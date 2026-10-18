@@ -358,7 +358,8 @@ test("projects native reward sets without exposing exact reward or room operands
   }, {
     kind: "reward_claim",
     rewards: [
-      { kind: "gold", label: "17 gold", description: null, enabled: true, group_relation: "unavailable" },
+      { kind: "gold", label: "17 gold", description: null, enabled: true, group_relation: "unavailable",
+        card_alternatives_complete: false, native_relic_refresh_subscription: "unavailable" },
       { kind: "card", label: "Add a card", description: null, enabled: true, group_relation: "unavailable", card_options: null,
         card_alternatives: null, card_alternatives_complete: false, can_skip_selection: null, can_reroll: null, selection_completes_reward: null,
         native_relic_refresh_subscription: "unavailable" }
@@ -1326,4 +1327,22 @@ test("populated reward candidate Reads retain each actual native card, group and
   const changed = [...project(incomplete).reads.values()].find(read => read.content.display_context === "reward_candidate");
   assert.equal(changed.completeness.status, "partial");
   assert.deepEqual(changed.completeness.missing, ["native_tooltip_unavailable"]);
+});
+
+
+test("reward group identity is the visible reward entity for every reward kind", () => {
+  const state = { ...eventState(), decision: "reward_set", reward_set_ref: "set-native", is_terminal: false,
+    rewards: ["gold", "potion", "relic", "card_choice"].map((kind, index) => ({
+      native_ref: `reward-${index}`, kind, name: kind, group_relation: "independent" })) };
+  const projection = projectManagedCandidateDecision({ ...projectionIdentity, state });
+  const rewards = projection.snapshot.interaction.content.surface.rewards;
+  for (const reward of rewards) {
+    assert.equal(reward.entity_id, reward.group_id);
+    assert.equal(projection.snapshot.referents.find(item => item.referent_id === reward.entity_id).role, "reward");
+  }
+  for (const reward of rewards.filter(reward => reward.kind !== "card")) {
+    assert.equal(reward.card_alternatives_complete, false);
+    assert.equal(reward.native_relic_refresh_subscription, "unavailable");
+  }
+  assert.equal(new Set(rewards.map(reward => reward.group_id)).size, rewards.length);
 });

@@ -1035,6 +1035,7 @@ function currentSurface(state, ctx) {
         const label = reward.name ?? kind ?? `Reward ${index + 1}`;
         const item = ctx.referent({
           role: "reward",
+          id: ctx.entityId("reward_group", reward.native_ref),
           label,
           enabled,
           occurrence: index,
@@ -1046,6 +1047,8 @@ function currentSurface(state, ctx) {
             // Public stable group identity (alias of the private native reward ref).
             group_id: ctx.entityId("reward_group", reward.native_ref),
             group_relation: ["independent", "linked"].includes(reward.group_relation) ? reward.group_relation : "unavailable",
+            ...(kind !== "card" ? { card_alternatives_complete: false,
+              native_relic_refresh_subscription: "unavailable" } : {}),
             // Lawfully viewable candidates of an offered, populated card reward (P1 aggregation).
             ...(kind === "card" ? { card_options: Array.isArray(reward.card_options)
               ? reward.card_options.map((card, optionIndex) => ({ index: card?.index ?? optionIndex,
