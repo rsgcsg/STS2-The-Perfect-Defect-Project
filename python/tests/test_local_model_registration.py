@@ -121,8 +121,10 @@ def test_global_program_registration_labels_identify_both_environments(tmp_path,
         artifact = Path(args[6])
         manifest = {
             "adapter": adapter_identity(),
-            "artifact": {"path": str(artifact),
-                         "sha256": registration_module.hashlib.sha256(artifact.read_bytes()).hexdigest()},
+            "artifact": {
+                "path": str(artifact),
+                "sha256": registration_module.hashlib.sha256(artifact.read_bytes()).hexdigest(),
+            },
             "input": {"profile": "p1-global-r1", "state_recovery": {"model_bindings": []}},
             "agent": {"id": "global-public-program", "version": "1",
                       "provider": "project-program", "architecture": "model-less-program"},
@@ -130,7 +132,9 @@ def test_global_program_registration_labels_identify_both_environments(tmp_path,
         return SimpleNamespace(returncode=0, stdout=json.dumps(manifest))
 
     monkeypatch.setattr(registration_module.subprocess, "run", negotiate)
-    results = [service.register_global_program(environment_kind=kind) for kind in ("native", "managed")]
+    results = [
+        service.register_global_program(environment_kind=kind) for kind in ("native", "managed")
+    ]
     entries = service._entries()
     assert [entry["id"] for entry in entries] == [result["selection_id"] for result in results]
     assert [entry["label"] for entry in entries] == [

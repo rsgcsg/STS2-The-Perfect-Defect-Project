@@ -698,7 +698,9 @@ def test_v2_native_agent_retains_explicit_healthy_protocol_and_exact_original_co
 
 
 @pytest.mark.parametrize("retained", [False, True])
-def test_global_context_uses_original_handoff_without_claiming_source3_preservation(bridge, retained):
+def test_global_context_uses_original_handoff_without_claiming_source3_preservation(
+    bridge, retained
+):
     client, _, calls, behavior = bridge
     source_status(behavior, "recording")
     source = behavior["recording"]["source"]
@@ -715,7 +717,9 @@ def test_global_context_uses_original_handoff_without_claiming_source3_preservat
         with pytest.raises(BoundaryError, match="native_task_command_unknown"):
             client.prepare_model(metadata, behavior["connector_endpoint"], model_context=context)
     else:
-        result = client.prepare_model(metadata, behavior["connector_endpoint"], model_context=context)
+        result = client.prepare_model(
+            metadata, behavior["connector_endpoint"], model_context=context
+        )
         assert result["recording_disposition"] == "closed_for_model"
         assert result["status"]["recording_lifecycle"] == "closed"
         assert result["status"]["source_declaration"] == source["declaration"]
