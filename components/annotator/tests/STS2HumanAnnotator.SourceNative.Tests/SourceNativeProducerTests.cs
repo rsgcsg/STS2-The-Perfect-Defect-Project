@@ -46,6 +46,7 @@ public sealed class SourceNativeProducerTests
         internal int Dispatches, SourceRegistrations, SourceCaptures, LegacyCaptures;
         internal bool PartialNative, MissingNeutral, ThrowCarrierAlias;
         internal Action? OnCapture;
+        internal Func<TextMenuFrame, TextMenuFrame>? TransformFrame;
         internal readonly object PhysicalOwner = new();
         internal object? PhysicalSubject;
         internal int PhysicalMatchCount = 1;
@@ -141,7 +142,8 @@ public sealed class SourceNativeProducerTests
                 "root", PhysicalLeafVerb, "Confirm", subjectId, Array.Empty<PlayerEnvironmentBoundActionArgument>(),
                 () => { Dispatches++; OnDispatch?.Invoke(); return NativeInputResult.Delivered("synthetic_native_callback"); },
                 PhysicalMatchCount == 0 ? null : new TextMenuNativeWitnessBinding(PhysicalOwner, PhysicalSubject, new Dictionary<string, object>(StringComparer.Ordinal))) { NativeSourcePrefixVerb = PhysicalSourcePrefixVerb }).ToArray();
-            return new(page, Surface, leaves) { GameContinuityId = Continuity };
+            var frame = new TextMenuFrame(page, Surface, leaves) { GameContinuityId = Continuity };
+            return TransformFrame?.Invoke(frame) ?? frame;
         }
         internal NativeLogicalService.NativeLogicalSourceCapture SourceFrame()
         {
