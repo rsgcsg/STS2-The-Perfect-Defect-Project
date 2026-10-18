@@ -20,6 +20,7 @@ RESERVED_PHASES = frozenset(
     {"preparing", "ready", "actor-associated", "closing", "unknown", "recovery_required"}
 )
 MODES = frozenset({"normal", "fast", "instant"})
+DEFAULT_NATIVE_SPEED = "instant"
 PRESENTATIONS = frozenset({"headless", "native-ui"})
 TUPLE_FIELDS = {
     "game_version",
@@ -185,7 +186,13 @@ def checked_context(value: object) -> dict[str, Any]:
             raise BoundaryError("native_episode", "speed_unproven")
         default = speed["configured_default"]
         if default is not None:
-            raise BoundaryError("native_episode", "qualified_default_unavailable")
+            default = object_fields(default, {"mode", "basis"}, "native_episode.speed.default")
+            if (
+                default["mode"] != DEFAULT_NATIVE_SPEED
+                or default["mode"] != speed["requested"]
+                or default["basis"] != "project_default"
+            ):
+                raise BoundaryError("native_episode", "project_default_unproven")
         handoff = object_fields(
             body["handoff"],
             {"schema", "runtime_instance_id", "observed_at", "controller", "basis"},
