@@ -63,6 +63,48 @@ describe("P1 r1.1 full-public graph comparison", () => {
     const report = compare(a, b); expect(report.verdict).not.toBe("equal"); expect(report.matching).toBe(0);
     expect(report.first_divergence).not.toBeNull();
   });
+  it("treats only combat card/potion legal target domains as complete unordered sets under one bijection", () => {
+    const a = unambiguousObservation(), surface = (a.scene.content as any).surface;
+    const enemy = content(a.combat).enemies[0], twin = { ...structuredClone(enemy), entity_id: "target-twin", combat_id: 2, hp: 1 };
+    content(a.combat).enemies.push(twin);
+    const targets = [enemy.entity_id, twin.entity_id];
+    surface.playable_cards[1].target_entity_ids = [...targets];
+    surface.usable_potions = [{ entity_id: surface.playable_cards[0].entity_id, target_entity_ids: [...targets] }];
+    const b = renamed(a), other = (b.scene.content as any).surface;
+    other.playable_cards[1].target_entity_ids.reverse(); other.usable_potions[0].target_entity_ids.reverse();
+    expect(compare(a, b).verdict).toBe("equal");
+    for (const change of ["missing", "extra", "different", "duplicate"]) {
+      const bad = structuredClone(b), domain = (bad.scene.content as any).surface.playable_cards[1].target_entity_ids;
+      if (change === "missing") domain.pop();
+      if (change === "extra") domain.push(content(b.player).entity_id);
+      if (change === "different") domain[0] = content(b.player).entity_id;
+      if (change === "duplicate") domain[0] = domain[1];
+      expect(compare(a, bad).verdict, change).not.toBe("equal");
+    }
+    const duplicate = structuredClone(a);
+    (duplicate.scene.content as any).surface.usable_potions[0].target_entity_ids = [targets[0], targets[0]];
+    expect(compare(duplicate, duplicate).verdict).toBe("incomparable");
+    const reorderedEnemies = structuredClone(b); content(reorderedEnemies.combat).enemies.reverse();
+    expect(compare(a, reorderedEnemies).verdict).toBe("different");
+    const reorderedHand = structuredClone(b); content(reorderedHand.combat).player.hand.reverse();
+    expect(compare(a, reorderedHand).verdict).toBe("different");
+    for (const field of ["target_entity_ids", "cards"]) {
+      const left = structuredClone(a), right = structuredClone(a);
+      (left.scene.content as any).surface.extension = { [field]: ["literal-a", "literal-b"] };
+      (right.scene.content as any).surface.extension = { [field]: ["literal-b", "literal-a"] };
+      expect(compare(left, right).verdict).toBe("different");
+    }
+    const otherKindLeft = structuredClone(a), otherKindRight = structuredClone(a);
+    for (const o of [otherKindLeft, otherKindRight]) {
+      (o.scene as any).native_kind = "event_option";
+      (o.scene as any).content_schema = "sts2.player-environment/surface/event_option-1";
+      (o.scene.content as any).surface.kind = "event_option";
+    }
+    (otherKindRight.scene.content as any).surface.playable_cards[1].target_entity_ids.reverse();
+    expect(compare(otherKindLeft, otherKindRight).verdict).toBe("different");
+    const oldRevision = structuredClone(a); (oldRevision as any).revision = "r1.2";
+    expect(compare(a, oldRevision).verdict).toBe("incomparable");
+  });
   it("keeps chosen target instance relations for two enemies of one definition", () => {
     const a = observation(); const enemy = content(a.combat).enemies[0];
     const twin = { ...structuredClone(enemy), entity_id: "m999", combat_id: 2, hp: 1 };

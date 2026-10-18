@@ -1,6 +1,6 @@
 # P1 全局 r1：可执行合同（profile `p1-global-r1`）
 
-状态：**r1.2，P1 的唯一权威文档**（2026-10-17 用户决定；实现和实跑资格见 CURRENT）。其他 P1 文档（[P1](P1.zh-CN.md)、[Host/wire](P1_HOST_AND_WIRE.zh-CN.md)、[计划](../plans/P1_FORWARD_2026-10-15.zh-CN.md)、[ADR-0017](../adr/0017-p1-forward-decision-profile.md)）是背景和历史；本文定义P1语义；用户最新要求及组件权责仍优先，代码是待检验实现，不以当前代码覆盖需求。
+状态：**r1.3，P1 的唯一权威文档**（2026-10-18 用户决定；实现和实跑资格见 CURRENT）。其他 P1 文档（[P1](P1.zh-CN.md)、[Host/wire](P1_HOST_AND_WIRE.zh-CN.md)、[计划](../plans/P1_FORWARD_2026-10-15.zh-CN.md)、[ADR-0017](../adr/0017-p1-forward-decision-profile.md)）是背景和历史；本文定义P1语义；用户最新要求及组件权责仍优先，代码是待检验实现，不以当前代码覆盖需求。
 推进规则见 [WORKING_RULES](../WORKING_RULES.zh-CN.md)；当前进度与下一步见第 16–18 节。
 
 代码：共享核心 `components/connector/sdk/typescript/src/p1Global/`（包出口 `@rsgcsg/sts2-connector-client/p1-global`）。
@@ -146,6 +146,24 @@ Agent 不需要了解 Godot、原生操作数或 Host 差异。示例：`compone
 - 所有真正选择点及完整公开终局（包括 win/loss）均须一致，Reference 必须明确自然终局且无删失。unknown、预算停止、基础设施中断、partial 卡点单独计数。
 - 比较器资源上限返回 incomparable，不能算 equal；改变 loss→win、丢失重复实例、错绑关系或文本不相等必须拒绝 equal。
 - 批准的差异也不算一致，只缩小声明；未实现/未验证机制继续保留全局义务。旧 r1.0 的压缩 decision-signature 统计是历史结果，不代替本标准。r1.2 新语义/观察绑定不能重贴到旧 r1.1 原件上。
+
+### r1.3 修订登记（2026-10-18，用户批准）
+
+只在 `combat_turn` 的 `sts2.player-environment/surface/combat_turn-1` 中，
+`scene.content.surface.playable_cards[].target_entity_ids` 与
+`scene.content.surface.usable_potions[].target_entity_ids` 是**完整、无重复的无序合法目标集合**。
+顺序没有决策意义，Agent 不得依赖其顺序。比较时保留全部成员、所属卡牌/药水与目标实例的关联，
+并纳入同一个全局实体双射；缺失、增加、重复或错绑成员均不等价。
+
+此修订源自 Human01 第19个输入：Reference 按每进程随机实体ID排序合法目标，Managed按公开敌人顺序投影。
+批准仅覆盖上述两个路径。敌人/手牌顺序、其他ID列表、目录关联、文字、extra_reads、
+未知扩展及其他所有字段沿用既有严格语义。以后如发现其他字段随机ID排序，须逐项报告，不沿用本批准。
+Human选择器可将同一卡牌/药水的目标选项按公开敌人从左到右显示，保持原choice_id和编号绑定。
+
+r1.2 原始运行、帧和既有结论保留。用 r1.3 回放旧轨迹时必须显式生成独立衍生轨迹并记录原件hash、
+来源帧hash和逐点前后hash；唯一允许修改的是观察的 `revision`。数组和事实不重排、不删除。
+该衍生件只用于在新语义下重放，不表示真人原来消费了r1.3，也不转移原生/Human/训练资格。
+直接混比不同revision仍返回incomparable。
 
 ## 12. 限额
 

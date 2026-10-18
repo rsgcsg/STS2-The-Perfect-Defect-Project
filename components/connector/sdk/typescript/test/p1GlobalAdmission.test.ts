@@ -6,7 +6,7 @@ const project = (basis: P1Basis) => reduce(createSession("admission", "managed")
 const count = (basis: any) => { basis.snapshot.bound_actions.total_count = basis.snapshot.bound_actions.materialized_count = basis.snapshot.bound_actions.actions.length; };
 const read = (basis: any, kind: string): any => basis.reads.find((item: any) => item.kind === kind).response;
 
-describe("P1 r1.2 explicit complete-capture admission", () => {
+describe("P1 r1.3 explicit complete-capture admission", () => {
   it("admits the native generated-card chooser without inventing grid preferences or confirmation", () => {
     const b = fixture("synthetic-complete-combat");
     const original = b.snapshot.interaction.content.context.player.hand[0];
@@ -58,7 +58,7 @@ describe("P1 r1.2 explicit complete-capture admission", () => {
     const result = project(fixture("synthetic-complete-combat"));
     expect(result.complete).toBe(true);
     expect(result.missing).toEqual([]);
-    expect(result.observation.revision).toBe("r1.2");
+    expect(result.observation.revision).toBe("r1.3");
     expect(result.observation.envelope.required_information_complete).toBe(true);
     expect(result.observation.envelope.read_instances).toHaveLength(3);
   });
