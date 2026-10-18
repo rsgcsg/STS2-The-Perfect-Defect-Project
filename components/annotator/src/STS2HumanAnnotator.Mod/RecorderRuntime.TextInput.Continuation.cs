@@ -83,6 +83,9 @@ internal static partial class RecorderRuntime
     internal static NCardPlay? BeginHumanTextTargetSetup(NCardPlay carrier)
     {
         NCardPlay? previous = HumanTextStartingCard.Value;
+        lock (Gate)
+            if (_store == null || !HumanTextInputObservationContract.Supports(_store.Manifest.TextInputSchemaVersion))
+                return previous;
         HumanTextStartingCard.Value = carrier;
         return previous;
     }
@@ -102,6 +105,9 @@ internal static partial class RecorderRuntime
     {
         try
         {
+            lock (Gate)
+                if (_store == null || !HumanTextInputObservationContract.Supports(_store.Manifest.TextInputSchemaVersion))
+                    return;
             NCardPlay? carrier = HumanTextStartingCard.Value;
             if (!ReferenceEquals(NTargetManager.Instance, manager)
                 || carrier == null || !((carrier is NControllerCardPlay

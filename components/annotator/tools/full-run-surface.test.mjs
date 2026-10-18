@@ -54,6 +54,46 @@ test("legacy text-input scopes require a declared stream before capturing or all
     assert.ok(guard < prefix.indexOf("PlayerEnvironmentTextMenuWitness."), `${file} gates before legacy capture`);
     assert.match(prefix.slice(guard, prefix.indexOf("_humanTextInputPendingScopes++")), /return null;/u);
   }
+  const targetSource = fs.readFileSync(path.join(root, "src", "STS2HumanAnnotator.Mod", "RecorderRuntime.TextInput.Continuation.cs"), "utf8");
+  const setup = section(targetSource, "internal static NCardPlay? BeginHumanTextTargetSetup(", "internal static void EndHumanTextTargetSetup(");
+  const binding = section(targetSource, "internal static void BindHumanTextTargetManager(", "internal static HumanTextContinuationScope? BeginHumanTextControllerInput(");
+  for (const [body, write] of [[setup, "HumanTextStartingCard.Value = carrier"], [binding, "HumanTextTargetBindings[manager] = new("]])
+    assert.ok(body.indexOf("!HumanTextInputObservationContract.Supports(_store.Manifest.TextInputSchemaVersion)") < body.indexOf(write));
+});
+
+test("P1 routes every shared legacy evidence ingress before its legacy writer", () => {
+  for (const [start, end, gate, legacy] of [
+    ["internal static void ObserveAcceptedAction(", "internal static void ObservePlayCardExecutionAborted(", "if (IsP1Recording)", "SubmittedInputs.TryGet"],
+    ["internal static bool ObserveAcceptedSemanticUiAction(", "internal static void ObserveAcceptedSemanticUiFailure(", "if (IsP1Recording)", "AcceptedDecisionObserver.Observe"],
+    ["private static void ObserveBeforeActionExecution(", "private static void ObserveSemanticDecisionBoundary(", "if (IsP1Recording)", "NativeSemanticDiscriminatorRuntime.Observe"],
+    ["internal static bool ObserveSemanticUiCarrierBindingFailure(", "internal static void ObserveSemanticUiNativeCommitBindingFailure(", "if (IsP1Recording)", "return PersistTrackerMutationOrUnknown"],
+    ["internal static bool ObserveAcceptedNestedHumanContinuation(", "internal static bool ObserveNestedHumanContinuationUnavailable(", "TryRouteP1LegacyRecord", "return PersistTrackerMutationOrUnknown"],
+    ["private static bool PersistTrackerMutationOrUnknown(", "private static NativeCompletionEvidence ToCompletionEvidence(", "if (IsP1Recording)", "BoundaryTracker.BeginDurableMutation"],
+    ["private static void Quarantine(\n", "private static void WriteStatus(", "TryRouteP1LegacyRecord", "AppendInvalidation"],
+    ["private static void ObserveNativeActEntered(", "private static void UpdateRunLifecycle(", "if (IsP1Recording)", "CaptureSemanticFrame()"],
+    ["private static void FinalizeClose()", "private static void TerminateClosePendingWork(", "if (IsP1Recording)", "PersistSemanticBoundaryDrafts"]
+  ]) {
+    const body = section(runtime, start, end);
+    assert.ok(body.indexOf(gate) !== -1 && body.indexOf(gate) < body.indexOf(legacy), `${start}: P1 must route before legacy capture/write`);
+  }
+  for (const [start, end, completion] of [
+    ["private static bool ObserveSemanticUiNativeCommitCore(", "private static void StartSemanticNativeAction(", "CompleteP1Ui"],
+    ["private static void ObserveNativePostCommitCompletion(", "private static bool PersistTrackerMutationOrUnknown(", "CompleteP1Ui"]
+  ]) {
+    const body = section(runtime, start, end);
+    assert.ok(body.indexOf(completion) < body.indexOf("PersistTrackerMutationOrUnknown"), `${start}: native P1 completion owns its stream`);
+  }
+});
+
+test("P1 native terminal retains its own boundary and exact ready-owner witness before automatic Close", () => {
+  const ended = section(runtime, "internal static void ObserveNativeRunEnded(", "internal static void ObserveNativeRunStarted(");
+  assert.ok(ended.indexOf('ObserveP1Boundary("native_run_ended"') < ended.indexOf("TerminalSeal.ObserveNativeEnded"));
+  assert.match(ended, /is_victory = isVictory, abandoned/u);
+  const ready = section(runtime, "private static void ObserveNativeDecisionOwnerReady(", "private static CurrentDecisionFrame FreezeSemanticBoundary(");
+  assert.match(ready, /ObserveP1Boundary\("native_decision_owner_ready", new \{ domain = observation.Domain/u);
+  assert.match(ready, /native_owner_witness_id = NativeWitnessIdentity.Get\(observation.NativeOwner/u);
+  assert.match(ready, /native_mechanism = observation.NativeMechanism/u);
+  assert.ok(ready.indexOf('ObserveP1Boundary("native_decision_owner_ready"') < ready.indexOf("close: () => ExecuteTerminalAutoSeal"));
 });
 
 test("act-ready binds one exact queued action and skips generic duplicate ingress", () => {

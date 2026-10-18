@@ -14,6 +14,7 @@
   <ItemGroup>
     <ProjectReference Include="../../src/STS2HumanAnnotator.Core/STS2HumanAnnotator.Core.csproj" />
     <Compile Include="../../src/STS2HumanAnnotator.Mod/SourcePublicationBinding.cs" Link="SourcePublicationBinding.cs" />
+    <Compile Include="../../src/STS2HumanAnnotator.Mod/RecorderRuntime.ProfileRouting.cs" Link="RecorderRuntime.ProfileRouting.cs" />
   </ItemGroup>
   <ItemGroup><None Include="../../../connector/sdk/typescript/test/fixtures/p1-global/synthetic-complete-combat.json" Link="p1-complete-combat.json" CopyToOutputDirectory="PreserveNewest" /></ItemGroup>
 </Project>

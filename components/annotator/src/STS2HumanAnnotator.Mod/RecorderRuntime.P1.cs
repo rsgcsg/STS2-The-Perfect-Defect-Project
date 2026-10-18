@@ -9,7 +9,6 @@ namespace STS2HumanAnnotator.Mod;
 
 internal static partial class RecorderRuntime
 {
-    private static bool IsP1Recording => _activeCaptureProfileId == P1NativeRecordingContract.ProfileId;
     private static readonly Dictionary<string, (string Decision, string Run)> P1UiPending = new(StringComparer.Ordinal);
 
     // Administrative command under Gate; no game action, lifecycle transition or client-selected output path.
@@ -38,14 +37,6 @@ internal static partial class RecorderRuntime
 
     private static P1NativeBasisReference? PersistP1Basis(ProcessLocalNativeWitnessFrame? frame) =>
         frame?.PublicBasis is { } basis ? _store!.PersistP1NativeBasis(basis.SnapshotId, basis.Bytes) : null;
-
-    private static void P1Issue(string reason, string? nativeType = null, object? witness = null)
-    {
-        if (_store == null) return;
-        _store.AppendP1NativeEvent(new JsonObject { ["kind"] = "issue", ["run_id"] = _currentRunId,
-            ["reason"] = reason, ["native_action_type"] = nativeType,
-            ["native_witness"] = witness == null ? null : JsonSerializer.SerializeToNode(witness, EvidenceJson.Options) });
-    }
 
     private static void ObserveP1AcceptedAction(GameAction action)
     {
@@ -77,6 +68,7 @@ internal static partial class RecorderRuntime
                 ["native_queue_id"] = action.Id, ["native_mechanism"] = "game_action",
                 ["basis"] = JsonSerializer.SerializeToNode(basis, EvidenceJson.Options),
                 ["bound_action"] = JsonSerializer.SerializeToNode(match?.BoundAction, EvidenceJson.Options),
+                ["native_witness"] = JsonSerializer.SerializeToNode(witness, EvidenceJson.Options),
                 ["native_receipt"] = new JsonObject { ["kind"] = "game_action_accepted", ["carrier_ref"] = id },
                 ["missing_reason"] = error });
             if (error != null) P1Issue(error, type, witness);
@@ -182,16 +174,17 @@ internal static partial class RecorderRuntime
         { _runtimeState = "p1_native_recording_failed"; _detail = exception.Message; NativeUiObservationSafety.Report("p1_native.lifecycle", exception); }
     }
 
-    private static void ObserveP1Boundary(string reason)
+    private static void ObserveP1Boundary(string reason, object? nativeWitness = null)
     {
         if (_store == null || _lifecycle.State is not (RecordingLifecycleState.Recording or RecordingLifecycleState.Closing)) return;
         try
         {
             var frame = PlayerEnvironmentNativeWitness.CaptureP1();
             _store.AppendP1NativeEvent(new JsonObject { ["kind"] = "observation", ["run_id"] = _currentRunId,
-                ["reason"] = reason, ["basis"] = JsonSerializer.SerializeToNode(PersistP1Basis(frame), EvidenceJson.Options) });
+                ["reason"] = reason, ["basis"] = JsonSerializer.SerializeToNode(PersistP1Basis(frame), EvidenceJson.Options),
+                ["native_witness"] = JsonSerializer.SerializeToNode(nativeWitness, EvidenceJson.Options) });
         }
-        catch (Exception exception) { P1Issue("observation_capture_failed:" + exception.GetType().Name); }
+        catch (Exception exception) { P1Issue("observation_capture_failed:" + exception.GetType().Name, witness: nativeWitness); }
     }
 
     private static void FinalizeP1Close()
