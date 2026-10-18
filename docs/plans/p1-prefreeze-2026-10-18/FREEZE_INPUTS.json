@@ -1,7 +1,7 @@
 {
   "scope": "Round19 documentation synthesis, not an approval or a new identity registry. Paths/hashes bind the actual draft inputs and relative-link snapshots.",
-  "source_baseline": "4b489108238d1a17bef1dae421d289b29c5883dc",
-  "source_tree": "429b6f6673014408a9f94e66e477472e23842d5c",
+  "source_baseline": "c5bf7bd7f5c0d9fcba8a0325c3ef47eef89924d5",
+  "source_tree": "b678dc35c503a9887eb5dd8abc13c95074962696",
   "files": [
     {
       "source": "/Users/fire/Documents/Codex/2026-10-17/a-t7-runtime-connector-status-settling/work/p1-K6-20261018/K6-workbench-position.md",
@@ -29,7 +29,8 @@
       "bytes": 48802,
       "sha256": "e3b8fb14b6a8e40e4294b9c56c7de4c9cd304c450aa932e13a4f1264f39dcd52",
       "repository_snapshot": "SCOPE_v0.3.zh-CN.md",
-      "repository_sha256": "60345aa7d9dbb99facbb519da24a79cd9e5299312219468a340efb798802b8f9"
+      "repository_sha256": "5c0e3d91c0231a89484f7778c776da8e944e2c3e304c92a6cd60a6edff452ac5",
+      "role": "canonical original input retained; approved execution-boundary repository delta is synchronized to canonical by root integrator"
     },
     {
       "source": "/Users/fire/Documents/Codex/2026-10-17/a-t7-runtime-connector-status-settling/work/p1-K2-20261018/round19/scope-replies-before-merge.md",
@@ -205,6 +206,12 @@
       "role": "review input; its pending4.1 wording is historical, direct user approval now recorded in P1/canonical",
       "bytes": 12310,
       "sha256": "a6616f64f08b38d64a2b3c7692a5a35d84052abc4602af4d2ec21fcb84b1d934"
+    },
+    {
+      "source": "/Users/fire/Documents/Codex/2026-10-17/a-t7-runtime-connector-status-settling/work/p1-semantic-20261019/USER-QUEUED-INPUT-DECISION-20261019.txt",
+      "role": "fixed direct user decision input; later timebox tightened by user to2h per root fixed report, not implemented/runtime evidence",
+      "bytes": 4055,
+      "sha256": "d27ba3a13a3e34e22642bd259ec4e281629618c59c6684de0f03a58cd8b037db"
     }
   ]
 }

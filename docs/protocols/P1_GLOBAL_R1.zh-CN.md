@@ -60,23 +60,29 @@ Managed：sts2.dll 无界面宿主 + 投影                 ┴→ 两端共用�
 
 这是[唯一上层图连接⑥](../plans/p1-prefreeze-2026-10-18/CHAIN_PURPOSES.md#唯一上层图与连接要求新任务入口2026-10-19)的P1要求，与[冻结定义4.1–4.2](../plans/p1-prefreeze-2026-10-18/SCOPE_v0.3.zh-CN.md)同一已批准含义。任何交互profile都应声明自己的③④在线要求和⑥原件派生requires，不能由某个来源实现反向决定profile需要什么。来源支持P1，是其原件provides经声明的投影Π覆盖以下全部requires；不按Source4/Human/Runtime名称直接判支持。
 
-- **观察抽象α/同次原件**：所选run全部实际玩家语义决策的同次完整`public-basis-1`，全部advertised Reads及同状态身份绑定；真实accepted原生动作/UI选择，原顺序、对象/目标/exact owner与接受证明。敌人/效果自动GameAction保留事实/结果，不制造玩家label；行政准备保留私有provenance，不作标签。
-- **动作到结果**：真实accepted选择的生命周期、效果、结果/后继；cancelled/aborted/unknown及缺失都显式保存。未提交拿牌取消没有accepted决策/label；不能借此丢掉已接受选择或实际效果，也不以前置Source4 raw净零分类替代P1语义。
-- **整局与封存**：真实原生新局到自然终局，run/parent/save/continuity、原始起终/顺序、Close/pack及内容身份。必需PB1/Read、结果、顺序或真实决策缺失须报gap，不由Close/pack成功推出整局完整。
-- **投影Π/派生**：用在线同一共享核reducer/lowering恢复所有真实P1决策的观察、完整catalog、choice/聚合/commitments、结果/后继与终局；可逐项回到原件，无unknown、必需信息缺失或决策遗漏。原件完整、派生完整、Managed严格重放、Human来源和研究准入分别报告。原件完整而adapter暂缺可列缺口后补实现并重派生，不改原件、不以后来状态补旧H/PB、不先填派生PASS。
+**2026-10-19用户批准的记录解释修订（连接⑤⑥）**：恢复历史rc4的执行边界`S / A(S)`作为P1派生决策点；点击/输入时的`H`只证明来源。H/S规则用于原生输入来源；Runtime/选择器原件沿既有同边界合同，不补造Human来源。此修订不改在线连接③④的观察、完整动作和执行合同，不扩展Reference/Managed的排队能力。获批的是解释要求，不表示新P1采集、转换或真实验收已经完成；具体原件字段由Annotator/adapter owner共同声明，本文不另造schema。暂存牌与手牌在PB1中的实际字段差异由C只读核对后逐项交Curation；不能以字段形状相近声称原始H与执行S相同，也不因此自动批准研究输入。
 
-原Source4 E2/E3条文和旧FAIL保持原义；新路线按上述已批准解释。原件尽量保留比所选profile更多的事实，但未来profile仍须按其requires重新判断支持。新增来源或profile不新增长期独立业务链。
+- **分开H和S**：保存原始点击/输入H及exact来源、原生接受、owner和顺序；H原有状态/Reads/缺失照实保留。P1观察与选择以执行边界S为准，不宣称玩家在S重新点击/决定过，不把执行S倒填成旧H，也不要求空的H公开catalog凭空出现BoundAction。
+- **执行边界完整公开依据**：在同一个执行边界、同一snapshot身份下保存完整`public-basis-1`、全部advertised Reads及完整catalog `A(S)`。复用既有[RecordedNativeInput](../../components/annotator/src/STS2HumanAnnotator.Core/RecordedNativeInput.cs)与[执行订阅](../../components/annotator/src/STS2HumanAnnotator.Mod/NativeActionLifecycleSubscription.cs)，不新建tracker。queued动作沿原生`BeforeActionExecuted`接缝取得新S/A(S)；无queue的原生直接callback沿其合法pre-admission/执行接缝取得。完整S不是从未来拼起来的快照，公开信息约束保持。
+- **唯一、精确动作身份**：真实native accepted的key和全部operands必须与执行catalog所选动作精确匹配，保留exact subject/target/owner及原始接受证明，不凭名称、索引、近似目标或时间接近猜绑定。沿既有合同保留public action或native input两种表示**二选一**，不制造H的BoundAction。执行时公开投递catalog没有该暂存牌的BoundAction，不单独作为停止理由；允许沿完整原生执行A(S)及native input声明派生，但不能伪造公开BoundAction。若真实执行边界无法保存完整S/PB1或可派生目录，则停下实现并报告具体缺失。具体字段以[Annotator数据合同](../../components/annotator/docs/DATA_CONTRACT.md#queued-execution-catalog-phase)及B/root本次实现声明为准；既有schema3/native input不能直接叫当前P1实现已接好。
+- **排队与两时点**：nonqueued须证明H和S落在同一原生执行边界；queued明确标`queued=true`，保留H→S的原始时间/顺序与实际间隔，不把两时点伪装为同时。对应执行S完整且精确匹配才可派生；有间隔不等于可以改H或自动补缺。
+- **结果与拒绝**：保留真实accepted选择的生命周期、效果和原生后继；取消、目标变化、失效、执行不匹配、unsupported/unknown及缺失须保留明确disposition/issue，不派生为成功选择。未提交拿牌取消没有accepted决策/label；已接受后的取消也不能当成未提交而抹掉。敌人/自动效果保留原生事实和结果，不制造玩家label；行政准备只保留私有provenance。
+- **整局与派生**：从真实新局到自然终局，保存原顺序、run/parent/save/continuity、起终及Close/pack内容身份。每个原生accepted必须有符合上述规则的派生决策或显式issue。共享在线reducer/lowering恢复完整P1观察/catalog/choice/commitments/结果/后继/终局，逐项可回原件。原件完整、派生完整、严格Managed、Human来源与研究准入分开；adapter暂缺可从**已经完整保存的执行S/A(S)**重派生，不先填PASS。旧gap/FAIL原样保留，旧H或旧S没采到的内容不回填。
 
-**当前完整性检测四项：实现、缺口与known risk（源码基线4b489108；不是完整性保证）**
+原Source4 E2/E3条文和旧FAIL保持原义；新路线按上述已批准解释。原件尽量保留比所选profile更多的事实，但未来profile仍按其requires重核。新增来源或profile不新增长期独立业务链。
+
+**历史查过（本次设计依据）**：以前遇到过：原生接受queued输入时，H公开目录可能为空或与执行状态不同；见[rapid audit](../evidence/PR25_RAPID_INPUT_EXECUTION_AUDIT_2026-09-11.md)。当时怎么解决：[native-admission修复](../evidence/PR25_NATIVE_ADMISSION_REPAIR_2026-09-11.md)分存H/native input和BeforeActionExecuted的S/A(S)，按key/全部operands核对、公共action/native input互斥；[rc4原件报告](../evidence/PR25_RC4_FULL_RUN_HUMAN_PASS_2026-09-12.md)限定两自然败局524/524、47次rapid handoff。此次用不用、为什么：恢复该原生执行接缝和精确身份约束来服务P1连接⑤⑥。此前10-19最小方案把派生决策时点固定为H，并绕过旧执行捕获，误把“不能拿S回填H”扩大成“不能按S派生”；工程05因此没有完整派生轨迹，不能归因于玩家连点或历史方案无效。当前仍须补P1完整PB1/all Reads/共享核接线并在新原件实测，不转移rc4资格。
+
+**当前完整性检测四项：实现、缺口与known risk（本次文档基线c5bf7bd7；旧H路线实况与新S路线缺口分开，不是完整性保证）**
 
 | 用户要求 | 当前实际实现／定位 | 缺失、能抓什么与抓不到什么 |
 |---|---|---|
-| (a) 录制器看到但不支持的动作写issue | **部分已实现**：[RecorderRuntime.P1](../../components/annotator/src/STS2HumanAnnotator.Mod/RecorderRuntime.P1.cs)对已进入accepted捕获的mapping不可用、PB不完整、bound action未证成写`P1Issue`；[converter](../../tools/p1-native-to-p1.mjs)将未映射/歧义/缺continuation列issue | B正审所有P1可达旧入口与旁路，尚不能称任何看到的动作都正确分流；没有进入捕获接缝的选择不会凭空产生issue。新审查修复另按实际commit/安装验收。 |
-| (b) 每次等待玩家决定，后面须有accepted决策或明确结束原因 | **未完整实现**：[Store](../../components/annotator/src/STS2HumanAnnotator.Core/P1NativeRecording.cs)跟踪已accepted→terminal，Close将未完成accepted写unknown；converter报无terminal/完整后继 | 这不是独立的“全部waiting边界→accepted或结束”核对；若等待点及选择都没被捕获，当前accepted计数不会发现它。不能用0pending/0issue声称全边界无漏录。 |
+| (a) 录制器看到但不支持的动作写issue | **部分已实现**：[RecorderRuntime.P1](../../components/annotator/src/STS2HumanAnnotator.Mod/RecorderRuntime.P1.cs)对已进入accepted捕获的mapping不可用、PB不完整、bound action未证成写`P1Issue`；[converter](../../tools/p1-native-to-p1.mjs)将未映射/歧义/缺continuation列issue | 旧入口分流/selector修复已有源码，但本次执行S路线尚未接好；尚不能称任何看到的动作都正确分流；没有进入捕获接缝的选择不会凭空产生issue。新审查修复另按实际commit/安装验收。 |
+| (b) 每个原生accepted必须有派生决策或issue（用户改为执行边界计数） | **新规则待实现/实测**：[Store](../../components/annotator/src/STS2HumanAnnotator.Core/P1NativeRecording.cs)已有已捕获accepted/terminal/issue计数；[converter](../../tools/p1-native-to-p1.mjs)已有未匹配/缺terminal/后继的issue，但当前基线仍以H basis派生 | 新执行S/A(S)采集、精确native key/全部operands关联及accepted→派生或issue的完整对账由B/root补；尚不能声称满足。此项替代先前“全部waiting边界计数”的要求，不靠轮询每个等待时刻扩一套采集器；从未进入捕获的accepted仍是known risk。 |
 | (c) 相邻决策间变化须由已录决策和自动效果解释 | **部分检查，未完整实现**：[bundle reader](../../tools/p1-native-bundle.mjs)核原件/顺序/关联，[converter](../../tools/p1-native-to-p1.mjs)沿原lifecycle和真实后继共享核派生；原生自动效果保持事实 | 没有独立穷尽每次状态变化的因果/自动效果核算。遗漏决策若改变状态可能在(d)暴露；净零或未改变比较字段的漏录未必被发现，不能称状态变化都已解释。 |
 | (d) Managed严格重放对不上 | **已实现于可派生轨迹**：[replay agent](../../components/policy-runtime/examples/p1/replay_agent.mjs)沿既有严格comparator比每点和最后后继/终局并报告divergence；native02有效前缀5动作/最后后继实际equal | 只核声明轨迹/起点/公开语义；native02会话Close失败，前缀通过不代完整包或整局。尚无最终候选正式英文整局PASS。重放不能证明所有从未记录、或净效果不显的选择都被捕获。 |
 
-**静默漏录known risk**：当前(a)只检查录制器已经看到的事实；(b)/(c)未形成独立全量覆盖，(d)有助发现可见分叉但不能完全兜住未捕获选择。因此“录制器根本没看到的选择”仍可能漏掉，不宣称机器已能完整检测。目标requires不因此减掉；按当前真实范围报告，出现原件gap立即说明何步缺什么，由用户决定继续/重开，工程同步修原owner出新candidate。每局约30分钟，无需中途实时盯；结束立即转换核对，首局先核已保存开头。gap原件保留且不计≥3整局；gap之前片段须同次Reference正确、离线验证、严格Managed三证同时通过才计机制覆盖。
+**静默漏录known risk**：当前(a)只检查录制器已经看到的事实；新(b)accepted完整对账与(c)状态解释未形成独立全量覆盖，(d)有助发现可见分叉但不能完全兜住未捕获选择。因此“录制器根本没看到的选择”仍可能漏掉，不宣称机器已能完整检测。目标requires不因此减掉；按当前真实范围报告，出现原件gap立即说明何步缺什么，由用户决定继续/重开，工程同步修原owner出新candidate。每局约30分钟，无需中途实时盯；结束立即转换核对，首局先核已保存开头。gap原件保留且不计≥3整局；gap之前片段须同次Reference正确、离线验证、严格Managed三证同时通过才计机制覆盖。
 
 ## 5. 观察（`sts2.p1/observation-1`）
 
@@ -280,7 +286,7 @@ r1.2 原始运行、帧和既有结论保留。用 r1.3 回放旧轨迹时必须
 - **显示文字两端不同**：Managed 卡牌/事件描述是模板加数值（如 `Gain {MaxHp} Max HP.` + variables），Reference 是解析后的中文；Managed 事件选项不带卡牌预览提示；Managed 附魔描述带一个未解析的图标路径。decision 口径不受影响，但模型看到的文字不同。
 - **Managed 多选牌组选择会发出 `preview` 动词**，而 snapshot-1 合同没有这个动词（严格解码会拒绝）。P1 运行里没遇到；是 Managed 投影已有的潜在缺陷。
 - **地图**：只有地图页给完整地图，其他页面为 unsupported。
-- **记录器（历史范围更正，2026-10-19）**：早期本节仅指P1选择器/外部Agent协议记录，原“原生见证不在本轮范围”描述当时边界。当前范围已包含Annotator P1-native真实原生accepted动作＋同次完整PB1，原件requires见§4.1；Source4物理raw分类不再是P1必经门。实现/缺口按§4.1状态表，不把定义已批当实际已通过。
+- **记录器（历史范围更正，2026-10-19）**：早期本节仅指P1选择器/外部Agent协议记录，原“原生见证不在本轮范围”描述当时边界。当前范围已包含Annotator P1-native真实原生accepted动作、H来源与执行S/A(S)的完整PB1，原件requires见§4.1；Source4物理raw分类不再是P1必经门。实现/缺口按§4.1状态表，不把定义已批当实际已通过。
 - **人工选择器**未在真实游戏里由真人跑过；执行链路与外部 Agent 相同。
 - **执行路径**：`sts2-p1 run` 直接用 Host 驱动协议，不经过 Policy Runtime 的完整产品路径（workbench/队列）；Codex 的 `p1-ordinary-combat-r1` 是另一个 profile，二者关系待整合。
 - 不声明：胜率或策略强度、第二幕以后的覆盖、胜利终局、Reference 发布级资格、Managed 规则等价资格、训练数据可用性。
@@ -312,7 +318,7 @@ r1.2 原始运行、帧和既有结论保留。用 r1.3 回放旧轨迹时必须
 
 ## 17. 登记的协议例外（必须经用户审核才能新增）
 
-**2026-10-19适用性说明**：E2/E3以下登记仍是原Source4格式的已批准解释，原条文和旧失败证据不改。用户已批准P1改走成熟Human accepted动作＋同次完整PB1路线，Source4主要服务P2/后续，退出P1当前强制主线，不再新增其取消预检/投入。方向、开录门以及[冻结定义4.1/4.2](../plans/p1-prefreeze-2026-10-18/SCOPE_v0.3.zh-CN.md)的新路线原件/派生整局完整及E2/E3具体适用性均已用户批准：行政准备不作标签；未提交拿牌取消没有accepted决策/label，无需先证成Source4 raw净零；真实accepted选择/效果/unknown必须保留，真实决策缺PB1/Read仍不合格。此说明不修改Agent前进目录或旧report-v3完整性含义。
+**2026-10-19适用性说明**：E2/E3以下登记仍是原Source4格式的已批准解释，原条文和旧失败证据不改。用户已批准P1复用成熟Human accepted动作来源并在执行边界S/A(S)派生，H仅来源，Source4主要服务P2/后续，退出P1当前强制主线，不再新增其取消预检/投入。方向、开录门以及[冻结定义4.1/4.2](../plans/p1-prefreeze-2026-10-18/SCOPE_v0.3.zh-CN.md)的新路线原件/派生整局完整及E2/E3具体适用性均已用户批准：行政准备不作标签；未提交拿牌取消没有accepted决策/label，无需先证成Source4 raw净零；真实accepted选择/效果/unknown必须保留，执行边界S缺完整PB1/Read/catalog或native key/operands不能精确匹配仍不合格。此说明不修改Agent前进目录或旧report-v3完整性含义。
 
 | 编号 | 例外 | 原因 | 批准 |
 | --- | --- | --- | --- |
