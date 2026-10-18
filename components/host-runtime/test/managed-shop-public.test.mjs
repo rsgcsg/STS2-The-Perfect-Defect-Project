@@ -50,6 +50,7 @@ test("closed shop exposes snapshot-bound inspectable catalog without purchase au
   assert.equal(projected.snapshot.completeness.status,"complete");
   assert.equal(catalog.content.access_state,"inventory_closed_open_to_inspect");
   assert.equal(catalog.descriptor.ordering_semantics,"fixed_ui_slots");
+  assert.equal([...projected.reads.values()].filter(read=>!["run_deck","map","combat_piles"].includes(read.descriptor.kind))[0].descriptor.kind,"shop_catalog");
   assert.deepEqual(catalog.content.cards.map(offer=>[offer.inventory_index,offer.price,offer.can_purchase,offer.blocked_reason]),[[0,52,false,"ui_control_disabled"]]);
   assert.deepEqual([...projected.bindings.values()].map(value=>value.raw_request.action),["open_shop_inventory","leave_shop"]);
   const details=[...projected.reads.values()].filter(read=>read.descriptor.kind==="surface_card"&&read.content.display_context==="shop_offer");

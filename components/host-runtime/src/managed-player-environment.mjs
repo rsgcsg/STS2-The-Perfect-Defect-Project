@@ -1686,6 +1686,7 @@ function currentSurface(state, ctx) {
       if (plainObject(state.selector_public)) {
         const canonical = canonicalSelectorSurface(state, ctx, commonContext);
         return { ...canonical, context: publicHud,
+          hiddenByPolicy: ["hidden_rng", "draw_pile_true_order", "future_enemy_moves", "future_rewards", "future_events"],
           complete: canonical.complete && hudComplete,
           missing: [...canonical.missing, ...(hudComplete ? [] : ["complete_current_post_prefix_combat_hud"])] };
       }
@@ -1715,7 +1716,7 @@ function currentSurface(state, ctx) {
           missing: complete ? [] : ["exact_current_native_generated_choice_and_details"],
           visibleInformation: "same_capture_original_native_generated_cards_and_post_prefix_combat_hud",
           interactionDiscovery: "original_native_choose_callback_task_and_offered_objects",
-          hiddenByPolicy: ["hidden_rng","draw_pile_true_order","future_enemy_moves"] };
+          hiddenByPolicy: ["hidden_rng", "draw_pile_true_order", "future_enemy_moves", "future_rewards", "future_events"] };
       }
       const referents = cards.map((card, index) => {
         const unique = typeof card?.native_ref === "string" && refs.filter((ref) => ref === card.native_ref).length === 1;
@@ -2391,9 +2392,9 @@ export function projectManagedCandidateDecision({
     deckRead,
     mapRead(ctx.snapshotId, state, ctx.id, ctx.entityId),
     combatPilesRead(ctx, state),
+    ...ctx.catalogReads,
     ...deckCardDetailReads(ctx, state, deckRead),
     ...handCardDetailReads(ctx, state),
-    ...ctx.catalogReads,
     ...ctx.detailReads
   ]
     .filter(Boolean);
