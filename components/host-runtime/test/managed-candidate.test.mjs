@@ -33,16 +33,16 @@ import {
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
-test("built managed source and retained measured build identities remain explicit", () => {
+test("pending native act-selection source and retained measured builds remain explicit", () => {
   const { manifest } = loadManagedCandidateManifest(ROOT);
-  assert.equal(manifest.status, "candidate_built_unqualified");
+  assert.equal(manifest.status, "candidate_source_pending_build");
   assert.deepEqual(Object.keys(manifest.expected_build), [
     "source_patch_sha256", "artifact_sha256", "artifact_mvid", "localization_sha256"
   ]);
   const sourcePatch = readFileSync(path.join(ROOT, "experiments", "managed-exact", manifest.source_patch));
   assert.equal(
     createHash("sha256").update(sourcePatch).digest("hex"),
-    manifest.expected_build.source_patch_sha256
+    manifest.pending_source_patch_sha256
   );
   assert.equal(manifest.expected_build.artifact_sha256, "8397f7be3982eff42684ef83e23a369daa333ea9a235d602e76f1428668036f5");
   assert.equal(manifest.expected_build.artifact_mvid, "85ec5c2e-1345-4710-86b2-ebd8458a4e8f");

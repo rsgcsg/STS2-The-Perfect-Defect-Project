@@ -5762,7 +5762,7 @@ index 6b9de4a..3635c75 100644
 -                seed: seedStr
 +            _runState = RunState.CreateForNewRun(
 +                new[] { player },
-+                ActModel.GetDefaultList().Select(act => act.ToMutable()).ToList(),
++                ActModel.GetRandomList(new MegaCrit.Sts2.Core.Random.Rng(StringHelper.GetDeterministicHashCode(seedStr), "act_selection"), unlockState, isMultiplayer: false).Select(act => act.ToMutable()).ToList(),
 +                Array.Empty<ModifierModel>(),
 +                GameMode.Standard,
 +                ascension,

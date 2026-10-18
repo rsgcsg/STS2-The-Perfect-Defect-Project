@@ -352,11 +352,10 @@ its input SHA and actual frozen UnlockState comparison. There is no arbitrary
 save path or in-run import command. Managed presentation TestMode is retained.
 `initial-progress-tests` exercises the native owner without Launch or game input.
 
-The current source patch is pending a new actual candidate build. The manifest's
-`pending_source_patch_sha256` identifies it; `expected_build` still identifies the
-previous a70d artifact. Existing build admission rejects that old artifact for
-this changed source. New build/install/live qualification must be recorded from
-actual results before selecting it.
+The full candidate built from integration e9d88 uses patch aa3df815 and artifact
+8397f7be / MVID85ec5c2e. The manifest retains the previous a70 build in history;
+source/build inspection accepts only the new measured identity. Actual installed
+product and cross-Host replay qualification must be recorded separately.
 
 For fresh P1 suite comparisons the Managed manager reset receives the exact
 Reference prepared `initial_progress` object (`recipe`, `progress_json`,
@@ -366,3 +365,11 @@ observations, and retains the native run-identity verification before publishing
 an episode. The file is private setup data; it is never a P1 action or label.
 The current full candidate is built with patch aa3df815 and artifact8397f7be;
 old a70 measurements remain historical. Build admission is not live comparison.
+
+The same prepared progress exposed a real initial-scene divergence: seed
+SWNBPYW69BAC starts Underdocks in the native lobby, while the old Managed
+initializer forced the default Overgrowth act list. StartRun now calls the native
+ActModel.GetRandomList with the lobby's seeded `act_selection` RNG and the actual
+UnlockState. This preserves the Standard lobby default random-act choice rather
+than overriding game facts. The previous8397 build remains measured history;
+the changed patch is pending a new candidate build and live comparison.
