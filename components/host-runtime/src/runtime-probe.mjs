@@ -25,6 +25,7 @@ import {
 } from "./connector-endpoint.mjs";
 import { validateRequestedHostExecutionProfile } from "./host-execution-profile.mjs";
 import { nativeSpeedLaunchEnvironment, NATIVE_SPEED_ENVIRONMENT_VARIABLES } from "./native-speed.mjs";
+import { nativeBaselineLaunchEnvironment, NATIVE_BASELINE_ENVIRONMENT_VARIABLE } from "./native-baseline.mjs";
 
 export function resolveExperimentalConnectorCanary({
   installation,
@@ -366,8 +367,10 @@ export function shippedRuntimeLaunch(installation, {
   connectorCanary = null,
   hostExecutionProfile = null,
   nativeSpeed = null,
+  baselineRecipe = null,
   displayMode = "headless"
 } = {}) {
+  const baselineEnvironment = nativeBaselineLaunchEnvironment(baselineRecipe, connectorEndpoint == null ? null : launchProfile);
   const speedEnvironment = nativeSpeedLaunchEnvironment(nativeSpeed, connectorEndpoint == null ? null : launchProfile);
   if (Object.keys(speedEnvironment).length > 0) {
     if (connectorEndpoint == null) throw new Error("native_speed_requires_host_control");
@@ -394,11 +397,11 @@ export function shippedRuntimeLaunch(installation, {
       : { STS2_CONNECTOR_HOST_EXECUTION_PROFILE: requestedHostExecutionProfile }),
     ...extraEnvironment
   }, connectorCanary);
-  for (const key of NATIVE_SPEED_ENVIRONMENT_VARIABLES) {
+  for (const key of [...NATIVE_SPEED_ENVIRONMENT_VARIABLES, NATIVE_BASELINE_ENVIRONMENT_VARIABLE]) {
     if (Object.hasOwn(extraEnvironment, key)) throw new Error("native_speed_environment_override");
     delete environment[key]; // An ambient request must never modify a personal process.
   }
-  Object.assign(environment, speedEnvironment);
+  Object.assign(environment, speedEnvironment, baselineEnvironment);
   if (Object.keys(speedEnvironment).length > 0 && (environment[HOST_CONTROL_TOKEN_ENVIRONMENT_VARIABLE] !== hostControlToken
     || Object.entries(launchProfile.environment).some(([key, value]) => environment[key] !== value))) {
     throw new Error("native_speed_isolation_environment_override");
@@ -431,7 +434,8 @@ export function shippedRuntimeLaunch(installation, {
       canary_game_id: connectorCanary?.game_id ?? null,
       canary_source_revision: connectorCanary?.source_revision ?? null,
       requested_execution_profile: requestedHostExecutionProfile,
-      requested_native_speed: nativeSpeed
+      requested_native_speed: nativeSpeed,
+      requested_baseline_recipe: baselineRecipe
     }
   };
 }

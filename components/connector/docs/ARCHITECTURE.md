@@ -67,12 +67,15 @@ with the game-owned run RNG seed. The token and seed metadata are not published
 through capabilities, SDK, MCP, Snapshot, Read or BoundAction.
 
 The same private Host-control plane also supports bounded `/api/host-control/prepare`
-for the existing Host's closed native speed run configuration. It accepts only
+for the existing Host's closed native speed and normal singleplayer baseline
+configuration. It accepts only
 the process-local token and exact runtime, applies the frozen desired typed
 native preference once after boot at an isolated unobstructed main menu, and
 requires immediate readback. The existing provenance route remains read-only
-and reports nested `native_speed` readiness, actual getter and prepared profile
-binding, including later drift. No request can choose a mode/property/path or
+and reports independent nested `native_speed` and `baseline` readiness. Speed
+retains its actual getter/profile binding. The fixed baseline records native
+save/reload progress, derived UnlockState and content pools; later run entry
+compares the actual run UnlockState with that prepared state. No request can choose a mode/property/path or
 native operand. Normal, Fast and Instant share the same public contract. Host
 Runtime owns launch isolation, configuration and qualification; see its
 owning monorepo specification at `components/host-runtime/docs/ARCHITECTURE.md`,
