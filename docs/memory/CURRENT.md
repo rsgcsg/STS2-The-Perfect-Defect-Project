@@ -31,13 +31,25 @@ choice/result is supported. The proposed exact definitions are in section4.1.
 
 The hard checkpoint is 2026-10-19 09:00 Brisbane (2026-10-18 23:00 UTC). Report actual
 core/self-test short results then. If incomplete, give the concrete blocker, remaining
-work and time estimate for the user to decide. Two preflight failures with different
+work and time estimate, then continue authorized ordinary repairs without waiting
+for approval or claiming PASS. Plan/scope changes remain the user's decision.
+Two preflight failures with different
 causes trigger a route review before more patches/runs. Review is proportionate to
 actual merge/freeze needs, not a new independent gate for every SHA or step.
 
+Checkpoint automation stops after its final trigger at2026-10-20 09:00 Brisbane.
+Only the deadline automation sends the16:30 deadline report. Pausing scheduled
+triggers does not pause engineering work; root already updated the automations.
+If a game or its conversion is ongoing at16:30, preserve originals and finish normal
+Close/pack without interruption. Report pending at the deadline, then add actual
+results after safe completion; do not call pending PASS.
+
 The user-set recording gate requires Play, an unsubmitted pickup cancel with zero
 labels, EndTurn and another non-card-play decision, plus complete originals, offline
-verification and strict Managed short replay. Only the user operates formal whole
+verification and strict Managed short replay. After root's self-test passes, the
+user directly starts formal English whole games, with no separate Human short run.
+Convert/check the first saved opening segment as Human validation without interrupting
+the formal game; it does not establish whole-run completeness. Only the user operates formal whole
 games. When the user is unavailable, wait for formal recording/decisions; continue
 independent work. Also wait if the user cannot locate the entry; do not record a
 formal game on their behalf. Engineering records keep their true origin.
