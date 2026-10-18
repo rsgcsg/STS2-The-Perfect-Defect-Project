@@ -23,17 +23,21 @@ internal static partial class PlayerEnvironmentService
     internal static SealedObservationCapture ReadCurrentPublicBasis(string? expectedSnapshotId) =>
         SealedObservations.Capture(CapturePublicBasis, expectedSnapshotId);
 
-    private static FrozenPublicObservation CapturePublicBasis()
+    private static FrozenPublicObservation CapturePublicBasis() => CapturePublicBasisBuild((_, frozen) => frozen);
+
+    internal static T CapturePublicBasisBuild<T>(Func<SnapshotBuildResult, FrozenPublicObservation, T> assemble,
+        Witness.ProcessLocalCaptureProfiler? profiler = null)
     {
         using var guard = new P1CaptureGuard();
         NativeSourceInputProvider.BeforePrefix += P1CaptureGuard.InvalidateActive;
         try
         {
             var before = P1NativeCaptureBoundary.Capture();
-            SnapshotBuildResult built = BuildSnapshot(inputProfile: PublicBasisContract.Profile);
-            var frozen = FreezePublicBasis(built, before.Run == null ? null : Entities.GetId(before.Run, "run"));
+            SnapshotBuildResult built = BuildSnapshot(inputProfile: PublicBasisContract.Profile, captureProfiler: profiler);
+            var frozen = FreezePublicBasis(built, before.Run == null ? null : Entities.GetId(before.Run, "run"), built.Snapshot.ObservedAt);
+            T result = assemble(built, frozen);
             guard.RequireStable(before.Matches(P1NativeCaptureBoundary.Capture()));
-            return frozen;
+            return result;
         }
         finally { NativeSourceInputProvider.BeforePrefix -= P1CaptureGuard.InvalidateActive; }
     }

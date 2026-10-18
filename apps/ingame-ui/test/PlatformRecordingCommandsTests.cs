@@ -42,6 +42,45 @@ public sealed class PlatformRecordingCommandsTests
     internal static PlatformRecordingRequest Read(JsonObject body)
     { using var json = JsonDocument.Parse(body.ToJsonString()); return PlatformRecordingCommands.Read(json.RootElement); }
 
+    private static JsonObject P1Request(string kind = "start_new_session", string? origin = "agent_native_ui")
+    {
+        var body = Request();
+        body["command"] = new JsonObject {
+            ["schema"] = RecordingApplicationContract.CommandSchema, ["command_id"] = Guid.NewGuid().ToString("D"),
+            ["kind"] = kind, ["capture_profile_id"] = kind == "start_new_session" ? P1NativeRecordingContract.ProfileId : null,
+            ["p1_native_origin"] = origin };
+        return body;
+    }
+
+    [Theory]
+    [InlineData("agent_native_ui")]
+    [InlineData("declared_human")]
+    [InlineData("unknown")]
+    public void P1NativeStartRetainsTheExplicitOrigin(string origin)
+    {
+        var request = Read(P1Request(origin: origin));
+        Assert.Equal(P1NativeRecordingContract.ProfileId, request.Command.CaptureProfileId);
+        Assert.Equal(origin, request.Command.P1NativeOrigin);
+        Assert.Equal(RecordingApplicationContract.CommandSchema, request.Command.Schema);
+        Assert.Null(request.Command.SourceDeclaration);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("human")]
+    public void P1NativeStartRequiresARecognizedOrigin(string? origin) =>
+        Assert.Throws<ArgumentException>(() => Read(P1Request(origin: origin)));
+
+    [Theory]
+    [InlineData("pause")]
+    [InlineData("resume")]
+    [InlineData("close")]
+    public void P1NativeLifecycleDoesNotAcceptAReplacementOrigin(string kind)
+    {
+        Assert.Null(Read(P1Request(kind, null)).Command.P1NativeOrigin);
+        Assert.Throws<ArgumentException>(() => Read(P1Request(kind)));
+    }
+
     [Theory]
     [InlineData("start_new_session", RecordingCommandKind.StartNewSession)]
     [InlineData("pause", RecordingCommandKind.Pause)]

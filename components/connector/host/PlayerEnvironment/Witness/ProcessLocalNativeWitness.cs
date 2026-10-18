@@ -40,6 +40,7 @@ public sealed record ProcessLocalReadCapture(
     string? Detail);
 
 public sealed record ProcessLocalCaptureTiming(string Phase, long ElapsedMicroseconds);
+public sealed record ProcessLocalPublicBasisCapture(string SnapshotId, ReadOnlyMemory<byte> Bytes, DateTimeOffset CapturedAt);
 
 internal sealed class ProcessLocalCaptureProfiler
 {
@@ -109,6 +110,7 @@ public sealed class ProcessLocalNativeWitnessFrame
     public IReadOnlyDictionary<string, ProcessLocalReadCapture> Reads { get; }
 
     public IReadOnlyList<ProcessLocalCaptureTiming> CaptureTimings { get; }
+    public ProcessLocalPublicBasisCapture? PublicBasis { get; internal init; }
 
     /// <summary>Correlate an exact scoped native input with its accepted
     /// callback even when public delivery is settling. This never publishes a
@@ -254,6 +256,14 @@ public sealed class ProcessLocalNativeWitnessFrame
 /// </summary>
 public static class PlayerEnvironmentNativeWitness
 {
+    /// <summary>One original P1 build supplies both exact native bindings and every advertised Read instance.</summary>
+    public static ProcessLocalNativeWitnessFrame CaptureP1()
+    {
+        var profiler = new ProcessLocalCaptureProfiler();
+        return PlayerEnvironmentService.CapturePublicBasisBuild((built, frozen) =>
+            CreateFrame(built, Array.Empty<string>(), profiler,
+                new(frozen.SnapshotId, frozen.Bytes, frozen.CapturedAt)), profiler);
+    }
     public static ProcessLocalNativeWitnessFrame Capture(
         IReadOnlyCollection<string>? requiredReadKinds = null)
     {
@@ -280,7 +290,8 @@ public static class PlayerEnvironmentNativeWitness
     private static ProcessLocalNativeWitnessFrame CreateFrame(
         SnapshotBuildResult frame,
         IReadOnlyCollection<string>? requiredReadKinds,
-        ProcessLocalCaptureProfiler profiler)
+        ProcessLocalCaptureProfiler profiler,
+        ProcessLocalPublicBasisCapture? publicBasis = null)
     {
         HashSet<string> referentIds = profiler.Measure(
             "witness_referent_index",
@@ -322,7 +333,8 @@ public static class PlayerEnvironmentNativeWitness
                     .Where(entity => exactReferences.ContainsKey(entity.EntityId)).Select(entity => exactReferences[entity.EntityId]).ToArray(),
                 pair.Value.NativeAction.Candidate.EntityBindings
                     .Where(entity => entity.Role is not ("screen" or "hand" or "owner"))
-                    .Where(entity => exactReferences.ContainsKey(entity.EntityId)).Select(entity => exactReferences[entity.EntityId]).ToArray())).ToArray());
+                    .Where(entity => exactReferences.ContainsKey(entity.EntityId)).Select(entity => exactReferences[entity.EntityId]).ToArray())).ToArray())
+        { PublicBasis = publicBasis };
     }
 
     private static IReadOnlyDictionary<string, ProcessLocalReadCapture> MaterializeReads(

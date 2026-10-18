@@ -112,8 +112,8 @@ internal static partial class RecorderRuntime
     // terminal marker.  Polling IsInProgress may describe a transition, but
     // it must never publish a successful terminal disposition by itself.
     private static string _currentRunId => RunLifecycle.RunId;
-    private static readonly HumanCaptureProfile CaptureProfile =
-        HumanCaptureProfiles.FullRunReadRich;
+    private static HumanCaptureProfile CaptureProfile => IsP1Recording
+        ? P1NativeRecordingContract.Profile : HumanCaptureProfiles.FullRunReadRich;
     private static readonly string[] DeclaredOutOfScopeActionFamilies =
     {
         "unverified_selector_families"
@@ -285,7 +285,7 @@ internal static partial class RecorderRuntime
                     {
                         try
                         {
-                            StartSession(result.Lifecycle, command.CaptureProfileId);
+                            StartSession(result.Lifecycle, command.CaptureProfileId, command.P1NativeOrigin);
                         }
                         catch (Exception exception)
                         {
@@ -373,15 +373,19 @@ internal static partial class RecorderRuntime
 
     private static void StartSession(
         RecordingLifecycleSnapshot lifecycle,
-        string? requestedCaptureProfileId)
+        string? requestedCaptureProfileId, string? p1Origin = null)
     {
         if (_configuration == null || _sourceRevision == null || lifecycle.SessionId == null)
             throw new InvalidOperationException("Recorder runtime initialization is incomplete.");
+        HumanCaptureProfile profile = requestedCaptureProfileId == P1NativeRecordingContract.ProfileId
+            ? P1NativeRecordingContract.Profile : HumanCaptureProfiles.FullRunReadRich;
+        if (profile.ProfileId == P1NativeRecordingContract.ProfileId && p1Origin is not ("agent_native_ui" or "declared_human" or "unknown"))
+            throw new InvalidDataException("p1_native_declared_origin_required");
         if (requestedCaptureProfileId != null
-            && !string.Equals(requestedCaptureProfileId, CaptureProfile.ProfileId, StringComparison.Ordinal))
+            && !string.Equals(requestedCaptureProfileId, profile.ProfileId, StringComparison.Ordinal))
         {
             throw new InvalidDataException(
-                $"Unsupported capture profile {requestedCaptureProfileId}; expected {CaptureProfile.ProfileId}.");
+                $"Unsupported capture profile {requestedCaptureProfileId}; expected {profile.ProfileId}.");
         }
 
         DateTimeOffset now = DateTimeOffset.UtcNow;
@@ -395,20 +399,21 @@ internal static partial class RecorderRuntime
             RecorderMod.Version,
             _sourceRevision,
             System.Runtime.InteropServices.RuntimeInformation.RuntimeIdentifier,
-            CaptureProfile.ProfileId,
-            EvidenceIdentity.Sha256Json(CaptureProfile),
-            CaptureProfile.SupportedActionFamilies,
-            CaptureProfile.NonClaims.Append("not_human_validated").ToArray())
+            profile.ProfileId,
+            EvidenceIdentity.Sha256Json(profile),
+            profile.SupportedActionFamilies,
+            profile.NonClaims.Append("not_human_validated").ToArray())
         { DecisionSchemaVersion = DecisionOccurrenceIdentity.CurrentSchemaVersion, DispositionSchemaVersion = 1,
             CloseSchemaVersion = 1, RecoverySchemaVersion = 1, ContinuousSchemaVersion = 1,
-            TextInputSchemaVersion = HumanTextInputObservationContract.SchemaVersion };
+            TextInputSchemaVersion = profile.ProfileId == P1NativeRecordingContract.ProfileId ? null : HumanTextInputObservationContract.SchemaVersion,
+            P1NativeSchemaVersion = profile.ProfileId == P1NativeRecordingContract.ProfileId ? 1 : null, P1NativeOrigin = p1Origin };
         RecordingSessionStore store = RecordingSessionStore.Create(
             _configuration.RecordingRoot,
             manifest,
-            CaptureProfile);
+            profile);
 
         _store = store;
-        _activeCaptureProfileId = CaptureProfile.ProfileId;
+        _activeCaptureProfileId = profile.ProfileId;
         _lastSourceStatus = null;
         SessionId = lifecycle.SessionId;
         TimelineId = timelineId;
@@ -539,6 +544,7 @@ internal static partial class RecorderRuntime
     private static void FinalizeClose()
     {
         if (IsSourceRecording) { FinalizeSourceClose(); return; }
+        if (IsP1Recording) { FinalizeP1Close(); return; }
         IReadOnlyList<SemanticBoundaryTraceDraft> closeDrafts;
         lock (Gate)
         {
@@ -751,7 +757,7 @@ internal static partial class RecorderRuntime
     }
 
     private static bool HasPendingRecordingWorkUnsafe() =>
-        HasNativePendingRecordingWorkUnsafe() || BoundaryTracker.HasUnresolvedActions
+        IsP1Recording ? NativeActionSubscriptions.Count > 0 || P1UiPending.Count > 0 : HasNativePendingRecordingWorkUnsafe() || BoundaryTracker.HasUnresolvedActions
         || _humanTextInputPendingScopes > 0;
 
     private static bool HasNativePendingRecordingWorkUnsafe() =>
@@ -1243,7 +1249,7 @@ internal static partial class RecorderRuntime
                 return new NativeUiScopeEntry(false, true);
             }
 
-            ProcessLocalNativeSemanticCapture? semanticDecision = semanticSelection == null
+            ProcessLocalNativeSemanticCapture? semanticDecision = IsP1Recording || semanticSelection == null
                 ? null
                 : PlayerEnvironmentNativeSemanticWitness.Capture(
                     "before_native_action_admission",
@@ -1315,7 +1321,7 @@ internal static partial class RecorderRuntime
         try
         {
             ProcessLocalNativeWitnessFrame frame = CaptureSemanticFrame();
-            ProcessLocalNativeSemanticCapture semanticDecision =
+            ProcessLocalNativeSemanticCapture? semanticDecision = IsP1Recording ? null :
                 PlayerEnvironmentNativeSemanticWitness.Capture(
                     "before_native_action_admission",
                     uiFrame: frame,
@@ -1477,6 +1483,7 @@ internal static partial class RecorderRuntime
     internal static void ObserveAcceptedAction(GameAction action)
     {
         if (IsSourceRecording) return;
+        if (IsP1Recording) { ObserveP1AcceptedAction(action); return; }
         // Some native UI callbacks enqueue a known child action inside the
         // UI method whose accepted occurrence is already being staged. The
         // exact object binding is installed in RequestEnqueue's Prefix, before
@@ -1639,6 +1646,7 @@ internal static partial class RecorderRuntime
 
     internal static void ObservePlayCardExecutionAborted(PlayCardAction action)
     {
+        if (IsP1Recording) { if (NativeActionSubscriptions.TryGetValue(action, out var p1)) ObserveP1Lifecycle(p1, "aborted"); return; }
         string actionWitnessId = NativeWitnessIdentity.Get(action, "game_action");
         NativeSemanticDiscriminatorRuntime.Observe(
             _store,
@@ -1680,6 +1688,8 @@ internal static partial class RecorderRuntime
             if (sourceAcceptanceProven) NativeSourceInputProvider.Accepted(sourceInvocation);
             return false; // Source completions never enter Human observer/bookkeeping.
         }
+        if (IsP1Recording) return ObserveP1AcceptedUi(nativeActionType, observed, witness,
+            captureImmediatePostCommitBoundary, actionWitnessId);
         HumanActionContext? context = HumanActionScope.Current;
         try
         {
@@ -2050,6 +2060,7 @@ internal static partial class RecorderRuntime
 
     private static void ObserveBeforeActionExecution(GameAction action)
     {
+        if (IsP1Recording) return; // The same native subscription records lifecycle; no legacy canonical execution tracker.
         string actionWitnessId;
         lock (Gate)
             actionWitnessId = NativeActionSubscriptions.TryGetValue(action, out var exactSubscription)
@@ -2308,6 +2319,7 @@ internal static partial class RecorderRuntime
             {
                 try
                 {
+                    if (IsP1Recording) { ObserveP1Boundary("native_decision_owner_ready"); return; }
                     if (!_semanticBoundaryTraceHealthy)
                         return;
                     lock (Gate)
@@ -2800,6 +2812,12 @@ internal static partial class RecorderRuntime
                 nativeCompletion.CompletionId,
                 operationWitnessId,
                 true);
+            if (IsP1Recording)
+            {
+                bool saved = CompleteP1Ui(actionWitnessId, "finished", completion);
+                if (saved) NativePostCommitCompletions.CommitTaskCompletion(taskCompletion);
+                return saved;
+            }
             return PersistTrackerMutationOrUnknown(
                 actionWitnessId,
                 tracker =>
@@ -3344,6 +3362,12 @@ internal static partial class RecorderRuntime
         NativeCompletionEvidence evidence = ToCompletionEvidence(
             completion,
             registration.ActionWitnessId);
+        if (IsP1Recording)
+        {
+            if (CompleteP1Ui(registration.ActionWitnessId, completion.Succeeded ? "finished" : "unknown", evidence))
+                NativePostCommitCompletions.CommitTaskCompletion(taskCompletion);
+            return;
+        }
         PersistTrackerMutationOrUnknown(
             registration.ActionWitnessId,
             tracker =>
@@ -4209,7 +4233,8 @@ internal static partial class RecorderRuntime
     {
         ProcessLocalNativeWitnessFrame frame = MeasureStore(
             "read_rich_snapshot_capture",
-            () => PlayerEnvironmentNativeWitness.Capture(SemanticBoundaryReadPolicy.RequiredKinds));
+            () => IsP1Recording ? PlayerEnvironmentNativeWitness.CaptureP1()
+                : PlayerEnvironmentNativeWitness.Capture(SemanticBoundaryReadPolicy.RequiredKinds));
         RecordCaptureSubphases("read_rich", frame);
         return frame;
     }
@@ -4218,7 +4243,8 @@ internal static partial class RecorderRuntime
     {
         ProcessLocalNativeWitnessFrame frame = MeasureStore(
             "semantic_snapshot_capture",
-            () => PlayerEnvironmentNativeWitness.Capture(SemanticBoundaryReadPolicy.RequiredKinds));
+            () => IsP1Recording ? PlayerEnvironmentNativeWitness.CaptureP1()
+                : PlayerEnvironmentNativeWitness.Capture(SemanticBoundaryReadPolicy.RequiredKinds));
         RecordCaptureSubphases("semantic", frame);
         return frame;
     }
@@ -4248,6 +4274,7 @@ internal static partial class RecorderRuntime
         HasSemanticRequiredReads(frame);
 
     private static bool HasSemanticRequiredReads(ProcessLocalNativeWitnessFrame frame) =>
+        IsP1Recording ? frame.PublicBasis is { } basis && P1NativeRecordingContract.CompleteBasis(basis.Bytes) :
         SemanticBoundaryReadPolicy.RequiredKinds(frame.Snapshot.Interaction.Kind)
             .All(kind => frame.Reads.TryGetValue(kind, out ProcessLocalReadCapture? read)
                 && string.Equals(read.Status, "materialized", StringComparison.Ordinal)
