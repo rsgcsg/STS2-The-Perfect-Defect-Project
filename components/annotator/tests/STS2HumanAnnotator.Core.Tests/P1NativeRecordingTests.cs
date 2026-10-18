@@ -71,6 +71,31 @@ public sealed class P1NativeRecordingTests
     }
 
     [Fact]
+    public void AnUndeclaredLegacyTextInputAppendStillPermanentlyPreventsSuccessfulP1Close()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "p1-native-undeclared-text-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var store = RecordingSessionStore.Create(root, Manifest(), P1NativeRecordingContract.Profile);
+            string directory = store.DirectoryPath;
+            Assert.Null(store.Manifest.TextInputSchemaVersion);
+            Assert.False(HumanTextInputObservationContract.Supports(store.Manifest.TextInputSchemaVersion));
+            // Manifest rejection precedes observation decoding, matching the real failed legacy ingress.
+            var failure = Assert.Throws<InvalidDataException>(() => store.AppendHumanTextInputObservation(null!));
+            Assert.Contains("not declared by this manifest", failure.Message);
+            Assert.Equal("failed", store.GetSnapshot().AppendHealth);
+            Assert.Throws<InvalidDataException>(() => store.Dispose());
+            store.Dispose(); // Resource cleanup cannot turn a failed Close into a successful seal.
+            Assert.False(store.GetSnapshot().Closed);
+            Assert.Equal("failed", store.GetSnapshot().AppendHealth);
+            Assert.True(File.Exists(Path.Combine(directory, "human-text-input-failure.json")));
+            Assert.False(File.Exists(Path.Combine(directory, P1NativeRecordingContract.CloseFile)));
+            Assert.False(File.Exists(Path.Combine(directory, "session-close-receipt.json")));
+        }
+        finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
+    }
+
+    [Fact]
     public void DurablePrefixPreservesPendingOriginalBytesWhileTheSessionContinues()
     {
         string? exported = Environment.GetEnvironmentVariable("STS2_P1_PREFIX_FIXTURE_OUT");
