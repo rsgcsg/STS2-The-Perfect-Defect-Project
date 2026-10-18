@@ -61,6 +61,11 @@ test("legacy text-input scopes require a declared stream before capturing or all
     assert.ok(guard < prefix.indexOf("PlayerEnvironmentTextMenuWitness."), `${file} gates before legacy capture`);
     assert.match(prefix.slice(guard, prefix.indexOf("_humanTextInputPendingScopes++")), /return null;/u);
   }
+  const targetSource = fs.readFileSync(path.join(root, "src", "STS2HumanAnnotator.Mod", "RecorderRuntime.TextInput.Continuation.cs"), "utf8");
+  const setup = section(targetSource, "internal static NCardPlay? BeginHumanTextTargetSetup(", "internal static void EndHumanTextTargetSetup(");
+  const binding = section(targetSource, "internal static void BindHumanTextTargetManager(", "internal static HumanTextContinuationScope? BeginHumanTextControllerInput(");
+  for (const [body, write] of [[setup, "HumanTextStartingCard.Value = carrier"], [binding, "HumanTextTargetBindings[manager] = new("]])
+    assert.ok(body.indexOf("!HumanTextInputObservationContract.Supports(_store.Manifest.TextInputSchemaVersion)") < body.indexOf(write));
 });
 
 test("P1 routes every shared legacy evidence ingress before its legacy writer", () => {
