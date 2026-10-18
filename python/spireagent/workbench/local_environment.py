@@ -20,7 +20,14 @@ from pathlib import Path
 from typing import Any, cast
 
 from spireagent.artifact_contracts import Manifest, Parent, Producer
-from spireagent.json_boundary import BoundaryError, FrozenObject, decode_json, digest, json_bytes
+from spireagent.json_boundary import (
+    BoundaryError,
+    FrozenObject,
+    decode_json,
+    digest,
+    json_bytes,
+    object_fields,
+)
 from spireagent.package_identity import PackageIdentityError, validate_installed_package
 from spireagent.source import REPOSITORY
 from spireagent.storage.blobs import StoreError
@@ -56,9 +63,6 @@ SCENARIO = {
     "seed": "M2H0ST20260929A",
     "character": "Defect",
     "scope": "固定种子新局的人工文字单步；不是完整游戏或精确存档恢复。",
-    "source_patch_sha256": "bf3ac3d1aadee5ce556687745d2d64d37d0eea47e2b67904ca7c97b080d8b89e",
-    "artifact_sha256": "dd726fba38f4fc097a57e9dd4a5fe7d220bd94ea3527e132be31a31c95963d93",
-    "artifact_mvid": "145c95e9-ace0-42b5-bb46-3fef292ac645",
     "exact_game_assembly_sha256": (
         "9cb4f1ad8c9f284aa8fec3122ffd6d780bbf543d875c817abdd12ff63fbf12b4"
     ),
@@ -319,6 +323,26 @@ def _verify_host(host_root: Path, pin: dict[str, Any]) -> None:
         raise BoundaryError("local_environment", "host_package_unavailable") from error
 
 
+def _candidate_audit(value: object) -> dict[str, str]:
+    """The selected profile pins one audited build; the scenario pins its game."""
+    try:
+        result = object_fields(value, set(AUDIT_FIELDS), "local_environment.candidate_audit")
+        digest(result["upstream_revision"], "local_environment.candidate_source", length=40)
+        for field in ("source_patch_sha256", "artifact_sha256"):
+            digest(result[field], "local_environment." + field)
+        mvid = result["artifact_mvid"]
+        if (not isinstance(mvid, str) or re.fullmatch(
+                r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", mvid
+        ) is None):
+            raise ValueError
+        if any(result[field] != SCENARIO["exact_game_assembly_sha256"] for field in
+               ("original_sts2_sha256", "runtime_sts2_sha256")):
+            raise ValueError
+        return cast(dict[str, str], result)
+    except (BoundaryError, TypeError, ValueError) as error:
+        raise BoundaryError("local_environment", "managed_candidate_identity_mismatch") from error
+
+
 def _audit(host_root: Path, candidate: Path) -> dict[str, str]:
     completed = subprocess.run(
         ["node", str(host_root / "tools/managed-exact.mjs"), "audit", "--candidate",
@@ -331,19 +355,9 @@ def _audit(host_root: Path, candidate: Path) -> dict[str, str]:
         value = decode_json(completed.stdout)
         if not isinstance(value, dict):
             raise ValueError
-        result = {key: value[key] for key in AUDIT_FIELDS}
-        if any(not isinstance(item, str) or not item for item in result.values()):
-            raise ValueError
         if value.get("candidate_directory") != str(candidate):
             raise ValueError
-        if result["source_patch_sha256"] != SCENARIO["source_patch_sha256"] or (
-            result["artifact_sha256"] != SCENARIO["artifact_sha256"]
-            or result["artifact_mvid"] != SCENARIO["artifact_mvid"]
-            or result["original_sts2_sha256"] != SCENARIO["exact_game_assembly_sha256"]
-            or result["runtime_sts2_sha256"] != SCENARIO["exact_game_assembly_sha256"]
-        ):
-            raise ValueError
-        return result
+        return _candidate_audit({key: value[key] for key in AUDIT_FIELDS})
     except (BoundaryError, KeyError, TypeError, ValueError) as error:
         raise BoundaryError("local_environment", "managed_candidate_identity_mismatch") from error
 
@@ -381,13 +395,7 @@ def _configure_managed_host(
     ):
         raise BoundaryError("local_environment", "host_package_path_unsafe")
     _verify_host(host_root, host_pin)
-    observed = audit(host_root, candidate)
-    if (observed.get("source_patch_sha256") != SCENARIO["source_patch_sha256"]
-            or observed.get("artifact_sha256") != SCENARIO["artifact_sha256"]
-            or observed.get("artifact_mvid") != SCENARIO["artifact_mvid"]
-            or observed.get("original_sts2_sha256") != SCENARIO["exact_game_assembly_sha256"]
-            or observed.get("runtime_sts2_sha256") != SCENARIO["exact_game_assembly_sha256"]):
-        raise BoundaryError("local_environment", "managed_candidate_identity_mismatch")
+    observed = _candidate_audit(audit(host_root, candidate))
     profile = {
         "schema": PROFILE_SCHEMA,
         "candidate_directory": str(candidate),
@@ -438,17 +446,7 @@ def _read_profile(config: ProjectConfig) -> dict[str, Any]:
             not _ordinary(host_root, directory=True)
         ):
             raise ValueError
-        if not isinstance(value["audit"], dict) or set(value["audit"]) != set(AUDIT_FIELDS):
-            raise ValueError
-        if (value["audit"]["source_patch_sha256"] != SCENARIO["source_patch_sha256"]
-                or value["audit"]["artifact_sha256"] != SCENARIO["artifact_sha256"]
-                or value["audit"]["artifact_mvid"] != SCENARIO["artifact_mvid"]
-                or value["audit"]["original_sts2_sha256"] != (
-                    SCENARIO["exact_game_assembly_sha256"]
-                ) or value["audit"]["runtime_sts2_sha256"] != (
-                    SCENARIO["exact_game_assembly_sha256"]
-                )):
-            raise ValueError
+        _candidate_audit(value["audit"])
         pin = value["host_package_pin"]
         if not isinstance(pin, dict) or pin.get("schema") != (
             "stpd/platform-host-runtime-pin-v1"
