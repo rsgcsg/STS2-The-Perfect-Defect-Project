@@ -36,7 +36,7 @@ for (const identityMode of ["crypto", "sequence"]) {
     assert.equal(player.length, 1);
     assert.equal(player[0].referent_id, playerId);
     const use = snapshot.bound_actions.actions.find((item) => item.verb === "use");
-    assert.equal(use.label, "Use Energy Potion on Ironclad");
+    assert.equal(use.label, "Use Energy Potion");
     assert.deepEqual(use.arguments, [{ role: "target", referent_id: playerId }]);
     assert.deepEqual(snapshot.interaction.content.surface.usable_potions[0].target_entity_ids, [playerId]);
     assert.deepEqual(projection.bindings.get(use.bound_action_id).raw_request,

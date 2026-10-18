@@ -6,6 +6,7 @@ export function selector({ choose = false, skip = false, manual = false, selecte
   const card = (ref, name = "Strike") => ({ native_ref: ref, id: name.toUpperCase(), name,
     cost: "1", type: "Attack", rarity: "Basic", description: "Deal 6 damage.", target_type: "AnyEnemy",
     is_upgraded: false, keywords: [], card_previews: [], render_complete: true,
+    public_details: { keywords: [], card_previews: [] }, public_details_missing: [],
     is_selected: false, is_selectable: !selected, is_deselectable: false });
   const cards = [card("native-card-a"), card("native-card-b")];
   if (selected) Object.assign(cards[0], { is_selected: true, is_deselectable: manual });

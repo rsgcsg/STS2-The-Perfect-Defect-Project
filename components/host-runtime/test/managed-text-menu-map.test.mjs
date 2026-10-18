@@ -120,11 +120,11 @@ function eventDecision() {
     type: "decision", decision: "event_choice",
     context: { ...mapDecision().context, floor: 1, total_floor: 1, room_type: "Event" },
     room_ref: "native-event-room", event_ref: "native-event-instance",
-    event_name: "Neow", description: "Choose a boon.",
+    event_name: "Neow", event_id: "NEOW", ancient: true, in_dialogue: false, event_public_complete: true, description: "Choose a boon.",
     options: [
-      { index: 0, native_ref: "native-option-a", title: "First boon", description: "Gain a boon.", is_locked: false },
-      { index: 1, native_ref: "native-option-b", title: "Second boon", description: "Another boon.", is_locked: false },
-      { index: 2, native_ref: "native-option-locked", title: "Locked boon", description: "Unavailable.", is_locked: true }
+      { index: 0, native_ref: "native-option-a", title: "First boon", description: "Gain a boon.", is_locked: false, is_enabled: true, is_proceed: false, was_chosen: false, will_kill_player: false, tooltips: [] },
+      { index: 1, native_ref: "native-option-b", title: "Second boon", description: "Another boon.", is_locked: false, is_enabled: true, is_proceed: false, was_chosen: false, will_kill_player: false, tooltips: [] },
+      { index: 2, native_ref: "native-option-locked", title: "Locked boon", description: "Unavailable.", is_locked: true, is_enabled: false, is_proceed: false, was_chosen: false, will_kill_player: false, tooltips: [] }
     ],
     player: mapDecision().player
   };
@@ -136,18 +136,18 @@ function treasureDecision(stage = "treasure_chest") {
     room_ref: "native-treasure-room", player: mapDecision().player };
   if (stage === "treasure_relic") return { ...common, can_skip: true,
     relics: [
-      { index: 0, native_ref: "native-relic-a", id: "RELIC.A", name: "First relic", rarity: "Common" },
-      { index: 1, native_ref: "native-relic-b", id: "RELIC.B", name: "Second relic", rarity: "Uncommon" }
+      { index: 0, native_ref: "native-relic-a", id: "RELIC.A", name: "First relic", rarity: "Common", description: "Visible effect.", keywords: [], card_previews: [], hover_facts_complete: true },
+      { index: 1, native_ref: "native-relic-b", id: "RELIC.B", name: "Second relic", rarity: "Uncommon", description: "Visible effect.", keywords: [], card_previews: [], hover_facts_complete: true }
     ] };
   return common;
 }
 
 test("treasure text menu preserves the current three-stage native choices", async () => {
   for (const [state, kind, labels] of [
-    [treasureDecision(), "treasure_chest", ["Open treasure chest"]],
-    [treasureDecision("treasure_relic"), "treasure_relic_selection",
-      ["Take First relic", "Take Second relic", "Skip treasure relic"]],
-    [treasureDecision("treasure_complete"), "treasure_completion", ["Proceed to map"]]
+    [treasureDecision(), "treasure_room", ["Open the treasure chest"]],
+    [treasureDecision("treasure_relic"), "treasure_room",
+      ["Take First relic", "Take Second relic", "Skip the visible treasure relic"]],
+    [treasureDecision("treasure_complete"), "treasure_room", ["Continue from the treasure room"]]
   ]) {
     const projected = projectManagedCandidateDecision({ state, ...identity });
     const menu = new ManagedTextMenuSessionAdapter({ observe: () => projected.snapshot,
@@ -157,7 +157,7 @@ test("treasure text menu preserves the current three-stage native choices", asyn
     assert.deepEqual(menu.menu_actions.actions.map((action) => action.label), labels);
     assert.equal(JSON.stringify(menu).includes("native-treasure-room"), false);
     const requests = [...projected.bindings.values()].map((binding) => binding.raw_request);
-    if (kind === "treasure_relic_selection") assert.deepEqual(requests, [
+    if (state.decision === "treasure_relic") assert.deepEqual(requests, [
       { cmd: "action", action: "select_treasure_relic",
         args: { room_ref: "native-treasure-room", relic_ref: "native-relic-a" } },
       { cmd: "action", action: "select_treasure_relic",
@@ -265,7 +265,7 @@ function rewardDecision(kind = "reward_set") {
 
 test("published v1 and v2 contracts cover actual reviewed scene projections", () => {
   const contracts = [managedTextMenuV1Contract(), managedTextMenuV2Contract()];
-  const scenes = [mapDecision(), restDecision(), eventDecision(), publicSelector({ family: "deck_card" }), publicSelector({ family: "deck_transform" }), shopRoom(),
+  const scenes = [mapDecision(), restDecision(), eventDecision(), publicSelector({ family: "deck_card" }), publicSelector({ family: "deck_transform" }), publicSelector({ family: "simple" }), publicSelector({ family: "combat_pile" }), shopRoom(),
     treasureDecision(), treasureDecision("treasure_relic"),
     treasureDecision("treasure_complete"),
     deckUpgradeDecision(), deckUpgradeDecision("preview"),
@@ -561,7 +561,7 @@ test("projects complete rest options in native order and submits only bound enab
   const snapshot = adapter.observe();
   assert.equal(snapshot.menu_actions.status, "complete");
   assert.deepEqual(snapshot.interaction.content.surface.options.map((entry) =>
-    [entry.name, entry.is_enabled]), [["Rest", true], ["Smith", false], ["Dig", true]]);
+    [entry.name, entry.enabled]), [["Rest", true], ["Smith", false], ["Dig", true]]);
   assert.deepEqual(snapshot.menu_actions.actions.map((entry) => entry.label), ["Rest", "Dig"]);
   assert.equal(JSON.stringify(snapshot).includes("native-rest-a"), false);
   const input = { request_id: "rest-choose", expected_snapshot_id: snapshot.snapshot_id,
@@ -626,7 +626,7 @@ test("a successful rest option retains the page and exposes an independent bound
     action_id: initial.menu_actions.actions[0].action_id, input_profile: MANAGED_TEXT_MENU_PROFILE });
   assert.equal(choice.status, "applied");
   assert.equal(choice.successor.interaction.kind, "rest_site");
-  assert.deepEqual(choice.successor.menu_actions.actions.map((action) => action.label), ["Dig", "Proceed"]);
+  assert.deepEqual(choice.successor.menu_actions.actions.map((action) => action.label), ["Dig", "Proceed to map"]);
   assert.deepEqual(choice.successor.interaction.content.surface.options.map((option) => option.name), ["Smith", "Dig"]);
   const proceed = choice.successor.menu_actions.actions[1];
   const result = await adapter.submit({ request_id: "rest-proceed", expected_snapshot_id: choice.successor.snapshot_id,
@@ -654,7 +654,7 @@ test("an exhausted rest site advertises only proceed when native success enabled
   await session.mount({ seed: "TREST", reset: true });
   const ready = adapter.observe();
   assert.equal(ready.menu_actions.status, "complete");
-  assert.deepEqual(ready.menu_actions.actions.map((action) => action.label), ["Proceed"]);
+  assert.deepEqual(ready.menu_actions.actions.map((action) => action.label), ["Proceed to map"]);
 });
 
 test("replaced rest room invalidates the previously advertised proceed without dispatch", async () => {

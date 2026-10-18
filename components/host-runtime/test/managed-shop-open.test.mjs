@@ -33,7 +33,7 @@ test("a closed merchant presents the Reference room controls and keeps inventory
 
 test("forward open dispatches the original bound owner and advances to the actual returned inventory", async () => {
   const state = shopRoom(), requests = [];
-  const inventory = { ...state, decision: "shop", cards: [], relics: [], potions: [], card_removal: null,
+  const inventory = { ...state, decision: "shop", shop_public: true, shop_missing: [], cards: [], relics: [], potions: [], card_removal: null,
     presentation_owner: { ...state.presentation_owner, stage: "inventory" } };
   const session = new ManagedPlayerEnvironmentSession({ ...identity, process: {
     async request(request) {
@@ -69,7 +69,7 @@ test("inventory close retains the same semantic shop context while public world 
   const room = shopRoom();
   room.context = { ...room.context, floor: 7, total_floor: 7, room_type: "Shop" };
   room.player = { ...room.player, hp: 11, gold: 26 };
-  const inventory = { ...room, decision: "shop", cards: [], relics: [], potions: [], card_removal: null,
+  const inventory = { ...room, decision: "shop", shop_public: true, shop_missing: [], cards: [], relics: [], potions: [], card_removal: null,
     presentation_owner: { ...room.presentation_owner, stage: "inventory" } };
   const aliases = new Map();
   const open = projectManagedCandidateDecision({ state: inventory, ...identity, publicEntityAliases: aliases });

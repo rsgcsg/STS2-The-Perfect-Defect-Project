@@ -1,3 +1,4 @@
+import { shopInventory } from "./fixtures/managed-shop.mjs";
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
@@ -51,10 +52,11 @@ function eventState() {
     room_ref: "event-room-a",
     event_ref: "event-a",
     event_name: "Neow",
+    event_id: "NEOW", ancient: true, in_dialogue: false, event_public_complete: true,
     description: "Choose.",
     options: [
-      { index: 0, native_ref: "event-option-open", title: "Open", description: "Available", is_locked: false },
-      { index: 1, native_ref: "event-option-locked", title: "Locked", description: "Unavailable", is_locked: true }
+      { index: 0, native_ref: "event-option-open", title: "Open", description: "Available", is_locked: false, is_enabled: true, is_proceed: false, was_chosen: false, will_kill_player: false, tooltips: [] },
+      { index: 1, native_ref: "event-option-locked", title: "Locked", description: "Unavailable", is_locked: true, is_enabled: false, is_proceed: false, was_chosen: false, will_kill_player: false, tooltips: [] }
     ],
     player: player()
   };
@@ -256,10 +258,10 @@ test("projects game-owned rest option text and native actionability", () => {
   assert.deepEqual(projection.snapshot.interaction.content.surface.options.map((option) => ({
     name: option.name,
     description: option.description,
-    is_enabled: option.is_enabled
+    enabled: option.enabled
   })), [
-    { name: "Rest", description: "Heal 24 HP.", is_enabled: true },
-    { name: "Smith", description: "Upgrade a card.", is_enabled: false }
+    { name: "Rest", description: "Heal 24 HP.", enabled: true },
+    { name: "Smith", description: "Upgrade a card.", enabled: false }
   ]);
   assert.deepEqual(projection.snapshot.bound_actions.actions.map((action) => action.label), ["Rest"]);
   assert.equal(JSON.stringify(projection.snapshot).includes("rest-option-a"), false);
@@ -311,7 +313,7 @@ test("rest proceed is a separate room-bound input while remaining options stay v
   const projection = projectManagedCandidateDecision({ ...projectionIdentity, state });
   assert.equal(decodePlayerSnapshot(projection.snapshot).data.interaction.content.surface.can_proceed, true);
   assert.deepEqual(projection.snapshot.interaction.content.surface.options.map((option) => option.name), ["Smith", "Dig"]);
-  assert.deepEqual(projection.snapshot.bound_actions.actions.map((action) => action.label), ["Dig", "Proceed"]);
+  assert.deepEqual(projection.snapshot.bound_actions.actions.map((action) => action.label), ["Dig", "Proceed to map"]);
   assert.deepEqual([...projection.bindings.values()].map((binding) => binding.raw_request), [
     { cmd: "action", action: "choose_option", args: { option_index: 1, option_ref: "rest-option-c" } },
     { cmd: "action", action: "proceed", args: { room_ref: "rest-room-a" } }
@@ -320,7 +322,7 @@ test("rest proceed is a separate room-bound input while remaining options stay v
   const exhausted = projectManagedCandidateDecision({
     ...projectionIdentity, state: { ...state, options: [] }
   });
-  assert.deepEqual(exhausted.snapshot.bound_actions.actions.map((action) => action.label), ["Proceed"]);
+  assert.deepEqual(exhausted.snapshot.bound_actions.actions.map((action) => action.label), ["Proceed to map"]);
   assert.deepEqual(chooseManagedCandidateAction(state), {
     cmd: "action", action: "proceed", args: { room_ref: "rest-room-a" }
   });
@@ -376,6 +378,30 @@ test("projects native reward sets without exposing exact reward or room operands
   const requests = [...projection.bindings.values()].map((binding) => binding.raw_request);
   assert.equal(requests.some((request) => request.args?.reward_ref === "reward-gold-a"), true);
   assert.equal(requests.some((request) => request.args?.room_ref === "combat-room-a"), true);
+});
+
+test("reward descriptions expose visible text while retaining native reward bindings and inline icons", () => {
+  const state = {
+    ...eventState(), decision: "reward_set", reward_set_ref: "native-reward-set",
+    rewards: [
+      { native_ref: "native-gold", kind: "gold", name: "18金币", description: "18金币", group_relation: "independent" },
+      { native_ref: "native-potion", kind: "potion", name: "再生药水",
+        description: "获得[green]5[/green]层[gold]再生[/gold]。", group_relation: "independent" }
+    ]
+  };
+  const projection = projectManagedCandidateDecision({ state, ...projectionIdentity });
+  const rewards = projection.snapshot.interaction.content.surface.rewards;
+  assert.equal(rewards[0].description, "18金币");
+  assert.equal(rewards[1].description, "获得5层再生。");
+  assert.equal(projection.snapshot.referents.find(item => item.referent_id === rewards[1].entity_id)
+    .properties.description, "获得5层再生。");
+  assert.ok([...projection.bindings.values()].some(binding =>
+    binding.raw_request.args?.reward_ref === "native-potion"));
+
+  state.rewards[1].description = "获得[img]res://images/packed/sprite_fonts/defect_energy_icon.png[/img]。";
+  const icon = projectManagedCandidateDecision({ state, ...projectionIdentity });
+  assert.equal(icon.snapshot.interaction.content.surface.rewards[1].description,
+    "获得[defect_energy_icon.png]。");
 });
 
 test("a populated card reward publishes its lawfully viewable candidates under a public group id", () => {
@@ -569,9 +595,12 @@ test("projects treasure stages with explicit native choice and Host-local operan
       player: player()
     }
   });
-  assert.equal(closed.snapshot.interaction.kind, "treasure_chest");
-  assert.equal(closed.snapshot.bound_actions.actions[0].label, "Open treasure chest");
+  assert.equal(closed.snapshot.interaction.kind, "treasure_room");
+  assert.equal(closed.snapshot.bound_actions.actions[0].label, "Open the treasure chest");
   assert.equal(JSON.stringify(closed.snapshot).includes("treasure-room-a"), false);
+  assert.deepEqual(closed.snapshot.interaction.content.surface, { kind: "treasure_room",stage:"closed",chest_opened:false,
+    relics:[],can_choose:false,can_skip:false,can_proceed:false });
+  assert.equal(closed.snapshot.bound_actions.actions[0].subject_referent_id,null);
 
   const choosing = projectManagedCandidateDecision({
     ...projectionIdentity,
@@ -585,7 +614,7 @@ test("projects treasure stages with explicit native choice and Host-local operan
         native_ref: "relic-a",
         id: "RELIC.BAG_OF_PREPARATION",
         name: "Bag of Preparation",
-        description: "Draw two additional cards.",
+        description: "Draw two additional cards.", keywords: [], card_previews: [], hover_facts_complete: true,
         rarity: "Common"
       }],
       can_skip: true,
@@ -593,8 +622,8 @@ test("projects treasure stages with explicit native choice and Host-local operan
     }
   });
   assert.equal(decodePlayerSnapshot(choosing.snapshot).data.status, "interactive");
-  assert.equal(choosing.snapshot.interaction.kind, "treasure_relic_selection");
-  assert.deepEqual(choosing.snapshot.bound_actions.actions.map((action) => action.verb).sort(), ["select", "skip"]);
+  assert.equal(choosing.snapshot.interaction.kind, "treasure_room");
+  assert.deepEqual(choosing.snapshot.bound_actions.actions.map((action) => action.verb).sort(), ["activate", "skip"]);
   assert.equal(JSON.stringify(choosing.snapshot).includes("relic-a"), false);
   assert.equal(JSON.stringify(choosing.snapshot).includes("treasure-room-a"), false);
   const requests = [...choosing.bindings.values()].map((binding) => binding.raw_request);
@@ -897,35 +926,17 @@ test("combat projection fails closed for target types without an exact current b
 test("projects shop entries from native actionability and keeps purchase identities Host-local", () => {
   const projection = projectManagedCandidateDecision({
     ...projectionIdentity,
-    state: {
-      type: "decision",
-      decision: "shop",
-      context: { act: 1, floor: 3, room_type: "Shop" },
-      room_ref: "room-a", shop_ref: "room-a", inventory_ref: "inventory-a",
-      cards: [{
-        native_ref: "card-entry-a",
-        name: "Pommel Strike",
-        card_cost: 1,
-        cost: 50,
-        type: "Attack",
-        rarity: "Common",
-        is_stocked: true,
-        can_purchase: true
-      }],
-      relics: [{ native_ref: "relic-entry-a", name: "Bag", cost: 150, is_stocked: true, can_purchase: false }],
-      potions: [{ native_ref: "potion-entry-a", name: "Fire Potion", cost: 50, is_stocked: true, can_purchase: true }],
-      card_removal: { native_ref: "removal-a", cost: 75, is_stocked: true, can_purchase: true },
-      player: player()
-    }
+    state: { ...shopInventory(), room_ref: "room-a", shop_ref: "room-a",
+      presentation_owner: { ...shopInventory().presentation_owner, room_ref: "room-a" } }
   });
   assert.equal(projection.snapshot.status, "interactive");
   assert.deepEqual(projection.snapshot.bound_actions.actions.map((action) => action.label).sort(), [
-    "Buy Fire Potion",
-    "Buy Pommel Strike",
-    "Buy card removal",
+    "Buy Fire Potion for 50 gold",
+    "Buy Pommel Strike for 50 gold",
+    "Buy card removal for 75 gold",
     "Close shop inventory"
   ]);
-  assert.equal(projection.snapshot.interaction.content.surface.cards[0].cost, "1");
+  assert.equal(projection.snapshot.interaction.content.surface.cards[0].card.cost, "1");
   assert.equal(projection.snapshot.interaction.content.surface.cards[0].price, 50);
   assert.equal(JSON.stringify(projection.snapshot).includes("native_ref"), false);
   const rawRequests = [...projection.bindings.values()].map((binding) => binding.raw_request);
@@ -1349,4 +1360,48 @@ test("reward group identity is the visible reward entity for every reward kind",
     assert.equal(reward.native_relic_refresh_subscription, "unavailable");
   }
   assert.equal(new Set(rewards.map(reward => reward.group_id)).size, rewards.length);
+});
+
+
+test("projects native resolved event options, flags and card tooltips without template substitution", () => {
+  const state = eventState();
+  Object.assign(state, { event_id: "BYRDONIS_NEST", event_name: "多尼斯异鸟巢", ancient: false,
+    description: "第一段。\n\n第二段。" });
+  state.options[0].title = "吃掉这颗蛋";
+  state.options[0].description = "获得7点最大生命值。";
+  state.options[1] = { ...state.options[0], index: 1, native_ref: "native-take-egg", title: "带走这颗蛋",
+    description: "将一张多尼斯异鸟蛋加入你的牌组。", tooltips: [
+      { kind: "card", card: { id: "BYRDONIS_EGG", name: "多尼斯异鸟蛋", type: "Quest", rarity: "Quest",
+        cost: "-1", description: "不能被打出。 能在休息处被孵化。", is_upgraded: false, keywords: [], card_previews: [] } },
+      { kind: "text", name: "不能被打出", description: "不能被打出的牌无法被打出。" }
+    ] };
+  const projected = projectManagedCandidateDecision({ state, ...projectionIdentity });
+  const interaction = projected.snapshot.interaction;
+  assert.equal(interaction.stage, "ready"); assert.equal(interaction.prompt, null);
+  assert.equal(interaction.content.context.event_id, "BYRDONIS_NEST");
+  assert.equal(interaction.content.context.body, "第一段。  第二段。");
+  const options = interaction.content.surface.options;
+  assert.equal(options[0].description, "获得7点最大生命值。");
+  assert.equal(options[0].is_enabled, true); assert.equal(options[0].will_kill_player, false);
+  assert.equal(options[1].tooltips[0].card.definition_id, "BYRDONIS_EGG");
+  assert.equal(options[1].tooltips[0].card.target_type, undefined);
+  assert.equal(options[1].tooltips[0].card.keywords, undefined);
+  assert.equal(options[1].tooltips[1].description, "不能被打出的牌无法被打出。");
+  assert.equal(Object.hasOwn(options[0], "variables"), false);
+  assert.equal(Object.hasOwn(options[0], "text_key"), false);
+  const binding = [...projected.bindings.values()].find(b => b.raw_request.args.option_ref === "native-take-egg");
+  assert.equal(binding.raw_request.action, "choose_option");
+  assert.equal(binding.raw_request.args.event_ref, state.event_ref);
+  assert.equal(JSON.stringify(projected.snapshot).includes("native-take-egg"), false);
+});
+
+test("event body is published only when the native current body was actually rendered",()=>{
+  const present=eventState();present.description="Current visible body with 7 maximum HP.";
+  const withBody=projectManagedCandidateDecision({...projectionIdentity,state:present}).snapshot;
+  assert.equal(withBody.interaction.content.context.body,"Current visible body with 7 maximum HP.");
+  const absent={...present,event_id:"PAEL",ancient:true,description:null};
+  const noBody=projectManagedCandidateDecision({...projectionIdentity,state:absent}).snapshot;
+  assert.equal(noBody.bound_actions.status,"complete");
+  assert.equal(Object.hasOwn(noBody.interaction.content.context,"body"),false);
+  assert.equal(noBody.interaction.content.context.ancient,true);
 });
