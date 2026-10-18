@@ -1244,10 +1244,35 @@ def test_managed_global_command_reads_owned_startup_adapter_identity(
         ("/v2/mode", {"mode": "one_step"}), ("/v2/tick", {"max_ticks": 1})]
 
 
+def _global_program_files(tmp_path, host_kind="managed"):
+    from spireagent.workbench.global_program_agent import adapter_identity, descriptor
+    from spireagent.workbench.global_program_support import CONFIG_SCHEMA
+
+    artifact = tmp_path / "program.json"
+    artifact.write_text(canonical_json(descriptor()))
+    artifact_sha = hashlib.sha256(artifact.read_bytes()).hexdigest()
+    config_path = tmp_path / "global-config.json"
+    config_path.write_text(json.dumps({"schema": CONFIG_SCHEMA, "artifact_path": str(artifact),
+                                      "artifact_sha256": artifact_sha}))
+    manifest = {
+        "schema": "sts2.policy-runtime/agent-manifest-1", "manifest_id": "global-fixture",
+        "artifact": {"path": str(artifact), "sha256": artifact_sha},
+        "adapter": adapter_identity(), "agent": {
+            "id": "global-public-program", "version": "1", "provider": "project-program",
+            "architecture": "model-less-program"},
+        "input": {"profile": "p1-global-r1", "state_recovery": {"model_bindings": []}},
+        "requirements": {"environment": {"kind": "global-public-basis", "host_kind": host_kind}},
+    }
+    manifest_path = tmp_path / "global-manifest.json"
+    manifest_path.write_text(json.dumps(manifest))
+    return manifest, config_path, manifest_path
+
+
+@pytest.mark.parametrize("global_program", [False, True])
 @pytest.mark.parametrize("drift", [None, "binding_sha256", "service_instance_id",
-                                  "runtime_instance_id", "game_continuity_id"])
+                                  "runtime_instance_id", "game_continuity_id", "null"])
 def test_managed_load_binds_cli_and_checks_actual_startup_target(
-    service, monkeypatch, tmp_path, drift,
+    service, monkeypatch, tmp_path, drift, global_program,
 ):
     from test_managed_model_target import target
 
@@ -1259,8 +1284,16 @@ def test_managed_load_binds_cli_and_checks_actual_startup_target(
     manifest_path = tmp_path / "managed-manifest.json"
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     entry = {"id": "managed-fixture", "adapter": "stpd-m2-decision-adapter"}
+    config_path = manifest_path
+    if global_program:
+        manifest, config_path, manifest_path = _global_program_files(tmp_path)
+        entry = {"id": manifest["manifest_id"], "adapter": local_models.GLOBAL_ADAPTER,
+                 "runtime_profile": local_models.GLOBAL_PROFILE}
+        selected = {**selected, "input_profile": "public-basis-1"}
+        expected_target = local_models.public_target(selected)
     monkeypatch.setattr(service, "selection", lambda _: entry)
-    monkeypatch.setattr(service, "entry_path", lambda _entry, _key: manifest_path)
+    monkeypatch.setattr(service, "entry_path", lambda _entry, key:
+                        config_path if key == "config" else manifest_path)
     monkeypatch.setattr(service, "entry_root", lambda _: tmp_path)
     monkeypatch.setattr(service, "_run_profile", lambda *_: True)
     monkeypatch.setattr(service, "readiness", lambda _: {"status": "ready_to_load"})
@@ -1270,12 +1303,15 @@ def test_managed_load_binds_cli_and_checks_actual_startup_target(
     monkeypatch.setattr(local_models, "_check_runtime_port", lambda _: None)
     monkeypatch.setattr(service, "start_observer", lambda: None)
     limits = local_models.RUN_PROFILES["short"]
-    claimed_target = {**expected_target, **({drift: "foreign"} if drift else {})}
+    claimed_target = (None if drift == "null" else
+                      {**expected_target, **({drift: "foreign"} if drift else {})})
+    prefix = "agent" if global_program else "policy"
     observed_startup = {
-        "schema": "sts2.policy-runtime/startup-1", "mode": "human",
-        "manifest_id": manifest["manifest_id"],
-        "policy_artifact_sha256": manifest["artifact"]["sha256"],
-        "policy_manifest_sha256": hashlib.sha256(canonical_json(manifest).encode()).hexdigest(),
+        "schema": local_models.AGENT_STARTUP if global_program else "sts2.policy-runtime/startup-1",
+        "mode": "human",
+        "agent_manifest_id" if global_program else "manifest_id": manifest["manifest_id"],
+        f"{prefix}_artifact_sha256": manifest["artifact"]["sha256"],
+        f"{prefix}_manifest_sha256": hashlib.sha256(canonical_json(manifest).encode()).hexdigest(),
         "runtime_version": "managed-candidate", "runtime_code_sha256": "b" * 64,
         "address": "http://127.0.0.1:15527", "run_id": startup()["run_id"],
         "managed_environment": claimed_target,
@@ -1283,6 +1319,8 @@ def test_managed_load_binds_cli_and_checks_actual_startup_target(
                             "maxPolicyCalls": limits["max_policy_calls"],
                             "deadlineMs": limits["deadline_ms"]},
     }
+    if global_program:
+        observed_startup["adapter"] = manifest["adapter"]
     commands = []
 
     class Process:
@@ -1311,14 +1349,15 @@ def test_managed_load_binds_cli_and_checks_actual_startup_target(
 
     monkeypatch.setattr(local_models.subprocess, "Popen", Process)
     monkeypatch.setattr(local_models, "RuntimeClient", Client)
-    service.start("managed-fixture")
+    service.start(entry["id"])
     result = finished(service)
     assert len(commands) == 1
     command = commands[0]
     assert "--connector-endpoint" not in command
     assert command[command.index("--managed-attachment") + 1] == str(selected["client_attachment"])
     assert command[command.index("--managed-expected-game-continuity-id") + 1] == "episode-one"
-    assert "stpd.policy.memory_port" in " ".join(command)
+    assert ("spireagent.workbench.global_program_agent" if global_program
+            else "stpd.policy.memory_port") in " ".join(command)
     if drift:
         assert result["error_code"] == "runtime_load_or_attestation_failed"
         assert service.process.stopped
@@ -1329,6 +1368,66 @@ def test_managed_load_binds_cli_and_checks_actual_startup_target(
         assert "client_attachment" not in result["managed_environment"]
     service.client = None
     service.process.terminate()
+
+
+@pytest.mark.parametrize("case", ["managed", "reference", "reference_nonnull", "missing",
+                                  "binding_sha256", "service_instance_id",
+                                  "runtime_instance_id", "game_continuity_id"])
+def test_global_recovery_keeps_original_managed_target_and_reference_null(
+    service, monkeypatch, tmp_path, case,
+):
+    from test_managed_model_target import target
+
+    reference = case.startswith("reference")
+    manifest, _config_path, manifest_path = _global_program_files(
+        tmp_path, "reference" if reference else "managed")
+    original_target = local_models.public_target(
+        {**target(tmp_path), "input_profile": "public-basis-1"})
+    original_startup = {
+        "schema": local_models.AGENT_STARTUP, "address": "http://127.0.0.1:15527",
+        "run_id": startup()["run_id"], "agent_manifest_id": manifest["manifest_id"],
+        "agent_artifact_sha256": manifest["artifact"]["sha256"],
+        "agent_manifest_sha256": hashlib.sha256(canonical_json(manifest).encode()).hexdigest(),
+        "runtime_version": "fixture", "runtime_code_sha256": "b" * 64,
+        "adapter": manifest["adapter"], "managed_environment": None if reference else original_target,
+    }
+    previous = {"startup": copy.deepcopy(original_startup), "selection_id": "global-fixture",
+                "managed_environment": copy.deepcopy(original_target)}
+    if reference:
+        previous.pop("managed_environment")
+        previous["connector_endpoint"] = "http://127.0.0.1:19191"
+        if case == "reference_nonnull":
+            previous["startup"]["managed_environment"] = original_target
+    elif case == "missing":
+        previous.pop("managed_environment")
+    elif case != "managed":
+        previous["managed_environment"][case] = "foreign"
+    service.state["previous_session"] = previous
+    monkeypatch.setattr(service, "selection", lambda _: {"id": "global-fixture"})
+    monkeypatch.setattr(service, "entry_path", lambda *_: manifest_path)
+    monkeypatch.setattr(service, "_runtime_package", lambda *_: {
+        "version": "fixture", "code_sha256": "b" * 64})
+    monkeypatch.setattr(service, "start_observer", lambda: None)
+    calls = []
+
+    class Client:
+        def request(self, route, body=None, *, binding=None):
+            calls.append((route, body))
+            return {"status": {"lifecycle": "running", "mode": "human"}}
+
+    client = Client()
+    monkeypatch.setattr(local_models, "RuntimeClient", lambda *_: client)
+    service.managed_target = lambda: pytest.fail("Recovery must not adopt a new live Host target")
+    if case in {"managed", "reference"}:
+        service._recover("human", service.intent_generation)
+        assert service.state["startup"] == original_startup
+        assert service.state.get("managed_environment") == (None if reference else original_target)
+        assert calls == [("/status", None), ("/mode", {"mode": "human"})]
+    else:
+        with pytest.raises(BoundaryError, match="recovery_identity_drift"):
+            service._recover("human", service.intent_generation)
+        assert calls == []
+    service.client = None
 
 
 @pytest.mark.parametrize("epoch", [-1, True, 1.5, "1", None, 9007199254740992])

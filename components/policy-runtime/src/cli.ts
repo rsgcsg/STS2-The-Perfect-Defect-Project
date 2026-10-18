@@ -10,7 +10,7 @@ import { DEFAULT_AUTONOMY_BUDGET, POLICY_RUNTIME_VERSION, validatePolicyManifest
 import { ConnectorPolicyClient } from "./connector.js";
 import { AgentRunEvidence, canonicalJson } from "./evidence.js";
 import { ReferenceGlobalTransport } from "./global-transport.js";
-import { ManagedServicePolicyClient, type ManagedTarget } from "./managed.js";
+import { ManagedServicePolicyClient, type ManagedGlobalTransport, type ManagedTarget } from "./managed.js";
 import { NdjsonPolicyPort } from "./policy-port.js";
 import { PolicyRuntime } from "./runtime.js";
 import { successorWaitStderrSink } from "./successor-wait-diagnostics.js";
@@ -181,6 +181,7 @@ async function runAgent(options: CliOptions, manifestPath: string, manifest: Age
   const evidence = await AgentRunEvidence.createSession({ root: resolve(options.evidenceRoot), agentManifest: manifest,
     runtimeVersion: POLICY_RUNTIME_VERSION, runtimeCodeSha256, mode: options.mode });
   let runtime: NativeAgentRuntimeOwner | undefined;
+  let managedTransport: ManagedGlobalTransport | undefined;
   let port: NdjsonAgentSessionPort | undefined;
   let service: Awaited<ReturnType<typeof startPolicyRuntimeHttpServer>> | undefined;
   let shuttingDown = false;
@@ -196,8 +197,10 @@ async function runAgent(options: CliOptions, manifestPath: string, manifest: Age
     port = NdjsonAgentSessionPort.spawn(options.adapterCommand, options.adapterArgs,
       manifest.adapter, manifest.limits, { cwd: options.adapterCwd, executionPolicy: manifest.execution_policy });
     const environment = new PlayerEnvironmentRestClient(options.connectorEndpoint, manifest.limits.agent_timeout_ms);
-    const selected = global ? { globalTransport: options.managed
-      ? await ManagedServicePolicyClient.attachGlobal(options.managed.bindingPath, options.managed.attachmentPath, options.managed.target, evidence.runId)
+    if (global && options.managed)
+      managedTransport = await ManagedServicePolicyClient.attachGlobal(options.managed.bindingPath, options.managed.attachmentPath, options.managed.target, evidence.runId);
+    const selected = global ? { globalTransport: managedTransport
+      ? managedTransport
       : new ReferenceGlobalTransport(environment, { productVersion: POLICY_RUNTIME_VERSION, clientInstanceId: evidence.runId }) }
       : { environment };
     runtime = await PolicyRuntime.forAgent({ manifest, ...selected,
@@ -215,7 +218,8 @@ async function runAgent(options: CliOptions, manifestPath: string, manifest: Age
   const startup: AgentRuntimeStartup = { schema: "sts2.policy-runtime/agent-session-startup-1", address: service.address,
     run_id: evidence.runId, agent_manifest_id: manifest.manifest_id, agent_artifact_sha256: artifactSha256,
     agent_manifest_sha256: agentManifestSha256, runtime_version: POLICY_RUNTIME_VERSION, runtime_code_sha256: runtimeCodeSha256,
-    mode: runtime.status().mode, autonomy_budget: options.autoBudget, managed_environment: null, adapter: manifest.adapter };
+    mode: runtime.status().mode, autonomy_budget: options.autoBudget,
+    managed_environment: managedTransport?.startupEnvironment ?? null, adapter: manifest.adapter };
   process.stdout.write(`${JSON.stringify(startup)}\n`);
   service.startDriving();
   process.once("SIGINT", () => { void shutdown(); });
