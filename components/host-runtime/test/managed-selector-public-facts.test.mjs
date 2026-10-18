@@ -13,6 +13,7 @@ test("selector facts keep full original/after displays and same-snapshot details
   const surface = projection.snapshot.interaction.content.surface;
   assert.equal(projection.snapshot.completeness.status, "complete");
   assert.deepEqual(surface.cards, surface.preview_options.map(option => option.before));
+  assert.equal(projection.snapshot.bound_actions.actions.find(action => action.verb === "select").label, `Select ${surface.cards[0].name}`);
   assert.equal(surface.cards[0].entity_id, surface.preview_options[0].after.entity_id);
   assert.equal(surface.cards[0].is_upgraded, false);
   assert.equal(surface.preview_options[0].after.is_upgraded, true);

@@ -691,7 +691,7 @@ function canonicalSelectorSurface(state, ctx, commonContext) {
     if (exact) for (const [field, verb, action] of [
       ["is_selectable", "select", state.decision === "deck_upgrade_select" ? "select_upgrade_card" : "select_deck_card"],
       ["is_deselectable", "deselect", state.decision === "deck_upgrade_select" ? "deselect_upgrade_card" : "deselect_deck_card"]
-    ]) if (rawCards[index][field]) ctx.action({ verb, subject, label: `${verb} ${before.name}`,
+    ]) if (rawCards[index][field]) ctx.action({ verb, subject, label: `${verb === "select" ? "Select" : "Deselect"} ${before.name}`,
       raw: { cmd: "action", action, args: { selector_ref: state.selector_ref, card_ref: cardRefs[index] } } });
     for (const [card, context, renderMissing] of [[before, `selector_original:${request?.family}`, option.before_missing ?? option.missing],
       ...(after === null ? [] : [[after, option.display_context, option.after_missing ?? option.missing]])]) {
