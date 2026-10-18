@@ -17,7 +17,7 @@ layer,function,status,owner,evidence,scope
 环境,Host发现/隔离/launch/reset/stop,现行,components/host-runtime/docs/OPERATIONS.md,components/host-runtime/docs/COMPATIBILITY.md,进程与环境owner，非游戏规则owner
 环境,Headless/Native UI显示选择,现行,docs/ARCHITECTURE.md,components/host-runtime/docs/COMPATIBILITY.md,是Host配置，不是独立规则实现的移植证明
 环境,原生地图存档/恢复机制,现行,components/host-runtime/docs/OPERATIONS.md,docs/evidence/MANAGED_MAP_SAVE_ROUNDTRIP_2026-09-30.md,已有旧候选roundtrip，P1 checkpoint新闭包不能继承资格
-环境,P1地图checkpoint/续玩,未完成,components/host-runtime/README.md,/Users/fire/Desktop/SpireAgentProject/claude-handoff-2026-10-13/replies/P1-round15-C-map-continue-2026-10-18.md,#202已合入；S05只属于0affa651/1482的有界save/restore/前进，Reference仍未验，不向a70d新候选转贴
+环境,P1地图checkpoint/续玩,未完成,components/host-runtime/README.md,/Users/fire/Desktop/SpireAgentProject/claude-handoff-2026-10-13/replies/P1-round15-C-map-continue-2026-10-18.md,#202已合入；S05仅旧1482 Managed；当前保存续玩只批评估，非console suffix须三证才计覆盖、不计3full，parent同组；Reference/当前a70仍未验
 环境,Managed性能/并行容量,归档,components/host-runtime/docs/MEASUREMENT.md,components/host-runtime/docs/evidence/MANAGED_HOST_PERFORMANCE_ROUTE_SELECTION_2026-08-21.md,保留原机器/候选/计量条件，非当前吞吐保证
 环境,Windows支持/资格,未完成,docs/TESTING.md,components/host-runtime/docs/evidence/WINDOWS_MANAGED_EXACT_BUILD_ADMISSION_2026-08-22.md,旧Windows候选历史有效；本次P1全幕Windows无新资格
 P1能力,公平完整公开事实/别名/隐藏牌序,现行,docs/protocols/P1_GLOBAL_R1.zh-CN.md,components/connector/sdk/typescript/src/p1Global,规范已定，覆盖逐行验收

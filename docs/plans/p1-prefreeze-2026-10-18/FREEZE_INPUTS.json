@@ -26,10 +26,10 @@
     },
     {
       "source": "/Users/fire/Desktop/SpireAgentProject/claude-handoff-2026-10-13/P1_r1_SUPPORT_SCOPE_v0.3_2026-10-18.zh-CN.md",
-      "bytes": 35936,
-      "sha256": "f19cc100fb4bc8d9f47c7633b504d91cb6663f65417b1ab39ea9564006e8ee75",
+      "bytes": 40509,
+      "sha256": "0ebc45933989486a2f280ce44f47d9f198cde9ea6971748f527f3976f5d5305f",
       "repository_snapshot": "SCOPE_v0.3.zh-CN.md",
-      "repository_sha256": "3d4928cb7c245fd0f970389204516da0da1bab5a54f49b9d7ab61323ce5b914e"
+      "repository_sha256": "281231411cd814a8737385fd131ec904541cac93fb244c293abb0cbbc427e98d"
     },
     {
       "source": "/Users/fire/Documents/Codex/2026-10-17/a-t7-runtime-connector-status-settling/work/p1-K2-20261018/round19/scope-replies-before-merge.md",
@@ -48,6 +48,72 @@
       "role": "4d installation snapshot; not cold-load/preflight evidence",
       "bytes": 3860,
       "sha256": "fbdbb29b457b8518c4b54a7c5ae6635be246470b1b4f8179342bc152026eb307"
+    },
+    {
+      "source": "/Users/fire/Documents/Codex/2026-10-17/a-t7-runtime-connector-status-settling/work/p1-console-coverage-20261018/report.md",
+      "role": "original assessment/preflight attachment; failure semantics preserved",
+      "bytes": 4625,
+      "sha256": "9e90507b57488601471c097faea8c171a6bb26b94e18d3c5e4b48481c2f65d02"
+    },
+    {
+      "source": "/Users/fire/Documents/Codex/2026-10-17/a-t7-runtime-connector-status-settling/work/p1-console-coverage-20261018/saved-continuation-evaluation.md",
+      "role": "original assessment/preflight attachment; failure semantics preserved",
+      "bytes": 5291,
+      "sha256": "b98baac617492fec50feda6ec969c05afa731edfb0d45c13814601bf38ea761c"
+    },
+    {
+      "source": "/Users/fire/Documents/Codex/2026-10-17/a-t7-runtime-connector-status-settling/work/p1-round19-B-native-preflight/profile-template-findings-03.md",
+      "role": "original assessment/preflight attachment; failure semantics preserved",
+      "bytes": 3230,
+      "sha256": "a4b253250b3035eea6804435a67b1b98399abe227911d60d22377351892b04f1"
+    },
+    {
+      "source": "/Users/fire/Documents/Codex/2026-10-17/a-t7-runtime-connector-status-settling/work/p1-round19-B-native-preflight/native-preflight-02/conversion.json",
+      "role": "original assessment/preflight attachment; failure semantics preserved",
+      "bytes": 444129,
+      "sha256": "2708ab4f230a1b5f5850ae81401e3bbb91b82caeccaa5cb5f9cd5e4562006f6e"
+    },
+    {
+      "source": "/Users/fire/Documents/Codex/2026-10-17/a-t7-runtime-connector-status-settling/work/p1-round19-B-native-preflight/native-preflight-02/closed-status.json",
+      "role": "original assessment/preflight attachment; failure semantics preserved",
+      "bytes": 1095,
+      "sha256": "75f9c9afbb034f8fb1c083ce61c2e1bde924bd6cb00e0ca3ce081b7f7c38276a"
+    },
+    {
+      "source": "/Users/fire/Documents/Codex/2026-10-17/a-t7-runtime-connector-status-settling/work/p1-round19-B-native-preflight/native-preflight-03/bootstrap-receipt.json",
+      "role": "original assessment/preflight attachment; failure semantics preserved",
+      "bytes": 2870,
+      "sha256": "5d5b2c77b1c1489e74df58627069d71f95365253a90d6a9de2420ac9014408e0"
+    },
+    {
+      "source": "/Users/fire/Documents/Codex/2026-10-17/a-t7-runtime-connector-status-settling/work/p1-round19-B-native-preflight/native-preflight-03/closed-status.json",
+      "role": "original assessment/preflight attachment; failure semantics preserved",
+      "bytes": 1095,
+      "sha256": "1dd13d02956d445e9a76045dd98203fa0d3990ae3acd52e795d21a917f88b89d"
+    },
+    {
+      "source": "/Users/fire/Documents/Codex/2026-10-17/a-t7-runtime-connector-status-settling/work/p1-round19-B-native-preflight/native-preflight-02/capabilities.json",
+      "role": "original loaded tuple/attempt, not a successful recording gate",
+      "bytes": 2909,
+      "sha256": "8e2e939d32f49de4fbc0603200506f4d54a137ec424872442d3610fcf3c3270e"
+    },
+    {
+      "source": "/Users/fire/Documents/Codex/2026-10-17/a-t7-runtime-connector-status-settling/work/p1-round19-B-native-preflight/native-preflight-02/attempt.json",
+      "role": "original loaded tuple/attempt, not a successful recording gate",
+      "bytes": 20085,
+      "sha256": "44791a6bc25b5f34f97fff81d1548f74b281967a71585c00a26f66f711395c61"
+    },
+    {
+      "source": "/Users/fire/Documents/Codex/2026-10-17/a-t7-runtime-connector-status-settling/work/p1-round19-B-native-preflight/native-preflight-03/capabilities.json",
+      "role": "original loaded tuple/attempt, not a successful recording gate",
+      "bytes": 2909,
+      "sha256": "66087a7c39ccdd097b3e669e92c8b00539b424d0ad625f12f3259bf858e5ec8d"
+    },
+    {
+      "source": "/Users/fire/Documents/Codex/2026-10-17/a-t7-runtime-connector-status-settling/work/p1-round19-B-native-preflight/native-preflight-03/attempt.json",
+      "role": "original loaded tuple/attempt, not a successful recording gate",
+      "bytes": 9922,
+      "sha256": "975dc6d671902e2c6d3fda9bd855d160508ec90cef820977f17a99c13c231b3e"
     }
   ]
 }

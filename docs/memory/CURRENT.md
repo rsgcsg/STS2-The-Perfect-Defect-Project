@@ -1,61 +1,64 @@
 # Current — Round19 pre-training P1 freeze
 
 Resolve live GitHub refs; source/original records override this file.
-This is dated routing, not live service or qualification authority. The
-[project map](../plans/p1-prefreeze-2026-10-18/README.md) routes the active sprint;
-[definition v0.3](../plans/p1-prefreeze-2026-10-18/SCOPE_v0.3.zh-CN.md) is the merged
-**pending-user-approval** definition, not approved freeze or cloud/training authority.
-The root handoff canonical and input hashes are fixed in its source index.
+This is dated routing, not qualification or live service authority. Follow the
+[project map](../plans/p1-prefreeze-2026-10-18/README.md) and merged
+[definition v0.3](../plans/p1-prefreeze-2026-10-18/SCOPE_v0.3.zh-CN.md), still
+**pending-user-approval** overall. Cloud upload/fees and new training configuration
+are not authorized here. Hard deadline:2026-10-20 16:30 Australia/Brisbane.
 
-## Integrated source and actual use
+## Source and real candidate
 
-Develop is `ea7c14e8969006fa0e470678198ef94aca471f90`, tree `4b796997` matching
-reviewed eafa9a7c. PR202 merged as beca367c; PR204 merged as ea7c14e8.
-PR203 entered through PR204 (auto-MERGED, no third develop merge).
-CI39115695661/39120207920 passed; docs change no product/BOM identity.
+Develop733782b119967828160f893893aaf5bff3b540e4 normally merged PR205/cbbea;
+CI39124068850 passed. Earlier202/204 and203 ancestry keep their actual merge identities.
+This integration preserves Reference source60d14222/meta8eec9c5 plus docs d5e84a0.
+It is NOT the freeze PR or a new installed/live qualification.
+FullPython4485pass/5skip+93subtests is source evidence; original env fail/correction retained.
+Mod4d3f8b4b/MVIDfb38a130 installed and strict-loaded in02/03; build stays8967.
+Rollback2026-10-18T11-21-45.822Z preserves6 old Mod/config/provenance hashes.
+Old6c English/EndTurn, A03 a70d8de1/cd47 diagnostics and1482/S05 keep their identities.
+A03 loss terminals equal; choices170/293,236/432,0unknown are not strict full games.
 
-11:21:56Z: Mod4d3f8b4b/MVIDfb38a130 installed, not cold-loaded/preflight-pass.
-Build8967; rollback2026-10-18T11-21-45.822Z (6 old hashes match). Prior loaded6c
-English/EndTurn keep their identity. Unpushed root90429193: fullPython4485pass/5skip
-+93subtests; original env failure/correction retained. Managed A03 used a70d8de1/cd47f09c;
-old1482/S05 and all earlier records keep their actual source/artifact identities.
-A03 both loss terminals compare full-public equal; choice matches170/293 and236/432,
-zero unknown. These are Chinese diagnostics, not new English strict full games.
+## Current critical path
 
-## Critical path and parallel work
+- B02: loaded tuple PASS, Map/EndTurn exact, E2 startup1frame/7235ms/0input complete.
+  FTUE native_end_turn_ftue_unseen partial makes Source4 overall FALSE; Close/pack is
+  not conversion success. B03 ChangeSource without Pause failed BEFORE any native
+  input; steps0, Recorder closed/closed and Host exited normally. Original helper
+  stdin_closed_without_finish and failed receipts remain. 60min window ENDED11:40Z;
+  cannot tell user to record. Prepare/review first, then report a new bounded window.
+- New default approved: Agent unlock-all independent of tutorial progress/settings,
+  normal fully-unlocked standard singleplayer new-game/seed, Reference instant.
+  Reference source60d14222 implements fixed native preparation/save-reload and
+  post-entry UnlockState binding; JS18/exact9 passed. Managed same native progress
+  snapshot seam is being implemented. New Mod/build/install/live remain pending.
+  Administrative prior-run count is setup provenance, never a Human loss.
+- Console: Reference independent diagnostic only; whole console-assisted session
+  and console ancestors' suffixes excluded from formal3 Human/coverage/training.
+- Save continuation: evaluation only, not implementation approval. Nonconsole suffix
+  may cover a mechanism ONLY after Reference-correct+offline+strict-Managed PASS;
+  never counts3whole Human. Parent/suffix same group; preserve save/source/continuity.
+- A0 Act3 natural empty rewards/Proceed then actual victory may share same-point
+  three proofs. Boss kill alone is not terminal. If no victory, BOTH Boss/BossReward
+  gaps go to user; A10 double-Boss is future scope.
 
-- B: Reference normal baseline source60d14222 adds fixed all-unlocked/native-save-reload
-  preparation before normal SP menus, independent FTUEfalse and Instant. JS18/exact9
-  focused tests pass; new Mod/install/live preflight remain pending. Administrative
-  progress is setup, not Human history. Old partial recordings remain failed originals.
-- A: retain old Reference defects without rewriting originals; continue actual
-  Managed fixes. New same-candidate English strict games remain0/3. [Differences](../plans/p1-prefreeze-2026-10-18/MANAGED_DIFFERENCES.md)
-  separate original facts, source fixes and actual comparisons; exceptions stay in P1§17.
-- C/K6: GLOBAL API/library/CLI services, thin GUI and external-package R20 material
-  exist. Actual final-tuple product/R20 acceptance is pending; no complex GUI/team work.
-- K5: storage/provider reuse proposal delivered; current P1 R2/Modal seam untested.
-  Precise upload objects, costs and consumer probe need their own approval.
-- K: K0/K1/K2 and K5/K6 material delivered; K3 submitted a24-row historical-PR
-  disposition table completed:24/24 remote exact tags verified then PRs closed, unmerged.
-  No branch/worktree/data deletion. 19 reuse rows with actual tags are in the map;7 training/Modal/
-  checkpoint PRs must be checked before Q-CHAIN-0/Q3. K4 previously9/10; B operation
-  sheet is missing. This synthesis still needs root/K4 review and user definition approval.
+## Remaining gates and ownership
 
-## Stop boundary and next action
-
-Unblock B preflight, then user short segment -> complete conversion -> new English
-full games/strict replay; keep A/K/CLI work parallel. Preserve unknown/no-retry and
-actual candidate/source/parent continuity. Common mechanisms need one new-candidate instance; Act2/3 each require ordinary/elite/
-event/Boss/Boss-reward, all Reference-correct+offline+strict-Managed PASS.
-Pre-freeze non-author image/P1 approved; native tips/preview+CUA live pending.
-Approved ordinary merged-topic auto-delete/new-Mod install-with-backup differ from
-historical asset deletion/move, which still need approval; K3 closure has the narrow
-exact-tag-first approval above. No cloud upload,
-new paid job/research configuration, or final freeze is authorized by this document.
-Hard deadline: **2026-10-20 16:30 Australia/Brisbane**; report real gaps if incomplete.
+New English strict games0/3. Common mechanisms need one new-candidate instance;
+Act2/3 each require ordinary/elite/event/Boss/Boss-reward with three proofs.42 rows
+record evidence/gaps; missing common cases use seed-prefix/planned route then user
+scope decision, no fabricated PASS or unbounded wait. Pre-freeze non-author image/P1
+review uses native tips/preview+CUA; live/rendering and final English records pending.
+Managed external-package rc37 short passed1 submission/2calls, replay verified and
+normal close; only that side, not two-Host R20. Product Application load exposed
+GLOBAL managed startup null/target mismatch before any choice; original failed run
+is stopped/released with0calls. Native close unknown; Application normally closed.
+Original Runtime/Python owners are fixing startup attestation; current pins unchanged.
+K3 complete24 exact tags then closed unmerged, no branch/worktree/data deletion;
+19 map reuse rows and7 mandatory PR lookups before Q-CHAIN-0/Q3 retained. K4 previously
+9/10, B real operation sheet missing. K5 R2/Modal seam untested; no cloud action.
 
 ## Remaining Platform non-claims
 
-Final English>=3 games, Act3/victory evidence, full strict comparison, final40/20,
-product/R20, cloud seam and K are not complete. Old batches/CI/process exit/A03/S05
-do not establish final Human/Source4, Windows, training, strategy or native-clean shutdown.
+Final40/20, Act3/victory, strict replay, product/R20 and final freeze remain incomplete.
+Tests/CI/process exit/old batches do not establish Human, training, strategy or Windows.
