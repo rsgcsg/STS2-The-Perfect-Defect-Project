@@ -378,6 +378,30 @@ test("projects native reward sets without exposing exact reward or room operands
   assert.equal(requests.some((request) => request.args?.room_ref === "combat-room-a"), true);
 });
 
+test("reward descriptions expose visible text while retaining native reward bindings and inline icons", () => {
+  const state = {
+    ...eventState(), decision: "reward_set", reward_set_ref: "native-reward-set",
+    rewards: [
+      { native_ref: "native-gold", kind: "gold", name: "18金币", description: "18金币", group_relation: "independent" },
+      { native_ref: "native-potion", kind: "potion", name: "再生药水",
+        description: "获得[green]5[/green]层[gold]再生[/gold]。", group_relation: "independent" }
+    ]
+  };
+  const projection = projectManagedCandidateDecision({ state, ...projectionIdentity });
+  const rewards = projection.snapshot.interaction.content.surface.rewards;
+  assert.equal(rewards[0].description, "18金币");
+  assert.equal(rewards[1].description, "获得5层再生。");
+  assert.equal(projection.snapshot.referents.find(item => item.referent_id === rewards[1].entity_id)
+    .properties.description, "获得5层再生。");
+  assert.ok([...projection.bindings.values()].some(binding =>
+    binding.raw_request.args?.reward_ref === "native-potion"));
+
+  state.rewards[1].description = "获得[img]res://images/packed/sprite_fonts/defect_energy_icon.png[/img]。";
+  const icon = projectManagedCandidateDecision({ state, ...projectionIdentity });
+  assert.equal(icon.snapshot.interaction.content.surface.rewards[1].description,
+    "获得res://images/packed/sprite_fonts/defect_energy_icon.png。");
+});
+
 test("a populated card reward publishes its lawfully viewable candidates under a public group id", () => {
   const state = (options) => ({
     type: "decision", decision: "reward_set",

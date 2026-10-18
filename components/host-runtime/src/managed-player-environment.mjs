@@ -1042,7 +1042,7 @@ function currentSurface(state, ctx) {
           properties: {
             kind,
             label,
-            description: reward.description ?? null,
+            description: visibleText(reward.description),
             enabled,
             // Public stable group identity (alias of the private native reward ref).
             group_id: ctx.entityId("reward_group", reward.native_ref),
