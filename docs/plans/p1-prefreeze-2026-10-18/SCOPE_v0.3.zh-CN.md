@@ -15,9 +15,9 @@
 | 1 | 全部幕Reference正确性 | **没开始**：最终候选同条件英文合格整局0/3，真实第三幕/胜利行仍缺 | 新示范公开事实与结局可靠；全幕/英文/Act3目标/尽量赢为直接要求，≥3为采纳计数口径；不是三局都赢/都到Act3 |
 | 2 | Managed一致与最终40/20 | **进行中**：A03两loss完整terminal equal；选择点170/293、236/432，整轨不严格；新英文严格0/3，最终候选40/20未跑 | 保证训练/评估环境对照真实游戏；严格到底、最终40/20有直接用户依据 |
 | 3 | 机制覆盖 | **进行中**：用户已批准共同机制新候选合计至少一次、Act2/3五类幕特有各自实到及三证同时PASS；42+4行逐行填原件，新候选证据待齐 | 把首训环境实际能力和遗漏说清；全幕不自动等于每种共同机制每幕都必须重复验 |
-| 4 | 英文 | **进行中**：4d在02/03严格冷加载tuple已PASS、英文可见；02因FTUE转换false，03输入前失败，60分钟预检窗已结束，不能开录 | 与第一轮文字输入一致；用B短段/整局共用证据，不再暗增额外一局 |
-| 5 | 采集/转换路径 | **进行中**：native_input首战EndTurn阳性；E2源码22 focused PASS；02 startup/Map/EndTurn实证，但FTUE publication partial使overall false；03 ChangeSource未pause在任何输入前失败并正常闭合 | 原生示范能形成可核验P1来源；report-v3整局scope源码已交，不能当真实整局转换已过 |
-| 6 | API/库/CLI产品路径、Workbench薄映射、R20 | **进行中**：已有GLOBAL应用源码/接口、K6定位与外包材料；最终tuple实际短验/R20未过 | 训练后完整Agent能从同一入口运行、Stop、查原件；保留原短验要求，不做复杂GUI |
+| 4 | 英文 | **进行中**：d64 native04实际英文/normal prepare/run解锁PASS，但整体Source4 false；producer471尚未实装，不能开录 | 与第一轮文字输入一致；用B短段/整局共用证据，不再暗增额外一局 |
+| 5 | 采集/转换路径 | **进行中**：native_input首战EndTurn阳性；04为5actions/5unresolved、13raw gaps/2unknown，FAIL保留；producer471源码39/179/65/55 PASS未实装；E3刚获批准，非实现/预检PASS | 原生示范能形成可核验P1来源；report-v3整局scope源码已交，不能当真实整局转换已过 |
+| 6 | API/库/CLI产品路径、Workbench薄映射、R20 | **进行中**：rc38 GLOBAL startup与42a受信Python consumer源码/31及70测试已交；rc38 package未实装，新Application/最终双Host R20待验 | 训练后完整Agent能从同一入口运行、Stop、查原件；保留原短验要求，不做复杂GUI |
 | 7 | 文档与closeout | **进行中**：本定义待批；CURRENT本轮同步合入/装载/缺口，docs检查与复核待完成 | 消费者能找到准确身份、操作与差异，不再双份范围书 |
 | 8 | K收敛 | **进行中**：K0/K1/K2/磁盘/K5/K6材料已交；K4既有9/10，B操作单仍缺；K3表24项均已exact tag远端核验后关闭；19项以后复用已逐条入地图标实际tag（未迁入源码保留） | 入口定位owner/状态/出处/去向；不是承诺全史穷尽或重验所有旧结论 |
 | 9 | R2+Modal最简云 | **进行中**：已有存储/派发机制与K5方案；新P1→R2回读→Modal消费尚未实测，上传/费用需另批 | 首训能读同一获准数据；用户已定最简方向，具体对象/只读探针与细门待确认 |
@@ -49,30 +49,30 @@
 
 ## 3. 当前组合、发布身份与变化原则
 
-当前develop `ea7c14e8969006fa0e470678198ef94aca471f90`，tree `4b796997314f63b59557d6d8daa7f3b6ad14e67d`与已审eafa9a7c相同。#202实际merge `beca367cf72516f982031423d3266c9536925dd2`；#204实际merge即ea7c；#203的808e祖先经#204完整进入develop，GitHub标MERGED，不是第三次独立develop merge。#204 source CI39115695661与最终integration CI39120207920均PASS；这些是源码/集成证据，不是新英文整局。 root普通PR[#205](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/205)候选为 `cbbea3b1574517ee06c3d282083a249ef7cf8d29`，已含本轮此前文档和当前Runtime pin；普通候选不是冻结PR，CI/合入状态据实际远端另核。Mod编译身份仍是8967，不追贴904/cbbea。root已报fullPython4485 PASS/5skip+93subtests，原sourceGate环境失败及精确纠正记录保留；仍是源码检查，不是当前新Mod加载或预检证明。安装回执：`/Users/fire/Documents/Codex/2026-10-17/a-t7-runtime-connector-status-settling/work/p1-round19-20261018/deployment-4d-root-review.json`。
+develop已由普通PR205正常合入至 `733782b119967828160f893893aaf5bff3b540e4`（tree `2669e97f0fd292a0e8269747c836672653f32762`），full CI39124068850 PASS；父结点ea7c/cbbea和202/204/203原合入身份均保留，不是冻结发布。当前本次文档依赖rootI committed `1deca5eddf814988a943808128e87ae1382ff411`：已正常整合normal baseline、Managed GLOBAL rc38、Python受信progress consumer及Source4 producer471；组件metadata由root沿原BOM统一，本文不修改BOM。旧fullPython4485 PASS/5skip+93subtests仍绑定原8967生产者，原环境失败/纠正保留，不追贴当前组合。
 
 | 层 | 当前事实及冻结时要固定的内容 |
 |---|---|
 | 游戏 | 标准单人Defect/A0、正式新记录英文；DLL SHA `9cb4f1ad8c9f284aa8fec3122ffd6d780bbf543d875c817abdd12ff63fbf12b4`；最终模式/语言/模板和版本必须对应原件 |
-| Reference Mod | 当前安装 `4d3f8b4bd934de191731f7d6ccd011d12cd9eadd4d243eeb2caf95e1ef592860` / MVID `fb38a130-13eb-4b98-9439-7518362195de`，官方build workspace `8967a72c7533a30a8ba1f803f34b720a708fdc7c`；02/03实际严格loaded tuple均已验，**采集预检仍未PASS**。回滚 `2026-10-18T11-21-45.822Z` 的6份旧Mod/config/provenance SHA均独立匹配；前次实际loaded 6c6b885f/MVID5b2d62dc、英文/EndTurn仍仅属旧身份 |
-| Managed | A03实际native `a70d8de18578cc2666ec854d8d8eb6bb85868317335fb67fcfbb7151133d7f66` / MVID `c9acc642-499d-4af2-ba24-2e90db5ef8cb` / patch `54bfa3a3e8beb21ebf72b62da4675c9ec6953764ffa746340990931e71e369dc`。两局A03执行workspace cd47f09c，不追贴ea7c |
+| Reference Mod | native04实际installed/loaded `d64e57b0b872c2ecbfb6db8cfdc61409ae9fb252dfe91750c5b4cecdb7d7c273` / MVID `494e234f-d6f9-4aaa-9624-a8211066b682`，build79ba、Connector source60d14222；rollback `2026-10-18T12-12-49.442Z` 保留6份旧4d文件。producer471修复尚未实装，不能给d64追贴新源码资格 |
+| Managed | 新实测native `0426384c8c38e1a147dcfb2ba39c599ebdebe191f979acaaab8a4e302060943b` / MVID `1115859e-f311-4e2e-b103-0b3c91168250` / patch `43e223e567c1a8610bbc80b377033e9579b72e1ece7081d5f9b27b36c211a3c8`，buildf434；同04原progress/actual seed的初始Neow完整P1+12Reads严格equal，只有单点，不是选择/整轨/整局。A03 a70/cd47及1482/S05保持旧身份 |
 | P1/SDK/驱动/Runtime | P1 r1.3唯一语义owner；固定共享核心/Host mapping/Agent端口/比较器和实际发布包身份。typed tooltip用原全局双射，仅已声明typed shop detail尾部无序，usable_potions有序，500000工作上限保留 |
 | 采集/转换 | Source4原profile/bundle、capture身份、转换器/core、选择器来源/显示v4与原始记录grammar；report-v3的bounded/whole_run分别核验 |
-| 模板/显示 | Reference eng模板实际payload，Managed en；隔离Reference默认instant，native-ui/headless为独立显示维度。原888六格短验保持旧身份，不给6c转贴资格 |
+| 模板/显示 | Reference normal mature全解锁/FTUEoff/instant已在04 prepare与run UnlockState原生读回PASS；actual seed `SWNBPYW69BAC` 与menu请求值不同，严格比较用实际原件。准备数据私有，不进Agent/P1/训练标签；旧模板不改称成熟profile |
 | 校验/产品/文档 | 原verifier/replay/comparator、API/库/CLI调用链、外包R20、范围/覆盖/差异和K入口；冻结时填实际成功原件，空格不当ready |
 
-ea7c基准组件元数据快照如下（不是cbbea实际候选BOM；Runtime6a448仅终局fixture同步，实际A03生产运行仍属原cd47绑定）；最终发布沿现有BOM/组件manifest与安装/加载回执填写，不重建新身份系统。旧Workbench component元数据是退役Platform诊断壳，不代表正式Python Application的产品验收。
+当前功能源码/消费者快照（不是安装/整局资格，actual发布仍沿原组件manifest/BOM）：
 
-| 组件 | 版本 | 当前已审source / scoped digest |
+| 层/消费者 | 已实现/已验的源码或原件 | 实际消费者/资格缺口 |
 |---|---|---|
-| Connector/SDK | `1.3.0-rc.25` | `137d1c3c64961d6df47233ab3c3e37d35f54cb23` / `4826537d68dfdfc661cb0a9a9faf6a4de4f4e2e55942348a83ebe2a7ce217f09` |
-| Host Runtime | `1.1.0-rc.31` | `316f6d77094204213bf1992f5ab8f75453f7bf89` / `b199f5e77ad9d8cf7436337de1dae57dc93024246bcb76c215192c51870e8d48` |
-| Policy Runtime | `0.1.0-rc.37` | `6a448289a1db46bb710d7537a877d6e3142bd972` / `5c1948b3e45cf589e6a16065e8ee6ed672b9d767df9579d5d0199f11360815f4` |
-| Annotator | `0.3.0-rc.19` | `2859aa6bb5b8d5faf139051aee71676c7d8ae36c` / `4ac47a72bbf90f1e9146de8a8d62d753058dec1caf9ed275ef34a127edc52fc1` |
-| Evidence | `0.1.0-rc.31` | `c60c3691fe45590a12eb10ff99a130b2903c6623` / `6418df7cf4f65460b2f619506d379c21c670e8dfaa780dcece757b4c82f6ebb0` |
-| 旧Platform诊断API | `0.1.0-rc.3` | `01debc74ba24c61c5cbfbe9023ac8d4b3a7e9bc3` / `2accc441c50968fc2f8ca0bafba1fb7d9e71eaa47dc24fc60d5a4c1b768f80b4` |
+| Reference normal baseline | source60d14222；native04 prepare/run解锁读回PASS | d64实际loaded，但原Source4整体FAIL |
+| Source4 producer | source47157680；Host39、NativeLogical179、SourceNative65、Game-Mod55 PASS | 未实装/未新录；04九个capture throw内部根因不能逐个追认 |
+| Managed native act selection | 0426384c/patch43e223e5；原生seeded act算法 | 初始Neow fullP1+12Reads equal单点；未整轨严格 |
+| Python受信progress consumer | source42a3ca47；HostPython31、Workbench70 PASS，rc32 | prepare/reset/proof私有链源码已交；新installed Application待验 |
+| Runtime GLOBAL startup | source8a918d72、rc38；624PASS/3skip与Python175 PASS | 原rc38 package已产，但尚未实装/promote；旧rc37 R20单侧证据不替代最终双Host/产品 |
+| 旧证据与组件框架 | Evidence/Store/Training/API等原owner和版本规则保留 | 旧Workbench壳/旧来源/旧资格不推广成当前安装或新训练资格 |
 
-用户最新确定的Agent初始准备默认：**全解锁不依赖教学进度，教学设置独立处理**；等价普通已全解锁进度下的标准单人新游戏/seed，之后正常游戏，Reference默认instant。不在运行中改资源/RNG或跳幕，不把正常开局前progress准备等同console跳转诊断。当前B只读spike在既有Host/profile-template/native unlock/NoTutorials owner内查最小实现，**尚未实施/未验证新默认**；旧eng/windowed/zhs模板实际FTUE=true、unlocks0，不能改称已全解锁。复用成熟Mod/采集工具、内部库/API为主、GUI薄映射，不另建初始化框架。
+用户确定的Agent初始默认是普通成熟全解锁Standard单人新局/seed，教学独立、Reference instant。原owner实现已在d64 native04正常prepare与实际run UnlockState中核验；开局前administrative provenance不进Agent/P1。旧starter模板、真实玩家历史与正式Human来源不被改写。Managed已接同份真实progress的源码与单点比较，当前整轨/新installed产品资格仍待验。
 
 版本修订按真实公开语义、实际consumer兼容、解释和数据影响决定，不能机械用“r1.x就事实保持/r2才会影响数据”判断。原件/producer身份不改，新解释另记；r1.x也可能须重派生/重验。冻结不永久禁止架构演进；只有当前发布组合受批准的范围约束。
 
@@ -81,6 +81,8 @@ ea7c基准组件元数据快照如下（不是cbbea实际候选BOM；Runtime6a44
 Record grammar ≠ P1环境合同 ≠ Agent程序端口 ≠ Model Input/Target。通用环境采集不限Human或鼠标；直接Agent原件独立于Annotator/Source4。当前Runtime写 `sts2.policy-runtime/agent-session-run-1`目录（global_source、frame/Consume/ACK、Receipt/Result），旧 `sts2.p1/episode-record-1`单文件保留原converter/reader；不能混成一个当前格式。
 
 Source4 report-v3可显式 `--run-continuity`选择运行域：原菜单和域外事实仍保留并有原因，不能借scope排除运行内partial、unknown、gap、遗漏输入或终局。`complete`表示所选/声明范围的保留capture分类完整；`whole_run`另需真实new-run起点、连续来源及完整自然terminal，最终真整局证明不能由bounded complete、Close或fixture替代。Human来源、完整性、P1解释、轨迹/行为监督和研究训练准入分别由原owner判断。 仅本次附条件批准的有界启动waiting可按§8及P1§17 E2单列非决策段；它不把原NativeLogical缺失变成完整。
+
+用户已批准限定selector reversal离线解释，唯一语义登记为[P1§17 E3](../../protocols/P1_GLOBAL_R1.zh-CN.md#17-登记的协议例外必须经用户审核才能新增)：同owner/同原始card相邻select→deselect，全部complete before/after、all Reads及known原生接受证明恢复原状且无任何效果，才可context_only、不产生P1 choice/训练label；首select暂缓至pair分类，不能先发标签后删。Agent仍append-only、不加deselect；missing/unknown/换owner/复杂交错仍unresolved，不回填old04FAIL。**批准不等于实现、反例测试或新真实预检通过**；SDK/Source4原owner实现与新记录验收待完成。
 
 正式计数继续用同一最终候选、英文、≥3完整Human局，环境录制/选择器分来源列；自然loss可算完整局，不能当第三幕/胜利覆盖。不同候选/语言、locator诊断、原not_started跳过、Agent预检和save恢复片段不拼成最终三局；存档续玩保留父局/存档SHA/new continuity，数据按同谱系分组。
 
@@ -177,7 +179,7 @@ A0第三幕合并机制行在此拆开记验收结果（不增加机制种类，
 
 ### 当前真实预检及停止状态
 
-02原件 `native-preflight-02`：4d严格loaded tuple PASS，Map.travel/EndTurn均精确匹配、0unknown；E2 1帧7235ms、0waiting input、complete=true。之后两份publication出现 `native_end_turn_ftue_unseen`/partial，Source4 overall=false；Close/pack和Host正常退出不抵消此失败。实际用户新局seed按原生读回，helper请求seed不当实际seed。03原件 `native-preflight-03`：未pause就ChangeSource，被明确拒绝；任何native输入之前steps0停止，Recorder正常closed/closed、Host正常退出。原 `stdin_closed_without_finish` 与source-change失败原文保留，未重命名成成功。60分钟窗口已于11:40Z结束，**不能告诉用户可以录**；后续先完成原owner准备方案、独审，再另报有界新预检窗口，不暗延长。
+native04已结束：d64正常成熟baseline prepare/run解锁原生读回PASS，实际seed `SWNBPYW69BAC`；Map/EndTurn精确，E2 startup1帧9227ms/0input complete，但总体5actions/5unresolved、13raw gaps/2unknown，Source4 complete=false。原capture失败/unknown、相邻select/deselect原件保留；新producer471只能由新实装/新录检验，E3不得回填旧04为成功。旧01 mapunmapped、02 FTUE partial、03 ChangeSource未pause/steps0和stdin_closed_without_finish原失败全留。04正常Close/pack与Host unforced exit0不抵消录制失败。**现在不能告诉用户可以录**；下一新候选有界预检实际通过后才邀请短段，不暗延长旧窗口。
 
 ## 7. 收敛、发布与停止边界
 
@@ -187,7 +189,7 @@ A0第三幕合并机制行在此拆开记验收结果（不增加机制种类，
 
 发布继续用原版本/组件BOM、游戏/Mod/Managed/模板/工具原件和build/install/load身份；“develop冻结PR+tag、是否推main”的交付形式留用户确认，不先开新发布/registry。最终冻结PR用户亲批；普通source修复依已有冲刺授权推进。源码/CI、已装、真实游戏、Human来源、研究准入和策略强度各据实证。
 
-B是关键路径；已结束的预检失败保留，新默认准备尚未实施；后续新有界预检PASS→用户短段→新英文整局→转换/严格重放。录制闭环未过不告诉用户“可以录”。遇到的producer/转换/工具问题在原owner修，不从GUI黑图或click错误推断游戏黑屏；持续卡住按已定时限报最短反例和可选方案。A、K3/K5/K6/文档并行不挡用户录制。
+B是关键路径；04默认prepare已实测但采集FAIL保留，producer/E3及新installed验证仍缺；后续新有界预检PASS→用户短段→新英文整局→转换/严格重放。录制闭环未过不告诉用户“可以录”。遇到的producer/转换/工具问题在原owner修，不从GUI黑图或click错误推断游戏黑屏；持续卡住按已定时限报最短反例和可选方案。A、K3/K5/K6/文档并行不挡用户录制。
 
 ## 8. 提交用户确认的实际取舍
 
@@ -199,7 +201,7 @@ B是关键路径；已结束的预检失败保留，新默认准备尚未实施�
 3. 云最小对象/目的prefix/费用与一次有界Modal读取的授权和细门；40G历史迁移独立表，本地删除另批。
 4. 冻结前独立信息复验范围/时点已按第6节批准；截图具体方法已按第6节定位原native提示/预览+CUA，live前缀复现与rendering待小验，不提前称取证已通过。扩信息范围/改协议仍交用户决定。
 5. 胜利终局确实取得困难时，由用户决定剩余范围；旧中文缺陷的记录保留，新英文严格口径按最新指令执行。
-受限启动waiting、覆盖口径与冻结前独立信息复验均已按上述条件批准，不再列为未选方案；startup源码/22 focused已交，真实新预检与覆盖/画面取证仍待完成。
+受限启动waiting、覆盖口径与冻结前独立信息复验均已按上述条件批准，不再列为未选方案；startup源码/22 focused已交，真实新预检与覆盖/画面取证仍待完成。 E3限定局部撤销亦已获批准并在P1§17登记，SDK/转换器与反例/新预检待验；其它11项与42行/终局口径不变。
 
 首轮训练的数据划分/门槛、P1 Input/Target/词表及实际执行绑定、新费用、Q1固定评测方案仍在冻结后确认；已有Q3第3版模型/配方不因本定义被撤销，若要改变仍先请用户确认，本定义不代批。到截止未齐就交11条实际剩余表，不把待定/未测写成通过。
 

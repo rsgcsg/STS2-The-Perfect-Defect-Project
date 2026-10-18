@@ -1,7 +1,7 @@
 {
   "scope": "Round19 documentation synthesis, not an approval or a new identity registry. Paths/hashes bind the actual draft inputs and relative-link snapshots.",
-  "source_baseline": "ea7c14e8969006fa0e470678198ef94aca471f90",
-  "source_tree": "4b796997314f63b59557d6d8daa7f3b6ad14e67d",
+  "source_baseline": "1deca5eddf814988a943808128e87ae1382ff411",
+  "source_tree": "e4f3407303382bb89d6d214762e8586188045528",
   "files": [
     {
       "source": "/Users/fire/Documents/Codex/2026-10-17/a-t7-runtime-connector-status-settling/work/p1-K6-20261018/K6-workbench-position.md",
@@ -12,8 +12,8 @@
     },
     {
       "source": "/Users/fire/Documents/Codex/2026-10-17/a-t7-runtime-connector-status-settling/work/p1-K5-20261018/K5-cloud-minimal.md",
-      "bytes": 19131,
-      "sha256": "a0db9a37cdce0598994ef515423ca6147c6a584b4cc739bedad41b62bea20805",
+      "bytes": 19420,
+      "sha256": "a6fe46608d5412565692c8539dfe7eecfd72c21e980a850ed12c83373e53448b",
       "repository_snapshot": "CLOUD_MINIMAL.md",
       "repository_sha256": "1c215bb818fca3a536645d6f47c20c0ddc4c3be7320498089ed36f2666799c15"
     },
@@ -26,10 +26,10 @@
     },
     {
       "source": "/Users/fire/Desktop/SpireAgentProject/claude-handoff-2026-10-13/P1_r1_SUPPORT_SCOPE_v0.3_2026-10-18.zh-CN.md",
-      "bytes": 40509,
-      "sha256": "0ebc45933989486a2f280ce44f47d9f198cde9ea6971748f527f3976f5d5305f",
+      "bytes": 40655,
+      "sha256": "d584c56888b1fe9c5fc889a30a3dae1326776986852c0b6cc714e7aaf0d2f64a",
       "repository_snapshot": "SCOPE_v0.3.zh-CN.md",
-      "repository_sha256": "281231411cd814a8737385fd131ec904541cac93fb244c293abb0cbbc427e98d"
+      "repository_sha256": "b9dcffd0239008838f65a5e258ec26c9f773512fc4a4137d60d36b57f0a00275"
     },
     {
       "source": "/Users/fire/Documents/Codex/2026-10-17/a-t7-runtime-connector-status-settling/work/p1-K2-20261018/round19/scope-replies-before-merge.md",
@@ -114,6 +114,72 @@
       "role": "original loaded tuple/attempt, not a successful recording gate",
       "bytes": 9922,
       "sha256": "975dc6d671902e2c6d3fda9bd855d160508ec90cef820977f17a99c13c231b3e"
+    },
+    {
+      "source": "/Users/fire/Documents/Codex/2026-10-17/a-t7-runtime-connector-status-settling/work/p1-round19-20261018/selector-reversal-proposal.md",
+      "role": "E3 proposal or original current fact; approval is not implementation/runtime qualification",
+      "bytes": 2790,
+      "sha256": "7b6e4ed4b2d7906400bfaea3defbfe6aea8fa9328afe5bfced1a8500479092c8"
+    },
+    {
+      "source": "/Users/fire/Documents/Codex/2026-10-17/a-t7-runtime-connector-status-settling/work/p1-round19-20261018/pr205-merge.json",
+      "role": "E3 proposal or original current fact; approval is not implementation/runtime qualification",
+      "bytes": 123,
+      "sha256": "e5a05cb9b4157febd44587e189dcba365809bce87216d1fa4f3638c2872877bf"
+    },
+    {
+      "source": "/Users/fire/Documents/Codex/2026-10-17/a-t7-runtime-connector-status-settling/work/p1-round19-20261018/pr205-merged-commit.json",
+      "role": "E3 proposal or original current fact; approval is not implementation/runtime qualification",
+      "bytes": 3096,
+      "sha256": "b203c7a97589291b6fb585b6c2f6aa849769a1949fac74ce57aad1844a85aacd"
+    },
+    {
+      "source": "/Users/fire/Documents/Codex/2026-10-17/a-t7-runtime-connector-status-settling/work/p1-round19-B-native-preflight/native-preflight-04/attempt.json",
+      "role": "E3 proposal or original current fact; approval is not implementation/runtime qualification",
+      "bytes": 232852,
+      "sha256": "b531163bc4e436f6bb3d9a2d061b7bf8b5d4de84c87e6760776ab3646eced52b"
+    },
+    {
+      "source": "/Users/fire/Documents/Codex/2026-10-17/a-t7-runtime-connector-status-settling/work/p1-round19-B-native-preflight/native-preflight-04/conversion.json",
+      "role": "E3 proposal or original current fact; approval is not implementation/runtime qualification",
+      "bytes": 1554879,
+      "sha256": "771d755a230f68562c92a645aaa6dfa518021a21c830e6bad78d9ad86587a1be"
+    },
+    {
+      "source": "/Users/fire/Documents/Codex/2026-10-17/a-t7-runtime-connector-status-settling/work/p1-round19-B-native-preflight/native-preflight-04/native-preparation.json",
+      "role": "E3 proposal or original current fact; approval is not implementation/runtime qualification",
+      "bytes": 105018,
+      "sha256": "2bf7f8d556c3e87d809e5d8c527719034a8ccb313e02d4dec854813fd8abba84"
+    },
+    {
+      "source": "/Users/fire/Documents/Codex/2026-10-17/a-t7-runtime-connector-status-settling/work/p1-round19-B-native-preflight/native-preflight-04/native-post-run-provenance.json",
+      "role": "E3 proposal or original current fact; approval is not implementation/runtime qualification",
+      "bytes": 107589,
+      "sha256": "375d62dc9bb969ca351e8816ae51d81897da0f738033bae78b1af56764547657"
+    },
+    {
+      "source": "/Users/fire/Documents/Codex/2026-10-17/a-t7-runtime-connector-status-settling/work/p1-round19-B-native-preflight/native-preflight-04-analysis/PRODUCER-REPAIR-HANDOFF.md",
+      "role": "E3 proposal or original current fact; approval is not implementation/runtime qualification",
+      "bytes": 3147,
+      "sha256": "95a951e4abed9bcf1cf2ef96c5416f23bd6901fb5a01e9b8db470a5f156a15e8"
+    },
+    {
+      "source": "/Users/fire/Documents/Codex/2026-10-17/a-t7-runtime-connector-status-settling/work/p1-round19-20261018/native-act-selection-build-root-receipt.json",
+      "role": "E3 proposal or original current fact; approval is not implementation/runtime qualification",
+      "bytes": 1192,
+      "sha256": "0ab169fd63dc32f3dac9e6cadb16a2becf6518ccff428cc9deed6467f7511b17"
+    },
+    {
+      "source": "/Users/fire/Documents/Codex/2026-10-17/a-t7-runtime-connector-status-settling/work/p1-round19-20261018/native-act-selection-initial-p1-comparison.json",
+      "role": "E3 proposal or original current fact; approval is not implementation/runtime qualification",
+      "bytes": 81259,
+      "sha256": "0429bfbdd6d89d747bb68609a187fd72b4e5e7e2e6c3872ab21be85ceda588b4"
+    },
+    {
+      "source": "/Users/fire/Documents/Codex/2026-10-17/a-t7-runtime-connector-status-settling/work/p1-sprint-C-20261018/MANAGED-INITIAL-PROGRESS-SOURCE-HANDOFF.md",
+      "role": "E3 proposal or original current fact; approval is not implementation/runtime qualification",
+      "bytes": 1819,
+      "sha256": "064b8b891014b7bf60e327b203f1913632fcc3194eaf1b4108cf0a573a5f431f"
     }
   ]
 }
