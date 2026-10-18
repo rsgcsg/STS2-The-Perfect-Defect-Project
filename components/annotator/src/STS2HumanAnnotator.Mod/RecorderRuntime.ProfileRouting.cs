@@ -21,9 +21,17 @@ internal static partial class RecorderRuntime
     {
         if (!IsP1Recording) return false;
         if (_store != null)
-            _store.AppendP1NativeEvent(new JsonObject { ["kind"] = issue ? "issue" : "observation", ["run_id"] = _currentRunId,
+        {
+            var row = new JsonObject { ["kind"] = issue ? "issue" : "observation", ["run_id"] = _currentRunId,
                 ["reason"] = reason, ["native_action_type"] = nativeType,
-                ["native_witness"] = JsonSerializer.SerializeToNode(evidence, EvidenceJson.Options) });
+                ["native_witness"] = JsonSerializer.SerializeToNode(evidence, EvidenceJson.Options) };
+            if (!issue)
+            {
+                row["basis"] = null;
+                row["basis_missing_reason"] = "native_diagnostic_not_decision_boundary";
+            }
+            _store.AppendP1NativeEvent(row);
+        }
         return true;
     }
 }

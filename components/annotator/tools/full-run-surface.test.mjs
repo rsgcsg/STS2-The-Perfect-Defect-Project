@@ -87,6 +87,17 @@ test("P1 routes every shared legacy evidence ingress before its legacy writer", 
   }
 });
 
+test("P1 native terminal retains its own boundary and exact ready-owner witness before automatic Close", () => {
+  const ended = section(runtime, "internal static void ObserveNativeRunEnded(", "internal static void ObserveNativeRunStarted(");
+  assert.ok(ended.indexOf('ObserveP1Boundary("native_run_ended"') < ended.indexOf("TerminalSeal.ObserveNativeEnded"));
+  assert.match(ended, /is_victory = isVictory, abandoned/u);
+  const ready = section(runtime, "private static void ObserveNativeDecisionOwnerReady(", "private static CurrentDecisionFrame FreezeSemanticBoundary(");
+  assert.match(ready, /ObserveP1Boundary\("native_decision_owner_ready", new \{ domain = observation.Domain/u);
+  assert.match(ready, /native_owner_witness_id = NativeWitnessIdentity.Get\(observation.NativeOwner/u);
+  assert.match(ready, /native_mechanism = observation.NativeMechanism/u);
+  assert.ok(ready.indexOf('ObserveP1Boundary("native_decision_owner_ready"') < ready.indexOf("close: () => ExecuteTerminalAutoSeal"));
+});
+
 test("act-ready binds one exact queued action and skips generic duplicate ingress", () => {
   const enqueue = section(patches, "internal static class NativeActChangeVoteEnqueuePatch", "internal static class NativeActChangeVoteCommitPatch");
   const commit = section(patches, "internal static class NativeActChangeVoteCommitPatch", "[HarmonyPatch(typeof(RewardsSetSynchronizer)");

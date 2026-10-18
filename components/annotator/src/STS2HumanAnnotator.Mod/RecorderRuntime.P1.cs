@@ -174,16 +174,17 @@ internal static partial class RecorderRuntime
         { _runtimeState = "p1_native_recording_failed"; _detail = exception.Message; NativeUiObservationSafety.Report("p1_native.lifecycle", exception); }
     }
 
-    private static void ObserveP1Boundary(string reason)
+    private static void ObserveP1Boundary(string reason, object? nativeWitness = null)
     {
         if (_store == null || _lifecycle.State is not (RecordingLifecycleState.Recording or RecordingLifecycleState.Closing)) return;
         try
         {
             var frame = PlayerEnvironmentNativeWitness.CaptureP1();
             _store.AppendP1NativeEvent(new JsonObject { ["kind"] = "observation", ["run_id"] = _currentRunId,
-                ["reason"] = reason, ["basis"] = JsonSerializer.SerializeToNode(PersistP1Basis(frame), EvidenceJson.Options) });
+                ["reason"] = reason, ["basis"] = JsonSerializer.SerializeToNode(PersistP1Basis(frame), EvidenceJson.Options),
+                ["native_witness"] = JsonSerializer.SerializeToNode(nativeWitness, EvidenceJson.Options) });
         }
-        catch (Exception exception) { P1Issue("observation_capture_failed:" + exception.GetType().Name); }
+        catch (Exception exception) { P1Issue("observation_capture_failed:" + exception.GetType().Name, witness: nativeWitness); }
     }
 
     private static void FinalizeP1Close()

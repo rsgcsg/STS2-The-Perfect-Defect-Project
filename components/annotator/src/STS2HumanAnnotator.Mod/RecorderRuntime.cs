@@ -2335,7 +2335,13 @@ internal static partial class RecorderRuntime
             {
                 try
                 {
-                    if (IsP1Recording) { ObserveP1Boundary("native_decision_owner_ready"); return; }
+                    if (IsP1Recording)
+                    {
+                        ObserveP1Boundary("native_decision_owner_ready", new { domain = observation.Domain,
+                            native_owner_witness_id = NativeWitnessIdentity.Get(observation.NativeOwner, "decision_owner"),
+                            native_owner_type = observation.NativeOwnerType, native_mechanism = observation.NativeMechanism });
+                        return;
+                    }
                     if (!_semanticBoundaryTraceHealthy)
                         return;
                     lock (Gate)
@@ -4858,6 +4864,10 @@ internal static partial class RecorderRuntime
                 return;
             AppendJournal("run_ended_native", null, _lastSnapshotId, detail);
             bool abandoned = RunManager.Instance.IsAbandoned;
+            if (IsP1Recording)
+                ObserveP1Boundary("native_run_ended", new { is_victory = isVictory, abandoned,
+                    native_owner_witness_id = NativeWitnessIdentity.Get(RunManager.Instance, "run_manager"),
+                    native_mechanism = "RunManager.OnEnded.postfix" });
             if (abandoned)
                 AppendJournal("run_abandoned_native", null, _lastSnapshotId,
                     "RunManager.OnEnded observed IsAbandoned=true.");

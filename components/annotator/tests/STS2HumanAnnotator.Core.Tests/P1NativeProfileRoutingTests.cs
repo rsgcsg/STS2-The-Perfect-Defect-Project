@@ -23,7 +23,8 @@ public sealed class P1NativeProfileRoutingTests
     [Fact]
     public void ActualProfileIngressKeepsMechanicalFactsAndUnsupportedWitnessesInDeclaredP1Stream()
     {
-        string root = Path.Combine(Path.GetTempPath(), "p1-profile-routing-" + Guid.NewGuid().ToString("N"));
+        string? exported = Environment.GetEnvironmentVariable("STS2_P1_ROUTING_FIXTURE_OUT");
+        string root = exported ?? Path.Combine(Path.GetTempPath(), "p1-profile-routing-" + Guid.NewGuid().ToString("N"));
         try
         {
             var profile = P1NativeRecordingContract.Profile;
@@ -44,6 +45,8 @@ public sealed class P1NativeProfileRoutingTests
             var rows = File.ReadAllLines(Path.Combine(directory, P1NativeRecordingContract.EventFile)).Select(line => JsonNode.Parse(line)!).ToArray();
             Assert.Equal(2, rows.Length);
             Assert.Equal("observation", rows[0]["kind"]!.GetValue<string>());
+            Assert.True(rows[0].AsObject().ContainsKey("basis")); Assert.Null(rows[0]["basis"]);
+            Assert.Equal("native_diagnostic_not_decision_boundary", rows[0]["basis_missing_reason"]!.GetValue<string>());
             Assert.Equal("original-mechanical-1", rows[0]["native_witness"]!["witness"]!.GetValue<string>());
             Assert.Equal("issue", rows[1]["kind"]!.GetValue<string>());
             Assert.Equal("original-input-1", rows[1]["native_witness"]!["action_witness_id"]!.GetValue<string>());
@@ -53,6 +56,6 @@ public sealed class P1NativeProfileRoutingTests
             Assert.False(File.Exists(Path.Combine(directory, HumanTextInputObservationContract.FileName)));
             Assert.Equal("pass", P1NativeSessionBundlePacker.Audit(directory).Status);
         }
-        finally { RecorderRuntime.TestSession(null, null); if (Directory.Exists(root)) Directory.Delete(root, true); }
+        finally { RecorderRuntime.TestSession(null, null); if (exported == null && Directory.Exists(root)) Directory.Delete(root, true); }
     }
 }
