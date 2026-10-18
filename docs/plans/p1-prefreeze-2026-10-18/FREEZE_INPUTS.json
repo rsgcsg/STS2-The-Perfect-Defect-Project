@@ -1,7 +1,7 @@
 {
   "scope": "Round19 documentation synthesis, not an approval or a new identity registry. Paths/hashes bind the actual draft inputs and relative-link snapshots.",
-  "source_baseline": "1deca5eddf814988a943808128e87ae1382ff411",
-  "source_tree": "e4f3407303382bb89d6d214762e8586188045528",
+  "source_baseline": "c931292e3e59d2d9a791da764b7f2a51f3dcb820",
+  "source_tree": "f4eba921945c7b23ed7fa83d9737fd45638f95d8",
   "files": [
     {
       "source": "/Users/fire/Documents/Codex/2026-10-17/a-t7-runtime-connector-status-settling/work/p1-K6-20261018/K6-workbench-position.md",
@@ -26,10 +26,10 @@
     },
     {
       "source": "/Users/fire/Desktop/SpireAgentProject/claude-handoff-2026-10-13/P1_r1_SUPPORT_SCOPE_v0.3_2026-10-18.zh-CN.md",
-      "bytes": 40655,
-      "sha256": "d584c56888b1fe9c5fc889a30a3dae1326776986852c0b6cc714e7aaf0d2f64a",
+      "bytes": 47994,
+      "sha256": "458ce8e19b6f1784421c0597ea59044fa8f8afb1d6b618d9c886a02633d74997",
       "repository_snapshot": "SCOPE_v0.3.zh-CN.md",
-      "repository_sha256": "b9dcffd0239008838f65a5e258ec26c9f773512fc4a4137d60d36b57f0a00275"
+      "repository_sha256": "d189cefb7ee23b21d05c0b6134b86651b02afa88d4b15b07bd2ee1b768f029e4"
     },
     {
       "source": "/Users/fire/Documents/Codex/2026-10-17/a-t7-runtime-connector-status-settling/work/p1-K2-20261018/round19/scope-replies-before-merge.md",
@@ -180,6 +180,25 @@
       "role": "E3 proposal or original current fact; approval is not implementation/runtime qualification",
       "bytes": 1819,
       "sha256": "064b8b891014b7bf60e327b203f1913632fcc3194eaf1b4108cf0a573a5f431f"
+    },
+    {
+      "source": "/Users/fire/Documents/Codex/2026-10-17/a-t7-runtime-connector-status-settling/work/p1-K2-20261018/round19/semantic-route-input-captured-20261019.md",
+      "role": "fixed input capture of semantic-route context; live continuation may advance",
+      "bytes": 5586,
+      "sha256": "32fc97a7e7f08c70de18b6b8588ae07852ddfb2fe07e35f3147f0971b5eac26d",
+      "original_path": "/Users/fire/Documents/Codex/2026-10-17/a-t7-runtime-connector-status-settling/work/P1-SEMANTIC-ACTIVE-20261019.md"
+    },
+    {
+      "source": "/Users/fire/Documents/Codex/2026-10-17/a-t7-runtime-connector-status-settling/work/p1-K2-20261018/p1-consumer-audit/P1-CONSUMERS.zh-CN.md",
+      "role": "semantic-route context and actual owner/consumer audit; no runtime qualification transfer",
+      "bytes": 11487,
+      "sha256": "5dc83f83990409cea858fa8dbdf4069e1462e4c0fe6ad27bac9b260a13201702"
+    },
+    {
+      "source": "/Users/fire/Documents/Codex/2026-10-17/a-t7-runtime-connector-status-settling/work/p1-console-coverage-20261018/actual-20k-owner-audit/COMPARISON.zh-CN.md",
+      "role": "semantic-route context and actual owner/consumer audit; no runtime qualification transfer",
+      "bytes": 5523,
+      "sha256": "73a2dc6b0cac061c26415bca5edfc9774d7f95f9bce441024c0519552a915fcd"
     }
   ]
 }

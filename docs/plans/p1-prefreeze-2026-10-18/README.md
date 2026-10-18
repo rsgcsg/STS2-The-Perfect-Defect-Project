@@ -6,6 +6,8 @@
 
 历史调查、审计和收敛与开发同属本轮任务，最高优先级是首批训练前P1冻结及最相关工作。按需结合现行仓库文档、已有账本/地图、审计索引、旧仓库、PR与交接入口查证；Claude各卡片、目标和方法是参考，可能过时或可延后，不自行增加验收或授权。按用户直接决定与实际证据取舍，不要求先重建全部历史。
 
+当前方法已转为**成熟Human真实accepted动作关联＋同次完整PB1原件＋共享核离线派生**；Source4主要服务P2/后续，退出P1强制主线，新取消包/旧FAIL及分支保留，不为其再开预检。方向和开录门已按用户最新指令确定；新原件/派生整局完整及E2/E3新路线适用性见唯一[冻结定义4.1/4.2](SCOPE_v0.3.zh-CN.md)，**这些具体定义及整份冻结定义仍待用户批准**，开录门已定不等于实际开录PASS。2026-10-19 09:00 Brisbane硬检查点报告核心＋自测短段；未过报卡点/剩余时间后继续普通修复，不等批复、不称PASS，改计划用户定。
+
 ## 目标
 
 长期目标是能打完整局、持续变强的Agent；下一阶段要在固定条件下可复验地优于随机。当前先完成P1技术组合与历史收敛，再做Q1评测、Q2用途/划分、Q3输入适配和训练链。P1是当前环境合同，不是永久唯一格式。详见唯一[冻结定义v0.3同步页及覆盖索引](SCOPE_v0.3.zh-CN.md)；源canonical精确路径/合并输入SHA见[来源索引](FREEZE_INPUTS.json)，本页不另增门槛。
@@ -57,7 +59,8 @@
 | Human原生因果 | manifest2、trace4、canonical3、action-space3、Read2、journal2、close1、bundle3 | PR25 rc4原候选已有两自然败局/524 canonical；不转移到当前Mod/P1 |
 | 兼容/归档Human | record2/bundle2兼容；旧trace1–3/canonical2/ledger1–2/record1/bundle1 reader | 原consumer保留；record2不保全canonical3所有子选择，不升级旧bytes |
 | Source3 | 原输入basis/ordinals、publications/declarations、Source3 bundle | 有序来源事实，非Human证明/因果后继；旧STPD视图原义保留 |
-| Source4 | source-v4/bundle-v4、frozen public-basis/全部Reads/carrier/Task | 独立Evidence reader→共享SDK转换；保留report-v2，当前report-v3另列显式run-continuity与whole_run，真实整局仍待 |
+| 当前P1-native方向 | 真实accepted动作/同次完整PB1、run journal、Close/pack及内容身份 | 复用Human owner，B/root核心与短段在做；新原件/派生完整定义待批，开录门已确定但尚未取得开录PASS |
+| Source4（P2/后续） | source-v4/bundle-v4、frozen public-basis/全部Reads/carrier/Task | 原格式/report-v3与失败保留，退出P1强制主线；不再以raw取消全分类阻断P1 |
 | 当前P1 Agent/chooser | **目录** `sts2.policy-runtime/agent-session-run-1`，profile `p1-global-r1`，adapter `p1-session-bridge` | `tools/p1-suite.mjs`→bridge→外部stdio Agent→现有Runtime；events.jsonl、global_source原件、frame/Consume/ACK/Receipt/Result与封存清单；独立于Annotator/Source4 |
 | 旧P1直接记录 | **单文件** `sts2.p1/episode-record-1` | 原converter/reader的独立保留lane，不是当前Agent CLI唯一格式 |
 
@@ -65,9 +68,13 @@
 
 Source4当前report-v3区分声明范围的`complete`与`whole_run`，可显式选run-continuity且保留菜单/域外原件；不能排除运行内gap/partial/unknown/遗漏输入。经用户批准的有界启动waiting仅按[P1§17 E2](../../protocols/P1_GLOBAL_R1.zh-CN.md#17-登记的协议例外必须经用户审核才能新增)单列非决策段，不补原缺失；bounded完整分类不等于整局；真实new-run、连续来源及完整natural terminal另核。chooser真人会同时看游戏画面，不能声称只看P1观察；原生Human操作另按Annotator lane记录。任何源只要按明确合同可转换成所需轨迹即可支持环境采集，不限Source4/Human/鼠标。
 
-录一整局的门：最终英文tuple预检→约15分钟短段→Close/pack/独立验→转换complete→整局→离线及Managed严格配对重放，最终≥3局来源分开列、第三幕实到、胜利行尽验或交用户定。**B最终可操作预检单与真实整局转换未闭合，不指示用户依据本页立即开录。** 当前步骤/根因/范围见下节与 [范围书](SCOPE_v0.3.zh-CN.md)。
+用户已确定的开录门见定义4.1：新短段须有Play、未提交取消0label、EndTurn和至少一种其它非出牌，且原件完整/离线/Managed严格短重放均过；开录门已经确定，实际尚未通过。root自测通过后用户直接正式英文整局，不再另录真人短段；第一局开头已保存段先转换核对作为真人验证，不中断正式局。正式整局只由用户操作；联系不到用户、用户不方便或找不到入口时，正式录制及必需决定都等用户，其它独立工作并行继续。原3English/全幕/INFO/final40+20/R20等结果全部保留。
+
+检查点自动化最后触发为Oct20 09:00 Brisbane，16:30唯一截止报告只由deadline自动化负责；暂停只停定时触发，不停工程。截止时若用户仍录制或某局转换中，不中断/丢原件，正常Close/pack收尾，唯一截止报告写pending，收尾补实情。root已更新自动化，本文不另改。
 
 ## 状态与当前任务
+
+本节旧候选身份是历史事实；当前只从上面的P1-native路线和CURRENT指路执行，不恢复Source4取消专项。
 
 develop733782b1已正常合入PR205/fullCI39124068850 PASS；本docs从rootI committed1deca5ed功能组合派生。实际installed d64/MVID494e234f在04 normal prepare/run解锁读回PASS，但Source4 complete=false（5unresolved/13gaps/2unknown）；producer471的39/179/65/55源码检查通过而未实装。Managed0426初始Neow fullP1+12Reads严格equal只是单点。42a Python consumer31/70源码PASS，rc38 package尚未实装，新产品与最终R20待验。旧原件/源码/build/install身份不互相追贴。
 
@@ -78,7 +85,7 @@ develop733782b1已正常合入PR205/fullCI39124068850 PASS；本docs从rootI com
 **已定/待批的11条状态和覆盖索引只从[合成定义](SCOPE_v0.3.zh-CN.md)查；实际差异/旧Reference缺陷登记见[A线差异](MANAGED_DIFFERENCES.md)；例外仍只有[P1第17节](../../protocols/P1_GLOBAL_R1.zh-CN.md#17-登记的协议例外必须经用户审核才能新增)。** 旧T1–T7/旧CURRENT和本目录旧资产基准快照不派发当前任务。
 
 - A：A03两局原loss的完整terminal正式比较equal，选择点170/293、236/432，0unknown；中间并非全严格。旧中文Reference原件缺陷登记保留，真实Managed缺陷继续修，新英文整局严格验收仍0/3。A02 H02 ENOSPC及原not_started/unknown保持历史失败；S05只属于1482de5d有界存档，不转到a70d8de1新候选。
-- B：d64 native04 prepare/run正常默认已实测，但整体采集FAIL原件保留；新producer尚未实装。用户已批准[P1§17 E3](../../protocols/P1_GLOBAL_R1.zh-CN.md#17-登记的协议例外必须经用户审核才能新增)限定same-owner/card相邻select→deselect的净零离线context_only解释；Agent仍append-only。批准≠实现/反例验收/新预检PASS，不能据此让用户开录。
+- B/root：P1-native核心与工程短段仍在实现，旧Human成熟owner/动作关联可复用，同次PB1和离线共享核接线待实际验收。Source4不再是当前强制主线，也没有新预检投入。E2/E3原格式条文保留，新路线适用定义待批，不回填旧FAIL。
 - C/K6：现GLOBAL源码/接口、K6定位与R20外包/harness已存在；复用[API/库/CLI主入口、GUI薄映射](WORKBENCH_POSITION.md)，最终tuple实际产品短验/R20仍待。复杂GUI/团队系统不做，原信任/确认适配保留。
 - K5：[云最简调查](CLOUD_MINIMAL.md)复用R2 storage库/块hash与push/pull，不强制Hub。新P1→R2完整回读→Modal消费尚未实测，样本/费用/上传与消费操作另批；Hub/团队/云页面仅保留状态/接口。
 - 覆盖补验：Console仅Reference独立诊断，整session及console祖先的续玩都排除正式3局/覆盖/训练；保存续玩仅批准评估，非console suffix须实际三证PASS才计覆盖、不计3full且parent/suffix同组。A0 Act3可自然空奖励/Proceed+实际victory同点三证；不能胜利则Boss/BossReward两行gap交用户。详见[定义覆盖/续玩](SCOPE_v0.3.zh-CN.md)。
