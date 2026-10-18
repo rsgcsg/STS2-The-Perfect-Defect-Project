@@ -333,7 +333,8 @@ quiescent native MapRoom, `POST /v1/admin/save-map` takes `request_id`, an absol
 new output `path`, `expected_runtime_instance_id` and `expected_game_continuity_id`.
 Its `result.save` descriptor contains the file SHA-256/size, exact native Host/game
 artifact hashes, seed, act and floor. Retain that descriptor privately beside the
-save. Existing files are refused. Close the service normally after saving.
+save. The driver also records the exact parent runtime and game continuity in
+that descriptor. Existing files are refused. Close the service normally after saving.
 
 Next time, start the same exact native candidate in a new service without resetting
 or mounting a run. `POST /v1/admin/load-map` takes `request_id`, that complete `save`
@@ -343,7 +344,9 @@ candidate, loads through the existing native `load_save`, checks the actual map
 position, and issues a fresh game continuity. Claim control again and use only the
 new observation's bindings. `episode_identity` records
 `episode_provenance.origin.kind: map_continue_save` with the original save digest;
-this is a resumed segment, not a new continuous run from the seed. Paths are
+the original parent runtime and game continuity survive in that origin so the
+resumed segment can be linked to its actual parent. This is not a new continuous
+run from the seed. Paths are
 returned only to the manager and are not included in client episode provenance.
 
 An unknown save/load outcome fences this process and is never resent. A known

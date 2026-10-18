@@ -228,6 +228,8 @@ export class ManagedPeDriverSession {
         this.#requireEpisode(); this.#requireExpectedEpisode(request);
         try {
           const save = await saveManagedMapContinue(this.#started, request.path, this.#timeoutMs);
+          save.parent_runtime_instance_id = this.#started.runtime.adapterRuntimeInstanceId;
+          save.parent_game_continuity_id = this.#gameContinuityId;
           return { type: "save_map_result", request_id: requestId, save,
             game_continuity_id: this.#gameContinuityId };
         } catch (cause) {
@@ -258,7 +260,9 @@ export class ManagedPeDriverSession {
           if (this.#closed) throw new Error("driver_closed_during_map_restore");
           this.#requestedSeed = save.seed;
           this.#episodeOrigin = { kind: "map_continue_save", save_sha256: save.sha256,
-            candidate: save.candidate, act: save.act, floor: save.floor };
+            candidate: save.candidate, act: save.act, floor: save.floor,
+            parent_runtime_instance_id: save.parent_runtime_instance_id,
+            parent_game_continuity_id: save.parent_game_continuity_id };
           this.#gameContinuityId = `managed_episode_${randomUUID().replaceAll("-", "")}`;
           this.#available = true;
           return { type: "load_map_result", request_id: requestId, snapshot,

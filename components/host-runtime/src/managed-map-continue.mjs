@@ -80,6 +80,8 @@ export function validateManagedMapContinue(started, save) {
   if (save?.schema !== SCHEMA || !SHA256.test(save.sha256 ?? "")
     || !Number.isSafeInteger(save.bytes) || save.bytes <= 0
     || typeof save.seed !== "string" || !save.seed
+    || typeof save.parent_runtime_instance_id !== "string" || !save.parent_runtime_instance_id
+    || typeof save.parent_game_continuity_id !== "string" || !save.parent_game_continuity_id
     || !Number.isSafeInteger(save.act) || save.act < 1
     || !Number.isSafeInteger(save.floor) || save.floor < 0) {
     throw new Error("managed_map_continue_identity_required");

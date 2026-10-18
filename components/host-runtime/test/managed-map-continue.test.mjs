@@ -37,6 +37,8 @@ test("native map save returns a file and exact candidate identity without overwr
   const f = fixture();
   try {
     const save = await saveManagedMapContinue(f.started, f.path, 1000);
+    assert.throws(() => validateManagedMapContinue(f.started, save), /identity_required/);
+    Object.assign(save, { parent_runtime_instance_id: "original-runtime", parent_game_continuity_id: "original-episode" });
     assert.equal(validateManagedMapContinue(f.started, save), save);
     assert.equal(save.floor, 3); assert.equal(save.seed, "TEST");
     assert.equal(save.bytes, readFileSync(f.path).length);
@@ -61,6 +63,7 @@ test("changed file or native candidate cannot validate for restore", async () =>
   const f = fixture();
   try {
     const save = await saveManagedMapContinue(f.started, f.path, 1000);
+    Object.assign(save, { parent_runtime_instance_id: "original-runtime", parent_game_continuity_id: "original-episode" });
     f.started.runtime.build.artifact_sha256 = "c".repeat(64);
     assert.throws(() => validateManagedMapContinue(f.started, save), /candidate_changed/);
     f.started.runtime.build.artifact_sha256 = save.candidate.artifact_sha256;

@@ -588,6 +588,8 @@ test("saved map resumes in a new service with a fresh continuity and original ha
       expected_game_continuity_id: continuity });
     assert.equal(saved.status, 200);
     const save = saved.body.result.save;
+    assert.equal(save.parent_runtime_instance_id, "runtime-restore-1");
+    assert.equal(save.parent_game_continuity_id, continuity);
     await first.close();
     const next = await start();
     const restored = await call(next, next.managerToken, "/v1/admin/load-map", { request_id: "load-map",
@@ -598,6 +600,8 @@ test("saved map resumes in a new service with a fresh continuity and original ha
     const current = (await command(next, next.clientToken, { command: "episode_identity" })).body.result;
     assert.equal(current.identity.episode_provenance.origin.kind, "map_continue_save");
     assert.equal(current.identity.episode_provenance.origin.save_sha256, save.sha256);
+    assert.equal(current.identity.episode_provenance.origin.parent_runtime_instance_id, "runtime-restore-1");
+    assert.equal(current.identity.episode_provenance.origin.parent_game_continuity_id, continuity);
     assert.equal(JSON.stringify(current).includes(directory), false);
     const claim = (await command(next, next.clientToken, { command: "claim_control",
       expected_runtime_instance_id: "runtime-restore-2",
