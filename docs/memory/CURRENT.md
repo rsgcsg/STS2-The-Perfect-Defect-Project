@@ -31,8 +31,9 @@ from I by824847fb; original packets/branches/failures remain preserved.
 The integrated native build is e3caa3f2. Official installed artifact a4fef7a2/MVID
 805dbf4b cold-loaded with the exact tuple in engineering native05; component-only
 identity updates were checked against the unchanged compiled sources. Native05
-awaits user-assisted rapid card play and first-combat reward selection. Check actual
-process/operator state before resuming; never start another game from this snapshot.
+closed/packed and exited normally:66 accepted,17 staged card inputs missing H public
+BoundActions, and one combat-pile exact input join failure. No complete trajectory;
+no full-segment Managed replay. Check actual process state before resuming.
 
 Native04 passed the bounded gate:5 accepted/5 terminal, complete PB1/all Reads,
 unsubmitted cancel with zero labels, normal Close/pack, offline derivation and strict
@@ -40,8 +41,11 @@ Managed replay including final successor;0 unknown/taint/budget. Formal English0
 then exposed missing reward-selector H/parent binding and two settling card H records
 without public BoundActions. The user chose normal Close/pack and restart after repair.
 Its originals remain preserved and formal count is0/3. Selector lineage/accepted/
-completion is repaired; frozen capture diagnostics distinguish staged/current H
-without changing readiness. Native05 has not passed runtime qualification yet.
+completion is repaired; three native05 reward selections retained exact bindings.
+All17 card gaps use staged H:13 InCardPlay (four also executor-running), four Start
+phase. Native input can precede public delivery readiness. The separate grid selector
+join repair continues. Changing the approved H/P1 derivation definition or adding
+queued P1 capability awaits the user's explicit choice; do not alter either silently.
 
 Legacy hooks were audited and profile-routed; Core431, SourceNative66, surface38 and
 reader/adapter29 passed in the relevant checks. The official Mod compiled successfully.
