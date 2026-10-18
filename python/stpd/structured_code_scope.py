@@ -150,6 +150,7 @@ TRAINING_PATHS = tuple(
             "stpd/models/structured_engine.py",
             "stpd/models/structured_training.py",
             "stpd/structured_workload_contracts.py",
+            "stpd/structured_remote_contracts.py",
             "stpd/workers/reporting.py",
             "stpd/workers/structured_control.py",
             "stpd/workers/structured_execution.py",

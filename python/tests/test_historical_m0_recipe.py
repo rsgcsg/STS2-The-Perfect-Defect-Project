@@ -506,6 +506,9 @@ def test_real_service_child_completes_and_existing_public_export_scores_exact_in
         assert operation["status"] == "completed", terminal
         assert operation["worker_state"] == "terminal"
         assert operation["progress"]["completed"] == 1
+        assert operation["checkpoint_progress"] is None
+        assert operation["last_progress_at"] is not None
+        assert operation["progress"]["total"] is None
         inherited = owner.ledger.dataset(source_id)[1]
         with owner.transaction() as db:
             uses = {
@@ -823,6 +826,9 @@ def test_actual_historical_app_pause_resume_uses_checkpoint_without_second_warm_
         paused = service.status()["operation"]
         assert observed["next_reservation"] and observed["pause"] is not None
         assert paused["status"] == "paused" and paused["progress"]["completed"] == 1
+        assert paused["checkpoint_progress"] is None
+        assert paused["last_progress_at"] is not None
+        assert paused["progress"]["total"] is None
         assert paused["worker_state"] == "terminal"
         assert paused["domain_completion_state"] == "not_completed"
         assert paused["requested_action"] == "pause"

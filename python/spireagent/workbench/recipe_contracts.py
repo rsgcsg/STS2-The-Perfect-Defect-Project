@@ -9,6 +9,8 @@ from typing import Any
 from spireagent.json_boundary import BoundaryError, digest
 
 REQUEST_SCHEMA = "spireagent/training-request-v1"
+REMOTE_REQUEST_SCHEMA = "spireagent/training-request-v2"
+REMOTE_PLACEMENTS = frozenset({"modal-cpu", "modal-cuda"})
 SNAPSHOT_SCHEMA = "spireagent/training-operation-snapshot-v1"
 LOCAL_PLACEMENT = "local-cpu"
 WALL_AMENDMENT_SCHEMA = "spireagent/training-wall-budget-amendment-v1"
@@ -52,8 +54,8 @@ def effective_training_limits(operation: dict[str, Any]) -> dict[str, int]:
 
 
 def validate_limits(value: object) -> dict[str, int]:
-    # This service has no paid or remote execution adapter. Do not advertise
-    # unenforced memory, scratch or provider limits as executable capabilities.
+    # These are application cumulative caps. Remote slice/resource/cost caps are
+    # separately frozen in a qualified target and may not exceed this envelope.
     if value == {}:
         return {}
     if (not isinstance(value, dict) or "wall_seconds" not in value
@@ -78,8 +80,14 @@ class TrainingRequest:
     limits: dict[str, int] = field(default_factory=lambda: {"wall_seconds": 600})
     after_completed_operation_id: str | None = None
     execution_policy: dict[str, Any] | None = None
+    batch_policy: dict[str, Any] | None = None
 
     def __post_init__(self) -> None:
+        if self.batch_policy is not None:
+            from stpd.structured_workload_contracts import StructuredBatchPolicy
+
+            object.__setattr__(self, "batch_policy", StructuredBatchPolicy.from_dict(
+                self.batch_policy).to_dict())
         if self.execution_policy is not None:
             from spireagent.workbench.trusted_recipes import checked_recipe_execution_policy
 
@@ -91,9 +99,18 @@ class TrainingRequest:
         digest(self.source_id, "local_training.source_id")
         if not isinstance(self.recipe_id, str) or not isinstance(self.config, dict):
             raise BoundaryError("local_training", "invalid_training_request")
-        if self.placement_id != LOCAL_PLACEMENT:
+        if (not isinstance(self.placement_id, str)
+                or self.placement_id not in {LOCAL_PLACEMENT, *REMOTE_PLACEMENTS}):
             raise BoundaryError("local_training", "unsupported_placement")
         validate_limits(self.limits)
+        if self.batch_policy is not None:
+            from spireagent.workbench.trusted_recipes import STRUCTURED_RECIPES
+            from stpd.structured_workload_contracts import StructuredBatchPolicy
+
+            StructuredBatchPolicy.from_dict(self.batch_policy)
+            if (self.placement_id not in REMOTE_PLACEMENTS
+                    or self.recipe_id not in STRUCTURED_RECIPES):
+                raise BoundaryError("local_training", "batch_remote_structured_placement_required")
         if self.execution_policy is not None:
             from spireagent.workbench.trusted_recipes import checked_recipe_execution_policy
 
@@ -104,13 +121,16 @@ class TrainingRequest:
 
     def to_dict(self) -> dict[str, Any]:
         self.validate()
-        return {"schema": REQUEST_SCHEMA, "intent_id": self.intent_id,
+        return {"schema": (REQUEST_SCHEMA if self.placement_id == LOCAL_PLACEMENT
+                           else REMOTE_REQUEST_SCHEMA), "intent_id": self.intent_id,
                 "recipe_id": self.recipe_id, "source_id": self.source_id,
                 "config": dict(self.config), "placement_id": self.placement_id,
                 "limits": dict(self.limits),
                 "after_completed_operation_id": self.after_completed_operation_id,
                 **({"execution_policy": dict(self.execution_policy)}
-                   if self.execution_policy is not None else {})}
+                   if self.execution_policy is not None else {}),
+                **({"batch_policy": dict(self.batch_policy)}
+                   if self.batch_policy is not None else {})}
 
     @classmethod
     def from_dict(cls, value: object) -> TrainingRequest:
@@ -119,8 +139,8 @@ class TrainingRequest:
             "limits", "after_completed_operation_id",
         }
         if (not isinstance(value, dict)
-                or set(value) not in (required, required | {"execution_policy"})
-                or value["schema"] != REQUEST_SCHEMA):
+                or not required <= set(value) <= required | {"execution_policy", "batch_policy"}
+                or value["schema"] not in {REQUEST_SCHEMA, REMOTE_REQUEST_SCHEMA}):
             raise BoundaryError("local_training", "invalid_training_request")
         if "execution_policy" in value:
             from spireagent.workbench.trusted_recipes import checked_recipe_execution_policy
@@ -128,4 +148,67 @@ class TrainingRequest:
             checked_recipe_execution_policy(value["recipe_id"], value["execution_policy"])
         result = cls(**{key: item for key, item in value.items() if key != "schema"})
         result.validate()
+        if (value["schema"] == REQUEST_SCHEMA) != (result.placement_id == LOCAL_PLACEMENT):
+            raise BoundaryError("local_training", "invalid_training_request")
         return result
+
+
+def checked_training_plan(value: object) -> dict[str, Any]:
+    """Validate the saved domain plan's shape/digest without reading data or tensors."""
+    import hashlib
+
+    from spireagent.json_boundary import json_bytes, object_fields
+
+    fields = {"schema", "updates_per_epoch", "epochs", "update_cap", "planned_optimizer_updates",
+              "data_counts", "whole_cohort_target", "source_sha256", "plan_sha256",
+              "chunk_count_per_epoch", "planned_boundaries", "distinct_N_basis", "progress_basis",
+              "tbptt_advances"}
+    if isinstance(value, dict) and "batch_policy" in value:
+        from stpd.structured_workload_contracts import StructuredBatchPolicy
+
+        StructuredBatchPolicy.from_dict(value["batch_policy"])
+        fields.add("batch_policy")
+    row = dict(object_fields(value, fields, "local_training.plan"))
+    if (row["schema"] != "stpd/structured-training-plan-v1"
+            or row["distinct_N_basis"] not in {
+                "qualified_original_train_run_and_capture_identity",
+                "qualified_original_train_run_and_source_occurrence_identity",
+                "admitted_train_run_step_identity"}
+            or row["progress_basis"] !=
+            "actual_cumulative_optimizer_updates_label_uses_observations_boundaries"):
+        raise BoundaryError("local_training", "invalid_training_plan")
+    if type(row["tbptt_advances"]) is not int or row["tbptt_advances"] != 4:
+        raise BoundaryError("local_training", "invalid_training_plan_credit_window")
+    for name in ("updates_per_epoch", "epochs", "update_cap", "planned_optimizer_updates",
+                 "chunk_count_per_epoch", "planned_boundaries"):
+        if type(row[name]) is not int or not 1 <= row[name] <= 10**12:
+            raise BoundaryError("local_training", "invalid_training_plan")
+    counts = object_fields(row["data_counts"], {"distinct_supervised_N", "contexts",
+        "unlabelled_contexts", "excluded_N", "captured_readiness_dispositions"},
+        "local_training.plan")
+    for name, count in counts.items():
+        if name == "excluded_N" and count is None:
+            continue
+        if type(count) is not int or not 0 <= count <= 10**12:
+            raise BoundaryError("local_training", "invalid_training_plan_data_counts")
+    cohort = object_fields(row["whole_cohort_target"], {"scope", "planned"}, "local_training.plan")
+    if (cohort["scope"] != "one_full_frozen_selected_TRAIN_pass"
+            or type(cohort["planned"]) is not bool):
+        raise BoundaryError("local_training", "invalid_training_plan_coverage")
+    digest(row["source_sha256"], "local_training.plan_source")
+    claimed = digest(row.pop("plan_sha256"), "local_training.plan_digest")
+    if hashlib.sha256(json_bytes(row)).hexdigest() != claimed:
+        raise BoundaryError("local_training", "training_plan_digest_mismatch")
+    row["plan_sha256"] = claimed
+    return row
+
+
+def checked_training_counters(value: object) -> dict[str, int]:
+    """Accepted numerical counters; unavailable current-slice work stays absent."""
+    from spireagent.json_boundary import object_fields
+
+    row = dict(object_fields(value, {"optimizer_updates", "label_uses", "observations",
+        "boundaries", "epoch", "whole_cohort_passes"}, "local_training.counters"))
+    if any(type(count) is not int or not 0 <= count <= 10**12 for count in row.values()):
+        raise BoundaryError("local_training", "invalid_training_counters")
+    return row

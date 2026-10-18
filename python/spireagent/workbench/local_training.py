@@ -56,9 +56,12 @@ from spireagent.workbench.memory_recipe import (
 )
 from spireagent.workbench.recipe_contracts import (
     LOCAL_PLACEMENT,
+    REMOTE_PLACEMENTS,
     SNAPSHOT_SCHEMA,
     WALL_AMENDMENT_SCHEMA,
     TrainingRequest,
+    checked_training_counters,
+    checked_training_plan,
     effective_training_limits,
     validate_limits,
 )
@@ -67,6 +70,7 @@ from spireagent.workbench.training_scratch import retained_scratch_bytes, scratc
 from spireagent.workbench.trusted_recipes import (
     MAX_TOTAL_ATTEMPTS,
     REWARD_M0_RECIPE,
+    STRUCTURED_RECIPES,
     TRUSTED_RECIPES,
     TYPED_RECIPES,
     describe_recipe,
@@ -83,6 +87,7 @@ _private_child = private_child  # Legacy patchable child boundary.
 SCHEMA = "stpd/local-training-operation-v1"
 SCHEMA_V2 = "stpd/local-training-operation-v2"
 SCHEMA_V3 = "spireagent/local-training-operation-v3"
+SCHEMA_V4 = "spireagent/local-training-operation-v4"
 DEFAULT_RECIPE = "stage1a.dsimple.s.v1"
 MEMORY_RECIPE = M2_K1_RECIPE  # Preserve the existing recipe constant for callers.
 OPERATION_FILE = "local-training-operation.json"
@@ -158,14 +163,25 @@ def _write_parent_failure(path: Path, identity: str, error: Exception) -> None:
 
 
 class LocalTrainingService:
-    def __init__(self, config: ProjectConfig) -> None:
+    def __init__(self, config: ProjectConfig, *, remote_bindings: tuple[Any, ...] = ()) -> None:
         self.config = config
+        self._remote_bindings: dict[tuple[str, str], Any] = {}
+        for binding in remote_bindings:
+            from spireagent.workbench.remote_training_operation import RemoteTrainingBinding
+
+            if not isinstance(binding, RemoteTrainingBinding):
+                raise BoundaryError("local_training", "typed_remote_binding_required")
+            key = (binding.target.recipe_id, binding.target.placement_id)
+            if key in self._remote_bindings:
+                raise BoundaryError("local_training", "duplicate_remote_binding")
+            self._remote_bindings[key] = binding
         self._selection = LocalDatasetService(config)
         self._thread: threading.Thread | None = None
         self._lock = threading.RLock()
         self._failure_diagnostic: dict[str, Any] | None = None
         self._active_attempt: str | None = None
         self._attempt_started_monotonic: float | None = None
+        self._attempt_deadline_monotonic: float | None = None
         self._active_child_exit: dict[str, Any] | None = None
         self._child_failure_diagnostic: dict[str, str] | None = None
         self._cancel_requested_monotonic: float | None = None
@@ -187,8 +203,17 @@ class LocalTrainingService:
             schema = value.get("schema") if isinstance(value, dict) else None
             if schema == LEGACY_COMPLETED_SCHEMA:
                 return decode_completed(raw, identity)
-            if schema == SCHEMA_V3:
-                return LocalTrainingService._validate_v3(value, identity)
+            if schema in {SCHEMA_V3, SCHEMA_V4}:
+                checked = LocalTrainingService._validate_v3(value, identity)
+                if schema == SCHEMA_V4:
+                    from spireagent.workbench.remote_training_operation import (
+                        validate_remote_journal,
+                    )
+
+                    validate_remote_journal(checked)
+                elif checked["request"]["placement_id"] != LOCAL_PLACEMENT:
+                    raise ValueError("local_placement_required")
+                return checked
             if (not isinstance(value, dict) or schema not in {SCHEMA, SCHEMA_V2}
                     or value.get("status") not in
                     {"pending", "completed", "failed", "interrupted_unknown"}
@@ -266,6 +291,13 @@ class LocalTrainingService:
                 "recipe", "result_type", "evaluation_status", "schema",
                 "previous_completed", *IDS}
         public = {key: deepcopy(item) for key, item in value.items() if key in keys}
+        if value.get("schema") == SCHEMA_V4:
+            for key in ("request", "attempt_id", "intent_id", "elapsed_seconds", "attempts",
+                        "remote", "writer_terminal", "attempt_producer", "worker_isolation",
+                        "cost_reserved_microusd", "training_plan", "accepted_counters", "progress",
+                        "last_progress_at", "last_checkpoint_at", "checkpoint_progress"):
+                if key in value:
+                    public[key] = deepcopy(value[key])
         if value.get("budget_amendments"):
             # The slot may be replaced by a new explicit experiment. Retain its
             # audited authorization and exact attempts in the existing recursive
@@ -339,7 +371,7 @@ class LocalTrainingService:
             operation_id, "local_training.operation_id", length=32
         ):
             raise BoundaryError("local_training", "operation_not_current")
-        if operation.get("schema") == SCHEMA_V3:
+        if operation.get("schema") in {SCHEMA_V3, SCHEMA_V4}:
             return self._snapshot(operation)
         return {"schema": operation.get("schema", SCHEMA), "availability": "ready",
                 "operation": self._public(operation)}
@@ -349,7 +381,7 @@ class LocalTrainingService:
             current = json.loads(read_replaceable_bytes(path))
             if current.get("operation_id") != identity or current.get("status") != "pending":
                 raise BoundaryError("local_training", "operation_superseded")
-            if current.get("schema") == SCHEMA_V3:
+            if current.get("schema") in {SCHEMA_V3, SCHEMA_V4}:
                 updates.setdefault("updated_at", time.time())
             write_replaceable_json(path, {**current, **updates})
 
@@ -366,7 +398,9 @@ class LocalTrainingService:
                                       canonical, request.placement_id,
                                       validate_limits(request.limits),
                                       request.after_completed_operation_id,
-                                      request.execution_policy)
+                                      request.execution_policy, request.batch_policy)
+            if request.placement_id in REMOTE_PLACEMENTS and request.recipe_id not in TYPED_RECIPES:
+                raise BoundaryError("local_training", "remote_recipe_unavailable")
             if request.recipe_id in TYPED_RECIPES:
                 if not request.limits:
                     raise BoundaryError("local_training", "wall_limit_required")
@@ -480,7 +514,7 @@ class LocalTrainingService:
                 self._attempt_started_monotonic = time.monotonic()
             thread.start()
             held = None  # type: ignore[assignment]
-            if operation.get("schema") == SCHEMA_V3:
+            if operation.get("schema") in {SCHEMA_V3, SCHEMA_V4}:
                 return self._snapshot(operation)
             return {"schema": operation["schema"], "availability": "ready",
                     "operation": self._public(operation)}
@@ -502,8 +536,15 @@ class LocalTrainingService:
             initial_attempt = operation.get("attempt_id")
             from spireagent.workbench.trusted_recipes import recipe_adapter
 
-            recipe_adapter(operation.get("recipe", DEFAULT_RECIPE)).execute(
-                self, path, identity, owner, store, mark_started)
+            adapter = recipe_adapter(operation.get("recipe", DEFAULT_RECIPE))
+            if operation.get("schema") == SCHEMA_V4:
+                from spireagent.workbench.remote_training_operation import execute_remote
+
+                execute_remote(self, path, identity, owner, store,
+                               self._remote_binding(TrainingRequest.from_dict(operation["request"])),
+                               adapter, mark_started)
+            else:
+                adapter.execute(self, path, identity, owner, store, mark_started)
         except Exception as error:
             code = (error.code if isinstance(error, BoundaryError)
                     else "training_storage_or_process_error")
@@ -522,7 +563,7 @@ class LocalTrainingService:
             # persistence fails, so its run identity is never discarded.
             with suppress(OSError, ValueError, BoundaryError), self._lock:
                 recorded = self._read(path, owner.identity)
-                if recorded.get("schema") == SCHEMA_V3:
+                if recorded.get("schema") in {SCHEMA_V3, SCHEMA_V4}:
                     self._finish_attempt(path, owner, identity,
                                          status="interrupted_unknown" if run_started else "failed",
                                          error_code=code, expected_attempt_id=initial_attempt)
@@ -580,6 +621,15 @@ class LocalTrainingService:
                                                        ("run_id", "result_id", "model_id")):
             raise ValueError("operation_completion")
         effective_training_limits(value)
+        if value.get("training_plan") is not None:
+            checked_training_plan(value["training_plan"])
+        if value.get("accepted_counters") is not None:
+            checked_training_counters(value["accepted_counters"])
+        for name in ("last_progress_at", "last_checkpoint_at"):
+            stamp = value.get(name)
+            if stamp is not None and (type(stamp) not in {int, float}
+                    or not math.isfinite(stamp) or stamp <= 0):
+                raise ValueError("training_progress_timestamp")
         validate_history(value.get("previous_completed"))
         return value
 
@@ -590,10 +640,21 @@ class LocalTrainingService:
         charged = value["elapsed_seconds"]
         if running and self._active_attempt == value["attempt_id"] and (
                 self._attempt_started_monotonic is not None):
-            charged += max(0.0, time.monotonic()-self._attempt_started_monotonic)
+            base = (value["remote"].get("elapsed_before_attempt", value["elapsed_seconds"])
+                    if value.get("schema") == SCHEMA_V4 else value["elapsed_seconds"])
+            charged = base + max(0.0, time.monotonic()-self._attempt_started_monotonic)
+            if value.get("schema") == SCHEMA_V4 and self._attempt_deadline_monotonic is not None:
+                original_window = value["remote"]["deadline_at"] - value["attempt_started_at"]
+                charged += max(0.0, original_window - (
+                    self._attempt_deadline_monotonic - self._attempt_started_monotonic))
         retained = 0
         scratch_error = None
-        if structured and value.get("scratch_name"):
+        remote = value.get("schema") == SCHEMA_V4
+        if (remote and not value["writer_terminal"]
+                and value["remote"].get("deadline_at") is not None):
+            before = value["remote"]["elapsed_before_attempt"]
+            charged = max(charged, before + max(0.0, time.time()-value["attempt_started_at"]))
+        if structured and not remote and value.get("scratch_name"):
             path, _ = self._paths(self._selected()[0])
             try:
                 retained = retained_scratch_bytes(path, value, active_attempt=running)
@@ -603,6 +664,17 @@ class LocalTrainingService:
         scratch_available = scratch_error is None and bool(limits) and max(
             retained, value.get("artifact_reserved_bytes", 0)) < limits["scratch_bytes"]
         budget_available = remaining > 0 and scratch_available
+        if remote:
+            from spireagent.workbench.remote_training_operation import ConfiguredTrainingTarget
+
+            target = ConfiguredTrainingTarget.from_dict(value["remote"]["target"])
+            budget_available = (budget_available and remaining >=
+                target.limits.wall_seconds + target.limits.startup_seconds + target.cleanup_seconds
+                and value.get("artifact_reserved_bytes", 0) + target.limits.max_candidate_bytes
+                + target.limits.max_projection_bytes + target.limits.max_request_bytes
+                <= limits["scratch_bytes"]
+                and value.get("cost_reserved_microusd", 0) + target.limits.max_cost_microusd
+                <= target.max_operation_cost_microusd)
         actions = (["cancel", "pause"] if running else
                    ["resume"] if value["status"] in {"paused", "cancelled", "interrupted_unknown"}
                    and value.get("writer_terminal") and value.get("checkpoint_id") else [])
@@ -619,7 +691,9 @@ class LocalTrainingService:
             actions.append("amend_wall_budget")
         if structured and value["status"] == "interrupted_unknown":
             actions = [*actions, "reconcile"]
-        if not structured or (running and self._active_attempt != value["attempt_id"]):
+        if remote and running and self._active_attempt != value["attempt_id"]:
+            actions = ["reconcile"]
+        elif not structured or (running and self._active_attempt != value["attempt_id"]):
             actions = []
         operation = {"schema": SNAPSHOT_SCHEMA, "operation_id": value["operation_id"],
                      "intent_id": value["intent_id"], "recipe_id": value["recipe"],
@@ -662,6 +736,49 @@ class LocalTrainingService:
                     "attempt_producer"}:
             if key in value:
                 operation[key] = value[key]
+        plan = value.get("training_plan")
+        operation["training_plan"] = deepcopy(plan)
+        operation["accepted_counters"] = deepcopy(value.get("accepted_counters"))
+        operation["last_checkpoint_at"] = value.get("last_checkpoint_at")
+        operation["checkpoint_progress"] = deepcopy(value.get("checkpoint_progress"))
+        operation["progress"] = deepcopy(operation["progress"])
+        if plan is not None:
+            operation["progress"]["total"] = plan["planned_optimizer_updates"]
+        else:
+            operation["progress"].setdefault("total", None)
+        if remote:
+            from spireagent.workbench.remote_training_operation import remote_monitor_snapshot
+
+            binding = self._remote_bindings.get((value["recipe"], value["request"]["placement_id"]))
+            readiness = ("remote_configuration_missing" if binding is None else
+                         "remote_configuration_changed" if binding.target.to_dict() !=
+                         value["remote"]["target"] else
+                         "remote_recipe_unavailable" if not binding.available() else
+                         "configured_requires_exact_runtime_receipt")
+            operation["remote_execution"] = remote_monitor_snapshot(value, readiness=readiness)
+            if readiness != "configured_requires_exact_runtime_receipt":
+                operation["supported_actions"] = []
+        operation["next_start_precondition"] = None
+        if remote:
+            from spireagent.workbench.remote_training_operation import retireable_no_effect
+
+            owner = self._selected()[0]
+            path, lock_path = self._paths(owner)
+            released = False
+            try:
+                with instance_lock(lock_path, create=False):
+                    released = True
+            except (OSError, BoundaryError):
+                pass
+            if (released and retireable_no_effect(path, value)
+                    and operation["remote_execution"]["readiness"] ==
+                    "configured_requires_exact_runtime_receipt"):
+                operation["next_start_precondition"] = {
+                    "after_completed_operation_id": value["operation_id"],
+                    "explicit_new_intent_required": True}
+                operation["supported_actions"].append("start_new")
+        if value.get("previous_known_not_started") is not None:
+            operation["previous_known_not_started"] = deepcopy(value["previous_known_not_started"])
         if value.get("error_code"):
             operation["error"] = {"code": value["error_code"], "automatic_retry": False}
         if "execution_policy" in value["request"]:
@@ -674,11 +791,37 @@ class LocalTrainingService:
     def capabilities(self) -> dict[str, Any]:
         from spireagent.workbench.trusted_agents import agent_capabilities
 
+        recipes = [describe_recipe(item) for item in sorted(TRUSTED_RECIPES)]
+        for recipe in recipes:
+            for binding in self._remote_bindings.values():
+                if recipe["recipe_id"] == binding.target.recipe_id:
+                    if binding.available():
+                        recipe["placement_ids"].append(binding.target.placement_id)
+                        recipe["remote_execution"] = True
+                    recipe["remote_pause_boundary"] = (
+                        "end_of_bounded_slice_with_verified_checkpoint")
         return {"schema": "spireagent/training-capabilities-v1",
-                "recipes": [describe_recipe(item) for item in sorted(TRUSTED_RECIPES)],
+                "recipes": recipes,
                 "placements": [{"placement_id": LOCAL_PLACEMENT, "device": "cpu",
-                                "remote": False, "paid": False}],
+                                "remote": False, "paid": False},
+                               *[{"placement_id": binding.target.placement_id,
+                                  "recipe_id": binding.target.recipe_id,
+                                  "device": binding.target.placement.device,
+                                  "qualification_id": binding.target.qualification_id,
+                                  "readiness": ("configured_requires_exact_runtime_receipt"
+                                                if binding.available() else
+                                                "remote_recipe_unavailable"),
+                                  "available": binding.available(),
+                                  "remote": True, "paid": True,
+                                  "pause_boundary": "end_of_bounded_slice_with_verified_checkpoint"}
+                                 for binding in self._remote_bindings.values()]],
                 "agent_profiles": agent_capabilities(), "automatic_retry": False}
+
+    def _remote_binding(self, request: TrainingRequest) -> Any:
+        binding = self._remote_bindings.get((request.recipe_id, request.placement_id))
+        if binding is None:
+            raise BoundaryError("local_training", "remote_placement_unavailable")
+        return binding
 
     @staticmethod
     def _new_operation(request: TrainingRequest, owner: LocalCurationOwner, identity: str,
@@ -730,15 +873,27 @@ class LocalTrainingService:
                 if previous.get("request") != request.to_dict():
                     raise BoundaryError("local_training", "intent_payload_mismatch")
                 return self._snapshot(previous)
-            if previous["status"] in {"pending", "paused", "cancelled", "interrupted_unknown"} or (
-                previous["status"] == "failed" and previous.get("run_id")
-            ):
+            no_effect_successor = None
+            if previous.get("schema") == SCHEMA_V4:
+                from spireagent.workbench.remote_training_operation import retireable_no_effect
+
+                if retireable_no_effect(path, previous):
+                    if (request.placement_id not in REMOTE_PLACEMENTS
+                            or request.after_completed_operation_id != previous["operation_id"]):
+                        raise BoundaryError(
+                            "local_training", "explicit_known_no_effect_predecessor_required")
+                    no_effect_successor = previous
+            if no_effect_successor is None and (
+                previous["status"] in {"pending", "paused", "cancelled", "interrupted_unknown"} or
+                previous["status"] == "failed" and (previous.get("run_id")
+                                                     or previous.get("schema") == SCHEMA_V4)):
                 raise BoundaryError("local_training", "previous_training_outcome_unknown")
             after = request.after_completed_operation_id
             historical = previous.get("schema") == LEGACY_COMPLETED_SCHEMA
             if historical and after != previous["operation_id"]:
                 raise BoundaryError("local_training", "explicit_historical_successor_required")
-            if after is not None and (previous["status"] != "completed" or
+            if after is not None and no_effect_successor is None and (
+                                      previous["status"] != "completed" or
                                       previous["operation_id"] != after or
                                       (not historical and
                                        previous["dataset_id"] != request.source_id)):
@@ -746,12 +901,24 @@ class LocalTrainingService:
             if (previous["status"] == "completed" and previous["dataset_id"] == request.source_id
                     and after is None):
                 raise BoundaryError("local_training", "new_experiment_precondition_failed")
-            require_recipe_dependencies(request.recipe_id, "local_training")
+            remote_binding = None
+            if request.placement_id in REMOTE_PLACEMENTS:
+                from spireagent.workbench.trusted_recipes import recipe_adapter
+
+                remote_binding = self._remote_binding(request)
+                remote_binding.preflight(request, recipe_adapter(request.recipe_id))
+            else:
+                require_recipe_dependencies(request.recipe_id, "local_training")
             # Fail admission before writing a pending operation. This is read-only
             # verification; use reservation remains prior to preparation/fit.
             from spireagent.workbench.trusted_recipes import recipe_adapter
 
-            recipe_adapter(request.recipe_id).preflight_request(store, owner, request)
+            adapter = recipe_adapter(request.recipe_id)
+            dataset = adapter.preflight_request(store, owner, request)
+            plan = None
+            if request.recipe_id in STRUCTURED_RECIPES:
+                plan = checked_training_plan(adapter.training_plan(
+                    store, owner, request, prepared_dataset=dataset))
             if historical:
                 # Historical provider receipts are provenance, not the new
                 # recipe's admission. Preserve every original byte before the
@@ -760,7 +927,30 @@ class LocalTrainingService:
                 pointer = archive_completed(store, raw, previous)
                 previous = {**previous, "_historical_operation": pointer}
             operation = self._new_operation(request, owner, uuid.uuid4().hex, previous=previous)
-            self._prepare_child_ownership(path, operation)
+            if no_effect_successor is not None:
+                from spireagent.workbench.remote_training_operation import (
+                    archive_no_effect_predecessor,
+                )
+
+                operation["previous_known_not_started"] = archive_no_effect_predecessor(
+                    path, no_effect_successor)
+                if no_effect_successor.get("previous_completed") is not None:
+                    operation["previous_completed"] = deepcopy(
+                        no_effect_successor["previous_completed"])
+            if plan is not None:
+                operation["training_plan"] = plan
+            if remote_binding is not None:
+                from spireagent.workbench.remote_training_operation import REMOTE_ISOLATION
+
+                operation.update(schema=SCHEMA_V4, worker_isolation=REMOTE_ISOLATION,
+                                 cost_reserved_microusd=0,
+                                 attempt_producer=remote_binding.target.producer.to_dict(),
+                                 remote={"target": remote_binding.target.to_dict(),
+                                         "prepare_claimed": False, "submit_claimed": False,
+                                         "provider_terminal": False})
+                operation.pop("child_lock_name", None)
+            else:
+                self._prepare_child_ownership(path, operation)
             write_replaceable_json(path, operation)
             self._launch_attempt(held, path, operation, owner, store)
             held = None
@@ -777,6 +967,17 @@ class LocalTrainingService:
         with self._lock:
             self._active_attempt = operation["attempt_id"]
             self._attempt_started_monotonic = time.monotonic()
+            self._attempt_deadline_monotonic = None
+            if operation.get("schema") == SCHEMA_V4:
+                remaining = (effective_training_limits(operation)["wall_seconds"] -
+                             operation["elapsed_seconds"])
+                operation["remote"].update(
+                    elapsed_before_attempt=operation["elapsed_seconds"],
+                    deadline_at=operation["attempt_started_at"] + max(0.0, remaining),
+                    budget_phase="execution")
+                self._attempt_deadline_monotonic = self._attempt_started_monotonic + max(
+                    0.0, operation["remote"]["deadline_at"] - time.time())
+                write_replaceable_json(path, operation)
             self._thread = thread
             self._failure_diagnostic = None
             self._active_child_exit = None
@@ -789,7 +990,8 @@ class LocalTrainingService:
         operation_id = digest(operation_id, "local_training.operation_id", length=32)
         expected = digest(expected_attempt_id, "local_training.expected_attempt_id", length=32)
         value = self._read(path, owner.identity)
-        if (value.get("schema") != SCHEMA_V3 or value.get("operation_id") != operation_id
+        if (value.get("schema") not in {SCHEMA_V3, SCHEMA_V4}
+                or value.get("operation_id") != operation_id
                 or value.get("attempt_id") != expected):
             raise BoundaryError("local_training", "stale_operation_attempt")
         if value["recipe"] not in TYPED_RECIPES:
@@ -849,7 +1051,13 @@ class LocalTrainingService:
                     value["status"] = "cancelled"
                 if domain_status == "completed":
                     value["error_code"] = "cancel_requested_during_completion"
-            if value.get("worker_isolation") == "private_child-v1":
+            if value.get("schema") == SCHEMA_V4:
+                from spireagent.workbench.remote_training_operation import remote_terminal_proven
+
+                value["writer_terminal"] = remote_terminal_proven(value["remote"])
+                if not value["writer_terminal"]:
+                    value.update(status="interrupted_unknown", domain_completion_state="unknown")
+            elif value.get("worker_isolation") == "private_child-v1":
                 receipt = self._active_child_exit
                 actual_exit = (receipt is not None and
                                receipt.get("attempt_id") == expected_attempt_id)
@@ -954,6 +1162,12 @@ class LocalTrainingService:
         try:
             with self._lock:
                 value = self._command_operation(path, owner, operation_id, expected_attempt_id)
+                if value.get("schema") == SCHEMA_V4:
+                    result = self._recover_remote(path, owner, store, value, held, mode=mode,
+                        checkpoint_id=checkpoint_id, intent_id=intent_id, limits=limits)
+                    if result[1]:
+                        held = None
+                    return result[0]
                 if value.get("worker_isolation") == "private_child-v1":
                     child_path = self._child_path(path, value)
                     prior_child_lock = instance_lock(child_path, create=False)
@@ -1051,6 +1265,127 @@ class LocalTrainingService:
                 prior_child_lock.__exit__(None, None, None)
             if held is not None:
                 held.__exit__(None, None, None)
+
+    def _recover_remote(self, path: Path, owner: LocalCurationOwner,
+                        store: ManifestArtifactStore, value: dict[str, Any], held: Any, *,
+                        mode: str, checkpoint_id: str | None, intent_id: str | None,
+                        limits: dict[str, int] | None) -> tuple[dict[str, Any], bool]:
+        """Reconcile the original provider writer; local mutex possession is insufficient."""
+        from spireagent.training_execution_contracts import PreparedTrainingAttempt, Unknown
+        from spireagent.workbench.remote_training_operation import (
+            ApplicationTrainingAttemptOwner,
+            ConfiguredTrainingTarget,
+            finalize_remote,
+            finish_not_started,
+            remote_terminal_proven,
+            retireable_no_effect,
+            saved_remote_candidate,
+        )
+        from spireagent.workbench.trusted_recipes import recipe_adapter
+
+        request = TrainingRequest.from_dict(value["request"])
+        binding = self._remote_binding(request)
+        if binding.target.to_dict() != value["remote"]["target"]:
+            raise BoundaryError("local_training", "remote_target_configuration_changed")
+        adapter = recipe_adapter(value["recipe"])
+        if (mode == "reconcile" and value["writer_terminal"]
+                and (retireable_no_effect(path, value) or
+                     remote_terminal_proven(value["remote"])
+                     and (value["remote"].get("accepted") or value["status"] == "failed"))):
+            return self._snapshot(value), False
+        port = ApplicationTrainingAttemptOwner(self, path, owner, value)
+        saved = value["remote"].get("prepared")
+        if saved is None:
+            # A missing spec permits no provider call in this fixed protocol.
+            # It still does not grant permission to mint a replacement attempt.
+            from spireagent.workbench.remote_training_operation import _finish_no_effect
+
+            _finish_no_effect(port, "remote_preparation_not_submitted")
+            return self._snapshot(port.current()), False
+        prepared = PreparedTrainingAttempt.from_dict(saved)
+        executor = binding.executor_factory(port)
+        if mode == "reconcile":
+            from spireagent.training_execution_contracts import NotStarted
+
+            port.begin_explicit_control()
+            try:
+                ref = port.load_app_ref(prepared.identity)
+                receipt = value["remote"].get("not_started_receipt")
+                if receipt is not None:
+                    finish_not_started(port, executor, prepared, NotStarted(
+                        receipt["prepared_id"], receipt["stage"], receipt["code"]))
+                elif not value["remote"]["prepare_claimed"]:
+                    # Durable absence of prepare intent in this closed protocol
+                    # proves there was no provider side effect; no lookup is offered.
+                    from spireagent.workbench.remote_training_operation import _finish_no_effect
+
+                    _finish_no_effect(port, "remote_preparation_not_submitted")
+                else:
+                    if ref is None:
+                        recovered = executor.recover_preparation(prepared)
+                        if isinstance(recovered, Unknown):
+                            value = port.current()
+                            value.update(status="interrupted_unknown", writer_terminal=False,
+                                         error_code=recovered.code)
+                            port.write(value)
+                            return self._snapshot(port.current()), False
+                        port.persist_app_ref(prepared, recovered)
+                        ref = recovered
+                    if not value["remote"]["submit_claimed"]:
+                        finish_not_started(port, executor, prepared, NotStarted(
+                            prepared.identity, "submit", "owner_control_withheld"))
+                    else:
+                        observation = saved_remote_candidate(path, value, prepared)
+                        if observation is None:
+                            observation = executor.reconcile(prepared, ref,
+                                port.load_call_handle(prepared.identity))
+                        finalize_remote(self, path, owner, store, binding, adapter, executor,
+                                        port, prepared, observation)
+            finally:
+                latest = port.current()
+                port.finish_explicit_control("unknown" if latest["status"] == "interrupted_unknown"
+                                             else "completed")
+            return self._snapshot(port.current()), False
+        if (not value["writer_terminal"] or not remote_terminal_proven(value["remote"])
+                or value["status"] not in {"paused", "cancelled", "interrupted_unknown"}):
+            raise BoundaryError("local_training", "remote_prior_terminal_proof_required")
+        if limits != value["request"]["limits"] or not limits:
+            raise BoundaryError("local_training", "cumulative_limits_must_be_preserved")
+        effective = effective_training_limits(value)
+        target = ConfiguredTrainingTarget.from_dict(value["remote"]["target"])
+        if (effective["wall_seconds"] - value["elapsed_seconds"] <
+                target.limits.wall_seconds + target.limits.startup_seconds + target.cleanup_seconds
+                or value.get("artifact_reserved_bytes", 0) + target.limits.max_candidate_bytes
+                + target.limits.max_projection_bytes + target.limits.max_request_bytes
+                > effective["scratch_bytes"]):
+            raise BoundaryError("local_training", "cumulative_budget_exhausted")
+        if (value.get("cost_reserved_microusd", 0) + target.limits.max_cost_microusd
+                > target.max_operation_cost_microusd):
+            raise BoundaryError("local_training", "cumulative_remote_cost_exhausted")
+        if len(value["attempts"]) + 1 >= MAX_TOTAL_ATTEMPTS:
+            raise BoundaryError("local_training", "operation_attempt_limit")
+        adapter.verify_remote_resume(store, value, checkpoint_id)
+        if value["intent_id"] == intent_id or any(
+                item.get("intent_id") == intent_id for item in value["attempts"]):
+            raise BoundaryError("local_training", "new_resume_intent_required")
+        prior = {key: deepcopy(value.get(key)) for key in (
+            "attempt_id", "intent_id", "status", "writer_terminal", "checkpoint_id",
+            "attempt_started_at", "attempt_producer", "remote")}
+        prior["terminal_proof"] = "original_provider_terminal_and_app_stopped_zero"
+        value["attempts"].append(prior)
+        now = time.time()
+        value.update(attempt_id=uuid.uuid4().hex, status="pending", writer_terminal=False,
+                     requested_action="continue", mode="resume", attempt_started_at=now,
+                     updated_at=now, selected_result=True,
+                     application_disposition="explicit_resume",
+                     intent_id=intent_id, resume_checkpoint_id=checkpoint_id,
+                     remote={"target": target.to_dict(), "prepare_claimed": False,
+                             "submit_claimed": False, "provider_terminal": False})
+        value["request"]["intent_id"] = intent_id
+        value.pop("error_code", None)
+        port.write(value)
+        self._launch_attempt(held, path, value, owner, store)
+        return self._snapshot(value), True
 
     @staticmethod
     def _child_path(path: Path, operation: dict[str, Any]) -> Path:
