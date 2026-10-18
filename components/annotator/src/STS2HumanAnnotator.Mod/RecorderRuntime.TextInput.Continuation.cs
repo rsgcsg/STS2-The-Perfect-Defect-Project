@@ -253,7 +253,8 @@ internal static partial class RecorderRuntime
             lock (Gate)
             {
                 if (IsSourceRecording || !_initialized || _lifecycle.State != RecordingLifecycleState.Recording
-                    || _store == null || !_humanTextInputHealthy
+                    || _store == null || !HumanTextInputObservationContract.Supports(_store.Manifest.TextInputSchemaVersion)
+                    || !_humanTextInputHealthy
                     || SessionId == null || TimelineId == null) return null;
                 scope = new(HumanTextContinuationCurrent.Value, _store,
                     SessionId, TimelineId, _currentRunId, _humanTextInputSequence, carrier, input, verb,

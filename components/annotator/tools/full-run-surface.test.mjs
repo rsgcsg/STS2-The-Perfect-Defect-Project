@@ -37,6 +37,25 @@ function section(source, start, end) {
   return source.slice(begin, finish);
 }
 
+test("legacy text-input scopes require a declared stream before capturing or allocating pending work", () => {
+  for (const [file, entry, nextEntry] of [
+    ["RecorderRuntime.TextInput.cs", "internal static HumanTextCardScope? BeginHumanTextCardInput(", "internal static void BindHumanTextCardCarrier("],
+    ["RecorderRuntime.TextInput.EndTurn.cs", "internal static HumanTextEndTurnScope? BeginHumanTextEndTurnInput(", "internal static void"],
+    ["RecorderRuntime.TextInput.Continuation.cs", "private static HumanTextContinuationScope? BeginHumanTextContinuation(", "internal static void"]
+  ]) {
+    const source = fs.readFileSync(path.join(root, "src", "STS2HumanAnnotator.Mod", file), "utf8");
+    const begin = source.indexOf(entry);
+    assert.notEqual(begin, -1);
+    const finish = source.indexOf(nextEntry, begin + entry.length);
+    const prefix = source.slice(begin, finish === -1 ? source.length : finish);
+    const guard = prefix.indexOf("!HumanTextInputObservationContract.Supports(_store.Manifest.TextInputSchemaVersion)");
+    assert.notEqual(guard, -1, `${file} must reject a profile with no declared text-input stream`);
+    assert.ok(guard < prefix.indexOf("_humanTextInputPendingScopes++"), `${file} gates before pending work`);
+    assert.ok(guard < prefix.indexOf("PlayerEnvironmentTextMenuWitness."), `${file} gates before legacy capture`);
+    assert.match(prefix.slice(guard, prefix.indexOf("_humanTextInputPendingScopes++")), /return null;/u);
+  }
+});
+
 test("act-ready binds one exact queued action and skips generic duplicate ingress", () => {
   const enqueue = section(patches, "internal static class NativeActChangeVoteEnqueuePatch", "internal static class NativeActChangeVoteCommitPatch");
   const commit = section(patches, "internal static class NativeActChangeVoteCommitPatch", "[HarmonyPatch(typeof(RewardsSetSynchronizer)");
