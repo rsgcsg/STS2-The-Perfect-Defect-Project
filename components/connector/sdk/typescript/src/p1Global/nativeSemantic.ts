@@ -11,7 +11,7 @@ export interface NativeSemanticAcceptance {
   readonly bound_action: {
     readonly bound_action_id: string;
     readonly verb: string;
-    readonly subject_referent_id: string | null;
+    readonly subject_referent_id?: string | null;
     readonly arguments: readonly { readonly role: string; readonly referent_id: string }[];
   };
   readonly native_receipt: {
@@ -51,7 +51,7 @@ export function matchNativeSemanticChoice(state: P1SessionState, basis: P1Basis,
   const recorded = accepted.bound_action;
   const original = snapshot.bound_actions.actions.filter(action => action.bound_action_id === recorded.bound_action_id);
   if (original.length !== 1 || original[0]!.verb !== recorded.verb
-    || (original[0]!.subject_referent_id ?? null) !== recorded.subject_referent_id
+    || (original[0]!.subject_referent_id ?? null) !== (recorded.subject_referent_id ?? null)
     || canonicalJson(original[0]!.arguments) !== canonicalJson(recorded.arguments))
     return result("unmapped", "accepted_action_operands_do_not_match_original_human_basis");
 

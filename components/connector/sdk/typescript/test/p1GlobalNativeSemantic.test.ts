@@ -38,6 +38,18 @@ describe("P1 native semantic Human acceptance", () => {
     expect(result.choice_id).toBeNull();
   });
 
+  it("matches native EndTurn when the original action omits its optional subject", () => {
+    const { basis, accepted } = example();
+    const snapshot = basis.snapshot as any;
+    const action = snapshot.bound_actions.actions.find((item: any) => item.verb === "end_turn");
+    delete action.subject_referent_id;
+    const result = matchNativeSemanticChoice(createSession("human", "reference"), basis,
+      { ...accepted, bound_action: structuredClone(action) });
+    expect(result.status).toBe("matched");
+    expect(result.reduction.observation.catalog.find(item => item.choice_id === result.choice_id)!.kind)
+      .toBe("combat.end_turn");
+  });
+
   it("does not upgrade incomplete original public information into a P1 decision", () => {
     const { basis, accepted } = example();
     const incomplete = { ...basis, reads: basis.reads.slice(1) };
