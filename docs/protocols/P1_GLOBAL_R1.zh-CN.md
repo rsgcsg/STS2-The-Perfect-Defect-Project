@@ -294,6 +294,7 @@ r1.2 原始运行、帧和既有结论保留。用 r1.3 回放旧轨迹时必须
 | --- | --- | --- | --- |
 | E1 | P1 不提供原生"打开卡牌奖励后跳过，从而冻结候选、不受之后遗物升级影响"的输入。奖励页按普通方式发布。 | 这是导航技巧，不是新决策；提供它会把浏览重新带回单向协议。 | 用户，2026-10-16 |
 | E2 | Source4离线解释可将同run原生setup→Launch见证起、首份完整可决策观察前的有界settling段列为非决策启动waiting；不是Agent观察。 | 原始失败/缺失保留且不补齐；不称NativeLogical前缀完整；first decision起严格完整门不变。源码已root独审、22 focused PASS；真实新预检未通过。 | 用户，2026-10-18，附下列条件 |
+| E3 | Source4离线解释中，同一原生selector owner/同一原始卡实例的相邻select→deselect，经完整原件证明恢复原状且无效果，可合列context_only；无P1 choice/训练label。 | 限定完整、已接受且净状态不变的局部撤销；Agent目录仍append-only，不新增deselect。批准不等于实现、反例验收或真实预检通过。 | 用户，2026-10-18，附下列条件 |
 
 E2的全部条件：
 
@@ -303,6 +304,15 @@ E2的全部条件：
 - waiting必须以完整decision结束；崩溃或等不到该decision，整局不得complete。
 - 每局报告单列该段帧数与时长，不计入决策数；first decision起的完整性及full strict要求不变。
 - 转换规则由原Source4→P1 owner实现并用上述反例验收；源码已root独审、22 focused PASS，仍不代表真实新预检通过。
+
+E3的全部条件：
+
+- 仅同一原始selector owner、同一原始card实例的原生相邻select→deselect；同runtime/continuity或同typed卡名不够。selected set与所有公开/游戏事实必须回到该对操作前状态，exact selector schema仅可在其已声明的selection decoration上变化。
+- 两次操作原始顺序、完整before/after公共basis及全部advertised Reads、native outcome/已接受的known证明都保留；仅成功dispatch不代替原生接受证明。不产生Commit、卡/牌组、资源、RNG或其它游戏效果。
+- 转换器先暂缓输出首个select，待原始相邻pair分类后才决定是否输出；合格pair为context_only，不产生P1 choice或训练label，不得先产生标签再静默抹除。之后未撤销的选择按原前进语义处理。
+- missing basis/Read、unknown、换owner/换card、非相邻/复杂交错、preview取消或任何无法证明净效果为零的情况仍unresolved；不重试、不用后来事实回填缺失原件，不转为一般selector事务支持。
+- Agent仍使用原append-only目录，不增加deselect。SDK共享matcher/Source4原golden路线由原owner实现；同对象净零阳性及不同对象/owner、状态改变、缺basis/Read、unknown、真实提交效果等反例必须验收，随后非作者复核和新真实native记录。
+- 本次仅登记用户已批准的限定离线解释；实现/负例/新预检尚待验，不追改原native04的native_capture_failed、unknown或整体FAIL，不授训练或整局资格。
 
 对照范围与判据：
 - STS2原生事实是真相，Reference是首选对照但其投影也需审查；在Managed重放Reference原件并比较决策前缀和终局，按原件定位分叉owner。

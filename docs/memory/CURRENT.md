@@ -1,6 +1,7 @@
 # Current — Round19 pre-training P1 freeze
 
-Resolve actual refs/source/original records. This is dated routing, not live or
+Resolve live GitHub refs; actual source/original records override this file.
+This is dated routing, not live or
 qualification authority. [Project map](../plans/p1-prefreeze-2026-10-18/README.md)
 and [definition v0.3](../plans/p1-prefreeze-2026-10-18/SCOPE_v0.3.zh-CN.md) remain
 **pending-user-approval** overall. Deadline:2026-10-20 16:30 Australia/Brisbane.
@@ -42,8 +43,10 @@ It is not the freeze PR. Original env failures/corrections and old a70/1482/S05 
 Agent defaults:normal all-unlocked Standard SP fresh run/seed, tutorial-independent;
 Reference instant. Administrative preparation stays private, never Human history
 or a P1 action. B04 examined Agent surface excludes pre-run menu/unlock preparation.
-P1 remains append-only. Adjacent same-card select/deselect context-only proposal is
-awaiting user approval; no implementation or new exception is authorized by this file.
+P1 stays append-only. User-approved E3 permits only adjacent same-card/same-owner
+select/deselect with complete original basis/Reads, known native acceptance and zero
+net effect as context_only, no choice/label. Missing/unknown/drift/interleaving remain
+unresolved. SDK/converter/negative tests and new preflight pending; old04 stays FAIL.
 Console sessions/ancestors remain diagnostics only, excluded from3whole/coverage/train.
 Nonconsole save suffix evaluation is not implementation; coverage needs Reference-
 correct+offline+strict-Managed together, never3whole, same parent data split group.
@@ -56,4 +59,8 @@ K3 exact24 tags then closed, no old branch/worktree/data deletion;19 reuse rows 
 new actual operator/INFO acceptance. K5 CPU read probe local6checks PASS,0cloudcalls.
 Next:stable combined checks→new Mod/rollback+real Source4 preflight and new private
 rc38/Host32 product install→actual Application short/R20; user short recording only
-after preflight passes. Tests/build/close/process exit never establish Human/training.
+after preflight passes.
+
+## Remaining Platform non-claims
+
+Tests/build/close/process exit never establish Human/training.

@@ -67,7 +67,7 @@ Source4当前report-v3区分声明范围的`complete`与`whole_run`，可显式�
 
 ## 状态与当前任务
 
-当前develop `ea7c14e8969006fa0e470678198ef94aca471f90`，tree4b796997与已审eafa相同；#202正常merge beca367c，#204正常merge ea7c。#203的808e祖先经#204完整进入develop而自动标MERGED，**不是第三次独立develop merge**。#204源码CI39115695661和最终integration CI39120207920通过。源码/BOM原身份不因本次docs改写；新4d3f8b4b/MVIDfb38a130已安装并在02/03严格冷加载tuple PASS，build仍8967a72c；回滚2026-10-18T11-21-45.822Z的6份旧文件SHA匹配。02因FTUE Source4 overall false；03 ChangeSource未pause在输入前失败并正常闭合。60分钟预检窗11:40Z结束，不能开录。当前普通候选[PR205](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/205) head cbbea3b1已含此前文档/Runtime pin，与develop ea7c分列，不是冻结PR；fullPython4485PASS/5skip+93subtests仅源码层，原环境失败与纠正保留。
+develop733782b1已正常合入PR205/fullCI39124068850 PASS；本docs从rootI committed1deca5ed功能组合派生。实际installed d64/MVID494e234f在04 normal prepare/run解锁读回PASS，但Source4 complete=false（5unresolved/13gaps/2unknown）；producer471的39/179/65/55源码检查通过而未实装。Managed0426初始Neow fullP1+12Reads严格equal只是单点。42a Python consumer31/70源码PASS，rc38 package尚未实装，新产品与最终R20待验。旧原件/源码/build/install身份不互相追贴。
 
 ## Known differences and next gates
 
@@ -76,7 +76,7 @@ Source4当前report-v3区分声明范围的`complete`与`whole_run`，可显式�
 **已定/待批的11条状态和覆盖索引只从[合成定义](SCOPE_v0.3.zh-CN.md)查；实际差异/旧Reference缺陷登记见[A线差异](MANAGED_DIFFERENCES.md)；例外仍只有[P1第17节](../../protocols/P1_GLOBAL_R1.zh-CN.md#17-登记的协议例外必须经用户审核才能新增)。** 旧T1–T7/旧CURRENT和本目录旧资产基准快照不派发当前任务。
 
 - A：A03两局原loss的完整terminal正式比较equal，选择点170/293、236/432，0unknown；中间并非全严格。旧中文Reference原件缺陷登记保留，真实Managed缺陷继续修，新英文整局严格验收仍0/3。A02 H02 ENOSPC及原not_started/unknown保持历史失败；S05只属于1482de5d有界存档，不转到a70d8de1新候选。
-- B：4d02/03实际loaded tuple已验；02的E2 startup及Map/EndTurn通过，但FTUE publication partial使overall false；03 ChangeSource未pause在任何native输入前失败，均保留原件并正常闭合。60分钟窗口已结束，**不能告诉用户可以录**。新Agent默认全解锁与教学独立、普通标准新局/seed、Reference instant已获用户确定，B只读spike尚未实施。
+- B：d64 native04 prepare/run正常默认已实测，但整体采集FAIL原件保留；新producer尚未实装。用户已批准[P1§17 E3](../../protocols/P1_GLOBAL_R1.zh-CN.md#17-登记的协议例外必须经用户审核才能新增)限定same-owner/card相邻select→deselect的净零离线context_only解释；Agent仍append-only。批准≠实现/反例验收/新预检PASS，不能据此让用户开录。
 - C/K6：现GLOBAL源码/接口、K6定位与R20外包/harness已存在；复用[API/库/CLI主入口、GUI薄映射](WORKBENCH_POSITION.md)，最终tuple实际产品短验/R20仍待。复杂GUI/团队系统不做，原信任/确认适配保留。
 - K5：[云最简调查](CLOUD_MINIMAL.md)复用R2 storage库/块hash与push/pull，不强制Hub。新P1→R2完整回读→Modal消费尚未实测，样本/费用/上传与消费操作另批；Hub/团队/云页面仅保留状态/接口。
 - 覆盖补验：Console仅Reference独立诊断，整session及console祖先的续玩都排除正式3局/覆盖/训练；保存续玩仅批准评估，非console suffix须实际三证PASS才计覆盖、不计3full且parent/suffix同组。A0 Act3可自然空奖励/Proceed+实际victory同点三证；不能胜利则Boss/BossReward两行gap交用户。详见[定义覆盖/续玩](SCOPE_v0.3.zh-CN.md)。
