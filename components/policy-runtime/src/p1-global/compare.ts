@@ -2,7 +2,7 @@ import { canonicalJson, completeCards, completeCombatSurface, completeCombat, co
   createPublicIdentityPolicy, normalizePublicPath, publicFieldPath, completeRewardSurface, completeCardRewardSurface, P1G_REVISION, type P1Observation } from "@rsgcsg/sts2-connector-client/p1-global";
 
 /** Formal full-public comparison. No text key is globally erased. Locale-specific
- * transformations require an owning schema/path declaration; r1.2 uses literal text.
+ * transformations require an owning schema/path declaration; r1.3 uses literal text.
  * Entity aliases may be renamed only through one injective global mapping. */
 export interface FirstDifference { path: string; left: unknown; right: unknown; reason?: string }
 type Verdict = "equal" | "different" | "incomparable";
@@ -32,7 +32,13 @@ function graphPolicy(identicalFacts: boolean, observation: P1Observation) {
       return policy.relation(path) ? { kind: "entity", id: value } : null;
     },
     unordered(path, parent) {
-      return path === "$.observation.catalog" || !identicalFacts && (
+      // r1.3: only these schema-owned legal target domains are sets. All
+      // members still participate in the same global entity bijection.
+      const targetDomain = observation.scene.native_kind === "combat_turn" && [
+        "$.observation.scene.content.surface.playable_cards[].target_entity_ids",
+        "$.observation.scene.content.surface.usable_potions[].target_entity_ids"
+      ].includes(path);
+      return path === "$.observation.catalog" || targetDomain || !identicalFacts && (
         ["$.observation.deck.content.cards", "$.observation.map.content.nodes"].includes(path)
         || path === "$.observation.extra_reads" && cardInventory
         || path === "$.observation.piles.content.zones[].cards" && parent?.ordering === "unordered_multiset");

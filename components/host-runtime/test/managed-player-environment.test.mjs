@@ -358,7 +358,8 @@ test("projects native reward sets without exposing exact reward or room operands
   }, {
     kind: "reward_claim",
     rewards: [
-      { kind: "gold", label: "17 gold", description: null, enabled: true, group_relation: "unavailable" },
+      { kind: "gold", label: "17 gold", description: null, enabled: true, group_relation: "unavailable",
+        card_alternatives_complete: false, native_relic_refresh_subscription: "unavailable" },
       { kind: "card", label: "Add a card", description: null, enabled: true, group_relation: "unavailable", card_options: null,
         card_alternatives: null, card_alternatives_complete: false, can_skip_selection: null, can_reroll: null, selection_completes_reward: null,
         native_relic_refresh_subscription: "unavailable" }
@@ -394,7 +395,8 @@ test("a populated card reward publishes its lawfully viewable candidates under a
   const projection = projectManagedCandidateDecision({ ...projectionIdentity, state: state(options) });
   const [first, second] = projection.snapshot.interaction.content.surface.rewards;
   assert.equal(first.card_options.length, 2);
-  assert.deepEqual(first.card_options.map((card) => card.index), [0, 1]);
+  assert.deepEqual(first.card_options.map(card => card.definition_id), ["ZAP", "DUALCAST"]);
+  assert.equal(first.card_options.some(card => Object.hasOwn(card, "index")), false);
   assert.equal(second.card_options, null);
   assert.notEqual(first.group_id, second.group_id);
   const text = JSON.stringify(projection.snapshot);
@@ -1293,4 +1295,58 @@ test("same raw capture supplies the full map Read off page without creating trav
   assert.deepEqual(mapRead.content, current.snapshot.interaction.content.context);
   assert.equal(current.bindings.size, 1);
   assert.equal([...current.bindings.values()][0].raw_request.args.map_point_ref, "start");
+});
+
+
+test("populated reward candidate Reads retain each actual native card, group and hover facts across open", () => {
+  const card = { native_ref: "card-real", id: "COLD_SNAP", name: "寒流", cost: 1,
+    type: "Attack", rarity: "Common", target_type: "AnyEnemy", is_upgraded: false,
+    description: "造成6点伤害。生成1个冰霜充能球。", render_complete: true, render_missing: [],
+    keywords: [{ name: "冰霜", description: "获得格挡。" }], card_previews: [] };
+  const aliases = new Map(), common = eventState();
+  const project = state => projectManagedCandidateDecision({ ...projectionIdentity, state,
+    publicEntityAliases: aliases });
+  const state = { ...common, decision: "reward_set", reward_set_ref: "set-real", is_terminal: false,
+    rewards: [{ native_ref: "reward-real", kind: "card_choice", name: "Add card", card_options: [card] },
+      { native_ref: "reward-unpopulated", kind: "card_choice", name: "Unpopulated" }] };
+  const outer = project(state), group = outer.snapshot.interaction.content.surface.rewards[0];
+  const reads = [...outer.reads.values()].filter(read => read.content.display_context === "reward_candidate");
+  assert.equal(reads.length, 1); // Unpopulated groups create no made-up details.
+  const read = reads[0];
+  assert.equal(read.completeness.status, "complete");
+  assert.equal(read.descriptor.target_referent_id, group.card_options[0].entity_id);
+  assert.equal(read.content.display_owner_entity_id, group.group_id);
+  assert.equal(read.content.parent_read_id, null);
+  assert.deepEqual(read.content.keywords, card.keywords);
+  for (const key of ["index", "can_play", "keywords", "card_previews"])
+    assert.equal(Object.hasOwn(group.card_options[0], key), false, key);
+  assert.equal(group.card_options[0].target_type, "AnyEnemy");
+  const inner = project({ ...common, decision: "card_reward", parent_status: "bound",
+    parent_reward_ref: "reward-real", reward_set_ref: "set-real", selection_completes_reward: true,
+    cards: [{ ...card, index: 0, native_ref: "creation-real", card_entity_ref: "card-real" }], alternatives: [] });
+  assert.deepEqual([...inner.reads.values()].find(read => read.content.display_context === "reward_candidate").content,
+    read.content);
+  const incomplete = structuredClone(state); incomplete.rewards[0].card_options[0].render_complete = false;
+  incomplete.rewards[0].card_options[0].render_missing = ["native_tooltip_unavailable"];
+  const changed = [...project(incomplete).reads.values()].find(read => read.content.display_context === "reward_candidate");
+  assert.equal(changed.completeness.status, "partial");
+  assert.deepEqual(changed.completeness.missing, ["native_tooltip_unavailable"]);
+});
+
+
+test("reward group identity is the visible reward entity for every reward kind", () => {
+  const state = { ...eventState(), decision: "reward_set", reward_set_ref: "set-native", is_terminal: false,
+    rewards: ["gold", "potion", "relic", "card_choice"].map((kind, index) => ({
+      native_ref: `reward-${index}`, kind, name: kind, group_relation: "independent" })) };
+  const projection = projectManagedCandidateDecision({ ...projectionIdentity, state });
+  const rewards = projection.snapshot.interaction.content.surface.rewards;
+  for (const reward of rewards) {
+    assert.equal(reward.entity_id, reward.group_id);
+    assert.equal(projection.snapshot.referents.find(item => item.referent_id === reward.entity_id).role, "reward");
+  }
+  for (const reward of rewards.filter(reward => reward.kind !== "card")) {
+    assert.equal(reward.card_alternatives_complete, false);
+    assert.equal(reward.native_relic_refresh_subscription, "unavailable");
+  }
+  assert.equal(new Set(rewards.map(reward => reward.group_id)).size, rewards.length);
 });
