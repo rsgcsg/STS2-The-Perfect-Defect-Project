@@ -1,68 +1,59 @@
 # Current — Round19 pre-training P1 freeze
 
-Resolve live GitHub refs; source/original records override this file.
-This is dated routing, not qualification or live service authority. Follow the
-[project map](../plans/p1-prefreeze-2026-10-18/README.md) and merged
-[definition v0.3](../plans/p1-prefreeze-2026-10-18/SCOPE_v0.3.zh-CN.md), still
-**pending-user-approval** overall. Cloud upload/fees and new training configuration
-are not authorized here. Hard deadline:2026-10-20 16:30 Australia/Brisbane.
+Resolve actual refs/source/original records. This is dated routing, not live or
+qualification authority. [Project map](../plans/p1-prefreeze-2026-10-18/README.md)
+and [definition v0.3](../plans/p1-prefreeze-2026-10-18/SCOPE_v0.3.zh-CN.md) remain
+**pending-user-approval** overall. Deadline:2026-10-20 16:30 Australia/Brisbane.
+Cloud fees/data use, new research configuration and final freeze need actual authority.
 
-## Source and real candidate
+## Source and actual evidence
 
-Develop733782b119967828160f893893aaf5bff3b540e4 normally merged PR205/cbbea;
-CI39124068850 passed. Earlier202/204 and203 ancestry keep their actual merge identities.
-This integration preserves Reference source60d14222/meta8eec9c5 plus docs d5e84a0.
-It is NOT the freeze PR or a new installed/live qualification.
-FullPython4485pass/5skip+93subtests is source evidence; original env fail/correction retained.
-Modd64e57b0/MVID494e234f built79ba, installed and strict-loaded in04.
-Rollback2026-10-18T12-12-49.442Z preserves6 previous4d Mod/config/provenance hashes.
-Old6c English/EndTurn, A03 a70d8de1/cd47 diagnostics and1482/S05 keep their identities.
-A03 loss terminals equal; choices170/293,236/432,0unknown are not strict full games.
+Develop733782b119967828160f893893aaf5bff3b540e4 normally merged PR205; full
+CI39124068850 passed. Earlier202/204 and203 ancestry retain actual merge identities.
+This unpushed integration adds reviewed normal native initialization, Managed GLOBAL
+startup correction rc38, Python prepared-progress consumers rc32 and Source4 repairs.
+It is not the freeze PR. Original env failures/corrections and old a70/1482/S05 stay.
 
-## Current critical path
+- Installed Modd64e57b0/MVID494e234f was built79ba and strict-loaded04. Rollback
+  2026-10-18T12-12-49.442Z preserves6 prior4d Mod/config/provenance hashes.
+  New Source4 producer source47157680 is NOT that installed build; new Mod pending.
+- B04: normal mature unlocks/FTUEoff/instant and actual frozen run UnlockState PASS;
+  native seedSWNBPYW69BAC differs from requested menu seed. Map/EndTurn exact,
+  close/pack and unforced exit0; conversion FALSE:5 actions/5 unresolved,13 raw gaps,
+  2 unknown. E2 startup1frame9227ms/0input complete does not waive later failures.
+  Old01/02/03 also retain failed originals. New English strict whole Human games0/3.
+- Source47157680 repairs measured passive Source4 burst admission and exact event/
+  reward witnesses. Host39/NativeLogical179/SourceNative65/JS55 pass. Actual nine
+  old capture throw causes remain unknown; no retrospective repair of raw04.
+- Managed native0426384c/MVID1115859e builtf434 uses native seeded act selection,
+  rather than forced default Overgrowth. Same04 native progress SHA60352/seedSWNB,
+  original runtime UnlockState proof and initial Neow complete P1+12 Reads compare
+  equal; normal exit0. This is one initial point, not strict action/full-run proof.
+- Trusted Python profile now carries exact Reference progress privately; manager
+  reset/proof precedes observe/claim/Agent. Source42a3ca47:Workbench70/HostPython31
+  pass. Actual new installed Application load/one_step/Stop/evidence remain pending.
+- Runtime rc38 source8a918d72 fixes real GLOBAL startup null/target mismatch;
+  Runtime624pass/3skip,Python175pass. Official package exists; original registry37
+  still needs actual38 promotion and new private install. Old rc37 Managed R20 side
+  passed1submission/2calls; two-Host final R20 and Product remain incomplete.
 
-- B02: loaded tuple PASS, Map/EndTurn exact, E2 startup1frame/7235ms/0input complete.
-  FTUE native_end_turn_ftue_unseen partial makes Source4 overall FALSE; Close/pack is
-  not conversion success. B03 ChangeSource without Pause failed BEFORE any native
-  input; steps0, Recorder closed/closed and Host exited normally. Original helper
-  stdin_closed_without_finish and failed receipts remain. 60min window ENDED11:40Z;
-  cannot tell user to record. Prepare/review first, then report a new bounded window.
-- New default approved: Agent unlock-all independent of tutorial progress/settings,
-  normal fully-unlocked standard singleplayer new-game/seed, Reference instant.
-  Reference source60d14222 implements fixed native preparation/save-reload and
-  post-entry UnlockState binding; JS18/exact9 passed. Managed same native progress
-  snapshot seam source a24e7796/meta48b946dd passes JS78/native8; full new candidate
-  build and same-state Managed live consumer remain pending. Reference04 preparation
-  and run UnlockState readback passed, but conversion failed with publication gaps
-  and one unmapped input; 5 mapped actions,5 unresolved,2 original unknown inputs.
-  Close/pack and normal exit0 do not make the recording complete.
-  Administrative prior-run count is setup provenance, never a Human loss.
-- Console: Reference independent diagnostic only; whole console-assisted session
-  and console ancestors' suffixes excluded from formal3 Human/coverage/training.
-- Save continuation: evaluation only, not implementation approval. Nonconsole suffix
-  may cover a mechanism ONLY after Reference-correct+offline+strict-Managed PASS;
-  never counts3whole Human. Parent/suffix same group; preserve save/source/continuity.
-- A0 Act3 natural empty rewards/Proceed then actual victory may share same-point
-  three proofs. Boss kill alone is not terminal. If no victory, BOTH Boss/BossReward
-  gaps go to user; A10 double-Boss is future scope.
+## Decisions and remaining gates
 
-## Remaining gates and ownership
-
-New English strict games0/3. Common mechanisms need one new-candidate instance;
-Act2/3 each require ordinary/elite/event/Boss/Boss-reward with three proofs.42 rows
-record evidence/gaps; missing common cases use seed-prefix/planned route then user
-scope decision, no fabricated PASS or unbounded wait. Pre-freeze non-author image/P1
-review uses native tips/preview+CUA; live/rendering and final English records pending.
-Managed external-package rc37 short passed1 submission/2calls, replay verified and
-normal close; only that side, not two-Host R20. Product Application load exposed
-GLOBAL managed startup null/target mismatch before any choice; original failed run
-is stopped/released with0calls. Native close unknown; Application normally closed.
-Original Runtime/Python owners are fixing startup attestation; current pins unchanged.
-K3 complete24 exact tags then closed unmerged, no branch/worktree/data deletion;
-19 map reuse rows and7 mandatory PR lookups before Q-CHAIN-0/Q3 retained. K4 previously
-9/10, B real operation sheet missing. K5 R2/Modal seam untested; no cloud action.
-
-## Remaining Platform non-claims
-
-Final40/20, Act3/victory, strict replay, product/R20 and final freeze remain incomplete.
-Tests/CI/process exit/old batches do not establish Human, training, strategy or Windows.
+Agent defaults:normal all-unlocked Standard SP fresh run/seed, tutorial-independent;
+Reference instant. Administrative preparation stays private, never Human history
+or a P1 action. B04 examined Agent surface excludes pre-run menu/unlock preparation.
+P1 remains append-only. Adjacent same-card select/deselect context-only proposal is
+awaiting user approval; no implementation or new exception is authorized by this file.
+Console sessions/ancestors remain diagnostics only, excluded from3whole/coverage/train.
+Nonconsole save suffix evaluation is not implementation; coverage needs Reference-
+correct+offline+strict-Managed together, never3whole, same parent data split group.
+A0 Act3 empty rewards/Proceed→Architect→victory needs actual three proofs; Boss kill
+alone is not victory. A10 double-Boss is future. Common mechanisms≥1, Act2/3 each
+ordinary/elite/event/Boss/Boss-reward;42 rows record coverage/gaps, gaps go to user.
+Final40/20,3Human,strict replay,INFO native image/P1 review,Product/R20 remain undone.
+K3 exact24 tags then closed, no old branch/worktree/data deletion;19 reuse rows and
+7 mandatory training/Modal/checkpoint PR lookups before Q-CHAIN-0/Q3 remain. K4 lacks
+new actual operator/INFO acceptance. K5 CPU read probe local6checks PASS,0cloudcalls.
+Next:stable combined checks→new Mod/rollback+real Source4 preflight and new private
+rc38/Host32 product install→actual Application short/R20; user short recording only
+after preflight passes. Tests/build/close/process exit never establish Human/training.

@@ -2188,6 +2188,7 @@ internal static class NativeEventOptionCompletionPatch
             return;
         try
         {
+            NativeSourceInputProvider.ObserveOriginalEventChosen(__instance, __result);
             Tasks.Remove(__instance);
             Tasks.Add(__instance, new TaskCarrier(__result));
         }
