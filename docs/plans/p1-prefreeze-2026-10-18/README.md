@@ -67,14 +67,16 @@ Source4当前report-v3区分声明范围的`complete`与`whole_run`，可显式�
 
 ## 状态与当前任务
 
-当前develop `ea7c14e8969006fa0e470678198ef94aca471f90`，tree4b796997与已审eafa相同；#202正常merge beca367c，#204正常merge ea7c。#203的808e祖先经#204完整进入develop而自动标MERGED，**不是第三次独立develop merge**。#204源码CI39115695661和最终integration CI39120207920通过。源码/BOM原身份不因本次docs改写；新候选Mod6c已精确安装/加载，回滚备份2026-10-18T10-39-06.814Z。
+当前develop `ea7c14e8969006fa0e470678198ef94aca471f90`，tree4b796997与已审eafa相同；#202正常merge beca367c，#204正常merge ea7c。#203的808e祖先经#204完整进入develop而自动标MERGED，**不是第三次独立develop merge**。#204源码CI39115695661和最终integration CI39120207920通过。源码/BOM原身份不因本次docs改写；11:21:56Z安装快照：新4d3f8b4b/MVIDfb38a130已官方安装，build仍8967a72c；回滚2026-10-18T11-21-45.822Z的6份旧文件SHA匹配，尚未冷加载/预检PASS。前次loaded6c英文/EndTurn不转贴4d。root未push组合90429193与develop ea7c分列；fullPython4485PASS/5skip+93subtests仅源码层，原环境失败与纠正记录保留。
 
 ## Known differences and next gates
+
+用户已批准共同机制新候选合计至少一次、Act2/3各自五类幕特有及三证同时PASS；冻结前非作者画面对照完整P1，事后独立Reference同种子前缀+原native提示/预览+CUA截图路径已定位，live待小验，详见[第6节](SCOPE_v0.3.zh-CN.md#6-已批准覆盖与冻结前独立信息复验42机制行4跨幕终局行)。
 
 **已定/待批的11条状态和覆盖索引只从[合成定义](SCOPE_v0.3.zh-CN.md)查；实际差异/旧Reference缺陷登记见[A线差异](MANAGED_DIFFERENCES.md)；例外仍只有[P1第17节](../../protocols/P1_GLOBAL_R1.zh-CN.md#17-登记的协议例外必须经用户审核才能新增)。** 旧T1–T7/旧CURRENT和本目录旧资产基准快照不派发当前任务。
 
 - A：A03两局原loss的完整terminal正式比较equal，选择点170/293、236/432，0unknown；中间并非全严格。旧中文Reference原件缺陷登记保留，真实Managed缺陷继续修，新英文整局严格验收仍0/3。A02 H02 ENOSPC及原not_started/unknown保持历史失败；S05只属于1482de5d有界存档，不转到a70d8de1新候选。
-- B：6c已loaded exact、English可见、首战真实native_input EndTurn和同carrier/successor阳性；但initialpublication1失败/gap1的有界启动waiting离线解释条件已获用户批准，见[P1§17 E2](../../protocols/P1_GLOBAL_R1.zh-CN.md#17-登记的协议例外必须经用户审核才能新增)；实现及negative tests待验；首mapvote的NativeSourceWitness漏附普通修复独立推进，**预检未PASS，不能告诉用户可以录**。isolated collection-setup status CLI失败与typed API/root/manifest健康是不同接缝，不把CUA错误说成游戏黑屏。
+- B：前次loaded6c的English、首战真实native_input EndTurn和同carrier/successor阳性保留原身份；新安装4d尚未冷加载，但initialpublication1失败/gap1的有界启动waiting离线解释条件已获用户批准，见[P1§17 E2](../../protocols/P1_GLOBAL_R1.zh-CN.md#17-登记的协议例外必须经用户审核才能新增)；startup源码已root独审、22 focused PASS；真实新候选预检仍未通过；旧mapvote缺NativeSourceWitness原件不补写，原owner补附源码已入候选待新录制验，**预检未PASS，不能告诉用户可以录**。isolated collection-setup status CLI失败与typed API/root/manifest健康是不同接缝，不把CUA错误说成游戏黑屏。
 - C/K6：现GLOBAL源码/接口、K6定位与R20外包/harness已存在；复用[API/库/CLI主入口、GUI薄映射](WORKBENCH_POSITION.md)，最终tuple实际产品短验/R20仍待。复杂GUI/团队系统不做，原信任/确认适配保留。
 - K5：[云最简调查](CLOUD_MINIMAL.md)复用R2 storage库/块hash与push/pull，不强制Hub。新P1→R2完整回读→Modal消费尚未实测，样本/费用/上传与消费操作另批；Hub/团队/云页面仅保留状态/接口。
 - 最终门：同候选英文≥3整局、实际第三幕/胜利行、严格完整轨迹/terminal、稳定候选40/20、原产品/R20与K；42+4行是可检索覆盖索引，不暗增每个共同机制在每幕重复通过的笛卡尔硬门。用户待定项见定义第8节，不能由底稿代批。

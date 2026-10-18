@@ -26,10 +26,10 @@
     },
     {
       "source": "/Users/fire/Desktop/SpireAgentProject/claude-handoff-2026-10-13/P1_r1_SUPPORT_SCOPE_v0.3_2026-10-18.zh-CN.md",
-      "bytes": 31178,
-      "sha256": "0610a7eedad5e6516cac61a84e688f73180f845746a78fee03612c39edf7b939",
+      "bytes": 35936,
+      "sha256": "f19cc100fb4bc8d9f47c7633b504d91cb6663f65417b1ab39ea9564006e8ee75",
       "repository_snapshot": "SCOPE_v0.3.zh-CN.md",
-      "repository_sha256": "4aa81b3c623ee2b3e77b3c4c7df76b41dc969d5013f5dd49902c83167d343d45"
+      "repository_sha256": "3d4928cb7c245fd0f970389204516da0da1bab5a54f49b9d7ab61323ce5b914e"
     },
     {
       "source": "/Users/fire/Documents/Codex/2026-10-17/a-t7-runtime-connector-status-settling/work/p1-K2-20261018/round19/scope-replies-before-merge.md",
@@ -42,6 +42,12 @@
       "bytes": 23060,
       "sha256": "8791a1eb604245cfce1dee442f1d6d52f0d6ce67d3e80c4f46b05cc6c198cdd8",
       "role": "preserved merge input"
+    },
+    {
+      "source": "/Users/fire/Documents/Codex/2026-10-17/a-t7-runtime-connector-status-settling/work/p1-round19-20261018/deployment-4d-root-review.json",
+      "role": "4d installation snapshot; not cold-load/preflight evidence",
+      "bytes": 3860,
+      "sha256": "fbdbb29b457b8518c4b54a7c5ae6635be246470b1b4f8179342bc152026eb307"
     }
   ]
 }

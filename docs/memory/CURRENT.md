@@ -1,6 +1,6 @@
 # Current — Round19 pre-training P1 freeze
 
-Resolve live GitHub refs; current source and original records override this file.
+Resolve live GitHub refs; source/original records override this file.
 This is dated routing, not live service or qualification authority. The
 [project map](../plans/p1-prefreeze-2026-10-18/README.md) routes the active sprint;
 [definition v0.3](../plans/p1-prefreeze-2026-10-18/SCOPE_v0.3.zh-CN.md) is the merged
@@ -11,12 +11,13 @@ The root handoff canonical and input hashes are fixed in its source index.
 
 Develop is `ea7c14e8969006fa0e470678198ef94aca471f90`, tree `4b796997` matching
 reviewed eafa9a7c. PR202 merged as beca367c; PR204 merged as ea7c14e8.
-PR203's 808e ancestry entered through PR204; GitHub auto-MERGED it, not a third
-independent develop merge. PR204 source CI39115695661 and integration39120207920
-passed. This docs topic changes no product source/BOM or artifact identity.
+PR203 entered through PR204 (auto-MERGED, no third develop merge).
+CI39115695661/39120207920 passed; docs change no product/BOM identity.
 
-Reference Mod6c6b885f is installed/loaded exact, English is visible; rollback
-backup is `2026-10-18T10-39-06.814Z`. Managed A03 used a70d8de1/cd47f09c;
+11:21:56Z: Mod4d3f8b4b/MVIDfb38a130 installed, not cold-loaded/preflight-pass.
+Build8967; rollback2026-10-18T11-21-45.822Z (6 old hashes match). Prior loaded6c
+English/EndTurn keep their identity. Unpushed root90429193: fullPython4485pass/5skip
++93subtests; original env failure/correction retained. Managed A03 used a70d8de1/cd47f09c;
 old1482/S05 and all earlier records keep their actual source/artifact identities.
 A03 both loss terminals compare full-public equal; choice matches170/293 and236/432,
 zero unknown. These are Chinese diagnostics, not new English strict full games.
@@ -24,10 +25,9 @@ zero unknown. These are Chinese diagnostics, not new English strict full games.
 ## Critical path and parallel work
 
 - B: actual native_input first-combat EndTurn/carrier/successor is positive, but
-  bounded offline startup-waiting E2 is user-approved; converter/negative tests are pending;
-  missing map NativeSourceWitness is a separate ordinary fix. Preflight is NOT PASS;
-  do not tell the user to start recording. Isolated setup status CLI failure and
-  healthy typed API/root/manifest are distinct seams, not proof of a black game window.
+  bounded offline startup-waiting E2 is user-approved; source reviewed;22 focused pass; new preflight pending;
+  old map lacks witness; candidate fix needs new capture. Preflight is NOT PASS;
+  do not tell the user to start recording. Setup CLI status and typed API health differ.
 - A: retain old Reference defects without rewriting originals; continue actual
   Managed fixes. New same-candidate English strict games remain0/3. [Differences](../plans/p1-prefreeze-2026-10-18/MANAGED_DIFFERENCES.md)
   separate original facts, source fixes and actual comparisons; exceptions stay in P1§17.
@@ -45,8 +45,9 @@ zero unknown. These are Chinese diagnostics, not new English strict full games.
 
 Unblock B preflight, then user short segment -> complete conversion -> new English
 full games/strict replay; keep A/K/CLI work parallel. Preserve unknown/no-retry and
-actual candidate/source/parent continuity. The46 coverage rows are an index, not a
-new all-mechanisms-times-all-acts hard gate. Scope tradeoffs remain in definition§8.
+actual candidate/source/parent continuity. Common mechanisms need one new-candidate instance; Act2/3 each require ordinary/elite/
+event/Boss/Boss-reward, all Reference-correct+offline+strict-Managed PASS.
+Pre-freeze non-author image/P1 approved; native tips/preview+CUA live pending.
 Approved ordinary merged-topic auto-delete/new-Mod install-with-backup differ from
 historical asset deletion/move, which still need approval; K3 closure has the narrow
 exact-tag-first approval above. No cloud upload,

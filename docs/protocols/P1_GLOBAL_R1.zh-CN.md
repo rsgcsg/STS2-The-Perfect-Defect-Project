@@ -174,7 +174,7 @@ Human证明或运行验收。当前生产接缝及真实整局门见[采集调�
 遗漏输入和终局不靠scope抹除。范围内`complete`与`whole_run.complete`分列；后者另核
 真实new-run/setup/launch、来源连续性及完整native/P1 terminal。源码/fixture已交不表示
 本轮新英文整局已获资格；原report-v1/v2与原件意义保持。
-启动waiting的唯一有界离线解释例外见[第17节E2](#17-登记的协议例外必须经用户审核才能新增)；原缺失仍保留，批准/登记不证明转换实现已通过。
+启动waiting的唯一有界离线解释例外见[第17节E2](#17-登记的协议例外必须经用户审核才能新增)；原缺失仍保留，批准/登记不证明真实预检已通过。
 
 ## 11. 两端等价怎样检查
 
@@ -293,7 +293,7 @@ r1.2 原始运行、帧和既有结论保留。用 r1.3 回放旧轨迹时必须
 | 编号 | 例外 | 原因 | 批准 |
 | --- | --- | --- | --- |
 | E1 | P1 不提供原生"打开卡牌奖励后跳过，从而冻结候选、不受之后遗物升级影响"的输入。奖励页按普通方式发布。 | 这是导航技巧，不是新决策；提供它会把浏览重新带回单向协议。 | 用户，2026-10-16 |
-| E2 | Source4离线解释可将同run原生setup→Launch见证起、首份完整可决策观察前的有界settling段列为非决策启动waiting；不是Agent观察。 | 原始失败/缺失保留且不补齐；不称NativeLogical前缀完整；first decision起严格完整门不变。实现及negative tests仍待验。 | 用户，2026-10-18，附下列条件 |
+| E2 | Source4离线解释可将同run原生setup→Launch见证起、首份完整可决策观察前的有界settling段列为非决策启动waiting；不是Agent观察。 | 原始失败/缺失保留且不补齐；不称NativeLogical前缀完整；first decision起严格完整门不变。源码已root独审、22 focused PASS；真实新预检未通过。 | 用户，2026-10-18，附下列条件 |
 
 E2的全部条件：
 
@@ -302,7 +302,7 @@ E2的全部条件：
 - 期间只要混入任何玩家输入，即使未响应，也必须unresolved，整局不得complete。
 - waiting必须以完整decision结束；崩溃或等不到该decision，整局不得complete。
 - 每局报告单列该段帧数与时长，不计入决策数；first decision起的完整性及full strict要求不变。
-- 转换规则由原Source4→P1 owner实现并用上述反例验收；协议登记和用户批准不代表实现/预检已通过。
+- 转换规则由原Source4→P1 owner实现并用上述反例验收；源码已root独审、22 focused PASS，仍不代表真实新预检通过。
 
 对照范围与判据：
 - STS2原生事实是真相，Reference是首选对照但其投影也需审查；在Managed重放Reference原件并比较决策前缀和终局，按原件定位分叉owner。
