@@ -2104,3 +2104,90 @@ def test_explicit_host_close_requires_ack_then_removes_only_fixed_attachments(
     assert result == {"status": "closed", "service_instance_id": "managed_service_fixture"}
     assert not client_file.exists() and not manager_file.exists()
     assert service.record["host_service_closed"] is True
+
+
+INITIAL_PROGRESS = {"recipe": "normal-sp-all-unlocked-v1", "progress_json": '{"private":true}',
+                    "progress_sha256": hashlib.sha256(b'{"private":true}').hexdigest()}
+
+
+def progress_profile(tmp_path: Path):
+    config, host, candidate, pin, audit, checked = fixture(tmp_path)
+    (config.state_dir / PROFILE_FILE).unlink()  # Replace only the temporary old-profile fixture.
+    package = host / "package.json"
+    value = json.loads(package.read_text())
+    value["version"] = "1.1.0-rc.32"
+    package.write_text(json.dumps(value))
+    pin = {**pin, "version": value["version"], "package_content_sha256": directory_sha256(host)}
+    configure_managed_host(config, candidate, host_root=host, host_pin=pin,
+        input_profile="text-menu-v1", initial_progress=INITIAL_PROGRESS, audit=checked)
+    return config, host, candidate, pin, audit, checked
+
+
+def test_initial_progress_profile_is_private_exact_and_old_profiles_remain_readable(tmp_path: Path):
+    old_config, *_ = fixture(tmp_path / "old")
+    assert "initial_progress" not in _read_profile(old_config)
+    config, host, candidate, pin, _audit, checked = progress_profile(tmp_path / "new")
+    assert _read_profile(config)["initial_progress"] == INITIAL_PROGRESS
+    for bad in ({**INITIAL_PROGRESS, "progress_sha256": "0" * 64},
+                {**INITIAL_PROGRESS, "recipe": "other"}):
+        with pytest.raises(BoundaryError, match="managed_initial_progress_invalid"):
+            configure_managed_host(config, candidate, host_root=host, host_pin=pin,
+                input_profile="text-menu-v1", initial_progress=bad, audit=checked)
+    profile = json.loads((config.state_dir / PROFILE_FILE).read_text())
+    profile["initial_progress"]["progress_json"] = "changed"
+    (config.state_dir / PROFILE_FILE).write_text(json.dumps(profile))
+    with pytest.raises(BoundaryError, match="profile_invalid"):
+        _read_profile(config)
+
+
+@pytest.mark.parametrize("bad_proof", [
+    None, "missing", "recipe", "progress_sha256", "run_unlock_state_matches"])
+def test_initial_progress_manager_proof_precedes_claim_and_stays_private(tmp_path: Path, bad_proof):
+    config, _host, _candidate, _pin, audit, checked = progress_profile(tmp_path)
+    order = []
+    transport = ManagedServiceFixture()
+    transport_ready = {**transport.ready(), "candidate_build": audit,
+        "exact_game": {"sts2_dll_sha256": SCENARIO["exact_game_assembly_sha256"]}}
+    transport.ready = lambda: transport_ready
+    original_request = transport.request
+    def client_request(command):
+        order.append("client:" + command["command"])
+        assert command["command"] != "episode_identity", "private proof must use manager"
+        return original_request(command)
+    transport.request = client_request
+    class Manager:
+        def reset(self, seed, **values):
+            order.append("manager:reset")
+            assert seed == SCENARIO["seed"]
+            assert values == {"expected_runtime_instance_id": "runtime-fixture",
+                "expected_game_continuity_id": "episode-fixture",
+                "initial_progress": INITIAL_PROGRESS}
+            return {"result": {"type": "reset_result"}}
+        def request(self, command):
+            order.append("manager:" + command["command"])
+            identity = original_request(command)["result"]["identity"]
+            proof = {"recipe": INITIAL_PROGRESS["recipe"],
+                "progress_sha256": INITIAL_PROGRESS["progress_sha256"],
+                "run_unlock_state_matches": True}
+            if bad_proof is not None:
+                proof[bad_proof] = False if bad_proof == "run_unlock_state_matches" else "bad"
+            return {"result": {"identity": {**identity, **(
+                {} if bad_proof == "missing" else {"initial_progress": proof})}}}
+    environment = _ManagedServiceEnvironment(transport, Manager(), transport_ready, "text-menu-v1")
+    service = LocalEnvironmentService(config, audit=checked,
+        client_factory=lambda *_: environment, seed_normalizer=normalize_seed_fixture)
+    service.start(SCENARIO["id"])
+    if bad_proof is not None:
+        failed = wait_status(service, "failed")
+        assert failed["session"]["error_code"] == "managed_initial_progress_unverified"
+        assert order == ["manager:reset", "manager:episode_identity"]
+    else:
+        active = wait_status(service, "active")
+        assert order[:4] == ["manager:reset", "manager:episode_identity",
+                            "client:claim_control", "client:text_observe"]
+        assert "initial_progress" not in active["session"]["episode_identity"]
+        assert INITIAL_PROGRESS["progress_sha256"] not in json.dumps(active)
+        service.stop(active["session"]["session_id"])
+        wait_status(service, "stopped")
+    assert '"initial_progress":' not in json.dumps(service.record)
+    assert INITIAL_PROGRESS["progress_json"] not in json.dumps(service.record)

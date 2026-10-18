@@ -261,8 +261,10 @@ class ManagedPlayerEnvironment:
                 raise error
             return response
 
-    def reset(self, seed: str) -> Mapping[str, Any]:
-        return self._exchange("reset", seed=canonicalize_episode_seed(seed))["snapshot"]
+    def reset(self, seed: str, *, initial_progress: Mapping[str, Any] | None = None) -> Mapping[str, Any]:
+        return self._exchange("reset", seed=canonicalize_episode_seed(seed),
+                              **({"initial_progress": dict(initial_progress)}
+                                 if initial_progress is not None else {}))["snapshot"]
 
     def observe(self) -> Mapping[str, Any]:
         return self._exchange("observe")["snapshot"]

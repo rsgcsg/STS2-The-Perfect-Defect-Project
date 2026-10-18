@@ -432,6 +432,15 @@ and verifies actual run identity. This setup is unavailable to attached clients;
 manager `episode_identity` includes its private proof. Client commands retain the
 64 KiB body limit; manager reset allows 1 MiB for the native progress snapshot.
 
+Python `ManagedPlayerEnvironment.reset(seed, initial_progress=...)` and
+`ManagedHostServiceManager.reset(..., initial_progress=...)` forward this explicit
+setup unchanged; omitting it retains ordinary reset semantics. Trusted Workbench
+`configure_managed_host(..., initial_progress=...)` stores the exact recipe,
+progress JSON and SHA in its private profile (Host rc.32+). Startup verifies the
+manager-only episode proof before any observation/control claim; public session
+identity omits the private progress and proof. Existing six-field profiles retain
+their original reset behavior. The browser cannot supply this configuration.
+
 The same factory defaults to native Instant and accepts explicit
 `nativeSpeed: "normal"|"fast"|"instant"`; the existing `start` and reference
 driver CLIs accept `--native-speed normal|fast|instant`. Isolated `start` and
