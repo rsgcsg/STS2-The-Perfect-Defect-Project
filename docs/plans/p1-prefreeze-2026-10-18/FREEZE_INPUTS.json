@@ -26,11 +26,11 @@
     },
     {
       "source": "/Users/fire/Desktop/SpireAgentProject/claude-handoff-2026-10-13/P1_r1_SUPPORT_SCOPE_v0.3_2026-10-18.zh-CN.md",
-      "bytes": 48802,
-      "sha256": "e3b8fb14b6a8e40e4294b9c56c7de4c9cd304c450aa932e13a4f1264f39dcd52",
+      "bytes": 51545,
+      "sha256": "61b48df0603447aff60bfb0ce037431532c13dd266b91ad3291a336ee006cd8f",
       "repository_snapshot": "SCOPE_v0.3.zh-CN.md",
       "repository_sha256": "5c0e3d91c0231a89484f7778c776da8e944e2c3e304c92a6cd60a6edff452ac5",
-      "role": "canonical original input retained; approved execution-boundary repository delta is synchronized to canonical by root integrator"
+      "role": "current canonical synchronized with approved execution-boundary repository definition; prior canonical input preserved in listed backup"
     },
     {
       "source": "/Users/fire/Documents/Codex/2026-10-17/a-t7-runtime-connector-status-settling/work/p1-K2-20261018/round19/scope-replies-before-merge.md",
@@ -212,6 +212,12 @@
       "role": "fixed direct user decision input; later timebox tightened by user to2h per root fixed report, not implemented/runtime evidence",
       "bytes": 4055,
       "sha256": "d27ba3a13a3e34e22642bd259ec4e281629618c59c6684de0f03a58cd8b037db"
+    },
+    {
+      "source": "/Users/fire/Documents/Codex/2026-10-17/a-t7-runtime-connector-status-settling/work/p1-semantic-20261019/canonical-scope-before-execution-boundary.md",
+      "bytes": 48802,
+      "sha256": "e3b8fb14b6a8e40e4294b9c56c7de4c9cd304c450aa932e13a4f1264f39dcd52",
+      "role": "immutable prior canonical input before approved execution-boundary synchronization"
     }
   ]
 }

@@ -1,9 +1,10 @@
-# Current — P1 upper-chain implementation and semantic recording
+# 当前工作：P1执行时点已批准，实施因执行态卡详情缺失停止
 
-Current topic: 2026-10-19, native semantic recording in root integration branch
-`codex/p1-normal-baseline-startup-integration-20261018`. The upper-chain docs and
-selector/capture-diagnostic fixes are integrated. Resolve live GitHub refs; actual
-source and original records override this file. A recorded process identity is not live authority.
+更新：2026-10-19。本页是仓库导航；唯一冲刺操作现状是工作区固定文件
+`work/P1-SEMANTIC-ACTIVE-20261019.md`，本轮报告为`work/P1-QUEUED-INPUT-REPORT-20261019.md`，
+收敛报告为`work/CONVERGENCE-PREFREEZE-REPORT-20261019.md`。这些是项目工作区路径，worker局部checkpoint不是总派工入口。
+Resolve live GitHub refs; actual source and original records override this file.
+恢复前核准确分支、改动、agent和进程，不从旧记录重复启动游戏。
 
 Start with the single [chain diagram and requires/provides table](../plans/p1-prefreeze-2026-10-18/CHAIN_PURPOSES.md),
 then [P1 section4.1](../protocols/P1_GLOBAL_R1.zh-CN.md#41-录制原件派生p1的requires用户已批准).
@@ -22,45 +23,27 @@ derived completeness and new-route E2/E3 applicability. Direction and recording 
 are also set. The overall [freeze definition](../plans/p1-prefreeze-2026-10-18/SCOPE_v0.3.zh-CN.md)
 and final freeze PR are separate pending approval. Deadline remains Oct20 16:30 Brisbane.
 
-P1 reuses mature Human accepted native-action/exact-owner capture plus same-time
-complete PB1/all Reads and shared-core derivation. Internal automatic GameActions
-retain facts/results without becoming player labels. Source4 is retained for future
-profiles, has no new investment/preflight, and its cancellation-only code was removed
-from I by824847fb; original packets/branches/failures remain preserved.
+用户已批准⑤⑥恢复rc4：H只作输入来源，执行S/A(S)为P1派生决策；不改在线③④、两Host或原生游戏，不限制连点。
+public action或RecordedNativeInput二选一，不造BoundAction，仍需执行边界完整PB1、全部Reads及可派生目录。
+本轮已按指定条件停止实施：入队ActionEnqueued先清hand holder，之后才BeforeActionExecuted；
+当前PB手牌及详情Read按可见holder过滤，漏掉queued战斗卡的完整description、keywords和card_previews。
+rc4紧凑S、点击H和deck基卡都不能补这些执行态信息。无公开BoundAction本身允许native input，绝非停因。
+没有新producer/JS、测试、游戏、构建安装或运行通过。只收完既定文档与交接，不加新门。
+Source4停止新增投入/预检；原数据、分支和失败全部保留。自动GameAction不制造玩家标签。
 
-Native05 used build e3caa3f2. Official installed artifact a4fef7a2/MVID
-805dbf4b cold-loaded with the exact tuple in engineering native05; component-only
-identity updates were checked against the unchanged compiled sources. Native05
-closed/packed and exited normally:66 accepted,17 staged card inputs missing H public
-BoundActions, and one combat-pile exact input join failure. No complete trajectory;
-no full-segment Managed replay. Check actual process state before resuming.
+工程05正常Close/pack/退出，66 accepted/66 terminal，17出牌绑定gap和1选牌join gap；无完整P1轨迹，未做整段Managed。
+旧工程04只证明5动作及最后后继的旧短段严格通过；正式英文01有缺口已保留封包，正式合格仍0/3。
+选牌join修复77cbd6ae已整合构建，Host963/入口38通过，尚未安装或原生实跑；当前安装仍是工程05的a4fef7a2/MVID805dbf4b。
 
-Native04 passed the bounded gate:5 accepted/5 terminal, complete PB1/all Reads,
-unsubmitted cancel with zero labels, normal Close/pack, offline derivation and strict
-Managed replay including final successor;0 unknown/taint/budget. Formal English01
-then exposed missing reward-selector H/parent binding and two settling card H records
-without public BoundActions. The user chose normal Close/pack and restart after repair.
-Its originals remain preserved and formal count is0/3. Selector lineage/accepted/
-completion is repaired; three native05 reward selections retained exact bindings.
-All17 card gaps use staged H:13 InCardPlay (four also executor-running), four Start
-phase. Native input can precede public delivery readiness. The separate grid selector
-join repair77cbd6ae is integrated and built (Host963/surface38 pass): canonical grid
-callback verbs now join the same frozen exact owner/card/control bindings. It has
-not been installed or exercised natively. Changing the approved H/P1 derivation definition or adding
-queued P1 capability awaits the user's explicit choice; do not alter either silently.
-
-Legacy hooks were audited and profile-routed; Core431, SourceNative66, surface38 and
-reader/adapter29 passed in the relevant checks. The official Mod compiled successfully.
-Historical September11 rapid-input repairs remain present: exact staged native H
-and deferred carrier binding plus independent execution S/A(S). Those native-input
-records do not supply a missing P1 H BoundAction; never backfill from execution state.
+本轮已直接读rc4报告524/524与47rapid，旧tmp raw未找到，不声称重验524原件。
+rc4解决native queued身份与S/A(S)，不是今日完整PB1/allpresentation；不能用新缺口否定旧实证。
+此前P1误将H定为决策并绕过执行订阅是返工原因，不归咎玩家或历史无效。
 
 ## Four requested gap detectors: actual status and known risk
 
 (a) Seen unsupported actions: existing captured accepted-action/PB/match failures emit
-issue; missing or bypassed hooks are still under B audit. (b) Every player-wait boundary
-followed by accepted decision or explicit end: not fully implemented; accepted-to-terminal
-accounting does not count all waiting boundaries. (c) Every inter-decision change explained
+issue; unobserved choices remain a known risk. (b) 用户已改为每个native accepted有派生决策或issue；
+新执行S路线及完整对账尚未实现。 (c) Every inter-decision change explained
 by recorded choices and automatic effects: partial lifecycle/successor/sequence checks,
 no exhaustive independent effect-accounting proof. (d) Strict Managed mismatch: implemented
 for derived trajectories and tested on native02/04 bounded prefixes, not a formal whole run.
@@ -74,8 +57,8 @@ source anchors and limits are in P1 section4.1.
 Before inviting formal recording, a real engineering short segment must cover Play,
 unsubmitted pickup cancel with zero labels, EndTurn and another non-card decision,
 with complete originals, offline derivation/verification and strict Managed replay.
-Native04 passed this complete gate; native05 must validate the new repairs. After it
-passes, the user restarts formal English whole games, with no separate Human short run. Check the first
+Native04通过旧短段；native05明确未过，新执行态修复未实施，不要求用户验证一个未实现候选。未来修好后仍须
+用户5–10分钟快速连点、完整原件/离线/严格Managed通过，才重开正式局，不另加Human短段。Check the first
 saved opening segment as Human validation without interrupting the game.
 
 A game takes about30 minutes; no need to monitor midway in real time. Convert/check
@@ -85,7 +68,8 @@ candidate. Preserve gap originals; they do not count toward at least3 whole game
 A pre-gap segment may count mechanism coverage only if Reference correctness, offline
 verification and strict Managed replay all pass on that same occurrence.
 Only the user plays formal games. If unavailable or unable to find the entry, wait for
-formal play/required decisions while independent work continues.
+formal play/required decisions while independent work continues. 用户现已睡觉，需要他的工作时诚实停止，不代录、不强推。
+本轮整轮累计上限2小时，从Oct19 02:57:56至04:57:56 Brisbane；当前提前触发信息缺失停止条件，只收尾既定文档。
 
 Oct19 09:00 Brisbane is the core/self-test checkpoint. If missed, report blockers,
 remaining work/time, then continue ordinary authorized repairs; plan changes go to user.
