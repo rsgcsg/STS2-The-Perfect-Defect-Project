@@ -22,9 +22,9 @@
     },
     "annotator": {
       "version": "0.3.0-rc.19",
-      "source_revision": "c60c3691fe45590a12eb10ff99a130b2903c6623",
-      "component_tree_revision": "bb7a5ea2faae5a6eff8c7635e5b38f9d9e7c06e0",
-      "component_source_digest_sha256": "d8f36b2504235413256992f5d0f4e0df0ab1d0aae973de47d530ce9222cc5041"
+      "source_revision": "2859aa6bb5b8d5faf139051aee71676c7d8ae36c",
+      "component_tree_revision": "b7ab9e4c0d8d7874faf770407a7d384a12bb9446",
+      "component_source_digest_sha256": "4ac47a72bbf90f1e9146de8a8d62d753058dec1caf9ed275ef34a127edc52fc1"
     },
     "evidence": {
       "version": "0.1.0-rc.31",
@@ -170,8 +170,8 @@
     "annotator": {
       "source_revision": "09e5c2363fff64b2e8cfa07d16ec7cf22d8ad3b5",
       "source_digest_sha256": "8d23f1015a7b0df800f78a7545da5c86bfee521131c4391b398c884ff917918f",
-      "current_component_source_revision": "c60c3691fe45590a12eb10ff99a130b2903c6623",
-      "current_component_source_digest_sha256": "d8f36b2504235413256992f5d0f4e0df0ab1d0aae973de47d530ce9222cc5041",
+      "current_component_source_revision": "2859aa6bb5b8d5faf139051aee71676c7d8ae36c",
+      "current_component_source_digest_sha256": "4ac47a72bbf90f1e9146de8a8d62d753058dec1caf9ed275ef34a127edc52fc1",
       "source_relation": "loaded_human_v2_artifact_precedes_unified_platform_source",
       "artifact_sha256": "4e911dd616afa55753a5320a42c11ce0cebe9d4d10fefd66c8f8a431884cf105",
       "artifact_mvid": "692e9dd9-4bc7-4203-ae12-511ef95a5331",
@@ -277,8 +277,8 @@
     "annotator": {
       "source_revision": "cb20bfa6e4e0e64b3ee8fdf0e1d472e8a668450b",
       "source_digest_sha256": "3910bcbc71599610b125c91c62e9860541ce9edea9b2c0a9f41842eb53651071",
-      "current_component_source_revision": "c60c3691fe45590a12eb10ff99a130b2903c6623",
-      "current_component_source_digest_sha256": "d8f36b2504235413256992f5d0f4e0df0ab1d0aae973de47d530ce9222cc5041",
+      "current_component_source_revision": "2859aa6bb5b8d5faf139051aee71676c7d8ae36c",
+      "current_component_source_digest_sha256": "4ac47a72bbf90f1e9146de8a8d62d753058dec1caf9ed275ef34a127edc52fc1",
       "source_relation": "loaded_native_source_precedes_current_audit_closeout_source",
       "artifact_sha256": "04104ca5cd47c82329be185a8aa7017f7982b2062048fbf825488bead231d1c1",
       "artifact_mvid": "7408a183-f5a8-4f95-a997-dbf588b1536b"

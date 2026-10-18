@@ -2,6 +2,7 @@ import { decodePlayerRead } from "../protocol.js";
 import { decodePublicSourceSnapshot as decodePlayerSnapshot } from "../publicBasis.js";
 import { canonicalJson, isObject } from "./canonical.js";
 import { createSession, reduce, resolveFollowBasis, type Lowering, type P1Basis, type P1SessionState } from "./reducer.js";
+import { completeSelectorFacts, selectorOperation } from "./selectorForward.js";
 
 /** A derived wrapper around verified Source4 originals. The adapter, not this
  * semantic matcher, verifies the bundle, original byte hashes and native origin. */
@@ -167,7 +168,8 @@ function crossesPausedInterval(boundaries: readonly ObjectValue[], first: Object
   }
   return false;
 }
-function originalActionMatches(row: ObjectValue, action: ObjectValue, basis: P1Basis, play = false): boolean {
+function originalActionMatches(row: ObjectValue, action: ObjectValue, basis: P1Basis, play = false,
+  controlOperation: string | null = null): boolean {
   if (!accepted(row)) return false;
   const selected = row.outcome.selected_action, facts = row.outcome.native_facts;
   const expectedArgs = args(action.arguments), actualArgs = args(selected?.arguments);
@@ -178,10 +180,22 @@ function originalActionMatches(row: ObjectValue, action: ObjectValue, basis: P1B
     || !hasReferents(snapshot(basis), action.subject_referent_id ?? null, expectedArgs)) return false;
   // Native-logical IDs and Player Environment IDs are separate catalogs. Only
   // the original object-bound verb/operands are compared, never action ID text.
+  if (controlOperation !== null) {
+    const publicVerb = controlOperation === "confirm" || controlOperation === "confirm_selection" ? "confirm"
+      : controlOperation === "open_preview" || controlOperation === "toggle_upgrade_view" ? "open"
+      : controlOperation === "cancel_preview" || controlOperation === "cancel_selection" ? "cancel" : null;
+    return publicVerb !== null && action.verb === publicVerb && selected.verb === controlOperation;
+  }
   if (play) return action.verb === "play" && ["confirm_card", "confirm_target"].includes(selected.verb);
   if (row.outcome.native_mechanism === "NRewardButton.OnRelease"
     && ["claim_reward", "claim_linked_reward"].includes(selected.verb)) return action.verb === "activate";
   return selected.verb === action.verb;
+}
+
+function originalSelectorActionMatches(row: ObjectValue, action: ObjectValue, basis: P1Basis): boolean {
+  const surface = snapshot(basis).interaction.content.surface;
+  return completeSelectorFacts(surface) && row.outcome.native_facts.owner_ref === surface.screen_entity_id
+    && originalActionMatches(row, action, basis, false, selectorOperation(surface, action.subject_referent_id ?? null));
 }
 
 /** Match original native inputs to one complete offered P1 intention. A matched
@@ -285,6 +299,16 @@ export function matchSourceP1Choice(state: P1SessionState, basis: P1Basis,
         const actual = (last.basis.snapshot as ObjectValue).bound_actions.actions.find((value: ObjectValue) => value.bound_action_id === follow.bound_action_id);
         if (!actual || !originalActionMatches(last, actual, last.basis)) continue;
         if (contexts.some(value => !same(value, last.basis) && !rewardContextMatches(lowering, value))) continue;
+        matches.push(choice);
+      }
+      if (trace.length === 2 && lowering.selector_intention && lowering.follow.length === 1
+        && lowering.follow[0]!.rule_id === "selector_intention"
+        && originalSelectorActionMatches(first, action, basis)) {
+        const follow = resolveFollowBasis(lowering.follow[0]!, lowering, last.basis);
+        if (!follow) continue;
+        const actual = snapshot(last.basis).bound_actions.actions.find((value: ObjectValue) => value.bound_action_id === follow.bound_action_id);
+        if (!actual || !originalSelectorActionMatches(last, actual, last.basis)) continue;
+        if (contexts.some(value => !resolveFollowBasis(lowering.follow[0]!, lowering, value))) continue;
         matches.push(choice);
       }
     }

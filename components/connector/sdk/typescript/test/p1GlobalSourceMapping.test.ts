@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { createSession, matchSourceP1Choice, reduce, type P1Basis } from "../src/p1Global/index.js";
 import { rewardForwardPair } from "./fixtures/reward-forward.mjs";
+import { selectorForwardPair } from "./fixtures/selector-forward.mjs";
 
 // Synthetic complete public facts, with explicit original-invocation relations.
 // This is a semantic mapping regression, not a native capture/origin witness.
@@ -39,7 +40,49 @@ function play() {
   return { basis, action, trace: [start, submit] };
 }
 
+function selector() {
+  const { outer, preview } = selectorForwardPair();
+  const card = outer.snapshot.interaction.content.surface.cards[0].entity_id;
+  const choose = outer.snapshot.bound_actions.actions.find((value: any) => value.verb === "select");
+  const confirm = preview.snapshot.bound_actions.actions.find((value: any) => value.verb === "confirm");
+  // These are the producer's original card callback and exact original pressed
+  // control. Source4 keeps the control object as subject, not the label or a
+  // later selector Task. No native completion/causal effect is inferred here.
+  const trace = [
+    row(outer, "1", { ...choose, action_id: "native-select-original" },
+      { owner_ref: "owner-one", subject_ref: card, arguments: {}, carriers: [] },
+      "MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NDeckUpgradeSelectScreen.OnCardClicked"),
+    row(preview, "2", { ...confirm, action_id: "native-confirm-original" },
+      { owner_ref: "owner-one", subject_ref: "confirm", arguments: {}, carriers: [] },
+      "MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NDeckUpgradeSelectScreen.Confirm.Released")
+  ];
+  return { basis: outer, preview, trace };
+}
+
 describe("Source4 original-input to P1 intention mapping", () => {
+  it("matches one original select and its same-request exact native preview confirmation", () => {
+    const { basis, trace } = selector(); const originalBytes = JSON.stringify(trace);
+    const reduced = reduce(session(), basis);
+    const choose = reduced.observation.catalog.find(choice => choice.kind === "upgrade.choose")!;
+    expect(reduced.lowering[choose.choice_id]!.follow).toHaveLength(1);
+    expect(matchSourceP1Choice(session(), basis, trace)).toMatchObject({
+      status: "matched", choice_id: choose.choice_id, input_ids: ["input-1", "input-2"] });
+    expect(JSON.stringify(trace)).toBe(originalBytes);
+  });
+  it.each(["request", "selected", "public-after", "unknown"])(
+    "does not fold a selector confirmation after %s drift", change => {
+      const { basis, preview, trace } = selector();
+      const surface = preview.snapshot.interaction.content.surface;
+      if (change === "request") surface.request_entity_id = surface.selector_request.entity_id = "another-task";
+      if (change === "selected") surface.selected_card_entity_ids = surface.selector_request.selected_entity_ids = [];
+      if (change === "public-after") surface.preview_options[0].after.description += " changed public information";
+      if (change === "unknown") trace[1]!.outcome.delivery = "unknown";
+      expect(matchSourceP1Choice(session(), basis, trace).status).not.toBe("matched");
+    });
+  it("keeps a selector's unfinished original prefix unresolved", () => {
+    const { basis, trace } = selector();
+    expect(matchSourceP1Choice(session(), basis, trace.slice(0, 1)).status).not.toBe("matched");
+  });
   it("maps the explicit original RewardButton claim verb without equating catalog IDs", () => {
     const { outer, child } = rewardForwardPair();
     const open = outer.snapshot.bound_actions.actions[0], choose = child.snapshot.bound_actions.actions[0];
