@@ -1389,7 +1389,8 @@ def test_global_recovery_keeps_original_managed_target_and_reference_null(
         "agent_artifact_sha256": manifest["artifact"]["sha256"],
         "agent_manifest_sha256": hashlib.sha256(canonical_json(manifest).encode()).hexdigest(),
         "runtime_version": "fixture", "runtime_code_sha256": "b" * 64,
-        "adapter": manifest["adapter"], "managed_environment": None if reference else original_target,
+        "adapter": manifest["adapter"],
+        "managed_environment": None if reference else original_target,
     }
     previous = {"startup": copy.deepcopy(original_startup), "selection_id": "global-fixture",
                 "managed_environment": copy.deepcopy(original_target)}
