@@ -85,7 +85,25 @@ function wrapLines(value, width) {
   }).join("\n");
 }
 export function catalogText(obs) {
-  return (obs.catalog ?? []).map((c, i) => `  [${i + 1}] ${c.choice_id} ${displayLabel(c)} (${c.kind}) subject=${c.subject ?? "null"} target=${c.target ?? "null"}`).join("\n");
+  const rows = (obs.catalog ?? []).map((c, i) => ({ c, i }));
+  if (obs.scene?.native_kind === "combat_turn") {
+    const enemies = content(obs.combat)?.enemies ?? [];
+    const rank = new Map(enemies.map((enemy, i) => [enemy.entity_id, i]));
+    // Reorder only target alternatives of the same card/potion. Keep original
+    // numeric indices: input 3 must still bind to obs.catalog[2].
+    const groups = new Map();
+    for (const row of rows) if (["combat.play_card", "combat.use_potion"].includes(row.c.kind) && rank.has(row.c.target)) {
+      const key = JSON.stringify([row.c.kind, row.c.subject]);
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(row);
+    }
+    for (const group of groups.values()) {
+      const slots = group.map(row => row.i);
+      const sorted = [...group].sort((a, b) => rank.get(a.c.target) - rank.get(b.c.target));
+      slots.forEach((slot, i) => { rows[slot] = sorted[i]; });
+    }
+  }
+  return rows.map(({ c, i }) => `  [${i + 1}] ${c.choice_id} ${displayLabel(c)} (${c.kind}) subject=${c.subject ?? "null"} target=${c.target ?? "null"}`).join("\n");
 }
 export function overview(obs, { width = Math.max(40, Number(process.env.COLUMNS) || 100) } = {}) {
   const run = content(obs.run) ?? {}, player = content(obs.player) ?? {};
@@ -140,7 +158,7 @@ export async function runHumanChooser({ input, send, say, ask }) {
     const msg = JSON.parse(line);
     if (msg.type === "hello") {
       say(`人工 P1 选择器：episode ${msg.episode_id}。${HELP}\n本次等待选择上限 ${Number(process.env.P1_AGENT_TIMEOUT_MS ?? 30000) / 1000} 秒（浏览也计时；总预算或 Stop 可更早结束），超时会停止；没有自动代选。\n会话桥不转发 Receipt/result；屏幕只确认你提交的意图。实际交付与后继请查 Runtime 原始记录。`);
-      send({ type: "ready", protocol: msg.protocol, agent_id: "human-p1-chooser", agent_version: "2" });
+      send({ type: "ready", protocol: msg.protocol, agent_id: "human-p1-chooser", agent_version: "3" });
     } else if (msg.type === "observation") {
       if (!msg.requires_choice) {
         say(msg.observation.status === "terminal" ? `终局：${msg.observation.terminal?.outcome}` : overview(msg.observation));

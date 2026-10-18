@@ -10,7 +10,7 @@
  * irreversible P1 commitments, occurrence accounting and a versioned record/convert path.
  */
 export const P1G_PROFILE = "p1-global-r1" as const;
-export const P1G_REVISION = "r1.2" as const;
+export const P1G_REVISION = "r1.3" as const;
 export const P1G_OBSERVATION_SCHEMA = "sts2.p1/observation-1" as const;
 export const P1G_RESULT_SCHEMA = "sts2.p1/result-1" as const;
 export const P1G_PORT_PROTOCOL = "sts2.p1/agent-port-1" as const;

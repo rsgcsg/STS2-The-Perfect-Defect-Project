@@ -72,7 +72,8 @@ export function completeSelector(value: unknown): boolean {
 
 export function completeCombatSurface(value: unknown): boolean {
   const commands = (items: unknown): boolean => Array.isArray(items) && items.every(item => isObject(item)
-    && text(item.entity_id) && Array.isArray(item.target_entity_ids) && item.target_entity_ids.every(text));
+    && text(item.entity_id) && Array.isArray(item.target_entity_ids) && item.target_entity_ids.every(text)
+    && new Set(item.target_entity_ids).size === item.target_entity_ids.length);
   return isObject(value) && value.kind === "combat_turn" && typeof value.can_end_turn === "boolean"
     && commands(value.playable_cards) && commands(value.usable_potions)
     // Native71cf uses VisibleCombatPotion here, not VisibleCombatCommandOption.
