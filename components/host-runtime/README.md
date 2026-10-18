@@ -329,11 +329,14 @@ legality authority.
 
 Manager-only map continuation uses the same service ID, expected runtime and
 expected continuity as reset. Stop and release the controller first. At a complete,
-quiescent native MapRoom, `POST /v1/admin/save-map` takes `request_id`, an absolute
+quiescent native map boundary, `POST /v1/admin/save-map` takes `request_id`, an absolute
 new output `path`, `expected_runtime_instance_id` and `expected_game_continuity_id`.
 Its `result.save` descriptor contains the file SHA-256/size, exact native Host/game
-artifact hashes, seed, act and floor. Retain that descriptor privately beside the
-save. The driver also records the exact parent runtime and game continuity in
+artifact hashes, seed, act and floor, plus the native save boundary and actual
+source room type. A completed room's open map presentation is accepted only when
+the pinned native producer confirms `save_boundary: map_presentation` after its
+completion and pending-work checks; its physical room type remains truthful.
+Retain that descriptor privately beside the save. The driver also records the exact parent runtime and game continuity in
 that descriptor. Existing files are refused. Close the service normally after saving.
 
 Next time, start the same exact native candidate in a new service without resetting
@@ -353,7 +356,8 @@ An unknown save/load outcome fences this process and is never resent. A known
 native failure or unverified restored position remains explicitly distinct from
 unknown and also requires replacing the process. Original saves and failed output
 files remain available for diagnosis. This minimal operator path supports only a
-quiescent MapRoom and a fresh-process restore; it provides no combat checkpoint,
+quiescent MapRoom or completed native map presentation and a fresh-process restore;
+it provides no combat checkpoint,
 save catalog, branch library or Reference save qualification. Portable fixtures
 exercise these boundaries but do not establish actual-game save equivalence.
 

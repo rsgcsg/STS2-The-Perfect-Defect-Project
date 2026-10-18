@@ -65,13 +65,18 @@ export async function saveManagedMapContinue(started, path, timeoutMs) {
   let result;
   try { result = await started.runtime.process.request({ cmd: "write_continue_save", path }, timeoutMs); }
   catch (cause) { throw new ManagedMapContinueUnknown(cause); }
+  // The pinned native producer owns completion checks. A completed room can
+  // still be the physical room while its public map presentation is open.
+  const mapBoundary = result?.room_type === "MapRoom" || result?.save_boundary === "map_presentation";
   if (result?.type !== "save_result" || result.success !== true
-    || result.room_type !== "MapRoom" || result.path !== path) {
+    || !mapBoundary || result.path !== path) {
     throw new ManagedMapContinueFailure("managed_map_continue_native_save_failed");
   }
   try {
     await assertManagedMapReady(started, timeoutMs, position);
-    return { schema: SCHEMA, path, ...fileIdentity(path), candidate: native, ...position };
+    return { schema: SCHEMA, path, ...fileIdentity(path), candidate: native, ...position,
+      save_boundary: result.save_boundary ?? "map_room",
+      source_room_type: result.source_room_type ?? result.room_type };
   } catch (cause) { throw new ManagedMapContinueFailure("managed_map_continue_saved_unverified", { cause }); }
 }
 

@@ -10,6 +10,7 @@ function fixture() {
   const directory = mkdtempSync(join(tmpdir(), "managed-map-continue-unit-"));
   const path = join(directory, "map.save"), calls = [];
   let map = true, pending = false, unknown = false;
+  let nativeBoundary = { room_type: "MapRoom" };
   const started = {
     session: { tainted: false, observe: () => ({ interaction: { kind: map ? "map_navigation" : "combat_turn" },
       completeness: { status: "complete" } }) },
@@ -23,13 +24,14 @@ function fixture() {
         if (request.cmd === "write_continue_save") {
           writeFileSync(request.path, "synthetic native map save");
           if (unknown) throw new Error("transport disappeared after native write");
-          return { type: "save_result", success: true, room_type: "MapRoom", path: request.path };
+          return { type: "save_result", success: true, ...nativeBoundary, path: request.path };
         }
         throw new Error("unexpected request");
       } } }
   };
   return { started, calls, path, directory, nonMap: () => { map = false; },
     pending: () => { pending = true; }, unknown: () => { unknown = true; },
+    nativeBoundary: value => { nativeBoundary = value; },
     close: () => rmSync(directory, { recursive: true, force: true }) };
 }
 
@@ -80,4 +82,23 @@ test("unknown native save preserves its file and does not resend", async () => {
     assert.equal(readFileSync(f.path, "utf8"), "synthetic native map save");
     assert.equal(f.calls.filter(c => c.cmd === "write_continue_save").length, 1);
   } finally { f.close(); }
+});
+
+test("completed native map presentation preserves the physical room and legacy rollback is rejected", async () => {
+  for (const completed of [true, false]) {
+    const f = fixture();
+    try {
+      f.nativeBoundary({ room_type: "CombatRoom", source_room_type: "CombatRoom",
+        ...(completed ? { save_boundary: "map_presentation" } : {}) });
+      if (completed) {
+        const save = await saveManagedMapContinue(f.started, f.path, 1000);
+        assert.equal(save.save_boundary, "map_presentation");
+        assert.equal(save.source_room_type, "CombatRoom");
+      } else {
+        await assert.rejects(saveManagedMapContinue(f.started, f.path, 1000), /native_save_failed/);
+        assert.equal(existsSync(f.path), true);
+      }
+      assert.equal(f.calls.filter(c => c.cmd === "write_continue_save").length, 1);
+    } finally { f.close(); }
+  }
 });
