@@ -1,0 +1,48 @@
+{
+  "scope": "Read-only K1 snapshot; suggestions are not executed dispositions. One complete CSV and small reviewable detail summaries are retained here; original large JSON stays at its exact path.",
+  "baseline": "60dc0a89ad6ae19b26e0e1bbf71517471f409069",
+  "files": [
+    {
+      "path": "/Users/fire/Documents/Codex/2026-10-17/a-t7-runtime-connector-status-settling/work/p1-K1-20261018/full-ledger.csv",
+      "bytes": 1979125,
+      "sha256": "c3d5cecf1292ba11c1a4072c19ff27e0cf9a251c24dde5393a7833b3b75e008b",
+      "repository_copy": "asset-ledger.csv"
+    },
+    {
+      "path": "/Users/fire/Documents/Codex/2026-10-17/a-t7-runtime-connector-status-settling/work/p1-K1-20261018/full-ledger.json",
+      "bytes": 2978316,
+      "sha256": "f55469120bc493ce0f9ce7908d67c337b845913842493107c0ab04520cd0eb2f",
+      "repository_copy": null
+    },
+    {
+      "path": "/Users/fire/Documents/Codex/2026-10-17/a-t7-runtime-connector-status-settling/work/p1-K1-20261018/remote-report.md",
+      "bytes": 54416,
+      "sha256": "41ea777d1f8c5b36735534d18ea796a2c8f2a9aa067948ac44c6384d84f19797",
+      "repository_copy": "ASSET_REMOTE_REPORT.md"
+    },
+    {
+      "path": "/Users/fire/Documents/Codex/2026-10-17/a-t7-runtime-connector-status-settling/work/p1-K1-20261018/local-report.md",
+      "bytes": 5875,
+      "sha256": "958ee5a8437e8f27957c0e0b449d8aeb43066f3b150199dd0a5854801f80829a",
+      "repository_copy": "ASSET_LOCAL_REPORT.md"
+    },
+    {
+      "path": "/Users/fire/Documents/Codex/2026-10-17/a-t7-runtime-connector-status-settling/work/p1-K1-20261018/codex-docs-report.md",
+      "bytes": 9658,
+      "sha256": "183f61dbfc51bf824aa4ff7e270185c57be662e1467b5df472b9cfaba03b094a",
+      "repository_copy": null
+    },
+    {
+      "path": "/Users/fire/Documents/Codex/2026-10-17/a-t7-runtime-connector-status-settling/work/p1-K1-20261018/protected-assets.json",
+      "bytes": 78060,
+      "sha256": "6b2d48bb6c55863ee7ac7b94e3d7c08ec50c78199c08a34eb324756e197ed50f",
+      "repository_copy": null
+    },
+    {
+      "path": "/Users/fire/Documents/Codex/2026-10-17/a-t7-runtime-connector-status-settling/work/p1-K1-20261018/proposed-archive-index.json",
+      "bytes": 3022,
+      "sha256": "2e2a77a46c7498dade82f63356883001dcce56a2e22d7f5b9cd44ef64f966ba0",
+      "repository_copy": "asset-archive-proposals.json"
+    }
+  ]
+}

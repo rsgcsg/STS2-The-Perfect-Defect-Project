@@ -59,10 +59,12 @@ the execution semantic action space. Annotator preserves the same typed
 observation for evidence without gaining legality or mutation authority.
 Inside Annotator, `SemanticBoundaryTracker` is the sole current runtime causal
 authority. Current Decision and canonical-transition files are non-authorizing
-projections from an already proved semantic transition. The `*-2` wire names
-identify the one current recording format. Historical Decision V1/V2 and
-native-action-ledger contracts remain readable only for prior/additive evidence
-and are not current runtime admission state machines.
+projections from an already proved semantic transition. The
+[Full-Run data chain](FULL_RUN_DATA_CHAIN.md) owns the exact causal lane versions
+(trace4/canonical3/bundle3), restricted record2 compatibility projection and
+archival readers. Source3/4 and direct Agent evidence retain their separate
+grammars. Historical Decision V1/V2 and native-action-ledger contracts are not
+current runtime admission state machines; retained readers do not restore that authority.
 
 Each imported component retains its focused `AGENTS.md`, tests and operational
 documentation. Those files add component-specific constraints but cannot

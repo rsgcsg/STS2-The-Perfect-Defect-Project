@@ -1,5 +1,11 @@
 # Platform Live UI
 
+Historical UI description: the `K` shortcut and presentation below belong to
+the earlier implementation. Current requirements and operations route through
+[UI interaction specification](UI_INTERACTION_SPEC.md) and the
+[current project map](plans/p1-prefreeze-2026-10-18/README.md). Do not use this
+page to infer the current installed UI or shortcut; the original description is retained.
+
 The Platform has one in-game UI, not separate Connector, Annotator and Policy
 GUIs. The UI starts hidden inside the unified `STS2_PLATFORM` Mod and toggles
 with the uncommon letter key `K`; `Escape` closes it.

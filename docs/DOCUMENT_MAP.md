@@ -4,6 +4,25 @@ This is navigation, not a work queue. Start with [CURRENT](memory/CURRENT.md) an
 [shared working rules](WORKING_RULES.zh-CN.md). CURRENT alone links the current
 assignment; product plans below are background/backlog until assigned.
 
+## One project route
+
+The [P1 project map and current pre-freeze plan](plans/p1-prefreeze-2026-10-18/README.md)
+connect the existing Architecture, Components and ADR-0016 in this order:
+
+| Read for | Existing owner / route |
+| --- | --- |
+| Goal | A useful full-game Agent that can improve; current work is the training-before-freeze P1 combination, then Q1–Q3 |
+| Upper chain | [Architecture](ARCHITECTURE.md): world/Host → environment → complete Agent, and immutable sources → projection → learning → Model/Agent → execution/evaluation |
+| Protocols and contracts | [P1 r1](protocols/P1_GLOBAL_R1.zh-CN.md), [ADR-0016](adr/0016-agent-composition-and-execution-request.md); record grammar, environment agreement, Agent program port and Model Input/Target stay distinct |
+| Functions and capabilities | [Feature status table](plans/p1-prefreeze-2026-10-18/FEATURE_STATUS.md): one historical capability per row, owner, evidence and scoped status |
+| Components | [Components](COMPONENTS.md) and the component routes below |
+| Formats | [Recording history](plans/p1-prefreeze-2026-10-18/RECORDING_HISTORY.md), [format/cost table](plans/p1-prefreeze-2026-10-18/RECORDING_FORMATS_AND_COST.md), [P1 section10](protocols/P1_GLOBAL_R1.zh-CN.md#10-记录与转换); current Agent directories and legacy single-file records are different lanes |
+| Status and gaps | [Scope v0.3 / coverage](plans/p1-prefreeze-2026-10-18/SCOPE_v0.3.zh-CN.md), [actual Managed differences](plans/p1-prefreeze-2026-10-18/MANAGED_DIFFERENCES.md), [P1 exceptions](protocols/P1_GLOBAL_R1.zh-CN.md#17-登记的协议例外必须经用户审核才能新增) |
+| Historical assets/documents | [Asset ledger](plans/p1-prefreeze-2026-10-18/ASSETS.md), [current document routes](plans/p1-prefreeze-2026-10-18/DOCUMENT_INDEX.md), [archive index](plans/p1-prefreeze-2026-10-18/ARCHIVE_INDEX.md); navigation labels and proposed destinations do not mean anything was moved or closed |
+
+K3 disposition and K4 acceptance remain open. These are routes into the existing
+owners, not another protocol, identity store, registry or governance checker.
+
 ## P1 forward decision profile
 
 - [Selected decisions and supersession](DECISIONS.md)
@@ -28,7 +47,9 @@ not another requirements, identity or status registry.
 - [V1 specification](BASELINE_V1_SPEC.zh-CN.md): earlier required outcomes,
   design, rationale, assumptions and unimplemented choices; current selection is above.
 - [Agent composition/execution decision](adr/0016-agent-composition-and-execution-request.md):
-  Accepted architecture/migration direction; concrete P1 startup remains unaccepted, training mapping is future scope.
+  accepted architecture/migration direction; actual common startup/application seams
+  are owned by [Agent execution](../python/docs/AGENT_EXECUTION_CONTRACT.md).
+  Structural implementation, complete P1 acceptance and future training mapping are separate.
 - [Execution and acceptance matrix](plans/BASELINE_G2_V1_EXECUTION_2026-10-08.md):
   historical packets, dependencies and exact remaining evidence; no new authorization.
 - [Task index](plans/BASELINE_TASKS.zh-CN.md): stable P/E/G/V/R IDs.

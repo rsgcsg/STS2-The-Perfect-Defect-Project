@@ -244,9 +244,11 @@ manifest/producer fixtures 与原服务进程 seam，不为了设计先跑训练
 
 ## Implementation and later refinement
 
-当前 P1 A+B 已授权实施、尚未验收；具体接口、原 API/默认值、启动/结果接缝及实施
-约束由现有 [Local model task flow](../../python/docs/LOCAL_MODEL_TASK_FLOW.md) 拥有，
-不在 ADR 再维护一份实现清单。实现 owner 仍须以实际 Public M2/Teacher caller 验证
+本 ADR 形成时，P1 A+B 已授权实施、尚未验收。后来已实现的共同启动/结果接缝与
+实际 Public M2/Teacher 结构范围由 [Agent execution](../../python/docs/AGENT_EXECUTION_CONTRACT.md)
+和 [Local model task flow](../../python/docs/LOCAL_MODEL_TASK_FLOW.md) 拥有；完整P1技术冻结
+仍按[当前计划](../plans/p1-prefreeze-2026-10-18/README.md)验收，不在ADR维护第二份实现清单。
+实现 owner 仍须以实际 Public M2/Teacher caller 验证
 可信描述/请求引用、legacy Goal/witness 映射与真实默认值，再冻结具体编码和兼容版本。
 训练 workload 是未来另行 owning 映射，不是当前 P1 或首门的前置。剩余组合不是强制
 清单，existing unknown、原 identity/byte/pin 校验及 archived readers 规则保持；采纳

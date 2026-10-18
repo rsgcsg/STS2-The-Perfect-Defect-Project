@@ -1,7 +1,9 @@
 # P1 全局 r1：可执行合同（profile `p1-global-r1`）
 
 状态：**r1.3，P1 的唯一权威文档**（2026-10-18 用户决定；实现和实跑资格见 CURRENT）。其他 P1 文档（[P1](P1.zh-CN.md)、[Host/wire](P1_HOST_AND_WIRE.zh-CN.md)、[计划](../plans/P1_FORWARD_2026-10-15.zh-CN.md)、[ADR-0017](../adr/0017-p1-forward-decision-profile.md)）是背景和历史；本文定义P1语义；用户最新要求及组件权责仍优先，代码是待检验实现，不以当前代码覆盖需求。
-推进规则见 [WORKING_RULES](../WORKING_RULES.zh-CN.md)；当前进度与下一步见第 16–18 节。
+推进规则见 [WORKING_RULES](../WORKING_RULES.zh-CN.md)；当前任务、差异和冻结门见
+[第16轮入口](../plans/p1-prefreeze-2026-10-18/README.md)与[范围书v0.3](../plans/p1-prefreeze-2026-10-18/SCOPE_v0.3.zh-CN.md)。
+第14–16节实测及第18节旧T1–T7均保留其注明日期/候选的历史范围；第17节拥有登记例外。
 
 代码：共享核心 `components/connector/sdk/typescript/src/p1Global/`（包出口 `@rsgcsg/sts2-connector-client/p1-global`）。
 产品路径：`PolicyRuntime`（agent-session-1）→ Managed 用 `ManagedServicePolicyClient.attachGlobal`，Reference 用 `ReferenceGlobalTransport`；简单外部 Agent 经 `components/policy-runtime/examples/p1/session-bridge.mjs` 接入（`sts2.p1/agent-port-1`）。
@@ -130,16 +132,49 @@ Agent → 执行器：choose{occurrence, choice_id} | abstain{reason}
 
 Agent 不需要了解 Godot、原生操作数或 Host 差异。示例：`components/policy-runtime/examples/p1/`（随机、首项、人工选择器）。
 
-## 10. 记录与转换（`sts2.p1/episode-record-1`）
+## 10. 记录与转换
+
+### 当前 Runtime Agent-session 目录
+
+当前 `tools/p1-suite.mjs` → `session-bridge.mjs` → 外部 stdio Agent →
+Policy Runtime 使用已有 Agent-session 执行与记录 owner。当前 Agent CLI 写
+`sts2.policy-runtime/agent-session-run-1` **运行目录**，profile 为 `p1-global-r1`、
+adapter 为 `p1-session-bridge`；它不是下面旧格式的单一 NDJSON 文件。
+目录保存 `events.jsonl`、`global_source` 引用的原始环境字节、原始 Agent
+frame/Consume/ACK、dispatch/Receipt/Result 关联及封存清单。离线按
+`sts2-p1 replay --run-directory` 检查来源、共享投影、消费与原始执行回执；
+[Evidence Agent-session verifier](../../components/evidence/README.md)拥有typed独立验证。
+直接 Agent 记录独立于 Annotator/Source4，不能把程序记录或通过校验说成 Human 原点、
+因果后继、训练准入或本轮整局/跨Host资格。
+
+### 保留的旧单文件 lane（`sts2.p1/episode-record-1`）
+
+以下是旧直接记录/converter的格式范围，不是当前所有Agent运行的唯一记录格式：
 
 - 每局一个只追加文件，每行写入后立即 fsync，然后执行器才继续。环境行保存游戏端原样字节及 sha256，**先于** Agent 收到对应观察写入；没有 Agent 也能记录环境。
 - 行类型：record_open（含 P1 核心版本与代码摘要）、env_request / env_response / env_error、p1_observation（含来源引用、被排除的原生动作）、p1_choice（含来源：agent_choice / forced）、p1_step、p1_result、agent_message_in / out、episode_end、host_close、record_close。
 - 离线转换（`sts2-p1 convert`）只读记录里的环境字节，用同一共享核心重建每份观察，并与当时实际发给 Agent 的逐字节比对；同时报告记录时和当前的核心版本是否一致。
 - 人工 P1 选择器的记录来源为 `human-p1-chooser`；游戏内原生物理操作由 Annotator 另行记录，二者不混同。
 
+当前人工选择器经 Runtime 产品路径执行时使用上面的 Agent-session 目录；来源标识与
+记录grammar分开。简洁首页的操作者同时看游戏画面，不能声称只消费P1观察。
+
+### 独立环境来源与 Source4 离线解释
+
+通用环境采集不限 Human/鼠标或某一格式；原件能按明确合同转换为所需数据/轨迹即可。
+Source4仍由既有Recorder/Store/packer保存独立原件，经Evidence v4 reader再进入共享SDK
+解释，详见 [Source4 owner](../../components/annotator/docs/SOURCE_SESSION_PROFILE_V3.md#source4-originals-and-offline-p1-interpretation)。
+report-v2的 `complete=true`仅指声明的**bounded录制前缀**全部保留capture已分类、
+无必需事实缺失或排除pause；`natural_terminal_observed`单列终局。完整分类不是完整一局、
+Human证明或运行验收。当前生产接缝及真实整局门见[采集调查](../plans/p1-prefreeze-2026-10-18/RECORDING_HISTORY.md)
+和[范围书](../plans/p1-prefreeze-2026-10-18/SCOPE_v0.3.zh-CN.md)；不因有fixture/旧转换成功而降低门槛。
+
 ## 11. 两端等价怎样检查
 
-本轮按用户批准的 r1 支持范围书 v0.2：固定 test-1000 前20种子、角色/难度/语言和候选 tuple，保留 Reference 真实公开选择，再在 Managed 按完整公开身份/关系重放。不能用两个 Host 各自随机跑到死亡代替配对重放。
+正式比较固定角色/难度/语言、种子与候选tuple，保留Reference真实公开选择，再在Managed
+按完整公开身份/关系重放。不能用两个Host各自随机跑到死亡代替配对重放。
+旧v0.2的第一幕/中文及test-1000前20种子批次保持原范围；当前三幕、英文、最终批次与
+整局计数门见[范围书v0.3](../plans/p1-prefreeze-2026-10-18/SCOPE_v0.3.zh-CN.md)，不把旧批次重贴为新候选资格。
 
 - 正式比较完整 P1 公开观察、目录、实际选择和不可撤回承诺。一个全局注入双射约束全部卡、重复实例、owner、目录及被选动作；只有合同声明的多重集可换序。
 - 文字逐字段比较，不全局删名称或描述；同候选下编码/运输差异先按原始反例确定适配 owner。当前卡牌详情 Read 库存无时间顺序，可作为多重集比较，但每张牌、显示上下文、owner 关联及重复次数必须保留。
@@ -256,9 +291,18 @@ r1.2 原始运行、帧和既有结论保留。用 r1.3 回放旧轨迹时必须
 - STS2原生事实是真相，Reference是首选对照但其投影也需审查；在Managed重放Reference原件并比较决策前缀和终局，按原件定位分叉owner。
 - Managed 只需在 P1 语境里绝大多数情况与原版一致，功能齐全、逻辑相同；不要求逐字节相同。
 
-## 18. 当前已知缺口（r1.1）
+## 18. 缺口路由与历史 r1.1 清单
 
-按续作计划处理：
+**当前差异位置、拥有层、源码修复及尚未实际复验项**见
+[A线根因表](../plans/p1-prefreeze-2026-10-18/MANAGED_DIFFERENCES.md)；冻结候选、
+逐幕覆盖和数据/产品/K剩余门见[范围书v0.3](../plans/p1-prefreeze-2026-10-18/SCOPE_v0.3.zh-CN.md)。
+新Mod/英文/采集器预检、Source4短段与真实整局complete、严格完整终局对照、Workbench/R20
+及K3/K4仍未齐；登记例外只由第17节拥有。当前任务由[第16轮入口](../plans/p1-prefreeze-2026-10-18/README.md)
+派发，不以旧CURRENT或下面旧T编号恢复历史队列。
+
+### 历史 r1.1 T1–T7（保留原观察，不代表当前未修清单）
+
+以下是当时续作计划的缺口，后来工程/批次按各自原件验收：
 - T1：Managed 缺牌组卡详情和空字段形状，是等价的第一分叉。
 - T2：Managed 选卡页元数据不完整。
 - T3：Reference 20 局套件还没跑。

@@ -1,66 +1,58 @@
-# Current — Round12 Managed diagnostics
+# Current — Round16 P1 pre-training freeze sprint
 
 Resolve live GitHub refs; current source and original records override this file.
-Verify exact component/native identity before reusing this route.
-[PR194](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/194),
-[PR195](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/195) and
-[PR196](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/196) are merged;
-Round12 integration baseline `develop` is `6d4d9745`. The earlier conditional PR194 rejection below is
-historical and no longer describes its authorization or merge state.
+This is dated routing, not live service or qualification authority. Verify exact
+artifacts before operations. [Project map and active plan](../plans/p1-prefreeze-2026-10-18/README.md)
+own the current routes; [scope v0.3 and coverage](../plans/p1-prefreeze-2026-10-18/SCOPE_v0.3.zh-CN.md)
+own the final training-before-freeze gates. P1 is the current main line; Q1–Q3 follow.
 
-[PR198](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/198) remains
-Draft at `97e4ecdd`; required CI39096387287 is green. Its `888ba4d2`
-artifact passed one targeted Reference short with 322 completed Results,
-337 delivered Receipts and zero unknown/taint/error. This does not relabel old
-Human/strict replay evidence or qualify cross-Host equivalence.
+## Source and candidate
 
-[PR197](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/197) owns the
-current Managed repairs. Final Host source is `fed37a72`, native DLL SHA starts
-`751312e74071f8c3`, MVID `da361687-2c30-40cd-90cc-a2588177fd63`.
-Human01 C11 submitted 293 choices (67 full-public matches plus 226 explicit
-diagnostic locators), actually skipped 23 original `not_started` inputs, and
-reached the original loss terminal. Human02 C09 submitted 432 choices (47 full
-matches plus 385 diagnostic locators), actually skipped one original
-`not_started` input, and reached its original loss terminal. Both final runs
-have zero unknown and zero unresolved dispatches. Full-public terminal comparison
-remains different for both; bounded comparison work and unlocalized public graph
-differences remain recorded. This is diagnostic traversal, not strict replay or
-equivalence qualification. Formal comparison and original public facts were not
-weakened to obtain these results.
+Integrated develop is `60dc0a89ad6ae19b26e0e1bbf71517471f409069`, same tree as
+read-only `67adeccb`. [PR202](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/202)
+is Ready at `0affa651c84ff8c70acc276bc64710b43480176b`; source CI39108923063
+and independent review passed. It is **not merged**. Root handles the merge-time
+branch-auto-delete authority conflict under the current no-branch-deletion rule.
+The documentation topic is based on this unmerged candidate, not a new product build.
 
-Original strict replay06, old D06 unknown, and Round12 Human02 C07 unknown remain
-unchanged. The fixed candidates start fresh seed executions with new identities;
-they never resend the old unknown request. External Round12 reports retain all
-attempt identities, original Source/input/Receipt/Result joins, actual skips,
-full difference pairs, and the limits of source attribution. PR197 final-head CI
-must be checked independently from local source/build/runtime evidence.
+Reference new A1 Mod `0db06ad7` and Managed A5/C `1482de5d` keep their exact
+source/MVID/patch and actual-use scope in the scope table. Old Mod888/Managed7513,
+Human01/02 and prior unknown/failed attempts retain their original identities.
+C Managed S05 proved bounded changed-map save, normal parent close, fresh restore,
+full public equality and one actual new-node advance; Reference continue is unqualified.
 
-## Historical package 1 and bounded-window snapshots
+## Work and actual remaining gates
 
-[P1 package 1](../plans/P1_R1_PACKAGE1_2026-10-17.md) retains the implementation,
-acceptance and original failed windows. PR193 merged as `a90881c5` after
-CI39082142114. The approved B/C/S/T6 engineering closeout remains scoped: its
-Reference20 on Mod `d06a9e8b` completed 20 native natural losses, zero unknown,
-and 20 original replays. The original `e5f64e49` Managed40 was reused under its
-unchanged closure: 40 natural losses, 2802 original dispatch/Receipt/wire joins
-and 2706 completed P1 Results. Reuse is not a new Managed run. The old Reference
-batch's 64 reward interruptions remain historical failures; the later batch
-repairs them through owning producer changes, without rewriting old records.
+- A: repair and validate actual public differences. [Root causes and positions](../plans/p1-prefreeze-2026-10-18/MANAGED_DIFFERENCES.md)
+  separate source fixes, pending native checks and unresolved witnesses. Diagnostic
+  traversal/loss is not strict equivalence; A02 Human02 stopped at ENOSPC before terminal.
+  Old Human01 card text and ordered potion facts cannot be silently rewritten.
+- B: new-Mod/English/Recorder preflight, user short segment, Source4 conversion,
+  then natural-terminal full games and strict Managed replay. Final usable preflight
+  sheet remains missing; K0 found selector-assembly/sourceMapping seams, not a passed run.
+- Final candidate: English >=3 Human full games, actual Act3 and victory row,
+  strict complete-terminal comparison, fresh Managed40/Reference20, Workbench/R20,
+  source/records/coverage/closeout and K. None is inferred from old green or S05.
+- K0/K1/K2 documents are delivered via the project map. K3 is unapproved/unexecuted;
+  no archive move/PR closure/branch or data deletion occurred. K4 fresh-reader review
+  found routing/record-lane issues and the real B gap; final K acceptance remains open.
 
-Human01's original native run reached Act1 VANTOM_BOSS and Act2 floor22 loss.
-Early strict Managed replays stopped at public reward representation; historical
-replay06 reached 37 matched choices and then the original stale-snapshot Thunder/
-Zap publication seam. Later Round12 diagnostics explicitly distinguish those
-original `not_started` inputs from delivered native choices. Neither the strict
-failure nor original public facts were removed. PR194's original short missed
-its intended chest/Reboot targets; later user authorization and its eventual
-merge supersede the old conditional Draft/rejection state. Original failure,
-rollback, and scoped later installation evidence remain in those PRs and external
-reports, not relabeled as equivalent runs.
+Current differences route directly to the root-cause table; protocol exceptions
+remain solely [P1 section17](../protocols/P1_GLOBAL_R1.zh-CN.md#17-登记的协议例外必须经用户审核才能新增).
+The old Round12 CURRENT and P1 r1.1 T1–T7 list are historical, not a second queue.
+
+## Stop boundary and next action
+
+Continue ordinary A/B repairs and this scoped documentation integration/review.
+Unknown requests are never retried; new runs retain new identities and original facts.
+Do not start training, alter research configuration, close historical PRs, delete
+branches/data or declare freeze. Final freeze PR still needs the user's approval
+and K completion. Hard deadline: **2026-10-20 16:30 Australia/Brisbane**; if incomplete,
+deliver the actual remaining list without weakening criteria or silently extending.
 
 ## Remaining Platform non-claims
 
-Package2/3, Source4/Human, full Host equivalence, Windows, strategy and training
-qualification remain separate. Existing Q3-M0 non-game measurements do not
-change research configuration authority. Historical process exit, replay or
-terminal evidence does not establish native-clean shutdown.
+Historical [package1](../plans/P1_R1_PACKAGE1_2026-10-17.md) and [status/evidence](../STATUS.md)
+retain old Reference20/Managed40 and diagnostic receipts; they are not new final batches.
+No new Windows, Human/Source4 full-run, training, strategy or native-clean shutdown
+qualification is implied by these documents, process exit, CI or S05.

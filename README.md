@@ -51,9 +51,10 @@ and fully integrated remote game Host are not established capabilities.
 - `python/spireagent`: Workbench/Hub and shared application infrastructure.
   `python/stpd`: research projections, models, training and evaluation.
   `apps/workbench`: retained diagnostic APIs, not a second user console.
-- [P1 direction](docs/protocols/P1.zh-CN.md) and
-  [pending global implementation PR189](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/189): product work,
-  only when assigned; not proof that P1 is frozen or training-ready.
+- [P1 contract](docs/protocols/P1_GLOBAL_R1.zh-CN.md) and
+  [project map / current pre-freeze plan](docs/plans/p1-prefreeze-2026-10-18/README.md):
+  product work only when assigned; implementation, current acceptance and training
+  readiness are separate. Earlier P1 plans retain their historical scope.
 - [Workflow](docs/DEVELOPMENT_WORKFLOW.md), [Testing](docs/TESTING.md),
   [Governance](docs/ENGINEERING_GOVERNANCE.md), [Versioning](docs/VERSIONING.md).
 - [Stage1a product](docs/STAGE1A_PRODUCT_DELIVERY.zh-CN.md),
