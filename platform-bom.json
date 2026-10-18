@@ -22,9 +22,9 @@
     },
     "annotator": {
       "version": "0.3.0-rc.19",
-      "source_revision": "51a823eec7f56fba4c96d00a00f01143333d0f2d",
-      "component_tree_revision": "fe25267b0f720eb59af0920f62d25a4e375ded01",
-      "component_source_digest_sha256": "c0d9f0fb61cac2c65d8684266ca9c94f430996520b06e71ee8b9580349b0b04e"
+      "source_revision": "e3caa3f28601083555e33d054b3487d0cfdcdad9",
+      "component_tree_revision": "4d97143cc731dd0f93d18f1e7c4319e32357521d",
+      "component_source_digest_sha256": "5c2ccf4118e5bdee22636bba718cbfde57083f5c44bbf5441f211017163e7b0a"
     },
     "evidence": {
       "version": "0.1.0-rc.31",
