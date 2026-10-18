@@ -1,4 +1,44 @@
-# Current — P1 r1 package 1 closeout
+# Current — Round12 Managed diagnostics
+
+Resolve live refs and exact component/native identity before reusing this route.
+[PR194](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/194),
+[PR195](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/195) and
+[PR196](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/196) are merged;
+current `develop` is `6d4d9745`. The earlier conditional PR194 rejection below is
+historical and no longer describes its authorization or merge state.
+
+[PR198](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/198) remains
+Draft at `97e4ecdd`; required CI39096387287 is green. Its `888ba4d2`
+artifact passed one targeted Reference short with 322 completed Results,
+337 delivered Receipts and zero unknown/taint/error. This does not relabel old
+Human/strict replay evidence or qualify cross-Host equivalence.
+
+[PR197](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/197) owns the
+current Managed repairs. Final Host source is `fed37a72`, native DLL SHA starts
+`751312e74071f8c3`, MVID `da361687-2c30-40cd-90cc-a2588177fd63`.
+Human01 C11 submitted 293 choices (67 full-public matches plus 226 explicit
+diagnostic locators), actually skipped 23 original `not_started` inputs, and
+reached the original loss terminal. Human02 C09 submitted 432 choices (47 full
+matches plus 385 diagnostic locators), actually skipped one original
+`not_started` input, and reached its original loss terminal. Both final runs
+have zero unknown and zero unresolved dispatches. Full-public terminal comparison
+remains different for both; bounded comparison work and unlocalized public graph
+differences remain recorded. This is diagnostic traversal, not strict replay or
+equivalence qualification. Formal comparison and original public facts were not
+weakened to obtain these results.
+
+Original strict replay06, old D06 unknown, and Round12 Human02 C07 unknown remain
+unchanged. The fixed candidates start fresh seed executions with new identities;
+they never resend the old unknown request. External Round12 reports retain all
+attempt identities, original Source/input/Receipt/Result joins, actual skips,
+full difference pairs, and the limits of source attribution. PR197 final-head CI
+must be checked independently from local source/build/runtime evidence.
+
+## Historical package 1 and bounded-window snapshots
+
+The following sections record their then-current state. Their old Draft,
+not-authorized, not-yet-run, budget, and installation statements do not override
+the Round12 route above or live refs.
 
 Resolve live GitHub refs; current source and original records override this file.
 [P1 package 1](../plans/P1_R1_PACKAGE1_2026-10-17.md) records the implementation,
