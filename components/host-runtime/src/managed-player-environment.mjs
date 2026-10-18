@@ -1035,6 +1035,7 @@ function currentSurface(state, ctx) {
         const label = reward.name ?? kind ?? `Reward ${index + 1}`;
         const item = ctx.referent({
           role: "reward",
+          id: ctx.entityId("reward_group", reward.native_ref),
           label,
           enabled,
           occurrence: index,
@@ -1046,10 +1047,11 @@ function currentSurface(state, ctx) {
             // Public stable group identity (alias of the private native reward ref).
             group_id: ctx.entityId("reward_group", reward.native_ref),
             group_relation: ["independent", "linked"].includes(reward.group_relation) ? reward.group_relation : "unavailable",
+            ...(kind !== "card" ? { card_alternatives_complete: false,
+              native_relic_refresh_subscription: "unavailable" } : {}),
             // Lawfully viewable candidates of an offered, populated card reward (P1 aggregation).
             ...(kind === "card" ? { card_options: Array.isArray(reward.card_options)
-              ? reward.card_options.map((card, optionIndex) => ({ index: card?.index ?? optionIndex,
-                ...visibleCombatCard(card, ctx.entityId("card", card?.native_ref)) }))
+              ? reward.card_options.map(card => rewardCardBase(card, ctx.entityId("card", card?.native_ref)))
               : null,
               card_alternatives: Array.isArray(reward.card_alternatives) ? reward.card_alternatives.map(option => ({
                 option_id: option.option_id, title: option.title, after_selected: option.after_selected, is_native_skip: option.is_native_skip === true })) : null,
@@ -1078,6 +1080,9 @@ function currentSurface(state, ctx) {
             }
           });
         }
+        if (kind === "card" && Array.isArray(reward.card_options))
+          for (const card of reward.card_options) ctx.detailReads.push(rewardCandidateDetailRead(
+            ctx, card, ctx.entityId("card", card.native_ref), item.properties.group_id));
         return item.properties;
       });
       const rawPotions = Array.isArray(state.player?.potions)
@@ -1233,8 +1238,10 @@ function currentSurface(state, ctx) {
           id: typeof card.card_entity_ref === "string" ? ctx.entityId("card", card.card_entity_ref) : ctx.id("unbound_card", index),
           label: card?.name ?? `Card ${index + 1}`,
           occurrence: index,
-          properties: { index: card?.index ?? index, ...visibleCombatCard(card, typeof card.card_entity_ref === "string" ? ctx.entityId("card", card.card_entity_ref) : ctx.id("unbound_card", index)) }
+          properties: rewardCardBase(card, typeof card.card_entity_ref === "string" ? ctx.entityId("card", card.card_entity_ref) : ctx.id("unbound_card", index))
         });
+        if (parentComplete) ctx.detailReads.push(rewardCandidateDetailRead(ctx, card,
+          item.referent_id, ctx.entityId("reward_group", state.parent_reward_ref)));
         ctx.action({
           verb: "select", subject: item, label: `Take ${card.name ?? `card ${index + 1}`}`,
           raw: { cmd: "action", action: "select_card_reward", args: { card_ref: card.native_ref } }
@@ -2295,6 +2302,27 @@ function publicCardDetailRead(ctx, visible, details, missing, displayContext, ow
       visible_information: "complete_current_player_visible_card_detail", interaction_discovery: "read_only",
       missing: [...new Set(gaps)], hidden_by_policy: [] }
   };
+}
+
+function rewardCardBase(raw, entityId) {
+  // Match the native VisibleCard DTO; hover facts remain in their complete
+  // same-instance surface_card Read rather than a second inline representation.
+  return Object.fromEntries(Object.entries(visibleCardBase(raw, entityId))
+    .filter(([, value]) => value !== null));
+}
+
+// The populated outer reward and its opened child expose the same captured
+// native card instance and hover facts; Reference publishes both as reward_candidate.
+function rewardCandidateDetailRead(ctx, raw, entityId, ownerId) {
+  const { keywords, card_previews: cardPreviews, ...base } = visibleCombatCard(raw, entityId);
+  if (!ctx.referents.some(referent => referent.referent_id === entityId))
+    ctx.referent({ role: "card", id: entityId, label: base.name, properties: base });
+  const missing = Array.isArray(raw.render_missing) ? [...raw.render_missing] : [];
+  if (raw.render_complete !== true && missing.length === 0)
+    missing.push("current_native_reward_card_render_incomplete");
+  return publicCardDetailRead(ctx,
+    Object.fromEntries(Object.entries(base).filter(([, value]) => value !== null)),
+    { keywords, card_previews: cardPreviews }, missing, "reward_candidate", ownerId);
 }
 
 function deckCardDetailReads(ctx, state, deckRead) {
