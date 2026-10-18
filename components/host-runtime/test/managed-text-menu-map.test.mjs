@@ -120,11 +120,11 @@ function eventDecision() {
     type: "decision", decision: "event_choice",
     context: { ...mapDecision().context, floor: 1, total_floor: 1, room_type: "Event" },
     room_ref: "native-event-room", event_ref: "native-event-instance",
-    event_name: "Neow", description: "Choose a boon.",
+    event_name: "Neow", event_id: "NEOW", ancient: true, in_dialogue: false, event_public_complete: true, description: "Choose a boon.",
     options: [
-      { index: 0, native_ref: "native-option-a", title: "First boon", description: "Gain a boon.", is_locked: false },
-      { index: 1, native_ref: "native-option-b", title: "Second boon", description: "Another boon.", is_locked: false },
-      { index: 2, native_ref: "native-option-locked", title: "Locked boon", description: "Unavailable.", is_locked: true }
+      { index: 0, native_ref: "native-option-a", title: "First boon", description: "Gain a boon.", is_locked: false, is_enabled: true, is_proceed: false, was_chosen: false, will_kill_player: false, tooltips: [] },
+      { index: 1, native_ref: "native-option-b", title: "Second boon", description: "Another boon.", is_locked: false, is_enabled: true, is_proceed: false, was_chosen: false, will_kill_player: false, tooltips: [] },
+      { index: 2, native_ref: "native-option-locked", title: "Locked boon", description: "Unavailable.", is_locked: true, is_enabled: false, is_proceed: false, was_chosen: false, will_kill_player: false, tooltips: [] }
     ],
     player: mapDecision().player
   };

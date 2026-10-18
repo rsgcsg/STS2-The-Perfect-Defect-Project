@@ -800,9 +800,11 @@ function currentSurface(state, ctx) {
           && Array.isArray(option.tooltips) && typeof option.title === "string" && option.title.length > 0);
       const options = currentOptions.map((option, index) => {
         const unlocked = option?.is_locked === false && option?.is_enabled === true;
-        const optionId = ctx.entityId("option", option.native_ref);
+        const optionId = typeof option?.native_ref === "string" && option.native_ref.length > 0
+          && currentOptions.filter(entry => entry?.native_ref === option.native_ref).length === 1
+          ? ctx.entityId("option", option.native_ref) : ctx.id("unbound_option", index);
         let cardOrdinal = 0;
-        const tooltips = (option.tooltips ?? []).map(tip => {
+        const tooltips = (option?.tooltips ?? []).map(tip => {
           if (tip.kind === "text") return { kind: "text", name: visibleText(tip.name), description: visibleText(tip.description) };
           if (tip.kind !== "card" || !tip.card) throw new Error("unsupported_managed_event_tooltip");
           const card = visibleCardBase(tip.card, ctx.id("tooltip_card", optionId, tip.card.id, cardOrdinal++));
