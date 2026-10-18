@@ -44,8 +44,8 @@ test("managed candidate source and measured build identity match the manifest", 
     createHash("sha256").update(sourcePatch).digest("hex"),
     manifest.expected_build.source_patch_sha256
   );
-  assert.equal(manifest.expected_build.artifact_sha256, "7b853c14508489095805209b3efa516396c306cc19ebbe7f5f82872f6e11f23e");
-  assert.equal(manifest.expected_build.artifact_mvid, "0c6de752-e15e-48d6-bf31-e86f64206870");
+  assert.equal(manifest.expected_build.artifact_sha256, "a70d8de18578cc2666ec854d8d8eb6bb85868317335fb67fcfbb7151133d7f66");
+  assert.equal(manifest.expected_build.artifact_mvid, "c9acc642-499d-4af2-ba24-2e90db5ef8cb");
   assert.equal(manifest.previous_candidate_build.artifact_sha256, "003dd9f0fe8e5081ccce577d9963e143511d6a42461624df17b7e56ea35b4d93");
   assert.equal(manifest.previous_candidate_build.artifact_mvid, "5da84f07-fa96-4538-91c2-974180da3e62");
   assert.equal(manifest.historical_candidate_builds.some(build => build.artifact_sha256 === "75be6efa9ab35ef4eca4c2ce4153918bb8c14c75bee61d4f837b31c1727a7aba"
@@ -91,7 +91,8 @@ test("managed candidate patch keeps normal actions on native identity and commit
   assert.match(additions, /EnqueueManualUse\(target\)/u);
   assert.match(additions, /ActionQueueSynchronizer\.RequestEnqueue/u);
   assert.match(additions, /NativeObjectIdentity\.Get/u);
-  assert.match(additions, /GameOverState\(_runState\.CurrentRoom\?\.IsVictoryRoom == true\)/u);
+  assert.match(additions, /ManagedGameOverPresentation\.Install\(harmony\)/u);
+  assert.match(additions, /\["victory"\] = presentation\.Victory/u);
   assert.doesNotMatch(additions, /if \(RunManager\.Instance\.IsGameOver\)\s+return GameOverState\(true\)/u);
 });
 
@@ -113,6 +114,7 @@ test("fresh candidate preparation admits added source files into the audited dif
     "src/Sts2Headless/DeckUpgradeSelection.cs",
     "src/Sts2Headless/FairPileProjection.cs",
     "src/Sts2Headless/ManagedEventPresentation.cs",
+    "src/Sts2Headless/ManagedGameOverPresentation.cs",
     "src/Sts2Headless/ManagedMerchantPresentation.cs",
     "src/Sts2Headless/ManagedSelectorPublicCapture.cs",
     "src/Sts2Headless/NativeCalculatedVariableInventory.cs",
@@ -144,6 +146,8 @@ test("fresh candidate preparation admits added source files into the audited dif
     "src/Sts2Headless/NativeVisibleText.cs",
     "src/Sts2Headless/PerformanceLab.cs",
     "src/Sts2Headless/SimpleGridSelection.cs",
+    "terminal-tests/Program.cs",
+    "terminal-tests/TerminalMechanisms.csproj",
     "tests/NativePlayWindowAdmissionTests.csproj",
     "tests/Program.cs"
   ]);  assert.equal(source.includes('["add", "--intent-to-add"'), true);

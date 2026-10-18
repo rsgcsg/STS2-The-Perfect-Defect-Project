@@ -1,3 +1,4 @@
+import { gameOver } from "./fixtures/managed-game-over.mjs";
 import { shopRoom } from "./fixtures/managed-shop.mjs";
 import { publicSelector } from "./fixtures/managed-selector-public.mjs";
 import assert from "node:assert/strict";
@@ -46,26 +47,26 @@ function mapDecision() {
   };
 }
 
-test("observed native loss and win remain terminal text pages with no actions", () => {
+test("native loss and win intros preserve outcome with executable Continue pages", () => {
   for (const victory of [false, true]) {
-    const state = { ...mapDecision(), decision: "game_over", victory };
+    const state = gameOver(mapDecision(), { victory });
     const projected = projectManagedCandidateDecision({ state, ...identity });
-    assert.equal(projected.snapshot.status, "observed");
+    assert.equal(projected.snapshot.status, "interactive");
     const menu = new ManagedTextMenuSessionAdapter({ observe: () => projected.snapshot,
       async submit() { throw new Error("terminal page must not dispatch"); } }).observe();
-    assert.equal(menu.status, "observed");
+    assert.equal(menu.status, "interactive");
     assert.equal(menu.interaction.kind, "game_over");
-    assert.equal(menu.interaction.content.surface.victory, victory);
+    assert.equal(menu.interaction.content.context.result, victory ? "win" : "loss");
     assert.equal(menu.menu_actions.status, "complete");
-    assert.equal(menu.menu_actions.materialized_count, 0);
-    assert.equal(menu.menu_actions.total_count, 0);
-    assert.deepEqual(menu.menu_actions.actions, []);
+    assert.equal(menu.menu_actions.materialized_count, 1);
+    assert.equal(menu.menu_actions.total_count, 1);
+    assert.equal(menu.menu_actions.actions[0].verb, "activate");
   }
 });
 
 test("empty nonterminal, unknown and untyped terminal facts stay unavailable", () => {
   const source = projectManagedCandidateDecision({
-    state: { ...mapDecision(), decision: "game_over", victory: false }, ...identity
+    state: gameOver(mapDecision()), ...identity
   }).snapshot;
   for (const bad of [
     { ...source, status: "observed", interaction: { ...source.interaction, kind: "map_navigation" } },
@@ -94,7 +95,7 @@ test("empty nonterminal, unknown and untyped terminal facts stay unavailable", (
   ]) {
     const projected = projectManagedCandidateDecision({ state, ...identity }).snapshot;
     assert.equal(projected.status, "visible_unsupported");
-    assert.equal(projected.interaction.content.surface.victory, null);
+    assert.ok(projected.completeness.missing.includes("native_game_over_original_end_and_presentation_owner"));
     const text = new ManagedTextMenuSessionAdapter({ observe: () => projected,
       async submit() { throw new Error("untyped terminal must not dispatch"); } }).observe();
     assert.equal(text.status, "visible_unsupported");
@@ -275,7 +276,7 @@ test("published v1 and v2 contracts cover actual reviewed scene projections", ()
     { ...mapDecision(), decision:"relic_choice", selector_ref:"native-choice", stage:"choosing", can_skip:true, native_relic_complete:true,
       relics:[{index:0,native_ref:"native-relic-choice",id:"PAELS_WING",name:"Pael's Wing",description:"Visible effect.",
         hover_facts_complete:true,keywords:[],card_previews:[]}] },
-    { ...mapDecision(), decision: "game_over", victory: true }];
+    gameOver(mapDecision(), { victory: true })];
   const seenKinds = new Set();
   for (const state of scenes) {
     const source = projectManagedCandidateDecision({ state, ...identity }).snapshot;
@@ -292,8 +293,8 @@ test("published v1 and v2 contracts cover actual reviewed scene projections", ()
         assert.ok(contract.action_verbs.includes(action.verb), action.verb);
       }
       if (page.interaction.kind === "game_over") {
-        assert.equal(page.status, "observed");
-        assert.deepEqual(page.menu_actions.actions, []);
+        assert.equal(page.status, "interactive");
+        assert.equal(page.menu_actions.actions.length, 1);
         assert.deepEqual(contract.observed_terminal_kinds, ["game_over"]);
       } else assert.equal(page.menu_actions.status, "complete", page.interaction.kind);
     }
