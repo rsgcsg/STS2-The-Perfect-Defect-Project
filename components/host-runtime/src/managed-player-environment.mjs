@@ -237,7 +237,7 @@ function mapCoordinateKey(col, row) {
   return `${col},${row}`;
 }
 
-function buildPersistentVisibleState(state, snapshotId, makeId, entityId) {
+function buildPersistentVisibleState(state, entityId) {
   const run = state.context;
   const player = state.player;
   if (!plainObject(run) || !plainObject(player)) {
@@ -302,12 +302,12 @@ function buildPersistentVisibleState(state, snapshotId, makeId, entityId) {
             name: boss.name ?? null,
             order: boss.order
           })),
-          modifiers: modifiers.map((modifier, index) => ({
+          modifiers: modifiers.map(modifier => ({
             definition_id: definitionId(modifier.id ?? modifier.name),
             name: modifier.name ?? null,
             description: visibleText(modifier.description),
             keywords: visibleHoverKeywords(modifier.keywords),
-            card_previews: visibleHoverCards(modifier.card_previews, snapshotId, `modifier_${index}`, makeId)
+            card_previews: visibleHoverCards(modifier.card_previews, "modifier", modifier.native_ref, entityId)
           }))
         },
         player: {
@@ -317,23 +317,23 @@ function buildPersistentVisibleState(state, snapshotId, makeId, entityId) {
           hp: player.hp,
           max_hp: player.max_hp,
           gold: player.gold,
-          relics: relics.map((relic, index) => ({
+          relics: relics.map(relic => ({
             entity_id: entityId("relic", relic.native_ref),
             definition_id: definitionId(relic.id),
             name: relic.name ?? null,
             description: relic.description ?? null,
             ...(relic.counter == null ? {} : { counter: relic.counter }),
             keywords: visibleHoverKeywords(relic.keywords),
-            card_previews: visibleHoverCards(relic.card_previews, snapshotId, `relic_${index}`, makeId)
+            card_previews: visibleHoverCards(relic.card_previews, "relic", relic.native_ref, entityId)
           })),
-          potions: potions.map((potion, index) => ({
+          potions: potions.map(potion => ({
             entity_id: entityId("potion", potion.native_ref),
             definition_id: definitionId(potion.id),
             name: potion.name ?? null,
             description: potion.description ?? null,
             slot: potion.slot,
             keywords: visibleHoverKeywords(potion.keywords),
-            card_previews: visibleHoverCards(potion.card_previews, snapshotId, `potion_${index}`, makeId)
+            card_previews: visibleHoverCards(potion.card_previews, "potion", potion.native_ref, entityId)
           })),
           max_potion_slots: player.max_potion_slots
         },
@@ -540,10 +540,10 @@ function visibleHoverKeywords(keywords) {
   }));
 }
 
-function visibleHoverCards(cards, snapshotId, ownerKey, makeId) {
+function visibleHoverCards(cards, ownerKind, ownerRef, entityId) {
   return cards.map((card, index) => visibleCombatCard(
     card,
-    makeId("hover_card", snapshotId, ownerKey, index, card?.id, card?.is_upgraded)
+    entityId("tooltip_card", JSON.stringify([ownerKind, ownerRef, index, card?.id, card?.is_upgraded]))
   ));
 }
 
@@ -791,15 +791,15 @@ function canonicalShopSurface(state, ctx) {
       ctx.detailReads.push(publicCardDetailRead(ctx, card, raw.public_details,
         Array.isArray(raw.public_details_missing) ? raw.public_details_missing : ["native_shop_card_details"], "shop", null));
     } else if (entry.is_stocked) missing.push("native_shop_stocked_card_display");
-    return bind(entry, "shop_card", { ...base(entry), on_sale: entry.on_sale, card }, card?.name ?? "Sold card", "buy_card");
+    return bind(entry, "shop_card", { ...base(entry), on_sale: entry.on_sale, ...(card == null ? {} : { card }) }, card?.name ?? "Sold card", "buy_card");
   });
   const relics = (Array.isArray(state.relics) ? state.relics : []).map(entry => {
     const raw = entry.relic;
     const relic = raw == null ? null : { entity_id: ctx.entityId("relic", raw.native_ref), definition_id: raw.id,
       name: raw.name, description: visibleText(raw.description), keywords: visibleHoverKeywords(raw.keywords),
-      card_previews: visibleHoverCards(raw.card_previews, ctx.snapshotId, raw.native_ref, ctx.id) };
+      card_previews: visibleHoverCards(raw.card_previews, "relic", raw.native_ref, ctx.entityId) };
     if (entry.is_stocked && relic == null) missing.push("native_shop_stocked_relic_display");
-    return bind(entry, "shop_relic", { ...base(entry), relic }, relic?.name ?? "Sold relic", "buy_relic");
+    return bind(entry, "shop_relic", { ...base(entry), ...(relic == null ? {} : { relic }) }, relic?.name ?? "Sold relic", "buy_relic");
   });
   const potions = (Array.isArray(state.potions) ? state.potions : []).map(entry => bind(entry, "shop_potion", { ...base(entry),
     definition_id: entry.id, name: entry.name, description: visibleText(entry.description), rarity: entry.rarity },
@@ -819,7 +819,10 @@ function canonicalShopSurface(state, ctx) {
 function currentSurface(state, ctx) {
   const commonContext = {
     kind: "run",
-    run: plainObject(state.context) ? Object.fromEntries(Object.entries(state.context).filter(([key]) => key !== "current_map")) : null,
+    run: plainObject(state.context) ? {
+      ...Object.fromEntries(Object.entries(state.context).filter(([key]) => key !== "current_map")),
+      ...(Array.isArray(state.context.modifiers) ? { modifiers: state.context.modifiers.map(({ native_ref: _nativeModifier, ...visible }) => visible) } : {})
+    } : null,
     player: withoutDeck(state.player)
   };
   const supported = {
@@ -983,7 +986,7 @@ function currentSurface(state, ctx) {
             definition_id: relic == null ? null : definitionId(relic.id), name: relic?.name ?? null,
             description: visibleText(relic?.description), rarity: relic?.rarity ?? null,
             keywords: Array.isArray(relic?.keywords) ? visibleHoverKeywords(relic.keywords) : [],
-            card_previews: Array.isArray(relic?.card_previews) ? visibleHoverCards(relic.card_previews,ctx.snapshotId,index,ctx.id) : [] } });
+            card_previews: Array.isArray(relic?.card_previews) ? visibleHoverCards(relic.card_previews,"relic",relic.native_ref,ctx.entityId) : [] } });
         if (complete) ctx.action({ verb: "activate", subject: item, label: `Take ${relic.name}`,
           raw: { cmd: "action", action: "select_treasure_relic", args: { room_ref: state.room_ref,relic_ref: relic.native_ref } } });
         return item.properties;
@@ -1157,7 +1160,7 @@ function currentSurface(state, ctx) {
           label: relic.name, occurrence: index, enabled: exact,
           properties: { definition_id: definitionId(relic.id), name: visibleText(relic.name), description: visibleText(relic.description),
             counter: relic.counter ?? null, keywords: visibleHoverKeywords(relic.keywords ?? []),
-            card_previews: visibleHoverCards(relic.card_previews ?? [], ctx.snapshotId, `relic_choice_${index}`, ctx.id) } });
+            card_previews: visibleHoverCards(relic.card_previews ?? [], "relic", relic.native_ref, ctx.entityId) } });
         if (exact) ctx.action({ verb: "select", subject: item, label: `Choose ${relic.name}`,
           raw: { cmd: "action", action: "select_native_relic", args: { selector_ref: state.selector_ref, relic_ref: relic.native_ref } } });
         return item.properties;
@@ -2299,7 +2302,7 @@ export function projectManagedCandidateDecision({
   const surface = currentSurface(state, ctx);
   const surfaceMs = performance.now() - stageStarted;
   stageStarted = performance.now();
-  const persistent = buildPersistentVisibleState(state, ctx.snapshotId, ctx.id, ctx.entityId);
+  const persistent = buildPersistentVisibleState(state, ctx.entityId);
   const persistentMs = performance.now() - stageStarted;
   const terminal = state.decision === "game_over";
   const actionProjectionComplete = (surface.actionComplete ?? surface.complete) === true
