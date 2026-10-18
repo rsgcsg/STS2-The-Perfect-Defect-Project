@@ -1,3 +1,4 @@
+import { validateInitialProgress } from "./native-baseline.mjs";
 import { createHash } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import {
@@ -2608,20 +2609,40 @@ export class ManagedPlayerEnvironmentSession {
     return value;
   }
 
-  async mount({ seed, reset = false, timeoutMs = 10_000 }) {
+  async mount({ seed, reset = false, initialProgress = null, timeoutMs = 10_000 }) {
     if (typeof seed !== "string" || seed.length === 0) throw new TypeError("mount requires seed.");
     if (this.#tainted) throw new Error("A tainted Managed Player Environment session cannot mount another run.");
     const mountStarted = performance.now();
-    const state = await this.#process.request({
-      cmd: reset ? "reset_run" : "start_run",
-      character: this.#character,
-      seed,
-      lang: this.#language
-    }, timeoutMs);
-    this.#record("mount_transport_and_native", performance.now() - mountStarted);
-    this.#ledger.clear();
-    this.#publicEntityAliases.clear();
-    return this.#setState(state, timeoutMs);
+    initialProgress = validateInitialProgress(initialProgress);
+    try {
+      const state = await this.#process.request({
+        cmd: reset ? "reset_run" : "start_run",
+        character: this.#character,
+        seed,
+        lang: this.#language,
+        ...(initialProgress == null ? {} : { initial_progress: initialProgress })
+      }, timeoutMs);
+      this.#record("mount_transport_and_native", performance.now() - mountStarted);
+      this.#ledger.clear();
+      this.#publicEntityAliases.clear();
+      const snapshot = await this.#setState(state, timeoutMs);
+      if (initialProgress != null) {
+        const identity = await this.#process.request({ cmd: "run_identity" }, timeoutMs);
+        const proof = identity?.initial_progress;
+        if (identity?.type !== "run_identity" || identity.active !== true
+            || proof?.recipe !== initialProgress.recipe || proof.progress_sha256 !== initialProgress.progress_sha256
+            || proof.run_unlock_state_matches !== true)
+          throw new Error("managed_initial_progress_unverified");
+      }
+      return snapshot;
+    } catch (cause) {
+      if (initialProgress != null) {
+        this.#tainted = true;
+        this.#taintReason = "initial_progress_mount_failed_replace_process";
+        this.#projection = null;
+      }
+      throw cause;
+    }
   }
 
   async restoreMapSave({ path, timeoutMs = 10_000 }) {

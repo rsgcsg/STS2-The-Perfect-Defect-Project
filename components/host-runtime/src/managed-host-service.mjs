@@ -70,13 +70,14 @@ function publicRuntimeIdentity(value) {
     "sts2_assembly_sha256"]);
 }
 
-function publicEpisodeIdentity(value) {
+function publicEpisodeIdentity(value, includeInitialProgress = false) {
   return { type: value.type, request_id: value.request_id, identity: {
     candidate_build: publicCandidateBuild(value.identity.candidate_build),
     runtime_identity: publicRuntimeIdentity(value.identity.runtime_identity),
     adapter_runtime_instance_id: value.identity.adapter_runtime_instance_id,
     environment_fingerprint: value.identity.environment_fingerprint,
-    episode_provenance: value.identity.episode_provenance
+    episode_provenance: value.identity.episode_provenance,
+    ...(includeInitialProgress ? { initial_progress: value.identity.initial_progress } : {})
   } };
 }
 
@@ -282,7 +283,8 @@ export async function startManagedHostService(started, {
       if (request.url !== "/v1/command" && role !== "manager") {
         request.resume(); error(response, 403, "managed_service_manager_required"); return;
       }
-      const body = await readBody(request, maxBodyBytes);
+      // Only manager reset carries a complete native progress snapshot.
+      const body = await readBody(request, request.url === "/v1/admin/reset" ? 1024 * 1024 : maxBodyBytes);
       if (!nonempty(body.request_id)) throw new Error("managed_service_request_id_required");
 
       if (request.url === "/v1/command") {
@@ -324,7 +326,7 @@ export async function startManagedHostService(started, {
           return;
         }
         json(response, 200, result(command === "episode_identity"
-          ? publicEpisodeIdentity(value) : value));
+          ? publicEpisodeIdentity(value, role === "manager") : value));
         return;
       }
 
@@ -343,7 +345,8 @@ export async function startManagedHostService(started, {
       }
       if (request.url === "/v1/admin/reset") {
         if (!exactKeys(body, ["request_id", "seed", "expected_runtime_instance_id",
-          "expected_game_continuity_id"]) || !nonempty(body.expected_runtime_instance_id)
+          "expected_game_continuity_id", ...(Object.hasOwn(body, "initial_progress") ? ["initial_progress"] : [])])
+          || !nonempty(body.expected_runtime_instance_id)
           || !(body.expected_game_continuity_id === null
             || nonempty(body.expected_game_continuity_id))) {
           throw new Error("managed_service_episode_precondition_required");
