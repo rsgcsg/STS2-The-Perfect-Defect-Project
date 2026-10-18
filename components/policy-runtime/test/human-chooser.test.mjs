@@ -25,6 +25,41 @@ describe("manual P1 chooser", () => {
     expect(inspectCommand(o, "find map-extra")).toContain("boss");
     expect(overview(o)).toContain("c7");
   });
+  it("shows event consequences, selected cards and current enchantments without mutating input or IDs", () => {
+    const o = observation();
+    o.scene = { native_kind: "event_option", content: { context: { body: "事件完整正文" },
+      surface: { options: [{ entity_id: "e1", title: "吃蛋", description: "获得7点最大生命值。" }] } } };
+    const before = JSON.stringify(o);
+    expect(overview(o, { width: 80 })).toContain("获得7点最大生命值");
+    expect(JSON.stringify(o)).toBe(before);
+    o.scene = { native_kind: "deck_upgrade_selection", content: { surface: {
+      selected_count: 1, max_select: 4, selected_card_entity_ids: ["e1"],
+      selection_progress: { minimum_additional_cards: 3, remaining_slots: 3, mode: "forward_append_only" },
+      cards: [{ entity_id: "e1", name: "电击+", cost: "0", is_upgraded: true,
+        existing_enchantment: { name: "播种", amount: 1, description: "首次打出获得能量。" } }]
+    } } };
+    expect(overview(o)).toContain("已选 1/4：电击+ [e1]");
+    o.combat = { content: { player: { hand: o.scene.content.surface.cards }, enemies: [] } };
+    const shown = overview(o, { width: 120 });
+    expect(shown).toContain("附魔 播种 ×1：首次打出获得能量");
+    expect(shown).not.toContain("电击++");
+    expect(overview(o)).toContain("c7");
+  });
+  it("keeps an enchantment after-preview separate from the original card with the same entity", () => {
+    const o = observation();
+    const original = { entity_id: "e67", name: "防御", description: "获得5点格挡。" };
+    const after = { ...original, existing_enchantment: { name: "播种", amount: 1, description: "首次打出获得能量。" } };
+    o.scene = { native_kind: "deck_enchant_selection", content: { surface: {
+      cards: [original], selected_count: 0, max_select: 1, selected_card_entity_ids: [],
+      selection_progress: { minimum_additional_cards: 1, remaining_slots: 1 },
+      preview_options: [{ subject_entity_id: "e67", display_context: "native_single_enchantment_after", after }]
+    } } };
+    o.extra_reads = [{ display_context: "selector_original:deck_enchant", content: original },
+      { display_context: "native_single_enchantment_after", content: after }];
+    const shown = overview(o, { width: 120 });
+    expect(shown.split("native_single_enchantment_after")[0]).not.toContain("附魔");
+    expect(shown.split("native_single_enchantment_after")[1]).toContain("附魔 播种");
+  });
   it("browses without dispatching, rejects invalid input, and submits only the offered id at its occurrence", async () => {
     const o = observation(), sent = [], terminal = [], answers = ["map", "detail card-one", "choice 1", "all", "", "1.1", "c999", "c7"];
     async function* input() { yield JSON.stringify({ type: "hello", protocol: "sts2.p1/agent-port-1", episode_id: "manual-test" }); yield JSON.stringify({ type: "observation", requires_choice: true, observation: o }); yield JSON.stringify({ type: "episode_end", outcome: "loss" }); }

@@ -383,35 +383,48 @@ public sealed class NativeUiContractTests
             inPlayPhase: true,
             isPartOfPlayerTurn: true,
             handAcceptsInput: true,
-            handIsPeeking: false));
+            handIsPeeking: false, nativeActionExecuting: false));
         Assert.False(CombatTurnSurfaceReader.IsCombatInputReady(
             combatInProgress: true,
             playerActionsDisabled: true,
             inPlayPhase: true,
             isPartOfPlayerTurn: true,
             handAcceptsInput: true,
-            handIsPeeking: false));
+            handIsPeeking: false, nativeActionExecuting: false));
         Assert.False(CombatTurnSurfaceReader.IsCombatInputReady(
             combatInProgress: true,
             playerActionsDisabled: false,
             inPlayPhase: true,
             isPartOfPlayerTurn: true,
             handAcceptsInput: false,
-            handIsPeeking: false));
+            handIsPeeking: false, nativeActionExecuting: false));
         Assert.False(CombatTurnSurfaceReader.IsCombatInputReady(
             combatInProgress: true,
             playerActionsDisabled: false,
             inPlayPhase: false,
             isPartOfPlayerTurn: true,
             handAcceptsInput: true,
-            handIsPeeking: false));
+            handIsPeeking: false, nativeActionExecuting: false));
         Assert.False(CombatTurnSurfaceReader.IsCombatInputReady(
             combatInProgress: true,
             playerActionsDisabled: false,
             inPlayPhase: true,
             isPartOfPlayerTurn: true,
             handAcceptsInput: true,
-            handIsPeeking: true));
+            handIsPeeking: true, nativeActionExecuting: false));
+    }
+
+    [Fact]
+    public void ExecutingRebootIsNotAnIdleCombatDecision()
+    {
+        Assert.False(CombatTurnSurfaceReader.IsCombatInputReady(
+            combatInProgress: true, playerActionsDisabled: false, inPlayPhase: true,
+            isPartOfPlayerTurn: true, handAcceptsInput: true, handIsPeeking: false,
+            nativeActionExecuting: true));
+        Assert.True(CombatTurnSurfaceReader.IsCombatInputReady(
+            combatInProgress: true, playerActionsDisabled: false, inPlayPhase: true,
+            isPartOfPlayerTurn: true, handAcceptsInput: true, handIsPeeking: false,
+            nativeActionExecuting: false));
     }
 
     [Fact]

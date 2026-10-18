@@ -22,6 +22,18 @@ describe("GLOBAL through the existing Runtime, real HTTP and real supervised Age
       expect(events.filter(e=>e.kind==="global_consumed")).toHaveLength(2);
     } finally { await f.close(); }
   });
+  it("replays beyond the resident acquisition limit without increasing the limit", async () => {
+    const source = new GlobalHttpFixture(); source.terminalAfterStep = false;
+    const f = await globalRuntimeFixture({ source, editManifest: m => { m.limits.max_acquisitions = 2; } });
+    try {
+      for (let i = 0; i < 3; i++) expect((await f.runtime.tick()).type).toBe("delivered");
+      source.terminalAfterStep = true;
+      expect((await f.runtime.tick()).type).toBe("delivered");
+      expect((await f.runtime.tick()).type).toBe("closed");
+      const result = await replayGlobalAgentRun(f.evidence.directory);
+      expect(result.verdict).toBe("verified"); expect(result.consumed).toBe(5);
+    } finally { await f.close(); }
+  });
   it("expiry releases a held controller during a five-minute human Next wait without a second tick or GET", async () => {
     const source=new GlobalHttpFixture();source.terminalAfterStep=false;
     const f=await globalRuntimeFixture({source,behavior:"hang_second_next",budgetMs:1200, editManifest: manifest => { manifest.limits.agent_timeout_ms = 300_000; }});
