@@ -29,8 +29,11 @@ export function convertNativeSemanticOriginals(source, sdk, core, options = {}) 
     pending_decisions: [], complete: false,
     trajectory: null };
   const active = new Map();
+  const continuationParents = new Map();
   const bases = new Map();
   const terminalPhases = new Set(['finished', 'cancelled', 'aborted', 'unknown']);
+  // These are native subscription progress phases, not new decisions or results.
+  const progressPhases = new Set(['started', 'paused_for_player_choice', 'ready_to_resume', 'resumed']);
   let lastComplete = null;
 
   function basis(reference) {
@@ -74,20 +77,50 @@ export function convertNativeSemanticOriginals(source, sdk, core, options = {}) 
     .map(row => row.run_id))];
   if (options.runId === undefined && runIds.length > 1) throw new Error('native_p1_select_one_run');
   report.scope.run_id ??= runIds[0] ?? null;
+  const acceptedRows = source.events.filter(row => row.kind === 'decision_accepted'
+    && row.run_id === report.scope.run_id);
+
+  // Reuse the online lowering's exact declared follow. A later accepted choice
+  // can identify a full intention, but never supplies an earlier missing basis.
+  function matchRecordedIntention(match, row) {
+    if (!['ambiguous', 'continuation_required'].includes(match.status)) return match;
+    const following = acceptedRows[acceptedRows.indexOf(row) + 1];
+    if (!following?.basis || !following.bound_action) return match;
+    const nextBasis = basis(following.basis);
+    const nextMatch = core.matchNativeSemanticChoice(state, nextBasis, following);
+    if (!['matched', 'ambiguous', 'continuation_required'].includes(nextMatch.status)) return match;
+    const matches = Object.entries(match.reduction.lowering).filter(([, lowering]) => {
+      if (lowering.first?.bound_action_id !== row.bound_action.bound_action_id
+        || lowering.first.verb !== row.bound_action.verb || lowering.follow.length !== 1
+        || lowering.follow[0].optional) return false;
+      const step = core.resolveFollowBasis(lowering.follow[0], lowering, nextBasis);
+      return step?.bound_action_id === following.bound_action.bound_action_id
+        && step.verb === following.bound_action.verb;
+    });
+    if (matches.length !== 1) return match;
+    const [choiceId, lowering] = matches[0];
+    continuationParents.set(following.decision_id, row.decision_id);
+    return { ...match, status: 'matched', reason: 'exact_accepted_span_matches_shared_p1_lowering',
+      choice_id: choiceId, lowering, continuation_decision_id: following.decision_id };
+  }
 
   for (const row of source.events) {
     if (row.run_id !== null && row.run_id !== report.scope.run_id) continue;
     if (row.kind === 'decision_accepted') {
       if (active.has(row.decision_id)) throw new Error('native_p1_duplicate_decision');
       const original = row.basis === null ? null : basis(row.basis);
-      const match = original && row.bound_action !== null ? core.matchNativeSemanticChoice(state, original, row)
+      let match = original && row.bound_action !== null ? core.matchNativeSemanticChoice(state, original, row)
         : { status: 'incomplete', reason: original ? 'original_native_bound_action_missing' : 'original_human_basis_missing',
           choice_id: null, lowering: null, reduction: null };
+      const continuationOf = continuationParents.get(row.decision_id) ?? null;
+      if (!continuationOf) match = matchRecordedIntention(match, row);
       const captured = capture(row.basis, row, 'human_decision_basis', match.reduction);
       const action = { decision_id: row.decision_id, action_witness_id: row.action_witness_id,
         accepted_event_id: row.event_id, match_status: match.status, reason: match.reason,
         choice_id: match.choice_id, choice: match.reduction?.observation.catalog.find(item => item.choice_id === match.choice_id) ?? null,
         capture: report.captures.length - 1, lifecycle: [], terminal_sequence: null, successor: null,
+        native_terminal_sequence: null, continuation_of: continuationOf,
+        continuation_decision_id: match.continuation_decision_id ?? null,
         result: null, lowering: match.lowering, observation: captured.capture.observation };
       active.set(row.decision_id, action);
       report.actions.push(action);
@@ -96,25 +129,49 @@ export function convertNativeSemanticOriginals(source, sdk, core, options = {}) 
       const action = active.get(row.decision_id);
       if (!action || action.action_witness_id !== row.action_witness_id)
         throw new Error('native_p1_lifecycle_binding_mismatch');
-      if (!['started', ...terminalPhases].includes(row.phase)) throw new Error('native_p1_unknown_lifecycle_phase');
-      if (action.terminal_sequence !== null) throw new Error('native_p1_lifecycle_after_terminal');
+      if (!progressPhases.has(row.phase) && !terminalPhases.has(row.phase)) throw new Error('native_p1_unknown_lifecycle_phase');
+      if (action.native_terminal_sequence !== null) throw new Error('native_p1_lifecycle_after_terminal');
       action.lifecycle.push({ event_id: row.event_id, phase: row.phase,
         successor_missing_reason: row.successor_missing_reason ?? null });
       if (terminalPhases.has(row.phase)) {
-        action.terminal_sequence = row.sequence;
-        if (action.lowering && row.phase === 'finished') state = core.applyCommitment(state, action.lowering, true);
+        action.native_terminal_sequence = row.sequence;
+        if (!action.continuation_decision_id) action.terminal_sequence = row.sequence;
+        if (action.lowering && row.phase === 'finished' && !action.continuation_of && !action.continuation_decision_id)
+          state = core.applyCommitment(state, action.lowering, true);
         action.result = { schema: 'sts2.p1/native-semantic-result-1', occurrence: action.observation?.envelope.occurrence ?? null,
           choice_id: action.choice_id, status: row.phase === 'finished' ? 'completed'
             : row.phase === 'unknown' ? 'unknown' : 'interrupted_known',
           steps: [{ index: 0, origin: 'native_semantic_choice', native_verb: action.lowering?.first?.verb ?? null,
             label: action.lowering?.first?.label ?? null, delivery: 'delivered',
             reason_code: row.phase === 'finished' ? null : `native_action_${row.phase}` }], commitment_delta: null };
+        const parent = action.continuation_of ? active.get(action.continuation_of)
+          : action.continuation_decision_id ? action : null;
+        const child = parent && active.get(parent.continuation_decision_id);
+        if (parent?.native_terminal_sequence !== null && child?.native_terminal_sequence != null) {
+          parent.terminal_sequence = Math.max(parent.native_terminal_sequence, child.native_terminal_sequence);
+          if (parent.result?.status === 'completed' && child.result?.status === 'completed')
+            state = core.applyCommitment(state, parent.lowering, true);
+        }
       }
       if (row.successor_basis) capture(row.successor_basis, row, `native_lifecycle_${row.phase}`);
     } else if (row.kind === 'observation') capture(row.basis, row, row.reason);
     else if (row.kind === 'issue') report.issues.push(row);
     else throw new Error(`native_p1_unknown_event_kind:${row.kind}`);
   }
+
+  report.native_action_count = report.actions.length;
+  for (const action of report.actions) if (action.continuation_decision_id) {
+    const child = active.get(action.continuation_decision_id);
+    action.native_continuations = [{ decision_id: child.decision_id, action_witness_id: child.action_witness_id,
+      accepted_event_id: child.accepted_event_id, capture: child.capture, lifecycle: child.lifecycle,
+      result: child.result }];
+    if (!action.result || !child.result) action.result = null;
+    else action.result = { ...action.result,
+      status: [action.result, child.result].some(value => value.status === 'unknown') ? 'unknown'
+        : [action.result, child.result].every(value => value.status === 'completed') ? 'completed' : 'interrupted_known',
+      steps: [...action.result.steps, ...child.result.steps].map((step, index) => ({ ...step, index })) };
+  }
+  report.actions = report.actions.filter(action => !action.continuation_of);
 
   for (const action of report.actions) {
     if (action.terminal_sequence === null || action.successor === null) {

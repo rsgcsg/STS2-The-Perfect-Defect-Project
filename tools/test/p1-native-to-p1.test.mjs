@@ -5,6 +5,7 @@ import { readFileSync } from 'node:fs';
 import * as sdk from '../../components/connector/sdk/typescript/dist/index.js';
 import * as core from '../../components/connector/sdk/typescript/dist/p1Global/index.js';
 import { convertNativeSemanticOriginals } from '../p1-native-to-p1.mjs';
+import { rewardForwardPair } from '../../components/connector/sdk/typescript/test/fixtures/reward-forward.mjs';
 
 // Semantic-only fixture: actual Store/packer bytes are tested at the reader seam.
 // These bases exercise shared reduction and action bindings, not native gameplay.
@@ -129,6 +130,20 @@ test('a native unknown is retained even when a later complete public observation
   assert.equal(report.trajectory, null);
 });
 
+test('native PlayerChoice progress remains lifecycle of its accepted parent', () => {
+  const { source } = example();
+  const parent = source.events[3];
+  source.events.splice(3, 0, ...['paused_for_player_choice', 'ready_to_resume', 'resumed'].map(phase =>
+    ({ ...parent, phase, successor_basis: null, successor_missing_reason: 'native_lifecycle_not_terminal' })));
+  source.events.forEach((event, index) => { event.sequence = index + 1; event.event_id = `event-${index + 1}`; });
+  const report = convertNativeSemanticOriginals(source, sdk, core);
+  assert.equal(report.complete, true);
+  assert.equal(report.actions.length, 2);
+  assert.deepEqual(report.actions[0].lifecycle.map(item => item.phase),
+    ['started', 'paused_for_player_choice', 'ready_to_resume', 'resumed', 'finished']);
+  assert.equal(report.actions[0].result.status, 'completed');
+});
+
 test('an unsupported real native UI choice is an explicit gap', () => {
   const { source } = example();
   source.events.push({ ...source.events.at(-1), sequence: 8, event_id: 'event-8', kind: 'issue',
@@ -157,4 +172,86 @@ test('an open durable prefix preserves pending acceptance without closing or inv
   assert.equal(report.actions[0].result, null);
   assert.equal(report.pending_decisions.length, 1);
   assert.deepEqual(report.issues, []);
+});
+
+function nativeRewardSpan() {
+  const { outer, child } = rewardForwardPair();
+  const { source, blobs } = example();
+  source.events = [];
+  const retain = basis => {
+    const bytes = Buffer.from(JSON.stringify({ schema: 'sts2.player-environment/public-basis-1', revision: '1',
+      capture_scope: 'current_public_snapshot_and_advertised_read_instances', capture_status: 'complete', missing: [], ...basis }));
+    const sha256 = createHash('sha256').update(bytes).digest('hex');
+    const payload_ref = `public-bases/sha256/${sha256.slice(0, 2)}/${sha256}.json`;
+    blobs.set(payload_ref, bytes);
+    return { snapshot_id: basis.snapshot.snapshot_id, sha256, byte_count: bytes.length, payload_ref };
+  };
+  const add = (kind, fields) => {
+    const sequence = source.events.length + 1;
+    source.events.push({ kind, sequence, event_id: `reward-event-${sequence}`, run_id: 'run-1', ...fields });
+  };
+  const accept = (id, basis, actionId) => add('decision_accepted', { decision_id: id, action_witness_id: `native-${id}`,
+    basis: retain(basis), bound_action: basis.snapshot.bound_actions.actions.find(action => action.bound_action_id === actionId),
+    native_receipt: { kind: 'semantic_ui_accepted', carrier_ref: `native-${id}` } });
+  accept('open', outer, 'open');
+  add('lifecycle', { decision_id: 'open', action_witness_id: 'native-open', phase: 'finished', successor_basis: retain(child) });
+  accept('select', child, 'select-0');
+  add('lifecycle', { decision_id: 'select', action_witness_id: 'native-select', phase: 'finished', successor_basis: retain(outer) });
+  return { source, child, retain };
+}
+
+test('native reward open and exact accepted selection use the existing full P1 intention', () => {
+  const { source } = nativeRewardSpan();
+  const report = convertNativeSemanticOriginals(source, sdk, core);
+  assert.equal(report.complete, true);
+  assert.equal(report.native_action_count, 2);
+  assert.equal(report.actions.length, 1);
+  assert.equal(report.actions[0].choice.kind, 'reward.take_card');
+  assert.equal(report.actions[0].result.steps.length, 2);
+  assert.equal(report.actions[0].native_continuations[0].decision_id, 'select');
+  assert.equal(report.actions[0].terminal_sequence, 4);
+  assert.equal(report.actions[0].successor.sequence, 4);
+  assert.equal(report.trajectory.points.length, 2);
+});
+
+test('native reward opening never guesses a card without its original accepted selection', () => {
+  const { source } = nativeRewardSpan();
+  source.events = source.events.slice(0, 2);
+  const report = convertNativeSemanticOriginals(source, sdk, core);
+  assert.equal(report.complete, false);
+  assert.equal(report.actions[0].choice_id, null);
+});
+
+test('native reward continuation cannot borrow a foreign original owner or receipt', () => {
+  for (const defect of ['owner', 'receipt']) {
+    const { source, child, retain } = nativeRewardSpan();
+    if (defect === 'owner') {
+      child.snapshot.interaction.content.surface.reward_set_id = 'foreign-reward';
+      source.events[2].basis = retain(child);
+    } else source.events[2].native_receipt.carrier_ref = 'foreign-native-action';
+    const report = convertNativeSemanticOriginals(source, sdk, core);
+    assert.equal(report.complete, false);
+    assert.equal(report.actions[0].choice_id, null);
+  }
+});
+
+test('unknown native selection cannot become a completed reward intention', () => {
+  const { source } = nativeRewardSpan();
+  source.events[3].phase = 'unknown';
+  const report = convertNativeSemanticOriginals(source, sdk, core);
+  assert.equal(report.complete, false);
+  assert.equal(report.actions[0].result.status, 'unknown');
+  assert.equal(report.trajectory, null);
+});
+
+test('an open reward prefix retains its unfinished accepted continuation', () => {
+  const { source } = nativeRewardSpan();
+  source.events.pop();
+  source.manifest = { ...source.manifest.content_identity, schema: 'sts2.human-annotator/p1-native-prefix-1',
+    status: 'open', scope: 'durable_prefix', watermark: { accepted_count: 2, terminal_count: 1, pending_count: 1 } };
+  const report = convertNativeSemanticOriginals(source, sdk, core);
+  assert.equal(report.complete, false);
+  assert.equal(report.actions[0].result, null);
+  assert.equal(report.actions[0].terminal_sequence, null);
+  assert.ok(report.pending_decisions.some(item => item.decision_id === 'open'));
 });
