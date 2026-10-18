@@ -2,7 +2,7 @@
 
 第19轮文档收敛；沿用[Architecture](../../ARCHITECTURE.md)、[Components](../../COMPONENTS.md)和[ADR0016](../../adr/0016-agent-composition-and-execution-request.md)。本表解释现有owner如何服务第一轮训练，不新增服务、schema或注册表。冻结定义仍待用户批准；当前事实由[范围/状态](SCOPE_v0.3.zh-CN.md)路由。
 
-历史查过：旧K2地图/100功能表、现行源码和组件合同、K0采集、K5云调查、K6工作台定位及第19轮审计；复用成熟事实/记录/应用/存储owner，不重做采集器或复杂GUI。旧consumer和证据继续按原范围读取。
+历史查过：以前遇到过queued输入时H目录为空或不同于执行态，见[09-11 rapid audit](../../evidence/PR25_RAPID_INPUT_EXECUTION_AUDIT_2026-09-11.md)。当时分存H/native input与执行S/A(S)，精确匹配后在[rc4限定两局](../../evidence/PR25_RC4_FULL_RUN_HUMAN_PASS_2026-09-12.md)取得524/524及47rapid handoffs。此次复用该执行接缝/身份约束用于⑤⑥，并补当前P1的完整PB1/Reads与共享核；不能把原rc4资格当新P1通过。其它组件继续复用旧K2地图、现行owner与K0/K5/K6成果。
 
 ## 唯一上层图与连接要求（新任务入口，2026-10-19）
 
@@ -15,7 +15,7 @@
 记录链：记录来源（同一抽象角色：在声明接缝捕获事实）
          Runtime / 选择器 / 原生Human(Annotator) / Source4(后续profile) / 外部
           ─⑤─ 不可变原件Store / Evidence ─⑥─ 按所选profile派生 → profile轨迹
-                  P1：accepted原生动作＋同次完整PB1 → 同一共享核reducer/lowering
+                  P1：accepted原生动作＋H来源＋执行S/A(S)完整PB1 → 同一共享核reducer/lowering
 研究链：profile轨迹 ─⑦─ Curation(用途/划分) ─⑧─ Projection＋InputSpec/TargetSpec
           ─⑨─ Recipe / TrainRun → checkpoint / Model
           ─⑩─ AgentComposition → 运行/评估(Reference为准，Managed等价) → 新原件回Store
@@ -30,7 +30,7 @@
 | ③ Connector→profile | profile声明的信息时点、完整目录、结果/unknown | Connector Snapshot/all advertised Reads/BoundAction/Receipt；[P1](../../protocols/P1_GLOBAL_R1.zh-CN.md)由共享核聚合/lower | P1 r1.3；全机制资格待同候选实证 |
 | ④ profile→完整Agent | 声明的观察/动作/承诺与失败语义；原控制/消费保证 | P1共享核；AgentProgramPort/Policy Runtime；[ADR0016](../../adr/0016-agent-composition-and-execution-request.md) | 程序/Model组成完整Agent，Model不等于Agent |
 | ⑤ 来源→Store/Evidence | 来源/原始顺序/内容身份、原件与缺口不变 | Annotator、Runtime、选择器等各producer；[记录合同](../../../components/annotator/docs/SOURCE_SESSION_PROFILE_V3.md)、[Evidence](../../../components/evidence/README.md) | 每来源分开核；封包不证明Human或整局 |
-| **⑥ 原件→profile轨迹** | **每profile自己声明；P1要求决策时完整PB1/all Reads、accepted动作、结果/后继、起终/连续性、Close/pack** | **Annotator P1-native/AgentRun等原件；共享核reducer/lowering与声明的Π；[P1 §4.1](../../protocols/P1_GLOBAL_R1.zh-CN.md#41-录制原件派生p1的requires用户已批准)** | **定义4.1–4.2用户已批准；实现/探测四项与known risk见协议，实际开录未PASS** |
+| **⑥ 原件→profile轨迹** | **每profile自己声明；P1以执行S/A(S)同snapshot完整PB1/all Reads/catalog派生；H仅来源，native key/全部operands精确匹配，结果/后继及起终/Close/pack** | **Annotator P1-native/AgentRun等原件；共享核reducer/lowering与声明的Π；[P1 §4.1](../../protocols/P1_GLOBAL_R1.zh-CN.md#41-录制原件派生p1的requires用户已批准)** | **定义4.1–4.2用户已批准；实现/探测四项与known risk见协议，实际开录未PASS** |
 | ⑦ profile轨迹→Curation | 来源资格、用途/use、谱系/划分与缺口处理 | 已验原件/派生轨迹；[Data/Provenance](../../../python/docs/DATA_AND_PROVENANCE.md) | 具体P1研究准入requires冻结后随Q链定 |
 | ⑧ Curation→研究输入/目标 | Input/Target字段、曝光/历史/reset、target/mask与split | Projection/InputSpec/TargetSpec owner；[研究地图](../../../python/docs/DOCUMENT_MAP.md) | 冻结后Q链定，当前不称dataset合同已冻结 |
 | ⑨ 研究输入→训练/Model | recipe/初始化/输入身份、更新数/预算、checkpoint | TrainingService/engine/worker/provider；[workload](../../../python/docs/STRUCTURED_WORKLOAD.md) | 已有机制；P1实际consumer/首训资格未验 |
@@ -45,7 +45,7 @@
 | profile派生 | P1共享reducer/lowering、native-semantic adapter | P1 requires与来源reader；不以具体格式改定义 |
 | 研究／应用 | Curation/STPD/TrainingService；Python应用/API/库/CLI | 原Data/Provenance/训练合同；GUI为原用例薄映射 |
 
-P1原件整局完整、派生完整与新路线E2/E3适用性已由用户批准；方向与开录门也已确定。原件完整而adapter暂缺可补实现后从原件重派生；实际缺失的同次PB1不能由未来回填。未提交拿牌取消无accepted决策/label；真实accepted选择/效果/unknown仍保留。具体实现与用户四项缺口检测见[P1 §4.1](../../protocols/P1_GLOBAL_R1.zh-CN.md#41-录制原件派生p1的requires用户已批准)。这不代表实际开录或最终冻结已PASS。
+P1原件整局完整、派生完整与新路线E2/E3适用性已由用户批准；方向与开录门也已确定。用户进一步批准恢复rc4执行边界S/A(S)作为P1派生决策，H仅来源；这是⑤⑥的原件/解释要求修订，不改③④或两Host。nonqueued证明H/S同边界，queued披露true及间隔；public action/native input互斥，不制造H BoundAction。原件完整而adapter暂缺可补实现后重派生；旧H/执行S缺失不回填。未提交拿牌取消无accepted决策/label；真实accepted选择/效果/unknown仍保留。具体实现与用户四项缺口检测见[P1 §4.1](../../protocols/P1_GLOBAL_R1.zh-CN.md#41-录制原件派生p1的requires用户已批准)。这不代表实际开录或最终冻结已PASS。
 
 ### 报告、PR与路线复查如何使用这张图
 
@@ -99,7 +99,7 @@ P1原件整局完整、派生完整与新路线E2/E3适用性已由用户批准�
 | 格式族 | 链中用途/消费者 | 对首训的价值及去向 |
 |---|---|---|
 | Snapshot/Reads/BoundAction/Receipt原字节 | 环境→P1/Runtime/Recorder | 来源事实及选择绑定，离线复验可追溯；不直接当所有Model Input |
-| P1-native决策原件＋PB1 | 成熟Human accepted动作owner→Evidence→共享核离线P1 | 当前P1方向已批准，核心/短段仍在做；新完整性定义已批准，开录门已确定 |
+| P1-native决策原件＋PB1 | 成熟Human accepted动作owner→Evidence→共享核离线P1 | 执行S/A(S)解释已批准，H只作来源；本次核心接线/新短段仍待，批准不代表已实现 |
 | Source4 profile/bundle-v4/public-basis1 | 保留的原始输入/publication→P2/后续消费者 | 原report-v3和旧FAIL保持，不承担当前P1强制raw取消全分类门 |
 | P1 observation/choice/result | P1在线边界及离线派生 | 当前公开决策语义；模型投影、词表和学习目标后定 |
 | agent-session-run-1目录/events/引用原件 | Runtime→typed verifier/replay/样本admission | 保存实际offer、Consume/ACK、Receipt/Result；直接Agent lane独立于Source4 |
