@@ -170,11 +170,13 @@ class ManagedHostServiceManager(ManagedHostServiceClient):
         return value
 
     def reset(self, seed: str, *, expected_runtime_instance_id: str,
-              expected_game_continuity_id: str | None) -> dict[str, Any]:
+              expected_game_continuity_id: str | None,
+              initial_progress: Mapping[str, Any] | None = None) -> dict[str, Any]:
         return self._admin("/v1/admin/reset", {
             "seed": seed,
             "expected_runtime_instance_id": expected_runtime_instance_id,
             "expected_game_continuity_id": expected_game_continuity_id,
+            **({"initial_progress": dict(initial_progress)} if initial_progress is not None else {}),
         })
 
     def recover_control(self, *, expected_control_epoch: str,

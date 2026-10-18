@@ -40,6 +40,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_error(409)
             return
         data = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        self.server.last_request = (self.path, data)
         if data.get("command") == "drop_reply":
             self.connection.close()
             return
@@ -141,6 +142,20 @@ class ManagedServiceClientTests(unittest.TestCase):
         self.assertFalse(manager.status()["status"]["control_held"])
         self.assertEqual(manager.reset("SEED", expected_runtime_instance_id="runtime-one",
                                        expected_game_continuity_id=None)["result"]["type"], "reset_result")
+
+    def test_manager_reset_forwards_initial_progress_only_when_explicit(self):
+        manager = ManagedHostServiceManager.from_attachment(self.attachment("manager"))
+        initial = {"recipe": "normal-sp-all-unlocked-v1", "progress_json": "{}",
+                   "progress_sha256": "proof-sha"}
+        manager.reset("SEED", expected_runtime_instance_id="runtime-one",
+                      expected_game_continuity_id=None, initial_progress=initial)
+        route, body = self.server.last_request
+        self.assertEqual(route, "/v1/admin/reset")
+        self.assertEqual(body["initial_progress"], initial)
+        self.assertEqual(body["expected_runtime_instance_id"], "runtime-one")
+        manager.reset("SEED", expected_runtime_instance_id="runtime-one",
+                      expected_game_continuity_id=None)
+        self.assertNotIn("initial_progress", self.server.last_request[1])
 
     def test_wrong_role_and_insecure_attachment_fail(self):
         path = self.attachment("manager")
