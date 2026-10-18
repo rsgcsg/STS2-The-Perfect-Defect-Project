@@ -10,9 +10,9 @@
     },
     "connector": {
       "version": "1.3.0-rc.25",
-      "source_revision": "a908c3a94239ae9cdbe7a52864468ecce063db75",
-      "component_tree_revision": "5c166b1694d8900db0cc2d165ebefebb55124cbd",
-      "component_source_digest_sha256": "c9adef13e48d3444144bec7993aff83e33770d51f422954970988c0e2034c5c2"
+      "source_revision": "8213f66fbfe07bbc4d34228b8807d067915a374c",
+      "component_tree_revision": "78478f17e612a72a88111d8e524487964b9ad22b",
+      "component_source_digest_sha256": "5bfcf4100e08253147623d83c54e773d2d1d5270cb8759ec9bc4107e46ecaecd"
     },
     "host_runtime": {
       "version": "1.1.0-rc.31",
@@ -34,9 +34,9 @@
     },
     "policy_runtime": {
       "version": "0.1.0-rc.37",
-      "source_revision": "2c661f424f085e4799e3a9b78e4f45b38de00a8d",
-      "component_tree_revision": "5d77e17f83de99cf71b847a19c4dabe6933c406c",
-      "component_source_digest_sha256": "217e5bc5cb6c606451db753e301f1f8c9faf308f2d7ebfb737018280d6778e77"
+      "source_revision": "8213f66fbfe07bbc4d34228b8807d067915a374c",
+      "component_tree_revision": "5d786a3f0c1630ddccaf5b2d92d019c22200af28",
+      "component_source_digest_sha256": "946b3ba9e719078664ad4b290c9aa3c8b7bc29968dabd3c29eb217f840e1d4b3"
     },
     "workbench": {
       "version": "0.1.0-rc.3",
@@ -157,8 +157,8 @@
     },
     "connector": {
       "source_revision": "09e5c2363fff64b2e8cfa07d16ec7cf22d8ad3b5",
-      "current_component_source_revision": "a908c3a94239ae9cdbe7a52864468ecce063db75",
-      "current_component_source_digest_sha256": "c9adef13e48d3444144bec7993aff83e33770d51f422954970988c0e2034c5c2",
+      "current_component_source_revision": "8213f66fbfe07bbc4d34228b8807d067915a374c",
+      "current_component_source_digest_sha256": "5bfcf4100e08253147623d83c54e773d2d1d5270cb8759ec9bc4107e46ecaecd",
       "source_relation": "loaded_human_v2_artifact_precedes_unified_platform_source",
       "artifact_sha256": "6c66cbf06757dca3e7d910467fb56b89376f109c6d7d0ba47d2bc0260ab4a3d2",
       "artifact_mvid": "11f1da35-558f-4346-8ec9-a493fea95cb8",

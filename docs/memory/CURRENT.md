@@ -2,8 +2,9 @@
 
 Resolve live GitHub refs; current source and original records override this file.
 [P1 package 1](../plans/P1_R1_PACKAGE1_2026-10-17.md) records the implementation,
-acceptance and original failed windows. PR193 targets develop29d889bc and remains
-Draft/open for user review; no merge is authorized. Old T7 card A is obsolete.
+acceptance and original failed windows. PR193 was approved and merged as a90881c5 after CI39082142114 passed.
+Old T7 card A is obsolete. The bounded Human01 follow-up below is source-only;
+it does not replace the frozen accepted package1 artifacts.
 
 The approved package1 B/C/S/T6 engineering closeout passed. In the final bounded
 window, Reference20 on Mod d06a9e8b finished 20/20 in native natural loss,
@@ -38,11 +39,31 @@ resolved by producer ownership repair and the new full batch, not rewritten.
 
 This closeout used1/1 authorized Reference20 batch and0/2 short attempts,
 with original e5 Managed40 reused; unknown was never retried. No new game budget
-is implicit. The Boss human R21 guide is delivered; Boss gameplay awaits its own
-user approval.
+is implicit. The separately approved Boss window is active until 2026-10-18 19:20 Brisbane.
+Human01 finished; attempts2/3 retain their original fixed seeds/budgets.
 
 ## Remaining Platform non-claims
 
 Package2/3, Source4/Human, full equivalence, cross-act/victory,
 Windows and training qualification remain open. Q3-M0 non-game measurements were
 completed from existing records only; research configuration remains frozen.
+
+## Human01 bounded follow-up (2026-10-18)
+
+Human01 reached actual Act1 VANTOM_BOSS combat and then Act2 floor22 natural
+loss:317 inputs,316 choices,0 unknown. The sole Managed strict replay matched14
+choices and stopped at index14 reward_claim, extra_reads collection multiplicity
+(Reference13 / Managed10). This remains different; no second replay was run.
+The original offline replay error remains recorded. The corrected pure offline
+verifier validates all317 inputs and443 sources by releasing prior consumed
+acquisitions at the same lifetime as live Runtime, without increasing limits.
+
+Source repairs use native ActionExecutor.IsRunning to hold CombatTurn settling
+through effects/shuffle/draw, and hold treasure settling while its actual unique
+select exists but the relic holder is not actionable. These have exact-game unit
+coverage and independent review, but have not been installed or exercised live.
+The terminal now shows public event text/options, current hand descriptions and
+own enchantments, selected progress/after previews, and public map edges. Preview
+contexts remain separate, choices/order/IDs and the Agent input are unchanged.
+Next P1 consumer is the reward Read representation difference, under the original
+full-public comparison; do not qualify cross-Host equivalence from14 matches.
