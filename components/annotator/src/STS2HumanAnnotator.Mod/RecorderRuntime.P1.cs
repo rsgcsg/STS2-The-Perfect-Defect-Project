@@ -12,6 +12,30 @@ internal static partial class RecorderRuntime
     private static bool IsP1Recording => _activeCaptureProfileId == P1NativeRecordingContract.ProfileId;
     private static readonly Dictionary<string, (string Decision, string Run)> P1UiPending = new(StringComparer.Ordinal);
 
+    // Administrative command under Gate; no game action, lifecycle transition or client-selected output path.
+    private static RecordingCommandResult ExecuteP1NativePrefixCommand(RecordingCommand command)
+    {
+        RecordingCommandResult result;
+        if (!_initialized || !IsP1Recording || _store == null || _lifecycle.State is not (RecordingLifecycleState.Recording or RecordingLifecycleState.Paused)
+            || command.CaptureProfileId != null || command.P1NativeOrigin != null)
+            result = new(false, false, "p1_native_open_session_required", "Prefix export requires an open P1 native session.", _lifecycle);
+        else
+        {
+            try
+            {
+                var prefix = _store.ExportP1NativePrefix();
+                result = new(true, false, "p1_native_prefix_exported", "Original durable recording prefix exported; recording remains open.", _lifecycle)
+                    { P1NativePrefix = prefix };
+            }
+            catch (Exception exception)
+            {
+                result = new(false, false, "p1_native_prefix_export_failed", exception.Message, _lifecycle);
+            }
+        }
+        CommandLedger.Remember(command.CommandId, result);
+        return result;
+    }
+
     private static P1NativeBasisReference? PersistP1Basis(ProcessLocalNativeWitnessFrame? frame) =>
         frame?.PublicBasis is { } basis ? _store!.PersistP1NativeBasis(basis.SnapshotId, basis.Bytes) : null;
 

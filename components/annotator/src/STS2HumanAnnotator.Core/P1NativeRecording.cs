@@ -52,7 +52,7 @@ public sealed partial class RecordingSessionStore
             {
                 if (EvidenceIdentity.Sha256File(destination) != digest) throw new IOException("p1_native_basis_collision");
             }
-            else { using var file = new FileStream(destination, FileMode.CreateNew, FileAccess.Write); file.Write(payload); }
+            else { using var file = new FileStream(destination, FileMode.CreateNew, FileAccess.Write); file.Write(payload); file.Flush(flushToDisk: true); }
             result = new(snapshotId, digest, payload.LongLength, relative);
         });
         return result!;
