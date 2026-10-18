@@ -49,11 +49,14 @@ internal sealed class EventDialogueSurfaceReader : ILiveSurfaceReader
             return null;
         }
 
-        EventLiveContext context = LiveContextReader.BuildEvent(eventRoom);
+        if (!NativeEventRoomBinding.TryCapture(eventRoom, room, out var owner))
+            return null;
+
+        EventLiveContext context = LiveContextReader.BuildEvent(owner);
         if (!context.InDialogue)
             return null;
 
-        NAncientEventLayout? layout = ConnectorMod.FindFirst<NAncientEventLayout>(room);
+        NAncientEventLayout? layout = owner.Layout as NAncientEventLayout;
         NAncientDialogueHitbox? hitbox = layout?.GetNodeOrNull<NAncientDialogueHitbox>("%DialogueHitbox");
         VBoxContainer? container = layout?.GetNodeOrNull<VBoxContainer>("%DialogueContainer");
         Control? fakeNextContainer = layout?.GetNodeOrNull<Control>("%FakeNextButtonContainer");
@@ -172,8 +175,9 @@ internal sealed class EventDialogueSurfaceReader : ILiveSurfaceReader
         NAncientDialogueHitbox expectedHitbox,
         int expectedLine)
     {
-        if (!ReferenceEquals(NEventRoom.Instance, expectedRoom)
-            || !ConnectorMod.IsLiveNode(expectedRoom)
+        if (RunManager.Instance.DebugOnlyGetState()?.CurrentRoom is not EventRoom eventRoom
+            || !NativeEventRoomBinding.TryCapture(eventRoom, expectedRoom, out var owner)
+            || !ReferenceEquals(owner.Layout, expectedLayout)
             || !ConnectorMod.IsLiveNode(expectedLayout)
             || !ConnectorMod.IsNodeVisible(expectedHitbox)
             || !expectedHitbox.IsEnabled

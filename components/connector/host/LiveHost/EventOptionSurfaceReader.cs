@@ -40,7 +40,10 @@ internal sealed class EventOptionSurfaceReader : ILiveSurfaceReader
             return null;
         }
 
-        EventLiveContext context = LiveContextReader.BuildEvent(eventRoom);
+        if (!NativeEventRoomBinding.TryCapture(eventRoom, room, out var owner))
+            return null;
+
+        EventLiveContext context = LiveContextReader.BuildEvent(owner);
         if (context.InDialogue)
             return null;
 
@@ -50,6 +53,8 @@ internal sealed class EventOptionSurfaceReader : ILiveSurfaceReader
             .Select((button, index) => (Button: button, Index: index))
             .Where(entry => ConnectorMod.IsNodeVisible(entry.Button))
             .ToArray();
+        if (visibleButtons.Any(entry => !ReferenceEquals(entry.Button.Event, owner.Event)))
+            return null;
         var options = new List<VisibleEventOption>(visibleButtons.Length);
         int actionableOptionCount = 0;
         foreach ((NEventOptionButton button, int position) in visibleButtons)
@@ -141,7 +146,10 @@ internal sealed class EventOptionSurfaceReader : ILiveSurfaceReader
         int expectedIndex)
     {
         NEventRoom? currentRoom = NEventRoom.Instance;
-        if (!ReferenceEquals(currentRoom, expectedRoom) || !ConnectorMod.IsLiveNode(expectedRoom))
+        if (RunManager.Instance.DebugOnlyGetState()?.CurrentRoom is not EventRoom eventRoom
+            || !NativeEventRoomBinding.TryCapture(eventRoom, expectedRoom, out var owner)
+            || !ReferenceEquals(currentRoom, expectedRoom)
+            || !ReferenceEquals(expectedButton.Event, owner.Event))
             return NativeInputResult.Rejected("event_room_changed", "The event room is no longer current.");
         NEventOptionButton[] currentButtons = expectedRoom.Layout?.OptionButtons.ToArray()
             ?? Array.Empty<NEventOptionButton>();
