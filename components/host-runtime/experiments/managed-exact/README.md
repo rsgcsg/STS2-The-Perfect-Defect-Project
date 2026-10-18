@@ -357,3 +357,12 @@ The current source patch is pending a new actual candidate build. The manifest's
 previous a70d artifact. Existing build admission rejects that old artifact for
 this changed source. New build/install/live qualification must be recorded from
 actual results before selecting it.
+
+For fresh P1 suite comparisons the Managed manager reset receives the exact
+Reference prepared `initial_progress` object (`recipe`, `progress_json`,
+`progress_sha256`) through `tools/p1-suite.mjs --initial-progress FILE`.
+The suite requires this preparation, records recipe/SHA separately from Agent
+observations, and retains the native run-identity verification before publishing
+an episode. The file is private setup data; it is never a P1 action or label.
+The current full candidate is built with patch aa3df815 and artifact8397f7be;
+old a70 measurements remain historical. Build admission is not live comparison.

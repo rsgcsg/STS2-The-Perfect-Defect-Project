@@ -1,7 +1,7 @@
 {
   "schema": "sts2.headless/managed-candidate-manifest-1",
   "candidate_id": "wuhao21-sts2-cli-d11aa88-v01110",
-  "status": "candidate_source_pending_build",
+  "status": "candidate_built_unqualified",
   "upstream": {
     "url": "https://github.com/wuhao21/sts2-cli.git",
     "revision": "d11aa883b582dd68bd39b331f3370746b30d447e",
@@ -36,9 +36,9 @@
     "managed_artifact": "src/Sts2Headless/bin/Release/net9.0/Sts2Headless.dll"
   },
   "expected_build": {
-    "source_patch_sha256": "54bfa3a3e8beb21ebf72b62da4675c9ec6953764ffa746340990931e71e369dc",
-    "artifact_sha256": "a70d8de18578cc2666ec854d8d8eb6bb85868317335fb67fcfbb7151133d7f66",
-    "artifact_mvid": "c9acc642-499d-4af2-ba24-2e90db5ef8cb",
+    "source_patch_sha256": "aa3df815bd44b9e40faaf5c4d0fc36a28ba2fe6509a9bdb6cce9b253571017cf",
+    "artifact_sha256": "8397f7be3982eff42684ef83e23a369daa333ea9a235d602e76f1428668036f5",
+    "artifact_mvid": "85ec5c2e-1345-4710-86b2-ebd8458a4e8f",
     "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0"
   },
   "previous_candidate_build": {
@@ -230,11 +230,17 @@
       "artifact_mvid": "12a48a52-aab8-4f37-b42e-994150b48c02",
       "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0",
       "scope": "previous e6 package1 Managed40 and Human01 replay01-04; frozen originals retained"
+    },
+    {
+      "source_patch_sha256": "54bfa3a3e8beb21ebf72b62da4675c9ec6953764ffa746340990931e71e369dc",
+      "artifact_sha256": "a70d8de18578cc2666ec854d8d8eb6bb85868317335fb67fcfbb7151133d7f66",
+      "artifact_mvid": "c9acc642-499d-4af2-ba24-2e90db5ef8cb",
+      "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0",
+      "scope": "previous a70 terminal source and original rc37 R20; frozen originals retained"
     }
   ],
   "native_localization": {
     "resource_pack_filename": "Slay the Spire 2.pck",
     "resource_pack_sha256": "b3c9f133143f98a1c329c3d2efc7d8a9feb395db46fd3965b899487bf1f4d106"
-  },
-  "pending_source_patch_sha256": "aa3df815bd44b9e40faaf5c4d0fc36a28ba2fe6509a9bdb6cce9b253571017cf"
+  }
 }

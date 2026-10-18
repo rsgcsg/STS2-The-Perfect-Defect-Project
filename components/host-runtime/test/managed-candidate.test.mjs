@@ -33,19 +33,20 @@ import {
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
-test("pending managed source and retained measured build identities remain explicit", () => {
+test("built managed source and retained measured build identities remain explicit", () => {
   const { manifest } = loadManagedCandidateManifest(ROOT);
-  assert.equal(manifest.status, "candidate_source_pending_build");
+  assert.equal(manifest.status, "candidate_built_unqualified");
   assert.deepEqual(Object.keys(manifest.expected_build), [
     "source_patch_sha256", "artifact_sha256", "artifact_mvid", "localization_sha256"
   ]);
   const sourcePatch = readFileSync(path.join(ROOT, "experiments", "managed-exact", manifest.source_patch));
   assert.equal(
     createHash("sha256").update(sourcePatch).digest("hex"),
-    manifest.pending_source_patch_sha256
+    manifest.expected_build.source_patch_sha256
   );
-  assert.equal(manifest.expected_build.artifact_sha256, "a70d8de18578cc2666ec854d8d8eb6bb85868317335fb67fcfbb7151133d7f66");
-  assert.equal(manifest.expected_build.artifact_mvid, "c9acc642-499d-4af2-ba24-2e90db5ef8cb");
+  assert.equal(manifest.expected_build.artifact_sha256, "8397f7be3982eff42684ef83e23a369daa333ea9a235d602e76f1428668036f5");
+  assert.equal(manifest.expected_build.artifact_mvid, "85ec5c2e-1345-4710-86b2-ebd8458a4e8f");
+  assert.equal(manifest.historical_candidate_builds.some(build => build.artifact_sha256 === "a70d8de18578cc2666ec854d8d8eb6bb85868317335fb67fcfbb7151133d7f66"), true);
   assert.equal(manifest.previous_candidate_build.artifact_sha256, "003dd9f0fe8e5081ccce577d9963e143511d6a42461624df17b7e56ea35b4d93");
   assert.equal(manifest.previous_candidate_build.artifact_mvid, "5da84f07-fa96-4538-91c2-974180da3e62");
   assert.equal(manifest.historical_candidate_builds.some(build => build.artifact_sha256 === "75be6efa9ab35ef4eca4c2ce4153918bb8c14c75bee61d4f837b31c1727a7aba"
