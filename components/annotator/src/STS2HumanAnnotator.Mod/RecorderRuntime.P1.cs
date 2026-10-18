@@ -9,7 +9,6 @@ namespace STS2HumanAnnotator.Mod;
 
 internal static partial class RecorderRuntime
 {
-    private static bool IsP1Recording => _activeCaptureProfileId == P1NativeRecordingContract.ProfileId;
     private static readonly Dictionary<string, (string Decision, string Run)> P1UiPending = new(StringComparer.Ordinal);
 
     // Administrative command under Gate; no game action, lifecycle transition or client-selected output path.
@@ -38,14 +37,6 @@ internal static partial class RecorderRuntime
 
     private static P1NativeBasisReference? PersistP1Basis(ProcessLocalNativeWitnessFrame? frame) =>
         frame?.PublicBasis is { } basis ? _store!.PersistP1NativeBasis(basis.SnapshotId, basis.Bytes) : null;
-
-    private static void P1Issue(string reason, string? nativeType = null, object? witness = null)
-    {
-        if (_store == null) return;
-        _store.AppendP1NativeEvent(new JsonObject { ["kind"] = "issue", ["run_id"] = _currentRunId,
-            ["reason"] = reason, ["native_action_type"] = nativeType,
-            ["native_witness"] = witness == null ? null : JsonSerializer.SerializeToNode(witness, EvidenceJson.Options) });
-    }
 
     private static void ObserveP1AcceptedAction(GameAction action)
     {
@@ -77,6 +68,7 @@ internal static partial class RecorderRuntime
                 ["native_queue_id"] = action.Id, ["native_mechanism"] = "game_action",
                 ["basis"] = JsonSerializer.SerializeToNode(basis, EvidenceJson.Options),
                 ["bound_action"] = JsonSerializer.SerializeToNode(match?.BoundAction, EvidenceJson.Options),
+                ["native_witness"] = JsonSerializer.SerializeToNode(witness, EvidenceJson.Options),
                 ["native_receipt"] = new JsonObject { ["kind"] = "game_action_accepted", ["carrier_ref"] = id },
                 ["missing_reason"] = error });
             if (error != null) P1Issue(error, type, witness);

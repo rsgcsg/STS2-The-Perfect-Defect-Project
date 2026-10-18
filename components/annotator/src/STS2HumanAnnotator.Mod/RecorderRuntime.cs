@@ -1871,6 +1871,18 @@ internal static partial class RecorderRuntime
     {
         if (string.IsNullOrWhiteSpace(actionWitnessId))
             return false;
+        if (IsP1Recording)
+        {
+            lock (Gate)
+            {
+                if (HumanActionScope.Current is { } p1Context && p1Context.ActionWitnessId == actionWitnessId)
+                    p1Context.DeferredCarrierBindingFailure ??= detail;
+                P1Issue("native_carrier_binding_failed", nativeActionType, new { action_witness_id = actionWitnessId, detail });
+                if (P1UiPending.ContainsKey(actionWitnessId))
+                    CompleteP1Ui(actionWitnessId, "unknown", new { reason = "native_carrier_binding_failed", detail });
+            }
+            return false;
+        }
         lock (Gate)
         {
             if (!BoundaryTracker.Contains(actionWitnessId)
@@ -1919,6 +1931,8 @@ internal static partial class RecorderRuntime
             {
                 if (_store == null)
                     return;
+                if (TryRouteP1LegacyRecord(true, "native_commit_binding_pending", kind,
+                    new { action_witness_id = actionWitnessId, family, kind, detail })) return;
                 AppendJournal(
                     "native_commit_binding_pending",
                     actionWitnessId,
@@ -2776,6 +2790,12 @@ internal static partial class RecorderRuntime
                 || resolution.Completion is not { } nativeCompletion
                 || !string.Equals(nativeCompletion.Family, family, StringComparison.Ordinal))
             {
+                if (IsP1Recording && expectedActionWitnessId != null)
+                {
+                    P1Issue($"native_sync_binding_{resolution.Status}", kind,
+                        new { action_witness_id = expectedActionWitnessId, family, detail = resolution.Detail });
+                    return false;
+                }
                 Quarantine(
                     $"native_sync_binding_{resolution.Status}",
                     resolution.Detail ?? "The synchronous native Commit did not match its exact Human root.",
@@ -3288,6 +3308,8 @@ internal static partial class RecorderRuntime
                     : NativeWitnessIdentity.Get(nativeSubject, "nested_subject"),
                 operandWitnesses,
                 disposition);
+            if (TryRouteP1LegacyRecord(true, "p1_native_nested_continuation_unsupported", nativeMechanism, continuation))
+                return true; // Original witnessed input is retained; no guessed P1 BoundAction or accepted label.
             // Keep the tracker mutation provisional until the exact native
             // continuation event is authoritative in the semantic stream.
             // In particular, PersistSemanticBoundaryDrafts rejects a nonempty
@@ -3324,6 +3346,8 @@ internal static partial class RecorderRuntime
     {
         try
         {
+            if (TryRouteP1LegacyRecord(true, "native_nested_continuation_unavailable", nativeMechanism,
+                new { parent_action_witness_id = parentActionWitnessId, native_mechanism = nativeMechanism, reason })) return true;
             Quarantine(
                 "native_nested_continuation_unavailable",
                 $"parent={parentActionWitnessId};mechanism={nativeMechanism};reason={reason}",
@@ -3416,6 +3440,7 @@ internal static partial class RecorderRuntime
         bool emptyMutationIsSuccess = true,
         bool persistUnknownOnFailure = true)
     {
+        if (IsP1Recording) return false; // P1 owns its event stream; legacy tracker callbacks cannot author it.
         Exception? failure = null;
         bool authoritativeAppend = false;
         string[] affectedActionWitnessIds = string.IsNullOrWhiteSpace(actionWitnessId)
@@ -4620,6 +4645,10 @@ internal static partial class RecorderRuntime
         if (IsSourceRecording) return; // legacy Human correlation never authors source-profile evidence
         try
         {
+            if (TryRouteP1LegacyRecord(acceptedHumanEffect || humanOccurrence != null || decisionFailure != null,
+                reason, nativeActionType, new { detail, snapshot_id = snapshotId, evidence_level = evidenceLevel,
+                    human_occurrence = humanOccurrence, decision_failure = decisionFailure,
+                    basis = IsP1Recording ? PersistP1Basis(HumanActionScope.Current?.Frame) : null })) return;
             bool diagnostic = reason == "human_action_native_type_mismatch"
                 && nativeActionType is "ReadyToBeginEnemyTurnAction" or "MoveToMapCoordAction";
             if (!diagnostic && (acceptedHumanEffect || reason is "pre_frame_capture_failed" or "semantic_pre_frame_capture_failed"
@@ -4678,7 +4707,7 @@ internal static partial class RecorderRuntime
         }
         catch (Exception exception)
         {
-            _store?.MarkDecisionAccountingUnavailable();
+            if (!IsP1Recording) _store?.MarkDecisionAccountingUnavailable();
             GD.PrintErr($"[STS2 Human Annotator] failed to persist invalidation: {exception}");
         }
     }
@@ -4973,6 +5002,15 @@ internal static partial class RecorderRuntime
             || actionWitnessId == null
             || _store == null)
             return;
+        if (IsP1Recording)
+        {
+            // The exact existing owner binding proves this completion; no legacy causal projection is required.
+            if (CompleteP1Ui(actionWitnessId, "finished", new { seam = "RunManager.ActEntered", action_witness_id = actionWitnessId }))
+                NativeUiCompletionRootBindings.TakeIfMatches(owner, actionWitnessId);
+            else
+                ObserveP1Boundary("native_act_entered");
+            return;
+        }
         try
         {
             ProcessLocalNativeWitnessFrame frame = CaptureSemanticFrame();

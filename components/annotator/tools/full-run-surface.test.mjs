@@ -63,6 +63,30 @@ test("legacy text-input scopes require a declared stream before capturing or all
   }
 });
 
+test("P1 routes every shared legacy evidence ingress before its legacy writer", () => {
+  for (const [start, end, gate, legacy] of [
+    ["internal static void ObserveAcceptedAction(", "internal static void ObservePlayCardExecutionAborted(", "if (IsP1Recording)", "SubmittedInputs.TryGet"],
+    ["internal static bool ObserveAcceptedSemanticUiAction(", "internal static void ObserveAcceptedSemanticUiFailure(", "if (IsP1Recording)", "AcceptedDecisionObserver.Observe"],
+    ["private static void ObserveBeforeActionExecution(", "private static void ObserveSemanticDecisionBoundary(", "if (IsP1Recording)", "NativeSemanticDiscriminatorRuntime.Observe"],
+    ["internal static bool ObserveSemanticUiCarrierBindingFailure(", "internal static void ObserveSemanticUiNativeCommitBindingFailure(", "if (IsP1Recording)", "return PersistTrackerMutationOrUnknown"],
+    ["internal static bool ObserveAcceptedNestedHumanContinuation(", "internal static bool ObserveNestedHumanContinuationUnavailable(", "TryRouteP1LegacyRecord", "return PersistTrackerMutationOrUnknown"],
+    ["private static bool PersistTrackerMutationOrUnknown(", "private static NativeCompletionEvidence ToCompletionEvidence(", "if (IsP1Recording)", "BoundaryTracker.BeginDurableMutation"],
+    ["private static void Quarantine(\n", "private static void WriteStatus(", "TryRouteP1LegacyRecord", "AppendInvalidation"],
+    ["private static void ObserveNativeActEntered(", "private static void UpdateRunLifecycle(", "if (IsP1Recording)", "CaptureSemanticFrame()"],
+    ["private static void FinalizeClose()", "private static void TerminateClosePendingWork(", "if (IsP1Recording)", "PersistSemanticBoundaryDrafts"]
+  ]) {
+    const body = section(runtime, start, end);
+    assert.ok(body.indexOf(gate) !== -1 && body.indexOf(gate) < body.indexOf(legacy), `${start}: P1 must route before legacy capture/write`);
+  }
+  for (const [start, end, completion] of [
+    ["private static bool ObserveSemanticUiNativeCommitCore(", "private static void StartSemanticNativeAction(", "CompleteP1Ui"],
+    ["private static void ObserveNativePostCommitCompletion(", "private static bool PersistTrackerMutationOrUnknown(", "CompleteP1Ui"]
+  ]) {
+    const body = section(runtime, start, end);
+    assert.ok(body.indexOf(completion) < body.indexOf("PersistTrackerMutationOrUnknown"), `${start}: native P1 completion owns its stream`);
+  }
+});
+
 test("act-ready binds one exact queued action and skips generic duplicate ingress", () => {
   const enqueue = section(patches, "internal static class NativeActChangeVoteEnqueuePatch", "internal static class NativeActChangeVoteCommitPatch");
   const commit = section(patches, "internal static class NativeActChangeVoteCommitPatch", "[HarmonyPatch(typeof(RewardsSetSynchronizer)");
