@@ -44,8 +44,8 @@ test("managed candidate source and measured build identity match the manifest", 
     createHash("sha256").update(sourcePatch).digest("hex"),
     manifest.expected_build.source_patch_sha256
   );
-  assert.equal(manifest.expected_build.artifact_sha256, "3855aace069609764c188270909889ed327639a9190a7be9a3137c8c5f0136cf");
-  assert.equal(manifest.expected_build.artifact_mvid, "5690ff95-7079-49ec-aeb7-902086b8deff");
+  assert.equal(manifest.expected_build.artifact_sha256, "ed5834356bb5c30824cedcf16b79bb852bedd899392a3f836e7470ed7772f50a");
+  assert.equal(manifest.expected_build.artifact_mvid, "2b5a547e-0e5a-408a-9c81-2941cb67652e");
   assert.equal(manifest.previous_candidate_build.artifact_sha256, "003dd9f0fe8e5081ccce577d9963e143511d6a42461624df17b7e56ea35b4d93");
   assert.equal(manifest.previous_candidate_build.artifact_mvid, "5da84f07-fa96-4538-91c2-974180da3e62");
   assert.equal(manifest.historical_candidate_builds.some(build => build.artifact_sha256 === "75be6efa9ab35ef4eca4c2ce4153918bb8c14c75bee61d4f837b31c1727a7aba"
@@ -142,6 +142,7 @@ test("fresh candidate preparation admits added source files into the audited dif
     "src/Sts2Headless/NativeUpgradeMethodInventory.cs",
     "src/Sts2Headless/NativeVisibleText.cs",
     "src/Sts2Headless/PerformanceLab.cs",
+    "src/Sts2Headless/SimpleGridSelection.cs",
     "tests/NativePlayWindowAdmissionTests.csproj",
     "tests/Program.cs"
   ]);  assert.equal(source.includes('["add", "--intent-to-add"'), true);

@@ -257,10 +257,10 @@ test("projects game-owned rest option text and native actionability", () => {
   assert.deepEqual(projection.snapshot.interaction.content.surface.options.map((option) => ({
     name: option.name,
     description: option.description,
-    is_enabled: option.is_enabled
+    enabled: option.enabled
   })), [
-    { name: "Rest", description: "Heal 24 HP.", is_enabled: true },
-    { name: "Smith", description: "Upgrade a card.", is_enabled: false }
+    { name: "Rest", description: "Heal 24 HP.", enabled: true },
+    { name: "Smith", description: "Upgrade a card.", enabled: false }
   ]);
   assert.deepEqual(projection.snapshot.bound_actions.actions.map((action) => action.label), ["Rest"]);
   assert.equal(JSON.stringify(projection.snapshot).includes("rest-option-a"), false);

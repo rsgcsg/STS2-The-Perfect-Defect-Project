@@ -136,3 +136,46 @@ test("a custom native transformation keeps original displays but reports its unq
   assert.deepEqual(surface.cards, surface.preview_options.map(option => option.before));
   assert.ok(surface.preview_options.every(option => option.after === null));
 });
+
+test("simple grid keeps the original eight-card roster after one of two selections and dispatches the remaining original", async () => {
+  const state = selector({ family: "simple" });
+  state.decision = "simple_card_select";
+  state.origin = "simple";
+  state.min_select = state.max_select = 2;
+  const original = state.selector_public.preview_options[0];
+  state.selector_public.preview_options = Array.from({ length: 8 }, (_, index) => {
+    const before = { ...original.before, entity_id: `original-${index}`, definition_id: `CARD_${index}`,
+      name: `Card ${index}`, is_selected: index === 2 };
+    return { ...original, subject_entity_id: before.entity_id, before, after: null, after_availability: "not_applicable" };
+  });
+  state.cards = state.selector_public.preview_options.map(({ before }, index) => ({ ...before,
+    index, native_ref: before.entity_id, is_selectable: index !== 2, is_deselectable: index === 2 }));
+  state.selected_refs = ["original-2"];
+  Object.assign(state.selector_public.selector_request, { min_select: 2, max_select: 2,
+    selected_entity_ids: state.selected_refs, add_transition: "native_completion_at_max" });
+  const dispatched = [];
+  const session = new ManagedPlayerEnvironmentSession({ ...identity, process: { async request(request) {
+    if (request.cmd === "start_run") return state;
+    dispatched.push(request);
+    return selector();
+  } } });
+  const snapshot = await session.mount({ seed: "synthetic-simple-grid-eight-choose-two" });
+  const surface = snapshot.interaction.content.surface;
+  assert.equal(snapshot.completeness.status, "complete");
+  assert.equal(snapshot.interaction.kind, "native_simple_card_selection");
+  assert.equal(surface.cards.length, 8);
+  assert.deepEqual(surface.cards, surface.preview_options.map(option => option.before));
+  assert.deepEqual(surface.selected_card_entity_ids, [surface.cards[2].entity_id]);
+  assert.deepEqual(surface.selector_request.selected_entity_ids, surface.selected_card_entity_ids);
+  assert.equal(surface.selector_request.add_transition, "native_completion_at_max");
+  assert.equal(snapshot.bound_actions.actions.filter(action => action.verb === "select").length, 7);
+  assert.equal(snapshot.bound_actions.actions.filter(action => action.verb === "deselect").length, 1);
+  assert.equal(projectManagedTextMenuV1(snapshot).menu_actions.status, "complete");
+  const choice = snapshot.bound_actions.actions.find(action => action.verb === "select"
+    && action.subject_referent_id === surface.cards[5].entity_id);
+  const receipt = await session.submit({ requestId: "simple-grid-select-second-original", expectedSnapshotId: snapshot.snapshot_id,
+    boundActionId: choice.bound_action_id });
+  assert.equal(receipt.delivery, "delivered");
+  assert.equal(dispatched[0].action, "select_native_card");
+  assert.deepEqual(dispatched[0].args, { selector_ref: "private-selector-owner", card_ref: "original-5" });
+});

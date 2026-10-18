@@ -265,7 +265,7 @@ function rewardDecision(kind = "reward_set") {
 
 test("published v1 and v2 contracts cover actual reviewed scene projections", () => {
   const contracts = [managedTextMenuV1Contract(), managedTextMenuV2Contract()];
-  const scenes = [mapDecision(), restDecision(), eventDecision(), publicSelector({ family: "deck_card" }), publicSelector({ family: "deck_transform" }), shopRoom(),
+  const scenes = [mapDecision(), restDecision(), eventDecision(), publicSelector({ family: "deck_card" }), publicSelector({ family: "deck_transform" }), publicSelector({ family: "simple" }), shopRoom(),
     treasureDecision(), treasureDecision("treasure_relic"),
     treasureDecision("treasure_complete"),
     deckUpgradeDecision(), deckUpgradeDecision("preview"),
@@ -561,7 +561,7 @@ test("projects complete rest options in native order and submits only bound enab
   const snapshot = adapter.observe();
   assert.equal(snapshot.menu_actions.status, "complete");
   assert.deepEqual(snapshot.interaction.content.surface.options.map((entry) =>
-    [entry.name, entry.is_enabled]), [["Rest", true], ["Smith", false], ["Dig", true]]);
+    [entry.name, entry.enabled]), [["Rest", true], ["Smith", false], ["Dig", true]]);
   assert.deepEqual(snapshot.menu_actions.actions.map((entry) => entry.label), ["Rest", "Dig"]);
   assert.equal(JSON.stringify(snapshot).includes("native-rest-a"), false);
   const input = { request_id: "rest-choose", expected_snapshot_id: snapshot.snapshot_id,

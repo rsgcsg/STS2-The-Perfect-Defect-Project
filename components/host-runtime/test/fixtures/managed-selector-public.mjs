@@ -16,12 +16,12 @@ export function publicSelector({ preview = false, family = "deck_upgrade" } = {}
     : family === "deck_enchant" ? card("private-card-original", false) : null;
   const request = { entity_id: "private-original-task", owner_entity_id: "private-selector-owner", family,
     stage: preview ? "preview" : "selecting", selection_model: "native_selected_original_set",
-    add_transition: "native_preview_at_max", min_select: 1, max_select: 1,
+    add_transition: family === "simple" ? "native_completion_at_max" : "native_preview_at_max", min_select: 1, max_select: 1,
     require_manual_confirmation: false, displayed_holder_count: null,
     selected_entity_ids: preview ? [before.entity_id] : [], can_finish_now: preview,
     can_decline_now: false, mechanics_qualified: true, preview_information_complete: true,
     preview_projection_qualified: true, capability_revision: "sts2.native-selector-public-facts/1", missing: [] };
-  return { ...state, decision: family === "deck_upgrade" ? "deck_upgrade_select" : "deck_card_select",
+  return { ...state, decision: family === "simple" ? "simple_card_select" : family === "deck_upgrade" ? "deck_upgrade_select" : "deck_card_select",
     selector_ref: request.owner_entity_id, origin: family === "deck_enchant" || family === "deck_transform" ? family : "deck_generic",
     stage: request.stage, prompt: "Choose a card.",
     cards: [{ ...before, index: 0, native_ref: before.entity_id, is_selectable: !preview, is_deselectable: false }],

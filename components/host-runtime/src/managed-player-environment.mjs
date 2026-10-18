@@ -657,8 +657,8 @@ function canonicalSelectorSurface(state, ctx, commonContext) {
   const text = value => typeof value === "string" && value.length > 0;
   const exact = plainObject(request) && text(state.selector_ref)
     && text(request.entity_id) && request.owner_entity_id === state.selector_ref
-    && ["deck_upgrade", "deck_card", "deck_enchant", "deck_transform"].includes(request.family)
-    && request.family === (state.decision === "deck_upgrade_select" ? "deck_upgrade"
+    && ["deck_upgrade", "deck_card", "deck_enchant", "deck_transform", "simple"].includes(request.family)
+    && request.family === (state.decision === "simple_card_select" ? "simple" : state.decision === "deck_upgrade_select" ? "deck_upgrade"
       : state.origin === "deck_enchant" ? "deck_enchant" : state.origin === "deck_transform" ? "deck_transform" : "deck_card")
     && request.stage === state.stage && ["selecting", "preview"].includes(state.stage)
     && Number.isSafeInteger(state.min_select) && state.min_select >= 0
@@ -689,8 +689,8 @@ function canonicalSelectorSurface(state, ctx, commonContext) {
       selected: before.is_selected, enabled: exact && (rawCards[index].is_selectable || rawCards[index].is_deselectable),
       properties: before });
     if (exact) for (const [field, verb, action] of [
-      ["is_selectable", "select", state.decision === "deck_upgrade_select" ? "select_upgrade_card" : "select_deck_card"],
-      ["is_deselectable", "deselect", state.decision === "deck_upgrade_select" ? "deselect_upgrade_card" : "deselect_deck_card"]
+      ["is_selectable", "select", state.decision === "simple_card_select" ? "select_native_card" : state.decision === "deck_upgrade_select" ? "select_upgrade_card" : "select_deck_card"],
+      ["is_deselectable", "deselect", state.decision === "simple_card_select" ? "deselect_native_card" : state.decision === "deck_upgrade_select" ? "deselect_upgrade_card" : "deselect_deck_card"]
     ]) if (rawCards[index][field]) ctx.action({ verb, subject, label: `${verb === "select" ? "Select" : "Deselect"} ${before.name}`,
       raw: { cmd: "action", action, args: { selector_ref: state.selector_ref, card_ref: cardRefs[index] } } });
     for (const [card, context, renderMissing] of [[before, `selector_original:${request?.family}`, option.before_missing ?? option.missing],
@@ -703,7 +703,8 @@ function canonicalSelectorSurface(state, ctx, commonContext) {
       after_availability: option.after_availability, missing: [...option.missing] };
   });
   const controls = [];
-  const confirmAction = state.decision === "deck_upgrade_select" ? "confirm_upgrade_selection" : "confirm_deck_selection";
+  const confirmAction = state.decision === "simple_card_select" ? "confirm_native_selection"
+    : state.decision === "deck_upgrade_select" ? "confirm_upgrade_selection" : "confirm_deck_selection";
   const operations = {
     open_preview: ["open", "preview_deck_selection"],
     confirm: ["confirm", confirmAction],
@@ -723,7 +724,7 @@ function canonicalSelectorSurface(state, ctx, commonContext) {
       args: { selector_ref: state.selector_ref,
         ...(verb === "confirm" ? { selected_refs: selectedRefs.join(",") } : {}) } } });
   }
-  const kind = request?.family === "deck_upgrade" ? "deck_upgrade_selection"
+  const kind = request?.family === "simple" ? "native_simple_card_selection" : request?.family === "deck_upgrade" ? "deck_upgrade_selection"
     : request?.family === "deck_enchant" ? "deck_enchant_selection"
       : request?.family === "deck_transform" ? "deck_transform_selection" : "native_deck_card_selection";
   const selectedIds = selectedRefs.map(ref => ctx.entityId("card", ref));
@@ -787,6 +788,7 @@ function currentSurface(state, ctx) {
         interactionDiscovery: "derived_from_exact_current_travelable_map_point_controls"
       };
     }
+    case "simple_card_select": return canonicalSelectorSurface(state, ctx, commonContext);
     case "event_choice": {
       const currentOptions = Array.isArray(state.options) ? state.options : [];
       const optionRefs = new Set();
@@ -859,7 +861,7 @@ function currentSurface(state, ctx) {
             option_id: option.option_id ?? null,
             name: option.name ?? null,
             description: visibleText(option.description),
-            is_enabled: enabled
+            enabled
           }
         });
         if (enabled && complete) {
@@ -886,9 +888,9 @@ function currentSurface(state, ctx) {
       }
       return {
         kind: "rest_site",
-        stage: "choosing",
+        stage: "ready",
         prompt: null,
-        surface: { kind: "rest_site", stage: "choosing", options, can_proceed: canProceed },
+        surface: { kind: "rest_site", options, can_proceed: canProceed },
         context: { ...commonContext, kind: "rest" },
         ...supported,
         complete,
