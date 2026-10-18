@@ -326,16 +326,22 @@ public static class PlayerEnvironmentNativeWitness
             exactBindingIds,
             reads,
             profiler.Snapshot(),
-            frame.Bindings.Select(pair => new ProcessLocalNativeInputBinding(
-                pair.Key, pair.Value.NativeAction.Candidate.Operation,
+            CaptureNativeInputBindings(frame.Bindings, exactReferences))
+        { PublicBasis = publicBasis };
+    }
+
+    internal static IReadOnlyList<ProcessLocalNativeInputBinding> CaptureNativeInputBindings(
+        IReadOnlyDictionary<string, PlayerEnvironmentNativeBinding> bindings, IReadOnlyDictionary<string, object> exactReferences) =>
+            bindings.SelectMany(pair => new[] { pair.Value.NativeAction.Candidate.Operation,
+                pair.Value.NativeAction.GridInput?.NativeCallbackVerb }.OfType<string>().Distinct(StringComparer.Ordinal)
+                .Select(operation => new ProcessLocalNativeInputBinding(
+                pair.Key, operation,
                 pair.Value.NativeAction.Candidate.EntityBindings
                     .Where(entity => entity.Role is "screen" or "hand" or "owner" || entity.Role.EndsWith("_screen", StringComparison.Ordinal))
                     .Where(entity => exactReferences.ContainsKey(entity.EntityId)).Select(entity => exactReferences[entity.EntityId]).ToArray(),
                 pair.Value.NativeAction.Candidate.EntityBindings
                     .Where(entity => entity.Role is not ("screen" or "hand" or "owner"))
-                    .Where(entity => exactReferences.ContainsKey(entity.EntityId)).Select(entity => exactReferences[entity.EntityId]).ToArray())).ToArray())
-        { PublicBasis = publicBasis };
-    }
+                    .Where(entity => exactReferences.ContainsKey(entity.EntityId)).Select(entity => exactReferences[entity.EntityId]).ToArray()))).ToArray();
 
     private static IReadOnlyDictionary<string, ProcessLocalReadCapture> MaterializeReads(
         SnapshotBuildResult frame,

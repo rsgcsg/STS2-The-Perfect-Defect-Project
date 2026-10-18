@@ -69,6 +69,8 @@ internal static partial class RecorderRuntime
             if (IsP1Recording)
             {
                 var exact = operations.Select(operation => frame.ResolveNativeInput(owner, operation, subject))
+                    .Concat(sourceVerb == null ? Array.Empty<ProcessLocalNativeMatch>()
+                        : new[] { frame.ResolveNativeInput(owner, sourceVerb, sourceControl ?? subject) })
                     .Where(IsExact).DistinctBy(match => match.BoundActionId).ToArray();
                 if (frame.PublicBasis is not { } original || !P1NativeRecordingContract.CompleteBasis(original.Bytes) || exact.Length != 1)
                 { _selectorInputFailure = $"p1_selector_original_basis_or_binding_unavailable;matches={exact.Length}"; return null; }
