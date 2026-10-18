@@ -2076,9 +2076,14 @@ def test_managed_runtime_target_is_read_only_and_returns_private_attach_contract
     assert transport.calls == []
 
 
+@pytest.mark.parametrize("native_exit", [
+    {"code": 0, "signal": None, "error": None},
+    {"code": 7, "signal": None, "error": "native_failure"},
+    None,
+])
 def test_explicit_host_close_requires_ack_then_removes_only_fixed_attachments(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, native_exit,
 ) -> None:
     config, _host, _candidate, pin, _audit, _checked = fixture(tmp_path)
     service = LocalEnvironmentService(config)
@@ -2095,13 +2100,19 @@ def test_explicit_host_close_requires_ack_then_removes_only_fixed_attachments(
             return {"status": {"control_held": False, "control": None}}
 
         def close_host(self) -> dict[str, Any]:
-            return {"result": {"type": "close_result"}}
+            return {"result": {"type": "close_result", "exit": native_exit}}
 
     manager = ManagerFixture()
     monkeypatch.setattr(service, "_managed_service_handles",
                         lambda _profile: (object(), manager, ready))
     result = service.close_environment()
-    assert result == {"status": "closed", "service_instance_id": "managed_service_fixture"}
+    expected = {"type": "close_result", "exit": native_exit}
+    assert result == {"status": "closed", "service_instance_id": "managed_service_fixture",
+                      "close_result": expected}
+    assert service.record["host_close_result"] == expected
+    assert "host_close_result" not in service.status()["session"]
+    saved = json.loads((config.state_dir / JOURNAL_FILE).read_bytes())
+    assert saved["host_close_result"] == expected
     assert not client_file.exists() and not manager_file.exists()
     assert service.record["host_service_closed"] is True
 

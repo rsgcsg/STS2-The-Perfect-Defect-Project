@@ -7,12 +7,14 @@ from pathlib import Path
 import tempfile
 import threading
 import unittest
+from unittest.mock import Mock, patch
 
 from sts2_headless.managed_service import (
     ManagedHostServiceClient,
     ManagedHostServiceError,
     ManagedHostServiceManager,
     ManagedHostUncertainError,
+    launch_managed_host_service,
 )
 
 
@@ -156,6 +158,35 @@ class ManagedServiceClientTests(unittest.TestCase):
         manager.reset("SEED", expected_runtime_instance_id="runtime-one",
                       expected_game_continuity_id=None)
         self.assertNotIn("initial_progress", self.server.last_request[1])
+
+    def test_launch_forwards_optional_diagnostics_path_to_existing_cli(self):
+        package = self.directory / "package"
+        (package / "tools").mkdir(parents=True)
+        (package / "tools/managed-host-service.mjs").write_text("// fixture")
+        for index, diagnostic in enumerate(
+                (None, self.directory / "launch-test.native-diagnostics.json")):
+            with self.subTest(diagnostics=diagnostic):
+                client_file = self.directory / "client.json"
+                manager_file = self.directory / "manager.json"
+                for path in (client_file, manager_file):
+                    path.unlink(missing_ok=True)
+                observed = []
+                def spawn(args, **_options):
+                    observed.append(args)
+                    self.attachment("client")
+                    self.attachment("manager")
+                    return Mock(pid=123, poll=lambda: None)
+                with patch("sts2_headless.managed_service.subprocess.Popen", side_effect=spawn):
+                    launch_managed_host_service(host_package_dir=package,
+                        candidate_dir=self.directory / "candidate", client_attachment=client_file,
+                        manager_attachment=manager_file, log_file=self.directory / f"log-{index}",
+                        diagnostics_file=diagnostic)
+                if diagnostic is None:
+                    self.assertNotIn("--diagnostics-file", observed[0])
+                else:
+                    index = observed[0].index("--diagnostics-file")
+                    self.assertEqual(observed[0][index + 1], str(diagnostic.resolve()))
+                    self.assertFalse(diagnostic.exists(), "Only the original CLI writes diagnostics")
 
     def test_wrong_role_and_insecure_attachment_fail(self):
         path = self.attachment("manager")
