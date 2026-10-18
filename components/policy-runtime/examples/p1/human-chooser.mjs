@@ -59,7 +59,7 @@ function sceneLines(obs) {
       lines.push(...cardLines(c, obs));
       const preview = s.preview_options?.find(p => p.subject_entity_id === c.entity_id);
       if (preview?.after) {
-        lines.push(`    ${preview.display_context ?? "选择后"}：`);
+        lines.push(`    ${obs.scene?.native_kind === "deck_upgrade_selection" ? "升级后" : obs.scene?.native_kind === "deck_enchant_selection" ? "附魔后" : "选择后"}：`);
         lines.push(...cardLines(preview.after, obs, "      "));
       }
     }

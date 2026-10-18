@@ -57,8 +57,8 @@ describe("manual P1 chooser", () => {
     o.extra_reads = [{ display_context: "selector_original:deck_enchant", content: original },
       { display_context: "native_single_enchantment_after", content: after }];
     const shown = overview(o, { width: 120 });
-    expect(shown.split("native_single_enchantment_after")[0]).not.toContain("附魔");
-    expect(shown.split("native_single_enchantment_after")[1]).toContain("附魔 播种");
+    expect(shown.split("附魔后")[0]).not.toContain("附魔");
+    expect(shown.split("附魔后")[1]).toContain("附魔 播种");
   });
   it("browses without dispatching, rejects invalid input, and submits only the offered id at its occurrence", async () => {
     const o = observation(), sent = [], terminal = [], answers = ["map", "detail card-one", "choice 1", "all", "", "1.1", "c999", "c7"];
