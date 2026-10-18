@@ -4,6 +4,7 @@ import { describe, expect, it } from 'vitest';
 import * as core from '../src/p1Global/index.js';
 import * as sdk from '../src/index.js';
 import { convertOriginals } from '../../../../../tools/source4-to-p1.mjs';
+import { selectorForwardPair } from './fixtures/selector-forward.mjs';
 
 // Synthetic in-memory semantic inputs only. These do not claim Source bundle
 // verifier acceptance, native input origin, a SceneTree receipt or P1 coverage.
@@ -71,6 +72,40 @@ function canceled() {
 }
 
 describe('Source4 adapter using the actual shared SDK matcher', () => {
+  it('classifies the original select and preview confirmation as the offered folded selector intention', () => {
+    const f = fixture(); const { outer, preview } = selectorForwardPair();
+    const select = outer.snapshot.bound_actions.actions.find(action => action.verb === 'select');
+    const confirm = preview.snapshot.bound_actions.actions.find(action => action.verb === 'confirm');
+    f.publication(outer, 1);
+    f.input(outer, 1, selected(select), { owner_ref: 'owner-one', subject_ref: select.subject_referent_id,
+      arguments: {}, carriers: [] }, 'MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NDeckUpgradeSelectScreen.OnCardClicked');
+    f.publication(preview, 2);
+    f.input(preview, 2, selected(confirm), { owner_ref: 'owner-one', subject_ref: confirm.subject_referent_id,
+      arguments: {}, carriers: [] }, 'MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NDeckUpgradeSelectScreen.Confirm.Released');
+    const originalBytes = JSON.stringify(f.source.inputs), report = convert(f.source);
+    expect(report.actions.map(action => action.choice.kind), JSON.stringify(report.unresolved_inputs)).toEqual(['upgrade.choose']);
+    expect(report.actions[0].source_input_ids).toEqual(['input-1', 'input-2']);
+    expect(report.unresolved_inputs).toEqual([]); expect(report.complete).toBe(true);
+    expect(JSON.stringify(f.source.inputs)).toBe(originalBytes);
+  });
+  it('does not consume a foreign native confirmation into the pending selector intention', () => {
+    const f = fixture(); const { outer, preview } = selectorForwardPair();
+    const select = outer.snapshot.bound_actions.actions.find(action => action.verb === 'select');
+    const confirm = preview.snapshot.bound_actions.actions.find(action => action.verb === 'confirm');
+    // This is a different actual offered native control, not the typed current
+    // selector confirm. The original input remains separately visible.
+    confirm.subject_referent_id = 'foreign-control';
+    preview.snapshot.referents.push({ ...preview.snapshot.referents.find(ref => ref.referent_id === 'confirm'),
+      referent_id: 'foreign-control' });
+    f.input(outer, 1, selected(select), { owner_ref: 'owner-one', subject_ref: select.subject_referent_id,
+      arguments: {}, carriers: [] }, 'MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NDeckUpgradeSelectScreen.OnCardClicked');
+    f.input(preview, 2, selected(confirm), { owner_ref: 'owner-one', subject_ref: 'foreign-control',
+      arguments: {}, carriers: [] }, 'MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NDeckUpgradeSelectScreen.Other.Released');
+    const originalBytes = JSON.stringify(f.source.inputs), report = convert(f.source);
+    expect(report.actions.some(action => action.choice.kind === 'upgrade.choose')).toBe(false);
+    expect(report.unresolved_inputs.map(input => input.input_id)).toContain('input-1');
+    expect(report.complete).toBe(false); expect(JSON.stringify(report.native_trace)).toBe(originalBytes);
+  });
   it('binds candidates to the input bytes when an earlier publication has the same snapshot ID', () => {
     const f = fixture(), basis = original(), earlier = structuredClone(basis);
     earlier.snapshot.observed_at = '1970-01-01T00:00:00.001+00:00'; f.publication(earlier, 1);

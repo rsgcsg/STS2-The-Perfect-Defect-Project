@@ -46,9 +46,19 @@ internal static class NativeLogicalGridCapture
 
     internal static bool CapturesOwner(Type type, bool publicBasisOnly) => NativeLogicalGridCallbacks.Supported(type);
 
+    // Both projections retain one original state. The original-only public
+    // transform contract cannot qualify the native preview or its inputs.
+    internal static (NativeSelectorPreviewFacts PublicBasis, NativeSelectorPreviewFacts Native) CaptureProjectionFacts(
+        NativeLogicalGridState state, bool publicBasisOnly)
+    {
+        bool transform = state.Owner is NDeckTransformSelectScreen;
+        NativeSelectorPreviewFacts neutral = NativeSelectorPublicFacts.Capture(state, originalOnlyTransform: transform);
+        return (neutral, transform && !publicBasisOnly ? NativeSelectorPublicFacts.Capture(state) : neutral);
+    }
+
     private static NativeLogicalCapturedGrid Freeze(NativeLogicalGridState state, NativeEntityRegistry entities, bool publicBasisOnly)
     {
-        bool originalOnlyTransform = publicBasisOnly && state.Owner is NDeckTransformSelectScreen;
+        bool originalOnlyTransform = state.Owner is NDeckTransformSelectScreen;
         string ownerId = entities.GetId(state.Owner, "screen");
         string requestId = entities.GetId(state.Completion, "native_selector_request");
         string kind = SurfaceKind(state.Owner);
@@ -69,8 +79,8 @@ internal static class NativeLogicalGridCapture
             cache.Add((card, pile, mode, value));
             return value;
         }
-        NativeSelectorPreviewFacts facts = NativeSelectorPublicFacts.Capture(state, originalOnlyTransform);
-        if (!facts.Request.MechanicsQualified) nativeMissing.UnionWith(facts.Request.Missing);
+        var (facts, nativeFacts) = CaptureProjectionFacts(state, publicBasisOnly);
+        if (!nativeFacts.Request.MechanicsQualified) nativeMissing.UnionWith(nativeFacts.Request.Missing);
         NativeSelectorPublicProjection.Result projected = NativeSelectorPublicProjection.Project(facts, ownerId, requestId,
             card => entities.GetId(card, "card"), state.DisplayPile, Render);
         var fullCards = new List<VisibleCard>();
@@ -115,7 +125,7 @@ internal static class NativeLogicalGridCapture
             row["native_node_displayed"] = displayed;
             row["upgrade_preview_requested"] = state.UpgradeView;
             nativeRows.Add(row);
-            nativeReferents.Add(CardReferent(cardId, visible.Name, selected, canToggle, row));
+            nativeReferents.Add(CardReferent(cardId, visible.Name, selected, nativeFacts.Request.MechanicsQualified && canToggle, row));
             neutralReferents.Add(CardReferent(cardId, full.Name, selected, canToggle, before));
             string label = full.Name ?? full.DefinitionId ?? cardId;
             if (canInspect)
@@ -135,7 +145,8 @@ internal static class NativeLogicalGridCapture
                 string label = ControlLabel(verb);
                 var referent = new PlayerEnvironmentReferent(controlId, "selector_control", "control", label,
                     new(true, true, false, false, "native_visible_fact"), null, null);
-                nativeReferents.Add(referent); neutralReferents.Add(referent);
+                if (nativeFacts.Request.MechanicsQualified) nativeReferents.Add(referent);
+                neutralReferents.Add(referent);
                 inputs.Add(Spec("logical_grid_control:" + controlId + ":" + verb, verb, PublicControlVerb(verb), label,
                     controlId, NativeLogicalGridInputKind.Control, control: button));
             }
@@ -143,11 +154,12 @@ internal static class NativeLogicalGridCapture
         var nativeSurface = new JsonObject
         {
             ["kind"] = kind, ["stage"] = state.Stage, ["cards"] = nativeRows,
-            ["min_select"] = facts.Request.MinSelect, ["max_select"] = facts.Request.MaxSelect,
-            ["require_manual_confirmation"] = facts.Request.RequireManualConfirmation,
+            ["min_select"] = nativeFacts.Request.MinSelect, ["max_select"] = nativeFacts.Request.MaxSelect,
+            ["require_manual_confirmation"] = nativeFacts.Request.RequireManualConfirmation,
             ["selected_count"] = state.Selected.Count, ["selected_card_referent_ids"] = Strings(selectedIds),
             ["is_peeking"] = isPeeking, ["showing_upgrade_previews"] = state.UpgradeView,
-            ["ordering_basis"] = "exact_current_native_grid_logical_list", ["native_preview_text"] = originalOnlyTransform ? new JsonArray() : CapturePreviewText(state)
+            ["ordering_basis"] = "exact_current_native_grid_logical_list",
+            ["native_preview_text"] = publicBasisOnly && originalOnlyTransform ? new JsonArray() : CapturePreviewText(state)
         };
         bool previewQualified = originalOnlyTransform ? facts.Request.MechanicsQualified
             : PreviewMatchesCurrentWidget(state, facts, projected, Render);
@@ -178,7 +190,8 @@ internal static class NativeLogicalGridCapture
             PublicSurface = neutral, CardDisplays = displays.ToArray(), Referents = neutralReferents.ToArray(),
             Inputs = inputs.ToArray(), Missing = neutralMissing.Order(StringComparer.Ordinal).ToArray()
         };
-        return new(state, ownerId, requestId, nativeSurface, nativeReferents.ToArray(), inputs.ToArray(),
+        return new(state, ownerId, requestId, nativeSurface, nativeReferents.ToArray(),
+            nativeFacts.Request.MechanicsQualified ? inputs.ToArray() : Array.Empty<NativeLogicalGridInputSpec>(),
             nativeMissing.Order(StringComparer.Ordinal).ToArray(), prompt, neutralSurface);
 
         NativeLogicalGridInputSpec Spec(string leaf, string verb, string publicVerb, string label, string subject,
@@ -190,9 +203,16 @@ internal static class NativeLogicalGridCapture
     internal static LiveObservation? PublicBasisObservation(NativeLogicalGridCaptureResult? capture,
         NativeEntityRegistry entities, GameBuildIdentity game)
     {
-        if (capture?.Grid is { } grid) return PublicBasisObservation(grid, LiveContextReader.Build(entities), game);
+        return capture?.Grid != null || capture?.Missing.Count > 0
+            ? PublicBasisObservation(capture, LiveContextReader.Build(entities), game) : null;
+    }
+
+    internal static LiveObservation? PublicBasisObservation(NativeLogicalGridCaptureResult? capture,
+        ILiveContext context, GameBuildIdentity game)
+    {
+        if (capture?.Grid is { } grid) return PublicBasisObservation(grid, context, game);
         if (capture?.Missing.Count > 0)
-            return new(StableIdentityHash.Object(capture.Missing), "unsupported", LiveContextReader.Build(entities),
+            return new(StableIdentityHash.Object(capture.Missing), "unsupported", context,
                 new UnsupportedSurface("native_logical_grid_unresolved", capture.Missing[0], "The current native grid could not be captured."),
                 new("partial_current_structured_ui", "empty_fail_closed", Array.Empty<string>(), capture.Missing), game, Array.Empty<string>());
         return null;
@@ -316,7 +336,12 @@ internal static class NativeLogicalGridCapture
         var leaves = informationLeaves.Concat(grid.Inputs.Select(spec => new TextMenuLeaf(spec.NativeLeafKey,
             "root", spec.NativeVerb, spec.Label, spec.SubjectEntityId, Array.Empty<PlayerEnvironmentBoundActionArgument>(), spec.Dispatch,
             spec.Card == null ? null : new TextMenuNativeWitnessBinding(spec.State.Owner, spec.Card,
-                new Dictionary<string, object>(StringComparer.Ordinal))))).ToArray();
+                new Dictionary<string, object>(StringComparer.Ordinal))) {
+                    NativeSourceWitness = spec.Kind == NativeLogicalGridInputKind.Control && spec.Control != null
+                        ? new(spec.State.Owner, spec.Control, new Dictionary<string, object>(StringComparer.Ordinal)) : null,
+                    NativeSourcePrefixVerb = spec.Kind == NativeLogicalGridInputKind.Control
+                        ? spec.NativeVerb == "open_preview" ? "confirm" : PublicControlVerb(spec.NativeVerb) : null
+                })).ToArray();
         PlayerEnvironmentCompleteness completeness = NativeLogicalCapturePolicy.Replace(informationPage.Completeness,
             NativeLogicalProjectionReplacement.Grid,
             NativeLogicalCapturePolicy.DisplacesLegacyProjection(native.HostObservation.Surface, grid.State.Owner.GetType().Name,

@@ -1,5 +1,6 @@
 using System.Reflection;
 using System.Runtime.CompilerServices;
+using System.Text.Json;
 using System.Text.Json.Nodes;
 using HarmonyLib;
 using MegaCrit.Sts2.Core.CardSelection;
@@ -140,6 +141,58 @@ public sealed class NativeLogicalCapturedGridTests
         Assert.Null(first.Snapshot.Interaction.Content.Surface["native_preview_text"]);
         var legacy = PlayerEnvironmentService.BuildSnapshot(capturedInput: input);
         Assert.IsNotType<NativePublicBasisGridSurface>(legacy.HostObservation.Surface);
+    }
+
+    [Fact]
+    public void SourcePublicProjectionUsesTheSameFrozenGridWhileNativePreparationKeepsItsOriginalSurface()
+    {
+        var (source, grid) = Captured();
+        var publicSurface = (JsonObject)grid.NeutralSurface.PublicSurface.DeepClone();
+        publicSurface["selector_request"] = new JsonObject {
+            ["entity_id"] = grid.RequestEntityId, ["owner_entity_id"] = grid.OwnerEntityId,
+            ["family"] = "deck_card", ["stage"] = "selecting" };
+        publicSurface["preview_options"] = new JsonArray(grid.FullCards.Select(card => (JsonNode)new JsonObject {
+            ["subject_entity_id"] = card.EntityId, ["before"] = JsonSerializer.SerializeToNode(card, ConnectorMod._jsonOptions),
+            ["after"] = null, ["after_availability"] = "not_applicable", ["display_context"] = "native_original_only",
+            ["missing"] = new JsonArray() }).ToArray());
+        grid = grid with { NeutralSurface = grid.NeutralSurface with { PublicSurface = publicSurface,
+            CardDisplays = new[] { new NativeLogicalGridCardDisplay(grid.FullCards[63], "selector_original:deck_card") } } };
+        var frozen = new NativeLogicalGridCaptureResult(true, grid, Array.Empty<string>());
+        var input = new SnapshotBuildInput(source.HostObservation.Game, source.HostObservation,
+            new(false, null, null), new RewardPageSnapshotIdentity()) {
+            GridCapture = frozen, Read = kind => PlayerReadBuildResult.Failure("fixture", kind) };
+        SnapshotBuildResult? neutral = null;
+        var native = PlayerEnvironmentService.BuildSnapshot(textMenuCapture: true, aggregateCurrentPublicReads: true,
+            sourcePublicProjection: value => neutral = value, capturedInput: input);
+        Assert.NotNull(neutral);
+        Assert.IsType<NativePublicBasisGridSurface>(neutral.HostObservation.Surface);
+        Assert.Equal(64, neutral.Snapshot.Interaction.Content.Surface["cards"]!.AsArray().Count);
+        Assert.Equal(grid.RequestEntityId, neutral.Snapshot.Interaction.Content.Surface["selector_request"]!["entity_id"]!.GetValue<string>());
+        Assert.Equal(64, neutral.Snapshot.Interaction.Content.Surface["preview_options"]!.AsArray().Count);
+        Assert.Contains(neutral.Snapshot.Reads, read => read.Kind == "surface_card" && read.TargetReferentId == "card-63");
+        Assert.Same(source.HostObservation.Surface, native.HostObservation.Surface);
+        Assert.Same(frozen, native.CapturedLogicalGrid);
+        Assert.Null(neutral.Snapshot.Interaction.Content.Surface["native_preview_text"]);
+    }
+
+    [Fact]
+    public void SourceControlWitnessKeepsTheExactOriginalControlWithoutChangingNativeVerbOrDispatch()
+    {
+        var (source, grid) = Captured(); object originalControl = Bare<NButton>();
+        var control = new NativeLogicalGridInputSpec("request-original:confirm", "logical_grid_control:confirm",
+            grid.RequestEntityId, "confirm_selection", "confirm", "preview", "Confirm", "control-original",
+            NativeLogicalGridInputKind.Control, grid.State, Control: (NButton)originalControl);
+        grid = grid with { Inputs = new[] { control } };
+        var frame = NativeLogicalGridCapture.ComposeNativeFrame(source, source.Snapshot, Array.Empty<TextMenuLeaf>(),
+            new(true, grid, Array.Empty<string>()))!;
+        var leaf = Assert.Single(frame.Leaves);
+        Assert.Equal("confirm_selection", leaf.Verb); Assert.Equal("control-original", leaf.SubjectReferentId);
+        Assert.Null(leaf.NativeWitness);
+        Assert.NotNull(leaf.NativeSourceWitness);
+        Assert.Same(grid.State.Owner, leaf.NativeSourceWitness.Owner);
+        Assert.Same(originalControl, leaf.NativeSourceWitness.Subject);
+        Assert.Equal("confirm", leaf.NativeSourcePrefixVerb);
+        Assert.Empty(leaf.NativeSourceWitness.Arguments);
     }
 
     [Fact]

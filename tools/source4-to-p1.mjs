@@ -168,7 +168,32 @@ export function convertOriginals(source, sdk, core, options) {
     refusals.set(lastInput.input_id, outcomes.find(value => value.status === 'ambiguous')
       ?? outcomes.find(value => value.status === 'incomplete') ?? outcomes[0]
       ?? { status: 'unmapped', reason: 'no_original_complete_p1_boundary_basis' });
-    const distinct = new Map(matches.map(value => [core.canonicalJson({ status: value.result.status,
+    // A proved selector choose+confirm already contains its last native input.
+    // Do not count that exact declared follow again as an independent Finish.
+    // Different full intentions and different native follows remain ambiguous.
+    const selectorParents = matches.filter(value => {
+      const low = value.candidate.reduction.lowering[value.result.choice_id];
+      return value.result.status === 'matched' && low?.selector_intention && low.follow.length === 1
+        && low.follow[0].rule_id === 'selector_intention' && value.span.length > 1
+        && Array.isArray(value.result.input_ids) && value.result.input_ids.length === value.span.length
+        && value.result.input_ids.every((id, index) => id === value.span[index].input_id && !covered.has(id));
+    });
+    let classifiedMatches = matches;
+    if (selectorParents.length === 1) {
+      const parent = selectorParents[0], last = parent.span.at(-1);
+      const low = parent.candidate.reduction.lowering[parent.result.choice_id];
+      const follow = core.resolveFollowBasis(low.follow[0], low, last.basis);
+      if (follow) classifiedMatches = matches.filter(value => {
+        if (value === parent || value.result.status !== 'matched' || value.span.length !== 1
+            || value.span[0] !== last || value.candidate.basis !== last.basis
+            || value.result.input_ids.length !== 1 || value.result.input_ids[0] !== last.input_id) return true;
+        const suffix = value.candidate.reduction.lowering[value.result.choice_id];
+        const choice = value.candidate.reduction.observation.catalog.find(choice => choice.choice_id === value.result.choice_id);
+        return !(suffix?.first?.bound_action_id === follow.bound_action_id && suffix.follow.length === 0
+          && ['upgrade.finish', 'enchant.finish', 'selector.finish'].includes(choice?.kind));
+      });
+    }
+    const distinct = new Map(classifiedMatches.map(value => [core.canonicalJson({ status: value.result.status,
       choice_id: value.result.choice_id, input_ids: value.result.input_ids,
       source_input: value.span[0].input_id }), value]));
     if (distinct.size > 1) {
