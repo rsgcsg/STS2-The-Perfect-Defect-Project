@@ -130,6 +130,10 @@ public static class PlatformRecordingCommands
             ?? throw new ArgumentException("recording_runtime_required");
         string? session = OptionalIdentifier(body.GetProperty("recording_session_id"));
         JsonElement value = body.GetProperty("command");
+        if (value.TryGetProperty("schema", out var commandSchema)
+            && commandSchema.ValueKind == JsonValueKind.String
+            && commandSchema.GetString() == RecordingApplicationContract.CommandSchema)
+            return ReadP1Native(runtime, session, value);
         Exact(value, "schema", "command_id", "kind", "capture_profile_id", "source_declaration", "expected_source_segment_id");
         if (value.GetProperty("schema").ValueKind != JsonValueKind.String
             || value.GetProperty("schema").GetString() != SourceSessionContractV2.CommandSchema)
@@ -176,6 +180,26 @@ public static class PlatformRecordingCommands
             throw new ArgumentException("source_command_fields_not_applicable");
         return new(runtime, session, new(id, kind, profile, SourceSessionContractV2.CommandSchema)
         { SourceDeclaration = source, ExpectedSourceSegmentId = segment });
+    }
+
+    private static PlatformRecordingRequest ReadP1Native(string runtime, string? session, JsonElement value)
+    {
+        Exact(value, "schema", "command_id", "kind", "capture_profile_id", "p1_native_origin");
+        string id = OptionalIdentifier(value.GetProperty("command_id")) ?? "";
+        if (!Guid.TryParseExact(id, "D", out _)) throw new ArgumentException("invalid_recording_command_id");
+        RecordingCommandKind kind = value.GetProperty("kind").GetString() switch {
+            "start_new_session" => RecordingCommandKind.StartNewSession, "pause" => RecordingCommandKind.Pause,
+            "resume" => RecordingCommandKind.Resume, "close" => RecordingCommandKind.Close,
+            _ => throw new ArgumentException("invalid_recording_kind") };
+        string? profile = OptionalIdentifier(value.GetProperty("capture_profile_id"));
+        string? origin = OptionalIdentifier(value.GetProperty("p1_native_origin"));
+        if (kind == RecordingCommandKind.StartNewSession)
+        {
+            if (profile != P1NativeRecordingContract.ProfileId || origin is not ("agent_native_ui" or "declared_human" or "unknown"))
+                throw new ArgumentException("p1_native_profile_and_origin_required");
+        }
+        else if (profile != null || origin != null) throw new ArgumentException("p1_native_command_fields_not_applicable");
+        return new(runtime, session, new(id, kind, profile) { P1NativeOrigin = origin });
     }
 
     public static string SchemaForProfile(string? profile) => profile switch

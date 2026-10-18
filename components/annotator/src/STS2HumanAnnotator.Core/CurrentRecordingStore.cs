@@ -89,6 +89,8 @@ public sealed partial class RecordingSessionStore : IDisposable
                 Path.Combine(directory, "canonical-transitions.jsonl"));
             _nativeSemanticDiscriminator = OpenBufferedAppend(
                 Path.Combine(directory, "native-semantic-discriminator.jsonl"));
+            if (manifest.P1NativeSchemaVersion == 1)
+                _p1NativeEvents = OpenBufferedAppend(Path.Combine(directory, P1NativeRecordingContract.EventFile));
             if (HumanTextInputObservationContract.Supports(manifest.TextInputSchemaVersion))
                 _humanTextInputs = OpenBufferedAppend(Path.Combine(directory,
                     HumanTextInputObservationContract.FileName));
@@ -104,6 +106,7 @@ public sealed partial class RecordingSessionStore : IDisposable
             _invalidations?.Dispose(); _journal?.Dispose(); _semanticBoundaryTrace?.Dispose();
             _canonicalTransitions?.Dispose(); _nativeSemanticDiscriminator?.Dispose(); _ownerLease?.Dispose();
             _humanTextInputs?.Dispose();
+            _p1NativeEvents?.Dispose();
             _sourceSession?.Dispose();
             _sourceSessionV2?.Dispose();
             throw;
@@ -200,7 +203,7 @@ public sealed partial class RecordingSessionStore : IDisposable
                     _admittedCount,
                     _invalidationCount,
                     _readMaterialized,
-                    _readFailed, _decisions),
+                    _readFailed, IsP1NativeSession ? null : _decisions),
                 _lastRecord,
                 _lastInvalidation,
                 new Dictionary<string, long>(_recordedActionFamilies, StringComparer.Ordinal),
@@ -688,6 +691,13 @@ public sealed partial class RecordingSessionStore : IDisposable
         {
             if (_disposed)
                 return;
+            try { PrepareP1NativeClose(); }
+            catch (Exception error)
+            {
+                _disposed = true; MarkCloseFailure(error);
+                RecordingResourceCleanup.DisposeAll(EvidenceStreams().Concat(new IDisposable?[] { _ownerLease }));
+                throw;
+            }
             // Freeze appends under the same gate before preparation or any durable close work.
             // Closed remains a separate success fact if preparation, hashing or publication fails.
             _disposed = true;
@@ -707,6 +717,7 @@ public sealed partial class RecordingSessionStore : IDisposable
                     _canonicalTransitions.Flush(flushToDisk: true);
                     _nativeSemanticDiscriminator.Flush(flushToDisk: true);
                     _humanTextInputs?.Flush(flushToDisk: true);
+                    _p1NativeEvents?.Flush(flushToDisk: true);
                 });
                 WriteAtomic(
                     Path.Combine(DirectoryPath, "performance-profile.json"),
@@ -722,6 +733,7 @@ public sealed partial class RecordingSessionStore : IDisposable
                 {
                     throw new InvalidDataException("Human text input stream failed; session cannot close cleanly.");
                 }
+                WriteP1NativeClose();
                 if (Manifest.CloseSchemaVersion == 1)
                 {
                     string receipt = Path.Combine(DirectoryPath, "session-close-receipt.json");
@@ -767,7 +779,7 @@ public sealed partial class RecordingSessionStore : IDisposable
 
     private IEnumerable<IDisposable?> EvidenceStreams() => _decisionFiles.Values.Cast<IDisposable?>().Concat(
         new IDisposable?[] { _invalidations, _journal, _semanticBoundaryTrace, _canonicalTransitions,
-            _nativeSemanticDiscriminator, _humanTextInputs });
+            _nativeSemanticDiscriminator, _humanTextInputs, _p1NativeEvents });
 
     private void MarkCloseFailure(Exception exception)
     {

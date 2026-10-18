@@ -42,6 +42,7 @@ public sealed record RecordingCommand(
 {
     public SourceDeclaration? SourceDeclaration { get; init; }
     public string? ExpectedSourceSegmentId { get; init; }
+    public string? P1NativeOrigin { get; init; }
 }
 
 public sealed record RecordingLifecycleSnapshot(

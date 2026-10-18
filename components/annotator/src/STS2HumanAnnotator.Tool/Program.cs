@@ -19,6 +19,11 @@ return args switch
     ["pack-source-v4", string directory, string worker, string campaign, string output, string revision] =>
         PackSourceV2(directory, worker, campaign, output, revision, 4),
     ["audit-native-semantic", string directory] => AuditNativeSemantic(directory),
+    ["audit-p1-native", string directory] => AuditP1Native(directory),
+    ["pack-p1-native", string directory, string worker, string campaign, string output, string revision] =>
+        PackP1Native(directory, worker, campaign, output, revision),
+    ["pack-p1-native", string directory, string worker, string campaign, string output, string revision, "human_origin_attested"] =>
+        PackP1Native(directory, worker, campaign, output, revision, true),
     ["export", string directory, string output] => Export(directory, output),
     ["export-compatibility", string directory, string output] => Export(directory, output, compatibility: true),
     ["pack-session", string directory, string worker, string campaign,
@@ -37,6 +42,18 @@ static int AuditSourceV2(string directory, int version = 2)
     var audit = version == 4 ? SourceSessionAuditV4.Audit(directory) : version == 3 ? SourceSessionAuditV3.Audit(directory) : SourceSessionAuditV2.Audit(directory);
     Console.WriteLine(JsonSerializer.Serialize(audit, EvidenceJson.IndentedOptions));
     return audit.Status == "pass" ? 0 : 1;
+}
+static int AuditP1Native(string directory)
+{
+    var audit = P1NativeSessionBundlePacker.Audit(directory);
+    Console.WriteLine(JsonSerializer.Serialize(audit, EvidenceJson.IndentedOptions));
+    return audit.Status == "pass" ? 0 : 1;
+}
+static int PackP1Native(string directory, string worker, string campaign, string output, string revision, bool humanOriginAttested = false)
+{
+    var result = P1NativeSessionBundlePacker.Pack(directory, worker, campaign, output, revision, humanOriginAttested);
+    Console.WriteLine(JsonSerializer.Serialize(result, EvidenceJson.IndentedOptions));
+    return 0;
 }
 static int ExportSourceV2(string directory, string output, int version = 2)
 {
@@ -132,6 +149,7 @@ static int Identity(string assembly)
 
 static int Usage()
 {
+    Console.Error.WriteLine("P1 native: audit-p1-native <recording-dir> | pack-p1-native <recording-dir> <worker-id> <campaign-id> <output-dir> <source-revision> [human_origin_attested]");
     Console.Error.WriteLine("usage: sts2-human-annotator audit <recording-dir> | audit-native-semantic <recording-dir> | audit-source[-v2|-v3|-v4] <recording-dir> | export-source[-v2|-v3|-v4] <recording-dir> <output-dir> | pack-source[-v2|-v3|-v4] <recording-dir> <worker-id> <campaign-id> <output-dir> <source-revision> | export[-compatibility] <recording-dir> <output.jsonl> | pack-session[-compatibility] <recording-dir> <worker-id> <campaign-id> <output-dir> <source-revision> human_origin_attested | identity <assembly> | recover-interrupted <recordings-root> <recovered-root>");
     return 2;
 }

@@ -14,6 +14,9 @@ public static class SessionBundlePacker
         string packerSourceRevision,
         bool humanOriginAttested)
     {
+        var manifest = JsonSerializer.Deserialize<CurrentRecordingManifest>(File.ReadAllText(Path.Combine(recordingDirectory, "recording-manifest.json")), EvidenceJson.Options)!;
+        if (manifest.P1NativeSchemaVersion == 1)
+            return P1NativeSessionBundlePacker.Pack(recordingDirectory, workerId, campaignId, outputDirectory, packerSourceRevision, humanOriginAttested);
         SessionBundleResult result = PackCore(recordingDirectory, workerId, campaignId, outputDirectory,
             packerSourceRevision, humanOriginAttested, compatibility: false);
         return new CanonicalSessionBundleResult(result.Status, result.BundleDirectory,
