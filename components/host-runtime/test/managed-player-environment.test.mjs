@@ -400,7 +400,7 @@ test("reward descriptions expose visible text while retaining native reward bind
   state.rewards[1].description = "获得[img]res://images/packed/sprite_fonts/defect_energy_icon.png[/img]。";
   const icon = projectManagedCandidateDecision({ state, ...projectionIdentity });
   assert.equal(icon.snapshot.interaction.content.surface.rewards[1].description,
-    "获得res://images/packed/sprite_fonts/defect_energy_icon.png。");
+    "获得[defect_energy_icon.png]。");
 });
 
 test("a populated card reward publishes its lawfully viewable candidates under a public group id", () => {

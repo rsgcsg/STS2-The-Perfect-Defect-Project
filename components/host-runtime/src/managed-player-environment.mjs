@@ -527,7 +527,10 @@ function buildVisibleMap(state, ctx) {
 function visibleText(value) {
   return value == null
     ? null
-    : String(value).replace(/\[\/?[a-z_][a-z0-9_=]*\]/giu, "").replace(/\n/gu, " ");
+    : String(value)
+      // Same inline-icon text as NativeVisibleText.Strip in the Reference Host.
+      .replace(/\[img\]([\s\S]*?)\[\/img\]/gu, (_match, asset) => `[${asset.slice(asset.lastIndexOf("/") + 1)}]`)
+      .replace(/\[\/?[a-z_][a-z0-9_=]*\]/giu, "").replace(/\n/gu, " ");
 }
 
 function visibleHoverKeywords(keywords) {
@@ -1893,7 +1896,7 @@ function currentSurface(state, ctx) {
                 verb: "use",
                 subject: potionReferent,
                 arguments: [{ role: "target", referent: target }],
-                label: `Use ${potionReferent.label} on ${target.label ?? state.player?.name ?? "Player"}`,
+                label: `Use ${potionReferent.label}`,
                 raw: {
                   cmd: "action",
                   action: "use_potion",
