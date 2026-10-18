@@ -557,6 +557,8 @@ internal static class NativeTextMenuFrameBuilder
             && entities.TryResolve<NEventRoom>(options.ScreenEntityId, out var room)
             && entities.TryResolve<EventOption>(subject, out var option))
             return WithLegacySourceWitness(leaf, room!, option!);
+        if (surface is NativeGeneratedCardChoiceSurface generated && operation == NativeGeneratedCardChoice.SelectOperation)
+            return AttachGeneratedChoiceSourceWitness(leaf, generated, entities);
         if (surface is RewardClaimSurface rewards && operation == "claim_reward"
             && entities.TryResolve<NRewardsScreen>(rewards.ScreenEntityId, out var screen)
             && entities.TryResolve<Reward>(subject, out var reward))
@@ -567,6 +569,14 @@ internal static class NativeTextMenuFrameBuilder
         }
         return leaf;
     }
+    internal static TextMenuLeaf AttachGeneratedChoiceSourceWitness(TextMenuLeaf leaf,
+        NativeGeneratedCardChoiceSurface surface, NativeEntityRegistry entities) =>
+        leaf.Verb == "select" && leaf.SubjectReferentId is { } subject
+            && surface.SelectableCardEntityIds.Contains(subject, StringComparer.Ordinal)
+            && entities.TryResolve<MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NChooseACardSelectionScreen>(surface.ScreenEntityId, out var screen)
+            && entities.TryResolve<CardModel>(subject, out var card)
+                ? leaf with { NativeSourceWitness = new(screen!, card!, new Dictionary<string, object>(StringComparer.Ordinal)) }
+                : leaf;
     internal static TextMenuLeaf WithLegacySourceWitness(TextMenuLeaf leaf, object owner, object subject) =>
         leaf with { NativeSourceWitness = new(owner, subject, new Dictionary<string, object>(StringComparer.Ordinal)),
             NativeSourcePrefixVerb = "activate" };

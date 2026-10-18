@@ -40,6 +40,32 @@ public sealed class SourceProducerRegressionTests
         Assert.False(NativeLogicalService.MatchesPhysicalSourceLeaf(joined, prefix with { Verb = "claim" }, true));
     }
 
+    [Theory]
+    [InlineData("exact")]
+    [InlineData("foreign_screen")]
+    [InlineData("foreign_card")]
+    [InlineData("information")]
+    public void GeneratedChoiceSourceWitnessUsesTheActualCapturedScreenAndOriginalCard(string scenario)
+    {
+        var entities = new NativeEntityRegistry();
+        var screen = (MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NChooseACardSelectionScreen)
+            System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NChooseACardSelectionScreen));
+        var card = (MegaCrit.Sts2.Core.Models.Cards.Zap)
+            System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(MegaCrit.Sts2.Core.Models.Cards.Zap));
+        string ownerId = entities.GetId(screen, "screen"), cardId = entities.GetId(card, "card");
+        var original = Frame().Leaves[0] with { Verb = scenario == "information" ? "open" : "select", SubjectReferentId = cardId };
+        var surface = new NativeGeneratedCardChoiceSurface("native_generated_card_choice", "choosing",
+            scenario == "foreign_screen" ? "missing-screen" : ownerId, "Choose", new[] { cardId }, true, false,
+            Array.Empty<STS2Connector.LiveHost.Contracts.VisibleCard>());
+        var joined = NativeTextMenuFrameBuilder.AttachGeneratedChoiceSourceWitness(original, surface, entities);
+        Assert.Same(original.Dispatch, joined.Dispatch);
+        Assert.Equal(JsonSerializer.Serialize(original, ConnectorMod._jsonOptions), JsonSerializer.Serialize(joined, ConnectorMod._jsonOptions));
+        var prefix = new NativeSourceInputPrefix("select", screen, scenario == "foreign_card" ? new object() : card,
+            new Dictionary<string, object>(), "NChooseACardSelectionScreen.SelectHolder", "NChooseACardSelectionScreen.SelectHolder");
+        Assert.Equal(scenario == "exact", NativeLogicalService.MatchesPhysicalSourceLeaf(joined, prefix, true));
+        Assert.Null(joined.NativeWitness); // Human/native dispatch witness is not replaced.
+    }
+
     [Fact]
     public void ExactNativeShowScreenAssignsRewardOwnerFieldsBeforePushCanInvokeReady()
     {
