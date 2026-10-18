@@ -1,80 +1,48 @@
-# Current — P1 r1 package 1
+# Current — P1 r1 package 1 closeout
 
 Resolve live GitHub refs; current source and original records override this file.
-The research model configuration remains frozen.
+[P1 package 1](../plans/P1_R1_PACKAGE1_2026-10-17.md) records the implementation,
+acceptance and original failed windows. PR193 targets develop29d889bc and remains
+Draft/open for user review; no merge is authorized. Old T7 card A is obsolete.
 
-[P1 package 1](../plans/P1_R1_PACKAGE1_2026-10-17.md) owns this assignment.
-PR193 targets develop29d889bc after the approved PR189/191 merge commits.
-Old T7 card A is obsolete. No package2/3, training, release freeze or PR merge
-is assigned by this delivery.
+The approved package1 B/C/S/T6 engineering closeout passed. In the final bounded
+window, Reference20 on Mod d06a9e8b finished 20/20 in native natural loss,
+zero unknown and20 original replays verified. The original e5f64e49 Managed40
+is reused under its unchanged dependency closure, not relabeled as a new run.
+It retains40/40 natural losses,2802 delivered dispatch/Receipt/wire joins and2706
+completed P1 Results. This is not full-P1, strategy or Host-equivalence qualification.
 
-Package1 remains incomplete: B/T6 and the frozen B/C suite counts pass, but
-final closeout found64 Reference reward-intention mechanical interruptions.
-On frozen product source
-e5f64e49, Managed40 and Reference20 each finished entirely in natural loss,
-zero unknown and every original replay verified. Independent final audits bind
-raw native terminals, complete sources, exact current actions, original wire
-Receipts, loaded identities and the fixed SDK/Runtime/Agent bytes. Managed has
-2802 delivered dispatch/Receipt joins and2706 completed Results;
-Reference has1584 dispatch/Receipt joins. These are reliability and
-observed-mechanism results, not strategy or Host-equivalence qualification.
+New Reference: 1570 exact dispatch/Receipt/wire joins, 1558 delivered,
+12 known not-delivered; Results {"completed": 1499, "not_started": 12}.
+Every reward intention now executes the chosen forward mechanical continuation:
+37 take-card and12 decline chains, all two-step completed with original
+owner, full details, actual offered actions, original wire Receipt and sealed
+successor. All37 takes increase the chosen definition count by one; all12
+declines preserve the full original card multiset. No old reward-owner metadata failure or interrupted_known Result remains.
+The final batch also contains generated-card choice with complete map Read,
+actual native select and complete combat successor. Native stderr is retained;
+terminal/replay evidence does not establish native-clean shutdown.
 
-Final-source T1 replays the exact original point0 choice after lossless current
-reprojection of its original sealed source. Its next combat difference is retained:
-playable_cards[0].entity_id, opaque_alias_equality_or_bijection_changed. Original
-r1.1 records are not rewritten. T2 now has a legal SCRAPE choice, two delivered
-steps, completed Result and actual successor deck count0->1. Final Managed
-shop close/same-room proceed and enchant select/confirm have actual two-step
-positives; the full batch independently contains6 enchant,4 upgrade and1 shop fold.
+Source engine remains8d12afe7; Mod was built/deployed from clean057626f1 with
+Connector a908c3a9. Mod SHA d06a9e8b/MVID860493b7; Managed DLL e6f68ebb/MVID12a48a52;
+P1 r1.2 core1fe50249; Runtime8e04ba94; Agent44899b3c. Actual SDK105 and Runtime111
+files and installed artifacts stayed frozen through the batch. The tested product
+head CI39049525449 passed; local producer repair has909 exact-game Host tests.
+Later documentation does not rebuild or relabel native artifacts.
 
-Reference's generated chooser now has a native map entry and its owning single
-choice admission, without invented grid fields. Short10 binds complete map Read,
-legal generated card choice, delivered Receipt and combat successor. The final
-row5 same-seed random path did not encounter that selector; its terminal alone
-is not the short's mechanism proof. Command presentation now follows visible
-hand order, and Managed exposes the native discardable-potion DTO with real slots.
+T1 original point0, T2 actual SCRAPE receipt/deck successor, forward selector,
+shop departure and generated-selector map seams retain their scoped evidence.
+T1's next combat alias/bijection difference remains open for package2. The old
+f0830e97 Reference20's64 reward interruptions remain historical failed semantics,
+resolved by producer ownership repair and the new full batch, not rewritten.
 
-The pre-reward-owner-fix suite Mod is f0830e97/MVID933e38e4. Managed DLL: e6f68ebb/MVID12a48a52.
-Core r1.2:1fe50249; Runtime code:8e04ba94. Product-head CI39046363552 passed
-the full portable source/test route; Windows was skipped by its current policy.
-Local affected checks: SDK476, NativeLogical179, Runtime609 pass/3 skip,
-exact-game Host908 pass/0 skip, including NativeRewardCardRendererTests.
-
-User-approved scopev0.2 and full-public comparison stay fixed. S uses append-only
-card choice or Finish, selected/remaining capacity, no Back/deselect, default
-transform select-as-commit without rolling preview, and normal forward shop.open.
-Only qualified complete native owner/Task/roster/preview/world/detail facts permit
-mechanical folds. Custom Claws->Maul in Act3 and Draft mandatory reward production
-remain r1-not-encountered under the recorded source investigation; no new section17
-exception is registered.
-
-The continuation used16 short attempts and both authorized final batches within
-the2.5h window ending2026-10-18 03:43:38 Australia/Brisbane. Every short had a new
-implementation or stated hypothesis; no unknown was retried. Previous-window
-failed rows and their original replay errors remain separate historical evidence.
-
-A final classification of all64 interrupted_known Results found53 reward.take_card
-and11 reward.decline_group opens with no folded second input. Frozen SDK review
-shows every card/world/parent/alternative fact equal; only Reference surface_card
-content changed display_context reward_candidate->surface:card_reward_selection
-and dropped display_owner_entity_id to null.50 attached->attached and14 absent->absent
-subscriptions exclude E1 as the explanation. This is a real remaining S bug,
-not new game information. The Reference producer now keeps bound card rewards'
-original reward_candidate/ParentGroupId display ownership; standalone pages keep
-their own context. SDK full-fact guards remain unchanged. The regression and exact-game Host909 tests pass. New Mod d06a9e8b/MVID860493b7
-is installed; targeted shorts15/16 each execute open plus actual take/Skip in
-one completed intention, zero unknown and verified replay. Hologram enters the
-deck on take; decline preserves the deck and explicitly records pending_owner_skip.
-SDK105 and Runtime111 frozen files remain byte-identical. No third full batch
-is authorized; the old f0830e97 suite cannot qualify d06a9e8b Reference20.
-
-No actual Boss positive chain is established. A full terminal P1 human chooser
-and a one-page recording guide are available, but no real user recording is
-claimed. Further full acceptance and Boss gameplay need the user's next budget decision.
+This closeout used1/1 authorized Reference20 batch and0/2 short attempts,
+with original e5 Managed40 reused; unknown was never retried. No new game budget
+is implicit. The Boss human R21 guide is delivered; Boss gameplay awaits its own
+user approval.
 
 ## Remaining Platform non-claims
 
-No full-P1, Windows, Host-equivalence, Human, training or strategy qualification.
-Package2 still owes20 classified cross-Host traces, natural terminal comparison
-and every required mechanism journey on the merged candidate. Source4 and
-cross-act/victory obligations are not qualified by this package.
+Package2/3, Source4/Human, full equivalence, cross-act/victory,
+Windows and training qualification remain open. Q3-M0 non-game measurements were
+completed from existing records only; research configuration remains frozen.
