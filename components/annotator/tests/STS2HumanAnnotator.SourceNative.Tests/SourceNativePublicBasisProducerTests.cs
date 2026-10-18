@@ -1,6 +1,14 @@
 using System.Text.Json;
 using System.Runtime.CompilerServices;
 using MegaCrit.Sts2.Core.GameActions;
+using MegaCrit.Sts2.Core.GameActions.Multiplayer;
+using MegaCrit.Sts2.Core.Map;
+using MegaCrit.Sts2.Core.Nodes.Screens.Map;
+using STS2Connector;
+using STS2Connector.LiveHost;
+using STS2Connector.LiveHost.Contracts;
+using STS2Connector.NativeUi;
+using STS2Connector.PlayerEnvironment.Protocol;
 using STS2Connector.PlayerEnvironment;
 using STS2HumanAnnotator.Core;
 using STS2Platform.NativeFoundation;
@@ -15,6 +23,51 @@ public sealed class SourceNativePublicBasisProducerTests
             new Dictionary<string, object>(), "fixture.original_physical_prefix", nameof(PlayCardAction), typeof(PlayCardAction))));
     private static void Pass(SourceNativeProducerTests.Fixture f)
     { var audit = SourceSessionAuditV4.Audit(f.Store.DirectoryPath); Assert.True(audit.Status == "pass", string.Join(",", audit.Errors)); }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task OriginalMapCallbackMapsThroughActualMapLeafOnlyWithItsExactRegisteredObjects(bool sameOwner)
+    {
+        using var f = new SourceNativeProducerTests.Fixture(4);
+        var screen = (NMapScreen)RuntimeHelpers.GetUninitializedObject(typeof(NMapScreen));
+        var otherScreen = (NMapScreen)RuntimeHelpers.GetUninitializedObject(typeof(NMapScreen));
+        var point = (MapPoint)RuntimeHelpers.GetUninitializedObject(typeof(MapPoint));
+        var entities = new NativeEntityRegistry();
+        string screenId = entities.GetId(screen, "map_screen"), pointId = entities.GetId(point, "map_point");
+        f.Invoke(() =>
+        {
+            f.TransformFrame = frame =>
+            {
+                var surface = new MapNavigationSurface("map_navigation", screenId, true, false, "none",
+                    new[] { new VisibleMapChoice(pointId, 3, 0, "monster") });
+                var observation = new LiveObservation("map-source", "ready",
+                    new MapLiveContext("map", 0, null, Array.Empty<VisibleMapCoordinate>(), Array.Empty<VisibleMapNode>()),
+                    surface, new("contract_complete_for_visible_singleplayer_map_navigation", "exact", Array.Empty<string>(), Array.Empty<string>()),
+                    new("v", "commit", null, null, new("test", true, true, false, "fixture")), Array.Empty<string>());
+                var referent = new PlayerEnvironmentReferent(pointId, "map_node", "entity", "monster",
+                    new(true, true, false, false, "native_visible_fact"), null, null);
+                var native = NativeUiActionRuntime.DescribeMapCommands(surface)
+                    .Select(value => NativeUiActionRuntime.BindActionToCurrentObservation(observation, value)!).ToArray();
+                var projection = PlayerEnvironmentService.ProjectBoundActions(native, screenId,
+                    new Dictionary<string, PlayerEnvironmentReferent> { [pointId] = referent }, 100);
+                var page = frame.Page with { Referents = new[] { referent }, BoundActions = projection.Projection };
+                var source = new SnapshotBuildResult(page, observation, projection.Bindings, new Dictionary<string, PlayerReadBuildResult>());
+                return NativeTextMenuFrameBuilder.AppendMapActions(frame with { Page = page, Leaves = Array.Empty<TextMenuLeaf>() },
+                    source, _ => NativeInputResult.Delivered("native_map"), sourceEntities: entities);
+            };
+            var original = NativeSourceInputProvider.Begin(new("activate", sameOwner ? screen : otherScreen, point,
+                new Dictionary<string, object>(), "native_map_choice_ui", nameof(VoteForMapCoordAction), typeof(VoteForMapCoordAction)));
+            NativeSourceInputProvider.Accepted(original); NativeSourceInputProvider.Finish(original);
+        });
+        await f.Close(); Pass(f);
+        var row = Assert.Single(f.Rows<SourceNativeInputWitnessV2>("native-input-witnesses.jsonl"));
+        Assert.Equal(sameOwner ? "exact" : "unmapped", row.Outcome.MappingStatus);
+        Assert.Equal(sameOwner ? 1 : 0, row.Outcome.MatchCount);
+        Assert.Equal("delivered", row.Outcome.Delivery);
+        if (sameOwner) Assert.Equal("activate", row.Outcome.SelectedAction!.Verb);
+        else Assert.Null(row.Outcome.SelectedAction);
+    }
 
     [Theory]
     [InlineData(3)]

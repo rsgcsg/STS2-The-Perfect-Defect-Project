@@ -3,7 +3,21 @@
 Presentation consumes typed Recording, Policy and Connector services. It never
 owns native legality, input delivery, causal proof or research admission.
 
-## Accepted direction: complete in-game workbench (2026-09-18)
+## Current pre-training scope
+
+The user-selected first-training scope makes internal API, library and CLI the
+main operation surface; existing GUI is a thin mapping to the same use cases.
+Retain current presentation, pending/unknown confirmation and pairing adapters;
+do not create a second business owner or build new complex GUI/team systems.
+See the [Workbench position](plans/p1-prefreeze-2026-10-18/WORKBENCH_POSITION.md)
+and [pending freeze definition](plans/p1-prefreeze-2026-10-18/SCOPE_v0.3.zh-CN.md).
+The existing short product journey and R20 still need actual final-tuple acceptance.
+
+## Historical direction: complete in-game workbench (2026-09-18)
+
+The following target is retained as history and future design context. It is not
+an instruction to implement every cloud/training/team page before this freeze;
+future expansion needs a real use case and its owning decision.
 
 The owner requires one unified local/cloud/in-game workbench, with the Mod as its
 default entry and an optional external window. All local and cloud-backed functions,

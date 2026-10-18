@@ -61,6 +61,115 @@ test('partial and absent selected-run bases are retained even before the first c
     assert.ok(report.unresolved_contexts.some(row => row.source_ref === '1'));
   }
 });
+function startupFixture() {
+  const f = sourceRunFixture({ sameEpochPrelude: true });
+  const waiting = menuBasis(), snapshot = waiting.snapshot;
+  snapshot.snapshot_id = 'synthetic-original-startup';
+  snapshot.observed_at = '2026-10-16T02:53:58.000Z';
+  snapshot.status = 'settling';
+  snapshot.interaction = { ...snapshot.interaction, kind: 'no_action', stage: 'settling',
+    content_schema: 'sts2.player-environment/surface/no_action-1',
+    content: { surface: { kind: 'no_action', reason: 'settling', message: 'Native run mounting' },
+      context: { kind: 'menu', flow: 'tutorial_preference' } }, capabilities: [] };
+  snapshot.bound_actions.actions = []; snapshot.bound_actions.total_count = snapshot.bound_actions.materialized_count = 0;
+  snapshot.completeness.status = 'partial'; snapshot.completeness.missing = ['persistent_visible_state'];
+  const row = f.source.observations.find(row => row.epoch_id === 'run');
+  row.source_seam = 'connector_initial_observation'; row.phase = 'initial_observation';
+  row.completeness = 'failed'; row.missing_reason = 'source_capture_incomplete'; row.captured_parts = f.parts(waiting, 'run');
+  f.source.boundaries.find(row => row.kind === 'launch').position = position('run', 1);
+  return { ...f, waiting, waitingRow: row };
+}
+test('approved startup waiting remains an incomplete original context and ends at the first complete decision', () => {
+  const f = startupFixture();
+  const legacy = convert(f.source); assert.equal(legacy.complete, false); assert.equal('startup_context' in legacy, false);
+  const report = convert(f.source, { runContinuityId: 'run-exact' });
+  assert.equal(report.complete, true); assert.equal(report.whole_run.complete, true);
+  const waiting = report.captures[1];
+  assert.equal(waiting.classification, 'native_startup_waiting_context');
+  assert.equal(waiting.status, 'context_only'); assert.equal(waiting.complete, null); assert.equal(waiting.observation, null);
+  assert.deepEqual(waiting.original_missing, ['snapshot:partial']);
+  assert.equal(waiting.original_native_missing_reason, 'source_capture_incomplete');
+  assert.equal(waiting.original_snapshot_completeness.status, 'partial');
+  assert.equal(report.startup_context.frame_count, 1); assert.equal(report.startup_context.duration_ms, 2888);
+  assert.equal(report.startup_context.input_count, 0); assert.equal(report.startup_context.decision_count, 0);
+  assert.equal(report.startup_context.closing_complete_decision.source_kind, 'source_observation');
+  assert.deepEqual(report.actions.map(action => action.choice.kind), ['combat.end_turn']);
+});
+test('first complete input pre-basis closes startup before that same original input is strictly matched', () => {
+  const f = startupFixture();
+  f.source.observations = f.source.observations.filter(row => row.epoch_id !== 'run' || row.position.publication_index !== '2');
+  f.source.inputs[0].pre_position = position('run', 1);
+  const report = convert(f.source, { runContinuityId: 'run-exact' });
+  assert.equal(report.complete, true); assert.equal(report.startup_context.input_count, 0);
+  assert.equal(report.startup_context.closing_complete_decision.source_kind, 'source_input');
+  assert.deepEqual(report.actions[0].source_input_ids, ['input-first-p1']);
+  f.source.inputs[0].outcome.mapping_status = 'unmapped'; f.source.inputs[0].outcome.match_count = 0;
+  f.source.inputs[0].outcome.selected_action = null;
+  const unmapped = convert(f.source, { runContinuityId: 'run-exact' });
+  assert.equal(unmapped.complete, false); assert.equal(unmapped.startup_context.complete, true);
+  assert.equal(unmapped.unresolved_inputs[0].input_id, 'input-first-p1');
+});
+test('any recorded input during startup is retained unresolved even when the game does not respond', () => {
+  for (const delivery of ['delivered', 'not_delivered', 'unknown']) {
+    const f = startupFixture(), first = f.source.inputs[0];
+    first.input_prefix_ordinal = '2';
+    const early = { ...structuredClone(first), input_id: 'input-during-startup', sequence: 1,
+      input_prefix_ordinal: '1', pre_position: position('run', 1), captured_parts: f.parts(f.waiting, 'run') };
+    early.outcome.delivery = delivery; f.source.inputs.unshift(early);
+    const report = convert(f.source, { runContinuityId: 'run-exact' });
+    assert.equal(report.complete, false, delivery); assert.equal(report.whole_run.complete, false, delivery);
+    assert.equal(report.startup_context.input_count, 1);
+    assert.ok(report.unresolved_inputs.some(row => row.input_id === early.input_id));
+    assert.ok(report.native_trace.some(row => row.input_id === early.input_id));
+    assert.equal(report.captures.find(row => row.source_ref === early.input_id).status, 'unresolved');
+  }
+});
+test('an otherwise out-of-scope pre-Launch menu input cannot be hidden inside the startup interval', () => {
+  const f = startupFixture(), first = f.source.inputs[0]; first.input_prefix_ordinal = '2';
+  f.source.boundaries[0].after_input_ordinal = '1';
+  const early = { ...structuredClone(first), input_id: 'input-prelaunch-menu', input_prefix_ordinal: '1',
+    pre_position: position('run', 1), captured_parts: f.parts(menuBasis(), 'run') };
+  f.source.inputs.unshift(early);
+  const report = convert(f.source, { runContinuityId: 'run-exact' });
+  assert.equal(report.complete, false);
+  const captured = report.captures.find(row => row.source_ref === early.input_id);
+  assert.equal(captured.status, 'unresolved'); assert.equal(captured.scope.disposition, 'inside');
+  assert.ok(report.unresolved_inputs.some(row => row.input_id === early.input_id));
+});
+test('startup without a complete decision, exact lifecycle, or original unbroken waiting basis cannot complete', () => {
+  for (const change of ['no-decision', 'no-launch', 'wrong-run', 'no-setup', 'gap', 'other-missing', 'read-error']) {
+    const f = startupFixture();
+    if (change === 'no-decision') { f.source.inputs = []; f.source.observations = f.source.observations.filter(row =>
+      row.epoch_id !== 'run' || row.position.publication_index !== '2'); }
+    if (change === 'no-launch') f.source.boundaries = f.source.boundaries.filter(row => row.kind !== 'launch');
+    if (change === 'wrong-run') f.source.boundaries[0].transition.game_continuity_id = 'foreign-run';
+    if (change === 'no-setup') f.source.epochs[1].transition = null;
+    if (change === 'gap') f.waitingRow.gap_after_index = '0';
+    if (change === 'other-missing') { f.waiting.snapshot.completeness.missing.push('actual_owner_missing');
+      f.waitingRow.captured_parts = f.parts(f.waiting, 'run'); }
+    if (change === 'read-error') {
+      f.waiting.snapshot.reads = structuredClone(f.combat.snapshot.reads);
+      f.waiting.reads = structuredClone(f.combat.reads);
+      for (const read of f.waiting.reads) if (read.response) {
+        read.response.expected_snapshot_id = f.waiting.snapshot.snapshot_id;
+        read.response.observed_snapshot_id = f.waiting.snapshot.snapshot_id;
+      }
+      f.waiting.reads[0].response = null; f.waiting.reads[0].error = 'native_read_failed';
+      f.waitingRow.captured_parts = f.parts(f.waiting, 'run');
+    }
+    const report = convert(f.source, { runContinuityId: 'run-exact' });
+    assert.equal(report.complete, false, change); assert.equal(report.whole_run.complete, false, change);
+    if (change === 'read-error') assert.ok(report.startup_context.missing.includes('startup_original_information_error_or_gap'));
+    assert.notEqual(report.captures[1].status, 'context_only', change);
+    assert.ok(report.unresolved_contexts.some(row => row.source_ref === '1'), change);
+  }
+});
+test('a later partial waiting frame never borrows the startup exception after the first complete decision', () => {
+  const f = startupFixture(); f.publication(f.waiting, 'run', 4);
+  const report = convert(f.source, { runContinuityId: 'run-exact' });
+  assert.equal(report.complete, false); assert.equal(report.startup_context.frame_count, 1);
+  assert.equal(report.captures.at(-1).status, 'unresolved');
+});
 test('unknown delivery and a post-Launch input at the same publication watermark stay in the run', () => {
   const f = sourceRunFixture(); f.source.inputs[0].outcome.delivery = 'unknown';
   const unknown = convert(f.source, { runContinuityId: 'run-exact' });

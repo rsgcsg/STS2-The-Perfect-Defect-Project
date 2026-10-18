@@ -36,8 +36,12 @@ export function sourceRunFixture({ sameEpochPrelude = false, terminal = true } =
   const source = { bundle: 'synthetic-semantic-input', receipt: { content_id: 'synthetic-only',
     manifest: { session_id: identity.session_id } }, epochs: [], observations: [], inputs: [], boundaries: [], bytes: path => blobs.get(path) };
   function parts(basis, epoch) {
-    const partial = basis.snapshot.completeness.status !== 'complete' || basis.snapshot.completeness.missing.length > 0;
-    const missing = partial ? ['snapshot:partial'] : [];
+    const missing = basis.reads.flatMap(read => read.response === null ? [`read:${read.read_id}:${read.error}`]
+      : read.response.completeness.status !== 'complete' || read.response.completeness.missing.length
+        ? [`read:${read.read_id}:partial`] : []);
+    if (basis.snapshot.completeness.status !== 'complete' || basis.snapshot.completeness.missing.length)
+      missing.push('snapshot:partial');
+    const partial = missing.length > 0;
     const bytes = Buffer.from(JSON.stringify({ schema: 'sts2.player-environment/public-basis-1', revision: '1',
       capture_scope: 'current_public_snapshot_and_advertised_read_instances', capture_status: partial ? 'partial' : 'complete',
       snapshot: basis.snapshot, reads: basis.reads, missing }));

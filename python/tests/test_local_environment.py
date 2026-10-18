@@ -19,9 +19,20 @@ from spireagent.workbench.local_environment import (
     PROFILE_FILE,
     SCENARIO,
     LocalEnvironmentService,
+    _audit,
     _ManagedServiceEnvironment,
+    _read_profile,
     configure_managed_host,
 )
+
+CANDIDATE_AUDIT = {
+    "upstream_revision": "d" * 40,
+    "source_patch_sha256": "1" * 64,
+    "artifact_sha256": "2" * 64,
+    "artifact_mvid": "c9acc642-499d-4af2-ba24-2e90db5ef8cb",
+    "original_sts2_sha256": SCENARIO["exact_game_assembly_sha256"],
+    "runtime_sts2_sha256": SCENARIO["exact_game_assembly_sha256"],
+}
 
 
 def fixture(tmp_path: Path):
@@ -58,14 +69,7 @@ def fixture(tmp_path: Path):
     candidate = tmp_path / "candidate"
     candidate.mkdir()
     config = ProjectConfig(state, "", "", None, combo)
-    audit = {
-        "upstream_revision": "d" * 40,
-        "source_patch_sha256": SCENARIO["source_patch_sha256"],
-        "artifact_sha256": SCENARIO["artifact_sha256"],
-        "artifact_mvid": SCENARIO["artifact_mvid"],
-        "original_sts2_sha256": SCENARIO["exact_game_assembly_sha256"],
-        "runtime_sts2_sha256": SCENARIO["exact_game_assembly_sha256"],
-    }
+    audit = CANDIDATE_AUDIT.copy()
 
     def checked(_host: Path, _candidate: Path) -> dict[str, str]:
         assert _host == host and _candidate == candidate
@@ -1359,7 +1363,7 @@ def test_profile_collision_symlink_and_exact_package_drift_fail_closed(tmp_path:
     assert failed["session"]["report_artifact_id"]
 
 
-def test_private_setup_rejects_released_rc7_and_wrong_scenario_audit(tmp_path: Path) -> None:
+def test_private_setup_rejects_released_rc7_and_wrong_game_audit(tmp_path: Path) -> None:
     config, host, candidate, pin, audit, checked = fixture(tmp_path)
     (config.state_dir / PROFILE_FILE).unlink()
     old = {**pin, "version": "1.1.0-rc.7"}
@@ -1382,7 +1386,7 @@ def test_private_setup_rejects_released_rc7_and_wrong_scenario_audit(tmp_path: P
             input_profile="text-menu-v2",
             audit=checked,
         )
-    wrong = {**audit, "source_patch_sha256": "0" * 64}
+    wrong = {**audit, "runtime_sts2_sha256": "0" * 64}
     with pytest.raises(BoundaryError, match="managed_candidate_identity_mismatch"):
         configure_managed_host(
             config,
@@ -1393,6 +1397,49 @@ def test_private_setup_rejects_released_rc7_and_wrong_scenario_audit(tmp_path: P
             audit=lambda _host, _candidate: wrong,
         )
     assert not (config.state_dir / PROFILE_FILE).exists()
+
+
+def test_current_candidate_audit_is_bound_to_the_selected_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from subprocess import CompletedProcess
+
+    config, host, candidate, _pin, audit, _checked = fixture(tmp_path)
+    output = {**audit, "candidate_directory": str(candidate), "artifact_size": 380416}
+    commands = []
+
+    def inspect(command, **_kwargs):
+        commands.append(command)
+        return CompletedProcess(command, 0, json.dumps(output), "")
+
+    monkeypatch.setattr("spireagent.workbench.local_environment.subprocess.run", inspect)
+    assert _audit(host, candidate) == audit
+    assert commands == [["node", str(host / "tools/managed-exact.mjs"), "audit",
+                         "--candidate", str(candidate)]]
+    assert _read_profile(config)["audit"] == audit
+    output["candidate_directory"] = str(tmp_path / "other-candidate")
+    with pytest.raises(BoundaryError, match="managed_candidate_identity_mismatch"):
+        _audit(host, candidate)
+    profile_path = config.state_dir / PROFILE_FILE
+    profile = json.loads(profile_path.read_text())
+    profile["audit"]["artifact_mvid"] = "invalid-mvid"
+    profile_path.write_text(json.dumps(profile))
+    with pytest.raises(BoundaryError, match="profile_invalid"):
+        _read_profile(config)
+
+
+def test_candidate_drift_from_explicit_profile_is_rejected_before_native_start(
+    tmp_path: Path,
+) -> None:
+    config, _host, _candidate, _pin, audit, _checked = fixture(tmp_path)
+    service = LocalEnvironmentService(
+        config, audit=lambda *_: {**audit, "artifact_sha256": "3" * 64},
+        client_factory=lambda *_: pytest.fail("changed candidate must not launch"),
+    )
+    service.start(SCENARIO["id"])
+    failed = wait_status(service, "failed")["session"]
+    assert failed["error_code"] == "managed_candidate_changed"
+    assert _read_profile(config)["audit"] == audit
 
 
 def test_private_profile_setup_requires_stopped_workbench(tmp_path: Path) -> None:
@@ -1431,14 +1478,7 @@ class ManagedServiceFixture:
         self.calls: list[dict[str, Any]] = []
         self.held = held
         self.fail_release = fail_release
-        self.audit = {
-            "upstream_revision": "d" * 40,
-            "source_patch_sha256": SCENARIO["source_patch_sha256"],
-            "artifact_sha256": SCENARIO["artifact_sha256"],
-            "artifact_mvid": SCENARIO["artifact_mvid"],
-            "original_sts2_sha256": SCENARIO["exact_game_assembly_sha256"],
-            "runtime_sts2_sha256": SCENARIO["exact_game_assembly_sha256"],
-        }
+        self.audit = CANDIDATE_AUDIT.copy()
 
     def ready(self) -> dict[str, Any]:
         return {"service_instance_id": self.service_instance_id,

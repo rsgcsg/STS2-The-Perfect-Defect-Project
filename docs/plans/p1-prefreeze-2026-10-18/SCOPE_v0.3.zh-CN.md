@@ -1,123 +1,194 @@
-# P1 训练前支持范围书 v0.3（执行草稿，2026-10-18）
+# P1 r1 训练前冻结定义 v0.3（仓库同步副本，待用户批准）
 
-用户第15轮冲刺指令已授权实施，**本稿不是冻结批准**。范围扩到第一至第三幕，冻结只在训练前做一次；最终冻结 PR 仍由用户批准。硬截止 **2026-10-20 16:30 Brisbane**，到点交 PR 或剩余清单，不降低门槛、不顺延。v0.2 中第一幕限定、中文语言和旧预算不再作为本轮范围；历史证据继续保留原身份。
+本页同步唯一共享待批定义；canonical精确路径为 `/Users/fire/Desktop/SpireAgentProject/claude-handoff-2026-10-13/P1_r1_SUPPORT_SCOPE_v0.3_2026-10-18.zh-CN.md`，其SHA见输入索引 (`/Users/fire/Desktop/SpireAgentProject/claude-handoff-2026-10-13/FREEZE_INPUTS.json`)。两处按同一次文档集成同步，不独立派生要求。它不是冻结批准，也不批准训练、上传、云费用、历史资产处置或新的协议取舍。用户已定的要求继续执行；尚待决定的范围在第8节明确列出，不能把Claude建议或本次文档合并当成用户已定。
 
-历史查过：复用既有 Architecture/Components/ADR0016、P1 合同、K0 采集历史、K1 资产账本和 K2 地图；旧录制、旧批次和旧资格保留原范围，不转换为当前候选资格。
+**目的**：给第一轮训练一个确定、可复验的P1环境、采集/解释、独立Agent接入和可定位的项目全貌；快速复用已有成果，不扩建复杂GUI/团队平台。硬截止仍为2026-10-20 16:30 Brisbane；未完成交实际剩余清单，不暗改标准或延期。
 
-## 冻结内容与当前身份
+历史查过：既有Architecture/Components/ADR0016/DOCUMENT_MAP、K0/K1/K2/K4、版本与数据owner、原用户消息的有界审计、K5和K6，以及当前已审同树源码。旧输入文档的完整原文和SHA已保留为合并附件；原记录/失败/旧资格不改。
 
-最终清单需要填写 artifact SHA、MVID、source/patch/profile/converter/core 与原始批次路径。下列是当前实际基线和在途候选，不是最终组合，也不把源码、构建、已安装和实际执行资格互相替代。
+## 1. 11条进度、依据和首训价值
 
-| 层 | 本次绑定内容 | 当前已核身份/状态 |
+以下状态是第19轮实际快照。11行是总报告的共同表头，不意味着每项细化均已获用户批准。全幕/英文/Source4整局、严格重放、最终40/20、原产品/R20与收敛已有用户依据；覆盖口径和冻结前独立信息复验已按用户2026-10-18附条件批准（见第6节）；云具体消费门等实际待决仍按第8节确认。
+
+| # | 验收项 | 当前状态与真实缺口 | 为什么服务第一轮训练／依据层 |
+|---|---|---|---|
+| 1 | 全部幕Reference正确性 | **没开始**：最终候选同条件英文合格整局0/3，真实第三幕/胜利行仍缺 | 新示范公开事实与结局可靠；全幕/英文/Act3目标/尽量赢为直接要求，≥3为采纳计数口径；不是三局都赢/都到Act3 |
+| 2 | Managed一致与最终40/20 | **进行中**：A03两loss完整terminal equal；选择点170/293、236/432，整轨不严格；新英文严格0/3，最终候选40/20未跑 | 保证训练/评估环境对照真实游戏；严格到底、最终40/20有直接用户依据 |
+| 3 | 机制覆盖 | **进行中**：用户已批准共同机制新候选合计至少一次、Act2/3五类幕特有各自实到及三证同时PASS；42+4行逐行填原件，新候选证据待齐 | 把首训环境实际能力和遗漏说清；全幕不自动等于每种共同机制每幕都必须重复验 |
+| 4 | 英文 | **进行中**：旧6c实际加载时英文可见；新4d仅已安装、未冷加载，转换预检尚未PASS | 与第一轮文字输入一致；用B短段/整局共用证据，不再暗增额外一局 |
+| 5 | 采集/转换路径 | **进行中**：native_input首战EndTurn阳性；有界启动waiting源码已由root独审、22 focused PASS；真实新候选预检仍未通过，原包地图unmapped保留false | 原生示范能形成可核验P1来源；report-v3整局scope源码已交，不能当真实整局转换已过 |
+| 6 | API/库/CLI产品路径、Workbench薄映射、R20 | **进行中**：已有GLOBAL应用源码/接口、K6定位与外包材料；最终tuple实际短验/R20未过 | 训练后完整Agent能从同一入口运行、Stop、查原件；保留原短验要求，不做复杂GUI |
+| 7 | 文档与closeout | **进行中**：本定义待批；CURRENT本轮同步合入/装载/缺口，docs检查与复核待完成 | 消费者能找到准确身份、操作与差异，不再双份范围书 |
+| 8 | K收敛 | **进行中**：K0/K1/K2/磁盘/K5/K6材料已交；K4既有9/10，B操作单仍缺；K3表24项均已exact tag远端核验后关闭；19项以后复用已逐条入地图标实际tag（未迁入源码保留） | 入口定位owner/状态/出处/去向；不是承诺全史穷尽或重验所有旧结论 |
+| 9 | R2+Modal最简云 | **进行中**：已有存储/派发机制与K5方案；新P1→R2回读→Modal消费尚未实测，上传/费用需另批 | 首训能读同一获准数据；用户已定最简方向，具体对象/只读探针与细门待确认 |
+| 10 | Agent公开信息复验 | **没开始**：已批准冻结前由非作者agent共用新英文记录，每出现机制至少一次画面对照完整P1；原native提示/预览+CUA路径已定位，live待小验 | 防止人看游戏能选而Agent缺必需公开事实；不把“之后再复验”自动升级为无界审查 |
+| 11 | 组件/协议/格式的位置和原因 | **进行中**：已补三路链及逐行用途/首训价值，等root/K4复核 | 避免重复实现、错误依赖和权威混淆；复用已有组件框架 |
+
+依据[审计附件](FREEZE_AUDIT.md)：U14是全幕/英文/采集/严格/40+20/产品要求；U15采纳提案§4/§6计数和时刻；UK要求K及资产批准边界；U19要求首训导向、API/库/CLI、GUI薄映射、最简云、审计合成与11条表。原消息ID/记录SHA见审计附件。旧中文Boss“最多3局”窗口不是本次英文“至少3局”的同一数字依据。
+
+## 2. 三路链与本次交付边界
+
+```text
+在线：完整Agent ↔ Agent程序端口 ↔ Policy Runtime ↔ SDK(P1) ↔ Connector ↔ Host/STS2
+      Host Runtime管启动/隔离/恢复；执行请求/权限/预算/Stop与证据关联横切
+      Reference=真实游戏+Mod，Managed=无界面Host路径；Mod是包装
+
+独立记录：原生变化/输入 → Annotator Source4原件 → Evidence → 共享SDK解释为P1轨迹
+          Agent/选择器 → Runtime AgentRun原件 → 原typed verifier/replay（独立路线）
+
+研究：获准来源/用途 → Projection/InputSpec/TargetSpec → 数据集/划分/TrainingRun
+      → checkpoint/Model → 完整Agent组合 → 在线新运行 → 固定评估
+      R2承载对象，Modal承载获批作业；不决定来源/游戏/研究准入语义
+```
+
+每个组件、协议、格式的位置、为什么存在、首训价值与保留/占位状态，见项目地图的[链路用途表](CHAIN_PURPOSES.md)。现行API/库/CLI是主操作面；GUI映射原应用用例，保留已有显示/确认/配对适配，不扩复杂GUI/团队/Hub。
+
+“P1记录→研究消费”是本次交付的**阶段线**，不是已经冻结一个统一数据消费合同。固定的是发布组合、在线P1语义、可校验原件及解释身份；Projection/Input/Target、来源admission/use、数据集/划分/门槛、词表、训练配置和Q1方案仍属Q链owner后续决定。本批选用冻结P1，不废止其它历史合格来源或actual consumer。
+
+既有Q3第一批第3版 (`/Users/fire/Desktop/SpireAgentProject/claude-handoff-2026-10-13/Q3_BATCH1_PLAN_2026-10-17.zh-CN.md`)已获用户批准在P1完成后执行：1a六Agent工程链、1b既定对照问题保留；本定义不撤销或重设它。P1前仅低优先级Q3-M0；实际数据划分/门槛、一次Modal基线之外费用和配置变更按原限制确认，不借文档合并提前fit。
+
+## 3. 当前组合、发布身份与变化原则
+
+当前develop `ea7c14e8969006fa0e470678198ef94aca471f90`，tree `4b796997314f63b59557d6d8daa7f3b6ad14e67d`与已审eafa9a7c相同。#202实际merge `beca367cf72516f982031423d3266c9536925dd2`；#204实际merge即ea7c；#203的808e祖先经#204完整进入develop，GitHub标MERGED，不是第三次独立develop merge。#204 source CI39115695661与最终integration CI39120207920均PASS；这些是源码/集成证据，不是新英文整局。 root普通merge B后的未push组合源码为 `904291930cf1429df4fcc616dbfc07d720af10b8`；Mod编译身份仍是8967，不追贴904。root已报fullPython4485 PASS/5skip+93subtests，原sourceGate环境失败及精确纠正记录保留；仍是源码检查，不是当前新Mod加载或预检证明。安装回执：`/Users/fire/Documents/Codex/2026-10-17/a-t7-runtime-connector-status-settling/work/p1-round19-20261018/deployment-4d-root-review.json`。
+
+| 层 | 当前事实及冻结时要固定的内容 |
+|---|---|
+| 游戏 | 标准单人Defect/A0、正式新记录英文；DLL SHA `9cb4f1ad8c9f284aa8fec3122ffd6d780bbf543d875c817abdd12ff63fbf12b4`；最终模式/语言/模板和版本必须对应原件 |
+| Reference Mod | 11:21:56Z快照：新安装 `4d3f8b4bd934de191731f7d6ccd011d12cd9eadd4d243eeb2caf95e1ef592860` / MVID `fb38a130-13eb-4b98-9439-7518362195de`，官方build workspace `8967a72c7533a30a8ba1f803f34b720a708fdc7c`；**尚未冷加载/预检PASS**。回滚 `2026-10-18T11-21-45.822Z` 的6份旧Mod/config/provenance SHA均独立匹配；前次实际loaded 6c6b885f/MVID5b2d62dc、英文/EndTurn仍仅属旧身份 |
+| Managed | A03实际native `a70d8de18578cc2666ec854d8d8eb6bb85868317335fb67fcfbb7151133d7f66` / MVID `c9acc642-499d-4af2-ba24-2e90db5ef8cb` / patch `54bfa3a3e8beb21ebf72b62da4675c9ec6953764ffa746340990931e71e369dc`。两局A03执行workspace cd47f09c，不追贴ea7c |
+| P1/SDK/驱动/Runtime | P1 r1.3唯一语义owner；固定共享核心/Host mapping/Agent端口/比较器和实际发布包身份。typed tooltip用原全局双射，仅已声明typed shop detail尾部无序，usable_potions有序，500000工作上限保留 |
+| 采集/转换 | Source4原profile/bundle、capture身份、转换器/core、选择器来源/显示v4与原始记录grammar；report-v3的bounded/whole_run分别核验 |
+| 模板/显示 | Reference eng模板实际payload，Managed en；隔离Reference默认instant，native-ui/headless为独立显示维度。原888六格短验保持旧身份，不给6c转贴资格 |
+| 校验/产品/文档 | 原verifier/replay/comparator、API/库/CLI调用链、外包R20、范围/覆盖/差异和K入口；冻结时填实际成功原件，空格不当ready |
+
+当前源组件元数据如下（ea7c原platform-bom；Runtime6a448仅终局fixture同步，实际A03生产运行仍属原cd47绑定）；最终发布沿现有BOM/组件manifest与安装/加载回执填写，不重建新身份系统。旧Workbench component元数据是退役Platform诊断壳，不代表正式Python Application的产品验收。
+
+| 组件 | 版本 | 当前已审source / scoped digest |
 |---|---|---|
-| 游戏 | STS2 实际 DLL、模式、角色/难度、语言 | sts2.dll SHA256 `9cb4f1ad8c9f284aa8fec3122ffd6d780bbf543d875c817abdd12ff63fbf12b4`；标准单人 Defect/A0；正式新记录英文 |
-| 协议 | P1 r1 观察/目录/承诺/消费、ACK、Stop/unknown、集合与顺序语义及例外 | 当前 r1.3；#202 SDK/比较器绑定见下方组件身份。typed tooltip 纳入原全局双射；仅唯一 typed shop catalog 固定前缀后的完整 card-detail 尾段无序，文本/价格/重复数/owner/未知 Read 顺序和 500000 工作上限保留。usable_potions 仍有序；最终 init core 身份须用实际最终候选记录，旧 core 不冒充新候选 |
-| Reference | DLL、MVID、完整编译来源与回滚档 | 当前已安装新A1 SHA `0db06ad7bfc989eb8bdcef0e80639c27760d7876d633c660097328033c386199`，MVID `6daa8347-948c-4614-8e5a-0d57fb28fab5`，编译Connector source `91b478f283a36230c560a9c76218b8be8ddfb40c`，clean workspace `67adeccb`；新身份Source4预检待完成。旧888及回滚档 `a1-integration/apps/game-mod/.local/deployments/2026-10-18T07-19-27.577Z` 已核验，旧实跑不转贴新Mod |
-| Managed | native 产物/MVID/patch 与 Host 投影 | #202 A5/C 候选 SHA `1482de5d5c8aeee9e3ead971f54f7ae0c8a3ded194c70c66c80d043ce7fa0735`，MVID `3ffecdec-7008-4df3-bda3-948164a3ba84`，patch `89ddc776e969175eb3b18c49d3d862aa078ace6d8ef2305f8ab3270e4a05e374`；组合源码 `0affa651`。S05实际存读与后续floor2战斗通过；不是整局严格资格。A3诊断及旧候选保留 |
-| Connector 全组件/SDK | 当前发布元数据；最终候选重新取确切身份 | `1.3.0-rc.25`；source `e1d787667a265119f41ab717af10f1b61b2ce231`；source SHA256 `71337ef058d6b87f0f377d77c8e6eb1c580e7de072b7d7a2cb44c59a80aa912e`（#202 workspace `0affa651`；源码身份，非 installed/live 资格） |
-| Host | 当前发布元数据；最终候选重新取确切身份 | `1.1.0-rc.31`；source `d6ebd47a281f15b2dbf002f013aae763f51019a6`；source SHA256 `69e1b45c9fb66e29ba733c22a31a59c243ae9c9511dffa28fa27447622b66220`（#202 workspace `0affa651`；源码身份，非 installed/live 资格） |
-| Runtime / Agent 端口 | 当前发布元数据；最终候选重新取确切身份 | `0.1.0-rc.37`；source `e1d787667a265119f41ab717af10f1b61b2ce231`；source SHA256 `6c6681011f51e8bd943d1bf472e77691ba6360be50d3d08ec023fbe59f03b2d6`（#202 workspace `0affa651`；源码身份，非 installed/live 资格） |
-| 采集器 | 当前发布元数据；最终候选重新取确切身份 | `0.3.0-rc.19`；source `c60c3691fe45590a12eb10ff99a130b2903c6623`；source SHA256 `d8f36b2504235413256992f5d0f4e0df0ab1d0aae973de47d530ce9222cc5041`（#202 workspace `0affa651`；源码身份，非 installed/live 资格） |
-| 离线证据工具 | 当前发布元数据；最终候选重新取确切身份 | `0.1.0-rc.31`；source `c60c3691fe45590a12eb10ff99a130b2903c6623`；source SHA256 `6418df7cf4f65460b2f619506d379c21c670e8dfaa780dcece757b4c82f6ebb0`（#202 workspace `0affa651`；源码身份，非 installed/live 资格） |
-| Workbench | 当前发布元数据；最终候选重新取确切身份 | `0.1.0-rc.3`；source `01debc74ba24c61c5cbfbe9023ac8d4b3a7e9bc3`；source SHA256 `2accc441c50968fc2f8ca0bafba1fb7d9e71eaa47dc24fc60d5a4c1b768f80b4`（#202 workspace `0affa651`；源码身份，非 installed/live 资格） |
-| 英文模板 | Reference eng / Managed en；payload 与运行实际语言 | `defect-a0-eng-windowed`，显式eng、fullscreen=false/target_display=0；888已实际可见并采集通过，0db预检待完成，profile原件保留确切payload，不覆盖旧中文模板 |
-| 人工选择器 | 显示、输入来源和记录 provenance | 简洁全部动作首页显示v4，#199 merge `fdb465bb1057180bd5b877d174adeca133d08819`；用户同时看真实游戏画面，不能声称只看P1；Agent观察不变 |
-| 环境录制 | 原件格式、Close/打包、转换器及 SDK 映射 | 通用环境来源不限 Human/鼠标；只要按来源合同能转换为所需轨迹即可。本轮 B 仍需用户已定的英文 native_input Source4 整局 complete=true；新 tuple 尚无合格整局。直接 AgentRun 独立于 Annotator/Source4；Agent UI 预检不计 Human |
-| 校验/比较 | 离线 verifier、完整公开图比较、实例全局双射 | 当前 r1.3 比较器，不提高比较上限、不删字段、不按两端私有ID对齐；最终工具 source/digest 与原始回执一并固定 |
-| 文档 | 协议§16–18、CURRENT、本范围书、例外与覆盖表 | 冻结前更新；本稿先列真实缺口 |
+| Connector/SDK | `1.3.0-rc.25` | `137d1c3c64961d6df47233ab3c3e37d35f54cb23` / `4826537d68dfdfc661cb0a9a9faf6a4de4f4e2e55942348a83ebe2a7ce217f09` |
+| Host Runtime | `1.1.0-rc.31` | `316f6d77094204213bf1992f5ab8f75453f7bf89` / `b199f5e77ad9d8cf7436337de1dae57dc93024246bcb76c215192c51870e8d48` |
+| Policy Runtime | `0.1.0-rc.37` | `6a448289a1db46bb710d7537a877d6e3142bd972` / `5c1948b3e45cf589e6a16065e8ee6ed672b9d767df9579d5d0199f11360815f4` |
+| Annotator | `0.3.0-rc.19` | `2859aa6bb5b8d5faf139051aee71676c7d8ae36c` / `4ac47a72bbf90f1e9146de8a8d62d753058dec1caf9ed275ef34a127edc52fc1` |
+| Evidence | `0.1.0-rc.31` | `c60c3691fe45590a12eb10ff99a130b2903c6623` / `6418df7cf4f65460b2f619506d379c21c670e8dfaa780dcece757b4c82f6ebb0` |
+| 旧Platform诊断API | `0.1.0-rc.3` | `01debc74ba24c61c5cbfbe9023ac8d4b3a7e9bc3` / `2accc441c50968fc2f8ca0bafba1fb7d9e71eaa47dc24fc60d5a4c1b768f80b4` |
 
-完整当前 source/digest 原件：组件身份 (`/Users/fire/Documents/Codex/2026-10-17/a-t7-runtime-connector-status-settling/work/p1-sprint-root-20261018/pr200-current-identity.json`)、整合编译闭包 (`/Users/fire/Documents/Codex/2026-10-17/a-t7-runtime-connector-status-settling/work/p1-sprint-root-20261018/pr200-integrated-code-closure.json`)。上述链接均指向本机保留原件。
+版本修订按真实公开语义、实际consumer兼容、解释和数据影响决定，不能机械用“r1.x就事实保持/r2才会影响数据”判断。原件/producer身份不改，新解释另记；r1.x也可能须重派生/重验。冻结不永久禁止架构演进；只有当前发布组合受批准的范围约束。
 
-## 计数和验收
+## 4. 记录、转换、比较与计数
 
-- 正式计数：同一冻结候选、英文、至少3整局 Human，环境录制与选择器分别计数；每局0 unknown、离线通过、Managed严格重放到底。旧中文 Human01/02、Agent预检、诊断 locator、not_started跳过、不同候选及恢复片段不能拼成3局。
-- 环境录制必须有整局 `complete=true`，短段通过不替代整局；三幕机制可以由合格批次合起来覆盖，第三幕必须实际打到。胜利终局是必验缺口，若无法取得交用户定，不能用 loss/Stop替代。
-- 冻结候选上 Managed40 + Reference20、Workbench启动→决策→Stop→记录、独立Agent包 R20两端、project:closeout 均需实际完成。历史40/20只有历史资格。
-- 按同种子与公开选择前缀重放；每个真正决策点比较完整公开观察、目录、承诺与选择；只有协议已声明的集合可无序。`different`、`incomparable`、unknown、技术停止与自然终局分别记录。
-- 原始记录不改。旧 Human01 occurrence41 的同一卡公开描述仅有4，新生产修复后应为6；不能凭另一张Strike或源码猜值改成6。旧局正式严格到终局目标如何处理，已交用户决定；其余根因修复继续。
+Record grammar ≠ P1环境合同 ≠ Agent程序端口 ≠ Model Input/Target。通用环境采集不限Human或鼠标；直接Agent原件独立于Annotator/Source4。当前Runtime写 `sts2.policy-runtime/agent-session-run-1`目录（global_source、frame/Consume/ACK、Receipt/Result），旧 `sts2.p1/episode-record-1`单文件保留原converter/reader；不能混成一个当前格式。
 
-## 三幕机制覆盖表
+Source4 report-v3可显式 `--run-continuity`选择运行域：原菜单和域外事实仍保留并有原因，不能借scope排除运行内partial、unknown、gap、遗漏输入或终局。`complete`表示所选/声明范围的保留capture分类完整；`whole_run`另需真实new-run起点、连续来源及完整自然terminal，最终真整局证明不能由bounded complete、Close或fixture替代。Human来源、完整性、P1解释、轨迹/行为监督和研究训练准入分别由原owner判断。 仅本次附条件批准的有界启动waiting可按§8及P1§17 E2单列非决策段；它不把原NativeLogical缺失变成完整。
 
-状态“Reference已见/两端执行”只描述下列**旧候选**事实；“最终待验”均没有新冻结批次资格。“两端严格通过”必须补逐步完整相等的原件，现不以C11/C09诊断走到终局代替。
+正式计数继续用同一最终候选、英文、≥3完整Human局，环境录制/选择器分来源列；自然loss可算完整局，不能当第三幕/胜利覆盖。不同候选/语言、locator诊断、原not_started跳过、Agent预检和save恢复片段不拼成最终三局；存档续玩保留父局/存档SHA/new continuity，数据按同谱系分组。
 
-旧证据：H1=中文Human01，317输入、Act1 Boss后Act2 floor22 loss；H2=中文Human02，434输入、Act1 Boss后Act2 floor28 loss。M1=C11、M2=C09均为诊断新执行，分别67/293、47/432公开图相等，终局图也不同。原件索引与逐occ归因 (`/Users/fire/Documents/Codex/2026-10-17/a-t7-runtime-connector-status-settling/outputs/P1-round12-Managed-diagnostic-2026-10-18-details.md`)。本表按幕核对了原轨迹的选择位置，完整索引见 历史动作索引 (`/Users/fire/Documents/Codex/2026-10-17/a-t7-runtime-connector-status-settling/work/p1-sprint-root-20261018/historical-act-mechanism-index.json`)。索引说明原始选择/catalog与场景；只有对应Receipt/Result和后继才能证明效果完成，旧not_started不计成功。不从“打到某幕”推断所有该幕机制都遇到。
+严格比较固定tuple/语言/角色/难度/种子/起点，在Managed重放Reference真实选择，核完整公开观察、目录、选择、承诺及完整terminal。原全局实体双射、重复实例、owner/关系和文本保留；只有合同已声明集合可无序；different/incomparable/unknown/预算/技术中断/自然终局分别计。
 
-| 幕 | 必验机制 | 已有记录及真实状态 | 新冻结验收状态 | 到达办法 |
+旧中文Reference缺陷按最新root转交的用户指令登记，新英文整局承担严格验收，真实Managed缺陷继续修。A03两个终局equal是实质进展，但中间170/293、236/432，不是整轨严格；不能把所有description差异都推广为已证旧缓存。原Human01 occurrence41同typed卡4→新6、药水顺序原事实均不改。终局后Return/timeline仍是产品限制；当前P1胜负终局不新增为必须执行结算后导航的门。
+
+## 5. 工作台与最简云
+
+按[K6定位](WORKBENCH_POSITION.md)，工作台是现有Python Application用例层及可选人类面板，复用环境/完整Agent登记、prepare/start、one_step、Stop、查原件；GLOBAL已有API/库/浏览器入口，CLI没有同名register子命令，不虚构命令。`model stop`停Agent，`project stop`停Application服务，不混用。原Workbench短验和外包R20两Host要求保留；现成2684B外包与harness可复用，材料/源码不当实际验收。复杂GUI/团队系统本次不做，既有薄映射/信任边界保留。
+
+云按[K5最简建议](CLOUD_MINIMAL.md)复用storage库/现有push/pull：原始/P1产物及来源清单→ArtifactStore→R2→完整回读同hash→Modal消费获准同一对象。R2分块/manifest库可直接用，不强制Hub登录；现Modal派发器消费旧FeatureJob/TrainingRun，不自动等于新P1训练reader。K5查到的本地合成分块检查只证明局部机制，不是当前R2/Modal实测。
+
+Hub、Cloudflare登录、Evidence delivery、campaign/团队账号和Workbench云页面保留现状/接口，不扩建也不先迁全系统。两个历史大数据根合计约40.286GiB逻辑大小属于保全候选，不是自动训练数据；先批具体源/目的prefix/清单/校验，再传，原地删除另批。8MiB块/原blob限额、内存archive_bundle和临时整payload复制各有范围，不能为40G迁移直接放宽全局上限。
+
+云详细样本/读回/Modal CPU消费、上传对象及费用需明确批准后才执行；当前没有新上传/Modal消费实证。其目标是第一轮可读的最小接缝，不顺带启动训练或消耗Q3未来基线额度。
+
+## 6. 已批准覆盖与冻结前独立信息复验（42机制行+4跨幕/终局行）
+
+
+用户2026-10-18已选覆盖方案1并附条件：**共同机制在新候选记录合计至少出现并验过一次**；不要求每个共同机制在每幕重复验。**第2幕、第3幕各自的普通战、精英战、该幕事件、Boss战、Boss奖励五类必须实际验到**，两幕不能互相代替。每次计PASS必须同时具备该次Reference记录正确、离线校验PASS、Managed严格重放PASS三项证据；到达、源码修好或单项PASS都不能填通过。
+
+下表保留42个逐幕机制行和4个跨幕/终局行，逐行记录实际候选/来源/位置、三项证据路径和结果。共同机制只须合计一次，别幕对应行可明确引用同一已通过实例，不伪称该幕发生；幕特有必验行必须用对应幕自身原件。当前新候选三证尚未齐，下表不预填PASS。3局未遇共同机制时，先用同种子前缀重放或用户有意路线补验；仍未到达就作为冻结前缺口交用户决定，不算PASS，也不无限卡住冻结。第三幕、胜利及跨幕/终局原要求保留，取得困难的实际剩余范围交用户决定。
+
+**冻结前独立信息复验已选方案1并附条件**：由非作者agent共用这批新英文记录，对每个实际出现机制至少一次，将游戏画面与同次完整P1逐项对照；必须包含悬停关键词解释、升级预览、敌人意图和遗物能力说明。采用事后独立Reference同种子、原选择前缀复现取得真画面，不插入用户录制、不要求用户额外操作。复用既有native-logical目录的 `show_card_tips` / `show_power_tips` / `show_intent_tips` / `show_relic_tips` / `inspect_relic`、`inspect_deck_card` / `toggle_card_upgrade_preview`，沿原 `nativeFocus` / `MouseEntered` / `NHoverTipSet` / Inspector，再由CUA `getScreenshot`取得真实渲染画面；不另建截图产品框架。**既有代码路径已定位，live前缀复现与rendering仍待小验，尚未完成画面复验**；Read或离线replay都不能替代真画面。K4按非作者验收者角色执行短方案。所需合同内信息缺失由原owner修；扩信息范围或改协议先交用户决定。独立复验保存画面、P1/来源绑定、检查者与结论，不能仅凭作者源码自检代替。
+
+旧证据：H1=中文Human01，317输入、Act1 Boss后Act2 floor22 loss；H2=中文Human02，434输入、Act1 Boss后Act2 floor28 loss。M1=C11、M2=C09均为诊断新执行，分别67/293、47/432公开图相等，终局图也不同。原件索引与逐occ归因 (`/Users/fire/Documents/Codex/2026-10-17/a-t7-runtime-connector-status-settling/outputs/P1-round12-Managed-diagnostic-2026-10-18-details.md`)。本表历史列只覆盖H1/H2这组P1原件及注明的M1/M2诊断，不是全机器、全历史记录穷尽；其中无Act3不能写成全史无Act3。本表按幕核对了原轨迹的选择位置，完整索引见 历史动作索引 (`/Users/fire/Documents/Codex/2026-10-17/a-t7-runtime-connector-status-settling/work/p1-sprint-root-20261018/historical-act-mechanism-index.json`)。索引说明原始选择/catalog与场景；只有对应Receipt/Result和后继才能证明效果完成，旧not_started不计成功。不从“打到某幕”推断所有该幕机制都遇到。
+
+| 幕 | 机制（按批准口径取证） | 已有记录及真实状态 | 新冻结验收状态 | 到达办法 |
 |---|---|---|---|---|
-| 第1幕 | 普通/精英战：出牌、目标、结束回合、公开状态与牌堆 | H1/H2 Act1普通战实录；精英种类仍需逐场核，不从combat_turn推断 | 最终待验 | 正常推进并选精英路线；每场核完整观察/选择 |
-| 第1幕 | 战斗药水使用、丢弃及槽/目标顺序 | H1 occ119/120是可用药水列表顺序反例；实际potion.use选项见78/131/158，需分场核Result | 最终待验 | 保留药水至有合法目标的战斗；验证后继与库存 |
-| 第1幕 | 地图、跨房间、非地图公开map | H1/H2通过Act1并在Act2终局；H2 occ321地图→新事件 | 最终待验 | 同种子公开前缀；记录房间变更和owner |
-| 第1幕 | 金币/遗物/药水奖励、满槽与离开 | 历史普通奖励已见；满槽/linked/mandatory分支未逐项证明 | 最终待验 | 保留满槽；按实际奖励分支记录，未出现不填通过 |
-| 第1幕 | 卡奖领取、跳过/替代、生成卡详情 | H1 Act1 occ16/29等领取卡，occ159 REBOOT生成选择；拒绝/替代逐项待核 | 最终待验 | 战斗后自然奖励；保留完整详情与后继牌组 |
-| 第1幕 | 营火休息、离开 | H1 Act1 occ100–102旧rest修复链；H2 occ136/137等rest.choose；休息具体意图核原件 | 最终待验 | 路线选营火，分别记录休息和可继续页 |
-| 第1幕 | 升级选择、预览、确认 | H1 Act1 occ101/116/142/195、H2 occ166选择upgrade.choose；预览/后继待最终验收 | 最终待验 | 进入升级营火并选合法卡，核Preview/Result/后继 |
-| 第1幕 | 附魔选择、预览与结果 | H1 Act1 occ75、H2 occ54选择enchant.choose；旧公开summary差异在修 | 最终待验 | 遇附魔机会保留原始前缀；不能按名字推支持 |
-| 第1幕 | 商店购买、移除等服务、关闭再开及离开 | H1 Act1 occ104–108、145–147商店链，含原RNG/投影反例；服务效果待逐项核 | 最终待验 | 有金币的商店路线；核售罄/价格/服务后继 |
-| 第1幕 | 该幕事件：选项、继续、owner与嵌套 | H1 Act1 occ49/50、74/76；H2 occ77事件及78/79八选二；不是Act2证据 | 最终待验 | 各幕真人有意走事件；每类出现的选择都校验 |
-| 第1幕 | 宝箱打开、取遗物、跳过 | H1 Act1 occ110–113；H2 occ132–134宝箱动作，原H1跳过not_started另记 | 最终待验 | 路线选宝箱；不在开箱前揭示未来遗物 |
-| 第1幕 | 单选、多选、生成卡、选堆/包选择 | H2 Act1 occ77事件八选二、89弃牌选择；H1 occ159生成选择，其他类型待核 | 最终待验 | 复用已发生公开前缀，其他类型仅在真实出现后登记 |
-| 第1幕 | 移除/变换及后继牌组 | 旧事件/商店有入口线索；未逐幕证明全部效果 | 最终待验 | 使用自然服务/事件；核实体消失或新实体及后继 |
-| 第1幕 | Boss战斗、掉落与Boss遗物选择 | H1/H2确实经过Act1 Boss；Act2/3 Boss未有合格证明 | 最终待验 | 真人目标第三幕，保留Boss战及奖励完整链 |
-| 第2幕 | 普通/精英战：出牌、目标、结束回合、公开状态与牌堆 | H1 Act2 occ243起/H2 occ255起普通战实录；精英种类待核 | 最终待验 | 正常推进并选精英路线；每场核完整观察/选择 |
-| 第2幕 | 战斗药水使用、丢弃及槽/目标顺序 | H1 Act2 occ310选择potion.use；场景与Result须原件验收；H2 occ323事件喝药不代替战斗用药 | 最终待验 | 保留药水至有合法目标的战斗；验证后继与库存 |
-| 第2幕 | 地图、跨房间、非地图公开map | H1/H2通过Act1并在Act2终局；H2 occ321地图→新事件 | 最终待验 | 同种子公开前缀；记录房间变更和owner |
-| 第2幕 | 金币/遗物/药水奖励、满槽与离开 | 历史普通奖励已见；满槽/linked/mandatory分支未逐项证明 | 最终待验 | 保留满槽；按实际奖励分支记录，未出现不填通过 |
-| 第2幕 | 卡奖领取、跳过/替代、生成卡详情 | H1 Act2 occ265、H2 occ279特殊奖励；H2 occ281/315/390领取卡、357拒绝组 | 最终待验 | 战斗后自然奖励；保留完整详情与后继牌组 |
-| 第2幕 | 营火休息、离开 | 尚无确认的Act2营火操作链；不从Act1迁移 | 最终待验 | 路线选营火，分别记录休息和可继续页 |
-| 第2幕 | 升级选择、预览、确认 | H1 Act2 occ237–240选择upgrade.choose；不迁移Act1证据 | 最终待验 | 进入升级营火并选合法卡，核Preview/Result/后继 |
-| 第2幕 | 附魔选择、预览与结果 | H2 Act2 occ252选择enchant.choose；最终完整比较待验 | 最终待验 | 遇附魔机会保留原始前缀；不能按名字推支持 |
-| 第2幕 | 商店购买、移除等服务、关闭再开及离开 | H2 Act2 occ287仅shop.leave，不能当购买/移除完整链 | 最终待验 | 有金币的商店路线；核售罄/价格/服务后继 |
-| 第2幕 | 该幕事件：选项、继续、owner与嵌套 | H2 Act2 occ320–323旧event→map→新event反例，原322 not_started；888定点短测越过 | 最终待验 | 各幕真人有意走事件；每类出现的选择都校验 |
-| 第2幕 | 宝箱打开、取遗物、跳过 | H2 Act2 occ360–362 treasure.open/activate，需核各自Result与奖品后继 | 最终待验 | 路线选宝箱；不在开箱前揭示未来遗物 |
-| 第2幕 | 单选、多选、生成卡、选堆/包选择 | H1 Act2 occ248/289、H2 occ301/346/400 selector.choose；具体类型按原scene逐项核 | 最终待验 | 复用已发生公开前缀，其他类型仅在真实出现后登记 |
-| 第2幕 | 移除/变换及后继牌组 | 旧事件/商店有入口线索；未逐幕证明全部效果 | 最终待验 | 使用自然服务/事件；核实体消失或新实体及后继 |
-| 第2幕 | Boss战斗、掉落与Boss遗物选择 | 未有Act2 Boss完成记录；两局均在floor22/28自然loss | 最终待验 | 真人目标第三幕，保留Boss战及奖励完整链 |
-| 第3幕 | 普通/精英战：出牌、目标、结束回合、公开状态与牌堆 | 未有实际Act3记录；不从前两幕迁移资格 | 最终待验 | 正常推进并选精英路线；每场核完整观察/选择 |
-| 第3幕 | 战斗药水使用、丢弃及槽/目标顺序 | 未有实际Act3记录；不从前两幕迁移资格 | 最终待验 | 保留药水至有合法目标的战斗；验证后继与库存 |
-| 第3幕 | 地图、跨房间、非地图公开map | 未有实际Act3记录；不从前两幕迁移资格 | 最终待验 | 同种子公开前缀；记录房间变更和owner |
-| 第3幕 | 金币/遗物/药水奖励、满槽与离开 | 未有实际Act3记录；不从前两幕迁移资格 | 最终待验 | 保留满槽；按实际奖励分支记录，未出现不填通过 |
-| 第3幕 | 卡奖领取、跳过/替代、生成卡详情 | 未有实际Act3记录；不从前两幕迁移资格 | 最终待验 | 战斗后自然奖励；保留完整详情与后继牌组 |
-| 第3幕 | 营火休息、离开 | 未有实际Act3记录；不从前两幕迁移资格 | 最终待验 | 路线选营火，分别记录休息和可继续页 |
-| 第3幕 | 升级选择、预览、确认 | 未有实际Act3记录；不从前两幕迁移资格 | 最终待验 | 进入升级营火并选合法卡，核Preview/Result/后继 |
-| 第3幕 | 附魔选择、预览与结果 | 未有实际Act3记录；不从前两幕迁移资格 | 最终待验 | 遇附魔机会保留原始前缀；不能按名字推支持 |
-| 第3幕 | 商店购买、移除等服务、关闭再开及离开 | 未有实际Act3记录；不从前两幕迁移资格 | 最终待验 | 有金币的商店路线；核售罄/价格/服务后继 |
-| 第3幕 | 该幕事件：选项、继续、owner与嵌套 | 未有实际Act3记录；不从前两幕迁移资格 | 最终待验 | 各幕真人有意走事件；每类出现的选择都校验 |
-| 第3幕 | 宝箱打开、取遗物、跳过 | 未有实际Act3记录；不从前两幕迁移资格 | 最终待验 | 路线选宝箱；不在开箱前揭示未来遗物 |
-| 第3幕 | 单选、多选、生成卡、选堆/包选择 | 未有实际Act3记录；不从前两幕迁移资格 | 最终待验 | 复用已发生公开前缀，其他类型仅在真实出现后登记 |
-| 第3幕 | 移除/变换及后继牌组 | 未有实际Act3记录；不从前两幕迁移资格 | 最终待验 | 使用自然服务/事件；核实体消失或新实体及后继 |
-| 第3幕 | Boss战斗、掉落与Boss遗物选择 | 未有实际Act3记录；不从前两幕迁移资格 | 最终待验 | 真人目标第三幕，保留Boss战及奖励完整链 |
+| 第1幕 | 普通/精英战：出牌、目标、结束回合、公开状态与牌堆 | H1/H2 Act1普通战实录；精英种类仍需逐场核，不从combat_turn推断 | 共同机制合计至少一次；三证待齐 | 正常推进并选精英路线；每场核完整观察/选择 |
+| 第1幕 | 战斗药水使用、丢弃及槽/目标顺序 | H1 occ119/120是可用药水列表顺序反例；实际potion.use选项见78/131/158，需分场核Result | 共同机制合计至少一次；三证待齐 | 保留药水至有合法目标的战斗；验证后继与库存 |
+| 第1幕 | 地图、跨房间、非地图公开map | H1/H2通过Act1并在Act2终局；H2 occ321地图→新事件 | 共同机制合计至少一次；三证待齐 | 同种子公开前缀；记录房间变更和owner |
+| 第1幕 | 金币/遗物/药水奖励、满槽与离开 | 历史普通奖励已见；满槽/linked/mandatory分支未逐项证明 | 共同机制合计至少一次；三证待齐 | 保留满槽；按实际奖励分支记录，未出现不填通过 |
+| 第1幕 | 卡奖领取、跳过/替代、生成卡详情 | H1 Act1 occ16/29等领取卡，occ159 REBOOT生成选择；拒绝/替代逐项待核 | 共同机制合计至少一次；三证待齐 | 战斗后自然奖励；保留完整详情与后继牌组 |
+| 第1幕 | 营火休息、离开 | H1 Act1 occ100–102旧rest修复链；H2 occ136/137等rest.choose；休息具体意图核原件 | 共同机制合计至少一次；三证待齐 | 路线选营火，分别记录休息和可继续页 |
+| 第1幕 | 升级选择、预览、确认 | H1 Act1 occ101/116/142/195、H2 occ166选择upgrade.choose；预览/后继待最终验收 | 共同机制合计至少一次；三证待齐 | 进入升级营火并选合法卡，核Preview/Result/后继 |
+| 第1幕 | 附魔选择、预览与结果 | H1 Act1 occ75、H2 occ54选择enchant.choose；旧公开summary差异在修 | 共同机制合计至少一次；三证待齐 | 遇附魔机会保留原始前缀；不能按名字推支持 |
+| 第1幕 | 商店购买、移除等服务、关闭再开及离开 | H1 Act1 occ104–108、145–147商店链，含原RNG/投影反例；服务效果待逐项核 | 共同机制合计至少一次；三证待齐 | 有金币的商店路线；核售罄/价格/服务后继 |
+| 第1幕 | 该幕事件：选项、继续、owner与嵌套 | H1 Act1 occ49/50、74/76；H2 occ77事件及78/79八选二；不是Act2证据 | 共同机制合计至少一次；三证待齐 | 各幕真人有意走事件；每类出现的选择都校验 |
+| 第1幕 | 宝箱打开、取遗物、跳过 | H1 Act1 occ110–113；H2 occ132–134宝箱动作，原H1跳过not_started另记 | 共同机制合计至少一次；三证待齐 | 路线选宝箱；不在开箱前揭示未来遗物 |
+| 第1幕 | 单选、多选、生成卡、选堆/包选择 | H2 Act1 occ77事件八选二、89弃牌选择；H1 occ159生成选择，其他类型待核 | 共同机制合计至少一次；三证待齐 | 复用已发生公开前缀，其他类型仅在真实出现后登记 |
+| 第1幕 | 移除/变换及后继牌组 | 旧事件/商店有入口线索；未逐幕证明全部效果 | 共同机制合计至少一次；三证待齐 | 使用自然服务/事件；核实体消失或新实体及后继 |
+| 第1幕 | Boss战斗、掉落与Boss遗物选择 | H1/H2确实经过Act1 Boss；Act2/3 Boss未有合格证明 | 共同机制合计至少一次；三证待齐 | 真人目标第三幕，保留Boss战及奖励完整链 |
+| 第2幕 | 普通/精英战：出牌、目标、结束回合、公开状态与牌堆 | H1 Act2 occ243起/H2 occ255起普通战实录；精英种类待核 | 本幕普通战、精英战各必验；三证待齐 | 正常推进并选精英路线；每场核完整观察/选择 |
+| 第2幕 | 战斗药水使用、丢弃及槽/目标顺序 | H1 Act2 occ310选择potion.use；场景与Result须原件验收；H2 occ323事件喝药不代替战斗用药 | 共同机制合计至少一次；三证待齐 | 保留药水至有合法目标的战斗；验证后继与库存 |
+| 第2幕 | 地图、跨房间、非地图公开map | H1/H2通过Act1并在Act2终局；H2 occ321地图→新事件 | 共同机制合计至少一次；三证待齐 | 同种子公开前缀；记录房间变更和owner |
+| 第2幕 | 金币/遗物/药水奖励、满槽与离开 | 历史普通奖励已见；满槽/linked/mandatory分支未逐项证明 | 共同机制合计至少一次；三证待齐 | 保留满槽；按实际奖励分支记录，未出现不填通过 |
+| 第2幕 | 卡奖领取、跳过/替代、生成卡详情 | H1 Act2 occ265、H2 occ279特殊奖励；H2 occ281/315/390领取卡、357拒绝组 | 共同机制合计至少一次；三证待齐 | 战斗后自然奖励；保留完整详情与后继牌组 |
+| 第2幕 | 营火休息、离开 | 尚无确认的Act2营火操作链；不从Act1迁移 | 共同机制合计至少一次；三证待齐 | 路线选营火，分别记录休息和可继续页 |
+| 第2幕 | 升级选择、预览、确认 | H1 Act2 occ237–240选择upgrade.choose；不迁移Act1证据 | 共同机制合计至少一次；三证待齐 | 进入升级营火并选合法卡，核Preview/Result/后继 |
+| 第2幕 | 附魔选择、预览与结果 | H2 Act2 occ252选择enchant.choose；最终完整比较待验 | 共同机制合计至少一次；三证待齐 | 遇附魔机会保留原始前缀；不能按名字推支持 |
+| 第2幕 | 商店购买、移除等服务、关闭再开及离开 | H2 Act2 occ287仅shop.leave，不能当购买/移除完整链 | 共同机制合计至少一次；三证待齐 | 有金币的商店路线；核售罄/价格/服务后继 |
+| 第2幕 | 该幕事件：选项、继续、owner与嵌套 | H2 Act2 occ320–323旧event→map→新event反例，原322 not_started；888定点短测越过 | 本幕事件必验；三证待齐 | 各幕真人有意走事件；每类出现的选择都校验 |
+| 第2幕 | 宝箱打开、取遗物、跳过 | H2 Act2 occ360–362 treasure.open/activate，需核各自Result与奖品后继 | 共同机制合计至少一次；三证待齐 | 路线选宝箱；不在开箱前揭示未来遗物 |
+| 第2幕 | 单选、多选、生成卡、选堆/包选择 | H1 Act2 occ248/289、H2 occ301/346/400 selector.choose；具体类型按原scene逐项核 | 共同机制合计至少一次；三证待齐 | 复用已发生公开前缀，其他类型仅在真实出现后登记 |
+| 第2幕 | 移除/变换及后继牌组 | 旧事件/商店有入口线索；未逐幕证明全部效果 | 共同机制合计至少一次；三证待齐 | 使用自然服务/事件；核实体消失或新实体及后继 |
+| 第2幕 | Boss战斗、掉落与Boss遗物选择 | H1/H2无Act2 Boss完成记录；两局均在floor22/28自然loss | 本幕Boss战、Boss奖励各必验；三证待齐 | 真人目标第三幕，保留Boss战及奖励完整链 |
+| 第3幕 | 普通/精英战：出牌、目标、结束回合、公开状态与牌堆 | H1/H2这组P1原件无Act3；不代表全史无记录，不迁移资格 | 本幕普通战、精英战各必验；三证待齐 | 正常推进并选精英路线；每场核完整观察/选择 |
+| 第3幕 | 战斗药水使用、丢弃及槽/目标顺序 | H1/H2这组P1原件无Act3；不代表全史无记录，不迁移资格 | 共同机制合计至少一次；三证待齐 | 保留药水至有合法目标的战斗；验证后继与库存 |
+| 第3幕 | 地图、跨房间、非地图公开map | H1/H2这组P1原件无Act3；不代表全史无记录，不迁移资格 | 共同机制合计至少一次；三证待齐 | 同种子公开前缀；记录房间变更和owner |
+| 第3幕 | 金币/遗物/药水奖励、满槽与离开 | H1/H2这组P1原件无Act3；不代表全史无记录，不迁移资格 | 共同机制合计至少一次；三证待齐 | 保留满槽；按实际奖励分支记录，未出现不填通过 |
+| 第3幕 | 卡奖领取、跳过/替代、生成卡详情 | H1/H2这组P1原件无Act3；不代表全史无记录，不迁移资格 | 共同机制合计至少一次；三证待齐 | 战斗后自然奖励；保留完整详情与后继牌组 |
+| 第3幕 | 营火休息、离开 | H1/H2这组P1原件无Act3；不代表全史无记录，不迁移资格 | 共同机制合计至少一次；三证待齐 | 路线选营火，分别记录休息和可继续页 |
+| 第3幕 | 升级选择、预览、确认 | H1/H2这组P1原件无Act3；不代表全史无记录，不迁移资格 | 共同机制合计至少一次；三证待齐 | 进入升级营火并选合法卡，核Preview/Result/后继 |
+| 第3幕 | 附魔选择、预览与结果 | H1/H2这组P1原件无Act3；不代表全史无记录，不迁移资格 | 共同机制合计至少一次；三证待齐 | 遇附魔机会保留原始前缀；不能按名字推支持 |
+| 第3幕 | 商店购买、移除等服务、关闭再开及离开 | H1/H2这组P1原件无Act3；不代表全史无记录，不迁移资格 | 共同机制合计至少一次；三证待齐 | 有金币的商店路线；核售罄/价格/服务后继 |
+| 第3幕 | 该幕事件：选项、继续、owner与嵌套 | H1/H2这组P1原件无Act3；不代表全史无记录，不迁移资格 | 本幕事件必验；三证待齐 | 各幕真人有意走事件；每类出现的选择都校验 |
+| 第3幕 | 宝箱打开、取遗物、跳过 | H1/H2这组P1原件无Act3；不代表全史无记录，不迁移资格 | 共同机制合计至少一次；三证待齐 | 路线选宝箱；不在开箱前揭示未来遗物 |
+| 第3幕 | 单选、多选、生成卡、选堆/包选择 | H1/H2这组P1原件无Act3；不代表全史无记录，不迁移资格 | 共同机制合计至少一次；三证待齐 | 复用已发生公开前缀，其他类型仅在真实出现后登记 |
+| 第3幕 | 移除/变换及后继牌组 | H1/H2这组P1原件无Act3；不代表全史无记录，不迁移资格 | 共同机制合计至少一次；三证待齐 | 使用自然服务/事件；核实体消失或新实体及后继 |
+| 第3幕 | Boss战斗、掉落与Boss遗物选择 | H1/H2这组P1原件无Act3；不代表全史无记录，不迁移资格 | 本幕Boss战、Boss奖励各必验；三证待齐 | 真人目标第三幕，保留Boss战及奖励完整链 |
 | 1→2 | 跨幕选择、地图与状态连续性 | H1/H2实际进入Act2，旧中文Reference已见；Managed仅诊断执行 | 最终待验 | 完成Act1 Boss奖励后跨幕，核进入新幕前后 |
-| 2→3 | 跨幕与Act3初始化 | 未有实际记录 | 最终待验 | 真人完成Act2 Boss并进入Act3 |
+| 2→3 | 跨幕与Act3初始化 | H1/H2这组P1原件未到Act3；不作全史无记录结论 | 最终待验 | 真人完成Act2 Boss并进入Act3 |
 | 终局 | 自然loss、完整终局公开图与释放 | H1 Act2/22、H2 Act2/28均真实loss；M1/M2到loss但终局图不同 | 最终待验 | 新英文整局自然终局，核胜负/HP/Receipt/Stop/释放 |
 | 终局 | 胜利 | 未有合格记录 | 必验缺口 | 真人尽量获胜；取得困难时由用户决定，不替换标准 |
 
 关联/强制奖励等只有特殊模式证据的机制，先列实际标准局可达实例；不凭fixture宣称标准模式覆盖，也不因暂未遇到而宣称不存在。多人、未知身份与隐藏未来仍为当前不支持范围。
 
-## 执行节奏、缺口处理与存档
 
-B 先完成“新Mod＋采集器＋英文”原生预检，再给一页说明供用户录约15分钟：至少结束回合、选卡、事件或商店。每个根因先用30分钟定位并分“转换问题 / 采集问题”，再用60分钟修复和重验；时限到仍未闭合则报告具体证据与剩余工作，不静默兜底或降低complete。普通修复继续自主处理，真实协议取舍/例外/用户游戏操作才询问用户。unknown请求永不重发；修复后新候选从原种子头开始、独立新身份。
 
-地图房间存档续玩作为C并行最小功能：Managed 的 S05 已实际验证：HP62/gold111/deck11/floor1 保存、正常关闭父进程、全新进程 full-P1 恢复相等、随后实际进入floor2战斗；17 delivered、0 unknown、0 retry，两个进程正常退出。仅此受支持完成地图边界，不是战斗任意checkpoint。S03 incomplete/S04 fail原件保留。Reference现有原生继续入口不能单凭按钮名证明当前地图状态已存。恢复记父局/存档SHA/候选/新continuity，片段与原局同数据分组，不算独立新局。不以此阻挡A/B。
+## 7. 收敛、发布与停止边界
 
-检查点：10-18 22:00预检及说明；10-19 12:00短段complete与A根因表；10-19晚20:00第一局英文转换/重放；10-20早09:00稳定候选及最终批次/产品验收；10-20 16:30冻结PR或剩余清单。以上均为Brisbane时间。未来检查点已设当前chat提醒，平时只通知实质变化。
+项目地图应让新人定位owner、状态、出处、适用范围、资产去向和当前操作，不承诺穷尽历史全部知识，也不重验每条旧结论。复用K1的2063资产行、K2的100功能/401文档基准索引；135其它Codex目录仅metadata、语义迁入未核实等限制保留。
 
-## Reference 速度与呈现补充（用户10-18新增要求）
+用户2026-10-18已批准K3表24项：逐项先创建exact归档tag并远端核验，再关闭旧Draft；不删branch/worktree/data。K1逐项执行回执现已核24/24 exact tag远端解引用匹配、24/24 CLOSED且未合并，原branch/worktree/data保留；[紧凑执行快照](K3_EXECUTION.json)。19项以后复用已逐条进入K2对应链路并标实际tag；[#141/#147/#150/#157/#158/#161/#163](CHAIN_PURPOSES.md#k3历史复用来源按链路逐项定位)必须在Q-CHAIN-0与Q3开工前先查，不改变已批准训练配置。历史数据/资产迁移/删除不由本定义自动授权。冲刺普通已合topic自动删branch和新Mod安装（先备份）已有本轮单独许可，与历史未合分支/原始记录分开。
 
-隔离Reference默认instant，显式fast、normal仍支持；headless/native-ui是独立呈现维度。PR201全部原提交已整入已合并的PR200（develop `60dc0a89ad6ae19b26e0e1bbf71517471f409069`，与67adeccb同树）（六格实跑Host source/head仍为a7db15529d7fe266154553dc428540bb35527d91），当前留装888下六格短实跑均通过requested/effective和真实round1→2，12/12delivered、0unknown；最终冻结tuple仍须自己的实际记录。shared/attached个人游戏不覆盖偏好，低层诊断/模板启动不伪装成准备完成的Reference episode。当前与历史启动方式、证据边界 (`/Users/fire/Desktop/SpireAgentProject/claude-handoff-2026-10-13/replies/P1-Reference-launch-history-2026-10-18.md`)。
+发布继续用原版本/组件BOM、游戏/Mod/Managed/模板/工具原件和build/install/load身份；“develop冻结PR+tag、是否推main”的交付形式留用户确认，不先开新发布/registry。最终冻结PR用户亲批；普通source修复依已有冲刺授权推进。源码/CI、已装、真实游戏、Human来源、研究准入和策略强度各据实证。
 
-## 当前新增候选与实跑回执（持续更新）
+B是关键路径；新Mod真实预检→用户短段→新英文整局→转换/严格重放。录制闭环未过不告诉用户“可以录”。遇到的producer/转换/工具问题在原owner修，不从GUI黑图或click错误推断游戏黑屏；持续卡住按已定时限报最短反例和可选方案。A、K3/K5/K6/文档并行不挡用户录制。
 
-A第二组源码候选 `f11ed1abb33e3b884aefd3b4bc4ffd7dd8ced3e0`；Managed native SHA `778a557902dbb9012797ff459db7212474965466963c8e20dc6decbafbefbe44`，MVID `dd3ed293-23ff-4ff3-90de-8c42735464aa`，patch `403e33061bdaf67e8751274b2d5ebaa5439288f941d3cc199b23ca4232a8925d`。Human01新诊断293个选择全部completed，158完整相等/135仅定位，23原not_started另列，真实loss、终局图不同、0unknown；这些仍不计最终英文严格整局。原件 A01 (`/Users/fire/Documents/Codex/2026-10-17/a-t7-runtime-connector-status-settling/work/p1-sprint-A-20261018/diagnostics/human01/attempt-A01.json`)。
+## 8. 提交用户确认的实际取舍
 
-环境录制 Source4 capture profile SHA `acde561770d11aeaff8e22bf082bd0869bf440015f7ea525a9521dc4d81b96a4`；当前转换器source文件SHA256 `3d176dbad60cf9f397e08f0afc403071485e5e404ccd493d3b81434dba96b737`；B05完整原件保留实际源与SDK/core身份，完整自然终局转换仍待真实记录。
+用户2026-10-18已批准**有界启动waiting离线解释例外**，唯一协议登记为[P1§17 E2](../../protocols/P1_GLOBAL_R1.zh-CN.md#17-登记的协议例外必须经用户审核才能新增)：从**同run的native setup→Launch原见证**起，到首份完整、可决策公开观察前，可保留明确settling且原始失败/缺失的帧为非决策启动语境；原缺失和失败完整保留，不以后帧补齐，不发Agent，不声称NativeLogical缺失前缀变完整。期间混入任何玩家输入（即使未响应）必须unresolved，整局不得complete；该段必须以完整decision结束，崩溃或等不到都不得complete；每局报告单列帧数和时长，不算决策。first decision起的完整性与full strict门不变。**批准条件已登记；startup源码已root独审、22 focused PASS；原真实包派生仍因地图unmapped为overall false，新候选预检仍未通过。** 旧MapNativeSourceWitness漏附原件不补写；原owner补附源码已入候选，等新录制验。
 
-## 第16轮 K 收敛门（仍未冻结）
 
-- [磁盘表](DISK.md)：181目录；本轮不删、不移，K3按用户逐表批准。
-- [K0采集调查](RECORDING_HISTORY.md)：复用成熟采集/Close/pack；Source4两接缝估6–16人时，昂贵旧数据转换暂缓。
-- [K1账本](ASSETS.md)：2063行；6 dirty、46潜在未覆盖refs保护，目录/PR去向仍是建议，未物理归档或关闭。
-- [K2单入口](README.md)：沿原框架串目标/链路/合同/功能/组件/格式/状态，K4新agent验收与K3批准执行仍待完成；不能以盘点表存在宣布K完成。
+1. 本合成冻结定义整体及最终发布形式（原BOM、freeze PR/tag、main另定）；在确认前仍是待批稿。
+2. 覆盖口径已按第6节批准；补验后仍未到达的具体机制，冻结前列缺口交用户决定，不预填PASS。
+3. 云最小对象/目的prefix/费用与一次有界Modal读取的授权和细门；40G历史迁移独立表，本地删除另批。
+4. 冻结前独立信息复验范围/时点已按第6节批准；截图具体方法已按第6节定位原native提示/预览+CUA，live前缀复现与rendering待小验，不提前称取证已通过。扩信息范围/改协议仍交用户决定。
+5. 胜利终局确实取得困难时，由用户决定剩余范围；旧中文缺陷的记录保留，新英文严格口径按最新指令执行。
+受限启动waiting、覆盖口径与冻结前独立信息复验均已按上述条件批准，不再列为未选方案；startup源码/22 focused已交，真实新预检与覆盖/画面取证仍待完成。
 
-当前 develop 是60dc0a89；#202候选0affa651已通过source CI39108923063及独立复核，Ready但尚未合并；仓库merge自动删分支与当前禁删分支要求的权限接缝由root处理。最终freeze PR仍需用户批准并等K完成。最终候选英文≥3Human整局/实际第三幕/胜利行、Source4整局、完整终局严格比较、Managed40/Reference20、Workbench/R20和最终文档仍未齐备。旧Human01牌文本与药水顺序有不可事实保持派生的原始问题，另有终局UI接缝，不能静默放宽严格门槛。
+首轮训练的数据划分/门槛、P1 Input/Target/词表及实际执行绑定、新费用、Q1固定评测方案仍在冻结后确认；已有Q3第3版模型/配方不因本定义被撤销，若要改变仍先请用户确认，本定义不代批。到截止未齐就交11条实际剩余表，不把待定/未测写成通过。
 
-最新组合身份原件：0affa651组件身份 (`/Users/fire/Documents/Codex/2026-10-17/a-t7-runtime-connector-status-settling/work/p1-sprint-C-20261018/map-continue-final-identities.json`)；S05独立full-public比较 (`/Users/fire/Documents/Codex/2026-10-17/a-t7-runtime-connector-status-settling/work/p1-sprint-root-20261018/S05-independent-full-public-compare.json`)。新增A/B普通修复准备不覆盖以上冻结候选或旧实际记录。
+## 9. 依据、历史输入与当前入口
+
+- 合并前完整原文：较新replies输入 (`/Users/fire/Desktop/SpireAgentProject/claude-handoff-2026-10-13/replies/P1-r1-support-scope-v0.3-2026-10-18-attachments/replies-original.md`)、旧root输入 (`/Users/fire/Desktop/SpireAgentProject/claude-handoff-2026-10-13/replies/P1-r1-support-scope-v0.3-2026-10-18-attachments/root-original.md`)。历史证据完整保留，不从旧append恢复旧任务。
+- Claude冻结提案/全景仍作审计过的背景底稿；本定义没有将它们的待定条件默认为批准。
+- 当前操作/状态：START (`/Users/fire/Desktop/SpireAgentProject/claude-handoff-2026-10-13/00_START_HERE.md`)与项目[文档入口](../../DOCUMENT_MAP.md)；K4完整操作单仍待B真实预检闭环。
+- 已装6c原件：`/Users/fire/Documents/Codex/2026-10-17/a-t7-runtime-connector-status-settling/work/p1-round19-20261018/installed-6c-provenance.json`；合并/CI回执由root保留；A03实际两局报告：`/Users/fire/Desktop/SpireAgentProject/claude-handoff-2026-10-13/replies/P1-round16-A-new-identity-Managed-diagnostics-2026-10-18.md`。
+
+此定义等待用户批准；文档合并/本地检查不发布冻结、不声明最终英文或R20/云已完成。
