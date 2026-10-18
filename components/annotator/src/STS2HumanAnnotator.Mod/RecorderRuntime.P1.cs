@@ -67,12 +67,15 @@ internal static partial class RecorderRuntime
             if (!complete) error ??= "accepted_action_original_p1_basis_incomplete";
             if (match?.BoundAction == null || match.MatchCount != 1 || match.Status != "exact_unique")
                 error ??= "accepted_action_original_bound_action_unproven";
+            var originalWitness = JsonSerializer.SerializeToNode(witness, EvidenceJson.Options);
+            if (context?.P1CaptureDiagnostics is { } diagnostics && originalWitness is JsonObject witnessed)
+                witnessed["capture_diagnostics"] = diagnostics.DeepClone();
             _store!.AppendP1NativeEvent(new JsonObject { ["kind"] = "decision_accepted", ["run_id"] = _currentRunId,
                 ["decision_id"] = decision, ["action_witness_id"] = id, ["native_action_type"] = type,
                 ["native_queue_id"] = action.Id, ["native_mechanism"] = "game_action",
                 ["basis"] = JsonSerializer.SerializeToNode(basis, EvidenceJson.Options),
                 ["bound_action"] = JsonSerializer.SerializeToNode(match?.BoundAction, EvidenceJson.Options),
-                ["native_witness"] = JsonSerializer.SerializeToNode(witness, EvidenceJson.Options),
+                ["native_witness"] = originalWitness,
                 ["native_receipt"] = new JsonObject { ["kind"] = "game_action_accepted", ["carrier_ref"] = id },
                 ["missing_reason"] = error });
             if (error != null) P1Issue(error, type, witness);

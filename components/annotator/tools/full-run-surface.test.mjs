@@ -125,6 +125,20 @@ test("all native selector prefixes route P1 exact H and completion before legacy
   assert.match(p1, /P1UiPending.Values.Any\(value => value.NativeType.StartsWith\("NChooseARelicSelection\."/u);
 });
 
+test("P1 card diagnostic flags freeze at original capture and accepted rows only serialize that context", () => {
+  const diagnostics = fs.readFileSync(path.join(root, "src", "STS2HumanAnnotator.Mod", "RecorderRuntime.P1Diagnostics.cs"), "utf8");
+  assert.doesNotMatch(diagnostics, /\.CanPlay\(|\.CanPlayTargeting\(|RequestEnqueue\(|StartCardPlay\(/u);
+  for (const field of ["capture_snapshot_id", "capture_stage_generation", "exact_holder_witness_id", "native_action_executing",
+    "hand_in_card_play", "hand_current_mode", "hand_is_peeking", "player_actions_disabled", "part_of_player_turn", "extra_turn_player_count"])
+    assert.ok(diagnostics.includes(`\"${field}\"`), field);
+  assert.match(runtime, /CaptureP1CardReadiness\(frame, holder, "StartCardPlay.prefix"\)/u);
+  assert.match(runtime, /CaptureP1CardReadiness\(current, stagedOwner\?\.Holder, "TryPlayCard.prefix.current_capture"\)/u);
+  const p1 = fs.readFileSync(path.join(root, "src", "STS2HumanAnnotator.Mod", "RecorderRuntime.P1.cs"), "utf8");
+  const accepted = section(p1, "private static void ObserveP1AcceptedAction(", "private static bool ObserveP1AcceptedUi(");
+  assert.match(accepted, /witnessed\["capture_diagnostics"\] = diagnostics.DeepClone\(\)/u);
+  assert.doesNotMatch(accepted, /CaptureP1CardReadiness\(|ActionExecutor\.IsRunning/u);
+});
+
 test("act-ready binds one exact queued action and skips generic duplicate ingress", () => {
   const enqueue = section(patches, "internal static class NativeActChangeVoteEnqueuePatch", "internal static class NativeActChangeVoteCommitPatch");
   const commit = section(patches, "internal static class NativeActChangeVoteCommitPatch", "[HarmonyPatch(typeof(RewardsSetSynchronizer)");

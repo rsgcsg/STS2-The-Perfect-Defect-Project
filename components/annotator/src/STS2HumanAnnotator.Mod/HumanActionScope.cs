@@ -1,6 +1,7 @@
 using STS2Connector.PlayerEnvironment.Witness;
 using STS2HumanAnnotator.Core;
 using STS2Platform.NativeFoundation;
+using System.Text.Json.Nodes;
 
 namespace STS2HumanAnnotator.Mod;
 
@@ -47,6 +48,7 @@ internal sealed class HumanActionContext
     }
 
     internal RecorderRuntime.NestedUiInput? NestedInput { get; set; }
+    internal JsonObject? P1CaptureDiagnostics { get; set; }
 
     internal bool NativeInputBinding { get; }
     internal string Origin { get; }
