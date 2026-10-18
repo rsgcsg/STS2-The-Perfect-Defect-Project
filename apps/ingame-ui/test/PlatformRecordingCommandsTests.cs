@@ -75,10 +75,26 @@ public sealed class PlatformRecordingCommandsTests
     [InlineData("pause")]
     [InlineData("resume")]
     [InlineData("close")]
+    [InlineData("export_p1_native_prefix")]
     public void P1NativeLifecycleDoesNotAcceptAReplacementOrigin(string kind)
     {
         Assert.Null(Read(P1Request(kind, null)).Command.P1NativeOrigin);
         Assert.Throws<ArgumentException>(() => Read(P1Request(kind)));
+    }
+
+    [Fact]
+    public void P1PrefixCommandHasNoClientSelectedOutputPathAndProjectsTheExactReceipt()
+    {
+        var body = P1Request("export_p1_native_prefix", null);
+        var command = Read(body);
+        Assert.Equal(RecordingCommandKind.ExportP1NativePrefix, command.Command.Kind);
+        var watermark = new P1NativePrefixWatermark(1, 20, new string('a', 64), 0, new string('b', 64), 1, 0, 1, 0);
+        var receipt = new P1NativePrefixResult("prefix-1", "/recorder/prefix-1", "/recorder/prefix-1/manifest.json", new string('c', 64), watermark);
+        var result = PlatformRecordingCommands.Execute(command, () => "game-1", () => Status(P1NativeRecordingContract.ProfileId),
+            (_, _) => new(true, false, "p1_native_prefix_exported", "exported", Status().Lifecycle) { P1NativePrefix = receipt });
+        Assert.Same(receipt, result.P1NativePrefix);
+        body["command"]!["output_path"] = "/client-selected";
+        Assert.Throws<ArgumentException>(() => Read(body));
     }
 
     [Theory]

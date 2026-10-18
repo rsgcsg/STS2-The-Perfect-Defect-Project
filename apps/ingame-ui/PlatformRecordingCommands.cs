@@ -36,7 +36,10 @@ public sealed record PlatformRecordingStatus(string Schema, string RuntimeInstan
     string RecordingLifecycle, string? CaptureProfileId, string CloseoutStatus,
     SourceSessionStatusV2? Source, PlatformRecordingHealth Health, IReadOnlyList<string> NonClaims);
 public sealed record PlatformRecordingResult(string Schema, string CommandId, bool Accepted, bool Pending,
-    string Code, PlatformRecordingStatus Status);
+    string Code, PlatformRecordingStatus Status)
+{
+    public P1NativePrefixResult? P1NativePrefix { get; init; }
+}
 public sealed class PlatformRecordingNotDispatchedException : Exception { }
 public sealed class PlatformRecordingPreconditionException(string code) : InvalidOperationException(code) { }
 
@@ -190,6 +193,7 @@ public static class PlatformRecordingCommands
         RecordingCommandKind kind = value.GetProperty("kind").GetString() switch {
             "start_new_session" => RecordingCommandKind.StartNewSession, "pause" => RecordingCommandKind.Pause,
             "resume" => RecordingCommandKind.Resume, "close" => RecordingCommandKind.Close,
+            "export_p1_native_prefix" => RecordingCommandKind.ExportP1NativePrefix,
             _ => throw new ArgumentException("invalid_recording_kind") };
         string? profile = OptionalIdentifier(value.GetProperty("capture_profile_id"));
         string? origin = OptionalIdentifier(value.GetProperty("p1_native_origin"));
@@ -239,6 +243,6 @@ public static class PlatformRecordingCommands
         if (request.RuntimeInstanceId != current) throw new PlatformRecordingPreconditionException("recording_game_instance_changed");
         RecordingCommandResult result = execute(request.Command, request.RecordingSessionId);
         return new(ResultSchema, request.Command.CommandId, result.Accepted, result.Pending,
-            PublicCode(result.Code), Project(current, query()));
+            PublicCode(result.Code), Project(current, query())) { P1NativePrefix = result.P1NativePrefix };
     }
 }

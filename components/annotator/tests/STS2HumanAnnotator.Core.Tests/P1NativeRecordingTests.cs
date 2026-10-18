@@ -71,6 +71,49 @@ public sealed class P1NativeRecordingTests
     }
 
     [Fact]
+    public void DurablePrefixPreservesPendingOriginalBytesWhileTheSessionContinues()
+    {
+        string? exported = Environment.GetEnvironmentVariable("STS2_P1_PREFIX_FIXTURE_OUT");
+        string root = exported ?? Path.Combine(Path.GetTempPath(), "p1-native-prefix-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            P1NativePrefixResult prefix; string directory; byte[] prefixEvents;
+            using (var store = RecordingSessionStore.Create(root, Manifest(), P1NativeRecordingContract.Profile))
+            {
+                directory = store.DirectoryPath; byte[] bytes = Basis(); var original = JsonNode.Parse(bytes)!;
+                string snapshot = original["snapshot"]!["snapshot_id"]!.GetValue<string>();
+                var basis = store.PersistP1NativeBasis(snapshot, bytes);
+                store.AppendRunEvent(new(2, CurrentRecordingContract.RunJournalSchema, "prefix-journal-1", store.Manifest.SessionId,
+                    "run-synthetic", store.Manifest.TimelineId, 1, DateTimeOffset.UtcNow, "run_observed_in_progress", null, snapshot,
+                    "Synthetic durable prefix fixture; no native execution or Human origin."));
+                store.AppendP1NativeEvent(Decision(basis, original["snapshot"]!["bound_actions"]!["actions"]![0]!, "play"));
+                prefix = store.ExportP1NativePrefix();
+                Assert.Equal(1, prefix.Watermark.PendingCount); Assert.Equal(1, prefix.Watermark.AcceptedCount);
+                Assert.Equal(0, prefix.Watermark.TerminalCount); Assert.False(store.GetSnapshot().Closed);
+                string raw = Path.Combine(prefix.PrefixDirectory, "raw");
+                prefixEvents = File.ReadAllBytes(Path.Combine(raw, P1NativeRecordingContract.EventFile));
+                Assert.Equal(prefixEvents.LongLength, prefix.Watermark.EventsByteCount);
+                Assert.Equal(EvidenceIdentity.Sha256Bytes(prefixEvents), prefix.Watermark.EventsSha256);
+                Assert.Equal(bytes, File.ReadAllBytes(Path.Combine(raw, basis.PayloadRef)));
+                Assert.False(File.Exists(Path.Combine(raw, P1NativeRecordingContract.CloseFile)));
+                Assert.False(File.Exists(Path.Combine(raw, "session-close-receipt.json")));
+                var manifest = JsonNode.Parse(File.ReadAllBytes(prefix.ManifestPath))!;
+                Assert.Equal("open", manifest["status"]!.GetValue<string>());
+                Assert.Equal("durable_prefix", manifest["scope"]!.GetValue<string>());
+                store.AppendP1NativeEvent(new JsonObject { ["kind"] = "lifecycle", ["run_id"] = "run-synthetic",
+                    ["decision_id"] = "decision-play", ["action_witness_id"] = "play", ["phase"] = "finished",
+                    ["successor_basis"] = JsonSerializer.SerializeToNode(basis, EvidenceJson.Options), ["successor_missing_reason"] = null });
+            }
+            Assert.Equal("pass", P1NativeSessionBundlePacker.Audit(directory).Status);
+            Assert.Equal(2, File.ReadAllLines(Path.Combine(directory, P1NativeRecordingContract.EventFile)).Length);
+            Assert.Equal(prefixEvents, File.ReadAllBytes(Path.Combine(prefix.PrefixDirectory, "raw", P1NativeRecordingContract.EventFile)));
+            Assert.Equal(prefix.ManifestSha256, EvidenceIdentity.Sha256File(prefix.ManifestPath));
+            if (exported != null) File.WriteAllText(Path.Combine(root, "production-prefix-result.json"), JsonSerializer.Serialize(prefix, EvidenceJson.IndentedOptions));
+        }
+        finally { if (exported == null && Directory.Exists(root)) Directory.Delete(root, true); }
+    }
+
+    [Fact]
     public void CloseGivesAnAcceptedUnfinishedActionAnExplicitUnknownDisposition()
     {
         string root = Path.Combine(Path.GetTempPath(), "p1-native-pending-" + Guid.NewGuid().ToString("N"));

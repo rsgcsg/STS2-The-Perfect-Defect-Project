@@ -242,6 +242,8 @@ internal static partial class RecorderRuntime
                     "The recording changed before this command could be applied.", _lifecycle);
             if (CommandLedger.TryGet(command.CommandId, out RecordingCommandResult? existing))
                 return existing!;
+            if (command.Kind == RecordingCommandKind.ExportP1NativePrefix)
+                return ExecuteP1NativePrefixCommand(command);
             if (!initialized)
             {
                 result = new RecordingCommandResult(
