@@ -1,3 +1,4 @@
+import { shopInventory } from "./fixtures/managed-shop.mjs";
 import assert from "node:assert/strict";
 import test from "node:test";
 import { ManagedPlayerEnvironmentSession, projectManagedCandidateDecision } from "../src/managed-player-environment.mjs";
@@ -29,9 +30,10 @@ function selector(stage = "selecting", chosen = null) {
       is_deselectable: false })) };
 }
 function shop() {
-  return { type: "decision", decision: "shop", context, player,
-    room_ref: "shop-room", shop_ref: "shop-room", inventory_ref: "shop-inventory", cards: [], relics: [], potions: [],
-    card_removal: { native_ref: "removal-entry", cost: 75, is_stocked: true, can_purchase: true } };
+  const state=shopInventory();
+  return { ...state,context,player,room_ref:"shop-room",shop_ref:"shop-room",inventory_ref:"shop-inventory",cards:[],relics:[],potions:[],
+    presentation_owner:{...state.presentation_owner,room_ref:"shop-room",inventory_ref:"shop-inventory",player_ref:player.native_ref},
+    card_removal:{...state.card_removal,native_ref:"removal-entry",inventory_index:0} };
 }
 function menu(state) {
   const snapshot = projectManagedCandidateDecision({ state, ...identity }).snapshot;
@@ -79,7 +81,7 @@ test("exact deck selector is one sequential card choice, preview return, and con
   });
   let page = adapter.observe();
   assert.equal(page.interaction.kind, "shop_inventory");
-  assert.deepEqual(page.menu_actions.actions.map(x => x.label), ["Buy card removal", "Close shop inventory"]);
+  assert.deepEqual(page.menu_actions.actions.map(x => x.label), ["Buy card removal for 75 gold", "Close shop inventory"]);
   page = (await submit(page, 0, "buy-removal")).successor;
   assert.equal(page.interaction.kind, "deck_card_selection");
   assert.deepEqual(page.menu_actions.actions.map(x => x.verb), ["select", "select", "cancel"]);

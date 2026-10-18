@@ -265,7 +265,7 @@ function rewardDecision(kind = "reward_set") {
 
 test("published v1 and v2 contracts cover actual reviewed scene projections", () => {
   const contracts = [managedTextMenuV1Contract(), managedTextMenuV2Contract()];
-  const scenes = [mapDecision(), restDecision(), eventDecision(), publicSelector({ family: "deck_card" }), publicSelector({ family: "deck_transform" }), publicSelector({ family: "simple" }), shopRoom(),
+  const scenes = [mapDecision(), restDecision(), eventDecision(), publicSelector({ family: "deck_card" }), publicSelector({ family: "deck_transform" }), publicSelector({ family: "simple" }), publicSelector({ family: "combat_pile" }), shopRoom(),
     treasureDecision(), treasureDecision("treasure_relic"),
     treasureDecision("treasure_complete"),
     deckUpgradeDecision(), deckUpgradeDecision("preview"),
@@ -626,7 +626,7 @@ test("a successful rest option retains the page and exposes an independent bound
     action_id: initial.menu_actions.actions[0].action_id, input_profile: MANAGED_TEXT_MENU_PROFILE });
   assert.equal(choice.status, "applied");
   assert.equal(choice.successor.interaction.kind, "rest_site");
-  assert.deepEqual(choice.successor.menu_actions.actions.map((action) => action.label), ["Dig", "Proceed"]);
+  assert.deepEqual(choice.successor.menu_actions.actions.map((action) => action.label), ["Dig", "Proceed to map"]);
   assert.deepEqual(choice.successor.interaction.content.surface.options.map((option) => option.name), ["Smith", "Dig"]);
   const proceed = choice.successor.menu_actions.actions[1];
   const result = await adapter.submit({ request_id: "rest-proceed", expected_snapshot_id: choice.successor.snapshot_id,
@@ -654,7 +654,7 @@ test("an exhausted rest site advertises only proceed when native success enabled
   await session.mount({ seed: "TREST", reset: true });
   const ready = adapter.observe();
   assert.equal(ready.menu_actions.status, "complete");
-  assert.deepEqual(ready.menu_actions.actions.map((action) => action.label), ["Proceed"]);
+  assert.deepEqual(ready.menu_actions.actions.map((action) => action.label), ["Proceed to map"]);
 });
 
 test("replaced rest room invalidates the previously advertised proceed without dispatch", async () => {

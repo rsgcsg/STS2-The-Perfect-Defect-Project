@@ -179,3 +179,22 @@ test("simple grid keeps the original eight-card roster after one of two selectio
   assert.equal(dispatched[0].action, "select_native_card");
   assert.deepEqual(dispatched[0].args, { selector_ref: "private-selector-owner", card_ref: "original-5" });
 });
+
+test("bounded combat pile projects the current original task and native hand legality without inventing holder count", () => {
+  const state = selector({ family: "combat_pile" });
+  state.combat_context.hand[0].can_play = true;
+  state.combat_context.hand[1].can_play = false;
+  state.combat_context.hand[1].unplayable_reason = "NotEnoughEnergy";
+  const projection = projectManagedCandidateDecision({ state, ...identity });
+  const surface = projection.snapshot.interaction.content.surface;
+  assert.equal(projection.snapshot.completeness.status, "complete");
+  assert.equal(projection.snapshot.interaction.kind, "native_combat_pile_selection");
+  assert.equal(surface.selector_request.family, "combat_pile");
+  assert.equal(surface.selector_request.displayed_holder_count, null);
+  assert.deepEqual(surface.cards, surface.preview_options.map(option => option.before));
+  assert.deepEqual(projection.snapshot.interaction.content.context.combat.player.hand.map(card => card.can_play), [true, false]);
+  assert.equal(projection.snapshot.interaction.content.context.combat.player.hand[1].unplayable_reason, "NotEnoughEnergy");
+  assert.equal([...projection.bindings.values()][0].raw_request.action, "select_native_card");
+  assert.deepEqual([...projection.bindings.values()][0].raw_request.args,
+    { selector_ref: "private-selector-owner", card_ref: "private-card-original" });
+});

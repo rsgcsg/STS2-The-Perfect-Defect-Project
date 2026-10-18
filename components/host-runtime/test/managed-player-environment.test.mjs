@@ -1,3 +1,4 @@
+import { shopInventory } from "./fixtures/managed-shop.mjs";
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
@@ -312,7 +313,7 @@ test("rest proceed is a separate room-bound input while remaining options stay v
   const projection = projectManagedCandidateDecision({ ...projectionIdentity, state });
   assert.equal(decodePlayerSnapshot(projection.snapshot).data.interaction.content.surface.can_proceed, true);
   assert.deepEqual(projection.snapshot.interaction.content.surface.options.map((option) => option.name), ["Smith", "Dig"]);
-  assert.deepEqual(projection.snapshot.bound_actions.actions.map((action) => action.label), ["Dig", "Proceed"]);
+  assert.deepEqual(projection.snapshot.bound_actions.actions.map((action) => action.label), ["Dig", "Proceed to map"]);
   assert.deepEqual([...projection.bindings.values()].map((binding) => binding.raw_request), [
     { cmd: "action", action: "choose_option", args: { option_index: 1, option_ref: "rest-option-c" } },
     { cmd: "action", action: "proceed", args: { room_ref: "rest-room-a" } }
@@ -321,7 +322,7 @@ test("rest proceed is a separate room-bound input while remaining options stay v
   const exhausted = projectManagedCandidateDecision({
     ...projectionIdentity, state: { ...state, options: [] }
   });
-  assert.deepEqual(exhausted.snapshot.bound_actions.actions.map((action) => action.label), ["Proceed"]);
+  assert.deepEqual(exhausted.snapshot.bound_actions.actions.map((action) => action.label), ["Proceed to map"]);
   assert.deepEqual(chooseManagedCandidateAction(state), {
     cmd: "action", action: "proceed", args: { room_ref: "rest-room-a" }
   });
@@ -922,35 +923,17 @@ test("combat projection fails closed for target types without an exact current b
 test("projects shop entries from native actionability and keeps purchase identities Host-local", () => {
   const projection = projectManagedCandidateDecision({
     ...projectionIdentity,
-    state: {
-      type: "decision",
-      decision: "shop",
-      context: { act: 1, floor: 3, room_type: "Shop" },
-      room_ref: "room-a", shop_ref: "room-a", inventory_ref: "inventory-a",
-      cards: [{
-        native_ref: "card-entry-a",
-        name: "Pommel Strike",
-        card_cost: 1,
-        cost: 50,
-        type: "Attack",
-        rarity: "Common",
-        is_stocked: true,
-        can_purchase: true
-      }],
-      relics: [{ native_ref: "relic-entry-a", name: "Bag", cost: 150, is_stocked: true, can_purchase: false }],
-      potions: [{ native_ref: "potion-entry-a", name: "Fire Potion", cost: 50, is_stocked: true, can_purchase: true }],
-      card_removal: { native_ref: "removal-a", cost: 75, is_stocked: true, can_purchase: true },
-      player: player()
-    }
+    state: { ...shopInventory(), room_ref: "room-a", shop_ref: "room-a",
+      presentation_owner: { ...shopInventory().presentation_owner, room_ref: "room-a" } }
   });
   assert.equal(projection.snapshot.status, "interactive");
   assert.deepEqual(projection.snapshot.bound_actions.actions.map((action) => action.label).sort(), [
-    "Buy Fire Potion",
-    "Buy Pommel Strike",
-    "Buy card removal",
+    "Buy Fire Potion for 50 gold",
+    "Buy Pommel Strike for 50 gold",
+    "Buy card removal for 75 gold",
     "Close shop inventory"
   ]);
-  assert.equal(projection.snapshot.interaction.content.surface.cards[0].cost, "1");
+  assert.equal(projection.snapshot.interaction.content.surface.cards[0].card.cost, "1");
   assert.equal(projection.snapshot.interaction.content.surface.cards[0].price, 50);
   assert.equal(JSON.stringify(projection.snapshot).includes("native_ref"), false);
   const rawRequests = [...projection.bindings.values()].map((binding) => binding.raw_request);
