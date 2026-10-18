@@ -905,7 +905,8 @@ function currentSurface(state, ctx) {
         kind: "event_option", stage: "ready", prompt: null,
         surface: { kind: "event_option", options },
         context: { kind: "event", event_id: state.event_id ?? null, name: visibleText(state.event_name),
-          ancient: state.ancient ?? null, in_dialogue: state.in_dialogue ?? null, body: visibleText(state.description) },
+          ancient: state.ancient ?? null, in_dialogue: state.in_dialogue ?? null,
+          ...(state.description == null ? {} : { body: visibleText(state.description) }) },
         ...supported, complete,
         missing: complete ? [] : ["exact_current_event_public_facts"]
       };
@@ -1630,11 +1631,11 @@ function currentSurface(state, ctx) {
         kind: "combat", encounter_type: hud.encounter_type, is_play_phase: hud.is_play_phase,
         round: hud.round, turn_owner: hud.turn_owner,
         player: { player_entity_id: ctx.entityId("player", hud.player_ref),
-          hand: hud.hand.map((card) => plainObject(state.selector_public)
+          hand: hud.hand.map((card) => (choose || plainObject(state.selector_public))
             ? visibleCardBase(card, ctx.entityId("card", card.native_ref)) : publicCard(card, ctx.entityId("card", card.native_ref))),
           ...Object.fromEntries(["hp", "max_hp", "block", "energy", "max_energy", "stars", "draw_pile_count",
-            "discard_pile_count", "exhaust_pile_count", "orb_slots"].filter(key => !plainObject(state.selector_public) || key !== "stars" || hud.stars != null).map((key) => [key, hud[key]])),
-          statuses: hud.statuses.map(visibleStatus), orbs: hud.orbs.map((orb) => visibleOrb(orb, ctx, !plainObject(state.selector_public))),
+            "discard_pile_count", "exhaust_pile_count", "orb_slots"].filter(key => !(choose || plainObject(state.selector_public)) || key !== "stars" || hud.stars != null).map((key) => [key, hud[key]])),
+          statuses: hud.statuses.map(visibleStatus), orbs: hud.orbs.map((orb) => visibleOrb(orb, ctx, !(choose || plainObject(state.selector_public)))),
           potion_states: hud.potion_states.map((potion) => ({ entity_id: ctx.entityId("potion", potion.native_ref),
             target_type: potion.target_type, can_use: potion.can_use, automatic: potion.automatic })),
           companions: hud.companions.map((pet) => visibleCompanion(pet, ctx)) },
@@ -1647,6 +1648,34 @@ function currentSurface(state, ctx) {
         return { ...canonical, context: { kind: "selection", combat: publicHud },
           complete: canonical.complete && hudComplete,
           missing: [...canonical.missing, ...(hudComplete ? [] : ["complete_current_post_prefix_combat_hud"])] };
+      }
+      if (choose) {
+        const complete = exact && cards.every(card => plainObject(card.public_details)
+          && Array.isArray(card.public_details.keywords) && Array.isArray(card.public_details.card_previews)
+          && Array.isArray(card.public_details_missing) && card.public_details_missing.length === 0);
+        const generated = cards.map((card,index) => {
+          const unique = typeof card?.native_ref === "string" && refs.filter(ref => ref === card.native_ref).length === 1;
+          const id = unique ? ctx.entityId("card",card.native_ref) : ctx.id("unbound_generated_card",index);
+          const { target_type: _target, can_play: _play, ...visible } = visibleCardBase(card,id);
+          const item = ctx.referent({ role: "card",id,label: visible.name,enabled: complete,properties: visible });
+          ctx.detailReads.push(publicCardDetailRead(ctx,visible,card.public_details,
+            Array.isArray(card.public_details_missing) ? card.public_details_missing : ["current_native_generated_card_details"],
+            "surface:native_generated_card_choice",null));
+          if (complete) ctx.action({ verb: "select",subject: item,label: `Choose ${visible.name}`,
+            raw: { cmd: "action",action: "select_native_card",args: { selector_ref: state.selector_ref,card_ref: card.native_ref } } });
+          return item.properties;
+        });
+        if (complete && state.can_skip) ctx.action({ verb: "skip",label: "Skip",
+          raw: { cmd: "action",action: "skip_native_selection",args: { selector_ref: state.selector_ref } } });
+        return { kind: "native_generated_card_choice",stage: "choosing",prompt: state.prompt ?? null,
+          surface: { kind: "native_generated_card_choice",stage: "choosing",prompt: state.prompt ?? null,
+            cards: generated,selectable_card_entity_ids: complete ? generated.map(card => card.entity_id) : [],
+            is_peeking: false,can_skip: complete && state.can_skip },
+          context: { kind: "selection",combat: publicHud },complete,
+          missing: complete ? [] : ["exact_current_native_generated_choice_and_details"],
+          visibleInformation: "same_capture_original_native_generated_cards_and_post_prefix_combat_hud",
+          interactionDiscovery: "original_native_choose_callback_task_and_offered_objects",
+          hiddenByPolicy: ["hidden_rng","draw_pile_true_order","future_enemy_moves"] };
       }
       const referents = cards.map((card, index) => {
         const unique = typeof card?.native_ref === "string" && refs.filter((ref) => ref === card.native_ref).length === 1;

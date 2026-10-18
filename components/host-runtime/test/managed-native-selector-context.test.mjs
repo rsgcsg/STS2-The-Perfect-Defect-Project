@@ -92,7 +92,7 @@ test("Host rejects removed candidate details/catalog controls and unknown-purpos
     s => { s.interaction.content.surface.selector_kind = "unknown"; },
     s => { s.interaction.content.surface.cards.pop(); },
     s => { s.bound_actions.actions.pop(); s.bound_actions.materialized_count--; s.bound_actions.total_count--; }]) {
-    const snapshot = structuredClone(project(selector({ choose: true, skip: true })).snapshot);
+    const snapshot = structuredClone(project(selector()).snapshot);
     mutate(snapshot);
     assert.throws(() => decodePlayerSnapshot(snapshot), /native card selection/u);
     assert.equal(projectManagedTextMenuV1(snapshot).menu_actions.status, "unavailable");
@@ -235,4 +235,23 @@ test("canonical current selector HUD preserves numeric ids, native potion flags 
     assert.equal(project(other).snapshot.completeness.status, "partial");
     assert.equal(project(other).snapshot.bound_actions.actions.length, 0);
   }
+});
+
+
+test("generated choice uses the existing Reference DTO and keeps all rich facts in same-capture detail Reads", () => {
+  const state=selector({choose:true,skip:true});
+  state.cards[0].public_details={keywords:[{name:"Block",description:"Prevent damage."}],card_previews:[]};
+  const p=project(state),surface=p.snapshot.interaction.content.surface;
+  assert.equal(p.snapshot.interaction.kind,"native_generated_card_choice");
+  assert.deepEqual(p.snapshot.bound_actions.actions.map(action=>action.label),["Choose Strike","Choose Strike","Skip"]);
+  assert.deepEqual(surface.selectable_card_entity_ids,surface.cards.map(card=>card.entity_id));
+  assert.equal(Object.hasOwn(surface.cards[0],"keywords"),false);
+  assert.equal(Object.hasOwn(surface.cards[0],"can_play"),false);
+  const reads=[...p.reads.values()].filter(read=>read.content.display_context==="surface:native_generated_card_choice");
+  assert.equal(reads.length,2);
+  assert.deepEqual(reads[0].content.keywords,[{name:"Block",description:"Prevent damage."}]);
+  assert.deepEqual([...p.bindings.values()][0].raw_request.args,{selector_ref:"native-selector",card_ref:"native-card-a"});
+  const missing=structuredClone(state);delete missing.cards[0].public_details;
+  assert.equal(project(missing).snapshot.completeness.status,"partial");
+  assert.equal(project(missing).bindings.size,0);
 });

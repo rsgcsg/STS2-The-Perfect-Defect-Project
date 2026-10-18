@@ -1394,3 +1394,14 @@ test("projects native resolved event options, flags and card tooltips without te
   assert.equal(binding.raw_request.args.event_ref, state.event_ref);
   assert.equal(JSON.stringify(projected.snapshot).includes("native-take-egg"), false);
 });
+
+test("event body is published only when the native current body was actually rendered",()=>{
+  const present=eventState();present.description="Current visible body with 7 maximum HP.";
+  const withBody=projectManagedCandidateDecision({...projectionIdentity,state:present}).snapshot;
+  assert.equal(withBody.interaction.content.context.body,"Current visible body with 7 maximum HP.");
+  const absent={...present,event_id:"PAEL",ancient:true,description:null};
+  const noBody=projectManagedCandidateDecision({...projectionIdentity,state:absent}).snapshot;
+  assert.equal(noBody.bound_actions.status,"complete");
+  assert.equal(Object.hasOwn(noBody.interaction.content.context,"body"),false);
+  assert.equal(noBody.interaction.content.context.ancient,true);
+});
