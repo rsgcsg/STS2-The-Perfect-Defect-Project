@@ -1,9 +1,9 @@
 # Current — P1 upper-chain implementation and semantic recording
 
-Current docs topic: 2026-10-19, `codex/p1-upper-chain-docs-20261019`, based on
-root I `4b489108238d1a17bef1dae421d289b29c5883dc`. The old 3aac docs are already
-integrated; do not restore that task. Resolve live GitHub refs; actual source and
-original records override this file. This is dated routing, not live authority.
+Current topic: 2026-10-19, native semantic recording in root integration branch
+`codex/p1-normal-baseline-startup-integration-20261018`. The upper-chain docs and
+selector/capture-diagnostic fixes are integrated. Resolve live GitHub refs; actual
+source and original records override this file. A recorded process identity is not live authority.
 
 Start with the single [chain diagram and requires/provides table](../plans/p1-prefreeze-2026-10-18/CHAIN_PURPOSES.md),
 then [P1 section4.1](../protocols/P1_GLOBAL_R1.zh-CN.md#41-录制原件派生p1的requires用户已批准).
@@ -28,16 +28,26 @@ retain facts/results without becoming player labels. Source4 is retained for fut
 profiles, has no new investment/preflight, and its cancellation-only code was removed
 from I by824847fb; original packets/branches/failures remain preserved.
 
-Root I is4b489108; official installed f0f050eb/MVIDfa40acad used a strictly checked
-cold-load tuple in native03. This is a dated source/install snapshot, not a recording
-PASS. Native02 saved16 events/5 accepted/5 terminal/0 pending/0 issue and complete
-Reads, but legacy text-input wrote an undeclared stream: Close failed and no pack.
-Its immutable prefix later derived5 actions/6 points and strictly matched Managed,
-including final successor, with0 unknown/taint/budget. This valid prefix does not
-repair failed Close. Native03 ended normally at the menu with zero player actions,
-for the old-hook audit; zero-action Close/pack does not pass the recording gate.
-B audits all reachable old hooks (Quarantine, nested continuation, act-entered,
-carrier failure included); root integrates/builds/backs up/deploys then runs a new session.
+The integrated native build is e3caa3f2. Official installed artifact a4fef7a2/MVID
+805dbf4b cold-loaded with the exact tuple in engineering native05; component-only
+identity updates were checked against the unchanged compiled sources. Native05
+awaits user-assisted rapid card play and first-combat reward selection. Check actual
+process/operator state before resuming; never start another game from this snapshot.
+
+Native04 passed the bounded gate:5 accepted/5 terminal, complete PB1/all Reads,
+unsubmitted cancel with zero labels, normal Close/pack, offline derivation and strict
+Managed replay including final successor;0 unknown/taint/budget. Formal English01
+then exposed missing reward-selector H/parent binding and two settling card H records
+without public BoundActions. The user chose normal Close/pack and restart after repair.
+Its originals remain preserved and formal count is0/3. Selector lineage/accepted/
+completion is repaired; frozen capture diagnostics distinguish staged/current H
+without changing readiness. Native05 has not passed runtime qualification yet.
+
+Legacy hooks were audited and profile-routed; Core431, SourceNative66, surface38 and
+reader/adapter29 passed in the relevant checks. The official Mod compiled successfully.
+Historical September11 rapid-input repairs remain present: exact staged native H
+and deferred carrier binding plus independent execution S/A(S). Those native-input
+records do not supply a missing P1 H BoundAction; never backfill from execution state.
 
 ## Four requested gap detectors: actual status and known risk
 
@@ -47,7 +57,7 @@ followed by accepted decision or explicit end: not fully implemented; accepted-t
 accounting does not count all waiting boundaries. (c) Every inter-decision change explained
 by recorded choices and automatic effects: partial lifecycle/successor/sequence checks,
 no exhaustive independent effect-accounting proof. (d) Strict Managed mismatch: implemented
-for derived trajectories and tested on native02's bounded prefix, not a formal whole run.
+for derived trajectories and tested on native02/04 bounded prefixes, not a formal whole run.
 A choice never observed by any capture hook can evade(a);(b)/(c) do not currently close
 that hole. Managed(d) may expose changed state but cannot prove every omitted choice
 was detected. Silent omission remains a known risk, not a complete guarantee. Exact
@@ -58,8 +68,8 @@ source anchors and limits are in P1 section4.1.
 Before inviting formal recording, a real engineering short segment must cover Play,
 unsubmitted pickup cancel with zero labels, EndTurn and another non-card decision,
 with complete originals, offline derivation/verification and strict Managed replay.
-No actual segment has passed this complete gate yet. After it passes, the user directly
-starts formal English whole games, with no separate Human short run. Check the first
+Native04 passed this complete gate; native05 must validate the new repairs. After it
+passes, the user restarts formal English whole games, with no separate Human short run. Check the first
 saved opening segment as Human validation without interrupting the game.
 
 A game takes about30 minutes; no need to monitor midway in real time. Convert/check
