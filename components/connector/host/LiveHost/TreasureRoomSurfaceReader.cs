@@ -154,7 +154,14 @@ internal sealed class TreasureRoomSurfaceReader : ILiveSurfaceReader
                                     || stage == "relic_choice" && holderActionable
                                     || canSkip
                                     || canProceed;
-        string readiness = hasActionableControl ? "ready" : "settling";
+        // Select exists logically before the relic arrival animation enables its
+        // holder. Skip alone cannot certify that the complete decision is ready.
+        bool nativeSelectAwaitingPresentation = stage == "relic_choice"
+            && currentRelics.Length == 1
+            && NativeSemanticActionCatalog.ContainsExactlyOnce(nativeDecision.Actions, "select", currentRelics[0])
+            && !canChoose;
+        string readiness = IsDecisionReady(hasActionableControl, nativeSelectAwaitingPresentation)
+            ? "ready" : "settling";
         var completeness = new StateCompleteness(
             "contract_complete_for_single_player_treasure_room_lifecycle",
             hasActionableControl
@@ -193,6 +200,9 @@ internal sealed class TreasureRoomSurfaceReader : ILiveSurfaceReader
                 $"Treasure projection failed at {step}: {ex.GetType().Name}.");
         }
     }
+
+    internal static bool IsDecisionReady(bool hasActionableControl, bool nativeSelectAwaitingPresentation) =>
+        hasActionableControl && !nativeSelectAwaitingPresentation;
 
     internal static NativeInputResult StartOpen(
         NativeEntityRegistry entities,

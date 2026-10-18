@@ -82,7 +82,8 @@ internal sealed class CombatTurnSurfaceReader : ILiveSurfaceReader
             playerCombat.Phase == PlayerTurnPhase.Play,
             CombatManager.Instance.IsPartOfPlayerTurn(player),
             !hand.InCardPlay && hand.CurrentMode == NPlayerHand.Mode.Play,
-            hand.PeekButton?.IsPeeking == true);
+            hand.PeekButton?.IsPeeking == true,
+            RunManager.Instance.ActionExecutor.IsRunning);
         bool inputReady = IsProjectionReady(
             presentationReady,
             semanticDecision.Status,
@@ -289,13 +290,15 @@ internal sealed class CombatTurnSurfaceReader : ILiveSurfaceReader
         bool inPlayPhase,
         bool isPartOfPlayerTurn,
         bool handAcceptsInput,
-        bool handIsPeeking) =>
+        bool handIsPeeking,
+        bool nativeActionExecuting) =>
         combatInProgress
         && !playerActionsDisabled
         && inPlayPhase
         && isPartOfPlayerTurn
         && handAcceptsInput
-        && !handIsPeeking;
+        && !handIsPeeking
+        && !nativeActionExecuting;
 
     internal static NativeInputResult StartDirectPlayCard(
         NativeEntityRegistry entities,
@@ -481,7 +484,8 @@ internal sealed class CombatTurnSurfaceReader : ILiveSurfaceReader
             player.PlayerCombatState?.Phase == PlayerTurnPhase.Play,
             CombatManager.Instance.IsPartOfPlayerTurn(player),
             hand != null && !hand.InCardPlay && hand.CurrentMode == NPlayerHand.Mode.Play,
-            hand?.PeekButton?.IsPeeking == true);
+            hand?.PeekButton?.IsPeeking == true,
+            RunManager.Instance.ActionExecutor.IsRunning);
     }
 
     internal static bool IsProjectionReady(

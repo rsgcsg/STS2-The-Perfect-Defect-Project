@@ -5,6 +5,14 @@ namespace STS2Connector.Tests;
 public sealed class LiveObservationLifecycleTests
 {
     [Fact]
+    public void TreasureSkipDoesNotPublishBeforeTheSelectableRelicHolderIsReady()
+    {
+        Assert.False(TreasureRoomSurfaceReader.IsDecisionReady(true, true));
+        Assert.True(TreasureRoomSurfaceReader.IsDecisionReady(true, false));
+        Assert.False(TreasureRoomSurfaceReader.IsDecisionReady(false, false));
+    }
+
+    [Fact]
     public void ExactOpenModalOwnsInputAheadOfMenuOverlayAndRoomLayers()
     {
         Assert.Equal(InputOwnerLayer.Modal, ActiveInputResolver.SelectLayer(

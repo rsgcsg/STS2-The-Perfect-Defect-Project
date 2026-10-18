@@ -52,6 +52,7 @@ export async function replayGlobalAgentRun(directory: string) {
   const sources = new Map<number, { full: FullPublicBasis; reduction?: ReturnType<typeof reduce>; classified: boolean; valid: boolean; before?: P1SessionState }>();
   let mode: string | null = null, control = "released", permanentlyFenced = false;
   let ledger: AgentConsumptionLedger | undefined;
+  let consumedAcquisition: string | null = null;
   const durableAcks = new Map<string, any>();
   const inputs = new Map<string, { input: any; source: number; occurrence: number }>();
   const offers = new Map<string, any>(), consumedFrames = new Map<string, any>(), acknowledgements = new Set<string>();
@@ -157,6 +158,10 @@ export async function replayGlobalAgentRun(directory: string) {
       const frame = consumedFrames.get(p.request_id); require(frame && ledger && !durableAcks.has(p.request_id) && same(frame, p.report), "global_durable_ack_without_original_report");
       ledger.noteReceived(p.acknowledgement.prefix.received_cursor, 1);
       const ack = ledger.accept(frame); require(same(ack, p.acknowledgement), "global_durable_ack_changed"); durableAcks.set(p.request_id, ack); consumed++;
+      // Match the live owner's lifetime after the next consume; historical joins
+      // remain retained separately by the verifier, rather than in the live ledger.
+      if (consumedAcquisition && consumedAcquisition !== frame.acquisition_id) ledger.release(consumedAcquisition);
+      consumedAcquisition = frame.acquisition_id;
     } else if (event.kind === "agent_directive") {
       const index = directives.findIndex(d => same(d, p.output)); require(index >= 0 && ledger && p.output.continuity_token === ledger.continuityToken && p.output.consumption_id === ledger.consumptionId && p.output.state_version === ledger.stateVersion, "global_directive_not_from_agent"); directives.splice(index, 1); lastDirective = p.output;
     } else if (event.kind === "global_choice") {
