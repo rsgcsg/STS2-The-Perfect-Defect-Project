@@ -2595,6 +2595,17 @@ window.SpireProject = (() => {
       await reload(ctx);
     }, {disabled: !canPrepareRuntime}));
     box.append(teacherSetup);
+    const globalSetup = panel("P1 GLOBAL 程序 Agent", "使用公开 P1 输入的固定程序，无学习模型或权重。选择环境登记后，在同一 Agent 列表检查并加载，再显式执行一步或开始测试。");
+    for (const [environmentKind, label] of [["native", "Reference"], ["managed", "Managed"]])
+      globalSetup.append(command(ctx, `register-global-program-${environmentKind}`, `登记 P1 GLOBAL · ${label}`, async () => {
+        const registered = await request(ctx, "/api/local-model-registrations/register-global-program", {environment_kind: environmentKind});
+        if (registered.schema !== "spireagent/local-agent-registration-v1" || registered.status !== "registered"
+            || !selectionId(registered.selection_id) || !Array.isArray(registered.models) || registered.models.length)
+          throw new Error("agent_registration_identity_mismatch");
+        note(ctx, `P1 GLOBAL · ${label} 已登记；请在同一 Agent 列表检查并加载，尚未接管游戏。`);
+        await reload(ctx);
+      }, {disabled: !canPrepareRuntime}));
+    box.append(globalSetup);
     const requestedSelection = new URLSearchParams(ctx.search).get("id");
     const focusSelection = selectionId(requestedSelection) ? requestedSelection : null;
     const preparations = panel(
