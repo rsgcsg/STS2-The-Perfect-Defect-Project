@@ -166,7 +166,9 @@ P1 source contract changes.
 
 Before character selection, with no active run, multiplayer or native TestMode,
 the Connector invokes the fixed native `unlock all` command, adds every native
-encounter to progress membership, and disables FTUE through the native setter.
+encounter to progress membership, and disables ordinary FTUE in native progress.
+It also completes the native singleplayer Ascension unlock notification: that
+Standard-lobby `SeenPopup` check is independent of the ordinary tutorial toggle.
 A fresh zero-run profile receives one administrative Defect loss count so native
 first-run room/question/treasure rules no longer apply. This count and the native
 unlock command's administrative discovery statistics are preparation data, never
@@ -179,7 +181,9 @@ uncertain write. Readback verifies epochs, encounters, positive run count, FTUE
 and Ascension unlocks, then records the actual native serialized progress/SHA,
 derived UnlockState and singleplayer pools. Normal Standard run creation still
 owns seed, RNG and initial resources. Read-only provenance after bootstrap checks
-that the actual run froze that same UnlockState. Baseline metadata is private
+that the actual run froze that same UnlockState. Reference setup hands off the
+first complete native Neow event decision (or an existing initial map); it never
+selects Neow for the Agent. Baseline metadata is private
 Host provenance, never fair-player input. Managed accepts that exact prepared progress JSON/SHA only through manager reset
 (or the private stdio operator). Before creating a player/run, its native owner
 writes only the current profile progress path in the existing native memory

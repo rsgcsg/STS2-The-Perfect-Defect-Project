@@ -165,6 +165,15 @@ export function verifyReferenceCharacter(snapshot, { characterId = null, ascensi
     throw new Error("reference_actual_character_or_ascension_mismatch");
 }
 
+/** Stop setup at the original complete native decision; Neow belongs to the Agent. */
+export function requireReferenceInitialDecision(snapshot, options = {}) {
+  if (snapshot.status !== "interactive" || snapshot.bound_actions?.status !== "complete"
+      || !["event_option", "map_navigation"].includes(snapshot.interaction.kind)) {
+    throw new Error(`Reference reset expected a complete initial in-run decision, observed ${snapshot.status}:${snapshot.interaction.kind}.`);
+  }
+  verifyReferenceCharacter(snapshot, options);
+}
+
 async function closeStreams(streams) {
   for (const stream of streams) stream.end();
   await Promise.allSettled(streams.map((stream) => finished(stream)));
@@ -423,12 +432,7 @@ export async function startShippedPlayerEnvironmentEpisode({
     if (runEntryKinds.has(snapshot.interaction.kind)) {
       throw new Error("Reference reset exceeded the bounded run-entry action budget.");
     }
-    if (snapshot.status !== "interactive" || snapshot.interaction.kind !== "map_navigation") {
-      throw new Error(
-        `Reference reset expected the first map decision, observed ${snapshot.status}:${snapshot.interaction.kind}.`
-      );
-    }
-    verifyReferenceCharacter(snapshot, { characterId, ascension });
+    requireReferenceInitialDecision(snapshot, { characterId, ascension });
     await refreshProvenance();
     if (provenance.verdict !== "provenance_pass") {
       throw new Error(`Reference run seed was not proven after bootstrap: ${provenance.errors.join(", ")}`);

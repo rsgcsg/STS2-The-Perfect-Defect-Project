@@ -1,3 +1,5 @@
+using MegaCrit.Sts2.Core.Saves;
+using MegaCrit.Sts2.Core.Nodes.Ftue;
 using STS2Connector.HostControl;
 using Xunit;
 
@@ -10,6 +12,21 @@ public sealed class HostBaselineTests
     private static HostBaselineSnapshot Snapshot() => new("before", "after", "{}",
         new(Array.Empty<string>(), Array.Empty<string>(), 1),
         new(Array.Empty<string>(), Array.Empty<string>(), Array.Empty<string>(), Array.Empty<string>(), Array.Empty<string>()), true, true);
+
+    [Fact]
+    public void DisabledTutorialsAlsoCompleteTheIndependentNativeAscensionPopup()
+    {
+        var progress = new ProgressState { EnableFtues = true };
+        Assert.DoesNotContain(NAscensionSingleplayerFtue.id, progress.FtueCompleted);
+        HostProfileControl.PrepareNormalBaselineTutorials(progress);
+        Assert.False(progress.EnableFtues);
+        Assert.Contains(NAscensionSingleplayerFtue.id, progress.FtueCompleted);
+        var restored = SaveManager.FromJson<SerializableProgress>(SaveManager.ToJson(progress.ToSerializable()));
+        Assert.True(restored.Success);
+        Assert.NotNull(restored.SaveData);
+        Assert.False(restored.SaveData!.EnableFtues);
+        Assert.Contains(NAscensionSingleplayerFtue.id, restored.SaveData.FtueCompleted);
+    }
 
     [Fact]
     public void PreparationIsExplicitAndOnlyBeforeNormalSingleplayerRun()
