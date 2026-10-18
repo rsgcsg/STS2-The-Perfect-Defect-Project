@@ -1051,8 +1051,7 @@ function currentSurface(state, ctx) {
               native_relic_refresh_subscription: "unavailable" } : {}),
             // Lawfully viewable candidates of an offered, populated card reward (P1 aggregation).
             ...(kind === "card" ? { card_options: Array.isArray(reward.card_options)
-              ? reward.card_options.map((card, optionIndex) => ({ index: card?.index ?? optionIndex,
-                ...visibleCombatCard(card, ctx.entityId("card", card?.native_ref)) }))
+              ? reward.card_options.map(card => rewardCardBase(card, ctx.entityId("card", card?.native_ref)))
               : null,
               card_alternatives: Array.isArray(reward.card_alternatives) ? reward.card_alternatives.map(option => ({
                 option_id: option.option_id, title: option.title, after_selected: option.after_selected, is_native_skip: option.is_native_skip === true })) : null,
@@ -1239,7 +1238,7 @@ function currentSurface(state, ctx) {
           id: typeof card.card_entity_ref === "string" ? ctx.entityId("card", card.card_entity_ref) : ctx.id("unbound_card", index),
           label: card?.name ?? `Card ${index + 1}`,
           occurrence: index,
-          properties: { index: card?.index ?? index, ...visibleCombatCard(card, typeof card.card_entity_ref === "string" ? ctx.entityId("card", card.card_entity_ref) : ctx.id("unbound_card", index)) }
+          properties: rewardCardBase(card, typeof card.card_entity_ref === "string" ? ctx.entityId("card", card.card_entity_ref) : ctx.id("unbound_card", index))
         });
         if (parentComplete) ctx.detailReads.push(rewardCandidateDetailRead(ctx, card,
           item.referent_id, ctx.entityId("reward_group", state.parent_reward_ref)));
@@ -2303,6 +2302,13 @@ function publicCardDetailRead(ctx, visible, details, missing, displayContext, ow
       visible_information: "complete_current_player_visible_card_detail", interaction_discovery: "read_only",
       missing: [...new Set(gaps)], hidden_by_policy: [] }
   };
+}
+
+function rewardCardBase(raw, entityId) {
+  // Match the native VisibleCard DTO; hover facts remain in their complete
+  // same-instance surface_card Read rather than a second inline representation.
+  return Object.fromEntries(Object.entries(visibleCardBase(raw, entityId))
+    .filter(([, value]) => value !== null));
 }
 
 // The populated outer reward and its opened child expose the same captured

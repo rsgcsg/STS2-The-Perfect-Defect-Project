@@ -395,7 +395,8 @@ test("a populated card reward publishes its lawfully viewable candidates under a
   const projection = projectManagedCandidateDecision({ ...projectionIdentity, state: state(options) });
   const [first, second] = projection.snapshot.interaction.content.surface.rewards;
   assert.equal(first.card_options.length, 2);
-  assert.deepEqual(first.card_options.map((card) => card.index), [0, 1]);
+  assert.deepEqual(first.card_options.map(card => card.definition_id), ["ZAP", "DUALCAST"]);
+  assert.equal(first.card_options.some(card => Object.hasOwn(card, "index")), false);
   assert.equal(second.card_options, null);
   assert.notEqual(first.group_id, second.group_id);
   const text = JSON.stringify(projection.snapshot);
@@ -1317,6 +1318,9 @@ test("populated reward candidate Reads retain each actual native card, group and
   assert.equal(read.content.display_owner_entity_id, group.group_id);
   assert.equal(read.content.parent_read_id, null);
   assert.deepEqual(read.content.keywords, card.keywords);
+  for (const key of ["index", "can_play", "keywords", "card_previews"])
+    assert.equal(Object.hasOwn(group.card_options[0], key), false, key);
+  assert.equal(group.card_options[0].target_type, "AnyEnemy");
   const inner = project({ ...common, decision: "card_reward", parent_status: "bound",
     parent_reward_ref: "reward-real", reward_set_ref: "set-real", selection_completes_reward: true,
     cards: [{ ...card, index: 0, native_ref: "creation-real", card_entity_ref: "card-real" }], alternatives: [] });
