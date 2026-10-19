@@ -19,16 +19,24 @@ const terminal = () => {
 const point = (observation: any) => ({ index: 0, observation, chosen: null });
 const hello = { type: "hello", protocol: "sts2.p1/agent-port-1" };
 const inform = (observation: any) => ({ type: "observation", observation, requires_choice: false });
+function cancellationMetadata(points: any[]) {
+  const cancellations = new Map<string, any>();
+  points.forEach((point, index) => (point.continuity_checks ?? []).forEach((check: any) => {
+    if (!cancellations.has(check.decision_id)) cancellations.set(check.decision_id, {
+      decision_id: check.decision_id, action_witness_id: `witness-${check.decision_id}`, phase: check.phase,
+      source_event_id: `terminal-${check.decision_id}`, reason: "native_cancel", continuity_checkpoints: [],
+    });
+    cancellations.get(check.decision_id).continuity_checkpoints.push({ boundary: check.boundary,
+      source_event_id: check.source_event_id, comparison_point_index: index });
+  }));
+  return cancellations.size ? { cancellation_count: cancellations.size, native_cancellations: [...cancellations.values()] } : {};
+}
 function scenario(points: any[], messages: any[], throughBridge = false, metadata = {}) {
   const directory = mkdtempSync(join(tmpdir(), "p1-terminal-"));
   try {
     const trajectory = join(directory, "trajectory.json"), report = join(directory, "report.jsonl");
-    const cancellations = points.flatMap((point, index) => (point.continuity_checks ?? []).map((check: any) => ({
-      decision_id: check.decision_id, action_witness_id: `witness-${check.decision_id}`, phase: check.phase,
-      source_event_id: check.source_event_id, comparison_point_index: index, reason: "native_cancel",
-    })));
     writeFileSync(trajectory, JSON.stringify({ schema: "sts2.p1/trajectory-1", run_directory: "fixture", points,
-      ...(cancellations.length ? { cancellation_count: cancellations.length, native_cancellations: cancellations } : {}), ...metadata }));
+      ...cancellationMetadata(points), ...metadata }));
     let command = [replay, trajectory, report];
     if (throughBridge) {
       const manifest = join(directory, "agent.json");
@@ -111,20 +119,20 @@ describe("P1 cancellation continuity uses the actual replay observation", () => 
     expect(result.complete).toBe(true);
     return result.observation;
   };
-  const checks = (observation: any) => ["cancelled_before_execution", "cancelled_after_execution"].map((phase, index) => ({
-    decision_id: `cancel-${index}`, phase, source_event_id: `cancel-event-${index}`, observation: structuredClone(observation),
+  const checks = (observation: any, phase = "cancelled_before_execution") => ["before", "after"].map((boundary, index) => ({
+    decision_id: "cancel", phase, boundary, source_event_id: `capture-event-${index}`, observation: structuredClone(observation),
   }));
   const bounded = { scope: { kind: "bounded_native_semantic_prefix" }, origin: "native_semantic_recording" };
   const observe = (observation: any) => ({ type: "observation", observation, requires_choice: true });
 
-  it("checks both cancellation phases before choosing the next successful action", () => {
+  it.each(["cancelled_before_execution", "cancelled_after_execution"])("checks both boundaries before choosing the next successful action (%s)", phase => {
     const observation = decision();
-    const reference = { ...point(observation), chosen: observation.catalog[0]!.choice_id, continuity_checks: checks(observation) };
+    const reference = { ...point(observation), chosen: observation.catalog[0]!.choice_id, continuity_checks: checks(observation, phase) };
     const result = scenario([reference, point(observation)], [hello, observe(observation), observe(observation),
       { type: "episode_end", outcome: null, censor_reason: "agent_abstained" }], false, bounded);
     const checked = result.rows.filter(row => row.type === "cancellation_continuity");
-    expect(checked.map(row => [row.decision_id, row.phase, row.verdict])).toEqual([
-      ["cancel-0", "cancelled_before_execution", "equal"], ["cancel-1", "cancelled_after_execution", "equal"],
+    expect(checked.map(row => [row.decision_id, row.phase, row.boundary, row.verdict])).toEqual([
+      ["cancel", phase, "before", "equal"], ["cancel", phase, "after", "equal"],
     ]);
     expect(result.replies.some(reply => reply.type === "choose")).toBe(true);
     expect(result.end.replay_reached_reference_prefix).toBe(true);
@@ -132,14 +140,49 @@ describe("P1 cancellation continuity uses the actual replay observation", () => 
 
   it.each([0, 1])("rejects a changed cancellation fact even when the successful point matches (check %s)", changed => {
     const observation = decision(), continuity = checks(observation);
-    continuity[changed]!.observation.player.content.gold += 1;
+    continuity[changed]!.observation.player.content.gold = 1098;
     const reference = { ...point(observation), chosen: observation.catalog[0]!.choice_id, continuity_checks: continuity };
     const result = scenario([reference], [hello, observe(observation)]);
     expect(result.replies.at(-1).type).toBe("abstain");
     expect(result.replies.some(reply => reply.type === "choose")).toBe(false);
     const failed = result.rows.find(row => row.type === "cancellation_continuity" && row.verdict !== "equal");
-    expect(failed.decision_id).toBe(`cancel-${changed}`);
+    expect(failed.decision_id).toBe("cancel");
+    expect(failed.boundary).toBe(changed === 0 ? "before" : "after");
     expect(failed.difference).not.toBeNull();
+  });
+
+  it.each(["unsupported", "incomplete"])("does not promote the original before observation (%s)", defect => {
+    const observation = decision(), continuity = checks(observation);
+    if (defect === "unsupported") continuity[0]!.observation.status = "unsupported";
+    else continuity[0]!.observation.envelope.required_information_complete = false;
+    const result = scenario([{ ...point(observation), continuity_checks: continuity }], [hello, observe(observation)], false, bounded);
+    expect(result.replies.at(-1).type).toBe("abstain");
+    expect(result.rows.find(row => row.type === "cancellation_continuity").verdict).not.toBe("equal");
+  });
+
+  it.each(["prefix", "terminal"])("compares before and after at their separate actual points ending at %s", boundary => {
+    const first = decision(), last = boundary === "terminal" ? terminal() : structuredClone(first);
+    const [before, after] = checks(first, "cancelled_after_execution");
+    after!.observation = last;
+    const result = scenario([
+      { ...point(first), chosen: first.catalog[0]!.choice_id, continuity_checks: [before] },
+      { ...point(last), index: 1, continuity_checks: [after] },
+    ], [hello, observe(first), ...(boundary === "terminal" ? [inform(last)] : [observe(last)]),
+      { type: "episode_end", outcome: boundary === "terminal" ? "loss" : null,
+        censor_reason: boundary === "terminal" ? null : "agent_abstained" }], false, bounded);
+    expect(result.rows.filter(row => row.type === "cancellation_continuity").map(row => [row.boundary, row.index, row.verdict]))
+      .toEqual([["before", 0, "equal"], ["after", 1, "equal"]]);
+    expect(boundary === "terminal" ? result.end.replay_reached_reference_terminal : result.end.replay_reached_reference_prefix).toBe(true);
+  });
+
+  it.each(["before", "after"])("rejects an omitted %s checkpoint even with the other boundary intact", boundary => {
+    const observation = terminal(), continuity = checks(observation);
+    const reference = { ...point(observation), continuity_checks: continuity };
+    const metadata = cancellationMetadata([reference]);
+    reference.continuity_checks = continuity.filter(check => check.boundary !== boundary);
+    const result = scenario([reference], [hello, inform(observation), { type: "episode_end", outcome: "loss", censor_reason: null }], false, metadata);
+    expect(result.end.replay_reached_reference_terminal).toBe(false);
+    expect(result.rows.find(row => row.type === "divergence").reason).toBe("cancellation_manifest_mismatch");
   });
 
   it.each([false, true])("checks cancellations at the final bounded decision before prefix_end (changed=%s)", changed => {
@@ -175,15 +218,14 @@ describe("P1 cancellation continuity uses the actual replay observation", () => 
 
   it.each(["missing", "extra", "duplicate", "wrong_index", "wrong_event", "count"])("rejects %s cancellation attachment metadata", defect => {
     const observation = terminal(), continuity = checks(observation);
-    const declared = continuity.map((check, index) => ({ ...check, action_witness_id: `witness-${index}`,
-      comparison_point_index: 0, reason: "native_cancel" }));
     const reference = { ...point(observation), continuity_checks: continuity };
+    const declared = cancellationMetadata([reference]).native_cancellations!;
     let count = declared.length;
     if (defect === "missing") reference.continuity_checks = [];
     if (defect === "extra") reference.continuity_checks.push({ ...continuity[0]!, decision_id: "extra" });
     if (defect === "duplicate") reference.continuity_checks[1] = reference.continuity_checks[0]!;
-    if (defect === "wrong_index") declared[0]!.comparison_point_index = 1;
-    if (defect === "wrong_event") declared[0]!.source_event_id = "foreign-event";
+    if (defect === "wrong_index") declared[0]!.continuity_checkpoints[0].comparison_point_index = 1;
+    if (defect === "wrong_event") declared[0]!.continuity_checkpoints[0].source_event_id = "foreign-event";
     if (defect === "count") count += 1;
     const result = scenario([reference], [hello, inform(observation), { type: "episode_end", outcome: "loss", censor_reason: null }],
       false, { cancellation_count: count, native_cancellations: declared });
@@ -196,7 +238,8 @@ describe("P1 cancellation continuity uses the actual replay observation", () => 
     const result = scenario([point(observation)], [hello, observe(observation),
       { type: "episode_end", outcome: null, censor_reason: "agent_abstained" }], false,
     { ...bounded, cancellation_count: 1, native_cancellations: [{ decision_id: "cancel", source_event_id: "event",
-      phase: "cancelled_before_execution", comparison_point_index: 0 }] });
+      phase: "cancelled_before_execution", continuity_checkpoints: [{ boundary: "before", source_event_id: "capture-before", comparison_point_index: 0 },
+        { boundary: "after", source_event_id: "capture-after", comparison_point_index: 0 }] }] });
     expect(result.end.replay_reached_reference_prefix).toBe(false);
     expect(result.rows.some(row => row.type === "prefix_end")).toBe(false);
     expect(result.replies.at(-1).type).toBe("abstain");

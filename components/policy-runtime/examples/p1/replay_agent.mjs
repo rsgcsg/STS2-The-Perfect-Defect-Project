@@ -26,7 +26,7 @@ function cancellationContinuity(reference, observation) {
         left: null, right: null, reason: "cancellation_observation_missing" } }
       : matchReferenceChoice({ index, observation: check.observation, chosen: null }, observation);
     log({ type: "cancellation_continuity", decision_id: check.decision_id, index, phase: check.phase,
-      source_event_id: check.source_event_id, verdict: match.verdict, difference: match.difference });
+      boundary: check.boundary, source_event_id: check.source_event_id, verdict: match.verdict, difference: match.difference });
     if (match.verdict !== "equal") return false;
   }
   return true;
@@ -39,13 +39,16 @@ function cancellationManifestComplete() {
   const declared = trajectory.native_cancellations;
   if (!Number.isInteger(trajectory.cancellation_count) || trajectory.cancellation_count < 0
       || !Array.isArray(declared) || declared.length !== trajectory.cancellation_count
-      || checks.length !== declared.length || new Set(declared.map(item => item.decision_id)).size !== declared.length)
+      || checks.length !== declared.length * 2 || new Set(declared.map(item => item.decision_id)).size !== declared.length)
     return false;
   return declared.every(item => typeof item.decision_id === "string" && item.decision_id.length > 0
     && typeof item.source_event_id === "string" && item.source_event_id.length > 0
     && ["cancelled_before_execution", "cancelled_after_execution"].includes(item.phase)
-    && checks.filter(check => check.decision_id === item.decision_id && check.source_event_id === item.source_event_id
-      && check.phase === item.phase && check.index === item.comparison_point_index).length === 1);
+    && Array.isArray(item.continuity_checkpoints) && item.continuity_checkpoints.length === 2
+    && ["before", "after"].every(boundary => item.continuity_checkpoints.filter(checkpoint => checkpoint.boundary === boundary).length === 1)
+    && item.continuity_checkpoints.every(checkpoint => typeof checkpoint.source_event_id === "string" && checkpoint.source_event_id.length > 0
+      && checks.filter(check => check.decision_id === item.decision_id && check.source_event_id === checkpoint.source_event_id
+        && check.phase === item.phase && check.boundary === checkpoint.boundary && check.index === checkpoint.comparison_point_index).length === 1));
 }
 log({ type: "start", reference: trajectory.run_directory, points: trajectory.points.length });
 if (!cancellationManifestComplete()) {
