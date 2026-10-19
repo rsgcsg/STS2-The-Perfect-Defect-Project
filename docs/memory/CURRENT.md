@@ -21,9 +21,11 @@ B已执行奖励原生例外open→Skip并严格比较完整前/中/后，06连�
 用药映射另议；不自行实施D、不从H补S、不删合法动作。该混合前缀不授P1-only全轨。
 
 准确eca6ce72批次Managed40已全部运行，24自然loss/16技术停止、5unknown/7taint，
-0budget、40replayverified只证明trace，整批FAIL。Reference20占唯一原生游戏槽，
-完成前不另开游戏。双Host R20同包/同seed/同prepared progress各自真实短链PASS，
-不是整局或Host等价。下一步按主报告完成Reference20、INFO、三证与剩余归因。
+0budget、40replayverified只证明trace，整批FAIL。Reference20全部自然loss、1471选择、0unknown/taint/budget，
+逐局terminal原字节及normalclose验收PASS；当前全部游戏/批次结束。双Host R20同包/同seed/同prepared progress各自真实短链PASS，
+不是整局或Host等价。两组7张原图INFO已独核：基本卡/关键词、意图、遗物说明、Coolant2及Strength7相符；
+同一deck Defend公开升级预览实际5→8，目标PB全树/P1只有5，INFO不能PASS。
+下一步信息字段/用药范围与缺原件整局处置见主报告，未经批准不扩语义或重装。
 
 ## 当前源码、测试与范围
 
