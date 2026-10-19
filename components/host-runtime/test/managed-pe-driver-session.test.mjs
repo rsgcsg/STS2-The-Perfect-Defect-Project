@@ -214,6 +214,13 @@ test("delivered text action with rejected successor projection keeps Receipt and
   assert.equal(later.result.reason_code, "runtime_tainted_after_successor_projection_failure");
   assert.equal(later.result.retry, "never");
   assert.equal(later.result.successor, null);
+  const unbound = { ...submit(page, "unbound-after-projection"), action_id: "not-in-old-page" };
+  const unboundReceipt = await driver.handle(unbound);
+  assert.equal(unboundReceipt.result.status, "not_applied");
+  assert.equal(unboundReceipt.result.reason_code, "runtime_tainted_after_successor_projection_failure");
+  assert.equal(unboundReceipt.result.retry, "never");
+  assert.equal(unboundReceipt.result.successor, null);
+  assert.deepEqual(await driver.handle(unbound), unboundReceipt);
   assert.equal(calls.filter((call) => call.cmd === "action").length, 1);
 });
 

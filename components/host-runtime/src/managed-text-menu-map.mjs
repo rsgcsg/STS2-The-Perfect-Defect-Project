@@ -194,6 +194,7 @@ export class ManagedTextMenuSessionAdapter {
         detail: "An exact text-menu-v1 profile is required.", retry: "reobserve", successor: null
       }));
     }
+    if (this.#session.tainted === true) return this.#rejectTainted(request_id, fingerprint);
     const binding = this.#bindings.get(expected_snapshot_id);
     const entry = binding?.actions.get(action_id);
     if (entry == null) {
@@ -217,20 +218,22 @@ export class ManagedTextMenuSessionAdapter {
     return pending;
   }
 
+  #rejectTainted(requestId, fingerprint) {
+    const projectionFailed = this.#session.taintReason === "successor_projection_failed";
+    const successor = projectionFailed ? null : this.#remember(this.#session.observe());
+    return this.#save(requestId, fingerprint, this.#result(requestId, {
+      status: "not_applied", effect_domain: null, native_delivery: null,
+      action: null, reason_code: projectionFailed
+        ? "runtime_tainted_after_successor_projection_failure" : "runtime_tainted_after_unknown",
+      detail: projectionFailed
+        ? "A delivered action had no trustworthy successor projection; mutation authority is closed."
+        : "Unknown native delivery closed mutation authority for this Managed session.",
+      retry: projectionFailed ? "never" : "reobserve", successor
+    }));
+  }
+
   async #dispatch({ requestId, fingerprint, binding, entry, timeoutMs }) {
-    if (this.#session.tainted === true) {
-      const projectionFailed = this.#session.taintReason === "successor_projection_failed";
-      const successor = projectionFailed ? null : this.#remember(this.#session.observe());
-      return this.#save(requestId, fingerprint, this.#result(requestId, {
-        status: "not_applied", effect_domain: null, native_delivery: null,
-        action: null, reason_code: projectionFailed
-          ? "runtime_tainted_after_successor_projection_failure" : "runtime_tainted_after_unknown",
-        detail: projectionFailed
-          ? "A delivered action had no trustworthy successor projection; mutation authority is closed."
-          : "Unknown native delivery closed mutation authority for this Managed session.",
-        retry: projectionFailed ? "never" : "reobserve", successor
-      }));
-    }
+    if (this.#session.tainted === true) return this.#rejectTainted(requestId, fingerprint);
     const current = this.#session.observe();
     if (current.snapshot_id !== binding.nativeSnapshotId
         || !current.bound_actions?.actions.some((action) => action.bound_action_id === entry.boundActionId)) {

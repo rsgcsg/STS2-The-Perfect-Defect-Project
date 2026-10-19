@@ -283,3 +283,16 @@ test("upgrade and transform view controls dispatch only to the same pending Mana
     assert.deepEqual(after.preview_options, before.preview_options);
   }
 });
+
+// An exact mechanical selector binding is separate from missing public HUD facts.
+// Its public DTO must decode as partial, without claiming complete P1 input.
+test("canonical combat selector missing HUD retains explicit incomplete information", () => {
+  const state = selector({ family: "combat_pile" });
+  state.combat_context = null;
+  const projection = projectManagedCandidateDecision({ state, ...identity });
+  const snapshot = projection.snapshot;
+  assert.equal(snapshot.completeness.status, "partial");
+  assert.ok(snapshot.completeness.missing.includes("complete_current_post_prefix_combat_hud"));
+  assert.equal(snapshot.interaction.content.context.kind, "selection");
+  assert.equal(snapshot.interaction.content.surface.selector_request.mechanics_qualified, true);
+});
