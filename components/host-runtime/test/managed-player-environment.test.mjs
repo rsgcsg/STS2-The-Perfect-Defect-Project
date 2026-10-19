@@ -1406,3 +1406,22 @@ test("event body is published only when the native current body was actually ren
   assert.equal(Object.hasOwn(noBody.interaction.content.context,"body"),false);
   assert.equal(noBody.interaction.content.context.ancient,true);
 });
+
+
+test("reward candidate previews retain native null star cost without changing the outer card", () => {
+  const slimed = { id: "CARD.SLIMED", name: "Slimed", type: "Status", cost: 1,
+    star_cost: null, description: "Exhaust.", rarity: "Status", keywords: [], card_previews: [] };
+  const card = { native_ref: "gunk-up", id: "CARD.GUNK_UP", name: "Gunk Up", type: "Skill", cost: 1,
+    star_cost: null, description: "Add a Slimed.", rarity: "Common", render_complete: true,
+    keywords: [], card_previews: [slimed, { ...slimed, id: "CARD.STAR_PREVIEW", star_cost: 2 }] };
+  const state = { ...eventState(), decision: "reward_set", reward_set_ref: "native-set",
+    rewards: [{ native_ref: "native-reward", kind: "card_choice", name: "Add card", card_options: [card] }] };
+  const projection = projectManagedCandidateDecision({ state, ...projectionIdentity });
+  const detail = [...projection.reads.values()].find(read => read.descriptor.kind === "surface_card"
+    && read.content.display_context === "reward_candidate");
+  assert.equal(detail.completeness.status, "complete");
+  assert.equal(Object.hasOwn(detail.content, "star_cost"), false);
+  assert.equal(Object.hasOwn(detail.content.card_previews[0], "star_cost"), true);
+  assert.equal(detail.content.card_previews[0].star_cost, null);
+  assert.equal(detail.content.card_previews[1].star_cost, "2");
+});
