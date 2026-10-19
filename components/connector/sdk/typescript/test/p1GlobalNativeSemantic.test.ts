@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { createSession, reduce, matchNativeExecutionChoice, matchNativeSemanticChoice, type NativeSemanticAcceptance,
+import { createSession, reduce, reduceNativeExecution, matchNativeExecutionChoice, matchNativeSemanticChoice, type NativeSemanticAcceptance,
   type P1Basis } from "../src/p1Global/index.js";
 
 function example() {
@@ -106,6 +106,15 @@ function executionExample() {
   q.interaction.content.surface.can_end_turn = false;
   return { basis, queued, accepted: { ...accepted, bound_action: null, native_input }, execution };
 }
+
+it.each([null, undefined, [], { target: "foreign-target" }])("rejects an incomplete native execution catalog without selecting an action: %s", argumentsValue => {
+  const { queued, execution } = executionExample();
+  const actions = structuredClone(execution.execution_action_space.actions) as any[];
+  actions[0].arguments = argumentsValue;
+  const result = reduceNativeExecution(createSession("same", "reference"), queued, actions);
+  expect(result.complete).toBe(false);
+  expect(result.missing).toContain("required:native_execution_catalog_operands");
+});
 
 describe("P1 execution S and native A(S)", () => {
   it("retains original empty public catalog and projects the same complete P1 choice facts", () => {

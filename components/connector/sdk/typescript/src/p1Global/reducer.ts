@@ -320,6 +320,19 @@ export function reduceNativeExecution(state: P1SessionState, basis: P1Basis,
 function reduceCatalog(state: P1SessionState, basis: P1Basis, execution?: readonly NativeExecutionAction[]): Reduction {
   const snapshot = decodePlayerSnapshot(basis.snapshot).raw as Record<string, any>;
   let interaction = snapshot.interaction as Record<string, any>;
+  const sourcePlayer = snapshot.interaction.content.context?.player;
+  const knownIds = new Set((snapshot.referents as NativeReferent[]).map(ref => ref.referent_id));
+  const invalidExecution = execution !== undefined && (
+    new Set(execution.map(action => action.key)).size !== execution.length
+    || execution.some(action => !action.key || !action.native_legality_basis
+      || !["play", "use", "end_turn"].includes(action.verb)
+      || action.arguments == null || typeof action.arguments !== "object" || Array.isArray(action.arguments)
+      || Object.entries(action.arguments).some(([role, id]) => role !== "target" || !knownIds.has(id))
+      || action.verb === "play" && !sourcePlayer?.hand?.some((card: any) => card.entity_id === action.subject_referent_id)
+      || action.verb === "use" && !sourcePlayer?.potion_states?.some((potion: any) => potion.entity_id === action.subject_referent_id)
+      || action.verb === "end_turn" && (action.subject_referent_id != null || Object.keys(action.arguments).length !== 0)));
+  // Invalid captured operands remain an incomplete observation, never a choice.
+  if (invalidExecution) execution = undefined;
   if (execution && interaction.kind === "combat_turn") {
     const context = interaction.content.context;
     const options = (verb: string, items: Record<string, any>[]) => items.flatMap(item => {
@@ -337,9 +350,11 @@ function reduceCatalog(state: P1SessionState, basis: P1Basis, execution?: readon
   const nativeKind = String(interaction.kind);
   const family: SceneFamily = FAMILY[nativeKind] ?? "other";
   const missing: string[] = [];
+  if (invalidExecution) missing.push("required:native_execution_catalog_operands");
   if (!hasFinitePublicNumbers(basis)) missing.push("required:finite_public_numbers");
   if (execution && (interaction.kind !== "combat_turn" || snapshot.completeness?.status !== "complete"
       || execution.length === 0)) missing.push("required:complete_native_execution_combat_basis");
+
   if (!P1G_INFORMATION_SHAPES.includes(family)) missing.push(`required:scene_information_qualification:${family}`);
   if (!(nativeKind in FAMILY)) missing.push(`required:scene_contract:${nativeKind}`);
   if (interaction.content_schema !== `sts2.player-environment/surface/${nativeKind}-1`

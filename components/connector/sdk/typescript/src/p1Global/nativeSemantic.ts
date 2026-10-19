@@ -157,18 +157,6 @@ export function matchNativeExecutionChoice(state: P1SessionState, basis: P1Basis
         || execution.native_input.subject_referent_id !== selected.subject_referent_id
         || canonicalJson(execution.native_input.arguments) !== canonicalJson(selected.arguments)))
     return result("unmapped", "execution_native_input_operands_changed");
-  if (space.actions.some(action => !["play", "use", "end_turn"].includes(action.verb)
-      || !action.key || !action.native_legality_basis || !action.arguments
-      || Object.entries(action.arguments).some(([role, id]) => role !== "target" || typeof id !== "string")))
-    return result("unmapped", "execution_action_space_has_unsupported_native_action");
-  const context = snapshot.interaction.content.context as Record<string, any>;
-  const knownIds = new Set<unknown>(snapshot.referents.map(ref => ref.referent_id));
-  if (space.actions.some(action => action.verb === "play"
-      && !context.player?.hand?.some((card: any) => card.entity_id === action.subject_referent_id)
-      || action.verb === "use"
-      && !context.player?.potion_states?.some((potion: any) => potion.entity_id === action.subject_referent_id)
-      || Object.values(action.arguments).some(id => !knownIds.has(id))))
-    return result("incomplete", "execution_catalog_operand_missing_from_same_public_basis");
   reduction = reduceNativeExecution(state, basis, space.actions);
   if (!reduction.complete || reduction.observation.status !== "decision")
     return result("incomplete", "execution_basis_is_not_a_complete_p1_decision");

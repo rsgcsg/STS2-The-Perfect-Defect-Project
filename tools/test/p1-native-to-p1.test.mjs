@@ -294,7 +294,7 @@ test('turn-start and in-card queue derive at execution S while H stays provenanc
   const { source } = queuedExample();
   const report = convertNativeSemanticOriginals(source, sdk, core);
   assert.equal(report.complete, true);
-  assert.deepEqual(report.accepted_accounting, { accepted: 2, derived: 2, explained_gaps: 0 });
+  assert.deepEqual(report.accepted_accounting, { accepted: 2, derived: 2, native_cancelled: 0, explained_gaps: 0 });
   assert.ok(report.actions.every(action => action.execution.queued && action.execution.queue_interval_ms === 120));
   assert.ok(report.actions.every(action => action.source_human_basis.snapshot_id !== action.execution.basis.snapshot_id));
   assert.equal(report.actions[0].successor.origin, 'native_before_execution');
@@ -302,7 +302,7 @@ test('turn-start and in-card queue derive at execution S while H stays provenanc
   assert.equal(report.trajectory.points.length, 3);
 });
 
-for (const failure of ['cancel', 'target-death', 'operands-changed', 'missing-execution']) test(`queued ${failure} remains an explained gap`, () => {
+for (const failure of ['target-death', 'operands-changed', 'missing-execution']) test(`queued ${failure} remains an explained gap`, () => {
   const { source, secondExecution } = queuedExample();
   if (failure === 'target-death') secondExecution.execution_action_space.observed_match_count = 0;
   if (failure === 'operands-changed') secondExecution.native_input.arguments = { target: 'changed-target' };
@@ -329,4 +329,98 @@ test('native execution order owns derived points even when admission order diffe
   assert.deepEqual(report.actions.map(action => action.decision_id), ['second', 'first']);
   assert.deepEqual(report.trajectory.points.slice(0, -1).map(point => point.observation.envelope.occurrence), [1, 2]);
   assert.equal(report.actions[0].successor.public_basis.snapshot_id, firstExecution.basis.snapshot_id);
+});
+
+function cancelledExample(afterStart = false) {
+  const fixture = queuedExample(), { source, second, secondExecution, nextBasis, retain } = fixture;
+  second.native_action_type = 'PlayCardAction';
+  const terminal = source.events.at(-1);
+  terminal.phase = 'cancelled';
+  if (!afterStart) source.events = source.events.filter(row => row !== secondExecution);
+  else {
+    const current = nextBasis('-rejected-S', true);
+    const player = current.snapshot.interaction.content.context.player;
+    player.energy = 0;
+    player.hand.forEach(card => { card.can_play = false; card.unplayable_reason = 'EnergyCostTooHigh'; });
+    secondExecution.basis = retain(current);
+    secondExecution.execution_snapshot_id = secondExecution.basis.snapshot_id;
+    secondExecution.missing_reason = 'execution_semantic_action_space_missing';
+    secondExecution.execution_action_space = null;
+    secondExecution.native_semantic_capture = {
+      schema: 'sts2.player-environment/process-local-native-semantic-capture-1', phase: 'before_execution', status: 'captured',
+      semantic_actions: fixture.source.events.find(row => row.kind === 'execution').execution_action_space.actions.filter(action => action.verb === 'end_turn'),
+      ui_catalog: { snapshot_id: current.snapshot.snapshot_id },
+      observed_action: { membership: 'absent', semantic_match_count: 0, native_action_type: 'PlayCardAction' } };
+  }
+  const reason = afterStart ? 'execution_semantic_action_space_missing' : 'accepted_native_action_ended_before_execution';
+  source.events.push({ ...terminal, kind: 'issue', event_id: 'original-native-cancel-issue', reason,
+    native_witness: { action_witness_id: second.action_witness_id, decision_id: second.decision_id } });
+  source.events.forEach((row, index) => row.sequence = index + 1);
+  return fixture;
+}
+
+for (const afterStart of [false, true]) test(`an explained native cancellation ${afterStart ? 'after' : 'before'} execution retains originals/issues and no successful label`, () => {
+  const { source } = cancelledExample(afterStart);
+  const originalBytes = JSON.stringify(source.events);
+  const report = convertNativeSemanticOriginals(source, sdk, core);
+  assert.equal(report.complete, true);
+  assert.deepEqual(report.accepted_accounting, { accepted: 2, derived: 1, native_cancelled: 1, explained_gaps: 0 });
+  const cancelled = report.actions.find(action => action.decision_id === 'second');
+  assert.equal(cancelled.choice_id, null); assert.equal(cancelled.choice, null);
+  assert.equal(cancelled.result.status, 'interrupted_known');
+  assert.equal(cancelled.native_disposition.successful_label, false);
+  assert.equal(report.trajectory.points.length, 2);
+  assert.equal(report.trajectory.cancellation_count, 1);
+  assert.equal(report.trajectory.points.at(-1).continuity_checks[0].decision_id, 'second');
+  assert.equal(report.native_cancellations[0].continuity, 'requires_strict_managed_comparison');
+  assert.ok(report.issues.some(issue => issue.event_id === 'original-native-cancel-issue' && issue.blocking === false));
+  assert.deepEqual(report.blocking_issues, []);
+  assert.equal(report.strict_managed_comparison, 'not_run');
+  assert.equal(JSON.stringify(source.events), originalBytes);
+});
+
+for (const defect of ['missing-H-read', 'foreign-native-input', 'missing-S-read', 'missing-catalog', 'source-failure', 'unknown']) test(`native cancellation does not excuse ${defect}`, () => {
+  const { source, second, secondExecution, retain, nextBasis } = cancelledExample(true);
+  if (defect === 'missing-H-read') { const bad = nextBasis('-bad-H', true); bad.reads.shift(); second.basis = retain(bad); }
+  if (defect === 'foreign-native-input') secondExecution.native_input.arguments = { target: 'foreign-target' };
+  if (defect === 'missing-S-read') { const bad = nextBasis('-bad-S', true); bad.reads.shift(); secondExecution.basis = retain(bad);
+    secondExecution.execution_snapshot_id = bad.snapshot.snapshot_id; secondExecution.native_semantic_capture.ui_catalog.snapshot_id = bad.snapshot.snapshot_id; }
+  if (defect === 'missing-catalog') secondExecution.native_semantic_capture = null;
+  if (defect === 'source-failure') source.events.at(-1).reason = 'pre_frame_capture_failed';
+  if (defect === 'unknown') source.events.find(row => row.kind === 'lifecycle' && row.decision_id === 'second').phase = 'unknown';
+  if (defect === 'missing-H-read' || defect === 'missing-S-read') {
+    assert.throws(() => convertNativeSemanticOriginals(source, sdk, core), /public Read inventory is incomplete/);
+    return;
+  }
+  const report = convertNativeSemanticOriginals(source, sdk, core);
+  assert.equal(report.complete, false); assert.equal(report.trajectory, null);
+  assert.ok(report.blocking_issues.length > 0);
+});
+
+test('a cancelled-before-execution input retains complete popup H as source without requiring an H P1 choice', () => {
+  const { source, second, retain, nextBasis } = cancelledExample();
+  const human = nextBasis('-popup-H');
+  human.snapshot.interaction.kind = 'potion_popup';
+  human.snapshot.interaction.content_schema = 'sts2.player-environment/surface/potion_popup-1';
+  human.snapshot.interaction.content.surface.kind = 'potion_popup';
+  second.basis = retain(human);
+  const report = convertNativeSemanticOriginals(source, sdk, core);
+  assert.equal(report.complete, true);
+  assert.equal(report.accepted_accounting.native_cancelled, 1);
+  assert.equal(report.actions.find(action => action.decision_id === 'second').choice, null);
+});
+
+test('cancelled inputs may coexist with complete native run boundaries; strict replay remains separate', () => {
+  const { source, retain } = cancelledExample();
+  const terminal = JSON.parse(readFileSync(new URL('../../components/connector/sdk/typescript/test/fixtures/p1-global/managed-game_over.json', import.meta.url), 'utf8'));
+  source.events.push({ ...source.events.at(-1), kind: 'observation',
+    event_id: 'terminal-observation', sequence: source.events.length + 1,
+    reason: 'native_run_ended', basis: retain(terminal) });
+  source.journal = [{ run_id: 'run-1', kind: 'run_started_native', sequence: 1 }, { run_id: 'run-1', kind: 'run_ended_native', sequence: 2 }];
+  const report = convertNativeSemanticOriginals(source, sdk, core);
+  assert.equal(report.complete, true); assert.equal(report.whole_run_recording_complete, true);
+  assert.equal(report.trajectory.points.at(-1).observation.status, 'terminal');
+  assert.equal(report.strict_managed_comparison, 'not_run');
+  source.journal.push({ run_id: 'run-1', kind: 'run_abandoned_native', sequence: 3 });
+  assert.equal(convertNativeSemanticOriginals(source, sdk, core).whole_run_recording_complete, false);
 });

@@ -5,6 +5,7 @@ import { createHash } from 'node:crypto';
 import { writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { classifyNativeCancellation } from './p1-native-cancellation.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
@@ -37,6 +38,17 @@ export function convertNativeSemanticOriginals(source, sdk, core, options = {}) 
   let lastComplete = null;
   const executionMode = source.executionSchemaVersion === 1;
   const acceptedById = new Map();
+  const terminalById = new Map(source.events.filter(row => row.kind === 'lifecycle' && terminalPhases.has(row.phase))
+    .map(row => [row.decision_id, row]));
+  const executionById = new Map(source.events.filter(row => row.kind === 'execution').map(row => [row.decision_id, row]));
+  const cancellations = new Map();
+  // Looking at a recorded final disposition classifies an outcome; it never
+  // supplies an earlier S, legality or choice from a future state.
+  function cancellation(accepted, original, execution = null, executionBasis = null, match = null) {
+    if (!executionMode) return null;
+    return classifyNativeCancellation({ accepted, humanBasis: original, execution, executionBasis, match,
+      terminal: terminalById.get(accepted.decision_id), state, core });
+  }
 
   function basis(reference) {
     if (!reference || typeof reference.payload_ref !== 'string') throw new Error('native_p1_basis_reference_required');
@@ -49,7 +61,7 @@ export function convertNativeSemanticOriginals(source, sdk, core, options = {}) 
       bases.set(reference.sha256, value);
     }
     if (value.snapshot.snapshot_id !== reference.snapshot_id) throw new Error('native_p1_basis_snapshot_mismatch');
-    return { snapshot: value.snapshot, reads: value.reads };
+    return { snapshot: value.snapshot, reads: value.reads, capture_status: value.capture_status, missing: value.missing };
   }
 
   function capture(reference, row, origin, reduction = null, promote = true) {
@@ -120,6 +132,9 @@ export function convertNativeSemanticOriginals(source, sdk, core, options = {}) 
       if (!continuationOf && !awaitsExecution) match = matchRecordedIntention(match, row);
       if (awaitsExecution) match = { status: 'incomplete', reason: 'accepted_action_without_execution_original',
         choice_id: null, lowering: null, reduction: null };
+      const cancelled = !executionById.has(row.decision_id) ? cancellation(row, original) : null;
+      if (cancelled) { cancellations.set(row.decision_id, cancelled);
+        match = { ...match, status: 'native_cancelled', reason: cancelled.receipt.reason, choice_id: null, lowering: null }; }
       const captured = capture(row.basis, row, 'human_decision_basis', match.reduction, !awaitsExecution);
       const action = { decision_id: row.decision_id, action_witness_id: row.action_witness_id,
         accepted_event_id: row.event_id, match_status: match.status, reason: match.reason,
@@ -139,12 +154,18 @@ export function convertNativeSemanticOriginals(source, sdk, core, options = {}) 
       const original = row.basis == null ? null : basis(row.basis);
       const match = original ? core.matchNativeExecutionChoice(state, original, accepted, row)
         : { status: 'incomplete', reason: 'original_execution_basis_missing', choice_id: null, lowering: null, reduction: null };
-      const captured = capture(row.basis, row, 'native_before_execution', match.reduction);
+      const cancelled = cancellation(accepted, accepted.basis ? basis(accepted.basis) : null, row, original, match);
+      if (cancelled) cancellations.set(row.decision_id, cancelled);
+      const projected = cancelled?.checkpoint ?? match.reduction;
+      const captured = capture(row.basis, row, 'native_before_execution', projected);
       Object.assign(action, { execution: { event_id: row.event_id, queued: row.queued,
-          queue_interval_ms: row.queue_interval_ms, basis: row.basis }, match_status: match.status, reason: match.reason,
-        choice_id: match.choice_id, choice: match.reduction?.observation.catalog.find(item => item.choice_id === match.choice_id) ?? null,
-        capture: report.captures.length - 1, lowering: match.lowering, observation: captured.capture.observation });
-      if (match.status === 'matched') state = match.reduction.state;
+          queue_interval_ms: row.queue_interval_ms, basis: row.basis },
+        match_status: cancelled ? 'native_cancelled' : match.status, reason: cancelled?.receipt.reason ?? match.reason,
+        choice_id: cancelled ? null : match.choice_id,
+        choice: cancelled ? null : match.reduction?.observation.catalog.find(item => item.choice_id === match.choice_id) ?? null,
+        capture: report.captures.length - 1, lowering: cancelled ? null : match.lowering, observation: captured.capture.observation });
+      if (cancelled?.checkpoint) state = cancelled.checkpoint.state;
+      else if (match.status === 'matched') state = match.reduction.state;
     } else if (row.kind === 'lifecycle') {
       const action = active.get(row.decision_id);
       if (!action || action.action_witness_id !== row.action_witness_id)
@@ -191,34 +212,80 @@ export function convertNativeSemanticOriginals(source, sdk, core, options = {}) 
         : [action.result, child.result].every(value => value.status === 'completed') ? 'completed' : 'interrupted_known',
       steps: [...action.result.steps, ...child.result.steps].map((step, index) => ({ ...step, index })) };
   }
-  const derivedNative = report.actions.filter(action => action.match_status === 'matched'
-    || action.continuation_of && active.get(action.continuation_of)?.match_status === 'matched').length;
-  // Execution may differ from admission order (native queue scheduling). The
-  // actual decision capture, including same-boundary UI choices, owns P1 order.
+  const nativeActions = [...report.actions];
+  const derivedNative = nativeActions.filter(action => action.result?.status === 'completed'
+    && (action.match_status === 'matched'
+      || action.continuation_of && active.get(action.continuation_of)?.match_status === 'matched')).length;
+  // Actual execution capture order, including same-boundary UI choices, owns P1.
   report.actions = report.actions.filter(action => !action.continuation_of)
     .sort((a, b) => report.captures[a.capture].sequence - report.captures[b.capture].sequence);
-
+  const successful = report.actions.filter(action => action.match_status === 'matched' && action.result?.status === 'completed');
+  const pointActions = [...successful.map(action => ({ action, capture: report.captures[action.capture] })),
+    ...(lastComplete ? [{ action: null, capture: lastComplete }] : [])];
+  const nativeCancellations = [];
   for (const action of report.actions) {
-    if (action.terminal_sequence === null || action.successor === null) {
-      const reason = action.terminal_sequence === null ? 'accepted_action_without_terminal_disposition'
-        : 'accepted_action_without_complete_successor';
-      (openPrefix ? report.pending_decisions : report.issues).push({ decision_id: action.decision_id, reason });
+    const cancelled = cancellations.get(action.decision_id);
+    if (terminalById.get(action.decision_id)?.phase === 'cancelled') {
+      action.choice_id = null; action.choice = null;
     }
-    if (action.match_status !== 'matched') report.issues.push({ decision_id: action.decision_id, reason: action.reason });
-    if (action.result?.status === 'unknown') report.issues.push({ decision_id: action.decision_id,
-      reason: 'accepted_action_unknown' });
+    if (cancelled) {
+      action.native_disposition = cancelled.receipt;
+      action.choice_id = null; action.choice = null; // A cancellation never yields a successful label.
+      report.issues.push({ decision_id: action.decision_id, action_witness_id: action.action_witness_id,
+        reason: cancelled.receipt.reason, disposition: 'native_cancelled', blocking: false });
+      const comparison = pointActions.findIndex(point => point.capture.sequence >= cancelled.receipt.terminal_sequence);
+      if (comparison < 0) (openPrefix ? report.pending_decisions : report.issues)
+        .push({ decision_id: action.decision_id, reason: 'native_cancellation_without_complete_continuity_boundary', blocking: true });
+      else nativeCancellations.push({ ...cancelled.receipt, comparison_point_index: comparison,
+        observation: cancelled.checkpoint?.observation ?? pointActions[comparison].capture.observation });
+    } else {
+      if (action.terminal_sequence === null || action.successor === null) {
+        const reason = action.terminal_sequence === null ? 'accepted_action_without_terminal_disposition'
+          : 'accepted_action_without_complete_successor';
+        (openPrefix ? report.pending_decisions : report.issues).push({ decision_id: action.decision_id, reason });
+      }
+      if (action.match_status !== 'matched') report.issues.push({ decision_id: action.decision_id, reason: action.reason });
+      if (action.result?.status === 'unknown') report.issues.push({ decision_id: action.decision_id, reason: 'accepted_action_unknown' });
+      if (action.result?.status === 'interrupted_known') report.issues.push({ decision_id: action.decision_id,
+        reason: 'native_interruption_without_qualified_cancellation' });
+    }
     delete action.lowering;
     delete action.observation;
   }
-  report.accepted_accounting = { accepted: report.native_action_count,
-    derived: derivedNative, explained_gaps: report.native_action_count - derivedNative };
-  report.complete = report.actions.length > 0 && report.issues.length === 0 && report.pending_decisions.length === 0;
+  // Original issues stay visible. Only the exact issues explained by an exact
+  // cancelled carrier are nonblocking; no per-type/nearby-event forgiveness.
+  report.issues = report.issues.map(issue => {
+    if (issue.blocking !== undefined) return issue;
+    const decision = issue.decision_id ?? issue.native_witness?.decision_id;
+    const witness = issue.action_witness_id ?? issue.native_witness?.action_witness_id;
+    const cancelled = decision ? cancellations.get(decision)
+      : [...cancellations.values()].find(item => item.receipt.action_witness_id === witness);
+    const explained = cancelled && (!witness || cancelled.receipt.action_witness_id === witness)
+      && cancelled.expected_source_issues.includes(issue.reason);
+    return { ...issue, blocking: !explained, ...(explained ? { disposition: 'native_cancelled' } : {}) };
+  });
+  report.blocking_issues = report.issues.filter(issue => issue.blocking);
+  report.native_cancellations = nativeCancellations.map(({ observation: _observation, ...receipt }) => receipt);
+  report.accepted_accounting = { accepted: report.native_action_count, derived: derivedNative,
+    native_cancelled: cancellations.size, explained_gaps: report.native_action_count - derivedNative - cancellations.size };
+  report.complete = successful.length > 0 && report.blocking_issues.length === 0 && report.pending_decisions.length === 0;
+  const journal = source.journal.filter(row => row.run_id === report.scope.run_id);
+  const starts = journal.filter(row => row.kind === 'run_started_native');
+  const ends = journal.filter(row => row.kind === 'run_ended_native');
+  report.whole_run_recording_complete = report.complete && !openPrefix && starts.length === 1 && ends.length === 1
+    && starts[0].sequence < ends[0].sequence && report.scope.natural_terminal_observed
+    && !journal.some(row => ['run_resumed_native', 'run_abandoned_native', 'run_ended_unproved', 'recording_paused'].includes(row.kind));
+  report.strict_managed_comparison = 'not_run';
   if (report.complete) {
-    const points = report.actions.map((action, index) => ({ index,
-      observation: report.captures[action.capture].observation, chosen: action.choice_id }));
-    points.push({ index: points.length, observation: lastComplete.observation, chosen: null });
+    const points = pointActions.map(({ action, capture }, index) => ({ index,
+      observation: capture.observation, chosen: action?.choice_id ?? null,
+      ...(nativeCancellations.some(item => item.comparison_point_index === index) ? {
+        continuity_checks: nativeCancellations.filter(item => item.comparison_point_index === index)
+          .map(({ decision_id, phase, source_event_id, observation }) => ({ decision_id, phase, source_event_id, observation }))
+      } : {}) }));
     report.trajectory = { schema: 'sts2.p1/trajectory-1', run_directory: source.bundle,
-      origin: 'native_semantic_recording', scope: report.scope, points };
+      origin: 'native_semantic_recording', scope: report.scope,
+      cancellation_count: report.native_cancellations.length, native_cancellations: report.native_cancellations, points };
   }
   return report;
 }
