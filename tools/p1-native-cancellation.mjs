@@ -65,3 +65,57 @@ export function classifyNativeCancellation({ accepted, execution, terminal, huma
     || !['decision', 'terminal'].includes(checkpoint.observation.status)) return null;
   return { receipt, checkpoint, expected_source_issues: expectedSourceIssues };
 }
+
+/** User-approved interpretation of the exact Smith -> empty selector Cancel span.
+ * Preserve the parent's raw unknown; independent native child witnesses and a
+ * whole-public-state comparison explain cancellation, never successful Smith. */
+export function classifyNativeSelectorCancellation({ row, child, restored, terminalById, basis, state, core }) {
+  const parentEnd = terminalById.get(row.decision_id), childEnd = terminalById.get(child?.decision_id);
+  const parentCompletion = parentEnd?.native_completion;
+  const callback = 'MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NDeckUpgradeSelectScreen.Close.Released';
+  if (row.native_action_type !== 'RestSiteSynchronizer.ChooseLocalOption'
+    || row.native_receipt?.kind !== 'semantic_ui_accepted' || row.native_receipt.carrier_ref !== row.action_witness_id
+    || row.bound_action?.verb !== 'activate' || row.missing_reason != null || !row.basis
+    || parentEnd?.phase !== 'unknown' || parentCompletion?.family !== 'rest_site'
+    || parentCompletion.kind !== row.native_action_type || parentCompletion.succeeded !== false
+    || parentCompletion.action_witness_id !== row.action_witness_id
+    || typeof parentCompletion.task_witness_id !== 'string' || parentCompletion.task_witness_id.length === 0
+    || typeof row.native_witness?.subject_witness_id !== 'string'
+    || parentCompletion.native_operand_witness_id !== row.native_witness.subject_witness_id
+    || child?.native_action_type !== callback || child.native_receipt?.kind !== 'semantic_ui_accepted'
+    || child.native_receipt.carrier_ref !== child.action_witness_id || child.missing_reason != null
+    || child.native_receipt.selector_callback?.native_callback !== callback
+    || child.native_receipt.selector_callback.native_acceptance_proven !== true
+    || child.native_witness?.parent_action_witness_id !== row.action_witness_id
+    || child.native_witness.parent_owner_witness_id !== parentCompletion.native_operand_witness_id
+    || child.bound_action?.verb !== 'cancel' || !child.basis || childEnd?.phase !== 'finished'
+    || childEnd.native_completion?.native_callback !== callback || childEnd.native_completion.terminal !== true
+    || !restored?.basis || restored.missing_reason != null
+    || ![child, parentEnd, childEnd, restored].every(item => item.session_id === row.session_id && item.run_id === row.run_id)
+    || !(row.sequence < child.sequence && child.sequence < childEnd.sequence
+      && childEnd.sequence < parentEnd.sequence && parentEnd.sequence < restored.sequence)) return null;
+  const before = basis(row.basis), middle = basis(child.basis), after = basis(restored.basis);
+  if (![before, middle, after].every(value => completeInformation(value))) return null;
+  const first = before.snapshot.interaction.content.surface, selector = middle.snapshot.interaction.content.surface;
+  if (first.kind !== 'rest_site' || !first.options?.some(option => option.option_id === 'SMITH'
+      && option.entity_id === row.bound_action.subject_referent_id && option.enabled === true)
+    || selector.kind !== 'deck_upgrade_selection' || selector.stage !== 'selecting'
+    || !Array.isArray(selector.selected_card_entity_ids) || selector.selected_card_entity_ids.length !== 0
+    || !selector.current_controls?.some(control => control.entity_id === child.bound_action.subject_referent_id
+      && control.operation === 'cancel_selection')
+    || !['matched', 'continuation_required'].includes(core.matchNativeSemanticChoice(state, before, row).status)) return null;
+  const childMatch = core.matchNativeSemanticChoice(state, middle, child);
+  if (childMatch.status !== 'matched' && !(childMatch.status === 'unmapped'
+    && childMatch.reason === 'accepted_action_has_no_p1_choice')) return null;
+  const comparison = core.compareOriginalPresentationBases(before, after);
+  if (!comparison.equal) return null;
+  return { decision_ids: [row.decision_id, child.decision_id], before: { event: row, reference: row.basis, basis: before },
+    after: { event: restored, reference: restored.basis, basis: after }, comparison,
+    receipt: { decision_id: row.decision_id, decision_ids: [row.decision_id, child.decision_id],
+      action_witness_id: row.action_witness_id, source_event_id: parentEnd.event_id,
+      terminal_sequence: parentEnd.sequence, disposition: 'cancelled', phase: 'cancelled_semantic_selector',
+      kind: 'rest_smith_cancel', reason: 'exact_native_child_cancel_and_equal_public_originals', successful_label: false,
+      original_parent_terminal: { event_id: parentEnd.event_id, phase: parentEnd.phase, native_completion: parentCompletion },
+      native_child_terminal: { event_id: childEnd.event_id, action_witness_id: child.action_witness_id,
+        native_completion: childEnd.native_completion }, comparison, continuity: 'requires_strict_managed_comparison' } };
+}

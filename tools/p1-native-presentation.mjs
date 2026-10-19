@@ -41,7 +41,11 @@ export function classifyNativePresentation({ row, next, terminalById, basis, sta
         const skip = second.alternatives?.find(option => option.entity_id === next.bound_action.subject_referent_id
           && option.is_native_skip === true);
         if (group?.kind === 'card' && group.can_skip_selection === true && core.completeRewardGroup(group) && skip
-            && complete(afterEnd) && core.compareOriginalPresentationBases(afterEnd, middle).equal
+            // The native open Task may finish before card controls become
+            // clickable. Retain that original, but bind both actual child
+            // captures through the existing complete intention/world/Read check.
+            && complete(afterEnd) && core.matchesRewardIntention(core.rewardIntention(first.reward_set_id, group, before,
+              'decline', skip.option_id), afterEnd)
             && core.matchesRewardIntention(core.rewardIntention(first.reward_set_id, group, before,
               'decline', skip.option_id), middle)
             && surface(restored).kind === 'reward_claim' && surface(restored).reward_set_id === first.reward_set_id) {

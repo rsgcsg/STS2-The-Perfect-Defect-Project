@@ -47,7 +47,13 @@ function cancellationManifestComplete() {
     return false;
   return declared.every(item => typeof item.decision_id === "string" && item.decision_id.length > 0
     && typeof item.source_event_id === "string" && item.source_event_id.length > 0
-    && ["cancelled_before_execution", "cancelled_after_execution"].includes(item.phase)
+    && (["cancelled_before_execution", "cancelled_after_execution"].includes(item.phase)
+      || item.phase === "cancelled_semantic_selector" && item.kind === "rest_smith_cancel"
+        && item.disposition === "cancelled" && item.successful_label === false
+        && item.original_parent_terminal?.phase === "unknown"
+        && item.original_parent_terminal?.native_completion?.succeeded === false
+        && item.native_child_terminal?.native_completion?.terminal === true
+        && item.comparison?.equal === true && item.comparison.changes?.length === 0)
     && Array.isArray(item.continuity_checkpoints) && item.continuity_checkpoints.length === 2
     && ["before", "after"].every(boundary => item.continuity_checkpoints.filter(checkpoint => checkpoint.boundary === boundary).length === 1)
     && item.continuity_checkpoints.every(checkpoint => typeof checkpoint.source_event_id === "string" && checkpoint.source_event_id.length > 0

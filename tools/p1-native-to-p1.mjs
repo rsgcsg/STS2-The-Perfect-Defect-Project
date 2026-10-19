@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto';
 import { writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { classifyNativeCancellation } from './p1-native-cancellation.mjs';
+import { classifyNativeCancellation, classifyNativeSelectorCancellation } from './p1-native-cancellation.mjs';
 import { classifyNativePresentation } from './p1-native-presentation.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -53,6 +53,8 @@ export function convertNativeSemanticOriginals(source, sdk, core, options = {}) 
     .map(row => [row.decision_id, row]));
   const executionById = new Map(events.filter(row => row.kind === 'execution').map(row => [row.decision_id, row]));
   const cancellations = new Map();
+  const selectorCancellationByDecision = new Map();
+  const selectorCancellations = [];
   const presentationByDecision = new Map();
   const presentations = [];
   // Looking at a recorded final disposition classifies an outcome; it never
@@ -145,7 +147,18 @@ export function convertNativeSemanticOriginals(source, sdk, core, options = {}) 
       let match = original && row.bound_action != null ? core.matchNativeSemanticChoice(state, original, row)
         : { status: 'incomplete', reason: original ? 'original_native_bound_action_missing' : 'original_human_basis_missing',
           choice_id: null, lowering: null, reduction: null };
-      if (!awaitsExecution && !presentationByDecision.has(row.decision_id)) {
+      if (!awaitsExecution && !selectorCancellationByDecision.has(row.decision_id)) {
+        const index = acceptedRows.indexOf(row);
+        const span = classifyNativeSelectorCancellation({ row, child: acceptedRows[index + 1],
+          restored: acceptedRows[index + 2], terminalById, basis, state, core });
+        if (span) {
+          span.before.observation = core.reduce(state, span.before.basis).observation;
+          span.after.observation = core.reduce(state, span.after.basis).observation;
+          selectorCancellations.push(span);
+          for (const id of span.decision_ids) selectorCancellationByDecision.set(id, span);
+        }
+      }
+      if (!awaitsExecution && !selectorCancellationByDecision.has(row.decision_id) && !presentationByDecision.has(row.decision_id)) {
         const presentation = classifyNativePresentation({ row, next: acceptedRows[acceptedRows.indexOf(row) + 1],
           terminalById, basis, state, core });
         if (presentation) {
@@ -157,13 +170,16 @@ export function convertNativeSemanticOriginals(source, sdk, core, options = {}) 
           for (const id of presentation.decision_ids) presentationByDecision.set(id, presentation);
         }
       }
+      const selectorCancellation = selectorCancellationByDecision.get(row.decision_id);
       const presentation = presentationByDecision.get(row.decision_id);
+      if (selectorCancellation) match = { ...match, status: 'native_cancelled',
+        reason: selectorCancellation.receipt.reason, choice_id: null, lowering: null };
       if (presentation) match = { ...match, status: presentation.comparison.equal ? 'presentation' : 'presentation_gap',
         reason: presentation.comparison.equal ? 'native_presentation_originals_equal'
           : presentation.exception ? 'native_presentation_exception:stop_relic_refresh' : 'native_presentation_public_state_changed',
         choice_id: null, lowering: null };
       const continuationOf = continuationParents.get(row.decision_id) ?? null;
-      if (!presentation && !continuationOf && !awaitsExecution) match = matchRecordedIntention(match, row);
+      if (!selectorCancellation && !presentation && !continuationOf && !awaitsExecution) match = matchRecordedIntention(match, row);
       if (awaitsExecution) match = { status: 'incomplete', reason: 'accepted_action_without_execution_original',
         choice_id: null, lowering: null, reduction: null };
       const cancelled = !executionById.has(row.decision_id) ? cancellation(row, original) : null;
@@ -258,6 +274,17 @@ export function convertNativeSemanticOriginals(source, sdk, core, options = {}) 
     ...(lastComplete ? [{ action: null, capture: lastComplete }] : [])];
   const nativeCancellations = [];
   const nativePresentations = [];
+  for (const span of selectorCancellations) {
+    const pointIndex = pointActions.findIndex(point => point.capture.sequence >= span.after.event.sequence);
+    const checks = ['before', 'after'].map(boundary => ({ decision_id: span.receipt.decision_id,
+      phase: span.receipt.phase, boundary, source_event_id: span[boundary].event.event_id,
+      source_public_basis: span[boundary].reference, comparison_point_index: pointIndex,
+      observation: span[boundary].observation }));
+    nativeCancellations.push({ ...span.receipt, checks,
+      continuity_checkpoints: checks.map(({ observation: _observation, ...checkpoint }) => checkpoint) });
+    if (pointIndex < 0) report.issues.push({ decision_id: span.receipt.decision_id,
+      reason: 'native_cancellation_without_complete_continuity_boundary', blocking: true });
+  }
   for (const span of presentations) {
     const equal = span.comparison.equal;
     const pointIndex = pointActions.findIndex(point => point.capture.sequence >= span.after.event.sequence);
@@ -280,7 +307,14 @@ export function convertNativeSemanticOriginals(source, sdk, core, options = {}) 
     if (terminalById.get(action.decision_id)?.phase === 'cancelled') {
       action.choice_id = null; action.choice = null;
     }
-    if (presentation) {
+    const selectorCancellation = selectorCancellationByDecision.get(action.decision_id);
+    if (selectorCancellation) {
+      action.native_disposition = selectorCancellation.receipt;
+      action.choice_id = null; action.choice = null;
+      report.issues.push({ decision_id: action.decision_id, action_witness_id: action.action_witness_id,
+        reason: selectorCancellation.receipt.reason, disposition: 'native_cancelled', blocking: false,
+        original_result_status: action.result?.status ?? null });
+    } else if (presentation) {
       action.native_disposition = { disposition: presentation.disposition, kind: presentation.kind,
         span_decision_id: presentation.decision_ids[0], successful_label: false };
       action.choice_id = null; action.choice = null;
@@ -338,8 +372,8 @@ export function convertNativeSemanticOriginals(source, sdk, core, options = {}) 
   const exceptionDecisions = [...presentationByDecision.values()].filter(span => span.exception != null).length;
   report.native_cancellations = nativeCancellations.map(({ checks: _checks, ...receipt }) => receipt);
   report.accepted_accounting = { accepted: report.native_action_count, derived: derivedNative,
-    native_cancelled: cancellations.size, presentation: presentationDecisions, presentation_exceptions: exceptionDecisions,
-    explained_gaps: report.native_action_count - derivedNative - cancellations.size - presentationDecisions - exceptionDecisions };
+    native_cancelled: cancellations.size + selectorCancellationByDecision.size, presentation: presentationDecisions, presentation_exceptions: exceptionDecisions,
+    explained_gaps: report.native_action_count - derivedNative - cancellations.size - selectorCancellationByDecision.size - presentationDecisions - exceptionDecisions };
   report.complete = successful.length > 0 && report.blocking_issues.length === 0 && report.pending_decisions.length === 0;
   const journal = source.journal.filter(row => row.run_id === report.scope.run_id);
   const starts = journal.filter(row => row.kind === 'run_started_native');
@@ -347,6 +381,9 @@ export function convertNativeSemanticOriginals(source, sdk, core, options = {}) 
   report.whole_run_recording_complete = report.complete && !diagnosticRange && !openPrefix && starts.length === 1 && ends.length === 1
     && starts[0].sequence < ends[0].sequence && report.scope.natural_terminal_observed
     && !journal.some(row => ['run_resumed_native', 'run_abandoned_native', 'run_ended_unproved', 'recording_paused'].includes(row.kind));
+  report.raw_unknown_count = nativeActions.filter(action => action.result?.status === 'unknown').length;
+  report.explained_raw_unknown_count = nativeActions.filter(action => action.result?.status === 'unknown'
+    && selectorCancellationByDecision.has(action.decision_id)).length;
   report.strict_managed_comparison = 'not_run';
   if (report.complete) {
     const continuitySpans = [...nativeCancellations, ...nativePresentations.filter(span => span.comparison.equal || span.exception)];

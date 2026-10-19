@@ -559,7 +559,7 @@ function visibleCombatCard(card, entityId, depth = 0) {
     name: card?.name ?? null,
     type: card?.type ?? "Unknown",
     cost: String(card?.cost ?? "?"),
-    ...(card?.star_cost == null ? {} : { star_cost: String(card.star_cost) }),
+    ...(card?.star_cost == null ? (depth > 0 ? { star_cost: null } : {}) : { star_cost: String(card.star_cost) }),
     description: visibleText(card?.description),
     rarity: card?.rarity ?? "Unknown",
     is_upgraded: card?.is_upgraded === true || card?.upgraded === true,
