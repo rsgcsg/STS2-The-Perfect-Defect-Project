@@ -168,6 +168,7 @@ const KIND_TABLE: Readonly<Record<string, string>> = {
   "potion_popup|activate|potion": "potion.discard",
   "potion_popup|use|potion": "potion.use",
   "reward_claim|activate|": "reward.leave",
+  "reward_claim|skip|": "reward.leave",
   "reward_completion|activate|combat_room": "reward.proceed",
   "card_reward_selection|select|card": "card_reward.take",
   "card_reward_selection|skip|card_reward_alternative": "card_reward.decline",

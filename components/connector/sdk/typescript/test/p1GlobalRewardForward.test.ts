@@ -5,6 +5,28 @@ import { rewardForwardPair as pair } from "./fixtures/reward-forward.mjs";
 const project = (basis: P1Basis) => reduce(createSession("reward-test", "reference"), basis);
 
 describe("complete forward reward intentions", () => {
+  it("maps a native whole-page Skip to the existing reward leave intention", () => {
+    const { outer } = pair();
+    const surface = outer.snapshot.interaction.content.surface;
+    surface.can_proceed = false;
+    surface.can_leave_with_unclaimed_rewards = false;
+    const baseline = project(outer);
+    const leave = outer.snapshot.bound_actions.actions.find((a: any) => a.subject_referent_id === null)!;
+    leave.verb = "skip";
+    const skipped = project(outer);
+    expect(skipped.complete).toBe(true);
+    expect(skipped.missing).toEqual([]);
+    expect(skipped.observation).toEqual(baseline.observation);
+    const choice = skipped.observation.catalog.find(c => c.kind === "reward.leave_remaining")!;
+    expect(skipped.lowering[choice.choice_id]!.first).toMatchObject({
+      bound_action_id: leave.bound_action_id, verb: "skip"
+    });
+    expect(skipped.lowering[choice.choice_id]!.commitment).toBe("leave_reward_page");
+    expect(skipped.observation.catalog.some(c => c.kind === "reward.decline_group")).toBe(false);
+    outer.snapshot.bound_actions.actions = outer.snapshot.bound_actions.actions.filter((a: any) => a !== leave);
+    outer.snapshot.bound_actions.total_count = outer.snapshot.bound_actions.materialized_count = 1;
+    expect(project(outer).observation.catalog.some(c => c.kind === "reward.leave_remaining")).toBe(false);
+  });
   it("publishes an attached passive-refresh reward as a registered exception, with the fact public", () => {
     // User decision 2026-10-16: P1 does not offer the native open->Skip "freeze candidates"
     // input; the subscription state stays visible and the page is still published.
