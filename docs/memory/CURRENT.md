@@ -10,11 +10,11 @@ Resolve live GitHub refs; current source and original evidence override this fil
 三局均同一已装Mod，已正常Close/pack/退出。首局自然三幕胜利，3149原件全验，
 1067accepted完整解释、980选择加胜利terminal共981点；Smith父unknown只按用户
 限定批准解释取消，0成功label，其它unknown仍阻断。第二局第三幕48层loss，
-2069原件全验、716accepted全终结、无producer issue，但3次非战斗Foul Potion
-不在当前P1执行归约范围。第三局第二幕33层loss、1033原件全验、369accepted全终结；
-有1次丢药exact binding ambiguous导致原H/PB没有封存，以及2次非战斗用药、
+2069原件全验、716accepted全终结、无producer issue，原3次非战斗Foul Potion已按用户批准范围、同S真实药水与A(S)归约，
+716次全部有归属，697derived，667轨迹点，整局结构PASS。第三局2次同类用药也已归约。第三局第二幕33层loss、1033原件全验、369accepted全终结；
+有1次丢药exact binding ambiguous导致原H/PB没有封存，以及
 2次商店移除false/unknown。相邻PB不能补原H，Smith限定解释不扩大给商店移除。
-三份整局文件保存3/3、无未解释source issue来源2/3、完整P1派生1/3，三局验收未通过。
+三份整局文件保存3/3、无未解释source issue来源2/3、完整P1派生2/3，三局验收未通过。
 
 B已执行奖励原生例外open→Skip并严格比较完整前/中/后，06连续118选择相同，
 随后在独立用药执行S目录4对5差异停止。用户已决定先停B、继续其它冻结项，
@@ -25,7 +25,11 @@ B已执行奖励原生例外open→Skip并严格比较完整前/中/后，06连�
 逐局terminal原字节及normalclose验收PASS；当前全部游戏/批次结束。双Host R20同包/同seed/同prepared progress各自真实短链PASS，
 不是整局或Host等价。两组7张原图INFO已独核：基本卡/关键词、意图、遗物说明、Coolant2及Strength7相符；
 同一deck Defend公开升级预览实际5→8，目标PB全树/P1只有5，INFO不能PASS。
-下一步信息字段/用药范围与缺原件整局处置见主报告，未经批准不扩语义或重装。
+用户已批准补公开升级预览并验收、补限定非战斗用药归约；B继续停止。
+两项源码已通过SDK571、Host55、native64检查及限定非作者复核。真实renderer测试为
+DefendIronclad fixture，不能替代Defect实际INFO。新Managed候选已通过官方独立prepare
+的源码/产物/MVID/localization核验。下一步正常部署新Mod、采新PB/P1并与原生Defect
+升级预览原图核对；不回填原三局、不自动重录、不恢复B。
 
 ## 当前源码、测试与范围
 
@@ -39,7 +43,8 @@ I只修现契约下Managed selector缺HUD的明确partial表示，以及delivere
 
 最小云在授权范围完成首局3158文件R2完整回读和唯一Modal CPU读取同SHA，
 App停止且无容器，云覆盖1/3。无新上传、GPU、训练或历史迁移。
-实际Mod仍9921819/MVID65682、native源a267912d，未重装；三局原始身份不变。
+实际Mod仍9921819/MVID65682、native源a267912d，准备按新批准范围部署验收；
+三局原始身份不变。当前没有游戏或录制运行。
 
 ## Remaining Platform non-claims（上层链路与后续边界）
 
