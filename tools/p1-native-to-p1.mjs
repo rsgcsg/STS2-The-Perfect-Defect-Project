@@ -125,6 +125,10 @@ export function convertNativeSemanticOriginals(source, sdk, core, options = {}) 
       acceptedById.set(row.decision_id, row);
       const awaitsExecution = executionMode && row.native_receipt?.kind === 'game_action_accepted';
       const original = row.basis == null ? null : basis(row.basis);
+      if (executionMode && (!original || row.missing_reason != null
+        || original.capture_status !== 'complete' || original.missing.length !== 0
+        || original.snapshot.completeness.status !== 'complete'))
+        report.issues.push({ decision_id: row.decision_id, reason: 'accepted_input_source_information_missing' });
       let match = original && row.bound_action != null ? core.matchNativeSemanticChoice(state, original, row)
         : { status: 'incomplete', reason: original ? 'original_native_bound_action_missing' : 'original_human_basis_missing',
           choice_id: null, lowering: null, reduction: null };

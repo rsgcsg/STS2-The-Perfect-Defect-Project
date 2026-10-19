@@ -307,6 +307,16 @@ test('turn-start and in-card queue derive at execution S while H stays provenanc
   assert.equal(report.trajectory.points.length, 3);
 });
 
+test('a complete successful S cannot fill an accepted source H that was never captured', () => {
+  const { source, second } = queuedExample();
+  second.basis = null;
+  const report = convertNativeSemanticOriginals(source, sdk, core);
+  assert.equal(report.complete, false);
+  assert.equal(report.trajectory, null);
+  assert.ok(report.blocking_issues.some(issue => issue.decision_id === second.decision_id
+    && issue.reason === 'accepted_input_source_information_missing'));
+});
+
 for (const failure of ['target-death', 'operands-changed', 'missing-execution']) test(`queued ${failure} remains an explained gap`, () => {
   const { source, secondExecution } = queuedExample();
   if (failure === 'target-death') secondExecution.execution_action_space.observed_match_count = 0;
