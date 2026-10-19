@@ -87,6 +87,7 @@ internal static class NativeMapInformation
     internal static bool HasUnobstructedTopBarMapEntry(Type? overlayType) => overlayType == null
         || typeof(NCardRewardSelectionScreen).IsAssignableFrom(overlayType) || typeof(NRewardsScreen).IsAssignableFrom(overlayType)
         || overlayType == typeof(NChooseACardSelectionScreen)
+        || overlayType == typeof(NChooseABundleSelectionScreen)
         || typeof(NCardGridSelectionScreen).IsAssignableFrom(overlayType);
 
     internal static ReadEntry CaptureReadEntry(RunState state)
@@ -118,7 +119,7 @@ internal static class NativeMapInformation
             // exact overlays; arbitrary interception/unknown overlays do not
             // become a false native-unavailable claim.
             IOverlayScreen? overlay = NOverlayStack.Instance?.Peek();
-            // The generated-card chooser is also an ordinary overlay: native
+            // Generated-card and bundle choosers are ordinary overlays: native
             // Map.Open hides it and Map.Close shows that same pending chooser.
             // Its selection Task is neither closed nor completed by inspection.
             return HasUnobstructedTopBarMapEntry(overlay?.GetType()) && ControlAvailable(button, run.GlobalUi.TopBar)

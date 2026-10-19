@@ -25,7 +25,9 @@ public sealed class NativeMapInformationTests
     public void GeneratedChooserUsesTheKnownOverlayMapRouteWhileUnknownOverlayIsNotAssumedSafe()
     {
         Assert.True(typeof(IOverlayScreen).IsAssignableFrom(typeof(NChooseACardSelectionScreen)));
+        Assert.True(typeof(IOverlayScreen).IsAssignableFrom(typeof(NChooseABundleSelectionScreen)));
         Assert.True(NativeMapInformation.HasUnobstructedTopBarMapEntry(typeof(NChooseACardSelectionScreen)));
+        Assert.True(NativeMapInformation.HasUnobstructedTopBarMapEntry(typeof(NChooseABundleSelectionScreen)));
         Assert.True(NativeMapInformation.HasUnobstructedTopBarMapEntry(typeof(NCardRewardSelectionScreen)));
         Assert.True(NativeMapInformation.HasUnobstructedTopBarMapEntry(typeof(NDeckUpgradeSelectScreen)));
         Assert.True(NativeMapInformation.HasUnobstructedTopBarMapEntry(null));

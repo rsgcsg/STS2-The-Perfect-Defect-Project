@@ -205,7 +205,9 @@ public static partial class NativeCardPreviewReadQualification
                 || !BaseImplementation(card.GetType(), typeof(CardModel), "DeepCloneFields")
                 || !BaseImplementation(card.GetType(), typeof(CardModel), "AfterCloned")
                 || !BaseImplementation(card.GetType(), typeof(CardModel), "get_CanonicalEnergyCost")
-                || !BaseImplementation(card.GetType(), typeof(CardModel), "get_HasEnergyCostX")) return false;
+                // Native X-cost cards override this display fact. Reuse the
+                // exact-game effective-getter qualification used by rendering.
+                || !NativeRenderMethod(card.GetType().GetMethod("get_HasEnergyCostX", NativeMembers))) return false;
             if (!CopiedDelegatesQualified(card) || !AttachmentCopyQualified(card))
             { gap = "native_preview_existing_attachment_copy_callbacks_unqualified"; return false; }
             if (Canonical?.GetValue(card) is not CardModel canonical || canonical.GetType() != card.GetType()

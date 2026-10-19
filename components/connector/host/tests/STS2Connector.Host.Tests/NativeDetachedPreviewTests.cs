@@ -84,6 +84,16 @@ public sealed class NativeDetachedPreviewTests
     [InlineData(typeof(PerfectedStrike))]
     [InlineData(typeof(Stack))]
     [InlineData(typeof(Darkness))]
+    [InlineData(typeof(Cascade))]
+    [InlineData(typeof(Dirge))]
+    [InlineData(typeof(Eradicate))]
+    [InlineData(typeof(HeavenlyDrill))]
+    [InlineData(typeof(Malaise))]
+    [InlineData(typeof(MultiCast))]
+    [InlineData(typeof(Skewer))]
+    [InlineData(typeof(Tempest))]
+    [InlineData(typeof(Volley))]
+    [InlineData(typeof(Whirlwind))]
     public void RealNativeUpgradeMatchesNativeCopyWithoutChangingOriginal(Type type)
     {
         CardModel original = Mutable(type);
@@ -101,6 +111,23 @@ public sealed class NativeDetachedPreviewTests
             Assert.Same(result.Display, Field(typeof(DynamicVar), "_owner").GetValue(value));
         });
         Assert.All(original.DynamicVars.Values, value => Assert.Same(original, Field(typeof(DynamicVar), "_owner").GetValue(value)));
+    }
+
+    [Fact]
+    public void ExactNativeXCostOverridesAreConstantReadOnlyFactsAndPatchedGetterIsNotInvoked()
+    {
+        var overrides = typeof(CardModel).Assembly.GetTypes()
+            .Where(type => type.Namespace == "MegaCrit.Sts2.Core.Models.Cards" && type.IsSubclassOf(typeof(CardModel)))
+            .Select(type => type.GetMethod("get_HasEnergyCostX", Flags | BindingFlags.DeclaredOnly))
+            .OfType<MethodInfo>().OrderBy(method => method.DeclaringType!.Name, StringComparer.Ordinal).ToArray();
+        Assert.Equal(new[] { "Cascade", "Dirge", "Eradicate", "HeavenlyDrill", "Malaise", "MultiCast", "Skewer", "Tempest", "Volley", "Whirlwind" },
+            overrides.Select(method => method.DeclaringType!.Name));
+        Assert.All(overrides, method => Assert.Equal(new byte[] { 0x17, 0x2a }, method.GetMethodBody()!.GetILAsByteArray()));
+        CardModel original = Mutable<Tempest>();
+        using var patch = new Patched(typeof(Tempest).GetMethod("get_HasEnergyCostX", Flags)!);
+        Assert.False(NativeDetachedCardPreviewFactory.TryDeckUpgrade(original, out var result, out var gap));
+        Assert.Null(result); Assert.NotNull(gap); Assert.Equal(0, calls);
+        Assert.Equal(0, original.CurrentUpgradeLevel);
     }
 
     [Fact]
