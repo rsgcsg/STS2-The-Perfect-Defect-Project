@@ -49,6 +49,13 @@ internal sealed class HumanActionContext
 
     internal RecorderRuntime.NestedUiInput? NestedInput { get; set; }
     internal JsonObject? P1CaptureDiagnostics { get; set; }
+    internal object? UiInputOwner { get; set; }
+    internal string? UiInputOperation { get; set; }
+
+    internal ProcessLocalNativeMatch ResolveUiInput(ProcessLocalObservedAction observed) =>
+        UiInputOwner != null && UiInputOperation != null
+            ? Frame.ResolveObservedNativeInput(UiInputOwner, UiInputOperation, observed)
+            : Frame.Resolve(observed);
 
     internal bool NativeInputBinding { get; }
     internal string Origin { get; }

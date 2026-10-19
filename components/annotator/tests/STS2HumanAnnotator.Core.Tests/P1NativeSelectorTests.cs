@@ -9,6 +9,35 @@ namespace STS2HumanAnnotator.Mod;
 [Collection("P1 recorder runtime")]
 public sealed class P1NativeSelectorTests
 {
+    [Theory]
+    [InlineData("MerchantCardRemovalEntry.OnTryPurchaseWrapper")]
+    [InlineData("RestSiteSynchronizer.ChooseLocalOption")]
+    public void FalseParentIsCancelledOnlyWithExactAcceptedChildAndNormallyCompletedFalseTask(string kind)
+    {
+        var witness = new JsonObject { ["selector_owner_witness_id"] = "selector", ["parent_action_witness_id"] = "parent",
+            ["parent_owner_witness_id"] = "owner" };
+        var capture = new RecorderRuntime.P1SelectorCapture("child", "child-decision", "NativeSelector.Close.Released",
+            new("snapshot", new string('a', 64), 1, "basis"), new JsonObject { ["verb"] = "cancel" }, witness);
+        var proof = RecorderRuntime.P1ExplicitSelectorCancellation(capture, true, true);
+        Assert.NotNull(proof);
+        var completion = new NativePostCommitCompletion("session", 1, "completion", "family", kind, "task", false,
+            ActionWitnessId: "parent", NativeOperandWitnessId: "owner");
+        var task = new NativeTaskCompletion("session", 1, "completion", "task", false) {
+            NativeTaskStatus = "RanToCompletion", NativeBooleanResult = false };
+        Assert.Equal("cancelled", RecorderRuntime.P1UiCompletionPhase(completion, task, proof));
+        Assert.Equal("unknown", RecorderRuntime.P1UiCompletionPhase(completion, task, null));
+        Assert.Equal("unknown", RecorderRuntime.P1UiCompletionPhase(completion, task with { NativeTaskStatus = "Faulted" }, proof));
+        Assert.Equal("unknown", RecorderRuntime.P1UiCompletionPhase(completion, task with { NativeTaskStatus = "Canceled" }, proof));
+        Assert.Equal("unknown", RecorderRuntime.P1UiCompletionPhase(completion, task with { NativeBooleanResult = null }, proof));
+        Assert.Equal("unknown", RecorderRuntime.P1UiCompletionPhase(completion with { ActionWitnessId = "other" }, task, proof));
+        Assert.Equal("unknown", RecorderRuntime.P1UiCompletionPhase(completion with { NativeOperandWitnessId = "other" }, task, proof));
+        Assert.Equal("finished", RecorderRuntime.P1UiCompletionPhase(completion with { Succeeded = true },
+            task with { Succeeded = true, NativeBooleanResult = true }, null));
+        Assert.Null(RecorderRuntime.P1ExplicitSelectorCancellation(capture, true, false));
+        Assert.Null(RecorderRuntime.P1ExplicitSelectorCancellation(capture, false, true));
+        Assert.Null(RecorderRuntime.P1ExplicitSelectorCancellation(capture with { BoundAction = new JsonObject { ["verb"] = "select" } }, true, true));
+    }
+
     [Fact]
     public void ProductionSelectorSinkPreservesOriginalHAndExactNativeReceiptWithoutLegacyParentDecision()
     {

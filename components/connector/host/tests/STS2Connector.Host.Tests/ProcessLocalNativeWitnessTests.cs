@@ -216,6 +216,26 @@ public sealed class ProcessLocalNativeWitnessTests
     }
 
     [Fact]
+    public void PotionDiscardUsesExactPopupOperationWhenPublicVerbAndPotionAreShared()
+    {
+        object popup = new(), potion = new();
+        var entities = new NativeEntityRegistry();
+        string potionId = entities.GetId(potion, "potion");
+        var actions = new[] { Action("use", "activate", potionId), Action("discard", "activate", potionId) };
+        var frame = Frame(entities, actions, "interactive", "complete", new[] {
+            new ProcessLocalNativeInputBinding("use", "choose_potion_use", new[] { popup }, new[] { potion }),
+            new ProcessLocalNativeInputBinding("discard", "discard_potion", new[] { popup }, new[] { potion }) });
+        var observed = new ProcessLocalObservedAction("activate", potion, new Dictionary<string, object>());
+        Assert.Equal("ambiguous", frame.Resolve(observed).Status);
+        Assert.Equal("discard", frame.ResolveObservedNativeInput(popup, "discard_potion", observed).BoundActionId);
+        Assert.Null(frame.ResolveObservedNativeInput(new object(), "discard_potion", observed).BoundActionId);
+        Assert.Null(frame.ResolveObservedNativeInput(popup, "discard_potion", observed with { Subject = new object() }).BoundActionId);
+        Assert.Null(frame.ResolveObservedNativeInput(popup, "discard_potion", observed with { Verb = "select" }).BoundActionId);
+        Assert.Null(frame.ResolveObservedNativeInput(popup, "discard_potion", observed with {
+            Arguments = new Dictionary<string, object> { ["target"] = potion } }).BoundActionId);
+    }
+
+    [Fact]
     public void NativeInputRejectsAmbiguityAndIncompleteCatalog()
     {
         var owner = new object();

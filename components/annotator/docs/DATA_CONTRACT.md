@@ -524,6 +524,22 @@ increase accepted counts or supply a canonical result by themselves. The P1
 consumer owns derived decisions and coverage accounting, and a new Human canary
 plus strict Managed replay remains separate from source/fixture validation.
 
+Potion-popup discard correlates the exact popup owner and `discard_potion`
+operation as well as the frozen public verb and operands. Use and discard can
+both be public `activate` inputs for the same potion; neither labels nor the
+first matching candidate can distinguish them.
+
+New direct-UI task completions retain `native_task_status` and the normally
+completed task's nullable `native_bool_result`. A false result alone remains
+unknown. For Smith or merchant card removal, an exact accepted terminal Cancel
+from that parent's bound selector is retained as `explicit_selector_cancel`,
+including child, screen and parent identities. Only this proof together with a
+normally completed false Task records the parent as `cancelled`. Faulted,
+Task-cancelled, unbound or unsupported completions stay unknown. This does not
+rewrite old unknown records. The offline consumer still needs complete original
+before/selector/after information and an equal full public state; cancellation
+creates no successful label and does not itself establish replay continuity.
+
 ## Queued execution catalog phase
 
 A `game_action` or an action with `native_queue_id` requires its execution

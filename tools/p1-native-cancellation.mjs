@@ -66,17 +66,29 @@ export function classifyNativeCancellation({ accepted, execution, terminal, huma
   return { receipt, checkpoint, expected_source_issues: expectedSourceIssues };
 }
 
-/** User-approved interpretation of the exact Smith -> empty selector Cancel span.
- * Preserve the parent's raw unknown; independent native child witnesses and a
- * whole-public-state comparison explain cancellation, never successful Smith. */
+/** Preserve the approved legacy Smith explanation. New recording cancellations
+ * must carry their own normally-completed false Task and exact child receipt;
+ * an old merchant unknown cannot acquire those facts from this adapter. */
 export function classifyNativeSelectorCancellation({ row, child, restored, terminalById, basis, state, core }) {
   const parentEnd = terminalById.get(row.decision_id), childEnd = terminalById.get(child?.decision_id);
   const parentCompletion = parentEnd?.native_completion;
-  const callback = 'MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NDeckUpgradeSelectScreen.Close.Released';
-  if (row.native_action_type !== 'RestSiteSynchronizer.ChooseLocalOption'
+  const smith = row.native_action_type === 'RestSiteSynchronizer.ChooseLocalOption';
+  const merchant = row.native_action_type === 'MerchantCardRemovalEntry.OnTryPurchaseWrapper';
+  const callback = 'MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.'
+    + (smith ? 'NDeckUpgradeSelectScreen' : 'NDeckCardSelectScreen') + '.Close.Released';
+  const proof = parentCompletion?.explicit_selector_cancel;
+  const explicit = parentEnd?.phase === 'cancelled' && parentCompletion?.native_task_status === 'RanToCompletion'
+    && parentCompletion.native_bool_result === false && proof?.native_callback === callback
+    && proof.terminal === true && proof.native_acceptance_proven === true
+    && proof.child_decision_id === child?.decision_id && proof.child_action_witness_id === child?.action_witness_id
+    && proof.parent_action_witness_id === row.action_witness_id
+    && proof.parent_owner_witness_id === parentCompletion.native_operand_witness_id
+    && typeof proof.selector_owner_witness_id === 'string' && proof.selector_owner_witness_id.length > 0
+    && proof.selector_owner_witness_id === child?.native_witness?.selector_owner_witness_id;
+  if ((!smith && !merchant) || !(explicit || (smith && parentEnd?.phase === 'unknown'))
     || row.native_receipt?.kind !== 'semantic_ui_accepted' || row.native_receipt.carrier_ref !== row.action_witness_id
-    || row.bound_action?.verb !== 'activate' || row.missing_reason != null || !row.basis
-    || parentEnd?.phase !== 'unknown' || parentCompletion?.family !== 'rest_site'
+    || row.bound_action?.verb !== (smith ? 'activate' : 'open') || row.missing_reason != null || !row.basis
+    || parentCompletion?.family !== (smith ? 'rest_site' : 'shop_inventory')
     || parentCompletion.kind !== row.native_action_type || parentCompletion.succeeded !== false
     || parentCompletion.action_witness_id !== row.action_witness_id
     || typeof parentCompletion.task_witness_id !== 'string' || parentCompletion.task_witness_id.length === 0
@@ -97,9 +109,11 @@ export function classifyNativeSelectorCancellation({ row, child, restored, termi
   const before = basis(row.basis), middle = basis(child.basis), after = basis(restored.basis);
   if (![before, middle, after].every(value => completeInformation(value))) return null;
   const first = before.snapshot.interaction.content.surface, selector = middle.snapshot.interaction.content.surface;
-  if (first.kind !== 'rest_site' || !first.options?.some(option => option.option_id === 'SMITH'
+  if (smith ? first.kind !== 'rest_site' || !first.options?.some(option => option.option_id === 'SMITH'
       && option.entity_id === row.bound_action.subject_referent_id && option.enabled === true)
-    || selector.kind !== 'deck_upgrade_selection' || selector.stage !== 'selecting'
+    : first.kind !== 'shop_inventory' || first.card_removal?.entity_id !== row.bound_action.subject_referent_id)
+    return null;
+  if (selector.kind !== (smith ? 'deck_upgrade_selection' : 'native_deck_card_selection') || selector.stage !== 'selecting'
     || !Array.isArray(selector.selected_card_entity_ids) || selector.selected_card_entity_ids.length !== 0
     || !selector.current_controls?.some(control => control.entity_id === child.bound_action.subject_referent_id
       && control.operation === 'cancel_selection')
@@ -114,7 +128,8 @@ export function classifyNativeSelectorCancellation({ row, child, restored, termi
     receipt: { decision_id: row.decision_id, decision_ids: [row.decision_id, child.decision_id],
       action_witness_id: row.action_witness_id, source_event_id: parentEnd.event_id,
       terminal_sequence: parentEnd.sequence, disposition: 'cancelled', phase: 'cancelled_semantic_selector',
-      kind: 'rest_smith_cancel', reason: 'exact_native_child_cancel_and_equal_public_originals', successful_label: false,
+      kind: smith ? 'rest_smith_cancel' : 'merchant_removal_cancel',
+      reason: 'exact_native_child_cancel_and_equal_public_originals', successful_label: false,
       original_parent_terminal: { event_id: parentEnd.event_id, phase: parentEnd.phase, native_completion: parentCompletion },
       native_child_terminal: { event_id: childEnd.event_id, action_witness_id: child.action_witness_id,
         native_completion: childEnd.native_completion }, comparison, continuity: 'requires_strict_managed_comparison' } };

@@ -9,7 +9,11 @@ namespace STS2HumanAnnotator.Mod;
 
 internal static partial class RecorderRuntime
 {
-    private static readonly Dictionary<string, (string Decision, string Run, string NativeType)> P1UiPending = new(StringComparer.Ordinal);
+    private sealed record P1UiPendingInput(string Decision, string Run, string NativeType)
+    {
+        internal JsonObject? SelectorCancellation { get; set; }
+    }
+    private static readonly Dictionary<string, P1UiPendingInput> P1UiPending = new(StringComparer.Ordinal);
     internal static bool IsP1NativeProfile => IsP1Recording;
     internal static bool ShouldObserveBossRelicCommit => !IsP1Recording
         || P1UiPending.Values.Any(value => value.NativeType.StartsWith("NChooseARelicSelection.", StringComparison.Ordinal))
@@ -124,7 +128,7 @@ internal static partial class RecorderRuntime
         {
             string id = originalRoot ?? context?.ActionWitnessId ?? $"unbound-ui-{Guid.NewGuid():N}";
             string decision = $"p1-decision-{Guid.NewGuid():N}";
-            var match = context?.Frame.Resolve(observed);
+            var match = context?.ResolveUiInput(observed);
             var basis = PersistP1Basis(context?.Frame);
             string? missing = context?.Frame.PublicBasis is { } original && P1NativeRecordingContract.CompleteBasis(original.Bytes)
                 ? null : "accepted_ui_original_p1_basis_incomplete";
@@ -141,7 +145,7 @@ internal static partial class RecorderRuntime
                 }, EvidenceJson.Options),
                 ["native_receipt"] = new JsonObject { ["kind"] = "semantic_ui_accepted", ["carrier_ref"] = id },
                 ["missing_reason"] = missing });
-            P1UiPending.Add(id, (decision, _currentRunId, nativeType));
+            P1UiPending.Add(id, new(decision, _currentRunId, nativeType));
             if (missing != null) P1Issue(missing, nativeType, witness);
             if (context?.ActionWitnessId == id && context.DeferredCarrierBindingFailure is { } carrierFailure)
             {

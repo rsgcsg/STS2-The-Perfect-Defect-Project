@@ -220,6 +220,16 @@ public sealed class ProcessLocalNativeWitnessFrame
             matches.Length == 1 ? matches[0] : null, "exact_native_owner_operation_and_frozen_host_binding", null);
     }
 
+    public ProcessLocalNativeMatch ResolveObservedNativeInput(
+        object owner, string operation, ProcessLocalObservedAction observed)
+    {
+        var exact = ResolveNativeInput(owner, operation, observed.Subject);
+        if (exact.BoundAction != null && Matches(exact.BoundAction, observed)) return exact;
+        return exact.BoundAction == null ? exact : new("zero", 0, null, null,
+            "exact_native_owner_operation_and_frozen_host_binding",
+            "The native callback's public verb or operands differ from the frozen binding.");
+    }
+
     private bool Matches(
         PlayerEnvironmentBoundAction action,
         ProcessLocalObservedAction observed)

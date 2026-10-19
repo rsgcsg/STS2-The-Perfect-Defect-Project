@@ -668,6 +668,67 @@ test('exact Smith selector cancellation keeps raw unknown, has zero labels, and 
   assert.equal(report.trajectory.points[0].continuity_checks.length, 2);
 });
 
+async function explicitMerchantCancellationExample() {
+  const fixture = await smithCancellationExample(), { source, before, middle, retain } = fixture;
+  const action = source.events[0].bound_action;
+  action.verb = 'open'; action.label = 'Choose a card to remove';
+  before.snapshot.bound_actions.actions = [structuredClone(action)];
+  Object.assign(before.snapshot.interaction, { kind: 'shop_inventory',
+    content_schema: 'sts2.player-environment/surface/shop_inventory-1', content: {
+      surface: { kind: 'shop_inventory', shop_session_entity_id: 'shop-session', cards: [], relics: [], potions: [],
+        card_removal: { entity_id: action.subject_referent_id, price: 75, stocked: true, can_purchase: true } },
+      context: { kind: 'shop', room_entity_id: 'shop-room' } } });
+  before.snapshot.referents[0].role = 'shop_entry';
+  const selector = middle.snapshot.interaction.content.surface;
+  selector.kind = middle.snapshot.interaction.kind = 'native_deck_card_selection';
+  middle.snapshot.interaction.content_schema = 'sts2.player-environment/surface/native_deck_card_selection-1';
+  selector.selector_request.family = 'deck_card';
+  for (const option of selector.preview_options) {
+    option.after = null; option.after_availability = 'not_applicable'; option.display_context = 'native_deck_card_before';
+  }
+  const [parent, child, childEnd, parentEnd, next, nextEnd] = source.events;
+  parent.native_action_type = 'MerchantCardRemovalEntry.OnTryPurchaseWrapper'; parent.basis = retain(before);
+  child.native_action_type = child.native_receipt.selector_callback.native_callback
+    = childEnd.native_completion.native_callback = 'MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NDeckCardSelectScreen.Close.Released';
+  child.native_witness.selector_owner_witness_id = 'exact-selector'; child.basis = retain(middle);
+  parentEnd.phase = 'cancelled';
+  Object.assign(parentEnd.native_completion, { kind: parent.native_action_type, family: 'shop_inventory',
+    native_task_status: 'RanToCompletion', native_bool_result: false,
+    explicit_selector_cancel: { ...structuredClone(child.native_witness), child_decision_id: child.decision_id,
+      child_action_witness_id: child.action_witness_id, native_callback: child.native_action_type,
+      native_acceptance_proven: true, terminal: true } });
+  childEnd.successor_basis = parentEnd.successor_basis = next.basis = nextEnd.successor_basis = retain(before);
+  next.bound_action = structuredClone(action);
+  return fixture;
+}
+
+test('new explicit merchant cancellation has zero labels and full original continuity checks', async () => {
+  const { source } = await explicitMerchantCancellationExample();
+  const report = convertNativeSemanticOriginals(source, sdk, core);
+  assert.equal(report.complete, true, JSON.stringify(report.blocking_issues));
+  assert.equal(report.accepted_accounting.native_cancelled, 2);
+  assert.equal(report.raw_unknown_count, 0);
+  assert.equal(report.native_cancellations[0].kind, 'merchant_removal_cancel');
+  assert.deepEqual(report.actions.slice(0, 2).map(a => a.choice_id), [null, null]);
+  assert.deepEqual(report.native_cancellations[0].continuity_checkpoints.map(c => c.boundary), ['before', 'after']);
+});
+
+for (const defect of ['old_unknown', 'faulted', 'missing_result', 'foreign_child', 'foreign_selector', 'missing_selector', 'missing_proof', 'changed_world'])
+  test(`merchant cancellation keeps ${defect} blocking`, async () => {
+    const { source, before, retain } = await explicitMerchantCancellationExample();
+    const end = source.events[3], proof = end.native_completion.explicit_selector_cancel;
+    if (defect === 'old_unknown') { end.phase = 'unknown'; delete end.native_completion.explicit_selector_cancel; }
+    if (defect === 'faulted') end.native_completion.native_task_status = 'Faulted';
+    if (defect === 'missing_result') delete end.native_completion.native_bool_result;
+    if (defect === 'foreign_child') proof.child_action_witness_id = 'foreign';
+    if (defect === 'foreign_selector') proof.selector_owner_witness_id = 'foreign';
+    if (defect === 'missing_selector') { delete proof.selector_owner_witness_id; delete source.events[1].native_witness.selector_owner_witness_id; }
+    if (defect === 'missing_proof') delete end.native_completion.explicit_selector_cancel;
+    if (defect === 'changed_world') { before.snapshot.persistent.content.player.gold--; source.events[4].basis = retain(before); }
+    const report = convertNativeSemanticOriginals(source, sdk, core);
+    assert.equal(report.native_cancellations.length, 0); assert.equal(report.complete, false);
+  });
+
 for (const defect of ['foreign_parent', 'foreign_operand', 'missing_child_completion', 'selected_card', 'false_without_cancel',
   'changed_public_fact', 'changed_read', 'changed_directory', 'different_session', 'other_unknown', 'foreign_bound', 'changed_operands'])
   test(`Smith cancellation does not forgive ${defect}`, async () => {

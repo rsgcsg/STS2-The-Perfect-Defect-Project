@@ -145,8 +145,12 @@ internal static partial class RecorderRuntime
                 if (!accepted || _store == null) return;
                 AppendP1SelectorAccepted(p1, new { native_callback = p1.Mechanism, terminal,
                     native_acceptance_proven = sourceAcceptanceProven });
-                P1UiPending.Add(p1.ActionWitnessId, (p1.DecisionId, _currentRunId, p1.Mechanism));
-                CompleteP1Ui(p1.ActionWitnessId, "finished", new { native_callback = p1.Mechanism, terminal });
+                P1UiPending.Add(p1.ActionWitnessId, new(p1.DecisionId, _currentRunId, p1.Mechanism));
+                bool recorded = CompleteP1Ui(p1.ActionWitnessId, "finished", new { native_callback = p1.Mechanism, terminal });
+                if (recorded && P1ExplicitSelectorCancellation(p1, terminal, sourceAcceptanceProven) is { } cancel
+                    && cancel["parent_action_witness_id"]?.GetValue<string>() is { } parentId
+                    && P1UiPending.TryGetValue(parentId, out var parent))
+                    parent.SelectorCancellation = cancel;
             }
             finally
             {

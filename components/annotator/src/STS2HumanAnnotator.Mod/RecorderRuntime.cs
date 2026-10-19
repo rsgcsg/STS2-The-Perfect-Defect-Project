@@ -1322,7 +1322,8 @@ internal static partial class RecorderRuntime
         ProcessLocalObservedAction? nativeSemanticSelection = null,
         object? nestedInputOwner = null,
         object? sourceOwner = null,
-        object? sourceControl = null)
+        object? sourceControl = null,
+        string? nativeInputOperation = null)
     {
         if (TryEnterSourceInputScope(nativeActionType, nativeActionType, sourceOwner ?? nestedInputOwner,
             observed, out var source, sourceControl: sourceControl)) return source;
@@ -1359,7 +1360,9 @@ internal static partial class RecorderRuntime
                     semanticSelection: nativeSemanticSelection ?? observed);
             RecorderEnvironmentIdentity environment = BuildEnvironment(frame);
             IReadOnlyList<string> blockers = SemanticWitnessBlockers(frame, environment);
-            ProcessLocalNativeMatch match = frame.Resolve(observed);
+            ProcessLocalNativeMatch match = sourceOwner != null && nativeInputOperation != null
+                ? frame.ResolveObservedNativeInput(sourceOwner, nativeInputOperation, observed)
+                : frame.Resolve(observed);
             if (blockers.Count > 0 || !IsExact(match))
             {
                 HumanActionScope.EnterDeferredFailure(
@@ -1418,6 +1421,8 @@ internal static partial class RecorderRuntime
                     completionExpectation,
                     nativeSemanticSelection: nativeSemanticSelection ?? observed);
                 HumanActionScope.Current!.NestedInput = nestedInput;
+                HumanActionScope.Current.UiInputOwner = sourceOwner;
+                HumanActionScope.Current.UiInputOperation = nativeInputOperation;
                 return new NativeUiScopeEntry(true, false, actionWitnessId);
             }
         }
@@ -1474,7 +1479,7 @@ internal static partial class RecorderRuntime
             return null;
         try
         {
-            return context.Frame.Resolve(observed);
+            return context.ResolveUiInput(observed);
         }
         catch
         {
@@ -3424,7 +3429,13 @@ internal static partial class RecorderRuntime
             registration.ActionWitnessId);
         if (IsP1Recording)
         {
-            if (CompleteP1Ui(registration.ActionWitnessId, completion.Succeeded ? "finished" : "unknown", evidence))
+            P1UiPending.TryGetValue(registration.ActionWitnessId, out var pending);
+            var original = (JsonObject)JsonSerializer.SerializeToNode(evidence, EvidenceJson.Options)!;
+            original["native_task_status"] = taskCompletion.NativeTaskStatus;
+            original["native_bool_result"] = taskCompletion.NativeBooleanResult;
+            original["explicit_selector_cancel"] = pending?.SelectorCancellation?.DeepClone();
+            if (CompleteP1Ui(registration.ActionWitnessId,
+                P1UiCompletionPhase(completion, taskCompletion, pending?.SelectorCancellation), original))
                 NativePostCommitCompletions.CommitTaskCompletion(taskCompletion);
             return;
         }
@@ -3845,7 +3856,12 @@ internal static partial class RecorderRuntime
                     generation,
                     $"native-completion-{Guid.NewGuid():N}",
                     taskWitnessId,
-                    succeeded(completed));
+                    succeeded(completed))
+                {
+                    NativeTaskStatus = completed.Status.ToString(),
+                    NativeBooleanResult = completed.Status == TaskStatus.RanToCompletion && completed is Task<bool> result
+                        ? result.Result : null
+                };
                 lock (Gate)
                 {
                     if (generation == _nativePostCommitGeneration

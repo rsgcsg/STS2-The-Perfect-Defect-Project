@@ -1611,7 +1611,8 @@ internal static class NativeRewardPotionDiscardPatch
                     new ProcessLocalObservedAction(
                         "activate",
                         potion,
-                        new Dictionary<string, object>(StringComparer.Ordinal)), sourceOwner: __instance),
+                        new Dictionary<string, object>(StringComparer.Ordinal)), sourceOwner: __instance,
+                    nativeInputOperation: "discard_potion"),
                 potion,
                 __instance);
         }
