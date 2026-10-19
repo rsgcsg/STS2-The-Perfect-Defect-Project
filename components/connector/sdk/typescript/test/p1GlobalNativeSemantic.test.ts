@@ -178,3 +178,16 @@ it("a public S binding never authorizes a different native subject or target", (
   native.arguments = { target: "another-target" };
   expect(matchNativeExecutionChoice(createSession("same", "reference"), basis, human, original).status).toBe("unmapped");
 });
+
+it("retains exact H native input when S has its own real public BoundAction", () => {
+  const { basis, accepted, execution } = executionExample();
+  const bound = (basis.snapshot as any).bound_actions.actions.find((item: any) => item.verb === accepted.native_input.verb
+    && item.subject_referent_id === accepted.native_input.subject_referent_id);
+  const original = { ...execution, native_input: null, bound_action: bound,
+    execution_action_space: { ...execution.execution_action_space, human_bound_action_id: bound.bound_action_id } };
+  const result = matchNativeExecutionChoice(createSession("same", "reference"), basis, accepted, original);
+  expect(result.status).toBe("matched");
+  expect(result.lowering?.first?.bound_action_id).toBe(bound.bound_action_id);
+  accepted.native_input.arguments = { target: "changed-target" };
+  expect(matchNativeExecutionChoice(createSession("same", "reference"), basis, accepted, original).status).toBe("unmapped");
+});

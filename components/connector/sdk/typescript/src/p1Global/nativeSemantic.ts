@@ -125,15 +125,20 @@ export function matchNativeExecutionChoice(state: P1SessionState, basis: P1Basis
   if (execution.bound_action) {
     const bound = execution.bound_action;
     const human = accepted.bound_action;
+    const native = accepted.native_input;
+    const sameHumanOperands = human
+      ? human.verb === bound.verb && (human.subject_referent_id ?? null) === (bound.subject_referent_id ?? null)
+        && canonicalJson([...human.arguments].sort((a, b) => a.role.localeCompare(b.role)))
+          === canonicalJson([...bound.arguments].sort((a, b) => a.role.localeCompare(b.role)))
+      : native != null && native.action_key === selected.key && native.verb === selected.verb
+        && (native.subject_referent_id ?? null) === (selected.subject_referent_id ?? null)
+        && canonicalJson(native.arguments) === canonicalJson(selected.arguments);
     // As in the native owner, presentation verbs may differ (travel/activate).
     // The declared binding must still name the exact S subject and all operands.
-    if (!human || execution.native_input != null || space.human_bound_action_id !== bound.bound_action_id
+    if (!sameHumanOperands || execution.native_input != null || space.human_bound_action_id !== bound.bound_action_id
         || (selected.subject_referent_id ?? null) !== (bound.subject_referent_id ?? null)
         || canonicalJson(selected.arguments) !== canonicalJson(Object.fromEntries(
-          bound.arguments.map(argument => [argument.role, argument.referent_id])))
-        || human.verb !== bound.verb || (human.subject_referent_id ?? null) !== (bound.subject_referent_id ?? null)
-        || canonicalJson([...human.arguments].sort((a, b) => a.role.localeCompare(b.role)))
-          !== canonicalJson([...bound.arguments].sort((a, b) => a.role.localeCompare(b.role))))
+          bound.arguments.map(argument => [argument.role, argument.referent_id]))))
       return result("unmapped", "execution_public_action_operands_changed");
     return matchNativeSemanticChoice(state, basis, { ...accepted, basis: execution.basis, bound_action: bound });
   }
