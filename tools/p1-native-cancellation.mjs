@@ -85,7 +85,9 @@ export function classifyNativeSelectorCancellation({ row, child, restored, termi
     && proof.parent_owner_witness_id === parentCompletion.native_operand_witness_id
     && typeof proof.selector_owner_witness_id === 'string' && proof.selector_owner_witness_id.length > 0
     && proof.selector_owner_witness_id === child?.native_witness?.selector_owner_witness_id;
-  if ((!smith && !merchant) || !(explicit || (smith && parentEnd?.phase === 'unknown'))
+  const legacySmith = smith && parentEnd?.phase === 'unknown' && parentCompletion != null
+    && ['native_task_status', 'native_bool_result', 'explicit_selector_cancel'].every(key => !Object.hasOwn(parentCompletion, key));
+  if ((!smith && !merchant) || !(explicit || legacySmith)
     || row.native_receipt?.kind !== 'semantic_ui_accepted' || row.native_receipt.carrier_ref !== row.action_witness_id
     || row.bound_action?.verb !== (smith ? 'activate' : 'open') || row.missing_reason != null || !row.basis
     || parentCompletion?.family !== (smith ? 'rest_site' : 'shop_inventory')

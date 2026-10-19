@@ -129,8 +129,9 @@ internal static partial class RecorderRuntime
             string id = originalRoot ?? context?.ActionWitnessId ?? $"unbound-ui-{Guid.NewGuid():N}";
             string decision = $"p1-decision-{Guid.NewGuid():N}";
             var match = context?.ResolveUiInput(observed);
-            var basis = PersistP1Basis(context?.Frame);
-            string? missing = context?.Frame.PublicBasis is { } original && P1NativeRecordingContract.CompleteBasis(original.Bytes)
+            var frame = context?.Frame ?? captureFailure?.OriginalP1Frame;
+            var basis = PersistP1Basis(frame);
+            string? missing = frame?.PublicBasis is { } original && P1NativeRecordingContract.CompleteBasis(original.Bytes)
                 ? null : "accepted_ui_original_p1_basis_incomplete";
             if (match?.BoundAction == null || match.MatchCount != 1 || match.Status != "exact_unique")
                 missing ??= "accepted_ui_original_bound_action_unproven";

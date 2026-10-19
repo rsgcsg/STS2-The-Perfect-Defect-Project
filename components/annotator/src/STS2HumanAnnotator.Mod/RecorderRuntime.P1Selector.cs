@@ -29,8 +29,16 @@ internal static partial class RecorderRuntime
         NativeTaskCompletion task, JsonObject? cancellation)
     {
         if (completion.Succeeded) return "finished";
+        string? callback = completion.Kind switch {
+            "RestSiteSynchronizer.ChooseLocalOption" =>
+                "MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NDeckUpgradeSelectScreen.Close.Released",
+            "MerchantCardRemovalEntry.OnTryPurchaseWrapper" =>
+                "MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NDeckCardSelectScreen.Close.Released",
+            _ => null
+        };
         return completion.Kind is "MerchantCardRemovalEntry.OnTryPurchaseWrapper" or "RestSiteSynchronizer.ChooseLocalOption"
             && task.NativeTaskStatus == "RanToCompletion" && task.NativeBooleanResult == false
+            && cancellation?["native_callback"]?.GetValue<string>() == callback
             && cancellation?["parent_action_witness_id"]?.GetValue<string>() == completion.ActionWitnessId
             && cancellation?["parent_owner_witness_id"]?.GetValue<string>() == completion.NativeOperandWitnessId
             && cancellation?["native_acceptance_proven"]?.GetValue<bool>() == true

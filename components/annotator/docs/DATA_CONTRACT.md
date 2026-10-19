@@ -528,6 +528,9 @@ Potion-popup discard correlates the exact popup owner and `discard_potion`
 operation as well as the frozen public verb and operands. Use and discard can
 both be public `activate` inputs for the same potion; neither labels nor the
 first matching candidate can distinguish them.
+If that exact prefix already captured PB but input correlation fails, retain
+that same PB with the failed admission. The binding remains unproven and the
+issue remains blocking; no later frame supplies the missing evidence.
 
 New direct-UI task completions retain `native_task_status` and the normally
 completed task's nullable `native_bool_result`. A false result alone remains

@@ -668,6 +668,16 @@ test('exact Smith selector cancellation keeps raw unknown, has zero labels, and 
   assert.equal(report.trajectory.points[0].continuity_checks.length, 2);
 });
 
+for (const status of ['Faulted', 'Canceled', 'RanToCompletion', null])
+  test(`new Smith ${status} unknown is not the legacy cancellation exception`, async () => {
+    const { source } = await smithCancellationExample();
+    Object.assign(source.events[3].native_completion, { native_task_status: status, native_bool_result: null,
+      explicit_selector_cancel: null });
+    const report = convertNativeSemanticOriginals(source, sdk, core);
+    assert.equal(report.complete, false); assert.equal(report.native_cancellations.length, 0);
+    assert.ok(report.blocking_issues.some(issue => issue.reason === 'accepted_action_unknown'));
+  });
+
 async function explicitMerchantCancellationExample() {
   const fixture = await smithCancellationExample(), { source, before, middle, retain } = fixture;
   const action = source.events[0].bound_action;

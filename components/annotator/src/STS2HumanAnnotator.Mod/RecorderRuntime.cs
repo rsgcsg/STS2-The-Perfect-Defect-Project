@@ -1371,7 +1371,7 @@ internal static partial class RecorderRuntime
                     string.Join(",", blockers.Concat(new[] { match.Status }).Distinct(StringComparer.Ordinal))
                         + $";interaction={frame.Snapshot.Interaction.Kind};status={frame.Snapshot.Status};candidates={frame.Snapshot.BoundActions.TotalCount}",
                     frame.Snapshot.SnapshotId,
-                    "fail_closed");
+                    "fail_closed", originalP1Frame: IsP1Recording ? frame : null);
                 return new NativeUiScopeEntry(false, true);
             }
             NestedUiInput? nestedInput = ResolveNestedUiInput(nestedInputOwner);

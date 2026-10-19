@@ -16,7 +16,9 @@ public sealed class P1NativeSelectorTests
     {
         var witness = new JsonObject { ["selector_owner_witness_id"] = "selector", ["parent_action_witness_id"] = "parent",
             ["parent_owner_witness_id"] = "owner" };
-        var capture = new RecorderRuntime.P1SelectorCapture("child", "child-decision", "NativeSelector.Close.Released",
+        string callback = "MegaCrit.Sts2.Core.Nodes.Screens.CardSelection."
+            + (kind == "RestSiteSynchronizer.ChooseLocalOption" ? "NDeckUpgradeSelectScreen" : "NDeckCardSelectScreen") + ".Close.Released";
+        var capture = new RecorderRuntime.P1SelectorCapture("child", "child-decision", callback,
             new("snapshot", new string('a', 64), 1, "basis"), new JsonObject { ["verb"] = "cancel" }, witness);
         var proof = RecorderRuntime.P1ExplicitSelectorCancellation(capture, true, true);
         Assert.NotNull(proof);
@@ -31,6 +33,11 @@ public sealed class P1NativeSelectorTests
         Assert.Equal("unknown", RecorderRuntime.P1UiCompletionPhase(completion, task with { NativeBooleanResult = null }, proof));
         Assert.Equal("unknown", RecorderRuntime.P1UiCompletionPhase(completion with { ActionWitnessId = "other" }, task, proof));
         Assert.Equal("unknown", RecorderRuntime.P1UiCompletionPhase(completion with { NativeOperandWitnessId = "other" }, task, proof));
+        var foreignCallback = (JsonObject)proof.DeepClone();
+        foreignCallback["native_callback"] = callback.Contains("NDeckUpgradeSelectScreen")
+            ? callback.Replace("NDeckUpgradeSelectScreen", "NDeckCardSelectScreen")
+            : callback.Replace("NDeckCardSelectScreen", "NDeckUpgradeSelectScreen");
+        Assert.Equal("unknown", RecorderRuntime.P1UiCompletionPhase(completion, task, foreignCallback));
         Assert.Equal("finished", RecorderRuntime.P1UiCompletionPhase(completion with { Succeeded = true },
             task with { Succeeded = true, NativeBooleanResult = true }, null));
         Assert.Null(RecorderRuntime.P1ExplicitSelectorCancellation(capture, true, false));

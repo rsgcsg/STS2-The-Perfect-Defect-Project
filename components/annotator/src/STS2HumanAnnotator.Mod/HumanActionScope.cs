@@ -132,6 +132,8 @@ internal sealed class DeferredHumanActionFailure
 
     internal NativeUiAttemptOutcome? NativeAttemptOutcome { get; set; }
 
+    internal ProcessLocalNativeWitnessFrame? OriginalP1Frame { get; init; }
+
     internal bool TryClaim(string nativeActionType) =>
         _rootActionGate.TryClaim(nativeActionType);
 }
@@ -189,7 +191,8 @@ internal static class HumanActionScope
         string detail,
         string? snapshotId,
         string evidenceLevel,
-        HumanActionOccurrenceEvidence? occurrence = null)
+        HumanActionOccurrenceEvidence? occurrence = null,
+        ProcessLocalNativeWitnessFrame? originalP1Frame = null)
     {
         _deferredFailures ??= new Stack<DeferredHumanActionFailure>();
         _deferredFailures.Push(new DeferredHumanActionFailure(
@@ -198,7 +201,7 @@ internal static class HumanActionScope
             detail,
             snapshotId,
             evidenceLevel,
-            occurrence));
+            occurrence) { OriginalP1Frame = originalP1Frame });
     }
 
     internal static void ExitDeferredFailure()
