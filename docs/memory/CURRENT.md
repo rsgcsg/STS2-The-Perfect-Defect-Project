@@ -1,10 +1,11 @@
-# 当前工作：自测07已封包；卡包地图与X费用升级预览已修，待新构建验证
+# 当前工作：自测07保留失败；三处修复完成，待新候选针对性原生验证
 
 更新于2026-10-19。本页是仓库导航；唯一现场状态是工作区固定文件
 `work/P1-SEMANTIC-ACTIVE-20261019.md`，唯一主报告是`work/P1-QUEUED-INPUT-REPORT-20261019.md`。
 总11行进度位于`outputs/P1-round19-progress-2026-10-18.md`并镜像共享replies；四项文档收敛见
 `work/CONVERGENCE-PREFREEZE-REPORT-20261019.md`。这些是工作区路径，旧worker恢复卡不派发当前任务。
 恢复前核当前分支、脏改、agent、Game/Recorder/Managed进程，不重复启动或复活旧PTY。
+Resolve live GitHub refs; current source and original evidence override this file.
 
 ## 当前结果与下一步
 
@@ -17,13 +18,18 @@
 用户新批准限定修③④两处信息供给，源码3b512a5d已完成：card_bundle_selection沿既有topbar地图入口；
 升级预览复用exact-game effective native getter资格，修Tempest原生X费用override被误拒绝。
 同类10X卡已查全，实际原生复制/升级对照、原件不变、patched getter未调用反例均通过。
-75项定向、Host968项、非作者复核通过；Connector完整检查进行中。新修复尚未构建安装/原生页面实测。
-当前安装仍bf31/MVIDefaf04f5，来自clean b7d8833c；没有Game、录制或Managed进程。
+75项定向、Host968项、Connector完整检查、GameMod92项及非作者复核通过。
+两处信息修复已从clean ac388正式构建安装3b6d/MVID024665，尚未冷加载或原生页面实测。
 
-Drowning Beacon的Bottle药水回调还存在一次unbound来源。原生OfferCustom确在事件内，
-但原件没有该回调的H，不能猜成自动、删除unknown或补造完成。root已问用户是手动领取还是自动到账；
-同时沿成熟Human作用域/原生Task关联核查，未另造tracker或执行通路。不要在该原因未明时盲目再录同一整段。
-下一步完成新信息修复的官方构建及候选身份核对，原生验证只按真实已验证范围报告。
+用户已明确回答“我手动点了药水领取”。⑤的源码反例已复现：P1奖励输入误查未写入的旧canonical
+父决策表，在注册自己的完成root之前抛错。9ff6af56按selector现有做法隔离旧tracker依赖；
+同刻完整PB1/all Reads、exact动作、独立root/operand及真实Task完成要求均保留。
+无scope时只附记匹配native type的capture_failure真实原因，不补basis、绑定或完成。
+旧产物实际方法复现异常，候选实际方法不再异常且旧格式仍拒绝缺parent；另两例验证原失败细节
+保留、不同callback不误附，缺basis/绑定及无finished均未升格。Annotator437项及分析检查通过，
+非作者限定复核无阻塞。该源码尚未官方构建安装；不能用进程内probe替实际领取/派生/Managed。
+当前无Game、录制或Managed进程。下一步正式构建安装稳定候选，再对三处做针对性原生验证。
+旧07 unknown、原件与FAIL不变，不能猜成自动或补造成功；不要求用户盲目重录同一候选。
 
 ## 已批准的链路与资格
 
