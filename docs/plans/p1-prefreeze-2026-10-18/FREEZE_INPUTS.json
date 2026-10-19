@@ -1,7 +1,7 @@
 {
   "scope": "Round19 documentation synthesis, not an approval or a new identity registry. Paths/hashes bind the actual draft inputs and relative-link snapshots.",
-  "source_baseline": "c5bf7bd7f5c0d9fcba8a0325c3ef47eef89924d5",
-  "source_tree": "b678dc35c503a9887eb5dd8abc13c95074962696",
+  "source_baseline": "dabe32842035a1614c4da2cbdc765ef5281ec7fa",
+  "source_tree": "1b00c9986fc04c0b70360c2ade11363d2f8bdcaa",
   "files": [
     {
       "source": "/Users/fire/Documents/Codex/2026-10-17/a-t7-runtime-connector-status-settling/work/p1-K6-20261018/K6-workbench-position.md",
@@ -26,11 +26,11 @@
     },
     {
       "source": "/Users/fire/Desktop/SpireAgentProject/claude-handoff-2026-10-13/P1_r1_SUPPORT_SCOPE_v0.3_2026-10-18.zh-CN.md",
-      "bytes": 51545,
-      "sha256": "61b48df0603447aff60bfb0ce037431532c13dd266b91ad3291a336ee006cd8f",
+      "bytes": 53405,
+      "sha256": "06c28e9b6d975272ecef30ddfe39b0a378d9e5341aec163109e37cd56463af0e",
       "repository_snapshot": "SCOPE_v0.3.zh-CN.md",
-      "repository_sha256": "5c0e3d91c0231a89484f7778c776da8e944e2c3e304c92a6cd60a6edff452ac5",
-      "role": "current canonical synchronized with approved execution-boundary repository definition; prior canonical input preserved in listed backup"
+      "repository_sha256": "6f1f884ef255d21f7eae0d0d11ff38db293136961d2aa44348c25175adc5188b",
+      "role": "canonical synchronized with user-approved cancellation and execution-boundary definitions; no runtime qualification transfer"
     },
     {
       "source": "/Users/fire/Documents/Codex/2026-10-17/a-t7-runtime-connector-status-settling/work/p1-K2-20261018/round19/scope-replies-before-merge.md",

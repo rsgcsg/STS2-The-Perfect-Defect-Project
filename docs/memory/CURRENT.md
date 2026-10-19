@@ -36,8 +36,10 @@ SDK543/SourceNative70/surface38/adapter39、实际Modcompile与独立review通�
 artifact bf31b3b8/MVIDefaf04f5，doctor及回滚备份核对；尚未冷加载/新自测。当前无Game/Recorder/Managed。
 历史aa03c84d/80d2a776/8f66bc93/f5b6079f，以及9-13(413/412/1cancel)、9-17(17/15/2cancel)已直接核。
 旧机制复用，旧资格不转移；用户提到的约两万数据没有本轮全量重审，已核37archive/14313选样的旧报告范围。
-已向用户给具体待选：复用历史取消分流，保raw/issue且不作成功label，允许成功序列严格比较；或维持任何cancel
-阻断整段。该⑥P1派生范围修改先等用户定，未改complete或滤旧数据制造PASS；未知/缺信息/绑定错误仍阻断。
+用户已明确批准历史取消分流：保raw/disposition/issue，不成功label、不补造决策；取消前后实际比较，
+成功P1逐点及最终后继严格Managed，unknown/缺信息/绑定错仍阻断。取消有解释、生命周期/连续性完整的
+自然整局可计正式，取消本身不算gap。实现dabe3284及Runtime7fa5439d已合，SDK547/readeradapter53/Runtime37及tsc/build通过；
+限定非作者审查已过，曾发现的before复用after缺陷已修成双原件实比；H不可比仍strict失败，实际新短测/严格Managed尚未过。旧06新解释78=47derived+17cancel+14gap，仍FAIL，原件不改。
 不要求盲目重录。普通运行默认instant，指定连点自测可normal，不复活旧PTY32600；主报告含历史核查附件。
 Source4停止新增投入/预检；原数据、分支和失败全部保留。自动GameAction不制造玩家标签。
 
@@ -78,8 +80,8 @@ candidate. Preserve gap originals; they do not count toward at least3 whole game
 A pre-gap segment may count mechanism coverage only if Reference correctness, offline
 verification and strict Managed replay all pass on that same occurrence.
 Only the user plays formal games. If unavailable or unable to find the entry, wait for
-formal play/required decisions while independent work continues. 用户现已睡觉，需要他的工作时诚实停止，不代录、不强推。
-本轮整轮累计上限2小时，从Oct19 02:57:56至04:57:56 Brisbane；当前提前触发信息缺失停止条件，只收尾既定文档。
+formal play/required decisions while independent work continues. 用户已恢复并完成自测06，新接线和取消分流稳定后再请用户操作短测；需要用户时等待，不代录。
+02:57轮的2小时时间盒仅为历史，本轮按用户已恢复工作继续普通修复及原检查点。
 
 Oct19 09:00 Brisbane is the core/self-test checkpoint. If missed, report blockers,
 remaining work/time, then continue ordinary authorized repairs; plan changes go to user.
