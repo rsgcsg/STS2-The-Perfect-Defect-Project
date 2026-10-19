@@ -47,7 +47,7 @@ internal static partial class RecorderRuntime
         SubmittedInputs.TryGet(action, out SubmittedHumanInput? submitted);
         HumanActionContext? context = submitted?.Context ?? HumanActionScope.Current;
         DeferredHumanActionFailure? failure = submitted?.Failure ?? HumanActionScope.CurrentDeferredFailure;
-        if (context == null && failure == null) return; // Native/internal actions are not manufactured player decisions.
+        if (context == null && failure == null) return;
         string type = action.GetType().Name;
         if (submitted != null && (submitted.SessionId != SessionId || submitted.TimelineId != TimelineId || submitted.RunId != _currentRunId))
         { P1Issue("submitted_human_input_session_mismatch", type); return; }
@@ -55,26 +55,40 @@ internal static partial class RecorderRuntime
         if (context == null && !failure!.TryClaim(type)) return;
         try
         {
-            ProcessLocalNativeMatch? match = null;
+            DateTimeOffset acceptedAt = DateTimeOffset.UtcNow;
+            ProcessLocalNativeMatch? match = null, nativeMatch = null;
             NativeWitnessEvidence? witness = null;
             string? error = failure?.ReasonCode;
             if (context != null && TryDescribeAction(action, context, out var observed, out witness,
-                out var reason, out _, out _)) match = context.Frame.Resolve(observed!);
+                out var reason, out _, out _))
+            {
+                if (context.ExpectedAction != null)
+                    nativeMatch = context.Frame.ResolveAcceptedInput(context.ExpectedAction, observed!);
+                match = context.NativeInputBinding ? nativeMatch : context.Frame.Resolve(observed!);
+            }
             else error ??= "accepted_native_action_mapping_unavailable";
             string id = NativeWitnessIdentity.Get(action, "game_action"), decision = $"p1-decision-{Guid.NewGuid():N}";
             var basis = PersistP1Basis(context?.Frame);
             bool complete = context?.Frame.PublicBasis is { } original && P1NativeRecordingContract.CompleteBasis(original.Bytes);
             if (!complete) error ??= "accepted_action_original_p1_basis_incomplete";
-            if (match?.BoundAction == null || match.MatchCount != 1 || match.Status != "exact_unique")
-                error ??= "accepted_action_original_bound_action_unproven";
+            if (match is not { MatchCount: 1 } || (match.BoundAction == null && match.NativeInput == null))
+                error ??= "accepted_action_original_input_unproven";
             var originalWitness = JsonSerializer.SerializeToNode(witness, EvidenceJson.Options);
             if (context?.P1CaptureDiagnostics is { } diagnostics && originalWitness is JsonObject witnessed)
                 witnessed["capture_diagnostics"] = diagnostics.DeepClone();
+            var input = new SemanticActionReference(id, 0, decision, _currentRunId, type, action.Id,
+                context?.Frame.Snapshot.SnapshotId ?? "unavailable") {
+                NativeWitness = witness,
+                Mapping = match == null ? null : new(match.Status, match.MatchCount, match.Evidence, match.Detail),
+                BoundAction = ToP1RecordedBoundAction(match?.BoundAction),
+                NativeInput = ToP1RecordedNativeInput(match?.NativeInput)
+            };
             _store!.AppendP1NativeEvent(new JsonObject { ["kind"] = "decision_accepted", ["run_id"] = _currentRunId,
                 ["decision_id"] = decision, ["action_witness_id"] = id, ["native_action_type"] = type,
-                ["native_queue_id"] = action.Id, ["native_mechanism"] = "game_action",
+                ["native_queue_id"] = action.Id, ["native_mechanism"] = "game_action", ["accepted_at"] = acceptedAt,
                 ["basis"] = JsonSerializer.SerializeToNode(basis, EvidenceJson.Options),
                 ["bound_action"] = JsonSerializer.SerializeToNode(match?.BoundAction, EvidenceJson.Options),
+                ["native_input"] = JsonSerializer.SerializeToNode(input.NativeInput, EvidenceJson.Options),
                 ["native_witness"] = originalWitness,
                 ["native_receipt"] = new JsonObject { ["kind"] = "game_action_accepted", ["carrier_ref"] = id },
                 ["missing_reason"] = error });
@@ -82,13 +96,15 @@ internal static partial class RecorderRuntime
             if (!NativeUiCompletionRootBindings.Remember(action, id))
                 P1Issue("accepted_native_parent_binding_conflict", type, new { action_witness_id = id });
             var subscription = new NativeActionLifecycleSubscription(action, id, 0, decision, match?.BoundActionId,
-                ObserveP1Lifecycle, nativeSemanticSelection: context?.ExpectedAction, semanticNativeActionType: type);
+                ObserveP1Lifecycle, nativeSemanticSelection: context?.NativeSemanticSelection ?? context?.ExpectedAction,
+                semanticNativeActionType: type, humanNativeActionKey: input.NativeInput?.ActionKey) {
+                P1Input = input, P1NativeInput = ToP1RecordedNativeInput(nativeMatch?.NativeInput), P1AcceptedAt = acceptedAt
+            };
             NativeActionSubscriptions.Add(action, subscription);
         }
         catch (Exception exception)
         {
-            _detail = exception.Message;
-            _runtimeState = "p1_native_recording_failed";
+            _detail = exception.Message; _runtimeState = "p1_native_recording_failed";
             NativeUiObservationSafety.Report("p1_native.accepted", exception);
             try { P1Issue("accepted_native_recording_failed:" + exception.GetType().Name, type); }
             catch { /* Store append health and durable Close failure remain explicit. */ }
@@ -177,7 +193,13 @@ internal static partial class RecorderRuntime
                 ["decision_id"] = subscription.RecordId, ["action_witness_id"] = subscription.ActionWitnessId,
                 ["phase"] = phase, ["successor_basis"] = JsonSerializer.SerializeToNode(successor, EvidenceJson.Options),
                 ["successor_missing_reason"] = missing });
-            if (terminal) { subscription.Dispose(); NativeActionSubscriptions.Remove(subscription.Action); }
+            if (terminal)
+            {
+                if (subscription.P1Input != null && !subscription.P1ExecutionCaptured)
+                    P1Issue("accepted_native_action_ended_before_execution", subscription.NativeActionType,
+                        new { action_witness_id = subscription.ActionWitnessId, phase });
+                subscription.Dispose(); NativeActionSubscriptions.Remove(subscription.Action);
+            }
         }
         catch (Exception exception)
         { _runtimeState = "p1_native_recording_failed"; _detail = exception.Message; NativeUiObservationSafety.Report("p1_native.lifecycle", exception); }

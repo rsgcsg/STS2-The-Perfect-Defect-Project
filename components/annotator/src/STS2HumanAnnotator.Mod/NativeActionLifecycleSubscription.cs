@@ -41,6 +41,11 @@ internal sealed class NativeActionLifecycleSubscription : IDisposable
 
     internal RecorderRuntime.NestedUiInput? NestedInput { get; init; }
 
+    internal SemanticActionReference? P1Input { get; init; }
+    internal RecordedNativeInput? P1NativeInput { get; init; }
+    internal DateTimeOffset P1AcceptedAt { get; init; }
+    internal bool P1ExecutionCaptured { get; set; }
+
     internal GameAction Action => _action;
     internal string ActionWitnessId { get; }
     internal long ActionSequence { get; }

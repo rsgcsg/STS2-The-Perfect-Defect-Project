@@ -11,6 +11,20 @@ namespace STS2Connector.Host.Tests;
 public sealed class ProcessLocalNativeWitnessTests
 {
     [Fact]
+    public void EndTurnNativeInputRequiresTheExactSubjectlessOperandlessShape()
+    {
+        var frame = Frame(new NativeEntityRegistry(), Array.Empty<PlayerEnvironmentBoundAction>(), "settling", "complete");
+        var expected = new ProcessLocalObservedAction("end_turn", null, new Dictionary<string, object>());
+        var exact = frame.ResolveAcceptedInput(expected, expected);
+        Assert.Equal("exact_native_input", exact.Status); Assert.Null(exact.NativeInput!.SubjectReferentId);
+        Assert.Equal("end_turn|-|", exact.NativeInput.ActionKey);
+        Assert.Equal("zero", frame.ResolveAcceptedInput(expected, expected with { Subject = new object() }).Status);
+        Assert.Equal("zero", frame.ResolveAcceptedInput(expected, expected with { Arguments = new Dictionary<string, object> { ["target"] = new object() } }).Status);
+        var badCard = expected with { Verb = "play" };
+        Assert.Equal("zero", frame.ResolveAcceptedInput(badCard, badCard).Status);
+    }
+
+    [Fact]
     public void QueuedPotionInputKeepsNativePotionIdentityWithNoPublicDeliveryCatalog()
     {
         var frame = Frame(new NativeEntityRegistry(), Array.Empty<PlayerEnvironmentBoundAction>(), "settling", "complete");

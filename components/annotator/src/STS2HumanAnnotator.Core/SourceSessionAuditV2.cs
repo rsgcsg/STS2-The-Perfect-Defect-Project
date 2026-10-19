@@ -25,7 +25,7 @@ public static class SourceSessionAuditV2
                 bool omittedManifestExtension = manifest && info.Type == typeof(CurrentRecordingManifest)
                     && property.Name is "decision_schema_version" or "disposition_schema_version" or "close_schema_version"
                         or "recovery_schema_version" or "continuous_schema_version" or "text_input_schema_version"
-                        or "p1_native_schema_version" or "p1_native_origin";
+                        or "p1_native_schema_version" or "p1_native_execution_schema_version" or "p1_native_origin";
                 bool omittedManifestGameFact = manifest && info.Type == typeof(ExactGameIdentity)
                     && property.Name is "version" or "commit";
                 property.IsRequired = !omittedManifestExtension && !omittedManifestGameFact;

@@ -485,6 +485,41 @@ this does not assert automatic origin. `unrecorded_human_effect_before_successor
 means an accepted but uncaptured Human input fenced a pending transition. No
 later frame may be projected as that transition's causal successor.
 
+## P1 native execution records
+
+New `human-p1-native-decisions-1` sessions declare
+`p1_native_execution_schema_version: 1` in their manifest. Existing recordings
+without this field retain their original admission-only meaning. The original
+`decision_accepted` event preserves H and exact native acceptance. A queued
+`game_action` additionally records one `execution` event at its first
+`BeforeActionExecuted` callback: its own complete PB1 and all advertised Reads,
+the mature native `execution-semantic-action-space-3` catalog, exact observed
+native key and all operands. H is provenance, never the execution decision state.
+
+The execution event binds `basis.snapshot_id`, `execution_snapshot_id`, and the
+native semantic capture's `ui_catalog.snapshot_id`. It contains either the
+current S's real `bound_action`, or `native_input`; a public delivery catalog
+may remain empty while the native execution catalog is complete. Subjectless,
+operandless `EndPlayerTurnAction` is an exact native input alongside Play/Use.
+`queued=true` means a real GameAction queue carrier; `queue_interval_ms` measures
+acceptance to its first execution callback. Direct synchronous UI decisions keep
+their original capture boundary. PlayerChoice resume is lifecycle evidence only.
+
+Visible queue NCards whose exact combat model remains in backend Hand retain
+current hand facts and complete `surface_card` Reads, including description,
+cost/enchantment, keywords/previews and `display_context=hand`. Their existing
+native holder-based action candidates and execution readiness guards are
+unchanged. No hidden/non-Hand queue card, deck base copy, cached H detail or
+name/index match supplies these facts. With no visible queue, the original hand
+observation and public action projection are unchanged.
+
+An accepted cancellation before execution has no invented execution S. Native
+cancellation, retarget/dead-target membership loss, partial PB or failed capture
+remain original lifecycle/events and explicit issues; execution records do not
+increase accepted counts or supply a canonical result by themselves. The P1
+consumer owns derived decisions and coverage accounting, and a new Human canary
+plus strict Managed replay remains separate from source/fixture validation.
+
 ## Queued execution catalog phase
 
 A `game_action` or an action with `native_queue_id` requires its execution
