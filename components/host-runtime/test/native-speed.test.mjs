@@ -75,6 +75,24 @@ test("Windows native path spelling normalizes without weakening profile identity
     preparedBinding: { ...response.response.native_speed, native_profile_id: 2 } }));
 });
 
+test("native UI speed changes retain the prepared run and actual preference", () => {
+  for (const requested of ["normal", "fast", "instant"]) {
+    const preparedBinding = requireNativeSpeedProvenance({ nativeSpeed: requested, launchProfile: profile,
+      runtimeInstanceId: "runtime-1", response: provenance(requested) });
+    for (const effective of ["normal", "fast", "instant"]) {
+      const observed = requireNativeSpeedProvenance({ nativeSpeed: requested, launchProfile: profile,
+        runtimeInstanceId: "runtime-1", response: provenance(requested, { effective }), preparedBinding });
+      assert.equal(observed.requested, requested);
+      assert.equal(observed.effective, effective);
+    }
+    for (const overrides of [{ effective: "unknown" }, { identity_key: "different-build" },
+      { profile_generation_id: "different-profile" }]) {
+      assert.throws(() => requireNativeSpeedProvenance({ nativeSpeed: requested, launchProfile: profile,
+        runtimeInstanceId: "runtime-1", response: provenance(requested, overrides), preparedBinding }));
+    }
+  }
+});
+
 test("preparation requires a separate observed getter match before bootstrap", async () => {
   for (const mode of ["normal", "fast", "instant"]) {
     const events = [];
