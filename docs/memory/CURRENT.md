@@ -42,7 +42,7 @@ SDK558项、类型检查与构建、相关reader/adapter/replay/Host/suite124项
 其余两局资产尚未齐，云资产覆盖仍1/3，不从存取成功推出训练资格。
 实际Mod仍9921819/MVID65682，原局源和已装产物身份未被JS离线修复改写。
 
-## 上层链路与后续边界
+## Remaining Platform non-claims（上层链路与后续边界）
 
 从[唯一链路和连接表](../plans/p1-prefreeze-2026-10-18/CHAIN_PURPOSES.md)及
 [P1协议](../protocols/P1_GLOBAL_R1.zh-CN.md)进入owner。P1是可替换profile；
