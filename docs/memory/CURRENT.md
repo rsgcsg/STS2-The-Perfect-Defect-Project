@@ -1,57 +1,56 @@
-# 当前工作：转幕修复与严格短段已验收，进入正式英文整局
+# 当前工作：首个正式英文胜利局已封包，整局派生完整
 
-更新于2026-10-19。本页是仓库导航；唯一现场状态是工作区固定文件
-`work/P1-SEMANTIC-ACTIVE-20261019.md`，主报告是`work/P1-QUEUED-INPUT-REPORT-20261019.md`。
+更新于2026-10-19。本页为仓库导航；唯一现场状态是工作区固定文件
+`work/P1-SEMANTIC-ACTIVE-20261019.md`，主报告为`work/P1-QUEUED-INPUT-REPORT-20261019.md`。
 总11行进度在`outputs/P1-round19-progress-2026-10-18.md`并镜像共享replies。
-恢复前先查准确Git、脏改、agent、Game/Recorder/Managed进程；旧worker快照不派发当前工作。
+恢复前检查准确Git、脏改、agent与进程；旧worker状态不派发当前任务。
 Resolve live GitHub refs; current source and original evidence override this file.
 
-## 已验证与当前差距
+## 当前实际结果
 
-工程自测10实际经过三幕，第三幕46层自然loss。1983个原件文件经生产reader全验，
-1970份PB1完整，691accepted的H均完整，477份执行原件；690finished、1unknown、pending0。
-Close/pack成功，但Host shutdown fetch failed且forced=true，退出诊断保留，不称native clean。
-自测声明agent_native_ui，不计正式Human局，正式仍0/3；原件和旧FAIL不改。
+用户正式英文第1局human-english-02自然胜利，三幕均有原件，第三幕48层。
+3149份不可变原件经生产reader全验；4022事件、1067accepted均有终结，pending为0。
+正常Close/pack，Host shutdown HTTP200、退出0、forced=false。原件、封包和旧失败保留。
+英文完整录制完成1/3；这项计数不授完整Managed等价、机制覆盖或训练资格。
 
-⑥已修奖励页/药水弹窗的既有discard映射，并按用户批准解释Human浏览：完整PB1/all Reads/目录
-前后逐项比较，只有相同owner且相等才presentation折叠，0label，Managed仍实比两侧。
-仅去掉各原件已验证的snapshot定位/sequence/观察时刻，保留所有目录、operands、Read实例和文本。
-用户另批准8次奖励打开→Skip的刷新订阅attached→absent为stop_relic_refresh同类已解释副作用例外，
-0label、comparison.equal仍false，真实差异和前后严格检查都保留；登记不授予整轨等价。
-Agent目前没有“冻结但保留该奖励组”的独立选择，用户已认可freeze_card_group覆盖方案但明确延后，当前只登记，不实施新在线动作。
-最终691=669成功派生+5纯presentation接受+16例外接受+1unknown；该unknown仍阻断整段trajectory。
-669只是当前adapter派生数量；后述A(S)漏类型已由实比发现，旧10不能宣称P1所需原件语义完整。
+全量P1派生完整：1067=1013成功派生+5明确取消+3纯presentation+46已解释副作用接受，
+未解释缺口、blocking和pending均0；980个P1选择及实际胜利终局，共981点。
+5取消包括3个原生game action取消及Smith→空选择器Cancel的2次接受，均0成功label。
+Smith父原unknown仍保留，仅按用户专门批准的精确父子动作/operand、真实子cancel完成、
+完整PB1/all Reads/catalog前后equal解释；raw_unknown=1、explained=1，其它unknown仍阻断。
+3136份PB1中3134 complete，2份非决策过渡partial原样保留，后续完整ready边界已有真实原件；
+不由后状态补早先S，也不把中间partial当作决策。whole_run_recording_complete=true。
 
-自测10连续前缀321绑定同一完整封包，90accepted/84个P1选择及最终后继，共85点，来源未改。
-实际Managed用同seed/同prepared progress运行：前30选择严格equal，第31点Reference执行A(S)
-少一项potion.discard，故停止；0unknown/taint/budget，Runtime replay verified不是语义通过。
-旧10的该S公开目录为空，不能从H或库存规则补造缺失执行目录，不要求用户重录整局。
+首战22选择及最终后继strict已通过。用同seed/同初始progress对最终完整轨迹重新实际Managed：
+连续56选择equal；index56奖励打开→Skip的before equal、after真实不等，
+native_relic_refresh_subscription为Reference absent/Managed attached。
+0运行unknown/taint/budget，Runtime replay verified仅证明trace，不是完整P1等价。
+没有绕过差异，尚未到后面的Smith取消实比；最终40+20与双Host R20仍未完成。
 
-⑤转幕主因是首个Vote Commit先finished、后ActEntered漏释放RunManager旧root，第二次exact
-Transfer失败，最终unknown。已沿9月8/10旧成熟Transfer/exact Take修复，持久证据后才释放，
-并及时消费精确scope accepted前的carrier失败为unknown。3生产helper回归、SourceNative73、
-Annotator437和限定非作者复核通过；旧10的unknown不能凭后来新幕画面回填。
+## 本轮源码与适用边界
 
-用户已追加限定批准③④process-local执行目录补齐：P1执行捕获复用现有原生discard provider、
-同一slot/当前控件资格；unknown绑定明确capture_failed，默认旧caller不变。
-⑥只解释真实A(S)已录discard，不由库存生成旧动作，不制造BoundAction。
-SDK553、Host968/定向34、Annotator437及限定非作者复核通过。新9921819产物已安装、doctor和11/12冷加载身份核过；11两份真实战斗执行目录均记录discard，限定供给修复得到实际证据。
-用户明确三速同语义、局内可切、默认instant；be91c229已正常merge，182+20源码证据保留。
+Managed卡牌预览递归保留原生star_cost:null；顶层表示不变。
+⑥复用原同实例reward intention分别核开页早期settling和实际ready子H；
+两个原件均完整、owner/cards/options/world/hover Reads对上才解释浏览，
+完整before/after比较保留；attached→absent仍为用户批准例外，0label。
+执行S/A(S)在显示另一药水popup时仍可有完整combat context与真实目录；
+归约器按实际执行目录映射原战斗动作，保留原popup、全部公开事实及精确operands。
+没有改变游戏规则、C#producer、在线动作或strict comparator。
 
-工程13已在同进程内实际完成两次转幕：同owner、独立lineage的接受及finished，后续原件map act_index按0→1→2，26raw/13PB全验、4accepted/4finished/0unknown/0issue，正常Close/pack/退出。console仅定位房间，不算正式局或覆盖。工程14无console正常开局，实际拿牌取消前后事件原字节相同、0label；Play、EndTurn和非出牌选择齐，29raw/16PB全验，5accepted/5finished/0issue/0unknown，正常Close/pack/退出。用户只协助最后Defend和EndTurn，仍是工程来源。Managed同实际seed和初始progress，连续5选择及最后后继全部严格equal，0taint/unknown/budget、Runtime replay verified。本轮修复验收通过；11/12失败保留，不修旧10原件。下一步按用户原安排直接正式英文整局，不额外设真人短段，首局开头优先导出原件核对。正式操作交用户。
-真实正在运行的进程及新安装身份只从现场入口和原回执核对，不从本页假设。
+SDK557全测/tsc/build、reader-adapter79、replay46、Host投影40及限定非作者复核通过；
+12份在线fixture完整输出逐字节不变。额外Host全Node测试有一项旧candidate源码资格差异，
+冻结基线也已复现，不称Host全套绿色。本轮修复已正常本地合入，未push/新PR。
+实际Mod仍9921819/MVID65682，原局源身份和已装产物未被这些JS离线修复改写。
 
-## Remaining Platform non-claims
+## Remaining Platform non-claims（下一步与非主张）
 
-从[唯一链路图](../plans/p1-prefreeze-2026-10-18/CHAIN_PURPOSES.md)及
+当前没有游戏、录制、Managed或离线转换在运行，不重启旧PTY、不重复pack。
+后续继续余下2局用户英文整局与原定覆盖/INFO、产品R20及最终40+20等验收；
+不要求重录已保存的首局。freeze_card_group依用户原话仍仅登记延后，
+本轮没有偷偷增加在线选择或把真实副作用差异抹平。
+
+从[唯一链路和连接表](../plans/p1-prefreeze-2026-10-18/CHAIN_PURPOSES.md)及
 [P1 §4.1](../protocols/P1_GLOBAL_R1.zh-CN.md#41-录制原件派生p1的requires用户已批准)进入owner。
-H只作来源，执行S/A(S)派生；queued存真实间隔，同snapshot PB1/all Reads/catalog不可少。
-public action/native input互斥，不制造BoundAction；resume不是新决策。
-原生取消、presentation、已解释副作用、unknown、缺信息、绑定错分别核算，不混成成功label。
-有解释且生命周期与连续性完整的取消不作gap；任何处置都不自动授Human或训练资格。
-
-开录门仍需真实Play、未提交拿牌取消0label、EndTurn及其它非出牌选择，原件/离线/严格Managed均过。
-通过后直接用户正式英文整局，不额外添加真人短段；原件缺信息才需要对应补采，不盲重录。
-至少3自然完整英文局、逐幕/第三幕/胜利、INFO独立复验、最终40+20、产品双Host R20和最简云仍未齐。
-Source4不作P1新增前置，旧约两万资产和历史失败保留，不转移旧资格。
-整体冻结及PR仍待用户批准；硬截止10-20 16:30 Brisbane不变。无新PR/push、云费用、上传或训练。
+H是来源，执行S/A(S)用于派生，queued保存真实间隔；public action/native input互斥，
+不造BoundAction。Source4不加为P1前置；历史资产及自测10旧FAIL/unknown不改。
+整体冻结、最终PR和训练未批准；10-20 16:30硬截止不变。无新云费用、上传或训练。
