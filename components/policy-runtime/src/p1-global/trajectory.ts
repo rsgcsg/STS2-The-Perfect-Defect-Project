@@ -8,7 +8,17 @@ import { comparePublicPoint, type FirstDifference } from "./compare.js";
  * offered and the choice it returned (null on the terminal observation). Read from the
  * run's original framed Agent messages, not from summaries.
  */
-export interface TrajectoryPoint { index: number; observation: P1Observation; chosen: string | null }
+export interface TrajectoryPoint {
+  index: number;
+  observation: P1Observation;
+  chosen: string | null;
+  continuity_checks?: {
+    decision_id: string;
+    phase: "cancelled_before_execution" | "cancelled_after_execution";
+    source_event_id: string;
+    observation: P1Observation;
+  }[];
+}
 export interface Trajectory { schema: "sts2.p1/trajectory-1"; run_directory: string; points: TrajectoryPoint[] }
 
 const withEnvelope = (observation: Record<string, unknown>, index: number): P1Observation => ({
