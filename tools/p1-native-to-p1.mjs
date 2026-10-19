@@ -236,6 +236,18 @@ export function convertNativeSemanticOriginals(source, sdk, core, options = {}) 
         || action.action_witness_id !== row.action_witness_id || row.run_id !== accepted.run_id)
         throw new Error('native_p1_execution_binding_mismatch');
       const original = row.basis == null ? null : basis(row.basis);
+      // This recorded producer recipe incorrectly filtered execution operands
+      // by UI queue/holder readiness. Preserve its bytes, but do not qualify a
+      // known incomplete A(S) merely because the chosen use/play still matches.
+      const space = row.execution_action_space;
+      if (original && space?.scope === 'combat_play_phase'
+          && space.native_evidence?.includes('P1:CombatTurnSurfaceReader.CanDiscardPotion+exact_current_enabled_potion_holder')) {
+        const missingDiscards = original.snapshot.persistent.content.player.potions.filter(potion =>
+          !space.actions.some(input => input.verb === 'discard' && input.subject_referent_id === potion.entity_id));
+        if (missingDiscards.length) report.issues.push({ decision_id: row.decision_id,
+          reason: 'original_execution_catalog_filtered_by_ui_queue_gate',
+          missing_discard_subjects: missingDiscards.map(potion => potion.entity_id) });
+      }
       const match = original ? core.matchNativeExecutionChoice(state, original, accepted, row)
         : { status: 'incomplete', reason: 'original_execution_basis_missing', choice_id: null, lowering: null, reduction: null };
       const cancelled = cancellation(accepted, accepted.basis ? basis(accepted.basis) : null, row, original, match);
@@ -425,6 +437,7 @@ export function convertNativeSemanticOriginals(source, sdk, core, options = {}) 
     interpretation: 'execution_basis_reexpression_with_declared_native_spans',
     assumptions: [
       'human_input_basis_is_origin_execution_basis_owns_game_action_choice',
+      'model_view_is_serial_execution_state_reexpression_not_human_click_timing',
       'original_required_public_facts_and_exact_native_operands_are_verified',
       'zero_label_native_spans_are_not_automatically_p1_actions_or_noops',
       'host_conformance_requires_same_declared_actions_not_only_same_seed'

@@ -131,28 +131,7 @@ public static class PlayerEnvironmentNativeSemanticWitness
                     observedAction, ui, "Required public combat power facts could not be captured.");
             NativeCombatDecision decision = NativeCombatDecisionProvider.Capture(entities);
             if (includeCombatPotionDiscards && decision.IsDecisionOpen)
-            {
-                var discards = new List<NativeSemanticAction>();
-                var nativeDiscard = NativePotionDiscardDecisionProvider.Capture(entities);
-                for (int slot = 0; slot < player.PotionSlots.Count; slot++)
-                {
-                    PotionModel? potion = player.GetPotionAtSlotIndex(slot);
-                    if (!CombatTurnSurfaceReader.CanDiscardPotion(player, potion, slot)) continue;
-                    bool ready = PotionPopupSurfaceReader.TryCurrentDiscardHolder(player, potion!, slot,
-                        out _, out bool known);
-                    if (!known) throw new InvalidOperationException("P1 execution potion discard binding unavailable.");
-                    if (!ready) continue;
-                    NativeSemanticAction[] exact = nativeDiscard.Actions.Where(candidate =>
-                        candidate.Verb == "discard" && ReferenceEquals(candidate.NativeSubject, potion)).ToArray();
-                    if (exact.Length != 1) throw new InvalidOperationException("P1 execution potion discard operand not exact.");
-                    discards.Add(exact[0]);
-                }
-                decision = decision with {
-                    Actions = decision.Actions.Concat(discards).OrderBy(action => action.Key, StringComparer.Ordinal).ToArray(),
-                    Evidence = decision.Evidence.Concat(nativeDiscard.Evidence).Append(
-                        "P1:CombatTurnSurfaceReader.CanDiscardPotion+exact_current_enabled_potion_holder").ToArray()
-                };
-            }
+                decision = WithExecutionPotionDiscards(decision, NativePotionDiscardDecisionProvider.Capture(entities));
             bool localPlayPhase = decision.IsDecisionOpen;
             IReadOnlyList<VisibleCombatPotionState> semanticPotions =
                 BuildSemanticPotionStates(player, entities, decision);
@@ -416,6 +395,23 @@ public static class PlayerEnvironmentNativeSemanticWitness
             domain.NonClaims,
             nativeDetail
             ?? $"semantic_owner={domain.SemanticDomain};input_owner={domain.InputDomain}");
+    }
+
+    // A(S) describes the native execution boundary, as for queued card plays.
+    // Button readiness is public input authority, not execution membership:
+    // EnqueueManualUse sets IsQueued before S, while DiscardPotionGameAction
+    // itself resolves the exact current non-null slot. Never modify the PB1
+    // delivery catalog or allow a second public input for the queued potion.
+    internal static NativeCombatDecision WithExecutionPotionDiscards(
+        NativeCombatDecision decision, NativePotionDiscardDecision discards)
+    {
+        if (!decision.IsDecisionOpen) return decision;
+        if (discards.Status != "captured")
+            throw new InvalidOperationException("P1 execution potion discard catalog unavailable.");
+        return decision with {
+            Actions = decision.Actions.Concat(discards.Actions).OrderBy(action => action.Key, StringComparer.Ordinal).ToArray(),
+            Evidence = decision.Evidence.Concat(discards.Evidence).ToArray()
+        };
     }
 
     private static NativeObservedSemanticAction DescribeDomainSelection(

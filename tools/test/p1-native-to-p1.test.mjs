@@ -308,6 +308,29 @@ test('turn-start and in-card queue derive at execution S while H stays provenanc
   assert.equal(report.trajectory.points.length, 3);
 });
 
+test('the recorded UI-filter producer cannot qualify a known incomplete execution catalog', () => {
+  const { source, secondExecution, nextBasis, retain } = queuedExample();
+  const original = nextBasis('-queued-potion', true);
+  const potionFixture = JSON.parse(readFileSync(new URL('../../components/connector/sdk/typescript/test/fixtures/'
+    + 'p1-global/managed-deck_enchant_selection.json', import.meta.url), 'utf8'));
+  const potion = structuredClone(potionFixture.snapshot.persistent.content.player.potions[0]);
+  original.snapshot.persistent.content.player.potions = [potion];
+  secondExecution.basis = retain(original);
+  secondExecution.execution_snapshot_id = secondExecution.basis.snapshot_id;
+  Object.assign(secondExecution.execution_action_space, { scope: 'combat_play_phase',
+    native_evidence: ['P1:CombatTurnSurfaceReader.CanDiscardPotion+exact_current_enabled_potion_holder'] });
+  const unchanged = structuredClone(secondExecution);
+  const report = convertNativeSemanticOriginals(source, sdk, core, { includeSegments: true });
+  assert.equal(report.complete, false);
+  assert.equal(report.trajectory, null);
+  assert.ok(report.blocking_issues.some(issue => issue.decision_id === secondExecution.decision_id
+    && issue.reason === 'original_execution_catalog_filtered_by_ui_queue_gate'
+    && issue.missing_discard_subjects.includes(potion.entity_id)));
+  assert.ok(report.segment_output.gaps.some(gap => gap.decision_ids.includes(secondExecution.decision_id)));
+  assert.ok(report.segment_output.segments.every(segment => segment.points.every(point => point.source_decision_id !== secondExecution.decision_id)));
+  assert.deepEqual(secondExecution, unchanged);
+});
+
 test('a complete successful S cannot fill an accepted source H that was never captured', () => {
   const { source, second } = queuedExample();
   second.basis = null;
@@ -892,6 +915,7 @@ test('optional segments reuse shared-core observations without changing whole-ru
   assert.deepEqual(segment.points.map(point => point.mask.next), [true, false]);
   assert.ok(segment.points.every(point => point.mask.N && !point.mask.end));
   assert.equal(withSegments.segment_output.training_loader_consumed, false);
+  assert.deepEqual(withSegments.segment_output.projection_claims, withSegments.projection_claims);
 });
 
 test('an unknown between choices cuts next and resumes only at a real complete uncommitted basis', () => {

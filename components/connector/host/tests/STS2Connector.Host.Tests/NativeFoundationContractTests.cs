@@ -1,5 +1,6 @@
 using STS2Connector.LiveHost;
 using STS2Platform.NativeFoundation;
+using STS2Connector.PlayerEnvironment.Witness;
 using MegaCrit.Sts2.Core.Map;
 
 namespace STS2Connector.Host.Tests;
@@ -72,6 +73,37 @@ public sealed class NativeFoundationContractTests
         var changed = NativePotionDiscardDecisionProvider.CaptureSlots(new[] { replacement, null }, identities);
         Assert.False(NativeSemanticActionCatalog.ContainsExactlyOnce(changed, "discard", first));
         Assert.Empty(NativePotionDiscardDecisionProvider.CaptureSlots(Array.Empty<MegaCrit.Sts2.Core.Models.PotionModel>(), identities));
+    }
+
+    [Fact]
+    public void QueuedPotionExecutionCatalogUsesNativeSlotsWhilePublicInputRemainsBlocked()
+    {
+        var player = Bare<MegaCrit.Sts2.Core.Entities.Players.Player>();
+        var creature = Bare<MegaCrit.Sts2.Core.Entities.Creatures.Creature>();
+        var potion = Bare<MegaCrit.Sts2.Core.Models.Potions.FruitJuice>();
+        SetField(player, "<Creature>k__BackingField", creature);
+        SetField(creature, "_currentHp", 57);
+        player.CanUseOrRemovePotions = true;
+        var slots = new List<MegaCrit.Sts2.Core.Models.PotionModel?> { potion, null };
+        SetField(player, "_potionSlots", slots);
+        SetField(potion, "<IsQueued>k__BackingField", true, typeof(MegaCrit.Sts2.Core.Models.PotionModel));
+        Assert.False(CombatTurnSurfaceReader.CanDiscardPotion(player, potion, 0));
+        var identities = new STS2Connector.NativeUi.NativeEntityRegistry();
+        NativePotionDiscardDecision Discards() => new("captured", "potion_belt_discard", true,
+            NativePotionDiscardDecisionProvider.CaptureSlots(slots, identities),
+            new[] { "DiscardPotionGameAction.ExecuteAction:current_PotionSlots_non_null" }, null);
+        var combat = new NativeCombatDecision("captured", "combat_play_phase", true,
+            Array.Empty<NativeSemanticAction>(), Array.Empty<string>(), null);
+        var execution = PlayerEnvironmentNativeSemanticWitness.WithExecutionPotionDiscards(combat, Discards());
+        var discard = Assert.Single(execution.Actions);
+        Assert.Same(potion, discard.NativeSubject);
+        Assert.Equal("exact_once", NativeSemanticActionCatalog.Describe(execution.Actions,
+            "DiscardPotionGameAction", "discard", potion, new Dictionary<string, object>()).Membership);
+        Assert.False(CombatTurnSurfaceReader.CanDiscardPotion(player, potion, 0));
+        slots[0] = null;
+        Assert.Empty(PlayerEnvironmentNativeSemanticWitness.WithExecutionPotionDiscards(combat, Discards()).Actions);
+        Assert.Empty(PlayerEnvironmentNativeSemanticWitness.WithExecutionPotionDiscards(
+            combat with { IsDecisionOpen = false }, Discards()).Actions);
     }
 
     [Fact]

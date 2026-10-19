@@ -28,17 +28,22 @@ A2已修商店关闭重开和休息升级取消的解释。前者要求同owner�
 整局complete/whole_run仍为false，未生成合格整局trajectory。
 
 可选片段输出复用同一共享核真实state，仅在完整且无未结commitment的点开段。
-r14当前10段、447个目录内N点、9处缺口，next不跨段；同一分支自然loss才给end。
+r14当前15段、441个目录内候选N点、14处缺口，next不跨段；同分支自然loss才给end。
 包含手牌替换的整个父链剔除。开放前缀pending跨段缺陷已由独立复核发现并修好，
-107项adapter/reader检查通过，限定非作者源码复核通过。尚无T0 loader消费收据，
+108项adapter/reader检查通过，限定非作者源码复核通过。尚无T0 loader消费收据，
 因此只称片段产物，不称已入训练或研究准入。命令及消费合同见
 [采集文档](../ANNOTATOR_COLLECTION.md#p1-native-offline-conversion-and-optional-segments)。
 
 ## 下一步和边界
 
-A3已核旧02七例及r14五例：药水在执行S前已排队，本瓶discard机会消失；
-H仅药水弹窗，不能直接替代完整战斗决策依据。保持已批S规则，时点选择交用户。
-不删合法动作来凑相等，不恢复已停B，不将源码匹配等同线上决策一致。
+A3按用户“复用连续出牌方法”修执行目录：原生Discard按当前非空槽位解释，
+旧代码却混入public !IsQueued/holder门。公开输入门和执行S时点保持。
+975项完整Host、579项SDK、182项NativeLogical及限定独立复核通过，未安装实跑。
+旧02七例及r14五例目录缺项不回填；准确旧recipe命中的五个父span新增切段，
+仅余441个候选N点。旧10段/447产物与失败保留，尚无训练消费或准入。
+用户最新默认是此前已结算、当前马上执行的串行局面，H与排队事实照存。
+原件→P1、同协议Host对照、原生重放和训练消费分别验证，不绑死。
+不另建点击前采集，不恢复B，不将原生重放或源码匹配等同P1 Host一致。
 
 余下两局仍由用户录制；按用户要求，实际开好Reference窗口后告知完整步骤。
 同一时间只给Human、T0b、最终Reference验收或R-deep一个owner。

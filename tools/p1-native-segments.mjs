@@ -108,6 +108,7 @@ export function buildNativeP1Segments({ source, report, successful, boundaries }
   } else finish('source_boundary');
   return { schema: 'sts2.p1/native-segments-1', source_bundle: source.bundle,
     source_content_id: report.source_content_id, source_manifest_sha256: report.source_manifest_sha256,
+    projection_claims: report.projection_claims,
     branch, profile: 'p1-global-r1', revision: segments[0]?.points[0]?.observation.revision ?? null,
     whole_run_complete: report.whole_run_recording_complete,
     source_conversion_complete: report.complete, gaps, discarded_choices: discarded, segments,

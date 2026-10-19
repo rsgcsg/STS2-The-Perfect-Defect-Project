@@ -18,12 +18,14 @@
                   P1：accepted原生动作＋H来源＋执行S/A(S)完整PB1 → 同一共享核reducer/lowering
 研究链：profile轨迹 ─⑦─ Curation(用途/划分) ─⑧─ Projection＋InputSpec/TargetSpec
           ─⑨─ Recipe / TrainRun → checkpoint / Model
-          ─⑩─ AgentComposition → 运行/评估(Reference为准，Managed等价) → 新原件回Store
+          ─⑩─ AgentComposition → 运行/评估(本轮Reference；Managed严格延后) → 新原件回Store
 ```
 
 编号表示逻辑连接，不要求每次运行经过全部节点；SDK、Mod包装和传输形式不另设语义层。**交互profile是可替换角色，P1只是当前选择。每个profile必须声明③④在线requires及⑥原件派生requires**：目标字段/时点/公开来源α、接受事实/顺序/结果、完整性与拒绝条件、投影Π及版本。新增来源只需证明其provides经声明的Π覆盖该profile的全部requires；更换profile换这些声明，图不变。原件尽量保存比单个profile更多的事实，但不因此宣称所有未来profile可用。实现不能自行重定义下游requires；真实语义取舍交用户。
 
 **比较声明也沿同一图定位（2026-10-19用户明确）：** Managed是Host实现，不是P1专用执行器；可直接消费受支持的原生语义操作，或经P1/其它profile实现R执行。C1是同起点同P1操作下Host一致；C2是声明原生操作范围下Host一致；C3是⑥投影Π正确；C4是profile对目标功能够用。原生Human→有损Π→P1→Managed不同，不能直接归因Host。B在已登记例外段补放原生实际操作，证明混合路径的限定一致，不能自动授予P1-only全轨或全部原生内部状态等价；A独立原生重放与C新P1动作冻结后才做。原件、派生及比较报告保留假设、例外和经过的连接，验收逐项见[冻结表](SCOPE_v0.3.zh-CN.md#1-11条进度依据和首训价值)，不另建链路或注册表。
+
+**2026-10-20现行决定与默认解释：** 原始记录、⑥转P1、跨Host对照和不同目的的重放分别判断，不要求每次都串过全部节点。P1里的出牌/用药状态默认按“前面已结算、现在轮到该动作”的串行执行态解释，沿既有rc4接缝取真实S/A(S)；原件仍保留真人实际连点/排队，不改游戏或伪造点击时点。按钮灰掉等暂存表现不能替代原生执行语义，执行目录也不授予新的公开输入权。Managed严格一致已延后，资产/差异收据保留，1a与T0实打用Reference；旧B实验和旧冻结表不构成当前派工。各类验证不互相代替，也不相互绑成未经用户要求的门。
 
 | 连接 | 下游requires | 上游provides／当前owner与合同 | 当前状态 |
 |---|---|---|---|

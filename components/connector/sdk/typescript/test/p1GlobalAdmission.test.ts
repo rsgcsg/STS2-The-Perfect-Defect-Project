@@ -73,7 +73,7 @@ describe("P1 r1.3 explicit complete-capture admission", () => {
     const result = project(fixture("synthetic-complete-combat"));
     expect(result.complete).toBe(true);
     expect(result.missing).toEqual([]);
-    expect(result.observation.revision).toBe("r1.3");
+    expect(result.observation.revision).toBe("r1.4");
     expect(result.observation.envelope.required_information_complete).toBe(true);
     expect(result.observation.envelope.read_instances).toHaveLength(3);
   });

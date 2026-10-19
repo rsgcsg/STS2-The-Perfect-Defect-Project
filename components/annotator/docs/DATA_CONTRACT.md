@@ -509,6 +509,22 @@ operandless `EndPlayerTurnAction` is an exact native input alongside Play/Use.
 acceptance to its first execution callback. Direct synchronous UI decisions keep
 their original capture boundary. PlayerChoice resume is lifecycle evidence only.
 
+The model-facing interpretation is sequential: prior actions have resolved and
+the current action is about to execute, as if Human input had no advance queue.
+The immutable H/queue/acceptance evidence still describes what really happened;
+it is not rewritten into a fictional click at S. A(S) uses native execution
+semantics, not transient button readiness. In particular, queued potion use does
+not erase the existing native discard operation on that current non-null slot;
+public delivery keeps its independent queued/enabled-holder guards. The original
+PB1 catalog is never replaced by A(S). Old incomplete execution inventories are
+not backfilled by a producer fix.
+
+Original recording, P1 projection, same-profile Host comparison and native replay
+are independent claims with declared inputs and scope. A source fix or sealed
+record grants none of the others. Managed strict conformance is deferred for the
+current pre-training freeze; it is not a prerequisite for every projection or
+loader read. Reference is the selected Host for the first training evaluation.
+
 Visible queue NCards whose exact combat model remains in backend Hand retain
 current hand facts and complete `surface_card` Reads, including description,
 cost/enchantment, keywords/previews and `display_context=hand`. Their existing
