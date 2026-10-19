@@ -218,10 +218,9 @@ export class ManagedTextMenuSessionAdapter {
   }
 
   async #dispatch({ requestId, fingerprint, binding, entry, timeoutMs }) {
-    const current = this.#session.observe();
     if (this.#session.tainted === true) {
       const projectionFailed = this.#session.taintReason === "successor_projection_failed";
-      const successor = projectionFailed ? null : this.#remember(current);
+      const successor = projectionFailed ? null : this.#remember(this.#session.observe());
       return this.#save(requestId, fingerprint, this.#result(requestId, {
         status: "not_applied", effect_domain: null, native_delivery: null,
         action: null, reason_code: projectionFailed
@@ -232,6 +231,7 @@ export class ManagedTextMenuSessionAdapter {
         retry: projectionFailed ? "never" : "reobserve", successor
       }));
     }
+    const current = this.#session.observe();
     if (current.snapshot_id !== binding.nativeSnapshotId
         || !current.bound_actions?.actions.some((action) => action.bound_action_id === entry.boundActionId)) {
       const successor = this.#remember(current);

@@ -1133,6 +1133,9 @@ test("native delivery with rejected successor projection preserves delivered Rec
   assert.equal(first.successor, null);
   assert.equal(first.retry.allowed, false);
   assert.equal(session.tainted, true);
+  assert.throws(() => session.observe(), /managed_session_tainted_after_successor_projection_failure/);
+  assert.throws(() => session.read({ readId: "old", expectedSnapshotId: snapshot.snapshot_id }),
+    /managed_session_tainted_after_successor_projection_failure/);
   assert.deepEqual(await session.submit(exact), first);
   const later = await session.submit({ ...exact, requestId: "later" });
   assert.equal(later.delivery, "not_delivered");

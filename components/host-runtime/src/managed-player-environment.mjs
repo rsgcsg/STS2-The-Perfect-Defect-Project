@@ -1738,7 +1738,7 @@ function currentSurface(state, ctx) {
       } : null;
       if (plainObject(state.selector_public)) {
         const canonical = canonicalSelectorSurface(state, ctx, commonContext);
-        return { ...canonical, context: publicHud,
+        return { ...canonical, context: publicHud ?? canonical.context,
           hiddenByPolicy: ["hidden_rng", "draw_pile_true_order", "future_enemy_moves", "future_rewards", "future_events"],
           complete: canonical.complete && hudComplete,
           missing: [...canonical.missing, ...(hudComplete ? [] : ["complete_current_post_prefix_combat_hud"])] };
@@ -1765,7 +1765,7 @@ function currentSurface(state, ctx) {
           surface: { kind: "native_generated_card_choice",stage: "choosing",prompt: state.prompt ?? null,
             cards: generated,selectable_card_entity_ids: complete ? generated.map(card => card.entity_id) : [],
             is_peeking: false,can_skip: complete && state.can_skip },
-          context: publicHud,complete,
+          context: publicHud ?? { ...commonContext, kind: "selection" },complete,
           missing: complete ? [] : ["exact_current_native_generated_choice_and_details"],
           visibleInformation: "same_capture_original_native_generated_cards_and_post_prefix_combat_hud",
           interactionDiscovery: "original_native_choose_callback_task_and_offered_objects",
@@ -2669,13 +2669,15 @@ export class ManagedPlayerEnvironmentSession {
   }
 
   observe() {
+    if (this.#taintReason === "successor_projection_failed")
+      throw new Error("managed_session_tainted_after_successor_projection_failure");
     if (this.#projection == null) throw new Error("No managed run is mounted.");
     return this.#projection.snapshot;
   }
 
   read({ readId, expectedSnapshotId }) {
-    if (this.#projection == null) throw new Error("No managed run is mounted.");
-    if (expectedSnapshotId !== this.#projection.snapshot.snapshot_id) {
+    const snapshot = this.observe();
+    if (expectedSnapshotId !== snapshot.snapshot_id) {
       throw new Error("stale_snapshot");
     }
     const read = this.#projection.reads.get(readId);

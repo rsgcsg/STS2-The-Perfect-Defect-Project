@@ -409,8 +409,9 @@ test("reward text menu preserves every current callback choice and native bindin
   const noSkip = rewardDecision("card_reward");
   noSkip.alternatives = noSkip.alternatives.slice(1).map((option, index) => ({ ...option, index }));
   const noSkipSnapshot = projectManagedCandidateDecision({ state: noSkip, ...identity }).snapshot;
-  assert.equal(noSkipSnapshot.interaction.content.surface.can_skip, false);
-  assert.equal(noSkipSnapshot.bound_actions.actions.some((action) => action.verb === "skip"), false);
+  assert.equal(Object.hasOwn(noSkipSnapshot.interaction.content.surface, "can_skip"), false);
+  assert.equal(noSkipSnapshot.interaction.content.surface.alternatives.some(option => option.is_native_skip), false);
+  assert.equal(noSkipSnapshot.bound_actions.actions.some((action) => action.label === "Skip"), false);
   for (const kind of ["reward_set", "combat_rewards_complete"]) {
     const snapshot = projectManagedCandidateDecision({ state: rewardDecision(kind), ...identity }).snapshot;
     assert.equal(new ManagedTextMenuSessionAdapter({ observe: () => snapshot,
