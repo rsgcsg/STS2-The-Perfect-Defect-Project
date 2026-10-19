@@ -33,7 +33,9 @@ B已执行奖励原生例外open→Skip并严格比较完整前/中/后，06连�
 I只修现契约下Managed selector缺HUD的明确partial表示，以及delivered后继
 投影失败后禁止提供旧观察/Reads、后续text-menu新请求明确拒绝且不重试原生动作。
 109定向与14公开信息检查通过，限定非作者复核完成；旧40局结果不因此转为通过。
-未补selector信息、未加动作或扩大P1语义。原SDK558/相关124等证据仍绑定原候选。
+未补selector信息、未加动作或扩大P1语义。随后补齐既有reward.leave的整页native skip动词映射，
+保留exact bound ID及原skip；SDK559/typecheck/build、消费者63、7原状态离线归约通过，
+限定非作者复核接受。原40局FAIL及原候选证据不转给新source，未重跑native效果。
 
 最小云在授权范围完成首局3158文件R2完整回读和唯一Modal CPU读取同SHA，
 App停止且无容器，云覆盖1/3。无新上传、GPU、训练或历史迁移。
