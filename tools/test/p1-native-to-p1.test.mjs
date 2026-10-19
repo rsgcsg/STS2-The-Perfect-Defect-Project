@@ -511,7 +511,15 @@ async function nativeBrowse(kind, change = null) {
   const second = middle.snapshot.bound_actions.actions.find(a => a.verb === (kind === 'selector' ? 'cancel' : 'skip'));
   if (change === 'native-activate') second.verb = 'activate';
   accept('browse-start', before, first);
-  row('lifecycle', { decision_id: 'browse-start', action_witness_id: 'witness-browse-start', phase: 'finished', successor_basis: retain(middle) });
+  const opened = structuredClone(middle);
+  if (change === 'settling-child' || change === 'settling-foreign-world') {
+    opened.snapshot.status = 'settling'; opened.snapshot.interaction.stage = 'settling';
+    opened.snapshot.interaction.content.surface.selectable_card_entity_ids = [];
+    opened.snapshot.bound_actions.actions = [];
+    opened.snapshot.bound_actions.materialized_count = opened.snapshot.bound_actions.total_count = 0;
+    if (change === 'settling-foreign-world') opened.snapshot.persistent.content.player.gold++;
+  }
+  row('lifecycle', { decision_id: 'browse-start', action_witness_id: 'witness-browse-start', phase: 'finished', successor_basis: retain(opened) });
   accept('browse-back', middle, second);
   row('lifecycle', { decision_id: 'browse-back', action_witness_id: 'witness-browse-back', phase: change === 'unknown' ? 'unknown' : 'finished', successor_basis: retain(restored) });
   if (change === 'foreign') source.events[2].bound_action = { ...second, subject_referent_id: 'foreign-subject' };
@@ -671,3 +679,17 @@ for (const defect of ['foreign_parent', 'foreign_operand', 'missing_child_comple
     assert.equal(report.complete, false); assert.equal(report.trajectory, null);
     assert.ok(report.blocking_issues.some(issue => issue.reason === 'accepted_action_unknown'));
   });
+
+
+test('reward open may finish while settling; real ready child and full endpoints still prove browsing', async () => {
+  const report = await nativeBrowse('reward', 'settling-child');
+  assert.equal(report.native_presentations.length, 1);
+  assert.equal(report.native_presentations[0].comparison.equal, true);
+  assert.equal(report.accepted_accounting.presentation, 2);
+  assert.ok(report.actions.every(action => action.choice_id === null));
+  assert.ok(report.captures.some(capture => capture.observation?.scene.stage === 'settling'));
+});
+test('a settling reward callback cannot hide different world facts from the same-instance intention', async () => {
+  const report = await nativeBrowse('reward', 'settling-foreign-world');
+  assert.equal(report.native_presentations.length, 0);
+});

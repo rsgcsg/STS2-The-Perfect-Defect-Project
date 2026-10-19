@@ -247,3 +247,52 @@ it.each(["subject", "target", "inventory"])("does not create discard operands fr
   if (defect === "inventory") (queued.snapshot as any).persistent.content.player.potions = [];
   expect(matchNativeExecutionChoice(createSession("discard-S", "reference"), queued, accepted, execution).status).toBe("incomplete");
 });
+
+function popupExecutionExample() {
+  const data = executionExample();
+  const snapshot = data.queued.snapshot as any;
+  const target = snapshot.interaction.content.context.player.player_entity_id;
+  if (!snapshot.referents.some((ref: any) => ref.referent_id === target)) snapshot.referents.push({
+    ...snapshot.referents[0], referent_id: target, role: 'player' });
+  for (const [id, slot] of [['queued-potion', 0], ['visible-other-potion', 2]] as const) {
+    const potion = { entity_id: id, definition_id: 'ENERGY_POTION', name: id, description: 'Gain energy.',
+      slot, target_type: 'Self', can_use: true, automatic: false, keywords: [], card_previews: [] };
+    snapshot.persistent.content.player.potions.push(potion);
+    snapshot.interaction.content.context.player.potion_states.push({ entity_id: id, target_type: 'Self', can_use: true, automatic: false });
+    snapshot.referents.push({ ...snapshot.referents[0], referent_id: id, role: 'potion',
+      properties_schema: 'sts2.player-environment/referent/potion-1', properties: potion });
+  }
+  Object.assign(snapshot.interaction, { kind: 'potion_popup', content_schema: 'sts2.player-environment/surface/potion_popup-1' });
+  snapshot.interaction.content.surface = { kind: 'potion_popup', potion_entity_id: 'visible-other-potion',
+    definition_id: 'ENERGY_POTION', name: 'visible-other-potion', slot: 2, can_use: true, can_discard: true,
+    direct_combat_use: true, use_target_entity_ids: [target] };
+  const selected = { key: 'use|queued-potion|target=' + target, verb: 'use', subject_referent_id: 'queued-potion',
+    arguments: { target }, native_legality_basis: 'same-boundary-native-potion-catalog' };
+  data.execution.execution_action_space.actions.push(selected);
+  const native_input = { action_key: selected.key, verb: selected.verb, subject_referent_id: selected.subject_referent_id,
+    arguments: selected.arguments };
+  data.accepted.native_input = native_input;
+  data.execution.native_input = native_input;
+  data.execution.execution_action_space.observed_action_key = selected.key;
+  return data;
+}
+it('maps exact queued use from full combat S/A(S) while retaining a different visible potion popup', () => {
+  const { queued, accepted, execution } = popupExecutionExample();
+  const bytes = JSON.stringify(queued);
+  const actual = matchNativeExecutionChoice(createSession('popup-execution', 'reference'), queued, accepted, execution);
+  expect(actual.status).toBe('matched'); expect(actual.reduction.missing).toEqual([]);
+  expect(actual.reduction.observation.catalog.find(choice => choice.choice_id === actual.choice_id)?.kind).toBe('potion.use');
+  expect(actual.reduction.observation.scene.native_kind).toBe('potion_popup');
+  expect((actual.reduction.observation.scene.content as any).surface.slot).toBe(2);
+  expect(actual.reduction.observation.catalog.some(choice => choice.kind === 'combat.end_turn')).toBe(true);
+  expect(actual.reduction.observation.catalog.some(choice => !choice.mapped)).toBe(false);
+  expect(JSON.stringify(queued)).toBe(bytes);
+});
+it.each(['foreign_target', 'noncombat_context', 'partial_snapshot'])('keeps queued popup execution incomplete for %s', defect => {
+  const { queued, accepted, execution } = popupExecutionExample();
+  const snapshot = queued.snapshot as any;
+  if (defect === 'foreign_target') execution.execution_action_space.actions[0]!.arguments = { target: 'not-in-S' };
+  if (defect === 'noncombat_context') snapshot.interaction.content.context.kind = 'event';
+  if (defect === 'partial_snapshot') { snapshot.completeness.status = 'partial'; snapshot.completeness.missing = ['uncaptured']; }
+  expect(matchNativeExecutionChoice(createSession('popup-execution', 'reference'), queued, accepted, execution).status).toBe('incomplete');
+});

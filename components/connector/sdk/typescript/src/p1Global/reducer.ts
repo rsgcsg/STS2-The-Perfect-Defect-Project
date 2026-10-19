@@ -367,7 +367,12 @@ function reduceCatalog(state: P1SessionState, basis: P1Basis, execution?: readon
   const missing: string[] = [];
   if (invalidExecution) missing.push("required:native_execution_catalog_operands");
   if (!hasFinitePublicNumbers(basis)) missing.push("required:finite_public_numbers");
-  if (execution && (interaction.kind !== "combat_turn" || snapshot.completeness?.status !== "complete"
+  // An accepted combat input can execute while a different potion popup is
+  // visible. Its same-capture combat context and A(S) still own the input;
+  // preserve the actual popup as public information rather than invent a UI.
+  const executionCombatBasis = interaction.content.context?.kind === "combat"
+    && ["combat_turn", "potion_popup"].includes(nativeKind);
+  if (execution && (!executionCombatBasis || snapshot.completeness?.status !== "complete"
       || execution.length === 0)) missing.push("required:complete_native_execution_combat_basis");
 
   if (!P1G_INFORMATION_SHAPES.includes(family)) missing.push(`required:scene_information_qualification:${family}`);
@@ -645,7 +650,8 @@ function reduceCatalog(state: P1SessionState, basis: P1Basis, execution?: readon
         || operation === "toggle_upgrade_view")) {
       exclude("forward_profile:complete_selector_public_presentations"); continue;
     }
-    let kind = KIND_TABLE[`${nativeKind}|${action.verb}|${role}`] ?? FAMILY_VERB[family]?.[action.verb];
+    const actionOwnerKind = execution ? "combat_turn" : nativeKind;
+    let kind = KIND_TABLE[`${actionOwnerKind}|${action.verb}|${role}`] ?? FAMILY_VERB[family]?.[action.verb];
     if (operation) kind = operation === "open_preview" ? `${family}.confirm`
       : operation === "cancel_selection" ? `${family}.cancel`
       : operation === "cancel_preview" ? `${family}.back` : `${family}.confirm`;
