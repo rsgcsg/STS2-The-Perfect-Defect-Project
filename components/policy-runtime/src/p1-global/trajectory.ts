@@ -15,6 +15,7 @@ export interface TrajectoryPoint {
   continuity_checks?: {
     decision_id: string;
     phase: "cancelled_before_execution" | "cancelled_after_execution";
+    boundary: "before" | "after";
     source_event_id: string;
     observation: P1Observation;
   }[];
