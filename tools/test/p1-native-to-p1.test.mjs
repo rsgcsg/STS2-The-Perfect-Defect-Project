@@ -81,6 +81,7 @@ test('two accepted decisions derive without any record for unsubmitted pickup/ca
   const { source } = example();
   const report = convertNativeSemanticOriginals(source, sdk, core);
   assert.equal(report.complete, true);
+  assert.equal(report.projection_claims.lossless_p1_trace, 'not_established');
   assert.deepEqual(report.actions.map(action => action.choice.kind), ['combat.play_card', 'combat.end_turn']);
   assert.deepEqual(report.actions.map(action => action.result.status), ['completed', 'completed']);
   assert.equal(report.actions[1].successor.origin, 'native_decision_owner_ready');
@@ -534,6 +535,7 @@ for (const kind of ['selector', 'reward']) test(`${kind} browsing is a separate 
   assert.equal(report.accepted_accounting.derived, 0);
   assert.ok(report.actions.every(a => a.choice_id === null && a.choice === null && a.result.status === 'completed'));
   assert.ok(report.issues.every(issue => !issue.blocking));
+
 });
 for (const change of ['world', 'refresh', 'directory', 'read']) test(`changed browsing ${change} is reported with real field differences and no successful labels`, async () => {
   const report = await nativeBrowse('reward', change);
@@ -597,6 +599,14 @@ test('the exact approved refresh side effect stays a separate exception with lit
   assert.equal(report.native_presentations[0].comparison.equal, false);
   assert.equal(report.native_presentations[0].comparison.changes.length, 2);
   assert.equal(report.accepted_accounting.presentation_exceptions, 2);
+  assert.equal(report.projection_claims.lossless_p1_trace, false);
+  assert.equal(report.projection_claims.exceptions.length, 1);
+  assert.equal(report.projection_claims.exceptions[0].p1_action, null);
+  assert.equal(report.projection_claims.p1_host_conformance, 'not_established');
+  const replay = convertNativeSemanticOriginals(source, sdk, core, { includeNativeReplayWitnesses: true });
+  assert.equal(replay.native_presentations[0].native_replay_steps.length, 2);
+  assert.deepEqual(replay.actions, report.actions);
+  assert.deepEqual(replay.native_presentations[0].comparison, report.native_presentations[0].comparison);
   assert.equal(report.presentation_gaps.length, 0);
   assert.ok(report.actions.every(action => action.choice_id === null));
   assert.ok(report.issues.every(issue => !issue.blocking));

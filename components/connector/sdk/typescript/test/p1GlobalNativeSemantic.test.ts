@@ -240,6 +240,30 @@ it("retains the same independent discard opportunity in captured execution A(S) 
   const missing = matchNativeExecutionChoice(createSession("discard-S", "reference"), queued, accepted, execution);
   expect(missing.reduction.observation.catalog.some(choice => choice.kind === "potion.discard")).toBe(false);
 });
+it("keeps published potion-slot order when the exact execution action inventory is permuted", () => {
+  const { basis, queued, accepted, execution, discard } = discardExecutionExample();
+  const first = (basis.snapshot as any).persistent.content.player.potions[0];
+  const second = { ...first, entity_id: "second-slot", definition_id: "OTHER", name: "Other", slot: 1 };
+  for (const value of [basis, queued]) {
+    const snapshot = value.snapshot as any;
+    snapshot.persistent.content.player.potions.push(structuredClone(second));
+    snapshot.interaction.content.context.player.potion_states.push({ entity_id: second.entity_id,
+      target_type: second.target_type, can_use: false, automatic: true });
+    snapshot.referents.push({ ...snapshot.referents.find((ref: any) => ref.referent_id === first.entity_id),
+      referent_id: second.entity_id, label: second.name, properties: structuredClone(second) });
+  }
+  const snapshot = basis.snapshot as any;
+  const { keywords: _keywords, card_previews: _previews, ...surfacePotion } = second;
+  snapshot.interaction.content.surface.discardable_potions.push(surfacePotion);
+  snapshot.bound_actions.actions.push({ ...snapshot.bound_actions.actions.at(-1), bound_action_id: "second-discard",
+    subject_referent_id: second.entity_id, label: "Discard Other" });
+  snapshot.bound_actions.total_count = snapshot.bound_actions.materialized_count = snapshot.bound_actions.actions.length;
+  execution.execution_action_space.actions.unshift({ ...discard, key: "second-discard", subject_referent_id: second.entity_id });
+  const actual = matchNativeExecutionChoice(createSession("slots", "reference"), queued, accepted, execution);
+  const online = reduce(createSession("slots", "reference"), basis);
+  expect(actual.status).toBe("matched");
+  expect(actual.reduction.observation).toEqual(online.observation);
+});
 it.each(["subject", "target", "inventory"])("does not create discard operands from missing or foreign %s", defect => {
   const { queued, accepted, execution, discard } = discardExecutionExample();
   if (defect === "subject") discard.subject_referent_id = "foreign-slot";

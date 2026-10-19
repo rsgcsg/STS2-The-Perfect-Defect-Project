@@ -1332,7 +1332,9 @@ function currentSurface(state, ctx) {
             after_selected: alternative?.after_selected ?? null, is_native_skip: alternative?.is_native_skip === true }
         });
         ctx.action({
-          verb: alternative.id.toLowerCase() === "skip" ? "skip" : "activate",
+          // Reference's native alternative provider uses activate for every
+          // button, including the alternative whose typed outcome is Skip.
+          verb: "activate",
           subject: item, label: alternative.name,
           raw: { cmd: "action", action: "select_card_reward_alternative",
             args: { alternative_ref: alternative.native_ref } }
@@ -1341,19 +1343,18 @@ function currentSurface(state, ctx) {
       });
       return {
         kind: "card_reward_selection",
-        stage: "choosing",
+        stage: "ready",
         prompt: null,
-        surface: { kind: "card_reward_selection", stage: "choosing", cards, alternatives,
+        surface: { kind: "card_reward_selection", cards, alternatives,
           parent_status: ["bound", "standalone"].includes(state.parent_status) ? state.parent_status : "unavailable",
           parent_group_id: typeof state.parent_reward_ref === "string" ? ctx.entityId("reward_group", state.parent_reward_ref) : null,
           reward_set_id: typeof state.reward_set_ref === "string" ? ctx.entityId("reward_set", state.reward_set_ref) : null,
           selection_completes_reward: typeof state.selection_completes_reward === "boolean" ? state.selection_completes_reward : null,
           native_relic_refresh_subscription: ["attached", "absent"].includes(state.native_relic_refresh_subscription)
             ? state.native_relic_refresh_subscription : "unavailable",
-          can_skip: rawAlternatives.some((option) => option.id.toLowerCase() === "skip"),
           // Same fact as the Reference card reward page: every offered card has its select input.
           selectable_card_entity_ids: cards.map((card) => card.entity_id) },
-        context: { ...commonContext, kind: "reward" },
+        context: { kind: "reward_flow", reward_kind: "card_reward" },
         complete: metadataComplete,
         visibleInformation: "contract_complete_for_current_native_card_reward",
         interactionDiscovery: "derived_from_same_current_native_card_reward_callback_as_execution",
@@ -2008,7 +2009,7 @@ function currentSurface(state, ctx) {
                 verb: "use",
                 subject: potionReferent,
                 arguments: [{ role: "target", referent: target }],
-                label: `Use ${potionReferent.label}`,
+                label: target.label ? `Use ${potionReferent.label} -> ${target.label}` : `Use ${potionReferent.label}`,
                 raw: {
                   cmd: "action",
                   action: "use_potion",
