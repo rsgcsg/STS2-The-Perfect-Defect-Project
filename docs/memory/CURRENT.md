@@ -1,93 +1,56 @@
-# 当前工作：自测06已封包；排队采集有效，EndTurn和map接线修复待新实测
+# 当前工作：自测07已封包；卡包地图与X费用升级预览已修，待新构建验证
 
-更新：2026-10-19。本页是仓库导航；唯一冲刺操作现状是工作区固定文件
-`work/P1-SEMANTIC-ACTIVE-20261019.md`，本轮报告为`work/P1-QUEUED-INPUT-REPORT-20261019.md`，
-收敛报告为`work/CONVERGENCE-PREFREEZE-REPORT-20261019.md`。这些是项目工作区路径，worker局部checkpoint不是总派工入口。
-Resolve live GitHub refs; actual source and original records override this file.
-恢复前核准确分支、改动、agent和进程，不从旧记录重复启动游戏。
+更新于2026-10-19。本页是仓库导航；唯一现场状态是工作区固定文件
+`work/P1-SEMANTIC-ACTIVE-20261019.md`，唯一主报告是`work/P1-QUEUED-INPUT-REPORT-20261019.md`。
+总11行进度位于`outputs/P1-round19-progress-2026-10-18.md`并镜像共享replies；四项文档收敛见
+`work/CONVERGENCE-PREFREEZE-REPORT-20261019.md`。这些是工作区路径，旧worker恢复卡不派发当前任务。
+恢复前核当前分支、脏改、agent、Game/Recorder/Managed进程，不重复启动或复活旧PTY。
 
-Start with the single [chain diagram and requires/provides table](../plans/p1-prefreeze-2026-10-18/CHAIN_PURPOSES.md),
-then [P1 section4.1](../protocols/P1_GLOBAL_R1.zh-CN.md#41-录制原件派生p1的requires用户已批准).
-Every profile declares originals-to-profile requires; a new source supports it only
-when declared projection of its provides covers those requires. P1 is today's choice.
-Reports/PRs identify chain position and one of the four Architecture change classes.
-Two different-cause preflight failures trigger a review of the failed connection:
-implementation fails requires, or requires are unclear/wrong. Semantic/upper-level
-changes remain user decisions. Q connections7/8 and a non-blocking closeout hint wait
-until after freeze; this task adds no checker, service, registry, schema or freeze gate.
+## 当前结果与下一步
 
-## Approved definitions and current engineering
+用户亲手完成工程自测07，声明仍是agent_native_ui工程来源，不计正式Human局。
+原件4e65a86e…d2f2b0f8已正常Close/pack，701文件内容身份通过；游戏自然第一幕17层loss，已正常退出。
+28次EndTurn、16次地图均精确匹配并完成，170份执行PB1/all Reads完整，旧接线修复在本次范围有效。
+232个accepted为227成功派生、4原生取消、1缺H且unknown；另有10条选择器信息issue。
+整段仍FAIL、trajectory=null、Managed严格未跑，正式合格仍0/3。原件、unknown及旧FAIL不改。
 
-The user has approved freeze-definition sections4.1–4.2: original whole-run completeness,
-derived completeness and new-route E2/E3 applicability. Direction and recording gate
-are also set. The overall [freeze definition](../plans/p1-prefreeze-2026-10-18/SCOPE_v0.3.zh-CN.md)
-and final freeze PR are separate pending approval. Deadline remains Oct20 16:30 Brisbane.
+用户新批准限定修③④两处信息供给，源码3b512a5d已完成：card_bundle_selection沿既有topbar地图入口；
+升级预览复用exact-game effective native getter资格，修Tempest原生X费用override被误拒绝。
+同类10X卡已查全，实际原生复制/升级对照、原件不变、patched getter未调用反例均通过。
+75项定向、Host968项、非作者复核通过；Connector完整检查进行中。新修复尚未构建安装/原生页面实测。
+当前安装仍bf31/MVIDefaf04f5，来自clean b7d8833c；没有Game、录制或Managed进程。
 
-用户已批准⑤⑥恢复rc4：H只作输入来源，执行S/A(S)为P1派生决策；不改在线③④、两Host或原生游戏，不限制连点。
-public action或RecordedNativeInput二选一，不造BoundAction，仍需执行边界完整PB1、全部Reads及可派生目录。
-用户本轮新批准⑤采集修复：执行边界backend Hand仍在且queue NCard仍可见的牌，
-沿普通BuildCard及ReadService取得完整当前facts与surface_card Read，不借H或deck基卡。
-自测06已Close/pack/退出：78accepted/78terminal、pending0；56执行PB1/allReads及41Play当前详情均完整。
-29合法Play+2Potion派生成功；12能量不足后cancel、6执行前cancel如实保留，另9EndTurn/4map绑定失败。
-整段未通过，trajectory=null、Managed strict未运行；原件1f9494a7…60d44与失败不改，正式0/3。
-B07ac9351已正常merge，修EndTurn subjectless输入/完整settlingH来源及map publicActivate/nativeTravel分角色；
-root9ec71246/30c498e4核S绑定全部operands和Hnative/Spublic表示切换，未改在线合法性或取消规则。
-SDK543/SourceNative70/surface38/adapter39、实际Modcompile与独立review通过。官方cleanb7d8833c构建已安装
-artifact bf31b3b8/MVIDefaf04f5，doctor及回滚备份核对；尚未冷加载/新自测。当前无Game/Recorder/Managed。
-历史aa03c84d/80d2a776/8f66bc93/f5b6079f，以及9-13(413/412/1cancel)、9-17(17/15/2cancel)已直接核。
-旧机制复用，旧资格不转移；用户提到的约两万数据没有本轮全量重审，已核37archive/14313选样的旧报告范围。
-用户已明确批准历史取消分流：保raw/disposition/issue，不成功label、不补造决策；取消前后实际比较，
-成功P1逐点及最终后继严格Managed，unknown/缺信息/绑定错仍阻断。取消有解释、生命周期/连续性完整的
-自然整局可计正式，取消本身不算gap。实现dabe3284及Runtime7fa5439d已合，SDK547/readeradapter53/Runtime37及tsc/build通过；
-限定非作者审查已过，曾发现的before复用after缺陷已修成双原件实比；H不可比仍strict失败，实际新短测/严格Managed尚未过。旧06新解释78=47derived+17cancel+14gap，仍FAIL，原件不改。
-不要求盲目重录。普通运行默认instant，指定连点自测可normal，不复活旧PTY32600；主报告含历史核查附件。
-Source4停止新增投入/预检；原数据、分支和失败全部保留。自动GameAction不制造玩家标签。
+Drowning Beacon的Bottle药水回调还存在一次unbound来源。原生OfferCustom确在事件内，
+但原件没有该回调的H，不能猜成自动、删除unknown或补造完成。root已问用户是手动领取还是自动到账；
+同时沿成熟Human作用域/原生Task关联核查，未另造tracker或执行通路。不要在该原因未明时盲目再录同一整段。
+下一步完成新信息修复的官方构建及候选身份核对，原生验证只按真实已验证范围报告。
 
-工程05正常Close/pack/退出，66 accepted/66 terminal，17出牌绑定gap和1选牌join gap；无完整P1轨迹，未做整段Managed。
-旧工程04只证明5动作及最后后继的旧短段严格通过；正式英文01有缺口已保留封包，正式合格仍0/3。
-选牌join修复77cbd6ae包含于当前安装bf31b3b8；自测06未暴露旧join，不能外推全部selector覆盖。
+## 已批准的链路与资格
 
-本轮已直接读rc4报告524/524与47rapid，旧tmp raw未找到，不声称重验524原件。
-rc4解决native queued身份与S/A(S)，不是今日完整PB1/allpresentation；不能用新缺口否定旧实证。
-此前P1误将H定为决策并绕过执行订阅是返工原因，不归咎玩家或历史无效。
+从[唯一链路图及requires/provides表](../plans/p1-prefreeze-2026-10-18/CHAIN_PURPOSES.md)
+和[P1协议4.1](../protocols/P1_GLOBAL_R1.zh-CN.md#41-录制原件派生p1的requires用户已批准)进入各owner。
+H只作输入来源，执行S/A(S)才派生P1；queued保存真实间隔，完整同刻PB1和全部advertised Reads不可少。
+public action/native input二选一，不制造BoundAction；resume不是新决策。
+用户已批准历史取消分流：保raw/disposition/issue，不成功label、不补造决策；真实before/after都要实比。
+成功P1逐点和最后后继与Managed严格比较；unknown、缺信息、绑定错误仍阻断。
+有解释、生命周期及连续性完整的取消不算gap，可随合格自然完整局正式计数。
+若H的before投影不完整或不可比，当前strict仍须失败，不提升H、复制after或假设取消无效果。
 
-## Four requested gap detectors: actual status and known risk
+工程开录门仍需真实Play、未提交拿牌取消0label、EndTurn和其它非出牌选择，原件/离线/严格Managed均过。
+通过后直接请用户正式英文整局，不另加真人短段；首局开头已保存片段优先核对，不打断游戏。
+只有用户操作正式局；找不到用户或需要其决定时等该依赖，其他已授权独立修复继续。
+至少3自然完整英文局及逐幕/第三幕/胜利等原要求保留；缺口原件保留，不能拿散落成功或诊断片段拼整局。
+Source4停止P1新增投入/预检；旧约两万资产不强制迁移/删除，本轮没有逐条重审或转移资格。
 
-(a) Seen unsupported actions: existing captured accepted-action/PB/match failures emit
-issue; unobserved choices remain a known risk. (b) 用户已改为每个native accepted有派生决策或issue；
-新执行S路线及accepted→derived或issue对账已实现，自测06有78个输入完整对账但13个真实绑定缺陷，当前修复待新实测。 (c) Every inter-decision change explained
-by recorded choices and automatic effects: partial lifecycle/successor/sequence checks,
-no exhaustive independent effect-accounting proof. (d) Strict Managed mismatch: implemented
-for derived trajectories and tested on native02/04 bounded prefixes, not a formal whole run.
-A choice never observed by any capture hook can evade(a);(b)/(c) do not currently close
-that hole. Managed(d) may expose changed state but cannot prove every omitted choice
-was detected. Silent omission remains a known risk, not a complete guarantee. Exact
-source anchors and limits are in P1 section4.1.
+完整性检测：(a)已观察但不支持的输入有issue；(b)native accepted均有派生或issue并对账；
+(c)完整状态变化的独立因果核算只有部分；(d)可派生轨迹有严格比较实现和旧04有界实证。
+未被任何hook观察的输入仍有静默漏录风险；0issue、Close成功、BOM通过都不证明没有漏录。
+已有记录器方法按现P1 requires定向复用，历史PASS不替当前安装/原生/Human/研究准入。
 
-## User recording and follow-up
-
-Before inviting formal recording, a real engineering short segment must cover Play,
-unsubmitted pickup cancel with zero labels, EndTurn and another non-card decision,
-with complete originals, offline derivation/verification and strict Managed replay.
-Native04通过旧短段；native05/06均未过。新接线修复已实现，新构建安装及加载核对后仍须
-用户5–10分钟快速连点、完整原件/离线/严格Managed通过，才重开正式局，不另加Human短段。Check the first
-saved opening segment as Human validation without interrupting the game.
-
-A game takes about30 minutes; no need to monitor midway in real time. Convert/check
-immediately after each game. On an original gap, report exactly what and at which step;
-the user decides continue/restart while engineers repair the recorder and make a new
-candidate. Preserve gap originals; they do not count toward at least3 whole games.
-A pre-gap segment may count mechanism coverage only if Reference correctness, offline
-verification and strict Managed replay all pass on that same occurrence.
-Only the user plays formal games. If unavailable or unable to find the entry, wait for
-formal play/required decisions while independent work continues. 用户已恢复并完成自测06，新接线和取消分流稳定后再请用户操作短测；需要用户时等待，不代录。
-02:57轮的2小时时间盒仅为历史，本轮按用户已恢复工作继续普通修复及原检查点。
-
-Oct19 09:00 Brisbane is the core/self-test checkpoint. If missed, report blockers,
-remaining work/time, then continue ordinary authorized repairs; plan changes go to user.
-Checkpoint scheduling ends after Oct20 09:00; only the deadline automation reports16:30.
-A scheduling pause does not stop engineering. At deadline protect any ongoing game or
-conversion and complete normal Close/pack; report pending, then actual results afterward.
+整体冻结和最终PR仍待用户批准。硬截止10-20 16:30 Brisbane不变。
+09:00核心检查点未过须报具体卡点/剩余工作后继续普通修复，不擅自延期或无限停等批复。
+p1检查点到10-20 09:00停止定时触发，16:30只由p1-2截止报告；暂停定时不打断正在录制/转换。
+无新云费用、上传、训练或其他chat消息。其他冻结剩余项继续在总11行报告中逐项保留。
 
 ## Remaining Platform non-claims
 

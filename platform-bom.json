@@ -4,15 +4,15 @@
   "components": {
     "native_foundation": {
       "version": "0.1.0-rc.5",
-      "source_revision": "824847fb0625216051874e981006a72ea3ffda85",
-      "component_tree_revision": "ee0b8345fbb791e42629a473d8754dd92a7174c6",
-      "component_source_digest_sha256": "4343f3599d779eaf2c019189d75b120ddd34fb0c568a275c96bd4c1c0b874fd3"
+      "source_revision": "3b512a5da862141f7a68bbb0dff9533eb0e17af9",
+      "component_tree_revision": "4913036757795f927f15b82ef29c18f8d4840582",
+      "component_source_digest_sha256": "bc7b6fa86d12f6599d7bf60596f78808d2bff990979b9be1a403570795709abe"
     },
     "connector": {
       "version": "1.3.0-rc.25",
-      "source_revision": "ef9dc6cb5c41a225463421646d1a14ecf6c5f183",
-      "component_tree_revision": "109c5f3f53c5fe5a93990ceb95eeb147e335eefd",
-      "component_source_digest_sha256": "e621dece7b3bf33978aa400d4613daee15d87cb967cdeb4410d7485c0ac0fb38"
+      "source_revision": "3b512a5da862141f7a68bbb0dff9533eb0e17af9",
+      "component_tree_revision": "fb5002cfcf28b8194968702a781fb32592266e52",
+      "component_source_digest_sha256": "464c1ac004f331dbfb7ad7535458544a8ec576901836d7f3aaf2aa4cfe186f80"
     },
     "host_runtime": {
       "version": "1.1.0-rc.32",
@@ -157,8 +157,8 @@
     },
     "connector": {
       "source_revision": "09e5c2363fff64b2e8cfa07d16ec7cf22d8ad3b5",
-      "current_component_source_revision": "ef9dc6cb5c41a225463421646d1a14ecf6c5f183",
-      "current_component_source_digest_sha256": "e621dece7b3bf33978aa400d4613daee15d87cb967cdeb4410d7485c0ac0fb38",
+      "current_component_source_revision": "3b512a5da862141f7a68bbb0dff9533eb0e17af9",
+      "current_component_source_digest_sha256": "464c1ac004f331dbfb7ad7535458544a8ec576901836d7f3aaf2aa4cfe186f80",
       "source_relation": "loaded_human_v2_artifact_precedes_unified_platform_source",
       "artifact_sha256": "6c66cbf06757dca3e7d910467fb56b89376f109c6d7d0ba47d2bc0260ab4a3d2",
       "artifact_mvid": "11f1da35-558f-4346-8ec9-a493fea95cb8",
@@ -258,8 +258,8 @@
     "connector": {
       "source_revision": "4de52cfd72c6bf5b0d2312538152e81c616dabfb",
       "source_digest_sha256": "8651b47e2fec8e0c77689a8e8774377795d79c188f2d69910a116e72db8f78c1",
-      "current_component_source_revision": "ef9dc6cb5c41a225463421646d1a14ecf6c5f183",
-      "current_component_source_digest_sha256": "e621dece7b3bf33978aa400d4613daee15d87cb967cdeb4410d7485c0ac0fb38",
+      "current_component_source_revision": "3b512a5da862141f7a68bbb0dff9533eb0e17af9",
+      "current_component_source_digest_sha256": "464c1ac004f331dbfb7ad7535458544a8ec576901836d7f3aaf2aa4cfe186f80",
       "source_relation": "loaded_native_source_precedes_current_discriminator_source",
       "artifact_sha256": "04104ca5cd47c82329be185a8aa7017f7982b2062048fbf825488bead231d1c1",
       "artifact_mvid": "7408a183-f5a8-4f95-a997-dbf588b1536b",
