@@ -1,56 +1,66 @@
-# 当前工作：三局原件已保留，继续冻结项与实际差异归因
+# 当前工作：两项扩展已验收，修采集后等待工程短验
 
-更新于2026-10-19。本页为仓库导航；唯一现场状态是工作区固定文件
+更新于2026-10-19。本页为仓库导航；唯一现场状态为工作区固定文件
 `work/P1-SEMANTIC-ACTIVE-20261019.md`，主报告为`work/P1-QUEUED-INPUT-REPORT-20261019.md`。
-恢复前检查准确Git、脏改、agent及进程；旧worker报告不派发当前工作。
+恢复前检查准确Git、脏改、agent及进程。不要从旧报告重复启动任务。
 Resolve live GitHub refs; current source and original evidence override this file.
 
-## 当前结果和下一步
+## 当前结果与下一步
 
-三局均同一已装Mod，已正常Close/pack/退出。首局自然三幕胜利，3149原件全验，
-1067accepted完整解释、980选择加胜利terminal共981点；Smith父unknown只按用户
-限定批准解释取消，0成功label，其它unknown仍阻断。第二局第三幕48层loss，
-2069原件全验、716accepted全终结、无producer issue，原3次非战斗Foul Potion已按用户批准范围、同S真实药水与A(S)归约，
-716次全部有归属，697derived，667轨迹点，整局结构PASS。第三局2次同类用药也已归约。第三局第二幕33层loss、1033原件全验、369accepted全终结；
-有1次丢药exact binding ambiguous导致原H/PB没有封存，以及
-2次商店移除false/unknown。相邻PB不能补原H，Smith限定解释不扩大给商店移除。
-三份整局文件保存3/3、无未解释source issue来源2/3、完整P1派生2/3，三局验收未通过。
+用户已批准公开升级预览、限定非战斗用药归约，两项源码与定向实测完成。
+SDK571、Managed55、native64检查通过；两端共用原生detached preview，
+Read详情revision2含升级卡、关键词/hovercards，预览entity_id为空。
+独立Reference与Managed同seed、Reference实际prepared progress的新Neow
+PB/P1均含4张Defect Defend的基础5/升级8，完整起点观察相等；Reference
+6次信息操作的两张实际CUA图显示同卡5→8，返回前后完整P1相等，0unknown，
+两侧正常close。限定非作者实际原图/原件复核通过，只授该字段和样例，
+不授全内容INFO、整局Host等价或旧三局的新信息资格。原三局不回填。
 
-B已执行奖励原生例外open→Skip并严格比较完整前/中/后，06连续118选择相同，
-随后在独立用药执行S目录4对5差异停止。用户已决定先停B、继续其它冻结项，
-用药映射另议；不自行实施D、不从H补S、不删合法动作。该混合前缀不授P1-only全轨。
+原三局同旧992候选正常Close/pack。第一局三幕win、3149原件全验、
+1067accepted已解释、981轨迹点；第二局第三幕48层loss、2069原件，
+3次非战斗用药现按同S真实药水/A(S)归约，716accepted全部有归属、667点，
+整局结构通过。第三局第二幕33层loss、1033原件、369accepted；其2次同类
+用药已归约，但1次丢药原H/PB缺失和2次merchant父unknown仍阻断。
+三局文件闭包3/3、无未解释producerissue的来源2/3、结构完整派生2/3。
+结构完整不等于信息够用、整局严格或训练入选。
 
-准确eca6ce72批次Managed40已全部运行，24自然loss/16技术停止、5unknown/7taint，
-0budget、40replayverified只证明trace，整批FAIL。Reference20全部自然loss、1471选择、0unknown/taint/budget，
-逐局terminal原字节及normalclose验收PASS；当前全部游戏/批次结束。双Host R20同包/同seed/同prepared progress各自真实短链PASS，
-不是整局或Host等价。两组7张原图INFO已独核：基本卡/关键词、意图、遗物说明、Coolant2及Strength7相符；
-同一deck Defend公开升级预览实际5→8，目标PB全树/P1只有5，INFO不能PASS。
-用户已批准补公开升级预览并验收、补限定非战斗用药归约；B继续停止。
-两项源码已通过SDK571、Host55、native64检查及限定非作者复核。真实renderer测试为
-DefendIronclad fixture，不能替代Defect实际INFO。新Managed候选已通过官方独立prepare
-的源码/产物/MVID/localization核验。下一步正常部署新Mod、采新PB/P1并与原生Defect
-升级预览原图核对；不回填原三局、不自动重录、不恢复B。
+用户最新选择“保留三局要求，先修采集再安排补采”。采集源码修复已提交并
+通过限定非作者复核：popup discard按exact owner/operation及完整公开
+verb/operands绑定；已捕获但匹配失败的同一PB保留，绑定仍不合格。新Task
+保留真实status/bool；Smith/merchant仅有对应具体selector callback的明确
+终结Cancel及正常返回false才记cancelled，故障仍unknown。adapter还核完整
+原before/selector/after全公开相等，0成功label；新故障不能套旧Smith专批，
+旧第三局不改。Node73、Host witness23、Core定向15通过；首批Annotator
+完整Core439检查通过，最后条件修正做了定向复验与实际Mod编译。
 
-## 当前源码、测试与范围
+新Mod已从干净源码构建/部署，实际冷加载身份核对通过，旧候选rollback均保留。
+当前唯一工程录制native-selftest-capture15停在Neow，工程来源agent_native_ui，
+非正式补采。窗口工具截图正常但鼠标连续noWindowsAvailable，尚无游戏决策，
+已请用户协助5–10分钟工程操作；上限18:55 Brisbane。必须先完成实际短段
+原件/共享派生/Managed短严格，再邀请正式补采；不同候选不能直接相加。
+准确进程/端口/PTY只见现场入口，不按本文自行新开游戏。
 
-整合I正常merge冻结W后可写；W保持eca6ce72供原批次，不改变其源码/dist。
-I只修现契约下Managed selector缺HUD的明确partial表示，以及delivered后继
-投影失败后禁止提供旧观察/Reads、后续text-menu新请求明确拒绝且不重试原生动作。
-109定向与14公开信息检查通过，限定非作者复核完成；旧40局结果不因此转为通过。
-未补selector信息、未加动作或扩大P1语义。随后补齐既有reward.leave的整页native skip动词映射，
-保留exact bound ID及原skip；SDK559/typecheck/build、消费者63、7原状态离线归约通过，
-限定非作者复核接受。原40局FAIL及原候选证据不转给新source，未重跑native效果。
+## 批次和其它边界
 
-最小云在授权范围完成首局3158文件R2完整回读和唯一Modal CPU读取同SHA，
-App停止且无容器，云覆盖1/3。无新上传、GPU、训练或历史迁移。
-实际Mod仍9921819/MVID65682、native源a267912d，准备按新批准范围部署验收；
-三局原始身份不变。当前没有游戏或录制运行。
+B按用户决定停止：06跨index56原生open→Skip完整前/中/后相同，连续118
+选择后独立战斗用药时点目录4对5停止。无07、无D、不从H补S、不删合法动作；
+本轮非战斗用药扩展不解决或解释该时点差异，不授P1-only全轨。
+
+旧eca6ce72批次Reference20自然loss20/1471选择、0unknown/taint/budget，
+逐局terminal原字节及正常close PASS；Managed40自然loss24/技术停止16、
+5unknown/7taint，整批FAIL。两侧同包/seed/prepared progress各自R20短链PASS，
+不是整局或Host等价。新候选未重跑40+20，旧通过不自动转移。
+旧selector缺HUD的partial表示、失败后继禁止旧观察/Reads、奖励整页skip映射
+修复均保留；原40局不会因源码变化转为通过。W冻结eca6ce72不改源码/dist。
+
+最小云首局3158文件R2完整回读与唯一Modal CPU同SHA通过，资源已停止，
+正式云覆盖1/3。本轮无新上传、GPU、训练、push或新PR。
 
 ## Remaining Platform non-claims（上层链路与后续边界）
 
 从[唯一链路和连接表](../plans/p1-prefreeze-2026-10-18/CHAIN_PURPOSES.md)及
-[P1协议](../protocols/P1_GLOBAL_R1.zh-CN.md)进入owner。P1是可替换profile；
-C1同P1动作Host一致、C2声明原生操作一致、C3投影正确、C4功能够用分别判断。
-GUI/自动落盘/轻量恢复方案及A独立原生重放、C下一版freeze_card_group均已登记
+[P1协议](../protocols/P1_GLOBAL_R1.zh-CN.md)进入owner。C1同P1下Host一致、
+C2声明原生操作一致、C3投影正确、C4信息功能够用分别判断。P1是可替换profile。
+GUI/自动落盘/轻量恢复、A独立原生重放和C下一版freeze_card_group仅登记
 [冻结后首批待做卡](../plans/p1-prefreeze-2026-10-18/POSTFREEZE_RECORDING_WORK_CARD.zh-CN.md)，
-冻结前不实现，不新增门。整体冻结、最终PR和训练未批准；10-20 16:30硬截止不变。
+冻结前不实现。整体冻结与最终PR仍须批准，10-20 16:30硬截止不变。
