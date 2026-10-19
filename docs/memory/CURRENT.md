@@ -4,6 +4,7 @@
 `work/P1-SEMANTIC-ACTIVE-20261019.md`，主报告是`work/P1-QUEUED-INPUT-REPORT-20261019.md`。
 总11行进度在`outputs/P1-round19-progress-2026-10-18.md`并镜像共享replies。
 恢复前先查准确Git、脏改、agent、Game/Recorder/Managed进程；旧worker快照不派发当前工作。
+Resolve live GitHub refs; current source and original evidence override this file.
 
 ## 已验证与当前差距
 
@@ -19,6 +20,7 @@ Close/pack成功，但Host shutdown fetch failed且forced=true，退出诊断保
 0label、comparison.equal仍false，真实差异和前后严格检查都保留；登记不授予整轨等价。
 Agent目前没有“冻结但保留该奖励组”的独立选择，新增freeze_card_group只是建议，未获批准或实施。
 最终691=669成功派生+5纯presentation接受+16例外接受+1unknown；该unknown仍阻断整段trajectory。
+669只是当前adapter派生数量；后述A(S)漏类型已由实比发现，旧10不能宣称P1所需原件语义完整。
 
 自测10连续前缀321绑定同一完整封包，90accepted/84个P1选择及最终后继，共85点，来源未改。
 实际Managed用同seed/同prepared progress运行：前30选择严格equal，第31点Reference执行A(S)
@@ -40,7 +42,7 @@ SDK553、Host968/定向34、Annotator437及限定非作者复核通过，真实�
 没有要求用户另录，正式录制仅用户操作。新源未继承旧24e7已装/已加载资格。
 真实正在运行的进程及新安装身份只从现场入口和原回执核对，不从本页假设。
 
-## 既定要求与边界
+## Remaining Platform non-claims
 
 从[唯一链路图](../plans/p1-prefreeze-2026-10-18/CHAIN_PURPOSES.md)及
 [P1 §4.1](../protocols/P1_GLOBAL_R1.zh-CN.md#41-录制原件派生p1的requires用户已批准)进入owner。
