@@ -64,7 +64,7 @@ public sealed class NativeRewardCardRendererTests
     [Fact]
     public void SameActualNativeRewardCardRetainsTheFullReferenceDtoAfterExactParentScreenBinding()
     {
-        // Component fixture only: two synthetic localization entries isolate
+        // Component fixture only: bounded synthetic localization entries isolate
         // the actual native card/SmartFormat renderer from Godot filesystem.
         // No card renderer, reward selection, legality or effect is patched.
         var instance=typeof(LocManager).GetProperty("Instance",BindingFlags.Static|BindingFlags.Public)!;
@@ -72,8 +72,12 @@ public sealed class NativeRewardCardRendererTests
         var manager=(LocManager)RuntimeHelpers.GetUninitializedObject(typeof(LocManager));
         var tables=new Dictionary<string,LocTable> { ["cards"]=new("cards",new Dictionary<string,string>
             { ["STRIKE_IRONCLAD.title"]="Strike", ["STRIKE_IRONCLAD.description"]="Deal {Damage:diff()} damage.",
-              ["DEFEND_IRONCLAD.title"]="Defend", ["DEFEND_IRONCLAD.description"]="Gain {Block:diff()} Block." },null),
+              ["DEFEND_IRONCLAD.title"]="Defend", ["DEFEND_IRONCLAD.description"]="Gain {Block:diff()} Block.",
+              ["GUILTY.title"]="Guilty", ["GUILTY.description"]="Unplayable. Removed after {Combats:diff()} combats." },null),
+              ["card_keywords"]=new("card_keywords",new Dictionary<string,string>
+                { ["UNPLAYABLE.title"]="Unplayable", ["UNPLAYABLE.description"]="Cannot be played.", ["PERIOD"]="." },null),
               ["static_hover_tips"]=new("static_hover_tips",new Dictionary<string,string> { ["BLOCK.title"]="Block", ["BLOCK.description"]="Reduces attack damage.",
+                ["UNPLAYABLE.title"]="Unplayable", ["UNPLAYABLE.description"]="Cannot be played.",
                 ["SUMMON_STATIC.title"]="Summon", ["SUMMON_STATIC.description"]="Summon a companion.",
                 ["SUMMON_DYNAMIC.title"]="Summon", ["SUMMON_DYNAMIC.description"]="Summon a companion." },null) };
         instance.SetValue(null,manager);
@@ -192,6 +196,14 @@ public sealed class NativeRewardCardRendererTests
             Assert.True(maxedPreview.Complete, string.Join(",", maxedPreview.Missing));
             Assert.Equal("not_applicable", maxedPreview.UpgradePreview!["status"]);
             Assert.Null(maxedPreview.UpgradePreview["card"]);
+            ModelDb.Inject(typeof(Guilty));
+            var guilty = ModelDb.Card<Guilty>().ToMutable();
+            typeof(CardModel).GetField("_pool",BindingFlags.Instance|BindingFlags.NonPublic)!.SetValue(guilty,ModelDb.CardPool<IroncladCardPool>());
+            var cursePreview = NativePublicCardDetails.CaptureWithUpgradePreview(guilty, PileType.Deck);
+            Assert.True(cursePreview.Complete, string.Join(",", cursePreview.Missing));
+            Assert.Equal("not_applicable", cursePreview.UpgradePreview!["status"]);
+            Assert.Null(cursePreview.UpgradePreview["card"]);
+            Assert.Equal(0, guilty.CurrentUpgradeLevel);
             var defender=NativePublicCardDetails.Capture(defend,PileType.None);
             Assert.True(defender.Complete,string.Join(",",defender.Missing));
             var keywords=(List<Dictionary<string,object?>>)defender.Card["keywords"]!;

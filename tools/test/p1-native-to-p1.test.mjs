@@ -723,7 +723,22 @@ test('new explicit merchant cancellation has zero labels and full original conti
   assert.deepEqual(report.native_cancellations[0].continuity_checkpoints.map(c => c.boundary), ['before', 'after']);
 });
 
-for (const defect of ['old_unknown', 'faulted', 'missing_result', 'foreign_child', 'foreign_selector', 'missing_selector', 'missing_proof', 'changed_world'])
+test('an explicit final selector cancellation uses its actual parent successor without another input', async () => {
+  const { source } = await explicitMerchantCancellationExample();
+  source.events.splice(4);
+  const report = convertNativeSemanticOriginals(source, sdk, core);
+  assert.equal(report.blocking_issues.length, 0, JSON.stringify(report.blocking_issues));
+  // A cancel-only fixture still has no successful P1 action/trajectory.
+  assert.equal(report.complete, false);
+  assert.equal(report.native_cancellations.length, 1);
+  assert.equal(report.accepted_accounting.native_cancelled, 2);
+  assert.ok(report.actions.every(action => action.choice_id === null));
+  const after = report.native_cancellations[0].continuity_checkpoints.find(check => check.boundary === 'after');
+  assert.equal(after.source_event_id, source.events[3].event_id);
+  assert.deepEqual(after.source_public_basis, source.events[3].successor_basis);
+});
+
+for (const defect of ['old_unknown', 'faulted', 'missing_result', 'foreign_child', 'foreign_selector', 'missing_selector', 'missing_proof', 'changed_world', 'missing_after', 'incomplete_after'])
   test(`merchant cancellation keeps ${defect} blocking`, async () => {
     const { source, before, retain } = await explicitMerchantCancellationExample();
     const end = source.events[3], proof = end.native_completion.explicit_selector_cancel;
@@ -734,7 +749,9 @@ for (const defect of ['old_unknown', 'faulted', 'missing_result', 'foreign_child
     if (defect === 'foreign_selector') proof.selector_owner_witness_id = 'foreign';
     if (defect === 'missing_selector') { delete proof.selector_owner_witness_id; delete source.events[1].native_witness.selector_owner_witness_id; }
     if (defect === 'missing_proof') delete end.native_completion.explicit_selector_cancel;
-    if (defect === 'changed_world') { before.snapshot.persistent.content.player.gold--; source.events[4].basis = retain(before); }
+    if (defect === 'changed_world') { before.snapshot.persistent.content.player.gold--; end.successor_basis = retain(before); }
+    if (defect === 'missing_after') end.successor_basis = null;
+    if (defect === 'incomplete_after') end.successor_missing_reason = 'basis_incomplete';
     const report = convertNativeSemanticOriginals(source, sdk, core);
     assert.equal(report.native_cancellations.length, 0); assert.equal(report.complete, false);
   });

@@ -286,7 +286,9 @@ public static partial class NativeCardPreviewReadQualification
                     || upgrade.DeclaringType == card.GetType() && NativeUpgradeMethodInventory.Contains(card.GetType().Name))
                 // Harmony keys inherited methods by their actual declaration.
                 || !IsUnpatched(upgrade.DeclaringType?.GetMethod("OnUpgrade", NativeMembers | BindingFlags.DeclaredOnly))
-                || !BaseImplementation(card.GetType(), typeof(CardModel), "get_MaxUpgradeLevel")
+                // Reuse the render qualification for the effective native getter;
+                // native curses/status cards override the limit with zero.
+                || !NativeRenderMethod(card.GetType().GetMethod("get_MaxUpgradeLevel", NativeMembers))
                 || !MethodsUnpatched(typeof(CardModel), "UpgradeInternal", "get_IsUpgradable", "get_CurrentUpgradeLevel",
                     "set_CurrentUpgradeLevel", "get_MaxUpgradeLevel", "AddKeyword", "RemoveKeyword", "InvokeEnergyCostChanged",
                     "get_UpgradePreviewType", "set_UpgradePreviewType")

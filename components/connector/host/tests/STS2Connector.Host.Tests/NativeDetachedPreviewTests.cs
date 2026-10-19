@@ -131,6 +131,31 @@ public sealed class NativeDetachedPreviewTests
     }
 
     [Fact]
+    public void NativeZeroUpgradeLimitOverridesHaveNoUpgradePreview()
+    {
+        var limits = typeof(CardModel).Assembly.GetTypes()
+            .Where(type => type.Namespace == "MegaCrit.Sts2.Core.Models.Cards" && type.IsSubclassOf(typeof(CardModel)))
+            .Select(type => type.GetMethod("get_MaxUpgradeLevel", Flags | BindingFlags.DeclaredOnly))
+            .OfType<MethodInfo>().ToArray();
+        Assert.Equal(39, limits.Length);
+        foreach (MethodInfo limit in limits)
+        {
+            Assert.Equal(new byte[] { 0x16, 0x2a }, limit.GetMethodBody()!.GetILAsByteArray());
+            CardModel card = Mutable(limit.DeclaringType!);
+            string before = Values(card);
+            Assert.False(card.IsUpgradable);
+            Assert.False(NativeDetachedCardPreviewFactory.TryDeckUpgrade(card, out var preview, out var gap));
+            Assert.Equal("native_preview_card_not_upgradable", gap);
+            Assert.Null(preview);
+            Assert.Equal(before, Values(card));
+        }
+        using var patch = new Patched(typeof(Guilty).GetMethod("get_MaxUpgradeLevel", Flags)!);
+        Assert.False(NativeDetachedCardPreviewFactory.TryDeckUpgrade(Mutable<Guilty>(), out _, out var patchedGap));
+        Assert.Equal("native_preview_upgrade_closure_unqualified", patchedGap);
+        Assert.Equal(0, calls);
+    }
+
+    [Fact]
     public void DarknessUsesTheNativeBaseNoOpUpgradeAndRefusesItWhenPatched()
     {
         CardModel original = Mutable<Darkness>();

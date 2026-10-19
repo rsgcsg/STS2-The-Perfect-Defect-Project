@@ -87,6 +87,11 @@ export function classifyNativeSelectorCancellation({ row, child, restored, termi
     && proof.selector_owner_witness_id === child?.native_witness?.selector_owner_witness_id;
   const legacySmith = smith && parentEnd?.phase === 'unknown' && parentCompletion != null
     && ['native_task_status', 'native_bool_result', 'explicit_selector_cancel'].every(key => !Object.hasOwn(parentCompletion, key));
+  // New native completions already retain the actual post-cancel basis. A final
+  // cancel needs no later player input to supply an unrelated accepted frame.
+  const afterEvent = explicit ? parentEnd : restored;
+  const afterReference = explicit ? parentEnd.successor_basis : restored?.basis;
+  const afterMissing = explicit ? parentEnd.successor_missing_reason : restored?.missing_reason;
   if ((!smith && !merchant) || !(explicit || legacySmith)
     || row.native_receipt?.kind !== 'semantic_ui_accepted' || row.native_receipt.carrier_ref !== row.action_witness_id
     || row.bound_action?.verb !== (smith ? 'activate' : 'open') || row.missing_reason != null || !row.basis
@@ -104,11 +109,11 @@ export function classifyNativeSelectorCancellation({ row, child, restored, termi
     || child.native_witness.parent_owner_witness_id !== parentCompletion.native_operand_witness_id
     || child.bound_action?.verb !== 'cancel' || !child.basis || childEnd?.phase !== 'finished'
     || childEnd.native_completion?.native_callback !== callback || childEnd.native_completion.terminal !== true
-    || !restored?.basis || restored.missing_reason != null
-    || ![child, parentEnd, childEnd, restored].every(item => item.session_id === row.session_id && item.run_id === row.run_id)
+    || !afterReference || afterMissing != null
+    || ![child, parentEnd, childEnd, afterEvent].every(item => item.session_id === row.session_id && item.run_id === row.run_id)
     || !(row.sequence < child.sequence && child.sequence < childEnd.sequence
-      && childEnd.sequence < parentEnd.sequence && parentEnd.sequence < restored.sequence)) return null;
-  const before = basis(row.basis), middle = basis(child.basis), after = basis(restored.basis);
+      && childEnd.sequence < parentEnd.sequence && (explicit || parentEnd.sequence < restored.sequence))) return null;
+  const before = basis(row.basis), middle = basis(child.basis), after = basis(afterReference);
   if (![before, middle, after].every(value => completeInformation(value))) return null;
   const first = before.snapshot.interaction.content.surface, selector = middle.snapshot.interaction.content.surface;
   if (smith ? first.kind !== 'rest_site' || !first.options?.some(option => option.option_id === 'SMITH'
@@ -126,7 +131,7 @@ export function classifyNativeSelectorCancellation({ row, child, restored, termi
   const comparison = core.compareOriginalPresentationBases(before, after);
   if (!comparison.equal) return null;
   return { decision_ids: [row.decision_id, child.decision_id], before: { event: row, reference: row.basis, basis: before },
-    after: { event: restored, reference: restored.basis, basis: after }, comparison,
+    after: { event: afterEvent, reference: afterReference, basis: after }, comparison,
     receipt: { decision_id: row.decision_id, decision_ids: [row.decision_id, child.decision_id],
       action_witness_id: row.action_witness_id, source_event_id: parentEnd.event_id,
       terminal_sequence: parentEnd.sequence, disposition: 'cancelled', phase: 'cancelled_semantic_selector',
