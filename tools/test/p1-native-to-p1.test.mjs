@@ -420,7 +420,7 @@ test('a cancelled-before-execution input retains complete popup H as source with
   assert.equal(report.actions.find(action => action.decision_id === 'second').choice, null);
   const before = report.trajectory.points.flatMap(point => point.continuity_checks ?? [])
     .find(check => check.boundary === 'before');
-  assert.equal(before.observation.status, 'unsupported');
+  assert.equal(before.observation.scene.native_kind, 'potion_popup');
   assert.equal(before.observation.envelope.required_information_complete, false);
 });
 
