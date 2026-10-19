@@ -125,7 +125,12 @@ export function matchNativeExecutionChoice(state: P1SessionState, basis: P1Basis
   if (execution.bound_action) {
     const bound = execution.bound_action;
     const human = accepted.bound_action;
+    // As in the native owner, presentation verbs may differ (travel/activate).
+    // The declared binding must still name the exact S subject and all operands.
     if (!human || execution.native_input != null || space.human_bound_action_id !== bound.bound_action_id
+        || (selected.subject_referent_id ?? null) !== (bound.subject_referent_id ?? null)
+        || canonicalJson(selected.arguments) !== canonicalJson(Object.fromEntries(
+          bound.arguments.map(argument => [argument.role, argument.referent_id])))
         || human.verb !== bound.verb || (human.subject_referent_id ?? null) !== (bound.subject_referent_id ?? null)
         || canonicalJson([...human.arguments].sort((a, b) => a.role.localeCompare(b.role)))
           !== canonicalJson([...bound.arguments].sort((a, b) => a.role.localeCompare(b.role))))

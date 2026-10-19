@@ -163,3 +163,18 @@ it("uses only a real S public BoundAction when that execution representation is 
   human.bound_action.arguments = [{ role: "target", referent_id: "changed-target" }];
   expect(matchNativeExecutionChoice(createSession("same", "reference"), basis, human, original).status).toBe("unmapped");
 });
+
+it("a public S binding never authorizes a different native subject or target", () => {
+  const { basis, accepted, execution } = executionExample();
+  const selected = (basis.snapshot as any).bound_actions.actions.find((item: any) => item.verb === accepted.native_input.verb
+    && item.subject_referent_id === accepted.native_input.subject_referent_id);
+  const human = { ...accepted, native_input: null, bound_action: selected };
+  const original = { ...execution, native_input: null, bound_action: selected,
+    execution_action_space: { ...execution.execution_action_space, human_bound_action_id: selected.bound_action_id } };
+  const native = original.execution_action_space.actions.find((item: any) => item.key === original.execution_action_space.observed_action_key);
+  native.subject_referent_id = "another-real-card";
+  expect(matchNativeExecutionChoice(createSession("same", "reference"), basis, human, original).status).toBe("unmapped");
+  native.subject_referent_id = selected.subject_referent_id;
+  native.arguments = { target: "another-target" };
+  expect(matchNativeExecutionChoice(createSession("same", "reference"), basis, human, original).status).toBe("unmapped");
+});
