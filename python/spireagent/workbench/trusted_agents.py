@@ -46,9 +46,9 @@ def agent_capabilities() -> list[dict[str, Any]]:
 
 def trusted_agent_support(adapter_id: str) -> ModuleType:
     if adapter_id == "stpd-p1-mstd-agent":
-        from stpd.p1 import installation
+        from stpd.p1 import installation as p1_installation
 
-        return installation
+        return p1_installation
     if adapter_id == "spireagent-global-public-program":
         from spireagent.workbench import global_program_support
         return global_program_support
