@@ -23,7 +23,7 @@
 
 编号表示逻辑连接，不要求每次运行经过全部节点；SDK、Mod包装和传输形式不另设语义层。**交互profile是可替换角色，P1只是当前选择。每个profile必须声明③④在线requires及⑥原件派生requires**：目标字段/时点/公开来源α、接受事实/顺序/结果、完整性与拒绝条件、投影Π及版本。新增来源只需证明其provides经声明的Π覆盖该profile的全部requires；更换profile换这些声明，图不变。原件尽量保存比单个profile更多的事实，但不因此宣称所有未来profile可用。实现不能自行重定义下游requires；真实语义取舍交用户。
 
-**比较声明也沿同一图定位（2026-10-19用户明确）：** Managed是Host实现，不是P1专用执行器；可直接消费受支持的原生语义操作，或经P1/其它profile实现R执行。C1是同起点同P1操作下Host一致；C2是声明原生操作范围下Host一致；C3是⑥投影Π正确；C4是profile对目标功能够用。原生Human→有损Π→P1→Managed不同，不能直接归因Host。B在已登记例外段补放原生实际操作，证明混合路径的限定一致，不能自动授予P1-only全轨或全部原生内部状态等价；A独立原生重放与C新P1动作冻结后才做。原件、派生及比较报告保留假设、例外和经过的连接，验收逐项见[冻结表](SCOPE_v0.3.zh-CN.md#1-11条进度依据和首训价值)，不另建链路或注册表。
+**比较声明也沿同一图定位（2026-10-19用户明确）：** Managed是Host实现，不是P1专用执行器；可直接消费受支持的原生语义操作，或经P1/其它profile实现R执行。C1是同起点同P1操作下Host一致；C2是声明原生操作范围下Host一致；C3是⑥投影Π正确；C4是profile对目标功能够用。原生Human→有损Π→P1→Managed不同，不能直接归因Host。B已延后；其历史试验在已登记例外段补放原生实际操作，只证明混合路径的限定一致，不能自动授予P1-only全轨或全部原生内部状态等价；A独立原生重放与C新P1动作冻结后才做。原件、派生及比较报告保留假设、例外和经过的连接，验收逐项见[冻结表](SCOPE_v0.3.zh-CN.md#1-11条进度依据和首训价值)，不另建链路或注册表。
 
 **2026-10-20现行决定与默认解释：** 原始记录、⑥转P1、跨Host对照和不同目的的重放分别判断，不要求每次都串过全部节点。P1里的出牌/用药状态默认按“前面已结算、现在轮到该动作”的串行执行态解释，沿既有rc4接缝取真实S/A(S)；原件仍保留真人实际连点/排队，不改游戏或伪造点击时点。按钮灰掉等暂存表现不能替代原生执行语义，执行目录也不授予新的公开输入权。Managed严格一致已延后，资产/差异收据保留，1a与T0实打用Reference；旧B实验和旧冻结表不构成当前派工。各类验证不互相代替，也不相互绑成未经用户要求的门。
 
@@ -31,14 +31,14 @@
 |---|---|---|---|
 | ① 世界→Host能力 | 真实规则/RNG/原生合法性、状态与生命周期 | STS2原生事实；Native Foundation见证；[Host合同](../../../components/host-runtime/README.md) | 既有实现；实际组合另核 |
 | ② Host能力→Connector | 同状态公开事实/Reads、精确操作、执行复验与结果 | Reference/Managed映射；[Player Environment](../../../components/connector/docs/player-environment/PROTOCOL.md) | 既有实现；Host差异不自动等价 |
-| ③ Connector→profile | profile声明的信息时点、完整目录、结果/unknown | Connector Snapshot/all advertised Reads/BoundAction/Receipt；[P1](../../protocols/P1_GLOBAL_R1.zh-CN.md)由共享核聚合/lower | P1 r1.3；全机制资格待同候选实证 |
+| ③ Connector→profile | profile声明的信息时点、完整目录、结果/unknown | Connector Snapshot/all advertised Reads/BoundAction/Receipt；[P1](../../protocols/P1_GLOBAL_R1.zh-CN.md)由共享核聚合/lower | P1 r1.4；全机制按已批跨版本组合及受影响补证实证 |
 | ④ profile→完整Agent | 声明的观察/动作/承诺与失败语义；原控制/消费保证 | P1共享核；AgentProgramPort/Policy Runtime；[ADR0016](../../adr/0016-agent-composition-and-execution-request.md) | 程序/Model组成完整Agent，Model不等于Agent |
 | ⑤ 来源→Store/Evidence | 来源/原始顺序/内容身份、原件与缺口不变 | Annotator、Runtime、选择器等各producer；[记录合同](../../../components/annotator/docs/SOURCE_SESSION_PROFILE_V3.md)、[Evidence](../../../components/evidence/README.md) | 每来源分开核；封包不证明Human或整局 |
 | **⑥ 原件→profile轨迹** | **每profile自己声明；P1以执行S/A(S)同snapshot完整PB1/all Reads/catalog派生；H仅来源，native key/全部operands精确匹配，结果/后继及起终/Close/pack** | **Annotator P1-native/AgentRun等原件；共享核reducer/lowering与声明的Π；[P1 §4.1](../../protocols/P1_GLOBAL_R1.zh-CN.md#41-录制原件派生p1的requires用户已批准)** | **定义4.1–4.2用户已批准；实现/探测四项与known risk见协议，实际开录未PASS** |
-| ⑦ profile轨迹→Curation | 来源资格、用途/use、谱系/划分与缺口处理 | 已验原件/派生轨迹；[Data/Provenance](../../../python/docs/DATA_AND_PROVENANCE.md) | 具体P1研究准入requires冻结后随Q链定 |
-| ⑧ Curation→研究输入/目标 | Input/Target字段、曝光/历史/reset、target/mask与split | Projection/InputSpec/TargetSpec owner；[研究地图](../../../python/docs/DOCUMENT_MAP.md) | 冻结后Q链定，当前不称dataset合同已冻结 |
+| ⑦ profile轨迹→Curation | 来源资格、用途/use、谱系/划分与缺口处理 | 已验原件/派生轨迹；[Data/Provenance](../../../python/docs/DATA_AND_PROVENANCE.md) | 具体用途由Q链owner定；已批T0a实际读入，非正式研究准入 |
+| ⑧ Curation→研究输入/目标 | Input/Target字段、曝光/历史/reset、target/mask与split | Projection/InputSpec/TargetSpec owner；[研究地图](../../../python/docs/DOCUMENT_MAP.md) | T0 owner接当前Input/Target；正式dataset/研究配置未因此冻结 |
 | ⑨ 研究输入→训练/Model | recipe/初始化/输入身份、更新数/预算、checkpoint | TrainingService/engine/worker/provider；[workload](../../../python/docs/STRUCTURED_WORKLOAD.md) | 已有机制；P1实际consumer/首训资格未验 |
-| ⑩ Model→Agent→评估/新原件 | 可加载权重、输入/状态语义、组合/请求和固定评估条件 | 注册/AgentComposition/ExecutionRequest、Runtime/result reader；[Agent执行](../../../python/docs/AGENT_EXECUTION_CONTRACT.md) | 部分有；沿已批Q3v3，冻结后接线验收 |
+| ⑩ Model→Agent→评估/新原件 | 可加载权重、输入/状态语义、组合/请求和固定评估条件 | 注册/AgentComposition/ExecutionRequest、Runtime/result reader；[Agent执行](../../../python/docs/AGENT_EXECUTION_CONTRACT.md) | T0a离线接线进行；T0b ready且获独占窗口才实打 |
 
 | 抽象节点 | 当前实现 | 合同/责任owner |
 |---|---|---|
@@ -57,7 +57,7 @@ P1原件整局完整、派生完整与新路线E2/E3适用性已由用户批准�
 
 两次预检因不同原因失败时，对图回答：失败在什么连接；是实现未满足requires，还是requires未写清/错误；复用哪个已有owner、何时交付最小可验结果。native01/02的已做路线复查定位⑤→⑥：原件采集/Close不完整，和adapter表示匹配错误分别归原owner修复；不重跑旧失败来改旧结论。native02有效前缀离线/Managed通过仍不能填正常Close/pack开录PASS；native03主动零动作收尾也不是通过。
 
-**冻结后**再随Q链明确⑦⑧的用途/划分→模型输入requires；再考虑closeout对“改合同未写链路位置”的非阻塞轻提示。本次不实现checker、不加阻塞门、不重设已批Q3v3。
+**按当前已批T0a并行安排**由Q链owner明确⑦⑧的工程用途/划分→模型输入requires，正式研究准入仍另定；再考虑closeout对“改合同未写链路位置”的非阻塞轻提示。本次不实现checker、不加阻塞门、不重设已批Q3v3。
 
 ## 组件：位置、原因与首训价值
 

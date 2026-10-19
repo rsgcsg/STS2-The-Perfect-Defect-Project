@@ -26,11 +26,11 @@
     },
     {
       "source": "/Users/fire/Desktop/SpireAgentProject/claude-handoff-2026-10-13/P1_r1_SUPPORT_SCOPE_v0.3_2026-10-18.zh-CN.md",
-      "bytes": 55530,
-      "sha256": "ebd10d606eaf069cef6c4ea350ad893493659cc376f7922707be1df8ae1efa45",
+      "bytes": 57197,
+      "sha256": "dfaba5803001546da1de0a3e79a5e1d34502e0c684398bc770a7ef2ea996ac73",
       "repository_snapshot": "SCOPE_v0.3.zh-CN.md",
-      "repository_sha256": "c7f9e74b7af15431873f0b641eb69ad9c6c3217e131b66111d8c262d0b858d00",
-      "role": "canonical synchronized with user-approved cancellation and execution-boundary definitions; no runtime qualification transfer"
+      "repository_sha256": "273b9df2c119b0adeff0d4091dfa9897c719b2fdae7a89d9ae8f959572970d36",
+      "role": "current synchronized user decisions on cross-version cohort and deferred Managed gate; older scope snapshots preserved"
     },
     {
       "source": "/Users/fire/Documents/Codex/2026-10-17/a-t7-runtime-connector-status-settling/work/p1-K2-20261018/round19/scope-replies-before-merge.md",

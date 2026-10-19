@@ -1,6 +1,6 @@
 # P1 训练前收敛：项目地图与当前执行入口
 
-第19轮，2026-10-18。沿用 [Architecture](../../ARCHITECTURE.md)、[Components](../../COMPONENTS.md)、[ADR0016](../../adr/0016-agent-composition-and-execution-request.md) 和 [Document map](../../DOCUMENT_MAP.md)；本页是它们的任务导航，不另建协议、全局registry或治理检查器。**当前还未冻结：本批定义已合成、待用户批准；K0/K1/K2/K5/K6材料已交，K3表24项已exact tag核验后关闭、19条复用已入地图，K4既有9/10、B实际操作单仍缺。** 最终冻结PR仍需用户批准。硬截止2026-10-20 16:30 Brisbane，未完成交剩余清单，不降低门槛。
+更新于2026-10-20。当前仍未冻结。**用户已定跨版本组合：旧r14自然来源1局＋新版两局＋受影响机制补证，不称三局同候选；旧r14整局P1派生仍false。Managed严格/Managed40/旧B延后，1a/T0b用Reference，最终Reference20及Reference产品/R20另验。** 新版已安装/冷加载，A3原生queued目录、两点派生/ready后继及线上前后全观察已核；工程整包准备缺口保留，不作训练或整局。T0已实际读入15段441N，模型/恢复/端口尚未完成。K-F/K-T扩大整理在其固定报告执行，不重做S0。现场从[CURRENT](../../memory/CURRENT.md)进入，历史材料不派发任务。16:30是硬报告、不硬停；最终冻结PR待用户批准。
 
 历史查过：四份既有框架、设计沿革、旧19项任务、组件/Python地图、Full-Run data chain、Source3/4、Data/Provenance、PR25 rc4、K0/K1/K5/K6、第19轮原用户来源审计与当前同树源码。复用已有owner、采集链和来源证据；旧green、旧派发和旧资格不转贴当前组合。
 
@@ -10,7 +10,7 @@
 
 ## 目标
 
-长期目标是能打完整局、持续变强的Agent；下一阶段要在固定条件下可复验地优于随机。当前先完成P1技术组合与历史收敛，再做Q1评测、Q2用途/划分、Q3输入适配和训练链。P1是当前环境合同，不是永久唯一格式。详见唯一[冻结定义v0.3同步页及覆盖索引](SCOPE_v0.3.zh-CN.md)；源canonical精确路径/合并输入SHA见[来源索引](FREEZE_INPUTS.json)，本页不另增门槛。
+长期目标是能打完整局、持续变强的Agent；下一阶段要在固定条件下可复验地优于随机。当前P1技术组合/历史收敛与已批T0a离线工程并行；正式Q1/T1/T2仍按各自准备和授权。P1是当前环境合同，不是永久唯一格式。详见唯一[冻结定义v0.3同步页及覆盖索引](SCOPE_v0.3.zh-CN.md)；源canonical精确路径/合并输入SHA见[来源索引](FREEZE_INPUTS.json)，本页不另增门槛。
 
 ## 上层链路
 
@@ -74,13 +74,13 @@ Source4当前report-v3区分声明范围的`complete`与`whole_run`，可显式�
 
 冻结后第一批待做见[顺手录制、轻量恢复与存档续接卡](POSTFREEZE_RECORDING_WORK_CARD.zh-CN.md)：方案方向与取舍已采纳，冻结前不实现、不重装 Mod、不改游戏内界面；自动下一局携 P1 设置列第 1 片必修，方案批准不等于实现获批，不新增冻结门。
 
-## 状态与当前任务
+## 状态与当前任务（历史分项；现行从CURRENT进入）
 
 本节旧候选身份是历史事实；当前只从上面的P1-native路线和CURRENT指路执行，不恢复Source4取消专项。
 
 develop733782b1已正常合入PR205/fullCI39124068850 PASS；以下为旧文档时点的rootI committed1deca5ed功能组合；本次上层连接增量基于4b489108，最新状态从CURRENT查。实际installed d64/MVID494e234f在04 normal prepare/run解锁读回PASS，但Source4 complete=false（5unresolved/13gaps/2unknown）；producer471的39/179/65/55源码检查通过而未实装。Managed0426初始Neow fullP1+12Reads严格equal只是单点。42a Python consumer31/70源码PASS，rc38 package尚未实装，新产品与最终R20待验。旧原件/源码/build/install身份不互相追贴。
 
-## Known differences and next gates
+## Known differences and next gates（历史列表；现行门以SCOPE当前段为准）
 
 用户已批准共同机制新候选合计至少一次、Act2/3各自五类幕特有及三证同时PASS；冻结前非作者画面对照完整P1，事后独立Reference同种子前缀+原native提示/预览+CUA截图路径已定位，live待小验，详见[第6节](SCOPE_v0.3.zh-CN.md#6-已批准覆盖与冻结前独立信息复验42机制行4跨幕终局行)。
 
