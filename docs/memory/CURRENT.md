@@ -33,12 +33,21 @@ verb/operands绑定；已捕获但匹配失败的同一PB保留，绑定仍不�
 旧第三局不改。Node73、Host witness23、Core定向15通过；首批Annotator
 完整Core439检查通过，最后条件修正做了定向复验与实际Mod编译。
 
-新Mod已从干净源码构建/部署，实际冷加载身份核对通过，旧候选rollback均保留。
-当前唯一工程录制native-selftest-capture15停在Neow，工程来源agent_native_ui，
-非正式补采。窗口工具截图正常但鼠标连续noWindowsAvailable，尚无游戏决策，
-已请用户协助5–10分钟工程操作；上限18:55 Brisbane。必须先完成实际短段
-原件/共享派生/Managed短严格，再邀请正式补采；不同候选不能直接相加。
-准确进程/端口/PTY只见现场入口，不按本文自行新开游戏。
+工程短验15发现共性采集故障后，按用户确认正常Close/pack，exit0、shutdown200、
+forced=false，当前无游戏运行。原122accepted、195issue、15raw unknown全部保留，
+不是正式补采，也未通过。Neow Sacrifice给Guilty后，新预览强制MaxUpgradeLevel
+继承base，把原生limit0误报升级缺失，导致后续公开basis partial。源码09841067
+复用既有有效原生getter资格；39同类native override均实测常数0、不调用升级，
+Guilty完整详情返回not_applicable，65定向检查通过。Managed镜像同步此前漏掉的
+已有X-cost有效getter修复；fresh官方prepare通过，旧失败stage保留。
+
+同一短段还暴露最后商店取消必须等下一accepted的转换缺陷，09841067改用本次
+parent完成原件里的真实successor_basis。精确子cancel/parent/task/selector证明、
+完整公开前后相等及0成功label保持，legacySmith解释不扩。79消费者检查通过，
+原短验两次merchant取消均完整相等，4accepted解释为取消，103真实gap及15unknown
+保留，整体仍FAIL。限定非作者复核正在收尾；新源码clean Mod已构建，待部署、
+冷加载及含Guilty的两端完整PB/P1预检，再工程短验，通过后才邀请正式三局补采。
+不同候选不能混算，准确进程/端口/PTY只见现场入口，不按本文自行新开游戏。
 
 ## 批次和其它边界
 
