@@ -233,11 +233,20 @@ export function convertNativeSemanticOriginals(source, sdk, core, options = {}) 
       action.choice_id = null; action.choice = null; // A cancellation never yields a successful label.
       report.issues.push({ decision_id: action.decision_id, action_witness_id: action.action_witness_id,
         reason: cancelled.receipt.reason, disposition: 'native_cancelled', blocking: false });
-      const comparison = pointActions.findIndex(point => point.capture.sequence >= cancelled.receipt.terminal_sequence);
-      if (comparison < 0) (openPrefix ? report.pending_decisions : report.issues)
+      const before = report.captures[action.capture];
+      const beforePoint = pointActions.findIndex(point => point.capture.sequence >= before.sequence);
+      const afterPoint = pointActions.findIndex(point => point.capture.sequence >= cancelled.receipt.terminal_sequence);
+      if (beforePoint < 0 || afterPoint < 0) (openPrefix ? report.pending_decisions : report.issues)
         .push({ decision_id: action.decision_id, reason: 'native_cancellation_without_complete_continuity_boundary', blocking: true });
-      else nativeCancellations.push({ ...cancelled.receipt, comparison_point_index: comparison,
-        observation: cancelled.checkpoint?.observation ?? pointActions[comparison].capture.observation });
+      else {
+        const checks = [{ boundary: 'before', capture: before, comparison_point_index: beforePoint },
+          { boundary: 'after', capture: pointActions[afterPoint].capture, comparison_point_index: afterPoint }]
+          .map(({ boundary, capture, comparison_point_index }) => ({ boundary,
+            source_event_id: capture.event_id, source_public_basis: capture.public_basis,
+            comparison_point_index, observation: capture.observation }));
+        nativeCancellations.push({ ...cancelled.receipt, checks,
+          continuity_checkpoints: checks.map(({ observation: _observation, ...checkpoint }) => checkpoint) });
+      }
     } else {
       if (action.terminal_sequence === null || action.successor === null) {
         const reason = action.terminal_sequence === null ? 'accepted_action_without_terminal_disposition'
@@ -265,7 +274,7 @@ export function convertNativeSemanticOriginals(source, sdk, core, options = {}) 
     return { ...issue, blocking: !explained, ...(explained ? { disposition: 'native_cancelled' } : {}) };
   });
   report.blocking_issues = report.issues.filter(issue => issue.blocking);
-  report.native_cancellations = nativeCancellations.map(({ observation: _observation, ...receipt }) => receipt);
+  report.native_cancellations = nativeCancellations.map(({ checks: _checks, ...receipt }) => receipt);
   report.accepted_accounting = { accepted: report.native_action_count, derived: derivedNative,
     native_cancelled: cancellations.size, explained_gaps: report.native_action_count - derivedNative - cancellations.size };
   report.complete = successful.length > 0 && report.blocking_issues.length === 0 && report.pending_decisions.length === 0;
@@ -279,9 +288,11 @@ export function convertNativeSemanticOriginals(source, sdk, core, options = {}) 
   if (report.complete) {
     const points = pointActions.map(({ action, capture }, index) => ({ index,
       observation: capture.observation, chosen: action?.choice_id ?? null,
-      ...(nativeCancellations.some(item => item.comparison_point_index === index) ? {
-        continuity_checks: nativeCancellations.filter(item => item.comparison_point_index === index)
-          .map(({ decision_id, phase, source_event_id, observation }) => ({ decision_id, phase, source_event_id, observation }))
+      ...(nativeCancellations.some(item => item.checks.some(check => check.comparison_point_index === index)) ? {
+        continuity_checks: nativeCancellations.flatMap(item => item.checks
+          .filter(check => check.comparison_point_index === index)
+          .map(({ boundary, source_event_id, observation }) => ({ decision_id: item.decision_id,
+            phase: item.phase, boundary, source_event_id, observation })))
       } : {}) }));
     report.trajectory = { schema: 'sts2.p1/trajectory-1', run_directory: source.bundle,
       origin: 'native_semantic_recording', scope: report.scope,

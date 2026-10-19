@@ -1,7 +1,11 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { readFileSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import * as sdk from '../../components/connector/sdk/typescript/dist/index.js';
 import * as core from '../../components/connector/sdk/typescript/dist/p1Global/index.js';
 import { convertNativeSemanticOriginals } from '../p1-native-to-p1.mjs';
@@ -372,6 +376,7 @@ for (const afterStart of [false, true]) test(`an explained native cancellation $
   assert.equal(report.trajectory.points.length, 2);
   assert.equal(report.trajectory.cancellation_count, 1);
   assert.equal(report.trajectory.points.at(-1).continuity_checks[0].decision_id, 'second');
+  assert.deepEqual(report.trajectory.points.at(-1).continuity_checks.map(check => check.boundary), ['before', 'after']);
   assert.equal(report.native_cancellations[0].continuity, 'requires_strict_managed_comparison');
   assert.ok(report.issues.some(issue => issue.event_id === 'original-native-cancel-issue' && issue.blocking === false));
   assert.deepEqual(report.blocking_issues, []);
@@ -408,6 +413,52 @@ test('a cancelled-before-execution input retains complete popup H as source with
   assert.equal(report.complete, true);
   assert.equal(report.accepted_accounting.native_cancelled, 1);
   assert.equal(report.actions.find(action => action.decision_id === 'second').choice, null);
+  const before = report.trajectory.points.flatMap(point => point.continuity_checks ?? [])
+    .find(check => check.boundary === 'before');
+  assert.equal(before.observation.status, 'unsupported');
+  assert.equal(before.observation.envelope.required_information_complete, false);
+});
+
+test('cancellation continuity retains the real before facts instead of copying its later after point', () => {
+  const { source, second, retain, nextBasis } = cancelledExample();
+  const human = nextBasis('-different-before');
+  human.snapshot.persistent.content.player.gold += 999;
+  second.basis = retain(human);
+  const report = convertNativeSemanticOriginals(source, sdk, core);
+  assert.equal(report.complete, true);
+  const checks = report.trajectory.points.flatMap(point => point.continuity_checks ?? []);
+  assert.equal(checks.find(check => check.boundary === 'before').source_event_id, second.event_id);
+  const before = checks.find(check => check.boundary === 'before').observation;
+  const after = checks.find(check => check.boundary === 'after').observation;
+  assert.equal(before.player.content.gold, after.player.content.gold + 999);
+});
+
+test('the production converter and replay consumer reject changed cancellation-before facts even when every main point matches', () => {
+  const { source, second, retain, nextBasis } = cancelledExample();
+  const human = nextBasis('-different-before');
+  human.snapshot.persistent.content.player.gold += 999;
+  second.basis = retain(human);
+  const report = convertNativeSemanticOriginals(source, sdk, core);
+  assert.equal(report.complete, true);
+  const directory = mkdtempSync(join(tmpdir(), 'p1-cancel-continuity-'));
+  try {
+    const trajectory = join(directory, 'trajectory.json'), log = join(directory, 'replay.jsonl');
+    writeFileSync(trajectory, JSON.stringify(report.trajectory));
+    const input = [{ type: 'hello', protocol: 'sts2.p1/agent-port-1' },
+      ...report.trajectory.points.map(point => ({ type: 'observation', requires_choice: true,
+        observation: point.observation })), { type: 'episode_end', censor_reason: 'fixture_end' }]
+      .map(value => JSON.stringify(value)).join('\n') + '\n';
+    const child = spawnSync(process.execPath, [fileURLToPath(new URL(
+      '../../components/policy-runtime/examples/p1/replay_agent.mjs', import.meta.url)), trajectory, log],
+    { input, encoding: 'utf8', timeout: 10000 });
+    assert.equal(child.status, 0, child.stderr);
+    const events = readFileSync(log, 'utf8').trim().split('\n').map(JSON.parse);
+    assert.ok(events.some(event => event.type === 'cancellation_continuity'
+      && event.boundary === 'before' && event.verdict === 'different'));
+    assert.ok(events.some(event => event.type === 'divergence'
+      && event.reason === 'cancellation_continuity_difference'));
+    assert.equal(events.some(event => event.type === 'prefix_end'), false);
+  } finally { rmSync(directory, { recursive: true, force: true }); }
 });
 
 test('cancelled inputs may coexist with complete native run boundaries; strict replay remains separate', () => {
