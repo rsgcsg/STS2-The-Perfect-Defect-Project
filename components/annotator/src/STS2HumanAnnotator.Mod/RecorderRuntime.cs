@@ -1160,6 +1160,8 @@ internal static partial class RecorderRuntime
     {
         if (TryEnterSourceInputScope(origin, expectedNativeActionType, sourceOwner ?? stagedOwner,
             expectedAction ?? semanticSelection, out var source, sourceControl: sourceControl)) return source;
+        if (IsP1Recording)
+            expectedAction = P1NativeScopeInputs.PublicInput(expectedNativeActionType, expectedAction, semanticSelection);
         if (!AcceptingNewWitnesses() || SelectorInputActive)
             return default;
         if (!CanOpenSemanticEvidenceWindow())
@@ -1249,6 +1251,18 @@ internal static partial class RecorderRuntime
                 return new NativeUiScopeEntry(true, false);
             }
 
+            if (selected == null && IsP1Recording && current != null
+                && P1NativeScopeInputs.CanRetainQueuedEndTurn(expectedNativeActionType, expectedAction, current,
+                    SemanticStateBlockers(current, BuildEnvironment(current))))
+            {
+                // The native End Turn gesture may be accepted behind earlier
+                // work. H is complete provenance; its empty delivery catalog
+                // does not assert execution legality. OnEnqueued binds the exact input.
+                HumanActionScope.Enter(origin, expectedNativeActionType, expectedAction, current,
+                    occurrence: occurrence, nativeSemanticSelection: semanticSelection, nativeInputBinding: true);
+                return new NativeUiScopeEntry(true, false);
+            }
+
             if (selected == null)
             {
                 HumanActionScope.EnterDeferredFailure(
@@ -1282,7 +1296,7 @@ internal static partial class RecorderRuntime
                     expectedAction,
                     selected,
                     semanticDecision,
-                    occurrence: occurrence);
+                    occurrence: occurrence, nativeSemanticSelection: semanticSelection);
                 BindP1CardCaptureDiagnostics(selectedCaptureDiagnostics, ReferenceEquals(selected, current) ? "current" : "staged", stagedDisposition);
             }
             return new NativeUiScopeEntry(true, false);
