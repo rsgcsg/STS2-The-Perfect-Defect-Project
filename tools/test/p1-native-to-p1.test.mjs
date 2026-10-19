@@ -593,3 +593,81 @@ test('the exact approved refresh side effect stays a separate exception with lit
   assert.ok(report.actions.every(action => action.choice_id === null));
   assert.ok(report.issues.every(issue => !issue.blocking));
 });
+
+// Synthetic native-shaped Smith/cancel originals, not a gameplay qualification.
+async function smithCancellationExample() {
+  const { selectorForwardPair } = await import('../../components/connector/sdk/typescript/test/fixtures/selector-forward.mjs');
+  const { source, original, retain, row } = example(); source.events.length = 0;
+  const before = structuredClone(original);
+  const option = { entity_id: 'smith-option', index: 0, option_id: 'SMITH', name: 'Smith', description: 'Upgrade.', enabled: true };
+  Object.assign(before.snapshot.interaction, { kind: 'rest_site', content_schema: 'sts2.player-environment/surface/rest_site-1',
+    content: { surface: { kind: 'rest_site', options: [option], can_proceed: false }, context: { kind: 'rest_site', room_entity_id: 'rest-room' } } });
+  const action = { bound_action_id: 'smith', verb: 'activate', interaction_id: before.snapshot.interaction.interaction_id,
+    subject_referent_id: option.entity_id, arguments: [], label: 'Smith' };
+  before.snapshot.bound_actions.actions = [action];
+  before.snapshot.bound_actions.total_count = before.snapshot.bound_actions.materialized_count = 1;
+  before.snapshot.referents = [{ referent_id: option.entity_id, role: 'rest_option', kind: 'entity', label: 'Smith',
+    state: { visible: true, observation_basis: 'native_visible_fact' }, properties_schema: 'sts2.player-environment/referent/rest_option-1', properties: option }];
+  const middle = selectorForwardPair().outer;
+  const selector = middle.snapshot.interaction.content.surface;
+  selector.current_controls.push({ entity_id: 'cancel', operation: 'cancel_selection' });
+  const cancel = { ...action, bound_action_id: 'selector-cancel', verb: 'cancel',
+    interaction_id: middle.snapshot.interaction.interaction_id, subject_referent_id: 'cancel', label: 'Cancel' };
+  middle.snapshot.bound_actions.actions.push(cancel);
+  middle.snapshot.bound_actions.materialized_count = middle.snapshot.bound_actions.total_count = middle.snapshot.bound_actions.actions.length;
+  const callback = 'MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NDeckUpgradeSelectScreen.Close.Released';
+  row('decision_accepted', { decision_id: 'smith', action_witness_id: 'root-smith', basis: retain(before), bound_action: action,
+    native_action_type: 'RestSiteSynchronizer.ChooseLocalOption', native_witness: { subject_witness_id: 'smith-operand' },
+    native_receipt: { kind: 'semantic_ui_accepted', carrier_ref: 'root-smith' } });
+  row('decision_accepted', { decision_id: 'cancel', action_witness_id: 'root-cancel', basis: retain(middle), bound_action: cancel,
+    native_action_type: callback, native_witness: { parent_action_witness_id: 'root-smith', parent_owner_witness_id: 'smith-operand' },
+    native_receipt: { kind: 'semantic_ui_accepted', carrier_ref: 'root-cancel',
+      selector_callback: { native_callback: callback, native_acceptance_proven: true } } });
+  row('lifecycle', { decision_id: 'cancel', action_witness_id: 'root-cancel', phase: 'finished',
+    native_completion: { native_callback: callback, terminal: true }, successor_basis: retain(before) });
+  row('lifecycle', { decision_id: 'smith', action_witness_id: 'root-smith', phase: 'unknown',
+    native_completion: { family: 'rest_site', kind: 'RestSiteSynchronizer.ChooseLocalOption', action_witness_id: 'root-smith',
+      task_witness_id: 'exact-task', native_operand_witness_id: 'smith-operand', succeeded: false }, successor_basis: retain(before) });
+  row('decision_accepted', { decision_id: 'next', action_witness_id: 'root-next', basis: retain(before), bound_action: action,
+    native_receipt: { kind: 'semantic_ui_accepted', carrier_ref: 'root-next' } });
+  row('lifecycle', { decision_id: 'next', action_witness_id: 'root-next', phase: 'finished', successor_basis: retain(before) });
+  return { source, before, middle, retain };
+}
+
+test('exact Smith selector cancellation keeps raw unknown, has zero labels, and requires both strict checkpoints', async () => {
+  const { source } = await smithCancellationExample();
+  const report = convertNativeSemanticOriginals(source, sdk, core);
+  assert.equal(report.complete, true, JSON.stringify(report.blocking_issues));
+  assert.equal(report.accepted_accounting.native_cancelled, 2);
+  assert.equal(report.raw_unknown_count, 1); assert.equal(report.explained_raw_unknown_count, 1);
+  assert.deepEqual(report.actions.slice(0, 2).map(a => [a.choice_id, a.result.status]), [[null, 'unknown'], [null, 'completed']]);
+  assert.equal(report.native_cancellations.length, 1);
+  const cancel = report.native_cancellations[0];
+  assert.equal(cancel.original_parent_terminal.phase, 'unknown');
+  assert.equal(cancel.successful_label, false);
+  assert.deepEqual(cancel.continuity_checkpoints.map(c => c.boundary), ['before', 'after']);
+  assert.equal(report.trajectory.points.filter(p => p.chosen !== null).length, 1);
+  assert.equal(report.trajectory.points[0].continuity_checks.length, 2);
+});
+
+for (const defect of ['foreign_parent', 'foreign_operand', 'missing_child_completion', 'selected_card', 'false_without_cancel',
+  'changed_public_fact', 'changed_read', 'changed_directory', 'different_session', 'other_unknown', 'foreign_bound', 'changed_operands'])
+  test(`Smith cancellation does not forgive ${defect}`, async () => {
+    const { source, before, middle, retain } = await smithCancellationExample();
+    if (defect === 'foreign_bound') source.events[1].bound_action.bound_action_id = 'foreign';
+    if (defect === 'changed_operands') source.events[1].bound_action.arguments = [{ role: 'target', referent_id: 'foreign' }];
+    if (defect === 'foreign_parent') source.events[1].native_witness.parent_action_witness_id = 'foreign';
+    if (defect === 'foreign_operand') source.events[1].native_witness.parent_owner_witness_id = 'foreign';
+    if (defect === 'missing_child_completion') delete source.events[2].native_completion;
+    if (defect === 'selected_card') { middle.snapshot.interaction.content.surface.selected_card_entity_ids = ['selected']; source.events[1].basis = retain(middle); }
+    if (defect === 'false_without_cancel') source.events[1].bound_action.verb = 'open';
+    if (defect === 'changed_public_fact') { before.snapshot.persistent.content.player.gold++; source.events[4].basis = retain(before); }
+    if (defect === 'changed_read') { before.reads[0].response.content.extra_public_fact = true; source.events[4].basis = retain(before); }
+    if (defect === 'changed_directory') { before.snapshot.bound_actions.actions[0].label += ' changed'; source.events[4].basis = retain(before); }
+    if (defect === 'different_session') source.events[1].session_id = 'foreign';
+    if (defect === 'other_unknown') source.events[0].native_action_type = 'AnotherNativeTask';
+    const report = convertNativeSemanticOriginals(source, sdk, core);
+    assert.equal(report.native_cancellations.length, 0);
+    assert.equal(report.complete, false); assert.equal(report.trajectory, null);
+    assert.ok(report.blocking_issues.some(issue => issue.reason === 'accepted_action_unknown'));
+  });

@@ -295,3 +295,34 @@ it("an explained refresh exception still compares its unequal real endpoints and
   expect(result.rows.find(row => row.type === "presentation_continuity").verdict).toBe("different");
   expect(result.end.reason).toBe("presentation_continuity_difference");
 });
+
+
+describe("exact native Smith cancellation retains raw unknown and strict continuity", () => {
+  const phase = "cancelled_semantic_selector";
+  const reference = terminal();
+  const checks = ["before", "after"].map((boundary, index) => ({ decision_id: "smith-cancel", phase, boundary,
+    source_event_id: `original-${index}`, observation: structuredClone(reference) }));
+  const metadata = { cancellation_count: 1, native_cancellations: [{ decision_id: "smith-cancel",
+    source_event_id: "raw-parent-unknown", phase, kind: "rest_smith_cancel", disposition: "cancelled",
+    successful_label: false, original_parent_terminal: { phase: "unknown", native_completion: { succeeded: false } },
+    native_child_terminal: { native_completion: { terminal: true } }, comparison: { equal: true, changes: [] },
+    continuity_checkpoints: checks.map(({ observation: _observation, ...check }) => ({ ...check, comparison_point_index: 0 })) }] };
+  it("checks both complete observations while retaining the original unknown disposition", () => {
+    const result = scenario([{ ...point(reference), continuity_checks: checks }], [hello, inform(reference),
+      { type: "episode_end", outcome: "loss", censor_reason: null }], false, metadata);
+    expect(result.rows.filter(row => row.type === "cancellation_continuity").map(row => row.verdict)).toEqual(["equal", "equal"]);
+    expect(result.end.replay_reached_reference_terminal).toBe(true);
+  });
+  it("still fails on a changed public fact at the cancellation boundaries", () => {
+    const actual: any = structuredClone(reference); actual.player.content.gold += 1;
+    const result = scenario([{ ...point(reference), continuity_checks: checks }], [hello, inform(actual),
+      { type: "episode_end", outcome: "loss", censor_reason: null }], false, metadata);
+    expect(result.rows.find(row => row.type === "cancellation_continuity").verdict).toBe("different");
+    expect(result.end.replay_reached_reference_terminal).toBe(false);
+  });
+  it("cannot accept a selector cancellation receipt without its native terminal witness", () => {
+    const broken = structuredClone(metadata); broken.native_cancellations[0]!.native_child_terminal.native_completion.terminal = false;
+    const result = scenario([{ ...point(reference), continuity_checks: checks }], [hello, inform(reference)], false, broken);
+    expect(result.rows.find(row => row.type === "divergence").reason).toBe("cancellation_manifest_mismatch");
+  });
+});
