@@ -302,11 +302,13 @@ function popupExecutionExample() {
 }
 it('maps exact queued use from full combat S/A(S) while retaining a different visible potion popup', () => {
   const { queued, accepted, execution } = popupExecutionExample();
+  (queued.snapshot as any).interaction.content.context.player.potion_states[0].can_use = false;
   const bytes = JSON.stringify(queued);
   const actual = matchNativeExecutionChoice(createSession('popup-execution', 'reference'), queued, accepted, execution);
   expect(actual.status).toBe('matched'); expect(actual.reduction.missing).toEqual([]);
   expect(actual.reduction.observation.catalog.find(choice => choice.choice_id === actual.choice_id)?.kind).toBe('potion.use');
   expect(actual.reduction.observation.scene.native_kind).toBe('potion_popup');
+  expect((actual.reduction.observation.combat.content as any).player.potion_states[0].can_use).toBe(true);
   expect((actual.reduction.observation.scene.content as any).surface.slot).toBe(2);
   expect(actual.reduction.observation.catalog.some(choice => choice.kind === 'combat.end_turn')).toBe(true);
   expect(actual.reduction.observation.catalog.some(choice => !choice.mapped)).toBe(false);
@@ -433,4 +435,38 @@ describe("noncombat discard keeps the whole decision", () => {
     }
     expect(matchNativeSemanticChoice(createSession("discard", "reference"), queued, accepted).status).toBe("incomplete");
   });
+});
+
+
+it("reexpresses a queued potion usability flag from its exact same-S use without changing the original public gate", () => {
+  const { basis, queued, accepted, execution, discard } = discardExecutionExample();
+  const id = discard.subject_referent_id;
+  for (const value of [basis, queued]) {
+    const snapshot = value.snapshot as any;
+    snapshot.interaction.content.context.player.potion_states[0].automatic = false;
+    snapshot.interaction.content.context.player.potion_states[0].can_use = value === basis;
+    snapshot.persistent.content.player.potions[0].automatic = false;
+    snapshot.referents.find((ref: any) => ref.referent_id === id).role = "usable_potion";
+    snapshot.interaction.content.surface.discardable_potions?.forEach((p: any) => { p.automatic = false; });
+  }
+  const snapshot = basis.snapshot as any;
+  const target = snapshot.persistent.content.player.entity_id;
+  snapshot.interaction.content.surface.usable_potions.push({ entity_id: id, name: "Revive", target_entity_ids: [target] });
+  snapshot.bound_actions.actions.push({ ...snapshot.bound_actions.actions[0], bound_action_id: "actual-use",
+    verb: "use", subject_referent_id: id, arguments: [{ role: "target", referent_id: target }], label: "Use Revive" });
+  snapshot.bound_actions.total_count = snapshot.bound_actions.materialized_count = snapshot.bound_actions.actions.length;
+  execution.execution_action_space.actions.push({ key: "native-potion-use", verb: "use", subject_referent_id: id,
+    arguments: { target }, native_legality_basis: "exact-current-native-potion-use" } as any);
+  const original = JSON.stringify(queued);
+  const actual = matchNativeExecutionChoice(createSession("usable-S", "reference"), queued, accepted, execution);
+  const online = reduce(createSession("usable-S", "reference"), basis);
+  expect(actual.status).toBe("matched");
+  expect(actual.reduction.observation).toEqual(online.observation);
+  expect(JSON.stringify(queued)).toBe(original);
+  expect((queued.snapshot as any).bound_actions.actions).toEqual([]);
+  // A different potion / no exact use is not evidence to enable this one.
+  execution.execution_action_space.actions.pop();
+  const absent = matchNativeExecutionChoice(createSession("usable-S", "reference"), queued, accepted, execution);
+  const states = (absent.reduction.observation.combat.content as any).player.potion_states;
+  expect(states[0].can_use).toBe(false);
 });

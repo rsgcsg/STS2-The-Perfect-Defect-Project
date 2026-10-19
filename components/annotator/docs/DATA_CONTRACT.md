@@ -517,7 +517,11 @@ semantics, not transient button readiness. In particular, queued potion use does
 not erase the existing native discard operation on that current non-null slot;
 public delivery keeps its independent queued/enabled-holder guards. The original
 PB1 catalog is never replaced by A(S). Old incomplete execution inventories are
-not backfilled by a producer fix.
+not backfilled by a producer fix. The derived combat `potion_states.can_use`
+also expresses this sequential view: an exact use for that same potion in the
+validated same-S A(S) proves usability despite the queued public flag. Without
+that evidence the flag is not enabled; normal public reduction and all original
+PB1 bytes stay unchanged. This is projection, not public delivery authority.
 
 Original recording, P1 projection, same-profile Host comparison and native replay
 are independent claims with declared inputs and scope. A source fix or sealed

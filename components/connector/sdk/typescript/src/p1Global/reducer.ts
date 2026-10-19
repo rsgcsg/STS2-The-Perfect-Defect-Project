@@ -345,6 +345,19 @@ function reduceCatalog(state: P1SessionState, basis: P1Basis, execution?: readon
       || action.verb === "end_turn" && (action.subject_referent_id != null || Object.keys(action.arguments).length !== 0)));
   // Invalid captured operands remain an incomplete observation, never a choice.
   if (invalidExecution) execution = undefined;
+  if (execution && interaction.content.context?.kind === "combat"
+      && ["combat_turn", "potion_popup"].includes(interaction.kind)
+      && Array.isArray(sourcePlayer?.potion_states)) {
+    const context = interaction.content.context;
+    // A queued potion's public button is disabled in the original S. Its
+    // exact native use in A(S) proves usability for the serial P1 view.
+    // Preserve all original PB1 bytes and the independent delivery gate.
+    interaction = { ...interaction, content: { ...interaction.content,
+      context: { ...context, player: { ...sourcePlayer,
+        potion_states: sourcePlayer.potion_states.map((potion: any) => ({ ...potion,
+          can_use: potion.can_use || execution.some(action => action.verb === "use"
+            && action.subject_referent_id === potion.entity_id) })) } } } };
+  }
   if (execution && interaction.kind === "combat_turn") {
     const context = interaction.content.context;
     const options = (verb: string, items: Record<string, any>[]) => items.flatMap(item => {
