@@ -134,8 +134,10 @@ menu with no active run or multiplayer owner. It writes only the public typed
 Preparation occurs once before bootstrap gameplay inputs. Repetition of the
 same exact preparation verifies and returns the recorded result; conflicting
 configuration, missing readiness, shared profile, unknown identity/isolation,
-active gameplay, or later mode/profile drift fail closed. No timer reapplies a
-mode, no provenance read mutates prefs, and no Fast fallback satisfies Instant.
+active gameplay during preparation, or later runtime/profile/identity changes fail closed.
+The initial write must match its request; later native changes among Normal, Fast
+and Instant remain valid and retain their actual readback. Unknown speed values
+still fail. No timer reapplies a mode and no provenance read mutates prefs.
 Read-only private Host provenance records requested/before/effective mode,
 readiness and runtime/profile binding. The caller verifies it before bootstrap
 and again through the existing post-bootstrap provenance check before handing
@@ -145,10 +147,11 @@ input and do not create a public speed action.
 Instant is the user-selected project default. Workbench owned preparation resolves
 `default` to Instant and records `{mode: instant, basis: project_default}`; it
 records actual typed readback separately and invents no qualification reference.
-Final-candidate exact build/install/load and all-three-mode live verification
-remain required before claiming runtime qualification. This configuration change
-does not qualify performance, save/restore or full runs. Normal and Fast remain
-supported explicit configurations and reference conditions. Native settings
+Normal, Fast and Instant are settings of one Reference environment, including
+changes made during a run. Semantic differences are implementation defects.
+Instant remains the default; another speed is selected for a particular test.
+Actual build/install/load and runtime evidence retain their usual scope; choosing
+a speed does not qualify performance, save/restore or full runs. Native settings
 may save into the isolated working copy on quit; immutable templates and
 personal prefs are not edited. A failed configuration blocks the run. If
 qualified Instant still fails measured throughput, resource or save/restore

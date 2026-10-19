@@ -452,9 +452,11 @@ The same factory defaults to native Instant and accepts explicit
 `nativeSpeed: "normal"|"fast"|"instant"`; the existing `start` and reference
 driver CLIs accept `--native-speed normal|fast|instant`. Isolated `start` and
 Reference driver launches share that Instant default; explicit Normal or Fast
-is forwarded once and remains effective. A mode requires an isolated Host-owned profile and authenticated
+is applied once as the initial preference. Normal, Fast and Instant share the same
+Reference gameplay contract; changing native speed during a run retains that contract.
+A mode requires an isolated Host-owned profile and authenticated
 post-boot preparation. The Host verifies the native typed getter before
-bootstrap and after run entry; a mismatch or unknown preparation outcome
+bootstrap and after run entry; a failed initial application or unknown preparation outcome
 closes the episode without bootstrap retry. Attached/shared personal games
 keep their native prefs. Both native UI and
 headless presentations use the same speed configuration and public contracts.
@@ -465,8 +467,8 @@ override. An unmanaged native UI game receives no seed override.
 Instant is the user-selected project default. Workbench owned `speed: default`
 resolves to Instant with `project_default` provenance, alongside the actual typed
 native readback; that configuration choice is not qualification evidence.
-Final-candidate live verification of all three modes remains required before
-claiming three-mode runtime qualification. See the
+Runtime reads preserve the actual mode without reapplying the startup preference.
+Semantic differences between speeds are implementation defects, not separate environments. See the
 [owning configuration contract](docs/ARCHITECTURE.md#native-speed-run-configuration).
 
 A caller transferring the bootstrapped episode to another controller first calls
