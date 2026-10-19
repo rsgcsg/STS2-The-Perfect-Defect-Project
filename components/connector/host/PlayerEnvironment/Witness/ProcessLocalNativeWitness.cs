@@ -120,14 +120,17 @@ public sealed class ProcessLocalNativeWitnessFrame
     {
         if (ExternalControllerActive || Snapshot.Completeness.Status != "complete"
             || string.IsNullOrWhiteSpace(expected.Verb)
-            || expected.Subject == null || accepted.Subject == null
+            || (expected.Subject == null || accepted.Subject == null)
+                && !(expected.Verb == "end_turn" && expected.Subject == null && accepted.Subject == null
+                    && expected.Arguments.Count == 0 && accepted.Arguments.Count == 0)
             || expected.Verb != accepted.Verb || !ReferenceEquals(expected.Subject, accepted.Subject)
             || expected.Arguments.Count != accepted.Arguments.Count
             || expected.Arguments.Any(pair => string.IsNullOrWhiteSpace(pair.Key) || pair.Value == null
                 || !accepted.Arguments.TryGetValue(pair.Key, out object? value)
                 || !ReferenceEquals(pair.Value, value)))
             return new("zero", 0, null, null, "scoped_native_input_reference_equality", "Exact accepted input did not match the scoped Human operands.");
-        string subject = NativeUiRuntime.Entities.GetId(expected.Subject, expected.Verb == "play" ? "card" : expected.Verb == "use" ? "potion" : "subject");
+        string? subject = expected.Subject == null ? null : NativeUiRuntime.Entities.GetId(expected.Subject,
+            expected.Verb == "play" ? "card" : expected.Verb == "use" ? "potion" : "subject");
         var arguments = expected.Arguments.ToDictionary(pair => pair.Key,
             pair => NativeUiRuntime.Entities.GetId(pair.Value,
                 pair.Value is MegaCrit.Sts2.Core.Entities.Creatures.Creature creature

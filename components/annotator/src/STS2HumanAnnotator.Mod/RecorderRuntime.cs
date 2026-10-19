@@ -409,7 +409,8 @@ internal static partial class RecorderRuntime
         { DecisionSchemaVersion = DecisionOccurrenceIdentity.CurrentSchemaVersion, DispositionSchemaVersion = 1,
             CloseSchemaVersion = 1, RecoverySchemaVersion = 1, ContinuousSchemaVersion = 1,
             TextInputSchemaVersion = profile.ProfileId == P1NativeRecordingContract.ProfileId ? null : HumanTextInputObservationContract.SchemaVersion,
-            P1NativeSchemaVersion = profile.ProfileId == P1NativeRecordingContract.ProfileId ? 1 : null, P1NativeOrigin = p1Origin };
+            P1NativeSchemaVersion = profile.ProfileId == P1NativeRecordingContract.ProfileId ? 1 : null,
+            P1NativeExecutionSchemaVersion = profile.ProfileId == P1NativeRecordingContract.ProfileId ? 1 : null, P1NativeOrigin = p1Origin };
         RecordingSessionStore store = RecordingSessionStore.Create(
             _configuration.RecordingRoot,
             manifest,
@@ -2089,7 +2090,7 @@ internal static partial class RecorderRuntime
 
     private static void ObserveBeforeActionExecution(GameAction action)
     {
-        if (IsP1Recording) return; // The same native subscription records lifecycle; no legacy canonical execution tracker.
+        if (IsP1Recording) { ObserveP1BeforeActionExecution(action); return; }
         string actionWitnessId;
         lock (Gate)
             actionWitnessId = NativeActionSubscriptions.TryGetValue(action, out var exactSubscription)

@@ -496,6 +496,7 @@ public sealed record CurrentRecordingManifest(
     public int? TextInputSchemaVersion { get; init; }
     public int? SourceSchemaVersion { get; init; }
     public int? P1NativeSchemaVersion { get; init; }
+    public int? P1NativeExecutionSchemaVersion { get; init; }
     public string? P1NativeOrigin { get; init; }
     public RecorderEnvironmentIdentity? SourceEnvironment { get; init; }
 }
