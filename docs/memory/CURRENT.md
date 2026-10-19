@@ -1,4 +1,4 @@
-# 当前工作：P1排队牌完整采集及执行态派生已实现，准备安装自测
+# 当前工作：P1排队修复已安装加载，normal自测06等用户操作
 
 更新：2026-10-19。本页是仓库导航；唯一冲刺操作现状是工作区固定文件
 `work/P1-SEMANTIC-ACTIVE-20261019.md`，本轮报告为`work/P1-QUEUED-INPUT-REPORT-20261019.md`，
@@ -29,15 +29,17 @@ public action或RecordedNativeInput二选一，不造BoundAction，仍需执行�
 沿普通BuildCard及ReadService取得完整当前facts与surface_card Read，不借H或deck基卡。
 25b0e7a9已正常merge，root1b76c0fe接⑥S/A(S)精确派生、H仅来源、queued/间隔、取消及accepted对账。
 共享在线idle/noqueue完整PB1+catalog字节不变已测，12份SDK现有fixture对改前reducer完整输出逐字节一致。
-Host966/Core437/SourceNative66/surface38、SDK541/adapter38通过，实际Modcompile通过。
+Host966/Core437/SourceNative66/surface38、SDK541/adapter39通过，官方Mod构建通过。
 真实Store→Pack→Reader→Converter synthetic正例1动作0issue，负例缺口保留；不冒作runtime/Human通过。
-下一步统一官方构建安装包含77cbd6ae的新候选，请用户5–10分钟normal连点，随后验证派生及Managed strict。
-当前无游戏/录制/Managed，尚未安装新候选；其余运行默认instant。独立scoped review正在进行。
+包含77cbd6ae的新候选已安装并实际加载，artifact ed36f371/MVID2b8c0b50；构建source51b49968 clean。
+独立review顺序缺陷已在c792189a修复，accept A,B / execute B,A反例通过，无剩余范围内阻塞。
+工程自测06正在主菜单、normal已核、录制execution格式1已启用，等待用户亲手5–10分钟连点。
+唯一GamePID76485/operatorPTY32600；续接先看工作区主状态，不重复启动。自测及Managed strict仍未验；其他默认instant。
 Source4停止新增投入/预检；原数据、分支和失败全部保留。自动GameAction不制造玩家标签。
 
 工程05正常Close/pack/退出，66 accepted/66 terminal，17出牌绑定gap和1选牌join gap；无完整P1轨迹，未做整段Managed。
 旧工程04只证明5动作及最后后继的旧短段严格通过；正式英文01有缺口已保留封包，正式合格仍0/3。
-选牌join修复77cbd6ae已包含于本轮源候选，尚未安装或原生实跑；当前安装仍是工程05的a4fef7a2/MVID805dbf4b。
+选牌join修复77cbd6ae已包含于当前安装ed36f371，已核冷加载，真实选牌/连点效果仍待本次用户自测。
 
 本轮已直接读rc4报告524/524与47rapid，旧tmp raw未找到，不声称重验524原件。
 rc4解决native queued身份与S/A(S)，不是今日完整PB1/allpresentation；不能用新缺口否定旧实证。
