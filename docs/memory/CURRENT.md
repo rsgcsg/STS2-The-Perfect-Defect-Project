@@ -18,7 +18,7 @@ Close/pack成功，但Host shutdown fetch failed且forced=true，退出诊断保
 仅去掉各原件已验证的snapshot定位/sequence/观察时刻，保留所有目录、operands、Read实例和文本。
 用户另批准8次奖励打开→Skip的刷新订阅attached→absent为stop_relic_refresh同类已解释副作用例外，
 0label、comparison.equal仍false，真实差异和前后严格检查都保留；登记不授予整轨等价。
-Agent目前没有“冻结但保留该奖励组”的独立选择，新增freeze_card_group只是建议，未获批准或实施。
+Agent目前没有“冻结但保留该奖励组”的独立选择，用户已认可freeze_card_group覆盖方案但明确延后，当前只登记，不实施新在线动作。
 最终691=669成功派生+5纯presentation接受+16例外接受+1unknown；该unknown仍阻断整段trajectory。
 669只是当前adapter派生数量；后述A(S)漏类型已由实比发现，旧10不能宣称P1所需原件语义完整。
 
@@ -35,11 +35,10 @@ Annotator437和限定非作者复核通过；旧10的unknown不能凭后来新�
 用户已追加限定批准③④process-local执行目录补齐：P1执行捕获复用现有原生discard provider、
 同一slot/当前控件资格；unknown绑定明确capture_failed，默认旧caller不变。
 ⑥只解释真实A(S)已录discard，不由库存生成旧动作，不制造BoundAction。
-SDK553、Host968/定向34、Annotator437及限定非作者复核通过，真实新产物验证仍待。
+SDK553、Host968/定向34、Annotator437及限定非作者复核通过。新9921819产物已安装、doctor和11/12冷加载身份核过；11两份真实战斗执行目录均记录discard，限定供给修复得到实际证据。
 用户明确三速同语义、局内可切、默认instant；be91c229已正常merge，182+20源码证据保留。
 
-当前root负责统一clean构建安装与最小工程验证（带药水出牌、同一进程连续两次转幕）；
-没有要求用户另录，正式录制仅用户操作。新源未继承旧24e7已装/已加载资格。
+11的43个raw文件全验，10accepted/10finished/0unknown，EndTurn与Defend真实执行，只有一次转幕finished；最后一牌只有settling后件，无后续ready原件，转换仍报缺口。11正常Close/pack/退出。12冷加载后CUA黑屏，未操作，正常关闭且0动作。两次窗口工具失败后已路线复查并停止重开；第二次真实转幕及新完整严格链仍待可操作原生窗口。当前无游戏/录制/Managed进程，没有要求用户重录整局。正式录制仅用户操作。
 真实正在运行的进程及新安装身份只从现场入口和原回执核对，不从本页假设。
 
 ## Remaining Platform non-claims

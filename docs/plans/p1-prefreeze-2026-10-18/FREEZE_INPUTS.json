@@ -26,10 +26,10 @@
     },
     {
       "source": "/Users/fire/Desktop/SpireAgentProject/claude-handoff-2026-10-13/P1_r1_SUPPORT_SCOPE_v0.3_2026-10-18.zh-CN.md",
-      "bytes": 53380,
-      "sha256": "4d96da6037936b7bf1c632d3a099a757fe2987346aa3e25f2c7d00ec4af1d726",
+      "bytes": 53399,
+      "sha256": "96e43e6104954d3bc14a97eb84bf599112e4cf7dd6a80bceb1c9df87cdd06ddc",
       "repository_snapshot": "SCOPE_v0.3.zh-CN.md",
-      "repository_sha256": "090c3e183e16b6f2ee057c310f843bc84f96039d05d9cc386e5438a2972abbfb",
+      "repository_sha256": "3d430e198c39c27c3f5a19c7d60727b0b3635d571dd8c5a83b371544773d0013",
       "role": "canonical synchronized with user-approved cancellation and execution-boundary definitions; no runtime qualification transfer"
     },
     {
