@@ -2121,7 +2121,7 @@ index 0000000..85112ee
 +}
 diff --git a/src/Sts2Headless/NativeCardPreviewReadQualification.cs b/src/Sts2Headless/NativeCardPreviewReadQualification.cs
 new file mode 100644
-index 0000000..dc274c7
+index 0000000..cacc86c
 --- /dev/null
 +++ b/src/Sts2Headless/NativeCardPreviewReadQualification.cs
 @@ -0,0 +1,353 @@
@@ -2894,7 +2894,7 @@ index 0000000..381119e
 +}
 diff --git a/src/Sts2Headless/NativeDetachedCardCopy.cs b/src/Sts2Headless/NativeDetachedCardCopy.cs
 new file mode 100644
-index 0000000..2b9887b
+index 0000000..3f046fd
 --- /dev/null
 +++ b/src/Sts2Headless/NativeDetachedCardCopy.cs
 @@ -0,0 +1,74 @@
@@ -5609,7 +5609,7 @@ index 800f139..0da0544 100644
  
              case "action":
 diff --git a/src/Sts2Headless/RunSimulator.cs b/src/Sts2Headless/RunSimulator.cs
-index 6b9de4a..35e2abf 100644
+index 6b9de4a..4ba003d 100644
 --- a/src/Sts2Headless/RunSimulator.cs
 +++ b/src/Sts2Headless/RunSimulator.cs
 @@ -1,4 +1,7 @@
@@ -8896,8 +8896,7 @@ index 6b9de4a..35e2abf 100644
 -                // Extract vars: try event's own DynamicVars first, then relic
 -                Dictionary<string, object?>? optVars = null;
 -                try
-+                switch (tip)
-                 {
+-                {
 -                    // Event's DynamicVars (covers Gold, HpLoss, Heal, etc.)
 -                    if (localEvent.DynamicVars?.Values != null)
 -                    {
@@ -8909,7 +8908,8 @@ index 6b9de4a..35e2abf 100644
 -                catch { }
 -                // Also try relic vars (for Neow options)
 -                if (opt.TextKey != null)
--                {
++                switch (tip)
+                 {
 -                    try
 -                    {
 -                        var parts = opt.TextKey.Split('.');
@@ -9090,10 +9090,7 @@ index 6b9de4a..35e2abf 100644
 -                var stats = new Dictionary<string, object?>();
 -                int cardCost = 0;
 -                try
-+                var display = NativePublicCardDetails.CaptureWithUpgradePreview(card, PileType.None);
-+                missing.AddRange(display.Missing);
-+                var visible = new Dictionary<string, object?>(display.Card)
-                 {
+-                {
 -                    if (card != null)
 -                    {
 -                        cardCost = card.EnergyCost?.GetResolved() ?? 0;
@@ -9113,7 +9110,10 @@ index 6b9de4a..35e2abf 100644
 -                catch { }
 -                var shopkws = card?.Keywords?.Where(k => k != CardKeyword.None).Select(k => k.ToString()).ToList();
 -                return new Dictionary<string, object?>
--                {
++                var display = NativePublicCardDetails.CaptureWithUpgradePreview(card, PileType.None);
++                missing.AddRange(display.Missing);
++                var visible = new Dictionary<string, object?>(display.Card)
+                 {
 -                    ["index"] = i,
 -                    ["name"] = _loc.Card(entry),
 -                    ["type"] = card?.Type.ToString() ?? "?",
@@ -9277,16 +9277,16 @@ index 6b9de4a..35e2abf 100644
 -        catch (Exception ex) { Log($"Treasure relic pick: {ex.Message}"); }
  
 -        try
-+        var currentRelics = RunManager.Instance.TreasureRoomRelicSynchronizer.CurrentRelics;
-+        if (!_treasureRelicResolved && currentRelics is { Count: > 0 })
-         {
+-        {
 -            treasureRoom.DoNormalRewards().GetAwaiter().GetResult();
 -            _syncCtx.Pump();
 -            treasureRoom.DoExtraRewardsIfNeeded().GetAwaiter().GetResult();
 -            _syncCtx.Pump();
 -        }
 -        catch (InvalidOperationException ex) when (ex.Message.Contains("relic picking session"))
--        {
++        var currentRelics = RunManager.Instance.TreasureRoomRelicSynchronizer.CurrentRelics;
++        if (!_treasureRelicResolved && currentRelics is { Count: > 0 })
+         {
 -            // BUG-013: Relic session conflict — wait for pending session then retry
 -            Log($"Relic session conflict, waiting and retrying: {ex.Message}");
 -            WaitForActionExecutor();
@@ -9643,7 +9643,7 @@ index 6b9de4a..35e2abf 100644
                  if (c.Affliction != null)
                  {
                      dcard["affliction"] = _loc.Bilingual("afflictions", c.Affliction.Id.Entry + ".title");
-@@ -3034,16 +3738,146 @@ public class RunSimulator
+@@ -3034,36 +3738,184 @@ public class RunSimulator
          };
      }
  
@@ -9791,7 +9791,23 @@ index 6b9de4a..35e2abf 100644
          };
  
          // Boss encounter info — use BossEncounter?.Id?.Entry
-@@ -3064,6 +3898,28 @@ public class RunSimulator
+         try
+         {
+-            var bossIdEntry = _runState.Act?.BossEncounter?.Id?.Entry;
++            var boss = _runState.Act?.BossEncounter;
++            var bossIdEntry = boss?.Id.Entry;
+             if (!string.IsNullOrEmpty(bossIdEntry))
+             {
+-                var monsterKey = bossIdEntry.EndsWith("_BOSS") ? bossIdEntry[..^5] : bossIdEntry;
+-                // Handle special mappings
+-                if (monsterKey == "THE_KIN") monsterKey = "KIN_PRIEST";
+                 ctx["boss"] = new Dictionary<string, object?>
+                 {
+                     ["id"] = bossIdEntry,
+-                    ["name"] = _loc.Monster(monsterKey),
++                    ["name"] = StripVisibleText(boss!.Title.GetFormattedText()),
+                 };
+             }
          }
          catch { }
  
@@ -9803,12 +9819,10 @@ index 6b9de4a..35e2abf 100644
 +            {
 +                var bossIdEntry = boss?.Id.Entry;
 +                if (string.IsNullOrEmpty(bossIdEntry)) continue;
-+                var monsterKey = bossIdEntry.EndsWith("_BOSS") ? bossIdEntry[..^5] : bossIdEntry;
-+                if (monsterKey == "THE_KIN") monsterKey = "KIN_PRIEST";
 +                bosses.Add(new Dictionary<string, object?>
 +                {
 +                    ["id"] = bossIdEntry,
-+                    ["name"] = _loc.Monster(monsterKey),
++                    ["name"] = StripVisibleText(boss!.Title.GetFormattedText()),
 +                    ["order"] = order,
 +                });
 +            }
@@ -9820,7 +9834,7 @@ index 6b9de4a..35e2abf 100644
          return ctx;
      }
  
-@@ -3074,6 +3930,11 @@ public class RunSimulator
+@@ -3074,6 +3926,11 @@ public class RunSimulator
  
          TestMode.IsOn = true;
  
@@ -9832,7 +9846,7 @@ index 6b9de4a..35e2abf 100644
          // Install inline sync context on main thread
          SynchronizationContext.SetSynchronizationContext(_syncCtx);
  
-@@ -3099,14 +3960,6 @@ public class RunSimulator
+@@ -3099,14 +3956,6 @@ public class RunSimulator
          try { SaveManager.Instance.InitPrefsDataForTest(); }
          catch (Exception ex) { Console.Error.WriteLine($"[WARN] SaveManager.InitPrefsDataForTest: {ex.Message}"); }
  
@@ -9847,7 +9861,7 @@ index 6b9de4a..35e2abf 100644
          // Patch Cmd.Wait to be a no-op in headless mode.
          // Cmd.Wait(duration) is used for UI animations (e.g., PreviewCardPileAdd during
          // Vantom's Dismember move adding Wounds). In headless mode, these never complete
-@@ -3139,9 +3992,15 @@ public class RunSimulator
+@@ -3139,9 +3988,15 @@ public class RunSimulator
          }
          Console.Error.WriteLine($"[INFO] ModelDb: {registered} registered, {failed} failed out of {subtypes.Count}");
  
@@ -9863,7 +9877,7 @@ index 6b9de4a..35e2abf 100644
              ModelIdSerializationCache.Init();
              Console.Error.WriteLine("[INFO] ModelIdSerializationCache initialized");
          }
-@@ -3151,15 +4010,15 @@ public class RunSimulator
+@@ -3151,15 +4006,15 @@ public class RunSimulator
          }
      }
  
@@ -9885,7 +9899,7 @@ index 6b9de4a..35e2abf 100644
              _ => null
          };
      }
-@@ -3263,42 +4122,169 @@ public class RunSimulator
+@@ -3263,42 +4118,169 @@ public class RunSimulator
          }
      }
  
@@ -10077,7 +10091,7 @@ index 6b9de4a..35e2abf 100644
      /// <summary>
      /// Card selector that creates a pending selection decision point.
      /// When the game needs the player to choose cards (upgrade, remove, transform, bundle pick),
-@@ -3306,6 +4292,11 @@ public class RunSimulator
+@@ -3306,6 +4288,11 @@ public class RunSimulator
      /// </summary>
      internal class HeadlessCardSelector : MegaCrit.Sts2.Core.TestSupport.ICardSelector
      {
@@ -10089,7 +10103,7 @@ index 6b9de4a..35e2abf 100644
          // Pending card selection — set by game engine, read by main loop
          public List<CardModel>? PendingOptions { get; private set; }
          public int PendingMinSelect { get; private set; }
-@@ -3313,36 +4304,249 @@ public class RunSimulator
+@@ -3313,36 +4300,249 @@ public class RunSimulator
          public string PendingPrompt { get; private set; } = "";
          private TaskCompletionSource<IEnumerable<CardModel>>? _pendingTcs;
  
@@ -10354,7 +10368,7 @@ index 6b9de4a..35e2abf 100644
          }
  
          public void ResolvePendingByIndices(int[] indices)
-@@ -3357,15 +4561,36 @@ public class RunSimulator
+@@ -3357,15 +4557,36 @@ public class RunSimulator
  
          public void CancelPending()
          {
@@ -10395,7 +10409,7 @@ index 6b9de4a..35e2abf 100644
  
          // NOTE: STS2 build 23372702 changed ICardSelector.GetSelectedCardReward to return
          // a CardRewardSelection struct { CardModel card; CardRewardAlternative alternative }.
-@@ -3375,55 +4600,110 @@ public class RunSimulator
+@@ -3375,55 +4596,110 @@ public class RunSimulator
              IReadOnlyList<MegaCrit.Sts2.Core.Entities.Cards.CardCreationResult> options,
              IReadOnlyList<CardRewardAlternative> alternatives)
          {
@@ -10540,7 +10554,7 @@ index 6b9de4a..35e2abf 100644
          /// <summary>Harmony prefix: make Cmd.Wait() return completed task immediately (no-op in headless).</summary>
          public static bool CmdWaitPrefix(ref Task __result)
          {
-@@ -3447,178 +4727,87 @@ public class RunSimulator
+@@ -3447,178 +4723,87 @@ public class RunSimulator
  
      private static void InitLocManager()
      {
@@ -10790,7 +10804,7 @@ index 6b9de4a..35e2abf 100644
  
              // Patch FromChooseABundleScreen to use our card selector
              try
-@@ -3634,42 +4823,6 @@ public class RunSimulator
+@@ -3634,42 +4819,6 @@ public class RunSimulator
                  }
              }
              catch (Exception ex) { Console.Error.WriteLine($"[WARN] Bundle patch: {ex.Message}"); }
@@ -10833,7 +10847,7 @@ index 6b9de4a..35e2abf 100644
          }
          catch (Exception ex)
          {
-@@ -3677,85 +4830,79 @@ public class RunSimulator
+@@ -3677,85 +4826,79 @@ public class RunSimulator
          }
      }
  
@@ -10982,7 +10996,7 @@ index 6b9de4a..35e2abf 100644
          /// <summary>
          /// Intercept bundle selection — store bundles and wait for player to pick a pack index.
          /// </summary>
-@@ -3789,16 +4936,12 @@ public class RunSimulator
+@@ -3789,16 +4932,12 @@ public class RunSimulator
          // Static reference so Harmony patch can access the simulator instance
          internal static RunSimulator? _bundleSimRef;
  
@@ -11001,7 +11015,7 @@ index 6b9de4a..35e2abf 100644
      }
  
      private static Dictionary<string, object?> Error(string message) =>
-@@ -3826,36 +4969,54 @@ public class RunSimulator
+@@ -3826,36 +4965,54 @@ public class RunSimulator
          var currentCoord = _runState.CurrentMapCoord;
          var visited = _runState.VisitedMapCoords;
  
@@ -11075,7 +11089,24 @@ index 6b9de4a..35e2abf 100644
          // Boss node
          var bossNode = new Dictionary<string, object?>
          {
-@@ -3896,15 +5057,124 @@ public class RunSimulator
+@@ -3867,13 +5024,12 @@ public class RunSimulator
+         // Add boss name/id — use BossEncounter?.Id?.Entry
+         try
+         {
+-            var bossIdEntry = _runState.Act?.BossEncounter?.Id?.Entry;
++            var boss = _runState.Act?.BossEncounter;
++            var bossIdEntry = boss?.Id.Entry;
+             if (!string.IsNullOrEmpty(bossIdEntry))
+             {
+-                var monsterKey = bossIdEntry.EndsWith("_BOSS") ? bossIdEntry[..^5] : bossIdEntry;
+-                if (monsterKey == "THE_KIN") monsterKey = "KIN_PRIEST";
+                 bossNode["id"] = bossIdEntry;
+-                bossNode["name"] = _loc.Monster(monsterKey);
++                bossNode["name"] = StripVisibleText(boss!.Title.GetFormattedText());
+             }
+         }
+         catch { }
+@@ -3896,15 +5052,124 @@ public class RunSimulator
      {
          try
          {
