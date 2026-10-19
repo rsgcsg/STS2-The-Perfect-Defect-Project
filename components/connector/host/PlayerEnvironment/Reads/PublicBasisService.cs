@@ -113,7 +113,13 @@ internal static partial class PlayerEnvironmentService
         if (built.RawNativeNavigation is { } original)
         {
             var raw = FreezePublicBasis(original, continuity, captureTime);
-            snapshot["raw_native_navigation_basis"] = JsonNode.Parse(raw.Bytes);
+            var originalBasis = JsonNode.Parse(raw.Bytes)!;
+            snapshot["raw_native_navigation_basis"] = originalBasis;
+            if (originalBasis["capture_status"]?.GetValue<string>() != "complete")
+            {
+                snapshot["completeness"]!["status"] = "partial";
+                ((JsonArray)snapshot["completeness"]!["missing"]!).Add("raw_native_navigation_basis_incomplete");
+            }
         }
         return PublicBasisAssembly.Freeze(snapshot, reads, continuity, ConnectorMod._jsonOptions, captureTime);
     }

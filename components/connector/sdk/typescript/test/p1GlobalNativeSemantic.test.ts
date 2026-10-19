@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { createSession, reduce, reduceNativeExecution, matchNativeExecutionChoice, matchNativeSemanticChoice, type NativeSemanticAcceptance,
+import { createSession, reduce, modelView, reduceNativeExecution, matchNativeExecutionChoice, matchNativeSemanticChoice, type NativeSemanticAcceptance,
   type P1Basis } from "../src/p1Global/index.js";
 
 function example() {
@@ -392,6 +392,27 @@ describe("noncombat discard keeps the whole decision", () => {
     return { ...value, accepted };
   }
 
+  it("aliases this declared potion reference across Host identities without deleting the field", () => {
+    const { queued } = discardExample();
+    const renamed = JSON.parse(JSON.stringify(queued).replaceAll('shop-potion', 'another-host-potion'));
+    const left = reduce(createSession("same", "reference"), queued);
+    const right = reduce(createSession("same", "managed"), renamed);
+    expect(left.complete && right.complete).toBe(true);
+    const surface = (left.observation.scene.content as any).surface;
+    expect(surface.non_combat_discardable_potions[0].entity_id).not.toBe('shop-potion');
+    expect(modelView(left.observation)).toEqual(modelView(right.observation));
+  });
+  it.each(["combat", "undeclared_page"])("refuses the belt extension outside its approved scope: %s", defect => {
+    const { queued } = discardExample(), snapshot = queued.snapshot as any;
+    if (defect === "combat") snapshot.interaction.content.context.kind = "combat";
+    else {
+      snapshot.interaction.kind = snapshot.interaction.content.surface.kind = "potion_popup";
+      snapshot.interaction.content_schema = "sts2.player-environment/surface/potion_popup-1";
+    }
+    const reduced = reduce(createSession("scope", "reference"), queued);
+    expect(reduced.complete).toBe(false);
+    expect(reduced.missing).toContain("required:noncombat_potion_scope");
+  });
   it("converts native discard with the room action and all original facts still present", () => {
     const { queued, accepted, execution } = discardExample();
     const original = JSON.stringify(queued);

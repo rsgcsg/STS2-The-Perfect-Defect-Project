@@ -11,7 +11,7 @@ import { completeRewardSurface, completeRewardGroup, structuralRewardGroup, comp
   matchesRewardIntention, type RewardIntention } from "./rewardForward.js";
 import { shopWorldFacts } from "./shopForward.js";
 import {
-  P1G_INFORMATION_SHAPES, P1G_LIMITS, P1G_OBSERVATION_SCHEMA, P1G_PROFILE, P1G_REVISION,
+  P1G_INFORMATION_SHAPES, P1G_NONCOMBAT_POTION_SCENES, P1G_LIMITS, P1G_OBSERVATION_SCHEMA, P1G_PROFILE, P1G_REVISION,
   type Availability, type HostKind, type P1Choice, type P1Commitments, type P1Observation,
   type P1Part, type SceneFamily
 } from "./contracts.js";
@@ -576,6 +576,8 @@ function reduceCatalog(state: P1SessionState, basis: P1Basis, execution?: readon
   if (!isObject(interaction.content.surface)) missing.push("required:surface:invalid_content");
   if (Object.hasOwn(surface, "non_combat_discardable_potions")) {
     const belt = surface.non_combat_discardable_potions;
+    if (!P1G_NONCOMBAT_POTION_SCENES.includes(nativeKind) || context.kind === "combat")
+      missing.push("required:noncombat_potion_scope");
     if (!Array.isArray(belt) || new Set(belt.map((item: any) => item?.entity_id)).size !== belt.length
         || belt.some((item: any) => !isObject(item) || !Number.isSafeInteger(item.slot)
           || !persistent?.player?.potions?.some((potion: any) => potion.entity_id === item.entity_id && potion.slot === item.slot)

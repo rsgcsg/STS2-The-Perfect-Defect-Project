@@ -11,6 +11,11 @@
  */
 export const P1G_PROFILE = "p1-global-r1" as const;
 export const P1G_REVISION = "r1.4" as const;
+/** Approved noncombat belt boundary. Other scenes retain their original contract. */
+export const P1G_NONCOMBAT_POTION_SCENES: readonly string[] = Object.freeze([
+  "event_option", "event_dialogue", "map_navigation", "rest_site", "shop_room", "shop_inventory",
+  "treasure_room", "reward_claim", "card_reward_selection"
+]);
 export const P1G_OBSERVATION_SCHEMA = "sts2.p1/observation-1" as const;
 export const P1G_RESULT_SCHEMA = "sts2.p1/result-1" as const;
 export const P1G_PORT_PROTOCOL = "sts2.p1/agent-port-1" as const;

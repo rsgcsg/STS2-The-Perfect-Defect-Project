@@ -74,9 +74,19 @@ export function decodePublicBasisSnapshot(value: unknown): DecodedPlayerPayload<
   const normal = withoutPublicProfile(value);
   const navigation = normal.raw_native_navigation_basis;
   if (navigation !== undefined) {
-    const original = decodePublicBasis(navigation);
-    if (original.snapshot.raw_native_navigation_basis !== undefined)
+    if (!isJsonObject(navigation) || !isJsonObject(navigation.snapshot)
+        || navigation.snapshot.raw_native_navigation_basis !== undefined)
       throw new Error("native navigation basis must be an original unfurled capture");
+    const original = decodePublicBasis(navigation), raw = original.snapshot as Record<string, any>;
+    if (raw.interaction?.kind !== "potion_popup" || raw.interaction.content?.context?.kind === "combat"
+        || raw.interaction.content?.surface?.can_use !== false || raw.interaction.content?.surface?.can_discard !== true)
+      throw new Error("native navigation basis is outside the pure noncombat discard popup scope");
+    if (canonical(raw.session) !== canonical(normal.session) || raw.observed_at !== normal.observed_at
+        || canonical(raw.information_policy) !== canonical(normal.information_policy)
+        || canonical(raw.persistent) !== canonical(normal.persistent))
+      throw new Error("native navigation basis does not belong to the same public capture");
+    if (original.capture_status !== "complete" && (normal.completeness as any)?.status === "complete")
+      throw new Error("native navigation incompleteness must be preserved by the outer basis");
     delete normal.raw_native_navigation_basis;
   }
   const decoded = decodePlayerSnapshot(normal);

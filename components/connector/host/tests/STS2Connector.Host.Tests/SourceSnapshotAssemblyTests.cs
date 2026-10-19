@@ -24,6 +24,19 @@ public sealed class SourceSnapshotAssemblyTests
         new Dictionary<string, PlayerEnvironmentNativeBinding>(), new Dictionary<string, STS2Connector.LiveHost.PlayerReadBuildResult>());
 
     [Fact]
+    public void PartialOriginalNavigationRemainsStoredAndMakesTheLogicalBasisPartial()
+    {
+        var page = Page("partial-popup");
+        var raw = Built(page with { Completeness = page.Completeness with { Status = "partial", Missing = new[] { "original_missing" } } });
+        var frozen = PlayerEnvironmentService.FreezePublicBasis(Built(Page("logical-base")) with { RawNativeNavigation = raw }, "same-run");
+        using var body = JsonDocument.Parse(frozen.Bytes);
+        Assert.Equal("partial", body.RootElement.GetProperty("capture_status").GetString());
+        var snapshot = body.RootElement.GetProperty("snapshot");
+        Assert.Equal("partial", snapshot.GetProperty("raw_native_navigation_basis").GetProperty("capture_status").GetString());
+        Assert.Contains("raw_native_navigation_basis_incomplete", snapshot.GetProperty("completeness").GetProperty("missing").EnumerateArray().Select(item => item.GetString()));
+    }
+
+    [Fact]
     public void FoldedNavigationRetainsTheExactOriginalPopupPublicBasisSeparately()
     {
         var raw = Built(Page("original-popup"));
