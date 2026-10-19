@@ -200,3 +200,50 @@ it("retains exact H native input when S has its own real public BoundAction", ()
   accepted.native_input.arguments = { target: "changed-target" };
   expect(matchNativeExecutionChoice(createSession("same", "reference"), basis, accepted, original).status).toBe("unmapped");
 });
+
+function discardExecutionExample() {
+  const data = executionExample();
+  const potion = { entity_id: "actual-potion-slot", definition_id: "REVIVE", name: "Revive",
+    description: "Revive on death", slot: 0, target_type: "Self", can_use: false, automatic: true, keywords: [], card_previews: [] };
+  for (const value of [data.basis, data.queued]) {
+    const snapshot = value.snapshot as any;
+    snapshot.persistent.content.player.potions.push(structuredClone(potion));
+    snapshot.interaction.content.context.player.potion_states.push({ entity_id: potion.entity_id,
+      target_type: potion.target_type, can_use: false, automatic: true });
+    snapshot.referents.push({ ...snapshot.referents[0], referent_id: potion.entity_id, role: "discardable_potion",
+      properties_schema: "sts2.player-environment/referent/potion-1", properties: structuredClone(potion) });
+  }
+  const snapshot = data.basis.snapshot as any;
+  const { keywords: _keywords, card_previews: _previews, ...surfacePotion } = potion;
+  snapshot.interaction.content.surface.discardable_potions = [surfacePotion];
+  snapshot.bound_actions.actions.push({ ...snapshot.bound_actions.actions[0], bound_action_id: "actual-discard",
+    verb: "activate", subject_referent_id: potion.entity_id, arguments: [], label: "Discard Revive" });
+  snapshot.bound_actions.total_count = snapshot.bound_actions.materialized_count = snapshot.bound_actions.actions.length;
+  const discard = { key: "native-discard-slot", verb: "discard", subject_referent_id: potion.entity_id, arguments: {},
+    native_legality_basis: "native_slot+exact_current_enabled_potion_holder" };
+  data.execution.execution_action_space.actions.push(discard);
+  return { ...data, discard };
+}
+it("retains the same independent discard opportunity in captured execution A(S) and the online P1 catalog", () => {
+  const { basis, queued, accepted, execution } = discardExecutionExample();
+  const original = JSON.stringify(queued);
+  const actual = matchNativeExecutionChoice(createSession("discard-S", "reference"), queued, accepted, execution);
+  const online = reduce(createSession("discard-S", "reference"), basis);
+  expect(actual.status).toBe("matched");
+  expect(actual.reduction.observation).toEqual(online.observation);
+  const choice = actual.reduction.observation.catalog.find(choice => choice.kind === "potion.discard")!;
+  expect(actual.reduction.lowering[choice.choice_id]?.native_input_key).toBe("native-discard-slot");
+  expect(actual.reduction.lowering[choice.choice_id]?.first).toBeNull();
+  expect(JSON.stringify(queued)).toBe(original);
+  // Absence in old A(S) is not repaired from inventory or an earlier H.
+  execution.execution_action_space.actions.pop();
+  const missing = matchNativeExecutionChoice(createSession("discard-S", "reference"), queued, accepted, execution);
+  expect(missing.reduction.observation.catalog.some(choice => choice.kind === "potion.discard")).toBe(false);
+});
+it.each(["subject", "target", "inventory"])("does not create discard operands from missing or foreign %s", defect => {
+  const { queued, accepted, execution, discard } = discardExecutionExample();
+  if (defect === "subject") discard.subject_referent_id = "foreign-slot";
+  if (defect === "target") (discard.arguments as any).target = (queued.snapshot as any).referents[0].referent_id;
+  if (defect === "inventory") (queued.snapshot as any).persistent.content.player.potions = [];
+  expect(matchNativeExecutionChoice(createSession("discard-S", "reference"), queued, accepted, execution).status).toBe("incomplete");
+});

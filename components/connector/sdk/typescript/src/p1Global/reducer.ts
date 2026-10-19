@@ -129,7 +129,7 @@ const FAMILY: Readonly<Record<string, SceneFamily>> = {
   map_navigation: "map", event_option: "event", event_dialogue: "event",
   shop_inventory: "shop", shop_room: "shop", rest_site: "rest",
   treasure_room: "treasure", treasure_chest: "treasure", treasure_relic_selection: "treasure", treasure_completion: "treasure", relic_choice: "relic_choice", native_boss_relic_selection: "relic_choice",
-  tutorial: "other", game_over: "terminal"
+  tutorial: "other", potion_popup: "other", game_over: "terminal"
 };
 
 /** Verb-level semantics per family, used when no exact (kind, verb, role) row exists. */
@@ -154,6 +154,7 @@ const FAMILY_VERB: Readonly<Record<string, Readonly<Record<string, string>>>> = 
 const KIND_TABLE: Readonly<Record<string, string>> = {
   "combat_turn|play|playable_card": "combat.play_card",
   "combat_turn|use|usable_potion": "potion.use",
+  "combat_turn|discard|discardable_potion": "potion.discard",
   "combat_turn|activate|usable_potion": "potion.discard",
   "combat_turn|activate|discardable_potion": "potion.discard",
   "combat_turn|end_turn|": "combat.end_turn",
@@ -163,6 +164,9 @@ const KIND_TABLE: Readonly<Record<string, string>> = {
   "treasure_relic_selection|skip|treasure_room": "treasure.skip",
   "treasure_completion|close|treasure_room": "treasure.proceed",
   "reward_claim|activate|reward": "reward.claim",
+  "reward_claim|activate|discardable_potion": "potion.discard",
+  "potion_popup|activate|potion": "potion.discard",
+  "potion_popup|use|potion": "potion.use",
   "reward_claim|activate|": "reward.leave",
   "reward_completion|activate|combat_room": "reward.proceed",
   "card_reward_selection|select|card": "card_reward.take",
@@ -325,11 +329,14 @@ function reduceCatalog(state: P1SessionState, basis: P1Basis, execution?: readon
   const invalidExecution = execution !== undefined && (
     new Set(execution.map(action => action.key)).size !== execution.length
     || execution.some(action => !action.key || !action.native_legality_basis
-      || !["play", "use", "end_turn"].includes(action.verb)
+      || !["play", "use", "discard", "end_turn"].includes(action.verb)
       || action.arguments == null || typeof action.arguments !== "object" || Array.isArray(action.arguments)
       || Object.entries(action.arguments).some(([role, id]) => role !== "target" || !knownIds.has(id))
       || action.verb === "play" && !sourcePlayer?.hand?.some((card: any) => card.entity_id === action.subject_referent_id)
       || action.verb === "use" && !sourcePlayer?.potion_states?.some((potion: any) => potion.entity_id === action.subject_referent_id)
+      || action.verb === "discard" && (!sourcePlayer?.potion_states?.some((potion: any) => potion.entity_id === action.subject_referent_id)
+        || !snapshot.persistent?.content?.player?.potions?.some((potion: any) => potion.entity_id === action.subject_referent_id)
+        || Object.keys(action.arguments).length !== 0)
       || action.verb === "end_turn" && (action.subject_referent_id != null || Object.keys(action.arguments).length !== 0)));
   // Invalid captured operands remain an incomplete observation, never a choice.
   if (invalidExecution) execution = undefined;
@@ -345,7 +352,15 @@ function reduceCatalog(state: P1SessionState, basis: P1Basis, execution?: readon
     interaction = { ...interaction, stage: "ready", content: { ...interaction.content,
       surface: { ...interaction.content.surface, can_end_turn: execution.some(action => action.verb === "end_turn"),
         playable_cards: options("play", context.player.hand),
-        usable_potions: options("use", context.player.potion_states ?? []) } } };
+        usable_potions: options("use", context.player.potion_states ?? []),
+        ...(execution.some(action => action.verb === "discard") || Array.isArray(interaction.content.surface.discardable_potions) ? {
+        discardable_potions: execution.filter(action => action.verb === "discard").map(action => {
+          const potion = snapshot.persistent.content.player.potions.find((item: any) => item.entity_id === action.subject_referent_id);
+          const current = context.player.potion_states.find((item: any) => item.entity_id === action.subject_referent_id);
+          return { entity_id: potion.entity_id, definition_id: potion.definition_id, name: potion.name,
+            description: potion.description, slot: potion.slot, target_type: current.target_type,
+            can_use: false, automatic: current.automatic };
+        }) } : {}) } } };
   }
   const nativeKind = String(interaction.kind);
   const family: SceneFamily = FAMILY[nativeKind] ?? "other";
@@ -572,7 +587,7 @@ function reduceCatalog(state: P1SessionState, basis: P1Basis, execution?: readon
     if (action.verb === "end_turn") return "End turn";
     const item = (action.verb === "play" ? context.player.hand : persistent?.player?.potions ?? [])
       .find((value: any) => value.entity_id === action.subject_referent_id);
-    const label = `${action.verb === "play" ? "Play" : "Use"} ${item?.name ?? action.subject_referent_id}`;
+    const label = `${action.verb === "play" ? "Play" : action.verb === "discard" ? "Discard" : "Use"} ${item?.name ?? action.subject_referent_id}`;
     const target = snapshot.referents.find((ref: any) => ref.referent_id === action.arguments.target)?.label;
     return target && !label.includes(target) ? `${label} -> ${target}` : label;
   };
@@ -598,7 +613,7 @@ function reduceCatalog(state: P1SessionState, basis: P1Basis, execution?: readon
     sort: `${choice.kind}\u0000${choice.subject ?? ""}\u0000${choice.target ?? ""}\u0000${choice.option ?? ""}\u0000${low.group_key ?? ""}\u0000${low.option_index ?? ""}` });
   for (const action of catalogActions) {
     const subjectId = action.subject_referent_id ?? null;
-    const role = execution ? action.verb === "play" ? "playable_card" : action.verb === "use" ? "usable_potion" : ""
+    const role = execution ? action.verb === "play" ? "playable_card" : action.verb === "use" ? "usable_potion" : action.verb === "discard" ? "discardable_potion" : ""
       : subjectId ? roles.get(subjectId) ?? "" : "";
     const operation = qualifiedSelector ? selectorOperation(surface, subjectId) : null;
     const first = action.bound_action_id === null ? null
@@ -607,6 +622,9 @@ function reduceCatalog(state: P1SessionState, basis: P1Basis, execution?: readon
       if (first) excluded.push({ ...first, rule });
       else missing.push(`required:execution_action_exclusion:${rule}`);
     };
+    if (nativeKind === "potion_popup" && action.verb === "cancel" && subjectId === null) {
+      exclude("forward_profile:complete_potion_public_presentation"); continue;
+    }
     if (selectionFamily && (action.verb === "deselect" || operation === "cancel_preview"
         || !operation && ["cancel", "close"].includes(action.verb) && surface.stage === "preview")) {
       exclude("forward_profile:selection_append_only"); continue;

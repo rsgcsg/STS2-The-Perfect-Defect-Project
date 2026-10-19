@@ -5042,11 +5042,7 @@ internal static partial class RecorderRuntime
             return;
         if (IsP1Recording)
         {
-            // The exact existing owner binding proves this completion; no legacy causal projection is required.
-            if (CompleteP1Ui(actionWitnessId, "finished", new { seam = "RunManager.ActEntered", action_witness_id = actionWitnessId }))
-                NativeUiCompletionRootBindings.TakeIfMatches(owner, actionWitnessId);
-            else
-                ObserveP1Boundary("native_act_entered");
+            CompleteP1ActEntered(owner, actionWitnessId);
             return;
         }
         try

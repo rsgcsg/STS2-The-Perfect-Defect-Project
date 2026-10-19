@@ -49,7 +49,7 @@ internal static partial class RecorderRuntime
             complete = frame.PublicBasis is { } original && P1NativeRecordingContract.CompleteBasis(original.Bytes);
             capture = PlayerEnvironmentNativeSemanticWitness.Capture("before_execution", action, frame,
                 semanticNativeActionType: subscription.SemanticNativeActionType,
-                semanticSelection: subscription.NativeSemanticSelection);
+                semanticSelection: subscription.NativeSemanticSelection, includeCombatPotionDiscards: true);
             currentBound = P1NativeScopeInputs.CurrentPublicAction(frame, subscription.P1PublicInput);
             selected = selected with {
                 BoundAction = ToP1RecordedBoundAction(currentBound),

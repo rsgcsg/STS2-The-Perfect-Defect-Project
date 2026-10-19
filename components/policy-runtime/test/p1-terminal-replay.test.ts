@@ -21,7 +21,7 @@ const hello = { type: "hello", protocol: "sts2.p1/agent-port-1" };
 const inform = (observation: any) => ({ type: "observation", observation, requires_choice: false });
 function cancellationMetadata(points: any[]) {
   const cancellations = new Map<string, any>();
-  points.forEach((point, index) => (point.continuity_checks ?? []).forEach((check: any) => {
+  points.forEach((point, index) => (point.continuity_checks ?? []).filter((check: any) => check.phase !== "presentation").forEach((check: any) => {
     if (!cancellations.has(check.decision_id)) cancellations.set(check.decision_id, {
       decision_id: check.decision_id, action_witness_id: `witness-${check.decision_id}`, phase: check.phase,
       source_event_id: `terminal-${check.decision_id}`, reason: "native_cancel", continuity_checkpoints: [],
@@ -244,4 +244,54 @@ describe("P1 cancellation continuity uses the actual replay observation", () => 
     expect(result.rows.some(row => row.type === "prefix_end")).toBe(false);
     expect(result.replies.at(-1).type).toBe("abstain");
   });
+});
+
+
+describe("Human presentation continuity uses its own disposition", () => {
+  it.each([false, true])("compares both actual endpoints before terminal success (changed=%s)", changed => {
+    const reference = terminal(), actual = structuredClone(reference);
+    const before = structuredClone(reference);
+    if (changed) (before.player.content as any).gold += 1;
+    const checks = [{ decision_id: "browse", phase: "presentation", boundary: "before", source_event_id: "before", observation: before },
+      { decision_id: "browse", phase: "presentation", boundary: "after", source_event_id: "after", observation: reference }];
+    const metadata = { presentation_count: 1, native_presentations: [{ decision_id: "browse", decision_ids: ["browse", "back"],
+      phase: "presentation", disposition: "presentation", successful_label: false, comparison: { equal: true, changes: [] },
+      continuity_checkpoints: checks.map(({ observation: _observation, ...check }) => ({ ...check, comparison_point_index: 0 })) }] };
+    const result = scenario([{ ...point(reference), continuity_checks: checks }], [hello, inform(actual),
+      { type: "episode_end", outcome: "loss", censor_reason: null }], false, metadata);
+    expect(result.end.replay_reached_reference_terminal).toBe(!changed);
+    expect(result.rows.filter(row => row.type === "presentation_continuity")).toHaveLength(changed ? 1 : 2);
+    expect(result.rows.some(row => row.type === "cancellation_continuity")).toBe(false);
+    if (changed) expect(result.end.reason).toBe("presentation_continuity_difference");
+  });
+  it.each(["missing_checks", "state_changed", "success_label"])("refuses %s in the presentation manifest", defect => {
+    const observation = terminal();
+    const metadata = { presentation_count: 1, native_presentations: [{ decision_id: "browse", decision_ids: ["browse"],
+      phase: "presentation", disposition: "presentation", successful_label: defect === "success_label",
+      comparison: { equal: defect !== "state_changed", changes: [] }, continuity_checkpoints: [] }] };
+    const result = scenario([point(observation)], [hello, inform(observation),
+      { type: "episode_end", outcome: "loss", censor_reason: null }], false, metadata);
+    expect(result.end.replay_reached_reference_terminal).toBe(false);
+    expect(result.rows.some(row => row.reason === "presentation_manifest_mismatch")).toBe(true);
+  });
+});
+
+it("an explained refresh exception still compares its unequal real endpoints and cannot grant strict equality", () => {
+  const before: any = terminal(), after: any = structuredClone(before);
+  before.scene.content.surface.native_relic_refresh_subscription = "attached";
+  after.scene.content.surface.native_relic_refresh_subscription = "absent";
+  const checks = [{ decision_id: "refresh", phase: "presentation", boundary: "before", source_event_id: "before", observation: before },
+    { decision_id: "refresh", phase: "presentation", boundary: "after", source_event_id: "after", observation: after }];
+  const metadata = { presentation_count: 1, native_presentations: [{ decision_id: "refresh", decision_ids: ["refresh", "skip"],
+    phase: "presentation", disposition: "presentation_exception", successful_label: false,
+    exception: { id: "stop_relic_refresh" }, comparison: { equal: false, changes: [
+      { path: "$.snapshot.interaction.content.surface.rewards.0.native_relic_refresh_subscription", before: "attached", after: "absent" },
+      { path: "$.snapshot.referents.0.properties.native_relic_refresh_subscription", before: "attached", after: "absent" }] },
+    continuity_checkpoints: checks.map(({ observation: _observation, ...check }) => ({ ...check, comparison_point_index: 0 })) }] };
+  const result = scenario([{ ...point(after), continuity_checks: checks }], [hello, inform(after),
+    { type: "episode_end", outcome: "loss", censor_reason: null }], false, metadata);
+  expect(result.end.replay_reached_reference_terminal).toBe(false);
+  expect(result.rows.some(row => row.reason === "presentation_manifest_mismatch")).toBe(false);
+  expect(result.rows.find(row => row.type === "presentation_continuity").verdict).toBe("different");
+  expect(result.end.reason).toBe("presentation_continuity_difference");
 });

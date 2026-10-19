@@ -97,3 +97,48 @@ describe("complete forward reward intentions", () => {
     expect(project(outer).observation.catalog.some(c => c.kind === "reward.decline_group")).toBe(false);
   });
 });
+
+describe("existing potion choices outside combat", () => {
+  it("maps full-slot reward discards without making the complete reward catalog incomplete", () => {
+    const { outer } = pair(); const snapshot = outer.snapshot;
+    const potion = structuredClone(snapshot.persistent.content.player.potions[0] ?? {
+      entity_id: "held-potion", definition_id: "DEXTERITY_POTION", name: "Dexterity Potion", slot: 0
+    });
+    potion.entity_id = "held-potion";
+    snapshot.interaction.content.surface.potion_slots_full = true;
+    snapshot.interaction.content.surface.discardable_potions = [potion];
+    snapshot.referents.push({ ...snapshot.referents[0], referent_id: potion.entity_id, role: "discardable_potion",
+      properties_schema: "sts2.player-environment/referent/potion-1", properties: potion });
+    snapshot.bound_actions.actions.push({ ...snapshot.bound_actions.actions[0], bound_action_id: "discard-held",
+      verb: "activate", subject_referent_id: potion.entity_id, label: "Discard held potion" });
+    snapshot.bound_actions.total_count = snapshot.bound_actions.materialized_count = snapshot.bound_actions.actions.length;
+    const r = project(outer);
+    expect(r.missing).toEqual([]);
+    const discard = r.observation.catalog.find(c => c.kind === "potion.discard")!;
+    expect(r.lowering[discard.choice_id]?.first?.bound_action_id).toBe("discard-held");
+    expect(r.observation.catalog.some(c => c.kind === "reward.take_card")).toBe(true);
+  });
+  it("offers exact popup use/discard while excluding its information-only close", () => {
+    const { outer } = pair(); const snapshot = outer.snapshot;
+    Object.assign(snapshot.interaction, { kind: "potion_popup", content_schema: "sts2.player-environment/surface/potion_popup-1",
+      content: { context: { kind: "potion" }, surface: { kind: "potion_popup", potion_entity_id: "held-potion",
+        definition_id: "DEXTERITY_POTION", name: "Dexterity Potion", slot: 0,
+        can_use: true, can_discard: true, direct_combat_use: false } } });
+    snapshot.referents = [{ ...snapshot.referents[0], referent_id: "held-potion", role: "potion",
+      properties_schema: "sts2.player-environment/referent/potion-1", properties: {} }];
+    const template = snapshot.bound_actions.actions[0];
+    snapshot.bound_actions.actions = [
+      { ...template, bound_action_id: "discard", verb: "activate", subject_referent_id: "held-potion" },
+      { ...template, bound_action_id: "use", verb: "use", subject_referent_id: "held-potion" },
+      { ...template, bound_action_id: "close", verb: "cancel", subject_referent_id: null }
+    ];
+    snapshot.bound_actions.total_count = snapshot.bound_actions.materialized_count = 3;
+    const r = project(outer);
+    expect(r.complete).toBe(true);
+    expect(r.observation.catalog.map(c => c.kind).sort()).toEqual(["potion.discard", "potion.use"]);
+    expect(r.excluded).toEqual([expect.objectContaining({ bound_action_id: "close",
+      rule: "forward_profile:complete_potion_public_presentation" })]);
+    outer.reads.pop();
+    expect(project(outer).complete).toBe(false);
+  });
+});

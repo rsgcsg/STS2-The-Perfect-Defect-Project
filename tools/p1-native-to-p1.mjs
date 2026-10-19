@@ -6,6 +6,7 @@ import { writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { classifyNativeCancellation } from './p1-native-cancellation.mjs';
+import { classifyNativePresentation } from './p1-native-presentation.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
@@ -16,6 +17,14 @@ export function convertNativeSemanticOriginals(source, sdk, core, options = {}) 
   const openPrefix = source.manifest.schema === 'sts2.human-annotator/p1-native-prefix-1';
   if (!openPrefix && source.manifest.schema !== 'sts2.human-annotator/p1-native-session-bundle-1')
     throw new Error('native_p1_recording_schema_required');
+  if (options.throughSequence !== undefined && (!Number.isSafeInteger(options.throughSequence)
+    || options.throughSequence < 1 || options.throughSequence > (source.events.at(-1)?.sequence ?? 0)))
+    throw new Error('native_p1_diagnostic_sequence_out_of_range');
+  // A derived view of the fully verified bundle, never a fabricated raw prefix.
+  // Future accepted choices, terminals and original bases cannot qualify this view.
+  const events = options.throughSequence === undefined ? source.events
+    : source.events.filter(row => row.sequence <= options.throughSequence);
+  const diagnosticRange = options.throughSequence !== undefined;
   const identity = openPrefix ? source.manifest : source.manifest.content_identity;
   const episode = `native-semantic:${identity.session_id}`;
   let state = core.createSession(episode, 'reference');
@@ -26,7 +35,9 @@ export function convertNativeSemanticOriginals(source, sdk, core, options = {}) 
     human_origin_attestation: openPrefix ? null : identity.human_origin_attestation,
     scope: { kind: 'bounded_native_semantic_prefix', run_id: options.runId ?? null,
       natural_terminal_observed: false, recording_status: openPrefix ? 'open' : 'closed',
-      watermark: openPrefix ? source.manifest.watermark : null }, captures: [], actions: [], issues: [],
+      watermark: openPrefix ? source.manifest.watermark : null,
+      ...(diagnosticRange ? { native_event_range: { through_sequence: options.throughSequence,
+        source_last_sequence: source.events.at(-1).sequence, source_fully_verified: true, derived_only: true } } : {}) }, captures: [], actions: [], issues: [],
     pending_decisions: [], complete: false,
     trajectory: null };
   const active = new Map();
@@ -38,10 +49,12 @@ export function convertNativeSemanticOriginals(source, sdk, core, options = {}) 
   let lastComplete = null;
   const executionMode = source.executionSchemaVersion === 1;
   const acceptedById = new Map();
-  const terminalById = new Map(source.events.filter(row => row.kind === 'lifecycle' && terminalPhases.has(row.phase))
+  const terminalById = new Map(events.filter(row => row.kind === 'lifecycle' && terminalPhases.has(row.phase))
     .map(row => [row.decision_id, row]));
-  const executionById = new Map(source.events.filter(row => row.kind === 'execution').map(row => [row.decision_id, row]));
+  const executionById = new Map(events.filter(row => row.kind === 'execution').map(row => [row.decision_id, row]));
   const cancellations = new Map();
+  const presentationByDecision = new Map();
+  const presentations = [];
   // Looking at a recorded final disposition classifies an outcome; it never
   // supplies an earlier S, legality or choice from a future state.
   function cancellation(accepted, original, execution = null, executionBasis = null, match = null) {
@@ -87,11 +100,11 @@ export function convertNativeSemanticOriginals(source, sdk, core, options = {}) 
     return { basis: value, reduction: reduced, capture: item };
   }
 
-  const runIds = [...new Set(source.events.filter(row => row.kind === 'decision_accepted')
+  const runIds = [...new Set(events.filter(row => row.kind === 'decision_accepted')
     .map(row => row.run_id))];
   if (options.runId === undefined && runIds.length > 1) throw new Error('native_p1_select_one_run');
   report.scope.run_id ??= runIds[0] ?? null;
-  const acceptedRows = source.events.filter(row => row.kind === 'decision_accepted'
+  const acceptedRows = events.filter(row => row.kind === 'decision_accepted'
     && row.run_id === report.scope.run_id);
 
   // Reuse the online lowering's exact declared follow. A later accepted choice
@@ -118,7 +131,7 @@ export function convertNativeSemanticOriginals(source, sdk, core, options = {}) 
       choice_id: choiceId, lowering, continuation_decision_id: following.decision_id };
   }
 
-  for (const row of source.events) {
+  for (const row of events) {
     if (row.run_id !== null && row.run_id !== report.scope.run_id) continue;
     if (row.kind === 'decision_accepted') {
       if (active.has(row.decision_id)) throw new Error('native_p1_duplicate_decision');
@@ -132,8 +145,25 @@ export function convertNativeSemanticOriginals(source, sdk, core, options = {}) 
       let match = original && row.bound_action != null ? core.matchNativeSemanticChoice(state, original, row)
         : { status: 'incomplete', reason: original ? 'original_native_bound_action_missing' : 'original_human_basis_missing',
           choice_id: null, lowering: null, reduction: null };
+      if (!awaitsExecution && !presentationByDecision.has(row.decision_id)) {
+        const presentation = classifyNativePresentation({ row, next: acceptedRows[acceptedRows.indexOf(row) + 1],
+          terminalById, basis, state, core });
+        if (presentation) {
+          // Lifecycle remains in the originals. Even a changed browsing span
+          // has no successful label; its real difference stays a blocking gap.
+          presentation.before.observation = core.reduce(state, presentation.before.basis).observation;
+          presentation.after.observation = core.reduce(state, presentation.after.basis).observation;
+          presentations.push(presentation);
+          for (const id of presentation.decision_ids) presentationByDecision.set(id, presentation);
+        }
+      }
+      const presentation = presentationByDecision.get(row.decision_id);
+      if (presentation) match = { ...match, status: presentation.comparison.equal ? 'presentation' : 'presentation_gap',
+        reason: presentation.comparison.equal ? 'native_presentation_originals_equal'
+          : presentation.exception ? 'native_presentation_exception:stop_relic_refresh' : 'native_presentation_public_state_changed',
+        choice_id: null, lowering: null };
       const continuationOf = continuationParents.get(row.decision_id) ?? null;
-      if (!continuationOf && !awaitsExecution) match = matchRecordedIntention(match, row);
+      if (!presentation && !continuationOf && !awaitsExecution) match = matchRecordedIntention(match, row);
       if (awaitsExecution) match = { status: 'incomplete', reason: 'accepted_action_without_execution_original',
         choice_id: null, lowering: null, reduction: null };
       const cancelled = !executionById.has(row.decision_id) ? cancellation(row, original) : null;
@@ -227,12 +257,36 @@ export function convertNativeSemanticOriginals(source, sdk, core, options = {}) 
   const pointActions = [...successful.map(action => ({ action, capture: report.captures[action.capture] })),
     ...(lastComplete ? [{ action: null, capture: lastComplete }] : [])];
   const nativeCancellations = [];
+  const nativePresentations = [];
+  for (const span of presentations) {
+    const equal = span.comparison.equal;
+    const pointIndex = pointActions.findIndex(point => point.capture.sequence >= span.after.event.sequence);
+    const checks = ['before', 'after'].map(boundary => ({ boundary,
+      source_event_id: span[boundary].event.event_id, source_public_basis: span[boundary].reference,
+      comparison_point_index: pointIndex, observation: span[boundary].observation }));
+    const receipt = { decision_id: span.decision_ids[0], decision_ids: span.decision_ids,
+      kind: span.kind, owner: span.owner, phase: 'presentation', disposition: span.disposition,
+      successful_label: false, comparison: span.comparison, exception: span.exception,
+      source_event_id: span.after.event.event_id,
+      continuity: 'requires_strict_managed_comparison', checks,
+      continuity_checkpoints: checks.map(({ observation: _observation, ...checkpoint }) => checkpoint) };
+    nativePresentations.push(receipt);
+    if (equal && pointIndex < 0) report.issues.push({ decision_id: receipt.decision_id,
+      reason: 'native_presentation_without_complete_continuity_boundary', blocking: true });
+  }
   for (const action of report.actions) {
     const cancelled = cancellations.get(action.decision_id);
+    const presentation = presentationByDecision.get(action.decision_id);
     if (terminalById.get(action.decision_id)?.phase === 'cancelled') {
       action.choice_id = null; action.choice = null;
     }
-    if (cancelled) {
+    if (presentation) {
+      action.native_disposition = { disposition: presentation.disposition, kind: presentation.kind,
+        span_decision_id: presentation.decision_ids[0], successful_label: false };
+      action.choice_id = null; action.choice = null;
+      report.issues.push({ decision_id: action.decision_id, action_witness_id: action.action_witness_id,
+        reason: action.reason, disposition: presentation.disposition, blocking: !presentation.comparison.equal && !presentation.exception });
+    } else if (cancelled) {
       action.native_disposition = cancelled.receipt;
       action.choice_id = null; action.choice = null; // A cancellation never yields a successful label.
       report.issues.push({ decision_id: action.decision_id, action_witness_id: action.action_witness_id,
@@ -278,29 +332,36 @@ export function convertNativeSemanticOriginals(source, sdk, core, options = {}) 
     return { ...issue, blocking: !explained, ...(explained ? { disposition: 'native_cancelled' } : {}) };
   });
   report.blocking_issues = report.issues.filter(issue => issue.blocking);
+  report.native_presentations = nativePresentations.map(({ checks: _checks, ...receipt }) => receipt);
+  report.presentation_gaps = report.native_presentations.filter(span => !span.comparison.equal && !span.exception);
+  const presentationDecisions = [...presentationByDecision.values()].filter(span => span.comparison.equal).length;
+  const exceptionDecisions = [...presentationByDecision.values()].filter(span => span.exception != null).length;
   report.native_cancellations = nativeCancellations.map(({ checks: _checks, ...receipt }) => receipt);
   report.accepted_accounting = { accepted: report.native_action_count, derived: derivedNative,
-    native_cancelled: cancellations.size, explained_gaps: report.native_action_count - derivedNative - cancellations.size };
+    native_cancelled: cancellations.size, presentation: presentationDecisions, presentation_exceptions: exceptionDecisions,
+    explained_gaps: report.native_action_count - derivedNative - cancellations.size - presentationDecisions - exceptionDecisions };
   report.complete = successful.length > 0 && report.blocking_issues.length === 0 && report.pending_decisions.length === 0;
   const journal = source.journal.filter(row => row.run_id === report.scope.run_id);
   const starts = journal.filter(row => row.kind === 'run_started_native');
   const ends = journal.filter(row => row.kind === 'run_ended_native');
-  report.whole_run_recording_complete = report.complete && !openPrefix && starts.length === 1 && ends.length === 1
+  report.whole_run_recording_complete = report.complete && !diagnosticRange && !openPrefix && starts.length === 1 && ends.length === 1
     && starts[0].sequence < ends[0].sequence && report.scope.natural_terminal_observed
     && !journal.some(row => ['run_resumed_native', 'run_abandoned_native', 'run_ended_unproved', 'recording_paused'].includes(row.kind));
   report.strict_managed_comparison = 'not_run';
   if (report.complete) {
+    const continuitySpans = [...nativeCancellations, ...nativePresentations.filter(span => span.comparison.equal || span.exception)];
     const points = pointActions.map(({ action, capture }, index) => ({ index,
       observation: capture.observation, chosen: action?.choice_id ?? null,
-      ...(nativeCancellations.some(item => item.checks.some(check => check.comparison_point_index === index)) ? {
-        continuity_checks: nativeCancellations.flatMap(item => item.checks
+      ...(continuitySpans.some(item => item.checks.some(check => check.comparison_point_index === index)) ? {
+        continuity_checks: continuitySpans.flatMap(item => item.checks
           .filter(check => check.comparison_point_index === index)
           .map(({ boundary, source_event_id, observation }) => ({ decision_id: item.decision_id,
             phase: item.phase, boundary, source_event_id, observation })))
       } : {}) }));
     report.trajectory = { schema: 'sts2.p1/trajectory-1', run_directory: source.bundle,
       origin: 'native_semantic_recording', scope: report.scope,
-      cancellation_count: report.native_cancellations.length, native_cancellations: report.native_cancellations, points };
+      cancellation_count: report.native_cancellations.length, native_cancellations: report.native_cancellations,
+      presentation_count: report.native_presentations.length, native_presentations: report.native_presentations, points };
   }
   return report;
 }
@@ -321,9 +382,9 @@ async function main() {
   const args = process.argv.slice(2), options = {};
   for (let i = 0; i < args.length; i += 2) {
     const keys = { '--bundle': 'bundle', '--prefix': 'prefix', '--manifest-sha256': 'manifestSha256',
-      '--sdk-root': 'sdkRoot', '--run-id': 'runId', '--output': 'output' };
+      '--sdk-root': 'sdkRoot', '--run-id': 'runId', '--output': 'output', '--through-sequence': 'throughSequence' };
     if (!keys[args[i]] || !args[i + 1]) throw new Error('usage: --bundle PATH | --prefix PATH --manifest-sha256 SHA [--sdk-root PATH] [--run-id ID] [--output PATH]');
-    options[keys[args[i]]] = args[i + 1];
+    options[keys[args[i]]] = keys[args[i]] === "throughSequence" ? Number(args[i + 1]) : args[i + 1];
   }
   const report = await convertP1NativeBundle(options);
   const serialized = JSON.stringify(report, null, 2) + '\n';

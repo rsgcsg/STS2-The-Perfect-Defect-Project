@@ -189,17 +189,45 @@ export function isSourceP1ReversibleSelect(input: SourceP1TraceInput): boolean {
   } catch { return false; }
 }
 
+/** Shared original-world comparison for a completed Human presentation round trip.
+ * Preserve the complete PB1/catalog and every Read. Only each original's checked
+ * snapshot locator, source sequence and observation timestamp are transport metadata.
+ * This is the same boundary used by the existing Source4 selector-reversal proof. */
+function originalPresentationBasis(basis: P1Basis): ObjectValue {
+  snapshot(basis); // Validate every advertised Read against its own frozen snapshot.
+  const copy = structuredClone(basis) as ObjectValue;
+  delete copy.snapshot.snapshot_id; delete copy.snapshot.sequence; delete copy.snapshot.observed_at;
+  for (const read of copy.reads) {
+    delete read.response.expected_snapshot_id; delete read.response.observed_snapshot_id; delete read.response.observed_at;
+  }
+  return copy;
+}
+
+export function compareOriginalPresentationBases(before: P1Basis, after: P1Basis): {
+  readonly equal: boolean; readonly changes: readonly { path: string; before: unknown; after: unknown }[];
+} {
+  const changes: { path: string; before: unknown; after: unknown }[] = [];
+  function visit(a: unknown, b: unknown, path: string): void {
+    if (canonicalJson(a) === canonicalJson(b)) return;
+    if (a !== null && b !== null && typeof a === "object" && typeof b === "object"
+        && Array.isArray(a) === Array.isArray(b)) {
+      const left = a as ObjectValue, right = b as ObjectValue;
+      for (const key of new Set([...Object.keys(left), ...Object.keys(right)])) visit(left[key], right[key], `${path}.${key}`);
+    } else changes.push({ path, before: a, after: b });
+  }
+  visit(originalPresentationBasis(before), originalPresentationBasis(after), "$");
+  return { equal: changes.length === 0, changes };
+}
+
 // Preserve all original public fields except the declared selection decoration
 // of this one card. Locator/time fields are checked against each own original
 // before comparing worlds; no later basis repairs an absent original.
 function selectorReversalView(basis: P1Basis, subject: string, decoration: boolean): string {
-  const copy = structuredClone(basis) as ObjectValue, value = snapshot(basis);
+  const copy = originalPresentationBasis(basis), value = snapshot(basis);
   const surface = value.interaction.content.surface;
   if (!completeSelectorFacts(surface) || !reduce(createSession("source-reversal-check", "reference"), basis).complete)
     throw new Error("source_selector_reversal_basis_incomplete");
-  delete copy.snapshot.snapshot_id; delete copy.snapshot.sequence; delete copy.snapshot.observed_at;
   for (const read of copy.reads) {
-    delete read.response.expected_snapshot_id; delete read.response.observed_snapshot_id; delete read.response.observed_at;
     if (decoration && read.kind === "surface_card" && read.response.target_referent_id === subject)
       read.response.content.is_selected = false;
   }

@@ -143,6 +143,11 @@ internal static partial class RecorderRuntime
                 ["missing_reason"] = missing });
             P1UiPending.Add(id, (decision, _currentRunId, nativeType));
             if (missing != null) P1Issue(missing, nativeType, witness);
+            if (context?.ActionWitnessId == id && context.DeferredCarrierBindingFailure is { } carrierFailure)
+            {
+                CompleteP1Ui(id, "unknown", new { reason = "native_carrier_binding_failed", detail = carrierFailure });
+                return true;
+            }
             // A Task-backed choice retains its existing exact completion owner.
             // A proven synchronous accepted callback is its own native completion.
             if (context?.CompletionExpectation == null && immediateCompletion)
@@ -213,17 +218,22 @@ internal static partial class RecorderRuntime
         { _runtimeState = "p1_native_recording_failed"; _detail = exception.Message; NativeUiObservationSafety.Report("p1_native.lifecycle", exception); }
     }
 
-    private static void ObserveP1Boundary(string reason, object? nativeWitness = null)
+    private static bool ObserveP1Boundary(string reason, object? nativeWitness = null)
     {
-        if (_store == null || _lifecycle.State is not (RecordingLifecycleState.Recording or RecordingLifecycleState.Closing)) return;
+        if (_store == null || _lifecycle.State is not (RecordingLifecycleState.Recording or RecordingLifecycleState.Closing)) return false;
         try
         {
             var frame = PlayerEnvironmentNativeWitness.CaptureP1();
             _store.AppendP1NativeEvent(new JsonObject { ["kind"] = "observation", ["run_id"] = _currentRunId,
                 ["reason"] = reason, ["basis"] = JsonSerializer.SerializeToNode(PersistP1Basis(frame), EvidenceJson.Options),
                 ["native_witness"] = JsonSerializer.SerializeToNode(nativeWitness, EvidenceJson.Options) });
+            return true;
         }
-        catch (Exception exception) { P1Issue("observation_capture_failed:" + exception.GetType().Name, witness: nativeWitness); }
+        catch (Exception exception)
+        {
+            P1Issue("observation_capture_failed:" + exception.GetType().Name, witness: nativeWitness);
+            return false;
+        }
     }
 
     private static void FinalizeP1Close()

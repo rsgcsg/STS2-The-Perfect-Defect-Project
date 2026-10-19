@@ -299,7 +299,7 @@ test('turn-start and in-card queue derive at execution S while H stays provenanc
   const { source } = queuedExample();
   const report = convertNativeSemanticOriginals(source, sdk, core);
   assert.equal(report.complete, true);
-  assert.deepEqual(report.accepted_accounting, { accepted: 2, derived: 2, native_cancelled: 0, explained_gaps: 0 });
+  assert.deepEqual(report.accepted_accounting, { accepted: 2, derived: 2, native_cancelled: 0, presentation: 0, presentation_exceptions: 0, explained_gaps: 0 });
   assert.ok(report.actions.every(action => action.execution.queued && action.execution.queue_interval_ms === 120));
   assert.ok(report.actions.every(action => action.source_human_basis.snapshot_id !== action.execution.basis.snapshot_id));
   assert.equal(report.actions[0].successor.origin, 'native_before_execution');
@@ -379,7 +379,7 @@ for (const afterStart of [false, true]) test(`an explained native cancellation $
   const originalBytes = JSON.stringify(source.events);
   const report = convertNativeSemanticOriginals(source, sdk, core);
   assert.equal(report.complete, true);
-  assert.deepEqual(report.accepted_accounting, { accepted: 2, derived: 1, native_cancelled: 1, explained_gaps: 0 });
+  assert.deepEqual(report.accepted_accounting, { accepted: 2, derived: 1, native_cancelled: 1, presentation: 0, presentation_exceptions: 0, explained_gaps: 0 });
   const cancelled = report.actions.find(action => action.decision_id === 'second');
   assert.equal(cancelled.choice_id, null); assert.equal(cancelled.choice, null);
   assert.equal(cancelled.result.status, 'interrupted_known');
@@ -489,4 +489,107 @@ test('cancelled inputs may coexist with complete native run boundaries; strict r
   assert.equal(report.strict_managed_comparison, 'not_run');
   source.journal.push({ run_id: 'run-1', kind: 'run_abandoned_native', sequence: 3 });
   assert.equal(convertNativeSemanticOriginals(source, sdk, core).whole_run_recording_complete, false);
+});
+
+// Native-shaped synthetic originals exercise the adapter, never prove gameplay.
+async function nativeBrowse(kind, change = null) {
+  const { selectorForwardPair } = await import('../../components/connector/sdk/typescript/test/fixtures/selector-forward.mjs');
+  const { source, retain, row } = example(); source.events.length = 0;
+  const pair = kind === 'selector' ? selectorForwardPair() : rewardForwardPair();
+  const before = pair.outer, middle = pair.preview ?? pair.child;
+  const restored = structuredClone(before);
+  restored.snapshot.snapshot_id += '-restored'; restored.snapshot.sequence++;
+  for (const read of restored.reads) read.response.expected_snapshot_id = read.response.observed_snapshot_id = restored.snapshot.snapshot_id;
+  if (change === 'world') restored.snapshot.persistent.content.player.gold++;
+  if (change === 'refresh') restored.snapshot.interaction.content.surface.rewards[0].native_relic_refresh_subscription = 'attached';
+  if (change === 'directory') restored.snapshot.bound_actions.actions[0].label += ' changed';
+  if (change === 'read') restored.reads[0].response.content.extra_public_fact = 'changed';
+  const accept = (id, value, action) => row('decision_accepted', { decision_id: id, action_witness_id: `witness-${id}`,
+    basis: retain(value), bound_action: action, missing_reason: null,
+    native_receipt: { kind: 'semantic_ui_accepted', carrier_ref: `witness-${id}` } });
+  const first = before.snapshot.bound_actions.actions.find(a => a.verb === (kind === 'selector' ? 'select' : 'activate'));
+  const second = middle.snapshot.bound_actions.actions.find(a => a.verb === (kind === 'selector' ? 'cancel' : 'skip'));
+  if (change === 'native-activate') second.verb = 'activate';
+  accept('browse-start', before, first);
+  row('lifecycle', { decision_id: 'browse-start', action_witness_id: 'witness-browse-start', phase: 'finished', successor_basis: retain(middle) });
+  accept('browse-back', middle, second);
+  row('lifecycle', { decision_id: 'browse-back', action_witness_id: 'witness-browse-back', phase: change === 'unknown' ? 'unknown' : 'finished', successor_basis: retain(restored) });
+  if (change === 'foreign') source.events[2].bound_action = { ...second, subject_referent_id: 'foreign-subject' };
+  return convertNativeSemanticOriginals(source, sdk, core);
+}
+for (const kind of ['selector', 'reward']) test(`${kind} browsing is a separate disposition with two real original checkpoints and zero successful labels`, async () => {
+  const report = await nativeBrowse(kind);
+  assert.equal(report.native_presentations.length, 1);
+  assert.equal(report.native_presentations[0].comparison.equal, true);
+  assert.deepEqual(report.native_presentations[0].continuity_checkpoints.map(x => x.boundary), ['before', 'after']);
+  assert.equal(report.accepted_accounting.presentation, 2);
+  assert.equal(report.accepted_accounting.derived, 0);
+  assert.ok(report.actions.every(a => a.choice_id === null && a.choice === null && a.result.status === 'completed'));
+  assert.ok(report.issues.every(issue => !issue.blocking));
+});
+for (const change of ['world', 'refresh', 'directory', 'read']) test(`changed browsing ${change} is reported with real field differences and no successful labels`, async () => {
+  const report = await nativeBrowse('reward', change);
+  assert.equal(report.presentation_gaps.length, 1);
+  assert.equal(report.presentation_gaps[0].comparison.equal, false);
+  assert.ok(report.presentation_gaps[0].comparison.changes.length > 0);
+  assert.equal(report.accepted_accounting.presentation, 0);
+  assert.equal(report.accepted_accounting.explained_gaps, 2);
+  assert.ok(report.actions.every(action => action.choice_id === null));
+  assert.equal(report.trajectory, null);
+});
+for (const change of ['unknown', 'foreign']) test(`browsing cannot forgive ${change} native evidence`, async () => {
+  const report = await nativeBrowse('selector', change);
+  assert.equal(report.native_presentations.length, 0);
+  assert.ok(report.blocking_issues.length > 0);
+  assert.equal(report.trajectory, null);
+});
+
+test('Reference Activate on an explicitly native Skip is browsing, independent of its label', async () => {
+  const report = await nativeBrowse('reward', 'native-activate');
+  assert.equal(report.native_presentations[0].comparison.equal, true);
+  assert.equal(report.accepted_accounting.presentation, 2);
+  assert.ok(report.actions.every(a => a.choice_id === null));
+});
+
+
+test('a diagnostic derived range remains bound to the full bundle and cannot use a future terminal', () => {
+  const { source } = example();
+  const last = source.events.at(-1).sequence;
+  const report = convertNativeSemanticOriginals(source, sdk, core, { throughSequence: last - 1 });
+  assert.equal(report.scope.native_event_range.derived_only, true);
+  assert.equal(report.source_content_id, source.manifest.bundle_content_id);
+  assert.equal(report.scope.native_event_range.source_last_sequence, last);
+  assert.equal(report.whole_run_recording_complete, false);
+  assert.ok(report.captures.every(c => c.sequence <= last - 1));
+  const withoutTerminal = convertNativeSemanticOriginals(source, sdk, core, { throughSequence: 2 });
+  assert.equal(withoutTerminal.actions[0].result, null);
+  assert.equal(withoutTerminal.trajectory, null);
+  for (const throughSequence of [0, last + 1, 1.5, '2'])
+    assert.throws(() => convertNativeSemanticOriginals(source, sdk, core, { throughSequence }), /sequence_out_of_range/);
+});
+
+
+test('the exact approved refresh side effect stays a separate exception with literal unequal checkpoints', async () => {
+  const { source, retain, row } = example(); source.events.length = 0;
+  const { outer, child, group } = rewardForwardPair(); group.native_relic_refresh_subscription = 'attached';
+  child.snapshot.interaction.content.surface.native_relic_refresh_subscription = 'attached';
+  const reference = { ...outer.snapshot.referents[0], referent_id: group.entity_id,
+    properties: { ...group } }; outer.snapshot.referents = [reference];
+  const after = structuredClone(outer);
+  after.snapshot.interaction.content.surface.rewards[0].native_relic_refresh_subscription = 'absent';
+  after.snapshot.referents[0].properties.native_relic_refresh_subscription = 'absent';
+  const accept = (id, value, action) => row('decision_accepted', { decision_id: id, action_witness_id: id,
+    basis: retain(value), bound_action: action, native_receipt: { kind: 'semantic_ui_accepted', carrier_ref: id } });
+  accept('open-refresh', outer, outer.snapshot.bound_actions.actions[0]);
+  row('lifecycle', { decision_id: 'open-refresh', action_witness_id: 'open-refresh', phase: 'finished', successor_basis: retain(child) });
+  accept('skip-refresh', child, child.snapshot.bound_actions.actions.find(a => a.verb === 'skip'));
+  row('lifecycle', { decision_id: 'skip-refresh', action_witness_id: 'skip-refresh', phase: 'finished', successor_basis: retain(after) });
+  const report = convertNativeSemanticOriginals(source, sdk, core);
+  assert.equal(report.native_presentations[0].exception.id, 'stop_relic_refresh');
+  assert.equal(report.native_presentations[0].comparison.equal, false);
+  assert.equal(report.native_presentations[0].comparison.changes.length, 2);
+  assert.equal(report.accepted_accounting.presentation_exceptions, 2);
+  assert.equal(report.presentation_gaps.length, 0);
+  assert.ok(report.actions.every(action => action.choice_id === null));
+  assert.ok(report.issues.every(issue => !issue.blocking));
 });
