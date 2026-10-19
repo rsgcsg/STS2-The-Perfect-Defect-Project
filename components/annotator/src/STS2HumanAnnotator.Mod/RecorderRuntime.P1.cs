@@ -117,6 +117,9 @@ internal static partial class RecorderRuntime
     {
         HumanActionContext? context = HumanActionScope.Current;
         if (context != null && !context.TryClaimRootAction(nativeType)) return false;
+        DeferredHumanActionFailure? deferred = HumanActionScope.CurrentDeferredFailure;
+        DeferredHumanActionFailure? captureFailure = context == null && deferred?.ExpectedNativeActionType == nativeType
+            ? deferred : null;
         try
         {
             string id = originalRoot ?? context?.ActionWitnessId ?? $"unbound-ui-{Guid.NewGuid():N}";
@@ -132,6 +135,10 @@ internal static partial class RecorderRuntime
                 ["native_mechanism"] = witness.Origin, ["basis"] = JsonSerializer.SerializeToNode(basis, EvidenceJson.Options),
                 ["bound_action"] = JsonSerializer.SerializeToNode(match?.BoundAction, EvidenceJson.Options),
                 ["native_witness"] = JsonSerializer.SerializeToNode(witness, EvidenceJson.Options),
+                ["capture_failure"] = captureFailure == null ? null : JsonSerializer.SerializeToNode(new {
+                    reason = captureFailure.ReasonCode, detail = captureFailure.Detail,
+                    snapshot_id = captureFailure.SnapshotId, evidence_level = captureFailure.EvidenceLevel
+                }, EvidenceJson.Options),
                 ["native_receipt"] = new JsonObject { ["kind"] = "semantic_ui_accepted", ["carrier_ref"] = id },
                 ["missing_reason"] = missing });
             P1UiPending.Add(id, (decision, _currentRunId, nativeType));

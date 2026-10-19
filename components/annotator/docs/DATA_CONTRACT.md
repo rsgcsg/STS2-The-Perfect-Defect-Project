@@ -22,6 +22,10 @@ independent public observations and issues. Each decision's basis references exa
 native bindings. Read instances are preserved by `read_id`, including repeated kinds.
 Accepted is not finished. Close retains unfinished accepted actions as unknown;
 unsubmitted card staging/cancellation does not create a decision or pending action.
+Direct UI roots use their own original frame and exact native completion, without
+requiring a legacy canonical parent decision. If that prefix capture fails,
+`capture_failure` retains its matching native type's reason, detail, snapshot ID
+and evidence level; it does not supply a missing basis, binding or completion.
 
 Use `sts2.ai-platform/recording-command-1` within the existing Platform recording
 request. Start sets `capture_profile_id` to this profile and `p1_native_origin` to
