@@ -574,6 +574,15 @@ function reduceCatalog(state: P1SessionState, basis: P1Basis, execution?: readon
   }
 
   if (!isObject(interaction.content.surface)) missing.push("required:surface:invalid_content");
+  if (Object.hasOwn(surface, "non_combat_discardable_potions")) {
+    const belt = surface.non_combat_discardable_potions;
+    if (!Array.isArray(belt) || new Set(belt.map((item: any) => item?.entity_id)).size !== belt.length
+        || belt.some((item: any) => !isObject(item) || !Number.isSafeInteger(item.slot)
+          || !persistent?.player?.potions?.some((potion: any) => potion.entity_id === item.entity_id && potion.slot === item.slot)
+          || snapshot.bound_actions.actions.filter((action: any) => action.verb === "activate"
+            && action.subject_referent_id === item.entity_id && action.arguments.length === 0).length !== 1))
+      missing.push("required:noncombat_potion_belt_and_exact_catalog");
+  }
   if (nativeKind === "combat_turn" && !completeCombatSurface(surface)) missing.push("required:combat_surface:invalid_content");
   if (["selector", "upgrade", "enchant"].includes(family) && !completeSelector(surface)) missing.push("required:selector:invalid_content");
   if (nativeKind === "reward_claim" && !completeRewardSurface(surface)) missing.push("required:reward:invalid_content");
@@ -664,7 +673,11 @@ function reduceCatalog(state: P1SessionState, basis: P1Basis, execution?: readon
       exclude("forward_profile:complete_selector_public_presentations"); continue;
     }
     const actionOwnerKind = execution ? "combat_turn" : nativeKind;
-    let kind = nonCombatPotionExecution && execution && action.verb === "use" ? "potion.use"
+    const nonCombatDiscard = !execution && action.verb === "activate" && subjectId !== null
+      && Array.isArray(surface.non_combat_discardable_potions)
+      && surface.non_combat_discardable_potions.some((potion: any) => potion.entity_id === subjectId);
+    let kind = nonCombatDiscard ? "potion.discard"
+      : nonCombatPotionExecution && execution && action.verb === "use" ? "potion.use"
       : KIND_TABLE[`${actionOwnerKind}|${action.verb}|${role}`] ?? FAMILY_VERB[family]?.[action.verb];
     if (operation) kind = operation === "open_preview" ? `${family}.confirm`
       : operation === "cancel_selection" ? `${family}.cancel`

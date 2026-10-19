@@ -106,11 +106,12 @@ internal static class ActiveInputResolver
         IReadOnlyList<ILiveSurfaceReader> providers,
         NativeEntityRegistry entities,
         GameBuildIdentity game,
-        Func<LiveObservation?>? specializedSurface = null)
+        Func<LiveObservation?>? specializedSurface = null,
+        bool includePotionPopup = true)
     {
         ActiveSurfaceResolution? preferred = ResolvePreferredSurface(
             snapshot.OpenModal != null,
-            () => PotionPopupSurfaceReader.Capture(entities, game, snapshot),
+            () => includePotionPopup ? PotionPopupSurfaceReader.Capture(entities, game, snapshot) : null,
             specializedSurface);
         if (preferred != null) return preferred;
         var matches = new List<(string Kind, LiveObservation Draft)>();

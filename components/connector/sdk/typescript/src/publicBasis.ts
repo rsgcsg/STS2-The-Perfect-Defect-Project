@@ -60,7 +60,8 @@ export const decodePublicBasisRelease = (value: unknown): PublicBasisRelease => 
 export const decodePublicBasisCapabilities = (value: unknown): PublicBasisCapabilities => capabilitiesSchema.parse(value);
 
 // Keep legacy decoders strict. Only the named public-basis path accepts this tag.
-export type PublicBasisSnapshot = PlayerEnvironmentSnapshot & { input_profile: typeof PUBLIC_BASIS_PROFILE };
+export type PublicBasisSnapshot = PlayerEnvironmentSnapshot & { input_profile: typeof PUBLIC_BASIS_PROFILE;
+  raw_native_navigation_basis?: PublicBasis };
 export type PublicBasisReceipt = Omit<PlayerEnvironmentReceipt, "successor"> & {
   input_profile: typeof PUBLIC_BASIS_PROFILE; successor: PublicBasisSnapshot | null;
 };
@@ -70,13 +71,23 @@ function withoutPublicProfile(value: unknown): JsonObject {
   const normal = { ...value }; delete normal.input_profile; return normal;
 }
 export function decodePublicBasisSnapshot(value: unknown): DecodedPlayerPayload<PublicBasisSnapshot> {
-  const decoded = decodePlayerSnapshot(withoutPublicProfile(value));
-  return { raw: value as JsonObject, data: { ...decoded.data, input_profile: PUBLIC_BASIS_PROFILE } };
+  const normal = withoutPublicProfile(value);
+  const navigation = normal.raw_native_navigation_basis;
+  if (navigation !== undefined) {
+    const original = decodePublicBasis(navigation);
+    if (original.snapshot.raw_native_navigation_basis !== undefined)
+      throw new Error("native navigation basis must be an original unfurled capture");
+    delete normal.raw_native_navigation_basis;
+  }
+  const decoded = decodePlayerSnapshot(normal);
+  return { raw: value as JsonObject, data: { ...decoded.data, input_profile: PUBLIC_BASIS_PROFILE,
+    ...(navigation === undefined ? {} : { raw_native_navigation_basis: navigation as unknown as PublicBasis }) } };
 }
 export function decodePublicBasisReceipt(value: unknown): DecodedPlayerPayload<PublicBasisReceipt> {
   const normal = withoutPublicProfile(value);
   const successor = normal.successor === null ? null : decodePublicBasisSnapshot(normal.successor).data;
   normal.successor = normal.successor === null ? null : withoutPublicProfile(normal.successor);
+  if (isJsonObject(normal.successor)) delete normal.successor.raw_native_navigation_basis;
   const decoded = decodePlayerReceipt(normal);
   return { raw: value as JsonObject, data: { ...decoded.data, input_profile: PUBLIC_BASIS_PROFILE, successor } };
 }

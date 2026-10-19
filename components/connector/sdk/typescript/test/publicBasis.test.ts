@@ -144,3 +144,15 @@ describe('protocol-neutral original public basis', () => {
   });
 
 });
+
+
+it('retains the complete original navigation record and verifies its own Read bindings', () => {
+  const value = basis(); value.revision = '2'; value.snapshot.input_profile = 'public-basis-1';
+  const original = structuredClone(value);
+  value.snapshot.raw_native_navigation_basis = original;
+  expect(decodePublicBasis(value)).toEqual(value);
+  expect(decodePublicBasisSnapshot(value.snapshot).data.raw_native_navigation_basis).toEqual(original);
+  const broken = structuredClone(value);
+  broken.snapshot.raw_native_navigation_basis.reads[0].response.observed_snapshot_id = 'foreign-frame';
+  expect(() => decodePublicBasis(broken)).toThrow(/Read source binding/);
+});

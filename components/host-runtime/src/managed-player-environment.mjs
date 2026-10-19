@@ -2427,6 +2427,27 @@ export function projectManagedCandidateDecision({
   const contextMs = performance.now() - stageStarted;
   stageStarted = performance.now();
   const surface = currentSurface(state, ctx);
+  // Same noncombat decision boundary as the Reference public-basis producer.
+  // The native DTO already supplies exact belt refs and discard eligibility.
+  if (["event_option", "event_dialogue", "map_navigation", "rest_site", "shop_room", "shop_inventory",
+      "treasure_room", "reward_claim", "card_reward_selection"].includes(surface.kind) && !state.combat_context) {
+    const potions = (state.player?.potions ?? []).filter(potion => potion?.can_discard === true);
+    surface.surface.non_combat_discardable_potions = potions.map(potion => {
+      const id = ctx.entityId("potion", potion.native_ref);
+      const subject = ctx.referents.find(item => item.referent_id === id)
+        ?? ctx.referent({ role: "potion", id, label: potion.name, properties: { entity_id: id, slot: potion.slot } });
+      // Replace only the old reward-room discard carrier; retain all room actions.
+      for (let i = ctx.actions.length - 1; i >= 0; i--) {
+        const action = ctx.actions[i];
+        if (action.subject_referent_id === id && ctx.bindings.get(action.bound_action_id)?.raw_request.action === "discard_potion") {
+          ctx.bindings.delete(action.bound_action_id); ctx.actions.splice(i, 1);
+        }
+      }
+      ctx.action({ verb: "activate", subject, label: `Discard ${potion.name}`,
+        raw: { cmd: "action", action: "discard_potion", args: { potion_slot: potion.slot, potion_ref: potion.native_ref } } });
+      return { entity_id: id, slot: potion.slot };
+    });
+  }
   const surfaceMs = performance.now() - stageStarted;
   stageStarted = performance.now();
   const persistent = buildPersistentVisibleState(state, ctx.entityId);

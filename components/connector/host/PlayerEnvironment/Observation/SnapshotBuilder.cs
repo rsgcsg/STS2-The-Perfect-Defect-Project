@@ -69,6 +69,20 @@ internal static partial class PlayerEnvironmentService
         if (capturedInput != null && publicBasisProfile && gridCapture?.Grid is { } frozenGrid)
             nativeView = LiveObservationReader.ApplyRequiredContextCompleteness(
                 NativeLogicalGridCapture.PublicBasisObservation(frozenGrid, nativeView.Context, game));
+        LiveObservation? navigationView = null;
+        if (publicBasisProfile && capturedInput == null
+            && nativeView.Surface is PotionPopupSurface { CanUse: false, CanDiscard: true } popup
+            && nativeView.Context is not CombatLiveContext)
+        {
+            // Read the actual obscured owner now; never reuse H or a neighbouring frame.
+            var underlying = LiveObservationReader.Build(Entities, game,
+                () => NativeRestSite.TryBuild(Entities, game), includePotionPopup: false);
+            if (NonCombatPotionBoundary.IsBase(underlying))
+            {
+                navigationView = nativeView;
+                nativeView = underlying with { NonCombatNavigationPopup = popup };
+            }
+        }
         LiveObservation nativeDraft = nativeView;
         // Native lifecycle availability is observed once on the complete base
         // capture, before any profile branch. Rich leaves cannot renew its clock.
@@ -78,7 +92,7 @@ internal static partial class PlayerEnvironmentService
                 : new PersistentVisibleStateBuildResult(false, null, null)));
         nativeView = CombatInputAvailability.Attach(nativeView, shared.RunActive && shared.State != null && shared.Failure == null,
             Environment.TickCount64);
-        nativeDraft = nativeView;
+        nativeDraft = navigationView ?? nativeView;
         if (suppressNativePageEvidence)
             nativeView = NativePageEvidence.SuppressMutation(nativeView);
         bool rewardPotionProfile = inputProfile == PlayerEnvironmentContract.RewardPotionPageProfile;
@@ -133,7 +147,17 @@ internal static partial class PlayerEnvironmentService
             sourcePublicProjection(ProjectSnapshot(neutral, false, MaxBoundActions, false, gridView != null));
             return ProjectSnapshot(nativeView, true, maximumBoundActions, true, false);
         }
-        return ProjectSnapshot(nativeView, textMenuCapture, maximumBoundActions, false, publicBasisProfile);
+        SnapshotBuildResult? rawNavigation = null;
+        if (navigationView != null)
+        {
+            var logical = nativeView;
+            nativeView = navigationView;
+            rawNavigation = ProjectSnapshot(navigationView, false, maximumBoundActions, true, false);
+            capturedReads.Clear();
+            nativeView = logical;
+        }
+        return ProjectSnapshot(nativeView, textMenuCapture, maximumBoundActions, false, publicBasisProfile)
+            with { RawNativeNavigation = rawNavigation };
 
         SnapshotBuildResult ProjectSnapshot(LiveObservation draft, bool asTextMenu, int actionLimit,
             bool privatePreparation, bool publicBasisProjection)
@@ -197,6 +221,13 @@ internal static partial class PlayerEnvironmentService
             if (rewardPotionProfile && draft.RewardPotionFacts is { Qualified: true } potionFacts
                 && surfaceContent.Surface is JsonObject potionPage)
                 ProjectRewardPotionFacts(potionPage, draft.Surface, potionFacts);
+            var belt = publicBasisProjection && NonCombatPotionBoundary.IsBase(draft)
+                ? capturedInput == null ? NonCombatPotionBoundary.Capture(Entities) : Array.Empty<NonCombatPotionDiscardBinding>()
+                : Array.Empty<NonCombatPotionDiscardBinding>();
+            if (publicBasisProjection && NonCombatPotionBoundary.IsBase(draft)
+                && surfaceContent.Surface is JsonObject basePage)
+                basePage["non_combat_discardable_potions"] = new JsonArray(belt.Select(item =>
+                    (JsonNode)new JsonObject { ["entity_id"] = item.PotionId, ["slot"] = item.Slot }).ToArray());
             var projectionContent = new PlayerEnvironmentInteractionContent(
                 surfaceContent.Surface.DeepClone(), surfaceContent.Context.DeepClone());
             IReadOnlyList<NativeUiBoundAction> nativeBindings = Measure(
@@ -208,6 +239,9 @@ internal static partial class PlayerEnvironmentService
                         ? NativeUiActionRuntime.BuildRewardPotionBindings(draft)
                         : BuildPlayerEnvironmentBindings(draft)
                     : Array.Empty<NativeUiBoundAction>());
+            if (belt.Length > 0)
+                nativeBindings = nativeBindings.Where(item => item.Candidate.Operation != "discard_potion_for_reward")
+                    .Concat(belt.Select(item => NonCombatPotionBoundary.Bind(item, draft.NonCombatNavigationPopup))).ToArray();
             string interactionId = ReadFirstString(
                 rawSurface,
                 "screen_entity_id",

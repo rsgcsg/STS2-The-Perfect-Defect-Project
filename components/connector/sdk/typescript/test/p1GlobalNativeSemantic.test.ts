@@ -375,3 +375,41 @@ describe("declared noncombat potion execution scope", () => {
     expect(result.reduction.missing).toContain("required:native_execution_catalog_operands");
   });
 });
+
+
+describe("noncombat discard keeps the whole decision", () => {
+  function discardExample() {
+    const value = nonCombatPotionExample(), snapshot = value.queued.snapshot as any;
+    const potion = snapshot.persistent.content.player.potions[0];
+    snapshot.referents.push({ ...snapshot.referents[0], referent_id: potion.entity_id, role: "potion", label: potion.name });
+    snapshot.interaction.content.surface.non_combat_discardable_potions = [{ entity_id: potion.entity_id, slot: 0 }];
+    const action = { ...snapshot.bound_actions.actions[0], bound_action_id: "actual-belt-discard", verb: "activate",
+      subject_referent_id: potion.entity_id, arguments: [], label: "Discard Foul Potion" };
+    snapshot.bound_actions.actions.push(action);
+    snapshot.bound_actions.total_count = snapshot.bound_actions.materialized_count = 2;
+    const accepted = { ...value.accepted, bound_action: action,
+      native_receipt: { kind: "semantic_ui_accepted" as const, carrier_ref: value.accepted.action_witness_id } };
+    return { ...value, accepted };
+  }
+
+  it("converts native discard with the room action and all original facts still present", () => {
+    const { queued, accepted, execution } = discardExample();
+    const original = JSON.stringify(queued);
+    const result = matchNativeSemanticChoice(createSession("discard", "reference"), queued, accepted);
+    expect(result.status).toBe("matched");
+    expect(result.reduction.observation.catalog.map(choice => choice.kind).sort()).toEqual(["potion.discard", "shop.leave"]);
+    expect(result.reduction.observation.scene.native_kind).toBe("shop_room");
+    expect(result.lowering?.first?.bound_action_id).toBe("actual-belt-discard");
+    expect(JSON.stringify(queued)).toBe(original);
+  });
+  it.each(["read", "foreign_potion", "duplicate_binding"])("refuses incomplete whole decisions: %s", defect => {
+    const { queued, accepted, execution } = discardExample(), snapshot = queued.snapshot as any;
+    if (defect === "read") (queued as any).reads = queued.reads.slice(1);
+    if (defect === "foreign_potion") snapshot.persistent.content.player.potions = [];
+    if (defect === "duplicate_binding") {
+      snapshot.bound_actions.actions.push({ ...snapshot.bound_actions.actions[1], bound_action_id: "duplicate-discard" });
+      snapshot.bound_actions.total_count = snapshot.bound_actions.materialized_count = 3;
+    }
+    expect(matchNativeSemanticChoice(createSession("discard", "reference"), queued, accepted).status).toBe("incomplete");
+  });
+});

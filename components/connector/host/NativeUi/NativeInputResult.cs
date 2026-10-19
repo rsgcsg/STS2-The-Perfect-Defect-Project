@@ -18,6 +18,7 @@ internal enum NativeInputStageKind
     TargetFocus,
     TargetConfirmInput,
     PotionPopupInput,
+    BoundActionInput,
     PotionTargetConfirmInput,
     MerchantFocus,
     MerchantConfirmInput,

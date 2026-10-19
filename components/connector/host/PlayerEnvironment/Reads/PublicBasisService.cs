@@ -110,6 +110,11 @@ internal static partial class PlayerEnvironmentService
                 result.Read == null ? result.ErrorCode ?? "read_materialization_missing" : null));
         }
         var snapshot = (JsonObject)JsonSerializer.SerializeToNode(built.Snapshot, ConnectorMod._jsonOptions)!;
+        if (built.RawNativeNavigation is { } original)
+        {
+            var raw = FreezePublicBasis(original, continuity, captureTime);
+            snapshot["raw_native_navigation_basis"] = JsonNode.Parse(raw.Bytes);
+        }
         return PublicBasisAssembly.Freeze(snapshot, reads, continuity, ConnectorMod._jsonOptions, captureTime);
     }
 

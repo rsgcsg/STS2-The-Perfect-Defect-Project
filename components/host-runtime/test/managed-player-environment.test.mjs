@@ -360,6 +360,7 @@ test("projects native reward sets without exposing exact reward or room operands
     rewards: projection.snapshot.interaction.content.surface.rewards.map(({ entity_id: _entityId, group_id: _groupId, ...reward }) => reward)
   }, {
     kind: "reward_claim",
+    non_combat_discardable_potions: [],
     rewards: [
       { kind: "gold", label: "17 gold", description: null, enabled: true, group_relation: "unavailable",
         card_alternatives_complete: false, native_relic_refresh_subscription: "unavailable" },
@@ -599,7 +600,7 @@ test("projects treasure stages with explicit native choice and Host-local operan
   assert.equal(closed.snapshot.interaction.kind, "treasure_room");
   assert.equal(closed.snapshot.bound_actions.actions[0].label, "Open the treasure chest");
   assert.equal(JSON.stringify(closed.snapshot).includes("treasure-room-a"), false);
-  assert.deepEqual(closed.snapshot.interaction.content.surface, { kind: "treasure_room",stage:"closed",chest_opened:false,
+  assert.deepEqual(closed.snapshot.interaction.content.surface, { kind: "treasure_room",non_combat_discardable_potions: [],stage:"closed",chest_opened:false,
     relics:[],can_choose:false,can_skip:false,can_proceed:false });
   assert.equal(closed.snapshot.bound_actions.actions[0].subject_referent_id,null);
 
@@ -1462,4 +1463,22 @@ test("deck public detail revision 2 preserves the native upgrade without replaci
     assert.equal(failed.completeness.status, "partial");
     assert.ok(failed.completeness.missing.includes("current_native_public_card_upgrade_preview_not_captured"));
   }
+});
+
+
+test("noncombat belt discard preserves event options, exact native slot and post-discard absence", () => {
+  const state = eventState();
+  state.player.potions = [{ native_ref: "potion-original", slot: 1, id: "ENERGY_POTION", name: "Energy Potion",
+    description: "Gain 2 Energy", can_discard: true, can_use: false, usage: "CombatOnly", keywords: [], card_previews: [], hover_facts_complete: true }];
+  const before = projectManagedCandidateDecision({ state, ...projectionIdentity });
+  assert.equal(before.snapshot.bound_actions.actions.length, 2);
+  assert.equal(before.snapshot.interaction.content.surface.options.length, 2);
+  const discard = before.snapshot.bound_actions.actions.find(action => action.label === "Discard Energy Potion");
+  assert.ok(discard);
+  assert.deepEqual(before.bindings.get(discard.bound_action_id).raw_request, {
+    cmd: "action", action: "discard_potion", args: { potion_slot: 1, potion_ref: "potion-original" } });
+  state.player.potions = [];
+  const after = projectManagedCandidateDecision({ state, ...projectionIdentity, sequence: 2 });
+  assert.equal(after.snapshot.bound_actions.actions.length, 1);
+  assert.deepEqual(after.snapshot.interaction.content.surface.non_combat_discardable_potions, []);
 });

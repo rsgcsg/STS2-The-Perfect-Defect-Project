@@ -36,6 +36,7 @@ public sealed record NativeUiActionCandidate(
 internal sealed record NativeUiBoundAction(NativeUiActionCandidate Candidate)
 {
     internal NativeLogicalGridInputSpec? GridInput { get; init; }
+    internal NonCombatPotionDiscardBinding? NonCombatDiscard { get; init; }
 }
 
 internal sealed record NativeUiInput(
