@@ -1,4 +1,4 @@
-# 当前工作：两项扩展已验收，修采集后等待工程短验
+# 当前工作：卡牌回调已内部实测，推进已批准的非战斗丢药边界
 
 更新于2026-10-19。本页为仓库导航；唯一现场状态为工作区固定文件
 `work/P1-SEMANTIC-ACTIVE-20261019.md`，主报告为`work/P1-QUEUED-INPUT-REPORT-20261019.md`。
@@ -45,11 +45,25 @@ Guilty完整详情返回not_applicable，65定向检查通过。Managed镜像同
 parent完成原件里的真实successor_basis。精确子cancel/parent/task/selector证明、
 完整公开前后相等及0成功label保持，legacySmith解释不扩。79消费者检查通过，
 原短验两次merchant取消均完整相等，4accepted解释为取消，103真实gap及15unknown
-保留，整体仍FAIL。限定非作者复核通过；新源码clean Mod已构建/部署/冷加载，
-Reference/Managed各选同Neow第三项后，Guilty完整PB/P1、升级不适用及完整P1相等
-均已实测，正常关闭。当前唯一工程窗口17已开，窗口工具只返回黑色画面，
-等待用户协助Defect A0→Neow第三项→Ambergris Discard后立即停下核原件，
-上限18:55 Brisbane。这不是正式补采；工程采集和短严格通过后才邀请正式三局。
+保留，整体仍FAIL。限定非作者复核通过；Guilty两端完整PB/P1已实测并正常关闭。
+
+工程17也已正常Close/pack/exit0/shutdown200、forced=false；当前无游戏运行。
+本局实际尼奥选项为Phial Holster，不固定上一局的选项位置。开头选择和丢药
+原件/转换完整，但首战卡牌Read因真实UI回调被复制资格误拒绝。20accepted中
+7派生、2已批浏览例外、11gap，22producerissue、0unknown，整段仍FAIL。
+源码013a9316在新副本的任何原生深复制之前清除全部11个卡牌回调，原件事件
+不动；实际copy/variable/attachment保护保留。66检查与限定非作者复核通过，
+新Mod clean构建/部署/回滚及冷加载已核。内部Reference/Managed同实际seed和
+初始进度，5次输入含实际出牌/EndTurn、最终后继共6份完整P1均相等；战斗中
+20份卡牌Read完整，正常关闭。此为内部producer/短路径预检，不是Human采集通过。
+
+工程17丢药前缀的严格比较仍停于第2点：Reference药水弹窗只提供discard，
+Managed事件页只提供Proceed，不只是scene字段噪声。用户已直接批准
+`work/P1-NONCOMBAT-DISCARD-SCOPE-PROPOSAL-20261019.md`限定扩展：两端补齐
+非战斗药水带丢弃，以同一次完整S/A(S)定义共同P1边界、折叠纯弹窗导航，
+完整公开事实和选择机会必须由producer提供；旧原件不回填，B不恢复。
+该扩展正在实施，尚未通过。先完成内部战斗/药水预检，再安排最短新采集；
+工程采集及短严格通过后才邀请三局同候选正式补采。
 不同候选不能混算，准确进程/端口/PTY只见现场入口，不按本文自行新开游戏。
 
 ## 批次和其它边界
