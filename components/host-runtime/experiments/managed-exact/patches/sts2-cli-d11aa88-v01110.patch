@@ -2124,7 +2124,7 @@ new file mode 100644
 index 0000000..dc274c7
 --- /dev/null
 +++ b/src/Sts2Headless/NativeCardPreviewReadQualification.cs
-@@ -0,0 +1,369 @@
+@@ -0,0 +1,353 @@
 +using System;
 +using System.Collections.Generic;
 +using System.Linq;
@@ -2248,22 +2248,6 @@ index 0000000..dc274c7
 +        && IsUnpatched(callback.Method) && callback.Target is NCard node && node.GetType() == typeof(NCard)
 +        && ReferenceEquals(NativeDetachedCardCopy.UiModel(node), original);
 +
-+    private static bool CopiedDelegatesQualified(CardModel card)
-+    {
-+        foreach (string name in new[] { "AfflictionChanged", "EnchantmentChanged", "EnergyCostChanged", "KeywordsChanged",
-+                     "ReplayCountChanged", "Played", "Drawn", "StarCostChanged", "Upgraded", "Forged" })
-+        {
-+            FieldInfo? field = typeof(CardModel).GetField(name, NativeMembers);
-+            if (field == null) return false;
-+            if (field.GetValue(card) is not Delegate callbacks) continue;
-+            string? observer = name switch
-+            { "AfflictionChanged" => "OnAfflictionChanged", "EnchantmentChanged" => "OnEnchantmentChanged", _ => null };
-+            if (observer == null || callbacks.GetInvocationList().Any(callback => !UiObserver(callback, observer, card))) return false;
-+        }
-+        return typeof(AbstractModel).GetField("ExecutionFinished", NativeMembers) is { } completed
-+            && completed.GetValue(card) == null;
-+    }
-+
 +    private static bool AttachmentCopyQualified(CardModel card)
 +    {
 +        if (Enchantment == null || Affliction == null) return false;
@@ -2335,7 +2319,7 @@ index 0000000..dc274c7
 +                // Native X-cost cards override this display fact. Reuse the
 +                // exact-game effective-getter qualification used by rendering.
 +                || !NativeRenderMethod(card.GetType().GetMethod("get_HasEnergyCostX", NativeMembers))) return false;
-+            if (!CopiedDelegatesQualified(card) || !AttachmentCopyQualified(card))
++            if (!AttachmentCopyQualified(card))
 +            { gap = "native_preview_existing_attachment_copy_callbacks_unqualified"; return false; }
 +            if (Canonical?.GetValue(card) is not CardModel canonical || canonical.GetType() != card.GetType()
 +                || Mutable.GetValue(canonical) is not false || Keywords?.GetValue(card) is not HashSet<CardKeyword> keywords
@@ -2363,7 +2347,7 @@ index 0000000..dc274c7
 +                || !MethodsUnpatched(typeof(Shiv), "get_CanonicalVars", "get_CanonicalKeywords")
 +                || !FixedConstructorsUnpatched(typeof(DynamicVar)) || !FixedConstructorsUnpatched(typeof(DamageVar))
 +                || !MethodsUnpatched(typeof(DamageVar), "set_Props")
-+                || !SingletonVariableListUnpatched() || !SingletonListUnpatched(typeof(CardKeyword)) || !CopiedDelegatesQualified(canonical)
++                || !SingletonVariableListUnpatched() || !SingletonListUnpatched(typeof(CardKeyword))
 +                || Enchantment?.GetValue(canonical) != null || Affliction?.GetValue(canonical) != null
 +                || !CopyCostQualified(canonical)) return false;
 +            if (CardVars?.GetValue(canonical) is DynamicVarSet initialized && !CopyVariablesQualified(canonical, initialized)) return false;
@@ -2913,7 +2897,7 @@ new file mode 100644
 index 0000000..2b9887b
 --- /dev/null
 +++ b/src/Sts2Headless/NativeDetachedCardCopy.cs
-@@ -0,0 +1,47 @@
+@@ -0,0 +1,74 @@
 +using System;
 +using System.Runtime.CompilerServices;
 +using MegaCrit.Sts2.Core.Models;
@@ -2922,8 +2906,8 @@ index 0000000..2b9887b
 +namespace STS2Platform.NativeFoundation;
 +
 +/// <summary>Fixed exact-build structural bridge for presentation only. The
-+/// caller must first qualify the effective native copy closure and every
-+/// copied delegate. Only the newly allocated copy is changed. All native field
++/// caller must first qualify the effective native copy closure. All copied card
++/// callbacks are detached on the new copy before native work. All native field
 +/// copying and rules remain in DeepCloneFields/AfterCloned and the real native
 +/// upgrade/enchantment methods. Never register or dispatch this copy.</summary>
 +internal static class NativeDetachedCardCopy
@@ -2932,12 +2916,21 @@ index 0000000..2b9887b
 +    {
 +        // Native AbstractModel.MutableClone performs these three structural
 +        // steps. Its DeepCloneFields reattaches enchantment/affliction before
-+        // AfterCloned clears copied card UI delegates. Isolate those two on
++        // AfterCloned clears copied card delegates. Detach all card callbacks on
 +        // the NEW copy first; never clear/restore an event on the original.
 +        var copy = (CardModel)MemberwiseClone(original);
 +        SetMutable(copy, true);
 +        EnchantmentChanged(copy) = null;
 +        AfflictionChanged(copy) = null;
++        EnergyCostChanged(copy) = null;
++        KeywordsChanged(copy) = null;
++        ReplayCountChanged(copy) = null;
++        Played(copy) = null;
++        Drawn(copy) = null;
++        StarCostChanged(copy) = null;
++        Upgraded(copy) = null;
++        Forged(copy) = null;
++        ExecutionFinished(copy) = null;
 +        DeepCloneFields(copy);
 +        AfterCloned(copy);
 +        return copy;
@@ -2956,6 +2949,24 @@ index 0000000..2b9887b
 +    private static extern ref Action? EnchantmentChanged(CardModel copy);
 +    [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "AfflictionChanged")]
 +    private static extern ref Action? AfflictionChanged(CardModel copy);
++    [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "EnergyCostChanged")]
++    private static extern ref Action? EnergyCostChanged(CardModel copy);
++    [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "KeywordsChanged")]
++    private static extern ref Action? KeywordsChanged(CardModel copy);
++    [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "ReplayCountChanged")]
++    private static extern ref Action? ReplayCountChanged(CardModel copy);
++    [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "Played")]
++    private static extern ref Action? Played(CardModel copy);
++    [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "Drawn")]
++    private static extern ref Action? Drawn(CardModel copy);
++    [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "StarCostChanged")]
++    private static extern ref Action? StarCostChanged(CardModel copy);
++    [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "Upgraded")]
++    private static extern ref Action? Upgraded(CardModel copy);
++    [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "Forged")]
++    private static extern ref Action? Forged(CardModel copy);
++    [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "ExecutionFinished")]
++    private static extern ref Action<AbstractModel>? ExecutionFinished(AbstractModel copy);
 +    [UnsafeAccessor(UnsafeAccessorKind.Method, Name = "DeepCloneFields")]
 +    private static extern void DeepCloneFields(CardModel copy);
 +    [UnsafeAccessor(UnsafeAccessorKind.Method, Name = "AfterCloned")]

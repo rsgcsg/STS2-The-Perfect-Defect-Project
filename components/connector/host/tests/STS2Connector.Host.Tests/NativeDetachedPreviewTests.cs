@@ -262,11 +262,11 @@ public sealed class NativeDetachedPreviewTests
         object? events = Field(typeof(CardModel), "EnchantmentChanged").GetValue(original);
         // Isolated bridge ordering probe: this deliberately unknown observer
         // would run during ordinary native MutableClone.DeepCloneFields.
-        // Production qualification refuses it before using the bridge.
+        // The production bridge detaches it on the new card before native work.
         CardModel copy = NativeDetachedCardCopy.CreateQualifiedCopy(original);
         Assert.Equal(0, calls); Assert.NotSame(original.Enchantment, copy.Enchantment);
         Assert.Same(events, Field(typeof(CardModel), "EnchantmentChanged").GetValue(original));
-        Assert.False(NativeDetachedCardPreviewFactory.TryDeckUpgrade(original, out _, out _));
+        Assert.True(NativeDetachedCardPreviewFactory.TryDeckUpgrade(original, out _, out var gap), gap);
         Assert.Equal(0, calls);
     }
 
@@ -275,8 +275,42 @@ public sealed class NativeDetachedPreviewTests
     {
         CardModel original = Mutable<StrikeDefect>(); calls = 0;
         original.EnchantmentChanged += () => calls++;
-        Assert.False(NativeDetachedCardPreviewFactory.TryDeckUpgrade(original, out _, out _));
+        Assert.True(NativeDetachedCardPreviewFactory.TryDeckUpgrade(original, out _, out var gap), gap);
         Assert.Equal(0, calls); Assert.Equal(0, original.CurrentUpgradeLevel);
+    }
+
+    [Fact]
+    public void CombatCardCallbacksStayOnOriginalAndNeverRunInDetachedUpgrade()
+    {
+        CardModel original = Mutable<DefendDefect>(); calls = 0;
+        var names = new[] { "AfflictionChanged", "EnchantmentChanged", "EnergyCostChanged", "KeywordsChanged",
+            "ReplayCountChanged", "Played", "Drawn", "StarCostChanged", "Upgraded", "Forged" };
+        var callbacks = new Dictionary<string, object?>();
+        var holderType = typeof(CardModel).Assembly.GetType("MegaCrit.Sts2.Core.Nodes.Cards.Holders.NHandCardHolder", true)!;
+        var holder = RuntimeHelpers.GetUninitializedObject(holderType);
+        var flash = (Action)holderType.GetMethod("Flash", Flags)!.CreateDelegate(typeof(Action), holder);
+        foreach (string name in names)
+        {
+            Action callback = () => calls++;
+            if (new[] { "Upgraded", "KeywordsChanged", "ReplayCountChanged", "EnergyCostChanged", "StarCostChanged" }.Contains(name))
+                callback += flash;
+            Field(typeof(CardModel), name).SetValue(original, callback);
+            callbacks[name] = callback;
+        }
+        Action<AbstractModel> finished = _ => calls++;
+        Field(typeof(AbstractModel), "ExecutionFinished").SetValue(original, finished);
+        string before = Values(original);
+        Assert.True(NativeDetachedCardPreviewFactory.TryDeckUpgrade(original, out var result, out var gap), gap);
+        Assert.Equal(0, calls); Assert.Equal(before, Values(original));
+        foreach (string name in names)
+        {
+            Assert.Same(callbacks[name], Field(typeof(CardModel), name).GetValue(original));
+            Assert.Null(Field(typeof(CardModel), name).GetValue(result!.Display));
+        }
+        Assert.Same(finished, Field(typeof(AbstractModel), "ExecutionFinished").GetValue(original));
+        Assert.Null(Field(typeof(AbstractModel), "ExecutionFinished").GetValue(result!.Display));
+        Assert.Equal(1, result.Display.CurrentUpgradeLevel);
+        Assert.Equal(8, result.Display.DynamicVars["Block"].BaseValue);
     }
 
     [Fact]
