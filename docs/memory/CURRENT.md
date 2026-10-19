@@ -5,6 +5,8 @@
 `work/P1-QUEUED-INPUT-REPORT-20261019.md`。恢复前检查准确Git、脏改、agent和进程；
 不要从本页或旧worker快照重复启动游戏或恢复已停B。
 
+Resolve live GitHub refs; current source and original evidence override this file.
+
 ## 当前已经核实的结果
 
 P1 r1.4非战斗丢药与既有采集修复已完成源码、构建安装和限定真实两端验收。
@@ -42,3 +44,12 @@ B仍按用户要求停止，战斗用药时点与已登记副作用例外没有�
 旧三局原件3/3、结构派生2/3不与新批次混算；旧win不转移到新候选。
 最小R2→Modal验证通过、正式资产云覆盖1/3，云资源已停；本轮无新云调用或训练。
 最终冻结定义整体和冻结PR仍需用户批准，硬截止10-20 16:30 Brisbane不变。
+
+## Remaining Platform non-claims（上层链路与后续边界）
+
+从[唯一链路和连接表](../plans/p1-prefreeze-2026-10-18/CHAIN_PURPOSES.md)及
+[P1协议](../protocols/P1_GLOBAL_R1.zh-CN.md)进入owner。C1同P1下Host一致、
+C2声明原生操作一致、C3投影正确、C4信息功能够用分别判断。P1是可替换profile。
+GUI/自动落盘/轻量恢复、A独立原生重放和C下一版freeze_card_group仅登记
+[冻结后首批待做卡](../plans/p1-prefreeze-2026-10-18/POSTFREEZE_RECORDING_WORK_CARD.zh-CN.md)，
+冻结前不实现。整体冻结与最终PR仍须批准，10-20 16:30硬截止不变。
