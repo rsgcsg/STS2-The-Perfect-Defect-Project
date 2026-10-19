@@ -2,6 +2,7 @@
 // Run a P1 Agent over a seed suite on a real Host (Managed service or Reference game) through the existing Policy Runtime.
 // node tools/p1-suite.mjs [--worktree W (default: this repository)] [--host managed --candidate C --initial-progress FILE [--character Defect --language en|zh] | --host reference --local-root DIR [--template T]]
 //   --seeds S1,S2|--suite FILE [--limit N] [--episode-budget-ms N] [--agent-timeout-ms N (default 30000, max 300000)] --out DIR --agent "cmd args"
+// Reference also forwards --game-dir DIR and --expected-installed-tuple JSON to the existing driver.
 import { spawn, execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync, existsSync, chmodSync, readdirSync } from "node:fs";
@@ -166,6 +167,10 @@ async function runReference() {
   const driverArgs = [join(worktree, "components/host-runtime/tools/reference-pe-driver.mjs"), "--local-root", resolve(opt("--local-root")),
     "--template", opt("--template", "defect-a0-s0"), "--endpoint", endpoint, "--character", "DEFECT", "--native-speed", "instant",
     "--display-mode", opt("--display-mode", "headless"), "--experimental-connector"];
+  for (const flag of ["--game-dir", "--expected-installed-tuple"]) {
+    const value = opt(flag);
+    if (value != null) driverArgs.push(flag, value);
+  }
   // One driver per episode: after release_bootstrap the Runtime owns the Host, and the
   // driver refuses a second reset (reference_bootstrap_transferred).
   const startDriver = (started) => {
@@ -182,8 +187,13 @@ async function runReference() {
       const request_id = `suite-${++counter}`; driver.stdin.write(JSON.stringify({ command, request_id, ...extra }) + "\n");
       const r = await next(remaining); if (r.type === "error") throw new Error(`${command}:${r.code}:${r.message}`); return r; };
     const close = async (dir) => {
-      try { if (driver.exitCode === null && driver.signalCode === null) await call("close", {}, 120000); } catch { /* best effort */ }
+      let receipt;
+      try { receipt = driver.exitCode === null && driver.signalCode === null
+        ? await call("close", {}, 120000) : { status: "driver_already_exited", code: driver.exitCode, signal: driver.signalCode }; }
+      catch (error) { receipt = { status: "unconfirmed", error: String(error.message) }; }
+      writeFileSync(join(dir, "reference-close.json"), JSON.stringify(receipt, null, 2));
       driver.kill("SIGTERM"); writeFileSync(join(dir, "driver.stderr"), dErr);
+      return receipt;
     };
     return { next, call, close };
   };
@@ -195,6 +205,7 @@ async function runReference() {
       const ready = await next(Math.min(300000, remainingEpisodeMs(started))); if (ready.type !== "ready") throw new Error("driver_not_ready " + JSON.stringify(ready).slice(0, 300));
       await call("reset", { seed }, 600000);
       const identity = (await call("episode_identity")).identity;
+      writeFileSync(join(dir, "reference-identity.json"), JSON.stringify(identity, null, 2));
       const prov = identity.episode_provenance ?? {};
       row.provenance = { verdict: prov.verdict ?? null, actual_seed: prov.actual_seed ?? null };
       await call("release_bootstrap", { expected_runtime_instance_id: identity.host.runtime_instance_id });
@@ -208,7 +219,7 @@ async function runReference() {
     } catch (error) { row.error = String(error.message).slice(0, 400);
       row.budget_exhausted = error.message === "episode_budget_exhausted"
         || error.name === "TimeoutError" && Date.now() - started >= episodeBudgetMs; }
-    finally { await close(dir); }
+    finally { row.reference_close = await close(dir); }
     row.seconds = Math.round((Date.now() - started) / 1000); rows.push(row); console.log(JSON.stringify(row));
     writeFileSync(join(outDir, "report.json"), JSON.stringify({ worktree, host, agent: agentCmd, seeds, agent_timeout_ms: agentTimeoutMs, initial_progress: initialProgressIdentity, rows }, null, 1));
   }
