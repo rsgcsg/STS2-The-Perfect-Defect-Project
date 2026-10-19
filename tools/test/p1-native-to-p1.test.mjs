@@ -315,3 +315,18 @@ for (const failure of ['cancel', 'target-death', 'operands-changed', 'missing-ex
   assert.equal(report.accepted_accounting.explained_gaps, 1);
   assert.ok(report.issues.some(issue => issue.decision_id === 'second'));
 });
+
+test('native execution order owns derived points even when admission order differs', () => {
+  const { source } = queuedExample();
+  const [observation, first, firstExecution, second, firstFinished, secondExecution, secondFinished] = source.events;
+  const finalBasis = secondFinished.successor_basis;
+  secondFinished.successor_basis = firstFinished.successor_basis;
+  firstFinished.successor_basis = finalBasis;
+  source.events = [observation, first, second, secondExecution, secondFinished, firstExecution, firstFinished];
+  source.events.forEach((row, index) => row.sequence = index + 1);
+  const report = convertNativeSemanticOriginals(source, sdk, core);
+  assert.equal(report.complete, true);
+  assert.deepEqual(report.actions.map(action => action.decision_id), ['second', 'first']);
+  assert.deepEqual(report.trajectory.points.slice(0, -1).map(point => point.observation.envelope.occurrence), [1, 2]);
+  assert.equal(report.actions[0].successor.public_basis.snapshot_id, firstExecution.basis.snapshot_id);
+});

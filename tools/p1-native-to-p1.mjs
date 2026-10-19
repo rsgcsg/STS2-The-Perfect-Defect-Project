@@ -193,7 +193,10 @@ export function convertNativeSemanticOriginals(source, sdk, core, options = {}) 
   }
   const derivedNative = report.actions.filter(action => action.match_status === 'matched'
     || action.continuation_of && active.get(action.continuation_of)?.match_status === 'matched').length;
-  report.actions = report.actions.filter(action => !action.continuation_of);
+  // Execution may differ from admission order (native queue scheduling). The
+  // actual decision capture, including same-boundary UI choices, owns P1 order.
+  report.actions = report.actions.filter(action => !action.continuation_of)
+    .sort((a, b) => report.captures[a.capture].sequence - report.captures[b.capture].sequence);
 
   for (const action of report.actions) {
     if (action.terminal_sequence === null || action.successor === null) {
