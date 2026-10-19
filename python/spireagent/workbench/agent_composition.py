@@ -50,7 +50,8 @@ def describe(
                 "binding": "original_native_model_package",
             }
         ]
-        state = {"kind": "declared_native_state", "declaration": original_input}
+        state = {"kind": "stateless_current" if adapter == "stpd-p1-mstd-agent"
+                 else "declared_native_state", "declaration": original_input}
     else:
         models = [
             {
