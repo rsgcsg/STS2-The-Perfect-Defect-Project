@@ -557,3 +557,38 @@ test('prefix original bytes stay checked when consumed after initial verificatio
   writeFileSync(resolve(directory, 'raw', reference.payload_ref), '{}');
   assert.throws(() => result.bytes(reference.payload_ref), /raw_original_changed/);
 }));
+
+function withExecutionFixture(run) {
+  fixture((directory, files) => {
+    const manifest = readJson(directory, 'raw/recording-manifest.json');
+    manifest.p1_native_execution_schema_version = 1;
+    writeJson(directory, 'raw/recording-manifest.json', manifest);
+    const rows = readEvents(directory), accepted = rows.find(row => row.kind === 'decision_accepted');
+    const execution = { ...accepted, kind: 'execution', event_id: 'execution-event', phase: 'before_execution',
+      queued: true, queue_interval_ms: 42, execution_snapshot_id: accepted.basis.snapshot_id };
+    rows.splice(rows.indexOf(accepted) + 1, 0, execution);
+    rows.forEach((row, index) => row.sequence = index + 1);
+    writeEvents(directory, rows);
+    const close = readJson(directory, 'raw/p1-native-close.json');
+    close.event_count = rows.length;
+    writeJson(directory, 'raw/p1-native-close.json', close);
+    reseal(directory, files);
+    run(directory, files, rows, execution);
+  });
+}
+
+test('explicit execution-version recording retains execution without inventing a new accepted decision', () => withExecutionFixture(directory => {
+  const source = readVerifiedP1NativeBundle(directory);
+  assert.equal(source.executionSchemaVersion, 1);
+  assert.equal(source.events.filter(row => row.kind === 'execution').length, 1);
+  assert.equal(source.events.filter(row => row.kind === 'decision_accepted').length, 2);
+}));
+for (const defect of ['foreign-witness', 'duplicate', 'unknown-version']) test(`execution reader rejects ${defect}`, () => withExecutionFixture((directory, files, rows, execution) => {
+  if (defect === 'foreign-witness') execution.action_witness_id = 'foreign';
+  if (defect === 'duplicate') { rows.splice(rows.indexOf(execution) + 1, 0, { ...execution, event_id: 'duplicate-execution' });
+    rows.forEach((row, index) => row.sequence = index + 1); }
+  if (defect === 'unknown-version') { const manifest = readJson(directory, 'raw/recording-manifest.json');
+    manifest.p1_native_execution_schema_version = 2; writeJson(directory, 'raw/recording-manifest.json', manifest); }
+  writeEvents(directory, rows); reseal(directory, files);
+  assert.throws(() => readVerifiedP1NativeBundle(directory), /execution_binding_mismatch|execution_schema_unsupported/u);
+}));

@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { createSession, matchNativeSemanticChoice, type NativeSemanticAcceptance,
+import { createSession, reduce, matchNativeExecutionChoice, matchNativeSemanticChoice, type NativeSemanticAcceptance,
   type P1Basis } from "../src/p1Global/index.js";
 
 function example() {
@@ -79,4 +79,87 @@ describe("P1 native semantic Human acceptance", () => {
     expect(result.status).toBe("matched");
     expect(result.reduction.observation.catalog.find(choice => choice.choice_id === result.choice_id)!.kind).toBe("selector.choose");
   });
+});
+
+function executionExample() {
+  const { basis, accepted } = example();
+  const snapshot = basis.snapshot as any;
+  const actions = snapshot.bound_actions.actions.map((action: any, i: number) => ({
+    key: `native-key-${i}`, verb: action.verb, subject_referent_id: action.subject_referent_id ?? null,
+    arguments: Object.fromEntries(action.arguments.map((arg: any) => [arg.role, arg.referent_id])),
+    native_legality_basis: "same-boundary-native-catalog" }));
+  const action = actions.find((item: any) => item.verb === accepted.bound_action.verb
+    && item.subject_referent_id === accepted.bound_action.subject_referent_id
+    && JSON.stringify(item.arguments) === JSON.stringify(Object.fromEntries(accepted.bound_action.arguments.map(arg => [arg.role, arg.referent_id]))));
+  const native_input = { action_key: action.key, verb: action.verb,
+    subject_referent_id: action.subject_referent_id, arguments: action.arguments };
+  const execution = { action_witness_id: accepted.action_witness_id, basis: accepted.basis,
+    phase: "before_execution", missing_reason: null, native_input,
+    execution_action_space: { schema: "sts2.human-annotator/execution-semantic-action-space-3",
+      action_witness_id: accepted.action_witness_id, phase: "before_execution", status: "captured",
+      actions, observed_action_key: action.key, observed_membership: "exact_once", observed_match_count: 1 } };
+  const queued = structuredClone(basis);
+  const q = queued.snapshot as any;
+  q.status = "settling"; q.interaction.stage = "settling";
+  q.bound_actions.actions = []; q.bound_actions.total_count = q.bound_actions.materialized_count = 0;
+  q.interaction.content.surface.playable_cards = []; q.interaction.content.surface.usable_potions = [];
+  q.interaction.content.surface.can_end_turn = false;
+  return { basis, queued, accepted: { ...accepted, bound_action: null, native_input }, execution };
+}
+
+describe("P1 execution S and native A(S)", () => {
+  it("retains original empty public catalog and projects the same complete P1 choice facts", () => {
+    const { basis, queued, accepted, execution } = executionExample();
+    const bytes = JSON.stringify(queued);
+    const actual = matchNativeExecutionChoice(createSession("same", "reference"), queued, accepted, execution);
+    const online = reduce(createSession("same", "reference"), basis);
+    expect(actual.status).toBe("matched");
+    expect(actual.reduction.missing).toEqual([]);
+    expect(actual.reduction.observation).toEqual(online.observation);
+    expect(actual.reduction.observation.catalog).toEqual(online.observation.catalog);
+    expect(actual.lowering?.first).toBeNull();
+    expect(actual.lowering?.native_input_key).toBe(execution.native_input.action_key);
+    expect(JSON.stringify(queued)).toBe(bytes);
+  });
+
+  it.each(["carrier", "key", "target", "duplicate", "membership", "missing-read", "missing-hand"])(
+    "records an explicit failure for %s instead of borrowing Human-time facts", defect => {
+      const { queued, accepted, execution } = executionExample();
+      if (defect === "carrier") execution.action_witness_id = "foreign";
+      if (defect === "key") accepted.native_input.action_key = "foreign";
+      if (defect === "target") accepted.native_input.arguments = { target: "dead-target" };
+      if (defect === "duplicate") execution.execution_action_space.actions.push(execution.execution_action_space.actions[0]);
+      if (defect === "membership") execution.execution_action_space.observed_match_count = 0;
+      if (defect === "missing-read") (queued as any).reads = queued.reads.slice(1);
+      if (defect === "missing-hand") (queued.snapshot as any).interaction.content.context.player.hand = [];
+      const result = matchNativeExecutionChoice(createSession("same", "reference"), queued, accepted, execution);
+      expect(result.status).not.toBe("matched");
+      expect(result.choice_id).toBeNull();
+    });
+});
+
+it("matches H public input to S native input while ignoring descriptive metadata, never action operands", () => {
+  const { basis, queued, accepted, execution } = executionExample();
+  const selected = (basis.snapshot as any).bound_actions.actions.find((item: any) => item.verb === accepted.native_input.verb
+    && item.subject_referent_id === accepted.native_input.subject_referent_id);
+  const human = { ...accepted, native_input: null, bound_action: selected };
+  const original = { ...execution, native_input: { ...execution.native_input, label: "native observation metadata" } };
+  expect(matchNativeExecutionChoice(createSession("same", "reference"), queued, human, original).status).toBe("matched");
+  original.native_input.arguments = { target: "changed-target" };
+  expect(matchNativeExecutionChoice(createSession("same", "reference"), queued, human, original).status).toBe("unmapped");
+});
+
+it("uses only a real S public BoundAction when that execution representation is available", () => {
+  const { basis, accepted, execution } = executionExample();
+  const selected = (basis.snapshot as any).bound_actions.actions.find((item: any) => item.verb === accepted.native_input.verb
+    && item.subject_referent_id === accepted.native_input.subject_referent_id);
+  const original = { ...execution, native_input: null, bound_action: selected,
+    execution_action_space: { ...execution.execution_action_space, human_bound_action_id: selected.bound_action_id,
+      human_native_action_key: null } };
+  const human = { ...accepted, native_input: null, bound_action: { ...selected, bound_action_id: "earlier-H-action-id" } };
+  const result = matchNativeExecutionChoice(createSession("same", "reference"), basis, human, original);
+  expect(result.status).toBe("matched");
+  expect(result.lowering?.first?.bound_action_id).toBe(selected.bound_action_id);
+  human.bound_action.arguments = [{ role: "target", referent_id: "changed-target" }];
+  expect(matchNativeExecutionChoice(createSession("same", "reference"), basis, human, original).status).toBe("unmapped");
 });

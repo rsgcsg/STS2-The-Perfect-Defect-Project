@@ -39,6 +39,9 @@ function recording(identity, bytes) {
     && rawManifest.capture_profile_id === PROFILE && rawManifest.session_id === identity.session_id
     && rawManifest.timeline_id === identity.timeline_id && rawManifest.p1_native_origin === identity.declared_origin,
   'raw_manifest_identity');
+  require(rawManifest.p1_native_execution_schema_version == null || rawManifest.p1_native_execution_schema_version === 1,
+    'execution_schema_unsupported');
+  const executionSchemaVersion = rawManifest.p1_native_execution_schema_version ?? null;
   const profile = rawJson('capture-profile.json');
   require(profile.profile_id === PROFILE && profile.record_schema === 'sts2.human-annotator/p1-native-event-1'
     && rawManifest.capture_profile_sha256 === hash(Buffer.from(JSON.stringify(profile))), 'capture_profile_identity');
@@ -81,7 +84,17 @@ function recording(identity, bytes) {
       require(identifier(row.action_witness_id) && identifier(row.decision_id) && identifier(row.run_id)
         && !witnesses.has(row.action_witness_id), 'accepted_identity');
       witnesses.add(row.action_witness_id);
-      pending.set(row.action_witness_id, { decision_id: row.decision_id, run_id: row.run_id }); accepted++;
+      pending.set(row.action_witness_id, { decision_id: row.decision_id, run_id: row.run_id, executed: false }); accepted++;
+    }
+    if (row.kind === 'execution') {
+      const start = pending.get(row.action_witness_id);
+      require(executionSchemaVersion === 1 && start && start.decision_id === row.decision_id
+        && start.run_id === row.run_id && !start.executed, 'execution_binding_mismatch');
+      require(row.phase === 'before_execution' && typeof row.queued === 'boolean'
+        && Number.isFinite(row.queue_interval_ms) && row.queue_interval_ms >= 0, 'execution_boundary_invalid');
+      require(row.basis == null || row.missing_reason != null || row.execution_snapshot_id === row.basis.snapshot_id,
+        'execution_snapshot_mismatch');
+      start.executed = true;
     }
     if (row.kind === 'issue') issues++;
     if (row.kind === 'lifecycle' && ['finished', 'cancelled', 'aborted', 'unknown'].includes(row.phase)) {
@@ -90,7 +103,7 @@ function recording(identity, bytes) {
       pending.delete(row.action_witness_id); terminal++;
     }
   }
-  return { events, journal, accepted, terminal, issues, pending: pending.size };
+  return { events, journal, accepted, terminal, issues, pending: pending.size, executionSchemaVersion };
 }
 
 export function readVerifiedP1NativeBundle(bundlePath) {
@@ -153,7 +166,7 @@ export function readVerifiedP1NativeBundle(bundlePath) {
   }
   const rawJson = name => JSON.parse(text(bytes(name)));
   const belongs = value => value.session_id === identity.session_id && value.timeline_id === identity.timeline_id;
-  const { events, journal, accepted, terminal, issues, pending } = recording(identity, bytes);
+  const { events, journal, accepted, terminal, issues, pending, executionSchemaVersion } = recording(identity, bytes);
   const receipt = rawJson('session-close-receipt.json');
   require(receipt.schema === 'sts2.human-annotator/session-close-1' && receipt.status === 'closed'
     && belongs(receipt), 'original_close_required');
@@ -167,7 +180,7 @@ export function readVerifiedP1NativeBundle(bundlePath) {
     && close.issue_count === issues, 'closed_stream_accounting');
   // The producer's declared origin and explicit attestation remain in manifest;
   // neither attested=true nor a closed file upgrades them to machine-proven Human data.
-  return { bundle, manifest, events, journal, bytes };
+  return { bundle, manifest, events, journal, bytes, executionSchemaVersion };
 }
 
 /** Verify the immutable administrative export of an open recording, without closing it. */
@@ -202,7 +215,7 @@ export function readVerifiedP1NativePrefix(prefixPath) {
     return value;
   }
   for (const name of Object.keys(rawHashes)) bytes(name);
-  const { events, journal, accepted, terminal, issues, pending } = recording(manifest, bytes);
+  const { events, journal, accepted, terminal, issues, pending, executionSchemaVersion } = recording(manifest, bytes);
   const watermark = manifest.watermark;
   require(object(watermark), 'prefix_watermark_required');
   const eventsBytes = bytes('p1-native-events.jsonl'), journalBytes = bytes('run-journal.jsonl');
@@ -213,5 +226,5 @@ export function readVerifiedP1NativePrefix(prefixPath) {
     && watermark.terminal_count === terminal && watermark.pending_count === pending && watermark.issue_count === issues,
   'prefix_event_watermark');
   // Pending is an observed open-prefix fact. No Close or terminal event is synthesized.
-  return { bundle, manifest, events, journal, bytes, manifestSha256: hash(manifestBytes) };
+  return { bundle, manifest, events, journal, bytes, executionSchemaVersion, manifestSha256: hash(manifestBytes) };
 }

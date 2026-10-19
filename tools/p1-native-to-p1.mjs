@@ -33,8 +33,10 @@ export function convertNativeSemanticOriginals(source, sdk, core, options = {}) 
   const bases = new Map();
   const terminalPhases = new Set(['finished', 'cancelled', 'aborted', 'unknown']);
   // These are native subscription progress phases, not new decisions or results.
-  const progressPhases = new Set(['started', 'paused_for_player_choice', 'ready_to_resume', 'resumed']);
+  const progressPhases = new Set(['before_execution_resume', 'started', 'paused_for_player_choice', 'ready_to_resume', 'resumed']);
   let lastComplete = null;
+  const executionMode = source.executionSchemaVersion === 1;
+  const acceptedById = new Map();
 
   function basis(reference) {
     if (!reference || typeof reference.payload_ref !== 'string') throw new Error('native_p1_basis_reference_required');
@@ -50,8 +52,8 @@ export function convertNativeSemanticOriginals(source, sdk, core, options = {}) 
     return { snapshot: value.snapshot, reads: value.reads };
   }
 
-  function capture(reference, row, origin, reduction = null) {
-    if (reference === null) {
+  function capture(reference, row, origin, reduction = null, promote = true) {
+    if (reference == null) {
       const item = { sequence: row.sequence, event_id: row.event_id, origin, public_basis: null,
         complete: false, missing: [row.basis_missing_reason ?? 'original_public_basis_missing'], observation: null };
       report.captures.push(item);
@@ -64,7 +66,7 @@ export function convertNativeSemanticOriginals(source, sdk, core, options = {}) 
     report.captures.push(item);
     // Only an actual complete later boundary supplies a successor. A native
     // finished callback may itself carry a partial/settling original.
-    if (reduced.complete && ['decision', 'terminal'].includes(reduced.observation.status)) {
+    if (promote && reduced.complete && ['decision', 'terminal'].includes(reduced.observation.status)) {
       lastComplete = item;
       report.scope.natural_terminal_observed ||= reduced.observation.status === 'terminal';
       for (const action of active.values()) if (action.terminal_sequence !== null && action.successor === null
@@ -108,22 +110,40 @@ export function convertNativeSemanticOriginals(source, sdk, core, options = {}) 
     if (row.run_id !== null && row.run_id !== report.scope.run_id) continue;
     if (row.kind === 'decision_accepted') {
       if (active.has(row.decision_id)) throw new Error('native_p1_duplicate_decision');
-      const original = row.basis === null ? null : basis(row.basis);
-      let match = original && row.bound_action !== null ? core.matchNativeSemanticChoice(state, original, row)
+      acceptedById.set(row.decision_id, row);
+      const awaitsExecution = executionMode && row.native_receipt?.kind === 'game_action_accepted';
+      const original = row.basis == null ? null : basis(row.basis);
+      let match = original && row.bound_action != null ? core.matchNativeSemanticChoice(state, original, row)
         : { status: 'incomplete', reason: original ? 'original_native_bound_action_missing' : 'original_human_basis_missing',
           choice_id: null, lowering: null, reduction: null };
       const continuationOf = continuationParents.get(row.decision_id) ?? null;
-      if (!continuationOf) match = matchRecordedIntention(match, row);
-      const captured = capture(row.basis, row, 'human_decision_basis', match.reduction);
+      if (!continuationOf && !awaitsExecution) match = matchRecordedIntention(match, row);
+      if (awaitsExecution) match = { status: 'incomplete', reason: 'accepted_action_without_execution_original',
+        choice_id: null, lowering: null, reduction: null };
+      const captured = capture(row.basis, row, 'human_decision_basis', match.reduction, !awaitsExecution);
       const action = { decision_id: row.decision_id, action_witness_id: row.action_witness_id,
         accepted_event_id: row.event_id, match_status: match.status, reason: match.reason,
         choice_id: match.choice_id, choice: match.reduction?.observation.catalog.find(item => item.choice_id === match.choice_id) ?? null,
         capture: report.captures.length - 1, lifecycle: [], terminal_sequence: null, successor: null,
-        native_terminal_sequence: null, continuation_of: continuationOf,
+        native_terminal_sequence: null, execution: null, source_human_basis: row.basis, continuation_of: continuationOf,
         continuation_decision_id: match.continuation_decision_id ?? null,
         result: null, lowering: match.lowering, observation: captured.capture.observation };
       active.set(row.decision_id, action);
       report.actions.push(action);
+      if (match.status === 'matched') state = match.reduction.state;
+    } else if (row.kind === 'execution') {
+      const action = active.get(row.decision_id), accepted = acceptedById.get(row.decision_id);
+      if (!executionMode || !action || action.execution !== null || action.native_terminal_sequence !== null
+        || action.action_witness_id !== row.action_witness_id || row.run_id !== accepted.run_id)
+        throw new Error('native_p1_execution_binding_mismatch');
+      const original = row.basis == null ? null : basis(row.basis);
+      const match = original ? core.matchNativeExecutionChoice(state, original, accepted, row)
+        : { status: 'incomplete', reason: 'original_execution_basis_missing', choice_id: null, lowering: null, reduction: null };
+      const captured = capture(row.basis, row, 'native_before_execution', match.reduction);
+      Object.assign(action, { execution: { event_id: row.event_id, queued: row.queued,
+          queue_interval_ms: row.queue_interval_ms, basis: row.basis }, match_status: match.status, reason: match.reason,
+        choice_id: match.choice_id, choice: match.reduction?.observation.catalog.find(item => item.choice_id === match.choice_id) ?? null,
+        capture: report.captures.length - 1, lowering: match.lowering, observation: captured.capture.observation });
       if (match.status === 'matched') state = match.reduction.state;
     } else if (row.kind === 'lifecycle') {
       const action = active.get(row.decision_id);
@@ -141,8 +161,8 @@ export function convertNativeSemanticOriginals(source, sdk, core, options = {}) 
         action.result = { schema: 'sts2.p1/native-semantic-result-1', occurrence: action.observation?.envelope.occurrence ?? null,
           choice_id: action.choice_id, status: row.phase === 'finished' ? 'completed'
             : row.phase === 'unknown' ? 'unknown' : 'interrupted_known',
-          steps: [{ index: 0, origin: 'native_semantic_choice', native_verb: action.lowering?.first?.verb ?? null,
-            label: action.lowering?.first?.label ?? null, delivery: 'delivered',
+          steps: [{ index: 0, origin: 'native_semantic_choice', native_verb: action.lowering?.first?.verb ?? action.choice?.kind ?? null,
+            label: action.lowering?.first?.label ?? action.choice?.label ?? null, delivery: 'delivered',
             reason_code: row.phase === 'finished' ? null : `native_action_${row.phase}` }], commitment_delta: null };
         const parent = action.continuation_of ? active.get(action.continuation_of)
           : action.continuation_decision_id ? action : null;
@@ -171,6 +191,8 @@ export function convertNativeSemanticOriginals(source, sdk, core, options = {}) 
         : [action.result, child.result].every(value => value.status === 'completed') ? 'completed' : 'interrupted_known',
       steps: [...action.result.steps, ...child.result.steps].map((step, index) => ({ ...step, index })) };
   }
+  const derivedNative = report.actions.filter(action => action.match_status === 'matched'
+    || action.continuation_of && active.get(action.continuation_of)?.match_status === 'matched').length;
   report.actions = report.actions.filter(action => !action.continuation_of);
 
   for (const action of report.actions) {
@@ -185,6 +207,8 @@ export function convertNativeSemanticOriginals(source, sdk, core, options = {}) 
     delete action.lowering;
     delete action.observation;
   }
+  report.accepted_accounting = { accepted: report.native_action_count,
+    derived: derivedNative, explained_gaps: report.native_action_count - derivedNative };
   report.complete = report.actions.length > 0 && report.issues.length === 0 && report.pending_decisions.length === 0;
   if (report.complete) {
     const points = report.actions.map((action, index) => ({ index,

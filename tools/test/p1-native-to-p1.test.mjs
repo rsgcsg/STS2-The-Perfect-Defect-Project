@@ -70,7 +70,7 @@ function example() {
     schema: 'sts2.human-annotator/p1-native-session-bundle-1', bundle_content_id: 'synthetic',
     content_identity: { session_id: 'test-session', declared_origin: 'agent_native_ui', human_origin_attestation: { attested: false } } }, events,
     journal: [], bytes: path => blobs.get(path) };
-  return { source, blobs };
+  return { source, blobs, original, retain, nextBasis, row };
 }
 
 test('two accepted decisions derive without any record for unsubmitted pickup/cancel', () => {
@@ -254,4 +254,64 @@ test('an open reward prefix retains its unfinished accepted continuation', () =>
   assert.equal(report.actions[0].result, null);
   assert.equal(report.actions[0].terminal_sequence, null);
   assert.ok(report.pending_decisions.some(item => item.decision_id === 'open'));
+});
+
+function queuedExample() {
+  const fixture = example(), { source, original, retain, nextBasis, row } = fixture;
+  source.events.length = 0;
+  source.executionSchemaVersion = 1;
+  const h = retain(nextBasis('-H', true)), s1 = retain(nextBasis('-S1', true)), s2 = retain(nextBasis('-S2', true));
+  const actions = original.snapshot.bound_actions.actions.map((action, index) => ({ key: `native-${index}`,
+    verb: action.verb, subject_referent_id: action.subject_referent_id ?? null,
+    arguments: Object.fromEntries(action.arguments.map(arg => [arg.role, arg.referent_id])), native_legality_basis: 'native-exact-S' }));
+  function accepted(id, index) {
+    const selected = actions[index];
+    return row('decision_accepted', { decision_id: id, action_witness_id: `witness-${id}`, basis: h,
+      bound_action: null, native_input: { action_key: selected.key, verb: selected.verb,
+        subject_referent_id: selected.subject_referent_id, arguments: structuredClone(selected.arguments) },
+      native_receipt: { kind: 'game_action_accepted', carrier_ref: `witness-${id}` } });
+  }
+  function execution(accepted, basis) {
+    return row('execution', { decision_id: accepted.decision_id, action_witness_id: accepted.action_witness_id,
+      phase: 'before_execution', basis, missing_reason: null, queued: true, queue_interval_ms: 120,
+      native_input: structuredClone(accepted.native_input), bound_action: null, execution_action_space: {
+        schema: 'sts2.human-annotator/execution-semantic-action-space-3', phase: 'before_execution', status: 'captured',
+        action_witness_id: accepted.action_witness_id, actions, observed_action_key: accepted.native_input.action_key,
+        human_native_action_key: accepted.native_input.action_key, observed_membership: 'exact_once', observed_match_count: 1 } });
+  }
+  row('observation', { basis: retain(original), reason: 'native_decision_owner_ready' });
+  const first = accepted('first', 0);
+  execution(first, s1);
+  const second = accepted('second', 1);
+  row('lifecycle', { decision_id: 'first', action_witness_id: 'witness-first', phase: 'finished', successor_basis: h });
+  const secondExecution = execution(second, s2);
+  row('lifecycle', { decision_id: 'second', action_witness_id: 'witness-second', phase: 'finished',
+    successor_basis: retain(nextBasis('-after')) });
+  return { ...fixture, first, second, secondExecution };
+}
+
+test('turn-start and in-card queue derive at execution S while H stays provenance and next S is a successor', () => {
+  const { source } = queuedExample();
+  const report = convertNativeSemanticOriginals(source, sdk, core);
+  assert.equal(report.complete, true);
+  assert.deepEqual(report.accepted_accounting, { accepted: 2, derived: 2, explained_gaps: 0 });
+  assert.ok(report.actions.every(action => action.execution.queued && action.execution.queue_interval_ms === 120));
+  assert.ok(report.actions.every(action => action.source_human_basis.snapshot_id !== action.execution.basis.snapshot_id));
+  assert.equal(report.actions[0].successor.origin, 'native_before_execution');
+  assert.ok(report.actions.every(action => report.captures[action.capture].origin === 'native_before_execution'));
+  assert.equal(report.trajectory.points.length, 3);
+});
+
+for (const failure of ['cancel', 'target-death', 'operands-changed', 'missing-execution']) test(`queued ${failure} remains an explained gap`, () => {
+  const { source, secondExecution } = queuedExample();
+  if (failure === 'target-death') secondExecution.execution_action_space.observed_match_count = 0;
+  if (failure === 'operands-changed') secondExecution.native_input.arguments = { target: 'changed-target' };
+  if (['cancel', 'missing-execution'].includes(failure)) source.events = source.events.filter(row => row !== secondExecution);
+  if (failure === 'cancel') source.events.at(-1).phase = 'cancelled';
+  const report = convertNativeSemanticOriginals(source, sdk, core);
+  assert.equal(report.complete, false);
+  assert.equal(report.trajectory, null);
+  assert.equal(report.accepted_accounting.accepted, 2);
+  assert.equal(report.accepted_accounting.explained_gaps, 1);
+  assert.ok(report.issues.some(issue => issue.decision_id === 'second'));
 });
