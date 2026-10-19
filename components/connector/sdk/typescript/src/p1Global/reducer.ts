@@ -318,14 +318,17 @@ export function reduce(state: P1SessionState, basis: P1Basis): Reduction {
 /** Same P1 projection over a separately retained native execution catalog.
  * The original public snapshot/catalog stays unchanged; no BoundAction is invented. */
 export function reduceNativeExecution(state: P1SessionState, basis: P1Basis,
-  actions: readonly NativeExecutionAction[]): Reduction {
-  return reduceCatalog(state, basis, actions);
+  actions: readonly NativeExecutionAction[], scope?: string): Reduction {
+  return reduceCatalog(state, basis, actions, scope);
 }
 
-function reduceCatalog(state: P1SessionState, basis: P1Basis, execution?: readonly NativeExecutionAction[]): Reduction {
+function reduceCatalog(state: P1SessionState, basis: P1Basis, execution?: readonly NativeExecutionAction[], executionScope?: string): Reduction {
   const snapshot = decodePlayerSnapshot(basis.snapshot).raw as Record<string, any>;
   let interaction = snapshot.interaction as Record<string, any>;
   const sourcePlayer = snapshot.interaction.content.context?.player;
+  const nonCombatPotionExecution = executionScope === "potion_belt_non_combat_use"
+    && snapshot.interaction.content.context?.kind !== "combat";
+  const executionPotions = nonCombatPotionExecution ? snapshot.persistent?.content?.player?.potions : sourcePlayer?.potion_states;
   const knownIds = new Set((snapshot.referents as NativeReferent[]).map(ref => ref.referent_id));
   const invalidExecution = execution !== undefined && (
     new Set(execution.map(action => action.key)).size !== execution.length
@@ -334,7 +337,9 @@ function reduceCatalog(state: P1SessionState, basis: P1Basis, execution?: readon
       || action.arguments == null || typeof action.arguments !== "object" || Array.isArray(action.arguments)
       || Object.entries(action.arguments).some(([role, id]) => role !== "target" || !knownIds.has(id))
       || action.verb === "play" && !sourcePlayer?.hand?.some((card: any) => card.entity_id === action.subject_referent_id)
-      || action.verb === "use" && !sourcePlayer?.potion_states?.some((potion: any) => potion.entity_id === action.subject_referent_id)
+      || action.verb === "use" && (!executionPotions?.some((potion: any) => potion.entity_id === action.subject_referent_id)
+        || nonCombatPotionExecution && !knownIds.has(action.subject_referent_id!))
+      || nonCombatPotionExecution && (action.verb !== "use" || Object.keys(action.arguments).length !== 0)
       || action.verb === "discard" && (!sourcePlayer?.potion_states?.some((potion: any) => potion.entity_id === action.subject_referent_id)
         || !snapshot.persistent?.content?.player?.potions?.some((potion: any) => potion.entity_id === action.subject_referent_id)
         || Object.keys(action.arguments).length !== 0)
@@ -378,7 +383,7 @@ function reduceCatalog(state: P1SessionState, basis: P1Basis, execution?: readon
   // preserve the actual popup as public information rather than invent a UI.
   const executionCombatBasis = interaction.content.context?.kind === "combat"
     && ["combat_turn", "potion_popup"].includes(nativeKind);
-  if (execution && (!executionCombatBasis || snapshot.completeness?.status !== "complete"
+  if (execution && (!(executionCombatBasis || nonCombatPotionExecution) || snapshot.completeness?.status !== "complete"
       || execution.length === 0)) missing.push("required:complete_native_execution_combat_basis");
 
   if (!P1G_INFORMATION_SHAPES.includes(family)) missing.push(`required:scene_information_qualification:${family}`);
@@ -657,7 +662,8 @@ function reduceCatalog(state: P1SessionState, basis: P1Basis, execution?: readon
       exclude("forward_profile:complete_selector_public_presentations"); continue;
     }
     const actionOwnerKind = execution ? "combat_turn" : nativeKind;
-    let kind = KIND_TABLE[`${actionOwnerKind}|${action.verb}|${role}`] ?? FAMILY_VERB[family]?.[action.verb];
+    let kind = nonCombatPotionExecution && execution && action.verb === "use" ? "potion.use"
+      : KIND_TABLE[`${actionOwnerKind}|${action.verb}|${role}`] ?? FAMILY_VERB[family]?.[action.verb];
     if (operation) kind = operation === "open_preview" ? `${family}.confirm`
       : operation === "cancel_selection" ? `${family}.cancel`
       : operation === "cancel_preview" ? `${family}.back` : `${family}.confirm`;

@@ -320,3 +320,60 @@ it.each(['foreign_target', 'noncombat_context', 'partial_snapshot'])('keeps queu
   if (defect === 'partial_snapshot') { snapshot.completeness.status = 'partial'; snapshot.completeness.missing = ['uncaptured']; }
   expect(matchNativeExecutionChoice(createSession('popup-execution', 'reference'), queued, accepted, execution).status).toBe('incomplete');
 });
+
+function nonCombatPotionExample() {
+  const value = executionExample(), snapshot = value.queued.snapshot as any;
+  const potion = { entity_id: "shop-potion", definition_id: "FOUL_POTION", name: "Foul Potion",
+    description: "A native public potion description", slot: 0, keywords: [], card_previews: [] };
+  snapshot.persistent.content.player.potions = [potion];
+  snapshot.referents.push({ ...snapshot.referents[0], referent_id: potion.entity_id, role: "potion",
+    properties_schema: "sts2.player-environment/referent/potion-1", properties: potion });
+  Object.assign(snapshot, { status: "interactive" });
+  snapshot.bound_actions.actions = [{ ...(value.basis.snapshot as any).bound_actions.actions[0],
+    bound_action_id: "shop-original-continue", verb: "activate", subject_referent_id: null,
+    arguments: [], label: "Continue" }];
+  snapshot.bound_actions.total_count = snapshot.bound_actions.materialized_count = 1;
+  Object.assign(snapshot.interaction, { kind: "shop_room", stage: "ready",
+    content_schema: "sts2.player-environment/surface/shop_room-1", content: {
+      context: { kind: "shop" }, surface: { kind: "shop_room", shop_session_entity_id: "same-shop",
+        can_open_inventory: true, can_proceed: true } } });
+  snapshot.reads = snapshot.reads.filter((r: any) => r.kind !== "combat_piles");
+  (value.queued as any).reads = value.queued.reads.filter(r => r.kind !== "combat_piles");
+  const input = { action_key: "use|shop-potion|", verb: "use", subject_referent_id: potion.entity_id, arguments: {} };
+  value.accepted.native_input = input;
+  Object.assign(value.execution, { native_input: input });
+  Object.assign(value.execution.execution_action_space, { scope: "potion_belt_non_combat_use",
+    actions: [{ key: input.action_key, verb: "use", subject_referent_id: potion.entity_id, arguments: {},
+      native_legality_basis: "actual_same_capture_native_potion_slot_and_anytime_qualification" }],
+    observed_action_key: input.action_key });
+  return value;
+}
+
+describe("declared noncombat potion execution scope", () => {
+  it("uses only the original S potion and A(S), preserving the real shop scene", () => {
+    const { queued, accepted, execution } = nonCombatPotionExample();
+    const original = JSON.stringify(queued);
+    const result = matchNativeExecutionChoice(createSession("shop", "reference"), queued, accepted, execution);
+    expect(result.status).toBe("matched");
+    expect(result.reduction.complete).toBe(true);
+    expect(result.reduction.observation.scene.native_kind).toBe("shop_room");
+    expect(result.reduction.observation.scene.content).toMatchObject({ surface: { kind: "shop_room" } });
+    expect(result.reduction.observation.catalog.map(c => c.kind)).toEqual(["potion.use"]);
+    expect(result.lowering?.native_input_key).toBe(accepted.native_input.action_key);
+    expect(result.lowering?.first).toBeNull();
+    expect(JSON.stringify(queued)).toBe(original);
+  });
+  it.each([undefined, "combat", "potion_belt_non_combat_discard"])("does not admit an undeclared or different scope: %s", scope => {
+    const { queued, accepted, execution } = nonCombatPotionExample();
+    Object.assign(execution.execution_action_space, { scope });
+    expect(matchNativeExecutionChoice(createSession("shop", "reference"), queued, accepted, execution).status)
+      .toBe("incomplete");
+  });
+  it("does not borrow a potion absent from the actual execution S", () => {
+    const { queued, accepted, execution } = nonCombatPotionExample();
+    (queued.snapshot as any).persistent.content.player.potions = [];
+    const result = matchNativeExecutionChoice(createSession("shop", "reference"), queued, accepted, execution);
+    expect(result.status).toBe("incomplete");
+    expect(result.reduction.missing).toContain("required:native_execution_catalog_operands");
+  });
+});

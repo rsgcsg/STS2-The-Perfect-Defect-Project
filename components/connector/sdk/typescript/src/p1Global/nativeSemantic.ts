@@ -85,6 +85,7 @@ export interface NativeExecutionOriginal {
     readonly action_witness_id: string;
     readonly phase: string;
     readonly status: string;
+    readonly scope?: string;
     readonly actions: readonly NativeExecutionAction[];
     readonly observed_action_key: string;
     readonly observed_membership: string;
@@ -157,7 +158,7 @@ export function matchNativeExecutionChoice(state: P1SessionState, basis: P1Basis
         || execution.native_input.subject_referent_id !== selected.subject_referent_id
         || canonicalJson(execution.native_input.arguments) !== canonicalJson(selected.arguments)))
     return result("unmapped", "execution_native_input_operands_changed");
-  reduction = reduceNativeExecution(state, basis, space.actions);
+  reduction = reduceNativeExecution(state, basis, space.actions, space.scope);
   if (!reduction.complete || reduction.observation.status !== "decision")
     return result("incomplete", "execution_basis_is_not_a_complete_p1_decision");
   const choices = Object.entries(reduction.lowering).filter(([, low]) => low.native_input_key === selected.key);
