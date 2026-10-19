@@ -791,3 +791,142 @@ test('a settling reward callback cannot hide different world facts from the same
   const report = await nativeBrowse('reward', 'settling-foreign-world');
   assert.equal(report.native_presentations.length, 0);
 });
+
+async function explicitSmithSettlingExample() {
+  const f = await smithCancellationExample(), { source, before, retain } = f;
+  const [parent, child, , parentEnd] = source.events;
+  child.native_witness.selector_owner_witness_id = 'exact-selector';
+  parentEnd.phase = 'cancelled';
+  Object.assign(parentEnd.native_completion, { native_task_status: 'RanToCompletion', native_bool_result: false,
+    explicit_selector_cancel: { ...structuredClone(child.native_witness), child_decision_id: child.decision_id,
+      child_action_witness_id: child.action_witness_id, native_callback: child.native_action_type,
+      native_acceptance_proven: true, terminal: true } });
+  const settling = structuredClone(before);
+  settling.snapshot.status = 'settling'; settling.snapshot.interaction.stage = 'settling';
+  settling.snapshot.bound_actions.actions = [];
+  settling.snapshot.bound_actions.materialized_count = settling.snapshot.bound_actions.total_count = 0;
+  settling.snapshot.interaction.content.surface.options[0].enabled = false;
+  parentEnd.successor_basis = retain(settling);
+  return f;
+}
+
+test('explicit Smith cancel retains the Task settling basis and proves restoration at the next real input', async () => {
+  const { source } = await explicitSmithSettlingExample();
+  const original = structuredClone(source.events[3]);
+  const report = convertNativeSemanticOriginals(source, sdk, core);
+  assert.equal(report.complete, true, JSON.stringify(report.blocking_issues));
+  assert.equal(report.accepted_accounting.native_cancelled, 2);
+  const after = report.native_cancellations[0].continuity_checkpoints.find(x => x.boundary === 'after');
+  assert.equal(after.source_event_id, source.events[4].event_id);
+  assert.deepEqual(after.source_public_basis, source.events[4].basis);
+  assert.deepEqual(source.events[3], original);
+});
+for (const defect of ['missing_ready', 'changed_ready', 'foreign_run']) test(`settling Smith cancellation cannot infer restoration from ${defect}`, async () => {
+  const { source, before, retain } = await explicitSmithSettlingExample();
+  if (defect === 'missing_ready') source.events.splice(4);
+  if (defect === 'changed_ready') {
+    before.snapshot.persistent.content.player.gold++;
+    source.events[4].basis = retain(before);
+  }
+  if (defect === 'foreign_run') source.events[4].run_id = source.events[5].run_id = 'foreign-run';
+  const report = convertNativeSemanticOriginals(source, sdk, core, { runId: 'run-1' });
+  assert.equal(report.complete, false);
+  assert.equal(report.native_cancellations.length, 0);
+});
+
+function shopBrowseExample(defect = null) {
+  const f = example(), { source, original, retain, row } = f;
+  source.events.length = 0;
+  const before = structuredClone(original);
+  Object.assign(before.snapshot.interaction, { kind: 'shop_inventory', content_schema: 'sts2.player-environment/surface/shop_inventory-1',
+    content: { surface: { kind: 'shop_inventory', shop_session_entity_id: 'shop-owner', cards: [], relics: [], potions: [] },
+      context: { kind: 'shop', room_entity_id: 'shop-room' } } });
+  const close = { bound_action_id: 'close-shop', verb: 'cancel', interaction_id: before.snapshot.interaction.interaction_id,
+    arguments: [], label: 'Close inventory' };
+  before.snapshot.bound_actions.actions = [close];
+  before.snapshot.bound_actions.materialized_count = before.snapshot.bound_actions.total_count = 1;
+  const middle = structuredClone(before);
+  Object.assign(middle.snapshot.interaction, { kind: 'shop_room', content_schema: 'sts2.player-environment/surface/shop_room-1',
+    content: { surface: { kind: 'shop_room', shop_session_entity_id: 'shop-owner', can_open_inventory: true },
+      context: structuredClone(before.snapshot.interaction.content.context) } });
+  const open = { ...close, bound_action_id: 'open-shop', verb: 'open', label: 'Open inventory' };
+  middle.snapshot.bound_actions.actions = [open];
+  const restored = structuredClone(before);
+  if (defect === 'changed_read') restored.reads[0].response.content.new_visible_fact = 'changed';
+  if (defect === 'different_owner') restored.snapshot.interaction.content.surface.shop_session_entity_id = 'other';
+  const accept = (id, b, action, type) => row('decision_accepted', { decision_id: id, action_witness_id: 'root-' + id,
+    native_action_type: type, basis: retain(b), bound_action: action,
+    native_receipt: { kind: 'semantic_ui_accepted', carrier_ref: 'root-' + id } });
+  accept('close', before, close, 'NMerchantInventory.Close');
+  row('lifecycle', { decision_id: 'close', action_witness_id: 'root-close', phase: 'finished', successor_basis: retain(middle) });
+  accept('reopen', middle, open, 'NMerchantRoom.OpenInventory');
+  row('lifecycle', { decision_id: 'reopen', action_witness_id: 'root-reopen', phase: defect === 'unknown' ? 'unknown' : 'finished', successor_basis: retain(restored) });
+  return f;
+}
+test('same-owner shop close/reopen with equal whole originals is zero-label presentation', () => {
+  const { source } = shopBrowseExample();
+  const report = convertNativeSemanticOriginals(source, sdk, core);
+  assert.equal(report.native_presentations.length, 1);
+  assert.equal(report.native_presentations[0].kind, 'shop_close_reopen');
+  assert.equal(report.native_presentations[0].comparison.equal, true);
+  assert.equal(report.accepted_accounting.presentation, 2);
+  assert.ok(report.actions.every(x => x.choice_id === null));
+});
+for (const defect of ['changed_read', 'different_owner', 'unknown']) test(`shop browse keeps ${defect} unresolved`, () => {
+  const { source } = shopBrowseExample(defect);
+  const report = convertNativeSemanticOriginals(source, sdk, core);
+  assert.equal(report.complete, false);
+  assert.equal(report.accepted_accounting.presentation, 0);
+});
+
+test('optional segments reuse shared-core observations without changing whole-run conversion claims', () => {
+  const { source } = example();
+  const plain = convertNativeSemanticOriginals(source, sdk, core);
+  const withSegments = convertNativeSemanticOriginals(source, sdk, core, { includeSegments: true });
+  assert.equal(withSegments.complete, plain.complete);
+  assert.equal(withSegments.whole_run_recording_complete, plain.whole_run_recording_complete);
+  assert.deepEqual(withSegments.trajectory, plain.trajectory);
+  assert.equal(withSegments.segment_output.segments.length, 1);
+  const segment = withSegments.segment_output.segments[0];
+  assert.deepEqual(segment.points.map(point => point.chosen), plain.trajectory.points.slice(0, -1).map(point => point.chosen));
+  assert.deepEqual(segment.points.map(point => point.mask.next), [true, false]);
+  assert.ok(segment.points.every(point => point.mask.N && !point.mask.end));
+  assert.equal(withSegments.segment_output.training_loader_consumed, false);
+});
+
+test('an unknown between choices cuts next and resumes only at a real complete uncommitted basis', () => {
+  const { source } = example();
+  source.events.splice(4, 0, { ...source.events[1], decision_id: 'unknown-choice', action_witness_id: 'unknown-root',
+    native_receipt: { kind: 'game_action_accepted', carrier_ref: 'unknown-root' } },
+    { ...source.events[3], decision_id: 'unknown-choice', action_witness_id: 'unknown-root', phase: 'unknown' });
+  source.events.forEach((row, i) => { row.sequence = i + 1; row.event_id = `event-${i + 1}`; });
+  const report = convertNativeSemanticOriginals(source, sdk, core, { includeSegments: true });
+  assert.equal(report.complete, false);
+  assert.equal(report.trajectory, null);
+  assert.equal(report.segment_output.segments.length, 2);
+  const [first, second] = report.segment_output.segments;
+  assert.equal(first.points.length, 1);
+  assert.equal(first.points[0].mask.next, false);
+  assert.equal(second.points[0].mask.next, false);
+  assert.equal(second.data_class, 'D');
+  assert.match(first.end_reason, /accepted_action_unknown/);
+  assert.equal(second.start_boundary.complete_basis, true);
+});
+
+for (const openPrefix of [false, true]) test(`an unfinished native decision cuts segments through the ${openPrefix ? 'open prefix' : 'closed bundle'} tail`, () => {
+  const { source } = example();
+  if (openPrefix) source.manifest = { ...source.manifest.content_identity,
+    schema: 'sts2.human-annotator/p1-native-prefix-1', watermark: {} };
+  source.events.splice(4, 0, { ...structuredClone(source.events[1]),
+    decision_id: 'unfinished-parent', action_witness_id: 'unfinished-witness',
+    native_receipt: { kind: 'game_action_accepted', carrier_ref: 'unfinished-witness' } });
+  source.events.forEach((row, i) => { row.sequence = i + 1; row.event_id = `event-${i + 1}`; });
+  const report = convertNativeSemanticOriginals(source, sdk, core, { includeSegments: true });
+  assert.equal(report.complete, false);
+  assert.equal(report.segment_output.segments.length, 1);
+  assert.equal(report.segment_output.segments[0].points.length, 1);
+  assert.equal(report.segment_output.segments[0].points[0].mask.next, false);
+  const gap = report.segment_output.gaps.find(item => item.decision_ids.includes('unfinished-parent'));
+  assert.equal(gap.through_sequence, source.events.at(-1).sequence);
+  assert.ok(report.segment_output.discarded_choices.some(item => item.decision_id === 'end-turn'));
+});

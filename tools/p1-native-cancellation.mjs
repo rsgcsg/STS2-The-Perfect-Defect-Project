@@ -89,9 +89,20 @@ export function classifyNativeSelectorCancellation({ row, child, restored, termi
     && ['native_task_status', 'native_bool_result', 'explicit_selector_cancel'].every(key => !Object.hasOwn(parentCompletion, key));
   // New native completions already retain the actual post-cancel basis. A final
   // cancel needs no later player input to supply an unrelated accepted frame.
-  const afterEvent = explicit ? parentEnd : restored;
-  const afterReference = explicit ? parentEnd.successor_basis : restored?.basis;
-  const afterMissing = explicit ? parentEnd.successor_missing_reason : restored?.missing_reason;
+  let afterEvent = explicit ? parentEnd : restored;
+  let afterReference = explicit ? parentEnd.successor_basis : restored?.basis;
+  let afterMissing = explicit ? parentEnd.successor_missing_reason : restored?.missing_reason;
+  // Native Task completion can precede the restored controls becoming ready.
+  // Keep that settling original; use only the next actual accepted H as the
+  // later boundary, before its input, never as a replacement for the Task basis.
+  if (explicit && afterReference && afterMissing == null) {
+    const immediate = basis(afterReference);
+    if (completeInformation(immediate) && immediate.snapshot.status === 'settling'
+        && restored?.basis && restored.missing_reason == null
+        && restored.sequence > parentEnd.sequence) {
+      afterEvent = restored; afterReference = restored.basis; afterMissing = restored.missing_reason;
+    }
+  }
   if ((!smith && !merchant) || !(explicit || legacySmith)
     || row.native_receipt?.kind !== 'semantic_ui_accepted' || row.native_receipt.carrier_ref !== row.action_witness_id
     || row.bound_action?.verb !== (smith ? 'activate' : 'open') || row.missing_reason != null || !row.basis

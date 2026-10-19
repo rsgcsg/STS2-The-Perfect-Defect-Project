@@ -55,7 +55,7 @@ GUI / CLI / API → 同一 Application 用例 → 上述既有 owner
 | [固定决策数据集](../../../python/docs/adr/0007-fixed-decision-datasets.md) | 不完整局中独立完整决策、排除原因、同 run 分组 | 新 P1 reader/选择/loader 接线，不能声称当前 partial 已能一键训练 |
 | [Host 地图续玩](../../../components/host-runtime/src/managed-map-continue.mjs) | 已有存档 descriptor、hash、同候选及 fresh-process 边界 | 不等于任意时刻/战斗/选择器快照，不证明 Reference 与 Managed 通用互读 |
 
-当前方案的调查基线来自[原始完整方案](../../../../P1-RECORDING-GUI-RECOVERY-PROPOSAL-20261019.md)，其源码调查点为 `569effa796dee11a86b3dca118532bf2bd0b5f6a`，不是未来实施基线。首局的完整原件与可重新派生结果证明“解释器出错可以离线修”，未证明新 GUI、P1 崩溃恢复或续玩产品已经可用；首局严格对照卡点也不等于录制原件损坏。实施前刷新当前源码、候选、运行进程与真实入口，不复活调查时的旧命令或 worker。
+当前方案的调查基线来自本地工作区原始完整方案 `work/P1-RECORDING-GUI-RECOVERY-PROPOSAL-20261019.md`，其源码调查点为 `569effa796dee11a86b3dca118532bf2bd0b5f6a`，不是未来实施基线。首局的完整原件与可重新派生结果证明“解释器出错可以离线修”，未证明新 GUI、P1 崩溃恢复或续玩产品已经可用；首局严格对照卡点也不等于录制原件损坏。实施前刷新当前源码、候选、运行进程与真实入口，不复活调查时的旧命令或 worker。
 
 ## 4. GUI：准备、游戏中与结束后
 
@@ -143,10 +143,10 @@ A/C 都先做一个声明范围清楚的最小实例，再据真实接缝、支�
 
 ## 9. 原始依据与进一步定位
 
-本卡收敛自[完整调查方案](../../../../P1-RECORDING-GUI-RECOVERY-PROPOSAL-20261019.md)及 2026-10-19 用户直接决定；完整方案中的待定项、手动保存按钮和“第二片才修连录”安排由本卡明确取舍替代。工作区原文作为调查来源保留，仓库内执行取舍以本卡为准；历史统计只描述原结果，不作为当前资格。
+本卡收敛自本地工作区完整调查方案 `work/P1-RECORDING-GUI-RECOVERY-PROPOSAL-20261019.md`及 2026-10-19 用户直接决定；完整方案中的待定项、手动保存按钮和“第二片才修连录”安排由本卡明确取舍替代。工作区原文作为调查来源保留，仓库内执行取舍以本卡为准；历史统计只描述原结果，不作为当前资格。
 
 - 上层与边界：[链路/连接表](CHAIN_PURPOSES.md)、[工作台定位](WORKBENCH_POSITION.md)、[P1 合同](../../protocols/P1_GLOBAL_R1.zh-CN.md)、[Full-Run 数据链](../../FULL_RUN_DATA_CHAIN.md)。
 - GUI 接缝：[浏览器页面](../../../python/spireagent/console/project.js)、[应用任务白名单](../../../python/spireagent/workbench/native_tasks.py)、[游戏内面板](../../../apps/ingame-ui/PlatformLiveUiMod.cs)、[原录制命令](../../../apps/ingame-ui/PlatformRecordingCommands.cs)。冻结前均不修改。
 - 采集/连录：[P1NativeRecording](../../../components/annotator/src/STS2HumanAnnotator.Core/P1NativeRecording.cs)、[P1NativePrefix](../../../components/annotator/src/STS2HumanAnnotator.Core/P1NativePrefix.cs)、[RecorderRuntime](../../../components/annotator/src/STS2HumanAnnotator.Mod/RecorderRuntime.cs)、[InterruptedRecordingRecovery](../../../components/annotator/src/STS2HumanAnnotator.Core/InterruptedRecordingRecovery.cs)。
 - 数据用途：[B 链交接](../../../python/docs/B_PIPELINE_HANDOFF.md)、[固定决策数据集 ADR](../../../python/docs/adr/0007-fixed-decision-datasets.md)、[数据与来源](../../../python/docs/DATA_AND_PROVENANCE.md)。
-- 历史调查附件：[实际父包与旧 owner 对照](../../../../p1-console-coverage-20261018/actual-20k-owner-audit/COMPARISON.zh-CN.md)、[旧数据库存](../../../../p1-K1-20261018/OLD-RECORDINGS-CURRENT-INVENTORY.md)、[原生/Managed 续玩接缝调查](../../../../p1-console-coverage-20261018/saved-continuation-evaluation.md)。这些是工作区附件，离开该工作区可能不可用；主要 owner 与实施边界已在本卡和仓库链接中保留。
+- 历史调查附件：实际父包与旧 owner 对照 `work/p1-console-coverage-20261018/actual-20k-owner-audit/COMPARISON.zh-CN.md`、旧数据库存 `work/p1-K1-20261018/OLD-RECORDINGS-CURRENT-INVENTORY.md`、原生/Managed续玩接缝调查 `work/p1-console-coverage-20261018/saved-continuation-evaluation.md`。这些是工作区附件，离开该工作区可能不可用；主要 owner 与实施边界已在本卡和仓库链接中保留。

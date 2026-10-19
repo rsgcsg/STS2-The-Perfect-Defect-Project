@@ -7,6 +7,7 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { classifyNativeCancellation, classifyNativeSelectorCancellation } from './p1-native-cancellation.mjs';
 import { classifyNativePresentation } from './p1-native-presentation.mjs';
+import { buildNativeP1Segments } from './p1-native-segments.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
@@ -43,6 +44,7 @@ export function convertNativeSemanticOriginals(source, sdk, core, options = {}) 
   const active = new Map();
   const continuationParents = new Map();
   const bases = new Map();
+  const segmentBoundaries = new Map();
   const terminalPhases = new Set(['finished', 'cancelled', 'aborted', 'unknown']);
   // These are native subscription progress phases, not new decisions or results.
   const progressPhases = new Set(['before_execution_resume', 'started', 'paused_for_player_choice', 'ready_to_resume', 'resumed']);
@@ -91,6 +93,20 @@ export function convertNativeSemanticOriginals(source, sdk, core, options = {}) 
     const item = { sequence: row.sequence, event_id: row.event_id, origin, public_basis: reference,
       complete: reduced.complete, missing: [...reduced.missing], observation: reduced.observation };
     report.captures.push(item);
+    if (options.includeSegments) {
+      const pending = [...active.values()].filter(action => action.decision_id !== row.decision_id
+        && action.terminal_sequence === null).map(action => action.decision_id);
+      const reward = reduced.state.reward;
+      const unclosedReward = reward != null && (reward.open_group !== null || reward.left || reward.declined.length > 0);
+      const selector = ['selector', 'upgrade', 'enchant', 'card_reward'].includes(reduced.observation.scene.family);
+      segmentBoundaries.set(report.captures.length - 1, {
+        eligible: value.capture_status === 'complete' && reduced.complete
+          && ['decision', 'terminal'].includes(reduced.observation.status)
+          && !unclosedReward && !selector && pending.length === 0,
+        pending_native_decisions: pending, unfinished_reward_commitment: unclosedReward,
+        selector_continuation: selector, protocol_state: reduced.state
+      });
+    }
     // Only an actual complete later boundary supplies a successor. A native
     // finished callback may itself carry a partial/settling original.
     if (promote && reduced.complete && ['decision', 'terminal'].includes(reduced.observation.status)) {
@@ -440,6 +456,8 @@ export function convertNativeSemanticOriginals(source, sdk, core, options = {}) 
       presentation_count: report.native_presentations.length, native_presentations: report.native_presentations,
       projection_claims: report.projection_claims, points };
   }
+  if (options.includeSegments)
+    report.segment_output = buildNativeP1Segments({ source, report, successful, boundaries: segmentBoundaries });
   return report;
 }
 
@@ -459,11 +477,20 @@ async function main() {
   const args = process.argv.slice(2), options = {};
   for (let i = 0; i < args.length; i += 2) {
     const keys = { '--bundle': 'bundle', '--prefix': 'prefix', '--manifest-sha256': 'manifestSha256',
-      '--sdk-root': 'sdkRoot', '--run-id': 'runId', '--output': 'output', '--through-sequence': 'throughSequence' };
-    if (!keys[args[i]] || !args[i + 1]) throw new Error('usage: --bundle PATH | --prefix PATH --manifest-sha256 SHA [--sdk-root PATH] [--run-id ID] [--output PATH]');
+      '--sdk-root': 'sdkRoot', '--run-id': 'runId', '--output': 'output', '--through-sequence': 'throughSequence',
+      '--segments-output': 'segmentsOutput' };
+    if (!keys[args[i]] || !args[i + 1]) throw new Error('usage: --bundle PATH | --prefix PATH --manifest-sha256 SHA [--sdk-root PATH] [--run-id ID] [--output PATH] [--segments-output PATH]');
     options[keys[args[i]]] = keys[args[i]] === "throughSequence" ? Number(args[i + 1]) : args[i + 1];
   }
+  options.includeSegments = Boolean(options.segmentsOutput);
   const report = await convertP1NativeBundle(options);
+  if (options.segmentsOutput) {
+    writeFileSync(options.segmentsOutput, JSON.stringify(report.segment_output, null, 2) + '\n', { flag: 'wx' });
+    report.segment_summary = { segments: report.segment_output.segments.length,
+      n_labels: report.segment_output.segments.reduce((n, segment) => n + segment.points.filter(point => point.mask.N).length, 0),
+      output: options.segmentsOutput, training_loader_consumed: false };
+    delete report.segment_output;
+  }
   const serialized = JSON.stringify(report, null, 2) + '\n';
   if (options.output) writeFileSync(options.output, serialized, { flag: 'wx' });
   else process.stdout.write(serialized);

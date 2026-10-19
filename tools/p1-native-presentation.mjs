@@ -23,7 +23,15 @@ export function classifyNativePresentation({ row, next, terminalById, basis, sta
     const second = surface(middle);
     if (secondEnd?.phase === 'finished' && secondEnd.successor_basis && exact(next, middle, state, core)) {
       const restored = basis(secondEnd.successor_basis);
-      if (first.kind === 'deck_upgrade_selection' && first.stage === 'selecting'
+      if (first.kind === 'shop_inventory' && row.native_action_type === 'NMerchantInventory.Close'
+          && row.bound_action.verb === 'cancel' && second.kind === 'shop_room'
+          && next.native_action_type === 'NMerchantRoom.OpenInventory' && next.bound_action.verb === 'open'
+          && complete(afterEnd) && core.compareOriginalPresentationBases(afterEnd, middle).equal
+          && surface(restored).kind === 'shop_inventory'
+          && first.shop_session_entity_id === surface(restored).shop_session_entity_id
+          && typeof first.shop_session_entity_id === 'string') {
+        kind = 'shop_close_reopen'; owner = first.shop_session_entity_id;
+      } else if (first.kind === 'deck_upgrade_selection' && first.stage === 'selecting'
           && row.bound_action.verb === 'select' && second.kind === first.kind && second.stage === 'preview'
           && first.screen_entity_id === second.screen_entity_id && first.request_entity_id === second.request_entity_id
           && next.bound_action.verb === 'cancel'
