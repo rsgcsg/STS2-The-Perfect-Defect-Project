@@ -326,8 +326,6 @@ function nonCombatPotionExample() {
   const potion = { entity_id: "shop-potion", definition_id: "FOUL_POTION", name: "Foul Potion",
     description: "A native public potion description", slot: 0, keywords: [], card_previews: [] };
   snapshot.persistent.content.player.potions = [potion];
-  snapshot.referents.push({ ...snapshot.referents[0], referent_id: potion.entity_id, role: "potion",
-    properties_schema: "sts2.player-environment/referent/potion-1", properties: potion });
   Object.assign(snapshot, { status: "interactive" });
   snapshot.bound_actions.actions = [{ ...(value.basis.snapshot as any).bound_actions.actions[0],
     bound_action_id: "shop-original-continue", verb: "activate", subject_referent_id: null,

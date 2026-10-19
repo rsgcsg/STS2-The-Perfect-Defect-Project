@@ -1,7 +1,7 @@
 import { decodePlayerRead } from "../protocol.js";
 import { decodePublicSourceSnapshot as decodePlayerSnapshot } from "../publicBasis.js";
 import { hasFinitePublicNumbers } from "../publicCombat.js";
-import { completeCombatSurface, completeCombat, completeDeck, completeMap, completePiles, completeSelector } from "./admission.js";
+import { completeCombatSurface, completeCombat, completeDeck, completeMap, completePiles, completeSelector, completePublicUpgradePreview } from "./admission.js";
 import { canonicalJson, isObject } from "./canonical.js";
 import { projectCombatContext } from "./combatProjection.js";
 import { createPublicIdentityPolicy, publicFieldPath } from "./publicIdentity.js";
@@ -337,8 +337,7 @@ function reduceCatalog(state: P1SessionState, basis: P1Basis, execution?: readon
       || action.arguments == null || typeof action.arguments !== "object" || Array.isArray(action.arguments)
       || Object.entries(action.arguments).some(([role, id]) => role !== "target" || !knownIds.has(id))
       || action.verb === "play" && !sourcePlayer?.hand?.some((card: any) => card.entity_id === action.subject_referent_id)
-      || action.verb === "use" && (!executionPotions?.some((potion: any) => potion.entity_id === action.subject_referent_id)
-        || nonCombatPotionExecution && !knownIds.has(action.subject_referent_id!))
+      || action.verb === "use" && !executionPotions?.some((potion: any) => potion.entity_id === action.subject_referent_id)
       || nonCombatPotionExecution && (action.verb !== "use" || Object.keys(action.arguments).length !== 0)
       || action.verb === "discard" && (!sourcePlayer?.potion_states?.some((potion: any) => potion.entity_id === action.subject_referent_id)
         || !snapshot.persistent?.content?.player?.potions?.some((potion: any) => potion.entity_id === action.subject_referent_id)
@@ -432,6 +431,9 @@ function reduceCatalog(state: P1SessionState, basis: P1Basis, execution?: readon
         missing.push(`read:${listed.kind}:${listed.read_id}:not_complete_for_snapshot`);
       else read = decoded;
     }
+    if (read && listed.kind === "surface_card" && read.content?.public_details_revision === "2"
+        && !completePublicUpgradePreview(read.content.upgrade_preview))
+      missing.push(`read:surface_card:${listed.read_id}:upgrade_preview_incomplete`);
     readInstances.push({ listed, read });
   }
   const aggregate = (kind: string): Record<string, any> | null | undefined => {

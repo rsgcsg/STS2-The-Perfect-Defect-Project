@@ -8,7 +8,7 @@ using MegaCrit.Sts2.Core.Models;
 
 namespace STS2Platform.NativeFoundation;
 
-// Read-only, typed native rendering for the two admitted selector kinds. No raw
+// Read-only, typed native card rendering and qualified upgrade previews. No raw
 // localization template, manual variable substitution or fallback can be complete.
 public static class NativePublicCardDetails
 {
@@ -16,12 +16,21 @@ public static class NativePublicCardDetails
     {
         public bool Complete => Missing.Length == 0;
         public Dictionary<string, object?> PublicCard => NativePublicCardDetails.ToPublicCard(Card);
-        public Dictionary<string, object?> PublicDetail => new()
+        public Dictionary<string, object?>? UpgradePreview { get; init; }
+        public Dictionary<string, object?> PublicDetail
         {
-            ["keywords"] = Card.GetValueOrDefault("keywords"),
-            ["card_previews"] = Card.GetValueOrDefault("card_previews") is List<Dictionary<string, object?>> previews
-                ? previews.Select(ToPublicCard).ToArray() : null
-        };
+            get
+            {
+                var detail = new Dictionary<string, object?>
+                {
+                    ["keywords"] = Card.GetValueOrDefault("keywords"),
+                    ["card_previews"] = Card.GetValueOrDefault("card_previews") is List<Dictionary<string, object?>> previews
+                        ? previews.Select(ToPublicCard).ToArray() : null
+                };
+                if (UpgradePreview != null) detail["upgrade_preview"] = UpgradePreview;
+                return detail;
+            }
+        }
     }
 
     // Shape conversion only. Native owns every value and recursive hover-card
@@ -52,6 +61,28 @@ public static class NativePublicCardDetails
 
     public static Result Capture(CardModel card, PileType displayPile, CardPreviewMode mode = CardPreviewMode.Normal) =>
         Capture(card, displayPile, new HashSet<CardModel>(ReferenceEqualityComparer.Instance), mode);
+
+    // The same game-owned detached deck-upgrade display used by native selectors.
+    // It is public presentation, never a replacement live card or input operand.
+    public static Result CaptureWithUpgradePreview(CardModel card, PileType displayPile)
+    {
+        Result current = Capture(card, displayPile);
+        if (!current.Complete)
+            return current with { UpgradePreview = new() { ["status"] = "unavailable", ["card"] = null } };
+        if (!NativeDetachedCardPreviewFactory.TryDeckUpgrade(card, out var preview, out string? gap))
+        {
+            if (gap == "native_preview_card_not_upgradable")
+                return current with { UpgradePreview = new() { ["status"] = "not_applicable", ["card"] = null } };
+            return current with {
+                Missing = current.Missing.Append(gap ?? "native_public_upgrade_preview_unavailable").Distinct(StringComparer.Ordinal).ToArray(),
+                UpgradePreview = new() { ["status"] = "unavailable", ["card"] = null } };
+        }
+        Result upgraded = Capture(preview!.Display, preview.DisplayPile, preview.PreviewMode);
+        return current with {
+            Missing = current.Missing.Concat(upgraded.Missing).Distinct(StringComparer.Ordinal).ToArray(),
+            UpgradePreview = new() { ["status"] = upgraded.Complete ? "available" : "unavailable",
+                ["card"] = upgraded.Complete ? upgraded.PublicCard : null } };
+    }
 
     private static Result Capture(CardModel card, PileType displayPile, HashSet<CardModel> path, CardPreviewMode mode = CardPreviewMode.Normal)
     {

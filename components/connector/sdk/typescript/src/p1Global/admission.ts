@@ -8,6 +8,18 @@ const coordinate = (value: unknown): value is Record<string, unknown> => isObjec
 export const completeCards = (cards: unknown): cards is Record<string, unknown>[] => Array.isArray(cards)
   && cards.every(card => visibleCardSchema.safeParse(card).success)
   && new Set(cards.map(card => card.entity_id)).size === cards.length;
+/** A display-only native upgrade preview, never an action-bearing card instance. */
+export function completePublicUpgradePreview(value: unknown): boolean {
+  if (!isObject(value)) return false;
+  if (value.status === "not_applicable") return value.card === null;
+  const card = value.card;
+  return value.status === "available" && isObject(card) && card.entity_id === null
+    && ["definition_id", "name", "type", "cost", "description", "rarity", "target_type"].every(key => text(card[key]))
+    && typeof card.is_upgraded === "boolean" && Array.isArray(card.keywords)
+    && card.keywords.every(tip => isObject(tip) && text(tip.name) && text(tip.description))
+    && Array.isArray(card.card_previews);
+}
+
 export function completeDeck(value: unknown): boolean {
   return isObject(value) && value.kind === "run_deck" && completeCards(value.cards) && value.card_count === value.cards.length;
 }

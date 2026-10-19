@@ -176,6 +176,22 @@ public sealed class NativeRewardCardRendererTests
             Assert.Equal("Deal 6 damage.",outer.Description);Assert.Equal("AnyEnemy",outer.TargetType);
             var defend=ModelDb.Card<DefendIronclad>().ToMutable();
             typeof(CardModel).GetField("_pool",BindingFlags.Instance|BindingFlags.NonPublic)!.SetValue(defend,ModelDb.CardPool<IroncladCardPool>());
+            string originalDefend = JsonSerializer.Serialize(new { defend.CurrentUpgradeLevel,
+                Block = defend.DynamicVars["Block"].BaseValue, Preview = defend.DynamicVars["Block"].PreviewValue });
+            var withUpgrade = NativePublicCardDetails.CaptureWithUpgradePreview(defend, PileType.Deck);
+            Assert.True(withUpgrade.Complete, string.Join(",", withUpgrade.Missing));
+            Assert.Equal("available", withUpgrade.UpgradePreview!["status"]);
+            var upgradedCard = Assert.IsType<Dictionary<string, object?>>(withUpgrade.UpgradePreview["card"]);
+            Assert.Equal("Gain 8 Block.", upgradedCard["description"]);
+            Assert.Null(upgradedCard["entity_id"]);
+            Assert.Equal("Gain 5 Block.", withUpgrade.Card["description"]);
+            Assert.Equal(originalDefend, JsonSerializer.Serialize(new { defend.CurrentUpgradeLevel,
+                Block = defend.DynamicVars["Block"].BaseValue, Preview = defend.DynamicVars["Block"].PreviewValue }));
+            defend.UpgradeInternal();
+            var maxedPreview = NativePublicCardDetails.CaptureWithUpgradePreview(defend, PileType.Deck);
+            Assert.True(maxedPreview.Complete, string.Join(",", maxedPreview.Missing));
+            Assert.Equal("not_applicable", maxedPreview.UpgradePreview!["status"]);
+            Assert.Null(maxedPreview.UpgradePreview["card"]);
             var defender=NativePublicCardDetails.Capture(defend,PileType.None);
             Assert.True(defender.Complete,string.Join(",",defender.Missing));
             var keywords=(List<Dictionary<string,object?>>)defender.Card["keywords"]!;

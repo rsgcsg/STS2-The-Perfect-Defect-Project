@@ -7,6 +7,7 @@ import {
   decodePlayerReceipt,
   decodePlayerSnapshot
 } from "@rsgcsg/sts2-connector-client";
+import { completePublicUpgradePreview } from "@rsgcsg/sts2-connector-client/p1-global";
 import { startManagedCandidateRuntime } from "./managed-candidate.mjs";
 
 const ACTION_LIMIT = 512;
@@ -2234,6 +2235,9 @@ function publicCardDetailRead(ctx, visible, details, missing, displayContext, ow
   if (!plainObject(details)) gaps.push("current_native_public_card_details_not_captured");
   else for (const field of ["keywords", "card_previews"])
     if (!Array.isArray(details[field])) gaps.push(`current_native_public_card_${field}_not_captured`);
+  if (plainObject(details) && Object.hasOwn(details, "upgrade_preview")
+      && !completePublicUpgradePreview(details.upgrade_preview))
+    gaps.push("current_native_public_card_upgrade_preview_not_captured");
   return {
     descriptor: {
       read_id: ctx.id("read", ctx.snapshotId, "surface_card", displayContext, parentReadId, ownerId, visible.entity_id),
@@ -2246,10 +2250,11 @@ function publicCardDetailRead(ctx, visible, details, missing, displayContext, ow
       ...(plainObject(visible.existing_enchantment) && Object.hasOwn(visible.existing_enchantment, "visibility_basis")
         ? { existing_enchantment: Object.fromEntries(Object.entries(visible.existing_enchantment)
           .map(([key, value]) => [key === "visibility_basis" ? "observation_source" : key, value])) } : {}),
-      public_details_revision: "1", display_context: displayContext,
+      public_details_revision: plainObject(details) && Object.hasOwn(details, "upgrade_preview") ? "2" : "1", display_context: displayContext,
       parent_read_id: parentReadId, display_owner_entity_id: ownerId,
       ...(Array.isArray(details?.keywords) ? { keywords: structuredClone(details.keywords) } : {}),
-      ...(Array.isArray(details?.card_previews) ? { card_previews: structuredClone(details.card_previews) } : {}) },
+      ...(Array.isArray(details?.card_previews) ? { card_previews: structuredClone(details.card_previews) } : {}),
+      ...(details?.upgrade_preview !== undefined ? { upgrade_preview: structuredClone(details.upgrade_preview) } : {}) },
     completeness: { status: gaps.length === 0 ? "complete" : "partial",
       visible_information: "complete_current_player_visible_card_detail", interaction_discovery: "read_only",
       missing: [...new Set(gaps)], hidden_by_policy: [] }
@@ -2288,6 +2293,9 @@ function deckCardDetailReads(ctx, state, deckRead) {
     if (!plainObject(details)) missing.push("current_native_public_card_details_not_captured");
     else for (const field of ["keywords", "card_previews"])
       if (!Array.isArray(details[field])) missing.push(`current_native_public_card_${field}_not_captured`);
+    if (plainObject(details) && Object.hasOwn(details, "upgrade_preview")
+        && !completePublicUpgradePreview(details.upgrade_preview))
+      missing.push("current_native_public_card_upgrade_preview_not_captured");
     if (card.public_details_complete !== true && missing.length === 0)
       missing.push("current_native_public_card_detail_incomplete");
     return {
@@ -2303,12 +2311,13 @@ function deckCardDetailReads(ctx, state, deckRead) {
       },
       content: {
         ...visible,
-        public_details_revision: "1",
+        public_details_revision: plainObject(details) && Object.hasOwn(details, "upgrade_preview") ? "2" : "1",
         display_context: "deck",
         parent_read_id: deckRead.descriptor.read_id,
         display_owner_entity_id: null,
         ...(Array.isArray(details?.keywords) ? { keywords: structuredClone(details.keywords) } : {}),
-        ...(Array.isArray(details?.card_previews) ? { card_previews: structuredClone(details.card_previews) } : {})
+        ...(Array.isArray(details?.card_previews) ? { card_previews: structuredClone(details.card_previews) } : {}),
+      ...(details?.upgrade_preview !== undefined ? { upgrade_preview: structuredClone(details.upgrade_preview) } : {})
       },
       completeness: {
         status: missing.length === 0 ? "complete" : "partial",

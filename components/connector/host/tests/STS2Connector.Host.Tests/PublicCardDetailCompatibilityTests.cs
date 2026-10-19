@@ -90,6 +90,21 @@ public sealed class PublicCardDetailCompatibilityTests
         Assert.Contains("native_hover_card_unqualified", partial.Completeness.Missing);
     }
     [Fact]
+    public void RevisionTwoRetainsUpgradePreviewAndRejectsAnExplicitMissingPreview()
+    {
+        var details = new JsonObject { ["keywords"] = new JsonArray(), ["card_previews"] = new JsonArray(),
+            ["upgrade_preview"] = new JsonObject { ["status"] = "not_applicable", ["card"] = null } };
+        var current = Read(Build(Card() with { CurrentPublicDetails = details }, enriched: true), true);
+        Assert.Equal("2", current.Content["public_details_revision"]!.GetValue<string>());
+        Assert.Equal("not_applicable", current.Content["upgrade_preview"]!["status"]!.GetValue<string>());
+        Assert.Equal("complete", current.Completeness.Status);
+        details["upgrade_preview"] = null;
+        var invalid = Read(Build(Card() with { CurrentPublicDetails = details }, enriched: true), true);
+        Assert.Equal("2", invalid.Content["public_details_revision"]!.GetValue<string>());
+        Assert.Equal("partial", invalid.Completeness.Status);
+        Assert.Contains("current_native_public_card_upgrade_preview_not_captured", invalid.Completeness.Missing);
+    }
+    [Fact]
     public void CapturedHandDeckAndPileKeepSeparateDisplayInstancesForTheSameEntity()
     {
         VisibleCard In(string display) => Card() with { Description = display, CurrentPublicDetails = new JsonObject {

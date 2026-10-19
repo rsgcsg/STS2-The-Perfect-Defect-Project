@@ -1440,3 +1440,26 @@ test("reward candidate previews retain native null star cost without changing th
   assert.equal(detail.content.card_previews[0].star_cost, null);
   assert.equal(detail.content.card_previews[1].star_cost, "2");
 });
+
+test("deck public detail revision 2 preserves the native upgrade without replacing the original card", () => {
+  const state = eventState();
+  const preview = { status: "available", card: { entity_id: null, definition_id: "STRIKE_IRONCLAD",
+    name: "Strike+", type: "Attack", cost: "1", description: "Deal 9 damage.", rarity: "Basic",
+    is_upgraded: true, target_type: "AnyEnemy", keywords: [], card_previews: [] } };
+  state.player.deck[0].public_details.upgrade_preview = preview;
+  const projection = projectManagedCandidateDecision({ state, ...projectionIdentity });
+  const detail = [...projection.reads.values()].find(r => r.descriptor.kind === "surface_card");
+  assert.equal(detail.content.public_details_revision, "2");
+  assert.deepEqual(detail.content.upgrade_preview, preview);
+  assert.equal(detail.content.description, "Deal 6 damage.");
+  assert.equal(detail.completeness.status, "complete");
+  assert.equal(state.player.deck[0].upgraded, false);
+  for (const bad of [null, undefined, {}, { status: "unavailable", card: null }]) {
+    state.player.deck[0].public_details.upgrade_preview = bad;
+    const invalid = projectManagedCandidateDecision({ state, ...projectionIdentity });
+    const failed = [...invalid.reads.values()].find(r => r.descriptor.kind === "surface_card");
+    assert.equal(failed.content.public_details_revision, "2");
+    assert.equal(failed.completeness.status, "partial");
+    assert.ok(failed.completeness.missing.includes("current_native_public_card_upgrade_preview_not_captured"));
+  }
+});
