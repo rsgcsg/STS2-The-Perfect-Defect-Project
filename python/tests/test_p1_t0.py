@@ -236,6 +236,58 @@ def test_controlled_weights_score_legal_choices_and_exact_export_load(tmp_path):
     )
     assert manifest["input"]["profile"] == "p1-global-r1"
     assert config["weights_sha256"] and torch.equal(loaded(frame), flipped)
+    # Exercise the actual Agent implementation with known controlled weights.
+    # ACK uses the returned completion, exactly as the Runtime client does.
+    import io
+
+    from stpd.p1.agent import SCHEMA, serve
+
+    destination = io.StringIO()
+    current = observation()
+    current.pop("envelope")
+    context = {"schema": SCHEMA, "session_id": "test-session", "recovery_epoch": 0}
+    value = {
+        "acquisition_id": "acq-1",
+        "input_spec": manifest["input"]["input_spec"],
+        "continuity_token": "continuity-1",
+        "previous_consumption_id": None,
+        "observation": current,
+        "catalog": current["catalog"],
+        "consumption_unit": {"id": "unit-1"},
+    }
+
+    def client_messages():
+        yield json.dumps(
+            {**context, "request_id": "consume-1", "message_type": "consume", "input": value}
+        )
+        completion = json.loads(destination.getvalue().splitlines()[-1])["completion"]
+        yield json.dumps(
+            {
+                **context,
+                "request_id": "consume-1",
+                "message_type": "consume_ack",
+                "completion": completion,
+            }
+        )
+        yield json.dumps(
+            {
+                **context,
+                "request_id": "next-1",
+                "message_type": "next",
+                "input": {"continuity_token": "continuity-1"},
+            }
+        )
+
+    serve(
+        tmp_path / "private/config.json",
+        tmp_path / "private/manifest.json",
+        tmp_path / "private",
+        source=client_messages(),
+        destination=destination,
+    )
+    directive = json.loads(destination.getvalue().splitlines()[-1])["output"]["directive"]
+    assert directive["selection"]["action_id"] == "c9"
+    assert directive["scores"]["values"] == flipped.tolist()
     from spireagent.workbench.developer import ProjectConfig, combination
     from spireagent.workbench.local_models import LocalModelService
 

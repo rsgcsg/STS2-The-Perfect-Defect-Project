@@ -40,6 +40,10 @@ it.skipIf(!modelExport)("runs exact trained M-std via ACK, score-bound choice, R
     const chosen = messages.find(m => m.message_type === "directive" && m.output.directive.type === "act").output.directive;
     expect(chosen.scores.values.length).toBeGreaterThan(1);
     expect(chosen.selection.kind).toBe("handle");
+    const inputEvent = events.find(e => e.kind === "global_input");
+    const input = JSON.parse(await readFile(join(f.evidence.directory, inputEvent.payload.artifact.path), "utf8"));
+    const best = chosen.scores.values.reduce((winner: number, value: number, index: number, values: number[]) => value > values[winner]! ? index : winner, 0);
+    expect(chosen.selection.action_id).toBe(input.catalog[best].choice_id);
     expect(events.filter(e => e.kind === "global_consumed")).toHaveLength(2);
     const replay = await replayGlobalAgentRun(f.evidence.directory);
     expect(replay.verdict).toBe("verified");
