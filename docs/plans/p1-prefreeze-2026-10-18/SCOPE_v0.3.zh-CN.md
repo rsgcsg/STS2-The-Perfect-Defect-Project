@@ -90,11 +90,13 @@ Record grammar ≠ P1环境合同 ≠ Agent程序端口 ≠ Model Input/Target�
 
 用户2026-10-19已批准本节与4.2，并进一步明确恢复历史rc4的执行边界S/A(S)作为P1派生决策点，点击/输入H只作为来源；这次变更在记录链⑤⑥，不改在线③④、两Host或Agent动作能力。批准要求不表示已实现或实际通过，整份冻结定义与最终冻结PR仍待批准。唯一细则见[P1协议§4.1](../../protocols/P1_GLOBAL_R1.zh-CN.md#41-录制原件派生p1的requires用户已批准)；具体字段由Annotator/adapter owner声明，不在范围书另建schema。
 
-**原件整局完整**：真实原生新局到自然终局，所选run全部玩家来源native accepted保留原始H/来源、精确key/全部operands/owner与接受证明；另在执行边界S以同snapshot身份保留完整PB1、全部advertised Reads及完整catalog A(S)。H只是原点击来源，不称作P1决策时点，不从后来的S回填H。nonqueued证明H/S在同一原生边界；queued明确`queued=true`并披露H→S顺序和间隔。public action/native input沿原合同二选一，不制造H BoundAction。执行时public catalog缺该暂存牌的BoundAction本身不等于完整S不可得；允许按完整原生A(S)/native input声明派生，真实S/PB或可派生目录拿不到才停止实现报告。保留结果/后继、起终、run/parent/save/continuity及Close/pack内容校验。取消、目标变化、失效、执行不匹配、真实效果与unknown分别保留issue/disposition，不能改成成功或当作未提交拿牌取消丢掉。未提交拿牌取消本无accepted决策/label；内部敌人/自动GameAction只保留事实/效果，不制造玩家label。
+**原件整局完整**：真实原生新局到自然终局，所选run全部玩家来源native accepted保留原始H/来源、精确key/全部operands/owner与接受证明；另对实际发生的执行边界S以同snapshot身份保留完整PB1、全部advertised Reads及完整catalog A(S)。H只是原点击来源，不称作P1决策时点，不从后来的S回填H。nonqueued证明H/S在同一原生边界；queued明确`queued=true`并披露H→S顺序和间隔。public action/native input沿原合同二选一，不制造H BoundAction。执行时public catalog缺该暂存牌的BoundAction本身不等于完整S不可得；允许按完整原生A(S)/native input声明派生，真实S/PB或可派生目录拿不到才停止实现报告。保留结果/后继、起终、run/parent/save/continuity及Close/pack内容校验。能量不足、执行前取消、目标失效等有明确原生取消解释时，保留原件生命周期和处置issue，不生成成功label/不存在的P1决策；取消前后连续性须实际比较，不假设无效果。不能用取消解释吞掉unknown、必需信息缺失、绑定错或未解释变化；已接受后取消不能当未提交拿牌取消丢掉。未提交拿牌取消本无accepted决策/label；内部敌人/自动GameAction只保留事实/效果，不制造玩家label。
 
-**派生完整**：P1选择基于执行S/A(S)：真实accepted native key和全部operands与该执行catalog精确匹配，沿在线同一共享核恢复完整P1观察、catalog、choice/聚合/commitments、结果/后继和终局，逐项可回执行原件。每个native accepted都有派生决策或明确issue；有issue/unknown、必需S信息缺失或决策遗漏不能填派生完整。不能用仅captured数量/Close成功声称全局没有静默漏录。原件完整、派生完整、Managed严格轨迹/终局、Human来源与研究准入分别报告。
+**派生完整与取消整局资格（用户新批准）**：成功选择仍以执行S/A(S)和精确native key/全部operands沿共享核派生，全部P1成功点与Managed逐点严格比较，并核最后后继/自然终局。每个native accepted都有派生决策或明确issue；有明确原生解释、生命周期完整、无unknown/缺信息/绑定错，且取消前后连续性经实际原件核对的取消，是已解释处置，本身不算gap；这样的自然完整局可计正式整局，不要求每条accepted都有成功label。取消不造成功决策，不能仅删取消就假设轨迹连续。其它英文/同候选/起终/三证及冻结要求保持，不新增资格门。unknown、必需信息缺失、绑定错或未解释连续性继续阻断；原件完整、派生完整、严格Managed、Human来源和研究准入分别报告。
 
-**adapter暂缺与旧数据**：只有执行S/A(S)及所需原件已完整保存，暂缺adapter才可边录边补并重新派生，显式列待解释机制；不能改原件或用后来的状态补旧H/旧S，旧gap/FAIL保持原义。历史rc4的H/native input→执行S/A(S)方法复用，524/524及47rapid handoffs只属于原rc4原件，不转贴本次P1资格。当前P1执行边界接线、字段实现和真实短段仍待B/root交付/验收。
+历史直接依据：[09-13报告](../../evidence/B_PIPELINE_FIRST_HUMAN_UPLOAD_2026-09-13.md)的413 accepted/412 canonical/1原生取消是新局到自然败局、0真实failure/unknown；[09-17报告](../../evidence/CURATION_CONTINUOUS_ACCEPTANCE_2026-09-17.md)的17/15/2支持取消处置机制，但该段abandoned，不能推广为自然整局资格。新07ac9351 sourcefix已装bf31b3b8尚未load；root正实现⑥取消分流，未有新strict PASS。EndTurn9/map4继续修复、装新候选后再用户短测正常连点；批准规则不表示这些步骤已完成。
+
+**adapter暂缺与旧数据**：只有执行S/A(S)及所需原件已完整保存，暂缺adapter才可边录边补并重新派生，显式列待解释机制；不能改原件或用后来的状态补旧H/旧S，旧06的13项binding、7项preframe仍是历史真实缺失，不能当取消回填；其它旧gap/FAIL保持原义。历史rc4的H/native input→执行S/A(S)方法复用，524/524及47rapid handoffs只属于原rc4原件，不转贴本次P1资格。当前P1执行边界接线、字段实现和真实短段仍待B/root交付/验收。
 
 **开录短段门**：邀请用户正式录整局之前，新候选必须有一段实际短记录，覆盖真实Play、一次未提交拿牌取消且0label、EndTurn，以及至少一项其它非出牌决策（如地图/事件/奖励）。该段的原件完整、共享核离线校验/派生、Managed严格短重放都通过，保留同一tuple/实际seed/原件/报告链接；仅源码fixture、取消0label或单侧动作成功不够。工程自测短段按真实操作者/工程来源标注，不能冒充正式Human局。root工程自测短段实际通过开录门后，用户直接开始正式英文整局，**不再单独要求真人短段**。第一局开始后优先对开头已经保存的一段原件做转换核对，作为真人验证；不要求用户另开一局或为核对中断正式局，开头段通过也不冒称该整局完整。**正式整局仅由用户操作**；联系不到用户、用户不方便或找不到入口/记录器时，正式录制及必需的用户决定都等待用户，不代录正式局，可独立的其它工作并行继续。
 
@@ -106,7 +108,7 @@ Record grammar ≠ P1环境合同 ≠ Agent程序端口 ≠ Model Input/Target�
 
 - E2保留原Source4无输入启动waiting的原合同和旧报告解释。新路线行政准备不产label，也不要求它先满足Source4 raw前缀分类；但真实执行决策S缺同snapshot完整PB1/全部Read/catalog、或native key/全部operands不匹配仍不合格，不能借“启动”排掉真实accepted。
 - E3保留原Source4同owner/card相邻select→deselect的原合同。新路线未提交拿牌取消本来就没有accepted决策，不产生label，不再要求Source4 raw净零分类作为P1前置。已经真实accepted的选择、效果、取消/中断和unknown仍按原始事实保留，不能把它们混成“只是拿牌”丢掉。
-- H来源与执行S分存不是Source4新的启动或取消例外；执行前取消、目标改变、失效和不匹配保持原生结果/issue，不派生成成功。native accepted的公开action/native input互斥，不用执行S制造旧H动作。
+- H来源与执行S分存不是Source4新的启动或取消例外；执行前取消、目标改变、失效和不匹配保留原生结果/issue，不派生成成功；有原生取消解释且生命周期/连续性实际核对完整、无unknown/缺信息/绑定错时，取消本身不作gap，可随合格自然整局计正式。没有原生解释的失效/不匹配仍阻断。native accepted的公开action/native input互斥，不用执行S制造旧H动作。
 - 旧Source4报告、取消证明包、分支及native01–06失败事实均保持原义。上述范围调整不回填旧FAIL，不静默改旧report-v3的complete含义。当前不为Source4再开新预检或新增投入。
 
 ### 4.3 保留的历史Source4解释
