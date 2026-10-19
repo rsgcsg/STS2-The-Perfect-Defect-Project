@@ -166,6 +166,24 @@ export function convertNativeSemanticOriginals(source, sdk, core, options = {}) 
           // has no successful label; its real difference stays a blocking gap.
           presentation.before.observation = core.reduce(state, presentation.before.basis).observation;
           presentation.after.observation = core.reduce(state, presentation.after.basis).observation;
+          if (options.includeNativeReplayWitnesses && presentation.exception) {
+            // Offline replay witnesses name only original accepted public inputs.
+            // They are not P1 choices/labels and do not apply any commitment.
+            presentation.native_replay_steps = presentation.decision_ids.map(id => {
+              const accepted = acceptedRows.find(item => item.decision_id === id);
+              const original = basis(accepted.basis);
+              const reduced = core.reduce(state, original);
+              const choices = Object.entries(reduced.lowering).filter(([, lowering]) =>
+                lowering.first?.bound_action_id === accepted.bound_action.bound_action_id
+                && lowering.first.verb === accepted.bound_action.verb);
+              if (!reduced.complete || choices.length === 0)
+                throw new Error('native_presentation_replay_has_no_existing_public_lowering');
+              return { decision_id: id, source_event_id: accepted.event_id,
+                source_public_basis: accepted.basis, bound_action: accepted.bound_action,
+                observation: reduced.observation, reference_choice_id: choices[0][0],
+                original_terminal_phase: terminalById.get(id)?.phase };
+            });
+          }
           presentations.push(presentation);
           for (const id of presentation.decision_ids) presentationByDecision.set(id, presentation);
         }
@@ -297,6 +315,7 @@ export function convertNativeSemanticOriginals(source, sdk, core, options = {}) 
       source_event_id: span.after.event.event_id,
       continuity: 'requires_strict_managed_comparison', checks,
       continuity_checkpoints: checks.map(({ observation: _observation, ...checkpoint }) => checkpoint) };
+    if (span.native_replay_steps) receipt.native_replay_steps = span.native_replay_steps;
     nativePresentations.push(receipt);
     if (equal && pointIndex < 0) report.issues.push({ decision_id: receipt.decision_id,
       reason: 'native_presentation_without_complete_continuity_boundary', blocking: true });
@@ -385,6 +404,26 @@ export function convertNativeSemanticOriginals(source, sdk, core, options = {}) 
   report.explained_raw_unknown_count = nativeActions.filter(action => action.result?.status === 'unknown'
     && selectorCancellationByDecision.has(action.decision_id)).length;
   report.strict_managed_comparison = 'not_run';
+  report.projection_claims = {
+    source: 'recorded_native_acceptances_and_public_bases', target_profile: 'p1-global-r1',
+    interpretation: 'execution_basis_reexpression_with_declared_native_spans',
+    assumptions: [
+      'human_input_basis_is_origin_execution_basis_owns_game_action_choice',
+      'original_required_public_facts_and_exact_native_operands_are_verified',
+      'zero_label_native_spans_are_not_automatically_p1_actions_or_noops',
+      'host_conformance_requires_same_declared_actions_not_only_same_seed'
+    ],
+    exceptions: report.native_presentations.filter(span => span.exception).map(span => ({
+      id: span.exception.id, decision_ids: span.decision_ids, kind: span.kind,
+      comparison: span.comparison, successful_label: false,
+      p1_action: null, native_replay_required: true,
+      continuity_checkpoints: span.continuity_checkpoints
+    })),
+    lossless_p1_trace: report.native_presentations.some(span => span.exception) ? false : 'not_established',
+    native_host_conformance: 'not_established', p1_host_conformance: 'not_established',
+    p1_native_capability_coverage: report.native_presentations.some(span => span.exception)
+      ? 'declared_native_capability_outside_current_profile' : 'not_established'
+  };
   if (report.complete) {
     const continuitySpans = [...nativeCancellations, ...nativePresentations.filter(span => span.comparison.equal || span.exception)];
     const points = pointActions.map(({ action, capture }, index) => ({ index,
@@ -398,7 +437,8 @@ export function convertNativeSemanticOriginals(source, sdk, core, options = {}) 
     report.trajectory = { schema: 'sts2.p1/trajectory-1', run_directory: source.bundle,
       origin: 'native_semantic_recording', scope: report.scope,
       cancellation_count: report.native_cancellations.length, native_cancellations: report.native_cancellations,
-      presentation_count: report.native_presentations.length, native_presentations: report.native_presentations, points };
+      presentation_count: report.native_presentations.length, native_presentations: report.native_presentations,
+      projection_claims: report.projection_claims, points };
   }
   return report;
 }

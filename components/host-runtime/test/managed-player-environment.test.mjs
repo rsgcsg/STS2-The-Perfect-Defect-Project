@@ -797,6 +797,9 @@ test("projects native potion bindings without exposing Host-local identity", () 
   assert.equal(JSON.stringify(projection.snapshot).includes("native_ref"), false);
   const requests = [...projection.bindings.values()].map((binding) => binding.raw_request);
   assert.equal(requests.some((request) => request.args?.potion_ref === "potion-a"), true);
+  const use = projection.snapshot.bound_actions.actions.find(action => action.verb === "use");
+  assert.equal(use.label, "Use Fire Potion -> A");
+  assert.equal(use.arguments.length, 1);
 });
 
 test("fails closed when visible potion actionability is not represented", () => {
@@ -1180,11 +1183,20 @@ test("opened reward retains exact parent, set and real card identity while execu
   const inner = project(opened);
   const outerSurface = outer.snapshot.interaction.content.surface;
   const innerSurface = inner.snapshot.interaction.content.surface;
+  // Reference VisibleInteractionProjection/CardRewardSurfaceReader publish
+  // ready and reward_flow, with no second stage/can_skip surface inventory.
+  assert.equal(inner.snapshot.interaction.stage, "ready");
+  assert.deepEqual(inner.snapshot.interaction.content.context, { kind: "reward_flow", reward_kind: "card_reward" });
+  assert.equal(Object.hasOwn(innerSurface, "stage"), false);
+  assert.equal(Object.hasOwn(innerSurface, "can_skip"), false);
   assert.equal(innerSurface.parent_group_id, outerSurface.rewards[0].group_id);
   assert.equal(innerSurface.reward_set_id, outerSurface.reward_set_id);
   assert.equal(innerSurface.cards[0].entity_id, outerSurface.rewards[0].card_options[0].entity_id);
   assert.equal(innerSurface.selection_completes_reward, true);
   assert.equal(innerSurface.native_relic_refresh_subscription, "absent");
+  const skipProjection = project({ ...opened, alternatives: [{ index: 0, id: "Skip", option_id: "Skip", native_ref: "skip-real",
+    name: "Skip", title: "Skip", after_selected: "end_selection_and_do_not_complete_reward", is_native_skip: true }] });
+  assert.equal(skipProjection.snapshot.bound_actions.actions.find(action => action.label === "Skip").verb, "activate");
   assert.deepEqual([...inner.bindings.values()][0].raw_request.args, { card_ref: "creation-result" });
   assert.equal(JSON.stringify(inner.snapshot).includes("creation-result"), false);
   assert.equal(JSON.stringify(inner.snapshot).includes("real-card"), false);

@@ -354,8 +354,13 @@ function reduceCatalog(state: P1SessionState, basis: P1Basis, execution?: readon
         playable_cards: options("play", context.player.hand),
         usable_potions: options("use", context.player.potion_states ?? []),
         ...(execution.some(action => action.verb === "discard") || Array.isArray(interaction.content.surface.discardable_potions) ? {
-        discardable_potions: execution.filter(action => action.verb === "discard").map(action => {
-          const potion = snapshot.persistent.content.player.potions.find((item: any) => item.entity_id === action.subject_referent_id);
+        // A(S) is an action inventory, not potion-slot presentation order.
+        // Keep the same S's published potion order; exact A(S) membership
+        // still decides whether each independent discard exists.
+        discardable_potions: snapshot.persistent.content.player.potions
+          .filter((potion: any) => execution.some(action => action.verb === "discard" && action.subject_referent_id === potion.entity_id))
+          .map((potion: any) => {
+          const action = execution.find(action => action.verb === "discard" && action.subject_referent_id === potion.entity_id)!;
           const current = context.player.potion_states.find((item: any) => item.entity_id === action.subject_referent_id);
           return { entity_id: potion.entity_id, definition_id: potion.definition_id, name: potion.name,
             description: potion.description, slot: potion.slot, target_type: current.target_type,
