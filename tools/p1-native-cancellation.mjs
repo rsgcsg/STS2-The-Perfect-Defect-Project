@@ -26,6 +26,7 @@ function completeInformation(value, reduction = null) {
 export function classifyNativeCancellation({ accepted, execution, terminal, humanBasis,
   executionBasis, match, state, core }) {
   if (terminal?.phase !== 'cancelled' || accepted.missing_reason != null
+    || (accepted.native_input != null && accepted.bound_action != null)
     || accepted.native_receipt?.kind !== 'game_action_accepted'
     || accepted.native_receipt.carrier_ref !== accepted.action_witness_id || !inputOf(accepted)
     || !humanBasis || !completeInformation(humanBasis)) return null;
@@ -37,6 +38,8 @@ export function classifyNativeCancellation({ accepted, execution, terminal, huma
     successful_label: false, continuity: 'requires_strict_managed_comparison' };
   if (!execution) return { receipt, checkpoint: null, expected_source_issues: ['accepted_native_action_ended_before_execution'] };
   if (!executionBasis || execution.basis.snapshot_id !== executionBasis.snapshot.snapshot_id
+    || execution.execution_snapshot_id !== executionBasis.snapshot.snapshot_id
+    || (execution.native_input != null && execution.bound_action != null)
     || !sameOperands(inputOf(accepted), inputOf(execution))) return null;
 
   let checkpoint = match.reduction;

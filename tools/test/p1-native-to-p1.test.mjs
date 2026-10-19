@@ -277,7 +277,8 @@ function queuedExample() {
   }
   function execution(accepted, basis) {
     return row('execution', { decision_id: accepted.decision_id, action_witness_id: accepted.action_witness_id,
-      phase: 'before_execution', basis, missing_reason: null, queued: true, queue_interval_ms: 120,
+      phase: 'before_execution', basis, execution_snapshot_id: basis.snapshot_id,
+      missing_reason: null, queued: true, queue_interval_ms: 120,
       native_input: structuredClone(accepted.native_input), bound_action: null, execution_action_space: {
         schema: 'sts2.human-annotator/execution-semantic-action-space-3', phase: 'before_execution', status: 'captured',
         action_witness_id: accepted.action_witness_id, actions, observed_action_key: accepted.native_input.action_key,
@@ -384,13 +385,17 @@ for (const afterStart of [false, true]) test(`an explained native cancellation $
   assert.equal(JSON.stringify(source.events), originalBytes);
 });
 
-for (const defect of ['missing-H-read', 'foreign-native-input', 'missing-S-read', 'missing-catalog', 'source-failure', 'unknown']) test(`native cancellation does not excuse ${defect}`, () => {
+for (const defect of ['missing-H-read', 'foreign-native-input', 'missing-S-read', 'missing-catalog',
+  'foreign-execution-snapshot', 'duplicate-input-carriers', 'source-failure', 'unknown']) test(`native cancellation does not excuse ${defect}`, () => {
   const { source, second, secondExecution, retain, nextBasis } = cancelledExample(true);
   if (defect === 'missing-H-read') { const bad = nextBasis('-bad-H', true); bad.reads.shift(); second.basis = retain(bad); }
   if (defect === 'foreign-native-input') secondExecution.native_input.arguments = { target: 'foreign-target' };
   if (defect === 'missing-S-read') { const bad = nextBasis('-bad-S', true); bad.reads.shift(); secondExecution.basis = retain(bad);
     secondExecution.execution_snapshot_id = bad.snapshot.snapshot_id; secondExecution.native_semantic_capture.ui_catalog.snapshot_id = bad.snapshot.snapshot_id; }
   if (defect === 'missing-catalog') secondExecution.native_semantic_capture = null;
+  if (defect === 'foreign-execution-snapshot') secondExecution.execution_snapshot_id = 'foreign-snapshot';
+  if (defect === 'duplicate-input-carriers') secondExecution.bound_action = {
+    verb: secondExecution.native_input.verb, subject_referent_id: secondExecution.native_input.subject_referent_id, arguments: [] };
   if (defect === 'source-failure') source.events.at(-1).reason = 'pre_frame_capture_failed';
   if (defect === 'unknown') source.events.find(row => row.kind === 'lifecycle' && row.decision_id === 'second').phase = 'unknown';
   if (defect === 'missing-H-read' || defect === 'missing-S-read') {
