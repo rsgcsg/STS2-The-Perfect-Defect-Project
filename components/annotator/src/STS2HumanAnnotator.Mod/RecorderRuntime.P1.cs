@@ -92,13 +92,14 @@ internal static partial class RecorderRuntime
                 ["native_witness"] = originalWitness,
                 ["native_receipt"] = new JsonObject { ["kind"] = "game_action_accepted", ["carrier_ref"] = id },
                 ["missing_reason"] = error });
-            if (error != null) P1Issue(error, type, witness);
+            if (error != null) P1Issue(error, type, failure == null ? witness :
+                P1NativeScopeInputs.Failure(id, decision, failure.Detail, failure.SnapshotId, failure.EvidenceLevel, failure.Occurrence));
             if (!NativeUiCompletionRootBindings.Remember(action, id))
                 P1Issue("accepted_native_parent_binding_conflict", type, new { action_witness_id = id });
             var subscription = new NativeActionLifecycleSubscription(action, id, 0, decision, match?.BoundActionId,
                 ObserveP1Lifecycle, nativeSemanticSelection: context?.NativeSemanticSelection ?? context?.ExpectedAction,
                 semanticNativeActionType: type, humanNativeActionKey: input.NativeInput?.ActionKey) {
-                P1Input = input, P1NativeInput = ToP1RecordedNativeInput(nativeMatch?.NativeInput), P1AcceptedAt = acceptedAt
+                P1PublicInput = context?.ExpectedAction, P1Input = input, P1NativeInput = ToP1RecordedNativeInput(nativeMatch?.NativeInput), P1AcceptedAt = acceptedAt
             };
             NativeActionSubscriptions.Add(action, subscription);
         }

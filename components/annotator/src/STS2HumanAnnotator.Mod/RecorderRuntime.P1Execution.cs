@@ -50,12 +50,7 @@ internal static partial class RecorderRuntime
             capture = PlayerEnvironmentNativeSemanticWitness.Capture("before_execution", action, frame,
                 semanticNativeActionType: subscription.SemanticNativeActionType,
                 semanticSelection: subscription.NativeSemanticSelection);
-            if (subscription.NativeSemanticSelection is { } selection)
-            {
-                var match = frame.Resolve(selection);
-                if (match is { Status: "exact_unique", MatchCount: 1, BoundAction: not null })
-                    currentBound = match.BoundAction;
-            }
+            currentBound = P1NativeScopeInputs.CurrentPublicAction(frame, subscription.P1PublicInput);
             selected = selected with {
                 BoundAction = ToP1RecordedBoundAction(currentBound),
                 NativeInput = currentBound == null ? subscription.P1NativeInput : null,
