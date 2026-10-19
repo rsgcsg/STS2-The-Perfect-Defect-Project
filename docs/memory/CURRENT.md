@@ -1,4 +1,4 @@
-# 当前工作：自测10原件已重派生，修转幕及执行目录后做针对性原生验证
+# 当前工作：转幕修复与严格短段已验收，进入正式英文整局
 
 更新于2026-10-19。本页是仓库导航；唯一现场状态是工作区固定文件
 `work/P1-SEMANTIC-ACTIVE-20261019.md`，主报告是`work/P1-QUEUED-INPUT-REPORT-20261019.md`。
@@ -38,7 +38,7 @@ Annotator437和限定非作者复核通过；旧10的unknown不能凭后来新�
 SDK553、Host968/定向34、Annotator437及限定非作者复核通过。新9921819产物已安装、doctor和11/12冷加载身份核过；11两份真实战斗执行目录均记录discard，限定供给修复得到实际证据。
 用户明确三速同语义、局内可切、默认instant；be91c229已正常merge，182+20源码证据保留。
 
-11的43个raw文件全验，10accepted/10finished/0unknown，EndTurn与Defend真实执行，只有一次转幕finished；最后一牌只有settling后件，无后续ready原件，转换仍报缺口。11正常Close/pack/退出。12冷加载后CUA黑屏，未操作，正常关闭且0动作。两次窗口工具失败后已路线复查并停止重开；第二次真实转幕及新完整严格链仍待可操作原生窗口。当前无游戏/录制/Managed进程，没有要求用户重录整局。正式录制仅用户操作。
+工程13已在同进程内实际完成两次转幕：同owner、独立lineage的接受及finished，后续原件map act_index按0→1→2，26raw/13PB全验、4accepted/4finished/0unknown/0issue，正常Close/pack/退出。console仅定位房间，不算正式局或覆盖。工程14无console正常开局，实际拿牌取消前后事件原字节相同、0label；Play、EndTurn和非出牌选择齐，29raw/16PB全验，5accepted/5finished/0issue/0unknown，正常Close/pack/退出。用户只协助最后Defend和EndTurn，仍是工程来源。Managed同实际seed和初始progress，连续5选择及最后后继全部严格equal，0taint/unknown/budget、Runtime replay verified。本轮修复验收通过；11/12失败保留，不修旧10原件。下一步按用户原安排直接正式英文整局，不额外设真人短段，首局开头优先导出原件核对。正式操作交用户。
 真实正在运行的进程及新安装身份只从现场入口和原回执核对，不从本页假设。
 
 ## Remaining Platform non-claims
