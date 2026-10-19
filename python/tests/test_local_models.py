@@ -167,6 +167,41 @@ def service(tmp_path, monkeypatch):
     return result
 
 
+def test_p1_model_preflight_uses_own_input_spec_and_keeps_program_guard(public_native_preflight):
+    """Real packaged Runtime preflight; model loading is checked separately.
+
+    This synthetic environment envelope starts no Host or Agent process.
+    """
+    from stpd.p1.export import adapter_identity
+
+    service, _, temporary = public_native_preflight
+    runtime = service._node_modules() / local_models.RUNTIME_PACKAGE / "dist/index.js"
+    script = """
+        const runtime = await import(process.argv[1]);
+        const identity = {kind:'reference', protocol_version:'1.0.0',
+          session:{runtime_instance_id:'fixture',environment_fingerprint:'fixture'},
+          game_continuity_id:'fixture', producer:{fixture:true},
+          game:{version:'fixture',commit:'fixture'}};
+        const manifest = runtime.createGlobalProgramManifest({episodeId:'fixture',identity,
+          artifactPath:'/fixture/model',artifactBytes:Buffer.from('metadata-only preflight'),
+          adapter:JSON.parse(process.argv[2])});
+        manifest.agent={id:'p1-mstd',version:'1',provider:'stpd',architecture:'q3-m-std-1'};
+        manifest.input.input_spec={id:'stpd-p1-mstd-input',version:'1',sha256:'a'.repeat(64)};
+        process.stdout.write(JSON.stringify(manifest));
+    """
+    manifest = json.loads(subprocess.check_output(
+        ["node", "--input-type=module", "-e", script, runtime.as_uri(),
+         json.dumps(adapter_identity())], text=True))
+    path = temporary / "p1-model-preflight.json"
+    path.write_text(json.dumps(manifest))
+    service._public_manifest_contract(path)
+    # The old program adapter must still reject a learned model InputSpec.
+    manifest["adapter"]["id"] = local_models.GLOBAL_ADAPTER
+    path.write_text(json.dumps(manifest))
+    with pytest.raises(BoundaryError, match="native_runtime_contract_unavailable"):
+        service._public_manifest_contract(path)
+
+
 def finished(service):
     assert service.thread is not None
     service.thread.join(timeout=3)
