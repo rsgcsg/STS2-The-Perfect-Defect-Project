@@ -1,4 +1,4 @@
-# 当前工作：P1排队修复已安装加载，normal自测06等用户操作
+# 当前工作：自测06已封包；排队采集有效，EndTurn和map接线修复待新实测
 
 更新：2026-10-19。本页是仓库导航；唯一冲刺操作现状是工作区固定文件
 `work/P1-SEMANTIC-ACTIVE-20261019.md`，本轮报告为`work/P1-QUEUED-INPUT-REPORT-20261019.md`，
@@ -27,19 +27,23 @@ and final freeze PR are separate pending approval. Deadline remains Oct20 16:30 
 public action或RecordedNativeInput二选一，不造BoundAction，仍需执行边界完整PB1、全部Reads及可派生目录。
 用户本轮新批准⑤采集修复：执行边界backend Hand仍在且queue NCard仍可见的牌，
 沿普通BuildCard及ReadService取得完整当前facts与surface_card Read，不借H或deck基卡。
-25b0e7a9已正常merge，root1b76c0fe接⑥S/A(S)精确派生、H仅来源、queued/间隔、取消及accepted对账。
-共享在线idle/noqueue完整PB1+catalog字节不变已测，12份SDK现有fixture对改前reducer完整输出逐字节一致。
-Host966/Core437/SourceNative66/surface38、SDK541/adapter39通过，官方Mod构建通过。
-真实Store→Pack→Reader→Converter synthetic正例1动作0issue，负例缺口保留；不冒作runtime/Human通过。
-包含77cbd6ae的新候选已安装并实际加载，artifact ed36f371/MVID2b8c0b50；构建source51b49968 clean。
-独立review顺序缺陷已在c792189a修复，accept A,B / execute B,A反例通过，无剩余范围内阻塞。
-工程自测06正在主菜单、normal已核、录制execution格式1已启用，等待用户亲手5–10分钟连点。
-唯一GamePID76485/operatorPTY32600；续接先看工作区主状态，不重复启动。自测及Managed strict仍未验；其他默认instant。
+25b0e7a9已正常merge并以ed36f371构建实际加载。用户自测06已Close/pack/正常退出：78accepted/78terminal、pending0。
+56份执行PB1/all advertised Reads全部完整，41份Play当前hand+详情Read完整；29合法Play+2Potion派生成功。
+12次能量不足后取消、6次执行前取消如实保留，不造成功决策；13次完成动作绑定失败（9EndTurn/4map）。
+整段未通过，trajectory=null，Managed严格回放未运行。原件1f9494a7…60d44及旧失败不改，正式仍0/3。
+B07ac9351已正常merge，修EndTurn exact subjectless输入与完整settlingH来源、分开publicActivate/nativeTravel角色；
+root9ec71246/30c498e4核S公共绑定native全部operands及Hnative/Spublic表示切换，未改在线合法性或取消规则。
+SourceNative70/surface38、SDK543/adapter39、实际Modcompile0warning/error；限定delta review正在收尾。
+下一步统一官方构建安装新cleancandidate，实际加载后请用户再测EndTurn/map/有效连点并做Managed严格回放。
+当前无游戏/录制/Managed；默认instant，只在指定连点工程测试用normal，不复活旧operatorPTY32600。
+历史按用户要求继续参考9-11及以后成熟录制器：aa03c84d/80d2a776分public/native，8f66bc93保exactqueued输入；
+9-13原413accepted/412canonical/1cancel，9-17原17accepted/15canonical/2cancel均分离真实取消和录制失败。
+这些提供可复用机制，不把旧紧凑原件或研究投影升级成当前P1完整PB1/allReads/严格等价资格。
 Source4停止新增投入/预检；原数据、分支和失败全部保留。自动GameAction不制造玩家标签。
 
 工程05正常Close/pack/退出，66 accepted/66 terminal，17出牌绑定gap和1选牌join gap；无完整P1轨迹，未做整段Managed。
 旧工程04只证明5动作及最后后继的旧短段严格通过；正式英文01有缺口已保留封包，正式合格仍0/3。
-选牌join修复77cbd6ae已包含于当前安装ed36f371，已核冷加载，真实选牌/连点效果仍待本次用户自测。
+选牌join修复77cbd6ae已包含于当前安装ed36f371；自测06未暴露旧选牌join，不能外推全部selector覆盖。
 
 本轮已直接读rc4报告524/524与47rapid，旧tmp raw未找到，不声称重验524原件。
 rc4解决native queued身份与S/A(S)，不是今日完整PB1/allpresentation；不能用新缺口否定旧实证。
@@ -49,7 +53,7 @@ rc4解决native queued身份与S/A(S)，不是今日完整PB1/allpresentation；
 
 (a) Seen unsupported actions: existing captured accepted-action/PB/match failures emit
 issue; unobserved choices remain a known risk. (b) 用户已改为每个native accepted有派生决策或issue；
-新执行S路线及accepted→derived或issue对账已实现并测试，真实自测仍待。 (c) Every inter-decision change explained
+新执行S路线及accepted→derived或issue对账已实现，自测06有78个输入完整对账但13个真实绑定缺陷，当前修复待新实测。 (c) Every inter-decision change explained
 by recorded choices and automatic effects: partial lifecycle/successor/sequence checks,
 no exhaustive independent effect-accounting proof. (d) Strict Managed mismatch: implemented
 for derived trajectories and tested on native02/04 bounded prefixes, not a formal whole run.
@@ -63,7 +67,7 @@ source anchors and limits are in P1 section4.1.
 Before inviting formal recording, a real engineering short segment must cover Play,
 unsubmitted pickup cancel with zero labels, EndTurn and another non-card decision,
 with complete originals, offline derivation/verification and strict Managed replay.
-Native04通过旧短段；native05明确未过。新执行态修复已实现，构建安装及加载核对后仍须
+Native04通过旧短段；native05/06均未过。新接线修复已实现，新构建安装及加载核对后仍须
 用户5–10分钟快速连点、完整原件/离线/严格Managed通过，才重开正式局，不另加Human短段。Check the first
 saved opening segment as Human validation without interrupting the game.
 
