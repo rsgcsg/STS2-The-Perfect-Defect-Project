@@ -48,8 +48,8 @@ A/B/C/D从同一父依赖各建独立短命分支。集成负责人独占CURRENT
 | 3 异常录制可恢复 | A4d5e87ff已合；52 Core/133 Node及Tool→pack→reader→B独立Store合成E2E通过（1N/1unknown，0next/end，非完整局） | A/B交Tool→pack→reader→正常导入；独立工程继续，真人/生产操作留最终 |
 | 4 日常录制可用 | 保正常Application，未新启动游戏/修改安装 | A核安装/工具/空间差额，B入口，实际Human由用户；不能称游戏已就绪 |
 | 5 正常训练入口与任务管理 | 正常CLI/API同LocalTrainingService，26相关测试/隔离App两更新控制链已验；仍仅local CPU，1小时/1GiB artifact边界 | 正常App→既有Hub prepare P1 Run/provider/control薄接仍缺（B/C），不是只等USD2/学校；正式训练配置/费用留用户 |
-| 6 全部候选盘清并实际入库 | 旧820N不是库存总数；A三新连续targets正常Store发布/reader实际1305unique N、0duplicate，3根独立性unknown；C全部候选范围清单另核 | A给来源事实，B发布，C全候选/谱系/曝光清单；用途不由盘点授予 |
-| 7 唯一用途账与固定学习问题 | P1 named索引接原ledger，6源/0claims/uses；C未知谱系默认全unassigned，显式engineering分配仍可用 | B给唯一用途接口，C给实际组/固定Input/Target提案；正式用途/划分留用户 |
+| 6 全部候选盘清并实际入库 | 旧820N不是库存总数；三新targets正常发布/reader实际1305unique N、0duplicate，第四源另核；r14同旧T0内容已证441N真实训练，不能当清洁holdout | A给来源事实，B发布，C全候选/谱系/曝光清单；用途不由盘点授予 |
+| 7 唯一用途账与固定学习问题 | P1 named索引接原ledger，当前7索引/0claims/uses；只代表当前账未分配/本轮无新增训练，r14旧T0 441N历史曝光未迁入原账 | B/C把已证历史use迁入既有唯一账仍是工程余项；C给实际组/Input/Target提案，正式用途/划分留用户，不造第二ledger |
 | 8 R2日常读写与恢复 | 既有完整取回证据保原义，不等于后台周转完成 | B5a76e7a5已合原private账SQLite备份/新目录恢复；R2备份回读、6引用解析与3实际reader消费已核；持续热集仍未完成；现有具名授权内可验证，不新删原件 |
 | 9 GPU接通并发挥优势 | C已审旧WIP/数值隔离/Modal-v2资源；41通过/1CUDA跳过，worker源码准备不等于正常App远端控制或真实GPU | B/C仍须接正常App→现Hub/ComputeRequest/provider控制，固定镜像与真GPU设备恢复另验；费用/学校登录留用户 |
 | 10 全项目逐层收敛与SOP | De1a4c270已合原指南/104行路径，五help与静态走查通过；39旧caller均有原去向，不新增全live门，六项按原验收逐项核 | D和各owner交六项实物与非作者走查；未达仍是正式首训前置，无需新框架 |
@@ -68,9 +68,10 @@ A/B/C/D从同一父依赖各建独立短命分支。集成负责人独占CURRENT
 ## 当前结果与下一步
 
 已接受并normal merge的稳定来源是A `4d5e87ff`（含连续7dd9da31）、B `5a76e7a5`（含fe76eb16）、C `e7f7135a`（含4bacf580/43637f61）、D `6b40a03f`（含e1a4c270/8677432b）；最新组合为`1ccb2f1c`。版本元数据提交`db12fe09`将Annotator源码候选升rc22、统一Mod候选升rc47，current BOM已同步；已测Tool3e9/628及历史loaded/运行安装身份不变，不追授最终候选装载资格。
-A三真实源连续派生经B正常Store发布，B正常reader已核1305unique N/0duplicate；C旧模型消费看其具名回执；A合成中断恢复经实际Tool recover/audit/pack、独立Node和B正常import/publish/read得到1N/1unknown、0next/end、wholefalse，原件不改。B private账备份只含原Curation，R2实际回读/6引用解析/三连续targets远端原reader消费已核；正常Application不重启。
+A三真实源连续派生经B正常Store发布，B正常reader已核1305unique N/0duplicate；C旧模型消费看其具名回执；A合成中断恢复经实际Tool recover/audit/pack、独立Node和B正常import/publish/read得到1N/1unknown、0next/end、wholefalse，原件不改。历史曝光已核r14同旧T0 run02、441N真实训练；当前账0use不抹掉该事实，迁回原唯一账仍是B/C工程余项。B private账备份只含原Curation，R2实际回读/原6引用解析/三连续targets远端原reader消费已核；后新增第七projection另核，不回写该备份时点；正常Application不重启。
 C正确私环境数值/原Mac失败序列41通过/1CUDA跳过；65点2epoch含dropout/真尾批的完整训练state与旧数值maxdiff0，identity字段明确排除，不作为旧历史身份证明。Modal-v2 producer/preflight一致；真实GPU/镜像运行未做。D104行保去向，208owner/evidence路径存在，39历史caller均明确16历史/15现行/8未来去向；这是路由范围，不新增39次live重跑门，#63仍是原R20实际门，#90仍是六项父验收。五help/静态走查不等于全部实际操作通过。
 集成独立解释器view复用成熟依赖、不安装/改共享env，当前SpireAgent/STPD/Evidence及剥PYTHONPATH的真child均解析候选、typed API为真；原线程环境变量未注入。原CURRENT安全字串/缺typescript环境失败保留，修正后静态检查通过。首完整门在`90fca107`的repository阶段1.89秒失败：README精简漏掉既有治理/skills直接入口，后续11阶段blocked，未跑Python等重型检查。原`full-selected01.log`及`workspace-full-darwin-attempt01.json`保留；D恢复原路由后窄核repository，再依据新diff人工选择完整门02，候选检查期间不改源。
 第二完整门`35bc061b`的repository10.18秒、shared-build3.35秒、S0 20.85秒通过；Python16.93秒在mypy报Numerics三处真实类型错误和缺PEFT，未跑pytest。解释器view的Evidence code虽当前但metadata rc11与锁rc31不符，集成负责人对其自有runner有序SIGINT，connector14.04秒取消、后7阶段blocked，source accepted且无候选遗留进程。完整原`full-selected02.log`/stage回执保留，不能把中止称产品通过。
 路线复查复用更短成熟路径：新私view以当前source→原minimal rc31锁配依赖→成熟landing191完整ML补集，20直接deps/dev/全部extras齐、87可见选择分发对锁0mismatch，parent及剥PYTHONPATH真child同模块/metadata/source身份；无安装/共享env修改。C已用TrainingRNG精确类型修原三处错误。先完整Python Ruff/Mypy再由root选择第三门，不自动retry。
 本轮无真实数据梯度、游戏或生产安装作业。正常App远端GPU控制尚未接通，不是只等预算；最终准确检查分母、PR、未完owner及用户决定写在此任务收口修订与固定交付回执。
+
