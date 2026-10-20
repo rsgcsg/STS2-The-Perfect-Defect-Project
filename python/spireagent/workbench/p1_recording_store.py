@@ -33,6 +33,7 @@ from spireagent.storage.archives import _extract_tar
 from spireagent.storage.local import LocalBlobStore
 from spireagent.storage.store import CHUNK_BYTES, ManifestArtifactStore
 
+CATALOG_SCHEMA = "stpd/p1-recording-catalog-v1"
 BUNDLE_SCHEMA = P1_NATIVE_SUPPORT["bundle_schema"]
 SEGMENTS_SCHEMA = P1_NATIVE_SUPPORT["segment_schema"]
 PROJECTION_FORMATS = {
@@ -550,6 +551,103 @@ def query_p1_recordings(
     return results
 
 
+def publish_p1_catalog_metadata(
+    store: ManifestArtifactStore, projection_id: str, producer: Producer
+) -> Manifest:
+    """Rebuild searchable facts from an exact named view; never rewrite its source or labels."""
+    projection = p1_projection(store, projection_id)
+    existing = _matching(store, CATALOG_SCHEMA, projection_artifact_id=projection_id)
+    if existing is not None:
+        return existing
+    info = projection.parameters.value()
+    role = projection_format(info["projection_id"])[1]
+    payload = projection.payload(role)
+    data = json.loads(b"".join(store.read_payload(payload)))
+    points = (
+        data["points"]
+        if role == "targets"
+        else [p for segment in data["segments"] for p in segment["points"]]
+    )
+    point = points[0] if points else {}
+    observation = point.get("observation", {})
+    player = observation.get("player", {})
+    run = observation.get("run", {})
+
+    def available_content(value: dict[str, Any]) -> dict[str, Any]:
+        if value.get("availability") != "available":
+            return {}
+        content = value.get("content")
+        if not isinstance(content, dict):
+            raise BoundaryError("p1_catalog", "available_content_object_required")
+        return content
+
+    player_content = available_content(player)
+    run_content = available_content(run)
+    character = player_content.get("character_definition_id")
+    ascension = run_content.get("ascension")
+    terminals = (
+        ([data["end_target"]] if data.get("end_target") is not None else [])
+        if role == "targets"
+        else [
+            segment["end_target"]
+            for segment in data["segments"]
+            if segment.get("end_target") is not None
+        ]
+    )
+    terminals = [t for t in terminals if t.get("branch", data["branch"]) == data["branch"]]
+    results = {t["result"] for t in terminals if isinstance(t.get("result"), str)}
+    result = next(iter(results)) if len(results) == 1 else None
+    terminal = terminals[0] if terminals else {}
+    metadata = {
+        "character": character if isinstance(character, str) else None,
+        "ascension": ascension if type(ascension) is int else None,
+        "first_observed_act": run_content.get("act"),
+        "first_observed_floor": run_content.get("floor"),
+        "modifiers": run_content.get("modifiers"),
+        "result": result if isinstance(result, str) else None,
+        "mode": None,
+        "language": None,
+        "game_version": None,
+        "seed": None,
+        "root": None,
+        "ancestry": None,
+    }
+    manifest = Manifest(
+        "analysis",
+        producer,
+        parents=(
+            Parent("source", projection.parent("source")),
+            Parent("projection", projection_id),
+        ),
+        parameters=FrozenObject.of(
+            {
+                "schema": CATALOG_SCHEMA,
+                "source_artifact_id": projection.parent("source"),
+                "projection_artifact_id": projection_id,
+                "run_id": info["run_id"],
+                "metadata": metadata,
+                "evidence": {
+                    "projection_payload_sha256": payload.sha256,
+                    "source_content_id": info["source_content_id"],
+                    "first_source_event_id": point.get("source_event_id"),
+                    "first_source_public_basis": point.get("source_public_basis"),
+                    "end_source_event_id": terminal.get("source_event_id"),
+                    "end_source_public_basis": terminal.get("source_public_basis"),
+                    "end_targets": terminals,
+                    "conflicting_results": sorted(results) if len(results) > 1 else [],
+                },
+                "unknown_scope": (
+                    "mode_language_game_version_seed_root_ancestry_not_in_indexed_P1_view"
+                ),
+                "purpose": "rebuildable_recording_catalog",
+                "research_admission": "not_evaluated",
+            }
+        ),
+    )
+    store.publish(manifest)
+    return manifest
+
+
 def query_p1_sources(
     store: ManifestArtifactStore,
     *,
@@ -572,14 +670,56 @@ def query_p1_sources(
     }
     if not set(filters) <= allowed:
         raise BoundaryError("p1_store", "unsupported_query_filter")
+    for field, value in filters.items():
+        if field in {"has_projection", "preservation_verified"}:
+            valid = type(value) is bool
+        elif field == "ascension":
+            valid = value is None or type(value) is int
+        else:
+            valid = value is None or isinstance(value, str)
+        if not valid:
+            raise BoundaryError("p1_store", "unsupported_query_filter_type")
     projections = query_p1_recordings(store)
+    catalog = [
+        m
+        for identity in store.manifest_ids()
+        if (m := store.get_manifest(identity)).parameters.value().get("schema") == CATALOG_SCHEMA
+    ]
     results = []
     for identity in store.manifest_ids():
         source = store.get_manifest(identity)
         info = source.parameters.value()
         if info.get("schema") != BUNDLE_SCHEMA:
             continue
-        metadata = info.get("metadata", {})
+        metadata = dict(info.get("metadata", {}))
+        indexed = [m for m in catalog if m.parent("source") == identity]
+        conflicts = []
+        for field in (
+            "character",
+            "ascension",
+            "result",
+            "mode",
+            "language",
+            "game_version",
+            "first_observed_act",
+            "first_observed_floor",
+            "modifiers",
+            "seed",
+            "root",
+            "ancestry",
+        ):
+            values = {
+                json_bytes(m.parameters.value()["metadata"][field]): m.parameters.value()[
+                    "metadata"
+                ][field]
+                for m in indexed
+                if m.parameters.value()["metadata"].get(field) is not None
+            }
+            if len(values) > 1:
+                metadata[field] = None
+                conflicts.append(field)
+            elif values:
+                metadata[field] = next(iter(values.values()))
         views = [
             {
                 "artifact_id": p["artifact_id"],
@@ -620,6 +760,8 @@ def query_p1_sources(
             },
             "recorder_source_revision": info["original_recording"]["recorder_source_revision"],
             "projections": views,
+            "catalog_metadata_artifacts": [m.artifact_id for m in indexed],
+            "metadata_conflicts": conflicts,
             "has_projection": bool(views),
             "preservation_verified": bool(receipts),
             "storage_receipts": receipts,

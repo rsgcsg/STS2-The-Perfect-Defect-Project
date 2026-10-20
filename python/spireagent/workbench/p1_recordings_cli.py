@@ -23,11 +23,13 @@ from spireagent.workbench.local_recording_import import (
 )
 from spireagent.workbench.p1_recording_store import (
     BUNDLE_SCHEMA,
+    CATALOG_SCHEMA,
     PROJECTIONS,
     _matching,
     derive_p1_recording,
     p1_projection,
     projection_format,
+    publish_p1_catalog_metadata,
     publish_p1_original,
     publish_p1_projection,
     query_p1_recordings,
@@ -86,6 +88,7 @@ def _main(argv: list[str] | None = None) -> int:
             "import-bundle",
             "derive",
             "publish-projection",
+            "index",
             "list",
             "sources",
             "read",
@@ -151,11 +154,11 @@ def _main(argv: list[str] | None = None) -> int:
             result = _reconcile(store, operation)
             atomic_json(path, result)
     else:
-        if args.tool is None or args.tool_release is None:
+        if args.action != "index" and (args.tool is None or args.tool_release is None):
             parser.error("import/derive require the exact --tool and --tool-release")
         if args.action == "import-bundle" and args.bundle is None:
             parser.error("import-bundle requires --bundle")
-        if args.action in {"derive", "publish-projection"} and args.artifact is None:
+        if args.action in {"derive", "publish-projection", "index"} and args.artifact is None:
             parser.error("projection requires --artifact")
         if args.action == "publish-projection" and not (
             args.input and args.expected_sha256 and args.derivation_receipt
@@ -165,13 +168,12 @@ def _main(argv: list[str] | None = None) -> int:
             )
         from spireagent.workbench.developer_server import instance_lock
 
-        tool = CollectionTool(args.tool, args.tool_release)
+        tool = CollectionTool(args.tool, args.tool_release) if args.action != "index" else None
         producer = source_identity(ROOT)
-        content_id = (
-            tool.verify_p1_native(args.bundle)["manifest"]["bundle_content_id"]
-            if args.action == "import-bundle"
-            else None
-        )
+        content_id = None
+        if args.action == "import-bundle":
+            assert tool is not None
+            content_id = tool.verify_p1_native(args.bundle)["manifest"]["bundle_content_id"]
         operation = {
             "schema": SCHEMA,
             "recording_type": "p1_native",
@@ -193,6 +195,7 @@ def _main(argv: list[str] | None = None) -> int:
             atomic_json(path, operation)
             try:
                 if args.action == "import-bundle":
+                    assert tool is not None
                     original = (
                         Manifest.from_bytes(args.preserved_manifest.read_bytes())
                         if args.preserved_manifest is not None
@@ -208,7 +211,10 @@ def _main(argv: list[str] | None = None) -> int:
                         preserved_archive=args.preserved_archive,
                         preserved_index=args.preserved_index,
                     )
+                elif args.action == "index":
+                    manifest = publish_p1_catalog_metadata(store, args.artifact, producer)
                 elif args.action == "publish-projection":
+                    assert tool is not None
                     manifest = publish_p1_projection(
                         store,
                         args.artifact,
@@ -221,6 +227,7 @@ def _main(argv: list[str] | None = None) -> int:
                         derivation_receipt=json.loads(args.derivation_receipt.read_bytes()),
                     )
                 else:
+                    assert tool is not None
                     manifest = derive_p1_recording(
                         store,
                         args.artifact,
@@ -260,7 +267,11 @@ def _reconcile(store: ManifestArtifactStore, operation: dict[str, Any]) -> dict[
     """Read the original intent only; absence is known only after a successful local scan."""
     if operation.get("recording_type") != "p1_native":
         raise BoundaryError("p1_store", "p1_operation_required")
-    if operation["action"] == "import-bundle":
+    if operation["action"] == "index":
+        manifest = _matching(
+            store, CATALOG_SCHEMA, projection_artifact_id=operation["source_artifact_id"]
+        )
+    elif operation["action"] == "import-bundle":
         manifest = _matching(store, BUNDLE_SCHEMA, content_id=operation["content_id"])
     else:
         manifest = _matching(
@@ -281,8 +292,12 @@ def _reconcile(store: ManifestArtifactStore, operation: dict[str, Any]) -> dict[
     if operation["action"] == "publish-projection":
         role = projection_format(operation["projection_id"])[1]
         if manifest.payload(role).sha256 != operation.get("expected_payload_sha256"):
-            return {**operation, "status": "failed", "publication": "different_payload",
-                    "error_code": "named_projection_bytes_differ"}
+            return {
+                **operation,
+                "status": "failed",
+                "publication": "different_payload",
+                "error_code": "named_projection_bytes_differ",
+            }
     for payload in manifest.payloads:
         for _ in store.read_payload(payload):
             pass
@@ -413,8 +428,16 @@ def _storage(argv: list[str]) -> int:
             raise
         if result["status"] == "completed" and result.get("storage_receipt") is not None:
             receipts = previous.get("_storage_receipts", {})
-            receipts[result["operation_id"]] = {key: result[key] for key in (
-                "operation_id", "storage_action", "peer", "artifact_id", "storage_receipt")}
+            receipts[result["operation_id"]] = {
+                key: result[key]
+                for key in (
+                    "operation_id",
+                    "storage_action",
+                    "peer",
+                    "artifact_id",
+                    "storage_receipt",
+                )
+            }
             result["_storage_receipts"] = receipts
         atomic_json(path, result)
     print(json.dumps(result, ensure_ascii=False, sort_keys=True))
@@ -434,6 +457,13 @@ def _maintenance(argv: list[str]) -> int:
     parser.add_argument(
         "--peer", help="explicit preservation Store; omitted keeps the current policy"
     )
+    parser.add_argument("--candidate-id", action="append")
+    parser.add_argument("--from-now", action="store_true")
+    parser.add_argument(
+        "--origin",
+        choices=("declared_human", "agent_native_ui", "unknown"),
+        default="declared_human",
+    )
     args = parser.parse_args(argv)
     current = running(ProjectConfig.load(args.config))
     if current is None:
@@ -449,6 +479,13 @@ def _maintenance(argv: list[str]) -> int:
                 "enabled": args.action == "enable",
                 "peer": peer_binding(args.peer) if args.peer else policy["peer"],
                 "projection_id": policy["projection_id"],
+                "scope": (
+                    {"candidate_ids": args.candidate_id}
+                    if args.candidate_id
+                    else {"from_now": True, "declared_origins": [args.origin]}
+                    if args.from_now
+                    else policy.get("scope")
+                ),
             },
         )
     print(json.dumps(value, ensure_ascii=False, sort_keys=True))

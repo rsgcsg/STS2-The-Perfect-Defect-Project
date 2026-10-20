@@ -244,6 +244,7 @@ def test_background_derivation_reconciles_published_result_without_reexecution(
 
     def converter_failed(*args, **kwargs):
         raise CollectionFailure("synthetic converter failure")
+
     monkeypatch.setattr(CollectionTool, "derive_p1_native", converter_failed)
     importer.start_p1_derivation(source.artifact_id, "native-input-v1")
     importer.thread.join(timeout=10)
@@ -354,7 +355,14 @@ def test_storage_space_preflight_and_secret_binding_rejected(tmp_path, original,
     assert not ManifestArtifactStore(LocalBlobStore(tmp_path / "cold")).manifest_ids()
 
 
-def test_target_publication_keeps_schema_role_receipt_and_partial(tmp_path, original, tool):
+@pytest.mark.parametrize("ascension, expected_ascension", [(0, 0), (None, None), (False, None)])
+def test_target_publication_keeps_schema_role_receipt_and_partial(
+    tmp_path,
+    original,
+    tool,
+    ascension,
+    expected_ascension,
+):
     from spireagent.workbench.p1_recording_store import (
         p1_projection,
         publish_p1_projection,
@@ -401,7 +409,29 @@ def test_target_publication_keeps_schema_role_receipt_and_partial(tmp_path, orig
                 "source_integrity_verified": True,
                 "projection_claims": {"lossless_p1_trace": False},
                 "timeline": {"events": [{}], "spans": [{"kind": "non_p1_native_effect"}]},
-                "points": [{"mask": {"N": True, "next": False, "end": True}}],
+                "points": [
+                    {
+                        "mask": {"N": True, "next": False, "end": True},
+                        "source_event_id": "event-first",
+                        "source_public_basis": {"sha256": "a" * 64},
+                        "observation": {
+                            "player": {
+                                "availability": "available",
+                                "content": {"character_definition_id": "DEFECT"},
+                            },
+                            "run": {
+                                "availability": "available",
+                                "content": {
+                                    "ascension": ascension,
+                                    "act": 1,
+                                    "floor": 1,
+                                    "modifiers": [],
+                                },
+                            },
+                        },
+                    }
+                ],
+                "end_target": {"result": "loss", "source_event_id": "event-end"},
                 "p1_action_chain_complete": False,
                 "memory_continuity": "not_approved_or_validated",
             }
@@ -438,6 +468,26 @@ def test_target_publication_keeps_schema_role_receipt_and_partial(tmp_path, orig
     assert publish(receipt).artifact_id == result.artifact_id
     assert p1_projection(local, result.artifact_id).artifact_id == result.artifact_id
     assert query_p1_recordings(local)[0]["training_admitted"] is False
+
+    from spireagent.workbench.p1_recording_store import (
+        publish_p1_catalog_metadata,
+        query_p1_sources,
+    )
+
+    catalog = publish_p1_catalog_metadata(local, result.artifact_id, producer)
+    assert catalog.parent("projection") == result.artifact_id
+    assert catalog.parent("source") == raw.artifact_id
+    metadata = catalog.parameters.value()["metadata"]
+    assert metadata["character"] == "DEFECT" and metadata["ascension"] == expected_ascension
+    assert metadata["result"] == "loss" and metadata["root"] is None
+    with pytest.raises(BoundaryError, match="unsupported_query_filter_type"):
+        query_p1_sources(local, filters={"ascension": False})
+    with pytest.raises(BoundaryError, match="unsupported_query_filter_type"):
+        query_p1_sources(local, filters={"has_projection": 1})
+    assert (
+        query_p1_sources(local, filters={"character": "DEFECT"})[0]["artifact_id"]
+        == raw.artifact_id
+    )
     output.write_text(output.read_text() + " ")
     with pytest.raises(BoundaryError, match="projection_payload_hash_mismatch"):
         publish(receipt)
@@ -686,12 +736,132 @@ def test_cli_absent_storage_reconciliation_is_saved_as_failed(tmp_path, capsys):
 
     state = tmp_path / "state"
     state.mkdir()
-    intent = {"schema": SCHEMA, **storage_intent(
-        "restore", "a" * 64, peer_binding(str(tmp_path / "cold"))),
-        "status": "publication_unknown"}
+    intent = {
+        "schema": SCHEMA,
+        **storage_intent("restore", "a" * 64, peer_binding(str(tmp_path / "cold"))),
+        "status": "publication_unknown",
+    }
     atomic_json(state / OPERATION_FILE, intent)
-    assert main(["storage", "reconcile", "--store", str(tmp_path / "local"),
-                 "--state", str(state)]) == 1
+    assert (
+        main(["storage", "reconcile", "--store", str(tmp_path / "local"), "--state", str(state)])
+        == 1
+    )
     result = json.loads(capsys.readouterr().out)
     assert result["status"] == "failed" and result["publication"] == "absent_or_incomplete"
     assert json.loads((state / OPERATION_FILE).read_bytes())["status"] == "failed"
+
+
+def test_cloud_maintenance_requires_scope_and_excludes_older_or_other_origin(tmp_path, monkeypatch):
+    from spireagent.workbench import p1_recording_maintenance as maintenance
+    from spireagent.workbench.developer import ProjectConfig, combination
+    from spireagent.workbench.local_recording_import import LocalRecordingImporter
+
+    config = ProjectConfig(tmp_path / "state", "", "", None, combination())
+    config.state_dir.mkdir()
+    service = maintenance.P1RecordingMaintenance(LocalRecordingImporter(config, None))
+    monkeypatch.setattr(maintenance, "open_peer", lambda _: None)
+    peer = {
+        "kind": "s3",
+        "bucket": "synthetic",
+        "prefix": "test",
+        "region": "test",
+        "endpoint": None,
+    }
+    with pytest.raises(BoundaryError, match="explicit_cloud_scope_required"):
+        service.configure(True, peer)
+    scope = {"closed_after": "2026-10-20T08:00:00+00:00", "declared_origins": ["declared_human"]}
+    service.configure(True, peer, scope=scope)
+    source = {
+        "candidate_id": "a" * 64,
+        "declared_origin": "declared_human",
+        "closed_at": "2026-10-20T08:01:00+00:00",
+    }
+    assert maintenance._in_scope(source, scope)
+    assert not maintenance._in_scope({**source, "closed_at": "2026-10-19T08:00:00+00:00"}, scope)
+    assert not maintenance._in_scope({**source, "declared_origin": "agent_native_ui"}, scope)
+    allowlist = {"candidate_ids": ["b" * 64]}
+    assert not maintenance._in_scope(source, allowlist)
+
+
+def test_segments_catalog_reads_explicit_consistent_end_targets(tmp_path, original, tool):
+    from spireagent.artifact_contracts import Manifest, Parent
+    from spireagent.json_boundary import FrozenObject, json_bytes
+    from spireagent.workbench.p1_recording_store import (
+        SEGMENTS_SCHEMA,
+        publish_p1_catalog_metadata,
+    )
+
+    store = ManifestArtifactStore(LocalBlobStore(tmp_path / "store"))
+    producer = Producer("test", "a" * 40, "b" * 64)
+    source = publish_p1_original(store, original, tool, producer, scratch=tmp_path / "scratch")
+    for run_id, results, expected in [
+        ("same", ["loss", "loss"], "loss"),
+        ("conflict", ["loss", "win"], None),
+    ]:
+        branch = {"run_id": run_id}
+        data = {
+            "branch": branch,
+            "segments": [
+                {
+                    "points": [],
+                    "end_target": {"branch": branch, "result": result, "source_event_id": "end"},
+                }
+                for result in results
+            ],
+        }
+        payload = store.put_bytes("segments", json_bytes(data))
+        view = Manifest(
+            "analysis",
+            producer,
+            parents=(Parent("source", source.artifact_id),),
+            payloads=(payload,),
+            parameters=FrozenObject.of(
+                {
+                    "schema": SEGMENTS_SCHEMA,
+                    "source_artifact_id": source.artifact_id,
+                    "source_content_id": source.parameters.value()["content_id"],
+                    "projection_id": "native-selector-finalized-d-1",
+                    "run_id": run_id,
+                }
+            ),
+        )
+        store.publish(view)
+        metadata = publish_p1_catalog_metadata(store, view.artifact_id, producer)
+        assert metadata.parameters.value()["metadata"]["result"] == expected
+        assert len(metadata.parameters.value()["evidence"]["end_targets"]) == 2
+
+
+def test_changed_cloud_scope_rechecks_active_and_restart_before_new_dispatch(tmp_path, monkeypatch):
+    from spireagent.workbench import p1_recording_maintenance as maintenance
+    from spireagent.workbench.developer import ProjectConfig, combination
+    from spireagent.workbench.local_recording_import import LocalRecordingImporter
+
+    config = ProjectConfig(tmp_path / "state", "", "", None, combination())
+    config.state_dir.mkdir()
+    importer = LocalRecordingImporter(config, None)
+    active = {
+        "candidate_id": "a" * 64,
+        "source_artifact_id": "b" * 64,
+        "scope_facts": {
+            "candidate_id": "a" * 64,
+            "declared_origin": "agent_native_ui",
+            "closed_at": "2026-10-20T08:01:00+00:00",
+        },
+    }
+    importer._maintenance["active"] = active
+    service = maintenance.P1RecordingMaintenance(importer)
+    monkeypatch.setattr(maintenance, "open_peer", lambda _: None)
+    service.configure(
+        True,
+        {"kind": "s3"},
+        scope={"closed_after": "2026-10-20T08:00:00+00:00", "declared_origins": ["declared_human"]},
+    )
+    # Restart retains the selected engineering source, but the new policy excludes it before I/O.
+    reopened = LocalRecordingImporter(config, None)
+    assert maintenance.P1RecordingMaintenance(reopened).tick()["status"] == "excluded_by_scope"
+    assert reopened.operation["status"] == "idle"
+    # An unresolved original operation stays fenced even when its source is outside scope.
+    reopened._maintenance["active"] = active
+    reopened.operation["status"] = "publication_unknown"
+    assert maintenance.P1RecordingMaintenance(reopened).tick()["status"] == "blocked"
+    assert reopened._maintenance["active"]["candidate_id"] == "a" * 64
