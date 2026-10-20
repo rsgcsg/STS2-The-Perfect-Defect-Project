@@ -4,7 +4,8 @@
 并要求查本链路私有入口/临时处置，完成本批再评冻结；不按旧“隔离四链/稳定即停”收尾。
 唯一现场检查点和完整主报告为本地工作根work/P1-SEMANTIC-ACTIVE-20261019.md与
 work/P1-QUEUED-INPUT-REPORT-20261019.md。恢复前核准确Git/dirty、agent、游戏/录制进程与Reference owner。
-当前离线批完成，无游戏/录制；新入口/continuous源码已落，正在构建与定向验收，不借旧Mod资格。
+本批同owner实现、三源重派生、旧模型读回、固定发布与连续采集工程短验已完成。
+当前无游戏/录制；应用导入/Store及最终集成验收仍未完成，不宣称已冻结。
 Resolve live GitHub refs; current source and original evidence override this file.
 
 ## 本批已完成的离线增量
@@ -30,7 +31,14 @@ P1线上r1.4和完整Input不变，独立opt-in投影native-selector-finalized-d
 已修Recorder automatic下一局丢P1 profile/origin，保手动Pause/Close disarm；Core定向9PASS。
 新增公共薄CLI/npm recording:p1，复用原Platform Application和collectionSetup status/bound，准确runtime/session、
 单POST/UUID与持久收据，pending/unknown不重试、不关用户游戏；固定CollectionTool发布P1 pack/reader/converter和SDK/zod闭包。
-相关148定向Node检查通过；发布的实际release、精确native build/install/load和入口短验仍待，不称已运行通过。
+148定向Node、443 Core、13 Annotator CLI、19 analysis、92 GameMod与16入口检查通过；
+隔离setup追加10PASS，非作者增量复核接受。真实release02的725文件已核，包内converter重跑三原件
+逐字节复现03派生。rc45新Mod正常构建/部署并精确冷加载e70648be/MVID7dd9；
+真实工程短窗已验start/prefix/pause/resume、终态自动封口、第二局保P1/origin且新session、
+manual Close后第三局不复活，两原件可pack；HTTP200退出/code0/forcedfalse、PID已释放。
+工程局主动放弃且无可训练canonical点，只证明操作/生命周期，不替自然局、Human、INFO或策略。
+release01首次setup因普通log/port阻断为not_sent/0session；显式隔离Host log/port已修后独立重验，旧失败保留。
+新环境manifest由本次真实caps经production owner生成，出处work/p1-selector-transactions-20261020/environment-handoff01.json。
 
 跨owner真实缺口已交统筹：Python NativeTasks/developer_server只接Source命令，catalog误识P1为legacy、
 CollectionTool/Importer未接P1分流；须沿现import operation/Store接原件及新派生、版本/用途/branch/mask和去重。
@@ -39,7 +47,7 @@ CollectionTool/Importer未接P1分流；须沿现import operation/Store接原件
 
 ## Remaining Platform non-claims（继续执行与原边界）
 
-先稳定本批contract/CLI/continuous/发布、必要复核和真实短验，再汇合应用/数据接线结果评冻结。
+本批contract/CLI/continuous/固定发布已稳定；需汇合应用/数据接线与最终集成结果后再评冻结。
 16:30是硬报告、不硬停、不自动冻结；不要求用户再打一整局。三来源/旧T0/原件全部保留。
 原I 15c3436e/Mod0226、新两局Mod c2a36b24/MVID4691保持其历史身份，新Mod必须独立核加载。
 T0a已完成CPU更新/恢复/export/隔离注册与Runtime离线链；T0b需具名独占安排才Reference实打。
