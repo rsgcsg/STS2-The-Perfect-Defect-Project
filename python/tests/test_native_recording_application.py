@@ -11,12 +11,13 @@ from urllib.request import HTTPCookieProcessor, Request, build_opener
 from uuid import uuid4
 
 import pytest
-from spireagent.json_boundary import BoundaryError
-from spireagent.workbench.developer import ProjectConfig, combination
-from spireagent.workbench.developer_server import Application, create_server
 from test_native_tasks import bridge as bridge
 from test_native_workbench_api import PREFIX, command
 from test_native_workbench_api import native_http as native_http
+
+from spireagent.json_boundary import BoundaryError
+from spireagent.workbench.developer import ProjectConfig, combination
+from spireagent.workbench.developer_server import Application, create_server
 
 
 def body(status, kind, source_kind=None):

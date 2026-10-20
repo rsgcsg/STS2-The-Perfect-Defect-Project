@@ -10,6 +10,13 @@ import re
 from pathlib import Path
 
 import pytest
+from sts2_platform_evidence.collection_tool import (
+    P1_NATIVE_SUPPORT,
+    CollectionFailure,
+    CollectionTool,
+    digest,
+)
+
 from spireagent.artifact_contracts import Producer
 from spireagent.json_boundary import BoundaryError
 from spireagent.storage.local import LocalBlobStore
@@ -20,12 +27,6 @@ from spireagent.workbench.p1_recording_store import (
     derive_p1_recording,
     materialize_p1_original,
     publish_p1_original,
-)
-from sts2_platform_evidence.collection_tool import (
-    P1_NATIVE_SUPPORT,
-    CollectionFailure,
-    CollectionTool,
-    digest,
 )
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -363,12 +364,13 @@ def test_target_publication_keeps_schema_role_receipt_and_partial(
     ascension,
     expected_ascension,
 ):
+    from sts2_platform_evidence.collection_tool import P1_TARGET_PROJECTION, P1_TARGET_SUPPORT
+
     from spireagent.workbench.p1_recording_store import (
         p1_projection,
         publish_p1_projection,
         query_p1_recordings,
     )
-    from sts2_platform_evidence.collection_tool import P1_TARGET_PROJECTION, P1_TARGET_SUPPORT
 
     manifest_path = tool.directory / "collection-tool.json"
     manifest = json.loads(manifest_path.read_bytes())

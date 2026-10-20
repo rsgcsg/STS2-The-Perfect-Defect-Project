@@ -7,6 +7,7 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
+
 from spireagent.json_boundary import BoundaryError
 from spireagent.workbench.native_tasks import NativeTasks
 
