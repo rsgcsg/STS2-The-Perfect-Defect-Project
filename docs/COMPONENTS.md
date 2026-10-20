@@ -61,7 +61,7 @@ precedes any future SDK-direct driver, under the same execution guarantees.
 | 原件与学习表示 | 原Annotator/Evidence/Store；`stpd` P1 reader/projection，见[数据与来源](../python/docs/DATA_AND_PROVENANCE.md)与[P1输入说明](../python/docs/P1_T0.md#input-targets-and-provenance) | 原始身份、公开时点、chosen/缺口、谱系及用途 → 固定Input/Target和mask；不补造Human或独立分组 |
 | 决定数据用途 | `spireagent.p1_curation`与既有Curation，见[数据管理](../python/docs/research/DATA_MANAGEMENT.zh-CN.md) | 有依据的来源/亲缘/曝光与用户选择 → 用途/固定分组；存储成功和GPU可用不授予准入 |
 | 数值训练与保存 | `stpd.models.structured_training`、原P1训练和worker，见[workload](../python/docs/STRUCTURED_WORKLOAD.md) | 固定recipe、输入、执行身份和明确checkpoint → 实际更新、全状态checkpoint、模型与结果；不是应用权限owner |
-| 任务生命周期 | 既有Application/LocalTrainingService，见[正常训练控制](../python/docs/PROJECT_CONSOLE.md#trusted-local-training-service-contract) | 具体请求、权限、累计预算、操作/attempt身份 → start/status/支持的pause/resume/cancel/reconcile及持久结果；关客户端不是Stop |
+| 任务生命周期 | 同一Application：local使用LocalTrainingService，显式remote复用原Operations/Scheduler，见[正常训练控制](../python/docs/PROJECT_CONSOLE.md#non-gui-training-control)；用途仍由原Curation账拥有 | 具体请求、权限、累计预算、操作/attempt身份 → start/status及该执行方式支持的pause/resume/cancel/reconcile；remote prepare记录用途并验同Store peer闭包，live pause不支持；关客户端不是Stop |
 | 执行资源 | `spireagent.compute`及现provider/worker接缝，见[结构化执行](../python/docs/STRUCTURED_WORKLOAD.md) | 同一具名任务/输入/产物承诺、资源和恢复能力 → 本地/远端实际handle与返回产物；unknown不换provider重投 |
 | 产物到Agent、评估 | 原Model注册、policy adapter与Runtime，见[模型交付](../python/docs/STRUCTURED_MODEL_DELIVERY.md)、[Agent执行](../python/docs/AGENT_EXECUTION_CONTRACT.md) | 兼容权重/Input、完整动作目录和明确Task → 完整Agent执行与固定条件结果；模型包不自获游戏控制权 |
 
