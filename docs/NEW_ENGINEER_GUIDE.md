@@ -6,6 +6,10 @@ Then read the active task and relevant owning guide/code. This is a contributor'
 first-PR reference, not an additional full reading prerequisite. Use the
 [member handoff](NEW_MEMBER_HANDOFF.zh-CN.md) only for its applicable product role.
 
+如果是接手现有工作，先核分支/dirty、运行中的Agent与进程、准确任务及停止点，再从[按操作导航](DOCUMENT_MAP.md#按我要做什么进入)选择一条路径。不要按旧CURRENT中的PID或本地ACTIVE重启任务。
+
+有界接手走查只需回答：现在做什么、下一步由谁做；能否找到一个受支持操作及结果判定；旧成熟解法在哪里及能否复用；本次选哪些测试；若改合同或文档应维护哪里。按实际风险用`--help`/静态阅读/窄命令验证，录制、登录、付费、部署等不能为走查擅自执行。走查失败修对应入口，不能要求新人通读全部历史。
+
 ## 1. Know the boundary
 
 Platform connects the real STS2 runtime to fair-player automation,
@@ -39,7 +43,7 @@ and npm are required.
 
 ```bash
 git fetch --prune origin
-git switch --create chore/platform/my-change origin/develop
+git switch --create codex/my-change origin/develop
 npm ci
 npm ci --prefix python
 npm run setup:python

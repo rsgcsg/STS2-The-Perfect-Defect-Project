@@ -43,6 +43,7 @@ resumption of a historical backlog item. Fresh refs are verified before action.
 | `STATUS.md` | Small cross-project claim/evidence index, with date and exact scope | A capability/build/install/deployment claim changes; old operating combinations are labelled historical, never implied current |
 | `memory/CURRENT.md` | Bounded active checkout/task route, blocker and next gate | Active work changes; remove completed detail into its evidence report, aiming below 4 KiB / 80 lines |
 | `docs/design/` | Alternatives, exploratory reasoning and superseded designs | A useful hypothesis or tradeoff needs retention; proposals do not become requirements by proximity |
+| `RESOLVED_ISSUES.zh-CN.md` | 重复问题的原解法、代码/消费者、证据和适用边界 | 新的重复问题或复用边界改变；不抄全部历史，也不成为当前队列 |
 | dated evidence and review receipts | Exact source, method, result, failures and limits for one completed observation | Preserve original results; add a separately scoped correction/follow-up, never rewrite a failed run as a pass |
 
 The [baseline task index](plans/BASELINE_TASKS.zh-CN.md) retains historical IDs and
@@ -80,6 +81,10 @@ to these owners. Known explicit user decisions bind while docs catch up.
 Raw/private evidence stays in authorized storage.
 After integration, a reader starting at develop must recover the main line, current
 scope, next delivery and remaining obligations without private chat.
+
+操作说明归对应现有功能指南。[DOCUMENT_MAP](DOCUMENT_MAP.md#按我要做什么进入)按“我要做什么”路由；组件/Python地图只继续路由，不能另抄一套业务流程。一个操作段须让人或Agent知道使用条件、准确受支持入口、必要输入、结果位置、完成判断和真实失败后的处理。GUI、CLI/API映射同一业务owner；不支持的操作明确写缺口，不为未来功能造教程，也不为每个内部函数写SOP。
+
+新实现接入或受支持入口改变时，同PR更新该操作段和导航；改变合同/理由则更新合同或DECISIONS/ADR；当前工作变化则由集成者替换CURRENT。历史解法保原证据，新的适用边界归RESOLVED_ISSUES。不要求每次同时改全部文档。收敛验收必须同时有职责、当前入口、实际操作、历史复用、接手走查与维护归属；表格登记、链接通过或文档提交本身不宣布父能力已完成。
 
 A new idea belongs either in the owning specification as a selected decision or
 in its existing plan/design section as a hypothesis with rationale and a deciding
