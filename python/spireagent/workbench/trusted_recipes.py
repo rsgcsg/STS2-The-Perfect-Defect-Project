@@ -334,12 +334,12 @@ def validate_recipe_config(recipe_id: str, config: object) -> dict[str, Any]:
         from stpd.p1.spec import MStdConfig
 
         try:
-            selected = MStdConfig(**config)
+            p1_selected = MStdConfig(**config)
         except TypeError as error:
             raise BoundaryError("local_training", "invalid_recipe_config") from error
-        if selected.device != "cpu":
+        if p1_selected.device != "cpu":
             raise BoundaryError("local_training", "local_P1_recipe_requires_cpu")
-        return selected.to_dict()
+        return p1_selected.to_dict()
     if recipe_id == HISTORICAL_M0_RECIPE:
         from stpd.historical_m0_spec import HistoricalM0Config
 
