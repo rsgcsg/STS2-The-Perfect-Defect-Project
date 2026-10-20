@@ -1,6 +1,6 @@
 # 三小时执行：连续数据闭环、正常控制与收敛候选
 
-2026-10-21，Brisbane。本轮正在执行；root负责指派、统筹和最终审计，集成负责人维护此唯一任务、CURRENT及共享身份。A/B/C/D只写各自独立分支的owner路径。目前尚未收到本轮稳定产品增量，没有新游戏、训练或部署在运行。
+2026-10-21，Brisbane。本轮正在执行；root负责指派、统筹和最终审计，集成负责人维护此唯一任务、CURRENT及共享身份。A/B/C/D只写各自独立分支的owner路径。目前已normal merge A奖励连续、B正常训练client/用途索引及D原指南首增量，C消费/数值和A恢复继续推进；没有新游戏、真实训练或部署在运行。
 
 ## 目标、授权与停止点
 
@@ -67,6 +67,7 @@ A/B/C/D从同一父依赖各建独立短命分支。集成负责人独占CURRENT
 
 ## 当前结果与下一步
 
-父依赖BOM核对、closeout和diff检查通过；本轮组合门尚未运行，PR206失败未改变。无本轮训练/游戏/安装作业。
-下一步A给派生、B发布、C消费；集成负责人核稳定head/路径normal merge，D同步指南，root安排独立审查和重型slot。
-最终来源、检查分母、PR、运行项、未完owner及用户决定在此任务稳定收口修订与固定交付回执中给出。
+A首稳定`7dd9da31`、B首稳定`fe76eb16`及D首稳定`a8280ab4`均已由集成负责人核关键diff后normal merge，当前组合为`f016f9ef`。A的109窄测、B的19轻测试/2合成HTTP CLI子进程、D的22项目测试保作者准确范围；三源正常Store发布有回执，C reader/旧模型消费待核。current BOM按Annotator README路径身份刷新，历史loaded字段不动。
+父栈BOM核对与初始closeout/diff检查通过；CURRENT首版缺必需安全句和初次新树boundary缺typescript的原失败保留，修正后项目22/22、boundary9/9与history通过。尚未运行完整稳定组合门，不能说旧PR206组合失败已解决。
+下一步C交数值/消费来源，A交恢复来源，D按审查修日常入口；root发单重型slot后集成跑所选门。独立审查已核原件targets边/span与BOM历史不转授，最终stable audit仍待。
+本轮没有真实训练、游戏或安装作业；正常Application保持。最终准确来源、检查分母、PR、未完owner及用户决定在此任务收口修订与固定交付回执给出。

@@ -12,8 +12,9 @@ Root负责指派及最终审计；集成负责人维护本页、共享身份和�
 集成树为`work/p1-round3h-integration-20261021`，分支`codex/p1-round3h-integration-20261021`。
 它从`origin/develop@733782b1`开始，normal merge未验收PR206的`5b8fd2c2`为显式父依赖；稳定来源只作normal merge，保组件来源。
 最短主线是原件→奖励连续新派生→正常Store发布→训练reader及旧模型离线评分；控制/GPU准备和原指南收敛并行。
-目前尚未收到本轮产品来源；父栈BOM核对和closeout通过，完整组合门尚未运行。
-下一步由A给具名派生、B经正常入口发布、C消费，集成负责人核增量与身份后组合，独立审查者验稳定候选。
+已normal merge A连续派生、B正常训练client/用途索引、D原指南首增量，组件current BOM已同步；独立审查进行中。
+三源新派生已有正常Store发布回执，C实际reader/旧模型消费与数值修复待核；完整组合门尚未运行。
+下一步接C和A恢复的稳定增量，核真实消费/身份，在root分配slot后运行稳定组合门，独立审查者核实际结果。
 
 ## Remaining Platform non-claims 与真实边界
 
