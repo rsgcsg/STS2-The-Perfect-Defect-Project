@@ -18,6 +18,7 @@ import threading
 from pathlib import Path
 
 import pytest
+import torch
 from test_native_agent_sampled_source import ROOT, SHARED, publish
 from test_native_agent_sampled_source import original as original
 from test_protocol_source import setup_store
@@ -369,11 +370,19 @@ child.ChildReporter.emit = emit
     )
     training = store.get_manifest(run.parent("training_input"))
     numeric_config = StructuredTrainingConfig(**info["config"])
-    with pytest.raises(BoundaryError, match="package_execution_policy_mismatch"):
-        _completed(store, forged_result, run, training, partition.dataset, numeric_config)
-    altered_report = {**report, "execution_policy": altered_policy}
-    report_payload = store.put_bytes("report", json_bytes(altered_report), "application/json")
-    forged_report = Manifest("run_result", result.producer, result.parents,
-                             (report_payload,), result.parameters)
-    with pytest.raises(BoundaryError, match="completed_report_binding_mismatch"):
-        _completed(store, forged_report, run, training, partition.dataset, numeric_config)
+    # The production executor establishes the numerical thread contract in
+    # _load before calling this private verifier. Supply that same precondition
+    # here, independently of which unrelated test ran before this fixture.
+    previous_threads = torch.get_num_threads()
+    torch.set_num_threads(numeric_config.cpu_threads)
+    try:
+        with pytest.raises(BoundaryError, match="package_execution_policy_mismatch"):
+            _completed(store, forged_result, run, training, partition.dataset, numeric_config)
+        altered_report = {**report, "execution_policy": altered_policy}
+        report_payload = store.put_bytes("report", json_bytes(altered_report), "application/json")
+        forged_report = Manifest("run_result", result.producer, result.parents,
+                                 (report_payload,), result.parameters)
+        with pytest.raises(BoundaryError, match="completed_report_binding_mismatch"):
+            _completed(store, forged_report, run, training, partition.dataset, numeric_config)
+    finally:
+        torch.set_num_threads(previous_threads)

@@ -118,6 +118,15 @@ target native timeout must not exceed each job's approved maximum. Reservations 
 units, not a provider billing meter; consumed reservations do not automatically refund.
 The operator must also set provider spend limits and an approved timeout/GPU/concurrency.
 
+New deployments use `stpd/modal-target-v2`: `cpu_cores` (default 2 physical
+cores) and `memory_mib` (default 8192 MiB) freeze both request and limit into the
+target ID. The wrapper passes `(request, limit)` explicitly to the locked SDK;
+changing either value produces a different deployment identity. A v1 target
+must be regenerated for this source and its qualified image; saved historical
+targets/call handles remain evidence for their original source, not migrated
+execution grants. Resource limits and timeout are not a USD spending cap, and
+the wrapper retains zero provider retries and zero warm minimum containers.
+
 ## Failure and maintenance
 
 - Operations SQLite is authoritative mutable state; Registry/DuckDB are rebuildable views.

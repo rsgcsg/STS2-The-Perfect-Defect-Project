@@ -107,13 +107,20 @@ class MStd(nn.Module):
         device = self.ids.weight.device
         tokens = [self.tokenize(text) for text in texts]
         width = max(len(ids) for ids, _ in tokens)
-        ids = torch.zeros(len(tokens), width, dtype=torch.long, device=device)
-        nums = torch.zeros(len(tokens), width, 1, device=device)
-        mask = torch.ones(len(tokens), width, dtype=torch.bool, device=device)
-        for i, (row, numbers) in enumerate(tokens):
-            ids[i, : len(row)] = torch.tensor(row, device=device)
-            nums[i, : len(row), 0] = torch.tensor(numbers, device=device)
-            mask[i, : len(row)] = False
+        # Pack on the host before transfer. Row-by-row device assignment launches
+        # several copies/kernels per text, even though these inputs need no grad.
+        ids = torch.tensor(
+            [row + [0] * (width - len(row)) for row, _ in tokens],
+            dtype=torch.long,
+            device=device,
+        )
+        nums = torch.tensor(
+            [numbers + [0.0] * (width - len(numbers)) for _, numbers in tokens],
+            dtype=torch.float32,
+            device=device,
+        ).unsqueeze(-1)
+        lengths = torch.tensor([len(row) for row, _ in tokens], device=device)
+        mask = torch.arange(width, device=device).unsqueeze(0) >= lengths.unsqueeze(1)
         value = self.text_ids(ids) + self.text_numbers(nums)
         value = value + positions(torch.arange(width, device=device), 128)
         encoded = self.text_blocks(value, src_key_padding_mask=mask)
