@@ -909,6 +909,43 @@ structured adapters without a public installation builder retain their explicit
 `structured_installation_adapter_required` disposition.
 
 
+## Non-GUI training control
+
+The supported entry is `python -m spireagent.workbench training --help` from the
+Python environment. It calls the already running Application and its same
+`LocalTrainingService`; it does not start a second service or open a page.
+Use the selected project's private `--config PROJECT`:
+
+```sh
+python -m spireagent.workbench training capabilities --config PROJECT
+python -m spireagent.workbench training status --config PROJECT
+python -m spireagent.workbench training start --config PROJECT --input request.json
+python -m spireagent.workbench training status --config PROJECT --operation-id OPERATION
+python -m spireagent.workbench training pause --config PROJECT --input control.json
+python -m spireagent.workbench training resume --config PROJECT --input resume.json
+python -m spireagent.workbench training cancel --config PROJECT --input control.json
+python -m spireagent.workbench training reconcile --config PROJECT --input control.json
+python -m spireagent.workbench training amend_wall_budget --config PROJECT --input amendment.json
+```
+
+`request.json` is the exact typed training request described below; choose only an
+advertised recipe/placement with its already reserved source. `control.json` has
+exactly `operation_id` and `expected_attempt_id` from status. Resume also contains
+`checkpoint_id`, a fresh `intent_id` and unchanged original `limits`; an amendment
+also contains a fresh `intent_id` and cumulative `wall_seconds`. These are the
+same bodies as the browser API, not shell commands or executable paths.
+
+The private runtime control token is read from the existing configuration-bound
+runtime record; do not copy it into reports. Status returns the same operation,
+checkpoint/result IDs, selected result, actual worker state, supported actions and
+cumulative budgets seen by the page. Closing the CLI or page does not cancel the
+Application-owned child. A successful control response acknowledges intent;
+check status until the worker is terminal and inspect its actual checkpoint/result.
+On an unknown transport response, inspect the original operation/intent; the client
+does not retry the mutation or start a replacement. Unsupported targets fail
+explicitly. The current service advertises local CPU only: this entry does not
+qualify or silently substitute CPU for the planned first GPU training.
+
 ## Local training browser boundary
 
 The existing loopback Workbench exposes authenticated `GET /api/local-training/capabilities`
@@ -927,8 +964,9 @@ exactly `operation_id`, `expected_attempt_id`, a unique `intent_id`, and an inte
 `wall_seconds` total cumulative cap (for example 600 total after an original 300).
 The matching library entry is `service.amend_wall_budget(operation_id,
 expected_attempt_id, intent_id, wall_seconds)`; inspect its snapshot before the
-separate `resume` call. Every mutation uses the existing browser cookie,
-Origin/CSRF checks and running configuration/instance guard. Remote compute is
+separate `resume` call. Browser mutations use the existing cookie and Origin/CSRF checks. The non-GUI
+client uses the same loopback-only private control-token boundary as recording and
+model control. Both retain the running configuration/instance guard. Remote compute is
 unavailable unless declared by an owning service; the current service advertises
 only local CPU.
 
