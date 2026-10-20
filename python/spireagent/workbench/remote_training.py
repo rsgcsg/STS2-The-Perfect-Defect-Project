@@ -22,6 +22,7 @@ class RemoteTrainingService:
     def __init__(self, config: ProjectConfig, select: Callable[[], Any], *,
                  provider: ComputeProvider | None = None) -> None:
         self.config, self.select, self._provider = config, select, provider
+        self._injected_provider = provider is not None
         self._lock = threading.RLock()
         self._scheduler: Scheduler | None = None
         self._operations: Operations | None = None
@@ -34,7 +35,7 @@ class RemoteTrainingService:
         return {"schema": "spireagent/remote-training-capabilities-1",
                 "deployment": "local_scheduler", "configured": configured,
                 "available": configured and not self.config.hub_url,
-                "provider": "trusted_injected_engineering" if self._provider else "modal",
+                "provider": "trusted_injected_engineering" if self._injected_provider else "modal",
                 "supported_actions": ["start", "status", "cancel", "reconcile", "resume"],
                 "live_pause_supported": False, "fixed_stop_after_supported": True,
                 "automatic_retry": False, "gpu_qualification": "not_established",
