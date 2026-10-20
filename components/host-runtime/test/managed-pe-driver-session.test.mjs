@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import assert from "node:assert/strict";
 import { PassThrough } from "node:stream";
 import readline from "node:readline";
@@ -26,6 +27,8 @@ function decision(floor = 0) {
 function fixture() {
   const calls = [];
   let floor = 0;
+  let initialProgress = null;
+  let badInitialProof = false;
   let failReset = false;
   let unknownAction = false;
   let nativeError = false;
@@ -36,12 +39,14 @@ function fixture() {
     async request(request) {
       calls.push(request);
       if (request.cmd === "start_run" || request.cmd === "reset_run") {
-        floor = 0;
+        floor = 0; initialProgress = request.initial_progress ?? null;
         if (failReset) { failReset = false; throw new Error("reset failed after simulator replacement"); }
         return decision(floor);
       }
       if (request.cmd === "get_map") return decision(floor).visible_map;
-      if (request.cmd === "run_identity") return { type: "run_identity", active: true, seed: "SEED" };
+      if (request.cmd === "run_identity") return { type: "run_identity", active: true, seed: "SEED",
+        initial_progress: initialProgress == null ? null : { recipe: initialProgress.recipe,
+          progress_sha256: initialProgress.progress_sha256, run_unlock_state_matches: !badInitialProof } };
       if (request.cmd === "action") {
         onActionEntered?.();
         if (pendingAction) await pendingAction;
@@ -64,6 +69,7 @@ function fixture() {
   }, environmentFingerprint: "driver-test-environment" });
   return { driver, calls,
     failNextReset() { failReset = true; },
+    makeInitialProofInvalid() { badInitialProof = true; },
     makeActionUnknown() { unknownAction = true; },
     makeNativeError() { nativeError = true; },
     makeProjectionFail() { projectionFailure = true; },
@@ -208,6 +214,13 @@ test("delivered text action with rejected successor projection keeps Receipt and
   assert.equal(later.result.reason_code, "runtime_tainted_after_successor_projection_failure");
   assert.equal(later.result.retry, "never");
   assert.equal(later.result.successor, null);
+  const unbound = { ...submit(page, "unbound-after-projection"), action_id: "not-in-old-page" };
+  const unboundReceipt = await driver.handle(unbound);
+  assert.equal(unboundReceipt.result.status, "not_applied");
+  assert.equal(unboundReceipt.result.reason_code, "runtime_tainted_after_successor_projection_failure");
+  assert.equal(unboundReceipt.result.retry, "never");
+  assert.equal(unboundReceipt.result.successor, null);
+  assert.deepEqual(await driver.handle(unbound), unboundReceipt);
   assert.equal(calls.filter((call) => call.cmd === "action").length, 1);
 });
 
@@ -473,4 +486,49 @@ test("JSONL emits the explicit close result after an earlier pipelined response"
       await driver.shutdown();
     }
   }
+});
+
+function initialProgressInput(progress = '{"native_prepared":"fixture"}') {
+  return { recipe: "normal-sp-all-unlocked-v1", progress_json: progress,
+    progress_sha256: createHash("sha256").update(progress).digest("hex") };
+}
+
+test("only manager setup forwards one exact native progress snapshot before normal mount", async () => {
+  const { driver, calls } = fixture();
+  const initial_progress = initialProgressInput();
+  await assert.rejects(driver.handle({ command: "reset", seed: "SEED", initial_progress },
+    { principal: "client", sharedService: true }), /managed_initial_progress_manager_required/u);
+  assert.equal(calls.length, 0);
+  const reset = await driver.handle({ command: "reset", seed: "SEED", initial_progress },
+    { principal: "manager", sharedService: true });
+  assert.deepEqual(calls[0].initial_progress, initial_progress);
+  assert.equal(calls[0].cmd, "start_run");
+  assert.equal(JSON.stringify(reset.snapshot).includes("native_prepared"), false);
+  const identity = await driver.handle({ command: "episode_identity" });
+  assert.equal(identity.identity.initial_progress.progress_sha256, initial_progress.progress_sha256);
+});
+
+test("invalid setup fails before transport and uncertain setup mount requires process replacement", async () => {
+  const { driver, calls, failNextReset } = fixture();
+  const initial_progress = initialProgressInput();
+  await assert.rejects(driver.handle({ command: "reset", seed: "SEED",
+    initial_progress: { ...initial_progress, progress_sha256: "0".repeat(64) } }), /managed_initial_progress_invalid/u);
+  assert.equal(calls.length, 0);
+  failNextReset();
+  await assert.rejects(driver.handle({ command: "reset", seed: "SEED", initial_progress }), /reset failed/u);
+  await assert.rejects(driver.handle({ command: "reset", seed: "SEED", initial_progress }), /tainted/u);
+  assert.equal(calls.filter(call => ["start_run", "reset_run"].includes(call.cmd)).length, 1);
+});
+
+
+test("actual frozen-run readback is required before prepared mount becomes available", async () => {
+  const { driver, calls, makeInitialProofInvalid } = fixture();
+  makeInitialProofInvalid();
+  await assert.rejects(driver.handle({ command: "reset", seed: "SEED", initial_progress: initialProgressInput() }),
+    /managed_initial_progress_unverified/u);
+  assert.equal(driver.status().episode_available, false);
+  assert.equal(driver.status().tainted, true);
+  assert.equal(driver.status().taint_reason, "initial_progress_mount_failed_replace_process");
+  await assert.rejects(driver.handle({ command: "reset", seed: "SEED", initial_progress: initialProgressInput() }), /tainted/u);
+  assert.equal(calls.filter(call => ["start_run", "reset_run"].includes(call.cmd)).length, 1);
 });

@@ -81,10 +81,30 @@ replaced. Interrupted initialization directories are retained and reported; the 
 adopt arbitrary old directories. Keep private local paths out of Git. An artifact's presence in
 this inventory alone does not make it a usable training set, installed model or validated result.
 
-The local Data page and paired native Workbench also expose **原生交互与观察**
+The local Data page and paired native Workbench expose **原生交互与观察**
 lifecycle controls through one Application/NativeTasks path. The format selector
-defaults to Source3; explicitly choose **Source4（保留 P1 公共基底）** for offline
-P1 conversion. Active Source4 uses the same Pause/Resume/ChangeSource/Close owner.
+defaults to **P1 原生决策**; Source3 and **Source4（保留 P1 公共基底）** remain explicit
+format choices. P1 uses the existing Application command-1 and the actual
+`declared_human / agent_native_ui / unknown` origin values. Start requires an explicit
+choice; there is no Human default. Everyday controls are Start and End/seal.
+Advanced controls pause/resume collection or save a durable prefix; pausing collection
+does not pause gameplay. These map to the existing Recorder owner and command UUID,
+with a private persisted uncertainty notice across server restart. A refresh or reopened
+browser only queries status. The CLI `recordings control --config /ABS/project.json`
+uses this same running Application API for status/start/pause/resume/prefix/close.
+A saved prefix retains its original manifest hash and watermark and is not a closed run.
+
+P1 originals appear under **录制** in the same local catalog. Explicit import preserves
+their declared origin; a Human declaration requires the independent attestation checkbox.
+Machine UI and unknown origins cannot be promoted to Human by import. In original detail,
+**生成或复用派生资料** publishes one named interpretation through the same import operation
+service. Derivation progress survives closing the page. Its original source parent, fixed
+tool identity and projection version stay separate. The projection detail shows observations,
+valid N, complete successor edges, segment count and declared external effects. A closed
+source or consecutive segment does not establish complete lossless P1 replay. Readback errors
+remain visible; explicit reconciliation only checks the original operation and never resends.
+
+For the Source formats, Active Source4 uses the same Pause/Resume/ChangeSource/Close owner.
 This is source support, not an installed Mod or Human recording qualification. They query only scalar
 recording status and use the configured local Connector (or its documented Mod
 default) to check the exact game instance. Start and ChangeSource require an explicit

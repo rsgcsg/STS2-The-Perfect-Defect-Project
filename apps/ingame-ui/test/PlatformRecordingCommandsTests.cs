@@ -42,6 +42,61 @@ public sealed class PlatformRecordingCommandsTests
     internal static PlatformRecordingRequest Read(JsonObject body)
     { using var json = JsonDocument.Parse(body.ToJsonString()); return PlatformRecordingCommands.Read(json.RootElement); }
 
+    private static JsonObject P1Request(string kind = "start_new_session", string? origin = "agent_native_ui")
+    {
+        var body = Request();
+        body["command"] = new JsonObject {
+            ["schema"] = RecordingApplicationContract.CommandSchema, ["command_id"] = Guid.NewGuid().ToString("D"),
+            ["kind"] = kind, ["capture_profile_id"] = kind == "start_new_session" ? P1NativeRecordingContract.ProfileId : null,
+            ["p1_native_origin"] = origin };
+        return body;
+    }
+
+    [Theory]
+    [InlineData("agent_native_ui")]
+    [InlineData("declared_human")]
+    [InlineData("unknown")]
+    public void P1NativeStartRetainsTheExplicitOrigin(string origin)
+    {
+        var request = Read(P1Request(origin: origin));
+        Assert.Equal(P1NativeRecordingContract.ProfileId, request.Command.CaptureProfileId);
+        Assert.Equal(origin, request.Command.P1NativeOrigin);
+        Assert.Equal(RecordingApplicationContract.CommandSchema, request.Command.Schema);
+        Assert.Null(request.Command.SourceDeclaration);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("human")]
+    public void P1NativeStartRequiresARecognizedOrigin(string? origin) =>
+        Assert.Throws<ArgumentException>(() => Read(P1Request(origin: origin)));
+
+    [Theory]
+    [InlineData("pause")]
+    [InlineData("resume")]
+    [InlineData("close")]
+    [InlineData("export_p1_native_prefix")]
+    public void P1NativeLifecycleDoesNotAcceptAReplacementOrigin(string kind)
+    {
+        Assert.Null(Read(P1Request(kind, null)).Command.P1NativeOrigin);
+        Assert.Throws<ArgumentException>(() => Read(P1Request(kind)));
+    }
+
+    [Fact]
+    public void P1PrefixCommandHasNoClientSelectedOutputPathAndProjectsTheExactReceipt()
+    {
+        var body = P1Request("export_p1_native_prefix", null);
+        var command = Read(body);
+        Assert.Equal(RecordingCommandKind.ExportP1NativePrefix, command.Command.Kind);
+        var watermark = new P1NativePrefixWatermark(1, 20, new string('a', 64), 0, new string('b', 64), 1, 0, 1, 0);
+        var receipt = new P1NativePrefixResult("prefix-1", "/recorder/prefix-1", "/recorder/prefix-1/manifest.json", new string('c', 64), watermark);
+        var result = PlatformRecordingCommands.Execute(command, () => "game-1", () => Status(P1NativeRecordingContract.ProfileId),
+            (_, _) => new(true, false, "p1_native_prefix_exported", "exported", Status().Lifecycle) { P1NativePrefix = receipt });
+        Assert.Same(receipt, result.P1NativePrefix);
+        body["command"]!["output_path"] = "/client-selected";
+        Assert.Throws<ArgumentException>(() => Read(body));
+    }
+
     [Theory]
     [InlineData("start_new_session", RecordingCommandKind.StartNewSession)]
     [InlineData("pause", RecordingCommandKind.Pause)]

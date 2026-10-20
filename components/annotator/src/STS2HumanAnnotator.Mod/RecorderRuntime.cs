@@ -33,7 +33,8 @@ internal static partial class RecorderRuntime
         long Generation,
         IReadOnlyList<string> Blockers,
         IReadOnlyList<string> SemanticBlockers,
-        string NativeReadiness);
+        string NativeReadiness,
+        JsonObject? P1CaptureDiagnostics);
 
     private sealed record ArmedPotionUse(
         long Generation,
@@ -96,6 +97,7 @@ internal static partial class RecorderRuntime
     private static DateTimeOffset? _sessionClosedAt;
     private static string? _recordingDirectory;
     private static string? _sourceRevision;
+    private static string? _p1NativeOrigin;
     private static string _requiredReadsHealth = "not_active";
     private static string? _lastPublishedHealth;
     private static bool _initializationStarted;
@@ -112,8 +114,8 @@ internal static partial class RecorderRuntime
     // terminal marker.  Polling IsInProgress may describe a transition, but
     // it must never publish a successful terminal disposition by itself.
     private static string _currentRunId => RunLifecycle.RunId;
-    private static readonly HumanCaptureProfile CaptureProfile =
-        HumanCaptureProfiles.FullRunReadRich;
+    private static HumanCaptureProfile CaptureProfile => IsP1Recording
+        ? P1NativeRecordingContract.Profile : HumanCaptureProfiles.FullRunReadRich;
     private static readonly string[] DeclaredOutOfScopeActionFamilies =
     {
         "unverified_selector_families"
@@ -242,6 +244,8 @@ internal static partial class RecorderRuntime
                     "The recording changed before this command could be applied.", _lifecycle);
             if (CommandLedger.TryGet(command.CommandId, out RecordingCommandResult? existing))
                 return existing!;
+            if (command.Kind == RecordingCommandKind.ExportP1NativePrefix)
+                return ExecuteP1NativePrefixCommand(command);
             if (!initialized)
             {
                 result = new RecordingCommandResult(
@@ -285,7 +289,7 @@ internal static partial class RecorderRuntime
                     {
                         try
                         {
-                            StartSession(result.Lifecycle, command.CaptureProfileId);
+                            StartSession(result.Lifecycle, command.CaptureProfileId, command.P1NativeOrigin);
                         }
                         catch (Exception exception)
                         {
@@ -331,7 +335,7 @@ internal static partial class RecorderRuntime
             if (result.Accepted && !automatic)
             {
                 if (command.Kind is RecordingCommandKind.StartNewSession or RecordingCommandKind.Resume)
-                    Continuous.Arm();
+                    Continuous.Arm(_activeCaptureProfileId, _p1NativeOrigin);
                 else if (command.Kind == RecordingCommandKind.Pause)
                     Continuous.Pause();
                 else if (command.Kind == RecordingCommandKind.Close)
@@ -373,15 +377,19 @@ internal static partial class RecorderRuntime
 
     private static void StartSession(
         RecordingLifecycleSnapshot lifecycle,
-        string? requestedCaptureProfileId)
+        string? requestedCaptureProfileId, string? p1Origin = null)
     {
         if (_configuration == null || _sourceRevision == null || lifecycle.SessionId == null)
             throw new InvalidOperationException("Recorder runtime initialization is incomplete.");
+        HumanCaptureProfile profile = requestedCaptureProfileId == P1NativeRecordingContract.ProfileId
+            ? P1NativeRecordingContract.Profile : HumanCaptureProfiles.FullRunReadRich;
+        if (profile.ProfileId == P1NativeRecordingContract.ProfileId && p1Origin is not ("agent_native_ui" or "declared_human" or "unknown"))
+            throw new InvalidDataException("p1_native_declared_origin_required");
         if (requestedCaptureProfileId != null
-            && !string.Equals(requestedCaptureProfileId, CaptureProfile.ProfileId, StringComparison.Ordinal))
+            && !string.Equals(requestedCaptureProfileId, profile.ProfileId, StringComparison.Ordinal))
         {
             throw new InvalidDataException(
-                $"Unsupported capture profile {requestedCaptureProfileId}; expected {CaptureProfile.ProfileId}.");
+                $"Unsupported capture profile {requestedCaptureProfileId}; expected {profile.ProfileId}.");
         }
 
         DateTimeOffset now = DateTimeOffset.UtcNow;
@@ -395,20 +403,23 @@ internal static partial class RecorderRuntime
             RecorderMod.Version,
             _sourceRevision,
             System.Runtime.InteropServices.RuntimeInformation.RuntimeIdentifier,
-            CaptureProfile.ProfileId,
-            EvidenceIdentity.Sha256Json(CaptureProfile),
-            CaptureProfile.SupportedActionFamilies,
-            CaptureProfile.NonClaims.Append("not_human_validated").ToArray())
+            profile.ProfileId,
+            EvidenceIdentity.Sha256Json(profile),
+            profile.SupportedActionFamilies,
+            profile.NonClaims.Append("not_human_validated").ToArray())
         { DecisionSchemaVersion = DecisionOccurrenceIdentity.CurrentSchemaVersion, DispositionSchemaVersion = 1,
             CloseSchemaVersion = 1, RecoverySchemaVersion = 1, ContinuousSchemaVersion = 1,
-            TextInputSchemaVersion = HumanTextInputObservationContract.SchemaVersion };
+            TextInputSchemaVersion = profile.ProfileId == P1NativeRecordingContract.ProfileId ? null : HumanTextInputObservationContract.SchemaVersion,
+            P1NativeSchemaVersion = profile.ProfileId == P1NativeRecordingContract.ProfileId ? 1 : null,
+            P1NativeExecutionSchemaVersion = profile.ProfileId == P1NativeRecordingContract.ProfileId ? 1 : null, P1NativeOrigin = p1Origin };
         RecordingSessionStore store = RecordingSessionStore.Create(
             _configuration.RecordingRoot,
             manifest,
-            CaptureProfile);
+            profile);
 
         _store = store;
-        _activeCaptureProfileId = CaptureProfile.ProfileId;
+        _activeCaptureProfileId = profile.ProfileId;
+        _p1NativeOrigin = p1Origin;
         _lastSourceStatus = null;
         SessionId = lifecycle.SessionId;
         TimelineId = timelineId;
@@ -539,6 +550,7 @@ internal static partial class RecorderRuntime
     private static void FinalizeClose()
     {
         if (IsSourceRecording) { FinalizeSourceClose(); return; }
+        if (IsP1Recording) { FinalizeP1Close(); return; }
         IReadOnlyList<SemanticBoundaryTraceDraft> closeDrafts;
         lock (Gate)
         {
@@ -751,7 +763,7 @@ internal static partial class RecorderRuntime
     }
 
     private static bool HasPendingRecordingWorkUnsafe() =>
-        HasNativePendingRecordingWorkUnsafe() || BoundaryTracker.HasUnresolvedActions
+        IsP1Recording ? NativeActionSubscriptions.Count > 0 || P1UiPending.Count > 0 : HasNativePendingRecordingWorkUnsafe() || BoundaryTracker.HasUnresolvedActions
         || _humanTextInputPendingScopes > 0;
 
     private static bool HasNativePendingRecordingWorkUnsafe() =>
@@ -827,7 +839,8 @@ internal static partial class RecorderRuntime
                 new ExactDecisionFrame(frame, environment), holder, Volatile.Read(ref _cardStageGeneration),
                 EligibilityBlockers(frame, environment, requireReads: true),
                 SemanticStateBlockers(frame, environment),
-                DescribeNativeCardReadiness(holder.CardModel));
+                DescribeNativeCardReadiness(holder.CardModel),
+                IsP1Recording ? CaptureP1CardReadiness(frame, holder, "StartCardPlay.prefix") : null);
             // The native factory below runs inside this StartCardPlay invocation.
             return StagedCardPlays.Enter(staged);
         }
@@ -1149,6 +1162,8 @@ internal static partial class RecorderRuntime
     {
         if (TryEnterSourceInputScope(origin, expectedNativeActionType, sourceOwner ?? stagedOwner,
             expectedAction ?? semanticSelection, out var source, sourceControl: sourceControl)) return source;
+        if (IsP1Recording)
+            expectedAction = P1NativeScopeInputs.PublicInput(expectedNativeActionType, expectedAction, semanticSelection);
         if (!AcceptingNewWitnesses() || SelectorInputActive)
             return default;
         if (!CanOpenSemanticEvidenceWindow())
@@ -1167,6 +1182,8 @@ internal static partial class RecorderRuntime
         {
             ProcessLocalNativeWitnessFrame? selected = null;
             ProcessLocalNativeWitnessFrame? current = null;
+            JsonObject? selectedCaptureDiagnostics = null;
+            JsonObject? currentCaptureDiagnostics = null;
             List<string> currentBlockers = new();
             string stagedDisposition = "not_applicable";
 
@@ -1183,11 +1200,15 @@ internal static partial class RecorderRuntime
                 if (staged != null && sameGeneration && staged.Blockers.Count == 0
                     && ReferenceEquals(staged.Holder.CardModel, stagedCard)
                     && IsExact(staged.Decision.Frame.Resolve(expectedAction)))
+                {
                     selected = staged.Decision.Frame;
+                    selectedCaptureDiagnostics = staged.P1CaptureDiagnostics;
+                }
                 else if (staged != null && sameGeneration
                     && ReferenceEquals(staged.Holder.CardModel, stagedCard)
-                    && staged.Decision.Frame.Snapshot.Interaction.Kind == "combat_turn"
-                    && staged.SemanticBlockers.Count == 0)
+                    && (IsP1Recording
+                        ? P1NativeScopeInputs.CanRetainCombatSource(staged.Decision.Frame, staged.SemanticBlockers)
+                        : staged.Decision.Frame.Snapshot.Interaction.Kind == "combat_turn" && staged.SemanticBlockers.Count == 0))
                 {
                     // H belongs to this exact native CardPlay factory. Public
                     // settling does not erase H when combat ends before release.
@@ -1195,6 +1216,7 @@ internal static partial class RecorderRuntime
                     // supply S + A(S), and a queued cancellation supplies no S'.
                     HumanActionScope.Enter(origin, expectedNativeActionType, expectedAction,
                         staged.Decision.Frame, occurrence: occurrence, nativeInputBinding: true);
+                    BindP1CardCaptureDiagnostics(staged.P1CaptureDiagnostics, "staged", stagedDisposition);
                     return new NativeUiScopeEntry(true, false);
                 }
             }
@@ -1202,6 +1224,8 @@ internal static partial class RecorderRuntime
             if (selected == null)
             {
                 current = CaptureReadRichFrame();
+                if (IsP1Recording && stagedCard != null)
+                    currentCaptureDiagnostics = CaptureP1CardReadiness(current, stagedOwner?.Holder, "TryPlayCard.prefix.current_capture");
                 RecorderEnvironmentIdentity currentEnvironment = BuildEnvironment(current);
                 currentBlockers = EligibilityBlockers(
                     current,
@@ -1211,20 +1235,36 @@ internal static partial class RecorderRuntime
                     && (expectedAction == null || IsExact(current.Resolve(expectedAction))))
                 {
                     selected = current;
+                    selectedCaptureDiagnostics = currentCaptureDiagnostics;
                 }
             }
 
             if (selected == null && current != null
                 && expectedNativeActionType == nameof(PlayCardAction)
                 && expectedAction?.Subject is CardModel && ReferenceEquals(expectedAction.Subject, stagedCard)
-                && current.Snapshot.Interaction.Kind == "combat_turn"
-                && SemanticStateBlockers(current, BuildEnvironment(current)).Count == 0)
+                && (IsP1Recording
+                    ? P1NativeScopeInputs.CanRetainCombatSource(current, SemanticStateBlockers(current, BuildEnvironment(current)))
+                    : current.Snapshot.Interaction.Kind == "combat_turn"
+                        && SemanticStateBlockers(current, BuildEnvironment(current)).Count == 0))
             {
                 // Native UI can accept a queued card while public delivery is
                 // settling. Preserve this exact H and scoped operands; only
                 // OnEnqueued may admit it, and execution must prove A(S).
                 HumanActionScope.Enter(origin, expectedNativeActionType, expectedAction,
                     current, occurrence: occurrence, nativeInputBinding: true);
+                BindP1CardCaptureDiagnostics(currentCaptureDiagnostics, "current", stagedDisposition);
+                return new NativeUiScopeEntry(true, false);
+            }
+
+            if (selected == null && IsP1Recording && current != null
+                && P1NativeScopeInputs.CanRetainQueuedEndTurn(expectedNativeActionType, expectedAction, current,
+                    SemanticStateBlockers(current, BuildEnvironment(current))))
+            {
+                // The native End Turn gesture may be accepted behind earlier
+                // work. H is complete provenance; its empty delivery catalog
+                // does not assert execution legality. OnEnqueued binds the exact input.
+                HumanActionScope.Enter(origin, expectedNativeActionType, expectedAction, current,
+                    occurrence: occurrence, nativeSemanticSelection: semanticSelection, nativeInputBinding: true);
                 return new NativeUiScopeEntry(true, false);
             }
 
@@ -1243,7 +1283,7 @@ internal static partial class RecorderRuntime
                 return new NativeUiScopeEntry(false, true);
             }
 
-            ProcessLocalNativeSemanticCapture? semanticDecision = semanticSelection == null
+            ProcessLocalNativeSemanticCapture? semanticDecision = IsP1Recording || semanticSelection == null
                 ? null
                 : PlayerEnvironmentNativeSemanticWitness.Capture(
                     "before_native_action_admission",
@@ -1261,7 +1301,8 @@ internal static partial class RecorderRuntime
                     expectedAction,
                     selected,
                     semanticDecision,
-                    occurrence: occurrence);
+                    occurrence: occurrence, nativeSemanticSelection: semanticSelection);
+                BindP1CardCaptureDiagnostics(selectedCaptureDiagnostics, ReferenceEquals(selected, current) ? "current" : "staged", stagedDisposition);
             }
             return new NativeUiScopeEntry(true, false);
         }
@@ -1286,7 +1327,8 @@ internal static partial class RecorderRuntime
         ProcessLocalObservedAction? nativeSemanticSelection = null,
         object? nestedInputOwner = null,
         object? sourceOwner = null,
-        object? sourceControl = null)
+        object? sourceControl = null,
+        string? nativeInputOperation = null)
     {
         if (TryEnterSourceInputScope(nativeActionType, nativeActionType, sourceOwner ?? nestedInputOwner,
             observed, out var source, sourceControl: sourceControl)) return source;
@@ -1315,7 +1357,7 @@ internal static partial class RecorderRuntime
         try
         {
             ProcessLocalNativeWitnessFrame frame = CaptureSemanticFrame();
-            ProcessLocalNativeSemanticCapture semanticDecision =
+            ProcessLocalNativeSemanticCapture? semanticDecision = IsP1Recording ? null :
                 PlayerEnvironmentNativeSemanticWitness.Capture(
                     "before_native_action_admission",
                     uiFrame: frame,
@@ -1323,7 +1365,9 @@ internal static partial class RecorderRuntime
                     semanticSelection: nativeSemanticSelection ?? observed);
             RecorderEnvironmentIdentity environment = BuildEnvironment(frame);
             IReadOnlyList<string> blockers = SemanticWitnessBlockers(frame, environment);
-            ProcessLocalNativeMatch match = frame.Resolve(observed);
+            ProcessLocalNativeMatch match = sourceOwner != null && nativeInputOperation != null
+                ? frame.ResolveObservedNativeInput(sourceOwner, nativeInputOperation, observed)
+                : frame.Resolve(observed);
             if (blockers.Count > 0 || !IsExact(match))
             {
                 HumanActionScope.EnterDeferredFailure(
@@ -1332,7 +1376,7 @@ internal static partial class RecorderRuntime
                     string.Join(",", blockers.Concat(new[] { match.Status }).Distinct(StringComparer.Ordinal))
                         + $";interaction={frame.Snapshot.Interaction.Kind};status={frame.Snapshot.Status};candidates={frame.Snapshot.BoundActions.TotalCount}",
                     frame.Snapshot.SnapshotId,
-                    "fail_closed");
+                    "fail_closed", originalP1Frame: IsP1Recording ? frame : null);
                 return new NativeUiScopeEntry(false, true);
             }
             NestedUiInput? nestedInput = ResolveNestedUiInput(nestedInputOwner);
@@ -1382,6 +1426,8 @@ internal static partial class RecorderRuntime
                     completionExpectation,
                     nativeSemanticSelection: nativeSemanticSelection ?? observed);
                 HumanActionScope.Current!.NestedInput = nestedInput;
+                HumanActionScope.Current.UiInputOwner = sourceOwner;
+                HumanActionScope.Current.UiInputOperation = nativeInputOperation;
                 return new NativeUiScopeEntry(true, false, actionWitnessId);
             }
         }
@@ -1438,7 +1484,7 @@ internal static partial class RecorderRuntime
             return null;
         try
         {
-            return context.Frame.Resolve(observed);
+            return context.ResolveUiInput(observed);
         }
         catch
         {
@@ -1477,6 +1523,7 @@ internal static partial class RecorderRuntime
     internal static void ObserveAcceptedAction(GameAction action)
     {
         if (IsSourceRecording) return;
+        if (IsP1Recording) { ObserveP1AcceptedAction(action); return; }
         // Some native UI callbacks enqueue a known child action inside the
         // UI method whose accepted occurrence is already being staged. The
         // exact object binding is installed in RequestEnqueue's Prefix, before
@@ -1639,6 +1686,7 @@ internal static partial class RecorderRuntime
 
     internal static void ObservePlayCardExecutionAborted(PlayCardAction action)
     {
+        if (IsP1Recording) { if (NativeActionSubscriptions.TryGetValue(action, out var p1)) ObserveP1Lifecycle(p1, "aborted"); return; }
         string actionWitnessId = NativeWitnessIdentity.Get(action, "game_action");
         NativeSemanticDiscriminatorRuntime.Observe(
             _store,
@@ -1680,6 +1728,8 @@ internal static partial class RecorderRuntime
             if (sourceAcceptanceProven) NativeSourceInputProvider.Accepted(sourceInvocation);
             return false; // Source completions never enter Human observer/bookkeeping.
         }
+        if (IsP1Recording) return ObserveP1AcceptedUi(nativeActionType, observed, witness,
+            captureImmediatePostCommitBoundary, actionWitnessId);
         HumanActionContext? context = HumanActionScope.Current;
         try
         {
@@ -1859,6 +1909,18 @@ internal static partial class RecorderRuntime
     {
         if (string.IsNullOrWhiteSpace(actionWitnessId))
             return false;
+        if (IsP1Recording)
+        {
+            lock (Gate)
+            {
+                if (HumanActionScope.Current is { } p1Context && p1Context.ActionWitnessId == actionWitnessId)
+                    p1Context.DeferredCarrierBindingFailure ??= detail;
+                P1Issue("native_carrier_binding_failed", nativeActionType, new { action_witness_id = actionWitnessId, detail });
+                if (P1UiPending.ContainsKey(actionWitnessId))
+                    CompleteP1Ui(actionWitnessId, "unknown", new { reason = "native_carrier_binding_failed", detail });
+            }
+            return false;
+        }
         lock (Gate)
         {
             if (!BoundaryTracker.Contains(actionWitnessId)
@@ -1907,6 +1969,8 @@ internal static partial class RecorderRuntime
             {
                 if (_store == null)
                     return;
+                if (TryRouteP1LegacyRecord(true, "native_commit_binding_pending", kind,
+                    new { action_witness_id = actionWitnessId, family, kind, detail })) return;
                 AppendJournal(
                     "native_commit_binding_pending",
                     actionWitnessId,
@@ -2050,6 +2114,7 @@ internal static partial class RecorderRuntime
 
     private static void ObserveBeforeActionExecution(GameAction action)
     {
+        if (IsP1Recording) { ObserveP1BeforeActionExecution(action); return; }
         string actionWitnessId;
         lock (Gate)
             actionWitnessId = NativeActionSubscriptions.TryGetValue(action, out var exactSubscription)
@@ -2308,6 +2373,13 @@ internal static partial class RecorderRuntime
             {
                 try
                 {
+                    if (IsP1Recording)
+                    {
+                        ObserveP1Boundary("native_decision_owner_ready", new { domain = observation.Domain,
+                            native_owner_witness_id = NativeWitnessIdentity.Get(observation.NativeOwner, "decision_owner"),
+                            native_owner_type = observation.NativeOwnerType, native_mechanism = observation.NativeMechanism });
+                        return;
+                    }
                     if (!_semanticBoundaryTraceHealthy)
                         return;
                     lock (Gate)
@@ -2762,6 +2834,12 @@ internal static partial class RecorderRuntime
                 || resolution.Completion is not { } nativeCompletion
                 || !string.Equals(nativeCompletion.Family, family, StringComparison.Ordinal))
             {
+                if (IsP1Recording && expectedActionWitnessId != null)
+                {
+                    P1Issue($"native_sync_binding_{resolution.Status}", kind,
+                        new { action_witness_id = expectedActionWitnessId, family, detail = resolution.Detail });
+                    return false;
+                }
                 Quarantine(
                     $"native_sync_binding_{resolution.Status}",
                     resolution.Detail ?? "The synchronous native Commit did not match its exact Human root.",
@@ -2800,6 +2878,12 @@ internal static partial class RecorderRuntime
                 nativeCompletion.CompletionId,
                 operationWitnessId,
                 true);
+            if (IsP1Recording)
+            {
+                bool saved = CompleteP1Ui(actionWitnessId, "finished", completion);
+                if (saved) NativePostCommitCompletions.CommitTaskCompletion(taskCompletion);
+                return saved;
+            }
             return PersistTrackerMutationOrUnknown(
                 actionWitnessId,
                 tracker =>
@@ -3268,6 +3352,8 @@ internal static partial class RecorderRuntime
                     : NativeWitnessIdentity.Get(nativeSubject, "nested_subject"),
                 operandWitnesses,
                 disposition);
+            if (TryRouteP1LegacyRecord(true, "p1_native_nested_continuation_unsupported", nativeMechanism, continuation))
+                return true; // Original witnessed input is retained; no guessed P1 BoundAction or accepted label.
             // Keep the tracker mutation provisional until the exact native
             // continuation event is authoritative in the semantic stream.
             // In particular, PersistSemanticBoundaryDrafts rejects a nonempty
@@ -3304,6 +3390,8 @@ internal static partial class RecorderRuntime
     {
         try
         {
+            if (TryRouteP1LegacyRecord(true, "native_nested_continuation_unavailable", nativeMechanism,
+                new { parent_action_witness_id = parentActionWitnessId, native_mechanism = nativeMechanism, reason })) return true;
             Quarantine(
                 "native_nested_continuation_unavailable",
                 $"parent={parentActionWitnessId};mechanism={nativeMechanism};reason={reason}",
@@ -3344,6 +3432,18 @@ internal static partial class RecorderRuntime
         NativeCompletionEvidence evidence = ToCompletionEvidence(
             completion,
             registration.ActionWitnessId);
+        if (IsP1Recording)
+        {
+            P1UiPending.TryGetValue(registration.ActionWitnessId, out var pending);
+            var original = (JsonObject)JsonSerializer.SerializeToNode(evidence, EvidenceJson.Options)!;
+            original["native_task_status"] = taskCompletion.NativeTaskStatus;
+            original["native_bool_result"] = taskCompletion.NativeBooleanResult;
+            original["explicit_selector_cancel"] = pending?.SelectorCancellation?.DeepClone();
+            if (CompleteP1Ui(registration.ActionWitnessId,
+                P1UiCompletionPhase(completion, taskCompletion, pending?.SelectorCancellation), original))
+                NativePostCommitCompletions.CommitTaskCompletion(taskCompletion);
+            return;
+        }
         PersistTrackerMutationOrUnknown(
             registration.ActionWitnessId,
             tracker =>
@@ -3390,6 +3490,7 @@ internal static partial class RecorderRuntime
         bool emptyMutationIsSuccess = true,
         bool persistUnknownOnFailure = true)
     {
+        if (IsP1Recording) return false; // P1 owns its event stream; legacy tracker callbacks cannot author it.
         Exception? failure = null;
         bool authoritativeAppend = false;
         string[] affectedActionWitnessIds = string.IsNullOrWhiteSpace(actionWitnessId)
@@ -3760,7 +3861,12 @@ internal static partial class RecorderRuntime
                     generation,
                     $"native-completion-{Guid.NewGuid():N}",
                     taskWitnessId,
-                    succeeded(completed));
+                    succeeded(completed))
+                {
+                    NativeTaskStatus = completed.Status.ToString(),
+                    NativeBooleanResult = completed.Status == TaskStatus.RanToCompletion && completed is Task<bool> result
+                        ? result.Result : null
+                };
                 lock (Gate)
                 {
                     if (generation == _nativePostCommitGeneration
@@ -4209,7 +4315,8 @@ internal static partial class RecorderRuntime
     {
         ProcessLocalNativeWitnessFrame frame = MeasureStore(
             "read_rich_snapshot_capture",
-            () => PlayerEnvironmentNativeWitness.Capture(SemanticBoundaryReadPolicy.RequiredKinds));
+            () => IsP1Recording ? PlayerEnvironmentNativeWitness.CaptureP1()
+                : PlayerEnvironmentNativeWitness.Capture(SemanticBoundaryReadPolicy.RequiredKinds));
         RecordCaptureSubphases("read_rich", frame);
         return frame;
     }
@@ -4218,7 +4325,8 @@ internal static partial class RecorderRuntime
     {
         ProcessLocalNativeWitnessFrame frame = MeasureStore(
             "semantic_snapshot_capture",
-            () => PlayerEnvironmentNativeWitness.Capture(SemanticBoundaryReadPolicy.RequiredKinds));
+            () => IsP1Recording ? PlayerEnvironmentNativeWitness.CaptureP1()
+                : PlayerEnvironmentNativeWitness.Capture(SemanticBoundaryReadPolicy.RequiredKinds));
         RecordCaptureSubphases("semantic", frame);
         return frame;
     }
@@ -4248,6 +4356,7 @@ internal static partial class RecorderRuntime
         HasSemanticRequiredReads(frame);
 
     private static bool HasSemanticRequiredReads(ProcessLocalNativeWitnessFrame frame) =>
+        IsP1Recording ? frame.PublicBasis is { } basis && P1NativeRecordingContract.CompleteBasis(basis.Bytes) :
         SemanticBoundaryReadPolicy.RequiredKinds(frame.Snapshot.Interaction.Kind)
             .All(kind => frame.Reads.TryGetValue(kind, out ProcessLocalReadCapture? read)
                 && string.Equals(read.Status, "materialized", StringComparison.Ordinal)
@@ -4591,6 +4700,10 @@ internal static partial class RecorderRuntime
         if (IsSourceRecording) return; // legacy Human correlation never authors source-profile evidence
         try
         {
+            if (TryRouteP1LegacyRecord(acceptedHumanEffect || humanOccurrence != null || decisionFailure != null,
+                reason, nativeActionType, new { detail, snapshot_id = snapshotId, evidence_level = evidenceLevel,
+                    human_occurrence = humanOccurrence, decision_failure = decisionFailure,
+                    basis = IsP1Recording ? PersistP1Basis(HumanActionScope.Current?.Frame) : null })) return;
             bool diagnostic = reason == "human_action_native_type_mismatch"
                 && nativeActionType is "ReadyToBeginEnemyTurnAction" or "MoveToMapCoordAction";
             if (!diagnostic && (acceptedHumanEffect || reason is "pre_frame_capture_failed" or "semantic_pre_frame_capture_failed"
@@ -4649,7 +4762,7 @@ internal static partial class RecorderRuntime
         }
         catch (Exception exception)
         {
-            _store?.MarkDecisionAccountingUnavailable();
+            if (!IsP1Recording) _store?.MarkDecisionAccountingUnavailable();
             GD.PrintErr($"[STS2 Human Annotator] failed to persist invalidation: {exception}");
         }
     }
@@ -4800,6 +4913,10 @@ internal static partial class RecorderRuntime
                 return;
             AppendJournal("run_ended_native", null, _lastSnapshotId, detail);
             bool abandoned = RunManager.Instance.IsAbandoned;
+            if (IsP1Recording)
+                ObserveP1Boundary("native_run_ended", new { is_victory = isVictory, abandoned,
+                    native_owner_witness_id = NativeWitnessIdentity.Get(RunManager.Instance, "run_manager"),
+                    native_mechanism = "RunManager.OnEnded.postfix" });
             if (abandoned)
                 AppendJournal("run_abandoned_native", null, _lastSnapshotId,
                     "RunManager.OnEnded observed IsAbandoned=true.");
@@ -4832,17 +4949,16 @@ internal static partial class RecorderRuntime
             ExecuteRecordingCommand(new RecordingCommand($"auto-seal-next-run-{Guid.NewGuid():N}",
                 RecordingCommandKind.Close), new RecordingSessionExpectation(previousSession), automatic: true);
 
-        bool begin;
+        RecordingCommand? begin;
         lock (Gate)
         {
             if (_lifecycle.State == RecordingLifecycleState.Closing)
                 return;
-            begin = _store == null && Continuous.Armed
-                && _lifecycle.State is RecordingLifecycleState.Ready or RecordingLifecycleState.Closed;
+            begin = _store == null && _lifecycle.State is RecordingLifecycleState.Ready or RecordingLifecycleState.Closed
+                ? Continuous.NextSessionCommand($"auto-start-{Guid.NewGuid():N}") : null;
         }
-        if (begin)
-            ExecuteRecordingCommand(new RecordingCommand($"auto-start-{Guid.NewGuid():N}",
-                RecordingCommandKind.StartNewSession), automatic: true);
+        if (begin != null)
+            ExecuteRecordingCommand(begin, automatic: true);
         lock (Gate)
         {
             if (_store == null
@@ -4944,6 +5060,11 @@ internal static partial class RecorderRuntime
             || actionWitnessId == null
             || _store == null)
             return;
+        if (IsP1Recording)
+        {
+            CompleteP1ActEntered(owner, actionWitnessId);
+            return;
+        }
         try
         {
             ProcessLocalNativeWitnessFrame frame = CaptureSemanticFrame();

@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // Run a P1 Agent over a seed suite on a real Host (Managed service or Reference game) through the existing Policy Runtime.
-// node tools/p1-suite.mjs [--worktree W (default: this repository)] [--host managed --candidate C [--character Defect --language en|zh] | --host reference --local-root DIR [--template T]]
+// node tools/p1-suite.mjs [--worktree W (default: this repository)] [--host managed --candidate C --initial-progress FILE [--character Defect --language en|zh] | --host reference --local-root DIR [--template T]]
 //   --seeds S1,S2|--suite FILE [--limit N] [--episode-budget-ms N] [--agent-timeout-ms N (default 30000, max 300000)] --out DIR --agent "cmd args"
+// Reference also forwards --game-dir DIR and --expected-installed-tuple JSON to the existing driver.
 import { spawn, execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync, existsSync, chmodSync, readdirSync } from "node:fs";
@@ -25,6 +26,20 @@ const { ManagedServicePolicyClient } = await import(pathToFileURL(join(dist, "ma
 const { createGlobalProgramManifest } = await import(pathToFileURL(join(dist, "global-program.js")));
 
 const host = opt("--host", "managed");
+const { validateInitialProgress } = await import(pathToFileURL(join(worktree, "components/host-runtime/src/native-baseline.mjs")));
+// Fresh comparisons use the exact Reference preparation, before Agent control.
+const initialProgressPath = opt("--initial-progress");
+if (host === "managed" && initialProgressPath == null)
+  throw new Error("Managed suites require --initial-progress with the Reference prepared native progress");
+if (host !== "managed" && initialProgressPath != null)
+  throw new Error("initial-progress is a Managed manager preparation input");
+const initialProgress = initialProgressPath == null ? null
+  : validateInitialProgress(JSON.parse(readFileSync(resolve(initialProgressPath), "utf8")));
+if (host === "managed" && initialProgress == null)
+  throw new Error("Managed suite initial-progress must contain the prepared native progress object");
+const initialProgressIdentity = initialProgress == null ? null
+  : { recipe: initialProgress.recipe, progress_sha256: initialProgress.progress_sha256 };
+
 const episodeBudgetMs = Number(opt("--episode-budget-ms", "1200000"));
 const agentTimeoutMs = Number(opt("--agent-timeout-ms", "30000"));
 if (!Number.isSafeInteger(agentTimeoutMs) || agentTimeoutMs <= 0 || agentTimeoutMs > 300000)
@@ -104,13 +119,13 @@ try {
   const freshService = async (started) => { svc.kill("SIGTERM"); await new Promise((r) => setTimeout(r, 1500)); startService(); await attach(started); };
   for (const [index, seed] of seeds.entries()) {
     const episode = `managed-${String(index + 1).padStart(4, "0")}-${seed}`, dir = join(outDir, episode); mkdirSync(dir, { recursive: true });
-    const started = Date.now(); const row = { episode, seed, episode_budget_ms: episodeBudgetMs };
+    const started = Date.now(); const row = { episode, seed, episode_budget_ms: episodeBudgetMs, initial_progress: initialProgressIdentity };
     try {
       let r0 = await ready(started);
       if (r0.episode?.tainted || r0.episode?.closed || index > 0 && rows.at(-1)?.unknown) { await freshService(started); r0 = await ready(started); row.service_generation = svcGeneration; }
       const reset = await fetch(ep + "/v1/admin/reset", { method: "POST", headers: { authorization: `Bearer ${manager.token}`, "content-type": "application/json",
         "x-sts2-managed-service-id": manager.service_instance_id }, signal: AbortSignal.timeout(remainingEpisodeMs(started)), body: JSON.stringify({ request_id: "reset-" + randomUUID(), seed,
-        expected_runtime_instance_id: r0.adapter_runtime_instance_id, expected_game_continuity_id: r0.episode?.game_continuity_id ?? null }) });
+        expected_runtime_instance_id: r0.adapter_runtime_instance_id, expected_game_continuity_id: r0.episode?.game_continuity_id ?? null, initial_progress: initialProgress }) });
       if (reset.status !== 200) throw new Error("reset_" + reset.status + ":" + (await reset.text()).slice(0, 300));
       const rd = await ready(started); const h = rd.host_identity;
       const binding = { schema: "sts2.policy-runtime/managed-environment-binding-1", profile_sha256: sha("p1-suite"), input_profile: "public-basis-1",
@@ -131,14 +146,14 @@ try {
         || error.name === "TimeoutError" && Date.now() - started >= episodeBudgetMs; }
     row.seconds = Math.round((Date.now() - started) / 1000);
     rows.push(row); console.log(JSON.stringify(row));
-    writeFileSync(join(outDir, "report.json"), JSON.stringify({ worktree, candidate, agent: agentCmd, seeds, agent_timeout_ms: agentTimeoutMs, rows }, null, 1));
+    writeFileSync(join(outDir, "report.json"), JSON.stringify({ worktree, candidate, agent: agentCmd, seeds, agent_timeout_ms: agentTimeoutMs, initial_progress: initialProgressIdentity, rows }, null, 1));
   }
 } finally { svc?.kill("SIGTERM"); writeFileSync(join(outDir, "service.stderr"), svcErr); }
 function writeSummary() {
 const summary = { planned: seeds.length, terminal: rows.filter((r) => r.terminal).length, handoff: rows.filter((r) => r.handoff).length,
   taint: rows.filter((r) => r.taint).length, unknown: rows.filter((r) => r.unknown).length, errors: rows.filter((r) => r.error).length,
   replay_verified: rows.filter((r) => r.replay === "verified").length, decisions: rows.reduce((a, r) => a + (r.decisions ?? 0), 0) };
-writeFileSync(join(outDir, "report.json"), JSON.stringify({ worktree, host, agent: agentCmd, seeds, agent_timeout_ms: agentTimeoutMs, summary, rows }, null, 1));
+writeFileSync(join(outDir, "report.json"), JSON.stringify({ worktree, host, agent: agentCmd, seeds, agent_timeout_ms: agentTimeoutMs, initial_progress: initialProgressIdentity, summary, rows }, null, 1));
 console.log(JSON.stringify({ summary }));
 }
 writeSummary();
@@ -152,6 +167,10 @@ async function runReference() {
   const driverArgs = [join(worktree, "components/host-runtime/tools/reference-pe-driver.mjs"), "--local-root", resolve(opt("--local-root")),
     "--template", opt("--template", "defect-a0-s0"), "--endpoint", endpoint, "--character", "DEFECT", "--native-speed", "instant",
     "--display-mode", opt("--display-mode", "headless"), "--experimental-connector"];
+  for (const flag of ["--game-dir", "--expected-installed-tuple"]) {
+    const value = opt(flag);
+    if (value != null) driverArgs.push(flag, value);
+  }
   // One driver per episode: after release_bootstrap the Runtime owns the Host, and the
   // driver refuses a second reset (reference_bootstrap_transferred).
   const startDriver = (started) => {
@@ -168,8 +187,13 @@ async function runReference() {
       const request_id = `suite-${++counter}`; driver.stdin.write(JSON.stringify({ command, request_id, ...extra }) + "\n");
       const r = await next(remaining); if (r.type === "error") throw new Error(`${command}:${r.code}:${r.message}`); return r; };
     const close = async (dir) => {
-      try { if (driver.exitCode === null && driver.signalCode === null) await call("close", {}, 120000); } catch { /* best effort */ }
+      let receipt;
+      try { receipt = driver.exitCode === null && driver.signalCode === null
+        ? await call("close", {}, 120000) : { status: "driver_already_exited", code: driver.exitCode, signal: driver.signalCode }; }
+      catch (error) { receipt = { status: "unconfirmed", error: String(error.message) }; }
+      writeFileSync(join(dir, "reference-close.json"), JSON.stringify(receipt, null, 2));
       driver.kill("SIGTERM"); writeFileSync(join(dir, "driver.stderr"), dErr);
+      return receipt;
     };
     return { next, call, close };
   };
@@ -181,6 +205,7 @@ async function runReference() {
       const ready = await next(Math.min(300000, remainingEpisodeMs(started))); if (ready.type !== "ready") throw new Error("driver_not_ready " + JSON.stringify(ready).slice(0, 300));
       await call("reset", { seed }, 600000);
       const identity = (await call("episode_identity")).identity;
+      writeFileSync(join(dir, "reference-identity.json"), JSON.stringify(identity, null, 2));
       const prov = identity.episode_provenance ?? {};
       row.provenance = { verdict: prov.verdict ?? null, actual_seed: prov.actual_seed ?? null };
       await call("release_bootstrap", { expected_runtime_instance_id: identity.host.runtime_instance_id });
@@ -194,9 +219,9 @@ async function runReference() {
     } catch (error) { row.error = String(error.message).slice(0, 400);
       row.budget_exhausted = error.message === "episode_budget_exhausted"
         || error.name === "TimeoutError" && Date.now() - started >= episodeBudgetMs; }
-    finally { await close(dir); }
+    finally { row.reference_close = await close(dir); }
     row.seconds = Math.round((Date.now() - started) / 1000); rows.push(row); console.log(JSON.stringify(row));
-    writeFileSync(join(outDir, "report.json"), JSON.stringify({ worktree, host, agent: agentCmd, seeds, agent_timeout_ms: agentTimeoutMs, rows }, null, 1));
+    writeFileSync(join(outDir, "report.json"), JSON.stringify({ worktree, host, agent: agentCmd, seeds, agent_timeout_ms: agentTimeoutMs, initial_progress: initialProgressIdentity, rows }, null, 1));
   }
   writeSummary();
 }

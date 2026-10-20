@@ -171,12 +171,13 @@ function localHome() {
   page.append(grid);
 
   const recording = panel(
-    "游戏内真人录制",
-    "录制由你在 STS2 游戏 Mod 中开始和结束；打开工作台不会启动游戏或触发录制。",
+    "录制与查看",
+    "在本机资料页查看录制状态、开始或结束 P1 录制，并查询已保存资料。打开工作台不会启动游戏或触发录制。",
   );
   recording.append(
     node("p", "录制保存在本机。上传另需设备授权、开启上传设置且本机投递服务实际运行；没有投递配置时，新录制不会自动上传。查看下方真人采集状态可核对。"),
-    link("查看真人采集配置与状态 →", "?view=campaigns"),
+    link("打开本机录制与资料 →", "?view=local-workspace"),
+    link("查看上传配置与状态 →", "?view=campaigns"),
   );
   page.append(recording);
   return page;

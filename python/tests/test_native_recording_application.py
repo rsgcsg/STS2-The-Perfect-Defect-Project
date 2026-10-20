@@ -66,7 +66,7 @@ def owner(app, monkeypatch):
     )
 
     def execute(endpoint, observed, kind, *, source_declaration, command_id,
-                capture_profile_id=None):
+                capture_profile_id=None, p1_native_origin=None):
         if capture_profile_id is not None:
             behavior["selected_profile"] = capture_profile_id
             current["capture_profile_id"] = capture_profile_id
@@ -81,6 +81,9 @@ def owner(app, monkeypatch):
             current["recording_lifecycle"] = "recording"
         if kind == "start_new_session":
             current.update(recording_lifecycle="recording", recording_session_id="fresh-session")
+        if p1_native_origin is not None:
+            behavior["p1_native_origin"] = p1_native_origin
+            current["source"] = None
         if source_declaration is not None:
             current["source"]["declaration"] = source_declaration
         return {
@@ -306,3 +309,101 @@ def test_source_format_rejects_bad_values_before_owner_dispatch(tmp_path, monkey
         assert calls == []
     finally:
         app.close()
+
+
+def test_p1_controls_use_same_application_and_unknown_survives_restart(tmp_path, monkeypatch):
+    config = ProjectConfig(tmp_path / "state", "", "", None, combination())
+    app = Application(config)
+    current, calls, behavior = owner(app, monkeypatch)
+    current.update(recording_lifecycle="closed", closeout_status="closed", source=None)
+    start = {**body(current, "start_new_session", "declared_human"), "actor_id": None,
+             "capture_profile_id": "human-p1-native-decisions-1"}
+    app.control_native_recording(start)
+    assert behavior["p1_native_origin"] == "declared_human"
+    assert current["capture_profile_id"] == "human-p1-native-decisions-1"
+    app.control_native_recording(body(current, "export_p1_native_prefix"))
+    behavior["unknown"] = True
+    pause = body(current, "pause")
+    with pytest.raises(BoundaryError, match="native_recording_command_unknown"):
+        app.control_native_recording(pause)
+    resumed = Application(config)
+    assert resumed._recording_unknown_notice["command_id"] == pause["command_id"]
+    assert resumed._recording_unknown_blocks is True
+    assert len(calls) == 3  # restart did not resend the unknown request
+
+
+def test_p1_derivation_http_uses_existing_browser_admission_and_exact_dto(browser_app, monkeypatch):
+    app, client, root, call, current, calls, behavior = browser_app
+    invocations = []
+    monkeypatch.setattr(app.local_recording_import, "start_p1_derivation",
+                        lambda **body: invocations.append(body) or {"status": "pending"})
+    request = {"source_artifact_id": "a" * 64,
+               "projection_id": "native-selector-finalized-d-1", "run_id": "run-0001"}
+    with pytest.raises(HTTPError) as denied:
+        call("/api/local-recordings/derive", request)
+    assert denied.value.code == 403 and not invocations
+    client.open(root + "/").close()
+    with pytest.raises(HTTPError) as invalid:
+        call("/api/local-recordings/derive", {**request, "private_path": "/source"})
+    assert invalid.value.code == 400 and not invocations
+    assert call("/api/local-recordings/derive", request)["status"] == "pending"
+    assert invocations == [request]
+
+
+def test_p1_terminal_control_calls_same_application_api(browser_app, monkeypatch, tmp_path, capsys):
+    from spireagent.workbench import developer_server
+    from spireagent.workbench.developer import atomic_json
+    from spireagent.workbench.p1_recordings_cli import main
+
+    app, client, root, call, current, calls, behavior = browser_app
+    current.update(capture_profile_id="human-p1-native-decisions-1", source=None)
+    config = tmp_path / "project.json"
+    atomic_json(config, app.config.to_dict())
+    monkeypatch.setattr(developer_server, "running", lambda _: {
+        "port": int(root.rsplit(":", 1)[1]), "control_token": app.control_token})
+    assert main(["control", "status", "--config", str(config)]) == 0
+    assert json.loads(capsys.readouterr().out)["status"]["recording_session_id"] == "source-session"
+    assert not calls
+    assert main(["control", "prefix", "--config", str(config)]) == 0
+    assert json.loads(capsys.readouterr().out)["command_id"] == calls[0][-1]
+    assert calls[0][2] == "export_p1_native_prefix" and len(calls) == 1
+
+
+def test_p1_storage_http_uses_existing_operation_and_exact_body(browser_app, monkeypatch):
+    app, client, root, call, current, calls, behavior = browser_app
+    invocations = []
+    monkeypatch.setattr(app.local_recording_import, "start_p1_storage",
+        lambda **body: invocations.append(body) or {"status": "pending"})
+    request = {"action": "restore", "artifact_id": "a" * 64,
+               "peer": {"kind": "local", "directory": "/explicit/cold-store"}}
+    with pytest.raises(HTTPError) as denied:
+        call("/api/local-recordings/storage", request)
+    assert denied.value.code == 403 and not invocations
+    client.open(root + "/").close()
+    with pytest.raises(HTTPError) as malformed:
+        call("/api/local-recordings/storage", {**request, "secret": "not accepted"})
+    assert malformed.value.code == 400 and not invocations
+    assert call("/api/local-recordings/storage", request)["status"] == "pending"
+    assert invocations == [request] and not calls
+
+
+def test_p1_maintenance_terminal_and_browser_share_policy_api(
+    browser_app, monkeypatch, tmp_path, capsys,
+):
+    from spireagent.workbench import developer_server
+    from spireagent.workbench.developer import atomic_json
+    from spireagent.workbench.p1_recordings_cli import main
+
+    app, client, root, call, current, calls, behavior = browser_app
+    path = tmp_path / "project.json"
+    atomic_json(path, app.config.to_dict())
+    monkeypatch.setattr(developer_server, "running", lambda _: {
+        "port": int(root.rsplit(":", 1)[1]), "control_token": app.control_token})
+    assert main(["maintenance", "enable", "--config", str(path)]) == 0
+    assert json.loads(capsys.readouterr().out)["policy"]["enabled"] is True
+    assert app.local_recording_import._maintenance["policy"]["peer"] is None
+    client.open(root + "/").close()
+    assert call("/api/local-recordings/maintenance", {
+        "enabled": False, "peer": None, "projection_id": "native-timeline-targets-1"
+    })["policy"]["enabled"] is False
+    assert not calls, "maintenance policy never sends Recorder commands"

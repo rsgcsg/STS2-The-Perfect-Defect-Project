@@ -12,6 +12,20 @@ from spireagent.json_boundary import decode_json
 from stpd import native_code_scope as scope_owner
 
 
+def operational_target_lock() -> str:
+    """Exact archived rc30 target, reconstructed from the existing rc27 lock."""
+    fixtures = Path(__file__).parent / "fixtures/native_compatibility"
+    proof = decode_json((fixtures / "evidence_rc27_basis.json").read_bytes())
+    target = proof["original_lock"].replace("0.1.0rc27", "0.1.0rc30").replace(
+        "cd319ba9146eddb39bb09439fc9b2e366061360e",
+        "3988448dbb486d830a4e36f6a92049960fdc2e73",
+    )
+    assert hashlib.sha256(target.encode()).hexdigest() == (
+        scope_owner.OPERATIONAL_TARGET_LOCK_SHA256
+    )
+    return target
+
+
 def historical_operational_source(tmp_path: Path) -> Path:
     current = Path(__file__).resolve().parents[1]
     target = tmp_path / "historical-target-source"
@@ -21,6 +35,8 @@ def historical_operational_source(tmp_path: Path) -> Path:
         raw = (
             (fixtures / "evidence_rc27_structured_code_scope.py.txt").read_bytes()
             if relative == "stpd/structured_code_scope.py"
+            else operational_target_lock().encode()
+            if relative == "uv.lock"
             else (current / relative).read_bytes()
         )
         destination = target / relative

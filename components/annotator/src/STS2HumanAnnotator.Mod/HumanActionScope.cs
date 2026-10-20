@@ -1,6 +1,7 @@
 using STS2Connector.PlayerEnvironment.Witness;
 using STS2HumanAnnotator.Core;
 using STS2Platform.NativeFoundation;
+using System.Text.Json.Nodes;
 
 namespace STS2HumanAnnotator.Mod;
 
@@ -47,6 +48,14 @@ internal sealed class HumanActionContext
     }
 
     internal RecorderRuntime.NestedUiInput? NestedInput { get; set; }
+    internal JsonObject? P1CaptureDiagnostics { get; set; }
+    internal object? UiInputOwner { get; set; }
+    internal string? UiInputOperation { get; set; }
+
+    internal ProcessLocalNativeMatch ResolveUiInput(ProcessLocalObservedAction observed) =>
+        UiInputOwner != null && UiInputOperation != null
+            ? Frame.ResolveObservedNativeInput(UiInputOwner, UiInputOperation, observed)
+            : Frame.Resolve(observed);
 
     internal bool NativeInputBinding { get; }
     internal string Origin { get; }
@@ -123,6 +132,8 @@ internal sealed class DeferredHumanActionFailure
 
     internal NativeUiAttemptOutcome? NativeAttemptOutcome { get; set; }
 
+    internal ProcessLocalNativeWitnessFrame? OriginalP1Frame { get; init; }
+
     internal bool TryClaim(string nativeActionType) =>
         _rootActionGate.TryClaim(nativeActionType);
 }
@@ -180,7 +191,8 @@ internal static class HumanActionScope
         string detail,
         string? snapshotId,
         string evidenceLevel,
-        HumanActionOccurrenceEvidence? occurrence = null)
+        HumanActionOccurrenceEvidence? occurrence = null,
+        ProcessLocalNativeWitnessFrame? originalP1Frame = null)
     {
         _deferredFailures ??= new Stack<DeferredHumanActionFailure>();
         _deferredFailures.Push(new DeferredHumanActionFailure(
@@ -189,7 +201,7 @@ internal static class HumanActionScope
             detail,
             snapshotId,
             evidenceLevel,
-            occurrence));
+            occurrence) { OriginalP1Frame = originalP1Frame });
     }
 
     internal static void ExitDeferredFailure()

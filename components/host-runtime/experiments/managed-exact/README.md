@@ -340,3 +340,32 @@ When changing the candidate:
 
 Never transfer evidence across a platform baseline, changed patch, artifact, game assembly,
 runtime instance, or canonical adapter source.
+
+
+## Prepared initial profile
+
+Manager reset/start may carry one `initial_progress` snapshot from the fixed
+Reference `normal-sp-all-unlocked-v1` preparation. `ManagedInitialProgress` loads
+that exact JSON/SHA through the native memory save store and `InitProgressData`
+before the original Standard player/run initializer. Native run identity records
+its input SHA and actual frozen UnlockState comparison. There is no arbitrary
+save path or in-run import command. Managed presentation TestMode is retained.
+`initial-progress-tests` exercises the native owner without Launch or game input.
+
+Fresh P1 suites require the exact Reference prepared `initial_progress` object
+(`recipe`, `progress_json`, `progress_sha256`) through
+`tools/p1-suite.mjs --initial-progress FILE`. Recipe/SHA stay in suite provenance;
+progress JSON is private setup data, never a P1 action or label. The native mount
+verifies input SHA and actual run UnlockState before publishing the episode.
+
+The same prepared progress exposed a real initial-scene divergence: seed
+SWNBPYW69BAC starts Underdocks in the native lobby, while the old Managed
+initializer forced the default Overgrowth act list. StartRun now calls native
+ActModel.GetRandomList with the lobby's seeded `act_selection` RNG and the actual
+UnlockState. This preserves the Standard lobby default random-act selection.
+
+The current full candidate built from integration f434 uses patch 43e223e5 and artifact
+0426384c / MVID1115859e-f311-4e2e-b103-0b3c91168250. The manifest retains the
+previous8397 and a70 builds in history. Source/build inspection accepts only the
+new measured identity. Installed product, Reads and strict cross-Host gameplay
+qualification remain separate actual gates.

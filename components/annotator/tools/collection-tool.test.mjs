@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import crypto from "node:crypto";
-import { canonical, collectionIdentity, copyCollectionSetup, inventory, publishCollectionTool, setupFiles } from "./publish-collection-tool.mjs";
+import { canonical, collectionIdentity, copyCollectionSetup, copyP1NativeTools, p1NativeSupport, inventory, publishCollectionTool, setupFiles } from "./publish-collection-tool.mjs";
 
 test("Source3 capability is authenticated by the publisher identity and keeps legacy support", () => {
   const identity = collectionIdentity({ workspaceRevision: "a".repeat(40),
@@ -60,5 +60,29 @@ test("installed setup copies its owning dependency closure and runs without a so
     assert.equal(result.schema, "sts2.platform/collection-setup-1");
     assert.equal(result.bound, false);
     assert.equal(result.reason, "installation_unavailable");
+  } finally { fs.rmSync(directory, { recursive: true, force: true }); }
+});
+
+test("fixed P1 release includes a real executable reader/core/SDK closure and explicit capability", () => {
+  const directory = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "collection-p1-installed-")));
+  try {
+    const workspaceRoot = path.resolve(import.meta.dirname, "../../..");
+    copyCollectionSetup(workspaceRoot, directory); copyP1NativeTools(workspaceRoot, directory);
+    const files = inventory(directory), identity = collectionIdentity({ workspaceRevision: "a".repeat(40),
+      componentSourceRevision: "b".repeat(40), componentTreeRevision: "c".repeat(40) }, files);
+    assert.deepEqual(identity.p1_native_support, p1NativeSupport);
+    assert.ok(files.some(file => file.path === "p1/node_modules/zod/package.json"));
+    assert.ok(files.some(file => file.path === p1NativeSupport.recording_client_entrypoint));
+    const asUrl = file => new URL(`file://${file}`).href;
+    const code = `import {convertNativeSemanticOriginals as convert} from ${JSON.stringify(asUrl(path.join(directory, p1NativeSupport.converter_entrypoint)))};
+      import * as sdk from ${JSON.stringify(asUrl(path.join(directory, "p1/components/connector/sdk/typescript/dist/index.js")))};
+      import * as core from ${JSON.stringify(asUrl(path.join(directory, "p1/components/connector/sdk/typescript/dist/p1Global/index.js")))};
+      import {P1NativeRecordingClient} from ${JSON.stringify(asUrl(path.join(directory, p1NativeSupport.recording_client_entrypoint)))};
+      import {nativeHandTransaction} from ${JSON.stringify(asUrl(path.join(workspaceRoot, "tools/test/fixtures/native-hand-transaction.mjs")))};
+      const c=convert(nativeHandTransaction().source,sdk,core,{includeSegments:true,selectorTransactions:'native-selector-finalized-d-1'});
+      console.log(JSON.stringify({complete:c.complete,D:c.derived_transaction_choices.length,client:typeof P1NativeRecordingClient}));`;
+    const result = JSON.parse(execFileSync(process.execPath, ["--input-type=module", "-e", code],
+      { cwd: directory, encoding: "utf8" }));
+    assert.deepEqual(result, { complete: true, D: 1, client: "function" });
   } finally { fs.rmSync(directory, { recursive: true, force: true }); }
 });

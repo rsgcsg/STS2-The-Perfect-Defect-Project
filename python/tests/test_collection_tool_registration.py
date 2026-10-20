@@ -180,3 +180,50 @@ def test_cli_registers_first_tool_without_an_old_delivery_config(config, tmp_pat
     assert result["status"] == "registered"
     assert "path" not in result
     assert registered_collection_tool(config, release) == directory.resolve()
+
+
+def test_selected_host_context_uses_explicit_log_and_blocks_generation_change(config, tmp_path):
+    from spireagent.workbench.collection_tool_registration import inspect_collection_destination
+
+    directory = tmp_path / "tool"
+    release = make_tool(directory)
+    root = tmp_path / "host-profile"
+    root.mkdir()
+    log = root / "godot.log"
+    log.write_text("native fixture")
+    lifecycle = tmp_path / "current.json"
+    record = {
+        "schema_version": 1, "status": "ready", "pid": 123,
+        "endpoint": "http://127.0.0.1:15526",
+        "profile": {"expected_user_data_root": str(root), "generation_id": "generation-one"},
+        "loaded_identity": {"host": {"runtime_instance_id": "runtime-one"}},
+    }
+    lifecycle.write_text(json.dumps(record))
+    register_collection_tool(config, directory, release,
+                             host_lifecycle=lifecycle, native_log_file=log)
+    calls = []
+
+    class Owner:
+        change = False
+
+        def setup_status(self, **options):
+            calls.append(options)
+            if self.change:
+                record["pid"] = 456
+                lifecycle.write_text(json.dumps(record))
+            return {"loaded_identity": {
+                "process_id": 123, "runtime_instance_id": "runtime-one",
+                "connector_endpoint": "http://127.0.0.1:15526",
+            }}
+
+    owner = Owner()
+    inspect_collection_destination(config, owner, recordings_root=tmp_path / "probe")
+    assert calls == [{"recordings_root": tmp_path / "probe", "native_log_file": str(log),
+                      "connector_port": 15526}]
+    owner.change = True
+    with pytest.raises(BoundaryError, match="selected_host_context_changed"):
+        inspect_collection_destination(config, owner, recordings_root=tmp_path / "probe")
+    lifecycle.unlink()
+    with pytest.raises(BoundaryError, match="selected_host_context_unavailable"):
+        inspect_collection_destination(config, owner, recordings_root=tmp_path / "probe")
+    assert len(calls) == 2

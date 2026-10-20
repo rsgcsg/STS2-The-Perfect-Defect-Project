@@ -447,7 +447,29 @@ Freeze necessary public values on the game main thread at their actual seam.
 Record actual-displayed versus publicly-available-at-seam where they differ; neither
 means Human mental knowledge. Never read transient values later through live getters
 and call them old observations. Background encoding/storage/transport uses frozen
-values only. Source capture failure, queue/disk failure and retention overflow have
+values only. Consumer request encoding retains its four-slot admission. Passive
+Source4 publication and prefix encodings use the existing 128 MiB copied/scratch
+budget instead: the synchronous extraction's 64 MiB working reservation shrinks
+to the measured detached native/public byte size with the existing 64x copy/parser
+charge before queuing. Only an encoding that acquired a request slot releases it.
+A small native callback burst therefore retains each original position without
+borrowing another request slot; byte-full admission and the original encoding
+deadline still produce explicit missing outcomes, with no retry or later backfill.
+Capture failures retain their typed cause and acquisition stage in the missing
+reason and write the original exception with source seam/phase/position to stderr.
+
+Native event and ordinary reward Source4 leaves keep source-only original object
+witnesses: current event room plus EventOption, or the exact current reward button
+plus Reward. Public actions and dispatch remain unchanged. The original
+EventOption.Chosen invocation's native WasChosen fact proves acceptance before its
+Task may await nested choices; it does not prove task success, effects or Commit.
+The reward screen owner is registered from fields that native ShowScreen assigned
+before Push invokes _Ready, and confirmed again at the returned screen. This
+prevents the screen's own opening callbacks from preceding their known owner.
+Forward-profile deselection remains excluded by the existing P1 rule; a physical
+Human deselection does not become an invented P1 choice.
+
+Source capture failure, queue/disk failure and retention overflow have
 separate gap reasons and accounting; none changes game legality or guesses success.
 
 Large material not yet captured can be a notice with a current-read capability.

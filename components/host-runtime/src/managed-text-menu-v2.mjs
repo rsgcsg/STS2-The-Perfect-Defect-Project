@@ -254,8 +254,6 @@ export class ManagedTextMenuV2SessionAdapter {
   }
 
   async #dispatch({ requestId, expectedSnapshotId, actionId, timeoutMs }) {
-    const source = this.#session.observe();
-    const current = this.#project(source);
     if (this.#session.tainted === true) {
       return this.#result(requestId, { status: "not_applied", effect_domain: null,
         native_delivery: null, action: null,
@@ -263,6 +261,8 @@ export class ManagedTextMenuV2SessionAdapter {
           ? "runtime_tainted_after_successor_projection_failure" : "runtime_tainted_after_unknown",
         detail: "Managed mutation authority is closed.", retry: "never", successor: null });
     }
+    const source = this.#session.observe();
+    const current = this.#project(source);
     const choice = current.choices.get(actionId);
     if (expectedSnapshotId !== current.snapshot.snapshot_id || !choice
         || current.snapshot.menu_actions.status !== "complete") {

@@ -1,61 +1,47 @@
-# Current — Round19 pre-training P1 freeze
+# 当前工作：冻结准备进行中，尚未通过
 
-Resolve live GitHub refs; source/original records override this file.
-This is dated routing, not live service or qualification authority. The
-[project map](../plans/p1-prefreeze-2026-10-18/README.md) routes the active sprint;
-[definition v0.3](../plans/p1-prefreeze-2026-10-18/SCOPE_v0.3.zh-CN.md) is the merged
-**pending-user-approval** definition, not approved freeze or cloud/training authority.
-The root handoff canonical and input hashes are fixed in its source index.
+更新于2026-10-20。Resolve live GitHub refs before relying on a recorded candidate.
+最新直接用户原话和现场证据 override this file；安装/录制/原收据分层，不把此页的快照当资格。
+主线唯一writer A，当前树work/p1-recording-followup-20261019；B应用/Store与C研究的稳定来源正常merge保留。
+正在收固定组合的检查/普通PR；具名merge、发布、冻结、付费训练没有新增批准，不自动执行。
 
-## Integrated source and actual use
+用户已批准本轮B*离线新投影、具名原件/旧报告tar的既有ArtifactStore/R2保全，最近2局热集及条件冷却。
+原件/旧默认/03/T0保留，三修复原件/活动session/依赖不动；不删云/其它历史，不建自动化，不授跨缺失记忆。
+今天19:00停止新增实现/长任务，19:30全员停止交可审计快照，不后台续做。
+完整工程基线最晚周三10-21，首训最晚周四10-22；覆盖旧多日日程，不能为日期删需求或吞失败。
 
-Develop is `ea7c14e8969006fa0e470678198ef94aca471f90`, tree `4b796997` matching
-reviewed eafa9a7c. PR202 merged as beca367c; PR204 merged as ea7c14e8.
-PR203 entered through PR204 (auto-MERGED, no third develop merge).
-CI39115695661/39120207920 passed; docs change no product/BOM identity.
+## 当前可用路径与真实边界
 
-11:21:56Z: Mod4d3f8b4b/MVIDfb38a130 installed, not cold-loaded/preflight-pass.
-Build8967; rollback2026-10-18T11-21-45.822Z (6 old hashes match). Prior loaded6c
-English/EndTurn keep their identity. Unpushed root90429193: fullPython4485pass/5skip
-+93subtests; original env failure/correction retained. Managed A03 used a70d8de1/cd47f09c;
-old1482/S05 and all earlier records keep their actual source/artifact identities.
-A03 both loss terminals compare full-public equal; choice matches170/293 and236/432,
-zero unknown. These are Chinese diagnostics, not new English strict full games.
+用户窗口已恢复滚动自然录制：标准英文全角色A0–A10，默认instant已实际核；normal/fast为同合同额外测试。
+公共recording:p1经真实Application在Embark前Start，origin=declared_human；原生游玩由用户完成。
+活动局期间不部署/重启/工程实打。准确session/进程/df和下一局预算查下面现场ACTIVE，不复用旧端点。
+Annotatorrc21/GameModrc46实际730616d2/MVID094962fe已冷加载；popup出牌/EndTurn工程原H、
+exact nativeInput/执行完整目录/finished后继逐项通过，6actions complete/0issues，非Human整局资格。
+首滚动旧loss447观察/446N，2个实际H/绑定缺口保留，不能拿执行S补H；原件已R2全成员读回及按ID恢复。
 
-## Critical path and parallel work
+B* native-timeline-targets-1沿同reader/共享核，保同原局timeline、effects/missing与引用；
+N自身完整Input/catalog/唯一chosen/完成，next拒跨效果或缺失，end核同分支自然终局。
+三旧源1308点/1305N，旧1303观察Input/chosen全同，5新N；28effects/5missing保留，chain仍false。
+Tool2928三源输出验证保原范围；新Toold25c0ab1同P1字节、6动作canary通过，旧默认/03不变。
 
-- B: actual native_input first-combat EndTurn/carrier/successor is positive, but
-  bounded offline startup-waiting E2 is user-approved; source reviewed;22 focused pass; new preflight pending;
-  old map lacks witness; candidate fix needs new capture. Preflight is NOT PASS;
-  do not tell the user to start recording. Setup CLI status and typed API health differ.
-- A: retain old Reference defects without rewriting originals; continue actual
-  Managed fixes. New same-candidate English strict games remain0/3. [Differences](../plans/p1-prefreeze-2026-10-18/MANAGED_DIFFERENCES.md)
-  separate original facts, source fixes and actual comparisons; exceptions stay in P1§17.
-- C/K6: GLOBAL API/library/CLI services, thin GUI and external-package R20 material
-  exist. Actual final-tuple product/R20 acceptance is pending; no complex GUI/team work.
-- K5: storage/provider reuse proposal delivered; current P1 R2/Modal seam untested.
-  Precise upload objects, costs and consumer probe need their own approval.
-- K: K0/K1/K2 and K5/K6 material delivered; K3 submitted a24-row historical-PR
-  disposition table completed:24/24 remote exact tags verified then PRs closed, unmerged.
-  No branch/worktree/data deletion. 19 reuse rows with actual tags are in the map;7 training/Modal/
-  checkpoint PRs must be checked before Q-CHAIN-0/Q3. K4 previously9/10; B operation
-  sheet is missing. This synthesis still needs root/K4 review and user definition approval.
+B同一Application/CLI/API/GUI经固定Tool→ManifestArtifactStore/原operation处理保全/恢复/具名派生。
+B固定安装2fa3723d正常Catalog已读当前隔离Host，ready/33sealed+3unsealed，0录制写命令。
+实际首局直接publication、R2按ID恢复1404members、一次正常Tool3派生已通过，不重pack/三源重算。
+catalog元数据只作来源绑定的显示/筛选，不改不可变原件/targets，不作为seed/root/恢复谱系权威。
+后台维护默认disabled，启用云peer须明确候选或日期/来源范围；日常持续维护/冷却不由源码存在推定通过。
+C已实现N-only快照、完整epoch/dev5/best-last/全状态恢复及同worker/Model→现Agent工程链，synthetic实证通过。
+真实3派生来自2原件，370重叠N作alias去重后820N；亲缘unknown、全unassigned、真实训练0。
+P1已从Workbench私有路径helper解耦并入共享policy_files；新adapter另绑定，旧模型字节不改。
+现Store P1-aware Curation owner准备、事实lineage消费/用途、真实多源worker仍未闭合；不得制造holdout。
 
-## Stop boundary and next action
+## Remaining Platform non-claims 与下一步
 
-Unblock B preflight, then user short segment -> complete conversion -> new English
-full games/strict replay; keep A/K/CLI work parallel. Preserve unknown/no-retry and
-actual candidate/source/parent continuity. Common mechanisms need one new-candidate instance; Act2/3 each require ordinary/elite/
-event/Boss/Boss-reward, all Reference-correct+offline+strict-Managed PASS.
-Pre-freeze non-author image/P1 approved; native tips/preview+CUA live pending.
-Approved ordinary merged-topic auto-delete/new-Mod install-with-backup differ from
-historical asset deletion/move, which still need approval; K3 closure has the narrow
-exact-tag-first approval above. No cloud upload,
-new paid job/research configuration, or final freeze is authorized by this document.
-Hard deadline: **2026-10-20 16:30 Australia/Brisbane**; report real gaps if incomplete.
+固定组合的本地selected/hostedCI以各自精确head/receipt另判；不要借旧green或独立作者测试报组合通过。
+普通P1 interruption recovery缺P1events/close/prefix，原生Continue缺跨process确切save/parent，均未实现完整闭环。
+Reference20/R20/INFO/T0b、真实多源/镜像/CUDA、正式用途/费用与策略效果未全验，不由三Human或synthetic替代。
+全部大小/历史功能沿唯一CHAIN/COMPONENTS/FEATURE_STATUS核role→连接→合同→owner/caller→格式→证据/去向，
+不是只移动目录或登记入口。历史成熟也须满足当前requires；未知和未迁入不靠归档标签消失。
 
-## Remaining Platform non-claims
-
-Final English>=3 games, Act3/victory evidence, full strict comparison, final40/20,
-product/R20, cloud seam and K are not complete. Old batches/CI/process exit/A03/S05
-do not establish final Human/Source4, Windows, training, strategy or native-clean shutdown.
+现场唯一检查点work/P1-SEMANTIC-ACTIVE-20261019.md；固定报告共享replies/
+P1-CONTINUITY-AND-INTEGRATION-NEXT-20261020.md，细证据work/p1-freeze-preparation-20261020。
+历史CURRENT与原产物/失败按各原时点保留，当前候选不追授历史资格。

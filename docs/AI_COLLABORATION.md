@@ -42,6 +42,8 @@ work while waiting where useful. Do not make the user relay routine technical me
 Only use actual available authorized communication tools; never claim an issue or
 written prompt has started a worker without a real dispatch receipt.
 
+Every report includes chain position (node/edge), one of the four Architecture change
+classes, and actual requires/provides or gap; use the existing CHAIN_PURPOSES diagram.
 Return a compact delta: exact head/artifact, changed behavior, actual checks, side
 effects, unresolved matters and next consumer. Logs stay at their original locations.
 The lead checks critical code and results, integrates useful increments and updates the

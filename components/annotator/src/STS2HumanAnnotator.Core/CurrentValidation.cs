@@ -19,7 +19,8 @@ public static class HumanCaptureProfileValidator
             || profile.Schema != CurrentRecordingContract.CaptureProfileSchema)
             errors.Add("capture_profile_schema_mismatch");
         if (string.IsNullOrWhiteSpace(profile.ProfileId)
-            || profile.RecordSchema != CurrentRecordingContract.RecordSchema)
+            || profile.RecordSchema != (profile.ProfileId == P1NativeRecordingContract.ProfileId
+                ? P1NativeRecordingContract.EventSchema : CurrentRecordingContract.RecordSchema))
             errors.Add("capture_profile_identity_incomplete");
         if (profile.SupportedActionFamilies.Count == 0
             || profile.SupportedActionFamilies.Any(string.IsNullOrWhiteSpace)

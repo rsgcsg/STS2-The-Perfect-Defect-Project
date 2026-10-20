@@ -8,10 +8,13 @@ public static partial class ConnectorMod
 {
     internal const int MaxHostControlBodyBytes = 4 * 1024;
 
+    internal sealed record HostPreparationProvenance(string Status, bool Ready,
+        HostNativeSpeedProvenance NativeSpeed, HostBaselineProvenance Baseline);
+
     private static void HandlePostHostPreparation(HttpListenerRequest request, HttpListenerResponse response)
     {
         HostPreparationRequest? preparation = ReadBoundedJsonBody<HostPreparationRequest>(
-            request, response, MaxHostControlBodyBytes, "Host native speed preparation");
+            request, response, MaxHostControlBodyBytes, "Host fixed run preparation");
         if (preparation == null) return;
         if (!IsSafeProtocolIdentifier(preparation.ExpectedRuntimeInstanceId, 128)
             || preparation.HostControlToken?.Length != 64)
@@ -30,8 +33,16 @@ public static partial class ConnectorMod
                     authorization.Status, "Host preparation failed closed.");
                 return;
             }
-            var task = RunOnMainThread(() => HostNativeSpeedControl.Prepare(authorization.RuntimeInstanceId));
-            HostNativeSpeedProvenance result = task.GetAwaiter().GetResult();
+            var task = RunOnMainThread(() =>
+            {
+                var baseline = HostProfileControl.PrepareBaseline(authorization.RuntimeInstanceId);
+                var speed = baseline.Recipe != null && !baseline.Ready
+                    ? HostNativeSpeedControl.Observe(authorization.RuntimeInstanceId)
+                    : HostNativeSpeedControl.Prepare(authorization.RuntimeInstanceId);
+                bool ready = (baseline.Recipe == null || baseline.Ready) && (speed.Requested == null || speed.Ready);
+                return new HostPreparationProvenance(ready ? "host_preparation_ready" : "host_preparation_incomplete", ready, speed, baseline);
+            });
+            HostPreparationProvenance result = task.GetAwaiter().GetResult();
             if (!result.Ready) response.StatusCode = 409;
             SendJson(response, result);
         }

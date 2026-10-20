@@ -86,6 +86,8 @@ NATIVE_PROFILE = "native-logical-v1"
 NATIVE_ADAPTER = "stpd-native-structured-m2-agent"
 TEACHER_ADAPTER = "stpd-native-public-program-teacher"
 GLOBAL_ADAPTER = "spireagent-global-public-program"
+GLOBAL_MODEL_ADAPTER = "stpd-p1-mstd-agent"
+GLOBAL_ADAPTERS = frozenset({GLOBAL_ADAPTER, GLOBAL_MODEL_ADAPTER})
 GLOBAL_PROFILE = "p1-global-r1"
 PROGRAM_ADAPTERS = frozenset({TEACHER_ADAPTER, GLOBAL_ADAPTER})
 NATIVE_AGENT_ADAPTERS = frozenset({NATIVE_ADAPTER, TEACHER_ADAPTER})
@@ -191,7 +193,8 @@ def _loopback(url: str) -> str:
     return str(result)
 
 
-def _startup_identity(manifest: dict[str, Any], package: dict[str, Any]) -> dict[str, Any]:
+def _startup_identity(manifest: dict[str, Any], package: dict[str, Any], *,
+                      managed_environment: dict[str, str] | None = None) -> dict[str, Any]:
     native = manifest.get("schema") == "sts2.policy-runtime/agent-manifest-1"
     prefix = "agent" if native else "policy"
     return {
@@ -202,7 +205,8 @@ def _startup_identity(manifest: dict[str, Any], package: dict[str, Any]) -> dict
         "runtime_version": package["version"],
         "runtime_code_sha256": package["code_sha256"],
         "address": "http://127.0.0.1:15527",
-        **({"adapter": manifest["adapter"], "managed_environment": None} if native else {}),
+        **({"adapter": manifest["adapter"], "managed_environment": managed_environment}
+           if native else {}),
     }
 
 
@@ -599,6 +603,7 @@ class LocalModelService:
                         NATIVE_ADAPTER,
                         TEACHER_ADAPTER,
                         GLOBAL_ADAPTER,
+                        GLOBAL_MODEL_ADAPTER,
                         PUBLIC_M0_ADAPTER,
                         PUBLIC_M2_ADAPTER,
                     }
@@ -644,8 +649,8 @@ class LocalModelService:
             if entry.get("adapter") == PUBLIC_M2_ADAPTER and profile != PUBLIC_M2_PROFILE:
                 raise BoundaryError("local_model", "unsupported_runtime_profile")
             if "runtime_profile" in entry and (
-                (profile == GLOBAL_PROFILE and entry.get("adapter") != GLOBAL_ADAPTER)
-                or (entry.get("adapter") == GLOBAL_ADAPTER and profile != GLOBAL_PROFILE)
+                (profile == GLOBAL_PROFILE and entry.get("adapter") not in GLOBAL_ADAPTERS)
+                or (entry.get("adapter") in GLOBAL_ADAPTERS and profile != GLOBAL_PROFILE)
                 or (profile == PUBLIC_M0_PROFILE and entry.get("adapter") != PUBLIC_M0_ADAPTER)
                 or (profile == PUBLIC_M2_PROFILE and entry.get("adapter") != PUBLIC_M2_ADAPTER)
                 or (profile == NATIVE_PROFILE and entry.get("adapter") not in NATIVE_AGENT_ADAPTERS)
@@ -965,7 +970,8 @@ class LocalModelService:
             "runtime.validateAgentManifest(manifest);"
             "if(manifest.input.profile==='p1-global-r1'){"
             "if(manifest.input.global?.core_sha256!==runtime.p1CoreIdentity?.().module_digest||"
-            "runtime.globalDigest(manifest.input.input_spec)!==runtime.globalDigest(runtime.GLOBAL_PROGRAM_INPUT))"
+            "(manifest.adapter.id!=='stpd-p1-mstd-agent'&&"
+            "runtime.globalDigest(manifest.input.input_spec)!==runtime.globalDigest(runtime.GLOBAL_PROGRAM_INPUT)))"
             "throw Error('global_runtime_core_or_program_input_required');"
             "}else{"
             "const history=manifest.input.history_mode;"
@@ -1315,7 +1321,7 @@ class LocalModelService:
                                           binding_root=self.entry_root(entry)))
         elif entry["adapter"] in {"token-v1", "stpd-m2-decision-adapter",
                                  "stpd-s0-structured-adapter", NATIVE_ADAPTER, PUBLIC_M0_ADAPTER,
-                                 PUBLIC_M2_ADAPTER}:
+                                 PUBLIC_M2_ADAPTER, GLOBAL_MODEL_ADAPTER}:
             from spireagent.workbench.local_model_dependencies import (
                 local_models_available,
                 native_models_available,
@@ -1874,7 +1880,7 @@ class LocalModelService:
         if request_ref is not None:
             from .agent_run_request import original
 
-            expected = _startup_identity(manifest, package)
+            expected = _startup_identity(manifest, package, managed_environment=selected_target)
             admitted = original(self.directory, request_ref, expected)
             if self.composition(identity)["composition_id"] != admitted["composition_id"]:
                 raise BoundaryError(
@@ -1966,7 +1972,8 @@ class LocalModelService:
             startup = decode_json(raw)
             if not isinstance(startup, dict) or len(raw) > JSON_LIMIT:
                 raise ValueError
-            expected = {**_startup_identity(manifest, package), "mode": "human"}
+            expected = {**_startup_identity(manifest, package, managed_environment=selected_target),
+                        "mode": "human"}
             if any(
                 startup.get(key) != value for key, value in expected.items()
             ) or not re.fullmatch(r"run-[a-f0-9-]{36}", startup.get("run_id", "")):
@@ -2351,7 +2358,13 @@ class LocalModelService:
         entry = self.selection(previous.get("selection_id", ""))
         manifest = _object_file(self.entry_path(entry, "manifest"))
         package = self._runtime_package(entry["id"])
-        expected_startup = _startup_identity(manifest, package)
+        managed_environment = (previous.get("managed_environment")
+                               if managed_manifest(manifest) else None)
+        if (manifest.get("schema") == "sts2.policy-runtime/agent-manifest-1"
+                and managed_manifest(manifest) and not isinstance(managed_environment, dict)):
+            raise BoundaryError("local_model", "recovery_identity_drift")
+        expected_startup = _startup_identity(
+            manifest, package, managed_environment=managed_environment)
         if manifest.get("schema") != "sts2.policy-runtime/agent-manifest-1":
             # Preserve the established legacy recovery identity contract.
             # Native startup provenance always requires its explicit namespace.
@@ -2372,8 +2385,6 @@ class LocalModelService:
         # Older sessions did not persist their Connector endpoint. Their exact
         # Runtime can still be returned to Human or stopped, but cannot safely be
         # retargeted from today's project config. Stop then load again to bind it.
-        managed_environment = (previous.get("managed_environment")
-                               if managed_manifest(manifest) else None)
         if managed_manifest(manifest):
             connector_endpoint = None
             if not isinstance(managed_environment, dict) or (

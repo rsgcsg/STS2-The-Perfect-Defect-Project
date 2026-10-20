@@ -1,5 +1,11 @@
-import { it, expect } from "vitest";
-import { mkdtemp, writeFile, realpath } from "node:fs/promises";
+import { afterAll, beforeAll, describe, it, expect } from "vitest";
+import { mkdtemp, writeFile, readFile, realpath, rm, symlink } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { once } from "node:events";
+import { createServer } from "node:net";
+import { createRequire } from "node:module";
+import { execFileSync, spawn, type ChildProcess } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 // The actual Host service/actor and Managed projection, with only native process input synthetic.
@@ -12,7 +18,9 @@ import { gameOver } from "../../host-runtime/test/fixtures/managed-game-over.mjs
 import { ManagedServicePolicyClient } from "../src/managed.js";
 import { globalRuntimeFixture } from "./global-runtime-fixtures.js";
 import { replayGlobalAgentRun } from "../src/global-replay.js";
-it("runs real Managed service HTTP → original same-actor capture → NDJSON → token/epoch action → release",async()=>{
+import { canonicalJson } from "../src/evidence.js";
+import { POLICY_RUNTIME_VERSION } from "../src/contracts.js";
+async function managedSource() {
  let terminal=false, actions=0;
  const decision=()=>terminal?gameOver({type:"decision",context:{act:1,act_index:0,act_definition_id:"OVERGROWTH",act_name:"Overgrowth",floor:1,total_floor:1,ascension:0,bosses:[],modifiers:[]},player:{name:"The Ironclad",character_id:"IRONCLAD",hp:0,max_hp:80,gold:99,native_ref:"player",max_potion_slots:3,relics:[],potions:[],deck:[]}}):{
   type:"decision",decision:"map_select",context:{act:1,act_index:0,act_definition_id:"OVERGROWTH",act_name:"Overgrowth",floor:0,total_floor:0,ascension:0,bosses:[],modifiers:[]},
@@ -24,17 +32,78 @@ it("runs real Managed service HTTP → original same-actor capture → NDJSON �
  const session=new ManagedPlayerEnvironmentSession({process,runtimeInstanceId:"managed-runtime",environmentFingerprint:"managed-environment"});
  const runtime={process,manifest:{candidate_id:"synthetic"},exactGame:{version:"fixture",commit:"fixture"},build,runtimeIdentity:{kind:"synthetic"},adapterRuntimeInstanceId:"managed-runtime"};
  const service=await startManagedHostService({session,runtime,environmentFingerprint:"managed-environment"},{hostIdentity:host});
- let f:Awaited<ReturnType<typeof globalRuntimeFixture>>|undefined;
  try{
   const reset=await fetch(service.endpoint+"/v1/admin/reset",{method:"POST",headers:{authorization:`Bearer ${service.managerToken}`,"content-type":"application/json","x-sts2-managed-service-id":service.serviceInstanceId},body:JSON.stringify({request_id:"reset",seed:"SEED",expected_runtime_instance_id:"managed-runtime",expected_game_continuity_id:null})});expect(reset.status).toBe(200);
   const ready=await(await fetch(service.endpoint+"/v1/ready",{headers:{authorization:`Bearer ${service.clientToken}`}})).json() as any;
   const directory=await realpath(await mkdtemp(join(tmpdir(),"global-managed-"))),bindingPath=join(directory,"binding.json"),attachmentPath=join(directory,"attachment.json");
   await writeFile(bindingPath,JSON.stringify({schema:"sts2.policy-runtime/managed-environment-binding-1",profile_sha256:"a".repeat(64),input_profile:"public-basis-1",host_package_identity:{package:host.package_name,version:host.version,source_revision:host.source_revision,component_tree_revision:host.component_tree_revision,release_asset_sha256:"d".repeat(64),package_content_sha256:"e".repeat(64)},candidate_build:build}));
   await writeFile(attachmentPath,JSON.stringify({schema:"sts2.host-runtime/managed-service-attachment-1",endpoint:service.endpoint,service_instance_id:service.serviceInstanceId,host_identity:ready.host_identity,role:"client",token:service.clientToken}),{mode:0o600});
-  const transport=await ManagedServicePolicyClient.attachGlobal(bindingPath,attachmentPath,{serviceInstanceId:service.serviceInstanceId,runtimeInstanceId:"managed-runtime",gameContinuityId:ready.episode.game_continuity_id},"run-00000000-0000-4000-8000-000000000001");
+  const target={serviceInstanceId:service.serviceInstanceId,runtimeInstanceId:"managed-runtime",gameContinuityId:ready.episode.game_continuity_id};
+  return {service,bindingPath,attachmentPath,target,get actions(){return actions;}};
+ }catch(error){await service.close();throw error;}
+}
+it("runs real Managed service HTTP → original same-actor capture → NDJSON → token/epoch action → release",async()=>{
+ const source=await managedSource();let f:Awaited<ReturnType<typeof globalRuntimeFixture>>|undefined;
+ try{
+  const transport=await ManagedServicePolicyClient.attachGlobal(source.bindingPath,source.attachmentPath,source.target,"run-00000000-0000-4000-8000-000000000001");
+  expect(()=>transport.startupEnvironment).toThrow("global_source_not_admitted");
   f=await globalRuntimeFixture({transport});
-  const first=await f.runtime.tick();expect(first.type).toBe("delivered");expect(actions).toBe(1);
-  expect((await f.runtime.tick()).type).toBe("closed");expect(actions).toBe(1);expect(service.driver.status().control_held).toBe(false);expect(service.driver.closed).toBe(false);
+  const first=await f.runtime.tick();expect(first.type).toBe("delivered");expect(source.actions).toBe(1);
+  expect((await f.runtime.tick()).type).toBe("closed");expect(source.actions).toBe(1);expect(source.service.driver.status().control_held).toBe(false);expect(source.service.driver.closed).toBe(false);
   expect((await replayGlobalAgentRun(f.evidence.directory)).verdict).toBe("verified");
- }finally{await f?.close();await service.close();}
+ }finally{await f?.close();await source.service.close();}
 },15000);
+
+describe("original GLOBAL CLI startup and control",()=>{
+ let compiled:string;
+ beforeAll(async()=>{
+  compiled=await mkdtemp(join(tmpdir(),"global-runtime-cli-source-"));
+  execFileSync(process.execPath,[createRequire(import.meta.url).resolve("typescript/bin/tsc"),"-p",fileURLToPath(new URL("../tsconfig.json",import.meta.url)),"--outDir",compiled]);
+  await symlink(fileURLToPath(new URL("../../../node_modules/",import.meta.url)),join(compiled,"node_modules"),process.platform==="win32"?"junction":"dir");
+  await writeFile(join(compiled,"package.json"),'{"type":"module"}');
+ });
+ afterAll(async()=>{if(compiled)await rm(compiled,{recursive:true,force:true});});
+ it.each(["managed","reference"] as const)("attests %s startup and performs one original step/Stop",async(kind)=>{
+  const source=kind==="managed"?await managedSource():undefined;
+  const transport=source?await ManagedServicePolicyClient.attachGlobal(source.bindingPath,source.attachmentPath,source.target,"run-00000000-0000-4000-8000-000000000001"):undefined;
+  const f=await globalRuntimeFixture({transport});await f.runtime.stop();
+  let child:ChildProcess|undefined,closed:Promise<unknown[]>|undefined;
+  try{
+   const listener=createServer();listener.listen(0,"127.0.0.1");await once(listener,"listening");
+   const address=listener.address();if(!address||typeof address==="string")throw Error("test listener unavailable");
+   const port=address.port;await new Promise<void>(done=>listener.close(()=>done()));
+   const manifestPath=join(f.root,"agent.json"),agent=fileURLToPath(new URL("./fixtures/global-agent-child.mjs",import.meta.url));
+   const args=[join(compiled,"cli.js"),"--manifest",manifestPath,"--adapter-command",process.execPath,
+    "--adapter-arg",agent,"--adapter-arg",manifestPath,"--listen-port",String(port),"--evidence-root",f.root,
+    "--mode","human","--max-auto-submissions","1","--max-policy-calls","8","--auto-deadline-ms","10000"];
+   if(source)args.push("--managed-binding",source.bindingPath,"--managed-attachment",source.attachmentPath,
+    "--managed-expected-service-instance-id",source.target.serviceInstanceId,"--managed-expected-runtime-instance-id",source.target.runtimeInstanceId,
+    "--managed-expected-game-continuity-id",source.target.gameContinuityId);
+   else args.push("--connector-endpoint",f.source.address);
+   child=spawn(process.execPath,args,{stdio:["ignore","pipe","pipe"]});closed=once(child,"close");
+   let diagnostics="";child.stderr!.on("data",chunk=>{diagnostics+=String(chunk);});
+   const startup=await new Promise<any>((resolve,reject)=>{
+    let text="";const timer=setTimeout(()=>reject(Error("GLOBAL CLI startup timeout:"+diagnostics)),5000);
+    child!.once("exit",code=>{clearTimeout(timer);reject(Error(`GLOBAL CLI early exit ${code}: ${diagnostics}`));});
+    child!.stdout!.on("data",chunk=>{text+=String(chunk);const end=text.indexOf("\n");if(end>=0){clearTimeout(timer);resolve(JSON.parse(text.slice(0,end)));}});
+   });
+   const expected=source?{binding_sha256:createHash("sha256").update(canonicalJson(JSON.parse(await readFile(source.bindingPath,"utf8")))).digest("hex"),
+    service_instance_id:source.target.serviceInstanceId,runtime_instance_id:source.target.runtimeInstanceId,game_continuity_id:source.target.gameContinuityId}:null;
+   expect(startup).toMatchObject({schema:"sts2.policy-runtime/agent-session-startup-1",runtime_version:POLICY_RUNTIME_VERSION,managed_environment:expected,mode:"human"});
+   if(source){const attachment=JSON.parse(await readFile(source.attachmentPath,"utf8"));expect(JSON.stringify(startup)).not.toContain(attachment.token);expect(JSON.stringify(startup)).not.toContain(source.attachmentPath);}
+   const environment=await(await fetch(startup.address+"/v2/environment")).json();
+   const headers={"content-type":"application/json","x-sts2-policy-run-id":startup.run_id,"x-sts2-game-instance-id":environment.runtime_instance_id,"x-sts2-recovery-epoch":String(environment.recovery_epoch)};
+   const mode=await fetch(startup.address+"/v2/mode",{method:"POST",headers,body:JSON.stringify({mode:"one_step"})});expect(mode.status).toBe(200);
+   const tick=await fetch(startup.address+"/v2/tick",{method:"POST",headers,body:JSON.stringify({max_ticks:1})});expect(tick.status).toBe(200);
+   expect(await tick.json()).toMatchObject({results:[{type:"delivered"}],status:{mode:"human",autonomy_budget:{submissions_used:1}}});
+   const stop=await fetch(startup.address+"/v2/stop",{method:"POST",headers:{"content-type":"application/json","x-sts2-policy-run-id":startup.run_id},body:"{}"});expect(stop.status).toBe(200);
+   expect((await stop.json()).status).toMatchObject({lifecycle:"stopped",controller:"released",pending_request:null});
+   const [code]=await closed;expect(code,diagnostics).toBe(0);
+   expect((await replayGlobalAgentRun(join(f.root,startup.run_id))).verdict).toBe("verified");
+   expect(source?source.actions:f.source.steps).toBe(1);
+  }finally{
+   if(child&&child.exitCode===null&&child.signalCode===null&&!child.killed)child.kill("SIGKILL");
+   if(closed)await closed;await f.close();await source?.service.close();
+  }
+ },15000);
+});

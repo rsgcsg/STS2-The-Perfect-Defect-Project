@@ -1,3 +1,4 @@
+import { validateInitialProgress } from "./native-baseline.mjs";
 import { createHash } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import {
@@ -6,6 +7,7 @@ import {
   decodePlayerReceipt,
   decodePlayerSnapshot
 } from "@rsgcsg/sts2-connector-client";
+import { completePublicUpgradePreview } from "@rsgcsg/sts2-connector-client/p1-global";
 import { startManagedCandidateRuntime } from "./managed-candidate.mjs";
 
 const ACTION_LIMIT = 512;
@@ -558,7 +560,7 @@ function visibleCombatCard(card, entityId, depth = 0) {
     name: card?.name ?? null,
     type: card?.type ?? "Unknown",
     cost: String(card?.cost ?? "?"),
-    ...(card?.star_cost == null ? {} : { star_cost: String(card.star_cost) }),
+    ...(card?.star_cost == null ? (depth > 0 ? { star_cost: null } : {}) : { star_cost: String(card.star_cost) }),
     description: visibleText(card?.description),
     rarity: card?.rarity ?? "Unknown",
     is_upgraded: card?.is_upgraded === true || card?.upgraded === true,
@@ -1331,7 +1333,9 @@ function currentSurface(state, ctx) {
             after_selected: alternative?.after_selected ?? null, is_native_skip: alternative?.is_native_skip === true }
         });
         ctx.action({
-          verb: alternative.id.toLowerCase() === "skip" ? "skip" : "activate",
+          // Reference's native alternative provider uses activate for every
+          // button, including the alternative whose typed outcome is Skip.
+          verb: "activate",
           subject: item, label: alternative.name,
           raw: { cmd: "action", action: "select_card_reward_alternative",
             args: { alternative_ref: alternative.native_ref } }
@@ -1340,19 +1344,18 @@ function currentSurface(state, ctx) {
       });
       return {
         kind: "card_reward_selection",
-        stage: "choosing",
+        stage: "ready",
         prompt: null,
-        surface: { kind: "card_reward_selection", stage: "choosing", cards, alternatives,
+        surface: { kind: "card_reward_selection", cards, alternatives,
           parent_status: ["bound", "standalone"].includes(state.parent_status) ? state.parent_status : "unavailable",
           parent_group_id: typeof state.parent_reward_ref === "string" ? ctx.entityId("reward_group", state.parent_reward_ref) : null,
           reward_set_id: typeof state.reward_set_ref === "string" ? ctx.entityId("reward_set", state.reward_set_ref) : null,
           selection_completes_reward: typeof state.selection_completes_reward === "boolean" ? state.selection_completes_reward : null,
           native_relic_refresh_subscription: ["attached", "absent"].includes(state.native_relic_refresh_subscription)
             ? state.native_relic_refresh_subscription : "unavailable",
-          can_skip: rawAlternatives.some((option) => option.id.toLowerCase() === "skip"),
           // Same fact as the Reference card reward page: every offered card has its select input.
           selectable_card_entity_ids: cards.map((card) => card.entity_id) },
-        context: { ...commonContext, kind: "reward" },
+        context: { kind: "reward_flow", reward_kind: "card_reward" },
         complete: metadataComplete,
         visibleInformation: "contract_complete_for_current_native_card_reward",
         interactionDiscovery: "derived_from_same_current_native_card_reward_callback_as_execution",
@@ -1736,7 +1739,7 @@ function currentSurface(state, ctx) {
       } : null;
       if (plainObject(state.selector_public)) {
         const canonical = canonicalSelectorSurface(state, ctx, commonContext);
-        return { ...canonical, context: publicHud,
+        return { ...canonical, context: publicHud ?? canonical.context,
           hiddenByPolicy: ["hidden_rng", "draw_pile_true_order", "future_enemy_moves", "future_rewards", "future_events"],
           complete: canonical.complete && hudComplete,
           missing: [...canonical.missing, ...(hudComplete ? [] : ["complete_current_post_prefix_combat_hud"])] };
@@ -1763,7 +1766,7 @@ function currentSurface(state, ctx) {
           surface: { kind: "native_generated_card_choice",stage: "choosing",prompt: state.prompt ?? null,
             cards: generated,selectable_card_entity_ids: complete ? generated.map(card => card.entity_id) : [],
             is_peeking: false,can_skip: complete && state.can_skip },
-          context: publicHud,complete,
+          context: publicHud ?? { ...commonContext, kind: "selection" },complete,
           missing: complete ? [] : ["exact_current_native_generated_choice_and_details"],
           visibleInformation: "same_capture_original_native_generated_cards_and_post_prefix_combat_hud",
           interactionDiscovery: "original_native_choose_callback_task_and_offered_objects",
@@ -2007,7 +2010,7 @@ function currentSurface(state, ctx) {
                 verb: "use",
                 subject: potionReferent,
                 arguments: [{ role: "target", referent: target }],
-                label: `Use ${potionReferent.label}`,
+                label: target.label ? `Use ${potionReferent.label} -> ${target.label}` : `Use ${potionReferent.label}`,
                 raw: {
                   cmd: "action",
                   action: "use_potion",
@@ -2232,6 +2235,9 @@ function publicCardDetailRead(ctx, visible, details, missing, displayContext, ow
   if (!plainObject(details)) gaps.push("current_native_public_card_details_not_captured");
   else for (const field of ["keywords", "card_previews"])
     if (!Array.isArray(details[field])) gaps.push(`current_native_public_card_${field}_not_captured`);
+  if (plainObject(details) && Object.hasOwn(details, "upgrade_preview")
+      && !completePublicUpgradePreview(details.upgrade_preview))
+    gaps.push("current_native_public_card_upgrade_preview_not_captured");
   return {
     descriptor: {
       read_id: ctx.id("read", ctx.snapshotId, "surface_card", displayContext, parentReadId, ownerId, visible.entity_id),
@@ -2244,10 +2250,11 @@ function publicCardDetailRead(ctx, visible, details, missing, displayContext, ow
       ...(plainObject(visible.existing_enchantment) && Object.hasOwn(visible.existing_enchantment, "visibility_basis")
         ? { existing_enchantment: Object.fromEntries(Object.entries(visible.existing_enchantment)
           .map(([key, value]) => [key === "visibility_basis" ? "observation_source" : key, value])) } : {}),
-      public_details_revision: "1", display_context: displayContext,
+      public_details_revision: plainObject(details) && Object.hasOwn(details, "upgrade_preview") ? "2" : "1", display_context: displayContext,
       parent_read_id: parentReadId, display_owner_entity_id: ownerId,
       ...(Array.isArray(details?.keywords) ? { keywords: structuredClone(details.keywords) } : {}),
-      ...(Array.isArray(details?.card_previews) ? { card_previews: structuredClone(details.card_previews) } : {}) },
+      ...(Array.isArray(details?.card_previews) ? { card_previews: structuredClone(details.card_previews) } : {}),
+      ...(details?.upgrade_preview !== undefined ? { upgrade_preview: structuredClone(details.upgrade_preview) } : {}) },
     completeness: { status: gaps.length === 0 ? "complete" : "partial",
       visible_information: "complete_current_player_visible_card_detail", interaction_discovery: "read_only",
       missing: [...new Set(gaps)], hidden_by_policy: [] }
@@ -2286,6 +2293,9 @@ function deckCardDetailReads(ctx, state, deckRead) {
     if (!plainObject(details)) missing.push("current_native_public_card_details_not_captured");
     else for (const field of ["keywords", "card_previews"])
       if (!Array.isArray(details[field])) missing.push(`current_native_public_card_${field}_not_captured`);
+    if (plainObject(details) && Object.hasOwn(details, "upgrade_preview")
+        && !completePublicUpgradePreview(details.upgrade_preview))
+      missing.push("current_native_public_card_upgrade_preview_not_captured");
     if (card.public_details_complete !== true && missing.length === 0)
       missing.push("current_native_public_card_detail_incomplete");
     return {
@@ -2301,12 +2311,13 @@ function deckCardDetailReads(ctx, state, deckRead) {
       },
       content: {
         ...visible,
-        public_details_revision: "1",
+        public_details_revision: plainObject(details) && Object.hasOwn(details, "upgrade_preview") ? "2" : "1",
         display_context: "deck",
         parent_read_id: deckRead.descriptor.read_id,
         display_owner_entity_id: null,
         ...(Array.isArray(details?.keywords) ? { keywords: structuredClone(details.keywords) } : {}),
-        ...(Array.isArray(details?.card_previews) ? { card_previews: structuredClone(details.card_previews) } : {})
+        ...(Array.isArray(details?.card_previews) ? { card_previews: structuredClone(details.card_previews) } : {}),
+      ...(details?.upgrade_preview !== undefined ? { upgrade_preview: structuredClone(details.upgrade_preview) } : {})
       },
       completeness: {
         status: missing.length === 0 ? "complete" : "partial",
@@ -2416,6 +2427,27 @@ export function projectManagedCandidateDecision({
   const contextMs = performance.now() - stageStarted;
   stageStarted = performance.now();
   const surface = currentSurface(state, ctx);
+  // Same noncombat decision boundary as the Reference public-basis producer.
+  // The native DTO already supplies exact belt refs and discard eligibility.
+  if (["event_option", "event_dialogue", "map_navigation", "rest_site", "shop_room", "shop_inventory",
+      "treasure_room", "reward_claim", "card_reward_selection"].includes(surface.kind) && !state.combat_context) {
+    const potions = (state.player?.potions ?? []).filter(potion => potion?.can_discard === true);
+    surface.surface.non_combat_discardable_potions = potions.map(potion => {
+      const id = ctx.entityId("potion", potion.native_ref);
+      const subject = ctx.referents.find(item => item.referent_id === id)
+        ?? ctx.referent({ role: "potion", id, label: potion.name, properties: { entity_id: id, slot: potion.slot } });
+      // Replace only the old reward-room discard carrier; retain all room actions.
+      for (let i = ctx.actions.length - 1; i >= 0; i--) {
+        const action = ctx.actions[i];
+        if (action.subject_referent_id === id && ctx.bindings.get(action.bound_action_id)?.raw_request.action === "discard_potion") {
+          ctx.bindings.delete(action.bound_action_id); ctx.actions.splice(i, 1);
+        }
+      }
+      ctx.action({ verb: "activate", subject, label: `Discard ${potion.name}`,
+        raw: { cmd: "action", action: "discard_potion", args: { potion_slot: potion.slot, potion_ref: potion.native_ref } } });
+      return { entity_id: id, slot: potion.slot };
+    });
+  }
   const surfaceMs = performance.now() - stageStarted;
   stageStarted = performance.now();
   const persistent = buildPersistentVisibleState(state, ctx.entityId);
@@ -2608,20 +2640,40 @@ export class ManagedPlayerEnvironmentSession {
     return value;
   }
 
-  async mount({ seed, reset = false, timeoutMs = 10_000 }) {
+  async mount({ seed, reset = false, initialProgress = null, timeoutMs = 10_000 }) {
     if (typeof seed !== "string" || seed.length === 0) throw new TypeError("mount requires seed.");
     if (this.#tainted) throw new Error("A tainted Managed Player Environment session cannot mount another run.");
     const mountStarted = performance.now();
-    const state = await this.#process.request({
-      cmd: reset ? "reset_run" : "start_run",
-      character: this.#character,
-      seed,
-      lang: this.#language
-    }, timeoutMs);
-    this.#record("mount_transport_and_native", performance.now() - mountStarted);
-    this.#ledger.clear();
-    this.#publicEntityAliases.clear();
-    return this.#setState(state, timeoutMs);
+    initialProgress = validateInitialProgress(initialProgress);
+    try {
+      const state = await this.#process.request({
+        cmd: reset ? "reset_run" : "start_run",
+        character: this.#character,
+        seed,
+        lang: this.#language,
+        ...(initialProgress == null ? {} : { initial_progress: initialProgress })
+      }, timeoutMs);
+      this.#record("mount_transport_and_native", performance.now() - mountStarted);
+      this.#ledger.clear();
+      this.#publicEntityAliases.clear();
+      const snapshot = await this.#setState(state, timeoutMs);
+      if (initialProgress != null) {
+        const identity = await this.#process.request({ cmd: "run_identity" }, timeoutMs);
+        const proof = identity?.initial_progress;
+        if (identity?.type !== "run_identity" || identity.active !== true
+            || proof?.recipe !== initialProgress.recipe || proof.progress_sha256 !== initialProgress.progress_sha256
+            || proof.run_unlock_state_matches !== true)
+          throw new Error("managed_initial_progress_unverified");
+      }
+      return snapshot;
+    } catch (cause) {
+      if (initialProgress != null) {
+        this.#tainted = true;
+        this.#taintReason = "initial_progress_mount_failed_replace_process";
+        this.#projection = null;
+      }
+      throw cause;
+    }
   }
 
   async restoreMapSave({ path, timeoutMs = 10_000 }) {
@@ -2647,13 +2699,15 @@ export class ManagedPlayerEnvironmentSession {
   }
 
   observe() {
+    if (this.#taintReason === "successor_projection_failed")
+      throw new Error("managed_session_tainted_after_successor_projection_failure");
     if (this.#projection == null) throw new Error("No managed run is mounted.");
     return this.#projection.snapshot;
   }
 
   read({ readId, expectedSnapshotId }) {
-    if (this.#projection == null) throw new Error("No managed run is mounted.");
-    if (expectedSnapshotId !== this.#projection.snapshot.snapshot_id) {
+    const snapshot = this.observe();
+    if (expectedSnapshotId !== snapshot.snapshot_id) {
       throw new Error("stale_snapshot");
     }
     const read = this.#projection.reads.get(readId);

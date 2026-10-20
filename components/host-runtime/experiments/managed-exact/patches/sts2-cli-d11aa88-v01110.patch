@@ -1,3 +1,86 @@
+diff --git a/initial-progress-tests/InitialProgressTests.csproj b/initial-progress-tests/InitialProgressTests.csproj
+new file mode 100644
+index 0000000..94d1c56
+--- /dev/null
++++ b/initial-progress-tests/InitialProgressTests.csproj
+@@ -0,0 +1,8 @@
++<Project Sdk="Microsoft.NET.Sdk">
++  <PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net9.0</TargetFramework><ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable></PropertyGroup>
++  <ItemGroup>
++    <ProjectReference Include="../src/Sts2Headless/Sts2Headless.csproj" />
++    <Compile Include="../src/Sts2Headless/ManagedInitialProgress.cs" Link="ManagedInitialProgress.cs" />
++    <Reference Include="sts2"><HintPath>../lib/sts2.dll</HintPath><Private>true</Private></Reference>
++  </ItemGroup>
++</Project>
+diff --git a/initial-progress-tests/Program.cs b/initial-progress-tests/Program.cs
+new file mode 100644
+index 0000000..e914248
+--- /dev/null
++++ b/initial-progress-tests/Program.cs
+@@ -0,0 +1,63 @@
++using System.Reflection;
++using System.Text.Json;
++using MegaCrit.Sts2.Core.DevConsole.ConsoleCommands;
++using MegaCrit.Sts2.Core.Entities.Players;
++using MegaCrit.Sts2.Core.Models;
++using MegaCrit.Sts2.Core.Models.Characters;
++using MegaCrit.Sts2.Core.Runs;
++using MegaCrit.Sts2.Core.Saves;
++using MegaCrit.Sts2.Core.Saves.Test;
++using Sts2Headless;
++
++class Program
++{
++    static int checks;
++    static void Check(bool value, string message) { if (!value) throw new Exception(message); checks++; }
++    static JsonElement Input(string json, string? sha = null) => JsonSerializer.SerializeToElement(new {
++        recipe = "normal-sp-all-unlocked-v1", progress_json = json,
++        progress_sha256 = sha ?? ManagedInitialProgress.Sha(json) });
++    static void Main()
++    {
++        typeof(RunSimulator).GetMethod("EnsureModelDbInitialized", BindingFlags.Static | BindingFlags.NonPublic)!.Invoke(null, null);
++        var save = SaveManager.Instance;
++        new UnlockConsoleCmd().Process(null, new[] { "all" });
++        foreach (var encounter in ModelDb.AllEncounters) save.Progress.GetOrCreateEncounterStats(encounter.Id);
++        save.Progress.GetOrCreateCharacterStats(ModelDb.GetId<Defect>()).TotalLosses = 1;
++        save.SetFtuesEnabled(false);
++        save.SaveProgressFile();
++        var loaded = save.InitProgressData();
++        Check(loaded.Success, "actual native prepared progress reloads");
++        string json = SaveManager.ToJson(loaded.SaveData!);
++        string normalized = SaveManager.ToJson(save.Progress.ToSerializable());
++        var memory = (MockGodotFileIo)typeof(SaveManager).GetField("_saveStore", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(save)!;
++        int Writes() => memory.Calls.Count(call => call.Method == MockGodotFileIo.Methods.writeFile);
++        int before = Writes();
++        try { new ManagedInitialProgress().Prepare(Input(json, new string('0', 64))); throw new Exception("hash accepted"); }
++        catch (InvalidOperationException ex) { Check(ex.Message == "initial_progress_sha_mismatch" && Writes() == before, "invalid bytes fail before writes"); }
++        var failed = new ManagedInitialProgress();
++        memory.ShouldFailWrites = true;
++        try { failed.Prepare(Input(json)); throw new Exception("write failure swallowed"); }
++        catch (InvalidOperationException ex) { Check(ex.Message == "Simulated write failure", "actual memory-store failure remains explicit"); }
++        memory.ShouldFailWrites = false;
++        before = Writes();
++        try { failed.Prepare(Input(json)); throw new Exception("retried uncertain write"); }
++        catch (InvalidOperationException ex) { Check(ex.Message == "initial_progress_already_attempted" && Writes() == before, "unknown write never retried"); }
++        var owner = new ManagedInitialProgress();
++        owner.Prepare(Input(json));
++        Check(SaveManager.ToJson(save.Progress.ToSerializable()) == normalized, "same native progress normalization survives memory write and reload");
++        var unlocks = save.GenerateUnlockStateFromProgress();
++        var player = Player.CreateForNewRun<Defect>(unlocks, 1uL);
++        var run = RunState.CreateForNewRun(new[] { player }, ActModel.GetDefaultList().Select(act => act.ToMutable()).ToList(),
++            Array.Empty<ModifierModel>(), GameMode.Standard, 0, "BASELINE_FIXTURE");
++        var proof = JsonSerializer.SerializeToElement(owner.Observe(run));
++        Check(proof.GetProperty("progress_sha256").GetString() == ManagedInitialProgress.Sha(json)
++            && proof.GetProperty("run_unlock_state_matches").GetBoolean(), "normal Standard initializer freezes the same native UnlockState");
++        Check(run.Rng.StringSeed == "BASELINE_FIXTURE" && player.Gold == ModelDb.Character<Defect>().StartingGold,
++            "original run seed and initial gold remain native");
++        RunManager.Instance.SetUpTest(run, new MegaCrit.Sts2.Core.Multiplayer.NetSingleplayerGameService());
++        before = Writes();
++        try { new ManagedInitialProgress().Prepare(Input(json)); throw new Exception("active run accepted"); }
++        catch (InvalidOperationException ex) { Check(ex.Message == "initial_progress_requires_idle_managed_profile" && Writes() == before, "active native run refuses profile replacement"); }
++        Console.WriteLine($"PASS {checks} native initial-progress checks; no Launch or game input");
++    }
++}
 diff --git a/native-tests/NativeMechanisms.csproj b/native-tests/NativeMechanisms.csproj
 new file mode 100644
 index 0000000..05b940b
@@ -1408,6 +1491,87 @@ index 0000000..9ecb038
 +        if (Owners.TryGetValue(run, out var current) && ReferenceEquals(current, this)) Owners.Remove(run);
 +    }
 +}
+diff --git a/src/Sts2Headless/ManagedInitialProgress.cs b/src/Sts2Headless/ManagedInitialProgress.cs
+new file mode 100644
+index 0000000..bde41ea
+--- /dev/null
++++ b/src/Sts2Headless/ManagedInitialProgress.cs
+@@ -0,0 +1,75 @@
++using System.Reflection;
++using System.Security.Cryptography;
++using System.Text;
++using System.Text.Json;
++using MegaCrit.Sts2.Core.Combat;
++using MegaCrit.Sts2.Core.Models;
++using MegaCrit.Sts2.Core.Platform.Steam;
++using MegaCrit.Sts2.Core.Runs;
++using MegaCrit.Sts2.Core.Saves;
++using MegaCrit.Sts2.Core.Saves.Managers;
++using MegaCrit.Sts2.Core.Saves.Test;
++using MegaCrit.Sts2.Core.Saves.Validation;
++using MegaCrit.Sts2.Core.TestSupport;
++using MegaCrit.Sts2.Core.Timeline;
++using MegaCrit.Sts2.Core.Unlocks;
++
++namespace Sts2Headless;
++
++// One fixed manager-provided initial profile, before the native run freezes it.
++internal sealed class ManagedInitialProgress
++{
++    private bool attempted;
++    private string? inputSha;
++    private string? normalizedSha;
++    private string? unlockJson;
++    internal static string Sha(string value) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value))).ToLowerInvariant();
++    internal static object DescribeUnlocks(UnlockState unlocks)
++    {
++        var native = unlocks.ToSerializable();
++        return new { unlocked_epochs = native.UnlockedEpochs.Order(StringComparer.Ordinal).ToArray(),
++            encounters_seen = native.EncountersSeen.Select(id => id.ToString()).Order(StringComparer.Ordinal).ToArray(),
++            number_of_runs = native.NumberOfRuns };
++    }
++    internal void Prepare(JsonElement? input)
++    {
++        if (input == null) return;
++        if (attempted) throw new InvalidOperationException("initial_progress_already_attempted");
++        var value = input.Value;
++        if (value.ValueKind != JsonValueKind.Object || value.GetProperty("recipe").GetString() != "normal-sp-all-unlocked-v1")
++            throw new InvalidOperationException("initial_progress_recipe_invalid");
++        string json = value.GetProperty("progress_json").GetString() ?? throw new InvalidOperationException("initial_progress_missing");
++        string sha = value.GetProperty("progress_sha256").GetString() ?? "";
++        if (Sha(json) != sha) throw new InvalidOperationException("initial_progress_sha_mismatch");
++        var saves = SaveManager.Instance;
++        if (!TestMode.IsOn || SteamInitializer.Initialized || !saves.IsProfileInitialized
++            || RunManager.Instance.DebugOnlyGetState() != null || RunManager.Instance.IsInProgress || CombatManager.Instance.IsInProgress)
++            throw new InvalidOperationException("initial_progress_requires_idle_managed_profile");
++        var store = typeof(SaveManager).GetField("_saveStore", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(saves);
++        if (store is not MockGodotFileIo memory) throw new InvalidOperationException("initial_progress_requires_native_memory_store");
++        var parsed = SaveManager.FromJson<SerializableProgress>(json);
++        if (!parsed.Success || parsed.SaveData == null) throw new InvalidOperationException("initial_progress_native_parse_failed");
++        string expected = SaveManager.ToJson(ProgressState.FromSerializable(parsed.SaveData, new DeserializationContext()).ToSerializable());
++        attempted = true; // A write or reload with uncertain outcome is never repeated.
++        memory.WriteFile(ProgressSaveManager.GetProgressPathForProfile(saves.CurrentProfileId), json);
++        var loaded = saves.InitProgressData();
++        string actual = SaveManager.ToJson(saves.Progress.ToSerializable());
++        if (!loaded.Success || loaded.SaveData == null || actual != expected)
++            throw new InvalidOperationException("initial_progress_native_reload_mismatch");
++        var unlocks = saves.GenerateUnlockStateFromProgress();
++        if (saves.Progress.EnableFtues || unlocks.NumberOfRuns <= 0
++            || !unlocks.ToSerializable().UnlockedEpochs.ToHashSet(StringComparer.Ordinal).SetEquals(EpochModel.AllEpochIds)
++            || ModelDb.AllEncounters.Any(encounter => !unlocks.HasSeenEncounter(encounter))
++            || ModelDb.AllCharacters.Any(character => saves.Progress.GetStatsForCharacter(character.Id)?.MaxAscension != 10))
++            throw new InvalidOperationException("initial_progress_baseline_incomplete");
++        inputSha = sha;
++        normalizedSha = Sha(actual);
++        unlockJson = JsonSerializer.Serialize(DescribeUnlocks(unlocks));
++    }
++    internal object? Observe(RunState? run) => inputSha == null ? null : new {
++        recipe = "normal-sp-all-unlocked-v1", progress_sha256 = inputSha,
++        normalized_progress_sha256 = normalizedSha,
++        unlock_state = run == null ? null : DescribeUnlocks(run.UnlockState),
++        run_unlock_state_matches = run != null && JsonSerializer.Serialize(DescribeUnlocks(run.UnlockState)) == unlockJson
++    };
++}
 diff --git a/src/Sts2Headless/ManagedMerchantPresentation.cs b/src/Sts2Headless/ManagedMerchantPresentation.cs
 new file mode 100644
 index 0000000..18afe29
@@ -1957,10 +2121,10 @@ index 0000000..85112ee
 +}
 diff --git a/src/Sts2Headless/NativeCardPreviewReadQualification.cs b/src/Sts2Headless/NativeCardPreviewReadQualification.cs
 new file mode 100644
-index 0000000..dc274c7
+index 0000000..cacc86c
 --- /dev/null
 +++ b/src/Sts2Headless/NativeCardPreviewReadQualification.cs
-@@ -0,0 +1,365 @@
+@@ -0,0 +1,353 @@
 +using System;
 +using System.Collections.Generic;
 +using System.Linq;
@@ -2084,22 +2248,6 @@ index 0000000..dc274c7
 +        && IsUnpatched(callback.Method) && callback.Target is NCard node && node.GetType() == typeof(NCard)
 +        && ReferenceEquals(NativeDetachedCardCopy.UiModel(node), original);
 +
-+    private static bool CopiedDelegatesQualified(CardModel card)
-+    {
-+        foreach (string name in new[] { "AfflictionChanged", "EnchantmentChanged", "EnergyCostChanged", "KeywordsChanged",
-+                     "ReplayCountChanged", "Played", "Drawn", "StarCostChanged", "Upgraded", "Forged" })
-+        {
-+            FieldInfo? field = typeof(CardModel).GetField(name, NativeMembers);
-+            if (field == null) return false;
-+            if (field.GetValue(card) is not Delegate callbacks) continue;
-+            string? observer = name switch
-+            { "AfflictionChanged" => "OnAfflictionChanged", "EnchantmentChanged" => "OnEnchantmentChanged", _ => null };
-+            if (observer == null || callbacks.GetInvocationList().Any(callback => !UiObserver(callback, observer, card))) return false;
-+        }
-+        return typeof(AbstractModel).GetField("ExecutionFinished", NativeMembers) is { } completed
-+            && completed.GetValue(card) == null;
-+    }
-+
 +    private static bool AttachmentCopyQualified(CardModel card)
 +    {
 +        if (Enchantment == null || Affliction == null) return false;
@@ -2168,8 +2316,10 @@ index 0000000..dc274c7
 +                || !BaseImplementation(card.GetType(), typeof(CardModel), "DeepCloneFields")
 +                || !BaseImplementation(card.GetType(), typeof(CardModel), "AfterCloned")
 +                || !BaseImplementation(card.GetType(), typeof(CardModel), "get_CanonicalEnergyCost")
-+                || !BaseImplementation(card.GetType(), typeof(CardModel), "get_HasEnergyCostX")) return false;
-+            if (!CopiedDelegatesQualified(card) || !AttachmentCopyQualified(card))
++                // Native X-cost cards override this display fact. Reuse the
++                // exact-game effective-getter qualification used by rendering.
++                || !NativeRenderMethod(card.GetType().GetMethod("get_HasEnergyCostX", NativeMembers))) return false;
++            if (!AttachmentCopyQualified(card))
 +            { gap = "native_preview_existing_attachment_copy_callbacks_unqualified"; return false; }
 +            if (Canonical?.GetValue(card) is not CardModel canonical || canonical.GetType() != card.GetType()
 +                || Mutable.GetValue(canonical) is not false || Keywords?.GetValue(card) is not HashSet<CardKeyword> keywords
@@ -2197,7 +2347,7 @@ index 0000000..dc274c7
 +                || !MethodsUnpatched(typeof(Shiv), "get_CanonicalVars", "get_CanonicalKeywords")
 +                || !FixedConstructorsUnpatched(typeof(DynamicVar)) || !FixedConstructorsUnpatched(typeof(DamageVar))
 +                || !MethodsUnpatched(typeof(DamageVar), "set_Props")
-+                || !SingletonVariableListUnpatched() || !SingletonListUnpatched(typeof(CardKeyword)) || !CopiedDelegatesQualified(canonical)
++                || !SingletonVariableListUnpatched() || !SingletonListUnpatched(typeof(CardKeyword))
 +                || Enchantment?.GetValue(canonical) != null || Affliction?.GetValue(canonical) != null
 +                || !CopyCostQualified(canonical)) return false;
 +            if (CardVars?.GetValue(canonical) is DynamicVarSet initialized && !CopyVariablesQualified(canonical, initialized)) return false;
@@ -2247,7 +2397,9 @@ index 0000000..dc274c7
 +                    || upgrade.DeclaringType == card.GetType() && NativeUpgradeMethodInventory.Contains(card.GetType().Name))
 +                // Harmony keys inherited methods by their actual declaration.
 +                || !IsUnpatched(upgrade.DeclaringType?.GetMethod("OnUpgrade", NativeMembers | BindingFlags.DeclaredOnly))
-+                || !BaseImplementation(card.GetType(), typeof(CardModel), "get_MaxUpgradeLevel")
++                // Reuse the render qualification for the effective native getter;
++                // native curses/status cards override the limit with zero.
++                || !NativeRenderMethod(card.GetType().GetMethod("get_MaxUpgradeLevel", NativeMembers))
 +                || !MethodsUnpatched(typeof(CardModel), "UpgradeInternal", "get_IsUpgradable", "get_CurrentUpgradeLevel",
 +                    "set_CurrentUpgradeLevel", "get_MaxUpgradeLevel", "AddKeyword", "RemoveKeyword", "InvokeEnergyCostChanged",
 +                    "get_UpgradePreviewType", "set_UpgradePreviewType")
@@ -2742,10 +2894,10 @@ index 0000000..381119e
 +}
 diff --git a/src/Sts2Headless/NativeDetachedCardCopy.cs b/src/Sts2Headless/NativeDetachedCardCopy.cs
 new file mode 100644
-index 0000000..2b9887b
+index 0000000..3f046fd
 --- /dev/null
 +++ b/src/Sts2Headless/NativeDetachedCardCopy.cs
-@@ -0,0 +1,47 @@
+@@ -0,0 +1,74 @@
 +using System;
 +using System.Runtime.CompilerServices;
 +using MegaCrit.Sts2.Core.Models;
@@ -2754,8 +2906,8 @@ index 0000000..2b9887b
 +namespace STS2Platform.NativeFoundation;
 +
 +/// <summary>Fixed exact-build structural bridge for presentation only. The
-+/// caller must first qualify the effective native copy closure and every
-+/// copied delegate. Only the newly allocated copy is changed. All native field
++/// caller must first qualify the effective native copy closure. All copied card
++/// callbacks are detached on the new copy before native work. All native field
 +/// copying and rules remain in DeepCloneFields/AfterCloned and the real native
 +/// upgrade/enchantment methods. Never register or dispatch this copy.</summary>
 +internal static class NativeDetachedCardCopy
@@ -2764,12 +2916,21 @@ index 0000000..2b9887b
 +    {
 +        // Native AbstractModel.MutableClone performs these three structural
 +        // steps. Its DeepCloneFields reattaches enchantment/affliction before
-+        // AfterCloned clears copied card UI delegates. Isolate those two on
++        // AfterCloned clears copied card delegates. Detach all card callbacks on
 +        // the NEW copy first; never clear/restore an event on the original.
 +        var copy = (CardModel)MemberwiseClone(original);
 +        SetMutable(copy, true);
 +        EnchantmentChanged(copy) = null;
 +        AfflictionChanged(copy) = null;
++        EnergyCostChanged(copy) = null;
++        KeywordsChanged(copy) = null;
++        ReplayCountChanged(copy) = null;
++        Played(copy) = null;
++        Drawn(copy) = null;
++        StarCostChanged(copy) = null;
++        Upgraded(copy) = null;
++        Forged(copy) = null;
++        ExecutionFinished(copy) = null;
 +        DeepCloneFields(copy);
 +        AfterCloned(copy);
 +        return copy;
@@ -2788,6 +2949,24 @@ index 0000000..2b9887b
 +    private static extern ref Action? EnchantmentChanged(CardModel copy);
 +    [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "AfflictionChanged")]
 +    private static extern ref Action? AfflictionChanged(CardModel copy);
++    [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "EnergyCostChanged")]
++    private static extern ref Action? EnergyCostChanged(CardModel copy);
++    [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "KeywordsChanged")]
++    private static extern ref Action? KeywordsChanged(CardModel copy);
++    [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "ReplayCountChanged")]
++    private static extern ref Action? ReplayCountChanged(CardModel copy);
++    [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "Played")]
++    private static extern ref Action? Played(CardModel copy);
++    [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "Drawn")]
++    private static extern ref Action? Drawn(CardModel copy);
++    [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "StarCostChanged")]
++    private static extern ref Action? StarCostChanged(CardModel copy);
++    [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "Upgraded")]
++    private static extern ref Action? Upgraded(CardModel copy);
++    [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "Forged")]
++    private static extern ref Action? Forged(CardModel copy);
++    [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "ExecutionFinished")]
++    private static extern ref Action<AbstractModel>? ExecutionFinished(AbstractModel copy);
 +    [UnsafeAccessor(UnsafeAccessorKind.Method, Name = "DeepCloneFields")]
 +    private static extern void DeepCloneFields(CardModel copy);
 +    [UnsafeAccessor(UnsafeAccessorKind.Method, Name = "AfterCloned")]
@@ -3335,10 +3514,10 @@ index 0000000..21f689a
 +}
 diff --git a/src/Sts2Headless/NativePublicCardDetails.cs b/src/Sts2Headless/NativePublicCardDetails.cs
 new file mode 100644
-index 0000000..1e42462
+index 0000000..1586939
 --- /dev/null
 +++ b/src/Sts2Headless/NativePublicCardDetails.cs
-@@ -0,0 +1,165 @@
+@@ -0,0 +1,196 @@
 +using System;
 +using System.Collections.Generic;
 +using System.Linq;
@@ -3349,7 +3528,7 @@ index 0000000..1e42462
 +
 +namespace STS2Platform.NativeFoundation;
 +
-+// Read-only, typed native rendering for the two admitted selector kinds. No raw
++// Read-only, typed native card rendering and qualified upgrade previews. No raw
 +// localization template, manual variable substitution or fallback can be complete.
 +public static class NativePublicCardDetails
 +{
@@ -3357,12 +3536,21 @@ index 0000000..1e42462
 +    {
 +        public bool Complete => Missing.Length == 0;
 +        public Dictionary<string, object?> PublicCard => NativePublicCardDetails.ToPublicCard(Card);
-+        public Dictionary<string, object?> PublicDetail => new()
++        public Dictionary<string, object?>? UpgradePreview { get; init; }
++        public Dictionary<string, object?> PublicDetail
 +        {
-+            ["keywords"] = Card.GetValueOrDefault("keywords"),
-+            ["card_previews"] = Card.GetValueOrDefault("card_previews") is List<Dictionary<string, object?>> previews
-+                ? previews.Select(ToPublicCard).ToArray() : null
-+        };
++            get
++            {
++                var detail = new Dictionary<string, object?>
++                {
++                    ["keywords"] = Card.GetValueOrDefault("keywords"),
++                    ["card_previews"] = Card.GetValueOrDefault("card_previews") is List<Dictionary<string, object?>> previews
++                        ? previews.Select(ToPublicCard).ToArray() : null
++                };
++                if (UpgradePreview != null) detail["upgrade_preview"] = UpgradePreview;
++                return detail;
++            }
++        }
 +    }
 +
 +    // Shape conversion only. Native owns every value and recursive hover-card
@@ -3393,6 +3581,28 @@ index 0000000..1e42462
 +
 +    public static Result Capture(CardModel card, PileType displayPile, CardPreviewMode mode = CardPreviewMode.Normal) =>
 +        Capture(card, displayPile, new HashSet<CardModel>(ReferenceEqualityComparer.Instance), mode);
++
++    // The same game-owned detached deck-upgrade display used by native selectors.
++    // It is public presentation, never a replacement live card or input operand.
++    public static Result CaptureWithUpgradePreview(CardModel card, PileType displayPile)
++    {
++        Result current = Capture(card, displayPile);
++        if (!current.Complete)
++            return current with { UpgradePreview = new() { ["status"] = "unavailable", ["card"] = null } };
++        if (!NativeDetachedCardPreviewFactory.TryDeckUpgrade(card, out var preview, out string? gap))
++        {
++            if (gap == "native_preview_card_not_upgradable")
++                return current with { UpgradePreview = new() { ["status"] = "not_applicable", ["card"] = null } };
++            return current with {
++                Missing = current.Missing.Append(gap ?? "native_public_upgrade_preview_unavailable").Distinct(StringComparer.Ordinal).ToArray(),
++                UpgradePreview = new() { ["status"] = "unavailable", ["card"] = null } };
++        }
++        Result upgraded = Capture(preview!.Display, preview.DisplayPile, preview.PreviewMode);
++        return current with {
++            Missing = current.Missing.Concat(upgraded.Missing).Distinct(StringComparer.Ordinal).ToArray(),
++            UpgradePreview = new() { ["status"] = upgraded.Complete ? "available" : "unavailable",
++                ["card"] = upgraded.Complete ? upgraded.PublicCard : null } };
++    }
 +
 +    private static Result Capture(CardModel card, PileType displayPile, HashSet<CardModel> path, CardPreviewMode mode = CardPreviewMode.Normal)
 +    {
@@ -3935,7 +4145,7 @@ index 0000000..0dc1e17
 +}
 diff --git a/src/Sts2Headless/NativeSelectorCardDisplay.cs b/src/Sts2Headless/NativeSelectorCardDisplay.cs
 new file mode 100644
-index 0000000..8158d5b
+index 0000000..0b46dc7
 --- /dev/null
 +++ b/src/Sts2Headless/NativeSelectorCardDisplay.cs
 @@ -0,0 +1,15 @@
@@ -3950,13 +4160,13 @@ index 0000000..8158d5b
 +    { internal bool Complete => Missing.Length == 0; }
 +    internal static Result Capture(CardModel card, PileType displayPile)
 +    {
-+        var captured = NativePublicCardDetails.Capture(card, displayPile);
++        var captured = NativePublicCardDetails.CaptureWithUpgradePreview(card, displayPile);
 +        return new(captured.Card, captured.Missing, captured.PublicDetail);
 +    }
 +}
 diff --git a/src/Sts2Headless/NativeSelectorHud.cs b/src/Sts2Headless/NativeSelectorHud.cs
 new file mode 100644
-index 0000000..7f2807c
+index 0000000..5852e97
 --- /dev/null
 +++ b/src/Sts2Headless/NativeSelectorHud.cs
 @@ -0,0 +1,159 @@
@@ -4003,7 +4213,7 @@ index 0000000..7f2807c
 +    }
 +    private static Dictionary<string,object?> Card(CardModel card, PileType pile, bool identity)
 +    {
-+        var display = NativePublicCardDetails.Capture(card, pile);
++        var display = NativePublicCardDetails.CaptureWithUpgradePreview(card, pile);
 +        if (!display.Complete)
 +            throw new InvalidOperationException("Current native combat card display is incomplete: " + card.Id.Entry + " " + string.Join(",", display.Missing));
 +        var result = new Dictionary<string,object?>(display.Card);
@@ -5292,7 +5502,7 @@ index 0000000..aeeb8a2
 +        (Stopwatch.GetTimestamp() - started) * 1000.0 / Stopwatch.Frequency;
 +}
 diff --git a/src/Sts2Headless/Program.cs b/src/Sts2Headless/Program.cs
-index 800f139..d950eec 100644
+index 800f139..0da0544 100644
 --- a/src/Sts2Headless/Program.cs
 +++ b/src/Sts2Headless/Program.cs
 @@ -1,7 +1,9 @@
@@ -5334,7 +5544,7 @@ index 800f139..d950eec 100644
              }
  
              if (result != null)
-@@ -108,11 +114,53 @@ class Program
+@@ -108,17 +114,61 @@ class Program
          }
      }
  
@@ -5383,24 +5593,34 @@ index 800f139..d950eec 100644
 +                        : "Ironclad",
 +                    cmd.TryGetProperty("ascension", out var resetAscension) ? resetAscension.GetInt32() : 0,
 +                    cmd.TryGetProperty("seed", out var resetSeed) ? resetSeed.GetString() : null,
-+                    cmd.TryGetProperty("lang", out var resetLang) ? resetLang.GetString() ?? "en" : "en"
++                    cmd.TryGetProperty("lang", out var resetLang) ? resetLang.GetString() ?? "en" : "en",
++                    cmd.TryGetProperty("initial_progress", out var resetProgress) ? resetProgress : null
 +                );
 +
              case "start_run":
                  return sim.StartRun(
                      cmd.TryGetProperty("character", out var ch) ? ch.GetString() ?? "Ironclad" : "Ironclad",
+                     cmd.TryGetProperty("ascension", out var asc) ? asc.GetInt32() : 0,
+                     cmd.TryGetProperty("seed", out var s) ? s.GetString() : null,
+-                    cmd.TryGetProperty("lang", out var lang) ? lang.GetString() ?? "en" : "en"
++                    cmd.TryGetProperty("lang", out var lang) ? lang.GetString() ?? "en" : "en",
++                    cmd.TryGetProperty("initial_progress", out var initialProgress) ? initialProgress : null
+                 );
+ 
+             case "action":
 diff --git a/src/Sts2Headless/RunSimulator.cs b/src/Sts2Headless/RunSimulator.cs
-index 6b9de4a..311aafc 100644
+index 6b9de4a..4ba003d 100644
 --- a/src/Sts2Headless/RunSimulator.cs
 +++ b/src/Sts2Headless/RunSimulator.cs
-@@ -1,4 +1,6 @@
+@@ -1,4 +1,7 @@
++using System.Text.Json;
  using System.Reflection;
 +using System.Runtime.CompilerServices;
 +using System.Diagnostics;
  using MegaCrit.Sts2.Core.Combat;
  using MegaCrit.Sts2.Core.Commands;
  using MegaCrit.Sts2.Core.Context;
-@@ -7,23 +9,30 @@ using MegaCrit.Sts2.Core.Entities.Ascension;
+@@ -7,23 +10,30 @@ using MegaCrit.Sts2.Core.Entities.Ascension;
  using MegaCrit.Sts2.Core.Entities.Cards;
  using MegaCrit.Sts2.Core.Entities.Creatures;
  using MegaCrit.Sts2.Core.Entities.Players;
@@ -5432,7 +5652,7 @@ index 6b9de4a..311aafc 100644
  using MegaCrit.Sts2.Core.Localization;
  using MegaCrit.Sts2.Core.Multiplayer.Serialization;
  using MegaCrit.Sts2.Core.Saves;
-@@ -31,6 +40,29 @@ using MegaCrit.Sts2.Core.Unlocks;
+@@ -31,6 +41,29 @@ using MegaCrit.Sts2.Core.Unlocks;
  
  namespace Sts2Headless;
  
@@ -5462,7 +5682,7 @@ index 6b9de4a..311aafc 100644
  /// <summary>
  /// Synchronization context that executes continuations inline immediately.
  /// Task.Yield() posts to SynchronizationContext.Current — by executing inline,
-@@ -85,6 +117,12 @@ internal class InlineSynchronizationContext : SynchronizationContext
+@@ -85,6 +118,12 @@ internal class InlineSynchronizationContext : SynchronizationContext
              finally { _executing = false; }
          }
      }
@@ -5475,7 +5695,7 @@ index 6b9de4a..311aafc 100644
  }
  
  /// <summary>
-@@ -98,8 +136,8 @@ internal class LocLookup
+@@ -98,8 +137,8 @@ internal class LocLookup
      public LocLookup()
      {
          var baseDir = Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..");
@@ -5486,7 +5706,7 @@ index 6b9de4a..311aafc 100644
      }
  
      private static void Load(string dir, Dictionary<string, Dictionary<string, string>> target)
-@@ -205,6 +243,7 @@ internal class LocLookup
+@@ -205,6 +244,7 @@ internal class LocLookup
  /// </summary>
  public class RunSimulator
  {
@@ -5494,7 +5714,7 @@ index 6b9de4a..311aafc 100644
      private static int? _expectedSaveSchemaVersion;
      private static bool _expectedSaveSchemaVersionReady;
      private static readonly object _expectedSaveSchemaVersionLock = new();
-@@ -217,69 +256,113 @@ public class RunSimulator
+@@ -217,69 +257,116 @@ public class RunSimulator
      private static readonly LocLookup _loc = new();
      private bool _eventOptionChosen;
      private int _lastEventOptionCount;
@@ -5529,7 +5749,8 @@ index 6b9de4a..311aafc 100644
      private TaskCompletionSource<IEnumerable<CardModel>>? _pendingBundleTcs;
 +    private bool _captureDecisionProjectionTiming;
 +    private long _decisionProjectionTicks;
-+
+ 
+-    public Dictionary<string, object?> StartRun(string character, int ascension = 0, string? seed = null, string lang = "en")
 +    public void BeginDecisionProjectionTiming()
 +    {
 +        _decisionProjectionTicks = 0;
@@ -5541,8 +5762,10 @@ index 6b9de4a..311aafc 100644
 +        _captureDecisionProjectionTiming = false;
 +        return _decisionProjectionTicks * 1000.0 / Stopwatch.Frequency;
 +    }
- 
-     public Dictionary<string, object?> StartRun(string character, int ascension = 0, string? seed = null, string lang = "en")
++
++    private readonly ManagedInitialProgress _initialProgress = new();
++
++    public Dictionary<string, object?> StartRun(string character, int ascension = 0, string? seed = null, string lang = "en", JsonElement? initialProgress = null)
      {
          try
          {
@@ -5557,6 +5780,7 @@ index 6b9de4a..311aafc 100644
              EnsureModelDbInitialized();
 -
 -            var player = CreatePlayer(character);
++            _initialProgress.Prepare(initialProgress);
 +            if (!DeckUpgradeCallScope.HookReady)
 +                return Error("The exact deck-upgrade selector binding is unavailable");
 +            if (!NativeSelectorCallScope.ChooseHookReady || !NativeSelectorCallScope.CombatHookReady)
@@ -5584,7 +5808,7 @@ index 6b9de4a..311aafc 100644
 -                seed: seedStr
 +            _runState = RunState.CreateForNewRun(
 +                new[] { player },
-+                ActModel.GetDefaultList().Select(act => act.ToMutable()).ToList(),
++                ActModel.GetRandomList(new MegaCrit.Sts2.Core.Random.Rng(StringHelper.GetDeterministicHashCode(seedStr), "act_selection"), unlockState, isMultiplayer: false).Select(act => act.ToMutable()).ToList(),
 +                Array.Empty<ModifierModel>(),
 +                GameMode.Standard,
 +                ascension,
@@ -5639,7 +5863,7 @@ index 6b9de4a..311aafc 100644
              LocPatches._bundleSimRef = this;
  
              // Now we should be at the map — detect decision point
-@@ -402,6 +485,13 @@ public class RunSimulator
+@@ -402,6 +489,13 @@ public class RunSimulator
          try
          {
              if (_runState == null) return Error("No run in progress");
@@ -5653,7 +5877,7 @@ index 6b9de4a..311aafc 100644
              var runState = _runState;
              Log($"EnterRoom: type={roomType} encounter={encounter} event={eventId}");
  
-@@ -496,7 +586,25 @@ public class RunSimulator
+@@ -496,7 +590,25 @@ public class RunSimulator
          try
          {
              _loc.Lang = lang;
@@ -5679,7 +5903,7 @@ index 6b9de4a..311aafc 100644
  
              Log("Loading save file...");
  
-@@ -517,59 +625,34 @@ public class RunSimulator
+@@ -517,59 +629,34 @@ public class RunSimulator
              Log($"RunState created, players={_runState.Players?.Count}");
  
              var netService = new NetSingleplayerGameService();
@@ -5762,7 +5986,7 @@ index 6b9de4a..311aafc 100644
  
              return DetectDecisionPoint();
          }
-@@ -723,33 +806,6 @@ public class RunSimulator
+@@ -723,33 +810,6 @@ public class RunSimulator
          return true;
      }
  
@@ -5796,7 +6020,7 @@ index 6b9de4a..311aafc 100644
      private static bool TryRollbackSerializedSaveToPreRoom(SerializableRun serializableRun, out string error)
      {
          error = "";
-@@ -821,16 +877,49 @@ public class RunSimulator
+@@ -821,16 +881,49 @@ public class RunSimulator
  
              var currentRoom = _runState.CurrentRoom;
              SerializableRun serializableRun;
@@ -5847,7 +6071,7 @@ index 6b9de4a..311aafc 100644
                  if (!TryRollbackSerializedSaveToPreRoom(serializableRun, out var rollbackError))
                      return Error($"Cannot save checkpoint: {rollbackError}");
              }
-@@ -851,6 +940,8 @@ public class RunSimulator
+@@ -851,6 +944,8 @@ public class RunSimulator
                  ["path"] = outputPath,
                  ["size"] = saveJson.Length,
                  ["room_type"] = currentRoom?.GetType().Name,
@@ -5856,7 +6080,7 @@ index 6b9de4a..311aafc 100644
              };
          }
          catch (Exception ex)
-@@ -866,21 +957,41 @@ public class RunSimulator
+@@ -866,21 +961,41 @@ public class RunSimulator
                  return Error("No run in progress");
  
              var player = _runState.Players[0];
@@ -5901,7 +6125,7 @@ index 6b9de4a..311aafc 100644
                  case "buy_card":
                      return DoBuyCard(player, args);
                  case "buy_relic":
-@@ -888,21 +999,43 @@ public class RunSimulator
+@@ -888,21 +1003,43 @@ public class RunSimulator
                  case "buy_potion":
                      return DoBuyPotion(player, args);
                  case "remove_card":
@@ -5948,7 +6172,7 @@ index 6b9de4a..311aafc 100644
                  default:
                      return Error($"Unknown action: {action}");
              }
-@@ -915,21 +1048,23 @@ public class RunSimulator
+@@ -915,21 +1052,23 @@ public class RunSimulator
  
      #region Actions
  
@@ -5982,7 +6206,7 @@ index 6b9de4a..311aafc 100644
          var coord = new MapCoord((byte)col, (byte)row);
  
          Log($"Moving to map coord ({col},{row})");
-@@ -938,333 +1073,434 @@ public class RunSimulator
+@@ -938,333 +1077,434 @@ public class RunSimulator
          WaitForActionExecutor();
          _syncCtx.Pump();
  
@@ -6575,17 +6799,17 @@ index 6b9de4a..311aafc 100644
 -            _cardSelector.SkipReward();
 -            Thread.Sleep(50);
 +            synchronizer.PickRelicLocally(index);
++            _syncCtx.Pump();
++            WaitForNativeCommit();
              _syncCtx.Pump();
 -            WaitForActionExecutor();
 -            return DetectDecisionPoint();
-+            WaitForNativeCommit();
-+            _syncCtx.Pump();
-+        }
+         }
+-        if (_pendingCardReward != null)
 +        finally
 +        {
 +            synchronizer.RelicsAwarded -= capture;
-         }
--        if (_pendingCardReward != null)
++        }
 +
 +        if (awarded == null)
 +            throw new InvalidOperationException(
@@ -6667,7 +6891,7 @@ index 6b9de4a..311aafc 100644
          return DetectDecisionPoint();
      }
  
-@@ -1272,24 +1508,29 @@ public class RunSimulator
+@@ -1272,24 +1512,29 @@ public class RunSimulator
      {
          if (_runState?.CurrentRoom is not MerchantRoom merchantRoom)
              return Error("Not in a shop");
@@ -6707,7 +6931,7 @@ index 6b9de4a..311aafc 100644
          }
          catch (Exception ex) { return Error($"Buy card failed: {ex.Message}"); }
  
-@@ -1300,16 +1541,21 @@ public class RunSimulator
+@@ -1300,16 +1545,21 @@ public class RunSimulator
      {
          if (_runState?.CurrentRoom is not MerchantRoom merchantRoom)
              return Error("Not in a shop");
@@ -6736,7 +6960,7 @@ index 6b9de4a..311aafc 100644
  
          try
          {
-@@ -1318,23 +1564,22 @@ public class RunSimulator
+@@ -1318,23 +1568,22 @@ public class RunSimulator
              // pending selection appears so the caller can resolve it; the background task
              // continues once the selector's TCS is fed by select_cards.
              var inv = merchantRoom.GetLocalInventory();
@@ -6766,7 +6990,7 @@ index 6b9de4a..311aafc 100644
          }
          catch (Exception ex) { return Error($"Buy relic failed: {ex.Message}"); }
  
-@@ -1345,49 +1590,82 @@ public class RunSimulator
+@@ -1345,49 +1594,82 @@ public class RunSimulator
      {
          if (_runState?.CurrentRoom is not MerchantRoom merchantRoom)
              return Error("Not in a shop");
@@ -6867,7 +7091,7 @@ index 6b9de4a..311aafc 100644
                  if (task.IsCompleted) break;
                  Thread.Sleep(10);
              }
-@@ -1396,8 +1674,7 @@ public class RunSimulator
+@@ -1396,8 +1678,7 @@ public class RunSimulator
                  WaitForActionExecutor();
                  return DetectDecisionPoint();
              }
@@ -6877,7 +7101,7 @@ index 6b9de4a..311aafc 100644
              Log($"Removed card for {removal.Cost}g");
          }
          catch (Exception ex) { return Error($"Remove card failed: {ex.Message}"); }
-@@ -1405,6 +1682,26 @@ public class RunSimulator
+@@ -1405,6 +1686,26 @@ public class RunSimulator
          return DetectDecisionPoint();
      }
  
@@ -6904,7 +7128,7 @@ index 6b9de4a..311aafc 100644
      private Dictionary<string, object?> DoSelectBundle(Player player, Dictionary<string, object?>? args)
      {
          if (_pendingBundleTcs == null || _pendingBundles == null)
-@@ -1424,12 +1721,30 @@ public class RunSimulator
+@@ -1424,12 +1725,30 @@ public class RunSimulator
          tcs.TrySetResult(selected);
  
          _syncCtx.Pump();
@@ -6935,7 +7159,7 @@ index 6b9de4a..311aafc 100644
          if (!_cardSelector.HasPending)
              return Error("No pending card selection");
          if (args == null || !args.ContainsKey("indices"))
-@@ -1444,19 +1759,16 @@ public class RunSimulator
+@@ -1444,19 +1763,16 @@ public class RunSimulator
          Log($"Card selection: indices [{string.Join(",", indices)}]");
          _cardSelector.ResolvePendingByIndices(indices);
          _syncCtx.Pump();
@@ -6962,7 +7186,7 @@ index 6b9de4a..311aafc 100644
          }
  
          // Extra wait for shop card removal: the purchase task needs to finish
-@@ -1473,110 +1785,181 @@ public class RunSimulator
+@@ -1473,110 +1789,181 @@ public class RunSimulator
  
      private Dictionary<string, object?> DoSkipSelect(Player player)
      {
@@ -7224,7 +7448,7 @@ index 6b9de4a..311aafc 100644
          return DetectDecisionPoint();
      }
  
-@@ -1591,15 +1974,34 @@ public class RunSimulator
+@@ -1591,15 +1978,34 @@ public class RunSimulator
          // Dispatch based on ROOM TYPE (not event state) to avoid cross-contamination
          if (_runState?.CurrentRoom is RestSiteRoom restSiteRoom)
          {
@@ -7262,7 +7486,7 @@ index 6b9de4a..311aafc 100644
                      if (task.IsCompleted) break;
                      Thread.Sleep(10);
                  }
-@@ -1608,64 +2010,75 @@ public class RunSimulator
+@@ -1608,64 +2014,75 @@ public class RunSimulator
                      WaitForActionExecutor();
                      return DetectDecisionPoint();
                  }
@@ -7367,7 +7591,7 @@ index 6b9de4a..311aafc 100644
                  }
  
                  // Note: do NOT force-finish on `optCountAfter == optCountBefore`. Events can
-@@ -1679,86 +2092,103 @@ public class RunSimulator
+@@ -1679,86 +2096,103 @@ public class RunSimulator
          return DetectDecisionPoint();
      }
  
@@ -7532,7 +7756,7 @@ index 6b9de4a..311aafc 100644
      }
  
      #endregion
-@@ -1767,15 +2197,28 @@ public class RunSimulator
+@@ -1767,15 +2201,28 @@ public class RunSimulator
  
      private Dictionary<string, object?> DetectDecisionPoint()
      {
@@ -7565,7 +7789,7 @@ index 6b9de4a..311aafc 100644
          }
  
          // Check if there's a pending bundle selection (Scroll Boxes: pick 1 of N packs)
-@@ -1813,36 +2256,45 @@ public class RunSimulator
+@@ -1813,36 +2260,45 @@ public class RunSimulator
          }
  
          // Check if there's a pending card reward from event (GetSelectedCardReward blocking)
@@ -7631,7 +7855,7 @@ index 6b9de4a..311aafc 100644
                  ["from_event"] = true,
                  ["player"] = PlayerSummary(_runState!.Players[0]),
              };
-@@ -1852,7 +2304,24 @@ public class RunSimulator
+@@ -1852,7 +2308,24 @@ public class RunSimulator
          checkCardSelect:
          if (_cardSelector.HasPending && _cardSelector.PendingOptions != null)
          {
@@ -7657,7 +7881,7 @@ index 6b9de4a..311aafc 100644
              {
                  var stats = new Dictionary<string, object?>();
                  try { foreach (var dv in card.DynamicVars.Values) stats[dv.Name.ToLowerInvariant()] = (int)dv.BaseValue; } catch { }
-@@ -1860,6 +2329,8 @@ public class RunSimulator
+@@ -1860,6 +2333,8 @@ public class RunSimulator
                  return new Dictionary<string, object?>
                  {
                      ["index"] = i,
@@ -7666,7 +7890,7 @@ index 6b9de4a..311aafc 100644
                      ["id"] = card.Id.ToString(),
                      ["name"] = _loc.Card(card.Id.Entry),
                      ["cost"] = card.EnergyCost?.GetResolved() ?? 0,
-@@ -1870,9 +2341,110 @@ public class RunSimulator
+@@ -1870,9 +2345,110 @@ public class RunSimulator
                      ["description"] = _loc.Bilingual("cards", card.Id.Entry + ".description"),
                      ["keywords"] = selkws?.Count > 0 ? selkws : null,
                      ["after_upgrade"] = GetUpgradedInfo(card),
@@ -7777,7 +8001,7 @@ index 6b9de4a..311aafc 100644
              return new Dictionary<string, object?>
              {
                  ["type"] = "decision",
-@@ -1885,20 +2457,23 @@ public class RunSimulator
+@@ -1885,20 +2461,23 @@ public class RunSimulator
              };
          }
  
@@ -7809,7 +8033,7 @@ index 6b9de4a..311aafc 100644
          // Map room — need to select a node
          if (room is MapRoom || room == null)
          {
-@@ -1908,7 +2483,7 @@ public class RunSimulator
+@@ -1908,7 +2487,7 @@ public class RunSimulator
          // Combat room
          if (room is CombatRoom combatRoom)
          {
@@ -7818,7 +8042,7 @@ index 6b9de4a..311aafc 100644
              _syncCtx.Pump();
              WaitForActionExecutor();
  
-@@ -1919,7 +2494,7 @@ public class RunSimulator
+@@ -1919,7 +2498,7 @@ public class RunSimulator
                  goto checkCardSelect;  // Jump back to card_select handling
              }
  
@@ -7827,7 +8051,7 @@ index 6b9de4a..311aafc 100644
              {
                  return CombatPlayState(player);
              }
-@@ -1932,7 +2507,7 @@ public class RunSimulator
+@@ -1932,7 +2511,7 @@ public class RunSimulator
              {
                  _syncCtx.Pump();
                  Thread.Sleep(5);
@@ -7836,7 +8060,7 @@ index 6b9de4a..311aafc 100644
                  if (!CombatManager.Instance.IsInProgress) return DetectPostCombatState(player, combatRoom);
              }
              return CombatPlayState(player);
-@@ -1963,14 +2538,20 @@ public class RunSimulator
+@@ -1963,14 +2542,20 @@ public class RunSimulator
          }
  
          // Fallback
@@ -7864,7 +8088,7 @@ index 6b9de4a..311aafc 100644
      }
  
      private Dictionary<string, object?> MapSelectState()
-@@ -1992,76 +2573,32 @@ public class RunSimulator
+@@ -1992,76 +2577,32 @@ public class RunSimulator
              if (map == null)
                  return Error("No map available");
          }
@@ -7956,7 +8180,7 @@ index 6b9de4a..311aafc 100644
              ["choices"] = choices,
              ["player"] = PlayerSummary(_runState!.Players[0]),
              ["act"] = _runState.CurrentActIndex + 1,
-@@ -2070,6 +2607,38 @@ public class RunSimulator
+@@ -2070,6 +2611,38 @@ public class RunSimulator
          };
      }
  
@@ -7995,7 +8219,7 @@ index 6b9de4a..311aafc 100644
      private Dictionary<string, object?> CombatPlayState(Player player)
      {
          var pcs = player.PlayerCombatState;
-@@ -2079,11 +2648,6 @@ public class RunSimulator
+@@ -2079,11 +2652,6 @@ public class RunSimulator
          if (player.Creature != null && player.Creature.CurrentHp > 0)
              _lastKnownHp = player.Creature.CurrentHp;
  
@@ -8007,7 +8231,7 @@ index 6b9de4a..311aafc 100644
          var hand = pcs?.Hand?.Cards?.Select((c, i) =>
          {
              // Export the *currently resolved* stat values, not the card base: refresh the
-@@ -2109,78 +2673,30 @@ public class RunSimulator
+@@ -2109,78 +2677,30 @@ public class RunSimulator
              }
              catch { }
  
@@ -8098,7 +8322,7 @@ index 6b9de4a..311aafc 100644
              };
              if (starCost > 0)
              {
-@@ -2201,8 +2717,6 @@ public class RunSimulator
+@@ -2201,8 +2721,6 @@ public class RunSimulator
                  cardInfo["affliction"] = _loc.Bilingual("afflictions", c.Affliction.Id.Entry + ".title");
                  try { if (c.Affliction.Amount != 0) cardInfo["affliction_amount"] = c.Affliction.Amount; } catch { }
              }
@@ -8107,7 +8331,7 @@ index 6b9de4a..311aafc 100644
              return cardInfo;
          }).ToList() ?? new();
  
-@@ -2224,6 +2738,18 @@ public class RunSimulator
+@@ -2224,6 +2742,18 @@ public class RunSimulator
                              {
                                  ["type"] = intent.IntentType.ToString(),
                              };
@@ -8126,7 +8350,7 @@ index 6b9de4a..311aafc 100644
                              // Get damage for attack intents
                              if (intent is MegaCrit.Sts2.Core.MonsterMoves.Intents.AttackIntent atk && playerCreatures != null)
                              {
-@@ -2255,33 +2781,27 @@ public class RunSimulator
+@@ -2255,33 +2785,27 @@ public class RunSimulator
                  catch { }
  
                  // Enemy powers
@@ -8167,7 +8391,7 @@ index 6b9de4a..311aafc 100644
  
          var result = new Dictionary<string, object?>
          {
-@@ -2294,9 +2814,31 @@ public class RunSimulator
+@@ -2294,9 +2818,31 @@ public class RunSimulator
              ["hand"] = hand,
              ["enemies"] = enemies,
              ["player"] = PlayerSummary(player),
@@ -8200,7 +8424,7 @@ index 6b9de4a..311aafc 100644
          };
  
          // Character-specific mechanics
-@@ -2346,141 +2888,273 @@ public class RunSimulator
+@@ -2346,141 +2892,273 @@ public class RunSimulator
              Log($"Character-specific data: {ex.Message}");
          }
  
@@ -8495,9 +8719,10 @@ index 6b9de4a..311aafc 100644
 +            ["can_reroll"] = preview?.CanReroll,
 +            ["selection_completes_reward"] = preview?.SelectionCompletesReward,
 +            ["native_relic_refresh_subscription"] = reward is CardReward observedReward ? NativeCardRewardAlternativePreview.NativeRelicRefreshSubscription(observedReward) : "unavailable",
-+        };
-+    }
-+
+         };
+     }
+ 
+-    private void ForceToMap()
 +    // Same public card fields as the opened card_reward decision, so preview and page agree.
 +    private Dictionary<string, object?> RewardCardOption(CardModel card, int index)
 +    {
@@ -8507,11 +8732,10 @@ index 6b9de4a..311aafc 100644
 +            ["index"] = index, ["native_ref"] = NativeObjectIdentity.Get(card),
 +            ["render_complete"] = rendered.Complete,
 +            ["render_missing"] = rendered.Missing
-         };
++        };
 +        return result;
-     }
- 
--    private void ForceToMap()
++    }
++
 +    private void OpenMapPresentation()
      {
          try
@@ -8569,7 +8793,7 @@ index 6b9de4a..311aafc 100644
      private Dictionary<string, object?> EventChoiceState(EventRoom eventRoom)
      {
          var localEvent = RunManager.Instance.EventSynchronizer?.GetLocalEvent();
-@@ -2492,166 +3166,75 @@ public class RunSimulator
+@@ -2492,166 +3170,75 @@ public class RunSimulator
          // instead and let DetectDecisionPoint show the current options for the next choice.
          if (_eventOptionChosen) _eventOptionChosen = false;
  
@@ -8672,8 +8896,7 @@ index 6b9de4a..311aafc 100644
 -                // Extract vars: try event's own DynamicVars first, then relic
 -                Dictionary<string, object?>? optVars = null;
 -                try
-+                switch (tip)
-                 {
+-                {
 -                    // Event's DynamicVars (covers Gold, HpLoss, Heal, etc.)
 -                    if (localEvent.DynamicVars?.Values != null)
 -                    {
@@ -8685,7 +8908,8 @@ index 6b9de4a..311aafc 100644
 -                catch { }
 -                // Also try relic vars (for Neow options)
 -                if (opt.TextKey != null)
--                {
++                switch (tip)
+                 {
 -                    try
 -                    {
 -                        var parts = opt.TextKey.Split('.');
@@ -8791,7 +9015,7 @@ index 6b9de4a..311aafc 100644
              ["options"] = options,
              ["player"] = PlayerSummary(_runState!.Players[0]),
          };
-@@ -2661,20 +3244,13 @@ public class RunSimulator
+@@ -2661,20 +3248,13 @@ public class RunSimulator
      {
          var options = restRoom.Options;
          var player = _runState!.Players[0];
@@ -8815,7 +9039,7 @@ index 6b9de4a..311aafc 100644
              ["is_enabled"] = opt.IsEnabled,
          }).ToList();
  
-@@ -2684,194 +3260,177 @@ public class RunSimulator
+@@ -2684,194 +3264,177 @@ public class RunSimulator
              ["decision"] = "rest_site",
              ["context"] = RunContext(),
              ["options"] = optionList,
@@ -8866,10 +9090,7 @@ index 6b9de4a..311aafc 100644
 -                var stats = new Dictionary<string, object?>();
 -                int cardCost = 0;
 -                try
-+                var display = NativePublicCardDetails.Capture(card, PileType.None);
-+                missing.AddRange(display.Missing);
-+                var visible = new Dictionary<string, object?>(display.Card)
-                 {
+-                {
 -                    if (card != null)
 -                    {
 -                        cardCost = card.EnergyCost?.GetResolved() ?? 0;
@@ -8889,7 +9110,10 @@ index 6b9de4a..311aafc 100644
 -                catch { }
 -                var shopkws = card?.Keywords?.Where(k => k != CardKeyword.None).Select(k => k.ToString()).ToList();
 -                return new Dictionary<string, object?>
--                {
++                var display = NativePublicCardDetails.CaptureWithUpgradePreview(card, PileType.None);
++                missing.AddRange(display.Missing);
++                var visible = new Dictionary<string, object?>(display.Card)
+                 {
 -                    ["index"] = i,
 -                    ["name"] = _loc.Card(entry),
 -                    ["type"] = card?.Type.ToString() ?? "?",
@@ -9053,16 +9277,16 @@ index 6b9de4a..311aafc 100644
 -        catch (Exception ex) { Log($"Treasure relic pick: {ex.Message}"); }
  
 -        try
-+        var currentRelics = RunManager.Instance.TreasureRoomRelicSynchronizer.CurrentRelics;
-+        if (!_treasureRelicResolved && currentRelics is { Count: > 0 })
-         {
+-        {
 -            treasureRoom.DoNormalRewards().GetAwaiter().GetResult();
 -            _syncCtx.Pump();
 -            treasureRoom.DoExtraRewardsIfNeeded().GetAwaiter().GetResult();
 -            _syncCtx.Pump();
 -        }
 -        catch (InvalidOperationException ex) when (ex.Message.Contains("relic picking session"))
--        {
++        var currentRelics = RunManager.Instance.TreasureRoomRelicSynchronizer.CurrentRelics;
++        if (!_treasureRelicResolved && currentRelics is { Count: > 0 })
+         {
 -            // BUG-013: Relic session conflict — wait for pending session then retry
 -            Log($"Relic session conflict, waiting and retrying: {ex.Message}");
 -            WaitForActionExecutor();
@@ -9140,7 +9364,7 @@ index 6b9de4a..311aafc 100644
          };
      }
  
-@@ -2879,6 +3438,44 @@ public class RunSimulator
+@@ -2879,6 +3442,44 @@ public class RunSimulator
  
      #region Helpers
  
@@ -9185,7 +9409,7 @@ index 6b9de4a..311aafc 100644
      private void WaitForActionExecutor()
      {
          try
-@@ -2891,7 +3488,7 @@ public class RunSimulator
+@@ -2891,7 +3492,7 @@ public class RunSimulator
  
              // Executor may stay "running" while the game awaits headless card selection / reward (e.g. Attack Potion).
              // Spinning here would time out and downstream code could mis-handle an in-flight potion use (BUG-026).
@@ -9194,7 +9418,7 @@ index 6b9de4a..311aafc 100644
                  return;
  
              var executor = RunManager.Instance.ActionExecutor;
-@@ -2902,7 +3499,7 @@ public class RunSimulator
+@@ -2902,7 +3503,7 @@ public class RunSimulator
                  for (int i = 0; i < maxPumps; i++)
                  {
                      _syncCtx.Pump();
@@ -9203,7 +9427,7 @@ index 6b9de4a..311aafc 100644
                      Thread.Sleep(1);
                  }
              }
-@@ -2913,6 +3510,60 @@ public class RunSimulator
+@@ -2913,6 +3514,60 @@ public class RunSimulator
          }
      }
  
@@ -9264,7 +9488,7 @@ index 6b9de4a..311aafc 100644
      private void SpinWaitForCombatStable()
      {
          int maxIterations = 200;
-@@ -2920,14 +3571,32 @@ public class RunSimulator
+@@ -2920,14 +3575,32 @@ public class RunSimulator
          {
              _syncCtx.Pump();
              if (!CombatManager.Instance.IsInProgress) return;
@@ -9299,7 +9523,7 @@ index 6b9de4a..311aafc 100644
      private Dictionary<string, object?>? GetUpgradedInfo(CardModel card)
      {
          if (!card.IsUpgradable) return null;
-@@ -2969,34 +3638,70 @@ public class RunSimulator
+@@ -2969,34 +3642,70 @@ public class RunSimulator
      {
          return new Dictionary<string, object?>
          {
@@ -9379,7 +9603,7 @@ index 6b9de4a..311aafc 100644
                  };
              }).Where(x => x != null).ToList(),
              ["deck_size"] = player.Deck?.Cards?.Count(c => c != null) ?? 0,
-@@ -3005,25 +3710,20 @@ public class RunSimulator
+@@ -3005,25 +3714,20 @@ public class RunSimulator
                  var dstats = new Dictionary<string, object?>();
                  try { foreach (var dv in c.DynamicVars.Values) dstats[dv.Name.ToLowerInvariant()] = (int)dv.BaseValue; } catch { }
                  var dkws = c.Keywords?.Where(k => k != CardKeyword.None).Select(k => k.ToString()).ToList();
@@ -9412,14 +9636,14 @@ index 6b9de4a..311aafc 100644
 +                dcard["after_upgrade"] = GetUpgradedInfo(c);
 +                // The public deck and its linked hover details are one native
 +                // capture, matching Reference's BuildCard/CurrentPublicDetails.
-+                var publicDetails = NativePublicCardDetails.Capture(c, PileType.Deck);
++                var publicDetails = NativePublicCardDetails.CaptureWithUpgradePreview(c, PileType.Deck);
 +                dcard["public_details"] = publicDetails.PublicDetail;
 +                dcard["public_details_complete"] = publicDetails.Complete;
 +                dcard["public_details_missing"] = publicDetails.Missing;
                  if (c.Affliction != null)
                  {
                      dcard["affliction"] = _loc.Bilingual("afflictions", c.Affliction.Id.Entry + ".title");
-@@ -3034,16 +3734,146 @@ public class RunSimulator
+@@ -3034,36 +3738,184 @@ public class RunSimulator
          };
      }
  
@@ -9567,7 +9791,23 @@ index 6b9de4a..311aafc 100644
          };
  
          // Boss encounter info — use BossEncounter?.Id?.Entry
-@@ -3064,6 +3894,28 @@ public class RunSimulator
+         try
+         {
+-            var bossIdEntry = _runState.Act?.BossEncounter?.Id?.Entry;
++            var boss = _runState.Act?.BossEncounter;
++            var bossIdEntry = boss?.Id.Entry;
+             if (!string.IsNullOrEmpty(bossIdEntry))
+             {
+-                var monsterKey = bossIdEntry.EndsWith("_BOSS") ? bossIdEntry[..^5] : bossIdEntry;
+-                // Handle special mappings
+-                if (monsterKey == "THE_KIN") monsterKey = "KIN_PRIEST";
+                 ctx["boss"] = new Dictionary<string, object?>
+                 {
+                     ["id"] = bossIdEntry,
+-                    ["name"] = _loc.Monster(monsterKey),
++                    ["name"] = StripVisibleText(boss!.Title.GetFormattedText()),
+                 };
+             }
          }
          catch { }
  
@@ -9579,12 +9819,10 @@ index 6b9de4a..311aafc 100644
 +            {
 +                var bossIdEntry = boss?.Id.Entry;
 +                if (string.IsNullOrEmpty(bossIdEntry)) continue;
-+                var monsterKey = bossIdEntry.EndsWith("_BOSS") ? bossIdEntry[..^5] : bossIdEntry;
-+                if (monsterKey == "THE_KIN") monsterKey = "KIN_PRIEST";
 +                bosses.Add(new Dictionary<string, object?>
 +                {
 +                    ["id"] = bossIdEntry,
-+                    ["name"] = _loc.Monster(monsterKey),
++                    ["name"] = StripVisibleText(boss!.Title.GetFormattedText()),
 +                    ["order"] = order,
 +                });
 +            }
@@ -10851,7 +11089,24 @@ index 6b9de4a..311aafc 100644
          // Boss node
          var bossNode = new Dictionary<string, object?>
          {
-@@ -3896,15 +5053,123 @@ public class RunSimulator
+@@ -3867,13 +5024,12 @@ public class RunSimulator
+         // Add boss name/id — use BossEncounter?.Id?.Entry
+         try
+         {
+-            var bossIdEntry = _runState.Act?.BossEncounter?.Id?.Entry;
++            var boss = _runState.Act?.BossEncounter;
++            var bossIdEntry = boss?.Id.Entry;
+             if (!string.IsNullOrEmpty(bossIdEntry))
+             {
+-                var monsterKey = bossIdEntry.EndsWith("_BOSS") ? bossIdEntry[..^5] : bossIdEntry;
+-                if (monsterKey == "THE_KIN") monsterKey = "KIN_PRIEST";
+                 bossNode["id"] = bossIdEntry;
+-                bossNode["name"] = _loc.Monster(monsterKey);
++                bossNode["name"] = StripVisibleText(boss!.Title.GetFormattedText());
+             }
+         }
+         catch { }
+@@ -3896,15 +5052,124 @@ public class RunSimulator
      {
          try
          {
@@ -10912,6 +11167,7 @@ index 6b9de4a..311aafc 100644
 +            ["pending_reward_set"] = _rewardsSelector.PendingSet != null,
 +            ["pending_bundle"] = _pendingBundleTcs is { Task.IsCompleted: false },
 +            ["terminal_profile_identity"] = _gameOverPresentation?.ProfileIdentity(),
++            ["initial_progress"] = _initialProgress.Observe(state),
 +        };
 +    }
 +

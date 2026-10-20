@@ -1,7 +1,7 @@
 import { decodePlayerRead } from "../protocol.js";
 import { decodePublicSourceSnapshot as decodePlayerSnapshot } from "../publicBasis.js";
 import { hasFinitePublicNumbers } from "../publicCombat.js";
-import { completeCombatSurface, completeCombat, completeDeck, completeMap, completePiles, completeSelector } from "./admission.js";
+import { completeCombatSurface, completeCombat, completeDeck, completeMap, completePiles, completeSelector, completePublicUpgradePreview } from "./admission.js";
 import { canonicalJson, isObject } from "./canonical.js";
 import { projectCombatContext } from "./combatProjection.js";
 import { createPublicIdentityPolicy, publicFieldPath } from "./publicIdentity.js";
@@ -11,7 +11,7 @@ import { completeRewardSurface, completeRewardGroup, structuralRewardGroup, comp
   matchesRewardIntention, type RewardIntention } from "./rewardForward.js";
 import { shopWorldFacts } from "./shopForward.js";
 import {
-  P1G_INFORMATION_SHAPES, P1G_LIMITS, P1G_OBSERVATION_SCHEMA, P1G_PROFILE, P1G_REVISION,
+  P1G_INFORMATION_SHAPES, P1G_NONCOMBAT_POTION_SCENES, P1G_LIMITS, P1G_OBSERVATION_SCHEMA, P1G_PROFILE, P1G_REVISION,
   type Availability, type HostKind, type P1Choice, type P1Commitments, type P1Observation,
   type P1Part, type SceneFamily
 } from "./contracts.js";
@@ -81,6 +81,8 @@ export type Commitment = "decline_group" | "consume_group" | "decline_open_group
 export interface Lowering {
   /** First native step; null for a pure P1 commitment that performs no native input. */
   readonly first: NativeStep | null;
+  /** Offline execution evidence only; never a public dispatch binding. */
+  readonly native_input_key?: string;
   readonly follow: readonly FollowRule[];
   /** Applied after the intention's native steps are known delivered (or at once for pure commitments). */
   readonly commitment: Commitment | null;
@@ -127,7 +129,7 @@ const FAMILY: Readonly<Record<string, SceneFamily>> = {
   map_navigation: "map", event_option: "event", event_dialogue: "event",
   shop_inventory: "shop", shop_room: "shop", rest_site: "rest",
   treasure_room: "treasure", treasure_chest: "treasure", treasure_relic_selection: "treasure", treasure_completion: "treasure", relic_choice: "relic_choice", native_boss_relic_selection: "relic_choice",
-  tutorial: "other", game_over: "terminal"
+  tutorial: "other", potion_popup: "other", game_over: "terminal"
 };
 
 /** Verb-level semantics per family, used when no exact (kind, verb, role) row exists. */
@@ -152,6 +154,7 @@ const FAMILY_VERB: Readonly<Record<string, Readonly<Record<string, string>>>> = 
 const KIND_TABLE: Readonly<Record<string, string>> = {
   "combat_turn|play|playable_card": "combat.play_card",
   "combat_turn|use|usable_potion": "potion.use",
+  "combat_turn|discard|discardable_potion": "potion.discard",
   "combat_turn|activate|usable_potion": "potion.discard",
   "combat_turn|activate|discardable_potion": "potion.discard",
   "combat_turn|end_turn|": "combat.end_turn",
@@ -161,7 +164,11 @@ const KIND_TABLE: Readonly<Record<string, string>> = {
   "treasure_relic_selection|skip|treasure_room": "treasure.skip",
   "treasure_completion|close|treasure_room": "treasure.proceed",
   "reward_claim|activate|reward": "reward.claim",
+  "reward_claim|activate|discardable_potion": "potion.discard",
+  "potion_popup|activate|potion": "potion.discard",
+  "potion_popup|use|potion": "potion.use",
   "reward_claim|activate|": "reward.leave",
+  "reward_claim|skip|": "reward.leave",
   "reward_completion|activate|combat_room": "reward.proceed",
   "card_reward_selection|select|card": "card_reward.take",
   "card_reward_selection|skip|card_reward_alternative": "card_reward.decline",
@@ -287,6 +294,13 @@ function part<T>(availability: Availability, content: T | null, source: string |
 
 interface NativeAction { bound_action_id: string; verb: string; subject_referent_id?: string | null;
   arguments: { role: string; referent_id: string }[]; label: string }
+export interface NativeExecutionAction {
+  readonly key: string;
+  readonly verb: string;
+  readonly subject_referent_id: string | null;
+  readonly arguments: Readonly<Record<string, string>>;
+  readonly native_legality_basis: string;
+}
 interface NativeReferent { referent_id: string; role: string }
 
 /** Rich card details: the display owner is an entity relation (aliased by the identity
@@ -298,12 +312,92 @@ function publicDetailContent(kind: string, content: unknown): unknown {
 }
 
 export function reduce(state: P1SessionState, basis: P1Basis): Reduction {
+  return reduceCatalog(state, basis);
+}
+
+/** Same P1 projection over a separately retained native execution catalog.
+ * The original public snapshot/catalog stays unchanged; no BoundAction is invented. */
+export function reduceNativeExecution(state: P1SessionState, basis: P1Basis,
+  actions: readonly NativeExecutionAction[], scope?: string): Reduction {
+  return reduceCatalog(state, basis, actions, scope);
+}
+
+function reduceCatalog(state: P1SessionState, basis: P1Basis, execution?: readonly NativeExecutionAction[], executionScope?: string): Reduction {
   const snapshot = decodePlayerSnapshot(basis.snapshot).raw as Record<string, any>;
-  const interaction = snapshot.interaction as Record<string, any>;
+  let interaction = snapshot.interaction as Record<string, any>;
+  const sourcePlayer = snapshot.interaction.content.context?.player;
+  const nonCombatPotionExecution = executionScope === "potion_belt_non_combat_use"
+    && snapshot.interaction.content.context?.kind !== "combat";
+  const executionPotions = nonCombatPotionExecution ? snapshot.persistent?.content?.player?.potions : sourcePlayer?.potion_states;
+  const knownIds = new Set((snapshot.referents as NativeReferent[]).map(ref => ref.referent_id));
+  const invalidExecution = execution !== undefined && (
+    new Set(execution.map(action => action.key)).size !== execution.length
+    || execution.some(action => !action.key || !action.native_legality_basis
+      || !["play", "use", "discard", "end_turn"].includes(action.verb)
+      || action.arguments == null || typeof action.arguments !== "object" || Array.isArray(action.arguments)
+      || Object.entries(action.arguments).some(([role, id]) => role !== "target" || !knownIds.has(id))
+      || action.verb === "play" && !sourcePlayer?.hand?.some((card: any) => card.entity_id === action.subject_referent_id)
+      || action.verb === "use" && !executionPotions?.some((potion: any) => potion.entity_id === action.subject_referent_id)
+      || nonCombatPotionExecution && (action.verb !== "use" || Object.keys(action.arguments).length !== 0)
+      || action.verb === "discard" && (!sourcePlayer?.potion_states?.some((potion: any) => potion.entity_id === action.subject_referent_id)
+        || !snapshot.persistent?.content?.player?.potions?.some((potion: any) => potion.entity_id === action.subject_referent_id)
+        || Object.keys(action.arguments).length !== 0)
+      || action.verb === "end_turn" && (action.subject_referent_id != null || Object.keys(action.arguments).length !== 0)));
+  // Invalid captured operands remain an incomplete observation, never a choice.
+  if (invalidExecution) execution = undefined;
+  if (execution && interaction.content.context?.kind === "combat"
+      && ["combat_turn", "potion_popup"].includes(interaction.kind)
+      && Array.isArray(sourcePlayer?.potion_states)) {
+    const context = interaction.content.context;
+    // A queued potion's public button is disabled in the original S. Its
+    // exact native use in A(S) proves usability for the serial P1 view.
+    // Preserve all original PB1 bytes and the independent delivery gate.
+    interaction = { ...interaction, content: { ...interaction.content,
+      context: { ...context, player: { ...sourcePlayer,
+        potion_states: sourcePlayer.potion_states.map((potion: any) => ({ ...potion,
+          can_use: potion.can_use || execution.some(action => action.verb === "use"
+            && action.subject_referent_id === potion.entity_id) })) } } } };
+  }
+  if (execution && interaction.kind === "combat_turn") {
+    const context = interaction.content.context;
+    const options = (verb: string, items: Record<string, any>[]) => items.flatMap(item => {
+      const selected = execution.filter(action => action.verb === verb && action.subject_referent_id === item.entity_id);
+      return selected.length ? [{ entity_id: item.entity_id, name: item.name
+        ?? snapshot.persistent?.content?.player?.potions?.find((potion: any) => potion.entity_id === item.entity_id)?.name,
+        target_entity_ids: selected.map(action => action.arguments.target).filter((id): id is string => id !== undefined) }] : [];
+    });
+    // These are P1 semantic facts derived from the actual A(S), not a replacement PB1.
+    interaction = { ...interaction, stage: "ready", content: { ...interaction.content,
+      surface: { ...interaction.content.surface, can_end_turn: execution.some(action => action.verb === "end_turn"),
+        playable_cards: options("play", context.player.hand),
+        usable_potions: options("use", context.player.potion_states ?? []),
+        ...(execution.some(action => action.verb === "discard") || Array.isArray(interaction.content.surface.discardable_potions) ? {
+        // A(S) is an action inventory, not potion-slot presentation order.
+        // Keep the same S's published potion order; exact A(S) membership
+        // still decides whether each independent discard exists.
+        discardable_potions: snapshot.persistent.content.player.potions
+          .filter((potion: any) => execution.some(action => action.verb === "discard" && action.subject_referent_id === potion.entity_id))
+          .map((potion: any) => {
+          const action = execution.find(action => action.verb === "discard" && action.subject_referent_id === potion.entity_id)!;
+          const current = context.player.potion_states.find((item: any) => item.entity_id === action.subject_referent_id);
+          return { entity_id: potion.entity_id, definition_id: potion.definition_id, name: potion.name,
+            description: potion.description, slot: potion.slot, target_type: current.target_type,
+            can_use: false, automatic: current.automatic };
+        }) } : {}) } } };
+  }
   const nativeKind = String(interaction.kind);
   const family: SceneFamily = FAMILY[nativeKind] ?? "other";
   const missing: string[] = [];
+  if (invalidExecution) missing.push("required:native_execution_catalog_operands");
   if (!hasFinitePublicNumbers(basis)) missing.push("required:finite_public_numbers");
+  // An accepted combat input can execute while a different potion popup is
+  // visible. Its same-capture combat context and A(S) still own the input;
+  // preserve the actual popup as public information rather than invent a UI.
+  const executionCombatBasis = interaction.content.context?.kind === "combat"
+    && ["combat_turn", "potion_popup"].includes(nativeKind);
+  if (execution && (!(executionCombatBasis || nonCombatPotionExecution) || snapshot.completeness?.status !== "complete"
+      || execution.length === 0)) missing.push("required:complete_native_execution_combat_basis");
+
   if (!P1G_INFORMATION_SHAPES.includes(family)) missing.push(`required:scene_information_qualification:${family}`);
   if (!(nativeKind in FAMILY)) missing.push(`required:scene_contract:${nativeKind}`);
   if (interaction.content_schema !== `sts2.player-environment/surface/${nativeKind}-1`
@@ -350,6 +444,9 @@ export function reduce(state: P1SessionState, basis: P1Basis): Reduction {
         missing.push(`read:${listed.kind}:${listed.read_id}:not_complete_for_snapshot`);
       else read = decoded;
     }
+    if (read && listed.kind === "surface_card" && read.content?.public_details_revision === "2"
+        && !completePublicUpgradePreview(read.content.upgrade_preview))
+      missing.push(`read:surface_card:${listed.read_id}:upgrade_preview_incomplete`);
     readInstances.push({ listed, read });
   }
   const aggregate = (kind: string): Record<string, any> | null | undefined => {
@@ -469,7 +566,7 @@ export function reduce(state: P1SessionState, basis: P1Basis): Reduction {
       ? part("available", aliasTree(mapRead.content, work, "map.content"), "read:map")
       : part(terminalScene ? "terminal" : mapRead === null ? "unknown" : "unsupported", null, null);
   const combatRequired = family === "combat" || context.kind === "combat" || nestedCombat !== null
-    || ["combat_hand_card_selection", "native_combat_pile_selection", "native_generated_card_choice"].includes(nativeKind);
+    || ["combat_hand_card_selection", "native_combat_pile_selection"].includes(nativeKind);
   if (combatRequired && pilesRead === undefined) pilesPart = part("unsupported", null, null);
   // Absence from the legacy advertised Reads is not evidence of native unavailability.
   if (!terminalScene) {
@@ -490,6 +587,17 @@ export function reduce(state: P1SessionState, basis: P1Basis): Reduction {
   }
 
   if (!isObject(interaction.content.surface)) missing.push("required:surface:invalid_content");
+  if (Object.hasOwn(surface, "non_combat_discardable_potions")) {
+    const belt = surface.non_combat_discardable_potions;
+    if (!P1G_NONCOMBAT_POTION_SCENES.includes(nativeKind) || context.kind === "combat")
+      missing.push("required:noncombat_potion_scope");
+    if (!Array.isArray(belt) || new Set(belt.map((item: any) => item?.entity_id)).size !== belt.length
+        || belt.some((item: any) => !isObject(item) || !Number.isSafeInteger(item.slot)
+          || !persistent?.player?.potions?.some((potion: any) => potion.entity_id === item.entity_id && potion.slot === item.slot)
+          || snapshot.bound_actions.actions.filter((action: any) => action.verb === "activate"
+            && action.subject_referent_id === item.entity_id && action.arguments.length === 0).length !== 1))
+      missing.push("required:noncombat_potion_belt_and_exact_catalog");
+  }
   if (nativeKind === "combat_turn" && !completeCombatSurface(surface)) missing.push("required:combat_surface:invalid_content");
   if (["selector", "upgrade", "enchant"].includes(family) && !completeSelector(surface)) missing.push("required:selector:invalid_content");
   if (nativeKind === "reward_claim" && !completeRewardSurface(surface)) missing.push("required:reward:invalid_content");
@@ -517,6 +625,20 @@ export function reduce(state: P1SessionState, basis: P1Basis): Reduction {
 
   // Catalog: every native bound action is accounted for; only declared P1 commitments remove one.
   const roles = new Map((snapshot.referents as NativeReferent[]).map((item) => [item.referent_id, item.role]));
+  const executionLabel = (action: NativeExecutionAction): string => {
+    if (action.verb === "end_turn") return "End turn";
+    const item = (action.verb === "play" ? context.player.hand : persistent?.player?.potions ?? [])
+      .find((value: any) => value.entity_id === action.subject_referent_id);
+    const label = `${action.verb === "play" ? "Play" : action.verb === "discard" ? "Discard" : "Use"} ${item?.name ?? action.subject_referent_id}`;
+    const target = snapshot.referents.find((ref: any) => ref.referent_id === action.arguments.target)?.label;
+    return target && !label.includes(target) ? `${label} -> ${target}` : label;
+  };
+  const catalogActions: (Omit<NativeAction, "bound_action_id"> & { bound_action_id: string | null; key?: string })[] = execution
+    ? execution.map(action => ({ bound_action_id: null, key: action.key, verb: action.verb,
+      subject_referent_id: action.subject_referent_id, arguments: Object.entries(action.arguments)
+        .sort(([a], [b]) => a.localeCompare(b)).map(([role, referent_id]) => ({ role, referent_id })),
+      label: executionLabel(action) }))
+    : snapshot.bound_actions.actions;
   const lowering: Record<string, Lowering> = {};
   const candidates: { choice: Omit<P1Choice, "choice_id">; lowering: Lowering; sort: string }[] = [];
   const declined = new Set(reward?.declined ?? []);
@@ -531,32 +653,47 @@ export function reduce(state: P1SessionState, basis: P1Basis): Reduction {
     missing.push("required:selector:public_facts_incomplete");
   const push = (choice: Omit<P1Choice, "choice_id">, low: Lowering) => candidates.push({ choice, lowering: low,
     sort: `${choice.kind}\u0000${choice.subject ?? ""}\u0000${choice.target ?? ""}\u0000${choice.option ?? ""}\u0000${low.group_key ?? ""}\u0000${low.option_index ?? ""}` });
-  for (const action of snapshot.bound_actions.actions as NativeAction[]) {
+  for (const action of catalogActions) {
     const subjectId = action.subject_referent_id ?? null;
-    const role = subjectId ? roles.get(subjectId) ?? "" : "";
+    const role = execution ? action.verb === "play" ? "playable_card" : action.verb === "use" ? "usable_potion" : action.verb === "discard" ? "discardable_potion" : ""
+      : subjectId ? roles.get(subjectId) ?? "" : "";
     const operation = qualifiedSelector ? selectorOperation(surface, subjectId) : null;
-    const first = { bound_action_id: action.bound_action_id, verb: action.verb, label: action.label };
+    const first = action.bound_action_id === null ? null
+      : { bound_action_id: action.bound_action_id, verb: action.verb, label: action.label };
+    const exclude = (rule: string) => {
+      if (first) excluded.push({ ...first, rule });
+      else missing.push(`required:execution_action_exclusion:${rule}`);
+    };
+    if (nativeKind === "potion_popup" && action.verb === "cancel" && subjectId === null) {
+      exclude("forward_profile:complete_potion_public_presentation"); continue;
+    }
     if (selectionFamily && (action.verb === "deselect" || operation === "cancel_preview"
         || !operation && ["cancel", "close"].includes(action.verb) && surface.stage === "preview")) {
-      excluded.push({ ...first, rule: "forward_profile:selection_append_only" }); continue;
+      exclude("forward_profile:selection_append_only"); continue;
     }
     if (selectionFamily && action.verb === "select" && (surface.selected_count >= surface.max_select
         || surface.selected_card_entity_ids.includes(subjectId))) {
-      excluded.push({ ...first, rule: "forward_profile:selection_capacity_or_already_selected" }); continue;
+      exclude("forward_profile:selection_capacity_or_already_selected"); continue;
     }
     const declineSelection = selectionFamily && (operation === "cancel_selection"
       || !operation && ["skip", "cancel", "close"].includes(action.verb));
     if (declineSelection && surface.selected_count !== 0) {
-      excluded.push({ ...first, rule: "forward_profile:keep_selected_originals" }); continue;
+      exclude("forward_profile:keep_selected_originals"); continue;
     }
     if (declineSelection && hasSelectionCompletion) {
-      excluded.push({ ...first, rule: "forward_profile:empty_selection_uses_completion" }); continue;
+      exclude("forward_profile:empty_selection_uses_completion"); continue;
     }
     if (qualifiedSelector && (action.verb === "open" && role === "card"
         || operation === "toggle_upgrade_view")) {
-      excluded.push({ ...first, rule: "forward_profile:complete_selector_public_presentations" }); continue;
+      exclude("forward_profile:complete_selector_public_presentations"); continue;
     }
-    let kind = KIND_TABLE[`${nativeKind}|${action.verb}|${role}`] ?? FAMILY_VERB[family]?.[action.verb];
+    const actionOwnerKind = execution ? "combat_turn" : nativeKind;
+    const nonCombatDiscard = !execution && action.verb === "activate" && subjectId !== null
+      && Array.isArray(surface.non_combat_discardable_potions)
+      && surface.non_combat_discardable_potions.some((potion: any) => potion.entity_id === subjectId);
+    let kind = nonCombatDiscard ? "potion.discard"
+      : nonCombatPotionExecution && execution && action.verb === "use" ? "potion.use"
+      : KIND_TABLE[`${actionOwnerKind}|${action.verb}|${role}`] ?? FAMILY_VERB[family]?.[action.verb];
     if (operation) kind = operation === "open_preview" ? `${family}.confirm`
       : operation === "cancel_selection" ? `${family}.cancel`
       : operation === "cancel_preview" ? `${family}.back` : `${family}.confirm`;
@@ -568,7 +705,7 @@ export function reduce(state: P1SessionState, basis: P1Basis): Reduction {
     const mapped = kind !== undefined;
     kind ??= `native.${nativeKind}.${action.verb}${role ? `.${role}` : ""}`;
     // The native result is final: inputs on the game-over page only navigate to the run summary.
-    if (terminalScene) { excluded.push({ ...first, rule: "terminal:post_result_navigation" }); continue; }
+    if (terminalScene) { exclude("terminal:post_result_navigation"); continue; }
     if (!mapped) missing.push(`required:action_mapping:${nativeKind}.${action.verb}`);
     const target = action.arguments.find((item) => item.role === "target")?.referent_id ?? null;
     const subjectAlias = subjectId ? aliasFor(work, subjectId) : null;
@@ -578,7 +715,7 @@ export function reduce(state: P1SessionState, basis: P1Basis): Reduction {
       const group = groupByReferent.get(subjectId);
       const groupKey = groupIdentityAvailable ? String(group?.group_id) : null;
       if (groupKey && declined.has(groupKey)) {
-        excluded.push({ ...first, rule: "forward_profile:declined_exact_reward_group" }); continue;
+        exclude("forward_profile:declined_exact_reward_group"); continue;
       }
       if (group?.kind === "card" && groupKey && owner && completeRewardGroup(group)) {
         const follow: FollowRule[] = [{ rule_id: "reward_intention", expect_native_kind: "card_reward_selection", expect_verb: "select", optional: false }];
@@ -634,7 +771,7 @@ export function reduce(state: P1SessionState, basis: P1Basis): Reduction {
       expect_verb: "activate", optional: false });
     push({ kind, subject: SUBJECTLESS_KINDS.has(kind) ? null : subjectAlias, target: targetAlias,
       label: selectionFamily && kind === `${family}.finish` ? "Finish selection" : action.label, mapped },
-      { ...base, first, follow, commitment, group_key: groupKey, ...(intention ? { selector_intention: intention } : {}),
+      { ...base, first, ...(action.key ? { native_input_key: action.key } : {}), follow, commitment, group_key: groupKey, ...(intention ? { selector_intention: intention } : {}),
         ...(shopLeave ? { shop_leave: shopLeave } : {}) });
   }
   candidates.sort((a, b) => (a.sort < b.sort ? -1 : a.sort > b.sort ? 1 : 0));
@@ -657,7 +794,7 @@ export function reduce(state: P1SessionState, basis: P1Basis): Reduction {
   // Hosts state the native result differently (Managed surface.victory, Reference context.result).
   const victory = surface?.victory ?? (context.result === "win" ? true : context.result === "loss" ? false : undefined);
   const terminal = terminalScene ? { outcome: (victory === true ? "win" : victory === false ? "loss" : "unknown") as "win" | "loss" | "unknown" } : null;
-  const decision = snapshot.status === "interactive" && catalog.length > 0;
+  const decision = (snapshot.status === "interactive" || execution !== undefined) && catalog.length > 0;
   const status: P1Observation["status"] = terminalScene ? "terminal" : decision ? "decision" : "unsupported";
   if (status === "unsupported") missing.push(`scene:${nativeKind}:${snapshot.status}`);
 

@@ -158,7 +158,7 @@ internal static class LiveContextReader
         string? starCost = card.HasStarCostX
             ? "X"
             : card.CurrentStarCost >= 0 ? card.GetStarCostWithModifiers().ToString() : null;
-        var publicDetails = NativePublicCardDetails.Capture(card, displayPile);
+        var publicDetails = NativePublicCardDetails.CaptureWithUpgradePreview(card, displayPile);
         // The native render transaction clears and updates previews for this
         // exact pile, then restores the prior preview state. The base Read must
         // use its captured description, not format that restored cache again.

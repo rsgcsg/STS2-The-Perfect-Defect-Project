@@ -7,6 +7,9 @@ classes are defined in [Engineering Governance](ENGINEERING_GOVERNANCE.md).
 
 ## Current native learning and application route
 
+For the approved current-segment CPU/model Agent engineering slice, see
+[P1 M-std T0 input, restore and private installation](P1_T0.md).
+
 Use root [CURRENT](../../docs/memory/CURRENT.md) and the
 [P1 project map](../../docs/plans/p1-prefreeze-2026-10-18/README.md) for the active task;
 [P1 r1](../../docs/protocols/P1_GLOBAL_R1.zh-CN.md) owns the selected environment semantics.

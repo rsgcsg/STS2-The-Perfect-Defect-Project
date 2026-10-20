@@ -68,6 +68,9 @@ internal static partial class RecorderRuntime
 
     private static NestedUiInput? ResolveNestedUiInput(object? owner)
     {
+        // P1 records each exact UI frame/root and native completion directly.
+        // Its accepted decisions never enter the legacy canonical tracker.
+        if (IsP1Recording) return null;
         if (owner == null || !NativeNestedSelectorBindings.TryGet(owner, out var binding)
             || binding == null) return null;
         if (binding.RecordingSessionId != SessionId || binding.ActionWitnessId == "unavailable")

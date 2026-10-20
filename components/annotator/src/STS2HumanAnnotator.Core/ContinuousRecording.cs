@@ -11,12 +11,24 @@ public sealed class ContinuousRecording
     private bool _nativeStart, _resumed, _interrupted, _terminal, _sealed;
     private string _outcome = "unknown";
     private string _sealState = "not_open";
+    private string? _captureProfileId, _p1NativeOrigin;
     public bool Armed { get; private set; }
     public int SealedSegments { get; private set; }
     public int FinishedRuns { get; private set; }
 
-    public void Arm() => Armed = true;
+    public void Arm(string? captureProfileId = null, string? p1NativeOrigin = null)
+    {
+        _captureProfileId = captureProfileId;
+        _p1NativeOrigin = p1NativeOrigin;
+        Armed = true;
+    }
     public void Disarm() => Armed = false;
+
+    // A new session changes identity, not the operator's selected recording
+    // profile or origin. StartSession remains the configuration validator.
+    public RecordingCommand? NextSessionCommand(string commandId) => !Armed ? null : new(
+        commandId, RecordingCommandKind.StartNewSession,
+        CaptureProfileId: _captureProfileId) { P1NativeOrigin = _p1NativeOrigin };
 
     public void BeginSession()
     {

@@ -3,6 +3,7 @@ import test from "node:test";
 import { SUPPORTED_PLAYER_ENVIRONMENT_PROTOCOL } from "@rsgcsg/sts2-connector-client";
 import {
   commandOwnsHeadlessRuntime,
+  commandOwnsRecordedRuntime,
   evaluateHeadlessCapabilities,
   processCommand
 } from "../src/headless-host.mjs";
@@ -22,6 +23,18 @@ test("recognizes only the exact recorded executable with a headless argument", (
     '"E:\\SteamLibrary\\steamapps\\common\\Slay the Spire 2\\SlayTheSpire2.exe" --headless --verbose',
     "e:/steamlibrary/steamapps/common/slay the spire 2/slaythespire2.exe"
   ), true);
+});
+
+test("native UI lifecycle matches its recorded isolated launch without treating a normal game as owned", () => {
+  const record = { executable: "/games/Slay the Spire 2", display_mode: "native-ui",
+    profile: { mode: "isolated_local_profile" } };
+  const command = `${record.executable} --verbose --force-steam=off --clientId=1`;
+  assert.equal(commandOwnsRecordedRuntime(command, record), true);
+  assert.equal(commandOwnsRecordedRuntime(record.executable, record), false);
+  assert.equal(commandOwnsRecordedRuntime(`${command} --headless`, record), false);
+  assert.equal(commandOwnsRecordedRuntime(command.replace("/games/", "/foreign/"), record), false);
+  assert.equal(commandOwnsRecordedRuntime(command, { ...record, profile: { mode: "shared" } }), false);
+  assert.equal(commandOwnsRecordedRuntime(`${record.executable} --headless`, { executable: record.executable }), true);
 });
 
 test("does not inspect invalid process identifiers", () => {

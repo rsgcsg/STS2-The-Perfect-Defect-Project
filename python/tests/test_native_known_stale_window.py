@@ -10,7 +10,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from native_compatibility_fixtures import historical_operational_source
+from native_compatibility_fixtures import historical_operational_source, operational_target_lock
 
 from spireagent.json_boundary import BoundaryError
 from stpd import native_code_scope as scope
@@ -279,7 +279,7 @@ def test_separate_operational_lock_validator_rejects_rehashed_dependency_or_unse
     replacement,
 ):
     before, after = replacement
-    target = (ROOT / "uv.lock").read_text()
+    target = operational_target_lock()
     assert before in target
     with pytest.raises(BoundaryError, match="not_exact_operational_evidence_only_lock_delta"):
         scope._operational_evidence_only_lock_delta(

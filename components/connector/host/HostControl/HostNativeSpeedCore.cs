@@ -69,9 +69,9 @@ internal sealed class HostNativeSpeedSession
             || _prepared.NativeProfilePath != facts.NativeProfilePath
             || _prepared.IdentityKey != facts.IdentityKey)
             return Result("native_speed_binding_changed", facts);
-        return facts.Effective == Requested
-            ? Result("native_speed_ready", facts, true)
-            : Result("native_speed_mismatch", facts);
+        // The request is the initial preference, not a gameplay identity.
+        // Native UI may change between the three known modes during the run.
+        return Result("native_speed_ready", facts, true);
     }
 
     private string? CommonRefusal(HostNativeSpeedFacts facts) =>

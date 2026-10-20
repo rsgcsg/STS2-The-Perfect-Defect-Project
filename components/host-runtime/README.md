@@ -418,13 +418,45 @@ checks the selected character before Embark, and verifies actual run HUD identit
 A locked or unavailable requested character fails; no fallback character is chosen.
 Omitting `characterId` preserves the historical template-selected behavior.
 
+The same factory defaults to `baselineRecipe: "normal-sp-all-unlocked-v1"`: a
+normal Standard singleplayer profile with all native content unlocked, first-run
+special cases cleared and tutorials disabled. This uses fixed authenticated
+preparation before character selection, native save/reload verification, and
+post-entry actual UnlockState comparison. The recorded administrative progress
+is setup provenance, not Human play history. Low-level launches opt in explicitly;
+see the [baseline contract](docs/ARCHITECTURE.md#normal-singleplayer-baseline).
+Managed manager `/v1/admin/reset` optionally accepts `initial_progress` containing
+exactly `{recipe, progress_json, progress_sha256}` from that Reference preparation.
+It reloads the native in-memory profile before the existing Standard initializer
+and verifies actual run identity. This setup is unavailable to attached clients;
+manager `episode_identity` includes its private proof. Client commands retain the
+64 KiB body limit; manager reset allows 1 MiB for the native progress snapshot.
+
+Python `ManagedPlayerEnvironment.reset(seed, initial_progress=...)` and
+`ManagedHostServiceManager.reset(..., initial_progress=...)` forward this explicit
+setup unchanged; omitting it retains ordinary reset semantics. Trusted Workbench
+`configure_managed_host(..., initial_progress=...)` stores the exact recipe,
+progress JSON and SHA in its private profile (Host rc.32+). Startup verifies the
+manager-only episode proof before any observation/control claim; public session
+identity omits the private progress and proof. Existing six-field profiles retain
+their original reset behavior. The browser cannot supply this configuration.
+
+Python Host launch accepts optional `diagnostics_file` for the existing CLI.
+Workbench initial-progress profiles choose a fixed private launch-scoped diagnostic
+file; older profiles omit that option. Explicit environment close retains the
+original `close_result` in the private journal and returns it with the existing
+closed response. Its `exit` remains the original native result, including failure
+or unknown; closure alone does not establish a normal native exit.
+
 The same factory defaults to native Instant and accepts explicit
 `nativeSpeed: "normal"|"fast"|"instant"`; the existing `start` and reference
 driver CLIs accept `--native-speed normal|fast|instant`. Isolated `start` and
 Reference driver launches share that Instant default; explicit Normal or Fast
-is forwarded once and remains effective. A mode requires an isolated Host-owned profile and authenticated
+is applied once as the initial preference. Normal, Fast and Instant share the same
+Reference gameplay contract; changing native speed during a run retains that contract.
+A mode requires an isolated Host-owned profile and authenticated
 post-boot preparation. The Host verifies the native typed getter before
-bootstrap and after run entry; a mismatch or unknown preparation outcome
+bootstrap and after run entry; a failed initial application or unknown preparation outcome
 closes the episode without bootstrap retry. Attached/shared personal games
 keep their native prefs. Both native UI and
 headless presentations use the same speed configuration and public contracts.
@@ -435,8 +467,8 @@ override. An unmanaged native UI game receives no seed override.
 Instant is the user-selected project default. Workbench owned `speed: default`
 resolves to Instant with `project_default` provenance, alongside the actual typed
 native readback; that configuration choice is not qualification evidence.
-Final-candidate live verification of all three modes remains required before
-claiming three-mode runtime qualification. See the
+Runtime reads preserve the actual mode without reapplying the startup preference.
+Semantic differences between speeds are implementation defects, not separate environments. See the
 [owning configuration contract](docs/ARCHITECTURE.md#native-speed-run-configuration).
 
 A caller transferring the bootstrapped episode to another controller first calls
@@ -448,6 +480,20 @@ disabled; process close remains the episode owner's responsibility.
 UI preparation under an isolated, Steam-disabled profile. The default remains
 headless. Native UI preparation, administrative unlocks and AI-operated steps are
 recorded separately; they establish neither Human origin nor headless qualification.
+
+The public `start` command exposes this same native UI launch owner with
+`--display-mode native-ui --isolated-profile ID`. Select persistent Host state
+with `--local-root PATH` on `start`, `status`, `stop` and
+`instantiate-profile-template`; reuse the profile for native Continue. The default
+remains headless. `--experimental-build` explicitly uses the existing exact
+installed canary; it never admits arbitrary builds or extra mods. There is no
+scripted Embark, character selection, seed override or automatic recording in
+this launch command. The explicit `--baseline normal-sp-all-unlocked-v1` reuses
+the existing verified native preparation recipe, before any Human session starts;
+it is preparation provenance, not gameplay. Use the separate public P1 recording
+client before Embark.
+Native UI `stop` retains the process when shutdown is not acknowledged or the
+process remains alive; it does not turn an unknown close into a signal.
 
 The reference handoff status query uses the existing public
 `GET /api/player-environment/controller` wire contract directly, with exact runtime

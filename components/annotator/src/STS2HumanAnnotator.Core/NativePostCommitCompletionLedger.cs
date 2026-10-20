@@ -86,7 +86,11 @@ public sealed record NativeTaskCompletion(
     long Generation,
     string CompletionId,
     string TaskWitnessId,
-    bool Succeeded);
+    bool Succeeded)
+{
+    public string? NativeTaskStatus { get; init; }
+    public bool? NativeBooleanResult { get; init; }
+}
 
 /// <summary>
 /// Binds native operations to the exact Human root that staged them, then

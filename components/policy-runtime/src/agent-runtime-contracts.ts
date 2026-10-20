@@ -1,4 +1,4 @@
-import type { RuntimeEnvironmentBinding, RuntimeMode, RuntimeStatus } from "./contracts.js";
+import type { ManagedEnvironmentStatus, RuntimeEnvironmentBinding, RuntimeMode, RuntimeStatus } from "./contracts.js";
 import type { AgentAdapterIdentity, AgentDirective, AgentInputSpec, AgentPrefix } from "./agent-session-contracts.js";
 import type { NativeLogicalDispatchBinding } from "@rsgcsg/sts2-connector-client";
 
@@ -59,13 +59,16 @@ export type AgentRuntimeTickResult =
   | { type: "not_admitted"; reason: string; status: AgentRuntimeStatus }
   | { type: "unknown"; error: string; status: AgentRuntimeStatus };
 
+export type ManagedStartupEnvironment = Pick<ManagedEnvironmentStatus,
+  "binding_sha256" | "service_instance_id" | "runtime_instance_id" | "game_continuity_id">;
+
 export interface AgentRuntimeStartup {
   schema: "sts2.policy-runtime/agent-session-startup-1";
   address: string; run_id: string; agent_manifest_id: string;
   agent_artifact_sha256: string; agent_manifest_sha256: string;
   runtime_version: string; runtime_code_sha256: string; mode: RuntimeMode;
   autonomy_budget: { maxSubmissions: number; maxPolicyCalls: number; deadlineMs: number };
-  managed_environment: null; adapter: AgentAdapterIdentity;
+  managed_environment: ManagedStartupEnvironment | null; adapter: AgentAdapterIdentity;
 }
 
 /** Both profiles share one existing HTTP service and control protocol. */

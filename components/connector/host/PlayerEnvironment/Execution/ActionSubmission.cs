@@ -208,6 +208,26 @@ internal static partial class PlayerEnvironmentService
         IReadOnlyDictionary<string, string> parameters)
     {
         P1CaptureGuard.InvalidateActive();
+        if (binding.NonCombatDiscard is { } discard)
+            return NonCombatPotionBoundary.Start(Entities, discard);
+        if (snapshot.HostObservation.NonCombatNavigationPopup is { } popup)
+        {
+            var closed = PotionPopupSurfaceReader.Start(Entities, popup, "cancel_potion_popup");
+            if (closed.LegacyDisposition != LegacyNativeInputDisposition.Delivered) return closed;
+            var step = StartPlayerEnvironmentInputCore(snapshot, binding, parameters);
+            return step.LegacyDisposition == LegacyNativeInputDisposition.Delivered
+                ? NativeInputResult.DeliveredStages(step.DeliveryEvidence ?? "native_bound_action_delivered",
+                    new NativeInputStage(NativeInputStageKind.PotionPopupInput, NativeInputDelivery.Delivered, "native_potion_popup_closed"),
+                    new NativeInputStage(NativeInputStageKind.BoundActionInput, NativeInputDelivery.Delivered, step.DeliveryEvidence ?? "native_bound_action_delivered"))
+                : NativeInputResult.PartiallyDelivered("noncombat_navigation_action_incomplete", step.Detail ?? "Popup closed; following action not confirmed.",
+                    new NativeInputStage(NativeInputStageKind.PotionPopupInput, NativeInputDelivery.Delivered, "native_potion_popup_closed"));
+        }
+        return StartPlayerEnvironmentInputCore(snapshot, binding, parameters);
+    }
+
+    private static NativeInputResult StartPlayerEnvironmentInputCore(SnapshotBuildResult snapshot,
+        NativeUiBoundAction binding, IReadOnlyDictionary<string, string> parameters)
+    {
         if (binding.GridInput is { } gridInput)
             return snapshot.HostObservation.Surface is NativePublicBasisGridSurface grid
                 && grid.Inputs.Any(spec => ReferenceEquals(spec, gridInput))

@@ -340,7 +340,7 @@ internal static class NativeLogicalGridCapture
                     NativeSourceWitness = spec.Kind == NativeLogicalGridInputKind.Control && spec.Control != null
                         ? new(spec.State.Owner, spec.Control, new Dictionary<string, object>(StringComparer.Ordinal)) : null,
                     NativeSourcePrefixVerb = spec.Kind == NativeLogicalGridInputKind.Control
-                        ? spec.NativeVerb == "open_preview" ? "confirm" : PublicControlVerb(spec.NativeVerb) : null
+                        ? spec.NativeCallbackVerb : null
                 })).ToArray();
         PlayerEnvironmentCompleteness completeness = NativeLogicalCapturePolicy.Replace(informationPage.Completeness,
             NativeLogicalProjectionReplacement.Grid,

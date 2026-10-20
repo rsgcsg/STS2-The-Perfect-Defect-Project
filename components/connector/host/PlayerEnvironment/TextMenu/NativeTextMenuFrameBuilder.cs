@@ -10,6 +10,10 @@ using MegaCrit.Sts2.Core.ControllerInput;
 using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Map;
+using MegaCrit.Sts2.Core.Events;
+using MegaCrit.Sts2.Core.Rewards;
+using MegaCrit.Sts2.Core.Nodes.Rewards;
+using MegaCrit.Sts2.Core.Nodes.Screens;
 using MegaCrit.Sts2.Core.Nodes.Screens.Map;
 using MegaCrit.Sts2.Core.Nodes.Combat;
 using MegaCrit.Sts2.Core.Nodes.Rooms;
@@ -383,7 +387,8 @@ internal static class NativeTextMenuFrameBuilder
                          legacy.Snapshot.BoundActions.Actions))
                 if (legacy.Bindings.TryGetValue(action.BoundActionId,
                         out PlayerEnvironmentNativeBinding? binding))
-                    leaves.Add(FromLegacy(action, binding, executeLegacy));
+                    leaves.Add(AttachLegacySourceWitness(FromLegacy(action, binding, executeLegacy),
+                        legacy.HostObservation.Surface, binding, entities));
             // The persistent top-bar belt may still be an enabled native
             // control in shops/events outside combat. In particular this is
             // how Foul Potion's real merchant-targeting flow is entered.
@@ -542,6 +547,39 @@ internal static class NativeTextMenuFrameBuilder
                     : int.MaxValue)
             .ToArray();
     }
+
+    private static TextMenuLeaf AttachLegacySourceWitness(TextMenuLeaf leaf, ILiveSurface surface,
+        PlayerEnvironmentNativeBinding binding, NativeEntityRegistry entities)
+    {
+        if (leaf.SubjectReferentId is not { } subject) return leaf;
+        string operation = binding.NativeAction.Candidate.Operation;
+        if (surface is EventOptionSurface options && operation is "choose_event_option" or "proceed_event"
+            && entities.TryResolve<NEventRoom>(options.ScreenEntityId, out var room)
+            && entities.TryResolve<EventOption>(subject, out var option))
+            return WithLegacySourceWitness(leaf, room!, option!);
+        if (surface is NativeGeneratedCardChoiceSurface generated && operation == NativeGeneratedCardChoice.SelectOperation)
+            return AttachGeneratedChoiceSourceWitness(leaf, generated, entities);
+        if (surface is RewardClaimSurface rewards && operation == "claim_reward"
+            && entities.TryResolve<NRewardsScreen>(rewards.ScreenEntityId, out var screen)
+            && entities.TryResolve<Reward>(subject, out var reward))
+        {
+            var buttons = ConnectorMod.FindAll<NRewardButton>(screen!).Where(button =>
+                ConnectorMod.IsNodeVisible(button) && button.IsEnabled && ReferenceEquals(button.Reward, reward)).ToArray();
+            if (buttons.Length == 1) return WithLegacySourceWitness(leaf, buttons[0], reward!);
+        }
+        return leaf;
+    }
+    internal static TextMenuLeaf AttachGeneratedChoiceSourceWitness(TextMenuLeaf leaf,
+        NativeGeneratedCardChoiceSurface surface, NativeEntityRegistry entities) =>
+        leaf.Verb == "select" && leaf.SubjectReferentId is { } subject
+            && surface.SelectableCardEntityIds.Contains(subject, StringComparer.Ordinal)
+            && entities.TryResolve<MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NChooseACardSelectionScreen>(surface.ScreenEntityId, out var screen)
+            && entities.TryResolve<CardModel>(subject, out var card)
+                ? leaf with { NativeSourceWitness = new(screen!, card!, new Dictionary<string, object>(StringComparer.Ordinal)) }
+                : leaf;
+    internal static TextMenuLeaf WithLegacySourceWitness(TextMenuLeaf leaf, object owner, object subject) =>
+        leaf with { NativeSourceWitness = new(owner, subject, new Dictionary<string, object>(StringComparer.Ordinal)),
+            NativeSourcePrefixVerb = "activate" };
 
     internal static TextMenuLeaf FromLegacy(
         PlayerEnvironmentBoundAction action,

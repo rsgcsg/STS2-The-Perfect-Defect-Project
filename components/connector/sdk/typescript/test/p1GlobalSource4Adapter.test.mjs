@@ -4,7 +4,8 @@ import { describe, expect, it } from 'vitest';
 import * as core from '../src/p1Global/index.js';
 import * as sdk from '../src/index.js';
 import { convertOriginals } from '../../../../../tools/source4-to-p1.mjs';
-import { selectorForwardPair } from './fixtures/selector-forward.mjs';
+import { selectorForwardPair, selectorReversalPair } from './fixtures/selector-forward.mjs';
+import { sourceCardDragPair } from './fixtures/source-card-drag.mjs';
 
 // Synthetic in-memory semantic inputs only. These do not claim Source bundle
 // verifier acceptance, native input origin, a SceneTree receipt or P1 coverage.
@@ -72,6 +73,59 @@ function canceled() {
 }
 
 describe('Source4 adapter using the actual shared SDK matcher', () => {
+  it.each(['valid', 'changed-held-read', 'foreign-ui'])(
+    'matches the original full pre-Begin Play and consumed physical submission: %s', change => {
+      const f = fixture(), { before, held, action } = sourceCardDragPair();
+      f.publication(before, 1);
+      f.input(before, 1, selected(action, 'begin_card_play'), { owner_ref: 'original-hand',
+        subject_ref: action.subject_referent_id, arguments: { holder: 'original-holder' },
+        carriers: [{ kind: 'card_play_created', carrier_ref: 'original-created-ui' }] }, 'NPlayerHand.StartCardPlay');
+      if (change === 'changed-held-read') held.reads.find(r => r.kind === 'surface_card').response.content.keywords[0].description += ' changed';
+      f.publication(held, 2);
+      const submit = f.input(held, 2, null, { owner_ref: change === 'foreign-ui' ? 'other-ui' : 'original-created-ui',
+        subject_ref: action.subject_referent_id, arguments: {}, carriers: acceptedCarrier() }, 'NCardPlay.TryPlayCard');
+      Object.assign(submit.outcome, { mapping_status: 'unmapped', match_count: 0 });
+      const raw = JSON.stringify(f.source.inputs), report = convert(f.source);
+      if (change === 'valid') {
+        expect(report.complete, JSON.stringify(report.unresolved_inputs)).toBe(true);
+        expect(report.actions).toHaveLength(1); expect(report.actions[0].choice.kind).toBe('combat.play_card');
+        expect(report.actions[0].source_input_ids).toEqual(['input-1', 'input-2']);
+      } else {
+        expect(report.complete).toBe(false); expect(report.actions).toEqual([]);
+        expect(report.unresolved_inputs.map(r => r.input_id)).toEqual(['input-1', 'input-2']);
+      }
+      expect(JSON.stringify(report.native_trace)).toBe(raw);
+      expect(report.native_trace[1].outcome.selected_action).toBe(null);
+      expect(report.native_trace[1].outcome.mapping_status).toBe('unmapped');
+    });
+  it.each(['valid', 'publication-return', 'missing-return', 'foreign-owner', 'public-world', 'unknown', 'missing-read'])(
+    'defers select labels until the original adjacent reversal span is classified: %s', change => {
+      const f = fixture(), { outer, selected: held, restored } = selectorReversalPair();
+      const select = outer.snapshot.bound_actions.actions[0], deselect = held.snapshot.bound_actions.actions[0];
+      const facts = () => ({ owner_ref: 'owner-one', subject_ref: select.subject_referent_id, arguments: {}, carriers: [] });
+      const mechanism = 'MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NDeckCardSelectScreen.OnCardClicked';
+      f.input(outer, 1, selected(select), facts(), mechanism);
+      const second = f.input(held, 2, selected(deselect), facts(), mechanism);
+      if (change === 'foreign-owner') second.outcome.native_facts.owner_ref = 'different-owner';
+      if (change === 'unknown') second.outcome.delivery = 'unknown';
+      if (change === 'public-world') restored.snapshot.persistent.content.player.gold++;
+      if (change === 'missing-read') restored.reads.pop();
+      if (change === 'publication-return') f.publication(restored, 3);
+      else if (change !== 'missing-return') f.input(restored, 3, selected(select), facts(), mechanism);
+      const raw = JSON.stringify(f.source.inputs), report = convert(f.source);
+      if (['valid', 'publication-return'].includes(change)) {
+        expect(report.context_spans[0]?.source_input_ids, JSON.stringify(report.unresolved_inputs)).toEqual(['input-1', 'input-2']);
+        expect(report.actions).toHaveLength(change === 'valid' ? 1 : 0);
+        if (change === 'valid') expect(report.actions[0].source_input_ids).toEqual(['input-3']);
+        expect(report.complete).toBe(true);
+      } else {
+        expect(report.context_spans).toEqual([]); expect(report.complete).toBe(false);
+        expect(report.unresolved_inputs.map(row => row.input_id)).toContain('input-1');
+        expect(report.unresolved_inputs.map(row => row.input_id)).toContain('input-2');
+      }
+      expect(report.actions.some(action => action.source_input_ids.includes('input-1'))).toBe(false);
+      expect(JSON.stringify(report.native_trace)).toBe(raw);
+    });
   it('classifies the original select and preview confirmation as the offered folded selector intention', () => {
     const f = fixture(); const { outer, preview } = selectorForwardPair();
     const select = outer.snapshot.bound_actions.actions.find(action => action.verb === 'select');

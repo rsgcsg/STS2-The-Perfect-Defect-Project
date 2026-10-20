@@ -24,6 +24,7 @@ internal sealed record HostEpisodeProvenanceResponse(
     bool? SeedMatches)
 {
     public HostNativeSpeedProvenance? NativeSpeed { get; init; }
+    public HostBaselineProvenance? Baseline { get; init; }
 }
 
 internal static class HostRunSeedControl
@@ -115,6 +116,7 @@ internal static class HostRunSeedControl
             runtimeInstanceId,
             _configuredSeed,
             actualSeed,
-            matches) { NativeSpeed = HostNativeSpeedControl.Observe(runtimeInstanceId) };
+            matches) { NativeSpeed = HostNativeSpeedControl.Observe(runtimeInstanceId),
+                Baseline = HostProfileControl.ObserveBaseline(runtimeInstanceId) };
     }
 }

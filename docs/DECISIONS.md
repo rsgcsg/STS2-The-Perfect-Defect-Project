@@ -26,6 +26,8 @@ contracts and actual artifacts/records own behavior and evidence.
 | 2026-10-16 | Keep hard invariants; independently assess and simplify procedures inside existing owners. | User delegation; D4 candidate requires non-author Codex and Claude review. A rule proposal is not effectiveness evidence. |
 | 2026-10-16 | Deliver global P1 through existing Host, Runtime, Recorder/Evidence, Agent and Workbench owners. Independent environment records must support complete P1 conversion in supported scenes; record-derived same-action Managed comparison complements targeted and natural runs. | Latest user direction; old-record salvage is optional, but new supported-scene recording/conversion is required. Program/Human origin and data admission remain distinct; no training approval inferred. |
 
+| 2026-10-20 | User selected the cross-version evidence combination: retain r14, record two runs with the new producer and supplement affected mechanisms; do not call the three runs one candidate. | Direct user answer in mainline; old r14 whole P1 conversion remains false, source-run and qualified-P1 counts stay separate. Managed strict/40 and old B stay deferred; T0a uses the current15-segment input and T0b uses Reference after an exclusive slot is allocated. |
+
 Historical PR178 decisions are reviewed selectively, not imported with all old
 “effective” labels. Its competing governance overlay and P1 navigation default are
 not the current owner. Historical capability targets remain project goals, not

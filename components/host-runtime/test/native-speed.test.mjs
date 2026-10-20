@@ -75,6 +75,24 @@ test("Windows native path spelling normalizes without weakening profile identity
     preparedBinding: { ...response.response.native_speed, native_profile_id: 2 } }));
 });
 
+test("native UI speed changes retain the prepared run and actual preference", () => {
+  for (const requested of ["normal", "fast", "instant"]) {
+    const preparedBinding = requireNativeSpeedProvenance({ nativeSpeed: requested, launchProfile: profile,
+      runtimeInstanceId: "runtime-1", response: provenance(requested) });
+    for (const effective of ["normal", "fast", "instant"]) {
+      const observed = requireNativeSpeedProvenance({ nativeSpeed: requested, launchProfile: profile,
+        runtimeInstanceId: "runtime-1", response: provenance(requested, { effective }), preparedBinding });
+      assert.equal(observed.requested, requested);
+      assert.equal(observed.effective, effective);
+    }
+    for (const overrides of [{ effective: "unknown" }, { identity_key: "different-build" },
+      { profile_generation_id: "different-profile" }]) {
+      assert.throws(() => requireNativeSpeedProvenance({ nativeSpeed: requested, launchProfile: profile,
+        runtimeInstanceId: "runtime-1", response: provenance(requested, overrides), preparedBinding }));
+    }
+  }
+});
+
 test("preparation requires a separate observed getter match before bootstrap", async () => {
   for (const mode of ["normal", "fast", "instant"]) {
     const events = [];
@@ -104,8 +122,8 @@ test("preparation requires a separate observed getter match before bootstrap", a
 test("the shipped episode wires speed before bootstrap and checks after bootstrap", () => {
   const source = readFileSync(new URL("../src/shipped-player-environment.mjs", import.meta.url), "utf8");
   assert.match(source, /nativeSpeed[\s\S]*shippedRuntimeLaunch[\s\S]*nativeSpeed/u);
-  assert.ok(source.indexOf("await prepareNativeSpeedBeforeBootstrap(") >= 0);
-  assert.ok(source.indexOf("await prepareNativeSpeedBeforeBootstrap(") < source.indexOf("await controller.register("));
+  assert.ok(source.indexOf("await prepareNativeHostBeforeBootstrap(") >= 0);
+  assert.ok(source.indexOf("await prepareNativeHostBeforeBootstrap(") < source.indexOf("await controller.register("));
   assert.match(source, /const refreshProvenance[\s\S]*requireNativeSpeedProvenance/u);
   assert.match(source, /shippedRuntimeLaunch[\s\S]*displayMode/u);
   assert.match(source, /evaluateShippedCapabilities\(capabilities, displayMode\)/u);

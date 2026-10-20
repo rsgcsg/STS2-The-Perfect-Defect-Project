@@ -621,6 +621,7 @@ internal static class NativeBossRelicCommitPatch
 
     private static void Postfix(PlayerChoiceSynchronizer __instance)
     {
+        if (!RecorderRuntime.ShouldObserveBossRelicCommit) return;
         try
         {
             if (!NativeBossRelicDecisionProvider.TryGetRegisteredCurrentChoiceCarrier(
@@ -1610,7 +1611,8 @@ internal static class NativeRewardPotionDiscardPatch
                     new ProcessLocalObservedAction(
                         "activate",
                         potion,
-                        new Dictionary<string, object>(StringComparer.Ordinal)), sourceOwner: __instance),
+                        new Dictionary<string, object>(StringComparer.Ordinal)), sourceOwner: __instance,
+                    nativeInputOperation: "discard_potion"),
                 potion,
                 __instance);
         }
@@ -2188,6 +2190,7 @@ internal static class NativeEventOptionCompletionPatch
             return;
         try
         {
+            NativeSourceInputProvider.ObserveOriginalEventChosen(__instance, __result);
             Tasks.Remove(__instance);
             Tasks.Add(__instance, new TaskCarrier(__result));
         }

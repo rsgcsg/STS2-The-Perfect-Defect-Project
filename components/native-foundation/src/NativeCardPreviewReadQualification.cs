@@ -121,22 +121,6 @@ public static partial class NativeCardPreviewReadQualification
         && IsUnpatched(callback.Method) && callback.Target is NCard node && node.GetType() == typeof(NCard)
         && ReferenceEquals(NativeDetachedCardCopy.UiModel(node), original);
 
-    private static bool CopiedDelegatesQualified(CardModel card)
-    {
-        foreach (string name in new[] { "AfflictionChanged", "EnchantmentChanged", "EnergyCostChanged", "KeywordsChanged",
-                     "ReplayCountChanged", "Played", "Drawn", "StarCostChanged", "Upgraded", "Forged" })
-        {
-            FieldInfo? field = typeof(CardModel).GetField(name, NativeMembers);
-            if (field == null) return false;
-            if (field.GetValue(card) is not Delegate callbacks) continue;
-            string? observer = name switch
-            { "AfflictionChanged" => "OnAfflictionChanged", "EnchantmentChanged" => "OnEnchantmentChanged", _ => null };
-            if (observer == null || callbacks.GetInvocationList().Any(callback => !UiObserver(callback, observer, card))) return false;
-        }
-        return typeof(AbstractModel).GetField("ExecutionFinished", NativeMembers) is { } completed
-            && completed.GetValue(card) == null;
-    }
-
     private static bool AttachmentCopyQualified(CardModel card)
     {
         if (Enchantment == null || Affliction == null) return false;
@@ -205,8 +189,10 @@ public static partial class NativeCardPreviewReadQualification
                 || !BaseImplementation(card.GetType(), typeof(CardModel), "DeepCloneFields")
                 || !BaseImplementation(card.GetType(), typeof(CardModel), "AfterCloned")
                 || !BaseImplementation(card.GetType(), typeof(CardModel), "get_CanonicalEnergyCost")
-                || !BaseImplementation(card.GetType(), typeof(CardModel), "get_HasEnergyCostX")) return false;
-            if (!CopiedDelegatesQualified(card) || !AttachmentCopyQualified(card))
+                // Native X-cost cards override this display fact. Reuse the
+                // exact-game effective-getter qualification used by rendering.
+                || !NativeRenderMethod(card.GetType().GetMethod("get_HasEnergyCostX", NativeMembers))) return false;
+            if (!AttachmentCopyQualified(card))
             { gap = "native_preview_existing_attachment_copy_callbacks_unqualified"; return false; }
             if (Canonical?.GetValue(card) is not CardModel canonical || canonical.GetType() != card.GetType()
                 || Mutable.GetValue(canonical) is not false || Keywords?.GetValue(card) is not HashSet<CardKeyword> keywords
@@ -234,7 +220,7 @@ public static partial class NativeCardPreviewReadQualification
                 || !MethodsUnpatched(typeof(Shiv), "get_CanonicalVars", "get_CanonicalKeywords")
                 || !FixedConstructorsUnpatched(typeof(DynamicVar)) || !FixedConstructorsUnpatched(typeof(DamageVar))
                 || !MethodsUnpatched(typeof(DamageVar), "set_Props")
-                || !SingletonVariableListUnpatched() || !SingletonListUnpatched(typeof(CardKeyword)) || !CopiedDelegatesQualified(canonical)
+                || !SingletonVariableListUnpatched() || !SingletonListUnpatched(typeof(CardKeyword))
                 || Enchantment?.GetValue(canonical) != null || Affliction?.GetValue(canonical) != null
                 || !CopyCostQualified(canonical)) return false;
             if (CardVars?.GetValue(canonical) is DynamicVarSet initialized && !CopyVariablesQualified(canonical, initialized)) return false;
@@ -284,7 +270,9 @@ public static partial class NativeCardPreviewReadQualification
                     || upgrade.DeclaringType == card.GetType() && NativeUpgradeMethodInventory.Contains(card.GetType().Name))
                 // Harmony keys inherited methods by their actual declaration.
                 || !IsUnpatched(upgrade.DeclaringType?.GetMethod("OnUpgrade", NativeMembers | BindingFlags.DeclaredOnly))
-                || !BaseImplementation(card.GetType(), typeof(CardModel), "get_MaxUpgradeLevel")
+                // Reuse the render qualification for the effective native getter;
+                // native curses/status cards override the limit with zero.
+                || !NativeRenderMethod(card.GetType().GetMethod("get_MaxUpgradeLevel", NativeMembers))
                 || !MethodsUnpatched(typeof(CardModel), "UpgradeInternal", "get_IsUpgradable", "get_CurrentUpgradeLevel",
                     "set_CurrentUpgradeLevel", "get_MaxUpgradeLevel", "AddKeyword", "RemoveKeyword", "InvokeEnergyCostChanged",
                     "get_UpgradePreviewType", "set_UpgradePreviewType")

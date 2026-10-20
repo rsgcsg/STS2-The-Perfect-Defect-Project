@@ -126,6 +126,24 @@ function acceptedAction(row: ObjectValue): boolean {
     && carriers[0].kind === "game_action_submitted" && carriers[1].kind === "game_action_accepted"
     && text(carriers[0].carrier_ref) && carriers[0].carrier_ref === carriers[1].carrier_ref;
 }
+// TryPlayCard is reached after its mouse confirmation was consumed. Its
+// current catalog may correctly offer only Cancel. The original actual call
+// and submitted/accepted carrier still bind to the earlier complete Play.
+function consumedPhysicalPlay(row: ObjectValue): boolean {
+  return row.outcome?.mapping_status === "unmapped" && row.outcome.match_count === 0
+    && row.outcome.selected_action === null && row.outcome.delivery === "delivered" && row.outcome.reason_code === null
+    && row.outcome.native_mechanism === "NCardPlay.TryPlayCard"
+    && row.outcome.native_facts?.origin === "native_input" && row.outcome.native_facts.missing_reason === null
+    && acceptedAction(row);
+}
+function completedPhysicalPlay(row: ObjectValue, action: ObjectValue, basis: P1Basis): boolean {
+  if (!consumedPhysicalPlay(row)) return acceptedAction(row) && originalActionMatches(row, action, basis, true);
+  const operands = args(action.arguments), facts = row.outcome.native_facts;
+  return action.verb === "play" && operands !== null && isObject(facts.arguments)
+    && action.subject_referent_id === facts.subject_ref && same(operands, facts.arguments)
+    && hasReferents(snapshot(basis), action.subject_referent_id, operands);
+}
+
 function cancellationContext(trace: readonly SourceP1TraceInput[], contexts: readonly P1Basis[], basis: P1Basis): boolean {
   if (trace.length !== 2) return false;
   const start = trace[0] as ObjectValue, last = trace[1] as ObjectValue;
@@ -151,6 +169,145 @@ function cancellationContext(trace: readonly SourceP1TraceInput[], contexts: rea
     || !same(stage.arguments, { hand: firstFacts.owner_ref })) return false;
   const world = dragWorld(basis, firstFacts.subject_ref);
   return contexts.every(context => dragSurfaceAllowed(basis, context) && dragWorld(context, firstFacts.subject_ref) === world);
+}
+
+// E3 is deliberately limited to the observed native deck-card callback before
+// max-selection opens a preview. It adds no Agent action or reducer exception.
+export function isSourceP1ReversibleSelect(input: SourceP1TraceInput): boolean {
+  try {
+    const row = input as ObjectValue, surface = snapshot(row.basis).interaction.content.surface;
+    return accepted(row) && completeSelectorFacts(surface)
+      && surface.kind === "native_deck_card_selection" && surface.stage === "selecting"
+      && surface.selector_request.family === "deck_card"
+      && surface.selector_request.add_transition === "native_preview_at_max"
+      && surface.selected_count + 1 < surface.max_select
+      && row.outcome.native_mechanism === "MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NDeckCardSelectScreen.OnCardClicked"
+      && row.outcome.selected_action?.verb === "select"
+      && row.outcome.native_facts.owner_ref === surface.screen_entity_id
+      && surface.selectable_card_entity_ids.includes(row.outcome.native_facts.subject_ref)
+      && row.outcome.native_facts.carriers?.length === 0 && row.outcome.stages?.length === 0;
+  } catch { return false; }
+}
+
+/** Shared original-world comparison for a completed Human presentation round trip.
+ * Preserve the complete PB1/catalog and every Read. Only each original's checked
+ * snapshot locator, source sequence and observation timestamp are transport metadata.
+ * This is the same boundary used by the existing Source4 selector-reversal proof. */
+function originalPresentationBasis(basis: P1Basis): ObjectValue {
+  snapshot(basis); // Validate every advertised Read against its own frozen snapshot.
+  const copy = structuredClone(basis) as ObjectValue;
+  delete copy.snapshot.snapshot_id; delete copy.snapshot.sequence; delete copy.snapshot.observed_at;
+  for (const read of copy.reads) {
+    delete read.response.expected_snapshot_id; delete read.response.observed_snapshot_id; delete read.response.observed_at;
+  }
+  return copy;
+}
+
+export function compareOriginalPresentationBases(before: P1Basis, after: P1Basis): {
+  readonly equal: boolean; readonly changes: readonly { path: string; before: unknown; after: unknown }[];
+} {
+  const changes: { path: string; before: unknown; after: unknown }[] = [];
+  function visit(a: unknown, b: unknown, path: string): void {
+    if (canonicalJson(a) === canonicalJson(b)) return;
+    if (a !== null && b !== null && typeof a === "object" && typeof b === "object"
+        && Array.isArray(a) === Array.isArray(b)) {
+      const left = a as ObjectValue, right = b as ObjectValue;
+      for (const key of new Set([...Object.keys(left), ...Object.keys(right)])) visit(left[key], right[key], `${path}.${key}`);
+    } else changes.push({ path, before: a, after: b });
+  }
+  visit(originalPresentationBasis(before), originalPresentationBasis(after), "$");
+  return { equal: changes.length === 0, changes };
+}
+
+// Preserve all original public fields except the declared selection decoration
+// of this one card. Locator/time fields are checked against each own original
+// before comparing worlds; no later basis repairs an absent original.
+function selectorReversalView(basis: P1Basis, subject: string, decoration: boolean): string {
+  const copy = originalPresentationBasis(basis), value = snapshot(basis);
+  const surface = value.interaction.content.surface;
+  if (!completeSelectorFacts(surface) || !reduce(createSession("source-reversal-check", "reference"), basis).complete)
+    throw new Error("source_selector_reversal_basis_incomplete");
+  for (const read of copy.reads) {
+    if (decoration && read.kind === "surface_card" && read.response.target_referent_id === subject)
+      read.response.content.is_selected = false;
+  }
+  if (decoration) {
+    const cleanSurface = (s: ObjectValue) => {
+      const selected = s.selected_card_entity_ids.includes(subject);
+      s.selected_count -= selected ? 1 : 0;
+      for (const key of ["selected_card_entity_ids", "selectable_card_entity_ids", "deselectable_card_entity_ids"])
+        s[key] = s[key].filter((id: string) => id !== subject);
+      s.selector_request.selected_entity_ids = s.selector_request.selected_entity_ids.filter((id: string) => id !== subject);
+      for (const card of s.cards) if (card.entity_id === subject) card.is_selected = false;
+      for (const option of s.preview_options) if (option.subject_entity_id === subject) option.before.is_selected = false;
+    };
+    cleanSurface(copy.snapshot.interaction.content.surface);
+    for (const ref of copy.snapshot.referents) {
+      if (ref.referent_id === subject) { ref.state.selected = false; ref.properties.is_selected = false; }
+      if (ref.properties?.kind === surface.kind && ref.properties.screen_entity_id === surface.screen_entity_id)
+        cleanSurface(ref.properties);
+    }
+    for (const action of copy.snapshot.bound_actions.actions)
+      if (action.subject_referent_id === subject && ["select", "deselect"].includes(action.verb)) {
+        action.verb = "select"; action.label = action.label.replace(/^(?:Select|Deselect)(?=\s|$)/u, ""); action.bound_action_id = null;
+      }
+    // The native capability inventory adds deselect for the selected card.
+    copy.snapshot.interaction.capabilities = copy.snapshot.interaction.capabilities.filter((cap: ObjectValue) =>
+      !(cap.verb === "deselect" && cap.subject_role === "card" && same(cap.arguments, [])
+        && cap.availability_basis === "current_native_interaction"));
+  }
+  return canonicalJson(copy);
+}
+
+function selectorReversalContext(trace: readonly SourceP1TraceInput[], contexts: readonly P1Basis[], basis: P1Basis,
+  following: SourceP1TraceInput | null): boolean {
+  if (trace.length !== 2 || !isSourceP1ReversibleSelect(trace[0]!)) return false;
+  const first = trace[0] as ObjectValue, last = trace[1] as ObjectValue;
+  if (last.outcome?.selected_action?.verb !== "deselect") return false;
+  const subject = first.outcome.native_facts.subject_ref, surface = snapshot(basis).interaction.content.surface;
+  const selected = snapshot(last.basis).interaction.content.surface;
+  const actual = snapshot(last.basis).bound_actions.actions.find((a: ObjectValue) =>
+    a.verb === "deselect" && a.subject_referent_id === subject);
+  if (!accepted(last) || !actual || !originalActionMatches(last, actual, last.basis)
+    || last.outcome.native_mechanism !== first.outcome.native_mechanism
+    || last.outcome.native_facts.owner_ref !== surface.screen_entity_id
+    || !same(last.outcome.native_facts.carriers, []) || !same(last.outcome.stages, [])
+    || !same(first.outcome.native_facts.arguments, {})
+    || !same(last.outcome.native_facts.arguments, {}) || selected.stage !== "selecting"
+    || !same(selected.selected_card_entity_ids, [...surface.selected_card_entity_ids, subject])) throw new Error("source_selector_reversal_input_not_exact");
+  const select = snapshot(basis).bound_actions.actions.find((a: ObjectValue) =>
+    a.verb === "select" && a.subject_referent_id === subject);
+  if (!select || !originalActionMatches(first, select, basis) || !Array.isArray(last.source_boundaries)) throw new Error("source_selector_reversal_boundaries_or_select_missing");
+  const tail = [...(last.publications_after ?? [])] as ObjectValue[];
+  if (following) {
+    const next = following as ObjectValue;
+    if (!next.basis || next.session_id !== first.session_id || next.timeline_id !== first.timeline_id
+      || next.epoch_id !== first.epoch_id || next.segment_id !== first.segment_id
+      || next.basis_order?.status !== "native_prefix_frozen" || next.basis_order.reason_code !== null
+      || ordinal(next.input_prefix_ordinal) !== ordinal(last.input_prefix_ordinal) + 1n
+      || ordinal(next.pre_position.publication_index) < ordinal(last.pre_position.publication_index)) return false;
+    reference(next, next.basis, first.captured_parts.public_basis);
+    if (!Array.isArray(next.publications_before)) return false;
+    let at = ordinal(last.pre_position.publication_index);
+    for (const publication of next.publications_before) {
+      if (!publication.basis || publication.gap_after_index !== null || publication.session_id !== first.session_id
+        || publication.timeline_id !== first.timeline_id || publication.segment_id !== first.segment_id) return false;
+      reference(publication, publication.basis, first.captured_parts.public_basis);
+      const position = ordinal(publication.position.publication_index);
+      if (position < at || position > ordinal(next.pre_position.publication_index)) return false;
+      at = position; tail.push(publication);
+    }
+    if (crossesPausedInterval(last.source_boundaries, first, next, ordinal(next.pre_position.publication_index))) return false;
+    tail.push(next);
+  }
+  if (tail.length === 0 || [...last.publications_before, ...tail].some(row =>
+    row.captured_parts?.native_stage != null)) return false;
+  const world = selectorReversalView(basis, subject, true), restored = selectorReversalView(basis, subject, false);
+  if (![...contexts, ...tail.map(row => row.basis)].every(context => selectorReversalView(context, subject, true) === world))
+    throw new Error("source_selector_reversal_public_world_changed");
+  if (!tail.every(row => selectorReversalView(row.basis, subject, false) === restored))
+    throw new Error("source_selector_reversal_not_restored");
+  return true;
 }
 
 function crossesPausedInterval(boundaries: readonly ObjectValue[], first: ObjectValue, last: ObjectValue, through: bigint): boolean {
@@ -199,9 +356,10 @@ function originalSelectorActionMatches(row: ObjectValue, action: ObjectValue, ba
 }
 
 /** Match original native inputs to one complete offered P1 intention. A matched
- * physical input is not an Agent choice, a Commit proof or a Human-origin claim. */
+ * physical input is not an Agent choice, a Commit proof or a Human-origin claim.
+ * followingInput is an unconsumed original pre-basis endpoint for E3 only. */
 export function matchSourceP1Choice(state: P1SessionState, basis: P1Basis,
-  trace: readonly SourceP1TraceInput[]): SourceP1Match {
+  trace: readonly SourceP1TraceInput[], followingInput: SourceP1TraceInput | null = null): SourceP1Match {
   try {
     if (trace.length === 0 || trace.length > 4096) return result("incomplete", "source_trace_empty_or_over_capacity");
     const initial = snapshot(basis), reduction = reduce(state, basis);
@@ -256,9 +414,14 @@ export function matchSourceP1Choice(state: P1SessionState, basis: P1Basis,
     if (last.source_boundaries !== undefined && (!Array.isArray(last.source_boundaries)
       || crossesPausedInterval(last.source_boundaries, first, last, position)))
       return result("incomplete", "source_span_crosses_recording_pause");
+    if (selectorReversalContext(trace, contexts, basis, followingInput))
+      return result("context_only", "original_adjacent_selector_reversal_restores_public_world", ids);
     if (cancellationContext(trace, contexts, basis))
       return result("context_only", "original_canceled_drag_without_submission_preserves_public_world", ids);
-    if (trace.some(row => !accepted(row))) return result("incomplete", "source_original_delivery_or_native_binding_unproven");
+    const consumedPlayTail = trace.length === 2 && accepted(first)
+      && first.outcome.native_mechanism === "NPlayerHand.StartCardPlay" && consumedPhysicalPlay(last);
+    if (trace.some(row => !accepted(row)) && !consumedPlayTail)
+      return result("incomplete", "source_original_delivery_or_native_binding_unproven");
 
     const matches: string[] = [];
     const originalActions = initial.bound_actions.actions as ObjectValue[];
@@ -284,7 +447,7 @@ export function matchSourceP1Choice(state: P1SessionState, basis: P1Basis,
           || !text(carriers[0].carrier_ref) || last.outcome.native_facts.owner_ref !== carriers[0].carrier_ref
           || facts.subject_ref !== last.outcome.native_facts.subject_ref || !text(facts.owner_ref)
           || !text(facts.arguments?.holder) || Object.keys(facts.arguments).length !== 1
-          || !acceptedAction(last) || !originalActionMatches(last, action, basis, true)) continue;
+          || !completedPhysicalPlay(last, action, basis)) continue;
         const world = dragWorld(basis, facts.subject_ref);
         if (contexts.some(value => !dragSurfaceAllowed(basis, value) || dragWorld(value, facts.subject_ref) !== world)) continue;
         matches.push(choice); continue;

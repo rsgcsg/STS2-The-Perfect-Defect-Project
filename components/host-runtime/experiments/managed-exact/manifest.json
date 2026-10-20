@@ -36,15 +36,16 @@
     "managed_artifact": "src/Sts2Headless/bin/Release/net9.0/Sts2Headless.dll"
   },
   "expected_build": {
-    "source_patch_sha256": "54bfa3a3e8beb21ebf72b62da4675c9ec6953764ffa746340990931e71e369dc",
-    "artifact_sha256": "a70d8de18578cc2666ec854d8d8eb6bb85868317335fb67fcfbb7151133d7f66",
-    "artifact_mvid": "c9acc642-499d-4af2-ba24-2e90db5ef8cb",
+    "source_patch_sha256": "41b15fbf27ef26ef4c04650adbdb8a437969743931bc8dc7263b88910b3e312d",
+    "artifact_sha256": "ef907317a47900204caad7400c341213f5dc533549d7c33a913066e83e522766",
+    "artifact_mvid": "8b84be95-3391-49d9-b11e-69aa29afa38a",
     "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0"
   },
   "previous_candidate_build": {
-    "source_patch_sha256": "9a448176c7a96e66deddebaf827c6efcdbc3070acedcf15ad9305e2c55441b82",
-    "artifact_sha256": "003dd9f0fe8e5081ccce577d9963e143511d6a42461624df17b7e56ea35b4d93",
-    "artifact_mvid": "5da84f07-fa96-4538-91c2-974180da3e62"
+    "source_patch_sha256": "43e223e567c1a8610bbc80b377033e9579b72e1ece7081d5f9b27b36c211a3c8",
+    "artifact_sha256": "0426384c8c38e1a147dcfb2ba39c599ebdebe191f979acaaab8a4e302060943b",
+    "artifact_mvid": "1115859e-f311-4e2e-b103-0b3c91168250",
+    "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0"
   },
   "last_measured_build": {
     "source_patch_sha256": "56af273801537d4ff3968a8e513c072ec94d3b17e0e771868ede2002e120c770",
@@ -230,6 +231,20 @@
       "artifact_mvid": "12a48a52-aab8-4f37-b42e-994150b48c02",
       "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0",
       "scope": "previous e6 package1 Managed40 and Human01 replay01-04; frozen originals retained"
+    },
+    {
+      "source_patch_sha256": "54bfa3a3e8beb21ebf72b62da4675c9ec6953764ffa746340990931e71e369dc",
+      "artifact_sha256": "a70d8de18578cc2666ec854d8d8eb6bb85868317335fb67fcfbb7151133d7f66",
+      "artifact_mvid": "c9acc642-499d-4af2-ba24-2e90db5ef8cb",
+      "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0",
+      "scope": "previous a70 terminal source and original rc37 R20; frozen originals retained"
+    },
+    {
+      "source_patch_sha256": "aa3df815bd44b9e40faaf5c4d0fc36a28ba2fe6509a9bdb6cce9b253571017cf",
+      "artifact_sha256": "8397f7be3982eff42684ef83e23a369daa333ea9a235d602e76f1428668036f5",
+      "artifact_mvid": "85ec5c2e-1345-4710-86b2-ebd8458a4e8f",
+      "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0",
+      "scope": "same-native-progress initial live baseline only; fixed default act list diverged from Reference"
     }
   ],
   "native_localization": {
