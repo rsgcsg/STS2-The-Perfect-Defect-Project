@@ -183,6 +183,7 @@ def _main(argv: list[str] | None = None) -> int:
             "content_id": content_id,
             "run_id": args.run_id,
             "tool_release_id": args.tool_release,
+            "expected_payload_sha256": args.expected_sha256,
         }
         with instance_lock(args.state / "instance.lock"):
             path = args.state / OPERATION_FILE
@@ -277,6 +278,11 @@ def _reconcile(store: ManifestArtifactStore, operation: dict[str, Any]) -> dict[
             "publication": "absent",
             "finished_at": datetime.now(UTC).isoformat(),
         }
+    if operation["action"] == "publish-projection":
+        role = projection_format(operation["projection_id"])[1]
+        if manifest.payload(role).sha256 != operation.get("expected_payload_sha256"):
+            return {**operation, "status": "failed", "publication": "different_payload",
+                    "error_code": "named_projection_bytes_differ"}
     for payload in manifest.payloads:
         for _ in store.read_payload(payload):
             pass
@@ -405,15 +411,14 @@ def _storage(argv: list[str]) -> int:
                 },
             )
             raise
-        receipts = previous.get("_storage_receipts", {})
-        receipts[result["operation_id"]] = {
-            key: result[key]
-            for key in ("operation_id", "storage_action", "peer", "artifact_id", "storage_receipt")
-        }
-        result["_storage_receipts"] = receipts
+        if result["status"] == "completed" and result.get("storage_receipt") is not None:
+            receipts = previous.get("_storage_receipts", {})
+            receipts[result["operation_id"]] = {key: result[key] for key in (
+                "operation_id", "storage_action", "peer", "artifact_id", "storage_receipt")}
+            result["_storage_receipts"] = receipts
         atomic_json(path, result)
     print(json.dumps(result, ensure_ascii=False, sort_keys=True))
-    return 0
+    return 0 if result["status"] == "completed" else 1
 
 
 def _maintenance(argv: list[str]) -> int:

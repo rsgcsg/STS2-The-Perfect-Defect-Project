@@ -242,6 +242,17 @@ def test_background_derivation_reconciles_published_result_without_reexecution(
     assert importer.reconcile_p1_derivation()["status"] == "completed"
     assert len(calls) == 1
 
+    def converter_failed(*args, **kwargs):
+        raise CollectionFailure("synthetic converter failure")
+    monkeypatch.setattr(CollectionTool, "derive_p1_native", converter_failed)
+    importer.start_p1_derivation(source.artifact_id, "native-input-v1")
+    importer.thread.join(timeout=10)
+    assert not importer.thread.is_alive()
+    assert importer.status()["status"] == "failed"
+    assert importer.status()["publication"] == "absent"
+    assert importer.status()["source_artifact_id"] == source.artifact_id
+    assert len(calls) == 1, "failed converter did not publish or retry"
+
 
 def test_unknown_p1_import_retains_original_intent_and_can_reconcile_without_raw(
     tmp_path,
@@ -665,3 +676,22 @@ def test_explicit_storage_reconcile_can_establish_absence_without_copy(tmp_path)
     intent = storage_intent("restore", "a" * 64, peer_binding(str(tmp_path / "cold")))
     result = reconcile_storage(local, intent, scratch=tmp_path / "scratch")
     assert result["status"] == "failed" and result["publication"] == "absent_or_incomplete"
+
+
+def test_cli_absent_storage_reconciliation_is_saved_as_failed(tmp_path, capsys):
+    from spireagent.workbench.developer import atomic_json
+    from spireagent.workbench.local_recording_import import OPERATION_FILE, SCHEMA
+    from spireagent.workbench.p1_recording_storage import peer_binding, storage_intent
+    from spireagent.workbench.p1_recordings_cli import main
+
+    state = tmp_path / "state"
+    state.mkdir()
+    intent = {"schema": SCHEMA, **storage_intent(
+        "restore", "a" * 64, peer_binding(str(tmp_path / "cold"))),
+        "status": "publication_unknown"}
+    atomic_json(state / OPERATION_FILE, intent)
+    assert main(["storage", "reconcile", "--store", str(tmp_path / "local"),
+                 "--state", str(state)]) == 1
+    result = json.loads(capsys.readouterr().out)
+    assert result["status"] == "failed" and result["publication"] == "absent_or_incomplete"
+    assert json.loads((state / OPERATION_FILE).read_bytes())["status"] == "failed"
