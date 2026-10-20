@@ -1484,7 +1484,7 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                 except BoundaryError as error:
                     self.respond(409, json.dumps({"error": error.code}).encode())
             elif parsed.path in {"/api/local-training/status", "/api/local-training/capabilities"}:
-                if not self.authenticated_browser():
+                if not (self.authenticated_browser() or self.control_client()):
                     self.respond(401, b'{"error":"browser_session_required"}')
                     return
                 try:
@@ -1503,8 +1503,9 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                             operation_id = digest(
                                 operation_id, "local_training.operation_id", length=32)
                         value = app.local_training.status(operation_id)
-                    self.respond(200, json.dumps({**value,
-                                                  "csrf_token": app.account.csrf}).encode())
+                    self.respond(200, json.dumps({**value, **(
+                        {"csrf_token": app.account.csrf} if self.authenticated_browser() else {})
+                    }).encode())
                 except BoundaryError as error:
                     self.respond(409, json.dumps({"error": error.code}).encode())
                 except (ValueError, TypeError):
@@ -2098,7 +2099,7 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                     self.respond(400, b'{"error":"invalid_local_dataset_request"}')
                 return
             if self.path.startswith("/api/local-training/"):
-                if not self.browser_write():
+                if not (self.browser_write() or self.control_client()):
                     self.respond(403, b'{"error":"browser_action_denied"}')
                     return
                 action = self.path.removeprefix("/api/local-training/")

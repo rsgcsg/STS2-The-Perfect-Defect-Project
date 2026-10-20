@@ -87,6 +87,42 @@ def _require_purposes(
         raise BoundaryError("p1_training_data", "training_claim_binding_mismatch")
 
 
+def index_p1_projection(
+    ledger: CurationLedger, store: Any, projection_id: str,
+) -> dict[str, Any]:
+    """Index verified eligible N and observed lineage without allocating data use."""
+    index = inspect_projections(store, [projection_id])
+    source = index["sources"][0]
+    role = projection_payload_role(store.get_manifest(projection_id))
+    payload_sha256 = source[role + "_sha256"]
+    fingerprint_rows = [(key, root) for group in index["groups"]
+                        for root in group["root_run_ids"] for key in group["keys"]]
+    with ledger.operations.transaction() as db:
+        previous = db.execute("SELECT archive FROM curation_sources WHERE id=?",
+                              (projection_id,)).fetchone()
+        if previous is not None and previous[0] != payload_sha256:
+            raise BoundaryError("p1_training_data", "projection_index_identity_conflict")
+        db.execute("INSERT OR IGNORE INTO curation_sources VALUES(?,?,0)",
+                   (projection_id, payload_sha256))
+        db.executemany("INSERT OR IGNORE INTO curation_fingerprints VALUES(?,?)",
+                       fingerprint_rows)
+        for point in index["points"]:
+            occurrence = _occurrence(point["source_decision_id"])
+            db.execute("INSERT OR IGNORE INTO curation_source_runs VALUES(?,?)",
+                       (projection_id, point["root_run_id"]))
+            db.execute("INSERT OR IGNORE INTO curation_source_decisions VALUES(?,?,?)",
+                       (projection_id, occurrence, point["N_fact_sha256"]))
+            db.execute("INSERT OR IGNORE INTO curation_occurrences VALUES(?,?,?)",
+                       (occurrence, point["root_run_id"], point["source_decision_id"]))
+        db.execute("UPDATE curation_sources SET complete=1 WHERE id=?", (projection_id,))
+        db.execute("INSERT OR IGNORE INTO curation_exact_source_index VALUES(?)",
+                   (projection_id,))
+    return {"projection_id": projection_id, "eligible_N": index["unique_N"],
+            "root_run_ids": sorted({p["root_run_id"] for p in index["points"]}),
+            "index_scope": "immutable_named_projection_eligible_N_not_raw_capture_inventory",
+            "purpose_reserved": False, "training_use_recorded": False}
+
+
 def reserve_p1_snapshot(ledger: CurationLedger, store: Any, snapshot_id: str) -> dict[str, Any]:
     """Explicit engineering purpose reservation; no model updates or formal admission.
 
@@ -97,32 +133,7 @@ def reserve_p1_snapshot(ledger: CurationLedger, store: Any, snapshot_id: str) ->
     """
     value, scopes = _scope(store, snapshot_id)
     for source in value["sources"]:
-        projection_id = source["projection_id"]
-        index = inspect_projections(store, [projection_id])
-        role = projection_payload_role(store.get_manifest(projection_id))
-        payload_sha256 = source[role + "_sha256"]
-        fingerprint_rows = [(key, root) for group in index["groups"]
-                            for root in group["root_run_ids"] for key in group["keys"]]
-        with ledger.operations.transaction() as db:
-            previous = db.execute("SELECT archive FROM curation_sources WHERE id=?",
-                                  (projection_id,)).fetchone()
-            if previous is not None and previous[0] != payload_sha256:
-                raise BoundaryError("p1_training_data", "projection_index_identity_conflict")
-            db.execute("INSERT OR IGNORE INTO curation_sources VALUES(?,?,0)",
-                       (projection_id, payload_sha256))
-            db.executemany("INSERT OR IGNORE INTO curation_fingerprints VALUES(?,?)",
-                           fingerprint_rows)
-            for point in index["points"]:
-                occurrence = _occurrence(point["source_decision_id"])
-                db.execute("INSERT OR IGNORE INTO curation_source_runs VALUES(?,?)",
-                           (projection_id, point["root_run_id"]))
-                db.execute("INSERT OR IGNORE INTO curation_source_decisions VALUES(?,?,?)",
-                           (projection_id, occurrence, point["N_fact_sha256"]))
-                db.execute("INSERT OR IGNORE INTO curation_occurrences VALUES(?,?,?)",
-                           (occurrence, point["root_run_id"], point["source_decision_id"]))
-            db.execute("UPDATE curation_sources SET complete=1 WHERE id=?", (projection_id,))
-            db.execute("INSERT OR IGNORE INTO curation_exact_source_index VALUES(?)",
-                       (projection_id,))
+        index_p1_projection(ledger, store, source["projection_id"])
     for split, scope in scopes.items():
         ledger.claim(scope["claim_id"], "training" if split == "train" else "test", scope["roots"])
     ledger.bind(snapshot_id, snapshot_id)

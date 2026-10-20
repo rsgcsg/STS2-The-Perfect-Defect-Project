@@ -155,7 +155,8 @@ def preparation_status(config: ProjectConfig, *, active: bool = False) -> dict[s
                                          plan.get("unknown_dataset_count", 0)) if plan else 0,
                 "known_dataset_count": plan.get("known_dataset_count", 0) if plan else 0,
                 "unknown_dataset_count": plan.get("unknown_dataset_count", 0) if plan else 0,
-                "unknown_source_count": plan.get("unknown_source_count", 0) if plan else 0}
+                "unknown_source_count": plan.get("unknown_source_count", 0) if plan else 0,
+                "p1_projection_count": plan.get("p1_projection_count", 0) if plan else 0}
     except (BoundaryError, OSError, sqlite3.DatabaseError) as error:
         return {"schema": SCHEMA, "status": "recovery_required",
                 "retry_available": False,
@@ -293,10 +294,18 @@ class InplaceCurationPreparation:
         plan.pop("error_code", None)
         plan["processed"] = 0
         atomic_json(store_dir / PLAN_NAME, plan)
-        known = unknown = unknown_sources = 0
+        known = unknown = unknown_sources = p1_projections = 0
         processed = 0
         for identity in identities:
             item = store.get_manifest(identity)
+            if item.kind == "analysis":
+                from spireagent.p1_curation import index_p1_projection
+                from stpd.p1.dataset import SUPPORTED_PROJECTIONS
+
+                info = item.parameters.value()
+                if (info.get("schema"), info.get("projection_id")) in SUPPORTED_PROJECTIONS:
+                    index_p1_projection(owner.ledger, store, identity)
+                    p1_projections += 1
             if item.kind != "evidence":
                 continue
             projections: list[Any] = []
@@ -369,5 +378,6 @@ class InplaceCurationPreparation:
                                    ((run,) for run in runs))
         plan.update(status="ready", known_dataset_count=known,
                     unknown_dataset_count=unknown, unknown_source_count=unknown_sources,
+                    p1_projection_count=p1_projections,
                     processed=plan["total"])
         atomic_json(store_dir / PLAN_NAME, plan)

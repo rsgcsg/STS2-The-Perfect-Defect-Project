@@ -285,3 +285,30 @@ def test_bridge_visible_at_inventory_gate_cannot_launder_old_unknown_run(
     with owner.transaction() as db:
         assert db.execute("SELECT 1 FROM curation_claims WHERE id=?", ("i" * 64,)).fetchone() \
             is None
+
+
+def test_prepare_indexes_P1_eligible_N_in_same_ledger_without_admitting_raw(tmp_path):
+    from test_p1_snapshot import projection_fixture
+
+    from stpd.p1.dataset import load_projection
+
+    config, _source, store = _config(tmp_path)
+    projection_id, original = projection_fixture(store, "prepare-P1")
+    preparation = InplaceCurationPreparation(config)
+    preparation.start()
+    status = _settle(preparation)
+    assert status["status"] == "ready", status
+    assert status["p1_projection_count"] == 1
+    assert status["unknown_source_count"] == 1  # Original raw is not a canonical Full-Run.
+    owner = configured_owner(config)
+    observed = load_projection(store, projection_id)
+    assert owner.ledger.source_runs(projection_id) == {observed.root}
+    assert owner.ledger.exact_source_ready(projection_id) is True
+    assert owner.ledger.source_runs(original.artifact_id) is None
+    with owner.transaction() as db:
+        assert db.execute("SELECT count(*) FROM curation_claims").fetchone()[0] == 0
+        assert db.execute("SELECT count(*) FROM curation_uses").fetchone()[0] == 0
+        assert db.execute("SELECT count(*) FROM curation_source_uses").fetchone()[0] == 0
+        assert owner._inventory_pending(db) is True
+    with pytest.raises(BoundaryError):
+        owner.ledger.claim("a" * 64, "gold", {observed.root})
