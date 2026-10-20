@@ -58,6 +58,13 @@ def verify_resume_checkpoint(store: Any, operation: dict[str, Any], checkpoint_i
 
         verify_reward_resume_checkpoint(store, operation, checkpoint_id)
         return
+    from stpd.p1.spec import RECIPE as P1_RECIPE
+
+    if operation["recipe"] == P1_RECIPE:
+        from spireagent.workbench.recipes.p1_mstd import verify_p1_resume_checkpoint
+
+        verify_p1_resume_checkpoint(store, operation, checkpoint_id)
+        return
     checkpoint = store.get_manifest(checkpoint_id)
     run = store.get_manifest(operation["run_id"])
     verify_run_execution_policy(run, operation)
@@ -230,6 +237,9 @@ class StructuredRecipeAdapter:
     def preflight_request(self, store: Any, owner: Any, request: TrainingRequest) -> Any:
         return self.preflight(store, owner, request.source_id)
 
+    def optimizer_update_limit(self, store: Any, operation: dict[str, Any]) -> int:
+        return 10000  # Bound of the existing structured/reward/token recipes.
+
     def validate_terminal(self, store: Any, operation: dict[str, Any],
                           terminal: dict[str, Any]) -> None:
         """Existing structured terminals are validated by their registered domain worker."""
@@ -360,7 +370,9 @@ class StructuredRecipeAdapter:
                         update["checkpoint_id"] = cp_id
                     if "optimizer_updates" in event_details:
                         updates = event_details["optimizer_updates"]
-                        if type(updates) is not int or not 0 <= updates <= 10000:
+                        if (type(updates) is not int
+                                or not 0 <= updates <= self.optimizer_update_limit(
+                                    store, recorded)):
                             raise BoundaryError("local_training", "child_progress_invalid")
                         update.update(last_progress_at=time.time(), progress={
                             "unit": "optimizer_update", "completed": updates, "total": None})
@@ -375,7 +387,8 @@ class StructuredRecipeAdapter:
                             or type(details["event_step"]) is not int
                             or details["event_step"] < recorded.get("_event_step", 0)
                             or type(details["optimizer_updates"]) is not int
-                            or not 0 <= details["optimizer_updates"] <= 10000
+                            or not 0 <= details["optimizer_updates"] <= self.optimizer_update_limit(
+                                store, recorded)
                             or type(details["attempt_seconds"]) not in {float, int}
                             or not math.isfinite(details["attempt_seconds"])
                             or details["attempt_seconds"] < 0):
