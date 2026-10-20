@@ -613,3 +613,12 @@ does not delete original/history or stop a user's game. P1-aware initialization 
 CurationOwner is also pending: preserve-only P1 data must not be forced through legacy
 ResearchTransition preview or silently adopted into a second ledger. Actual populations remain
 unassigned until lineage/use facts and deliberate admission are present.
+
+
+### 固定Tool与选定Host上下文
+
+`project collection-tool`可用`--host-lifecycle <absolute current.json>`及`--native-log-file <absolute godot.log>`成对注册。它们是现Host公开上下文引用，凭据不进入注册文件。Catalog和CollectionSetup调用同一`inspect_collection_destination`，薄传既有公开setup CLI的日志和端口；原setup继续验证Mod/加载/代次。显式引用缺失、前后pid/runtime/endpoint变化会阻断，不退回默认Steam实例。未配置上下文的旧消费者与game-stopped bind/upgrade保持原合同。
+
+非GUI只读目录入口为`LocalRecordingCatalog(ProjectConfig.load(config_path)).read()`；它只观察当前固定Tool/原生owner、封存元数据及未封目录，不pack、复制raw、发送录制命令或赋予Human/研究资格。正常安装的2fa3723d已实际返回ready/current_runtime/33候选/3未封；Evidence精确来源8682d7e7，Tool为d25c0ab1。当前正常服务后台维护保持disabled。
+
+训练CLI/control-client缺口仍未关闭：`LocalTrainingService`必须由长期Application持有；当前训练HTTP只有浏览器鉴权，不能把短-lived库脚本当正常训练客户端。原owner下一段应沿同control_client接现start/status/pause/resume/cancel/reconcile等方法并保校验与失败语义；不复制worker或新控制器。

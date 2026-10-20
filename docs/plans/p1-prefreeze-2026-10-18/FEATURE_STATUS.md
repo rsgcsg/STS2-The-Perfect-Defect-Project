@@ -118,3 +118,12 @@
 | 应用与数据 | P1压缩保全与按ID取回 | 现行 | [python/docs/B_PIPELINE_HANDOFF.md](../../../python/docs/B_PIPELINE_HANDOFF.md) | [python/tests/test_p1_recording_store.py](../../../python/tests/test_p1_recording_store.py) | R2 25,087,767B压缩/290,696,684B成员全回读，任务分配峰50,520,064B；正常service cloud peer可配置但维护disabled。 |
 | 应用与数据 | P1录制查询与可重建元数据 | 现行 | [python/docs/B_PIPELINE_HANDOFF.md](../../../python/docs/B_PIPELINE_HANDOFF.md) | [python/tests/test_p1_recording_store.py](../../../python/tests/test_p1_recording_store.py) | 真实PB可给角色/进阶/修饰/首观察act/floor与end.result；language/mode/gameversion/seed/root/ancestry仍unknown。 |
 | 应用与数据 | P1封存后台编排与容量周转 | 未完成 | [python/docs/B_PIPELINE_HANDOFF.md](../../../python/docs/B_PIPELINE_HANDOFF.md) | [python/tests/test_p1_recording_store.py](../../../python/tests/test_p1_recording_store.py) | 已实现封存编排/空间预估；当天实际新Tool/candidate范围由A排，无自动删原件/用户局。 |
+
+
+## 非GUI入口核对（2026-10-20本批增量）
+
+原CSV新增non_gui_entry/gui_mapping/non_gui_verification/non_gui_gap四列，合C的21研究行和B的5条当前连接。空白仍表示本批未重新核对，不能读成所有历史功能已具备正常agent入口。workbench承载Application用例和服务，GUI是可选客户；目录名称不构成领域归属或验收依据。
+
+Host上下文接缝在原Tool注册增加显式host_lifecycle/native_log_file，同一setup消费者传原公开CLI的log/port，前后核pid/runtime/endpoint并保原setup严格身份检查。正常安装2fa3723d/精确Evidence8682d7e7、固定Tool d25c0ab1，纯库LocalRecordingCatalog.read实际ready/current_runtime，33个封存候选、3个未封目录；这些是目录观察，不是33份已验证bundle。game-stopped bind/upgrade路径仍走原合同。
+
+训练有LocalTrainingService完整用例和持久Application宿主，但当前HTTP只接受浏览器cookie/CSRF，普通训练CLI尚未交付，不能用库方法存在或短脚本daemon join代替可用操作入口。下一段最短交付由原应用owner沿运行中Application的control_client接start/status/capabilities/pause/resume/cancel/reconcile/amend_wall_budget，并复用现方法、请求校验、错误与持久操作；不新建controller。应验证非GUI调用、进程持续持有任务、失败/unknown与重开核对，之后才关这一连接。本批没有启正式训练或云worker。
