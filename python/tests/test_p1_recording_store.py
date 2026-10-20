@@ -480,6 +480,10 @@ def test_target_publication_keeps_schema_role_receipt_and_partial(
     metadata = catalog.parameters.value()["metadata"]
     assert metadata["character"] == "DEFECT" and metadata["ascension"] == expected_ascension
     assert metadata["result"] == "loss" and metadata["root"] is None
+    with pytest.raises(BoundaryError, match="unsupported_query_filter_type"):
+        query_p1_sources(local, filters={"ascension": False})
+    with pytest.raises(BoundaryError, match="unsupported_query_filter_type"):
+        query_p1_sources(local, filters={"has_projection": 1})
     assert (
         query_p1_sources(local, filters={"character": "DEFECT"})[0]["artifact_id"]
         == raw.artifact_id
