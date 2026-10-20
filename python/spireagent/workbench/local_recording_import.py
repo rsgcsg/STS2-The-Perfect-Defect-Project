@@ -388,7 +388,6 @@ class LocalRecordingImporter:
                                requested: dict[str, Any] | None = None) -> None:
         """All journaled unresolved intents survive changes of the current caller."""
         if (self.operation.get("recording_type") == "p1_native"
-                and self.operation.get("action") == "derive"
                 and self.operation.get("status") in {
                     "pending", "publication_unknown", "interrupted_unknown"}):
             raise BoundaryError("local_import", "original_intent_reconciliation_required")
@@ -980,7 +979,8 @@ class LocalRecordingImporter:
                 self.operation = self._completed(identity, existing, candidate)
                 self._save()
                 return self.status()
-            owner = _selected_curation_owner(self.config)
+            owner = (_selected_curation_owner(self.config)
+                     if candidate.get("recording_type") != "p1_native" else None)
             if owner is not None:
                 # Commit before any payload or manifest write. A crash leaves the
                 # pending row visible to the Gold inventory transaction.
@@ -988,6 +988,12 @@ class LocalRecordingImporter:
             self.operation = {"schema": SCHEMA, "status": "pending", "candidate_id": identity,
                               "started_at": _now(),
                               "recording_type": candidate.get("recording_type", "legacy_human"),
+                              **({"action": "import", "_p1_candidate": {
+                                  key: candidate[key] for key in (
+                                      "recording_type", "session_id", "timeline_id",
+                                      "recorder_source_revision", "manifest_sha256",
+                                      "close_sha256", "p1_close_sha256")}}
+                                 if candidate.get("recording_type") == "p1_native" else {}),
                               **({"_owner": owner.identity} if owner is not None
                                  and candidate.get("recording_type") == "source3" else {})}
             self._save()
@@ -995,6 +1001,46 @@ class LocalRecordingImporter:
                 target=self._run, args=(identity, candidate), daemon=True,
             )
             self.thread.start()
+            return self.status()
+
+    def reconcile_p1_import(self) -> dict[str, Any]:
+        """Resolve only the retained original candidate; do not pack or publish again."""
+        with self.lock:
+            if self.thread is not None and self.thread.is_alive():
+                raise BoundaryError("local_import", "operation_in_progress")
+            if (self.operation.get("recording_type") != "p1_native"
+                    or self.operation.get("action") not in {"import", "import-bundle"}):
+                raise BoundaryError("local_import", "p1_import_intent_required")
+            intent = self.operation
+            checked = False
+            try:
+                store, registry = _selected_store(self.config)
+                if intent["action"] == "import-bundle":
+                    from .p1_recording_store import BUNDLE_SCHEMA, _matching
+
+                    manifest = _matching(store, BUNDLE_SCHEMA, content_id=intent["content_id"])
+                    identity = manifest.artifact_id if manifest else None
+                    if manifest is not None:
+                        for payload in manifest.payloads:
+                            for _ in store.read_payload(payload):
+                                pass
+                else:
+                    identity = self._existing_candidate(store, intent["candidate_id"],
+                                                         intent["_p1_candidate"])
+                if identity is None:
+                    self.operation = {**intent, "status": "failed", "publication": "absent",
+                                      "finished_at": _now()}
+                else:
+                    checked = True
+                    self.operation = {**intent, "status": "published_index_unavailable",
+                                      "artifact_id": identity}
+                    _sync(store, registry)
+                    self.operation.update(status="completed", finished_at=_now())
+            except Exception as error:
+                if not checked:
+                    self.operation["status"] = "publication_unknown"
+                self.operation["error_code"] = getattr(error, "code", "p1_reconciliation_failed")
+            self._save()
             return self.status()
 
     def start_p1_derivation(self, source_artifact_id: str, projection_id: str,
@@ -1240,9 +1286,8 @@ class LocalRecordingImporter:
                 raise BoundaryError("local_import", "packed_p1_identity_mismatch")
             raw = publish_p1_original(store, bundle, tool, source_identity(ROOT),
                                       scratch=Path(name))
-            owner = _selected_curation_owner(self.config)
-            if owner is not None:
-                owner.published_source(candidate_id, raw.artifact_id)
+            # This is preservation, not a legacy ResearchTransition source index.
+            # P1 N/use indexing belongs to the explicitly selected projection consumer.
             _sync(store, registry)
             return raw.artifact_id
 

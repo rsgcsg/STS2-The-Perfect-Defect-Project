@@ -7554,3 +7554,23 @@ test("P1 recording uses explicit supported origin and same controls including pr
   assert.equal(writes.length,2);assert.equal(writes[1].kind,"export_p1_native_prefix");
   assert.equal(writes[1].recording_session_id,"p1-session");
 });
+
+
+test("published P1 derivation with failed index exposes explicit original-operation reconciliation", async () => {
+  const source=id("a");const writes=[];
+  const env=setup({identity:{status:"signed_out"},view:"local-workspace",query:`&id=${source}`,
+    importStatus:{recording_type:"p1_native",action:"derive",status:"published_index_unavailable",
+      source_artifact_id:source,artifact_id:id("b"),csrf_token:"browser-csrf"},
+    handler:async(url,options)=>{
+      if(url===`/api/local-workspace/artifacts/${source}`) return {artifact_id:source,kind:"evidence",
+        parameters:{schema:"sts2.human-annotator/p1-native-session-bundle-1",declared_origin:"unknown"},
+        parents:[],payloads:[]};
+      if(url==="/api/local-workspace/managed")return{status:"ready"};
+      if(url==="/api/local-recordings/derive/reconcile"){writes.push(JSON.parse(options.body));return{status:"completed"};}
+      throw new Error(`unexpected route ${url}`);
+    }});
+  const page=await env.render();
+  assert.equal(action(page,"derive-p1-recording").disabled,true);
+  await action(page,"reconcile-p1-derivation").onclick();
+  assert.deepEqual(writes,[{}]);
+});

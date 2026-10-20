@@ -209,3 +209,32 @@ def test_background_derivation_reconciles_published_result_without_reexecution(
             importer.start_p1_derivation(source.artifact_id, "native-input-v1")
     assert importer.reconcile_p1_derivation()["status"] == "completed"
     assert len(calls) == 1
+
+
+def test_unknown_p1_import_retains_original_intent_and_can_reconcile_without_raw(
+    tmp_path, original, tool, monkeypatch,
+):
+    from spireagent.storage.registry import SQLiteRegistry
+    from spireagent.workbench import local_recording_import as importing
+    from spireagent.workbench.developer import ProjectConfig, combination
+
+    store = ManifestArtifactStore(LocalBlobStore(tmp_path / "store"))
+    raw = publish_p1_original(store, original, tool, Producer("test", "a" * 40, "b" * 64),
+                              scratch=tmp_path / "scratch")
+    config = ProjectConfig(tmp_path / "state", "", "", None, combination())
+    importer = importing.LocalRecordingImporter(config, None)
+    importer.operation = {"schema": importing.SCHEMA, "recording_type": "p1_native",
+        "action": "import", "candidate_id": "a" * 64, "status": "publication_unknown",
+        "_p1_candidate": _closed_session(original / "raw")}
+    importer._save()
+    original.rename(tmp_path / "offline-original")
+    restarted = importing.LocalRecordingImporter(config, None)
+    before = dict(restarted.operation)
+    with pytest.raises(BoundaryError, match="original_intent_reconciliation_required"):
+        restarted.start("b" * 64, False)
+    assert restarted.operation == before
+    registry = SQLiteRegistry(tmp_path / "registry.sqlite")
+    monkeypatch.setattr(importing, "_selected_store", lambda _: (store, registry))
+    resolved = restarted.reconcile_p1_import()
+    assert resolved["status"] == "completed" and resolved["artifact_id"] == raw.artifact_id
+    assert resolved["candidate_id"] == "a" * 64

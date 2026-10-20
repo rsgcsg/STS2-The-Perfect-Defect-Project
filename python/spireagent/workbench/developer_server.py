@@ -1944,11 +1944,17 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                     self.respond(403, b'{"error":"browser_action_denied"}')
                     return
                 if self.path not in {"/api/local-recordings/import",
+                                     "/api/local-recordings/import/reconcile",
                                      "/api/local-recordings/import/native-agent"}:
                     self.respond(404, b'{"error":"route_not_found"}')
                     return
                 try:
-                    if self.path == "/api/local-recordings/import/native-agent":
+                    if self.path == "/api/local-recordings/import/reconcile":
+                        body = self.json_body(maximum=64)
+                        if body:
+                            raise ValueError
+                        value = app.local_recording_import.reconcile_p1_import()
+                    elif self.path == "/api/local-recordings/import/native-agent":
                         body = self.json_body(maximum=8192)
                         if set(body) not in (
                             {"directory", "cohort", "relation_id"},

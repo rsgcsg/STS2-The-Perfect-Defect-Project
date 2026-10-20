@@ -4193,6 +4193,11 @@ window.SpireProject = (() => {
     } else if (["failed", "interrupted_unknown", "publication_unknown"].includes(importStatus.status)) {
       section.append(el("p", "上一次导入未确认完成；不会自动重试。请查看状态并核对后再明确操作。", "small muted"));
     }
+    if (importStatus.recording_type === "p1_native" && ["import", "import-bundle"].includes(importStatus.action)
+        && ["publication_unknown", "interrupted_unknown", "published_index_unavailable"].includes(importStatus.status))
+      section.append(command(ctx, "reconcile-p1-import", "核对原导入结果", async () => {
+        await request(ctx, "/api/local-recordings/import/reconcile", {}, localCsrfToken); await reload(ctx);
+      }));
     if (importStatus.error_code) section.append(technical(safeImportStatus, "查看导入状态"));
     section.append(command(ctx, "refresh-local-import-status", "刷新导入状态", async () => {
       await reload(ctx);
@@ -5466,7 +5471,7 @@ window.SpireProject = (() => {
         if (operation.action === "derive" && operation.source_artifact_id === value.artifact_id) {
           p1.append(el("p", `派生状态：${show(operation.status)}`, "small muted"));
           if (operation.artifact_id) p1.append(link("查看派生资料", route("local-workspace", operation.artifact_id)));
-          if (["publication_unknown", "interrupted_unknown"].includes(operation.status))
+          if (["publication_unknown", "interrupted_unknown", "published_index_unavailable"].includes(operation.status))
             p1.append(command(ctx, "reconcile-p1-derivation", "核对原派生结果", async () => {
               await request(ctx, "/api/local-recordings/derive/reconcile", {}, operation.csrf_token); await reload(ctx);
             }));
@@ -5475,7 +5480,7 @@ window.SpireProject = (() => {
         p1.append(command(ctx, "derive-p1-recording", "生成或复用派生资料", async () => {
           await request(ctx, "/api/local-recordings/derive", {source_artifact_id:value.artifact_id,
             projection_id:projection.value, run_id:run.value}, operation.csrf_token); await reload(ctx);
-        }, {disabled:operation.status === "pending" || ["publication_unknown", "interrupted_unknown"].includes(operation.status)}));
+        }, {disabled:operation.status === "pending" || ["publication_unknown", "interrupted_unknown", "published_index_unavailable"].includes(operation.status)}));
         p1.append(command(ctx, "refresh-p1-derivation", "刷新派生状态", async () => { await reload(ctx); }, {type:"secondary"}));
         box.append(p1);
       }
