@@ -305,9 +305,9 @@ def test_frozen_operational_profile_rejects_changed_current_source_without_publi
             store, old.artifact_id, producer=target_producer(),
             profile=OPERATIONAL_COMPATIBILITY_PROFILE,
         )
+    current_lock = (historical_target_source / "uv.lock").read_bytes()
     current_producer = replace(
-        target_producer(),
-        uv_lock_sha256=hashlib.sha256((historical_target_source / "uv.lock").read_bytes()).hexdigest(),
+        target_producer(), uv_lock_sha256=hashlib.sha256(current_lock).hexdigest(),
     )
     with pytest.raises(BoundaryError, match="inference_source_changed"):
         owner.publish_native_compatible_model(
