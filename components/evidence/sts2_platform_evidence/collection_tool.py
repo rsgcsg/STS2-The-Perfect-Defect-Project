@@ -43,8 +43,8 @@ P1_SELECTOR_PROJECTION = P1_NATIVE_SUPPORT["selector_transaction_projection"]
 
 _P1_READ = """
 import {pathToFileURL} from 'node:url';
-const {readVerifiedP1NativeBundle} = await import(pathToFileURL(process.argv[1]).href);
-const source = readVerifiedP1NativeBundle(process.argv[2]);
+const {readVerifiedP1NativeBundle} = await import(pathToFileURL(process.argv[2]).href);
+const source = readVerifiedP1NativeBundle(process.argv[3]);
 const json = name => JSON.parse(source.bytes(name).toString('utf8'));
 console.log(JSON.stringify({manifest:source.manifest, recording:json('recording-manifest.json'),
   close:json('p1-native-close.json'), journal:source.journal,
@@ -54,11 +54,11 @@ console.log(JSON.stringify({manifest:source.manifest, recording:json('recording-
 _P1_DERIVE = """
 import {pathToFileURL} from 'node:url';
 import {writeFileSync} from 'node:fs';
-const {convertP1NativeBundle} = await import(pathToFileURL(process.argv[1]).href);
-const options = {bundle:process.argv[2], runId:process.argv[3], includeSegments:true};
-if (process.argv[4] !== 'native-input-v1') options.selectorTransactions=process.argv[4];
+const {convertP1NativeBundle} = await import(pathToFileURL(process.argv[2]).href);
+const options = {bundle:process.argv[3], runId:process.argv[4], includeSegments:true};
+if (process.argv[5] !== 'native-input-v1') options.selectorTransactions=process.argv[5];
 const result = await convertP1NativeBundle(options);
-writeFileSync(process.argv[5], JSON.stringify(result.segment_output,null,2)+'\\n',{flag:'wx'});
+writeFileSync(process.argv[6], JSON.stringify(result.segment_output,null,2)+'\\n',{flag:'wx'});
 const segments=result.segment_output;
 const points=segments.segments.flatMap(segment=>segment.points);
 console.log(JSON.stringify({schema:segments.schema, source_content_id:segments.source_content_id,
@@ -171,7 +171,7 @@ class CollectionTool:
     def _p1_node(self, driver: str, arguments: list[str], *, node: str) -> dict[str, Any]:
         self._p1()
         try:
-            result = subprocess.run([node, "--input-type=module", "--eval", driver, *arguments],
+            result = subprocess.run([node, "--input-type=module", "--eval", driver, "p1-application", *arguments],
                                     capture_output=True, text=True, timeout=600, check=False)
         except subprocess.TimeoutExpired:
             raise CollectionFailure("P1-native reader/converter exceeded bounded runtime") from None

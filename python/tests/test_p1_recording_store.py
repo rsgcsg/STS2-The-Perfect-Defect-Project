@@ -57,7 +57,17 @@ def tool(tmp_path):
         "platform-bom.json": b"{}",
         "sts2-human-annotator.dll": b"not executed in this portable reader test",
         "p1/tools/p1-native-bundle.mjs": (ROOT / "tools/p1-native-bundle.mjs").read_bytes(),
-        "p1/tools/p1-native-to-p1.mjs": b"throw Error('conversion not part of this fixture');",
+        "p1/tools/p1-native-to-p1.mjs": b"""
+import {fileURLToPath} from 'node:url';
+if (process.argv[1] === fileURLToPath(import.meta.url)) throw Error('CLI executed on import');
+export async function convertP1NativeBundle(options) {
+ if (options.runId !== 'run-0001' || !options.includeSegments) throw Error('options lost');
+ return {segment_output:{schema:'sts2.p1/native-segments-1',source_content_id:'a'.repeat(64),
+ branch:{root:null},profile:'test',revision:'test',projection_claims:[],whole_run_complete:false,
+ source_conversion_complete:false,segments:[{points:[{mask:{N:true,next:false,end:false}}]}],
+ gaps:[{reason:'synthetic-gap'}],discarded_choices:[]},blocking_issues:[]};
+}
+""",
         "p1/components/connector/sdk/typescript/dist/p1Global/index.js": b"export {};",
         "setup/tools/p1-native-recording.mjs": b"throw Error('no gameplay in this fixture');",
     }
@@ -146,3 +156,10 @@ def test_import_reconciliation_uses_exact_raw_fingerprints(tmp_path, original, t
     for field in ("manifest_sha256", "close_sha256", "p1_close_sha256"):
         changed = {**candidate, field: "0" * 64}
         assert importer._existing_candidate(store, "unused", changed) is None
+
+
+def test_converter_adapter_import_does_not_execute_cli(tmp_path, original, tool):
+    summary = tool.derive_p1_native(original, tmp_path / "segments.json", run_id="run-0001")
+    assert summary["candidate_N"] == 1
+    assert summary["gaps"] == [{"reason": "synthetic-gap"}]
+    assert json.loads((tmp_path / "segments.json").read_bytes())["whole_run_complete"] is False
