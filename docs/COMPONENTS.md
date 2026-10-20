@@ -75,6 +75,24 @@ not another adapter merely to retain the old implementation. The four change
 classes and approval boundary remain in Architecture. Different role formats
 remain distinct; a future supported combination is never an implemented claim.
 
+Application/use-case and resource organization cuts across the online, recording
+and research chains. Workbench GUI is the optional human mapping; the existing
+`python/spireagent/workbench` directory also contains the local Application and
+services, rather than defining another upper-level authority. `apps/workbench`
+is the retained diagnostic API, console is presentation and Hub is a remote
+application/permission implementation. A running use case may need an application
+service without a browser; closing its page is not Stop. Direct offline library
+calls keep their owning contract and need no forced HTTP/Application hop.
+
+Every project GUI business function and its status/failure handling must have a
+supported, discoverable non-GUI entry through CLI, API, library or agent tooling.
+Agents do not operate the Workbench GUI to execute business use cases. These entry
+types may divide the supported surface; they need not each duplicate every command.
+A private function requiring permission bypass, database editing or a private daily
+script is not a delivered entry. GUI presentation QA and native Human gameplay
+are distinct from this business-entry requirement. The dated K6 investigation is
+limited to its original scope, not a finding that all current functions satisfy it.
+
 For the current pre-training freeze, internal API/library/CLI calls are the main
 operation surface. Existing browser and native UI remain thin mappings to the same
 application use cases, including their presentation/confirmation/pairing adapters.
