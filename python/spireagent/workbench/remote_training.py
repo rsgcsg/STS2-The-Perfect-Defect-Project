@@ -179,7 +179,10 @@ class RemoteTrainingService:
                     "scheduler_error": self._error, "automatic_retry": False}
 
     def prepare(self, body: object) -> dict[str, Any]:
-        from spireagent.workbench.p1_training_data import record_p1_training_use, require_p1_snapshot
+        from spireagent.workbench.p1_training_data import (
+            record_p1_training_use,
+            require_p1_snapshot,
+        )
         from spireagent.workbench.remote_training_storage import transfer_p1_input
         from stpd.p1.spec import MStdConfig
         from stpd.p1.workload import prepare_p1_run
