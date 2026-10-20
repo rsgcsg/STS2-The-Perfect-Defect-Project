@@ -21,7 +21,9 @@ def _occurrence(decision: str) -> str:
     return digest(("p1-N-native:" + decision).encode())
 
 
-def _scope(store: Any, owner: Any, snapshot_id: str):
+def _scope(
+    store: Any, owner: Any, snapshot_id: str,
+) -> tuple[dict[str, Any], dict[str, Any]]:
     if not isinstance(store.blobs, LocalBlobStore) or store.blobs.root != owner.store_dir.resolve():
         raise BoundaryError("p1_training_data", "store_owner_mismatch")
     manifest, value = load_snapshot(store, snapshot_id)
@@ -135,7 +137,9 @@ def reserve_p1_snapshot(owner: Any, store: Any, snapshot_id: str) -> dict[str, A
     }
 
 
-def require_p1_snapshot(owner: Any, store: Any, snapshot_id: str):
+def require_p1_snapshot(
+    owner: Any, store: Any, snapshot_id: str,
+) -> tuple[dict[str, Any], dict[str, Any]]:
     value, scopes = _scope(store, owner, snapshot_id)
     _require_purposes(owner, snapshot_id, scopes)
     return value, scopes
