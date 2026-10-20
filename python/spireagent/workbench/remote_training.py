@@ -15,7 +15,6 @@ from spireagent.source import source_identity
 from spireagent.storage.store import copy_artifact
 from spireagent.workbench.developer import ROOT, ProjectConfig
 from spireagent.workbench.p1_recording_storage import open_peer
-from spireagent.workbench.p1_training_data import record_p1_training_use, require_p1_snapshot
 from stpd.cloud_jobs.modal import ModalProvider, ModalTarget
 
 if TYPE_CHECKING:
@@ -83,6 +82,7 @@ class RemoteTrainingService:
             self._operations = Operations(deployment.operations_path)
 
             def record_use(run: Manifest) -> None:
+                from spireagent.workbench.p1_training_data import record_p1_training_use
                 from stpd.p1.workload import verify_p1_run
 
                 current_owner, current_store, _ = self.select()
@@ -179,6 +179,7 @@ class RemoteTrainingService:
                     "scheduler_error": self._error, "automatic_retry": False}
 
     def prepare(self, body: object) -> dict[str, Any]:
+        from spireagent.workbench.p1_training_data import record_p1_training_use, require_p1_snapshot
         from spireagent.workbench.remote_training_storage import transfer_p1_input
         from stpd.p1.spec import MStdConfig
         from stpd.p1.workload import prepare_p1_run
