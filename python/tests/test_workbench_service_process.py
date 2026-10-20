@@ -230,6 +230,7 @@ def test_direct_serve_owns_context_before_application_and_restores_on_exit(
             pass
 
         p1_maintenance = SimpleNamespace(start=lambda: None)
+        remote_training = SimpleNamespace(start_loop=lambda: None)
 
         def close(self):
             closed.append("application")

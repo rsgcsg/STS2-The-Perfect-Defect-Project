@@ -218,7 +218,9 @@ class LocalRecordingCatalog:
             # This inert profile-owned path is an expected-root probe, not a
             # guessed recordings location. The native owner reports its own root.
             expected_root = self.config.state_dir / "local-recordings-root-probe"
-            owner = inspect_collection_destination(self.config, tool, recordings_root=expected_root)
+            owner = inspect_collection_destination(
+                self.config, tool, recordings_root=expected_root, allow_stopped_inventory=True
+            )
         except (OSError, ValueError, TypeError, RuntimeError, subprocess.SubprocessError):
             return self._result(
                 status="owner_unavailable", observed_at=observed_at,

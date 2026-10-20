@@ -191,6 +191,7 @@ def inspect_collection_destination(
     *,
     recordings_root: Path,
     game_directory: Path | None = None,
+    allow_stopped_inventory: bool = False,
 ) -> dict[str, Any]:
     """One setup consumer for Catalog and collection preparation; no native rule duplication."""
     context = selected_host_context(config)
@@ -203,10 +204,28 @@ def inspect_collection_destination(
         options["game_directory"] = game_directory
     result = tool.setup_status(recordings_root=recordings_root, **options)
     if context is not None:
+        if selected_host_context(config) != context:
+            raise BoundaryError("collection_tool", "selected_host_context_changed_or_unconfirmed")
+        # Catalog may read the owner's configured directory while no game is
+        # running. It still validates that root before scanning. This does not
+        # assert an active runtime or relax the preparation/mutation callers.
+        stopped_inventory = (
+            allow_stopped_inventory
+            and result.get("game_running") is False
+            and result.get("loaded_identity") is None
+            and isinstance(result.get("configured_recordings_root"), str)
+            and (
+                (result.get("reason") == "configured_game_stopped"
+                 and result.get("configured") is True)
+                or (result.get("reason") == "recording_root_not_configured"
+                    and result.get("configured") is False)
+            )
+        )
+        if stopped_inventory:
+            return result
         loaded = result.get("loaded_identity") or {}
         if (
-            selected_host_context(config) != context
-            or any(loaded.get(key) != context[key] for key in ("process_id", "runtime_instance_id"))
+            any(loaded.get(key) != context[key] for key in ("process_id", "runtime_instance_id"))
             or loaded.get("connector_endpoint") != context["endpoint"]
         ):
             raise BoundaryError("collection_tool", "selected_host_context_changed_or_unconfirmed")
