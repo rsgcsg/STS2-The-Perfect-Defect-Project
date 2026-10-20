@@ -24,6 +24,12 @@ does not imply a GPU/model or arbitrary-version qualification.
 
 ## The everyday path
 
+For the current local P1 recording/Store destination, use the final P1 section below.
+It requires neither a Hub login nor a campaign/Gold workflow merely to preserve an original.
+The following retained member/Hub destination additionally owns device, sharing and upload consent;
+its account rules must not be copied into the local P1 path or silently removed from real Hub callers.
+
+
 | When | What to do | What confirms success |
 |---|---|---|
 | first install | obtain the approved Mod/tool and exact project checkout; run the launcher below | local workbench opens; project doctor passes |
@@ -511,64 +517,99 @@ records the owner's engineering release scope without claiming continuous Full-R
 
 ## P1 originals and named projections in the existing local Store
 
-The internal developer entry is `python -m spireagent.workbench recordings --help`.
-It complements the same `project open --config /ABS/project.json` workbench;
-opening either entry starts no recording. This local P1 path does not authorize
-cloud upload or training. Register an entire immutable collection-tool directory
-by its release ID using the existing project registration; do not use a floating
-source checkout as the collection tool.
+Open the same fixed installed workbench with `project open --config /ABS/project.json`.
+Keep its existing Store/registry binding and register a complete immutable CollectionTool by
+its exact release ID. Opening/refreshing the page sends no Recorder command. Tool setup must
+match the currently installed/loaded Mod; an older tool may still verify historical data while
+its setup probe correctly reports `installed_artifact_mismatch` for the new Mod. Do not weaken
+that identity check. Credentials remain environment-only; S3 reads use the configured bucket,
+endpoint and prefix, not a guessed object key.
 
-From `python/` (replace the absolute example values with the configured binding):
+The unique application core is `workbench.p1_recording_store` (original/named publication,
+materialize/query/catalog), `p1_recording_storage` (existing Store copy/readback) and the existing
+`LocalRecordingImporter` operation. GUI, CLI and API are thin callers. `P1RecordingMaintenance`
+only composes those operations for sealed candidates; Recorder retains its sole native lifecycle.
+The registry/catalog are rebuildable indexes, not another source or a research-use ledger.
+
+| Data | Explicit schema/profile and payload role |
+|---|---|
+| Original | P1-native bundle; `archive` + `transfer`; original producer/declaration/raw hashes/Close/journal retained; optional exact `preservation` parent |
+| Old 03/default | `sts2.p1/native-segments-1`; `segments`; projection `native-selector-finalized-d-1` or `native-input-v1` |
+| B* | `sts2.p1/native-targets-1`; `targets`; projection `native-timeline-targets-1`; timeline/effects/exclusions/masks retained |
+
+Both named formats have one `source` parent, exact source content/branch/run, fixed Tool/Core
+identity, `conversion_summary`, and derivation provenance. Select `(schema, projection)` to
+obtain the role; never silently read targets as segments. Old artifacts are immutable and are
+not automatically counted again when a newer view exists. Training selects/deduplicates explicit
+native decisions; consecutive points or a complete archive do not establish a complete P1 chain,
+replay conformance, Human origin, memory continuity or research admission.
+
+From `python/` of the exact installed checkout (absolute bindings below are placeholders):
 
 ```bash
-python -m spireagent.workbench recordings import-bundle --store /ABS/store --state /ABS/state --tool /ABS/collection-tools/RELEASE --tool-release RELEASE --bundle /ABS/sealed-bundle
-python -m spireagent.workbench recordings derive --store /ABS/store --state /ABS/state --tool /ABS/collection-tools/RELEASE --tool-release RELEASE --artifact ORIGINAL_ID --run-id run-0001 --projection native-selector-finalized-d-1
-python -m spireagent.workbench recordings list --store /ABS/store --state /ABS/state
-python -m spireagent.workbench recordings read --store /ABS/store --state /ABS/state --artifact PROJECTION_ID --output /ABS/segments.json
-python -m spireagent.workbench recordings reconcile --store /ABS/store --state /ABS/state
+python -m spireagent.workbench recordings import-bundle --store /ABS/store --state /ABS/state --tool /ABS/fixed-tool --tool-release RELEASE_ID --bundle /ABS/sealed-bundle
+python -m spireagent.workbench recordings derive --store /ABS/store --state /ABS/state --tool /ABS/fixed-tool --tool-release RELEASE_ID --artifact ORIGINAL_ID --projection native-timeline-targets-1
+python -m spireagent.workbench recordings read --store /ABS/store --state /ABS/state --artifact PROJECTION_ID --output /ABS/projection.json
+python -m spireagent.workbench recordings index --store /ABS/store --state /ABS/state --artifact PROJECTION_ID
+python -m spireagent.workbench recordings sources --store /ABS/store --state /ABS/state --filter 'character="DEFECT"' --filter ascension=0 --filter 'result="loss"'
+python -m spireagent.workbench recordings storage restore --store /ABS/store --state /ABS/state --peer s3 --artifact PRESERVATION_ID
 ```
 
-`reconcile` only reads the persisted operation intent and durable Store objects;
-it never retries publication. Failed reads leave the outcome unknown. A known
-absent publication is a failure; explicit resubmission is then possible.
-`import-bundle` can reuse an already preserved archive with
-`--preserved-manifest`, `--preserved-archive` and `--preserved-index`, checking the
-exact archive and original index bytes before binding their preservation parent.
+These operations were exercised on real sealed data, including an empty-local-Store R2 restore
+with every archive member hashed. Local `preserve`/`verify` and failure/reopen paths also have
+bounded fixtures; that does not qualify a new production cloud upload or unattended daily run.
+`import-bundle` accepts `--preserved-manifest`, `--preserved-archive`, `--preserved-index` to
+reuse an exact archive without repacking. `publish-projection` accepts an existing owner output
+via `--input`, `--expected-sha256`, `--derivation-receipt` and the same source/tool/projection flags;
+it checks full bytes/identity and publishes through the same core, avoiding a second conversion.
+The receipt binds source content, Tool release, output SHA/full readback and original diagnostics.
 
-The Python API is `spireagent.workbench.p1_recording_store`:
-`publish_p1_original`, `derive_p1_recording`, `query_p1_recordings`,
-`p1_projection`, and the temporary context `materialize_p1_original`.
-All use the existing `ManifestArtifactStore`. Originals retain the published
-P1 bundle schema, immutable archive/transfer payloads, original producer,
-origin declaration, raw file hashes and run journal. Named projections retain
-the existing native-segments schema and a `source` parent pointing to the exact
-original ID, plus tool release, core inventory, run and projection identity.
-The application names the converter's original default `native-input-v1`;
-`native-selector-finalized-d-1` uses its existing explicit selector option.
-The reader rejects unknown projections rather than treating them as segments.
+Storage actions are `preserve`, `restore`, `verify`, `reconcile`; peers are an explicit local
+Store directory or the environment-selected S3 Store. Receipts record exact IDs, non-secret
+location, full-member readback time and scratch/persistent/free-space budgets. An existing
+`preservation` parent can locate the same archive before its semantic wrapper is published remotely.
+`copy_artifact` transfers the exact parent closure and uses one payload temporary; materializing an
+original additionally needs compressed and expanded space. Neither path promises zero disk usage.
+Capacity checks live before the shared publication/copy/materialize, not only in the GUI.
 
-Read segments by obtaining `p1_projection(store, id)`, then
-`store.materialize(manifest.payload("segments"), destination)` or
-`store.read_payload(...)`. Conversion diagnostics remain in `conversion_summary`;
-segment masks, gap markers, external effects and original raw references remain
-in the converter output. Consecutive points do not claim complete P1 replay.
-Import does not imply Human proof or training admission. A later target projection
-requires its own declared supported schema; it must not replace an older artifact.
+`recordings reconcile` handles the saved import/derive/index intent;
+`recordings storage reconcile` reads the saved storage destination only. Neither retries a write.
+Known absence/incomplete data is saved as failure; transport/read uncertainty remains unknown.
+The same operation file retains maintenance policy, receipts and other unresolved native intents
+across CLI use and restart. Use a separate stopped state for offline writes: the running service
+holds its state lock, and its GUI/API use the same serial importer.
 
+Catalog indexing publishes a small analysis referencing the exact source/projection and payload
+SHA/event/public-basis evidence; it rewrites neither original nor supervision. Character/ascension
+come from available public facts; 03 results come from same-branch consistent segment end targets,
+B* from its explicit end target. Missing/conflicting facts remain unknown. JSON integer filters
+reject booleans; boolean filters reject integers. Seed/root/ancestry, language, mode or game version
+are not inferred from session names or an empty modifier list. This display/search metadata is not
+a split authority: the research consumer still requires its explicit immutable lineage contract.
 
-P1 control through the same running Application (from the same exact checkout/environment):
+Control still calls the same running Application:
 
 ```bash
-python -m spireagent.workbench project open --config /ABS/project.json
 python -m spireagent.workbench recordings control --config /ABS/project.json status
-python -m spireagent.workbench recordings control --config /ABS/project.json start --origin declared_human
-python -m spireagent.workbench recordings control --config /ABS/project.json close
+python -m spireagent.workbench recordings maintenance status --config /ABS/project.json
 ```
 
-Only use `start` or `close` when you intend to change collection. `pause`, `resume`
-and `prefix` are advanced collection operations and do not pause gameplay. Reopen
-`project open` with the same configuration after closing the browser or rebooting.
-Do not repeat setup, change the data root or restart the Recorder to refresh a page.
-The existing local catalog/search and cloud delivery pages remain the supported
-view/upload paths. Local archive preservation, a recorded remote backup receipt and
-current remote availability are distinct states; local import alone proves no cloud copy.
+`start --origin declared_human`, `close`, and advanced `pause`/`resume`/`prefix` intentionally
+change collection; they are not page refresh operations and collection pause does not pause the game.
+Reopen the same config after a browser close/reboot; do not repeat setup or restart Recorder.
+
+Maintenance defaults disabled. S3 enable requires an explicit candidate allowlist or a closed-time
+cutoff plus origin declarations. The existing `maintenance` entry supports `--candidate-id` and
+`--from-now --origin`; the GUI selects future sealed `declared_human` sources from service enable time.
+This is scope selection, not proof of Human origin. Each new dispatch rechecks the current policy,
+including a previously selected active job after policy change/restart; an in-flight/unknown original
+operation keeps its original intent and must be resolved before anything else. Excluded old/engineering
+sources do not get uploaded. Do not enable an entire recordings root to test a named permission.
+
+At the 2026-10-20 audit stop, the normal application is installed and maintenance remains disabled;
+full formal catalog→background cloud maintenance and recent-two-game hot-set cooling are not yet
+qualified. Cooling needs exact recoverability, consumer release and named authorization; this code
+does not delete original/history or stop a user's game. P1-aware initialization of the same existing
+CurationOwner is also pending: preserve-only P1 data must not be forced through legacy
+ResearchTransition preview or silently adopted into a second ledger. Actual populations remain
+unassigned until lineage/use facts and deliberate admission are present.
