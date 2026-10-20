@@ -35,6 +35,8 @@ secrets = [modal.Secret.from_name(target.storage_secret_name)]
     image=image,
     gpu=None if target.gpu == "none" else target.gpu,
     timeout=target.timeout_seconds,
+    cpu=(target.cpu_cores, target.cpu_cores),
+    memory=(target.memory_mib, target.memory_mib),
     max_containers=1,
     min_containers=0,
     retries=0,
