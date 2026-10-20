@@ -16,7 +16,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from sts2_platform_evidence.collection_tool import CollectionTool
+from sts2_platform_evidence.collection_tool import P1_NATIVE_SUPPORT, CollectionTool
 
 from spireagent.json_boundary import BoundaryError
 from spireagent.workbench.collection_tool_registration import (
@@ -113,6 +113,9 @@ def _closed_session(directory: Path) -> dict[str, Any] | None:
     if manifest is None:
         return None
     source3 = manifest.get("schema") == SOURCE3_MANIFEST
+    p1 = manifest.get("capture_profile_id") == P1_NATIVE_SUPPORT["source_profile"]
+    if "p1_native_schema_version" in manifest and not p1:
+        return None
     close_bytes = _read_regular_metadata(directory / (
         "source-close-receipt.json" if source3 else "session-close-receipt.json"))
     close = _json_object(close_bytes)
@@ -143,6 +146,18 @@ def _closed_session(directory: Path) -> dict[str, Any] | None:
         or re.fullmatch(r"[0-9a-f]{40}", str(manifest.get("recorder_source_revision", ""))) is None
     ):
         return None
+    p1_close_bytes = _read_regular_metadata(directory / "p1-native-close.json") if p1 else None
+    p1_close = _json_object(p1_close_bytes) if p1 else None
+    if p1 and (
+        manifest.get("p1_native_schema_version") != 1
+        or manifest.get("p1_native_origin") not in {"declared_human", "agent_native_ui", "unknown"}
+        or p1_close is None
+        or p1_close.get("schema") != "sts2.human-annotator/p1-native-close-1"
+        or p1_close.get("session_id") != session_id
+        or p1_close.get("timeline_id") != timeline_id
+        or re.fullmatch(r"[0-9a-f]{40}", str(manifest.get("recorder_source_revision", ""))) is None
+    ):
+        return None
     return {
         "session_id": session_id,
         "timeline_id": timeline_id,
@@ -150,6 +165,10 @@ def _closed_session(directory: Path) -> dict[str, Any] | None:
             "source_profile": SOURCE3_PROFILE,
             "recorder_source_revision": manifest["recorder_source_revision"]}
            if source3 else {"closed_at": closed_at[:64], "recording_type": "legacy_human"}),
+        **({"recording_type": "p1_native", "source_profile": P1_NATIVE_SUPPORT["source_profile"],
+            "declared_origin": manifest["p1_native_origin"],
+            "recorder_source_revision": manifest["recorder_source_revision"],
+            "p1_close_sha256": _sha256(p1_close_bytes or b"")} if p1 else {}),
         "manifest_sha256": _sha256(manifest_bytes or b""),
         "close_sha256": _sha256(close_bytes or b""),
     }
@@ -222,6 +241,7 @@ class LocalRecordingCatalog:
 
         try:
             source3_supported = getattr(tool, "supports_source_v3", lambda: False)() is True
+            p1_supported = getattr(tool, "supports_p1_native", lambda: False)() is True
         except (OSError, ValueError, TypeError, RuntimeError):
             return self._result(status="tool_unavailable", observed_at=observed_at,
                                 error_code="collection_tool_registration_unavailable")
@@ -229,6 +249,7 @@ class LocalRecordingCatalog:
             candidates, unsealed, truncated = self._scan(
                 root, tool_release_id=release_id,
                 source3_supported=source3_supported,
+                p1_supported=p1_supported,
             )
         except OSError:
             return self._result(
@@ -307,7 +328,8 @@ class LocalRecordingCatalog:
         return None, None
 
     def _scan(self, root: Path, *, tool_release_id: str | None = None,
-              source3_supported: bool = False) -> tuple[list[dict[str, Any]], int, bool]:
+              source3_supported: bool = False,
+              p1_supported: bool = False) -> tuple[list[dict[str, Any]], int, bool]:
         candidates: list[dict[str, Any]] = []
         unsealed = 0
         truncated = False
@@ -336,8 +358,10 @@ class LocalRecordingCatalog:
                 material = "\0".join((str(root), entry.name,
                                        metadata["manifest_sha256"],
                                        metadata["close_sha256"]))
-                if metadata["recording_type"] == "source3":
+                if metadata["recording_type"] in {"source3", "p1_native"}:
                     material += "\0" + str(tool_release_id)
+                if metadata["recording_type"] == "p1_native":
+                    material += "\0" + metadata["p1_close_sha256"]
                 candidate_id = _sha256(material.encode("utf-8"))
                 server_value = {
                     "recordings_root": root,
@@ -345,6 +369,8 @@ class LocalRecordingCatalog:
                     "tool_release_id": tool_release_id,
                     **({"source3_tool_supported": source3_supported}
                        if metadata["recording_type"] == "source3" else {}),
+                    **({"p1_tool_supported": p1_supported}
+                       if metadata["recording_type"] == "p1_native" else {}),
                     **metadata,
                 }
                 candidates.append({
@@ -358,6 +384,10 @@ class LocalRecordingCatalog:
                         "import_reason": (None if source3_supported
                                           else "source3_tool_support_required")}
                        if metadata["recording_type"] == "source3" else {}),
+                    **({"import_supported": p1_supported,
+                        "declared_origin": metadata["declared_origin"],
+                        "import_reason": None if p1_supported else "p1_tool_support_required"}
+                       if metadata["recording_type"] == "p1_native" else {}),
                     "state": "close_metadata_present_pending_bundle_verification",
                     "_server": server_value,
                 })

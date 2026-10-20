@@ -164,7 +164,8 @@ class ManifestArtifactStore:
             temporary.unlink(missing_ok=True)
 
 
-def copy_artifact(source: ArtifactStore, target: ArtifactStore, artifact_id: str) -> str:
+def copy_artifact(source: ArtifactStore, target: ArtifactStore, artifact_id: str, *,
+                  scratch: Path | None = None) -> str:
     """Copy an exact lineage closure, publishing every manifest after its parents/bytes."""
     visited: set[str] = set()
     visiting: set[str] = set()
@@ -189,7 +190,7 @@ def copy_artifact(source: ArtifactStore, target: ArtifactStore, artifact_id: str
             except StoreError as error:
                 if error.code != "object_not_found":
                     raise
-            with tempfile.TemporaryFile("w+b") as handle:
+            with tempfile.TemporaryFile("w+b", dir=scratch) as handle:
                 for chunk in source.read_payload(payload):
                     handle.write(chunk)
                 handle.seek(0)

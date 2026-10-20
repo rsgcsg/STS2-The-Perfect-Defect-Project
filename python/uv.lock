@@ -1204,7 +1204,7 @@ wheels = [
 [[package]]
 name = "rsgcsg-sts2-platform-evidence"
 version = "0.1.0rc31"
-source = { git = "https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project.git?subdirectory=components%2Fevidence&rev=c60c3691fe45590a12eb10ff99a130b2903c6623#c60c3691fe45590a12eb10ff99a130b2903c6623" }
+source = { git = "https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project.git?subdirectory=components%2Fevidence&rev=9a636b0997dc2b80b07dd239418098fba804d144#9a636b0997dc2b80b07dd239418098fba804d144" }
 
 [[package]]
 name = "ruff"
@@ -1372,7 +1372,7 @@ requires-dist = [
     { name = "pyarrow", specifier = ">=18,<24" },
     { name = "pyjwt", extras = ["crypto"], marker = "extra == 'cloud'", specifier = ">=2.10,<3" },
     { name = "python-dotenv", marker = "extra == 'cloud'", specifier = ">=1.1,<2" },
-    { name = "rsgcsg-sts2-platform-evidence", git = "https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project.git?subdirectory=components%2Fevidence&rev=c60c3691fe45590a12eb10ff99a130b2903c6623" },
+    { name = "rsgcsg-sts2-platform-evidence", git = "https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project.git?subdirectory=components%2Fevidence&rev=9a636b0997dc2b80b07dd239418098fba804d144" },
     { name = "safetensors", marker = "extra == 'l2'", specifier = ">=0.5,<1" },
     { name = "safetensors", marker = "extra == 'local-models'", specifier = ">=0.5,<1" },
     { name = "tokenizers", marker = "extra == 'l1'", specifier = ">=0.21,<1" },
