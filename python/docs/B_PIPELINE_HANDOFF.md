@@ -613,6 +613,11 @@ does not delete original/history or stop a user's game. P1-aware initialization 
 CurationOwner is also pending: preserve-only P1 data must not be forced through legacy
 ResearchTransition preview or silently adopted into a second ledger. Actual populations remain
 unassigned until lineage/use facts and deliberate admission are present.
+The current preparation now indexes verified named P1 eligible-N projections through this same
+owner, without claiming complete raw inventory or allocating a purpose. See the current
+[Store/R2 operations](DATA_LIFECYCLE.md#daily-p1-store-and-r2-operations) and
+[private Curation recovery](DATA_LIFECYCLE.md#private-curation-ledger-recovery); the historical
+10-20 pending statement above is not an instruction to create another owner.
 
 
 ### 固定Tool与选定Host上下文
@@ -621,4 +626,4 @@ unassigned until lineage/use facts and deliberate admission are present.
 
 非GUI只读目录入口为`LocalRecordingCatalog(ProjectConfig.load(config_path)).read()`；它只观察当前固定Tool/原生owner、封存元数据及未封目录，不pack、复制raw、发送录制命令或赋予Human/研究资格。正常安装的2fa3723d已实际返回ready/current_runtime/33候选/3未封；Evidence精确来源8682d7e7，Tool为d25c0ab1。当前正常服务后台维护保持disabled。
 
-训练CLI/control-client缺口仍未关闭：`LocalTrainingService`必须由长期Application持有；当前训练HTTP只有浏览器鉴权，不能把短-lived库脚本当正常训练客户端。原owner下一段应沿同control_client接现start/status/pause/resume/cancel/reconcile等方法并保校验与失败语义；不复制worker或新控制器。
+当前源码已沿同一个长期Application和`LocalTrainingService`提供受支持的[非GUI训练控制](PROJECT_CONSOLE.md#non-gui-training-control)：`python -m spireagent.workbench training --help`。CLI与GUI调用同一任务状态和原有权限、预算、Stop/恢复owner；关闭客户端不丢任务，unknown不自动重投。当前服务只声明local CPU，GPU须由实际支持的执行owner接通。2026-10-21开发配置已实际走通start/status/pause/同Run resume/completed/reconcile及cancel保unknown；原固定安装2fa3723d未升级，不能把源码/隔离运行证据当该安装已支持新路由。
