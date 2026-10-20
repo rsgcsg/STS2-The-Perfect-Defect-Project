@@ -7,8 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from spireagent.json_boundary import BoundaryError, object_fields
-from spireagent.policy_files import _object_file
-from spireagent.workbench.native_agent_support import _bound_path
+from spireagent.policy_files import _object_file, bound_path
 
 ADAPTER = "stpd-native-public-program-teacher"
 PROFILE = "native-logical-v1"
@@ -21,8 +20,8 @@ def validate(
     from stpd.policy.native_teacher_agent import NativeTeacherAgent
 
     owner = (binding_root or root).resolve()
-    config_path = _bound_path(owner, config_path)
-    manifest_path = _bound_path(owner, manifest_path)
+    config_path = bound_path(owner, config_path, stage="native_agent_support")
+    manifest_path = bound_path(owner, manifest_path, stage="native_agent_support")
     config = object_fields(
         _object_file(config_path),
         {"schema", "artifact_path", "artifact_sha256"},
@@ -30,7 +29,7 @@ def validate(
     )
     if config["schema"] != CONFIG_SCHEMA:
         raise BoundaryError("native_teacher_support", "unsupported_installation")
-    artifact_path = _bound_path(owner, Path(config["artifact_path"]))
+    artifact_path = bound_path(owner, Path(config["artifact_path"]), stage="native_agent_support")
     descriptor = _object_file(artifact_path)
     manifest = _object_file(manifest_path)
     if (
@@ -97,7 +96,7 @@ def original_artifact(
 ) -> tuple[bytes, dict[str, Any]]:
     from spireagent.json_boundary import decode_json
 
-    path = _bound_path(owner, Path(config["artifact_path"]))
+    path = bound_path(owner, Path(config["artifact_path"]), stage="native_agent_support")
     with path.open("rb") as handle:
         raw = handle.read(1024 * 1024 + 1)
     if len(raw) > 1024 * 1024:

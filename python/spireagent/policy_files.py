@@ -41,3 +41,19 @@ def _inside(root: Path, relative: object) -> Path:
     if not path.is_relative_to(root.resolve()):
         raise BoundaryError("local_model", "invalid_registry_path")
     return path
+
+
+def bound_path(owner: Path, path: Path, *, stage: str) -> Path:
+    """Resolve a binding inside its owner without accepting symlink segments.
+
+    Keep the caller's existing failure stage; this checks files, not Agent type
+    or application state. Missing destinations remain valid for binding writes.
+    """
+    relative = path.relative_to(owner)
+    checked = _inside(owner, relative.as_posix())
+    current = owner
+    for part in relative.parts:
+        current /= part
+        if current.is_symlink():
+            raise BoundaryError(stage, "unsafe_binding_path")
+    return checked

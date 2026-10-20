@@ -5,10 +5,9 @@ import hashlib
 from pathlib import Path
 
 from spireagent.json_boundary import BoundaryError, object_fields
-from spireagent.policy_files import _object_file
+from spireagent.policy_files import _object_file, bound_path
 
 from .global_program_agent import adapter_identity, descriptor
-from .native_agent_support import _bound_path
 
 PROFILE = "p1-global-r1"
 CONFIG_SCHEMA = "spireagent/global-public-program-installation-1"
@@ -16,10 +15,12 @@ CONFIG_SCHEMA = "spireagent/global-public-program-installation-1"
 
 def validate(root, config_path, manifest_path, *, binding_root=None):
     owner = (binding_root or root).resolve()
-    config = object_fields(_object_file(_bound_path(owner, config_path)),
-                           {"schema", "artifact_path", "artifact_sha256"}, "global_program")
+    config = object_fields(
+        _object_file(bound_path(owner, config_path, stage="native_agent_support")),
+        {"schema", "artifact_path", "artifact_sha256"}, "global_program",
+    )
     raw, original = original_artifact(
-        owner, config, _object_file(_bound_path(owner, manifest_path))
+        owner, config, _object_file(bound_path(owner, manifest_path, stage="native_agent_support"))
     )
     manifest = _object_file(manifest_path)
     if (
@@ -45,7 +46,7 @@ def arguments(entry):
 
 
 def original_artifact(owner, config, manifest):
-    path = _bound_path(owner, Path(config["artifact_path"]))
+    path = bound_path(owner, Path(config["artifact_path"]), stage="native_agent_support")
     if path.stat().st_size > 1024 * 1024:
         raise BoundaryError("global_program", "artifact_over_limit")
     raw = path.read_bytes()

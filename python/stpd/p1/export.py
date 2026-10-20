@@ -30,6 +30,9 @@ def adapter_identity() -> dict[str, str]:
     closure["checkpoint_codec.py"] = digest(
         (root.parent / "workers/checkpoint_codec.py").read_bytes()
     )
+    platform = root.parent.parent / "spireagent"
+    for name in ("policy_files.py", "json_boundary.py"):
+        closure["spireagent/" + name] = digest((platform / name).read_bytes())
     return {
         "id": ADAPTER,
         "version": "1",

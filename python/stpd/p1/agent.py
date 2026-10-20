@@ -21,12 +21,11 @@ SCHEMA = "sts2.policy-runtime/agent-session-1"
 def installation(
     config_path: Path, manifest_path: Path, owner: Path
 ) -> tuple[dict[str, Any], dict[str, Any], MStd, dict[str, Any]]:
-    from spireagent.policy_files import _object_file
-    from spireagent.workbench.native_agent_support import _bound_path
+    from spireagent.policy_files import _object_file, bound_path
 
-    config = _object_file(_bound_path(owner, config_path))
-    manifest = _object_file(_bound_path(owner, manifest_path))
-    path = _bound_path(owner, Path(config["package_path"]))
+    config = _object_file(bound_path(owner, config_path, stage="native_agent_support"))
+    manifest = _object_file(bound_path(owner, manifest_path, stage="native_agent_support"))
+    path = bound_path(owner, Path(config["package_path"]), stage="native_agent_support")
     model, payload = load_model(path, config["package_sha256"])
     expected_artifact = {
         "id": config["package_sha256"],
