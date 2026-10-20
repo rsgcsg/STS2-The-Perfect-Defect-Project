@@ -106,6 +106,77 @@ function recording(identity, bytes) {
   return { events, journal, accepted, terminal, issues, pending: pending.size, executionSchemaVersion };
 }
 
+// The fixed reader independently verifies the offline recovery receipt. A pack
+// checksum proves bytes, not that a recovered suffix contains only unknowns.
+function verifyP1Recovery(rawHashes, bytes, events, journal) {
+  const schema = 'sts2.human-annotator/interrupted-recovery-1';
+  const marker = journal.some(row => row.kind === 'recording_interrupted')
+    || events.some(row => row.reason === 'process_interrupted');
+  if (!Object.hasOwn(rawHashes, 'recording-recovery.json')) {
+    require(!marker, 'recovery_receipt_missing'); return null;
+  }
+  const receipt = JSON.parse(text(bytes('recording-recovery.json')));
+  const manifest = JSON.parse(text(bytes('recording-manifest.json')));
+  const close = JSON.parse(text(bytes('session-close-receipt.json')));
+  const originals = receipt.original_files;
+  require(manifest.recovery_schema_version === 1 && manifest.close_schema_version === 1
+    && receipt.schema === schema && receipt.disposition === 'interrupted_partial'
+    && close.recovery === schema && object(originals), 'recovery_identity');
+  const canonical = value => Array.isArray(value) ? `[${value.map(canonical).join(',')}]`
+    : object(value) ? `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${canonical(value[key])}`).join(',')}}`
+      : JSON.stringify(value);
+  const inventoryDigest = hash(Buffer.from(canonical(originals)));
+  require(receipt.original_inventory_sha256 === inventoryDigest, 'recovery_inventory_digest');
+  require(!['recording-recovery.json', 'session-close-receipt.json', 'p1-native-close.json']
+    .some(name => Object.hasOwn(originals, name)), 'recovery_original_already_sealed');
+  require(sameKeys(Object.keys(rawHashes), [...Object.keys(originals),
+    'recording-recovery.json', 'session-close-receipt.json', 'p1-native-close.json']), 'recovery_inventory_membership');
+  const mutable = new Set(['run-journal.jsonl', 'p1-native-events.jsonl']);
+  for (const [name, original] of Object.entries(originals)) {
+    safePath(name);
+    require(object(original) && Number.isSafeInteger(original.bytes) && original.bytes >= 0
+      && digest(original.sha256), 'recovery_original_inventory');
+    const value = bytes(name);
+    require(value.length >= original.bytes && hash(value.subarray(0, original.bytes)) === original.sha256
+      && (mutable.has(name) || value.length === original.bytes), 'recovery_original_prefix_changed');
+  }
+  function suffix(name) {
+    require(Object.hasOwn(originals, name), 'recovery_stream_original_required');
+    const value = bytes(name), offset = originals[name].bytes;
+    require(offset === 0 || value[offset - 1] === 10, 'recovery_original_partial_line');
+    const content = text(value.subarray(offset));
+    if (!content) return [];
+    const lines = content.split('\n'); require(lines.pop() === '', 'recovery_suffix_partial_line');
+    return lines.map(line => JSON.parse(line));
+  }
+  const added = suffix('p1-native-events.jsonl'), addedJournal = suffix('run-journal.jsonl');
+  const originalEvents = events.slice(0, events.length - added.length), pending = new Map();
+  for (const row of originalEvents) {
+    if (row.kind === 'decision_accepted') pending.set(row.action_witness_id, row);
+    if (row.kind === 'lifecycle' && ['finished', 'cancelled', 'aborted', 'unknown'].includes(row.phase))
+      pending.delete(row.action_witness_id);
+  }
+  const fields = ['schema', 'sequence', 'session_id', 'timeline_id', 'event_id', 'recorded_at',
+    'kind', 'run_id', 'decision_id', 'action_witness_id', 'phase', 'reason', 'successor_basis', 'successor_missing_reason'];
+  require(added.length === pending.size && receipt.p1_unknowns_added === pending.size
+    && receipt.unknowns_added === 0, 'recovery_unknown_accounting');
+  for (const row of added) {
+    const accepted = pending.get(row.action_witness_id);
+    require(sameKeys(Object.keys(row), fields) && accepted && row.kind === 'lifecycle'
+      && row.phase === 'unknown' && row.reason === 'process_interrupted' && row.successor_basis === null
+      && row.successor_missing_reason === 'native_terminal_unobserved'
+      && row.decision_id === accepted.decision_id && row.run_id === accepted.run_id,
+    'recovery_suffix_not_unknown_only');
+    pending.delete(row.action_witness_id);
+  }
+  require(pending.size === 0 && addedJournal.length === 2
+    && addedJournal[0].kind === 'recording_interrupted' && addedJournal[1].kind === 'session_closed'
+    && addedJournal[0].detail === `Offline recovery of immutable source inventory ${inventoryDigest}`
+    && journal.filter(row => row.kind === 'session_closed').length === 1, 'recovery_journal_suffix');
+  return { schema, disposition: receipt.disposition, original_inventory_sha256: inventoryDigest,
+    p1_unknowns_added: added.length };
+}
+
 export function readVerifiedP1NativeBundle(bundlePath) {
   const bundle = realpathSync(resolve(bundlePath));
   require(lstatSync(bundle).isDirectory(), 'directory_required');
@@ -178,9 +249,10 @@ export function readVerifiedP1NativeBundle(bundlePath) {
   require(close.event_count === events.length && close.accepted_count === accepted
     && close.terminal_count === terminal && close.pending_count === pending && pending === 0
     && close.issue_count === issues, 'closed_stream_accounting');
+  const recovery = verifyP1Recovery(rawHashes, bytes, events, journal);
   // The producer's declared origin and explicit attestation remain in manifest;
   // neither attested=true nor a closed file upgrades them to machine-proven Human data.
-  return { bundle, manifest, events, journal, bytes, executionSchemaVersion,
+  return { bundle, manifest, events, journal, bytes, executionSchemaVersion, recovery,
     verifiedManifestSha256: hash(checked('session-bundle-manifest.json')) };
 }
 

@@ -660,10 +660,18 @@ It preserves the original directory and builds a separate staged copy. A receipt
 `sts2.human-annotator/interrupted-recovery-1` binds every original relative file's
 byte length and SHA-256, their canonical inventory digest, and an interrupted
 partial disposition. Only missing accepted-action terminals may be appended, as
-`transition_unknown` / `process_interrupted`; no successor or native completion
-is invented. The journal gains `recording_interrupted` and one final close.
-The normal auditor and independent Evidence verifier check original byte prefixes,
-unchanged other files, exact inventory and unknown-only suffix. Only a passing
+`transition_unknown` / `process_interrupted` in the canonical profile. For
+`p1_native_schema_version=1`, the same recovery owner preserves the original
+`p1-native-events.jsonl` prefix and appends only bound lifecycle
+`unknown` with `reason=process_interrupted`, no successor, and exact
+`p1_unknowns_added` accounting. It writes `p1-native-close.json` after the
+recovered journal is sealed, with the real event/accepted/terminal/issue counts
+and hashes of both streams. Mixed canonical/P1 trace recovery and an already
+sealed P1 stream remain incidents. No successor or native completion is invented.
+The journal gains `recording_interrupted` and one final close.
+The canonical auditor/Evidence verifier and the P1 audit/fixed Node reader
+check original byte prefixes, unchanged other files, exact inventory and
+unknown-only suffix within their declared formats. Only a passing
 copy is atomically published for delivery. Torn/corrupt streams remain incidents.
 A live lease, duplicate recovery or historical session without this ownership
 contract is never automatically repaired. Session-local run IDs remain unchanged.

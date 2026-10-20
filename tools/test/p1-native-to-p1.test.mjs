@@ -1139,6 +1139,9 @@ test('same-branch natural end is a separate target and resume evidence withholds
   report.blocking_issues.push({ decision_id: 'not-recorded-choice', reason: 'basis_missing' });
   let targets = buildNativeP1Targets(input);
   assert.equal(targets.end_target.result, 'win');
+  source.recovery = { disposition: 'interrupted_partial' };
+  assert.equal(buildNativeP1Targets(input).end_target, null);
+  delete source.recovery;
   assert.ok(targets.points.every(point => point.mask.end));
   assert.ok(targets.edges.every(edge => !edge.eligible));
   assert.equal(targets.p1_action_chain_complete, false);

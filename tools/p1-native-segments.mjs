@@ -50,8 +50,8 @@ export function buildNativeP1Segments({ source, report, successful, boundaries, 
     run_id: report.scope.run_id };
   const terminalCapture = report.captures.findLast(item => item.complete && item.observation?.status === 'terminal');
   const journal = source.journal.filter(row => row.run_id === report.scope.run_id);
-  const endProven = terminalCapture && journal.filter(row => row.kind === 'run_ended_native').length === 1
-    && !journal.some(row => ['run_resumed_native', 'run_abandoned_native', 'run_ended_unproved'].includes(row.kind));
+  const endProven = !source.recovery && terminalCapture && journal.filter(row => row.kind === 'run_ended_native').length === 1
+    && !journal.some(row => ['run_resumed_native', 'run_abandoned_native', 'run_ended_unproved', 'recording_interrupted'].includes(row.kind));
   const endTarget = endProven ? { branch, source_event_id: terminalCapture.event_id,
     source_public_basis: terminalCapture.public_basis,
     result: terminalCapture.observation.scene.content.context?.result ?? null } : null;

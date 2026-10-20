@@ -70,6 +70,70 @@ public sealed class P1NativeRecordingTests
         finally { if (exported == null) Directory.Delete(root, true); }
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void InterruptedP1RecoveryKeepsOriginalPrefixAndOnlyClosesTheUnknownTail(bool torn)
+    {
+        string? exported = torn ? null : Environment.GetEnvironmentVariable("STS2_P1_RECOVERY_FIXTURE_OUT");
+        string root = exported ?? Path.Combine(Path.GetTempPath(), "p1-recovery-" + Guid.NewGuid().ToString("N"));
+        string recordings = Path.Combine(root, "recordings"), recovered = Path.Combine(root, "recovered-by-test");
+        Directory.CreateDirectory(recordings);
+        try
+        {
+            var manifest = Manifest() with { RecoverySchemaVersion = 1, ContinuousSchemaVersion = 1 };
+            string directory; byte[] originalEvents, originalJournal;
+            using (var store = RecordingSessionStore.Create(recordings, manifest, P1NativeRecordingContract.Profile))
+            {
+                directory = store.DirectoryPath; byte[] bytes = Basis(); var value = JsonNode.Parse(bytes)!;
+                string snapshot = value["snapshot"]!["snapshot_id"]!.GetValue<string>();
+                var basis = store.PersistP1NativeBasis(snapshot, bytes);
+                store.AppendRunEvent(new(2, CurrentRecordingContract.RunJournalSchema, "recovery-journal-1", manifest.SessionId,
+                    "run-synthetic", manifest.TimelineId, 1, DateTimeOffset.UtcNow, "run_observed_in_progress", null, snapshot,
+                    "Synthetic interrupted recording, not Human or native game evidence."));
+                var actions = value["snapshot"]!["bound_actions"]!["actions"]!.AsArray();
+                store.AppendP1NativeEvent(Decision(basis, actions.First(a => a!["verb"]!.GetValue<string>() == "play")!, "play"));
+                store.AppendP1NativeEvent(new JsonObject { ["kind"] = "lifecycle", ["run_id"] = "run-synthetic",
+                    ["decision_id"] = "decision-play", ["action_witness_id"] = "play", ["phase"] = "finished",
+                    ["successor_basis"] = JsonSerializer.SerializeToNode(basis, EvidenceJson.Options) });
+                store.AppendP1NativeEvent(Decision(basis, actions.First(a => a!["verb"]!.GetValue<string>() == "end_turn")!, "end"));
+                store.ExportP1NativePrefix(); // The normal writer's durable flush; no invented bytes.
+                originalEvents = File.ReadAllBytes(Path.Combine(directory, P1NativeRecordingContract.EventFile));
+                originalJournal = File.ReadAllBytes(Path.Combine(directory, "run-journal.jsonl"));
+                var busy = JsonSerializer.SerializeToElement(InterruptedRecordingRecovery.RecoverOne(recordings, recovered));
+                Assert.Equal(1, busy.GetProperty("busy").GetInt32());
+            }
+            // Simulate process loss between durable append and Close without
+            // relying on Dispose's graceful unknown closure as crash evidence.
+            File.WriteAllBytes(Path.Combine(directory, P1NativeRecordingContract.EventFile), originalEvents);
+            File.WriteAllBytes(Path.Combine(directory, "run-journal.jsonl"), originalJournal);
+            File.Delete(Path.Combine(directory, P1NativeRecordingContract.CloseFile));
+            File.Delete(Path.Combine(directory, "session-close-receipt.json"));
+            if (torn) File.AppendAllText(Path.Combine(directory, P1NativeRecordingContract.EventFile), "{\"kind\":");
+            var before = Directory.GetFiles(directory, "*", SearchOption.AllDirectories).ToDictionary(p => p, EvidenceIdentity.Sha256File);
+            var result = JsonSerializer.SerializeToElement(InterruptedRecordingRecovery.RecoverOne(recordings, recovered));
+            foreach (var (path, hash) in before) Assert.Equal(hash, EvidenceIdentity.Sha256File(path));
+            Assert.Equal(torn ? "incident" : "recovered", result.GetProperty("status").GetString());
+            if (torn) { Assert.Empty(Directory.GetDirectories(recovered, "recovered-*")); return; }
+            string copy = Assert.Single(Directory.GetDirectories(recovered, "recovered-*"));
+            var rows = File.ReadAllLines(Path.Combine(copy, P1NativeRecordingContract.EventFile)).Select(line => JsonNode.Parse(line)!).ToArray();
+            Assert.Equal(4, rows.Length); Assert.Equal("unknown", rows[3]["phase"]!.GetValue<string>());
+            Assert.Equal("process_interrupted", rows[3]["reason"]!.GetValue<string>()); Assert.Null(rows[3]["successor_basis"]);
+            Assert.Equal("pass", P1NativeSessionBundlePacker.Audit(copy).Status);
+            var packed = P1NativeSessionBundlePacker.Pack(copy, "synthetic-recovery", "p1-recovery-fixture", Path.Combine(root, "bundles-by-test"), new string('b', 40));
+            if (exported != null) File.WriteAllText(Path.Combine(root, "recovery-fixture-result.json"), JsonSerializer.Serialize(new {
+                source = directory, recovered = copy, bundle = packed.BundleDirectory }, EvidenceJson.IndentedOptions));
+            // Even a resealed stream hash cannot promote the offline tail to success.
+            string eventFile = Path.Combine(copy, P1NativeRecordingContract.EventFile);
+            File.WriteAllText(eventFile, File.ReadAllText(eventFile).Replace("\"phase\":\"unknown\"", "\"phase\":\"finished\""));
+            var closePath = Path.Combine(copy, P1NativeRecordingContract.CloseFile);
+            var close = JsonNode.Parse(File.ReadAllText(closePath))!;
+            close["events_sha256"] = EvidenceIdentity.Sha256File(eventFile); File.WriteAllText(closePath, close.ToJsonString());
+            Assert.Contains("recording_recovery_invalid", P1NativeSessionBundlePacker.Audit(copy).Errors);
+        }
+        finally { if (exported == null && Directory.Exists(root)) Directory.Delete(root, true); }
+    }
+
     [Fact]
     public void AnUndeclaredLegacyTextInputAppendStillPermanentlyPreventsSuccessfulP1Close()
     {
