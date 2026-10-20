@@ -11,13 +11,15 @@ namespace STS2HumanAnnotator.SourceNative.Tests;
 public sealed class P1NativeScopeInputsTests
 {
     private static ProcessLocalNativeWitnessFrame Frame(string status = "settling", bool external = false,
-        bool hidden = false, string captureStatus = "complete", object? point = null)
+        bool hidden = false, string captureStatus = "complete", object? point = null,
+        string? interaction = null, string? contextKind = null)
     {
         PlayerEnvironmentBoundAction[] actions = point == null ? [] :
             [new("current-S-bound", "activate", "current-map", "exact-point", Array.Empty<PlayerEnvironmentBoundActionArgument>(), "Choose point")];
         var snapshot = new PlayerEnvironmentSnapshot("1.0.0", PlayerEnvironmentContract.SnapshotSchema,
             "current-S", 1, DateTimeOffset.UnixEpoch, status, null,
-            new("current-owner", point == null ? "combat_turn" : "map_navigation", status, null, "surface", new(new JsonObject(), new JsonObject()),
+            new("current-owner", interaction ?? (point == null ? "combat_turn" : "map_navigation"), status, null, "surface",
+                new(new JsonObject(), new JsonObject { ["kind"] = contextKind }),
                 Array.Empty<PlayerEnvironmentInteractionCapability>()), Array.Empty<PlayerEnvironmentReferent>(),
             new("sts2.player-environment/bound-actions-1", "complete", actions.Length, actions.Length, 512, "native", actions),
             Array.Empty<PlayerEnvironmentReadOpportunity>(), new("complete", "complete", "native", Array.Empty<string>(), Array.Empty<string>()),
@@ -47,6 +49,31 @@ public sealed class P1NativeScopeInputsTests
         Assert.Equal("end_turn|-|", accepted.NativeInput!.ActionKey); Assert.Null(accepted.NativeInput.SubjectReferentId);
         Assert.Empty(h.Snapshot.BoundActions.Actions); // Source retention grants no delivery authority.
         Assert.Equal("settling", h.Snapshot.Status);
+    }
+
+    [Fact]
+    public void CompleteCombatSourceBehindPotionPopupKeepsExactNativeInputWithoutPublicDelivery()
+    {
+        // Rolling01 had complete popup context, but the input is accepted by
+        // the combat owner. The popup catalog need not advertise that gesture.
+        var frame = Frame("interactive", interaction: "potion_popup", contextKind: "combat");
+        var end = new ProcessLocalObservedAction("end_turn", null, new Dictionary<string, object>());
+        object card = new(); var play = new ProcessLocalObservedAction("play", card, new Dictionary<string, object>());
+        Assert.True(P1NativeScopeInputs.CanRetainCombatSource(frame, Array.Empty<string>()));
+        Assert.True(P1NativeScopeInputs.CanRetainQueuedEndTurn("EndPlayerTurnAction", end, frame, Array.Empty<string>()));
+        Assert.Equal("exact_native_input", frame.ResolveAcceptedInput(end, end).Status);
+        Assert.Equal("exact_native_input", frame.ResolveAcceptedInput(play, play).Status);
+        Assert.Null(P1NativeScopeInputs.CurrentPublicAction(frame, end));
+        Assert.Null(P1NativeScopeInputs.CurrentPublicAction(frame, play));
+        Assert.Empty(frame.Snapshot.BoundActions.Actions);
+        foreach (var invalid in new[] {
+            Frame(interaction: "potion_popup", contextKind: "map"),
+            Frame(interaction: "potion_popup"), Frame(interaction: "event_option", contextKind: "combat"),
+            Frame(interaction: "potion_popup", contextKind: "combat", hidden: true),
+            Frame(interaction: "potion_popup", contextKind: "combat", external: true),
+            Frame(interaction: "potion_popup", contextKind: "combat", captureStatus: "partial") })
+            Assert.False(P1NativeScopeInputs.CanRetainCombatSource(invalid, Array.Empty<string>()));
+        Assert.False(P1NativeScopeInputs.CanRetainCombatSource(frame, new[] { "required_read_evidence_unavailable" }));
     }
 
     [Fact]

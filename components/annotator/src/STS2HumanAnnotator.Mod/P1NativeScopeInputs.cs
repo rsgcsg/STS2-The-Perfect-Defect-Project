@@ -18,7 +18,14 @@ internal static class P1NativeScopeInputs
     internal static bool CanRetainQueuedEndTurn(string nativeType, ProcessLocalObservedAction? expected,
         ProcessLocalNativeWitnessFrame frame, IReadOnlyList<string> semanticBlockers) =>
         nativeType == "EndPlayerTurnAction" && IsEndTurn(expected)
-        && frame.Snapshot.Interaction.Kind == "combat_turn" && !frame.ExternalControllerActive
+        && CanRetainCombatSource(frame, semanticBlockers);
+
+    internal static bool CanRetainCombatSource(ProcessLocalNativeWitnessFrame frame,
+        IReadOnlyList<string> semanticBlockers) =>
+        (frame.Snapshot.Interaction.Kind == "combat_turn"
+            || frame.Snapshot.Interaction.Kind == "potion_popup"
+                && frame.Snapshot.Interaction.Content.Context["kind"]?.GetValue<string>() == "combat")
+        && !frame.ExternalControllerActive
         && !frame.Snapshot.InformationPolicy.IncludesHiddenInformation
         && frame.PublicBasis is { } basis && P1NativeRecordingContract.CompleteBasis(basis.Bytes)
         && semanticBlockers.Count == 0;

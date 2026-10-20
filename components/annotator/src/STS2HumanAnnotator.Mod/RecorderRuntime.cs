@@ -1206,8 +1206,9 @@ internal static partial class RecorderRuntime
                 }
                 else if (staged != null && sameGeneration
                     && ReferenceEquals(staged.Holder.CardModel, stagedCard)
-                    && staged.Decision.Frame.Snapshot.Interaction.Kind == "combat_turn"
-                    && staged.SemanticBlockers.Count == 0)
+                    && (IsP1Recording
+                        ? P1NativeScopeInputs.CanRetainCombatSource(staged.Decision.Frame, staged.SemanticBlockers)
+                        : staged.Decision.Frame.Snapshot.Interaction.Kind == "combat_turn" && staged.SemanticBlockers.Count == 0))
                 {
                     // H belongs to this exact native CardPlay factory. Public
                     // settling does not erase H when combat ends before release.
@@ -1241,8 +1242,10 @@ internal static partial class RecorderRuntime
             if (selected == null && current != null
                 && expectedNativeActionType == nameof(PlayCardAction)
                 && expectedAction?.Subject is CardModel && ReferenceEquals(expectedAction.Subject, stagedCard)
-                && current.Snapshot.Interaction.Kind == "combat_turn"
-                && SemanticStateBlockers(current, BuildEnvironment(current)).Count == 0)
+                && (IsP1Recording
+                    ? P1NativeScopeInputs.CanRetainCombatSource(current, SemanticStateBlockers(current, BuildEnvironment(current)))
+                    : current.Snapshot.Interaction.Kind == "combat_turn"
+                        && SemanticStateBlockers(current, BuildEnvironment(current)).Count == 0))
             {
                 // Native UI can accept a queued card while public delivery is
                 // settling. Preserve this exact H and scoped operands; only

@@ -132,3 +132,10 @@ Read [Status](docs/STATUS.md), [Architecture](docs/ARCHITECTURE.md), the
 [Document map](docs/DOCUMENT_MAP.md) and [AGENTS.md](AGENTS.md). Dated evidence
 under Platform `docs/evidence` and the component's
 [historical evidence](docs/LIVE_EVIDENCE_2026-08-22.md) records predecessor facts.
+
+P1 combat input source retention also accepts a complete `potion_popup` whose
+frozen public context is combat. This retains the original Human-time PB and
+exact accepted native operands for queued card/End Turn inputs; it does not add
+public delivery actions or infer execution legality. Hidden/external-controller,
+incomplete-read and noncombat frames remain ineligible. Older sessions with
+missing Human frames keep their original gaps; an execution PB is not a repair.
