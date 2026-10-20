@@ -51,6 +51,28 @@ def split_whole_runs(records: Sequence[ResearchTransitionV1], seed: int) -> Froz
 def split_run_fingerprints(rows: Iterable[tuple[str, str]], seed: int) -> FrozenObject:
     """The same whole-run algorithm over the trusted selector's compact row index."""
     unsigned(seed, "split.seed")
+    components = sorted(
+        group_run_fingerprints(rows), key=lambda group: semantic_hash([seed, group])
+    )
+    if len(components) < 3:
+        raise BoundaryError(
+            "split",
+            "insufficient_independent_run_components",
+            "collect at least three independent run components",
+        )
+    test_count = max(1, len(components) // 10)
+    dev_count = max(1, len(components) // 10)
+    assignments: dict[str, str] = {}
+    for index, component in enumerate(components):
+        partition = (
+            "test" if index < test_count else ("dev" if index < test_count + dev_count else "train")
+        )
+        assignments.update({run_id: partition for run_id in component})
+    return FrozenObject.of(assignments)
+
+
+def group_run_fingerprints(rows: Iterable[tuple[str, str]]) -> tuple[tuple[str, ...], ...]:
+    """Existing run/component grouping, reusable before choosing any partition."""
     parent: dict[str, str] = {}
 
     def root(value: str) -> str:
@@ -69,22 +91,7 @@ def split_run_fingerprints(rows: Iterable[tuple[str, str]], seed: int) -> Frozen
     groups: dict[str, list[str]] = defaultdict(list)
     for run_id in sorted(parent):
         groups[root(run_id)].append(run_id)
-    components = sorted(groups.values(), key=lambda group: semantic_hash([seed, group]))
-    if len(components) < 3:
-        raise BoundaryError(
-            "split",
-            "insufficient_independent_run_components",
-            "collect at least three independent run components",
-        )
-    test_count = max(1, len(components) // 10)
-    dev_count = max(1, len(components) // 10)
-    assignments: dict[str, str] = {}
-    for index, component in enumerate(components):
-        partition = (
-            "test" if index < test_count else ("dev" if index < test_count + dev_count else "train")
-        )
-        assignments.update({run_id: partition for run_id in component})
-    return FrozenObject.of(assignments)
+    return tuple(tuple(group) for group in sorted(groups.values()))
 
 
 def _adapter(adapter_id: str) -> SourceAdapter:
