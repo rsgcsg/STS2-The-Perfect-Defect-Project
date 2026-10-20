@@ -7,16 +7,24 @@ next consumer from inheriting training settings or dropout RNG state.
 from __future__ import annotations
 
 import random
+from collections.abc import Iterator
 from contextlib import contextmanager
 from functools import wraps
+from typing import TypedDict
 
 import torch
+
+
+class TrainingRNG(TypedDict):
+    torch_cpu: torch.Tensor
+    python: tuple[object, ...]
+    torch_cuda: torch.Tensor | None
 
 
 class TrainingNumerics:
     def __init__(self, seed: int, threads: int, device: torch.device) -> None:
         self.threads, self.device = threads, device
-        self.rng = {
+        self.rng: TrainingRNG = {
             "torch_cpu": torch.Generator().manual_seed(seed).get_state(),
             "python": random.Random(seed).getstate(),
             "torch_cuda": torch.Generator(device=device).manual_seed(seed).get_state()
@@ -25,7 +33,7 @@ class TrainingNumerics:
         }
 
     @contextmanager
-    def scope(self):
+    def scope(self) -> Iterator[None]:
         threads = torch.get_num_threads()
         deterministic = torch.are_deterministic_algorithms_enabled()
         warn_only = torch.is_deterministic_algorithms_warn_only_enabled()
@@ -44,7 +52,9 @@ class TrainingNumerics:
                     torch.backends.cuda.matmul.allow_tf32 = False
                     torch.backends.cudnn.allow_tf32 = False
                     torch.backends.cudnn.benchmark = False
-                    torch.cuda.set_rng_state(self.rng["torch_cuda"], self.device)
+                    cuda_rng = self.rng["torch_cuda"]
+                    assert cuda_rng is not None  # CUDA trainers own a CUDA RNG state.
+                    torch.cuda.set_rng_state(cuda_rng, self.device)
                 torch.set_rng_state(self.rng["torch_cpu"])
                 random.setstate(self.rng["python"])
                 yield

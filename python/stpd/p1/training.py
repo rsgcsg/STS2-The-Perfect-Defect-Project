@@ -167,7 +167,11 @@ class Trainer:
             raise ValueError("checkpoint identity does not match this M-std execution")
         self.model.load_state_dict(value["model"], strict=True)
         self.optimizer.load_state_dict(value["optimizer"])
-        self._numerics.rng = {**value["rng"], "torch_cuda": None}
+        self._numerics.rng = {
+            "torch_cpu": value["rng"]["torch_cpu"],
+            "python": value["rng"]["python"],
+            "torch_cuda": None,
+        }
         sampler = value["sampler"]
         self.sampler.set_state(sampler["generator"])
         self.order, self.cursor, self.epoch = sampler["order"], sampler["cursor"], sampler["epoch"]
