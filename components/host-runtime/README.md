@@ -481,6 +481,20 @@ UI preparation under an isolated, Steam-disabled profile. The default remains
 headless. Native UI preparation, administrative unlocks and AI-operated steps are
 recorded separately; they establish neither Human origin nor headless qualification.
 
+The public `start` command exposes this same native UI launch owner with
+`--display-mode native-ui --isolated-profile ID`. Select persistent Host state
+with `--local-root PATH` on `start`, `status`, `stop` and
+`instantiate-profile-template`; reuse the profile for native Continue. The default
+remains headless. `--experimental-build` explicitly uses the existing exact
+installed canary; it never admits arbitrary builds or extra mods. There is no
+scripted Embark, character selection, seed override or automatic recording in
+this launch command. The explicit `--baseline normal-sp-all-unlocked-v1` reuses
+the existing verified native preparation recipe, before any Human session starts;
+it is preparation provenance, not gameplay. Use the separate public P1 recording
+client before Embark.
+Native UI `stop` retains the process when shutdown is not acknowledged or the
+process remains alive; it does not turn an unknown close into a signal.
+
 The reference handoff status query uses the existing public
 `GET /api/player-environment/controller` wire contract directly, with exact runtime
 and envelope checks. This preserves the standalone Host package's intentionally

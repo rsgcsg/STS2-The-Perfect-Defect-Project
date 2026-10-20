@@ -1,12 +1,18 @@
-# 当前工作：冻结前长期收口批，尚未冻结
+# 当前工作：冻结准备进行中，尚未通过
 
-更新于2026-10-20。用户直接批准“确认前编辑属于同一次选择事务，按最终确认选择生成监督”，
-并要求查本链路私有入口/临时处置，完成本批再评冻结；不按旧“隔离四链/稳定即停”收尾。
-唯一现场检查点和完整主报告为本地工作根work/P1-SEMANTIC-ACTIVE-20261019.md与
-work/P1-QUEUED-INPUT-REPORT-20261019.md。恢复前核准确Git/dirty、agent、游戏/录制进程与Reference owner。
-本批同owner实现、三源重派生、旧模型读回、固定发布与连续采集工程短验已完成。
-当前无游戏/录制；应用导入/Store及最终集成验收仍未完成，不宣称已冻结。
-Resolve live GitHub refs; current source and original evidence override this file.
+更新于2026-10-20。用户直接授权今天启动最终冻结准备、B*具名离线新解释、
+现ArtifactStore/R2对两新自然局/旧9报告现档/随后封存原件持续保全与完整读回，
+最近两局热工作集和满足验证/按ID可取回/consumer释放后的有条件冷却。
+不改原件/旧默认/03/T0固定输入，不授跨缺失记忆；无新自动化/具名merge许可。
+唯一现场检查点work/P1-SEMANTIC-ACTIVE-20261019.md；本批固定报告为共享
+replies/P1-CONTINUITY-AND-INTEGRATION-NEXT-20261020.md，详细实物位于work/p1-freeze-preparation-20261020。
+第一里程碑收到16:26起2小时内，最迟18:26交“可开始滚动录制”实际结果；日期不代替通过。
+B拥有Python应用/Store，C拥有研究，主线管理公共Mod/SDK/Runtime/BOM与窗口；用户游戏优先，
+局中不部署/换Mod/重启或工程游戏。当前新公共native-ui启动复用原Host owner，非私人日常脚本；
+原生first start/stop已实证，标准baseline/开录绑定正在验收。两新局及9旧报告现档R2全回读已验，
+按ID取回/单成员恢复通过；没有删除三修复原件，已测一次真实pack/converter盘峰值。
+B*和B/C当前增量标pending，不先贴最终候选标签。10-21/22 18:00交产物，10-23目标准确验收；
+最终确认仍用户决定。下文是此前稳定批结果，供复用，不代新B*/正常Store/最终验收。
 
 ## 本批已完成的离线增量
 
