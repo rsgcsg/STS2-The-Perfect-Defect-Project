@@ -4,6 +4,8 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { createWriteStream, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { finished } from "node:stream/promises";
+import { request as requestHttp } from "node:http";
+import { request as requestHttps } from "node:https";
 import {
   EnvironmentControllerSession,
   PlayerEnvironmentRestClient
@@ -254,7 +256,8 @@ async function requestHostControl({
     return { status: "unavailable", response: null, error: "host_control_not_configured" };
   }
   try {
-    const response = await fetch(`${endpoint.replace(/\/$/u, "")}${route}`, {
+    const url = `${endpoint.replace(/\/$/u, "")}${route}`;
+    const options = {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -262,7 +265,13 @@ async function requestHostControl({
         host_control_token: hostControlToken
       }),
       signal: AbortSignal.timeout(timeoutMs)
-    });
+    };
+    // Shutdown follows synchronous packing/conversion in real consumers. An
+    // idle pooled socket may already have been closed while their event loop
+    // was blocked. Send this one lifecycle request on a fresh connection; never
+    // retry an ambiguous request or reinterpret a failed shutdown as success.
+    const response = route === "/api/host-control/shutdown"
+      ? await requestFreshHostControl(url, options) : await fetch(url, options);
     const body = await response.json();
     return {
       status: response.ok ? "response" : "rejected",
@@ -274,9 +283,29 @@ async function requestHostControl({
     return {
       status: "transport_error",
       response: null,
-      error: error instanceof Error ? error.message : String(error)
+      error: error instanceof Error ? error.message : String(error),
+      error_code: error?.cause?.code ?? error?.code ?? null
     };
   }
+}
+
+function requestFreshHostControl(url, options) {
+  return new Promise((resolve, reject) => {
+    const request = new URL(url).protocol === "https:" ? requestHttps : requestHttp;
+    const req = request(url, { method: options.method, agent: false, signal: options.signal,
+      headers: { ...options.headers, "content-length": Buffer.byteLength(options.body) } }, response => {
+      const chunks = [];
+      response.on("data", chunk => chunks.push(chunk));
+      response.once("error", reject);
+      response.once("end", () => resolve({
+        ok: response.statusCode >= 200 && response.statusCode < 300,
+        status: response.statusCode,
+        json: async () => JSON.parse(Buffer.concat(chunks).toString("utf8"))
+      }));
+    });
+    req.once("error", reject);
+    req.end(options.body);
+  });
 }
 
 export async function requestHostProvenance({

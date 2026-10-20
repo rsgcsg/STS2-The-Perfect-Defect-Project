@@ -4,6 +4,27 @@
 const complete = value => value?.capture_status === 'complete' && value.missing.length === 0
   && value.snapshot.completeness.status === 'complete';
 const surface = value => value.snapshot.interaction.content.surface;
+// Deck-card previews use the same zero-label round trip as upgrade previews.
+// Bind the actual native selector callbacks as well as the public request; a
+// cancelled purchase or a different selector is not a preview return.
+function nativeDeckPreviewPair(row, next, end, secondEnd) {
+  const prefix = 'MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NDeckCardSelectScreen.';
+  if (row.native_action_type !== `${prefix}OnCardClicked`
+      || next.native_action_type !== `${prefix}PreviewCancel.Released`) return false;
+  if (!['session_id', 'timeline_id', 'run_id'].every(key =>
+    [next, end, secondEnd].every(item => item[key] === row[key]))) return false;
+  if (!['selector_owner_witness_id', 'parent_action_witness_id', 'parent_owner_witness_id'].every(key =>
+    typeof row.native_witness?.[key] === 'string' && row.native_witness[key].length > 0
+      && row.native_witness[key] === next.native_witness?.[key])) return false;
+  return [[row, end], [next, secondEnd]].every(([accepted, terminal]) =>
+    accepted.native_receipt.carrier_ref === accepted.action_witness_id
+      && accepted.native_receipt.selector_callback?.native_callback === accepted.native_action_type
+      && accepted.native_receipt.selector_callback.native_acceptance_proven === true
+      && accepted.native_receipt.selector_callback.terminal === false
+      && terminal.action_witness_id === accepted.action_witness_id
+      && terminal.native_completion?.native_callback === accepted.native_action_type
+      && terminal.native_completion.terminal === false);
+}
 const exact = (row, value, state, core) => {
   if (!complete(value) || row.missing_reason != null || row.native_receipt?.kind !== 'semantic_ui_accepted'
       || !row.bound_action || row.native_input != null) return false;
@@ -31,7 +52,9 @@ export function classifyNativePresentation({ row, next, terminalById, basis, sta
           && first.shop_session_entity_id === surface(restored).shop_session_entity_id
           && typeof first.shop_session_entity_id === 'string') {
         kind = 'shop_close_reopen'; owner = first.shop_session_entity_id;
-      } else if (first.kind === 'deck_upgrade_selection' && first.stage === 'selecting'
+      } else if ((first.kind === 'deck_upgrade_selection'
+          || first.kind === 'native_deck_card_selection' && nativeDeckPreviewPair(row, next, end, secondEnd))
+          && first.stage === 'selecting'
           && row.bound_action.verb === 'select' && second.kind === first.kind && second.stage === 'preview'
           && first.screen_entity_id === second.screen_entity_id && first.request_entity_id === second.request_entity_id
           && next.bound_action.verb === 'cancel'

@@ -519,8 +519,17 @@ test('cancelled inputs may coexist with complete native run boundaries; strict r
 async function nativeBrowse(kind, change = null) {
   const { selectorForwardPair } = await import('../../components/connector/sdk/typescript/test/fixtures/selector-forward.mjs');
   const { source, retain, row } = example(); source.events.length = 0;
-  const pair = kind === 'selector' ? selectorForwardPair() : rewardForwardPair();
+  const pair = kind !== 'reward' ? selectorForwardPair() : rewardForwardPair();
   const before = pair.outer, middle = pair.preview ?? pair.child;
+  if (kind === 'deck') for (const basis of [before, middle]) {
+    const s = basis.snapshot.interaction.content.surface;
+    s.kind = basis.snapshot.interaction.kind = 'native_deck_card_selection';
+    basis.snapshot.interaction.content_schema = 'sts2.player-environment/surface/native_deck_card_selection-1';
+    s.selector_request.family = 'deck_card';
+    for (const option of s.preview_options) {
+      option.after = null; option.after_availability = 'not_applicable'; option.display_context = 'native_deck_card_before';
+    }
+  }
   const restored = structuredClone(before);
   restored.snapshot.snapshot_id += '-restored'; restored.snapshot.sequence++;
   for (const read of restored.reads) read.response.expected_snapshot_id = read.response.observed_snapshot_id = restored.snapshot.snapshot_id;
@@ -531,8 +540,8 @@ async function nativeBrowse(kind, change = null) {
   const accept = (id, value, action) => row('decision_accepted', { decision_id: id, action_witness_id: `witness-${id}`,
     basis: retain(value), bound_action: action, missing_reason: null,
     native_receipt: { kind: 'semantic_ui_accepted', carrier_ref: `witness-${id}` } });
-  const first = before.snapshot.bound_actions.actions.find(a => a.verb === (kind === 'selector' ? 'select' : 'activate'));
-  const second = middle.snapshot.bound_actions.actions.find(a => a.verb === (kind === 'selector' ? 'cancel' : 'skip'));
+  const first = before.snapshot.bound_actions.actions.find(a => a.verb === (kind !== 'reward' ? 'select' : 'activate'));
+  const second = middle.snapshot.bound_actions.actions.find(a => a.verb === (kind !== 'reward' ? 'cancel' : 'skip'));
   if (change === 'native-activate') second.verb = 'activate';
   accept('browse-start', before, first);
   const opened = structuredClone(middle);
@@ -547,9 +556,24 @@ async function nativeBrowse(kind, change = null) {
   accept('browse-back', middle, second);
   row('lifecycle', { decision_id: 'browse-back', action_witness_id: 'witness-browse-back', phase: change === 'unknown' ? 'unknown' : 'finished', successor_basis: retain(restored) });
   if (change === 'foreign') source.events[2].bound_action = { ...second, subject_referent_id: 'foreign-subject' };
+  if (kind === 'deck') {
+    for (const [accepted, terminal, callback] of [[source.events[0], source.events[1], 'OnCardClicked'],
+      [source.events[2], source.events[3], 'PreviewCancel.Released']]) {
+      accepted.native_action_type = 'MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NDeckCardSelectScreen.' + callback;
+      accepted.native_witness = { selector_owner_witness_id: 'native-selector', parent_action_witness_id: 'native-parent',
+        parent_owner_witness_id: 'native-parent-owner' };
+      accepted.native_receipt.selector_callback = { native_callback: accepted.native_action_type,
+        native_acceptance_proven: true, terminal: false };
+      terminal.native_completion = { native_callback: accepted.native_action_type, terminal: false };
+    }
+    if (change === 'foreign-owner') source.events[2].native_witness.selector_owner_witness_id = 'different-selector';
+    if (change === 'foreign-parent') source.events[2].native_witness.parent_action_witness_id = 'different-parent';
+    if (change === 'purchase-cancel') source.events[3].native_completion.terminal = true;
+    if (change === 'missing-acceptance') source.events[2].native_receipt.selector_callback.native_acceptance_proven = false;
+  }
   return convertNativeSemanticOriginals(source, sdk, core);
 }
-for (const kind of ['selector', 'reward']) test(`${kind} browsing is a separate disposition with two real original checkpoints and zero successful labels`, async () => {
+for (const kind of ['selector', 'deck', 'reward']) test(`${kind} browsing is a separate disposition with two real original checkpoints and zero successful labels`, async () => {
   const report = await nativeBrowse(kind);
   assert.equal(report.native_presentations.length, 1);
   assert.equal(report.native_presentations[0].comparison.equal, true);
@@ -560,6 +584,14 @@ for (const kind of ['selector', 'reward']) test(`${kind} browsing is a separate 
   assert.ok(report.issues.every(issue => !issue.blocking));
 
 });
+for (const change of ['foreign-owner', 'foreign-parent', 'purchase-cancel', 'missing-acceptance', 'unknown', 'foreign', 'world', 'read', 'directory'])
+  test(`deck preview return preserves ${change} as an unresolved gap`, async () => {
+    const report = await nativeBrowse('deck', change);
+    assert.equal(report.complete, false);
+    assert.equal(report.accepted_accounting.presentation, 0);
+    assert.ok(report.blocking_issues.length > 0);
+    assert.ok(report.actions.every(action => action.choice_id === null));
+  });
 for (const change of ['world', 'refresh', 'directory', 'read']) test(`changed browsing ${change} is reported with real field differences and no successful labels`, async () => {
   const report = await nativeBrowse('reward', change);
   assert.equal(report.presentation_gaps.length, 1);
