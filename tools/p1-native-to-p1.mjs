@@ -530,7 +530,10 @@ export function convertNativeSemanticOriginals(source, sdk, core, options = {}) 
     const segments = buildNativeP1Segments({ source, report, successful, boundaries: segmentBoundaries });
     if (options.includeSegments) report.segment_output = segments;
     if (options.includeTargets) report.target_output = buildNativeP1Targets({ source, report, successful,
-      strictSegments: segments });
+      // Reuse the ordinary edge owner, removing only the user-approved reward
+      // refresh barrier. The historical segments output above is unchanged.
+      strictSegments: buildNativeP1Segments({ source, report, successful, boundaries: segmentBoundaries,
+        continuousRewardReturns: true }) });
   }
   return report;
 }

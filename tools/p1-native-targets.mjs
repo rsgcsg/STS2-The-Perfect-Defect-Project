@@ -32,7 +32,8 @@ export function buildNativeP1Targets({ source, report, successful, strictSegment
       effect: span.exception.id, decision_ids: span.decision_ids,
       from_sequence: checkpoints[0].source_sequence, through_sequence: checkpoints[1].source_sequence,
       checkpoints, actual_changes: span.comparison.changes,
-      N_label: null, ordinary_p1_transition: false, memory_crossing_approved: false });
+      N_label: null, ordinary_p1_transition: false,
+      memory_crossing_approved: span.exception.id === 'stop_relic_refresh' });
   }
   for (const issue of [...report.blocking_issues, ...report.pending_decisions]) {
     const decisionId = issue.decision_id ?? issue.native_witness?.decision_id;
@@ -105,11 +106,14 @@ export function buildNativeP1Targets({ source, report, successful, strictSegment
     .flatMap((point, index) => point.mask.next ? [pairKey(point, segment.points[index + 1])] : [])));
   const edges = points.slice(0, -1).map((from, index) => {
     const to = points[index + 1], action = actionsByPoint.get(from.point_id);
-    const blockers = spans.filter(span => span.from_sequence < to.source_sequence
+    const blockers = spans.filter(span => !span.memory_crossing_approved && span.from_sequence < to.source_sequence
       && span.through_sequence > from.source_sequence);
     const exactSuccessor = action?.successor?.public_basis?.sha256 === to.source_public_basis.sha256
       && isDeepStrictEqual(action?.successor?.observation, to.observation);
-    const provenance = strictEdges.has(pairKey(from, to)) ? 'existing_qualified_p1_edge'
+    const approvedEffects = spans.filter(span => span.memory_crossing_approved
+      && span.from_sequence < to.source_sequence && span.through_sequence > from.source_sequence);
+    const provenance = strictEdges.has(pairKey(from, to))
+      ? approvedEffects.length ? 'qualified_p1_edge_with_approved_reward_return' : 'existing_qualified_p1_edge'
       : exactSuccessor ? 'exact_recorded_complete_successor' : null;
     const eligible = blockers.length === 0 && provenance !== null;
     from.mask.next = eligible;
@@ -119,7 +123,7 @@ export function buildNativeP1Targets({ source, report, successful, strictSegment
       proof: eligible ? provenance : null,
       reasons: blockers.length ? [...new Set(blockers.map(span => span.effect ?? span.reason))]
         : eligible ? [] : ['no_qualified_P1_edge_for_independently_retained_N_point'],
-      blocking_span_ids: blockers.map(span => span.span_id), memory_crossing_approved: false };
+      blocking_span_ids: blockers.map(span => span.span_id), memory_crossing_approved: eligible };
   });
   return { schema: nativeTargetSchema, projection_id: nativeTargetProjection,
     source_bundle: source.bundle, source_content_id: report.source_content_id,
@@ -141,7 +145,7 @@ export function buildNativeP1Targets({ source, report, successful, strictSegment
       journal, spans },
     points, edges, end_target: endTarget, excluded_N_candidates: excluded,
     source_integrity_verified: true, p1_action_chain_complete: spans.length ? false : 'not_established',
-    memory_continuity: 'not_approved_or_validated', training_loader_consumed: false,
+    memory_continuity: 'qualified_edges_only_missing_facts_remain_barriers', training_loader_consumed: false,
     nonclaims: ['not_lossless_p1_action_chain', 'not_memory_across_missing_facts',
       'not_host_equivalence', 'not_research_admission'] };
 }

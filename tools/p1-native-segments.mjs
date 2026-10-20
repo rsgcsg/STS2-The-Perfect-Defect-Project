@@ -1,6 +1,6 @@
 /** Offline segments from the converter's actual shared-core state and originals.
  * This neither repairs missing bytes nor grants whole-run/training admission. */
-export function buildNativeP1Segments({ source, report, successful, boundaries }) {
+export function buildNativeP1Segments({ source, report, successful, boundaries, continuousRewardReturns = false }) {
   const identity = source.manifest.content_identity ?? source.manifest;
   const events = source.events.filter(row => row.run_id === report.scope.run_id);
   const accepted = events.filter(row => row.kind === 'decision_accepted');
@@ -28,9 +28,11 @@ export function buildNativeP1Segments({ source, report, successful, boundaries }
   }
   for (const issue of [...report.blocking_issues, ...report.pending_decisions])
     barrier(byDecision.get(issue.decision_id ?? issue.native_witness?.decision_id), issue.reason);
-  // The exception has an actual state effect, no P1 successful choice and no
-  // next target. Later complete states can start a D segment, never a splice.
-  for (const span of report.native_presentations.filter(item => item.exception)) {
+  // Historical segments retain their strict interpretation. The current target
+  // projection reuses this edge builder with the approved reward-return effect
+  // ignored for continuity only; originals and successful labels stay unchanged.
+  for (const span of report.native_presentations.filter(item => item.exception
+    && !(continuousRewardReturns && item.exception.id === 'stop_relic_refresh'))) {
     const last = events.find(row => row.event_id === span.source_event_id);
     barrier(byDecision.get(span.decision_ids[0]), `projection_exception:${span.exception.id}`, last?.sequence);
   }
