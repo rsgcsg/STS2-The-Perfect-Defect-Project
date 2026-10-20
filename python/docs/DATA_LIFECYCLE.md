@@ -184,5 +184,39 @@ cloud scope must name candidates or a date/origin scope. It remains disabled unt
 authorized. Existing recent-two-session hot-set cooling requires verified
 recoverability and the approved exact scope. This guide grants no new deletion,
 bulk scan, service restart, or automatic eviction authority. Continuous cooling
-and management-ledger backup/restore are not established by one successful upload;
-keep those unverified operational obligations visible at handoff.
+is not established by one successful upload; keep that operational obligation
+visible at handoff. Private Curation backup and staged recovery use the owner
+operation below; replacing a live owner is deliberately separate.
+
+
+## Private Curation ledger recovery
+
+`python -m spireagent.workbench curation --help` backs up the configured
+`LocalCurationOwner` using SQLite's WAL-aware native backup API. It permits only
+the private Curation tables (claims, uses, indexes, annotations, identity, pending
+source state and legacy-unknown markers); a shared Hub/account database is rejected.
+The registry, Application runtime token, account state and training-operation files
+are not included or falsely declared recovered. The source owner must already be
+prepared; backup does not initialize or allocate purposes.
+
+```sh
+python -m spireagent.workbench curation backup --config PROJECT --store STORE --output SCRATCH
+python -m spireagent.workbench push --store STORE --other-store s3 --artifact BACKUP
+python -m spireagent.workbench curation restore --store s3 --artifact BACKUP --output NEW_RECOVERY_DIRECTORY
+```
+
+`BACKUP` is the exact returned immutable Artifact ID. The backup includes the
+private owner's marker, its native SQLite snapshot, and the existing in-place
+preparation plan when present. Restore verifies payload hashes, database integrity,
+owner identity and supported private tables, then reports `verified_staged` with
+claim/use counts. It refuses an existing destination. This proves recoverable bytes;
+it never replaces an active ledger, changes source purposes, resumes an unknown
+job, restores account credentials, or makes a new training dataset.
+
+For a real owner-loss incident, stop the owning Application and all writers, keep
+the original Store/owner identities and paths, and review the staged database,
+marker and preparation plan before replacing the missing original files. A moved
+Store requires the existing explicit owner-rebind workflow, not editing identity
+strings. Reopen `configured_owner(config)` and read the original claims/uses through
+its existing ledger; leave unknown legacy exposure intact. Live replacement is an
+operator recovery step, not an automatic consequence of a restore command.
