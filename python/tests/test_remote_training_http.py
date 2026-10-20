@@ -18,6 +18,7 @@ from spireagent.json_boundary import BoundaryError
 from spireagent.source import source_identity
 from spireagent.workbench.developer import ROOT, ProjectConfig, RemoteComputeConfig
 from spireagent.workbench.developer_server import Application, configuration_id, create_server
+from spireagent.workbench.p1_recording_storage import open_peer
 from spireagent.workbench.p1_training_data import reserve_p1_snapshot
 from spireagent.workbench.remote_training import RemoteTrainingService
 from spireagent.workbench.training_cli import main, training_command
@@ -27,17 +28,20 @@ from stpd.workers.p1_run import verify_p1_result
 
 
 @contextmanager
-def client(tmp_path, *, reserve=True):
+def client(tmp_path, *, reserve=True, peer_binding=None):
     config, store, owner, snapshot = workspace(tmp_path)
     if reserve:
         reserve_p1_snapshot(owner, store, snapshot.artifact_id)
-    deployment = RemoteComputeConfig(tmp_path / "ops.sqlite", tmp_path / "target.json", 4, 1)
+    binding = peer_binding or {"kind": "local", "directory": str(tmp_path / "peer")}
+    peer = open_peer(binding)
+    deployment = RemoteComputeConfig(tmp_path / "ops.sqlite", tmp_path / "target.json", 4, 1,
+                                     binding)
     config = replace(config, remote_compute=deployment)
     config_path = tmp_path / "project.json"
     config_path.write_text(json.dumps(config.to_dict()))
     assert ProjectConfig.load(config_path) == config
     operations = Operations(deployment.operations_path)
-    provider = Provider(operations, store, None, source_identity(ROOT))
+    provider = Provider(operations, peer, None, source_identity(ROOT))
     provider.target = replace(provider.target, gpu="none")
     app = Application(config, config_path=config_path, remote_provider=provider)
     server = create_server(app)
@@ -49,9 +53,10 @@ def client(tmp_path, *, reserve=True):
                                   "port": server.server_port,
                                   "control_token": app.control_token}))
 
-    def call(action, *, body=None, job_id=None):
+    def call(action, *, body=None, job_id=None, intent_id=None, wait_seconds=None):
         return training_command(config, action, body=body, operation_id=job_id,
-                                execution="remote")
+                                execution="remote", intent_id=intent_id,
+                                wait_seconds=wait_seconds)
 
     try:
         yield app, call, provider, store, owner, snapshot, config_path
@@ -100,13 +105,14 @@ def test_normal_client_start_bounded_pause_same_run_resume_and_result(tmp_path, 
         second = call("resume", body=resume)["jobs"][0]
         completed = settled(call, second["id"], "completed")
         assert second["input_id"] == paused["input_id"]
+        assert completed["result"]["output_id"] not in store.manifest_ids()
+        assert call("reconcile", body={"job_id": second["id"],
+                                      "expected_attempt_id": completed["attempt_id"]})[
+                                          "jobs"][0]["result"] == completed["result"]
         workload = verify_p1_run(store, second["input_id"], provider.target.producer)
         _, model, checkpoint = verify_p1_result(store, completed["result"]["output_id"], workload)
         assert checkpoint.state["step"] == 2 and model.parent("run") == first["input_id"]
         assert len(provider.calls) == 2
-        assert call("reconcile", body={"job_id": second["id"],
-                                      "expected_attempt_id": completed["attempt_id"]})[
-                                          "jobs"][0]["result"] == completed["result"]
         with owner.transaction() as db:
             assert db.execute("SELECT count(*) FROM curation_uses").fetchone() == (1,)
         with app.remote_training._operations.transaction() as db:
@@ -159,3 +165,54 @@ def test_configured_hub_and_missing_local_purposes_are_not_bypassed(tmp_path):
                                 "max_seconds": 300, "stop_after": None})
         assert set(store.manifest_ids()) == before and not provider.calls
         assert app.local_training.capabilities()["automatic_retry"] is False
+
+
+def test_normal_prepare_verifies_separate_peer_without_enqueue_or_submit(tmp_path, monkeypatch):
+    with client(tmp_path) as (app, call, provider, local, owner, snapshot, _path):
+        body = {"intent_id": "f" * 32, "source_id": snapshot.artifact_id,
+                "config": MStdConfig(max_epochs=1).to_dict(), "max_seconds": 300,
+                "stop_after": None}
+        from spireagent.workbench import training_cli
+
+        waits = []
+        original_request = training_cli._local_request
+
+        def observe(*args, **kwargs):
+            waits.append(kwargs["timeout"])
+            return original_request(*args, **kwargs)
+
+        monkeypatch.setattr(training_cli, "_local_request", observe)
+        result = call("prepare", body=body, wait_seconds=600)
+        assert waits == [600]
+        assert result["state"] == "prepared" and not result["enqueued"]
+        assert not result["provider_submitted"] and not provider.calls
+        assert result["input"]["unique_N"] == 3
+        assert result["input"]["catalog_choices"] == 6
+        assert result["input"]["closure_payload_readback"] == "verified"
+        assert app.remote_training._operations is None
+        assert app.remote_training._thread is None
+        assert provider.ops.jobs() == []
+        peer = open_peer(app.config.remote_compute.compute_store)
+        assert peer.blobs.root != local.blobs.root
+        assert peer.get_manifest(result["run_id"]) == local.get_manifest(result["run_id"])
+        for identity in peer.manifest_ids():
+            manifest = peer.get_manifest(identity)
+            for payload in manifest.payloads:
+                assert b"".join(peer.read_payload(payload)) == b"".join(local.read_payload(payload))
+        with owner.transaction() as db:
+            assert db.execute("SELECT count(*) FROM curation_uses").fetchone() == (1,)
+        normal_provider = RemoteTrainingService(app.config, app.local_datasets._selected)
+        assert normal_provider.capabilities()["available"] is False
+        with pytest.raises(BoundaryError, match="shared_compute_store_required"):
+            normal_provider.command("prepare", body)
+
+        def unavailable_peer():
+            raise AssertionError("intent facts must not query peer/provider")
+
+        monkeypatch.setattr(app.remote_training, "_context", unavailable_peer)
+        observed = call("status", intent_id=body["intent_id"])
+        assert observed["local_runs"][0]["run_id"] == result["run_id"]
+        assert observed["jobs"] == []
+        assert observed["peer_queried"] is observed["provider_queried"] is False
+        assert observed["transfer_completion"] == "not_inferred_from_local_run"
+        assert not provider.calls and provider.ops.jobs() == []

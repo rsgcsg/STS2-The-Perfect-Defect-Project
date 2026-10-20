@@ -124,17 +124,19 @@ class RemoteComputeConfig:
     target_path: Path
     budget_limit: int
     reserved_units: int
+    compute_store: dict[str, Any]
     deployment: str = "local_scheduler"
 
     def to_dict(self) -> dict[str, Any]:
         return {"deployment": self.deployment, "operations_path": str(self.operations_path),
                 "target_path": str(self.target_path), "budget_limit": self.budget_limit,
-                "reserved_units": self.reserved_units}
+                "reserved_units": self.reserved_units, "compute_store": dict(self.compute_store)}
 
     @classmethod
     def decode(cls, value: object) -> RemoteComputeConfig:
         obj = object_fields(value, {"deployment", "operations_path", "target_path",
-                                    "budget_limit", "reserved_units"}, "remote_compute")
+                                    "budget_limit", "reserved_units", "compute_store"},
+                            "remote_compute")
         paths = [Path(text(obj[key], "remote_compute." + key))
                  for key in ("operations_path", "target_path")]
         if (obj["deployment"] != "local_scheduler" or not all(p.is_absolute() for p in paths)
@@ -142,7 +144,20 @@ class RemoteComputeConfig:
                        for k in ("budget_limit", "reserved_units"))
                 or obj["reserved_units"] > obj["budget_limit"]):
             raise BoundaryError("remote_compute", "invalid_scheduler_deployment")
-        return cls(paths[0], paths[1], obj["budget_limit"], obj["reserved_units"])
+        binding = obj["compute_store"]
+        if not isinstance(binding, dict):
+            raise BoundaryError("remote_compute", "explicit_compute_store_binding_required")
+        if set(binding) == {"kind", "directory"} and binding["kind"] == "local":
+            if not Path(text(binding["directory"], "remote_compute.directory")).is_absolute():
+                raise BoundaryError("remote_compute", "absolute_local_path_required")
+        elif (set(binding) == {"kind", "bucket", "endpoint", "prefix", "region"}
+              and binding["kind"] == "s3"):
+            from spireagent.storage.s3 import S3Config
+
+            S3Config(**{k: v for k, v in binding.items() if k != "kind"})
+        else:
+            raise BoundaryError("remote_compute", "invalid_compute_store_binding")
+        return cls(paths[0], paths[1], obj["budget_limit"], obj["reserved_units"], dict(binding))
 
 
 @dataclass(frozen=True)

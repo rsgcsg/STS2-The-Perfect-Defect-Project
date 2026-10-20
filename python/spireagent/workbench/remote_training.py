@@ -12,7 +12,9 @@ from spireagent.compute import ComputeProvider
 from spireagent.hub.database import Operations
 from spireagent.json_boundary import BoundaryError, digest, object_fields
 from spireagent.source import source_identity
+from spireagent.storage.store import copy_artifact
 from spireagent.workbench.developer import ROOT, ProjectConfig
+from spireagent.workbench.p1_recording_storage import open_peer
 from spireagent.workbench.p1_training_data import record_p1_training_use, require_p1_snapshot
 from stpd.cloud_jobs.modal import ModalProvider, ModalTarget
 
@@ -28,27 +30,35 @@ class RemoteTrainingService:
         self._lock = threading.RLock()
         self._scheduler: Scheduler | None = None
         self._operations: Operations | None = None
+        self._compute_store: Any = None
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._error: str | None = None
 
     def capabilities(self) -> dict[str, Any]:
-        configured = self.config.remote_compute is not None
+        deployment = self.config.remote_compute
+        configured = deployment is not None
         return {"schema": "spireagent/remote-training-capabilities-1",
                 "deployment": "local_scheduler", "configured": configured,
-                "available": configured and not self.config.hub_url,
+                "available": (deployment is not None and not self.config.hub_url
+                              and (self._injected_provider or
+                                   deployment.compute_store.get("kind") == "s3")),
                 "provider": "trusted_injected_engineering" if self._injected_provider else "modal",
-                "supported_actions": ["start", "status", "cancel", "reconcile", "resume"],
+                "supported_actions": ["prepare", "start", "status", "cancel", "reconcile",
+                                      "resume"],
                 "live_pause_supported": False, "fixed_stop_after_supported": True,
                 "automatic_retry": False, "gpu_qualification": "not_established",
-                "remote_store_access": "requires_independent_exact_target_verification"}
+                "compute_store": dict(deployment.compute_store) if deployment else None,
+                "remote_store_access": "prepare_verifies_inputs_only_not_worker_secret_injection"}
 
-    def _ready(self) -> tuple[Any, Any, ComputeProvider, Operations, Scheduler]:
+    def _context(self) -> tuple[Any, Any, ComputeProvider, Any]:
         deployment = self.config.remote_compute
         if deployment is None:
             raise BoundaryError("remote_training", "explicit_scheduler_deployment_required")
         if self.config.hub_url:
             raise BoundaryError("remote_training", "configured_hub_requires_hub_scheduler_route")
+        if not self._injected_provider and deployment.compute_store.get("kind") != "s3":
+            raise BoundaryError("remote_training", "shared_compute_store_required")
         owner, store, _ = self.select()
         if self._provider is None:
             target = ModalTarget.decode(json.loads(deployment.target_path.read_bytes()))
@@ -59,6 +69,14 @@ class RemoteTrainingService:
         # Ops must never share the private allocation/use database.
         if deployment.operations_path.resolve() == owner.path.resolve():
             raise BoundaryError("remote_training", "separate_operations_database_required")
+        if self._compute_store is None:
+            self._compute_store = open_peer(deployment.compute_store)
+        return owner, store, provider, self._compute_store
+
+    def _ready(self) -> tuple[Any, Any, ComputeProvider, Operations, Scheduler]:
+        owner, store, provider, peer = self._context()
+        deployment = self.config.remote_compute
+        assert deployment is not None
         if self._scheduler is None:
             from spireagent.hub.scheduler import Scheduler
 
@@ -72,7 +90,7 @@ class RemoteTrainingService:
                 record_p1_training_use(current_owner, current_store, workload.snapshot.artifact_id,
                                        run.parameters.value()["operation_id"])
 
-            self._scheduler = Scheduler(self._operations, store, provider,
+            self._scheduler = Scheduler(self._operations, peer, provider,
                                         budget_limit=deployment.budget_limit,
                                         record_training_use=record_use)
         assert self._operations is not None
@@ -122,6 +140,32 @@ class RemoteTrainingService:
             raise BoundaryError("remote_training", "job_not_found")
         return row
 
+    def preparation_status(self, intent_id: object) -> dict[str, Any]:
+        """Observe only existing local facts, even while transfer holds its write lock."""
+        from stpd.p1.spec import RUN_SCHEMA
+
+        intent = digest(intent_id, "remote_training.intent_id", length=32)
+        if self.config.hub_url:
+            raise BoundaryError("remote_training", "configured_hub_requires_hub_scheduler_route")
+        deployment = self.config.remote_compute
+        if deployment is None:
+            raise BoundaryError("remote_training", "explicit_scheduler_deployment_required")
+        _, local, _ = self.select()
+        runs = [manifest for identity in local.manifest_ids()
+                if (manifest := local.get_manifest(identity)).parameters.value().get("schema")
+                == RUN_SCHEMA and manifest.parameters.value().get("operation_id") == intent]
+        jobs = []
+        if deployment.operations_path.is_file():
+            operations = self._operations or Operations(deployment.operations_path)
+            jobs = [{"job_id": row["id"], "run_id": row["input_id"], "status": row["status"]}
+                    for row in operations.jobs() if row["input_id"] in
+                    {manifest.artifact_id for manifest in runs}]
+        return {"schema": "spireagent/remote-preparation-observation-1", "intent_id": intent,
+                "local_runs": [{"run_id": m.artifact_id, "producer": m.producer.to_dict()}
+                               for m in runs], "jobs": jobs,
+                "transfer_completion": "not_inferred_from_local_run",
+                "provider_queried": False, "peer_queried": False, "automatic_retry": False}
+
     def status(self, job_id: object | None = None) -> dict[str, Any]:
         with self._lock:
             _, _, _, ops, _ = self._ready()
@@ -134,37 +178,58 @@ class RemoteTrainingService:
             return {"schema": "spireagent/remote-training-status-1", "jobs": visible,
                     "scheduler_error": self._error, "automatic_retry": False}
 
+    def prepare(self, body: object) -> dict[str, Any]:
+        from spireagent.workbench.remote_training_storage import transfer_p1_input
+        from stpd.p1.spec import MStdConfig
+        from stpd.p1.workload import prepare_p1_run
+
+        owner, store, provider, _ = self._context()
+        deployment = self.config.remote_compute
+        assert deployment is not None
+        obj = object_fields(body, {"intent_id", "source_id", "config", "max_seconds",
+                                    "stop_after"}, "remote_training.start")
+        intent = digest(obj["intent_id"], "remote_training.intent_id", length=32)
+        snapshot = digest(obj["source_id"], "remote_training.source_id")
+        config = MStdConfig.decode(obj["config"])
+        target = provider.target
+        gpu = getattr(target, "gpu", None)
+        if ((config.device == "cpu") != (gpu == "none")):
+            raise BoundaryError("remote_training", "explicit_target_device_mismatch")
+        self._limits(obj, target.timeout_seconds)
+        require_p1_snapshot(owner, store, snapshot)
+        # Vocabulary fitting itself discloses training examples; reserve use first.
+        record_p1_training_use(owner, store, snapshot, intent)
+        run = prepare_p1_run(store, snapshot, target.producer, config, intent)
+        scratch = self.config.state_dir / "remote-training-transfer"
+        scratch.mkdir(parents=True, exist_ok=True)
+        facts = transfer_p1_input(store, deployment.compute_store, run.artifact_id,
+                                  target.producer, scratch=scratch)
+        return {"schema": "spireagent/remote-training-prepared-1", "state": "prepared",
+                "run_id": run.artifact_id, "input": facts, "enqueued": False,
+                "provider_submitted": False, "gpu_qualification": "not_established"}
+
     def command(self, action: str, body: object) -> dict[str, Any]:
         if action == "pause":
             raise BoundaryError("remote_training", "live_pause_unsupported_use_fixed_stop_after")
         with self._lock:
-            owner, store, provider, ops, _ = self._ready()
-            deployment = self.config.remote_compute
-            assert deployment is not None
+            if action == "prepare":
+                return self.prepare(body)
             if action == "start":
-                from stpd.p1.spec import MStdConfig
-                from stpd.p1.workload import prepare_p1_run
-
-                obj = object_fields(body, {"intent_id", "source_id", "config", "max_seconds",
-                                            "stop_after"}, "remote_training.start")
-                intent = digest(obj["intent_id"], "remote_training.intent_id", length=32)
-                snapshot = digest(obj["source_id"], "remote_training.source_id")
-                config = MStdConfig.decode(obj["config"])
-                target = provider.target
-                gpu = getattr(target, "gpu", None)
-                if ((config.device == "cpu") != (gpu == "none")):
-                    raise BoundaryError("remote_training", "explicit_target_device_mismatch")
-                self._limits(obj, target.timeout_seconds)
-                require_p1_snapshot(owner, store, snapshot)
-                # Vocabulary fitting itself discloses training examples; reserve use first.
-                record_p1_training_use(owner, store, snapshot, intent)
-                run = prepare_p1_run(store, snapshot, target.producer, config, intent)
-                job_id = ops.enqueue("training", run.artifact_id, intent,
+                prepared = self.prepare(body)
+                assert isinstance(body, dict)  # prepare checked the exact request grammar.
+                obj = body
+                _, _, _, ops, _ = self._ready()
+                deployment = self.config.remote_compute
+                assert deployment is not None
+                job_id = ops.enqueue("training", prepared["run_id"], obj["intent_id"],
                                      max_seconds=obj["max_seconds"],
                                      reserved_units=deployment.reserved_units,
                                      budget_limit=deployment.budget_limit,
                                      options={"stop_after": obj["stop_after"]})
             elif action in {"cancel", "reconcile", "resume"}:
+                owner, store, provider, ops, _ = self._ready()
+                deployment = self.config.remote_compute
+                assert deployment is not None
                 fields = {"job_id", "expected_attempt_id"}
                 if action == "resume":
                     fields |= {"intent_id", "checkpoint_id", "max_seconds", "stop_after"}
@@ -178,6 +243,14 @@ class RemoteTrainingService:
                 elif action == "reconcile":
                     # Existing Scheduler polls the saved exact handle; no guessed stop evidence.
                     self._ready()[4].tick(time.time())
+                    selected = self._job(ops, job_id)
+                    result = json.loads(selected["result"]) if selected["result"] else {}
+                    if selected["status"] in {"paused", "completed"}:
+                        scratch = self.config.state_dir / "remote-training-transfer"
+                        scratch.mkdir(parents=True, exist_ok=True)
+                        identity = result.get("output_id") or result.get("checkpoint_id")
+                        if identity:
+                            copy_artifact(self._compute_store, store, identity, scratch=scratch)
                 else:
                     intent = digest(obj["intent_id"], "remote_training.intent_id", length=32)
                     checkpoint = digest(obj["checkpoint_id"], "remote_training.checkpoint_id")
