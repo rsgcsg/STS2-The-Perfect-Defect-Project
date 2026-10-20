@@ -1502,9 +1502,13 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                     else:
                         query = parse_qs(parsed.query, strict_parsing=True, max_num_fields=1,
                                          keep_blank_values=True)
-                        if query and (set(query) != {"job_id"} or len(query["job_id"]) != 1):
+                        if query and (set(query) not in ({"job_id"}, {"intent_id"})
+                                      or len(next(iter(query.values()))) != 1):
                             raise ValueError
-                        value = app.remote_training.status(query.get("job_id", [None])[0])
+                        if "intent_id" in query:
+                            value = app.remote_training.preparation_status(query["intent_id"][0])
+                        else:
+                            value = app.remote_training.status(query.get("job_id", [None])[0])
                     self.respond(200, json.dumps(value).encode())
                 except BoundaryError as error:
                     self.respond(409, json.dumps({"error": error.code}).encode())

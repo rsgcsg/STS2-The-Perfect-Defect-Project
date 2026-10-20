@@ -996,30 +996,51 @@ Human origin, model quality, remote placement or complete G2/V1 acceptance.
 
 `training --execution remote` uses the same running Application and control token,
 then maps to the existing Operations/Scheduler jobs. Local CPU commands and their
-request grammar are unchanged. A project opts in with `remote_compute` containing
-`deployment: "local_scheduler"`, absolute `operations_path` and `target_path`, and
-positive `budget_limit`/`reserved_units`. The target file is the existing immutable
-ModalTarget v2 contract. The Operations DB must differ from the private Curation DB.
-A nonempty `hub_url` is rejected by this co-located deployment; it never silently
-bypasses the configured Hub. There is no production JSON fake-provider/import hook.
+request grammar are unchanged. The project `remote_compute` has mandatory
+`deployment: "local_scheduler"`, absolute `operations_path` and `target_path`, positive
+`budget_limit`/`reserved_units`, and `compute_store`. The latter uses the existing
+frozen, credential-free Store peer binding: either `{kind: "local", directory: ABS}`
+for explicitly injected engineering providers or `{kind: "s3", bucket, endpoint,
+prefix, region}` for Modal. JSON decoding validates shape and S3Config without
+opening any Store or network. Credentials remain environment-only. The target file
+is the existing immutable ModalTarget v2 contract. Ops must differ from the private
+Curation DB. A nonempty `hub_url` is rejected by this co-located deployment, never
+silently bypassed. Production JSON has no fake-provider/import hook.
 
-Remote `start` JSON contains `intent_id`, `source_id` (a reserved engineering P1
-snapshot), the full MStdConfig `config`, `max_seconds`, and `stop_after` (positive
-step or null). Start reserves the existing LocalLedger training uses before fitting
-vocabulary, then enqueues the prepared Run in Ops. Provider GPU and the recipe's
-explicit device must agree; source/lock identity must match. Actual Modal execution
-also requires independently verified access from that exact remote target to the
-same immutable ArtifactStore input closure. Synthetic injected-provider evidence
-neither verifies that storage connection nor qualifies an image, CUDA, cost or a
-production deployment.
+Remote `prepare` and `start` take the same JSON: `intent_id`, `source_id` (reserved
+engineering P1 snapshot), full MStdConfig `config`, `max_seconds`, and `stop_after`
+(positive step or null). Prepare records the existing LocalLedger training use
+before vocabulary fitting, creates the original immutable Run, and uses the original
+`copy_artifact` to transfer its entire parent closure. It independently reopens the
+frozen peer, reads every closure payload, verifies the original P1 Run, and consumes
+all selected N points/catalogs. It returns prepared facts without enqueuing or
+submitting compute. A failed transfer does not roll back the truthful vocabulary
+exposure/use. Source/lock identity and the explicit target/device must match;
+there is no CPU fallback.
 
-`status --operation-id <job>` selects the original remote job. `cancel` and
-`reconcile` take `job_id` and `expected_attempt_id`. Cancel acknowledges intent;
-it does not claim terminal execution or select the cancelled output. Reconcile
-polls only the original saved handle. Unknown submission never automatically retries.
-Live `pause` is unsupported: choose a bounded `stop_after` before submission. An
-explicit `resume` request additionally gives a new `intent_id`, exact paused
-`checkpoint_id`, `max_seconds`, and `stop_after`; the new budgeted invocation keeps
-the same immutable Run. Client exit does not end the Application scheduler. Stopping
-and reopening the Application restores the original Ops handle and attempt; it does
-not create a second local-training operation or curation database.
+Start reuses that preparation then enqueues the Run. Scheduler reads inputs and
+validates results from the same peer. Its use callback still addresses the original
+local owner/Store and full `record_p1_training_use`; no private ledger enters Ops or
+the peer. Modal without an explicit S3 peer is rejected. Verified input readback is
+not proof of worker Secret namespace injection, an immutable image, CUDA or cost
+qualification. Synthetic injected-provider execution does not establish those facts.
+
+`status --operation-id JOB` selects the original remote job. `cancel` and `reconcile`
+take `job_id` and `expected_attempt_id`. Cancel acknowledges intent without claiming
+terminal execution or selecting cancelled output. Reconcile polls only the saved
+handle; selected result/checkpoint closures are explicitly copied back to the
+original local Store for the existing Model consumer. Unknown submission never
+retries. Live pause is unsupported: choose `stop_after` before submission. Resume
+additionally takes a new budgeted `intent_id`, exact paused `checkpoint_id`,
+`max_seconds` and `stop_after`, while retaining the same immutable Run.
+
+Remote prepare/start/reconcile use a 300-second transport wait by default; the
+caller can set `--wait-seconds` (1–86400). Other commands retain 15 seconds. Complete
+Run ancestry includes original archives, so waiting is sized for real transfer and
+readback rather than merely the small vocabulary. A client timeout does not stop
+the Application handler and must not trigger automatic re-offer. Use normal
+`training status --execution remote --intent-id INTENT` to inspect existing local
+Run and associated Ops facts, without querying a peer or provider. Run existence
+alone is explicitly not transfer completion. Client exit does not end the
+Application scheduler. Reopening restores the existing Ops handle/attempt and
+creates no second local-training operation or Curation database.
