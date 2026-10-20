@@ -1,37 +1,44 @@
 # 当前工作：冻结准备进行中，尚未通过
 
-更新于2026-10-20。Resolve live GitHub refs before relying on a recorded candidate.
-最新用户原话和现场证据 override this file；旧结果只按原验证层复用。
+更新于2026-10-20。以最新直接用户原话、live Git/安装/录制及原收据为准，不把此页的快照当资格。
+主线唯一writer A，当前树work/p1-recording-followup-20261019；B应用/Store与C研究的稳定来源正常merge保留。
+正在收固定组合的检查/普通PR；具名merge、发布、冻结、付费训练没有新增批准，不自动执行。
 
-用户已批准B*离线语义和既有ArtifactStore/R2持续保全；最近两局热集，压缩/R2/按ID取回均验证且
-consumer释放后才可冷却本轮新局。三修复原件/旧默认/03/T0/活动session保持；未授跨缺失记忆、自动化或具名merge。
-主线独占Mod/SDK/Runtime/BOM与游戏窗口，B负责应用/Store，C负责研究。首滚动局已自然loss并保全；popup源修复已完成工程短验，现恢复新Human自然录制。活动局期间不部署/重启/工程实打。
-public recording:p1在Embark前Start、declared_human；
-标准英文全角色A0–A10，默认instant由既有Host owner准备并实际核；normal/fast仅同合同额外测试。第一里程碑已交，固定Workbench日常闭环仍由B接线。
-两新版原件和9旧报告现tar均已R2全量逐成员读回及按ID恢复；不重复删历史。
+用户已批准本轮B*离线新投影、具名原件/旧报告tar的既有ArtifactStore/R2保全，最近2局热集及条件冷却。
+原件/旧默认/03/T0保留，三修复原件/活动session/依赖不动；不删云/其它历史，不建自动化，不授跨缺失记忆。
+今天19:00停止新增实现/长任务，19:30全员停止交可审计快照，不后台续做。
+完整工程基线最晚周三10-21，首训最晚周四10-22；覆盖旧多日日程，不能为日期删需求或吞失败。
 
-B*显式native-timeline-targets-1沿同reader/共享核，保同原局timeline、具名effects/missing；
-N核自身完整PB/全部目录/唯一选择/完成，next独立拒跨效果或缺失，end核同分支自然终局。
-修后107回归、reader/Tool定向通过，限定非作者复核接受；三源1308点/1305N，旧1303观察Input/chosen全同，
-5新N，28effects和5缺资料保留，完整P1动作链false。旧默认/03不变；固定Tool发布、Store及C消费另验。
-首滚动局447观察/446N已原件封包及R2全量读回/按ID恢复，2个popup战斗输入缺H/绑定；
-修复在原采集owner保完整combat-popup H和exact native input，5定向PASS/整Mod编译通过、限定复核接受，
-Annotatorrc21/GameModrc46已部署并冷加载730616d2/MVID094962fe；工程6actions complete/0issues，
-popup出牌/EndTurn原H、exact nativeInput/完整目录、finished后继逐项通过，非Human/整局资格。
-旧H缺口不补造，轻量恢复独立增量仍未实现。
-原生Continue来源已有，轻量P1中断恢复仍需补窄接缝，不能用连录代替。
+## 当前可用路径与真实边界
 
-全功能沿唯一CHAIN/COMPONENTS/FEATURE_STATUS核owner/入口/requires-provides/证据，历史存在不等于当前接入通过。
-今天19:00停新增实现/长任务，19:30全员停止交可审计快照，不后台续做。
-完整工程基线最晚周三10-21，首训最晚周四10-22；覆盖旧日期，失败和原需求不消失。
-最终具名merge/发布及冻结确认仍由用户决定。
-唯一现场检查点work/P1-SEMANTIC-ACTIVE-20261019.md；固定报告共享replies/P1-CONTINUITY-AND-INTEGRATION-NEXT-20261020.md，
-细证据work/p1-freeze-preparation-20261020。容量用真实df及逐局预算更新，不视为无限录制许可。
+用户窗口已恢复滚动自然录制：标准英文全角色A0–A10，默认instant已实际核；normal/fast为同合同额外测试。
+公共recording:p1经真实Application在Embark前Start，origin=declared_human；原生游玩由用户完成。
+活动局期间不部署/重启/工程实打。准确session/进程/df和下一局预算查下面现场ACTIVE，不复用旧端点。
+Annotatorrc21/GameModrc46实际730616d2/MVID094962fe已冷加载；popup出牌/EndTurn工程原H、
+exact nativeInput/执行完整目录/finished后继逐项通过，6actions complete/0issues，非Human整局资格。
+首滚动旧loss447观察/446N，2个实际H/绑定缺口保留，不能拿执行S补H；原件已R2全成员读回及按ID恢复。
 
-## Remaining Platform non-claims 与历史稳定批
+B* native-timeline-targets-1沿同reader/共享核，保同原局timeline、effects/missing与引用；
+N自身完整Input/catalog/唯一chosen/完成，next拒跨效果或缺失，end核同分支自然终局。
+三旧源1308点/1305N，旧1303观察Input/chosen全同，5新N；28effects/5missing保留，chain仍false。
+固定Tool2928a825全库存/包内三源输出回读通过，旧默认/03不变；用途和完整P1链分别判断。
 
-此前手牌D事务投影native-selector-finalized-d-1及三源03、原模型0优化步消费已验；
-四链原件、release02、旧e70648be/MVID7dd9原时点与公共recording CLI/终态封口/下一局profile传递沿用，
-详见主线work/p1-selector-transactions-20261020/LONG-TERM-BATCH-RESULT-20261020.md。
-该批源码、构建、安装、工程生命周期均按各自收据，不替Human、INFO、Reference20/R20、T0b或最终冻结资格。
-旧完整CURRENT已保存在本批current-before-bstar-close01.md，历史失败和原产物不改。
+B同一Application/CLI/API/GUI经固定Tool→ManifestArtifactStore/原operation处理保全/恢复/具名派生。
+实际首局直接publication、R2按ID恢复1404members、一次正常Tool3派生已通过，不重pack/三源重算。
+catalog元数据只作来源绑定的显示/筛选，不改不可变原件/targets，不作为seed/root/恢复谱系权威。
+后台维护默认disabled，启用云peer须明确候选或日期/来源范围；日常持续维护/冷却不由源码存在推定通过。
+C已实现N-only快照、完整epoch/dev5/best-last/全状态恢复及同worker/Model→现Agent工程链，synthetic实证通过。
+真实3派生来自2原件，370重叠N作alias去重后820N；亲缘unknown、全unassigned、真实训练0。
+现Store P1-aware Curation owner准备、事实lineage消费/用途、真实多源worker仍未闭合；不得制造holdout。
+
+## 下一步与未过门
+
+固定组合的本地selected/hostedCI以各自精确head/receipt另判；不要借旧green或独立作者测试报组合通过。
+普通P1 interruption recovery缺P1events/close/prefix，原生Continue缺跨process确切save/parent，均未实现完整闭环。
+Reference20/R20/INFO/T0b、真实多源/镜像/CUDA、正式用途/费用与策略效果未全验，不由三Human或synthetic替代。
+全部大小/历史功能沿唯一CHAIN/COMPONENTS/FEATURE_STATUS核role→连接→合同→owner/caller→格式→证据/去向，
+不是只移动目录或登记入口。历史成熟也须满足当前requires；未知和未迁入不靠归档标签消失。
+
+现场唯一检查点work/P1-SEMANTIC-ACTIVE-20261019.md；固定报告共享replies/
+P1-CONTINUITY-AND-INTEGRATION-NEXT-20261020.md，细证据work/p1-freeze-preparation-20261020。
+历史CURRENT与原产物/失败按各原时点保留，当前候选不追授历史资格。
