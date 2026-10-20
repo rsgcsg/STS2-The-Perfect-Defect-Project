@@ -507,3 +507,50 @@ Do not relax the existing Full-Run contract to implement it. Collection can cont
 verified storage, useful projection, training eligibility and complete-run certification are
 four different facts. The [bounded acceptance](evidence/B_WORKFLOW_BOUNDED_ACCEPTANCE_2026-09-15.md)
 records the owner's engineering release scope without claiming continuous Full-Run PASS.
+
+
+## P1 originals and named projections in the existing local Store
+
+The internal developer entry is `python -m spireagent.workbench recordings --help`.
+It complements the same `project open --config /ABS/project.json` workbench;
+opening either entry starts no recording. This local P1 path does not authorize
+cloud upload or training. Register an entire immutable collection-tool directory
+by its release ID using the existing project registration; do not use a floating
+source checkout as the collection tool.
+
+From `python/` (replace the absolute example values with the configured binding):
+
+```bash
+python -m spireagent.workbench recordings import-bundle --store /ABS/store --state /ABS/state --tool /ABS/collection-tools/RELEASE --tool-release RELEASE --bundle /ABS/sealed-bundle
+python -m spireagent.workbench recordings derive --store /ABS/store --state /ABS/state --tool /ABS/collection-tools/RELEASE --tool-release RELEASE --artifact ORIGINAL_ID --run-id run-0001 --projection native-selector-finalized-d-1
+python -m spireagent.workbench recordings list --store /ABS/store --state /ABS/state
+python -m spireagent.workbench recordings read --store /ABS/store --state /ABS/state --artifact PROJECTION_ID --output /ABS/segments.json
+python -m spireagent.workbench recordings reconcile --store /ABS/store --state /ABS/state
+```
+
+`reconcile` only reads the persisted operation intent and durable Store objects;
+it never retries publication. Failed reads leave the outcome unknown. A known
+absent publication is a failure; explicit resubmission is then possible.
+`import-bundle` can reuse an already preserved archive with
+`--preserved-manifest`, `--preserved-archive` and `--preserved-index`, checking the
+exact archive and original index bytes before binding their preservation parent.
+
+The Python API is `spireagent.workbench.p1_recording_store`:
+`publish_p1_original`, `derive_p1_recording`, `query_p1_recordings`,
+`p1_projection`, and the temporary context `materialize_p1_original`.
+All use the existing `ManifestArtifactStore`. Originals retain the published
+P1 bundle schema, immutable archive/transfer payloads, original producer,
+origin declaration, raw file hashes and run journal. Named projections retain
+the existing native-segments schema and a `source` parent pointing to the exact
+original ID, plus tool release, core inventory, run and projection identity.
+The application names the converter's original default `native-input-v1`;
+`native-selector-finalized-d-1` uses its existing explicit selector option.
+The reader rejects unknown projections rather than treating them as segments.
+
+Read segments by obtaining `p1_projection(store, id)`, then
+`store.materialize(manifest.payload("segments"), destination)` or
+`store.read_payload(...)`. Conversion diagnostics remain in `conversion_summary`;
+segment masks, gap markers, external effects and original raw references remain
+in the converter output. Consecutive points do not claim complete P1 replay.
+Import does not imply Human proof or training admission. A later target projection
+requires its own declared supported schema; it must not replace an older artifact.

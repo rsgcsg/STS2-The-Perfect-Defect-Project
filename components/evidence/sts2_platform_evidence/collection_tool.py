@@ -24,6 +24,56 @@ SOURCE_V3_SUPPORT = {
     "type_id": "source-session-bundle-v3",
 }
 
+P1_NATIVE_SUPPORT = {
+    "schema": "sts2.evidence/p1-native-collection-support-1",
+    "audit_command": "audit-p1-native",
+    "pack_command": "pack-p1-native",
+    "recording_schema": "sts2.human-annotator/recording-manifest-2",
+    "source_profile": "human-p1-native-decisions-1",
+    "bundle_schema": "sts2.human-annotator/p1-native-session-bundle-1",
+    "prefix_schema": "sts2.human-annotator/p1-native-prefix-1",
+    "segment_schema": "sts2.p1/native-segments-1",
+    "type_id": "p1-native-session-bundle-v1",
+    "converter_entrypoint": "p1/tools/p1-native-to-p1.mjs",
+    "recording_client_entrypoint": "setup/tools/p1-native-recording.mjs",
+    "selector_transaction_projection": "native-selector-finalized-d-1",
+}
+P1_INPUT_PROJECTION = "native-input-v1"
+P1_SELECTOR_PROJECTION = P1_NATIVE_SUPPORT["selector_transaction_projection"]
+
+_P1_READ = """
+import {pathToFileURL} from 'node:url';
+const {readVerifiedP1NativeBundle} = await import(pathToFileURL(process.argv[1]).href);
+const source = readVerifiedP1NativeBundle(process.argv[2]);
+const json = name => JSON.parse(source.bytes(name).toString('utf8'));
+console.log(JSON.stringify({manifest:source.manifest, recording:json('recording-manifest.json'),
+  close:json('p1-native-close.json'), journal:source.journal,
+  human_origin_verified:false}));
+"""
+
+_P1_DERIVE = """
+import {pathToFileURL} from 'node:url';
+import {writeFileSync} from 'node:fs';
+const {convertP1NativeBundle} = await import(pathToFileURL(process.argv[1]).href);
+const options = {bundle:process.argv[2], runId:process.argv[3], includeSegments:true};
+if (process.argv[4] !== 'native-input-v1') options.selectorTransactions=process.argv[4];
+const result = await convertP1NativeBundle(options);
+writeFileSync(process.argv[5], JSON.stringify(result.segment_output,null,2)+'\\n',{flag:'wx'});
+const segments=result.segment_output;
+const points=segments.segments.flatMap(segment=>segment.points);
+console.log(JSON.stringify({schema:segments.schema, source_content_id:segments.source_content_id,
+  branch:segments.branch, profile:segments.profile, revision:segments.revision,
+  projection_claims:segments.projection_claims, whole_run_complete:segments.whole_run_complete,
+  source_conversion_complete:segments.source_conversion_complete,
+  segments:segments.segments.length, observations:points.length,
+  candidate_N:points.filter(point=>point.mask.N).length,
+  next_edges:points.filter(point=>point.mask.next).length,
+  end_masks:points.filter(point=>point.mask.end).length,
+  gaps:segments.gaps, discarded_choices:segments.discarded_choices,
+  blocking_issues:result.blocking_issues,
+  training_loader_consumed:false, research_admission:'not_evaluated'}));
+"""
+
 
 def canonical(value: object) -> bytes:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False).encode()
@@ -84,7 +134,69 @@ class CollectionTool:
         if ("source_v3_support" in identity
                 and identity["source_v3_support"] != SOURCE_V3_SUPPORT):
             raise ValueError("unsupported Source3 collection tool capability")
+        if "p1_native_support" in identity:
+            required = {"p1/tools/p1-native-bundle.mjs", P1_NATIVE_SUPPORT["converter_entrypoint"],
+                        P1_NATIVE_SUPPORT["recording_client_entrypoint"],
+                        "p1/components/connector/sdk/typescript/dist/p1Global/index.js"}
+            if (identity["p1_native_support"] != P1_NATIVE_SUPPORT
+                    or not required <= {row["path"] for row in actual}):
+                raise ValueError("unsupported or incomplete P1-native collection capability")
         return manifest
+
+    def supports_p1_native(self) -> bool:
+        return self.verify()["identity"].get("p1_native_support") == P1_NATIVE_SUPPORT
+
+    def _p1(self) -> dict[str, Any]:
+        identity = self.verify()["identity"]
+        if identity.get("p1_native_support") != P1_NATIVE_SUPPORT:
+            raise CollectionFailure("P1-native support is unavailable in this fixed tool")
+        return identity
+
+    def pack_p1_native(self, session: Path, output: Path, worker: str, campaign: str,
+                       *, human_origin_attested: bool = False) -> None:
+        identity = self._p1()
+        arguments = [self.dotnet, str(self.directory / identity["entrypoint"]),
+                     P1_NATIVE_SUPPORT["pack_command"], str(session), worker, campaign,
+                     str(output), identity["source_revision"]]
+        if human_origin_attested:
+            arguments.append("human_origin_attested")
+        try:
+            result = subprocess.run(arguments, capture_output=True, text=True,
+                                    timeout=600, check=False)
+        except subprocess.TimeoutExpired:
+            raise CollectionFailure("P1-native packing exceeded bounded runtime") from None
+        if result.returncode:
+            raise CollectionFailure("P1-native audit/pack failed", result.stderr[-16384:])
+
+    def _p1_node(self, driver: str, arguments: list[str], *, node: str) -> dict[str, Any]:
+        self._p1()
+        try:
+            result = subprocess.run([node, "--input-type=module", "--eval", driver, *arguments],
+                                    capture_output=True, text=True, timeout=600, check=False)
+        except subprocess.TimeoutExpired:
+            raise CollectionFailure("P1-native reader/converter exceeded bounded runtime") from None
+        if result.returncode:
+            raise CollectionFailure("P1-native reader/converter failed", result.stderr[-16384:])
+        value = json.loads(result.stdout)
+        if not isinstance(value, dict):
+            raise CollectionFailure("P1-native owner returned an invalid result")
+        return value
+
+    def verify_p1_native(self, bundle: Path, *, node: str = "node") -> dict[str, Any]:
+        """Delegate integrity and stream accounting to the pinned original reader."""
+        return self._p1_node(_P1_READ,
+                             [str(self.directory / "p1/tools/p1-native-bundle.mjs"), str(bundle)],
+                             node=node)
+
+    def derive_p1_native(self, bundle: Path, output: Path, *, run_id: str,
+                         projection_id: str = P1_SELECTOR_PROJECTION,
+                         node: str = "node") -> dict[str, Any]:
+        """Write only the named segments and compact diagnostics, never a giant debug trace."""
+        if projection_id not in {P1_INPUT_PROJECTION, P1_SELECTOR_PROJECTION}:
+            raise CollectionFailure("unsupported P1-native projection")
+        return self._p1_node(_P1_DERIVE,
+                             [str(self.directory / P1_NATIVE_SUPPORT["converter_entrypoint"]),
+                              str(bundle), run_id, projection_id, str(output)], node=node)
 
     def supports_source_v3(self) -> bool:
         """Only a caller-pinned complete release may advertise Source3 support."""

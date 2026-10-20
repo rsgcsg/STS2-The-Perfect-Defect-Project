@@ -657,6 +657,23 @@ class LocalRecordingImporter:
 
     def _existing_candidate(self, store: ManifestArtifactStore, candidate_id: str,
                             candidate: dict[str, Any]) -> str | None:
+        if candidate.get("recording_type") == "p1_native":
+            from .p1_recording_store import BUNDLE_SCHEMA
+
+            matches = [m.artifact_id for identity in store.manifest_ids()
+                       if (m := store.get_manifest(identity)).kind == "evidence"
+                       and m.parameters.value().get("schema") == BUNDLE_SCHEMA
+                       and m.parameters.value().get("session_id") == candidate["session_id"]
+                       and m.parameters.value().get("timeline_id") == candidate["timeline_id"]
+                       and m.parameters.value().get("original_recording", {}).get(
+                           "recorder_source_revision") == candidate["recorder_source_revision"]
+                       and all(m.parameters.value().get("raw_file_sha256", {}).get(name) == candidate[key]
+                               for name, key in (("recording-manifest.json", "manifest_sha256"),
+                                                 ("session-close-receipt.json", "close_sha256"),
+                                                 ("p1-native-close.json", "p1_close_sha256")))]
+            if len(matches) > 1:
+                raise BoundaryError("local_import", "candidate_publication_ambiguous")
+            return matches[0] if matches else None
         if candidate.get("recording_type") != "source3":
             return self._existing(store, candidate_id)
         from stpd.ordered_source_spec import RAW_SCHEMA
@@ -841,6 +858,14 @@ class LocalRecordingImporter:
             "schema": SCHEMA, "status": "completed", "candidate_id": candidate_id,
             "artifact_id": artifact_id, "finished_at": _now(),
         }
+        if candidate.get("recording_type") == "p1_native":
+            store, _ = _selected_store(self.config)
+            raw = store.get_manifest(artifact_id)
+            result.update(recording_type="p1_native", session_id=candidate["session_id"],
+                          timeline_id=candidate["timeline_id"],
+                          bundle_content_id=raw.parameters.value()["content_id"],
+                          human_origin_verified=False, research_admission="not_evaluated",
+                          next_action="recordings.p1_derive")
         if candidate.get("recording_type") == "source3":
             store, _ = _selected_store(self.config)
             raw = store.get_manifest(artifact_id)
@@ -909,6 +934,16 @@ class LocalRecordingImporter:
                 if candidate.get("source3_tool_supported") is not True:
                     raise BoundaryError("local_import", "source3_tool_support_required")
                 _source3_api()
+            elif candidate.get("recording_type") == "p1_native":
+                if candidate.get("p1_tool_supported") is not True:
+                    raise BoundaryError("local_import", "p1_tool_support_required")
+                if (candidate["declared_origin"] == "declared_human"
+                        and human_origin_attested is not True):
+                    raise BoundaryError("local_import",
+                                        "explicit_human_origin_attestation_required")
+                if (candidate["declared_origin"] != "declared_human"
+                        and human_origin_attested not in {None, False}):
+                    raise BoundaryError("local_import", "p1_origin_attestation_mismatch")
             elif human_origin_attested is not True:
                 raise BoundaryError("local_import", "explicit_human_origin_attestation_required")
             if self.thread is not None and self.thread.is_alive():
@@ -997,6 +1032,8 @@ class LocalRecordingImporter:
             return existing
         if candidate.get("recording_type") == "source3":
             return self._import_source3(candidate_id, candidate, store, registry)
+        if candidate.get("recording_type") == "p1_native":
+            return self._import_p1(candidate_id, candidate, store, registry)
         producer = source_identity(ROOT)
         labels = _labels(self.config)
         tool_directory, release_id = current_collection_tool(self.config)
@@ -1062,6 +1099,43 @@ class LocalRecordingImporter:
                 owner.published_source(candidate_id, artifact_id)
             _sync(store, registry)
             return artifact_id
+
+    def _import_p1(self, candidate_id: str, candidate: dict[str, Any],
+                   store: ManifestArtifactStore, registry: SQLiteRegistry) -> str:
+        from .p1_recording_store import publish_p1_original
+
+        directory, release_id = current_collection_tool(self.config)
+        if release_id != candidate["tool_release_id"]:
+            raise BoundaryError("local_import", "candidate_tool_changed")
+        tool = CollectionTool(directory, release_id)
+        labels = _labels(self.config)
+        with tempfile.TemporaryDirectory(prefix="p1-recording-import-",
+                                         dir=self.config.state_dir) as name:
+            bundle = Path(name) / "bundle"
+            tool.pack_p1_native(candidate["source_directory"], bundle,
+                                labels["worker_id"], labels["campaign_id"],
+                                human_origin_attested=(
+                                    candidate["declared_origin"] == "declared_human"))
+            if self._fresh_candidate(candidate_id) != candidate:
+                raise BoundaryError("local_import", "candidate_changed_during_pack")
+            verified = tool.verify_p1_native(bundle)
+            recording = verified["recording"]
+            if (recording["session_id"] != candidate["session_id"]
+                    or recording["timeline_id"] != candidate["timeline_id"]
+                    or _sha256_file(bundle / "raw/recording-manifest.json")
+                    != candidate["manifest_sha256"]
+                    or _sha256_file(bundle / "raw/session-close-receipt.json")
+                    != candidate["close_sha256"]
+                    or _sha256_file(bundle / "raw/p1-native-close.json")
+                    != candidate["p1_close_sha256"]):
+                raise BoundaryError("local_import", "packed_p1_identity_mismatch")
+            raw = publish_p1_original(store, bundle, tool, source_identity(ROOT),
+                                      scratch=Path(name))
+            owner = _selected_curation_owner(self.config)
+            if owner is not None:
+                owner.published_source(candidate_id, raw.artifact_id)
+            _sync(store, registry)
+            return raw.artifact_id
 
     def _import_source3(self, candidate_id: str, candidate: dict[str, Any],
                         store: ManifestArtifactStore, registry: SQLiteRegistry) -> str:
