@@ -61,6 +61,14 @@ Originals, derived artifacts and research admission remain distinct. The Python
 application/catalog/importer must consume this explicit capability and P1 format;
 legacy Human import is not a substitute. Current integration status lives in CURRENT.
 
+The opt-in `--target-projection native-timeline-targets-1 --targets-output NEW_FILE`
+produces `sts2.p1/native-targets-1`: one original fact timeline with explicit native
+effects/missing spans, complete N inputs/labels, separately qualified adjacent
+next edges and same-branch observed end targets. This is a different declared
+consumer purpose from episode segments. It preserves the original timeline without
+claiming a complete P1 action chain or memory across missing facts. The default,
+segments03 and fixed historical training inputs retain their original meaning.
+
 ## Canonical profile and existing consumers
 
 Human observation **H** is separate from execution **S + A(S)**. Native

@@ -52,6 +52,17 @@ precedes any future SDK-direct driver, under the same execution guarantees.
 | Project applications | `python/spireagent` | one local/cloud console, members/devices, upload/export, operations and shared artifact infrastructure | legality, recording proof, research labels |
 | STPD | `python/stpd` | ResearchTransition, Dataset Views, representation, Qwen, training/evaluation | Host implementation or legality |
 
+The user's 2026-10-20 freeze requirement covers every historical/current function,
+including small utilities, recovery, viewing, downloads and cloud operations.
+Each function resolves to one responsible component, a supported entry and its
+actual core implementation, connected requires/provides, protocol/format versions,
+evidence level and disposition in the existing
+[feature table](plans/p1-prefreeze-2026-10-18/FEATURE_STATUS.md) and K asset ledger.
+GUI/CLI/API may be multiple thin surfaces over that same owner. Historical items
+must be evidenced as retained, replaced, archived or unfinished; an archive tag or
+inventory count alone does not complete migration. This is not a request to merge
+all components, rebuild all experiments or create another ownership registry.
+
 For the current pre-training freeze, internal API/library/CLI calls are the main
 operation surface. Existing browser and native UI remain thin mappings to the same
 application use cases, including their presentation/confirmation/pairing adapters.

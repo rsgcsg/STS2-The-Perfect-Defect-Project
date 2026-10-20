@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 import * as sdk from '../../components/connector/sdk/typescript/dist/index.js';
 import * as core from '../../components/connector/sdk/typescript/dist/p1Global/index.js';
 import { convertNativeSemanticOriginals } from '../p1-native-to-p1.mjs';
+import { buildNativeP1Targets, nativeTargetProjection } from '../p1-native-targets.mjs';
 import { rewardForwardPair } from '../../components/connector/sdk/typescript/test/fixtures/reward-forward.mjs';
 
 // Semantic-only fixture: actual Store/packer bytes are tested at the reader seam.
@@ -320,7 +321,8 @@ test('the recorded UI-filter producer cannot qualify a known incomplete executio
   Object.assign(secondExecution.execution_action_space, { scope: 'combat_play_phase',
     native_evidence: ['P1:CombatTurnSurfaceReader.CanDiscardPotion+exact_current_enabled_potion_holder'] });
   const unchanged = structuredClone(secondExecution);
-  const report = convertNativeSemanticOriginals(source, sdk, core, { includeSegments: true });
+  const report = convertNativeSemanticOriginals(source, sdk, core, { includeSegments: true,
+    includeTargets: true, targetProjection: nativeTargetProjection });
   assert.equal(report.complete, false);
   assert.equal(report.trajectory, null);
   assert.ok(report.blocking_issues.some(issue => issue.decision_id === secondExecution.decision_id
@@ -328,6 +330,9 @@ test('the recorded UI-filter producer cannot qualify a known incomplete executio
     && issue.missing_discard_subjects.includes(potion.entity_id)));
   assert.ok(report.segment_output.gaps.some(gap => gap.decision_ids.includes(secondExecution.decision_id)));
   assert.ok(report.segment_output.segments.every(segment => segment.points.every(point => point.source_decision_id !== secondExecution.decision_id)));
+  assert.ok(report.target_output.points.every(point => point.source_decision_id !== secondExecution.decision_id));
+  assert.ok(report.target_output.excluded_N_candidates.some(point => point.decision_id === secondExecution.decision_id
+    && point.source_issues.includes('original_execution_catalog_filtered_by_ui_queue_gate')));
   assert.deepEqual(secondExecution, unchanged);
 });
 
@@ -985,4 +990,133 @@ for (const openPrefix of [false, true]) test(`an unfinished native decision cuts
   const gap = report.segment_output.gaps.find(item => item.decision_ids.includes('unfinished-parent'));
   assert.equal(gap.through_sequence, source.events.at(-1).sequence);
   assert.ok(report.segment_output.discarded_choices.some(item => item.decision_id === 'end-turn'));
+});
+
+test('opt-in target projection preserves default output and keeps ordinary qualified edges', () => {
+  const { source } = example();
+  const old = convertNativeSemanticOriginals(source, sdk, core, { includeSegments: true });
+  const report = convertNativeSemanticOriginals(source, sdk, core, {
+    includeSegments: true, includeTargets: true, targetProjection: nativeTargetProjection });
+  const { target_output: targets, ...unchanged } = report;
+  assert.deepEqual(unchanged, old);
+  assert.equal(targets.schema, 'sts2.p1/native-targets-1');
+  assert.deepEqual(targets.points.map(point => point.mask.N), [true, true]);
+  assert.deepEqual(targets.edges.map(edge => edge.eligible), [true]);
+  assert.equal(targets.timeline.events.length, source.events.length);
+  assert.equal(targets.memory_continuity, 'not_approved_or_validated');
+  assert.throws(() => convertNativeSemanticOriginals(source, sdk, core,
+    { includeTargets: true }), /target_projection_required/);
+  assert.throws(() => convertNativeSemanticOriginals(source, sdk, core,
+    { includeTargets: true, targetProjection: 'future' }), /target_projection_unknown/);
+});
+
+test('target projection blocks the complete predecessor to complete successor edge across an unknown action', () => {
+  const { source } = example();
+  source.events.splice(4, 0, { ...source.events[1], decision_id: 'unknown-choice', action_witness_id: 'unknown-root',
+    native_receipt: { kind: 'game_action_accepted', carrier_ref: 'unknown-root' } },
+    { ...source.events[3], decision_id: 'unknown-choice', action_witness_id: 'unknown-root', phase: 'unknown' });
+  source.events.forEach((row, i) => { row.sequence = i + 1; row.event_id = `event-${i + 1}`; });
+  const report = convertNativeSemanticOriginals(source, sdk, core, { includeTargets: true,
+    targetProjection: nativeTargetProjection });
+  const targets = report.target_output;
+  assert.equal(targets.points.filter(point => point.mask.N).length, 2);
+  assert.equal(targets.edges[0].eligible, false);
+  assert.equal(targets.points[0].mask.next, false);
+  assert.ok(targets.edges[0].blocking_span_ids.length > 0);
+  assert.ok(targets.timeline.spans.some(span => span.reason === 'accepted_action_unknown'));
+  assert.equal(targets.timeline.events.length, source.events.length);
+  assert.equal(targets.p1_action_chain_complete, false);
+});
+
+function targetBuilderExample() {
+  const { source } = example();
+  const report = convertNativeSemanticOriginals(source, sdk, core, { includeSegments: true });
+  return { source, report, successful: report.actions.filter(action => action.result?.status === 'completed'),
+    strictSegments: report.segment_output };
+}
+
+test('a real-effect span keeps both full local labels and blocks their ordinary P1 edge', () => {
+  const input = targetBuilderExample(), { source, report } = input;
+  report.native_presentations.push({ decision_ids: ['effect-open', 'effect-skip'],
+    exception: { id: 'stop_relic_refresh' },
+    comparison: { changes: [{ path: '$.subscription', before: 'attached', after: 'absent' }] },
+    continuity_checkpoints: [{ boundary: 'before', source_event_id: source.events[0].event_id,
+      source_public_basis: source.events[0].basis },
+    { boundary: 'after', source_event_id: source.events[3].event_id,
+      source_public_basis: source.events[3].successor_basis }] });
+  const targets = buildNativeP1Targets(input);
+  assert.equal(targets.points.filter(point => point.mask.N).length, 2);
+  assert.equal(targets.edges[0].eligible, false);
+  assert.deepEqual(targets.timeline.spans[0].actual_changes, report.native_presentations[0].comparison.changes);
+  assert.equal(targets.timeline.spans[0].checkpoints[1].source_public_basis.sha256,
+    source.events[3].successor_basis.sha256);
+  assert.equal(targets.timeline.spans[0].N_label, null);
+});
+
+test('a newly retained N point does not inherit a preceding next flag or require a restart boundary', () => {
+  const input = targetBuilderExample();
+  input.strictSegments = { segments: [] }; // No qualified episode-restart edge.
+  input.successful[0].successor = null;
+  const targets = buildNativeP1Targets(input);
+  assert.equal(targets.points.filter(point => point.mask.N).length, 2);
+  assert.equal(targets.edges[0].eligible, false);
+  assert.match(targets.edges[0].reasons[0], /independently_retained_N/);
+});
+
+test('partial input remains original context and cannot be an ordinary model point even with a chosen ID', () => {
+  const input = targetBuilderExample(), capture = input.report.captures[input.successful[1].capture];
+  capture.complete = false; capture.missing = ['original_execution_catalog_filtered_by_ui_queue_gate'];
+  input.report.blocking_issues.push({ decision_id: input.successful[1].decision_id,
+    reason: 'original_execution_catalog_filtered_by_ui_queue_gate' });
+  const targets = buildNativeP1Targets(input);
+  assert.equal(targets.points.filter(point => point.mask.N).length, 1);
+  assert.equal(targets.excluded_N_candidates.length, 1);
+  const span = targets.timeline.spans[0];
+  assert.equal(span.model_input, null);
+  assert.ok(span.original_references.length > 0);
+  assert.ok(targets.timeline.events.some(event => event.public_bases.some(basis => basis.reduced_complete === false)));
+});
+
+test('same-branch natural end is a separate target and resume evidence withholds it', () => {
+  const input = targetBuilderExample(), { source, report } = input;
+  const after = structuredClone(report.captures.at(-1));
+  after.sequence = source.events.length + 1; after.event_id = 'terminal-original';
+  after.observation.status = 'terminal'; after.observation.scene.content.context = { result: 'win' };
+  report.captures.push(after);
+  source.events.push({ ...source.events[0], sequence: after.sequence, event_id: after.event_id, basis: after.public_basis });
+  source.journal.push({ run_id: 'run-1', kind: 'run_ended_native', result: 'win' });
+  report.blocking_issues.push({ decision_id: 'not-recorded-choice', reason: 'basis_missing' });
+  let targets = buildNativeP1Targets(input);
+  assert.equal(targets.end_target.result, 'win');
+  assert.ok(targets.points.every(point => point.mask.end));
+  assert.ok(targets.edges.every(edge => !edge.eligible));
+  assert.equal(targets.p1_action_chain_complete, false);
+  source.journal.push({ run_id: 'run-1', kind: 'run_resumed_native' });
+  targets = buildNativeP1Targets(input);
+  assert.equal(targets.end_target, null);
+  assert.ok(targets.points.every(point => !point.mask.end));
+});
+
+
+test('a complete local N remains qualified when only its successor is missing', () => {
+  const input = targetBuilderExample();
+  input.report.blocking_issues.push({ decision_id: input.successful[0].decision_id,
+    reason: 'accepted_action_without_complete_successor' });
+  input.successful[0].successor = null;
+  const targets = buildNativeP1Targets(input);
+  assert.equal(targets.points.filter(point => point.mask.N).length, 2);
+  assert.equal(targets.edges[0].eligible, false);
+});
+
+test('a terminal capture outside the original branch cannot provide an end target', () => {
+  const input = targetBuilderExample(), { source, report } = input;
+  const capture = structuredClone(report.captures.at(-1));
+  capture.event_id = 'foreign-terminal'; capture.sequence = source.events.length + 1;
+  capture.observation.status = 'terminal'; capture.observation.scene.content.context = { result: 'win' };
+  report.captures.push(capture);
+  source.events.push({ event_id: capture.event_id, sequence: capture.sequence, run_id: null, kind: 'observation' });
+  source.journal.push({ run_id: 'run-1', kind: 'run_ended_native' });
+  const targets = buildNativeP1Targets(input);
+  assert.equal(targets.end_target, null);
+  assert.ok(targets.points.every(point => !point.mask.end && point.source_event_id !== capture.event_id));
 });

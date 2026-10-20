@@ -30,12 +30,14 @@ export const p1NativeSupport = Object.freeze({
   recording_client_entrypoint: "setup/tools/p1-native-recording.mjs",
   converter_entrypoint: "p1/tools/p1-native-to-p1.mjs",
   segment_schema: "sts2.p1/native-segments-1",
-  selector_transaction_projection: "native-selector-finalized-d-1"
+  selector_transaction_projection: "native-selector-finalized-d-1",
+  target_projection: "native-timeline-targets-1",
+  target_schema: "sts2.p1/native-targets-1"
 });
 
 export const p1NativeToolFiles = ["p1-native-to-p1.mjs", "p1-native-bundle.mjs",
   "p1-native-cancellation.mjs", "p1-native-presentation.mjs", "p1-native-segments.mjs",
-  "p1-native-selector-transactions.mjs"];
+  "p1-native-selector-transactions.mjs", "p1-native-targets.mjs"];
 
 /** The fixed reader ships its executable SDK/zod closure, not a worktree path. */
 export function copyP1NativeTools(workspaceRoot, staging) {

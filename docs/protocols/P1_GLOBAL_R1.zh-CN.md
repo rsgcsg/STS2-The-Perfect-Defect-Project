@@ -179,6 +179,29 @@ accepted计数分开。既有分段器继续隔离其它gap，next只连同一�
 仍由其owner确定。本条为已批准的解释合同，实际验证层级见当前交付，不能由条文
 推定已安装、已入库或已训练。
 
+### 6.2 同原局事实时间线与独立目标准入B*（2026-10-20用户批准）
+
+新增显式opt-in `native-timeline-targets-1`，输出`sts2.p1/native-targets-1`，
+复用原件reader/同一共享核/现分段器已资格普通边，不改线上目录或旧默认/03/T0固定输入。
+此格式分别保存同session/timeline/run的原事件顺序、原件引用、具名非P1奖励真实效果、
+完整目录缺失或unknown等span，以及合格完整模型观察的监督点和显式边。
+原件时间线不断不等于完整P1动作链，不为效果span伪造动作或把缺失资料补成普通Input。
+
+N按自身完整PB/全部必需公开资料、完整合法目录、准确唯一chosen及完成事实准入；
+无承诺的重启边界是旧片段用途约束，不能无理由挡住本用途的局部N。
+部分资料只保存为原件context/ref，不成为该完整InputSpec的普通模型点。
+next按相邻点的边准入：既有已资格P1相邻pair继续用；新保留N形成的新邻接须有
+准确同一完整原生后继证明，否则显式false。所有边再检查其前后之间/重叠的未表达效果、
+缺资料、unknown和pending span，尤其不能只把异常点N/next=false而误连前一完整点到后一完整点。
+未证明的边保留拒绝原因/跨度/原件前后引用，不因append点就置next=true。
+end另按同分支真实自然终局和原journal核，不要求整条next连续；恢复/放弃/不明终局不得
+靠同seed、晚到结果或其它branch补标签。完整原生事件与P1动作完整性分别报告。
+
+M-std本批只消费显式支持的新格式中完整合法的N点；timeline/effects/partial不喂成普通输入，
+未知projection/schema拒绝。未来memory如何消费非动作/缺失、reset/history仍由其InputSpec与
+训练/推理一致性另验，本次未授跨缺失记忆。原件完整性、P1动作链、N/next/end数量和终局来源
+分别给实证；新产物/用途和谱系具名，不静默改变旧实验或双计旧新解释同一选择。
+
 ## 7. 结果与失败（`sts2.p1/result-1`）
 
 每个意图返回：completed / interrupted_known / not_started / unknown，以及每一步的原生动词、delivered / not_delivered / unknown、原因码。

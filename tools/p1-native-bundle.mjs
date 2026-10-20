@@ -180,7 +180,8 @@ export function readVerifiedP1NativeBundle(bundlePath) {
     && close.issue_count === issues, 'closed_stream_accounting');
   // The producer's declared origin and explicit attestation remain in manifest;
   // neither attested=true nor a closed file upgrades them to machine-proven Human data.
-  return { bundle, manifest, events, journal, bytes, executionSchemaVersion };
+  return { bundle, manifest, events, journal, bytes, executionSchemaVersion,
+    verifiedManifestSha256: hash(checked('session-bundle-manifest.json')) };
 }
 
 /** Verify the immutable administrative export of an open recording, without closing it. */

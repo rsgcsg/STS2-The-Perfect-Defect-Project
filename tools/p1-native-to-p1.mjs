@@ -8,6 +8,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { classifyNativeCancellation, classifyNativeSelectorCancellation } from './p1-native-cancellation.mjs';
 import { classifyNativePresentation } from './p1-native-presentation.mjs';
 import { buildNativeP1Segments } from './p1-native-segments.mjs';
+import { buildNativeP1Targets, nativeTargetProjection } from './p1-native-targets.mjs';
 import { classifyNativeHandSelectionTransaction, selectorTransactionProjection } from './p1-native-selector-transactions.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -18,6 +19,10 @@ const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
 export function convertNativeSemanticOriginals(source, sdk, core, options = {}) {
   if (options.selectorTransactions !== undefined && options.selectorTransactions !== selectorTransactionProjection)
     throw new Error('native_p1_selector_transaction_projection_unknown');
+  if (options.targetProjection !== undefined && options.targetProjection !== nativeTargetProjection)
+    throw new Error('native_p1_target_projection_unknown');
+  if (options.includeTargets && options.targetProjection !== nativeTargetProjection)
+    throw new Error('native_p1_target_projection_required');
   const openPrefix = source.manifest.schema === 'sts2.human-annotator/p1-native-prefix-1';
   if (!openPrefix && source.manifest.schema !== 'sts2.human-annotator/p1-native-session-bundle-1')
     throw new Error('native_p1_recording_schema_required');
@@ -97,7 +102,7 @@ export function convertNativeSemanticOriginals(source, sdk, core, options = {}) 
     const item = { sequence: row.sequence, event_id: row.event_id, origin, public_basis: reference,
       complete: reduced.complete, missing: [...reduced.missing], observation: reduced.observation };
     report.captures.push(item);
-    if (options.includeSegments) {
+    if (options.includeSegments || options.includeTargets) {
       const pending = [...active.values()].filter(action => action.decision_id !== row.decision_id
         && action.terminal_sequence === null).map(action => action.decision_id);
       const reward = reduced.state.reward;
@@ -521,8 +526,12 @@ export function convertNativeSemanticOriginals(source, sdk, core, options = {}) 
       presentation_count: report.native_presentations.length, native_presentations: report.native_presentations,
       projection_claims: report.projection_claims, points };
   }
-  if (options.includeSegments)
-    report.segment_output = buildNativeP1Segments({ source, report, successful, boundaries: segmentBoundaries });
+  if (options.includeSegments || options.includeTargets) {
+    const segments = buildNativeP1Segments({ source, report, successful, boundaries: segmentBoundaries });
+    if (options.includeSegments) report.segment_output = segments;
+    if (options.includeTargets) report.target_output = buildNativeP1Targets({ source, report, successful,
+      strictSegments: segments });
+  }
   return report;
 }
 
@@ -543,12 +552,22 @@ async function main() {
   for (let i = 0; i < args.length; i += 2) {
     const keys = { '--bundle': 'bundle', '--prefix': 'prefix', '--manifest-sha256': 'manifestSha256',
       '--sdk-root': 'sdkRoot', '--run-id': 'runId', '--output': 'output', '--through-sequence': 'throughSequence',
-      '--segments-output': 'segmentsOutput', '--selector-transactions': 'selectorTransactions' };
+      '--segments-output': 'segmentsOutput', '--selector-transactions': 'selectorTransactions',
+      '--targets-output': 'targetsOutput', '--target-projection': 'targetProjection' };
     if (!keys[args[i]] || !args[i + 1]) throw new Error('usage: --bundle PATH | --prefix PATH --manifest-sha256 SHA [--sdk-root PATH] [--run-id ID] [--output PATH] [--segments-output PATH]');
     options[keys[args[i]]] = keys[args[i]] === "throughSequence" ? Number(args[i + 1]) : args[i + 1];
   }
   options.includeSegments = Boolean(options.segmentsOutput);
+  options.includeTargets = Boolean(options.targetsOutput);
   const report = await convertP1NativeBundle(options);
+  if (options.targetsOutput) {
+    writeFileSync(options.targetsOutput, JSON.stringify(report.target_output, null, 2) + '\n', { flag: 'wx' });
+    report.target_summary = { schema: report.target_output.schema,
+      projection_id: report.target_output.projection_id, points: report.target_output.points.length,
+      N: report.target_output.points.filter(point => point.mask.N).length,
+      next: report.target_output.edges.filter(edge => edge.eligible).length, output: options.targetsOutput };
+    delete report.target_output;
+  }
   if (options.segmentsOutput) {
     writeFileSync(options.segmentsOutput, JSON.stringify(report.segment_output, null, 2) + '\n', { flag: 'wx' });
     report.segment_summary = { segments: report.segment_output.segments.length,

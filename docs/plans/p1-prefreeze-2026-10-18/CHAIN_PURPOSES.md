@@ -4,6 +4,14 @@
 
 历史查过：以前遇到过queued输入时H目录为空或不同于执行态，见[09-11 rapid audit](../../evidence/PR25_RAPID_INPUT_EXECUTION_AUDIT_2026-09-11.md)。当时分存H/native input与执行S/A(S)，精确匹配后在[rc4限定两局](../../evidence/PR25_RC4_FULL_RUN_HUMAN_PASS_2026-09-12.md)取得524/524及47rapid handoffs。此次复用该执行接缝/身份约束用于⑤⑥，并补当前P1的完整PB1/Reads与共享核；不能把原rc4资格当新P1通过。其它组件继续复用旧K2地图、现行owner与K0/K5/K6成果。
 
+## 2026-10-20冻结准备：所有功能都需明确归属与入口
+
+用户在统筹chat直接明确：“所有功能，大的还是小的，不论是历史还是现在的，冻结的时候都要收敛到一个明确的入口，和单一组件”，并要求实现前先找是否已有成果。这里的“单一组件”是每项业务唯一责任owner，不是把所有功能并成一个巨型组件。沿下方同一上层图与[Components](../../COMPONENTS.md)、[现功能表](FEATURE_STATUS.md)/既有K资产账本落实，不另建总图或平行制度。
+
+每项大小功能，包括启动/恢复/查看/下载/云/小工具，都须定位受支持入口→同一核心实现→上下游requires/provides、协议/格式版本、实际证据层和当前去向。GUI/CLI/API只是该owner的薄映射。历史条目逐项核现用、已替代、归档或未完成；归档需有真实用途/保留入口依据，不能用归档tag或登记行数消掉活跃重复路径、独有成果或未闭合接缝。不要求所有旧实验重新实现或重授资格。当前全功能映射尚未闭合，B已有K账本与C研究映射汇合后由主线抽查真实调用，未完成部分如实计冻结剩余。
+
+今天已启动准备，不等新的阶段许可；B*离线新投影已另获准确批准，旧默认/03/T0固定输入与原件保留。滚动采集的技术就绪、固定操作入口、正常Store与最终环境/模型验收分开报告，不以录一局代全功能收敛。日期是工作目标，最终通过依实际结果与用户确认。
+
 ## 唯一上层图与连接要求（新任务入口，2026-10-19）
 
 目标是在不多于原生公开信息的交互下，做出最强、能真实使用的STS2 Agent，靠采集、管理、训练、评估与迭代完成。沿用[BASELINE §2](../../BASELINE_V1_SPEC.zh-CN.md#2-上层抽象与唯一责任)、[综合设计 §3](../../design/BASELINE_PROTOCOL_V1_SYNTHESIS.zh-CN.md)的实现R/投影Π/观察抽象α及[四类变更规则](../../ARCHITECTURE.md#selected-convergence-and-change-rules)，把现有三路图提升到工作入口；不新建框架、服务、注册表或schema。
@@ -34,11 +42,11 @@
 | ③ Connector→profile | profile声明的信息时点、完整目录、结果/unknown | Connector Snapshot/all advertised Reads/BoundAction/Receipt；[P1](../../protocols/P1_GLOBAL_R1.zh-CN.md)由共享核聚合/lower | P1 r1.4；全机制按已批跨版本组合及受影响补证实证 |
 | ④ profile→完整Agent | 声明的观察/动作/承诺与失败语义；原控制/消费保证 | P1共享核；AgentProgramPort/Policy Runtime；[ADR0016](../../adr/0016-agent-composition-and-execution-request.md) | 程序/Model组成完整Agent，Model不等于Agent |
 | ⑤ 来源→Store/Evidence | 来源/原始顺序/内容身份、原件与缺口不变 | Annotator、Runtime、选择器等各producer；[记录合同](../../../components/annotator/docs/SOURCE_SESSION_PROFILE_V3.md)、[Evidence](../../../components/evidence/README.md) | 每来源分开核；封包不证明Human或整局 |
-| **⑥ 原件→profile轨迹** | **每profile自己声明；P1以执行S/A(S)同snapshot完整PB1/all Reads/catalog派生；H仅来源，native key/全部operands精确匹配，结果/后继及起终/Close/pack** | **Annotator P1-native/AgentRun等原件；共享核reducer/lowering与声明的Π；[P1 §4.1](../../protocols/P1_GLOBAL_R1.zh-CN.md#41-录制原件派生p1的requires用户已批准)** | **定义4.1–4.2用户已批准；实现/探测四项与known risk见协议，实际开录未PASS** |
+| **⑥ 原件→profile轨迹** | **每profile自己声明；P1以执行S/A(S)同snapshot完整PB1/all Reads/catalog派生；H仅来源，native key/全部operands精确匹配，结果/后继及起终/Close/pack** | **Annotator P1-native/AgentRun等原件；共享核reducer/lowering与声明的Π；[P1 §4.1](../../protocols/P1_GLOBAL_R1.zh-CN.md#41-录制原件派生p1的requires用户已批准)** | **定义4.1–4.2用户已批准；三自然原件及既有事务03/兼容已交，B*和最终资格见CURRENT，不沿旧“未开录”快照派工** |
 | ⑦ profile轨迹→Curation | 来源资格、用途/use、谱系/划分与缺口处理 | 已验原件/派生轨迹；[Data/Provenance](../../../python/docs/DATA_AND_PROVENANCE.md) | 具体用途由Q链owner定；已批T0a实际读入，非正式研究准入 |
 | ⑧ Curation→研究输入/目标 | Input/Target字段、曝光/历史/reset、target/mask与split | Projection/InputSpec/TargetSpec owner；[研究地图](../../../python/docs/DOCUMENT_MAP.md) | T0 owner接当前Input/Target；正式dataset/研究配置未因此冻结 |
 | ⑨ 研究输入→训练/Model | recipe/初始化/输入身份、更新数/预算、checkpoint | TrainingService/engine/worker/provider；[workload](../../../python/docs/STRUCTURED_WORKLOAD.md) | 已有机制；P1实际consumer/首训资格未验 |
-| ⑩ Model→Agent→评估/新原件 | 可加载权重、输入/状态语义、组合/请求和固定评估条件 | 注册/AgentComposition/ExecutionRequest、Runtime/result reader；[Agent执行](../../../python/docs/AGENT_EXECUTION_CONTRACT.md) | T0a离线接线进行；T0b ready且获独占窗口才实打 |
+| ⑩ Model→Agent→评估/新原件 | 可加载权重、输入/状态语义、组合/请求和固定评估条件 | 注册/AgentComposition/ExecutionRequest、Runtime/result reader；[Agent执行](../../../python/docs/AGENT_EXECUTION_CONTRACT.md) | T0a离线已交；正式研究工程进行，T0b须准确新注册/独占窗口才实打 |
 
 | 抽象节点 | 当前实现 | 合同/责任owner |
 |---|---|---|
