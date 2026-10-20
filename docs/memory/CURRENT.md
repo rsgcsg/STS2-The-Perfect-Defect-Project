@@ -10,11 +10,13 @@ Root负责指派及最终审计；集成负责人维护本页、共享身份和�
 ## 当前候选与下一步
 
 集成树为`work/p1-round3h-integration-20261021`，分支`codex/p1-round3h-integration-20261021`。
-它从`origin/develop@733782b1`开始，normal merge未验收PR206的`5b8fd2c2`为显式父依赖；稳定来源只作normal merge，保组件来源。
-最短主线是原件→奖励连续新派生→正常Store发布→训练reader及旧模型离线评分；控制/GPU准备和原指南收敛并行。
-已normal merge A连续派生、B正常训练client/用途索引、D原指南首增量，组件current BOM已同步；独立审查进行中。
-三源新派生已有正常Store发布回执，C实际reader/旧模型消费与数值修复待核；完整组合门尚未运行。
-下一步接C和A恢复的稳定增量，核真实消费/身份，在root分配slot后运行稳定组合门，独立审查者核实际结果。
+它从`origin/develop@733782b1`开始，normal merge未验收PR206的`5b8fd2c2`为显式父依赖，保组件来源。
+已normal merge A连续派生/P1恢复、B正常训练client/用途索引/关键账恢复、C数值隔离/GPU准备和D原指南。
+源码候选Annotator rc22/GameMod rc47及current BOM一致；已测固定Tool、实际安装和旧loaded身份分别保留。
+A→B正常发布已实证；P1合成中断恢复经Tool→pack→reader→B导入只保1N/1unknown，不造next/完整局。
+C数值41通过/1CUDA跳过，65点完整训练状态与旧数值maxdiff0；这些不能代替真实GPU或策略质量。
+下一步由集成负责人运行一次稳定组合所选门，独立审查者核实际结果；B开发实例控制验收/当前真实模型消费另看任务原回执。
+完整组合门尚未运行，六项全项目收敛仍按实际走查及未完项判断，不能称首训就绪。
 
 ## Remaining Platform non-claims 与真实边界
 
