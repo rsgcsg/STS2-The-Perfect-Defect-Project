@@ -45,6 +45,27 @@ uses the explicit prefix reader, while `--bundle PATH` requires actual closed or
 Derived trajectories retain recording origin and never invent Agent Consume/ACK.
 Missing information, unsupported intentions and native unknown remain explicit.
 
+The optional finalized hand-selector D projection is owned by
+[P1 §6.1](../../../docs/protocols/P1_GLOBAL_R1.zh-CN.md#61-原生确认事务的离线d监督2026-10-20用户批准),
+not a change to native events or the online append-only catalog. Use
+`--selector-transactions native-selector-finalized-d-1` with a new output path.
+Raw edit inputs retain their actual operands/results and receive zero-label
+context disposition; independent D records carry the final target, exact original
+anchor/confirmation/successor and projection provenance. The original accepted
+accounting and D label counts are separate. All provenance stays outside the
+observation passed to `modelView`/Input. The original/default reader interpretation
+and fixed datasets remain readable and are not rewritten.
+
+The supported Application client is `npm run recording:p1 -- ...` at the root,
+also shipped as `setup/tools/p1-native-recording.mjs` in a fixed Collection Tool
+release. It sends one command with exact runtime/session, an explicit P1 origin
+on start, and a durable command receipt. It consumes `collectionSetup status`'s
+current connected/bound runtime identity; unsupported/blocked setup is an error.
+It attaches to an already running game, never delivers gameplay or shuts it down.
+Pending Close is reported as pending; unknown delivery is retained without retry.
+Continuous automatic next-session creation retains the chosen profile and origin;
+Pause/manual Close still disarm it. Actual runtime qualification is separate.
+
 ## Human text-menu input observations
 
 New recordings declare `text_input_schema_version: 2` and retain a separate

@@ -1,59 +1,48 @@
-# 当前工作：三来源集中修复，稳定候选待交接，尚未冻结
+# 当前工作：冻结前长期收口批，尚未冻结
 
-更新于2026-10-20。唯一现场状态是本地工作根的
-`work/P1-SEMANTIC-ACTIVE-20261019.md`；完整主报告是
-`work/P1-QUEUED-INPUT-REPORT-20261019.md`。当前执行用户具名B节，
-做到稳定候选或真实语义阻塞即交统筹，不自动开始最终套件或T0b。
-恢复前刷新准确分支、dirty、agent、游戏/录制进程与Reference owner。
+更新于2026-10-20。用户直接批准“确认前编辑属于同一次选择事务，按最终确认选择生成监督”，
+并要求查本链路私有入口/临时处置，完成本批再评冻结；不按旧“隔离四链/稳定即停”收尾。
+唯一现场检查点和完整主报告为本地工作根work/P1-SEMANTIC-ACTIVE-20261019.md与
+work/P1-QUEUED-INPUT-REPORT-20261019.md。恢复前核准确Git/dirty、agent、游戏/录制进程与Reference owner。
+当前离线批完成，无游戏/录制；新入口/continuous源码已落，正在构建与定向验收，不借旧Mod资格。
 Resolve live GitHub refs; current source and original evidence override this file.
 
-## 当前结果与范围
+## 本批已完成的离线增量
 
-已批跨版本组合是旧r14加新版两局，三自然来源已全部封包。
-旧r14第三幕39层loss；新版第一局第二幕33层loss、第二局第三幕48层win。
-不是三局同候选，不要求用户为解释缺口重新整局游玩。
-旧冻结I保留15c3436e及原Mod0226/MVIDa770；新版两局实际同一
-Mod c2a36b24/MVID4691、hostsource37b64f31。此次没有重建或替换Mod。
+P1线上r1.4和完整Input不变，独立opt-in投影native-selector-finalized-d-1已按共同机制实现。
+原native accepted/原件/旧产物不改；三简单replace另产D，复杂净零prefix 0label、真实1292后重选保留。
+同owner/parent、完整每步PB/全部Reads/目录、无中间效果或新信息、准确确认和真实后件逐条核验。
+默认旧逐输入解释保留。限定非作者复核已接受源码/四链/三源03派生，未代下游或冻结签字。
 
-预览返回沿既有完整原件相等、同owner的0label浏览合同补接deck-card页面；
-准确原生parent/selector/callback、完整中间与首尾PB/Reads/目录仍核验。
-当前重派生：旧r14 15段441N字节SHA仍0f126e54；新版第一局10段363N、
-第二局14段486N。旧保留点完整观察和选择均不变，两新版各恢复2点。
-第二新版complete/whole=true但13奖励副作用例外保留、lossless=false；
-旧r14仍6blocking（手牌1、旧药水目录5），新版第一局仍6手牌编辑blocking。
-四条手牌编辑链已全核，改变append-only或离线投影含义须用户决定；
-隔离不代表手牌问题已解决，不回填原件或修改T0固定输入。
+三自然来源为旧r14第三幕39层loss、新版第一局第二幕33层loss及新版第二局第三幕48层win。
+新D产物：r14 14段445观察/444N，仍5旧药水资料blocking；新版loss 7段371观察/370N、0blocking，
+仍7奖励副作用gap；新版win14段487观察/486N、旧点不变，仍13奖励副作用gap。complete/whole是
+各自声明投影的完整，不等于lossless原生轨迹或Host一致。原例外不隐藏，next不跨gap，end同分支。
+已有1293个旧观察中1292个仍在新选择中、Input完全相同，仅692/1061改为明确D最终target、1282转context。
 
-Host Runtime源码a9141533修shutdown为单次新连接，防止同步打包转换期间
-旧keep-alive失效；认证、超时、拒绝/错误及forced语义保持，不自动重试。
-独立子进程反例修复后正常退出；唯一隔离工程短验已Close/pack、HTTP200、
-code0/signalnull/forcedfalse并释放PID。三局旧fetchfailed/forcedtrue不改，
-原生资源诊断另列，不能据一次退出称nativeclean。
+实际T0旧loader已读全部1303观察，8个事务D目标实际评分/算监督项；权重/词表/InputSpec不变，
+旧固定0f126e54输入字节不变，0优化步。用途只是新D读回和原模型兼容，不自动研究准入/混入旧T0训练。
+主线证据work/p1-selector-transactions-20261020/loader-model-consumption01.json及three-source-rederive-summary03.json。
+预览同owner完整相等修复、shutdown单次fresh连接及真实工程正常退出沿既有a9141533复用，旧三forced诊断不改。
 
-## 消费者、覆盖和下一步
+## 本批长期入口与依赖
 
-T0a已完成真实CPU更新、恢复、导出、隔离注册与生产Runtime离线链。
-T0b离线准备已交，尚未实际Reference；K16项调查已交，不重复派工。
-固定报告分别为本地work的T0-TRAINING-THIN-SLICE-REPORT-20261020.md及
-CONVERGENCE-AND-TRAINING-INVENTORY-REPORT-20261020.md。
-本批新三源由实际旧loader逐点投影1293观察，4个恢复点由原模型全目录
-推理；权重/词表/InputSpec与固定工程输入均不改，不授研究准入或重训。
+已修Recorder automatic下一局丢P1 profile/origin，保手动Pause/Close disarm；Core定向9PASS。
+新增公共薄CLI/npm recording:p1，复用原Platform Application和collectionSetup status/bound，准确runtime/session、
+单POST/UUID与持久收据，pending/unknown不重试、不关用户游戏；固定CollectionTool发布P1 pack/reader/converter和SDK/zod闭包。
+相关148定向Node检查通过；发布的实际release、精确native build/install/load和入口短验仍待，不称已运行通过。
 
-42+4索引按三源原件定位；Act2/3各自普通、精英、事件、Boss、BossReward
-均有来源，三幕/胜局不是所有机制INFO已通过。战斗discard、linked/mandatory
-奖励、包选择等子型按实际命中分开；画面与同次P1独核仍有差额。
-Managed严格/40、旧B、freeze_card_group、O-v1延期，不恢复旧门。
-本批先交准确环境manifest、组件provenance、兼容/缺口和窗口建议；
-最终Reference20、Reference R20/产品短链及INFO在统筹分配独占窗口后执行，
-T0b需用户转发具名安排才启动，不与主线同时抢Reference。
-16:30是原唯一硬报告、不硬停；具名PR合入/冻结仍由用户批准。
+跨owner真实缺口已交统筹：Python NativeTasks/developer_server只接Source命令，catalog误识P1为legacy、
+CollectionTool/Importer未接P1分流；须沿现import operation/Store接原件及新派生、版本/用途/branch/mask和去重。
+不能以CAS存字节或主线CLI代日常采集→Store闭环；主线不抢写T0/研究配方或其它writer。
+已有API/组件足够，不新建collector/Store/治理平台。具体审计和共享handoff见同日主线附件。
 
-## Remaining Platform non-claims（声明与后续边界）
+## Remaining Platform non-claims（继续执行与原边界）
 
-从[唯一链路和连接表](../plans/p1-prefreeze-2026-10-18/CHAIN_PURPOSES.md)及
-[P1协议](../protocols/P1_GLOBAL_R1.zh-CN.md)进入owner。
-原件到P1、同P1的Host一致、原生重放、信息正确与研究准入分别验证。
-S0两topic及r14原件R2完整回读已完成，不重复上传、不删本地或原失败。
-GUI/恢复、通用原生重放和下一版freeze_card_group保留在
-[后续待做卡](../plans/p1-prefreeze-2026-10-18/POSTFREEZE_RECORDING_WORK_CARD.zh-CN.md)，
-当前不自动实施；旧卡的Managed门和同候选安排由最新用户范围覆盖。
+先稳定本批contract/CLI/continuous/发布、必要复核和真实短验，再汇合应用/数据接线结果评冻结。
+16:30是硬报告、不硬停、不自动冻结；不要求用户再打一整局。三来源/旧T0/原件全部保留。
+原I 15c3436e/Mod0226、新两局Mod c2a36b24/MVID4691保持其历史身份，新Mod必须独立核加载。
+T0a已完成CPU更新/恢复/export/隔离注册与Runtime离线链；T0b需具名独占安排才Reference实打。
+最终Reference20/R20/产品和INFO尚未完成；42+4各幕来源齐不等于每个子型/画面均已验。
+Managed严格/40、旧B、freeze_card_group、O-v1不因本批自动恢复为门；S0保全已交，不重复云上传或删历史。
+主线接口地图由docs/plans/p1-prefreeze-2026-10-18/CHAIN_PURPOSES.md拥有；用户最新原话优先于旧底稿。

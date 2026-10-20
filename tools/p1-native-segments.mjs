@@ -91,9 +91,13 @@ export function buildNativeP1Segments({ source, report, successful, boundaries }
         source_exceptions: priorGaps.filter(gap => gap.reasons.some(reason => reason.startsWith('projection_exception:'))),
         end_target: endTarget, points: [] };
     }
+    if (action.data_class === 'D') current.data_class = 'D';
     if (current.points.length) current.points.at(-1).mask.next = true;
     current.points.push({ index: current.points.length, source_sequence: sequence,
-      source_event_id: capture.event_id, source_decision_id: action.decision_id,
+      source_event_id: capture.event_id,
+      source_decision_id: action.decision_id.startsWith('D:') ? action.selector_transaction.anchor_decision_id : action.decision_id,
+      ...(action.selector_transaction ? { data_class: 'D', selector_transaction: action.selector_transaction,
+        ...(action.decision_id.startsWith('D:') ? { derived_choice_id: action.decision_id } : {}) } : {}),
       source_public_basis: capture.public_basis, observation: capture.observation, chosen: action.choice_id,
       mask: { N: true, next: false, end: endTarget?.result != null } });
   }

@@ -180,6 +180,7 @@ export async function collectionSetup(command, options, dependencies = {}) {
     }
     result.errors = evaluation.errors;
     result.loaded_identity = evaluation.ready && platformIdentity ? { ...platformIdentity, process_id: status.process_id,
+      runtime_instance_id: capabilities.host.runtime_instance_id,
       process_started_at: processStartedAt,
       game: { version: capabilities.game?.version ?? null, revision: capabilities.game?.commit ?? null,
         assembly_sha256: status.environment?.game?.main_assembly_sha256 ?? null,

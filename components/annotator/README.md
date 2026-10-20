@@ -23,6 +23,41 @@ Close or changing pending actions. Its consumer requires the returned manifest h
 See the [data contract](docs/DATA_CONTRACT.md#p1-native-semantic-profile).
 Actual native recording and replay qualification remain separate from source support.
 
+For daily P1 collection attach to the running installed game through the existing
+Application API. Run `npm run recording:p1 -- status`, then use its exact runtime
+and session (`none` before the first session):
+
+```bash
+npm run recording:p1 -- start --runtime RUNTIME --session SESSION_OR_none \
+  --origin declared_human --setup /absolute/collection-config.json --receipt /absolute/new-start-receipt.json
+npm run recording:p1 -- prefix --runtime RUNTIME --session SESSION \
+  --setup /absolute/collection-config.json --receipt /absolute/new-prefix-receipt.json
+npm run recording:p1 -- close --runtime RUNTIME --session SESSION \
+  --setup /absolute/collection-config.json --receipt /absolute/new-close-receipt.json
+```
+
+`collection-config.json` contains the existing setup fields `recordings_root`,
+`mod_provenance` and optional `game_dir`; use absolute paths to the persistent
+collection root and selected build/installed provenance. The command consumes
+`collectionSetup status`'s actual connected/bound runtime. Configure a different
+root through the existing `collection-setup.mjs bind` while the game is stopped.
+No per-game rebinding, private workspace script, stdin command or engineering
+deadline is needed. The client does not launch or shut down the user's game.
+It saves the UUID/request before its single POST. A pending Close needs a later
+read-only status check; unknown delivery needs owner investigation and is not retried.
+After an automatic terminal seal, the next run retains P1 profile/origin and gets
+its own session; manual Close/Pause still stops continuous recording.
+
+A fixed Collection Tool release declares `p1_native_support` and ships that client,
+the existing `audit-p1-native`/`pack-p1-native` Tool commands and the converter's
+executable SDK/zod closure. Its new-output conversion entry is
+`node RELEASE/p1/tools/p1-native-to-p1.mjs --bundle BUNDLE --output NEW_REPORT
+--segments-output NEW_SEGMENTS`; opt in to the approved D interpretation with
+`--selector-transactions native-selector-finalized-d-1`.
+Originals, derived artifacts and research admission remain distinct. The Python
+application/catalog/importer must consume this explicit capability and P1 format;
+legacy Human import is not a substitute. Current integration status lives in CURRENT.
+
 ## Canonical profile and existing consumers
 
 Human observation **H** is separate from execution **S + A(S)**. Native

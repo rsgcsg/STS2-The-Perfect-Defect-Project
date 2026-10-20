@@ -8,6 +8,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { classifyNativeCancellation, classifyNativeSelectorCancellation } from './p1-native-cancellation.mjs';
 import { classifyNativePresentation } from './p1-native-presentation.mjs';
 import { buildNativeP1Segments } from './p1-native-segments.mjs';
+import { classifyNativeHandSelectionTransaction, selectorTransactionProjection } from './p1-native-selector-transactions.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
@@ -15,6 +16,8 @@ const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
 /** Pure interpretation seam. `source` is returned by the owning bundle reader;
  * this export also permits production-shaped semantic fixtures without disk IO. */
 export function convertNativeSemanticOriginals(source, sdk, core, options = {}) {
+  if (options.selectorTransactions !== undefined && options.selectorTransactions !== selectorTransactionProjection)
+    throw new Error('native_p1_selector_transaction_projection_unknown');
   const openPrefix = source.manifest.schema === 'sts2.human-annotator/p1-native-prefix-1';
   if (!openPrefix && source.manifest.schema !== 'sts2.human-annotator/p1-native-session-bundle-1')
     throw new Error('native_p1_recording_schema_required');
@@ -59,6 +62,7 @@ export function convertNativeSemanticOriginals(source, sdk, core, options = {}) 
   const selectorCancellations = [];
   const presentationByDecision = new Map();
   const presentations = [];
+  const transactions = [], transactionByDecision = new Map(), transactionCandidates = [];
   // Looking at a recorded final disposition classifies an outcome; it never
   // supplies an earlier S, legality or choice from a future state.
   function cancellation(accepted, original, execution = null, executionBasis = null, match = null) {
@@ -163,6 +167,21 @@ export function convertNativeSemanticOriginals(source, sdk, core, options = {}) 
       let match = original && row.bound_action != null ? core.matchNativeSemanticChoice(state, original, row)
         : { status: 'incomplete', reason: original ? 'original_native_bound_action_missing' : 'original_human_basis_missing',
           choice_id: null, lowering: null, reduction: null };
+      if (options.selectorTransactions && !transactionByDecision.has(row.decision_id)) {
+        const transaction = classifyNativeHandSelectionTransaction({ row, acceptedRows, events, terminalById, basis, state, core });
+        if (transaction) {
+          transactionCandidates.push(transaction.qualified ? { qualified: true, ...transaction.receipt }
+            : transaction);
+          if (transaction.qualified) {
+            transactions.push(transaction);
+            for (const id of transaction.receipt.decision_ids) transactionByDecision.set(id, transaction);
+          }
+        }
+      }
+      const transaction = transactionByDecision.get(row.decision_id);
+      const originalMatch = transaction ? { status: match.status, reason: match.reason, choice_id: match.choice_id } : null;
+      if (transaction?.contextIds.has(row.decision_id)) match = { ...match, status: 'transaction_context',
+        reason: 'native_selector_uncommitted_edit_context', choice_id: null, lowering: null };
       if (!awaitsExecution && !selectorCancellationByDecision.has(row.decision_id)) {
         const index = acceptedRows.indexOf(row);
         const span = classifyNativeSelectorCancellation({ row, child: acceptedRows[index + 1],
@@ -213,7 +232,7 @@ export function convertNativeSemanticOriginals(source, sdk, core, options = {}) 
           : presentation.exception ? 'native_presentation_exception:stop_relic_refresh' : 'native_presentation_public_state_changed',
         choice_id: null, lowering: null };
       const continuationOf = continuationParents.get(row.decision_id) ?? null;
-      if (!selectorCancellation && !presentation && !continuationOf && !awaitsExecution) match = matchRecordedIntention(match, row);
+      if (!selectorCancellation && !presentation && !transaction && !continuationOf && !awaitsExecution) match = matchRecordedIntention(match, row);
       if (awaitsExecution) match = { status: 'incomplete', reason: 'accepted_action_without_execution_original',
         choice_id: null, lowering: null, reduction: null };
       const cancelled = !executionById.has(row.decision_id) ? cancellation(row, original) : null;
@@ -227,9 +246,12 @@ export function convertNativeSemanticOriginals(source, sdk, core, options = {}) 
         native_terminal_sequence: null, execution: null, source_human_basis: row.basis, continuation_of: continuationOf,
         continuation_decision_id: match.continuation_decision_id ?? null,
         result: null, lowering: match.lowering, observation: captured.capture.observation };
+      if (transaction) Object.assign(action, { original_p1_match: originalMatch, data_class: 'D',
+        selector_transaction: transaction.receipt });
       active.set(row.decision_id, action);
       report.actions.push(action);
-      if (match.status === 'matched') state = match.reduction.state;
+      if (match.status === 'matched' || match.status === 'transaction_context' && originalMatch.status === 'matched')
+        state = match.reduction.state;
     } else if (row.kind === 'execution') {
       const action = active.get(row.decision_id), accepted = acceptedById.get(row.decision_id);
       if (!executionMode || !action || action.execution !== null || action.native_terminal_sequence !== null
@@ -316,6 +338,19 @@ export function convertNativeSemanticOriginals(source, sdk, core, options = {}) 
   report.actions = report.actions.filter(action => !action.continuation_of)
     .sort((a, b) => report.captures[a.capture].sequence - report.captures[b.capture].sequence);
   const successful = report.actions.filter(action => action.match_status === 'matched' && action.result?.status === 'completed');
+  // Separate supervision records: never overwrite the original first click,
+  // result, accepted count or its chosen native operand with a later target.
+  report.derived_transaction_choices = transactions.filter(transaction => transaction.synthetic).map(transaction => {
+    const anchor = active.get(transaction.anchor.decision_id), confirm = active.get(transaction.confirm.decision_id);
+    const action = { decision_id: `D:${transaction.confirm.decision_id}`, capture: anchor.capture,
+      choice_id: transaction.choice.choice_id, choice: transaction.choice,
+      terminal_sequence: transaction.lastEdit.sequence,
+      successor: report.captures[confirm.capture], data_class: 'D',
+      result: { status: 'completed', origin: 'offline_finalized_selector_transaction' },
+      selector_transaction: transaction.receipt };
+    successful.push(action); return action;
+  });
+  successful.sort((a, b) => report.captures[a.capture].sequence - report.captures[b.capture].sequence);
   const pointActions = [...successful.map(action => ({ action, capture: report.captures[action.capture] })),
     ...(lastComplete ? [{ action: null, capture: lastComplete }] : [])];
   const nativeCancellations = [];
@@ -355,7 +390,14 @@ export function convertNativeSemanticOriginals(source, sdk, core, options = {}) 
       action.choice_id = null; action.choice = null;
     }
     const selectorCancellation = selectorCancellationByDecision.get(action.decision_id);
-    if (selectorCancellation) {
+    const transaction = transactionByDecision.get(action.decision_id);
+    if (transaction?.contextIds.has(action.decision_id)) {
+      action.native_disposition = { disposition: 'selector_transaction_context', successful_label: false,
+        confirmation_decision_id: transaction.confirm.decision_id, projection_version: selectorTransactionProjection };
+      action.choice_id = null; action.choice = null;
+      report.issues.push({ decision_id: action.decision_id, reason: 'native_selector_uncommitted_edit_context',
+        disposition: 'selector_transaction_context', blocking: false });
+    } else if (selectorCancellation) {
       action.native_disposition = selectorCancellation.receipt;
       action.choice_id = null; action.choice = null;
       report.issues.push({ decision_id: action.decision_id, action_witness_id: action.action_witness_id,
@@ -420,7 +462,13 @@ export function convertNativeSemanticOriginals(source, sdk, core, options = {}) 
   report.native_cancellations = nativeCancellations.map(({ checks: _checks, ...receipt }) => receipt);
   report.accepted_accounting = { accepted: report.native_action_count, derived: derivedNative,
     native_cancelled: cancellations.size + selectorCancellationByDecision.size, presentation: presentationDecisions, presentation_exceptions: exceptionDecisions,
-    explained_gaps: report.native_action_count - derivedNative - cancellations.size - selectorCancellationByDecision.size - presentationDecisions - exceptionDecisions };
+    ...(options.selectorTransactions ? {
+      selector_transaction_context: [...transactionByDecision].filter(([id, transaction]) => transaction.contextIds.has(id)).length,
+      derived_transaction_labels: report.derived_transaction_choices.length } : {}),
+    explained_gaps: report.native_action_count - derivedNative - cancellations.size - selectorCancellationByDecision.size - presentationDecisions - exceptionDecisions
+      - [...transactionByDecision].filter(([id, transaction]) => transaction.contextIds.has(id)).length };
+  report.selector_transactions = transactions.map(transaction => transaction.receipt);
+  report.selector_transaction_candidates = transactionCandidates;
   report.complete = successful.length > 0 && report.blocking_issues.length === 0 && report.pending_decisions.length === 0;
   const journal = source.journal.filter(row => row.run_id === report.scope.run_id);
   const starts = journal.filter(row => row.kind === 'run_started_native');
@@ -435,6 +483,9 @@ export function convertNativeSemanticOriginals(source, sdk, core, options = {}) 
   report.projection_claims = {
     source: 'recorded_native_acceptances_and_public_bases', target_profile: 'p1-global-r1',
     interpretation: 'execution_basis_reexpression_with_declared_native_spans',
+    ...(options.selectorTransactions ? { selector_transactions: { version: selectorTransactionProjection,
+      semantics: 'final_confirmed_single_choice_at_own_complete_empty_basis', data_class: 'D',
+      purpose: 'offline_supervision', human_first_click_claim: false, online_action_catalog_changed: false } } : {}),
     assumptions: [
       'human_input_basis_is_origin_execution_basis_owns_game_action_choice',
       'model_view_is_serial_execution_state_reexpression_not_human_click_timing',
@@ -448,7 +499,7 @@ export function convertNativeSemanticOriginals(source, sdk, core, options = {}) 
       p1_action: null, native_replay_required: true,
       continuity_checkpoints: span.continuity_checkpoints
     })),
-    lossless_p1_trace: report.native_presentations.some(span => span.exception) ? false : 'not_established',
+    lossless_p1_trace: transactions.length || report.native_presentations.some(span => span.exception) ? false : 'not_established',
     native_host_conformance: 'not_established', p1_host_conformance: 'not_established',
     p1_native_capability_coverage: report.native_presentations.some(span => span.exception)
       ? 'declared_native_capability_outside_current_profile' : 'not_established'
@@ -457,6 +508,7 @@ export function convertNativeSemanticOriginals(source, sdk, core, options = {}) 
     const continuitySpans = [...nativeCancellations, ...nativePresentations.filter(span => span.comparison.equal || span.exception)];
     const points = pointActions.map(({ action, capture }, index) => ({ index,
       observation: capture.observation, chosen: action?.choice_id ?? null,
+      ...(action?.selector_transaction ? { data_class: 'D', selector_transaction: action.selector_transaction } : {}),
       ...(continuitySpans.some(item => item.checks.some(check => check.comparison_point_index === index)) ? {
         continuity_checks: continuitySpans.flatMap(item => item.checks
           .filter(check => check.comparison_point_index === index)
@@ -491,7 +543,7 @@ async function main() {
   for (let i = 0; i < args.length; i += 2) {
     const keys = { '--bundle': 'bundle', '--prefix': 'prefix', '--manifest-sha256': 'manifestSha256',
       '--sdk-root': 'sdkRoot', '--run-id': 'runId', '--output': 'output', '--through-sequence': 'throughSequence',
-      '--segments-output': 'segmentsOutput' };
+      '--segments-output': 'segmentsOutput', '--selector-transactions': 'selectorTransactions' };
     if (!keys[args[i]] || !args[i + 1]) throw new Error('usage: --bundle PATH | --prefix PATH --manifest-sha256 SHA [--sdk-root PATH] [--run-id ID] [--output PATH] [--segments-output PATH]');
     options[keys[args[i]]] = keys[args[i]] === "throughSequence" ? Number(args[i + 1]) : args[i + 1];
   }

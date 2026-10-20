@@ -143,6 +143,42 @@ Managed：sts2.dll 无界面宿主 + 投影                 ┴→ 两端共用�
 
 **奖励组承诺**：组身份来自 Host 的 `group_id`，从不用标签、位置或观察 ID 代替；Host 不提供时该页标为不完整。放弃后同一组在本奖励页内不再提供，并公开在 `commitments`；P1提交关闭承诺前已执行合格原生Skip并核后件；原生组的最终处置仍由原owner退出处理，不用本地ledger伪造OnSkipped。
 
+### 6.1 原生确认事务的离线D监督（2026-10-20用户批准）
+
+线上r1.4目录仍逐张追加、无replace/deselect。另行显式选择的离线投影
+`native-selector-finalized-d-1`按同一次原生手牌选择事务的最终确认产生D类监督，
+不冒用E3相邻同卡撤销规则，不声称Human第一次就在初始状态选择了最终牌。
+原native accepted、点击时H、全部S/PB/Reads、生命周期和旧派生保持原样。
+
+首版只处理原生`NPlayerHand.SelectCards`的`simple_select`、min=max=1、
+手动确认机制。必须有同session/timeline/run、准确owner/parent/factory、初始
+完整空选S和有限合法目录；每个原始输入都在自身目录中，全部编辑回调正常完成，
+每步真实selected set变化准确。确认前所有原件的世界/上下文、候选及公开详情
+必须相等，只可规范化已核的选择装饰、相应有限controls和原生移动holder引起的
+展示顺序。其它Read展示上下文、升级预览、游戏状态、目录元数据和新信息不删除。
+原生实现已核：编辑只改暂选容器，确认才完成await；同一未中断factory await及
+精确terminal callback证明事务，旧原件没有独立request-id时不捏造该字段。
+terminal必须结束当前事务，不能仅按同owner/parent合并后续选择请求。
+
+简单换牌在自己完整空选原件上新增独立finalized choose监督记录，原点击只记
+`selector_transaction_context`、0label；真实confirm继续用自己原S的finish。
+完整撤回后重选，优先最近的真实空选边界：净零前缀0label，后半段若是一次真实
+select→confirm则保留其准确标签，不把它挪回最早空选。多选、自动确认、顺序相关、
+外部状态/必要新信息变化、缺资料、换owner或unknown不套用本解释。
+
+确认的真实后件必须完整保留；完整PB但原生settling照实保留，不能伪造成decision。
+只有原转换器看到后来的真实完整边界才能作为P1 successor。每个D点携带
+projection version、原件跨度、anchor/confirm/后件引用、原始输入处置与用途；这些
+只进provenance/Target，不进modelView或模型Input。synthetic D标签与native
+accepted计数分开。既有分段器继续隔离其它gap，next只连同一段，end只取同分支
+真实终局；整局投影complete不等于lossless原生轨迹或Host一致。
+
+转换入口为`tools/p1-native-to-p1.mjs --selector-transactions native-selector-finalized-d-1`，
+必须另写新产物；默认逐输入解释、已有固定输入和权重不静默改变。数据消费者须
+显式选用途/投影及固定SHA，同一原始选择的旧新解释不能重复计样，研究准入和训练
+仍由其owner确定。本条为已批准的解释合同，实际验证层级见当前交付，不能由条文
+推定已安装、已入库或已训练。
+
 ## 7. 结果与失败（`sts2.p1/result-1`）
 
 每个意图返回：completed / interrupted_known / not_started / unknown，以及每一步的原生动词、delivered / not_delivered / unknown、原因码。

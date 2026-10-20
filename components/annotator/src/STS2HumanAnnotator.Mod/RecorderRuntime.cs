@@ -97,6 +97,7 @@ internal static partial class RecorderRuntime
     private static DateTimeOffset? _sessionClosedAt;
     private static string? _recordingDirectory;
     private static string? _sourceRevision;
+    private static string? _p1NativeOrigin;
     private static string _requiredReadsHealth = "not_active";
     private static string? _lastPublishedHealth;
     private static bool _initializationStarted;
@@ -334,7 +335,7 @@ internal static partial class RecorderRuntime
             if (result.Accepted && !automatic)
             {
                 if (command.Kind is RecordingCommandKind.StartNewSession or RecordingCommandKind.Resume)
-                    Continuous.Arm();
+                    Continuous.Arm(_activeCaptureProfileId, _p1NativeOrigin);
                 else if (command.Kind == RecordingCommandKind.Pause)
                     Continuous.Pause();
                 else if (command.Kind == RecordingCommandKind.Close)
@@ -418,6 +419,7 @@ internal static partial class RecorderRuntime
 
         _store = store;
         _activeCaptureProfileId = profile.ProfileId;
+        _p1NativeOrigin = p1Origin;
         _lastSourceStatus = null;
         SessionId = lifecycle.SessionId;
         TimelineId = timelineId;
@@ -4944,17 +4946,16 @@ internal static partial class RecorderRuntime
             ExecuteRecordingCommand(new RecordingCommand($"auto-seal-next-run-{Guid.NewGuid():N}",
                 RecordingCommandKind.Close), new RecordingSessionExpectation(previousSession), automatic: true);
 
-        bool begin;
+        RecordingCommand? begin;
         lock (Gate)
         {
             if (_lifecycle.State == RecordingLifecycleState.Closing)
                 return;
-            begin = _store == null && Continuous.Armed
-                && _lifecycle.State is RecordingLifecycleState.Ready or RecordingLifecycleState.Closed;
+            begin = _store == null && _lifecycle.State is RecordingLifecycleState.Ready or RecordingLifecycleState.Closed
+                ? Continuous.NextSessionCommand($"auto-start-{Guid.NewGuid():N}") : null;
         }
-        if (begin)
-            ExecuteRecordingCommand(new RecordingCommand($"auto-start-{Guid.NewGuid():N}",
-                RecordingCommandKind.StartNewSession), automatic: true);
+        if (begin != null)
+            ExecuteRecordingCommand(begin, automatic: true);
         lock (Gate)
         {
             if (_store == null

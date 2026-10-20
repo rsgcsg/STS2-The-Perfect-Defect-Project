@@ -5,6 +5,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { createRequire } from "node:module";
 import { componentGitState } from "../../../tools/component-git.mjs";
 import { sourceSetIdentity, sourceSetMatches } from "../../../apps/game-mod/source-identity.mjs";
 
@@ -17,6 +18,43 @@ export const sourceV3Support = Object.freeze({
   bundle_schema: "sts2.annotator/source-session-bundle-3",
   type_id: "source-session-bundle-v3"
 });
+
+export const p1NativeSupport = Object.freeze({
+  schema: "sts2.evidence/p1-native-collection-support-1",
+  source_profile: "human-p1-native-decisions-1",
+  recording_schema: "sts2.human-annotator/recording-manifest-2",
+  bundle_schema: "sts2.human-annotator/p1-native-session-bundle-1",
+  prefix_schema: "sts2.human-annotator/p1-native-prefix-1",
+  audit_command: "audit-p1-native", pack_command: "pack-p1-native",
+  type_id: "p1-native-session-bundle-v1",
+  recording_client_entrypoint: "setup/tools/p1-native-recording.mjs",
+  converter_entrypoint: "p1/tools/p1-native-to-p1.mjs",
+  segment_schema: "sts2.p1/native-segments-1",
+  selector_transaction_projection: "native-selector-finalized-d-1"
+});
+
+export const p1NativeToolFiles = ["p1-native-to-p1.mjs", "p1-native-bundle.mjs",
+  "p1-native-cancellation.mjs", "p1-native-presentation.mjs", "p1-native-segments.mjs",
+  "p1-native-selector-transactions.mjs"];
+
+/** The fixed reader ships its executable SDK/zod closure, not a worktree path. */
+export function copyP1NativeTools(workspaceRoot, staging) {
+  for (const name of p1NativeToolFiles) {
+    const destination = path.join(staging, "p1/tools", name);
+    fs.mkdirSync(path.dirname(destination), { recursive: true });
+    fs.copyFileSync(path.join(workspaceRoot, "tools", name), destination);
+  }
+  const client = path.join(staging, p1NativeSupport.recording_client_entrypoint);
+  fs.mkdirSync(path.dirname(client), { recursive: true });
+  fs.copyFileSync(path.join(workspaceRoot, "tools/p1-native-recording.mjs"), client);
+  const sdk = path.join(workspaceRoot, "components/connector/sdk/typescript");
+  const destination = path.join(staging, "p1/components/connector/sdk/typescript");
+  fs.mkdirSync(destination, { recursive: true });
+  fs.cpSync(path.join(sdk, "dist"), path.join(destination, "dist"), { recursive: true });
+  fs.copyFileSync(path.join(sdk, "package.json"), path.join(destination, "package.json"));
+  const zod = path.dirname(createRequire(path.join(sdk, "package.json")).resolve("zod/package.json"));
+  fs.cpSync(zod, path.join(staging, "p1/node_modules/zod"), { recursive: true, dereference: true });
+}
 
 export const setupFiles = [
   "apps/game-mod/collection-setup.mjs",
@@ -79,6 +117,7 @@ export function collectionIdentity(state, files, modProvenance) {
     supported_recording_schema: "sts2.human-annotator/recording-manifest-2",
     output_schema: "sts2.human-annotator/session-bundle-3",
     source_v3_support: sourceV3Support,
+    p1_native_support: p1NativeSupport,
     interrupted_recovery_schema: "sts2.human-annotator/interrupted-recovery-1",
     collection_setup_entrypoint: "setup/apps/game-mod/collection-setup.mjs",
     ...(modProvenance ? { collection_setup_provenance: "game-mod/build-provenance.json" } : {}),
@@ -100,6 +139,10 @@ export function publishCollectionTool(componentRoot, output, { dotnet = "dotnet"
     { stdio: "inherit" });
     fs.copyFileSync(path.join(state.workspaceRoot, "platform-bom.json"), path.join(staging, "platform-bom.json"));
     copyCollectionSetup(state.workspaceRoot, staging, modProvenance);
+    execFileSync(process.platform === "win32" ? "npm.cmd" : "npm", ["run", "build"], {
+      cwd: path.join(state.workspaceRoot, "components/connector/sdk/typescript"), stdio: "inherit"
+    });
+    copyP1NativeTools(state.workspaceRoot, staging);
     if (componentGitState(componentRoot).workspaceWorktreeStatus !== "clean"
         || componentGitState(componentRoot).workspaceRevision !== state.workspaceRevision)
       throw new Error("Source identity changed during collection tool publication");
