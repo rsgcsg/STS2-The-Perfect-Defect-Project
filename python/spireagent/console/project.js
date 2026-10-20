@@ -5508,12 +5508,13 @@ window.SpireProject = (() => {
         }
         const maintenance = operation.maintenance || {};
         storage.append(el("p", `已封存录制后台维护：${maintenance.policy?.enabled === true ? "已启用" : "未启用"} · ${show(maintenance.status)}`, "small"));
-        for (const [enabled, label] of [[true, "启用封存后维护"], [false, "暂停后续维护"]])
+        for (const [enabled, label] of [[true, "维护今后封存的真人声明录制"], [false, "暂停后续维护"]])
           storage.append(command(ctx, `p1-maintenance-${enabled ? "enable" : "disable"}`, label, async () => {
             const peer = enabled ? (peerType.value === "local" ? (peerPath.value ? {kind:"local",directory:peerPath.value} : null)
               : (await request(ctx, "/api/local-recordings/storage/peer")).peer) : maintenance.policy?.peer || null;
             if (enabled && peerType.value === "s3" && !peer) throw new Error("storage_peer_required");
-            await request(ctx, "/api/local-recordings/maintenance", {enabled, peer, projection_id:"native-timeline-targets-1"}, operation.csrf_token);
+            await request(ctx, "/api/local-recordings/maintenance", {enabled, peer, projection_id:"native-timeline-targets-1",
+              scope:enabled ? {from_now:true,declared_origins:["declared_human"]} : maintenance.policy?.scope || null}, operation.csrf_token);
             await reload(ctx);
           }));
         const receipts = (operation.storage_receipts || []).filter(item=>item.artifact_id === value.artifact_id);

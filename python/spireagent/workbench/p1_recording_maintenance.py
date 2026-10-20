@@ -3,16 +3,56 @@
 from __future__ import annotations
 
 import threading
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from sts2_platform_evidence.collection_tool import P1_TARGET_PROJECTION
 
-from spireagent.json_boundary import BoundaryError
+from spireagent.json_boundary import BoundaryError, digest
 
+from .native_tasks import P1_ORIGINS
 from .p1_recording_storage import open_peer
 
 if TYPE_CHECKING:
     from .local_recording_import import LocalRecordingImporter
+
+
+def _scope(value: dict[str, Any]) -> dict[str, Any]:
+    if set(value) == {"candidate_ids"}:
+        ids = value["candidate_ids"]
+        if not isinstance(ids, list) or not ids:
+            raise BoundaryError("p1_maintenance", "invalid_scope")
+        return {"candidate_ids": [digest(v, "p1_maintenance.candidate") for v in ids]}
+    if set(value) == {"from_now", "declared_origins"} and value["from_now"] is True:
+        value = {
+            "closed_after": datetime.now(UTC).isoformat(),
+            "declared_origins": value["declared_origins"],
+        }
+    if set(value) != {"closed_after", "declared_origins"}:
+        raise BoundaryError("p1_maintenance", "invalid_scope")
+    origins = value["declared_origins"]
+    if (
+        not isinstance(origins, list)
+        or not origins
+        or any(origin not in P1_ORIGINS for origin in origins)
+        or datetime.fromisoformat(value["closed_after"]).tzinfo is None
+    ):
+        raise BoundaryError("p1_maintenance", "invalid_scope")
+    return value
+
+
+def _in_scope(candidate: dict[str, Any], scope: dict[str, Any] | None) -> bool:
+    if scope is None:
+        return True
+    if "candidate_ids" in scope:
+        return candidate["candidate_id"] in scope["candidate_ids"]
+    if candidate.get("declared_origin") not in scope["declared_origins"]:
+        return False
+    try:
+        created = datetime.fromisoformat(candidate["closed_at"])
+        return created >= datetime.fromisoformat(scope["closed_after"])
+    except (KeyError, ValueError, TypeError):
+        return False  # A date-scoped policy excludes an undated source; the original stays intact.
 
 
 class P1RecordingMaintenance:
@@ -26,17 +66,30 @@ class P1RecordingMaintenance:
         enabled: bool,
         peer: dict[str, Any] | None,
         projection_id: str | None = P1_TARGET_PROJECTION,
+        scope: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         if type(enabled) is not bool or projection_id not in {None, P1_TARGET_PROJECTION}:
             raise BoundaryError("p1_maintenance", "invalid_policy")
-        if peer is not None:
-            open_peer(peer)
         with self.importer.lock:
             state = self.importer._maintenance
             previous = state["policy"]
-            if previous["peer"] != peer or previous["projection_id"] != projection_id:
+            selected_scope = _scope(scope) if scope is not None else previous.get("scope")
+            if enabled and peer is not None and peer.get("kind") == "s3" and selected_scope is None:
+                raise BoundaryError("p1_maintenance", "explicit_cloud_scope_required")
+            if peer is not None:
+                open_peer(peer)
+            if (
+                previous["peer"] != peer
+                or previous["projection_id"] != projection_id
+                or previous.get("scope") != selected_scope
+            ):
                 state["completed_candidates"] = []
-            state["policy"] = {"enabled": enabled, "peer": peer, "projection_id": projection_id}
+            state["policy"] = {
+                "enabled": enabled,
+                "peer": peer,
+                "projection_id": projection_id,
+                "scope": selected_scope,
+            }
             self.importer._save()
             return dict(state)
 
@@ -111,7 +164,9 @@ class P1RecordingMaintenance:
                 candidates = [
                     c
                     for c in catalog["candidates"]
-                    if c.get("recording_type") == "p1_native" and c["candidate_id"] not in completed
+                    if c.get("recording_type") == "p1_native"
+                    and c["candidate_id"] not in completed
+                    and _in_scope(c, policy.get("scope"))
                 ]
                 if not candidates:
                     state.update(status="up_to_date", error_code=None)

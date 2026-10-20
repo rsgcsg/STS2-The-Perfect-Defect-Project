@@ -457,6 +457,13 @@ def _maintenance(argv: list[str]) -> int:
     parser.add_argument(
         "--peer", help="explicit preservation Store; omitted keeps the current policy"
     )
+    parser.add_argument("--candidate-id", action="append")
+    parser.add_argument("--from-now", action="store_true")
+    parser.add_argument(
+        "--origin",
+        choices=("declared_human", "agent_native_ui", "unknown"),
+        default="declared_human",
+    )
     args = parser.parse_args(argv)
     current = running(ProjectConfig.load(args.config))
     if current is None:
@@ -472,6 +479,13 @@ def _maintenance(argv: list[str]) -> int:
                 "enabled": args.action == "enable",
                 "peer": peer_binding(args.peer) if args.peer else policy["peer"],
                 "projection_id": policy["projection_id"],
+                "scope": (
+                    {"candidate_ids": args.candidate_id}
+                    if args.candidate_id
+                    else {"from_now": True, "declared_origins": [args.origin]}
+                    if args.from_now
+                    else policy.get("scope")
+                ),
             },
         )
     print(json.dumps(value, ensure_ascii=False, sort_keys=True))

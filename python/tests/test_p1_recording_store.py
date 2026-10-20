@@ -745,3 +745,83 @@ def test_cli_absent_storage_reconciliation_is_saved_as_failed(tmp_path, capsys):
     result = json.loads(capsys.readouterr().out)
     assert result["status"] == "failed" and result["publication"] == "absent_or_incomplete"
     assert json.loads((state / OPERATION_FILE).read_bytes())["status"] == "failed"
+
+
+def test_cloud_maintenance_requires_scope_and_excludes_older_or_other_origin(tmp_path, monkeypatch):
+    from spireagent.workbench import p1_recording_maintenance as maintenance
+    from spireagent.workbench.developer import ProjectConfig, combination
+    from spireagent.workbench.local_recording_import import LocalRecordingImporter
+
+    config = ProjectConfig(tmp_path / "state", "", "", None, combination())
+    config.state_dir.mkdir()
+    service = maintenance.P1RecordingMaintenance(LocalRecordingImporter(config, None))
+    monkeypatch.setattr(maintenance, "open_peer", lambda _: None)
+    peer = {
+        "kind": "s3",
+        "bucket": "synthetic",
+        "prefix": "test",
+        "region": "test",
+        "endpoint": None,
+    }
+    with pytest.raises(BoundaryError, match="explicit_cloud_scope_required"):
+        service.configure(True, peer)
+    scope = {"closed_after": "2026-10-20T08:00:00+00:00", "declared_origins": ["declared_human"]}
+    service.configure(True, peer, scope=scope)
+    source = {
+        "candidate_id": "a" * 64,
+        "declared_origin": "declared_human",
+        "closed_at": "2026-10-20T08:01:00+00:00",
+    }
+    assert maintenance._in_scope(source, scope)
+    assert not maintenance._in_scope({**source, "closed_at": "2026-10-19T08:00:00+00:00"}, scope)
+    assert not maintenance._in_scope({**source, "declared_origin": "agent_native_ui"}, scope)
+    allowlist = {"candidate_ids": ["b" * 64]}
+    assert not maintenance._in_scope(source, allowlist)
+
+
+def test_segments_catalog_reads_explicit_consistent_end_targets(tmp_path, original, tool):
+    from spireagent.artifact_contracts import Manifest, Parent
+    from spireagent.json_boundary import FrozenObject, json_bytes
+    from spireagent.workbench.p1_recording_store import (
+        SEGMENTS_SCHEMA,
+        publish_p1_catalog_metadata,
+    )
+
+    store = ManifestArtifactStore(LocalBlobStore(tmp_path / "store"))
+    producer = Producer("test", "a" * 40, "b" * 64)
+    source = publish_p1_original(store, original, tool, producer, scratch=tmp_path / "scratch")
+    for run_id, results, expected in [
+        ("same", ["loss", "loss"], "loss"),
+        ("conflict", ["loss", "win"], None),
+    ]:
+        branch = {"run_id": run_id}
+        data = {
+            "branch": branch,
+            "segments": [
+                {
+                    "points": [],
+                    "end_target": {"branch": branch, "result": result, "source_event_id": "end"},
+                }
+                for result in results
+            ],
+        }
+        payload = store.put_bytes("segments", json_bytes(data))
+        view = Manifest(
+            "analysis",
+            producer,
+            parents=(Parent("source", source.artifact_id),),
+            payloads=(payload,),
+            parameters=FrozenObject.of(
+                {
+                    "schema": SEGMENTS_SCHEMA,
+                    "source_artifact_id": source.artifact_id,
+                    "source_content_id": source.parameters.value()["content_id"],
+                    "projection_id": "native-selector-finalized-d-1",
+                    "run_id": run_id,
+                }
+            ),
+        )
+        store.publish(view)
+        metadata = publish_p1_catalog_metadata(store, view.artifact_id, producer)
+        assert metadata.parameters.value()["metadata"]["result"] == expected
+        assert len(metadata.parameters.value()["evidence"]["end_targets"]) == 2

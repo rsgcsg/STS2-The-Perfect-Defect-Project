@@ -1950,7 +1950,8 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                     return
                 try:
                     body = self.json_body(maximum=2048, reject_duplicate=True)
-                    if set(body) != {"enabled", "peer", "projection_id"}:
+                    if set(body) not in ({"enabled", "peer", "projection_id"},
+                                         {"enabled", "peer", "projection_id", "scope"}):
                         raise ValueError
                     value = app.p1_maintenance.configure(**body)
                     self.respond(200, json.dumps(value).encode())

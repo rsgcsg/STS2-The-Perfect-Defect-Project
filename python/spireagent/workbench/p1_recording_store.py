@@ -585,8 +585,19 @@ def publish_p1_catalog_metadata(
     run_content = available_content(run)
     character = player_content.get("character_definition_id")
     ascension = run_content.get("ascension")
-    terminal = data.get("end_target") or {}
-    result = terminal.get("result")
+    terminals = (
+        ([data["end_target"]] if data.get("end_target") is not None else [])
+        if role == "targets"
+        else [
+            segment["end_target"]
+            for segment in data["segments"]
+            if segment.get("end_target") is not None
+        ]
+    )
+    terminals = [t for t in terminals if t.get("branch", data["branch"]) == data["branch"]]
+    results = {t["result"] for t in terminals if isinstance(t.get("result"), str)}
+    result = next(iter(results)) if len(results) == 1 else None
+    terminal = terminals[0] if terminals else {}
     metadata = {
         "character": character if isinstance(character, str) else None,
         "ascension": ascension if type(ascension) is int else None,
@@ -622,9 +633,12 @@ def publish_p1_catalog_metadata(
                     "first_source_public_basis": point.get("source_public_basis"),
                     "end_source_event_id": terminal.get("source_event_id"),
                     "end_source_public_basis": terminal.get("source_public_basis"),
+                    "end_targets": terminals,
+                    "conflicting_results": sorted(results) if len(results) > 1 else [],
                 },
                 "unknown_scope": (
-                    "mode_language_game_version_seed_root_ancestry_not_in_indexed_P1_view"),
+                    "mode_language_game_version_seed_root_ancestry_not_in_indexed_P1_view"
+                ),
                 "purpose": "rebuildable_recording_catalog",
                 "research_admission": "not_evaluated",
             }
@@ -656,6 +670,15 @@ def query_p1_sources(
     }
     if not set(filters) <= allowed:
         raise BoundaryError("p1_store", "unsupported_query_filter")
+    for field, value in filters.items():
+        if field in {"has_projection", "preservation_verified"}:
+            valid = type(value) is bool
+        elif field == "ascension":
+            valid = value is None or type(value) is int
+        else:
+            valid = value is None or isinstance(value, str)
+        if not valid:
+            raise BoundaryError("p1_store", "unsupported_query_filter_type")
     projections = query_p1_recordings(store)
     catalog = [
         m
