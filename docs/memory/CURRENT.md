@@ -1,4 +1,4 @@
-# 当前工作：正常控制已集成，远端Store闭包与最终验收正在收口
+# 当前工作：远端输入闭包已真实R2验证，准备最终完整门
 
 更新于2026-10-21，Brisbane。用户已直接授权本轮指派、并行实施、统筹和审计；旧“两小时待批准”安排已被覆盖。
 Resolve live GitHub refs before relying on this snapshot. 最新用户原话和现场证据 override this file。
@@ -11,15 +11,16 @@ Root负责指派及最终审计；集成负责人维护本页、共享身份和�
 
 集成树为`work/p1-round3h-integration-20261021`，分支`codex/p1-round3h-integration-20261021`。
 它从`origin/develop@733782b1`开始，normal merge未验收PR206的`5b8fd2c2`为显式父依赖，保组件来源。
-最新稳定组合为`2a8a8ebf`，normal merge A连续派生/恢复、B用途/恢复/正常CLI及远端薄接、C数值/Scheduler原用途回调和D原指南。
+最新稳定功能组合为`fb86ee2e`，normal merge A连续派生/恢复、B用途/恢复/正常CLI及远端控制/compute Store、C数值/Scheduler用途回调及输入闭包和D原指南。
 Annotator rc22/GameMod rc47及current BOM一致；Python增量只改workspace provenance，9组件语义身份未变。旧Tool/安装/loaded分别保来源。
-四真实targets正常发布/读回1751unique N、1744next、0duplicate，独立谱系全unknown；尚不是所有raw候选。2空恢复副本实际入库0N，另1工程incident保原件。
+四真实targets正常发布/读回1751unique N、1744next、0duplicate，独立谱系全unknown。另3既有execution1来源已派生1966局部N条目/1613next，B正常发布/C去重待核，未当独立人口。2空恢复入库0N、1工程incident保原件。
 原账已补旧T0历史use并R2恢复验：0claims/1root use/1raw-source use；441是输入/词表人口，实际256 distinct梯度点/4更新，不是干净heldout。
 完整门04在d552自然结束：12阶段11通过，Python因私Evidence installed-origin失败16项；4593通过/6跳过/80 subtests通过。原失败保留。
-只修私解释器真实安装布局后，parent/清PYTHONPATH子进程原身份PASS，原15 testcase及13 subtests通过；未重跑整门。2a8根repository/closeout/BOM通过，最终门等剩余稳定增量。
+只修私解释器真实安装布局后，parent/清PYTHONPATH子进程原身份PASS，原15 testcase及13 subtests通过；未追改整门。新功能稳定后准备冻结最终门，准确head/tree/原结果交固定回执。
 正常App/CLI→原Ops/Scheduler/provider已合，合成CPU HTTP首跑3项通过；旧模型→production Runtime/synthetic HTTP Host首跑通过，1submission/2consumed/replay verified，权重不变。
 A已交d552 build/load/INFO/API工程生命周期和退出回滚原件，root核审中；teardown ERROR单列，不能称native clean。没有代Human。
-B/C正在原owner补同一prepare入口的Run完整闭包→明确compute Store peer/R2读回及result回local Model；当前无真实GPU/付费/真实梯度，正常安装未升级。
+B/C的42f稳定来源已合：同一正常prepare把完整10-manifest Run闭包真实写入R2并逐payload读回，独立reader3合成N/6catalog；0Ops jobs/0submit/0poll，12.65秒。Scheduler沿peer消费，显式reconcile回local Model保原用途账。
+真实Modal Secret注入、image/GPU/同设备恢复仍未验，本轮无付费或真实数据梯度，正常安装未升级；最终source门、数据新人口和root审计尚未完成。
 
 ## Remaining Platform non-claims 与真实边界
 
