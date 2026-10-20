@@ -5,17 +5,19 @@ import json
 import threading
 import time
 from collections.abc import Callable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from spireagent.artifact_contracts import Manifest
 from spireagent.compute import ComputeProvider
 from spireagent.hub.database import Operations
-from spireagent.hub.scheduler import Scheduler
 from spireagent.json_boundary import BoundaryError, digest, object_fields
 from spireagent.source import source_identity
 from spireagent.workbench.developer import ROOT, ProjectConfig
 from spireagent.workbench.p1_training_data import record_p1_training_use, require_p1_snapshot
 from stpd.cloud_jobs.modal import ModalProvider, ModalTarget
+
+if TYPE_CHECKING:
+    from spireagent.hub.scheduler import Scheduler
 
 
 class RemoteTrainingService:
@@ -58,6 +60,8 @@ class RemoteTrainingService:
         if deployment.operations_path.resolve() == owner.path.resolve():
             raise BoundaryError("remote_training", "separate_operations_database_required")
         if self._scheduler is None:
+            from spireagent.hub.scheduler import Scheduler
+
             self._operations = Operations(deployment.operations_path)
 
             def record_use(run: Manifest) -> None:
