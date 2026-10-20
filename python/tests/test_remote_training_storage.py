@@ -61,7 +61,7 @@ def test_existing_corrupt_remote_original_is_not_healed_or_reported_prepared(tmp
     original_bytes = b"".join(local.read_payload(payload))
     corrupted = tmp_path / "peer" / "objects" / "sha256" / payload.sha256
     corrupted.write_bytes(b"corrupt")
-    with pytest.raises(StoreError, match="payload_integrity_failure"):
+    with pytest.raises(StoreError, match="payload_chunk_integrity_failure"):
         transfer_p1_input(local, binding, run.artifact_id, run.producer,
                           scratch=tmp_path / "scratch")
     assert corrupted.read_bytes() == b"corrupt"
