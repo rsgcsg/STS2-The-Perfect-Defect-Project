@@ -30,7 +30,7 @@ assignment; product plans below are background/backlog until assigned.
 
 ## One project route
 
-The [P1 project map and current pre-freeze plan](plans/p1-prefreeze-2026-10-18/README.md)
+The [P1 topic map](plans/p1-prefreeze-2026-10-18/README.md)
 connect the existing Architecture, Components and ADR-0016 in this order:
 
 | Read for | Existing owner / route |
@@ -51,8 +51,10 @@ authority comes from the user instruction and CURRENT-linked task; implementatio
 authorization alone does not freeze or qualify a candidate. [Cloud](plans/p1-prefreeze-2026-10-18/CLOUD_MINIMAL.md) and
 [Workbench](plans/p1-prefreeze-2026-10-18/WORKBENCH_POSITION.md) reuse existing owners;
 uploads/paid work and complex GUI/team expansion are not authorized by the map.
-K3 disposition and K4 acceptance remain open. These are routes into the existing
-owners, not another protocol, identity store, registry or governance checker.
+The [asset ledger](plans/p1-prefreeze-2026-10-18/ASSETS.md) distinguishes proposed
+dispositions from the exact [K3 executed receipt](plans/p1-prefreeze-2026-10-18/K3_EXECUTION.json).
+Remaining acceptance is recorded in the CURRENT-linked task. These are routes into
+existing owners, not another protocol, identity store, registry or governance checker.
 
 ## P1 forward decision profile
 
