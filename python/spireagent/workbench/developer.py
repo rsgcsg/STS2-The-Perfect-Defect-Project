@@ -117,6 +117,35 @@ class LocalResearchWorkspaceConfig:
 
 
 @dataclass(frozen=True)
+class RemoteComputeConfig:
+    """Explicit co-located Scheduler deployment, separate from a remote Hub."""
+
+    operations_path: Path
+    target_path: Path
+    budget_limit: int
+    reserved_units: int
+    deployment: str = "local_scheduler"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"deployment": self.deployment, "operations_path": str(self.operations_path),
+                "target_path": str(self.target_path), "budget_limit": self.budget_limit,
+                "reserved_units": self.reserved_units}
+
+    @classmethod
+    def decode(cls, value: object) -> RemoteComputeConfig:
+        obj = object_fields(value, {"deployment", "operations_path", "target_path",
+                                    "budget_limit", "reserved_units"}, "remote_compute")
+        paths = [Path(text(obj[key], "remote_compute." + key))
+                 for key in ("operations_path", "target_path")]
+        if (obj["deployment"] != "local_scheduler" or not all(p.is_absolute() for p in paths)
+                or any(type(obj[k]) is not int or obj[k] <= 0
+                       for k in ("budget_limit", "reserved_units"))
+                or obj["reserved_units"] > obj["budget_limit"]):
+            raise BoundaryError("remote_compute", "invalid_scheduler_deployment")
+        return cls(paths[0], paths[1], obj["budget_limit"], obj["reserved_units"])
+
+
+@dataclass(frozen=True)
 class ProjectConfig:
     state_dir: Path
     hub_url: str
@@ -124,6 +153,7 @@ class ProjectConfig:
     delivery_config: Path | None
     combination: dict[str, Any]
     research_workspace: LocalResearchWorkspaceConfig | None = None
+    remote_compute: RemoteComputeConfig | None = None
 
     def to_dict(self) -> dict[str, Any]:
         value = {
@@ -136,6 +166,8 @@ class ProjectConfig:
         }
         if self.research_workspace is not None:
             value["research_workspace"] = self.research_workspace.to_dict()
+        if self.remote_compute is not None:
+            value["remote_compute"] = self.remote_compute.to_dict()
         return value
 
     @classmethod
@@ -151,10 +183,7 @@ class ProjectConfig:
             "delivery_config",
             "combination",
         }
-        if frozenset(raw) not in {
-            frozenset(fields),
-            frozenset(fields | {"research_workspace"}),
-        }:
+        if not fields <= set(raw) or set(raw) - fields - {"research_workspace", "remote_compute"}:
             raise BoundaryError("project.config", "missing_or_unknown_fields")
         obj = object_fields(raw, set(raw), "project.config")
         if obj["schema"] != CONFIG_SCHEMA or not isinstance(obj["combination"], dict):
@@ -186,6 +215,7 @@ class ProjectConfig:
             Path(delivery) if delivery is not None else None,
             dict(obj["combination"]),
             research_workspace,
+            RemoteComputeConfig.decode(obj["remote_compute"]) if "remote_compute" in obj else None,
         )
 
 

@@ -221,7 +221,8 @@ def status_project(config: ProjectConfig) -> dict[str, Any]:
 
 
 class Application:
-    def __init__(self, config: ProjectConfig, *, config_path: Path | None = None) -> None:
+    def __init__(self, config: ProjectConfig, *, config_path: Path | None = None,
+                 remote_provider: Any = None) -> None:
         from spireagent.workbench.collection_flow import CollectionFlow
         from spireagent.workbench.collection_setup import CollectionSetup
         from spireagent.workbench.evaluation_sharing import EvaluationSharing
@@ -311,6 +312,10 @@ class Application:
         self.local_recording_preview = LocalRecordingPreview(self.local_research_workspace)
         self.local_datasets = LocalDatasetService(config)
         self.local_training = LocalTrainingService(config)
+        from spireagent.workbench.remote_training import RemoteTrainingService
+
+        self.remote_training = RemoteTrainingService(config, self.local_datasets._selected,
+                                                     provider=remote_provider)
         self.local_memory_evaluation = LocalMemoryEvaluationService(config)
         self.local_model_export = LocalModelExport(config)
         self.local_model_registration = LocalModelRegistration(
@@ -1080,6 +1085,7 @@ class Application:
         return self.local_model_registration.register_teacher(variant=variant)
 
     def close(self) -> None:
+        self.remote_training.close()
         self.p1_maintenance.close()
         # The same Application admission lock fences an in-flight handler before
         # this snapshot. Recovery/Stop remains enabled until its original owner
@@ -1483,6 +1489,27 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                     self.respond(200, json.dumps(value).encode())
                 except BoundaryError as error:
                     self.respond(409, json.dumps({"error": error.code}).encode())
+            elif parsed.path in {"/api/remote-training/status",
+                                 "/api/remote-training/capabilities"}:
+                if not (self.authenticated_browser() or self.control_client()):
+                    self.respond(401, b'{"error":"browser_session_required"}')
+                    return
+                try:
+                    if parsed.path.endswith("/capabilities"):
+                        if parsed.query:
+                            raise ValueError
+                        value = app.remote_training.capabilities()
+                    else:
+                        query = parse_qs(parsed.query, strict_parsing=True, max_num_fields=1,
+                                         keep_blank_values=True)
+                        if query and (set(query) != {"job_id"} or len(query["job_id"]) != 1):
+                            raise ValueError
+                        value = app.remote_training.status(query.get("job_id", [None])[0])
+                    self.respond(200, json.dumps(value).encode())
+                except BoundaryError as error:
+                    self.respond(409, json.dumps({"error": error.code}).encode())
+                except (OSError, ValueError, TypeError):
+                    self.respond(400, b'{"error":"invalid_remote_training_request"}')
             elif parsed.path in {"/api/local-training/status", "/api/local-training/capabilities"}:
                 if not (self.authenticated_browser() or self.control_client()):
                     self.respond(401, b'{"error":"browser_session_required"}')
@@ -2098,6 +2125,20 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                 except (OSError, ValueError, TypeError):
                     self.respond(400, b'{"error":"invalid_local_dataset_request"}')
                 return
+            if self.path.startswith("/api/remote-training/"):
+                if not (self.browser_write() or self.control_client()):
+                    self.respond(403, b'{"error":"browser_action_denied"}')
+                    return
+                action = self.path.removeprefix("/api/remote-training/")
+                try:
+                    app._require_training_instance()
+                    value = app.remote_training.command(action, self.json_body(maximum=8192))
+                    self.respond(200, json.dumps(value).encode())
+                except BoundaryError as error:
+                    self.respond(409, json.dumps({"error": error.code}).encode())
+                except (OSError, ValueError, TypeError):
+                    self.respond(400, b'{"error":"invalid_remote_training_request"}')
+                return
             if self.path.startswith("/api/local-training/"):
                 if not (self.browser_write() or self.control_client()):
                     self.respond(403, b'{"error":"browser_action_denied"}')
@@ -2406,6 +2447,7 @@ def serve(config: ProjectConfig, *, config_path: Path | None = None) -> dict[str
                     access=app.native_access,
                 )
             app.p1_maintenance.start()
+            app.remote_training.start_loop()
             server.serve_forever(poll_interval=0.2)
         finally:
             if registration is not None:

@@ -991,3 +991,35 @@ Focused HTTP tests exercise the real service with immutable synthetic fixtures,
 CPU 2 and a private child; JavaScript tests verify presentation and exact requests.
 This is source/test evidence, not real-data training, installed/game execution,
 Human origin, model quality, remote placement or complete G2/V1 acceptance.
+
+### Explicit co-located remote Scheduler
+
+`training --execution remote` uses the same running Application and control token,
+then maps to the existing Operations/Scheduler jobs. Local CPU commands and their
+request grammar are unchanged. A project opts in with `remote_compute` containing
+`deployment: "local_scheduler"`, absolute `operations_path` and `target_path`, and
+positive `budget_limit`/`reserved_units`. The target file is the existing immutable
+ModalTarget v2 contract. The Operations DB must differ from the private Curation DB.
+A nonempty `hub_url` is rejected by this co-located deployment; it never silently
+bypasses the configured Hub. There is no production JSON fake-provider/import hook.
+
+Remote `start` JSON contains `intent_id`, `source_id` (a reserved engineering P1
+snapshot), the full MStdConfig `config`, `max_seconds`, and `stop_after` (positive
+step or null). Start reserves the existing LocalLedger training uses before fitting
+vocabulary, then enqueues the prepared Run in Ops. Provider GPU and the recipe's
+explicit device must agree; source/lock identity must match. Actual Modal execution
+also requires independently verified access from that exact remote target to the
+same immutable ArtifactStore input closure. Synthetic injected-provider evidence
+neither verifies that storage connection nor qualifies an image, CUDA, cost or a
+production deployment.
+
+`status --operation-id <job>` selects the original remote job. `cancel` and
+`reconcile` take `job_id` and `expected_attempt_id`. Cancel acknowledges intent;
+it does not claim terminal execution or select the cancelled output. Reconcile
+polls only the original saved handle. Unknown submission never automatically retries.
+Live `pause` is unsupported: choose a bounded `stop_after` before submission. An
+explicit `resume` request additionally gives a new `intent_id`, exact paused
+`checkpoint_id`, `max_seconds`, and `stop_after`; the new budgeted invocation keeps
+the same immutable Run. Client exit does not end the Application scheduler. Stopping
+and reopening the Application restores the original Ops handle and attempt; it does
+not create a second local-training operation or curation database.
