@@ -196,3 +196,65 @@ def test_real_service_pause_resume_keeps_run_input_and_optimizer_state(tmp_path,
     _, _, last = verify_p1_result(store, result.artifact_id, workload)
     assert last.state["step"] == 2 and last.state["history"][0] == state["history"][0]
     assert all(float(slot["step"]) == 2 for slot in last.state["optimizer"]["state"].values())
+
+
+@pytest.mark.parametrize(
+    "fault", [
+        "missing_heldout_reservation", "dev_training_exposure", "dev_gold", "excluded_N", "valid",
+    ],
+)
+def test_hub_P1_preflight_checks_the_same_roles_before_provider_submit(tmp_path, fault):
+    from test_hub_scheduler import Provider
+
+    from spireagent.hub.curation import CurationLedger
+    from spireagent.hub.database import Operations
+    from spireagent.hub.scheduler import Scheduler
+    from spireagent.p1_curation import reserve_p1_snapshot as reserve_shared
+    from stpd.p1.workload import prepare_p1_run
+
+    _, store, _, snapshot = workspace(tmp_path)
+    _, selection = load_snapshot(store, snapshot.artifact_id)
+    train = {p["root_run_id"] for p in selection["points"] if p["split"] == "train"}
+    dev = {p["root_run_id"] for p in selection["points"] if p["split"] == "dev"}
+    producer = snapshot.producer
+    run = prepare_p1_run(store, snapshot.artifact_id, producer,
+                         MStdConfig(max_epochs=1), "a" * 32)
+    operations = Operations(tmp_path / "hub.sqlite")
+    ledger = CurationLedger(operations)
+    if fault in {"valid", "excluded_N"}:
+        assert reserve_shared(ledger, store, snapshot.artifact_id) == reserve_shared(
+            ledger, store, snapshot.artifact_id
+        )
+        expected = None
+        if fault == "excluded_N":
+            from spireagent.p1_curation import _occurrence
+
+            ledger.annotate(_occurrence(selection["points"][0]["source_decision_id"]),
+                            "engineering-test", "exclude", "explicit N quality exclusion")
+            expected = "snapshot_selected_excluded_N"
+    elif fault == "dev_training_exposure":
+        reserve_shared(ledger, store, snapshot.artifact_id)
+        ledger.use(dev, "training", "prior-training")
+        expected = "held_out_run_has_training_exposure"
+    else:
+        ledger.claim(snapshot.artifact_id, "training", train)
+        ledger.bind(snapshot.artifact_id, snapshot.artifact_id)
+        if fault == "dev_gold":
+            ledger.claim("gold-dev", "gold", dev)
+            with pytest.raises(BoundaryError, match="gold_reserved_data"):
+                reserve_shared(ledger, store, snapshot.artifact_id)
+        expected = "snapshot_purpose_reservation_required"
+    operations.enqueue("training", run.artifact_id, "P1-role-counterexample",
+                       max_seconds=300, reserved_units=1, budget_limit=1)
+    provider = Provider(operations, store, None, producer)
+    with Scheduler(operations, store, provider, budget_limit=1) as scheduler:
+        reply = scheduler.tick(1)
+    if fault == "valid":
+        assert reply["state"] == "submitted" and len(provider.calls) == 1
+    else:
+        assert reply["state"] == "preflight_failed" and reply["code"] == expected
+        assert not provider.calls
+    with operations.transaction() as db:
+        used = {r[0] for r in db.execute("SELECT run FROM curation_uses WHERE kind='training'")}
+    assert used == (train if fault == "valid" else
+                    dev if fault == "dev_training_exposure" else set())

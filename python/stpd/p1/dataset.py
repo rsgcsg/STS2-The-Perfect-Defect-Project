@@ -26,12 +26,18 @@ from .spec import SNAPSHOT_SCHEMA, TARGET_SPEC
 SOURCE_SCHEMA = "sts2.human-annotator/p1-native-session-bundle-1"
 SEGMENTS_SCHEMA = "sts2.p1/native-segments-1"
 TARGETS_SCHEMA = "sts2.p1/native-targets-1"
-SUPPORTED_PROJECTIONS = frozenset(
-    {
-        (SEGMENTS_SCHEMA, "native-selector-finalized-d-1"),
-        (TARGETS_SCHEMA, "native-timeline-targets-1"),
-    }
-)
+SUPPORTED_PROJECTIONS = {
+    (SEGMENTS_SCHEMA, "native-selector-finalized-d-1"): "segments",
+    (TARGETS_SCHEMA, "native-timeline-targets-1"): "targets",
+}
+
+
+def projection_payload_role(manifest: Manifest) -> str:
+    info = manifest.parameters.value()
+    pair = info.get("schema"), info.get("projection_id")
+    if manifest.kind != "analysis" or pair not in SUPPORTED_PROJECTIONS:
+        raise BoundaryError("p1_snapshot", "unsupported_named_projection")
+    return SUPPORTED_PROJECTIONS[pair]
 
 
 @dataclass(frozen=True)
@@ -55,9 +61,7 @@ def _payload_json(store: ArtifactStore, manifest: Manifest, role: str) -> dict[s
 def load_projection(store: ArtifactStore, artifact_id: str) -> Projection:
     manifest = store.get_manifest(artifact_id)
     info = manifest.parameters.value()
-    pair = info.get("schema"), info.get("projection_id")
-    if manifest.kind != "analysis" or pair not in SUPPORTED_PROJECTIONS:
-        raise BoundaryError("p1_snapshot", "unsupported_named_projection")
+    role = projection_payload_role(manifest)
     if (
         {p.role for p in manifest.parents} != {"source"}
         or not isinstance(info.get("tool_release_id"), str)
@@ -68,7 +72,7 @@ def load_projection(store: ArtifactStore, artifact_id: str) -> Projection:
     original = source.parameters.value()
     if source.kind != "evidence" or original.get("schema") != SOURCE_SCHEMA:
         raise BoundaryError("p1_snapshot", "native_original_source_required")
-    value = _payload_json(store, manifest, "segments")
+    value = _payload_json(store, manifest, role)
     if (
         value.get("schema") != info["schema"]
         or (value.get("profile"), value.get("revision")) != ("p1-global-r1", "r1.4")
@@ -250,7 +254,8 @@ def inspect_projections(
                 "projection_id": artifact_id,
                 "source_id": projection.source.artifact_id,
                 "source_content_id": projection.value["source_content_id"],
-                "segments_sha256": projection.manifest.payload("segments").sha256,
+                projection_payload_role(projection.manifest) + "_sha256":
+                    projection.manifest.payload(projection_payload_role(projection.manifest)).sha256,
                 "projection": projection.manifest.parameters.value(),
                 "branch": projection.value["branch"],
                 "root_run_id": root_id,

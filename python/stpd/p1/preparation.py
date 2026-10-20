@@ -11,7 +11,7 @@ from typing import Any
 from spireagent.json_boundary import BoundaryError
 from spireagent.storage.store import ArtifactStore
 
-from .dataset import iter_snapshot_points, load_snapshot
+from .dataset import iter_snapshot_points, load_snapshot, projection_payload_role
 from .spec import RUN_SCHEMA, SNAPSHOT_SCHEMA
 from .workload import verify_p1_run
 
@@ -70,8 +70,9 @@ def input_transfer_inventory(store: ArtifactStore, identity: str) -> dict[str, A
         raise BoundaryError("p1_preparation", "P1_snapshot_or_run_required")
     _, selection = load_snapshot(store, snapshot.artifact_id)
     compute.append((snapshot, "selection"))
-    compute.extend((store.get_manifest(s["projection_id"]), "segments")
-                   for s in selection["sources"])
+    for source in selection["sources"]:
+        projection = store.get_manifest(source["projection_id"])
+        compute.append((projection, projection_payload_role(projection)))
 
     def rows(pairs):
         unique: dict[str, Any] = {}
@@ -104,7 +105,7 @@ def input_transfer_inventory(store: ArtifactStore, identity: str) -> dict[str, A
         "copy_artifact_payloads": closure,
         "copy_artifact_unique_payload_bytes": sum(p["bytes"] for p in closure),
         "copy_behavior": "all_parent_payloads_streamed_via_one_temporary_payload_file",
-        "worker_reads": "projection_segments_selection_vocabulary_and_ancestor_manifests",
+        "worker_reads": "named_projection_payloads_selection_vocabulary_and_ancestor_manifests",
         "worker_archive_payload_reads": False,
         "placement": "existing_ArtifactStore_binding_not_embedded_local_paths",
         "upload_performed": False,

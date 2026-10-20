@@ -80,6 +80,18 @@ def record_use(
     *,
     nodes: tuple[Manifest, ...] = (),
 ) -> None:
+    from stpd.p1.spec import RUN_SCHEMA as P1_RUN_SCHEMA
+
+    if kind == "training" and manifest.parameters.value().get("schema") == P1_RUN_SCHEMA:
+        from spireagent.p1_curation import record_p1_training_use
+        from stpd.p1.workload import verify_p1_run
+
+        workload = verify_p1_run(store, manifest.artifact_id, manifest.producer)
+        record_p1_training_use(
+            CurationLedger(operations), store, workload.snapshot.artifact_id,
+            workload.run.parameters.value()["operation_id"],
+        )
+        return
     sources: set[str] = set()
     runs = guarded_runs(
         operations, store, manifest, training=kind == "training", nodes=nodes, sources=sources

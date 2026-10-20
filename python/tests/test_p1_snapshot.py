@@ -96,7 +96,8 @@ def projection_fixture(
         "analysis",
         PRODUCER,
         (Parent("source", original.artifact_id),),
-        (store.put_payload("segments", io.BytesIO(json_bytes(value)), "application/json"),),
+        (store.put_payload("targets" if value["schema"] == TARGETS_SCHEMA else "segments",
+                           io.BytesIO(json_bytes(value)), "application/json"),),
         FrozenObject.of(
             {
                 "schema": value["schema"],

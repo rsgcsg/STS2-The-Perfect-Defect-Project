@@ -274,7 +274,8 @@ N decision IDs. Parent projections retain their native originals and tool identi
 the selection contains references, hashes, aliases, whole-lineage groups and splits,
 not copies of observations or raw recordings. Supported source pairs are explicit:
 03 `native-segments-1/native-selector-finalized-d-1`, and B*
-`native-targets-1/native-timeline-targets-1`. Old ResearchTransition datasets keep
+`native-targets-1/native-timeline-targets-1`. The exact payload roles are `segments`
+for 03 and `targets` for B*; there is no fallback between them. Old ResearchTransition datasets keep
 their existing consumers and are not relabelled as P1 N.
 
 Only complete current decision observations with a unique chosen choice in the full,
@@ -289,7 +290,9 @@ histograms. These are engineering descriptions, not research admission threshold
 The existing local entry is `LocalTrainingService.start(TrainingRequest(...))`.
 Before start, `spireagent.workbench.p1_training_data.reserve_p1_snapshot` verifies
 and reserves the explicit engineering allocation on the existing LocalCurationOwner
-ledger. Only train roots and train projections get gradient-training use records;
+ledger. Hub scheduling calls the same shared `spireagent.p1_curation` rules, with
+explicit allocation reservation on its existing ledger before submission. Only train
+roots and train projections get gradient-training use records;
 dev/test roles remain separate. Known previous training exposure, Gold or conflicting
 related-run purposes reject held-out use. This does not establish unknown historical
 external exposure. It creates no new database, Store, service or scientific admission.
