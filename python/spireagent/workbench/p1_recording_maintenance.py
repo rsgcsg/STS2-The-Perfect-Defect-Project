@@ -150,6 +150,25 @@ class P1RecordingMaintenance:
                 policy["enabled"] = False
                 importer._save()
                 return dict(state)
+            if active is not None and policy.get("scope") is not None:
+                if "scope_facts" not in active:
+                    catalog = importer.catalog.read()
+                    candidate = importer.catalog.candidate(active["candidate_id"])
+                    if catalog.get("status") != "ready" or candidate is None:
+                        state.update(
+                            status="blocked", error_code="original_candidate_scope_unavailable"
+                        )
+                        importer._save()
+                        return dict(state)
+                    active["scope_facts"] = {
+                        "candidate_id": active["candidate_id"],
+                        "declared_origin": candidate.get("declared_origin"),
+                        "closed_at": candidate.get("closed_at"),
+                    }
+                if not _in_scope(active["scope_facts"], policy["scope"]):
+                    state.update(active=None, status="excluded_by_scope", error_code=None)
+                    importer._save()
+                    return dict(state)
             store, _ = _selected_store(importer.config, require_curation=False)
             if active is None:
                 catalog = importer.catalog.read()
@@ -179,7 +198,15 @@ class P1RecordingMaintenance:
                 source = importer._existing_candidate(
                     store, identity, candidate, verify_payloads=False
                 )
-                active = {"candidate_id": identity, "source_artifact_id": source}
+                active = {
+                    "candidate_id": identity,
+                    "source_artifact_id": source,
+                    "scope_facts": {
+                        "candidate_id": identity,
+                        "declared_origin": candidate.get("declared_origin"),
+                        "closed_at": candidate.get("closed_at"),
+                    },
+                }
                 state.update(active=active, status="running", error_code=None)
                 importer._save()
                 if source is None:

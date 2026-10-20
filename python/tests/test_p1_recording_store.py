@@ -829,3 +829,39 @@ def test_segments_catalog_reads_explicit_consistent_end_targets(tmp_path, origin
         metadata = publish_p1_catalog_metadata(store, view.artifact_id, producer)
         assert metadata.parameters.value()["metadata"]["result"] == expected
         assert len(metadata.parameters.value()["evidence"]["end_targets"]) == 2
+
+
+def test_changed_cloud_scope_rechecks_active_and_restart_before_new_dispatch(tmp_path, monkeypatch):
+    from spireagent.workbench import p1_recording_maintenance as maintenance
+    from spireagent.workbench.developer import ProjectConfig, combination
+    from spireagent.workbench.local_recording_import import LocalRecordingImporter
+
+    config = ProjectConfig(tmp_path / "state", "", "", None, combination())
+    config.state_dir.mkdir()
+    importer = LocalRecordingImporter(config, None)
+    active = {
+        "candidate_id": "a" * 64,
+        "source_artifact_id": "b" * 64,
+        "scope_facts": {
+            "candidate_id": "a" * 64,
+            "declared_origin": "agent_native_ui",
+            "closed_at": "2026-10-20T08:01:00+00:00",
+        },
+    }
+    importer._maintenance["active"] = active
+    service = maintenance.P1RecordingMaintenance(importer)
+    monkeypatch.setattr(maintenance, "open_peer", lambda _: None)
+    service.configure(
+        True,
+        {"kind": "s3"},
+        scope={"closed_after": "2026-10-20T08:00:00+00:00", "declared_origins": ["declared_human"]},
+    )
+    # Restart retains the selected engineering source, but the new policy excludes it before I/O.
+    reopened = LocalRecordingImporter(config, None)
+    assert maintenance.P1RecordingMaintenance(reopened).tick()["status"] == "excluded_by_scope"
+    assert reopened.operation["status"] == "idle"
+    # An unresolved original operation stays fenced even when its source is outside scope.
+    reopened._maintenance["active"] = active
+    reopened.operation["status"] = "publication_unknown"
+    assert maintenance.P1RecordingMaintenance(reopened).tick()["status"] == "blocked"
+    assert reopened._maintenance["active"]["candidate_id"] == "a" * 64
