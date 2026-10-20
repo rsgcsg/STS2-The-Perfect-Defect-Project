@@ -91,7 +91,7 @@ P1原件整局完整、派生完整与新路线E2/E3适用性已由用户批准�
 | 合同/协议 | 位置和原因 | 首训价值/状态 |
 |---|---|---|
 | Player Environment | Connector提供公开观察/Read/完整原生目录/Receipt的具体合同 | P1派生与执行的原始基础，不是训练张量格式 |
-| P1 r1.3 | 当前环境信息/前进动作/承诺/失败语义 | 线上和离线解释同意当前公开决策问题；[唯一语义owner](../../protocols/P1_GLOBAL_R1.zh-CN.md) |
+| P1 r1.4 | 当前环境信息/前进动作/承诺/失败语义 | 线上和离线解释同意当前公开决策问题；[唯一语义owner](../../protocols/P1_GLOBAL_R1.zh-CN.md) |
 | Agent-session/P1子程序端口 | Runtime↔完整Agent的消费、query/choice/control | 复用同一受控入口接未来模型，NDJSON只是实现；[owner](../../../components/policy-runtime/docs/AGENT_SESSION_PROTOCOL.md) |
 | AgentComposition/ExecutionRequest/Goal | Agent描述与一次执行意图、资源/权限/预算、任务见证 | Model不等于Agent；沿原应用启动/结果，不添scheduler；[owner](../../../python/docs/AGENT_EXECUTION_CONTRACT.md) |
 | Record grammar/来源声明 | 来源原件事实、顺序、身份、缺口、完整性 | 核验记录可解释什么；不冒充P1/Agent消费/训练准入 |
@@ -103,9 +103,9 @@ P1原件整局完整、派生完整与新路线E2/E3适用性已由用户批准�
 | 格式族 | 链中用途/消费者 | 对首训的价值及去向 |
 |---|---|---|
 | Snapshot/Reads/BoundAction/Receipt原字节 | 环境→P1/Runtime/Recorder | 来源事实及选择绑定，离线复验可追溯；不直接当所有Model Input |
-| P1-native决策原件＋PB1 | 成熟Human accepted动作owner→Evidence→共享核离线P1 | 执行S/A(S)解释已批准，H只作来源；本次核心接线/新短段仍待，批准不代表已实现 |
+| P1-native决策原件＋PB1 | 成熟Human accepted动作owner→Evidence→共享核离线P1 | 执行S/A(S)解释与接线已实现，H只作来源；三自然来源已封包，当前重派生/缺口及资格从CURRENT查 |
 | Source4 profile/bundle-v4/public-basis1 | 保留的原始输入/publication→P2/后续消费者 | 原report-v3和旧FAIL保持，不承担当前P1强制raw取消全分类门 |
-| P1 observation/choice/result | P1在线边界及离线派生 | 当前公开决策语义；模型投影、词表和学习目标后定 |
+| P1 observation/choice/result | P1在线边界及离线派生 | 当前公开决策语义；T0已按固定InputSpec/词表完成工程闭环，正式数据配方和研究准入另定 |
 | agent-session-run-1目录/events/引用原件 | Runtime→typed verifier/replay/样本admission | 保存实际offer、Consume/ACK、Receipt/Result；直接Agent lane独立于Source4 |
 | legacy episode-record-1单文件 | 原直接记录converter/reader | 有限复用原P1来源，保留原版本，不与当前目录格式混同 |
 | Human manifest2/trace4/canonical3/action-space3/Read2/journal2/close1/bundle3 | 原生因果lane→Evidence/对应研究consumer | 成熟动作owner、H关联、原件和封存可复用；旧H缺当前P1事实不补造，不在未测下断言必须重建全部hooks或高迁移成本 |
@@ -113,7 +113,7 @@ P1原件整局完整、派生完整与新路线E2/E3适用性已由用户批准�
 | Source1/2/3及bundle | 原声明/epoch/有序basis研究lane | Source3默认及旧专用view继续；不回填Source4新事实 |
 | ResearchTransition/Parquet/dataset/use/split manifests | 来源admission→固定研究样本/用途/划分 | 复用现有数据管理；不是所有源都强制S-a-S′或同一Parquet语义 |
 | Artifact manifest/chunks/content hashes | Store/R2/transfer/materialize | 既有内容身份可分块核对；大数据路径/云费用另批，不擅调全局上限 |
-| Model/checkpoint/Agent package | 学习→加载/注册→新运行 | 后续冻结数据/配置/权重/状态身份；本次P1冻结不包含一个尚未批准的新Model |
+| Model/checkpoint/Agent package | 学习→加载/注册→新运行 | T0已交固定M-std工程模型/恢复/export，真实环境运行待具名独占窗口；不把模型工程更新计正式策略资格 |
 
 ## 工作台停止边界
 

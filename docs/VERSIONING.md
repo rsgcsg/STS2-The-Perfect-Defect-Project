@@ -63,6 +63,17 @@ reason, affected consumers and migration window. Stopping old executable support
 never authorizes deleting archival data readers. Ordinary dependency maintenance
 is batched; urgent security or data-integrity issues are handled promptly.
 
+For the current P1 baseline, the protected consumer is the actual
+`native-segments-1` / `p1-global-r1` / `r1.4` reader and the fixed
+`stpd-p1-mstd-input@1` model adapter. A converter implementation repair creates
+a new derived artifact, preserving the original accepted inputs and any already
+frozen training snapshot. Unchanged observations, catalogs, InputSpec and weights
+remain usable; environment changes use a new isolated registration with the
+accurate producer/game/core envelope. This is finite consumer compatibility, not
+permission to relax exact runtime binding, silently reassign choice IDs or admit
+all historical revisions. New projection or action semantics need their own
+explicit decision and affected-consumer checks.
+
 ## Repository spelling correction (2026-09-16)
 
 The same GitHub repository was renamed from `rsgcsg/STS2-The-Pefect-Defect-Project`

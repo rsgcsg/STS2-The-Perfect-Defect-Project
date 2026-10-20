@@ -20,6 +20,7 @@
 | 采集、封包、验证与数据用途 | [Annotator](components/annotator/README.md)、[Evidence](components/evidence/README.md)、[Data/Provenance](python/docs/DATA_AND_PROVENANCE.md)；可校验不等于Human来源或训练准入 |
 | Agent运行、工作台与模型接入 | [Policy Runtime](components/policy-runtime/README.md)、[应用/研究地图](python/docs/DOCUMENT_MAP.md)、[Workbench用例](python/docs/PROJECT_CONSOLE.md)；Model只是完整Agent的一部分 |
 | 开发、检查、发布与具体目录 | [开发流程](docs/DEVELOPMENT_WORKFLOW.md)、[测试](docs/TESTING.md)、[版本](docs/VERSIONING.md)、[文档地图](docs/DOCUMENT_MAP.md)；按改动选必要检查 |
+| 工程治理与已有技能 | [治理与变更检查](docs/ENGINEERING_GOVERNANCE.md)、[技能目录](.agents/skills/README.md)；沿实际变更owner选择规则与工具 |
 | 已有结果、旧方案或资产去向 | [问题索引](docs/RESOLVED_ISSUES.zh-CN.md) → 对应证据；其它资料从[文档地图](docs/DOCUMENT_MAP.md)按需找，保留原版本/适用范围 |
 
 STS2决定规则和原生执行；Connector决定公开信息、动作绑定和执行时复验；Host Runtime管进程与隔离；Annotator/Evidence管原件；Policy Runtime管受控执行；应用管用户入口；研究管模型、训练与评估。Mod是装载包装，GUI映射同一应用用例，不再造一套控制或数据链。
