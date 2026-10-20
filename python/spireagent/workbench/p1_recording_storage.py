@@ -44,8 +44,9 @@ def open_peer(binding: dict[str, Any]) -> ManifestArtifactStore:
     raise BoundaryError("p1_storage", "invalid_peer_binding")
 
 
-def _inventory(store: ManifestArtifactStore, manifest: Manifest,
-               scratch: Path) -> DirectoryTransferManifest:
+def _inventory(
+    store: ManifestArtifactStore, manifest: Manifest, scratch: Path
+) -> DirectoryTransferManifest:
     info = manifest.parameters.value()
     if info.get("schema") == BUNDLE_SCHEMA:
         return _transfer(store, manifest)
@@ -274,6 +275,16 @@ def reconcile_storage(
     identity = intent["artifact_id"]
     if intent["storage_action"] == "verify":
         identity, _ = _remote_locator(local, peer, identity)
-    storage_budget(target, identity, scratch=scratch, destination=None)
-    receipt = verify_p1_storage(target, identity, scratch=scratch)
+    try:
+        storage_budget(target, identity, scratch=scratch, destination=None)
+        receipt = verify_p1_storage(target, identity, scratch=scratch)
+    except StoreError as error:
+        if error.code != "object_not_found":
+            raise
+        return {
+            **intent,
+            "status": "failed",
+            "publication": "absent_or_incomplete",
+            "error_code": error.code,
+        }
     return {**intent, "status": "completed", "storage_receipt": receipt}

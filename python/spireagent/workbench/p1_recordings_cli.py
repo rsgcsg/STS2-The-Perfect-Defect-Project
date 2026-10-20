@@ -16,7 +16,11 @@ from spireagent.source import source_identity
 from spireagent.storage.config import open_store
 from spireagent.storage.store import ManifestArtifactStore
 from spireagent.workbench.developer import ROOT, atomic_json
-from spireagent.workbench.local_recording_import import OPERATION_FILE, SCHEMA
+from spireagent.workbench.local_recording_import import (
+    NATIVE_IMPORT_UNCERTAIN,
+    OPERATION_FILE,
+    SCHEMA,
+)
 from spireagent.workbench.p1_recording_store import (
     BUNDLE_SCHEMA,
     PROJECTIONS,
@@ -29,6 +33,24 @@ from spireagent.workbench.p1_recording_store import (
     query_p1_recordings,
     query_p1_sources,
 )
+
+_PERSISTENT_FIELDS = ("_maintenance", "_native_agent_intents", "_storage_receipts")
+
+
+def _operation_guard(previous: dict[str, Any]) -> None:
+    if previous and previous.get("schema") != SCHEMA:
+        raise BoundaryError("p1_store", "operation_file_invalid")
+    if previous.get("status") in {"pending", "publication_unknown", "interrupted_unknown"}:
+        raise BoundaryError("p1_store", "explicit_operation_reconciliation_required")
+    if any(
+        row.get("status") in {"pending", *NATIVE_IMPORT_UNCERTAIN}
+        for row in previous.get("_native_agent_intents", {}).values()
+    ):
+        raise BoundaryError("p1_store", "explicit_native_intent_reconciliation_required")
+
+
+def _carry_operation_state(previous: dict[str, Any], operation: dict[str, Any]) -> dict[str, Any]:
+    return {**{key: previous[key] for key in _PERSISTENT_FIELDS if key in previous}, **operation}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -164,16 +186,9 @@ def _main(argv: list[str] | None = None) -> int:
         }
         with instance_lock(args.state / "instance.lock"):
             path = args.state / OPERATION_FILE
-            if path.exists():
-                previous = json.loads(path.read_bytes())
-                if previous.get("status") in {
-                    "pending",
-                    "publication_unknown",
-                    "interrupted_unknown",
-                }:
-                    raise BoundaryError("p1_store", "explicit_operation_reconciliation_required")
-            if path.exists():
-                operation["_storage_receipts"] = previous.get("_storage_receipts", {})
+            previous = json.loads(path.read_bytes()) if path.exists() else {}
+            _operation_guard(previous)
+            operation = _carry_operation_state(previous, operation)
             atomic_json(path, operation)
             try:
                 if args.action == "import-bundle":
@@ -366,15 +381,14 @@ def _storage(argv: list[str]) -> int:
                 raise BoundaryError("p1_storage", "storage_intent_required")
             intent = previous
         else:
-            if previous.get("status") in {"pending", "publication_unknown", "interrupted_unknown"}:
-                raise BoundaryError("p1_storage", "explicit_operation_reconciliation_required")
+            _operation_guard(previous)
             if not args.peer or not args.artifact:
                 parser.error("storage action requires --peer and --artifact")
             intent = {
                 "schema": SCHEMA,
                 **storage_intent(args.action, args.artifact, peer_binding(args.peer)),
             }
-            intent["_storage_receipts"] = previous.get("_storage_receipts", {})
+            intent = _carry_operation_state(previous, intent)
             atomic_json(path, intent)
         try:
             if args.action == "reconcile":

@@ -545,7 +545,9 @@ def test_background_storage_lost_ack_requires_explicit_readback(
 
 
 def test_query_sources_keeps_unknown_metadata_and_does_not_double_count_views(
-    tmp_path, original, tool,
+    tmp_path,
+    original,
+    tool,
 ):
     from spireagent.workbench.p1_recording_store import query_p1_sources
 
@@ -560,3 +562,106 @@ def test_query_sources_keeps_unknown_metadata_and_does_not_double_count_views(
     assert query_p1_sources(store, filters={"character": "invented"}) == []
     with pytest.raises(BoundaryError, match="unsupported_query_filter"):
         query_p1_sources(store, filters={"hidden_state": "bad"})
+
+
+def test_changed_maintenance_policy_rechecks_previously_completed_sources(
+    tmp_path,
+    original,
+    tool,
+    monkeypatch,
+):
+    from spireagent.storage.registry import SQLiteRegistry
+    from spireagent.workbench import local_recording_import as importing
+    from spireagent.workbench.developer import ProjectConfig, combination
+    from spireagent.workbench.p1_recording_maintenance import P1RecordingMaintenance
+    from spireagent.workbench.p1_recording_storage import peer_binding
+
+    store = ManifestArtifactStore(LocalBlobStore(tmp_path / "store"))
+    registry = SQLiteRegistry(tmp_path / "registry.sqlite")
+    candidate = {**_closed_session(original / "raw"), "source_directory": original / "raw"}
+    identity = "a" * 64
+
+    class Catalog:
+        def read(self):
+            return {
+                "status": "ready",
+                "candidates": [{"candidate_id": identity, "recording_type": "p1_native"}],
+            }
+
+        def candidate(self, value):
+            return candidate
+
+    source = publish_p1_original(
+        store, original, tool, Producer("test", "a" * 40, "b" * 64), scratch=tmp_path / "scratch"
+    )
+    config = ProjectConfig(tmp_path / "state", "", "", None, combination())
+    config.state_dir.mkdir()
+    importer = importing.LocalRecordingImporter(config, Catalog())
+    monkeypatch.setattr(importing, "_selected_store", lambda _, **_kw: (store, registry))
+    maintenance = P1RecordingMaintenance(importer)
+    maintenance.configure(True, None, projection_id=None)
+    assert maintenance.tick()["status"] == "completed"
+    assert not importer._storage_receipts
+    maintenance.configure(True, peer_binding(str(tmp_path / "cold")), projection_id=None)
+    maintenance.tick()
+    importer.thread.join(timeout=10)
+    assert importer.status()["storage_receipt"]["artifact_id"] == source.artifact_id
+    assert maintenance.tick()["status"] == "completed"
+
+
+def test_cli_state_carries_all_owners_and_native_unknown_fences_new_work():
+    from spireagent.workbench.local_recording_import import SCHEMA
+    from spireagent.workbench.p1_recordings_cli import _carry_operation_state, _operation_guard
+
+    previous = {
+        "schema": SCHEMA,
+        "status": "completed",
+        "_maintenance": {"policy": {"enabled": True}},
+        "_storage_receipts": {"old": {}},
+        "_native_agent_intents": {"a": {"status": "completed"}},
+    }
+    _operation_guard(previous)
+    next_operation = _carry_operation_state(previous, {"schema": SCHEMA, "status": "pending"})
+    for key in ("_maintenance", "_storage_receipts", "_native_agent_intents"):
+        assert next_operation[key] == previous[key]
+    previous["_native_agent_intents"]["a"]["status"] = "publication_unknown"
+    with pytest.raises(BoundaryError, match="explicit_native_intent_reconciliation_required"):
+        _operation_guard(previous)
+
+
+def test_direct_publication_space_precheck_precedes_payload_writes(
+    tmp_path,
+    original,
+    tool,
+    monkeypatch,
+):
+    from collections import namedtuple
+
+    from spireagent.workbench import p1_recording_storage as storage
+
+    store = ManifestArtifactStore(LocalBlobStore(tmp_path / "store"))
+    usage = namedtuple("usage", "total used free")
+    monkeypatch.setattr(storage.shutil, "disk_usage", lambda _: usage(100, 99, 1))
+    with pytest.raises(BoundaryError, match="space_insufficient"):
+        publish_p1_original(
+            store,
+            original,
+            tool,
+            Producer("test", "a" * 40, "b" * 64),
+            scratch=tmp_path / "scratch",
+        )
+    assert not store.manifest_ids()
+    assert not list((tmp_path / "store").rglob("objects/sha256/*"))
+
+
+def test_explicit_storage_reconcile_can_establish_absence_without_copy(tmp_path):
+    from spireagent.workbench.p1_recording_storage import (
+        peer_binding,
+        reconcile_storage,
+        storage_intent,
+    )
+
+    local = ManifestArtifactStore(LocalBlobStore(tmp_path / "local"))
+    intent = storage_intent("restore", "a" * 64, peer_binding(str(tmp_path / "cold")))
+    result = reconcile_storage(local, intent, scratch=tmp_path / "scratch")
+    assert result["status"] == "failed" and result["publication"] == "absent_or_incomplete"

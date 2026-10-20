@@ -30,7 +30,8 @@ from sts2_platform_evidence.collection_tool import (
 from spireagent.artifact_contracts import Manifest, Parent, Producer
 from spireagent.json_boundary import BoundaryError, FrozenObject, json_bytes
 from spireagent.storage.archives import _extract_tar
-from spireagent.storage.store import ManifestArtifactStore
+from spireagent.storage.local import LocalBlobStore
+from spireagent.storage.store import CHUNK_BYTES, ManifestArtifactStore
 
 BUNDLE_SCHEMA = P1_NATIVE_SUPPORT["bundle_schema"]
 SEGMENTS_SCHEMA = P1_NATIVE_SUPPORT["segment_schema"]
@@ -123,6 +124,22 @@ def publish_p1_original(
         return existing
     transfer = DirectoryTransferManifest.from_directory(
         bundle, content_id=content_id, artifact_type=P1_NATIVE_SUPPORT["type_id"]
+    )
+    from .p1_recording_storage import require_workspace_space
+
+    archive_estimate = (
+        preserved_archive.stat().st_size
+        if preserved_archive is not None
+        else sum(f.bytes + 2048 for f in transfer.files) + 8192
+    )
+    metadata_estimate = len(json_bytes(transfer.to_dict()))
+    if preserved_index is not None:
+        metadata_estimate += preserved_index.stat().st_size
+    require_workspace_space(
+        scratch,
+        CHUNK_BYTES + (archive_estimate if preserved_archive is None else 0),
+        persistent_bytes=archive_estimate + metadata_estimate,
+        destination=store.blobs.root if isinstance(store.blobs, LocalBlobStore) else None,
     )
     scratch.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="p1-import-", dir=scratch) as name:
@@ -341,8 +358,10 @@ def publish_p1_projection(
         raise BoundaryError("p1_store", "derivation_receipt_mismatch")
     summary = inspect_p1_projection(output, source, projection_id, run_id, expected_sha256)
     diagnostics = derivation_receipt.get("owner_diagnostics", {})
-    for field, owner_field in (("whole_run_complete", "whole_run_recording_complete"),
-                               ("source_conversion_complete", "source_conversion_complete")):
+    for field, owner_field in (
+        ("whole_run_complete", "whole_run_recording_complete"),
+        ("source_conversion_complete", "source_conversion_complete"),
+    ):
         fact = diagnostics.get(owner_field, diagnostics.get(field))
         if type(fact) is bool:
             summary[field] = fact
@@ -362,6 +381,16 @@ def publish_p1_projection(
             for _ in store.read_payload(payload):
                 pass
         return existing
+    from .p1_recording_storage import require_workspace_space
+
+    require_workspace_space(
+        output.parent,
+        CHUNK_BYTES,
+        persistent_bytes=output.stat().st_size
+        + len(json_bytes(summary))
+        + len(json_bytes(derivation_receipt)),
+        destination=store.blobs.root if isinstance(store.blobs, LocalBlobStore) else None,
+    )
     with output.open("rb") as handle:
         payload = store.put_payload(role, handle, "application/json")
     if payload.sha256 != expected_sha256:
@@ -408,7 +437,8 @@ def publish_p1_projection(
                 },
                 "projection_claims": summary["projection_claims"],
                 "source_bundle_path_semantics": (
-                    "diagnostic_only_use_source_artifact_id_and_raw_member_refs"),
+                    "diagnostic_only_use_source_artifact_id_and_raw_member_refs"
+                ),
             }
         ),
     )

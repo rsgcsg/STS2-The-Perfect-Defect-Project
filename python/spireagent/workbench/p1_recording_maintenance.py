@@ -33,6 +33,9 @@ class P1RecordingMaintenance:
             open_peer(peer)
         with self.importer.lock:
             state = self.importer._maintenance
+            previous = state["policy"]
+            if previous["peer"] != peer or previous["projection_id"] != projection_id:
+                state["completed_candidates"] = []
             state["policy"] = {"enabled": enabled, "peer": peer, "projection_id": projection_id}
             self.importer._save()
             return dict(state)
