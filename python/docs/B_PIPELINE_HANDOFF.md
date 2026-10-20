@@ -624,6 +624,8 @@ owner, without claiming complete raw inventory or allocating a purpose. See the 
 
 `project collection-tool`可用`--host-lifecycle <absolute current.json>`及`--native-log-file <absolute godot.log>`成对注册。它们是现Host公开上下文引用，凭据不进入注册文件。Catalog和CollectionSetup调用同一`inspect_collection_destination`，薄传既有公开setup CLI的日志和端口；原setup继续验证Mod/加载/代次。显式引用缺失、前后pid/runtime/endpoint变化会阻断，不退回默认Steam实例。未配置上下文的旧消费者与game-stopped bind/upgrade保持原合同。
 
+游戏停止时，正常Catalog仍可按Tool报告并经验证的configured root只读查看库存；这不声称存在活动Host，也不授予Start、绑定或其它变更。活动Host仍须匹配选定PID、runtime和endpoint；配置在读取期间变化仍拒绝。
+
 非GUI只读目录入口为`LocalRecordingCatalog(ProjectConfig.load(config_path)).read()`；它只观察当前固定Tool/原生owner、封存元数据及未封目录，不pack、复制raw、发送录制命令或赋予Human/研究资格。正常安装的2fa3723d已实际返回ready/current_runtime/33候选/3未封；Evidence精确来源8682d7e7，Tool为d25c0ab1。当前正常服务后台维护保持disabled。
 
 当前源码已沿同一个长期Application和`LocalTrainingService`提供受支持的[非GUI训练控制](PROJECT_CONSOLE.md#non-gui-training-control)：`python -m spireagent.workbench training --help`。CLI与GUI调用同一任务状态和原有权限、预算、Stop/恢复owner；关闭客户端不丢任务，unknown不自动重投。当前服务只声明local CPU，GPU须由实际支持的执行owner接通。2026-10-21开发配置已实际走通start/status/pause/同Run resume/completed/reconcile及cancel保unknown；原固定安装2fa3723d未升级，不能把源码/隔离运行证据当该安装已支持新路由。

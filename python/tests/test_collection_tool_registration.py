@@ -227,3 +227,44 @@ def test_selected_host_context_uses_explicit_log_and_blocks_generation_change(co
     with pytest.raises(BoundaryError, match="selected_host_context_unavailable"):
         inspect_collection_destination(config, owner, recordings_root=tmp_path / "probe")
     assert len(calls) == 2
+
+
+@pytest.mark.parametrize("configured,reason", [
+    (False, "recording_root_not_configured"), (True, "configured_game_stopped"),
+])
+def test_stopped_catalog_inventory_does_not_claim_selected_runtime_or_relax_other_callers(
+    config, tmp_path, monkeypatch, configured, reason,
+):
+    from spireagent.workbench import collection_tool_registration as registration
+
+    context = {"process_id": 123, "runtime_instance_id": "old-runtime",
+               "endpoint": "http://127.0.0.1:15526", "connector_port": 15526,
+               "native_log_file": str(tmp_path / "old-godot.log")}
+    monkeypatch.setattr(registration, "selected_host_context", lambda _: dict(context))
+    response = {"game_running": False, "loaded_identity": None, "configured": configured,
+                "reason": reason, "configured_recordings_root": str(tmp_path / "recordings")}
+
+    class Tool:
+        def setup_status(self, **_options):
+            return response
+
+    tool = Tool()
+    probe = tmp_path / "probe"
+    assert registration.inspect_collection_destination(
+        config, tool, recordings_root=probe, allow_stopped_inventory=True
+    ) == response
+    # Collection preparation and mutation gates do not opt into catalog-only reading.
+    with pytest.raises(BoundaryError, match="selected_host_context_changed_or_unconfirmed"):
+        registration.inspect_collection_destination(config, tool, recordings_root=probe)
+    response["game_running"] = True
+    with pytest.raises(BoundaryError, match="selected_host_context_changed_or_unconfirmed"):
+        registration.inspect_collection_destination(
+            config, tool, recordings_root=probe, allow_stopped_inventory=True
+        )
+    response["game_running"] = False
+    seen = iter((dict(context), {**context, "process_id": 456}))
+    monkeypatch.setattr(registration, "selected_host_context", lambda _: next(seen))
+    with pytest.raises(BoundaryError, match="selected_host_context_changed_or_unconfirmed"):
+        registration.inspect_collection_destination(
+            config, tool, recordings_root=probe, allow_stopped_inventory=True
+        )
