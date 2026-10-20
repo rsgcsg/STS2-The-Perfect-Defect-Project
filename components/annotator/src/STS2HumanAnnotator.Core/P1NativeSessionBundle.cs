@@ -15,6 +15,10 @@ public static class P1NativeSessionBundlePacker
         var manifest = JsonSerializer.Deserialize<CurrentRecordingManifest>(File.ReadAllText(Path.Combine(directory, "recording-manifest.json")), EvidenceJson.Options)!;
         if (manifest.P1NativeSchemaVersion != 1 || manifest.CaptureProfileId != P1NativeRecordingContract.ProfileId)
             errors.Add("p1_native_manifest_mismatch");
+        try { InterruptedRecordingRecovery.Validate(directory, manifest); }
+        catch (Exception exception) when (exception is IOException or InvalidDataException or JsonException or InvalidOperationException
+            or ArgumentException or KeyNotFoundException or UnauthorizedAccessException)
+        { errors.Add("recording_recovery_invalid"); }
         var close = JsonNode.Parse(File.ReadAllText(Path.Combine(directory, P1NativeRecordingContract.CloseFile)))!;
         if (close["status"]?.GetValue<string>() != "closed" || close["pending_count"]?.GetValue<long>() != 0
             || close["session_id"]?.GetValue<string>() != manifest.SessionId || close["timeline_id"]?.GetValue<string>() != manifest.TimelineId)

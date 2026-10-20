@@ -6,10 +6,29 @@ starts only after the installed and loaded identities agree. Record each
 candidate/cohort separately; a new DLL or source revision receives no Human
 qualification from its predecessor. Retain the previous deployment for rollback.
 
-## Default project workflow
+## Current P1 daily collection
 
-For SpireAgent collection, use the [versioned STPD workbench release](https://github.com/rsgcsg/STS2-The-Perfect-Defect/releases)
-and its [single project handoff](https://github.com/rsgcsg/STS2-The-Perfect-Defect/blob/main/docs/B_PIPELINE_HANDOFF.md).
+Use the current [Application collection controls](../python/docs/PROJECT_CONSOLE.md#daily-collection)
+and the [Annotator daily command/SOP](../components/annotator/README.md#p1-native-semantic-recording).
+GUI and `npm run recording:p1` call the same recording owner for
+status/Start/Pause/Resume/prefix/Close. Read the actual status and exact installed
+Tool/Mod/runtime binding before Start; an open Application alone is not a ready game.
+After a native terminal seals successfully, continuous collection opens a distinct
+session on the next run; manual Close/Pause disarms it. Only the user plays Human
+recordings. Do not substitute engineering input for Human evidence.
+
+For interrupted sessions use the [same Tool recovery owner](../components/annotator/README.md#recover-an-interrupted-p1-recording),
+then the [normal Store import and named projection operations](../python/docs/B_PIPELINE_HANDOFF.md#p1-originals-and-named-projections-in-the-existing-local-store).
+The current targets keep exactly approved reward-refresh returns continuous while
+retaining original effects; real missing/unknown facts remain barriers. Old
+segments/default artifacts retain their own interpretation and immutable IDs.
+
+## Canonical distributed collection workflow
+
+The retained canonical bundle3/Full-Run lane below has its own scope; its
+uninterrupted qualification conditions do not replace the current P1 daily SOP.
+For installation and project operation, use the current repository's
+[application and pipeline guide](../python/docs/B_PIPELINE_HANDOFF.md).
 That document owns installation, account/computer binding, campaign setup, cloud viewing,
 operator deployment and maintenance. This guide owns native capture, the Platform tool
 contract and recording incidents; it does not duplicate cloud account or research rules.

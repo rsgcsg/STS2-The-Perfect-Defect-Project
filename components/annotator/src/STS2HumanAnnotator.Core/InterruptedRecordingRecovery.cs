@@ -9,7 +9,7 @@ namespace STS2HumanAnnotator.Core;
 /// copy. Original bytes never change; absent successors become explicit unknowns.
 /// A corrupt/torn stream remains an incident, never trimmed into successful evidence.
 /// </summary>
-public static class InterruptedRecordingRecovery
+public static partial class InterruptedRecordingRecovery
 {
     public sealed record OriginalFile(long Bytes, string Sha256);
     public const string Schema = "sts2.human-annotator/interrupted-recovery-1";
@@ -76,8 +76,9 @@ public static class InterruptedRecordingRecovery
                     RecoverCopy(stage, manifest, identity, inventory);
                     if (!inventory.SequenceEqual(Inventory(source)))
                         throw new InvalidDataException("Recovery source changed under lease.");
-                    RecordingAuditResult audit = RecordingSessionAuditor.Audit(stage);
-                    if (audit.Status != "pass")
+                    string auditStatus = manifest.P1NativeSchemaVersion == 1
+                        ? P1NativeSessionBundlePacker.Audit(stage).Status : RecordingSessionAuditor.Audit(stage).Status;
+                    if (auditStatus != "pass")
                         throw new InvalidDataException("Recovered copy did not pass the recording audit.");
                     Directory.Move(stage, destination);
                     return new { schema = Schema, status = "recovered", identity, busy };
@@ -107,6 +108,8 @@ public static class InterruptedRecordingRecovery
         if (trace.Any(e => e.Schema != SemanticEvidenceContract.EventSchema
             || e.SessionId != manifest.SessionId || e.TimelineId != manifest.TimelineId))
             throw new InvalidDataException("Unsupported interrupted trace.");
+        if (manifest.P1NativeSchemaVersion == 1 && trace.Length != 0)
+            throw new InvalidDataException("P1 recovery cannot repair mixed semantic streams.");
         var accepted = trace.Where(e => e.Kind == "action_accepted")
             .ToDictionary(e => e.Action.ActionWitnessId, StringComparer.Ordinal);
         var terminals = trace.Where(e => TerminalKinds.Contains(e.Kind))
@@ -122,6 +125,7 @@ public static class InterruptedRecordingRecovery
                 Detail = "Original process ended before a durable terminal disposition.",
                 NonClaims = new[] { "no_semantic_successor", "offline_recovery_not_native_event" }
             });
+        int p1Unknowns = manifest.P1NativeSchemaVersion == 1 ? RecoverP1Copy(directory, manifest, now) : 0;
         long journalSequence = journal.Max(e => e.Sequence);
         var last = journal[^1];
         Append(journalFile, last with { EventId = "recovery-" + identity, Sequence = ++journalSequence,
@@ -132,8 +136,10 @@ public static class InterruptedRecordingRecovery
             Detail = "Recovered copy sealed; original process did not close normally." });
         DurableJson(Path.Combine(directory, "recording-recovery.json"), new {
             schema = Schema, original_inventory_sha256 = identity, original_files = inventory,
-            disposition = "interrupted_partial", unknowns_added = accepted.Keys.Count(k => !terminals.Contains(k))
+            disposition = "interrupted_partial", unknowns_added = accepted.Keys.Count(k => !terminals.Contains(k)),
+            p1_unknowns_added = p1Unknowns
         });
+        if (manifest.P1NativeSchemaVersion == 1) WriteP1RecoveryClose(directory, manifest);
         DurableJson(Path.Combine(directory, "session-close-receipt.json"), new {
             schema = "sts2.human-annotator/session-close-1", session_id = manifest.SessionId,
             timeline_id = manifest.TimelineId, closed_at = now, status = "closed", recovery = Schema
@@ -197,7 +203,8 @@ public static class InterruptedRecordingRecovery
             throw new InvalidDataException("Invalid recovery receipt.");
         var observed = Inventory(directory);
         if (!observed.Keys.ToHashSet(StringComparer.Ordinal).SetEquals(
-            inventory.Keys.Concat(new[] { "recording-recovery.json", "session-close-receipt.json" })))
+            inventory.Keys.Concat(new[] { "recording-recovery.json", "session-close-receipt.json" })
+                .Concat(manifest.P1NativeSchemaVersion == 1 ? new[] { P1NativeRecordingContract.CloseFile } : Array.Empty<string>())))
             throw new InvalidDataException("Recovery inventory membership differs.");
         foreach (var (relative, original) in inventory)
         {
@@ -214,7 +221,9 @@ public static class InterruptedRecordingRecovery
                 hash.AppendData(buffer, 0, read); remaining -= read;
             }
             if (Convert.ToHexString(hash.GetHashAndReset()).ToLowerInvariant() != original.Sha256
-                || (relative is not ("run-journal.jsonl" or "semantic-boundary-trace.jsonl") && current.Bytes != original.Bytes))
+                || (relative is not ("run-journal.jsonl" or "semantic-boundary-trace.jsonl")
+                    && !(manifest.P1NativeSchemaVersion == 1 && relative == P1NativeRecordingContract.EventFile)
+                    && current.Bytes != original.Bytes))
                 throw new InvalidDataException("Recovery original changed.");
         }
         var addedTrace = Suffix<SemanticEvidenceEvent>(directory, "semantic-boundary-trace.jsonl", inventory);
@@ -235,6 +244,7 @@ public static class InterruptedRecordingRecovery
             || addedJournal[1].Kind != "session_closed" || journal.Count(e => e.Kind == "session_closed") != 1
             || addedJournal[0].Detail != "Offline recovery of immutable source inventory " + identity)
             throw new InvalidDataException("Recovery suffix differs from unknown-only closure.");
+        if (manifest.P1NativeSchemaVersion == 1) ValidateP1Suffix(directory, manifest, inventory, receipt);
         var close = Read<JsonElement>(Path.Combine(directory, "session-close-receipt.json"));
         if (close.GetProperty("recovery").GetString() != Schema)
             throw new InvalidDataException("Recovery close marker missing.");

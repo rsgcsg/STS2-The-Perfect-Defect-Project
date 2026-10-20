@@ -45,6 +45,7 @@ export function convertNativeSemanticOriginals(source, sdk, core, options = {}) 
     scope: { kind: 'bounded_native_semantic_prefix', run_id: options.runId ?? null,
       natural_terminal_observed: false, recording_status: openPrefix ? 'open' : 'closed',
       watermark: openPrefix ? source.manifest.watermark : null,
+      ...(source.recovery ? { recovery: source.recovery } : {}),
       ...(diagnosticRange ? { native_event_range: { through_sequence: options.throughSequence,
         source_last_sequence: source.events.at(-1).sequence, source_fully_verified: true, derived_only: true } } : {}) }, captures: [], actions: [], issues: [],
     pending_decisions: [], complete: false,
@@ -478,9 +479,9 @@ export function convertNativeSemanticOriginals(source, sdk, core, options = {}) 
   const journal = source.journal.filter(row => row.run_id === report.scope.run_id);
   const starts = journal.filter(row => row.kind === 'run_started_native');
   const ends = journal.filter(row => row.kind === 'run_ended_native');
-  report.whole_run_recording_complete = report.complete && !diagnosticRange && !openPrefix && starts.length === 1 && ends.length === 1
+  report.whole_run_recording_complete = !source.recovery && report.complete && !diagnosticRange && !openPrefix && starts.length === 1 && ends.length === 1
     && starts[0].sequence < ends[0].sequence && report.scope.natural_terminal_observed
-    && !journal.some(row => ['run_resumed_native', 'run_abandoned_native', 'run_ended_unproved', 'recording_paused'].includes(row.kind));
+    && !journal.some(row => ['run_resumed_native', 'run_abandoned_native', 'run_ended_unproved', 'recording_paused', 'recording_interrupted'].includes(row.kind));
   report.raw_unknown_count = nativeActions.filter(action => action.result?.status === 'unknown').length;
   report.explained_raw_unknown_count = nativeActions.filter(action => action.result?.status === 'unknown'
     && selectorCancellationByDecision.has(action.decision_id)).length;

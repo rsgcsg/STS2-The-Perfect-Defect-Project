@@ -30,6 +30,10 @@ and session (`none` before the first session):
 ```bash
 npm run recording:p1 -- start --runtime RUNTIME --session SESSION_OR_none \
   --origin declared_human --setup /absolute/collection-config.json --receipt /absolute/new-start-receipt.json
+npm run recording:p1 -- pause --runtime RUNTIME --session SESSION \
+  --setup /absolute/collection-config.json --receipt /absolute/new-pause-receipt.json
+npm run recording:p1 -- resume --runtime RUNTIME --session SESSION \
+  --setup /absolute/collection-config.json --receipt /absolute/new-resume-receipt.json
 npm run recording:p1 -- prefix --runtime RUNTIME --session SESSION \
   --setup /absolute/collection-config.json --receipt /absolute/new-prefix-receipt.json
 npm run recording:p1 -- close --runtime RUNTIME --session SESSION \
@@ -74,6 +78,36 @@ N label is added. Other effects, incomplete inputs and unknown actions still blo
 continuity. Select the exact fixed Tool release when reproducing this interpretation;
 older target artifacts retain their original masks. The default,
 segments03 and fixed historical training inputs retain their original meaning.
+
+## Recover an interrupted P1 recording
+
+Use the same fixed Collection Tool after the original game process has released
+its recording lease. Preserve the entire recording root and choose a separate
+recovery directory; do not run recovery against a live recorder or edit originals.
+The Tool command is:
+
+```bash
+dotnet /ABS/RELEASE/sts2-human-annotator.dll recover-interrupted /ABS/recordings /ABS/recovered
+dotnet /ABS/RELEASE/sts2-human-annotator.dll audit-p1-native /ABS/recovered/recovered-INVENTORY_ID
+dotnet /ABS/RELEASE/sts2-human-annotator.dll pack-p1-native /ABS/recovered/recovered-INVENTORY_ID collector-id recovery-cohort /ABS/bundles TOOL_SOURCE_REVISION
+```
+
+Copy `TOOL_SOURCE_REVISION` from that release's `collection-tool.json` identity.
+The result names `recovered-INVENTORY_ID` when it succeeds. `idle` with `busy>0`
+means the live lease prevented recovery; it is not a repaired recording. An
+`incident` keeps originals and diagnostic staging for review, including torn
+JSONL tails. Do not trim or retry the same unchanged incident under a new name.
+The new copy retains every original byte prefix and appends only offline
+`unknown/process_interrupted` for accepted actions without terminal evidence.
+Its close seals file/accounting integrity; it does not invent a successor, a
+natural end, Human attestation or a continued game.
+
+The fixed reader checks the recovery receipt and unknown-only suffix even after
+outer bundle hashes verify. Derive with the same converter entry above, then
+use the existing [normal Store import and named-publication operations](../../python/docs/B_PIPELINE_HANDOFF.md#p1-originals-and-named-projections-in-the-existing-local-store).
+A complete local N before the interruption may remain available; unknown and
+missing spans still disable affected next/end targets. Dataset use remains a
+separate decision. This workflow recovers recording evidence, not native Continue.
 
 ## Canonical profile and existing consumers
 
