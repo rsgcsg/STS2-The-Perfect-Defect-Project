@@ -89,6 +89,10 @@ inside a worker, an image build, GPU availability, billing limits or an executio
    by the adapter and must not be assumed from a local registry login.
 4. Create a `ModalTarget` JSON using the Producer, final image `@sha256:...`, explicit GPU
    (or `none` for CPU), timeout, named storage Secret and optional pre-existing Qwen volume.
+   Current `stpd/modal-target-v2` also freezes `cpu_cores` and `memory_mib`
+   (defaults 2 and 8192) as explicit request/limit pairs. Old v1 targets and their
+   calls remain historical evidence for their original source; do not rewrite
+   an active handle or grant it the new source/image.
    The Secret contains scoped `STPD_S3_*` / `AWS_*` environment settings, and when required
    `STPD_QWEN_SNAPSHOT` points at a pre-verified snapshot under `/qwen`. Never put values in
    JSON. Worker credentials must not grant Hub database, deployment or final-selection access.
