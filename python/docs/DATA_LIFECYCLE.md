@@ -166,8 +166,10 @@ actual lineage and learning masks remain in the original and named projection.
 
 After `read`, use the supported `stpd.p1.dataset.load_projection` or
 `inspect_projections(store, [PROJECTION])` reader. Named eligible-N indexes in the
-existing CurationLedger do not assert complete raw capture inventory. Preparation
-and indexing reserve no data purpose; snapshot reservation and actual training
+existing CurationLedger do not assert complete raw capture inventory. Store/Curation initialization
+and indexing reserve no data purpose. Training preparation records vocabulary
+exposure/use before fitting as described in the [remote Scheduler guide](PROJECT_CONSOLE.md#explicit-co-located-remote-scheduler).
+Snapshot reservation and actual training
 use remain separate explicit owner calls. Unknown seed or restore ancestry stays
 unknown and cannot justify independent holdout.
 
