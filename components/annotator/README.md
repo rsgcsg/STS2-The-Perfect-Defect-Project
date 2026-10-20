@@ -66,7 +66,13 @@ produces `sts2.p1/native-targets-1`: one original fact timeline with explicit na
 effects/missing spans, complete N inputs/labels, separately qualified adjacent
 next edges and same-branch observed end targets. This is a different declared
 consumer purpose from episode segments. It preserves the original timeline without
-claiming a complete P1 action chain or memory across missing facts. The default,
+claiming a complete P1 action chain or memory across missing facts. The current
+target interpretation treats exactly classified `stop_relic_refresh` reward returns
+as continuous: their actual changes and original checkpoints remain in the timeline,
+but they do not independently disable `next` or require memory reset. No browsing
+N label is added. Other effects, incomplete inputs and unknown actions still block
+continuity. Select the exact fixed Tool release when reproducing this interpretation;
+older target artifacts retain their original masks. The default,
 segments03 and fixed historical training inputs retain their original meaning.
 
 ## Canonical profile and existing consumers

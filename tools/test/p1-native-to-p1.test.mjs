@@ -1003,7 +1003,7 @@ test('opt-in target projection preserves default output and keeps ordinary quali
   assert.deepEqual(targets.points.map(point => point.mask.N), [true, true]);
   assert.deepEqual(targets.edges.map(edge => edge.eligible), [true]);
   assert.equal(targets.timeline.events.length, source.events.length);
-  assert.equal(targets.memory_continuity, 'not_approved_or_validated');
+  assert.equal(targets.memory_continuity, 'qualified_edges_only_missing_facts_remain_barriers');
   assert.throws(() => convertNativeSemanticOriginals(source, sdk, core,
     { includeTargets: true }), /target_projection_required/);
   assert.throws(() => convertNativeSemanticOriginals(source, sdk, core,
@@ -1035,7 +1035,7 @@ function targetBuilderExample() {
     strictSegments: report.segment_output };
 }
 
-test('a real-effect span keeps both full local labels and blocks their ordinary P1 edge', () => {
+test('the approved reward effect keeps both labels and their qualified edge with literal originals', () => {
   const input = targetBuilderExample(), { source, report } = input;
   report.native_presentations.push({ decision_ids: ['effect-open', 'effect-skip'],
     exception: { id: 'stop_relic_refresh' },
@@ -1046,11 +1046,62 @@ test('a real-effect span keeps both full local labels and blocks their ordinary 
       source_public_basis: source.events[3].successor_basis }] });
   const targets = buildNativeP1Targets(input);
   assert.equal(targets.points.filter(point => point.mask.N).length, 2);
-  assert.equal(targets.edges[0].eligible, false);
+  assert.equal(targets.edges[0].eligible, true);
+  assert.equal(targets.edges[0].memory_crossing_approved, true);
+  assert.equal(targets.timeline.spans[0].memory_crossing_approved, true);
   assert.deepEqual(targets.timeline.spans[0].actual_changes, report.native_presentations[0].comparison.changes);
   assert.equal(targets.timeline.spans[0].checkpoints[1].source_public_basis.sha256,
     source.events[3].successor_basis.sha256);
   assert.equal(targets.timeline.spans[0].N_label, null);
+  report.blocking_issues.push({ decision_id: 'missing-original', reason: 'accepted_action_unknown' });
+  const missing = buildNativeP1Targets(input);
+  assert.equal(missing.edges[0].eligible, false);
+  assert.equal(missing.points[0]?.mask.next, false);
+  assert.ok(missing.timeline.spans.some(span => span.kind === 'unqualified_native_span'));
+});
+
+test('only the approved reward effect is ignored; other effects remain edge barriers', () => {
+  const input = targetBuilderExample(), { source, report } = input;
+  report.native_presentations.push({ decision_ids: ['other-effect'], exception: { id: 'not_approved' },
+    comparison: { changes: [] }, continuity_checkpoints: [
+      { boundary: 'before', source_event_id: source.events[0].event_id, source_public_basis: source.events[0].basis },
+      { boundary: 'after', source_event_id: source.events[3].event_id, source_public_basis: source.events[3].successor_basis }] });
+  const targets = buildNativeP1Targets(input);
+  assert.equal(targets.edges[0].eligible, false);
+  assert.equal(targets.edges[0].memory_crossing_approved, false);
+  assert.equal(targets.timeline.spans[0].memory_crossing_approved, false);
+});
+
+test('the current targets join qualified choices across reward refresh while historical segments stay split', () => {
+  const { source, original, retain, row } = example(); source.events.length = 0;
+  const { outer, child, group } = rewardForwardPair(); group.native_relic_refresh_subscription = 'attached';
+  child.snapshot.interaction.content.surface.native_relic_refresh_subscription = 'attached';
+  outer.snapshot.referents = [{ ...outer.snapshot.referents[0], referent_id: group.entity_id, properties: { ...group } }];
+  const after = structuredClone(outer);
+  after.snapshot.interaction.content.surface.rewards[0].native_relic_refresh_subscription = 'absent';
+  after.snapshot.referents[0].properties.native_relic_refresh_subscription = 'absent';
+  const choice = (id, value, action, successor, kind = 'semantic_ui_accepted') => {
+    row('decision_accepted', { decision_id: id, action_witness_id: id, basis: retain(value),
+      bound_action: action, native_receipt: { kind, carrier_ref: id } });
+    row('lifecycle', { decision_id: id, action_witness_id: id, phase: 'finished', successor_basis: retain(successor) });
+  };
+  choice('before', original, original.snapshot.bound_actions.actions.find(a => a.verb === 'play'), outer, 'game_action_accepted');
+  choice('open', outer, outer.snapshot.bound_actions.actions[0], child);
+  choice('back', child, child.snapshot.bound_actions.actions.find(a => a.verb === 'skip'), after);
+  choice('leave', after, after.snapshot.bound_actions.actions.find(a => a.subject_referent_id == null), original);
+  const options = { includeSegments: true, includeTargets: true, targetProjection: nativeTargetProjection };
+  const report = convertNativeSemanticOriginals(source, sdk, core, options);
+  assert.equal(report.native_presentations.length, 1);
+  assert.equal(report.native_presentations[0].exception.id, 'stop_relic_refresh');
+  assert.equal(report.target_output.points.filter(p => p.mask.N).length, 2);
+  assert.equal(report.target_output.edges[0].eligible, true);
+  assert.equal(report.target_output.points[0].mask.next, true);
+  assert.equal(report.target_output.edges[0].memory_crossing_approved, true);
+  assert.ok(report.segment_output.gaps.some(g => g.reasons.includes('projection_exception:stop_relic_refresh')));
+  const old = convertNativeSemanticOriginals(source, sdk, core, { includeSegments: true });
+  assert.deepEqual(report.segment_output, old.segment_output);
+  assert.equal(report.target_output.timeline.spans[0].actual_changes.length, 2);
+  assert.ok(report.actions.filter(a => ['open', 'back'].includes(a.decision_id)).every(a => a.choice_id === null));
 });
 
 test('a newly retained N point does not inherit a preceding next flag or require a restart boundary', () => {
