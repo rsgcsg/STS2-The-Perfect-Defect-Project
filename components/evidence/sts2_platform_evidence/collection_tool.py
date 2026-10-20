@@ -38,6 +38,10 @@ P1_NATIVE_SUPPORT = {
     "recording_client_entrypoint": "setup/tools/p1-native-recording.mjs",
     "selector_transaction_projection": "native-selector-finalized-d-1",
 }
+P1_TARGET_PROJECTION = "native-timeline-targets-1"
+P1_TARGET_SCHEMA = "sts2.p1/native-targets-1"
+P1_TARGET_SUPPORT = {**P1_NATIVE_SUPPORT, "target_projection": P1_TARGET_PROJECTION,
+                     "target_schema": P1_TARGET_SCHEMA}
 P1_INPUT_PROJECTION = "native-input-v1"
 P1_SELECTOR_PROJECTION = P1_NATIVE_SUPPORT["selector_transaction_projection"]
 
@@ -47,8 +51,22 @@ const {readVerifiedP1NativeBundle} = await import(pathToFileURL(process.argv[2])
 const source = readVerifiedP1NativeBundle(process.argv[3]);
 const json = name => JSON.parse(source.bytes(name).toString('utf8'));
 console.log(JSON.stringify({manifest:source.manifest, recording:json('recording-manifest.json'),
-  close:json('p1-native-close.json'), journal:source.journal,
+  close:json('p1-native-close.json'), session_close:json('session-close-receipt.json'),
+  journal:source.journal,
   human_origin_verified:false}));
+"""
+
+_P1_TARGET_DERIVE = """
+import {pathToFileURL} from 'node:url';
+import {writeFileSync} from 'node:fs';
+const {convertP1NativeBundle} = await import(pathToFileURL(process.argv[2]).href);
+const result = await convertP1NativeBundle({bundle:process.argv[3],runId:process.argv[4],
+ includeSegments:false,includeTargets:true,targetProjection:'native-timeline-targets-1',
+ selectorTransactions:'native-selector-finalized-d-1'});
+writeFileSync(process.argv[6],JSON.stringify(result.target_output,null,2)+'\\n',{flag:'wx'});
+console.log(JSON.stringify({blocking_issues:result.blocking_issues,
+ whole_run_complete:result.whole_run_recording_complete??null,
+ source_conversion_complete:result.source_conversion_complete??null}));
 """
 
 _P1_DERIVE = """
@@ -138,17 +156,21 @@ class CollectionTool:
             required = {"p1/tools/p1-native-bundle.mjs", P1_NATIVE_SUPPORT["converter_entrypoint"],
                         P1_NATIVE_SUPPORT["recording_client_entrypoint"],
                         "p1/components/connector/sdk/typescript/dist/p1Global/index.js"}
-            if (identity["p1_native_support"] != P1_NATIVE_SUPPORT
-                    or not required <= {row["path"] for row in actual}):
+            if (identity["p1_native_support"] not in (P1_NATIVE_SUPPORT, P1_TARGET_SUPPORT)
+                    or not required <= {row["path"] for row in actual}
+                    or (identity["p1_native_support"] == P1_TARGET_SUPPORT
+                        and "p1/tools/p1-native-targets.mjs" not in {
+                            row["path"] for row in actual})):
                 raise ValueError("unsupported or incomplete P1-native collection capability")
         return manifest
 
     def supports_p1_native(self) -> bool:
-        return self.verify()["identity"].get("p1_native_support") == P1_NATIVE_SUPPORT
+        return self.verify()["identity"].get("p1_native_support") in (
+            P1_NATIVE_SUPPORT, P1_TARGET_SUPPORT)
 
     def _p1(self) -> dict[str, Any]:
         identity = self.verify()["identity"]
-        if identity.get("p1_native_support") != P1_NATIVE_SUPPORT:
+        if identity.get("p1_native_support") not in (P1_NATIVE_SUPPORT, P1_TARGET_SUPPORT):
             raise CollectionFailure("P1-native support is unavailable in this fixed tool")
         return identity
 
@@ -192,9 +214,14 @@ class CollectionTool:
                          projection_id: str = P1_SELECTOR_PROJECTION,
                          node: str = "node") -> dict[str, Any]:
         """Write only the named segments and compact diagnostics, never a giant debug trace."""
-        if projection_id not in {P1_INPUT_PROJECTION, P1_SELECTOR_PROJECTION}:
+        driver = _P1_DERIVE
+        if projection_id == P1_TARGET_PROJECTION:
+            if self._p1().get("p1_native_support") != P1_TARGET_SUPPORT:
+                raise CollectionFailure("target projection is unavailable in this fixed tool")
+            driver = _P1_TARGET_DERIVE
+        elif projection_id not in {P1_INPUT_PROJECTION, P1_SELECTOR_PROJECTION}:
             raise CollectionFailure("unsupported P1-native projection")
-        return self._p1_node(_P1_DERIVE,
+        return self._p1_node(driver,
                              [str(self.directory / P1_NATIVE_SUPPORT["converter_entrypoint"]),
                               str(bundle), run_id, projection_id, str(output)], node=node)
 

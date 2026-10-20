@@ -366,3 +366,43 @@ def test_p1_terminal_control_calls_same_application_api(browser_app, monkeypatch
     assert main(["control", "prefix", "--config", str(config)]) == 0
     assert json.loads(capsys.readouterr().out)["command_id"] == calls[0][-1]
     assert calls[0][2] == "export_p1_native_prefix" and len(calls) == 1
+
+
+def test_p1_storage_http_uses_existing_operation_and_exact_body(browser_app, monkeypatch):
+    app, client, root, call, current, calls, behavior = browser_app
+    invocations = []
+    monkeypatch.setattr(app.local_recording_import, "start_p1_storage",
+        lambda **body: invocations.append(body) or {"status": "pending"})
+    request = {"action": "restore", "artifact_id": "a" * 64,
+               "peer": {"kind": "local", "directory": "/explicit/cold-store"}}
+    with pytest.raises(HTTPError) as denied:
+        call("/api/local-recordings/storage", request)
+    assert denied.value.code == 403 and not invocations
+    client.open(root + "/").close()
+    with pytest.raises(HTTPError) as malformed:
+        call("/api/local-recordings/storage", {**request, "secret": "not accepted"})
+    assert malformed.value.code == 400 and not invocations
+    assert call("/api/local-recordings/storage", request)["status"] == "pending"
+    assert invocations == [request] and not calls
+
+
+def test_p1_maintenance_terminal_and_browser_share_policy_api(
+    browser_app, monkeypatch, tmp_path, capsys,
+):
+    from spireagent.workbench import developer_server
+    from spireagent.workbench.developer import atomic_json
+    from spireagent.workbench.p1_recordings_cli import main
+
+    app, client, root, call, current, calls, behavior = browser_app
+    path = tmp_path / "project.json"
+    atomic_json(path, app.config.to_dict())
+    monkeypatch.setattr(developer_server, "running", lambda _: {
+        "port": int(root.rsplit(":", 1)[1]), "control_token": app.control_token})
+    assert main(["maintenance", "enable", "--config", str(path)]) == 0
+    assert json.loads(capsys.readouterr().out)["policy"]["enabled"] is True
+    assert app.local_recording_import._maintenance["policy"]["peer"] is None
+    client.open(root + "/").close()
+    assert call("/api/local-recordings/maintenance", {
+        "enabled": False, "peer": None, "projection_id": "native-timeline-targets-1"
+    })["policy"]["enabled"] is False
+    assert not calls, "maintenance policy never sends Recorder commands"

@@ -305,6 +305,9 @@ class Application:
         self.local_recordings = LocalRecordingCatalog(config)
         # Keep command-time owner observations separate from concurrent browser GET scans.
         self.local_recording_import = LocalRecordingImporter(config, LocalRecordingCatalog(config))
+        from .p1_recording_maintenance import P1RecordingMaintenance
+
+        self.p1_maintenance = P1RecordingMaintenance(self.local_recording_import)
         self.local_recording_preview = LocalRecordingPreview(self.local_research_workspace)
         self.local_datasets = LocalDatasetService(config)
         self.local_training = LocalTrainingService(config)
@@ -1077,6 +1080,7 @@ class Application:
         return self.local_model_registration.register_teacher(variant=variant)
 
     def close(self) -> None:
+        self.p1_maintenance.close()
         # The same Application admission lock fences an in-flight handler before
         # this snapshot. Recovery/Stop remains enabled until its original owner
         # finishes; no lock is held across Stop, sealing or Host cleanup.
@@ -1381,6 +1385,44 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                     return
                 value = app.local_recordings.read()
                 self.respond(200, json.dumps(value, ensure_ascii=False).encode())
+            elif parsed.path == "/api/local-recordings/store":
+                if not self.authenticated_browser() and not self.control_client():
+                    self.respond(401, b'{"error":"browser_session_required"}')
+                    return
+                try:
+                    from .p1_recording_store import query_p1_sources
+
+                    query = parse_qs(parsed.query, keep_blank_values=True)
+                    if any(len(values) != 1 for values in query.values()):
+                        raise ValueError
+                    filters = {key: json.loads(values[0]) for key, values in query.items()}
+                    workspace = app.local_research_workspace()
+                    if workspace is None:
+                        raise BoundaryError("p1_store", "workspace_required")
+                    rows = query_p1_sources(workspace.store, filters=filters,
+                        storage_receipts=app.local_recording_import.status()["storage_receipts"])
+                    self.respond(200, json.dumps({"sources": rows}).encode())
+                except BoundaryError as error:
+                    self.respond(409, json.dumps({"error": error.code}).encode())
+                except (OSError, ValueError, TypeError):
+                    self.respond(400, b'{"error":"invalid_p1_query"}')
+            elif parsed.path == "/api/local-recordings/maintenance":
+                if not self.authenticated_browser() and not self.control_client():
+                    self.respond(401, b'{"error":"browser_session_required"}')
+                    return
+                value = app.local_recording_import.status()["maintenance"]
+                self.respond(200, json.dumps(value).encode())
+            elif parsed.path == "/api/local-recordings/storage/peer":
+                if not self.authenticated_browser():
+                    self.respond(401, b'{"error":"browser_session_required"}')
+                    return
+                from .p1_recording_storage import peer_binding
+
+                try:
+                    value = {"status": "configured", "peer": peer_binding("s3")}
+                except (BoundaryError, ValueError, ImportError):
+                    value = {"status": "unconfigured", "peer": None}
+                self.respond(200, json.dumps(value).encode())
             elif parsed.path == "/api/local-recordings/import/status":
                 if not self.authenticated_browser():
                     self.respond(401, b'{"error":"browser_session_required"}')
@@ -1902,6 +1944,40 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                 except (OSError, ValueError, TypeError):
                     self.respond(400, b'{"error":"invalid_native_recording_command"}')
                 return
+            if self.path == "/api/local-recordings/maintenance":
+                if not self.browser_write() and not self.control_client():
+                    self.respond(403, b'{"error":"browser_action_denied"}')
+                    return
+                try:
+                    body = self.json_body(maximum=2048, reject_duplicate=True)
+                    if set(body) != {"enabled", "peer", "projection_id"}:
+                        raise ValueError
+                    value = app.p1_maintenance.configure(**body)
+                    self.respond(200, json.dumps(value).encode())
+                except BoundaryError as error:
+                    self.respond(409, json.dumps({"error": error.code}).encode())
+                except (OSError, ValueError, TypeError):
+                    self.respond(400, b'{"error":"invalid_p1_maintenance_policy"}')
+                return
+            if self.path.startswith("/api/local-recordings/storage"):
+                if not self.browser_write():
+                    self.respond(403, b'{"error":"browser_action_denied"}')
+                    return
+                try:
+                    body = self.json_body(maximum=1024, reject_duplicate=True)
+                    if self.path == "/api/local-recordings/storage" and set(body) == {
+                            "action", "artifact_id", "peer"}:
+                        value = app.local_recording_import.start_p1_storage(**body)
+                    elif self.path == "/api/local-recordings/storage/reconcile" and not body:
+                        value = app.local_recording_import.reconcile_p1_storage()
+                    else:
+                        raise ValueError
+                    self.respond(200, json.dumps(value).encode())
+                except BoundaryError as error:
+                    self.respond(409, json.dumps({"error": error.code}).encode())
+                except (OSError, ValueError, TypeError):
+                    self.respond(400, b'{"error":"invalid_p1_storage_request"}')
+                return
             if self.path.startswith("/api/local-recordings/derive"):
                 if not self.browser_write():
                     self.respond(403, b'{"error":"browser_action_denied"}')
@@ -2327,6 +2403,7 @@ def serve(config: ProjectConfig, *, config_path: Path | None = None) -> dict[str
                     f"http://127.0.0.1:{server.server_port}/", app.instance_id,
                     access=app.native_access,
                 )
+            app.p1_maintenance.start()
             server.serve_forever(poll_interval=0.2)
         finally:
             if registration is not None:
