@@ -1,47 +1,23 @@
-# 当前工作：冻结准备进行中，尚未通过
+# 当前工作：三小时有界集成与收敛正在执行
 
-更新于2026-10-20。Resolve live GitHub refs before relying on a recorded candidate.
-最新直接用户原话和现场证据 override this file；安装/录制/原收据分层，不把此页的快照当资格。
-主线唯一writer A，当前树work/p1-recording-followup-20261019；B应用/Store与C研究的稳定来源正常merge保留。
-正在收固定组合的检查/普通PR；具名merge、发布、冻结、付费训练没有新增批准，不自动执行。
+更新于2026-10-21，Brisbane。用户已直接授权本轮指派、并行实施、统筹和审计；旧“两小时待批准”安排已被覆盖。
+唯一当前任务是[本轮任务、依赖与停止点](../plans/p1-prefreeze-2026-10-18/THREE_HOUR_EXECUTION_20261021.zh-CN.md)。
+Root负责指派及最终审计；集成负责人维护本页、共享身份和候选；A/B/C/D分别在独立分支交稳定增量。
+本轮于02:33:13开始，05:03:13停止新增功能，05:13:13冻结审计组合，05:33:13前强制收口交付。
+三小时是上限；完成有价值的可审一轮且余项只需人工操作/取舍时提前收口。用户休息，需其操作或决定的事项汇总到最终交付，不中途追问。
 
-用户已批准本轮B*离线新投影、具名原件/旧报告tar的既有ArtifactStore/R2保全，最近2局热集及条件冷却。
-原件/旧默认/03/T0保留，三修复原件/活动session/依赖不动；不删云/其它历史，不建自动化，不授跨缺失记忆。
-今天19:00停止新增实现/长任务，19:30全员停止交可审计快照，不后台续做。
-完整工程基线最晚周三10-21，首训最晚周四10-22；覆盖旧多日日程，不能为日期删需求或吞失败。
+## 当前候选与下一步
 
-## 当前可用路径与真实边界
+集成树为`work/p1-round3h-integration-20261021`，分支`codex/p1-round3h-integration-20261021`。
+它从`origin/develop@733782b1`开始，normal merge未验收PR206的`5b8fd2c2`为显式父依赖；稳定来源只作normal merge，保组件来源。
+最短主线是原件→奖励连续新派生→正常Store发布→训练reader及旧模型离线评分；控制/GPU准备和原指南收敛并行。
+目前尚未收到本轮产品来源；父栈BOM核对和closeout通过，完整组合门尚未运行。
+下一步由A给具名派生、B经正常入口发布、C消费，集成负责人核增量与身份后组合，独立审查者验稳定候选。
 
-用户窗口已恢复滚动自然录制：标准英文全角色A0–A10，默认instant已实际核；normal/fast为同合同额外测试。
-公共recording:p1经真实Application在Embark前Start，origin=declared_human；原生游玩由用户完成。
-活动局期间不部署/重启/工程实打。准确session/进程/df和下一局预算查下面现场ACTIVE，不复用旧端点。
-Annotatorrc21/GameModrc46实际730616d2/MVID094962fe已冷加载；popup出牌/EndTurn工程原H、
-exact nativeInput/执行完整目录/finished后继逐项通过，6actions complete/0issues，非Human整局资格。
-首滚动旧loss447观察/446N，2个实际H/绑定缺口保留，不能拿执行S补H；原件已R2全成员读回及按ID恢复。
+## 保留的真实边界
 
-B* native-timeline-targets-1沿同reader/共享核，保同原局timeline、effects/missing与引用；
-N自身完整Input/catalog/唯一chosen/完成，next拒跨效果或缺失，end核同分支自然终局。
-三旧源1308点/1305N，旧1303观察Input/chosen全同，5新N；28effects/5missing保留，chain仍false。
-Tool2928三源输出验证保原范围；新Toold25c0ab1同P1字节、6动作canary通过，旧默认/03不变。
-
-B同一Application/CLI/API/GUI经固定Tool→ManifestArtifactStore/原operation处理保全/恢复/具名派生。
-B固定安装2fa3723d正常Catalog已读当前隔离Host，ready/33sealed+3unsealed，0录制写命令。
-实际首局直接publication、R2按ID恢复1404members、一次正常Tool3派生已通过，不重pack/三源重算。
-catalog元数据只作来源绑定的显示/筛选，不改不可变原件/targets，不作为seed/root/恢复谱系权威。
-后台维护默认disabled，启用云peer须明确候选或日期/来源范围；日常持续维护/冷却不由源码存在推定通过。
-C已实现N-only快照、完整epoch/dev5/best-last/全状态恢复及同worker/Model→现Agent工程链，synthetic实证通过。
-真实3派生来自2原件，370重叠N作alias去重后820N；亲缘unknown、全unassigned、真实训练0。
-P1已从Workbench私有路径helper解耦并入共享policy_files；新adapter另绑定，旧模型字节不改。
-现Store P1-aware Curation owner准备、事实lineage消费/用途、真实多源worker仍未闭合；不得制造holdout。
-
-## Remaining Platform non-claims 与下一步
-
-固定组合的本地selected/hostedCI以各自精确head/receipt另判；不要借旧green或独立作者测试报组合通过。
-普通P1 interruption recovery缺P1events/close/prefix，原生Continue缺跨process确切save/parent，均未实现完整闭环。
-Reference20/R20/INFO/T0b、真实多源/镜像/CUDA、正式用途/费用与策略效果未全验，不由三Human或synthetic替代。
-全部大小/历史功能沿唯一CHAIN/COMPONENTS/FEATURE_STATUS核role→连接→合同→owner/caller→格式→证据/去向，
-不是只移动目录或登记入口。历史成熟也须满足当前requires；未知和未迁入不靠归档标签消失。
-
-现场唯一检查点work/P1-SEMANTIC-ACTIVE-20261019.md；固定报告共享replies/
-P1-CONTINUITY-AND-INTEGRATION-NEXT-20261020.md，细证据work/p1-freeze-preparation-20261020。
-历史CURRENT与原产物/失败按各原时点保留，当前候选不追授历史资格。
+PR206旧本地与Linux组合失败保留，不能由新窄测追认为通过。正式首训前必须完成任务列出的六项全项目收敛交付。
+现有T0曾有真实训练；本轮不执行真实数据梯度、未知费用、生产安装或Human操作。具名PR merge/发布和具体正式训练配置仍留用户决定。
+奖励28处已由用户决定直接连续；缺Human、药水缺项、unknown仍独立处理。GPU首训、Modal后学校、R2长期主存、Continue延期保持原决定。
+正常Application保持固定安装；开工核见PID61901、未见游戏/训练、内盘约22GiB。此为时点快照，任何操作前刷新，不凭PID复用旧端点。
+全部实际增量、原失败、未完项、运行任务及下一位负责人写入唯一任务及其链接回执；历史ACTIVE和旧报告不再派发本轮工作。
