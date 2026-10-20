@@ -101,3 +101,61 @@ def test_real_service_child_store_result_model_export_and_score(tmp_path):
         scores = loaded(frame)
     assert bool(torch.isfinite(scores).all()) and len(scores) == len(frame.choices)
     assert reference["chosen"] in {c["choice_id"] for c in frame.choices}
+
+
+def test_real_service_pause_resume_keeps_run_input_and_optimizer_state(tmp_path, monkeypatch):
+    import json
+
+    from spireagent.workbench.local_training import LocalTrainingService
+    from spireagent.workbench.recipes import structured as adapter
+    from stpd.workers.checkpoint_codec import decode_checkpoint
+
+    config, store, owner, snapshot = workspace(tmp_path)
+    reserve_p1_snapshot(owner, store, snapshot.artifact_id)
+    request = TrainingRequest(uuid.uuid4().hex, RECIPE, snapshot.artifact_id,
+                              MStdConfig(max_epochs=2).to_dict(),
+                              limits={"wall_seconds": 120, "scratch_bytes": 512 * 1024**2})
+    service = LocalTrainingService(config)
+    actual_child = adapter._private_child
+    pause_requests = []
+
+    def observe_child(command, *args, **kwargs):
+        callback = kwargs["on_stdout_line"]
+
+        def event_line(raw):
+            message = json.loads(raw)
+            callback(raw)
+            if message["kind"] == "event":
+                event = store.get_manifest(message["details"]["event_id"]).parameters.value()
+                if (event["kind"] == "progress" and event["details"]["optimizer_updates"] == 1
+                        and not pause_requests):
+                    pause_requests.append(service.pause(message["operation_id"],
+                                                        message["attempt_id"]))
+        kwargs["on_stdout_line"] = event_line
+        return actual_child(command, *args, **kwargs)
+
+    monkeypatch.setattr(adapter, "_private_child", observe_child)
+    service.start(request)
+    service._thread.join(timeout=120)
+    assert not service._thread.is_alive()
+    paused = service.status()["operation"]
+    assert pause_requests and paused["status"] == "paused", paused
+    assert paused["progress"]["completed"] == 1 and paused["writer_terminal"] is True
+    saved = store.get_manifest(paused["checkpoint_id"])
+    state = decode_checkpoint(b"".join(store.read_payload(saved.payload("checkpoint"))))
+    assert state["step"] == 1 and state["optimizer"]["state"]
+    assert all(float(slot["step"]) == 1 for slot in state["optimizer"]["state"].values())
+    assert ObjectStoreRunReporter(store, store.blobs).completed(paused["run_id"]) is None
+    service.resume(paused["operation_id"], paused["attempt_id"], paused["checkpoint_id"],
+                   uuid.uuid4().hex, request.limits)
+    service._thread.join(timeout=120)
+    assert not service._thread.is_alive()
+    completed = service.status()["operation"]
+    assert completed["status"] == "completed", completed
+    assert completed["attempt_id"] != paused["attempt_id"]
+    assert completed["run_id"] == paused["run_id"] and completed["input_id"] == paused["input_id"]
+    result = ObjectStoreRunReporter(store, store.blobs).completed(completed["run_id"])
+    workload = verify_p1_run(store, completed["run_id"], source_identity(ROOT))
+    _, _, last = verify_p1_result(store, result.artifact_id, workload)
+    assert last.state["step"] == 2 and last.state["history"][0] == state["history"][0]
+    assert all(float(slot["step"]) == 2 for slot in last.state["optimizer"]["state"].values())
