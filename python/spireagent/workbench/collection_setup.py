@@ -15,6 +15,8 @@ from spireagent.workbench.developer import ProjectConfig, atomic_json
 from spireagent.workbench.identity import private_read
 from spireagent.workbench.member_client import MemberClient
 
+from .collection_tool_registration import inspect_collection_destination
+
 
 class CollectionSetup:
     def __init__(self, members: MemberClient) -> None:
@@ -49,10 +51,17 @@ class CollectionSetup:
         game = bind if bind is not None else setting.get("game_directory")
         if game is not None and (not isinstance(game, str) or not Path(game).is_absolute()):
             raise BoundaryError("collection", "absolute_game_directory_required")
-        result = operation(
-            recordings_root=delivery.recordings_root,
-            game_directory=Path(game) if game is not None else None,
-        )
+        if bind is None:
+            result = inspect_collection_destination(
+                self.config, tool,
+                recordings_root=delivery.recordings_root,
+                game_directory=Path(game) if game is not None else None,
+            )
+        else:
+            result = operation(
+                recordings_root=delivery.recordings_root,
+                game_directory=Path(game) if game is not None else None,
+            )
         if (
             not isinstance(result, dict)
             or result.get("schema") != "sts2.platform/collection-setup-1"

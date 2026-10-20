@@ -6,6 +6,7 @@ import os
 import stat
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from sts2_platform_evidence.collection_tool import CollectionTool
 
@@ -43,11 +44,14 @@ def _registration(path: Path) -> dict[str, Any]:
         or (os.name != "nt" and info.st_mode & 0o077)
     ):
         raise BoundaryError("collection_tool", "collection_tool_registration_missing_or_unsafe")
-    value = object_fields(
-        decode_json(path.read_bytes()),
-        {"schema", "path", "release_id"},
-        "collection_tool.registration",
-    )
+    raw = decode_json(path.read_bytes())
+    fields = {"schema", "path", "release_id"}
+    if not isinstance(raw, dict) or set(raw) not in (
+        fields,
+        fields | {"host_lifecycle", "native_log_file"},
+    ):
+        raise BoundaryError("collection_tool", "collection_tool_registration_invalid")
+    value = object_fields(raw, set(raw), "collection_tool.registration")
     if value["schema"] != SCHEMA or not isinstance(value["path"], str):
         raise BoundaryError("collection_tool", "collection_tool_registration_invalid")
     digest(value["release_id"], "collection_tool.release_id")
@@ -60,6 +64,8 @@ def register_collection_tool(
     release_id: str,
     *,
     replace: bool = False,
+    host_lifecycle: Path | None = None,
+    native_log_file: Path | None = None,
 ) -> dict[str, Any]:
     """Register verified bytes without executing, packaging, binding or uploading anything."""
     from spireagent.workbench.developer_server import instance_lock
@@ -70,6 +76,21 @@ def register_collection_tool(
         tool = _tool(directory, identity)
         target = config.state_dir / REGISTRATION_FILE
         registration = {"schema": SCHEMA, "path": str(tool), "release_id": identity}
+        if (host_lifecycle is None) != (native_log_file is None):
+            raise BoundaryError("collection_tool", "host_lifecycle_and_log_required")
+        if host_lifecycle is not None:
+            assert native_log_file is not None
+            if (
+                not host_lifecycle.is_absolute()
+                or host_lifecycle.is_symlink()
+                or not native_log_file.is_absolute()
+                or native_log_file.is_symlink()
+            ):
+                raise BoundaryError("collection_tool", "absolute_host_lifecycle_required")
+            registration["host_lifecycle"] = str(host_lifecycle)
+            registration["native_log_file"] = str(native_log_file)
+            _host_context(config, host_lifecycle, native_log_file)
+
         if target.is_symlink():
             raise BoundaryError("collection_tool", "collection_tool_registration_missing_or_unsafe")
         if target.exists():
@@ -110,3 +131,83 @@ def current_collection_tool(config: ProjectConfig) -> tuple[Path, str]:
     registration = _registration(config.state_dir / REGISTRATION_FILE)
     identity = registration["release_id"]
     return _tool(Path(registration["path"]), identity), identity
+
+
+def _host_context(config: ProjectConfig, path: Path, native_log_file: Path) -> dict[str, Any]:
+    """Read only the selected Host lifecycle; Host profile supplies the isolated data root."""
+    try:
+        if path.is_symlink() or not path.is_file() or path.stat().st_size > 16 * 1024**2:
+            raise ValueError
+        record = decode_json(path.read_bytes())
+        profile = record["profile"]
+        runtime = record["loaded_identity"]["host"]["runtime_instance_id"]
+        address = urlsplit(record["endpoint"])
+        root = Path(profile["expected_user_data_root"])
+        if (
+            record.get("schema_version") != 1
+            or record.get("status") != "ready"
+            or type(record["pid"]) is not int
+            or record["pid"] <= 0
+            or not isinstance(runtime, str)
+            or not runtime
+            or address.scheme != "http"
+            or address.hostname not in {"127.0.0.1", "localhost", "::1"}
+            or address.port is None
+            or not root.is_absolute()
+            or not native_log_file.is_file()
+            or native_log_file.is_symlink()
+            or root not in native_log_file.parents
+            or (config.platform_url and record["endpoint"] != config.platform_url)
+        ):
+            raise ValueError
+        return {
+            "process_id": record["pid"],
+            "runtime_instance_id": runtime,
+            "endpoint": record["endpoint"],
+            "connector_port": address.port,
+            "native_log_file": str(native_log_file),
+            "profile_generation_id": profile["generation_id"],
+        }
+    except (OSError, ValueError, TypeError, KeyError) as error:
+        raise BoundaryError("collection_tool", "selected_host_context_unavailable") from error
+
+
+def selected_host_context(config: ProjectConfig) -> dict[str, Any] | None:
+    path = config.state_dir / REGISTRATION_FILE
+    if not path.exists() and not path.is_symlink():
+        return None
+    value = _registration(path)
+    selected = value.get("host_lifecycle")
+    return (
+        _host_context(config, Path(selected), Path(value["native_log_file"]))
+        if selected is not None
+        else None
+    )
+
+
+def inspect_collection_destination(
+    config: ProjectConfig,
+    tool: CollectionTool,
+    *,
+    recordings_root: Path,
+    game_directory: Path | None = None,
+) -> dict[str, Any]:
+    """One setup consumer for Catalog and collection preparation; no native rule duplication."""
+    context = selected_host_context(config)
+    options: dict[str, Any] = (
+        {"native_log_file": context["native_log_file"], "connector_port": context["connector_port"]}
+        if context is not None
+        else {}
+    )
+    if game_directory is not None:
+        options["game_directory"] = game_directory
+    result = tool.setup_status(recordings_root=recordings_root, **options)
+    if context is not None:
+        loaded = result.get("loaded_identity") or {}
+        if (
+            selected_host_context(config) != context
+            or any(loaded.get(key) != context[key] for key in ("process_id", "runtime_instance_id"))
+            or loaded.get("connector_endpoint") != context["endpoint"]
+        ):
+            raise BoundaryError("collection_tool", "selected_host_context_changed_or_unconfirmed")
+    return result

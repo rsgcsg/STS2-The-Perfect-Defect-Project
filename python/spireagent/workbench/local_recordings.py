@@ -22,6 +22,7 @@ from spireagent.json_boundary import BoundaryError
 from spireagent.workbench.collection_tool_registration import (
     REGISTRATION_FILE,
     current_collection_tool,
+    inspect_collection_destination,
 )
 from spireagent.workbench.developer import ProjectConfig
 
@@ -217,7 +218,7 @@ class LocalRecordingCatalog:
             # This inert profile-owned path is an expected-root probe, not a
             # guessed recordings location. The native owner reports its own root.
             expected_root = self.config.state_dir / "local-recordings-root-probe"
-            owner = tool.setup_status(recordings_root=expected_root)
+            owner = inspect_collection_destination(self.config, tool, recordings_root=expected_root)
         except (OSError, ValueError, TypeError, RuntimeError, subprocess.SubprocessError):
             return self._result(
                 status="owner_unavailable", observed_at=observed_at,
