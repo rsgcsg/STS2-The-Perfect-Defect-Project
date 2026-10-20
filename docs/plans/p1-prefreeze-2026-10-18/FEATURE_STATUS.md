@@ -6,7 +6,7 @@
 
 历史查过：`docs/ARCHITECTURE.md`、`COMPONENTS.md`、ADR0016、`DOCUMENT_MAP.md`、`design/BASELINE_DESIGN_HISTORY.zh-CN.md`、`plans/BASELINE_TASKS.zh-CN.md`、各组件地图及研究地图；复用已有角色/链路/19项历史任务去向，不新增任务编号/协议/registry。
 
-本轮每个组件/协议/格式的位置、why与首训价值见[链路用途表](CHAIN_PURPOSES.md)，当前已定/待批和实际进度由[唯一合成定义同步页](SCOPE_v0.3.zh-CN.md)路由。
+每个组件/协议/格式的位置、why与首训价值见[链路用途表](CHAIN_PURPOSES.md)。当前任务、已定/待决及实际进度只由[CURRENT](../../memory/CURRENT.md)链接的唯一任务路由；[范围定义](SCOPE_v0.3.zh-CN.md)保其合同/历史范围，不独立派工。
 
 2026-10-20用户新要求覆盖全部大小/历史/当前功能；本表继续作为唯一功能入口，B既有K账本/C研究映射正补实际owner/支持入口/核心实现/消费者/requires-provides/格式版本/证据/去向，**尚未完成逐功能闭合**。以下旧快照行不得作为今日未录制/未接T0的事实或派工依据；最新实物先查CURRENT，归档/未完成需回原owner核。三自然来源、事务03和public采集技术链已交，不代日常固定GUI/Store、B*或最终Reference/R20/INFO。
 
@@ -105,7 +105,7 @@
 | 工程 | 独立版本/BOM/install/load/rollback | 现行 | [docs/VERSIONING.md](../../VERSIONING.md) | [apps/game-mod/README.md](../../../apps/game-mod/README.md) | 源码/产物/安装/加载身份分别保留；非同SHA强制升级 |
 | 工程 | CI portable/每日Windows/发布前Windows | 现行 | [docs/TESTING.md](../../TESTING.md) | [docs/DEVELOPMENT_WORKFLOW.md](../../DEVELOPMENT_WORKFLOW.md) | 当前工程门不转移到游戏/训练资格 |
 | 工程 | Workshop/发行渠道 | 未完成 | [docs/plans/BASELINE_TASKS.zh-CN.md](../BASELINE_TASKS.zh-CN.md) | [docs/DEVELOPMENT_WORKFLOW.md](../../DEVELOPMENT_WORKFLOW.md) | 保留历史产品目标；未核出P1当前完整发布资格 |
-| 工程 | K项目资产/归档/新人交接 | 未完成 | [docs/DOCUMENT_MAP.md](../../DOCUMENT_MAP.md) | [docs/ARCHITECTURE.md](../../ARCHITECTURE.md) | 本报告是K2草案；K0/K1/K3/K4未完成不冻结 |
+| 工程 | K项目资产/归档/新人交接 | 未完成 | [docs/DOCUMENT_MAP.md](../../DOCUMENT_MAP.md) | [docs/ARCHITECTURE.md](../../ARCHITECTURE.md) | 原K1账本/功能表保留真实去向；职责、导航、操作、历史复用与接手验收未全闭合，不凭登记宣布全项目收敛 |
 | 数据与学习 | AgenticSTS外部历史源适配 | 归档 | [python/docs/AGENTICSTS_IMPORT.md](../../../python/docs/AGENTICSTS_IMPORT.md) | [python/docs/evidence/AGENTICSTS_DATA_ADMISSION_AUDIT_2026-08-22.md](../../../python/docs/evidence/AGENTICSTS_DATA_ADMISSION_AUDIT_2026-08-22.md) | 只在原license/provenance/缺失字段资格内使用；不冒当前Host真值 |
 | 数据与学习 | Full-Run Gold任务/E0-E7工具 | 现行 | [python/docs/FULLRUN_GOLD.md](../../../python/docs/FULLRUN_GOLD.md) | [python/docs/BENCHMARKS.md](../../../python/docs/BENCHMARKS.md) | Gold配置/工具不等于已有合格Gold、科学Core通过 |
 | 数据与学习 | 独立D-Simple M2持续状态计算核 | 现行 | [python/docs/research/DSIMPLE_MEMORY.md](../../../python/docs/research/DSIMPLE_MEMORY.md) | [python/docs/NATIVE_STRUCTURED_MODEL.md](../../../python/docs/NATIVE_STRUCTURED_MODEL.md) | 计算核可用不证明P1新Input/Target适配完成 |
@@ -115,12 +115,20 @@
 | 环境 | Managed legacy choose/战斗堆selector | 归档 | [components/host-runtime/docs/MANAGED_SELECTOR_CONTEXT.md](../../../components/host-runtime/docs/MANAGED_SELECTOR_CONTEXT.md) | [components/host-runtime/docs/ARCHITECTURE.md](../../../components/host-runtime/docs/ARCHITECTURE.md) | 原同步单次callback帧合同；不冒全P1 |
 | 执行 | 共享请求lifetime/取消来源 | 现行 | [components/connector/docs/player-environment/PROTOCOL.md](../../../components/connector/docs/player-environment/PROTOCOL.md) | [components/connector/docs/player-environment/REQUEST_LIFETIME_SOURCE.md](../../../components/connector/docs/player-environment/REQUEST_LIFETIME_SOURCE.md) | 请求generation/取消语义归原owner，dated报告保留限定 |
 | 工程 | 全局serialized-input recorder候选 | 废弃 | [docs/FULL_RUN_SEMANTIC_COVERAGE.md](../../FULL_RUN_SEMANTIC_COVERAGE.md) | [docs/FULL_RUN_DATA_CHAIN.md](../../FULL_RUN_DATA_CHAIN.md) | 曾阻断普通UI，已撤出active runtime；证据/fixture保留 |
-| 工程 | K快捷键旧LiveUI入口 | 归档 | [docs/LIVE_UI.md](../../LIVE_UI.md) | [docs/UI_INTERACTION_SPEC.md](../../UI_INTERACTION_SPEC.md) | 旧页记K但现owner明确无K；需要整合修导航，不按旧页操作 |
+| 工程 | K快捷键旧LiveUI入口 | 归档 | [docs/LIVE_UI.md](../../LIVE_UI.md) | [docs/UI_INTERACTION_SPEC.md](../../UI_INTERACTION_SPEC.md) | LIVE_UI已明确K为历史描述；当前操作从根导航进入原UI/应用guide。本轮只核导航限定，未授当前UI/录制资格 |
 | 应用与数据 | P1原件导入与具名发布 | 现行 | [python/docs/B_PIPELINE_HANDOFF.md](../../../python/docs/B_PIPELINE_HANDOFF.md) | [python/tests/test_p1_recording_store.py](../../../python/tests/test_p1_recording_store.py) | 单源旧03+新B*、rolling原件/B*实际通过；三旧源其余两具名应用ID仍未交。 |
 | 应用与数据 | P1压缩保全与按ID取回 | 现行 | [python/docs/B_PIPELINE_HANDOFF.md](../../../python/docs/B_PIPELINE_HANDOFF.md) | [python/tests/test_p1_recording_store.py](../../../python/tests/test_p1_recording_store.py) | R2 25,087,767B压缩/290,696,684B成员全回读，任务分配峰50,520,064B；正常service cloud peer可配置但维护disabled。 |
 | 应用与数据 | P1录制查询与可重建元数据 | 现行 | [python/docs/B_PIPELINE_HANDOFF.md](../../../python/docs/B_PIPELINE_HANDOFF.md) | [python/tests/test_p1_recording_store.py](../../../python/tests/test_p1_recording_store.py) | 真实PB可给角色/进阶/修饰/首观察act/floor与end.result；language/mode/gameversion/seed/root/ancestry仍unknown。 |
 | 应用与数据 | P1封存后台编排与容量周转 | 未完成 | [python/docs/B_PIPELINE_HANDOFF.md](../../../python/docs/B_PIPELINE_HANDOFF.md) | [python/tests/test_p1_recording_store.py](../../../python/tests/test_p1_recording_store.py) | 已实现封存编排/空间预估；当天实际新Tool/candidate范围由A排，无自动删原件/用户局。 |
 
+
+## 本轮有界路由复核（2026-10-21）
+
+原104行全部保留，`owner`及`evidence`路径共208/208实际存在；这是路由核对，不是104项功能重新通过。原CSV本轮补34行当前共享核、Runtime、Host、采集/Store应用和工程入口的实际源码/消费者/边界，标`D_current_source_route_only`，不把旧运行资格转给新候选。当前CSV有63行entry/implementation、58行direct_static_callers、60行non_gui_entry；空白含目标、未实现合同和历史项，不能读成其余都是未实现功能，也不能把有值读成已实际操作。
+
+这些新增路由包括P1的`reduce`/专用reward/selector/shop投影及原Runtime/compare消费者、Host既有native-ui/保存接缝、Recording/原因果tracker、Evidence/原应用入口、Runtime控制和原测试选择。旧21行C研究caller、6行A/B接缝及4行B实物记录保原证据范围；其余39行仍是未重新核当前caller的历史快照，不自动归档、删除、迁回或获得当前资格。各行原状态未改变；当前能力缺口仍由原owner和CURRENT任务推进。日常操作及失败/恢复步骤只在[根操作导航](../../DOCUMENT_MAP.md#按我要做什么进入)所链接的功能guide维护，不在CSV复制一份SOP。
+
+本轮接手走查实际跑了Host组件context与T0/compute/Agent三条`--help`；第一条Python环境缺Torch失败保留，换成既有ML环境后均成功。它们未做训练、网络、游戏、安装或云执行，不能宣布全项目收敛或正式GPU首训就绪。A/B/C的实现、数据派生、恢复/控制和组合运行结果由集成者核原产物后进入CURRENT链接任务，本表不复制worker动态数字。
 
 ## 非GUI入口核对（2026-10-20本批增量）
 
