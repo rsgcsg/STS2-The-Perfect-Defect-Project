@@ -15,8 +15,8 @@ Root负责指派及最终审计；集成负责人维护本页、共享身份和�
 源码候选Annotator rc22/GameMod rc47及current BOM一致；已测固定Tool、实际安装和旧loaded身份分别保留。
 三真实源已正常发布/读回1305unique N，未知谱系默认全unassigned；P1合成中断恢复经Tool→pack→reader→B导入只保1N/1unknown，不造next/完整局。
 C数值41通过/1CUDA跳过，65点完整训练状态与旧数值maxdiff0；这些不能代替真实GPU或策略质量。
-首组合门在README缺两条既有治理链接处失败，后续11阶段blocked。D定点修复，集成窄核repository后再选完整门；独立审查核原结果。
-B隔离开发实例已完成正常控制验收；当前安装未升级。六项收敛仍按原实际验收判断，不能称首训就绪。
+首门README路由已修；第二门mypy真实类型/缺PEFT失败，因旧metadata视图有序中止，原分母保留。C类型已修，正确锁私view预检通过，待完整静态后root再选门。
+B隔离实例已验正常控制；client仍仅local CPU，正常App→Hub/provider控制接缝未接，当前安装未升级。六项收敛仍按原实际验收判断，不能称首训就绪。
 
 ## Remaining Platform non-claims 与真实边界
 
