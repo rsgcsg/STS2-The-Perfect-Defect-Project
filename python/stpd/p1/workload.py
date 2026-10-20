@@ -1,0 +1,175 @@
+"""Freeze/verify P1 M-std work on the existing Store and run artifact kinds."""
+
+from __future__ import annotations
+
+import io
+import json
+from dataclasses import dataclass
+from typing import Any
+
+from spireagent.artifact_contracts import Manifest, Parent, Producer
+from spireagent.json_boundary import BoundaryError, FrozenObject
+from spireagent.json_boundary import digest as checked_digest
+from spireagent.storage.store import ArtifactStore
+from stpd.fullrun.dataset_policy import training_sources
+
+from .data import digest, json_bytes
+from .dataset import iter_snapshot_points, load_snapshot
+from .export import input_spec
+from .formal_training import Population
+from .input import INPUT_SPEC, fit_vocabulary, project
+from .model import ARCHITECTURE
+from .spec import RUN_SCHEMA, TARGET_SPEC, TRAINING_SCHEMA, MStdConfig
+
+ENTRYPOINT = "stpd.workers.p1_run:execute_p1_run"
+
+
+def populations_from_snapshot(store: ArtifactStore, snapshot_id: str) -> dict[str, Population]:
+    _, selection = load_snapshot(store, snapshot_id)
+    counts = selection["partition_N"]
+    if set(counts) - {"train", "dev", "test"} or not counts.get("train") or not counts.get("dev"):
+        raise BoundaryError("p1_workload", "explicit_nonempty_train_dev_required")
+    rows: dict[str, list[tuple[str, Any, int]]] = {s: [] for s in ("train", "dev", "test")}
+    for reference, observation in iter_snapshot_points(store, snapshot_id):
+        frame = project(observation)
+        target = [c["choice_id"] for c in frame.choices].index(reference["chosen"])
+        rows[reference["split"]].append((reference["point_id"], frame, target))
+    return {
+        split: Population(
+            tuple(row[1] for row in sorted(samples)),
+            tuple(row[2] for row in sorted(samples)),
+            tuple(row[0] for row in sorted(samples)),
+        )
+        for split, samples in rows.items()
+    }
+
+
+def prepare_p1_run(
+    store: ArtifactStore,
+    snapshot_id: str,
+    producer: Producer,
+    config: MStdConfig,
+    operation_id: str,
+) -> Manifest:
+    """Caller reserves the existing application/Hub use before fitting vocabulary.
+
+    This batch implements engineering runs only. Snapshot publication/readability
+    is never promoted here into formal research admission.
+    """
+    checked_digest(operation_id, "p1_workload.operation_id", length=32)
+    training_sources(store, snapshot_id)
+    snapshot, _ = load_snapshot(store, snapshot_id)
+    if snapshot.parameters.value().get("purpose") != "engineering":
+        raise BoundaryError("p1_workload", "engineering_snapshot_required_no_auto_admission")
+    populations = populations_from_snapshot(store, snapshot_id)
+    vocabulary = fit_vocabulary(list(populations["train"].frames))
+    vocabulary_raw = json_bytes(vocabulary)
+    payload = store.put_payload("vocabulary", io.BytesIO(vocabulary_raw), "application/json")
+    training = Manifest(
+        "training_input",
+        producer,
+        (Parent("source", snapshot_id),),
+        (payload,),
+        FrozenObject.of(
+            {
+                "schema": TRAINING_SCHEMA,
+                "entrypoint": ENTRYPOINT,
+                "config": config.to_dict(),
+                "purpose": "engineering",
+                "research_admission": "not_evaluated",
+                "snapshot_selection_sha256": snapshot.payload("selection").sha256,
+                "input_spec": input_spec(vocabulary),
+                "input_projection": INPUT_SPEC,
+                "target_spec": TARGET_SPEC,
+                "architecture": ARCHITECTURE,
+                "partition_N": {s: len(p.frames) for s, p in populations.items()},
+                "planned_steps": config.steps(len(populations["train"].frames)),
+                "vocabulary_sha256": digest(vocabulary_raw),
+            }
+        ),
+    )
+    store.publish(training)
+    experiment = Manifest(
+        "experiment",
+        producer,
+        (Parent("training_input", training.artifact_id),),
+        parameters=FrozenObject.of(
+            {"schema": "stpd/p1-mstd-experiment-1", "purpose": "engineering"}
+        ),
+    )
+    store.publish(experiment)
+    run = Manifest(
+        "run",
+        producer,
+        (
+            Parent("experiment", experiment.artifact_id),
+            Parent("training_input", training.artifact_id),
+        ),
+        parameters=FrozenObject.of({"schema": RUN_SCHEMA, "operation_id": operation_id}),
+    )
+    store.publish(run)
+    return run
+
+
+@dataclass(frozen=True)
+class P1Workload:
+    run: Manifest
+    training: Manifest
+    snapshot: Manifest
+    config: MStdConfig
+    vocabulary: dict[str, Any]
+
+
+def verify_p1_run(store: ArtifactStore, run_id: str, producer: Producer) -> P1Workload:
+    training_sources(store, run_id)
+    run = store.get_manifest(run_id)
+    if (
+        run.kind != "run"
+        or run.producer != producer
+        or run.parameters.value().get("schema") != RUN_SCHEMA
+        or {p.role for p in run.parents} != {"experiment", "training_input"}
+    ):
+        raise BoundaryError("p1_workload", "run_source_or_schema_mismatch")
+    info_run = run.parameters.value()
+    checked_digest(info_run.get("operation_id"), "p1_workload.operation_id", length=32)
+    training = store.get_manifest(run.parent("training_input"))
+    info = training.parameters.value()
+    if (
+        training.kind != "training_input"
+        or training.producer != producer
+        or info.get("schema") != TRAINING_SCHEMA
+        or info.get("entrypoint") != ENTRYPOINT
+        or {p.role for p in training.parents} != {"source"}
+        or {p.role for p in training.payloads} != {"vocabulary"}
+        or info.get("input_projection") != INPUT_SPEC
+        or info.get("target_spec") != TARGET_SPEC
+        or info.get("architecture") != ARCHITECTURE
+        or info.get("purpose") != "engineering"
+    ):
+        raise BoundaryError("p1_workload", "training_input_binding_mismatch")
+    config = MStdConfig.decode(info["config"])
+    snapshot, selection = load_snapshot(store, training.parent("source"))
+    if snapshot.parameters.value().get("purpose") != "engineering":
+        raise BoundaryError("p1_workload", "engineering_snapshot_required_no_auto_admission")
+    vocabulary_raw = b"".join(store.read_payload(training.payload("vocabulary")))
+    vocabulary = json.loads(vocabulary_raw)
+    if (
+        digest(vocabulary_raw) != info.get("vocabulary_sha256")
+        or input_spec(vocabulary) != info.get("input_spec")
+        or vocabulary.get("input_spec") != INPUT_SPEC
+        or training.payload("vocabulary").sha256 != info.get("vocabulary_sha256")
+        or info.get("snapshot_selection_sha256") != snapshot.payload("selection").sha256
+        or info.get("partition_N")
+        != {s: selection["partition_N"].get(s, 0) for s in ("train", "dev", "test")}
+        or info.get("planned_steps") != config.steps(info["partition_N"]["train"])
+    ):
+        raise BoundaryError("p1_workload", "frozen_input_identity_mismatch")
+    experiment = store.get_manifest(run.parent("experiment"))
+    if (
+        experiment.kind != "experiment"
+        or experiment.producer != producer
+        or experiment.parameters.value().get("schema") != "stpd/p1-mstd-experiment-1"
+        or experiment.parent("training_input") != training.artifact_id
+    ):
+        raise BoundaryError("p1_workload", "experiment_input_mismatch")
+    return P1Workload(run, training, snapshot, config, vocabulary)

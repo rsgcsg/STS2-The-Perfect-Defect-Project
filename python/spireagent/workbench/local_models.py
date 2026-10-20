@@ -86,6 +86,8 @@ NATIVE_PROFILE = "native-logical-v1"
 NATIVE_ADAPTER = "stpd-native-structured-m2-agent"
 TEACHER_ADAPTER = "stpd-native-public-program-teacher"
 GLOBAL_ADAPTER = "spireagent-global-public-program"
+GLOBAL_MODEL_ADAPTER = "stpd-p1-mstd-agent"
+GLOBAL_ADAPTERS = frozenset({GLOBAL_ADAPTER, GLOBAL_MODEL_ADAPTER})
 GLOBAL_PROFILE = "p1-global-r1"
 PROGRAM_ADAPTERS = frozenset({TEACHER_ADAPTER, GLOBAL_ADAPTER})
 NATIVE_AGENT_ADAPTERS = frozenset({NATIVE_ADAPTER, TEACHER_ADAPTER})
@@ -601,6 +603,7 @@ class LocalModelService:
                         NATIVE_ADAPTER,
                         TEACHER_ADAPTER,
                         GLOBAL_ADAPTER,
+                        GLOBAL_MODEL_ADAPTER,
                         PUBLIC_M0_ADAPTER,
                         PUBLIC_M2_ADAPTER,
                     }
@@ -646,8 +649,8 @@ class LocalModelService:
             if entry.get("adapter") == PUBLIC_M2_ADAPTER and profile != PUBLIC_M2_PROFILE:
                 raise BoundaryError("local_model", "unsupported_runtime_profile")
             if "runtime_profile" in entry and (
-                (profile == GLOBAL_PROFILE and entry.get("adapter") != GLOBAL_ADAPTER)
-                or (entry.get("adapter") == GLOBAL_ADAPTER and profile != GLOBAL_PROFILE)
+                (profile == GLOBAL_PROFILE and entry.get("adapter") not in GLOBAL_ADAPTERS)
+                or (entry.get("adapter") in GLOBAL_ADAPTERS and profile != GLOBAL_PROFILE)
                 or (profile == PUBLIC_M0_PROFILE and entry.get("adapter") != PUBLIC_M0_ADAPTER)
                 or (profile == PUBLIC_M2_PROFILE and entry.get("adapter") != PUBLIC_M2_ADAPTER)
                 or (profile == NATIVE_PROFILE and entry.get("adapter") not in NATIVE_AGENT_ADAPTERS)
@@ -967,7 +970,8 @@ class LocalModelService:
             "runtime.validateAgentManifest(manifest);"
             "if(manifest.input.profile==='p1-global-r1'){"
             "if(manifest.input.global?.core_sha256!==runtime.p1CoreIdentity?.().module_digest||"
-            "runtime.globalDigest(manifest.input.input_spec)!==runtime.globalDigest(runtime.GLOBAL_PROGRAM_INPUT))"
+            "(manifest.adapter.id!=='stpd-p1-mstd-agent'&&"
+            "runtime.globalDigest(manifest.input.input_spec)!==runtime.globalDigest(runtime.GLOBAL_PROGRAM_INPUT)))"
             "throw Error('global_runtime_core_or_program_input_required');"
             "}else{"
             "const history=manifest.input.history_mode;"
@@ -1317,7 +1321,7 @@ class LocalModelService:
                                           binding_root=self.entry_root(entry)))
         elif entry["adapter"] in {"token-v1", "stpd-m2-decision-adapter",
                                  "stpd-s0-structured-adapter", NATIVE_ADAPTER, PUBLIC_M0_ADAPTER,
-                                 PUBLIC_M2_ADAPTER}:
+                                 PUBLIC_M2_ADAPTER, GLOBAL_MODEL_ADAPTER}:
             from spireagent.workbench.local_model_dependencies import (
                 local_models_available,
                 native_models_available,

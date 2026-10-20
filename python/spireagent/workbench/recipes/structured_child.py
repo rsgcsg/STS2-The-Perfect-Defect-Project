@@ -302,6 +302,13 @@ def run_child(args: argparse.Namespace, channel: ChildChannel) -> None:
 
         run_reward_child(args, channel, store, fence, current_producer)
         return
+    from stpd.p1.spec import RECIPE as P1_RECIPE
+
+    if operation["recipe"] == P1_RECIPE:
+        from spireagent.workbench.recipes.p1_mstd import run_p1_child
+
+        run_p1_child(args, channel, store, fence, current_producer)
+        return
     scope = structured_recipe_scope(operation["recipe"])
     # Numerical imports happen only after immutable application admission and
     # the independent child lifecycle mutex are established.

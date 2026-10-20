@@ -19,8 +19,7 @@ from spireagent.hub.database import Operations
 from spireagent.json_boundary import BoundaryError
 from spireagent.storage.store import ArtifactStore
 from stpd.cloud_jobs.contracts import ComputeReceipt, ComputeRequest, load_feature_job
-from stpd.cloud_jobs.execution import validate_receipt
-from stpd.workers.contracts import load_training_input
+from stpd.cloud_jobs.execution import preflight_training_request, validate_receipt
 
 ACTIVE = frozenset({"running", "uncertain", "submission_unknown", "cancelling"})
 
@@ -114,10 +113,7 @@ class Scheduler:
         if kind == "features":
             load_feature_job(self.store, request.input_id, target.producer)
         else:
-            run = self.store.get_manifest(request.input_id)
-            if run.kind != "run" or run.producer != target.producer:
-                raise BoundaryError("scheduler", "run_source_or_kind_mismatch")
-            load_training_input(self.store, run.parent("training_input"), target.producer)
+            preflight_training_request(self.store, request)
         from spireagent.hub.curation_access import record_use
 
         # Also reserve feature preparation: exported frozen features can disclose test
