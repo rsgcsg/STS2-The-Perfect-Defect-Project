@@ -165,4 +165,3 @@ def require_p1_training_use(
     ledger.require_training_use(
         snapshot_id, train["projections"], train["roots"], operation_id
     )
-
