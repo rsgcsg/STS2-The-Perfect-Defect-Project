@@ -326,7 +326,13 @@ def publish_snapshot(
     groups = {g["group_id"] for g in value["groups"] if g["N"] > 0}
     if not isinstance(split_salt, str) or not split_salt:
         raise BoundaryError("p1_snapshot", "explicit_split_identity_required")
-    if split_by_group is None:
+    if split_by_group is None and value["unknown_independence_groups"]:
+        # Observed branches do not establish seed/restore independence. Keep a
+        # new default selection readable, but require explicit engineering use
+        # instead of silently assigning unknown relatives to held-out roles.
+        splits = dict.fromkeys(groups, "unassigned")
+        split_method = "unknown_lineage_unassigned"
+    elif split_by_group is None:
         try:
             splits = split_run_fingerprints(
                 ((g, g) for g in sorted(groups)), int(digest(split_salt.encode())[:16], 16)

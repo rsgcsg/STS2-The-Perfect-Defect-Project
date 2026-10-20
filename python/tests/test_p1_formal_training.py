@@ -39,6 +39,66 @@ def complete(trainer):
     return trainer
 
 
+def test_nonfinite_loss_does_not_update_parameters(monkeypatch):
+    trainer = engine()
+    before = {key: value.clone() for key, value in trainer.model.state_dict().items()}
+    # Finite extreme logits can still produce an infinite cross-entropy loss.
+    # The batched host read must reject it before optimizer.step.
+    parameter = next(trainer.model.parameters())
+    monkeypatch.setattr(
+        trainer.model,
+        "forward",
+        lambda frame: parameter.reshape(-1)[:2] * 0
+        + torch.tensor([-3e38, 3e38]),
+    )
+    with pytest.raises(BoundaryError, match="non_finite_loss"):
+        trainer.advance()
+    assert trainer.step == 0
+    assert not trainer.optimizer.state
+    assert all(torch.equal(value, before[key]) for key, value in trainer.model.state_dict().items())
+
+
+@pytest.mark.parametrize("cuda_available", [False, True])
+def test_cuda_preflight_rejects_missing_device_or_workspace(monkeypatch, cuda_available):
+    populations = {
+        "train": population(1, "train"),
+        "dev": population(1, "dev"),
+        "test": population(0, "test"),
+    }
+    vocabulary = fit_vocabulary(list(populations["train"].frames))
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: cuda_available)
+    monkeypatch.delenv("CUBLAS_WORKSPACE_CONFIG", raising=False)
+    expected = (
+        "deterministic_cublas_workspace_required"
+        if cuda_available
+        else "cuda_unavailable_no_fallback"
+    )
+    with pytest.raises(BoundaryError, match=expected):
+        MStdTrainer(populations, vocabulary, "a" * 64, MStdConfig(device="cuda:0"))
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="requires real CUDA hardware")
+def test_real_cuda_full_state_resume(monkeypatch):
+    monkeypatch.setenv("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+    populations = {
+        "train": population(3, "train"),
+        "dev": population(2, "dev", target=1),
+        "test": population(1, "test"),
+    }
+    vocabulary = fit_vocabulary(list(populations["train"].frames))
+    config = MStdConfig(device="cuda:0", max_epochs=2)
+    trainer = MStdTrainer(populations, vocabulary, "a" * 64, config)
+    trainer.advance()
+    checkpoint = trainer.checkpoint()
+    complete(trainer)
+    expected = decode_checkpoint(trainer.checkpoint())
+    restored = MStdTrainer(populations, vocabulary, "a" * 64, config)
+    restored.restore(checkpoint)
+    complete(restored)
+    assert maximum_difference(expected, decode_checkpoint(restored.checkpoint())) == 0.0
+    assert restored.finish() == trainer.finish()
+
+
 def test_real_epoch_tail_and_boundary_resume_are_exact():
     uninterrupted = engine(train_count=65)
     with pytest.raises(BoundaryError, match="test_before_model_selection"):

@@ -23,6 +23,8 @@ class ModalTarget:
     image: str
     gpu: str = "L4"
     timeout_seconds: int = 3600
+    cpu_cores: int = 2
+    memory_mib: int = 8192
     storage_secret_name: str = "stpd-worker-storage"
     qwen_volume_name: str | None = None
 
@@ -37,6 +39,10 @@ class ModalTarget:
             raise BoundaryError("modal_target", "explicit_single_compatible_gpu_required")
         if not 1 <= unsigned(self.timeout_seconds, "modal.timeout") <= 86400:
             raise BoundaryError("modal_target", "timeout_limit")
+        if not unsigned(self.cpu_cores, "modal.cpu_cores"):
+            raise BoundaryError("modal_target", "positive_cpu_required")
+        if not unsigned(self.memory_mib, "modal.memory_mib"):
+            raise BoundaryError("modal_target", "positive_memory_required")
         for value in (self.storage_secret_name, self.qwen_volume_name):
             if value is not None and (
                 not isinstance(value, str) or not re.fullmatch(r"[a-zA-Z0-9_-]{1,64}", value)
@@ -44,7 +50,7 @@ class ModalTarget:
                 raise BoundaryError("modal_target", "invalid_resource_name")
 
     def to_dict(self) -> dict[str, Any]:
-        return {"schema": "stpd/modal-target-v1", **asdict(self)}
+        return {"schema": "stpd/modal-target-v2", **asdict(self)}
 
     @property
     def target_id(self) -> str:
@@ -59,7 +65,7 @@ class ModalTarget:
     @classmethod
     def decode(cls, value: object) -> ModalTarget:
         obj = dict(object_fields(value, {"schema", *cls.__dataclass_fields__}, "modal_target"))
-        if obj.pop("schema") != "stpd/modal-target-v1":
+        if obj.pop("schema") != "stpd/modal-target-v2":
             raise BoundaryError("modal_target", "unsupported_schema")
         obj["producer"] = Producer.decode(obj["producer"])
         return cls(**obj)

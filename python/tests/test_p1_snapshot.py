@@ -270,3 +270,39 @@ def test_snapshot_load_reproduces_parent_selection_not_just_hash(tmp_path):
     with pytest.raises(BoundaryError, match="parent_reprojection"):
         load_snapshot(store, forged.artifact_id)
     assert json_bytes(load_snapshot(store, snapshot.artifact_id)[1]) == original_bytes
+
+
+def test_unknown_lineage_never_gets_an_automatic_heldout_split(tmp_path):
+    from stpd.p1.workload import populations_from_snapshot
+
+    store = store_at(tmp_path)
+    projections = []
+    for index in range(3):
+        _, source, value = projection_fixture(store, "unknown-" + str(index))
+        source = replace(source, parameters=FrozenObject.of({
+            **source.parameters.value(), "lineage": {},
+        }))
+        store.publish(source)
+        projection, _, _ = projection_fixture(
+            store, "unknown-copy-" + str(index), original=source, value=value,
+        )
+        projections.append(projection.artifact_id)
+    snapshot = publish_snapshot(store, projections, PRODUCER, split_salt="unknown")
+    _, selection = load_snapshot(store, snapshot.artifact_id)
+    assert selection["observed_group_count"] == 3
+    assert selection["unknown_independence_groups"] == 3
+    assert selection["partition_N"] == {"unassigned": 3}
+    assert selection["split_method"] == "unknown_lineage_unassigned"
+    with pytest.raises(BoundaryError, match="explicit_nonempty_train_dev_required"):
+        populations_from_snapshot(store, snapshot.artifact_id)
+    # An explicit engineering allocation is still supported and remains marked
+    # as such; it does not establish statistical independence or admission.
+    explicit = publish_snapshot(
+        store, projections, PRODUCER, split_salt="explicit-engineering",
+        split_by_group={g["group_id"]: ("train", "dev", "test")[i]
+                        for i, g in enumerate(selection["groups"])},
+    )
+    _, chosen = load_snapshot(store, explicit.artifact_id)
+    assert chosen["partition_N"] == {"train": 1, "dev": 1, "test": 1}
+    assert chosen["unknown_independence_groups"] == 3
+    assert chosen["split_method"] == "explicit_engineering_groups_not_statistical_qualification"

@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import math
 import platform
-import random
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +19,7 @@ from stpd.workers.checkpoint_codec import decode_checkpoint, encode_checkpoint
 from .data import digest, json_bytes
 from .input import Frame
 from .model import ARCHITECTURE, MStd
+from .numerics import TrainingNumerics, training_scope
 
 CONFIG: dict[str, Any] = {
     "seed": 1,
@@ -55,14 +55,14 @@ class Trainer:
         if total_steps < 2 or total_steps > 32 or len(frames) != len(targets) or not frames:
             raise ValueError("T0 needs a nonempty population and 2..32 bounded CPU updates")
         self.frames, self.targets, self.total_steps = frames, targets, total_steps
-        torch.set_num_threads(CONFIG["cpu_threads"])
-        torch.use_deterministic_algorithms(True)
-        random.seed(CONFIG["seed"])
-        torch.manual_seed(CONFIG["seed"])
-        self.model = MStd(vocabulary)
-        self.optimizer = torch.optim.AdamW(
-            self.model.parameters(), lr=CONFIG["lr"], weight_decay=CONFIG["weight_decay"]
+        self._numerics = TrainingNumerics(
+            CONFIG["seed"], CONFIG["cpu_threads"], torch.device("cpu")
         )
+        with self._numerics.scope():
+            self.model = MStd(vocabulary)
+            self.optimizer = torch.optim.AdamW(
+                self.model.parameters(), lr=CONFIG["lr"], weight_decay=CONFIG["weight_decay"]
+            )
         self.sampler = torch.Generator().manual_seed(CONFIG["seed"] + 1000)
         self.order = torch.randperm(len(frames), generator=self.sampler).tolist()
         self.cursor = self.step = self.epoch = 0
@@ -78,11 +78,11 @@ class Trainer:
                 "torch": str(torch.__version__),
                 "python": platform.python_version(),
                 "device": "cpu",
-                "threads": torch.get_num_threads(),
+                "threads": CONFIG["cpu_threads"],
             },
             "code": {
                 name: digest((code_root / name).read_bytes())
-                for name in ("data.py", "input.py", "model.py", "training.py")
+                for name in ("data.py", "input.py", "model.py", "training.py", "numerics.py")
             },
             "codec_sha256": digest((code_root.parent / "workers/checkpoint_codec.py").read_bytes()),
             "frame_count": len(frames),
@@ -104,6 +104,7 @@ class Trainer:
             self.cursor += 1
         return selected
 
+    @training_scope
     def advance(self) -> dict[str, Any]:
         if self.step >= self.total_steps:
             raise ValueError("bounded T0 update budget exhausted")
@@ -145,7 +146,7 @@ class Trainer:
                 "identity": self.identity,
                 "model": self.model.state_dict(),
                 "optimizer": self.optimizer.state_dict(),
-                "rng": {"torch_cpu": torch.get_rng_state(), "python": random.getstate()},
+                "rng": {k: v for k, v in self._numerics.rng.items() if k != "torch_cuda"},
                 "sampler": {
                     "generator": self.sampler.get_state(),
                     "order": self.order,
@@ -166,8 +167,11 @@ class Trainer:
             raise ValueError("checkpoint identity does not match this M-std execution")
         self.model.load_state_dict(value["model"], strict=True)
         self.optimizer.load_state_dict(value["optimizer"])
-        torch.set_rng_state(value["rng"]["torch_cpu"])
-        random.setstate(value["rng"]["python"])
+        self._numerics.rng = {
+            "torch_cpu": value["rng"]["torch_cpu"],
+            "python": value["rng"]["python"],
+            "torch_cuda": None,
+        }
         sampler = value["sampler"]
         self.sampler.set_state(sampler["generator"])
         self.order, self.cursor, self.epoch = sampler["order"], sampler["cursor"], sampler["epoch"]

@@ -205,7 +205,7 @@ def check_compute(
     target = json.loads(target_path.read_bytes())
     if (
         not isinstance(target, dict)
-        or target.get("schema") != "stpd/modal-target-v1"
+        or target.get("schema") != "stpd/modal-target-v2"
         or target.get("producer") != checkout_identity()
         or target.get("image") != values["STPD_WORKER_IMAGE"]
     ):

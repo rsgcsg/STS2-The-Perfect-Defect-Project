@@ -62,7 +62,6 @@ def serve(
     source: TextIO = sys.stdin,
     destination: TextIO = sys.stdout,
 ) -> None:
-    torch.set_num_threads(2)
     _, manifest, model, _ = installation(config_path, manifest_path, owner)
     unit = consumption = committed = pending = None
     version = 0
@@ -189,6 +188,8 @@ def main() -> None:
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--binding-root", type=Path, required=True)
     args = parser.parse_args()
+    # The CLI owns its dedicated process; the reusable serve() does not.
+    torch.set_num_threads(2)
     serve(args.config.resolve(), args.manifest.resolve(), args.binding_root.resolve())
 
 

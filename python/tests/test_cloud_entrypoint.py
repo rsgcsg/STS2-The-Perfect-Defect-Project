@@ -83,6 +83,8 @@ def test_modal_definition_bounds_runtime_and_invokes_only_locked_worker(
     assert calls["settings"]["max_containers"] == 1
     assert calls["settings"]["min_containers"] == 0
     assert calls["settings"]["timeout"] == selected.timeout_seconds
+    assert calls["settings"]["cpu"] == (selected.cpu_cores, selected.cpu_cores)
+    assert calls["settings"]["memory"] == (selected.memory_mib, selected.memory_mib)
 
     def run(argv, **kwargs):
         assert argv[:4] == [

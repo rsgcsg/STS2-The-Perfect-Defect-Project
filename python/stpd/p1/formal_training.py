@@ -7,8 +7,8 @@ provider, data admission, local registry, game access or implicit restart.
 from __future__ import annotations
 
 import math
+import os
 import platform
-import random
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -23,6 +23,7 @@ from .data import digest, json_bytes
 from .export import input_spec
 from .input import Frame
 from .model import ARCHITECTURE, MStd
+from .numerics import TrainingNumerics, training_scope
 from .spec import CHECKPOINT_FRACTIONS, CHECKPOINT_SCHEMA, TARGET_SPEC, MStdConfig
 
 
@@ -59,18 +60,28 @@ class MStdTrainer:
             raise BoundaryError("p1_training", "point_leakage_between_partitions")
         self.populations, self.vocabulary, self.config = populations, vocabulary, config
         self.device = torch.device(config.device)
-        if self.device.type == "cuda" and not torch.cuda.is_available():
-            raise BoundaryError("p1_training", "cuda_unavailable_no_fallback")
-        torch.set_num_threads(config.cpu_threads)
-        torch.use_deterministic_algorithms(True)
-        random.seed(config.seed)
-        torch.manual_seed(config.seed)
+        cuda_runtime = None
         if self.device.type == "cuda":
-            torch.cuda.manual_seed(config.seed)
-        self.model = MStd(vocabulary).to(self.device)
-        self.optimizer = torch.optim.AdamW(
-            self.model.parameters(), lr=config.learning_rate, weight_decay=config.weight_decay
-        )
+            if not torch.cuda.is_available():
+                raise BoundaryError("p1_training", "cuda_unavailable_no_fallback")
+            if os.environ.get("CUBLAS_WORKSPACE_CONFIG") not in {":4096:8", ":16:8"}:
+                raise BoundaryError("p1_training", "deterministic_cublas_workspace_required")
+            properties = torch.cuda.get_device_properties(self.device)
+            cuda_runtime = {
+                "name": properties.name,
+                "capability": [properties.major, properties.minor],
+                "total_memory": properties.total_memory,
+                "cublas_workspace": os.environ["CUBLAS_WORKSPACE_CONFIG"],
+                "matmul_tf32": False,
+                "cudnn_tf32": False,
+                "cudnn_benchmark": False,
+            }
+        self._numerics = TrainingNumerics(config.seed, config.cpu_threads, self.device)
+        with self._numerics.scope():
+            self.model = MStd(vocabulary).to(self.device)
+            self.optimizer = torch.optim.AdamW(
+                self.model.parameters(), lr=config.learning_rate, weight_decay=config.weight_decay
+            )
         self.generator = torch.Generator().manual_seed(config.seed + 1000)
         self.order = torch.randperm(
             len(populations["train"].frames), generator=self.generator
@@ -114,11 +125,12 @@ class MStdTrainer:
                 "device": config.device,
                 "dtype": config.dtype,
                 "cuda": torch.version.cuda if self.device.type == "cuda" else None,
-                "cpu_threads": torch.get_num_threads(),
+                "cuda_runtime": cuda_runtime,
+                "cpu_threads": config.cpu_threads,
             },
             "code": {
                 name: digest((root / name).read_bytes())
-                for name in ("formal_training.py", "spec.py", "input.py", "model.py")
+                for name in ("formal_training.py", "spec.py", "input.py", "model.py", "numerics.py")
             },
             "codec_sha256": digest((root.parent / "workers/checkpoint_codec.py").read_bytes()),
         }
@@ -156,6 +168,7 @@ class MStdTrainer:
             "multi_correct": multi_correct,
         }
 
+    @training_scope
     def advance(self) -> dict[str, Any]:
         if self.phase != "training":
             raise BoundaryError("p1_training", "training_already_complete")
@@ -166,16 +179,19 @@ class MStdTrainer:
             group["lr"] = lr
         self.optimizer.zero_grad(set_to_none=True)
         self.model.train()
-        total_loss = 0.0
-        for i in indices:
+        targets = torch.tensor([train.targets[i] for i in indices], device=self.device)
+        losses = []
+        for offset, i in enumerate(indices):
             scores = self.model(train.frames[i])
-            loss = F.cross_entropy(
-                scores.unsqueeze(0), torch.tensor([train.targets[i]], device=self.device)
-            )
-            if not bool(torch.isfinite(loss)):
-                raise BoundaryError("p1_training", "non_finite_loss")
+            loss = F.cross_entropy(scores.unsqueeze(0), targets[offset : offset + 1])
             (loss / len(indices)).backward()
-            total_loss += float(loss.detach())
+            losses.append(loss.detach())
+        # One device-to-host read per optimizer batch. Keep the original Python
+        # summation order and reject invalid loss before any parameter update.
+        loss_values = torch.stack(losses).cpu().tolist()
+        if not all(math.isfinite(loss) for loss in loss_values):
+            raise BoundaryError("p1_training", "non_finite_loss")
+        total_loss = sum(loss_values)
         gradients = [p.grad.norm() for p in self.model.parameters() if p.grad is not None]
         norm = float(torch.linalg.vector_norm(torch.stack(gradients)))
         if not math.isfinite(norm):
@@ -255,6 +271,7 @@ class MStdTrainer:
         model.load_state_dict(self.best_weights, strict=True)
         return model.eval()
 
+    @training_scope
     def finish(self) -> dict[str, Any]:
         if self.phase not in {"trained", "completed"}:
             raise BoundaryError("p1_training", "test_before_model_selection")
@@ -272,13 +289,7 @@ class MStdTrainer:
                 "identity": self.identity,
                 "model": dict(self.model.state_dict()),
                 "optimizer": self.optimizer.state_dict(),
-                "rng": {
-                    "torch_cpu": torch.get_rng_state(),
-                    "python": random.getstate(),
-                    "torch_cuda": torch.cuda.get_rng_state(self.device)
-                    if self.device.type == "cuda"
-                    else None,
-                },
+                "rng": self._numerics.rng,
                 "sampler": {
                     "generator": self.generator.get_state(),
                     "order": self.order,
@@ -307,10 +318,7 @@ class MStdTrainer:
             raise BoundaryError("p1_training", "checkpoint_execution_identity_mismatch")
         self.model.load_state_dict(value["model"], strict=True)
         self.optimizer.load_state_dict(value["optimizer"])
-        torch.set_rng_state(value["rng"]["torch_cpu"])
-        random.setstate(value["rng"]["python"])
-        if self.device.type == "cuda":
-            torch.cuda.set_rng_state(value["rng"]["torch_cuda"], self.device)
+        self._numerics.rng = value["rng"]
         self.generator.set_state(value["sampler"]["generator"])
         self.order, self.cursor = value["sampler"]["order"], value["sampler"]["cursor"]
         for key in (
