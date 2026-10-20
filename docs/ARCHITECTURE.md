@@ -59,6 +59,16 @@ drivers preserve their original semantics while used; this is not a requirement 
 retain both forever. Retirement follows actual consumer, parity, rollback and archival
 reader needs, without rewriting old records, identities or qualification.
 
+### Responsibility refinement
+
+目标驱动职责分解；模块、协议、格式和部署实现这些职责。抽象与具体是相对当前边界而言：调用者只需训练器的输入、产物、失败和恢复承诺，维护者可继续展开其学习定义、数值计算、生命周期、执行资源和产物验收。只在真实调用、变化原因或独立验证需要时局部细分，各分支可以有不同深度。不要把每个函数展开进全项目图，也不把每项职责强制变成服务、进程或一个工程Agent。
+
+“下载→训练→上传”是操作步骤，不自动构成三个好模块。模块应封装一起变化的规则和状态；若一个训练对象偷偷修改进程全局Torch配置，它与另一个评分器仍有实际耦合，目录分开并未解决问题。设计要减少使用者必须了解的内部细节，同时明确真实共享状态的owner，不追求零耦合。
+
+每次展开先回答父能力给谁什么承诺、子职责分别需要/提供什么、组合是否覆盖原承诺。内部整理且保持承诺，归原owner实现；改变外部信息、动作、学习目标、用途、失败/恢复含义或上层职责，按下面变更规则先取得具体决定。接口的身份、成功、失败、停止和恢复含义必须明确；JSON、HTTP、文件或机器可以后选。父能力不能表达真实用例时，提出最小上层修订，而非另起一条业务链。
+
+训练各接缝沿现有[组件映射](COMPONENTS.md#training-responsibilities)：原件到模型输入/目标归Projection/InputSpec/TargetSpec；选定训练任务到引擎归原workload/recipe；任务到Modal或以后学校资源归compute/provider；Model到完整Agent归模型包和Agent适配。所谓“适配器”必须先指明这两边，不能借名称新造统管训练、数据用途和云权限的全局层。逻辑细分与运行时协作是两个视图，职责树不表示所有数据必须依次经过的流水线。
+
 ### Selected convergence and change rules
 
 Retain one ExecutionRuntime kernel and the current separately supervised process

@@ -26,6 +26,14 @@ One owner writes shared contracts, BOM and integration refs. One heavy local/nat
 slot is the default; increase only for demonstrated available resources. Never stop
 another worker or delete its dependencies to obtain resources.
 
+### Reuse or start a worker
+
+同一结果的修复、补证、审查返工和上下文续接，优先复用原执行者；保留原任务范围和已花成本。新的独立问题、大量可独立验收的调查，或需要非作者审查的稳定候选，才另开有界Agent。新开窗口或subagent只是执行方式，不能重置截止、预算、失败分母或验收。
+
+先定共享合同和写入owner，再并行独立结果。两位作者需要改同一状态机，或分别猜共享接口时，先由一个负责人打通最短连接，消费者可并行准备忠实检查。架构有几层、目录有几个组件，不决定开几个Agent。任务包给明确结束行为：达成指定消费者结果即交；检查点到时交真实进度；轮次上限到时停止扩范围、保住实物与运行项并收口。时间到不把未完成改成通过，也不任意杀正常用户服务或另有授权的任务。
+
+用户已授权完整阶段时，主管可在该范围内继续后续检查点，无须每次再次申请。需要其亲手操作或未授权的实质决定，保留具体对象、选项和影响；独立工作照常推进，交付时集中呈现，不让睡眠中的用户充当技术协调者。
+
 ## Task packet and delivery format
 
 Use the shared five-field task card in WORKING_RULES, inside an existing task/issue/PR.
