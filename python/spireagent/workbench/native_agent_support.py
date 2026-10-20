@@ -7,7 +7,7 @@ from typing import Any
 
 from spireagent.json_boundary import BoundaryError, digest, json_bytes, object_fields
 from spireagent.package_identity import file_sha256
-from spireagent.policy_files import _inside, _object_file
+from spireagent.policy_files import _object_file, bound_path
 
 ADAPTER = "stpd-native-structured-m2-agent"
 PROFILE = "native-logical-v1"
@@ -23,17 +23,6 @@ def code_digest(root: Path) -> str:
     from stpd.native_code_scope import native_code_sha256
 
     return native_code_sha256(root)
-
-
-def _bound_path(owner: Path, path: Path) -> Path:
-    relative = path.relative_to(owner)
-    checked = _inside(owner, relative.as_posix())
-    current = owner
-    for part in relative.parts:
-        current /= part
-        if current.is_symlink():
-            raise BoundaryError("native_agent_support", "unsafe_binding_path")
-    return checked
 
 
 def _config(path: Path) -> dict[str, Any]:
@@ -71,8 +60,8 @@ def bind_native_export(root: Path, export_path: Path, config_path: Path,
     from stpd.policy.native_structured_export import load_native_package
 
     owner = (binding_root or root).resolve()
-    config_path, manifest_path = (_bound_path(owner, config_path),
-                                  _bound_path(owner, manifest_path))
+    config_path, manifest_path = (bound_path(owner, config_path, stage="native_agent_support"),
+                                  bound_path(owner, manifest_path, stage="native_agent_support"))
     if (config_path == manifest_path or config_path.exists() or config_path.is_symlink()
             or manifest_path.exists() or manifest_path.is_symlink()):
         raise BoundaryError("native_agent_support", "invalid_binding_destination")
@@ -108,8 +97,8 @@ def validate(root: Path, config_path: Path, manifest_path: Path, *,
     from stpd.policy.native_structured_export import load_native_package
 
     owner = (binding_root or root).resolve()
-    config = _config(_bound_path(owner, config_path))
-    manifest_path = _bound_path(owner, manifest_path)
+    config = _config(bound_path(owner, config_path, stage="native_agent_support"))
+    manifest_path = bound_path(owner, manifest_path, stage="native_agent_support")
     manifest = _object_file(manifest_path)
     export = Path(config["export_path"])
     package, model = load_native_package(export)

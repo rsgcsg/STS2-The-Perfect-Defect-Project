@@ -202,7 +202,7 @@ def test_resume_restores_dropout_sampler_adam_and_next_batch(tmp_path):
         Trainer([frame], [0], vocab, "source", 2).restore(midpoint)
 
 
-def test_controlled_weights_score_legal_choices_and_exact_export_load(tmp_path):
+def test_controlled_weights_score_legal_choices_and_exact_export_load(tmp_path, monkeypatch):
     frame = project(observation())
     model = MStd(fit_vocabulary([frame])).eval()
     with torch.no_grad():
@@ -229,8 +229,18 @@ def test_controlled_weights_score_legal_choices_and_exact_export_load(tmp_path):
         "input": {"profile": "p1-global-r1"},
     }
     register(tmp_path / "export", tmp_path / "private", template)
+    import builtins
+
     from stpd.p1.agent import installation
 
+    original_import = builtins.__import__
+
+    def without_workbench(name, *args, **kwargs):
+        if name == "spireagent.workbench" or name.startswith("spireagent.workbench."):
+            raise AssertionError("P1 installation must not import Workbench")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", without_workbench)
     config, manifest, loaded, _ = installation(
         tmp_path / "private/config.json", tmp_path / "private/manifest.json", tmp_path / "private"
     )
@@ -288,6 +298,7 @@ def test_controlled_weights_score_legal_choices_and_exact_export_load(tmp_path):
     directive = json.loads(destination.getvalue().splitlines()[-1])["output"]["directive"]
     assert directive["selection"]["action_id"] == "c9"
     assert directive["scores"]["values"] == flipped.tolist()
+    monkeypatch.setattr(builtins, "__import__", original_import)
     from spireagent.workbench.developer import ProjectConfig, combination
     from spireagent.workbench.local_models import LocalModelService
 
