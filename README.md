@@ -16,6 +16,8 @@
 
 新成员先看[共同工作规则](docs/WORKING_RULES.zh-CN.md)和适用的[工程入门](docs/NEW_ENGINEER_GUIDE.md)；Agent另读[协作与续接](docs/AI_COLLABORATION.md)。遇到旧问题，从[已有解法与边界](docs/RESOLVED_ISSUES.zh-CN.md)直接找原代码和证据。历史资产由[原账本](docs/plans/p1-prefreeze-2026-10-18/ASSETS.md)定位，不把旧结果当当前通过。
 
+工程权威、公共合同与证据变更按[工程治理](docs/ENGINEERING_GOVERNANCE.md)处理；已有专用工作流从[技能目录](.agents/skills/README.md)按适用范围选择，普通开发不必另用Skill。
+
 STS2决定规则和原生执行；Connector决定公开信息、动作绑定和执行时复验；Host Runtime管进程与隔离；Annotator/Evidence管原件；Policy Runtime管受控执行；应用管用户入口；研究管模型、训练与评估。Mod是装载包装，GUI映射同一应用用例，不再造一套控制或数据链。
 
 源码/测试、实际构建安装、真实运行、Human来源与策略质量分别有证据。旧失败和原件保留；合入、正常退出或一个检查通过都不能替其它层授予资格。
