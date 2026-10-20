@@ -48,11 +48,11 @@ A/B/C/D从同一父依赖各建独立短命分支。集成负责人独占CURRENT
 | 3 异常录制可恢复 | A4d5e87ff已合；52 Core/133 Node及Tool→pack→reader→B独立Store合成E2E通过（1N/1unknown，0next/end，非完整局） | A/B交Tool→pack→reader→正常导入；独立工程继续，真人/生产操作留最终 |
 | 4 日常录制可用 | 保正常Application，未新启动游戏/修改安装 | A核安装/工具/空间差额，B入口，实际Human由用户；不能称游戏已就绪 |
 | 5 正常训练入口与任务管理 | B首源已合：正常CLI/API同LocalTrainingService，19轻测与2合成HTTP子进程通过 | B/C交非GUI同用例start/status/Stop等合成证据；真实训练留用户配置/费用决定 |
-| 6 全部候选盘清并实际入库 | 旧820N不是库存总数；A三新连续targets已正常Store发布，C全候选清单待核 | A给来源事实，B发布，C全候选/谱系/曝光清单；用途不由盘点授予 |
-| 7 唯一用途账与固定学习问题 | B首源已合：P1 named eligible-N索引接原ledger，不分配用途 | B给唯一用途接口，C给实际组/固定Input/Target提案；正式用途/划分留用户 |
-| 8 R2日常读写与恢复 | 既有完整取回证据保原义，不等于后台周转完成 | B5a76e7a5已合private Curation原账SQLite备份/新目录恢复，实际R2回读/reader回执待最终核；持续热集仍未完成；现有具名授权内可验证，不新删原件 |
+| 6 全部候选盘清并实际入库 | 旧820N不是库存总数；A三新连续targets正常Store发布/reader实际1305unique N、0duplicate，3根独立性unknown；C全部候选范围清单另核 | A给来源事实，B发布，C全候选/谱系/曝光清单；用途不由盘点授予 |
+| 7 唯一用途账与固定学习问题 | P1 named索引接原ledger，6源/0claims/uses；C未知谱系默认全unassigned，显式engineering分配仍可用 | B给唯一用途接口，C给实际组/固定Input/Target提案；正式用途/划分留用户 |
+| 8 R2日常读写与恢复 | 既有完整取回证据保原义，不等于后台周转完成 | B5a76e7a5已合原private账SQLite备份/新目录恢复；R2备份回读、6引用解析与3实际reader消费已核；持续热集仍未完成；现有具名授权内可验证，不新删原件 |
 | 9 GPU接通并发挥优势 | C43637f61已合并审查旧WIP；41通过/1CUDA跳过，worker/source与Modal资源v2准备不等于真实GPU | C交worker/source-lock-image/设备恢复与成本提案；未知费用/学校登录留用户 |
-| 10 全项目逐层收敛与SOP | D8677432b已合原指南/104行路径，五help与静态走查通过；39旧caller快照未全重验，六项整体仍部分 | D和各owner交六项实物与非作者走查；未达仍是正式首训前置，无需新框架 |
+| 10 全项目逐层收敛与SOP | De1a4c270已合原指南/104行路径，五help与静态走查通过；39旧caller均有原去向，不新增全live门，六项按原验收逐项核 | D和各owner交六项实物与非作者走查；未达仍是正式首训前置，无需新框架 |
 | 11 稳定组合与真实运行验收 | A/B/C/D稳定来源已normal merge，Annotatorrc22/GameModrc47源候选/current BOM一致；完整门/运行资格仍待 | 集成/独立审查/root做所选门；A/C列INFO/Reference20/R20/T0b、build/install/load真实缺口；新增生产/Human需用户 |
 | 12 首训与评估具体方案 | C准备实际数据/组/recipe/GPU/预算与保存恢复提案，未完成 | C交一页可决定材料，root审范围；最终配置/用途/费用由用户 |
 | 13 冻结与第一批真实GPU训练 | 未启动，不能用源码或合成工程替代 | 依赖10–12和真实GPU；具名merge/发布/冻结/首训及费用待用户，材料先备齐 |
@@ -67,8 +67,8 @@ A/B/C/D从同一父依赖各建独立短命分支。集成负责人独占CURRENT
 
 ## 当前结果与下一步
 
-已接受并normal merge的稳定来源是A `4d5e87ff`（含连续7dd9da31）、B `5a76e7a5`（含fe76eb16）、C `43637f61`、D `8677432b`；最新组合为`1ccb2f1c`。版本元数据提交`db12fe09`将Annotator源码候选升rc22、统一Mod候选升rc47，current BOM已同步；已测Tool3e9/628及历史loaded/运行安装身份不变，不追授最终候选装载资格。
-A三真实源连续派生经B正常Store发布，C真实reader/旧模型消费看其具名回执；A合成中断恢复经实际Tool recover/audit/pack、独立Node和B正常import/publish/read得到1N/1unknown、0next/end、wholefalse，原件不改。B private账备份只含原Curation，R2实际回读/原ledger消费待最终核；正常Application不重启。
-C正确私环境数值/原Mac失败序列41通过/1CUDA跳过；65点2epoch含dropout/真尾批的完整训练state与旧数值maxdiff0，identity字段明确排除，不作为旧历史身份证明。Modal-v2 producer/preflight一致；真实GPU/镜像运行未做。D104行保去向，208owner/evidence路径存在，39历史caller快照未全重验；五help/静态走查不等于全项目操作全通过。
+已接受并normal merge的稳定来源是A `4d5e87ff`（含连续7dd9da31）、B `5a76e7a5`（含fe76eb16）、C `4bacf580`（含43637f61）、D `e1a4c270`（含8677432b）；最新组合为`1ccb2f1c`。版本元数据提交`db12fe09`将Annotator源码候选升rc22、统一Mod候选升rc47，current BOM已同步；已测Tool3e9/628及历史loaded/运行安装身份不变，不追授最终候选装载资格。
+A三真实源连续派生经B正常Store发布，B正常reader已核1305unique N/0duplicate；C旧模型消费看其具名回执；A合成中断恢复经实际Tool recover/audit/pack、独立Node和B正常import/publish/read得到1N/1unknown、0next/end、wholefalse，原件不改。B private账备份只含原Curation，R2实际回读/6引用解析/三连续targets远端原reader消费已核；正常Application不重启。
+C正确私环境数值/原Mac失败序列41通过/1CUDA跳过；65点2epoch含dropout/真尾批的完整训练state与旧数值maxdiff0，identity字段明确排除，不作为旧历史身份证明。Modal-v2 producer/preflight一致；真实GPU/镜像运行未做。D104行保去向，208owner/evidence路径存在，39历史caller均明确16历史/15现行/8未来去向；这是路由范围，不新增39次live重跑门，#63仍是原R20实际门，#90仍是六项父验收。五help/静态走查不等于全部实际操作通过。
 集成独立解释器view复用成熟依赖、不安装/改共享env，当前SpireAgent/STPD/Evidence及剥PYTHONPATH的真child均解析候选、typed API为真；原线程环境变量未注入。原CURRENT安全字串/缺typescript环境失败保留，修正后静态检查通过。完整稳定组合门仍未执行，root发slot后一次运行，候选期间不改源。
 本轮无真实训练、游戏或安装作业。最终准确检查分母、PR、未完owner及用户决定写在此任务收口修订与固定交付回执。
