@@ -163,6 +163,7 @@ def fit_vocabulary(frames: list[Frame]) -> dict[str, Any]:
     tokenizer.pre_tokenizer = pre_tokenizers.ByteLevel(add_prefix_space=False)
     trainer = trainers.BpeTrainer(
         vocab_size=4096,
+        show_progress=False,  # stdout is the private worker's structured event channel.
         min_frequency=2,
         special_tokens=["[PAD]", "[UNK]", "<NUM>", "<MISSING>", "<REF>"],
         initial_alphabet=pre_tokenizers.ByteLevel.alphabet(),
