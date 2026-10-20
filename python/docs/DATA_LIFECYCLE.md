@@ -183,8 +183,8 @@ R2 is the long-term destination for project data; local bytes are the bounded
 active working set. Background closed-recording maintenance is separately
 configured through `recordings maintenance status|enable|disable --config PROJECT`;
 cloud scope must name candidates or a date/origin scope. It remains disabled until
-authorized. Existing recent-two-session hot-set cooling requires verified
-recoverability and the approved exact scope. This guide grants no new deletion,
+authorized. Planned recent-two-session hot-set cooling remains unimplemented and requires
+verified recoverability and the approved exact scope. This guide grants no new deletion,
 bulk scan, service restart, or automatic eviction authority. Continuous cooling
 is not established by one successful upload; keep that operational obligation
 visible at handoff. Private Curation backup and staged recovery use the owner

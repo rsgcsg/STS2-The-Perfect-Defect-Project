@@ -1,6 +1,6 @@
-# 三小时执行：连续数据闭环、正常控制与收敛候选
+# 三小时执行：源码门已通过，实局前缀已验并回滚
 
-2026-10-21，Brisbane。本轮正在收口；root负责指派、统筹和最终审计，集成负责人维护此唯一任务、CURRENT及共享身份。稳定功能组合fb86ee2e已normal merge A奖励连续/恢复、B正常CLI/远端控制/用途与原账恢复、C数值/Scheduler/输入闭包及D原指南。完整门04原失败与私环境首错修后范围分别保留；旧模型HTTP工程验证已过，A本机窗口已退出回滚但teardown ERROR保原义。正常prepare的完整10-manifest闭包已实际R2读回并经独立reader验3合成N/6catalog、0计算提交，源/指南已合，接下来冻结并由root选最终门。新3份派生正在B正常发布/C读取，未提前算unique N；没有真实数据梯度、付费云或Human操作在运行。
+2026-10-21，Brisbane。本轮独立工程已收口，源码门与原实局证据已完成root非作者复核，接下来仅做同一Draft PR206的最终状态审阅和一次安全快进，不再新增功能或启动游戏。准确源码候选9f9ad23b/treea9e29cf8原完整12阶段全通过；旧T0包在fresh原生窗口运行900次提交后，按原512MiB证据容量作operator/resource-capacity precaution stop，密封/可信同包typed replay通过。原件、旧模型、正常Application及13条安装路径均已核并恢复，无所属游戏/Runtime/adapter进程。七源为3717unique N/3357next，最新R2原账恢复11引用可读。正式首训整体仍未就绪：持续热集、Global回库桥、完整证据容量、空选循环、原生日志及实际GPU等真实余项保留，不能写成只等人工批准。
 
 ## 目标、授权与停止点
 
@@ -39,41 +39,55 @@ A/B/C/D从同一父依赖各建独立短命分支。集成负责人独占CURRENT
 
 ## 原14项完整覆盖与实际停止边界
 
-此表保原完整计划的14项，不以worker包数量缩小范围。结果只按本轮已核实物更新；未完成不因时间上限移出分母。
+此表保原完整计划的14项；源码子任务完成不自动完成父能力，未完成不因三小时上限移出分母。
 
 | 原项 | 本轮实际结果 / 证据层 | 未完owner与下一实物 / 是否需用户 |
 |---|---|---|
-| 1 奖励往返直接连续 | A7dd9da31已合，109窄测通过；原三源28effect与第四源3effect实派生后四targets正常发布/reader 1751unique N、1744next、0duplicate；C全读并对4N旧模型forward | 同机制连续源码/真实Store消费已交；真实缺H、药水缺项、unknown不放行，无需重问语义 |
-| 2 已有首错与可重复检查 | 原PR206本地/Linux失败保留；full04在d552跑完12阶段，11通过，Python16个installed-origin失败；4593通过/6跳过/80 subtests通过 | 私解释器真实installed Evidence修后原15 testcase/13 subtests通过，整门失败不追绿；2a8根repository/closeout/BOM通过，peer稳定后选最终门 |
-| 3 异常录制可恢复 | A4d5e87ff已合，52 Core/133 Node及Tool→reader→正常导入合成E2E保1N/1unknown、0next/end；另3真实原件实际recover：2空副本audit/pack/reader并正常入库0N，1工程incident | 原件hash未变；incident原journal已Close但缺P1/总Close，5份H/choice可读仍0当前N，不伪封存；有价值前缀边界交清 |
-| 4 日常录制可用 | A已交d552 exact build/load/INFO/API工程生命周期、退出和rollback原件，root正在审；退出日志teardown ERROR独立保留。正常Application未升级 | 不能称native clean、Human录制或Reference/R20资格；原owner保准确Tool/安装/加载/运行身份，Human由用户 |
-| 5 正常训练入口与任务管理 | local CLI/API沿同LocalTrainingService，两更新pause/resume/result已验，local仍1小时/1GiB；normal App/CLI→原Ops/Scheduler/provider/compute Store已合，最新HTTP4项16.89秒通过 | remote live-pause不支持，固定stop-after终态/同Run准确checkpoint显式恢复可用；prepare不入队/不查provider，status只看实际已有事实，unknown不重投 |
-| 6 全部候选盘清并实际入库 | actual Store原四targets1751N已读；persistent根36会话33sealed/3unsealed。新增3份既有execution1 bundle已实际派生1966局部N条目/1613next，原件未改；2空恢复入库0N、1工程incident保留 | B正在正常发布/C inspect后给最终去重/谱系分母，当前不加成独立样本。旧51accepted无execution保历史，不新增兼容；全机/R2旧库不混此分母 |
-| 7 唯一用途账与固定学习问题 | 既有P1索引/原LocalLedger已补历史T0：0claims、1root training use、1raw-source use，最新R2恢复查询曝光true；r14输入/词表441点、实际256 distinct梯度/4更新 | 历史迁账工程缺口已关闭，无新真实梯度/claim；所有四源亲缘unknown不造独立heldout。具体工程分配/正式用途留用户，沿同一账 |
-| 8 R2日常读写与恢复 | 原账SQLite备份→R2→新目录恢复及原reader消费已验；42f正常prepare又实际复制/逐payload读验完整10-manifest Run/InputSpec/vocab/原件闭包，独立R2 reader3合成N/6catalog | 原7引用/4targets备份保时点，新3来源发布后沿原账最新备份回读另核；持续热集仍未完成，不新删原件或造第二Store流程 |
-| 9 GPU接通并发挥优势 | 数值隔离/Modal-v2准备及41通过/1CUDA跳过保CPU范围；正常App/peer/Scheduler和同worker synthetic CPU stop-after/恢复/Model已验，实际R2 prepare0Ops/0submit/0poll | worker实际Modal Secret注入、OCI image/GPU/同设备恢复仍未资格化；R2控制面读回不能替worker侧存取，费用/账户与学校登录留用户 |
-| 10 全项目逐层收敛与SOP | D6b40a03f及各owner原指南已合，104行/208路径、五help与静态走查通过；39旧caller都有原去向，不新增全live门。六项当前材料逐项列于下文 | 新remote/peer指南同PR维护，root最终判达到/部分/未达；未达仍是正式首训前置，不以填表/新框架代验收 |
-| 11 稳定组合与真实运行验收 | A/B/C/D及42f/peer以normal merge成fb86；Annotator rc22/GameMod rc47/current BOM一致，Python不改9组件语义身份。full04失败与15/13修后范围保原义；A native原件含teardown ERROR | 稳定源/指南已齐，准备一次最终完整门及root审计。INFO/API工程结果不自动覆盖Reference20/R20/T0b、Human、GPU或日志clean；未授权新游戏不自动开 |
-| 12 首训与评估具体方案 | C交具体四观察分支工程划分、完整N/Input/Target、M-std FP32/batch64/AdamW/30epoch方案及L4/CPU2/8GiB/三有界工程调用、USD2建议；均未执行/批准正式训练 | 先验当前image/GPU/peer真实闭包和容量；30epoch checkpoint约2.56GB另加输入/模型，不能删checkpoint或冒称local1GiB足够。具体数据/预算/部署选择留用户 |
-| 13 冻结与第一批真实GPU训练 | 未启动，不能用源码或合成工程替代 | 依赖10–12和真实GPU；具名merge/发布/冻结/首训及费用待用户，材料先备齐 |
-| 14 模型真实使用、比较与回库 | 旧T0包在d552 fresh adapter→production Runtime/synthetic HTTP Host原opt-in首跑1PASS；6项catalog argmax真实提交1次、2consumed、Receipt→terminal/control释放/replay verified，权重前后不变。C另4N真实数据forward保原范围 | 这不是真实游戏或策略质量；新正式模型尚无，同条件Reference/评估/回库依赖13、具体配置及原窗口，不给合成Host授native资格 |
+| 1 奖励往返直接连续 | A原Tool/reducer已实现已定连续含义；七具名投影正常Store/reader合计3717unique N、3357next、0exact duplicate，7观察分支亲缘unknown | 真实缺H、药水缺项、unknown仍保屏障；不改已定语义，无需重问批准 |
+| 2 已有首错与可重复检查 | 完整06在9f9原12阶段全部通过，Ruff/Mypy406源；pytest4618通过/6跳过/93子测试通过。05两冷启动首错已定点修复，旧本地/Linux及01–05原失败保留 | 6跳过是Linux、Windows、真CUDA及可选安装Runtime各自条件；最终发布后hosted CI须按实际新head另报，不用本地green代替 |
+| 3 异常录制可恢复 | 固定Tool recover/audit/pack→独立reader→正常导入合成闭环1N/1unknown、0next/end；2真实空副本正常恢复入库0N，1工程incident保原Close冲突 | 原件hash不改，incident有5份可读H/choice但0当前N，不造封存、自然完成或Continue；原owner保问题事实 |
+| 4 日常录制可用 | d552 exact build/load/INFO/API工程生命周期已验；9f9同语义组件fresh T0b窗口准确加载，原Host关闭且13路径、正常App/config回滚核实 | 当前安装未升级；prequit无ERROR不等于native clean。T0b另有scope unavailable、空选及退出ERROR，Human/Reference20/R20仍未验 |
+| 5 正常训练入口与任务管理 | 正常CLI/HTTP沿同Application/LocalTrainingService；local两更新pause/resume/result已验。明确remote配置沿既有Ops/Scheduler/compute peer/同P1 worker，stop-after→paused→同Run/checkpoint显式续跑及Model回local已验 | local仍1小时/1GiB；remote live-pause不支持，unknown不重投、configured Hub不绕过。真实worker Store/Secret/image/GPU资格未完成，不能以synthetic CPU代替 |
+| 6 全部候选盘清并实际入库 | 持久根36会话33sealed/3unsealed，具名七投影全部正常发布/原reader消费3717N/3357next；旧4=1751N、新3=1966N，0重复 | 范围不是全机/R2全部旧库；7observed/7unknown/0known independent，额外数据不自动分用途。旧51accepted无execution保持历史，不新造兼容 |
+| 7 唯一用途账与固定学习问题 | 旧T0历史曝光已迁原LocalLedger并R2恢复查询true，0claims/1root use/1source use；441输入/词表点、256 distinct梯度点/4更新 | 本轮无新真实梯度/claim/use/snapshot；r14与旧T0同内容，不能作干净heldout。C只建议原四源TRAIN1305/DEV446/TEST空，新增三源不自动分配，具体用途留用户 |
+| 8 R2日常读写与恢复 | 原账SQLite backup→正常Store/R2→新目录恢复及原reader消费已验；最新c068备份10named索引+历史曝光共11引用可读，liveDB/原件未替换。正常prepare又实际R2读验10-manifest合成闭包 | 持续recent-two热集冷却/eviction动作尚未实现，不能写成已有能力只等授权；B原maintenance owner下一实物是同链路实际动作与可恢复验证，不删原件或新造第二Store |
+| 9 GPU接通并发挥优势 | P1数值隔离/Modal-v2请求-上限准备和CPU数值等价已交；正常App/peer/Scheduler及同worker synthetic CPU恢复、实际R2 prepare0Ops/0submit/0poll已验 | 实际worker Secret/准确Store读写、不可变image/GPU/同设备恢复尚未资格化；C/B沿原worker补准确实物，账户/费用/学校登录由用户，不归结为只差USD2 |
+| 10 全项目逐层收敛与SOP | 原ARCHITECTURE/COMPONENTS/DOCUMENT_MAP/指南/104功能行保去向；六项本轮材料逐项见下表，39历史caller不是39次新live门 | 已支持操作SOP可接手；持续冷却/Global回库等实际功能余项必须留原owner，不能以填表/新框架或泛称GPU/Human限制代替收敛判断 |
+| 11 稳定组合与真实运行验收 | A/B/C/D及peer/冷修normal merge为9f9；Annotator rc22/GameMod rc47/BOM同，原12阶段全过。旧模型900次native dispatch/Receipt均delivered，原typed API与root独立同包replay通过；原Host close/rollback完成 | 本机source/test通过及单次实局前缀不代hosted CI、自然完整局、Reference20/R20、Human或native clean；容量与循环仍是运行余项，不继续试到通过 |
+| 12 首训与评估具体方案 | C已交原四源工程分配、完整N/Input/Target、M-std FP32/batch64/AdamW/30epoch和L4/CPU2/8GiB/有界调用/费用提案，均未执行正式训练 | 先完成实际GPU/输入结果闭包及容量；30epoch checkpoint约2.56GB另加输入/模型，不能删checkpoint或冒称local1GiB足够。正式data/config/预算/部署留用户 |
+| 13 冻结与第一批真实GPU训练 | 未启动正式训练或冻结，无新真实梯度/付费 | 依赖10–12与实际GPU资格；具名merge/生产发布/正式冻结/首训及费用由用户，工程缺口由原owner交实物 |
+| 14 模型真实使用、比较与回库 | 旧包不变；synthetic Host原opt-in通过，fresh native T0b记录899完整Input/catalog/消费/有限分数向量与记录argmax选择，900dispatch/Receipt含1fold；密封20938events经原typed API和root非作者重验通过 | 900提交/1798calls后operator/resource-capacity precaution stop，非自然结局、预算耗尽或unknown；898completed+1interrupted_known，Stop取消只读capture有1条stopped error。393次Smith/Finish selection循环不算策略进度。Global typed evidence→正常ArtifactStore登记/reader/R2桥缺失，只有本地保全，Task14未闭环；原Runtime/Evidence/研究/应用owner分别定位容量、循环和薄桥，下一轮另授 |
 
-本轮尽量完成全部独立已授权工程；需人工、付费、具名合入/发布或真实训练用途决定的部分先备具体可审材料，统一留最终交付。首闭环完成不等于此14项全部通过。
+本轮没有真实数据梯度、未知费用、Human代玩、具名主线merge或生产发布。用户需要操作或决定的事项集中留最终报告；真实工程余项继续保原事实与owner。
 
-## 收敛六项与未完成保留
+## 六项收敛的最终材料状态
 
-正式首训前必须交并核：可解释的当前架构；一个日常导航；全部实际操作的同一套人/agent SOP；历史解法直接复用；从README实际接手走通；代码/合同/入口变化同PR维护。沿原ARCHITECTURE、COMPONENTS、DOCUMENT_MAP、功能表/资产账及各操作指南落地，不以填表/改标签替代验收。
-交付时六项逐项判定达到/部分/未达，保准确下一实物。Continue、奖励信息曝光修订、Managed严格等已定延期保持归属；当前义务不能塞进历史。Reference20/R20/INFO/T0b、准确build/install/load、真实GPU、用途/分组及正式训练不由窄测自动通过。
+沿原文档和实际入口验收，不增加永久队列、第二套上层逻辑或全量live重跑门。下列“达到”仅指写明的本轮交付范围，正式首训全链仍不就绪。
 
-## 当前结果与下一步
+| 原六项 | 判定和已验实物 | 实际边界 |
+|---|---|---|
+| 可解释的当前架构 | 达到本轮材料范围。原ARCHITECTURE/COMPONENTS补相对抽象、局部细分、requires/provides及现owner，当前控制/Store/worker沿同链路 | Global登记薄桥和运行容量仍有已定位缺口，不由说明授能力 |
+| 一个日常导航 | 达到。README→DOCUMENT_MAP/原指南、CURRENT→本唯一任务；104行/208路径和39caller去向有原owner | 历史/当前/未来分别16/15/8，未当39个现行运行验收 |
+| 人/agent同一套实际操作SOP | 当前已支持操作达到；原任务8全能力仍部分。正常控制/恢复/R2/用途/prepare在原guide，DATA_LIFECYCLE明确持续热集未实现 | Global正常回库也无桥；GPU/Human条件按本身证据边界保留，不当泛化文档缺口 |
+| 历史解法直接复用 | 达到本轮有界范围。原Recorder/Tool/Store/R2、旧worker恢复及失败首错复用现owner/代码/证据 | 没有重读全部历史或恢复废弃权威，旧成功不授当前资格 |
+| 从README实际接手走通 | 达到本轮候选接手范围。非作者五help/静态路径与最终repository通过，正常HTTP/R2 prepare、fresh旧模型Runtime/native前缀实跑 | 前缀不代完整自然局、策略质量或所有部署环境；单独记录循环/容量/诊断 |
+| 代码/合同/入口同PR维护 | 达到本轮机制。原guide和source同PR206，CURRENT/14项/六项/G0真相同次收口 | 机制不保证未来每次执行；最终主线合入仍由用户批准 |
 
-稳定来源保normal merge：A `4d5e87ff`、B `39d1dabe`、C `e7f7135a`、D `6b40a03f`，正常远端控制/停止Catalog/受信用途回调及tests `5a9e9dd8`合成到`2a8a8ebf`，完整peer闭包/正常prepare `42f90238`再normal merge到`fb86ee2e`。Annotator rc22/GameMod rc47/current BOM保原字段；新增只在Python，9组件source/contract/version/artifact不因workspace provenance变化而追改。已测固定Tool3e9/628、临时d552 native tuple和历史安装/loaded各保原身份。
+## 当前结果与下一位负责人
 
-四真实连续targets正常Store/reader为1751unique N、1744next、0duplicate；C全读并对指定4N旧模型forward。这只是具名投影，不代33sealed或全部旧库。实际3份未封原件中2空副本恢复/pack/reader并正常入库0N，1工程incident保原Close冲突和5份可读H/choice；原件不改。A已复用3份既有execution1 bundle实际派生1966局部N条目、1613next，B正常发布/C inspect和最新账R2备份正在交，未定结果不提前计unique或独立人口。历史T0 use已迁回同一原账并R2恢复读取：0claims/1root use/1raw-source use，r14不能作干净heldout；441输入/词表点中实际256 distinct梯度点、4更新，本轮无真实数据梯度或新用途claim。
+源码门候选为`9f9ad23b1f1994f98f33dee0e86156ffd0ef8f1d`，tree `a9e29cf82f4ab32c749691868f4a0da1457b409e`；其后只允许本次G0文档状态提交，原程序/九组件语义身份不变。最终PR最新head应现场刷新，不用该已测head冒充文档后的head。正常Application安装/config、原游戏Mod文件和原T0包均保持；工程游戏、Runtime、adapter、Host driver已退出，未留自动跟进或新任务。
 
-正常local client沿原Application/LocalTrainingService；正常remote client以明确配置沿同Application→既有Operations/Scheduler→provider→同P1 worker。初始B正常HTTP3项和C21项原Scheduler回归保原分母，peer版正常HTTP4项16.89秒通过：fixed stop-after一次更新→paused终态→新任务显式恢复同Run→两更新完成/Model，结果reconcile回local。unknown不自动重投，原LocalLedger保用途而Ops不增用途表，configured hub_url不绕过。42f还沿同正常CLI/HTTP prepare实际把完整10-manifest Run/InputSpec/vocab/原件闭包写入R2并逐payload读回，独立原reader3合成N/6catalog，12.65秒，Ops0job/provider0submit/0poll。前一01查metadata脚本失败且未联网保留。真实worker侧Modal Secret注入/image/GPU/同设备恢复仍未验证；控制面prepare通过不能替这些结果。
+### 原T0b实局的准确停止与诊断
 
-旧T0真实CPU包在d552 fresh adapter下，原production Runtime/synthetic HTTP Host opt-in首跑1PASS、3.03秒：6项全catalog评分argmax c5、实际1submission/2consumed、Receipt→terminal/control释放、replay verified。原包/descriptor前后SHA同，未起真实游戏或梯度。native/Human/admission均false。A另交d552 exact build/load/INFO/API工程生命周期、退出及rollback原件给root；退出阶段有大量原生ERROR，必须独立保留，不由INFO/API成功追授日志clean、Reference20/R20/T0b或Human资格。
+原Runtime于UTC18:42:56.402启动，同原包fbdb6e77和当前adapter77e4ce03，fresh loaded rc47/native artifact57815d41，9f9/私Python/core精确绑定。原20分钟/2000提交/4000calls预算没有耗尽。发现原`storeGlobalArtifact`累计512MiB容量时，决策时431,768,842B/11,393原件，尚未触限；root选择原Stop，UTC18:48:10.509记录停止，900submits/1798calls/elapsed314093ms，controller released、pending null、tainted false、unknown 0。归类为operator/resource-capacity precaution stop，不能改成自然死亡/胜利、预算停止或错误重试。
+
+记录899完整Input/catalog/消费，899有限、长度/digest/记录argmax一致的分数向量与Agent choice，900 native dispatch/Receipt（899choice+1fold）全部delivered；global_result为898completed+1interrupted_known。Stop取消post-delivery只读capture有一条`global_capture_error reason=stopped`，不能声称trace零error或全部步骤completed。场景有combat92/map6/event2/selector2/reward10/shop1，继而rest393/upgrade393（Smith393、Finish selection393），空选循环不证明策略进度，原因未定，不先归罪模型或原生规则。
+
+本地原件20938events/content `f8fef8a0905947bd338c7e2de6f746a5959032cac1508fbd3050be6d01fd2aa0`，C原公开typed API及root独立以实际startup/新manifest/可信当前Runtime重建expected均通过，findings为空；这是原件完整性和可信同包semantic replay，不是重算模型分数、native settlement、Human或研究准入。Host原close0/forcedfalse、rollback0，13路径原状与正常App/config/旧T0前后hash核过，4所属PID为空。
+
+T0b单canonical Godot日志prequit1439WARNING/0ERROR，postquit787ERROR/4WARNING、0Exception；另394 Annotator scope unavailable、393 player-empty-card-choice，66格式警告块含Connector输入栈。不能用Runtime errors=[]覆盖这些原生日志，不能声称无managed owner或退出clean；重复stderr不相加。原native生命周期窗口的1192/1093诊断保其独立身份，不与本次787混算。
+
+Global完整密封原件已有原typed验证及local保全，但目前没有覆盖该profile的正常ArtifactStore登记/reader桥；Evidence content_id不等于STPD artifact_id，旧text-menu/native-logical不能冒用。下一实物是在同现owner之间补薄桥后复用原R2传递，当前未上传/写账/另造schema。Runtime完整证据容量、空选循环、原生日志、持续冷却和实际GPU分别是真实工程余项；本轮停止，不追加实现、升cap、减record、自动retry或再开一局。
 
 ### 检查历史与本次门
 
@@ -86,26 +100,16 @@ A/B/C/D从同一父依赖各建独立短命分支。集成负责人独占CURRENT
 | 前置03 / d851 | 已提交任务EOF空白失败，少于1秒、0workspace阶段；只删1行，真实committed-diff及closeout通过。误copy旧02stage已标NOT-EXECUTED |
 | 完整04 / d552 | 自然跑完12阶段：11通过，仅Python失败；Ruff/Mypy通过，pytest16 failed/4593 passed/6 skipped/80 subtests passed，791.99秒。15 testcase记录含2 failed subtests。所有首错均为Evidence实际import不在私解释器purelib，源码全程clean、无中断 |
 | 仅私installed布局修正 / d552 | 成熟minimal真实Evidence rc31包31文件与锁8682/current逐字节相等；APFS克隆原包、dist-info、RECORD的2console脚本入私view，移除其Evidence source .pth行。原metadata/RECORD/shebang不改，console脚本不作新入口，实际用显式私python/runpy。父/清PYTHONPATH子进程包+metadata/purelib/锁/树/原doctor身份全过。原15 testcase及13 subtests全过，7.84秒；不是整门重跑或可迁移生产安装 |
-| 2a8增量 | 根repository、closeout、committed-diff、BOM通过；9组件语义身份同d552。最终所选完整门等peer稳定后由root人工选，不自动retry |
-| peer稳定fb86及最终门 | 42f正常merge，无native源路径变化；源/原guide已齐，当前先作最终preflight/committed-diff/closeout后提交准确冻结head/tree给root选完整门。原full04绝不追改 |
+| 2a8增量 | 根repository、closeout、committed-diff、BOM通过；9组件语义身份同d552。后续完整门由root对实际改动候选人工选择，不自动retry |
+| 稳定peer与指南 | 42f正常merge，原guide齐；9组件语义身份保原，workspace provenance另列。随后902e选完整05，原full04绝不追改 |
+| 完整05 / 902e | 自然12阶段11通过，仅Python失败；2 failed/4616 passed/6 skipped/93 subtests passed，799.34秒。两失败为默认Application提前导入P1用途helper→tokenizers。原trace/日志/JUnit/stage/TERMINAL05保留 |
+| 冷启动定点修复 | 原owner独立topic只延后两处helper import；原2 cold+4 HTTP回归、Ruff/Mypy通过，root审AST后normal merge c904到9f9。没有改断言/算法/私env或自动retry |
+| 完整06 / 9f9 | root明确选择新候选；原12阶段全部通过，Ruff/Mypy406源通过，pytest4618 passed/6 skipped/93 subtests passed，798.28秒；XML实际testcase4624，suite tests属性4717含93子测试。source/tree clean、私.pth及31个Evidence文件前后不变，所属PGID无残留 |
 
 各次原执行JSON/log及stage JSON均在固定集成回执链接的私有evidence目录。缺2个RECORD脚本的中途preflight失败和误从repo根跑Ruff的错误调用也原样保留，不改产品求绿。full04空间采样从pytest4%起，最低12.58GiB、终态16.86GiB；不是全门绝对峰，无自动删除。
 
-### 六项收敛的当前材料状态
+## 收据、交接与停止
 
-最终接受由root按实物审；本段不新增39项live重验或新框架。
+root最终统筹与审计 `P1-ROUND3H-ROOT-FINAL-20261021.md`保最终判定。原始门/Runtime/数据原件由固定集成回执 `P1-ROUND3H-INTEGRATION-RESULT-20261021.md`集中索引；C原trace计数 `original-trace-summary.json`、C原typed结果 `typed-verification.json`、A关闭回滚 `execution.json`和B回库路由核对 `P1-ROUND3H-B-TASK14-ROUTE-AUDIT-20261021.md`保原分层。这些私有原件的准确路径和可点击链接均在外部claude-handoff交接目录的固定集成回执，仓库只保文件名和结论，不把私有路径当可移植Markdown依赖；PR公开source不包含原件。
 
-| 原六项 | 已交与当前差额 |
-|---|---|
-| 可解释的当前架构 | 原ARCHITECTURE/COMPONENTS已补相对抽象、局部细分、requires/provides和现有owner。材料已交；远端peer/运行差额和最终组合仍待核，不能以说明代全部架构收敛 |
-| 一个日常导航 | README→DOCUMENT_MAP/原指南与CURRENT→此唯一任务已实走、旧私人ACTIVE不再派发。原104行功能表保208路径；39旧caller的16历史/15当前/8目标去向已清楚 |
-| 人/agent同一套实际操作SOP | 正常控制、恢复、R2/用途、原workload和remote/peer prepare均在原guide同PR维护；GPU/Human/生产条件未验的步骤照实标限制，不能称全部操作走通 |
-| 历史解法直接复用 | 已定点复用native-ui/Recorder/Store/R2/旧GPU恢复和raw-score失败的原owner、代码与证据；旧资格不授当前，未重读全史或恢复废弃权威 |
-| 从README实际接手走通 | 非作者走查五help与静态路径实跑；remote/peer已有正常HTTP和实际R2 prepare原证，最终组合入口静态门仍待。此范围不代实际GPU/Human/全部环境流程 |
-| 以后代码/合同/入口同PR维护 | PROJECT_SYSTEM/AI_COLLABORATION已明确，A/B/C/D在原指南交对应增量；最终source/guide/导航/root审计仍在同一PR206收口，机制不保证未来执行已被证明 |
-
-### 当前继续与最后交付
-
-B/C的compute peer输入/result闭包和原guide已稳定合入；A已完成3份既有bundle派生，B正常发布及最新账R2备份/C去重读取后只更新数据分母和回执。集成冻结此稳定组合并交root选择最终门及审计；若root再具名选择T0b，须沿已有runner/准确tuple串行，不自动开游戏/付费/真实数据梯度。PR仅安全快进现Draft PR206，先刷新live远端和旧writer状态，不force、不另造重叠PR，不merge develop/main或发布。
-
-未完成保原owner/下一实物：实际worker侧Modal Secret/准确Store存取、image/GPU/同设备恢复、Reference20/R20/T0b/原生日志问题、持续热集和具体正式data/config/fees。学校登录、GPU费用、具名PR merge/发布和正式训练/独立heldout选择留最终由用户定；材料先做实，不把独立工程伪装成人工阻塞，也不靠三小时上限宣布通过。
+当前只做纯docs根repository/closeout/BOM/committed-diff及组件语义字段复核，交root审后一次普通安全快进现Draft PR206，刷新实际remote和旧writer，expected旧head5b8；不force、不改旧checkout、不merge主线。发布后的hosted CI按实际head另报，不从本地通过推断。用户休息，学校登录/已知费用、正式data/config、具名merge/发布/正式冻结及首训由用户决定。Continue、已定延期与原计划余项均保留。本轮最迟UTC19:33:13（Brisbane05:33:13）收口，有价值工程及回执齐可提前结束，无后台继续或自动重启。

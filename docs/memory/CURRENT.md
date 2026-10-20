@@ -1,31 +1,26 @@
-# 当前工作：远端输入闭包已真实R2验证，准备最终完整门
+# 当前工作：源码门通过，实局前缀已验并回滚，最终PR收口
 
-更新于2026-10-21，Brisbane。用户已直接授权本轮指派、并行实施、统筹和审计；旧“两小时待批准”安排已被覆盖。
+更新于2026-10-21，Brisbane。用户已授权本轮实施、统筹和审计，旧“两小时待批准”已覆盖。
 Resolve live GitHub refs before relying on this snapshot. 最新用户原话和现场证据 override this file。
-唯一当前任务是[本轮任务、依赖与停止点](../plans/p1-prefreeze-2026-10-18/THREE_HOUR_EXECUTION_20261021.zh-CN.md)。
-Root负责指派及最终审计；集成负责人维护本页、共享身份和候选；A/B/C/D分别在独立分支交稳定增量。
-本轮于02:33:13开始，05:03:13停止新增功能，05:13:13冻结审计组合，05:33:13前强制收口交付。
-三小时是上限；完成有价值的可审一轮且余项只需人工操作/取舍时提前收口。用户休息，需其操作或决定的事项汇总到最终交付，不中途追问。
+唯一当前任务是[原14项、六项收敛与停止](../plans/p1-prefreeze-2026-10-18/THREE_HOUR_EXECUTION_20261021.zh-CN.md)。
+Root最终审计；集成负责人维护CURRENT/身份/refs，A/B/C/D稳定来源已normal merge。本轮02:33:13开始，最迟05:33:13收口；现仅纯docs检查、root审阅和现Draft PR206一次安全快进，之后停止，无自动跟进。
 
-## 当前候选与下一步
+## 当前候选和已核结果
 
-集成树为`work/p1-round3h-integration-20261021`，分支`codex/p1-round3h-integration-20261021`。
-它从`origin/develop@733782b1`开始，normal merge未验收PR206的`5b8fd2c2`为显式父依赖，保组件来源。
-最新稳定功能组合为`fb86ee2e`，normal merge A连续派生/恢复、B用途/恢复/正常CLI及远端控制/compute Store、C数值/Scheduler用途回调及输入闭包和D原指南。
-Annotator rc22/GameMod rc47及current BOM一致；Python增量只改workspace provenance，9组件语义身份未变。旧Tool/安装/loaded分别保来源。
-四真实targets正常发布/读回1751unique N、1744next、0duplicate，独立谱系全unknown。另3既有execution1来源已派生1966局部N条目/1613next，B正常发布/C去重待核，未当独立人口。2空恢复入库0N、1工程incident保原件。
-原账已补旧T0历史use并R2恢复验：0claims/1root use/1raw-source use；441是输入/词表人口，实际256 distinct梯度点/4更新，不是干净heldout。
-完整门04在d552自然结束：12阶段11通过，Python因私Evidence installed-origin失败16项；4593通过/6跳过/80 subtests通过。原失败保留。
-只修私解释器真实安装布局后，parent/清PYTHONPATH子进程原身份PASS，原15 testcase及13 subtests通过；未追改整门。新功能稳定后准备冻结最终门，准确head/tree/原结果交固定回执。
-正常App/CLI→原Ops/Scheduler/provider已合，合成CPU HTTP首跑3项通过；旧模型→production Runtime/synthetic HTTP Host首跑通过，1submission/2consumed/replay verified，权重不变。
-A已交d552 build/load/INFO/API工程生命周期和退出回滚原件，root核审中；teardown ERROR单列，不能称native clean。没有代Human。
-B/C的42f稳定来源已合：同一正常prepare把完整10-manifest Run闭包真实写入R2并逐payload读回，独立reader3合成N/6catalog；0Ops jobs/0submit/0poll，12.65秒。Scheduler沿peer消费，显式reconcile回local Model保原用途账。
-真实Modal Secret注入、image/GPU/同设备恢复仍未验，本轮无付费或真实数据梯度，正常安装未升级；最终source门、数据新人口和root审计尚未完成。
+集成topic `codex/p1-round3h-integration-20261021` 从`origin/develop@733782b1`开始，显式未验父依赖PR206 `5b8fd2c2`保留。
+准确程序候选`9f9ad23b`/tree`a9e29cf8`原12阶段全过，Python4618通过/6条件跳过/93子测试通过。其后只做G0状态提交，最终head现场刷新；旧本地/Linux及01–05失败不追改，hosted按新head另报。
+Annotator rc22/GameMod rc47/BOM同，九组件语义身份不因Python/docs追改，历史Tool/安装/loaded保原来源。
+七具名投影正常发布/原reader为3717unique N、3357next、0重复，7观察来源亲缘unknown。最新R2原账恢复10named索引+历史曝光共11引用，无liveDB替换或原件删除。
+旧T0曝光在原账：0claims/1root use/1source use；441输入/词表、256 distinct梯度点/4更新，不作干净heldout。本轮无新真实梯度/claim。
+正常local CLI及remote Ops/Scheduler/compute peer/同worker控制已交，实际正常prepare十manifest合成闭包R2读验通过、0Ops/0provider调用。
 
-## Remaining Platform non-claims 与真实边界
+旧包fresh原生T0b有899完整Input/评分、900dispatch/Receipt；原512MiB证据cap尚未触及时作operator/resource-capacity precaution stop，非自然结局、预算耗尽或unknown。
+密封20938events经C和root独立原typed验证通过；898completed+1interrupted_known及一次Stop取消只读capture保原义。Smith/Finish selection各393次空选循环不算策略进度。
+原Host关闭/回滚、13路径/正常App/config/旧包hash已核，4所属PID空；本次prequit0ERROR/1439WARNING、postquit787ERROR/4WARNING、scope unavailable及Connector栈均保原，不称native clean。
 
-PR206旧本地与Linux组合失败保留，不能由新窄测追认为通过。正式首训前必须完成任务列出的六项全项目收敛交付。
-本轮无真实数据梯度、未知费用、生产发布或Human操作。临时native工程窗口已退出回滚，不等于Reference/R20/T0b或原生日志clean。具名PR merge/发布和正式训练配置仍留用户决定。
-奖励28处已由用户决定直接连续；缺Human、药水缺项、unknown仍独立处理。GPU首训、Modal后学校、R2长期主存、Continue延期保持原决定。
-正常Application保持固定安装；开工PID61901和空间是旧快照，操作前刷新。full04后采样最低12.58GiB仅覆盖pytest4%以后；17:37 UTC约16GiB可用，无自动删除。
-全部实际增量、原失败、未完项、运行任务及下一位负责人写入唯一任务及其链接回执；历史ACTIVE和旧报告不再派发本轮工作。
+## Remaining Platform non-claims 与下一实物
+
+正式首训仍未就绪。真实工程余项是recent-two热集冷却动作未实现、Global终态证据正常ArtifactStore登记/reader/R2薄桥缺失、完整证据容量、空选循环和原生日志；本次Global仅local保全，未回库/上传，不借旧profile或content_id冒artifact_id。
+实际worker Secret/Store/image/GPU/同设备恢复、Reference20/R20、Human及正式data/config/费用保原owner；local仍1小时/1GiB。原owner下一轮先定位首错并交同链路实物，本轮不新增实现。
+六项收敛在唯一任务逐项判本轮范围，持续冷却等父能力仍部分。正常Application固定安装未升级、临时游戏已回滚；具名merge/发布/正式冻结/首训、登录及费用留用户，Continue延期等原决定不变。
+外部交接目录`replies/P1-ROUND3H-ROOT-FINAL-20261021.md`及固定集成回执保最终审计和私证据链接；历史ACTIVE不再派发，操作正常服务前刷新现场身份。
