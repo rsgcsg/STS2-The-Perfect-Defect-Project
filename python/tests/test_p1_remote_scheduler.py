@@ -80,7 +80,8 @@ def test_local_ledger_same_worker_bounded_pause_explicit_same_run_resume(tmp_pat
     assert len(provider.calls) == 2
     assert provider.calls[0].input_id == provider.calls[1].input_id == run.artifact_id
     assert provider.calls[1].resume == checkpoint
-    assert provider.target.gpu == "none" and run.parameters.value()["config"]["device"] == "cpu"
+    assert provider.target.gpu == "none"
+    assert verify_p1_run(store, run.artifact_id, run.producer).config.device == "cpu"
     with owner.transaction() as db:
         uses = db.execute("SELECT count(*) FROM curation_uses WHERE kind='training'").fetchone()
         assert uses == (1,)
