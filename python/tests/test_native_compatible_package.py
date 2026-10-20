@@ -300,9 +300,18 @@ def test_frozen_operational_profile_rejects_changed_current_source_without_publi
     monkeypatch.setattr(owner, "ROOT", historical_target_source)
     with pytest.raises(BoundaryError, match="inference_source_changed"):
         scope_owner.checked_native_operational_compatibility_proof(proof)
-    with pytest.raises(BoundaryError, match="inference_source_changed"):
+    with pytest.raises(BoundaryError, match="current_export_producer_mismatch"):
         owner.publish_native_compatible_model(
             store, old.artifact_id, producer=target_producer(),
+            profile=OPERATIONAL_COMPATIBILITY_PROFILE,
+        )
+    current_producer = replace(
+        target_producer(),
+        uv_lock_sha256=hashlib.sha256((historical_target_source / "uv.lock").read_bytes()).hexdigest(),
+    )
+    with pytest.raises(BoundaryError, match="inference_source_changed"):
+        owner.publish_native_compatible_model(
+            store, old.artifact_id, producer=current_producer,
             profile=OPERATIONAL_COMPATIBILITY_PROFILE,
         )
     assert store.manifest_ids() == before
