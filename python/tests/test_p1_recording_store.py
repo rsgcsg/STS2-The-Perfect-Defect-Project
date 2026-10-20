@@ -244,6 +244,7 @@ def test_background_derivation_reconciles_published_result_without_reexecution(
 
     def converter_failed(*args, **kwargs):
         raise CollectionFailure("synthetic converter failure")
+
     monkeypatch.setattr(CollectionTool, "derive_p1_native", converter_failed)
     importer.start_p1_derivation(source.artifact_id, "native-input-v1")
     importer.thread.join(timeout=10)
@@ -354,7 +355,14 @@ def test_storage_space_preflight_and_secret_binding_rejected(tmp_path, original,
     assert not ManifestArtifactStore(LocalBlobStore(tmp_path / "cold")).manifest_ids()
 
 
-def test_target_publication_keeps_schema_role_receipt_and_partial(tmp_path, original, tool):
+@pytest.mark.parametrize("ascension, expected_ascension", [(0, 0), (None, None), (False, None)])
+def test_target_publication_keeps_schema_role_receipt_and_partial(
+    tmp_path,
+    original,
+    tool,
+    ascension,
+    expected_ascension,
+):
     from spireagent.workbench.p1_recording_store import (
         p1_projection,
         publish_p1_projection,
@@ -401,7 +409,29 @@ def test_target_publication_keeps_schema_role_receipt_and_partial(tmp_path, orig
                 "source_integrity_verified": True,
                 "projection_claims": {"lossless_p1_trace": False},
                 "timeline": {"events": [{}], "spans": [{"kind": "non_p1_native_effect"}]},
-                "points": [{"mask": {"N": True, "next": False, "end": True}}],
+                "points": [
+                    {
+                        "mask": {"N": True, "next": False, "end": True},
+                        "source_event_id": "event-first",
+                        "source_public_basis": {"sha256": "a" * 64},
+                        "observation": {
+                            "player": {
+                                "availability": "available",
+                                "content": {"character_definition_id": "DEFECT"},
+                            },
+                            "run": {
+                                "availability": "available",
+                                "content": {
+                                    "ascension": ascension,
+                                    "act": 1,
+                                    "floor": 1,
+                                    "modifiers": [],
+                                },
+                            },
+                        },
+                    }
+                ],
+                "end_target": {"result": "loss", "source_event_id": "event-end"},
                 "p1_action_chain_complete": False,
                 "memory_continuity": "not_approved_or_validated",
             }
@@ -438,6 +468,22 @@ def test_target_publication_keeps_schema_role_receipt_and_partial(tmp_path, orig
     assert publish(receipt).artifact_id == result.artifact_id
     assert p1_projection(local, result.artifact_id).artifact_id == result.artifact_id
     assert query_p1_recordings(local)[0]["training_admitted"] is False
+
+    from spireagent.workbench.p1_recording_store import (
+        publish_p1_catalog_metadata,
+        query_p1_sources,
+    )
+
+    catalog = publish_p1_catalog_metadata(local, result.artifact_id, producer)
+    assert catalog.parent("projection") == result.artifact_id
+    assert catalog.parent("source") == raw.artifact_id
+    metadata = catalog.parameters.value()["metadata"]
+    assert metadata["character"] == "DEFECT" and metadata["ascension"] == expected_ascension
+    assert metadata["result"] == "loss" and metadata["root"] is None
+    assert (
+        query_p1_sources(local, filters={"character": "DEFECT"})[0]["artifact_id"]
+        == raw.artifact_id
+    )
     output.write_text(output.read_text() + " ")
     with pytest.raises(BoundaryError, match="projection_payload_hash_mismatch"):
         publish(receipt)
@@ -686,12 +732,16 @@ def test_cli_absent_storage_reconciliation_is_saved_as_failed(tmp_path, capsys):
 
     state = tmp_path / "state"
     state.mkdir()
-    intent = {"schema": SCHEMA, **storage_intent(
-        "restore", "a" * 64, peer_binding(str(tmp_path / "cold"))),
-        "status": "publication_unknown"}
+    intent = {
+        "schema": SCHEMA,
+        **storage_intent("restore", "a" * 64, peer_binding(str(tmp_path / "cold"))),
+        "status": "publication_unknown",
+    }
     atomic_json(state / OPERATION_FILE, intent)
-    assert main(["storage", "reconcile", "--store", str(tmp_path / "local"),
-                 "--state", str(state)]) == 1
+    assert (
+        main(["storage", "reconcile", "--store", str(tmp_path / "local"), "--state", str(state)])
+        == 1
+    )
     result = json.loads(capsys.readouterr().out)
     assert result["status"] == "failed" and result["publication"] == "absent_or_incomplete"
     assert json.loads((state / OPERATION_FILE).read_bytes())["status"] == "failed"
