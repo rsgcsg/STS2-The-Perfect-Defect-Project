@@ -263,3 +263,82 @@ policy value outside execution identity does not qualify old checkpoints across
 changed code. Engineering fixtures exercise policy binding, pause/resume and
 completed reconciliation. They do not authorize a real-data fit or prove useful
 learning, an installed consumer, game execution or model quality.
+
+## P1 N-only M-std workload
+
+`stpd.p1.spec` declares `p1-mstd-N-v1`. It uses the existing T0 `MStd` graph and
+full public English InputSpec, without memory, next/end prediction or O heads.
+Its input is an immutable `stpd/p1-N-snapshot-1` dataset in the same ArtifactStore.
+`stpd.p1.dataset.publish_snapshot` selects named projection artifact IDs and native
+N decision IDs. Parent projections retain their native originals and tool identity;
+the selection contains references, hashes, aliases, whole-lineage groups and splits,
+not copies of observations or raw recordings. Supported source pairs are explicit:
+03 `native-segments-1/native-selector-finalized-d-1`, and B*
+`native-targets-1/native-timeline-targets-1`. Old ResearchTransition datasets keep
+their existing consumers and are not relabelled as P1 N.
+
+Only complete current decision observations with a unique chosen choice in the full,
+mapped catalog reach the model. N=false, timeline effects, partial observations,
+next and end metadata are not ordinary model inputs. Root, seed, restoration
+ancestors, identical source content and shared native decision prefixes connect
+whole groups. A missing seed/ancestry remains unknown; a connected-component count
+is not a certified independent-game count. `snapshot_statistics` reports observed
+groups, known/unknown lineage, partition sizes, character/ascension and action/scene
+histograms. These are engineering descriptions, not research admission thresholds.
+
+The existing local entry is `LocalTrainingService.start(TrainingRequest(...))`.
+Before start, `spireagent.workbench.p1_training_data.reserve_p1_snapshot` verifies
+and reserves the explicit engineering allocation on the existing LocalCurationOwner
+ledger. Only train roots and train projections get gradient-training use records;
+dev/test roles remain separate. Known previous training exposure, Gold or conflicting
+related-run purposes reject held-out use. This does not establish unknown historical
+external exposure. It creates no new database, Store, service or scientific admission.
+B's normal CLI/UI can map to these same functions; it must not duplicate their logic.
+
+`prepare_p1_run` fits vocabulary from train only and freezes the existing
+TrainingInput/Experiment/Run artifact roles. `execute_p1_run` is the same worker for
+the local private child and `ComputeRequest(kind='training')` dispatch. It publishes
+safe tensor-tree checkpoints, a dev-selected Model, offline evaluation and RunResult.
+The existing child owns no application journal writes; the parent keeps budgets,
+Stop, prior-writer terminal checks, result selection and publication fences. Remote
+CandidateReporter publishes candidates and cannot acquire the local completion slot.
+The existing Scheduler preflights this explicit family and retains its normal
+budget/attempt/fence/unknown behavior. Its curation ledger must carry the actual train
+allocation before submission; copying a snapshot alone is no use reservation.
+
+Defaults are AdamW 3e-4, weight decay .01, batch 64, 5% warmup/cosine schedule,
+30 full epochs and 5 completed epochs without dev improvement before early stop.
+Engineering runs may use 1–30 epochs; tail batches use their true size. Dev is checked
+at epoch ends and scheduled 5/10/20/40/60/80/100% update checkpoints. Percentage
+collisions share a checkpoint; early stopping does not fabricate unvisited fractions.
+Best/last states retain parameters, AdamW, CPU/Python/selected-CUDA RNG, sampler order,
+cursor, scheduler step, epoch/patience, metrics and exact execution identity. Test is
+read only after dev selection. Restore requires the same device/runtime/config/source
+identity. Cross-device resume equivalence is not claimed; export is CPU-loadable.
+Local placement is CPU only; a separately authorized ComputeRequest may select the
+explicit `cuda:index` recipe device. Unavailable CUDA fails without CPU fallback.
+
+`materialize_p1_model` exports the Store Model package. The existing `p1.export.register`
+binds that exact package to an owner-supplied environment manifest and accepts an
+explicit registry entry ID/label. It retains producer/game/core/support/limits;
+registration does not start gameplay or qualify a loaded environment. The Agent uses
+the trained model's full-catalog scores and argmax through the existing
+consume/ACK/next port. Old T0 model/vocabulary/input/fixture bytes remain historical
+artifacts; source changes require a newly bound isolated registration.
+
+`stpd.p1.preparation.input_transfer_inventory` distinguishes the worker's actual
+selection/vocabulary/projection reads from `copy_artifact`'s recursive provenance
+payload closure. Worker metadata checks walk ancestor manifests but do not hydrate
+raw archives. The generic copier **does** stream every parent payload through one
+temporary payload file, even when the compute read set is smaller. Reuse already
+present R2 chunks/indexes; do not describe full closure copy as a metadata-only upload.
+Run configuration carries artifact IDs; local/S3 Store binding and scoped credentials
+remain outside research input identity. No upload is implied by preparing this list.
+
+Cloud execution retains [the existing Modal image/provider procedure](../deploy/cloud-worker/README.md):
+exact reviewed clean source/lock, immutable OCI digest, one L4, no Qwen volume for
+M-std, explicit timeout and one saved ComputeRequest/attempt/call handle. Image build,
+actual injected dependencies/CUDA, GPU numerics/resume, cost/utilization and service
+availability remain real execution evidence. CPU tests or an unbuilt target template
+cannot supply those facts. Do not upload data, deploy, run paid compute or repeat an
+unknown submission without the applicable operator authorization.

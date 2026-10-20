@@ -115,7 +115,10 @@ def load_model(path: Path, expected_sha256: str) -> tuple[MStd, dict[str, Any]]:
     return model.eval(), value
 
 
-def register(package: Path, root: Path, environment_manifest: dict[str, Any]) -> dict[str, Any]:
+def register(
+    package: Path, root: Path, environment_manifest: dict[str, Any], *,
+    entry_id: str = "t0-p1-mstd", label: str = "T0 P1 M-std (CPU engineering)",
+) -> dict[str, Any]:
     """Environment owner supplies the existing exact P1 environment envelope.
 
     This function selects no Host, starts no process and changes no shared registry.
@@ -168,8 +171,8 @@ def register(package: Path, root: Path, environment_manifest: dict[str, Any]) ->
     (root / "manifest.json").write_bytes(json_bytes(manifest))
     (root / "config.json").write_bytes(json_bytes(config))
     entry = {
-        "id": "t0-p1-mstd",
-        "label": "T0 P1 M-std (CPU engineering)",
+        "id": entry_id,
+        "label": label,
         "adapter": ADAPTER,
         "runtime_profile": "p1-global-r1",
         "manifest": "manifest.json",

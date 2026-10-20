@@ -103,3 +103,72 @@ def test_preparation_fits_vocabulary_from_train_only_and_source_lock_is_preserve
         from stpd.p1.dataset import publish_snapshot
 
         publish_snapshot(store, [], PRODUCER, split_salt="no-source")
+
+
+def test_transfer_inventory_distinguishes_worker_read_set_from_raw_provenance(tmp_path):
+    from stpd.p1.preparation import input_transfer_inventory, snapshot_statistics
+
+    store, snapshot, run = small_run(tmp_path)
+    original_reader = store.read_payload
+
+    def reject_raw_archive(payload):
+        assert payload.role != "archive", "preparation must not hydrate raw archives"
+        return original_reader(payload)
+
+    store.read_payload = reject_raw_archive
+    inventory = input_transfer_inventory(store, run.artifact_id)
+    compute_roles = {r["role"] for p in inventory["compute_payloads"] for r in p["references"]}
+    closure_roles = {
+        r["role"] for p in inventory["copy_artifact_payloads"] for r in p["references"]
+    }
+    assert compute_roles == {"selection", "vocabulary", "segments"}
+    assert "archive" in closure_roles and "archive" not in compute_roles
+    assert (inventory["copy_artifact_unique_payload_bytes"]
+            > inventory["compute_unique_payload_bytes"])
+    statistics = snapshot_statistics(store, snapshot.artifact_id)
+    assert statistics["N_by_character"] == {"Defect": 3}
+    assert statistics["N_by_ascension"] == {"0": 3}
+    assert statistics["unknown_independence_groups"] == 0
+    assert statistics["partition_N"] == {"train": 1, "dev": 1, "test": 1}
+
+
+def test_existing_scheduler_and_modal_contract_carry_P1_request_and_result(tmp_path):
+    from test_cloud_modal import FakeCall, FakeFunction, sdk_for
+    from test_hub_scheduler import Provider
+
+    from spireagent.hub.curation import CurationLedger
+    from spireagent.hub.database import Operations
+    from spireagent.hub.scheduler import Scheduler
+    from stpd.cloud_jobs.contracts import ComputeReceipt
+    from stpd.cloud_jobs.modal import ModalProvider
+    from stpd.p1.dataset import load_snapshot
+
+    store, snapshot, run = small_run(tmp_path)
+    _, value = load_snapshot(store, snapshot.artifact_id)
+    train_roots = {p["root_run_id"] for p in value["points"] if p["split"] == "train"}
+    operations = Operations(tmp_path / "operations.sqlite")
+    # The existing Hub uses its durable ledger. Publication alone is no admission.
+    ledger = CurationLedger(operations)
+    ledger.claim(snapshot.artifact_id, "training", train_roots)
+    ledger.bind(snapshot.artifact_id, snapshot.artifact_id)
+    job = operations.enqueue("training", run.artifact_id, "p1-engineering-only",
+                             max_seconds=300, reserved_units=1, budget_limit=1)
+    provider = Provider(operations, store, None, PRODUCER)
+    provider.ready = True
+    with Scheduler(operations, store, provider, budget_limit=1) as scheduler:
+        assert scheduler.tick(1)["state"] == "submitted"
+        assert scheduler.tick(2)["state"] == "completed"
+    with operations.transaction() as db:
+        uses = {r[0] for r in db.execute("SELECT run FROM curation_uses WHERE kind='training'")}
+    assert uses == train_roots
+    state = operations.compute_state(job)
+    request = ComputeRequest.decode(state["request"])
+    receipt = ComputeReceipt.decode(state["receipt"])
+    validate_receipt(store, request, receipt)
+    call = FakeCall({"target_id": provider.target.target_id, "receipt": receipt.to_dict()})
+    function = FakeFunction(call)
+    modal = ModalProvider(provider.target, sdk=sdk_for(function, provider.target))
+    handle = modal.submit(request)
+    assert modal.poll(modal.restore_handle(handle.to_dict())) == receipt
+    assert len(function.requests) == 1
+    assert ObjectStoreRunReporter(store, store.blobs).completed(run.artifact_id) is None

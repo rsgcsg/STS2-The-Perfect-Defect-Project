@@ -102,6 +102,43 @@ def test_real_service_child_store_result_model_export_and_score(tmp_path):
     assert bool(torch.isfinite(scores).all()) and len(scores) == len(frame.choices)
     assert reference["chosen"] in {c["choice_id"] for c in frame.choices}
 
+    # The formal worker's actual exported weights enter the existing Agent.
+    import io
+    import json
+
+    from stpd.p1.agent import SCHEMA, serve
+    from stpd.p1.data import digest, json_bytes
+    from stpd.p1.export import register
+
+    private = tmp_path / "formal-model-agent"
+    register(export, private, {"schema": "sts2.policy-runtime/agent-manifest-1",
+                              "input": {"profile": "p1-global-r1"}},
+             entry_id="formal-engineering-model", label="P1 formal recipe engineering model")
+    manifest = json.loads((private / "manifest.json").read_bytes())
+    current = {k: v for k, v in observation.items() if k != "envelope"}
+    destination = io.StringIO()
+    context = {"schema": SCHEMA, "session_id": "formal-test", "recovery_epoch": 0}
+    value = {"acquisition_id": "one", "input_spec": manifest["input"]["input_spec"],
+             "continuity_token": "one", "previous_consumption_id": None,
+             "observation": current, "catalog": current["catalog"],
+             "consumption_unit": {"id": "one"}}
+
+    def messages():
+        yield json.dumps({**context, "request_id": "consume", "message_type": "consume",
+                          "input": value})
+        completion = json.loads(destination.getvalue().splitlines()[-1])["completion"]
+        yield json.dumps({**context, "request_id": "consume", "message_type": "consume_ack",
+                          "completion": completion})
+        yield json.dumps({**context, "request_id": "next", "message_type": "next",
+                          "input": {"continuity_token": "one"}})
+
+    serve(private / "config.json", private / "manifest.json", private,
+          source=messages(), destination=destination)
+    directive = json.loads(destination.getvalue().splitlines()[-1])["output"]["directive"]
+    assert directive["selection"]["action_id"] == frame.choices[int(scores.argmax())]["choice_id"]
+    assert directive["scores"] == {"catalog_digest": digest(json_bytes(current["catalog"])),
+                                   "values": scores.tolist()}
+
 
 def test_real_service_pause_resume_keeps_run_input_and_optimizer_state(tmp_path, monkeypatch):
     import json
