@@ -260,9 +260,12 @@ class CollectionTool:
             raise CollectionFailure("collection tool audit/pack failed", result.stderr[-16384:])
 
     def setup_status(self, *, recordings_root: str | Path, game_directory: str | Path | None = None,
-                     mod_provenance: str | Path | None = None, node: str = "node") -> dict[str, Any]:
-        """Inspect the current native destination through the fixed Game Mod owner."""
-        return self._setup("status", recordings_root, game_directory, mod_provenance, node)
+                     mod_provenance: str | Path | None = None, node: str = "node",
+                     native_log_file: str | Path | None = None,
+                     connector_port: int | None = None) -> dict[str, Any]:
+        """Inspect through the fixed owner using an explicitly selected Host context."""
+        return self._setup("status", recordings_root, game_directory, mod_provenance, node,
+                           native_log_file=native_log_file, connector_port=connector_port)
 
     def recover_interrupted(self, recordings: Path, recovered: Path) -> dict[str, Any]:
         """The fixed recorder owner acquires the original session lease and seals a copy."""
@@ -292,7 +295,9 @@ class CollectionTool:
         return self._setup("bind", recordings_root, game_directory, mod_provenance, node)
 
     def _setup(self, command: str, recordings_root: str | Path, game_directory: str | Path | None,
-               mod_provenance: str | Path | None, node: str) -> dict[str, Any]:
+               mod_provenance: str | Path | None, node: str, *,
+               native_log_file: str | Path | None = None,
+               connector_port: int | None = None) -> dict[str, Any]:
         identity = self.verify()["identity"]
         entrypoint = "setup/apps/game-mod/collection-setup.mjs"
         if identity.get("collection_setup_entrypoint") != entrypoint:
@@ -309,6 +314,10 @@ class CollectionTool:
                      "--mod-provenance", str(provenance)]
         if game_directory is not None:
             arguments.extend(["--game-dir", str(game_directory)])
+        if native_log_file is not None:
+            arguments.extend(["--native-log-file", str(native_log_file)])
+        if connector_port is not None:
+            arguments.extend(["--connector-port", str(connector_port)])
         try:
             result = subprocess.run(arguments, capture_output=True, text=True, timeout=15, check=False)
         except subprocess.TimeoutExpired:
