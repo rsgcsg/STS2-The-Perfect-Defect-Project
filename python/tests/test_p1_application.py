@@ -140,7 +140,7 @@ def test_real_service_pause_resume_keeps_run_input_and_optimizer_state(tmp_path,
     assert not service._thread.is_alive()
     paused = service.status()["operation"]
     assert pause_requests and paused["status"] == "paused", paused
-    assert paused["progress"]["completed"] == 1 and paused["writer_terminal"] is True
+    assert paused["progress"]["completed"] == 1 and paused["worker_state"] == "terminal"
     saved = store.get_manifest(paused["checkpoint_id"])
     state = decode_checkpoint(b"".join(store.read_payload(saved.payload("checkpoint"))))
     assert state["step"] == 1 and state["optimizer"]["state"]
