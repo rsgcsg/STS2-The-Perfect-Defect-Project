@@ -13,7 +13,7 @@ assignment; product plans below are background/backlog until assigned.
 | 安装、升级、核游戏加载或回滚 | [固定开发工具安装](../python/docs/DEVELOPER_KIT_INSTALL.md)，原生生命周期由[Game Mod](../apps/game-mod/README.md#lifecycle)执行 | 精确发布清单、install/load回执；源码编译不代装载 |
 | 正常录制、查状态、Pause/Close、开始下一局 | [采集指南](ANNOTATOR_COLLECTION.md)，正常应用入口见[日常录制](../python/docs/PROJECT_CONSOLE.md#daily-collection) | 原生身份、session状态、Close结果与原件；页面关闭不是Stop，真人来源由操作者声明 |
 | 异常录制、保留前缀、封包和恢复导入 | [采集故障定位](ANNOTATOR_COLLECTION.md#detect-and-route-a-problem)与[同一应用导入](../python/docs/PROJECT_CONSOLE.md#本机资料) | 原始失败、prefix/封存范围和Tool结果；普通重连/旧semantic recover不能冒充P1异常恢复，Continue另行保留 |
-| 选择数据、查谱系/用途、固定数据集 | [数据与来源](../python/docs/DATA_AND_PROVENANCE.md)、[固定数据管理](../python/docs/research/DATA_MANAGEMENT.zh-CN.md) | Curation用途/分组与来源事实；目录数、内容校验和上传成功不授予训练资格 |
+| 选择数据、查谱系/用途、固定数据集 | [数据与来源](../python/docs/DATA_AND_PROVENANCE.md)、[固定数据管理](../python/docs/research/DATA_MANAGEMENT.zh-CN.md)；用途账恢复见[原账备份/按ID恢复](../python/docs/DATA_LIFECYCLE.md#private-curation-ledger-recovery) | Curation用途/分组与来源事实；目录数、内容校验和上传成功不授予训练资格 |
 | R2保全、按ID取回、管理本地热集与恢复 | [数据生命周期](../python/docs/DATA_LIFECYCLE.md#daily-p1-store-and-r2-operations)，P1日常入口由[项目应用指南](../python/docs/PROJECT_CONSOLE.md#本机资料)拥有 | 原件/派生/产物的Store身份与回读结果；释放须有可恢复artifact及实际consumer，不据旧清理快照删除 |
 | 训练start/status/pause/resume/cancel/reconcile | [正常训练服务与控制](../python/docs/PROJECT_CONSOLE.md#non-gui-training-control) | 同一Application操作、实际handle、累计预算和结果；具体支持能力以capabilities为准，unknown不重投 |
 | 运行P1训练、checkpoint恢复，准备GPU执行 | [P1 N-only workload](../python/docs/STRUCTURED_WORKLOAD.md#p1-n-only-m-std-workload)；[T0](../python/docs/P1_T0.md)只做CPU工程验证 | 同任务输入/执行身份、更新/checkpoint/模型/结果；正式GPU实际闭环及数据/配方/费用决定未具备时不能按T0启动首训 |
@@ -30,7 +30,7 @@ assignment; product plans below are background/backlog until assigned.
 
 ## One project route
 
-The [P1 project map and current pre-freeze plan](plans/p1-prefreeze-2026-10-18/README.md)
+The [P1 topic map](plans/p1-prefreeze-2026-10-18/README.md)
 connect the existing Architecture, Components and ADR-0016 in this order:
 
 | Read for | Existing owner / route |
@@ -51,8 +51,10 @@ authority comes from the user instruction and CURRENT-linked task; implementatio
 authorization alone does not freeze or qualify a candidate. [Cloud](plans/p1-prefreeze-2026-10-18/CLOUD_MINIMAL.md) and
 [Workbench](plans/p1-prefreeze-2026-10-18/WORKBENCH_POSITION.md) reuse existing owners;
 uploads/paid work and complex GUI/team expansion are not authorized by the map.
-K3 disposition and K4 acceptance remain open. These are routes into the existing
-owners, not another protocol, identity store, registry or governance checker.
+The [asset ledger](plans/p1-prefreeze-2026-10-18/ASSETS.md) distinguishes proposed
+dispositions from the exact [K3 executed receipt](plans/p1-prefreeze-2026-10-18/K3_EXECUTION.json).
+Remaining acceptance is recorded in the CURRENT-linked task. These are routes into
+existing owners, not another protocol, identity store, registry or governance checker.
 
 ## P1 forward decision profile
 
