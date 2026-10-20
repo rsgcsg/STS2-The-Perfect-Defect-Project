@@ -554,3 +554,21 @@ segment masks, gap markers, external effects and original raw references remain
 in the converter output. Consecutive points do not claim complete P1 replay.
 Import does not imply Human proof or training admission. A later target projection
 requires its own declared supported schema; it must not replace an older artifact.
+
+
+P1 control through the same running Application (from the same exact checkout/environment):
+
+```bash
+python -m spireagent.workbench project open --config /ABS/project.json
+python -m spireagent.workbench recordings control --config /ABS/project.json status
+python -m spireagent.workbench recordings control --config /ABS/project.json start --origin declared_human
+python -m spireagent.workbench recordings control --config /ABS/project.json close
+```
+
+Only use `start` or `close` when you intend to change collection. `pause`, `resume`
+and `prefix` are advanced collection operations and do not pause gameplay. Reopen
+`project open` with the same configuration after closing the browser or rebooting.
+Do not repeat setup, change the data root or restart the Recorder to refresh a page.
+The existing local catalog/search and cloud delivery pages remain the supported
+view/upload paths. Local archive preservation, a recorded remote backup receipt and
+current remote availability are distinct states; local import alone proves no cloud copy.

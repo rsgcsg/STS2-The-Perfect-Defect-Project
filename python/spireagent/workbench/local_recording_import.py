@@ -387,6 +387,11 @@ class LocalRecordingImporter:
     def _native_recovery_guard(self, intent: str | None = None,
                                requested: dict[str, Any] | None = None) -> None:
         """All journaled unresolved intents survive changes of the current caller."""
+        if (self.operation.get("recording_type") == "p1_native"
+                and self.operation.get("action") == "derive"
+                and self.operation.get("status") in {
+                    "pending", "publication_unknown", "interrupted_unknown"}):
+            raise BoundaryError("local_import", "original_intent_reconciliation_required")
         blocked = {key for key, snapshot in self._native_intents.items()
                    if snapshot["status"] in {"pending", *NATIVE_IMPORT_UNCERTAIN}}
         record = self._native_intents.get(intent) if intent is not None else None
@@ -421,7 +426,6 @@ class LocalRecordingImporter:
 
     def _native_agent_existing(self, store: ManifestArtifactStore,
                                content_id: str, cohort: str, relation: object) -> Manifest | None:
-        from spireagent.storage.blobs import MAX_BLOB_BYTES
         from stpd.fullrun.native_agent_sampled_source import (
             _bytes,
             _inventory,
@@ -433,6 +437,8 @@ class LocalRecordingImporter:
             MAX_ORIGINAL_FILES,
             RAW_SCHEMA,
         )
+
+        from spireagent.storage.blobs import MAX_BLOB_BYTES
 
         matches = []
         for identity in store.manifest_ids():
@@ -660,20 +666,25 @@ class LocalRecordingImporter:
         if candidate.get("recording_type") == "p1_native":
             from .p1_recording_store import BUNDLE_SCHEMA
 
-            matches = [m.artifact_id for identity in store.manifest_ids()
+            p1_matches = [m.artifact_id for identity in store.manifest_ids()
                        if (m := store.get_manifest(identity)).kind == "evidence"
                        and m.parameters.value().get("schema") == BUNDLE_SCHEMA
                        and m.parameters.value().get("session_id") == candidate["session_id"]
                        and m.parameters.value().get("timeline_id") == candidate["timeline_id"]
                        and m.parameters.value().get("original_recording", {}).get(
                            "recorder_source_revision") == candidate["recorder_source_revision"]
-                       and all(m.parameters.value().get("raw_file_sha256", {}).get(name) == candidate[key]
+                       and all(m.parameters.value().get("raw_file_sha256", {}).get(name)
+                               == candidate[key]
                                for name, key in (("recording-manifest.json", "manifest_sha256"),
                                                  ("session-close-receipt.json", "close_sha256"),
                                                  ("p1-native-close.json", "p1_close_sha256")))]
-            if len(matches) > 1:
+            if len(p1_matches) > 1:
                 raise BoundaryError("local_import", "candidate_publication_ambiguous")
-            return matches[0] if matches else None
+            if p1_matches:
+                for payload in store.get_manifest(p1_matches[0]).payloads:
+                    for _ in store.read_payload(payload):
+                        pass
+            return p1_matches[0] if p1_matches else None
         if candidate.get("recording_type") != "source3":
             return self._existing(store, candidate_id)
         from stpd.ordered_source_spec import RAW_SCHEMA
@@ -985,6 +996,104 @@ class LocalRecordingImporter:
             )
             self.thread.start()
             return self.status()
+
+    def start_p1_derivation(self, source_artifact_id: str, projection_id: str,
+                            run_id: str = "run-0001") -> dict[str, Any]:
+        from .p1_recording_store import BUNDLE_SCHEMA, PROJECTIONS
+
+        source_id = digest(source_artifact_id, "p1.source_artifact_id")
+        if (projection_id not in PROJECTIONS or not isinstance(run_id, str)
+                or re.fullmatch(r"[A-Za-z0-9._-]{1,128}", run_id) is None):
+            raise BoundaryError("local_import", "invalid_p1_derivation_request")
+        with self.lock:
+            self._native_recovery_guard()
+            if self.thread is not None and self.thread.is_alive():
+                raise BoundaryError("local_import", "operation_in_progress")
+            if (self.operation.get("recording_type") == "p1_native"
+                    and self.operation["status"] in {
+                        "pending", "publication_unknown", "interrupted_unknown"}):
+                raise BoundaryError("local_import", "original_intent_reconciliation_required")
+            store, _ = _selected_store(self.config)
+            source = store.get_manifest(source_id)
+            if (source.kind != "evidence"
+                    or source.parameters.value().get("schema") != BUNDLE_SCHEMA):
+                raise BoundaryError("local_import", "p1_original_required")
+            directory, release = current_collection_tool(self.config)
+            tool = CollectionTool(directory, release)
+            if not tool.supports_p1_native():
+                raise BoundaryError("local_import", "p1_tool_support_required")
+            self.operation = {"schema": SCHEMA, "recording_type": "p1_native", "action": "derive",
+                              "status": "pending", "source_artifact_id": source_id,
+                              "projection_id": projection_id, "run_id": run_id,
+                              "tool_release_id": release, "started_at": _now()}
+            self._save()
+            self.thread = threading.Thread(target=self._run_p1_derivation,
+                                           args=(tool,), daemon=True)
+            self.thread.start()
+            return self.status()
+
+    def reconcile_p1_derivation(self) -> dict[str, Any]:
+        from .p1_recording_store import SEGMENTS_SCHEMA, _matching
+
+        with self.lock:
+            if (self.thread is not None and self.thread.is_alive()
+                    and self.thread is not threading.current_thread()):
+                raise BoundaryError("local_import", "operation_in_progress")
+            if (self.operation.get("recording_type") != "p1_native"
+                    or self.operation.get("action") != "derive"):
+                raise BoundaryError("local_import", "p1_derivation_intent_required")
+            store, registry = _selected_store(self.config)
+            intent = self.operation
+            verified_publication = False
+            try:
+                manifest = _matching(store, SEGMENTS_SCHEMA,
+                    source_artifact_id=intent["source_artifact_id"],
+                    projection_id=intent["projection_id"], run_id=intent["run_id"],
+                    tool_release_id=intent["tool_release_id"])
+                if manifest is None:
+                    self.operation = {**intent, "status": "failed", "publication": "absent",
+                                      "finished_at": _now()}
+                else:
+                    for payload in manifest.payloads:
+                        for _ in store.read_payload(payload):
+                            pass
+                    verified_publication = True
+                    self.operation = {**intent, "status": "published_index_unavailable",
+                                      "artifact_id": manifest.artifact_id}
+                    _sync(store, registry)
+                    self.operation.update(status="completed", finished_at=_now())
+            except Exception as error:
+                if not verified_publication:
+                    self.operation["status"] = "publication_unknown"
+                self.operation["error_code"] = getattr(error, "code", "p1_reconciliation_failed")
+            self._save()
+            return self.status()
+
+    def _run_p1_derivation(self, tool: CollectionTool) -> None:
+        from .p1_recording_store import derive_p1_recording
+
+        intent = dict(self.operation)
+        try:
+            store, registry = _selected_store(self.config)
+            manifest = derive_p1_recording(store, intent["source_artifact_id"], tool,
+                source_identity(ROOT), scratch=self.config.state_dir,
+                run_id=intent["run_id"], projection_id=intent["projection_id"])
+            with self.lock:
+                self.operation.update(status="published_index_unavailable",
+                                      artifact_id=manifest.artifact_id)
+                _sync(store, registry)
+                self.operation.update(status="completed", finished_at=_now())
+                self._save()
+        except Exception as error:
+            with self.lock:
+                self.operation["error_code"] = getattr(error, "code", "p1_derivation_failed")
+                self.operation["_diagnostic"] = getattr(error, "diagnostic", "")[-16384:]
+            # Only read back the original intent; never re-execute an unknown write.
+            if self.operation.get("artifact_id") is not None:
+                with self.lock:
+                    self._save()
+            else:
+                self.reconcile_p1_derivation()
 
     def _run(self, candidate_id: str, candidate: dict[str, Any]) -> None:
         try:

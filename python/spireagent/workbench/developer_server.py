@@ -31,7 +31,7 @@ from spireagent.workbench.console import LocalConsole
 from spireagent.workbench.dashboard import _safe_value
 from spireagent.workbench.developer import ROOT, ProjectConfig, atomic_json, doctor, tool_identity
 from spireagent.workbench.hub_client import HubClient
-from spireagent.workbench.identity import LocalIdentity
+from spireagent.workbench.identity import LocalIdentity, private_read
 from spireagent.workbench.instance_lock import instance_lock as instance_lock
 from spireagent.workbench.local_models import LocalModelService
 from spireagent.workbench.member_client import MemberClient
@@ -80,11 +80,16 @@ def configuration_id(config: ProjectConfig) -> str:
     return hashlib.sha256(json.dumps(config.to_dict(), sort_keys=True).encode()).hexdigest()
 
 
-def _local_request(url: str, *, token: str | None = None, timeout: float = 2) -> dict[str, Any]:
+def _local_request(url: str, *, token: str | None = None, timeout: float = 2,
+                   body: dict[str, Any] | None = None,
+                   method: str | None = None) -> dict[str, Any]:
     request = Request(
         url,
-        data=b"" if token else None,
-        headers={"Authorization": "Bearer " + token} if token else {},
+        data=(json.dumps(body).encode() if body is not None
+              else b"" if token and method != "GET" else None),
+        headers={"Content-Type": "application/json",
+                 **({"Authorization": "Bearer " + token} if token else {})},
+        method=method,
     )
     with build_opener(ProxyHandler({})).open(request, timeout=timeout) as response:
         value: Any = json.loads(response.read(1024 * 1024))
@@ -281,6 +286,20 @@ class Application:
         self._recording_unknown_blocks = False
         self._recording_runtime_context: str | None = None
         self._recording_previous_unknown: list[dict[str, Any]] = []
+        self._recording_last_result: dict[str, Any] | None = None
+        intent = private_read(config.state_dir / "native-recording-intent.json")
+        if intent:
+            if intent.get("schema") != "spireagent/native-recording-intent-1":
+                raise BoundaryError("recording", "invalid_saved_recording_intent")
+            self._recording_last_result = intent.get("last_result")
+            self._recording_unknown_notice = intent["unconfirmed"]
+            self._recording_unknown_blocks = intent["blocks"]
+            self._recording_previous_unknown = intent["previous_unconfirmed"]
+            if intent["pending"] is not None:
+                if self._recording_unknown_notice is not None:
+                    self._recording_previous_unknown.append(self._recording_unknown_notice)
+                self._recording_unknown_notice = intent["pending"]
+                self._recording_unknown_blocks = True
         self.models.bind_recording_admission_guard(self._recording_model_admission_blocked)
         self.local_managed_sources = LocalManagedSourceService(config, self.local_environment)
         self.local_recordings = LocalRecordingCatalog(config)
@@ -635,6 +654,19 @@ class Application:
     def _recording_model_recovery_required(self, *, fresh: bool = False) -> bool:
         return self.models.recording_recovery_required(fresh=fresh)
 
+    def _save_recording_intent(self, pending: dict[str, Any] | None = None) -> None:
+        # One presentation intent, not another Recorder command ledger or state machine.
+        notice = ({key: pending[key] for key in (
+            "command_id", "kind", "runtime_instance_id", "recording_session_id")}
+            if pending is not None else None)
+        atomic_json(self.config.state_dir / "native-recording-intent.json", {
+            "schema": "spireagent/native-recording-intent-1", "pending": notice,
+            "unconfirmed": self._recording_unknown_notice,
+            "blocks": self._recording_unknown_blocks,
+            "previous_unconfirmed": self._recording_previous_unknown[-8:],
+            "last_result": self._recording_last_result,
+        })
+
     def native_recording_status(self) -> dict[str, Any]:
         endpoint = self._recording_endpoint()
         owner = self.models.native_tasks.recording_status(endpoint)
@@ -654,6 +686,7 @@ class Application:
         return {
             "schema": "spireagent/native-recording-view-1",
             "status": owner,
+            "last_result": self._recording_last_result,
             "connection": endpoint,
             "model_recovery_required": self._recording_model_recovery_required(),
             "command_pending": pending,
@@ -665,7 +698,7 @@ class Application:
     def control_native_recording(self, body: dict[str, Any]) -> dict[str, Any]:
         from uuid import UUID, uuid4
 
-        from spireagent.workbench.native_tasks import NativeTasks
+        from spireagent.workbench.native_tasks import P1_ORIGINS, P1_PROFILE, NativeTasks
 
         fields = {
             "kind",
@@ -685,13 +718,14 @@ class Application:
                     body.get("kind") != "start_new_session"
                     or not isinstance(body["capture_profile_id"], str)
                     or body["capture_profile_id"] not in {
-                        "native-logical-source-v3", "native-logical-source-v4"
+                        "native-logical-source-v3", "native-logical-source-v4", P1_PROFILE
                     }
                 )
             )
             or not isinstance(body["kind"], str)
             or body["kind"]
-            not in {"start_new_session", "pause", "resume", "change_source", "close"}
+            not in {"start_new_session", "pause", "resume", "change_source", "close",
+                    "export_p1_native_prefix"}
             or not NativeTasks._recording_identifier(body["runtime_instance_id"])
             or not NativeTasks._recording_identifier(body["recording_session_id"], nullable=True)
             or not NativeTasks._recording_identifier(body["source_segment_id"], nullable=True)
@@ -706,7 +740,11 @@ class Application:
         except (ValueError, TypeError, AttributeError):
             raise BoundaryError("recording", "invalid_native_recording_command") from None
         declaration = None
-        if body["kind"] in {"start_new_session", "change_source"}:
+        p1_start = body.get("capture_profile_id") == P1_PROFILE
+        if p1_start:
+            if body["source_kind"] not in P1_ORIGINS or body["actor_id"] is not None:
+                raise BoundaryError("recording", "invalid_native_recording_command")
+        elif body["kind"] in {"start_new_session", "change_source"}:
             declaration = {
                 "source_kind": body["source_kind"],
                 "actor_id": body["actor_id"],
@@ -718,7 +756,8 @@ class Application:
         elif body["source_kind"] is not None or body["actor_id"] is not None:
             raise BoundaryError("recording", "invalid_native_recording_command")
         reservation = self.models.reserve_recording_source_mutation(
-            require_human=declaration is not None and body["source_kind"] != "agent_protocol"
+            require_human=p1_start or (declaration is not None
+                                       and body["source_kind"] != "agent_protocol")
         )
         with reservation:
             endpoint = self._recording_endpoint()
@@ -733,7 +772,7 @@ class Application:
             with self._recording_intent_lock:
                 self._recording_runtime_context = observed["runtime_instance_id"]
                 if (
-                    declaration is not None
+                    (p1_start or declaration is not None)
                     and body["source_kind"] != "agent_protocol"
                     and self._recording_model_recovery_required()
                 ):
@@ -757,6 +796,7 @@ class Application:
                     raise BoundaryError("recording", "native_recording_recovery_required")
                 self._recording_intent_pending = True
             try:
+                self._save_recording_intent(body)
                 value = self.models.native_tasks.recording_command(
                     endpoint,
                     observed,
@@ -765,10 +805,12 @@ class Application:
                     command_id=body["command_id"],
                     **({"capture_profile_id": body["capture_profile_id"]}
                        if "capture_profile_id" in body else {}),
+                    **({"p1_native_origin": body["source_kind"]} if p1_start else {}),
                 )
                 if not value["accepted"]:
                     raise BoundaryError("recording", "native_recording_rejected")
                 with self._recording_intent_lock:
+                    self._recording_last_result = value
                     after = value["status"]
                     known_close = (
                         body["kind"] == "close"
@@ -814,6 +856,7 @@ class Application:
             finally:
                 with self._recording_intent_lock:
                     self._recording_intent_pending = False
+                    self._save_recording_intent()
 
     def start_local_recording_import(self, candidate_id: object,
                                      human_origin_attested: object = None) -> dict[str, Any]:
@@ -1317,7 +1360,8 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                 except (OSError, ValueError, KeyError):
                     self.respond(400, b'{"error":"invalid_member_request"}')
             elif parsed.path == "/api/native-recording/status":
-                if not self.local_host() or not self.authenticated_browser():
+                if not self.local_host() or not (
+                        self.authenticated_browser() or self.control_client()):
                     self.respond(401, b'{"error":"browser_session_required"}')
                     return
                 if parsed.query:
@@ -1843,7 +1887,7 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                     self.respond(400, b'{"error":"invalid_local_curation_request"}')
                 return
             if self.path.startswith("/api/native-recording/"):
-                if not self.browser_write():
+                if not self.browser_write() and not self.control_client():
                     self.respond(403, b'{"error":"browser_action_denied"}')
                     return
                 if self.path != "/api/native-recording/command":
@@ -1857,6 +1901,25 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                     self.respond(409, json.dumps({"error": error.code}).encode())
                 except (OSError, ValueError, TypeError):
                     self.respond(400, b'{"error":"invalid_native_recording_command"}')
+                return
+            if self.path.startswith("/api/local-recordings/derive"):
+                if not self.browser_write():
+                    self.respond(403, b'{"error":"browser_action_denied"}')
+                    return
+                try:
+                    body = self.json_body(maximum=1024, reject_duplicate=True)
+                    if self.path == "/api/local-recordings/derive" and set(body) == {
+                            "source_artifact_id", "projection_id", "run_id"}:
+                        value = app.local_recording_import.start_p1_derivation(**body)
+                    elif self.path == "/api/local-recordings/derive/reconcile" and not body:
+                        value = app.local_recording_import.reconcile_p1_derivation()
+                    else:
+                        raise ValueError
+                    self.respond(200, json.dumps(value).encode())
+                except BoundaryError as error:
+                    self.respond(409, json.dumps({"error": error.code}).encode())
+                except (OSError, ValueError, TypeError):
+                    self.respond(400, b'{"error":"invalid_p1_derivation_request"}')
                 return
             if self.path.startswith("/api/local-recordings/preview"):
                 if not self.browser_write():

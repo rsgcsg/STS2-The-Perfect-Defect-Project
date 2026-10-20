@@ -13,6 +13,9 @@ from spireagent.json_boundary import BoundaryError
 from spireagent.workbench.developer import endpoint
 from spireagent.workbench.hub_client import NoRedirect
 
+P1_PROFILE = "human-p1-native-decisions-1"
+P1_ORIGINS = frozenset({"declared_human", "agent_native_ui", "unknown"})
+
 
 class NativeTasks:
     address = "http://127.0.0.1:15528"
@@ -181,6 +184,8 @@ class NativeTasks:
                         "invalid_model_preparation_schema",
                         "recording_session_changed",
                         "recording_source_segment_changed",
+                        "p1_native_profile_and_origin_required",
+                        "p1_native_command_fields_not_applicable",
                     }
                 ):
                     raise BoundaryError("recording", "native_recording_rejected") from None
@@ -210,8 +215,20 @@ class NativeTasks:
     def recording_command(self, connector_endpoint: object, observed: dict[str, Any], kind: str, *,
                           source_declaration: dict[str, Any] | None = None,
                           command_id: str | None = None,
-                          capture_profile_id: str | None = None) -> dict[str, Any]:
-        if (
+                          capture_profile_id: str | None = None,
+                          p1_native_origin: str | None = None) -> dict[str, Any]:
+        p1 = (capture_profile_id == P1_PROFILE if kind == "start_new_session"
+              else observed.get("capture_profile_id") == P1_PROFILE)
+        if p1:
+            if (not self._recording_status_valid(observed)
+                    or kind not in {"start_new_session", "pause", "resume", "close",
+                                    "export_p1_native_prefix"}
+                    or source_declaration is not None
+                    or (kind == "start_new_session" and p1_native_origin not in P1_ORIGINS)
+                    or (kind != "start_new_session"
+                        and (p1_native_origin is not None or capture_profile_id is not None))):
+                raise BoundaryError("recording", "invalid_native_recording_command")
+        elif p1_native_origin is not None or (
             (
                 capture_profile_id is not None
                 and (
@@ -246,11 +263,12 @@ class NativeTasks:
         expected = self.connector_instance(connector_endpoint)
         if observed["runtime_instance_id"] != expected:
             raise BoundaryError("recording", "native_recording_game_identity_mismatch")
-        body = {
-            "schema": "sts2.platform/recording-request-1",
-            "runtime_instance_id": expected,
-            "recording_session_id": observed["recording_session_id"],
-            "command": {
+        command = {
+            "schema": "sts2.ai-platform/recording-command-1",
+            "command_id": command_id, "kind": kind,
+            "capture_profile_id": P1_PROFILE if kind == "start_new_session" else None,
+            "p1_native_origin": p1_native_origin,
+        } if p1 else {
                 "schema": "sts2.ai-platform/recording-command-3",
                 "command_id": command_id,
                 "kind": kind,
@@ -261,11 +279,18 @@ class NativeTasks:
                 "expected_source_segment_id": observed["source"]["segment_id"]
                 if kind == "change_source"
                 else None,
-            },
+            }
+        body = {
+            "schema": "sts2.platform/recording-request-1",
+            "runtime_instance_id": expected,
+            "recording_session_id": observed["recording_session_id"],
+            "command": command,
         }
         value = self._recording_request("/v1/tasks/recording/command", body)
         if (
-            set(value) != {"schema", "command_id", "accepted", "pending", "code", "status"}
+            set(value) not in ({"schema", "command_id", "accepted", "pending", "code", "status"},
+                               {"schema", "command_id", "accepted", "pending", "code", "status",
+                                "p1_native_prefix"})
             or value["schema"] != "sts2.platform/recording-result-1"
             or value["command_id"] != command_id
             or type(value["accepted"]) is not bool

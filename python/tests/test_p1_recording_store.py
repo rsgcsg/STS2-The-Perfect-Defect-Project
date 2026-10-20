@@ -59,10 +59,13 @@ def tool(tmp_path):
         "p1/tools/p1-native-bundle.mjs": (ROOT / "tools/p1-native-bundle.mjs").read_bytes(),
         "p1/tools/p1-native-to-p1.mjs": b"""
 import {fileURLToPath} from 'node:url';
+import {readFileSync} from 'node:fs';
 if (process.argv[1] === fileURLToPath(import.meta.url)) throw Error('CLI executed on import');
 export async function convertP1NativeBundle(options) {
  if (options.runId !== 'run-0001' || !options.includeSegments) throw Error('options lost');
- return {segment_output:{schema:'sts2.p1/native-segments-1',source_content_id:'a'.repeat(64),
+ const source=JSON.parse(readFileSync(options.bundle+'/session-bundle-manifest.json'));
+ return {segment_output:{schema:'sts2.p1/native-segments-1',
+ source_content_id:source.bundle_content_id,
  branch:{root:null},profile:'test',revision:'test',projection_claims:[],whole_run_complete:false,
  source_conversion_complete:false,segments:[{points:[{mask:{N:true,next:false,end:false}}]}],
  gaps:[{reason:'synthetic-gap'}],discarded_choices:[]},blocking_issues:[]};
@@ -163,3 +166,46 @@ def test_converter_adapter_import_does_not_execute_cli(tmp_path, original, tool)
     assert summary["candidate_N"] == 1
     assert summary["gaps"] == [{"reason": "synthetic-gap"}]
     assert json.loads((tmp_path / "segments.json").read_bytes())["whole_run_complete"] is False
+
+
+def test_background_derivation_reconciles_published_result_without_reexecution(
+    tmp_path, original, tool, monkeypatch,
+):
+    from spireagent.storage.registry import SQLiteRegistry
+    from spireagent.workbench import local_recording_import as importing
+    from spireagent.workbench.developer import ProjectConfig, combination
+    from spireagent.workbench.local_workspace import LocalWorkspace
+
+    store = ManifestArtifactStore(LocalBlobStore(tmp_path / "store"))
+    registry = SQLiteRegistry(tmp_path / "registry.sqlite")
+    producer = Producer("synthetic/test", "a" * 40, "b" * 64)
+    source = publish_p1_original(store, original, tool, producer, scratch=tmp_path / "scratch")
+    config = ProjectConfig(tmp_path / "state", "", "", None, combination())
+    monkeypatch.setattr(importing, "_selected_store", lambda _: (store, registry))
+    monkeypatch.setattr(importing, "current_collection_tool",
+                        lambda _: (tool.directory, tool.release_id))
+    monkeypatch.setattr(importing, "source_identity", lambda _: producer)
+    importer = importing.LocalRecordingImporter(config, None)
+    publish = store.publish
+    calls = []
+    def lost_after_publish(manifest):
+        calls.append(manifest.artifact_id)
+        publish(manifest)
+        raise OSError("synthetic lost publication acknowledgement")
+    monkeypatch.setattr(store, "publish", lost_after_publish)
+    importer.start_p1_derivation(source.artifact_id, "native-selector-finalized-d-1")
+    importer.thread.join(timeout=10)
+    assert not importer.thread.is_alive()
+    result = importer.status()
+    assert result["status"] == "completed" and len(calls) == 1
+    assert result["artifact_id"] == calls[0]
+    assert store.get_manifest(calls[0]).parent("source") == source.artifact_id
+    assert LocalWorkspace(registry, store).inventory(category="recordings")["total"] == 1
+    # A readback outage must remain unknown and must fence new publication.
+    with monkeypatch.context() as scoped:
+        scoped.setattr(store, "manifest_ids", lambda: (_ for _ in ()).throw(OSError("offline")))
+        assert importer.reconcile_p1_derivation()["status"] == "publication_unknown"
+        with pytest.raises(BoundaryError, match="original_intent_reconciliation_required"):
+            importer.start_p1_derivation(source.artifact_id, "native-input-v1")
+    assert importer.reconcile_p1_derivation()["status"] == "completed"
+    assert len(calls) == 1

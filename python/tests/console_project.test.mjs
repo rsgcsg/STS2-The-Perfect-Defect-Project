@@ -749,10 +749,10 @@ test("local recording import uses one explicit selection and resets attestation 
         observed_at: "2026-09-27T00:00:00Z", root_basis: "configured_only",
         candidate_count: 2, candidates: [{
           candidate_id: candidate, session_id: "session-1", timeline_id: "timeline-1",
-          closed_at: "2026-09-27T00:00:00Z",
+          recording_type: "legacy_human", closed_at: "2026-09-27T00:00:00Z",
         }, {
           candidate_id: id("b"), session_id: "session-2", timeline_id: "timeline-2",
-          closed_at: "2026-09-27T00:01:00Z",
+          recording_type: "legacy_human", closed_at: "2026-09-27T00:01:00Z",
         }],
       };
       if (url === "/api/local-recordings/import") {
@@ -6653,6 +6653,8 @@ test("Source recording forms require explicit actor and source, preserve exact c
   assert.equal(field(page,"native-recording-kind").value, "");
   assert.equal(field(page,"native-recording-actor").value, "");
   assert.equal(start.disabled,true);
+  field(page,"native-recording-profile").value="native-logical-source-v3";
+  field(page,"native-recording-profile").onchange();
   const kind=field(page,"native-recording-kind"), actor=field(page,"native-recording-actor");
   kind.value="agent_protocol"; kind.onchange(); assert.equal(start.disabled,true);
   actor.value="explicit-operator"; actor.oninput(); assert.equal(start.disabled,false);
@@ -6671,7 +6673,7 @@ test("Source4 can be selected explicitly and its active session can Close", asyn
       return recordingPageHandler(url, options);
     }});
   let page = await env.render();
-  assert.equal(field(page,"native-recording-profile").value,"native-logical-source-v3");
+  assert.equal(field(page,"native-recording-profile").value,"human-p1-native-decisions-1");
   field(page,"native-recording-profile").value="native-logical-source-v4";
   field(page,"native-recording-profile").onchange();
   field(page,"native-recording-kind").value="declared_human"; field(page,"native-recording-kind").onchange();
@@ -7522,4 +7524,33 @@ test("Native AgentRun stale page context cannot publish or preview",async()=>{
   env.scope("other-device");
   await action(page,"publish-native-agent-dataset").onclick();
   await action(page,"preview-native-agent-dataset").onclick();assert.equal(post(env.calls).length,0);
+});
+
+
+test("P1 recording uses explicit supported origin and same controls including prefix", async () => {
+  let view=recordingView();const writes=[];
+  const env=setup({identity:{status:"signed_out"},view:"local-workspace",nativeRecordingData:()=>view,
+    handler:async (url,options)=>{
+      if(url==="/api/native-recording/command") {writes.push(JSON.parse(options.body));return {status:view.status};}
+      return recordingPageHandler(url,options);
+    }});
+  let page=await env.render();
+  assert.equal(field(page,"native-recording-profile").value,"human-p1-native-decisions-1");
+  assert.equal(field(page,"native-recording-actor").disabled,true);
+  const kind=field(page,"native-recording-kind");
+  kind.value="agent_protocol";kind.onchange();
+  assert.equal(action(page,"native-recording-start_new_session").disabled,true);
+  kind.value="declared_human";kind.onchange();
+  assert.equal(action(page,"native-recording-start_new_session").disabled,false);
+  await action(page,"native-recording-start_new_session").onclick();
+  assert.deepEqual({...writes[0],command_id:null},{kind:"start_new_session",runtime_instance_id:"game-1",
+    recording_session_id:null,source_segment_id:null,source_kind:"declared_human",actor_id:null,
+    command_id:null,capture_profile_id:"human-p1-native-decisions-1"});
+  view=recordingView("recording","p1-session");view.status.capture_profile_id="human-p1-native-decisions-1";view.status.source=null;
+  page=await env.render();
+  assert.equal(action(page,"native-recording-change_source").disabled,true);
+  assert.equal(action(page,"native-recording-export_p1_native_prefix").disabled,false);
+  await action(page,"native-recording-export_p1_native_prefix").onclick();
+  assert.equal(writes.length,2);assert.equal(writes[1].kind,"export_p1_native_prefix");
+  assert.equal(writes[1].recording_session_id,"p1-session");
 });

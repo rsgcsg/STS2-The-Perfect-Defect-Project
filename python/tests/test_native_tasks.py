@@ -7,7 +7,6 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
-
 from spireagent.json_boundary import BoundaryError
 from spireagent.workbench.native_tasks import NativeTasks
 
@@ -958,3 +957,41 @@ def test_v2_legacy_close_only_context_never_destroys_explicit_paused_protocol(br
         )
     assert behavior["recording"]["recording_lifecycle"] == "paused"
     assert sum(value is not None for _, value in calls) == 1
+
+
+@pytest.mark.parametrize("origin", ["declared_human", "agent_native_ui", "unknown"])
+def test_p1_native_start_uses_existing_command1_wire_with_exact_origin(bridge, origin):
+    client, _, calls, behavior = bridge
+    observed = client.recording_status(behavior["connector_endpoint"])
+    result = client.recording_command(behavior["connector_endpoint"], observed,
+        "start_new_session", capture_profile_id="human-p1-native-decisions-1",
+        p1_native_origin=origin)
+    sent = [body["command"] for route, body in calls if body is not None]
+    assert sent == [{"schema": "sts2.ai-platform/recording-command-1",
+                     "command_id": result["command_id"], "kind": "start_new_session",
+                     "capture_profile_id": "human-p1-native-decisions-1",
+                     "p1_native_origin": origin}]
+
+
+def test_p1_protocol_origin_and_missing_origin_reject_before_post(bridge):
+    client, _, calls, behavior = bridge
+    observed = client.recording_status(behavior["connector_endpoint"])
+    for origin in (None, "agent_protocol"):
+        with pytest.raises(BoundaryError, match="invalid_native_recording_command"):
+            client.recording_command(behavior["connector_endpoint"], observed,
+                "start_new_session", capture_profile_id="human-p1-native-decisions-1",
+                p1_native_origin=origin)
+    assert all(body is None for _, body in calls)
+
+
+@pytest.mark.parametrize("kind", ["pause", "resume", "close", "export_p1_native_prefix"])
+def test_p1_lifecycle_does_not_send_source3_declaration(bridge, kind):
+    client, _, calls, behavior = bridge
+    behavior["recording"].update(capture_profile_id="human-p1-native-decisions-1",
+                                 recording_session_id="p1-session", recording_lifecycle="recording")
+    observed = client.recording_status(behavior["connector_endpoint"])
+    client.recording_command(behavior["connector_endpoint"], observed, kind)
+    sent = [body["command"] for _, body in calls if body is not None]
+    assert len(sent) == 1 and sent[0]["kind"] == kind
+    assert sent[0]["schema"] == "sts2.ai-platform/recording-command-1"
+    assert sent[0]["p1_native_origin"] is None and sent[0]["capture_profile_id"] is None

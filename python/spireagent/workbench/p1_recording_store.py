@@ -70,9 +70,12 @@ def _verify_archive(archive: Path, transfer: DirectoryTransferManifest) -> None:
             handle = stream.extractfile(member)
             if handle is None:
                 raise BoundaryError("p1_store", "archive_member_missing")
+            digest = hashlib.sha256()
             with handle:
-                if hashlib.file_digest(handle, "sha256").hexdigest() != row.sha256:
-                    raise BoundaryError("p1_store", "archive_member_hash_mismatch")
+                while chunk := handle.read(1024 * 1024):
+                    digest.update(chunk)
+            if digest.hexdigest() != row.sha256:
+                raise BoundaryError("p1_store", "archive_member_hash_mismatch")
             seen.add(member.name)
     if seen != expected.keys():
         raise BoundaryError("p1_store", "archive_members_missing")
