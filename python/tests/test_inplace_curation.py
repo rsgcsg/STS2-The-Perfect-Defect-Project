@@ -293,7 +293,8 @@ def test_prepare_indexes_P1_eligible_N_in_same_ledger_without_admitting_raw(tmp_
     from stpd.p1.dataset import load_projection
 
     config, _source, store = _config(tmp_path)
-    projection_id, original = projection_fixture(store, "prepare-P1")
+    projection, original, _value = projection_fixture(store, "prepare-P1")
+    projection_id = projection.artifact_id
     preparation = InplaceCurationPreparation(config)
     preparation.start()
     status = _settle(preparation)
