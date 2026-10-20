@@ -1,6 +1,7 @@
 # 当前工作：冻结准备进行中，尚未通过
 
-更新于2026-10-20。以最新直接用户原话、live Git/安装/录制及原收据为准，不把此页的快照当资格。
+更新于2026-10-20。Resolve live GitHub refs before relying on a recorded candidate.
+最新直接用户原话和现场证据 override this file；安装/录制/原收据分层，不把此页的快照当资格。
 主线唯一writer A，当前树work/p1-recording-followup-20261019；B应用/Store与C研究的稳定来源正常merge保留。
 正在收固定组合的检查/普通PR；具名merge、发布、冻结、付费训练没有新增批准，不自动执行。
 
@@ -31,7 +32,7 @@ C已实现N-only快照、完整epoch/dev5/best-last/全状态恢复及同worker/
 真实3派生来自2原件，370重叠N作alias去重后820N；亲缘unknown、全unassigned、真实训练0。
 现Store P1-aware Curation owner准备、事实lineage消费/用途、真实多源worker仍未闭合；不得制造holdout。
 
-## 下一步与未过门
+## Remaining Platform non-claims 与下一步
 
 固定组合的本地selected/hostedCI以各自精确head/receipt另判；不要借旧green或独立作者测试报组合通过。
 普通P1 interruption recovery缺P1events/close/prefix，原生Continue缺跨process确切save/parent，均未实现完整闭环。
