@@ -16,8 +16,6 @@ from spireagent.source import source_identity
 from spireagent.workbench.developer import ROOT, ProjectConfig
 from spireagent.workbench.p1_training_data import record_p1_training_use, require_p1_snapshot
 from stpd.cloud_jobs.modal import ModalProvider, ModalTarget
-from stpd.p1.spec import MStdConfig
-from stpd.p1.workload import prepare_p1_run, verify_p1_run
 
 
 class RemoteTrainingService:
@@ -62,6 +60,8 @@ class RemoteTrainingService:
             self._operations = Operations(deployment.operations_path)
 
             def record_use(run: Manifest) -> None:
+                from stpd.p1.workload import verify_p1_run
+
                 current_owner, current_store, _ = self.select()
                 workload = verify_p1_run(current_store, run.artifact_id, provider.target.producer)
                 record_p1_training_use(current_owner, current_store, workload.snapshot.artifact_id,
@@ -137,6 +137,9 @@ class RemoteTrainingService:
             deployment = self.config.remote_compute
             assert deployment is not None
             if action == "start":
+                from stpd.p1.spec import MStdConfig
+                from stpd.p1.workload import prepare_p1_run
+
                 obj = object_fields(body, {"intent_id", "source_id", "config", "max_seconds",
                                             "stop_after"}, "remote_training.start")
                 intent = digest(obj["intent_id"], "remote_training.intent_id", length=32)
