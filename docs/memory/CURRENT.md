@@ -22,14 +22,16 @@ exact nativeInput/执行完整目录/finished后继逐项通过，6actions compl
 B* native-timeline-targets-1沿同reader/共享核，保同原局timeline、effects/missing与引用；
 N自身完整Input/catalog/唯一chosen/完成，next拒跨效果或缺失，end核同分支自然终局。
 三旧源1308点/1305N，旧1303观察Input/chosen全同，5新N；28effects/5missing保留，chain仍false。
-固定Tool2928a825全库存/包内三源输出回读通过，旧默认/03不变；用途和完整P1链分别判断。
+Tool2928三源输出验证保原范围；新Toold25c0ab1同P1字节、6动作canary通过，旧默认/03不变。
 
 B同一Application/CLI/API/GUI经固定Tool→ManifestArtifactStore/原operation处理保全/恢复/具名派生。
+B固定安装2fa3723d正常Catalog已读当前隔离Host，ready/33sealed+3unsealed，0录制写命令。
 实际首局直接publication、R2按ID恢复1404members、一次正常Tool3派生已通过，不重pack/三源重算。
 catalog元数据只作来源绑定的显示/筛选，不改不可变原件/targets，不作为seed/root/恢复谱系权威。
 后台维护默认disabled，启用云peer须明确候选或日期/来源范围；日常持续维护/冷却不由源码存在推定通过。
 C已实现N-only快照、完整epoch/dev5/best-last/全状态恢复及同worker/Model→现Agent工程链，synthetic实证通过。
 真实3派生来自2原件，370重叠N作alias去重后820N；亲缘unknown、全unassigned、真实训练0。
+P1已从Workbench私有路径helper解耦并入共享policy_files；新adapter另绑定，旧模型字节不改。
 现Store P1-aware Curation owner准备、事实lineage消费/用途、真实多源worker仍未闭合；不得制造holdout。
 
 ## Remaining Platform non-claims 与下一步

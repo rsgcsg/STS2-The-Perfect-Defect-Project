@@ -127,6 +127,11 @@ the architecture against evidence-backed future substitution or retirement.
 
 #### Components, contracts, protocols, formats and deployment
 
+P1 is one replaceable interaction contract/profile, not only a JSON format.
+Evidence supports a specific proposition on a connection and within its declared
+version and scope. Native replay alone does not qualify a P1 projection or another
+Host implementation; those connections need their own applicable evidence.
+
 A component implements a bounded responsibility; it may be a library/module,
 application owner or separately supervised worker. A contract defines inputs,
 outputs and guarantees, including information/source meaning, state/reset,
