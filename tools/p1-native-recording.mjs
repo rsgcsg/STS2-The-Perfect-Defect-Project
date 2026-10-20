@@ -64,11 +64,25 @@ export class P1NativeRecordingClient {
         headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(request),
         signal: AbortSignal.timeout(45000), redirect: 'error' });
       result = await response.json();
+      // These are the bridge's explicit pre-mutation dispositions. A 500 or
+      // native-task timeout does not carry the same assurance.
+      const known = response.status === 503 && result.error === 'native_task_not_dispatched' ? 'not_dispatched'
+        : response.status === 409 && result.error === 'task_handoff_rejected'
+          || response.status === 400 && result.error === 'invalid_recording_request' ? 'rejected' : null;
+      if (known) {
+        receipt.result = result; receipt.delivery = known;
+        throw new RecordingOperationError(result.detail ?? result.error, known, result);
+      }
       if (result.schema !== 'sts2.platform/recording-result-1' || result.command_id !== commandId
         || typeof result.accepted !== 'boolean' || typeof result.pending !== 'boolean'
         || result.status?.runtime_instance_id !== runtimeInstanceId)
         throw new Error('recording_command_response_not_exact');
     } catch (error) {
+      if (error instanceof RecordingOperationError && ['rejected', 'not_dispatched'].includes(error.delivery)) {
+        try { retain(receipt); }
+        catch { throw new RecordingOperationError('recording_result_receipt_write_failed', error.delivery, result); }
+        throw error;
+      }
       receipt.delivery = 'unknown';
       try { retain(receipt); }
       catch { throw new RecordingOperationError('recording_delivery_unknown_receipt_write_failed', 'unknown'); }

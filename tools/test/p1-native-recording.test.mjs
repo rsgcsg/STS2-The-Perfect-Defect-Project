@@ -76,6 +76,17 @@ test('known rejection and a nonexact reply remain distinct', async () => {
   assert.equal(wrong.calls.filter(call => call.method === 'POST').length, 1);
 });
 
+test('bridge pre-dispatch rejections remain distinct from timeout/unavailable unknown', async () => {
+  for (const [status, error, delivery] of [[503, 'native_task_not_dispatched', 'not_dispatched'],
+    [409, 'task_handoff_rejected', 'rejected'], [400, 'invalid_recording_request', 'rejected'],
+    [504, 'native_task_command_unknown', 'unknown'], [500, 'task_handoff_unavailable', 'unknown']]) {
+    const f = fixture({ send: () => ({ ok: false, status, json: async () => ({ error }) }) });
+    await assert.rejects(f.client.command(f.request, f.retain), result => result.delivery === delivery, error);
+    assert.equal(f.calls.filter(call => call.method === 'POST').length, 1, error);
+    assert.equal(f.retained.at(-1).delivery, delivery, error);
+  }
+});
+
 test('receipt persistence failure cannot send an unrecorded command or disguise a known result', async () => {
   const before = fixture();
   await assert.rejects(before.client.command(before.request, () => { throw new Error('disk full'); }), /disk full/);
