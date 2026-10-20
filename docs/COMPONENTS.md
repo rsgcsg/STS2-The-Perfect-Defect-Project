@@ -63,6 +63,18 @@ must be evidenced as retained, replaced, archived or unfinished; an archive tag 
 inventory count alone does not complete migration. This is not a request to merge
 all components, rebuild all experiments or create another ownership registry.
 
+One function has one business meaning, fact authority and core state machine.
+The application owner orchestrates existing components for a composite use case;
+GUI, CLI and Agent surfaces map into that use case rather than copying its flow.
+Historical code must meet today's contract: adapt representation at the existing
+seam, repair/replace an implementation that misses requires, and version the
+owning contract when authorized information/action/timing/failure/use semantics
+change. An unexpressible real use case, repeated ownership overlap/consumer
+patches or measured unacceptable cost warrants an evidenced upper-level proposal,
+not another adapter merely to retain the old implementation. The four change
+classes and approval boundary remain in Architecture. Different role formats
+remain distinct; a future supported combination is never an implemented claim.
+
 For the current pre-training freeze, internal API/library/CLI calls are the main
 operation surface. Existing browser and native UI remain thin mappings to the same
 application use cases, including their presentation/confirmation/pairing adapters.
