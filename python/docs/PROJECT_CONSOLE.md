@@ -943,8 +943,10 @@ Application-owned child. A successful control response acknowledges intent;
 check status until the worker is terminal and inspect its actual checkpoint/result.
 On an unknown transport response, inspect the original operation/intent; the client
 does not retry the mutation or start a replacement. Unsupported targets fail
-explicitly. The current service advertises local CPU only: this entry does not
-qualify or silently substitute CPU for the planned first GPU training.
+explicitly. `LocalTrainingService` and the default local selection advertise CPU only.
+The explicit [remote Scheduler selection](#explicit-co-located-remote-scheduler)
+uses its existing owner; neither selection qualifies actual GPU execution or
+silently substitutes CPU for it.
 
 ## Local training browser boundary
 
@@ -966,9 +968,9 @@ The matching library entry is `service.amend_wall_budget(operation_id,
 expected_attempt_id, intent_id, wall_seconds)`; inspect its snapshot before the
 separate `resume` call. Browser mutations use the existing cookie and Origin/CSRF checks. The non-GUI
 client uses the same loopback-only private control-token boundary as recording and
-model control. Both retain the running configuration/instance guard. Remote compute is
-unavailable unless declared by an owning service; the current service advertises
-only local CPU.
+model control. Both retain the running configuration/instance guard. The `/api/local-training/` service advertises local CPU only. The explicit
+[remote Scheduler selection](#explicit-co-located-remote-scheduler) has its own
+capabilities in the same Application; actual GPU qualification remains separate.
 
 The ordinary local artifact detail offers capability-driven recipe, source,
 placement, numeric configuration and cumulative time/scratch controls. Fixed
