@@ -155,12 +155,15 @@ export async function collectionSetup(command, options, dependencies = {}) {
     }
     const status = readJson(configuration.runtime_status_path);
     if (status.schema !== "sts2.human-annotator/runtime-status-2") throw new Error("runtime_status_schema_unsupported");
-    const log = fs.readFileSync(installation.log_file, "utf8");
+    // An isolated Host supplies its own native log and selected local port.
+    // Ordinary user launches retain installation/config defaults. Neither path
+    // can borrow a different process generation or loaded assembly identity.
+    const nativeLog = requireSafePath(options.native_log_file ?? installation.log_file);
+    const log = fs.readFileSync(nativeLog, "utf8");
     const platformIdentity = latestIdentity(log, "[STS2 Platform] identity ");
     const liveUiIdentity = latestIdentity(log, "[STS2 Platform Live UI] identity ");
     const uiIndex = log.lastIndexOf("[STS2 Platform Live UI] identity ");
-    const connectorConfig = readJson(path.join(installation.mods_dir, "STS2_MCP.conf"));
-    const port = connectorConfig.port ?? 15526;
+    const port = options.connector_port ?? readJson(path.join(installation.mods_dir, "STS2_MCP.conf")).port ?? 15526;
     if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("connector_port_invalid");
     const capabilities = await (dependencies.fetchCapabilities ?? fetchCapabilities)(port);
     result.execution_available = capabilities.execution_available === true;
@@ -181,6 +184,7 @@ export async function collectionSetup(command, options, dependencies = {}) {
     result.errors = evaluation.errors;
     result.loaded_identity = evaluation.ready && platformIdentity ? { ...platformIdentity, process_id: status.process_id,
       runtime_instance_id: capabilities.host.runtime_instance_id,
+      connector_endpoint: `http://127.0.0.1:${port}`, native_log_file: nativeLog,
       process_started_at: processStartedAt,
       game: { version: capabilities.game?.version ?? null, revision: capabilities.game?.commit ?? null,
         assembly_sha256: status.environment?.game?.main_assembly_sha256 ?? null,
@@ -208,9 +212,10 @@ if (process.argv[1] && fs.existsSync(process.argv[1]) && fs.realpathSync(process
   const [command, ...arguments_] = process.argv.slice(2);
   const options = {};
   for (let index = 0; index < arguments_.length; index += 2) {
-    const key = { "--game-dir": "game_dir", "--recordings-root": "recordings_root", "--mod-provenance": "mod_provenance" }[arguments_[index]];
+    const key = { "--game-dir": "game_dir", "--recordings-root": "recordings_root", "--mod-provenance": "mod_provenance",
+      "--native-log-file": "native_log_file", "--connector-port": "connector_port" }[arguments_[index]];
     if (!key || !arguments_[index + 1] || options[key] !== undefined) throw new Error("invalid_setup_arguments");
-    options[key] = arguments_[index + 1];
+    options[key] = key === "connector_port" ? Number(arguments_[index + 1]) : arguments_[index + 1];
   }
   const result = await collectionSetup(command, options);
   process.stdout.write(`${JSON.stringify(result)}\n`);

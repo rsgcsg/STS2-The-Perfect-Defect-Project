@@ -41,6 +41,9 @@ npm run recording:p1 -- close --runtime RUNTIME --session SESSION \
 collection root and selected build/installed provenance. The command consumes
 `collectionSetup status`'s actual connected/bound runtime. Configure a different
 root through the existing `collection-setup.mjs bind` while the game is stopped.
+An isolated Host supplies its actual `connector_port` and `native_log_file` in
+that same setup config. They select its transport/log; process generation, loaded
+assembly and runtime identity checks remain required. Ordinary launches omit them.
 No per-game rebinding, private workspace script, stdin command or engineering
 deadline is needed. The client does not launch or shut down the user's game.
 It saves the UUID/request before its single POST. A pending Close needs a later

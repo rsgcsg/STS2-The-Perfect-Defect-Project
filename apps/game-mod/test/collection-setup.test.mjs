@@ -131,6 +131,21 @@ test("passive exact identity binds current native root without granting mutation
   assert.ok(mutation.errors.includes("connector_execution_not_available"));
 });
 
+test("an isolated Host explicitly supplies its actual native log and port with the same exact identity checks", async t => {
+  const f = fixture(t), isolatedLog = path.join(f.base, "isolated-godot.log");
+  fs.copyFileSync(f.dependencies.installation.log_file, isolatedLog);
+  fs.rmSync(f.dependencies.installation.log_file); // ordinary location cannot supply this process's log
+  const running = { ...f.dependencies, listProcesses: () => ["100 SlayTheSpire2"],
+    fetchCapabilities: async port => { assert.equal(port, 17433); return f.capabilities; } };
+  const options = { ...f.options, native_log_file: isolatedLog, connector_port: 17433 };
+  const result = await collectionSetup("status", options, running);
+  assert.equal(result.bound, true); assert.equal(result.loaded_identity.native_log_file, isolatedLog);
+  assert.equal(result.loaded_identity.connector_endpoint, "http://127.0.0.1:17433");
+  assert.equal((await collectionSetup("status", { ...options, connector_port: 0 }, running)).reason, "connector_port_invalid");
+  assert.equal((await collectionSetup("status", options, { ...running,
+    readProcessStartedAt: () => "2026-09-15T00:00:02Z" })).bound, false);
+});
+
 test("stopped or stale process, stale generation and wrong native root never bind", async t => {
   const f = fixture(t);
   assert.equal((await collectionSetup("status", f.options, f.dependencies)).bound, false);
