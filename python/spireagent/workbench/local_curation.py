@@ -186,6 +186,32 @@ class LocalCurationOwner:
             self._ledger = LocalLedger(self, inventory_pending=self._inventory_pending)
         return self._ledger
 
+    def backup(self, destination: Path) -> None:
+        """Snapshot only this private Curation database; never a shared Hub DB."""
+        from contextlib import closing
+
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        create_private_database(destination)
+        with (
+            closing(sqlite3.connect(self.path.resolve().as_uri() + "?mode=ro", uri=True)) as source,
+            closing(sqlite3.connect(destination)) as target,
+        ):
+            self._validate_backup(source, self.identity)
+            source.backup(target)
+            self._validate_backup(target, self.identity)
+
+    @staticmethod
+    def _validate_backup(db: sqlite3.Connection, identity: tuple[str, ...]) -> None:
+        LocalCurationOwner._validate_existing(db)
+        tables = {row[0] for row in db.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'")}
+        if tables - REQUIRED_TABLES - {"sqlite_sequence", "local_legacy_unknown_runs"}:
+            raise BoundaryError("local_curation", "private_curation_database_required")
+        if (db.execute("SELECT workspace,ledger,store,store_path "
+                       "FROM local_curation_identity").fetchall() != [identity]
+                or db.execute("PRAGMA integrity_check").fetchall() != [("ok",)]):
+            raise BoundaryError("local_curation", "backup_identity_or_integrity_mismatch")
+
     @contextmanager
     def transaction(self, *, initializing: bool = False) -> Iterator[sqlite3.Connection]:
         if self.path.is_symlink() or not self.path.is_file():
