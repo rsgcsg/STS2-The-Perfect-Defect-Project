@@ -1,6 +1,6 @@
 # 第一轮执行：稳定录制与正常数据、模型、GPU闭环
 
-2026-10-21，Brisbane。用户已在两轮完整计划后直接授权“现在执行”。本轮于UTC02:00:36（Brisbane12:00:36）开始，root只统筹、排资源和最终审计；各owner独立实施。PR206已依C-2准确normal merge作工程集成，新BASE为8b2c2334；这不是正式冻结或生产发布。目前各实现包刚从此BASE开工，只读/设计和源码实施不等无关完整门。下一步是G/B先交游戏内P1薄映射、A交r1.5语义、E/S/C分别交证据、Store与计算首接缝，D/Q随稳定实物走查。用户误暂停后于UTC02:11:31直接要求恢复，原绝对deadline不重置；平台credits/network/401中断不是工程失败。I恢复时核原HEAD仍8b2、仅已有CURRENT/此任务未提交，无原游戏/Runtime/全门/冷启动检查进程。B首GUI薄API候选ae20d926及18PASS待G/Q后集成，未重发旧请求。没有新本机游戏、完整门或正式训练由本任务自动启动。
+2026-10-21，Brisbane。用户已在两轮完整计划后直接授权“现在执行”。本轮UTC02:00:36（Brisbane12:00:36）开始，误暂停后UTC02:11:31恢复，原05:00:36绝对截止不重置。PR206已依C-2准确normal merge，新BASE 8b2c2334，非冻结或生产发布。当前I已正常合入A r1.5 selector语义、G/B游戏内P1薄映射和Source3/4原agent_protocol选项、D原guide/Skill接手；版本与SDK依赖锁统一，UI 34项和正常录制API 18项原检查通过。下一步由G在新I准确干净候选运行原check:exact-game、A唯一发布固定Tool，B原native-access准备等效source候选路径；不伪造prepared或绕guard、不为窗口先push。root控制唯一重slot，尚未新build/install/load/游戏。E/S/C/B其余工作继续，旧I编译证据与原件保持。
 
 ## 本轮目标、授权和准确起点
 
@@ -32,8 +32,8 @@ I独占`work/p1-round1-integration-20261021`、topic`codex/p1-round1-integration
 
 | owner/写范围 | 上游提供→下游需要；本轮产物 | 验收、停止与当前状态 |
 |---|---|---|
-| A 环境语义/Tool | 原selector surface事实→SDK准确动作与finish_available→固定r1.5 Tool→七源投影 | 同类cancel/真正空提交/拒绝/非空确认忠实正反例，协议和consumer同包；七源新旧N/next/缺口/标签差异。已从新BASE开工，未交新通过；不改原生规则/模型 |
-| G 原生GUI，B Application协同 | 游戏内既有控件→同一Application/TaskBridge/RecordingApplicationService→原RecorderRuntime | G独占apps/ingame-ui；B拥有Python descriptor/用例。实际点击P1开始/状态/暂停/继续/Close/下一局、面板重开及同session读回后才称可用。目标T+60–90分钟，不机械等GPU或七源派生 |
+| A 环境语义/Tool | 原selector surface事实→SDK准确动作与finish_available→固定r1.5 Tool→七源投影 | 同类cancel/真正空提交/拒绝/非空确认忠实正反例，协议和consumer同包；七源新旧N/next/缺口/标签差异。r1.5源码b4bf2304已审合入；固定Tool/七源新投影待发布，不改原生规则/模型 |
+| G 原生GUI，B Application协同 | 游戏内既有控件→同一Application/TaskBridge/RecordingApplicationService→原RecorderRuntime | G薄映射fa81f4c7/526c3066及B ae20d926/02b38638已审合入；I实跑UI 34项/API 18项通过，未授native资格。实际点击P1开始/状态/暂停/继续/Close/下一局、面板重开及同session读回后才称可用。目标T+60–90分钟，不机械等GPU或七源派生 |
 | E Runtime/Evidence | 原完整capture/source/Agent/Receipt→去重表示和原预算Stop→同包replay/typed消费者 | 先量旧T0b/历史复用，旧读新写，唯一字节/全部物理分母，旧archive保持验证；无进展窗口/摘要/choice意义明确，沿原Stop记no_progress，不冒自然结局。源码实现和限定离线验收，未获slot不开游戏 |
 | B Application/模型用例 | 既有Model/InputSpec/Runtime安装pin→原model/live registration/start/status/stop/证据查询 | 复用原P1 Agent/CLI/可信expected，原t0 register保工程工具；B独占共享Application路由/descriptor，S提供service接口。正常API/CLI与GUI同用例，进程内夹具/源码入口/准确安装/日常安装分层 |
 | S Store/maintenance | trusted runtime expected+密封Global→原typed verifier→正常Manifest/reader→copy_artifact/R2；原保存→recent-two冷却/恢复 | 旧T0b先独立接通，新格式随E；父Model/Runtime保身份，content_id不冒artifact_id，不借旧profile。具名非活动副本正常冷却→按ID恢复→原reader/实际空间与保留清单；不新建服务/账/删除脚本 |
@@ -71,7 +71,7 @@ I独占`work/p1-round1-integration-20261021`、topic`codex/p1-round1-integration
 | 六项 | 本轮要交的实物 | 当前状态 |
 |---|---|---|
 | 职责和上层逻辑清楚 | 原ARCHITECTURE/COMPONENTS及requires/provides定位新增薄桥/可替换格式，不另起链 | 继承原说明，新差额待D/Q核 |
-| 唯一当前导航 | README→CURRENT→此任务；原DOCUMENT_MAP路由原操作guide，外部START由root整体同步 | I建立当前入口中，旧任务只历史 |
+| 唯一当前导航 | README→CURRENT→此任务；原DOCUMENT_MAP路由原操作guide，外部START由root整体同步 | I已建立唯一当前入口，旧任务只历史 |
 | 全部实际操作SOP | 找任务/历史；安装录制恢复；原件/投影/用途；R2/热集；训练控制；Model/Agent/评估；调查测试；合同版本部署；协作账号事故九类保原owner | D随实现维护，不称旧待实现能力已有 |
 | 历史可直接复用 | 同类source/recorder/evidence/archives/Store/Scheduler原代码和适用范围直连 | 各owner bounded历史复用，不全量复活旧实验 |
 | 非作者能按guide走通 | Q/D实际数据恢复、任务控制、注册Stop、Global回库和冷却等有界正常操作 | 等稳定接口，不能只help/夹具授日常安装资格 |
@@ -81,7 +81,7 @@ I独占`work/p1-round1-integration-20261021`、topic`codex/p1-round1-integration
 
 本轮区分“进程内源码集成（测试夹具）”“正常源码入口”“准确候选安装”“日常已安装入口”；组件source/test、build/install/load、runtime、Human、策略/研究资格分别报告。原旧T0b是资源容量预防停止，未触512MiB，非自然结局或unknown；898completed+1interrupted_known/Stop取消capture及native warning/error保原件。新表示/语义不得改旧原件或把旧计数贴给新ID。
 
-当前没有新包通过/失败结果可报告。稳定增量、检查和原件在各owner固定报告及本轮集成回执汇总；外部文件名/私路径只在交接回执给可点击索引，不把私有绝对路径作为仓库Markdown依赖。root最终写`replies/P1-NEXT-ROUND-ROOT-RESULT-20261021.md`，同步外部START；I最后整段更新CURRENT与此任务，旧现状移历史。源码回滚为revert具名topic增量，安装/运行由原owner保确切原包/配置/Stop/rollback；数据恢复沿原Store，不删原件。
+当前首候选统一Connector 1.3rc26/SDK 1.3rc11、Host 1.1rc34/Policy 0.1rc39、Live UI 0.1rc13/Game Mod 0.2rc48及依赖锁/BOM，旧loaded/source/artifact记录保持。I实跑UI 34项、正常录制API 18项通过，project检查通过；新native build、安装、实际录制与Tool发布仍未验证。稳定增量、检查和原件在各owner固定报告及本轮集成回执汇总；外部文件名/私路径只在交接回执给可点击索引，不把私有绝对路径作为仓库Markdown依赖。root最终写`replies/P1-NEXT-ROUND-ROOT-RESULT-20261021.md`，同步外部START；I最后整段更新CURRENT与此任务，旧现状移历史。源码回滚为revert具名topic增量，安装/运行由原owner保确切原包/配置/Stop/rollback；数据恢复沿原Store，不删原件。
 
 ## 历史
 
