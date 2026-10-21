@@ -94,6 +94,13 @@ browser only queries status. The CLI `recordings control --config /ABS/project.j
 uses this same running Application API for status/start/pause/resume/prefix/close.
 A saved prefix retains its original manifest hash and watermark and is not a closed run.
 
+持续保存与冷热周转沿[原Store/R2操作](DATA_LIFECYCLE.md#daily-p1-store-and-r2-operations)：
+明确peer/scope及`--cool-recent`后，仍由原maintenance处理具名已结束会话，最近两会话
+保热；先独立peer全payload读回、按ID恢复并通过原Tool，才可冷却旧expanded副本。
+关闭页面不停止维护。状态须区分hot/cooling/cold/restoring；失败/中断保原intent，
+用原`restore-expanded`恢复缺失原文件，不覆盖冲突字节，不据archive存在宣布成功。
+不配置该选项不新增自动删除；本段也不授予范围外清理权限。
+
 P1 originals appear under **录制** in the same local catalog. Explicit import preserves
 their declared origin; a Human declaration requires the independent attestation checkbox.
 Machine UI and unknown origins cannot be promoted to Human by import. In original detail,
@@ -503,12 +510,14 @@ Old selections remain historical and non-loadable; export verification and expli
 create a current selection. Repeating the same migration is idempotent; divergent private pins
 or unsafe paths block it. The command does not move weights or search other checkouts.
 
-The registered executable selection is the retained **S1 Defect A0 ordinary-combat** lane, bounded
+The retained **S1 Defect A0 ordinary-combat** selection is bounded
 by its exact policy support manifest (`combat_turn`, play/end-turn; no selector or Full Run).
 It requires its original checkpoint/support files and CUDA/BF16 backend; a Mac does not become
 compatible by installing the UI. Current Full-Run offline views have no qualified online-input
 parity/adapter here, so **Full-Run online evaluation remains BLOCKED** until that separate owner
-work is implemented and qualified. Do not manufacture missing features or filter the native catalog.
+work is implemented and qualified. This limitation describes that legacy lane;
+the current P1 Model route below has its own exact compatibility and evidence.
+Do not manufacture missing features or filter the native catalog.
 
 Native Workbench play exposes fixed Auto/Shadow/OneStep/Tick commands for its owned
 loaded model. The original run/game/recovery tuple comes from a readonly typed owner
@@ -536,6 +545,62 @@ profile, every required seam, the actual SDK and Agent Runtime APIs, and the
 installed native Agent-session Evidence verifier. It reads capabilities without
 attaching or acquiring a controller. The native lane uses the existing primary
 Runtime installation pin; it does not choose an executable from model bytes.
+
+#### P1 Model：正常下载、注册与使用
+
+适用对象是Store中的P1 Model ArtifactID：正式worker产物
+`stpd/p1-mstd-trained-model-1`，或已按原Store owner登记的旧工程包
+`stpd/p1-mstd-model-1`。后者保留未知祖先，不补造Run/Input/Checkpoint。
+已运行的Application须绑定所选配置、准确Runtime/SDK和Evidence包；下载、注册、
+ready、加载和实际决策是不同结果，不相互代证。人的GUI优先游戏内工作台，
+不便时外部模型页；Agent使用以下同Application入口。
+
+从所选Python环境/安装进入，`PROJECT`是该Application的私有配置；
+`MODEL_ID`取实际Model artifact，不能用Evidence content ID代替：
+
+```sh
+python -m spireagent.workbench model --config PROJECT --action download --artifact MODEL_ID
+python -m spireagent.workbench model --config PROJECT --action registration-status --artifact MODEL_ID
+python -m spireagent.workbench model --config PROJECT --action register --artifact MODEL_ID
+python -m spireagent.workbench model --config PROJECT --action registration-status --artifact MODEL_ID
+python -m spireagent.workbench model --config PROJECT --action readiness --selection SELECTION_ID
+```
+
+已在本机所选Store中的Model可直接注册；远端Model先明确下载至原缓存。
+注册owner从实际Store/缓存reader读取完整weights及package manifest，验证原包、
+张量、InputSpec和准确当前环境后，才返回`status=registered`与`selection_id`。
+用该返回值替换`SELECTION_ID`，核registration-status保持同一Model/selection，
+再看readiness的具体缺项。私有注册保存在原`state_dir/models`；Model ArtifactID、
+包ID和selection ID各自保留。CLI不另启动服务，`tools/project.py`是仓库检查工具，
+不提供`model`操作。
+
+当前consumer按P1 r1.5运行；旧模型原包仍保持其r1.4 InputSpec和weights，新注册
+单独绑定当前projection/InputSpec。新Runtime envelope的缺失、旧或future revision
+在Agent ready之前拒绝，不能把旧包改标r1.5训练。具体兼容身份由
+[原P1模型指南](P1_T0.md#r15-input-and-retained-artifact-identities)拥有。
+
+确认环境与运行窗口已授权后，`model --action start --selection SELECTION_ID`
+只加载并停在Human。`model --action status`核原run；`model --action human`
+交还控制，`model --action stop`结束原模型运行。需要原生episode准备/绑定与
+完整Agent请求时，沿[同一Application原生流程](LOCAL_MODEL_TASK_FLOW.md#native-episode-preparation-and-explicit-finish)，
+用其`prepare-owned`/`attach`、`agent-request`、`run-agent`和原episode reference，
+不手拼另一套注册或native operands。Stop后还须核实际terminal和密封证据读回，
+不能以控制请求ACK或进程退出当完整运行/自然结局。
+
+注册失败保留原code、ModelID和日志关联ID，按对应owner修缺依赖/身份/资源；
+不改模型包、跳过校验或改数据库。`source_binding_changed`需明确新注册，不能据
+旧selection强行加载。写请求未确认时只查原status/request并沿原reconcile/Human/Stop，
+不重复注册或启动。新源码入口须由选定安装接纳后才可称日常安装可用；当前结果
+从[CURRENT](../../docs/memory/CURRENT.md)进入。
+
+GLOBAL的可选无进展预算沿`POST /api/local-models/request`的同一请求构造，追加
+`global_no_progress`对象，且只有`windowDecisions`、`maxRepeats`两个整数，满足
+`2 <= maxRepeats <= windowDecisions <= 256`。参数由当前任务选择，不在此指定
+策略值；省略时不新增此预算。返回的原request包含`budget.no_progress`，原样交
+`/api/local-models/run-agent`，不能在提交前后私改已绑定请求。状态如提供
+`global_no_progress`会含窗口、重复阈值及last的state/choice摘要、重复数和exhausted；
+原Runtime按该预算Stop并记`no_progress`，它是有界预算停止，不是自然终局或胜负。
+CLI和GUI未暴露的可选参数从此受支持API进入，不为此复制状态机或发起新的运行。
 
 The browser model detail reads
 `GET /api/local-model-exports/support?model_id=<ArtifactID>` through the same
