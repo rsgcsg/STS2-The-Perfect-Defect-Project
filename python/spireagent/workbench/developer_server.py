@@ -1036,6 +1036,12 @@ class Application:
             raise BoundaryError("local_model_export", "running_configuration_mismatch")
         return self.local_model_export.start(model_id)
 
+    def start_global_evidence(self, run_id: object, peer: object = None) -> dict[str, Any]:
+        """Preserve a stopped owned Model run through the existing data operation."""
+        self.check_environment_instance()
+        context = self.models.stopped_agent_evidence_context(run_id)
+        return self.local_recording_import.start_global_evidence(context, peer)
+
     def register_local_model(self, model_id: object, *,
                              environment_kind: str = "native",
                              composition_options: dict[str, str] | None = None) -> dict[str, Any]:
@@ -1186,6 +1192,9 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                 )
             if path == "/api/local-models/run-agent":
                 return app.models.run_agent(body)
+            if (path == "/api/local-models/evidence/publish"
+                    and set(body) in ({"run_id"}, {"run_id", "peer"})):
+                return app.start_global_evidence(body["run_id"], body.get("peer"))
             if path == "/api/local-models/prepare" and set(body) in (
                 {"selection_id"}, {"selection_id", "run_profile"}
             ):

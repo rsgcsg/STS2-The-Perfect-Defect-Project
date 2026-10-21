@@ -224,3 +224,85 @@ def test_downloaded_original_model_registers_through_own_payload_cache(
     (target / (weights.sha256 + ".bin")).write_bytes(b"broken")
     with pytest.raises(ValueError, match="download_payload_invalid"):
         service.register(model.artifact_id)
+
+
+def stopped_context(p1_registration, monkeypatch):
+    from spireagent.workbench.local_models import _startup_identity
+
+    service, models, _, model, _, _ = p1_registration
+    selection = service.register(model.artifact_id)["selection_id"]
+    entry = models.selection(selection)
+    import json
+
+    manifest = json.loads(models.entry_path(entry, "manifest").read_bytes())
+    package = {"version": "synthetic", "code_sha256": "b" * 64}
+    startup = {**_startup_identity(manifest, package),
+               "run_id": "run-11111111-1111-1111-1111-111111111111"}
+    models.state.update(status="stopped", startup=startup, loaded=False)
+    monkeypatch.setattr(models, "_runtime_package", lambda _: package)
+    monkeypatch.setattr(models, "_node_modules", lambda _: Path("/trusted/node_modules"))
+    return service, models, model, startup
+
+
+def test_global_preservation_context_is_only_from_owned_stopped_run(p1_registration, monkeypatch):
+    _, models, model, startup = stopped_context(p1_registration, monkeypatch)
+    context = models.stopped_agent_evidence_context(startup["run_id"])
+    assert context["model_artifact_id"] == model.artifact_id
+    assert context["directory"] == str(models.directory / "agent-runs" / startup["run_id"])
+    assert context["expected"]["run_id"] == startup["run_id"]
+    assert context["expected"]["global_runtime_directory"].startswith("/trusted/node_modules/")
+    with pytest.raises(ValueError, match="owned_stopped_agent_run_required"):
+        models.stopped_agent_evidence_context("run-22222222-2222-2222-2222-222222222222")
+    models.state.update(status="loaded", loaded=True)
+    with pytest.raises(ValueError, match="stop_runtime_before_install"):
+        models.stopped_agent_evidence_context(startup["run_id"])
+
+
+def test_global_publish_http_uses_trusted_context_and_original_data_operation(
+    p1_registration, monkeypatch, tmp_path,
+):
+    import json
+    import threading
+    from urllib.error import HTTPError
+    from urllib.request import Request, urlopen
+
+    from spireagent.workbench.developer_server import (
+        Application,
+        configuration_id,
+        create_server,
+    )
+
+    service, models, model, startup = stopped_context(p1_registration, monkeypatch)
+    config_path = tmp_path / "project-global.json"
+    atomic_json(config_path, service.config.to_dict())
+    app = Application(service.config, config_path=config_path)
+    app.models = models
+    atomic_json(service.config.state_dir / "runtime.json", {
+        "instance_id": app.instance_id, "configuration_id": configuration_id(service.config)})
+    received = []
+    monkeypatch.setattr(app.local_recording_import, "start_global_evidence",
+                        lambda context, peer: received.append((context, peer)) or {
+                            "schema": "stpd/local-import-v1", "status": "pending"}, raising=False)
+    server = create_server(app)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    url = f"http://127.0.0.1:{server.server_port}/api/local-models/evidence/publish"
+    headers = {"Authorization": "Bearer " + app.control_token, "Content-Type": "application/json"}
+    body = {"run_id": startup["run_id"], "peer": {"kind": "local", "directory": "/peer"}}
+    try:
+        request = Request(url, headers=headers, data=json.dumps(body).encode())
+        with urlopen(request, timeout=5) as response:
+            assert json.load(response)["status"] == "pending"
+        context, peer = received[0]
+        assert context["model_artifact_id"] == model.artifact_id and peer == body["peer"]
+        assert context["expected"]["run_id"] == startup["run_id"]
+        with pytest.raises(HTTPError) as invalid:
+            bad = Request(url, headers=headers,
+                          data=json.dumps({**body, "directory": "/untrusted"}).encode())
+            urlopen(bad, timeout=5)
+        assert invalid.value.code == 409 and len(received) == 1
+    finally:
+        server.shutdown()
+        server.server_close()
+        app.close()
+        thread.join(timeout=3)

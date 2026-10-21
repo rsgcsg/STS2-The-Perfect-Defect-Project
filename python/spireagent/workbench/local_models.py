@@ -2883,6 +2883,38 @@ class LocalModelService:
         with self.lock:
             self.state["evaluation"] = report
 
+    def stopped_agent_evidence_context(self, run_id: object) -> dict[str, Any]:
+        """Bind one owned stopped P1 run to its original registered Model and Runtime."""
+        with self.lock:
+            self._require_stopped_runtime()
+            startup = self.state.get("startup")
+            if (self.state.get("status") != "stopped"
+                    or self.thread is not None and self.thread.is_alive()
+                    or not isinstance(startup, dict)
+                    or startup.get("schema") != AGENT_STARTUP
+                    or not isinstance(run_id, str)
+                    or re.fullmatch(r"run-[a-f0-9-]{36}", run_id) is None
+                    or startup.get("run_id") != run_id):
+                raise BoundaryError("local_model", "owned_stopped_agent_run_required")
+            entry = self.selection(startup["agent_manifest_id"])
+            if entry["adapter"] != GLOBAL_MODEL_ADAPTER:
+                raise BoundaryError("local_model", "global_model_owned_run_required")
+            manifest = _object_file(self.entry_path(entry, "manifest"))
+            config = _object_file(self.entry_path(entry, "config"))
+            if (hashlib.sha256(canonical_json(manifest).encode()).hexdigest()
+                    != startup.get("agent_manifest_sha256")
+                    or manifest["artifact"]["sha256"] != startup.get("agent_artifact_sha256")
+                    or config.get("package_sha256") != startup.get("agent_artifact_sha256")):
+                raise BoundaryError("local_model", "original_agent_registration_changed")
+            model_id = digest(config.get("model_artifact_id"), "local_model.model_artifact_id")
+            # No archive field chooses code, an arbitrary source path or a Model.
+            # The data owner performs the typed sealed-original verification.
+            return {
+                "directory": str(self.directory / "agent-runs" / run_id),
+                "expected": self._agent_evidence_expected(dict(startup)),
+                "model_artifact_id": model_id,
+            }
+
     def _agent_evidence_expected(self, startup):
         expected = dict(startup)
         entry = self.selection(startup["agent_manifest_id"])
