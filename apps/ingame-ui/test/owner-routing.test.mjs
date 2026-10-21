@@ -48,3 +48,10 @@ test("P1 recording has a direct native Workbench entry and cannot fall through l
   assert.match(panel,/PlatformNativeRecordingPresentation.Rows\(recording\)/);
   assert.match(panel,/body.GetValueOrDefault\("capture_profile_id"\)[\s\S]*P1NativeRecordingContract.ProfileId\)[\s\S]*body\["actor_id"\] = null/);
 });
+
+test("recording status and eligible owner controls precede the artifact inventory",()=>{
+  assert.ok(panel.indexOf('_body.AddChild(_recordingStatus)')<panel.indexOf('_body.AddChild(_items)'));
+  assert.ok(panel.indexOf('_body.AddChild(_recordingForms)')<panel.indexOf('_body.AddChild(_items)'));
+  assert.match(panel,/recordingAction && !Boolean\(descriptor, "enabled"\)/);
+  assert.match(panel,/VBoxContainer destination = recordingAction \? _recordingForms : _forms/);
+});
