@@ -150,8 +150,10 @@ def register(
     if (
         manifest.get("schema") != "sts2.policy-runtime/agent-manifest-1"
         or manifest.get("input", {}).get("profile") != "p1-global-r1"
+        or not isinstance(manifest.get("input", {}).get("global"), dict)
+        or manifest["input"]["global"].get("revision") != INPUT_SPEC["revision"]
     ):
-        raise ValueError("registration needs an owner-supplied P1 environment manifest")
+        raise ValueError("registration needs a current r1.5 P1 environment manifest")
     manifest.update(
         manifest_id="p1-mstd-" + descriptor["package_sha256"][:16],
         agent={
