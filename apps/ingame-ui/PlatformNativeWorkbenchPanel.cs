@@ -304,7 +304,7 @@ internal sealed class PlatformNativeWorkbenchPanel : IDisposable
         _items.Visible = !daily && !diagnostics;
         _pager.Visible = !daily && !diagnostics;
         _forms.Visible = !daily && !diagnostics;
-        _result.Visible = diagnostics;
+        _result.Visible = !daily;
     }
 
     private void Render(JsonElement view, PlatformNativeWorkbenchConnection connection)
