@@ -57,8 +57,8 @@ test("Workbench registration bridge is exact-loopback, game-instance-bound metad
   assert.doesNotMatch(taskBridge, /OS\.ShellOpen|Process\.Start|WebBrowser/u);
 });
 
-test("Product navigation retains model and Human surfaces and adds the native Workbench", () => {
-  assert.match(mod, /new\[\] \{ "运行状态与恢复", "真人采集", "工作台" \}/u);
+test("Product navigation exposes current recording separately from compatibility diagnostics", () => {
+  assert.match(mod, /new\[\] \{ "运行状态与恢复", "兼容录制诊断", "工作台" \}/u);
   assert.match(mod, /BuildAgentRunPage\(_surfaceViewport\)/u);
   assert.match(mod, /BuildRecorderPage\(_surfaceViewport\)/u);
   assert.match(mod, /_surfaces\.Add\(_agentRunPage\)/u);
