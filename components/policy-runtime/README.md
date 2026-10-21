@@ -620,7 +620,17 @@ chunk envelope field, but references the same content-addressed `source` record
 for the payload slice. `restoreGlobalCaptureResponse` reconstructs byte-identical
 wire responses before the unchanged SDK chunk decoder/assembler and source joins.
 Old inline responses remain readable; failed/partial captures keep inline original
-responses because no complete source owns them. The immutable inventory, events,
+responses because no complete source owns them. Received wire bytes are first
+fsynced by the same evidence owner as diagnostic `capture-staging-<request>-<ordinal>-<sha>.bin`
+files. Successful source/reference bytes and events must be durable before those
+temporary duplicates are removed; failure/cancellation first flushes originals
+inline. A hard-killed producer retains its already staged response prefix;
+`readGlobalCaptureStaging(directory)` verifies filename/hash/size and returns
+read-only request/ordinal references. These are interrupted diagnostics, never
+sealed evidence, continuation permission or a second artifact type. Outstanding
+staging blocks sealing. Staging and final artifacts share the original physical
+512 MiB artifact budget, and their memory uses the shared Agent byte budget.
+The immutable inventory, events,
 checksums, roles and typed Evidence type remain unchanged. New archives require
 the matching trusted Runtime package; never edit a sealed old archive to upgrade
 it. The 512 MiB unique-artifact cap remains; journal and inventory bytes are

@@ -4,7 +4,7 @@ import { type FullPublicBasis, serializePublicBasisRecord, decodePublicSourceRec
 import { createSession, reduce, modelView, applyCommitment, resolveFollowBasis, commitmentView, P1G_LIMITS, P1G_RESULT_SCHEMA, type P1SessionState, type P1Result, type P1StepRecord } from "@rsgcsg/sts2-connector-client/p1-global";
 import { type GlobalTransport, type GlobalIdentity, assertGlobalIdentity, assertGlobalProgramSupport, globalDigest } from "./global-transport.js";
 import { p1CoreIdentity } from "./p1-global/core-identity.js";
-import type { GlobalArtifact } from "./evidence.js";
+import type { GlobalArtifact, GlobalCaptureStagingRef } from "./evidence.js";
 import type { ConnectorPolicyRequirements } from "./contracts.js";
 import { createHash, randomUUID } from "node:crypto";
 import {
@@ -1285,33 +1285,47 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
     await this.emitGlobal("global_capture_requested", { request_id: captureRequestId });
     const responseReservations: AgentByteReservation[] = [];
     try {
-    const responses: Buffer[] = [];
+    const responses: { bytes: Buffer; stage: GlobalCaptureStagingRef }[] = [];
     let responseBytes = 0;
+    let responseWrite = Promise.resolve();
     let full: FullPublicBasis;
     try {
+      try {
       full = await this.options.globalTransport!.capture({ signal, maxResponseBytes: Math.min(this.manifest.limits.max_capture_bytes, 8 * 1024 * 1024),
-        onResponseBytes: async bytes => {
+        onResponseBytes: bytes => {
           responseBytes += bytes.byteLength;
           if (responseBytes > 2 * this.manifest.limits.max_capture_bytes + 64 * 1024) throw new AgentSessionError("global_capture_response_capacity");
           responseReservations.push(this.budget.reserve(bytes.byteLength));
-          responses.push(Buffer.from(bytes));
+          const original = Buffer.from(bytes);
+          responseWrite = responseWrite.then(async () => {
+            const stage = await this.options.evidence.stageGlobalCaptureResponse(captureRequestId, responses.length + 1, original);
+            responses.push({ bytes: original, stage });
+          });
+          return responseWrite;
         } });
+      } finally {
+        // Cancellation may overtake the bounded response hook. Finish the
+        // original durable staging before flushing an interrupted capture.
+        await responseWrite;
+      }
     } catch (error) {
       // Partial/failed captures have no source owner: retain their original
       // responses unchanged and account the original capture error below.
-      for (const bytes of responses) {
+      for (const { bytes, stage } of responses) {
         const artifact = await this.options.evidence.storeGlobalArtifact("response", bytes);
         await this.emitGlobal("global_transport_response", { artifact, operation: "capture", capture_request_id: captureRequestId });
+        await this.options.evidence.releaseGlobalCaptureResponse(stage);
       }
       throw error;
     }
     const artifact = await this.options.evidence.storeGlobalArtifact("source", Buffer.from(serializePublicBasisRecord(full), "utf8"));
-    for (const bytes of responses) {
+    for (const { bytes } of responses) {
       const response = await this.options.evidence.storeGlobalArtifact("response", normalizeGlobalCaptureResponse(bytes, artifact, full));
       await this.emitGlobal("global_transport_response", { artifact: response, operation: "capture", capture_request_id: captureRequestId });
     }
     const ordinal = ++this.globalSourceOrdinal;
     await this.emitGlobal("global_source", { ordinal, artifact, capture_request_id: captureRequestId });
+    for (const { stage } of responses) await this.options.evidence.releaseGlobalCaptureResponse(stage);
     try {
       if (!this.globalIdentity || canonicalJson(full.capture.session) !== canonicalJson(this.globalIdentity.session)
         || (this.globalIdentity.game_continuity_id !== null && full.capture.game_continuity_id !== this.globalIdentity.game_continuity_id)

@@ -95,7 +95,9 @@ export async function replayGlobalAgentRun(directory: string) {
     } else if (event.kind === "global_no_progress") {
       const input = inputs.get(p.acquisition_id), reduction = input && sources.get(input.source)?.reduction;
       const choice = reduction?.observation.catalog.find(c => c.choice_id === p.choice_id);
-      require(noProgress && choice && reduction && !active && lastDirective?.directive.type === "act"
+      require(noProgress && choice && reduction && !active && !permanentlyFenced && !unknown
+        && mode !== null && mode !== "human" && mode !== "shadow" && acknowledgements.has(p.acquisition_id)
+        && lastDirective?.directive.type === "act"
         && lastDirective.directive.basis_acquisition_id === p.acquisition_id && lastDirective.directive.selection.action_id === p.choice_id,
         "global_no_progress_without_choice");
       const check = noProgress.check(reduction.observation, choice);

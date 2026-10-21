@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, open, readFile, writeFile } from "node:fs/promises";
+import { mkdir, open, readFile, writeFile, unlink, readdir, lstat } from "node:fs/promises";
 import { createReadStream } from "node:fs";
 import { join, relative, sep } from "node:path";
 import { validateManagedEnvironmentBinding, type AgentRunManifest, type EvidenceFileEntry, type ImmutableEvidenceManifest, type ManagedEnvironmentBinding, type PolicyManifest, type RuntimeMode } from "./contracts.js";
@@ -66,6 +66,8 @@ export class AgentRunEvidence {
   private pendingSampleBytes = 0;
   private pendingSamples = 0;
   private sampleStorageFailed = false;
+  private readonly globalStaged = new Map<string, number>();
+  private globalStagedBytes = 0;
 
   private constructor(
     directory: string,
@@ -289,6 +291,37 @@ export class AgentRunEvidence {
     } finally { this.pendingSamples -= 1; this.pendingSampleBytes -= charged; }
   }
 
+  /** A received capture response survives interruption before its full source
+   * exists. These files are a diagnostic unsealed prefix, never a new artifact
+   * type or a member of a successfully sealed archive. */
+  async stageGlobalCaptureResponse(requestId: string, ordinal: number, data: Uint8Array): Promise<GlobalCaptureStagingRef> {
+    if (this.policyManifest.schema !== "sts2.policy-runtime/agent-manifest-1" || this.policyManifest.input.profile !== "p1-global-r1"
+      || !/^capture-request-[a-f0-9-]{36}$/u.test(requestId) || !Number.isSafeInteger(ordinal) || ordinal < 1
+      || data.byteLength < 1 || data.byteLength > 96 * 1024 * 1024) throw new Error("global_staging_reference");
+    const bytes = Buffer.from(data), sha256 = sha256Bytes(bytes);
+    const path = `capture-staging-${requestId}-${ordinal}-${sha256}.bin`;
+    return this.serialize(async () => {
+      if (this.sealed || this.sampleStorageFailed) throw new Error("global_evidence_sealed_or_failed");
+      if (this.sampleBytes + this.globalStagedBytes + bytes.length > 512 * 1024 * 1024) throw new Error("global_storage_capacity");
+      try {
+        const handle = await open(join(this.directory, path), "wx", 0o600);
+        try { await handle.writeFile(bytes); await handle.sync(); } finally { await handle.close(); }
+        this.globalStaged.set(path, bytes.length); this.globalStagedBytes += bytes.length;
+      } catch (error) { this.sampleStorageFailed = true; throw error; }
+      return { path, bytes: bytes.length, sha256, capture_request_id: requestId, response_ordinal: ordinal };
+    });
+  }
+  /** Call only after the final source/reference or inline response and its event
+   * are durable. A failed unlink retains the original prefix and blocks sealing. */
+  async releaseGlobalCaptureResponse(ref: GlobalCaptureStagingRef): Promise<void> {
+    return this.serialize(async () => {
+      const bytes = this.globalStaged.get(ref.path);
+      if (bytes === undefined || bytes !== ref.bytes) throw new Error("global_staging_not_owned");
+      await unlink(join(this.directory, ref.path));
+      this.globalStaged.delete(ref.path); this.globalStagedBytes -= bytes;
+    });
+  }
+
   /** GLOBAL original bytes share this run's immutable inventory and serialized writer. */
   async storeGlobalArtifact(role: "source" | "public_input" | "agent_in" | "agent_out" | "response", data: Uint8Array): Promise<GlobalArtifact> {
     if (this.policyManifest.schema !== "sts2.policy-runtime/agent-manifest-1" || this.policyManifest.input.profile !== "p1-global-r1") throw new Error("global_evidence_profile_required");
@@ -299,7 +332,7 @@ export class AgentRunEvidence {
       const sha256 = sha256Bytes(bytes), path = `global-${sha256}.bin`;
       try {
         if (!this.sampleFiles.has(path)) {
-          if (this.sampleFiles.size >= 65536 || this.sampleBytes + bytes.length > 512 * 1024 * 1024) throw new Error("global_storage_capacity");
+          if (this.sampleFiles.size >= 65536 || this.sampleBytes + this.globalStagedBytes + bytes.length > 512 * 1024 * 1024) throw new Error("global_storage_capacity");
           const handle = await open(join(this.directory, path), "wx", 0o600);
           try { await handle.writeFile(bytes); await handle.sync(); } finally { await handle.close(); }
           this.sampleFiles.add(path); this.sampleBytes += bytes.length;
@@ -312,6 +345,7 @@ export class AgentRunEvidence {
   async finalize(input: { status: "completed" | "stopped" | "tainted"; tainted: boolean; mode: RuntimeMode; now?: string }): Promise<ImmutableEvidenceManifest> {
     return this.serialize(async () => {
       if (this.sealed) throw new Error("agent run evidence is already sealed");
+      if (this.globalStaged.size) throw new Error("global capture staging is not finalized; evidence cannot be sealed");
       if (this.sampleStorageFailed) throw new Error("sample storage incomplete; evidence cannot be sealed");
       if (this.stateStorageFailed) throw new Error("opaque state storage incomplete; evidence cannot be sealed");
       this.manifest = { ...this.manifest, ended_at: input.now ?? new Date().toISOString(), status: input.status, tainted: input.tainted, mode: input.mode };
@@ -410,3 +444,22 @@ export async function verifyEvidenceDirectory(directory: string): Promise<void> 
 }
 
 export interface GlobalArtifact { role: "source" | "public_input" | "agent_in" | "agent_out" | "response"; path: string; bytes: number; sha256: string }
+
+export interface GlobalCaptureStagingRef { path: string; bytes: number; sha256: string; capture_request_id: string; response_ordinal: number }
+/** Read-only diagnostics for a killed producer. No completion/origin/admission
+ * claim, mutation, code loading or automatic resubmission follows from this. */
+export async function readGlobalCaptureStaging(directory: string): Promise<GlobalCaptureStagingRef[]> {
+  const result: GlobalCaptureStagingRef[] = [];
+  for (const name of (await readdir(directory)).filter(name => name.startsWith("capture-staging-")).sort()) {
+    const match = /^capture-staging-(capture-request-[a-f0-9-]{36})-([1-9][0-9]*)-([a-f0-9]{64})\.bin$/u.exec(name);
+    if (!match) throw new Error("global_staging_filename");
+    const path = join(directory, name), info = await lstat(path);
+    if (!info.isFile() || info.isSymbolicLink() || info.size < 1 || info.size > 96 * 1024 * 1024) throw new Error("global_staging_file");
+    const ordinal = Number(match[2]);
+    if (!Number.isSafeInteger(ordinal)) throw new Error("global_staging_ordinal");
+    const bytes = await readFile(path);
+    if (sha256Bytes(bytes) !== match[3]) throw new Error("global_staging_bytes");
+    result.push({ path: name, bytes: bytes.length, sha256: match[3]!, capture_request_id: match[1]!, response_ordinal: ordinal });
+  }
+  return result;
+}
