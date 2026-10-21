@@ -559,11 +559,11 @@ ready、加载和实际决策是不同结果，不相互代证。人的GUI优先
 `MODEL_ID`取实际Model artifact，不能用Evidence content ID代替：
 
 ```sh
-python -m spireagent.workbench model --config PROJECT --action download --artifact MODEL_ID
-python -m spireagent.workbench model --config PROJECT --action registration-status --artifact MODEL_ID
-python -m spireagent.workbench model --config PROJECT --action register --artifact MODEL_ID
-python -m spireagent.workbench model --config PROJECT --action registration-status --artifact MODEL_ID
-python -m spireagent.workbench model --config PROJECT --action readiness --selection SELECTION_ID
+python -m spireagent.workbench project model --config PROJECT --action download --artifact MODEL_ID
+python -m spireagent.workbench project model --config PROJECT --action registration-status --artifact MODEL_ID
+python -m spireagent.workbench project model --config PROJECT --action register --artifact MODEL_ID
+python -m spireagent.workbench project model --config PROJECT --action registration-status --artifact MODEL_ID
+python -m spireagent.workbench project model --config PROJECT --action readiness --selection SELECTION_ID
 ```
 
 已在本机所选Store中的Model可直接注册；远端Model先明确下载至原缓存。
