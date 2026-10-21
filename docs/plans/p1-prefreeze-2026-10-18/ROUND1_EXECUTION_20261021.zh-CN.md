@@ -1,6 +1,6 @@
 # 第一轮执行：稳定录制与正常数据、模型、GPU闭环
 
-2026-10-21，Brisbane。用户已在两轮完整计划后直接授权“现在执行”。本轮UTC02:00:36（Brisbane12:00:36）开始，误暂停后UTC02:11:31恢复，原05:00:36绝对截止不重置。PR206已依C-2准确normal merge，新BASE 8b2c2334，非冻结或生产发布。当前I已正常合入A r1.5 selector语义、G/B游戏内P1薄映射和Source3/4原agent_protocol选项、D原guide/Skill接手；版本与SDK依赖锁统一，UI 34项和正常录制API 18项原检查通过。下一步由G在新I准确干净候选运行原check:exact-game、A唯一发布固定Tool，B原native-access准备等效source候选路径；不伪造prepared或绕guard、不为窗口先push。root控制唯一重slot，尚未新build/install/load/游戏。E/S/C/B其余工作继续，旧I编译证据与原件保持。
+2026-10-21，Brisbane。用户已直接授权执行，本轮UTC02:00:36开始，误暂停后02:11:31恢复仍沿05:00:36绝对截止。PR206已依C-2 normal merge，新BASE8b2c2334，非冻结/生产。当前A r1.5语义/忠实测试、G/B游戏内P1薄映射和Source3/4原Agent选项、G精确source-candidate launcher schema、C r1.5 InputSpec/数据与保留旧模型版本逻辑、D原guide/Skill均已normal merge。统一未build首批版本/锁/BOM；I UI34/API18通过。G首exact-game的SDK586/pack/versions先通过，组件docs跨根链接失败，后native未到；A原owner修复表示后组件docs/root静态门已通过，原失败保留，root另选修正source的exact-game02。无安装、游戏或用户可录资格；A唯一Tool待实际native provenance。B Model/sourcecandidate整支待一行fix/Q，E/S等稳定审查后滚动接入。root控制唯一重slot，游戏/Application候选准备后冻结其整个I Python源至窗口结束；不伪prepared、不为远端clone提前push。
 
 ## 本轮目标、授权和准确起点
 
@@ -81,7 +81,7 @@ I独占`work/p1-round1-integration-20261021`、topic`codex/p1-round1-integration
 
 本轮区分“进程内源码集成（测试夹具）”“正常源码入口”“准确候选安装”“日常已安装入口”；组件source/test、build/install/load、runtime、Human、策略/研究资格分别报告。原旧T0b是资源容量预防停止，未触512MiB，非自然结局或unknown；898completed+1interrupted_known/Stop取消capture及native warning/error保原件。新表示/语义不得改旧原件或把旧计数贴给新ID。
 
-当前首候选统一Connector 1.3rc26/SDK 1.3rc11、Host 1.1rc34/Policy 0.1rc39、Live UI 0.1rc13/Game Mod 0.2rc48及依赖锁/BOM，旧loaded/source/artifact记录保持。I实跑UI 34项、正常录制API 18项通过，project检查通过；新native build、安装、实际录制与Tool发布仍未验证。稳定增量、检查和原件在各owner固定报告及本轮集成回执汇总；外部文件名/私路径只在交接回执给可点击索引，不把私有绝对路径作为仓库Markdown依赖。root最终写`replies/P1-NEXT-ROUND-ROOT-RESULT-20261021.md`，同步外部START；I最后整段更新CURRENT与此任务，旧现状移历史。源码回滚为revert具名topic增量，安装/运行由原owner保确切原包/配置/Stop/rollback；数据恢复沿原Store，不删原件。
+当前首候选统一Connector 1.3rc26/SDK 1.3rc11、Host 1.1rc34/Policy 0.1rc39、Live UI 0.1rc13/Game Mod 0.2rc48及依赖锁/BOM，旧loaded/source/artifact记录保持。I实跑UI 34项、正常录制API 18项通过，project检查通过；首个exact-game因组件docs表示失败、native未到；最小修复的组件docs/root静态门已通过，root另选exact02。准确native build、安装、实际录制与Tool发布仍未验证。稳定增量、检查和原件在各owner固定报告及本轮集成回执汇总；外部文件名/私路径只在交接回执给可点击索引，不把私有绝对路径作为仓库Markdown依赖。root最终写`replies/P1-NEXT-ROUND-ROOT-RESULT-20261021.md`，同步外部START；I最后整段更新CURRENT与此任务，旧现状移历史。源码回滚为revert具名topic增量，安装/运行由原owner保确切原包/配置/Stop/rollback；数据恢复沿原Store，不删原件。
 
 ## 历史
 

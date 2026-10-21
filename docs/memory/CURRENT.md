@@ -10,7 +10,7 @@ PR206按用户C-2于UTC02:02:22 normal merge入develop作工程集成，非冻�
 原9a9 CI39479923386自然成功所选source/test门；merge-head CI39530764717首次观察queued，准确状态需刷新，不借旧green授新能力。
 I独占新topic `codex/p1-round1-integration-20261021`、CURRENT/任务/BOM/versions/refs，原9a9树不再改。各writer从新BASE建独立短命topic，稳定已审增量normal merge。
 A做P1 cancel/finish首错、r1.5/固定Tool与新七源；G/B先做游戏内P1原服务薄映射和正常Model用例；E做Global旧读新写去重与原Stop无进展；S做正常Global登记/reader/R2和maintenance recent-two；C做真实GPU工程/新数据预检；D/Q随稳定实物原guide与非作者走查。Root只统筹、排资源和最终审计。
-用户误暂停后于UTC02:11:31明确恢复，原05:00:36截止不变；I已核原refs/dirty/进程，无重复合并、分支或请求。当前已normal merge A r1.5取消/真正空Finish语义、G/B游戏内P1原服务薄映射、Source3/4保留agent_protocol选项和D原guide/Skill适配；没有新服务或native动作权威。首候选统一Connector 1.3rc26/SDK 1.3rc11、Host 1.1rc34/Policy 0.1rc39、Live UI 0.1rc13/Game Mod 0.2rc48及锁/BOM，历史loaded/artifact身份不改。I受影响UI 34项和正常录制API 18项通过；准确source候选待G原exact-game门与A唯一Tool发布，尚未build/install/load/运行，旧3717N/3357next不贴给r1.5。依赖仅APFS复用旧锁定node_modules到新I，workspace链接在新源码，旧I dist不改。
+用户误暂停后于UTC02:11:31明确恢复，原05:00:36截止不变；I核原refs/dirty/进程，不重复合并或请求。当前已normal merge A r1.5语义及忠实测试、G/B游戏内P1原服务薄映射与准确source-candidate launcher schema、Source3/4原agent_protocol选项、C r1.5 InputSpec/数据与保留旧模型版本逻辑、D原guide/Skill。统一Connector1.3rc26/SDK1.3rc11、Host1.1rc34/Policy0.1rc39、Live UI0.1rc13/Game Mod0.2rc48及锁/BOM。I UI34/API18通过；G首个exact-game的SDK586、package/versions先通过，随后component docs跨根Markdown链接失败，native测试/编译尚未到，无安装/游戏。A原owner最小表示修复后I组件docs/root静态门通过，旧失败保留；root已另选修正源码exact-game02，不是自动retry。G占唯一build slot；A固定Tool待实际Mod产物，B正常Model/sourcecandidate整支待一行fix/Q后合，E/S待各自审查。旧I dist与历史loaded/artifact不改，七源r1.5新N/next仍未验，不贴旧计数。
 
 ## Remaining Platform non-claims 与时间、资源边界
 
