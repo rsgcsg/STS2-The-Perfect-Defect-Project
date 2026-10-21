@@ -125,7 +125,7 @@ def main() -> int:
             refresh_checkout,
             args=(args.parent_source, args.parent_lock, args.source,
                   producer.uv_lock_sha256, "/tmp/stpd-candidate.bundle"),
-            cpu=2, memory=8192, timeout=900, include_source=False,
+            cpu=2, memory=8192, timeout=900,
         )
     )
     try:

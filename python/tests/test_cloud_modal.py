@@ -206,9 +206,13 @@ def test_credential_inspection_reports_only_presence(monkeypatch) -> None:
     assert "never-return" not in str(report)
 
 
-@pytest.mark.parametrize("native", [False, True])
+@pytest.mark.parametrize("image_kind,image", [
+    ("native", "im-I1q5U3MP0EnlZ3ydu6H3Mk"),
+    ("oci", "registry.example/stpd@sha256:" + "d" * 64),
+    ("oci", "im-registry.example/stpd@sha256:" + "d" * 64),
+])
 def test_deployment_uses_exact_native_or_oci_image_with_same_resource_contract(
-    tmp_path, monkeypatch, native,
+    tmp_path, monkeypatch, image_kind, image,
 ):
     import importlib
     import json
@@ -217,7 +221,7 @@ def test_deployment_uses_exact_native_or_oci_image_with_same_resource_contract(
 
     import spireagent.source as source
 
-    selected = replace(target(), image="im-I1q5U3MP0EnlZ3ydu6H3Mk") if native else target()
+    selected = replace(target(), image=image)
     path = tmp_path / "target.json"
     path.write_text(json.dumps(selected.to_dict()))
     monkeypatch.setenv("STPD_MODAL_TARGET", str(path))
@@ -249,7 +253,7 @@ def test_deployment_uses_exact_native_or_oci_image_with_same_resource_contract(
     monkeypatch.setattr(importlib, "import_module",
                         lambda name: sdk if name == "modal" else original(name))
     runpy.run_path(str(Path(__file__).parents[1] / "deploy/cloud-worker/modal_app.py"))
-    assert images == [("native" if native else "oci", selected.image)]
+    assert images == [(image_kind, selected.image)]
     assert len(definitions) == 1
     settings = definitions[0]
     assert settings["image"] == "exact-image" and settings["gpu"] == "L4"

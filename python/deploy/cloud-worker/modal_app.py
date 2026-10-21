@@ -10,6 +10,7 @@ from __future__ import annotations
 import importlib
 import json
 import os
+import re
 from pathlib import Path
 
 from spireagent.json_boundary import BoundaryError, decode_json
@@ -24,7 +25,7 @@ deployed_target_id = target.target_id
 app = modal.App(target.app_name)
 image = (
     modal.Image.from_id(target.image)
-    if target.image.startswith("im-")
+    if re.fullmatch(r"im-[A-Za-z0-9]{22}", target.image)
     else modal.Image.from_registry(target.image, add_python="3.11")
 )
 volumes = {}
