@@ -439,8 +439,9 @@ class NativeWorkbenchApi:
                             "开始录制（默认 P1 原生决策）",
                             [field(
                                 "source_kind", "操作来源声明", "enum", "",
-                                [{"value": value, "label": source_support["source_labels"][value]}
-                                 for value in ("declared_human", "agent_native_ui", "unknown")],
+                                [{"value": value, "label": label +
+                                  ("（仅 Source3/4）" if value == "agent_protocol" else "")}
+                                 for value, label in source_support["source_labels"].items()],
                             ), field("actor_id", "仅 Source3/4：操作者代号"), field(
                                 "capture_profile_id", "录制格式", "enum",
                                 P1_PROFILE,

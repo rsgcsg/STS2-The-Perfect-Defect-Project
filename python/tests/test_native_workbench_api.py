@@ -221,8 +221,8 @@ def test_native_source_labels_share_data_owner_without_changing_cohort_default(
     recording = {row["name"]: row for row in controls["recording.start"]["fields"]}
     cohort = {row["name"]: row for row in controls["datasets.source3-preview"]["fields"]}
     assert {row["value"]: row["label"] for row in recording["source_kind"]["options"]} == (
-        {key: support["source_labels"][key]
-         for key in ("declared_human", "agent_native_ui", "unknown")})
+        {key: label + ("（仅 Source3/4）" if key == "agent_protocol" else "")
+         for key, label in support["source_labels"].items()})
     assert {row["value"]: row["label"] for row in cohort["cohort"]["options"]} == {
         value: support["source_labels"][value] for value in support["cohorts"]
     }
