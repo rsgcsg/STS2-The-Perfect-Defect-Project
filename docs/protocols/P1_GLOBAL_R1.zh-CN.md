@@ -1,6 +1,6 @@
 # P1 全局 r1：可执行合同（profile `p1-global-r1`）
 
-状态：**r1.4，P1 的唯一权威文档**（2026-10-18 用户决定；实现和实跑资格见 CURRENT）。其他 P1 文档（[P1](P1.zh-CN.md)、[Host/wire](P1_HOST_AND_WIRE.zh-CN.md)、[计划](../plans/P1_FORWARD_2026-10-15.zh-CN.md)、[ADR-0017](../adr/0017-p1-forward-decision-profile.md)）是背景和历史；本文定义P1语义；用户最新要求及组件权责仍优先，代码是待检验实现，不以当前代码覆盖需求。
+状态：**r1.5，P1 的唯一权威文档**（2026-10-21 已授权修复取消/完成冲突；实现和实跑资格见 CURRENT）。其他 P1 文档（[P1](P1.zh-CN.md)、[Host/wire](P1_HOST_AND_WIRE.zh-CN.md)、[计划](../plans/P1_FORWARD_2026-10-15.zh-CN.md)、[ADR-0017](../adr/0017-p1-forward-decision-profile.md)）是背景和历史；本文定义P1语义；用户最新要求及组件权责仍优先，代码是待检验实现，不以当前代码覆盖需求。
 推进规则见 [WORKING_RULES](../WORKING_RULES.zh-CN.md)；当前任务、差异和冻结门见
 [当前入口](../plans/p1-prefreeze-2026-10-18/README.md)与[待批冻结定义v0.3](../plans/p1-prefreeze-2026-10-18/SCOPE_v0.3.zh-CN.md)。
 第14–16节实测及第18节旧T1–T7均保留其注明日期/候选的历史范围；第17节拥有登记例外。
@@ -129,7 +129,13 @@ Managed：sts2.dll 无界面宿主 + 投影                 ┴→ 两端共用�
 | event / rest / treasure / relic_choice | `event.choose`、`rest.choose`、`rest.proceed`、`treasure.*`、`relic.choose/skip` | 一对一 |
 | 其他 | 游戏端可交互但未在表内的动作 | 以 `native.<页面>.<动词>` 照样提供（mapped=false），不丢弃 |
 
-**排除（单向规则）**：选牌里的返回、取消预览、撤选不进入清单；已有选择不能用“取消整页”清空。原生合法的空集提交或整页拒绝输入在空选时统一成为 `finish`，不丢掉拒绝机会。观察的 `surface.selection_progress` 给出已选公开牌、剩余名额、还需满足的最低数量及当前是否能结束；本 profile 不制造原生未提供的提交。选满后排除追加，保留完成输入；用户允许唯一结束自动执行，本实现仍可把该唯一输入交给 Agent。纯浏览仅在完整公开信息已汇总后排除，不能通过删信息换取单向。
+**排除（单向规则，r1.5）**：选牌里的返回、取消预览、撤选不进入清单；已有选择不能用“取消整页”清空。空选的原生真正提交或整页拒绝才成为 `finish`。原生 `cancel` / `close` 可能使selector await以空集结束，却返回仍可重新进入的父选择（例如休息点升级）；这不属于P1前进，按 `forward_profile:selection_append_only` 排除，不标“Finish selection”。`cancelable`、`selector_request.can_decline_now` 或 `min_select=0` 都不能单独证明整页拒绝。
+
+当前producer的真正空提交须同时存在原生 `confirm` 或已合格的 `open_preview` / `confirm_selection` 完成绑定，以及当前公开的 `can_confirm=true` 或合格 `selector_request.can_finish_now=true`。已存在完成绑定时，空选取消作为重复入口排除；单独整页拒绝只接受明确原生 `skip` 绑定且 `can_skip=true`，不凭按钮标签、父页名称或最低数量推测。没有此事实的旧producer不新增拒绝动作，原件保留供准确新解释。
+
+观察的 `surface.selection_progress` 给出已选公开牌、剩余名额、还需满足的最低数量及当前真实前进目录是否含 `finish`；`minimum_additional_cards` 描述选择数量，明确整页Skip不要求补牌，不能反过来从最低数量猜出Skip。非空原生确认、真正空提交和明确整页拒绝仍保留精确原生绑定。本 profile 不制造原生未提供的提交。选满后排除追加，保留完成输入；用户允许唯一结束自动执行，本实现仍可把该唯一输入交给 Agent。纯浏览仅在完整公开信息已汇总后排除，不能通过删信息换取单向。
+
+**r1.5迁移**：在线与离线原件派生共用同一SDK reducer；固定新Tool release后生成新不可变投影，不改旧原件、旧投影或旧标签。r1.4来源和旧失败保留；新目录移除返回动作会改变choice编号和监督可用性，因此必须按原生绑定重派生，不只改revision或套用旧choice编号。是否原件完整、N监督可用、next可用、自然整局、Human和研究用途分别判断。
 
 **变换**：选择原牌就是决定，不提供返回。滚动展示不进 P1 观察，不能把某个动画帧说成承诺结果；确认能按同一 owner/request 和既选牌资格折叠即折叠，否则只留结束/确认单一选项。确定替换或候选集合必须有真实游戏 producer、公开时点和代码出处后再分型；未提供实例的分支按原生提交后揭示随机结果处理，不预演 delegate/RNG。此要求已由用户决定，当前实现及覆盖仍须验收。
 
@@ -145,7 +151,7 @@ Managed：sts2.dll 无界面宿主 + 投影                 ┴→ 两端共用�
 
 ### 6.1 原生确认事务的离线D监督（2026-10-20用户批准）
 
-线上r1.4目录仍逐张追加、无replace/deselect。另行显式选择的离线投影
+线上r1.5目录仍逐张追加、无replace/deselect。另行显式选择的离线投影
 `native-selector-finalized-d-1`按同一次原生手牌选择事务的最终确认产生D类监督，
 不冒用E3相邻同卡撤销规则，不声称Human第一次就在初始状态选择了最终牌。
 原native accepted、点击时H、全部S/PB/Reads、生命周期和旧派生保持原样。
