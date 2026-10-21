@@ -79,4 +79,21 @@ public sealed class PlatformNativeRecordingPresentationTests
         Assert.Equal("请选择", PlatformNativeRecordingPresentation.OptionLabel("source_kind", "", "请选择"));
         Assert.Equal("结束并保存", PlatformNativeRecordingPresentation.ActionLabel("recording.close"));
     }
+    [Fact]
+    public void MissingWorkspaceIsOneInstructionAndDoesNotHideUnknownOrActiveOperations()
+    {
+        using var workspace = JsonDocument.Parse("""{"status":"not_created"}""");
+        using var idle = JsonDocument.Parse("""{"status":"idle"}""");
+        using var active = JsonDocument.Parse("""{"status":"idle","operation":{"status":"failed"}}""");
+        using var unknown = JsonDocument.Parse("""{"status":"unexpected_status"}""");
+        Assert.Single(PlatformNativeRecordingPresentation.DataRows("workspace", workspace.RootElement, true)!);
+        Assert.Empty(PlatformNativeRecordingPresentation.DataRows("import", idle.RootElement, true)!);
+        Assert.Null(PlatformNativeRecordingPresentation.DataRows("import", active.RootElement, true));
+        Assert.Null(PlatformNativeRecordingPresentation.DataRows("import", unknown.RootElement, true));
+        Assert.Null(PlatformNativeRecordingPresentation.DataRows("import", idle.RootElement, false));
+        Assert.Equal("本机资料空间", PlatformNativeRecordingPresentation.OwnerLabel("workspace"));
+        Assert.Equal("尚未开始", PlatformNativeRecordingPresentation.StateLabel("idle"));
+        Assert.Equal("unexpected_status", PlatformNativeRecordingPresentation.StateLabel("unexpected_status"));
+    }
+
 }

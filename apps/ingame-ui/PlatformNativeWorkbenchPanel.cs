@@ -257,6 +257,8 @@ internal sealed class PlatformNativeWorkbenchPanel : IDisposable
             if (Names.TryGetValue(property.Name, out string? label))
             {
                 string text = Show(property.Value);
+                if (property.Name is "status" or "phase" or "stage" or "availability" or "reason")
+                    text = PlatformNativeRecordingPresentation.StateLabel(text);
                 if (text.Length > 400) text = text[..400] + "…";
                 target.AddChild(Label(label + "：" + text));
                 if (property.Name is "result_id" or "model_id" or "evaluation_id" or "checkpoint_id"
@@ -315,15 +317,25 @@ internal sealed class PlatformNativeWorkbenchPanel : IDisposable
         _notice.Visible = !string.IsNullOrEmpty(_notice.Text);
         _fences.Visible = !string.IsNullOrEmpty(_fences.Text);
         Clear(_cards); Clear(_recordingStatus);
+        bool workspaceMissing = _section == "data" && OwnerData(view, "workspace") is JsonElement workspace
+            && String(workspace, "status") == "not_created";
         foreach (JsonElement card in view.GetProperty("cards").EnumerateArray())
         {
-            VBoxContainer target = String(card, "owner") == "native_recording" ? _recordingStatus : _cards;
-            if (String(card, "owner") != "native_recording")
-                target.AddChild(Label("— " + (String(card, "owner") ?? "任务") + " —"));
-            RenderSummary(target, card.GetProperty("data"));
+            string owner = String(card, "owner") ?? "任务";
+            VBoxContainer target = owner == "native_recording" ? _recordingStatus : _cards;
+            JsonElement data = card.GetProperty("data");
+            if (_section == "data" && PlatformNativeRecordingPresentation.DataRows(owner, data, workspaceMissing) is { } rows)
+            {
+                foreach (string row in rows) target.AddChild(Label(row));
+                continue;
+            }
+            if (owner != "native_recording")
+                target.AddChild(Label("— " + PlatformNativeRecordingPresentation.OwnerLabel(owner) + " —"));
+            RenderSummary(target, data);
         }
         JsonElement pagination = view.GetProperty("pagination");
         int total = pagination.GetProperty("total").GetInt32();
+        if (_section == "data") _pager.Visible = total > 0;
         _pagination.Text = $"{_offset + 1}–{Math.Min(_offset + 25, total)} / {total}";
         _previous.Disabled = _offset == 0; _next.Disabled = _offset + 25 >= total || _offset + 25 > 10000;
         JsonElement items = view.GetProperty("items");

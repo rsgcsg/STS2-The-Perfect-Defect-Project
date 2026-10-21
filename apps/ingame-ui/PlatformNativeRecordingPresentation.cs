@@ -31,6 +31,35 @@ public static class PlatformNativeRecordingPresentation
         return rows;
     }
 
+    public static string OwnerLabel(string owner) => owner switch {
+        "workspace" => "本机资料空间", "curation" => "资料准备",
+        "import" => "录制导入", "datasets" => "数据集", _ => owner
+    };
+
+    public static string StateLabel(string value) => value switch {
+        "not_created" => "尚未建立", "not_applicable" => "暂不需要",
+        "idle" => "尚未开始", "workspace_required" => "请先建立本机资料空间",
+        "ready" => "就绪", "running" => "正在进行", "completed" => "已完成",
+        "failed" => "失败", "pending" => "等待处理", "interrupted_unknown" => "结果未知",
+        _ => value
+    };
+
+    public static IReadOnlyList<string>? DataRows(string owner, JsonElement data, bool workspaceMissing)
+    {
+        if (!workspaceMissing || Object(data, "operation") is not null || Text(data, "error_code") is not null)
+            return null;
+        string? status = Text(data, "status");
+        if (owner == "workspace" && status == "not_created")
+            return ["尚未建立本机资料空间，先建立后可导入录制、管理数据集。"];
+        if ((owner == "curation" && status == "not_applicable")
+            || (owner == "import" && status == "idle")
+            || (owner == "datasets" && status == "idle"
+                && Text(data, "availability") == "workspace_required"
+                && Text(data, "reason") == "workspace_required"))
+            return [];
+        return null;
+    }
+
     public static bool NeedsOperatorId(string? profile) => profile != "human-p1-native-decisions-1";
 
     public static string ActionLabel(string action) => action switch {
