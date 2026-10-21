@@ -1,7 +1,8 @@
-"""Prepare a fixed release directory from an independently approved developer-kit hash.
+"""Prepare fixed releases or an explicitly isolated engineering source candidate.
 
-Uses the existing kit inventory and native lifecycle. Never builds a Mod, changes
-consent, migrates a queue, starts gameplay or replaces an existing release directory.
+Release kits retain approved-hash verification. Source candidates retain clean
+source, locked imports and exact Mod/Tool native-access binding without claiming a
+verified release kit. Neither path builds a Mod, migrates a queue or starts gameplay.
 """
 
 from __future__ import annotations
