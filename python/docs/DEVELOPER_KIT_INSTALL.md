@@ -42,7 +42,7 @@ prepare返回`source_candidate_prepared`、`launcher_sha256`、`candidate_home`�
 
 launch重新核全部binding后，经原`open_project(..., browser=False)`启动/复用独立
 Application；成功返回`status=running`及`instance_id`，仍标source_candidate与
-`release_kit_verified=false`。随后游戏内Platform“录制”→“录制与资料”须实际配对
+`release_kit_verified=false`。随后游戏内Platform“录制”→项目内“录制”页须实际配对
 该Application/游戏实例，并按[原P1操作](../../apps/ingame-ui/README.md)核同session、
 Pause/Resume、双closed、下一session与原件读回。launch成功不证明录制/Human成功。
 
