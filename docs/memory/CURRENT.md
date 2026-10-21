@@ -1,15 +1,32 @@
-# 当前状态：五小时工程交付执行中
+# 当前状态：五小时工程交付收口；录制卡顿未完成
 
 Resolve live GitHub refs before relying on this snapshot. 最新用户原话和现场证据 override this file。
 
-2026-10-22 Brisbane，用户已批准本轮五小时工程工作及条件满足后的相关 normal merge/正常升级。唯一当前任务是[本轮交付与停止点](../plans/p1-prefreeze-2026-10-18/FIVEH_EXECUTION_20261022.zh-CN.md)。root 只主管，R/T/S 独立领域 writer，I 是唯一集成、根导航和正常安装 owner；不要从旧 Batch1/Round3H 或私人检查点派工。硬截止 07:18:15，候选 06:15、停止变更 06:40，I 最迟 07:05 保据释放资源。
+2026-10-22 Brisbane，本轮初始 `origin/develop=9561d262b27a619174cc735116930d2bbb067306`。
+用户批准范围、唯一负责人、准确产物与剩余义务归[本轮交付与停止点](../plans/p1-prefreeze-2026-10-18/FIVEH_EXECUTION_20261022.zh-CN.md)。
+PR209 的 `6fdb3c3e2011a1190c275d979a9c1d79bcbccadf` 已 normal merge 为
+`482317648af85d43bc9b67a344165ab912065249`；候选与 merge CI 两 Linux/portable 通过，
+router 跳过门不授通过。后续文档收口不重包、不改变已装组件身份。
 
-初始基线 fresh origin/develop=`9561d262b27a619174cc735116930d2bbb067306`；I topic 为 `codex/p1-fiveh-integration-20261022`，PR209 目标 develop。R/S/T 增量已独立复核并 normal merge；当前为 Native Foundation rc7、Connector rc31、Annotator rc24、Live UI rc17、Game Mod rc57、Host Runtime rc36、Policy Runtime rc39。rc56 无 canary 正常录制 2 accepted/2 execution/0 issue，Close/Host Stop 正常；Recording max180.487ms，卡顿仍未完成。rc56/c844 的原 Reference20 已20/20真实终局、replay verified、正常Close，0unknown/error；不自动转授新UI/Mod57整体资格。UI17只修同binding刷新连接文案闪动，普通冷载实观仍待。原锁及两closure文件115项通过；旧55 CI五失败、取消的985 CI和c844新Host清单失败均保留。原正常Managed build-only产生准确7f15补丁/0b376bf5产物/f9fc MVID，旧41b15/ef907完整留历史；原normal audit及完整Host门423 Node/32 Python通过，5项条件skip，不授Managed runtime资格。准确588 CI两Linux/portable已通过，未授其他跳过门；随后原private Host derive暴露SDK孤立副本漏canonical contract，已在原producer保目录布局窄修，真实generator及原derive离线import通过。S原Ops备份仅副本清三可重建ConsoleIndex，账户/可见性/未知表仍拒；两修合后24项定向通过，最终head CI、57冷载/R20、带private Host最终kit/正常永久升级和真实模型消费者仍待。最终Tool原永久reader已读56工程记录2N/1next，raw不变，不授Human。正常永久App仍941ae84d kit/c47；无活动录制、rollback和各准确门仍是升级前提。
+日常固定 launcher 已升级至 a972 kit/source6fdb、Tool2cd、Game Mod rc57，永久 CPU/Evidence 环境已核。
+正常 Steam 冷载的被动采集连接与同 binding 文案有限实观通过，正常执行仍
+`artifact_unqualified`，原 mutation gate 忠实拒绝。准确 rc57 隔离 Reference R20 单提交、
+回放、Stop/正常Close通过；原 rc56 Reference20 的20/20保其原组合。真实短 GPU Run 完成68updates，
+原 Model 经正常 Application 注册/请求/短程15次实际投递、预算终止、Stop与环境正常finish通过；
+同ID Store/R2完整typed读回通过；原发布operation终态被后续缓存维护覆盖，未捕获的限制保留。
+日常同Run只读status/progress及重开无重投已验证。
+入口沿[安装指南](../../python/docs/DEVELOPER_KIT_INSTALL.md)、
+[Model与只读远端任务操作](../../python/docs/PROJECT_CONSOLE.md#p1-model正常下载注册与使用)，不另造业务链。
 
 ## Remaining Platform non-claims 与历史
 
-正式长训练仍未启动；全项目六项、Reference20/R20、正式冻结及新模型比较继续保原范围，本轮只完成明确工程范围。源码/测试、build/installed/loaded、真实录制/Human和研究资格分层。上一轮69c4555f完整门5失败/4699通过/6跳过及4021ccdb七项定向通过保持原身份，见[历史执行原件](../plans/p1-prefreeze-2026-10-18/ROUND1_EXECUTION_20261021.zh-CN.md)。本批成功不改写历史失败或旧GPU预算消耗。旧大目录只交具名清单，未借此删除；本批仅在门终态、保据和无handles后清理自己新生成的pytest fixture，保日志/XML/失败及日常资产。
+用户明确的录制眩晕/卡顿仍未解决：rc56 Recording max180.487ms，不能称日常不卡。
+exact NCardGrid、Managed runtime、完整Human/研究资格、模型质量/胜率和正式长训练均未授通过。
+06:05 fresh df约2.523GiB；当前完整父链长训落地规划将低于原0.5GiB floor，容量硬阻塞。
+原55 CI失败、取消985 CI、c844 Host清单失败、原R20上下文tuple失败及Model缺lease分母保留。
+本轮仅具名缓存/已通过且关闭的合成fixture清理，未删除旧raw、Model、用途账、活环境或整worktree。
+root只主管；I为最后集成/安装与资源收口owner，硬截止07:18:15、I最迟07:05，不复活旧派工。
 
-## 历史快照去向
-
-上一批具体源码/门/安装/数据/Cloud证据沿[原 Batch1 任务](../plans/p1-prefreeze-2026-10-18/BATCH1_EXECUTION_20261021.zh-CN.md)与原交付报告保留，不能把其已过期当前段当本轮状态。
+历史导航沿[原 Batch1](../plans/p1-prefreeze-2026-10-18/BATCH1_EXECUTION_20261021.zh-CN.md)
+与[Round1](../plans/p1-prefreeze-2026-10-18/ROUND1_EXECUTION_20261021.zh-CN.md)。
+旧69c4555f全门5失败/4699通过/6跳过、4021ccdb七项定向通过保各自身份，不借本轮覆盖。

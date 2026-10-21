@@ -573,7 +573,15 @@ python -m spireagent.workbench project model --config PROJECT --action registrat
 python -m spireagent.workbench project model --config PROJECT --action readiness --selection SELECTION_ID
 ```
 
-已在本机所选Store中的Model可直接注册；远端Model先明确下载至原缓存。
+`download`使用该Application已配置的Hub；没有Hub时返回`hub_not_configured`。
+已在所选Store或其明确配置的同ID R2按需reader中的Model可直接注册。
+新发布的Model若返回`cache_read_lease_missing`，先按
+[原Store缓存入口](DATA_LIFECYCLE.md#same-id-local-cache-misses)读取该Model manifest，
+再以现有peer、budget和retain原值执行`cache-configure`准备lease；双peer配置必须
+保留第二peer，不借此trim或改变保留语义。确认原registration-status为未注册后才
+继续同Model注册。原P1注册只物化Model自身weights/package manifest，不要求先
+把Run/Input/Checkpoint父payload全部复制到本机；父ArtifactID仍保持不变。完整
+训练receipt验证与Store转移各有自己的完整祖先读取要求，不能用此路省略。
 注册owner从实际Store/缓存reader读取完整weights及package manifest，验证原包、
 张量、InputSpec和准确当前环境后，才返回`status=registered`与`selection_id`。
 用该返回值替换`SELECTION_ID`，核registration-status保持同一Model/selection，
