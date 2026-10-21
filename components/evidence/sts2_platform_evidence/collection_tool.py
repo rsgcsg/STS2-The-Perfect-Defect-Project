@@ -195,7 +195,8 @@ class CollectionTool:
             raise CollectionFailure("P1-native pack returned an invalid receipt") from None
         if (not isinstance(value, dict) or value.get("status") != "packed"
                 or not isinstance(value.get("bundle_directory"), str)
-                or not re.fullmatch(r"[0-9a-f]{64}", str(value.get("bundle_content_id", "")))):
+                or not isinstance(value.get("bundle_content_id"), str)
+                or not re.fullmatch(r"[0-9a-f]{64}", value["bundle_content_id"])):
             raise CollectionFailure("P1-native pack returned an invalid receipt")
         bundle = Path(value["bundle_directory"]).resolve()
         if bundle != output.resolve() / value["bundle_content_id"]:

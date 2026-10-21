@@ -509,7 +509,10 @@ def test_p1_pack_returns_original_receipt_location_and_rejects_bad_results(
     response = SimpleNamespace(returncode=0, stdout=json.dumps(receipt))
     monkeypatch.setattr(collection_tool.subprocess, "run", lambda *a, **k: response)
     assert tool.pack_p1_native(tmp_path / "session", output, "worker", "campaign") == expected
-    for content in ("not JSON", "{}", json.dumps({**receipt, "bundle_directory": str(tmp_path)})):
+    for content in (
+        "not JSON", "{}", json.dumps({**receipt, "bundle_directory": str(tmp_path)}),
+        json.dumps({**receipt, "bundle_content_id": int("1" * 64)}),
+    ):
         response.stdout = content
         with pytest.raises(CollectionFailure, match="invalid receipt|unexpected bundle location"):
             tool.pack_p1_native(tmp_path / "session", output, "worker", "campaign")
