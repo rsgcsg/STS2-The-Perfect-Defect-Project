@@ -45,9 +45,11 @@ internal static class NativeCardRenderTransaction
         || value.GetType().IsGenericType
             && value.GetType().GetGenericTypeDefinition() == typeof(PowerVar<>);
 
-    internal static T Run<T>(CardModel card, PileType displayPile, Func<T> capture, CardPreviewMode mode = CardPreviewMode.Normal)
+    internal static T Run<T>(CardModel card, PileType displayPile, Func<T> capture,
+        CardPreviewMode mode = CardPreviewMode.Normal, Action? beforePreview = null)
     {
         NativeCardPreviewReadQualification.InvokePreflight(card, mode, displayPile);
+        beforePreview?.Invoke();
         DynamicVar[] cardVars = card.DynamicVars.Values.ToArray();
         DynamicVar[] enchantVars = card.Enchantment?.DynamicVars.Values.ToArray() ?? [];
         DynamicVar[] all = cardVars.Concat(enchantVars).ToArray();
