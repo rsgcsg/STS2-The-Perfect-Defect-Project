@@ -97,6 +97,28 @@ def test_normal_client_start_bounded_pause_same_run_resume_and_result(tmp_path, 
         # The initiating client is gone; the Application scheduler owns this task.
         paused = settled(call, first["id"], "paused")
         assert paused["result"]["checkpoint_id"]
+        progress = call("progress", job_id=first["id"])
+        assert progress["run_id"] == first["input_id"]
+        assert progress["latest_progress"]["details"]["optimizer_updates"] == 1
+        assert progress["latest_checkpoint"]["details"]["checkpoint_id"] == (
+            paused["result"]["checkpoint_id"])
+        assert progress["provider_queried"] is False
+        observation_config = replace(app.config, remote_compute=replace(
+            app.config.remote_compute, observation_only=True))
+        observation_path = config_path.with_name("observation.json")
+        observation_path.write_text(json.dumps(observation_config.to_dict()))
+        assert ProjectConfig.load(observation_path) == observation_config
+        observer = RemoteTrainingService(observation_config,
+                                        lambda: pytest.fail("observer selected a writer context"))
+        observer.start_loop()
+        assert observer._thread is None and observer._scheduler is None
+        assert observer.progress(first["id"])["latest_progress"] == progress["latest_progress"]
+        assert observer.capabilities()["supported_actions"] == ["status", "progress"]
+        for action in ("prepare", "start", "pause", "resume", "cancel", "reconcile"):
+            with pytest.raises(BoundaryError, match="observation_only_original_writer_required"):
+                observer.command(action, {})
+        assert len(provider.calls) == 1
+
         with pytest.raises(BoundaryError, match="live_pause_unsupported"):
             call("pause", body={"job_id": paused["id"],
                                 "expected_attempt_id": paused["attempt_id"]})
@@ -115,6 +137,15 @@ def test_normal_client_start_bounded_pause_same_run_resume_and_result(tmp_path, 
         workload = verify_p1_run(store, second["input_id"], provider.target.producer)
         _, model, checkpoint = verify_p1_result(store, completed["result"]["output_id"], workload)
         assert checkpoint.state["step"] == 2 and model.parent("run") == first["input_id"]
+        from spireagent.workbench.local_evaluation import summary
+
+        evaluation = store.get_manifest(completed["result"]["output_id"]).parent("evaluation")
+        evaluation_summary = summary(store, evaluation)
+        assert evaluation_summary["evaluation_schema"] == "stpd/p1-N-evaluation-1"
+        assert evaluation_summary["best_dev_N_loss"] >= 0
+        assert evaluation_summary["test_metrics"] == "sealed_not_exposed"
+        assert "test" not in evaluation_summary and "rows" not in evaluation_summary
+
         assert len(provider.calls) == 2
         with owner.transaction() as db:
             assert db.execute("SELECT count(*) FROM curation_uses").fetchone() == (1,)

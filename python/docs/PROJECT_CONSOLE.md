@@ -1118,3 +1118,40 @@ Run and associated Ops facts, without querying a peer or provider. Run existence
 alone is explicitly not transfer completion. Client exit does not end the
 Application scheduler. Reopening restores the existing Ops handle/attempt and
 creates no second local-training operation or Curation database.
+
+
+### Observe the same remote Run
+
+The normal local **训练任务** page (`?view=jobs`) reads existing local Operations
+status first, then explicitly reads that job's immutable RunReporter events from
+its configured compute Store. It shows confirmed optimizer updates, N loss, DEV
+loss, checkpoint IDs, recorded errors and terminal result identities. No event
+means no confirmed gradient update; an unavailable peer leaves the local status
+visible and never causes submission or retry. Reopening the page observes the same
+job/Run/attempt. The existing non-GUI client exposes the same read:
+
+```sh
+python -m spireagent.workbench training progress --config PROJECT --execution remote --operation-id JOB
+```
+
+`status` stays local and does not wait for a provider or peer request. `progress`
+is an explicit peer read and may report a typed transport/storage failure. It
+returns up to the last 200 new events and declares history truncation; persistent
+original events remain in RunReporter. The service does not claim live provider
+state from a cached/persisted event.
+
+To observe an older producer's Run from a newer installed Application, set the
+existing `remote_compute.observation_only` field to `true`. This explicitly leaves
+its Scheduler unstarted and exposes only status/progress. Every prepare/start/
+pause/resume/cancel/reconcile command is rejected before context selection,
+vocabulary use, enqueue or provider contact. Stop and recovery remain with the
+original writer's normal config/CLI while it is available. Observation does not
+relax `target.producer == current source/lock`; changing back to writer mode still
+requires a compatible exact target. The page displays this control boundary and
+has no misleading control buttons.
+
+P1 `stpd/p1-N-evaluation-1` appears in the normal offline-evaluation detail using
+its recorded best DEV N loss and DEV denominator. The combined artifact's TEST
+metadata is not exposed by this summary, including an empty engineering TEST
+partition. This is recorded descriptive evidence, not a replay of weights/input,
+independent holdout qualification, game win rate or model-quality verdict.

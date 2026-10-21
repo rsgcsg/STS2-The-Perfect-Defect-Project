@@ -53,6 +53,7 @@ def render_shell(mode: str, api_base: str, cloud_url: str = "") -> str:
         ("local-models", "模型实战", "▷"),
         ("local-environment", "环境与场景", "◇"),
         ("local-workspace", "本机资料", "▤"),
+        ("jobs", "训练任务", "◷"),
     ] if mode == "local" else [])
     shared_primary = [("collections", "数据", "▤")]
     team_primary = [

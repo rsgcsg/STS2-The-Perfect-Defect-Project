@@ -30,6 +30,7 @@ window.SpireProject = (() => {
     "statistics",
     "downloads",
     "research",
+    "jobs",
     "local-models",
     "local-environment",
     "local-workspace",
@@ -41,6 +42,7 @@ window.SpireProject = (() => {
     "record-quality",
   ]);
   const supportedOfflineEvaluationSchemas = new Set([
+    "stpd/p1-N-evaluation-1",
     "stpd/offline-ranking-evaluation-v1",
     "stpd/stage1a-ranking-evaluation-v1",
     "stpd/experimental-m2-offline-evaluation-v1",
@@ -1079,6 +1081,56 @@ window.SpireProject = (() => {
     box.append(pager(ctx, "members", data));
     return box;
   }
+  async function remoteTrainingJobs(ctx) {
+    const box = panel("训练任务", "显示同一 Application 保存的作业及 Run 事件。离开或重开页面不会重投任务。");
+    let status;
+    try { status = await request(ctx, "/api/remote-training/status"); }
+    catch (error) {
+      box.append(el("p", "远端训练尚未配置或任务记录暂不可用。", "small muted"), technical({error:error.message}));
+      return box;
+    }
+    if (status.schema !== "spireagent/remote-training-status-1" || !Array.isArray(status.jobs))
+      throw new Error("invalid_remote_training_status");
+    if (status.observation_only === true) box.append(el("p",
+      "只读观察既有 Run；Stop、取消与恢复由原任务工作台执行。本页没有提交或控制权限。", "banner"));
+    if (status.scheduler_error) box.append(el("p", `调度器需要处理：${status.scheduler_error}`, "banner error"));
+    if (!status.jobs.length) box.append(empty("还没有已提交的远端作业", "准备中的 Run 不等于已提交 GPU 作业。"));
+    const labels = {queued:"等待调度", running:"运行中", paused:"已保存检查点并暂停", completed:"已完成",
+      failed:"失败", cancelling:"正在确认取消", cancelled:"已取消", submission_unknown:"提交结果未知"};
+    for (const job of status.jobs) {
+      if (!hex(job.id,32) || !hex(job.input_id)) throw new Error("invalid_remote_training_identity");
+      const card = panel(`${labels[job.status] || "状态待核对"} · ${job.id.slice(0,12)}`,
+        `Run ${job.input_id.slice(0,16)} · 预算 ${count(job.max_seconds)} 秒`);
+      try {
+        const value = await request(ctx, `/api/remote-training/progress?job_id=${job.id}`);
+        if (value.schema !== "spireagent/remote-training-progress-1" || value.job_id !== job.id
+            || value.run_id !== job.input_id || value.observation !== "persisted_run_events_only")
+          throw new Error("invalid_remote_progress_identity");
+        const progress = value.latest_progress?.details || {};
+        card.append(fields([["已确认更新", `${count(progress.optimizer_updates)} / ${count(value.planned_steps)}`],
+          ["当前轮次", progress.epoch ?? "尚无事件"], ["N 损失", progress.mean_N_loss ?? "尚无事件"],
+          ["DEV N 损失", progress.dev?.mean_N_loss ?? progress.dev_checkpoint?.mean_N_loss ?? "尚无事件"],
+          ["持久事件数", count(value.event_count)]]));
+        const checkpoint = value.latest_checkpoint?.details?.checkpoint_id;
+        if (hex(checkpoint)) card.append(el("p", `最近已保存检查点：${checkpoint}`, "small break"));
+        const history = (value.events || []).filter(event => event.kind === "progress").slice(-8);
+        if (history.length) card.append(table(["更新", "轮次", "N loss", "DEV loss"], history.map(event => [
+          event.details.optimizer_updates, event.details.epoch, event.details.mean_N_loss,
+          event.details.dev?.mean_N_loss ?? event.details.dev_checkpoint?.mean_N_loss ?? "—"])));
+        for (const error of value.recorded_errors || []) card.append(technical(error, "运行错误"));
+        if (!value.event_count) card.append(el("p", "尚无持久 Run 事件，不能据此认定已开始梯度更新。", "small muted"));
+        card.append(technical(value, "准确 Run、attempt、来源与事件"));
+      } catch (error) {
+        card.append(el("p", "进度暂不可读；保留本地作业状态，未重投或推断成功。", "small muted"),
+          technical({error:error.message}));
+      }
+      if (job.result) card.append(technical(job.result, "已记录的终态与产物"));
+      box.append(card);
+    }
+    box.append(command(ctx, "refresh-remote-training", "刷新任务与进度", async () => reload(ctx), {type:"secondary"}));
+    return box;
+  }
+
   async function research(ctx) {
     const box = el("div", null, "project-page");
     const archived = drafts.get("research-archived") === true;
@@ -3411,7 +3463,8 @@ window.SpireProject = (() => {
       summary.append(el("p", "封存测试评估不会在此读取或展示。", "small muted"));
       return summary;
     }
-    if (parameters.partition !== "dev" || !hex(artifact.artifact_id)) {
+    const p1Report = schema === "stpd/p1-N-evaluation-1";
+    if ((!p1Report && parameters.partition !== "dev") || !hex(artifact.artifact_id)) {
       summary.append(el("p", "该对象未标明可展示的开发集分区；未请求评估摘要。", "small muted"));
       return summary;
     }
@@ -3428,6 +3481,16 @@ window.SpireProject = (() => {
           || value.validation_scope !== "recorded_report_and_parent_identities"
           || value.interpretation !== "producer_recorded_summary_not_full_lineage_or_quality_verification") {
         summary.append(el("p", "评估摘要格式或核验范围未知，未将其视为已验证结果。", "small muted"));
+        return summary;
+      }
+      if (p1Report) {
+        if (value.test_metrics !== "sealed_not_exposed" || value.model_selection !== "dev_only")
+          throw new Error("invalid_p1_evaluation_scope");
+        summary.append(fields([["P1 DEV 样本数", count(value.decision_count)],
+          ["最佳 DEV N 损失", value.best_dev_N_loss], ["选模", "仅 DEV"],
+          ["测试指标", "封存，未展示"]]));
+        if (hex(value.model_id)) summary.append(link("查看本机模型", route("local-workspace", value.model_id)));
+        summary.append(technical(value, "记录身份与范围"));
         return summary;
       }
       const hasGroupingMetadata = value.grouping !== undefined
@@ -5851,7 +5914,7 @@ window.SpireProject = (() => {
         const title = identity
           ? link(`${name} · ${identity.slice(0, 16)}`, route("local-workspace", identity))
           : el("span", name);
-        const partition = parameters.partition === "dev" ? "开发集" : "未知";
+        const partition = parameters.partition === "dev" || schema === "stpd/p1-N-evaluation-1" ? "开发集摘要" : "未知";
         return [title, partition, schema, technical(item, "查看评估metadata")];
       });
       box.append(table(["本机评估", "分区", "格式", "metadata"], rows));
@@ -5933,7 +5996,7 @@ window.SpireProject = (() => {
       }
       if (view !== "local-models") stopModelWatch();
       commandControls.clear();
-      if (!(["local-models", "local-workspace", "local-environment", "evaluations"].includes(view) || (local && ["campaigns", "collection-overview"].includes(view))) && !signedIn(ctx)) return authNotice(ctx);
+      if (!(["local-models", "local-workspace", "local-environment", "evaluations", "jobs"].includes(view) || (local && ["campaigns", "collection-overview"].includes(view))) && !signedIn(ctx)) return authNotice(ctx);
       try {
         return await {
           members: admin,
@@ -5942,6 +6005,7 @@ window.SpireProject = (() => {
           games: gamesPage,
           downloads: exportsPage,
           research,
+          jobs: remoteTrainingJobs,
           evaluations,
           "local-models": localModels,
           "local-environment": localEnvironment,

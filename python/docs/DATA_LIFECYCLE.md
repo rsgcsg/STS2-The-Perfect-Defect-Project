@@ -185,7 +185,9 @@ python -m spireagent.workbench cache-configure --store STORE --other-store s3 --
 
 This writes only `STORE/cache-policy.json`, a non-secret storage configuration,
 including each exact bucket/endpoint/prefix selected now. At most two existing
-locations may be pinned, using `--additional-peer` for the second. The current
+locations may be pinned. Use `--additional-peer` for a second local location,
+or `--additional-peer-config BINDING.json` for the existing non-secret R2 peer
+binding returned by recording maintenance status (kind/bucket/endpoint/prefix/region). The current
 recording prefix `p1-native-preservation/v1` and compute prefix `stpd` are distinct;
 configure both when that Store consumes both. Only an exact `object_not_found`
 permits checking the next declared location; transport or integrity failures stop

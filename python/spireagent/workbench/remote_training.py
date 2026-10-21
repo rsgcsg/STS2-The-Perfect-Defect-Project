@@ -43,8 +43,11 @@ class RemoteTrainingService:
                               and (self._injected_provider or
                                    deployment.compute_store.get("kind") == "s3")),
                 "provider": "trusted_injected_engineering" if self._injected_provider else "modal",
-                "supported_actions": ["prepare", "start", "status", "cancel", "reconcile",
-                                      "resume"],
+                "supported_actions": (["status", "progress"] if deployment and
+                                      deployment.observation_only else
+                                      ["prepare", "start", "status", "progress", "cancel",
+                                       "reconcile", "resume"]),
+                "observation_only": deployment.observation_only if deployment else False,
                 "live_pause_supported": False, "fixed_stop_after_supported": True,
                 "automatic_retry": False, "gpu_qualification": "not_established",
                 "compute_store": dict(deployment.compute_store) if deployment else None,
@@ -54,6 +57,8 @@ class RemoteTrainingService:
         deployment = self.config.remote_compute
         if deployment is None:
             raise BoundaryError("remote_training", "explicit_scheduler_deployment_required")
+        if deployment.observation_only:
+            raise BoundaryError("remote_training", "observation_only_original_writer_required")
         if self.config.hub_url:
             raise BoundaryError("remote_training", "configured_hub_requires_hub_scheduler_route")
         if not self._injected_provider and deployment.compute_store.get("kind") != "s3":
@@ -118,7 +123,8 @@ class RemoteTrainingService:
             self._stop.wait(0.5)
 
     def start_loop(self) -> None:
-        if self.config.remote_compute is not None and not self.config.hub_url:
+        if (self.config.remote_compute is not None and not self.config.hub_url
+                and not self.config.remote_compute.observation_only):
             with self._lock:
                 self._ready()
                 self._launch_loop()
@@ -190,7 +196,50 @@ class RemoteTrainingService:
         for row in visible:
             row["result"] = json.loads(row["result"]) if row["result"] else None
         return {"schema": "spireagent/remote-training-status-1", "jobs": visible,
-                "scheduler_error": self._error, "automatic_retry": False}
+                "scheduler_error": self._error, "automatic_retry": False,
+                **({"observation_only": True} if deployment.observation_only else {})}
+
+    def progress(self, job_id: object, *, after_step: int = 0) -> dict[str, Any]:
+        """Explicit peer read of durable RunReporter events; never create/retry a task."""
+        from spireagent.storage.run_reporter import ObjectStoreRunReporter
+        from spireagent.workbench.dashboard import _safe_value
+
+        if type(after_step) is not int or after_step < 0:
+            raise BoundaryError("remote_training", "invalid_event_cursor")
+        row = self.status(job_id)["jobs"][0]
+        deployment = self.config.remote_compute
+        assert deployment is not None
+        peer = open_peer(deployment.compute_store)
+        run = peer.get_manifest(row["input_id"])
+        training = peer.get_manifest(run.parent("training_input"))
+        planned_steps = training.parameters.value().get("planned_steps")
+        events = ObjectStoreRunReporter(peer, peer.blobs).events(run.artifact_id)
+        facts = []
+        for event in events:
+            info = event.parameters.value()
+            if (event.producer != run.producer or type(info.get("step")) is not int
+                    or not isinstance(info.get("kind"), str)
+                    or not isinstance(info.get("details"), dict)):
+                raise BoundaryError("remote_training", "run_event_identity_mismatch")
+            facts.append({"event_id": event.artifact_id, "event_step": info["step"],
+                          "attempt_id": info.get("attempt"), "kind": info["kind"],
+                          "details": _safe_value(info["details"])})
+        selected = [event for event in facts if event["event_step"] > after_step]
+        def latest(kind: str) -> dict[str, Any] | None:
+            return next((event for event in reversed(facts) if event["kind"] == kind), None)
+
+        return {"schema": "spireagent/remote-training-progress-1", "job_id": row["id"],
+                "run_id": run.artifact_id, "attempt_id": row["attempt_id"],
+                "producer": run.producer.to_dict(), "job_status": row["status"],
+                "planned_steps": planned_steps,
+                "event_count": len(facts), "through_step": max(
+                    (event["event_step"] for event in facts), default=0),
+                "events": selected[-200:], "history_truncated": len(selected) > 200,
+                "latest_progress": latest("progress"), "latest_checkpoint": latest("checkpoint"),
+                "recorded_errors": [event for event in facts
+                                    if event["kind"] in {"failed", "error"}][-20:],
+                "result": row["result"], "provider_queried": False,
+                "automatic_retry": False, "observation": "persisted_run_events_only"}
 
     def prepare(self, body: object) -> dict[str, Any]:
         from spireagent.workbench.p1_training_data import (
@@ -227,6 +276,8 @@ class RemoteTrainingService:
                 "provider_submitted": False, "gpu_qualification": "not_established"}
 
     def command(self, action: str, body: object) -> dict[str, Any]:
+        if self.config.remote_compute is not None and self.config.remote_compute.observation_only:
+            raise BoundaryError("remote_training", "observation_only_original_writer_required")
         if action == "pause":
             raise BoundaryError("remote_training", "live_pause_unsupported_use_fixed_stop_after")
         with self._lock:

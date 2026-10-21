@@ -7574,3 +7574,49 @@ test("published P1 derivation with failed index exposes explicit original-operat
   await action(page,"reconcile-p1-derivation").onclick();
   assert.deepEqual(writes,[{}]);
 });
+
+test("normal task page observes persisted remote progress without submitting or controlling", async () => {
+  const job = id("1").slice(0,32), run = id("2"), checkpoint = id("3");
+  const env = setup({identity:{status:"signed_out"}, view:"jobs", handler: async url => {
+    if (url === "/api/remote-training/status") return {
+      schema:"spireagent/remote-training-status-1", observation_only:true,
+      jobs:[{id:job,input_id:run,status:"running",max_seconds:1200}], scheduler_error:null,
+    };
+    if (url === `/api/remote-training/progress?job_id=${job}`) return {
+      schema:"spireagent/remote-training-progress-1",job_id:job,run_id:run,
+      observation:"persisted_run_events_only",event_count:3,planned_steps:69,
+      latest_progress:{details:{optimizer_updates:1,epoch:1,mean_N_loss:0.5}},
+      latest_checkpoint:{details:{checkpoint_id:checkpoint}},events:[],recorded_errors:[],
+    };
+    throw new Error(`unexpected route ${url}`);
+  }});
+  const page = await env.render();
+  assert.match(text(page), /1 \/ 69/);
+  assert.match(text(page), /0\.5/);
+  assert.match(text(page), /只读观察既有 Run/);
+  assert.match(text(page), /Stop、取消与恢复由原任务工作台执行/);
+  assert.match(text(page), /最近已保存检查点/);
+  assert.equal(post(env.calls).length,0);
+});
+
+test("P1 combined evaluation exposes only the recorded dev summary", async () => {
+  const evaluation=id("c");
+  const env=setup({identity:{status:"signed_out"},view:"local-workspace",query:`&id=${evaluation}`,
+    curationStatus:{schema:"stpd/local-curation-preparation-v1",status:"ready"},handler:async url=>{
+      if(url==="/api/local-workspace/managed") return {schema:"stpd/managed-local-workspace-registration-v1",status:"ready",curation_status:"ready"};
+      if(url===`/api/local-workspace/artifacts/${evaluation}`) return {artifact_id:evaluation,kind:"offline_evaluation",parameters:{schema:"stpd/p1-N-evaluation-1"}};
+      if(url===`/api/local-workspace/evaluations/${evaluation}`) return {
+        schema:"stpd/local-offline-evaluation-summary-v1",evaluation_id:evaluation,
+        evaluation_schema:"stpd/p1-N-evaluation-1",partition:"dev",model_id:id("a"),
+        validation_scope:"recorded_report_and_parent_identities",
+        interpretation:"producer_recorded_summary_not_full_lineage_or_quality_verification",
+        decision_count:446,best_dev_N_loss:0.25,model_selection:"dev_only",test_metrics:"sealed_not_exposed",
+      };
+      throw new Error(`unexpected route ${url}`);
+    }});
+  const page=await env.render();
+  assert.match(text(page),/最佳 DEV N 损失/);
+  assert.match(text(page),/0\.25/);
+  assert.match(text(page),/封存，未展示/);
+  assert.equal(post(env.calls).length,0);
+});

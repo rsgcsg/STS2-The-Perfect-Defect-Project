@@ -62,6 +62,8 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument("--store", default=".local/research-store")
+    parser.add_argument("--additional-peer-config", type=Path,
+                        help="second pinned peer binding JSON; contains no credentials")
     parser.add_argument("--additional-peer", help="second explicit existing cache peer")
     parser.add_argument("--max-cache-bytes", type=int, help="explicit local payload budget")
     parser.add_argument("--retain-recent", type=int, default=2)
@@ -105,9 +107,13 @@ def main(argv: list[str] | None = None) -> int:
 
                 if not args.other_store or args.max_cache_bytes is None:
                     raise BoundaryError("cli", "explicit_peer_and_cache_budget_required")
+                if args.additional_peer and args.additional_peer_config:
+                    raise BoundaryError("cli", "choose_one_additional_peer_binding")
+                additional = (json.loads(args.additional_peer_config.read_bytes())
+                              if args.additional_peer_config else args.additional_peer)
                 result = configure_cache(store, args.other_store,
                                          max_bytes=args.max_cache_bytes,
-                                         additional_peer=args.additional_peer,
+                                         additional_peer=additional,
                                          retain_recent=args.retain_recent)
             elif args.command == "prepare":
                 from spireagent.json_boundary import decode_json

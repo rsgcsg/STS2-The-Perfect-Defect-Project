@@ -1035,6 +1035,7 @@ function changePage(offset) {
 }
 function navigationGroup(view) {
   if (["collections", "statistics", "games", "downloads", "overview"].includes(view)) return "collections";
+  if (localShell && view === "jobs") return "jobs";
   if (["research", "models", "jobs"].includes(view)) return "research";
   return view;
 }
@@ -1117,7 +1118,7 @@ async function load(manual = false, forceIdentity = manual) {
   if (
     localShell &&
     !config.cloudUrl &&
-    ["datasets", "research", "models", "jobs"].includes(view)
+    ["datasets", "research", "models"].includes(view)
   ) {
     if (serial !== state.serial) return;
     local = true;
@@ -1137,7 +1138,7 @@ async function load(manual = false, forceIdentity = manual) {
       ? `?limit=${state.limit}&offset=${state.offset}`
       : "";
   try {
-    const localOnlyPage = localShell && ["local-workspace", "local-environment"].includes(view);
+    const localOnlyPage = localShell && ["local-workspace", "local-environment", "jobs"].includes(view);
     const identity = localOnlyPage
       ? window.SpireIdentity.localOnly()
       : await window.SpireIdentity.refresh(forceIdentity);
@@ -1156,7 +1157,7 @@ async function load(manual = false, forceIdentity = manual) {
         $("updated").textContent = "当前页面状态已检查";
       return;
     }
-    if (["members", "statistics", "downloads", "research", "local-models", "local-environment", "local-workspace", "campaigns", "evaluations"].includes(view) || (["datasets", "games"].includes(view) && !id)) {
+    if ((localShell && view === "jobs") || ["members", "statistics", "downloads", "research", "local-models", "local-environment", "local-workspace", "campaigns", "evaluations"].includes(view) || (["datasets", "games"].includes(view) && !id)) {
       const opened = [...document.querySelectorAll("details[open]")].map(item => item.dataset.preserve);
       const content = await window.SpireProject.render(view, identity, shell => {
         if (serial === state.serial && identityContext === window.SpireIdentity.context()) $("content").replaceChildren(shell);
