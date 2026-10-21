@@ -217,6 +217,20 @@ retains these installed optional dependencies. The local home, model setup and
 recorded-report reading do not require team login; team account pairing is
 optional until a member uses collection sharing or uploads.
 
+### 正常 Steam 冷载与安装身份
+
+日常游戏从 Steam Library 的 STS2 条目启动，由 Steam 提供应用身份；直接运行原生
+可执行文件可能在 Steam 初始化处停止。正常无 canary 冷载可验证已装载身份和被动
+录制连接；`artifact_unqualified` / `execution_available=false` 仍不能通过原
+`verify-loaded` mutation gate。隔离 Host 的显式 canary 工程运行保独立证据，不能转授
+正常执行资格。两种启动上下文即使使用同一 DLL，Modset fingerprint 也可能不同；
+测试须冻结实际目标上下文取得的 tuple，保留先前失败，不能覆盖旧回执。
+
+Live UI 的编译身份覆盖 C# 输入，BOM 的组件身份覆盖整个组件目录；非编译文件变化
+可让其 source revision/digest 不同，同一 component tree 并不要求这两种身份值相等。
+安装校验沿各自原 input domain 比较，不用全目录 revision 代替已嵌入的编译身份。
+这些说明不改身份算法，也不更新已装 release 的字节或历史资格。
+
 ### P1 Model 的正常 CPU 环境
 
 录制专用 kit 默认仍使用 `cloud`；需要在同一正常 Application 注册并运行
