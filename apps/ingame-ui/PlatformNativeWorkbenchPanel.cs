@@ -46,7 +46,7 @@ internal sealed class PlatformNativeWorkbenchPanel : IDisposable
         _body.AddThemeConstantOverride("separation", 8);
         Root.AddChild(_body);
         var navigation = new HBoxContainer();
-        foreach ((string page, string label) in new[] { ("play", "实战"), ("data", "采集与资料"), ("training", "训练与任务"), ("models", "模型与分析"), ("settings", "账号与资源") })
+        foreach ((string page, string label) in new[] { ("play", "实战"), ("data", "录制与资料"), ("training", "训练与任务"), ("models", "模型与分析"), ("settings", "账号与资源") })
         {
             string selected = page;
             navigation.AddChild(Button(label, () => Navigate(selected, _context)));
@@ -217,15 +217,8 @@ internal sealed class PlatformNativeWorkbenchPanel : IDisposable
     {
         if (String(data, "schema") == "spireagent/native-recording-view-1" && Object(data, "status") is JsonElement recording)
         {
-            target.AddChild(Label("原生交互与观察 · " + String(recording, "recording_lifecycle")));
-            target.AddChild(Label("来源仅由操作员明确声明，不是机器验证的真人证明。"));
-            if (Object(recording, "source") is JsonElement source)
-            {
-                target.AddChild(Label($"公开观察 {Show(source.GetProperty("observations"))} · 输入 {Show(source.GetProperty("inputs"))} · 待完成 {Show(source.GetProperty("pending_inputs"))} · 缺口 {Show(source.GetProperty("gaps"))}"));
-                target.AddChild(Label(Boolean(source, "accounting_complete") ? "当前无记账失败；不代表零缺口或覆盖资格。" : "记账不完整，请查看录制诊断。"));
-                if (Object(source, "declaration") is JsonElement declaration)
-                    target.AddChild(Label("当前来源 · " + (String(declaration, "source_kind") switch { "declared_human" => "本人操作", "agent_native_ui" => "AI界面操作", "agent_protocol" => "Agent协议", _ => "未知来源" }) + " · " + String(declaration, "actor_id")));
-            }
+            foreach (string row in PlatformNativeRecordingPresentation.Rows(recording))
+                target.AddChild(Label(row));
             if (Boolean(data, "model_recovery_required"))
                 target.AddChild(Label("本机模型尚在实战或需要恢复。开始/更改为本人、AI界面或未知来源前，请先明确归还 Human 或 Stop。"));
             if (Object(data, "unconfirmed") is JsonElement uncertain)
@@ -445,6 +438,9 @@ internal sealed class PlatformNativeWorkbenchPanel : IDisposable
                         body["source_segment_id"] = Object(recording, "source") is JsonElement source ? String(source, "segment_id") : null;
                         body["command_id"] = Guid.NewGuid().ToString("D");
                         if (!body.ContainsKey("source_kind")) { body["source_kind"] = null; body["actor_id"] = null; }
+                        if (action == "recording.start" && body.GetValueOrDefault("capture_profile_id") as string
+                            == STS2HumanAnnotator.Core.P1NativeRecordingContract.ProfileId)
+                            body["actor_id"] = null;
                     }
                 }
                 Submit(connection, action, body);

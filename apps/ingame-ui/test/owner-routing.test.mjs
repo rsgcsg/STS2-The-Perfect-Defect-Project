@@ -37,3 +37,14 @@ test("direct Human Stop recovery retains exact remembered run while normal pairi
   assert.match(mod,/_endTestButton.Disabled = !recoveryAvailable/);
   assert.match(panel,/直接归还 Human/);assert.match(panel,/直接停止当前 Runtime/);
 });
+
+test("P1 recording has a direct native Workbench entry and cannot fall through legacy controls",()=>{
+  assert.match(mod,/BuildHeaderButton\("录制", \(\) => OpenNativeWorkbenchPage\("data"\)/);
+  assert.match(mod,/"兼容录制诊断"/);
+  assert.match(mod,/_recordingProfile.Selected = 1/);
+  const flow=mod.slice(mod.indexOf("private void ApplyRecordingCommand"),mod.indexOf("private STS2HumanAnnotator.Core.SourceDeclaration ReadSourceDeclaration"));
+  assert.match(flow,/or STS2HumanAnnotator.Core.P1NativeRecordingContract.ProfileId/);
+  assert.ok(flow.indexOf('OpenNativeWorkbenchPage("data")')<flow.indexOf("PlatformRecordingCommands.Execute"));
+  assert.match(panel,/PlatformNativeRecordingPresentation.Rows\(recording\)/);
+  assert.match(panel,/body.GetValueOrDefault\("capture_profile_id"\)[\s\S]*P1NativeRecordingContract.ProfileId\)[\s\S]*body\["actor_id"\] = null/);
+});
