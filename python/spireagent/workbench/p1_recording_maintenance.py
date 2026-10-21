@@ -272,6 +272,15 @@ class P1RecordingMaintenance:
                 if existing is None:
                     importer.start_p1_derivation(source, projection)
                     return dict(state)
+                if policy["peer"] is not None and not any(
+                    row["artifact_id"] == existing.artifact_id
+                    and row["peer"] == policy["peer"]
+                    and row["storage_action"] == "preserve"
+                    and row["storage_receipt"].get("full_readback") is True
+                    for row in importer._storage_receipts.values()
+                ):
+                    importer.start_p1_storage("preserve", existing.artifact_id, policy["peer"])
+                    return dict(state)
             state.setdefault("completed_candidates", []).append(active["candidate_id"])
             original = store.get_manifest(source).parameters.value()
             state.setdefault("sessions", {}).setdefault(source, {

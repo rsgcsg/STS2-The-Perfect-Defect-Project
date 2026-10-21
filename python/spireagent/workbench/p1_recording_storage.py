@@ -25,7 +25,13 @@ from spireagent.storage.local import LocalBlobStore
 from spireagent.storage.s3 import S3BlobStore, S3Config
 from spireagent.storage.store import ManifestArtifactStore, copy_artifact
 
-from .p1_recording_store import BUNDLE_SCHEMA, _transfer, _verify_archive
+from .p1_recording_store import (
+    BUNDLE_SCHEMA,
+    PROJECTIONS,
+    _transfer,
+    _verify_archive,
+    p1_projection,
+)
 
 HOT_METADATA = frozenset({
     "recording-manifest.json", "session-close-receipt.json", "p1-native-close.json",
@@ -289,6 +295,19 @@ def verify_p1_storage(
     """Full payload and streamed archive-member readback, without expanding the raw tree."""
     scratch.mkdir(parents=True, exist_ok=True)
     manifest = store.get_manifest(artifact_id)
+    if manifest.parameters.value().get("projection_id") in PROJECTIONS:
+        projection = p1_projection(store, artifact_id)
+        for payload in projection.payloads:
+            for _ in store.read_payload(payload):
+                pass
+        source = verify_p1_storage(store, projection.parent("source"), scratch=scratch)
+        return {
+            "artifact_id": artifact_id,
+            "projection_id": projection.parameters.value()["projection_id"],
+            "full_readback": True,
+            "source_archive": source,
+            "verified_at": datetime.now(UTC).isoformat(),
+        }
     inventory = _inventory(store, manifest, scratch)
     with tempfile.TemporaryDirectory(prefix="p1-readback-", dir=scratch) as name:
         archive = store.materialize(manifest.payload("archive"), Path(name) / "archive.tar.gz")
@@ -388,7 +407,12 @@ def run_storage(
         locator, original = _remote_locator(local, peer, identity)
     if action == "verify":
         source = target = peer
-    inventory = _inventory(source, source.get_manifest(locator), scratch)
+    manifest = source.get_manifest(locator)
+    if manifest.parameters.value().get("projection_id") in PROJECTIONS:
+        p1_projection(source, locator)
+        inventory = None
+    else:
+        inventory = _inventory(source, manifest, scratch)
     destination = (
         target.blobs.root
         if isinstance(target.blobs, LocalBlobStore) and action != "verify"
@@ -400,6 +424,7 @@ def run_storage(
     if action != "verify":
         copy_artifact(source, target, locator, scratch=scratch)
         if original is not None:
+            assert inventory is not None
             transfer = local.put_bytes("transfer", json_bytes(inventory.to_dict()))
             if transfer != original.payload("transfer"):
                 raise BoundaryError("p1_storage", "restored_transfer_mismatch")
