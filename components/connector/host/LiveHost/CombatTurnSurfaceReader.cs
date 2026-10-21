@@ -81,12 +81,8 @@ internal sealed class CombatTurnSurfaceReader : ILiveSurfaceReader
         {
             Player = context.Player with
             {
-                Hand = observedHandCards
-                    .Select(card => LiveContextReader.BuildCard(
-                        card,
-                        entities.GetId(card, "card"),
-                        includeCombatLegality: true))
-                    .ToArray()
+                Hand = RetainObservedHandFacts(context.Player.Hand,
+                    observedHandCards.Select(card => entities.GetId(card, "card")))
             }
         };
 
@@ -219,6 +215,15 @@ internal sealed class CombatTurnSurfaceReader : ILiveSurfaceReader
 
     // Keep backend hand order and exact instances. Queue-only cards are
     // observation scope, never an alternate source of public delivery actions.
+    // BuildCombat already rendered the complete logical Hand at this exact
+    // synchronous boundary. Visibility/queue selection is a subset, not a new
+    // card presentation: preserve those complete facts without rendering twice.
+    internal static VisibleCard[] RetainObservedHandFacts(IReadOnlyList<VisibleCard> capturedHand, IEnumerable<string> observedIds)
+    {
+        var byId = capturedHand.ToDictionary(card => card.EntityId, StringComparer.Ordinal);
+        return observedIds.Select(id => byId[id]).ToArray();
+    }
+
     internal static CardModel[] IncludeVisibleQueuedHandCards(IEnumerable<CardModel> logicalHand,
         IReadOnlyList<CardModel> visibleHolders, IReadOnlyList<CardModel> visibleQueue) =>
         visibleQueue.Count == 0 ? visibleHolders.ToArray() : logicalHand.Where(card =>
