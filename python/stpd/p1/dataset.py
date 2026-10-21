@@ -20,7 +20,7 @@ from spireagent.storage.store import ArtifactStore
 from stpd.fullrun.data import group_run_fingerprints, split_run_fingerprints
 
 from .data import digest, json_bytes
-from .input import INPUT_SPEC, project
+from .input import INPUT_SPEC, LEGACY_INPUT_SPEC, project, validate_input_spec
 from .spec import SNAPSHOT_SCHEMA, TARGET_SPEC
 
 SOURCE_SCHEMA = "sts2.human-annotator/p1-native-session-bundle-1"
@@ -75,8 +75,9 @@ def load_projection(store: ArtifactStore, artifact_id: str) -> Projection:
     value = _payload_json(store, manifest, role)
     if (
         value.get("schema") != info["schema"]
-        or (value.get("profile"), value.get("revision")) != ("p1-global-r1", "r1.4")
-        or (info.get("profile"), info.get("revision")) != ("p1-global-r1", "r1.4")
+        or (value.get("profile"), value.get("revision")) != ("p1-global-r1", info.get("revision"))
+        or info.get("profile") != "p1-global-r1"
+        or info.get("revision") not in {INPUT_SPEC["revision"], LEGACY_INPUT_SPEC["revision"]}
         or value.get("source_content_id") != original.get("content_id")
     ):
         raise BoundaryError("p1_snapshot", "projection_identity_mismatch")
@@ -117,13 +118,13 @@ def _points(projection: Projection) -> Iterator[tuple[str, int, dict[str, Any]]]
             yield "points", index, point
 
 
-def _N_fact(point: dict[str, Any]) -> str:
+def _N_fact(point: dict[str, Any], input_projection: dict[str, Any]) -> str:
     observation, chosen = point["observation"], point["chosen"]
     if (
         not isinstance(observation, dict)
         or observation.get("schema") != "sts2.p1/observation-1"
         or observation.get("profile") != "p1-global-r1"
-        or observation.get("revision") != "r1.4"
+        or observation.get("revision") != input_projection["revision"]
         or observation.get("status") != "decision"
         or not isinstance(observation.get("envelope"), dict)
         or observation["envelope"].get("required_information_complete") is not True
@@ -159,10 +160,12 @@ def inspect_projections(
     projection_ids: Sequence[str],
     *,
     selected_decisions: Mapping[str, Sequence[str]] | None = None,
+    input_projection: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Reproduce an exact selection; no implicit latest/union/admission rule."""
     if not projection_ids or len(set(projection_ids)) != len(projection_ids):
         raise BoundaryError("p1_snapshot", "explicit_unique_projections_required")
+    spec = validate_input_spec(INPUT_SPEC if input_projection is None else input_projection)
     selected = dict(selected_decisions or {})
     if set(selected) - set(projection_ids):
         raise BoundaryError("p1_snapshot", "selection_has_foreign_projection")
@@ -174,6 +177,8 @@ def inspect_projections(
     duplicates = 0
     for artifact_id in sorted(projection_ids):
         projection = load_projection(store, artifact_id)
+        if projection.value["revision"] != spec["revision"]:
+            raise BoundaryError("p1_snapshot", "projection_InputSpec_revision_mismatch")
         root_id, lineage = projection.root, projection.lineage
         fingerprints.append((root_id, "root:" + root_id))
         seed = lineage.get("seed")
@@ -220,10 +225,10 @@ def inspect_projections(
                 exclusions["explicit_selection"] += 1
                 continue
             found.add(decision)
-            fact = _N_fact(point)
+            fact = _N_fact(point, spec)
             observation = point["observation"]
             # Exercise the real, complete InputSpec; do not fit vocabulary here.
-            project(observation)
+            project(observation, input_projection=spec)
             reference = {
                 "projection_id": artifact_id,
                 "source_id": projection.source.artifact_id,
@@ -307,7 +312,7 @@ def inspect_projections(
         "unknown_independence_groups": sum(
             g["N"] > 0 and not g["independence_metadata_complete"] for g in groups
         ),
-        "input_projection": INPUT_SPEC,
+        "input_projection": spec,
         "target_spec": TARGET_SPEC,
         "use_scope": "engineering_only_not_research_admission",
     }
@@ -382,10 +387,15 @@ def load_snapshot(store: ArtifactStore, snapshot_id: str) -> tuple[Manifest, dic
     if manifest.kind != "dataset" or info.get("schema") != SNAPSHOT_SCHEMA:
         raise BoundaryError("p1_snapshot", "snapshot_schema_required")
     value = _payload_json(store, manifest, "selection")
+    spec = value.get("input_projection")
+    try:
+        spec = validate_input_spec(spec)
+    except ValueError as error:
+        raise BoundaryError("p1_snapshot", "snapshot_InputSpec_unsupported") from error
     if (
         digest(json_bytes(value)) != info.get("selection_sha256")
         or value.get("schema") != SNAPSHOT_SCHEMA
-        or value.get("input_projection") != INPUT_SPEC
+        or info.get("input_projection") != spec
         or value.get("target_spec") != TARGET_SPEC
         or {p.artifact_id for p in manifest.parents}
         != {s["projection_id"] for s in value["sources"]}
@@ -402,6 +412,7 @@ def load_snapshot(store: ArtifactStore, snapshot_id: str) -> tuple[Manifest, dic
         store,
         [s["projection_id"] for s in value["sources"]],
         selected_decisions=value["selection"],
+        input_projection=spec,
     )
     reproduced = {
         k: v
@@ -437,7 +448,7 @@ def iter_snapshot_points(
                 or point.get("source_decision_id") != ref["source_decision_id"]
                 or point.get("source_event_id") != ref["source_event_id"]
                 or digest(json_bytes(point["observation"])) != ref["observation_sha256"]
-                or _N_fact(point) != ref["N_fact_sha256"]
+                or _N_fact(point, snapshot["input_projection"]) != ref["N_fact_sha256"]
                 or ref["chosen"] != point["chosen"]
                 or ref["source_id"] != projection.source.artifact_id
                 or ref["split"] != snapshot["split_by_group"][ref["group_id"]]

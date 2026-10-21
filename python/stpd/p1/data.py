@@ -49,10 +49,10 @@ def read_segments(path: Path, expected_sha256: str) -> SegmentInput:
     if (value.get("schema"), value.get("profile"), value.get("revision")) != (
         "sts2.p1/native-segments-1",
         "p1-global-r1",
-        "r1.4",
+        "r1.5",
     ):
         raise ValueError(
-            "T0 supports current r1.4 segments only; historical input is regression-only"
+            "T0 supports current r1.5 segments only; historical input is regression-only"
         )
     branch = value["branch"]
     examples: list[Example] = []
@@ -77,7 +77,7 @@ def read_segments(path: Path, expected_sha256: str) -> SegmentInput:
         points, end = segment["points"], segment["end_target"]
         for i, point in enumerate(points):
             obs, mask, chosen = point["observation"], point["mask"], point["chosen"]
-            if obs.get("revision") != "r1.4" or obs.get("profile") != "p1-global-r1":
+            if obs.get("revision") != "r1.5" or obs.get("profile") != "p1-global-r1":
                 raise ValueError("point profile/revision drift")
             if set(mask) != {"N", "next", "end"} or any(type(x) is not bool for x in mask.values()):
                 raise ValueError("invalid supervision mask")

@@ -54,10 +54,16 @@ def inspect(root, entry, manifest, policy_config, *, binding_root=None):
 
 
 def metadata(owner: Path, config: dict[str, Any], manifest: dict[str, Any]) -> dict[str, Any]:
-    _, _, model, payload = installation(owner / "config.json", owner / "manifest.json", owner)
+    checked_config, checked_manifest, model, payload = installation(
+        owner / "config.json", owner / "manifest.json", owner
+    )
+    if config != checked_config or manifest != checked_manifest:
+        raise ValueError("P1 installation metadata changed")
     return {
         "schema": "stpd/p1-mstd-model-1",
         "input_spec": manifest["input"]["input_spec"],
+        "input_projection": config["input_projection"],
+        "package_input_spec": config["package_input_spec"],
         "checkpoint_sha256": payload["checkpoint_sha256"],
         "parameters": sum(x.numel() for x in model.parameters()),
     }

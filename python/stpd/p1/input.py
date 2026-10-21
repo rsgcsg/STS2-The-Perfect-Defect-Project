@@ -19,7 +19,7 @@ from .data import digest, json_bytes
 
 NUMBER = re.compile(r"(?<![\w])[-+]?(?:\d+\.?\d*|\.\d+)(?![\w])")
 TEXT_KEYS = {"description", "name", "label", "title", "prompt", "relic_description"}
-INPUT_SPEC: dict[str, Any] = {
+LEGACY_INPUT_SPEC: dict[str, Any] = {
     "id": "stpd-p1-mstd-input",
     "version": "1",
     "profile": "p1-global-r1",
@@ -34,6 +34,14 @@ INPUT_SPEC: dict[str, Any] = {
     "model_state": "stateless every observation",
     "targets_in_input": False,
 }
+# r1.5 changes the owning catalog semantics, not the model representation.
+INPUT_SPEC = {**LEGACY_INPUT_SPEC, "version": "2", "revision": "r1.5"}
+
+
+def validate_input_spec(value: object) -> dict[str, Any]:
+    if not isinstance(value, dict) or (value != INPUT_SPEC and value != LEGACY_INPUT_SPEC):
+        raise ValueError("unsupported P1 M-std InputSpec")
+    return value
 
 
 def normalized(text: str) -> tuple[str, list[float]]:
@@ -63,9 +71,14 @@ class Frame:
     roles: list[tuple[int, int]]
 
 
-def project(observation: dict[str, Any]) -> Frame:
-    if observation.get("profile") != "p1-global-r1" or observation.get("revision") != "r1.4":
-        raise ValueError("P1 M-std requires r1.4; no historical field filling")
+def project(
+    observation: dict[str, Any], *, input_projection: dict[str, Any] | None = None
+) -> Frame:
+    spec = validate_input_spec(INPUT_SPEC if input_projection is None else input_projection)
+    if (observation.get("profile"), observation.get("revision")) != (
+        spec["profile"], spec["revision"]
+    ):
+        raise ValueError("P1 M-std observation differs from bound InputSpec revision")
     entities: list[Entity] = []
     aliases: dict[str, int] = {}
     pending: list[tuple[int, str]] = []
