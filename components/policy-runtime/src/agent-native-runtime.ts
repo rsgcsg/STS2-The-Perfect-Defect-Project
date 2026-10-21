@@ -1,3 +1,5 @@
+import { GlobalNoProgressWindow, type GlobalNoProgressConfig } from "./global-no-progress.js";
+import { normalizeGlobalCaptureResponse } from "./global-capture-storage.js";
 import { type FullPublicBasis, serializePublicBasisRecord, decodePublicSourceReceipt } from "@rsgcsg/sts2-connector-client";
 import { createSession, reduce, modelView, applyCommitment, resolveFollowBasis, commitmentView, P1G_LIMITS, P1G_RESULT_SCHEMA, type P1SessionState, type P1Result, type P1StepRecord } from "@rsgcsg/sts2-connector-client/p1-global";
 import { type GlobalTransport, type GlobalIdentity, assertGlobalIdentity, assertGlobalProgramSupport, globalDigest } from "./global-transport.js";
@@ -38,6 +40,7 @@ interface SharedAgentRuntimeOptions {
   runtimeIdentity: { version: string; code_sha256: string };
   mode?: RuntimeMode;
   autoBudget?: Partial<AutonomyBudgetConfig>;
+  globalNoProgress?: GlobalNoProgressConfig;
   monotonicNow?: () => number;
   now?: () => string;
 }
@@ -68,6 +71,7 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
   private globalPendingSource: GlobalSource | null = null;
   private globalSourceOrdinal = 0;
   private globalEpisode: string | null = null;
+  private readonly globalNoProgress?: GlobalNoProgressWindow;
   private readonly budget: AgentByteBudget;
   private readonly ledger: AgentConsumptionLedger;
   private readonly sessionId = `agent-${randomUUID()}`;
@@ -130,6 +134,10 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
       throw new AgentSessionError("agent_execution_policy_mismatch");
     if (!options.runtimeIdentity.version || !/^[a-f0-9]{64}$/u.test(options.runtimeIdentity.code_sha256))
       throw new AgentSessionError("exact_runtime_identity_required");
+    if (options.globalNoProgress) {
+      if (!options.globalTransport) throw new AgentSessionError("global_no_progress_profile_required");
+      this.globalNoProgress = new GlobalNoProgressWindow(options.globalNoProgress, options.port.byteBudget);
+    }
     this.manifestSha256 = createHash("sha256").update(canonicalJson(this.manifest)).digest("hex");
     this.now = options.now ?? (() => new Date().toISOString());
     this.mode = options.mode ?? "human";
@@ -184,7 +192,7 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
       await this.release().catch(() => undefined);
       await this.quiesceRenewal();
       if (this.native?.subscription) await this.native!.detach().catch(() => undefined);
-      this.owner.clearDeadline();
+      this.owner.clearDeadline(); this.globalNoProgress?.close();
       // Deadline expiry owns serialized evidence even when initialization
       // aborts. Finish that write before the caller releases failed-run files.
       if (this.budgetHandoff) await this.budgetHandoff;
@@ -201,7 +209,7 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
         artifact_sha256: this.manifest.artifact.sha256, adapter: { ...this.manifest.adapter } },
       agent_manifest_sha256: this.manifestSha256, run_id: this.options.evidence.runId,
       lifecycle: this.stopped ? "stopped" : "running", mode: this.mode, controller: this.controllerStatus(),
-      autonomy_budget: budget, tainted: this.tainted, taint_reason: this.taintReason, refreshing: this.refreshing,
+      autonomy_budget: budget, ...(this.globalNoProgress ? { global_no_progress: this.globalNoProgress.status() } : {}), tainted: this.tainted, taint_reason: this.taintReason, refreshing: this.refreshing,
       environment: this.environment, session: { ...this.context(), profile: this.manifest.input.profile,
         input_spec: { ...this.manifest.input.input_spec }, stream_generation: this.capabilities?.stream_generation ?? null,
         continuity_token: this.ledger.continuityToken, state_version: this.ledger.stateVersion,
@@ -1213,7 +1221,7 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
       await attempt(() => this.options.globalTransport ? this.options.globalTransport.close() : this.controller!.close());
       await attempt(() => this.port.close());
       await attempt(() => this.port.framesDrained());
-      await attempt(() => this.ledger.close()); this.knownAcquisitions.clear(); this.knownActions.clear();
+      await attempt(() => this.ledger.close()); this.globalNoProgress?.close(); this.knownAcquisitions.clear(); this.knownActions.clear();
       for (const held of this.actionReservations.values()) for (const reservation of held)
         await attempt(() => reservation.release());
       this.actionReservations.clear();
@@ -1265,6 +1273,7 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
     this.environment = { kind: "global_public_basis", ...identity.session, host_kind: identity.kind,
       producer_sha256: globalDigest(identity.producer), game_sha256: globalDigest(identity.game), game_continuity_id: identity.game_continuity_id };
     await this.emitGlobal("global_initialized", { identity, core: p1CoreIdentity() });
+    if (this.globalNoProgress) await this.emitGlobal("global_no_progress_config", { ...this.globalNoProgress.config });
     await this.emit("mode_changed", { ...this.context(), mode: this.mode, autonomy_budget: this.budgetStatus(), controller: this.controllerStatus() });
   }
   private async emitGlobal(kind: string, data: Record<string, unknown>): Promise<void> {
@@ -1274,25 +1283,33 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
   private async captureGlobal(signal: AbortSignal, epoch: number, postDelivery = false): Promise<GlobalSource> {
     const captureRequestId = `capture-request-${randomUUID()}`;
     await this.emitGlobal("global_capture_requested", { request_id: captureRequestId });
+    const responseReservations: AgentByteReservation[] = [];
     try {
-    let responseWrite = Promise.resolve();
+    const responses: Buffer[] = [];
+    let responseBytes = 0;
     let full: FullPublicBasis;
     try {
       full = await this.options.globalTransport!.capture({ signal, maxResponseBytes: Math.min(this.manifest.limits.max_capture_bytes, 8 * 1024 * 1024),
-        onResponseBytes: bytes => {
-          responseWrite = (async () => {
-            const artifact = await this.options.evidence.storeGlobalArtifact("response", bytes);
-            await this.emitGlobal("global_transport_response", { artifact, operation: "capture", capture_request_id: captureRequestId });
-          })();
-          return responseWrite;
+        onResponseBytes: async bytes => {
+          responseBytes += bytes.byteLength;
+          if (responseBytes > 2 * this.manifest.limits.max_capture_bytes + 64 * 1024) throw new AgentSessionError("global_capture_response_capacity");
+          responseReservations.push(this.budget.reserve(bytes.byteLength));
+          responses.push(Buffer.from(bytes));
         } });
-    } finally {
-      // Transport cancellation may overtake its bounded response hook. Finish
-      // our original-byte accounting before closing this capture request; the
-      // lifecycle owner releases control independently of this durable write.
-      await responseWrite;
+    } catch (error) {
+      // Partial/failed captures have no source owner: retain their original
+      // responses unchanged and account the original capture error below.
+      for (const bytes of responses) {
+        const artifact = await this.options.evidence.storeGlobalArtifact("response", bytes);
+        await this.emitGlobal("global_transport_response", { artifact, operation: "capture", capture_request_id: captureRequestId });
+      }
+      throw error;
     }
     const artifact = await this.options.evidence.storeGlobalArtifact("source", Buffer.from(serializePublicBasisRecord(full), "utf8"));
+    for (const bytes of responses) {
+      const response = await this.options.evidence.storeGlobalArtifact("response", normalizeGlobalCaptureResponse(bytes, artifact, full));
+      await this.emitGlobal("global_transport_response", { artifact: response, operation: "capture", capture_request_id: captureRequestId });
+    }
     const ordinal = ++this.globalSourceOrdinal;
     await this.emitGlobal("global_source", { ordinal, artifact, capture_request_id: captureRequestId });
     try {
@@ -1309,6 +1326,7 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
       return { full, artifact, ordinal };
     } catch (error) { await this.emitGlobal("global_source_rejected", { source_ordinal: ordinal, reason: errorMessage(error) }); throw error; }
     } catch (error) { await this.emitGlobal("global_capture_error", { request_id: captureRequestId, reason: errorMessage(error) }); throw error; }
+    finally { for (const reservation of responseReservations) reservation.release(); }
   }
   private async receiveGlobal(signal: AbortSignal, epoch: number, handlers: AgentPortHandlers, offer: { pending: boolean }): Promise<void> {
     this.refreshing = true;
@@ -1379,6 +1397,15 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
       || directive.scores.values.length !== prepared.acquisition.catalog!.length)) throw new AgentSessionError("global_scores_binding");
     this.checkActive(epoch, signal);
     if (this.mode === "shadow") return { type: "shadow", status: this.status() };
+    if (this.globalNoProgress) {
+      const check = this.globalNoProgress.check(prepared.reduction.observation, choice);
+      if (check.exhausted) {
+        this.terminationReason = "no_progress"; this.errors.push("no_progress");
+        await this.emitGlobal("global_no_progress", { acquisition_id: this.basisId, choice_id: choiceId, ...check });
+        await this.finishStop();
+        return { type: "not_admitted", reason: "no_progress", status: this.status() };
+      }
+    }
     await this.emitGlobal("global_choice", { acquisition_id: this.basisId, occurrence: prepared.reduction.observation.envelope.occurrence, choice_id: choiceId, origin: "agent_choice" });
     const steps: P1StepRecord[] = []; let status: P1Result["status"] = "completed";
     let source = prepared.source, next = lowering.first, followIndex = 0;
