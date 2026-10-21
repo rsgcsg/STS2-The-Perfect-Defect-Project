@@ -173,6 +173,28 @@ Snapshot reservation and actual training
 use remain separate explicit owner calls. Unknown seed or restore ancestry stays
 unknown and cannot justify independent holdout.
 
+### Same-ID local cache misses
+
+The existing `ManifestArtifactStore` can use one explicitly pinned durable peer.
+Configure the existing local Store with the normal command (credentials remain in
+its process environment):
+
+```sh
+python -m spireagent.workbench cache-configure --store STORE --other-store s3 --max-cache-bytes 2147483648 --retain-recent 2
+```
+
+This writes only `STORE/cache-policy.json`, a non-secret storage configuration,
+including the exact bucket/endpoint/prefix selected now. It is not a Curation or
+transfer ledger. Reopen the normal Application/reader after configuring it. A local
+miss on an exact manifest, payload index or chunk reads that same key from that
+peer; normal manifest/chunk/whole-payload validation remains mandatory. A corrupt
+local object fails and never silently substitutes remote bytes. A writable reader
+caches verified bytes in the same Store; a read-only reader consumes the verified
+peer bytes without changing local files. An unavailable peer or missing remote key
+returns the original typed Store error. All prior artifact IDs and reader entry
+points remain unchanged. Setting a budget alone does not delete bytes or prove a
+bounded working set; the maintenance/eviction result must separately establish it.
+
 For checkpoint/model/result artifacts, use the existing generic `workbench push`
 and `pull --artifact ID --other-store s3` transfer; they retain manifest ancestry
 and transfer absent objects. Materialize and verify through the owning model or
