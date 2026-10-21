@@ -111,6 +111,44 @@ The local serialized deployment wrapper must also execute from the clean exact t
 Producer. No source-identity check is disabled to support packaging. The wrapper is serialized with
 only standard-library dependencies and primitive target identity, not the local STPD package.
 
+### Native Modal image refresh
+
+The same `ModalTarget` and deployment wrapper also accept an exact Modal-native
+immutable `im-...` image ID. This is a provider image identity, not an OCI digest;
+mutable names/tags remain rejected. The complete target still binds image,
+Producer, resources and timeout, and the image's worker independently checks its
+actual clean source and lock before dispatch.
+
+When no OCI builder is available, `build_modal_image.py` refreshes an explicitly
+identified worker parent with an exact Git bundle. It checks the parent source
+and lock, checks out the new source, runs the ordinary full locked dependency
+synchronization and `uv pip check`, and verifies actual `source_identity`. It
+does not carry secrets or invoke a training function. Run it from `python/`:
+
+```bash
+python deploy/cloud-worker/build_modal_image.py --parent-image EXACT_IM_ID \
+  --parent-source EXACT_PARENT_SHA --parent-lock EXACT_PARENT_LOCK_SHA256 \
+  --source EXACT_CANDIDATE_SHA --bundle /absolute/candidate.bundle \
+  --environment spireagent-b --output /absolute/new-build-receipt.json
+```
+
+Retain the original build receipt with native image ID, parent tuple, bundle and
+recipe SHA-256 separately. Its builder is CPU2/8GiB with a 900-second deadline.
+Build costs need the same explicit authorization as compute. A failed or uncertain
+build is retained for provider reconciliation, without automatic rebuild.
+
+The optional builder flag `--p1-engineering-profile` freezes a synthetic-only
+measurement entry in that image. The unchanged `execute_request` runs first; an
+independent clone of the completed checkpoint then measures at most four N
+forward/CE-backward passes without optimizer updates. Original weights,
+checkpoints and receipt remain unchanged. A `performance` artifact records actual
+worker wall time, sampled GPU use, peak memory and separate clone timings, bound
+to the exact request/attempt/run/checkpoint. Measurement failures stay explicit;
+the observer rejects any original whose origin is not `engineering_fixture`.
+Clone microtimings are not actual training throughput or a formal-data speed claim.
+The wrapper always uses a fresh container per call, startup120 seconds, two-second
+scaledown and zero retries; its ordinary non-profile entry remains unchanged.
+
 ## Submit, reconcile and restore
 
 Persist `submitting` plus the request/target/attempt before calling `ModalProvider.submit`.

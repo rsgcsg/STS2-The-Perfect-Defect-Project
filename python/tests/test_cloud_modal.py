@@ -30,6 +30,16 @@ def test_resource_limits_are_frozen_into_target_identity():
         ModalTarget.decode(legacy)
 
 
+def test_native_image_id_is_immutable_and_frozen_without_weakening_registry_digest():
+    selected = target()
+    native = replace(selected, image="im-I1q5U3MP0EnlZ3ydu6H3Mk")
+    assert ModalTarget.decode(native.to_dict()) == native
+    assert native.target_id != selected.target_id
+    for value in ("im-latest", "im-", "im-I1q5U3MP0EnlZ3ydu6H3Mk/other", "stpd:latest"):
+        with pytest.raises(BoundaryError, match="immutable_image"):
+            replace(selected, image=value)
+
+
 class FakeCall:
     object_id = "fc-fixed"
 
@@ -194,3 +204,80 @@ def test_credential_inspection_reports_only_presence(monkeypatch) -> None:
     assert report["token_id_env"] and report["token_secret_env"]
     assert all(type(value) is bool for value in report.values())
     assert "never-return" not in str(report)
+
+
+@pytest.mark.parametrize("image_kind,image", [
+    ("native", "im-I1q5U3MP0EnlZ3ydu6H3Mk"),
+    ("oci", "registry.example/stpd@sha256:" + "d" * 64),
+    ("oci", "im-registry.example/stpd@sha256:" + "d" * 64),
+])
+@pytest.mark.parametrize("profile", [False, True])
+def test_deployment_uses_exact_native_or_oci_image_with_same_resource_contract(
+    tmp_path, monkeypatch, image_kind, image, profile,
+):
+    import importlib
+    import json
+    import runpy
+    from pathlib import Path
+
+    import spireagent.source as source
+
+    selected = replace(target(), image=image)
+    path = tmp_path / "target.json"
+    path.write_text(json.dumps(selected.to_dict()))
+    monkeypatch.setenv("STPD_MODAL_TARGET", str(path))
+    monkeypatch.setenv("STPD_IMAGE_PROFILE", "worker")
+    monkeypatch.setenv("STPD_P1_ENGINEERING_PROFILE", "1" if profile else "0")
+    monkeypatch.setattr(source, "source_identity", lambda root: PRODUCER)
+    images, definitions = [], []
+
+    def from_id(value):
+        images.append(("native", value))
+        return "exact-image"
+
+    def from_registry(value, *, add_python):
+        assert add_python == "3.11"
+        images.append(("oci", value))
+        return "exact-image"
+
+    class App:
+        def __init__(self, name):
+            assert name == selected.app_name
+
+        def function(self, **settings):
+            definitions.append(settings)
+            return lambda function: function
+
+    sdk = SimpleNamespace(
+        App=App, Image=SimpleNamespace(from_id=from_id, from_registry=from_registry),
+        Secret=SimpleNamespace(from_name=lambda name: name),
+    )
+    original = importlib.import_module
+    monkeypatch.setattr(importlib, "import_module",
+                        lambda name: sdk if name == "modal" else original(name))
+    namespace = runpy.run_path(str(Path(__file__).parents[1] / "deploy/cloud-worker/modal_app.py"))
+    assert images == [(image_kind, selected.image)]
+    assert len(definitions) == 1
+    settings = definitions[0]
+    assert settings["image"] == "exact-image" and settings["gpu"] == "L4"
+    assert settings["cpu"] == (2, 2) and settings["memory"] == (8192, 8192)
+    assert settings["max_containers"] == 1 and settings["retries"] == 0
+    assert settings["secrets"] == [selected.storage_secret_name]
+    assert settings["startup_timeout"] == 120 and settings["scaledown_window"] == 2
+    assert settings["single_use_containers"] is True
+    invoked = []
+
+    def child(command, **options):
+        invoked.append(command)
+        receipt = {"original_receipt": True}
+        value = {"receipt": receipt, "profile_artifact_id": "probe"} if profile else receipt
+        return SimpleNamespace(returncode=0, stdout=json.dumps(value))
+
+    import subprocess
+
+    monkeypatch.setattr(subprocess, "run", child)
+    assert namespace["compute"]({}, selected.target_id) == {
+        "target_id": selected.target_id, "receipt": {"original_receipt": True},
+    }
+    assert len(invoked) == 1
+    assert invoked[0][2] == ("stpd.cloud_jobs.p1_gpu_profile" if profile else "stpd.cloud_jobs")
