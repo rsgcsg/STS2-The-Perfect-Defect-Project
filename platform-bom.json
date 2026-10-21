@@ -27,16 +27,16 @@
       "component_source_digest_sha256": "8164d1b0d3af9a2b8da0e829a10e9e77d59da7ce2bf38fce64e03a55c6bfa995"
     },
     "evidence": {
-      "version": "0.1.0-rc.31",
-      "source_revision": "8682d7e758d23b3decae5003a39a962d47b67c90",
-      "component_tree_revision": "2d81fb5dfeb02a81097272a8754b0b66cb5d9d94",
-      "component_source_digest_sha256": "7cc0b7d078b10ff81b5f4e565a7a265a0215c74d471dccebcf0e86781aee728b"
+      "version": "0.1.0-rc.32",
+      "source_revision": "20989e51a1d2b74fae02fd75e6249860ecae36fa",
+      "component_tree_revision": "ed777d7122230a50b6dd38e757eb385937e91862",
+      "component_source_digest_sha256": "32abfd881bbf3cf9a31e966a94062f214b65787156ca33bcc841a8b3e595bb1d"
     },
     "policy_runtime": {
       "version": "0.1.0-rc.39",
-      "source_revision": "a2aab2fc33d10116de8ac8d3d734d236d759da01",
-      "component_tree_revision": "a7a2065db22d5ea16455664f61a8b14d80c1f684",
-      "component_source_digest_sha256": "9850c13fd8f69e1fb042930a467f3caae73cc73345d35c41da5ce23605fd337f"
+      "source_revision": "705e37285267a64544b33194f4ff2a598b0ea809",
+      "component_tree_revision": "9772e8bbfcca170bfdd251939223a10bd229a7a9",
+      "component_source_digest_sha256": "9d8d13b036e4aaea398fcb60ebf8439dc893de5973a913a3b5e8ed4fa4f507e1"
     },
     "workbench": {
       "version": "0.1.0-rc.3",
@@ -269,8 +269,8 @@
       "source_revision": "e19b30315015664a5647ab351cdcefb09417f275",
       "source_digest_sha256": "d227321727d07edd2d4c67928edec439c26f156494dd9cfab98d2bac4debf346",
       "version": "0.1.0-rc.1",
-      "current_component_source_revision": "a2aab2fc33d10116de8ac8d3d734d236d759da01",
-      "current_component_source_digest_sha256": "9850c13fd8f69e1fb042930a467f3caae73cc73345d35c41da5ce23605fd337f",
+      "current_component_source_revision": "705e37285267a64544b33194f4ff2a598b0ea809",
+      "current_component_source_digest_sha256": "9d8d13b036e4aaea398fcb60ebf8439dc893de5973a913a3b5e8ed4fa4f507e1",
       "current_component_version": "0.1.0-rc.39",
       "source_relation": "historical_runtime_source_precedes_standalone_consumer_package"
     },
