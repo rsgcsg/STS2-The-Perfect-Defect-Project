@@ -24,7 +24,7 @@
 
 10:15—10:35重IO给Storage，scratch上限700MiB。11:00—11:45预留唯一本机完整门slot，其余源码轻检查可并行。日常服务和录制优先。I私有小env只复制原1.6MiB锁定依赖视图，ML依赖以只读路径复用；Evidence32真实VCS安装的原metadata/RECORD及31源文件逐字节核验，父子进程均从当前集成源码读取，20required/87selected无锁差。Node依赖APFS克隆54MiB，不共享可写目录。
 
-全门预计30—45分钟，scratch本轮上限2GiB；开始前要求当时df至少3GiB并核进程，不自动重跑。准确完整门及CI未齐则S2未验；通过也只授source/test，不授installed/runtime/Human。GPU和数据/R2按原owner授权，不能借测试启动正式训练或任意清理。
+全门预计30—45分钟。旧全机窗口可用空间下降约5.7GiB，仅是保守参考，不能当全门自身峰值；本轮使用独立TMPDIR并测实际体量。2GiB只是早期临时估算，不新增为通过/中止门；开始前据当时df、已测峰值、活动录制保护和其他进程判断资源，低空间时正常停止并保留准确结果，不自动重跑。准确完整门及CI未齐则S2未验；通过也只授source/test，不授installed/runtime/Human。GPU和数据/R2按原owner授权，不能借测试启动正式训练或任意清理。
 
 ## 收口规则
 
