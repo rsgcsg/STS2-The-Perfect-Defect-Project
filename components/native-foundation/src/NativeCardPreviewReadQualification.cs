@@ -31,11 +31,13 @@ public static partial class NativeCardPreviewReadQualification
         catch { return false; }
     }
 
-    internal static bool MethodsUnpatched(Type owner, params string[] names) => names.All(name =>
+    internal static bool MethodsUnpatched(Type owner, params string[] names)
     {
-        MethodInfo[] exact = owner.GetMethods(NativeMembers).Where(method => method.Name == name).ToArray();
-        return exact.Length > 0 && exact.All(IsUnpatched);
-    });
+        // Resolve immutable method metadata once per check. Patch state is
+        // still read anew for every overload on every invocation.
+        var methods = owner.GetMethods(NativeMembers).ToLookup(method => method.Name, StringComparer.Ordinal);
+        return names.All(name => methods[name].Any() && methods[name].All(IsUnpatched));
+    }
 
     private static bool FixedConstructorsUnpatched(Type type) =>
         type.GetConstructors(NativeMembers).All(IsUnpatched);
