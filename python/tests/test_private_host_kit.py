@@ -404,6 +404,36 @@ def test_private_host_producer_rejects_unrelated_source_root(tmp_path):
         )
 
 
+def test_private_host_sdk_staging_runs_actual_canonical_profile_generator(tmp_path):
+    source = Path(__file__).resolve().parents[2]
+    staged = kit_runtime._stage_private_host_sdk_source(source, tmp_path / "source", {})
+    contract = staged.parents[1] / "contracts/native-logical-publication-profile-v1.json"
+    canonical = source / "components/connector/contracts/native-logical-publication-profile-v1.json"
+    assert contract.read_bytes() == canonical.read_bytes()
+    assert not (staged / "node_modules").exists()
+    assert not (staged / "dist").exists()
+    checked = subprocess.run(
+        ["node", "tools/generate-native-logical-profile.mjs", "--check"],
+        cwd=staged, capture_output=True, text=True, check=False,
+    )
+    assert checked.returncode == 0, checked.stderr
+    contract.unlink()
+    missing = subprocess.run(
+        ["node", "tools/generate-native-logical-profile.mjs", "--check"],
+        cwd=staged, capture_output=True, text=True, check=False,
+    )
+    assert missing.returncode != 0
+    assert "ENOENT" in missing.stderr
+
+
+def test_private_host_sdk_staging_requires_tracked_canonical_contract(monkeypatch, tmp_path):
+    monkeypatch.setattr(kit_runtime.subprocess, "run", lambda *args, **kwargs:
+                        subprocess.CompletedProcess(args[0], 0,
+                            b"components/connector/sdk/typescript/package-lock.json\0", b""))
+    with pytest.raises(BoundaryError, match="private_host_sdk_source_inventory_failed"):
+        kit_runtime._stage_private_host_sdk_source(tmp_path, tmp_path / "staged", {})
+
+
 def test_private_host_runtime_stages_exact_tree_and_rejects_symlinked_bundle(tmp_path):
     profile, archive, bom = private_host_fixture(tmp_path)
     source = tmp_path / "release-source"
