@@ -1,6 +1,6 @@
 # 第一轮执行：稳定录制与正常数据、模型、GPU闭环
 
-2026-10-21，Brisbane。用户已直接授权执行，本轮UTC02:00:36开始，误暂停后02:11:31恢复仍沿05:00:36绝对截止。PR206已依C-2 normal merge，新BASE8b2c2334，非冻结/生产。当前A r1.5语义/忠实测试、G/B游戏内P1薄映射和Source3/4原Agent选项、G精确source-candidate launcher schema、C r1.5 InputSpec/数据与保留旧模型版本逻辑、D原guide/Skill均已normal merge。统一未build首批版本/锁/BOM；I UI34/API18通过。G首exact-game的SDK586/pack/versions先通过，组件docs跨根链接失败，后native未到；A原owner修复表示后组件docs/root静态门已通过，原失败保留，root另选修正source的exact-game02。无安装、游戏或用户可录资格；A唯一Tool待实际native provenance。B Model/sourcecandidate整支待一行fix/Q，E/S等稳定审查后滚动接入。root控制唯一重slot，游戏/Application候选准备后冻结其整个I Python源至窗口结束；不伪prepared、不为远端clone提前push。
+2026-10-21，Brisbane。本轮UTC02:00:36开始，误暂停后02:11:31恢复仍沿05:00:36绝对截止。PR206已按C-2 normal merge，新BASE8b2c2334，非冻结/生产。当前A r1.5语义与忠实测试、G/B游戏内P1薄映射和原Agent选项、source-candidate launcher、C r1.5 InputSpec/旧模型原版本、B正常P1 Model和isolated sourcecandidate整栈977、D原guide/Skill均已normal merge。首exact-game因组件docs表示失败、native未到；原owner修复后root另选exact02已自然PASS（SDK586/native182/Annotator445、13/19 Node检查、统一build零warning/error），原失败保留。A唯一固定Tool release9a489cd0已发布、绑定同Mod。I当前native sourceSet与后续Python增量严格匹配；依赖/真实installed Evidence与-I子进程新I ROOT已验。下一步冻结整个I到G sourcecandidate App/GUI工程窗口结束，先验证准确安装/加载/业务；尚无install/load/实际录制/Human资格，七源新投影仍在派生，不贴旧计数。E/S包留后续成熟审查，不阻塞首录窗口。
 
 ## 本轮目标、授权和准确起点
 
@@ -32,7 +32,7 @@ I独占`work/p1-round1-integration-20261021`、topic`codex/p1-round1-integration
 
 | owner/写范围 | 上游提供→下游需要；本轮产物 | 验收、停止与当前状态 |
 |---|---|---|
-| A 环境语义/Tool | 原selector surface事实→SDK准确动作与finish_available→固定r1.5 Tool→七源投影 | 同类cancel/真正空提交/拒绝/非空确认忠实正反例，协议和consumer同包；七源新旧N/next/缺口/标签差异。r1.5源码b4bf2304已审合入；固定Tool/七源新投影待发布，不改原生规则/模型 |
+| A 环境语义/Tool | 原selector surface事实→SDK准确动作与finish_available→固定r1.5 Tool→七源投影 | 同类cancel/真正空提交/拒绝/非空确认忠实正反例，协议和consumer同包；七源新旧N/next/缺口/标签差异。r1.5源码b4bf2304及忠实测试已审合入；唯一Tool9a489cd0已发布，七源新投影派生中，不改原生规则/模型 |
 | G 原生GUI，B Application协同 | 游戏内既有控件→同一Application/TaskBridge/RecordingApplicationService→原RecorderRuntime | G薄映射fa81f4c7/526c3066及B ae20d926/02b38638已审合入；I实跑UI 34项/API 18项通过，未授native资格。实际点击P1开始/状态/暂停/继续/Close/下一局、面板重开及同session读回后才称可用。目标T+60–90分钟，不机械等GPU或七源派生 |
 | E Runtime/Evidence | 原完整capture/source/Agent/Receipt→去重表示和原预算Stop→同包replay/typed消费者 | 先量旧T0b/历史复用，旧读新写，唯一字节/全部物理分母，旧archive保持验证；无进展窗口/摘要/choice意义明确，沿原Stop记no_progress，不冒自然结局。源码实现和限定离线验收，未获slot不开游戏 |
 | B Application/模型用例 | 既有Model/InputSpec/Runtime安装pin→原model/live registration/start/status/stop/证据查询 | 复用原P1 Agent/CLI/可信expected，原t0 register保工程工具；B独占共享Application路由/descriptor，S提供service接口。正常API/CLI与GUI同用例，进程内夹具/源码入口/准确安装/日常安装分层 |
@@ -81,7 +81,7 @@ I独占`work/p1-round1-integration-20261021`、topic`codex/p1-round1-integration
 
 本轮区分“进程内源码集成（测试夹具）”“正常源码入口”“准确候选安装”“日常已安装入口”；组件source/test、build/install/load、runtime、Human、策略/研究资格分别报告。原旧T0b是资源容量预防停止，未触512MiB，非自然结局或unknown；898completed+1interrupted_known/Stop取消capture及native warning/error保原件。新表示/语义不得改旧原件或把旧计数贴给新ID。
 
-当前首候选统一Connector 1.3rc26/SDK 1.3rc11、Host 1.1rc34/Policy 0.1rc39、Live UI 0.1rc13/Game Mod 0.2rc48及依赖锁/BOM，旧loaded/source/artifact记录保持。I实跑UI 34项、正常录制API 18项通过，project检查通过；首个exact-game因组件docs表示失败、native未到；最小修复的组件docs/root静态门已通过，root另选exact02。准确native build、安装、实际录制与Tool发布仍未验证。稳定增量、检查和原件在各owner固定报告及本轮集成回执汇总；外部文件名/私路径只在交接回执给可点击索引，不把私有绝对路径作为仓库Markdown依赖。root最终写`replies/P1-NEXT-ROUND-ROOT-RESULT-20261021.md`，同步外部START；I最后整段更新CURRENT与此任务，旧现状移历史。源码回滚为revert具名topic增量，安装/运行由原owner保确切原包/配置/Stop/rollback；数据恢复沿原Store，不删原件。
+当前首批版本Connector1.3rc26/SDK1.3rc11、Host1.1rc34/Policy0.1rc39、UI0.1rc13/Mod0.2rc48及依赖锁/BOM一致。I UI34/API18、原root repository/BOM/closeout/base diff通过；exact01组件docs表示首错保原FAIL，修复后root明确选择的exact02自然PASS，SDK586/native182/Annotator445、13/19 Node检查、Mod build零warning/error。A唯一固定Tool9a489cd0已含同Mod发布。B整支977正常合入后原native sourceSetMatches为true，未为无关Python SHA重build；真实-I子进程ROOT为新I、installed Evidence通过。现在整个I冻结至G Application/GUI工程窗口terminal，尚未安装/加载/实际录制；Human用户亲手，不能据build授日常使用资格。稳定增量、检查和原件在各owner固定报告及本轮集成回执汇总；外部文件名/私路径只在交接回执给可点击索引，不把私有绝对路径作为仓库Markdown依赖。root最终写`replies/P1-NEXT-ROUND-ROOT-RESULT-20261021.md`，同步外部START；I最后整段更新CURRENT与此任务，旧现状移历史。源码回滚为revert具名topic增量，安装/运行由原owner保确切原包/配置/Stop/rollback；数据恢复沿原Store，不删原件。
 
 ## 历史
 
