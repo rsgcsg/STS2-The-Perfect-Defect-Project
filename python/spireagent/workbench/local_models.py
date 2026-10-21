@@ -3050,7 +3050,7 @@ class LocalModelService:
                         or package.get("schema") != "stpd/p1-mstd-model-1"
                         or package.get("package_sha256") != original["artifact"]["sha256"]
                         or package.get("input_spec")
-                        != config.get("package_input_spec", config["input_spec"])
+                        != config["package_input_spec"]
                         or package.get("agent_spec") != config["agent_spec"]):
                     return None, "original_composition_binding_changed"
                 return raw, None
