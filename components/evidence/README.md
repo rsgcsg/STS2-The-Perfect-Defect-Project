@@ -307,6 +307,10 @@ show operational state without reimplementing verification.
 
 ## Automatic closed-session delivery
 
+`CollectionTool.pack_p1_native(...)` returns the exact content-addressed bundle
+directory from the fixed packer's receipt. Its `output` argument is the parent
+directory; callers pass the returned path to the original P1 reader and Store.
+
 The opt-in [delivery service](DELIVERY.md) consumes a fixed collection-tool release,
 reconciles durable Close receipts, and persists packing/upload/receiver state
 outside the game. Its public Python CLI supports background use, status and
