@@ -19,6 +19,7 @@ import sts2_platform_evidence as evidence
 from spireagent.artifact_contracts import Manifest, Producer
 from spireagent.encoding import semantic_hash
 from spireagent.json_boundary import BoundaryError, FrozenObject, json_bytes
+from spireagent.storage.blobs import StoreError
 from spireagent.storage.local import LocalBlobStore
 from spireagent.storage.store import ManifestArtifactStore, copy_artifact
 from spireagent.workbench import global_evidence_store as global_store
@@ -370,12 +371,13 @@ def test_global_postpublication_unknown_survives_restart_and_only_reads_original
     verify = global_store.verify_global_artifact
 
     def unreadable(*args, **kwargs):
-        raise OSError('deliberate postpublication read failure')
+        raise StoreError('s3_get_failed')
 
     monkeypatch.setattr(global_store, 'verify_global_artifact', unreadable)
     importer.start_global_evidence(context)
     importer.thread.join(10)
     assert importer.status()['status'] == 'publication_unknown'
+    assert importer.status()['failure_phase'] == 'local_readback'
     identity = importer.status()['artifact_id']
     reopened = LocalRecordingImporter(importer.config, None)
     with pytest.raises(BoundaryError, match='original_intent_reconciliation_required'):
@@ -391,3 +393,53 @@ def test_global_postpublication_unknown_survives_restart_and_only_reads_original
     monkeypatch.setattr(global_store, 'publish_global_runtime', unexpected)
     assert reopened.reconcile_global_evidence()['status'] == 'completed'
     assert reopened.status()['artifact_id'] == identity
+
+
+def test_global_manifest_ack_loss_keeps_intended_id_before_publication(tmp_path, monkeypatch):
+    from spireagent.workbench.local_recording_import import LocalRecordingImporter
+
+    setup = _setup(tmp_path, monkeypatch)
+    importer, context = _importer(setup, tmp_path, monkeypatch)
+    store = setup[0]
+    publish = store.publish
+    published = []
+
+    def publish_with_lost_ack(manifest):
+        identity = publish(manifest)
+        if manifest.kind == 'evidence':
+            published.append(identity)
+            raise OSError('deliberate manifest persisted but ACK lost')
+        return identity
+
+    monkeypatch.setattr(store, 'publish', publish_with_lost_ack)
+    importer.start_global_evidence(context)
+    importer.thread.join(10)
+    assert len(published) == 1
+    assert importer.status()['status'] == 'publication_unknown'
+    assert importer.status()['artifact_id'] == published[0]
+    reopened = LocalRecordingImporter(importer.config, None)
+    assert reopened.reconcile_global_evidence()['status'] == 'completed'
+    assert reopened.status()['artifact_id'] == published[0]
+    assert len(published) == 1  # No publication retry during reconciliation.
+
+
+def test_global_peer_delivery_store_error_is_unknown_and_cannot_redispatch(tmp_path, monkeypatch):
+    from spireagent.storage import store as storage
+
+    setup = _setup(tmp_path, monkeypatch)
+    importer, context = _importer(setup, tmp_path, monkeypatch)
+    deliveries = []
+
+    def failed_delivery(*args, **kwargs):
+        deliveries.append(args[-1])
+        raise StoreError('s3_put_failed')
+
+    monkeypatch.setattr(storage, 'copy_artifact', failed_delivery)
+    peer = {'kind': 'local', 'directory': str(tmp_path / 'peer')}
+    importer.start_global_evidence(context, peer)
+    importer.thread.join(10)
+    assert importer.status()['status'] == 'publication_unknown'
+    assert importer.status()['failure_phase'] == 'peer_delivery'
+    with pytest.raises(BoundaryError, match='original_intent_reconciliation_required'):
+        importer.start_global_evidence(context, peer)
+    assert len(deliveries) == 1
