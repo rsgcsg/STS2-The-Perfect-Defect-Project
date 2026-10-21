@@ -135,21 +135,24 @@ class NativeBootstrap:
         private_bytes(path)  # Validates every ancestor, not only the leaf.
         launcher_raw = private_bytes(directory / "launcher.json")
         launcher = json.loads(launcher_raw, object_pairs_hook=unique_object)
-        if (
-            not isinstance(launcher, dict)
-            or set(launcher)
-            != {
-                "schema",
-                "release_directory",
-                "kit_sha256",
-                "source_revision",
-                "workbench_sha256",
-                "uv_lock_sha256",
-                "config_path",
-            }
-            or launcher.get("schema") != "spireagent/workbench-launcher-v1"
-            or launcher.get("config_path") != str(path)
-        ):
+        release_keys = {
+            "schema", "release_directory", "kit_sha256", "source_revision",
+            "workbench_sha256", "uv_lock_sha256", "config_path",
+        }
+        candidate_keys = {
+            "schema", "source_directory", "python_executable", "candidate_home",
+            "source_revision", "workbench_sha256", "uv_lock_sha256", "config_path",
+            "game_mod_sha256", "build_provenance_sha256", "collection_tool_directory",
+            "collection_tool_release_id",
+        }
+        if (not isinstance(launcher, dict)
+                or not (
+                    (launcher.get("schema") == "spireagent/workbench-launcher-v1"
+                     and set(launcher) == release_keys)
+                    or (launcher.get("schema") == "spireagent/source-candidate-launcher-v1"
+                        and set(launcher) == candidate_keys)
+                )
+                or launcher.get("config_path") != str(path)):
             raise fail("native_launcher_mismatch")
         for key in ("launcher_sha256", "game_mod_sha256", "secret"):
             digest(value[key], "native_workbench." + key)
