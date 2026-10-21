@@ -4,9 +4,11 @@
 
 ## 当前状态与准确边界
 
-集成从PR207准确4128b2ce继承，origin/develop基准8b2c；新分支`codex/batch1-integration-20261021`。已normal merge纯规范候选44aac862。PR207原head4128仍Draft且Linux shard1失败；原失败日志保在集成工作树`.local/batch1/original-ci-linux1.log`，唯一pytest失败为source-candidate launcher在Linux请求Darwin launcher。旧完整门5失败及随后7项targeted通过的原证据保留，不授本批通过。
+集成从PR207准确4128b2ce继承，origin/develop基准8b2c；唯一writer分支`codex/batch1-integration-20261021`，只普通FF推既有PR207。纯规范44aac862、Installer8f807/96f6/405bbe、Storage47769154/b42020f7及GUI4ce1298d均已normal merge；UIrc16/Modrc51源95b171d4及BOM一致。正常cloud extra加入原已锁boto3，不换解析版本。准确组合七文件174测试、UI34测试和BOM15测试通过；保已有remote_compute的新回归18测试另通过。CURRENT与project:closeout已检查，准确完整门尚未启动。
 
-正常日常后台61901继续保留。当前未安装本批候选、未启动游戏；不复活旧Round3H worker。各owner交稳定head及对应测试原日志后由I逐包normal merge。完整门前冻结准确组合，root显式批准重型slot才执行，CI尽早普通FF推原PR head；未全绿不merge和不正常升级。
+PR207旧head4128仍保Linux fixture原失败，日志在集成工作树`.local/batch1/original-ci-linux1.log`。中间eca run39582497868因后续普通push自动取消，不能当新产品失败或通过；169c run39583904466已启动，本批最终CI须独立读取。旧完整门5失败与随后7项targeted通过仍保原身份。
+
+正常日常后台61901保留，当前未安装本批候选、未开游戏。唯一正常安装者是GUI；Installer准备kit命令和依赖，I不给自己另开Mod build。历史HOME固定launcher仍指旧kit/临时配置，GUI须按原expected-hash替换、正常永久kit配对与rollback验收。Storage正在修首真实import的实例锁自锁，Training无新增生产源码；它们的实际结果不由targeted绿色替代。全门前冻结准确组合，root给重型slot才执行，未准确完整门/CI全绿不merge及不正常升级。
 
 ## 本批可验结果与硬限
 

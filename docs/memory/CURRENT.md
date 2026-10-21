@@ -4,7 +4,7 @@ Resolve live GitHub refs before relying on this snapshot. 最新用户原话和�
 
 2026-10-21，Brisbane。用户新授权第一轮于UTC10:00:59开始，13:00:59硬收口；root只主管，六个当批owner已派发。唯一执行入口是[本批任务与验收](../plans/p1-prefreeze-2026-10-18/BATCH1_EXECUTION_20261021.zh-CN.md)。不要从旧Round3H或私人checkpoint恢复任务。
 
-集成基准为PR207准确4128b2ce，origin/develop8b2c；新独立分支codex/batch1-integration-20261021已normal merge纯规范44aac862。原PR仍Draft且CI失败，本批准确完整门未开始；旧门5失败与后续7项targeted原证据保持。当前未推广安装、未开游戏，正常日常后台61901保留。用户已条件批准准确最终完整门和CI全绿后normal merge207并正常升级，条件当前未成立。
+集成从PR207准确4128b2ce继承，origin/develop8b2c；唯一writer分支codex/batch1-integration-20261021已normal并本批规范、Installer、Storage与GUI稳定增量。UIrc16/Modrc51源95b171d4及BOM一致；准确组合七文件174测试、UI34测试、BOM15测试通过，保remote_compute的新回归18测试通过。当前全门尚未启动、最新CI运行中；原门5失败、后续7项targeted和旧head4128 CI失败原证据保持。中间eca CI因普通后续push取消，不冒新产品失败或通过。当前未推广安装、未开游戏，正常后台61901保留。用户已条件批准准确最终完整门/CI全绿后normal merge207及正常升级，条件当前未成立。
 
 Storage负责录制后台、自动R2和可恢复副本周转；Installer负责Linux fixture和Kit bootstrap；GUI负责简单薄入口及准入后的准确安装现场；Training负责既批两次工程GPU和七源+627候选；Disk负责具名清单及必要接手；Integration负责normal集成、测试/CI和当前文档。每项验收与硬停止均在唯一任务表。正式冻结、真实首训及第二批Reference仍未授权启动。
 
