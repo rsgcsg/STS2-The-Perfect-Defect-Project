@@ -108,9 +108,10 @@ script is not a delivered entry. GUI presentation QA and native Human gameplay
 are distinct from this business-entry requirement. The dated K6 investigation is
 limited to its original scope, not a finding that all current functions satisfy it.
 
-For the current pre-training freeze, internal API/library/CLI calls are the main
-operation surface. Existing browser and native UI remain thin mappings to the same
-application use cases, including their presentation/confirmation/pairing adapters.
+For human operators the selected GUI defaults to the in-game Platform/Workbench;
+use an external window when it is more practical. Agents and automation retain
+supported API/library/CLI entries. Both GUIs map to the same application use cases,
+including their presentation/confirmation/pairing adapters.
 The complete historical in-game/team/cloud UI target is not a requirement to build
 new complex GUI or team systems now. Hub/cloud components retain their current
 interfaces/status under the [minimal cloud proposal](plans/p1-prefreeze-2026-10-18/CLOUD_MINIMAL.md).

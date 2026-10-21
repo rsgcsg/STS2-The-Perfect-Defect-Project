@@ -6,12 +6,12 @@ assignment; product plans below are background/backlog until assigned.
 
 ## 按“我要做什么”进入
 
-人和Agent使用同一业务流程。下表给操作的唯一现有owner；其中状态页、合同和历史证据仅解释边界，不另维护命令副本。进入指南后先核该组合是否受支持，按其完成判断与失败路径操作；找到入口不代表当前候选已验收。
+人和Agent使用同一业务流程。人的GUI优先游戏内Platform/工作台，外部窗口为备选；agent用受支持CLI/API/内部库。下表给操作的唯一现有owner；其中状态页、合同和历史证据仅解释边界，不另维护命令副本。进入指南后先核该组合是否受支持，按其完成判断与失败路径操作；找到入口不代表当前候选已验收。
 
 | 我要做什么 | 进入原操作指南 | 结果与边界在哪里看 |
 | --- | --- | --- |
 | 安装、升级、核游戏加载或回滚 | [固定开发工具安装](../python/docs/DEVELOPER_KIT_INSTALL.md)，原生生命周期由[Game Mod](../apps/game-mod/README.md#lifecycle)执行 | 精确发布清单、install/load回执；源码编译不代装载 |
-| 正常录制、查状态、Pause/Close、开始下一局 | [采集指南](ANNOTATOR_COLLECTION.md)，正常应用入口见[日常录制](../python/docs/PROJECT_CONSOLE.md#daily-collection) | 原生身份、session状态、Close结果与原件；页面关闭不是Stop，真人来源由操作者声明 |
+| 正常录制、查状态、Pause/Close、开始下一局 | [游戏内Platform/采集操作](../apps/ingame-ui/README.md)→[采集指南](ANNOTATOR_COLLECTION.md#current-p1-daily-collection)，同一应用入口见[日常录制](../python/docs/PROJECT_CONSOLE.md#daily-collection) | 原生身份、session状态、Close结果与原件；页面关闭不是Stop，真人来源由操作者声明 |
 | 异常录制、保留前缀、封包和恢复导入 | [采集故障定位](ANNOTATOR_COLLECTION.md#detect-and-route-a-problem)与[同一应用导入](../python/docs/PROJECT_CONSOLE.md#本机资料) | 原始失败、prefix/封存范围和Tool结果；普通重连/旧semantic recover不能冒充P1异常恢复，Continue另行保留 |
 | 选择数据、查谱系/用途、固定数据集 | [数据与来源](../python/docs/DATA_AND_PROVENANCE.md)、[固定数据管理](../python/docs/research/DATA_MANAGEMENT.zh-CN.md)；用途账恢复见[原账备份/按ID恢复](../python/docs/DATA_LIFECYCLE.md#private-curation-ledger-recovery) | Curation用途/分组与来源事实；目录数、内容校验和上传成功不授予训练资格 |
 | R2保全、按ID取回、管理本地热集与恢复 | [数据生命周期](../python/docs/DATA_LIFECYCLE.md#daily-p1-store-and-r2-operations)，P1日常入口由[项目应用指南](../python/docs/PROJECT_CONSOLE.md#本机资料)拥有 | 原件/派生/产物的Store身份与回读结果；释放须有可恢复artifact及实际consumer，不据旧清理快照删除 |

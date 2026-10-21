@@ -1,11 +1,52 @@
 # Platform Live UI
 
-The in-game **Platform** button opens two surfaces: **Human Recorder** and
-**Agent Run**. There is no `K` shortcut. Close returns to the small launcher;
-`Esc` closes the normal workspace. Drag the header to move the workspace and
-use its corner to resize the normal view.
+## 日常 P1 录制：从游戏内进入
 
-Both surfaces have a **Minimize** control and a separate, genuinely smaller
+人的默认入口是游戏内 **Platform → 顶栏“录制” → 工作台“录制与资料”**
+（`data`页）。外部窗口为同一Application的备选入口，CLI/API服务Agent和自动化；
+这些入口共享RecorderRuntime，不另建状态机。旧页改名为**兼容录制诊断**，
+不作为当前P1日常入口。
+
+适用条件：已按[固定开发工具安装指南](../../python/docs/DEVELOPER_KIT_INSTALL.md)
+选择准确的Mod/Application组合并核实安装、装载及本机配对；页面须实际连接该
+游戏实例。源码中的默认按钮或可用能力声明不能证明旧安装已升级。配对或服务
+不可用时，按页面理由回原安装/`native-access`流程处理，不绕过配对、不停止他人
+服务。本段描述源码支持的操作，准确候选的build/install/load、实际点击与Human
+短录须分别验收；当前结果从[CURRENT](../../docs/memory/CURRENT.md)进入。
+
+1. 先看录制状态、当前会话、保存状态与封存状态。选择**开始录制（默认 P1
+   原生决策）**，明确来源为本人操作、AI界面操作或未知来源；没有默认Human。
+   P1不要求旧Source格式的操作者代号。提交后核实际profile为P1、生命周期为
+   正在录制，并记住当前session；Human录制仍由用户亲手玩游戏。
+2. 需要暂停采集时用**暂停录制**，核状态为已暂停；游戏本身继续。用**继续录制**恢复
+   同一session。刷新、关闭或重开面板只改变显示，不停止后台录制，也不重发命令。
+3. 结束时用**结束并封存录制**（Close），等待原owner完成。只有生命周期和封存状态
+   都为`closed`，页面才提示“本会话已封存；可明确选择来源并开始下一会话”。
+   `closing`、请求成功返回或零错误都不能代替完成。再明确选择来源开始下一会话，
+   核session已改变；不重复开始旧会话。
+4. 原件保存在本机既有录制root，准确路径、CLI与恢复方法由
+   [采集指南](../../docs/ANNOTATOR_COLLECTION.md#current-p1-daily-collection)及
+   [Annotator P1操作](../../components/annotator/README.md#p1-native-semantic-recording)
+   拥有。封存后在同页**刷新已结束的录制**选原候选编号，再用**保存已结束的录制**
+   进入原Store导入；核原operation结果和录制artifact读回，不能只据目录出现或
+   已封存判定入库成功。派生、上传与用途资格沿
+   [原Application资料流程](../../python/docs/PROJECT_CONSOLE.md#本机资料)，不由GUI授予。
+
+失败时保留当前session、原command/operation、保存错误和原件。按钮禁用先看其
+owner理由；保存health报错或记账不完整不能当成功继续批量采集。未知提交只查询
+原状态并用原恢复/Close路径，不再次点击以重投；重开面板或续配对不能清除unknown。
+卡在封存或进程中断时，按
+[原Tool恢复](../../components/annotator/README.md#recover-an-interrupted-p1-recording)
+保留可验证前缀及真实失败。确认原会话封存后才明确新建下一会话；仍有不确定性
+就保留记录，不能据新session倒推原请求成功。
+
+## 兼容录制诊断与Agent Run
+
+There is no `K` shortcut. Close returns to the small launcher; `Esc` closes the
+normal workspace. Drag the header to move the workspace and use its corner to
+resize the normal view. Closing UI does not stop background tasks.
+
+The compatibility Recorder and Agent Run have a **Minimize** control and a separate, genuinely smaller
 440 × 174 view. The arrow restores the normal workspace and its previous size.
 The compact Recorder shows only **已录入 / 真实失败 / 最新 3 条**. Its totals come
 from Annotator's session counters, not the retained UI list:
@@ -24,11 +65,12 @@ available in those details. Missing metadata stays unavailable. Canonical
 recording does not itself establish Full-Run qualification or research admission.
 
 The Recorder retains **兼容语义录制** as its original native Human capability.
-**原生交互与观察** controls navigate explicitly to the paired Workbench Data page;
-active Source3/Source4 lifecycle always uses that owner, regardless of profile dropdown.
-The Workbench selects
-the default `native-logical-source-v3` or explicit `native-logical-source-v4`
-profile (Source4 retains the public basis for offline P1 conversion). Select a source declaration
+**P1 录制（工作台）** controls navigate explicitly to the paired Workbench Data page;
+active P1/Source3/Source4 lifecycle always uses that owner, regardless of profile dropdown.
+The Workbench defaults to P1; the explicitly selected compatibility formats
+`native-logical-source-v3` and `native-logical-source-v4` retain their own semantics
+(Source4 retains the public basis for offline P1 conversion). For these Source
+formats select a source declaration
 (本人操作 / AI 界面操作 / Agent 协议 / 未知来源) and enter an operator ID before
 Start; no Human source is selected automatically. IDs use 1–128 ASCII letters,
 digits, `_`, `-` or `.`, excluding `.` and `..` alone. Pause before changing the
@@ -48,8 +90,9 @@ the diagnostic Recorder does not create a second Source3 mutation path.
 The bridge and async model preparation use the existing bounded native queue;
 queued cancellation can prove non-dispatch, while uncertain started work is never
 automatically retried. The browser and paired native Workbench Data page use the same application methods
-and fixed lifecycle API. Start/Change require an explicit source and actor; neither
-form defaults to Human. Refresh never retries an unknown write. Explicit Close and
+and fixed lifecycle API. Source3/Source4 Start/Change require an explicit source
+and actor; P1 Start requires the explicit source without a legacy actor field.
+Neither form defaults to Human. Refresh never retries an unknown write. Explicit Close and
 then a deliberate fresh session after durable Closed retain the earlier uncertainty
 notice. A fresh runtime/session isolates the presentation fence; it does not prove
 the prior request. Starting or changing away from Agent Protocol while a known

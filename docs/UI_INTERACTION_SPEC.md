@@ -5,13 +5,11 @@ owns native legality, input delivery, causal proof or research admission.
 
 ## Current pre-training scope
 
-The user-selected first-training scope makes internal API, library and CLI the
-main operation surface; existing GUI is a thin mapping to the same use cases.
-Retain current presentation, pending/unknown confirmation and pairing adapters;
-do not create a second business owner or build new complex GUI/team systems.
-See the [Workbench position](plans/p1-prefreeze-2026-10-18/WORKBENCH_POSITION.md)
-and [pending freeze definition](plans/p1-prefreeze-2026-10-18/SCOPE_v0.3.zh-CN.md).
-The existing short product journey and R20 still need actual final-tuple acceptance.
+人的工作台GUI默认以游戏内为主：能方便地在游戏里显示和操作，就优先游戏内；确实不适合的场景保留外部窗口。CLI/API/内部库继续服务agent和自动化，同一用例可以有多个入口。这覆盖旧“仅API/CLI主、游戏内统一以后再说”的笼统安排，不要求一轮重建全部历史训练、云或团队页面。
+
+GUI只是原业务用例的映射，可调用独立Application及后台服务。游戏内既有Platform/工作台控件→已配对Application录制用例→原TaskBridge/RecordingApplicationService→RecorderRuntime；保存、来源声明、互斥、Stop与unknown仍由原owner复核。关闭面板不停止后台任务，不在游戏主线程做上传或训练，不因为操作来自GUI就自动授予Human来源。
+
+第一批接通当前P1的开始、状态、暂停/继续、Close及下一局。具体操作由[游戏内指南](../apps/ingame-ui/README.md)和[原采集指南](ANNOTATOR_COLLECTION.md#current-p1-daily-collection)拥有；这段是已选目标，不宣称当前安装已完成。验收要从游戏内实际操作，核当前P1 profile/同一session、服务状态一致、封存读回和下一局，再报告源码/夹具/准确安装装载/真实操作各达到哪层。外部浏览器/CLI可观察同一session，不另造录制状态机。当前结果只从[CURRENT](memory/CURRENT.md)进入，最终产品/R20仍按原任务。
 
 ## Historical direction: complete in-game workbench (2026-09-18)
 
