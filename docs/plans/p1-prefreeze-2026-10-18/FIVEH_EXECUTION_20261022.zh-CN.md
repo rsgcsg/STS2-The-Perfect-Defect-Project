@@ -9,3 +9,5 @@
 I 集成分支为 `codex/p1-fiveh-integration-20261022`。正常初始 Application 使用永久 941ae84d release/c47 来源，游戏初检 PID8720、录制与 Close 均 closed；这只是开始时点，安装前重核。旧 G 私人检查点不再派发动作。当前本轮源码/构建/安装/装载/模型消费者均待完成，不能复用旧报告直接授予资格。
 
 操作入口保持 [日常导航](../../DOCUMENT_MAP.md#按我要做什么进入)，现场安装按 [原 installer](../../../python/docs/DEVELOPER_KIT_INSTALL.md) 与 [Game Mod lifecycle](../../../apps/game-mod/README.md#lifecycle)，模型按 [原 Application](../../../python/docs/PROJECT_CONSOLE.md#p1-model正常下载注册与使用)。各实现负责人同步其原功能指南；I 只汇总实际交付与未完成义务，不另造流程。
+
+用户最新明确日常录制卡顿会造成眩晕，本轮必须由R修同次Freeze重复构建并由I做真实录制开关/帧停顿验证；旧IO诊断不替代正常使用或用户体感。
