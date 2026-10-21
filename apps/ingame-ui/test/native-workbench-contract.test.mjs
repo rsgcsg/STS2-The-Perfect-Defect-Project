@@ -10,6 +10,14 @@ const bridge = read("apps/game-mod/PlatformTaskBridge.cs");
 const pairing = read("apps/ingame-ui/PlatformNativeWorkbenchPair.cs");
 const api = read("python/spireagent/workbench/native_workbench_api.py");
 
+test("same verified binding keeps its confirmed connection text during background refresh", () => {
+  const refresh = panel.slice(panel.indexOf("internal void Refresh("), panel.indexOf("internal void OnFrame("));
+  assert.ok(refresh.includes('if (_view is not JsonElement confirmed || PlatformNativeWorkbenchPair.Read(confirmed.GetProperty("binding")) != connection.Binding)\n            _connection.Text = "正在读取本机工作台…";'));
+  assert.ok(refresh.indexOf("connection.Binding.ExpiresAt <=") < refresh.indexOf("_view is not JsonElement confirmed"));
+  assert.match(refresh, /本机访问未连接或已过期/);
+  assert.match(panel, /else _connection.Text = result.Error;/);
+});
+
 test("native and application fixed command catalogs agree without an arbitrary proxy", () => {
   const expected = JSON.parse(read("docs/design/fixtures/native_workbench_pair_v1.json"));
   assert.equal(expected.fixture_only,true);
