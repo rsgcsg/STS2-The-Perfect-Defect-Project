@@ -218,7 +218,9 @@ def test_normal_prepare_verifies_separate_peer_without_enqueue_or_submit(tmp_pat
         assert not provider.calls and provider.ops.jobs() == []
 
 
-def test_normal_status_reads_durable_job_while_original_scheduler_poll_blocks(tmp_path, monkeypatch):
+def test_normal_status_reads_durable_job_while_original_scheduler_poll_blocks(
+    tmp_path, monkeypatch,
+):
     with client(tmp_path) as (app, call, provider, _store, _owner, snapshot, _path):
         entered, release, finished = threading.Event(), threading.Event(), threading.Event()
         original_poll = provider.poll
@@ -262,3 +264,26 @@ def test_normal_status_reads_durable_job_while_original_scheduler_poll_blocks(tm
         expected["result"] = json.loads(expected["result"]) if expected["result"] else None
         assert observed[0]["jobs"] == [expected]
         assert len(provider.calls) == 1
+
+
+def test_status_observes_no_jobs_without_initializing_or_querying_remote(tmp_path, monkeypatch):
+    with client(tmp_path) as (app, call, provider, _store, _owner, _snapshot, _path):
+        def no_remote_context():
+            raise AssertionError("status must not query provider/Store or admit new work")
+
+        monkeypatch.setattr(app.remote_training, "_context", no_remote_context)
+        assert call("status") == {
+            "schema": "spireagent/remote-training-status-1", "jobs": [],
+            "scheduler_error": None, "automatic_retry": False}
+        assert app.remote_training._scheduler is None
+        assert app.remote_training._operations is None
+        assert app.remote_training._thread is None and not provider.calls
+        with pytest.raises(BoundaryError, match="job_not_found"):
+            call("status", job_id="0" * 32)
+        deployment = replace(app.config.remote_compute, operations_path=tmp_path / "absent.sqlite")
+        service = RemoteTrainingService(replace(app.config, remote_compute=deployment),
+                                        app.local_datasets._selected, provider=provider)
+        assert service.status()["jobs"] == []
+        assert not deployment.operations_path.exists()
+        with pytest.raises(BoundaryError, match="job_not_found"):
+            service.status("0" * 32)

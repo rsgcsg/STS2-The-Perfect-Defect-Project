@@ -167,16 +167,30 @@ class RemoteTrainingService:
                 "provider_queried": False, "peer_queried": False, "automatic_retry": False}
 
     def status(self, job_id: object | None = None) -> dict[str, Any]:
-        with self._lock:
-            _, _, _, ops, _ = self._ready()
+        """Observe durable local jobs without waiting for Scheduler network writes."""
+        if self.config.hub_url:
+            raise BoundaryError("remote_training", "configured_hub_requires_hub_scheduler_route")
+        deployment = self.config.remote_compute
+        if deployment is None:
+            raise BoundaryError("remote_training", "explicit_scheduler_deployment_required")
+        # Like preparation_status, this is an observation of existing local Ops
+        # facts. It must not initialize a Scheduler or query provider/Store state.
+        ops = (self._operations or Operations(deployment.operations_path)
+               if deployment.operations_path.is_file() else None)
+        if ops is None:
+            if job_id is not None:
+                digest(job_id, "remote_training.job_id", length=32)
+                raise BoundaryError("remote_training", "job_not_found")
+            jobs = []
+        else:
             jobs = ops.jobs() if job_id is None else [self._job(ops, job_id)]
-            visible = [{k: row[k] for k in ("id", "kind", "input_id", "status", "attempt_id",
-                       "fence", "max_seconds", "reserved_units", "provider_ref", "result")}
-                       for row in jobs]
-            for row in visible:
-                row["result"] = json.loads(row["result"]) if row["result"] else None
-            return {"schema": "spireagent/remote-training-status-1", "jobs": visible,
-                    "scheduler_error": self._error, "automatic_retry": False}
+        visible = [{k: row[k] for k in ("id", "kind", "input_id", "status", "attempt_id",
+                   "fence", "max_seconds", "reserved_units", "provider_ref", "result")}
+                   for row in jobs]
+        for row in visible:
+            row["result"] = json.loads(row["result"]) if row["result"] else None
+        return {"schema": "spireagent/remote-training-status-1", "jobs": visible,
+                "scheduler_error": self._error, "automatic_retry": False}
 
     def prepare(self, body: object) -> dict[str, Any]:
         from spireagent.workbench.p1_training_data import (
