@@ -367,13 +367,13 @@ internal sealed class PlatformLivePanel : IDisposable
         _workspaceTitle.AddThemeFontSizeOverride("font_size", 18);
         _workspaceTitle.AddThemeColorOverride("font_color", TextPrimary);
         titleRow.AddChild(_workspaceTitle);
-        _workbenchButton = BuildHeaderButton("工作台", () => SelectSurface(2), "Open the native project Workbench.");
+        _workbenchButton = BuildHeaderButton("项目", () => SelectSurface(2), "Open the native project Workbench.");
         titleRow.AddChild(_workbenchButton);
         titleRow.AddChild(BuildHeaderButton("录制", () => OpenNativeWorkbenchPage("data"), "开始、查看和封存当前 P1 录制。"));
         _externalWorkbenchButton = BuildHeaderButton("兼容浏览器", BeginOpenWorkbench, "Open the registered legacy compatibility browser service.");
         titleRow.AddChild(_externalWorkbenchButton);
-        titleRow.AddChild(BuildHeaderButton("Minimize", MinimizePanel, "Keep a small live view during play."));
-        titleRow.AddChild(BuildHeaderButton("Reset", ResetLayout, "Restore position, size and active surface."));
+        titleRow.AddChild(BuildHeaderButton("缩小", MinimizePanel, "Keep a small live view during play."));
+        titleRow.AddChild(BuildHeaderButton("重置", ResetLayout, "Restore position, size and active surface."));
         var closeButton = BuildHeaderButton("收起", HidePanel, "Close workspace and return to gameplay.");
         closeButton.Shortcut = WorkspaceShortcut(Key.Escape);
         titleRow.AddChild(closeButton);
@@ -414,7 +414,7 @@ internal sealed class PlatformLivePanel : IDisposable
         _workspaceContent.AddChild(_surfaceViewport);
         BuildAgentRunPage(_surfaceViewport);
         BuildRecorderPage(_surfaceViewport);
-        _nativeWorkbench = new PlatformNativeWorkbenchPanel(command => _ = RunPolicyCommandAsync(command));
+        _nativeWorkbench = new PlatformNativeWorkbenchPanel(command => _ = RunPolicyCommandAsync(command), () => SelectSurface(1), () => SelectSurface(0));
         _surfaceViewport.AddChild(_nativeWorkbench.Root);
         _surfaces.Add(_nativeWorkbench.Root);
 
@@ -974,6 +974,7 @@ internal sealed class PlatformLivePanel : IDisposable
     {
         int activeSurface = _layout.ActiveSurface switch { "human_recorder" => 1, "workbench" => 2, _ => 0 };
         _tabBar.CurrentTab = activeSurface;
+        _tabBar.Visible = activeSurface != 2;
         for (int index = 0; index < _surfaces.Count; index++)
             _surfaces[index].Visible = index == activeSurface;
         if (resizeWorkspace)

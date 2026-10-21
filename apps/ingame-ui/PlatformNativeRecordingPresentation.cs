@@ -7,6 +7,50 @@ public static class PlatformNativeRecordingPresentation
 {
     public static IReadOnlyList<string> Rows(JsonElement status)
     {
+        string? lifecycle = Text(status, "recording_lifecycle"), closeout = Text(status, "closeout_status");
+        string label = lifecycle switch {
+            "ready" => "尚未开始", "recording" => "正在录制", "paused" => "已暂停",
+            "closing" => "保存中，请稍等", "closed" when closeout == "closed" => "已保存",
+            "closed" => "保存尚未完成", _ => "暂时无法读取状态"
+        };
+        var rows = new List<string> { "录制：" + label };
+        if (lifecycle == "ready") rows.Add("选择谁在操作，然后开始录制。");
+        if (lifecycle == "paused") rows.Add("暂停期间不采集，游戏可以继续。");
+        if (lifecycle == "closed" && closeout == "closed") rows.Add("本次录制已保存，可以开始下一次。");
+        if (Object(status, "health") is JsonElement health
+            && (Text(health, "error") is not null
+                || Text(health, "disk_health") is not ("healthy" or "not_open")))
+            rows.Add("保存遇到问题，请打开诊断页查看原因。");
+        if (Object(status, "source") is JsonElement source)
+        {
+            rows.Add($"已记录 {Value(source, "observations")} 次观察、{Value(source, "inputs")} 次操作。");
+            if (!source.GetProperty("accounting_complete").GetBoolean()) rows.Add("录制存在缺口，请到诊断页查看。");
+            if (Object(source, "declaration") is JsonElement declaration)
+                rows.Add("操作者：" + Origin(Text(declaration, "source_kind")));
+        }
+        return rows;
+    }
+
+    public static bool NeedsOperatorId(string? profile) => profile != "human-p1-native-decisions-1";
+
+    public static string ActionLabel(string action) => action switch {
+        "recording.start" => "开始录制", "recording.pause" => "暂停", "recording.resume" => "继续录制",
+        "recording.close" => "结束并保存", "recording.change_source" => "更换操作者", _ => action
+    };
+
+    public static string OptionLabel(string field, string? value, string original) => (field, value) switch {
+        ("source_kind", "declared_human") => "我本人操作（本人声明）",
+        ("source_kind", "agent_native_ui") => "AI 操作游戏界面",
+        ("source_kind", "agent_protocol") => "程序控制（高级）",
+        ("source_kind", "unknown") => "不确定操作来源",
+        ("capture_profile_id", "human-p1-native-decisions-1") => "日常录制（P1，默认）",
+        ("capture_profile_id", "native-logical-source-v3") => "完整观察（兼容模式）",
+        ("capture_profile_id", "native-logical-source-v4") => "完整观察与公共基底（高级）",
+        _ => original
+    };
+
+    public static IReadOnlyList<string> Details(JsonElement status)
+    {
         string? profile = Text(status, "capture_profile_id");
         var rows = new List<string>
         {

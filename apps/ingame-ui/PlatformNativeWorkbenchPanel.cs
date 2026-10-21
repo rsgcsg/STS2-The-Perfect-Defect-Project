@@ -21,6 +21,10 @@ internal sealed class PlatformNativeWorkbenchPanel : IDisposable
     private readonly VBoxContainer _items = new();
     private readonly VBoxContainer _forms = new();
     private readonly VBoxContainer _result = new();
+    private readonly HBoxContainer _recordingButtons = new();
+    private readonly VBoxContainer _recovery = new();
+    private readonly HBoxContainer _pager = new();
+    private readonly Label _backgroundNotice = Label("训练和上传会在后台继续；收起面板不会停止这些任务。");
     private readonly Label _connection = new() { AutowrapMode = TextServer.AutowrapMode.WordSmart };
     private readonly Label _notice = new() { AutowrapMode = TextServer.AutowrapMode.WordSmart };
     private readonly Label _fences = new() { AutowrapMode = TextServer.AutowrapMode.WordSmart };
@@ -31,6 +35,7 @@ internal sealed class PlatformNativeWorkbenchPanel : IDisposable
     private Task<(PlatformNativeWorkbenchConnection Connection, string? Url, long Generation)>? _externalOpen;
     private JsonElement? _view;
     private string _page = "play";
+    private string _section = "play";
     private string? _context;
     private int _offset;
     private long _generation;
@@ -41,14 +46,14 @@ internal sealed class PlatformNativeWorkbenchPanel : IDisposable
     private bool _visible;
     internal ScrollContainer Root { get; } = new() { SizeFlagsHorizontal = SizeFlags.ExpandFill, SizeFlagsVertical = SizeFlags.ExpandFill };
 
-    internal PlatformNativeWorkbenchPanel(Action<PlatformPolicyCommand> directRecovery)
+    internal PlatformNativeWorkbenchPanel(Action<PlatformPolicyCommand> directRecovery, Action openLegacyRecorder, Action openRuntimeDiagnostics)
     {
         Root.SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);
         _body.SizeFlagsHorizontal = SizeFlags.ExpandFill;
         _body.AddThemeConstantOverride("separation", 8);
         Root.AddChild(_body);
         var navigation = new HBoxContainer();
-        foreach ((string page, string label) in new[] { ("play", "实战"), ("data", "录制与资料"), ("training", "训练与任务"), ("models", "模型与分析"), ("settings", "账号与资源") })
+        foreach ((string page, string label) in new[] { ("recording", "录制"), ("data", "资料管理"), ("play", "模型实战"), ("training", "训练"), ("models", "模型"), ("settings", "设置"), ("diagnostics", "诊断") })
         {
             string selected = page;
             navigation.AddChild(Button(label, () => Navigate(selected, _context)));
@@ -59,25 +64,32 @@ internal sealed class PlatformNativeWorkbenchPanel : IDisposable
         recovery.AddChild(Button("暂停本机加载/接管", () => ModelRecovery("models.human")));
         recovery.AddChild(Button("结束本机模型任务", () => ModelRecovery("models.stop")));
         recovery.AddChild(Button("直接归还 Human", () => directRecovery(PlatformPolicyCommand.Human)));
-        _body.AddChild(recovery);
+        _recovery.AddChild(recovery);
         recovery = new HBoxContainer();
         recovery.AddChild(Button("直接停止当前 Runtime", () => directRecovery(PlatformPolicyCommand.Stop)));
         recovery.AddChild(Button("刷新本页", () => Refresh(true)));
-        _body.AddChild(recovery);
-        _body.AddChild(Label("关闭工作台或游戏不会停止已独立运行的训练/上传。这里显示服务实际能力；未知结果不会自动重试。"));
+        _recovery.AddChild(recovery);
+        var legacy = new HBoxContainer();
+        legacy.AddChild(Button("兼容录制窗口", openLegacyRecorder));
+        legacy.AddChild(Button("游戏运行诊断", openRuntimeDiagnostics));
+        _recovery.AddChild(legacy);
+        _body.AddChild(_recovery);
+        _body.AddChild(_backgroundNotice);
         _body.AddChild(_notice);
         _body.AddChild(_fences);
         _body.AddChild(_recordingStatus);
         _body.AddChild(_recordingForms);
+        _body.AddChild(_recordingButtons);
         _body.AddChild(_cards);
         _body.AddChild(_items);
-        var pager = new HBoxContainer();
+        var pager = _pager;
         _previous.Pressed += () => { _offset = Math.Max(0, _offset - 25); _generation++; Refresh(true); };
         _next.Pressed += () => { _offset += 25; _generation++; Refresh(true); };
         pager.AddChild(_previous); pager.AddChild(_pagination); pager.AddChild(_next);
         _body.AddChild(pager);
         _body.AddChild(_forms);
         _body.AddChild(_result);
+        ApplySectionVisibility();
     }
 
     private static Label Label(string value) => new() { Text = value, AutowrapMode = TextServer.AutowrapMode.WordSmart, SizeFlagsHorizontal = SizeFlags.ExpandFill };
@@ -91,8 +103,11 @@ internal sealed class PlatformNativeWorkbenchPanel : IDisposable
 
     private void Navigate(string page, string? context)
     {
-        bool changed = _page != page || _context != context;
-        _page = page; _context = context; _offset = 0; _generation++;
+        string apiPage = page is "recording" or "diagnostics" ? "data" : page;
+        bool changed = _section != page || _context != context;
+        _section = page; _page = apiPage; _context = context; _offset = 0; _generation++;
+        Root.ScrollVertical = 0;
+        ApplySectionVisibility();
         if (changed) { _formsKey = null; _itemsKey = null; _drafts.Clear(); }
         Refresh(true);
     }
@@ -100,7 +115,7 @@ internal sealed class PlatformNativeWorkbenchPanel : IDisposable
     internal void OpenPage(string page)
     {
         if (page is not ("play" or "data")) throw new ArgumentException("native_page_not_supported");
-        Navigate(page, null);
+        Navigate(page == "data" ? "recording" : page, null);
     }
 
     internal void Refresh(bool visible)
@@ -159,7 +174,9 @@ internal sealed class PlatformNativeWorkbenchPanel : IDisposable
             // Recompute button eligibility only from the next fresh owner view.
             _formsKey = null;
             _notice.Text = result.Status switch {
-                "accepted" => "服务已接收操作；请求登记与真正完成是不同状态，请查看所属任务的实际进度。",
+                "accepted" => write.Action.StartsWith("recording.", StringComparison.Ordinal)
+                    ? "操作已收到，正在刷新录制状态。"
+                    : "服务已接收操作；请查看所属任务的实际进度。",
                 "rejected" => "操作未投递：" + result.ErrorCode,
                 _ => "操作响应未确认。保留原任务上下文；不会自动重发。请明确核对或恢复原任务。"
             };
@@ -186,7 +203,11 @@ internal sealed class PlatformNativeWorkbenchPanel : IDisposable
             }
             Refresh(_visible);
         }
-        _fences.Text = _commands.Unconfirmed.Length == 0 ? "" : "未确认的原命令（更换认证连接不会清除）：\n" + string.Join('\n', _commands.Unconfirmed);
+        _fences.Text = _commands.Unconfirmed.Length == 0 ? "" : _section == "diagnostics"
+            ? "未确认的原命令（更换连接不会清除）：\n" + string.Join('\n', _commands.Unconfirmed)
+            : "上次操作还没有确认，请到诊断页核对。不要重复点击。";
+        _notice.Visible = !string.IsNullOrEmpty(_notice.Text);
+        _fences.Visible = !string.IsNullOrEmpty(_fences.Text);
     }
 
     private string HubUrl()
@@ -221,7 +242,9 @@ internal sealed class PlatformNativeWorkbenchPanel : IDisposable
     {
         if (String(data, "schema") == "spireagent/native-recording-view-1" && Object(data, "status") is JsonElement recording)
         {
-            foreach (string row in PlatformNativeRecordingPresentation.Rows(recording))
+            foreach (string row in _section == "diagnostics"
+                ? PlatformNativeRecordingPresentation.Details(recording)
+                : PlatformNativeRecordingPresentation.Rows(recording))
                 target.AddChild(Label(row));
             if (Boolean(data, "model_recovery_required"))
                 target.AddChild(Label("本机模型尚在实战或需要恢复。开始/更改为本人、AI界面或未知来源前，请先明确归还 Human 或 Stop。"));
@@ -269,14 +292,34 @@ internal sealed class PlatformNativeWorkbenchPanel : IDisposable
             if (String(previousTemplate, "consent_text") is string consent) target.AddChild(Label("已登记采集声明：\n" + consent));
     }
 
+    private void ApplySectionVisibility()
+    {
+        bool daily = _section == "recording", diagnostics = _section == "diagnostics";
+        _recovery.Visible = diagnostics;
+        _backgroundNotice.Visible = _section is "training" or "settings";
+        _recordingStatus.Visible = daily || diagnostics;
+        _recordingForms.Visible = daily;
+        _recordingButtons.Visible = daily;
+        _cards.Visible = !daily && !diagnostics;
+        _items.Visible = !daily && !diagnostics;
+        _pager.Visible = !daily && !diagnostics;
+        _forms.Visible = !daily && !diagnostics;
+        _result.Visible = diagnostics;
+    }
+
     private void Render(JsonElement view, PlatformNativeWorkbenchConnection connection)
     {
-        _connection.Text = "已连接本机工作台 · " + connection.Binding.WorkbenchInstanceId[..8] + " · 独立后台任务";
+        bool daily = _section == "recording", diagnostics = _section == "diagnostics";
+        ApplySectionVisibility();
+        _connection.Text = diagnostics ? "工作台实例：" + connection.Binding.WorkbenchInstanceId : "已连接游戏工作台";
+        _notice.Visible = !string.IsNullOrEmpty(_notice.Text);
+        _fences.Visible = !string.IsNullOrEmpty(_fences.Text);
         Clear(_cards); Clear(_recordingStatus);
         foreach (JsonElement card in view.GetProperty("cards").EnumerateArray())
         {
             VBoxContainer target = String(card, "owner") == "native_recording" ? _recordingStatus : _cards;
-            target.AddChild(Label("— " + (String(card, "owner") == "native_recording" ? "当前录制" : String(card, "owner") ?? "任务") + " —"));
+            if (String(card, "owner") != "native_recording")
+                target.AddChild(Label("— " + (String(card, "owner") ?? "任务") + " —"));
             RenderSummary(target, card.GetProperty("data"));
         }
         JsonElement pagination = view.GetProperty("pagination");
@@ -327,16 +370,18 @@ internal sealed class PlatformNativeWorkbenchPanel : IDisposable
             return String(card, "owner") + ":" + (operation is JsonElement task ?
                 (String(task, "operation_id") ?? String(task, "id")) + ":" + String(task, "attempt_id") : "");
         }));
-        string formsKey = _page + ":" + _context + ":" + connection.Binding.PairId + ":"
+        string formsKey = _section + ":" + _context + ":" + connection.Binding.PairId + ":"
             + ownerContexts + ":" + capabilities.GetRawText() + ":" + _commands.Unconfirmed.Length;
         if (formsKey != _formsKey)
         {
             _formsKey = formsKey; string? focused = _fields.FirstOrDefault(item => item.Value.HasFocus()).Key;
-            Clear(_forms); Clear(_recordingForms); _fields.Clear();
+            Clear(_forms); Clear(_recordingForms); Clear(_recordingButtons); _fields.Clear();
             foreach (JsonElement descriptor in capabilities.GetProperty("actions").EnumerateArray())
             {
                 string? action = String(descriptor, "action_id");
                 if (action is null || !PlatformNativeWorkbenchClient.Actions.Contains(action)) continue;
+                bool recordingAction = action.StartsWith("recording.", StringComparison.Ordinal);
+                if (recordingAction != daily || diagnostics) continue;
                 if (action == "training.start") BuildTrainingForm(view, connection, descriptor);
                 else BuildActionForm(view, connection, descriptor, action);
             }
@@ -373,20 +418,20 @@ internal sealed class PlatformNativeWorkbenchPanel : IDisposable
     {
         bool recordingAction = action.StartsWith("recording.", StringComparison.Ordinal);
         VBoxContainer destination = recordingAction ? _recordingForms : _forms;
-        if (recordingAction && !Boolean(descriptor, "enabled"))
-        {
-            destination.AddChild(Label((String(descriptor, "label") ?? action) + " · 当前不可用："
-                + (String(descriptor, "reason") ?? "请以当前录制状态为准")));
-            return;
-        }
+        if (recordingAction && !Boolean(descriptor, "enabled")) return;
         var form = new VBoxContainer();
-        form.AddChild(Label(String(descriptor, "label") ?? action));
+        if (!recordingAction) form.AddChild(Label(String(descriptor, "label") ?? action));
         var controls = new Dictionary<string, (string Type, Control Control)>();
+        var fieldLabels = new Dictionary<string, Label>();
         foreach (JsonElement declared in descriptor.GetProperty("fields").EnumerateArray())
         {
             string name = String(declared, "name")!; string type = String(declared, "type")!;
             string key = action + ":" + name;
-            form.AddChild(Label(String(declared, "label") ?? name));
+            var fieldLabel = Label(recordingAction ? name switch {
+                "source_kind" => "谁在操作？", "capture_profile_id" => "录制内容",
+                "actor_id" => "操作者代号（完整观察模式使用）", _ => String(declared, "label") ?? name
+            } : String(declared, "label") ?? name);
+            form.AddChild(fieldLabel); fieldLabels[name] = fieldLabel;
             string saved = _drafts.GetValueOrDefault(key, Show(declared.GetProperty("default")));
             Control control;
             if (type == "boolean")
@@ -401,7 +446,9 @@ internal sealed class PlatformNativeWorkbenchPanel : IDisposable
                     foreach (JsonElement item in view.GetProperty("items").EnumerateArray())
                     { string? identity = String(item, "selection_id"); if (identity is null) continue; select.AddItem(String(item, "label") ?? identity); select.SetItemMetadata(select.ItemCount - 1, identity); }
                 else foreach (JsonElement option in declared.GetProperty("options").EnumerateArray())
-                { select.AddItem(String(option, "label")); select.SetItemMetadata(select.ItemCount - 1, String(option, "value") ?? ""); }
+                { string? optionValue = String(option, "value");
+                  select.AddItem(recordingAction ? PlatformNativeRecordingPresentation.OptionLabel(name, optionValue, String(option, "label") ?? "") : String(option, "label"));
+                  select.SetItemMetadata(select.ItemCount - 1, optionValue ?? ""); }
                 for (int index = 0; index < select.ItemCount; index++) if (select.GetItemMetadata(index).AsString() == saved) select.Select(index);
                 select.ItemSelected += index => _drafts[key] = select.GetItemMetadata((int)index).AsString(); control = select;
             }
@@ -412,9 +459,26 @@ internal sealed class PlatformNativeWorkbenchPanel : IDisposable
             }
             _fields[key] = control; controls[name] = (type, control); form.AddChild(control);
         }
+        if (recordingAction && controls.TryGetValue("actor_id", out var actor))
+        {
+            void UpdateActor()
+            {
+                string? profile = controls.TryGetValue("capture_profile_id", out var profileField)
+                    ? ((OptionButton)profileField.Control).GetItemMetadata(((OptionButton)profileField.Control).Selected).AsString()
+                    : Object(view.GetProperty("cards").EnumerateArray().First(card => String(card, "owner") == "native_recording").GetProperty("data"), "status") is JsonElement status
+                        ? String(status, "capture_profile_id") : null;
+                bool shown = PlatformNativeRecordingPresentation.NeedsOperatorId(profile);
+                actor.Control.Visible = shown; fieldLabels["actor_id"].Visible = shown;
+            }
+            if (controls.TryGetValue("capture_profile_id", out var profileField))
+                ((OptionButton)profileField.Control).ItemSelected += _ => UpdateActor();
+            UpdateActor();
+        }
+        if (recordingAction && action == "recording.start")
+            form.AddChild(Label("请按实际情况选择操作者。"));
         if (action == "collection.consent")
             form.AddChild(Label("此声明包含真实 Human 来源、上传及项目共享授权。AI 或未知来源不能声明为 Human；登录不自动上传旧私有资料。"));
-        Button submit = Button(String(descriptor, "label") ?? action, () =>
+        Button submit = Button(recordingAction ? PlatformNativeRecordingPresentation.ActionLabel(action) : String(descriptor, "label") ?? action, () =>
         {
             try
             {
@@ -466,7 +530,10 @@ internal sealed class PlatformNativeWorkbenchPanel : IDisposable
         });
         submit.Disabled = !Boolean(descriptor, "enabled") || !_commands.CanSubmit(connection.Binding.ConfigurationId, action, _recordingContext);
         if (!Boolean(descriptor, "enabled")) form.AddChild(Label("当前不可用：" + String(descriptor, "reason")));
-        _fields[action + ":submit"] = submit; form.AddChild(submit); destination.AddChild(form);
+        _fields[action + ":submit"] = submit;
+        if (recordingAction && action is not ("recording.start" or "recording.change_source"))
+            _recordingButtons.AddChild(submit);
+        else { form.AddChild(submit); destination.AddChild(form); }
     }
 
     private static Dictionary<string, object?> TrainingControlPayload(JsonElement view, string action)
