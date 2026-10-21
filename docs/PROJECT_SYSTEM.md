@@ -84,6 +84,8 @@ scope, next delivery and remaining obligations without private chat.
 
 操作说明归对应现有功能指南。[DOCUMENT_MAP](DOCUMENT_MAP.md#按我要做什么进入)按“我要做什么”路由；组件/Python地图只继续路由，不能另抄一套业务流程。一个操作段须让人或Agent知道使用条件、准确受支持入口、必要输入、结果位置、完成判断和真实失败后的处理。GUI、CLI/API映射同一业务owner；不支持的操作明确写缺口，不为未来功能造教程，也不为每个内部函数写SOP。
 
+以真实内部开发和受支持内部库/API用起来方便为准，操作仍归原合同与状态owner，不强制所有内部操作经过HTTP、Application或GUI。GUI只映射人类需要且最方便易用的功能，不要求每个API都做按钮；具体界面继续由[原UI规范](UI_INTERACTION_SPEC.md)维护。
+
 新实现接入或受支持入口改变时，同PR更新该操作段和导航；改变合同/理由则更新合同或DECISIONS/ADR；当前工作变化则由集成者替换CURRENT。历史解法保原证据，新的适用边界归RESOLVED_ISSUES。不要求每次同时改全部文档。收敛验收必须同时有职责、当前入口、实际操作、历史复用、接手走查与维护归属；表格登记、链接通过或文档提交本身不宣布父能力已完成。
 
 A new idea belongs either in the owning specification as a selected decision or
