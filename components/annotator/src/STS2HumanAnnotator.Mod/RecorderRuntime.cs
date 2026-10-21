@@ -2011,6 +2011,7 @@ internal static partial class RecorderRuntime
 
     internal static void OnProcessFrame()
     {
+        ObserveProcessFrameInterval();
         if (IsSourceRecording) { FinalizeSourceClose(); return; }
         try
         {

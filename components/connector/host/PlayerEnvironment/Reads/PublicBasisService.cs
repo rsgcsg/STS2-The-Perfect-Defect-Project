@@ -34,7 +34,9 @@ internal static partial class PlayerEnvironmentService
         {
             var before = P1NativeCaptureBoundary.Capture();
             SnapshotBuildResult built = BuildSnapshot(inputProfile: PublicBasisContract.Profile, captureProfiler: profiler);
-            var frozen = FreezePublicBasis(built, before.Run == null ? null : Entities.GetId(before.Run, "run"), built.Snapshot.ObservedAt);
+            FrozenPublicObservation Freeze() => FreezePublicBasis(built,
+                before.Run == null ? null : Entities.GetId(before.Run, "run"), built.Snapshot.ObservedAt);
+            var frozen = profiler == null ? Freeze() : profiler.Measure("public_basis_reads_and_serialization", Freeze);
             T result = assemble(built, frozen);
             guard.RequireStable(before.Matches(P1NativeCaptureBoundary.Capture()));
             return result;
@@ -98,13 +100,15 @@ internal static partial class PlayerEnvironmentService
     internal static FrozenPublicObservation FreezePublicBasis(SnapshotBuildResult built, string? continuity, DateTimeOffset? captureTime = null)
     {
         var reads = new List<PublicBasisRead>();
+        var cardDetails = CapturePublicCardDetailIndex(built);
         foreach (var opportunity in built.Snapshot.Reads)
         {
             var resolution = ResolveReadMaterialization(built.Snapshot, opportunity.ReadId,
                 built.Snapshot.SnapshotId, built.ReadBuilds);
             var result = resolution.ErrorCode != null
                 ? new PlayerEnvironmentReadResult(null, resolution.ErrorCode, resolution.Detail)
-                : BuildResolvedRead(built, resolution, built.Snapshot.SnapshotId, captureTime, includePublicCardDetails: true);
+                : BuildResolvedRead(built, resolution, built.Snapshot.SnapshotId, captureTime,
+                    includePublicCardDetails: true, capturedPublicCardDetails: cardDetails);
             reads.Add(new(opportunity.ReadId, opportunity.Kind, result.Read == null ? null
                 : (JsonObject)JsonSerializer.SerializeToNode(result.Read, ConnectorMod._jsonOptions)!,
                 result.Read == null ? result.ErrorCode ?? "read_materialization_missing" : null));
