@@ -1167,15 +1167,17 @@ def create_server(app: Application) -> ThreadingHTTPServer:
             return body
 
         def model_action(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
-            if path == "/api/local-models/request" and set(body) in (
-                {"selection_id", "operation", "run_profile"},
-                {"selection_id", "operation", "run_profile", "native_episode_ref"},
-            ):
+            if (path == "/api/local-models/request"
+                    and {"selection_id", "operation", "run_profile"} <= set(body)
+                    and not set(body) - {"selection_id", "operation", "run_profile",
+                                         "native_episode_ref", "global_no_progress"}):
                 app.check_environment_instance()
                 return app.models.agent_request(
                     body["selection_id"],
                     body["operation"],
                     body["run_profile"],
+                    **({"global_no_progress": body["global_no_progress"]}
+                       if "global_no_progress" in body else {}),
                     **(
                         {"native_episode_ref": body["native_episode_ref"]}
                         if "native_episode_ref" in body

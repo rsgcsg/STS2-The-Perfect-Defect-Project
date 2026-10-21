@@ -22,6 +22,7 @@ def create(
     target: str,
     native_context: dict[str, Any] | None = None,
     native_episode_context: dict[str, Any] | None = None,
+    *, global_no_progress: dict[str, int] | None = None,
 ) -> dict[str, Any]:
     if operation not in OPERATIONS or target not in {"native", "managed"}:
         raise BoundaryError("agent_run_request", "unsupported_operation_or_target")
@@ -50,6 +51,8 @@ def create(
         },
         "composition": composition,
     }
+    if global_no_progress is not None:
+        value["budget"]["no_progress"] = dict(global_no_progress)
     if native_episode_context is not None:
         from .native_episode_binding import checked_context
 

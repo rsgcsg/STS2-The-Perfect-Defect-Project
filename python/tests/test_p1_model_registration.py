@@ -146,3 +146,38 @@ def test_normal_application_http_control_token_registers_p1_model(
         server.server_close()
         app.close()
         thread.join(timeout=3)
+
+
+def test_application_stop_window_is_in_original_request_and_runtime_spawn(
+    p1_registration, monkeypatch,
+):
+    from spireagent.workbench import local_models
+    from spireagent.workbench.agent_run_request import publish
+
+    service, models, _, model, _, _ = p1_registration
+    selection = service.register(model.artifact_id)["selection_id"]
+    progress = {"windowDecisions": 32, "maxRepeats": 8}
+    request = models.agent_request(selection, "start", global_no_progress=progress)
+    assert request["budget"]["no_progress"] == progress
+    assert "no_progress" not in models.agent_request(selection, "start")["budget"]
+    models.state["agent_run_request"] = publish(models.directory, request, "original-operation")
+    monkeypatch.setattr(models, "readiness", lambda _: {"status": "ready_to_load"})
+    monkeypatch.setattr(models, "_runtime_package", lambda _: {
+        "version": "synthetic", "code_sha256": "b" * 64})
+    monkeypatch.setattr(models, "_node_modules", lambda _: Path("/trusted/node_modules"))
+    monkeypatch.setattr(local_models, "_check_runtime_port", lambda _: None)
+    commands = []
+
+    def capture(command, **_):
+        commands.append(command)
+        raise RuntimeError("captured-before-native-launch")
+
+    monkeypatch.setattr(local_models.subprocess, "Popen", capture)
+    with pytest.raises(RuntimeError, match="captured-before-native-launch"):
+        models._start(selection)
+    assert len(commands) == 1
+    command = commands[0]
+    assert command[command.index("--no-progress-window") + 1] == "32"
+    assert command[command.index("--no-progress-repeats") + 1] == "8"
+    with pytest.raises(ValueError, match="invalid_global_no_progress"):
+        models.agent_request(selection, "start", global_no_progress={**progress, "extra": 1})
