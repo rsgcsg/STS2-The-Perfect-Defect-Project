@@ -65,8 +65,8 @@ available in those details. Missing metadata stays unavailable. Canonical
 recording does not itself establish Full-Run qualification or research admission.
 
 The Recorder retains **兼容语义录制** as its original native Human capability.
-**原生交互与观察** controls navigate explicitly to the paired Workbench Data page;
-active Source3/Source4 lifecycle always uses that owner, regardless of profile dropdown.
+**P1 录制（工作台）** controls navigate explicitly to the paired Workbench Data page;
+active P1/Source3/Source4 lifecycle always uses that owner, regardless of profile dropdown.
 The Workbench defaults to P1; the explicitly selected compatibility formats
 `native-logical-source-v3` and `native-logical-source-v4` retain their own semantics
 (Source4 retains the public basis for offline P1 conversion). For these Source
