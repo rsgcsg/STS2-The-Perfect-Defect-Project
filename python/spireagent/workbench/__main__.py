@@ -62,6 +62,7 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument("--store", default=".local/research-store")
+    parser.add_argument("--additional-peer", help="second explicit existing cache peer")
     parser.add_argument("--max-cache-bytes", type=int, help="explicit local payload budget")
     parser.add_argument("--retain-recent", type=int, default=2)
     parser.add_argument("--registry", type=Path, default=Path(".local/registry.sqlite"))
@@ -106,6 +107,7 @@ def main(argv: list[str] | None = None) -> int:
                     raise BoundaryError("cli", "explicit_peer_and_cache_budget_required")
                 result = configure_cache(store, args.other_store,
                                          max_bytes=args.max_cache_bytes,
+                                         additional_peer=args.additional_peer,
                                          retain_recent=args.retain_recent)
             elif args.command == "prepare":
                 from spireagent.json_boundary import decode_json

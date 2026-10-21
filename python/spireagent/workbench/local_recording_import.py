@@ -15,6 +15,7 @@ import subprocess
 import tarfile
 import tempfile
 import threading
+import time
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
@@ -1294,6 +1295,11 @@ class LocalRecordingImporter:
                 self._maintenance["cache"] = receipt
                 self._maintenance["cache_trim_signature"] = [
                     receipt["after_bytes"], len(store.manifest_ids()), store._cache_policy]
+                self._maintenance["cache_retry_after"] = (
+                    time.time() + 60 if receipt["active_chunks"] or receipt["unverified_chunks"]
+                    else None)
+                self._maintenance["status"] = (
+                    "up_to_date" if receipt["within_budget"] else "cache_over_budget")
                 self._save()
         except Exception as error:
             with self.lock:

@@ -44,7 +44,7 @@ class ArtifactStore(Protocol):
 class ManifestArtifactStore:
     def __init__(self, blobs: BlobStore) -> None:
         self.blobs = blobs
-        self._peer: ManifestArtifactStore | None = None
+        self._peers: tuple[ManifestArtifactStore, ...] | None = None
         self._cache_policy: dict[str, Any] | None = None
         if isinstance(blobs, LocalBlobStore):
             policy = blobs.root / "cache-policy.json"
@@ -53,13 +53,13 @@ class ManifestArtifactStore:
 
                 self._cache_policy = read_policy(policy)
 
-    def cache_peer(self) -> ManifestArtifactStore | None:
-        """The explicitly configured durable peer; no implicit provider fallback."""
-        if self._cache_policy is not None and self._peer is None:
+    def cache_peers(self) -> tuple[ManifestArtifactStore, ...]:
+        """Only the explicitly pinned existing locations; no provider discovery."""
+        if self._cache_policy is not None and self._peers is None:
             from spireagent.storage.config import open_peer
 
-            self._peer = open_peer(self._cache_policy["peer"])
-        return self._peer
+            self._peers = tuple(open_peer(binding) for binding in self._cache_policy["peers"])
+        return self._peers or ()
 
     def _cache(self, key: str, data: bytes) -> None:
         if isinstance(self.blobs, LocalBlobStore) and not self.blobs.readonly:
@@ -71,10 +71,13 @@ class ManifestArtifactStore:
         except StoreError as error:
             if error.code != "object_not_found":
                 raise
-            peer = self.cache_peer()
-            if peer is None:
-                raise
-            return peer.blobs.get(key), True
+            for peer in self.cache_peers():
+                try:
+                    return peer.blobs.get(key), True
+                except StoreError as peer_error:
+                    if peer_error.code != "object_not_found":
+                        raise
+            raise
 
     def put_payload(
         self, role: str, source: BinarySource, media_type: str = "application/octet-stream"

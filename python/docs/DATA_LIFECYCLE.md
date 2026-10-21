@@ -184,7 +184,12 @@ python -m spireagent.workbench cache-configure --store STORE --other-store s3 --
 ```
 
 This writes only `STORE/cache-policy.json`, a non-secret storage configuration,
-including the exact bucket/endpoint/prefix selected now. It is not a Curation or
+including each exact bucket/endpoint/prefix selected now. At most two existing
+locations may be pinned, using `--additional-peer` for the second. The current
+recording prefix `p1-native-preservation/v1` and compute prefix `stpd` are distinct;
+configure both when that Store consumes both. Only an exact `object_not_found`
+permits checking the next declared location; transport or integrity failures stop
+the read. No provider, bucket, prefix or artifact is guessed. It is not a Curation or
 transfer ledger. Reopen the normal Application/reader after configuring it. A local
 miss on an exact manifest, payload index or chunk reads that same key from that
 peer; normal manifest/chunk/whole-payload validation remains mandatory. A corrupt
@@ -215,7 +220,10 @@ remote object retains the local chunk and appears in `unverified_chunks`.
 The receipt reports actual before/after payload bytes, protected identities, busy
 chunks and `within_budget`. Metadata, retained models/checkpoints, unverified data
 or active readers can keep the Store above its target; this is reported rather than
-deleting protected data. Maintenance avoids repeating an unchanged blocked trim.
+deleting protected data. Maintenance reports `cache_over_budget` while protected bytes prevent its target.
+An active or not-yet-preserved chunk schedules another actual readback after a
+60-second backoff; an unchanged retained-only overage waits for changed data or
+policy. Time schedules that check and never counts as successful verification.
 Reading cold data can temporarily exceed the working-set target, and the next idle
 maintenance pass trims it. This bounds evictable Store payloads as well as expanded
 recording copies; it does not guarantee an unlimited offline buffer or constant

@@ -192,7 +192,7 @@ def test_existing_maintenance_owner_trims_and_persists_receipt(tmp_path, monkeyp
     assert len(importer.operation["storage_receipt"]["removed_chunks"]) == 2
     reopened = importing.LocalRecordingImporter(config, Catalog())
     assert reopened._maintenance["cache"] == importer.operation["storage_receipt"]
-    assert maintenance.tick()["status"] == "up_to_date"
+    assert maintenance.tick()["status"] == "cache_over_budget"
 
 
 def test_new_publication_prepares_lease_for_future_readonly_consumer(tmp_path):
@@ -210,3 +210,97 @@ def test_new_publication_prepares_lease_for_future_readonly_consumer(tmp_path):
     local.publish(manifest)
     readonly = ManifestArtifactStore(LocalBlobStore(tmp_path / "local", readonly=True))
     assert b"".join(readonly.read_payload(payload)) == b"published after cache setup"
+
+
+def test_maintenance_rechecks_active_reader_after_backoff(tmp_path, monkeypatch):
+    import io
+    import os
+
+    from test_artifact_store_v1 import PRODUCER
+
+    from spireagent.artifact_contracts import Manifest
+    from spireagent.workbench import local_recording_import as importing
+    from spireagent.workbench import p1_recording_maintenance as maintaining
+    from spireagent.workbench.developer import ProjectConfig, combination
+
+    local, peer = store_at(tmp_path / "local"), store_at(tmp_path / "peer")
+    manifests = []
+    for index in range(3):
+        manifest = Manifest("analysis", PRODUCER, payloads=(
+            local.put_payload("data", io.BytesIO(str(index).encode())),))
+        local.publish(manifest)
+        copy_artifact(local, peer, manifest.artifact_id)
+        os.utime(local.blobs.root / "manifests" / (manifest.artifact_id + ".json"),
+                 ns=(100 + index, 100 + index))
+        manifests.append(manifest)
+    configure_cache(local, str(tmp_path / "peer"), max_bytes=2)
+
+    class Catalog:
+        def read(self):
+            return {"status": "ready", "candidates": []}
+
+    config = ProjectConfig(tmp_path / "state", "", "", None, combination())
+    config.state_dir.mkdir()
+    importer = importing.LocalRecordingImporter(config, Catalog())
+    monkeypatch.setattr(importing, "_selected_store", lambda *a, **k: (local, None))
+    maintenance = maintaining.P1RecordingMaintenance(importer)
+    maintenance.configure(True, {"kind": "local", "directory": str(tmp_path / "peer")},
+                          projection_id=None)
+    reader = local.read_payload(manifests[0].payload("data"))
+    next(reader)
+    assert maintenance.tick()["status"] == "cache_trimming"
+    importer.thread.join(timeout=3)
+    assert importer._maintenance["cache"]["active_chunks"]
+    assert maintenance.tick()["status"] == "cache_over_budget"
+    reader.close()
+    # Closed reader alone is not success. The scheduled retry must actually trim.
+    monkeypatch.setattr(maintaining.time, "time",
+                        lambda: importer._maintenance["cache_retry_after"] + 1)
+    assert maintenance.tick()["status"] == "cache_trimming"
+    importer.thread.join(timeout=3)
+    assert importer._maintenance["cache"]["within_budget"]
+    assert maintenance.tick()["status"] == "up_to_date"
+
+
+def test_two_pinned_peers_recover_and_trim_only_on_exact_absence(tmp_path):
+    import io
+    import os
+
+    from test_artifact_store_v1 import PRODUCER
+
+    from spireagent.artifact_contracts import Manifest
+    from spireagent.storage.cache import trim_cache
+
+    local, primary, secondary = [store_at(tmp_path / name)
+                                 for name in ("local", "primary", "secondary")]
+    projection, _, _ = projection_fixture(local, "second-peer")
+    copy_artifact(local, secondary, projection.artifact_id)
+    configure_cache(local, str(tmp_path / "primary"), max_bytes=0,
+                    additional_peer=str(tmp_path / "secondary"))
+    key = "objects/sha256/" + projection.payload("segments").sha256
+    (local.blobs.root / key).unlink()
+    assert load_projection(local, projection.artifact_id).manifest == projection
+    for index in range(2):
+        manifest = Manifest("analysis", PRODUCER, payloads=(
+            local.put_payload("data", io.BytesIO(str(index).encode())),))
+        local.publish(manifest)
+        os.utime(local.blobs.root / "manifests" / (manifest.artifact_id + ".json"),
+                 ns=(10**18 + index, 10**18 + index))
+    # Make the two recent markers newer than the original read-through artifacts.
+    for identity in (projection.artifact_id, projection.parent("source")):
+        os.utime(local.blobs.root / "manifests" / (identity + ".json"), ns=(1, 1))
+    # The source's payload was not materialized in this read-only projection path;
+    # retain its local index metadata for trim inventory without fetching raw bytes.
+    source = secondary.get_manifest(projection.parent("source"))
+    for payload in source.payloads:
+        index_key = f"payload-indexes/v1/{payload.sha256}.json"
+        local.blobs.put_if_absent(index_key, secondary.blobs.get(index_key))
+    trimmed = trim_cache(local)
+    assert key.rsplit("/", 1)[1] in trimmed["removed_chunks"]
+    assert load_projection(local, projection.artifact_id).manifest == projection
+    copy_artifact(secondary, primary, projection.artifact_id)
+    (primary.blobs.root / key).write_bytes(b"corrupt first declared peer")
+    (local.blobs.root / key).unlink()
+    with pytest.raises(StoreError, match="payload_chunk_integrity_failure"):
+        load_projection(local, projection.artifact_id)
+    assert not (local.blobs.root / key).exists()
