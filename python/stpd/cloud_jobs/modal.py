@@ -32,7 +32,8 @@ class ModalTarget:
         if not isinstance(self.producer, Producer):
             raise BoundaryError("modal_target", "untyped_producer")
         if not isinstance(self.image, str) or not re.fullmatch(
-            r"[A-Za-z0-9][A-Za-z0-9._:/-]*@sha256:[0-9a-f]{64}", self.image
+            r"(?:[A-Za-z0-9][A-Za-z0-9._:/-]*@sha256:[0-9a-f]{64}|im-[A-Za-z0-9]{22})",
+            self.image,
         ):
             raise BoundaryError("modal_target", "immutable_image_digest_required")
         if self.gpu not in {"none", "L4", "A10", "L40S", "A100-40GB", "A100-80GB", "H100!"}:
