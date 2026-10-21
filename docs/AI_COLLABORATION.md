@@ -73,6 +73,11 @@ Keep one short checkpoint per current assignment; replace its active summary rat
 than prepending endless history. Durable requirements and acceptance must also be in
 the repository/task so work is not dependent on one private conversation.
 
+新的独立阶段使用清楚的当批任务名称和当前状态指针；同一有界修复仍可复用原执行者，
+不为改名而重启。旧轮私人检查点只保留历史地位，恢复时先以当前任务、准确工作树和
+实际运行项相互核对；发现冲突先纠正指针，不按旧文件继续实施。主管须在确认正在做
+用户要的同一结果之后派发或验收，不能用旧轮完成消息替代本轮现场。
+
 ## Mandatory independent review before acceptance
 
 Material changes under [Governance](ENGINEERING_GOVERNANCE.md#2-change-classes-and-required-confidence)
