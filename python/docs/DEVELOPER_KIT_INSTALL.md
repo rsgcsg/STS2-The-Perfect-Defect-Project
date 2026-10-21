@@ -82,14 +82,20 @@ writable development directory.
 ```bash
 uv run --locked --extra cloud python tools/install_developer_kit.py plan --archive /ABS/kit.zip --sha256 APPROVED_ZIP_SHA256 --releases /ABS/releases
 uv run --locked --extra cloud python tools/install_developer_kit.py prepare --archive /ABS/kit.zip --sha256 APPROVED_ZIP_SHA256 --releases /ABS/releases
+uv run --locked --extra cloud python tools/install_developer_kit.py initialize --directory /ABS/releases/APPROVED_ZIP_SHA256 --config /ABS/project.json --defer-launcher
 uv run --locked --extra cloud python tools/install_developer_kit.py preflight --directory /ABS/releases/APPROVED_ZIP_SHA256 --game-directory /ABS/game
-uv run --locked --extra cloud python tools/install_developer_kit.py initialize --directory /ABS/releases/APPROVED_ZIP_SHA256 --config /ABS/project.json
 ```
 
 `plan` reads only; `prepare` checks bounded archive paths/inventory, clones the exact
 source, verifies lock/combination/manifest, stages the published native bytes and
 publishes the directory. Dependencies initialize **after** placement so virtualenv
 paths remain stable. Neither step changes the game, profile, queues or cloud.
+Initialize before preflight: the prepared release's game doctor imports its installed
+Node consumer dependencies. `--defer-launcher` keeps the current launcher selected;
+after preflight passes, complete publication through the existing
+[reviewed launcher replacement and recovery](#reviewed-launcher-replacement-and-recovery)
+owner commands below. A new installation uses that selected release's `install-launcher`;
+an existing launcher requires the documented two-hash replacement.
 `preflight` is read-only: it binds the prepared package pins to their published BOM
 asset hashes, checks the target platform/architecture against the explicit local game
 and verifies declared Node, Python and .NET framework compatibility. It never installs,
@@ -218,7 +224,7 @@ remain inherited: an unavailable offline dependency fails initialization. A bare
 
 For kits whose `combination.json` declares
 `workbench_launcher_schema: spireagent/workbench-launcher-v1`, successful
-initialization installs a fixed per-user macOS entry at
+initialization without `--defer-launcher` installs a fixed per-user macOS entry at
 `~/Library/Application Support/spireagent/workbench/open`. The game Mod can
 invoke it only after an explicit Open action reports the Workbench stopped. The
 entry accepts no arguments, verifies its exact kit and bound config through the
