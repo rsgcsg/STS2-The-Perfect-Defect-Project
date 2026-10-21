@@ -169,6 +169,7 @@ class ProjectConfig:
     combination: dict[str, Any]
     research_workspace: LocalResearchWorkspaceConfig | None = None
     remote_compute: RemoteComputeConfig | None = None
+    cloud_environment_file: Path | None = None
 
     def to_dict(self) -> dict[str, Any]:
         value = {
@@ -183,6 +184,8 @@ class ProjectConfig:
             value["research_workspace"] = self.research_workspace.to_dict()
         if self.remote_compute is not None:
             value["remote_compute"] = self.remote_compute.to_dict()
+        if self.cloud_environment_file is not None:
+            value["cloud_environment_file"] = str(self.cloud_environment_file)
         return value
 
     @classmethod
@@ -198,7 +201,8 @@ class ProjectConfig:
             "delivery_config",
             "combination",
         }
-        if not fields <= set(raw) or set(raw) - fields - {"research_workspace", "remote_compute"}:
+        if not fields <= set(raw) or set(raw) - fields - {
+                "research_workspace", "remote_compute", "cloud_environment_file"}:
             raise BoundaryError("project.config", "missing_or_unknown_fields")
         obj = object_fields(raw, set(raw), "project.config")
         if obj["schema"] != CONFIG_SCHEMA or not isinstance(obj["combination"], dict):
@@ -223,6 +227,11 @@ class ProjectConfig:
             if not store_dir.is_absolute() or not registry_path.is_absolute():
                 raise BoundaryError("project", "absolute_local_path_required")
             research_workspace = LocalResearchWorkspaceConfig(store_dir, registry_path)
+        cloud_file = None
+        if "cloud_environment_file" in obj:
+            cloud_file = Path(text(obj["cloud_environment_file"], "project.cloud_environment_file"))
+            if not cloud_file.is_absolute():
+                raise BoundaryError("project", "absolute_local_path_required")
         return cls(
             state,
             endpoint(obj["hub_url"], optional=True),
@@ -231,6 +240,7 @@ class ProjectConfig:
             dict(obj["combination"]),
             research_workspace,
             RemoteComputeConfig.decode(obj["remote_compute"]) if "remote_compute" in obj else None,
+            cloud_file,
         )
 
 
@@ -241,6 +251,7 @@ def setup(
     hub_url: str = "",
     platform_url: str = "",
     delivery_config: Path | None = None,
+    cloud_environment_file: Path | None = None,
     install: bool = True,
     replace_config: bool = False,
 ) -> dict[str, Any]:
@@ -264,6 +275,7 @@ def setup(
                 hub_url=hub_url,
                 platform_url=platform_url,
                 delivery_config=delivery_config,
+                cloud_environment_file=cloud_environment_file,
                 install=install,
                 replace_config=replace_config,
             )
@@ -276,6 +288,7 @@ def _setup_unlocked(
     hub_url: str = "",
     platform_url: str = "",
     delivery_config: Path | None = None,
+    cloud_environment_file: Path | None = None,
     install: bool = True,
     replace_config: bool = False,
 ) -> dict[str, Any]:
@@ -289,6 +302,12 @@ def _setup_unlocked(
         if path.exists()
         else None
     )
+    selected_cloud_file = (cloud_environment_file if cloud_environment_file is not None
+                           else current_config.cloud_environment_file
+                           if current_config is not None else None)
+    from spireagent.workbench.service_process import cloud_environment
+
+    cloud_environment(selected_cloud_file)
     config = ProjectConfig(
         state_dir.expanduser().resolve(),
         endpoint(hub_url, optional=True),
@@ -296,6 +315,7 @@ def _setup_unlocked(
         delivery_config.expanduser().resolve() if delivery_config else None,
         combination(),
         current_config.research_workspace if current_config is not None else None,
+        cloud_environment_file=selected_cloud_file,
     )
     if path.exists() and not replace_config:
         current = ProjectConfig.load(path)

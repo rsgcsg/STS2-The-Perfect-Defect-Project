@@ -130,7 +130,8 @@ def open_project(
             if report["status"] != "PASS":
                 raise BoundaryError("project", "doctor_blocked")
             config.state_dir.mkdir(parents=True, exist_ok=True)
-            environment = service_environment(config.state_dir)
+            environment = service_environment(
+                config.state_dir, cloud_environment_file=config.cloud_environment_file)
             environment.pop("STPD_HUB_ADMIN_TOKEN", None)
             command = [sys.executable]
             if expected_identity is not None:
@@ -2446,7 +2447,9 @@ def create_server(app: Application) -> ThreadingHTTPServer:
 def serve(config: ProjectConfig, *, config_path: Path | None = None) -> dict[str, Any]:
     if doctor(config)["status"] != "PASS":
         raise BoundaryError("project", "doctor_blocked")
-    with service_process(config.state_dir) as resources, instance_lock(
+    with service_process(
+        config.state_dir, cloud_environment_file=config.cloud_environment_file
+    ) as resources, instance_lock(
         config.state_dir / "instance.lock"
     ):
         app = Application(config, config_path=config_path)
