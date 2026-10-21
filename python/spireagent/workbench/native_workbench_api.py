@@ -399,6 +399,7 @@ class NativeWorkbenchApi:
                 controls.append(action("workspace.create", "建立本机资料空间"))
             if page == "data":
                 from spireagent.workbench.local_dataset import source3_capabilities
+                from spireagent.workbench.native_tasks import P1_PROFILE
 
                 source_support = source3_capabilities()
                 live_recording = self.card("native_recording", app.native_recording_status)
@@ -410,8 +411,9 @@ class NativeWorkbenchApi:
                     if isinstance(owner_status, dict)
                     else None
                 )
+                p1_recording = owner_status.get("capture_profile_id") == P1_PROFILE
                 source_recording = owner_status.get("capture_profile_id") in {
-                    "native-logical-source-v3", "native-logical-source-v4"
+                    P1_PROFILE, "native-logical-source-v3", "native-logical-source-v4"
                 }
                 pending = owner_view.get("command_pending") is True
                 recovery = owner_view.get("recovery_required") is True
@@ -434,13 +436,18 @@ class NativeWorkbenchApi:
                     [
                         action(
                             "recording.start",
-                            "开始原生交互与观察录制",
-                            [*declaration_fields, field(
+                            "开始录制（默认 P1 原生决策）",
+                            [field(
+                                "source_kind", "操作来源声明", "enum", "",
+                                [{"value": value, "label": source_support["source_labels"][value]}
+                                 for value in ("declared_human", "agent_native_ui", "unknown")],
+                            ), field("actor_id", "仅 Source3/4：操作者代号"), field(
                                 "capture_profile_id", "录制格式", "enum",
-                                "native-logical-source-v3",
+                                P1_PROFILE,
                                 [
+                                    {"value": P1_PROFILE, "label": "P1 原生决策（默认）"},
                                     {"value": "native-logical-source-v3",
-                                     "label": "Source3（默认）"},
+                                     "label": "Source3"},
                                     {"value": "native-logical-source-v4",
                                      "label": "Source4（保留 P1 公共基底）"},
                                 ],
@@ -466,7 +473,7 @@ class NativeWorkbenchApi:
                             "recording.change_source",
                             "更改操作来源",
                             declaration_fields,
-                            enabled=source_recording and state == "paused"
+                            enabled=source_recording and not p1_recording and state == "paused"
                             and not pending and not recovery,
                         ),
                         action(

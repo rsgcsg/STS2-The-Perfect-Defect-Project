@@ -221,10 +221,12 @@ def test_native_source_labels_share_data_owner_without_changing_cohort_default(
     recording = {row["name"]: row for row in controls["recording.start"]["fields"]}
     cohort = {row["name"]: row for row in controls["datasets.source3-preview"]["fields"]}
     assert {row["value"]: row["label"] for row in recording["source_kind"]["options"]} == (
-        support["source_labels"])
+        {key: support["source_labels"][key]
+         for key in ("declared_human", "agent_native_ui", "unknown")})
     assert {row["value"]: row["label"] for row in cohort["cohort"]["options"]} == {
         value: support["source_labels"][value] for value in support["cohorts"]
     }
+    assert recording["capture_profile_id"]["default"] == "human-p1-native-decisions-1"
     assert cohort["cohort"]["default"] == "declared_human"
     assert app.local_training.status() == before
     assert guard.attempts == []
@@ -591,3 +593,19 @@ def test_original_stop_recovery_does_not_require_ordinary_pair_after_local_revoc
         release.set()
     finish_model(app)
     assert not any(path == "/v2/mode" and body == {"mode": "auto"} for path, body in requests)
+
+
+@pytest.mark.parametrize("state", ["recording", "paused"])
+def test_native_p1_recording_controls_map_existing_lifecycle(tmp_path, monkeypatch, state):
+    app, pair, *_ = paired_app(tmp_path, monkeypatch)
+    monkeypatch.setattr(app, "native_recording_status", lambda: {
+        "status": {"recording_lifecycle": state,
+                   "capture_profile_id": "human-p1-native-decisions-1"},
+    })
+    view = NativeWorkbenchApi(app).view("page=data", pair)
+    controls = {row["action_id"]: row for row in view["capabilities"]["actions"]}
+    assert not controls["recording.start"]["enabled"]
+    assert controls["recording.pause"]["enabled"] is (state == "recording")
+    assert controls["recording.resume"]["enabled"] is (state == "paused")
+    assert controls["recording.close"]["enabled"]
+    assert not controls["recording.change_source"]["enabled"]
