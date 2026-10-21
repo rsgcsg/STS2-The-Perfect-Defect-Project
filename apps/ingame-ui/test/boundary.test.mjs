@@ -41,6 +41,11 @@ test("Workbench browser opens after a user click and exact-instance health check
   assert.match(workbenchOpen, /new ProcessStartInfo\(path\)/u);
   assert.match(workbenchOpen, /UseShellExecute = false/u);
   assert.doesNotMatch(workbenchOpen, /OS\.ShellOpen\(/u);
+  const nativeEntry = mod.slice(mod.indexOf("private void OpenNativeWorkbenchPage"), mod.indexOf("private async Task RunPolicyCommandAsync"));
+  assert.match(nativeEntry, /BeginOpenWorkbench\(false\)/u);
+  assert.match(mod, /BuildHeaderButton\("项目", \(\) => \{ SelectSurface\(2\); BeginOpenWorkbench\(false\); \}/u);
+  const complete = mod.slice(mod.indexOf("private void CompleteWorkbenchOpenCheck"), mod.indexOf("private void ShowPanel"));
+  assert.match(complete, /if \(!_workbenchOpenExternal\)[\s\S]*?_nativeWorkbench.Refresh\([\s\S]*?return;[\s\S]*?OS.ShellOpen\(result.Url\)/u);
 });
 
 test("Workbench registration bridge is exact-loopback, game-instance-bound metadata only", () => {
