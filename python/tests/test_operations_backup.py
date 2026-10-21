@@ -7,6 +7,7 @@ from contextlib import closing
 import pytest
 from test_hub_scheduler import pipeline as pipeline
 
+from spireagent.hub.console_index import ConsoleIndex
 from spireagent.hub.database import Operations
 from spireagent.hub.scheduler import Scheduler
 from spireagent.json_boundary import BoundaryError
@@ -27,6 +28,13 @@ def test_private_operations_roundtrip_keeps_handle_but_never_dispatches(pipeline
     with Scheduler(ops, store, provider, budget_limit=10) as scheduler:
         assert scheduler.tick(1)["state"] == "submitted"
     original = ops.compute_state(job)
+    index = ConsoleIndex(ops)
+    index.artifact_closure(store, tuple(store.manifest_ids()))
+    projections = ("console_artifacts", "console_artifact_policy", "console_lineage")
+    with closing(sqlite3.connect(ops.path)) as db:
+        assert all(db.execute("SELECT count(*) FROM " + table).fetchone()[0]
+                   for table in projections)
+        original_database = tuple(db.iterdump())
     manifest = publish_backup(configuration(tmp_path, ops), store, provider.target.producer,
                               scratch=tmp_path / "scratch")
     peer = open_store(str(tmp_path / "peer"))
@@ -38,6 +46,11 @@ def test_private_operations_roundtrip_keeps_handle_but_never_dispatches(pipeline
     assert restored.compute_state(job) == original
     with closing(sqlite3.connect(restored.path)) as db:
         assert db.execute("SELECT lease_hash FROM jobs").fetchone() == (None,)
+        assert all(db.execute("SELECT count(*) FROM " + table).fetchone()[0] == 0
+                   for table in projections)
+        assert db.execute("PRAGMA freelist_count").fetchone() == (0,)
+    with closing(sqlite3.connect(ops.path)) as db:
+        assert tuple(db.iterdump()) == original_database
     assert ops.jobs()[0]["status"] == "running" and not ops.paused()
     with Scheduler(restored, store, provider, budget_limit=10) as scheduler:
         assert scheduler.tick(2)["state"] == "paused_by_operator"
@@ -46,12 +59,24 @@ def test_private_operations_roundtrip_keeps_handle_but_never_dispatches(pipeline
         restore_backup(peer, manifest.artifact_id, destination)
 
 
-def test_account_or_device_database_is_not_published(pipeline, tmp_path):
+@pytest.mark.parametrize("statement", [
+    "INSERT INTO devices(id,token_hash,active) VALUES('private-account','hash',1)",
+    "INSERT INTO identity_users VALUES('subject','issuer','access','private@example.test')",
+    "INSERT INTO console_collections VALUES('private-upload',1,'{}','available',1)",
+    "INSERT INTO console_artifact_visibility VALUES('artifact','private-owner',0)",
+    "CREATE TABLE unknown_private AS SELECT 'private value' AS value",
+])
+def test_account_or_device_database_is_not_published(pipeline, tmp_path, statement):
     ops, store, provider, _ = pipeline
+    ConsoleIndex(ops)
     with ops.transaction() as db:
-        db.execute("INSERT INTO devices(id,token_hash,active) VALUES('private-account','hash',1)")
+        db.execute(statement)
+    with closing(sqlite3.connect(ops.path)) as db:
+        original_database = tuple(db.iterdump())
     before = store.manifest_ids()
     with pytest.raises(BoundaryError, match="private_scheduler_database_required"):
         publish_backup(configuration(tmp_path, ops), store, provider.target.producer,
                        scratch=tmp_path / "scratch")
     assert store.manifest_ids() == before
+    with closing(sqlite3.connect(ops.path)) as db:
+        assert tuple(db.iterdump()) == original_database

@@ -51,6 +51,13 @@ def publish_backup(config: ProjectConfig, store: ManifestArtifactStore, producer
         # Existing SQLite WAL-aware owner backup; only this copy is paused/sanitized.
         Operations(deployment.operations_path).backup(snapshot)
         with closing(sqlite3.connect(snapshot)) as db:
+            # ConsoleIndex.artifact_closure rebuilds these projections from Store
+            # manifests. Drop their rows only in the copy; access/owner state is
+            # still rejected by the unchanged private-snapshot validation below.
+            for table in ("console_lineage", "console_artifact_policy", "console_artifacts"):
+                if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+                              (table,)).fetchone():
+                    db.execute("DELETE FROM " + table)
             db.execute("UPDATE jobs SET lease_hash=NULL")
             db.commit()
             _validate(db)
