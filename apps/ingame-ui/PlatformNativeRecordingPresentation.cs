@@ -1,10 +1,51 @@
 using System.Text.Json;
+using System.Globalization;
 
 namespace STS2PlatformLiveUi;
 
 /// <summary>Read-only labels from the recording owner's current status.</summary>
 public static class PlatformNativeRecordingPresentation
 {
+    public static IReadOnlyList<string> MaintenanceRows(JsonElement status, bool details)
+    {
+        string? state = Text(status, "status");
+        if (state == "unavailable")
+            return details && Text(status, "error_code") is string unavailable
+                ? ["后台保存和空间状态暂不可用，请到诊断页查看。", "后台错误 · " + unavailable]
+                : ["后台保存和空间状态暂不可用，请到诊断页查看。"];
+        bool enabled = Flag(status, "enabled"), remote = Flag(status, "remote_configured");
+        var rows = new List<string> { "自动整理：" + (enabled ? "已启用" : "未启用") };
+        string activity = state switch {
+            "running" or "operation_in_progress" => "正在保存、派生或备份，请稍等。",
+            "cooling" => "正在周转已验证的本地副本。",
+            "up_to_date" or "completed" => "已处理完当前录制。",
+            "failed" or "blocked" => "后台处理遇到问题，请到诊断页查看。",
+            "excluded_by_scope" => "当前录制不在已设置的处理范围内。",
+            "disabled" => "后台自动处理尚未启用。",
+            _ => "等待后台检查。"
+        };
+        rows.Add(activity);
+        rows.Add(remote ? "远端备份：已设置，已完整核验 " + Value(status, "verified_recordings") + " 份录制。"
+            : "远端备份：尚未设置。");
+        rows.Add("本地空间周转：" + (Flag(status, "cooling_enabled") ? "已启用" : "未启用"));
+        if (Object(status, "space") is JsonElement space
+            && space.TryGetProperty("free_bytes", out JsonElement free) && free.TryGetInt64(out long bytes))
+        {
+            rows.Add("录制磁盘剩余：" + (bytes / 1073741824d).ToString("0.0", CultureInfo.InvariantCulture) + " GiB（最近检查）");
+            if (details && Text(status, "space_observed_at") is string observed) rows.Add("空间检查时间 · " + observed);
+        }
+        else rows.Add("录制磁盘剩余：暂不可用。");
+        if (details)
+        {
+            rows.Add("后台状态 · " + state + " · operation=" + Text(status, "operation_status"));
+            if (Text(status, "error_code") is string error) rows.Add("后台错误 · " + error);
+        }
+        return rows;
+    }
+
+    private static bool Flag(JsonElement value, string key) => value.TryGetProperty(key, out JsonElement item)
+        && item.ValueKind == JsonValueKind.True;
+
     public static IReadOnlyList<string> Rows(JsonElement status)
     {
         string? lifecycle = Text(status, "recording_lifecycle"), closeout = Text(status, "closeout_status");

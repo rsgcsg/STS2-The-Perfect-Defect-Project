@@ -216,6 +216,7 @@ internal sealed class PlatformLivePanel : IDisposable
     private readonly PlatformPolicyCommands _policyCommands = new();
     private readonly HttpClient _workbenchHttpClient = PlatformWorkbenchOpenClient.CreateHttpClient();
     private Task<PlatformWorkbenchOpenResult>? _workbenchOpenCheck;
+    private bool _workbenchOpenExternal;
     private readonly CancellationTokenSource _workbenchOpenLifetime = new();
     private long _policyUiIntent;
     private string? _pendingPollError;
@@ -367,7 +368,7 @@ internal sealed class PlatformLivePanel : IDisposable
         _workspaceTitle.AddThemeFontSizeOverride("font_size", 18);
         _workspaceTitle.AddThemeColorOverride("font_color", TextPrimary);
         titleRow.AddChild(_workspaceTitle);
-        _workbenchButton = BuildHeaderButton("项目", () => SelectSurface(2), "Open the native project Workbench.");
+        _workbenchButton = BuildHeaderButton("项目", () => { SelectSurface(2); BeginOpenWorkbench(false); }, "Open the native project Workbench.");
         titleRow.AddChild(_workbenchButton);
         titleRow.AddChild(BuildHeaderButton("录制", () => OpenNativeWorkbenchPage("data"), "开始、查看和封存当前 P1 录制。"));
         _externalWorkbenchButton = BuildHeaderButton("兼容浏览器", BeginOpenWorkbench, "Open the registered legacy compatibility browser service.");
@@ -1198,6 +1199,7 @@ internal sealed class PlatformLivePanel : IDisposable
     {
         SelectSurface(2);
         _nativeWorkbench.OpenPage(page);
+        BeginOpenWorkbench(false);
         _command.Text = page == "play" ? "请在工作台实战页选择实际模型任务控制。" : "请在工作台采集页明确操作来源与录制。";
     }
 
@@ -1602,10 +1604,14 @@ internal sealed class PlatformLivePanel : IDisposable
     }
 
     private void BeginOpenWorkbench()
+        => BeginOpenWorkbench(true);
+
+    private void BeginOpenWorkbench(bool external)
     {
         if (_disposed || _workbenchOpenCheck is { IsCompleted: false })
             return;
         _externalWorkbenchButton.Disabled = true;
+        _workbenchOpenExternal = external;
         CancellationToken token = _workbenchOpenLifetime.Token;
         _workbenchOpenCheck = Task.Run(() => PlatformWorkbenchOpenClient.OpenAsync(
             _workbenchHttpClient, token));
@@ -1643,6 +1649,13 @@ internal sealed class PlatformLivePanel : IDisposable
                 _ => "本机工作台暂不可用。请在电脑上打开工作台后重试。"
             };
             PushToast("workbench.open", message);
+            return;
+        }
+
+        if (!_workbenchOpenExternal)
+        {
+            _nativeWorkbench.Refresh(_workspace.Visible && _layout.ActiveSurface == "workbench");
+            PushToast("workbench.open", "本机工作台已运行，正在连接游戏内页面。");
             return;
         }
 

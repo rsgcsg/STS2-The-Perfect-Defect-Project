@@ -96,4 +96,40 @@ public sealed class PlatformNativeRecordingPresentationTests
         Assert.Equal("unexpected_status", PlatformNativeRecordingPresentation.StateLabel("unexpected_status"));
     }
 
+    [Fact]
+    public void MaintenanceShowsOnlyVerifiedBackupsAndObservedRecordingVolumeSpace()
+    {
+        using var status = JsonDocument.Parse("""
+            {"status":"up_to_date","enabled":true,"remote_configured":true,
+             "verified_recordings":2,"cooling_enabled":true,"operation_status":"completed",
+             "space":{"free_bytes":2684354560,"total_bytes":10737418240},"space_observed_at":"2026-10-21T10:00:00Z"}
+            """);
+        var rows = PlatformNativeRecordingPresentation.MaintenanceRows(status.RootElement, false);
+        Assert.Contains("自动整理：已启用", rows);
+        Assert.Contains("远端备份：已设置，已完整核验 2 份录制。", rows);
+        Assert.Contains("录制磁盘剩余：2.5 GiB（最近检查）", rows);
+        Assert.DoesNotContain(rows, row => row.Contains("operation=") || row.Contains("2026-10"));
+        Assert.Contains("空间检查时间 · 2026-10-21T10:00:00Z",
+            PlatformNativeRecordingPresentation.MaintenanceRows(status.RootElement, true));
+    }
+
+    [Fact]
+    public void MaintenanceFailureAndUnavailableSpaceNeverBecomeASuccessOrZeroSpace()
+    {
+        using var status = JsonDocument.Parse("""
+            {"status":"failed","enabled":false,"remote_configured":false,
+             "verified_recordings":0,"cooling_enabled":false,"operation_status":"failed",
+             "error_code":"remote_readback_failed","space":null}
+            """);
+        var rows = PlatformNativeRecordingPresentation.MaintenanceRows(status.RootElement, false);
+        Assert.Contains("后台处理遇到问题，请到诊断页查看。", rows);
+        Assert.Contains("录制磁盘剩余：暂不可用。", rows);
+        Assert.DoesNotContain(rows, row => row.Contains("已处理完") || row.Contains("0.0 GiB") || row.Contains("remote_readback_failed"));
+        Assert.Contains("后台错误 · remote_readback_failed",
+            PlatformNativeRecordingPresentation.MaintenanceRows(status.RootElement, true));
+        using var unavailable = JsonDocument.Parse("""{"status":"unavailable","error_code":"owner_unavailable"}""");
+        Assert.Contains("后台错误 · owner_unavailable",
+            PlatformNativeRecordingPresentation.MaintenanceRows(unavailable.RootElement, true));
+    }
+
 }

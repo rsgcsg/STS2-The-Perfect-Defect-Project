@@ -170,6 +170,45 @@ def bounded_response(value: dict[str, Any]) -> bytes:
     return raw
 
 
+def recording_maintenance_view(import_status: dict[str, Any]) -> dict[str, Any]:
+    """Small read-only presentation of the existing import/maintenance owner.
+
+    Do not scan recordings or run the Collection Tool on a UI status poll. Space
+    is the maintenance worker's latest observation of the validated recording
+    volume; absence remains unavailable.
+    """
+    maintenance = import_status.get("maintenance")
+    if not isinstance(maintenance, dict):
+        return {"schema": "spireagent/native-recording-maintenance-view-1",
+                "status": "unavailable", "error_code": import_status.get("reason")}
+    policy = maintenance.get("policy", {})
+    peer = policy.get("peer")
+    originals = {session["source_artifact_id"]
+                 for session in maintenance.get("sessions", {}).values()}
+    verified = {
+        receipt["artifact_id"]
+        for receipt in import_status.get("storage_receipts", [])
+        if receipt.get("peer") == peer
+        and isinstance(peer, dict) and peer.get("kind") == "s3"
+        and receipt.get("storage_action") == "preserve"
+        and receipt["artifact_id"] in originals
+        and receipt.get("storage_receipt", {}).get("full_readback") is True
+    }
+    return {
+        "schema": "spireagent/native-recording-maintenance-view-1",
+        "enabled": policy.get("enabled") is True,
+        "status": maintenance.get("status", "disabled"),
+        "error_code": maintenance.get("error_code"),
+        "remote_configured": isinstance(peer, dict) and peer.get("kind") == "s3",
+        "verified_recordings": len(verified),
+        "cooling_enabled": policy.get("cool_recent") is True,
+        "completed_recordings": len(maintenance.get("completed_candidates", [])),
+        "operation_status": import_status.get("status"),
+        "space": maintenance.get("space"),
+        "space_observed_at": maintenance.get("space_observed_at"),
+    }
+
+
 def exact(body: dict[str, Any], fields: set[str]) -> None:
     if set(body) != fields:
         raise fail("invalid_native_payload")
@@ -506,6 +545,10 @@ class NativeWorkbenchApi:
                     )
                 except BoundaryError as error:
                     source_prepare.update(enabled=False, reason=error.code)
+                cards.append(self.card(
+                    "recording_maintenance",
+                    lambda: recording_maintenance_view(app.local_recording_import.status()),
+                ))
                 if self._recordings is not None:
                     listing = {
                         **self._recordings,

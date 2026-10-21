@@ -17,6 +17,7 @@ internal sealed class PlatformNativeWorkbenchPanel : IDisposable
     private readonly VBoxContainer _body = new();
     private readonly VBoxContainer _recordingStatus = new();
     private readonly VBoxContainer _recordingForms = new();
+    private readonly VBoxContainer _maintenanceStatus = new();
     private readonly VBoxContainer _cards = new();
     private readonly VBoxContainer _items = new();
     private readonly VBoxContainer _forms = new();
@@ -80,6 +81,7 @@ internal sealed class PlatformNativeWorkbenchPanel : IDisposable
         _body.AddChild(_recordingStatus);
         _body.AddChild(_recordingForms);
         _body.AddChild(_recordingButtons);
+        _body.AddChild(_maintenanceStatus);
         _body.AddChild(_cards);
         _body.AddChild(_items);
         var pager = _pager;
@@ -240,6 +242,12 @@ internal sealed class PlatformNativeWorkbenchPanel : IDisposable
     };
     private void RenderSummary(VBoxContainer target, JsonElement data)
     {
+        if (String(data, "schema") == "spireagent/native-recording-maintenance-view-1")
+        {
+            foreach (string row in PlatformNativeRecordingPresentation.MaintenanceRows(data, _section == "diagnostics"))
+                target.AddChild(Label(row));
+            return;
+        }
         if (String(data, "schema") == "spireagent/native-recording-view-1" && Object(data, "status") is JsonElement recording)
         {
             foreach (string row in _section == "diagnostics"
@@ -302,6 +310,7 @@ internal sealed class PlatformNativeWorkbenchPanel : IDisposable
         _recordingStatus.Visible = daily || diagnostics;
         _recordingForms.Visible = daily;
         _recordingButtons.Visible = daily;
+        _maintenanceStatus.Visible = daily || diagnostics;
         _cards.Visible = !daily && !diagnostics;
         _items.Visible = !daily && !diagnostics;
         _pager.Visible = !daily && !diagnostics;
@@ -316,20 +325,24 @@ internal sealed class PlatformNativeWorkbenchPanel : IDisposable
         _connection.Text = diagnostics ? "工作台实例：" + connection.Binding.WorkbenchInstanceId : "已连接游戏工作台";
         _notice.Visible = !string.IsNullOrEmpty(_notice.Text);
         _fences.Visible = !string.IsNullOrEmpty(_fences.Text);
-        Clear(_cards); Clear(_recordingStatus);
+        Clear(_cards); Clear(_recordingStatus); Clear(_maintenanceStatus);
         bool workspaceMissing = _section == "data" && OwnerData(view, "workspace") is JsonElement workspace
             && String(workspace, "status") == "not_created";
         foreach (JsonElement card in view.GetProperty("cards").EnumerateArray())
         {
             string owner = String(card, "owner") ?? "任务";
-            VBoxContainer target = owner == "native_recording" ? _recordingStatus : _cards;
+            VBoxContainer target = owner switch {
+                "native_recording" => _recordingStatus,
+                "recording_maintenance" => _maintenanceStatus,
+                _ => _cards
+            };
             JsonElement data = card.GetProperty("data");
             if (_section == "data" && PlatformNativeRecordingPresentation.DataRows(owner, data, workspaceMissing) is { } rows)
             {
                 foreach (string row in rows) target.AddChild(Label(row));
                 continue;
             }
-            if (owner != "native_recording")
+            if (owner is not ("native_recording" or "recording_maintenance"))
                 target.AddChild(Label("— " + PlatformNativeRecordingPresentation.OwnerLabel(owner) + " —"));
             RenderSummary(target, data);
         }

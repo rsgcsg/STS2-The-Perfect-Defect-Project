@@ -27,6 +27,7 @@ from spireagent.workbench.native_workbench_api import (
     NativeWorkbenchApi,
     bounded_response,
     public,
+    recording_maintenance_view,
 )
 
 
@@ -112,9 +113,42 @@ def test_actual_view_five_pages_and_public_health_never_expose_credentials(nativ
         assert source_support["enabled"] is False
         assert source_support["reason"] == (
             "workspace_required" if page == "data" else "source3_data_view_required")
+        if page == "data":
+            maintenance = next(card["data"] for card in view["cards"]
+                               if card["owner"] == "recording_maintenance")
+            assert maintenance["enabled"] is False
+            assert maintenance["space"] is None
     assert call("/health", headers={}) == {"instance_id": app.instance_id}
     assert app.local_training.status() == before
     assert not (app.config.state_dir / "local-training-operation.json").exists()
+
+
+def test_recording_maintenance_projection_counts_exact_remote_full_readback_without_peer_details():
+    peer = {"kind": "s3", "bucket": "private", "prefix": "private-prefix"}
+    status = {"status": "completed", "maintenance": {
+        "status": "up_to_date", "policy": {"enabled": True, "peer": peer, "cool_recent": True},
+        "completed_candidates": ["candidate"],
+        "sessions": {"a": {"source_artifact_id": "a"}},
+        "space": {"free_bytes": 12345, "total_bytes": 23456, "observed_at": "now"},
+    }, "storage_receipts": [
+        {"artifact_id": "a", "peer": peer, "storage_action": "preserve",
+         "storage_receipt": {"full_readback": True}},
+        {"artifact_id": "a", "peer": peer, "storage_action": "preserve",
+         "storage_receipt": {"full_readback": True}},
+        {"artifact_id": "b", "peer": peer, "storage_action": "preserve",
+         "storage_receipt": {"full_readback": False}},
+        {"artifact_id": "projection", "peer": peer, "storage_action": "preserve",
+         "storage_receipt": {"full_readback": True}},
+        {"artifact_id": "c", "peer": {"kind": "local"}, "storage_action": "preserve",
+         "storage_receipt": {"full_readback": True}},
+    ]}
+    view = recording_maintenance_view(status)
+    assert view["verified_recordings"] == 1
+    assert view["completed_recordings"] == 1 and view["cooling_enabled"] is True
+    assert view["space"] == status["maintenance"]["space"]
+    assert "private" not in json.dumps(view)
+    missing = recording_maintenance_view({"reason": "owner_unavailable"})
+    assert missing["status"] == "unavailable" and missing["error_code"] == "owner_unavailable"
 
 
 def test_native_envelope_auth_origin_fields_bounds_and_query_are_fail_closed(native_http):
