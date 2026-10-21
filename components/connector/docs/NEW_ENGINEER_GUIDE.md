@@ -29,6 +29,18 @@ This path is complete without reading SpireAgent or retired connector designs.
 Historical migration evidence is kept under `docs/evidence/`, not in the
 current design path.
 
+For the current P1 profile, read the owning [r1.5 contract](../../../docs/protocols/P1_GLOBAL_R1.zh-CN.md#6-动作清单)
+and `sdk/typescript/src/p1Global/reducer.ts`. Online Runtime and offline native
+recording conversion use that same core. A selector Close that returns to its
+parent is excluded by the forward profile; native await completion alone is not
+a P1 finish. Empty confirmation requires a current native completion binding and
+its public finish fact; whole-page refusal requires an explicit native Skip and
+`can_skip=true`. Never infer either from `min_select`, button text or `can_decline_now`.
+After changing this mapping, build the SDK, run selector/admission regressions,
+pin the Tool release, and derive new immutable projections from the originals.
+Keep old IDs and gaps; changing only a revision or relabeling an old choice is
+not migration or runtime qualification.
+
 ## Current Production Path
 
 ```text
