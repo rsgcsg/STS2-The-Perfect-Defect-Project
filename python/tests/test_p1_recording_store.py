@@ -957,6 +957,60 @@ def test_interrupted_expanded_cooling_is_recoverable_without_overwriting_origina
     assert _raw_hashes(raw) == before
 
 
+def test_interrupted_expanded_restore_never_publishes_partial_original(
+    tmp_path, original, tool, monkeypatch,
+):
+    import shutil
+
+    from spireagent.storage.store import copy_artifact
+    from spireagent.workbench.p1_recording_storage import (
+        _raw_hashes,
+        expanded_storage,
+        peer_binding,
+        storage_intent,
+    )
+
+    store = ManifestArtifactStore(LocalBlobStore(tmp_path / "store"))
+    peer = ManifestArtifactStore(LocalBlobStore(tmp_path / "cold"))
+    source = publish_p1_original(store, original, tool,
+                                 Producer("test", "a" * 40, "b" * 64), scratch=tmp_path)
+    copy_artifact(store, peer, source.artifact_id)
+    raw = tmp_path / "recordings" / "closed-session"
+    shutil.copytree(original / "raw", raw)
+    original_hashes = _raw_hashes(raw)
+    intent = {**storage_intent("cool", source.artifact_id, peer_binding(str(tmp_path / "cold"))),
+              "_expanded_directory": str(raw)}
+    expanded_storage(store, intent, scratch=tmp_path, tool=tool)
+    cold_hashes = _raw_hashes(raw)
+    copying = shutil.copyfileobj
+    interrupted = []
+
+    def fail_during_restore(src, dst, length=0):
+        target = Path(dst.name)
+        if target.parent.name.startswith("expanded-restore-"):
+            dst.write(b"partial")
+            dst.flush()
+            interrupted.append(target)
+            raise OSError("deliberate interruption during expanded restore")
+        return copying(src, dst, length)
+
+    monkeypatch.setattr(shutil, "copyfileobj", fail_during_restore)
+    restore = {**intent, "storage_action": "restore-expanded"}
+    with pytest.raises(OSError, match="deliberate interruption"):
+        expanded_storage(store, restore, scratch=tmp_path, tool=tool)
+    assert len(interrupted) == 1
+    assert _raw_hashes(raw) == cold_hashes
+    monkeypatch.setattr(shutil, "copyfileobj", copying)
+    expanded_storage(store, restore, scratch=tmp_path, tool=tool)
+    assert _raw_hashes(raw) == original_hashes
+    conflicting = next(raw / name for name in original_hashes if name not in cold_hashes)
+    conflicting.write_bytes(b"different original bytes")
+    before_conflict = _raw_hashes(raw)
+    with pytest.raises(BoundaryError, match="expanded_original_inventory_mismatch"):
+        expanded_storage(store, restore, scratch=tmp_path, tool=tool)
+    assert _raw_hashes(raw) == before_conflict
+
+
 def test_recent_two_policy_schedules_only_the_oldest_in_scope_session(tmp_path, monkeypatch):
     from spireagent.workbench import local_recording_import as importing
     from spireagent.workbench.developer import ProjectConfig, combination

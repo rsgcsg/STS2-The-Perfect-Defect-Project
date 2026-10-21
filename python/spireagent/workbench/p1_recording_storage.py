@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import shutil
 import tempfile
 from collections.abc import Iterator
@@ -136,13 +137,25 @@ def expanded_storage(
                 require_workspace_space(
                     directory, 0, persistent_bytes=sum((raw / n).stat().st_size for n in missing),
                 )
-                for name in missing:
-                    target = directory / name
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    # Existing files were hash-checked; never overwrite a different original.
-                    with target.open("xb") as output, (raw / name).open("rb") as original:
-                        shutil.copyfileobj(original, output, 1024**2)
-                    restored_files += 1
+                # Stage outside the immutable tree, on the same filesystem. A
+                # failed write must not leave a partial original blocking recovery.
+                with tempfile.TemporaryDirectory(
+                    prefix="expanded-restore-", dir=directory.parent.parent / ".p1-consumers",
+                ) as staging:
+                    pending = Path(staging) / "payload"
+                    for name in missing:
+                        target = directory / name
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        with pending.open("wb") as output, (raw / name).open("rb") as original:
+                            shutil.copyfileobj(original, output, 1024**2)
+                        with pending.open("rb") as content:
+                            if hashlib.file_digest(content, "sha256").hexdigest() != hashes[name]:
+                                raise BoundaryError("p1_storage", "expanded_restore_mismatch")
+                        # link publishes a complete file atomically and refuses an
+                        # existing destination, including a concurrently created one.
+                        os.link(pending, target)
+                        pending.unlink()
+                        restored_files += 1
                 if _raw_hashes(directory) != hashes:
                     raise BoundaryError("p1_storage", "expanded_restore_mismatch")
         receipt = {
