@@ -205,3 +205,26 @@ def test_paused_checkpoint_cannot_forge_a_self_consistent_different_training_pla
     store.publish(forged)
     with pytest.raises(BoundaryError, match="checkpoint_content_mismatch"):
         validate_receipt(store, request, replace(paused, checkpoint_id=forged.artifact_id))
+
+
+def test_candidate_reporter_uses_original_declared_event_index(tmp_path: Path) -> None:
+    from spireagent.artifact_contracts import Manifest, Parent
+    from spireagent.storage.local import LocalBlobStore
+    from spireagent.storage.store import ManifestArtifactStore
+
+    store = ManifestArtifactStore(LocalBlobStore(tmp_path))
+    run = Manifest("run", PRODUCER,
+                   parameters=FrozenObject.of({"event_index": "run-events-v1"}))
+    store.publish(run)
+    request = ComputeRequest("training", run.artifact_id, PRODUCER, "indexed-attempt")
+    reporter = CandidateReporter(store, run.artifact_id, PRODUCER, request=request)
+    event = Manifest("run_event", PRODUCER, (Parent("run", run.artifact_id),),
+                     parameters=FrozenObject.of({"schema": "stpd/run-event-v1", "step": 1}))
+    identity = reporter.emit(event)
+    store.blobs.put_if_absent("manifests/" + "a" * 64 + ".json", b"unrelated bad manifest")
+    events = reporter.events(run.artifact_id)
+    assert len(events) == 1 and events[0].artifact_id == identity
+    assert events[0].parameters.value()["details"] == {
+        "compute_request_id": request.request_id, "compute_attempt_id": request.attempt_id}
+    assert ObjectStoreRunReporter(store, store.blobs).events(run.artifact_id) == events
+    assert reporter.completed(run.artifact_id) is None  # Still no shared completion authority.

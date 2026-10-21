@@ -107,7 +107,8 @@ def prepare_p1_run(
             Parent("experiment", experiment.artifact_id),
             Parent("training_input", training.artifact_id),
         ),
-        parameters=FrozenObject.of({"schema": RUN_SCHEMA, "operation_id": operation_id}),
+        parameters=FrozenObject.of({"schema": RUN_SCHEMA, "operation_id": operation_id,
+                                   "event_index": "run-events-v1"}),
     )
     store.publish(run)
     return run

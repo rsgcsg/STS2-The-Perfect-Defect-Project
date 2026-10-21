@@ -7,7 +7,8 @@ from typing import Protocol
 
 from spireagent.artifact_contracts import Manifest, Producer
 from spireagent.json_boundary import BoundaryError, FrozenObject, unsigned
-from spireagent.storage.store import ArtifactStore
+from spireagent.storage.run_reporter import ObjectStoreRunReporter
+from spireagent.storage.store import ArtifactStore, ManifestArtifactStore
 
 from ..contracts import QwenBackend
 from ..fullrun.evaluation import load_evaluation
@@ -37,10 +38,11 @@ class CandidateReporter:
     """
 
     def __init__(
-        self, store: ArtifactStore, run_id: str, runtime: Producer,
+        self, store: ManifestArtifactStore, run_id: str, runtime: Producer,
         *, request: ComputeRequest | None = None,
     ) -> None:
         self.store, self.run_id, self.runtime = store, run_id, runtime
+        self._events = ObjectStoreRunReporter(store, store.blobs)
         if request is not None and (
             request.kind != "training" or request.input_id != run_id or request.producer != runtime
         ):
@@ -67,7 +69,7 @@ class CandidateReporter:
             })
             parameters["details"] = details
             event = replace(event, parameters=FrozenObject.of(parameters))
-        return self.store.publish(event)
+        return self._events.emit(event)
 
     def completed(self, run_id: str) -> Manifest | None:
         if run_id != self.run_id:
@@ -83,12 +85,8 @@ class CandidateReporter:
     def events(self, run_id: str) -> tuple[Manifest, ...]:
         if run_id != self.run_id:
             raise BoundaryError("candidate_reporter", "foreign_run")
-        return tuple(
-            value for identity in self.store.manifest_ids()
-            if (value := self.store.get_manifest(identity)).kind == "run_event"
-            and value.producer == self.runtime
-            and any(p.role == "run" and p.artifact_id == run_id for p in value.parents)
-        )
+        return tuple(event for event in self._events.events(run_id)
+                     if event.producer == self.runtime)
 
 
 def execute_feature_job(
@@ -142,7 +140,7 @@ def prepare_feature_run(
 
 
 def dispatch(
-    store: ArtifactStore, request: ComputeRequest, runtime: Producer,
+    store: ManifestArtifactStore, request: ComputeRequest, runtime: Producer,
     *, backend: FeatureBackend | None = None,
 ) -> ComputeReceipt:
     if request.producer != runtime:
