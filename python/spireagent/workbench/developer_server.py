@@ -1430,15 +1430,17 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                     value = {"status": "unconfigured", "peer": None}
                 self.respond(200, json.dumps(value).encode())
             elif parsed.path == "/api/local-recordings/import/status":
-                if not self.authenticated_browser():
+                if not self.authenticated_browser() and not self.control_client():
                     self.respond(401, b'{"error":"browser_session_required"}')
                     return
                 if parsed.query:
                     self.respond(400, b'{"error":"invalid_local_import_request"}')
                     return
-                value = {**app.local_recording_import.status(), "csrf_token": app.account.csrf,
-                         "workbench_instance_id": app.instance_id,
-                         "configuration_id": configuration_id(app.config)}
+                value = app.local_recording_import.status()
+                if self.authenticated_browser():
+                    value = {**value, "csrf_token": app.account.csrf,
+                             "workbench_instance_id": app.instance_id,
+                             "configuration_id": configuration_id(app.config)}
                 self.respond(200, json.dumps(value).encode())
             elif parsed.path == "/api/local-recordings/preview/status":
                 if not self.authenticated_browser():
@@ -1982,8 +1984,9 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                     return
                 try:
                     body = self.json_body(maximum=2048, reject_duplicate=True)
-                    if set(body) not in ({"enabled", "peer", "projection_id"},
-                                         {"enabled", "peer", "projection_id", "scope"}):
+                    if (not {"enabled", "peer", "projection_id"} <= set(body)
+                            or set(body) - {"enabled", "peer", "projection_id", "scope",
+                                            "cool_recent"}):
                         raise ValueError
                     value = app.p1_maintenance.configure(**body)
                     self.respond(200, json.dumps(value).encode())
@@ -1992,8 +1995,9 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                 except (OSError, ValueError, TypeError):
                     self.respond(400, b'{"error":"invalid_p1_maintenance_policy"}')
                 return
-            if self.path.startswith("/api/local-recordings/storage"):
-                if not self.browser_write():
+            if self.path in {"/api/local-recordings/storage",
+                              "/api/local-recordings/storage/reconcile"}:
+                if not self.browser_write() and not self.control_client():
                     self.respond(403, b'{"error":"browser_action_denied"}')
                     return
                 try:
