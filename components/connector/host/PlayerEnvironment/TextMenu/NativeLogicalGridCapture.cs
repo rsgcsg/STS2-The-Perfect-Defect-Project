@@ -34,8 +34,10 @@ internal static class NativeLogicalGridCapture
         if (NOverlayStack.Instance?.Peek() is not NCardGridSelectionScreen owner
             || !CapturesOwner(owner.GetType(), publicBasisOnly))
             return new(true, null, Array.Empty<string>());
-        if (!EnvironmentIdentityRuntime.ExecutionAvailable(game))
-            return new(true, null, new[] { "native_logical_grid_execution_identity_unavailable" });
+        if (!CaptureAvailable(game, publicBasisOnly))
+            return new(true, null, new[] { publicBasisOnly
+                ? "native_logical_grid_observation_identity_unavailable"
+                : "native_logical_grid_execution_identity_unavailable" });
         NativeLogicalGridState? state = NativeLogicalGridState.Capture(owner);
         if (state == null)
             return new(true, null, new[] { "native_logical_grid_current_binding_missing" });
@@ -45,6 +47,14 @@ internal static class NativeLogicalGridCapture
     }
 
     internal static bool CapturesOwner(Type type, bool publicBasisOnly) => NativeLogicalGridCallbacks.Supported(type);
+
+    // A P1 witness freezes the current public roster and exact native bindings;
+    // it does not submit them. Keep passive recording independent of permission
+    // to deliver input. Native-logical execution retains its exact identity gate.
+    internal static bool CaptureAvailable(GameBuildIdentity game, bool publicBasisOnly) =>
+        publicBasisOnly
+            ? game.Compatibility.StateObservationAllowed && game.Compatibility.ReadAllowed
+            : EnvironmentIdentityRuntime.ExecutionAvailable(game);
 
     // Both projections retain one original state. The original-only public
     // transform contract cannot qualify the native preview or its inputs.
