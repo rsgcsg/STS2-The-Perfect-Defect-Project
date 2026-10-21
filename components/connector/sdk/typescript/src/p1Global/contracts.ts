@@ -10,7 +10,7 @@
  * irreversible P1 commitments, occurrence accounting and a versioned record/convert path.
  */
 export const P1G_PROFILE = "p1-global-r1" as const;
-export const P1G_REVISION = "r1.4" as const;
+export const P1G_REVISION = "r1.5" as const;
 /** Approved noncombat belt boundary. Other scenes retain their original contract. */
 export const P1G_NONCOMBAT_POTION_SCENES: readonly string[] = Object.freeze([
   "event_option", "event_dialogue", "map_navigation", "rest_site", "shop_room", "shop_inventory",
