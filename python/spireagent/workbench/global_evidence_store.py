@@ -10,7 +10,7 @@ import gzip
 import hashlib
 import json
 import tempfile
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
@@ -247,6 +247,7 @@ def publish_global_evidence(
     model_artifact_id: str,
     runtime_artifact_id: str,
     scratch: Path,
+    before_publish: Callable[[Manifest], None] | None = None,
 ) -> Manifest:
     """Verify a stopped original, preserve every file, publish its real ancestry."""
     verified = _verified(directory, expected)
@@ -299,6 +300,8 @@ def publish_global_evidence(
         payloads=(payload, index),
         parameters=FrozenObject.of(_facts(verified)),
     )
+    if before_publish is not None:
+        before_publish(manifest)
     store.publish(manifest)
     return manifest
 

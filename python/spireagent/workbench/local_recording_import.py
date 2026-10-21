@@ -33,6 +33,7 @@ from spireagent.json_boundary import BoundaryError, FrozenObject, digest, json_b
 from spireagent.local_verified_bundle import EVIDENCE_SCHEMA
 from spireagent.source import REPOSITORY, source_identity
 from spireagent.storage.archives import MAX_BYTES, _extract
+from spireagent.storage.blobs import StoreError
 from spireagent.storage.local import LocalBlobStore
 from spireagent.storage.registry import SQLiteRegistry, sync_registry
 from spireagent.storage.store import ManifestArtifactStore
@@ -1110,7 +1111,7 @@ class LocalRecordingImporter:
 
         intent = copy.deepcopy(self.operation)
         context = intent["_global_context"]
-        writes_started = False
+        phase = "validation"
         try:
             store, registry = _selected_store(self.config, require_curation=False)
             producer = Producer.decode(intent["_producer"])
@@ -1118,19 +1119,24 @@ class LocalRecordingImporter:
             # validation rejection is failed, not uncertain delivery.
             _verified(Path(context["directory"]), context["expected"])
             _runtime_files(context["expected"])
-            writes_started = True
+            phase = "runtime_publication"
             runtime = publish_global_runtime(store, producer, context["expected"])
             with self.lock:
                 self.operation["runtime_artifact_id"] = runtime.artifact_id
                 self._save()
+            def before_publish(manifest: Manifest) -> None:
+                with self.lock:
+                    self.operation["artifact_id"] = manifest.artifact_id
+                    self._save()
+
+            phase = "global_publication"
             artifact = publish_global_evidence(
                 store, Path(context["directory"]), producer, expected=context["expected"],
                 model_artifact_id=context["model_artifact_id"],
                 runtime_artifact_id=runtime.artifact_id, scratch=self.config.state_dir,
+                before_publish=before_publish,
             )
-            with self.lock:
-                self.operation["artifact_id"] = artifact.artifact_id
-                self._save()
+            phase = "local_readback"
             local = verify_global_artifact(
                 store, artifact.artifact_id, expected=context["expected"],
                 scratch=self.config.state_dir,
@@ -1138,11 +1144,14 @@ class LocalRecordingImporter:
             remote = None
             if intent["peer"] is not None:
                 peer = open_peer(intent["peer"])
+                phase = "peer_delivery"
                 copy_artifact(store, peer, artifact.artifact_id)
+                phase = "peer_readback"
                 remote = verify_global_artifact(
                     peer, artifact.artifact_id, expected=context["expected"],
                     scratch=self.config.state_dir,
                 )
+            phase = "registry"
             _sync(store, registry)
             with self.lock:
                 self.operation.update(status="completed", finished_at=_now(),
@@ -1150,9 +1159,11 @@ class LocalRecordingImporter:
                 self._save()
         except Exception as error:
             with self.lock:
-                status = ("publication_unknown"
-                          if writes_started and not isinstance(error, BoundaryError) else "failed")
+                uncertain = phase != "validation" and (
+                    isinstance(error, StoreError) or not isinstance(error, BoundaryError))
+                status = "publication_unknown" if uncertain else "failed"
                 self.operation.update(status=status,
+                    failure_phase=phase,
                     error_code=getattr(error, "code", "global_evidence_import_failed"))
                 self._save()
 
