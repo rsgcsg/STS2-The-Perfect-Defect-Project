@@ -216,3 +216,74 @@ def test_normal_prepare_verifies_separate_peer_without_enqueue_or_submit(tmp_pat
         assert observed["peer_queried"] is observed["provider_queried"] is False
         assert observed["transfer_completion"] == "not_inferred_from_local_run"
         assert not provider.calls and provider.ops.jobs() == []
+
+
+def test_normal_status_reads_durable_job_while_original_scheduler_poll_blocks(
+    tmp_path, monkeypatch,
+):
+    with client(tmp_path) as (app, call, provider, _store, _owner, snapshot, _path):
+        entered, release, finished = threading.Event(), threading.Event(), threading.Event()
+        original_poll = provider.poll
+
+        def blocked_poll(handle):
+            entered.set()
+            assert release.wait(5), "test did not release synthetic provider poll"
+            return original_poll(handle)
+
+        monkeypatch.setattr(provider, "poll", blocked_poll)
+        first = call("start", body={"intent_id": "1" * 32, "source_id": snapshot.artifact_id,
+            "config": MStdConfig(max_epochs=1).to_dict(), "max_seconds": 300,
+            "stop_after": None})["jobs"][0]
+        assert entered.wait(5)
+        row = provider.ops.jobs()[0]
+        assert row["status"] == "running" and row["provider_ref"]
+        observed, errors = [], []
+
+        def read():
+            try:
+                observed.append(call("status", job_id=first["id"]))
+            except Exception as error:
+                errors.append(error)
+            finally:
+                finished.set()
+
+        reader = threading.Thread(target=read, daemon=True)
+        reader.start()
+        try:
+            prompt = finished.wait(1)
+        finally:
+            release.set()
+            reader.join(timeout=5)
+        assert prompt, "normal status waited for the Scheduler provider/network lock"
+        assert not errors
+        assert observed[0]["schema"] == "spireagent/remote-training-status-1"
+        assert observed[0]["automatic_retry"] is False
+        expected = {key: row[key] for key in (
+            "id", "kind", "input_id", "status", "attempt_id", "fence", "max_seconds",
+            "reserved_units", "provider_ref", "result")}
+        expected["result"] = json.loads(expected["result"]) if expected["result"] else None
+        assert observed[0]["jobs"] == [expected]
+        assert len(provider.calls) == 1
+
+
+def test_status_observes_no_jobs_without_initializing_or_querying_remote(tmp_path, monkeypatch):
+    with client(tmp_path) as (app, call, provider, _store, _owner, _snapshot, _path):
+        def no_remote_context():
+            raise AssertionError("status must not query provider/Store or admit new work")
+
+        monkeypatch.setattr(app.remote_training, "_context", no_remote_context)
+        assert call("status") == {
+            "schema": "spireagent/remote-training-status-1", "jobs": [],
+            "scheduler_error": None, "automatic_retry": False}
+        assert app.remote_training._scheduler is None
+        assert app.remote_training._operations is None
+        assert app.remote_training._thread is None and not provider.calls
+        with pytest.raises(BoundaryError, match="job_not_found"):
+            call("status", job_id="0" * 32)
+        deployment = replace(app.config.remote_compute, operations_path=tmp_path / "absent.sqlite")
+        service = RemoteTrainingService(replace(app.config, remote_compute=deployment),
+                                        app.local_datasets._selected, provider=provider)
+        assert service.status()["jobs"] == []
+        assert not deployment.operations_path.exists()
+        with pytest.raises(BoundaryError, match="job_not_found"):
+            service.status("0" * 32)
