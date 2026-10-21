@@ -24,6 +24,48 @@ public sealed class NativeRewardCardRendererTests
     private static void ObserveRenderCall() => RenderCallbacks++;
     private static int PreflightCalls;
     private static void ObservePreflightCall() => PreflightCalls++;
+    private sealed class CountedMethodType(Type nativeType) : TypeDelegator(nativeType)
+    {
+        public int MethodTableReads { get; private set; }
+        public override MethodInfo[] GetMethods(BindingFlags bindingAttr)
+        {
+            MethodTableReads++;
+            return base.GetMethods(bindingAttr);
+        }
+    }
+    private static class OverloadFixture
+    {
+        public static void Read() { }
+        public static void Read(int value) { }
+    }
+
+    [Fact]
+    public void OneQualificationResolvesNativeMethodTableOnceAndRechecksEveryOverloadPatch()
+    {
+        var owner = new CountedMethodType(typeof(CardModel));
+        Assert.True(NativeCardPreviewReadQualification.MethodsUnpatched(owner,
+            "GetDescriptionForPile", "get_Title", "get_Type"));
+        Assert.Equal(1, owner.MethodTableReads);
+        Assert.False(NativeCardPreviewReadQualification.MethodsUnpatched(owner, "missing_native_method"));
+
+        var overloadOwner = typeof(OverloadFixture);
+        var overloads = overloadOwner.GetMethods(NativeCardPreviewReadQualification.NativeMembers)
+            .Where(method => method.Name == "Read").ToArray();
+        Assert.Equal(2, overloads.Length);
+        var guard = new Harmony("sts2-test-public-card-method-table");
+        try
+        {
+            foreach (var overload in overloads)
+            {
+                guard.Patch(overload, prefix: new HarmonyMethod(typeof(NativeRewardCardRendererTests)
+                    .GetMethod(nameof(ObserveRenderCall), BindingFlags.Static | BindingFlags.NonPublic)));
+                Assert.False(NativeCardPreviewReadQualification.MethodsUnpatched(overloadOwner, "Read"));
+                guard.UnpatchAll(guard.Id);
+                Assert.True(NativeCardPreviewReadQualification.MethodsUnpatched(overloadOwner, "Read"));
+            }
+        }
+        finally { guard.UnpatchAll(guard.Id); }
+    }
     private static object SourceImpostor(Type contract, out FieldInfo callbackCount)
     {
         var assembly=AssemblyBuilder.DefineDynamicAssembly(new AssemblyName("HostileNativeSourceCounter"),AssemblyBuilderAccess.Run);
