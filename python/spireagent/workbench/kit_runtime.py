@@ -713,6 +713,28 @@ def _write_package_file(root: Path, relative: str, raw: bytes, mode: int = 0o644
     path.chmod(mode)
 
 
+def _stage_private_host_sdk_source(root: Path, destination: Path,
+                                   environment: dict[str, str]) -> Path:
+    sdk_relative = "components/connector/sdk/typescript"
+    contract = "components/connector/contracts/native-logical-publication-profile-v1.json"
+    # Preserve the production layout: the SDK generator reads the canonical
+    # contract through ../../../contracts rather than a second copied definition.
+    tracked_result = subprocess.run(
+        ["git", "ls-files", "-z", "--", sdk_relative, contract],
+        cwd=root, env=environment, stdin=subprocess.DEVNULL, capture_output=True,
+        check=False,
+    )
+    if tracked_result.returncode != 0:
+        raise BoundaryError("developer_kit", "private_host_sdk_source_inventory_failed")
+    paths = [value.decode("utf-8") for value in tracked_result.stdout.split(b"\0") if value]
+    if contract not in paths or f"{sdk_relative}/package-lock.json" not in paths:
+        raise BoundaryError("developer_kit", "private_host_sdk_source_inventory_failed")
+    for relative in paths:
+        raw, mode = _read_source_regular(root, relative)
+        _write_package_file(destination, relative, raw, mode)
+    return destination / sdk_relative
+
+
 def derive_private_host_candidate(original_archive_raw: bytes, original_archive_filename: str,
                                   expected_archive_sha256: str, bom_raw: bytes,
                                   source_root: Path) -> tuple[bytes, bytes, dict[str, Any]]:
@@ -817,23 +839,7 @@ def derive_private_host_candidate(original_archive_raw: bytes, original_archive_
         # Build from the committed Connector SDK source in an isolated copy. Its
         # npm ci uses the checked-in lockfile and a new cache; no author cache or
         # pre-existing node_modules/dist output can enter the candidate.
-        sdk_build = work / "sdk-source"
-        sdk_build.mkdir()
-        # Use a byte-safe NUL-separated list so unusual filenames cannot be truncated.
-        tracked_result = subprocess.run(
-            ["git", "ls-files", "-z", "--", "components/connector/sdk/typescript"],
-            cwd=root, env=base_env, stdin=subprocess.DEVNULL, capture_output=True,
-            check=False,
-        )
-        if tracked_result.returncode != 0:
-            raise BoundaryError("developer_kit", "private_host_sdk_source_inventory_failed")
-        paths = [value.decode("utf-8") for value in tracked_result.stdout.split(b"\0") if value]
-        if not paths or "components/connector/sdk/typescript/package-lock.json" not in paths:
-            raise BoundaryError("developer_kit", "private_host_sdk_source_inventory_failed")
-        for relative in paths:
-            local = relative.removeprefix("components/connector/sdk/typescript/")
-            raw, mode = _read_source_regular(root, relative)
-            _write_package_file(sdk_build, local, raw, mode)
+        sdk_build = _stage_private_host_sdk_source(root, work / "sdk-source", base_env)
         build_env = _fresh_npm_environment(work / "sdk-build-config", offline=False)
         _run_npm(npm, ["ci", "--ignore-scripts", "--no-audit", "--no-fund"],
                  sdk_build, build_env, "private_host_sdk_dependency_install_failed")

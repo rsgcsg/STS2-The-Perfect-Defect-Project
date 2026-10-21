@@ -130,8 +130,7 @@ def main() -> int:
             cpu=2, memory=8192, timeout=900,
         )
     )
-    if args.p1_engineering_profile:
-        image = image.env({"STPD_P1_ENGINEERING_PROFILE": "1"})
+    image = image.env({"STPD_P1_ENGINEERING_PROFILE": "1" if args.p1_engineering_profile else "0"})
     try:
         with modal.enable_output(), app.run(environment_name=args.environment):
             receipt["app_id"] = app.app_id

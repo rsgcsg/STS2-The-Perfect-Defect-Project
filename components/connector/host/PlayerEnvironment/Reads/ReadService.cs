@@ -41,11 +41,12 @@ internal static partial class PlayerEnvironmentService
     internal static PlayerEnvironmentReadResult BuildResolvedRead(
         SnapshotBuildResult snapshot,
         PlayerEnvironmentReadResolution resolution,
-        string expectedSnapshotId, DateTimeOffset? capturedAt = null, bool includePublicCardDetails = false)
+        string expectedSnapshotId, DateTimeOffset? capturedAt = null, bool includePublicCardDetails = false,
+        IReadOnlyDictionary<string, CapturedCardDetail>? capturedPublicCardDetails = null)
     {
         PlayerEnvironmentReadOpportunity opportunity = resolution.Opportunity!;
         if (opportunity.TargetReferentId != null)
-            return ReadLinkedDetail(snapshot, opportunity, expectedSnapshotId, capturedAt, includePublicCardDetails);
+            return ReadLinkedDetail(snapshot, opportunity, expectedSnapshotId, capturedAt, includePublicCardDetails, capturedPublicCardDetails);
         PlayerReadDraft draft = resolution.Build!.Draft!;
         return new PlayerEnvironmentReadResult(
             new PlayerEnvironmentReadResponse(
@@ -134,7 +135,8 @@ internal static partial class PlayerEnvironmentService
     private static PlayerEnvironmentReadResult ReadLinkedDetail(
         SnapshotBuildResult snapshot,
         PlayerEnvironmentReadOpportunity opportunity,
-        string expectedSnapshotId, DateTimeOffset? capturedAt = null, bool includePublicCardDetails = false)
+        string expectedSnapshotId, DateTimeOffset? capturedAt = null, bool includePublicCardDetails = false,
+        IReadOnlyDictionary<string, CapturedCardDetail>? capturedPublicCardDetails = null)
     {
         PlayerEnvironmentSnapshot observation = snapshot.Snapshot;
         if (!string.Equals(opportunity.Kind, "surface_card", StringComparison.Ordinal)
@@ -147,10 +149,13 @@ internal static partial class PlayerEnvironmentService
         }
         string referentId = opportunity.TargetReferentId;
         CapturedCardDetail? captured = includePublicCardDetails
-            ? CapturedCardDetails(snapshot.HostObservation.Surface, snapshot.HostObservation.Context, snapshot.ReadBuilds)
+            ? capturedPublicCardDetails != null
+                ? capturedPublicCardDetails.GetValueOrDefault(opportunity.ReadId)
+                : CapturedCardDetails(snapshot.HostObservation.Surface, snapshot.HostObservation.Context, snapshot.ReadBuilds)
                 .SingleOrDefault(value => string.Equals("read:surface_card:" + value.DetailKey, opportunity.ReadId, StringComparison.Ordinal)
                     && string.Equals(value.Card.EntityId, referentId, StringComparison.Ordinal))
             : null;
+        if (captured?.Card.EntityId != referentId) captured = null;
         VisibleCard? card = includePublicCardDetails ? captured?.Card
             : VisibleSurfaceCards(snapshot.HostObservation.Surface).FirstOrDefault(value =>
                 string.Equals(value.EntityId, referentId, StringComparison.Ordinal));
@@ -212,10 +217,16 @@ internal static partial class PlayerEnvironmentService
             null);
     }
 
-    private sealed record CapturedCardDetail(VisibleCard Card, string DisplayContext, string? ParentReadId, string? OwnerEntityId)
+    internal sealed record CapturedCardDetail(VisibleCard Card, string DisplayContext, string? ParentReadId, string? OwnerEntityId)
     {
         internal string DetailKey => "public-card-" + StableIdentityHash.Object(new { Card.EntityId, DisplayContext, ParentReadId, OwnerEntityId });
     }
+
+    // Scoped to one already frozen Snapshot. Rebuilding and serializing the full
+    // inventory for each individual Read made a full P1 freeze quadratic.
+    internal static IReadOnlyDictionary<string, CapturedCardDetail> CapturePublicCardDetailIndex(SnapshotBuildResult snapshot) =>
+        CapturedCardDetails(snapshot.HostObservation.Surface, snapshot.HostObservation.Context, snapshot.ReadBuilds)
+            .ToDictionary(value => "read:surface_card:" + value.DetailKey, StringComparer.Ordinal);
 
     // This inventory consumes the already captured DTOs only. It cannot resolve
     // a native model, navigate, rerender, or obtain a second version of the run.

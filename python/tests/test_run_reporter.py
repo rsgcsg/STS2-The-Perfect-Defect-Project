@@ -197,3 +197,57 @@ def test_index_failure_before_manifest_leaves_no_unindexed_event(tmp_path: Path)
     assert reporter.events(run.artifact_id) == ()
     with pytest.raises(StoreError, match="object_not_found"):
         store.get_manifest(event.artifact_id)
+
+
+def test_observer_cache_lists_full_index_but_gets_only_new_events_at_2040_step_scale():
+    class CountedBlobs:
+        def __init__(self):
+            self.values = {}
+            self.gets = []
+            self.listings = []
+
+        def put_if_absent(self, key, data):
+            if key in self.values and self.values[key] != data:
+                raise StoreError("immutable_key_collision")
+            created = key not in self.values
+            self.values[key] = data
+            return created
+
+        def get(self, key):
+            self.gets.append(key)
+            if key not in self.values:
+                raise StoreError("object_not_found")
+            return self.values[key]
+
+        def keys(self, prefix):
+            self.listings.append(prefix)
+            return tuple(sorted(key for key in self.values if key.startswith(prefix)))
+
+    blobs = CountedBlobs()
+    store = ManifestArtifactStore(blobs)
+    run = Manifest("run", PRODUCER,
+                   parameters=FrozenObject.of({"event_index": "run-events-v1"}))
+    store.publish(run)
+    writer = ObjectStoreRunReporter(store, blobs)
+    observer = ObjectStoreRunReporter(store, blobs, cache_events=True)
+
+    def emit(step):
+        event = Manifest("run_event", PRODUCER, (Parent("run", run.artifact_id),),
+                         parameters=FrozenObject.of({"schema": "stpd/run-event-v1", "step": step}))
+        writer.emit(event)
+        return event
+
+    for step in range(1, 2041):
+        emit(step)
+    blobs.gets.clear()
+    assert len(observer.events(run.artifact_id)) == 2040
+    assert sum(key.startswith("run-events/") for key in blobs.gets) == 2040
+    blobs.gets.clear()
+    assert len(observer.events(run.artifact_id)) == 2040
+    assert blobs.gets == [f"manifests/{run.artifact_id}.json"]
+    assert blobs.listings[-1] == f"run-events/{run.artifact_id}/"
+    newest = emit(2041)
+    blobs.gets.clear()
+    assert observer.events(run.artifact_id)[-1] == newest
+    assert sum(key.startswith("run-events/") for key in blobs.gets) == 1
+    assert len(blobs.gets) == 3  # Run declaration + new index bytes + its manifest.

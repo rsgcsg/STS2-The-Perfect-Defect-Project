@@ -1118,3 +1118,55 @@ Run and associated Ops facts, without querying a peer or provider. Run existence
 alone is explicitly not transfer completion. Client exit does not end the
 Application scheduler. Reopening restores the existing Ops handle/attempt and
 creates no second local-training operation or Curation database.
+
+
+### Observe the same remote Run
+
+The normal local **训练任务** page (`?view=local-training`) reads existing local Operations
+status first, then explicitly reads that job's immutable RunReporter events from
+its configured compute Store. It shows confirmed optimizer updates, N loss, DEV
+loss, checkpoint IDs, recorded errors and terminal result identities. No event
+means no confirmed gradient update; an unavailable peer leaves the local status
+visible and never causes submission or retry. Reopening the page observes the same
+job/Run/attempt. The existing non-GUI client exposes the same read:
+
+```sh
+python -m spireagent.workbench training progress --config PROJECT --execution remote --operation-id JOB
+```
+
+`status` stays local and does not wait for a provider or peer request. `progress`
+is an explicit peer read and may report a typed transport/storage failure. It
+returns up to the last 200 new events and declares history truncation; persistent
+original events remain in RunReporter. Its observer lists the existing immutable
+index but fetches only previously unseen event hashes after verifying each new
+index entry against its published manifest. Auditors keep fresh-read behavior.
+A separate progress-read lock rejects overlapping progress reads without blocking
+local status or starting duplicate network work. The service does not claim live provider
+state from a cached/persisted event.
+
+To observe an older producer's Run from a newer installed Application, set the
+existing `remote_compute.observation_only` field to `true`. This explicitly leaves
+its Scheduler unstarted and exposes only status/progress. Every prepare/start/
+pause/resume/cancel/reconcile command is rejected before context selection,
+vocabulary use, enqueue or provider contact. Stop and recovery remain with the
+original writer's normal config/CLI while it is available. Observation does not
+relax `target.producer == current source/lock`; changing back to writer mode still
+requires a compatible exact target. The page displays this control boundary and
+has no misleading control buttons.
+
+P1 `stpd/p1-N-evaluation-1` appears in the normal offline-evaluation detail using
+its recorded best DEV N loss and DEV denominator. The combined artifact's TEST
+metadata is not exposed by this summary, including an empty engineering TEST
+partition. This is recorded descriptive evidence, not a replay of weights/input,
+independent holdout qualification, game win rate or model-quality verdict.
+
+
+Remote `start` currently prepares and fully transfers/verifies the selected input
+synchronously before creating its sole Ops job. A real full-size P1 preparation
+exceeded a 600-second client wait while the original handler continued. A client
+transport timeout therefore leaves the domain outcome unknown; never resend
+`start`. On the task page, query the original preparation intent, or use
+`training status --execution remote --intent-id INTENT`. A local Run with no job
+only confirms local preparation; transfer completion is explicitly not inferred.
+After that same request creates a job, follow its exact job/Run/attempt. Detailed
+durable transfer-phase progress and asynchronous preparation are not yet provided.

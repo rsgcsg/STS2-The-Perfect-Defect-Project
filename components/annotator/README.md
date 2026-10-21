@@ -23,6 +23,18 @@ Close or changing pending actions. Its consumer requires the returned manifest h
 See the [data contract](docs/DATA_CONTRACT.md#p1-native-semantic-profile).
 Actual native recording and replay qualification remain separate from source support.
 
+P1 basis files, like event streams, flush to the OS on append; an open session is
+inspectable partial evidence. Close and durable-prefix export verify retained basis
+lengths/hashes and flush new basis files to disk before publishing their receipt.
+Any failure keeps Close/prefix unsuccessful and visible in recorder health. The
+performance profile separates basis validation/hash/write/OS-flush, durable seal,
+and each P1 capture call site; it does not itself qualify game-frame performance.
+`game_process_frame_interval.recording` and `.paused` measure main-thread process
+frame intervals in the same open session. Use Pause/Resume for a bounded OFF/ON
+comparison with the same scene/operation/speed/power conditions; transitions are
+excluded. Close publishes the profile. Read/capture counters and frame intervals
+are diagnostics, not automatic proof of acceptable user experience.
+
 For daily P1 collection attach to the running installed game through the existing
 Application API. Run `npm run recording:p1 -- status`, then use its exact runtime
 and session (`none` before the first session):
@@ -78,6 +90,16 @@ N label is added. Other effects, incomplete inputs and unknown actions still blo
 continuity. Select the exact fixed Tool release when reproducing this interpretation;
 older target artifacts retain their original masks. The default,
 segments03 and fixed historical training inputs retain their original meaning.
+
+New conversions locate an unbound issue only by its exact original event ID and
+sequence. Its missing span ends before the first independently recorded complete,
+uncommitted boundary (no pending native decisions, reward commitment or selector
+continuation). Until that boundary the span remains blocked; an issue without a
+retained location blocks the whole run. The original issue/basis and recovery proof
+remain in the new output. Complete local N labels remain independently usable;
+neither local recovery nor successful conversion repairs the missing selector facts
+or qualifies a whole run. Re-derive into new files with the selected fixed Tool
+identity; existing segments/targets and fixed training inputs are never rewritten.
 
 ## Recover an interrupted P1 recording
 

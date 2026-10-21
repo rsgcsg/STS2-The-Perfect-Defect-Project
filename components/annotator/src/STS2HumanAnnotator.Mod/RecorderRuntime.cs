@@ -2011,6 +2011,7 @@ internal static partial class RecorderRuntime
 
     internal static void OnProcessFrame()
     {
+        ObserveProcessFrameInterval();
         if (IsSourceRecording) { FinalizeSourceClose(); return; }
         try
         {
@@ -4315,7 +4316,7 @@ internal static partial class RecorderRuntime
     {
         ProcessLocalNativeWitnessFrame frame = MeasureStore(
             "read_rich_snapshot_capture",
-            () => IsP1Recording ? PlayerEnvironmentNativeWitness.CaptureP1()
+            () => IsP1Recording ? CaptureP1Frame("read_rich")
                 : PlayerEnvironmentNativeWitness.Capture(SemanticBoundaryReadPolicy.RequiredKinds));
         RecordCaptureSubphases("read_rich", frame);
         return frame;
@@ -4325,7 +4326,7 @@ internal static partial class RecorderRuntime
     {
         ProcessLocalNativeWitnessFrame frame = MeasureStore(
             "semantic_snapshot_capture",
-            () => IsP1Recording ? PlayerEnvironmentNativeWitness.CaptureP1()
+            () => IsP1Recording ? CaptureP1Frame("semantic")
                 : PlayerEnvironmentNativeWitness.Capture(SemanticBoundaryReadPolicy.RequiredKinds));
         RecordCaptureSubphases("semantic", frame);
         return frame;

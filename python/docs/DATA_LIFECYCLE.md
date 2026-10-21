@@ -173,6 +173,65 @@ Snapshot reservation and actual training
 use remain separate explicit owner calls. Unknown seed or restore ancestry stays
 unknown and cannot justify independent holdout.
 
+### Same-ID local cache misses
+
+The existing `ManifestArtifactStore` can use one explicitly pinned durable peer.
+Configure the existing local Store with the normal command (credentials remain in
+its process environment):
+
+```sh
+python -m spireagent.workbench cache-configure --store STORE --other-store s3 --max-cache-bytes 2147483648 --retain-recent 2
+```
+
+This writes only `STORE/cache-policy.json`, a non-secret storage configuration,
+including each exact bucket/endpoint/prefix selected now. At most two existing
+locations may be pinned. Use `--additional-peer` for a second local location,
+or `--additional-peer-config BINDING.json` for the existing non-secret R2 peer
+binding returned by recording maintenance status (kind/bucket/endpoint/prefix/region). The current
+recording prefix `p1-native-preservation/v1` and compute prefix `stpd` are distinct;
+configure both when that Store consumes both. Only an exact `object_not_found`
+permits checking the next declared location; transport or integrity failures stop
+the read. No provider, bucket, prefix or artifact is guessed. It is not a Curation or
+transfer ledger. Reopen the normal Application/reader after configuring it. A local
+miss on an exact manifest, payload index or chunk reads that same key from that
+peer; normal manifest/chunk/whole-payload validation remains mandatory. A corrupt
+local object fails and never silently substitutes remote bytes. A writable reader
+caches verified bytes in the same Store; a read-only reader consumes the verified
+peer bytes without caching data objects. An unavailable peer or missing remote key
+returns the original typed Store error. All prior artifact IDs and reader entry
+points remain unchanged. `cache-configure` prepares per-payload lease files for existing publications;
+new writable publication prepares its lease during payload verification. Read-only
+consumers only open an existing shared lease and do not create files. A missing
+lease returns `cache_read_lease_missing`; have the writable Store owner configure
+or publish/verify that payload first.
+
+```sh
+python -m spireagent.workbench cache-trim --store STORE
+```
+
+The same recording-maintenance owner schedules this trim when enabled and idle,
+using its persisted operation/receipt. It removes local chunk copies only after
+remote manifest ancestry and complete referenced payload readback succeed. Recent
+artifacts, newest two maintained recording originals, all local models/checkpoints/
+results, explicit pins, shared chunks referenced by them and active readers remain
+hot. OS-held payload leases cover a reader generator's lifetime and release on
+process death; remote readback does not hold a Store-wide exclusive lock. Manifests,
+payload indexes, Curation and application operation files remain local. A missing
+remote object retains the local chunk and appears in `unverified_chunks`.
+
+The receipt reports actual before/after payload bytes, protected identities, busy
+chunks and `within_budget`. Metadata, retained models/checkpoints, unverified data
+or active readers can keep the Store above its target; this is reported rather than
+deleting protected data. Maintenance reports `cache_over_budget` while protected bytes prevent its target.
+An active or not-yet-preserved chunk schedules another actual readback after a
+60-second backoff; an unchanged retained-only overage waits for changed data or
+policy. Time schedules that check and never counts as successful verification.
+Reading cold data can temporarily exceed the working-set target, and the next idle
+maintenance pass trims it. This bounds evictable Store payloads as well as expanded
+recording copies; it does not guarantee an unlimited offline buffer or constant
+whole-disk usage. Use the capacity reserve for new recording, input/checkpoint and
+installation scratch, and stop or increase capacity if protected bytes exceed it.
+
 For checkpoint/model/result artifacts, use the existing generic `workbench push`
 and `pull --artifact ID --other-store s3` transfer; they retain manifest ancestry
 and transfer absent objects. Materialize and verify through the owning model or
@@ -180,9 +239,10 @@ checkpoint reader before declaring a result usable. The P1 original-only storage
 entry above does not pretend to validate model semantics.
 
 R2 is the long-term destination for project data; local bytes are the bounded
-active working set goal. Current automatic cooling only removes verified older
-expanded recording copies; compressed Store archives and named projections still
-accumulate locally. It does not yet bound the entire Store. Background closed-recording maintenance is separately
+active working set goal. Expanded-copy cooling removes verified older recording copies. The optional
+Store cache policy above additionally trims recoverable compressed/raw, derived
+and input payload chunks; protected model/checkpoint/result bytes and metadata
+remain resident and can prevent reaching its target. Background closed-recording maintenance is separately
 configured through `recordings maintenance status|enable|disable --config PROJECT`;
 cloud scope must name candidates or a date/origin scope. It remains disabled until
 authorized. With `--cool-recent`, the same maintenance owner retains the newest
@@ -308,3 +368,32 @@ Store requires the existing explicit owner-rebind workflow, not editing identity
 strings. Reopen `configured_owner(config)` and read the original claims/uses through
 its existing ledger; leave unknown legacy exposure intact. Live replacement is an
 operator recovery step, not an automatic consequence of a restore command.
+
+
+## Private Scheduler and provider-handle recovery
+
+The normal `operations` entry preserves the existing `Operations.backup` SQLite
+snapshot in the same ManifestArtifactStore. It includes jobs, fenced attempts,
+original provider handles, outcomes and operation events. The snapshot is paused;
+local lease hashes are cleared in the copy and deleted database pages are vacuumed.
+The copy also clears only the rebuildable `console_artifacts`,
+`console_artifact_policy` and `console_lineage` projections; their owner can rebuild
+them from Store manifests with `ConsoleIndex.artifact_closure`. The live database
+is unchanged. Account/device/upload/collection/visibility and unknown tables must
+still be empty, otherwise publication is rejected. Restore retains the same strict
+private-scope validation. Control tokens, environment credentials and target/secret
+configuration are not exported. Curation remains the separate original private owner and uses
+its backup command above.
+
+```sh
+python -m spireagent.workbench operations backup --config PROJECT --store STORE --output SCRATCH
+python -m spireagent.workbench push --store STORE --other-store s3 --artifact BACKUP
+python -m spireagent.workbench operations restore --store s3 --artifact BACKUP --output NEW_RECOVERY_DIRECTORY
+```
+
+Restore checks content hashes, SQLite integrity/schema, private scope and paused
+state in a new directory. It never replaces a live owner or contacts a provider.
+Keep the original source/target/compute-Store binding, stop the original writer,
+review this staged owner, and reconcile its exact recorded handles before enabling
+dispatch. An unknown external outcome remains unknown; restoring bytes does not
+permit resubmission. Backup availability and actual worker recovery are distinct.

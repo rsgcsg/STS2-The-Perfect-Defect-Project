@@ -105,12 +105,6 @@ public static class NativePublicCardDetails
                 card = display;
             }
             stage = "preflight";
-            NativeCardPreviewReadQualification.InvokePreflight(card, mode, displayPile);
-            stage = "card_identity";
-            visible["id"] = card.Id.Entry; visible["type"] = card.Type.ToString();
-            visible["rarity"] = card.Rarity.ToString(); visible["is_upgraded"] = card.IsUpgraded;
-            visible["name"] = null; visible["description"] = null;
-            stage = "preview_update";
             NativeCardRenderTransaction.Run(card, displayPile, () =>
             {
                 stage = "title";
@@ -151,7 +145,16 @@ public static class NativePublicCardDetails
                 visible["keywords"] = keywords;
                 visible["card_previews"] = previews;
                 return true;
-            }, mode);
+            }, mode, beforePreview: () =>
+            {
+                // The transaction qualifies this exact card before any getter,
+                // retaining identity capture before the native preview update.
+                stage = "card_identity";
+                visible["id"] = card.Id.Entry; visible["type"] = card.Type.ToString();
+                visible["rarity"] = card.Rarity.ToString(); visible["is_upgraded"] = card.IsUpgraded;
+                visible["name"] = null; visible["description"] = null;
+                stage = "preview_update";
+            });
             stage = "visible_text_projection";
             // Same public text as the Reference surface readers: rich-text tags removed,
             // inline icons as [file.png], description newlines as spaces.

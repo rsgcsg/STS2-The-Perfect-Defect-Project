@@ -9,11 +9,13 @@ import os
 import tempfile
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
 from spireagent.artifact_contracts import Manifest, Payload
+from spireagent.instance_lock import instance_lock
 from spireagent.json_boundary import array, decode_json, digest, json_bytes, object_fields, unsigned
 from spireagent.storage.blobs import BlobStore, StoreError
+from spireagent.storage.local import LocalBlobStore
 
 CHUNK_BYTES = 8 * 1024 * 1024
 PAYLOAD_SCHEMA = "stpd/payload-index-v1"
@@ -42,6 +44,40 @@ class ArtifactStore(Protocol):
 class ManifestArtifactStore:
     def __init__(self, blobs: BlobStore) -> None:
         self.blobs = blobs
+        self._peers: tuple[ManifestArtifactStore, ...] | None = None
+        self._cache_policy: dict[str, Any] | None = None
+        if isinstance(blobs, LocalBlobStore):
+            policy = blobs.root / "cache-policy.json"
+            if policy.is_file():
+                from spireagent.storage.cache import read_policy
+
+                self._cache_policy = read_policy(policy)
+
+    def cache_peers(self) -> tuple[ManifestArtifactStore, ...]:
+        """Only the explicitly pinned existing locations; no provider discovery."""
+        if self._cache_policy is not None and self._peers is None:
+            from spireagent.storage.config import open_peer
+
+            self._peers = tuple(open_peer(binding) for binding in self._cache_policy["peers"])
+        return self._peers or ()
+
+    def _cache(self, key: str, data: bytes) -> None:
+        if isinstance(self.blobs, LocalBlobStore) and not self.blobs.readonly:
+            self.blobs.put_if_absent(key, data)
+
+    def _get(self, key: str) -> tuple[bytes, bool]:
+        try:
+            return self.blobs.get(key), False
+        except StoreError as error:
+            if error.code != "object_not_found":
+                raise
+            for peer in self.cache_peers():
+                try:
+                    return peer.blobs.get(key), True
+                except StoreError as peer_error:
+                    if peer_error.code != "object_not_found":
+                        raise
+            raise
 
     def put_payload(
         self, role: str, source: BinarySource, media_type: str = "application/octet-stream"
@@ -74,7 +110,24 @@ class ManifestArtifactStore:
         return payload
 
     def read_payload(self, payload: Payload) -> Iterator[bytes]:
-        raw = self.blobs.get(f"payload-indexes/v1/{payload.sha256}.json")
+        # A lease covers the generator lifetime, including a caller paused at yield.
+        # Only this payload is fenced; a remote miss never locks the whole Store.
+        if isinstance(self.blobs, LocalBlobStore) and self._cache_policy is not None:
+            lock = self.blobs.root / ".cache-leases" / (payload.sha256 + ".lock")
+            if not lock.exists():
+                if self.blobs.readonly:
+                    raise StoreError("cache_read_lease_missing",
+                                     "prepare cache leases with its writable Store owner")
+                lock.parent.mkdir(exist_ok=True)
+                lock.touch(exist_ok=True)
+            with instance_lock(lock, create=False, shared=True):
+                yield from self._read_payload(payload)
+        else:
+            yield from self._read_payload(payload)
+
+    def _read_payload(self, payload: Payload) -> Iterator[bytes]:
+        index_key = f"payload-indexes/v1/{payload.sha256}.json"
+        raw, recovered_index = self._get(index_key)
         index = object_fields(decode_json(raw), {"schema", "sha256", "size", "chunks"}, "payload")
         if (
             index["schema"] != PAYLOAD_SCHEMA
@@ -89,6 +142,8 @@ class ManifestArtifactStore:
         chunks = array(index["chunks"], "payload.chunks")
         if len(chunks) != (payload.size + CHUNK_BYTES - 1) // CHUNK_BYTES:
             raise StoreError("payload_integrity_failure")
+        if recovered_index:
+            self._cache(index_key, raw)
         for position, item in enumerate(chunks):
             chunk = object_fields(item, {"sha256", "size"}, "payload.chunk")
             key = digest(chunk["sha256"], "payload.chunk")
@@ -96,9 +151,12 @@ class ManifestArtifactStore:
             required_size = min(CHUNK_BYTES, payload.size - position * CHUNK_BYTES)
             if expected_size != required_size:
                 raise StoreError("invalid_chunk_size")
-            data = self.blobs.get(f"objects/sha256/{key}")
+            chunk_key = f"objects/sha256/{key}"
+            data, recovered = self._get(chunk_key)
             if len(data) != expected_size or hashlib.sha256(data).hexdigest() != key:
                 raise StoreError("payload_chunk_integrity_failure")
+            if recovered:
+                self._cache(chunk_key, data)
             whole.update(data)
             size += len(data)
             if size > payload.size:
@@ -128,7 +186,12 @@ class ManifestArtifactStore:
 
     def get_manifest(self, artifact_id: str) -> Manifest:
         digest(artifact_id, "artifact_id")
-        return Manifest.from_bytes(self.blobs.get(f"manifests/{artifact_id}.json"), artifact_id)
+        key = f"manifests/{artifact_id}.json"
+        raw, recovered = self._get(key)
+        manifest = Manifest.from_bytes(raw, artifact_id)
+        if recovered:
+            self._cache(key, raw)
+        return manifest
 
     def manifest_ids(self) -> tuple[str, ...]:
         identities = []

@@ -2121,10 +2121,10 @@ index 0000000..85112ee
 +}
 diff --git a/src/Sts2Headless/NativeCardPreviewReadQualification.cs b/src/Sts2Headless/NativeCardPreviewReadQualification.cs
 new file mode 100644
-index 0000000..cacc86c
+index 0000000..4c989df
 --- /dev/null
 +++ b/src/Sts2Headless/NativeCardPreviewReadQualification.cs
-@@ -0,0 +1,353 @@
+@@ -0,0 +1,355 @@
 +using System;
 +using System.Collections.Generic;
 +using System.Linq;
@@ -2158,11 +2158,13 @@ index 0000000..cacc86c
 +        catch { return false; }
 +    }
 +
-+    internal static bool MethodsUnpatched(Type owner, params string[] names) => names.All(name =>
++    internal static bool MethodsUnpatched(Type owner, params string[] names)
 +    {
-+        MethodInfo[] exact = owner.GetMethods(NativeMembers).Where(method => method.Name == name).ToArray();
-+        return exact.Length > 0 && exact.All(IsUnpatched);
-+    });
++        // Resolve immutable method metadata once per check. Patch state is
++        // still read anew for every overload on every invocation.
++        var methods = owner.GetMethods(NativeMembers).ToLookup(method => method.Name, StringComparer.Ordinal);
++        return names.All(name => methods[name].Any() && methods[name].All(IsUnpatched));
++    }
 +
 +    private static bool FixedConstructorsUnpatched(Type type) =>
 +        type.GetConstructors(NativeMembers).All(IsUnpatched);
@@ -2480,10 +2482,10 @@ index 0000000..cacc86c
 +}
 diff --git a/src/Sts2Headless/NativeCardRenderTransaction.cs b/src/Sts2Headless/NativeCardRenderTransaction.cs
 new file mode 100644
-index 0000000..9398ed0
+index 0000000..6ae28c8
 --- /dev/null
 +++ b/src/Sts2Headless/NativeCardRenderTransaction.cs
-@@ -0,0 +1,82 @@
+@@ -0,0 +1,84 @@
 +using System;
 +using System.Collections.Generic;
 +using System.Linq;
@@ -2531,9 +2533,11 @@ index 0000000..9398ed0
 +        || value.GetType().IsGenericType
 +            && value.GetType().GetGenericTypeDefinition() == typeof(PowerVar<>);
 +
-+    internal static T Run<T>(CardModel card, PileType displayPile, Func<T> capture, CardPreviewMode mode = CardPreviewMode.Normal)
++    internal static T Run<T>(CardModel card, PileType displayPile, Func<T> capture,
++        CardPreviewMode mode = CardPreviewMode.Normal, Action? beforePreview = null)
 +    {
 +        NativeCardPreviewReadQualification.InvokePreflight(card, mode, displayPile);
++        beforePreview?.Invoke();
 +        DynamicVar[] cardVars = card.DynamicVars.Values.ToArray();
 +        DynamicVar[] enchantVars = card.Enchantment?.DynamicVars.Values.ToArray() ?? [];
 +        DynamicVar[] all = cardVars.Concat(enchantVars).ToArray();
@@ -3514,10 +3518,10 @@ index 0000000..21f689a
 +}
 diff --git a/src/Sts2Headless/NativePublicCardDetails.cs b/src/Sts2Headless/NativePublicCardDetails.cs
 new file mode 100644
-index 0000000..1586939
+index 0000000..ef9cabc
 --- /dev/null
 +++ b/src/Sts2Headless/NativePublicCardDetails.cs
-@@ -0,0 +1,196 @@
+@@ -0,0 +1,199 @@
 +using System;
 +using System.Collections.Generic;
 +using System.Linq;
@@ -3625,12 +3629,6 @@ index 0000000..1586939
 +                card = display;
 +            }
 +            stage = "preflight";
-+            NativeCardPreviewReadQualification.InvokePreflight(card, mode, displayPile);
-+            stage = "card_identity";
-+            visible["id"] = card.Id.Entry; visible["type"] = card.Type.ToString();
-+            visible["rarity"] = card.Rarity.ToString(); visible["is_upgraded"] = card.IsUpgraded;
-+            visible["name"] = null; visible["description"] = null;
-+            stage = "preview_update";
 +            NativeCardRenderTransaction.Run(card, displayPile, () =>
 +            {
 +                stage = "title";
@@ -3671,7 +3669,16 @@ index 0000000..1586939
 +                visible["keywords"] = keywords;
 +                visible["card_previews"] = previews;
 +                return true;
-+            }, mode);
++            }, mode, beforePreview: () =>
++            {
++                // The transaction qualifies this exact card before any getter,
++                // retaining identity capture before the native preview update.
++                stage = "card_identity";
++                visible["id"] = card.Id.Entry; visible["type"] = card.Type.ToString();
++                visible["rarity"] = card.Rarity.ToString(); visible["is_upgraded"] = card.IsUpgraded;
++                visible["name"] = null; visible["description"] = null;
++                stage = "preview_update";
++            });
 +            stage = "visible_text_projection";
 +            // Same public text as the Reference surface readers: rich-text tags removed,
 +            // inline icons as [file.png], description newlines as spaces.

@@ -22,6 +22,18 @@ second legality model. Reads are state-bound and non-authorizing. A complete
 finite BoundAction projection is required for input authority; delivery is
 revalidated against the current native UI. Unknown delivery is not retryable.
 
+P1 public-basis grid capture uses the existing state-observation and Read
+permissions, including when a loaded artifact has no action-execution permission.
+It preserves that exact compatibility status in the original evidence. The
+native-logical execution profile still requires the exact execution identity;
+a complete passive grid never grants delivery permission or runtime qualification.
+
+Each P1 public-basis freeze indexes its already captured public card details once
+for all advertised Read instances. The index belongs to that freeze only; a new
+capture re-reads dynamic state and never reuses a previous frame's card facts.
+Combat visibility/queue filtering likewise retains the same capture's already
+rendered logical-hand facts; it does not render the selected hand a second time.
+
 Historical standalone stable/RC releases remain available from the predecessor
 repository. Current Platform source versions are Connector `1.2.0-rc.5`, SDK
 `1.1.0-rc.1` and Player Environment protocol `1.0.0`. They are source

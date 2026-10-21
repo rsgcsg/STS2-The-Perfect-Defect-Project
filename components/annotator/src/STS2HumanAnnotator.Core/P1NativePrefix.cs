@@ -20,6 +20,8 @@ public sealed partial class RecordingSessionStore
             EnsureOpen();
             if (!IsP1NativeSession || _p1NativeEvents == null) throw new InvalidOperationException("p1_native_profile_required");
             if (_p1NativeWriteFailed) throw new InvalidDataException("p1_native_persistence_failed");
+            try { SealP1NativeBases(); }
+            catch (Exception error) { MarkWriteFailureUnsafe(error); throw; }
             _p1NativeEvents.Flush(flushToDisk: true);
             _journal.Flush(flushToDisk: true);
             string id = $"p1-prefix-{Guid.NewGuid():N}";

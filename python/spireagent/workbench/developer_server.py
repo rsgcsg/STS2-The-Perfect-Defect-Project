@@ -1514,6 +1514,23 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                     self.respond(200, json.dumps(value).encode())
                 except BoundaryError as error:
                     self.respond(409, json.dumps({"error": error.code}).encode())
+            elif parsed.path == "/api/remote-training/progress":
+                if not (self.authenticated_browser() or self.control_client()):
+                    self.respond(401, b'{"error":"browser_session_required"}')
+                    return
+                try:
+                    query = parse_qs(parsed.query, strict_parsing=True, max_num_fields=2,
+                                     keep_blank_values=True)
+                    if (set(query) not in ({"job_id"}, {"job_id", "after_step"})
+                            or any(len(values) != 1 for values in query.values())):
+                        raise ValueError
+                    value = app.remote_training.progress(
+                        query["job_id"][0], after_step=int(query.get("after_step", ["0"])[0]))
+                    self.respond(200, json.dumps(value).encode())
+                except BoundaryError as error:
+                    self.respond(409, json.dumps({"error": error.code}).encode())
+                except (OSError, ValueError, TypeError):
+                    self.respond(400, b'{"error":"invalid_remote_training_request"}')
             elif parsed.path in {"/api/remote-training/status",
                                  "/api/remote-training/capabilities"}:
                 if not (self.authenticated_browser() or self.control_client()):

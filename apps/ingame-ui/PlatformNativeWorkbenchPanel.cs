@@ -130,7 +130,10 @@ internal sealed class PlatformNativeWorkbenchPanel : IDisposable
             foreach (Control field in _fields.Values) if (field is BaseButton button) button.Disabled = true;
             return;
         }
-        _connection.Text = "正在读取本机工作台…";
+        // A background page refresh does not change a confirmed connection.
+        // Reuse the validated view's binding instead of a second connection state.
+        if (_view is not JsonElement confirmed || PlatformNativeWorkbenchPair.Read(confirmed.GetProperty("binding")) != connection.Binding)
+            _connection.Text = "正在读取本机工作台…";
         long generation = _generation;
         string page = _page; int offset = _offset; string? context = _context;
         _read = Task.Run(async () =>

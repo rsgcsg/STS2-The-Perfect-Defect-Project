@@ -8,7 +8,6 @@ import shutil
 import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -20,9 +19,9 @@ from sts2_platform_evidence.collection_tool import CollectionTool
 from spireagent.artifact_contracts import Manifest
 from spireagent.json_boundary import BoundaryError, digest, json_bytes
 from spireagent.storage.blobs import StoreError
-from spireagent.storage.config import open_store
+from spireagent.storage.config import open_peer as open_peer
+from spireagent.storage.config import peer_binding as peer_binding
 from spireagent.storage.local import LocalBlobStore
-from spireagent.storage.s3 import S3BlobStore, S3Config
 from spireagent.storage.store import ManifestArtifactStore, copy_artifact
 
 from .p1_recording_store import (
@@ -178,27 +177,6 @@ def expanded_storage(
             "local_archive": local_receipt, "peer_archive": peer_receipt,
         }
     return {**intent, "status": "completed", "storage_receipt": receipt}
-
-
-def peer_binding(location: str) -> dict[str, Any]:
-    """Resolve once; reconciliation never silently targets a different environment bucket."""
-    store = open_store(location)
-    if isinstance(store.blobs, S3BlobStore):
-        return {"kind": "s3", **asdict(store.blobs.config)}
-    return {"kind": "local", "directory": str(Path(location).resolve())}
-
-
-def open_peer(binding: dict[str, Any]) -> ManifestArtifactStore:
-    if set(binding) == {"kind", "directory"} and binding["kind"] == "local":
-        return ManifestArtifactStore(LocalBlobStore(Path(binding["directory"])))
-    if (
-        set(binding) == {"kind", "bucket", "endpoint", "prefix", "region"}
-        and binding["kind"] == "s3"
-    ):
-        return ManifestArtifactStore(
-            S3BlobStore(S3Config(**{key: value for key, value in binding.items() if key != "kind"}))
-        )
-    raise BoundaryError("p1_storage", "invalid_peer_binding")
 
 
 def _inventory(
