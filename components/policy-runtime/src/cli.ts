@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import type { GlobalNoProgressConfig } from "./global-no-progress.js";
 
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, readdir } from "node:fs/promises";
@@ -33,6 +34,7 @@ interface CliOptions {
   evidenceRoot: string;
   mode: RuntimeMode;
   autoBudget: AutonomyBudgetConfig;
+  globalNoProgress?: GlobalNoProgressConfig;
 }
 
 async function main(): Promise<void> {
@@ -44,6 +46,7 @@ async function main(): Promise<void> {
     await runAgent(options, manifestPath, validateAgentManifest(rawManifest)); return;
   }
   const manifest = validatePolicyManifest(rawManifest);
+  if (options.globalNoProgress) throw new Error("no-progress window requires a GLOBAL Agent manifest");
   const isManaged = "kind" in manifest.requirements.environment;
   if (options.observationAcquisition === "sealed-text-menu-v2"
     && (isManaged || manifest.representation.input_schema !== "sts2.player-environment/text-menu-snapshot-2"))
@@ -204,7 +207,7 @@ async function runAgent(options: CliOptions, manifestPath: string, manifest: Age
       : new ReferenceGlobalTransport(environment, { productVersion: POLICY_RUNTIME_VERSION, clientInstanceId: evidence.runId }) }
       : { environment };
     runtime = await PolicyRuntime.forAgent({ manifest, ...selected,
-      port, evidence, mode: options.mode, autoBudget: options.autoBudget,
+      port, evidence, mode: options.mode, autoBudget: options.autoBudget, globalNoProgress: options.globalNoProgress,
       runtimeIdentity: { version: POLICY_RUNTIME_VERSION, code_sha256: runtimeCodeSha256 } });
     service = await startPolicyRuntimeHttpServer(runtime, { port: options.listenPort, autoDrive: true,
       deferAutoDrive: true, onStopped: shutdown });
@@ -243,7 +246,7 @@ function parseArgs(args: string[]): CliOptions {
     if (!value) throw new Error(`${key} requires a value`);
     index += 1;
     if (key === "--adapter-arg") adapterArgs.push(value);
-    else if (["--observation-acquisition", "--manifest", "--adapter-command", "--adapter-cwd", "--connector-endpoint", "--listen-port", "--evidence-root", "--mode", "--max-auto-submissions", "--max-policy-calls", "--auto-deadline-ms", "--managed-binding", "--managed-attachment", "--managed-expected-service-instance-id", "--managed-expected-runtime-instance-id", "--managed-expected-game-continuity-id"].includes(key)) values.set(key, value);
+    else if (["--observation-acquisition", "--manifest", "--adapter-command", "--adapter-cwd", "--connector-endpoint", "--listen-port", "--evidence-root", "--mode", "--max-auto-submissions", "--max-policy-calls", "--auto-deadline-ms", "--no-progress-window", "--no-progress-repeats", "--managed-binding", "--managed-attachment", "--managed-expected-service-instance-id", "--managed-expected-runtime-instance-id", "--managed-expected-game-continuity-id"].includes(key)) values.set(key, value);
     else throw new Error(`unknown argument: ${key}`);
   }
   const manifestPath = required(values, "--manifest");
@@ -285,7 +288,11 @@ function parseArgs(args: string[]): CliOptions {
     listenPort,
     evidenceRoot: values.get("--evidence-root") ?? ".local/evidence/agent-runs",
     mode,
-    autoBudget
+    autoBudget,
+    ...(values.has("--no-progress-window") || values.has("--no-progress-repeats") ? { globalNoProgress: {
+      windowDecisions: positiveOption(values, "--no-progress-window", 32),
+      maxRepeats: positiveOption(values, "--no-progress-repeats", 8)
+    } } : {})
   };
 }
 

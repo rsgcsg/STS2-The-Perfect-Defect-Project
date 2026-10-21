@@ -16,6 +16,9 @@ export interface AgentRuntimeStatus {
   run_id: string; lifecycle: "running" | "stopped"; mode: RuntimeMode;
   controller: RuntimeStatus["controller"];
   autonomy_budget: RuntimeStatus["autonomy_budget"];
+  global_no_progress?: import("./global-no-progress.js").GlobalNoProgressConfig & {
+    last: import("./global-no-progress.js").GlobalProgressCheck | null;
+  };
   tainted: boolean; taint_reason: string | null; refreshing: boolean;
   environment: RuntimeStatus["environment"];
   session: {

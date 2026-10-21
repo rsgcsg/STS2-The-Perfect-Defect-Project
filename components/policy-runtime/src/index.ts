@@ -22,3 +22,6 @@ export * from "./global-program.js";
 export * from "./global-replay.js";
 
 export { p1CoreIdentity } from "./p1-global/core-identity.js";
+
+export * from "./global-capture-storage.js";
+export * from "./global-no-progress.js";

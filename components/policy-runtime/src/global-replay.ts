@@ -1,3 +1,5 @@
+import { GlobalNoProgressWindow } from "./global-no-progress.js";
+import { restoreGlobalCaptureResponse } from "./global-capture-storage.js";
 import { createHash } from "node:crypto";
 import { readFile, readdir, lstat } from "node:fs/promises";
 import { join } from "node:path";
@@ -50,6 +52,7 @@ export async function replayGlobalAgentRun(directory: string) {
   let lastDirective: any = null, active: { acquisition: string; choice: string; lowering: Lowering; occurrence: number; epoch: number; deliveries: any[]; dispatches: any[]; postSources: Map<string, number[]>; errors: Set<string> } | null = null;
   let observations = 0, consumed = 0, results = 0, unknown = false, stopped = false, episode: string | null = null;
   const sources = new Map<number, { full: FullPublicBasis; reduction?: ReturnType<typeof reduce>; classified: boolean; valid: boolean; before?: P1SessionState }>();
+  let noProgress: GlobalNoProgressWindow | undefined, noProgressStopped = false;
   let mode: string | null = null, control = "released", permanentlyFenced = false;
   let ledger: AgentConsumptionLedger | undefined;
   let consumedAcquisition: string | null = null;
@@ -62,6 +65,8 @@ export async function replayGlobalAgentRun(directory: string) {
   const fields: Record<string, string[]> = {
     global_episode_bound: ["game_continuity_id", "source_ordinal"], global_source_rejected: ["source_ordinal", "reason"], global_source_retained: ["source_ordinal", "disposition"],
     global_capture_requested: ["request_id"], global_capture_error: ["request_id", "reason"],
+    global_no_progress_config: ["windowDecisions", "maxRepeats"],
+    global_no_progress: ["acquisition_id", "choice_id", "state_sha256", "choice_sha256", "repeats", "novel_state", "exhausted"],
     global_initialized: ["identity", "core"], global_transport_response: ["artifact", "operation"], global_source: ["ordinal", "artifact", "capture_request_id"],
     global_observation: ["source_ordinal", "occurrence", "complete", "missing", "status", "excluded", "observation_sha256"],
     global_input: ["acquisition_id", "source_ordinal", "occurrence", "artifact", "unit"], global_agent_frame: ["direction", "artifact"],
@@ -84,6 +89,20 @@ export async function replayGlobalAgentRun(directory: string) {
       require(!identity && same(p.core, p1CoreIdentity()), "global_initial_identity"); identity = p.identity;
       const expected = manifest.requirements.environment; require("kind" in expected && identity, "global_environment_contract");
       assertGlobalIdentity(identity, expected); assertGlobalProgramSupport(identity, manifest); state = createSession(run.run_id, identity.kind);
+    } else if (event.kind === "global_no_progress_config") {
+      require(identity && !noProgress && sources.size === 0, "global_no_progress_config_order");
+      noProgress = new GlobalNoProgressWindow({ windowDecisions: p.windowDecisions, maxRepeats: p.maxRepeats });
+    } else if (event.kind === "global_no_progress") {
+      const input = inputs.get(p.acquisition_id), reduction = input && sources.get(input.source)?.reduction;
+      const choice = reduction?.observation.catalog.find(c => c.choice_id === p.choice_id);
+      require(noProgress && choice && reduction && !active && !permanentlyFenced && !unknown
+        && mode !== null && mode !== "human" && mode !== "shadow" && acknowledgements.has(p.acquisition_id)
+        && lastDirective?.directive.type === "act"
+        && lastDirective.directive.basis_acquisition_id === p.acquisition_id && lastDirective.directive.selection.action_id === p.choice_id,
+        "global_no_progress_without_choice");
+      const check = noProgress.check(reduction.observation, choice);
+      require(check.exhausted && Object.entries(check).every(([key, value]) => p[key] === value), "global_no_progress_unproved");
+      noProgressStopped = true; permanentlyFenced = true;
     } else if (event.kind === "global_capture_requested") {
       require(identity && typeof p.request_id === "string" && !captureRequests.has(p.request_id), "global_capture_request_identity");
       captureRequests.set(p.request_id, { terminal: false, chunks: [] });
@@ -170,6 +189,8 @@ export async function replayGlobalAgentRun(directory: string) {
       const input = inputs.get(p.acquisition_id), reduction = input && sources.get(input.source)?.reduction;
       require(input && reduction && supportsProfileValue(manifest.support.action_verbs,
         reduction.observation.catalog.find(c => c.choice_id === p.choice_id)?.kind ?? "") && p.occurrence === input.occurrence && p.origin === "agent_choice" && reduction.lowering[p.choice_id], "global_choice_not_in_catalog");
+      if (noProgress) require(!noProgress.check(reduction.observation, reduction.observation.catalog.find(c => c.choice_id === p.choice_id)!).exhausted,
+        "global_no_progress_stop_omitted");
       active = { acquisition: p.acquisition_id, choice: p.choice_id, lowering: reduction.lowering[p.choice_id]!, occurrence: input.occurrence, epoch: p.recovery_epoch,
         deliveries: [], dispatches: [], postSources: new Map(), errors: new Set() };
     } else if (event.kind === "global_dispatch") {
@@ -187,7 +208,8 @@ export async function replayGlobalAgentRun(directory: string) {
       require(bound && step && step.bound_action_id === bound.bound_action_id && same(bound, p.bound_action) && p.expected_snapshot_id === source.full.basis.snapshot.snapshot_id, "global_dispatch_not_shared_lowering");
       active.dispatches.push(p); dispatches.set(p.request_id, p);
     } else if (event.kind === "global_transport_response") {
-      const bytes = await artifact(p.artifact, "response"); require(["capture", "step"].includes(p.operation), "global_transport_operation");
+      const stored = await artifact(p.artifact, "response"); require(["capture", "step"].includes(p.operation), "global_transport_operation");
+      const bytes = p.operation === "capture" ? await restoreGlobalCaptureResponse(stored, ref => artifact(ref, "source")) : stored;
       if (p.operation === "step") { require(dispatches.has(p.request_id), "global_response_without_dispatch"); responses.set(p.request_id, [...(responses.get(p.request_id) ?? []), bytes]); }
       else {
         const request = captureRequests.get(p.capture_request_id); require(request && !request.terminal, "global_capture_response_identity");
@@ -297,6 +319,6 @@ export async function replayGlobalAgentRun(directory: string) {
   require(stopped && !active && [...captureRequests.values()].every(r => r.terminal) && [...sources.values()].every(s => s.classified), "global_unaccounted_original_source_or_operation");
   const files = (await readdir(directory)).filter(name => /^global-/u.test(name)); require(files.every(name => referenced.has(name)) && referenced.size === files.length, "global_unreferenced_or_missing_original_artifact");
   return { schema: "sts2.policy-runtime/global-replay-1", run_id: run.run_id, sources: sources.size, observations, consumed, results,
-    unknown_delivery: unknown, profile: manifest.input.profile, core: p1CoreIdentity(), verdict: "verified" as const,
+    unknown_delivery: unknown, technical_stop: noProgressStopped ? "no_progress" : null, profile: manifest.input.profile, core: p1CoreIdentity(), verdict: "verified" as const,
     scope: "original_public_basis_semantic_replay_and_actual_agent_dispatch_joins", native_qualification: false, human_origin: false, research_admission: false };
 }
