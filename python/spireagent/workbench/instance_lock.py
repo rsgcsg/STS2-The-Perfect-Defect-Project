@@ -17,13 +17,14 @@ def _windows_shared_lease(descriptor: int) -> Callable[[], None]:
     from ctypes import wintypes
 
     msvcrt = importlib.import_module("msvcrt")
+    windows = importlib.import_module("ctypes")
 
     class Overlapped(ctypes.Structure):
         _fields_ = [("Internal", ctypes.c_size_t), ("InternalHigh", ctypes.c_size_t),
                     ("Offset", wintypes.DWORD), ("OffsetHigh", wintypes.DWORD),
                     ("hEvent", wintypes.HANDLE)]
 
-    kernel = getattr(ctypes, "WinDLL")("kernel32", use_last_error=True)
+    kernel = windows.WinDLL("kernel32", use_last_error=True)
     lock, unlock = kernel.LockFileEx, kernel.UnlockFileEx
     pointer = ctypes.POINTER(Overlapped)
     lock.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.DWORD,
@@ -32,7 +33,7 @@ def _windows_shared_lease(descriptor: int) -> Callable[[], None]:
     lock.restype = unlock.restype = wintypes.BOOL
     handle, offset = msvcrt.get_osfhandle(descriptor), Overlapped()
     byref = ctypes.byref
-    winerror, last_error = getattr(ctypes, "WinError"), getattr(ctypes, "get_last_error")
+    winerror, last_error = windows.WinError, windows.get_last_error
     if not lock(handle, 1, 0, 1, 0, byref(offset)):
         raise winerror(last_error())
 

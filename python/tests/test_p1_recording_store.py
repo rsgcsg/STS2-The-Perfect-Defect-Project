@@ -854,6 +854,49 @@ def test_cloud_maintenance_requires_scope_and_excludes_older_or_other_origin(tmp
     assert not maintenance._in_scope(source, allowlist)
 
 
+@pytest.mark.parametrize("runs", [[], ["run-0001", "run-0002"]])
+def test_maintenance_derives_each_original_run_without_inventing_empty_run(
+    tmp_path, monkeypatch, runs,
+):
+    from types import SimpleNamespace
+
+    from spireagent.workbench import collection_tool_registration, local_recording_import
+    from spireagent.workbench import p1_recording_store as recordings
+    from spireagent.workbench.developer import ProjectConfig, combination
+    from spireagent.workbench.p1_recording_maintenance import P1RecordingMaintenance
+
+    identity, source = "a" * 64, "b" * 64
+    info = {"run_journal": [{"run_id": run} for run in ["run-unassigned", *runs]],
+            "close": {"accepted_count": 1 if runs else 0},
+            "session_id": "synthetic-session", "timeline_id": "synthetic-timeline"}
+    store = SimpleNamespace(get_manifest=lambda _: SimpleNamespace(
+        parameters=SimpleNamespace(value=lambda: info)))
+    config = ProjectConfig(tmp_path / "state", "", "", None, combination())
+    config.state_dir.mkdir()
+    importer = local_recording_import.LocalRecordingImporter(config, None)
+    importer._maintenance["active"] = {"candidate_id": identity, "source_artifact_id": source,
+        "scope_facts": {"candidate_id": identity}}
+    monkeypatch.setattr(local_recording_import, "_selected_store", lambda *a, **kw: (store, None))
+    monkeypatch.setattr(collection_tool_registration, "current_collection_tool",
+                        lambda _: (tmp_path, "c" * 64))
+    completed, calls = set(), []
+    monkeypatch.setattr(recordings, "_matching", lambda *a, **kw: (
+        SimpleNamespace(artifact_id="d" * 64) if kw["run_id"] in completed else None))
+
+    def derive(artifact, projection, *, run_id):
+        calls.append((artifact, run_id))
+        completed.add(run_id)
+
+    monkeypatch.setattr(importer, "start_p1_derivation", derive)
+    maintenance = P1RecordingMaintenance(importer)
+    maintenance.configure(True, None, scope={"candidate_ids": [identity]})
+    for _ in runs:
+        assert maintenance.tick().get("completed_candidates") == []
+    assert maintenance.tick()["status"] == "completed"
+    assert calls == [(source, run) for run in runs]
+    assert importer._maintenance["sessions"][source]["run_ids"] == runs
+
+
 def test_segments_catalog_reads_explicit_consistent_end_targets(tmp_path, original, tool):
     from spireagent.artifact_contracts import Manifest, Parent
     from spireagent.json_boundary import FrozenObject, json_bytes
