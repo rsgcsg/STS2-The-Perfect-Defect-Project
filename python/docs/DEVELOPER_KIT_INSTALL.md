@@ -211,6 +211,11 @@ retains these installed optional dependencies. The local home, model setup and
 recorded-report reading do not require team login; team account pairing is
 optional until a member uses collection sharing or uploads.
 
+Installer `uv` subprocesses select this release's own environment and synchronize
+its lock even if a calling test runner set `UV_NO_SYNC`. Offline and network policy
+remain inherited: an unavailable offline dependency fails initialization. A bare
+`.venv` directory is not proof that the release environment was initialized.
+
 For kits whose `combination.json` declares
 `workbench_launcher_schema: spireagent/workbench-launcher-v1`, successful
 initialization installs a fixed per-user macOS entry at
@@ -222,6 +227,14 @@ dependencies. Ready opens the existing URL; stale or identity-mismatched state
 requires operator recovery. Older kits without the capability retain their
 existing initialization behavior and do not receive this entry. This entry is
 currently macOS-only; Windows is not qualified.
+
+The entry reuses the same configuration and exact running service; it does not
+start a second recorder when a panel is reopened. The service is detached from
+the launcher and owns its profile scratch directory. Closing a panel or the game
+does not stop the Workbench's already sealed-recording maintenance. Explicitly
+stopping the Workbench does stop that background work; reopening resumes the
+persisted maintenance policy. Cloud access still requires the configured SDK
+credential provider to be available to the independent service.
 
 ### Reviewed launcher replacement and recovery
 
