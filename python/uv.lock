@@ -1321,6 +1321,7 @@ dependencies = [
 
 [package.optional-dependencies]
 cloud = [
+    { name = "boto3" },
     { name = "modal" },
     { name = "pyjwt", extra = ["crypto"] },
     { name = "python-dotenv" },
@@ -1363,6 +1364,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "boto3", marker = "extra == 'cloud'", specifier = ">=1.35,<2" },
     { name = "boto3", marker = "extra == 'research'", specifier = ">=1.35,<2" },
     { name = "duckdb", marker = "extra == 'research'", specifier = ">=1.4,<2" },
     { name = "huggingface-hub", marker = "extra == 'l1'", specifier = ">=0.34,<2" },
