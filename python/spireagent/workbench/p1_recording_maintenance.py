@@ -213,6 +213,22 @@ class P1RecordingMaintenance:
                                 state.update(status="cooling", error_code=None)
                                 importer._save()
                                 return dict(state)
+                    cache_policy = getattr(store, "_cache_policy", None)
+                    if cache_policy is not None:
+                        from spireagent.storage.cache import cache_usage
+
+                        usage = cache_usage(store)
+                        signature = [usage, len(store.manifest_ids()), cache_policy]
+                        if (usage > cache_policy["max_bytes"]
+                                and state.get("cache_trim_signature") != signature):
+                            state["cache_trim_signature"] = signature
+                            recent = sorted(state.get("sessions", {}).values(),
+                                            key=lambda row: row["scope_facts"].get("closed_at", ""))
+                            protected = tuple(row["source_artifact_id"] for row in recent[-2:])
+                            importer.start_cache_trim(protected)
+                            state.update(status="cache_trimming", error_code=None)
+                            importer._save()
+                            return dict(state)
                     state.update(status="up_to_date", error_code=None)
                     importer._save()
                     return dict(state)

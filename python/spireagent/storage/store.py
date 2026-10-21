@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from spireagent.artifact_contracts import Manifest, Payload
+from spireagent.instance_lock import instance_lock
 from spireagent.json_boundary import array, decode_json, digest, json_bytes, object_fields, unsigned
 from spireagent.storage.blobs import BlobStore, StoreError
 from spireagent.storage.local import LocalBlobStore
@@ -106,6 +107,22 @@ class ManifestArtifactStore:
         return payload
 
     def read_payload(self, payload: Payload) -> Iterator[bytes]:
+        # A lease covers the generator lifetime, including a caller paused at yield.
+        # Only this payload is fenced; a remote miss never locks the whole Store.
+        if isinstance(self.blobs, LocalBlobStore) and self._cache_policy is not None:
+            lock = self.blobs.root / ".cache-leases" / (payload.sha256 + ".lock")
+            if not lock.exists():
+                if self.blobs.readonly:
+                    raise StoreError("cache_read_lease_missing",
+                                     "prepare cache leases with its writable Store owner")
+                lock.parent.mkdir(exist_ok=True)
+                lock.touch(exist_ok=True)
+            with instance_lock(lock, create=False, shared=True):
+                yield from self._read_payload(payload)
+        else:
+            yield from self._read_payload(payload)
+
+    def _read_payload(self, payload: Payload) -> Iterator[bytes]:
         index_key = f"payload-indexes/v1/{payload.sha256}.json"
         raw, recovered_index = self._get(index_key)
         index = object_fields(decode_json(raw), {"schema", "sha256", "size", "chunks"}, "payload")

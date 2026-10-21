@@ -44,6 +44,7 @@ def main(argv: list[str] | None = None) -> int:
         "command",
         choices=(
             "cache-configure",
+            "cache-trim",
             "prepare",
             "show",
             "lineage",
@@ -94,7 +95,11 @@ def main(argv: list[str] | None = None) -> int:
             result = run_e2e(args.root)
         else:
             store = open_store(args.store)
-            if args.command == "cache-configure":
+            if args.command == "cache-trim":
+                from spireagent.storage.cache import trim_cache
+
+                result = trim_cache(store)
+            elif args.command == "cache-configure":
                 from spireagent.storage.cache import configure_cache
 
                 if not args.other_store or args.max_cache_bytes is None:

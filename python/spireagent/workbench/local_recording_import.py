@@ -1264,6 +1264,44 @@ class LocalRecordingImporter:
             self.thread.start()
             return self.status()
 
+    def start_cache_trim(self, protected: tuple[str, ...]) -> dict[str, Any]:
+        """The existing serial import/storage owner also maintains its hot payload set."""
+        with self.lock:
+            self._native_recovery_guard()
+            if self.thread is not None and self.thread.is_alive():
+                raise BoundaryError("local_import", "operation_in_progress")
+            if self.operation.get("status") in {
+                    "pending", "publication_unknown", "interrupted_unknown"}:
+                raise BoundaryError("local_import", "original_intent_reconciliation_required")
+            self.operation = {"schema": SCHEMA, "action": "store-cache-trim",
+                              "operation_id": uuid.uuid4().hex, "status": "pending",
+                              "started_at": _now(), "protected_artifact_ids": list(protected)}
+            self._save()
+            self.thread = threading.Thread(target=self._run_cache_trim, daemon=True)
+            self.thread.start()
+            return self.status()
+
+    def _run_cache_trim(self) -> None:
+        from spireagent.storage.cache import trim_cache
+
+        intent = dict(self.operation)
+        try:
+            store, _ = _selected_store(self.config, require_curation=False)
+            receipt = trim_cache(store, protected=tuple(intent["protected_artifact_ids"]))
+            with self.lock:
+                self.operation = {**intent, "status": "completed", "finished_at": _now(),
+                                  "storage_receipt": receipt}
+                self._maintenance["cache"] = receipt
+                self._maintenance["cache_trim_signature"] = [
+                    receipt["after_bytes"], len(store.manifest_ids()), store._cache_policy]
+                self._save()
+        except Exception as error:
+            with self.lock:
+                self.operation = {**intent, "status": "failed", "finished_at": _now(),
+                                  "error_code": getattr(error, "code", "cache_trim_failed")}
+                self._maintenance["cache"] = {"error_code": self.operation["error_code"]}
+                self._save()
+
     def reconcile_p1_storage(self) -> dict[str, Any]:
         from .p1_recording_storage import reconcile_storage
 
