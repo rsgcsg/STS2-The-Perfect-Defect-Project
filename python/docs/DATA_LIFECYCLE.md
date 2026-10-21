@@ -180,7 +180,9 @@ checkpoint reader before declaring a result usable. The P1 original-only storage
 entry above does not pretend to validate model semantics.
 
 R2 is the long-term destination for project data; local bytes are the bounded
-active working set. Background closed-recording maintenance is separately
+active working set goal. Current automatic cooling only removes verified older
+expanded recording copies; compressed Store archives and named projections still
+accumulate locally. It does not yet bound the entire Store. Background closed-recording maintenance is separately
 configured through `recordings maintenance status|enable|disable --config PROJECT`;
 cloud scope must name candidates or a date/origin scope. It remains disabled until
 authorized. With `--cool-recent`, the same maintenance owner retains the newest
@@ -192,6 +194,22 @@ catalog metadata, Store archives/manifests, Curation and remote objects remain;
 only verified recoverable expanded files are removed. A closed historical copy
 can lack the native lease file; the managed consumer lock stays outside raw and
 its enclosing bundle, and never enters an immutable inventory.
+
+The same maintenance operation imports each sealed source, preserves its original
+to R2, derives every named run from the verified original run journal, and preserves
+each named projection with its original parent closure. Empty sessions without an
+observed run retain their original without inventing `run-0001`. Completion requires
+the configured original and projection readbacks; a derivation failure retains the
+already preserved original and reports the failed operation. Capacity observations
+come from the native owner's recording volume, carry an observation time and are
+refreshed by maintenance rather than every GUI poll. The operation reserves scratch
+and destination space before large writes; insufficient space stops that operation
+explicitly and keeps the source. A cloud receipt does not guarantee unlimited offline
+recording or eliminate the need to monitor the remaining compressed Store growth.
+These are import/publication/transfer/materialization checks with a 512 MiB reserve,
+not a native Recorder Start admission budget. The current native recording path
+reports append/disk-health failure after an actual I/O failure; a proactive low-space
+Start stop and a real recording-on-full-disk experiment are not established here.
 
 ```sh
 python -m spireagent.workbench recordings maintenance enable --config PROJECT --peer s3 --from-now --origin declared_human --cool-recent

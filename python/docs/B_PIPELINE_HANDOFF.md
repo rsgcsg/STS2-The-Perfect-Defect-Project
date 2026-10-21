@@ -531,6 +531,15 @@ materialize/query/catalog), `p1_recording_storage` (existing Store copy/readback
 only composes those operations for sealed candidates; Recorder retains its sole native lifecycle.
 The registry/catalog are rebuildable indexes, not another source or a research-use ledger.
 
+Enabled P1 maintenance preserves the original first, derives each observed named run
+from its verified journal, then preserves every configured named projection and its
+parent closure before marking that source complete. A no-run empty recording is
+preserved without a fabricated run identity. The shared native read lease permits
+the original C# packer to read the immutable lease file while excluding a native
+writer; the managed consumer lock remains exclusive. Cooling reduces expanded raw
+copies only. Compressed Store archives/projections still grow and are not silently
+evicted; low-space failures retain the sealed source and original operation.
+
 | Data | Explicit schema/profile and payload role |
 |---|---|
 | Original | P1-native bundle; `archive` + `transfer`; original producer/declaration/raw hashes/Close/journal retained; optional exact `preservation` parent |
