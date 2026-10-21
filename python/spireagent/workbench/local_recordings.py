@@ -10,6 +10,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import stat
 import subprocess
 from datetime import UTC, datetime
@@ -266,6 +267,7 @@ class LocalRecordingCatalog:
         self._candidates = {item["candidate_id"]: item["_server"] for item in candidates}
         public = [{key: value for key, value in item.items() if key != "_server"}
                   for item in candidates]
+        space = shutil.disk_usage(root)
         return {
             "schema": SCHEMA,
             "status": "ready",
@@ -273,6 +275,7 @@ class LocalRecordingCatalog:
             "root_basis": basis,
             "game_running": owner.get("game_running"),
             "candidate_count": len(public),
+            "space": {"free_bytes": space.free, "total_bytes": space.total},
             "unsealed_count": unsealed,
             "truncated": truncated,
             "candidates": public,

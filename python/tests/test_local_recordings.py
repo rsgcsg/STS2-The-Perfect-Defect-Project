@@ -100,6 +100,8 @@ def test_catalog_lists_only_matching_close_metadata_and_keeps_paths_server_side(
     assert result["status"] == "ready"
     assert result["root_basis"] == "configured_only"
     assert result["candidate_count"] == 1
+    assert result["space"]["free_bytes"] > 0
+    assert result["space"]["total_bytes"] >= result["space"]["free_bytes"]
     assert result["unsealed_count"] == 1
     assert result["candidates"][0]["state"] == "close_metadata_present_pending_bundle_verification"
     assert str(root) not in json.dumps(result)
