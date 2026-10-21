@@ -1578,7 +1578,7 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                 except BoundaryError as error:
                     self.respond(409, json.dumps({"error": error.code}).encode())
             elif parsed.path == "/api/local-model-registrations/status":
-                if not self.authenticated_browser():
+                if not self.authenticated_browser() and not self.control_client():
                     self.respond(401, b'{"error":"browser_session_required"}')
                     return
                 try:
@@ -2230,7 +2230,7 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                     self.respond(400, b'{"error":"invalid_local_model_export_request"}')
                 return
             if self.path.startswith("/api/local-model-registrations/"):
-                if not self.browser_write():
+                if not self.browser_write() and not self.control_client():
                     self.respond(403, b'{"error":"browser_action_denied"}')
                     return
                 if self.path not in {"/api/local-model-registrations/register",

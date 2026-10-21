@@ -1444,6 +1444,170 @@ def configure_native_access(directory: Path, config_path: Path, prepared: dict[s
             "scope": "selected_local_application", "gameplay_started": False}
 
 
+SOURCE_CANDIDATE_LAUNCHER_SCHEMA = "spireagent/source-candidate-launcher-v1"
+
+
+def _source_candidate_binding(source: Path, config_path: Path, python_executable: Path,
+                              collection_tool_directory: Path, home: Path) -> dict[str, Any]:
+    """One explicit engineering candidate, with the same native access guarantees."""
+    from spireagent.workbench.developer import ProjectConfig
+    from spireagent.workbench.native_workbench_access import private_bytes
+
+    for selected in (source, config_path, collection_tool_directory, home):
+        if not selected.is_absolute() or selected.resolve() != selected:
+            reject("source_candidate_absolute_paths_required")
+        _check_no_symlink(selected, "source_candidate_path_unsafe")
+    if not python_executable.is_absolute() or not python_executable.is_file():
+        reject("source_candidate_python_unavailable")
+    private_bytes(config_path)
+    ProjectConfig.load(config_path)
+    identity = _workbench_identity_for_source(source)
+    if identity.get("working_tree_clean") is not True:
+        reject("source_candidate_dirty")
+    provenance_path = source / "apps/game-mod/bin/Release/net9.0/build-provenance.json"
+    artifact_path = provenance_path.parent / "STS2_PLATFORM.dll"
+    provenance = decode_json(provenance_path.read_bytes())
+    if (not isinstance(provenance, dict)
+            or provenance.get("schema") != "sts2.platform/game-mod-build-provenance-1"
+            or provenance.get("artifact", {}).get("sha256") != sha(artifact_path.read_bytes())):
+        reject("source_candidate_mod_mismatch")
+    script = (
+        "import{sourceSetIdentity,sourceSetMatches}from'./apps/game-mod/source-identity.mjs';"
+        "import{readFileSync}from'node:fs';"
+        "const p=JSON.parse(readFileSync(process.argv[1],'utf8'));"
+        "if(!sourceSetMatches(p.source,sourceSetIdentity(process.cwd())))process.exit(1);"
+    )
+    run(["node", "--input-type=module", "-e", script, str(provenance_path)], source)
+    manifest = decode_json((collection_tool_directory / "collection-tool.json").read_bytes())
+    release_id = manifest["release_id"]
+    tool = CollectionTool(collection_tool_directory, release_id)
+    tool_provenance = decode_json(
+        (collection_tool_directory / "game-mod/build-provenance.json").read_bytes())
+    if (tool.manifest["identity"].get("component_tree_revision")
+            != provenance["source"]["components"]["annotator"]["component_tree_revision"]
+            or tool_provenance.get("artifact", {}).get("sha256")
+            != provenance["artifact"]["sha256"]):
+        reject("source_candidate_collection_tool_mismatch")
+    # A source candidate still uses the interpreter's genuine installed Evidence,
+    # with imports selected by its installed path, not inherited PYTHONPATH.
+    probe = "\n".join((
+        "import json, pathlib, sys",
+        "from spireagent.workbench.developer import ROOT, tool_identity, evidence_identity",
+        "print(json.dumps({'identity':tool_identity(),'root':str(ROOT.resolve()),",
+        " 'evidence':evidence_identity(sys.argv[1])}))",
+    ))
+    environment = dict(os.environ)
+    for name in ("PYTHONPATH", "PYTHONHOME", "PYTHONUSERBASE", "VIRTUAL_ENV"):
+        environment.pop(name, None)
+    config = ProjectConfig.load(config_path)
+    observed = decode_json(_run_launcher_probe(
+        [str(python_executable), "-I", "-c", probe, config.combination["evidence_source_revision"]],
+        cwd=source / "python", env=environment).encode())
+    if (not str(observed.get("identity", {}).get("python", "")).startswith("3.11.")
+            or observed.get("root") != str(source / "python")
+            or observed.get("evidence", {}).get("status") != "PASS"
+            or any(observed.get("identity", {}).get(key) != identity[key]
+                   for key in ("source_revision", "workbench_sha256", "uv_lock_sha256"))):
+        reject("source_candidate_environment_unverified")
+    return {
+        "schema": SOURCE_CANDIDATE_LAUNCHER_SCHEMA,
+        "source_directory": str(source), "python_executable": str(python_executable),
+        "candidate_home": str(home), "config_path": str(config_path),
+        **{key: identity[key] for key in
+           ("source_revision", "workbench_sha256", "uv_lock_sha256")},
+        "game_mod_sha256": provenance["artifact"]["sha256"],
+        "build_provenance_sha256": sha(provenance_path.read_bytes()),
+        "collection_tool_directory": str(collection_tool_directory),
+        "collection_tool_release_id": release_id,
+    }
+
+
+def prepare_source_candidate_access(source: Path, config_path: Path, python_executable: Path,
+                                    collection_tool_directory: Path, *,
+                                    home: Path) -> dict[str, Any]:
+    """Prepare only an isolated engineering launcher; never replace daily installation."""
+    from spireagent.workbench.developer import atomic_json
+    from spireagent.workbench.developer_server import instance_lock
+    from spireagent.workbench.native_workbench_access import BOOTSTRAP_SCHEMA, NativeBootstrap
+
+    if home.resolve() == Path.home().resolve():
+        reject("source_candidate_isolated_home_required")
+    home.mkdir(mode=0o700, parents=True, exist_ok=True)
+    binding = _source_candidate_binding(source, config_path, python_executable,
+                                        collection_tool_directory, home)
+    root = _launcher_directory(home=home)
+    lock = _prepare_launcher_root(root, create=True)
+    with instance_lock(lock):
+        if any((root / name).exists() or (root / name).is_symlink()
+               for name in ("launcher.json", "open", "native-access.json")):
+            reject("source_candidate_target_not_empty")
+        raw = json_bytes(binding)
+        script = ("#!/bin/sh\nset -eu\n"
+                  "unset PYTHONHOME PYTHONPATH PYTHONUSERBASE VIRTUAL_ENV UV_PROJECT_ENVIRONMENT\n"
+                  f"export HOME={shlex.quote(str(home))}\n"
+                  f"exec {shlex.quote(str(python_executable))} -I "
+                  f"{shlex.quote(str(source / 'python/tools/install_developer_kit.py'))} "
+                  "launch-source-candidate\n")
+        _write_launcher_pair(root, raw, script.encode(), 0o600, 0o700)
+        atomic_json(root / "native-access.json", {
+            "schema": BOOTSTRAP_SCHEMA, "enabled": True, "config_path": str(config_path),
+            "launcher_sha256": sha(raw), "game_mod_sha256": binding["game_mod_sha256"],
+            "secret": secrets.token_hex(32),
+        })
+        NativeBootstrap.read(root, config_path)
+    return {"status": "source_candidate_prepared", "evidence_level": "source_candidate",
+            "launcher_sha256": sha(raw), "candidate_home": str(home),
+            "gameplay_started": False, "release_kit_verified": False}
+
+
+def rollback_source_candidate_access(home: Path, expected_launcher_sha256: str) -> dict[str, Any]:
+    """Retire only this stopped isolated engineering launcher; keep config and data."""
+    from spireagent.workbench.developer import ProjectConfig
+    from spireagent.workbench.developer_server import instance_lock, running
+    from spireagent.workbench.native_workbench_access import private_bytes
+
+    if home.resolve() == Path.home().resolve():
+        reject("source_candidate_isolated_home_required")
+    root = _launcher_directory(home=home)
+    lock = _prepare_launcher_root(root, create=False)
+    with instance_lock(lock):
+        raw = private_bytes(root / "launcher.json")
+        binding = decode_json(raw)
+        if (sha(raw) != expected_launcher_sha256
+                or binding.get("schema") != SOURCE_CANDIDATE_LAUNCHER_SCHEMA
+                or binding.get("candidate_home") != str(home)):
+            reject("source_candidate_changed")
+        if running(ProjectConfig.load(Path(binding["config_path"]))) is not None:
+            reject("source_candidate_stop_application_first")
+        for name in ("native-access.json", "open", "launcher.json"):
+            (root / name).unlink(missing_ok=True)
+    return {"status": "source_candidate_retired", "config_and_data_retained": True}
+
+
+def launch_source_candidate() -> dict[str, Any]:
+    from spireagent.workbench.developer_server import open_project
+    from spireagent.workbench.native_workbench_access import NativeBootstrap, private_bytes
+
+    root = _launcher_directory()
+    raw = private_bytes(root / "launcher.json")
+    binding = decode_json(raw)
+    if binding.get("schema") != SOURCE_CANDIDATE_LAUNCHER_SCHEMA:
+        reject("source_candidate_launcher_required")
+    config_path = Path(binding["config_path"])
+    NativeBootstrap.read(root, config_path)
+    current = _source_candidate_binding(
+        Path(binding["source_directory"]), config_path, Path(binding["python_executable"]),
+        Path(binding["collection_tool_directory"]), Path.home())
+    if current != binding or Path(sys.executable) != Path(binding["python_executable"]):
+        reject("source_candidate_changed")
+    from spireagent.workbench.developer import tool_identity
+
+    opened = open_project(config_path, browser=False, expected_identity=tool_identity())
+    return {"status": "running", "instance_id": opened["instance_id"],
+            "evidence_level": "source_candidate", "gameplay_started": False,
+            "release_kit_verified": False}
+
+
 def launch_workbench() -> dict[str, Any]:
     """Validate this exact prepared release and open only its installed profile."""
     if sys.platform != "darwin":
@@ -1694,6 +1858,7 @@ def main() -> int:
             "plan", "prepare", "status", "preflight", "initialize", "deploy", "register",
             "launch", "install-launcher", "native-access", "backup-launcher",
             "prepare-launcher-target", "restore-launcher",
+            "prepare-source-candidate", "launch-source-candidate",
         )
     )
     parser.add_argument("--archive", type=Path)
@@ -1702,6 +1867,9 @@ def main() -> int:
     parser.add_argument("--directory", type=Path)
     parser.add_argument("--game-directory", type=Path)
     parser.add_argument("--config", type=Path)
+    parser.add_argument("--python-executable", type=Path)
+    parser.add_argument("--collection-tool-directory", type=Path)
+    parser.add_argument("--candidate-home", type=Path)
     parser.add_argument("--enable-native-access", action="store_true")
     parser.add_argument("--expected-launcher-binding-sha256")
     parser.add_argument("--expected-open-sha256")
@@ -1711,6 +1879,9 @@ def main() -> int:
 
     args = parser.parse_args()
     try:
+        if (args.command != "prepare-source-candidate" and any(value is not None for value in (
+                args.python_executable, args.collection_tool_directory, args.candidate_home))):
+            reject("source_candidate_arguments_require_prepare")
         launcher_commands = {"install-launcher", "backup-launcher", "restore-launcher"}
         if (args.expected_launcher_binding_sha256 is not None
                 and args.command not in launcher_commands):
@@ -1731,7 +1902,17 @@ def main() -> int:
             reject("launcher_snapshot_arguments_invalid")
         if args.enable_native_access and args.command != "native-access":
             reject("native_access_arguments_invalid")
-        if args.command == "native-access":
+        if args.command == "prepare-source-candidate":
+            if any(value is None for value in (args.directory, args.config, args.python_executable,
+                                                args.collection_tool_directory,
+                                                args.candidate_home)):
+                reject("source_candidate_arguments_required")
+            result = prepare_source_candidate_access(
+                args.directory, args.config, args.python_executable,
+                args.collection_tool_directory, home=args.candidate_home)
+        elif args.command == "launch-source-candidate":
+            result = launch_source_candidate()
+        elif args.command == "native-access":
             if (args.config is None or any(value is not None for value in (
                     args.archive, args.sha256, args.releases, args.directory,
                     args.game_directory))):

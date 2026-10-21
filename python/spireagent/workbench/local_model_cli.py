@@ -296,7 +296,13 @@ def model_command(
         raise BoundaryError("local_model", "application_instance_mismatch")
     route = "/api/local-models"
     body = None
-    if action == "status":
+    if action in {"register", "registration-status"}:
+        model_id = digest(artifact, "local_model.artifact")
+        route = "/api/local-model-registrations/" + (
+            "register" if action == "register" else "status?" + urlencode({"model_id": model_id}))
+        if action == "register":
+            body = {"model_id": model_id}
+    elif action == "status":
         route += "/status"
     elif action == "readiness":
         if not selection:
@@ -339,7 +345,9 @@ def model_command(
         if len(raw) > 1024 * 1024:
             raise ValueError
         result = decode_json(raw)
-        if not isinstance(result, dict) or result.get("schema") != "stpd/local-models-v1":
+        schema = ("stpd/local-model-registration-v1"
+                  if action in {"register", "registration-status"} else "stpd/local-models-v1")
+        if not isinstance(result, dict) or result.get("schema") != schema:
             raise ValueError
         return result
     except (OSError, ValueError):

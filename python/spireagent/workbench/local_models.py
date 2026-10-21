@@ -2837,7 +2837,7 @@ class LocalModelService:
     def _agent_evidence_expected(self, startup):
         expected = dict(startup)
         entry = self.selection(startup["agent_manifest_id"])
-        if entry["adapter"] == GLOBAL_ADAPTER:
+        if entry["adapter"] in GLOBAL_ADAPTERS:
             self._runtime_package(entry["id"])
             expected["global_runtime_directory"] = str(
                 (self._node_modules(entry["id"]) / RUNTIME_PACKAGE / "dist").resolve()
@@ -3031,6 +3031,27 @@ class LocalModelService:
                     != original["agent"]["version"]
                     or descriptor.get("agent_spec", {}).get("model_bindings") != []
                 ):
+                    return None, "original_composition_binding_changed"
+                return raw, None
+            if entry["adapter"] == GLOBAL_MODEL_ADAPTER:
+                config_path = self.entry_path(entry, "config")
+                config = _object_file(config_path)
+                metadata = _inside(
+                    self.entry_root(entry),
+                    (config_path.parent / "model.json").relative_to(
+                        self.entry_root(entry)).as_posix())
+                if metadata.stat().st_size > JSON_LIMIT:
+                    return None, "original_package_metadata_unavailable"
+                raw = metadata.read_bytes()
+                if hashlib.sha256(raw).hexdigest() != config.get("package_manifest_sha256"):
+                    return None, "original_package_metadata_changed"
+                package = decode_json(raw)
+                if (not isinstance(package, dict)
+                        or package.get("schema") != "stpd/p1-mstd-model-1"
+                        or package.get("package_sha256") != original["artifact"]["sha256"]
+                        or package.get("input_spec")
+                        != config["package_input_spec"]
+                        or package.get("agent_spec") != config["agent_spec"]):
                     return None, "original_composition_binding_changed"
                 return raw, None
             config = _config(self.entry_path(entry, "config"))
