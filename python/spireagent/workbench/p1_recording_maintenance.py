@@ -179,13 +179,17 @@ class P1RecordingMaintenance:
             store, _ = _selected_store(importer.config, require_curation=False)
             if active is None:
                 catalog = importer.catalog.read()
+                state["space"] = catalog.get("space")
+                state["space_observed_at"] = catalog.get("observed_at")
                 if catalog.get("status") != "ready":
                     state.update(
                         status="unavailable",
                         error_code=catalog.get("error_code", "catalog_unavailable"),
+                        owner_probe=catalog.get("owner_probe"),
                     )
                     importer._save()
                     return dict(state)
+                state.pop("owner_probe", None)
                 completed = state.setdefault("completed_candidates", [])
                 candidates = [
                     c
