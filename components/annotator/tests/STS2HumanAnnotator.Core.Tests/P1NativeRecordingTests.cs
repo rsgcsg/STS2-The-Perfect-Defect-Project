@@ -8,6 +8,74 @@ namespace STS2HumanAnnotator.Tests;
 
 public sealed class P1NativeRecordingTests
 {
+    [Fact]
+    public void P1BasisPersistenceDiagnosticUsesProductionStore()
+    {
+        string? output = Environment.GetEnvironmentVariable("STS2_P1_BASIS_DIAGNOSTIC_OUT");
+        string root = Path.Combine(Path.GetTempPath(), "p1-basis-diagnostic-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            string? sample = Environment.GetEnvironmentVariable("STS2_P1_BASIS_DIAGNOSTIC_SAMPLE");
+            var original = sample == null ? JsonNode.Parse(Basis())! : JsonNode.Parse(File.ReadAllBytes(sample))!;
+            string directory; double appendMs;
+            var elapsed = System.Diagnostics.Stopwatch.StartNew();
+            long bytesWritten = 0;
+            using (var store = RecordingSessionStore.Create(root, Manifest(), P1NativeRecordingContract.Profile))
+            {
+                directory = store.DirectoryPath;
+                for (int index = 0; index < 128; index++)
+                {
+                    string snapshot = "diagnostic-snapshot-" + index;
+                    original["snapshot"]!["snapshot_id"] = snapshot;
+                    byte[] bytes = Encoding.UTF8.GetBytes(original.ToJsonString()); bytesWritten += bytes.Length;
+                    var reference = store.PersistP1NativeBasis(snapshot, bytes);
+                    Assert.Equal(reference, store.PersistP1NativeBasis(snapshot, bytes));
+                }
+                appendMs = elapsed.Elapsed.TotalMilliseconds;
+            }
+            elapsed.Stop();
+            var profile = JsonNode.Parse(File.ReadAllText(Path.Combine(directory, "performance-profile.json")))!;
+            Assert.Equal(128, Directory.GetFiles(Path.Combine(directory, "public-bases"), "*.json", SearchOption.AllDirectories).Length);
+            Assert.True(File.Exists(Path.Combine(directory, P1NativeRecordingContract.CloseFile)));
+            if (output != null) File.WriteAllText(output, JsonSerializer.Serialize(new { elapsed_ms = elapsed.Elapsed.TotalMilliseconds,
+                append_ms = appendMs, close_ms = elapsed.Elapsed.TotalMilliseconds - appendMs,
+                unique_basis_count = 128, persistence_calls = 256, unique_bytes = bytesWritten,
+                profile }, EvidenceJson.IndentedOptions));
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ChangedPublicBasisCannotPublishDurablePrefixOrClose(bool prefix)
+    {
+        string root = Path.Combine(Path.GetTempPath(), "p1-basis-seal-failure-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            var store = RecordingSessionStore.Create(root, Manifest(), P1NativeRecordingContract.Profile);
+            byte[] bytes = Basis(); string snapshot = JsonNode.Parse(bytes)!["snapshot"]!["snapshot_id"]!.GetValue<string>();
+            var basis = store.PersistP1NativeBasis(snapshot, bytes);
+            string directory = store.DirectoryPath;
+            File.WriteAllText(Path.Combine(directory, basis.PayloadRef), "changed");
+            if (prefix)
+            {
+                Assert.Throws<IOException>(() => store.ExportP1NativePrefix());
+                Assert.Throws<InvalidDataException>(() => store.Dispose());
+                Assert.False(Directory.Exists(Path.Combine(root, "p1-native-prefixes")));
+            }
+            else Assert.Throws<IOException>(() => store.Dispose());
+            Assert.False(store.GetSnapshot().Closed);
+            Assert.Equal("failed", store.GetSnapshot().AppendHealth);
+            Assert.False(File.Exists(Path.Combine(directory, P1NativeRecordingContract.CloseFile)));
+            Assert.False(File.Exists(Path.Combine(directory, "session-close-receipt.json")));
+            store.Dispose();
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
     private static CurrentRecordingManifest Manifest() => new(2, CurrentRecordingContract.ManifestSchema,
         "session-p1-synthetic", "timeline-p1-synthetic", DateTimeOffset.UtcNow, "test", new string('a', 40), "test",
         P1NativeRecordingContract.ProfileId, EvidenceIdentity.Sha256Json(P1NativeRecordingContract.Profile),
