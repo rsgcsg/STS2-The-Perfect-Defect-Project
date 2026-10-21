@@ -206,6 +206,10 @@ refreshed by maintenance rather than every GUI poll. The operation reserves scra
 and destination space before large writes; insufficient space stops that operation
 explicitly and keeps the source. A cloud receipt does not guarantee unlimited offline
 recording or eliminate the need to monitor the remaining compressed Store growth.
+These are import/publication/transfer/materialization checks with a 512 MiB reserve,
+not a native Recorder Start admission budget. The current native recording path
+reports append/disk-health failure after an actual I/O failure; a proactive low-space
+Start stop and a real recording-on-full-disk experiment are not established here.
 
 ```sh
 python -m spireagent.workbench recordings maintenance enable --config PROJECT --peer s3 --from-now --origin declared_human --cool-recent
