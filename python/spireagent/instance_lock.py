@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import contextlib
-import importlib
 import os
 from collections.abc import Callable, Iterator
 from pathlib import Path
+from typing import Any, cast
 
 from spireagent.json_boundary import BoundaryError
 
@@ -14,10 +14,12 @@ from spireagent.json_boundary import BoundaryError
 def _windows_shared_lease(descriptor: int) -> Callable[[], None]:
     """Win32 shared byte lock; CRT LK_NBRLCK is still exclusive."""
     import ctypes
+    import msvcrt
     from ctypes import wintypes
 
-    msvcrt = importlib.import_module("msvcrt")
-    windows = importlib.import_module("ctypes")
+    # Non-Windows typeshed omits these APIs; execution stays Windows-only.
+    windows = cast(Any, ctypes)
+    crt = cast(Any, msvcrt)
 
     class Overlapped(ctypes.Structure):
         _fields_ = [("Internal", ctypes.c_size_t), ("InternalHigh", ctypes.c_size_t),
@@ -31,7 +33,7 @@ def _windows_shared_lease(descriptor: int) -> Callable[[], None]:
                      wintypes.DWORD, wintypes.DWORD, pointer]
     unlock.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.DWORD, wintypes.DWORD, pointer]
     lock.restype = unlock.restype = wintypes.BOOL
-    handle, offset = msvcrt.get_osfhandle(descriptor), Overlapped()
+    handle, offset = crt.get_osfhandle(descriptor), Overlapped()
     byref = ctypes.byref
     winerror, last_error = windows.WinError, windows.get_last_error
     if not lock(handle, 1, 0, 1, 0, byref(offset)):
@@ -65,12 +67,15 @@ def instance_lock(path: Path, *, create: bool = True, shared: bool = False) -> I
             if is_windows and shared:
                 release_shared = _windows_shared_lease(descriptor)
             elif is_windows:
-                msvcrt = importlib.import_module("msvcrt")
-                native_lock = msvcrt.locking
-                unlock_mode = msvcrt.LK_UNLCK
-                native_lock(descriptor, msvcrt.LK_NBLCK, 1)
+                import msvcrt
+
+                crt = cast(Any, msvcrt)
+                native_lock = crt.locking
+                unlock_mode = crt.LK_UNLCK
+                native_lock(descriptor, crt.LK_NBLCK, 1)
             else:
-                fcntl = importlib.import_module("fcntl")
+                import fcntl
+
                 native_lock = fcntl.flock
                 unlock_mode = fcntl.LOCK_UN
                 mode = fcntl.LOCK_SH if shared else fcntl.LOCK_EX
