@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import builtins
 import importlib
 import os
 import selectors
@@ -70,9 +71,7 @@ def test_windows_shared_lease_uses_win32_shared_nonblocking_mode(tmp_path, monke
     monkeypatch.setattr(ctypes, "WinError", lambda code: OSError(code), raising=False)
     monkeypatch.setattr(ctypes, "get_last_error", lambda: 5, raising=False)
     monkeypatch.setattr(lock_module, "os", SimpleNamespace(name="nt"))
-    monkeypatch.setattr(lock_module, "importlib", SimpleNamespace(
-        import_module=lambda name: ctypes if name == "ctypes"
-        else SimpleNamespace(get_osfhandle=lambda _: 123)))
+    monkeypatch.setitem(sys.modules, "msvcrt", SimpleNamespace(get_osfhandle=lambda _: 123))
     with instance_lock(path, create=False, shared=True):
         assert path.read_bytes() == b"unchanged"
     assert calls == [("lock", (123, 1, 0, 1, 0), 0), ("unlock", (123, 0, 1, 0), 0)]
@@ -165,9 +164,9 @@ gc.collect()
 def test_acquired_cleanup_has_no_helper_module_global_lookup(tmp_path, monkeypatch):
     path = tmp_path / "globals.lock"
     with instance_lock(path):
-        # Replace this helper's bindings only, not the process os/importlib modules.
+        # Replace this helper's binding only, not the process os module.
         monkeypatch.setattr(lock_module, "os", None)
-        monkeypatch.setattr(lock_module, "importlib", None)
+        assert not hasattr(lock_module, "importlib")
     monkeypatch.undo()
     assert _probe(path) == "acquired"
 
@@ -182,16 +181,23 @@ def test_windows_adapter_keeps_byte_zero_modes_callable_and_platform_bound(tmp_p
         calls.append((fd, mode, count, os.lseek(fd, 0, os.SEEK_CUR), os.fstat(fd).st_size))
 
     adapter = SimpleNamespace(locking=locking, LK_NBLCK=41, LK_UNLCK=43)
+    native_import = builtins.__import__
+
+    def record_import(name, *args, **kwargs):
+        if name in {"msvcrt", "fcntl"}:
+            imports.append(name)
+        return native_import(name, *args, **kwargs)
+
     monkeypatch.setattr(lock_module, "os", SimpleNamespace(name="nt"))
-    monkeypatch.setattr(lock_module, "importlib", SimpleNamespace(
-        import_module=lambda name: imports.append(name) or adapter))
+    monkeypatch.setitem(sys.modules, "msvcrt", adapter)
+    monkeypatch.setattr(builtins, "__import__", record_import)
     with instance_lock(path, create=False):
         fd = calls[0][0]
         os.lseek(fd, 17, os.SEEK_SET)
         adapter.locking = lambda *_: pytest.fail("Cleanup replaced acquired callable")
         adapter.LK_UNLCK = 99
         monkeypatch.setattr(lock_module, "os", None)
-        monkeypatch.setattr(lock_module, "importlib", None)
+        assert not hasattr(lock_module, "importlib")
     assert imports == ["msvcrt"]
     assert calls == [(fd, 41, 1, 0, 0), (fd, 43, 1, 0, 0)]
     assert path.read_bytes() == b""
@@ -210,7 +216,7 @@ def test_acquisition_os_error_keeps_already_running_and_never_unlocks(
     adapter = SimpleNamespace(locking=fail, LK_NBLCK=41, LK_UNLCK=43,
                               flock=fail, LOCK_EX=4, LOCK_NB=8, LOCK_UN=16)
     monkeypatch.setattr(lock_module, "os", SimpleNamespace(name="nt" if windows else "posix"))
-    monkeypatch.setattr(lock_module, "importlib", SimpleNamespace(import_module=lambda _: adapter))
+    monkeypatch.setitem(sys.modules, "msvcrt" if windows else "fcntl", adapter)
     with pytest.raises(BoundaryError) as failure, instance_lock(tmp_path / "busy.lock"):
         pytest.fail("Failed acquisition entered the owner body")
     assert failure.value.code == "already_running"
@@ -231,7 +237,7 @@ def test_unlock_failure_propagates_without_swallowing_or_reclassifying(
     adapter = SimpleNamespace(locking=locking, LK_NBLCK=41, LK_UNLCK=43,
                               flock=locking, LOCK_EX=4, LOCK_NB=8, LOCK_UN=16)
     monkeypatch.setattr(lock_module, "os", SimpleNamespace(name="nt" if windows else "posix"))
-    monkeypatch.setattr(lock_module, "importlib", SimpleNamespace(import_module=lambda _: adapter))
+    monkeypatch.setitem(sys.modules, "msvcrt" if windows else "fcntl", adapter)
     with pytest.raises(OSError, match="unlock failed"), instance_lock(tmp_path / "unlock.lock"):
         pass
     assert len(calls) == 2
