@@ -217,6 +217,31 @@ retains these installed optional dependencies. The local home, model setup and
 recorded-report reading do not require team login; team account pairing is
 optional until a member uses collection sharing or uploads.
 
+### P1 Model 的正常 CPU 环境
+
+录制专用 kit 默认仍使用 `cloud`；需要在同一正常 Application 注册并运行
+P1 M-std Model 时，先停止该 Application，在所选永久 release 的 `source/`
+运行原锁定依赖入口，再用原固定 launcher 重开：
+
+```sh
+uv sync --project python --locked --extra cloud --extra local-models
+```
+
+这是显式启用已有可选 backend，不下载权重或启动训练。随后从该 release 的
+`source/python/.venv/bin/python -I` 核 `torch`、`tokenizers`、`safetensors`
+来自该永久环境，再沿[原 P1 Model 操作](PROJECT_CONSOLE.md#p1-model正常下载注册与使用)
+下载/注册实际 Model ArtifactID。普通 setup 使用 `--inexact` 保留已选择的可选
+依赖；重新执行 collection-only 的 installer initialize 会按 kit inventory
+同步依赖，之后需要重做此显式选择。backend 可导入不代表 Model 已注册、
+Runtime 已安装或实局通过。
+
+P1 使用正常模型 registry 的 primary Runtime pin。若该 pin 尚无公开下载 URL，
+先保存与它完全匹配、已审查的本地 Runtime tarball，按原 `project model
+--action install-runtime --runtime-archive /ABS/runtime.tgz` 离线入口安装；
+Application 必须停止、Runtime port 空闲。owner 校验 tarball、完整包内容及
+bundled SDK，不接受临时源码目录或旧 hash。正常 kit、Runtime package 和 Model
+Artifact 各自保留身份；升级 Runtime 不能改写旧 run 的 producer/typed evidence。
+
 Installer `uv` subprocesses select this release's own environment and synchronize
 its lock even if a calling test runner set `UV_NO_SYNC`. Offline and network policy
 remain inherited: an unavailable offline dependency fails initialization. A bare
