@@ -67,13 +67,19 @@ class P1RecordingMaintenance:
         peer: dict[str, Any] | None,
         projection_id: str | None = P1_TARGET_PROJECTION,
         scope: dict[str, Any] | None = None,
+        cool_recent: bool | None = None,
     ) -> dict[str, Any]:
         if type(enabled) is not bool or projection_id not in {None, P1_TARGET_PROJECTION}:
             raise BoundaryError("p1_maintenance", "invalid_policy")
         with self.importer.lock:
             state = self.importer._maintenance
             previous = state["policy"]
+            cooling = previous.get("cool_recent", False) if cool_recent is None else cool_recent
+            if type(cooling) is not bool:
+                raise BoundaryError("p1_maintenance", "invalid_policy")
             selected_scope = _scope(scope) if scope is not None else previous.get("scope")
+            if cooling and (peer is None or selected_scope is None):
+                raise BoundaryError("p1_maintenance", "explicit_cooling_peer_and_scope_required")
             if enabled and peer is not None and peer.get("kind") == "s3" and selected_scope is None:
                 raise BoundaryError("p1_maintenance", "explicit_cloud_scope_required")
             if peer is not None:
@@ -89,6 +95,7 @@ class P1RecordingMaintenance:
                 "peer": peer,
                 "projection_id": projection_id,
                 "scope": selected_scope,
+                "cool_recent": cooling,
             }
             self.importer._save()
             return dict(state)
@@ -188,6 +195,20 @@ class P1RecordingMaintenance:
                     and _in_scope(c, policy.get("scope"))
                 ]
                 if not candidates:
+                    if policy.get("cool_recent"):
+                        sessions = [s for s in state.get("sessions", {}).values()
+                                    if _in_scope(s["scope_facts"], policy.get("scope"))]
+                        sessions.sort(key=lambda s: (
+                            s["scope_facts"].get("closed_at", ""), s["session_id"],
+                        ))
+                        for session in sessions[:-2]:
+                            if session.get("expanded_state", "hot") == "hot":
+                                importer.start_p1_storage(
+                                    "cool", session["source_artifact_id"], policy["peer"],
+                                )
+                                state.update(status="cooling", error_code=None)
+                                importer._save()
+                                return dict(state)
                     state.update(status="up_to_date", error_code=None)
                     importer._save()
                     return dict(state)
@@ -248,6 +269,12 @@ class P1RecordingMaintenance:
                     importer.start_p1_derivation(source, projection)
                     return dict(state)
             state.setdefault("completed_candidates", []).append(active["candidate_id"])
+            original = store.get_manifest(source).parameters.value()
+            state.setdefault("sessions", {}).setdefault(source, {
+                "source_artifact_id": source,
+                "session_id": original["session_id"], "timeline_id": original["timeline_id"],
+                "scope_facts": active["scope_facts"], "expanded_state": "hot",
+            })
             state.update(active=None, status="completed", error_code=None)
             importer._save()
             return dict(state)

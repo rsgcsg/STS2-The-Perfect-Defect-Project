@@ -334,6 +334,7 @@ class LocalRecordingCatalog:
               source3_supported: bool = False,
               p1_supported: bool = False) -> tuple[list[dict[str, Any]], int, bool]:
         candidates: list[dict[str, Any]] = []
+        storage_states = self._storage_states()
         unsealed = 0
         truncated = False
         with os.scandir(root) as entries:
@@ -392,11 +393,31 @@ class LocalRecordingCatalog:
                         "import_reason": None if p1_supported else "p1_tool_support_required"}
                        if metadata["recording_type"] == "p1_native" else {}),
                     "state": "close_metadata_present_pending_bundle_verification",
+                    "expanded_state": storage_states.get(
+                        (metadata["session_id"], metadata["timeline_id"]), "hot",
+                    ),
                     "_server": server_value,
                 })
         candidates.sort(key=lambda item: (
             item.get("closed_at", item.get("created_at", "")), item["session_id"]))
         return candidates, unsealed, truncated
+
+    def _storage_states(self) -> dict[tuple[str, str], str]:
+        """Read the same maintenance owner; retained seals keep cold sources indexed."""
+        from .local_recording_import import OPERATION_FILE
+
+        path = self.config.state_dir / OPERATION_FILE
+        if not path.exists():
+            return {}
+        if path.is_symlink():
+            raise OSError("recording storage state is not an ordinary owner file")
+        try:
+            operation = json.loads(path.read_bytes())
+            sessions = operation.get("_maintenance", {}).get("sessions", {})
+            return {(s["session_id"], s["timeline_id"]): s["expanded_state"]
+                    for s in sessions.values()}
+        except (ValueError, KeyError, TypeError, AttributeError) as error:
+            raise OSError("recording storage state is unavailable") from error
 
     @staticmethod
     def _result(*, status: str, observed_at: str, error_code: str | None = None,
