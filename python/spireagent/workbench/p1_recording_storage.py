@@ -66,7 +66,9 @@ def expanded_consumer(directory: Path) -> Iterator[None]:
         if native.is_symlink():
             raise BoundaryError("p1_storage", "expanded_source_symlink")
         if native.exists():
-            with instance_lock(native, create=False):
+            # Shared native read lease excludes the native writer but permits
+            # the owning C# packer to copy this unchanged lease file itself.
+            with instance_lock(native, create=False, shared=True):
                 yield
         else:
             yield
