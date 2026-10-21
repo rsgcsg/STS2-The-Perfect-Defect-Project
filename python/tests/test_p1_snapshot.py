@@ -366,8 +366,8 @@ def test_projection_revision_must_match_manifest_and_current_input(
 
 def test_current_projection_rejects_an_old_N_observation(tmp_path):
     store = store_at(tmp_path)
-    _, _, value = projection_fixture(store, "current")
+    _, original, value = projection_fixture(store, "current")
     value["segments"][0]["points"][0]["observation"]["revision"] = "r1.4"
-    mixed, _, _ = projection_fixture(store, "mixed", value=value)
+    mixed, _, _ = projection_fixture(store, "mixed", value=value, original=original)
     with pytest.raises(BoundaryError, match="N_requires_complete_current_Input"):
         inspect_projections(store, [mixed.artifact_id])
