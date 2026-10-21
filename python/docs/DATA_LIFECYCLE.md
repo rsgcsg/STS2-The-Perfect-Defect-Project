@@ -368,3 +368,28 @@ Store requires the existing explicit owner-rebind workflow, not editing identity
 strings. Reopen `configured_owner(config)` and read the original claims/uses through
 its existing ledger; leave unknown legacy exposure intact. Live replacement is an
 operator recovery step, not an automatic consequence of a restore command.
+
+
+## Private Scheduler and provider-handle recovery
+
+The normal `operations` entry preserves the existing `Operations.backup` SQLite
+snapshot in the same ManifestArtifactStore. It includes jobs, fenced attempts,
+original provider handles, outcomes and operation events. The snapshot is paused;
+local lease hashes are cleared in the copy and deleted database pages are vacuumed.
+Account/device/upload/collection rows must be empty, otherwise publication is
+rejected. Control tokens, environment credentials and target/secret configuration
+are not exported. Curation remains the separate original private owner and uses
+its backup command above.
+
+```sh
+python -m spireagent.workbench operations backup --config PROJECT --store STORE --output SCRATCH
+python -m spireagent.workbench push --store STORE --other-store s3 --artifact BACKUP
+python -m spireagent.workbench operations restore --store s3 --artifact BACKUP --output NEW_RECOVERY_DIRECTORY
+```
+
+Restore checks content hashes, SQLite integrity/schema, private scope and paused
+state in a new directory. It never replaces a live owner or contacts a provider.
+Keep the original source/target/compute-Store binding, stop the original writer,
+review this staged owner, and reconcile its exact recorded handles before enabling
+dispatch. An unknown external outcome remains unknown; restoring bytes does not
+permit resubmission. Backup availability and actual worker recovery are distinct.

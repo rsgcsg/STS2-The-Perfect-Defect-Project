@@ -30,7 +30,7 @@ window.SpireProject = (() => {
     "statistics",
     "downloads",
     "research",
-    "jobs",
+    "local-training",
     "local-models",
     "local-environment",
     "local-workspace",
@@ -1089,6 +1089,27 @@ window.SpireProject = (() => {
       box.append(el("p", "远端训练尚未配置或任务记录暂不可用。", "small muted"), technical({error:error.message}));
       return box;
     }
+    const lookup = el("div", null, "project-form");
+    const intent = input(lookup, "原准备请求 ID", "remote-preparation-intent",
+      drafts.get("remote-preparation-intent") || "");
+    intent.oninput = () => drafts.set("remote-preparation-intent", intent.value);
+    lookup.append(command(ctx, "observe-remote-preparation", "查询同一准备请求", async () => {
+      const identity = intent.value.trim();
+      if (!hex(identity,32)) throw new Error("invalid_intent_identity");
+      const facts = await request(ctx, `/api/remote-training/status?intent_id=${identity}`);
+      if (facts.schema !== "spireagent/remote-preparation-observation-1"
+          || facts.intent_id !== identity) throw new Error("invalid_preparation_identity");
+      drafts.set("remote-preparation-facts", facts);
+      await reload(ctx);
+    }, {type:"secondary"}));
+    const preparation = drafts.get("remote-preparation-facts");
+    if (preparation) lookup.append(el("p", preparation.jobs?.length
+      ? "同一准备请求已对应作业，执行进度以下方持久事件为准。"
+      : preparation.local_runs?.length
+        ? "本地 Run 已生成；远端完整传输与校验仍未确认，尚无已提交作业。"
+        : "尚无本地 Run 或作业；原同步准备可能仍在处理，不能据此重投。", "small muted"),
+      technical(preparation, "原请求的本地事实"));
+    box.append(lookup);
     if (status.schema !== "spireagent/remote-training-status-1" || !Array.isArray(status.jobs))
       throw new Error("invalid_remote_training_status");
     if (status.observation_only === true) box.append(el("p",
@@ -1101,6 +1122,8 @@ window.SpireProject = (() => {
       if (!hex(job.id,32) || !hex(job.input_id)) throw new Error("invalid_remote_training_identity");
       const card = panel(`${labels[job.status] || "状态待核对"} · ${job.id.slice(0,12)}`,
         `Run ${job.input_id.slice(0,16)} · 预算 ${count(job.max_seconds)} 秒`);
+      if (job.compute_error) card.append(el("p", `执行问题：${job.compute_error}`, "banner error"));
+      if (job.compute_phase) card.append(el("p", `已记录阶段：${job.compute_phase}`, "small muted"));
       try {
         const value = await request(ctx, `/api/remote-training/progress?job_id=${job.id}`);
         if (value.schema !== "spireagent/remote-training-progress-1" || value.job_id !== job.id
@@ -5996,7 +6019,7 @@ window.SpireProject = (() => {
       }
       if (view !== "local-models") stopModelWatch();
       commandControls.clear();
-      if (!(["local-models", "local-workspace", "local-environment", "evaluations", "jobs"].includes(view) || (local && ["campaigns", "collection-overview"].includes(view))) && !signedIn(ctx)) return authNotice(ctx);
+      if (!(["local-models", "local-workspace", "local-environment", "evaluations", "local-training"].includes(view) || (local && ["campaigns", "collection-overview"].includes(view))) && !signedIn(ctx)) return authNotice(ctx);
       try {
         return await {
           members: admin,
@@ -6005,7 +6028,7 @@ window.SpireProject = (() => {
           games: gamesPage,
           downloads: exportsPage,
           research,
-          jobs: remoteTrainingJobs,
+          "local-training": remoteTrainingJobs,
           evaluations,
           "local-models": localModels,
           "local-environment": localEnvironment,

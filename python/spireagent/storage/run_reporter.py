@@ -9,9 +9,13 @@ from spireagent.storage.store import ArtifactStore
 
 
 class ObjectStoreRunReporter:
-    def __init__(self, store: ArtifactStore, slots: BlobStore) -> None:
+    def __init__(self, store: ArtifactStore, slots: BlobStore, *,
+                 cache_events: bool = False) -> None:
         self.store = store
         self.slots = slots
+        # Only opt-in observers reuse verified immutable bytes. Auditors retain
+        # the default fresh read behavior; the index is still listed each time.
+        self._events_cache: dict[str, Manifest] | None = {} if cache_events else None
 
     def emit(self, event: Manifest) -> str:
         if (
@@ -93,6 +97,9 @@ class ObjectStoreRunReporter:
             identity = key.removeprefix(prefix).removesuffix(".json")
             if key != f"{prefix}{digest(identity, 'reporter.event_id')}.json":
                 raise BoundaryError("reporter", "event_index_key_mismatch")
+            if self._events_cache is not None and identity in self._events_cache:
+                found.append(self._events_cache[identity])
+                continue
             event = Manifest.from_bytes(self.slots.get(key), identity)
             if (event.kind != "run_event" or event.parent("run") != run_id
                     or event.parameters.value().get("schema") != "stpd/run-event-v1"):
@@ -107,6 +114,8 @@ class ObjectStoreRunReporter:
                 raise
             if published != event:
                 raise BoundaryError("reporter", "event_index_manifest_mismatch")
+            if self._events_cache is not None:
+                self._events_cache[identity] = event
             found.append(event)
         return found
 

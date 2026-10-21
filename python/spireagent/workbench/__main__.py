@@ -25,6 +25,10 @@ def main(argv: list[str] | None = None) -> int:
         from spireagent.workbench.p1_recordings_cli import main as recordings_main
 
         return recordings_main(arguments[1:])
+    if arguments and arguments[0] == "operations":
+        from spireagent.workbench.operations_backup import main as operations_main
+
+        return operations_main(arguments[1:])
     if arguments and arguments[0] == "curation":
         from spireagent.workbench.curation_backup import main as curation_main
 

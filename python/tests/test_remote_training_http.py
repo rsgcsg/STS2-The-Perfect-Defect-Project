@@ -114,6 +114,9 @@ def test_normal_client_start_bounded_pause_same_run_resume_and_result(tmp_path, 
         assert observer._thread is None and observer._scheduler is None
         assert observer.progress(first["id"])["latest_progress"] == progress["latest_progress"]
         assert observer.capabilities()["supported_actions"] == ["status", "progress"]
+        with observer._progress_lock, pytest.raises(
+                BoundaryError, match="progress_read_in_progress"):
+            observer.progress(first["id"])
         for action in ("prepare", "start", "pause", "resume", "cancel", "reconcile"):
             with pytest.raises(BoundaryError, match="observation_only_original_writer_required"):
                 observer.command(action, {})
@@ -296,6 +299,9 @@ def test_normal_status_reads_durable_job_while_original_scheduler_poll_blocks(
             "id", "kind", "input_id", "status", "attempt_id", "fence", "max_seconds",
             "reserved_units", "provider_ref", "result")}
         expected["result"] = json.loads(expected["result"]) if expected["result"] else None
+        compute = provider.ops.compute_state(row["id"])
+        expected.update(compute_phase=compute["phase"], compute_error=compute["last_error"])
+        assert expected["compute_phase"] == "submitted" and expected["compute_error"] is None
         assert observed[0]["jobs"] == [expected]
         assert len(provider.calls) == 1
 

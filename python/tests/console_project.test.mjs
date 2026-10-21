@@ -7577,7 +7577,7 @@ test("published P1 derivation with failed index exposes explicit original-operat
 
 test("normal task page observes persisted remote progress without submitting or controlling", async () => {
   const job = id("1").slice(0,32), run = id("2"), checkpoint = id("3");
-  const env = setup({identity:{status:"signed_out"}, view:"jobs", handler: async url => {
+  const env = setup({identity:{status:"signed_out"}, view:"local-training", handler: async url => {
     if (url === "/api/remote-training/status") return {
       schema:"spireagent/remote-training-status-1", observation_only:true,
       jobs:[{id:job,input_id:run,status:"running",max_seconds:1200}], scheduler_error:null,

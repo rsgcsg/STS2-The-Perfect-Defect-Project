@@ -33,6 +33,8 @@ class RemoteTrainingService:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._error: str | None = None
+        self._progress_lock = threading.Lock()
+        self._progress_reporters: dict[str, Any] = {}
 
     def capabilities(self) -> dict[str, Any]:
         deployment = self.config.remote_compute
@@ -195,12 +197,23 @@ class RemoteTrainingService:
                    for row in jobs]
         for row in visible:
             row["result"] = json.loads(row["result"]) if row["result"] else None
+            compute = ops.compute_state(row["id"]) if ops is not None else None
+            row["compute_phase"] = compute["phase"] if compute else None
+            row["compute_error"] = compute["last_error"] if compute else None
         return {"schema": "spireagent/remote-training-status-1", "jobs": visible,
                 "scheduler_error": self._error, "automatic_retry": False,
                 **({"observation_only": True} if deployment.observation_only else {})}
 
     def progress(self, job_id: object, *, after_step: int = 0) -> dict[str, Any]:
         """Explicit peer read of durable RunReporter events; never create/retry a task."""
+        if not self._progress_lock.acquire(blocking=False):
+            raise BoundaryError("remote_training", "progress_read_in_progress")
+        try:
+            return self._read_progress(job_id, after_step=after_step)
+        finally:
+            self._progress_lock.release()
+
+    def _read_progress(self, job_id: object, *, after_step: int) -> dict[str, Any]:
         from spireagent.storage.run_reporter import ObjectStoreRunReporter
         from spireagent.workbench.dashboard import _safe_value
 
@@ -209,11 +222,16 @@ class RemoteTrainingService:
         row = self.status(job_id)["jobs"][0]
         deployment = self.config.remote_compute
         assert deployment is not None
-        peer = open_peer(deployment.compute_store)
-        run = peer.get_manifest(row["input_id"])
-        training = peer.get_manifest(run.parent("training_input"))
+        reporter = self._progress_reporters.get(row["input_id"])
+        if reporter is None:
+            peer = open_peer(deployment.compute_store)
+            reporter = ObjectStoreRunReporter(peer, peer.blobs, cache_events=True)
+            self._progress_reporters[row["input_id"]] = reporter
+        observed_store = reporter.store
+        run = observed_store.get_manifest(row["input_id"])
+        training = observed_store.get_manifest(run.parent("training_input"))
         planned_steps = training.parameters.value().get("planned_steps")
-        events = ObjectStoreRunReporter(peer, peer.blobs).events(run.artifact_id)
+        events = reporter.events(run.artifact_id)
         facts = []
         for event in events:
             info = event.parameters.value()
