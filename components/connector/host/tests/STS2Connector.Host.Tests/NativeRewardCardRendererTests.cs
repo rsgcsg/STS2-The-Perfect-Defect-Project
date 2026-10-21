@@ -22,6 +22,8 @@ public sealed class NativeRewardCardRendererTests
 {
     private static int RenderCallbacks;
     private static void ObserveRenderCall() => RenderCallbacks++;
+    private static int PreflightCalls;
+    private static void ObservePreflightCall() => PreflightCalls++;
     private static object SourceImpostor(Type contract, out FieldInfo callbackCount)
     {
         var assembly=AssemblyBuilder.DefineDynamicAssembly(new AssemblyName("HostileNativeSourceCounter"),AssemblyBuilderAccess.Run);
@@ -107,6 +109,32 @@ public sealed class NativeRewardCardRendererTests
                 Assert.Equal(4,damage.PreviewValue);
             }
             finally { damage.PreviewValue=originalPreview; }
+            // Count the real qualification without skipping or replacing it.
+            // One current-card capture must not scan its closure twice.
+            var qualificationCounter = new Harmony("sts2-test-public-card-render-preflight-count");
+            try
+            {
+                qualificationCounter.Patch(typeof(NativeCardPreviewReadQualification)
+                    .GetMethod(nameof(NativeCardPreviewReadQualification.TryPreflightRender))!,
+                    prefix: new HarmonyMethod(typeof(NativeRewardCardRendererTests)
+                        .GetMethod(nameof(ObservePreflightCall), BindingFlags.Static | BindingFlags.NonPublic)));
+                PreflightCalls = 0;
+                var once = NativePublicCardDetails.Capture(card, PileType.Discard);
+                Assert.True(once.Complete, string.Join(",", once.Missing));
+                Assert.Equal("Deal 6 damage.", once.Card["description"]);
+                Assert.Equal("STRIKE_IRONCLAD", once.Card["id"]);
+                Assert.Equal("Attack", once.Card["type"]);
+                Assert.Equal("Basic", once.Card["rarity"]);
+                Assert.Equal(false, once.Card["is_upgraded"]);
+                Assert.Equal(originalPreview, damage.PreviewValue);
+                Assert.Equal(1, PreflightCalls);
+            }
+            finally { qualificationCounter.UnpatchAll(qualificationCounter.Id); }
+            bool captureCalled = false;
+            Assert.Throws<InvalidOperationException>(() => NativeCardRenderTransaction.Run(card, PileType.Discard,
+                () => captureCalled = true, beforePreview: () => throw new InvalidOperationException("identity capture failed")));
+            Assert.False(captureCalled);
+            Assert.Equal(originalPreview, damage.PreviewValue);
             // These native overrides and calculated multipliers were rejected
             // by the old per-class/constant-IL admission. Preflight reads only
             // their callable identities; it does not load their hover assets.
@@ -128,7 +156,14 @@ public sealed class NativeRewardCardRendererTests
                 guard.Patch(update, prefix: new HarmonyMethod(typeof(NativeRewardCardRendererTests).GetMethod(nameof(ObserveRenderCall),BindingFlags.Static|BindingFlags.NonPublic)));
                 Assert.False(NativeCardPreviewReadQualification.TryPreflightRender(card,CardPreviewMode.Normal,PileType.None,out string? patchedGap));
                 Assert.Equal("native_card_render_fixed_closure_unqualified", patchedGap);
-                Assert.False(NativePublicCardDetails.Capture(card,PileType.None).Complete);
+                var rejected = NativePublicCardDetails.Capture(card,PileType.None);
+                Assert.False(rejected.Complete);
+                Assert.False(rejected.Card.ContainsKey("id"));
+                bool identityCalled = false;
+                Assert.Throws<InvalidOperationException>(() => NativeCardRenderTransaction.Run(card, PileType.None,
+                    () => true, beforePreview: () => identityCalled = true));
+                Assert.False(identityCalled);
+                Assert.Equal(originalPreview, damage.PreviewValue);
                 Assert.Equal(0,RenderCallbacks);
             }
             finally { guard.UnpatchAll(guard.Id); }

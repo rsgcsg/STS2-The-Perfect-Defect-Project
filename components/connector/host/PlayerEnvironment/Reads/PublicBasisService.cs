@@ -100,7 +100,8 @@ internal static partial class PlayerEnvironmentService
     internal static FrozenPublicObservation FreezePublicBasis(SnapshotBuildResult built, string? continuity, DateTimeOffset? captureTime = null)
     {
         var reads = new List<PublicBasisRead>();
-        var cardDetails = CapturePublicCardDetailIndex(built);
+        var cardDetails = built.Snapshot.Reads.Any(read => read.Kind == "surface_card" && read.TargetReferentId != null)
+            ? CapturePublicCardDetailIndex(built) : null;
         foreach (var opportunity in built.Snapshot.Reads)
         {
             var resolution = ResolveReadMaterialization(built.Snapshot, opportunity.ReadId,
