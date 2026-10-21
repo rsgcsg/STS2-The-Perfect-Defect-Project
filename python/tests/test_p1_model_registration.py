@@ -306,3 +306,124 @@ def test_global_publish_http_uses_trusted_context_and_original_data_operation(
         server.server_close()
         app.close()
         thread.join(timeout=3)
+
+
+def test_http_owned_global_run_reaches_original_importer_and_readonly_reconcile(
+    p1_registration, monkeypatch, tmp_path,
+):
+    """Real Application/import journal/CAS/transfer; typed replay alone is synthetic."""
+    import hashlib
+    import json
+    import threading
+    from urllib.error import HTTPError
+    from urllib.request import Request, urlopen
+
+    import sts2_platform_evidence as evidence
+
+    from spireagent.encoding import semantic_hash
+    from spireagent.workbench import global_evidence_store, local_recording_import
+    from spireagent.workbench.developer_server import (
+        Application,
+        configuration_id,
+        create_server,
+    )
+
+    service, models, model, startup = stopped_context(p1_registration, monkeypatch)
+    store = p1_registration[2]
+    modules = tmp_path.resolve() / "node_modules"
+    runtime = modules / "@rsgcsg/sts2-policy-runtime/dist"
+    runtime.mkdir(parents=True)
+    code = b"// synthetic Runtime bytes; never executed\n"
+    (runtime / "global-replay.js").write_bytes(code)
+    atomic_json(runtime.parent / "package.json", {
+        "name": "@rsgcsg/sts2-policy-runtime", "version": "synthetic"})
+    startup["runtime_code_sha256"] = hashlib.sha256(
+        b"global-replay.js\0" + code + b"\0").hexdigest()
+    monkeypatch.setattr(models, "_node_modules", lambda _: modules)
+    context = models.stopped_agent_evidence_context(startup["run_id"])
+    original = Path(context["directory"])
+    original.mkdir(parents=True)
+    atomic_json(original / "manifest.json", {
+        "schema": global_evidence_store.RUN_SCHEMA, "run_id": startup["run_id"],
+        "agent_artifact_sha256": startup["agent_artifact_sha256"],
+        "runtime_code_sha256": startup["runtime_code_sha256"],
+        "runtime_version": "synthetic", "status": "stopped", "tainted": False})
+    entry = models.selection(startup["agent_manifest_id"])
+    (original / "agent-manifest.json").write_bytes(
+        models.entry_path(entry, "manifest").read_bytes())
+    raw = b"synthetic full original GLOBAL input/catalog/scores/Receipt\r\n"
+    (original / "original.bin").write_bytes(raw)
+    verifications = []
+
+    def verify(directory, expected):
+        assert expected == context["expected"]
+        directory = Path(directory)
+        verifications.append(directory)
+        files = [{"path": path.name, "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                  "bytes": path.stat().st_size} for path in sorted(directory.iterdir())]
+        value = evidence.AgentSessionRunEvidence(
+            directory, json.loads((directory / "manifest.json").read_bytes()),
+            json.loads((directory / "agent-manifest.json").read_bytes()), {}, 1,
+            semantic_hash({"schema": "sts2.evidence/store-directory-1", "files": files}))
+        return SimpleNamespace(passed=True, value=value, findings=[])
+
+    monkeypatch.setattr(evidence, "verify_agent_session_run_evidence", verify)
+    monkeypatch.setattr(local_recording_import, "_selected_store", lambda *a, **k: (store, None))
+    monkeypatch.setattr(local_recording_import, "_sync", lambda *a: None)
+    monkeypatch.setattr(local_recording_import, "source_identity", lambda _: PRODUCER)
+    config_path = tmp_path / "global-project.json"
+    atomic_json(config_path, service.config.to_dict())
+    app = Application(service.config, config_path=config_path)
+    app.models = models
+    atomic_json(service.config.state_dir / "runtime.json", {
+        "instance_id": app.instance_id, "configuration_id": configuration_id(service.config)})
+    server = create_server(app)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_port}"
+    headers = {"Authorization": "Bearer " + app.control_token, "Content-Type": "application/json"}
+
+    def post(path, body):
+        with urlopen(Request(base + path, headers=headers, data=json.dumps(body).encode()),
+                     timeout=5) as response:
+            return json.load(response)
+
+    try:
+        with pytest.raises(HTTPError) as invalid:
+            post("/api/local-models/evidence/publish", {"run_id": startup["run_id"], "peer": []})
+        assert invalid.value.code == 409
+        pending = post("/api/local-models/evidence/publish", {
+            "run_id": startup["run_id"],
+            "peer": {"kind": "local", "directory": str(tmp_path / "peer")}})
+        assert pending["recording_type"] == "p1_global" and "_global_context" not in pending
+        importer = app.local_recording_import
+        importer.thread.join(10)
+        assert not importer.thread.is_alive()
+        with urlopen(Request(base + "/api/local-recordings/import/status", headers=headers),
+                     timeout=5) as response:
+            result = json.load(response)
+        assert result["status"] == "completed", result
+        assert result["local_readback"]["typed_verification"] == "pass"
+        assert result["peer_readback"]["typed_verification"] == "pass"
+        artifact_id = result["artifact_id"]
+        assert store.get_manifest(artifact_id).parent("model") == model.artifact_id
+        retained = json.loads(importer.path.read_bytes())
+        assert retained["_global_context"] == context
+        assert len(verifications) >= 4
+
+        def no_write(*args, **kwargs):
+            raise AssertionError("read-only reconciliation attempted publication")
+
+        monkeypatch.setattr(global_evidence_store, "publish_global_evidence", no_write)
+        monkeypatch.setattr(global_evidence_store, "publish_global_runtime", no_write)
+        with pytest.raises(HTTPError) as invalid:
+            post("/api/local-recordings/import/reconcile", {"directory": "/untrusted"})
+        assert invalid.value.code == 400
+        reconciled = post("/api/local-recordings/import/reconcile", {})
+        assert reconciled["status"] == "completed" and reconciled["artifact_id"] == artifact_id
+        assert (original / "original.bin").read_bytes() == raw
+    finally:
+        server.shutdown()
+        server.server_close()
+        app.close()
+        thread.join(timeout=3)

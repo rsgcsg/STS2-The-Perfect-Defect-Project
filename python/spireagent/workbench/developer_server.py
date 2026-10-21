@@ -1039,8 +1039,19 @@ class Application:
     def start_global_evidence(self, run_id: object, peer: object = None) -> dict[str, Any]:
         """Preserve a stopped owned Model run through the existing data operation."""
         self.check_environment_instance()
+        if peer is not None and not isinstance(peer, dict):
+            raise BoundaryError("p1_storage", "invalid_peer_binding")
         context = self.models.stopped_agent_evidence_context(run_id)
         return self.local_recording_import.start_global_evidence(context, peer)
+
+    def reconcile_local_recording_import(self) -> dict[str, Any]:
+        """Read the retained original import intent through its owning service."""
+        self.check_environment_instance()
+        importer = self.local_recording_import
+        with importer.lock:
+            if importer.status().get("action") == "global-evidence":
+                return importer.reconcile_global_evidence()
+            return importer.reconcile_p1_import()
 
     def register_local_model(self, model_id: object, *,
                              environment_kind: str = "native",
@@ -2064,7 +2075,9 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                     self.respond(400, b'{"error":"invalid_local_preview_request"}')
                 return
             if self.path.startswith("/api/local-recordings/import"):
-                if not self.browser_write():
+                if not self.browser_write() and not (
+                        self.path == "/api/local-recordings/import/reconcile"
+                        and self.control_client()):
                     self.respond(403, b'{"error":"browser_action_denied"}')
                     return
                 if self.path not in {"/api/local-recordings/import",
@@ -2077,7 +2090,7 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                         body = self.json_body(maximum=64)
                         if body:
                             raise ValueError
-                        value = app.local_recording_import.reconcile_p1_import()
+                        value = app.reconcile_local_recording_import()
                     elif self.path == "/api/local-recordings/import/native-agent":
                         body = self.json_body(maximum=8192)
                         if set(body) not in (
