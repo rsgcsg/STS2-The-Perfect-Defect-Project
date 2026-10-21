@@ -126,7 +126,9 @@ describe("same-request forward selector intention", () => {
     snapshot.interaction.kind = s.kind = "native_deck_card_selection";
     snapshot.interaction.content_schema = "sts2.player-environment/surface/native_deck_card_selection-1";
     Object.assign(s.selector_request, { family: "deck_card", min_select: 0, can_finish_now: true });
-    s.min_select = 0; s.can_confirm = true;
+    // Native open_preview is a completion control but is not the public confirm
+    // verb; its qualified request supplies can_finish_now instead.
+    s.min_select = 0; s.can_confirm = false;
     s.preview_options[0].after = null; s.preview_options[0].after_availability = "not_applicable";
     s.current_controls = [{ entity_id: "confirm", operation: "open_preview" }, { entity_id: "cancel", operation: "cancel_selection" }];
     const base = snapshot.bound_actions.actions[0];
