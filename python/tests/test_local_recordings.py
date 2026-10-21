@@ -266,7 +266,8 @@ def test_invalid_native_root_owner_result_does_not_fall_back_to_default(
     root.mkdir()
     _sealed(root / "closed", "session-001", "timeline-001")
     catalog, _ = _service(
-        tmp_path, monkeypatch, _owner(root, errors=["installed_artifact_mismatch"])
+        tmp_path, monkeypatch, _owner(root, reason="installed_artifact_mismatch",
+                                     errors=["installed_artifact_mismatch"])
     )
 
     result = catalog.read()
@@ -274,3 +275,25 @@ def test_invalid_native_root_owner_result_does_not_fall_back_to_default(
     assert result["status"] == "owner_unavailable"
     assert "candidate_count" not in result and "candidates" not in result
     assert result["error_code"] == "native_recording_root_unavailable"
+    assert result["owner_probe"] == {
+        "status": "blocked", "reason": "installed_artifact_mismatch",
+        "errors": ["installed_artifact_mismatch"],
+    }
+    assert str(root) not in json.dumps(result)
+
+
+def test_setup_exception_preserves_owning_error_code(tmp_path: Path, monkeypatch) -> None:
+    from spireagent.workbench import local_recordings
+
+    catalog, _ = _service(tmp_path, monkeypatch, None)
+
+    def changed(*args, **kwargs):
+        raise BoundaryError("collection_tool", "selected_host_context_changed_or_unconfirmed")
+
+    monkeypatch.setattr(local_recordings, "inspect_collection_destination", changed)
+    result = catalog.read()
+    assert result["status"] == "owner_unavailable"
+    assert result["error_code"] == "collection_setup_unavailable"
+    assert result["owner_probe"] == {
+        "error_code": "selected_host_context_changed_or_unconfirmed",
+    }

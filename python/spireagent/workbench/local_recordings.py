@@ -221,10 +221,11 @@ class LocalRecordingCatalog:
             owner = inspect_collection_destination(
                 self.config, tool, recordings_root=expected_root, allow_stopped_inventory=True
             )
-        except (OSError, ValueError, TypeError, RuntimeError, subprocess.SubprocessError):
+        except (OSError, ValueError, TypeError, RuntimeError, subprocess.SubprocessError) as error:
             return self._result(
                 status="owner_unavailable", observed_at=observed_at,
                 error_code="collection_setup_unavailable",
+                owner_probe={"error_code": getattr(error, "code", type(error).__name__)},
             )
 
         root, basis = self._owner_root(owner, expected_root)
@@ -233,6 +234,8 @@ class LocalRecordingCatalog:
                 status="owner_unavailable", observed_at=observed_at,
                 game_running=owner.get("game_running") if isinstance(owner, dict) else None,
                 error_code="native_recording_root_unavailable",
+                owner_probe=({key: owner.get(key) for key in ("status", "reason", "errors")}
+                             if isinstance(owner, dict) else None),
             )
         if not root.exists():
             return self._result(
@@ -421,7 +424,8 @@ class LocalRecordingCatalog:
 
     @staticmethod
     def _result(*, status: str, observed_at: str, error_code: str | None = None,
-                root_basis: str | None = None, game_running: bool | None = None) -> dict[str, Any]:
+                root_basis: str | None = None, game_running: bool | None = None,
+                owner_probe: dict[str, Any] | None = None) -> dict[str, Any]:
         result: dict[str, Any] = {
             "schema": SCHEMA,
             "status": status,
@@ -434,4 +438,6 @@ class LocalRecordingCatalog:
             result["root_basis"] = root_basis
         if game_running is not None:
             result["game_running"] = game_running
+        if owner_probe is not None:
+            result["owner_probe"] = owner_probe
         return result
