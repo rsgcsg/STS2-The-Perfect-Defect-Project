@@ -272,4 +272,27 @@ public sealed class NativeLogicalCapturedGridTests
         }
     }
 
+    [Fact]
+    public void UnqualifiedArtifactCanFreezePublicGridWithoutAcquiringExecutionPermission()
+    {
+        var (source, grid) = Captured();
+        var game = source.HostObservation.Game with { Compatibility = new(
+            "artifact_unqualified", false, true, true, "Passive observation only.") };
+        Assert.True(NativeLogicalGridCapture.CaptureAvailable(game, publicBasisOnly: true));
+        Assert.False(NativeLogicalGridCapture.CaptureAvailable(game, publicBasisOnly: false));
+        var observation = source.HostObservation with { Game = game };
+        var input = new SnapshotBuildInput(game, observation, new(false, null, null), new RewardPageSnapshotIdentity()) {
+            GridCapture = new(true, grid, Array.Empty<string>()),
+            Read = kind => PlayerReadBuildResult.Failure("fixture", kind) };
+        var captured = PlayerEnvironmentService.BuildSnapshot(inputProfile: PublicBasisContract.Profile, capturedInput: input);
+        Assert.Equal(64, captured.Snapshot.Interaction.Content.Surface["cards"]!.AsArray().Count);
+        Assert.Single(captured.Snapshot.BoundActions.Actions);
+        Assert.False(captured.HostObservation.Game.Compatibility.ActionExecutionAllowed);
+        Assert.Equal("artifact_unqualified", captured.HostObservation.Game.Compatibility.Status);
+        Assert.False(NativeLogicalGridCapture.CaptureAvailable(game with { Compatibility = game.Compatibility with {
+            StateObservationAllowed = false } }, publicBasisOnly: true));
+        Assert.False(NativeLogicalGridCapture.CaptureAvailable(game with { Compatibility = game.Compatibility with {
+            ReadAllowed = false } }, publicBasisOnly: true));
+    }
+
 }
