@@ -30,6 +30,8 @@ public sealed partial class RecordingSessionStore
     private FileStream? _p1NativeEvents;
     private long _p1NativeSequence, _p1NativeAccepted, _p1NativeTerminal, _p1NativeIssues;
     private bool _p1NativeWriteFailed;
+    private readonly Dictionary<string, P1NativeBasisReference> _p1NativeBases = new(StringComparer.Ordinal);
+    private readonly HashSet<string> _p1NativeUnsealedBases = new(StringComparer.Ordinal);
     private readonly HashSet<string> _p1NativeAcceptedIds = new(StringComparer.Ordinal);
     private readonly Dictionary<string, (string Decision, string Run)> _p1NativePending = new(StringComparer.Ordinal);
     public bool IsP1NativeSession => Manifest.P1NativeSchemaVersion == 1;
@@ -39,21 +41,27 @@ public sealed partial class RecordingSessionStore
         EnsureOpen();
         P1NativeBasisReference? result = null;
         P1NativeWrite(() => {
-            using var parsed = JsonDocument.Parse(bytes);
+            using var parsed = Measure("p1_basis_validate", () => JsonDocument.Parse(bytes));
             if (parsed.RootElement.GetProperty("schema").GetString() != "sts2.player-environment/public-basis-1"
                 || parsed.RootElement.GetProperty("snapshot").GetProperty("snapshot_id").GetString() != snapshotId)
                 throw new InvalidDataException("p1_native_original_basis_identity_mismatch");
             byte[] payload = bytes.ToArray();
-            string digest = EvidenceIdentity.Sha256Bytes(payload);
+            string digest = Measure("p1_basis_digest", () => EvidenceIdentity.Sha256Bytes(payload));
             string relative = $"public-bases/sha256/{digest[..2]}/{digest}.json";
             string destination = ResolveRelative(relative);
             Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
             if (File.Exists(destination))
             {
-                if (EvidenceIdentity.Sha256File(destination) != digest) throw new IOException("p1_native_basis_collision");
+                if (Measure("p1_basis_existing_verify", () => EvidenceIdentity.Sha256File(destination)) != digest) throw new IOException("p1_native_basis_collision");
             }
-            else { using var file = new FileStream(destination, FileMode.CreateNew, FileAccess.Write); file.Write(payload); file.Flush(flushToDisk: true); }
+            else { using var file = new FileStream(destination, FileMode.CreateNew, FileAccess.Write);
+                Measure("p1_basis_write", () => file.Write(payload));
+                // Match the existing event-stream contract: surface OS write
+                // errors now; Close/prefix owns durable evidence publication.
+                Measure("p1_basis_os_flush", () => file.Flush());
+                _p1NativeUnsealedBases.Add(digest); }
             result = new(snapshotId, digest, payload.LongLength, relative);
+            _p1NativeBases[digest] = result;
         });
         return result!;
     }
@@ -108,6 +116,27 @@ public sealed partial class RecordingSessionStore
                 ["decision_id"] = item.Value.Decision, ["action_witness_id"] = item.Key,
                 ["phase"] = "unknown", ["reason"] = "session_closed_before_native_terminal",
                 ["successor_basis"] = null, ["successor_missing_reason"] = "native_terminal_unobserved" });
+    }
+
+    private void SealP1NativeBases()
+    {
+        if (!IsP1NativeSession) return;
+        try
+        {
+            Measure("p1_basis_seal_verify_and_durable_flush", () => {
+                foreach (var (digest, reference) in _p1NativeBases)
+                {
+                    string path = ResolveRelative(reference.PayloadRef);
+                    if (new FileInfo(path).Length != reference.ByteCount || EvidenceIdentity.Sha256File(path) != digest)
+                        throw new IOException("p1_native_basis_changed_before_seal");
+                    if (!_p1NativeUnsealedBases.Contains(digest)) continue;
+                    using var file = new FileStream(path, FileMode.Open, FileAccess.Write, FileShare.Read);
+                    file.Flush(flushToDisk: true);
+                }
+                _p1NativeUnsealedBases.Clear();
+            });
+        }
+        catch { _p1NativeWriteFailed = true; throw; }
     }
     private void WriteP1NativeClose()
     {

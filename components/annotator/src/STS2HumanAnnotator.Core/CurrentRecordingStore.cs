@@ -706,6 +706,7 @@ public sealed partial class RecordingSessionStore : IDisposable
             {
                 _sourceSession?.PrepareClose();
                 _sourceSessionV2?.RequirePreparedClose();
+                SealP1NativeBases();
                 WriteCoverage();
                 _performance.Measure("close_evidence_durable_flush", () =>
                 {

@@ -37,7 +37,7 @@ export const p1NativeSupport = Object.freeze({
 
 export const p1NativeToolFiles = ["p1-native-to-p1.mjs", "p1-native-bundle.mjs",
   "p1-native-cancellation.mjs", "p1-native-presentation.mjs", "p1-native-segments.mjs",
-  "p1-native-selector-transactions.mjs", "p1-native-targets.mjs"];
+  "p1-native-selector-transactions.mjs", "p1-native-targets.mjs", "p1-native-issue-spans.mjs"];
 
 /** The fixed reader ships its executable SDK/zod closure, not a worktree path. */
 export function copyP1NativeTools(workspaceRoot, staging) {

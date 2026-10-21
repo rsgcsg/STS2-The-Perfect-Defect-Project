@@ -109,6 +109,12 @@ Outputs must be new paths. Omitting `--segments-output` keeps the existing
 whole-conversion behavior. An open administrative export instead uses `--prefix`
 and its exact `--manifest-sha256`; it never qualifies as a sealed whole run.
 
+Select a fixed Tool identity and new output paths when re-deriving older originals.
+The current issue-range fix uses original event ID/sequence and ends a located
+unbound gap only at an existing complete uncommitted recovery boundary. Missing
+location still blocks the run; missing selector bytes are never supplied by the
+later boundary. Existing outputs/datasets keep their original interpretation.
+
 `sts2.p1/native-segments-1` records the original session/timeline/run, source content
 identity, original basis references, profile/revision, gaps, discarded choices and
 each segment's start/end reasons. A segment starts only at a real complete basis

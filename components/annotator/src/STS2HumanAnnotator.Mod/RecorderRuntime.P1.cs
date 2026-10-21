@@ -46,6 +46,13 @@ internal static partial class RecorderRuntime
     private static P1NativeBasisReference? PersistP1Basis(ProcessLocalNativeWitnessFrame? frame) =>
         frame?.PublicBasis is { } basis ? _store!.PersistP1NativeBasis(basis.SnapshotId, basis.Bytes) : null;
 
+    private static ProcessLocalNativeWitnessFrame CaptureP1Frame(string callSite)
+    {
+        var frame = MeasureStore("p1_snapshot_capture." + callSite, PlayerEnvironmentNativeWitness.CaptureP1);
+        RecordCaptureSubphases("p1." + callSite, frame);
+        return frame;
+    }
+
     private static void ObserveP1AcceptedAction(GameAction action)
     {
         SubmittedInputs.TryGet(action, out SubmittedHumanInput? submitted);
@@ -175,7 +182,7 @@ internal static partial class RecorderRuntime
         P1NativeBasisReference? successor = null; string? missing = null;
         try
         {
-            var frame = PlayerEnvironmentNativeWitness.CaptureP1(); successor = PersistP1Basis(frame);
+            var frame = CaptureP1Frame("ui_terminal"); successor = PersistP1Basis(frame);
             if (frame.PublicBasis is not { } captured || !P1NativeRecordingContract.CompleteBasis(captured.Bytes))
                 missing = "native_ui_terminal_public_basis_partial";
         }
@@ -200,7 +207,7 @@ internal static partial class RecorderRuntime
             {
                 try
                 {
-                    var frame = PlayerEnvironmentNativeWitness.CaptureP1();
+                    var frame = CaptureP1Frame("action_terminal");
                     successor = PersistP1Basis(frame);
                     if (frame.PublicBasis is not { } captured || !P1NativeRecordingContract.CompleteBasis(captured.Bytes))
                         missing = "native_terminal_public_basis_partial";
@@ -228,7 +235,7 @@ internal static partial class RecorderRuntime
         if (_store == null || _lifecycle.State is not (RecordingLifecycleState.Recording or RecordingLifecycleState.Closing)) return false;
         try
         {
-            var frame = PlayerEnvironmentNativeWitness.CaptureP1();
+            var frame = CaptureP1Frame("native_boundary");
             _store.AppendP1NativeEvent(new JsonObject { ["kind"] = "observation", ["run_id"] = _currentRunId,
                 ["reason"] = reason, ["basis"] = JsonSerializer.SerializeToNode(PersistP1Basis(frame), EvidenceJson.Options),
                 ["native_witness"] = JsonSerializer.SerializeToNode(nativeWitness, EvidenceJson.Options) });

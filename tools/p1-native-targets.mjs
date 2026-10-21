@@ -1,21 +1,18 @@
 /** A single original timeline, separately qualified supervised points and edges.
  * No online action, inferred missing basis, replay claim or memory policy. */
 import { isDeepStrictEqual } from 'node:util';
+import { nativeIssueSpan } from './p1-native-issue-spans.mjs';
 
 export const nativeTargetProjection = 'native-timeline-targets-1';
 export const nativeTargetSchema = 'sts2.p1/native-targets-1';
 
-export function buildNativeP1Targets({ source, report, successful, strictSegments }) {
+export function buildNativeP1Targets({ source, report, successful, strictSegments, boundaries }) {
   const identity = source.manifest.content_identity ?? source.manifest;
   const branch = { session_id: identity.session_id, timeline_id: identity.timeline_id ?? null,
     run_id: report.scope.run_id };
   const limit = report.scope.native_event_range?.through_sequence ?? Infinity;
   const events = source.events.filter(row => row.run_id === branch.run_id && row.sequence <= limit);
   const byEvent = new Map(events.map(row => [row.event_id, row]));
-  const byDecision = new Map(events.filter(row => row.kind === 'decision_accepted')
-    .map(row => [row.decision_id, row]));
-  const terminalByDecision = new Map(events.filter(row => row.kind === 'lifecycle'
-    && ['finished', 'cancelled', 'aborted', 'unknown'].includes(row.phase)).map(row => [row.decision_id, row]));
   const capturesByEvent = new Map();
   for (const capture of report.captures) {
     const values = capturesByEvent.get(capture.event_id) ?? [];
@@ -37,16 +34,16 @@ export function buildNativeP1Targets({ source, report, successful, strictSegment
   }
   for (const issue of [...report.blocking_issues, ...report.pending_decisions]) {
     const decisionId = issue.decision_id ?? issue.native_witness?.decision_id;
-    const accepted = byDecision.get(decisionId);
-    const terminal = terminalByDecision.get(decisionId);
-    const references = events.filter(row => row.decision_id === decisionId).flatMap(row =>
+    const located = nativeIssueSpan({ events, issue, captures: report.captures, boundaries });
+    const references = events.filter(row => decisionId != null && row.decision_id === decisionId
+      || row.event_id === located.source_issue_event_id).flatMap(row =>
       ['basis', 'execution_basis', 'successor_basis'].filter(role => row[role])
         .map(role => ({ source_event_id: row.event_id, source_sequence: row.sequence,
           role, source_public_basis: row[role] })));
+    if (issue.native_witness?.basis) references.push({ source_event_id: located.source_issue_event_id,
+      source_sequence: issue.sequence, role: 'native_witness.basis', source_public_basis: issue.native_witness.basis });
     spans.push({ span_id: `missing:${decisionId ?? 'scope'}:${spans.length}`,
-      kind: 'unqualified_native_span', reason: issue.reason, decision_ids: accepted ? [decisionId] : [],
-      from_sequence: accepted?.sequence ?? events[0]?.sequence ?? 0,
-      through_sequence: terminal?.sequence ?? events.at(-1)?.sequence ?? 0,
+      kind: 'unqualified_native_span', reason: issue.reason, ...located,
       original_references: references, N_label: null, ordinary_p1_transition: false,
       model_input: null, memory_crossing_approved: false });
   }

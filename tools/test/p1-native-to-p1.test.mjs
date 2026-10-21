@@ -10,6 +10,7 @@ import * as sdk from '../../components/connector/sdk/typescript/dist/index.js';
 import * as core from '../../components/connector/sdk/typescript/dist/p1Global/index.js';
 import { convertNativeSemanticOriginals } from '../p1-native-to-p1.mjs';
 import { buildNativeP1Targets, nativeTargetProjection } from '../p1-native-targets.mjs';
+import { nativeIssueSpan } from '../p1-native-issue-spans.mjs';
 import { rewardForwardPair } from '../../components/connector/sdk/typescript/test/fixtures/reward-forward.mjs';
 
 // Semantic-only fixture: actual Store/packer bytes are tested at the reader seam.
@@ -1034,6 +1035,67 @@ function targetBuilderExample() {
   return { source, report, successful: report.actions.filter(action => action.result?.status === 'completed'),
     strictSegments: report.segment_output };
 }
+
+test('an original unbound selector issue fences only through an independently complete recovery boundary', () => {
+  const { source, row, retain, nextBasis } = example();
+  const afterTurn = source.events.at(-1).basis;
+  const end = source.events.find(event => event.decision_id === 'end-turn' && event.kind === 'decision_accepted');
+  row('decision_accepted', { ...structuredClone(end), sequence: 8, event_id: 'event-8',
+    decision_id: 'after-recovery', action_witness_id: 'after-recovery', basis: afterTurn,
+    native_receipt: { ...end.native_receipt, carrier_ref: 'after-recovery' } });
+  row('lifecycle', { decision_id: 'after-recovery', action_witness_id: 'after-recovery', phase: 'finished',
+    successor_basis: retain(nextBasis('-later')) });
+  const issue = { ...source.events[0], kind: 'issue', event_id: 'unbound-selector-issue',
+    reason: 'selector_decision_pre_or_lineage_unavailable', native_witness: {
+      basis: source.events[0].basis, human_occurrence: { native_owner_witness_id: 'original-selector-owner' } } };
+  delete issue.basis;
+  source.events.splice(4, 0, issue);
+  source.events.forEach((event, index) => { event.sequence = index + 1; });
+  const report = convertNativeSemanticOriginals(source, sdk, core, { includeSegments: true, includeTargets: true, targetProjection: nativeTargetProjection });
+  const targets = report.target_output;
+  const span = targets.timeline.spans.find(item => item.reason === issue.reason);
+  assert.equal(span.from_sequence, issue.sequence);
+  assert.equal(span.through_sequence, end.sequence - 1);
+  assert.equal(span.source_issue_event_id, issue.event_id);
+  assert.equal(span.recovery_boundary.source_event_id, end.event_id);
+  assert.equal(span.recovery_boundary.selector_continuation, false);
+  assert.deepEqual(span.original_references[0].source_public_basis, issue.native_witness.basis);
+  assert.equal(targets.points.filter(point => point.mask.N).length, 3);
+  assert.equal(targets.edges[0].eligible, false);
+  assert.equal(targets.edges[1].eligible, true);
+  assert.equal(report.complete, false);
+  assert.equal(report.whole_run_recording_complete, false);
+  assert.equal(report.segment_output.gaps[0].through_sequence, end.sequence - 1);
+});
+
+test('unbound original failure without a complete recovery keeps the remaining tail blocked', () => {
+  const { source } = example();
+  const issue = { ...source.events.at(-1), kind: 'issue', event_id: 'original-tail-issue',
+    sequence: 8, reason: 'selector_missing', native_witness: { basis: source.events[0].basis } };
+  delete issue.basis; source.events.push(issue);
+  const report = convertNativeSemanticOriginals(source, sdk, core, { includeSegments: true, includeTargets: true, targetProjection: nativeTargetProjection });
+  const span = report.target_output.timeline.spans[0];
+  assert.equal(span.from_sequence, 8); assert.equal(span.through_sequence, 8);
+  assert.equal(span.recovery_boundary, undefined);
+  assert.equal(report.complete, false);
+});
+
+test('issue recovery skips complete captures with pending native decisions or selector continuation', () => {
+  const issue = { kind: 'issue', event_id: 'original-issue', sequence: 2, reason: 'basis_missing' };
+  const events = [{ sequence: 1 }, issue, { sequence: 10 }];
+  const captures = [3, 5, 8].map(sequence => ({ sequence, event_id: 'capture-' + sequence,
+    complete: true, public_basis: { sha256: 'basis-' + sequence } }));
+  const boundaries = new Map([[0, { eligible: false, pending_native_decisions: ['still-active'] }],
+    [1, { eligible: false, selector_continuation: true }],
+    [2, { eligible: true, pending_native_decisions: [], unfinished_reward_commitment: false, selector_continuation: false }]]);
+  const span = nativeIssueSpan({ events, issue, captures, boundaries });
+  assert.equal(span.through_sequence, 7);
+  assert.equal(span.recovery_boundary.source_sequence, 8);
+  assert.deepEqual(span.recovery_boundary.pending_native_decisions, []);
+  const unlocated = nativeIssueSpan({ events, issue: { ...issue, event_id: 'not-an-original' }, captures, boundaries });
+  assert.equal(unlocated.from_sequence, 1); assert.equal(unlocated.through_sequence, 10);
+  assert.equal(unlocated.location, 'unlocated_run_scope');
+});
 
 test('the approved reward effect keeps both labels and their qualified edge with literal originals', () => {
   const input = targetBuilderExample(), { source, report } = input;

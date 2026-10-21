@@ -27,6 +27,13 @@ requiring a legacy canonical parent decision. If that prefix capture fails,
 `capture_failure` retains its matching native type's reason, detail, snapshot ID
 and evidence level; it does not supply a missing basis, binding or completion.
 
+P1 basis persistence uses the same durability boundary as the event streams:
+append writes and flushes to the OS, while Close/prefix verifies each retained
+basis length and content hash and durably flushes new basis files before a
+success receipt is published. Abrupt interruption may retain only an inspectable
+prefix; it is never a successful durable Close. A failed basis verification/flush
+sets failed persistence health and prevents later successful Close.
+
 Use `sts2.ai-platform/recording-command-1` within the existing Platform recording
 request. Start sets `capture_profile_id` to this profile and `p1_native_origin` to
 `declared_human`, `agent_native_ui` or `unknown`. Other commands carry null values

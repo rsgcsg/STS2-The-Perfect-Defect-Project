@@ -1,5 +1,6 @@
 /** Offline segments from the converter's actual shared-core state and originals.
  * This neither repairs missing bytes nor grants whole-run/training admission. */
+import { nativeIssueSpan } from './p1-native-issue-spans.mjs';
 export function buildNativeP1Segments({ source, report, successful, boundaries, continuousRewardReturns = false }) {
   const identity = source.manifest.content_identity ?? source.manifest;
   const events = source.events.filter(row => row.run_id === report.scope.run_id);
@@ -27,7 +28,7 @@ export function buildNativeP1Segments({ source, report, successful, boundaries, 
       reasons: [reason], decision_ids: [...visited] });
   }
   for (const issue of [...report.blocking_issues, ...report.pending_decisions])
-    barrier(byDecision.get(issue.decision_id ?? issue.native_witness?.decision_id), issue.reason);
+    barriers.push({ ...nativeIssueSpan({ events, issue, captures: report.captures, boundaries }), reasons: [issue.reason] });
   // Historical segments retain their strict interpretation. The current target
   // projection reuses this edge builder with the approved reward-return effect
   // ignored for continuity only; originals and successful labels stay unchanged.
