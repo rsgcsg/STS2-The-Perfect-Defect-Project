@@ -633,3 +633,17 @@ test('local model deep link delegates automatic ticks but explicit refresh still
   assert.equal(projectRenders(), 2);
   assert.deepEqual(delegated, ['local-models']);
 });
+
+test('local training view uses its local owner while legacy Hub jobs and details retain their routes', async () => {
+  const observed=pageSetup('local-training', null, undefined, '', 'local', '?view=local-training', '');
+  await settled();
+  assert.deepEqual(observed.projectCalls,[['local-training','local_only']]);
+  assert.deepEqual(observed.refreshes,[]);
+  for (const suffix of ['', '&id='+'a'.repeat(32)]) {
+    const env=pageSetup('jobs', person(), undefined, '', 'local', '?view=jobs'+suffix, 'https://hub.example');
+    await settled();
+    assert.equal(env.projectRenders(),0);
+    assert.notEqual(env.refreshes.length,0);
+    assert.equal(vm.runInContext('state.view',env.context),'jobs');
+  }
+});

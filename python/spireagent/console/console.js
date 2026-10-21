@@ -12,6 +12,7 @@ const views = {
   collections: ["采集记录", "每份录制的质量、投递和研究使用，分别查看。"],
   games: ["对局与片段", "按原生边界整理；完整性、胜负与记录质量分别统计。"],
   datasets: ["数据集", "固定来源与版本；新上传的数据不会自动改变已有训练集。"],
+  "local-training": ["训练任务", "当前 Application 的远端任务与持久进度。"],
   jobs: ["作业", "查看真实执行状态与产物。此页面不会启动计算。"],
   models: ["模型目录", "沿着数据与作业来源查看产物；下载不等于加载或运行。"],
   system: ["系统", "查看连接、版本与运维证据，区分已确认事实和未观测状态。"],
@@ -1137,7 +1138,7 @@ async function load(manual = false, forceIdentity = manual) {
       ? `?limit=${state.limit}&offset=${state.offset}`
       : "";
   try {
-    const localOnlyPage = localShell && ["local-workspace", "local-environment"].includes(view);
+    const localOnlyPage = localShell && ["local-workspace", "local-environment", "local-training"].includes(view);
     const identity = localOnlyPage
       ? window.SpireIdentity.localOnly()
       : await window.SpireIdentity.refresh(forceIdentity);
@@ -1156,7 +1157,7 @@ async function load(manual = false, forceIdentity = manual) {
         $("updated").textContent = "当前页面状态已检查";
       return;
     }
-    if (["members", "statistics", "downloads", "research", "local-models", "local-environment", "local-workspace", "campaigns", "evaluations"].includes(view) || (["datasets", "games"].includes(view) && !id)) {
+    if ((localShell && view === "local-training") || ["members", "statistics", "downloads", "research", "local-models", "local-environment", "local-workspace", "campaigns", "evaluations"].includes(view) || (["datasets", "games"].includes(view) && !id)) {
       const opened = [...document.querySelectorAll("details[open]")].map(item => item.dataset.preserve);
       const content = await window.SpireProject.render(view, identity, shell => {
         if (serial === state.serial && identityContext === window.SpireIdentity.context()) $("content").replaceChildren(shell);

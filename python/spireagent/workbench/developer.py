@@ -126,14 +126,22 @@ class RemoteComputeConfig:
     reserved_units: int
     compute_store: dict[str, Any]
     deployment: str = "local_scheduler"
+    observation_only: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {"deployment": self.deployment, "operations_path": str(self.operations_path),
                 "target_path": str(self.target_path), "budget_limit": self.budget_limit,
-                "reserved_units": self.reserved_units, "compute_store": dict(self.compute_store)}
+                "reserved_units": self.reserved_units, "compute_store": dict(self.compute_store),
+                **({"observation_only": True} if self.observation_only else {})}
 
     @classmethod
     def decode(cls, value: object) -> RemoteComputeConfig:
+        observation_only = (value.get("observation_only", False)
+                            if isinstance(value, dict) else False)
+        if type(observation_only) is not bool:
+            raise BoundaryError("remote_compute", "invalid_observation_mode")
+        if isinstance(value, dict):
+            value = {key: item for key, item in value.items() if key != "observation_only"}
         obj = object_fields(value, {"deployment", "operations_path", "target_path",
                                     "budget_limit", "reserved_units", "compute_store"},
                             "remote_compute")
@@ -157,7 +165,8 @@ class RemoteComputeConfig:
             S3Config(**{k: v for k, v in binding.items() if k != "kind"})
         else:
             raise BoundaryError("remote_compute", "invalid_compute_store_binding")
-        return cls(paths[0], paths[1], obj["budget_limit"], obj["reserved_units"], dict(binding))
+        return cls(paths[0], paths[1], obj["budget_limit"], obj["reserved_units"], dict(binding),
+                   observation_only=observation_only)
 
 
 @dataclass(frozen=True)

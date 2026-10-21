@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from spireagent.artifact_contracts import Manifest, Payload
+from spireagent.instance_lock import instance_lock
 from spireagent.json_boundary import array, decode_json, digest, json_bytes, object_fields, unsigned
 from spireagent.storage.blobs import BlobStore, StoreError
 from spireagent.storage.local import LocalBlobStore
@@ -43,7 +44,7 @@ class ArtifactStore(Protocol):
 class ManifestArtifactStore:
     def __init__(self, blobs: BlobStore) -> None:
         self.blobs = blobs
-        self._peer: ManifestArtifactStore | None = None
+        self._peers: tuple[ManifestArtifactStore, ...] | None = None
         self._cache_policy: dict[str, Any] | None = None
         if isinstance(blobs, LocalBlobStore):
             policy = blobs.root / "cache-policy.json"
@@ -52,13 +53,13 @@ class ManifestArtifactStore:
 
                 self._cache_policy = read_policy(policy)
 
-    def cache_peer(self) -> ManifestArtifactStore | None:
-        """The explicitly configured durable peer; no implicit provider fallback."""
-        if self._cache_policy is not None and self._peer is None:
+    def cache_peers(self) -> tuple[ManifestArtifactStore, ...]:
+        """Only the explicitly pinned existing locations; no provider discovery."""
+        if self._cache_policy is not None and self._peers is None:
             from spireagent.storage.config import open_peer
 
-            self._peer = open_peer(self._cache_policy["peer"])
-        return self._peer
+            self._peers = tuple(open_peer(binding) for binding in self._cache_policy["peers"])
+        return self._peers or ()
 
     def _cache(self, key: str, data: bytes) -> None:
         if isinstance(self.blobs, LocalBlobStore) and not self.blobs.readonly:
@@ -70,10 +71,13 @@ class ManifestArtifactStore:
         except StoreError as error:
             if error.code != "object_not_found":
                 raise
-            peer = self.cache_peer()
-            if peer is None:
-                raise
-            return peer.blobs.get(key), True
+            for peer in self.cache_peers():
+                try:
+                    return peer.blobs.get(key), True
+                except StoreError as peer_error:
+                    if peer_error.code != "object_not_found":
+                        raise
+            raise
 
     def put_payload(
         self, role: str, source: BinarySource, media_type: str = "application/octet-stream"
@@ -106,6 +110,22 @@ class ManifestArtifactStore:
         return payload
 
     def read_payload(self, payload: Payload) -> Iterator[bytes]:
+        # A lease covers the generator lifetime, including a caller paused at yield.
+        # Only this payload is fenced; a remote miss never locks the whole Store.
+        if isinstance(self.blobs, LocalBlobStore) and self._cache_policy is not None:
+            lock = self.blobs.root / ".cache-leases" / (payload.sha256 + ".lock")
+            if not lock.exists():
+                if self.blobs.readonly:
+                    raise StoreError("cache_read_lease_missing",
+                                     "prepare cache leases with its writable Store owner")
+                lock.parent.mkdir(exist_ok=True)
+                lock.touch(exist_ok=True)
+            with instance_lock(lock, create=False, shared=True):
+                yield from self._read_payload(payload)
+        else:
+            yield from self._read_payload(payload)
+
+    def _read_payload(self, payload: Payload) -> Iterator[bytes]:
         index_key = f"payload-indexes/v1/{payload.sha256}.json"
         raw, recovered_index = self._get(index_key)
         index = object_fields(decode_json(raw), {"schema", "sha256", "size", "chunks"}, "payload")

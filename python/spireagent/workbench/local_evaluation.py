@@ -301,10 +301,45 @@ def _structured_summary(store: ManifestArtifactStore, manifest: Any) -> dict[str
             "interpretation": "producer_recorded_summary_not_full_lineage_or_quality_verification"}
 
 
+def _p1_summary(store: ManifestArtifactStore, manifest: Any) -> dict[str, Any]:
+    """P1 combines dev selection and sealed test metadata; expose dev loss only."""
+    from stpd.p1.spec import MODEL_SCHEMA, TRAINING_SCHEMA
+
+    info = manifest.parameters.value()
+    if (set(info) != {"schema", "best_dev_N_loss", "test", "model_selection", "scientific_verdict"}
+            or manifest.payloads or [parent.role for parent in manifest.parents] != ["model"]
+            or info["model_selection"] != "dev_only"
+            or info["scientific_verdict"] != "not_claimed"
+            or type(info["best_dev_N_loss"]) not in {int, float}
+            or not math.isfinite(info["best_dev_N_loss"]) or info["best_dev_N_loss"] < 0):
+        raise BoundaryError("local_evaluation", "invalid_p1_report")
+    model = store.get_manifest(manifest.parent("model"))
+    if (model.kind != "model" or model.parameters.value().get("schema") != MODEL_SCHEMA
+            or model.producer != manifest.producer):
+        raise BoundaryError("local_evaluation", "invalid_p1_model_parent")
+    training = store.get_manifest(model.parent("training_input"))
+    counts = training.parameters.value().get("partition_N")
+    if (training.kind != "training_input"
+            or training.parameters.value().get("schema") != TRAINING_SCHEMA
+            or training.producer != model.producer or not isinstance(counts, dict)
+            or type(counts.get("dev")) is not int or counts["dev"] < 1):
+        raise BoundaryError("local_evaluation", "invalid_p1_input_parent")
+    return {"schema": SCHEMA, "validation_scope": SCOPE,
+            "evaluation_id": manifest.artifact_id, "evaluation_schema": info["schema"],
+            "model_id": model.artifact_id, "evaluation_input_id": training.artifact_id,
+            "source_id": training.parent("source"), "partition": "dev",
+            "decision_count": counts["dev"], "best_dev_N_loss": info["best_dev_N_loss"],
+            "model_selection": "dev_only", "scientific_verdict": "not_claimed",
+            "test_metrics": "sealed_not_exposed", "qualification": "engineering_descriptive",
+            "interpretation": "producer_recorded_summary_not_full_lineage_or_quality_verification"}
+
+
 def summary(store: ManifestArtifactStore, evaluation_id: str) -> dict[str, Any]:
     """Open one recorded report; full typed revalidation remains a separate owner path."""
     manifest = store.get_manifest(digest(evaluation_id, "local_evaluation.artifact_id"))
     schema = manifest.parameters.value().get("schema")
+    if manifest.kind == "offline_evaluation" and schema == "stpd/p1-N-evaluation-1":
+        return _p1_summary(store, manifest)
     if (manifest.kind == "offline_evaluation" and
             schema in {"stpd/structured-fixed-model-evaluation-report-v1",
                        "stpd/source3-fixed-native-evaluation-report-v1"}):

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+import time
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
@@ -213,6 +214,29 @@ class P1RecordingMaintenance:
                                 state.update(status="cooling", error_code=None)
                                 importer._save()
                                 return dict(state)
+                    cache_policy = getattr(store, "_cache_policy", None)
+                    if cache_policy is not None:
+                        from spireagent.storage.cache import cache_usage
+
+                        usage = cache_usage(store)
+                        signature = [usage, len(store.manifest_ids()), cache_policy]
+                        retry_after = state.get("cache_retry_after")
+                        retry_due = (isinstance(retry_after, (int, float))
+                                     and time.time() >= retry_after)
+                        if (usage > cache_policy["max_bytes"] and (
+                                state.get("cache_trim_signature") != signature or retry_due)):
+                            state["cache_trim_signature"] = signature
+                            recent = sorted(state.get("sessions", {}).values(),
+                                            key=lambda row: row["scope_facts"].get("closed_at", ""))
+                            protected = tuple(row["source_artifact_id"] for row in recent[-2:])
+                            importer.start_cache_trim(protected)
+                            state.update(status="cache_trimming", error_code=None)
+                            importer._save()
+                            return dict(state)
+                        if usage > cache_policy["max_bytes"]:
+                            state.update(status="cache_over_budget", error_code=None)
+                            importer._save()
+                            return dict(state)
                     state.update(status="up_to_date", error_code=None)
                     importer._save()
                     return dict(state)

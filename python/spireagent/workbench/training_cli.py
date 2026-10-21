@@ -14,7 +14,8 @@ from spireagent.workbench.developer import ProjectConfig
 from spireagent.workbench.developer_server import _local_request, running
 from spireagent.workbench.recipe_contracts import TrainingRequest
 
-ACTIONS = ("capabilities", "status", "prepare", "start", "pause", "resume", "cancel", "reconcile",
+ACTIONS = ("capabilities", "status", "progress", "prepare", "start", "pause", "resume", "cancel",
+           "reconcile",
            "amend_wall_budget")
 
 
@@ -34,14 +35,14 @@ def training_command(
         raise BoundaryError("local_training", "invalid_transport_wait_seconds")
     timeout = wait_seconds if wait_seconds is not None else (
         300 if execution == "remote" and action in {"prepare", "start", "reconcile"} else 15)
-    if action == "prepare" and execution != "remote":
+    if action in {"prepare", "progress"} and execution != "remote":
         raise BoundaryError("local_training", "prepare_requires_remote_execution")
     if action not in ACTIONS:
         raise BoundaryError("local_training", "unsupported_training_action")
-    reading = action in {"status", "capabilities"}
+    reading = action in {"status", "capabilities", "progress"}
     if (reading and body is not None) or (not reading and body is None):
         raise BoundaryError("local_training", "training_body_mismatch")
-    if operation_id is not None and action != "status":
+    if operation_id is not None and action not in {"status", "progress"}:
         raise BoundaryError("local_training", "operation_query_requires_status")
     if action == "start" and execution == "local":
         TrainingRequest.from_dict(body)

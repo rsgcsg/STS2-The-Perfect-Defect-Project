@@ -25,6 +25,10 @@ def main(argv: list[str] | None = None) -> int:
         from spireagent.workbench.p1_recordings_cli import main as recordings_main
 
         return recordings_main(arguments[1:])
+    if arguments and arguments[0] == "operations":
+        from spireagent.workbench.operations_backup import main as operations_main
+
+        return operations_main(arguments[1:])
     if arguments and arguments[0] == "curation":
         from spireagent.workbench.curation_backup import main as curation_main
 
@@ -44,6 +48,7 @@ def main(argv: list[str] | None = None) -> int:
         "command",
         choices=(
             "cache-configure",
+            "cache-trim",
             "prepare",
             "show",
             "lineage",
@@ -61,6 +66,9 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument("--store", default=".local/research-store")
+    parser.add_argument("--additional-peer-config", type=Path,
+                        help="second pinned peer binding JSON; contains no credentials")
+    parser.add_argument("--additional-peer", help="second explicit existing cache peer")
     parser.add_argument("--max-cache-bytes", type=int, help="explicit local payload budget")
     parser.add_argument("--retain-recent", type=int, default=2)
     parser.add_argument("--registry", type=Path, default=Path(".local/registry.sqlite"))
@@ -94,13 +102,22 @@ def main(argv: list[str] | None = None) -> int:
             result = run_e2e(args.root)
         else:
             store = open_store(args.store)
-            if args.command == "cache-configure":
+            if args.command == "cache-trim":
+                from spireagent.storage.cache import trim_cache
+
+                result = trim_cache(store)
+            elif args.command == "cache-configure":
                 from spireagent.storage.cache import configure_cache
 
                 if not args.other_store or args.max_cache_bytes is None:
                     raise BoundaryError("cli", "explicit_peer_and_cache_budget_required")
+                if args.additional_peer and args.additional_peer_config:
+                    raise BoundaryError("cli", "choose_one_additional_peer_binding")
+                additional = (json.loads(args.additional_peer_config.read_bytes())
+                              if args.additional_peer_config else args.additional_peer)
                 result = configure_cache(store, args.other_store,
                                          max_bytes=args.max_cache_bytes,
+                                         additional_peer=additional,
                                          retain_recent=args.retain_recent)
             elif args.command == "prepare":
                 from spireagent.json_boundary import decode_json
