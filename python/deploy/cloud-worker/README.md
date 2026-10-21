@@ -163,6 +163,33 @@ the exact call handle for its existing terminal reconciliation.
 `cancel` requests cancellation but does not manufacture a terminal result. Keep the call ID
 for operator reconciliation if the provider reports an ambiguous cancellation or result.
 
+The Application's normal `training --execution remote` client is the operator entry.
+After a client interruption, inspect its original Operations job and saved provider
+handle first. Reopen the same configured owner and use `status`/`reconcile` for that
+job; a provider success still needs the ordinary typed receipt validation and fenced
+selection. `reconcile` also copies the selected result's complete parent closure
+back to the local Store. A transport wait is an observation limit, never permission
+to repeat `start` or to manufacture a terminal state. Schedule that readback and
+CPU materialization against the actual local memory/disk/IO budget.
+
+Fixed-pause recovery uses the original paused job, expected attempt and exact
+checkpoint through `resume`. Preserve its Run's producer, lock, input, numerical
+execution identity, model budget and all previous invocation reservations. A new
+authorized invocation or target timeout does not rewrite an old target, handle,
+deadline or cancelled job. If the available call/time budget cannot contain a
+baseline plus valid pause/resume, report the missing part or reuse an already
+verified compatible pause; do not weaken the recipe, relabel cancellation as pause
+or silently add a call.
+
+Acceptance separates provider terminal/zero running inputs from selected
+RunResult/Model closure, complete baseline-versus-resume checkpoint state and CPU
+package tensor/scoring consumption. Record startup, worker, checkpoint/transfer
+and reconciliation timings separately where observed. Synthetic N throughput and
+clone microtimings do not predict the complete real corpus. Quote current resource
+rates and cumulative request envelopes including previous attempts/builders;
+unknown invoices remain unknown. After the bounded campaign, stop only its named
+deployment and verify actual stopped/zero-task state, preserving images and data.
+
 Modal worker settings are one container, zero warm containers, a fixed timeout and zero
 user-code retries. Infrastructure preemption or client-level delivery behavior can still
 cause duplicate execution; fencing is always required. Scoped immutable candidate writes are
