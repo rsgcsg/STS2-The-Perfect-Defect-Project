@@ -107,3 +107,30 @@ def test_offline_install_and_generation_reject_instance_guard_before_owner(
             SimpleNamespace(state_dir=tmp_path), action,
             expected_instance_id="original", **arguments,
         )
+
+
+@pytest.mark.parametrize("action", ["register", "registration-status"])
+def test_register_uses_existing_application_model_owner(tmp_path, monkeypatch, action):
+    config = SimpleNamespace(state_dir=tmp_path)
+    monkeypatch.setattr(local_model_cli, "running", lambda _: {
+        "instance_id": "original", "port": 12345, "control_token": "original-token"})
+    offered = []
+
+    class Transport:
+        def open(self, request, *, timeout):
+            offered.append(request)
+            return BytesIO(b'{"schema":"stpd/local-model-registration-v1","status":"registered"}')
+
+    monkeypatch.setattr(local_model_cli, "build_opener", lambda *_: Transport())
+    result = local_model_cli.model_command(config, action, artifact="a" * 64,
+                                            expected_instance_id="original")
+    assert result["status"] == "registered"
+    request = offered[0]
+    assert request.get_header("Authorization") == "Bearer original-token"
+    if action == "register":
+        assert request.full_url.endswith("/api/local-model-registrations/register")
+        assert json.loads(request.data) == {"model_id": "a" * 64}
+    else:
+        expected = "/api/local-model-registrations/status?model_id=" + "a" * 64
+        assert request.full_url.endswith(expected)
+        assert request.data is None

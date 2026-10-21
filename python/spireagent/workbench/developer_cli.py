@@ -118,6 +118,8 @@ def main(argv: list[str] | None = None) -> int:
             "catalog",
             "status",
             "readiness",
+            "register",
+            "registration-status",
             "download",
             "install-runtime",
             "initialize-runtime-generation",
