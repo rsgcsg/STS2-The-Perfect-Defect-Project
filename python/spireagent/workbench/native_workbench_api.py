@@ -163,6 +163,33 @@ def public(value: Any, depth: int = 0) -> Any:
     raise fail("native_projection_type")
 
 
+# PlatformNativeWorkbenchPanel.RenderSummary's artifact parameter labels. Native
+# pages display these scalar facts; the workspace owner retains full metadata.
+_ARTIFACT_DISPLAY_FIELDS = frozenset({
+    "status", "phase", "stage", "availability", "reason", "requested_action",
+    "worker_state", "domain_completion_state", "validation_state", "selected_result",
+    "elapsed_seconds", "error_code", "operation_id", "attempt_id", "recipe_id",
+    "source_id", "candidate_count", "records", "purpose", "mode", "loaded",
+    "selection_id", "device_name", "device_id", "team_configured", "platform_local",
+    "name", "display_name", "description", "qualification", "claim", "progress",
+    "configuration_id", "checkpoint_id", "preview_id", "artifact_id", "input_id",
+    "run_id", "consent_required", "result_id", "model_id", "evaluation_id",
+})
+
+
+def artifact_summary(artifact: dict[str, Any], *, detail: bool = False) -> dict[str, Any]:
+    """Project only the existing native list/detail consumers, never Store metadata."""
+    fields = _ARTIFACT_DISPLAY_FIELDS if detail else {"display_name", "name"}
+    return {
+        "artifact_id": artifact["artifact_id"],
+        "kind": artifact["kind"],
+        "parameters": {
+            key: value for key, value in artifact["parameters"].items()
+            if key in fields and (value is None or isinstance(value, (str, int, float, bool)))
+        },
+    }
+
+
 def bounded_response(value: dict[str, Any]) -> bytes:
     raw = json.dumps(value, ensure_ascii=False, allow_nan=False).encode("utf-8")
     if len(raw) > MAX_RESPONSE_BYTES:
@@ -429,10 +456,13 @@ class NativeWorkbenchApi:
                 inventory = workspace.inventory(
                     category="models" if page == "models" else "all", limit=limit, offset=offset
                 )
-                items = public(inventory["items"])
+                items = public([artifact_summary(item) for item in inventory["items"]])
                 total = inventory["total"]
                 if context_id and re.fullmatch(r"[a-f0-9]{64}", context_id):
-                    cards.append(self.card("artifact", lambda: workspace.artifact(context_id)))
+                    cards.append(self.card(
+                        "artifact",
+                        lambda: artifact_summary(workspace.artifact(context_id), detail=True),
+                    ))
             else:
                 cards.append(self.card("workspace", app.managed_local_workspace))
                 controls.append(action("workspace.create", "建立本机资料空间"))

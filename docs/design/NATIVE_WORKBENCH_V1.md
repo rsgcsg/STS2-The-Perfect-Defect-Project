@@ -163,6 +163,13 @@ Exact view top-level fields: `schema=spireagent/native-workbench-view-v1`,
 `pagination`, `context`. Cards contain separate owner name/schema/observed_at/data
 and do not claim atomic cross-owner capture. Items are bounded object metadata,
 never model weights, raw recording bytes or arbitrary manifest programs.
+For `data`, `training` and `models`, native artifact lists carry only the object
+ID, kind and display/name labels consumed by the native panel. A selected artifact
+card carries its named scalar display facts, rather than embedding full manifest
+parameters. The existing workspace owner keeps complete metadata and reads it by
+artifact ID through its original API; this native presentation does not rewrite
+Store originals or increase the response limit.
+
 Capabilities are static owner-advertised actions/config/source/placement controls;
 unknown or absent capabilities disable writes. Context external links are typed
 view+ID targets resolved only against the exact paired local origin, plus the
