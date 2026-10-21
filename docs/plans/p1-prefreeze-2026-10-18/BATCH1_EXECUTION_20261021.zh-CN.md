@@ -4,11 +4,11 @@
 
 ## 当前状态与准确边界
 
-集成从PR207准确4128b2ce继承，origin/develop基准8b2c；唯一writer分支`codex/batch1-integration-20261021`，只普通FF推既有PR207。纯规范44aac862、Installer8f807/96f6/405bbe、Storage47769154/b42020f7及GUI4ce1298d均已normal merge；UIrc16/Modrc51源95b171d4及BOM一致。正常cloud extra加入原已锁boto3，不换解析版本。准确组合七文件174测试、UI34测试和BOM15测试通过；保已有remote_compute的新回归18测试另通过。CURRENT与project:closeout已检查，准确完整门尚未启动。
+集成从PR207准确4128b2ce继承，origin/develop基准8b2c；唯一writer分支`codex/batch1-integration-20261021`，只普通FF推既有PR207。纯规范44aac862、Installer最终405bbea3、Storage最终1bc86075及GUI4ce1298d均已normal merge；UIrc16/Modrc51源95b171d4及BOM一致。正常cloud extra加入原已锁boto3，不换解析版本。准确组合七文件174测试、UI34测试、BOM15测试通过；保已有remote_compute新回归18测试通过；原native pack自锁已沿shared read lease修复，原EX/native writer排他保留，跨语言原证与组合59测试通过；多run按已验证run_journal逐个派生及保全，不虚构run身份。CURRENT与project:closeout已检查，准确完整门尚未启动。
 
 PR207旧head4128仍保Linux fixture原失败，日志在集成工作树`.local/batch1/original-ci-linux1.log`。中间eca run39582497868因后续普通push自动取消，不能当新产品失败或通过；169c run39583904466已启动，本批最终CI须独立读取。旧完整门5失败与随后7项targeted通过仍保原身份。
 
-正常日常后台61901保留，当前未安装本批候选、未开游戏。唯一正常安装者是GUI；Installer准备kit命令和依赖，I不给自己另开Mod build。历史HOME固定launcher仍指旧kit/临时配置，GUI须按原expected-hash替换、正常永久kit配对与rollback验收。Storage正在修首真实import的实例锁自锁，Training无新增生产源码；它们的实际结果不由targeted绿色替代。全门前冻结准确组合，root给重型slot才执行，未准确完整门/CI全绿不merge及不正常升级。
+正常日常后台61901保留，当前未安装本批候选、未开游戏。唯一正常安装者是GUI；Installer准备kit命令和依赖，I不给自己另开Mod build。历史HOME固定launcher仍指旧kit/临时配置，GUI须按原expected-hash替换、正常永久kit配对与rollback验收。Storage首真实import失败原件保留，锁首因已修，等待同scope真实后台、R2和冷热验收；Training无新增生产源码；它们的实际结果不由targeted绿色替代。全门前冻结准确组合，root给重型slot才执行，未准确完整门/CI全绿不merge及不正常升级。
 
 ## 本批可验结果与硬限
 
@@ -24,7 +24,7 @@ PR207旧head4128仍保Linux fixture原失败，日志在集成工作树`.local/b
 
 ## 资源与验证安排
 
-10:15—10:35重IO给Storage，scratch上限700MiB。11:00—11:45预留唯一本机完整门slot，其余源码轻检查可并行。日常服务和录制优先。I私有小env只复制原1.6MiB锁定依赖视图，ML依赖以只读路径复用；Evidence32真实VCS安装的原metadata/RECORD及31源文件逐字节核验，父子进程均从当前集成源码读取，20required/87selected无锁差。Node依赖APFS克隆54MiB，不共享可写目录。
+root最新slot：Training10:30—10:33原call结果恢复/CPU物化，Storage10:33—10:38同3scope真实小IO；10:38开始唯一本机准确完整门，预计11:08—11:23结束，其余源码轻检查可并行。日常服务和录制优先。I私有小env只复制原1.6MiB锁定依赖视图，ML依赖以只读路径复用；Evidence32真实VCS安装的原metadata/RECORD及31源文件逐字节核验，父子进程均从当前集成源码读取，20required/87selected无锁差。Node依赖APFS克隆54MiB，不共享可写目录。
 
 全门预计30—45分钟。旧全机窗口可用空间下降约5.7GiB，仅是保守参考，不能当全门自身峰值；本轮使用独立TMPDIR并测实际体量。2GiB只是早期临时估算，不新增为通过/中止门；开始前据当时df、已测峰值、活动录制保护和其他进程判断资源，低空间时正常停止并保留准确结果，不自动重跑。准确完整门及CI未齐则S2未验；通过也只授source/test，不授installed/runtime/Human。GPU和数据/R2按原owner授权，不能借测试启动正式训练或任意清理。
 

@@ -12,6 +12,8 @@ specification/component guide and exact code/evidence needed for it. A four-file
 orientation is not a ban on relevant investigation; it is not a requirement to
 read all historical plans before doing useful work.
 
+开工先沿README唯一链路核本次交付的完整上下游需求、已有实现和对应SOP，再选有界改动；调查限本批真实路径与可复用成果，有限阅读不等于只查单组件，也不要求泛读全部历史。
+
 Before ordinary development consult relevant `docs/DEVELOPMENT_WORKFLOW.md` and
 `docs/TESTING.md` sections. For authority, public contracts, cross-layer semantics,
 identity, test policy or governance changes, also consult the relevant
