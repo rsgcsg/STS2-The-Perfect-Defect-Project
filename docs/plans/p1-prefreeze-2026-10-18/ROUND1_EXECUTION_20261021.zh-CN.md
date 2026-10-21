@@ -1,6 +1,6 @@
 # 第一轮执行：稳定录制与正常数据、模型、GPU闭环
 
-本轮UTC02:00:36开始；用户因电脑合盖直接延长一小时，最新05:30停新增、05:40候选收口、06:00（Brisbane16:00）硬交付，目标达成可提前停，费用/调用预算不扩。原PR206已按C-2 normal merge，I在准确398f源码组合已正常合入B0bf/S8e/D56b/C-input e592/E8d/C-GPU331c整栈；Evidence rc32真实VCS安装、canonical pin/锁/RECORD、原doctor与-I父子新I source绑定通过，整Python Mypy408/Ruff/root repository/closeout/BOM/已提交base diff通过。当前组合full与新head hosted CI尚未跑，完整门约17–20分钟，最后稳定组合由root另选一次，不借旧绿。新Human短录由用户亲手，Close/audit/pack/reader及14paths回滚已由root核；非完整整局。用户实际反馈界面不好用，G复用成熟旧录制页作纯UI改善，新包未合、未新build。原c930 Mod/Tool9a保本次Human及七源身份，七源已3715N/3357next；正常Store/独立reader、Global/热集、E lossless与非作者真实IO待root统一slot。GPU首call取消但有4更新/3checkpoint，无完整ModelResult，新镜像仅部署通过。原14/6全保，正式首训未就绪。
+本轮UTC02:00:36开始；用户因电脑合盖直接延长一小时，最新05:30停新增、05:40候选收口、06:00（Brisbane16:00）硬交付，目标达成可提前停，费用/调用预算不扩。原PR206已按C-2 normal merge，I在准确398f源码组合已正常合入B0bf/S8e/D56b/C-input e592/E8d/C-GPU331c整栈；Evidence rc32真实VCS安装、canonical pin/锁/RECORD、原doctor与-I父子新I source绑定通过，整Python Mypy408/Ruff/root repository/closeout/BOM/已提交base diff通过。当前组合full与新head hosted CI尚未跑，完整门约17–20分钟，最后稳定组合由root另选一次，不借旧绿。新Human短录由用户亲手，Close/audit/pack/reader及14paths回滚已由root核；非完整整局。用户实际反馈界面不好用，G复用成熟旧录制页作纯UI改善，整G0046/D b607已normal合，UIrc14/Modrc49及BOM已统一，准确新build/视觉未验。原c930 Mod/Tool9a保本次Human及七源身份，七源已3715N/3357next；S正常Store发布/CLI完整读回/R2完整父闭包7/7已实成，C独立dataset reader、Global/热集、E lossless与非作者真实IO待root统一slot。GPU首call取消但有4更新/3checkpoint，无完整ModelResult，新镜像仅部署通过。原14/6全保，正式首训未就绪。
 
 ## 本轮目标、授权和准确起点
 
@@ -32,8 +32,8 @@ I独占`work/p1-round1-integration-20261021`、topic`codex/p1-round1-integration
 
 | owner/写范围 | 上游提供→下游需要；本轮产物 | 验收、停止与当前状态 |
 |---|---|---|
-| A 环境语义/Tool | 原selector surface事实→SDK准确动作与finish_available→固定r1.5 Tool→七源投影 | 同类cancel/真正空提交/拒绝/非空确认忠实正反例，协议和consumer同包；七源新旧N/next/缺口/标签差异。r1.5源码b4bf2304及忠实测试已审合入；唯一Tool9a489cd0已发布，七源已派生3715N/3357next，正常Store/reader待验，不改原生规则/模型 |
-| G 原生GUI，B Application协同 | 游戏内既有控件→同一Application/TaskBridge/RecordingApplicationService→原RecorderRuntime | G薄映射fa81f4c7/526c3066及B ae20d926/02b38638已审合入；I实跑UI 34项/API 18项通过，未授native资格。工程UI生命周期及用户短录已实做，root核原件；用户反馈易用性不足，G改成熟分区/人话状态，新候选仍待准确build/视觉验证 |
+| A 环境语义/Tool | 原selector surface事实→SDK准确动作与finish_available→固定r1.5 Tool→七源投影 | 同类cancel/真正空提交/拒绝/非空确认忠实正反例，协议和consumer同包；七源新旧N/next/缺口/标签差异。r1.5源码b4bf2304及忠实测试已审合入；唯一Tool9a489cd0已发布，七源已派生3715N/3357next，正常Store/CLI/R2完整父闭包7/7通过，C dataset reader待验，不改原生规则/模型 |
+| G 原生GUI，B Application协同 | 游戏内既有控件→同一Application/TaskBridge/RecordingApplicationService→原RecorderRuntime | G薄映射fa81f4c7/526c3066及B ae20d926/02b38638已审合入；I实跑UI 34项/API 18项通过，未授native资格。工程UI生命周期及用户短录已实做，root核原件；用户反馈易用性不足，G0046成熟分区/人话状态已合，新候选仍待准确build/视觉验证 |
 | E Runtime/Evidence | 原完整capture/source/Agent/Receipt→去重表示和原预算Stop→同包replay/typed消费者 | 先量旧T0b/历史复用，旧读新写，唯一字节/全部物理分母，旧archive保持验证；无进展窗口/摘要/choice意义明确，沿原Stop记no_progress，不冒自然结局。E8d已正常合入，source窄测与真实旧原件lossless IO分别报告，后者待root slot |
 | B Application/模型用例 | 既有Model/InputSpec/Runtime安装pin→原model/live registration/start/status/stop/证据查询 | 复用原P1 Agent/CLI/可信expected，原t0 register保工程工具；B独占共享Application路由/descriptor，S提供service接口。正常API/CLI与GUI同用例，进程内夹具/源码入口/准确安装/日常安装分层 |
 | S Store/maintenance | trusted runtime expected+密封Global→原typed verifier→正常Manifest/reader→copy_artifact/R2；原保存→recent-two冷却/恢复 | 旧T0b先独立接通，新格式随E；父Model/Runtime保身份，content_id不冒artifact_id，不借旧profile。S8e/B0bf已合；真Evidence32前置已过，实际pack/Global/七源/热集与非作者reader仍待root slot，不以source测试授回库通过 |
@@ -81,7 +81,7 @@ I独占`work/p1-round1-integration-20261021`、topic`codex/p1-round1-integration
 
 本轮区分“进程内源码集成（测试夹具）”“正常源码入口”“准确候选安装”“日常已安装入口”；组件source/test、build/install/load、runtime、Human、策略/研究资格分别报告。原旧T0b是资源容量预防停止，未触512MiB，非自然结局或unknown；898completed+1interrupted_known/Stop取消capture及native warning/error保原件。新表示/语义不得改旧原件或把旧计数贴给新ID。
 
-当前版本Connector1.3rc26/SDK1.3rc11、Host1.1rc34/Policy0.1rc39、UI0.1rc13/Mod0.2rc48，Evidence0.1rc32及依赖锁/BOM一致。原exact02仅绑定c930/native tuple、SDK586/native182/Annotator445/13及19Node/零编译warning或error；首exact01组件docs错误保FAIL。Tool9a保同Mod provenance，本次Human/七源不贴未来新UI身份。准确398f真实operator installed Evidence32、原doctor和-I子进程源绑定、31源文件/RECORD及Mypy408/Ruff/rootrepository/closeout/base diff已验，当前full未验。S实际小fixture/正常Store/Global/R2/热集及E lossless IO与C工程GPU余项按root唯一slot交原件，source与夹具不冒真实consumer。Operator32不冒remote331c锁31资格。稳定增量和所有原失败在各owner固定报告及本轮集成回执；私路径只在外部回执可点击，不成为仓库依赖。root最终写replies/P1-NEXT-ROUND-ROOT-RESULT-20261021.md并同步外部START。回滚用具名topic revert、原owner确切安装/配置/Stop/rollback，数据恢复沿原Store不删原件。
+当前版本Connector1.3rc26/SDK1.3rc11、Host1.1rc34/Policy0.1rc39、UI0.1rc14/Mod0.2rc49，Evidence0.1rc32及依赖锁/BOM一致。原exact02仅绑定c930/native tuple、SDK586/native182/Annotator445/13及19Node/零编译warning或error；首exact01组件docs错误保FAIL。Tool9a保同Mod provenance，本次Human/七源不贴未来新UI身份。准确398f真实operator installed Evidence32、原doctor和-I子进程源绑定、31源文件/RECORD及Mypy408/Ruff/rootrepository/closeout/base diff已验，当前full未验。S实际小fixture/正常Store/Global/R2/热集及E lossless IO与C工程GPU余项按root唯一slot交原件，source与夹具不冒真实consumer。Operator32不冒remote331c锁31资格。稳定增量和所有原失败在各owner固定报告及本轮集成回执；私路径只在外部回执可点击，不成为仓库依赖。root最终写replies/P1-NEXT-ROUND-ROOT-RESULT-20261021.md并同步外部START。回滚用具名topic revert、原owner确切安装/配置/Stop/rollback，数据恢复沿原Store不删原件。
 
 ## 历史
 

@@ -8,8 +8,8 @@ Resolve live GitHub refs before relying on this snapshot. 最新用户原话和�
 
 PR206已依用户C-2 normal merge入develop8b2c作为工程BASE，非冻结/生产。I独占topic、CURRENT/唯一任务、版本/BOM和refs；各writer独立分支，root排资源/终审。
 I已normal merge经Q审B0bf/S8e/D56b/C-input e592/E8d/C-GPU331c整栈。准确源组合398f的整Python Mypy408、Ruff、原root repository/closeout/BOM/已提交base diff通过。Evidence真实pack子目录返回修复已版本rc32，正常canonical Git pin/uv lock、真实VCS build/install及原doctor/RECORD通过；31源文件逐字节同、20required/87selected零锁差、-I父子均绑定新I。旧Human配置combination_changed失败保留，另正常setup隔离operator配置验新组合，没有伪metadata或共享安装。当前组合完整门及新head hosted CI尚未跑，旧绿不替代。
-原exact02真实build通过，固定Tool9a489绑定同c930 Mod；七源r1.5已派生3715N/3357next，正常Store/独立reader未因派生自动通过。原工程UI完成两空session；随后用户亲手短录已Close/audit/pack/reader并回滚，由root核原件，非完整整局/研究资格。用户指出界面不好用，G正复用成熟旧录制页改分区/人话状态/显眼操作；新UI未合、未授新artifact，现有录制和七源保原tuple。
-S Global/热集、E lossless、正常数据回库及非作者消费者真实IO待root唯一slot；源码/夹具不替代。C首GPU调用已取消，实际4更新/3checkpoint、无完整ModelResult；新镜像仅部署通过，后续调用与成本由root排。Operator Evidence32与remote331c锁31分层，不能互授资格。D原九类SOP/15现行caller/104去向已核，非作者全操作仍按真实结果判，不用help或路径存在授六项全过。
+原exact02真实build通过，固定Tool9a489绑定同c930 Mod；七源r1.5已派生3715N/3357next；S正常Store发布/CLI完整读回及R2完整父闭包7/7已实成，C独立dataset reader仍待，不因派生授研究通过。原工程UI完成两空session；随后用户亲手短录已Close/audit/pack/reader并回滚，由root核原件，非完整整局/研究资格。用户指出界面不好用，G已复用成熟旧录制页改分区/人话状态/显眼操作，整G0046/D b607已normal合；新UI待准确build/视觉，未授新artifact，现有录制和七源保原tuple。
+S Global/热集、E lossless和非作者消费者后续真实IO待root唯一slot；源码/夹具不替代。C首GPU调用已取消，实际4更新/3checkpoint、无完整ModelResult；新镜像仅部署通过，后续调用与成本由root排。Operator Evidence32与remote331c锁31分层，不能互授资格。D原九类SOP/15现行caller/104去向已核，非作者全操作仍按真实结果判，不用help或路径存在授六项全过。
 
 ## Remaining Platform non-claims 与时间、资源边界
 
