@@ -41,6 +41,11 @@ test("Workbench browser opens after a user click and exact-instance health check
   assert.match(workbenchOpen, /new ProcessStartInfo\(path\)/u);
   assert.match(workbenchOpen, /UseShellExecute = false/u);
   assert.doesNotMatch(workbenchOpen, /OS\.ShellOpen\(/u);
+  const nativeEntry = mod.slice(mod.indexOf("private void OpenNativeWorkbenchPage"), mod.indexOf("private async Task RunPolicyCommandAsync"));
+  assert.match(nativeEntry, /BeginOpenWorkbench\(false\)/u);
+  assert.match(mod, /BuildHeaderButton\("项目", \(\) => \{ SelectSurface\(2\); BeginOpenWorkbench\(false\); \}/u);
+  const complete = mod.slice(mod.indexOf("private void CompleteWorkbenchOpenCheck"), mod.indexOf("private void ShowPanel"));
+  assert.match(complete, /if \(!_workbenchOpenExternal\)[\s\S]*?_nativeWorkbench.Refresh\([\s\S]*?return;[\s\S]*?OS.ShellOpen\(result.Url\)/u);
 });
 
 test("Workbench registration bridge is exact-loopback, game-instance-bound metadata only", () => {
@@ -57,8 +62,8 @@ test("Workbench registration bridge is exact-loopback, game-instance-bound metad
   assert.doesNotMatch(taskBridge, /OS\.ShellOpen|Process\.Start|WebBrowser/u);
 });
 
-test("Product navigation retains model and Human surfaces and adds the native Workbench", () => {
-  assert.match(mod, /new\[\] \{ "运行状态与恢复", "真人采集", "工作台" \}/u);
+test("Product navigation exposes current recording separately from compatibility diagnostics", () => {
+  assert.match(mod, /new\[\] \{ "运行状态与恢复", "兼容录制诊断", "工作台" \}/u);
   assert.match(mod, /BuildAgentRunPage\(_surfaceViewport\)/u);
   assert.match(mod, /BuildRecorderPage\(_surfaceViewport\)/u);
   assert.match(mod, /_surfaces\.Add\(_agentRunPage\)/u);

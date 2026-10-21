@@ -129,6 +129,17 @@ _BUDGET_EXHAUSTION = frozenset({"submission_attempt_limit", "policy_call_limit",
 _BUDGET_END = frozenset({"human_recovery", "mode_changed", "stopped"})
 
 
+def _global_no_progress_config(value: object) -> dict[str, int] | None:
+    if value is None:
+        return None
+    if (not isinstance(value, dict) or set(value) != {"windowDecisions", "maxRepeats"}
+            or type(value["windowDecisions"]) is not int
+            or type(value["maxRepeats"]) is not int
+            or not 2 <= value["maxRepeats"] <= value["windowDecisions"] <= 256):
+        raise BoundaryError("local_model", "invalid_global_no_progress")
+    return {"windowDecisions": value["windowDecisions"], "maxRepeats": value["maxRepeats"]}
+
+
 def _recorded_budget(value: object) -> dict[str, Any] | None:
     """Project only typed Runtime counters from verified event bytes."""
     if (not isinstance(value, dict) or not isinstance(value.get("state"), str)
@@ -415,7 +426,7 @@ class RuntimeClient:
         }
         agent, runtime = status.get("agent"), status.get("runtime")
         if (
-            set(status) != fields
+            set(status) not in (fields, fields | {"global_no_progress"})
             or status["schema"] != AGENT_STATUS
             or status["run_id"] != self.startup["run_id"]
             or status["agent_manifest_sha256"] != self.startup["agent_manifest_sha256"]
@@ -445,6 +456,27 @@ class RuntimeClient:
             or runtime.get("code_sha256") != self.startup["runtime_code_sha256"]
         ):
             raise ValueError
+        if "global_no_progress" in status:
+            progress = status["global_no_progress"]
+            if not isinstance(progress, dict) or set(progress) != {
+                "windowDecisions", "maxRepeats", "last"}:
+                raise ValueError
+            config = _global_no_progress_config({key: progress[key]
+                                                for key in ("windowDecisions", "maxRepeats")})
+            assert config is not None
+            last = progress["last"]
+            if last is not None and (
+                    not isinstance(last, dict) or set(last) != {
+                        "state_sha256", "choice_sha256", "repeats", "novel_state", "exhausted"}
+                    or any(not isinstance(last[key], str)
+                           or re.fullmatch(r"[a-f0-9]{64}", last[key]) is None
+                           for key in ("state_sha256", "choice_sha256"))
+                    or type(last["repeats"]) is not int
+                    or not 1 <= last["repeats"] <= config["windowDecisions"]
+                    or type(last["novel_state"]) is not bool
+                    or type(last["exhausted"]) is not bool
+                    or last["exhausted"] != (last["repeats"] >= config["maxRepeats"])):
+                raise ValueError
         for key in ("errors", "invalidations"):
             if not isinstance(status[key], list) or any(
                 not isinstance(item, str) for item in status[key]
@@ -751,10 +783,14 @@ class LocalModelService:
         *,
         native_context: dict[str, Any] | None = None,
         native_episode_ref: object | None = None,
+        global_no_progress: object = None,
     ) -> dict[str, Any]:
         from .agent_run_request import create
 
         bounded = self._run_profile(identity, run_profile)
+        progress = _global_no_progress_config(global_no_progress)
+        if progress is not None and self.selection(identity)["adapter"] not in GLOBAL_ADAPTERS:
+            raise BoundaryError("local_model", "global_no_progress_profile_required")
         composition = self.composition(identity)
         manifest = _object_file(self.entry_path(self.selection(identity), "manifest"))
         episode = None
@@ -787,6 +823,7 @@ class LocalModelService:
             "managed" if managed_manifest(manifest) else "native",
             native_context,
             episode,
+            global_no_progress=progress,
         )
 
     def run_agent(
@@ -808,6 +845,9 @@ class LocalModelService:
             raise BoundaryError("agent_run_request", "invalid_request")
         with self.lock:
             self._require_source_admission()
+        budget = value.get("budget")
+        if not isinstance(budget, dict):
+            raise BoundaryError("agent_run_request", "invalid_request")
         episode = None
         admission = value.get("admission_context")
         if isinstance(admission, dict) and "native_episode" in admission:
@@ -829,6 +869,7 @@ class LocalModelService:
             profile,
             native_context=native_context,
             **({"native_episode_ref": episode["environment_ref"]} if episode is not None else {}),
+            global_no_progress=budget.get("no_progress"),
         )
         request = checked(value, effective)
         operation = request["operation"]
@@ -1239,6 +1280,8 @@ class LocalModelService:
                     downloaded = Manifest.from_bytes(manifest_path.read_bytes(), directory.name)
                     if downloaded.kind != "model":
                         continue
+                    p1_registration = downloaded.parameters.value().get("schema") in {
+                        "stpd/p1-mstd-trained-model-1", "stpd/p1-mstd-model-1"}
                     export_supported = False
                     try:
                         support = LocalModelExport(self.config).support(downloaded.artifact_id)
@@ -1255,11 +1298,11 @@ class LocalModelService:
                             "model_schema": downloaded.parameters.value().get("schema"),
                             "local_download": (directory / "download.json").is_file(),
                             "loaded": False,
-                            "support_status": ("export_and_registration_required" if
-                                export_supported else
+                            "support_status": ("registration_required" if p1_registration else
+                                "export_and_registration_required" if export_supported else
                                 "unsupported"),
-                            "reason": ("s0_text_v2_only" if
-                                export_supported else
+                            "reason": ("register_current_p1_model" if p1_registration else
+                                "s0_text_v2_only" if export_supported else
                                 "no_compatible_live_adapter_and_input_parity"),
                         }
                     )
@@ -1473,6 +1516,7 @@ class LocalModelService:
                     agent_request["selection_id"],
                     agent_request["operation"],
                     agent_request["run_profile"],
+                    global_no_progress=agent_request.get("budget", {}).get("no_progress"),
                     **({"native_context": request_context} if request_context is not None else {}),
                     **(
                         {"native_episode_ref": native_episode_context["environment_ref"]}
@@ -1855,7 +1899,7 @@ class LocalModelService:
                 and native_context.get("intent_generation") == intent):
             raise BoundaryError("local_model", "native_model_target_unavailable")
         target = self._managed_runtime_target() if managed else None
-        if target is not None and entry["adapter"] == GLOBAL_ADAPTER:
+        if target is not None and entry["adapter"] in GLOBAL_ADAPTERS:
             target = {**target, "input_profile": "public-basis-1"}
         selected_target = public_target(target) if target is not None else None
         connector = (None if managed else
@@ -1876,12 +1920,14 @@ class LocalModelService:
                     raise BoundaryError("local_model", "native_model_context_changed")
                 self._require_intent(intent)
             environment_arguments = ["--connector-endpoint", connector]
+        progress: dict[str, int] | None = None
         request_ref = self.state.get("agent_run_request")
         if request_ref is not None:
             from .agent_run_request import original
 
             expected = _startup_identity(manifest, package, managed_environment=selected_target)
             admitted = original(self.directory, request_ref, expected)
+            progress = _global_no_progress_config(admitted["budget"].get("no_progress"))
             if self.composition(identity)["composition_id"] != admitted["composition_id"]:
                 raise BoundaryError(
                     "agent_run_request", "effective_composition_changed_before_spawn"
@@ -1904,6 +1950,9 @@ class LocalModelService:
             "--mode",
             "human",
         ]
+        if progress is not None:
+            command.extend(("--no-progress-window", str(progress["windowDecisions"]),
+                            "--no-progress-repeats", str(progress["maxRepeats"])))
         if bounded:
             limits = RUN_PROFILES[run_profile]
             command.extend(("--max-auto-submissions", str(limits["max_submissions"]),
@@ -2282,7 +2331,7 @@ class LocalModelService:
                 current_target = self._managed_runtime_target()
                 # The owned startup records the adapter; GLOBAL is always an
                 # agent-session startup, policy startups carry no adapter.
-                if client.startup.get("adapter", {}).get("id") == GLOBAL_ADAPTER:
+                if client.startup.get("adapter", {}).get("id") in GLOBAL_ADAPTERS:
                     current_target = {**current_target, "input_profile": "public-basis-1"}
                 confirm_target(managed_environment, current_target)
                 if current_target["runtime_instance_id"] != binding.runtime_instance_id:
@@ -2834,14 +2883,50 @@ class LocalModelService:
         with self.lock:
             self.state["evaluation"] = report
 
+    def stopped_agent_evidence_context(self, run_id: object) -> dict[str, Any]:
+        """Bind one owned stopped P1 run to its original registered Model and Runtime."""
+        with self.lock:
+            self._require_stopped_runtime()
+            startup = self.state.get("startup")
+            if (self.state.get("status") != "stopped"
+                    or self.thread is not None and self.thread.is_alive()
+                    or not isinstance(startup, dict)
+                    or startup.get("schema") != AGENT_STARTUP
+                    or not isinstance(run_id, str)
+                    or re.fullmatch(r"run-[a-f0-9-]{36}", run_id) is None
+                    or startup.get("run_id") != run_id):
+                raise BoundaryError("local_model", "owned_stopped_agent_run_required")
+            entry = self.selection(startup["agent_manifest_id"])
+            if entry["adapter"] != GLOBAL_MODEL_ADAPTER:
+                raise BoundaryError("local_model", "global_model_owned_run_required")
+            manifest = _object_file(self.entry_path(entry, "manifest"))
+            config = _object_file(self.entry_path(entry, "config"))
+            if (hashlib.sha256(canonical_json(manifest).encode()).hexdigest()
+                    != startup.get("agent_manifest_sha256")
+                    or manifest["artifact"]["sha256"] != startup.get("agent_artifact_sha256")
+                    or config.get("package_sha256") != startup.get("agent_artifact_sha256")):
+                raise BoundaryError("local_model", "original_agent_registration_changed")
+            model_id = digest(config.get("model_artifact_id"), "local_model.model_artifact_id")
+            # No archive field chooses code, an arbitrary source path or a Model.
+            # The data owner performs the typed sealed-original verification.
+            return {
+                "directory": str(self.directory / "agent-runs" / run_id),
+                "expected": self._agent_evidence_expected(dict(startup)),
+                "model_artifact_id": model_id,
+            }
+
     def _agent_evidence_expected(self, startup):
         expected = dict(startup)
         entry = self.selection(startup["agent_manifest_id"])
-        if entry["adapter"] == GLOBAL_ADAPTER:
+        if entry["adapter"] in GLOBAL_ADAPTERS:
             self._runtime_package(entry["id"])
             expected["global_runtime_directory"] = str(
                 (self._node_modules(entry["id"]) / RUNTIME_PACKAGE / "dist").resolve()
             )
+            if entry["adapter"] == GLOBAL_MODEL_ADAPTER:
+                config = _object_file(self.entry_path(entry, "config"))
+                expected["model_binding"] = {key: config[key] for key in (
+                    "package_input_spec", "input_spec", "input_projection")}
         return expected
 
     def _native_operation_handoff(self, startup: dict[str, Any]) -> None:
@@ -3031,6 +3116,27 @@ class LocalModelService:
                     != original["agent"]["version"]
                     or descriptor.get("agent_spec", {}).get("model_bindings") != []
                 ):
+                    return None, "original_composition_binding_changed"
+                return raw, None
+            if entry["adapter"] == GLOBAL_MODEL_ADAPTER:
+                config_path = self.entry_path(entry, "config")
+                config = _object_file(config_path)
+                metadata = _inside(
+                    self.entry_root(entry),
+                    (config_path.parent / "model.json").relative_to(
+                        self.entry_root(entry)).as_posix())
+                if metadata.stat().st_size > JSON_LIMIT:
+                    return None, "original_package_metadata_unavailable"
+                raw = metadata.read_bytes()
+                if hashlib.sha256(raw).hexdigest() != config.get("package_manifest_sha256"):
+                    return None, "original_package_metadata_changed"
+                package = decode_json(raw)
+                if (not isinstance(package, dict)
+                        or package.get("schema") != "stpd/p1-mstd-model-1"
+                        or package.get("package_sha256") != original["artifact"]["sha256"]
+                        or package.get("input_spec")
+                        != config["package_input_spec"]
+                        or package.get("agent_spec") != config["agent_spec"]):
                     return None, "original_composition_binding_changed"
                 return raw, None
             config = _config(self.entry_path(entry, "config"))

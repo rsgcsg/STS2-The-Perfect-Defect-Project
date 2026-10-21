@@ -66,18 +66,82 @@ describe("same-request forward selector intention", () => {
     expect((reduced.observation.scene.content as any).surface.selection_progress).toMatchObject({
       mode: "forward_append_only", remaining_slots: 0, finish_available: true });
   });
-  it("represents an available empty native decline as Finish, preserving its exact input", () => {
+  it("represents an explicitly advertised whole-page native Skip as Finish", () => {
     const { outer } = pair(); const snapshot = outer.snapshot;
     const surface = snapshot.interaction.content.surface;
-    surface.current_controls = [{ entity_id: "cancel", operation: "cancel_selection" }];
+    // Legacy Host exposes a semantic Skip, not a Close whose parent can reopen.
+    delete surface.selector_request;
+    surface.can_skip = true; surface.current_controls = [];
     snapshot.bound_actions.actions = [snapshot.bound_actions.actions[0], {
-      ...snapshot.bound_actions.actions[0], bound_action_id: "decline-empty", verb: "cancel",
-      subject_referent_id: "cancel", label: "Decline" }];
+      ...snapshot.bound_actions.actions[0], bound_action_id: "decline-empty", verb: "skip",
+      subject_referent_id: null, label: "Skip selection" }];
     snapshot.bound_actions.total_count = snapshot.bound_actions.materialized_count = 2;
     const reduced = project(outer); const finish = reduced.observation.catalog.find(c => c.kind === "upgrade.finish")!;
     expect(reduced.complete).toBe(true); expect(finish.subject).toBeNull();
     expect(reduced.lowering[finish.choice_id]!.first?.bound_action_id).toBe("decline-empty");
     expect((reduced.observation.scene.content as any).surface.selection_progress.remaining_slots).toBe(1);
+  });
+  it.each(["upgrade", "enchant", "selector", "transform"])("excludes an empty %s Close that returns to its parent, even at min=0", family => {
+    for (const minimum of [0, 1]) {
+      const { outer } = pair(); const snapshot = outer.snapshot;
+      const s = snapshot.interaction.content.surface;
+      if (family !== "upgrade") {
+        snapshot.interaction.kind = s.kind = family === "enchant" ? "deck_enchant_selection"
+          : family === "transform" ? "deck_transform_selection" : "native_deck_card_selection";
+        snapshot.interaction.content_schema = `sts2.player-environment/surface/${s.kind}-1`;
+        s.selector_request.family = family === "enchant" ? "deck_enchant" : family === "transform" ? "deck_transform" : "deck_card";
+        if (family === "selector" || family === "transform") {
+          s.preview_options[0].after = null; s.preview_options[0].after_availability = "not_applicable";
+        }
+      }
+      s.min_select = s.selector_request.min_select = minimum;
+      s.current_controls = [{ entity_id: "cancel", operation: "cancel_selection" }];
+      snapshot.bound_actions.actions = [snapshot.bound_actions.actions[0], {
+        ...snapshot.bound_actions.actions[0], bound_action_id: "return-empty", verb: "cancel",
+        subject_referent_id: "cancel", label: "Cancel card selection" }];
+      snapshot.bound_actions.total_count = snapshot.bound_actions.materialized_count = 2;
+      const reduced = project(outer);
+      expect(reduced.complete).toBe(true);
+      expect(reduced.observation.catalog.map(c => c.kind)).toEqual([`${family === "transform" ? "selector" : family}.choose`]);
+      expect(reduced.excluded).toContainEqual(expect.objectContaining({ bound_action_id: "return-empty",
+        rule: "forward_profile:selection_append_only" }));
+      expect((reduced.observation.scene.content as any).surface.selection_progress).toMatchObject({
+        minimum_additional_cards: minimum, finish_available: false });
+    }
+  });
+  it("does not infer an empty completion from min=0 without the native finish fact", () => {
+    const { outer } = pair(); const s = outer.snapshot.interaction.content.surface;
+    s.min_select = s.selector_request.min_select = 0;
+    s.current_controls.push({ entity_id: "confirm", operation: "open_preview" });
+    outer.snapshot.bound_actions.actions.push({ ...outer.snapshot.bound_actions.actions[0],
+      bound_action_id: "unavailable-empty-confirm", verb: "open", subject_referent_id: "confirm" });
+    outer.snapshot.bound_actions.total_count = outer.snapshot.bound_actions.materialized_count = 4;
+    const reduced = project(outer);
+    expect(reduced.complete).toBe(true);
+    expect(reduced.observation.catalog.map(c => c.kind)).toEqual(["upgrade.choose"]);
+    expect((reduced.observation.scene.content as any).surface.selection_progress.finish_available).toBe(false);
+  });
+  it("preserves a genuine native empty confirmation and excludes its duplicate Close", () => {
+    const { outer } = pair(); const snapshot = outer.snapshot; const s = snapshot.interaction.content.surface;
+    snapshot.interaction.kind = s.kind = "native_deck_card_selection";
+    snapshot.interaction.content_schema = "sts2.player-environment/surface/native_deck_card_selection-1";
+    Object.assign(s.selector_request, { family: "deck_card", min_select: 0, can_finish_now: true });
+    // Native open_preview is a completion control but is not the public confirm
+    // verb; its qualified request supplies can_finish_now instead.
+    s.min_select = 0; s.can_confirm = false;
+    s.preview_options[0].after = null; s.preview_options[0].after_availability = "not_applicable";
+    s.current_controls = [{ entity_id: "confirm", operation: "open_preview" }, { entity_id: "cancel", operation: "cancel_selection" }];
+    const base = snapshot.bound_actions.actions[0];
+    snapshot.bound_actions.actions = [{ ...base, bound_action_id: "empty-confirm", verb: "open", subject_referent_id: "confirm" },
+      { ...base, bound_action_id: "duplicate-close", verb: "cancel", subject_referent_id: "cancel" }];
+    snapshot.bound_actions.total_count = snapshot.bound_actions.materialized_count = 2;
+    const reduced = project(outer); const finish = reduced.observation.catalog[0]!;
+    expect(reduced.complete).toBe(true); expect(finish.kind).toBe("selector.finish");
+    expect(reduced.lowering[finish.choice_id]!.first?.bound_action_id).toBe("empty-confirm");
+    expect(reduced.excluded).toContainEqual(expect.objectContaining({ bound_action_id: "duplicate-close",
+      rule: "forward_profile:empty_selection_uses_completion" }));
+    expect((reduced.observation.scene.content as any).surface.selection_progress).toMatchObject({
+      minimum_additional_cards: 0, finish_available: true });
   });
   it("keeps a partial set irreversible and ends it through the available native preview", () => {
     const { outer } = pair(); const snapshot = outer.snapshot; const s = snapshot.interaction.content.surface;

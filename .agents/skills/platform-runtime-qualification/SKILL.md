@@ -9,6 +9,16 @@ Use this Skill for an explicit build/package/install/load/probe/runtime
 qualification request involving an exact Platform candidate. Ordinary coding,
 compilation fixes, and portable tests do not need it.
 
+## Canonical route
+
+This is an agent task adapter, not another SOP, approval authority or source of
+business truth. Start from this checkout's [CURRENT](../../../docs/memory/CURRENT.md)
+and its task, then [TESTING](../../../docs/TESTING.md) and the owning guide.
+User authorization persists; only a real missing dependency or out-of-scope
+choice pauses the dependent action. Continue independent authorized work.
+If discovery supplied an older checkout's Skill, compare with this repository's
+[Skill index](../README.md); do not operate on the old checkout or copy its state.
+
 ## Inputs
 
 Identify the owning component, source SHA/path-scoped identity, contract and BOM
@@ -26,8 +36,8 @@ fails closed.
    authorized native diagnostic may overlap isolated hosted CI on the same frozen
    candidate once install/load, rollback and Stop prerequisites pass. Do not bypass
    a failed relevant local gate or mutate generated inputs while consumers use them.
-   Selected full dual-OS/portable CI still governs merge, portability and stronger
-   promotion; record its actual outcome separately. An installed artifact does not
+   The checks selected by current TESTING govern merge, portability and stronger
+   promotion; do not add a dual-OS prerequisite from this Skill. Record actual CI separately. An installed artifact does not
    prove clean source. A task may require stronger prerequisites.
 3. Produce and hash the exact package/artifact; keep component identity,
    contract identity, workspace provenance, artifact SHA/MVID, and runtime
@@ -38,7 +48,8 @@ fails closed.
    installed, loaded, live exercise, journey, Human, qualification.
 6. On uncertain delivery or post-submission transport failure, classify
    `unknown`, taint as required, and never retry automatically.
-7. Run independent verification appropriate to the gate and report non-claims.
+7. Use the scoped non-author review selected by the task/governance; report non-claims,
+   including native warnings/teardown errors separately from install/API success.
 
 This is maintained workflow guidance subordinate to the user's authorized task and
 canonical TESTING rules. Revise a demonstrated workflow mismatch in the owning guide

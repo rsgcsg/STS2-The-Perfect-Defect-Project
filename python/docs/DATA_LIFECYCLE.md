@@ -180,15 +180,101 @@ checkpoint reader before declaring a result usable. The P1 original-only storage
 entry above does not pretend to validate model semantics.
 
 R2 is the long-term destination for project data; local bytes are the bounded
-active working set. Background closed-recording maintenance is separately
+active working set goal. Current automatic cooling only removes verified older
+expanded recording copies; compressed Store archives and named projections still
+accumulate locally. It does not yet bound the entire Store. Background closed-recording maintenance is separately
 configured through `recordings maintenance status|enable|disable --config PROJECT`;
 cloud scope must name candidates or a date/origin scope. It remains disabled until
-authorized. Planned recent-two-session hot-set cooling remains unimplemented and requires
-verified recoverability and the approved exact scope. This guide grants no new deletion,
-bulk scan, service restart, or automatic eviction authority. Continuous cooling
-is not established by one successful upload; keep that operational obligation
-visible at handoff. Private Curation backup and staged recovery use the owner
-operation below; replacing a live owner is deliberately separate.
+authorized. With `--cool-recent`, the same maintenance owner retains the newest
+two completed sessions in that exact scope. Older expanded raw copies cool only
+after the compressed local archive, independent peer full readback, exact-ID
+restore and the original CollectionTool reader all succeed. An OS-held consumer
+lock excludes managed raw import and the native recording owner. Source seals,
+catalog metadata, Store archives/manifests, Curation and remote objects remain;
+only verified recoverable expanded files are removed. A closed historical copy
+can lack the native lease file; the managed consumer lock stays outside raw and
+its enclosing bundle, and never enters an immutable inventory.
+
+The same maintenance operation imports each sealed source, preserves its original
+to R2, derives every named run from the verified original run journal, and preserves
+each named projection with its original parent closure. Empty sessions without an
+observed run retain their original without inventing `run-0001`. Completion requires
+the configured original and projection readbacks; a derivation failure retains the
+already preserved original and reports the failed operation. Capacity observations
+come from the native owner's recording volume, carry an observation time and are
+refreshed by maintenance rather than every GUI poll. The operation reserves scratch
+and destination space before large writes; insufficient space stops that operation
+explicitly and keeps the source. A cloud receipt does not guarantee unlimited offline
+recording or eliminate the need to monitor the remaining compressed Store growth.
+These are import/publication/transfer/materialization checks with a 512 MiB reserve,
+not a native Recorder Start admission budget. The current native recording path
+reports append/disk-health failure after an actual I/O failure; a proactive low-space
+Start stop and a real recording-on-full-disk experiment are not established here.
+
+```sh
+python -m spireagent.workbench recordings maintenance enable --config PROJECT --peer s3 --from-now --origin declared_human --cool-recent
+python -m spireagent.workbench recordings maintenance status --config PROJECT
+python -m spireagent.workbench recordings storage status --config PROJECT --store STORE --state STATE
+python -m spireagent.workbench recordings storage restore-expanded --config PROJECT --store STORE --state STATE --peer s3 --artifact ORIGINAL
+```
+
+These calls use the open Application and its same durable import/storage
+operation. Closing a panel does not stop maintenance. `expanded_state` in the
+catalog and maintenance status distinguishes hot, cooling, cold and restoring;
+the archive ID remains the read/derive authority. A failed or interrupted cooling
+operation does not automatically resume deletion. Use explicit
+`restore-expanded` for that artifact/peer; it restores missing exact original
+files without overwriting conflicting bytes. Archive existence alone cannot
+reconcile partial expanded deletion as success. The newest two and sources
+outside scope are never selected for automatic cooling. This is an implemented
+source capability; installed readiness and continuous real operation require
+their own receipts. Private Curation backup and staged recovery use the owner
+below; replacing a live owner is separate.
+
+## Finalized GLOBAL runtime originals
+
+`spireagent.workbench.global_evidence_store` is the thin registration/reader
+over the existing `Manifest` and ArtifactStore. It keeps the original
+`sts2.policy-runtime/agent-session-run-1` evidence schema and full directory
+inventory; it neither converts the run to Human/text-menu/native-logical data
+nor creates data use or admission. Application model/live supplies the trusted
+same-package Runtime `expected`, including `global_runtime_directory`, and the
+real model/Runtime parent artifact IDs. The archive cannot choose executable code.
+
+`publish_global_runtime(store, producer, expected)` preserves the exact compiled
+package bytes as a `protocol` parent. `publish_detached_p1_model(store, package,
+producer)` preserves an old engineering export's `weights` and `package_manifest`
+with its original package schema and explicitly unknown detached ancestry; it
+does not invent formal Run/Input/Checkpoint parents. The normal model owner still
+checks tensor and InputSpec semantics. Formal model artifacts keep their original
+training parents. Evidence registration checks parent bytes, original model
+descriptor/package InputSpec, the current trusted consumer binding when present,
+and the exact Runtime package/compiled closure against that sealed run.
+
+`publish_global_evidence(..., expected=..., model_artifact_id=...,
+runtime_artifact_id=..., scratch=...)` runs the original typed verifier, binds the
+copied complete inventory to its verified content ID, streams the existing cold
+archive and publishes an `evidence` Manifest. Its `artifact_id` is a different
+identity from the Evidence `content_id`. Full source Input/catalog, actual Agent
+frames/scores, dispatches, Receipts and typed results stay in the archive.
+
+After registration, use normal generic transfer:
+
+```sh
+python -m spireagent.workbench push --store STORE --other-store s3 --artifact EVIDENCE_ARTIFACT
+python -m spireagent.workbench pull --store STORE --other-store s3 --artifact EVIDENCE_ARTIFACT
+```
+
+`materialize_global_evidence(store, id, expected=..., scratch=...)` is the normal
+typed reader/context manager; `verify_global_artifact` returns its bounded receipt.
+They restore by ID, verify every original byte and parent, then call the same
+Evidence verifier and trusted same-package replay. Expanded read files exist only
+inside that call. An old run needs its original compatible trusted Runtime package;
+the current/default package is never silently substituted. GLOBAL format readers
+remain with Evidence/Runtime, so their old-read/new-write migration does not create
+another Store format. A `show` of metadata, transfer exit or generic hash check is
+insufficient to declare the run usable. Budget scratch for the compressed archive
+plus expanded inventory and retain the disk reserve before beginning.
 
 
 ## Private Curation ledger recovery

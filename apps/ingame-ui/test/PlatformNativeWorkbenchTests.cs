@@ -50,8 +50,10 @@ public sealed class PlatformNativeWorkbenchTests
         Assert.DoesNotContain(Connection(pair).Token, JsonSerializer.Serialize(Connection(pair)));
     }
 
-    [Fact]
-    public void BootstrapRequiresExactPrivateSelectedLauncherAndLoadedArtifact()
+    [Theory]
+    [InlineData("spireagent/workbench-launcher-v1")]
+    [InlineData("spireagent/source-candidate-launcher-v1")]
+    public void BootstrapRequiresExactPrivateSelectedLauncherAndLoadedArtifact(string launcherSchema)
     {
         string temp = OperatingSystem.IsMacOS() ? "/private/tmp" : Path.GetTempPath();
         string root = Path.Combine(temp, "native-workbench-test-" + Guid.NewGuid().ToString("N"));
@@ -63,7 +65,7 @@ public sealed class PlatformNativeWorkbenchTests
             { File.WriteAllText(path, value); if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite); }
             Private(config, "{}");
             string launcherPath = Path.Combine(root, "launcher.json");
-            Private(launcherPath, JsonSerializer.Serialize(new { schema = "spireagent/workbench-launcher-v1", config_path = config }));
+            Private(launcherPath, JsonSerializer.Serialize(new { schema = launcherSchema, config_path = config }));
             string launcherHash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(launcherPath))).ToLowerInvariant();
             string artifact = new string('8', 64);
             string path = Path.Combine(root, "native-access.json");
@@ -72,8 +74,18 @@ public sealed class PlatformNativeWorkbenchTests
             Assert.Equal(config, PlatformNativeWorkbenchBootstrap.Read(artifact, root).ConfigPath);
             Assert.DoesNotContain(Secret, PlatformNativeWorkbenchBootstrap.Read(artifact, root).ToString());
             Assert.Throws<InvalidOperationException>(() => PlatformNativeWorkbenchBootstrap.Read(new string('9', 64), root));
+            // A matching hash never admits an unrecognized launcher format.
+            Private(launcherPath, JsonSerializer.Serialize(new { schema = "spireagent/untrusted-launcher-v1", config_path = config }));
+            string invalidSchemaHash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(launcherPath))).ToLowerInvariant();
+            Private(path, JsonSerializer.Serialize(new { schema = PlatformNativeWorkbenchBootstrap.Schema, enabled = true,
+                config_path = config, launcher_sha256 = invalidSchemaHash, game_mod_sha256 = artifact, secret = Secret }));
+            Assert.Throws<InvalidOperationException>(() => PlatformNativeWorkbenchBootstrap.Read(artifact, root));
             File.WriteAllText(launcherPath, "{\"changed\":true}");
             Assert.Throws<InvalidOperationException>(() => PlatformNativeWorkbenchBootstrap.Read(artifact, root));
+            Private(launcherPath, JsonSerializer.Serialize(new { schema = launcherSchema, config_path = config }));
+            Private(path, JsonSerializer.Serialize(new { schema = PlatformNativeWorkbenchBootstrap.Schema, enabled = true,
+                config_path = config, launcher_sha256 = launcherHash, game_mod_sha256 = artifact, secret = Secret }));
+            Assert.Equal(config, PlatformNativeWorkbenchBootstrap.Read(artifact, root).ConfigPath);
             if (!OperatingSystem.IsWindows())
             {
                 File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.OtherRead);

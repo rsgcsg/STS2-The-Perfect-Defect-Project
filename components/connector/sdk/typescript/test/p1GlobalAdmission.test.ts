@@ -73,7 +73,7 @@ describe("P1 r1.3 explicit complete-capture admission", () => {
     const result = project(fixture("synthetic-complete-combat"));
     expect(result.complete).toBe(true);
     expect(result.missing).toEqual([]);
-    expect(result.observation.revision).toBe("r1.4");
+    expect(result.observation.revision).toBe("r1.5");
     expect(result.observation.envelope.required_information_complete).toBe(true);
     expect(result.observation.envelope.read_instances).toHaveLength(3);
   });
@@ -173,7 +173,7 @@ describe("P1 r1.3 explicit complete-capture admission", () => {
     b.snapshot.interaction.kind = "event_option"; b.snapshot.referents[0].role = "option";
     expect(project(b).forced_choice_id).toBeNull();
   });
-  it("retains meaningful multiselect deselect and cancel with no automatic confirmation", () => {
+  it("retains diagnostic native inputs without admitting an inconsistent multiselect", () => {
     const b = fixture("managed-deck_enchant_selection"); const s = b.snapshot.interaction;
     s.kind = "card_selection"; s.content_schema = "sts2.player-environment/surface/card_selection-1";
     Object.assign(s.content.surface, { kind: "card_selection", min_select: 1, max_select: 3, selected_count: 1, cancelable: true, can_cancel_selection: true });
@@ -181,6 +181,10 @@ describe("P1 r1.3 explicit complete-capture admission", () => {
     b.snapshot.bound_actions.actions.push({ ...a, bound_action_id: "action_deselect", verb: "deselect" },
       { ...a, bound_action_id: "action_cancel", verb: "cancel", subject_referent_id: null }); count(b);
     const r = project(b); const kinds = r.observation.catalog.map(c => c.kind);
+    // This legacy fixture declares selected_count=1 with an empty selected set.
+    // Its diagnostic raw catalog is not an admitted forward P1 decision.
+    expect(r.complete).toBe(false);
+    expect(r.missing).toContain("required:selector:invalid_content");
     expect(kinds).toContain("selector.deselect"); expect(kinds).toContain("selector.cancel"); expect(r.excluded).toEqual([]);
     for (const low of Object.values(r.lowering)) expect(low.follow).toEqual([]);
   });

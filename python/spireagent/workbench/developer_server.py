@@ -130,7 +130,8 @@ def open_project(
             if report["status"] != "PASS":
                 raise BoundaryError("project", "doctor_blocked")
             config.state_dir.mkdir(parents=True, exist_ok=True)
-            environment = service_environment(config.state_dir)
+            environment = service_environment(
+                config.state_dir, cloud_environment_file=config.cloud_environment_file)
             environment.pop("STPD_HUB_ADMIN_TOKEN", None)
             command = [sys.executable]
             if expected_identity is not None:
@@ -1036,6 +1037,23 @@ class Application:
             raise BoundaryError("local_model_export", "running_configuration_mismatch")
         return self.local_model_export.start(model_id)
 
+    def start_global_evidence(self, run_id: object, peer: object = None) -> dict[str, Any]:
+        """Preserve a stopped owned Model run through the existing data operation."""
+        self.check_environment_instance()
+        if peer is not None and not isinstance(peer, dict):
+            raise BoundaryError("p1_storage", "invalid_peer_binding")
+        context = self.models.stopped_agent_evidence_context(run_id)
+        return self.local_recording_import.start_global_evidence(context, peer)
+
+    def reconcile_local_recording_import(self) -> dict[str, Any]:
+        """Read the retained original import intent through its owning service."""
+        self.check_environment_instance()
+        importer = self.local_recording_import
+        with importer.lock:
+            if importer.status().get("action") == "global-evidence":
+                return importer.reconcile_global_evidence()
+            return importer.reconcile_p1_import()
+
     def register_local_model(self, model_id: object, *,
                              environment_kind: str = "native",
                              composition_options: dict[str, str] | None = None) -> dict[str, Any]:
@@ -1167,15 +1185,17 @@ def create_server(app: Application) -> ThreadingHTTPServer:
             return body
 
         def model_action(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
-            if path == "/api/local-models/request" and set(body) in (
-                {"selection_id", "operation", "run_profile"},
-                {"selection_id", "operation", "run_profile", "native_episode_ref"},
-            ):
+            if (path == "/api/local-models/request"
+                    and {"selection_id", "operation", "run_profile"} <= set(body)
+                    and not set(body) - {"selection_id", "operation", "run_profile",
+                                         "native_episode_ref", "global_no_progress"}):
                 app.check_environment_instance()
                 return app.models.agent_request(
                     body["selection_id"],
                     body["operation"],
                     body["run_profile"],
+                    **({"global_no_progress": body["global_no_progress"]}
+                       if "global_no_progress" in body else {}),
                     **(
                         {"native_episode_ref": body["native_episode_ref"]}
                         if "native_episode_ref" in body
@@ -1184,6 +1204,9 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                 )
             if path == "/api/local-models/run-agent":
                 return app.models.run_agent(body)
+            if (path == "/api/local-models/evidence/publish"
+                    and set(body) in ({"run_id"}, {"run_id", "peer"})):
+                return app.start_global_evidence(body["run_id"], body.get("peer"))
             if path == "/api/local-models/prepare" and set(body) in (
                 {"selection_id"}, {"selection_id", "run_profile"}
             ):
@@ -1430,15 +1453,17 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                     value = {"status": "unconfigured", "peer": None}
                 self.respond(200, json.dumps(value).encode())
             elif parsed.path == "/api/local-recordings/import/status":
-                if not self.authenticated_browser():
+                if not self.authenticated_browser() and not self.control_client():
                     self.respond(401, b'{"error":"browser_session_required"}')
                     return
                 if parsed.query:
                     self.respond(400, b'{"error":"invalid_local_import_request"}')
                     return
-                value = {**app.local_recording_import.status(), "csrf_token": app.account.csrf,
-                         "workbench_instance_id": app.instance_id,
-                         "configuration_id": configuration_id(app.config)}
+                value = app.local_recording_import.status()
+                if self.authenticated_browser():
+                    value = {**value, "csrf_token": app.account.csrf,
+                             "workbench_instance_id": app.instance_id,
+                             "configuration_id": configuration_id(app.config)}
                 self.respond(200, json.dumps(value).encode())
             elif parsed.path == "/api/local-recordings/preview/status":
                 if not self.authenticated_browser():
@@ -1578,7 +1603,7 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                 except BoundaryError as error:
                     self.respond(409, json.dumps({"error": error.code}).encode())
             elif parsed.path == "/api/local-model-registrations/status":
-                if not self.authenticated_browser():
+                if not self.authenticated_browser() and not self.control_client():
                     self.respond(401, b'{"error":"browser_session_required"}')
                     return
                 try:
@@ -1982,8 +2007,9 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                     return
                 try:
                     body = self.json_body(maximum=2048, reject_duplicate=True)
-                    if set(body) not in ({"enabled", "peer", "projection_id"},
-                                         {"enabled", "peer", "projection_id", "scope"}):
+                    if (not {"enabled", "peer", "projection_id"} <= set(body)
+                            or set(body) - {"enabled", "peer", "projection_id", "scope",
+                                            "cool_recent"}):
                         raise ValueError
                     value = app.p1_maintenance.configure(**body)
                     self.respond(200, json.dumps(value).encode())
@@ -1992,8 +2018,9 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                 except (OSError, ValueError, TypeError):
                     self.respond(400, b'{"error":"invalid_p1_maintenance_policy"}')
                 return
-            if self.path.startswith("/api/local-recordings/storage"):
-                if not self.browser_write():
+            if self.path in {"/api/local-recordings/storage",
+                              "/api/local-recordings/storage/reconcile"}:
+                if not self.browser_write() and not self.control_client():
                     self.respond(403, b'{"error":"browser_action_denied"}')
                     return
                 try:
@@ -2049,7 +2076,9 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                     self.respond(400, b'{"error":"invalid_local_preview_request"}')
                 return
             if self.path.startswith("/api/local-recordings/import"):
-                if not self.browser_write():
+                if not self.browser_write() and not (
+                        self.path == "/api/local-recordings/import/reconcile"
+                        and self.control_client()):
                     self.respond(403, b'{"error":"browser_action_denied"}')
                     return
                 if self.path not in {"/api/local-recordings/import",
@@ -2062,7 +2091,7 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                         body = self.json_body(maximum=64)
                         if body:
                             raise ValueError
-                        value = app.local_recording_import.reconcile_p1_import()
+                        value = app.reconcile_local_recording_import()
                     elif self.path == "/api/local-recordings/import/native-agent":
                         body = self.json_body(maximum=8192)
                         if set(body) not in (
@@ -2230,7 +2259,7 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                     self.respond(400, b'{"error":"invalid_local_model_export_request"}')
                 return
             if self.path.startswith("/api/local-model-registrations/"):
-                if not self.browser_write():
+                if not self.browser_write() and not self.control_client():
                     self.respond(403, b'{"error":"browser_action_denied"}')
                     return
                 if self.path not in {"/api/local-model-registrations/register",
@@ -2418,7 +2447,9 @@ def create_server(app: Application) -> ThreadingHTTPServer:
 def serve(config: ProjectConfig, *, config_path: Path | None = None) -> dict[str, Any]:
     if doctor(config)["status"] != "PASS":
         raise BoundaryError("project", "doctor_blocked")
-    with service_process(config.state_dir) as resources, instance_lock(
+    with service_process(
+        config.state_dir, cloud_environment_file=config.cloud_environment_file
+    ) as resources, instance_lock(
         config.state_dir / "instance.lock"
     ):
         app = Application(config, config_path=config_path)

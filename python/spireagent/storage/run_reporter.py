@@ -20,8 +20,15 @@ class ObjectStoreRunReporter:
         ):
             raise BoundaryError("reporter", "unsupported_event")
         run_id = event.parent("run")
-        self.store.publish(event)
-        self.slots.put_if_absent(f"run-events/{run_id}/{event.artifact_id}.json", event.to_bytes())
+        key = f"run-events/{run_id}/{event.artifact_id}.json"
+        if self._indexed(run_id):
+            # The declaration makes this directory exhaustive, including a
+            # publication interrupted before its final manifest is visible.
+            self.slots.put_if_absent(key, event.to_bytes())
+            self.store.publish(event)
+        else:
+            self.store.publish(event)
+            self.slots.put_if_absent(key, event.to_bytes())
         return event.artifact_id
 
     def completed(self, run_id: str) -> Manifest | None:
@@ -72,8 +79,42 @@ class ObjectStoreRunReporter:
         )
         return result.artifact_id
 
+    def _indexed(self, run_id: str) -> bool:
+        run = self.store.get_manifest(run_id)
+        declaration = run.parameters.value().get("event_index")
+        if declaration is not None and declaration != "run-events-v1":
+            raise BoundaryError("reporter", "unsupported_event_index")
+        return declaration == "run-events-v1"
+
+    def _indexed_events(self, run_id: str) -> list[Manifest]:
+        prefix = f"run-events/{run_id}/"
+        found = []
+        for key in self.slots.keys(prefix):
+            identity = key.removeprefix(prefix).removesuffix(".json")
+            if key != f"{prefix}{digest(identity, 'reporter.event_id')}.json":
+                raise BoundaryError("reporter", "event_index_key_mismatch")
+            event = Manifest.from_bytes(self.slots.get(key), identity)
+            if (event.kind != "run_event" or event.parent("run") != run_id
+                    or event.parameters.value().get("schema") != "stpd/run-event-v1"):
+                raise BoundaryError("reporter", "event_index_binding_mismatch")
+            try:
+                published = self.store.get_manifest(identity)
+            except StoreError as error:
+                if error.code == "object_not_found":
+                    # This is an incomplete publication, not an empty history or
+                    # corrupt index. The caller retains its current attempt.
+                    raise BoundaryError("reporter", "event_publication_pending") from error
+                raise
+            if published != event:
+                raise BoundaryError("reporter", "event_index_manifest_mismatch")
+            found.append(event)
+        return found
+
     def events(self, run_id: str) -> tuple[Manifest, ...]:
         digest(run_id, "reporter.run_id")
+        if self._indexed(run_id):
+            return tuple(sorted(self._indexed_events(run_id),
+                                key=lambda e: (e.parameters.value().get("step", 0), e.artifact_id)))
         found = []
         for artifact_id in self.store.manifest_ids():
             manifest = self.store.get_manifest(artifact_id)

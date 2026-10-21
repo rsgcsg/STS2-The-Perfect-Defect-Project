@@ -50,17 +50,22 @@ print(json.dumps({'exit':child.returncode, 'result':child.stdout, 'stderr':child
     assert not (tmp_path / "state").exists()
 
 
-def test_real_service_outlives_launcher_and_uses_profile_scratch(tmp_path):
+def test_real_service_outlives_launcher_and_uses_profile_scratch(tmp_path, monkeypatch):
+    monkeypatch.delenv("AWS_ACCESS_KEY_ID", raising=False)
+    monkeypatch.delenv("MODAL_TOKEN_ID", raising=False)
+    cloud_file = tmp_path / "cloud.env"
+    cloud_file.write_text("AWS_ACCESS_KEY_ID=synthetic-cloud-access\nMODAL_TOKEN_ID=excluded\n")
+    cloud_file.chmod(0o600)
     phase = tmp_path / "phase-tmp"
     phase.mkdir()
     state, result_path = tmp_path / "state", tmp_path / "result.json"
     child_code = """
-import json, sqlite3, sys, tempfile, time
+import json, os, sqlite3, sys, tempfile, time
 from pathlib import Path
 from types import SimpleNamespace
 sys.path.insert(0, sys.argv[1])
 from spireagent.workbench.service_process import service_process
-with service_process(Path(sys.argv[2])) as resources:
+with service_process(Path(sys.argv[2]), cloud_environment_file=Path(sys.argv[4])) as resources:
     time.sleep(0.5)
     with tempfile.TemporaryDirectory(prefix='service-probe-') as scratch:
         db = sqlite3.connect(Path(scratch)/'rows.sqlite')
@@ -71,7 +76,9 @@ with service_process(Path(sys.argv[2])) as resources:
             assert db.execute('SELECT length(body) FROM rows').fetchone()[0] == 2097152
         finally:
             db.close()
-    report = {**resources, 'scratch':scratch, 'written':True}
+    report = {**resources, 'scratch':scratch, 'written':True,
+              'cloud_access':os.environ.get('AWS_ACCESS_KEY_ID') == 'synthetic-cloud-access',
+              'excluded_cloud_key':'MODAL_TOKEN_ID' not in os.environ}
 Path(sys.argv[3]).write_text(json.dumps(report))
 """
     launcher = """
@@ -80,14 +87,15 @@ from pathlib import Path
 from types import SimpleNamespace
 sys.path.insert(0, sys.argv[1])
 from spireagent.workbench.service_process import service_environment
-subprocess.Popen([sys.executable,'-c',sys.argv[4],*sys.argv[1:4]],
-                 env=service_environment(Path(sys.argv[2])),
+subprocess.Popen([sys.executable,'-c',sys.argv[4],*sys.argv[1:4],sys.argv[5]],
+                 env=service_environment(Path(sys.argv[2]),cloud_environment_file=Path(sys.argv[5])),
                  stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                  stderr=subprocess.DEVNULL, start_new_session=True)
 """
     environment = dict(os.environ, TMPDIR=str(phase), TMP=str(phase), TEMP=str(phase))
     result = subprocess.run(
-        [sys.executable, "-c", launcher, str(ROOT), str(state), str(result_path), child_code],
+        [sys.executable, "-c", launcher, str(ROOT), str(state), str(result_path), child_code,
+         str(cloud_file)],
         env=environment, capture_output=True, text=True, timeout=10,
     )
     assert result.returncode == 0, result.stderr
@@ -97,6 +105,7 @@ subprocess.Popen([sys.executable,'-c',sys.argv[4],*sys.argv[1:4]],
         time.sleep(0.05)
     report = json.loads(result_path.read_text())
     assert report["written"] is True
+    assert report["cloud_access"] is True and report["excluded_cloud_key"] is True
     assert report["temporary_directory"] == str((state / "workbench-tmp").resolve())
     assert Path(report["scratch"]).parent == (state / "workbench-tmp").resolve()
     assert report["file_size_limit"] == (
@@ -176,7 +185,11 @@ def test_open_passes_owned_scratch_to_child_without_mutating_launcher(tmp_path, 
 
     state = tmp_path / "state"
     (state / "logs").mkdir(parents=True)
-    config = ProjectConfig(state, "", "", None, combination())
+    cloud_file = tmp_path / "cloud.env"
+    cloud_file.write_text("AWS_ACCESS_KEY_ID=synthetic-cloud-access\n")
+    cloud_file.chmod(0o600)
+    monkeypatch.delenv("AWS_ACCESS_KEY_ID", raising=False)
+    config = ProjectConfig(state, "", "", None, combination(), cloud_environment_file=cloud_file)
     config_path = tmp_path / "project.json"
     atomic_json(config_path, config.to_dict())
     phase = str(tmp_path / "installer-phase")
@@ -200,6 +213,8 @@ def test_open_passes_owned_scratch_to_child_without_mutating_launcher(tmp_path, 
     assert {options["env"][name] for name in ("TMPDIR", "TMP", "TEMP")} == {
         str((state / "workbench-tmp").resolve())}
     assert "STPD_HUB_ADMIN_TOKEN" not in options["env"]
+    assert options["env"]["AWS_ACCESS_KEY_ID"] == "synthetic-cloud-access"
+    assert "AWS_ACCESS_KEY_ID" not in os.environ
     assert {os.environ[name] for name in ("TMPDIR", "TMP", "TEMP")} == {phase}
 
 
@@ -212,7 +227,12 @@ def test_direct_serve_owns_context_before_application_and_restores_on_exit(
     from spireagent.workbench import developer_server
     from spireagent.workbench.developer import ProjectConfig, combination
 
-    config = ProjectConfig(tmp_path / "state", "", "", None, combination())
+    cloud_file = tmp_path / "cloud.env"
+    cloud_file.write_text("AWS_ACCESS_KEY_ID=synthetic-serve-access\n")
+    cloud_file.chmod(0o600)
+    monkeypatch.delenv("AWS_ACCESS_KEY_ID", raising=False)
+    config = ProjectConfig(tmp_path / "state", "", "", None, combination(),
+                           cloud_environment_file=cloud_file)
     previous = {name: os.environ.get(name) for name in ("TMPDIR", "TMP", "TEMP")}
     cached = tempfile.tempdir
     scratch = str((config.state_dir / "workbench-tmp").resolve())
@@ -225,6 +245,7 @@ def test_direct_serve_owns_context_before_application_and_restores_on_exit(
 
         def __init__(self, *_args, **_kwargs):
             assert tempfile.gettempdir() == scratch
+            assert os.environ["AWS_ACCESS_KEY_ID"] == "synthetic-serve-access"
 
         def start_delivery(self):
             pass
@@ -259,3 +280,107 @@ def test_direct_serve_owns_context_before_application_and_restores_on_exit(
     assert not (config.state_dir / "runtime.json").exists()
     assert {name: os.environ.get(name) for name in previous} == previous
     assert tempfile.tempdir == cached
+    assert "AWS_ACCESS_KEY_ID" not in os.environ
+
+
+def test_cloud_provider_reopens_from_private_reference_and_preserves_environment(
+    tmp_path, monkeypatch,
+):
+    cloud_file = tmp_path / "cloud.env"
+    cloud_file.write_text(
+        "AWS_ACCESS_KEY_ID=file-access\nAWS_SECRET_ACCESS_KEY='literal-${AWS_ACCESS_KEY_ID}'\n"
+        "STPD_S3_BUCKET=synthetic-bucket\nMODAL_TOKEN_SECRET=excluded\n")
+    cloud_file.chmod(0o600)
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "existing-access")
+    monkeypatch.delenv("AWS_SECRET_ACCESS_KEY", raising=False)
+    monkeypatch.delenv("STPD_S3_BUCKET", raising=False)
+    monkeypatch.delenv("MODAL_TOKEN_SECRET", raising=False)
+    for _ in range(2):
+        with service_process(tmp_path / "state", cloud_environment_file=cloud_file) as report:
+            assert os.environ["AWS_ACCESS_KEY_ID"] == "existing-access"
+            assert os.environ["AWS_SECRET_ACCESS_KEY"] == "literal-${AWS_ACCESS_KEY_ID}"
+            assert os.environ["STPD_S3_BUCKET"] == "synthetic-bucket"
+            assert "MODAL_TOKEN_SECRET" not in os.environ
+            assert "literal-" not in json.dumps(report)
+        assert os.environ["AWS_ACCESS_KEY_ID"] == "existing-access"
+        assert "AWS_SECRET_ACCESS_KEY" not in os.environ
+        assert "STPD_S3_BUCKET" not in os.environ
+
+
+def test_setup_persists_only_private_cloud_reference_and_retains_it_on_reopen(tmp_path, capsys):
+    from spireagent.workbench.developer import ProjectConfig
+    from spireagent.workbench.developer_cli import main
+
+    cloud_file = tmp_path / "cloud.env"
+    cloud_file.write_text("AWS_ACCESS_KEY_ID=synthetic-private-access\n")
+    cloud_file.chmod(0o600)
+    profile = tmp_path / "project.json"
+    args = ["setup", "--config", str(profile), "--state-dir", str(tmp_path / "state"),
+            "--skip-install"]
+    assert main([*args, "--cloud-environment-file", str(cloud_file)]) == 0
+    assert ProjectConfig.load(profile).cloud_environment_file == cloud_file
+    assert "synthetic-private-access" not in profile.read_text()
+    assert "synthetic-private-access" not in capsys.readouterr().out
+    assert main(args) == 0
+    assert ProjectConfig.load(profile).cloud_environment_file == cloud_file
+
+
+def test_cloud_reference_setup_preserves_existing_remote_compute_and_workspace(tmp_path):
+    from spireagent.workbench.developer import (
+        LocalResearchWorkspaceConfig,
+        ProjectConfig,
+        RemoteComputeConfig,
+        atomic_json,
+        combination,
+        setup,
+    )
+
+    profile = tmp_path / "project.json"
+    remote = RemoteComputeConfig(
+        tmp_path / "ops.sqlite", tmp_path / "target.json", 4, 1,
+        {"kind": "local", "directory": str(tmp_path / "peer")})
+    workspace = LocalResearchWorkspaceConfig(tmp_path / "store", tmp_path / "registry.sqlite")
+    previous = ProjectConfig(tmp_path / "state", "", "", None, combination(), workspace, remote)
+    atomic_json(profile, previous.to_dict())
+    cloud_file = tmp_path / "cloud.env"
+    cloud_file.write_text("AWS_ACCESS_KEY_ID=synthetic-private-access\n")
+    cloud_file.chmod(0o600)
+    setup(profile, state_dir=previous.state_dir, install=False, replace_config=True,
+          cloud_environment_file=cloud_file)
+    for _ in range(2):
+        selected = ProjectConfig.load(profile)
+        assert selected.remote_compute == remote
+        assert selected.research_workspace == workspace
+        assert selected.cloud_environment_file == cloud_file
+        setup(profile, state_dir=previous.state_dir, install=False)
+
+
+@pytest.mark.parametrize("defect", ["missing", "symlink", "permissions", "owner", "syntax"])
+def test_cloud_provider_rejects_unavailable_or_untrusted_reference(tmp_path, monkeypatch, defect):
+    from spireagent.workbench.service_process import cloud_environment
+
+    cloud_file = tmp_path / "cloud.env"
+    cloud_file.write_text("AWS_ACCESS_KEY_ID=synthetic\n")
+    cloud_file.chmod(0o600)
+    if defect == "missing":
+        cloud_file.unlink()
+    elif defect == "symlink":
+        target = tmp_path / "real.env"
+        cloud_file.rename(target)
+        try:
+            cloud_file.symlink_to(target)
+        except OSError:
+            pytest.skip("symlink creation unavailable")
+    elif defect in {"permissions", "owner"}:
+        if os.name == "nt":
+            pytest.skip("POSIX private file ownership")
+        if defect == "permissions":
+            cloud_file.chmod(0o644)
+        else:
+            monkeypatch.setattr(os, "geteuid", lambda: cloud_file.stat().st_uid + 1)
+    else:
+        cloud_file.write_text("AWS_ACCESS_KEY_ID='unterminated\n")
+    with pytest.raises(
+        BoundaryError, match="cloud_environment_private_file_required|cloud_environment_invalid"
+    ):
+        cloud_environment(cloud_file)

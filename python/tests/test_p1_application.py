@@ -112,7 +112,8 @@ def test_real_service_child_store_result_model_export_and_score(tmp_path):
 
     private = tmp_path / "formal-model-agent"
     register(export, private, {"schema": "sts2.policy-runtime/agent-manifest-1",
-                              "input": {"profile": "p1-global-r1"}},
+                              "input": {"profile": observation["profile"],
+                                        "global": {"revision": observation["revision"]}}},
              entry_id="formal-engineering-model", label="P1 formal recipe engineering model")
     manifest = json.loads((private / "manifest.json").read_bytes())
     current = {k: v for k, v in observation.items() if k != "envelope"}

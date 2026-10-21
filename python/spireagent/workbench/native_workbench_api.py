@@ -170,6 +170,45 @@ def bounded_response(value: dict[str, Any]) -> bytes:
     return raw
 
 
+def recording_maintenance_view(import_status: dict[str, Any]) -> dict[str, Any]:
+    """Small read-only presentation of the existing import/maintenance owner.
+
+    Do not scan recordings or run the Collection Tool on a UI status poll. Space
+    is the maintenance worker's latest observation of the validated recording
+    volume; absence remains unavailable.
+    """
+    maintenance = import_status.get("maintenance")
+    if not isinstance(maintenance, dict):
+        return {"schema": "spireagent/native-recording-maintenance-view-1",
+                "status": "unavailable", "error_code": import_status.get("reason")}
+    policy = maintenance.get("policy", {})
+    peer = policy.get("peer")
+    originals = {session["source_artifact_id"]
+                 for session in maintenance.get("sessions", {}).values()}
+    verified = {
+        receipt["artifact_id"]
+        for receipt in import_status.get("storage_receipts", [])
+        if receipt.get("peer") == peer
+        and isinstance(peer, dict) and peer.get("kind") == "s3"
+        and receipt.get("storage_action") == "preserve"
+        and receipt["artifact_id"] in originals
+        and receipt.get("storage_receipt", {}).get("full_readback") is True
+    }
+    return {
+        "schema": "spireagent/native-recording-maintenance-view-1",
+        "enabled": policy.get("enabled") is True,
+        "status": maintenance.get("status", "disabled"),
+        "error_code": maintenance.get("error_code"),
+        "remote_configured": isinstance(peer, dict) and peer.get("kind") == "s3",
+        "verified_recordings": len(verified),
+        "cooling_enabled": policy.get("cool_recent") is True,
+        "completed_recordings": len(maintenance.get("completed_candidates", [])),
+        "operation_status": import_status.get("status"),
+        "space": maintenance.get("space"),
+        "space_observed_at": maintenance.get("space_observed_at"),
+    }
+
+
 def exact(body: dict[str, Any], fields: set[str]) -> None:
     if set(body) != fields:
         raise fail("invalid_native_payload")
@@ -399,6 +438,7 @@ class NativeWorkbenchApi:
                 controls.append(action("workspace.create", "建立本机资料空间"))
             if page == "data":
                 from spireagent.workbench.local_dataset import source3_capabilities
+                from spireagent.workbench.native_tasks import P1_PROFILE
 
                 source_support = source3_capabilities()
                 live_recording = self.card("native_recording", app.native_recording_status)
@@ -410,8 +450,9 @@ class NativeWorkbenchApi:
                     if isinstance(owner_status, dict)
                     else None
                 )
+                p1_recording = owner_status.get("capture_profile_id") == P1_PROFILE
                 source_recording = owner_status.get("capture_profile_id") in {
-                    "native-logical-source-v3", "native-logical-source-v4"
+                    P1_PROFILE, "native-logical-source-v3", "native-logical-source-v4"
                 }
                 pending = owner_view.get("command_pending") is True
                 recovery = owner_view.get("recovery_required") is True
@@ -434,13 +475,19 @@ class NativeWorkbenchApi:
                     [
                         action(
                             "recording.start",
-                            "开始原生交互与观察录制",
-                            [*declaration_fields, field(
+                            "开始录制（默认 P1 原生决策）",
+                            [field(
+                                "source_kind", "操作来源声明", "enum", "",
+                                [{"value": value, "label": label +
+                                  ("（仅 Source3/4）" if value == "agent_protocol" else "")}
+                                 for value, label in source_support["source_labels"].items()],
+                            ), field("actor_id", "仅 Source3/4：操作者代号"), field(
                                 "capture_profile_id", "录制格式", "enum",
-                                "native-logical-source-v3",
+                                P1_PROFILE,
                                 [
+                                    {"value": P1_PROFILE, "label": "P1 原生决策（默认）"},
                                     {"value": "native-logical-source-v3",
-                                     "label": "Source3（默认）"},
+                                     "label": "Source3"},
                                     {"value": "native-logical-source-v4",
                                      "label": "Source4（保留 P1 公共基底）"},
                                 ],
@@ -466,7 +513,7 @@ class NativeWorkbenchApi:
                             "recording.change_source",
                             "更改操作来源",
                             declaration_fields,
-                            enabled=source_recording and state == "paused"
+                            enabled=source_recording and not p1_recording and state == "paused"
                             and not pending and not recovery,
                         ),
                         action(
@@ -498,6 +545,10 @@ class NativeWorkbenchApi:
                     )
                 except BoundaryError as error:
                     source_prepare.update(enabled=False, reason=error.code)
+                cards.append(self.card(
+                    "recording_maintenance",
+                    lambda: recording_maintenance_view(app.local_recording_import.status()),
+                ))
                 if self._recordings is not None:
                     listing = {
                         **self._recordings,

@@ -84,6 +84,10 @@ scope, next delivery and remaining obligations without private chat.
 
 操作说明归对应现有功能指南。[DOCUMENT_MAP](DOCUMENT_MAP.md#按我要做什么进入)按“我要做什么”路由；组件/Python地图只继续路由，不能另抄一套业务流程。一个操作段须让人或Agent知道使用条件、准确受支持入口、必要输入、结果位置、完成判断和真实失败后的处理。GUI、CLI/API映射同一业务owner；不支持的操作明确写缺口，不为未来功能造教程，也不为每个内部函数写SOP。
 
+以真实内部开发和受支持内部库/API用起来方便为准，操作仍归原合同与状态owner，不强制所有内部操作经过HTTP、Application或GUI。GUI只映射人类需要且最方便易用的功能，不要求每个API都做按钮；具体界面继续由[原UI规范](UI_INTERACTION_SPEC.md)维护。
+
+面向人的日常交付以该规范的[简便操作与后台运行要求](UI_INTERACTION_SPEC.md#human-operation-contract)验收：复杂工作由原owner在后台完成，正常使用不依赖Codex或工程临时进程。界面建好、库调用一次成功或补完SOP，都不能替代正常安装上的完整用户流程。
+
 新实现接入或受支持入口改变时，同PR更新该操作段和导航；改变合同/理由则更新合同或DECISIONS/ADR；当前工作变化则由集成者替换CURRENT。历史解法保原证据，新的适用边界归RESOLVED_ISSUES。不要求每次同时改全部文档。收敛验收必须同时有职责、当前入口、实际操作、历史复用、接手走查与维护归属；表格登记、链接通过或文档提交本身不宣布父能力已完成。
 
 A new idea belongs either in the owning specification as a selected decision or
@@ -217,6 +221,10 @@ outweighs trusted-project behavior and personal model/permission differences.
 A repository Skill is a reusable, non-obvious, bounded workflow. It is not
 current state, a component handbook, generic coding advice, or a one-off prompt.
 
+Skill是agent专用的按需任务适配与非显然操作知识：给它何时进入原流程、怎样使用真实工具、需要保留什么证据及何时交还。业务事实、合同和操作SOP仍由代码与原功能指南拥有；Skill链接这些owner，只保少量真正agent特有的差异，不能成为第二SOP、业务权威或新增审批来源。是否保留/增加按真实复用价值决定，过时或重复的合并/淘汰，高频或高成本且非显然的流程可以继续使用；不以数量为目标，也不每个函数建一个Skill。
+
+SOP是在明确职责和合同下，给当前实现组合的可执行操作方法，不是上层真理，也不只是一条help。它说明适用条件、入口/必要参数、结果位置、完成判据和实际失败/Stop/恢复；载体或实现换了就在原owner更新。人和agent共享这份事实，GUI/CLI可以各有操作映射，不复制业务含义。
+
 Initial Skills:
 
 - `repo-skill-maintenance`: explicit-only governance of Skill proposals and
@@ -237,11 +245,13 @@ encode it more cheaply.
 
 Admission normally needs about three independent occurrences, two repetitions
 of the same high-cost failure, or an unusually high-risk workflow that is
-already stable. Once admitted, open a separate governance PR, explicitly invoke
-`$repo-skill-maintenance`, then use bundled `$skill-creator`. Create one job,
+already stable. New or substantially expanded Skill proposals use a focused governance
+change and `$repo-skill-maintenance`, then bundled `$skill-creator`. A user-authorized
+focused correction to an existing Skill stays in its owning task/PR; it does not
+require a second admission or approval merely to repair a demonstrated mismatch. Create one job,
 explicit inputs/outputs/non-triggers/stop gates, and positive/negative/overlap
-trigger evals. New meta/high-risk Skills start explicit-only when required by
-their policy; do not build a separate Skill registry.
+trigger evals. Preserve an existing invocation policy unless the user changes it; use the bundled
+skill-creator rules for new discovery metadata. Do not build a separate Skill registry.
 
 Update a Skill only when its workflow, trigger boundary, authority/stop gate, or
 required external interface changes, or a reproducible Skill failure needs a

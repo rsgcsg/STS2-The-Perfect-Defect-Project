@@ -81,6 +81,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--hub-url", default="")
     parser.add_argument("--platform-url", default="")
     parser.add_argument("--delivery-config", type=Path)
+    parser.add_argument("--cloud-environment-file", type=Path,
+                        help="explicit private cloud SDK .env file; setup persists its path only")
     parser.add_argument(
         "--skip-install",
         action="store_true",
@@ -118,6 +120,8 @@ def main(argv: list[str] | None = None) -> int:
             "catalog",
             "status",
             "readiness",
+            "register",
+            "registration-status",
             "download",
             "install-runtime",
             "initialize-runtime-generation",
@@ -223,6 +227,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         result: Any
+        if args.cloud_environment_file is not None and args.command != "setup":
+            raise BoundaryError("project", "cloud_environment_requires_setup")
         if args.runtime_profile is not None and args.command != "model":
             raise BoundaryError("local_model", "runtime_profile_requires_model_command")
         if (args.command != "model" and any(value is not None for value in (
@@ -236,6 +242,7 @@ def main(argv: list[str] | None = None) -> int:
                 hub_url=args.hub_url,
                 platform_url=args.platform_url,
                 delivery_config=args.delivery_config,
+                cloud_environment_file=args.cloud_environment_file,
                 install=not args.skip_install,
                 replace_config=args.replace_config,
             )

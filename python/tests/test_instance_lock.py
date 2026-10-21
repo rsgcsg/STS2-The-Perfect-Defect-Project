@@ -23,18 +23,59 @@ from pathlib import Path
 from spireagent.json_boundary import BoundaryError
 from spireagent.workbench.instance_lock import instance_lock
 try:
-    with instance_lock(Path(sys.argv[1]), create=False):
+    with instance_lock(Path(sys.argv[1]), create=False, shared=sys.argv[2] == 'shared'):
         print('acquired')
 except BoundaryError as error:
     print(error.code)
 """
 
 
-def _probe(path: Path) -> str:
-    result = subprocess.run([sys.executable, "-c", PROBE, str(path)],
+def _probe(path: Path, *, shared: bool = False) -> str:
+    result = subprocess.run([sys.executable, "-c", PROBE, str(path),
+                             "shared" if shared else "exclusive"],
                             capture_output=True, text=True, timeout=5, check=True)
     assert result.stderr == ""
     return result.stdout.strip()
+
+
+def test_shared_existing_lease_allows_reader_and_excludes_writer_across_processes(tmp_path):
+    path = tmp_path / "native.lock"
+    path.write_bytes(b"unchanged native lease")
+    with instance_lock(path, create=False, shared=True):
+        assert _probe(path, shared=True) == "acquired"
+        assert _probe(path) == "already_running"
+        assert path.read_bytes() == b"unchanged native lease"
+    with instance_lock(path, create=False):
+        assert _probe(path, shared=True) == "already_running"
+    assert _probe(path) == "acquired"
+
+
+def test_windows_shared_lease_uses_win32_shared_nonblocking_mode(tmp_path, monkeypatch):
+    import ctypes
+
+    path = tmp_path / "windows-native.lock"
+    path.write_bytes(b"unchanged")
+    calls = []
+
+    class NativeCall:
+        def __init__(self, label):
+            self.label = label
+
+        def __call__(self, *args):
+            calls.append((self.label, args[:-1], args[-1]._obj.Offset))
+            return 1
+
+    kernel = SimpleNamespace(LockFileEx=NativeCall("lock"), UnlockFileEx=NativeCall("unlock"))
+    monkeypatch.setattr(ctypes, "WinDLL", lambda *a, **kw: kernel, raising=False)
+    monkeypatch.setattr(ctypes, "WinError", lambda code: OSError(code), raising=False)
+    monkeypatch.setattr(ctypes, "get_last_error", lambda: 5, raising=False)
+    monkeypatch.setattr(lock_module, "os", SimpleNamespace(name="nt"))
+    monkeypatch.setattr(lock_module, "importlib", SimpleNamespace(
+        import_module=lambda name: ctypes if name == "ctypes"
+        else SimpleNamespace(get_osfhandle=lambda _: 123)))
+    with instance_lock(path, create=False, shared=True):
+        assert path.read_bytes() == b"unchanged"
+    assert calls == [("lock", (123, 1, 0, 1, 0), 0), ("unlock", (123, 0, 1, 0), 0)]
 
 
 @pytest.mark.skipif(

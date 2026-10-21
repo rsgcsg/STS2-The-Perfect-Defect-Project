@@ -1,8 +1,8 @@
 # K6 附件：工作台、应用与人的操作面
 
-## 当前解释（2026-10-20）
+## 当前解释（2026-10-21）
 
-沿原Architecture/BASELINE的同一逻辑，**应用与资源组织横向编排在线、记录和研究链；工作台GUI是人的可选交互映射。** 当前`python/spireagent/workbench`目录还承载本地Application、用例和服务实现，它不等于网页，也不新增一个上层业务权威。`apps/workbench`保留诊断API，console是界面，Hub是远端应用/权限实现；它们都不是独立业务链。旧“评测→Workbench→Mod界面”的串联写法只可理解为当时某个展示用例，不能当所有工作必经的流水线；原历史资料保留。
+沿原Architecture/BASELINE的同一逻辑，**应用与资源组织横向编排在线、记录和研究链；工作台GUI是人的交互映射，默认游戏内优先，确实不适合时外部备选；agent保留CLI/API/库入口。** 当前`python/spireagent/workbench`目录还承载本地Application、用例和服务实现，它不等于网页，也不新增一个上层业务权威。`apps/workbench`保留诊断API，console是界面，Hub是远端应用/权限实现；它们都不是独立业务链。旧“评测→Workbench→Mod界面”的串联写法只可理解为当时某个展示用例，不能当所有工作必经的流水线；原历史资料保留。
 
 同一用例通过可发现、受支持的CLI/API/内部库/agent工具或GUI调用。**全部项目GUI都不能独占业务功能、状态核对或失败处理；agent开发和日常操作不依赖点击工作台。** 非GUI入口按方便分工，不要求每种接口复制所有功能；只能绕权限、改数据库或拼私人日常脚本才能调用的底层函数不算已交入口。GUI负责人的显示/交互映射和必要配对/确认适配，唯一业务语义、事实及状态机仍在原owner。GUI呈现验证与业务执行分开，原生Human游玩由用户完成。
 
@@ -29,8 +29,8 @@
 
 **可立即复用的最短路线（本轮未执行）：**
 1. 对已有精确安装/配置，用 `uv run --project python --locked --extra cloud python -m spireagent.workbench project open --config CONFIG --no-browser` 启动同一Application；已有依赖时不必走根`npm run workbench`包装器（它还执行uv sync/npm ci）。无浏览器也能调用库/API。prepare/attached Host要先核最终tuple；GLOBAL attached历史限制不作为此次最小路线前提。
-2. 已有selection可直接用 `project model --action catalog/readiness/start --selection ID`；新GLOBAL通过现 `POST /api/local-model-registrations/register-global-program {environment_kind:native|managed}` 或Application `register_builtin_teacher(global_program=True,...)`登记。原`/api/local-models/prepare`在Human加载、`/request→/run-agent`绑定完整请求；`project native-episode --action prepare-owned/.../run-agent`已有相同Application入口，不能虚构`model --action register-global`。认证用现有客户端/私有配置，不打印token。
-3. `project model --action one_step`→原Runtime一次tick；`project model --action stop`→原RuntimeStop/验证记录。这里的**model stop停止Agent**，`project stop`是停止Application服务，二者不混用。看 `project model --action status/catalog`的原报告与run_id；底层`agent-runs/run-*`原件用 `node components/policy-runtime/bin/sts2-p1.mjs replay --run-directory RUN`/trajectory核验，界面“实战记录”也是该报告投影。
+2. 已有selection使用 `python -m spireagent.workbench project model --config PROJECT --action readiness --selection ID`核准备状态；查看目录把action换为`catalog`，明确加载用`start`；新GLOBAL通过现 `POST /api/local-model-registrations/register-global-program {environment_kind:native|managed}` 或Application `register_builtin_teacher(global_program=True,...)`登记。原`/api/local-models/prepare`在Human加载、`/request→/run-agent`绑定完整请求；`python -m spireagent.workbench project native-episode --config PROJECT`的`prepare-owned`、`attach`、`agent-request`与`run-agent` action已有相同Application入口，参数/完成恢复见[原流程](../../../python/docs/LOCAL_MODEL_TASK_FLOW.md#native-episode-preparation-and-explicit-finish)，不能虚构`model --action register-global`。认证用现有客户端/私有配置，不打印token。
+3. `python -m spireagent.workbench project model --config PROJECT --action one_step`→原Runtime一次tick；`python -m spireagent.workbench project model --config PROJECT --action stop`→原RuntimeStop/验证记录。这里的**model stop停止Agent**，`python -m spireagent.workbench project stop --config PROJECT`是停止Application服务，二者不混用。看 `python -m spireagent.workbench project model --config PROJECT --action status`及`catalog`的原报告与run_id；底层`agent-runs/run-*`原件用 `node components/policy-runtime/bin/sts2-p1.mjs replay --run-directory RUN`/trajectory核验，界面“实战记录”也是该报告投影。
 4. R20用已封存仓库外first-choice包与既备私有材料 (`/Users/fire/Documents/Codex/2026-10-17/a-t7-runtime-connector-status-settling/work/p1-sprint-C-20261018/R20-EXECUTION-MATERIALS.md`)：root填最终HEAD/Runtime code/bridge SHA、Managed candidate和Reference loaded/template tuple；复用Host+Runtime owners，两Host各1fresh短run、1底层submission/8calls/60s→实际Consume/ACK/Next/Receipt/Result/独立sealed后继→显式Stop/正常close→官方replay，前后核同一外包SHA。旧包1两Host脚本在仓库内部，不能改名当R20。现suite硬码4000/8000，不能冒称一输入。**这条是外部Agent接入验收；不要求新增GUI。**
 
 **冻结前保留/不做与成本：** 保留现有Application、CLI/API/库、简洁选择器、现有浏览器/Mod薄页与独立Human/Stop；C的GLOBAL按钮与闭合P1 context源码已存在当前候选，独审已完成，不能再列为“完全未实现”。仅10-18该次定位调查新增源码需求为0，不代表今天的完整功能/接口覆盖；余下是最终tuple的API/CLI实际启动→决策→Stop→查记录及外部包双Host验收。依赖就绪后预估准备参数10–20分钟、两Host短验5–15分钟，取决于实际启动/Reference可见性；Mod统一构建/安装与B预检成本由关键路径另计，不复制构建、不挡用户录制。小包2684B、短证据一般MB级；空间以真实测量为准，不新增大缓存/历史副本。

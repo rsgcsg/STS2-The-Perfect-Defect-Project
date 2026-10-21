@@ -614,6 +614,48 @@ plumbing, not native coverage, Human origin, Task success or training admission.
 its `--manifest`, `--adapter-command` and environment options. Historical P1
 records retain their existing converter and evidence scope.
 
+GLOBAL capture storage revision `sts2.policy-runtime/global-capture-response-1`
+keeps the original response SHA/byte count, exact JSON prefix/suffix and every
+chunk envelope field, but references the same content-addressed `source` record
+for the payload slice. `restoreGlobalCaptureResponse` reconstructs byte-identical
+wire responses before the unchanged SDK chunk decoder/assembler and source joins.
+Old inline responses remain readable; failed/partial captures keep inline original
+responses because no complete source owns them. Received wire bytes are first
+fsynced by the same evidence owner as diagnostic `capture-staging-<request>-<ordinal>-<sha>.bin`
+files. Successful source/reference bytes and events must be durable before those
+temporary duplicates are removed; failure/cancellation first flushes originals
+inline. A hard-killed producer retains its already staged response prefix;
+`readGlobalCaptureStaging(directory)` verifies filename/hash/size and returns
+read-only request/ordinal references. These are interrupted diagnostics, never
+sealed evidence, continuation permission or a second artifact type. Outstanding
+staging blocks sealing. Staging and final artifacts share the original physical
+512 MiB artifact budget, and their memory uses the shared Agent byte budget.
+The immutable inventory, events,
+checksums, roles and typed Evidence type remain unchanged. New archives require
+the matching trusted Runtime package; never edit a sealed old archive to upgrade
+it. The 512 MiB unique-artifact cap remains; journal and inventory bytes are
+additional, so capacity reports must include them and actual allocated disk bytes.
+The existing `spireagent.storage.archives` deterministic gzip/tar path is the
+cold storage/transfer encoding and does not change content identity.
+
+The opt-in technical repetition budget uses `globalNoProgress` in
+`PolicyRuntime.forAgent`, or CLI `--no-progress-window 32 --no-progress-repeats 8`.
+Both parameters are explicit (defaults apply only once either flag opts in), with
+window 2–256 decisions and repeat limit 2–window. Status exposes
+`global_no_progress` with settings and last check; config and an exhausted check
+are retained in the original event stream. The shared full-public graph comparator
+removes only the existing binding envelope and applies the already declared
+entity/choice bijection and inventory multiset rules. It preserves public words,
+card/owner/choice relationships and meaningful order; `incomparable` counts as a
+new state. A new public state clears repeat counts while retaining the bounded
+state window, so an alternating A/B loop can exhaust. Retained representatives
+are charged to the existing shared Agent byte budget. The repeated choice is not
+submitted: original Stop releases control, closes the Agent and seals the run.
+The tick reason and status error are `no_progress`; replay recomputes the window
+and returns `technical_stop: "no_progress"`. This is a censored technical stop,
+never natural win/loss, strategy qualification or permission to restart. It does
+not substitute for fixing an incorrectly offered action.
+
 Workbench exposes `POST /api/local-model-registrations/register-global-program`
 with `{}` or `{"environment_kind":"native"|"managed"}`. The reviewed Python
 program and adapter identity are selected by application code. Registration has

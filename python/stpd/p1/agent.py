@@ -12,7 +12,7 @@ import torch
 
 from .data import digest, json_bytes
 from .export import adapter_identity, input_spec, load_model
-from .input import project
+from .input import INPUT_SPEC, project
 from .model import MStd
 
 SCHEMA = "sts2.policy-runtime/agent-session-1"
@@ -36,13 +36,17 @@ def installation(
         config["schema"] != "stpd/p1-mstd-installation-1"
         or manifest.get("adapter") != adapter_identity()
         or manifest.get("artifact") != expected_artifact
-        or manifest.get("input", {}).get("input_spec") != input_spec(model.vocabulary)
+        or manifest.get("input", {}).get("input_spec") != input_spec(model.vocabulary, INPUT_SPEC)
         or manifest["input"].get("profile") != "p1-global-r1"
+        or not isinstance(manifest["input"].get("global"), dict)
+        or manifest["input"]["global"].get("revision") != INPUT_SPEC["revision"]
         or manifest["input"].get("state_recovery")
         != {"mode": "none", "max_state_bytes": 0, "model_bindings": []}
         or config["checkpoint_sha256"] != payload["checkpoint_sha256"]
         or config["weights_sha256"] != digest(encode_weights(payload["weights"]))
         or config["package_model_id"] != config["package_sha256"]
+        or config.get("package_input_spec") != input_spec(model.vocabulary)
+        or config.get("input_projection") != INPUT_SPEC
         or config["input_spec"] != manifest["input"]["input_spec"]
     ):
         raise ValueError("P1 model installation binding differs")
@@ -62,7 +66,7 @@ def serve(
     source: TextIO = sys.stdin,
     destination: TextIO = sys.stdout,
 ) -> None:
-    _, manifest, model, _ = installation(config_path, manifest_path, owner)
+    config, manifest, model, _ = installation(config_path, manifest_path, owner)
     unit = consumption = committed = pending = None
     version = 0
 
@@ -99,7 +103,7 @@ def serve(
                 or value["catalog"] != value["observation"]["catalog"]
             ):
                 raise ValueError("P1 Agent needs its bound InputSpec and full current catalog")
-            frame = project(value["observation"])
+            frame = project(value["observation"], input_projection=config["input_projection"])
             with torch.inference_mode():
                 scores = model(frame).tolist() if frame.choices else []
             advanced = value["consumption_unit"]["id"] != unit

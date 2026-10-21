@@ -14,6 +14,7 @@ import re
 import shutil
 import sqlite3
 import subprocess
+import tempfile
 import uuid
 from pathlib import Path
 from time import monotonic
@@ -741,6 +742,8 @@ class LocalModelRegistration:
                 task: object = _DEFAULT_PUBLIC_TASK,
                 program: object = None) -> dict[str, Any]:
         identity = digest(model_id, "local_model_registration.model_id")
+        if self._p1_supported(identity):
+            return self._status_p1(identity, environment_kind)
         observed = self._export_status(identity)
         operation = observed["operation"]
         if program is not None and operation.get("model_type") != "public_m0":
@@ -977,6 +980,8 @@ class LocalModelRegistration:
                   task: object = _DEFAULT_PUBLIC_TASK,
                   program: object = None) -> dict[str, Any]:
         identity = digest(model_id, "local_model_registration.model_id")
+        if self._p1_supported(identity):
+            return self._register_p1(identity, environment_kind)
 
         deadline = monotonic() + REGISTRATION_SECONDS
         # Weight/scorer verification and current-store binding are explicit POST work.
@@ -1153,15 +1158,131 @@ class LocalModelRegistration:
         except OSError as error:
             raise BoundaryError("local_model_registration", "registration_write_failed") from error
 
-    def register_global_program(self, *, environment_kind: str = "native") -> dict[str, Any]:
-        """Fixed public program registration; no model, downloaded command or inference."""
-        from .global_program_agent import ADAPTER, adapter_identity, descriptor
-        from .global_program_support import CONFIG_SCHEMA, PROFILE, validate
-        if environment_kind not in {"native", "managed"}:
-            raise BoundaryError("global_program", "unsupported_environment")
+    def _p1_supported(self, identity: str) -> bool:
+        from spireagent.storage.blobs import StoreError
+
+        if not isinstance(self.export, LocalModelExport):
+            return False
+        try:
+            model = self.export._source(identity).get_manifest(identity)
+        except StoreError as error:
+            if error.code == "object_not_found":
+                return False
+            raise
+        return model.kind == "model" and model.parameters.value().get("schema") in {
+            "stpd/p1-mstd-trained-model-1", "stpd/p1-mstd-model-1"}
+
+    def _p1_source(self, identity: str) -> tuple[Any, Manifest]:
+        source = self.export._source(identity)
+        model = source.get_manifest(identity)
+        if (model.kind != "model" or model.parameters.value().get("schema") not in {
+                "stpd/p1-mstd-trained-model-1", "stpd/p1-mstd-model-1"}):
+            raise BoundaryError("local_model_registration", "P1_model_required")
+        return source, model
+
+    def _status_p1(self, identity: str, environment_kind: str) -> dict[str, Any]:
+        _, model = self._p1_source(identity)
+        package_sha = model.parameters.value().get("package_sha256")
+        for entry in reversed(self._entries()):
+            if entry.get("adapter") != "stpd-p1-mstd-agent":
+                continue
+            config = _object_file(self.models.entry_path(entry, "config"))
+            manifest = _object_file(self.models.entry_path(entry, "manifest"))
+            if (config.get("model_artifact_id") == identity
+                    and config.get("package_sha256") == package_sha
+                    and managed_manifest(manifest) == (environment_kind == "managed")):
+                from stpd.p1.agent import installation
+
+                try:
+                    installation(self.models.entry_path(entry, "config"),
+                                 self.models.entry_path(entry, "manifest"),
+                                 self.models.private_root)
+                except (OSError, ValueError, KeyError, TypeError):
+                    return _public(identity, "not_registered", profile="p1-global-r1",
+                                   reason_code="source_binding_changed")
+                return _public(identity, "registered", selection_id=entry["id"],
+                               profile="p1-global-r1")
+        return _public(identity, "not_registered", profile="p1-global-r1")
+
+    def _register_p1(self, identity: str, environment_kind: str) -> dict[str, Any]:
+        """Materialize the original Model, then bind it to the existing Runtime owner."""
+        from stpd.p1.agent import installation
+        from stpd.p1.export import adapter_identity, load_model, register
+        from stpd.workers.p1_run import materialize_p1_model
+
+        require_local_models("local_model_registration")
+        source, model = self._p1_source(identity)
         deadline = monotonic() + REGISTRATION_SECONDS
         node_modules, _ = self._native_runtime(deadline=deadline)
         runtime = node_modules / RUNTIME_PACKAGE / "dist"
+        options = self._global_environment_options(environment_kind)
+        private = self.models.private_root
+        if private.is_symlink():
+            raise BoundaryError("local_model_registration", "registration_metadata_invalid")
+        private.mkdir(mode=0o700, exist_ok=True)
+        with instance_lock(private / LOCK):
+            folder = private / REGISTRATIONS
+            if folder.is_symlink():
+                raise BoundaryError("local_model_registration", "registration_metadata_invalid")
+            folder.mkdir(mode=0o700, exist_ok=True)
+            selection = "local-p1-mstd-" + uuid.uuid4().hex
+            target = folder / selection
+            with tempfile.TemporaryDirectory(prefix="p1-registration-", dir=private) as temporary:
+                package = Path(temporary) / "package"
+                if model.parameters.value()["schema"] == "stpd/p1-mstd-trained-model-1":
+                    descriptor = materialize_p1_model(source, identity, package)
+                else:
+                    # Detached historical engineering packages have no fabricated
+                    # training Run/Input/Checkpoint ancestry.
+                    package.mkdir()
+                    for role, name in (("weights", "model.tensor-tree"),
+                                       ("package_manifest", "model.json")):
+                        with (package / name).open("wb") as output:
+                            for chunk in source.read_payload(model.payload(role)):
+                                output.write(chunk)
+                    descriptor = _object_file(package / "model.json")
+                    _, payload = load_model(package / "model.tensor-tree",
+                                            model.parameters.value()["package_sha256"])
+                    if (descriptor.get("schema") != "stpd/p1-mstd-model-1"
+                            or descriptor.get("package_sha256")
+                            != model.parameters.value()["package_sha256"]
+                            or descriptor.get("input_spec") != payload["input_spec"]
+                            or descriptor.get("checkpoint_sha256") != payload["checkpoint_sha256"]):
+                        raise BoundaryError("local_model_registration",
+                                            "model_package_binding_mismatch")
+                envelope = self._global_environment_manifest(
+                    runtime, options, package / "model.tensor-tree", adapter_identity(),
+                    selection, deadline)
+                try:
+                    label = ("P1 M-std · " + ("Reference" if environment_kind == "native"
+                                              else "Managed") + " · " + identity[:8])
+                    entry = register(package, target, envelope, entry_id=selection, label=label)
+                    manifest_path = target / "manifest.json"
+                    manifest = _object_file(manifest_path)
+                    manifest["manifest_id"] = selection
+                    atomic_json(manifest_path, manifest)
+                    shutil.copyfile(package / "model.json", target / "model.json")
+                    config_path = target / "config.json"
+                    config = _object_file(config_path)
+                    config["model_artifact_id"] = identity
+                    config["package_manifest_sha256"] = hashlib.sha256(
+                        (target / "model.json").read_bytes()).hexdigest()
+                    atomic_json(config_path, config)
+                    installation(config_path, target / "manifest.json", private)
+                    self.models._public_manifest_contract(target / "manifest.json")
+                    entry["manifest"] = (target / "manifest.json").relative_to(private).as_posix()
+                    entry["config"] = config_path.relative_to(private).as_posix()
+                    atomic_json(private / REGISTRY, {
+                        "schema": "stpd/local-token-policies-v1",
+                        "policies": [*self._entries(), entry],
+                    })
+                except Exception:
+                    if target.exists():
+                        shutil.rmtree(target)
+                    raise
+        return _public(identity, "registered", selection_id=selection, profile="p1-global-r1")
+
+    def _global_environment_options(self, environment_kind: str) -> dict[str, str]:
         if environment_kind == "managed":
             from .managed_model_target import runtime_arguments
             managed_target = {
@@ -1171,6 +1292,68 @@ class LocalModelRegistration:
             options = {args[i].removeprefix("--"): args[i+1] for i in range(0, len(args), 2)}
         else:
             options = {"connector-endpoint": self.models.config.platform_url or "http://127.0.0.1:15526"}
+        return options
+
+    def _global_environment_manifest(self, runtime: Path, options: dict[str, str],
+                                     artifact_path: Path, adapter: dict[str, str],
+                                     selection: str, deadline: float) -> dict[str, Any]:
+        """Negotiate the owner-supplied complete public P1 environment envelope."""
+        script = (
+            "import{pathToFileURL}from'node:url';"
+            "import{readFile}from'node:fs/promises';import{randomUUID}from'node:crypto';"
+            "const d=process.argv[1],o=JSON.parse(process.argv[2]),"
+            "p=process.argv[3],a=JSON.parse(process.argv[4]);"
+            "const r=await import(pathToFileURL(d+'/index.js'));let t;"
+            "if(o['managed-binding']){const m=await import(pathToFileURL(d+'/managed.js'));"
+            "t=await m.ManagedServicePolicyClient.attachGlobal("
+            "o['managed-binding'],o['managed-attachment'],"
+            "{serviceInstanceId:o['managed-expected-service-instance-id'],"
+            "runtimeInstanceId:o['managed-expected-runtime-instance-id'],"
+            "gameContinuityId:o['managed-expected-game-continuity-id']},'run-'+randomUUID());}"
+            "else{const s=await import(pathToFileURL("
+            "d+'/../node_modules/@rsgcsg/sts2-connector-client/dist/index.js'));"
+            "t=new r.ReferenceGlobalTransport("
+            "new s.PlayerEnvironmentRestClient(o['connector-endpoint'],3000),"
+            "{productVersion:'1',clientInstanceId:'global-registration'});}"
+            "const identity=await t.negotiate(AbortSignal.timeout(5000));"
+            "console.log(JSON.stringify(r.createGlobalProgramManifest("
+            "{episodeId:process.argv[5],manifestId:process.argv[5],"
+            "identity,artifactPath:p,artifactBytes:await readFile(p),adapter:a})));"
+        )
+        reply = subprocess.run(
+            [
+                "node",
+                "--input-type=module",
+                "-e",
+                script,
+                str(runtime),
+                json.dumps(options),
+                str(artifact_path),
+                json.dumps(adapter),
+                selection,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=_remaining(deadline),
+            check=False,
+        )
+        if reply.returncode != 0 or len(reply.stdout) > 1024 * 1024:
+            raise BoundaryError("global_program", "public_environment_unavailable")
+        value = json.loads(reply.stdout)
+        if not isinstance(value, dict):
+            raise BoundaryError("global_program", "public_environment_unavailable")
+        return value
+
+    def register_global_program(self, *, environment_kind: str = "native") -> dict[str, Any]:
+        """Fixed public program registration; no model, downloaded command or inference."""
+        from .global_program_agent import ADAPTER, adapter_identity, descriptor
+        from .global_program_support import CONFIG_SCHEMA, PROFILE, validate
+        if environment_kind not in {"native", "managed"}:
+            raise BoundaryError("global_program", "unsupported_environment")
+        deadline = monotonic() + REGISTRATION_SECONDS
+        node_modules, _ = self._native_runtime(deadline=deadline)
+        runtime = node_modules / RUNTIME_PACKAGE / "dist"
+        options = self._global_environment_options(environment_kind)
         private = self.models.private_root
         if private.is_symlink():
             raise BoundaryError("global_program", "unsafe_registration_owner")
@@ -1189,48 +1372,8 @@ class LocalModelRegistration:
             try:
                 raw = json_bytes(descriptor())
                 artifact_path.write_bytes(raw)
-                script = (
-                    "import{pathToFileURL}from'node:url';"
-                    "import{readFile}from'node:fs/promises';import{randomUUID}from'node:crypto';"
-                    "const d=process.argv[1],o=JSON.parse(process.argv[2]),"
-                    "p=process.argv[3],a=JSON.parse(process.argv[4]);"
-                    "const r=await import(pathToFileURL(d+'/index.js'));let t;"
-                    "if(o['managed-binding']){const m=await import(pathToFileURL(d+'/managed.js'));"
-                    "t=await m.ManagedServicePolicyClient.attachGlobal("
-                    "o['managed-binding'],o['managed-attachment'],"
-                    "{serviceInstanceId:o['managed-expected-service-instance-id'],"
-                    "runtimeInstanceId:o['managed-expected-runtime-instance-id'],"
-                    "gameContinuityId:o['managed-expected-game-continuity-id']},'run-'+randomUUID());}"
-                    "else{const s=await import(pathToFileURL("
-                    "d+'/../node_modules/@rsgcsg/sts2-connector-client/dist/index.js'));"
-                    "t=new r.ReferenceGlobalTransport("
-                    "new s.PlayerEnvironmentRestClient(o['connector-endpoint'],3000),"
-                    "{productVersion:'1',clientInstanceId:'global-registration'});}"
-                    "const identity=await t.negotiate(AbortSignal.timeout(5000));"
-                    "console.log(JSON.stringify(r.createGlobalProgramManifest("
-                    "{episodeId:process.argv[5],manifestId:process.argv[5],"
-                    "identity,artifactPath:p,artifactBytes:await readFile(p),adapter:a})));"
-                )
-                reply = subprocess.run(
-                    [
-                        "node",
-                        "--input-type=module",
-                        "-e",
-                        script,
-                        str(runtime),
-                        json.dumps(options),
-                        str(artifact_path),
-                        json.dumps(adapter_identity()),
-                        selection,
-                    ],
-                    capture_output=True,
-                    text=True,
-                    timeout=_remaining(deadline),
-                    check=False,
-                )
-                if reply.returncode != 0 or len(reply.stdout) > 1024 * 1024:
-                    raise BoundaryError("global_program", "public_environment_unavailable")
-                manifest = json.loads(reply.stdout)
+                manifest = self._global_environment_manifest(
+                    runtime, options, artifact_path, adapter_identity(), selection, deadline)
                 config = {
                     "schema": CONFIG_SCHEMA,
                     "artifact_path": str(artifact_path),

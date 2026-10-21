@@ -1203,8 +1203,8 @@ wheels = [
 
 [[package]]
 name = "rsgcsg-sts2-platform-evidence"
-version = "0.1.0rc31"
-source = { git = "https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project.git?subdirectory=components%2Fevidence&rev=8682d7e758d23b3decae5003a39a962d47b67c90#8682d7e758d23b3decae5003a39a962d47b67c90" }
+version = "0.1.0rc32"
+source = { git = "https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project.git?subdirectory=components%2Fevidence&rev=20989e51a1d2b74fae02fd75e6249860ecae36fa#20989e51a1d2b74fae02fd75e6249860ecae36fa" }
 
 [[package]]
 name = "ruff"
@@ -1321,6 +1321,7 @@ dependencies = [
 
 [package.optional-dependencies]
 cloud = [
+    { name = "boto3" },
     { name = "modal" },
     { name = "pyjwt", extra = ["crypto"] },
     { name = "python-dotenv" },
@@ -1363,6 +1364,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "boto3", marker = "extra == 'cloud'", specifier = ">=1.35,<2" },
     { name = "boto3", marker = "extra == 'research'", specifier = ">=1.35,<2" },
     { name = "duckdb", marker = "extra == 'research'", specifier = ">=1.4,<2" },
     { name = "huggingface-hub", marker = "extra == 'l1'", specifier = ">=0.34,<2" },
@@ -1372,7 +1374,7 @@ requires-dist = [
     { name = "pyarrow", specifier = ">=18,<24" },
     { name = "pyjwt", extras = ["crypto"], marker = "extra == 'cloud'", specifier = ">=2.10,<3" },
     { name = "python-dotenv", marker = "extra == 'cloud'", specifier = ">=1.1,<2" },
-    { name = "rsgcsg-sts2-platform-evidence", git = "https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project.git?subdirectory=components%2Fevidence&rev=8682d7e758d23b3decae5003a39a962d47b67c90" },
+    { name = "rsgcsg-sts2-platform-evidence", git = "https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project.git?subdirectory=components%2Fevidence&rev=20989e51a1d2b74fae02fd75e6249860ecae36fa" },
     { name = "safetensors", marker = "extra == 'l2'", specifier = ">=0.5,<1" },
     { name = "safetensors", marker = "extra == 'local-models'", specifier = ">=0.5,<1" },
     { name = "tokenizers", marker = "extra == 'l1'", specifier = ">=0.21,<1" },

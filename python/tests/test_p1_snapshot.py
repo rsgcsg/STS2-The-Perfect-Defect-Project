@@ -40,6 +40,7 @@ def projection_fixture(
     value=None,
     projection_id="native-selector-finalized-d-1",
     original=None,
+    revision="r1.5",
 ):
     branch = {
         "session_id": "session-" + name,
@@ -78,7 +79,7 @@ def projection_fixture(
     if value is None:
         point = {
             "index": 0,
-            "observation": observation(),
+            "observation": {**observation(), "revision": revision},
             "chosen": "c9",
             "source_event_id": "event-" + name,
             "source_decision_id": "decision-" + name,
@@ -87,7 +88,7 @@ def projection_fixture(
         value = {
             "schema": SEGMENTS_SCHEMA,
             "profile": "p1-global-r1",
-            "revision": "r1.4",
+            "revision": revision,
             "branch": branch,
             "source_content_id": content_id,
             "segments": [{"segment_id": "segment", "branch": branch, "points": [point]}],
@@ -96,15 +97,20 @@ def projection_fixture(
         "analysis",
         PRODUCER,
         (Parent("source", original.artifact_id),),
-        (store.put_payload("targets" if value["schema"] == TARGETS_SCHEMA else "segments",
-                           io.BytesIO(json_bytes(value)), "application/json"),),
+        (
+            store.put_payload(
+                "targets" if value["schema"] == TARGETS_SCHEMA else "segments",
+                io.BytesIO(json_bytes(value)),
+                "application/json",
+            ),
+        ),
         FrozenObject.of(
             {
                 "schema": value["schema"],
                 "projection_id": projection_id,
                 "tool_release_id": "tool-release-fixture",
                 "profile": "p1-global-r1",
-                "revision": "r1.4",
+                "revision": revision,
                 "run_id": value["branch"]["run_id"],
             }
         ),
@@ -279,12 +285,21 @@ def test_unknown_lineage_never_gets_an_automatic_heldout_split(tmp_path):
     projections = []
     for index in range(3):
         _, source, value = projection_fixture(store, "unknown-" + str(index))
-        source = replace(source, parameters=FrozenObject.of({
-            **source.parameters.value(), "lineage": {},
-        }))
+        source = replace(
+            source,
+            parameters=FrozenObject.of(
+                {
+                    **source.parameters.value(),
+                    "lineage": {},
+                }
+            ),
+        )
         store.publish(source)
         projection, _, _ = projection_fixture(
-            store, "unknown-copy-" + str(index), original=source, value=value,
+            store,
+            "unknown-copy-" + str(index),
+            original=source,
+            value=value,
         )
         projections.append(projection.artifact_id)
     snapshot = publish_snapshot(store, projections, PRODUCER, split_salt="unknown")
@@ -298,11 +313,61 @@ def test_unknown_lineage_never_gets_an_automatic_heldout_split(tmp_path):
     # An explicit engineering allocation is still supported and remains marked
     # as such; it does not establish statistical independence or admission.
     explicit = publish_snapshot(
-        store, projections, PRODUCER, split_salt="explicit-engineering",
-        split_by_group={g["group_id"]: ("train", "dev", "test")[i]
-                        for i, g in enumerate(selection["groups"])},
+        store,
+        projections,
+        PRODUCER,
+        split_salt="explicit-engineering",
+        split_by_group={
+            g["group_id"]: ("train", "dev", "test")[i] for i, g in enumerate(selection["groups"])
+        },
     )
     _, chosen = load_snapshot(store, explicit.artifact_id)
     assert chosen["partition_N"] == {"train": 1, "dev": 1, "test": 1}
     assert chosen["unknown_independence_groups"] == 3
     assert chosen["split_method"] == "explicit_engineering_groups_not_statistical_qualification"
+
+
+def test_old_snapshot_is_readable_but_not_a_new_current_training_input(tmp_path, monkeypatch):
+    import stpd.p1.dataset as dataset
+    from stpd.p1.input import INPUT_SPEC, LEGACY_INPUT_SPEC
+    from stpd.p1.workload import populations_from_snapshot
+
+    store = store_at(tmp_path)
+    old, _, _ = projection_fixture(store, "old", revision="r1.4")
+    # Freeze an artifact with the original writer contract, then read it with the new reader.
+    with monkeypatch.context() as patch:
+        patch.setattr(dataset, "INPUT_SPEC", LEGACY_INPUT_SPEC)
+        frozen = publish_snapshot(store, [old.artifact_id], PRODUCER, split_salt="old")
+    _, selection = load_snapshot(store, frozen.artifact_id)
+    assert selection["input_projection"] == LEGACY_INPUT_SPEC
+    assert list(iter_snapshot_points(store, frozen.artifact_id))[0][1]["revision"] == "r1.4"
+    with pytest.raises(BoundaryError, match="InputSpec_revision"):
+        publish_snapshot(store, [old.artifact_id], PRODUCER, split_salt="new")
+    with pytest.raises(BoundaryError, match="current_InputSpec"):
+        populations_from_snapshot(store, frozen.artifact_id)
+    current, _, _ = projection_fixture(store, "current")
+    fresh = publish_snapshot(store, [current.artifact_id], PRODUCER, split_salt="new")
+    assert load_snapshot(store, fresh.artifact_id)[1]["input_projection"] == INPUT_SPEC
+
+
+@pytest.mark.parametrize(
+    "payload_revision,manifest_revision", [("r1.6", "r1.6"), ("r1.4", "r1.5")]
+)
+def test_projection_revision_must_match_manifest_and_current_input(
+    tmp_path, payload_revision, manifest_revision
+):
+    store = store_at(tmp_path)
+    current, _, value = projection_fixture(store, "current")
+    value["revision"] = payload_revision
+    future, _, _ = projection_fixture(store, "future", value=value, revision=manifest_revision)
+    with pytest.raises(BoundaryError, match="projection_identity"):
+        inspect_projections(store, [future.artifact_id])
+
+
+def test_current_projection_rejects_an_old_N_observation(tmp_path):
+    store = store_at(tmp_path)
+    _, original, value = projection_fixture(store, "current")
+    value["segments"][0]["points"][0]["observation"]["revision"] = "r1.4"
+    mixed, _, _ = projection_fixture(store, "mixed", value=value, original=original)
+    with pytest.raises(BoundaryError, match="N_requires_complete_current_Input"):
+        inspect_projections(store, [mixed.artifact_id])

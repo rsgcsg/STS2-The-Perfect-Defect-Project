@@ -33,6 +33,7 @@ from spireagent.json_boundary import BoundaryError, FrozenObject, digest, json_b
 from spireagent.local_verified_bundle import EVIDENCE_SCHEMA
 from spireagent.source import REPOSITORY, source_identity
 from spireagent.storage.archives import MAX_BYTES, _extract
+from spireagent.storage.blobs import StoreError
 from spireagent.storage.local import LocalBlobStore
 from spireagent.storage.registry import SQLiteRegistry, sync_registry
 from spireagent.storage.store import ManifestArtifactStore
@@ -250,8 +251,10 @@ def _labels(config: ProjectConfig) -> dict[str, str]:
 
 
 def _archive_verified_bundle(bundle: Path, archive: Path,
-                             transfer: DirectoryTransferManifest) -> None:
-    if len(transfer.files) > 50000 or sum(item.bytes for item in transfer.files) > 2 * 1024**3:
+                             transfer: DirectoryTransferManifest, *,
+                             max_bytes: int = 2 * 1024**3, max_files: int = 50000,
+                             max_archive_bytes: int = MAX_ARCHIVE) -> None:
+    if len(transfer.files) > max_files or sum(item.bytes for item in transfer.files) > max_bytes:
         raise BoundaryError("local_import", "bundle_size_limit")
     with (archive.open("xb") as output,
           gzip.GzipFile(filename="", fileobj=output, mode="wb", mtime=0) as zipped,
@@ -264,7 +267,7 @@ def _archive_verified_bundle(bundle: Path, archive: Path,
             info.size, info.mode, info.mtime = item.bytes, 0o644, 0
             with source.open("rb") as handle:
                 stream.addfile(info, handle)
-    if archive.stat().st_size > MAX_ARCHIVE:
+    if archive.stat().st_size > max_archive_bytes:
         raise BoundaryError("local_import", "archive_size_limit")
 
 
@@ -401,7 +404,7 @@ class LocalRecordingImporter:
     def _native_recovery_guard(self, intent: str | None = None,
                                requested: dict[str, Any] | None = None) -> None:
         """All journaled unresolved intents survive changes of the current caller."""
-        if (self.operation.get("recording_type") == "p1_native"
+        if (self.operation.get("recording_type") in {"p1_native", "p1_global"}
                 and self.operation.get("status") in {
                     "pending", "publication_unknown", "interrupted_unknown"}):
             raise BoundaryError("local_import", "original_intent_reconciliation_required")
@@ -1065,9 +1068,10 @@ class LocalRecordingImporter:
             self._save()
             return self.status()
 
-    def start_p1_storage(self, action: str, artifact_id: str,
-                         peer: dict[str, Any]) -> dict[str, Any]:
-        from .p1_recording_storage import storage_intent
+    def start_global_evidence(self, context: dict[str, Any],
+                              peer: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Import only the stopped context resolved by the Application Model owner."""
+        from .p1_recording_storage import open_peer
 
         with self.lock:
             self._native_recovery_guard()
@@ -1076,7 +1080,185 @@ class LocalRecordingImporter:
             if self.operation.get("status") in {
                     "pending", "publication_unknown", "interrupted_unknown"}:
                 raise BoundaryError("local_import", "original_intent_reconciliation_required")
-            self.operation = {"schema": SCHEMA, **storage_intent(action, artifact_id, peer)}
+            if peer is not None:
+                open_peer(peer)
+            producer = source_identity(ROOT)
+            frozen = copy.deepcopy(context)
+            digest(frozen["model_artifact_id"], "global_store.model_artifact_id")
+            self.operation = {
+                "schema": SCHEMA, "recording_type": "p1_global", "action": "global-evidence",
+                "operation_id": uuid.uuid4().hex, "status": "pending", "started_at": _now(),
+                "run_id": frozen["expected"]["run_id"], "peer": copy.deepcopy(peer),
+                "model_artifact_id": frozen["model_artifact_id"],
+                "_global_context": frozen, "_producer": producer.to_dict(),
+            }
+            self._save()
+            self.thread = threading.Thread(target=self._run_global_evidence, daemon=True)
+            self.thread.start()
+            return self.status()
+
+    def _run_global_evidence(self) -> None:
+        from spireagent.storage.store import copy_artifact
+
+        from .global_evidence_store import (
+            _runtime_files,
+            _verified,
+            publish_global_evidence,
+            publish_global_runtime,
+            verify_global_artifact,
+        )
+        from .p1_recording_storage import open_peer
+
+        intent = copy.deepcopy(self.operation)
+        context = intent["_global_context"]
+        phase = "validation"
+        try:
+            store, registry = _selected_store(self.config, require_curation=False)
+            producer = Producer.decode(intent["_producer"])
+            # Reuse the owner checks before the first persistent write. Known
+            # validation rejection is failed, not uncertain delivery.
+            _verified(Path(context["directory"]), context["expected"])
+            _runtime_files(context["expected"])
+            phase = "runtime_publication"
+            runtime = publish_global_runtime(store, producer, context["expected"])
+            with self.lock:
+                self.operation["runtime_artifact_id"] = runtime.artifact_id
+                self._save()
+            def before_publish(manifest: Manifest) -> None:
+                with self.lock:
+                    self.operation["artifact_id"] = manifest.artifact_id
+                    self._save()
+
+            phase = "global_publication"
+            artifact = publish_global_evidence(
+                store, Path(context["directory"]), producer, expected=context["expected"],
+                model_artifact_id=context["model_artifact_id"],
+                runtime_artifact_id=runtime.artifact_id, scratch=self.config.state_dir,
+                before_publish=before_publish,
+            )
+            phase = "local_readback"
+            local = verify_global_artifact(
+                store, artifact.artifact_id, expected=context["expected"],
+                scratch=self.config.state_dir,
+            )
+            remote = None
+            if intent["peer"] is not None:
+                peer = open_peer(intent["peer"])
+                phase = "peer_delivery"
+                copy_artifact(store, peer, artifact.artifact_id)
+                phase = "peer_readback"
+                remote = verify_global_artifact(
+                    peer, artifact.artifact_id, expected=context["expected"],
+                    scratch=self.config.state_dir,
+                )
+            phase = "registry"
+            _sync(store, registry)
+            with self.lock:
+                self.operation.update(status="completed", finished_at=_now(),
+                                      local_readback=local, peer_readback=remote)
+                self._save()
+        except Exception as error:
+            with self.lock:
+                uncertain = phase != "validation" and (
+                    isinstance(error, StoreError) or not isinstance(error, BoundaryError))
+                status = "publication_unknown" if uncertain else "failed"
+                self.operation.update(status=status,
+                    failure_phase=phase,
+                    error_code=getattr(error, "code", "global_evidence_import_failed"))
+                self._save()
+
+    def reconcile_global_evidence(self) -> dict[str, Any]:
+        """Read the original ID only; never repeat publication or cloud delivery."""
+        from .global_evidence_store import verify_global_artifact
+        from .p1_recording_storage import open_peer
+
+        with self.lock:
+            if self.thread is not None and self.thread.is_alive():
+                raise BoundaryError("local_import", "operation_in_progress")
+            if self.operation.get("action") != "global-evidence":
+                raise BoundaryError("local_import", "global_evidence_intent_required")
+            identity = self.operation.get("artifact_id")
+            if identity is None:
+                return self.status()
+            context = self.operation["_global_context"]
+            try:
+                store, registry = _selected_store(self.config, require_curation=False)
+                local = verify_global_artifact(
+                    store, identity, expected=context["expected"], scratch=self.config.state_dir,
+                )
+                remote = None
+                if self.operation["peer"] is not None:
+                    remote = verify_global_artifact(
+                        open_peer(self.operation["peer"]), identity, expected=context["expected"],
+                        scratch=self.config.state_dir,
+                    )
+                _sync(store, registry)
+                self.operation.update(status="completed", finished_at=_now(),
+                                      local_readback=local, peer_readback=remote)
+                self.operation.pop("error_code", None)
+            except Exception as error:
+                self.operation.update(status="publication_unknown",
+                    error_code=getattr(error, "code", "global_evidence_readback_failed"))
+            self._save()
+            return self.status()
+
+    def start_p1_storage(self, action: str, artifact_id: str,
+                         peer: dict[str, Any]) -> dict[str, Any]:
+        from .p1_recording_storage import storage_intent
+
+        with self.lock:
+            if self.thread is not None and self.thread.is_alive():
+                raise BoundaryError("local_import", "operation_in_progress")
+            restoring_interrupted = (
+                action == "restore-expanded"
+                and self.operation.get("recording_type") == "p1_native"
+                and self.operation.get("action") == "storage"
+                and self.operation.get("storage_action") in {"cool", "restore-expanded"}
+                and self.operation.get("artifact_id") == artifact_id
+                and self.operation.get("peer") == peer
+                and self.operation.get("status") in {"publication_unknown", "interrupted_unknown"}
+            )
+            if not restoring_interrupted:
+                self._native_recovery_guard()
+            if not restoring_interrupted and self.operation.get("status") in {
+                    "pending", "publication_unknown", "interrupted_unknown"}:
+                raise BoundaryError("local_import", "original_intent_reconciliation_required")
+            operation = {"schema": SCHEMA, **storage_intent(action, artifact_id, peer)}
+            if action in {"cool", "restore-expanded"}:
+                from .p1_recording_maintenance import _in_scope
+
+                sessions = self._maintenance.get("sessions", {})
+                session = sessions.get(artifact_id)
+                if session is None:
+                    raise BoundaryError("p1_storage", "maintained_session_required")
+                policy = self._maintenance["policy"]
+                if action == "cool" and (
+                    not policy.get("cool_recent") or policy.get("peer") != peer
+                    or not _in_scope(session["scope_facts"], policy.get("scope"))
+                ):
+                    raise BoundaryError("p1_storage", "cooling_scope_required")
+                if action == "cool":
+                    ordered = sorted(
+                        (s for s in sessions.values()
+                         if _in_scope(s["scope_facts"], policy.get("scope"))),
+                        key=lambda s: (s["scope_facts"].get("closed_at", ""), s["session_id"]),
+                    )
+                    if artifact_id not in {s["source_artifact_id"] for s in ordered[:-2]}:
+                        raise BoundaryError("p1_storage", "recent_two_sessions_retained")
+                observed = self.catalog.read()
+                matches = []
+                if observed.get("status") == "ready":
+                    for row in observed["candidates"]:
+                        candidate = self.catalog.candidate(row["candidate_id"])
+                        if (candidate is not None and candidate.get("recording_type") == "p1_native"
+                                and candidate["session_id"] == session["session_id"]
+                                and candidate["timeline_id"] == session["timeline_id"]):
+                            matches.append(candidate)
+                if len(matches) != 1:
+                    raise BoundaryError("p1_storage", "original_closed_source_required")
+                operation["_expanded_directory"] = str(matches[0]["source_directory"])
+                session["expanded_state"] = "cooling" if action == "cool" else "restoring"
+            self.operation = operation
             self._save()
             self.thread = threading.Thread(target=self._run_p1_storage, daemon=True)
             self.thread.start()
@@ -1102,15 +1284,27 @@ class LocalRecordingImporter:
             return self.status()
 
     def _run_p1_storage(self) -> None:
-        from .p1_recording_storage import run_storage, storage_error_status
+        from .p1_recording_storage import expanded_storage, run_storage, storage_error_status
 
         intent = dict(self.operation)
         try:
             store, registry = _selected_store(self.config, require_curation=False)
-            result = run_storage(store, intent, scratch=self.config.state_dir)
+            if intent["storage_action"] in {"cool", "restore-expanded"}:
+                directory, release = current_collection_tool(self.config)
+                result = expanded_storage(
+                    store, intent, scratch=self.config.state_dir,
+                    tool=CollectionTool(directory, release),
+                )
+            else:
+                result = run_storage(store, intent, scratch=self.config.state_dir)
             _sync(store, registry)
             with self.lock:
                 self.operation = result
+                if intent["storage_action"] in {"cool", "restore-expanded"}:
+                    self._maintenance["sessions"][intent["artifact_id"]].update(
+                        expanded_state=result["storage_receipt"]["expanded_state"],
+                        storage_receipt=result["storage_receipt"],
+                    )
                 self._save()
         except Exception as error:
             with self.lock:
@@ -1334,6 +1528,13 @@ class LocalRecordingImporter:
 
     def _import_p1(self, candidate_id: str, candidate: dict[str, Any],
                    store: ManifestArtifactStore, registry: SQLiteRegistry) -> str:
+        from .p1_recording_storage import expanded_consumer
+
+        with expanded_consumer(Path(candidate["source_directory"])):
+            return self._import_p1_owned(candidate_id, candidate, store, registry)
+
+    def _import_p1_owned(self, candidate_id: str, candidate: dict[str, Any],
+                         store: ManifestArtifactStore, registry: SQLiteRegistry) -> str:
         from .p1_recording_store import publish_p1_original
 
         directory, release_id = current_collection_tool(self.config)
@@ -1355,7 +1556,7 @@ class LocalRecordingImporter:
         with tempfile.TemporaryDirectory(prefix="p1-recording-import-",
                                          dir=self.config.state_dir) as name:
             bundle = Path(name) / "bundle"
-            tool.pack_p1_native(candidate["source_directory"], bundle,
+            bundle = tool.pack_p1_native(candidate["source_directory"], bundle,
                                 labels["worker_id"], labels["campaign_id"],
                                 human_origin_attested=(
                                     self.operation.get("human_origin_attested") is True))

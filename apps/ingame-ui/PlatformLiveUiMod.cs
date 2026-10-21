@@ -216,6 +216,7 @@ internal sealed class PlatformLivePanel : IDisposable
     private readonly PlatformPolicyCommands _policyCommands = new();
     private readonly HttpClient _workbenchHttpClient = PlatformWorkbenchOpenClient.CreateHttpClient();
     private Task<PlatformWorkbenchOpenResult>? _workbenchOpenCheck;
+    private bool _workbenchOpenExternal;
     private readonly CancellationTokenSource _workbenchOpenLifetime = new();
     private long _policyUiIntent;
     private string? _pendingPollError;
@@ -298,7 +299,7 @@ internal sealed class PlatformLivePanel : IDisposable
 
     private void BuildUi()
     {
-        _launcher = BuildHeaderButton("Platform", ShowPanel, "Open Human Recorder or Agent Run.");
+        _launcher = BuildHeaderButton("Platform", ShowPanel, "Open recording, the native Workbench or runtime recovery.");
         _launcher.Name = "PlatformLauncher";
         _launcher.Position = new Vector2(12, 12);
         _launcher.CustomMinimumSize = new Vector2(102, 32);
@@ -367,12 +368,13 @@ internal sealed class PlatformLivePanel : IDisposable
         _workspaceTitle.AddThemeFontSizeOverride("font_size", 18);
         _workspaceTitle.AddThemeColorOverride("font_color", TextPrimary);
         titleRow.AddChild(_workspaceTitle);
-        _workbenchButton = BuildHeaderButton("工作台", () => SelectSurface(2), "Open the native project Workbench.");
+        _workbenchButton = BuildHeaderButton("项目", () => { SelectSurface(2); BeginOpenWorkbench(false); }, "Open the native project Workbench.");
         titleRow.AddChild(_workbenchButton);
+        titleRow.AddChild(BuildHeaderButton("录制", () => OpenNativeWorkbenchPage("data"), "开始、查看和封存当前 P1 录制。"));
         _externalWorkbenchButton = BuildHeaderButton("兼容浏览器", BeginOpenWorkbench, "Open the registered legacy compatibility browser service.");
         titleRow.AddChild(_externalWorkbenchButton);
-        titleRow.AddChild(BuildHeaderButton("Minimize", MinimizePanel, "Keep a small live view during play."));
-        titleRow.AddChild(BuildHeaderButton("Reset", ResetLayout, "Restore position, size and active surface."));
+        titleRow.AddChild(BuildHeaderButton("缩小", MinimizePanel, "Keep a small live view during play."));
+        titleRow.AddChild(BuildHeaderButton("重置", ResetLayout, "Restore position, size and active surface."));
         var closeButton = BuildHeaderButton("收起", HidePanel, "Close workspace and return to gameplay.");
         closeButton.Shortcut = WorkspaceShortcut(Key.Escape);
         titleRow.AddChild(closeButton);
@@ -397,7 +399,7 @@ internal sealed class PlatformLivePanel : IDisposable
         _tabBar.AddThemeFontSizeOverride("font_size", 13);
         _tabBar.AddThemeColorOverride("font_selected_color", TextPrimary);
         _tabBar.AddThemeColorOverride("font_unselected_color", TextSecondary);
-        foreach (string name in new[] { "运行状态与恢复", "真人采集", "工作台" })
+        foreach (string name in new[] { "运行状态与恢复", "兼容录制诊断", "工作台" })
             _tabBar.AddTab(name);
         _tabBar.TabClicked += OnTabClicked;
         _workspaceContent.AddChild(_tabBar);
@@ -413,7 +415,7 @@ internal sealed class PlatformLivePanel : IDisposable
         _workspaceContent.AddChild(_surfaceViewport);
         BuildAgentRunPage(_surfaceViewport);
         BuildRecorderPage(_surfaceViewport);
-        _nativeWorkbench = new PlatformNativeWorkbenchPanel(command => _ = RunPolicyCommandAsync(command));
+        _nativeWorkbench = new PlatformNativeWorkbenchPanel(command => _ = RunPolicyCommandAsync(command), () => SelectSurface(1), () => SelectSurface(0));
         _surfaceViewport.AddChild(_nativeWorkbench.Root);
         _surfaces.Add(_nativeWorkbench.Root);
 
@@ -585,7 +587,7 @@ internal sealed class PlatformLivePanel : IDisposable
 
         _command = new Label
         {
-            Text = "模型执行与 Source3/Source4 录制统一在工作台实战/采集页操作。这里保留运行诊断和独立 Human/Stop 恢复。",
+            Text = "模型执行与 P1 录制统一在工作台实战/录制页操作。这里保留运行诊断和独立 Human/Stop 恢复。",
             MouseFilter = MouseFilterEnum.Ignore,
             AutowrapMode = TextServer.AutowrapMode.WordSmart
         };
@@ -680,8 +682,8 @@ internal sealed class PlatformLivePanel : IDisposable
         var declaration = new HBoxContainer { MouseFilter = MouseFilterEnum.Stop };
         _recordingProfile = new OptionButton();
         _recordingProfile.AddItem("兼容语义录制", 0);
-        _recordingProfile.AddItem("原生交互与观察", 1);
-        _recordingProfile.Selected = 0;
+        _recordingProfile.AddItem("P1 录制（工作台）", 1);
+        _recordingProfile.Selected = 1;
         declaration.AddChild(_recordingProfile);
         _recordingSourceKind = new OptionButton();
         _recordingSourceKind.AddItem("请选择来源声明", 0);
@@ -973,6 +975,7 @@ internal sealed class PlatformLivePanel : IDisposable
     {
         int activeSurface = _layout.ActiveSurface switch { "human_recorder" => 1, "workbench" => 2, _ => 0 };
         _tabBar.CurrentTab = activeSurface;
+        _tabBar.Visible = activeSurface != 2;
         for (int index = 0; index < _surfaces.Count; index++)
             _surfaces[index].Visible = index == activeSurface;
         if (resizeWorkspace)
@@ -1101,7 +1104,8 @@ internal sealed class PlatformLivePanel : IDisposable
             var before = owner.QueryStatus();
             bool sourceStart = kind == STS2HumanAnnotator.Core.RecordingCommandKind.StartNewSession && _recordingProfile.Selected == 1;
             bool activeSource = before.Session?.CaptureProfileId is STS2HumanAnnotator.Core.SourceSessionContractV3.ProfileId
-                or STS2HumanAnnotator.Core.SourceSessionContractV4.ProfileId;
+                or STS2HumanAnnotator.Core.SourceSessionContractV4.ProfileId
+                or STS2HumanAnnotator.Core.P1NativeRecordingContract.ProfileId;
             bool inactive = before.Lifecycle.State is STS2HumanAnnotator.Core.RecordingLifecycleState.Ready or STS2HumanAnnotator.Core.RecordingLifecycleState.Closed;
             if (sourceStart || (activeSource && (kind != STS2HumanAnnotator.Core.RecordingCommandKind.StartNewSession || !inactive)))
             { OpenNativeWorkbenchPage("data"); return; }
@@ -1195,6 +1199,7 @@ internal sealed class PlatformLivePanel : IDisposable
     {
         SelectSurface(2);
         _nativeWorkbench.OpenPage(page);
+        BeginOpenWorkbench(false);
         _command.Text = page == "play" ? "请在工作台实战页选择实际模型任务控制。" : "请在工作台采集页明确操作来源与录制。";
     }
 
@@ -1358,7 +1363,8 @@ internal sealed class PlatformLivePanel : IDisposable
         bool isSource = recording.SourceV2 is not null || recording.Source is not null;
         bool sourceControls = (inactive && _recordingProfile.Selected == 1)
             || recording.Session?.CaptureProfileId is STS2HumanAnnotator.Core.SourceSessionContractV3.ProfileId
-                or STS2HumanAnnotator.Core.SourceSessionContractV4.ProfileId;
+                or STS2HumanAnnotator.Core.SourceSessionContractV4.ProfileId
+                or STS2HumanAnnotator.Core.P1NativeRecordingContract.ProfileId;
         bool sourceFields = !sourceControls && ((inactive && _recordingProfile.Selected == 1) || (!inactive && isSource));
         _recordingProfile.Disabled = !inactive;
         _recordingSourceKind.Visible = _recordingActor.Visible = sourceFields;
@@ -1366,7 +1372,7 @@ internal sealed class PlatformLivePanel : IDisposable
         _recordingSourceKind.Disabled = !inactive && state != STS2HumanAnnotator.Core.RecordingLifecycleState.Paused;
         _recordingActor.Editable = !_recordingSourceKind.Disabled;
         var sourceDeclaration = recording.SourceV2?.Declaration ?? recording.Source?.Declaration;
-        _sourceDeclarationNotice.Text = (sourceControls ? "Source3/Source4 录制在工作台采集页操作。" : "") + "来源仅由操作员声明，不是机器验证的真人证明。"
+        _sourceDeclarationNotice.Text = (sourceControls ? "P1 / Source3 / Source4 录制在工作台录制页操作。" : "") + "来源仅由操作员声明，不是机器验证的真人证明。"
             + (isSource && sourceDeclaration is not null ? $" 当前：{SourceKindLabel(sourceDeclaration.SourceKind)} · {sourceDeclaration.ActorId}" : "");
         if (isSource)
         {
@@ -1598,10 +1604,14 @@ internal sealed class PlatformLivePanel : IDisposable
     }
 
     private void BeginOpenWorkbench()
+        => BeginOpenWorkbench(true);
+
+    private void BeginOpenWorkbench(bool external)
     {
         if (_disposed || _workbenchOpenCheck is { IsCompleted: false })
             return;
         _externalWorkbenchButton.Disabled = true;
+        _workbenchOpenExternal = external;
         CancellationToken token = _workbenchOpenLifetime.Token;
         _workbenchOpenCheck = Task.Run(() => PlatformWorkbenchOpenClient.OpenAsync(
             _workbenchHttpClient, token));
@@ -1639,6 +1649,13 @@ internal sealed class PlatformLivePanel : IDisposable
                 _ => "本机工作台暂不可用。请在电脑上打开工作台后重试。"
             };
             PushToast("workbench.open", message);
+            return;
+        }
+
+        if (!_workbenchOpenExternal)
+        {
+            _nativeWorkbench.Refresh(_workspace.Visible && _layout.ActiveSurface == "workbench");
+            PushToast("workbench.open", "本机工作台已运行，正在连接游戏内页面。");
             return;
         }
 

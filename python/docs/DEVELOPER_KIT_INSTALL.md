@@ -6,6 +6,71 @@ Use the repository root for native commands and python/ for collector commands. 
 as part of installing a published binary kit. Windows/Linux portable CI is not proof that
 this native installation procedure works there. Consult the release's supported game/OS tuple.
 
+## 隔离源码候选：工程配对窗口
+
+此段供已授权的准确候选工程窗口；日常已安装发布版继续走下文原kit流程。
+源码候选不冒充release kit，也不覆盖日常Application、固定launcher或项目配置。
+仍由本installer、原Application/native-access与原Game Mod/Host owner负责。
+
+先具备：clean的准确源码、该源码集对应的统一Mod build/provenance、同Mod且
+Annotator tree一致的完整固定Collection Tool；所选Python 3.11的`-I`实际ROOT须
+是该源码的`python/`，Evidence须为真实已安装的配置pin，不能靠PYTHONPATH遮盖。
+先按原`project setup --skip-install`及`project collection-tool`入口准备独立私有
+config/state并登记Tool；这些步骤不启动游戏或录制。保留日常配置/运行身份。
+Game Mod安装/装载、录制root临时绑定及Host关闭/回滚仍按各原owner执行。
+
+`CANDIDATE_HOME`必须取所选隔离Host实际启动的游戏进程HOME（原Host profile
+与ready/lifecycle回读），不是操作者终端HOME或随手建的另一个目录；每个窗口
+重新核实际路径，不能复用旧driver/PID。它与日常HOME分开，目标launcher槽为空。
+私有config/Tool及HOME用绝对、规范、非symlink路径，所选Python可为已验证解释器。
+用该解释器执行源码的原installer，替换以下具名输入：
+
+```sh
+/ABS/python3.11 /ABS/source/python/tools/install_developer_kit.py prepare-source-candidate \
+  --directory /ABS/source --config /ABS/candidate-project.json \
+  --python-executable /ABS/python3.11 --collection-tool-directory /ABS/fixed-tool \
+  --candidate-home /ABS/host-profile/home
+"/ABS/host-profile/home/Library/Application Support/spireagent/workbench/open"
+```
+
+prepare返回`source_candidate_prepared`、`launcher_sha256`、`candidate_home`，
+`gameplay_started=false`、`release_kit_verified=false`。保存此回执，后续回滚使用
+同一hash。它在该HOME的`Library/Application Support/spireagent/workbench/`
+写原`launcher.json`、`open`和私密`native-access.json`；不打印/复制其中secret。
+生成的`open`自行设置此HOME并清理Python覆盖变量，用准确解释器`-I`执行
+`launch-source-candidate`。不要从日常HOME直接调用这个launch子命令；它会找错槽。
+
+launch重新核全部binding后，经原`open_project(..., browser=False)`启动/复用独立
+Application；成功返回`status=running`及`instance_id`，仍标source_candidate与
+`release_kit_verified=false`。随后游戏内Platform“录制”→项目内“录制”页须实际配对
+该Application/游戏实例，并按[原P1操作](../../apps/ingame-ui/README.md)核同session、
+Pause/Resume、双closed、下一session与原件读回。launch成功不证明录制/Human成功。
+
+失败保留原code和回执；`doctor_blocked`到原project doctor/依赖owner定位，
+`source_candidate_changed`核源码/lock/build/Tool/解释器/launcher差异，不能手改
+binding或bootstrap求过。请求unknown不重投。按原控制先Close/封存、Host stop/close，
+用`python -m spireagent.workbench project stop --config /ABS/candidate-project.json`
+停止这个独立App并核已不运行；不要停止日常App或仅凭`stopping` ACK宣布结束。
+
+退役配对通过同installer已有库API（当前没有另一个rollback CLI）：
+
+```python
+from pathlib import Path
+import runpy
+
+owner = runpy.run_path("/ABS/source/python/tools/install_developer_kit.py")
+receipt = owner["rollback_source_candidate_access"](
+    Path("/ABS/host-profile/home"), "PREPARED_LAUNCHER_SHA256"
+)
+```
+
+仍从日常操作者环境调用，HOME参数显式指定该隔离槽；API只在hash/schema/HOME
+一致且原App已停止时删除那三个候选launcher文件，返回`source_candidate_retired`
+与`config_and_data_retained=true`。它不删除config、录制原件或日志，也不回滚Mod/
+Host/原录制root配置；这些原owner回滚及日常安装/配置身份复核完成后，工程窗口
+才算关闭。当前实际窗口结果从[CURRENT](../../docs/memory/CURRENT.md)进入；原日志
+与失败/原生退出诊断保留，不能把一次工程零操作session写成Human或整局资格。
+
 ## Managed preparation (default for new kits)
 
 Use the approved release's exact checkout to run the following entrypoint from
@@ -17,14 +82,20 @@ writable development directory.
 ```bash
 uv run --locked --extra cloud python tools/install_developer_kit.py plan --archive /ABS/kit.zip --sha256 APPROVED_ZIP_SHA256 --releases /ABS/releases
 uv run --locked --extra cloud python tools/install_developer_kit.py prepare --archive /ABS/kit.zip --sha256 APPROVED_ZIP_SHA256 --releases /ABS/releases
+uv run --locked --extra cloud python tools/install_developer_kit.py initialize --directory /ABS/releases/APPROVED_ZIP_SHA256 --config /ABS/project.json --defer-launcher
 uv run --locked --extra cloud python tools/install_developer_kit.py preflight --directory /ABS/releases/APPROVED_ZIP_SHA256 --game-directory /ABS/game
-uv run --locked --extra cloud python tools/install_developer_kit.py initialize --directory /ABS/releases/APPROVED_ZIP_SHA256 --config /ABS/project.json
 ```
 
 `plan` reads only; `prepare` checks bounded archive paths/inventory, clones the exact
 source, verifies lock/combination/manifest, stages the published native bytes and
 publishes the directory. Dependencies initialize **after** placement so virtualenv
 paths remain stable. Neither step changes the game, profile, queues or cloud.
+Initialize before preflight: the prepared release's game doctor imports its installed
+Node consumer dependencies. `--defer-launcher` keeps the current launcher selected;
+after preflight passes, complete publication through the existing
+[reviewed launcher replacement and recovery](#reviewed-launcher-replacement-and-recovery)
+owner commands below. A new installation uses that selected release's `install-launcher`;
+an existing launcher requires the documented two-hash replacement.
 `preflight` is read-only: it binds the prepared package pins to their published BOM
 asset hashes, checks the target platform/architecture against the explicit local game
 and verifies declared Node, Python and .NET framework compatibility. It never installs,
@@ -146,9 +217,14 @@ retains these installed optional dependencies. The local home, model setup and
 recorded-report reading do not require team login; team account pairing is
 optional until a member uses collection sharing or uploads.
 
+Installer `uv` subprocesses select this release's own environment and synchronize
+its lock even if a calling test runner set `UV_NO_SYNC`. Offline and network policy
+remain inherited: an unavailable offline dependency fails initialization. A bare
+`.venv` directory is not proof that the release environment was initialized.
+
 For kits whose `combination.json` declares
 `workbench_launcher_schema: spireagent/workbench-launcher-v1`, successful
-initialization installs a fixed per-user macOS entry at
+initialization without `--defer-launcher` installs a fixed per-user macOS entry at
 `~/Library/Application Support/spireagent/workbench/open`. The game Mod can
 invoke it only after an explicit Open action reports the Workbench stopped. The
 entry accepts no arguments, verifies its exact kit and bound config through the
@@ -157,6 +233,34 @@ dependencies. Ready opens the existing URL; stale or identity-mismatched state
 requires operator recovery. Older kits without the capability retain their
 existing initialization behavior and do not receive this entry. This entry is
 currently macOS-only; Windows is not qualified.
+
+The entry reuses the same configuration and exact running service; it does not
+start a second recorder when a panel is reopened. The service is detached from
+the launcher and owns its profile scratch directory. Closing a panel or the game
+does not stop the Workbench's already sealed-recording maintenance. Explicitly
+stopping the Workbench does stop that background work; reopening resumes the
+persisted maintenance policy. Cloud access still requires the configured SDK
+credential provider to be available to the independent service.
+
+For a device that already uses a private cloud SDK environment file, select it
+once with `project setup --cloud-environment-file /ABS/private-cloud.env` and the
+same config/state/other setup arguments as the existing installation. Stop the
+Workbench before changing its configuration; use `--replace-config` only for
+the reviewed settings change. Setup validates the file and stores only its
+absolute path as `cloud_environment_file`. Subsequent trusted opens and direct
+serve use that same reference, so they do not need a Codex shell or a sourced
+terminal. Ordinary SDK profile/role/environment credentials remain supported.
+
+The selected file must be a bounded regular private file owned by the current
+user on POSIX; missing files, symlinks, public permissions and malformed syntax
+fail explicitly. Only the AWS credential/profile/region keys and STPD S3
+bucket/endpoint/prefix/region keys are imported. Existing environment values
+win; dotenv values are literal, without interpolation or shell execution.
+Unrelated provider keys are not imported. No credential value enters the
+project configuration, launcher binding, runtime status or reports. A stopped
+service reads a rotated file on its next open; a running service retains its
+already loaded environment. Configuring this provider does not itself enable
+maintenance or select Human origin, upload scope or cooling policy.
 
 ### Reviewed launcher replacement and recovery
 

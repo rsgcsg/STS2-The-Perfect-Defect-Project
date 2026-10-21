@@ -13,7 +13,7 @@ import torch
 from stpd.workers.checkpoint_codec import decode_checkpoint, encode_checkpoint
 
 from .data import digest, json_bytes
-from .input import INPUT_SPEC
+from .input import INPUT_SPEC, validate_input_spec
 from .model import ARCHITECTURE, MStd
 
 ADAPTER = "stpd-p1-mstd-agent"
@@ -41,14 +41,17 @@ def adapter_identity() -> dict[str, str]:
     }
 
 
-def input_spec(vocabulary: dict[str, Any]) -> dict[str, str]:
+def input_spec(
+    vocabulary: dict[str, Any], input_projection: dict[str, Any] | None = None
+) -> dict[str, str]:
+    spec = validate_input_spec(
+        vocabulary["input_spec"] if input_projection is None else input_projection
+    )
     return {
-        "id": INPUT_SPEC["id"],
-        "version": INPUT_SPEC["version"],
+        "id": spec["id"],
+        "version": spec["version"],
         "sha256": digest(
-            json_bytes(
-                {"projection": INPUT_SPEC, "vocabulary_sha256": digest(json_bytes(vocabulary))}
-            )
+            json_bytes({"projection": spec, "vocabulary_sha256": digest(json_bytes(vocabulary))})
         ),
     }
 
@@ -101,7 +104,6 @@ def load_model(path: Path, expected_sha256: str) -> tuple[MStd, dict[str, Any]]:
         value.get("schema") != PACKAGE_SCHEMA
         or value.get("architecture") != ARCHITECTURE
         or value.get("input_spec") != input_spec(value["vocabulary"])
-        or value["vocabulary"]["input_spec"] != INPUT_SPEC
     ):
         raise ValueError("model package architecture/InputSpec mismatch")
     # Inference construction must not alter process random state.
@@ -119,8 +121,12 @@ def load_model(path: Path, expected_sha256: str) -> tuple[MStd, dict[str, Any]]:
 
 
 def register(
-    package: Path, root: Path, environment_manifest: dict[str, Any], *,
-    entry_id: str = "t0-p1-mstd", label: str = "T0 P1 M-std (CPU engineering)",
+    package: Path,
+    root: Path,
+    environment_manifest: dict[str, Any],
+    *,
+    entry_id: str = "t0-p1-mstd",
+    label: str = "T0 P1 M-std (CPU engineering)",
 ) -> dict[str, Any]:
     """Environment owner supplies the existing exact P1 environment envelope.
 
@@ -135,12 +141,19 @@ def register(
     path = (root / "model.tensor-tree").resolve()
     shutil.copyfile(package / "model.tensor-tree", path)
     model, payload = load_model(path, descriptor["package_sha256"])
+    if (
+        descriptor["input_spec"] != input_spec(model.vocabulary)
+        or descriptor["checkpoint_sha256"] != payload["checkpoint_sha256"]
+    ):
+        raise ValueError("model descriptor differs from package")
     manifest = copy.deepcopy(environment_manifest)
     if (
         manifest.get("schema") != "sts2.policy-runtime/agent-manifest-1"
         or manifest.get("input", {}).get("profile") != "p1-global-r1"
+        or not isinstance(manifest.get("input", {}).get("global"), dict)
+        or manifest["input"]["global"].get("revision") != INPUT_SPEC["revision"]
     ):
-        raise ValueError("registration needs an owner-supplied P1 environment manifest")
+        raise ValueError("registration needs a current r1.5 P1 environment manifest")
     manifest.update(
         manifest_id="p1-mstd-" + descriptor["package_sha256"][:16],
         agent={
@@ -157,7 +170,7 @@ def register(
         },
     )
     manifest["input"].update(
-        input_spec=input_spec(model.vocabulary),
+        input_spec=input_spec(model.vocabulary, INPUT_SPEC),
         state_format_version="mstd-stateless-1",
         state_recovery={"mode": "none", "max_state_bytes": 0, "model_bindings": []},
     )
@@ -169,7 +182,9 @@ def register(
         "weights_sha256": digest(encode_checkpoint({"weights": payload["weights"]})),
         "checkpoint_sha256": payload["checkpoint_sha256"],
         "agent_spec": descriptor["agent_spec"],
-        "input_spec": descriptor["input_spec"],
+        "input_spec": input_spec(model.vocabulary, INPUT_SPEC),
+        "input_projection": INPUT_SPEC,
+        "package_input_spec": input_spec(model.vocabulary),
     }
     (root / "manifest.json").write_bytes(json_bytes(manifest))
     (root / "config.json").write_bytes(json_bytes(config))

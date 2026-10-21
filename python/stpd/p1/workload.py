@@ -26,6 +26,8 @@ ENTRYPOINT = "stpd.workers.p1_run:execute_p1_run"
 
 def populations_from_snapshot(store: ArtifactStore, snapshot_id: str) -> dict[str, Population]:
     _, selection = load_snapshot(store, snapshot_id)
+    if selection["input_projection"] != INPUT_SPEC:
+        raise BoundaryError("p1_workload", "current_InputSpec_required_for_new_training")
     counts = selection["partition_N"]
     if set(counts) - {"train", "dev", "test"} or not counts.get("train") or not counts.get("dev"):
         raise BoundaryError("p1_workload", "explicit_nonempty_train_dev_required")
@@ -105,7 +107,8 @@ def prepare_p1_run(
             Parent("experiment", experiment.artifact_id),
             Parent("training_input", training.artifact_id),
         ),
-        parameters=FrozenObject.of({"schema": RUN_SCHEMA, "operation_id": operation_id}),
+        parameters=FrozenObject.of({"schema": RUN_SCHEMA, "operation_id": operation_id,
+                                   "event_index": "run-events-v1"}),
     )
     store.publish(run)
     return run

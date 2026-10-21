@@ -10,6 +10,16 @@ preparation, capture, audit, bundle classification, or closeout. It does not
 authorize gameplay actions, prove Human origin by machine, or decide research
 admission.
 
+## Canonical route
+
+This is an agent task adapter, not another SOP, approval authority or source of
+business truth. Start from this checkout's [CURRENT](../../../docs/memory/CURRENT.md)
+and its task, then [TESTING](../../../docs/TESTING.md) and the owning guide.
+User authorization persists; only a real missing dependency or out-of-scope
+choice pauses the dependent action. Continue independent authorized work.
+If discovery supplied an older checkout's Skill, compare with this repository's
+[Skill index](../README.md); do not operate on the old checkout or copy its state.
+
 ## Inputs
 
 Identify the exact loaded game/Modset/runtime and component artifact identities,
@@ -19,12 +29,15 @@ conditions.
 
 ## Workflow
 
-1. Read root and Annotator/Evidence/Game Mod guidance, `docs/TESTING.md`, Status,
-   and only the exact capture/audit contract and relevant dated evidence.
+1. Read root and [current collection guidance](../../../docs/ANNOTATOR_COLLECTION.md),
+   the exact Annotator/Evidence contract and relevant original evidence. Select the
+   actual profile: P1-native, canonical bundle3 and Source lanes are distinct.
 2. Verify source/test/build/install/load identities independently. A predecessor
    session cannot qualify new bytes.
-3. Prepare the runtime and recording boundary, then stop for the Human owner to
-   perform native actions and attest origin. Do not simulate Human origin.
+3. For new capture, prepare the authorized runtime/recording boundary, then wait
+   only for the Human owner to perform required native actions/attestation. For an
+   existing session audit, inspect the originals directly; do not require a new
+   Human capture or repeat authorized setup. Never simulate Human origin.
 4. Preserve accepted, cancelled, invalidated, unknown, unresolved, and
    out-of-scope outcomes. Do not convert absence or incomplete capture into a
    successful transition.
@@ -41,8 +54,10 @@ installed artifacts. Never retry an uncertain mutation automatically.
 
 Return exact identities, owner-attested actions, machine-verifiable audit
 results, counts by disposition/family, evidence level, rollback, and non-claims.
-Stop for Human action/attestation, unavailable exact runtime, unsafe identity,
-authority ambiguity, or any unresolved evidence write.
+Pause dependent capture for required Human action/attestation or unsafe/unavailable
+runtime/identity; an offline audit does not require a running game. Preserve an
+unresolved evidence write and its original identity without retrying it. Audit and
+report what remains available; do not stop unrelated authorized work.
 
 ## Trigger evals
 

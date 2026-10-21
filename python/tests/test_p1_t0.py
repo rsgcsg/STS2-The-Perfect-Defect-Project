@@ -10,7 +10,7 @@ import torch
 
 from stpd.p1.data import digest, json_bytes, read_segments
 from stpd.p1.export import export_model, load_model, register
-from stpd.p1.input import fit_vocabulary, project
+from stpd.p1.input import INPUT_SPEC, LEGACY_INPUT_SPEC, fit_vocabulary, project
 from stpd.p1.model import MStd
 from stpd.p1.training import Trainer, maximum_difference
 from stpd.workers.checkpoint_codec import decode_checkpoint
@@ -20,7 +20,7 @@ def observation():
     return {
         "schema": "sts2.p1/observation-1",
         "profile": "p1-global-r1",
-        "revision": "r1.4",
+        "revision": "r1.5",
         "envelope": {
             "source_snapshot_id": "private-binding",
             "required_information_complete": True,
@@ -69,7 +69,7 @@ def segments():
     return {
         "schema": "sts2.p1/native-segments-1",
         "profile": "p1-global-r1",
-        "revision": "r1.4",
+        "revision": "r1.5",
         "branch": branch,
         "source_content_id": "source",
         "gaps": [],
@@ -226,7 +226,7 @@ def test_controlled_weights_score_legal_choices_and_exact_export_load(tmp_path, 
         load_model(tmp_path / "export/model.tensor-tree", "0" * 64)
     template = {
         "schema": "sts2.policy-runtime/agent-manifest-1",
-        "input": {"profile": "p1-global-r1"},
+        "input": {"profile": "p1-global-r1", "global": {"revision": "r1.5"}},
     }
     register(tmp_path / "export", tmp_path / "private", template)
     import builtins
@@ -324,3 +324,150 @@ def test_controlled_weights_score_legal_choices_and_exact_export_load(tmp_path, 
         config,
     )
     assert state["policy_identity"]["status"] == "blocked"
+
+
+@pytest.mark.parametrize("revision", ["r1.3", "r1.4", "r1.6", None])
+def test_current_input_does_not_accept_another_revision(tmp_path, revision):
+    obs = observation()
+    obs["revision"] = revision
+    with pytest.raises(ValueError, match="bound InputSpec"):
+        project(obs)
+    source = segments()
+    source["revision"] = revision
+    with pytest.raises(ValueError, match="current r1.5"):
+        read_fixture(tmp_path, source)
+
+
+def test_legacy_package_keeps_identity_and_binds_current_agent_explicitly(tmp_path):
+    import io
+
+    from stpd.p1.agent import SCHEMA, installation, serve
+    from stpd.p1.export import input_spec
+    from stpd.p1.installation import metadata
+    from stpd.workers.checkpoint_codec import encode_checkpoint
+
+    old = observation()
+    old["revision"] = "r1.4"
+    frame = project(old, input_projection=LEGACY_INPUT_SPEC)
+    vocabulary = fit_vocabulary([frame])
+    vocabulary["input_spec"] = copy.deepcopy(LEGACY_INPUT_SPEC)
+    model = MStd(vocabulary).eval()
+    checkpoint = tmp_path / "checkpoint"
+    checkpoint.write_bytes(b"legacy controlled fixture; no training")
+    package = tmp_path / "export"
+    descriptor = export_model(model, checkpoint, package, {"lineage": "unknown"})
+    before = {p.name: p.read_bytes() for p in package.iterdir()}
+    assert descriptor["input_spec"] == input_spec(vocabulary)
+    assert descriptor["input_spec"]["version"] == "1"
+    raw = before["model.tensor-tree"]
+    payload = decode_checkpoint(raw)
+    # A relabelled or future InputSpec cannot be accepted under a fresh checksum.
+    payload["vocabulary"]["input_spec"] = {**LEGACY_INPUT_SPEC, "revision": "r1.6"}
+    foreign = tmp_path / "foreign.tensor-tree"
+    foreign.write_bytes(encode_checkpoint(payload))
+    with pytest.raises(ValueError, match="InputSpec"):
+        load_model(foreign, digest(foreign.read_bytes()))
+    root = tmp_path / "private"
+    register(
+        package,
+        root,
+        {
+            "schema": "sts2.policy-runtime/agent-manifest-1",
+            "input": {"profile": "p1-global-r1", "global": {"revision": "r1.5"}},
+        },
+    )
+    config, manifest, loaded, payload = installation(
+        root / "config.json", root / "manifest.json", root
+    )
+    assert {p.name: p.read_bytes() for p in package.iterdir()} == before
+    assert (root / "model.tensor-tree").read_bytes() == raw
+    assert payload["vocabulary"]["input_spec"] == LEGACY_INPUT_SPEC
+    assert config["package_input_spec"] == descriptor["input_spec"]
+    assert config["input_spec"] == input_spec(vocabulary, INPUT_SPEC)
+    assert config["input_spec"] != config["package_input_spec"]
+    assert config["input_projection"] == INPUT_SPEC
+    # A current consumer binding never upgrades the Runtime envelope's protocol.
+    for runtime_global in ({"revision": "r1.4"}, {"revision": "r1.6"}, {}, None):
+        wrong_manifest = copy.deepcopy(manifest)
+        wrong_manifest["input"]["global"] = runtime_global
+        (root / "manifest.json").write_bytes(json_bytes(wrong_manifest))
+        with pytest.raises(ValueError, match="installation binding differs"):
+            installation(root / "config.json", root / "manifest.json", root)
+        rejected_output = io.StringIO()
+        with pytest.raises(ValueError, match="installation binding differs"):
+            serve(root / "config.json", root / "manifest.json", root, [], rejected_output)
+        assert rejected_output.getvalue() == ""  # No ready event for an incompatible Runtime.
+        with pytest.raises(ValueError, match="current r1.5"):
+            register(
+                package,
+                tmp_path / ("wrong-" + digest(json_bytes(runtime_global))[:8]),
+                wrong_manifest,
+            )
+    (root / "manifest.json").write_bytes(json_bytes(manifest))
+    for field, replacement in (
+        ("package_input_spec", config["input_spec"]),
+        ("input_spec", config["package_input_spec"]),
+        ("input_projection", {**INPUT_SPEC, "truncate": True}),
+    ):
+        changed = {**config, field: replacement}
+        (root / "config.json").write_bytes(json_bytes(changed))
+        with pytest.raises(ValueError, match="binding differs"):
+            installation(root / "config.json", root / "manifest.json", root)
+    (root / "config.json").write_bytes(json_bytes(config))
+    assert payload["training_identity"] == {"lineage": "unknown"}
+    assert metadata(root, config, manifest)["package_input_spec"] == descriptor["input_spec"]
+    current = observation()
+    with torch.inference_mode():
+        expected = loaded(project(current)).tolist()
+        assert expected == model(frame).tolist()
+    value = {
+        "acquisition_id": "one",
+        "input_spec": config["input_spec"],
+        "continuity_token": "one",
+        "previous_consumption_id": None,
+        "observation": current,
+        "catalog": current["catalog"],
+        "consumption_unit": {"id": "one"},
+    }
+    context = {"schema": SCHEMA, "session_id": "one", "recovery_epoch": 0}
+    destination = io.StringIO()
+
+    def messages():
+        yield json.dumps(
+            {**context, "request_id": "one", "message_type": "consume", "input": value}
+        )
+        completion = json.loads(destination.getvalue().splitlines()[-1])["completion"]
+        yield json.dumps(
+            {
+                **context,
+                "request_id": "one",
+                "message_type": "consume_ack",
+                "completion": completion,
+            }
+        )
+        yield json.dumps(
+            {
+                **context,
+                "request_id": "next",
+                "message_type": "next",
+                "input": {"continuity_token": "one"},
+            }
+        )
+
+    serve(root / "config.json", root / "manifest.json", root, messages(), destination)
+    directive = json.loads(destination.getvalue().splitlines()[-1])["output"]["directive"]
+    assert directive["scores"]["values"] == expected
+    # The newly bound Agent must not silently accept its package's old protocol.
+    value["observation"] = old
+    with pytest.raises(ValueError, match="bound InputSpec"):
+        serve(
+            root / "config.json",
+            root / "manifest.json",
+            root,
+            [
+                json.dumps(
+                    {**context, "request_id": "old", "message_type": "consume", "input": value}
+                )
+            ],
+            io.StringIO(),
+        )

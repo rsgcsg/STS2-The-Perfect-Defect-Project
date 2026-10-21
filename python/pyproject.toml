@@ -11,11 +11,11 @@ requires-python = ">=3.11,<3.12"
 dependencies = [
   "numpy>=2.0,<3",
   "pyarrow>=18,<24",
-  "rsgcsg-sts2-platform-evidence @ git+https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project.git@8682d7e758d23b3decae5003a39a962d47b67c90#subdirectory=components/evidence",
+  "rsgcsg-sts2-platform-evidence @ git+https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project.git@20989e51a1d2b74fae02fd75e6249860ecae36fa#subdirectory=components/evidence",
 ]
 
 [project.optional-dependencies]
-cloud = ["waitress>=3,<4", "modal==1.5.5", "python-dotenv>=1.1,<2", "PyJWT[crypto]>=2.10,<3"]
+cloud = ["boto3>=1.35,<2", "waitress>=3,<4", "modal==1.5.5", "python-dotenv>=1.1,<2", "PyJWT[crypto]>=2.10,<3"]
 # Fixed local text-menu B/D/M2 models; collection-only members do not need these.
 local-models = ["torch>=2.7,<3", "tokenizers>=0.21,<1", "safetensors>=0.5,<1"]
 research = [

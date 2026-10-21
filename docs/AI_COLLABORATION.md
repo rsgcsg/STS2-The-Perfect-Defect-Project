@@ -14,11 +14,7 @@ risk. One worker has one current assignment; it is not a general assistant colle
 miscellaneous work. Do not spawn merely because slots are available, or create hidden
 worker chains. The lead may implement; delegation never transfers accountability.
 
-The established default worker is GPT-6.1-Sol/high where available; do not restart an
-existing worker just to change its model. Use a costlier model only for a specific
-unresolved architecture/risk question. Model availability and actual tools must be
-checked, not inferred. The lead controls the total round budget, not a fresh budget
-per worker/context window. No paid external operation is implied.
+项目模型偏好：新子代理默认GPT-6.1-Sol/high；简单任务可选其medium/low，或GPT-6-Luna/xhigh、max，由主管按任务与实际可用模型选择。这是用户项目偏好，不是平台可用性或能力保证，不为换模型重启正在运行的任务。更贵模型只用于具体未决问题。总轮次预算不因worker/上下文更换而重置，也不因此授权付费外部操作。
 
 Use a small number of non-overlapping writers on separate branches/worktrees. Reuse a
 suitable clean checkout where possible; read-only reviewers need no new worktree.
@@ -33,6 +29,8 @@ another worker or delete its dependencies to obtain resources.
 先定共享合同和写入owner，再并行独立结果。两位作者需要改同一状态机，或分别猜共享接口时，先由一个负责人打通最短连接，消费者可并行准备忠实检查。架构有几层、目录有几个组件，不决定开几个Agent。任务包给明确结束行为：达成指定消费者结果即交；检查点到时交真实进度；轮次上限到时停止扩范围、保住实物与运行项并收口。时间到不把未完成改成通过，也不任意杀正常用户服务或另有授权的任务。
 
 用户已授权完整阶段时，主管可在该范围内继续后续检查点，无须每次再次申请。需要其亲手操作或未授权的实质决定，保留具体对象、选项和影响；独立工作照常推进，交付时集中呈现，不让睡眠中的用户充当技术协调者。
+
+已授权父任务未验收且未到硬截止时，主管继续核真实进展、解依赖、审计和交付；派发、恢复或状态报告本身不结束该任务，确有须用户亲手处理的阻塞则具名报告。上下文接续仍按下文五项与原件核对，摘要不作为新授权或新证据。
 
 ## Task packet and delivery format
 
@@ -76,6 +74,11 @@ phase, launch another collector or rebuild already verified inputs without a rea
 Keep one short checkpoint per current assignment; replace its active summary rather
 than prepending endless history. Durable requirements and acceptance must also be in
 the repository/task so work is not dependent on one private conversation.
+
+新的独立阶段使用清楚的当批任务名称和当前状态指针；同一有界修复仍可复用原执行者，
+不为改名而重启。旧轮私人检查点只保留历史地位，恢复时先以当前任务、准确工作树和
+实际运行项相互核对；发现冲突先纠正指针，不按旧文件继续实施。主管须在确认正在做
+用户要的同一结果之后派发或验收，不能用旧轮完成消息替代本轮现场。
 
 ## Mandatory independent review before acceptance
 
