@@ -152,7 +152,8 @@ internal sealed record PlatformNativeWorkbenchBootstrap(string ConfigPath, strin
         if (Convert.ToHexString(SHA256.HashData(launcherBytes)).ToLowerInvariant() != launcherHash)
             throw new InvalidOperationException("native_launcher_mismatch");
         using JsonDocument launcher = JsonDocument.Parse(launcherBytes);
-        if (launcher.RootElement.GetProperty("schema").GetString() != "spireagent/workbench-launcher-v1"
+        if (launcher.RootElement.GetProperty("schema").GetString() is not
+                ("spireagent/workbench-launcher-v1" or "spireagent/source-candidate-launcher-v1")
             || launcher.RootElement.GetProperty("config_path").GetString() != config)
             throw new InvalidOperationException("native_launcher_mismatch");
         return new PlatformNativeWorkbenchBootstrap(config, artifact, secret, launcherHash,
