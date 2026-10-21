@@ -259,3 +259,34 @@ def test_known_original_rejection_keeps_native_unknown_scope_closed(native_http)
             binding=RuntimeControlBinding("game-original", 3),
         )
     assert len(calls) == 1
+
+
+def test_runtime_status_accepts_exact_optional_global_stop_window():
+    startup, status = source()
+    client = RuntimeClient("http://127.0.0.1:15527", startup)
+    status["global_no_progress"] = {"windowDecisions": 32, "maxRepeats": 8, "last": None}
+    client.validate_status(status)
+    status["global_no_progress"]["last"] = {
+        "state_sha256": "a" * 64, "choice_sha256": "b" * 64, "repeats": 8,
+        "novel_state": False, "exhausted": True}
+    status.update(lifecycle="stopped", mode="human", controller="released", errors=["no_progress"])
+    client.validate_status(status)
+    del status["global_no_progress"]
+    status["unexpected"] = True
+    with pytest.raises(ValueError):
+        client.validate_status(status)
+
+
+@pytest.mark.parametrize("change", [
+    {"windowDecisions": True}, {"maxRepeats": 33}, {"unexpected": 0},
+    {"last": {"state_sha256": "x", "choice_sha256": "b" * 64, "repeats": 8,
+              "novel_state": False, "exhausted": True}},
+    {"last": {"state_sha256": "a" * 64, "choice_sha256": "b" * 64, "repeats": 8,
+              "novel_state": False, "exhausted": False}},
+])
+def test_runtime_status_rejects_malformed_optional_stop_window(change):
+    startup, status = source()
+    client = RuntimeClient("http://127.0.0.1:15527", startup)
+    status["global_no_progress"] = {"windowDecisions": 32, "maxRepeats": 8, "last": None, **change}
+    with pytest.raises(ValueError):
+        client.validate_status(status)

@@ -14,6 +14,7 @@ from spireagent.artifact_contracts import Manifest
 from spireagent.json_boundary import BoundaryError
 from spireagent.source import source_identity
 from spireagent.storage.config import open_store
+from spireagent.storage.local import LocalBlobStore
 from spireagent.storage.store import ManifestArtifactStore
 from spireagent.workbench.developer import ROOT, atomic_json
 from spireagent.workbench.local_recording_import import (
@@ -384,14 +385,57 @@ def _storage(argv: list[str]) -> int:
     )
 
     parser = argparse.ArgumentParser(description="P1 preservation and exact-ID restore")
-    parser.add_argument("action", choices=("preserve", "restore", "verify", "reconcile"))
+    parser.add_argument("action", choices=(
+        "preserve", "restore", "verify", "reconcile", "cool", "restore-expanded", "status",
+    ))
     parser.add_argument("--store", required=True)
     parser.add_argument("--state", type=Path, required=True)
     parser.add_argument("--peer", help="Store directory or s3 (credentials from environment)")
     parser.add_argument("--artifact")
+    parser.add_argument("--config", type=Path,
+                        help="open Application owner; required for expanded cooling/restore/status")
     args = parser.parse_args(argv)
     if args.store == "s3":
         parser.error("--store is the local application Store; --peer may be s3")
+    if args.config is not None:
+        from urllib.error import HTTPError
+
+        from .developer import ProjectConfig
+        from .developer_server import _local_request, running
+        from .local_recording_import import _selected_store
+
+        config = ProjectConfig.load(args.config)
+        selected, _ = _selected_store(config, require_curation=False)
+        if (config.state_dir.resolve() != args.state.resolve()
+                or not isinstance(selected.blobs, LocalBlobStore)
+                or selected.blobs.root != Path(args.store).resolve()):
+            raise BoundaryError("p1_storage", "application_store_binding_mismatch")
+        current = running(config)
+        if current is None:
+            raise BoundaryError("p1_storage", "open_workbench_first")
+        if args.action not in {"status", "reconcile"} and (not args.artifact or not args.peer):
+            parser.error("storage action requires --peer and --artifact")
+        base = f"http://127.0.0.1:{current['port']}"
+        route = ("/api/local-recordings/import/status" if args.action == "status"
+                 else "/api/local-recordings/storage/reconcile" if args.action == "reconcile"
+                 else "/api/local-recordings/storage")
+        body = (None if args.action == "status" else {} if args.action == "reconcile" else {
+            "action": args.action, "artifact_id": args.artifact, "peer": peer_binding(args.peer),
+        })
+        try:
+            result = _local_request(
+                base + route, token=current["control_token"], body=body,
+                method="GET" if args.action == "status" else "POST", timeout=15,
+            )
+        except HTTPError as error:
+            value = json.loads(error.read(4096))
+            raise BoundaryError("p1_storage", value.get("error", "request_rejected")) from error
+        except (OSError, ValueError) as error:
+            raise BoundaryError("p1_storage", "check_original_storage_status_no_retry") from error
+        print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+        return 0
+    if args.action in {"cool", "restore-expanded", "status"}:
+        parser.error("expanded cooling/restore/status requires --config of the open Application")
     local = open_store(args.store)
     args.state.mkdir(parents=True, exist_ok=True)
     with instance_lock(args.state / "instance.lock"):
@@ -459,6 +503,8 @@ def _maintenance(argv: list[str]) -> int:
     )
     parser.add_argument("--candidate-id", action="append")
     parser.add_argument("--from-now", action="store_true")
+    parser.add_argument("--cool-recent", action="store_true",
+                        help="retain newest two scoped sessions after full independent restore")
     parser.add_argument(
         "--origin",
         choices=("declared_human", "agent_native_ui", "unknown"),
@@ -486,6 +532,8 @@ def _maintenance(argv: list[str]) -> int:
                     if args.from_now
                     else policy.get("scope")
                 ),
+                **({"cool_recent": True}
+                   if args.cool_recent or policy.get("cool_recent") is True else {}),
             },
         )
     print(json.dumps(value, ensure_ascii=False, sort_keys=True))
