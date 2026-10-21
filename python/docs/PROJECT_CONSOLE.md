@@ -49,7 +49,14 @@ may contain several runs or a partial run; the unassigned session context is not
 Closing the browser tab does not stop delivery. `project stop --config /ABS/project.json`
 stops the owned background service. After a computer restart or an explicit stop, reopen the
 same configuration to resume sealed work. This is not an installed OS autostart service.
-Local raw sessions and bundles are not automatically deleted after cloud success.
+Cloud success alone does not delete local data. For P1, the separately enabled
+recording-maintenance policy can cool older expanded copies in its explicit scope,
+retaining the newest two sessions. It first verifies the compressed local archive,
+the independent R2 copy, exact-ID restoration and the original Tool reader, and
+holds the native/managed consumer locks. Seals, Store archives/manifests and
+Curation state remain. Failure or interruption preserves the original operation;
+explicit `restore-expanded` recovers that same artifact without overwriting
+conflicting bytes. See [the original Store/R2 operations](DATA_LIFECYCLE.md#daily-p1-store-and-r2-operations).
 
 ## 本机资料
 

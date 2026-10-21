@@ -356,6 +356,42 @@ def test_storage_space_preflight_and_secret_binding_rejected(tmp_path, original,
     assert not ManifestArtifactStore(LocalBlobStore(tmp_path / "cold")).manifest_ids()
 
 
+def test_named_projection_storage_restores_its_original_parent_and_detects_corruption(
+    tmp_path, original, tool,
+):
+    from spireagent.workbench.p1_recording_storage import (
+        peer_binding,
+        reconcile_storage,
+        run_storage,
+        storage_intent,
+    )
+    from spireagent.workbench.p1_recording_store import p1_projection
+
+    local = ManifestArtifactStore(LocalBlobStore(tmp_path / "local"))
+    producer = Producer("test", "a" * 40, "b" * 64)
+    raw = publish_p1_original(local, original, tool, producer, scratch=tmp_path / "scratch")
+    named = derive_p1_recording(local, raw.artifact_id, tool, producer,
+                                scratch=tmp_path / "scratch")
+    peer = peer_binding(str(tmp_path / "cold"))
+    intent = storage_intent("preserve", named.artifact_id, peer)
+    saved = run_storage(local, intent, scratch=tmp_path / "scratch", reserve_bytes=0)
+    assert saved["storage_receipt"]["full_readback"] is True
+    assert saved["storage_receipt"]["source_archive"]["artifact_id"] == raw.artifact_id
+    empty = ManifestArtifactStore(LocalBlobStore(tmp_path / "restored"))
+    restored = run_storage(empty, storage_intent("restore", named.artifact_id, peer),
+                           scratch=tmp_path / "scratch", reserve_bytes=0)
+    assert restored["storage_receipt"]["full_readback"] is True
+    assert p1_projection(empty, named.artifact_id).artifact_id == named.artifact_id
+    assert empty.get_manifest(raw.artifact_id) == raw
+    assert empty.bytes(named.payload("segments")) == local.bytes(named.payload("segments"))
+    cold = ManifestArtifactStore(LocalBlobStore(tmp_path / "cold"))
+    payload = named.payload("segments")
+    index = json.loads(cold.blobs.get(f"payload-indexes/v1/{payload.sha256}.json"))
+    (cold.blobs.root / "objects/sha256" / index["chunks"][0]["sha256"]).write_bytes(b"bad")
+    with pytest.raises(ValueError, match="payload_chunk_integrity_failure"):
+        reconcile_storage(local, intent, scratch=tmp_path / "scratch")
+
+
 @pytest.mark.parametrize("ascension, expected_ascension", [(0, 0), (None, None), (False, None)])
 def test_target_publication_keeps_schema_role_receipt_and_partial(
     tmp_path,
