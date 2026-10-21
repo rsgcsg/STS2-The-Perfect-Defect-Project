@@ -376,9 +376,13 @@ The normal `operations` entry preserves the existing `Operations.backup` SQLite
 snapshot in the same ManifestArtifactStore. It includes jobs, fenced attempts,
 original provider handles, outcomes and operation events. The snapshot is paused;
 local lease hashes are cleared in the copy and deleted database pages are vacuumed.
-Account/device/upload/collection rows must be empty, otherwise publication is
-rejected. Control tokens, environment credentials and target/secret configuration
-are not exported. Curation remains the separate original private owner and uses
+The copy also clears only the rebuildable `console_artifacts`,
+`console_artifact_policy` and `console_lineage` projections; their owner can rebuild
+them from Store manifests with `ConsoleIndex.artifact_closure`. The live database
+is unchanged. Account/device/upload/collection/visibility and unknown tables must
+still be empty, otherwise publication is rejected. Restore retains the same strict
+private-scope validation. Control tokens, environment credentials and target/secret
+configuration are not exported. Curation remains the separate original private owner and uses
 its backup command above.
 
 ```sh
