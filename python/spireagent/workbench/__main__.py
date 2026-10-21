@@ -43,6 +43,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "command",
         choices=(
+            "cache-configure",
             "prepare",
             "show",
             "lineage",
@@ -60,6 +61,8 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument("--store", default=".local/research-store")
+    parser.add_argument("--max-cache-bytes", type=int, help="explicit local payload budget")
+    parser.add_argument("--retain-recent", type=int, default=2)
     parser.add_argument("--registry", type=Path, default=Path(".local/registry.sqlite"))
     parser.add_argument("--other-store", help="transfer peer: local directory or s3")
     parser.add_argument("--artifact", help="exact artifact SHA256; required for push/pull/show")
@@ -91,7 +94,15 @@ def main(argv: list[str] | None = None) -> int:
             result = run_e2e(args.root)
         else:
             store = open_store(args.store)
-            if args.command == "prepare":
+            if args.command == "cache-configure":
+                from spireagent.storage.cache import configure_cache
+
+                if not args.other_store or args.max_cache_bytes is None:
+                    raise BoundaryError("cli", "explicit_peer_and_cache_budget_required")
+                result = configure_cache(store, args.other_store,
+                                         max_bytes=args.max_cache_bytes,
+                                         retain_recent=args.retain_recent)
+            elif args.command == "prepare":
                 from spireagent.json_boundary import decode_json
                 from spireagent.workbench.preparation import prepare
                 from stpd.workers.contracts import TrainingConfig
