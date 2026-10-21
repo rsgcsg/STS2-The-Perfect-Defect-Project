@@ -532,7 +532,7 @@ internal sealed class PlatformNativeWorkbenchPanel : IDisposable
         if (!Boolean(descriptor, "enabled")) form.AddChild(Label("当前不可用：" + String(descriptor, "reason")));
         _fields[action + ":submit"] = submit;
         if (recordingAction && action is not ("recording.start" or "recording.change_source"))
-            _recordingButtons.AddChild(submit);
+        { form.AddChild(submit); _recordingButtons.AddChild(form); }
         else { form.AddChild(submit); destination.AddChild(form); }
     }
 
