@@ -9,16 +9,16 @@
       "component_source_digest_sha256": "63f59af4f7053e483885bfa7a62cba2eb74f39334113ea1f4c8dcbaba007a7ba"
     },
     "connector": {
-      "version": "1.3.0-rc.25",
-      "source_revision": "c2f335663c33b8ac53b516dac14c087d0cdada4d",
-      "component_tree_revision": "eedcb45a6a4df3b898caa6b9bb9bbc6e4f9e3979",
-      "component_source_digest_sha256": "49f63ae4b1d62391c0bd41276c0cc64e0be604e533b9b92577d707a0b63b5b51"
+      "version": "1.3.0-rc.26",
+      "source_revision": "a2aab2fc33d10116de8ac8d3d734d236d759da01",
+      "component_tree_revision": "48f3f4856da4ecfbf5dc0c3d24762856f880442c",
+      "component_source_digest_sha256": "d57eade8ff3a5d7ffc9363cc3cc2fc2f2e320517161d95cc52a48e16b5bf4d31"
     },
     "host_runtime": {
-      "version": "1.1.0-rc.33",
-      "source_revision": "bffe4ebcce7e989926e3edc511c8561291d6557a",
-      "component_tree_revision": "aa1e9ce6ff0e8b4073be4edfe88c69c59044d448",
-      "component_source_digest_sha256": "ac6701912011824ad751db7779a52d86b852672c634e97f63fbe83fdb31dbb23"
+      "version": "1.1.0-rc.34",
+      "source_revision": "a2aab2fc33d10116de8ac8d3d734d236d759da01",
+      "component_tree_revision": "aa60e798646043ce52e770d9891fabccc68b07a5",
+      "component_source_digest_sha256": "0725c949d6448bf121d30cca8ff63b70cbea97b972f50b510d95a0deb2119baf"
     },
     "annotator": {
       "version": "0.3.0-rc.22",
@@ -33,10 +33,10 @@
       "component_source_digest_sha256": "7cc0b7d078b10ff81b5f4e565a7a265a0215c74d471dccebcf0e86781aee728b"
     },
     "policy_runtime": {
-      "version": "0.1.0-rc.38",
-      "source_revision": "e6293ee53d25eb7efcfaeea7c392616e4ccf6301",
-      "component_tree_revision": "ee6e7bc9a43e60b7284ac2e390d6de1a0d07cec9",
-      "component_source_digest_sha256": "d16d43facd6ae534130b74565389f599f396055e0825d0906ae0f2f5b479f411"
+      "version": "0.1.0-rc.39",
+      "source_revision": "a2aab2fc33d10116de8ac8d3d734d236d759da01",
+      "component_tree_revision": "a7a2065db22d5ea16455664f61a8b14d80c1f684",
+      "component_source_digest_sha256": "9850c13fd8f69e1fb042930a467f3caae73cc73345d35c41da5ce23605fd337f"
     },
     "workbench": {
       "version": "0.1.0-rc.3",
@@ -46,9 +46,9 @@
     },
     "live_ui": {
       "version": "0.1.0-rc.13",
-      "source_revision": "caf0f4a0952b2f3918184aaf9fb44588c9c3cd29",
-      "component_tree_revision": "fee2f6b99be465837425a8d88b1ea9c84bd6c4fa",
-      "component_source_digest_sha256": "24f9044c1c1a15c63830c9c0b4245a9ad4e3a756a28b0d4eed4b993ad78943c9"
+      "source_revision": "37eb08bf7bdd5612efa80bed5cc5374516fa1431",
+      "component_tree_revision": "ab30b1a3235b87861c93963df1c18dd9637da67e",
+      "component_source_digest_sha256": "235cb6c184a5334c4ea6404ddb10c8337b2b0777ca9bde5dab25c7dc568517c0"
     },
     "game_mod": {
       "version": "0.2.0-rc.48",
@@ -57,7 +57,7 @@
       "component_source_digest_sha256": "d8cc88390926565f3eb7ddef7cfc580a8ddbe056e5180212c36cf42e6cf9d278"
     },
     "player_environment_protocol": "1.0.0",
-    "typescript_sdk": "1.3.0-rc.10"
+    "typescript_sdk": "1.3.0-rc.11"
   },
   "public_packages": {
     "connector_host": {
@@ -157,8 +157,8 @@
     },
     "connector": {
       "source_revision": "09e5c2363fff64b2e8cfa07d16ec7cf22d8ad3b5",
-      "current_component_source_revision": "c2f335663c33b8ac53b516dac14c087d0cdada4d",
-      "current_component_source_digest_sha256": "49f63ae4b1d62391c0bd41276c0cc64e0be604e533b9b92577d707a0b63b5b51",
+      "current_component_source_revision": "a2aab2fc33d10116de8ac8d3d734d236d759da01",
+      "current_component_source_digest_sha256": "d57eade8ff3a5d7ffc9363cc3cc2fc2f2e320517161d95cc52a48e16b5bf4d31",
       "source_relation": "loaded_human_v2_artifact_precedes_unified_platform_source",
       "artifact_sha256": "6c66cbf06757dca3e7d910467fb56b89376f109c6d7d0ba47d2bc0260ab4a3d2",
       "artifact_mvid": "11f1da35-558f-4346-8ec9-a493fea95cb8",
@@ -258,8 +258,8 @@
     "connector": {
       "source_revision": "4de52cfd72c6bf5b0d2312538152e81c616dabfb",
       "source_digest_sha256": "8651b47e2fec8e0c77689a8e8774377795d79c188f2d69910a116e72db8f78c1",
-      "current_component_source_revision": "c2f335663c33b8ac53b516dac14c087d0cdada4d",
-      "current_component_source_digest_sha256": "49f63ae4b1d62391c0bd41276c0cc64e0be604e533b9b92577d707a0b63b5b51",
+      "current_component_source_revision": "a2aab2fc33d10116de8ac8d3d734d236d759da01",
+      "current_component_source_digest_sha256": "d57eade8ff3a5d7ffc9363cc3cc2fc2f2e320517161d95cc52a48e16b5bf4d31",
       "source_relation": "loaded_native_source_precedes_current_discriminator_source",
       "artifact_sha256": "04104ca5cd47c82329be185a8aa7017f7982b2062048fbf825488bead231d1c1",
       "artifact_mvid": "7408a183-f5a8-4f95-a997-dbf588b1536b",
@@ -269,9 +269,9 @@
       "source_revision": "e19b30315015664a5647ab351cdcefb09417f275",
       "source_digest_sha256": "d227321727d07edd2d4c67928edec439c26f156494dd9cfab98d2bac4debf346",
       "version": "0.1.0-rc.1",
-      "current_component_source_revision": "e6293ee53d25eb7efcfaeea7c392616e4ccf6301",
-      "current_component_source_digest_sha256": "d16d43facd6ae534130b74565389f599f396055e0825d0906ae0f2f5b479f411",
-      "current_component_version": "0.1.0-rc.38",
+      "current_component_source_revision": "a2aab2fc33d10116de8ac8d3d734d236d759da01",
+      "current_component_source_digest_sha256": "9850c13fd8f69e1fb042930a467f3caae73cc73345d35c41da5ce23605fd337f",
+      "current_component_version": "0.1.0-rc.39",
       "source_relation": "historical_runtime_source_precedes_standalone_consumer_package"
     },
     "annotator": {
@@ -900,8 +900,8 @@
     "live_ui": {
       "source_revision": "305a2cac80f0bd3126d66cfc5818477c583a8ce5",
       "source_digest_sha256": "c2a75214cb69678913fceb965ae4d41784a6cb1580311b53a2cc5b4c0c4cb1c4",
-      "current_component_source_revision": "caf0f4a0952b2f3918184aaf9fb44588c9c3cd29",
-      "current_component_source_digest_sha256": "24f9044c1c1a15c63830c9c0b4245a9ad4e3a756a28b0d4eed4b993ad78943c9",
+      "current_component_source_revision": "37eb08bf7bdd5612efa80bed5cc5374516fa1431",
+      "current_component_source_digest_sha256": "235cb6c184a5334c4ea6404ddb10c8337b2b0777ca9bde5dab25c7dc568517c0",
       "source_relation": "loaded_ui_source_precedes_current_component",
       "artifact_sha256": "04104ca5cd47c82329be185a8aa7017f7982b2062048fbf825488bead231d1c1",
       "artifact_mvid": "7408a183-f5a8-4f95-a997-dbf588b1536b"
