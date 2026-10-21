@@ -2,7 +2,8 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { createSession, matchSourceP1Choice, reduce, type P1Basis } from "../src/p1Global/index.js";
 import { rewardForwardPair } from "./fixtures/reward-forward.mjs";
-import { selectorForwardPair } from "./fixtures/selector-forward.mjs";
+import { selectorForwardPair, selectorReversalPair } from "./fixtures/selector-forward.mjs";
+import { sourceCardDragPair } from "./fixtures/source-card-drag.mjs";
 
 // Synthetic complete public facts, with explicit original-invocation relations.
 // This is a semantic mapping regression, not a native capture/origin witness.
@@ -27,9 +28,10 @@ function row(basis: any, ordinal: string, selected: any, facts: any, mechanism: 
 }
 const accepted = (carrier = "exact-action") => [
   { kind: "game_action_submitted", carrier_ref: carrier }, { kind: "game_action_accepted", carrier_ref: carrier }];
-function play() {
-  const basis = original(), next = rename(basis, "-held");
-  const action = basis.snapshot.bound_actions.actions.find((value: any) => value.verb === "play" && value.arguments.length);
+function play(targeted = true) {
+  const pair = targeted ? null : sourceCardDragPair();
+  const basis = pair?.before ?? original(), next = pair?.held ?? rename(basis, "-held");
+  const action = pair?.action ?? basis.snapshot.bound_actions.actions.find((value: any) => value.verb === "play" && value.arguments.length);
   const facts = { owner_ref: "exact-play", subject_ref: action.subject_referent_id,
     arguments: Object.fromEntries(action.arguments.map((value: any) => [value.role, value.referent_id])), carriers: accepted() };
   const start = row(basis, "1", { action_id: "native-begin-not-pe-id", verb: "begin_card_play",
@@ -60,6 +62,65 @@ function selector() {
 }
 
 describe("Source4 original-input to P1 intention mapping", () => {
+  it.each(["valid", "owner", "card", "effect", "world", "read", "missing", "unknown", "interleaved", "no-return", "intermediate-world", "gap", "paused", "label"])(
+    "E3 retains adjacent original selector reversal semantics: %s", change => {
+      const { outer, selected, restored } = selectorReversalPair();
+      const action = outer.snapshot.bound_actions.actions[0], deselect = selected.snapshot.bound_actions.actions[0];
+      const facts = { owner_ref: "owner-one", subject_ref: action.subject_referent_id, arguments: {}, carriers: [] as any[] };
+      const mechanism = "MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NDeckCardSelectScreen.OnCardClicked";
+      const first = row(outer, "1", action, structuredClone(facts), mechanism);
+      const last: any = row(selected, "2", deselect, structuredClone(facts), mechanism); last.source_boundaries = [];
+      const next = row(restored, "3", action, structuredClone(facts), mechanism);
+      if (change === "owner") last.outcome.native_facts.owner_ref = "other-owner";
+      if (change === "card") last.outcome.native_facts.subject_ref = "other-card";
+      if (change === "effect") last.outcome.native_facts.carriers = accepted();
+      if (change === "label") selected.snapshot.bound_actions.actions[0].label = "Deselect changed public instruction";
+      if (change === "world") restored.snapshot.persistent.content.player.gold++;
+      if (change === "read") restored.reads[0].response.content.changed_public_fact = true;
+      if (change === "missing") last.basis = null;
+      if (change === "unknown") last.outcome.delivery = "unknown";
+      if (change === "interleaved") last.input_prefix_ordinal = "3";
+      if (change === "intermediate-world") selected.snapshot.persistent.content.player.gold++;
+      if (change === "gap") last.publications_before.push({ session_id: "source-session", timeline_id: "timeline", epoch_id: "epoch-original",
+        segment_id: "segment", position: position("2"), gap_after_index: "1", captured_parts: {
+          public_basis: reference(selected), public_basis_missing_reason: null }, basis: selected });
+      if (change === "paused") last.source_boundaries.push({ session_id: "source-session", timeline_id: "timeline", paused_intervals: [{
+        epoch_id: "epoch-original", stream_generation: "1", after_index: "1", through_index: "3",
+        after_input_ordinal: "1", through_input_ordinal: "2" }] });
+      const raw = JSON.stringify([first, last, next]);
+      const match = matchSourceP1Choice(session(), outer, [first, last], change === "no-return" ? null : next);
+      if (change === "valid") expect(match, JSON.stringify(match)).toMatchObject({ status: "context_only", choice_id: null, input_ids: ["input-1", "input-2"] });
+      else expect(match.status).not.toBe("context_only");
+      expect(JSON.stringify([first, last, next])).toBe(raw);
+      expect(reduce(session(), selected).observation.catalog.some(choice => choice.kind.includes("deselect"))).toBe(false);
+    });
+  it.each(["valid", "owner", "card", "target", "unknown", "ambiguous", "energy", "hp", "enemy", "card-details", "hand-card-detail", "missing-read"])(
+    "uses the original pre-Begin Play and actual consumed mouse submission: %s", change => {
+      const { basis, trace } = play(false); const last: any = trace[1];
+      // New producer retains the still-visible held card in the real model Hand
+      // and therefore advertises its current full Read. Only input is settling.
+      last.basis.snapshot.status = "settling"; last.basis.snapshot.interaction.stage = "settling";
+      last.basis.snapshot.bound_actions.actions = [];
+      last.basis.snapshot.bound_actions.total_count = last.basis.snapshot.bound_actions.materialized_count = 0;
+      last.basis.snapshot.interaction.content.surface.can_end_turn = false;
+      last.outcome.mapping_status = "unmapped"; last.outcome.match_count = 0; last.outcome.selected_action = null;
+      if (change === "owner") last.outcome.native_facts.owner_ref = "different-created-ui";
+      if (change === "card") last.outcome.native_facts.subject_ref = "different-card";
+      if (change === "target") last.outcome.native_facts.arguments = { target: "wrong-target" };
+      if (change === "unknown") last.outcome.delivery = "unknown";
+      if (change === "ambiguous") { last.outcome.mapping_status = "ambiguous"; last.outcome.match_count = 2; }
+      if (change === "energy") last.basis.snapshot.interaction.content.context.player.energy--;
+      if (change === "hp") last.basis.snapshot.persistent.content.player.hp--;
+      if (change === "enemy") last.basis.snapshot.interaction.content.context.enemies[0].hp--;
+      if (change === "card-details") last.basis.reads.find((r: any) => r.kind === "surface_card").response.content.keywords[0].description += " changed";
+      if (change === "hand-card-detail") last.basis.snapshot.interaction.content.context.player.hand
+        .find((card: any) => card.entity_id === last.outcome.native_facts.subject_ref).description += " changed";
+      if (change === "missing-read") last.basis.reads.pop();
+      const raw = JSON.stringify(trace), matched = matchSourceP1Choice(session(), basis, trace);
+      if (change === "valid") expect(matched).toMatchObject({ status: "matched", input_ids: ["input-1", "input-2"] });
+      else expect(matched.status).not.toBe("matched");
+      expect(JSON.stringify(trace)).toBe(raw); expect(last.outcome.mapping_status).toBe(change === "ambiguous" ? "ambiguous" : "unmapped");
+    });
   it("matches one original select and its same-request exact native preview confirmation", () => {
     const { basis, trace } = selector(); const originalBytes = JSON.stringify(trace);
     const reduced = reduce(session(), basis);

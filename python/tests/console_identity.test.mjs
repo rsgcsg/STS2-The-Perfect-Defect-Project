@@ -360,8 +360,11 @@ test('no-cloud local root selects the local home without identity, cloud reads, 
   assert.deepEqual(refreshes, []);
   const content = get('content');
   const links = descendants(content).filter(item => typeof item.href === 'string');
-  assert.deepEqual(links.map(item => item.href), [
-    '?view=local-models', '?view=local-workspace', '?view=campaigns',
+  assert.deepEqual(links.map(item => [item.textContent, item.href]), [
+    ['打开模型实战 →', '?view=local-models'],
+    ['打开本机资料 →', '?view=local-workspace'],
+    ['打开本机录制与资料 →', '?view=local-workspace'],
+    ['查看上传配置与状态 →', '?view=campaigns'],
   ]);
   assert.match(flatten(content), /本机模型与资料查看不需要云端登录/);
   assert.match(flatten(content), /上传另需设备授权、开启上传设置且本机投递服务实际运行/);

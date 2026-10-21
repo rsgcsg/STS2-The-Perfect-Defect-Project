@@ -170,11 +170,13 @@ class ManagedHostServiceManager(ManagedHostServiceClient):
         return value
 
     def reset(self, seed: str, *, expected_runtime_instance_id: str,
-              expected_game_continuity_id: str | None) -> dict[str, Any]:
+              expected_game_continuity_id: str | None,
+              initial_progress: Mapping[str, Any] | None = None) -> dict[str, Any]:
         return self._admin("/v1/admin/reset", {
             "seed": seed,
             "expected_runtime_instance_id": expected_runtime_instance_id,
             "expected_game_continuity_id": expected_game_continuity_id,
+            **({"initial_progress": dict(initial_progress)} if initial_progress is not None else {}),
         })
 
     def recover_control(self, *, expected_control_epoch: str,
@@ -207,6 +209,7 @@ def launch_managed_host_service(*, host_package_dir: Path | str,
                                 client_attachment: Path | str,
                                 manager_attachment: Path | str,
                                 log_file: Path | str,
+                                diagnostics_file: Path | str | None = None,
                                 port: int = 0,
                                 character: str = "Ironclad",
                                 timeout_ms: int = 10_000,
@@ -235,6 +238,8 @@ def launch_managed_host_service(*, host_package_dir: Path | str,
             "--timeout-ms", str(timeout_ms), "--quiet-diagnostics"]
     if game_dir is not None:
         args.extend(["--game-dir", str(Path(game_dir).resolve())])
+    if diagnostics_file is not None:
+        args.extend(["--diagnostics-file", str(Path(diagnostics_file).resolve())])
     log_descriptor = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     try:
         with os.fdopen(log_descriptor, "wb") as log:

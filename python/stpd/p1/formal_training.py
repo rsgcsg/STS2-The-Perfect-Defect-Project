@@ -1,0 +1,341 @@
+"""M-std epochs/dev/best/resume over the delivered T0 graph and checkpoint codec.
+
+The workload owns publication and application controls. This engine has no Store,
+provider, data admission, local registry, game access or implicit restart.
+"""
+
+from __future__ import annotations
+
+import math
+import os
+import platform
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+import torch
+from torch.nn import functional as F
+
+from spireagent.json_boundary import BoundaryError
+from stpd.workers.checkpoint_codec import decode_checkpoint, encode_checkpoint
+
+from .data import digest, json_bytes
+from .export import input_spec
+from .input import Frame
+from .model import ARCHITECTURE, MStd
+from .numerics import TrainingNumerics, training_scope
+from .spec import CHECKPOINT_FRACTIONS, CHECKPOINT_SCHEMA, TARGET_SPEC, MStdConfig
+
+
+@dataclass(frozen=True)
+class Population:
+    frames: tuple[Frame, ...]
+    targets: tuple[int, ...]
+    point_ids: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if len(self.frames) != len(self.targets) or len(self.frames) != len(self.point_ids):
+            raise BoundaryError("p1_training", "population_length_mismatch")
+        for frame, target in zip(self.frames, self.targets, strict=True):
+            if type(target) is not int or not 0 <= target < len(frame.choices):
+                raise BoundaryError("p1_training", "target_outside_full_catalog")
+
+
+class MStdTrainer:
+    """One real epoch visits each train point once, including the true tail batch."""
+
+    def __init__(
+        self,
+        populations: dict[str, Population],
+        vocabulary: dict[str, Any],
+        snapshot_id: str,
+        config: MStdConfig,
+    ) -> None:
+        if set(populations) != {"train", "dev", "test"}:
+            raise BoundaryError("p1_training", "partition_inventory_mismatch")
+        if not populations["train"].frames or not populations["dev"].frames:
+            raise BoundaryError("p1_training", "nonempty_train_and_dev_required")
+        ids = [point for p in populations.values() for point in p.point_ids]
+        if len(set(ids)) != len(ids):
+            raise BoundaryError("p1_training", "point_leakage_between_partitions")
+        self.populations, self.vocabulary, self.config = populations, vocabulary, config
+        self.device = torch.device(config.device)
+        cuda_runtime = None
+        if self.device.type == "cuda":
+            if not torch.cuda.is_available():
+                raise BoundaryError("p1_training", "cuda_unavailable_no_fallback")
+            if os.environ.get("CUBLAS_WORKSPACE_CONFIG") not in {":4096:8", ":16:8"}:
+                raise BoundaryError("p1_training", "deterministic_cublas_workspace_required")
+            properties = torch.cuda.get_device_properties(self.device)
+            cuda_runtime = {
+                "name": properties.name,
+                "capability": [properties.major, properties.minor],
+                "total_memory": properties.total_memory,
+                "cublas_workspace": os.environ["CUBLAS_WORKSPACE_CONFIG"],
+                "matmul_tf32": False,
+                "cudnn_tf32": False,
+                "cudnn_benchmark": False,
+            }
+        self._numerics = TrainingNumerics(config.seed, config.cpu_threads, self.device)
+        with self._numerics.scope():
+            self.model = MStd(vocabulary).to(self.device)
+            self.optimizer = torch.optim.AdamW(
+                self.model.parameters(), lr=config.learning_rate, weight_decay=config.weight_decay
+            )
+        self.generator = torch.Generator().manual_seed(config.seed + 1000)
+        self.order = torch.randperm(
+            len(populations["train"].frames), generator=self.generator
+        ).tolist()
+        self.cursor = self.epoch = self.step = self.bad_epochs = 0
+        self.phase = "training"
+        self.stop_reason: str | None = None
+        self.best_loss: float | None = None
+        self.best_epoch_loss: float | None = None
+        self.best_step: int | None = None
+        self.best_epoch: int | None = None
+        self.best_weights: dict[str, torch.Tensor] | None = None
+        self.history: list[dict[str, Any]] = []
+        self.dev_history: list[dict[str, Any]] = []
+        self.checkpoint_dev_history: list[dict[str, Any]] = []
+        self.test_result: dict[str, Any] | None = None
+        self.planned_steps = config.steps(len(populations["train"].frames))
+        self.checkpoint_steps = {
+            fraction: max(1, math.ceil(self.planned_steps * fraction / 100))
+            for fraction in CHECKPOINT_FRACTIONS
+        }
+        root = Path(__file__).parent
+        self.identity = {
+            "snapshot_id": snapshot_id,
+            "config": config.to_dict(),
+            "architecture": ARCHITECTURE,
+            "input_spec": input_spec(vocabulary),
+            "target_spec": TARGET_SPEC,
+            "partitions": {
+                k: {
+                    "points_sha256": digest(json_bytes(p.point_ids)),
+                    "targets_sha256": digest(json_bytes(p.targets)),
+                }
+                for k, p in populations.items()
+            },
+            "vocabulary_sha256": digest(json_bytes(vocabulary)),
+            "planned_steps": self.planned_steps,
+            "runtime": {
+                "python": platform.python_version(),
+                "torch": str(torch.__version__),
+                "device": config.device,
+                "dtype": config.dtype,
+                "cuda": torch.version.cuda if self.device.type == "cuda" else None,
+                "cuda_runtime": cuda_runtime,
+                "cpu_threads": config.cpu_threads,
+            },
+            "code": {
+                name: digest((root / name).read_bytes())
+                for name in ("formal_training.py", "spec.py", "input.py", "model.py", "numerics.py")
+            },
+            "codec_sha256": digest((root.parent / "workers/checkpoint_codec.py").read_bytes()),
+        }
+
+    def _lr(self) -> float:
+        warmup = max(1, math.ceil(self.planned_steps * self.config.warmup_fraction))
+        if self.step < warmup:
+            return self.config.learning_rate * (self.step + 1) / warmup
+        progress = (self.step + 1 - warmup) / (self.planned_steps - warmup)
+        return self.config.learning_rate * (1 + math.cos(math.pi * progress)) / 2
+
+    @staticmethod
+    def evaluate(model: MStd, population: Population) -> dict[str, Any]:
+        model.eval()
+        device = model.ids.weight.device
+        losses: list[float] = []
+        correct = multi = multi_correct = 0
+        with torch.inference_mode():
+            for frame, target in zip(population.frames, population.targets, strict=True):
+                scores = model(frame)
+                losses.append(
+                    float(
+                        F.cross_entropy(scores.unsqueeze(0), torch.tensor([target], device=device))
+                    )
+                )
+                right = int(scores.argmax()) == target
+                correct += right
+                multi += len(frame.choices) > 1
+                multi_correct += right and len(frame.choices) > 1
+        return {
+            "N": len(losses),
+            "mean_N_loss": sum(losses) / len(losses) if losses else None,
+            "correct": correct,
+            "multi_N": multi,
+            "multi_correct": multi_correct,
+        }
+
+    @training_scope
+    def advance(self) -> dict[str, Any]:
+        if self.phase != "training":
+            raise BoundaryError("p1_training", "training_already_complete")
+        train = self.populations["train"]
+        indices = self.order[self.cursor : self.cursor + self.config.batch_size]
+        lr = self._lr()
+        for group in self.optimizer.param_groups:
+            group["lr"] = lr
+        self.optimizer.zero_grad(set_to_none=True)
+        self.model.train()
+        targets = torch.tensor([train.targets[i] for i in indices], device=self.device)
+        losses = []
+        for offset, i in enumerate(indices):
+            scores = self.model(train.frames[i])
+            loss = F.cross_entropy(scores.unsqueeze(0), targets[offset : offset + 1])
+            (loss / len(indices)).backward()
+            losses.append(loss.detach())
+        # One device-to-host read per optimizer batch. Keep the original Python
+        # summation order and reject invalid loss before any parameter update.
+        loss_values = torch.stack(losses).cpu().tolist()
+        if not all(math.isfinite(loss) for loss in loss_values):
+            raise BoundaryError("p1_training", "non_finite_loss")
+        total_loss = sum(loss_values)
+        gradients = [p.grad.norm() for p in self.model.parameters() if p.grad is not None]
+        norm = float(torch.linalg.vector_norm(torch.stack(gradients)))
+        if not math.isfinite(norm):
+            raise BoundaryError("p1_training", "non_finite_gradient")
+        self.optimizer.step()
+        self.step += 1
+        self.cursor += len(indices)
+        progress: dict[str, Any] = {
+            "step": self.step,
+            "epoch": self.epoch + 1,
+            "examples": len(indices),
+            "batch_sha256": digest(json_bytes([train.point_ids[i] for i in indices])),
+            "mean_N_loss": total_loss / len(indices),
+            "lr": lr,
+            "gradient_norm": norm,
+        }
+        self.history.append(dict(progress))
+        improved = False
+        fractions = [
+            fraction for fraction, step in self.checkpoint_steps.items() if step == self.step
+        ]
+        if self.cursor == len(self.order):
+            self.epoch += 1
+            dev = self.evaluate(self.model, self.populations["dev"])
+            dev_loss = dev["mean_N_loss"]
+            if dev_loss is None or not math.isfinite(dev_loss):
+                raise BoundaryError("p1_training", "non_finite_dev_loss")
+            improved = self._select_best(dev_loss, self.epoch)
+            # Patience is measured in completed epochs, independently of extra
+            # dev checks at the approved percentage checkpoints.
+            if self.best_epoch_loss is None or dev_loss < self.best_epoch_loss:
+                self.best_epoch_loss = dev_loss
+                self.bad_epochs = 0
+            else:
+                self.bad_epochs += 1
+            self.dev_history.append({"epoch": self.epoch, "step": self.step, **dev})
+            progress["dev"] = dev
+            if self.bad_epochs >= self.config.patience:
+                self.stop_reason = "dev_patience_exhausted"
+            elif self.epoch == self.config.max_epochs:
+                self.stop_reason = "epoch_budget_exhausted"
+            if self.stop_reason is not None:
+                self.phase = "trained"
+            else:
+                self.order = torch.randperm(len(train.frames), generator=self.generator).tolist()
+                self.cursor = 0
+        elif fractions:
+            dev = self.evaluate(self.model, self.populations["dev"])
+            dev_loss = dev["mean_N_loss"]
+            if dev_loss is None or not math.isfinite(dev_loss):
+                raise BoundaryError("p1_training", "non_finite_dev_loss")
+            improved = self._select_best(dev_loss, self.epoch + 1)
+            self.checkpoint_dev_history.append(
+                {"step": self.step, "epoch": self.epoch + 1, "fractions": fractions, **dev}
+            )
+            progress["dev_checkpoint"] = dev
+        progress["best_improved"] = improved
+        progress["checkpoint_fractions"] = fractions
+        progress["phase"] = self.phase
+        return progress
+
+    def _select_best(self, loss: float, epoch: int) -> bool:
+        if self.best_loss is not None and loss >= self.best_loss:
+            return False
+        self.best_loss, self.best_step, self.best_epoch = loss, self.step, epoch
+        self.best_weights = {
+            name: value.detach().cpu().clone() for name, value in self.model.state_dict().items()
+        }
+        return True
+
+    def selected_model(self) -> MStd:
+        if self.best_weights is None:
+            raise BoundaryError("p1_training", "no_dev_selected_model")
+        # Construction must not consume training RNG or mutate the continuing last model.
+        with torch.random.fork_rng(devices=[]):
+            model = MStd(self.vocabulary)
+        model.load_state_dict(self.best_weights, strict=True)
+        return model.eval()
+
+    @training_scope
+    def finish(self) -> dict[str, Any]:
+        if self.phase not in {"trained", "completed"}:
+            raise BoundaryError("p1_training", "test_before_model_selection")
+        if self.test_result is None:
+            self.test_result = self.evaluate(
+                self.selected_model().to(self.device), self.populations["test"]
+            )
+            self.phase = "completed"
+        return self.test_result
+
+    def checkpoint(self) -> bytes:
+        return encode_checkpoint(
+            {
+                "schema": CHECKPOINT_SCHEMA,
+                "identity": self.identity,
+                "model": dict(self.model.state_dict()),
+                "optimizer": self.optimizer.state_dict(),
+                "rng": self._numerics.rng,
+                "sampler": {
+                    "generator": self.generator.get_state(),
+                    "order": self.order,
+                    "cursor": self.cursor,
+                },
+                "epoch": self.epoch,
+                "step": self.step,
+                "phase": self.phase,
+                "stop_reason": self.stop_reason,
+                "bad_epochs": self.bad_epochs,
+                "best_loss": self.best_loss,
+                "best_epoch_loss": self.best_epoch_loss,
+                "best_epoch": self.best_epoch,
+                "best_step": self.best_step,
+                "best_model": self.best_weights,
+                "history": self.history,
+                "dev_history": self.dev_history,
+                "checkpoint_dev_history": self.checkpoint_dev_history,
+                "test_result": self.test_result,
+            }
+        )
+
+    def restore(self, raw: bytes) -> None:
+        value = decode_checkpoint(raw)
+        if value.get("schema") != CHECKPOINT_SCHEMA or value.get("identity") != self.identity:
+            raise BoundaryError("p1_training", "checkpoint_execution_identity_mismatch")
+        self.model.load_state_dict(value["model"], strict=True)
+        self.optimizer.load_state_dict(value["optimizer"])
+        self._numerics.rng = value["rng"]
+        self.generator.set_state(value["sampler"]["generator"])
+        self.order, self.cursor = value["sampler"]["order"], value["sampler"]["cursor"]
+        for key in (
+            "epoch",
+            "step",
+            "phase",
+            "stop_reason",
+            "bad_epochs",
+            "best_loss",
+            "best_epoch_loss",
+            "best_epoch",
+            "best_step",
+            "history",
+            "dev_history",
+            "checkpoint_dev_history",
+            "test_result",
+        ):
+            setattr(self, key, value[key])
+        self.best_weights = value["best_model"]
+        self.optimizer.zero_grad(set_to_none=True)

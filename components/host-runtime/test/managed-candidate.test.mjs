@@ -33,7 +33,7 @@ import {
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
-test("managed candidate source and measured build identity match the manifest", () => {
+test("built native act-selection source and retained measured builds remain explicit", () => {
   const { manifest } = loadManagedCandidateManifest(ROOT);
   assert.equal(manifest.status, "candidate_built_unqualified");
   assert.deepEqual(Object.keys(manifest.expected_build), [
@@ -44,10 +44,11 @@ test("managed candidate source and measured build identity match the manifest", 
     createHash("sha256").update(sourcePatch).digest("hex"),
     manifest.expected_build.source_patch_sha256
   );
-  assert.equal(manifest.expected_build.artifact_sha256, "a70d8de18578cc2666ec854d8d8eb6bb85868317335fb67fcfbb7151133d7f66");
-  assert.equal(manifest.expected_build.artifact_mvid, "c9acc642-499d-4af2-ba24-2e90db5ef8cb");
-  assert.equal(manifest.previous_candidate_build.artifact_sha256, "003dd9f0fe8e5081ccce577d9963e143511d6a42461624df17b7e56ea35b4d93");
-  assert.equal(manifest.previous_candidate_build.artifact_mvid, "5da84f07-fa96-4538-91c2-974180da3e62");
+  assert.equal(manifest.expected_build.artifact_sha256, "ef907317a47900204caad7400c341213f5dc533549d7c33a913066e83e522766");
+  assert.equal(manifest.expected_build.artifact_mvid, "8b84be95-3391-49d9-b11e-69aa29afa38a");
+  assert.equal(manifest.historical_candidate_builds.some(build => build.artifact_sha256 === "a70d8de18578cc2666ec854d8d8eb6bb85868317335fb67fcfbb7151133d7f66"), true);
+  assert.equal(manifest.previous_candidate_build.artifact_sha256, "0426384c8c38e1a147dcfb2ba39c599ebdebe191f979acaaab8a4e302060943b");
+  assert.equal(manifest.previous_candidate_build.artifact_mvid, "1115859e-f311-4e2e-b103-0b3c91168250");
   assert.equal(manifest.historical_candidate_builds.some(build => build.artifact_sha256 === "75be6efa9ab35ef4eca4c2ce4153918bb8c14c75bee61d4f837b31c1727a7aba"
     && build.artifact_mvid === "c91e08aa-797e-4837-a320-bdbb92e5b9b2"), true);
   assert.equal(manifest.last_measured_build.artifact_sha256, "dd4b10f22606203f8825569c2e0478626d96ac1166d2cd9430591be607d808a6");
@@ -104,6 +105,8 @@ test("fresh candidate preparation admits added source files into the audited dif
     "utf8"
   );
   assert.deepEqual(addedPatchPaths(patch), [
+    "initial-progress-tests/InitialProgressTests.csproj",
+    "initial-progress-tests/Program.cs",
     "native-tests/NativeMechanisms.csproj",
     "native-tests/Program.cs",
     "src/Sts2Headless/DeckEnchantCallScope.cs",
@@ -115,6 +118,7 @@ test("fresh candidate preparation admits added source files into the audited dif
     "src/Sts2Headless/FairPileProjection.cs",
     "src/Sts2Headless/ManagedEventPresentation.cs",
     "src/Sts2Headless/ManagedGameOverPresentation.cs",
+    "src/Sts2Headless/ManagedInitialProgress.cs",
     "src/Sts2Headless/ManagedMerchantPresentation.cs",
     "src/Sts2Headless/ManagedSelectorPublicCapture.cs",
     "src/Sts2Headless/NativeCalculatedVariableInventory.cs",

@@ -1,3 +1,4 @@
+import { validateInitialProgress } from "./native-baseline.mjs";
 import { captureManagedPublicBasis } from "./managed-public-basis.mjs";
 import { randomBytes, randomUUID } from "node:crypto";
 import { canonicalizeEpisodeSeed } from "./episode-provenance.mjs";
@@ -199,6 +200,9 @@ export class ManagedPeDriverSession {
         if (this.#mapContinueFailure) throw new Error(this.#mapContinueFailure);
         this.#requireControlIntent(intent);
         this.#requireExpectedEpisode(request);
+        if (request.initial_progress != null && intent.sharedService && intent.principal !== "manager")
+          throw new Error("managed_initial_progress_manager_required");
+        const initialProgress = validateInitialProgress(request.initial_progress);
         const seed = canonicalizeEpisodeSeed(request.seed);
         // reset_run first destroys the old simulator. A failed/unknown reset
         // cannot leave either public action route bound to that old episode.
@@ -213,7 +217,7 @@ export class ManagedPeDriverSession {
         this.#control = null;
         this.#controlGeneration += 1;
         const snapshot = await this.#started.session.mount({
-          seed, reset, timeoutMs: this.#timeoutMs
+          seed, reset, initialProgress, timeoutMs: this.#timeoutMs
         });
         if (this.#closed) throw new Error("driver_closed_during_reset");
         this.#requestedSeed = seed;
@@ -427,6 +431,7 @@ export class ManagedPeDriverSession {
             runtime_identity: this.#started.runtime.runtimeIdentity,
             adapter_runtime_instance_id: this.#started.runtime.adapterRuntimeInstanceId,
             environment_fingerprint: this.#started.environmentFingerprint,
+            initial_progress: runIdentity?.initial_progress ?? null,
             episode_provenance: {
               origin: this.#episodeOrigin,
               verdict: runIdentity?.type === "run_identity"

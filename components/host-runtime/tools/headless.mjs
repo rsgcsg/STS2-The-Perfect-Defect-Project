@@ -89,26 +89,29 @@ async function main() {
     const installation = resolveCurrentInstallation();
     await runHeadlessHost({
       installation,
-      localRoot: path.join(ROOT, ".local"),
+      localRoot: path.resolve(option(args, "--local-root", path.join(ROOT, ".local"))),
       endpoint: option(args, "--endpoint", "http://127.0.0.1:15526"),
       timeoutMs: Number(option(args, "--timeout-ms", "90000")),
       mirrorLogs: args.includes("--verbose"),
       sharedProfileAcknowledged: args.includes("--shared-profile"),
       isolatedProfileId: option(args, "--isolated-profile", null),
-      nativeSpeed: option(args, "--native-speed", null)
+      nativeSpeed: option(args, "--native-speed", null),
+      displayMode: option(args, "--display-mode", "headless"),
+      experimentalBuildAcknowledged: args.includes("--experimental-build"),
+      baselineRecipe: option(args, "--baseline", null)
     });
     return;
   }
   if (command === "status") {
     console.log(JSON.stringify(await queryHeadlessStatus({
-      localRoot: path.join(ROOT, ".local"),
+      localRoot: path.resolve(option(args, "--local-root", path.join(ROOT, ".local"))),
       endpoint: option(args, "--endpoint", "http://127.0.0.1:15526")
     }), null, 2));
     return;
   }
   if (command === "stop") {
     console.log(JSON.stringify(await stopHeadlessHost({
-      localRoot: path.join(ROOT, ".local"),
+      localRoot: path.resolve(option(args, "--local-root", path.join(ROOT, ".local"))),
       endpoint: option(args, "--endpoint", "http://127.0.0.1:15526")
     }), null, 2));
     return;
@@ -192,7 +195,7 @@ async function main() {
       throw new Error(`Refusing to replace a profile while STS2 is running:\n${running.join("\n")}`);
     }
     console.log(JSON.stringify(instantiateProfileTemplate({
-      localRoot: path.join(ROOT, ".local"),
+      localRoot: path.resolve(option(args, "--local-root", path.join(ROOT, ".local"))),
       templateId,
       profileId,
       expectedGameIdentity: readDiskIdentity(resolveCurrentInstallation())
@@ -349,7 +352,8 @@ async function main() {
   node tools/headless.mjs setup
   node tools/headless.mjs rollback --backup DIRECTORY
   node tools/headless.mjs doctor
-  node tools/headless.mjs start (--isolated-profile ID | --shared-profile) [--native-speed normal|fast|instant] [--timeout-ms 90000] [--endpoint URL] [--verbose]
+  start/status/stop/instantiate-profile-template accept --local-root PATH for the selected persistent Host state.
+  node tools/headless.mjs start (--isolated-profile ID | --shared-profile) [--display-mode headless|native-ui] [--experimental-build] [--baseline normal-sp-all-unlocked-v1] [--native-speed normal|fast|instant] [--timeout-ms 90000] [--endpoint URL] [--verbose]
   node tools/headless.mjs status [--endpoint URL]
   node tools/headless.mjs stop [--endpoint URL]
   node tools/headless.mjs reset-profile --isolated-profile ID

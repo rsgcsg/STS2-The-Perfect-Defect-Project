@@ -144,3 +144,25 @@ describe('protocol-neutral original public basis', () => {
   });
 
 });
+
+
+it('retains the complete original navigation record and verifies its own Read bindings', () => {
+  const value = basis(); value.revision = '2'; value.snapshot.input_profile = 'public-basis-1';
+  const original = structuredClone(value);
+  Object.assign(original.snapshot.interaction, { kind: 'potion_popup', content_schema: 'sts2.player-environment/surface/potion_popup-1',
+    content: { surface: { kind: 'potion_popup', can_use: false, can_discard: true }, context: { kind: 'event' } } });
+  value.snapshot.raw_native_navigation_basis = original;
+  expect(decodePublicBasis(value)).toEqual(value);
+  expect(decodePublicBasisSnapshot(value.snapshot).data.raw_native_navigation_basis).toEqual(original);
+  const broken = structuredClone(value);
+  broken.snapshot.raw_native_navigation_basis.reads[0].response.observed_snapshot_id = 'foreign-frame';
+  expect(() => decodePublicBasis(broken)).toThrow(/Read source binding/);
+  const partial = structuredClone(value);
+  partial.snapshot.raw_native_navigation_basis.snapshot.completeness.status = 'partial';
+  partial.snapshot.raw_native_navigation_basis.missing = ['snapshot:partial'];
+  partial.snapshot.raw_native_navigation_basis.capture_status = 'partial';
+  expect(() => decodePublicBasis(partial)).toThrow(/incompleteness must be preserved/);
+  const foreign = structuredClone(value);
+  foreign.snapshot.raw_native_navigation_basis.snapshot.observed_at = '2026-10-19T00:00:00Z';
+  expect(() => decodePublicBasis(foreign)).toThrow(/same public capture/);
+});

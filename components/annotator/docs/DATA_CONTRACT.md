@@ -11,6 +11,61 @@ optional and may be absent for canonical-only runs; the journal and semantic
 streams retain run identity. The current store does not create a native-action
 ledger.
 
+## P1 native semantic profile
+
+`P1NativeRecordingContract` owns the additive `human-p1-native-decisions-1` profile.
+Its manifest declares `p1_native_schema_version: 1` and the actual declared origin;
+old canonical and Source4 formats retain their own meaning. Its append-only
+`p1-native-events.jsonl` records accepted player decisions, native lifecycle,
+independent public observations and issues. Each decision's basis references exact
+`public-basis-1` bytes captured with the original Human-time snapshot and exact
+native bindings. Read instances are preserved by `read_id`, including repeated kinds.
+Accepted is not finished. Close retains unfinished accepted actions as unknown;
+unsubmitted card staging/cancellation does not create a decision or pending action.
+Direct UI roots use their own original frame and exact native completion, without
+requiring a legacy canonical parent decision. If that prefix capture fails,
+`capture_failure` retains its matching native type's reason, detail, snapshot ID
+and evidence level; it does not supply a missing basis, binding or completion.
+
+Use `sts2.ai-platform/recording-command-1` within the existing Platform recording
+request. Start sets `capture_profile_id` to this profile and `p1_native_origin` to
+`declared_human`, `agent_native_ui` or `unknown`. Other commands carry null values
+for those two fields. The original runtime/session preconditions remain required.
+`audit-p1-native <session>` and `pack-p1-native <session> <worker> <campaign>
+<output> <exact-packer-source>` use the actual Tool. Positive Human attestation is
+an explicit optional argument and is rejected for engineering-origin records.
+
+`export_p1_native_prefix` is an administrative recording command. Under the Store
+write lock it flushes and copies committed original bytes, then atomically publishes
+an immutable `sts2.human-annotator/p1-native-prefix-1` manifest and watermark.
+The original recording stays open, with pending actions unchanged. The returned
+manifest SHA binds the offline reader to that export; it is not a closed bundle
+or a whole-run claim. `tools/p1-native-to-p1.mjs --prefix PATH --manifest-sha256 SHA`
+uses the explicit prefix reader, while `--bundle PATH` requires actual closed originals.
+Derived trajectories retain recording origin and never invent Agent Consume/ACK.
+Missing information, unsupported intentions and native unknown remain explicit.
+
+The optional finalized hand-selector D projection is owned by
+[P1 §6.1](../../../docs/protocols/P1_GLOBAL_R1.zh-CN.md#61-原生确认事务的离线d监督2026-10-20用户批准),
+not a change to native events or the online append-only catalog. Use
+`--selector-transactions native-selector-finalized-d-1` with a new output path.
+Raw edit inputs retain their actual operands/results and receive zero-label
+context disposition; independent D records carry the final target, exact original
+anchor/confirmation/successor and projection provenance. The original accepted
+accounting and D label counts are separate. All provenance stays outside the
+observation passed to `modelView`/Input. The original/default reader interpretation
+and fixed datasets remain readable and are not rewritten.
+
+The supported Application client is `npm run recording:p1 -- ...` at the root,
+also shipped as `setup/tools/p1-native-recording.mjs` in a fixed Collection Tool
+release. It sends one command with exact runtime/session, an explicit P1 origin
+on start, and a durable command receipt. It consumes `collectionSetup status`'s
+current connected/bound runtime identity; unsupported/blocked setup is an error.
+It attaches to an already running game, never delivers gameplay or shuts it down.
+Pending Close is reported as pending; unknown delivery is retained without retry.
+Continuous automatic next-session creation retains the chosen profile and origin;
+Pause/manual Close still disarm it. Actual runtime qualification is separate.
+
 ## Human text-menu input observations
 
 New recordings declare `text_input_schema_version: 2` and retain a separate
@@ -455,6 +510,80 @@ this does not assert automatic origin. `unrecorded_human_effect_before_successor
 means an accepted but uncaptured Human input fenced a pending transition. No
 later frame may be projected as that transition's causal successor.
 
+## P1 native execution records
+
+New `human-p1-native-decisions-1` sessions declare
+`p1_native_execution_schema_version: 1` in their manifest. Existing recordings
+without this field retain their original admission-only meaning. The original
+`decision_accepted` event preserves H and exact native acceptance. A queued
+`game_action` additionally records one `execution` event at its first
+`BeforeActionExecuted` callback: its own complete PB1 and all advertised Reads,
+the mature native `execution-semantic-action-space-3` catalog, exact observed
+native key and all operands. H is provenance, never the execution decision state.
+
+The execution event binds `basis.snapshot_id`, `execution_snapshot_id`, and the
+native semantic capture's `ui_catalog.snapshot_id`. It contains either the
+current S's real `bound_action`, or `native_input`; a public delivery catalog
+may remain empty while the native execution catalog is complete. Subjectless,
+operandless `EndPlayerTurnAction` is an exact native input alongside Play/Use.
+`queued=true` means a real GameAction queue carrier; `queue_interval_ms` measures
+acceptance to its first execution callback. Direct synchronous UI decisions keep
+their original capture boundary. PlayerChoice resume is lifecycle evidence only.
+
+The model-facing interpretation is sequential: prior actions have resolved and
+the current action is about to execute, as if Human input had no advance queue.
+The immutable H/queue/acceptance evidence still describes what really happened;
+it is not rewritten into a fictional click at S. A(S) uses native execution
+semantics, not transient button readiness. In particular, queued potion use does
+not erase the existing native discard operation on that current non-null slot;
+public delivery keeps its independent queued/enabled-holder guards. The original
+PB1 catalog is never replaced by A(S). Old incomplete execution inventories are
+not backfilled by a producer fix. The derived combat `potion_states.can_use`
+also expresses this sequential view: an exact use for that same potion in the
+validated same-S A(S) proves usability despite the queued public flag. Without
+that evidence the flag is not enabled; normal public reduction and all original
+PB1 bytes stay unchanged. This is projection, not public delivery authority.
+
+Original recording, P1 projection, same-profile Host comparison and native replay
+are independent claims with declared inputs and scope. A source fix or sealed
+record grants none of the others. Managed strict conformance is deferred for the
+current pre-training freeze; it is not a prerequisite for every projection or
+loader read. Reference is the selected Host for the first training evaluation.
+
+Visible queue NCards whose exact combat model remains in backend Hand retain
+current hand facts and complete `surface_card` Reads, including description,
+cost/enchantment, keywords/previews and `display_context=hand`. Their existing
+native holder-based action candidates and execution readiness guards are
+unchanged. No hidden/non-Hand queue card, deck base copy, cached H detail or
+name/index match supplies these facts. With no visible queue, the original hand
+observation and public action projection are unchanged.
+
+An accepted cancellation before execution has no invented execution S. Native
+cancellation, retarget/dead-target membership loss, partial PB or failed capture
+remain original lifecycle/events and explicit issues; execution records do not
+increase accepted counts or supply a canonical result by themselves. The P1
+consumer owns derived decisions and coverage accounting, and a new Human canary
+plus strict Managed replay remains separate from source/fixture validation.
+
+Potion-popup discard correlates the exact popup owner and `discard_potion`
+operation as well as the frozen public verb and operands. Use and discard can
+both be public `activate` inputs for the same potion; neither labels nor the
+first matching candidate can distinguish them.
+If that exact prefix already captured PB but input correlation fails, retain
+that same PB with the failed admission. The binding remains unproven and the
+issue remains blocking; no later frame supplies the missing evidence.
+
+New direct-UI task completions retain `native_task_status` and the normally
+completed task's nullable `native_bool_result`. A false result alone remains
+unknown. For Smith or merchant card removal, an exact accepted terminal Cancel
+from that parent's bound selector is retained as `explicit_selector_cancel`,
+including child, screen and parent identities. Only this proof together with a
+normally completed false Task records the parent as `cancelled`. Faulted,
+Task-cancelled, unbound or unsupported completions stay unknown. This does not
+rewrite old unknown records. The offline consumer still needs complete original
+before/selector/after information and an equal full public state; cancellation
+creates no successful label and does not itself establish replay continuity.
+
 ## Queued execution catalog phase
 
 A `game_action` or an action with `native_queue_id` requires its execution
@@ -531,10 +660,18 @@ It preserves the original directory and builds a separate staged copy. A receipt
 `sts2.human-annotator/interrupted-recovery-1` binds every original relative file's
 byte length and SHA-256, their canonical inventory digest, and an interrupted
 partial disposition. Only missing accepted-action terminals may be appended, as
-`transition_unknown` / `process_interrupted`; no successor or native completion
-is invented. The journal gains `recording_interrupted` and one final close.
-The normal auditor and independent Evidence verifier check original byte prefixes,
-unchanged other files, exact inventory and unknown-only suffix. Only a passing
+`transition_unknown` / `process_interrupted` in the canonical profile. For
+`p1_native_schema_version=1`, the same recovery owner preserves the original
+`p1-native-events.jsonl` prefix and appends only bound lifecycle
+`unknown` with `reason=process_interrupted`, no successor, and exact
+`p1_unknowns_added` accounting. It writes `p1-native-close.json` after the
+recovered journal is sealed, with the real event/accepted/terminal/issue counts
+and hashes of both streams. Mixed canonical/P1 trace recovery and an already
+sealed P1 stream remain incidents. No successor or native completion is invented.
+The journal gains `recording_interrupted` and one final close.
+The canonical auditor/Evidence verifier and the P1 audit/fixed Node reader
+check original byte prefixes, unchanged other files, exact inventory and
+unknown-only suffix within their declared formats. Only a passing
 copy is atomically published for delivery. Torn/corrupt streams remain incidents.
 A live lease, duplicate recovery or historical session without this ownership
 contract is never automatically repaired. Session-local run IDs remain unchanged.

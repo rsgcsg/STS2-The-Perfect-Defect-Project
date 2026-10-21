@@ -23,6 +23,8 @@ internal sealed record LiveObservation(
     [JsonIgnore]
     public object? PopupUnderlyingRewardOwner { get; init; }
     [JsonIgnore]
+    internal PotionPopupSurface? NonCombatNavigationPopup { get; init; }
+    [JsonIgnore]
     internal STS2Connector.NativeUi.NativeEndTurnInput.Binding? EndTurnBinding { get; init; }
     [JsonIgnore]
     internal string? EndTurnBindingIdentity { get; init; }

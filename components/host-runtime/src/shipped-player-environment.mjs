@@ -15,7 +15,8 @@ import { chooseBoundAction } from "./journey-probe.mjs";
 import { readProjectIdentity } from "./project-identity.mjs";
 import { resolveLaunchProfile } from "./profile-isolation.mjs";
 import { instantiateProfileTemplate } from "./profile-template.mjs";
-import { validateNativeSpeed, resolveNativeSpeed, prepareNativeSpeedBeforeBootstrap, requireNativeSpeedProvenance } from "./native-speed.mjs";
+import { validateNativeSpeed, resolveNativeSpeed, requireNativeSpeedProvenance } from "./native-speed.mjs";
+import { NORMAL_BASELINE_RECIPE, validateNativeBaseline, prepareNativeHostBeforeBootstrap, requireNativeBaselineProvenance } from "./native-baseline.mjs";
 import { validateExpectedNativeTuple, requireExpectedNativeInstallation, requireExpectedNativeLoadedTuple } from "./native-episode-tuple.mjs";
 import {
   listGameProcesses,
@@ -164,6 +165,15 @@ export function verifyReferenceCharacter(snapshot, { characterId = null, ascensi
     throw new Error("reference_actual_character_or_ascension_mismatch");
 }
 
+/** Stop setup at the original complete native decision; Neow belongs to the Agent. */
+export function requireReferenceInitialDecision(snapshot, options = {}) {
+  if (snapshot.status !== "interactive" || snapshot.bound_actions?.status !== "complete"
+      || !["event_option", "map_navigation"].includes(snapshot.interaction.kind)) {
+    throw new Error(`Reference reset expected a complete initial in-run decision, observed ${snapshot.status}:${snapshot.interaction.kind}.`);
+  }
+  verifyReferenceCharacter(snapshot, options);
+}
+
 async function closeStreams(streams) {
   for (const stream of streams) stream.end();
   await Promise.allSettled(streams.map((stream) => finished(stream)));
@@ -215,12 +225,14 @@ export async function startShippedPlayerEnvironmentEpisode({
   experimentalBuildAcknowledged = false,
   experimentalConnectorAcknowledged = false,
   nativeSpeed = null,
+  baselineRecipe = NORMAL_BASELINE_RECIPE,
   displayMode = "headless",
   expectedInstalledTuple = null,
   signal = undefined
 }) {
   signal?.throwIfAborted();
   validateNativeSpeed(nativeSpeed);
+  validateNativeBaseline(baselineRecipe);
   const expectedTuple = validateExpectedNativeTuple(expectedInstalledTuple);
   if (!["headless", "native-ui"].includes(displayMode)) throw new Error("unsupported_shipped_display_mode");
   if (characterId !== null && (typeof characterId !== "string" || !characterId))
@@ -275,6 +287,7 @@ export async function startShippedPlayerEnvironmentEpisode({
       connectorEndpoint: runtimeEndpoint,
       runSeed: canonicalSeed,
       nativeSpeed,
+      baselineRecipe,
       displayMode,
       connectorCanary
     });
@@ -310,13 +323,15 @@ export async function startShippedPlayerEnvironmentEpisode({
     let snapshot = observations.at(-1)?.value;
     if (snapshot == null) throw new Error("Reference runtime did not mount an interactive snapshot.");
 
-    let nativeSpeedProvenance = await prepareNativeSpeedBeforeBootstrap({
-      nativeSpeed, launchProfile, runtimeInstanceId: capabilities.host.runtime_instance_id,
+    const preparation = await prepareNativeHostBeforeBootstrap({
+      nativeSpeed, baselineRecipe, launchProfile, runtimeInstanceId: capabilities.host.runtime_instance_id,
       prepare: () => requestHostPreparation({ endpoint: runtimeEndpoint, hostControlToken: launch.hostControlToken,
         expectedRuntimeInstanceId: capabilities.host.runtime_instance_id, timeoutMs: requestTimeoutMs }),
       observeProvenance: () => requestHostProvenance({ endpoint: runtimeEndpoint, hostControlToken: launch.hostControlToken,
         expectedRuntimeInstanceId: capabilities.host.runtime_instance_id, timeoutMs: requestTimeoutMs })
     });
+    let nativeSpeedProvenance = preparation.nativeSpeed;
+    let baselineProvenance = preparation.baseline;
     lifecycle.assertActive();
 
     const client = new PlayerEnvironmentRestClient(runtimeEndpoint, requestTimeoutMs);
@@ -336,6 +351,8 @@ export async function startShippedPlayerEnvironmentEpisode({
     lifecycle.assertActive();
     nativeSpeedProvenance = requireNativeSpeedProvenance({ nativeSpeed, launchProfile,
       runtimeInstanceId: capabilities.host.runtime_instance_id, response: provenanceResponse, preparedBinding: nativeSpeedProvenance });
+    baselineProvenance = requireNativeBaselineProvenance({ baselineRecipe, launchProfile,
+      runtimeInstanceId: capabilities.host.runtime_instance_id, response: provenanceResponse, preparedBinding: baselineProvenance });
     let provenance = evaluateEpisodeProvenance({
       requestedSeed: canonicalSeed,
       expectedRuntimeInstanceId: capabilities.host.runtime_instance_id,
@@ -352,6 +369,8 @@ export async function startShippedPlayerEnvironmentEpisode({
       lifecycle.assertActive();
       nativeSpeedProvenance = requireNativeSpeedProvenance({ nativeSpeed, launchProfile,
         runtimeInstanceId: capabilities.host.runtime_instance_id, response, preparedBinding: nativeSpeedProvenance });
+      baselineProvenance = requireNativeBaselineProvenance({ baselineRecipe, launchProfile,
+        runtimeInstanceId: capabilities.host.runtime_instance_id, response, preparedBinding: baselineProvenance });
       provenance = evaluateEpisodeProvenance({
         requestedSeed: canonicalSeed,
         expectedRuntimeInstanceId: capabilities.host.runtime_instance_id,
@@ -413,12 +432,7 @@ export async function startShippedPlayerEnvironmentEpisode({
     if (runEntryKinds.has(snapshot.interaction.kind)) {
       throw new Error("Reference reset exceeded the bounded run-entry action budget.");
     }
-    if (snapshot.status !== "interactive" || snapshot.interaction.kind !== "map_navigation") {
-      throw new Error(
-        `Reference reset expected the first map decision, observed ${snapshot.status}:${snapshot.interaction.kind}.`
-      );
-    }
-    verifyReferenceCharacter(snapshot, { characterId, ascension });
+    requireReferenceInitialDecision(snapshot, { characterId, ascension });
     await refreshProvenance();
     if (provenance.verdict !== "provenance_pass") {
       throw new Error(`Reference run seed was not proven after bootstrap: ${provenance.errors.join(", ")}`);
@@ -433,6 +447,8 @@ export async function startShippedPlayerEnvironmentEpisode({
         disk: diskIdentity,
         profile,
         requested_native_speed: nativeSpeed,
+        requested_baseline_recipe: baselineRecipe,
+        get baseline() { return baselineProvenance; },
         requested_display_mode: displayMode,
         get native_speed() { return nativeSpeedProvenance; },
         get episode_provenance() {

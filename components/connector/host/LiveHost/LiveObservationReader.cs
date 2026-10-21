@@ -77,8 +77,8 @@ internal static class LiveObservationReader
         NativeEntityRegistry entities,
         GameBuildIdentity game,
         Func<LiveObservation?>? specializedSurface = null,
-        bool rewardPageProfile = false)
-        => ApplyRequiredContextCompleteness(BuildCore(entities, game, specializedSurface, rewardPageProfile));
+        bool rewardPageProfile = false, bool includePotionPopup = true)
+        => ApplyRequiredContextCompleteness(BuildCore(entities, game, specializedSurface, rewardPageProfile, includePotionPopup));
 
     // A combat context is shared by ordinary combat and nested input owners.
     // Required context failures must not disappear when a selector is complete.
@@ -115,7 +115,7 @@ internal static class LiveObservationReader
         NativeEntityRegistry entities,
         GameBuildIdentity game,
         Func<LiveObservation?>? specializedSurface,
-        bool rewardPageProfile)
+        bool rewardPageProfile, bool includePotionPopup)
     {
         IReadOnlyList<ILiveSurfaceReader> providers = CreateReaders(rewardPageProfile);
         ActiveSurfaceSnapshot snapshot;
@@ -180,7 +180,7 @@ internal static class LiveObservationReader
             providers,
             entities,
             game,
-            specializedSurface);
+            specializedSurface, includePotionPopup);
         if (resolution.Failure != null)
         {
             string provider = resolution.FailedProvider ?? "unknown";

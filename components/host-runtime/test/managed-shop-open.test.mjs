@@ -14,7 +14,8 @@ test("a closed merchant presents the Reference room controls and keeps inventory
   const shopSession = p.snapshot.interaction.content.surface.shop_session_entity_id;
   assert.equal(typeof shopSession, "string");
   assert.deepEqual(p.snapshot.interaction.content, {
-    surface: { kind: "shop_room", shop_session_entity_id: shopSession, can_open_inventory: true, can_proceed: true }, context: { kind: "shop" }
+    surface: { kind: "shop_room", shop_session_entity_id: shopSession, can_open_inventory: true, can_proceed: true,
+      non_combat_discardable_potions: [] }, context: { kind: "shop" }
   });
   assert.deepEqual(p.snapshot.bound_actions.actions.map(action => [action.verb, action.subject_referent_id]), [["open", null], ["activate", null]]);
   assert.equal(JSON.stringify(p.snapshot).includes("private-original"), false);

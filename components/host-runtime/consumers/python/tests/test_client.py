@@ -348,6 +348,22 @@ class ClientTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 environment.submit_text_menu(action, "", context["game_continuity_id"])
 
+    def test_reset_forwards_only_explicit_initial_progress(self):
+        environment = object.__new__(ManagedPlayerEnvironment)
+        requests = []
+        def exchange(command, **values):
+            requests.append({"command": command, **values})
+            return {"snapshot": {"snapshot_id": "mounted"}}
+        environment._exchange = exchange
+        initial = {"recipe": "normal-sp-all-unlocked-v1", "progress_json": "{}",
+                   "progress_sha256": "proof-sha"}
+        self.assertEqual(environment.reset("SEED", initial_progress=initial),
+                         {"snapshot_id": "mounted"})
+        self.assertEqual(requests[-1], {"command": "reset", "seed": "SEED",
+                                      "initial_progress": initial})
+        environment.reset("SEED")
+        self.assertEqual(requests[-1], {"command": "reset", "seed": "SEED"})
+
     def test_public_v2_profile_selection_and_v1_isolation(self):
         with ManagedPlayerEnvironment([sys.executable, "-u", "-c", FAKE_DRIVER]) as environment:
             environment.reset("SEED")

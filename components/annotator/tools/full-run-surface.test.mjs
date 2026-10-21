@@ -37,6 +37,102 @@ function section(source, start, end) {
   return source.slice(begin, finish);
 }
 
+test("legacy text-input scopes require a declared stream before capturing or allocating pending work", () => {
+  for (const [file, entry, nextEntry] of [
+    ["RecorderRuntime.TextInput.cs", "internal static HumanTextCardScope? BeginHumanTextCardInput(", "internal static void BindHumanTextCardCarrier("],
+    ["RecorderRuntime.TextInput.EndTurn.cs", "internal static HumanTextEndTurnScope? BeginHumanTextEndTurnInput(", "internal static void"],
+    ["RecorderRuntime.TextInput.Continuation.cs", "private static HumanTextContinuationScope? BeginHumanTextContinuation(", "internal static void"]
+  ]) {
+    const source = fs.readFileSync(path.join(root, "src", "STS2HumanAnnotator.Mod", file), "utf8");
+    const begin = source.indexOf(entry);
+    assert.notEqual(begin, -1);
+    const finish = source.indexOf(nextEntry, begin + entry.length);
+    const prefix = source.slice(begin, finish === -1 ? source.length : finish);
+    const guard = prefix.indexOf("!HumanTextInputObservationContract.Supports(_store.Manifest.TextInputSchemaVersion)");
+    assert.notEqual(guard, -1, `${file} must reject a profile with no declared text-input stream`);
+    assert.ok(guard < prefix.indexOf("_humanTextInputPendingScopes++"), `${file} gates before pending work`);
+    assert.ok(guard < prefix.indexOf("PlayerEnvironmentTextMenuWitness."), `${file} gates before legacy capture`);
+    assert.match(prefix.slice(guard, prefix.indexOf("_humanTextInputPendingScopes++")), /return null;/u);
+  }
+  const targetSource = fs.readFileSync(path.join(root, "src", "STS2HumanAnnotator.Mod", "RecorderRuntime.TextInput.Continuation.cs"), "utf8");
+  const setup = section(targetSource, "internal static NCardPlay? BeginHumanTextTargetSetup(", "internal static void EndHumanTextTargetSetup(");
+  const binding = section(targetSource, "internal static void BindHumanTextTargetManager(", "internal static HumanTextContinuationScope? BeginHumanTextControllerInput(");
+  for (const [body, write] of [[setup, "HumanTextStartingCard.Value = carrier"], [binding, "HumanTextTargetBindings[manager] = new("]])
+    assert.ok(body.indexOf("!HumanTextInputObservationContract.Supports(_store.Manifest.TextInputSchemaVersion)") < body.indexOf(write));
+});
+
+test("P1 routes every shared legacy evidence ingress before its legacy writer", () => {
+  for (const [start, end, gate, legacy] of [
+    ["internal static void ObserveAcceptedAction(", "internal static void ObservePlayCardExecutionAborted(", "if (IsP1Recording)", "SubmittedInputs.TryGet"],
+    ["internal static bool ObserveAcceptedSemanticUiAction(", "internal static void ObserveAcceptedSemanticUiFailure(", "if (IsP1Recording)", "AcceptedDecisionObserver.Observe"],
+    ["private static void ObserveBeforeActionExecution(", "private static void ObserveSemanticDecisionBoundary(", "if (IsP1Recording)", "NativeSemanticDiscriminatorRuntime.Observe"],
+    ["internal static bool ObserveSemanticUiCarrierBindingFailure(", "internal static void ObserveSemanticUiNativeCommitBindingFailure(", "if (IsP1Recording)", "return PersistTrackerMutationOrUnknown"],
+    ["internal static bool ObserveAcceptedNestedHumanContinuation(", "internal static bool ObserveNestedHumanContinuationUnavailable(", "TryRouteP1LegacyRecord", "return PersistTrackerMutationOrUnknown"],
+    ["private static bool PersistTrackerMutationOrUnknown(", "private static NativeCompletionEvidence ToCompletionEvidence(", "if (IsP1Recording)", "BoundaryTracker.BeginDurableMutation"],
+    ["private static void Quarantine(\n", "private static void WriteStatus(", "TryRouteP1LegacyRecord", "AppendInvalidation"],
+    ["private static void ObserveNativeActEntered(", "private static void UpdateRunLifecycle(", "if (IsP1Recording)", "CaptureSemanticFrame()"],
+    ["private static void FinalizeClose()", "private static void TerminateClosePendingWork(", "if (IsP1Recording)", "PersistSemanticBoundaryDrafts"]
+  ]) {
+    const body = section(runtime, start, end);
+    assert.ok(body.indexOf(gate) !== -1 && body.indexOf(gate) < body.indexOf(legacy), `${start}: P1 must route before legacy capture/write`);
+  }
+  for (const [start, end, completion] of [
+    ["private static bool ObserveSemanticUiNativeCommitCore(", "private static void StartSemanticNativeAction(", "CompleteP1Ui"],
+    ["private static void ObserveNativePostCommitCompletion(", "private static bool PersistTrackerMutationOrUnknown(", "CompleteP1Ui"]
+  ]) {
+    const body = section(runtime, start, end);
+    assert.ok(body.indexOf(completion) < body.indexOf("PersistTrackerMutationOrUnknown"), `${start}: native P1 completion owns its stream`);
+  }
+});
+
+test("P1 native terminal retains its own boundary and exact ready-owner witness before automatic Close", () => {
+  const ended = section(runtime, "internal static void ObserveNativeRunEnded(", "internal static void ObserveNativeRunStarted(");
+  assert.ok(ended.indexOf('ObserveP1Boundary("native_run_ended"') < ended.indexOf("TerminalSeal.ObserveNativeEnded"));
+  assert.match(ended, /is_victory = isVictory, abandoned/u);
+  const ready = section(runtime, "private static void ObserveNativeDecisionOwnerReady(", "private static CurrentDecisionFrame FreezeSemanticBoundary(");
+  assert.match(ready, /ObserveP1Boundary\("native_decision_owner_ready", new \{ domain = observation.Domain/u);
+  assert.match(ready, /native_owner_witness_id = NativeWitnessIdentity.Get\(observation.NativeOwner/u);
+  assert.match(ready, /native_mechanism = observation.NativeMechanism/u);
+  assert.ok(ready.indexOf('ObserveP1Boundary("native_decision_owner_ready"') < ready.indexOf("close: () => ExecuteTerminalAutoSeal"));
+});
+
+test("all native selector prefixes route P1 exact H and completion before legacy parent or trace requirements", () => {
+  const selectors = fs.readFileSync(path.join(root, "src", "STS2HumanAnnotator.Mod", "NativeSelectorDecisionRuntime.cs"), "utf8");
+  const patches = fs.readFileSync(path.join(root, "src", "STS2HumanAnnotator.Mod", "NativeSelectorDecisionPatches.cs"), "utf8");
+  const prefix = section(selectors, "private static SelectorInputHandle? BeginSelectorInputCore(", "internal static void EndSelectorInput(");
+  assert.ok(prefix.indexOf("if (IsP1Recording)") < prefix.indexOf("BoundaryTracker.DecisionIdentity"));
+  assert.match(prefix, /frame.ResolveNativeInput\(owner, operation, subject\)/u);
+  assert.match(prefix, /frame.ResolveNativeInput\(owner, sourceVerb, sourceControl \?\? subject\)/u);
+  assert.match(prefix, /P1NativeRecordingContract.CompleteBasis\(original.Bytes\)/u);
+  assert.match(prefix, /\["parent_action_witness_id"\] = binding.ActionWitnessId/u);
+  const finish = section(selectors, "internal static void EndSelectorInput(", null);
+  assert.ok(finish.indexOf("AppendP1SelectorAccepted") < finish.indexOf("!_semanticBoundaryTraceHealthy"));
+  assert.match(finish, /CompleteP1Ui\(p1.ActionWitnessId, "finished"/u);
+  assert.match(patches, /IsPublicBasisSourceProfile \|\| RecorderRuntime.IsP1NativeProfile/u);
+  assert.match(patches, /RecorderRuntime.IsP1NativeProfile \? exactAccepted/u);
+  const boss = section(fs.readFileSync(path.join(root, "src", "STS2HumanAnnotator.Mod", "NativeUiPatches.cs"), "utf8"),
+    "internal static class NativeBossRelicCommitPatch", "internal static class NativeCombatHandSelectPatch");
+  assert.ok(boss.indexOf("ShouldObserveBossRelicCommit") < boss.indexOf("TryGetRegisteredCurrentChoiceCarrier"));
+  assert.match(patches, /IsP1NativeProfile && __instance is NCardRewardSelectionScreen\s*&& __originalMethod.Name == "OnAlternateRewardSelected"/u);
+  const p1 = fs.readFileSync(path.join(root, "src", "STS2HumanAnnotator.Mod", "RecorderRuntime.P1.cs"), "utf8");
+  assert.match(p1, /NativeUiCompletionRootBindings.Remember\(action, id\)/u);
+  assert.match(p1, /P1UiPending.Values.Any\(value => value.NativeType.StartsWith\("NChooseARelicSelection\."/u);
+});
+
+test("P1 card diagnostic flags freeze at original capture and accepted rows only serialize that context", () => {
+  const diagnostics = fs.readFileSync(path.join(root, "src", "STS2HumanAnnotator.Mod", "RecorderRuntime.P1Diagnostics.cs"), "utf8");
+  assert.doesNotMatch(diagnostics, /\.CanPlay\(|\.CanPlayTargeting\(|RequestEnqueue\(|StartCardPlay\(/u);
+  for (const field of ["capture_snapshot_id", "capture_stage_generation", "exact_holder_witness_id", "native_action_executing",
+    "hand_in_card_play", "hand_current_mode", "hand_is_peeking", "player_actions_disabled", "part_of_player_turn", "extra_turn_player_count"])
+    assert.ok(diagnostics.includes(`\"${field}\"`), field);
+  assert.match(runtime, /CaptureP1CardReadiness\(frame, holder, "StartCardPlay.prefix"\)/u);
+  assert.match(runtime, /CaptureP1CardReadiness\(current, stagedOwner\?\.Holder, "TryPlayCard.prefix.current_capture"\)/u);
+  const p1 = fs.readFileSync(path.join(root, "src", "STS2HumanAnnotator.Mod", "RecorderRuntime.P1.cs"), "utf8");
+  const accepted = section(p1, "private static void ObserveP1AcceptedAction(", "private static bool ObserveP1AcceptedUi(");
+  assert.match(accepted, /witnessed\["capture_diagnostics"\] = diagnostics.DeepClone\(\)/u);
+  assert.doesNotMatch(accepted, /CaptureP1CardReadiness\(|ActionExecutor\.IsRunning/u);
+});
+
 test("act-ready binds one exact queued action and skips generic duplicate ingress", () => {
   const enqueue = section(patches, "internal static class NativeActChangeVoteEnqueuePatch", "internal static class NativeActChangeVoteCommitPatch");
   const commit = section(patches, "internal static class NativeActChangeVoteCommitPatch", "[HarmonyPatch(typeof(RewardsSetSynchronizer)");

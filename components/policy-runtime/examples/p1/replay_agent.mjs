@@ -16,10 +16,76 @@ const [trajectoryPath, reportPath] = process.argv.slice(2);
 const { matchReferenceChoice } = await import(new URL("../../dist/p1-global/trajectory.js", import.meta.url).href);
 const trajectory = JSON.parse(readFileSync(trajectoryPath, "utf8"));
 const log = (value) => appendFileSync(reportPath, JSON.stringify(value) + "\n");
-let index = 0, diverged = false, terminalObservation = null;
+let index = 0, diverged = false, terminalObservation = null, prefixComplete = false;
 const completeView = observation => ({ ...observation,
   envelope: { ...observation.envelope, required_information_complete: true } });
+let continuityFailureReason = "cancellation_continuity_difference";
+function cancellationContinuity(reference, observation) {
+  for (const check of reference.continuity_checks ?? []) {
+    const match = check.observation == null
+      ? { verdict: "incomparable", difference: { path: "$.continuity_checks.observation",
+        left: null, right: null, reason: check.phase === "presentation" ? "presentation_observation_missing" : "cancellation_observation_missing" } }
+      : matchReferenceChoice({ index, observation: check.observation, chosen: null }, observation);
+    log({ type: check.phase === "presentation" ? "presentation_continuity" : "cancellation_continuity", decision_id: check.decision_id, index, phase: check.phase,
+      boundary: check.boundary, source_event_id: check.source_event_id, verdict: match.verdict, difference: match.difference });
+    if (match.verdict !== "equal") {
+      continuityFailureReason = check.phase === "presentation" ? "presentation_continuity_difference" : "cancellation_continuity_difference";
+      return false;
+    }
+  }
+  return true;
+}
+function cancellationManifestComplete() {
+  const checks = trajectory.points.flatMap((point, index) =>
+    (point.continuity_checks ?? []).filter(check => check.phase !== "presentation").map(check => ({ ...check, index })));
+  if (trajectory.cancellation_count === undefined && trajectory.native_cancellations === undefined)
+    return checks.length === 0;
+  const declared = trajectory.native_cancellations;
+  if (!Number.isInteger(trajectory.cancellation_count) || trajectory.cancellation_count < 0
+      || !Array.isArray(declared) || declared.length !== trajectory.cancellation_count
+      || checks.length !== declared.length * 2 || new Set(declared.map(item => item.decision_id)).size !== declared.length)
+    return false;
+  return declared.every(item => typeof item.decision_id === "string" && item.decision_id.length > 0
+    && typeof item.source_event_id === "string" && item.source_event_id.length > 0
+    && (["cancelled_before_execution", "cancelled_after_execution"].includes(item.phase)
+      || item.phase === "cancelled_semantic_selector" && item.kind === "rest_smith_cancel"
+        && item.disposition === "cancelled" && item.successful_label === false
+        && item.original_parent_terminal?.phase === "unknown"
+        && item.original_parent_terminal?.native_completion?.succeeded === false
+        && item.native_child_terminal?.native_completion?.terminal === true
+        && item.comparison?.equal === true && item.comparison.changes?.length === 0)
+    && Array.isArray(item.continuity_checkpoints) && item.continuity_checkpoints.length === 2
+    && ["before", "after"].every(boundary => item.continuity_checkpoints.filter(checkpoint => checkpoint.boundary === boundary).length === 1)
+    && item.continuity_checkpoints.every(checkpoint => typeof checkpoint.source_event_id === "string" && checkpoint.source_event_id.length > 0
+      && checks.filter(check => check.decision_id === item.decision_id && check.source_event_id === checkpoint.source_event_id
+        && check.phase === item.phase && check.boundary === checkpoint.boundary && check.index === checkpoint.comparison_point_index).length === 1));
+}
+function presentationManifestComplete() {
+  const checks = trajectory.points.flatMap((point, index) => (point.continuity_checks ?? [])
+    .filter(check => check.phase === "presentation").map(check => ({ ...check, index })));
+  if (trajectory.presentation_count === undefined && trajectory.native_presentations === undefined) return checks.length === 0;
+  const declared = trajectory.native_presentations;
+  if (!Number.isInteger(trajectory.presentation_count) || trajectory.presentation_count < 0
+      || !Array.isArray(declared) || declared.length !== trajectory.presentation_count
+      || checks.length !== declared.length * 2 || new Set(declared.map(item => item.decision_id)).size !== declared.length) return false;
+  return declared.every(item => item.phase === "presentation" && item.successful_label === false
+    && (item.disposition === "presentation" && item.comparison?.equal === true && item.comparison.changes?.length === 0
+      || item.disposition === "presentation_exception" && item.exception?.id === "stop_relic_refresh"
+        && item.comparison?.equal === false && item.comparison.changes?.length === 2
+        && item.comparison.changes.every(change => change.before === "attached" && change.after === "absent"))
+    && typeof item.decision_id === "string" && item.decision_id.length > 0
+    && Array.isArray(item.decision_ids) && item.decision_ids.length > 0 && item.decision_ids[0] === item.decision_id
+    && Array.isArray(item.continuity_checkpoints) && item.continuity_checkpoints.length === 2
+    && ["before", "after"].every(boundary => item.continuity_checkpoints.filter(check => check.boundary === boundary).length === 1)
+    && item.continuity_checkpoints.every(checkpoint => typeof checkpoint.source_event_id === "string" && checkpoint.source_event_id.length > 0
+      && checks.filter(check => check.decision_id === item.decision_id && check.source_event_id === checkpoint.source_event_id
+        && check.phase === item.phase && check.boundary === checkpoint.boundary && check.index === checkpoint.comparison_point_index).length === 1));
+}
 log({ type: "start", reference: trajectory.run_directory, points: trajectory.points.length });
+if (!cancellationManifestComplete() || !presentationManifestComplete()) {
+  diverged = true;
+  log({ type: "divergence", index, reason: !cancellationManifestComplete() ? "cancellation_manifest_mismatch" : "presentation_manifest_mismatch" });
+}
 for await (const line of readline.createInterface({ input: process.stdin })) {
   const msg = JSON.parse(line);
   if (msg.type === "hello") {
@@ -28,10 +94,27 @@ for await (const line of readline.createInterface({ input: process.stdin })) {
     terminalObservation = msg.observation?.status === "terminal" ? completeView(msg.observation) : null;
   } else if (msg.type === "observation" && msg.requires_choice) {
     terminalObservation = null;
+    if (diverged) { console.log(JSON.stringify({ type: "abstain", reason: "prior_divergence" })); continue; }
     const reference = trajectory.points[index];
     const observation = completeView(msg.observation);
     if (!reference) { diverged = true; log({ type: "divergence", index, reason: "reference_ended_before_replay" }); console.log(JSON.stringify({ type: "abstain", reason: "reference_ended" })); continue; }
+    if (!cancellationContinuity(reference, observation)) {
+      diverged = true;
+      log({ type: "divergence", index, reason: continuityFailureReason });
+      console.log(JSON.stringify({ type: "abstain", reason: `divergence_at_${index}` }));
+      continue;
+    }
     const match = matchReferenceChoice(reference, observation);
+    if (!diverged && match.verdict === "equal" && reference.chosen === null && index === trajectory.points.length - 1
+      && trajectory.scope?.kind === "bounded_native_semantic_prefix" && reference.observation.status === "decision") {
+      // Compare the actual final successor, then stop through the existing
+      // abstain path. This proves a bounded replay prefix, never a whole game.
+      prefixComplete = true;
+      log({ type: "prefix_end", index, reference_points: trajectory.points.length,
+        replay_reached_reference_prefix: true, public_successor_equal: true });
+      console.log(JSON.stringify({ type: "abstain", reason: "recorded_prefix_complete" }));
+      continue;
+    }
     if (match.verdict !== "equal" || match.choice_id === null) {
       diverged = true;
       log({ type: "divergence", index, verdict: match.verdict, difference: match.difference,
@@ -54,11 +137,13 @@ for await (const line of readline.createInterface({ input: process.stdin })) {
       reason = "replay_terminal_observation_missing";
     else if (reference.observation.terminal.outcome !== terminalObservation.terminal.outcome ||
       msg.outcome !== terminalObservation.terminal.outcome) reason = "terminal_outcome_mismatch";
+    else if (!cancellationContinuity(reference, terminalObservation)) reason = continuityFailureReason;
     else {
       comparison = matchReferenceChoice(reference, terminalObservation);
       if (comparison.verdict !== "equal") reason = "public_terminal_difference";
     }
     log({ type: "end", index, reference_points: trajectory.points.length,
+      replay_reached_reference_prefix: prefixComplete && !diverged,
       replay_reached_reference_terminal: reason === null && comparison?.verdict === "equal",
       outcome: msg.outcome ?? null, reason, comparison });
     break;

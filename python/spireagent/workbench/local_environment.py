@@ -146,22 +146,28 @@ class _ManagedServiceEnvironment:
             raise BoundaryError("local_environment", "managed_service_result_invalid")
         return result
 
-    def reset(self, seed: str) -> dict[str, Any]:
+    def reset(self, seed: str, *,
+              initial_progress: Mapping[str, Any] | None = None) -> dict[str, Any]:
         runtime = self.ready.get("adapter_runtime_instance_id")
         episode = self.ready.get("episode")
         continuity = episode.get("game_continuity_id") if isinstance(episode, Mapping) else None
         if not isinstance(runtime, str) or not runtime:
             raise BoundaryError("local_environment", "managed_service_identity_invalid")
         value = self._manager.reset(seed, expected_runtime_instance_id=runtime,
-                                    expected_game_continuity_id=continuity)
+                                    expected_game_continuity_id=continuity,
+                                    **({"initial_progress": initial_progress}
+                                       if initial_progress is not None else {}))
         result = value.get("result")
         if not isinstance(result, dict) or result.get("type") != "reset_result":
             raise BoundaryError("local_environment", "managed_service_reset_unconfirmed")
         self.refresh()
         return result
 
-    def episode_identity(self) -> dict[str, Any]:
-        result = self.request("episode_identity")
+    def episode_identity(self, *, manager: bool = False) -> dict[str, Any]:
+        result = (self._manager.request({"command": "episode_identity"}).get("result")
+                  if manager else self.request("episode_identity"))
+        if not isinstance(result, Mapping):
+            raise BoundaryError("local_environment", "episode_identity_invalid")
         identity = result.get("identity")
         if not isinstance(identity, dict):
             raise BoundaryError("local_environment", "episode_identity_invalid")
@@ -310,6 +316,29 @@ def _validate_private_pin(pin: dict[str, Any]) -> None:
         raise BoundaryError("local_environment", "host_cleanup_capability_required")
 
 
+def _checked_initial_progress(value: object, pin: Mapping[str, Any]) -> dict[str, str]:
+    if (not isinstance(value, dict)
+            or set(value) != {"recipe", "progress_json", "progress_sha256"}
+            or value["recipe"] != "normal-sp-all-unlocked-v1"
+            or not isinstance(value["progress_json"], str)
+            or hashlib.sha256(value["progress_json"].encode("utf-8")).hexdigest()
+            != value["progress_sha256"]):
+        raise BoundaryError("local_environment", "managed_initial_progress_invalid")
+    if int(str(pin["version"]).rsplit(".", 1)[1]) < 32:
+        raise BoundaryError("local_environment", "managed_initial_progress_capability_required")
+    return dict(value)
+
+
+def _require_initial_progress_proof(
+    identity: Mapping[str, Any], initial: Mapping[str, str],
+) -> None:
+    proof = identity.get("initial_progress")
+    if (not isinstance(proof, Mapping) or proof.get("recipe") != initial["recipe"]
+            or proof.get("progress_sha256") != initial["progress_sha256"]
+            or proof.get("run_unlock_state_matches") is not True):
+        raise BoundaryError("local_environment", "managed_initial_progress_unverified")
+
+
 def _verify_host(host_root: Path, pin: dict[str, Any]) -> None:
     _validate_private_pin(pin)
     try:
@@ -364,7 +393,7 @@ def _audit(host_root: Path, candidate: Path) -> dict[str, str]:
 
 def configure_managed_host(
     config: ProjectConfig, candidate: Path, *, host_root: Path, host_pin: dict[str, Any],
-    input_profile: str,
+    input_profile: str, initial_progress: dict[str, str] | None = None,
     audit: Callable[[Path, Path], dict[str, str]] = _audit,
 ) -> dict[str, Any]:
     """Trusted stopped-Workbench setup; the web API has no equivalent path input."""
@@ -375,13 +404,13 @@ def configure_managed_host(
     with instance_lock(config.state_dir / "instance.lock"):
         return _configure_managed_host(
             config, candidate, host_root=host_root, host_pin=host_pin,
-            input_profile=input_profile, audit=audit,
+            input_profile=input_profile, initial_progress=initial_progress, audit=audit,
         )
 
 
 def _configure_managed_host(
     config: ProjectConfig, candidate: Path, *, host_root: Path, host_pin: dict[str, Any],
-    input_profile: str,
+    input_profile: str, initial_progress: dict[str, str] | None = None,
     audit: Callable[[Path, Path], dict[str, str]],
 ) -> dict[str, Any]:
     if not isinstance(input_profile, str) or input_profile not in TEXT_PROFILES:
@@ -395,6 +424,8 @@ def _configure_managed_host(
     ):
         raise BoundaryError("local_environment", "host_package_path_unsafe")
     _verify_host(host_root, host_pin)
+    initial = (_checked_initial_progress(initial_progress, host_pin)
+               if initial_progress is not None else None)
     observed = _candidate_audit(audit(host_root, candidate))
     profile = {
         "schema": PROFILE_SCHEMA,
@@ -403,6 +434,7 @@ def _configure_managed_host(
         "host_package_pin": host_pin,
         "input_profile": input_profile,
         "audit": observed,
+        **({"initial_progress": initial} if initial is not None else {}),
     }
     target = config.state_dir / PROFILE_FILE
     if target.is_symlink():
@@ -429,10 +461,13 @@ def _read_profile(config: ProjectConfig) -> dict[str, Any]:
         raise BoundaryError("local_environment", "profile_required")
     try:
         value = decode_json(target.read_bytes())
-        if not isinstance(value, dict) or set(value) != {
+        required = {
             "schema", "candidate_directory", "host_package_directory", "host_package_pin",
             "input_profile", "audit"
-        } or value["schema"] != PROFILE_SCHEMA:
+        }
+        if (not isinstance(value, dict)
+                or set(value) not in (required, required | {"initial_progress"})
+                or value["schema"] != PROFILE_SCHEMA):
             raise ValueError
         if value["input_profile"] not in TEXT_PROFILES:
             raise ValueError
@@ -455,6 +490,8 @@ def _read_profile(config: ProjectConfig) -> dict[str, Any]:
         ):
             raise ValueError
         _validate_private_pin(pin)
+        if "initial_progress" in value:
+            _checked_initial_progress(value["initial_progress"], pin)
         return value
     except (OSError, TypeError, KeyError, ValueError, BoundaryError) as error:
         raise BoundaryError("local_environment", "profile_invalid") from error
@@ -1716,6 +1753,8 @@ class LocalEnvironmentService:
                 host_package_dir=host_root, candidate_dir=candidate,
                 client_attachment=client_file, manager_attachment=manager_file,
                 log_file=log_file, character=SCENARIO["character"],
+                **({"diagnostics_file": log_file.with_suffix(".native-diagnostics.json")}
+                   if "initial_progress" in _read_profile(self.config) else {}),
             )
             client = client_type.from_attachment(client_file)
             manager = manager_type.from_attachment(manager_file)
@@ -1872,12 +1911,14 @@ class LocalEnvironmentService:
         if not isinstance(result, Mapping) or result.get("type") != "close_result":
             raise BoundaryError("local_environment", "managed_host_close_unconfirmed")
         for filename in ("client.json", "manager.json"):
-            (directory / filename).unlink()
+            (directory / filename).unlink(missing_ok=True)
         with self.lock:
             self.client = None
             self.record["host_service_closed"] = True
+            self.record["host_close_result"] = decode_json(json_bytes(result))
             self._save()
-        return {"status": "closed", "service_instance_id": ready["service_instance_id"]}
+        return {"status": "closed", "service_instance_id": ready["service_instance_id"],
+                "close_result": dict(result)}
 
     def recover_control(self, *, expected_session_id: str | None = None,
                         expected_service_instance_id: str | None = None,
@@ -2235,7 +2276,8 @@ class LocalEnvironmentService:
         public = {key: value for key, value in self.record.items()
                   if key not in {"producer", "pending_request_id", "stop_requested",
                                  "pending_control_claim_request_id",
-                                 "uncertain_claim_request_id", "uncertain_control_epoch"}}
+                                 "uncertain_claim_request_id", "uncertain_control_epoch",
+                                 "host_close_result"}}
         if self.record.get("service_binding") is not None:
             public.update(
                 session_semantics="workbench-segment-v2-host-owned-service",
@@ -2270,7 +2312,8 @@ class LocalEnvironmentService:
             record = {key: value for key, value in self.record.items()
                       if key not in {"producer", "pending_request_id", "stop_requested",
                                      "pending_control_claim_request_id",
-                                     "uncertain_claim_request_id", "uncertain_control_epoch"}}
+                                     "uncertain_claim_request_id", "uncertain_control_epoch",
+                                     "host_close_result"}}
             record = decode_json(json_bytes(record))
             try:
                 profile = _read_profile(self.config)
@@ -2696,8 +2739,14 @@ class LocalEnvironmentService:
                 != SCENARIO["exact_game_assembly_sha256"]
             ):
                 raise BoundaryError("local_environment", "managed_candidate_changed")
-            client.reset(seed)
-            identity = _public_identity(client.episode_identity())
+            initial = profile.get("initial_progress")
+            client.reset(seed, **({"initial_progress": initial} if initial is not None else {}))
+            original_identity = (client.episode_identity(manager=True)
+                                 if is_managed_service and initial is not None
+                                 else client.episode_identity())
+            if initial is not None:
+                _require_initial_progress_proof(original_identity, initial)
+            identity = _public_identity(original_identity)
             provenance = identity["episode_provenance"]
             if (identity["candidate_build"] != profile["audit"]
                     or provenance["verdict"] != "provenance_pass"

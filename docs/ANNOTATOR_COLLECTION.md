@@ -6,10 +6,29 @@ starts only after the installed and loaded identities agree. Record each
 candidate/cohort separately; a new DLL or source revision receives no Human
 qualification from its predecessor. Retain the previous deployment for rollback.
 
-## Default project workflow
+## Current P1 daily collection
 
-For SpireAgent collection, use the [versioned STPD workbench release](https://github.com/rsgcsg/STS2-The-Perfect-Defect/releases)
-and its [single project handoff](https://github.com/rsgcsg/STS2-The-Perfect-Defect/blob/main/docs/B_PIPELINE_HANDOFF.md).
+Use the current [Application collection controls](../python/docs/PROJECT_CONSOLE.md#daily-collection)
+and the [Annotator daily command/SOP](../components/annotator/README.md#p1-native-semantic-recording).
+GUI and `npm run recording:p1` call the same recording owner for
+status/Start/Pause/Resume/prefix/Close. Read the actual status and exact installed
+Tool/Mod/runtime binding before Start; an open Application alone is not a ready game.
+After a native terminal seals successfully, continuous collection opens a distinct
+session on the next run; manual Close/Pause disarms it. Only the user plays Human
+recordings. Do not substitute engineering input for Human evidence.
+
+For interrupted sessions use the [same Tool recovery owner](../components/annotator/README.md#recover-an-interrupted-p1-recording),
+then the [normal Store import and named projection operations](../python/docs/B_PIPELINE_HANDOFF.md#p1-originals-and-named-projections-in-the-existing-local-store).
+The current targets keep exactly approved reward-refresh returns continuous while
+retaining original effects; real missing/unknown facts remain barriers. Old
+segments/default artifacts retain their own interpretation and immutable IDs.
+
+## Canonical distributed collection workflow
+
+The retained canonical bundle3/Full-Run lane below has its own scope; its
+uninterrupted qualification conditions do not replace the current P1 daily SOP.
+For installation and project operation, use the current repository's
+[application and pipeline guide](../python/docs/B_PIPELINE_HANDOFF.md).
 That document owns installation, account/computer binding, campaign setup, cloud viewing,
 operator deployment and maintenance. This guide owns native capture, the Platform tool
 contract and recording incidents; it does not duplicate cloud account or research rules.
@@ -72,6 +91,44 @@ that projection is not a complete Full-Run dataset. Pin the consumer contract.
 The version-pinned STPD bundle3 adapter, dataset eligibility policy and training/evaluation
 checks belong to STPD. Their independent release and admission checks never change the
 original recording or turn receiver verification into research qualification.
+
+## P1-native offline conversion and optional segments
+
+The current P1-native lane retains accepted input H, execution S/A(S), lifecycle
+and complete public-basis originals in its own sealed bundle. It is separate from
+bundle3 and historical Source4. Its owning reader verifies the immutable inventory
+before the shared P1 converter interprets it:
+
+```bash
+node tools/p1-native-to-p1.mjs --bundle /absolute/p1-native-bundle \
+  --run-id run-0001 --output /absolute/new-conversion.json \
+  --segments-output /absolute/new-segments.json
+```
+
+Outputs must be new paths. Omitting `--segments-output` keeps the existing
+whole-conversion behavior. An open administrative export instead uses `--prefix`
+and its exact `--manifest-sha256`; it never qualifies as a sealed whole run.
+
+`sts2.p1/native-segments-1` records the original session/timeline/run, source content
+identity, original basis references, profile/revision, gaps, discarded choices and
+each segment's start/end reasons. A segment starts only at a real complete basis
+with complete shared-core observation and no unfinished native parent, reward
+commitment or selector continuation. It carries the actual `start_protocol_state`
+from the same conversion, rather than resetting the protocol. Unresolved inputs
+and stateful projection exceptions cut the segment; unfinished inputs cut through
+the observed tail. Pure browsing and qualified cancellation produce no N labels.
+
+Each point keeps `observation`, `chosen` and `mask`. N names only an exact choice
+in that point's catalog; next never crosses a gap or segment; end refers only to
+the real observed terminal on the same branch. Later recovery segments are D
+data with explicit source exceptions. The converter leaves `complete`,
+`whole_run_recording_complete` and `trajectory` unchanged by the optional output.
+
+The research loader must preserve these masks, boundaries, version/branch lineage
+and protocol state, and bind source and derivation hashes in its snapshot receipt.
+`training_loader_consumed=false` means the converter has made no claim that any
+training consumer read the artifact. Loader ingestion, research admission, online
+Reference behavior and cross-Host conformance remain separate evidence.
 
 ## Source4 P1 conversion of one recorded run
 

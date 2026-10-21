@@ -173,6 +173,10 @@ internal static class NativeSelectorCardDecisionPatch
     private static void Prefix(object __instance, object __0, MethodBase __originalMethod, out State? __state)
     {
         NativeSourceInputProvider.BeforeInputPrefix();
+        // REROLL keeps the selector task open. The existing exact CardReward
+        // alternative owner records its accepted callback and two-signal native Commit.
+        if (RecorderRuntime.IsP1NativeProfile && __instance is NCardRewardSelectionScreen
+            && __originalMethod.Name == "OnAlternateRewardSelected") { __state = null; return; }
         if (RecorderRuntime.SelectorInputActive && !RecorderRuntime.IsOrderedSourceProfile) { __state = null; return; }
         __state = NativeNestedCallbackSafety.Run("selector.card.before", () =>
         {
@@ -201,7 +205,7 @@ internal static class NativeSelectorCardDecisionPatch
             var before = NativeSelectorInputFacts.Selected(__instance);
             bool wasTerminal = NativeSelectorInputFacts.Terminal(__instance);
             var completion = NativeSelectorInputFacts.CompletionTask(__instance);
-            var sourceReceipt = RecorderRuntime.IsPublicBasisSourceProfile
+            var sourceReceipt = RecorderRuntime.IsPublicBasisSourceProfile || RecorderRuntime.IsP1NativeProfile
                 ? NativeSelectorInputFacts.CompletionReceipt(__instance, __originalMethod, subject, __0, completion) : null;
             string verb = __originalMethod.Name == "DeselectCard"
                 || before.Any(value => ReferenceEquals(value, subject)) ? "deselect" : "select";
@@ -217,13 +221,16 @@ internal static class NativeSelectorCardDecisionPatch
     {
         if (__state == null) return;
         NativeNestedCallbackSafety.Run("selector.card.after", () =>
+        {
+            bool exactAccepted = NativeSelectorInputFacts.Changed(__instance, __state.Selected)
+                || __state.SourceReceipt?.Accepted(__instance, __state.Callback) == true;
             RecorderRuntime.EndSelectorInput(__state.Input,
-                NativeSelectorInputFacts.Changed(__instance, __state.Selected)
+                RecorderRuntime.IsP1NativeProfile ? exactAccepted : NativeSelectorInputFacts.Changed(__instance, __state.Selected)
                     || !__state.Terminal && (__state.Completion?.IsCompletedSuccessfully
                         ?? NativeSelectorInputFacts.Terminal(__instance)),
                 NativeSelectorInputFacts.Terminal(__instance),
-                sourceAcceptanceProven: NativeSelectorInputFacts.Changed(__instance, __state.Selected)
-                    || __state.SourceReceipt?.Accepted(__instance, __state.Callback) == true));
+                sourceAcceptanceProven: exactAccepted);
+        });
     }
 
     private static Exception? Finalizer(State? __state, Exception? __exception) =>

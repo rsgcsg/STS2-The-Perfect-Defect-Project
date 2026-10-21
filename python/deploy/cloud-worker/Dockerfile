@@ -27,6 +27,7 @@ LABEL org.opencontainers.image.source="https://github.com/rsgcsg/STS2-The-Perfec
       org.opencontainers.image.revision=$STPD_SOURCE_REVISION \
       org.spireagent.image-profile=$STPD_IMAGE_PROFILE
 ENV PYTHONDONTWRITEBYTECODE=1
+ENV CUBLAS_WORKSPACE_CONFIG=:4096:8
 ENV PATH="/opt/stpd/python/.venv/bin:$PATH"
 # Modal uses its own Python runtime for the small wrapper. Model work executes
 # in this locked virtual environment, not in Modal's injected SDK environment.

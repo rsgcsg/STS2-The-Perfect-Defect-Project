@@ -1,6 +1,6 @@
 # P1 全局 r1：可执行合同（profile `p1-global-r1`）
 
-状态：**r1.3，P1 的唯一权威文档**（2026-10-18 用户决定；实现和实跑资格见 CURRENT）。其他 P1 文档（[P1](P1.zh-CN.md)、[Host/wire](P1_HOST_AND_WIRE.zh-CN.md)、[计划](../plans/P1_FORWARD_2026-10-15.zh-CN.md)、[ADR-0017](../adr/0017-p1-forward-decision-profile.md)）是背景和历史；本文定义P1语义；用户最新要求及组件权责仍优先，代码是待检验实现，不以当前代码覆盖需求。
+状态：**r1.4，P1 的唯一权威文档**（2026-10-18 用户决定；实现和实跑资格见 CURRENT）。其他 P1 文档（[P1](P1.zh-CN.md)、[Host/wire](P1_HOST_AND_WIRE.zh-CN.md)、[计划](../plans/P1_FORWARD_2026-10-15.zh-CN.md)、[ADR-0017](../adr/0017-p1-forward-decision-profile.md)）是背景和历史；本文定义P1语义；用户最新要求及组件权责仍优先，代码是待检验实现，不以当前代码覆盖需求。
 推进规则见 [WORKING_RULES](../WORKING_RULES.zh-CN.md)；当前任务、差异和冻结门见
 [当前入口](../plans/p1-prefreeze-2026-10-18/README.md)与[待批冻结定义v0.3](../plans/p1-prefreeze-2026-10-18/SCOPE_v0.3.zh-CN.md)。
 第14–16节实测及第18节旧T1–T7均保留其注明日期/候选的历史范围；第17节拥有登记例外。
@@ -27,6 +27,8 @@ P1 不新增游戏规则、不判断合法性：每个 P1 动作都落到游戏�
 3. **不暴露真实的未来**：抽牌真实顺序、未揭示的奖励、随机结果、未来敌人行动永不进入观察；也不能从别名、排序或摘要里间接泄漏（第 5 节）。付款、开箱、出牌等效果先真实发生，之后才给新内容。
 4. **不加提示**：没有推荐、访问计数、"你又来了"之类程序推导的信息。
 5. **完整才发布**：任何必需部分取不到，这份观察就不交给 Agent。原生明确报告 `settling` 时等待；离开该状态后仍缺必需信息即如实停止，不对任意 `partial` 施加重读宽限。读取轮询间隔仅为现有pull接口调度，不能证明就绪；原预算/Stop限制等待。
+
+**公开升级预览（2026-10-19用户批准）**：同一卡牌可免费查看的原生升级预览进入`surface_card`详情revision `2`，字段`upgrade_preview`为`{status:"available",card:<display-only public card>}`或原生明确不可再升级时的`{status:"not_applicable",card:null}`。预览卡`entity_id:null`，不成为输入operand，不修改实际牌组/升级等级，不给策略建议；复用合格原生detached upgrade与原生文本渲染。无法取得时原件保留`unavailable`及missing，Read/P1不能声称完整。基础卡、关键词和hover-card预览原样保留，两Host供给同字段。旧revision `1`原件不回填，旧完整标记只对应其原供给范围，不据此授本次INFO通过；本次新候选必须真实验证revision `2`。
 
 ## 3. 分层与现有组件
 
@@ -55,6 +57,45 @@ Managed：sts2.dll 无界面宿主 + 投影                 ┴→ 两端共用�
 - 出牌后出现子选择（生成卡、从弃牌堆选牌等）：游戏端给出新的决策边界，立即交给 Agent，父动作可以仍在进行中。
 - 结束回合：Agent 选择后由游戏自动推进，不反复调用 Agent，直到下一个决策边界。
 - 终局：游戏端确定胜负即为终局，Agent 收到终局观察；返回菜单和清理属于任务管理。
+
+### 4.1 录制原件派生P1的requires（用户已批准）
+
+这是[唯一上层图连接⑥](../plans/p1-prefreeze-2026-10-18/CHAIN_PURPOSES.md#唯一上层图与连接要求新任务入口2026-10-19)的P1要求，与[冻结定义4.1–4.2](../plans/p1-prefreeze-2026-10-18/SCOPE_v0.3.zh-CN.md)同一已批准含义。任何交互profile都应声明自己的③④在线要求和⑥原件派生requires，不能由某个来源实现反向决定profile需要什么。来源支持P1，是其原件provides经声明的投影Π覆盖以下全部requires；不按Source4/Human/Runtime名称直接判支持。
+
+**2026-10-19用户批准的记录解释修订（连接⑤⑥）**：恢复历史rc4的执行边界`S / A(S)`作为P1派生决策点；点击/输入时的`H`只证明来源。H/S规则用于原生输入来源；Runtime/选择器原件沿既有同边界合同，不补造Human来源。此修订不改在线连接③④的观察、完整动作和执行合同，不扩展Reference/Managed的排队能力。获批的是解释要求，不表示新P1采集、转换或真实验收已经完成；具体原件字段由Annotator/adapter owner共同声明，本文不另造schema。暂存牌与手牌在PB1中的实际字段差异由C只读核对后逐项交Curation；不能以字段形状相近声称原始H与执行S相同，也不因此自动批准研究输入。
+
+- **默认的顺序行动局面（2026-10-20用户重申）**：出牌、用药等排队输入统一沿已批准的执行边界解释：给模型的状态相当于此前动作已经结算、当前动作马上执行，假设玩家也只能按这个顺序逐项操作，不把缓存/暂存/按钮临时禁用当成模型的额外限制。真实依据仍取同一次执行S与原生语义A(S)，不从未来拼状态、不新增点击前采集路线、不实际改游戏排队。H、queued标记、间隔、实际原始目录和生命周期全部照存；模型的串行化解释不冒称真人恰在S重新决定过。
+- **分开H和S**：保存原始点击/输入H及exact来源、原生接受、owner和顺序；H原有状态/Reads/缺失照实保留。P1观察与选择以执行边界S为准，不宣称玩家在S重新点击/决定过，不把执行S倒填成旧H，也不要求空的H公开catalog凭空出现BoundAction。
+- **执行边界完整公开依据**：在同一个执行边界、同一snapshot身份下保存完整`public-basis-1`、全部advertised Reads及完整catalog `A(S)`。复用既有[RecordedNativeInput](../../components/annotator/src/STS2HumanAnnotator.Core/RecordedNativeInput.cs)与[执行订阅](../../components/annotator/src/STS2HumanAnnotator.Mod/NativeActionLifecycleSubscription.cs)，不新建tracker。queued动作沿原生`BeforeActionExecuted`接缝取得新S/A(S)；无queue的原生直接callback沿其合法pre-admission/执行接缝取得。完整S不是从未来拼起来的快照，公开信息约束保持。
+- **唯一、精确动作身份**：真实native accepted的key和全部operands必须与执行catalog所选动作精确匹配，保留exact subject/target/owner及原始接受证明，不凭名称、索引、近似目标或时间接近猜绑定。沿既有合同保留public action或native input两种表示**二选一**，不制造H的BoundAction。执行时公开投递catalog没有该暂存牌的BoundAction，不单独作为停止理由；允许沿完整原生执行A(S)及native input声明派生，但不能伪造公开BoundAction。若真实执行边界无法保存完整S/PB1或可派生目录，则停下实现并报告具体缺失。具体字段以[Annotator数据合同](../../components/annotator/docs/DATA_CONTRACT.md#queued-execution-catalog-phase)及B/root本次实现声明为准；既有schema3/native input不能直接叫当前P1实现已接好。
+- **排队与两时点**：nonqueued须证明H和S落在同一原生执行边界；queued明确标`queued=true`，保留H→S的原始时间/顺序与实际间隔，不把两时点伪装为同时。对应执行S完整且精确匹配才可派生；有间隔不等于可以改H或自动补缺。
+- **原生取消与失败分开**：能量不足、执行前取消、目标失效等，只有存在明确原生取消解释并完整保留接受/取消生命周期及原始处置issue，才记为`native cancellation`；不生成成功label，不为它制造P1决策或不存在的执行S。确由原生取消解释执行边界没有发生时，不把不存在的S误作采集缺失；取消处置和连续性所需原件本身缺失仍阻断。取消前后连续性必须按实际原件比较，不能假设取消无效果或跳过未解释的变化。unknown、必需信息缺失、绑定错和没有原生解释的失效/不匹配仍是阻断缺口，不能改名取消。未提交拿牌取消原本没有accepted决策/label；已接受后的取消保留独立处置，两者不混。
+- **Human浏览处置（2026-10-19用户批准）**：升级预览后返回、奖励页切地图再返回、药水弹窗查看等，保留完整原件并标`presentation`，不给成功label，不冒称原生cancelled。仅在同一owner、原件完整、浏览前后真实PB1、全部Reads及完整目录逐项相等时折叠；比较只去掉各自已经验证的snapshot定位、sequence和观察时刻，不删除目录动作、operands、Referents、Read实例或公开文本。折叠后保留两侧真实观察及比较引用；需要声明跨Host一致时另交Managed严格比较，当前冻结不以该比较为前提。比较不等时列浏览种类、实际字段变化和次数，由用户决定例外或其它处理，不默默放过或长期不报原因地阻断。
+- **Human已解释副作用例外**：用户已批准自测10的8次原生卡牌奖励打开→Skip所造成的`native_relic_refresh_subscription: attached→absent`登记为既有`stop_relic_refresh`同类例外。仅实际同组surface及referent两个镜像字段变化、其余完整原件相同的精确span适用；保原件、变化和0成功label，`comparison.equal`仍为false，不视为纯浏览相等。需要跨Host声明时仍逐项比较真实两侧，例外登记不直接授予严格等价，也不因已解释副作用要求重录。这个来源处置不自动成为`reward.decline_group`或新Agent动作，在线P1仍按第6节单向合同；该能力的覆盖方式已获用户认可但明确延后，当前不新增Agent动作。用户于2026-10-19明确认可覆盖方式 `reward.freeze_card_group(group)`：内部执行原生打开→Skip，保留该组稍后领取能力，仅在刷新订阅attached且普通Skip合格时提供，每组最多一次，保持P1单向。该语义与此前规划的stop_relic_refresh属于同一效果，不另起协议链；名称和正式动作仍留待后续版本确定。用户明确当前不急，可延后或仅登记；本版不新增在线动作，不将8次例外转换为成功label，真实严格差异保留。现有证据证明原生操作差异，未证明实战战略收益。
+- **非战斗用药执行范围（2026-10-19用户批准）**：原件明确声明`potion_belt_non_combat_use`时，共享核心可沿同一完整S的persistent药水公开entity_id和实际A(S)将无目标原生use解释为既有`potion.use`。保留真实shop等scene/context，不冒称combat，不从H补药水，不造BoundAction；其它动作或未声明scope不借此放行。此限定扩展与战斗用药排队时点差异分开，用户已停止的B仍停止。原五次用药的重新派生只解释原字节，不回填旧原件或授严格重放通过。
+- **非战斗丢药共同边界（r1.4，2026-10-19 用户批准）**：两Host在支持的非战斗基础页面提供当前原生药水带的独立`potion.discard`，完整S、全部Reads和页面其他动作仍属于同一决策。Reference可将仅含不可用Use、可用Discard和Close的纯药水导航弹窗折叠到该基础页面，但须在同一次同步采集中重新读取被遮页面的完整事实及动作绑定；原始popup的完整PB另存于同一原件的`raw_native_navigation_basis`，不从邻近帧或H补事实。当前限定基础页面为event_option、event_dialogue、map_navigation、rest_site、shop_room、shop_inventory、treasure_room、reward_claim、card_reward_selection，且不是战斗context；尚不能证明纯导航的popup保留原页，不折叠。实际丢弃使用已有原生Discard入口，原生slot、资格、enabled holder及精确对象须在交付时重验；若先关闭其它纯popup再交付基础动作，保留各步交付状态，部分交付不得当作未交付重发。Human的既有popup原生callback继续按原semantic_ui_accepted边界记录，导航本身不给成功label。旧原件与旧严格FAIL不回填，战斗用药时点和已停止的B不因此恢复；r1.4源码和实跑资格分别报告。
+
+- **成功选择与比较分开**：成功选择按完整执行S/A(S)、精确native key/全部operands和共享P1核派生；夹在其间的原生取消不成为成功选择，其前后连续性仍按实际原件核对，不假设取消无效果或跳接未知变化。原件→P1投影、同P1序列的Reference/Managed一致、原生操作重放是不同连接和声明，不能绑成同一个通过条件。用户已在2026-10-20明确延后Managed严格一致；它不再是本轮片段输出或冻结的前提。需要声明跨Host严格一致时，仍逐点及最后后继/终局比较，不降低该声明自身的标准。
+- **战斗用药沿同一执行路径**：执行目录复用Native Foundation的实际原生药水规则；`EnqueueManualUse`提前设置IsQueued不改变当前非空槽位的原生Discard执行含义。不得把公开按钮是否enabled的投递门移入A(S)，也不得反过来把执行目录当公开输入授权。PB1原目录和在线精确复验保持。 派生战斗观察中的`potion_states.can_use`也遵循同一串行执行态：同一完整S/A(S)明确含该瓶精确use时，可重表达原件因排队暂禁用的false；没有该证据不启用，不据后继或旧H补值。普通公开观察与输入门不改，原件字节保持。旧A(S)缺少某替代项的原件不回填，不因source修复自动变成新完整目录；是否可重新派生或限定使用按原件provides及消费者requires判断。
+- **整局与派生完整**：真实新局到自然终局保留原顺序、run/parent/save/continuity、起终和Close/pack内容身份。每个原生accepted有派生决策或显式issue；有明确原生解释、生命周期完整且前后连续性经实际核对的取消，是已解释处置，**本身不算gap，不阻止计入正式整局**，也不要求accepted数等于成功label数。全部成功选择须满足上述P1派生要求；unknown、必需信息缺失、绑定错或未解释连续性仍阻断派生/整局完整。原件完整、派生完整、跨Host严格、Human来源与研究准入分别报告；其它英文/同候选/自然终局及既定冻结要求不变，不新增门。
+- **旧数据与暂缺adapter**：adapter只可从已经完整保存的执行S/A(S)/取消处置原件重新派生，不先填PASS，不修改旧原件。旧06仍有13项binding和7项preframe真实历史缺失，不能用本次取消解释或新sourcefix回填；未知/漏录不能归入取消。自动敌人/效果仍只保留事实/结果，不制造玩家label，行政准备保留私有provenance。
+
+原Source4 E2/E3条文和旧FAIL保持原义；新路线按上述已批准解释。原件尽量保留比所选profile更多的事实，但未来profile仍按其requires重核。新增来源或profile不新增长期独立业务链。
+
+**历史查过（本次设计依据）**：以前遇到过：原生接受queued输入时，H公开目录可能为空或与执行状态不同；见[rapid audit](../evidence/PR25_RAPID_INPUT_EXECUTION_AUDIT_2026-09-11.md)。当时怎么解决：[native-admission修复](../evidence/PR25_NATIVE_ADMISSION_REPAIR_2026-09-11.md)分存H/native input和BeforeActionExecuted的S/A(S)，按key/全部operands核对、公共action/native input互斥；[rc4原件报告](../evidence/PR25_RC4_FULL_RUN_HUMAN_PASS_2026-09-12.md)限定两自然败局524/524、47次rapid handoff。此次用不用、为什么：恢复该原生执行接缝和精确身份约束来服务P1连接⑤⑥。此前10-19最小方案把派生决策时点固定为H，并绕过旧执行捕获，误把“不能拿S回填H”扩大成“不能按S派生”；工程05因此没有完整派生轨迹，不能归因于玩家连点或历史方案无效。当前仍须补P1完整PB1/all Reads/共享核接线并在新原件实测，不转移rc4资格。
+
+**原生取消的历史依据与本次状态（2026-10-19用户明确批准）**：[09-13原报告](../evidence/B_PIPELINE_FIRST_HUMAN_UPLOAD_2026-09-13.md)是413 accepted、412 canonical、1次执行前PlayCard原生取消，0真实failure/unknown且真实新局→自然败局，证明“有解释取消不必等于整局缺口”。[09-17原报告](../evidence/CURATION_CONTINUOUS_ACCEPTANCE_2026-09-17.md)的17 accepted/15 canonical/2取消是abandoned片段，支持处置机制，不能称自然完整局。此次复用该解释并保持新P1严格比较；新07ac9351 sourcefix已装bf31b3b8但尚未冷加载，root正实现⑥分流，未有新strict PASS。EndTurn9/map4实现继续修复后装新候选，再由用户正常快速连点短测；这里不把计划写成结果。
+
+**当前完整性检测四项：实现、缺口与known risk（本次语义同步基线c41e4a57；旧H/新S来源实况与取消分流资格分开，不是完整性保证）**
+
+| 用户要求 | 当前实际实现／定位 | 缺失、能抓什么与抓不到什么 |
+|---|---|---|
+| (a) 录制器看到但不支持的动作写issue | **部分已实现**：[RecorderRuntime.P1](../../components/annotator/src/STS2HumanAnnotator.Mod/RecorderRuntime.P1.cs)对已进入accepted捕获的mapping不可用、PB不完整、bound action未证成写`P1Issue`；[converter](../../tools/p1-native-to-p1.mjs)将未映射/歧义/缺continuation列issue | 旧入口分流/selector修复已有源码，但本次取消处置分流尚未新strict验收；尚不能称任何看到的动作都正确分流；没有进入捕获接缝的选择不会凭空产生issue。新审查修复另按实际commit/安装验收。 |
+| (b) 每个原生accepted必须有派生决策或issue（用户改为执行边界计数） | **完整对账/取消分流仍待实测**：[Store](../../components/annotator/src/STS2HumanAnnotator.Core/P1NativeRecording.cs)已有已捕获accepted/terminal/issue计数；[converter](../../tools/p1-native-to-p1.mjs)已有未匹配/缺terminal/后继的issue，执行边界producer/匹配已有源码，当前⑥取消分流和连续性严格核对尚未新实测通过 | 每条accepted核到成功派生或明确issue；原生解释取消保留处置而不造成功label，无unknown/缺失/绑定错及连续性实际核对后才可作为已解释取消。当前完整规则尚不能声称满足。此项替代先前“全部waiting边界计数”的要求，不靠轮询每个等待时刻扩一套采集器；从未进入捕获的accepted仍是known risk。 |
+| (c) 相邻决策间变化须由已录决策和自动效果解释 | **部分检查，未完整实现**：[bundle reader](../../tools/p1-native-bundle.mjs)核原件/顺序/关联，[converter](../../tools/p1-native-to-p1.mjs)沿原lifecycle和真实后继共享核派生；原生自动效果保持事实 | 没有独立穷尽每次状态变化的因果/自动效果核算。遗漏决策若改变状态可能在(d)暴露；净零或未改变比较字段的漏录未必被发现，不能称状态变化都已解释。 |
+| (d) Managed严格重放对不上 | **已实现于可派生轨迹**：[replay agent](../../components/policy-runtime/examples/p1/replay_agent.mjs)沿既有严格comparator比每点和最后后继/终局并报告divergence；native02有效前缀5动作/最后后继实际equal | 只核声明轨迹/起点/公开语义；native02会话Close失败，前缀通过不代完整包或整局。尚无最终候选正式英文整局PASS。重放不能证明所有从未记录、或净效果不显的选择都被捕获。 |
+
+**静默漏录known risk**：当前(a)只检查录制器已经看到的事实；新(b)accepted完整对账与(c)状态解释未形成独立全量覆盖，(d)有助发现可见分叉但不能完全兜住未捕获选择。因此“录制器根本没看到的选择”仍可能漏掉，不宣称机器已能完整检测。目标requires不因此减掉；按当前真实范围报告，出现原件gap立即说明何步缺什么，由用户决定继续/重开，工程同步修原owner出新candidate。每局约30分钟，无需中途实时盯；结束立即转换核对，首局先核已保存开头。gap原件保留且不计≥3整局；gap之前片段按原件→P1及当前用途requires核定，跨Host机制覆盖仍须另有同条件实际配对证据，不由片段输出授予。
 
 ## 5. 观察（`sts2.p1/observation-1`）
 
@@ -101,6 +142,65 @@ Managed：sts2.dll 无界面宿主 + 投影                 ┴→ 两端共用�
 **两端呈现差异的统一**：奖励页全部领完后，Managed 给单独的"前往地图"页，Reference 停在空奖励页给"继续"——两者都映射为 `reward.proceed`；当前仍由chooser选择，不因单例自行执行。`reward.leave` 之后若出现只有一个"前往地图"输入的完成页，把它作为同一意图的折叠步骤执行。继续类动作（`reward.proceed/leave`、`rest.proceed`）不带主语（原生房间引用不含决策信息）。
 
 **奖励组承诺**：组身份来自 Host 的 `group_id`，从不用标签、位置或观察 ID 代替；Host 不提供时该页标为不完整。放弃后同一组在本奖励页内不再提供，并公开在 `commitments`；P1提交关闭承诺前已执行合格原生Skip并核后件；原生组的最终处置仍由原owner退出处理，不用本地ledger伪造OnSkipped。
+
+### 6.1 原生确认事务的离线D监督（2026-10-20用户批准）
+
+线上r1.4目录仍逐张追加、无replace/deselect。另行显式选择的离线投影
+`native-selector-finalized-d-1`按同一次原生手牌选择事务的最终确认产生D类监督，
+不冒用E3相邻同卡撤销规则，不声称Human第一次就在初始状态选择了最终牌。
+原native accepted、点击时H、全部S/PB/Reads、生命周期和旧派生保持原样。
+
+首版只处理原生`NPlayerHand.SelectCards`的`simple_select`、min=max=1、
+手动确认机制。必须有同session/timeline/run、准确owner/parent/factory、初始
+完整空选S和有限合法目录；每个原始输入都在自身目录中，全部编辑回调正常完成，
+每步真实selected set变化准确。确认前所有原件的世界/上下文、候选及公开详情
+必须相等，只可规范化已核的选择装饰、相应有限controls和原生移动holder引起的
+展示顺序。其它Read展示上下文、升级预览、游戏状态、目录元数据和新信息不删除。
+原生实现已核：编辑只改暂选容器，确认才完成await；同一未中断factory await及
+精确terminal callback证明事务，旧原件没有独立request-id时不捏造该字段。
+terminal必须结束当前事务，不能仅按同owner/parent合并后续选择请求。
+
+简单换牌在自己完整空选原件上新增独立finalized choose监督记录，原点击只记
+`selector_transaction_context`、0label；真实confirm继续用自己原S的finish。
+完整撤回后重选，优先最近的真实空选边界：净零前缀0label，后半段若是一次真实
+select→confirm则保留其准确标签，不把它挪回最早空选。多选、自动确认、顺序相关、
+外部状态/必要新信息变化、缺资料、换owner或unknown不套用本解释。
+
+确认的真实后件必须完整保留；完整PB但原生settling照实保留，不能伪造成decision。
+只有原转换器看到后来的真实完整边界才能作为P1 successor。每个D点携带
+projection version、原件跨度、anchor/confirm/后件引用、原始输入处置与用途；这些
+只进provenance/Target，不进modelView或模型Input。synthetic D标签与native
+accepted计数分开。既有分段器继续隔离其它gap，next只连同一段，end只取同分支
+真实终局；整局投影complete不等于lossless原生轨迹或Host一致。
+
+转换入口为`tools/p1-native-to-p1.mjs --selector-transactions native-selector-finalized-d-1`，
+必须另写新产物；默认逐输入解释、已有固定输入和权重不静默改变。数据消费者须
+显式选用途/投影及固定SHA，同一原始选择的旧新解释不能重复计样，研究准入和训练
+仍由其owner确定。本条为已批准的解释合同，实际验证层级见当前交付，不能由条文
+推定已安装、已入库或已训练。
+
+### 6.2 同原局事实时间线与独立目标准入B*（2026-10-20用户批准）
+
+新增显式opt-in `native-timeline-targets-1`，输出`sts2.p1/native-targets-1`，
+复用原件reader/同一共享核/现分段器已资格普通边，不改线上目录或旧默认/03/T0固定输入。
+此格式分别保存同session/timeline/run的原事件顺序、原件引用、具名非P1奖励真实效果、
+完整目录缺失或unknown等span，以及合格完整模型观察的监督点和显式边。
+原件时间线不断不等于完整P1动作链，不为效果span伪造动作或把缺失资料补成普通Input。
+
+N按自身完整PB/全部必需公开资料、完整合法目录、准确唯一chosen及完成事实准入；
+无承诺的重启边界是旧片段用途约束，不能无理由挡住本用途的局部N。
+部分资料只保存为原件context/ref，不成为该完整InputSpec的普通模型点。
+next按相邻点的边准入：既有已资格P1相邻pair继续用；新保留N形成的新邻接须有
+准确同一完整原生后继证明，否则显式false。所有边再检查其前后之间/重叠的未表达效果、
+缺资料、unknown和pending span，尤其不能只把异常点N/next=false而误连前一完整点到后一完整点。
+未证明的边保留拒绝原因/跨度/原件前后引用，不因append点就置next=true。
+end另按同分支真实自然终局和原journal核，不要求整条next连续；恢复/放弃/不明终局不得
+靠同seed、晚到结果或其它branch补标签。完整原生事件与P1动作完整性分别报告。
+
+M-std本批只消费显式支持的新格式中完整合法的N点；timeline/effects/partial不喂成普通输入，
+未知projection/schema拒绝。未来memory如何消费非动作/缺失、reset/history仍由其InputSpec与
+训练/推理一致性另验，本次未授跨缺失记忆。原件完整性、P1动作链、N/next/end数量和终局来源
+分别给实证；新产物/用途和谱系具名，不静默改变旧实验或双计旧新解释同一选择。
 
 ## 7. 结果与失败（`sts2.p1/result-1`）
 
@@ -159,7 +259,7 @@ frame/Consume/ACK、dispatch/Receipt/Result 关联及封存清单。离线按
 当前人工选择器经 Runtime 产品路径执行时使用上面的 Agent-session 目录；来源标识与
 记录grammar分开。简洁首页的操作者同时看游戏画面，不能声称只消费P1观察。
 
-### 独立环境来源与 Source4 离线解释
+### 独立环境来源与保留的 Source4 离线解释
 
 通用环境采集不限 Human/鼠标或某一格式；原件能按明确合同转换为所需数据/轨迹即可。
 Source4仍由既有Recorder/Store/packer保存独立原件，经Evidence v4 reader再进入共享SDK
@@ -177,6 +277,10 @@ Human证明或运行验收。当前生产接缝及真实整局门见[采集调�
 启动waiting的唯一有界离线解释例外见[第17节E2](#17-登记的协议例外必须经用户审核才能新增)；原缺失仍保留，批准/登记不证明真实预检已通过。
 
 ## 11. 两端等价怎样检查
+
+**声明范围（2026-10-19用户明确）**：同起点同P1操作序列的Host conformance、声明原生操作的Host一致、原件→P1投影Π正确和P1功能覆盖分别验证。原生Human轨迹含当前P1未表达的有状态副作用时，删除该输入后重放不同不直接证明Managed有缺陷。转换产物携带`projection_claims`中的假设和精确例外；`complete`/原件完整不表示无损P1。冻结前B只在已登记例外段补放原生实际输入，仍比较该段完整前/中/后及其余P1点，结果注明混合路径；不直接称纯P1全轨或全原生等价。D允许登记差异后继续的口径仍须用户另批。A独立原生重放与C下一版`reward.freeze_card_group`仅登记冻结后，不新增当前在线动作。
+
+本例index56是`reward.leave_remaining`之前的原生打开→Skip片段，不是已执行P1 Skip后的差异。`reward.decline_group`既有实现本来打开→原生Skip并追加拒领承诺；它不等于保留后续领取能力的原生浏览返回。Reference外层不打开的Skip/Proceed是离开整个奖励页，不存在不打开、跳过该组又留同页的当前API。
 
 正式比较固定角色/难度/语言、种子与候选tuple，保留Reference真实公开选择，再在Managed
 按完整公开身份/关系重放。不能用两个Host各自随机跑到死亡代替配对重放。
@@ -258,7 +362,7 @@ r1.2 原始运行、帧和既有结论保留。用 r1.3 回放旧轨迹时必须
 - **显示文字两端不同**：Managed 卡牌/事件描述是模板加数值（如 `Gain {MaxHp} Max HP.` + variables），Reference 是解析后的中文；Managed 事件选项不带卡牌预览提示；Managed 附魔描述带一个未解析的图标路径。decision 口径不受影响，但模型看到的文字不同。
 - **Managed 多选牌组选择会发出 `preview` 动词**，而 snapshot-1 合同没有这个动词（严格解码会拒绝）。P1 运行里没遇到；是 Managed 投影已有的潜在缺陷。
 - **地图**：只有地图页给完整地图，其他页面为 unsupported。
-- **记录器**：现在是协议来源记录（P1 选择器/外部 Agent 的意图与环境字节）。游戏内原生物理操作的见证（Annotator V4）不在本轮范围。
+- **记录器（历史范围更正，2026-10-19）**：早期本节仅指P1选择器/外部Agent协议记录，原“原生见证不在本轮范围”描述当时边界。当前范围已包含Annotator P1-native真实原生accepted动作、H来源与执行S/A(S)的完整PB1，原件requires见§4.1；Source4物理raw分类不再是P1必经门。实现/缺口按§4.1状态表，不把定义已批当实际已通过。
 - **人工选择器**未在真实游戏里由真人跑过；执行链路与外部 Agent 相同。
 - **执行路径**：`sts2-p1 run` 直接用 Host 驱动协议，不经过 Policy Runtime 的完整产品路径（workbench/队列）；Codex 的 `p1-ordinary-combat-r1` 是另一个 profile，二者关系待整合。
 - 不声明：胜率或策略强度、第二幕以后的覆盖、胜利终局、Reference 发布级资格、Managed 规则等价资格、训练数据可用性。
@@ -290,10 +394,13 @@ r1.2 原始运行、帧和既有结论保留。用 r1.3 回放旧轨迹时必须
 
 ## 17. 登记的协议例外（必须经用户审核才能新增）
 
+**2026-10-19适用性说明**：E2/E3以下登记仍是原Source4格式的已批准解释，原条文和旧失败证据不改。用户已批准P1复用成熟Human accepted动作来源并在执行边界S/A(S)派生，H仅来源，Source4主要服务P2/后续，退出P1当前强制主线，不再新增其取消预检/投入。方向、开录门以及[冻结定义4.1/4.2](../plans/p1-prefreeze-2026-10-18/SCOPE_v0.3.zh-CN.md)的新路线原件/派生整局完整及E2/E3具体适用性均已用户批准：行政准备不作标签；未提交拿牌取消没有accepted决策/label，无需先证成Source4 raw净零；真实accepted选择/效果/unknown必须保留，执行边界S缺完整PB1/Read/catalog或native key/operands不能精确匹配仍不合格。此说明不修改Agent前进目录或旧report-v3完整性含义。
+
 | 编号 | 例外 | 原因 | 批准 |
 | --- | --- | --- | --- |
 | E1 | P1 不提供原生"打开卡牌奖励后跳过，从而冻结候选、不受之后遗物升级影响"的输入。奖励页按普通方式发布。 | 这是导航技巧，不是新决策；提供它会把浏览重新带回单向协议。 | 用户，2026-10-16 |
 | E2 | Source4离线解释可将同run原生setup→Launch见证起、首份完整可决策观察前的有界settling段列为非决策启动waiting；不是Agent观察。 | 原始失败/缺失保留且不补齐；不称NativeLogical前缀完整；first decision起严格完整门不变。源码已root独审、22 focused PASS；真实新预检未通过。 | 用户，2026-10-18，附下列条件 |
+| E3 | Source4离线解释中，同一原生selector owner/同一原始卡实例的相邻select→deselect，经完整原件证明恢复原状且无效果，可合列context_only；无P1 choice/训练label。 | 限定完整、已接受且净状态不变的局部撤销；Agent目录仍append-only，不新增deselect。批准不等于实现、反例验收或真实预检通过。 | 用户，2026-10-18，附下列条件 |
 
 E2的全部条件：
 
@@ -304,6 +411,15 @@ E2的全部条件：
 - 每局报告单列该段帧数与时长，不计入决策数；first decision起的完整性及full strict要求不变。
 - 转换规则由原Source4→P1 owner实现并用上述反例验收；源码已root独审、22 focused PASS，仍不代表真实新预检通过。
 
+E3的全部条件：
+
+- 仅同一原始selector owner、同一原始card实例的原生相邻select→deselect；同runtime/continuity或同typed卡名不够。selected set与所有公开/游戏事实必须回到该对操作前状态，exact selector schema仅可在其已声明的selection decoration上变化。
+- 两次操作原始顺序、完整before/after公共basis及全部advertised Reads、native outcome/已接受的known证明都保留；仅成功dispatch不代替原生接受证明。不产生Commit、卡/牌组、资源、RNG或其它游戏效果。
+- 转换器先暂缓输出首个select，待原始相邻pair分类后才决定是否输出；合格pair为context_only，不产生P1 choice或训练label，不得先产生标签再静默抹除。之后未撤销的选择按原前进语义处理。
+- missing basis/Read、unknown、换owner/换card、非相邻/复杂交错、preview取消或任何无法证明净效果为零的情况仍unresolved；不重试、不用后来事实回填缺失原件，不转为一般selector事务支持。
+- Agent仍使用原append-only目录，不增加deselect。SDK共享matcher/Source4原golden路线由原owner实现；同对象净零阳性及不同对象/owner、状态改变、缺basis/Read、unknown、真实提交效果等反例必须验收，随后非作者复核和新真实native记录。
+- 本次仅登记用户已批准的限定离线解释；实现/负例/新预检尚待验，不追改原native04的native_capture_failed、unknown或整体FAIL，不授训练或整局资格。
+
 对照范围与判据：
 - STS2原生事实是真相，Reference是首选对照但其投影也需审查；在Managed重放Reference原件并比较决策前缀和终局，按原件定位分叉owner。
 - Managed 只需在 P1 语境里绝大多数情况与原版一致，功能齐全、逻辑相同；不要求逐字节相同。
@@ -313,7 +429,7 @@ E2的全部条件：
 **当前差异位置、拥有层、源码修复及尚未实际复验项**见
 [A线根因表](../plans/p1-prefreeze-2026-10-18/MANAGED_DIFFERENCES.md)；冻结候选、
 逐幕覆盖和数据/产品/K剩余门见[范围书v0.3](../plans/p1-prefreeze-2026-10-18/SCOPE_v0.3.zh-CN.md)。
-新Mod/英文/采集器预检、Source4短段与真实整局complete、严格完整终局对照、Workbench/R20
+新P1-native核心/短段的原件完整、共享核离线与Managed短重放开录门（用户已确定，实际待验）、严格完整终局对照、Workbench/R20
 及K3/K4仍未齐；登记例外只由第17节拥有。当前任务由[第16轮入口](../plans/p1-prefreeze-2026-10-18/README.md)
 派发，不以旧CURRENT或下面旧T编号恢复历史队列。
 

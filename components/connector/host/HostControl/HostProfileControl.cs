@@ -11,7 +11,7 @@ internal sealed record HostNativeProfileBinding(bool Verified, string UserDataRo
 
 // The same existing Host-control process configuration binds speed and isolated
 // native-UI seed preparation. Neither permission depends on the speed value.
-internal static class HostProfileControl
+internal static partial class HostProfileControl
 {
     internal static string? ProfileRoot { get; private set; }
     internal static string? GenerationId { get; private set; }
@@ -19,11 +19,12 @@ internal static class HostProfileControl
     private static bool _configured;
     internal static bool Enabled => ProfileRoot != null;
 
-    internal static void Configure(string? profileRoot, string? generation, string? userDataRoot)
+    internal static void Configure(string? profileRoot, string? generation, string? userDataRoot, string? baselineRecipe = null)
     {
         if (_configured)
         {
-            if (profileRoot != ProfileRoot || generation != GenerationId || userDataRoot != _expectedUserDataRoot)
+            if (profileRoot != ProfileRoot || generation != GenerationId || userDataRoot != _expectedUserDataRoot
+                || baselineRecipe != BaselineRecipe)
                 throw new InvalidOperationException("Conflicting Host profile process configuration.");
             return;
         }
@@ -38,6 +39,8 @@ internal static class HostProfileControl
             GenerationId = generation;
             _expectedUserDataRoot = userDataRoot;
         }
+        if (baselineRecipe != null && !Enabled) throw new InvalidOperationException("Native baseline requires a verified isolated Host profile.");
+        _baseline = new(ResolveBaselineRecipe(baselineRecipe));
         _configured = true;
     }
 

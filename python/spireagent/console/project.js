@@ -4062,30 +4062,37 @@ window.SpireProject = (() => {
       ...Object.entries(sourceLabels)], drafts.get("native-recording-kind") || "");
     const actor = input(form, "记录内操作者代号（可自定；字母、数字、_、-、.）", "native-recording-actor", drafts.get("native-recording-actor") || "");
     actor.maxLength = 128;
-    const declared = () => kind.value && /^[A-Za-z0-9._-]{1,128}$/.test(actor.value)
-      && ![".", ".."].includes(actor.value)
+    const p1Profile = "human-p1-native-decisions-1";
+    const declared = () => kind.value && (profile.value === p1Profile
+      ? kind.value !== "agent_protocol" : /^[A-Za-z0-9._-]{1,128}$/.test(actor.value)
+        && ![".", ".."].includes(actor.value))
       && (!view.model_recovery_required || kind.value === "agent_protocol");
     const profile = select(form, "录制格式", "native-recording-profile", [
-      ["native-logical-source-v3", "Source3（默认）"], ["native-logical-source-v4", "Source4（保留 P1 公共基底）"]],
-      ["native-logical-source-v3", "native-logical-source-v4"].includes(status.capture_profile_id)
+      [p1Profile, "P1 原生决策"], ["native-logical-source-v3", "Source3"], ["native-logical-source-v4", "Source4（保留 P1 公共基底）"]],
+      [p1Profile, "native-logical-source-v3", "native-logical-source-v4"].includes(status.capture_profile_id)
         && !["ready", "closed"].includes(status.recording_lifecycle) ? status.capture_profile_id
-        : drafts.get("native-recording-profile") || "native-logical-source-v3");
+        : drafts.get("native-recording-profile") || p1Profile);
     profile.disabled = !["ready", "closed"].includes(status.recording_lifecycle);
-    const sourceRecording = ["native-logical-source-v3", "native-logical-source-v4"].includes(status.capture_profile_id);
+    const p1Recording = status.capture_profile_id === p1Profile;
+    const sourceRecording = [p1Profile, "native-logical-source-v3", "native-logical-source-v4"].includes(status.capture_profile_id);
     const fresh = () => ["ready", "closed"].includes(status.recording_lifecycle)
       && (!view.recovery_required || (status.recording_lifecycle === "closed" && status.closeout_status === "closed"));
     const eligible = action => !view.command_pending && !!view.csrf_token && (action === "close" || confirmationStorage) && (action === "start_new_session" ? fresh() && declared()
-      : action === "change_source" ? sourceRecording && status.recording_lifecycle === "paused" && !view.recovery_required && declared()
+      : action === "change_source" ? sourceRecording && !p1Recording && status.recording_lifecycle === "paused" && !view.recovery_required && declared()
+      : action === "export_p1_native_prefix" ? p1Recording && ["recording", "paused"].includes(status.recording_lifecycle) && !view.recovery_required
       : action === "close" ? sourceRecording && ["recording", "paused"].includes(status.recording_lifecycle)
       : sourceRecording && !view.recovery_required && status.recording_lifecycle === (action === "pause" ? "recording" : "paused"));
     const buttons = [];
-    for (const [action, label] of [["start_new_session", "开始录制"], ["pause", "暂停"], ["resume", "继续"], ["change_source", "更改来源"], ["close", "结束并封存"]]) {
+    const advanced = el("details", null, "technical");
+    advanced.append(el("summary", "高级：暂停采集、继续与保存片段"));
+    advanced.append(el("p", "暂停采集只影响记录，不会暂停游戏。", "small muted"));
+    for (const [action, label] of [["start_new_session", "开始录制"], ["pause", "暂停采集"], ["resume", "继续采集"], ["change_source", "更改来源"], ["export_p1_native_prefix", "保存当前前缀"], ["close", "结束并封存"]]) {
       const button = command(ctx, "native-recording-" + action, label, async () => {
         if (!eligible(action)) return;
         const declaration = ["start_new_session", "change_source"].includes(action);
         const body = {kind: action, runtime_instance_id: status.runtime_instance_id,
           recording_session_id: status.recording_session_id, source_segment_id: status.source?.segment_id ?? null,
-          source_kind: declaration ? kind.value : null, actor_id: declaration ? actor.value : null,
+          source_kind: declaration ? kind.value : null, actor_id: declaration && profile.value !== p1Profile ? actor.value : null,
           command_id: crypto.randomUUID()};
         if (action === "start_new_session" && profile.value !== "native-logical-source-v3")
           body.capture_profile_id = profile.value;
@@ -4146,16 +4153,23 @@ window.SpireProject = (() => {
 
       }, {disabled: () => !eligible(action)});
       button.disabled = !eligible(action);
-      buttons.push([action, button]); form.append(button);
+      buttons.push([action, button]);
+      (["start_new_session", "close"].includes(action) ? form : advanced).append(button);
     }
     const refreshButtons = () => {
+      actor.disabled = profile.value === p1Profile;
+      for (const option of kind.children) option.disabled = profile.value === p1Profile && option.value === "agent_protocol";
       drafts.set("native-recording-kind", kind.value); drafts.set("native-recording-actor", actor.value);
       drafts.set("native-recording-profile", profile.value);
       for (const [action, button] of buttons) button.disabled = !eligible(action);
     };
     kind.onchange = refreshButtons; actor.oninput = refreshButtons; profile.onchange = refreshButtons;
+    refreshButtons();
+    form.append(advanced);
     box.append(form);
     box.append(command(ctx, "refresh-native-recording", "刷新录制状态", async () => { await reload(ctx); }, {type:"secondary"}));
+    if (view.last_result?.p1_native_prefix)
+      box.append(technical(view.last_result.p1_native_prefix, "查看已保存前缀与校验值"));
     box.append(technical({connection:view.connection, profile:status.capture_profile_id,
       session_id:status.recording_session_id, health:status.health, non_claims:status.non_claims,
       unconfirmed:view.unconfirmed, previous_unconfirmed:[...(view.previous_unconfirmed || []), ...(browserUnknown?.previous_unconfirmed || [])]}, "查看录制诊断"));
@@ -4179,6 +4193,11 @@ window.SpireProject = (() => {
     } else if (["failed", "interrupted_unknown", "publication_unknown"].includes(importStatus.status)) {
       section.append(el("p", "上一次导入未确认完成；不会自动重试。请查看状态并核对后再明确操作。", "small muted"));
     }
+    if (importStatus.recording_type === "p1_native" && ["import", "import-bundle"].includes(importStatus.action)
+        && ["publication_unknown", "interrupted_unknown", "published_index_unavailable"].includes(importStatus.status))
+      section.append(command(ctx, "reconcile-p1-import", "核对原导入结果", async () => {
+        await request(ctx, "/api/local-recordings/import/reconcile", {}, localCsrfToken); await reload(ctx);
+      }));
     if (importStatus.error_code) section.append(technical(safeImportStatus, "查看导入状态"));
     section.append(command(ctx, "refresh-local-import-status", "刷新导入状态", async () => {
       await reload(ctx);
@@ -4221,7 +4240,8 @@ window.SpireProject = (() => {
       String(item.session_id || "未知").slice(0, 24),
       String(item.timeline_id || "未知").slice(0, 24),
       item.closed_at || item.created_at || "未知",
-      item.recording_type === "source3" ? "Source 3 已结束，声明来源保留，内容待验证" : "录制已结束，内容待验证",
+      item.recording_type === "p1_native" ? `P1 已结束 · ${item.declared_origin} · 内容待验证`
+        : item.recording_type === "source3" ? "Source 3 已结束，声明来源保留，内容待验证" : "录制已结束，内容待验证",
     ]);
     section.append(table(["录制", "时间线", "结束时间", "状态"], rows));
     const candidates = (data.candidates || []).filter(item =>
@@ -4229,27 +4249,35 @@ window.SpireProject = (() => {
     if (candidates.length) {
       const selection = select(section, "要导入的录制", "local-recording-selection",
         [["", "请选择一条录制"], ...candidates.map(item => [item.candidate_id,
-          `${item.closed_at || item.created_at || "结束时间未知"} · ${item.session_id}${item.recording_type === "source3" ? " · Source 3" : ""}`])], "");
+          `${item.closed_at || item.created_at || "结束时间未知"} · ${item.session_id}${item.recording_type === "p1_native" ? " · P1" : item.recording_type === "source3" ? " · Source 3" : ""}`])], "");
       const checkbox = input(section, "我确认所选录制来自真人操作", "local-recording-attestation", false, "checkbox");
       const sourceNote = el("p", "请选择录制；旧 Human 录制需要独立声明。", "small muted");
       section.append(sourceNote);
       const selected = () => candidates.find(item => item.candidate_id === selection.value);
+      const needsHuman = () => selected()?.recording_type === "legacy_human";
+      const allowsHuman = () => needsHuman() || (selected()?.recording_type === "p1_native"
+        && selected().declared_origin === "declared_human");
       const canImport = () => !!selected()
-        && (selected().recording_type === "source3" ? selected().import_supported === true : checkbox.checked)
+        && (selected().recording_type === "legacy_human" || selected().import_supported === true)
+        && (!needsHuman() || checkbox.checked)
         && importStatus.status !== "pending" && !!localCsrfToken;
       const button = command(ctx, "import-local-recording", "验证并导入本机", async () => {
         if (!canImport()) return;
         await request(ctx, "/api/local-recordings/import", {
           candidate_id: selection.value,
-          human_origin_attested: selected().recording_type !== "source3",
+          human_origin_attested: allowsHuman() && checkbox.checked,
         }, localCsrfToken);
         await reload(ctx);
       }, {disabled:true});
       selection.onchange = () => {
         checkbox.checked = false;
         const source3 = selected()?.recording_type === "source3";
-        checkbox.disabled = source3 || !selected();
-        sourceNote.textContent = source3
+        checkbox.disabled = !allowsHuman() || !selected();
+        sourceNote.textContent = selected()?.recording_type === "p1_native"
+          ? selected().import_supported === true
+            ? `保留 P1 原件与来源声明 ${selected().declared_origin}；导入不自动准入训练。${allowsHuman() ? "真人来源声明可自愿确认；仅保全可直接导入。" : ""}`
+            : `P1 导入不可用：${selected().import_reason || "固定组件尚未声明支持"}`
+          : source3
           ? selected().import_supported === true
             ? "Source 3 保留原始来源声明；导入不声明或验证 Human 起源，也不创建训练数据集。"
             : `Source 3 导入不可用：${selected().import_reason || "来源组件尚未声明支持"}`
@@ -5432,6 +5460,83 @@ window.SpireProject = (() => {
         : value.kind === "evidence" && value.parameters?.schema === "stpd/local-verified-bundle-v1"
           ? "录制来源" : show(value.kind);
       box.append(panel(heading, `本机对象 · ${value.artifact_id.slice(0, 16)}`));
+      if (value.kind === "evidence" && value.parameters?.schema === "sts2.human-annotator/p1-native-session-bundle-1") {
+        const p1 = panel("P1 录制原件", "原件已验证保存；来源是声明，训练用途仍需单独登记。可重复派生，原件不会改写。");
+        p1.append(fields([["会话", value.parameters.session_id], ["时间线", value.parameters.timeline_id],
+          ["来源声明", value.parameters.declared_origin], ["本机归档", value.payloads?.some(p => p.role === "archive") ? "已保存" : "未知"],
+          ["备份记录", value.parents?.some(p => p.role === "preservation") ? "有精确保全父记录；远端回读见该记录" : "尚未关联保全记录"]]));
+        const run = input(p1, "录制内对局编号", "p1-run-id", "run-0001");
+        const projection = select(p1, "派生方式", "p1-projection", [
+          ["native-timeline-targets-1", "时间线与监督目标（B*）"],
+          ["native-selector-finalized-d-1", "已确认选择（03）"], ["native-input-v1", "原始输入解释"]], "native-timeline-targets-1");
+        const operation = await request(ctx, "/api/local-recordings/import/status");
+        if (operation.action === "derive" && operation.source_artifact_id === value.artifact_id) {
+          p1.append(el("p", `派生状态：${show(operation.status)}`, "small muted"));
+          if (operation.artifact_id) p1.append(link("查看派生资料", route("local-workspace", operation.artifact_id)));
+          if (["publication_unknown", "interrupted_unknown", "published_index_unavailable"].includes(operation.status))
+            p1.append(command(ctx, "reconcile-p1-derivation", "核对原派生结果", async () => {
+              await request(ctx, "/api/local-recordings/derive/reconcile", {}, operation.csrf_token); await reload(ctx);
+            }));
+          if (operation.error_code) p1.append(technical({error_code:operation.error_code}, "查看派生错误"));
+        }
+        p1.append(command(ctx, "derive-p1-recording", "生成或复用派生资料", async () => {
+          await request(ctx, "/api/local-recordings/derive", {source_artifact_id:value.artifact_id,
+            projection_id:projection.value, run_id:run.value}, operation.csrf_token); await reload(ctx);
+        }, {disabled:operation.status === "pending" || ["publication_unknown", "interrupted_unknown", "published_index_unavailable"].includes(operation.status)}));
+        p1.append(command(ctx, "refresh-p1-derivation", "刷新派生状态", async () => { await reload(ctx); }, {type:"secondary"}));
+        const storage = el("details");
+        storage.append(el("summary", "保全与按 ID 取回"));
+        const peerType = select(storage, "保存位置", "p1-storage-peer-type", [
+          ["local", "本机备用 Store"], ["s3", "已配置的云 Store"]], "local");
+        const peerPath = input(storage, "本机备用目录", "p1-storage-peer-directory", "");
+        const storageBusy = ["pending", "publication_unknown", "interrupted_unknown"].includes(operation.status);
+        for (const [action, label] of [["preserve", "保全并完整回读"], ["restore", "按 ID 取回"], ["verify", "核验备用原件"]])
+          storage.append(command(ctx, `p1-storage-${action}`, label, async () => {
+            const peer = peerType.value === "local" ? {kind:"local", directory:peerPath.value}
+              : (await request(ctx, "/api/local-recordings/storage/peer")).peer;
+            if (!peer || (peer.kind === "local" && !peer.directory)) throw new Error("storage_peer_required");
+            await request(ctx, "/api/local-recordings/storage", {action, artifact_id:value.artifact_id, peer}, operation.csrf_token);
+            await reload(ctx);
+          }, {disabled:storageBusy}));
+        if (operation.action === "storage") {
+          storage.append(el("p", `存储操作：${show(operation.status)}`, "small muted"));
+          if (["publication_unknown", "interrupted_unknown"].includes(operation.status))
+            storage.append(command(ctx, "p1-storage-reconcile", "核对原存储操作", async () => {
+              await request(ctx, "/api/local-recordings/storage/reconcile", {}, operation.csrf_token); await reload(ctx);
+            }));
+          if (operation.error_code) storage.append(technical({error_code:operation.error_code}, "查看存储错误"));
+        }
+        const maintenance = operation.maintenance || {};
+        storage.append(el("p", `已封存录制后台维护：${maintenance.policy?.enabled === true ? "已启用" : "未启用"} · ${show(maintenance.status)}`, "small"));
+        for (const [enabled, label] of [[true, "维护今后封存的真人声明录制"], [false, "暂停后续维护"]])
+          storage.append(command(ctx, `p1-maintenance-${enabled ? "enable" : "disable"}`, label, async () => {
+            const peer = enabled ? (peerType.value === "local" ? (peerPath.value ? {kind:"local",directory:peerPath.value} : null)
+              : (await request(ctx, "/api/local-recordings/storage/peer")).peer) : maintenance.policy?.peer || null;
+            if (enabled && peerType.value === "s3" && !peer) throw new Error("storage_peer_required");
+            await request(ctx, "/api/local-recordings/maintenance", {enabled, peer, projection_id:"native-timeline-targets-1",
+              scope:enabled ? {from_now:true,declared_origins:["declared_human"]} : maintenance.policy?.scope || null}, operation.csrf_token);
+            await reload(ctx);
+          }));
+        const receipts = (operation.storage_receipts || []).filter(item=>item.artifact_id === value.artifact_id);
+        for (const item of receipts)
+          storage.append(el("p", `已完整回读：${item.storage_receipt.verified_at} · ${item.peer.kind} · ${item.storage_receipt.source_files} 个文件`, "small"));
+        storage.append(el("p", "回读记录代表当时的核验结果。此入口保留现有副本；热集周转由维护策略和消费者释放状态决定。", "small muted"));
+        p1.append(storage);
+        box.append(p1);
+      }
+      if (value.kind === "analysis" && ["sts2.p1/native-segments-1", "sts2.p1/native-targets-1"].includes(value.parameters?.schema)) {
+        const info = value.parameters, summary = info.summary || {};
+        const p1 = panel("P1 具名派生", "来自固定工具的离线解释。连续片段、有效选择和完整转移分开计数；尚未自动准入训练。");
+        p1.append(fields([["观察点", count(summary.observations)], ["有效 N", count(summary.candidate_N)],
+          ["完整转移", count(summary.next_edges)],
+          ["片段／原生跨度", count(summary.segments ?? summary.native_spans)],
+          ["时间线事件", count(summary.events)],
+          ["原件采集闭合", summary.whole_run_complete === true ? "是" : "否或未知"],
+          ["完整 P1 重放", info.projection_claims?.lossless_p1_trace === true ? "工具声明完整，资格另验" : "未成立"],
+          ["外部效果／例外", count(info.projection_claims?.exceptions?.length)]]));
+        p1.append(link("查看原件", route("local-workspace", info.source_artifact_id)));
+        box.append(p1);
+      }
       const facts = localDataFacts(value.data_facts, value);
       if (facts) box.append(facts);
       if (value.kind === "dataset" && value.parameters?.schema === "stpd/curated-decision-dataset-v1")

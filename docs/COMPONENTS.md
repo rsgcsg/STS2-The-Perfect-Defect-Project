@@ -52,6 +52,62 @@ precedes any future SDK-direct driver, under the same execution guarantees.
 | Project applications | `python/spireagent` | one local/cloud console, members/devices, upload/export, operations and shared artifact infrastructure | legality, recording proof, research labels |
 | STPD | `python/stpd` | ResearchTransition, Dataset Views, representation, Qwen, training/evaluation | Host implementation or legality |
 
+## Training responsibilities
+
+下表展开研究与应用的既有职责，不新设组件或第二套训练系统。职责的内部细分仍受[架构细分规则](ARCHITECTURE.md#responsibility-refinement)约束；具体是否可用和本轮验收从CURRENT进入。
+
+| 接缝与职责 | 现有实现与操作owner | requires → provides |
+| --- | --- | --- |
+| 原件与学习表示 | 原Annotator/Evidence/Store；`stpd` P1 reader/projection，见[数据与来源](../python/docs/DATA_AND_PROVENANCE.md)与[P1输入说明](../python/docs/P1_T0.md#input-targets-and-provenance) | 原始身份、公开时点、chosen/缺口、谱系及用途 → 固定Input/Target和mask；不补造Human或独立分组 |
+| 决定数据用途 | `spireagent.p1_curation`与既有Curation，见[数据管理](../python/docs/research/DATA_MANAGEMENT.zh-CN.md) | 有依据的来源/亲缘/曝光与用户选择 → 用途/固定分组；存储成功和GPU可用不授予准入 |
+| 数值训练与保存 | `stpd.models.structured_training`、原P1训练和worker，见[workload](../python/docs/STRUCTURED_WORKLOAD.md) | 固定recipe、输入、执行身份和明确checkpoint → 实际更新、全状态checkpoint、模型与结果；不是应用权限owner |
+| 任务生命周期 | 同一Application：local使用LocalTrainingService，显式remote复用原Operations/Scheduler，见[正常训练控制](../python/docs/PROJECT_CONSOLE.md#non-gui-training-control)；用途仍由原Curation账拥有 | 具体请求、权限、累计预算、操作/attempt身份 → start/status及该执行方式支持的pause/resume/cancel/reconcile；remote prepare记录用途并验同Store peer闭包，live pause不支持；关客户端不是Stop |
+| 执行资源 | `spireagent.compute`及现provider/worker接缝，见[结构化执行](../python/docs/STRUCTURED_WORKLOAD.md) | 同一具名任务/输入/产物承诺、资源和恢复能力 → 本地/远端实际handle与返回产物；unknown不换provider重投 |
+| 产物到Agent、评估 | 原Model注册、policy adapter与Runtime，见[模型交付](../python/docs/STRUCTURED_MODEL_DELIVERY.md)、[Agent执行](../python/docs/AGENT_EXECUTION_CONTRACT.md) | 兼容权重/Input、完整动作目录和明确Task → 完整Agent执行与固定条件结果；模型包不自获游戏控制权 |
+
+T0是CPU工程验证入口。正式GPU任务复用相同的用途、任务、checkpoint、Store和产物消费者；当前后端是否完成实证由其运行证据决定，不能从上述映射或旧GPU训练推出。学校资源在接入资料到齐后适配真实差异，不预设调度器或跨设备exact resume。
+
+The user's 2026-10-20 freeze requirement covers every historical/current function,
+including small utilities, recovery, viewing, downloads and cloud operations.
+Each function resolves to one responsible component, a supported entry and its
+actual core implementation, connected requires/provides, protocol/format versions,
+evidence level and disposition in the existing
+[feature table](plans/p1-prefreeze-2026-10-18/FEATURE_STATUS.md) and K asset ledger.
+GUI/CLI/API may be multiple thin surfaces over that same owner. Historical items
+must be evidenced as retained, replaced, archived or unfinished; an archive tag or
+inventory count alone does not complete migration. This is not a request to merge
+all components, rebuild all experiments or create another ownership registry.
+
+One function has one business meaning, fact authority and core state machine.
+The application owner orchestrates existing components for a composite use case;
+GUI, CLI and Agent surfaces map into that use case rather than copying its flow.
+Historical code must meet today's contract: adapt representation at the existing
+seam, repair/replace an implementation that misses requires, and version the
+owning contract when authorized information/action/timing/failure/use semantics
+change. An unexpressible real use case, repeated ownership overlap/consumer
+patches or measured unacceptable cost warrants an evidenced upper-level proposal,
+not another adapter merely to retain the old implementation. The four change
+classes and approval boundary remain in Architecture. Different role formats
+remain distinct; a future supported combination is never an implemented claim.
+
+Application/use-case and resource organization cuts across the online, recording
+and research chains. Workbench GUI is the optional human mapping; the existing
+`python/spireagent/workbench` directory also contains the local Application and
+services, rather than defining another upper-level authority. `apps/workbench`
+is the retained diagnostic API, console is presentation and Hub is a remote
+application/permission implementation. A running use case may need an application
+service without a browser; closing its page is not Stop. Direct offline library
+calls keep their owning contract and need no forced HTTP/Application hop.
+
+Every project GUI business function and its status/failure handling must have a
+supported, discoverable non-GUI entry through CLI, API, library or agent tooling.
+Agents do not operate the Workbench GUI to execute business use cases. These entry
+types may divide the supported surface; they need not each duplicate every command.
+A private function requiring permission bypass, database editing or a private daily
+script is not a delivered entry. GUI presentation QA and native Human gameplay
+are distinct from this business-entry requirement. The dated K6 investigation is
+limited to its original scope, not a finding that all current functions satisfy it.
+
 For the current pre-training freeze, internal API/library/CLI calls are the main
 operation surface. Existing browser and native UI remain thin mappings to the same
 application use cases, including their presentation/confirmation/pairing adapters.

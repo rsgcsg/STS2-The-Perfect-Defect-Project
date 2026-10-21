@@ -31,7 +31,7 @@ from spireagent.workbench.console import LocalConsole
 from spireagent.workbench.dashboard import _safe_value
 from spireagent.workbench.developer import ROOT, ProjectConfig, atomic_json, doctor, tool_identity
 from spireagent.workbench.hub_client import HubClient
-from spireagent.workbench.identity import LocalIdentity
+from spireagent.workbench.identity import LocalIdentity, private_read
 from spireagent.workbench.instance_lock import instance_lock as instance_lock
 from spireagent.workbench.local_models import LocalModelService
 from spireagent.workbench.member_client import MemberClient
@@ -80,11 +80,16 @@ def configuration_id(config: ProjectConfig) -> str:
     return hashlib.sha256(json.dumps(config.to_dict(), sort_keys=True).encode()).hexdigest()
 
 
-def _local_request(url: str, *, token: str | None = None, timeout: float = 2) -> dict[str, Any]:
+def _local_request(url: str, *, token: str | None = None, timeout: float = 2,
+                   body: dict[str, Any] | None = None,
+                   method: str | None = None) -> dict[str, Any]:
     request = Request(
         url,
-        data=b"" if token else None,
-        headers={"Authorization": "Bearer " + token} if token else {},
+        data=(json.dumps(body).encode() if body is not None
+              else b"" if token and method != "GET" else None),
+        headers={"Content-Type": "application/json",
+                 **({"Authorization": "Bearer " + token} if token else {})},
+        method=method,
     )
     with build_opener(ProxyHandler({})).open(request, timeout=timeout) as response:
         value: Any = json.loads(response.read(1024 * 1024))
@@ -216,7 +221,8 @@ def status_project(config: ProjectConfig) -> dict[str, Any]:
 
 
 class Application:
-    def __init__(self, config: ProjectConfig, *, config_path: Path | None = None) -> None:
+    def __init__(self, config: ProjectConfig, *, config_path: Path | None = None,
+                 remote_provider: Any = None) -> None:
         from spireagent.workbench.collection_flow import CollectionFlow
         from spireagent.workbench.collection_setup import CollectionSetup
         from spireagent.workbench.evaluation_sharing import EvaluationSharing
@@ -281,14 +287,35 @@ class Application:
         self._recording_unknown_blocks = False
         self._recording_runtime_context: str | None = None
         self._recording_previous_unknown: list[dict[str, Any]] = []
+        self._recording_last_result: dict[str, Any] | None = None
+        intent = private_read(config.state_dir / "native-recording-intent.json")
+        if intent:
+            if intent.get("schema") != "spireagent/native-recording-intent-1":
+                raise BoundaryError("recording", "invalid_saved_recording_intent")
+            self._recording_last_result = intent.get("last_result")
+            self._recording_unknown_notice = intent["unconfirmed"]
+            self._recording_unknown_blocks = intent["blocks"]
+            self._recording_previous_unknown = intent["previous_unconfirmed"]
+            if intent["pending"] is not None:
+                if self._recording_unknown_notice is not None:
+                    self._recording_previous_unknown.append(self._recording_unknown_notice)
+                self._recording_unknown_notice = intent["pending"]
+                self._recording_unknown_blocks = True
         self.models.bind_recording_admission_guard(self._recording_model_admission_blocked)
         self.local_managed_sources = LocalManagedSourceService(config, self.local_environment)
         self.local_recordings = LocalRecordingCatalog(config)
         # Keep command-time owner observations separate from concurrent browser GET scans.
         self.local_recording_import = LocalRecordingImporter(config, LocalRecordingCatalog(config))
+        from .p1_recording_maintenance import P1RecordingMaintenance
+
+        self.p1_maintenance = P1RecordingMaintenance(self.local_recording_import)
         self.local_recording_preview = LocalRecordingPreview(self.local_research_workspace)
         self.local_datasets = LocalDatasetService(config)
         self.local_training = LocalTrainingService(config)
+        from spireagent.workbench.remote_training import RemoteTrainingService
+
+        self.remote_training = RemoteTrainingService(config, self.local_datasets._selected,
+                                                     provider=remote_provider)
         self.local_memory_evaluation = LocalMemoryEvaluationService(config)
         self.local_model_export = LocalModelExport(config)
         self.local_model_registration = LocalModelRegistration(
@@ -635,6 +662,19 @@ class Application:
     def _recording_model_recovery_required(self, *, fresh: bool = False) -> bool:
         return self.models.recording_recovery_required(fresh=fresh)
 
+    def _save_recording_intent(self, pending: dict[str, Any] | None = None) -> None:
+        # One presentation intent, not another Recorder command ledger or state machine.
+        notice = ({key: pending[key] for key in (
+            "command_id", "kind", "runtime_instance_id", "recording_session_id")}
+            if pending is not None else None)
+        atomic_json(self.config.state_dir / "native-recording-intent.json", {
+            "schema": "spireagent/native-recording-intent-1", "pending": notice,
+            "unconfirmed": self._recording_unknown_notice,
+            "blocks": self._recording_unknown_blocks,
+            "previous_unconfirmed": self._recording_previous_unknown[-8:],
+            "last_result": self._recording_last_result,
+        })
+
     def native_recording_status(self) -> dict[str, Any]:
         endpoint = self._recording_endpoint()
         owner = self.models.native_tasks.recording_status(endpoint)
@@ -654,6 +694,7 @@ class Application:
         return {
             "schema": "spireagent/native-recording-view-1",
             "status": owner,
+            "last_result": self._recording_last_result,
             "connection": endpoint,
             "model_recovery_required": self._recording_model_recovery_required(),
             "command_pending": pending,
@@ -665,7 +706,7 @@ class Application:
     def control_native_recording(self, body: dict[str, Any]) -> dict[str, Any]:
         from uuid import UUID, uuid4
 
-        from spireagent.workbench.native_tasks import NativeTasks
+        from spireagent.workbench.native_tasks import P1_ORIGINS, P1_PROFILE, NativeTasks
 
         fields = {
             "kind",
@@ -685,13 +726,14 @@ class Application:
                     body.get("kind") != "start_new_session"
                     or not isinstance(body["capture_profile_id"], str)
                     or body["capture_profile_id"] not in {
-                        "native-logical-source-v3", "native-logical-source-v4"
+                        "native-logical-source-v3", "native-logical-source-v4", P1_PROFILE
                     }
                 )
             )
             or not isinstance(body["kind"], str)
             or body["kind"]
-            not in {"start_new_session", "pause", "resume", "change_source", "close"}
+            not in {"start_new_session", "pause", "resume", "change_source", "close",
+                    "export_p1_native_prefix"}
             or not NativeTasks._recording_identifier(body["runtime_instance_id"])
             or not NativeTasks._recording_identifier(body["recording_session_id"], nullable=True)
             or not NativeTasks._recording_identifier(body["source_segment_id"], nullable=True)
@@ -706,7 +748,11 @@ class Application:
         except (ValueError, TypeError, AttributeError):
             raise BoundaryError("recording", "invalid_native_recording_command") from None
         declaration = None
-        if body["kind"] in {"start_new_session", "change_source"}:
+        p1_start = body.get("capture_profile_id") == P1_PROFILE
+        if p1_start:
+            if body["source_kind"] not in P1_ORIGINS or body["actor_id"] is not None:
+                raise BoundaryError("recording", "invalid_native_recording_command")
+        elif body["kind"] in {"start_new_session", "change_source"}:
             declaration = {
                 "source_kind": body["source_kind"],
                 "actor_id": body["actor_id"],
@@ -718,7 +764,8 @@ class Application:
         elif body["source_kind"] is not None or body["actor_id"] is not None:
             raise BoundaryError("recording", "invalid_native_recording_command")
         reservation = self.models.reserve_recording_source_mutation(
-            require_human=declaration is not None and body["source_kind"] != "agent_protocol"
+            require_human=p1_start or (declaration is not None
+                                       and body["source_kind"] != "agent_protocol")
         )
         with reservation:
             endpoint = self._recording_endpoint()
@@ -733,7 +780,7 @@ class Application:
             with self._recording_intent_lock:
                 self._recording_runtime_context = observed["runtime_instance_id"]
                 if (
-                    declaration is not None
+                    (p1_start or declaration is not None)
                     and body["source_kind"] != "agent_protocol"
                     and self._recording_model_recovery_required()
                 ):
@@ -757,6 +804,7 @@ class Application:
                     raise BoundaryError("recording", "native_recording_recovery_required")
                 self._recording_intent_pending = True
             try:
+                self._save_recording_intent(body)
                 value = self.models.native_tasks.recording_command(
                     endpoint,
                     observed,
@@ -765,10 +813,12 @@ class Application:
                     command_id=body["command_id"],
                     **({"capture_profile_id": body["capture_profile_id"]}
                        if "capture_profile_id" in body else {}),
+                    **({"p1_native_origin": body["source_kind"]} if p1_start else {}),
                 )
                 if not value["accepted"]:
                     raise BoundaryError("recording", "native_recording_rejected")
                 with self._recording_intent_lock:
+                    self._recording_last_result = value
                     after = value["status"]
                     known_close = (
                         body["kind"] == "close"
@@ -814,6 +864,7 @@ class Application:
             finally:
                 with self._recording_intent_lock:
                     self._recording_intent_pending = False
+                    self._save_recording_intent()
 
     def start_local_recording_import(self, candidate_id: object,
                                      human_origin_attested: object = None) -> dict[str, Any]:
@@ -1034,6 +1085,8 @@ class Application:
         return self.local_model_registration.register_teacher(variant=variant)
 
     def close(self) -> None:
+        self.remote_training.close()
+        self.p1_maintenance.close()
         # The same Application admission lock fences an in-flight handler before
         # this snapshot. Recovery/Stop remains enabled until its original owner
         # finishes; no lock is held across Stop, sealing or Host cleanup.
@@ -1317,7 +1370,8 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                 except (OSError, ValueError, KeyError):
                     self.respond(400, b'{"error":"invalid_member_request"}')
             elif parsed.path == "/api/native-recording/status":
-                if not self.local_host() or not self.authenticated_browser():
+                if not self.local_host() or not (
+                        self.authenticated_browser() or self.control_client()):
                     self.respond(401, b'{"error":"browser_session_required"}')
                     return
                 if parsed.query:
@@ -1337,6 +1391,44 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                     return
                 value = app.local_recordings.read()
                 self.respond(200, json.dumps(value, ensure_ascii=False).encode())
+            elif parsed.path == "/api/local-recordings/store":
+                if not self.authenticated_browser() and not self.control_client():
+                    self.respond(401, b'{"error":"browser_session_required"}')
+                    return
+                try:
+                    from .p1_recording_store import query_p1_sources
+
+                    query = parse_qs(parsed.query, keep_blank_values=True)
+                    if any(len(values) != 1 for values in query.values()):
+                        raise ValueError
+                    filters = {key: json.loads(values[0]) for key, values in query.items()}
+                    workspace = app.local_research_workspace()
+                    if workspace is None:
+                        raise BoundaryError("p1_store", "workspace_required")
+                    rows = query_p1_sources(workspace.store, filters=filters,
+                        storage_receipts=app.local_recording_import.status()["storage_receipts"])
+                    self.respond(200, json.dumps({"sources": rows}).encode())
+                except BoundaryError as error:
+                    self.respond(409, json.dumps({"error": error.code}).encode())
+                except (OSError, ValueError, TypeError):
+                    self.respond(400, b'{"error":"invalid_p1_query"}')
+            elif parsed.path == "/api/local-recordings/maintenance":
+                if not self.authenticated_browser() and not self.control_client():
+                    self.respond(401, b'{"error":"browser_session_required"}')
+                    return
+                value = app.local_recording_import.status()["maintenance"]
+                self.respond(200, json.dumps(value).encode())
+            elif parsed.path == "/api/local-recordings/storage/peer":
+                if not self.authenticated_browser():
+                    self.respond(401, b'{"error":"browser_session_required"}')
+                    return
+                from .p1_recording_storage import peer_binding
+
+                try:
+                    value = {"status": "configured", "peer": peer_binding("s3")}
+                except (BoundaryError, ValueError, ImportError):
+                    value = {"status": "unconfigured", "peer": None}
+                self.respond(200, json.dumps(value).encode())
             elif parsed.path == "/api/local-recordings/import/status":
                 if not self.authenticated_browser():
                     self.respond(401, b'{"error":"browser_session_required"}')
@@ -1397,8 +1489,33 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                     self.respond(200, json.dumps(value).encode())
                 except BoundaryError as error:
                     self.respond(409, json.dumps({"error": error.code}).encode())
+            elif parsed.path in {"/api/remote-training/status",
+                                 "/api/remote-training/capabilities"}:
+                if not (self.authenticated_browser() or self.control_client()):
+                    self.respond(401, b'{"error":"browser_session_required"}')
+                    return
+                try:
+                    if parsed.path.endswith("/capabilities"):
+                        if parsed.query:
+                            raise ValueError
+                        value = app.remote_training.capabilities()
+                    else:
+                        query = parse_qs(parsed.query, strict_parsing=True, max_num_fields=1,
+                                         keep_blank_values=True)
+                        if query and (set(query) not in ({"job_id"}, {"intent_id"})
+                                      or len(next(iter(query.values()))) != 1):
+                            raise ValueError
+                        if "intent_id" in query:
+                            value = app.remote_training.preparation_status(query["intent_id"][0])
+                        else:
+                            value = app.remote_training.status(query.get("job_id", [None])[0])
+                    self.respond(200, json.dumps(value).encode())
+                except BoundaryError as error:
+                    self.respond(409, json.dumps({"error": error.code}).encode())
+                except (OSError, ValueError, TypeError):
+                    self.respond(400, b'{"error":"invalid_remote_training_request"}')
             elif parsed.path in {"/api/local-training/status", "/api/local-training/capabilities"}:
-                if not self.authenticated_browser():
+                if not (self.authenticated_browser() or self.control_client()):
                     self.respond(401, b'{"error":"browser_session_required"}')
                     return
                 try:
@@ -1417,8 +1534,9 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                             operation_id = digest(
                                 operation_id, "local_training.operation_id", length=32)
                         value = app.local_training.status(operation_id)
-                    self.respond(200, json.dumps({**value,
-                                                  "csrf_token": app.account.csrf}).encode())
+                    self.respond(200, json.dumps({**value, **(
+                        {"csrf_token": app.account.csrf} if self.authenticated_browser() else {})
+                    }).encode())
                 except BoundaryError as error:
                     self.respond(409, json.dumps({"error": error.code}).encode())
                 except (ValueError, TypeError):
@@ -1843,7 +1961,7 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                     self.respond(400, b'{"error":"invalid_local_curation_request"}')
                 return
             if self.path.startswith("/api/native-recording/"):
-                if not self.browser_write():
+                if not self.browser_write() and not self.control_client():
                     self.respond(403, b'{"error":"browser_action_denied"}')
                     return
                 if self.path != "/api/native-recording/command":
@@ -1857,6 +1975,60 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                     self.respond(409, json.dumps({"error": error.code}).encode())
                 except (OSError, ValueError, TypeError):
                     self.respond(400, b'{"error":"invalid_native_recording_command"}')
+                return
+            if self.path == "/api/local-recordings/maintenance":
+                if not self.browser_write() and not self.control_client():
+                    self.respond(403, b'{"error":"browser_action_denied"}')
+                    return
+                try:
+                    body = self.json_body(maximum=2048, reject_duplicate=True)
+                    if set(body) not in ({"enabled", "peer", "projection_id"},
+                                         {"enabled", "peer", "projection_id", "scope"}):
+                        raise ValueError
+                    value = app.p1_maintenance.configure(**body)
+                    self.respond(200, json.dumps(value).encode())
+                except BoundaryError as error:
+                    self.respond(409, json.dumps({"error": error.code}).encode())
+                except (OSError, ValueError, TypeError):
+                    self.respond(400, b'{"error":"invalid_p1_maintenance_policy"}')
+                return
+            if self.path.startswith("/api/local-recordings/storage"):
+                if not self.browser_write():
+                    self.respond(403, b'{"error":"browser_action_denied"}')
+                    return
+                try:
+                    body = self.json_body(maximum=1024, reject_duplicate=True)
+                    if self.path == "/api/local-recordings/storage" and set(body) == {
+                            "action", "artifact_id", "peer"}:
+                        value = app.local_recording_import.start_p1_storage(**body)
+                    elif self.path == "/api/local-recordings/storage/reconcile" and not body:
+                        value = app.local_recording_import.reconcile_p1_storage()
+                    else:
+                        raise ValueError
+                    self.respond(200, json.dumps(value).encode())
+                except BoundaryError as error:
+                    self.respond(409, json.dumps({"error": error.code}).encode())
+                except (OSError, ValueError, TypeError):
+                    self.respond(400, b'{"error":"invalid_p1_storage_request"}')
+                return
+            if self.path.startswith("/api/local-recordings/derive"):
+                if not self.browser_write():
+                    self.respond(403, b'{"error":"browser_action_denied"}')
+                    return
+                try:
+                    body = self.json_body(maximum=1024, reject_duplicate=True)
+                    if self.path == "/api/local-recordings/derive" and set(body) == {
+                            "source_artifact_id", "projection_id", "run_id"}:
+                        value = app.local_recording_import.start_p1_derivation(**body)
+                    elif self.path == "/api/local-recordings/derive/reconcile" and not body:
+                        value = app.local_recording_import.reconcile_p1_derivation()
+                    else:
+                        raise ValueError
+                    self.respond(200, json.dumps(value).encode())
+                except BoundaryError as error:
+                    self.respond(409, json.dumps({"error": error.code}).encode())
+                except (OSError, ValueError, TypeError):
+                    self.respond(400, b'{"error":"invalid_p1_derivation_request"}')
                 return
             if self.path.startswith("/api/local-recordings/preview"):
                 if not self.browser_write():
@@ -1881,11 +2053,17 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                     self.respond(403, b'{"error":"browser_action_denied"}')
                     return
                 if self.path not in {"/api/local-recordings/import",
+                                     "/api/local-recordings/import/reconcile",
                                      "/api/local-recordings/import/native-agent"}:
                     self.respond(404, b'{"error":"route_not_found"}')
                     return
                 try:
-                    if self.path == "/api/local-recordings/import/native-agent":
+                    if self.path == "/api/local-recordings/import/reconcile":
+                        body = self.json_body(maximum=64)
+                        if body:
+                            raise ValueError
+                        value = app.local_recording_import.reconcile_p1_import()
+                    elif self.path == "/api/local-recordings/import/native-agent":
                         body = self.json_body(maximum=8192)
                         if set(body) not in (
                             {"directory", "cohort", "relation_id"},
@@ -1951,8 +2129,22 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                 except (OSError, ValueError, TypeError):
                     self.respond(400, b'{"error":"invalid_local_dataset_request"}')
                 return
+            if self.path.startswith("/api/remote-training/"):
+                if not (self.browser_write() or self.control_client()):
+                    self.respond(403, b'{"error":"browser_action_denied"}')
+                    return
+                action = self.path.removeprefix("/api/remote-training/")
+                try:
+                    app._require_training_instance()
+                    value = app.remote_training.command(action, self.json_body(maximum=8192))
+                    self.respond(200, json.dumps(value).encode())
+                except BoundaryError as error:
+                    self.respond(409, json.dumps({"error": error.code}).encode())
+                except (OSError, ValueError, TypeError):
+                    self.respond(400, b'{"error":"invalid_remote_training_request"}')
+                return
             if self.path.startswith("/api/local-training/"):
-                if not self.browser_write():
+                if not (self.browser_write() or self.control_client()):
                     self.respond(403, b'{"error":"browser_action_denied"}')
                     return
                 action = self.path.removeprefix("/api/local-training/")
@@ -2258,6 +2450,8 @@ def serve(config: ProjectConfig, *, config_path: Path | None = None) -> dict[str
                     f"http://127.0.0.1:{server.server_port}/", app.instance_id,
                     access=app.native_access,
                 )
+            app.p1_maintenance.start()
+            app.remote_training.start_loop()
             server.serve_forever(poll_interval=0.2)
         finally:
             if registration is not None:

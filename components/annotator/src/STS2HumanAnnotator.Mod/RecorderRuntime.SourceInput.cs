@@ -14,7 +14,10 @@ internal static partial class RecorderRuntime
         NativeSourceInputInvocation? SourceInvocation = null, object? SourceOwner = null,
         string? SourceMechanism = null, SelectorInputHandle? PreviousSource = null,
         object? SourceControl = null, string? SourceCallback = null)
-    { internal bool SourceCallbackClaimed { get; set; } }
+    {
+        internal bool SourceCallbackClaimed { get; set; }
+        internal P1SelectorCapture? P1 { get; init; }
+    }
 
     internal static bool IsPublicBasisSourceProfile => _activeCaptureProfileId == SourceSessionContractV4.ProfileId;
     internal static bool IsOrderedSourceProfile => _activeCaptureProfileId is SourceSessionContractV3.ProfileId or SourceSessionContractV4.ProfileId;

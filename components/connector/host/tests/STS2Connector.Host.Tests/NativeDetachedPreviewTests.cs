@@ -84,6 +84,16 @@ public sealed class NativeDetachedPreviewTests
     [InlineData(typeof(PerfectedStrike))]
     [InlineData(typeof(Stack))]
     [InlineData(typeof(Darkness))]
+    [InlineData(typeof(Cascade))]
+    [InlineData(typeof(Dirge))]
+    [InlineData(typeof(Eradicate))]
+    [InlineData(typeof(HeavenlyDrill))]
+    [InlineData(typeof(Malaise))]
+    [InlineData(typeof(MultiCast))]
+    [InlineData(typeof(Skewer))]
+    [InlineData(typeof(Tempest))]
+    [InlineData(typeof(Volley))]
+    [InlineData(typeof(Whirlwind))]
     public void RealNativeUpgradeMatchesNativeCopyWithoutChangingOriginal(Type type)
     {
         CardModel original = Mutable(type);
@@ -101,6 +111,48 @@ public sealed class NativeDetachedPreviewTests
             Assert.Same(result.Display, Field(typeof(DynamicVar), "_owner").GetValue(value));
         });
         Assert.All(original.DynamicVars.Values, value => Assert.Same(original, Field(typeof(DynamicVar), "_owner").GetValue(value)));
+    }
+
+    [Fact]
+    public void ExactNativeXCostOverridesAreConstantReadOnlyFactsAndPatchedGetterIsNotInvoked()
+    {
+        var overrides = typeof(CardModel).Assembly.GetTypes()
+            .Where(type => type.Namespace == "MegaCrit.Sts2.Core.Models.Cards" && type.IsSubclassOf(typeof(CardModel)))
+            .Select(type => type.GetMethod("get_HasEnergyCostX", Flags | BindingFlags.DeclaredOnly))
+            .OfType<MethodInfo>().OrderBy(method => method.DeclaringType!.Name, StringComparer.Ordinal).ToArray();
+        Assert.Equal(new[] { "Cascade", "Dirge", "Eradicate", "HeavenlyDrill", "Malaise", "MultiCast", "Skewer", "Tempest", "Volley", "Whirlwind" },
+            overrides.Select(method => method.DeclaringType!.Name));
+        Assert.All(overrides, method => Assert.Equal(new byte[] { 0x17, 0x2a }, method.GetMethodBody()!.GetILAsByteArray()));
+        CardModel original = Mutable<Tempest>();
+        using var patch = new Patched(typeof(Tempest).GetMethod("get_HasEnergyCostX", Flags)!);
+        Assert.False(NativeDetachedCardPreviewFactory.TryDeckUpgrade(original, out var result, out var gap));
+        Assert.Null(result); Assert.NotNull(gap); Assert.Equal(0, calls);
+        Assert.Equal(0, original.CurrentUpgradeLevel);
+    }
+
+    [Fact]
+    public void NativeZeroUpgradeLimitOverridesHaveNoUpgradePreview()
+    {
+        var limits = typeof(CardModel).Assembly.GetTypes()
+            .Where(type => type.Namespace == "MegaCrit.Sts2.Core.Models.Cards" && type.IsSubclassOf(typeof(CardModel)))
+            .Select(type => type.GetMethod("get_MaxUpgradeLevel", Flags | BindingFlags.DeclaredOnly))
+            .OfType<MethodInfo>().ToArray();
+        Assert.Equal(39, limits.Length);
+        foreach (MethodInfo limit in limits)
+        {
+            Assert.Equal(new byte[] { 0x16, 0x2a }, limit.GetMethodBody()!.GetILAsByteArray());
+            CardModel card = Mutable(limit.DeclaringType!);
+            string before = Values(card);
+            Assert.False(card.IsUpgradable);
+            Assert.False(NativeDetachedCardPreviewFactory.TryDeckUpgrade(card, out var preview, out var gap));
+            Assert.Equal("native_preview_card_not_upgradable", gap);
+            Assert.Null(preview);
+            Assert.Equal(before, Values(card));
+        }
+        using var patch = new Patched(typeof(Guilty).GetMethod("get_MaxUpgradeLevel", Flags)!);
+        Assert.False(NativeDetachedCardPreviewFactory.TryDeckUpgrade(Mutable<Guilty>(), out _, out var patchedGap));
+        Assert.Equal("native_preview_upgrade_closure_unqualified", patchedGap);
+        Assert.Equal(0, calls);
     }
 
     [Fact]
@@ -210,11 +262,11 @@ public sealed class NativeDetachedPreviewTests
         object? events = Field(typeof(CardModel), "EnchantmentChanged").GetValue(original);
         // Isolated bridge ordering probe: this deliberately unknown observer
         // would run during ordinary native MutableClone.DeepCloneFields.
-        // Production qualification refuses it before using the bridge.
+        // The production bridge detaches it on the new card before native work.
         CardModel copy = NativeDetachedCardCopy.CreateQualifiedCopy(original);
         Assert.Equal(0, calls); Assert.NotSame(original.Enchantment, copy.Enchantment);
         Assert.Same(events, Field(typeof(CardModel), "EnchantmentChanged").GetValue(original));
-        Assert.False(NativeDetachedCardPreviewFactory.TryDeckUpgrade(original, out _, out _));
+        Assert.True(NativeDetachedCardPreviewFactory.TryDeckUpgrade(original, out _, out var gap), gap);
         Assert.Equal(0, calls);
     }
 
@@ -223,8 +275,42 @@ public sealed class NativeDetachedPreviewTests
     {
         CardModel original = Mutable<StrikeDefect>(); calls = 0;
         original.EnchantmentChanged += () => calls++;
-        Assert.False(NativeDetachedCardPreviewFactory.TryDeckUpgrade(original, out _, out _));
+        Assert.True(NativeDetachedCardPreviewFactory.TryDeckUpgrade(original, out _, out var gap), gap);
         Assert.Equal(0, calls); Assert.Equal(0, original.CurrentUpgradeLevel);
+    }
+
+    [Fact]
+    public void CombatCardCallbacksStayOnOriginalAndNeverRunInDetachedUpgrade()
+    {
+        CardModel original = Mutable<DefendDefect>(); calls = 0;
+        var names = new[] { "AfflictionChanged", "EnchantmentChanged", "EnergyCostChanged", "KeywordsChanged",
+            "ReplayCountChanged", "Played", "Drawn", "StarCostChanged", "Upgraded", "Forged" };
+        var callbacks = new Dictionary<string, object?>();
+        var holderType = typeof(CardModel).Assembly.GetType("MegaCrit.Sts2.Core.Nodes.Cards.Holders.NHandCardHolder", true)!;
+        var holder = RuntimeHelpers.GetUninitializedObject(holderType);
+        var flash = (Action)holderType.GetMethod("Flash", Flags)!.CreateDelegate(typeof(Action), holder);
+        foreach (string name in names)
+        {
+            Action callback = () => calls++;
+            if (new[] { "Upgraded", "KeywordsChanged", "ReplayCountChanged", "EnergyCostChanged", "StarCostChanged" }.Contains(name))
+                callback += flash;
+            Field(typeof(CardModel), name).SetValue(original, callback);
+            callbacks[name] = callback;
+        }
+        Action<AbstractModel> finished = _ => calls++;
+        Field(typeof(AbstractModel), "ExecutionFinished").SetValue(original, finished);
+        string before = Values(original);
+        Assert.True(NativeDetachedCardPreviewFactory.TryDeckUpgrade(original, out var result, out var gap), gap);
+        Assert.Equal(0, calls); Assert.Equal(before, Values(original));
+        foreach (string name in names)
+        {
+            Assert.Same(callbacks[name], Field(typeof(CardModel), name).GetValue(original));
+            Assert.Null(Field(typeof(CardModel), name).GetValue(result!.Display));
+        }
+        Assert.Same(finished, Field(typeof(AbstractModel), "ExecutionFinished").GetValue(original));
+        Assert.Null(Field(typeof(AbstractModel), "ExecutionFinished").GetValue(result!.Display));
+        Assert.Equal(1, result.Display.CurrentUpgradeLevel);
+        Assert.Equal(8, result.Display.DynamicVars["Block"].BaseValue);
     }
 
     [Fact]

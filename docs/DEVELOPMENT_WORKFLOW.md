@@ -38,6 +38,12 @@ main 有独有热修复时才通过 PR 带回 develop。组件源码继续普通
 不要在仍不断修补的同时对每个中间提交启动完整 main 晋级。只更新流程规范的任务通常到 develop 结束；
 如果任务明确包含正式发布，则完成 main 与发布回执。不要为了演示流程去重启无关生产服务。
 
+## 报告与PR的链路位置
+
+每份报告和PR加一行“链路位置”：沿[唯一工作图](plans/p1-prefreeze-2026-10-18/CHAIN_PURPOSES.md)指出节点/连接编号，及[Architecture四类变更](ARCHITECTURE.md#selected-convergence-and-change-rules)中的一类：表示或传输、能力或交互语义、组件实现替换、回到上层抽象；说明两端requires/provides及实际缺口。能力/语义或上层取舍交用户，不由具体实现自行规定下游需要什么。已有授权内普通实现修复继续推进，不增冻结门。
+
+两次预检不同原因失败后的路线复查对图回答：失败在哪条连接，是实现不满足requires，还是requires未写清/有误；复用哪个已有owner、下一可验增量是什么。已保留失败不重命名通过。冻结后再随Q链定用途/划分→模型输入的⑦⑧requires，并考虑closeout“改合同未写链路位置”的非阻塞提示；本次仅文档，不新增checker或阻塞规则。
+
 ## Bounded integration and approval
 
 Use the shared task boundary in [WORKING_RULES](WORKING_RULES.zh-CN.md). One useful

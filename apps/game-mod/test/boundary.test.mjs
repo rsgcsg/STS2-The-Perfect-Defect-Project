@@ -542,6 +542,8 @@ test("non-combat native owners are observed by explicit read-only seams", () => 
     /NativeFoundationOwnerPatches\.Initialize\(\);[\s\S]*ConnectorMod\.Initialize\(\);[\s\S]*RecorderMod\.Initialize\(\);/u
   );
   assert.match(patches, /typeof\(NRewardsScreen\), nameof\(NRewardsScreen\.ShowScreen\)/u);
+  assert.match(patches, /typeof\(NRewardsScreen\), nameof\(NRewardsScreen\._Ready\)[\s\S]*ReadyPrefix/u);
+  assert.match(patches, /ReadyPrefix\(NRewardsScreen __instance, RewardsSet ____rewardsSet, bool ____isTerminal\)/u);
   assert.match(patches, /typeof\(NCardRewardSelectionScreen\),[\s\S]*nameof\(NCardRewardSelectionScreen\.ShowScreen\)/u);
   assert.match(patches, /typeof\(NCardRewardSelectionScreen\),[\s\S]*nameof\(NCardRewardSelectionScreen\.RefreshOptions\)/u);
   assert.match(patches, /typeof\(NTreasureRoom\),[\s\S]*nameof\(NTreasureRoom\.Create\)/u);
@@ -551,7 +553,7 @@ test("non-combat native owners are observed by explicit read-only seams", () => 
   assert.match(patches, /harmony\.Patch\(\s*cardRewardOnSelect,\s*prefix: new HarmonyMethod\(cardRewardPrefix\),\s*finalizer: new HarmonyMethod\(cardRewardFinalizer\)\)/u);
   assert.match(patches, /BeginSynchronousOnSelect\(__instance\)/u);
   assert.match(patches, /__state\?\.Dispose\(\)/u);
-  assert.equal((patches.match(/prefix:/gu) ?? []).length, 1);
+  assert.equal((patches.match(/prefix:/gu) ?? []).length, 2);
   assert.equal((patches.match(/finalizer:/gu) ?? []).length, 1);
   assert.doesNotMatch(patches, /PatchAll|transpiler:|static\s+bool\s+Prefix/u);
 });

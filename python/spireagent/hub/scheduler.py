@@ -12,15 +12,16 @@ import json
 import math
 import os
 import threading
+from collections.abc import Callable
 from typing import Any
 
+from spireagent.artifact_contracts import Manifest
 from spireagent.compute import ComputeHandle, ComputeProvider
 from spireagent.hub.database import Operations
 from spireagent.json_boundary import BoundaryError
 from spireagent.storage.store import ArtifactStore
 from stpd.cloud_jobs.contracts import ComputeReceipt, ComputeRequest, load_feature_job
-from stpd.cloud_jobs.execution import validate_receipt
-from stpd.workers.contracts import load_training_input
+from stpd.cloud_jobs.execution import preflight_training_request, validate_receipt
 
 ACTIVE = frozenset({"running", "uncertain", "submission_unknown", "cancelling"})
 
@@ -42,11 +43,13 @@ class Scheduler:
         provider: ComputeProvider,
         *,
         budget_limit: int = 0,
+        record_training_use: Callable[[Manifest], None] | None = None,
     ) -> None:
         if type(budget_limit) is not int or budget_limit < 0:
             raise BoundaryError("scheduler", "invalid_budget")
         self.operations, self.store, self.provider = operations, store, provider
         self.budget_limit = budget_limit
+        self._record_training_use = record_training_use
         self._tokens: dict[str, str] = {}
         self._serial = threading.Lock()
         self._closed = False
@@ -114,16 +117,18 @@ class Scheduler:
         if kind == "features":
             load_feature_job(self.store, request.input_id, target.producer)
         else:
-            run = self.store.get_manifest(request.input_id)
-            if run.kind != "run" or run.producer != target.producer:
-                raise BoundaryError("scheduler", "run_source_or_kind_mismatch")
-            load_training_input(self.store, run.parent("training_input"), target.producer)
-        from spireagent.hub.curation_access import record_use
+            preflight_training_request(self.store, request)
+        manifest = self.store.get_manifest(request.input_id)
+        if self._record_training_use is None:
+            from spireagent.hub.curation_access import record_use
 
-        # Also reserve feature preparation: exported frozen features can disclose test
-        # examples. This durable intent prevents a later Gold seal racing submission.
-        record_use(self.operations, self.store,
-                   self.store.get_manifest(request.input_id), "training")
+            # The default Hub retains its own durable Curation authority.
+            # Features disclose held-out input too, before numerical training.
+            record_use(self.operations, self.store, manifest, "training")
+        else:
+            # Trusted application composition can retain its existing LocalLedger
+            # (including host claim guards); this is never a request-supplied hook.
+            self._record_training_use(manifest)
         return request
 
     def _submit(self, row: dict[str, Any], now: float) -> dict[str, Any]:

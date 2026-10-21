@@ -360,6 +360,7 @@ test("projects native reward sets without exposing exact reward or room operands
     rewards: projection.snapshot.interaction.content.surface.rewards.map(({ entity_id: _entityId, group_id: _groupId, ...reward }) => reward)
   }, {
     kind: "reward_claim",
+    non_combat_discardable_potions: [],
     rewards: [
       { kind: "gold", label: "17 gold", description: null, enabled: true, group_relation: "unavailable",
         card_alternatives_complete: false, native_relic_refresh_subscription: "unavailable" },
@@ -599,7 +600,7 @@ test("projects treasure stages with explicit native choice and Host-local operan
   assert.equal(closed.snapshot.interaction.kind, "treasure_room");
   assert.equal(closed.snapshot.bound_actions.actions[0].label, "Open the treasure chest");
   assert.equal(JSON.stringify(closed.snapshot).includes("treasure-room-a"), false);
-  assert.deepEqual(closed.snapshot.interaction.content.surface, { kind: "treasure_room",stage:"closed",chest_opened:false,
+  assert.deepEqual(closed.snapshot.interaction.content.surface, { kind: "treasure_room",non_combat_discardable_potions: [],stage:"closed",chest_opened:false,
     relics:[],can_choose:false,can_skip:false,can_proceed:false });
   assert.equal(closed.snapshot.bound_actions.actions[0].subject_referent_id,null);
 
@@ -797,6 +798,9 @@ test("projects native potion bindings without exposing Host-local identity", () 
   assert.equal(JSON.stringify(projection.snapshot).includes("native_ref"), false);
   const requests = [...projection.bindings.values()].map((binding) => binding.raw_request);
   assert.equal(requests.some((request) => request.args?.potion_ref === "potion-a"), true);
+  const use = projection.snapshot.bound_actions.actions.find(action => action.verb === "use");
+  assert.equal(use.label, "Use Fire Potion -> A");
+  assert.equal(use.arguments.length, 1);
 });
 
 test("fails closed when visible potion actionability is not represented", () => {
@@ -1130,6 +1134,9 @@ test("native delivery with rejected successor projection preserves delivered Rec
   assert.equal(first.successor, null);
   assert.equal(first.retry.allowed, false);
   assert.equal(session.tainted, true);
+  assert.throws(() => session.observe(), /managed_session_tainted_after_successor_projection_failure/);
+  assert.throws(() => session.read({ readId: "old", expectedSnapshotId: snapshot.snapshot_id }),
+    /managed_session_tainted_after_successor_projection_failure/);
   assert.deepEqual(await session.submit(exact), first);
   const later = await session.submit({ ...exact, requestId: "later" });
   assert.equal(later.delivery, "not_delivered");
@@ -1180,11 +1187,20 @@ test("opened reward retains exact parent, set and real card identity while execu
   const inner = project(opened);
   const outerSurface = outer.snapshot.interaction.content.surface;
   const innerSurface = inner.snapshot.interaction.content.surface;
+  // Reference VisibleInteractionProjection/CardRewardSurfaceReader publish
+  // ready and reward_flow, with no second stage/can_skip surface inventory.
+  assert.equal(inner.snapshot.interaction.stage, "ready");
+  assert.deepEqual(inner.snapshot.interaction.content.context, { kind: "reward_flow", reward_kind: "card_reward" });
+  assert.equal(Object.hasOwn(innerSurface, "stage"), false);
+  assert.equal(Object.hasOwn(innerSurface, "can_skip"), false);
   assert.equal(innerSurface.parent_group_id, outerSurface.rewards[0].group_id);
   assert.equal(innerSurface.reward_set_id, outerSurface.reward_set_id);
   assert.equal(innerSurface.cards[0].entity_id, outerSurface.rewards[0].card_options[0].entity_id);
   assert.equal(innerSurface.selection_completes_reward, true);
   assert.equal(innerSurface.native_relic_refresh_subscription, "absent");
+  const skipProjection = project({ ...opened, alternatives: [{ index: 0, id: "Skip", option_id: "Skip", native_ref: "skip-real",
+    name: "Skip", title: "Skip", after_selected: "end_selection_and_do_not_complete_reward", is_native_skip: true }] });
+  assert.equal(skipProjection.snapshot.bound_actions.actions.find(action => action.label === "Skip").verb, "activate");
   assert.deepEqual([...inner.bindings.values()][0].raw_request.args, { card_ref: "creation-result" });
   assert.equal(JSON.stringify(inner.snapshot).includes("creation-result"), false);
   assert.equal(JSON.stringify(inner.snapshot).includes("real-card"), false);
@@ -1405,4 +1421,64 @@ test("event body is published only when the native current body was actually ren
   assert.equal(noBody.bound_actions.status,"complete");
   assert.equal(Object.hasOwn(noBody.interaction.content.context,"body"),false);
   assert.equal(noBody.interaction.content.context.ancient,true);
+});
+
+
+test("reward candidate previews retain native null star cost without changing the outer card", () => {
+  const slimed = { id: "CARD.SLIMED", name: "Slimed", type: "Status", cost: 1,
+    star_cost: null, description: "Exhaust.", rarity: "Status", keywords: [], card_previews: [] };
+  const card = { native_ref: "gunk-up", id: "CARD.GUNK_UP", name: "Gunk Up", type: "Skill", cost: 1,
+    star_cost: null, description: "Add a Slimed.", rarity: "Common", render_complete: true,
+    keywords: [], card_previews: [slimed, { ...slimed, id: "CARD.STAR_PREVIEW", star_cost: 2 }] };
+  const state = { ...eventState(), decision: "reward_set", reward_set_ref: "native-set",
+    rewards: [{ native_ref: "native-reward", kind: "card_choice", name: "Add card", card_options: [card] }] };
+  const projection = projectManagedCandidateDecision({ state, ...projectionIdentity });
+  const detail = [...projection.reads.values()].find(read => read.descriptor.kind === "surface_card"
+    && read.content.display_context === "reward_candidate");
+  assert.equal(detail.completeness.status, "complete");
+  assert.equal(Object.hasOwn(detail.content, "star_cost"), false);
+  assert.equal(Object.hasOwn(detail.content.card_previews[0], "star_cost"), true);
+  assert.equal(detail.content.card_previews[0].star_cost, null);
+  assert.equal(detail.content.card_previews[1].star_cost, "2");
+});
+
+test("deck public detail revision 2 preserves the native upgrade without replacing the original card", () => {
+  const state = eventState();
+  const preview = { status: "available", card: { entity_id: null, definition_id: "STRIKE_IRONCLAD",
+    name: "Strike+", type: "Attack", cost: "1", description: "Deal 9 damage.", rarity: "Basic",
+    is_upgraded: true, target_type: "AnyEnemy", keywords: [], card_previews: [] } };
+  state.player.deck[0].public_details.upgrade_preview = preview;
+  const projection = projectManagedCandidateDecision({ state, ...projectionIdentity });
+  const detail = [...projection.reads.values()].find(r => r.descriptor.kind === "surface_card");
+  assert.equal(detail.content.public_details_revision, "2");
+  assert.deepEqual(detail.content.upgrade_preview, preview);
+  assert.equal(detail.content.description, "Deal 6 damage.");
+  assert.equal(detail.completeness.status, "complete");
+  assert.equal(state.player.deck[0].upgraded, false);
+  for (const bad of [null, undefined, {}, { status: "unavailable", card: null }]) {
+    state.player.deck[0].public_details.upgrade_preview = bad;
+    const invalid = projectManagedCandidateDecision({ state, ...projectionIdentity });
+    const failed = [...invalid.reads.values()].find(r => r.descriptor.kind === "surface_card");
+    assert.equal(failed.content.public_details_revision, "2");
+    assert.equal(failed.completeness.status, "partial");
+    assert.ok(failed.completeness.missing.includes("current_native_public_card_upgrade_preview_not_captured"));
+  }
+});
+
+
+test("noncombat belt discard preserves event options, exact native slot and post-discard absence", () => {
+  const state = eventState();
+  state.player.potions = [{ native_ref: "potion-original", slot: 1, id: "ENERGY_POTION", name: "Energy Potion",
+    description: "Gain 2 Energy", can_discard: true, can_use: false, usage: "CombatOnly", keywords: [], card_previews: [], hover_facts_complete: true }];
+  const before = projectManagedCandidateDecision({ state, ...projectionIdentity });
+  assert.equal(before.snapshot.bound_actions.actions.length, 2);
+  assert.equal(before.snapshot.interaction.content.surface.options.length, 2);
+  const discard = before.snapshot.bound_actions.actions.find(action => action.label === "Discard Energy Potion");
+  assert.ok(discard);
+  assert.deepEqual(before.bindings.get(discard.bound_action_id).raw_request, {
+    cmd: "action", action: "discard_potion", args: { potion_slot: 1, potion_ref: "potion-original" } });
+  state.player.potions = [];
+  const after = projectManagedCandidateDecision({ state, ...projectionIdentity, sequence: 2 });
+  assert.equal(after.snapshot.bound_actions.actions.length, 1);
+  assert.deepEqual(after.snapshot.interaction.content.surface.non_combat_discardable_potions, []);
 });

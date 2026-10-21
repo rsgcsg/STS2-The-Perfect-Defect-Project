@@ -81,10 +81,30 @@ replaced. Interrupted initialization directories are retained and reported; the 
 adopt arbitrary old directories. Keep private local paths out of Git. An artifact's presence in
 this inventory alone does not make it a usable training set, installed model or validated result.
 
-The local Data page and paired native Workbench also expose **原生交互与观察**
+The local Data page and paired native Workbench expose **原生交互与观察**
 lifecycle controls through one Application/NativeTasks path. The format selector
-defaults to Source3; explicitly choose **Source4（保留 P1 公共基底）** for offline
-P1 conversion. Active Source4 uses the same Pause/Resume/ChangeSource/Close owner.
+defaults to **P1 原生决策**; Source3 and **Source4（保留 P1 公共基底）** remain explicit
+format choices. P1 uses the existing Application command-1 and the actual
+`declared_human / agent_native_ui / unknown` origin values. Start requires an explicit
+choice; there is no Human default. Everyday controls are Start and End/seal.
+Advanced controls pause/resume collection or save a durable prefix; pausing collection
+does not pause gameplay. These map to the existing Recorder owner and command UUID,
+with a private persisted uncertainty notice across server restart. A refresh or reopened
+browser only queries status. The CLI `recordings control --config /ABS/project.json`
+uses this same running Application API for status/start/pause/resume/prefix/close.
+A saved prefix retains its original manifest hash and watermark and is not a closed run.
+
+P1 originals appear under **录制** in the same local catalog. Explicit import preserves
+their declared origin; a Human declaration requires the independent attestation checkbox.
+Machine UI and unknown origins cannot be promoted to Human by import. In original detail,
+**生成或复用派生资料** publishes one named interpretation through the same import operation
+service. Derivation progress survives closing the page. Its original source parent, fixed
+tool identity and projection version stay separate. The projection detail shows observations,
+valid N, complete successor edges, segment count and declared external effects. A closed
+source or consecutive segment does not establish complete lossless P1 replay. Readback errors
+remain visible; explicit reconciliation only checks the original operation and never resends.
+
+For the Source formats, Active Source4 uses the same Pause/Resume/ChangeSource/Close owner.
 This is source support, not an installed Mod or Human recording qualification. They query only scalar
 recording status and use the configured local Connector (or its documented Mod
 default) to check the exact game instance. Start and ChangeSource require an explicit
@@ -889,6 +909,45 @@ structured adapters without a public installation builder retain their explicit
 `structured_installation_adapter_required` disposition.
 
 
+## Non-GUI training control
+
+The supported entry is `python -m spireagent.workbench training --help` from the
+Python environment. It calls the already running Application and its same
+`LocalTrainingService`; it does not start a second service or open a page.
+Use the selected project's private `--config PROJECT`:
+
+```sh
+python -m spireagent.workbench training capabilities --config PROJECT
+python -m spireagent.workbench training status --config PROJECT
+python -m spireagent.workbench training start --config PROJECT --input request.json
+python -m spireagent.workbench training status --config PROJECT --operation-id OPERATION
+python -m spireagent.workbench training pause --config PROJECT --input control.json
+python -m spireagent.workbench training resume --config PROJECT --input resume.json
+python -m spireagent.workbench training cancel --config PROJECT --input control.json
+python -m spireagent.workbench training reconcile --config PROJECT --input control.json
+python -m spireagent.workbench training amend_wall_budget --config PROJECT --input amendment.json
+```
+
+`request.json` is the exact typed training request described below; choose only an
+advertised recipe/placement with its already reserved source. `control.json` has
+exactly `operation_id` and `expected_attempt_id` from status. Resume also contains
+`checkpoint_id`, a fresh `intent_id` and unchanged original `limits`; an amendment
+also contains a fresh `intent_id` and cumulative `wall_seconds`. These are the
+same bodies as the browser API, not shell commands or executable paths.
+
+The private runtime control token is read from the existing configuration-bound
+runtime record; do not copy it into reports. Status returns the same operation,
+checkpoint/result IDs, selected result, actual worker state, supported actions and
+cumulative budgets seen by the page. Closing the CLI or page does not cancel the
+Application-owned child. A successful control response acknowledges intent;
+check status until the worker is terminal and inspect its actual checkpoint/result.
+On an unknown transport response, inspect the original operation/intent; the client
+does not retry the mutation or start a replacement. Unsupported targets fail
+explicitly. `LocalTrainingService` and the default local selection advertise CPU only.
+The explicit [remote Scheduler selection](#explicit-co-located-remote-scheduler)
+uses its existing owner; neither selection qualifies actual GPU execution or
+silently substitutes CPU for it.
+
 ## Local training browser boundary
 
 The existing loopback Workbench exposes authenticated `GET /api/local-training/capabilities`
@@ -907,10 +966,11 @@ exactly `operation_id`, `expected_attempt_id`, a unique `intent_id`, and an inte
 `wall_seconds` total cumulative cap (for example 600 total after an original 300).
 The matching library entry is `service.amend_wall_budget(operation_id,
 expected_attempt_id, intent_id, wall_seconds)`; inspect its snapshot before the
-separate `resume` call. Every mutation uses the existing browser cookie,
-Origin/CSRF checks and running configuration/instance guard. Remote compute is
-unavailable unless declared by an owning service; the current service advertises
-only local CPU.
+separate `resume` call. Browser mutations use the existing cookie and Origin/CSRF checks. The non-GUI
+client uses the same loopback-only private control-token boundary as recording and
+model control. Both retain the running configuration/instance guard. The `/api/local-training/` service advertises local CPU only. The explicit
+[remote Scheduler selection](#explicit-co-located-remote-scheduler) has its own
+capabilities in the same Application; actual GPU qualification remains separate.
 
 The ordinary local artifact detail offers capability-driven recipe, source,
 placement, numeric configuration and cumulative time/scratch controls. Fixed
@@ -933,3 +993,56 @@ Focused HTTP tests exercise the real service with immutable synthetic fixtures,
 CPU 2 and a private child; JavaScript tests verify presentation and exact requests.
 This is source/test evidence, not real-data training, installed/game execution,
 Human origin, model quality, remote placement or complete G2/V1 acceptance.
+
+### Explicit co-located remote Scheduler
+
+`training --execution remote` uses the same running Application and control token,
+then maps to the existing Operations/Scheduler jobs. Local CPU commands and their
+request grammar are unchanged. The project `remote_compute` has mandatory
+`deployment: "local_scheduler"`, absolute `operations_path` and `target_path`, positive
+`budget_limit`/`reserved_units`, and `compute_store`. The latter uses the existing
+frozen, credential-free Store peer binding: either `{kind: "local", directory: ABS}`
+for explicitly injected engineering providers or `{kind: "s3", bucket, endpoint,
+prefix, region}` for Modal. JSON decoding validates shape and S3Config without
+opening any Store or network. Credentials remain environment-only. The target file
+is the existing immutable ModalTarget v2 contract. Ops must differ from the private
+Curation DB. A nonempty `hub_url` is rejected by this co-located deployment, never
+silently bypassed. Production JSON has no fake-provider/import hook.
+
+Remote `prepare` and `start` take the same JSON: `intent_id`, `source_id` (reserved
+engineering P1 snapshot), full MStdConfig `config`, `max_seconds`, and `stop_after`
+(positive step or null). Prepare records the existing LocalLedger training use
+before vocabulary fitting, creates the original immutable Run, and uses the original
+`copy_artifact` to transfer its entire parent closure. It independently reopens the
+frozen peer, reads every closure payload, verifies the original P1 Run, and consumes
+all selected N points/catalogs. It returns prepared facts without enqueuing or
+submitting compute. A failed transfer does not roll back the truthful vocabulary
+exposure/use. Source/lock identity and the explicit target/device must match;
+there is no CPU fallback.
+
+Start reuses that preparation then enqueues the Run. Scheduler reads inputs and
+validates results from the same peer. Its use callback still addresses the original
+local owner/Store and full `record_p1_training_use`; no private ledger enters Ops or
+the peer. Modal without an explicit S3 peer is rejected. Verified input readback is
+not proof of worker Secret namespace injection, an immutable image, CUDA or cost
+qualification. Synthetic injected-provider execution does not establish those facts.
+
+`status --operation-id JOB` selects the original remote job. `cancel` and `reconcile`
+take `job_id` and `expected_attempt_id`. Cancel acknowledges intent without claiming
+terminal execution or selecting cancelled output. Reconcile polls only the saved
+handle; selected result/checkpoint closures are explicitly copied back to the
+original local Store for the existing Model consumer. Unknown submission never
+retries. Live pause is unsupported: choose `stop_after` before submission. Resume
+additionally takes a new budgeted `intent_id`, exact paused `checkpoint_id`,
+`max_seconds` and `stop_after`, while retaining the same immutable Run.
+
+Remote prepare/start/reconcile use a 300-second transport wait by default; the
+caller can set `--wait-seconds` (1–86400). Other commands retain 15 seconds. Complete
+Run ancestry includes original archives, so waiting is sized for real transfer and
+readback rather than merely the small vocabulary. A client timeout does not stop
+the Application handler and must not trigger automatic re-offer. Use normal
+`training status --execution remote --intent-id INTENT` to inspect existing local
+Run and associated Ops facts, without querying a peer or provider. Run existence
+alone is explicitly not transfer completion. Client exit does not end the
+Application scheduler. Reopening restores the existing Ops handle/attempt and
+creates no second local-training operation or Curation database.

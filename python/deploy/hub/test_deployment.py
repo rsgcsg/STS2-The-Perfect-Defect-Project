@@ -275,8 +275,9 @@ class PreflightTests(PosixPermissionFixture):
         with tempfile.TemporaryDirectory() as directory:
             state = Path(directory).resolve()
             target = state / "modal-target.json"
-            target.write_text(json.dumps({"schema": "stpd/modal-target-v1", "producer": producer,
+            target.write_text(json.dumps({"schema": "stpd/modal-target-v2", "producer": producer,
                                           "image": image, "gpu": "L4", "timeout_seconds": 300,
+                                          "cpu_cores": 2, "memory_mib": 8192,
                                           "storage_secret_name": "storage",
                                           "qwen_volume_name": None}))
             target.chmod(0o600)
@@ -289,6 +290,12 @@ class PreflightTests(PosixPermissionFixture):
                 self.assertEqual(report["compute"], "configured_budget_zero")
                 self.assertNotIn("private-", json.dumps(report))
                 self.assertEqual(target.read_bytes(), original)
+                old_schema = json.loads(original)
+                old_schema["schema"] = "stpd/modal-target-v1"
+                target.write_text(json.dumps(old_schema))
+                with self.assertRaisesRegex(preflight.PreflightError, "current_source_lock"):
+                    preflight.check_compute(values, secrets, state, allow_compute=False)
+                target.write_bytes(original)
                 values["STPD_HUB_BUDGET_UNITS"] = "1"
                 with self.assertRaisesRegex(preflight.PreflightError, "disable_compute_budget"):
                     preflight.check_compute(values, secrets, state, allow_compute=False)

@@ -8,6 +8,7 @@ using MegaCrit.Sts2.Core.Entities.Creatures;
 using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Nodes;
 using MegaCrit.Sts2.Core.Nodes.Cards;
+using MegaCrit.Sts2.Core.Nodes.Cards.Holders;
 using MegaCrit.Sts2.Core.Nodes.Combat;
 using MegaCrit.Sts2.Core.Nodes.CommonUi;
 using MegaCrit.Sts2.Core.Nodes.GodotExtensions;
@@ -56,6 +57,20 @@ public sealed class NativeCardOperationMethodTests
         Assert.Contains(stateBody, i => i.Member is MethodInfo m && m.Name == "ShowMultiCreatureTargetingVisuals");
         Assert.Contains(stateBody, i => i.Op == OpCodes.Ldftn && i.Member is MethodInfo predicate
             && Instructions(predicate).Any(body => body.Member is FieldInfo f && f.Name == "_isLeftMouseDown"));
+    }
+
+    [Fact]
+    public void NativeVisibleHolderLookupIncludesHeldBackendHandCardsWithoutMutatingTheModel()
+    {
+        var lookup = Instructions(Method(typeof(NPlayerHand), nameof(NPlayerHand.GetCardHolder), typeof(CardModel))).ToArray();
+        Assert.Contains(lookup, i => i.Member is FieldInfo f && f.Name == "_holdersAwaitingQueue");
+        var start = Instructions(Method(typeof(NPlayerHand), "StartCardPlay", typeof(NHandCardHolder), typeof(bool))).ToArray();
+        int reparent = Array.FindIndex(start, i => i.Member?.Name == "Reparent");
+        int begin = Array.FindIndex(start, i => i.Member?.Name == nameof(NHandCardHolder.BeginDrag));
+        Assert.True(reparent >= 0 && begin > reparent);
+        Assert.DoesNotContain(start, i => i.Member?.DeclaringType?.Name == "CardPile");
+        var drag = Instructions(Method(typeof(NHandCardHolder), nameof(NHandCardHolder.BeginDrag))).ToArray();
+        Assert.DoesNotContain(drag, i => i.Member?.DeclaringType?.Name == "CardPile");
     }
 
     [Fact]

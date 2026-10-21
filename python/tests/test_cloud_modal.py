@@ -16,6 +16,20 @@ def target() -> ModalTarget:
     return ModalTarget(PRODUCER, "registry.example/stpd@sha256:" + "d" * 64)
 
 
+def test_resource_limits_are_frozen_into_target_identity():
+    selected = target()
+    assert selected.to_dict()["schema"] == "stpd/modal-target-v2"
+    assert ModalTarget.decode(selected.to_dict()) == selected
+    assert replace(selected, cpu_cores=4).target_id != selected.target_id
+    assert replace(selected, memory_mib=16384).app_name != selected.app_name
+    for limits in ({"cpu_cores": 0}, {"memory_mib": 0}, {"cpu_cores": True}):
+        with pytest.raises(BoundaryError):
+            replace(selected, **limits)
+    legacy = {**selected.to_dict(), "schema": "stpd/modal-target-v1"}
+    with pytest.raises(BoundaryError, match="unsupported_schema"):
+        ModalTarget.decode(legacy)
+
+
 class FakeCall:
     object_id = "fc-fixed"
 

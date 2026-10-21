@@ -261,3 +261,20 @@ test("generated choice uses the existing Reference DTO and keeps all rich facts 
   assert.equal(project(missing).snapshot.completeness.status,"partial");
   assert.equal(project(missing).bindings.size,0);
 });
+
+// Native Lead Paperweight currently reaches this DTO without a qualified combat
+// domain. It must remain explicitly incomplete rather than throw on null context.
+test("unqualified generated selector without HUD publishes a partial decodable basis", () => {
+  const state = selector({ choose: true });
+  state.combat_context = null;
+  state.native_selector_complete = false;
+  state.native_selector_missing = ["exact_native_selector_current_domain"];
+  const projection = project(state);
+  const snapshot = decodeBaseSnapshot(projection.snapshot).data;
+  assert.equal(snapshot.completeness.status, "partial");
+  assert.ok(snapshot.completeness.missing.includes("exact_current_native_generated_choice_and_details"));
+  assert.equal(snapshot.interaction.content.context.kind, "selection");
+  assert.equal(snapshot.bound_actions.status, "unavailable");
+  assert.deepEqual(snapshot.bound_actions.actions, []);
+  assert.equal(projection.bindings.size, 0);
+});

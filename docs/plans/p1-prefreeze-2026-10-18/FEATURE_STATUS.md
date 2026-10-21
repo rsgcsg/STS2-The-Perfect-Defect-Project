@@ -1,4 +1,4 @@
-# 功能与合同状态表（K2 草案）
+# 功能与合同状态表（当前汇合；旧资格保留）
 
 基准：develop `60dc0a89ad6ae19b26e0e1bbf71517471f409069`；只读副本 `67adeccb`，两者 tree 同为 `8b565b29be0ff76e4c09df5c2bdc5fe0fb5038ca`。此基准是原调查快照；第19轮已合入ea7c与新候选事实按当前定义及下面定点更新解释，不把旧source/资格回写成新结果。只列可找到owner的能力；不以旧green判当前资格。
 
@@ -6,29 +6,35 @@
 
 历史查过：`docs/ARCHITECTURE.md`、`COMPONENTS.md`、ADR0016、`DOCUMENT_MAP.md`、`design/BASELINE_DESIGN_HISTORY.zh-CN.md`、`plans/BASELINE_TASKS.zh-CN.md`、各组件地图及研究地图；复用已有角色/链路/19项历史任务去向，不新增任务编号/协议/registry。
 
-本轮每个组件/协议/格式的位置、why与首训价值见[链路用途表](CHAIN_PURPOSES.md)，当前已定/待批和实际进度由[唯一合成定义同步页](SCOPE_v0.3.zh-CN.md)路由。
+每个组件/协议/格式的位置、why与首训价值见[链路用途表](CHAIN_PURPOSES.md)。当前任务、已定/待决及实际进度只由[CURRENT](../../memory/CURRENT.md)链接的唯一任务路由；[范围定义](SCOPE_v0.3.zh-CN.md)保其合同/历史范围，不独立派工。
+
+2026-10-20用户新要求覆盖全部大小/历史/当前功能；本表继续作为唯一功能入口，B既有K账本/C研究映射正补实际owner/支持入口/核心实现/消费者/requires-provides/格式版本/证据/去向，**尚未完成逐功能闭合**。以下旧快照行不得作为今日未录制/未接T0的事实或派工依据；最新实物先查CURRENT，归档/未完成需回原owner核。三自然来源、事务03和public采集技术链已交，不代日常固定GUI/Store、B*或最终Reference/R20/INFO。
+
+本次10-20汇合沿同一上层角色→连接→合同→核心owner→真实caller→格式→证据。CSV新增requires/provides、业务语义owner、状态权威、历史去向和未闭合列；以原function键合入C21行与A/B定点结果，不按PR/目录另算功能。未重验的行明确标historical_snapshot_not_revalidated_in_this_batch，不当当前通过或自动退休。GUI/CLI/agent薄映射同owner；Reference/Managed是同Host角色实现，P1是可换profile，保存原件/研究用途/训练资格分开。
+
+当前P1 pipeline只新增应用薄接，未恢复Hub/campaign为本地Store前置；旧Hub仍有实际团队/设备/分享caller，不能称已废除。初始私有保全脚本只保本轮具名一次性生产证据，产品日常使用原operation+共享storage函数，后台与热集资格按下表明确剩余。
 
 | 层 | 历史功能/能力 | 状态 | owner 文档 | 证据/实现入口 | 限定与剩余 |
 |---|---|---|---|---|---|
 | 目标与角色 | 完整局持续变强Agent | 未完成 | [docs/ARCHITECTURE.md](../../ARCHITECTURE.md) | [docs/DECISIONS.md](../../DECISIONS.md) | 长期目标；当前P1技术冻结，策略/训练另验 |
 | 目标与角色 | 可复验优于随机Agent | 未完成 | [python/docs/MANAGED_SUITE_EVALUATION.md](../../../python/docs/MANAGED_SUITE_EVALUATION.md) | [docs/DECISIONS.md](../../DECISIONS.md) | Q1后续科学门，工程通过不代表策略提升 |
-| 合同 | P1公开观察/单向语义目录 | 现行 | [docs/protocols/P1_GLOBAL_R1.zh-CN.md](../../protocols/P1_GLOBAL_R1.zh-CN.md) | [docs/memory/CURRENT.md](../../memory/CURRENT.md) | r1.3语义已选；全幕/严格等价未完成 |
+| 合同 | P1公开观察/单向语义目录 | 现行 | [docs/protocols/P1_GLOBAL_R1.zh-CN.md](../../protocols/P1_GLOBAL_R1.zh-CN.md) | [docs/memory/CURRENT.md](../../memory/CURRENT.md) | 当前r1.4；P1是可替换公开profile，Host角色与Source/record/Input/Target/checkpoint格式分开；全幕/严格等价未完成。 |
 | 合同 | 旧P1普通战斗/atomic C1 profile | 归档 | [docs/P1_CAPTURE_COMPARISON.md](../../P1_CAPTURE_COMPARISON.md) | [docs/protocols/P1_GLOBAL_R1.zh-CN.md](../../protocols/P1_GLOBAL_R1.zh-CN.md) | 按原profile读取；不能充当全局P1 |
 | 合同 | Player Environment snapshot/Read/BoundAction/Receipt | 现行 | [components/connector/docs/player-environment/PROTOCOL.md](../../../components/connector/docs/player-environment/PROTOCOL.md) | [docs/ARCHITECTURE.md](../../ARCHITECTURE.md) | Host事实及原生执行边界；不是Model输入 |
 | 合同 | native logical/text-menu-v2 | 归档 | [components/connector/docs/TEXT_MENU_PROFILE.md](../../../components/connector/docs/TEXT_MENU_PROFILE.md) | [docs/COMPONENTS.md](../../COMPONENTS.md) | 已有有界实现/旧消费者；本轮P1不沿用全部浏览语义 |
 | 合同 | 通用Agent-session端口 | 现行 | [components/policy-runtime/docs/AGENT_SESSION_PROTOCOL.md](../../../components/policy-runtime/docs/AGENT_SESSION_PROTOCOL.md) | [docs/COMPONENTS.md](../../COMPONENTS.md) | Consume/ACK/Act/Await/Abstain/Close；P1桥接复用 |
 | 合同 | P1子Agent端口与桥接 | 现行 | [docs/protocols/P1_GLOBAL_R1.zh-CN.md](../../protocols/P1_GLOBAL_R1.zh-CN.md) | [components/policy-runtime/examples/p1/session-bridge.mjs](../../../components/policy-runtime/examples/p1/session-bridge.mjs) | agent-port-1；当前桥不转发result，原Runtime保存结果 |
 | 合同 | legacy score-vector Policy端口 | 归档 | [components/policy-runtime/README.md](../../../components/policy-runtime/README.md) | [docs/COMPONENTS.md](../../COMPONENTS.md) | 保留实际旧消费者；不是新主线或已退休声明 |
-| 合同 | AgentComposition/ExecutionRequest | 现行 | [docs/adr/0016-agent-composition-and-execution-request.md](../../adr/0016-agent-composition-and-execution-request.md) | [python/docs/AGENT_EXECUTION_CONTRACT.md](../../../python/docs/AGENT_EXECUTION_CONTRACT.md) | 实际PublicM2/Teacher服务接缝已有；ADR末段状态陈旧 |
+| 合同 | AgentComposition/ExecutionRequest | 现行 | [docs/adr/0016-agent-composition-and-execution-request.md](../../adr/0016-agent-composition-and-execution-request.md) | [python/docs/AGENT_EXECUTION_CONTRACT.md](../../../python/docs/AGENT_EXECUTION_CONTRACT.md) | PublicM2/Teacher既有实际服务接缝；ADR的Implementation and later refinement已指回Agent execution/Local model task flow，由原owner给当前支持范围，不另造启动门 |
 | 合同 | Goal/witness与Task outcome | 现行 | [python/docs/AGENT_EXECUTION_CONTRACT.md](../../../python/docs/AGENT_EXECUTION_CONTRACT.md) | [docs/plans/AGENT_RUN_COMPLETION_2026-10-11.md](../AGENT_RUN_COMPLETION_2026-10-11.md) | Task、terminal、operation、strategy分轴；旧缺证据仍unknown |
 | 合同 | 通用Host core/extensions匹配 | 未完成 | [docs/ARCHITECTURE.md](../../ARCHITECTURE.md) | [docs/COMPONENTS.md](../../COMPONENTS.md) | 职责已定，合同分布在原owner；无已完成万能Host API |
 | 环境 | Native Foundation决策/生命周期 | 现行 | [components/native-foundation/README.md](../../../components/native-foundation/README.md) | [docs/NATIVE_SEAM_MATRIX.md](../../NATIVE_SEAM_MATRIX.md) | 只读原生事实/lineage；不新增合法性权威 |
-| 环境 | Reference真实游戏Mod | 现行 | [components/connector/docs/ARCHITECTURE.md](../../../components/connector/docs/ARCHITECTURE.md) | [docs/memory/CURRENT.md](../../memory/CURRENT.md) | 第19轮6c6b已装/loaded exact、English/native EndTurn阳性；Source4转换预检未PASS；旧888/0db保持各自资格 |
+| 环境 | Reference真实游戏Mod | 现行 | [components/connector/docs/ARCHITECTURE.md](../../../components/connector/docs/ARCHITECTURE.md) | [docs/memory/CURRENT.md](../../memory/CURRENT.md) | rc46当前730616d2/MVID0949冷加载；popup Play/End工程6actions PASS；新Human窗default instant active。旧6c6b等保原资格，不称全幕/新自然局完成。 |
 | 环境 | Managed无界面Host | 现行 | [components/host-runtime/docs/ARCHITECTURE.md](../../../components/host-runtime/docs/ARCHITECTURE.md) | [docs/memory/CURRENT.md](../../memory/CURRENT.md) | 当前a70d8de1，A03两loss完整terminal equal、170/293和236/432选择相等；整轨非严格；新英文严格0/3 |
 | 环境 | Host发现/隔离/launch/reset/stop | 现行 | [components/host-runtime/docs/OPERATIONS.md](../../../components/host-runtime/docs/OPERATIONS.md) | [components/host-runtime/docs/COMPATIBILITY.md](../../../components/host-runtime/docs/COMPATIBILITY.md) | 进程与环境owner，非游戏规则owner |
 | 环境 | Headless/Native UI显示选择 | 现行 | [docs/ARCHITECTURE.md](../../ARCHITECTURE.md) | [components/host-runtime/docs/COMPATIBILITY.md](../../../components/host-runtime/docs/COMPATIBILITY.md) | 是Host配置，不是独立规则实现的移植证明 |
 | 环境 | 原生地图存档/恢复机制 | 现行 | [components/host-runtime/docs/OPERATIONS.md](../../../components/host-runtime/docs/OPERATIONS.md) | [docs/evidence/MANAGED_MAP_SAVE_ROUNDTRIP_2026-09-30.md](../../evidence/MANAGED_MAP_SAVE_ROUNDTRIP_2026-09-30.md) | 已有旧候选roundtrip，P1 checkpoint新闭包不能继承资格 |
-| 环境 | P1地图checkpoint/续玩 | 未完成 | [components/host-runtime/README.md](../../../components/host-runtime/README.md) | /Users/fire/Desktop/SpireAgentProject/claude-handoff-2026-10-13/replies/P1-round15-C-map-continue-2026-10-18.md（本机精确出处） | #202已合入；S05只属于0affa651/1482的有界save/restore/前进，Reference仍未验，不向a70d新候选转贴 |
+| 环境 | P1地图checkpoint/续玩 | 未完成 | [components/host-runtime/README.md](../../../components/host-runtime/README.md) | /Users/fire/Desktop/SpireAgentProject/claude-handoff-2026-10-13/replies/P1-round15-C-map-continue-2026-10-18.md | 已有saved→run_resumed原生事实；跨process exact save parent未闭合。有限map save/load不是普通HumanContinue全通过，suffix与祖先组不伪造。 |
 | 环境 | Managed性能/并行容量 | 归档 | [components/host-runtime/docs/MEASUREMENT.md](../../../components/host-runtime/docs/MEASUREMENT.md) | [components/host-runtime/docs/evidence/MANAGED_HOST_PERFORMANCE_ROUTE_SELECTION_2026-08-21.md](../../../components/host-runtime/docs/evidence/MANAGED_HOST_PERFORMANCE_ROUTE_SELECTION_2026-08-21.md) | 保留原机器/候选/计量条件，非当前吞吐保证 |
 | 环境 | Windows支持/资格 | 未完成 | [docs/TESTING.md](../../TESTING.md) | [components/host-runtime/docs/evidence/WINDOWS_MANAGED_EXACT_BUILD_ADMISSION_2026-08-22.md](../../../components/host-runtime/docs/evidence/WINDOWS_MANAGED_EXACT_BUILD_ADMISSION_2026-08-22.md) | 旧Windows候选历史有效；本次P1全幕Windows无新资格 |
 | P1能力 | 公平完整公开事实/别名/隐藏牌序 | 现行 | [docs/protocols/P1_GLOBAL_R1.zh-CN.md](../../protocols/P1_GLOBAL_R1.zh-CN.md) | [components/connector/sdk/typescript/src/p1Global](../../../components/connector/sdk/typescript/src/p1Global) | 规范已定，覆盖逐行验收 |
@@ -49,19 +55,19 @@
 | 采集 | Human因果trace4/canonical3/bundle3 | 现行 | [components/annotator/docs/DATA_CONTRACT.md](../../../components/annotator/docs/DATA_CONTRACT.md) | [docs/evidence/PR25_RC4_FULL_RUN_HUMAN_PASS_2026-09-12.md](../../evidence/PR25_RC4_FULL_RUN_HUMAN_PASS_2026-09-12.md) | 成熟旧候选两局524 canonical通过；不转移到P1/现装 |
 | 采集 | H与execution S及causal successor分离 | 现行 | [components/annotator/docs/ARCHITECTURE.md](../../../components/annotator/docs/ARCHITECTURE.md) | [docs/FULL_RUN_DATA_CHAIN.md](../../FULL_RUN_DATA_CHAIN.md) | 唯一SemanticBoundaryTracker；不以晚帧补因果 |
 | 采集 | 原生子选择/rapid queued输入/owner lineage | 现行 | [components/annotator/docs/DATA_CONTRACT.md](../../../components/annotator/docs/DATA_CONTRACT.md) | [docs/evidence/PR25_RC4_FULL_RUN_HUMAN_PASS_2026-09-12.md](../../evidence/PR25_RC4_FULL_RUN_HUMAN_PASS_2026-09-12.md) | 父子分别留证；原候选真实覆盖保留原义 |
-| 采集 | RecordingService Start/Pause/Close/reconnect | 现行 | [docs/ARCHITECTURE.md](../../ARCHITECTURE.md) | [docs/ANNOTATOR_COLLECTION.md](../../ANNOTATOR_COLLECTION.md) | Close收据与flush；Pause缺口不伪装连续 |
+| 采集 | RecordingService Start/Pause/Close/reconnect | 现行 | [docs/ARCHITECTURE.md](../../ARCHITECTURE.md) | [docs/ANNOTATOR_COLLECTION.md](../../ANNOTATOR_COLLECTION.md) | 当前P1 typed command/status/prefix映射现Application；origin声明三值；未知不重发。普通reconnect与旧semantic recover不能冒充P1中断恢复。 |
 | 采集 | record2/bundle2兼容导出/研究导入 | 归档 | [docs/FULL_RUN_DATA_CHAIN.md](../../FULL_RUN_DATA_CHAIN.md) | [python/docs/HUMAN_CORPUS.md](../../../python/docs/HUMAN_CORPUS.md) | 真实消费者保留；不覆盖canonical3全部子选择 |
 | 采集 | trace1-3/canonical2/ledger1-2/record1 | 归档 | [docs/FULL_RUN_DATA_CHAIN.md](../../FULL_RUN_DATA_CHAIN.md) | [components/annotator/docs/DATA_CONTRACT.md](../../../components/annotator/docs/DATA_CONTRACT.md) | 归档reader/fixture；无新producer，不重写bytes |
 | 采集 | 历史native-action-ledger运行权威 | 废弃 | [docs/ARCHITECTURE.md](../../ARCHITECTURE.md) | [docs/FULL_RUN_DATA_CHAIN.md](../../FULL_RUN_DATA_CHAIN.md) | 不再是当前admission/causal状态机；原件reader保留 |
 | 采集 | Source1/Source2声明/attachment epoch | 归档 | [components/annotator/docs/SOURCE_SESSION_PROFILE.md](../../../components/annotator/docs/SOURCE_SESSION_PROFILE.md) | [components/annotator/docs/SOURCE_SESSION_PROFILE_V2.md](../../../components/annotator/docs/SOURCE_SESSION_PROFILE_V2.md) | 历史格式保留原义；不自动补Source3/4证明 |
-| 采集 | Source3有序public输入/原始basis | 现行 | [components/annotator/docs/SOURCE_SESSION_PROFILE_V3.md](../../../components/annotator/docs/SOURCE_SESSION_PROFILE_V3.md) | [python/docs/NATIVE_SOURCE3_COLLECTION.md](../../../python/docs/NATIVE_SOURCE3_COLLECTION.md) | 原始捕获顺序，非canonical3因果证明；Workbench默认 |
+| 采集 | Source3有序public输入/原始basis | 现行 | [components/annotator/docs/SOURCE_SESSION_PROFILE_V3.md](../../../components/annotator/docs/SOURCE_SESSION_PROFILE_V3.md) | [python/docs/NATIVE_SOURCE3_COLLECTION.md](../../../python/docs/NATIVE_SOURCE3_COLLECTION.md) | 原始捕获顺序，非canonical3因果证明；Source3是保留的显式格式选择。当前正常采集默认P1原生决策，操作归PROJECT_CONSOLE，不按历史Source3默认描述派工 |
 | 采集 | Source4完整public-basis/Reads/carrier | 现行 | [components/annotator/docs/SOURCE_SESSION_PROFILE_V3.md](../../../components/annotator/docs/SOURCE_SESSION_PROFILE_V3.md) | [tools/source4-to-p1.mjs](../../../tools/source4-to-p1.mjs) | 显式Source4复用原引擎；public-basis/all-Read原件合同保留；真实producer/转换闭环见当前B状态，不因有字段宣称通过 |
-| 采集 | Source4→P1离线分类/转换 | 未完成 | [components/annotator/docs/SOURCE_SESSION_PROFILE_V3.md](../../../components/annotator/docs/SOURCE_SESSION_PROFILE_V3.md) | [tools/source4-to-p1.mjs](../../../tools/source4-to-p1.mjs) | report-v3显式run-continuity与whole_run源码已交；真实initialpublication1失败/gap1/首mapvote unmatched待定位，完整新英文整局未过 |
+| 采集 | Source4→P1离线分类/转换 | 未完成 | [components/annotator/docs/SOURCE_SESSION_PROFILE_V3.md](../../../components/annotator/docs/SOURCE_SESSION_PROFILE_V3.md) | [tools/source4-to-p1.mjs](../../../tools/source4-to-p1.mjs) | 原Source4首publication失败及可读诊断保原资格；当前P1由P1-native满足。Source4未来profile/实际旧consumer保留，不机械迁回、不默删。 |
 | 采集 | AgentRunEvidence/直接sample原件 | 现行 | [components/policy-runtime/docs/AGENT_SESSION_PROTOCOL.md](../../../components/policy-runtime/docs/AGENT_SESSION_PROTOCOL.md) | [python/docs/NATIVE_AGENT_SAMPLED_ADMISSION.md](../../../python/docs/NATIVE_AGENT_SAMPLED_ADMISSION.md) | 与Source3可独立；真实offer/input/ACK/directive joins |
 | 采集 | 旧P1 episode-record-1单文件记录 | 归档 | [docs/protocols/P1_GLOBAL_R1.zh-CN.md](../../protocols/P1_GLOBAL_R1.zh-CN.md) | [components/policy-runtime/README.md](../../../components/policy-runtime/README.md) | 独立保留的旧记录/convert lane，不是当前Agent CLI唯一NDJSON格式 |
 | 采集 | 当前P1 Runtime Agent-session目录记录 | 现行 | [components/policy-runtime/README.md](../../../components/policy-runtime/README.md) | [components/evidence/README.md](../../../components/evidence/README.md) | agent-session-run-1/profile p1-global-r1/adapter p1-session-bridge；global_source原件+frame Consume ACK Receipt Result，独立Annotator/Source4 |
-| 采集 | P1 chooser真人来源 | 现行 | [docs/protocols/P1_GLOBAL_R1.zh-CN.md](../../protocols/P1_GLOBAL_R1.zh-CN.md) | [docs/memory/CURRENT.md](../../memory/CURRENT.md) | human-p1-chooser≠原生Human操作；简首页不证明只看P1 |
-| 采集 | P1 convert/replay/trajectory离线工具 | 现行 | [docs/protocols/P1_GLOBAL_R1.zh-CN.md](../../protocols/P1_GLOBAL_R1.zh-CN.md) | [docs/P1_CAPTURE_COMPARISON.md](../../P1_CAPTURE_COMPARISON.md) | 每种工具守自己record/profile语义，不能以same_record当跨Host |
+| 采集 | P1 chooser真人来源 | 现行 | [docs/protocols/P1_GLOBAL_R1.zh-CN.md](../../protocols/P1_GLOBAL_R1.zh-CN.md) | [docs/memory/CURRENT.md](../../memory/CURRENT.md) | 当前日常真人来源走P1-native公开录制Application，actual H/native witness/execution S完整PB分别保留。旧chooser保原profile/显式工具用途，不能代替当前日常入口或授Human证明。 |
+| 采集 | P1 convert/replay/trajectory离线工具 | 现行 | [docs/protocols/P1_GLOBAL_R1.zh-CN.md](../../protocols/P1_GLOBAL_R1.zh-CN.md) | [docs/P1_CAPTURE_COMPARISON.md](../../P1_CAPTURE_COMPARISON.md) | 03及10-20的B*旧字节/失败保留；用户已定28处奖励返回连续，不再仅因此断开next/reset。本轮新派生→Store→reader结果只看当前任务/A原收据；药水缺项、缺H和unknown不随之放行。旧820N/unassigned快照不当当前候选全集。 |
 | 证据 | audit/pack/verify/immutable content store | 现行 | [components/evidence/README.md](../../../components/evidence/README.md) | [docs/FULL_RUN_DATA_CHAIN.md](../../FULL_RUN_DATA_CHAIN.md) | 内容完整性不授予Human/研究/训练资格 |
 | 证据 | 传输/receiver receipt/Close上传 | 现行 | [components/evidence/DELIVERY.md](../../../components/evidence/DELIVERY.md) | [python/docs/COLLECTION_FLOW.md](../../../python/docs/COLLECTION_FLOW.md) | 复用队列与收据；上传不自动数据入选 |
 | 应用 | 本地/云统一项目console | 现行 | [python/docs/PROJECT_CONSOLE.md](../../../python/docs/PROJECT_CONSOLE.md) | [python/docs/STATUS.md](../../../python/docs/STATUS.md) | 共享业务owner；旧服务收据不证明现部署 |
@@ -73,7 +79,7 @@
 | 应用 | Mod内完整统一Workbench所有页 | 归档 | [docs/UI_INTERACTION_SPEC.md](../../UI_INTERACTION_SPEC.md) | [docs/COMPONENTS.md](../../COMPONENTS.md) | 保留历史完整GUI目标，当前用户明确API/库/CLI主、GUI薄映射、复杂GUI/团队不做；不是本次冻结实现门 |
 | 应用 | Mod Recorder/Runtime诊断控制页 | 现行 | [docs/UI_INTERACTION_SPEC.md](../../UI_INTERACTION_SPEC.md) | [apps/ingame-ui/README.md](../../../apps/ingame-ui/README.md) | typed应用命令；无直接合法性/录制写权限 |
 | 应用 | R20外部独立Agent包两Host | 未完成 | [docs/protocols/P1_GLOBAL_R1.zh-CN.md](../../protocols/P1_GLOBAL_R1.zh-CN.md) | [docs/memory/CURRENT.md](../../memory/CURRENT.md) | 2684B外包及harness已备；K6定位已交，现API/库/CLI路径可复用，最终tuple实际R20仍待，不要求新增复杂GUI |
-| 应用 | R21选择器简洁首页 | 现行 | [docs/plans/P1_TERMINAL_UPGRADE_2026-10-17.md](../P1_TERMINAL_UPGRADE_2026-10-17.md) | /Users/fire/Desktop/SpireAgentProject/claude-handoff-2026-10-13/replies/P1-round15-C-selector-2026-10-18.md（本机精确出处） | PR199显示代码已在60dc基准；旧commands保留；不因此声称新真人整局资格 |
+| 应用 | R21选择器简洁首页 | 现行 | [docs/plans/P1_TERMINAL_UPGRADE_2026-10-17.md](../P1_TERMINAL_UPGRADE_2026-10-17.md) | /Users/fire/Desktop/SpireAgentProject/claude-handoff-2026-10-13/replies/P1-round15-C-selector-2026-10-18.md | PR199显示代码已在60dc基准；旧commands保留；不因此声称新真人整局资格 |
 | 执行 | Human/Shadow/One-Step/Auto有限控制 | 现行 | [components/policy-runtime/README.md](../../../components/policy-runtime/README.md) | [docs/COMPONENTS.md](../../COMPONENTS.md) | 公共同controller，推理/策略仍归Agent |
 | 执行 | Stop/expiry/budget/unknown fence | 现行 | [components/policy-runtime/README.md](../../../components/policy-runtime/README.md) | [docs/ARCHITECTURE.md](../../ARCHITECTURE.md) | 进程退出、Task、cleanup分别验；unknown非自动retry |
 | 执行 | SDK-direct/in-process普通产品driver | 未完成 | [docs/ARCHITECTURE.md](../../ARCHITECTURE.md) | [docs/adr/0016-agent-composition-and-execution-request.md](../../adr/0016-agent-composition-and-execution-request.md) | 架构可行，不是已有合格产品路径；无IPC瓶颈实证 |
@@ -99,7 +105,7 @@
 | 工程 | 独立版本/BOM/install/load/rollback | 现行 | [docs/VERSIONING.md](../../VERSIONING.md) | [apps/game-mod/README.md](../../../apps/game-mod/README.md) | 源码/产物/安装/加载身份分别保留；非同SHA强制升级 |
 | 工程 | CI portable/每日Windows/发布前Windows | 现行 | [docs/TESTING.md](../../TESTING.md) | [docs/DEVELOPMENT_WORKFLOW.md](../../DEVELOPMENT_WORKFLOW.md) | 当前工程门不转移到游戏/训练资格 |
 | 工程 | Workshop/发行渠道 | 未完成 | [docs/plans/BASELINE_TASKS.zh-CN.md](../BASELINE_TASKS.zh-CN.md) | [docs/DEVELOPMENT_WORKFLOW.md](../../DEVELOPMENT_WORKFLOW.md) | 保留历史产品目标；未核出P1当前完整发布资格 |
-| 工程 | K项目资产/归档/新人交接 | 未完成 | [docs/DOCUMENT_MAP.md](../../DOCUMENT_MAP.md) | [docs/ARCHITECTURE.md](../../ARCHITECTURE.md) | 本报告是K2草案；K0/K1/K3/K4未完成不冻结 |
+| 工程 | K项目资产/归档/新人交接 | 未完成 | [docs/DOCUMENT_MAP.md](../../DOCUMENT_MAP.md) | [docs/ARCHITECTURE.md](../../ARCHITECTURE.md) | 原K1账本/功能表保留真实去向；职责、导航、操作、历史复用与接手验收未全闭合，不凭登记宣布全项目收敛 |
 | 数据与学习 | AgenticSTS外部历史源适配 | 归档 | [python/docs/AGENTICSTS_IMPORT.md](../../../python/docs/AGENTICSTS_IMPORT.md) | [python/docs/evidence/AGENTICSTS_DATA_ADMISSION_AUDIT_2026-08-22.md](../../../python/docs/evidence/AGENTICSTS_DATA_ADMISSION_AUDIT_2026-08-22.md) | 只在原license/provenance/缺失字段资格内使用；不冒当前Host真值 |
 | 数据与学习 | Full-Run Gold任务/E0-E7工具 | 现行 | [python/docs/FULLRUN_GOLD.md](../../../python/docs/FULLRUN_GOLD.md) | [python/docs/BENCHMARKS.md](../../../python/docs/BENCHMARKS.md) | Gold配置/工具不等于已有合格Gold、科学Core通过 |
 | 数据与学习 | 独立D-Simple M2持续状态计算核 | 现行 | [python/docs/research/DSIMPLE_MEMORY.md](../../../python/docs/research/DSIMPLE_MEMORY.md) | [python/docs/NATIVE_STRUCTURED_MODEL.md](../../../python/docs/NATIVE_STRUCTURED_MODEL.md) | 计算核可用不证明P1新Input/Target适配完成 |
@@ -109,4 +115,25 @@
 | 环境 | Managed legacy choose/战斗堆selector | 归档 | [components/host-runtime/docs/MANAGED_SELECTOR_CONTEXT.md](../../../components/host-runtime/docs/MANAGED_SELECTOR_CONTEXT.md) | [components/host-runtime/docs/ARCHITECTURE.md](../../../components/host-runtime/docs/ARCHITECTURE.md) | 原同步单次callback帧合同；不冒全P1 |
 | 执行 | 共享请求lifetime/取消来源 | 现行 | [components/connector/docs/player-environment/PROTOCOL.md](../../../components/connector/docs/player-environment/PROTOCOL.md) | [components/connector/docs/player-environment/REQUEST_LIFETIME_SOURCE.md](../../../components/connector/docs/player-environment/REQUEST_LIFETIME_SOURCE.md) | 请求generation/取消语义归原owner，dated报告保留限定 |
 | 工程 | 全局serialized-input recorder候选 | 废弃 | [docs/FULL_RUN_SEMANTIC_COVERAGE.md](../../FULL_RUN_SEMANTIC_COVERAGE.md) | [docs/FULL_RUN_DATA_CHAIN.md](../../FULL_RUN_DATA_CHAIN.md) | 曾阻断普通UI，已撤出active runtime；证据/fixture保留 |
-| 工程 | K快捷键旧LiveUI入口 | 归档 | [docs/LIVE_UI.md](../../LIVE_UI.md) | [docs/UI_INTERACTION_SPEC.md](../../UI_INTERACTION_SPEC.md) | 旧页记K但现owner明确无K；需要整合修导航，不按旧页操作 |
+| 工程 | K快捷键旧LiveUI入口 | 归档 | [docs/LIVE_UI.md](../../LIVE_UI.md) | [docs/UI_INTERACTION_SPEC.md](../../UI_INTERACTION_SPEC.md) | LIVE_UI已明确K为历史描述；当前操作从根导航进入原UI/应用guide。本轮只核导航限定，未授当前UI/录制资格 |
+| 应用与数据 | P1原件导入与具名发布 | 现行 | [python/docs/B_PIPELINE_HANDOFF.md](../../../python/docs/B_PIPELINE_HANDOFF.md) | [python/tests/test_p1_recording_store.py](../../../python/tests/test_p1_recording_store.py) | 单源旧03+新B*、rolling原件/B*实际通过；三旧源其余两具名应用ID仍未交。 |
+| 应用与数据 | P1压缩保全与按ID取回 | 现行 | [python/docs/B_PIPELINE_HANDOFF.md](../../../python/docs/B_PIPELINE_HANDOFF.md) | [python/tests/test_p1_recording_store.py](../../../python/tests/test_p1_recording_store.py) | R2 25,087,767B压缩/290,696,684B成员全回读，任务分配峰50,520,064B；正常service cloud peer可配置但维护disabled。 |
+| 应用与数据 | P1录制查询与可重建元数据 | 现行 | [python/docs/B_PIPELINE_HANDOFF.md](../../../python/docs/B_PIPELINE_HANDOFF.md) | [python/tests/test_p1_recording_store.py](../../../python/tests/test_p1_recording_store.py) | 真实PB可给角色/进阶/修饰/首观察act/floor与end.result；language/mode/gameversion/seed/root/ancestry仍unknown。 |
+| 应用与数据 | P1封存后台编排与容量周转 | 未完成 | [python/docs/B_PIPELINE_HANDOFF.md](../../../python/docs/B_PIPELINE_HANDOFF.md) | [python/tests/test_p1_recording_store.py](../../../python/tests/test_p1_recording_store.py) | 已实现封存编排/空间预估；当天实际新Tool/candidate范围由A排，无自动删原件/用户局。 |
+
+
+## 本轮有界路由复核（2026-10-21）
+
+原104行全部保留，`owner`及`evidence`路径共208/208实际存在；这是路由核对，不是104项功能重新通过。原CSV本轮补34行当前共享核、Runtime、Host、采集/Store应用和工程入口的实际源码/消费者/边界，标`D_current_source_route_only`，不把旧运行资格转给新候选。当前CSV有63行entry/implementation、58行direct_static_callers、60行non_gui_entry；空白含目标、未实现合同和历史项，不能读成其余都是未实现功能，也不能把有值读成已实际操作。
+
+这些新增路由包括P1的`reduce`/专用reward/selector/shop投影及原Runtime/compare消费者、Host既有native-ui/保存接缝、Recording/原因果tracker、Evidence/原应用入口、Runtime控制和原测试选择。旧21行C研究caller、6行A/B接缝及4行B实物记录保原证据范围；其余39行仍是未重新核当前caller的历史快照，不自动归档、删除、迁回或获得当前资格。各行原状态未改变；当前能力缺口仍由原owner和CURRENT任务推进。日常操作及失败/恢复步骤只在[根操作导航](../../DOCUMENT_MAP.md#按我要做什么进入)所链接的功能guide维护，不在CSV复制一份SOP。
+
+本轮接手走查实际跑了Host组件context与T0/compute/Agent三条`--help`；第一条Python环境缺Torch失败保留，换成既有ML环境后均成功。它们未做训练、网络、游戏、安装或云执行，不能宣布全项目收敛或正式GPU首训就绪。A/B/C的实现、数据派生、恢复/控制和组合运行结果由集成者核原产物后进入CURRENT链接任务，本表不复制worker动态数字。
+
+## 非GUI入口核对（2026-10-20本批增量）
+
+原CSV新增non_gui_entry/gui_mapping/non_gui_verification/non_gui_gap四列，合C的21研究行和B的5条当前连接。空白仍表示本批未重新核对，不能读成所有历史功能已具备正常agent入口。workbench承载Application用例和服务，GUI是可选客户；目录名称不构成领域归属或验收依据。
+
+Host上下文接缝在原Tool注册增加显式host_lifecycle/native_log_file，同一setup消费者传原公开CLI的log/port，前后核pid/runtime/endpoint并保原setup严格身份检查。正常安装2fa3723d/精确Evidence8682d7e7、固定Tool d25c0ab1，纯库LocalRecordingCatalog.read实际ready/current_runtime，33个封存候选、3个未封目录；这些是目录观察，不是33份已验证bundle。game-stopped bind/upgrade路径仍走原合同。
+
+10-20快照中已有LocalTrainingService与持久Application，但当时普通训练CLI尚未交付，HTTP仅浏览器cookie/CSRF，不能用库存在或短脚本daemon join代可用入口。当前支持操作及限制只从[原应用非GUI控制段](../../../python/docs/PROJECT_CONSOLE.md#non-gui-training-control)进入；B本轮沿现Application接capabilities/status/start/pause/resume/cancel/reconcile/amend_wall_budget，不新建controller。其实际子进程/unknown/重开核对以该增量测试和集成结果判；本表旧快照不派发下一段，也不代表正式训练或云worker已经启动。

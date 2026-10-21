@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import assert from "node:assert/strict";
 import { request as httpRequest } from "node:http";
 import test from "node:test";
@@ -30,6 +31,7 @@ function decision(floor = 0) {
 
 function fixture(runtimeInstanceId = "runtime-one") {
   let floor = 0;
+  let initialProgress = null;
   let pendingAction = null;
   let actionEntered = null;
   let unknown = false;
@@ -41,10 +43,12 @@ function fixture(runtimeInstanceId = "runtime-one") {
     async request(request) {
       calls.push(request);
       if (request.cmd === "start_run" || request.cmd === "reset_run") {
-        floor = 0; return decision();
+        floor = 0; initialProgress = request.initial_progress ?? null; return decision();
       }
       if (request.cmd === "get_map") return decision(floor).visible_map;
-      if (request.cmd === "run_identity") return { type: "run_identity", active: true, seed: "SEED" };
+      if (request.cmd === "run_identity") return { type: "run_identity", active: true, seed: "SEED",
+        initial_progress: initialProgress == null ? null : { recipe: initialProgress.recipe,
+          progress_sha256: initialProgress.progress_sha256, run_unlock_state_matches: true } };
       if (request.cmd === "action") {
         actionEntered?.();
         if (pendingAction) await pendingAction;
@@ -633,4 +637,23 @@ test("saved map resumes in a new service with a fresh continuity and original ha
     assert.equal((await call(broken, broken.managerToken, "/v1/admin/load-map", load)).status, 409);
     assert.equal(loadCalls, 1); assert.equal(broken.driver.status().episode_available, false);
   } finally { for (const service of services) await service.close(); rmSync(directory, { recursive: true, force: true }); }
+});
+
+test("manager reset accepts native progress above client body limit and keeps proof private", async () => {
+  const native = fixture();
+  const service = await startManagedHostService(native.started, { hostIdentity });
+  try {
+    const progress_json = JSON.stringify({ native_progress_fixture: "x".repeat(70 * 1024) });
+    const initial_progress = { recipe: "normal-sp-all-unlocked-v1", progress_json,
+      progress_sha256: createHash("sha256").update(progress_json).digest("hex") };
+    const body = { request_id: "baseline", seed: "SEED", expected_runtime_instance_id: "runtime-one",
+      expected_game_continuity_id: null, initial_progress };
+    assert.equal((await call(service, service.clientToken, "/v1/admin/reset", body)).status, 403);
+    assert.equal((await call(service, service.managerToken, "/v1/admin/reset", body)).status, 200);
+    assert.deepEqual(native.calls[0].initial_progress, initial_progress);
+    const manager = await command(service, service.managerToken, { command: "episode_identity" });
+    assert.equal(manager.body.result.identity.initial_progress.progress_sha256, initial_progress.progress_sha256);
+    const client = await command(service, service.clientToken, { command: "episode_identity" });
+    assert.equal(Object.hasOwn(client.body.result.identity, "initial_progress"), false);
+  } finally { await service.close({ force: true }); }
 });

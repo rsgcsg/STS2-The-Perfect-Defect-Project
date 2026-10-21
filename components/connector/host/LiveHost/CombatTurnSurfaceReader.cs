@@ -12,6 +12,7 @@ using MegaCrit.Sts2.Core.Entities.Potions;
 using MegaCrit.Sts2.Core.GameActions;
 using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Nodes.Combat;
+using MegaCrit.Sts2.Core.Nodes.Cards;
 using MegaCrit.Sts2.Core.Nodes.Rooms;
 using MegaCrit.Sts2.Core.Nodes.Screens.Overlays;
 using MegaCrit.Sts2.Core.Rooms;
@@ -58,16 +59,29 @@ internal sealed class CombatTurnSurfaceReader : ILiveSurfaceReader
             return null;
         NativeCombatDecision semanticDecision = NativeCombatDecisionProvider.Capture(entities);
         var visibleHolders = hand.ActiveHolders;
-        CardModel[] visibleHandCards = visibleHolders
-            .Select(holder => holder.CardModel)
-            .Where(card => card != null)
-            .Cast<CardModel>()
+        // Native StartCardPlay reparents the visible held/awaiting holder out
+        // of CardHolderContainer while its model remains in backend Hand.
+        // GetCardHolder includes that exact native holder; preserve real model
+        // order and current full Card Reads without making it actionable again.
+        CardModel[] visibleHandCards = playerCombat.Hand.Cards
+            .Where(card => hand.GetCardHolder(card) is { } holder && ConnectorMod.IsNodeVisible(holder))
             .ToArray();
+        // A submitted local card stays in backend Hand while its NCard is
+        // visibly owned by the native play queue and its hand holder is gone.
+        // Preserve its current public facts; delivery still uses only the old
+        // hand-holder list below. No queue card becomes a new input candidate.
+        CardModel[] queuedCards = NCardPlayQueue.Instance is { } queue
+            ? queue.GetChildren().OfType<NCard>()
+                .Where(card => ConnectorMod.IsNodeVisible(card) && card.Model != null)
+                .Select(card => card.Model!).ToArray()
+            : Array.Empty<CardModel>();
+        CardModel[] observedHandCards = IncludeVisibleQueuedHandCards(
+            playerCombat.Hand.Cards, visibleHandCards, queuedCards);
         context = context with
         {
             Player = context.Player with
             {
-                Hand = visibleHandCards
+                Hand = observedHandCards
                     .Select(card => LiveContextReader.BuildCard(
                         card,
                         entities.GetId(card, "card"),
@@ -161,7 +175,7 @@ internal sealed class CombatTurnSurfaceReader : ILiveSurfaceReader
                 "PlayerCombatState.Pets+MonsterModel.IsHealthBarVisible",
                 "NativeCombatDecisionProvider logical action catalog",
                 "CombatState.HittableEnemies",
-                "NPlayerHand.ActiveHolders+AreCardActionsAllowed-equivalent guards",
+                "PlayerCombatState.Hand native order + NPlayerHand.GetCardHolder visible holders; ActiveHolders action guards",
                 "NCardPlayQueue exclusion"
             },
             discardBindingsComplete ? Array.Empty<string>() : new[] { "native_combat_potion_holder_binding" });
@@ -202,6 +216,14 @@ internal sealed class CombatTurnSurfaceReader : ILiveSurfaceReader
         };
         return ApplyEndTurnCapturePolicy(observation, endTurnMissing);
     }
+
+    // Keep backend hand order and exact instances. Queue-only cards are
+    // observation scope, never an alternate source of public delivery actions.
+    internal static CardModel[] IncludeVisibleQueuedHandCards(IEnumerable<CardModel> logicalHand,
+        IReadOnlyList<CardModel> visibleHolders, IReadOnlyList<CardModel> visibleQueue) =>
+        visibleQueue.Count == 0 ? visibleHolders.ToArray() : logicalHand.Where(card =>
+            visibleHolders.Any(value => ReferenceEquals(value, card))
+            || visibleQueue.Any(value => ReferenceEquals(value, card))).ToArray();
 
     internal static LiveObservation ApplyEndTurnCapturePolicy(LiveObservation observation, string? missing)
     {

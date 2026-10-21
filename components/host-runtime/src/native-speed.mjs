@@ -56,7 +56,8 @@ export function requireNativeSpeedProvenance({ nativeSpeed, launchProfile, runti
   const errors = [];
   if (response?.status !== "observed") errors.push("provenance_not_observed");
   if (speed?.status !== "native_speed_ready" || speed?.ready !== true) errors.push("speed_not_ready");
-  if (speed?.requested !== mode || speed?.effective !== mode) errors.push("native_speed_mismatch");
+  if (speed?.requested !== mode || !["normal", "fast", "instant"].includes(speed?.effective)
+      || preparedBinding == null && speed?.effective !== mode) errors.push("native_speed_mismatch");
   if (speed?.runtime_instance_id !== runtimeInstanceId) errors.push("runtime_instance_changed");
   if (speed?.profile_generation_id !== launchProfile?.generation_id) errors.push("profile_generation_changed");
   if (!samePath(speed?.profile_root, launchProfile?.profile_root, platform)) errors.push("profile_root_changed");

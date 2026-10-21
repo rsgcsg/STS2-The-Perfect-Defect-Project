@@ -15,6 +15,7 @@ import {
   requestHostShutdown,
   requestHostProvenance,
   requestHostPreparation,
+  resolveExperimentalConnectorCanary,
   shippedRuntimeLaunch,
   snapshotIsInteractive,
   stopChild,
@@ -22,10 +23,11 @@ import {
   waitForInteractiveSnapshot
 } from "./runtime-probe.mjs";
 import { readDiskIdentity } from "./game-installation.mjs";
-import { requireSupportedRuntime } from "./compatibility.mjs";
+import { evaluateRuntimeCompatibility, requireSupportedRuntime } from "./compatibility.mjs";
 import { readProjectIdentity } from "./project-identity.mjs";
 import { publicProfileDescriptor, resolveLaunchProfile } from "./profile-isolation.mjs";
-import { validateNativeSpeed, resolveNativeSpeed, prepareNativeSpeedBeforeBootstrap } from "./native-speed.mjs";
+import { validateNativeSpeed, resolveNativeSpeed } from "./native-speed.mjs";
+import { validateNativeBaseline, prepareNativeHostBeforeBootstrap } from "./native-baseline.mjs";
 
 const DEFAULT_ENDPOINT = "http://127.0.0.1:15526";
 
@@ -69,6 +71,17 @@ export function commandOwnsHeadlessRuntime(command, executable) {
   const normalizedExecutable = executable.replaceAll("/", "\\").toLowerCase();
   return normalizedCommand.includes(normalizedExecutable)
     && /(?:^|\s)--headless(?:\s|$)/iu.test(command);
+}
+
+export function commandOwnsRecordedRuntime(command, record) {
+  if ((record.display_mode ?? "headless") === "headless")
+    return commandOwnsHeadlessRuntime(command, record.executable);
+  if (record.display_mode !== "native-ui" || record.profile?.mode !== "isolated_local_profile"
+    || typeof command !== "string" || typeof record.executable !== "string") return false;
+  return command.toLowerCase().includes(record.executable.toLowerCase())
+    && !/(?:^|\s)--headless(?:\s|$)/iu.test(command)
+    && /(?:^|\s)--force-steam=off(?:\s|$)/u.test(command)
+    && /(?:^|\s)--clientId=1(?:\s|$)/u.test(command);
 }
 
 export function evaluateHeadlessCapabilities(
@@ -126,7 +139,7 @@ export async function queryHeadlessStatus({ localRoot, endpoint = DEFAULT_ENDPOI
       ? {
           pid: record.pid,
           running: command != null,
-          command_matches_record: commandOwnsHeadlessRuntime(command, record.executable),
+          command_matches_record: commandOwnsRecordedRuntime(command, record),
           command
         }
       : null,
@@ -152,8 +165,8 @@ export async function stopHeadlessHost({ localRoot, endpoint = DEFAULT_ENDPOINT 
     unlinkSync(files.current);
     return { status: "not_running", detail: "The recorded process no longer exists." };
   }
-  if (!commandOwnsHeadlessRuntime(command, record.executable)) {
-    throw new Error(`Refusing to signal PID ${record.pid}; it is not the recorded Headless runtime.`);
+  if (!commandOwnsRecordedRuntime(command, record)) {
+    throw new Error(`Refusing to signal PID ${record.pid}; it is not the recorded runtime.`);
   }
   const control = existsSync(files.control)
     ? JSON.parse(readFileSync(files.control, "utf8"))
@@ -163,6 +176,9 @@ export async function stopHeadlessHost({ localRoot, endpoint = DEFAULT_ENDPOINT 
     hostControlToken: control?.host_control_token ?? null,
     expectedRuntimeInstanceId: record.loaded_identity?.host?.runtime_instance_id ?? null
   });
+  if (record.display_mode === "native-ui" && hostShutdown.status !== "requested")
+    return { status: "retained", pid: record.pid, host_shutdown: hostShutdown, forced: false,
+      detail: "Native UI shutdown was not acknowledged; inspect the owned process before another action." };
   const started = Date.now();
   while (hostShutdown.status === "requested"
       && Date.now() - started < 10_000
@@ -171,7 +187,7 @@ export async function stopHeadlessHost({ localRoot, endpoint = DEFAULT_ENDPOINT 
   }
   let stopped = processCommand(record.pid) == null;
   let forced = false;
-  if (!stopped) {
+  if (!stopped && record.display_mode !== "native-ui") {
     process.kill(record.pid, "SIGKILL");
     forced = true;
     const forcedStarted = Date.now();
@@ -200,9 +216,13 @@ export async function runHeadlessHost({
   mirrorLogs = false,
   sharedProfileAcknowledged = false,
   isolatedProfileId = null,
-  nativeSpeed = null
+  nativeSpeed = null,
+  displayMode = "headless",
+  experimentalBuildAcknowledged = false,
+  baselineRecipe = null
 }) {
   validateNativeSpeed(nativeSpeed);
+  validateNativeBaseline(baselineRecipe);
   const launchProfile = resolveLaunchProfile({
     localRoot,
     isolatedProfileId,
@@ -211,7 +231,10 @@ export async function runHeadlessHost({
   nativeSpeed = resolveNativeSpeed(nativeSpeed, launchProfile);
   const files = hostFiles(localRoot);
   const diskIdentity = readDiskIdentity(installation);
-  const compatibility = requireSupportedRuntime(diskIdentity);
+  const compatibility = experimentalBuildAcknowledged
+    ? evaluateRuntimeCompatibility(diskIdentity) : requireSupportedRuntime(diskIdentity);
+  const connectorCanary = experimentalBuildAcknowledged
+    ? resolveExperimentalConnectorCanary({ installation, compatibility, acknowledged: true }) : null;
   const existing = await queryHeadlessStatus({ localRoot, endpoint });
   if (existing.process?.running || existing.endpoint.reachable) {
     throw new Error("A game process or Connector endpoint is already active; inspect it with `npm run status`.");
@@ -224,7 +247,10 @@ export async function runHeadlessHost({
   const launch = shippedRuntimeLaunch(installation, {
     launchProfile,
     connectorEndpoint: endpoint,
-    nativeSpeed
+    nativeSpeed,
+    displayMode,
+    connectorCanary,
+    baselineRecipe
   });
   const { child, args } = launch;
   if (launch.hostControlToken == null) {
@@ -262,7 +288,9 @@ export async function runHeadlessHost({
     disk_identity: diskIdentity,
     compatibility,
     loaded_identity: null,
-    requested_native_speed: nativeSpeed
+    requested_native_speed: nativeSpeed,
+    display_mode: displayMode,
+    requested_baseline_recipe: baselineRecipe
   };
   writeJson(files.current, record);
   writeJson(path.join(sessionDirectory, "lifecycle.json"), record);
@@ -272,7 +300,7 @@ export async function runHeadlessHost({
     if (!capabilitiesResult.ok) {
       throw new Error(`Connector endpoint did not become ready: ${capabilitiesResult.error}`);
     }
-    const capabilityGate = evaluateHeadlessCapabilities(capabilitiesResult.value);
+    const capabilityGate = evaluateShippedCapabilities(capabilitiesResult.value, displayMode);
     if (!capabilityGate.ok) {
       throw new Error(`Loaded environment is not an admitted Headless runtime: ${capabilityGate.errors.join(", ")}`);
     }
@@ -281,7 +309,7 @@ export async function runHeadlessHost({
     if (!snapshotIsInteractive(snapshot)) {
       throw new Error("The real runtime loaded but did not mount an interactive Player Environment decision.");
     }
-    const nativeSpeedProvenance = await prepareNativeSpeedBeforeBootstrap({ nativeSpeed, launchProfile,
+    const preparation = await prepareNativeHostBeforeBootstrap({ nativeSpeed, baselineRecipe, launchProfile,
       runtimeInstanceId: capabilitiesResult.value.host.runtime_instance_id,
       prepare: () => requestHostPreparation({ endpoint, hostControlToken: launch.hostControlToken,
         expectedRuntimeInstanceId: capabilitiesResult.value.host.runtime_instance_id, timeoutMs }),
@@ -291,7 +319,8 @@ export async function runHeadlessHost({
       ...record,
       status: "ready",
       ready_at: new Date().toISOString(),
-      native_speed: nativeSpeedProvenance,
+      native_speed: preparation.nativeSpeed,
+      baseline: preparation.baseline,
       loaded_identity: {
         protocol: capabilitiesResult.value.protocol_version,
         host: capabilitiesResult.value.host,

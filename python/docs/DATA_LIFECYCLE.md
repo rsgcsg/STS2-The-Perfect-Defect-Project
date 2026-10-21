@@ -134,3 +134,91 @@ Portable tests prove deterministic identity, tamper rejection, drift rejection, 
 retry and exact reconstruction. The local experiment proves only the measured 106-row
 layout. No remote transfer, full-corpus profile, real-Qwen compile, optimizer run,
 model-quality improvement or training-host throughput is claimed.
+
+
+## Daily P1 Store and R2 operations
+
+Use the normal project's configured `research_workspace.store_dir`; use one exact
+artifact ID throughout publication, preservation, restoration and consumption.
+The recording application and `python -m spireagent.workbench recordings --help`
+share `ManifestArtifactStore` and the existing import-operation journal. Do not
+copy data to a private alternate Store or rebuild an already preserved original.
+Run offline recording writes with an exclusive operation state directory; the
+Application's live state must not be concurrently written by a CLI.
+
+```sh
+python -m spireagent.workbench recordings sources --store STORE --state STATE
+python -m spireagent.workbench recordings read --store STORE --state STATE --artifact PROJECTION --output projection.json
+python -m spireagent.workbench recordings storage preserve --store STORE --state STATE --peer s3 --artifact ORIGINAL
+python -m spireagent.workbench recordings storage restore --store STORE --state STATE --peer s3 --artifact ORIGINAL
+python -m spireagent.workbench recordings storage verify --store STORE --state STATE --peer s3 --artifact ORIGINAL
+python -m spireagent.workbench recordings storage reconcile --store STORE --state STATE
+```
+
+R2 credentials stay environment-only (`STPD_S3_BUCKET`, `STPD_S3_ENDPOINT`,
+`STPD_S3_PREFIX`, `STPD_S3_REGION`, AWS credential environment variables). The
+operation records the selected peer without secrets. `preserve` verifies remote
+payload and original archive members; `restore` verifies bytes into the same Store.
+A preservation receipt is storage evidence, not Human origin or training approval.
+A failed or unknown operation is preserved; use `reconcile` for that exact intent,
+not a new upload to another provider. Source metadata `sources` is navigation;
+actual lineage and learning masks remain in the original and named projection.
+
+After `read`, use the supported `stpd.p1.dataset.load_projection` or
+`inspect_projections(store, [PROJECTION])` reader. Named eligible-N indexes in the
+existing CurationLedger do not assert complete raw capture inventory. Store/Curation initialization
+and indexing reserve no data purpose. Training preparation records vocabulary
+exposure/use before fitting as described in the [remote Scheduler guide](PROJECT_CONSOLE.md#explicit-co-located-remote-scheduler).
+Snapshot reservation and actual training
+use remain separate explicit owner calls. Unknown seed or restore ancestry stays
+unknown and cannot justify independent holdout.
+
+For checkpoint/model/result artifacts, use the existing generic `workbench push`
+and `pull --artifact ID --other-store s3` transfer; they retain manifest ancestry
+and transfer absent objects. Materialize and verify through the owning model or
+checkpoint reader before declaring a result usable. The P1 original-only storage
+entry above does not pretend to validate model semantics.
+
+R2 is the long-term destination for project data; local bytes are the bounded
+active working set. Background closed-recording maintenance is separately
+configured through `recordings maintenance status|enable|disable --config PROJECT`;
+cloud scope must name candidates or a date/origin scope. It remains disabled until
+authorized. Planned recent-two-session hot-set cooling remains unimplemented and requires
+verified recoverability and the approved exact scope. This guide grants no new deletion,
+bulk scan, service restart, or automatic eviction authority. Continuous cooling
+is not established by one successful upload; keep that operational obligation
+visible at handoff. Private Curation backup and staged recovery use the owner
+operation below; replacing a live owner is deliberately separate.
+
+
+## Private Curation ledger recovery
+
+`python -m spireagent.workbench curation --help` backs up the configured
+`LocalCurationOwner` using SQLite's WAL-aware native backup API. It permits only
+the private Curation tables (claims, uses, indexes, annotations, identity, pending
+source state and legacy-unknown markers); a shared Hub/account database is rejected.
+The registry, Application runtime token, account state and training-operation files
+are not included or falsely declared recovered. The source owner must already be
+prepared; backup does not initialize or allocate purposes.
+
+```sh
+python -m spireagent.workbench curation backup --config PROJECT --store STORE --output SCRATCH
+python -m spireagent.workbench push --store STORE --other-store s3 --artifact BACKUP
+python -m spireagent.workbench curation restore --store s3 --artifact BACKUP --output NEW_RECOVERY_DIRECTORY
+```
+
+`BACKUP` is the exact returned immutable Artifact ID. The backup includes the
+private owner's marker, its native SQLite snapshot, and the existing in-place
+preparation plan when present. Restore verifies payload hashes, database integrity,
+owner identity and supported private tables, then reports `verified_staged` with
+claim/use counts. It refuses an existing destination. This proves recoverable bytes;
+it never replaces an active ledger, changes source purposes, resumes an unknown
+job, restores account credentials, or makes a new training dataset.
+
+For a real owner-loss incident, stop the owning Application and all writers, keep
+the original Store/owner identities and paths, and review the staged database,
+marker and preparation plan before replacing the missing original files. A moved
+Store requires the existing explicit owner-rebind workflow, not editing identity
+strings. Reopen `configured_owner(config)` and read the original claims/uses through
+its existing ledger; leave unknown legacy exposure intact. Live replacement is an
+operator recovery step, not an automatic consequence of a restore command.

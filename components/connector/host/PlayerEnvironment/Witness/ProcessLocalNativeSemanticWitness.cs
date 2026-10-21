@@ -85,7 +85,8 @@ public static class PlayerEnvironmentNativeSemanticWitness
         ProcessLocalNativeWitnessFrame? uiFrame = null,
         Action<ProcessLocalNativeWitnessFrame>? capturedUiFrame = null,
         string? semanticNativeActionType = null,
-        ProcessLocalObservedAction? semanticSelection = null)
+        ProcessLocalObservedAction? semanticSelection = null,
+        bool includeCombatPotionDiscards = false)
     {
         if (uiFrame == null)
         {
@@ -129,6 +130,8 @@ public static class PlayerEnvironmentNativeSemanticWitness
                 return Unavailable(phase, LiveContextReader.RequiredPowerCaptureMissing,
                     observedAction, ui, "Required public combat power facts could not be captured.");
             NativeCombatDecision decision = NativeCombatDecisionProvider.Capture(entities);
+            if (includeCombatPotionDiscards && decision.IsDecisionOpen)
+                decision = WithExecutionPotionDiscards(decision, NativePotionDiscardDecisionProvider.Capture(entities));
             bool localPlayPhase = decision.IsDecisionOpen;
             IReadOnlyList<VisibleCombatPotionState> semanticPotions =
                 BuildSemanticPotionStates(player, entities, decision);
@@ -392,6 +395,23 @@ public static class PlayerEnvironmentNativeSemanticWitness
             domain.NonClaims,
             nativeDetail
             ?? $"semantic_owner={domain.SemanticDomain};input_owner={domain.InputDomain}");
+    }
+
+    // A(S) describes the native execution boundary, as for queued card plays.
+    // Button readiness is public input authority, not execution membership:
+    // EnqueueManualUse sets IsQueued before S, while DiscardPotionGameAction
+    // itself resolves the exact current non-null slot. Never modify the PB1
+    // delivery catalog or allow a second public input for the queued potion.
+    internal static NativeCombatDecision WithExecutionPotionDiscards(
+        NativeCombatDecision decision, NativePotionDiscardDecision discards)
+    {
+        if (!decision.IsDecisionOpen) return decision;
+        if (discards.Status != "captured")
+            throw new InvalidOperationException("P1 execution potion discard catalog unavailable.");
+        return decision with {
+            Actions = decision.Actions.Concat(discards.Actions).OrderBy(action => action.Key, StringComparer.Ordinal).ToArray(),
+            Evidence = decision.Evidence.Concat(discards.Evidence).ToArray()
+        };
     }
 
     private static NativeObservedSemanticAction DescribeDomainSelection(

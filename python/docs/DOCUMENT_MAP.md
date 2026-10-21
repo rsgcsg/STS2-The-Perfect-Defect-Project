@@ -7,6 +7,15 @@ classes are defined in [Engineering Governance](ENGINEERING_GOVERNANCE.md).
 
 ## Current native learning and application route
 
+[P1 M-std T0](P1_T0.md) owns the bounded CPU engineering proof, restore and private
+installation. It is not the formal training launch path. Current training controls
+belong to [Application/TrainingService](PROJECT_CONSOLE.md#non-gui-training-control),
+and the recipe/worker/checkpoint seam to [P1 workload](STRUCTURED_WORKLOAD.md#p1-n-only-m-std-workload).
+Formal first training is GPU; an old GPU success or T0 proof does not establish the
+current backend, data/use, budget or actual run. The root
+[operation navigation](../../docs/DOCUMENT_MAP.md#按我要做什么进入) routes all daily tasks;
+this component map only routes deeper and does not define another workflow.
+
 Use root [CURRENT](../../docs/memory/CURRENT.md) and the
 [P1 project map](../../docs/plans/p1-prefreeze-2026-10-18/README.md) for the active task;
 [P1 r1](../../docs/protocols/P1_GLOBAL_R1.zh-CN.md) owns the selected environment semantics.

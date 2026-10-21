@@ -21,6 +21,18 @@ from spireagent.workbench.readiness import read_receipt, readiness
 
 def main(argv: list[str] | None = None) -> int:
     arguments = sys.argv[1:] if argv is None else argv
+    if arguments and arguments[0] == "recordings":
+        from spireagent.workbench.p1_recordings_cli import main as recordings_main
+
+        return recordings_main(arguments[1:])
+    if arguments and arguments[0] == "curation":
+        from spireagent.workbench.curation_backup import main as curation_main
+
+        return curation_main(arguments[1:])
+    if arguments and arguments[0] == "training":
+        from spireagent.workbench.training_cli import main as training_main
+
+        return training_main(arguments[1:])
     if arguments and arguments[0] == "project":
         from spireagent.workbench.developer_cli import main as project_main
 

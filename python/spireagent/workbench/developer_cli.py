@@ -160,6 +160,10 @@ def main(argv: list[str] | None = None) -> int:
         "--tool-directory", type=Path, help="absolute public CollectionTool directory"
     )
     parser.add_argument("--tool-release-id", help="exact trusted CollectionTool release ID")
+    parser.add_argument("--native-log-file", type=Path,
+                        help="explicit selected Host native log; requires --host-lifecycle")
+    parser.add_argument("--host-lifecycle", type=Path,
+                        help="selected Host lifecycle record for isolated native collection")
     parser.add_argument(
         "--replace-tool",
         action="store_true",
@@ -360,7 +364,8 @@ def main(argv: list[str] | None = None) -> int:
                 if args.tool_directory is None or args.tool_release_id is None:
                     raise BoundaryError("collection_tool", "tool_directory_and_release_id_required")
                 result = register_collection_tool(
-                    config, args.tool_directory, args.tool_release_id, replace=args.replace_tool
+                    config, args.tool_directory, args.tool_release_id, replace=args.replace_tool,
+                    host_lifecycle=args.host_lifecycle, native_log_file=args.native_log_file
                 )
             elif args.command == "credential":
                 if args.credential_file is None:

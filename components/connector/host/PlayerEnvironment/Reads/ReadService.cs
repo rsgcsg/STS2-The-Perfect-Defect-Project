@@ -176,6 +176,12 @@ internal static partial class PlayerEnvironmentService
                 foreach (string field in new[] { "keywords", "card_previews" })
                     if (details[field] is JsonArray values) content[field] = values.DeepClone();
                     else detailMissing.Add("current_native_public_card_" + field + "_not_captured");
+                if (details.ContainsKey("upgrade_preview"))
+                {
+                    content["public_details_revision"] = "2";
+                    if (details["upgrade_preview"] is JsonObject preview) content["upgrade_preview"] = preview.DeepClone();
+                    else detailMissing.Add("current_native_public_card_upgrade_preview_not_captured");
+                }
                 missing = detailMissing.Distinct(StringComparer.Ordinal).ToArray();
             }
             else missing = new[] { "current_native_public_card_details_not_captured" };

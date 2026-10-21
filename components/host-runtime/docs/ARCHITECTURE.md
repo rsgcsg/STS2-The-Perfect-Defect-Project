@@ -134,8 +134,10 @@ menu with no active run or multiplayer owner. It writes only the public typed
 Preparation occurs once before bootstrap gameplay inputs. Repetition of the
 same exact preparation verifies and returns the recorded result; conflicting
 configuration, missing readiness, shared profile, unknown identity/isolation,
-active gameplay, or later mode/profile drift fail closed. No timer reapplies a
-mode, no provenance read mutates prefs, and no Fast fallback satisfies Instant.
+active gameplay during preparation, or later runtime/profile/identity changes fail closed.
+The initial write must match its request; later native changes among Normal, Fast
+and Instant remain valid and retain their actual readback. Unknown speed values
+still fail. No timer reapplies a mode and no provenance read mutates prefs.
 Read-only private Host provenance records requested/before/effective mode,
 readiness and runtime/profile binding. The caller verifies it before bootstrap
 and again through the existing post-bootstrap provenance check before handing
@@ -145,14 +147,64 @@ input and do not create a public speed action.
 Instant is the user-selected project default. Workbench owned preparation resolves
 `default` to Instant and records `{mode: instant, basis: project_default}`; it
 records actual typed readback separately and invents no qualification reference.
-Final-candidate exact build/install/load and all-three-mode live verification
-remain required before claiming runtime qualification. This configuration change
-does not qualify performance, save/restore or full runs. Normal and Fast remain
-supported explicit configurations and reference conditions. Native settings
+Normal, Fast and Instant are settings of one Reference environment, including
+changes made during a run. Semantic differences are implementation defects.
+Instant remains the default; another speed is selected for a particular test.
+Actual build/install/load and runtime evidence retain their usual scope; choosing
+a speed does not qualify performance, save/restore or full runs. Native settings
 may save into the isolated working copy on quit; immutable templates and
 personal prefs are not edited. A failed configuration blocks the run. If
 qualified Instant still fails measured throughput, resource or save/restore
 needs, alternate Hosts are evaluated later through the existing contracts.
+
+## Normal singleplayer baseline
+
+The Reference episode factory defaults to `baselineRecipe: normal-sp-all-unlocked-v1`
+and native Instant independently of tutorials. The low-level `shippedRuntimeLaunch`
+requires an explicit recipe and clears any ambient baseline request. Preparation
+uses the same isolated profile/process binding and authenticated Host `/prepare`;
+the request still contains only token and exact runtime. The private response
+composes independent `native_speed` and `baseline` results. No player contract or
+P1 source contract changes.
+
+Before character selection, with no active run, multiplayer or native TestMode,
+the Connector invokes the fixed native `unlock all` command, adds every native
+encounter to progress membership, and disables ordinary FTUE in native progress.
+It also completes the native singleplayer Ascension unlock notification: that
+Standard-lobby `SeenPopup` check is independent of the ordinary tutorial toggle.
+A fresh zero-run profile receives one administrative Defect loss count so native
+first-run room/question/treasure rules no longer apply. This count and the native
+unlock command's administrative discovery statistics are preparation data, never
+Human outcomes. Existing positive run counts remain intact. This represents mature
+content availability, not a person's achievements, victory history or save lineage.
+
+The native owner saves then reloads progress through `InitProgressData`; failure or
+unequal normalized native serialization blocks readiness without retrying an
+uncertain write. Readback verifies epochs, encounters, positive run count, FTUE
+and Ascension unlocks, then records the actual native serialized progress/SHA,
+derived UnlockState and singleplayer pools. Normal Standard run creation still
+owns seed, RNG and initial resources. Read-only provenance after bootstrap checks
+that the actual run froze that same UnlockState. Reference setup hands off the
+first complete native Neow event decision (or an existing initial map); it never
+selects Neow for the Agent. Baseline metadata is private
+Host provenance, never fair-player input. Managed accepts that exact prepared progress JSON/SHA only through manager reset
+(or the private stdio operator). Before creating a player/run, its native owner
+writes only the current profile progress path in the existing native memory
+store, reloads through `InitProgressData`, verifies normalization and the fixed
+baseline, then preserves the existing Standard initializer. It keeps Managed
+presentation TestMode. Mount separately reads actual run identity and refuses
+a missing/mismatched progress SHA or frozen UnlockState. Failed/unknown preparation
+requires process replacement. Private manager identity retains the proof; attached
+clients and P1 never receive the initial profile. Cross-host equivalence still
+requires the same actual input and final-candidate live verification.
+
+For Human collection, an operator may explicitly prepare this baseline, verify
+readback, then start Source4 before the Human uses normal native new-run menus.
+That setup does not require changing source declarations during a recording.
+Immutable templates and personal profiles remain untouched; a prepared working
+profile can be captured through the existing profile-template tooling under a new
+explicit template ID. Build, installed identity and live readback remain separate
+acceptance evidence.
 
 ## Component Boundary
 

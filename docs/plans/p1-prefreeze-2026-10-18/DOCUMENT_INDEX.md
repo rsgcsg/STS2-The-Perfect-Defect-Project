@@ -1,6 +1,6 @@
 # 现行文档导航（基准盘点）
 
-文件级全量盘点见 [document-inventory.csv](document-inventory.csv)，共 401 文件；功能owner见 [FEATURE_STATUS.md](FEATURE_STATUS.md)。本索引只新增标签，不移动、改写或删除任何原文件。文件已登记不等于功能/历史结论已重新验收，K1仍保留语义迁入未核实项。
+文件级全量盘点见 [document-inventory.csv](document-inventory.csv)，共 401 文件；功能owner见 [FEATURE_STATUS.md](FEATURE_STATUS.md)。本索引保留原盘点标签；日常操作只从[根操作导航](../../DOCUMENT_MAP.md#按我要做什么进入)进入原指南，不按本表“现行”标签推断是受支持的当前操作或另抄步骤。文件已登记不等于功能/历史结论已重新验收，K1仍保留语义迁入未核实项。
 
 历史查过：develop同树文档目录、root/组件/python既有DOCUMENT_MAP；复用原目录和owner，不新造文档权威。除功能表相关owner/证据外，其他条目是路径/标题/地图盘点，未假称逐正文验收。
 

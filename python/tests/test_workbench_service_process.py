@@ -8,6 +8,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -27,6 +28,7 @@ resource.setrlimit(resource.RLIMIT_FSIZE, (65536, hard))
 child = subprocess.run([sys.executable, '-c', '''
 import json, sys
 from pathlib import Path
+from types import SimpleNamespace
 sys.path.insert(0, sys.argv[1])
 from spireagent.workbench.service_process import service_environment
 from spireagent.json_boundary import BoundaryError
@@ -55,6 +57,7 @@ def test_real_service_outlives_launcher_and_uses_profile_scratch(tmp_path):
     child_code = """
 import json, sqlite3, sys, tempfile, time
 from pathlib import Path
+from types import SimpleNamespace
 sys.path.insert(0, sys.argv[1])
 from spireagent.workbench.service_process import service_process
 with service_process(Path(sys.argv[2])) as resources:
@@ -74,6 +77,7 @@ Path(sys.argv[3]).write_text(json.dumps(report))
     launcher = """
 import subprocess, sys
 from pathlib import Path
+from types import SimpleNamespace
 sys.path.insert(0, sys.argv[1])
 from spireagent.workbench.service_process import service_environment
 subprocess.Popen([sys.executable,'-c',sys.argv[4],*sys.argv[1:4]],
@@ -224,6 +228,9 @@ def test_direct_serve_owns_context_before_application_and_restores_on_exit(
 
         def start_delivery(self):
             pass
+
+        p1_maintenance = SimpleNamespace(start=lambda: None)
+        remote_training = SimpleNamespace(start_loop=lambda: None)
 
         def close(self):
             closed.append("application")

@@ -4,6 +4,8 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { createWriteStream, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { finished } from "node:stream/promises";
+import { request as requestHttp } from "node:http";
+import { request as requestHttps } from "node:https";
 import {
   EnvironmentControllerSession,
   PlayerEnvironmentRestClient
@@ -25,6 +27,7 @@ import {
 } from "./connector-endpoint.mjs";
 import { validateRequestedHostExecutionProfile } from "./host-execution-profile.mjs";
 import { nativeSpeedLaunchEnvironment, NATIVE_SPEED_ENVIRONMENT_VARIABLES } from "./native-speed.mjs";
+import { nativeBaselineLaunchEnvironment, NATIVE_BASELINE_ENVIRONMENT_VARIABLE } from "./native-baseline.mjs";
 
 export function resolveExperimentalConnectorCanary({
   installation,
@@ -253,7 +256,8 @@ async function requestHostControl({
     return { status: "unavailable", response: null, error: "host_control_not_configured" };
   }
   try {
-    const response = await fetch(`${endpoint.replace(/\/$/u, "")}${route}`, {
+    const url = `${endpoint.replace(/\/$/u, "")}${route}`;
+    const options = {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -261,7 +265,13 @@ async function requestHostControl({
         host_control_token: hostControlToken
       }),
       signal: AbortSignal.timeout(timeoutMs)
-    });
+    };
+    // Shutdown follows synchronous packing/conversion in real consumers. An
+    // idle pooled socket may already have been closed while their event loop
+    // was blocked. Send this one lifecycle request on a fresh connection; never
+    // retry an ambiguous request or reinterpret a failed shutdown as success.
+    const response = route === "/api/host-control/shutdown"
+      ? await requestFreshHostControl(url, options) : await fetch(url, options);
     const body = await response.json();
     return {
       status: response.ok ? "response" : "rejected",
@@ -273,9 +283,29 @@ async function requestHostControl({
     return {
       status: "transport_error",
       response: null,
-      error: error instanceof Error ? error.message : String(error)
+      error: error instanceof Error ? error.message : String(error),
+      error_code: error?.cause?.code ?? error?.code ?? null
     };
   }
+}
+
+function requestFreshHostControl(url, options) {
+  return new Promise((resolve, reject) => {
+    const request = new URL(url).protocol === "https:" ? requestHttps : requestHttp;
+    const req = request(url, { method: options.method, agent: false, signal: options.signal,
+      headers: { ...options.headers, "content-length": Buffer.byteLength(options.body) } }, response => {
+      const chunks = [];
+      response.on("data", chunk => chunks.push(chunk));
+      response.once("error", reject);
+      response.once("end", () => resolve({
+        ok: response.statusCode >= 200 && response.statusCode < 300,
+        status: response.statusCode,
+        json: async () => JSON.parse(Buffer.concat(chunks).toString("utf8"))
+      }));
+    });
+    req.once("error", reject);
+    req.end(options.body);
+  });
 }
 
 export async function requestHostProvenance({
@@ -366,8 +396,10 @@ export function shippedRuntimeLaunch(installation, {
   connectorCanary = null,
   hostExecutionProfile = null,
   nativeSpeed = null,
+  baselineRecipe = null,
   displayMode = "headless"
 } = {}) {
+  const baselineEnvironment = nativeBaselineLaunchEnvironment(baselineRecipe, connectorEndpoint == null ? null : launchProfile);
   const speedEnvironment = nativeSpeedLaunchEnvironment(nativeSpeed, connectorEndpoint == null ? null : launchProfile);
   if (Object.keys(speedEnvironment).length > 0) {
     if (connectorEndpoint == null) throw new Error("native_speed_requires_host_control");
@@ -394,11 +426,11 @@ export function shippedRuntimeLaunch(installation, {
       : { STS2_CONNECTOR_HOST_EXECUTION_PROFILE: requestedHostExecutionProfile }),
     ...extraEnvironment
   }, connectorCanary);
-  for (const key of NATIVE_SPEED_ENVIRONMENT_VARIABLES) {
+  for (const key of [...NATIVE_SPEED_ENVIRONMENT_VARIABLES, NATIVE_BASELINE_ENVIRONMENT_VARIABLE]) {
     if (Object.hasOwn(extraEnvironment, key)) throw new Error("native_speed_environment_override");
     delete environment[key]; // An ambient request must never modify a personal process.
   }
-  Object.assign(environment, speedEnvironment);
+  Object.assign(environment, speedEnvironment, baselineEnvironment);
   if (Object.keys(speedEnvironment).length > 0 && (environment[HOST_CONTROL_TOKEN_ENVIRONMENT_VARIABLE] !== hostControlToken
     || Object.entries(launchProfile.environment).some(([key, value]) => environment[key] !== value))) {
     throw new Error("native_speed_isolation_environment_override");
@@ -431,7 +463,8 @@ export function shippedRuntimeLaunch(installation, {
       canary_game_id: connectorCanary?.game_id ?? null,
       canary_source_revision: connectorCanary?.source_revision ?? null,
       requested_execution_profile: requestedHostExecutionProfile,
-      requested_native_speed: nativeSpeed
+      requested_native_speed: nativeSpeed,
+      requested_baseline_recipe: baselineRecipe
     }
   };
 }

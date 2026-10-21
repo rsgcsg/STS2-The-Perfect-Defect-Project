@@ -2,6 +2,8 @@
 
 **历史查过**：现行 Annotator/Source/Agent 合同、旧 STPD 与现行 Python owner 文档、Workbench 源、既有录制摘要及本机 metadata；已有采集、封存和数据服务直接复用。此表是只读调查，不批准改造旧数据。
 
+本轮后续实查补充：现行 [PlatformBundle3SourceAdapter](../../../python/stpd/fullrun/platform_bundle3.py) 已读取 canonical3/trace4 并产 ResearchDecision，[public_bc](../../../python/stpd/fullrun/public_bc.py) 与 historical M0 也有实际消费者；下表 record2 importer 的能力边界不代表没有独立 canonical3 reader。M0 是模型视图，raw 无需与 P1 一一对应。当前继续复用 Source4 原件与共享 SDK 逻辑 span；用户批准的 E3 源码已整合，187项相关测试、22项CLI检查通过，新实装/录制验收仍待。旧数据转换成本高可暂不做，历史调查与收敛继续服务当前主线。
+
 估算为熟悉该代码的一名工程师的专注人时，包含适配/忠实回归/离线核验，不含新真人局、完整游戏运行、等待用户、云部署或训练。**各行共享工作，不能相加**。成本是设计前估算；缺失事实是不可恢复的能力边界，不是多花时间就能补出的字段。保留原版本/来源与 unresolved，只对已留事实派生。
 
 | 格式或工具 | 现状、包含什么 | 转 P1 缺什么 / 可复用什么 | 估计成本与建议 |

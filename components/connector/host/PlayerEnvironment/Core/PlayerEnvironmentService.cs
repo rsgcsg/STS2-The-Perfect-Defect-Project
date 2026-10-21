@@ -19,6 +19,7 @@ internal sealed record SnapshotBuildResult(
     IReadOnlyDictionary<string, PlayerEnvironmentNativeBinding> Bindings,
     IReadOnlyDictionary<string, PlayerReadBuildResult> ReadBuilds)
 {
+    [JsonIgnore] internal SnapshotBuildResult? RawNativeNavigation { get; init; }
     [JsonIgnore] internal NativeLogicalGridCaptureResult CapturedLogicalGrid { get; init; } = NativeLogicalGridCaptureResult.NotAttempted;
 }
 

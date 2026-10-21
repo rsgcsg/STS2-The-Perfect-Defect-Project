@@ -1,3 +1,4 @@
+import { P1G_NONCOMBAT_POTION_SCENES } from "./contracts.js";
 import { visibleCardSchema } from "../visibleState.js";
 import { isObject } from "./canonical.js";
 
@@ -32,6 +33,7 @@ export function createPublicIdentityPolicy(nativeKind: string,
   const add = (fields: readonly string[]) => fields.forEach(field => declared.add(surface + field));
   const refs = (fields: readonly string[]) => fields.forEach(field => references.add(surface + field));
   const card = (root: string) => cards.push(surface + root);
+  if (P1G_NONCOMBAT_POTION_SCENES.includes(nativeKind)) refs(["non_combat_discardable_potions[].entity_id"]);
   if (SELECTORS.has(nativeKind)) {
     card("cards[]"); add(["screen_entity_id", "hand_entity_id", "request_entity_id", "current_controls[].entity_id"]);
     refs(["selected_card_entity_ids[]", "selectable_card_entity_ids[]", "deselectable_card_entity_ids[]",

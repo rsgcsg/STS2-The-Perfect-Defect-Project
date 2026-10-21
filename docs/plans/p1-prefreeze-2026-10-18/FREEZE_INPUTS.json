@@ -1,7 +1,7 @@
 {
   "scope": "Round19 documentation synthesis, not an approval or a new identity registry. Paths/hashes bind the actual draft inputs and relative-link snapshots.",
-  "source_baseline": "ea7c14e8969006fa0e470678198ef94aca471f90",
-  "source_tree": "4b796997314f63b59557d6d8daa7f3b6ad14e67d",
+  "source_baseline": "3b512a5da862141f7a68bbb0dff9533eb0e17af9",
+  "source_tree": "e58dd615b9013e53e6cb2bc76eedb80fe2379e45",
   "files": [
     {
       "source": "/Users/fire/Documents/Codex/2026-10-17/a-t7-runtime-connector-status-settling/work/p1-K6-20261018/K6-workbench-position.md",
@@ -12,8 +12,8 @@
     },
     {
       "source": "/Users/fire/Documents/Codex/2026-10-17/a-t7-runtime-connector-status-settling/work/p1-K5-20261018/K5-cloud-minimal.md",
-      "bytes": 19131,
-      "sha256": "a0db9a37cdce0598994ef515423ca6147c6a584b4cc739bedad41b62bea20805",
+      "bytes": 19420,
+      "sha256": "a6fe46608d5412565692c8539dfe7eecfd72c21e980a850ed12c83373e53448b",
       "repository_snapshot": "CLOUD_MINIMAL.md",
       "repository_sha256": "1c215bb818fca3a536645d6f47c20c0ddc4c3be7320498089ed36f2666799c15"
     },
@@ -26,10 +26,11 @@
     },
     {
       "source": "/Users/fire/Desktop/SpireAgentProject/claude-handoff-2026-10-13/P1_r1_SUPPORT_SCOPE_v0.3_2026-10-18.zh-CN.md",
-      "bytes": 35936,
-      "sha256": "f19cc100fb4bc8d9f47c7633b504d91cb6663f65417b1ab39ea9564006e8ee75",
+      "bytes": 57197,
+      "sha256": "dfaba5803001546da1de0a3e79a5e1d34502e0c684398bc770a7ef2ea996ac73",
       "repository_snapshot": "SCOPE_v0.3.zh-CN.md",
-      "repository_sha256": "3d4928cb7c245fd0f970389204516da0da1bab5a54f49b9d7ab61323ce5b914e"
+      "repository_sha256": "273b9df2c119b0adeff0d4091dfa9897c719b2fdae7a89d9ae8f959572970d36",
+      "role": "current synchronized user decisions on cross-version cohort and deferred Managed gate; older scope snapshots preserved"
     },
     {
       "source": "/Users/fire/Documents/Codex/2026-10-17/a-t7-runtime-connector-status-settling/work/p1-K2-20261018/round19/scope-replies-before-merge.md",
@@ -48,6 +49,175 @@
       "role": "4d installation snapshot; not cold-load/preflight evidence",
       "bytes": 3860,
       "sha256": "fbdbb29b457b8518c4b54a7c5ae6635be246470b1b4f8179342bc152026eb307"
+    },
+    {
+      "source": "/Users/fire/Documents/Codex/2026-10-17/a-t7-runtime-connector-status-settling/work/p1-console-coverage-20261018/report.md",
+      "role": "original assessment/preflight attachment; failure semantics preserved",
+      "bytes": 4625,
+      "sha256": "9e90507b57488601471c097faea8c171a6bb26b94e18d3c5e4b48481c2f65d02"
+    },
+    {
+      "source": "/Users/fire/Documents/Codex/2026-10-17/a-t7-runtime-connector-status-settling/work/p1-console-coverage-20261018/saved-continuation-evaluation.md",
+      "role": "original assessment/preflight attachment; failure semantics preserved",
+      "bytes": 5291,
+      "sha256": "b98baac617492fec50feda6ec969c05afa731edfb0d45c13814601bf38ea761c"
+    },
+    {
+      "source": "/Users/fire/Documents/Codex/2026-10-17/a-t7-runtime-connector-status-settling/work/p1-round19-B-native-preflight/profile-template-findings-03.md",
+      "role": "original assessment/preflight attachment; failure semantics preserved",
+      "bytes": 3230,
+      "sha256": "a4b253250b3035eea6804435a67b1b98399abe227911d60d22377351892b04f1"
+    },
+    {
+      "source": "/Users/fire/Documents/Codex/2026-10-17/a-t7-runtime-connector-status-settling/work/p1-round19-B-native-preflight/native-preflight-02/conversion.json",
+      "role": "original assessment/preflight attachment; failure semantics preserved",
+      "bytes": 444129,
+      "sha256": "2708ab4f230a1b5f5850ae81401e3bbb91b82caeccaa5cb5f9cd5e4562006f6e"
+    },
+    {
+      "source": "/Users/fire/Documents/Codex/2026-10-17/a-t7-runtime-connector-status-settling/work/p1-round19-B-native-preflight/native-preflight-02/closed-status.json",
+      "role": "original assessment/preflight attachment; failure semantics preserved",
+      "bytes": 1095,
+      "sha256": "75f9c9afbb034f8fb1c083ce61c2e1bde924bd6cb00e0ca3ce081b7f7c38276a"
+    },
+    {
+      "source": "/Users/fire/Documents/Codex/2026-10-17/a-t7-runtime-connector-status-settling/work/p1-round19-B-native-preflight/native-preflight-03/bootstrap-receipt.json",
+      "role": "original assessment/preflight attachment; failure semantics preserved",
+      "bytes": 2870,
+      "sha256": "5d5b2c77b1c1489e74df58627069d71f95365253a90d6a9de2420ac9014408e0"
+    },
+    {
+      "source": "/Users/fire/Documents/Codex/2026-10-17/a-t7-runtime-connector-status-settling/work/p1-round19-B-native-preflight/native-preflight-03/closed-status.json",
+      "role": "original assessment/preflight attachment; failure semantics preserved",
+      "bytes": 1095,
+      "sha256": "1dd13d02956d445e9a76045dd98203fa0d3990ae3acd52e795d21a917f88b89d"
+    },
+    {
+      "source": "/Users/fire/Documents/Codex/2026-10-17/a-t7-runtime-connector-status-settling/work/p1-round19-B-native-preflight/native-preflight-02/capabilities.json",
+      "role": "original loaded tuple/attempt, not a successful recording gate",
+      "bytes": 2909,
+      "sha256": "8e2e939d32f49de4fbc0603200506f4d54a137ec424872442d3610fcf3c3270e"
+    },
+    {
+      "source": "/Users/fire/Documents/Codex/2026-10-17/a-t7-runtime-connector-status-settling/work/p1-round19-B-native-preflight/native-preflight-02/attempt.json",
+      "role": "original loaded tuple/attempt, not a successful recording gate",
+      "bytes": 20085,
+      "sha256": "44791a6bc25b5f34f97fff81d1548f74b281967a71585c00a26f66f711395c61"
+    },
+    {
+      "source": "/Users/fire/Documents/Codex/2026-10-17/a-t7-runtime-connector-status-settling/work/p1-round19-B-native-preflight/native-preflight-03/capabilities.json",
+      "role": "original loaded tuple/attempt, not a successful recording gate",
+      "bytes": 2909,
+      "sha256": "66087a7c39ccdd097b3e669e92c8b00539b424d0ad625f12f3259bf858e5ec8d"
+    },
+    {
+      "source": "/Users/fire/Documents/Codex/2026-10-17/a-t7-runtime-connector-status-settling/work/p1-round19-B-native-preflight/native-preflight-03/attempt.json",
+      "role": "original loaded tuple/attempt, not a successful recording gate",
+      "bytes": 9922,
+      "sha256": "975dc6d671902e2c6d3fda9bd855d160508ec90cef820977f17a99c13c231b3e"
+    },
+    {
+      "source": "/Users/fire/Documents/Codex/2026-10-17/a-t7-runtime-connector-status-settling/work/p1-round19-20261018/selector-reversal-proposal.md",
+      "role": "E3 proposal or original current fact; approval is not implementation/runtime qualification",
+      "bytes": 2790,
+      "sha256": "7b6e4ed4b2d7906400bfaea3defbfe6aea8fa9328afe5bfced1a8500479092c8"
+    },
+    {
+      "source": "/Users/fire/Documents/Codex/2026-10-17/a-t7-runtime-connector-status-settling/work/p1-round19-20261018/pr205-merge.json",
+      "role": "E3 proposal or original current fact; approval is not implementation/runtime qualification",
+      "bytes": 123,
+      "sha256": "e5a05cb9b4157febd44587e189dcba365809bce87216d1fa4f3638c2872877bf"
+    },
+    {
+      "source": "/Users/fire/Documents/Codex/2026-10-17/a-t7-runtime-connector-status-settling/work/p1-round19-20261018/pr205-merged-commit.json",
+      "role": "E3 proposal or original current fact; approval is not implementation/runtime qualification",
+      "bytes": 3096,
+      "sha256": "b203c7a97589291b6fb585b6c2f6aa849769a1949fac74ce57aad1844a85aacd"
+    },
+    {
+      "source": "/Users/fire/Documents/Codex/2026-10-17/a-t7-runtime-connector-status-settling/work/p1-round19-B-native-preflight/native-preflight-04/attempt.json",
+      "role": "E3 proposal or original current fact; approval is not implementation/runtime qualification",
+      "bytes": 232852,
+      "sha256": "b531163bc4e436f6bb3d9a2d061b7bf8b5d4de84c87e6760776ab3646eced52b"
+    },
+    {
+      "source": "/Users/fire/Documents/Codex/2026-10-17/a-t7-runtime-connector-status-settling/work/p1-round19-B-native-preflight/native-preflight-04/conversion.json",
+      "role": "E3 proposal or original current fact; approval is not implementation/runtime qualification",
+      "bytes": 1554879,
+      "sha256": "771d755a230f68562c92a645aaa6dfa518021a21c830e6bad78d9ad86587a1be"
+    },
+    {
+      "source": "/Users/fire/Documents/Codex/2026-10-17/a-t7-runtime-connector-status-settling/work/p1-round19-B-native-preflight/native-preflight-04/native-preparation.json",
+      "role": "E3 proposal or original current fact; approval is not implementation/runtime qualification",
+      "bytes": 105018,
+      "sha256": "2bf7f8d556c3e87d809e5d8c527719034a8ccb313e02d4dec854813fd8abba84"
+    },
+    {
+      "source": "/Users/fire/Documents/Codex/2026-10-17/a-t7-runtime-connector-status-settling/work/p1-round19-B-native-preflight/native-preflight-04/native-post-run-provenance.json",
+      "role": "E3 proposal or original current fact; approval is not implementation/runtime qualification",
+      "bytes": 107589,
+      "sha256": "375d62dc9bb969ca351e8816ae51d81897da0f738033bae78b1af56764547657"
+    },
+    {
+      "source": "/Users/fire/Documents/Codex/2026-10-17/a-t7-runtime-connector-status-settling/work/p1-round19-B-native-preflight/native-preflight-04-analysis/PRODUCER-REPAIR-HANDOFF.md",
+      "role": "E3 proposal or original current fact; approval is not implementation/runtime qualification",
+      "bytes": 3147,
+      "sha256": "95a951e4abed9bcf1cf2ef96c5416f23bd6901fb5a01e9b8db470a5f156a15e8"
+    },
+    {
+      "source": "/Users/fire/Documents/Codex/2026-10-17/a-t7-runtime-connector-status-settling/work/p1-round19-20261018/native-act-selection-build-root-receipt.json",
+      "role": "E3 proposal or original current fact; approval is not implementation/runtime qualification",
+      "bytes": 1192,
+      "sha256": "0ab169fd63dc32f3dac9e6cadb16a2becf6518ccff428cc9deed6467f7511b17"
+    },
+    {
+      "source": "/Users/fire/Documents/Codex/2026-10-17/a-t7-runtime-connector-status-settling/work/p1-round19-20261018/native-act-selection-initial-p1-comparison.json",
+      "role": "E3 proposal or original current fact; approval is not implementation/runtime qualification",
+      "bytes": 81259,
+      "sha256": "0429bfbdd6d89d747bb68609a187fd72b4e5e7e2e6c3872ab21be85ceda588b4"
+    },
+    {
+      "source": "/Users/fire/Documents/Codex/2026-10-17/a-t7-runtime-connector-status-settling/work/p1-sprint-C-20261018/MANAGED-INITIAL-PROGRESS-SOURCE-HANDOFF.md",
+      "role": "E3 proposal or original current fact; approval is not implementation/runtime qualification",
+      "bytes": 1819,
+      "sha256": "064b8b891014b7bf60e327b203f1913632fcc3194eaf1b4108cf0a573a5f431f"
+    },
+    {
+      "source": "/Users/fire/Documents/Codex/2026-10-17/a-t7-runtime-connector-status-settling/work/p1-K2-20261018/round19/semantic-route-input-captured-20261019.md",
+      "role": "fixed input capture of semantic-route context; live continuation may advance",
+      "bytes": 5586,
+      "sha256": "32fc97a7e7f08c70de18b6b8588ae07852ddfb2fe07e35f3147f0971b5eac26d",
+      "original_path": "/Users/fire/Documents/Codex/2026-10-17/a-t7-runtime-connector-status-settling/work/P1-SEMANTIC-ACTIVE-20261019.md"
+    },
+    {
+      "source": "/Users/fire/Documents/Codex/2026-10-17/a-t7-runtime-connector-status-settling/work/p1-K2-20261018/p1-consumer-audit/P1-CONSUMERS.zh-CN.md",
+      "role": "semantic-route context and actual owner/consumer audit; no runtime qualification transfer",
+      "bytes": 11487,
+      "sha256": "5dc83f83990409cea858fa8dbdf4069e1462e4c0fe6ad27bac9b260a13201702"
+    },
+    {
+      "source": "/Users/fire/Documents/Codex/2026-10-17/a-t7-runtime-connector-status-settling/work/p1-console-coverage-20261018/actual-20k-owner-audit/COMPARISON.zh-CN.md",
+      "role": "semantic-route context and actual owner/consumer audit; no runtime qualification transfer",
+      "bytes": 5523,
+      "sha256": "73a2dc6b0cac061c26415bca5edfc9774d7f95f9bce441024c0519552a915fcd"
+    },
+    {
+      "source": "/Users/fire/Desktop/SpireAgentProject/claude-handoff-2026-10-13/UPPER_CHAIN_REVIEW_2026-10-19.zh-CN.md",
+      "role": "review input; its pending4.1 wording is historical, direct user approval now recorded in P1/canonical",
+      "bytes": 12310,
+      "sha256": "a6616f64f08b38d64a2b3c7692a5a35d84052abc4602af4d2ec21fcb84b1d934"
+    },
+    {
+      "source": "/Users/fire/Documents/Codex/2026-10-17/a-t7-runtime-connector-status-settling/work/p1-semantic-20261019/USER-QUEUED-INPUT-DECISION-20261019.txt",
+      "role": "fixed direct user decision input; later timebox tightened by user to2h per root fixed report, not implemented/runtime evidence",
+      "bytes": 4055,
+      "sha256": "d27ba3a13a3e34e22642bd259ec4e281629618c59c6684de0f03a58cd8b037db"
+    },
+    {
+      "source": "/Users/fire/Documents/Codex/2026-10-17/a-t7-runtime-connector-status-settling/work/p1-semantic-20261019/canonical-scope-before-execution-boundary.md",
+      "bytes": 48802,
+      "sha256": "e3b8fb14b6a8e40e4294b9c56c7de4c9cd304c450aa932e13a4f1264f39dcd52",
+      "role": "immutable prior canonical input before approved execution-boundary synchronization"
     }
   ]
 }

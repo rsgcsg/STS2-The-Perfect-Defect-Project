@@ -81,13 +81,18 @@ class CollectionSetupTests(unittest.TestCase):
             with patch("sts2_platform_evidence.collection_tool.subprocess.run",
                        return_value=SimpleNamespace(returncode=0, stdout=json.dumps(response))) as run:
                 self.assertEqual(tool.setup_status(recordings_root=root / "records", game_directory=root / "game"), response)
+                tool.setup_status(recordings_root=root / "records", native_log_file=root / "godot.log",
+                                  connector_port=15526)
+                self.assertIn("--native-log-file", run.call_args.args[0])
+                self.assertIn(str(root / "godot.log"), run.call_args.args[0])
+                self.assertIn("15526", run.call_args.args[0])
                 self.assertIn("status", run.call_args.args[0])
                 self.assertIn(str(root / "game-mod/build-provenance.json"), run.call_args.args[0])
                 self.assertEqual(tool.bind_recording_root(recordings_root=root / "records"), response)
                 self.assertIn("bind", run.call_args.args[0])
                 with self.assertRaises(CollectionFailure):
                     tool.setup_status(recordings_root=root / "records", mod_provenance=root.parent / "untrusted.json")
-                self.assertEqual(run.call_count, 2)
+                self.assertEqual(run.call_count, 3)
 
     def test_setup_reverifies_all_owner_bytes_before_each_execution(self):
         with tempfile.TemporaryDirectory() as temporary:

@@ -26,7 +26,9 @@ def browser(config, tmp_path):
     url = f"http://127.0.0.1:{server.server_port}"
     runtime = config.state_dir / "runtime.json"
     runtime.write_text(json.dumps({"instance_id": app.instance_id,
-                                  "configuration_id": configuration_id(config)}))
+                                  "configuration_id": configuration_id(config),
+                                  "port": server.server_port,
+                                  "control_token": app.control_token}))
     headers = {"Cookie": f"{app.account.cookie_name}={app.account.cookie}",
                "Content-Type": "application/json", "Origin": url,
                "X-CSRF-Token": app.account.csrf}
@@ -238,3 +240,47 @@ def test_http_cancel_ack_retains_unknown_or_checkpoint_without_automatic_restart
         rejected(call, "start", replace(request, intent_id="3" * 32).to_dict(),
                  409, "previous_training_outcome_unknown")
         assert call("status")["operation"]["attempt_id"] == started["attempt_id"]
+
+
+def test_non_gui_client_uses_same_application_and_rejects_browserless_forgery(
+    tmp_path, monkeypatch, capsys,
+):
+    from spireagent.workbench.training_cli import main, training_command
+
+    service, request, _owner, _store = ready(tmp_path, monkeypatch)
+    with browser(service.config, tmp_path) as (app, call, _headers, _runtime):
+        app.local_training = service
+        assert training_command(service.config, "capabilities")["automatic_retry"] is False
+        assert training_command(service.config, "status")["operation"]["status"] == "idle"
+        rejected(call, "status", None, 401, "browser_session_required",
+                 selected_headers={"Authorization": "Bearer wrong"})
+        rejected(call, "pause", {"operation_id": "a" * 32,
+                                  "expected_attempt_id": "b" * 32},
+                 403, "browser_action_denied",
+                 selected_headers={"Authorization": "Bearer wrong",
+                                   "Content-Type": "application/json"})
+        request_path = tmp_path / "request.json"
+        request_path.write_text(json.dumps(request.to_dict()))
+        config_path = tmp_path / "project.json"
+        assert main(["start", "--config", str(config_path),
+                     "--input", str(request_path)]) == 0
+        started = json.loads(capsys.readouterr().out)["operation"]
+        assert training_command(service.config, "status",
+                                operation_id=started["operation_id"])["operation"][
+                                    "operation_id"] == started["operation_id"]
+        completed = settle(service)
+        assert completed["status"] == "completed", completed
+        assert call("status")["operation"]["result_id"] == completed["result_id"]
+        from spireagent.json_boundary import BoundaryError
+        with pytest.raises(BoundaryError, match="operation_not_current"):
+            training_command(service.config, "status", operation_id="f" * 32)
+        for action in ["pause", "resume", "cancel", "reconcile", "amend_wall_budget"]:
+            with pytest.raises(BoundaryError, match="stale_operation_attempt"):
+                body = {"operation_id": started["operation_id"],
+                        "expected_attempt_id": "0" * 32}
+                if action == "resume":
+                    body.update(checkpoint_id="c" * 64, intent_id="d" * 32,
+                                limits=request.limits)
+                if action == "amend_wall_budget":
+                    body.update(intent_id="e" * 32, wall_seconds=700)
+                training_command(service.config, action, body=body)

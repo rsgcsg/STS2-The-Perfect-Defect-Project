@@ -24,7 +24,8 @@ public enum RecordingCommandKind
     Pause,
     Resume,
     Close,
-    ChangeSource
+    ChangeSource,
+    ExportP1NativePrefix
 }
 
 public static class RecordingClosePolicy
@@ -42,6 +43,7 @@ public sealed record RecordingCommand(
 {
     public SourceDeclaration? SourceDeclaration { get; init; }
     public string? ExpectedSourceSegmentId { get; init; }
+    public string? P1NativeOrigin { get; init; }
 }
 
 public sealed record RecordingLifecycleSnapshot(
@@ -64,7 +66,10 @@ public sealed record RecordingCommandResult(
     string Code,
     string Detail,
     RecordingLifecycleSnapshot Lifecycle,
-    string Schema = RecordingApplicationContract.CommandResultSchema);
+    string Schema = RecordingApplicationContract.CommandResultSchema)
+{
+    public P1NativePrefixResult? P1NativePrefix { get; init; }
+}
 
 public sealed record RecordingSessionStatus(
     string SessionId,

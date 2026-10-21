@@ -187,3 +187,27 @@ test("handoff queries the production controller route over HTTP with the release
     assert.equal(receipt.controller, null); assert.equal(queries, 1);
   } finally { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); }
 });
+
+
+test("Reference setup hands off the original complete Neow decision without selecting its option", async () => {
+  const { requireReferenceInitialDecision } =
+    await import("../src/shipped-player-environment.mjs");
+  const choice = { bound_action_id: "neow-original-choice", verb: "select", label: "Native Neow option" };
+  const initial = { status: "interactive", interaction: { kind: "event_option" },
+    bound_actions: { status: "complete", actions: [choice] },
+    persistent: { content: { player: { character_definition_id: "DEFECT" }, run: { ascension: 0 } } } };
+  const options = { characterId: "DEFECT", ascension: 0 };
+  const before = structuredClone(initial);
+  assert.doesNotThrow(() => requireReferenceInitialDecision(initial, options));
+  assert.deepEqual(initial, before);
+  assert.doesNotThrow(() => requireReferenceInitialDecision({ ...initial,
+    interaction: { kind: "map_navigation" } }, options));
+  for (const snapshot of [
+    { ...initial, status: "settling" },
+    { ...initial, bound_actions: { status: "partial", actions: [choice] } },
+    { ...initial, interaction: { kind: "unsupported" } },
+    { ...initial, interaction: { kind: "character_select" } },
+  ]) assert.throws(() => requireReferenceInitialDecision(snapshot, options), /complete initial in-run decision/);
+  assert.throws(() => requireReferenceInitialDecision({ ...initial, persistent: { content: {
+    player: { character_definition_id: "IRONCLAD" }, run: { ascension: 0 } } } }, options), /mismatch/);
+});

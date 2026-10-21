@@ -70,3 +70,7 @@ consult the ambient/current GameAction. The child remains
 a durable continuation on the parent root, never a second root, Commit, ledger,
 or successor. No async `MoveNext`, FIFO, latest-frame, overlay, or timing
 association is used.
+
+Public card details can additionally capture a qualified native detached deck-upgrade preview.
+The source card and game state remain unchanged; the preview is display-only and has no input identity.
+An unavailable preview stays explicit and does not qualify complete public information.

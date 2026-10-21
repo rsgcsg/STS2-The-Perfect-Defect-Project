@@ -47,6 +47,7 @@
     "host:probe-menu-control": "npm --prefix components/host-runtime run probe:menu-control --",
     "host:probe-journey": "npm --prefix components/host-runtime run probe:journey --",
     "annotator:doctor": "node components/annotator/tools/annotator.mjs doctor",
+    "recording:p1": "node tools/p1-native-recording.mjs",
     "annotator:build": "node components/annotator/tools/annotator.mjs build",
     "annotator:prepare-mods": "node components/annotator/tools/annotator.mjs prepare-mod-settings",
     "annotator:admit-modset": "node components/annotator/tools/annotator.mjs admit-current-modset",

@@ -2,6 +2,8 @@
 
 **交付**：[项目地图入口](README.md)；本仓保留一次完整 [CSV](asset-ledger.csv)，共2063行；原完整JSON和详情文件的精确路径/大小/SHA见[source index](asset-sources.json)。每行有是什么、层、独有成果或未核实、状态、建议去向和出处。目录/ref/文档/副本相互重叠，行数不是功能数、局数或可释放空间。
 
+日常先从[操作导航](../../DOCUMENT_MAP.md#按我要做什么进入)进入现owner；遇到旧native-ui、Recorder连录、Store/R2或GPU恢复，从[已有解法](../../RESOLVED_ISSUES.zh-CN.md)直接到代码/原收据。本账是2026-10-18元数据盘点，不能用它的目录、PR、dirty或空间数字操作当前资源。功能迁入与支持入口只在[原功能表](FEATURE_STATUS.md)维护；未核语义不能靠归档标签或该账的行数完成。
+
 **历史查过**：H1 主表/附表/JSON、10-16 branch-inventory、10-16 ban/worktree-list、7 个交接包入口及当前 `00_START_HERE`/卡 K；复用独有成果线索、恢复包和结论边界；旧计数与旧清理结论不沿用，Git/远端和目录已重新查。固定 develop=`60dc0a89`；远端快照约 17:50 Brisbane，活动 PR202 仅记当时 `0affa651`，由 Root 接管。
 
 | 覆盖分母 | 已登记 |

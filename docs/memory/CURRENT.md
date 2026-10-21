@@ -1,61 +1,26 @@
-# Current — Round19 pre-training P1 freeze
+# 当前工作：源码门通过，实局前缀已验并回滚，最终PR收口
 
-Resolve live GitHub refs; source/original records override this file.
-This is dated routing, not live service or qualification authority. The
-[project map](../plans/p1-prefreeze-2026-10-18/README.md) routes the active sprint;
-[definition v0.3](../plans/p1-prefreeze-2026-10-18/SCOPE_v0.3.zh-CN.md) is the merged
-**pending-user-approval** definition, not approved freeze or cloud/training authority.
-The root handoff canonical and input hashes are fixed in its source index.
+更新于2026-10-21，Brisbane。用户已授权本轮实施、统筹和审计，旧“两小时待批准”已覆盖。
+Resolve live GitHub refs before relying on this snapshot. 最新用户原话和现场证据 override this file。
+唯一当前任务是[原14项、六项收敛与停止](../plans/p1-prefreeze-2026-10-18/THREE_HOUR_EXECUTION_20261021.zh-CN.md)。
+Root最终审计；集成负责人维护CURRENT/身份/refs，A/B/C/D稳定来源已normal merge。本轮02:33:13开始，最迟05:33:13收口；现仅纯docs检查、root审阅和现Draft PR206一次安全快进，之后停止，无自动跟进。
 
-## Integrated source and actual use
+## 当前候选和已核结果
 
-Develop is `ea7c14e8969006fa0e470678198ef94aca471f90`, tree `4b796997` matching
-reviewed eafa9a7c. PR202 merged as beca367c; PR204 merged as ea7c14e8.
-PR203 entered through PR204 (auto-MERGED, no third develop merge).
-CI39115695661/39120207920 passed; docs change no product/BOM identity.
+集成topic `codex/p1-round3h-integration-20261021` 从`origin/develop@733782b1`开始，显式未验父依赖PR206 `5b8fd2c2`保留。
+准确程序候选`9f9ad23b`/tree`a9e29cf8`原12阶段全过，Python4618通过/6条件跳过/93子测试通过。其后只做G0状态提交，最终head现场刷新；旧本地/Linux及01–05失败不追改，hosted按新head另报。
+Annotator rc22/GameMod rc47/BOM同，九组件语义身份不因Python/docs追改，历史Tool/安装/loaded保原来源。
+七具名投影正常发布/原reader为3717unique N、3357next、0重复，7观察来源亲缘unknown。最新R2原账恢复10named索引+历史曝光共11引用，无liveDB替换或原件删除。
+旧T0曝光在原账：0claims/1root use/1source use；441输入/词表、256 distinct梯度点/4更新，不作干净heldout。本轮无新真实梯度/claim。
+正常local CLI及remote Ops/Scheduler/compute peer/同worker控制已交，实际正常prepare十manifest合成闭包R2读验通过、0Ops/0provider调用。
 
-11:21:56Z: Mod4d3f8b4b/MVIDfb38a130 installed, not cold-loaded/preflight-pass.
-Build8967; rollback2026-10-18T11-21-45.822Z (6 old hashes match). Prior loaded6c
-English/EndTurn keep their identity. Unpushed root90429193: fullPython4485pass/5skip
-+93subtests; original env failure/correction retained. Managed A03 used a70d8de1/cd47f09c;
-old1482/S05 and all earlier records keep their actual source/artifact identities.
-A03 both loss terminals compare full-public equal; choice matches170/293 and236/432,
-zero unknown. These are Chinese diagnostics, not new English strict full games.
+旧包fresh原生T0b有899完整Input/评分、900dispatch/Receipt；原512MiB证据cap尚未触及时作operator/resource-capacity precaution stop，非自然结局、预算耗尽或unknown。
+密封20938events经C和root独立原typed验证通过；898completed+1interrupted_known及一次Stop取消只读capture保原义。Smith/Finish selection各393次空选循环不算策略进度。
+原Host关闭/回滚、13路径/正常App/config/旧包hash已核，4所属PID空；本次prequit0ERROR/1439WARNING、postquit787ERROR/4WARNING、scope unavailable及Connector栈均保原，不称native clean。
 
-## Critical path and parallel work
+## Remaining Platform non-claims 与下一实物
 
-- B: actual native_input first-combat EndTurn/carrier/successor is positive, but
-  bounded offline startup-waiting E2 is user-approved; source reviewed;22 focused pass; new preflight pending;
-  old map lacks witness; candidate fix needs new capture. Preflight is NOT PASS;
-  do not tell the user to start recording. Setup CLI status and typed API health differ.
-- A: retain old Reference defects without rewriting originals; continue actual
-  Managed fixes. New same-candidate English strict games remain0/3. [Differences](../plans/p1-prefreeze-2026-10-18/MANAGED_DIFFERENCES.md)
-  separate original facts, source fixes and actual comparisons; exceptions stay in P1§17.
-- C/K6: GLOBAL API/library/CLI services, thin GUI and external-package R20 material
-  exist. Actual final-tuple product/R20 acceptance is pending; no complex GUI/team work.
-- K5: storage/provider reuse proposal delivered; current P1 R2/Modal seam untested.
-  Precise upload objects, costs and consumer probe need their own approval.
-- K: K0/K1/K2 and K5/K6 material delivered; K3 submitted a24-row historical-PR
-  disposition table completed:24/24 remote exact tags verified then PRs closed, unmerged.
-  No branch/worktree/data deletion. 19 reuse rows with actual tags are in the map;7 training/Modal/
-  checkpoint PRs must be checked before Q-CHAIN-0/Q3. K4 previously9/10; B operation
-  sheet is missing. This synthesis still needs root/K4 review and user definition approval.
-
-## Stop boundary and next action
-
-Unblock B preflight, then user short segment -> complete conversion -> new English
-full games/strict replay; keep A/K/CLI work parallel. Preserve unknown/no-retry and
-actual candidate/source/parent continuity. Common mechanisms need one new-candidate instance; Act2/3 each require ordinary/elite/
-event/Boss/Boss-reward, all Reference-correct+offline+strict-Managed PASS.
-Pre-freeze non-author image/P1 approved; native tips/preview+CUA live pending.
-Approved ordinary merged-topic auto-delete/new-Mod install-with-backup differ from
-historical asset deletion/move, which still need approval; K3 closure has the narrow
-exact-tag-first approval above. No cloud upload,
-new paid job/research configuration, or final freeze is authorized by this document.
-Hard deadline: **2026-10-20 16:30 Australia/Brisbane**; report real gaps if incomplete.
-
-## Remaining Platform non-claims
-
-Final English>=3 games, Act3/victory evidence, full strict comparison, final40/20,
-product/R20, cloud seam and K are not complete. Old batches/CI/process exit/A03/S05
-do not establish final Human/Source4, Windows, training, strategy or native-clean shutdown.
+正式首训仍未就绪。真实工程余项是recent-two热集冷却动作未实现、Global终态证据正常ArtifactStore登记/reader/R2薄桥缺失、完整证据容量、空选循环和原生日志；本次Global仅local保全，未回库/上传，不借旧profile或content_id冒artifact_id。
+实际worker Secret/Store/image/GPU/同设备恢复、Reference20/R20、Human及正式data/config/费用保原owner；local仍1小时/1GiB。原owner下一轮先定位首错并交同链路实物，本轮不新增实现。
+六项收敛在唯一任务逐项判本轮范围，持续冷却等父能力仍部分。正常Application固定安装未升级、临时游戏已回滚；具名merge/发布/正式冻结/首训、登录及费用留用户，Continue延期等原决定不变。
+外部交接目录`replies/P1-ROUND3H-ROOT-FINAL-20261021.md`及固定集成回执保最终审计和私证据链接；历史ACTIVE不再派发，操作正常服务前刷新现场身份。

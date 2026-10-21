@@ -14,20 +14,23 @@ public static class RecordedNativeInputValidator
     public static IReadOnlyList<string> Validate(SemanticActionReference action)
     {
         if (action.NativeInput is not { } input) return Array.Empty<string>();
-        // These are the two native-input producers. This validates correlation,
+        // These are the exact native-input producers. This validates correlation,
         // not legality: exact execution membership is checked independently.
         bool supportedPair = (action.NativeActionType, input.Verb) is
-            ("PlayCardAction", "play") or ("UsePotionAction", "use");
+            ("PlayCardAction", "play") or ("UsePotionAction", "use") or ("EndPlayerTurnAction", "end_turn");
+        bool subjectValid = action.NativeActionType == "EndPlayerTurnAction"
+            ? input.SubjectReferentId == null && input.Arguments.Count == 0 && action.NativeWitness?.SubjectWitnessId == null
+            : !string.IsNullOrWhiteSpace(input.SubjectReferentId)
+                && !string.IsNullOrWhiteSpace(action.NativeWitness?.SubjectWitnessId);
         bool valid = action.BoundAction == null && action.NativeMechanism == "game_action"
             && supportedPair
             && !string.IsNullOrWhiteSpace(input.ActionKey)
-            && !string.IsNullOrWhiteSpace(input.SubjectReferentId)
+            && subjectValid
             && input.Arguments.All(pair => !string.IsNullOrWhiteSpace(pair.Key)
                 && !string.IsNullOrWhiteSpace(pair.Value))
             && action.NativeWitness is { } witness
             && witness.NativeActionType == action.NativeActionType
             && !string.IsNullOrWhiteSpace(witness.Origin)
-            && !string.IsNullOrWhiteSpace(witness.SubjectWitnessId)
             && action.Mapping is { Status: "exact_native_input", MatchCount: 1,
                 Basis: "scoped_native_input_reference_equality" };
         return valid ? Array.Empty<string>() : new[] { "native_input_correlation_invalid" };

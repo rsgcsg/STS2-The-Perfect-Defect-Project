@@ -37,6 +37,26 @@ public sealed class HostNativeSpeedTests
     }
 
     [Theory]
+    [InlineData("normal")]
+    [InlineData("fast")]
+    [InlineData("instant")]
+    public void NativeModeChangesKeepThePreparedRunAndNeverReapplyTheLaunchPreference(string requested)
+    {
+        var session = new HostNativeSpeedSession(requested);
+        int writes = 0;
+        Assert.True(session.Prepare(Ready(), () => writes++, () => requested).Ready);
+        foreach (string actual in new[] { "normal", "fast", "instant" })
+        {
+            var observed = session.Observe(Ready(actual) with { MainMenuCurrent = false, RunActive = true });
+            Assert.True(observed.Ready);
+            Assert.Equal(requested, observed.Requested);
+            Assert.Equal("normal", observed.Before);
+            Assert.Equal(actual, observed.Effective);
+        }
+        Assert.Equal(1, writes);
+    }
+
+    [Theory]
     [InlineData(0, "native_speed_identity_unadmitted")]
     [InlineData(1, "native_speed_isolation_unverified")]
     [InlineData(2, "native_speed_prefs_not_loaded")]
@@ -94,14 +114,14 @@ public sealed class HostNativeSpeedTests
     [InlineData(3)]
     [InlineData(4)]
     [InlineData(5)]
-    public void PreparedBindingAndModeDriftRefuseObservationAndReapplication(int fault)
+    public void PreparedBindingAndUnknownSpeedRefuseObservationAndReapplication(int fault)
     {
         var session = new HostNativeSpeedSession("instant");
         int writes = 0;
         Assert.True(session.Prepare(Ready(), () => writes++, () => "instant").Ready);
         HostNativeSpeedFacts drift = fault switch
         {
-            0 => Ready("fast"),
+            0 => Ready("unknown"),
             1 => Ready("instant") with { RuntimeInstanceId = "other" },
             2 => Ready("instant") with { ProfileGenerationId = "other" },
             3 => Ready("instant") with { NativeProfileId = 2 },

@@ -28,7 +28,8 @@ MAX_PAGE_SIZE = 100
 DEFAULT_PAGE_SIZE = 50
 CATEGORIES = frozenset({"recordings", "datasets", "models", "reports", "all"})
 CATEGORY_KINDS = {"datasets": "dataset", "models": "model", "reports": "offline_evaluation"}
-RECORDING_SCHEMAS = frozenset({"stpd/local-verified-bundle-v1", "stpd/received-bundle-v1"})
+RECORDING_SCHEMAS = frozenset({"stpd/local-verified-bundle-v1", "stpd/received-bundle-v1",
+                               "sts2.human-annotator/p1-native-session-bundle-1"})
 DATA_FACT_MANIFEST_LIMIT = 10000
 DATA_FACT_LINEAGE_LIMIT = 512
 DATA_FACT_REFERENCE_LIMIT = 500

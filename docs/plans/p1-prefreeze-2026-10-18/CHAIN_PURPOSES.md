@@ -2,28 +2,76 @@
 
 第19轮文档收敛；沿用[Architecture](../../ARCHITECTURE.md)、[Components](../../COMPONENTS.md)和[ADR0016](../../adr/0016-agent-composition-and-execution-request.md)。本表解释现有owner如何服务第一轮训练，不新增服务、schema或注册表。冻结定义仍待用户批准；当前事实由[范围/状态](SCOPE_v0.3.zh-CN.md)路由。
 
-历史查过：旧K2地图/100功能表、现行源码和组件合同、K0采集、K5云调查、K6工作台定位及第19轮审计；复用成熟事实/记录/应用/存储owner，不重做采集器或复杂GUI。旧consumer和证据继续按原范围读取。
+历史查过：以前遇到过queued输入时H目录为空或不同于执行态，见[09-11 rapid audit](../../evidence/PR25_RAPID_INPUT_EXECUTION_AUDIT_2026-09-11.md)。当时分存H/native input与执行S/A(S)，精确匹配后在[rc4限定两局](../../evidence/PR25_RC4_FULL_RUN_HUMAN_PASS_2026-09-12.md)取得524/524及47rapid handoffs。此次复用该执行接缝/身份约束用于⑤⑥，并补当前P1的完整PB1/Reads与共享核；不能把原rc4资格当新P1通过。其它组件继续复用旧K2地图、现行owner与K0/K5/K6成果。
 
-## 三条相连但不串成单一路径的链
+## 2026-10-20冻结准备：所有功能都需明确归属与入口
+
+用户在统筹chat直接明确：“所有功能，大的还是小的，不论是历史还是现在的，冻结的时候都要收敛到一个明确的入口，和单一组件”，并要求实现前先找是否已有成果。这里的“单一组件”是每项业务唯一责任owner，不是把所有功能并成一个巨型组件。沿下方同一上层图与[Components](../../COMPONENTS.md)、[现功能表](FEATURE_STATUS.md)/既有K资产账本落实，不另建总图或平行制度。
+
+每项大小功能，包括启动/恢复/查看/下载/云/小工具，都须定位受支持入口→同一核心实现→上下游requires/provides、协议/格式版本、实际证据层和当前去向。GUI/CLI/API只是该owner的薄映射。历史条目逐项核现用、已替代、归档或未完成；归档需有真实用途/保留入口依据，不能用归档tag或登记行数消掉活跃重复路径、独有成果或未闭合接缝。不要求所有旧实验重新实现或重授资格。当前全功能映射尚未闭合，B已有K账本与C研究映射汇合后由主线抽查真实调用，未完成部分如实计冻结剩余。
+
+收敛的验收是同一上层角色/连接能表示新、旧和后续方案，并实际支撑“采集→管理/用途→训练→Model/完整Agent→运行评估→改数据/模型/环境”的可重复闭环。不是只收目录、入口或停止点，也不要求不同角色共用一个schema。沿本图→合同→Components的owner→核心代码/真实caller→格式版本→证据和历史去向应能正反找到；未来组合仍须独立证明，不写成已实现。
+
+应用/资源组织是横跨在线、记录、研究链的角色；工作台GUI只是人的可选映射，现`python/spireagent/workbench`目录内的Application/用例服务是具体实现，不新增上层权威，也不把评测→Workbench→Mod界面串成必经流水线。运行可能需要服务但不需要打开页面，关页面不等于Stop；纯离线库直接调用所属owner。全部项目GUI的业务/状态/失败处理都须有可发现且实际可用的非GUI入口（CLI/API/库/agent工具按方便分工），agent不依赖点击工作台；绕权限/数据库或私人日常脚本不算受支持入口。GUI呈现测试与业务执行分开，原生Human游玩仍由用户完成。定位与历史限定见[原K6](WORKBENCH_POSITION.md)，全功能逐项闭合尚未完成。
+
+已有实现也须服从现在的合同：只差表示/传输，在原适配层改；组件没满足现requires，修或替换该owner实现；信息/动作/时序/失败/用途语义变化，修改拥有它的版本合同及consumer，未批重大取舍交用户。真实用例不能表达、职责反复重叠/消费者不断打补丁或有实测不可接受成本时，带证据与最小迁移回到上层，而不是为保历史实现强塞适配。复用有效机制和证据，不复活全部旧结构或改写旧失败。每功能只有一份业务语义、事实权威及核心状态机；复合用例由同一应用owner编排原组件，GUI/CLI/Agent入口薄映射，不各复制流程。
+
+今天已启动准备，不等新的阶段许可；B*离线新投影已另获准确批准，旧默认/03/T0固定输入与原件保留。滚动采集的技术就绪、固定操作入口、正常Store与最终环境/模型验收分开报告，不以录一局代全功能收敛。日期是工作目标，最终通过依实际结果与用户确认。
+
+## 唯一上层图与连接要求（新任务入口，2026-10-19）
+
+目标是在不多于原生公开信息的交互下，做出最强、能真实使用的STS2 Agent，靠采集、管理、训练、评估与迭代完成。沿用[BASELINE §2](../../BASELINE_V1_SPEC.zh-CN.md#2-上层抽象与唯一责任)、[综合设计 §3](../../design/BASELINE_PROTOCOL_V1_SYNTHESIS.zh-CN.md)的实现R/投影Π/观察抽象α及[四类变更规则](../../ARCHITECTURE.md#selected-convergence-and-change-rules)，把现有三路图提升到工作入口；不新建框架、服务、注册表或schema。
 
 ```text
-在线闭环：STS2/Reference Mod 或 Managed
-          ↕ 原生事实/公开环境映射（Native Foundation、Connector）
-          ↕ P1共享语义（SDK）
-          ↕ Policy Runtime的受控执行 ↔ Agent程序端口 ↔ 完整Agent（可含Model）
-
-独立记录：原生/程序输入与公开事实 ─→ Annotator Source4 ─→ Evidence ─→ 离线P1解释
-          Runtime实际offer/Consume/Receipt/Result ─→ AgentRunEvidence
-          旧Human因果lane ─→ canonical3/bundle3及原版本consumer
-
-研究闭环：不可变来源 → 来源专用admission/用途/划分 → Projection/InputSpec/TargetSpec
-          → 原TrainingService/worker/provider → checkpoint/Model
-          → AgentComposition/ExecutionRequest → 在线新运行 → 固定评估
+应用层：CLI / API / 库组织任务、资源、权限、预算；Workbench为薄映射；R2存取，Modal执行
+在线链：世界(STS2) ─①─ Host能力 ─②─ Connector ─③─ 交互profile(当前P1) ─④─ 完整Agent(程序＋可选Model)
+         Host Runtime管进程/隔离/恢复；Policy Runtime横切控制/Stop/unknown/消费与证据
+记录链：记录来源（同一抽象角色：在声明接缝捕获事实）
+         Runtime / 选择器 / 原生Human(Annotator) / Source4(后续profile) / 外部
+          ─⑤─ 不可变原件Store / Evidence ─⑥─ 按所选profile派生 → profile轨迹
+                  P1：accepted原生动作＋H来源＋执行S/A(S)完整PB1 → 同一共享核reducer/lowering
+研究链：profile轨迹 ─⑦─ Curation(用途/划分) ─⑧─ Projection＋InputSpec/TargetSpec
+          ─⑨─ Recipe / TrainRun → checkpoint / Model
+          ─⑩─ AgentComposition → 运行/评估(本轮Reference；Managed严格延后) → 新原件回Store
 ```
 
-Mod是装载包装；Host Runtime是进程管理；P1是环境合同；AgentProgramPort是程序边界；Source4是独立录制来源。它们不是依次经过的五层服务。SDK/传输格式也不定义另一套交互语义。
+编号表示逻辑连接，不要求每次运行经过全部节点；SDK、Mod包装和传输形式不另设语义层。**交互profile是可替换角色，P1只是当前选择。每个profile必须声明③④在线requires及⑥原件派生requires**：目标字段/时点/公开来源α、接受事实/顺序/结果、完整性与拒绝条件、投影Π及版本。新增来源只需证明其provides经声明的Π覆盖该profile的全部requires；更换profile换这些声明，图不变。原件尽量保存比单个profile更多的事实，但不因此宣称所有未来profile可用。实现不能自行重定义下游requires；真实语义取舍交用户。
 
-P1记录到研究数据集之间是**阶段边界**：这次固定环境、采集/解释和可核对原件，让后续能构造第一轮数据。没有因此声明统一数据消费合同、dataset split、Input/Target或P1训练reader已经冻结；这些仍由Q链owner按实际用途确定。
+**比较声明也沿同一图定位（2026-10-19用户明确）：** Managed是Host实现，不是P1专用执行器；可直接消费受支持的原生语义操作，或经P1/其它profile实现R执行。C1是同起点同P1操作下Host一致；C2是声明原生操作范围下Host一致；C3是⑥投影Π正确；C4是profile对目标功能够用。原生Human→有损Π→P1→Managed不同，不能直接归因Host。B已延后；其历史试验在已登记例外段补放原生实际操作，只证明混合路径的限定一致，不能自动授予P1-only全轨或全部原生内部状态等价；A独立原生重放与C新P1动作冻结后才做。原件、派生及比较报告保留假设、例外和经过的连接，验收逐项见[冻结表](SCOPE_v0.3.zh-CN.md#1-11条进度依据和首训价值)，不另建链路或注册表。
+
+**2026-10-20现行决定与默认解释：** 原始记录、⑥转P1、跨Host对照和不同目的的重放分别判断，不要求每次都串过全部节点。P1里的出牌/用药状态默认按“前面已结算、现在轮到该动作”的串行执行态解释，沿既有rc4接缝取真实S/A(S)；原件仍保留真人实际连点/排队，不改游戏或伪造点击时点。按钮灰掉等暂存表现不能替代原生执行语义，执行目录也不授予新的公开输入权。Managed严格一致已延后，资产/差异收据保留，1a与T0实打用Reference；旧B实验和旧冻结表不构成当前派工。各类验证不互相代替，也不相互绑成未经用户要求的门。
+
+| 连接 | 下游requires | 上游provides／当前owner与合同 | 当前状态 |
+|---|---|---|---|
+| ① 世界→Host能力 | 真实规则/RNG/原生合法性、状态与生命周期 | STS2原生事实；Native Foundation见证；[Host合同](../../../components/host-runtime/README.md) | 既有实现；实际组合另核 |
+| ② Host能力→Connector | 同状态公开事实/Reads、精确操作、执行复验与结果 | Reference/Managed映射；[Player Environment](../../../components/connector/docs/player-environment/PROTOCOL.md) | 既有实现；Host差异不自动等价 |
+| ③ Connector→profile | profile声明的信息时点、完整目录、结果/unknown | Connector Snapshot/all advertised Reads/BoundAction/Receipt；[P1](../../protocols/P1_GLOBAL_R1.zh-CN.md)由共享核聚合/lower | P1 r1.4；全机制按已批跨版本组合及受影响补证实证 |
+| ④ profile→完整Agent | 声明的观察/动作/承诺与失败语义；原控制/消费保证 | P1共享核；AgentProgramPort/Policy Runtime；[ADR0016](../../adr/0016-agent-composition-and-execution-request.md) | 程序/Model组成完整Agent，Model不等于Agent |
+| ⑤ 来源→Store/Evidence | 来源/原始顺序/内容身份、原件与缺口不变 | Annotator、Runtime、选择器等各producer；[记录合同](../../../components/annotator/docs/SOURCE_SESSION_PROFILE_V3.md)、[Evidence](../../../components/evidence/README.md) | 每来源分开核；封包不证明Human或整局 |
+| **⑥ 原件→profile轨迹** | **每profile自己声明；P1以执行S/A(S)同snapshot完整PB1/all Reads/catalog派生；H仅来源，native key/全部operands精确匹配，结果/后继及起终/Close/pack** | **Annotator P1-native/AgentRun等原件；共享核reducer/lowering与声明的Π；[P1 §4.1](../../protocols/P1_GLOBAL_R1.zh-CN.md#41-录制原件派生p1的requires用户已批准)** | **定义4.1–4.2用户已批准；三自然原件及既有事务03/兼容已交，B*和最终资格见CURRENT，不沿旧“未开录”快照派工** |
+| ⑦ profile轨迹→Curation | 来源资格、用途/use、谱系/划分与缺口处理 | 已验原件/派生轨迹；[Data/Provenance](../../../python/docs/DATA_AND_PROVENANCE.md) | 具体用途由Q链owner定；已批T0a实际读入，非正式研究准入 |
+| ⑧ Curation→研究输入/目标 | Input/Target字段、曝光/历史/reset、target/mask与split | Projection/InputSpec/TargetSpec owner；[研究地图](../../../python/docs/DOCUMENT_MAP.md) | T0 owner接当前Input/Target；正式dataset/研究配置未因此冻结 |
+| ⑨ 研究输入→训练/Model | recipe/初始化/输入身份、更新数/预算、checkpoint | TrainingService/engine/worker/provider；[workload](../../../python/docs/STRUCTURED_WORKLOAD.md) | 已有机制；P1实际consumer/首训资格未验 |
+| ⑩ Model→Agent→评估/新原件 | 可加载权重、输入/状态语义、组合/请求和固定评估条件 | 注册/AgentComposition/ExecutionRequest、Runtime/result reader；[Agent执行](../../../python/docs/AGENT_EXECUTION_CONTRACT.md) | T0a离线已交；正式研究工程进行，T0b须准确新注册/独占窗口才实打 |
+
+| 抽象节点 | 当前实现 | 合同/责任owner |
+|---|---|---|
+| 世界／Host能力 | STS2；Reference真游戏＋Mod、Managed无界面Host | Native Foundation、Host能力；Host Runtime只管进程 |
+| 公开环境／交互profile | Connector；SDK `p1Global`当前实现P1 | Player Environment；P1 §4.1/ADR0017 |
+| 完整Agent／执行 | 程序＋可选Model；独立Policy Runtime/NDJSON端口 | AgentComposition/ExecutionRequest及Runtime合同 |
+| 记录来源／不可变原件 | Annotator Human/P1-native、Runtime、选择器、Source4及外部 | 来源声明＋Store/Evidence；Source4非P1必经层 |
+| profile派生 | P1共享reducer/lowering、native-semantic adapter | P1 requires与来源reader；不以具体格式改定义 |
+| 研究／应用 | Curation/STPD/TrainingService；Python应用/API/库/CLI | 原Data/Provenance/训练合同；GUI为原用例薄映射 |
+
+P1原件整局完整、派生完整与新路线E2/E3适用性已由用户批准；方向与开录门也已确定。用户进一步批准恢复rc4执行边界S/A(S)作为P1派生决策，H仅来源；这是⑤⑥的原件/解释要求修订，不改③④或两Host。nonqueued证明H/S同边界，queued披露true及间隔；public action/native input互斥，不制造H BoundAction。原件完整而adapter暂缺可补实现后重派生；旧H/执行S缺失不回填。未提交拿牌取消无accepted决策/label；真实accepted选择/效果/unknown仍保留。具体实现与用户四项缺口检测见[P1 §4.1](../../protocols/P1_GLOBAL_R1.zh-CN.md#41-录制原件派生p1的requires用户已批准)。这不代表实际开录或最终冻结已PASS。
+
+### 报告、PR与路线复查如何使用这张图
+
+每份报告和PR加一行：**链路位置：节点/连接编号；变更类别：表示或传输／能力或交互语义／组件实现替换／回到上层抽象；requires/provides及实际缺口。** 四类名称与[Architecture](../../ARCHITECTURE.md#selected-convergence-and-change-rules)同一规则；能力/语义或上层取舍交用户，不由adapter隐改。普通实现修复在既有授权内推进，不新增冻结门。
+
+两次预检因不同原因失败时，对图回答：失败在什么连接；是实现未满足requires，还是requires未写清/错误；复用哪个已有owner、何时交付最小可验结果。native01/02的已做路线复查定位⑤→⑥：原件采集/Close不完整，和adapter表示匹配错误分别归原owner修复；不重跑旧失败来改旧结论。native02有效前缀离线/Managed通过仍不能填正常Close/pack开录PASS；native03主动零动作收尾也不是通过。
+
+**按当前已批T0a并行安排**由Q链owner明确⑦⑧的工程用途/划分→模型输入requires，正式研究准入仍另定；再考虑closeout对“改合同未写链路位置”的非阻塞轻提示。本次不实现checker、不加阻塞门、不重设已批Q3v3。
 
 ## 组件：位置、原因与首训价值
 
@@ -45,9 +93,9 @@ P1记录到研究数据集之间是**阶段边界**：这次固定环境、采�
 | 浏览器/Mod GUI | 同一用例的人类薄映射 | 方便显示/确认、配对和恢复，业务权威仍在原服务；不要求GUI全无代码 | 保留现成面板，不新建复杂GUI/团队页；[UI scope](../../UI_INTERACTION_SPEC.md) |
 | apps/workbench旧诊断API | 旧诊断/兼容入口 | 仅保留实际依赖/历史诊断，不作为又一完整工作台来做 | 已无HTML；[README](../../../apps/workbench/README.md) |
 | Store/Curation | 不可变原件→用途/划分 | 复用来源、去重、同seed/save谱系、Gold/use，后续dataset可追溯 | Q2/P1准入细则后定；[Data](../../../python/docs/DATA_AND_PROVENANCE.md) |
-| STPD projector/Input/Target | 研究输入构造 | 明确模型看到什么、记忆怎样推进、训练监督来自哪，防把未来标签放当前输入 | Q3适配器/词表/配方待确认；[research map](../../../python/docs/DOCUMENT_MAP.md) |
+| STPD projector/Input/Target | 研究输入构造 | 明确模型看到什么、记忆怎样推进、训练监督来自哪，防把未来标签放当前输入 | P1来源/适配/词表及实际绑定待验，已批Q3模型/配方不改；[research map](../../../python/docs/DOCUMENT_MAP.md) |
 | TrainingService/engine/worker | 研究学习 | 复用Run/attempt/checkpoint/更新数/预算与导出，不为新P1另写训练manager | 首轮配置/费用仍另批；[workload](../../../python/docs/STRUCTURED_WORKLOAD.md) |
-| R2存储adapter | 原件/派生包↔存储 | 最简内容寻址存取给远程首训用，可复用原库而不强制Hub | 路径/核验提案和授权见[K5](CLOUD_MINIMAL.md)；当前无新上传 |
+| R2存储adapter | 原件/派生包↔存储 | 最简内容寻址存取给远程首训用，复用ManifestArtifactStore而不强制Hub | 本轮具名原件/旧压缩档已实际完整回读/按ID恢复；正常storage operation接线和当前资格见[CURRENT](../../memory/CURRENT.md)，不是所有历史数据云资格 |
 | Modal/provider adapter | 资源执行/只读数据入口 | 复用远程资源机制；必须证明首轮所需数据真实可读，不能借旧job名冒充新P1接好 | 当前P1消费与费用未验/另批；[K5](CLOUD_MINIMAL.md) |
 | Hub/团队账号/Cloudflare登录/云页面 | 原有团队/共享通道 | 历史现成能力保留原consumer和授权；不让首训最简R2/Modal依赖整个团队产品 | 冻结前保留现状、接口/占位，不扩建；[K5](CLOUD_MINIMAL.md) |
 | Task/result reader与Q1评估 | 新运行→证据/质量 | 区分自然终局、技术停止、unknown与策略效果，回答是否优于随机 | Q1方案后固定；[evaluation](../../../python/docs/MANAGED_SUITE_EVALUATION.md) |
@@ -57,7 +105,7 @@ P1记录到研究数据集之间是**阶段边界**：这次固定环境、采�
 | 合同/协议 | 位置和原因 | 首训价值/状态 |
 |---|---|---|
 | Player Environment | Connector提供公开观察/Read/完整原生目录/Receipt的具体合同 | P1派生与执行的原始基础，不是训练张量格式 |
-| P1 r1.3 | 当前环境信息/前进动作/承诺/失败语义 | 线上和离线解释同意当前公开决策问题；[唯一语义owner](../../protocols/P1_GLOBAL_R1.zh-CN.md) |
+| P1 r1.4 | 当前环境信息/前进动作/承诺/失败语义 | 线上和离线解释同意当前公开决策问题；[唯一语义owner](../../protocols/P1_GLOBAL_R1.zh-CN.md) |
 | Agent-session/P1子程序端口 | Runtime↔完整Agent的消费、query/choice/control | 复用同一受控入口接未来模型，NDJSON只是实现；[owner](../../../components/policy-runtime/docs/AGENT_SESSION_PROTOCOL.md) |
 | AgentComposition/ExecutionRequest/Goal | Agent描述与一次执行意图、资源/权限/预算、任务见证 | Model不等于Agent；沿原应用启动/结果，不添scheduler；[owner](../../../python/docs/AGENT_EXECUTION_CONTRACT.md) |
 | Record grammar/来源声明 | 来源原件事实、顺序、身份、缺口、完整性 | 核验记录可解释什么；不冒充P1/Agent消费/训练准入 |
@@ -69,16 +117,17 @@ P1记录到研究数据集之间是**阶段边界**：这次固定环境、采�
 | 格式族 | 链中用途/消费者 | 对首训的价值及去向 |
 |---|---|---|
 | Snapshot/Reads/BoundAction/Receipt原字节 | 环境→P1/Runtime/Recorder | 来源事实及选择绑定，离线复验可追溯；不直接当所有Model Input |
-| Source4 profile/bundle-v4/public-basis1 | Annotator→Evidence→source4-to-p1 | 新完整公开basis/Read及输入供P1解释；[report-v3当前scope](SCOPE_v0.3.zh-CN.md)区分bounded/whole_run，真实整局仍待 |
-| P1 observation/choice/result | P1在线边界及离线派生 | 当前公开决策语义；模型投影、词表和学习目标后定 |
+| P1-native决策原件＋PB1 | 成熟Human accepted动作owner→Evidence→共享核离线P1 | 执行S/A(S)解释与接线已实现，H只作来源；三自然来源已封包，当前重派生/缺口及资格从CURRENT查 |
+| Source4 profile/bundle-v4/public-basis1 | 保留的原始输入/publication→P2/后续消费者 | 原report-v3和旧FAIL保持，不承担当前P1强制raw取消全分类门 |
+| P1 observation/choice/result | P1在线边界及离线派生 | 当前公开决策语义；T0已按固定InputSpec/词表完成工程闭环，正式数据配方和研究准入另定 |
 | agent-session-run-1目录/events/引用原件 | Runtime→typed verifier/replay/样本admission | 保存实际offer、Consume/ACK、Receipt/Result；直接Agent lane独立于Source4 |
 | legacy episode-record-1单文件 | 原直接记录converter/reader | 有限复用原P1来源，保留原版本，不与当前目录格式混同 |
-| Human manifest2/trace4/canonical3/action-space3/Read2/journal2/close1/bundle3 | 原生因果lane→Evidence/对应研究consumer | 成熟原件/经验可复用；旧数据转新P1高成本且缺失事实不补造 |
+| Human manifest2/trace4/canonical3/action-space3/Read2/journal2/close1/bundle3 | 原生因果lane→Evidence/对应研究consumer | 成熟动作owner、H关联、原件和封存可复用；旧H缺当前P1事实不补造，不在未测下断言必须重建全部hooks或高迁移成本 |
 | record2/bundle2兼容及trace1–3/canonical2/ledger1–2/record1/bundle1 | 真实旧consumer/归档reader/fixture | 原用途保留，不转贴新candidate资格；[格式链](../../FULL_RUN_DATA_CHAIN.md) |
 | Source1/2/3及bundle | 原声明/epoch/有序basis研究lane | Source3默认及旧专用view继续；不回填Source4新事实 |
 | ResearchTransition/Parquet/dataset/use/split manifests | 来源admission→固定研究样本/用途/划分 | 复用现有数据管理；不是所有源都强制S-a-S′或同一Parquet语义 |
 | Artifact manifest/chunks/content hashes | Store/R2/transfer/materialize | 既有内容身份可分块核对；大数据路径/云费用另批，不擅调全局上限 |
-| Model/checkpoint/Agent package | 学习→加载/注册→新运行 | 后续冻结数据/配置/权重/状态身份；本次P1冻结不包含一个尚未批准的新Model |
+| Model/checkpoint/Agent package | 学习→加载/注册→新运行 | T0已交固定M-std工程模型/恢复/export，真实环境运行待具名独占窗口；不把模型工程更新计正式策略资格 |
 
 ## 工作台停止边界
 

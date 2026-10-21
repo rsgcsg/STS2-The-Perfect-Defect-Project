@@ -6,6 +6,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Godot;
 using MegaCrit.Sts2.Core.GameActions;
+using MegaCrit.Sts2.Core.Events;
 using MegaCrit.Sts2.Core.Nodes.Cards.Holders;
 using MegaCrit.Sts2.Core.Nodes.Combat;
 using MegaCrit.Sts2.Core.Nodes.Rewards;
@@ -77,7 +78,7 @@ public static class NativeSourceInputProvider
     public const string CarrierObserverFailedReason = "native_source_carrier_observer_failed";
     internal sealed class Registration(Func<NativeSourceInputPrefix, object?> prefix,
         Action<object, string, string?> terminal, Action<object, object, string>? sourceCarrier,
-        Func<object?>? stageAnchor, Action<object, NativeSourceStageWitness>? stage, bool observeOriginalRewardTasks) : IDisposable
+        Func<object?>? stageAnchor, Action<object, NativeSourceStageWitness>? stage, bool observeOriginalRewardTasks, bool observeOriginalEventChoices) : IDisposable
     {
         internal Func<NativeSourceInputPrefix, object?>? Prefix = prefix;
         internal Action<object, string, string?>? Terminal = terminal;
@@ -85,6 +86,7 @@ public static class NativeSourceInputProvider
         internal Func<object?>? StageAnchor = stageAnchor;
         internal Action<object, NativeSourceStageWitness>? Stage = stage;
         internal readonly bool ObserveOriginalRewardTasks = observeOriginalRewardTasks;
+        internal readonly bool ObserveOriginalEventChoices = observeOriginalEventChoices;
         public void Dispose()
         {
             lock (Gate)
@@ -104,12 +106,12 @@ public static class NativeSourceInputProvider
     // Composition-only registration; public native hooks cannot create a sink.
     internal static IDisposable Register(Func<NativeSourceInputPrefix, object?> prefix, Action<object, string, string?> terminal,
         Action<object, object, string>? sourceCarrier = null, Func<object?>? stageAnchor = null,
-        Action<object, NativeSourceStageWitness>? stage = null, bool observeOriginalRewardTasks = false)
+        Action<object, NativeSourceStageWitness>? stage = null, bool observeOriginalRewardTasks = false, bool observeOriginalEventChoices = false)
     {
         lock (Gate)
         {
             if (current != null) throw new InvalidOperationException("native_source_input_owner_conflict");
-            return current = new(prefix, terminal, sourceCarrier, stageAnchor, stage, observeOriginalRewardTasks);
+            return current = new(prefix, terminal, sourceCarrier, stageAnchor, stage, observeOriginalRewardTasks, observeOriginalEventChoices);
         }
     }
     internal static IDisposable ProtocolDispatch(object originalRequest)
@@ -136,7 +138,7 @@ public static class NativeSourceInputProvider
         var invocation = new NativeSourceInputInvocation(original, token, prefix.ExpectedNativeActionType, prefix.AcceptedCarrierType)
         {
             OriginalOwner = original.StageAnchor == null && !original.ObserveOriginalRewardTasks || prefix.Owner == null ? null : new(prefix.Owner),
-            OriginalSubject = original.ObserveOriginalRewardTasks && prefix.Subject != null ? new(prefix.Subject) : null,
+            OriginalSubject = (original.ObserveOriginalRewardTasks || original.ObserveOriginalEventChoices) && prefix.Subject != null ? new(prefix.Subject) : null,
             OriginalMechanism = prefix.NativeMechanism
         };
         scopes ??= new(); scopes.Push(invocation); return invocation;
@@ -224,6 +226,20 @@ public static class NativeSourceInputProvider
         }
     }
     /// <summary>One actual SelectLocalReward return inside the exact original button callback, Source4 only.</summary>
+    // Chosen sets WasChosen before its first await. This witnesses original
+    // delivery/acceptance, never Task completion, effects or a causal successor.
+    public static bool ObserveOriginalEventChosen(EventOption exactOption, Task originalTask) =>
+        ObserveOriginalEventChosenCore(exactOption, exactOption.WasChosen, originalTask);
+    internal static bool ObserveOriginalEventChosenCore(object exactOption, bool wasChosen, Task originalTask)
+    {
+        if (!wasChosen || originalTask == null || scopes is not { Count: > 0 }) return false;
+        var original = scopes.Peek();
+        if (!original.Registration.ObserveOriginalEventChoices || original.OriginalMechanism != "NEventRoom.OptionButtonClicked"
+            || original.OriginalSubject == null || !original.OriginalSubject.TryGetTarget(out var subject)
+            || !ReferenceEquals(subject, exactOption)) return false;
+        Accepted(original); return true;
+    }
+
     public static bool BindOriginalRewardTask(Reward exactReward, Task<bool> exactTask)
     {
         if (scopes is not { Count: > 0 }) return false;
