@@ -1,21 +1,18 @@
-# 当前工作：第一轮稳定录制与正常数据、模型、GPU闭环
+# 当前结果：第一轮部分完成，首训尚未就绪
 
-更新于2026-10-21，Brisbane。用户已直接授权完整第一轮，旧“只规划”、旧Round3H/私人ACTIVE不再派发。
+2026-10-21，Brisbane。用户授权的第一轮已收口；未自动续第二轮，不派发旧Round3H/私人ACTIVE。
 Resolve live GitHub refs before relying on this snapshot. 最新用户原话和现场证据 override this file。
-唯一任务是[本轮owner、原14项和六项完整分母](../plans/p1-prefreeze-2026-10-18/ROUND1_EXECUTION_20261021.zh-CN.md)。
+唯一接续为[原14项、完整六项和真实剩余](../plans/p1-prefreeze-2026-10-18/ROUND1_EXECUTION_20261021.zh-CN.md)。
 
-## 当前做到哪里、谁在做
+## 本轮实际完成与证据层
 
-PR206已依用户C-2 normal merge入develop8b2c作BASE，非冻结/生产。I独占topic、CURRENT/任务、版本BOM/refs/env；各writer独立分支，root唯一排重slot/终审。
-已normalmerge经Q审B0bf/S8e/D56b/C-input e592/E8d/C-GPU331c、G0046/D b607及最新B43fd/D1a4970/G437d整包。B status沿原本地Ops观察，免等tick网络锁，未加retry/延timeout，不据此认定C具体timeout根因。D明确内部受支持库/API便利仍同合同/owner，GUI按人需入口，不强每API按钮或绕HTTP。
-Evidence32已正常canonical VCS pin/uv lock/build/install；原doctor/PEP610/RECORD/31源文件、20required/87selected零锁差和-I父子新I绑定通过。旧配置combination_changed失败保留，新隔离operator经原setup/doctor通过，没有伪metadata/共享env修改。Python408/Ruff与便宜root门保原检查身份；当前最终组合full/hostedCI尚未跑，不能借旧绿。
-七源已3715N/3357next，S正常publish/CLI完整reader/R2父闭包及payload全7/7通过，账0claim/1历史use/1sourceuse不变；C dataset语义与亲缘资格另判。原工程录制生命周期两空session、随后用户亲手短录Close/pack/reader及回滚已实做，保c930Mod/Tool9a原身份，不称整局。
-用户亲手呈现rc14/49的录制/资料/诊断三页，实际load/截图及14paths回滚通过；资料页首屏暴露未翻译状态/创建入口下沉，G437d纯表示修复已合。当前UIrc15/Modrc50与锁/BOM一致，需准确新build，未重做实屏、不贴旧视觉给新artifact。正常App61901/config/三launcher保持。
-S Global/Human/热集、E lossless和非作者consumer按原件逐项收口，source不自动授真实IO。C首call取消有4更新/3checkpoint；最新call3 provider TERMINATED、原Hub取消对账中，完整GPU闭环/ModelCPU与step3仍未验，不能把wrapper退出当云终态。Operator Evidence32与remote331c锁31分层。
+PR206已依C-2 normal merge至BASE8b2c，其他本轮增量保独立topic/normal ancestry，不授生产或正式冻结。最后准确源码69c4555f/tree4d6ca357原12阶段完整门失败，Python原摘要：== 5 failed, 4699 passed, 6 skipped, 93 subtests passed in 823.70s (0:13:43) ===。本次只收口G0状态文档，组件源码、合同、版本和artifact身份不变，不第二FULL；新文档head不能替代该源门身份，最终head CI须独立读取。 原门Python4699通过/5失败/6跳过/93子测试；pytest失败后的CPU e2e/cloud smoke/uv build未执行。随后只正常合B d382与C82e最小guard/忠实fixture修复，准确4021ccdb上唯一7项targeted通过17.20秒；kit同原sanitized uv一次诊断为ModuleNotFoundError: spireagent，selected-source自有.venv未bootstrap，不安装/绕边界求绿。最新组合未重跑完整门，原FAIL保持。
+Evidence32 canonical source20989e51、真实uv VCS安装/原doctor/PEP610/RECORD/31源文件与-I父子绑定通过，20required/87selected零锁差。旧配置combination_changed失败保留，未伪metadata或共享安装。当前版本UIrc15/Modrc50、SDKrc11/Connectorrc26、Hostrc34/Policyrc39及锁/BOM一致。
+最后Mod50 e5d34e77/MVID3ca7501a准确build通过，候选Tool304a209a已发布绑定；修后未install/load/实屏。用户实际看过rc14三页，资料首屏finding由G437纯表示修复，旧图不授新身份。原工程两空session及用户短录686accepted/686terminal/0issue、627N/627next正常保存/本地R2读回通过，保c930Mod/Tool9a，不称整局。14路径和三launcher按字节/权限回滚，正常App61901保持，临时native进程已退。
+七源正常Store/R2全父闭包和当前dataset reader通过，3715N/3357next、六TRAIN3269/DEV446/TEST0为工程只读划分；七组亲缘unknown/已证独立0，账0claim/1历史use/1sourceuse不变，无新真实fit/use。旧Global及Model/可信Runtime父闭包、本次Human回库通过。E11399文件全字节往返/原typed通过仅离线表示诊断；D一个真实非作者reader通过，不外推全部操作。
 
-## Remaining Platform non-claims 与时间、资源边界
+## Remaining Platform non-claims 与接续边界
 
-UTC02:00:36开始；用户因合盖直接延一小时，05:30停新增、05:40候选、06:00（Brisbane16:00）硬交付，达成提前停，费用/调用预算不扩。最终准确native build/必要Tool与稳定组合17–20分钟full均由root选，源/env整个窗口保持不变。
-重IO/full/native共用root一个slot，用户当前操作优先；unknown不重投，原件/云对象不删，正常App不强杀，不重复worker/game/请求。所有source/test/build/load/Human/研究资格分开。
-六TRAIN/一DEV/TEST空，r1.5后固定原reader输入，亲缘unknown/DEV仅早停；原M-std FP32配方保持。工程GPU总≤USD5含构建/≤3call，正式USD15只备命令；本轮不正式freeze/train/新真实use、不代merge新PR或生产升级。
-原14项、全六项、Reference20/Reference产品R20不缩，后两项原第二轮未跑仍未验，Managed严格/Continue延期不复活。D九类SOP/15现行caller/104去向及一个真实非作者reader不能授六项全过。正式首训未就绪，工程缺口不能写成只等批准。外部START/root最终判定归root，旧证据和失败不追改。
+全项目六项仍部分，首训未就绪。GPU三调用额度用尽，实际L4与step1完整checkpoint已验，但完整Model/Result、恢复step3和CPU导出未验，最终账单未知；原provider已终态、队列/runner为0，原Hub取消对账不重投。B正常HTTP争锁反例已修，不证明它就是该GPU失败原因。Operator Evidence32与remote331c锁31不互授资格。
+真实热集Catalog报告native_recording_root_unavailable/owner_unavailable，已配置目录实际存在且非symlink，原因未定；没有冷却/恢复/删除。Reference20/R20、正式冻结/首训、新模型比较未做，native退出诊断仍有错误，不能称干净整局。完整六项不因help/路径/一个reader通过而整体通过。
+下一步由原owner先解决Catalog根读取与完整GPU恢复，再做原Reference及剩余非作者实操；不自动请求新付费调用、训练或重试。最新硬收口06:00UTC/Brisbane16:00，预算不扩，正常App/原件/云对象保留；SOURCE/refs/CI实时状态归同topic PR及root外部报告，不能用旧绿推定新head。

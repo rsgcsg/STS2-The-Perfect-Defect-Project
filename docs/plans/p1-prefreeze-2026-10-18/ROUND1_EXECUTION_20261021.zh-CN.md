@@ -1,6 +1,6 @@
 # 第一轮执行：稳定录制与正常数据、模型、GPU闭环
 
-本轮UTC02:00:36开始；用户合盖后直接延一小时，05:30停新增、05:40候选、06:00（Brisbane16:00）硬交付，达成提前停、费用/调用预算不扩。已normalmerge原全部受理包及最新B43fd/D1a4970/G437d：status沿原本地Ops免等tick锁、受支持内部库/API仍同合同/owner、资料首屏状态和创建入口纯表示修复。Evidence32真实VCS安装/原doctor/PEP610/RECORD/20required87selected/-I父子源通过；原398f Python408/Ruff、fc8便宜门和准确native build各保原身份，最后新组合full/hosted CI未跑。七源正常CLI/R2全7通过3715N/3357next，账不变；本次Human保c930/Tool9a。用户实际呈现v14三页，load/截图/原Close及14paths回滚已验，资料首屏finding促成G437源码修；新UIrc15/Modrc50未贴旧实屏身份，准确新build待root授slot。C最新call3 provider TERMINATED，原Hub取消对账，完整GPU闭环/ModelCPU+step3未验。S/E真实IO与非作者reader按各原件最终判，原14/6不缩，正式首训未就绪。
+本轮已收口，整体首训baseline未通过。最后准确源码69c4555f/tree4d6ca357原12阶段完整门失败，Python原摘要：== 5 failed, 4699 passed, 6 skipped, 93 subtests passed in 823.70s (0:13:43) ===。本次只收口G0状态文档，组件源码、合同、版本和artifact身份不变，不第二FULL；新文档head不能替代该源门身份，最终head CI须独立读取。 原门Python4699通过/5失败/6跳过/93子测试；pytest失败后的CPU e2e/cloud smoke/uv build未执行。随后只正常合B d382与C82e最小guard/忠实fixture修复，准确4021ccdb上唯一7项targeted通过17.20秒；kit同原sanitized uv一次诊断为ModuleNotFoundError: spireagent，selected-source自有.venv未bootstrap，不安装/绕边界求绿。最新组合未重跑完整门，原FAIL保持。 七源、Human、旧Global/R2和离线字节往返等实物通过，GPU完整恢复/Model/CPU导出、真实热集和Reference20/R20未齐。最新用户延长后06:00UTC（16:00Brisbane）硬止，预算不扩，无自动续轮。原14项和完整六项最终判定见下表。
 
 ## 本轮目标、授权和准确起点
 
@@ -10,7 +10,7 @@
 
 I独占`work/p1-round1-integration-20261021`、topic`codex/p1-round1-integration-20261021`、CURRENT、此唯一任务、BOM/versions和集成refs。每位writer从新BASE建独立短命topic；normal merge保组件path-scoped来源，无force、无direct-push main/develop，不改其他writer分支。除PR206这次具名工程merge，本轮只交普通topic PR，不代批新PR merge/正式freeze/train/prod。
 
-采用转发prompt的已定选项：六源TRAIN、d74dc5f6/9e64c1d3源DEV、TEST空，旧计3271/446待r1.5新投影重算；DEV仅早停、亲缘unknown不作泛化。原M-std FP32、完整目录N、batch64、AdamW3e-4/wd0.01、5%warmup/cosine、最多30epoch/dev patience5及原best/last/checkpoint安排保持。工程GPU合计≤USD5含构建；正式Modal L4上限USD15仅准备命令/预检，本轮不正式开训、不写新真实use。奖励直接连续、R2长期主存、Modal优先/学校后、Continue延期保原决定；数值/模型方案若变先交用户，不用提速偷改配方。
+采用转发prompt的已定选项：六源TRAIN、d74dc5f6/9e64c1d3源DEV、TEST空，r1.5原reader已只读重算3269/446；DEV仅早停、亲缘unknown不作泛化。原M-std FP32、完整目录N、batch64、AdamW3e-4/wd0.01、5%warmup/cosine、最多30epoch/dev patience5及原best/last/checkpoint安排保持。工程GPU合计≤USD5含构建；正式Modal L4上限USD15仅准备命令/预检，本轮不正式开训、不写新真实use。奖励直接连续、R2长期主存、Modal优先/学校后、Continue延期保原决定；数值/模型方案若变先交用户，不用提速偷改配方。
 
 ## 绝对时间、资源和停止点
 
@@ -32,56 +32,62 @@ I独占`work/p1-round1-integration-20261021`、topic`codex/p1-round1-integration
 
 | owner/写范围 | 上游提供→下游需要；本轮产物 | 验收、停止与当前状态 |
 |---|---|---|
-| A 环境语义/Tool | 原selector surface事实→SDK准确动作与finish_available→固定r1.5 Tool→七源投影 | 同类cancel/真正空提交/拒绝/非空确认忠实正反例，协议和consumer同包；七源新旧N/next/缺口/标签差异。r1.5源码b4bf2304及忠实测试已审合入；唯一Tool9a489cd0已发布，七源已派生3715N/3357next，正常Store/CLI/R2完整父闭包7/7通过，C dataset reader待验，不改原生规则/模型 |
-| G 原生GUI，B Application协同 | 游戏内既有控件→同一Application/TaskBridge/RecordingApplicationService→原RecorderRuntime | G薄映射fa81f4c7/526c3066及B ae20d926/02b38638已审合入；I实跑UI 34项/API 18项通过，未授native资格。工程UI生命周期及用户短录已实做，root核原件；用户反馈易用性不足，G0046已实际load/用户呈现三页；资料页finding由G437源码修，新rc15/50准确build待验，未重做实屏 |
-| E Runtime/Evidence | 原完整capture/source/Agent/Receipt→去重表示和原预算Stop→同包replay/typed消费者 | 先量旧T0b/历史复用，旧读新写，唯一字节/全部物理分母，旧archive保持验证；无进展窗口/摘要/choice意义明确，沿原Stop记no_progress，不冒自然结局。E8d已正常合入，source窄测与真实旧原件lossless IO分别报告，后者待root slot |
-| B Application/模型用例 | 既有Model/InputSpec/Runtime安装pin→原model/live registration/start/status/stop/证据查询 | 复用原P1 Agent/CLI/可信expected，原t0 register保工程工具；B独占共享Application路由/descriptor，S提供service接口。正常API/CLI与GUI同用例，进程内夹具/源码入口/准确安装/日常安装分层 |
-| S Store/maintenance | trusted runtime expected+密封Global→原typed verifier→正常Manifest/reader→copy_artifact/R2；原保存→recent-two冷却/恢复 | 旧T0b先独立接通，新格式随E；父Model/Runtime保身份，content_id不冒artifact_id，不借旧profile。S8e/B0bf已合；真Evidence32前置已过，实际pack/Global/七源/热集与非作者reader仍待root slot，不以source测试授回库通过 |
-| C 计算/研究数据 | 同Application/Scheduler/worker+compute Store→真实L4工程恢复/Model；新七源→固定数据/词表/InputSpec预检 | 合成≤3具名调用，单L4/CPU2/8GiB/1容器/retries0、工程总≤USD5含构建；Secret不打印，unknown保handle。CPU导出逐tensor核、实测时费；新六TRAIN/一DEV重算、train-only词表/曝光保真，无真实数据梯度/use |
-| D 原指南/接手 | 稳定源码/接口和原历史解法→原guide/SOP→非作者正常入口操作 | 接口一稳即写条件/参数/位置/成功失败/恢复，不等最后堆手册；不是只跑help或用“本轮材料达到”代完整六项 |
-| Q 有界独立复核 | 作者diff/原始结果→公共语义、证据/预算、GPU/consumer的非作者判断 | 不代root终审、不把旧结论当当前；关键稳定增量交review，轻小步不反复全库审计 |
-| I 集成 | 已审稳定topic→normal merge→共享身份/原指南/CURRENT/唯一任务→普通topic PR/准确CI | 只改I权限路径，非owner source回原writer；首15分钟基线，滚动集成，末稳定原门等root slot；不自启游戏/完整门/重IO |
-| root 统筹/终审 | 直接用户意图+实际实物→依赖、资源、范围、最终14/6判定 | 不代实施；最终亲读准确diff/ref/原件/CI/安装/日志/用途/资源，不用worker总结授资格 |
+| A 环境语义/Tool | 原selector surface事实→SDK准确动作与finish_available→固定r1.5 Tool→七源投影 | r1.5首错和七源正常reader通过3715N/3357next；真实incident准确拒绝，不补造前缀。 |
+| G 原生GUI，B Application协同 | 游戏内既有控件→同一Application/TaskBridge/RecordingApplicationService→原RecorderRuntime | 工程生命周期和真人短录/rc14三页已验；rc15/Mod50准确build，最后表示修后未重验实屏，原路径已回滚。 |
+| E Runtime/Evidence | 原完整capture/source/Agent/Receipt→去重表示和原预算Stop→同包replay/typed消费者 | 11399原文件全byteexact往返和原typed通过，仅离线表示诊断；新格式真实Runtime/整局未验。 |
+| B Application/模型用例 | 既有Model/InputSpec/Runtime安装pin→原model/live registration/start/status/stop/证据查询 | 正常Model/控制source集成及status原HTTP争锁FAIL→9PASS；不授GPU失败因果或新Model实局。 |
+| S Store/maintenance | trusted runtime expected+密封Global→原typed verifier→正常Manifest/reader→copy_artifact/R2；原保存→recent-two冷却/恢复 | 七源、Human、旧Global与父闭包正常本地/R2通过；热集首Catalog报根不可用，原因未定，未cool/restore/delete。 |
+| C 计算/研究数据 | 同Application/Scheduler/worker+compute Store→真实L4工程恢复/Model；新七源→固定数据/词表/InputSpec预检 | 六TRAIN3269/DEV446/TEST0只读预检；真实GPU额度三次用尽，step1已验，完整恢复/Model/CPU导出未验，账单未知。 |
+| D 原指南/接手 | 稳定源码/接口和原历史解法→原guide/SOP→非作者正常入口操作 | 九类SOP/104行和15现行caller维护；一个真实非作者reader通过，全部操作未整体验收。 |
+| Q 有界独立复核 | 作者diff/原始结果→公共语义、证据/预算、GPU/consumer的非作者判断 | 已受理最终稳定源及原件的注明范围，不能替root终审或更高native/Human/科学资格。 |
+| I 集成 | 已审稳定topic→normal merge→共享身份/原指南/CURRENT/唯一任务→普通topic PR/准确CI | 全部稳定topic normal merge；最后原完整门失败并保准确69c身份，仅一次G0文档收口，普通PR不代merge。 |
+| root 统筹/终审 | 直接用户意图+实际实物→依赖、资源、范围、最终14/6判定 | 原14/六项最终按实物部分收口，首训未就绪；不自动续轮/新费用/正式冻结或真实训练。 |
 
 真实依赖只有：A语义→固定Tool→S正常发布→C新快照；G/B原件生产与保存→用户短录；E新格式→S新读（旧T0b桥可先做）；最终native tuple→原生/Reference验收。GPU、Application、旧证据回库、热集、原SOP从开始并行。新录制先入候选，不自动增入首训快照。
 
-## 原14项完整分母与本轮、后续归属
+## 原14项完整分母与实际判定
 
-| 原项 | 当前继承事实与本轮下一实物 | 仍需准确验收的边界/owner |
+| 原14项 | 实际判定 | 已验证实物与下一边界 |
 |---|---|---|
-| 1 奖励连续 | 已批连续规则复用；A r1.5新七源/正常reader保该含义 | 缺H/药水/unknown独立保屏障，新ID计数不贴旧3717/3357 |
-| 2 首错/数值/检查 | A取消首错、E容量/无进展、C真实GPU；faithful窄测后组合一次门 | 旧数值隔离和原失败保身份，不反复全门求绿；I/Q |
-| 3 异常恢复 | A用真实非空incident隔离副本recover→audit→pack→正常reader | 原件不改，可证前缀或准确不可恢复原因均如实；未来精确scope有依据再做 |
-| 4 日常录制 | G/B当前P1游戏内入口，准确加载、用户短录、Close/下一局/保存读回，S空间周转 | 目标60–90分钟先交；短段不称无限批量，Human用户亲手、root排窗口 |
-| 5 训练控制 | C/B原Application/Scheduler真实GPU固定暂停/同Run恢复/取消/结果 | remote live-pause不冒支持；unknown/reconcile/客户端关闭后handle仍查 |
-| 6 全部候选 | A/S/C新版七源及当前Catalog/Store/已知R2索引候选排除/重复曝光 | 七源不是全机全部合格人口，亲缘unknown/已证独立0保真，旧根优先索引 |
-| 7 用途/学习问题 | 已选(b)六TRAIN/一DEV/TEST空，新投影后重算，train-only词表/完整catalog | DEV不作泛化，旧T0 441输入/256 distinct梯度/4更新曝光仍在原账；预检不新use |
-| 8 R2保存/周转 | S热集、Global桥和账/模型/checkpoint/结果沿原Store回库 | 必须全payload/按ID原reader读回，先可恢复再冷却，不以metadata show代consumer |
-| 9 GPU/简单提速 | C原worker真实L4/Secret/image/Store/恢复/实测 | 数值保持优化先复用；批处理/精度改变交方案，不用旧CPU四步外推30epoch |
-| 10 全项目收敛 | D从第一轮维护原九类操作，Q实际走查，root完整六项 | 不只首模型链、路径表、help或标unsupported替代原承诺 |
-| 11 稳定组合/运行 | I滚动normal merge/Q复核，最终source门和准确tuple | Reference20/Reference产品R20在两轮原计划保留，沿原20分母；Managed严格/40延期不复活。本轮未跑记未验，不缩20求绿 |
-| 12 首训/评估具体方案 | C/B固定比较单位/场景seed/版本/预算/技术失败分母，准确正常命令 | 锁Input/Target/词表/image/Run/预算/恢复点；吞吐含准备/dev/发布实测，不新强制TEST |
-| 13 冻结/首训 | 本轮只备dry-run与准确命令/停止条件 | 两轮required工程未齐则未就绪；正式freeze/train用户具名批准，USD15非本轮正式提交授权 |
-| 14 模型真实用/比较/回库 | B正常注册/实局/Stop，S旧T0b与E新格式回库，C固定评估reader | 旧899Input/900dispatch/393循环是历史前缀，不整局资格；新模型实际比较在首训产出后，但接口不能欠到模型后补 |
+| 1 奖励连续 | 当前七源通过 | 原批准直接连续规则保留，r1.5正常Store/R2和语义reader七源3715N/3357next；cancel误标签两点排除。真实缺口与unknown不掩盖。 |
+| 2 首错、数值与检查 | 部分 | A实际取消首错、E全字节往返、B正常HTTP争锁先FAIL后修9PASS；同机CPU初始化/输入/分数及GPUstep1原payload相同。完整GPU恢复未通过，最后源码门见本文件结果段。 |
+| 3 异常恢复 | 已验证准确拒绝，恢复能力仍有边界 | 真实非空事故副本5accepted/5terminal但缺后继原件，原journal已关闭且无CloseReceipt；当前Tool准确incident拒绝pack，不补造可恢复前缀。两空件正常恢复是N0。 |
+| 4 日常录制 | 部分 | 用户亲手短录→Close→原Tool→正常入库→本地及R2按ID原typed读回，686accepted/686terminal/0issue。只证明本段；非无限录制/所有surface。新GUIrc14三页实屏，rc15资料修正仅源码/准确build。 |
+| 5 训练控制 | 部分 | 原Application/Scheduler合成GPU真实暂停到step1完整checkpoint；第三次同Run恢复遇本地观察失败，按预算取消并正常reconcile。完整Model/Result未验，不称恢复成功；非新增live-pause。 |
+| 6 全部候选 | 部分 | 当前七源完整ID/重复/parent/reader均验；新短录另存，不自动入首训。七结构组亲缘全unknown，已证独立组0，七源不代表全机全部合格人口。 |
+| 7 用途与学习问题 | 工程预检通过，研究资格未授 | 已选(b)六TRAIN3269/DEV446/TEST0只读重算；DEV非独立、不能作泛化。旧T0曝光原账仍0claims/1use/1sourceuse；没有本轮真实新fit/use/梯度。 |
+| 8 R2保存与空间周转 | 部分 | 七源、新短录、旧Global及完整Model/可信Runtime父闭包正常发布和按ID本地/R2全读通过；真实recent-two热集首Catalog报root不可用，未冷却/恢复/删除。 |
+| 9 GPU与提速 | 未达完整工程目标 | 原L4/不可变镜像/Secret/Store实际连通，三次额度用完。暂停step1payload完整且同旧GPU；完整baseline、resume Model/Result、CPU导出和step3前缀未验；最终账单未知，不能据额度估算冒已核费用。 |
+| 10 全项目收敛 | 部分 | 原九类SOP、当前路由、历史104行/208路径及15当前caller差额已核，新增代码与原指南同PR；六项细判如下。 |
+| 11 稳定组合与运行 | 部分 | 最后准确rc15/Modrc50原exact-game通过；最后源码门见本文件；PR/CI以实时GitHub为准。Reference20/产品R20第二轮未跑；Managed严格/40延期保持。 |
+| 12 首训与评估具体方案 | 已准备，实测依据不足 | 保原FP32/M-std、完整目录N、batch64及原配方、用途/版本/预算/恢复点；不能用几步合成GPU外推真实30epoch耗时。 |
+| 13 正式冻结与首训 | 未就绪、未执行 | GPU完整闭环、热集及两轮required工程未齐；无正式冻结或真实首训提交，具名批准仍属用户。 |
+| 14 模型实用、比较与回库 | 部分 | 正常Model注册/安装/原控制接口source与集成测试、旧T0 Global真实回库已通。旧899输入/900dispatch/393循环仅历史技术停止前缀；新模型比较/整局/新格式真实Runtime未验。 |
 
 ## 六项全项目验收与操作覆盖
 
-六项保持完整含义：职责逻辑清楚、唯一当前导航、全部实际操作SOP、历史可直接复用、非作者按指南走通、代码/合同/入口与原guide同PR维护。不能用“达到本轮材料范围”取代整项验收；每项最终给通过/部分/未验、原实物与下一owner。
+六项保完整含义，表中通过仅限注明事实，不把作者停止或单个reader通过当全项目完成。
 
-| 六项 | 本轮要交的实物 | 当前状态 |
+| 六项全项目标准 | 判定 | 依据与真实剩余 |
 |---|---|---|
-| 职责和上层逻辑清楚 | 原ARCHITECTURE/COMPONENTS及requires/provides定位新增薄桥/可替换格式，不另起链 | 继承原说明，新差额待D/Q核 |
-| 唯一当前导航 | README→CURRENT→此任务；原DOCUMENT_MAP路由原操作guide，外部START由root整体同步 | I已建立唯一当前入口，旧任务只历史 |
-| 全部实际操作SOP | 找任务/历史；安装录制恢复；原件/投影/用途；R2/热集；训练控制；Model/Agent/评估；调查测试；合同版本部署；协作账号事故九类保原owner | D随实现维护，不称旧待实现能力已有 |
-| 历史可直接复用 | 同类source/recorder/evidence/archives/Store/Scheduler原代码和适用范围直连 | 各owner bounded历史复用，不全量复活旧实验 |
-| 非作者能按guide走通 | Q/D实际数据恢复、任务控制、注册Stop、Global回库和冷却等有界正常操作 | 等稳定接口，不能只help/夹具授日常安装资格 |
-| 代码/合同/入口同PR维护 | 每个稳定增量带原guide/合同，I整合版本/BOM/入口，root终审 | 本轮执行中，最终普通topic PR，除206不擅merge |
+| 职责、上层逻辑清楚 | 部分 | 本次变更均归原owner和requires/provides，图与组件说明一致；全项目每条旧能力的当前实现/替代关系未被本次有限核查穷尽。 |
+| 唯一当前导航 | 通过 | README→CURRENT→唯一ROUND1；原DOCUMENT_MAP连接各原指南。外部START只路由，不另立任务。 |
+| 全部实际操作SOP | 部分 | 原九类条件/输入/入口/结果/成功失败/恢复说明已维护；GPU恢复和日常热集等实际操作尚未走通，不能用文档写齐替验收。 |
+| 历史可直接复用 | 部分 | 复用成熟Recorder、Tool、Store/transfer、Dataset/Curation、Scheduler/worker、旧Runtime包及事故原件；104行路径和15当前caller均有实物，未把所有历史当已迁移/当前合格。 |
+| 非作者按指南走通 | 部分 | D真实31MB正常CLI→当前dataset reader/inspect通过，Q独立原件复核；不能外推Model/Global/冷热/全部九类已由新人实操通过。 |
+| 代码、合同、入口、指南同PR维护 | 通过（PR/CI以实时GitHub为准） | 同一普通topic使用normal merges保组件来源；原指南、版本/BOM、pin、CURRENT同增量维护，无第二SOP/用途账。 |
 
-## 真实证据层、最终收据与回滚
+## 真实证据层、最后源码门与回滚
 
-本轮区分“进程内源码集成（测试夹具）”“正常源码入口”“准确候选安装”“日常已安装入口”；组件source/test、build/install/load、runtime、Human、策略/研究资格分别报告。原旧T0b是资源容量预防停止，未触512MiB，非自然结局或unknown；898completed+1interrupted_known/Stop取消capture及native warning/error保原件。新表示/语义不得改旧原件或把旧计数贴给新ID。
+最后准确源码69c4555f/tree4d6ca357原12阶段完整门失败，Python原摘要：== 5 failed, 4699 passed, 6 skipped, 93 subtests passed in 823.70s (0:13:43) ===。本次只收口G0状态文档，组件源码、合同、版本和artifact身份不变，不第二FULL；新文档head不能替代该源门身份，最终head CI须独立读取。 原门Python4699通过/5失败/6跳过/93子测试；pytest失败后的CPU e2e/cloud smoke/uv build未执行。随后只正常合B d382与C82e最小guard/忠实fixture修复，准确4021ccdb上唯一7项targeted通过17.20秒；kit同原sanitized uv一次诊断为ModuleNotFoundError: spireagent，selected-source自有.venv未bootstrap，不安装/绕边界求绿。最新组合未重跑完整门，原FAIL保持。
 
-当前版本Connector1.3rc26/SDK1.3rc11、Host1.1rc34/Policy0.1rc39、UI0.1rc15/Mod0.2rc50，Evidence0.1rc32及依赖锁/BOM一致。原exact02仅绑定c930/native tuple、SDK586/native182/Annotator445/13及19Node/零编译warning或error；首exact01组件docs错误保FAIL。Tool9a保同Mod provenance，本次Human/七源不贴未来新UI身份。准确398f真实operator installed Evidence32、原doctor和-I子进程源绑定、31源文件/RECORD及Mypy408/Ruff/rootrepository/closeout/base diff已验，最后新组合full未验，B43fd/D1a/G437已Q受理正常合，不用旧gate替新source。S真实小fixture和七源正常CLI/R2已通过；Global/Human/热集、E lossless、C工程GPU余项按root唯一slot交原件，source与夹具不冒真实consumer。Operator32不冒remote331c锁31资格。稳定增量和所有原失败在各owner固定报告及本轮集成回执；私路径只在外部回执可点击，不成为仓库依赖。root最终写replies/P1-NEXT-ROUND-ROOT-RESULT-20261021.md并同步外部START。回滚用具名topic revert、原owner确切安装/配置/Stop/rollback，数据恢复沿原Store不删原件。
+最后完整门准确源为69c4555f53146eef4f2f66817604ecb8ce7ee881/tree4d6ca35730905e30a37cfc0957b527607ab7a984，原阶段及XML/日志保留。原XML实际testcase4710、skip6、failure5、error0；suite tests属性4803包含子测试，不混同独立testcase。条件跳过不算通过。当前G0文档以组件identity前后语义字段相同复核，不重写源门身份。
+
+本轮真正不同的native tuple分别保留：c930 Mod48/Tool9a用于用户短录和七源；fc8 Mod49用于用户实际呈现三页；最后69c Mod50 SHA e5d34e77b4b408972acf91204cd4cf6c575d4a32ab4f88d87d1a44e61dd66c42、MVID3ca7501a-6a87-42e8-a85b-371e57130800与Tool304a209a只完成准确build/候选发布，G437修后未重新load或看实屏。没有新gameplay/Human/正式训练或研究资格。
+
+Evidence32正常VCS安装的canonical source20989e51、uv.lock b0e7f0ce、原RECORD和31源文件真实验证，旧doctor/Node缺依赖/组件文档错误等原失败保留，不重标通过。B43fd仅解决原本地status争锁反例，不授具体GPU失败因果。原目录存在但Catalog报告root不可用，原因未定，热集未cool/restore/delete；GPU完整Model/Result/恢复和CPU导出未验。首训仍未就绪。
+
+本轮只普通topic PR/准确head CI，不代merge、正式冻结或生产提升；CI未完成则明确pending。原source回滚为revert具名topic，安装按原owner确切artifact/config回滚；14paths及三正常launcher字节/权限已恢复，正常App保持。原件与云对象不删，数据恢复沿原Store。外部root收据、全部原始日志/身份/失败链接不成为仓库私有Markdown依赖；当前只有README→CURRENT→此唯一任务，不新立平行计划。
 
 ## 历史
 
