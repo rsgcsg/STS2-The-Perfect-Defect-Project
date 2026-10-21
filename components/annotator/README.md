@@ -29,6 +29,11 @@ lengths/hashes and flush new basis files to disk before publishing their receipt
 Any failure keeps Close/prefix unsuccessful and visible in recorder health. The
 performance profile separates basis validation/hash/write/OS-flush, durable seal,
 and each P1 capture call site; it does not itself qualify game-frame performance.
+`game_process_frame_interval.recording` and `.paused` measure main-thread process
+frame intervals in the same open session. Use Pause/Resume for a bounded OFF/ON
+comparison with the same scene/operation/speed/power conditions; transitions are
+excluded. Close publishes the profile. Read/capture counters and frame intervals
+are diagnostics, not automatic proof of acceptable user experience.
 
 For daily P1 collection attach to the running installed game through the existing
 Application API. Run `npm run recording:p1 -- status`, then use its exact runtime

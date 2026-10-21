@@ -62,6 +62,56 @@ public sealed class NativeLogicalCapturedGridTests
     private static int unexpectedCalls;
     private static bool UnexpectedCapture(ref NativeLogicalGridState? __result) { unexpectedCalls++; __result = null; return false; }
     private static bool UnexpectedTitle(ref string __result) { unexpectedCalls++; __result = "Late getter"; return false; }
+    private static int detailInventoryCalls;
+    private static void CountDetailInventory() => detailInventoryCalls++;
+
+    [Fact]
+    public void OnePublicBasisFreezeBuildsCardDetailsOnceAndPreservesEveryOriginalReadByte()
+    {
+        var (source, grid) = Captured();
+        grid = grid with { NeutralSurface = grid.NeutralSurface with {
+            CardDisplays = grid.FullCards.Select(card => new NativeLogicalGridCardDisplay(card, "selector_before")).ToArray() } };
+        var input = new SnapshotBuildInput(source.HostObservation.Game, source.HostObservation,
+            new(false, null, null), new RewardPageSnapshotIdentity()) {
+            GridCapture = new(true, grid, Array.Empty<string>()), Read = kind => PlayerReadBuildResult.Failure("fixture", kind) };
+        var built = PlayerEnvironmentService.BuildSnapshot(inputProfile: PublicBasisContract.Profile, capturedInput: input);
+        Assert.Equal(64, built.Snapshot.Reads.Count(read => read.Kind == "surface_card"));
+        var harmony = new Harmony("p1-detail-inventory-" + Guid.NewGuid().ToString("N"));
+        const BindingFlags flags = BindingFlags.Static | BindingFlags.NonPublic;
+        MethodInfo inventory = typeof(PlayerEnvironmentService).GetMethod("CapturedCardDetails", flags)!;
+        harmony.Patch(inventory, prefix: new HarmonyMethod(typeof(NativeLogicalCapturedGridTests).GetMethod(nameof(CountDetailInventory), flags)!));
+        try
+        {
+            detailInventoryCalls = 0;
+            var timer = System.Diagnostics.Stopwatch.StartNew();
+            var actual = PlayerEnvironmentService.FreezePublicBasis(built, null, DateTimeOffset.UnixEpoch);
+            double indexedMs = timer.Elapsed.TotalMilliseconds;
+            Assert.Equal(1, detailInventoryCalls);
+            detailInventoryCalls = 0; timer.Restart();
+            var originals = new List<PublicBasisRead>();
+            foreach (var opportunity in built.Snapshot.Reads)
+            {
+                var resolution = PlayerEnvironmentService.ResolveReadMaterialization(built.Snapshot,
+                    opportunity.ReadId, built.Snapshot.SnapshotId, built.ReadBuilds);
+                var read = resolution.ErrorCode != null ? new PlayerEnvironmentReadResult(null, resolution.ErrorCode, resolution.Detail)
+                    : PlayerEnvironmentService.BuildResolvedRead(built, resolution, built.Snapshot.SnapshotId,
+                        DateTimeOffset.UnixEpoch, includePublicCardDetails: true);
+                originals.Add(new(opportunity.ReadId, opportunity.Kind, read.Read == null ? null
+                    : (JsonObject)JsonSerializer.SerializeToNode(read.Read, ConnectorMod._jsonOptions)!,
+                    read.Read == null ? read.ErrorCode ?? "read_materialization_missing" : null));
+            }
+            var expected = PublicBasisAssembly.Freeze((JsonObject)JsonSerializer.SerializeToNode(built.Snapshot, ConnectorMod._jsonOptions)!,
+                originals, null, ConnectorMod._jsonOptions, DateTimeOffset.UnixEpoch);
+            double repeatedMs = timer.Elapsed.TotalMilliseconds;
+            Assert.Equal(64, detailInventoryCalls);
+            Assert.Equal(expected.Bytes.ToArray(), actual.Bytes.ToArray());
+            if (Environment.GetEnvironmentVariable("STS2_P1_DETAIL_DIAGNOSTIC_OUT") is { } output)
+                File.WriteAllText(output, JsonSerializer.Serialize(new { cards = 64, full_public_basis_bytes = actual.Bytes.Length,
+                    inventories_before = 64, inventories_after = 1, repeated_ms = repeatedMs, indexed_ms = indexedMs,
+                    exact_bytes_equal = true }));
+        }
+        finally { harmony.Unpatch(inventory, HarmonyPatchType.Prefix, harmony.Id); }
+    }
 
     [Fact]
     public void NativeCompositionUsesAllFrozenOriginalRowsAndNeverRecapturesOrRenders()

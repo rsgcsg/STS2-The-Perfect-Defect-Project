@@ -28,6 +28,10 @@ It preserves that exact compatibility status in the original evidence. The
 native-logical execution profile still requires the exact execution identity;
 a complete passive grid never grants delivery permission or runtime qualification.
 
+Each P1 public-basis freeze indexes its already captured public card details once
+for all advertised Read instances. The index belongs to that freeze only; a new
+capture re-reads dynamic state and never reuses a previous frame's card facts.
+
 Historical standalone stable/RC releases remain available from the predecessor
 repository. Current Platform source versions are Connector `1.2.0-rc.5`, SDK
 `1.1.0-rc.1` and Player Environment protocol `1.0.0`. They are source
