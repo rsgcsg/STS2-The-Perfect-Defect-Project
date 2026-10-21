@@ -31,6 +31,8 @@ a complete passive grid never grants delivery permission or runtime qualificatio
 Each P1 public-basis freeze indexes its already captured public card details once
 for all advertised Read instances. The index belongs to that freeze only; a new
 capture re-reads dynamic state and never reuses a previous frame's card facts.
+Combat visibility/queue filtering likewise retains the same capture's already
+rendered logical-hand facts; it does not render the selected hand a second time.
 
 Historical standalone stable/RC releases remain available from the predecessor
 repository. Current Platform source versions are Connector `1.2.0-rc.5`, SDK

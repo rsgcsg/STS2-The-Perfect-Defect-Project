@@ -19,13 +19,14 @@ public sealed class QueuedHandPublicBasisTests
             ["card_previews"] = new JsonArray(new JsonObject { ["description"] = "Current preview" }) } };
 
     private static SnapshotBuildResult Build(CardModel[] hand, CardModel[] deliverable,
-        IReadOnlyDictionary<CardModel, VisibleCard> facts, RewardPageSnapshotIdentity identity, bool executing)
+        IReadOnlyDictionary<CardModel, VisibleCard> facts, RewardPageSnapshotIdentity identity, bool executing,
+        VisibleCard[]? retainedFacts = null)
     {
         var surface = new CombatTurnSurface("combat_turn", "room", !executing) {
             PlayableCards = executing ? Array.Empty<VisibleCombatCommandOption>() : deliverable.Select(card =>
                 new VisibleCombatCommandOption(facts[card].EntityId, "Strike", new[] { "enemy" })).ToArray() };
         var context = new CombatLiveContext("combat", "normal", 1, "player", true,
-            new("player", 0, 3, 3, null, hand.Select(card => facts[card]).ToArray(), 0, 0, 0, Array.Empty<VisibleStatus>(), Array.Empty<VisibleCombatCompanion>(),
+            new("player", 0, 3, 3, null, retainedFacts ?? hand.Select(card => facts[card]).ToArray(), 0, 0, 0, Array.Empty<VisibleStatus>(), Array.Empty<VisibleCombatCompanion>(),
                 Array.Empty<VisibleCombatPotionState>(), Array.Empty<VisibleOrb>(), 0), Array.Empty<VisibleEnemy>());
         var game = new GameBuildIdentity("exact", "commit", null, 1, new("exact", true, true, true, "Fixture"));
         var observation = new LiveObservation(StableIdentityHash.Object(new { context, surface }), executing ? "settling" : "ready",
@@ -48,7 +49,10 @@ public sealed class QueuedHandPublicBasisTests
         var before = Build(oldVisible, oldVisible, facts, identity, executing: false);
         var selected = CombatTurnSurfaceReader.IncludeVisibleQueuedHandCards(logical, oldVisible, Array.Empty<CardModel>());
         Assert.Equal(oldVisible, selected);
-        var after = Build(selected, oldVisible, facts, identity, executing: false);
+        var retained = CombatTurnSurfaceReader.RetainObservedHandFacts(facts.Values.ToArray(), selected.Select(card => facts[card].EntityId));
+        Assert.Equal(oldVisible.Length, retained.Length);
+        Assert.All(retained, card => Assert.Same(facts.Values.Single(value => value.EntityId == card.EntityId), card));
+        var after = Build(selected, oldVisible, facts, identity, executing: false, retainedFacts: retained);
         // Both alternatives represent one controlled observation boundary. Only
         // the acquisition wall clock is fixed, not any public gameplay value.
         after = after with { Snapshot = after.Snapshot with { ObservedAt = before.Snapshot.ObservedAt } };
@@ -67,7 +71,11 @@ public sealed class QueuedHandPublicBasisTests
         var selected = CombatTurnSurfaceReader.IncludeVisibleQueuedHandCards(logical, holders, queue);
         Assert.Equal(logical, selected);
         var facts = new Dictionary<CardModel, VisibleCard>(ReferenceEqualityComparer.Instance) { [first] = Facts("first"), [queued] = Facts("queued") };
-        var built = Build(selected, holders, facts, new RewardPageSnapshotIdentity(), executing: true);
+        var captured = facts.Values.ToArray();
+        var retained = CombatTurnSurfaceReader.RetainObservedHandFacts(captured, selected.Select(card => facts[card].EntityId));
+        Assert.Same(facts[first], retained[0]); Assert.Same(facts[queued], retained[1]);
+        Assert.Same(facts[queued].CurrentPublicDetails, retained[1].CurrentPublicDetails);
+        var built = Build(selected, holders, facts, new RewardPageSnapshotIdentity(), executing: true, retainedFacts: retained);
         Assert.Empty(built.Snapshot.BoundActions.Actions);
         var opportunity = Assert.Single(built.Snapshot.Reads, read => read.Kind == "surface_card" && read.TargetReferentId == "queued");
         var resolution = PlayerEnvironmentService.ResolveReadMaterialization(built.Snapshot, opportunity.ReadId, built.Snapshot.SnapshotId, built.ReadBuilds);
@@ -84,5 +92,16 @@ public sealed class QueuedHandPublicBasisTests
         Assert.Equal("complete", original.RootElement.GetProperty("capture_status").GetString());
         Assert.DoesNotContain(selected, card => ReferenceEquals(card, sameDefinitionClone));
         Assert.DoesNotContain(selected, card => ReferenceEquals(card, nonHand));
+    }
+
+    [Fact]
+    public void ANewCaptureRetainsItsCurrentDynamicDescriptionAndCannotReuseThePreviousFrame()
+    {
+        var first = Facts("same-card") with { Description = "Damage 4", Cost = "1" };
+        var next = Facts("same-card") with { Description = "Damage 6", Cost = "0" };
+        Assert.Same(first, Assert.Single(CombatTurnSurfaceReader.RetainObservedHandFacts([first], ["same-card"])));
+        var current = Assert.Single(CombatTurnSurfaceReader.RetainObservedHandFacts([next], ["same-card"]));
+        Assert.Same(next, current); Assert.Equal("Damage 6", current.Description); Assert.Equal("0", current.Cost);
+        Assert.Throws<KeyNotFoundException>(() => CombatTurnSurfaceReader.RetainObservedHandFacts([next], ["not-in-this-capture"]));
     }
 }
