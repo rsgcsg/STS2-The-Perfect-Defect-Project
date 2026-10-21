@@ -15,6 +15,8 @@ internal sealed class PlatformNativeWorkbenchPanel : IDisposable
     private readonly Dictionary<string, Control> _fields = new(StringComparer.Ordinal);
     private readonly List<(Task<PlatformNativeWorkbenchCommandResult> Task, string Action)> _writes = [];
     private readonly VBoxContainer _body = new();
+    private readonly VBoxContainer _recordingStatus = new();
+    private readonly VBoxContainer _recordingForms = new();
     private readonly VBoxContainer _cards = new();
     private readonly VBoxContainer _items = new();
     private readonly VBoxContainer _forms = new();
@@ -65,6 +67,8 @@ internal sealed class PlatformNativeWorkbenchPanel : IDisposable
         _body.AddChild(Label("关闭工作台或游戏不会停止已独立运行的训练/上传。这里显示服务实际能力；未知结果不会自动重试。"));
         _body.AddChild(_notice);
         _body.AddChild(_fences);
+        _body.AddChild(_recordingStatus);
+        _body.AddChild(_recordingForms);
         _body.AddChild(_cards);
         _body.AddChild(_items);
         var pager = new HBoxContainer();
@@ -268,9 +272,13 @@ internal sealed class PlatformNativeWorkbenchPanel : IDisposable
     private void Render(JsonElement view, PlatformNativeWorkbenchConnection connection)
     {
         _connection.Text = "已连接本机工作台 · " + connection.Binding.WorkbenchInstanceId[..8] + " · 独立后台任务";
-        Clear(_cards);
+        Clear(_cards); Clear(_recordingStatus);
         foreach (JsonElement card in view.GetProperty("cards").EnumerateArray())
-        { _cards.AddChild(Label("— " + (String(card, "owner") ?? "任务") + " —")); RenderSummary(_cards, card.GetProperty("data")); }
+        {
+            VBoxContainer target = String(card, "owner") == "native_recording" ? _recordingStatus : _cards;
+            target.AddChild(Label("— " + (String(card, "owner") == "native_recording" ? "当前录制" : String(card, "owner") ?? "任务") + " —"));
+            RenderSummary(target, card.GetProperty("data"));
+        }
         JsonElement pagination = view.GetProperty("pagination");
         int total = pagination.GetProperty("total").GetInt32();
         _pagination.Text = $"{_offset + 1}–{Math.Min(_offset + 25, total)} / {total}";
@@ -324,7 +332,7 @@ internal sealed class PlatformNativeWorkbenchPanel : IDisposable
         if (formsKey != _formsKey)
         {
             _formsKey = formsKey; string? focused = _fields.FirstOrDefault(item => item.Value.HasFocus()).Key;
-            Clear(_forms); _fields.Clear();
+            Clear(_forms); Clear(_recordingForms); _fields.Clear();
             foreach (JsonElement descriptor in capabilities.GetProperty("actions").EnumerateArray())
             {
                 string? action = String(descriptor, "action_id");
@@ -363,6 +371,14 @@ internal sealed class PlatformNativeWorkbenchPanel : IDisposable
 
     private void BuildActionForm(JsonElement view, PlatformNativeWorkbenchConnection connection, JsonElement descriptor, string action)
     {
+        bool recordingAction = action.StartsWith("recording.", StringComparison.Ordinal);
+        VBoxContainer destination = recordingAction ? _recordingForms : _forms;
+        if (recordingAction && !Boolean(descriptor, "enabled"))
+        {
+            destination.AddChild(Label((String(descriptor, "label") ?? action) + " · 当前不可用："
+                + (String(descriptor, "reason") ?? "请以当前录制状态为准")));
+            return;
+        }
         var form = new VBoxContainer();
         form.AddChild(Label(String(descriptor, "label") ?? action));
         var controls = new Dictionary<string, (string Type, Control Control)>();
@@ -450,7 +466,7 @@ internal sealed class PlatformNativeWorkbenchPanel : IDisposable
         });
         submit.Disabled = !Boolean(descriptor, "enabled") || !_commands.CanSubmit(connection.Binding.ConfigurationId, action, _recordingContext);
         if (!Boolean(descriptor, "enabled")) form.AddChild(Label("当前不可用：" + String(descriptor, "reason")));
-        _fields[action + ":submit"] = submit; form.AddChild(submit); _forms.AddChild(form);
+        _fields[action + ":submit"] = submit; form.AddChild(submit); destination.AddChild(form);
     }
 
     private static Dictionary<string, object?> TrainingControlPayload(JsonElement view, string action)
