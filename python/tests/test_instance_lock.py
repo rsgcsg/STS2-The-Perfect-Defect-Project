@@ -71,7 +71,8 @@ def test_windows_shared_lease_uses_win32_shared_nonblocking_mode(tmp_path, monke
     monkeypatch.setattr(ctypes, "get_last_error", lambda: 5, raising=False)
     monkeypatch.setattr(lock_module, "os", SimpleNamespace(name="nt"))
     monkeypatch.setattr(lock_module, "importlib", SimpleNamespace(
-        import_module=lambda _: SimpleNamespace(get_osfhandle=lambda _: 123)))
+        import_module=lambda name: ctypes if name == "ctypes"
+        else SimpleNamespace(get_osfhandle=lambda _: 123)))
     with instance_lock(path, create=False, shared=True):
         assert path.read_bytes() == b"unchanged"
     assert calls == [("lock", (123, 1, 0, 1, 0), 0), ("unlock", (123, 0, 1, 0), 0)]

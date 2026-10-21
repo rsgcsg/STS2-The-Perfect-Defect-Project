@@ -259,33 +259,39 @@ class P1RecordingMaintenance:
                     importer.start_p1_storage("preserve", source, policy["peer"])
                     return dict(state)
             projection = policy["projection_id"]
-            if projection is not None:
-                _, release = current_collection_tool(importer.config)
-                existing = _matching(
-                    store,
-                    projection_format(projection)[0],
-                    source_artifact_id=source,
-                    tool_release_id=release,
-                    projection_id=projection,
-                    run_id="run-0001",
-                )
-                if existing is None:
-                    importer.start_p1_derivation(source, projection)
-                    return dict(state)
-                if policy["peer"] is not None and not any(
-                    row["artifact_id"] == existing.artifact_id
-                    and row["peer"] == policy["peer"]
-                    and row["storage_action"] == "preserve"
-                    and row["storage_receipt"].get("full_readback") is True
-                    for row in importer._storage_receipts.values()
-                ):
-                    importer.start_p1_storage("preserve", existing.artifact_id, policy["peer"])
-                    return dict(state)
-            state.setdefault("completed_candidates", []).append(active["candidate_id"])
             original = store.get_manifest(source).parameters.value()
+            run_ids = sorted({row["run_id"] for row in original["run_journal"]
+                              if row.get("run_id") not in {None, "run-unassigned"}})
+            if projection is not None:
+                if not run_ids and original["close"]["accepted_count"]:
+                    raise BoundaryError("p1_maintenance", "original_run_identity_required")
+                _, release = current_collection_tool(importer.config)
+                for run_id in run_ids:
+                    existing = _matching(
+                        store,
+                        projection_format(projection)[0],
+                        source_artifact_id=source,
+                        tool_release_id=release,
+                        projection_id=projection,
+                        run_id=run_id,
+                    )
+                    if existing is None:
+                        importer.start_p1_derivation(source, projection, run_id=run_id)
+                        return dict(state)
+                    if policy["peer"] is not None and not any(
+                        row["artifact_id"] == existing.artifact_id
+                        and row["peer"] == policy["peer"]
+                        and row["storage_action"] == "preserve"
+                        and row["storage_receipt"].get("full_readback") is True
+                        for row in importer._storage_receipts.values()
+                    ):
+                        importer.start_p1_storage("preserve", existing.artifact_id, policy["peer"])
+                        return dict(state)
+            state.setdefault("completed_candidates", []).append(active["candidate_id"])
             state.setdefault("sessions", {}).setdefault(source, {
                 "source_artifact_id": source,
                 "session_id": original["session_id"], "timeline_id": original["timeline_id"],
+                "run_ids": run_ids,
                 "scope_facts": active["scope_facts"], "expanded_state": "hot",
             })
             state.update(active=None, status="completed", error_code=None)
