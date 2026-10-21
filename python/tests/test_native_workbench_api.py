@@ -643,3 +643,52 @@ def test_native_p1_recording_controls_map_existing_lifecycle(tmp_path, monkeypat
     assert controls["recording.resume"]["enabled"] is (state == "paused")
     assert controls["recording.close"]["enabled"]
     assert not controls["recording.change_source"]["enabled"]
+
+
+@pytest.mark.parametrize("page", ["data", "training", "models"])
+def test_native_artifact_pages_project_large_owner_metadata_without_changing_it(
+    native_http, monkeypatch, page,
+):
+    from types import SimpleNamespace
+
+    app, call, _pair, *_ = native_http
+    artifact_id = "a" * 64
+    parameters = {
+        "display_name": "实际展示名称", "name": "备用名称", "purpose": "research",
+        "records": 627, "model_id": "b" * 64,
+        "metadata": {"catalog": [{"description": "x" * 2048} for _ in range(256)]},
+    }
+    artifact = {"artifact_id": artifact_id, "kind": "evidence", "parameters": parameters,
+                "parents": [], "payloads": [], "registry_indexed": True}
+    original = json.dumps(artifact, ensure_ascii=False)
+    assert len(original.encode()) > MAX_RESPONSE_BYTES
+    requests = []
+
+    def inventory(**kwargs):
+        requests.append(kwargs)
+        return {"items": [artifact, {"artifact_id": "c" * 64, "kind": "dataset",
+                                      "parameters": {"name": "备用名称"}}], "total": 2}
+
+    def detail(identity):
+        assert identity == artifact_id
+        return artifact
+
+    workspace = SimpleNamespace(inventory=inventory, artifact=detail)
+    monkeypatch.setattr(app, "local_research_workspace", lambda: workspace)
+    for context in ("", "&id=" + artifact_id):
+        view = call(PREFIX + "/view?page=" + page + context)
+        assert len(bounded_response(view)) < MAX_RESPONSE_BYTES
+        assert view["items"] == [
+            {"artifact_id": artifact_id, "kind": "evidence",
+             "parameters": {"display_name": "实际展示名称", "name": "备用名称"}},
+            {"artifact_id": "c" * 64, "kind": "dataset", "parameters": {"name": "备用名称"}},
+        ]
+        assert view["pagination"]["total"] == 2
+        if context:
+            card = next(card["data"] for card in view["cards"] if card["owner"] == "artifact")
+            assert card == {"artifact_id": artifact_id, "kind": "evidence", "parameters": {
+                "display_name": "实际展示名称", "name": "备用名称", "purpose": "research",
+                "records": 627, "model_id": "b" * 64}}
+        assert json.dumps(workspace.artifact(artifact_id), ensure_ascii=False) == original
+    assert requests == [{"category": "models" if page == "models" else "all",
+                         "limit": 25, "offset": 0}] * 2
