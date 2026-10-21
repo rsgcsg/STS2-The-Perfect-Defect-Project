@@ -495,6 +495,26 @@ def test_target_publication_keeps_schema_role_receipt_and_partial(
         publish(receipt)
 
 
+def test_p1_pack_returns_original_receipt_location_and_rejects_bad_results(
+    tmp_path, tool, monkeypatch,
+):
+    from types import SimpleNamespace
+
+    from sts2_platform_evidence import collection_tool
+
+    output = tmp_path / "packed"
+    expected = output / ("a" * 64)
+    receipt = {"status": "packed", "bundle_directory": str(expected),
+               "bundle_content_id": "a" * 64}
+    response = SimpleNamespace(returncode=0, stdout=json.dumps(receipt))
+    monkeypatch.setattr(collection_tool.subprocess, "run", lambda *a, **k: response)
+    assert tool.pack_p1_native(tmp_path / "session", output, "worker", "campaign") == expected
+    for content in ("not JSON", "{}", json.dumps({**receipt, "bundle_directory": str(tmp_path)})):
+        response.stdout = content
+        with pytest.raises(CollectionFailure, match="invalid receipt|unexpected bundle location"):
+            tool.pack_p1_native(tmp_path / "session", output, "worker", "campaign")
+
+
 def test_closed_recording_maintenance_uses_import_owner_and_survives_reopen(
     tmp_path,
     original,
@@ -533,7 +553,11 @@ def test_closed_recording_maintenance_uses_import_owner_and_survives_reopen(
 
     def pack(_self, _source, output, _worker, _campaign, **kwargs):
         calls.append(kwargs)
-        shutil.copytree(original, output)
+        content_id = json.loads((original / "session-bundle-manifest.json").read_bytes())[
+            "bundle_content_id"]
+        bundle = output / content_id
+        shutil.copytree(original, bundle)
+        return bundle
 
     monkeypatch.setattr(CollectionTool, "pack_p1_native", pack)
     monkeypatch.setattr(importing, "_selected_store", lambda _, **_kw: (store, registry))

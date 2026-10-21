@@ -1556,7 +1556,7 @@ class LocalRecordingImporter:
         with tempfile.TemporaryDirectory(prefix="p1-recording-import-",
                                          dir=self.config.state_dir) as name:
             bundle = Path(name) / "bundle"
-            tool.pack_p1_native(candidate["source_directory"], bundle,
+            bundle = tool.pack_p1_native(candidate["source_directory"], bundle,
                                 labels["worker_id"], labels["campaign_id"],
                                 human_origin_attested=(
                                     self.operation.get("human_origin_attested") is True))

@@ -175,7 +175,7 @@ class CollectionTool:
         return identity
 
     def pack_p1_native(self, session: Path, output: Path, worker: str, campaign: str,
-                       *, human_origin_attested: bool = False) -> None:
+                       *, human_origin_attested: bool = False) -> Path:
         identity = self._p1()
         arguments = [self.dotnet, str(self.directory / identity["entrypoint"]),
                      P1_NATIVE_SUPPORT["pack_command"], str(session), worker, campaign,
@@ -189,6 +189,18 @@ class CollectionTool:
             raise CollectionFailure("P1-native packing exceeded bounded runtime") from None
         if result.returncode:
             raise CollectionFailure("P1-native audit/pack failed", result.stderr[-16384:])
+        try:
+            value = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            raise CollectionFailure("P1-native pack returned an invalid receipt") from None
+        if (not isinstance(value, dict) or value.get("status") != "packed"
+                or not isinstance(value.get("bundle_directory"), str)
+                or not re.fullmatch(r"[0-9a-f]{64}", str(value.get("bundle_content_id", "")))):
+            raise CollectionFailure("P1-native pack returned an invalid receipt")
+        bundle = Path(value["bundle_directory"]).resolve()
+        if bundle != output.resolve() / value["bundle_content_id"]:
+            raise CollectionFailure("P1-native pack returned an unexpected bundle location")
+        return bundle
 
     def _p1_node(self, driver: str, arguments: list[str], *, node: str) -> dict[str, Any]:
         self._p1()
