@@ -44,8 +44,13 @@ test("built native act-selection source and retained measured builds remain expl
     createHash("sha256").update(sourcePatch).digest("hex"),
     manifest.expected_build.source_patch_sha256
   );
-  assert.equal(manifest.expected_build.artifact_sha256, "ef907317a47900204caad7400c341213f5dc533549d7c33a913066e83e522766");
-  assert.equal(manifest.expected_build.artifact_mvid, "8b84be95-3391-49d9-b11e-69aa29afa38a");
+  assert.equal(manifest.expected_build.artifact_sha256, "0b376bf504b75522e3e8e9bb766decd30ea4905f9ce484c4cfcece23701cea24");
+  assert.equal(manifest.expected_build.artifact_mvid, "f9fcb312-3c64-4e22-96d0-7436aef82e1c");
+  assert.equal(manifest.historical_candidate_builds.some(build =>
+    build.source_patch_sha256 === "41b15fbf27ef26ef4c04650adbdb8a437969743931bc8dc7263b88910b3e312d"
+    && build.artifact_sha256 === "ef907317a47900204caad7400c341213f5dc533549d7c33a913066e83e522766"
+    && build.artifact_mvid === "8b84be95-3391-49d9-b11e-69aa29afa38a"
+    && build.localization_sha256 === "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0"), true);
   assert.equal(manifest.historical_candidate_builds.some(build => build.artifact_sha256 === "a70d8de18578cc2666ec854d8d8eb6bb85868317335fb67fcfbb7151133d7f66"), true);
   assert.equal(manifest.previous_candidate_build.artifact_sha256, "0426384c8c38e1a147dcfb2ba39c599ebdebe191f979acaaab8a4e302060943b");
   assert.equal(manifest.previous_candidate_build.artifact_mvid, "1115859e-f311-4e2e-b103-0b3c91168250");
