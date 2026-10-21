@@ -236,6 +236,26 @@ stopping the Workbench does stop that background work; reopening resumes the
 persisted maintenance policy. Cloud access still requires the configured SDK
 credential provider to be available to the independent service.
 
+For a device that already uses a private cloud SDK environment file, select it
+once with `project setup --cloud-environment-file /ABS/private-cloud.env` and the
+same config/state/other setup arguments as the existing installation. Stop the
+Workbench before changing its configuration; use `--replace-config` only for
+the reviewed settings change. Setup validates the file and stores only its
+absolute path as `cloud_environment_file`. Subsequent trusted opens and direct
+serve use that same reference, so they do not need a Codex shell or a sourced
+terminal. Ordinary SDK profile/role/environment credentials remain supported.
+
+The selected file must be a bounded regular private file owned by the current
+user on POSIX; missing files, symlinks, public permissions and malformed syntax
+fail explicitly. Only the AWS credential/profile/region keys and STPD S3
+bucket/endpoint/prefix/region keys are imported. Existing environment values
+win; dotenv values are literal, without interpolation or shell execution.
+Unrelated provider keys are not imported. No credential value enters the
+project configuration, launcher binding, runtime status or reports. A stopped
+service reads a rotated file on its next open; a running service retains its
+already loaded environment. Configuring this provider does not itself enable
+maintenance or select Human origin, upload scope or cooling policy.
+
 ### Reviewed launcher replacement and recovery
 
 Launcher publication belongs to this installer. Ordinary same-profile install and
