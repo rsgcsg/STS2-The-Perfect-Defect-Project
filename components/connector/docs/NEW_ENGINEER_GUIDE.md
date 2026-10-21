@@ -29,8 +29,9 @@ This path is complete without reading SpireAgent or retired connector designs.
 Historical migration evidence is kept under `docs/evidence/`, not in the
 current design path.
 
-For the current P1 profile, read the owning [r1.5 contract](../../../docs/protocols/P1_GLOBAL_R1.zh-CN.md#6-动作清单)
-and `sdk/typescript/src/p1Global/reducer.ts`. Online Runtime and offline native
+For the current P1 profile, enter the root document map and read the owning
+`docs/protocols/P1_GLOBAL_R1.zh-CN.md` r1.5 contract, then
+`sdk/typescript/src/p1Global/reducer.ts`. Online Runtime and offline native
 recording conversion use that same core. A selector Close that returns to its
 parent is excluded by the forward profile; native await completion alone is not
 a P1 finish. Empty confirmation requires a current native completion binding and
