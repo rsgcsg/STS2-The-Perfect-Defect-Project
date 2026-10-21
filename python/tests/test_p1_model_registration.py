@@ -18,17 +18,23 @@ from spireagent.workbench.local_model_registration import REGISTRY, LocalModelRe
 from spireagent.workbench.local_models import LocalModelService
 from stpd.p1.agent import installation
 from stpd.p1.export import export_model
-from stpd.p1.input import fit_vocabulary, project
+from stpd.p1.input import LEGACY_INPUT_SPEC, fit_vocabulary, project
 from stpd.p1.model import MStd
 
 
-@pytest.fixture(params=["detached", "trained"])
+@pytest.fixture(params=["detached", "trained", "legacy-detached"])
 def p1_registration(tmp_path, monkeypatch, request):
     store = store_at(tmp_path / "store")
     package = tmp_path / "original"
     checkpoint = tmp_path / "last.tensor-tree"
     checkpoint.write_bytes(b"synthetic engineering checkpoint")
-    vocabulary = fit_vocabulary([project(observation())])
+    value = observation()
+    projection = LEGACY_INPUT_SPEC if request.param == "legacy-detached" else None
+    if projection is not None:
+        value["revision"] = projection["revision"]
+    vocabulary = fit_vocabulary([project(value, input_projection=projection)])
+    if projection is not None:
+        vocabulary["input_spec"] = dict(projection)
     descriptor = export_model(MStd(vocabulary), checkpoint, package, {"scope": "synthetic"})
     payloads = tuple(store.put_payload(role, io.BytesIO((package / name).read_bytes()), media)
                      for role, name, media in (
@@ -55,7 +61,8 @@ def p1_registration(tmp_path, monkeypatch, request):
         negotiations.append(options)
         assert artifact.read_bytes() == (package / "model.tensor-tree").read_bytes()
         return {"schema": "sts2.policy-runtime/agent-manifest-1", "manifest_id": selection,
-                "input": {"profile": "p1-global-r1", "global": {"core_sha256": "a" * 64}},
+                "input": {"profile": "p1-global-r1",
+                          "global": {"core_sha256": "a" * 64, "revision": "r1.5"}},
                 "environment": {"kind": "native"}, "adapter": adapter}
 
     monkeypatch.setattr(service, "_global_environment_manifest", envelope)
@@ -188,3 +195,32 @@ def test_application_stop_window_is_in_original_request_and_runtime_spawn(
     assert command[command.index("--no-progress-repeats") + 1] == "8"
     with pytest.raises(ValueError, match="invalid_global_no_progress"):
         models.agent_request(selection, "start", global_no_progress={**progress, "extra": 1})
+
+
+def test_downloaded_original_model_registers_through_own_payload_cache(
+    p1_registration, monkeypatch,
+):
+    from spireagent.workbench.developer import atomic_json
+
+    service, models, store, model, _, _ = p1_registration
+    target = service.config.state_dir / "downloads" / model.artifact_id
+    target.mkdir(parents=True)
+    (target / "manifest.json").write_bytes(model.to_bytes())
+    atomic_json(target / "download.json", {
+        "schema": "stpd/result-download-v1", "artifact_id": model.artifact_id})
+    for payload in model.payloads:
+        (target / (payload.sha256 + ".bin")).write_bytes(b"".join(store.read_payload(payload)))
+    monkeypatch.setattr(service.export, "_source",
+                        LocalModelExport._source.__get__(service.export, LocalModelExport))
+    result = service.register(model.artifact_id)
+    assert result["status"] == "registered"
+    entry = models.selection(result["selection_id"])
+    assert installation(models.entry_path(entry, "config"),
+                        models.entry_path(entry, "manifest"), models.private_root)[0][
+                            "model_artifact_id"] == model.artifact_id
+    # The normal cache reader authenticates bytes; a downloaded object is not
+    # an excuse to bypass integrity or invent its missing training ancestry.
+    weights = model.payload("weights")
+    (target / (weights.sha256 + ".bin")).write_bytes(b"broken")
+    with pytest.raises(ValueError, match="download_payload_invalid"):
+        service.register(model.artifact_id)

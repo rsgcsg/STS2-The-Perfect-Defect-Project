@@ -1280,6 +1280,8 @@ class LocalModelService:
                     downloaded = Manifest.from_bytes(manifest_path.read_bytes(), directory.name)
                     if downloaded.kind != "model":
                         continue
+                    p1_registration = downloaded.parameters.value().get("schema") in {
+                        "stpd/p1-mstd-trained-model-1", "stpd/p1-mstd-model-1"}
                     export_supported = False
                     try:
                         support = LocalModelExport(self.config).support(downloaded.artifact_id)
@@ -1296,11 +1298,11 @@ class LocalModelService:
                             "model_schema": downloaded.parameters.value().get("schema"),
                             "local_download": (directory / "download.json").is_file(),
                             "loaded": False,
-                            "support_status": ("export_and_registration_required" if
-                                export_supported else
+                            "support_status": ("registration_required" if p1_registration else
+                                "export_and_registration_required" if export_supported else
                                 "unsupported"),
-                            "reason": ("s0_text_v2_only" if
-                                export_supported else
+                            "reason": ("register_current_p1_model" if p1_registration else
+                                "s0_text_v2_only" if export_supported else
                                 "no_compatible_live_adapter_and_input_parity"),
                         }
                     )

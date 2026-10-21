@@ -250,7 +250,9 @@ class _DownloadedStructuredModel:
                 or receipt.get("artifact_id") != identity
                 or self.model.kind != "model"
                 or not (is_structured_model_schema(self.model.parameters.value().get("schema"))
-                        or is_native_model_schema(self.model.parameters.value().get("schema")))):
+                        or is_native_model_schema(self.model.parameters.value().get("schema"))
+                        or self.model.parameters.value().get("schema") in {
+                            "stpd/p1-mstd-trained-model-1", "stpd/p1-mstd-model-1"})):
             raise BoundaryError("local_model_export", "structured_download_required")
         self.directory = directory
         self.blobs = SimpleNamespace(root=directory)
@@ -387,7 +389,9 @@ class LocalModelExport:
                 raise BoundaryError("local_model_export", "unsafe_download_cache")
             cached = Manifest.from_bytes((directory / "manifest.json").read_bytes(), identity)
             if (is_structured_model_schema(cached.parameters.value().get("schema"))
-                    or is_native_model_schema(cached.parameters.value().get("schema"))):
+                    or is_native_model_schema(cached.parameters.value().get("schema"))
+                    or cached.parameters.value().get("schema") in {
+                        "stpd/p1-mstd-trained-model-1", "stpd/p1-mstd-model-1"}):
                 return _DownloadedStructuredModel(directory, identity)
         return self._workspace().store
 
