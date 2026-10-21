@@ -646,7 +646,9 @@ function reduceCatalog(state: P1SessionState, basis: P1Basis, execution?: readon
   const qualifiedSelector = completeSelectorFacts(surface);
   const selectionFamily = nativeKind !== "native_generated_card_choice"
     && ["selector", "upgrade", "enchant"].includes(family) && completeSelector(surface);
-  const hasSelectionCompletion = selectionFamily && (snapshot.bound_actions.actions as NativeAction[]).some(action =>
+  const selectionCanFinish = surface.selected_count !== 0 || surface.can_confirm === true
+    || qualifiedSelector && surface.selector_request.can_finish_now === true;
+  const hasSelectionCompletion = selectionFamily && selectionCanFinish && (snapshot.bound_actions.actions as NativeAction[]).some(action =>
     action.verb === "confirm" || qualifiedSelector && ["open_preview", "confirm_selection", "confirm"]
       .includes(selectorOperation(surface, action.subject_referent_id ?? null) ?? ""));
   if (Object.hasOwn(surface, "selector_request") && !qualifiedSelector)
@@ -675,6 +677,10 @@ function reduceCatalog(state: P1SessionState, basis: P1Basis, execution?: readon
         || surface.selected_card_entity_ids.includes(subjectId))) {
       exclude("forward_profile:selection_capacity_or_already_selected"); continue;
     }
+    if (selectionFamily && !selectionCanFinish && (action.verb === "confirm"
+        || ["open_preview", "confirm_selection", "confirm"].includes(operation ?? ""))) {
+      exclude("forward_profile:selection_append_only"); continue;
+    }
     const declineSelection = selectionFamily && (operation === "cancel_selection"
       || !operation && ["skip", "cancel", "close"].includes(action.verb));
     if (declineSelection && surface.selected_count !== 0) {
@@ -682,6 +688,13 @@ function reduceCatalog(state: P1SessionState, basis: P1Basis, execution?: readon
     }
     if (declineSelection && hasSelectionCompletion) {
       exclude("forward_profile:empty_selection_uses_completion"); continue;
+    }
+    // A native Close may finish its await with an empty result and still return
+    // to the parent choice (e.g. Smith). cancelable/can_decline_now describe the
+    // availability of that control, not a forward whole-page refusal. Only an
+    // explicitly advertised native Skip is a decline without a completion input.
+    if (declineSelection && !(action.verb === "skip" && surface.can_skip === true && !operation)) {
+      exclude("forward_profile:selection_append_only"); continue;
     }
     if (qualifiedSelector && (action.verb === "open" && role === "card"
         || operation === "toggle_upgrade_view")) {
