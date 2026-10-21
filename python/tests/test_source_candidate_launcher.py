@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -13,6 +14,9 @@ from tools import install_developer_kit as install
 
 
 def candidate(tmp_path, monkeypatch):
+    # This fixture models the macOS native launcher on every portable runner.
+    # Production must continue rejecting unsupported host platforms.
+    monkeypatch.setattr(sys, "platform", "darwin")
     home = tmp_path / "candidate-home"
     config = tmp_path / "project.json"
     atomic_json(config, ProjectConfig(tmp_path / "state", "", "", None, combination()).to_dict())

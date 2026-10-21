@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import base64
 import copy
+import hashlib
 import json
 import subprocess
 import zipfile
@@ -855,7 +857,41 @@ def test_initialize_new_profile_runs_real_owner_setup_without_selection(tmp_path
 def test_selected_source_uv_subprocess_ignores_foreign_python_and_uv_targets(
     tmp_path, monkeypatch
 ):
-    source = Path(__file__).resolve().parents[2]
+    # Exercise real uv bootstrap offline without constructing another full
+    # application/ML environment. The small wheel is a genuine installed import
+    # fixture, not an injected sys.path or fabricated installed metadata.
+    source = tmp_path / "selected-source"
+    project = source / "python"
+    project.mkdir(parents=True)
+    wheel = project / "selected_source_fixture-1.0-py3-none-any.whl"
+    metadata = "selected_source_fixture-1.0.dist-info"
+    members = {
+        "spireagent/__init__.py": b"",
+        "spireagent/workbench/__init__.py": b"",
+        "spireagent/workbench/developer.py": f"ROOT = {str(project)!r}\n".encode(),
+        f"{metadata}/METADATA": (
+            b"Metadata-Version: 2.1\nName: selected-source-fixture\nVersion: 1.0\n"),
+        f"{metadata}/WHEEL": (
+            b"Wheel-Version: 1.0\nGenerator: installer-test\n"
+            b"Root-Is-Purelib: true\nTag: py3-none-any\n"),
+    }
+    record = "".join(
+        f"{name},sha256={base64.urlsafe_b64encode(hashlib.sha256(raw).digest()).decode().rstrip('=')},{len(raw)}\n"
+        for name, raw in members.items())
+    members[f"{metadata}/RECORD"] = (record + f"{metadata}/RECORD,,\n").encode()
+    with zipfile.ZipFile(wheel, "w") as archive:
+        for name, raw in members.items():
+            archive.writestr(name, raw)
+    (project / "pyproject.toml").write_text(
+        '[project]\nname="installer-fixture"\nversion="1.0"\n'
+        'requires-python=">=3.11,<3.12"\n'
+        f'dependencies=["selected-source-fixture @ {wheel.as_uri()}"]\n'
+        '[project.optional-dependencies]\ncloud=[]\n')
+    monkeypatch.setenv("UV_OFFLINE", "1")
+    install.run(["uv", "lock", "--project", "python", "--offline"], source)
+    # Reproduce the supervisor's no-sync environment: the selected source has
+    # not been bootstrapped, so inheriting this switch must not skip installation.
+    monkeypatch.setenv("UV_NO_SYNC", "1")
     foreign = tmp_path / "foreign"
     package = foreign / "spireagent"
     workbench = package / "workbench"
@@ -872,14 +908,16 @@ def test_selected_source_uv_subprocess_ignores_foreign_python_and_uv_targets(
         "uv", "run", "--project", "python", "--locked", "--extra", "cloud", "python",
         "-c", "import spireagent.workbench.developer as d; print(d.ROOT)",
     ]
-    assert install.run(command, source).strip() == str(source / "python")
+    assert install.run(command, source).strip() == str(project)
     monkeypatch.setenv("PYTHONHOME", str(foreign))
     monkeypatch.setenv("VIRTUAL_ENV", str(foreign_environment))
     monkeypatch.setenv("UV_PROJECT_ENVIRONMENT", str(foreign_environment))
     monkeypatch.setenv("UV_WORKING_DIR", str(foreign))
     monkeypatch.setenv("UV_PROJECT", str(foreign))
     monkeypatch.setenv("UV_PYTHON", str(foreign / "python"))
-    assert install.run(command, source).strip() == str(source / "python")
+    assert install.run(command, source).strip() == str(project)
+    assert install.os.environ["UV_OFFLINE"] == "1"
+    assert install.os.environ["UV_NO_SYNC"] == "1"
     assert sentinel.read_text() == "unchanged"
     assert sorted(p.name for p in foreign_environment.iterdir()) == ["sentinel"]
 
