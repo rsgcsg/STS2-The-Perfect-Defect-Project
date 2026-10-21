@@ -315,6 +315,7 @@ def _setup_unlocked(
         delivery_config.expanduser().resolve() if delivery_config else None,
         combination(),
         current_config.research_workspace if current_config is not None else None,
+        current_config.remote_compute if current_config is not None else None,
         cloud_environment_file=selected_cloud_file,
     )
     if path.exists() and not replace_config:

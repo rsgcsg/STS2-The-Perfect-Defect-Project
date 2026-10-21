@@ -325,6 +325,36 @@ def test_setup_persists_only_private_cloud_reference_and_retains_it_on_reopen(tm
     assert ProjectConfig.load(profile).cloud_environment_file == cloud_file
 
 
+def test_cloud_reference_setup_preserves_existing_remote_compute_and_workspace(tmp_path):
+    from spireagent.workbench.developer import (
+        LocalResearchWorkspaceConfig,
+        ProjectConfig,
+        RemoteComputeConfig,
+        atomic_json,
+        combination,
+        setup,
+    )
+
+    profile = tmp_path / "project.json"
+    remote = RemoteComputeConfig(
+        tmp_path / "ops.sqlite", tmp_path / "target.json", 4, 1,
+        {"kind": "local", "directory": str(tmp_path / "peer")})
+    workspace = LocalResearchWorkspaceConfig(tmp_path / "store", tmp_path / "registry.sqlite")
+    previous = ProjectConfig(tmp_path / "state", "", "", None, combination(), workspace, remote)
+    atomic_json(profile, previous.to_dict())
+    cloud_file = tmp_path / "cloud.env"
+    cloud_file.write_text("AWS_ACCESS_KEY_ID=synthetic-private-access\n")
+    cloud_file.chmod(0o600)
+    setup(profile, state_dir=previous.state_dir, install=False, replace_config=True,
+          cloud_environment_file=cloud_file)
+    for _ in range(2):
+        selected = ProjectConfig.load(profile)
+        assert selected.remote_compute == remote
+        assert selected.research_workspace == workspace
+        assert selected.cloud_environment_file == cloud_file
+        setup(profile, state_dir=previous.state_dir, install=False)
+
+
 @pytest.mark.parametrize("defect", ["missing", "symlink", "permissions", "owner", "syntax"])
 def test_cloud_provider_rejects_unavailable_or_untrusted_reference(tmp_path, monkeypatch, defect):
     from spireagent.workbench.service_process import cloud_environment
