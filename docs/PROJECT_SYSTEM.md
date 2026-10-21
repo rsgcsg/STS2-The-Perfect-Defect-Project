@@ -86,6 +86,8 @@ scope, next delivery and remaining obligations without private chat.
 
 以真实内部开发和受支持内部库/API用起来方便为准，操作仍归原合同与状态owner，不强制所有内部操作经过HTTP、Application或GUI。GUI只映射人类需要且最方便易用的功能，不要求每个API都做按钮；具体界面继续由[原UI规范](UI_INTERACTION_SPEC.md)维护。
 
+面向人的日常交付以该规范的[简便操作与后台运行要求](UI_INTERACTION_SPEC.md#human-operation-contract)验收：复杂工作由原owner在后台完成，正常使用不依赖Codex或工程临时进程。界面建好、库调用一次成功或补完SOP，都不能替代正常安装上的完整用户流程。
+
 新实现接入或受支持入口改变时，同PR更新该操作段和导航；改变合同/理由则更新合同或DECISIONS/ADR；当前工作变化则由集成者替换CURRENT。历史解法保原证据，新的适用边界归RESOLVED_ISSUES。不要求每次同时改全部文档。收敛验收必须同时有职责、当前入口、实际操作、历史复用、接手走查与维护归属；表格登记、链接通过或文档提交本身不宣布父能力已完成。
 
 A new idea belongs either in the owning specification as a selected decision or
