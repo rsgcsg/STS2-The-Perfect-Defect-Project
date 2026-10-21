@@ -867,3 +867,124 @@ def test_changed_cloud_scope_rechecks_active_and_restart_before_new_dispatch(tmp
     reopened.operation["status"] = "publication_unknown"
     assert maintenance.P1RecordingMaintenance(reopened).tick()["status"] == "blocked"
     assert reopened._maintenance["active"]["candidate_id"] == "a" * 64
+
+
+def test_expanded_cooling_requires_independent_full_readback_and_owner_lease(
+    tmp_path, original, tool,
+):
+    import shutil
+
+    from spireagent.storage.store import copy_artifact
+    from spireagent.workbench.p1_recording_storage import (
+        HOT_METADATA,
+        _raw_hashes,
+        expanded_consumer,
+        expanded_storage,
+        peer_binding,
+        storage_intent,
+    )
+
+    store = ManifestArtifactStore(LocalBlobStore(tmp_path / "store"))
+    peer = ManifestArtifactStore(LocalBlobStore(tmp_path / "cold"))
+    source = publish_p1_original(store, original, tool,
+                                 Producer("test", "a" * 40, "b" * 64), scratch=tmp_path)
+    raw = tmp_path / "recordings" / "closed-session"
+    shutil.copytree(original / "raw", raw)
+    hashes = _raw_hashes(raw)
+    intent = {**storage_intent("cool", source.artifact_id, peer_binding(str(tmp_path / "cold"))),
+              "_expanded_directory": str(raw)}
+    # A successful local archive is insufficient without the independent peer.
+    with pytest.raises(BoundaryError):
+        expanded_storage(store, intent, scratch=tmp_path, tool=tool)
+    assert _raw_hashes(raw) == hashes
+    copy_artifact(store, peer, source.artifact_id)
+    with (expanded_consumer(raw),
+          pytest.raises(BoundaryError, match="already_running")):
+        expanded_storage(store, intent, scratch=tmp_path, tool=tool)
+    assert _raw_hashes(raw) == hashes
+    result = expanded_storage(store, intent, scratch=tmp_path, tool=tool)
+    assert result["storage_receipt"]["typed_restore"] is True
+    assert result["storage_receipt"]["removed_bytes"] > 0
+    assert set(_raw_hashes(raw)) == HOT_METADATA & set(hashes)
+    # The original source, cold archive, local Store and metadata remain.
+    assert _raw_hashes(original / "raw") == hashes
+    restored = expanded_storage(store, {**intent, "storage_action": "restore-expanded"},
+                                scratch=tmp_path, tool=tool)
+    assert restored["storage_receipt"]["expanded_state"] == "hot"
+    assert _raw_hashes(raw) == hashes
+
+
+def test_interrupted_expanded_cooling_is_recoverable_without_overwriting_originals(
+    tmp_path, original, tool, monkeypatch,
+):
+    import shutil
+
+    from spireagent.storage.store import copy_artifact
+    from spireagent.workbench.p1_recording_storage import (
+        _raw_hashes,
+        expanded_storage,
+        peer_binding,
+        storage_intent,
+    )
+
+    store = ManifestArtifactStore(LocalBlobStore(tmp_path / "store"))
+    peer = ManifestArtifactStore(LocalBlobStore(tmp_path / "cold"))
+    source = publish_p1_original(store, original, tool,
+                                 Producer("test", "a" * 40, "b" * 64), scratch=tmp_path)
+    copy_artifact(store, peer, source.artifact_id)
+    raw = tmp_path / "recordings" / "closed-session"
+    shutil.copytree(original / "raw", raw)
+    before = _raw_hashes(raw)
+    intent = {**storage_intent("cool", source.artifact_id, peer_binding(str(tmp_path / "cold"))),
+              "_expanded_directory": str(raw)}
+    original_unlink = Path.unlink
+    calls = []
+
+    def fail_second(path, *args, **kwargs):
+        if path.is_relative_to(raw):
+            calls.append(path)
+            if len(calls) == 2:
+                raise OSError("deliberate disk failure after first expanded-file deletion")
+        return original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", fail_second)
+    with pytest.raises(OSError, match="deliberate disk failure"):
+        expanded_storage(store, intent, scratch=tmp_path, tool=tool)
+    assert len(_raw_hashes(raw)) == len(before) - 1
+    monkeypatch.setattr(Path, "unlink", original_unlink)
+    expanded_storage(store, {**intent, "storage_action": "restore-expanded"},
+                     scratch=tmp_path, tool=tool)
+    assert _raw_hashes(raw) == before
+
+
+def test_recent_two_policy_schedules_only_the_oldest_in_scope_session(tmp_path, monkeypatch):
+    from spireagent.workbench import local_recording_import as importing
+    from spireagent.workbench.developer import ProjectConfig, combination
+    from spireagent.workbench.p1_recording_maintenance import P1RecordingMaintenance
+
+    class Catalog:
+        def read(self):
+            return {"status": "ready", "candidates": []}
+
+    config = ProjectConfig(tmp_path / "state", "", "", None, combination())
+    config.state_dir.mkdir()
+    importer = importing.LocalRecordingImporter(config, Catalog())
+    ids = [str(i) * 64 for i in range(1, 5)]
+    importer._maintenance["sessions"] = {
+        identity: {"source_artifact_id": identity, "session_id": str(i),
+                   "scope_facts": {"candidate_id": identity, "closed_at": str(i)},
+                   "expanded_state": "hot"}
+        for i, identity in enumerate(ids)
+    }
+    calls = []
+    monkeypatch.setattr(importing, "_selected_store", lambda *a, **k: (None, None))
+    monkeypatch.setattr(importer, "start_p1_storage", lambda *a: calls.append(a))
+    maintenance = P1RecordingMaintenance(importer)
+    peer = {"kind": "local", "directory": str(tmp_path / "cold")}
+    maintenance.configure(True, peer, projection_id=None,
+                          scope={"candidate_ids": ids[:3]}, cool_recent=True)
+    assert maintenance.tick()["status"] == "cooling"
+    assert calls == [("cool", ids[0], peer)]
+    # The newest two scoped sessions and the unrelated fourth session stay hot.
+    assert all(s["expanded_state"] == "hot"
+               for s in importer._maintenance["sessions"].values())
