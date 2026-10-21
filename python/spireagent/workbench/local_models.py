@@ -2889,6 +2889,10 @@ class LocalModelService:
             expected["global_runtime_directory"] = str(
                 (self._node_modules(entry["id"]) / RUNTIME_PACKAGE / "dist").resolve()
             )
+            if entry["adapter"] == GLOBAL_MODEL_ADAPTER:
+                config = _object_file(self.entry_path(entry, "config"))
+                expected["model_binding"] = {key: config[key] for key in (
+                    "package_input_spec", "input_spec", "input_projection")}
         return expected
 
     def _native_operation_handoff(self, startup: dict[str, Any]) -> None:

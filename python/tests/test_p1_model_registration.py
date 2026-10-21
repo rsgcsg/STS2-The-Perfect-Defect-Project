@@ -95,13 +95,20 @@ def test_failed_p1_environment_negotiation_does_not_publish_selection(p1_registr
 
 
 def test_global_model_evidence_uses_trusted_application_runtime(p1_registration, monkeypatch):
-    _, models, _, _, _, _ = p1_registration
-    monkeypatch.setattr(models, "selection", lambda _: {"id": "m", "adapter": "stpd-p1-mstd-agent"})
+    service, models, _, model, _, _ = p1_registration
+    selection = service.register(model.artifact_id)["selection_id"]
     verified = []
     monkeypatch.setattr(models, "_runtime_package", lambda name: verified.append(name))
     monkeypatch.setattr(models, "_node_modules", lambda _: Path("/trusted/runtime/node_modules"))
-    result = models._agent_evidence_expected({"agent_manifest_id": "m", "run_id": "run-original"})
-    assert verified == ["m"]
+    result = models._agent_evidence_expected({
+        "agent_manifest_id": selection, "run_id": "run-original"})
+    assert verified == [selection]
+    config = models.entry_path(models.selection(selection), "config")
+    import json
+
+    original = json.loads(config.read_bytes())
+    assert result["model_binding"] == {key: original[key] for key in (
+        "package_input_spec", "input_spec", "input_projection")}
     assert result["global_runtime_directory"].startswith("/trusted/runtime/node_modules/")
 
 
