@@ -305,3 +305,89 @@ def test_explicit_current_binding_preserves_package_input_and_rejects_other_proj
                 scratch=tmp_path / "scratch",
             )
         expected["model_binding"][field] = previous
+
+
+def _importer(setup, tmp_path, monkeypatch):
+    from spireagent.workbench import local_recording_import as importing
+    from spireagent.workbench.developer import ProjectConfig, combination
+
+    store, producer, directory, expected, model, _, _ = setup
+    expected['run_id'] = 'run-fixture'
+    config = ProjectConfig(tmp_path / 'state', '', '', None, combination())
+    config.state_dir.mkdir()
+    monkeypatch.setattr(importing, '_selected_store', lambda *a, **k: (store, None))
+    monkeypatch.setattr(importing, '_sync', lambda *a: None)
+    monkeypatch.setattr(importing, 'source_identity', lambda root: producer)
+    context = {'directory': str(directory), 'expected': expected,
+               'model_artifact_id': model.artifact_id}
+    return importing.LocalRecordingImporter(config, None), context
+
+
+def test_original_import_owner_transfers_and_reads_global_with_frozen_trust(tmp_path, monkeypatch):
+    setup = _setup(tmp_path, monkeypatch)
+    importer, context = _importer(setup, tmp_path, monkeypatch)
+    peer = {'kind': 'local', 'directory': str(tmp_path / 'peer')}
+    started = importer.start_global_evidence(context, peer)
+    assert '_global_context' not in started
+    assert 'directory' not in started
+    importer.thread.join(10)
+    assert not importer.thread.is_alive()
+    status = importer.status()
+    assert status['status'] == 'completed'
+    assert status['local_readback']['typed_verification'] == 'pass'
+    assert status['peer_readback']['typed_verification'] == 'pass'
+    original_id = status['artifact_id']
+
+    def unexpected(*args, **kwargs):
+        raise AssertionError('reconcile repeated a publication')
+
+    monkeypatch.setattr(global_store, 'publish_global_evidence', unexpected)
+    monkeypatch.setattr(global_store, 'publish_global_runtime', unexpected)
+    assert importer.reconcile_global_evidence()['artifact_id'] == original_id
+
+
+def test_global_typed_rejection_before_writes_remains_known_failure(tmp_path, monkeypatch):
+    setup = _setup(tmp_path, monkeypatch)
+    importer, context = _importer(setup, tmp_path, monkeypatch)
+    before = set(setup[0].manifest_ids())
+    monkeypatch.setattr(evidence, 'verify_agent_session_run_evidence',
+                        lambda *a: SimpleNamespace(passed=False, value=None,
+                            findings=[SimpleNamespace(code='known-invalid-original')]))
+    importer.start_global_evidence(context)
+    importer.thread.join(10)
+    assert importer.status()['status'] == 'failed'
+    assert importer.status()['error_code'] == 'typed_global_verification_failed'
+    assert set(setup[0].manifest_ids()) == before
+
+
+def test_global_postpublication_unknown_survives_restart_and_only_reads_original_id(
+    tmp_path, monkeypatch,
+):
+    from spireagent.workbench.local_recording_import import LocalRecordingImporter
+
+    setup = _setup(tmp_path, monkeypatch)
+    importer, context = _importer(setup, tmp_path, monkeypatch)
+    verify = global_store.verify_global_artifact
+
+    def unreadable(*args, **kwargs):
+        raise OSError('deliberate postpublication read failure')
+
+    monkeypatch.setattr(global_store, 'verify_global_artifact', unreadable)
+    importer.start_global_evidence(context)
+    importer.thread.join(10)
+    assert importer.status()['status'] == 'publication_unknown'
+    identity = importer.status()['artifact_id']
+    reopened = LocalRecordingImporter(importer.config, None)
+    with pytest.raises(BoundaryError, match='original_intent_reconciliation_required'):
+        reopened.start_global_evidence(context)
+    with pytest.raises(BoundaryError, match='original_intent_reconciliation_required'):
+        reopened.start_p1_derivation('a' * 64, 'native-timeline-targets-1')
+    monkeypatch.setattr(global_store, 'verify_global_artifact', verify)
+
+    def unexpected(*args, **kwargs):
+        raise AssertionError('reconcile repeated a publication')
+
+    monkeypatch.setattr(global_store, 'publish_global_evidence', unexpected)
+    monkeypatch.setattr(global_store, 'publish_global_runtime', unexpected)
+    assert reopened.reconcile_global_evidence()['status'] == 'completed'
+    assert reopened.status()['artifact_id'] == identity

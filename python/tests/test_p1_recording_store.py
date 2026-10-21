@@ -1042,3 +1042,38 @@ def test_recent_two_policy_schedules_only_the_oldest_in_scope_session(tmp_path, 
     # The newest two scoped sessions and the unrelated fourth session stay hot.
     assert all(s["expanded_state"] == "hot"
                for s in importer._maintenance["sessions"].values())
+
+
+def test_import_owner_allows_only_explicit_same_intent_expanded_recovery(tmp_path, monkeypatch):
+    from spireagent.workbench.developer import ProjectConfig, combination
+    from spireagent.workbench.local_recording_import import SCHEMA, LocalRecordingImporter
+
+    raw = tmp_path / 'recordings' / 'closed'
+    raw.mkdir(parents=True)
+    candidate = {'recording_type': 'p1_native', 'session_id': 's', 'timeline_id': 't',
+                 'source_directory': str(raw)}
+
+    class Catalog:
+        def read(self):
+            return {'status': 'ready', 'candidates': [{'candidate_id': 'candidate'}]}
+
+        def candidate(self, identity):
+            return candidate
+
+    config = ProjectConfig(tmp_path / 'state', '', '', None, combination())
+    config.state_dir.mkdir()
+    importer = LocalRecordingImporter(config, Catalog())
+    artifact = 'a' * 64
+    peer = {'kind': 'local', 'directory': str(tmp_path / 'peer')}
+    importer.operation = {'schema': SCHEMA, 'recording_type': 'p1_native', 'action': 'storage',
+                          'storage_action': 'cool', 'artifact_id': artifact, 'peer': peer,
+                          'status': 'publication_unknown'}
+    importer._maintenance['sessions'] = {artifact: {'session_id': 's', 'timeline_id': 't'}}
+    monkeypatch.setattr(importer, '_run_p1_storage', lambda: None)
+    with pytest.raises(BoundaryError, match='original_intent_reconciliation_required'):
+        importer.start_p1_storage('restore-expanded', artifact,
+                                 {**peer, 'directory': str(tmp_path / 'other-peer')})
+    status = importer.start_p1_storage('restore-expanded', artifact, peer)
+    importer.thread.join(5)
+    assert status['storage_action'] == 'restore-expanded'
+    assert status['artifact_id'] == artifact
