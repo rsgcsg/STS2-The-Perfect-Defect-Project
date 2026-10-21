@@ -675,6 +675,8 @@ def test_changed_maintenance_policy_rechecks_previously_completed_sources(
         def read(self):
             return {
                 "status": "ready",
+                "space": {"free_bytes": 12345, "total_bytes": 56789},
+                "observed_at": "2026-10-21T00:00:00Z",
                 "candidates": [{"candidate_id": identity, "recording_type": "p1_native"}],
             }
 
@@ -691,6 +693,10 @@ def test_changed_maintenance_policy_rechecks_previously_completed_sources(
     maintenance = P1RecordingMaintenance(importer)
     maintenance.configure(True, None, projection_id=None)
     assert maintenance.tick()["status"] == "completed"
+    assert importer.status()["maintenance"]["space"] == {
+        "free_bytes": 12345, "total_bytes": 56789,
+    }
+    assert importer.status()["maintenance"]["space_observed_at"] == "2026-10-21T00:00:00Z"
     assert not importer._storage_receipts
     maintenance.configure(True, peer_binding(str(tmp_path / "cold")), projection_id=None)
     maintenance.tick()
