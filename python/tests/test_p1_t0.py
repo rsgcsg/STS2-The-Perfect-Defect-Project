@@ -226,7 +226,7 @@ def test_controlled_weights_score_legal_choices_and_exact_export_load(tmp_path, 
         load_model(tmp_path / "export/model.tensor-tree", "0" * 64)
     template = {
         "schema": "sts2.policy-runtime/agent-manifest-1",
-        "input": {"profile": "p1-global-r1"},
+        "input": {"profile": "p1-global-r1", "global": {"revision": "r1.5"}},
     }
     register(tmp_path / "export", tmp_path / "private", template)
     import builtins
@@ -371,7 +371,10 @@ def test_legacy_package_keeps_identity_and_binds_current_agent_explicitly(tmp_pa
     register(
         package,
         root,
-        {"schema": "sts2.policy-runtime/agent-manifest-1", "input": {"profile": "p1-global-r1"}},
+        {
+            "schema": "sts2.policy-runtime/agent-manifest-1",
+            "input": {"profile": "p1-global-r1", "global": {"revision": "r1.5"}},
+        },
     )
     config, manifest, loaded, payload = installation(
         root / "config.json", root / "manifest.json", root
@@ -383,6 +386,24 @@ def test_legacy_package_keeps_identity_and_binds_current_agent_explicitly(tmp_pa
     assert config["input_spec"] == input_spec(vocabulary, INPUT_SPEC)
     assert config["input_spec"] != config["package_input_spec"]
     assert config["input_projection"] == INPUT_SPEC
+    # A current consumer binding never upgrades the Runtime envelope's protocol.
+    for runtime_global in ({"revision": "r1.4"}, {"revision": "r1.6"}, {}, None):
+        wrong_manifest = copy.deepcopy(manifest)
+        wrong_manifest["input"]["global"] = runtime_global
+        (root / "manifest.json").write_bytes(json_bytes(wrong_manifest))
+        with pytest.raises(ValueError, match="installation binding differs"):
+            installation(root / "config.json", root / "manifest.json", root)
+        rejected_output = io.StringIO()
+        with pytest.raises(ValueError, match="installation binding differs"):
+            serve(root / "config.json", root / "manifest.json", root, [], rejected_output)
+        assert rejected_output.getvalue() == ""  # No ready event for an incompatible Runtime.
+        with pytest.raises(ValueError, match="current r1.5"):
+            register(
+                package,
+                tmp_path / ("wrong-" + digest(json_bytes(runtime_global))[:8]),
+                wrong_manifest,
+            )
+    (root / "manifest.json").write_bytes(json_bytes(manifest))
     for field, replacement in (
         ("package_input_spec", config["input_spec"]),
         ("input_spec", config["package_input_spec"]),

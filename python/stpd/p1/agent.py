@@ -38,6 +38,8 @@ def installation(
         or manifest.get("artifact") != expected_artifact
         or manifest.get("input", {}).get("input_spec") != input_spec(model.vocabulary, INPUT_SPEC)
         or manifest["input"].get("profile") != "p1-global-r1"
+        or not isinstance(manifest["input"].get("global"), dict)
+        or manifest["input"]["global"].get("revision") != INPUT_SPEC["revision"]
         or manifest["input"].get("state_recovery")
         != {"mode": "none", "max_state_bytes": 0, "model_bindings": []}
         or config["checkpoint_sha256"] != payload["checkpoint_sha256"]
