@@ -289,7 +289,7 @@ def test_source4_browser_and_fixed_form_use_same_owner_and_close_controls(native
     descriptors = {item["action_id"]: item for item in view["capabilities"]["actions"]}
     assert descriptors["recording.close"]["enabled"]
     assert descriptors["recording.pause"]["enabled"]
-    assert descriptors["recording.start"]["fields"][-1]["default"] == "native-logical-source-v3"
+    assert descriptors["recording.start"]["fields"][-1]["default"] == "human-p1-native-decisions-1"
     route, value = command("recording.close", body(current, "close"), "e" * 32)
     assert call(route, value)["status"] == "accepted"
     assert current["recording_lifecycle"] == "closed"

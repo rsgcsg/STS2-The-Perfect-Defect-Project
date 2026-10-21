@@ -843,11 +843,11 @@ class LocalModelService:
         if (not isinstance(identity, str) or not isinstance(operation, str)
                 or not isinstance(profile, str)):
             raise BoundaryError("agent_run_request", "invalid_request")
+        with self.lock:
+            self._require_source_admission()
         budget = value.get("budget")
         if not isinstance(budget, dict):
             raise BoundaryError("agent_run_request", "invalid_request")
-        with self.lock:
-            self._require_source_admission()
         episode = None
         admission = value.get("admission_context")
         if isinstance(admission, dict) and "native_episode" in admission:

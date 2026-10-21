@@ -72,8 +72,11 @@ def settled(call, job_id, state):
     while True:
         value = call("status", job_id=job_id)
         assert value["scheduler_error"] is None, value
-        if value["jobs"][0]["status"] == state:
-            return value["jobs"][0]
+        row = value["jobs"][0]
+        # Ops records running at claim; cancellation tests need the subsequently
+        # persisted remote handle, not the earlier local claim observation.
+        if row["status"] == state and (state != "running" or row["provider_ref"] is not None):
+            return row
         assert time.monotonic() < deadline, value
         threading.Event().wait(0.05)
 
