@@ -1,17 +1,15 @@
-# 当前状态：第一批三小时执行中，尚未交付
+# 当前状态：第一批源码门通过，正常日常交付待验
 
 Resolve live GitHub refs before relying on this snapshot. 最新用户原话和现场证据 override this file。
 
-2026-10-21，Brisbane。用户新授权第一轮于UTC10:00:59开始，13:00:59硬收口；root只主管，六个当批owner已派发。唯一执行入口是[本批任务与验收](../plans/p1-prefreeze-2026-10-18/BATCH1_EXECUTION_20261021.zh-CN.md)。不要从旧Round3H或私人checkpoint恢复任务。
+2026-10-21，Brisbane。用户本批硬窗口UTC10:00:59—13:00:59不重置。唯一当前任务是[本批验收与停止点](../plans/p1-prefreeze-2026-10-18/BATCH1_EXECUTION_20261021.zh-CN.md)，不从旧Round3H或私人摘要派活。root仅主管；I正在收束文档/最终CI，随后G独占准确native构建、正常安装及游戏内操作。Storage工程闭环已交，日常策略由G接手；Installer、Disk和Training具名分包已交付停止，必要finding由原owner继续。
 
-集成从PR207准确4128b2ce继承，origin/develop8b2c；唯一writer分支codex/batch1-integration-20261021已normal并本批规范、Installer、Storage与GUI稳定增量。UIrc16/Modrc51源95b171d4及BOM一致；准确组合七文件174测试、UI34测试、BOM15测试通过，保remote_compute的新回归18测试通过。原native pack锁首因及多run后台均已修，组合59测试通过；当前全门尚未启动、最新CI运行中；原门5失败、后续7项targeted和旧head4128 CI失败原证据保持。中间eca CI因普通后续push取消，不冒新产品失败或通过。root已预留UTC10:38准确稳定组合完整门，门期不动生产源码。当前未推广安装、未开游戏，正常后台61901保留。用户已条件批准准确最终完整门/CI全绿后normal merge207及正常升级，条件当前未成立。
+PR207源候选1463c06b/treec93987c9的本机完整门03在UTC11:03:15自然通过：12/12阶段、4719 pytest通过/6跳过/93子测试，原CPU e2e/cloud smoke/uv build均执行；前后clean、private pth与installed Evidence源不变。同源GitHub39584992478的Linux两片/portable通过，Windows按路由跳过。原01因TMP在Git树内干扰fixture失败，02因漏Python独立Node consumer失败，分别保原件；完整环境连接复查后才选03，没有改source/断言/门路由求绿。最新文档head的CI须独立完成，不能借1463绿。UIrc16/Modrc51编译闭包源95b171d4及BOM一致，当前尚未native构建、正常安装/加载本批；原61901日常App继续保留。用户已条件批准准确完整门/最终CI及所需native构建全通过后normal merge207并正常升级，当前尚未满足全部条件。
 
-Storage负责录制后台、自动R2和可恢复副本周转；Installer负责Linux fixture和Kit bootstrap；GUI负责简单薄入口及准入后的准确安装现场；Training负责既批两次工程GPU和七源+627候选；Disk负责具名清单及必要接手；Integration负责normal集成、测试/CI和当前文档。每项验收与硬停止均在唯一任务表。正式冻结、真实首训及第二批Reference仍未授权启动。
+三个既有小工程来源已实际自动原件/具名派生R2全读回、领域reader、recent-two保护、冷却→按ID恢复→原Tool读回和策略重建；全部raw最终恢复热字节。它是旧Tool r1.4工程证据，不替当前正常日常部署或新Human整局。仅冷却可恢复expanded副本，压档/派生仍增长，不能宣称磁盘无限期恒定或已实现native Start低空间预拦。原件/Store压档/Curation保留。
 
-## Remaining Platform non-claims 与历史结果
+两次新增限定合成GPU已正常typed完成并停用具名deployment，完整baseline/同Run恢复、全状态差0、86模型张量及current4128 CPU全catalog消费相同；GPU资格只限原331c/image05/FP32/L4组合。八源候选当前reader实得4342唯一N/0重复，TRAIN3896/DEV446/TEST0；成员hash已验、8组谱系全unknown，账仍0claim/1历史use/1sourceuse，没有真实fit/use/梯度或正式snapshot发布。操作与原据归[原P1指南](../../python/docs/P1_T0.md)和本批任务。
 
-上一轮完整门准确源码69c4555f/tree4d6ca357失败：Python5失败、4699通过、6跳过、93子测试；随后4021ccdb唯一7项targeted通过，最终组合完整门未重跑。kit空env首错为ModuleNotFoundError: spireagent，旧原件保留。历史完整门、GPU、Store/R2、Human及未完成项见[上一轮原执行记录](../plans/p1-prefreeze-2026-10-18/ROUND1_EXECUTION_20261021.zh-CN.md)。本批普通修复不能改写这些结果。
+## Remaining Platform non-claims 与历史
 
-上一轮Evidence32真实VCS安装、31源字节/RECORD/父子绑定有证；UIrc15/Modrc50已构建但未安装/加载。日常仍旧正常组合，用户旧短录686accepted/627N和Store/R2读回仅授其原session/旧Mod身份。七源原候选3715N、六TRAIN3269/DEV446/TEST0；本批加627须实核，不直接使用预期4342计数。
-
-全项目六项仍部分，首训未就绪；Reference20/R20、正式冻结/首训、模型比较未做。上一轮GPU仅L4/step1完整checkpoint有证，完整Model/Result、恢复step3和CPU导出未验，旧provider已终态不重投。本批两次新工程GPU须独立计费、Stop和实证。历史Catalog root不可用不能凭目录存在改称通过；实际新Catalog/R2/周转由当批Storage负责。本批验收不以help、路径存在或一个reader代替全部操作接手。
+首训仍未就绪；全项目六项、Reference20/R20、正式冻结/真实首训及新模型比较继续保原范围，当前不自动开第二批。源码/测试、build/installed/loaded、真实录制/Human和研究资格分层。上一轮69c4555f完整门5失败/4699通过/6跳过及4021ccdb七项定向通过保持原身份，见[历史执行原件](../plans/p1-prefreeze-2026-10-18/ROUND1_EXECUTION_20261021.zh-CN.md)。本批成功不改写历史失败或旧GPU预算消耗。旧大目录只交具名清单，未借此删除；本批仅在门终态、保据和无handles后清理自己新生成的pytest fixture，保日志/XML/失败及日常资产。

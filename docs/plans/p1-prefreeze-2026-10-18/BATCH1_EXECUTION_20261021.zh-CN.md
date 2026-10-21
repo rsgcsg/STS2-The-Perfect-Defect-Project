@@ -4,11 +4,15 @@
 
 ## 当前状态与准确边界
 
-集成从PR207准确4128b2ce继承，origin/develop基准8b2c；唯一writer分支`codex/batch1-integration-20261021`，只普通FF推既有PR207。纯规范44aac862、Installer最终405bbea3、Storage最终1bc86075及GUI4ce1298d均已normal merge；UIrc16/Modrc51源95b171d4及BOM一致。正常cloud extra加入原已锁boto3，不换解析版本。准确组合七文件174测试、UI34测试、BOM15测试通过；保已有remote_compute新回归18测试通过；原native pack自锁已沿shared read lease修复，原EX/native writer排他保留，跨语言原证与组合59测试通过；多run按已验证run_journal逐个派生及保全，不虚构run身份。CURRENT与project:closeout已检查，准确完整门尚未启动。
+当前产品源码已完成normal集成，本机准确完整门03与同源CI通过，正常日常产品尚待准确native构建/安装/实屏。集成从PR207准确4128b2ce、origin/develop8b2c继承，唯一writer为`codex/batch1-integration-20261021`，只普通FF推原PR207。Installer405bbea3、Storage1bc86075及GUI4ce1298d保normal ancestry；UIrc16/Modrc51编译闭包源95b171d4、BOM和锁一致。
 
-PR207旧head4128仍保Linux fixture原失败，日志在集成工作树`.local/batch1/original-ci-linux1.log`。中间eca run39582497868因后续普通push自动取消，不能当新产品失败或通过；169c run39583904466已启动，本批最终CI须独立读取。旧完整门5失败与随后7项targeted通过仍保原身份。
+完整门源1463c06b/treec93987c9于UTC10:45:04—11:03:15自然完成12/12PASS，pytest4719通过/6跳过/93子测试，CPU e2e/cloud smoke/compileall/uv build都执行；原源码/installed Evidence/pth前后不变。同源CI39584992478 Linux两片/portable全绿、Windows按路由skip。原01因TMP在Git树内影响fixture失败、02因漏独立Python Node包导致doctor失败，保完整失败/blocked；随后盘清12入口、准确private Node包pins、非Git TMP、20required/87selected及原doctor/ruff/mypy/SDK/build后才由root选03，不改断言或路由。原收据在集成树`.local/batch1/`，资源样本scope文本沿旧runner标记，实际03的head/PID/时间字段明确，未重写原件。最终G0改变文档树，须新head CI真实执行；1463本地门不冒最新文档完整树。
 
-正常日常后台61901保留，当前未安装本批候选、未开游戏。唯一正常安装者是GUI；Installer准备kit命令和依赖，I不给自己另开Mod build。历史HOME固定launcher仍指旧kit/临时配置，GUI须按原expected-hash替换、正常永久kit配对与rollback验收。Storage首真实import失败原件保留，锁首因已修，等待同scope真实后台、R2和冷热验收；Training无新增生产源码；它们的实际结果不由targeted绿色替代。全门前冻结准确组合，root给重型slot才执行，未准确完整门/CI全绿不merge及不正常升级。
+Storage三个既有小工程scope的真实后台/原件及具名派生R2、全读回、按ID领域reader、recent-two、冷却/恢复和重建通过，旧Tool输出r1.4；全raw最后恢复为原热副本。正常未来策略固定为启用时刻之后declared_human、原R2 peer、targets及recent-two，由G正常升级后实核。原seal/Store压档/派生/用途账保留，容量仍随压档和派生增长，不宣称无限期恒定；Native Start没有容量预拦资格。首pack锁自锁失败原件保留，修复保native writer/managed排他，Windows实机未验。
+
+Training限定两GPU工程调用均正常typed completed、provider终态并停用具名deployment；完整baseline/同Run恢复、全状态差0/86tensor及current4128 CPU全catalog一致。八源+627实reader4342/dup0、TRAIN3896/DEV446/TEST0，8组谱系unknown，未正式fit/use。原GPU资格不移给本批新组合。Installer/D已交原修复与磁盘/SOP清单，无旧目录删除。root外部各分包原报告为`replies/P1-BATCH1-{STORAGE,TRAINING,INSTALLER,DISK-HANDOFF}-RESULT-20261021.md`，原日志/JSON就地保留，不复制第二账本。
+
+当前I只做一次G0文档/最终CI收束；G拿最终冻结头后独占同树准确native gate/build，再在root核条件后正常安装/配对/主控件/重开/rollback。G构建期间I不改tracked/head或共享dist，远端merge不切本地checkout。当前PR仍Draft/未merge，日常61901和原件保留，未开本批游戏。不复活旧Round3H、未启动正式首训。
 
 ## 本批可验结果与硬限
 
