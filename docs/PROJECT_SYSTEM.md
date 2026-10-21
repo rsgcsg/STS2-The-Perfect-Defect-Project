@@ -217,6 +217,10 @@ outweighs trusted-project behavior and personal model/permission differences.
 A repository Skill is a reusable, non-obvious, bounded workflow. It is not
 current state, a component handbook, generic coding advice, or a one-off prompt.
 
+Skill是agent专用的按需任务适配与非显然操作知识：给它何时进入原流程、怎样使用真实工具、需要保留什么证据及何时交还。业务事实、合同和操作SOP仍由代码与原功能指南拥有；Skill链接这些owner，只保少量真正agent特有的差异，不能成为第二SOP、业务权威或新增审批来源。是否保留/增加按真实复用价值决定，过时或重复的合并/淘汰，高频或高成本且非显然的流程可以继续使用；不以数量为目标，也不每个函数建一个Skill。
+
+SOP是在明确职责和合同下，给当前实现组合的可执行操作方法，不是上层真理，也不只是一条help。它说明适用条件、入口/必要参数、结果位置、完成判据和实际失败/Stop/恢复；载体或实现换了就在原owner更新。人和agent共享这份事实，GUI/CLI可以各有操作映射，不复制业务含义。
+
 Initial Skills:
 
 - `repo-skill-maintenance`: explicit-only governance of Skill proposals and
@@ -237,11 +241,13 @@ encode it more cheaply.
 
 Admission normally needs about three independent occurrences, two repetitions
 of the same high-cost failure, or an unusually high-risk workflow that is
-already stable. Once admitted, open a separate governance PR, explicitly invoke
-`$repo-skill-maintenance`, then use bundled `$skill-creator`. Create one job,
+already stable. New or substantially expanded Skill proposals use a focused governance
+change and `$repo-skill-maintenance`, then bundled `$skill-creator`. A user-authorized
+focused correction to an existing Skill stays in its owning task/PR; it does not
+require a second admission or approval merely to repair a demonstrated mismatch. Create one job,
 explicit inputs/outputs/non-triggers/stop gates, and positive/negative/overlap
-trigger evals. New meta/high-risk Skills start explicit-only when required by
-their policy; do not build a separate Skill registry.
+trigger evals. Preserve an existing invocation policy unless the user changes it; use the bundled
+skill-creator rules for new discovery metadata. Do not build a separate Skill registry.
 
 Update a Skill only when its workflow, trigger boundary, authority/stop gate, or
 required external interface changes, or a reproducible Skill failure needs a
