@@ -137,6 +137,18 @@ recipe SHA-256 separately. Its builder is CPU2/8GiB with a 900-second deadline.
 Build costs need the same explicit authorization as compute. A failed or uncertain
 build is retained for provider reconciliation, without automatic rebuild.
 
+The optional builder flag `--p1-engineering-profile` freezes a synthetic-only
+measurement entry in that image. The unchanged `execute_request` runs first; an
+independent clone of the completed checkpoint then measures at most four N
+forward/CE-backward passes without optimizer updates. Original weights,
+checkpoints and receipt remain unchanged. A `performance` artifact records actual
+worker wall time, sampled GPU use, peak memory and separate clone timings, bound
+to the exact request/attempt/run/checkpoint. Measurement failures stay explicit;
+the observer rejects any original whose origin is not `engineering_fixture`.
+Clone microtimings are not actual training throughput or a formal-data speed claim.
+The wrapper always uses a fresh container per call, startup120 seconds, two-second
+scaledown and zero retries; its ordinary non-profile entry remains unchanged.
+
 ## Submit, reconcile and restore
 
 Persist `submitting` plus the request/target/attempt before calling `ModalProvider.submit`.

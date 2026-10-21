@@ -45,6 +45,10 @@ secrets = [modal.Secret.from_name(target.storage_secret_name)]
     max_containers=1,
     min_containers=0,
     retries=0,
+    startup_timeout=120,
+    scaledown_window=2,
+    buffer_containers=0,
+    single_use_containers=True,
     secrets=secrets,
     volumes=volumes,
     serialized=True,
@@ -57,6 +61,7 @@ def compute(request: dict, target_id: str) -> dict:
         raise ValueError("qualified_worker_image_required")
     if target_id != deployed_target_id:
         raise ValueError("deployed_target_mismatch")
+    profile = os.environ.get("STPD_P1_ENGINEERING_PROFILE") == "1"
     with tempfile.TemporaryDirectory(prefix="stpd-request-") as directory:
         request_path = Path(directory) / "request.json"
         request_path.write_text(json.dumps(request), encoding="utf-8")
@@ -64,7 +69,7 @@ def compute(request: dict, target_id: str) -> dict:
             [
                 "/opt/stpd/python/.venv/bin/python",
                 "-m",
-                "stpd.cloud_jobs",
+                "stpd.cloud_jobs.p1_gpu_profile" if profile else "stpd.cloud_jobs",
                 "--request",
                 str(request_path),
             ],
@@ -76,4 +81,5 @@ def compute(request: dict, target_id: str) -> dict:
     if result.returncode:
         # Do not forward cloud/sdk stderr, which can contain credential-bearing URLs.
         raise RuntimeError("compute_failed_inspect_immutable_run_events")
-    return {"target_id": target_id, "receipt": json.loads(result.stdout)}
+    value = json.loads(result.stdout)
+    return {"target_id": target_id, "receipt": value["receipt"] if profile else value}

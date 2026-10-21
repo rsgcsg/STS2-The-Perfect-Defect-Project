@@ -81,6 +81,7 @@ def main() -> int:
     parser.add_argument("--bundle", type=Path, required=True)
     parser.add_argument("--environment", required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--p1-engineering-profile", action="store_true")
     args = parser.parse_args()
     if importlib.metadata.version("modal") != MODAL_SDK_VERSION:
         raise ValueError("locked_modal_sdk_required")
@@ -110,6 +111,7 @@ def main() -> int:
         "resources": {"cpu": 2, "memory_mib": 8192, "gpu": None, "timeout_seconds": 900},
         "image_identity_kind": "modal_native_immutable_id", "oci_digest": None,
         "environment": args.environment, "compute_calls": 0,
+        "p1_engineering_profile": args.p1_engineering_profile,
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)
 
@@ -128,6 +130,8 @@ def main() -> int:
             cpu=2, memory=8192, timeout=900,
         )
     )
+    if args.p1_engineering_profile:
+        image = image.env({"STPD_P1_ENGINEERING_PROFILE": "1"})
     try:
         with modal.enable_output(), app.run(environment_name=args.environment):
             receipt["app_id"] = app.app_id
