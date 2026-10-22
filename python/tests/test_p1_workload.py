@@ -41,6 +41,20 @@ def test_same_worker_full_pause_resume_candidate_and_exact_model_readback(tmp_pa
     assert full.state == "candidate_prepared" and full.output_id
     # A cloud worker candidate does not acquire the Hub's selected-result slot.
     assert ObjectStoreRunReporter(store, store.blobs).completed(run.artifact_id) is None
+    events = [
+        event.parameters.value()
+        for event in ObjectStoreRunReporter(store, store.blobs).events(run.artifact_id)
+    ]
+    started = next(row["details"] for row in events if row["kind"] == "started")
+    assert started["preparation"]["partition_N"] == {"train": 1, "dev": 1, "test": 1}
+    assert started["preparation"]["verify_run_seconds"] >= 0
+    progress = next(row["details"] for row in events if row["kind"] == "progress")
+    assert progress["timing"]["train_N_per_second"] > 0
+    checkpoint_event = next(row["details"] for row in events if row["kind"] == "checkpoint")
+    assert checkpoint_event["timing"]["checkpoint_bytes"] > 0
+    assert checkpoint_event["timing"]["checkpoint_seconds"] > 0
+    completed_event = next(row["details"] for row in events if row["kind"] == "completed")
+    assert completed_event["timing"]["worker_seconds"] > 0
     workload = verify_p1_run(store, run.artifact_id, PRODUCER)
     complete = verify_p1_checkpoint(store, full.checkpoint_id, workload)
     paused_request = replace(request, attempt_id="bounded-pause", stop_after=1)
@@ -123,8 +137,9 @@ def test_transfer_inventory_distinguishes_worker_read_set_from_raw_provenance(tm
     }
     assert compute_roles == {"selection", "vocabulary", "segments"}
     assert "archive" in closure_roles and "archive" not in compute_roles
-    assert (inventory["copy_artifact_unique_payload_bytes"]
-            > inventory["compute_unique_payload_bytes"])
+    assert (
+        inventory["copy_artifact_unique_payload_bytes"] > inventory["compute_unique_payload_bytes"]
+    )
     statistics = snapshot_statistics(store, snapshot.artifact_id)
     assert statistics["N_by_character"] == {"Defect": 3}
     assert statistics["N_by_ascension"] == {"0": 3}
@@ -152,8 +167,14 @@ def test_existing_scheduler_and_modal_contract_carry_P1_request_and_result(tmp_p
     from spireagent.p1_curation import reserve_p1_snapshot
 
     reserve_p1_snapshot(ledger, store, snapshot.artifact_id)
-    job = operations.enqueue("training", run.artifact_id, "p1-engineering-only",
-                             max_seconds=300, reserved_units=1, budget_limit=1)
+    job = operations.enqueue(
+        "training",
+        run.artifact_id,
+        "p1-engineering-only",
+        max_seconds=300,
+        reserved_units=1,
+        budget_limit=1,
+    )
     provider = Provider(operations, store, None, PRODUCER)
     provider.ready = True
     with Scheduler(operations, store, provider, budget_limit=1) as scheduler:
@@ -173,3 +194,31 @@ def test_existing_scheduler_and_modal_contract_carry_P1_request_and_result(tmp_p
     assert modal.poll(modal.restore_handle(handle.to_dict())) == receipt
     assert len(function.requests) == 1
     assert ObjectStoreRunReporter(store, store.blobs).completed(run.artifact_id) is None
+
+
+def test_prepare_and_worker_population_each_use_one_verified_read_session(tmp_path, monkeypatch):
+    from stpd.p1 import dataset
+    from stpd.p1.workload import populations_from_reader
+
+    store = store_at(tmp_path / "store")
+    projections = [projection_fixture(store, "single-read-" + str(i))[0] for i in range(3)]
+    snapshot = explicit_snapshot(store, projections)
+    calls = []
+    original = dataset.load_snapshot
+
+    def counted(*args):
+        calls.append(args[1])
+        return original(*args)
+
+    monkeypatch.setattr(dataset, "load_snapshot", counted)
+    run = prepare_p1_run(store, snapshot.artifact_id, PRODUCER, MStdConfig(max_epochs=1), "b" * 32)
+    assert calls == [snapshot.artifact_id]
+    calls.clear()
+    workload = verify_p1_run(store, run.artifact_id, PRODUCER)
+    populations = populations_from_reader(workload.reader)
+    assert calls == [snapshot.artifact_id]
+    assert {key: len(value.frames) for key, value in populations.items()} == {
+        "train": 1,
+        "dev": 1,
+        "test": 1,
+    }

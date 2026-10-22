@@ -3,6 +3,7 @@
 This reports a compute read set separately from generic copy_artifact's complete
 provenance closure. It publishes nothing and never opens a provider or uploads.
 """
+
 from __future__ import annotations
 
 from collections import Counter
@@ -11,13 +12,14 @@ from typing import Any
 from spireagent.json_boundary import BoundaryError
 from spireagent.storage.store import ArtifactStore
 
-from .dataset import iter_snapshot_points, load_snapshot, projection_payload_role
+from .dataset import SnapshotReader, projection_payload_role
 from .spec import RUN_SCHEMA, SNAPSHOT_SCHEMA
 from .workload import verify_p1_run
 
 
 def snapshot_statistics(store: ArtifactStore, snapshot_id: str) -> dict[str, Any]:
-    _, selection = load_snapshot(store, snapshot_id)
+    reader = SnapshotReader(store, snapshot_id)
+    selection = reader.selection
     metadata = {s["projection_id"]: s["lineage"] for s in selection["sources"]}
     roles: Counter[str] = Counter()
     difficulty: Counter[str] = Counter()
@@ -25,7 +27,7 @@ def snapshot_statistics(store: ArtifactStore, snapshot_id: str) -> dict[str, Any
     kinds: Counter[str] = Counter()
     catalogs: Counter[str] = Counter()
     partitions: dict[str, Counter[str]] = {}
-    for reference, observation in iter_snapshot_points(store, snapshot_id):
+    for reference, observation in reader.iter_points():
         lineage = metadata[reference["projection_id"]]
         character = str(lineage.get("character") or "unknown")
         ascension = lineage.get("ascension")
@@ -63,12 +65,14 @@ def input_transfer_inventory(store: ArtifactStore, identity: str) -> dict[str, A
     if schema == RUN_SCHEMA:
         workload = verify_p1_run(store, identity, item.producer)
         snapshot = workload.snapshot
+        reader = workload.reader
         compute.append((workload.training, "vocabulary"))
     elif schema == SNAPSHOT_SCHEMA:
         snapshot = item
+        reader = SnapshotReader(store, identity)
     else:
         raise BoundaryError("p1_preparation", "P1_snapshot_or_run_required")
-    _, selection = load_snapshot(store, snapshot.artifact_id)
+    selection = reader.selection
     compute.append((snapshot, "selection"))
     for source in selection["sources"]:
         projection = store.get_manifest(source["projection_id"])
@@ -78,9 +82,14 @@ def input_transfer_inventory(store: ArtifactStore, identity: str) -> dict[str, A
         unique: dict[str, Any] = {}
         for manifest, role in pairs:
             payload = manifest.payload(role)
-            entry = unique.setdefault(payload.sha256, {
-                "sha256": payload.sha256, "bytes": payload.size, "references": [],
-            })
+            entry = unique.setdefault(
+                payload.sha256,
+                {
+                    "sha256": payload.sha256,
+                    "bytes": payload.size,
+                    "references": [],
+                },
+            )
             entry["references"].append({"artifact_id": manifest.artifact_id, "role": role})
         return [unique[key] for key in sorted(unique)]
 
@@ -98,7 +107,8 @@ def input_transfer_inventory(store: ArtifactStore, identity: str) -> dict[str, A
     read_set = rows(compute)
     closure = rows((m, p.role) for m in seen.values() for p in m.payloads)
     return {
-        "identity": identity, "snapshot_id": snapshot.artifact_id,
+        "identity": identity,
+        "snapshot_id": snapshot.artifact_id,
         "compute_payloads": read_set,
         "compute_unique_payload_bytes": sum(p["bytes"] for p in read_set),
         "provenance_manifest_ids": sorted(seen),

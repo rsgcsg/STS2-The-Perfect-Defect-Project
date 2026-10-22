@@ -127,12 +127,11 @@ class MStd(nn.Module):
         encoded = (encoded * (~mask).unsqueeze(-1)).sum(1) / (~mask).sum(1).unsqueeze(-1)
         return cast(Tensor, self.text_projection(encoded))
 
-    def forward(self, frame: Frame) -> Tensor:
+    def node_vectors(self, frame: Frame, vectors: Tensor) -> Tensor:
         device = self.ids.weight.device
         entities = frame.entities
         texts = sorted({text for node in entities for _, text in node.text})
         text_rows = {text: i for i, text in enumerate(texts)}
-        vectors = self.text_vectors(texts) if texts else self.ids.weight.new_zeros((0, 192))
         id_pairs = [
             (row, key, value) for row, e in enumerate(entities) for key, value in e.identities
         ]
@@ -180,23 +179,64 @@ class MStd(nn.Module):
         linked = torch.stack(
             [nodes[e.refs].mean(0) if e.refs else torch.zeros_like(nodes[0]) for e in entities]
         )
-        nodes = self.node_norm(nodes + self.relations(linked))
-        scene = self.scene(nodes.unsqueeze(0))
-        if not frame.choices:
-            return self.ids.weight.new_empty((0,))
-        action = self.action_types(
-            torch.tensor([self.index("actions", c["kind"]) for c in frame.choices], device=device)
-        )
-        source = torch.stack(
-            [scene[0, s] if s >= 0 else self.absent_roles[0] for s, _ in frame.roles]
-        )
-        target = torch.stack(
-            [scene[0, t] if t >= 0 else self.absent_roles[1] for _, t in frame.roles]
-        )
-        action = action + self.source_role(source) + self.target_role(target)
-        read, _ = self.cross(action.unsqueeze(0), scene, scene, need_weights=False)
-        current = scene.mean(1).expand(len(action), -1)
-        scores = self.head(torch.cat((action + read[0], current), -1)).flatten()
-        if scores.shape != (len(frame.choices),) or not bool(torch.isfinite(scores).all()):
+        return cast(Tensor, self.node_norm(nodes + self.relations(linked)))
+
+    def forward(self, frame: Frame) -> Tensor:
+        return self.forward_batch([frame])[0]
+
+    def forward_batch(self, frames: list[Frame]) -> list[Tensor]:
+        """Independent scenes with full catalogs; padding is never a public input.
+
+        Texts are deduplicated within each frame exactly as in single-frame scoring,
+        never across frames (each occurrence owns its training dropout).
+        """
+        if not frames:
+            return []
+        device = self.ids.weight.device
+        texts = [
+            sorted({text for node in frame.entities for _, text in node.text}) for frame in frames
+        ]
+        all_texts = [text for row in texts for text in row]
+        vectors = self.text_vectors(all_texts) if all_texts else self.ids.weight.new_zeros((0, 192))
+        nodes = []
+        offset = 0
+        for frame, row in zip(frames, texts, strict=True):
+            nodes.append(self.node_vectors(frame, vectors[offset : offset + len(row)]))
+            offset += len(row)
+        lengths = torch.tensor([len(row) for row in nodes], device=device)
+        packed = nn.utils.rnn.pad_sequence(nodes, batch_first=True)
+        mask = torch.arange(packed.shape[1], device=device)[None, :] >= lengths[:, None]
+        scene = self.scene(packed, src_key_padding_mask=mask)
+        actions = []
+        for batch, frame in enumerate(frames):
+            action = self.action_types(
+                torch.tensor(
+                    [self.index("actions", c["kind"]) for c in frame.choices],
+                    dtype=torch.long,
+                    device=device,
+                )
+            )
+            if frame.choices:
+                source = torch.stack(
+                    [scene[batch, s] if s >= 0 else self.absent_roles[0] for s, _ in frame.roles]
+                )
+                target = torch.stack(
+                    [scene[batch, t] if t >= 0 else self.absent_roles[1] for _, t in frame.roles]
+                )
+                action = action + self.source_role(source) + self.target_role(target)
+            actions.append(action)
+        if not any(frame.choices for frame in frames):
+            return [self.ids.weight.new_empty((0,)) for _ in frames]
+        action = nn.utils.rnn.pad_sequence(actions, batch_first=True)
+        read, _ = self.cross(action, scene, scene, key_padding_mask=mask, need_weights=False)
+        current = (scene * (~mask).unsqueeze(-1)).sum(1) / lengths.unsqueeze(-1)
+        scores = self.head(
+            torch.cat((action + read, current[:, None, :].expand(-1, action.shape[1], -1)), -1)
+        ).squeeze(-1)
+        outputs = [scores[i, : len(frame.choices)] for i, frame in enumerate(frames)]
+        if any(
+            score.shape != (len(frame.choices),)
+            for score, frame in zip(outputs, frames, strict=True)
+        ) or not bool(torch.isfinite(torch.cat(outputs)).all()):
             raise ValueError("non-finite or incomplete model scores")
-        return cast(Tensor, scores)
+        return outputs

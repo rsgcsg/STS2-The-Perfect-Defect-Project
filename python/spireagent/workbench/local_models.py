@@ -87,7 +87,9 @@ NATIVE_ADAPTER = "stpd-native-structured-m2-agent"
 TEACHER_ADAPTER = "stpd-native-public-program-teacher"
 GLOBAL_ADAPTER = "spireagent-global-public-program"
 GLOBAL_MODEL_ADAPTER = "stpd-p1-mstd-agent"
-GLOBAL_ADAPTERS = frozenset({GLOBAL_ADAPTER, GLOBAL_MODEL_ADAPTER})
+GLOBAL_BASELINE_ADAPTER = "stpd-p1-baseline-agent"
+GLOBAL_MODEL_ADAPTERS = frozenset({GLOBAL_MODEL_ADAPTER, GLOBAL_BASELINE_ADAPTER})
+GLOBAL_ADAPTERS = frozenset({GLOBAL_ADAPTER, *GLOBAL_MODEL_ADAPTERS})
 GLOBAL_PROFILE = "p1-global-r1"
 PROGRAM_ADAPTERS = frozenset({TEACHER_ADAPTER, GLOBAL_ADAPTER})
 NATIVE_AGENT_ADAPTERS = frozenset({NATIVE_ADAPTER, TEACHER_ADAPTER})
@@ -635,7 +637,7 @@ class LocalModelService:
                         NATIVE_ADAPTER,
                         TEACHER_ADAPTER,
                         GLOBAL_ADAPTER,
-                        GLOBAL_MODEL_ADAPTER,
+                        *GLOBAL_MODEL_ADAPTERS,
                         PUBLIC_M0_ADAPTER,
                         PUBLIC_M2_ADAPTER,
                     }
@@ -1011,7 +1013,7 @@ class LocalModelService:
             "runtime.validateAgentManifest(manifest);"
             "if(manifest.input.profile==='p1-global-r1'){"
             "if(manifest.input.global?.core_sha256!==runtime.p1CoreIdentity?.().module_digest||"
-            "(manifest.adapter.id!=='stpd-p1-mstd-agent'&&"
+            "(!['stpd-p1-mstd-agent','stpd-p1-baseline-agent'].includes(manifest.adapter.id)&&"
             "runtime.globalDigest(manifest.input.input_spec)!==runtime.globalDigest(runtime.GLOBAL_PROGRAM_INPUT)))"
             "throw Error('global_runtime_core_or_program_input_required');"
             "}else{"
@@ -1281,7 +1283,8 @@ class LocalModelService:
                     if downloaded.kind != "model":
                         continue
                     p1_registration = downloaded.parameters.value().get("schema") in {
-                        "stpd/p1-mstd-trained-model-1", "stpd/p1-mstd-model-1"}
+                        "stpd/p1-mstd-trained-model-1", "stpd/p1-mstd-model-1",
+                        "stpd/p1-baseline-trained-model-1"}
                     export_supported = False
                     try:
                         support = LocalModelExport(self.config).support(downloaded.artifact_id)
@@ -1364,13 +1367,16 @@ class LocalModelService:
                                           binding_root=self.entry_root(entry)))
         elif entry["adapter"] in {"token-v1", "stpd-m2-decision-adapter",
                                  "stpd-s0-structured-adapter", NATIVE_ADAPTER, PUBLIC_M0_ADAPTER,
-                                 PUBLIC_M2_ADAPTER, GLOBAL_MODEL_ADAPTER}:
+                                 PUBLIC_M2_ADAPTER, *GLOBAL_MODEL_ADAPTERS}:
             from spireagent.workbench.local_model_dependencies import (
                 local_models_available,
                 native_models_available,
+                recipe_dependencies_available,
             )
 
-            available = (native_models_available() if entry["adapter"] == NATIVE_ADAPTER
+            available = (recipe_dependencies_available("p1-baselines-N-v1")
+                         if entry["adapter"] == GLOBAL_BASELINE_ADAPTER
+                         else native_models_available() if entry["adapter"] == NATIVE_ADAPTER
                          else local_models_available())
             if available:
                 adapter = policy_support(entry["adapter"])
@@ -2897,7 +2903,7 @@ class LocalModelService:
                     or startup.get("run_id") != run_id):
                 raise BoundaryError("local_model", "owned_stopped_agent_run_required")
             entry = self.selection(startup["agent_manifest_id"])
-            if entry["adapter"] != GLOBAL_MODEL_ADAPTER:
+            if entry["adapter"] not in GLOBAL_MODEL_ADAPTERS:
                 raise BoundaryError("local_model", "global_model_owned_run_required")
             manifest = _object_file(self.entry_path(entry, "manifest"))
             config = _object_file(self.entry_path(entry, "config"))
@@ -2923,7 +2929,7 @@ class LocalModelService:
             expected["global_runtime_directory"] = str(
                 (self._node_modules(entry["id"]) / RUNTIME_PACKAGE / "dist").resolve()
             )
-            if entry["adapter"] == GLOBAL_MODEL_ADAPTER:
+            if entry["adapter"] in GLOBAL_MODEL_ADAPTERS:
                 config = _object_file(self.entry_path(entry, "config"))
                 expected["model_binding"] = {key: config[key] for key in (
                     "package_input_spec", "input_spec", "input_projection")}
@@ -3118,7 +3124,7 @@ class LocalModelService:
                 ):
                     return None, "original_composition_binding_changed"
                 return raw, None
-            if entry["adapter"] == GLOBAL_MODEL_ADAPTER:
+            if entry["adapter"] in GLOBAL_MODEL_ADAPTERS:
                 config_path = self.entry_path(entry, "config")
                 config = _object_file(config_path)
                 metadata = _inside(
@@ -3132,7 +3138,10 @@ class LocalModelService:
                     return None, "original_package_metadata_changed"
                 package = decode_json(raw)
                 if (not isinstance(package, dict)
-                        or package.get("schema") != "stpd/p1-mstd-model-1"
+                        or package.get("schema") != (
+                            "stpd/p1-baseline-model-1"
+                            if entry["adapter"] == GLOBAL_BASELINE_ADAPTER
+                            else "stpd/p1-mstd-model-1")
                         or package.get("package_sha256") != original["artifact"]["sha256"]
                         or package.get("input_spec")
                         != config["package_input_spec"]

@@ -25,7 +25,7 @@ from ..p1.data import digest
 from ..p1.export import export_model, load_model
 from ..p1.formal_training import MStdTrainer
 from ..p1.spec import CHECKPOINT_FRACTIONS, CHECKPOINT_SCHEMA, MODEL_SCHEMA, TARGET_SPEC
-from ..p1.workload import P1Workload, populations_from_snapshot, verify_p1_run
+from ..p1.workload import P1Workload, populations_from_reader, verify_p1_run
 from .checkpoint_codec import decode_checkpoint
 from .reporting import RunReporter
 from .structured_control import AttemptAuthority, ExecutionControl, StructuredExecutionResult
@@ -210,7 +210,9 @@ def execute_p1_run(
     control: ExecutionControl | None = None,
     mode: str = "start",
 ) -> StructuredExecutionResult:
+    started = time.perf_counter()
     workload = verify_p1_run(store, run_id, runtime)
+    verified_seconds = time.perf_counter() - started
     operation_id = workload.run.parameters.value()["operation_id"]
     if mode not in {"start", "resume", "reconcile"} or (mode == "resume") != (resume is not None):
         raise BoundaryError("p1_worker", "explicit_execution_mode_required")
@@ -218,7 +220,6 @@ def execute_p1_run(
         raise BoundaryError("p1_worker", "attempt_identity_required")
     if stop_after is not None and (type(stop_after) is not int or stop_after < 1):
         raise BoundaryError("p1_worker", "invalid_update_pause_budget")
-    started = time.perf_counter()
 
     def guard() -> None:
         if authority is not None:
@@ -241,12 +242,17 @@ def execute_p1_run(
         )
     if mode == "reconcile":
         raise BoundaryError("p1_worker", "no_selected_result_reconcile_only")
+    preparation_started = time.perf_counter()
+    populations = populations_from_reader(workload.reader)
+    population_seconds = time.perf_counter() - preparation_started
+    construction_started = time.perf_counter()
     trainer = MStdTrainer(
-        populations_from_snapshot(store, workload.snapshot.artifact_id),
+        populations,
         workload.vocabulary,
         workload.snapshot.artifact_id,
         workload.config,
     )
+    construction_seconds = time.perf_counter() - construction_started
     checkpoints: dict[str, str] = {}
     best_checkpoint: str | None = None
     checkpoint_id: str | None = None
@@ -286,7 +292,9 @@ def execute_p1_run(
     def save(reason: str, fractions: list[int] | None = None) -> str:
         nonlocal checkpoint_id, best_checkpoint
         guard()
+        checkpoint_started = time.perf_counter()
         raw = trainer.checkpoint()
+        encoded_seconds = time.perf_counter() - checkpoint_started
         payload = store.put_payload(
             "checkpoint", io.BytesIO(raw), "application/vnd.stpd.tensor-tree"
         )
@@ -325,6 +333,12 @@ def execute_p1_run(
             optimizer_updates=trainer.step,
             reason=reason,
             checkpoint_fractions=fractions or [],
+            timing={
+                "encode_seconds": encoded_seconds,
+                "publish_seconds": time.perf_counter() - checkpoint_started - encoded_seconds,
+                "checkpoint_seconds": time.perf_counter() - checkpoint_started,
+                "checkpoint_bytes": len(raw),
+            },
         )
         return checkpoint_id
 
@@ -335,6 +349,12 @@ def execute_p1_run(
         optimizer_updates=trainer.step,
         planned_steps=trainer.planned_steps,
         device=workload.config.device,
+        preparation={
+            "verify_run_seconds": verified_seconds,
+            "population_seconds": population_seconds,
+            "trainer_construction_seconds": construction_seconds,
+            "partition_N": {key: len(value.frames) for key, value in populations.items()},
+        },
     )
     while trainer.phase == "training":
         guard()
@@ -388,11 +408,14 @@ def execute_p1_run(
             time.perf_counter() - started,
         )
     # Training is complete before test is read. Its labels never affect selection.
+    finish_started = time.perf_counter()
     trainer.finish()
+    test_seconds = time.perf_counter() - finish_started
     checkpoint_id = save("last")
     if best_checkpoint is None:
         raise BoundaryError("p1_worker", "dev_selected_checkpoint_required")
     last_manifest = store.get_manifest(checkpoint_id)
+    export_started = time.perf_counter()
     with tempfile.TemporaryDirectory(prefix="p1-model-export-") as temporary:
         checkpoint_path = Path(temporary) / "last.tensor-tree"
         with checkpoint_path.open("wb") as handle:
@@ -454,6 +477,11 @@ def execute_p1_run(
         model_id=model.artifact_id,
         checkpoint_id=checkpoint_id,
         stop_reason=trainer.stop_reason,
+        timing={
+            "test_seconds": test_seconds,
+            "export_publish_seconds": time.perf_counter() - export_started,
+            "worker_seconds": time.perf_counter() - started,
+        },
     )
     result = Manifest(
         "run_result",

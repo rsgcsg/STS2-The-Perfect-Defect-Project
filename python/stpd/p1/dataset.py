@@ -7,10 +7,11 @@ facts, a derived N label and research admission remain different claims.
 
 from __future__ import annotations
 
+import copy
 import io
 import json
 from collections import Counter
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -161,6 +162,7 @@ def inspect_projections(
     *,
     selected_decisions: Mapping[str, Sequence[str]] | None = None,
     input_projection: dict[str, Any] | None = None,
+    on_projection: Callable[[Projection], None] | None = None,
 ) -> dict[str, Any]:
     """Reproduce an exact selection; no implicit latest/union/admission rule."""
     if not projection_ids or len(set(projection_ids)) != len(projection_ids):
@@ -269,6 +271,8 @@ def inspect_projections(
                 "selected_N_before_dedup": source_selected,
             }
         )
+        if on_projection is not None:
+            on_projection(projection)
         del projection
     components = group_run_fingerprints(fingerprints)
     group_ids = {
@@ -290,6 +294,113 @@ def inspect_projections(
                 "keys": sorted({key for run, key in fingerprints if run in component}),
                 "root_run_ids": sorted({s["root_run_id"] for s in members}),
                 "N": sum(p["group_id"] == group_id for p in points.values()),
+                "independence_metadata_complete": all(
+                    s["lineage"].get("seed") is not None
+                    and s["lineage"].get("root_run_id") is not None
+                    and s["lineage"].get("ancestor_root_ids") is not None
+                    for s in members
+                ),
+            }
+        )
+    return {
+        "schema": SNAPSHOT_SCHEMA,
+        "sources": sources,
+        "points": sorted(points.values(), key=lambda p: p["point_id"]),
+        "groups": groups,
+        "unique_N": len(points),
+        "exact_duplicate_N": duplicates,
+        "exclusions": dict(exclusions),
+        "selection": {k: sorted(v) for k, v in sorted(selected.items())},
+        "observed_group_count": len(groups),
+        "independent_group_count": sum(g["N"] > 0 for g in groups),
+        "unknown_independence_groups": sum(
+            g["N"] > 0 and not g["independence_metadata_complete"] for g in groups
+        ),
+        "input_projection": spec,
+        "target_spec": TARGET_SPEC,
+        "use_scope": "engineering_only_not_research_admission",
+    }
+
+
+def merge_projection_inspections(
+    inspections: Sequence[dict[str, Any]],
+    *,
+    selected_decisions: Mapping[str, Sequence[str]] | None = None,
+) -> dict[str, Any]:
+    """Combine verified per-projection indexes without decoding immutable payloads.
+
+    This is a disposable preparation index. Publication and training readers still
+    reproduce the selection from original Store parents, independently of a cache.
+    """
+    if not inspections:
+        raise BoundaryError("p1_snapshot", "explicit_unique_projections_required")
+    spec = inspections[0]["input_projection"]
+    sources: list[dict[str, Any]] = []
+    fingerprints: list[tuple[str, str]] = []
+    selected = dict(selected_decisions or {})
+    points: dict[str, dict[str, Any]] = {}
+    exclusions: Counter[str] = Counter()
+    duplicates = 0
+    ordered = sorted(inspections, key=lambda x: x["sources"][0]["projection_id"])
+    projection_ids = [x["sources"][0]["projection_id"] for x in ordered]
+    if len(set(projection_ids)) != len(projection_ids) or set(selected) - set(projection_ids):
+        raise BoundaryError("p1_snapshot", "explicit_unique_projections_required")
+    for value in ordered:
+        if len(value["sources"]) != 1 or value["input_projection"] != spec or value["selection"]:
+            raise BoundaryError("p1_snapshot", "complete_single_projection_inspection_required")
+        source = dict(value["sources"][0])
+        identity = source["projection_id"]
+        wanted = None if identity not in selected else set(selected[identity])
+        if wanted is not None and len(wanted) != len(selected[identity]):
+            raise BoundaryError("p1_snapshot", "duplicate_selection_key")
+        available = {p["source_decision_id"] for p in value["points"]}
+        if wanted is not None and not wanted <= available:
+            raise BoundaryError("p1_snapshot", "selected_N_not_present")
+        for group in value["groups"]:
+            fingerprints.extend(
+                (root, key) for root in group["root_run_ids"] for key in group["keys"]
+            )
+        exclusions.update(value["exclusions"])
+        count = 0
+        for original in value["points"]:
+            refs = [
+                {k: v for k, v in original.items() if k not in {"aliases", "group_id", "point_id"}},
+                *original["aliases"],
+            ]
+            decision = original["source_decision_id"]
+            if wanted is not None and decision not in wanted:
+                exclusions["explicit_selection"] += len(refs)
+                continue
+            count += len(refs)
+            for ref in refs:
+                if decision in points:
+                    if points[decision]["N_fact_sha256"] != ref["N_fact_sha256"]:
+                        raise BoundaryError(
+                            "p1_snapshot", "overlapping_projection_N_conflict_select_one"
+                        )
+                    points[decision]["aliases"].append(dict(ref))
+                    duplicates += 1
+                else:
+                    points[decision] = {**ref, "aliases": []}
+        source["selected_N_before_dedup"] = count
+        sources.append(source)
+    components = group_run_fingerprints(fingerprints)
+    group_ids = {root: digest(json_bytes(group)) for group in components for root in group}
+    for decision, point in points.items():
+        point["group_id"] = group_ids[point["root_run_id"]]
+        point["point_id"] = digest(
+            json_bytes({"native_decision": decision, "N_fact_sha256": point["N_fact_sha256"]})
+        )
+    groups = []
+    for component in components:
+        identity = group_ids[component[0]]
+        members = [s for s in sources if s["root_run_id"] in component]
+        groups.append(
+            {
+                "group_id": identity,
+                "keys": sorted({key for root, key in fingerprints if root in component}),
+                "root_run_ids": sorted({s["root_run_id"] for s in members}),
+                "N": sum(p["group_id"] == identity for p in points.values()),
                 "independence_metadata_complete": all(
                     s["lineage"].get("seed") is not None
                     and s["lineage"].get("root_run_id") is not None
@@ -427,11 +538,36 @@ def load_snapshot(store: ArtifactStore, snapshot_id: str) -> tuple[Manifest, dic
     return manifest, value
 
 
+class SnapshotReader:
+    """One operation's verified selection, bound to its actual Store instance.
+
+    No external verified tuple or persisted trust token is accepted. Reusing this
+    reader avoids reproducing the snapshot twice when a consumer needs both its
+    metadata and points. Each point iteration still reads/hashes source payloads.
+    """
+
+    def __init__(self, store: ArtifactStore, snapshot_id: str) -> None:
+        self._store = store
+        self.manifest, self._selection = load_snapshot(store, snapshot_id)
+
+    @property
+    def selection(self) -> dict[str, Any]:
+        return copy.deepcopy(self._selection)
+
+    def iter_points(self) -> Iterator[tuple[dict[str, Any], dict[str, Any]]]:
+        return _iter_selected_points(self._store, self._selection)
+
+
 def iter_snapshot_points(
     store: ArtifactStore, snapshot_id: str
 ) -> Iterator[tuple[dict[str, Any], dict[str, Any]]]:
     """Read and verify one immutable projection at a time, by its exact Store ID."""
-    _, snapshot = load_snapshot(store, snapshot_id)
+    yield from SnapshotReader(store, snapshot_id).iter_points()
+
+
+def _iter_selected_points(
+    store: ArtifactStore, snapshot: dict[str, Any],
+) -> Iterator[tuple[dict[str, Any], dict[str, Any]]]:
     selected: dict[str, dict[tuple[str, int], dict[str, Any]]] = {}
     for ref in snapshot["points"]:
         selected.setdefault(ref["projection_id"], {})[(ref["segment_id"], ref["point_index"])] = ref
@@ -455,6 +591,6 @@ def iter_snapshot_points(
             ):
                 raise BoundaryError("p1_snapshot", "source_N_selection_drift")
             found.add(key)
-            yield ref, point["observation"]
+            yield copy.deepcopy(ref), point["observation"]
         if found != set(selected[artifact_id]):
             raise BoundaryError("p1_snapshot", "selected_point_missing")

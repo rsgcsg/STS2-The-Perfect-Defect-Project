@@ -9,6 +9,8 @@ from __future__ import annotations
 import math
 import os
 import platform
+import time
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -143,49 +145,85 @@ class MStdTrainer:
         return self.config.learning_rate * (1 + math.cos(math.pi * progress)) / 2
 
     @staticmethod
+    def batches(
+        frames: tuple[Frame, ...], indices: list[int], model: MStd | None = None
+    ) -> Iterator[list[int]]:
+        """Bound temporary padded attention, without changing the optimizer batch.
+
+        A large single observation is still processed whole. Frame order is kept;
+        no length sorting changes the sampler or which examples share an update.
+        """
+        group: list[int] = []
+        maximum = text_count = text_width = 0
+        for index in indices:
+            size = len(frames[index].entities)
+            texts = {text for node in frames[index].entities for _, text in node.text}
+            width = max((len(model.tokenize(text)[0]) for text in texts), default=0) if model else 0
+            padded = max(maximum, size)
+            text_area = (text_count + len(texts)) * max(text_width, width) ** 2
+            if group and (
+                len(group) == 8 or padded * padded * (len(group) + 1) > 262144 or text_area > 262144
+            ):
+                yield group
+                group, maximum, text_count, text_width = [], 0, 0, 0
+            group.append(index)
+            maximum = max(maximum, size)
+            text_count += len(texts)
+            text_width = max(text_width, width)
+        if group:
+            yield group
+
+    @staticmethod
     def evaluate(model: MStd, population: Population) -> dict[str, Any]:
         model.eval()
         device = model.ids.weight.device
-        losses: list[float] = []
-        correct = multi = multi_correct = 0
+        rows = []
         with torch.inference_mode():
-            for frame, target in zip(population.frames, population.targets, strict=True):
-                scores = model(frame)
-                losses.append(
-                    float(
-                        F.cross_entropy(scores.unsqueeze(0), torch.tensor([target], device=device))
-                    )
+            indices_in_order = list(range(len(population.frames)))
+            for indices in MStdTrainer.batches(population.frames, indices_in_order, model):
+                scores = model.forward_batch([population.frames[i] for i in indices])
+                packed = torch.nn.utils.rnn.pad_sequence(
+                    scores, batch_first=True, padding_value=-torch.inf
                 )
-                right = int(scores.argmax()) == target
-                correct += right
-                multi += len(frame.choices) > 1
-                multi_correct += right and len(frame.choices) > 1
+                targets = torch.tensor([population.targets[i] for i in indices], device=device)
+                losses = F.cross_entropy(packed, targets, reduction="none")
+                correct = packed.argmax(1) == targets
+                multi = torch.tensor(
+                    [len(population.frames[i].choices) > 1 for i in indices], device=device
+                )
+                rows.append(torch.stack((losses, correct, multi, correct & multi), dim=1))
+            # One host read for the full evaluation, preserving original loss sum order.
+            values = torch.cat(rows).cpu().tolist() if rows else []
         return {
-            "N": len(losses),
-            "mean_N_loss": sum(losses) / len(losses) if losses else None,
-            "correct": correct,
-            "multi_N": multi,
-            "multi_correct": multi_correct,
+            "N": len(values),
+            "mean_N_loss": sum(row[0] for row in values) / len(values) if values else None,
+            "correct": int(sum(row[1] for row in values)),
+            "multi_N": int(sum(row[2] for row in values)),
+            "multi_correct": int(sum(row[3] for row in values)),
         }
 
     @training_scope
     def advance(self) -> dict[str, Any]:
         if self.phase != "training":
             raise BoundaryError("p1_training", "training_already_complete")
+        started = time.perf_counter()
         train = self.populations["train"]
         indices = self.order[self.cursor : self.cursor + self.config.batch_size]
         lr = self._lr()
-        for group in self.optimizer.param_groups:
-            group["lr"] = lr
+        for parameter_group in self.optimizer.param_groups:
+            parameter_group["lr"] = lr
         self.optimizer.zero_grad(set_to_none=True)
         self.model.train()
-        targets = torch.tensor([train.targets[i] for i in indices], device=self.device)
-        losses = []
-        for offset, i in enumerate(indices):
-            scores = self.model(train.frames[i])
-            loss = F.cross_entropy(scores.unsqueeze(0), targets[offset : offset + 1])
-            (loss / len(indices)).backward()
-            losses.append(loss.detach())
+        losses: list[torch.Tensor] = []
+        for group in self.batches(train.frames, indices, self.model):
+            scores = self.model.forward_batch([train.frames[i] for i in group])
+            packed = torch.nn.utils.rnn.pad_sequence(
+                scores, batch_first=True, padding_value=-torch.inf
+            )
+            targets = torch.tensor([train.targets[i] for i in group], device=self.device)
+            loss = F.cross_entropy(packed, targets, reduction="none")
+            (loss.sum() / len(indices)).backward()
+            losses.extend(loss.detach().unbind())
         # One device-to-host read per optimizer batch. Keep the original Python
         # summation order and reject invalid loss before any parameter update.
         loss_values = torch.stack(losses).cpu().tolist()
@@ -197,6 +235,7 @@ class MStdTrainer:
         if not math.isfinite(norm):
             raise BoundaryError("p1_training", "non_finite_gradient")
         self.optimizer.step()
+        train_seconds = time.perf_counter() - started
         self.step += 1
         self.cursor += len(indices)
         progress: dict[str, Any] = {
@@ -251,6 +290,13 @@ class MStdTrainer:
         progress["best_improved"] = improved
         progress["checkpoint_fractions"] = fractions
         progress["phase"] = self.phase
+        # Wall measurements are events, never checkpoint state or selection inputs.
+        progress["timing"] = {
+            "train_seconds": train_seconds,
+            "dev_and_selection_seconds": time.perf_counter() - started - train_seconds,
+            "advance_seconds": time.perf_counter() - started,
+            "train_N_per_second": len(indices) / train_seconds,
+        }
         return progress
 
     def _select_best(self, loss: float, epoch: int) -> bool:

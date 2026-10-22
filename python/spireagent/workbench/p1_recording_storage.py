@@ -16,13 +16,25 @@ from uuid import uuid4
 from sts2_platform_evidence import DirectoryTransferManifest
 from sts2_platform_evidence.collection_tool import CollectionTool
 
-from spireagent.artifact_contracts import Manifest
-from spireagent.json_boundary import BoundaryError, digest, json_bytes
+from spireagent.artifact_contracts import Manifest, Payload
+from spireagent.json_boundary import (
+    BoundaryError,
+    array,
+    decode_json,
+    digest,
+    json_bytes,
+    object_fields,
+)
 from spireagent.storage.blobs import StoreError
 from spireagent.storage.config import open_peer as open_peer
 from spireagent.storage.config import peer_binding as peer_binding
 from spireagent.storage.local import LocalBlobStore
-from spireagent.storage.store import ManifestArtifactStore, copy_artifact
+from spireagent.storage.store import (
+    CHUNK_BYTES,
+    PAYLOAD_SCHEMA,
+    ManifestArtifactStore,
+    copy_artifact,
+)
 
 from .p1_recording_store import (
     BUNDLE_SCHEMA,
@@ -232,6 +244,46 @@ def require_workspace_space(
     }
 
 
+def _missing_local_payload(payload: Payload, target: ManifestArtifactStore) -> int:
+    """Capacity estimate only; the subsequent transfer still verifies every byte.
+
+    Read the small local index and stat chunks rather than hashing large ancestry
+    again just to decide whether space is available. A missing index reserves the
+    whole payload. Corrupt bytes are never accepted or repaired by this estimate.
+    """
+    if not isinstance(target.blobs, LocalBlobStore):
+        return payload.size
+    try:
+        raw = target.blobs.get(f"payload-indexes/v1/{payload.sha256}.json")
+    except StoreError as error:
+        if error.code == "object_not_found":
+            return payload.size
+        raise
+    index = object_fields(decode_json(raw), {"schema", "sha256", "size", "chunks"}, "payload")
+    if (index["schema"] != PAYLOAD_SCHEMA or index["sha256"] != payload.sha256
+            or index["size"] != payload.size or raw != json_bytes(index)):
+        raise StoreError("payload_index_mismatch")
+    chunks = array(index["chunks"], "payload.chunks")
+    if len(chunks) != (payload.size + CHUNK_BYTES - 1) // CHUNK_BYTES:
+        raise StoreError("payload_integrity_failure")
+    missing = 0
+    for position, item in enumerate(chunks):
+        chunk = object_fields(item, {"sha256", "size"}, "payload.chunk")
+        key = digest(chunk["sha256"], "payload.chunk")
+        expected = min(CHUNK_BYTES, payload.size - position * CHUNK_BYTES)
+        if type(chunk["size"]) is not int or chunk["size"] != expected:
+            raise StoreError("invalid_chunk_size")
+        path = target.blobs._path(f"objects/sha256/{key}")
+        try:
+            size = path.stat().st_size
+        except FileNotFoundError:
+            missing += expected
+        else:
+            if size != expected:
+                raise StoreError("payload_chunk_integrity_failure")
+    return missing
+
+
 def storage_budget(
     source: ManifestArtifactStore,
     artifact_id: str,
@@ -239,6 +291,7 @@ def storage_budget(
     scratch: Path,
     destination: Path | None,
     reserve_bytes: int = 512 * 1024**2,
+    destination_store: ManifestArtifactStore | None = None,
 ) -> dict[str, Any]:
     """Budget the actual lineage closure, one copy temporary and compressed readback."""
     if reserve_bytes < 0:
@@ -254,9 +307,19 @@ def storage_budget(
         manifest = source.get_manifest(identity)
         pending.extend(p.artifact_id for p in manifest.parents)
         for payload in manifest.payloads:
-            payloads[payload.sha256] = payload.size
-    scratch_bytes = max(payloads.values(), default=0)
-    persistent_bytes = sum(payloads.values()) if destination is not None else 0
+            payloads[payload.sha256] = payload
+    if destination_store is not None:
+        if (destination is None or not isinstance(destination_store.blobs, LocalBlobStore)
+                or destination_store.blobs.root != destination.resolve()):
+            raise BoundaryError("p1_storage", "destination_store_binding_mismatch")
+        missing = {key: _missing_local_payload(payload, destination_store)
+                   for key, payload in payloads.items()}
+        scratch_bytes = max((payloads[key].size for key, count in missing.items() if count),
+                            default=0)
+        persistent_bytes = sum(missing.values())
+    else:
+        scratch_bytes = max((payload.size for payload in payloads.values()), default=0)
+        persistent_bytes = sum(payload.size for payload in payloads.values()) if destination else 0
     return {
         **require_workspace_space(
             scratch,
@@ -266,6 +329,8 @@ def storage_budget(
             reserve_bytes=reserve_bytes,
         ),
         "lineage_manifests": len(seen),
+        "destination_estimate": ("missing_local_chunks_by_stat_then_transfer_verifies_bytes"
+                                 if destination_store is not None else "full_closure_conservative"),
     }
 
 

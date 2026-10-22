@@ -991,6 +991,96 @@ structured adapters without a public installation builder retain their explicit
 
 ## Non-GUI training control
 
+### P1 增量准备与固定成员
+
+普通入口是同一个已运行 Application 的 `project p1-data`，库入口是
+`spireagent.workbench.p1_data_preparation.prepare_p1_data` / `freeze_p1_data`。
+CLI/API/库都调用现有 Store 和 Curation owner，不创建第二用途账。先准备，再读取
+`ready_to_freeze`、`conflicts` 和 `allocation.blockers`：
+
+```sh
+python -m spireagent.workbench project p1-data --config PROJECT --action prepare --input filters.json
+python -m spireagent.workbench project p1-data --config PROJECT --action freeze --input selection.json
+```
+
+`filters.json` 可为 `{}`；可选 `revision`（默认 r1.5）、`declared_origins`、
+`projection_ids`、`projection_names`、`tool_release_ids` 是明确选择，不自动挑最大版本。
+另可给 `selected_decisions`、`split_salt`、`cache` 和 `allocation_policy`。
+默认 `preserve_existing` 保留已有用途和永久曝光，新录进入下一输入；unknown 首次组
+不会自动成为独立 holdout。显式 `observed_groups_engineering` 才允许按已观察组做工程
+草稿，unknown 和 `research_admission=not_evaluated` 仍保留。r1.4 只供历史盘点。
+
+准备只写可重建的私有索引缓存，不 reserve/use。缓存命中仍由正常 Store 流式校验
+原投影字节与 lease，只省 JSON/Input 重解码；损坏、缺失和来源冲突不会变成命中通过。
+`classification` 是逐投影完整点分布，可能包含别名重复和未选点；唯一 N 看 `index`，
+不能把前者当去重后样本分布。新增关闭来源沿现录制维护/import/derive 进入正常 Store，
+再运行 prepare；此命令不会停止录制或自行派生不存在的投影。
+
+冻结请求为 `{"selection": PREPARE_SELECTION, "reserve": false}`，其中
+`PREPARE_SELECTION` 是 prepare 的完整 `selection` 对象。先处理 blocker；需要时明确
+设 `reserve: true`，才沿原 ledger 认领用途。输出 `snapshot_id` 是不可变成员/Input 版本；
+以后新增录制或 prepare 不会改变已在训 Run。冻结后由正式 reader 重载，不授 Human、
+独立数据或研究资格。网络响应未知时不自动重投冻结；先按所选成员查已发布 Snapshot。
+数据 CLI 完整响应限16MiB，准备/冻结请求限1MiB；`local_response_too_large` 明确表示
+响应超过客户端边界，冻结时同样先查原 Snapshot，不能据此自动重投。
+
+### 同一训练入口的三个对照
+
+`p1-baselines-N-v1` 以 `config.algorithm` 选 `random`、`frequency` 或 `linear`，
+仍用下列 TrainingRequest、同一 LocalTrainingService、私有 child、Run/Store 和注册。
+随机不拟合，频率只数 TRAIN；两者 `optimizer_updates=0`，`fit_steps` 单列工作量。
+线性是 TRAIN 手特征/L2，DEV 选优，TEST 仅最终；类别只从 TRAIN 拟合，缺值有显式标记。
+G3 是无交叉项的相加线性模型；同页 scene/player 全局常量在候选 softmax 比较中抵消，
+不能据此声称模型会按这些全局状态改变候选之间的相对偏好。
+默认 CPU 2 线程，seed1、batch64；完整配置先读 `training capabilities` 的该 recipe。
+M-std 仍是普通 N-only，具体更新上限随固定 TRAIN 计算。
+
+对照 Model 走原 `project model --action download|registration-status|register`；注册后
+完整 Agent 仍由现 Runtime 管理预算、Stop 和 unknown。对照随机数流只在新 unit ACK
+后推进，重复 unit/next 复用原选择；新会话按包内 seed 重置，`state_recovery=none`
+不支持进程重启续接同一 RNG 流。安装/注册不证明真实游戏或策略质量。
+
+| 训练/使用场景 | 更换与复用 |
+|---|---|
+| 新增录制 | prepare 并冻结下一版 Snapshot；旧 Run 的成员和 Input 不动。 |
+| 同数据换算法或超参 | 复用固定 Snapshot 和原用途约束，选择新 recipe/config 创建新 Run。 |
+| 换 CPU/GPU/provider | 复用数据与业务控制；更换精确 target/backend 并重验 source、设备与结果边界。 |
+| 只消费已有 Model | 按现入口 register/load/evaluate；无需重新准备数据或训练。 |
+| 改 P1 语义 | 先回协议 owner 确定语义，再更新受影响投影、Input 和消费者。 |
+
+### 四 Agent 后续评估的现有边界
+
+离线比较先固定同一 Snapshot、成员/Input 与 TRAIN/DEV/TEST 用途，再分别完成四个
+Run，核各自 result→Model→evaluation 的原件绑定。随机/频率/线性原 evaluation
+(`stpd/p1-baseline-N-evaluation-1`) 记录 DEV/最终 TEST 的 `N`、
+`mean_score_softmax_N_loss`、`expected_greedy_correct` 和 tie 语义；随机的正确数为
+均匀选择期望，频率/线性按并列最大值均匀分配，不是一次实采准确率。M-std 原
+`stpd/p1-N-evaluation-1` 记录 best DEV loss 与最终 TEST 的 `N`、`mean_N_loss`、
+`correct`、`multi_N`、`multi_correct`。G3/M-std 只用 DEV 选优；TEST 最终一次读取，
+不能看过 TEST 再调参并继续称独立留出。原件由 `verify_baseline_result` /
+`verify_p1_result` 校验；空 TEST 的 loss 为 null，不能当零误差。
+
+当前普通离线详情沿同一 summary API 支持 M-std 与 baseline 的 DEV 摘要；baseline
+核原 Model/Run/Input/Snapshot metadata 绑定、公开 DEV N、有限指标及并列语义，
+不重解权重或完整来源。TEST 保持 sealed，没有一个受支持的 CLI 一次输出四 Agent
+同 TEST 对照表。
+现有原件提供描述性统计，未完成统一 tie/指标口径的四方评分、独立 lineage 资格或
+策略优劣结论。后续正式比较须先确定 TEST 开封用途与比较口径，再由原评估 owner
+补齐所缺消费者；无需另造训练链，也不能以 Managed evaluator 代替 P1 评估。
+
+真实 Reference 串行入口是 `python tools/evaluate_reference_suite.py --help`（从
+`python/`，调用已运行 Application）。它要求精确 `--config`、`--selection`、
+`--manifest stpd/evaluation/suites/ref-20.json` 及原 SHA、新 `--run-dir`，并明确
+`--preparation-seconds`、`--episode-seconds`、`--cleanup-seconds`、`--suite-seconds`、
+`--max-episodes` 和 `--run-profile short|extended`。manifest 固定 v0.111.0、
+Defect A0、Reference 20 seeds；不能改标当前游戏版本。每个 selection 的精确 Runtime/
+installed tuple/native readiness 均须先满足，预算由原请求绑定；同 seeds、预算、版本、
+输入/策略配置和运行条件才可作配对。dispatcher 不保证所选 P1 候选兼容该旧 manifest。
+其 report 在执行前保留全部20项，记录未开始、cleanup unknown、原生 win/loss、
+task completed/unproved/unknown、预算截断和 stop reason；技术失败和未派发项不得
+从分母删除，budget exhausted 不能算自然输赢。一个调用只评一个 selection，
+没有四 Agent 自动配对、完整胜率统计或跨 Host 等价资格。本轮未执行 Reference 游戏。
+
 The supported entry is `python -m spireagent.workbench training --help` from the
 Python environment. It calls the already running Application and its same
 `LocalTrainingService`; it does not start a second service or open a page.
@@ -1090,7 +1180,7 @@ Curation DB. A nonempty `hub_url` is rejected by this co-located deployment, nev
 silently bypassed. Production JSON has no fake-provider/import hook.
 
 Remote `prepare` and `start` take the same JSON: `intent_id`, `source_id` (reserved
-engineering P1 snapshot), full MStdConfig `config`, `max_seconds`, and `stop_after`
+engineering P1 snapshot), full recipe `config`, `max_seconds`, and `stop_after`
 (positive step or null). Prepare records the existing LocalLedger training use
 before vocabulary fitting, creates the original immutable Run, and uses the original
 `copy_artifact` to transfer its entire parent closure. It independently reopens the
@@ -1099,6 +1189,14 @@ all selected N points/catalogs. It returns prepared facts without enqueuing or
 submitting compute. A failed transfer does not roll back the truthful vocabulary
 exposure/use. Source/lock identity and the explicit target/device must match;
 there is no CPU fallback.
+
+Optional `recipe_id` selects `p1-mstd-N-v1` (the historical request default) or
+`p1-baselines-N-v1`. Baseline config is the full BaselineConfig and requires target
+`gpu: "none"`, CPU device; M-std requires the exact explicit CPU/CUDA target match.
+Both families use the same preparation, ComputeRequest, Scheduler, typed checkpoint
+and receipt path. Local recipe capability's `remote_execution: false` describes
+LocalTrainingService's placement; this explicit remote selection advertises its
+own available recipe/device map and requires the configured deployment.
 
 Start reuses that preparation then enqueues the Run. Scheduler reads inputs and
 validates results from the same peer. Its use callback still addresses the original
@@ -1115,6 +1213,15 @@ original local Store for the existing Model consumer. Unknown submission never
 retries. Live pause is unsupported: choose `stop_after` before submission. Resume
 additionally takes a new budgeted `intent_id`, exact paused `checkpoint_id`,
 `max_seconds` and `stop_after`, while retaining the same immutable Run.
+
+Before result reception, the owner checks actual filesystem free space and estimates
+only absent local chunk bytes plus the largest payload that needs temporary materialization.
+It reads small indexes/stats present chunks; this estimate is not integrity evidence.
+The original transfer still hashes present bytes and rejects corruption. A partially absent
+payload needs its full temporary file, even when only a small final chunk is new.
+Different scratch/destination filesystems are checked separately. An insufficient-space
+response keeps the original selected result and handle; free space through a separately
+authorized normal cache operation, then explicitly reconcile the same job.
 
 Remote prepare/start/reconcile use a 300-second transport wait by default; the
 caller can set `--wait-seconds` (1–86400). Other commands retain 15 seconds. Complete
@@ -1140,6 +1247,7 @@ job/Run/attempt. The existing non-GUI client exposes the same read:
 
 ```sh
 python -m spireagent.workbench training progress --config PROJECT --execution remote --operation-id JOB
+python -m spireagent.workbench training progress --config PROJECT --execution remote --operation-id JOB --after-step CURSOR
 ```
 
 `status` stays local and does not wait for a provider or peer request. `progress`
@@ -1151,6 +1259,32 @@ index entry against its published manifest. Auditors keep fresh-read behavior.
 A separate progress-read lock rejects overlapping progress reads without blocking
 local status or starting duplicate network work. The service does not claim live provider
 state from a cached/persisted event.
+
+`CURSOR` is the prior `through_step`; it only filters returned events and never advances
+training. New M-std worker events include preparation wall times, train/DEV/advance times,
+N/s, checkpoint bytes/encode/publish times and final export/test wall times. These are
+host wall observations, with no claim of GPU kernel timing or universal throughput.
+
+### 持续运行、固定资源与恢复
+
+关闭页面/CLI 后，Application/Scheduler 必须继续运行才能提交、轮询、选择和接收结果。
+Mac 睡眠、关机或断网不会把它变成常驻云控制器：已接受的 Modal 调用可能继续执行至
+自身 timeout；本机状态和结果接收可能停滞。恢复网络/原 Application 后先查原 job，
+由原持久 handle reconcile；无 handle 的 unknown 先查 provider 原请求，绝不自动重投。
+若进程还活着而 scheduler 显示错误，先处理具体错误，不另开同 DB 的 writer。
+观察配置 `observation_only: true` 永远不获取 writer 权限；执行用独立 state/config/Ops、
+准确 target，不热改日常录制配置或旧 Run。目标 source/lock/image 任一变化须新候选。
+
+本机并发重任务一个；数值 CPU 2 线程（对照可明确设1），不使用 MPS 冒充 CUDA。
+本机同训操作 `scratch_bytes` 默认512MiB、允许16MiB–1GiB，wall1–3600秒；恢复沿用
+原累计 wall/scratch/attempt 预算，不表示本机美元收费。它是检测阈值而非磁盘或RAM硬预留。
+prepare/copy 另由实际闭包空间检查负责，
+默认至少保512MiB空闲，scratch为该文件系统上最大待临时payload。已有缓存按正常
+cache-configure/trim 管理，不删除活跃原件/模型；R2保长期原件与恢复材料。
+远端 target 冻结 CPU/memory/timeout，当前短验配置使用 CPU2/8192MiB、单容器、
+zero retries；选 GPU 时明确L4及CUDA设备。正式任务应按本批输入、checkpoint和实际
+profile另定限额，不能借短验配置宣称所有规模都能容纳。每次恢复仍占原累计预算，
+Ops `reserved_units` 是管理额度，美元实账/当前计价须另核，不把它冒充美元计费硬限。
 
 To observe an older producer's Run from a newer installed Application, set the
 existing `remote_compute.observation_only` field to `true`. This explicitly leaves

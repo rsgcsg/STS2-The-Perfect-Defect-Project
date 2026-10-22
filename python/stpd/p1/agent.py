@@ -3,14 +3,13 @@
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 from pathlib import Path
 from typing import Any, TextIO
 
 import torch
 
-from .data import digest, json_bytes
+from .data import digest
 from .export import adapter_identity, input_spec, load_model
 from .input import INPUT_SPEC, project
 from .model import MStd
@@ -67,123 +66,20 @@ def serve(
     destination: TextIO = sys.stdout,
 ) -> None:
     config, manifest, model, _ = installation(config_path, manifest_path, owner)
-    unit = consumption = committed = pending = None
-    version = 0
+    from .agent_driver import serve_session
 
-    def send(value):
-        destination.write(
-            json.dumps(value, ensure_ascii=False, allow_nan=False, separators=(",", ":")) + "\n"
-        )
-        destination.flush()
+    def score(observation):
+        frame = project(observation, input_projection=config["input_projection"])
+        with torch.inference_mode():
+            return model(frame).tolist() if frame.choices else []
 
-    def reply(parent, kind, key, value):
-        send(
-            {
-                "schema": SCHEMA,
-                "message_type": kind,
-                "session_id": parent["session_id"],
-                "recovery_epoch": parent["recovery_epoch"],
-                "request_id": parent["request_id"],
-                key: value,
-            }
-        )
-
-    send({"schema": SCHEMA, "message_type": "ready", "adapter": manifest["adapter"]})
-    for line in source:
-        message = json.loads(line)
-        if message["schema"] != SCHEMA:
-            raise ValueError("P1 Agent schema mismatch")
-        kind = message["message_type"]
-        if kind == "consume":
-            value = message["input"]
-            if pending is not None or value["previous_consumption_id"] != consumption:
-                raise ValueError("P1 Agent consumption continuity mismatch")
-            if (
-                value["input_spec"] != manifest["input"]["input_spec"]
-                or value["catalog"] != value["observation"]["catalog"]
-            ):
-                raise ValueError("P1 Agent needs its bound InputSpec and full current catalog")
-            frame = project(value["observation"], input_projection=config["input_projection"])
-            with torch.inference_mode():
-                scores = model(frame).tolist() if frame.choices else []
-            advanced = value["consumption_unit"]["id"] != unit
-            next_version = version + int(advanced)
-            next_consumption = (
-                "mstd-"
-                + digest(
-                    json_bytes(
-                        {
-                            "unit": value["consumption_unit"],
-                            "version": next_version,
-                            "artifact": manifest["artifact"]["sha256"],
-                        }
-                    )
-                )
-                if advanced
-                else consumption
-            )
-            pending = (message["request_id"], value, scores, next_version, next_consumption)
-            reply(
-                message,
-                "consumed",
-                "completion",
-                {
-                    "acquisition_id": value["acquisition_id"],
-                    "input_spec": value["input_spec"],
-                    "continuity_token": value["continuity_token"],
-                    "previous_consumption_id": consumption,
-                    "consumption_id": next_consumption,
-                    "state_version": next_version,
-                    "advanced": advanced,
-                },
-            )
-        elif kind == "consume_ack":
-            if (
-                pending is None
-                or message["request_id"] != pending[0]
-                or message["completion"]["consumption_id"] != pending[4]
-            ):
-                raise ValueError("P1 Agent ACK does not bind pending consumption")
-            _, value, scores, version, consumption = pending
-            committed = value, scores
-            unit = value["consumption_unit"]["id"]
-            pending = None
-        elif kind == "next":
-            if committed is None or pending is not None:
-                raise ValueError("P1 Agent next requires acknowledged input")
-            value, scores = committed
-            directive: dict[str, Any]
-            if value["observation"]["status"] == "terminal":
-                directive = {"type": "close", "reason": "native_terminal_observed"}
-            else:
-                if not scores:
-                    raise ValueError("nonterminal P1 observation has no legal choices")
-                selected = max(range(len(scores)), key=scores.__getitem__)
-                directive = {
-                    "type": "act",
-                    "basis_acquisition_id": value["acquisition_id"],
-                    "selection": {
-                        "kind": "handle",
-                        "action_id": value["catalog"][selected]["choice_id"],
-                    },
-                    "scores": {
-                        "catalog_digest": digest(json_bytes(value["catalog"])),
-                        "values": scores,
-                    },
-                }
-            reply(
-                message,
-                "directive",
-                "output",
-                {
-                    "continuity_token": message["input"]["continuity_token"],
-                    "consumption_id": consumption,
-                    "state_version": version,
-                    "directive": directive,
-                },
-            )
-        else:
-            raise ValueError("unsupported P1 Agent message")
+    serve_session(
+        manifest,
+        score,
+        lambda scores: max(range(len(scores)), key=scores.__getitem__),
+        source,
+        destination,
+    )
 
 
 def main() -> None:
