@@ -1259,6 +1259,13 @@ environment. No shell source/eval or dotenv interpolation is used. No secret bel
 request, command arguments or transport receipts. Configure the existing local
 OpenSSH `-F` file with the verified school host alias/ProxyJump and host keys.
 The provider forces BatchMode, strict host-key checking and one connection attempt.
+It starts the fixed helper with `/usr/bin/env CUBLAS_WORKSPACE_CONFIG=:4096:8`
+before the interpreter or Torch is imported, matching the existing worker image.
+The detached supervisor and original worker inherit that same fixed setting;
+GPU target preflight rejects missing or different values. It is a source-locked
+deployment setting, not a storage dotenv key or a configurable shell/script hook.
+The worker still records workspace in its original checkpoint execution identity
+and independently rejects an incompatible restore.
 
 The target JSON is a closed `spireagent/ssh-target-1` object:
 
