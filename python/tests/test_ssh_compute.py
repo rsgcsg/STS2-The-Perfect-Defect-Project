@@ -101,7 +101,9 @@ sys.stdout.buffer.write(json_bytes(receipt.to_dict()))
             threads.append(thread)
             return SimpleNamespace(pid=0)
         assert argv[1:3] == ["-m", "stpd.cloud_jobs"]
-        assert argv[-2:] == ["--store", "s3"]
+        invocation = json.loads((Path(argv[4]).parent / "invocation.json").read_bytes())
+        assert argv[-4:] == ["--store", "s3", "--wall-seconds",
+                             str(invocation["target"]["timeout_seconds"])]
         kwargs["cwd"] = Path(__file__).parents[1]
         child = original_popen([sys.executable, "-c", worker, argv[4]], **kwargs)
         children.append(child)

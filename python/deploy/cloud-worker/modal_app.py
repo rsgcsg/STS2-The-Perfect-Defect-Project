@@ -72,6 +72,9 @@ def compute(request: dict, target_id: str) -> dict:
                 "stpd.cloud_jobs.p1_gpu_profile" if profile else "stpd.cloud_jobs",
                 "--request",
                 str(request_path),
+                # The synthetic measurement wrapper retains its original finite
+                # probe behavior. Normal P1 execution uses the provider wall bound.
+                *([] if profile else ["--wall-seconds", str(target.timeout_seconds)]),
             ],
             cwd="/opt/stpd/python",
             capture_output=True,

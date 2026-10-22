@@ -30,6 +30,8 @@ from .checkpoint_codec import decode_checkpoint
 from .reporting import RunReporter
 from .structured_control import AttemptAuthority, ExecutionControl, StructuredExecutionResult
 
+PERIODIC_CHECKPOINT_SECONDS = 1800
+
 
 @dataclass(frozen=True)
 class P1Checkpoint:
@@ -289,8 +291,10 @@ def execute_p1_run(
             )
         )
 
+    last_saved_at = time.monotonic()
+
     def save(reason: str, fractions: list[int] | None = None) -> str:
-        nonlocal checkpoint_id, best_checkpoint
+        nonlocal checkpoint_id, best_checkpoint, last_saved_at
         guard()
         checkpoint_started = time.perf_counter()
         raw = trainer.checkpoint()
@@ -340,6 +344,9 @@ def execute_p1_run(
                 "checkpoint_bytes": len(raw),
             },
         )
+        # Only a completed immutable publication and its original event reset
+        # the interval; elapsed time never manufactures a successful save.
+        last_saved_at = time.monotonic()
         return checkpoint_id
 
     initial_step = trainer.step
@@ -385,6 +392,8 @@ def execute_p1_run(
         event("progress", optimizer_updates=trainer.step, **progress)
         if progress["checkpoint_fractions"] or progress["best_improved"]:
             save("scheduled_or_dev_best", progress["checkpoint_fractions"])
+        elif time.monotonic() - last_saved_at >= PERIODIC_CHECKPOINT_SECONDS:
+            save("periodic")
     guard()
     action = "continue" if control is None else control.requested_action()
     if action != "continue":

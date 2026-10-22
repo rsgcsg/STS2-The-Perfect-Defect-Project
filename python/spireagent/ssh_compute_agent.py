@@ -197,7 +197,8 @@ def supervise(directory: Path) -> None:
                 os.chmod(directory / "worker-output.json", 0o600)
                 child = subprocess.Popen([target.interpreter, "-m", "stpd.cloud_jobs",
                                           "--request", str(directory / "request.json"),
-                                          "--store", "s3"], env=environment,
+                                          "--store", "s3", "--wall-seconds",
+                                          str(target.timeout_seconds)], env=environment,
                                          cwd=Path(target.checkout) / "python",
                                          stdin=subprocess.DEVNULL, stdout=output,
                                          stderr=subprocess.DEVNULL, start_new_session=True)
