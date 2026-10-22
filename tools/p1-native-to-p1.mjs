@@ -12,6 +12,7 @@ import { buildNativeP1Targets, nativeTargetProjection } from './p1-native-target
 import { classifyNativeHandSelectionTransaction, selectorTransactionProjection } from './p1-native-selector-transactions.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const presentationEqual = span => span.comparison.presentation_equal ?? span.comparison.equal;
 const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
 
 /** Pure interpretation seam. `source` is returned by the owning bundle reader;
@@ -236,8 +237,9 @@ export function convertNativeSemanticOriginals(source, sdk, core, options = {}) 
       const presentation = presentationByDecision.get(row.decision_id);
       if (selectorCancellation) match = { ...match, status: 'native_cancelled',
         reason: selectorCancellation.receipt.reason, choice_id: null, lowering: null };
-      if (presentation) match = { ...match, status: presentation.comparison.equal ? 'presentation' : 'presentation_gap',
-        reason: presentation.comparison.equal ? 'native_presentation_originals_equal'
+      if (presentation) match = { ...match, status: presentationEqual(presentation) ? 'presentation' : 'presentation_gap',
+        reason: presentationEqual(presentation) ? presentation.comparison.display_animation
+          ? 'native_presentation_approved_display_animation' : 'native_presentation_originals_equal'
           : presentation.exception ? 'native_presentation_exception:stop_relic_refresh' : 'native_presentation_public_state_changed',
         choice_id: null, lowering: null };
       const continuationOf = continuationParents.get(row.decision_id) ?? null;
@@ -376,7 +378,7 @@ export function convertNativeSemanticOriginals(source, sdk, core, options = {}) 
       reason: 'native_cancellation_without_complete_continuity_boundary', blocking: true });
   }
   for (const span of presentations) {
-    const equal = span.comparison.equal;
+    const equal = presentationEqual(span);
     const pointIndex = pointActions.findIndex(point => point.capture.sequence >= span.after.event.sequence);
     const checks = ['before', 'after'].map(boundary => ({ boundary,
       source_event_id: span[boundary].event.event_id, source_public_basis: span[boundary].reference,
@@ -417,7 +419,7 @@ export function convertNativeSemanticOriginals(source, sdk, core, options = {}) 
         span_decision_id: presentation.decision_ids[0], successful_label: false };
       action.choice_id = null; action.choice = null;
       report.issues.push({ decision_id: action.decision_id, action_witness_id: action.action_witness_id,
-        reason: action.reason, disposition: presentation.disposition, blocking: !presentation.comparison.equal && !presentation.exception });
+        reason: action.reason, disposition: presentation.disposition, blocking: !presentationEqual(presentation) && !presentation.exception });
     } else if (cancelled) {
       action.native_disposition = cancelled.receipt;
       action.choice_id = null; action.choice = null; // A cancellation never yields a successful label.
@@ -465,8 +467,8 @@ export function convertNativeSemanticOriginals(source, sdk, core, options = {}) 
   });
   report.blocking_issues = report.issues.filter(issue => issue.blocking);
   report.native_presentations = nativePresentations.map(({ checks: _checks, ...receipt }) => receipt);
-  report.presentation_gaps = report.native_presentations.filter(span => !span.comparison.equal && !span.exception);
-  const presentationDecisions = [...presentationByDecision.values()].filter(span => span.comparison.equal).length;
+  report.presentation_gaps = report.native_presentations.filter(span => !presentationEqual(span) && !span.exception);
+  const presentationDecisions = [...presentationByDecision.values()].filter(span => presentationEqual(span) && !span.exception).length;
   const exceptionDecisions = [...presentationByDecision.values()].filter(span => span.exception != null).length;
   report.native_cancellations = nativeCancellations.map(({ checks: _checks, ...receipt }) => receipt);
   report.accepted_accounting = { accepted: report.native_action_count, derived: derivedNative,
@@ -495,6 +497,8 @@ export function convertNativeSemanticOriginals(source, sdk, core, options = {}) 
     ...(options.selectorTransactions ? { selector_transactions: { version: selectorTransactionProjection,
       semantics: 'final_confirmed_single_choice_at_own_complete_empty_basis', data_class: 'D',
       purpose: 'offline_supervision', human_first_click_claim: false, online_action_catalog_changed: false } } : {}),
+    display_comparison_rules: [{ id: 'lasting_candy_trigger_display_2_to_0',
+      scope: 'same_reward_intention_or_proved_open_return', originals_preserved: true, model_input_unchanged: true }],
     assumptions: [
       'human_input_basis_is_origin_execution_basis_owns_game_action_choice',
       'model_view_is_serial_execution_state_reexpression_not_human_click_timing',
@@ -514,7 +518,7 @@ export function convertNativeSemanticOriginals(source, sdk, core, options = {}) 
       ? 'declared_native_capability_outside_current_profile' : 'not_established'
   };
   if (report.complete) {
-    const continuitySpans = [...nativeCancellations, ...nativePresentations.filter(span => span.comparison.equal || span.exception)];
+    const continuitySpans = [...nativeCancellations, ...nativePresentations.filter(span => presentationEqual(span) || span.exception)];
     const points = pointActions.map(({ action, capture }, index) => ({ index,
       observation: capture.observation, chosen: action?.choice_id ?? null,
       ...(action?.selector_transaction ? { data_class: 'D', selector_transaction: action.selector_transaction } : {}),

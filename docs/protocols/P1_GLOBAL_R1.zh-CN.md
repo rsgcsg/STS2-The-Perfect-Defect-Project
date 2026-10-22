@@ -60,6 +60,8 @@ Managed：sts2.dll 无界面宿主 + 投影                 ┴→ 两端共用�
 
 ### 4.1 录制原件派生P1的requires（用户已批准）
 
+**奖励触发显示动画（2026-10-22 用户批准）**：同一完整奖励意图、同一reward owner/组/候选/Read不变时，共享核只在一致性比较中识别同一唯一`LASTING_CANDY`遗物实例counter `2→0`的已证实触发显示动画。原始PB1、模型观察中的2/0及严格`comparison.equal=false`均保留；已证open→Skip→同一奖励页可另记`presentation_equal=true`与`lasting_candy_trigger_display_2_to_0`收据，0成功label，不仅因此切断原件已证明的连续边。HP/gold、其他遗物/计数、owner、候选、Read或其它公开差异仍严格检查；与既有`stop_relic_refresh`并存时分别保留真实差异与解释。该规则不证明跨Host严格相等，不新增在线动作，不更改end资格或补造next；新共享核/Tool以新身份交付，旧原件及固定投影不改。
+
 **原生Skip与P1放弃的区分**：领卡页物理Skip只证明返回奖励页，真人仍可重新打开同一组；不能仅凭打开→Skip两步就标成不可撤回的`reward.decline_group`。native converter与既有Source mapper使用同一含义。合格open/return保留原始端点并作0标签presentation（及另行明确批准的effect）；返回端点缺失或发生未获批准的变化仍保gap，不能用decline标签消除缺口。
 
 这是[唯一上层图连接⑥](../plans/p1-prefreeze-2026-10-18/CHAIN_PURPOSES.md#唯一上层图与连接要求新任务入口2026-10-19)的P1要求，与[冻结定义4.1–4.2](../plans/p1-prefreeze-2026-10-18/SCOPE_v0.3.zh-CN.md)同一已批准含义。任何交互profile都应声明自己的③④在线要求和⑥原件派生requires，不能由某个来源实现反向决定profile需要什么。来源支持P1，是其原件provides经声明的投影Π覆盖以下全部requires；不按Source4/Human/Runtime名称直接判支持。

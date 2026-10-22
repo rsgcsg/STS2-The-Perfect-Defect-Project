@@ -83,6 +83,36 @@ export function rewardWorldFacts(basis: P1Basis): string {
     information_policy: snapshot.information_policy });
 }
 
+/** The native LastingCandy trigger briefly displays 2, then its settled 0.
+ * This is a directional, same-instance presentation comparison only. Never
+ * change either original basis or model input, or relax another persistent fact. */
+export function settledRewardTriggerDisplay(before: unknown, after: unknown): {
+  readonly persistent: Record<string, any>; readonly path: string;
+} | null {
+  if (!isObject(before) || !isObject(after) || !isObject(before.content) || !isObject(after.content)
+      || !isObject(before.content.player) || !isObject(after.content.player)) return null;
+  const left = before.content?.player?.relics, right = after.content?.player?.relics;
+  if (!Array.isArray(left) || !Array.isArray(right) || left.length !== right.length) return null;
+  const indices = left.flatMap((relic: any, index: number) =>
+    isObject(relic) && isObject(right[index]) && relic.definition_id === "LASTING_CANDY"
+      && right[index].definition_id === relic.definition_id && text(relic.entity_id)
+      && right[index].entity_id === relic.entity_id && relic.counter === 2 && right[index].counter === 0
+      && left.filter(item => item?.entity_id === relic.entity_id).length === 1
+      && right.filter(item => item?.entity_id === relic.entity_id).length === 1 ? [index] : []);
+  if (indices.length !== 1) return null;
+  const persistent: Record<string, any> = structuredClone(before), index = indices[0]!;
+  persistent.content.player.relics[index].counter = 0;
+  return canonicalJson(persistent) === canonicalJson(after)
+    ? { persistent, path: `$.snapshot.persistent.content.player.relics.${index}.counter` } : null;
+}
+
+function matchesRewardWorld(before: string, after: string): boolean {
+  if (before === after) return true;
+  const left = JSON.parse(before), right = JSON.parse(after);
+  const display = settledRewardTriggerDisplay(left.persistent, right.persistent);
+  return display !== null && canonicalJson({ ...left, persistent: display.persistent }) === after;
+}
+
 export interface RewardIntention {
   readonly owner: string;
   readonly group: string;
@@ -125,5 +155,5 @@ export function matchesRewardIntention(plan: RewardIntention, basis: P1Basis): b
     && surface.native_relic_refresh_subscription === plan.refresh_subscription
     && canonicalJson(surface.cards.map(rewardCardFacts)) === plan.cards
     && canonicalJson(surface.alternatives.map(rewardAlternativeFacts)) === plan.alternatives
-    && rewardWorldFacts(basis) === plan.world && rewardDetailFacts(basis, surface.cards) === plan.details;
+    && matchesRewardWorld(plan.world, rewardWorldFacts(basis)) && rewardDetailFacts(basis, surface.cards) === plan.details;
 }

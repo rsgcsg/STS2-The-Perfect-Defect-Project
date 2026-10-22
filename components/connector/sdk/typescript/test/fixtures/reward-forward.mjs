@@ -51,3 +51,9 @@ export function rewardForwardPair() {
     child.snapshot.bound_actions.total_count = child.snapshot.bound_actions.materialized_count = child.snapshot.bound_actions.actions.length;
     return { outer, child, group, cards };
 }
+
+// Native-shaped display values; this synthetic fixture does not qualify a game.
+export function lastingCandyDisplay(basis, counter) {
+    const relics = basis.snapshot.persistent.content.player.relics;
+    relics[0] = { ...relics[0], entity_id: "same-lasting-candy", definition_id: "LASTING_CANDY", counter };
+}
