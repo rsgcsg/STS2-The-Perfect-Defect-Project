@@ -1231,9 +1231,11 @@ request grammar are unchanged. The project `remote_compute` has mandatory
 `budget_limit`/`reserved_units`, and `compute_store`. The latter uses the existing
 frozen, credential-free Store peer binding: either `{kind: "local", directory: ABS}`
 for explicitly injected engineering providers or `{kind: "s3", bucket, endpoint,
-prefix, region}` for Modal. JSON decoding validates shape and S3Config without
+prefix, region}` for Modal or the explicit school SSH target. JSON decoding validates
+shape and S3Config without
 opening any Store or network. Credentials remain environment-only. The target file
-is the existing immutable ModalTarget v2 contract. Ops must differ from the private
+is the existing immutable ModalTarget v2 or [school SSH target](#school-ssh-execution).
+Ops must differ from the private
 Curation DB. A nonempty `hub_url` is rejected by this co-located deployment, never
 silently bypassed. Production JSON has no fake-provider/import hook.
 
@@ -1273,7 +1275,9 @@ proves the worker is running nor permits a new submission. The provider reads on
 non-consuming ACK per query, with a bounded RPC and no transport retry.
 Selected result/checkpoint closures are explicitly copied back to the
 original local Store for the existing Model consumer. Unknown submission never
-retries. Live pause is unsupported: choose `stop_after` before submission. Resume
+retries. SSH can retain the deterministic original handle despite a lost submit ACK;
+its request directory is observed, never recreated or launched again. Live pause is
+unsupported: choose `stop_after` before submission. Resume
 additionally takes a new budgeted `intent_id`, exact paused `checkpoint_id`,
 `max_seconds` and `stop_after`, while retaining the same immutable Run.
 
@@ -1297,6 +1301,78 @@ alone is explicitly not transfer completion. Client exit does not end the
 Application scheduler. Reopening restores the existing Ops handle/attempt and
 creates no second local-training operation or Curation database.
 
+
+### School SSH execution
+
+Use the same `training --execution remote` commands, `remote_compute` binding,
+Operations, Scheduler, Curation owner and S3 Store. This adapter starts no allocation
+and manages no school quota. The operator first authorizes the allocation, fixed
+reviewed source/`uv.lock`, environment, input/use selection and time/cost ceiling.
+Install that exact clean checkout and locked Python 3.11 environment on the allocated
+host. Keep the remote Store dotenv file outside the checkout, owner-only mode `0600`;
+the existing `cloud_environment` parser supplies only its supported AWS/STPD S3
+storage keys. Runtime keys such as `PYTHONPATH`, `LD_LIBRARY_PATH` and
+`CUDA_VISIBLE_DEVICES` are ignored, so the worker retains the verified runtime
+environment. No shell source/eval or dotenv interpolation is used. No secret belongs in project, target,
+request, command arguments or transport receipts. Configure the existing local
+OpenSSH `-F` file with the verified school host alias/ProxyJump and host keys.
+The provider forces BatchMode, strict host-key checking and one connection attempt.
+
+The target JSON is a closed `spireagent/ssh-target-1` object:
+
+| Field | Required value |
+| --- | --- |
+| `producer` | Existing Producer: exact source revision and `uv.lock` SHA-256 |
+| `ssh_config`, `host` | Absolute local OpenSSH configuration path and explicit host alias |
+| `checkout`, `interpreter` | Absolute remote repository root and environment Python executable |
+| `private_env`, `state_directory` | Absolute remote owner-private env file and invocation directory, both outside checkout |
+| `timeout_seconds`, `gpu` | 1–86400 seconds; explicit `none` for CPU or `L40S` for this school adapter |
+| `runtime` | Exact string fields `python`, `torch`, `cuda`, `gpu_name`, `gpu_uuid`, `driver` |
+
+For CPU, the last four runtime fields are `none`; Python and Torch remain exact.
+For L40S, use the actual Torch/CUDA versions and single allocated GPU's name, UUID
+and driver. The remote helper independently checks source, lock, interpreter and
+runtime before launch; the original worker independently checks its execution and
+checkpoint identity. A new GPU UUID/source/runtime target is a new execution target,
+and does not grant cross-device checkpoint restore. Both production providers require
+the same explicit S3 peer; an injected local fixture is engineering evidence only.
+
+An accepted SSH invocation is a named detached supervisor and separate worker process
+group, identified by `target_id/request_id`. Files contain the frozen original
+request and atomic original receipt. Polling returns pending only while the original
+supervisor owns its OS lock. A lost observation, missing directory, launch gap or
+dead supervisor stays unknown, with the same handle and no automatic retry. A lost
+submit ACK preserves the deterministic handle in Ops; restoration only observes it.
+An existing invocation directory cannot launch a second worker. Closing a client or
+local Application does not stop the remote supervisor.
+
+Use normal `cancel` with the original job and expected attempt, then `reconcile` or
+observe status. The supervisor reads that invocation's cancel marker and terminates
+only its own worker group; the hard timeout follows the same cleanup. Stop allows
+0.2 seconds TERM grace before KILL, then requires the leader's exit and the group's
+absence. It never signals a persisted PID during restart. If exit cannot be proved,
+Ops retains the active unknown/cancelling job. Confirmed failed/cancelled/timeout
+transport facts bind target/request/attempt/original handle and are selected through
+the existing Ops fence, releasing the active slot while retaining the failed attempt,
+handle and cumulative budget reservation. Modal transport errors retain their prior
+unknown semantics. No process exit manufactures a paused checkpoint or data result.
+Choose `stop_after` with enough save/transfer margin for a durable worker checkpoint;
+a hard-killed task may retain only earlier checkpoints. Normal `resume` also accepts
+an explicit checkpoint for an original failed/cancelled job with confirmed typed
+termination, retained exact handle/attempt/fence and a new intent. It verifies the
+checkpoint through the original worker family and requires an immutable checkpoint
+event binding that exact original compute request and attempt. It never finds the
+latest checkpoint automatically or borrows one from another attempt. Unknown
+termination cannot use this route. The resumed job uses the same Run, original
+checkpoint and unchanged worker GPU/runtime restore gates, with a new cumulative
+budget reservation. The caller still owns total recovery-count and time/cost limits.
+Do not edit Ops directly or relabel the failed job as paused.
+
+Before long work, the operator validates the shortest real school submission,
+disconnect/restore, receipt, Stop, timeout and original source/GPU identity. Local
+process fixtures do not prove school deployment, CUDA numerics, remote R2 access,
+checkpoint recovery, quota or training quality. The adapter does not change data
+admission, research use, budget authorization or provider-switch restore rules.
 
 ### Observe the same remote Run
 
