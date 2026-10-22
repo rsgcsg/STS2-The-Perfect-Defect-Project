@@ -44,17 +44,17 @@ def positions(indices: Tensor, width: int) -> Tensor:
 
 
 def _mean_terms(values: Tensor, rows: list[list[int]], empty: Tensor) -> Tensor:
-    """Reduce complete ragged rows with less than twice their nonempty padding.
+    """Reduce complete ragged rows at their original, unpadded mean length.
 
-    Power-of-two buckets avoid N*max-degree storage for a star of references.
+    Equal-length buckets avoid N*max-degree storage for a star of references,
+    without changing a row's reduction length or replacing mean by sum/divide.
     Host indices are packed before transfer; index_select uses Torch's existing
     deterministic backward rather than an application scatter/atomic reduction.
     """
     buckets: dict[int, list[int]] = {}
     for row, terms in enumerate(rows):
-        width = 1 << (len(terms) - 1).bit_length() if terms else 0
+        width = len(terms)
         buckets.setdefault(width, []).append(row)
-    padded_values = torch.cat((values, values.new_zeros((1, values.shape[-1]))))
     parts, order = [], []
     for width, owners in buckets.items():
         order.extend(owners)
@@ -62,13 +62,11 @@ def _mean_terms(values: Tensor, rows: list[list[int]], empty: Tensor) -> Tensor:
             parts.append(empty.expand(len(owners), -1))
             continue
         indices = torch.tensor(
-            [index for row in owners
-             for index in rows[row] + [len(values)] * (width - len(rows[row]))],
+            [index for row in owners for index in rows[row]],
             dtype=torch.long, device=values.device,
         )
-        packed = padded_values.index_select(0, indices).reshape(len(owners), width, -1)
-        lengths = torch.tensor([len(rows[row]) for row in owners], device=values.device)
-        parts.append(packed.sum(1) / lengths[:, None])
+        packed = values.index_select(0, indices).reshape(len(owners), width, -1)
+        parts.append(packed.mean(1))
     inverse = [0] * len(order)
     for index, row in enumerate(order):
         inverse[row] = index
