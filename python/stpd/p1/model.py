@@ -43,6 +43,38 @@ def positions(indices: Tensor, width: int) -> Tensor:
     return torch.stack((angles.sin(), angles.cos()), -1).flatten(-2)
 
 
+def _mean_terms(values: Tensor, rows: list[list[int]], empty: Tensor) -> Tensor:
+    """Reduce complete ragged rows with less than twice their nonempty padding.
+
+    Power-of-two buckets avoid N*max-degree storage for a star of references.
+    Host indices are packed before transfer; index_select uses Torch's existing
+    deterministic backward rather than an application scatter/atomic reduction.
+    """
+    buckets: dict[int, list[int]] = {}
+    for row, terms in enumerate(rows):
+        width = 1 << (len(terms) - 1).bit_length() if terms else 0
+        buckets.setdefault(width, []).append(row)
+    padded_values = torch.cat((values, values.new_zeros((1, values.shape[-1]))))
+    parts, order = [], []
+    for width, owners in buckets.items():
+        order.extend(owners)
+        if not width:
+            parts.append(empty.expand(len(owners), -1))
+            continue
+        indices = torch.tensor(
+            [index for row in owners
+             for index in rows[row] + [len(values)] * (width - len(rows[row]))],
+            dtype=torch.long, device=values.device,
+        )
+        packed = padded_values.index_select(0, indices).reshape(len(owners), width, -1)
+        lengths = torch.tensor([len(rows[row]) for row in owners], device=values.device)
+        parts.append(packed.sum(1) / lengths[:, None])
+    inverse = [0] * len(order)
+    for index, row in enumerate(order):
+        inverse[row] = index
+    return torch.cat(parts).index_select(0, torch.tensor(inverse, device=values.device))
+
+
 class MStd(nn.Module):
     def __init__(self, vocabulary: dict[str, Any]):
         super().__init__()
@@ -140,45 +172,60 @@ class MStd(nn.Module):
         )
         if self.training:
             identities = identities.masked_fill(torch.rand(len(identities), device=device) < 0.1, 0)
+        id_rows: list[list[int]] = [[] for _ in entities]
+        for i, (row, _, _) in enumerate(id_pairs):
+            id_rows[row].append(i)
         id_vectors = self.ids(identities)
-        by_owner: dict[int, list[Tensor]] = {}
-        for i, (row, key, _) in enumerate(id_pairs):
-            by_owner.setdefault(row, []).append(
-                id_vectors[i] + self.fields.weight[self.index("fields", key)]
-            )
-        node_ids = torch.stack(
-            [
-                torch.stack(by_owner[row]).mean(0) if row in by_owner else self.ids.weight[0]
-                for row in range(len(entities))
-            ]
-        )
+        if id_pairs:
+            id_vectors = id_vectors + self.fields(torch.tensor(
+                [self.index("fields", key) for _, key, _ in id_pairs], device=device,
+            ))
+        node_ids = _mean_terms(id_vectors, id_rows, self.ids.weight[0])
         nodes = node_ids + self.kinds(
             torch.tensor([self.index("kinds", e.kind) for e in entities], device=device)
         )
         nodes = nodes + positions(torch.tensor([e.position for e in entities], device=device), 192)
-        features = []
-        for entity in entities:
-            text_terms = [
-                vectors[text_rows[text]] + self.fields.weight[self.index("fields", key)]
-                for key, text in entity.text
-            ]
-            number_terms = []
+        text_fields: list[int] = []
+        text_indices: list[int] = []
+        text_owners: list[list[int]] = [[] for _ in entities]
+        present: list[tuple[int, int, float]] = []
+        missing: list[tuple[int, int]] = []
+        number_owners: list[list[int]] = [[] for _ in entities]
+        for row, entity in enumerate(entities):
+            for key, text in entity.text:
+                text_owners[row].append(len(text_indices))
+                text_fields.append(self.index("fields", key))
+                text_indices.append(text_rows[text])
             for key, number in entity.numeric:
-                row = self.index("fields", key)
-                number_terms.append(
-                    self.number_missing.weight[row]
-                    if number is None
-                    else self.number_slope.weight[row] * signed_log(number)
-                    + self.number_bias.weight[row]
-                )
-            features.append(
-                (torch.stack(text_terms).mean(0) if text_terms else 0)
-                + (torch.stack(number_terms).mean(0) if number_terms else self.no_numbers)
-            )
-        nodes = nodes + torch.stack(features)
-        linked = torch.stack(
-            [nodes[e.refs].mean(0) if e.refs else torch.zeros_like(nodes[0]) for e in entities]
-        )
+                if number is None:
+                    number_owners[row].append(-len(missing) - 1)
+                    missing.append((row, self.index("fields", key)))
+                else:
+                    number_owners[row].append(len(present))
+                    present.append((row, self.index("fields", key), signed_log(number)))
+        text_values = vectors.new_zeros((0, 192))
+        if text_indices:
+            text_values = vectors.index_select(0, torch.tensor(text_indices, device=device))
+            text_values = text_values + self.fields(torch.tensor(text_fields, device=device))
+        # Do not evaluate absent branches: a zero gradient is not None to AdamW.
+        number_parts = []
+        if present:
+            fields = torch.tensor([key for _, key, _ in present], device=device)
+            numbers = torch.tensor([value for _, _, value in present],
+                                   dtype=self.number_slope.weight.dtype, device=device)
+            number_parts.append(self.number_slope(fields) * numbers[:, None]
+                                + self.number_bias(fields))
+        if missing:
+            number_parts.append(self.number_missing(torch.tensor(
+                [key for _, key in missing], device=device,
+            )))
+        number_owners = [[i if i >= 0 else len(present) - i - 1 for i in row]
+                         for row in number_owners]
+        number_values = torch.cat(number_parts) if number_parts else nodes.new_zeros((0, 192))
+        features = (_mean_terms(text_values, text_owners, nodes.new_zeros(192))
+                    + _mean_terms(number_values, number_owners, self.no_numbers))
+        nodes = nodes + features
+        linked = _mean_terms(nodes, [e.refs for e in entities], nodes.new_zeros(192))
         return cast(Tensor, self.node_norm(nodes + self.relations(linked)))
 
     def forward(self, frame: Frame) -> Tensor:
