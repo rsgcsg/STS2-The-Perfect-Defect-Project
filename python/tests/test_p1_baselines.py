@@ -370,7 +370,18 @@ def test_worker_pause_resume_uses_same_run_checkpoint_and_exact_result(tmp_path,
     )
 
 
-@pytest.mark.parametrize("corruption", ["cursor", "best_step", "early_test", "optimizer_lr"])
+@pytest.mark.parametrize(
+    "corruption",
+    [
+        "cursor",
+        "best_step",
+        "early_test",
+        "optimizer_lr",
+        "optimizer_empty",
+        "optimizer_steps",
+        "optimizer_shape",
+    ],
+)
 def test_resume_rejects_inconsistent_progress_selected_model_and_optimizer(corruption):
     config = BaselineConfig(algorithm="linear", max_epochs=2)
     trainer = BaselineTrainer(populations(), "snapshot", config)
@@ -382,8 +393,14 @@ def test_resume_rejects_inconsistent_progress_selected_model_and_optimizer(corru
         state["best_step"] = 100
     elif corruption == "early_test":
         state["test_result"] = {"N": 1}
-    else:
+    elif corruption == "optimizer_lr":
         state["optimizer"]["param_groups"][0]["lr"] = 1.0
+    elif corruption == "optimizer_empty":
+        state["optimizer"]["state"] = {}
+    elif corruption == "optimizer_steps":
+        state["optimizer"]["state"][0]["step"] += 1
+    else:
+        state["optimizer"]["state"][0]["exp_avg"] = torch.zeros(1)
     replacement = BaselineTrainer(populations(), "snapshot", config)
     with pytest.raises(ValueError):
         replacement.restore(encode_checkpoint(state))

@@ -207,6 +207,34 @@ def validate_checkpoint_state(
         raise ValueError("baseline completed state lacks selected model or evaluation")
     if (config.algorithm == "linear") != isinstance(state.get("optimizer"), dict):
         raise ValueError("baseline optimizer inventory differs")
+    if config.algorithm == "linear":
+        moments = state["optimizer"].get("state")
+        expected_keys = {0} if state["step"] else set()
+        if not isinstance(moments, dict) or set(moments) != expected_keys:
+            raise ValueError("baseline Adam state inventory differs")
+        if state["step"]:
+            moment = moments[0]
+            if not isinstance(moment, dict) or set(moment) != {"step", "exp_avg", "exp_avg_sq"}:
+                raise ValueError("baseline Adam moment inventory differs")
+            update = moment["step"]
+            if (
+                not isinstance(update, torch.Tensor)
+                or update.shape != ()
+                or update.dtype != torch.float32
+                or float(update) != state["step"]
+            ):
+                raise ValueError("baseline Adam update count differs")
+            for name in ("exp_avg", "exp_avg_sq"):
+                value = moment[name]
+                if (
+                    not isinstance(value, torch.Tensor)
+                    or value.shape != model.weights.shape
+                    or value.dtype != model.weights.dtype
+                    or not bool(torch.isfinite(value).all())
+                ):
+                    raise ValueError("baseline Adam moment structure differs")
+            if bool((moment["exp_avg_sq"] < 0).any()):
+                raise ValueError("baseline Adam second moment is negative")
 
 
 class BaselineTrainer:
