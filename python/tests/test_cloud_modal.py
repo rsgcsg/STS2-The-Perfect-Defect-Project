@@ -282,6 +282,38 @@ def test_deployment_uses_exact_native_or_oci_image_with_same_resource_contract(
     assert settings["secrets"] == [selected.storage_secret_name]
     assert settings["startup_timeout"] == 120 and settings["scaledown_window"] == 2
     assert settings["single_use_containers"] is True
+
+    # Modal hydrates this wrapper in its injected interpreter before the worker's
+    # project venv is invoked. Exercise the locked SDK's actual pickle decoder
+    # in a fresh interpreter that cannot import either project package.
+    import subprocess
+    import sys
+
+    payload = tmp_path / "compute.pickle"
+    payload.write_bytes(serialize_data_format(namespace["compute"], api.DATA_FORMAT_PICKLE))
+    cold = subprocess.run(
+        [sys.executable, "-I", "-c", """
+import importlib.abc
+import sys
+from pathlib import Path
+from modal._serialization import deserialize_data_format
+from modal_proto import api_pb2
+
+class NoProject(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname.split('.')[0] in {'stpd', 'spireagent'}:
+            raise ModuleNotFoundError('project packages absent from injected interpreter')
+
+sys.meta_path.insert(0, NoProject())
+function = deserialize_data_format(Path(sys.argv[1]).read_bytes(),
+                                   api_pb2.DATA_FORMAT_PICKLE, None)
+assert callable(function) and function.__name__ == 'compute'
+print('cold_wrapper_deserialized')
+""", str(payload)],
+        cwd=tmp_path, capture_output=True, text=True, timeout=20,
+    )
+    assert cold.returncode == 0, cold.stderr
+    assert cold.stdout.strip() == "cold_wrapper_deserialized"
     invoked = []
 
     def child(command, **options):
@@ -289,8 +321,6 @@ def test_deployment_uses_exact_native_or_oci_image_with_same_resource_contract(
         receipt = {"original_receipt": True}
         value = {"receipt": receipt, "profile_artifact_id": "probe"} if profile else receipt
         return SimpleNamespace(returncode=0, stdout=json.dumps(value))
-
-    import subprocess
 
     monkeypatch.setattr(subprocess, "run", child)
     assert namespace["compute"]({}, selected.target_id) == {

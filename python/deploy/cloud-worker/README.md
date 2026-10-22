@@ -110,6 +110,11 @@ worker verifies actual clean executing-checkout Producer. It invokes the image's
 The local serialized deployment wrapper must also execute from the clean exact target
 Producer. No source-identity check is disabled to support packaging. The wrapper is serialized with
 only standard-library dependencies and primitive target identity, not the local STPD package.
+Freeze wrapper values such as the timeout as primitive globals before defining
+`compute`; referencing the typed `ModalTarget` inside that serialized function
+would require importing STPD in Modal's injected interpreter before the project
+venv starts. The deployment regression decodes the actual locked-SDK pickle in a
+fresh interpreter with both project packages unavailable.
 
 ### Native Modal image refresh
 
@@ -162,6 +167,13 @@ error manufactures a terminal receipt or permits resubmission. The Hub retains
 the exact call handle for its existing terminal reconciliation.
 `cancel` requests cancellation but does not manufacture a terminal result. Keep the call ID
 for operator reconciliation if the provider reports an ambiguous cancellation or result.
+When no worker events appear, inspect the exact deployed App's startup logs;
+`retries=0` does not prevent Modal from replacing containers that fail to start.
+An empty container list or a cancellation ACK alone is not terminal proof. For a
+failed isolated target, stop its exact App and verify its stopped state and zero
+tasks, retain the original call's output/error and stop evidence, then use the
+existing `Operations.reconcile_stopped` operator entry with that evidence. This
+retains the job, handle and reservation and never requeues the original request.
 
 The Application's normal `training --execution remote` client is the operator entry.
 After a client interruption, inspect its original Operations job and saved provider
