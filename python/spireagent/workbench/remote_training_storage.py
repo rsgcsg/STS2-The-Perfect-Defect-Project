@@ -5,8 +5,26 @@ from pathlib import Path
 from typing import Any
 
 from spireagent.artifact_contracts import Producer
+from spireagent.json_boundary import BoundaryError
 from spireagent.storage.store import ManifestArtifactStore, copy_artifact
 from spireagent.workbench.p1_recording_storage import open_peer, storage_budget
+
+
+def verify_training_run(store: Any, run_id: str, producer: Producer) -> Any:
+    """Select only the two installed P1 families; metadata never chooses an import."""
+    from stpd.p1.baseline_spec import RUN_SCHEMA as BASELINE_RUN_SCHEMA
+    from stpd.p1.spec import RUN_SCHEMA
+
+    schema = store.get_manifest(run_id).parameters.value().get("schema")
+    if schema == RUN_SCHEMA:
+        from stpd.p1.workload import verify_p1_run
+
+        return verify_p1_run(store, run_id, producer)
+    if schema == BASELINE_RUN_SCHEMA:
+        from stpd.p1.baseline_workload import verify_baseline_run
+
+        return verify_baseline_run(store, run_id, producer)
+    raise BoundaryError("remote_training", "unsupported_training_run_schema")
 
 
 def transfer_p1_input(
@@ -25,7 +43,6 @@ def transfer_p1_input(
     """
     from stpd.p1.dataset import iter_snapshot_points
     from stpd.p1.input import project
-    from stpd.p1.workload import verify_p1_run
 
     budget = storage_budget(local, run_id, scratch=scratch, destination=None)
     peer = open_peer(peer_binding)
@@ -34,7 +51,7 @@ def transfer_p1_input(
     # every byte, including original parents that are not themselves model input.
     readback = open_peer(peer_binding)
     copy_artifact(readback, readback, run_id, scratch=scratch)
-    workload = verify_p1_run(readback, run_id, producer)
+    workload = verify_training_run(readback, run_id, producer)
     partition_N: dict[str, int] = {}
     catalog_choices = 0
     for reference, observation in iter_snapshot_points(readback, workload.snapshot.artifact_id):
@@ -50,7 +67,8 @@ def transfer_p1_input(
         "snapshot_id": workload.snapshot.artifact_id,
         "compute_store": dict(peer_binding),
         "input_spec": info["input_spec"],
-        "vocabulary_sha256": info["vocabulary_sha256"],
+        "vocabulary_sha256": info.get("vocabulary_sha256"),
+        **({"features_sha256": info["features_sha256"]} if "features_sha256" in info else {}),
         "partition_N": partition_N,
         "unique_N": sum(partition_N.values()),
         "catalog_choices": catalog_choices,

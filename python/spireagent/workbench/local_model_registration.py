@@ -1170,28 +1170,34 @@ class LocalModelRegistration:
                 return False
             raise
         return model.kind == "model" and model.parameters.value().get("schema") in {
-            "stpd/p1-mstd-trained-model-1", "stpd/p1-mstd-model-1"}
+            "stpd/p1-mstd-trained-model-1", "stpd/p1-mstd-model-1",
+            "stpd/p1-baseline-trained-model-1"}
 
     def _p1_source(self, identity: str) -> tuple[Any, Manifest]:
         source = self.export._source(identity)
         model = source.get_manifest(identity)
         if (model.kind != "model" or model.parameters.value().get("schema") not in {
-                "stpd/p1-mstd-trained-model-1", "stpd/p1-mstd-model-1"}):
+                "stpd/p1-mstd-trained-model-1", "stpd/p1-mstd-model-1",
+                "stpd/p1-baseline-trained-model-1"}):
             raise BoundaryError("local_model_registration", "P1_model_required")
         return source, model
 
     def _status_p1(self, identity: str, environment_kind: str) -> dict[str, Any]:
         _, model = self._p1_source(identity)
+        baseline = model.parameters.value()["schema"] == "stpd/p1-baseline-trained-model-1"
+        adapter = "stpd-p1-baseline-agent" if baseline else "stpd-p1-mstd-agent"
         package_sha = model.parameters.value().get("package_sha256")
         for entry in reversed(self._entries()):
-            if entry.get("adapter") != "stpd-p1-mstd-agent":
+            if entry.get("adapter") != adapter:
                 continue
             config = _object_file(self.models.entry_path(entry, "config"))
             manifest = _object_file(self.models.entry_path(entry, "manifest"))
             if (config.get("model_artifact_id") == identity
                     and config.get("package_sha256") == package_sha
                     and managed_manifest(manifest) == (environment_kind == "managed")):
-                from stpd.p1.agent import installation
+                from stpd.p1 import agent, baseline_agent
+
+                installation = baseline_agent.installation if baseline else agent.installation
 
                 try:
                     installation(self.models.entry_path(entry, "config"),
@@ -1206,12 +1212,24 @@ class LocalModelRegistration:
 
     def _register_p1(self, identity: str, environment_kind: str) -> dict[str, Any]:
         """Materialize the original Model, then bind it to the existing Runtime owner."""
-        from stpd.p1.agent import installation
-        from stpd.p1.export import adapter_identity, load_model, register
-        from stpd.workers.p1_run import materialize_p1_model
-
-        require_local_models("local_model_registration")
         source, model = self._p1_source(identity)
+        baseline = model.parameters.value()["schema"] == "stpd/p1-baseline-trained-model-1"
+        from stpd.p1 import agent, baseline_agent, baseline_export, baseline_worker, export
+        from stpd.workers import p1_run
+
+        installation = baseline_agent.installation if baseline else agent.installation
+        adapter_identity = baseline_export.adapter_identity if baseline else export.adapter_identity
+        register = baseline_export.register if baseline else export.register
+        load_model = export.load_model
+        materialize_p1_model = (baseline_worker.materialize_baseline_model if baseline
+                                else p1_run.materialize_p1_model)
+
+        if baseline:
+            from spireagent.workbench.local_model_dependencies import require_recipe_dependencies
+
+            require_recipe_dependencies("p1-baselines-N-v1", "local_model_registration")
+        else:
+            require_local_models("local_model_registration")
         deadline = monotonic() + REGISTRATION_SECONDS
         node_modules, _ = self._native_runtime(deadline=deadline)
         runtime = node_modules / RUNTIME_PACKAGE / "dist"
@@ -1225,11 +1243,11 @@ class LocalModelRegistration:
             if folder.is_symlink():
                 raise BoundaryError("local_model_registration", "registration_metadata_invalid")
             folder.mkdir(mode=0o700, exist_ok=True)
-            selection = "local-p1-mstd-" + uuid.uuid4().hex
+            selection = ("local-p1-baseline-" if baseline else "local-p1-mstd-") + uuid.uuid4().hex
             target = folder / selection
             with tempfile.TemporaryDirectory(prefix="p1-registration-", dir=private) as temporary:
                 package = Path(temporary) / "package"
-                if model.parameters.value()["schema"] == "stpd/p1-mstd-trained-model-1":
+                if baseline or model.parameters.value()["schema"] == "stpd/p1-mstd-trained-model-1":
                     descriptor = materialize_p1_model(source, identity, package)
                 else:
                     # Detached historical engineering packages have no fabricated
@@ -1254,7 +1272,8 @@ class LocalModelRegistration:
                     runtime, options, package / "model.tensor-tree", adapter_identity(),
                     selection, deadline)
                 try:
-                    label = ("P1 M-std · " + ("Reference" if environment_kind == "native"
+                    label = (("P1 baseline · " if baseline else "P1 M-std · ")
+                             + ("Reference" if environment_kind == "native"
                                               else "Managed") + " · " + identity[:8])
                     entry = register(package, target, envelope, entry_id=selection, label=label)
                     manifest_path = target / "manifest.json"

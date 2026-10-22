@@ -212,6 +212,40 @@ def test_cancel_auth_and_unknown_never_resubmit(tmp_path):
         assert error.value.code == 401
 
 
+@pytest.mark.parametrize("algorithm", ["frequency", "linear"])
+def test_baseline_remote_cpu_reuses_normal_run_scheduler_and_result(tmp_path, algorithm):
+    from stpd.p1.baseline_spec import RECIPE, BaselineConfig
+    from stpd.p1.baseline_worker import verify_baseline_result
+    from stpd.p1.baseline_workload import verify_baseline_run
+
+    with client(tmp_path) as (app, call, provider, store, _owner, snapshot, _path):
+        provider.ready = True
+        body = {"intent_id": "a" * 32, "source_id": snapshot.artifact_id, "recipe_id": RECIPE,
+                "config": BaselineConfig(algorithm=algorithm, max_epochs=2).to_dict(),
+                "max_seconds": 300, "stop_after": 1 if algorithm == "linear" else None}
+        first = call("start", body=body)["jobs"][0]
+        if algorithm == "linear":
+            paused = settled(call, first["id"], "paused")
+            second = call("resume", body={
+                "job_id": first["id"], "expected_attempt_id": paused["attempt_id"],
+                "checkpoint_id": paused["result"]["checkpoint_id"], "intent_id": "b" * 32,
+                "max_seconds": 300, "stop_after": None,
+            })["jobs"][0]
+            assert second["input_id"] == first["input_id"]
+        else:
+            second = first
+        completed = settled(call, second["id"], "completed")
+        call("reconcile", body={"job_id": second["id"],
+                                "expected_attempt_id": completed["attempt_id"]})
+        workload = verify_baseline_run(store, second["input_id"], provider.target.producer)
+        _, model, checkpoint = verify_baseline_result(
+            store, completed["result"]["output_id"], workload)
+        assert model.parameters.value()["algorithm"] == algorithm
+        assert checkpoint.state["step"] == (2 if algorithm == "linear" else 0)
+        assert len(provider.calls) == (2 if algorithm == "linear" else 1)
+        assert not (app.config.state_dir / "local-training-operation.json").exists()
+
+
 def test_configured_hub_and_missing_local_purposes_are_not_bypassed(tmp_path):
     with client(tmp_path, reserve=False) as (app, call, provider, store, owner, snapshot, _path):
         service = RemoteTrainingService(replace(app.config, hub_url="https://hub.example"),

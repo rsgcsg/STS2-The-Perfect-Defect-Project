@@ -2175,6 +2175,48 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                 except (OSError, ValueError, TypeError):
                     self.respond(400, b'{"error":"invalid_local_dataset_request"}')
                 return
+            if self.path.startswith("/api/p1-data/"):
+                if not (self.browser_write() or self.control_client()):
+                    self.respond(403, b'{"error":"browser_action_denied"}')
+                    return
+                try:
+                    from spireagent.source import source_identity
+                    from spireagent.workbench.p1_data_preparation import (
+                        freeze_p1_data,
+                        prepare_p1_data,
+                    )
+
+                    app._require_training_instance()
+                    owner, store, _ = app.local_datasets._selected()
+                    body = self.json_body(maximum=1024 * 1024)
+                    if self.path == "/api/p1-data/prepare":
+                        if set(body) - {"revision", "declared_origins", "projection_ids",
+                                        "selected_decisions", "split_salt", "cache",
+                                        "allocation_policy", "projection_names",
+                                        "tool_release_ids"}:
+                            raise ValueError
+                        value = prepare_p1_data(owner, store, **body)
+                    elif self.path == "/api/p1-data/freeze":
+                        if set(body) not in ({"selection"}, {"selection", "reserve"}):
+                            raise ValueError
+                        if type(body.get("reserve", False)) is not bool:
+                            raise ValueError
+                        selection = body["selection"]
+                        if not isinstance(selection, dict) or set(selection) - {
+                                "projection_ids", "split_salt", "split_by_group",
+                                "selected_decisions"}:
+                            raise ValueError
+                        value = freeze_p1_data(owner, store, source_identity(ROOT),
+                                               **selection, reserve=body.get("reserve", False))
+                    else:
+                        self.respond(404, b'{"error":"route_not_found"}')
+                        return
+                    self.respond(200, json.dumps(value).encode())
+                except BoundaryError as error:
+                    self.respond(409, json.dumps({"error": error.code}).encode())
+                except (OSError, ValueError, TypeError):
+                    self.respond(400, b'{"error":"invalid_p1_data_request"}')
+                return
             if self.path.startswith("/api/remote-training/"):
                 if not (self.browser_write() or self.control_client()):
                     self.respond(403, b'{"error":"browser_action_denied"}')

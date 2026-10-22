@@ -27,7 +27,7 @@ def recipe_dependencies_available(recipe_id: str) -> bool:
     from stpd.native_training_source_spec import RECIPE as NATIVE_SAMPLED_RECIPE
     from stpd.ordered_source_spec import RECIPES
 
-    if recipe_id == "structured-m2-cpu-v2":
+    if recipe_id in {"structured-m2-cpu-v2", "p1-baselines-N-v1"}:
         return find_spec("torch") is not None
     if recipe_id in {"structured-m2-cpu-v3", NATIVE_SAMPLED_RECIPE} or recipe_id in RECIPES:
         return all(find_spec(name) is not None for name in ("torch", "safetensors"))

@@ -14,6 +14,7 @@ from stpd.p1.spec import RECIPE as P1_MSTD_RECIPE
 from stpd.reward_m0_spec import RECIPE as REWARD_M0_RECIPE
 
 DEFAULT_RECIPE = "stage1a.dsimple.s.v1"
+P1_BASELINE_RECIPE = "p1-baselines-N-v1"
 STRUCTURED_RECIPE = "structured-m2-cpu-v2"
 STRUCTURED_SCOPED_RECIPE = "structured-m2-cpu-v3"
 ORDERED_RECIPES = frozenset(ORDERED_RECIPE_CONFIGS)
@@ -24,11 +25,16 @@ MAX_TOTAL_ATTEMPTS = 32
 DEFAULT_CHECKPOINT_CADENCE = 100
 TYPED_RECIPES = frozenset({
     *STRUCTURED_RECIPES, REWARD_M0_RECIPE, HISTORICAL_M0_RECIPE, P1_MSTD_RECIPE,
+    P1_BASELINE_RECIPE,
 })
 TRUSTED_RECIPES = frozenset({DEFAULT_RECIPE, *TYPED_RECIPES, *MEMORY_RECIPES})
 
 
 def typed_recipe_run_schema(recipe_id: str) -> str:
+    if recipe_id == P1_BASELINE_RECIPE:
+        from stpd.p1.baseline_spec import RUN_SCHEMA
+
+        return RUN_SCHEMA
     if recipe_id == P1_MSTD_RECIPE:
         from stpd.p1.spec import RUN_SCHEMA
 
@@ -45,6 +51,10 @@ def typed_recipe_run_schema(recipe_id: str) -> str:
 
 
 def typed_recipe_checkpoint_schema(recipe_id: str) -> str:
+    if recipe_id == P1_BASELINE_RECIPE:
+        from stpd.p1.baseline_spec import CHECKPOINT_SCHEMA
+
+        return CHECKPOINT_SCHEMA
     if recipe_id == P1_MSTD_RECIPE:
         from stpd.p1.spec import CHECKPOINT_SCHEMA
 
@@ -61,6 +71,8 @@ def typed_recipe_checkpoint_schema(recipe_id: str) -> str:
 
 
 def typed_recipe_is_scoped(recipe_id: str) -> bool:
+    if recipe_id == P1_BASELINE_RECIPE:
+        return False
     if recipe_id == P1_MSTD_RECIPE:
         return False  # Exact producer is retained across this recipe's resumes.
     if recipe_id == HISTORICAL_M0_RECIPE:
@@ -128,6 +140,33 @@ def structured_recipe_is_scoped(recipe_id: str) -> bool:
 def describe_recipe(recipe_id: str) -> dict[str, Any]:
     if recipe_id not in TRUSTED_RECIPES:
         raise BoundaryError("local_training", "unsupported_training_recipe")
+    if recipe_id == P1_BASELINE_RECIPE:
+        from stpd.p1.baseline_spec import (
+            CHECKPOINT_SCHEMA,
+            MODEL_SCHEMA,
+            RUN_SCHEMA,
+            BaselineConfig,
+        )
+        from stpd.p1.spec import SNAPSHOT_SCHEMA
+
+        return {
+            "recipe_id": recipe_id, "placement_ids": ["local-cpu"],
+            "numerical_devices": ["cpu"], "remote_execution": False,
+            "compute_request_entrypoint": "stpd.p1.baseline_worker:execute_baseline_run",
+            "compute_request_devices": ["cpu"],
+            "dependencies_available": recipe_dependencies_available(recipe_id),
+            "automatic_retry": False, "worker_isolation": "private_child-v1",
+            "supported_actions": ["cancel", "pause", "resume", "reconcile", "amend_wall_budget"],
+            "result_type": "evaluated", "research_admission": "not_evaluated",
+            "source_schema": SNAPSHOT_SCHEMA, "run_schema": RUN_SCHEMA,
+            "checkpoint_schema": CHECKPOINT_SCHEMA, "model_schema": MODEL_SCHEMA,
+            "config_defaults": BaselineConfig().to_dict(),
+            "config_fields": {"algorithm": ["random", "frequency", "linear"]},
+            "limits": {"wall_seconds": {"minimum": 1, "maximum": 3600},
+                       "scratch_bytes": {"minimum": 16 * 1024**2, "maximum": 1024**3,
+                                         "default": 512 * 1024**2}},
+            "cumulative_limits": True, "max_total_attempts": MAX_TOTAL_ATTEMPTS,
+        }
     if recipe_id == P1_MSTD_RECIPE:
         from stpd.p1.spec import (
             CHECKPOINT_SCHEMA,
@@ -330,6 +369,13 @@ def validate_recipe_config(recipe_id: str, config: object) -> dict[str, Any]:
         raise BoundaryError("local_training", "unsupported_training_recipe")
     if not isinstance(config, dict):
         raise BoundaryError("local_training", "invalid_recipe_config")
+    if recipe_id == P1_BASELINE_RECIPE:
+        from stpd.p1.baseline_spec import BaselineConfig
+
+        try:
+            return BaselineConfig(**config).to_dict()
+        except TypeError as error:
+            raise BoundaryError("local_training", "invalid_recipe_config") from error
     if recipe_id == P1_MSTD_RECIPE:
         from stpd.p1.spec import MStdConfig
 
@@ -375,6 +421,10 @@ def validate_recipe_config(recipe_id: str, config: object) -> dict[str, Any]:
 
 
 def recipe_adapter(recipe_id: str) -> Any:
+    if recipe_id == P1_BASELINE_RECIPE:
+        from spireagent.workbench.recipes.p1_baselines import P1BaselineRecipeAdapter
+
+        return P1BaselineRecipeAdapter(recipe_id)
     if recipe_id == P1_MSTD_RECIPE:
         from spireagent.workbench.recipes.p1_mstd import P1MStdRecipeAdapter
 

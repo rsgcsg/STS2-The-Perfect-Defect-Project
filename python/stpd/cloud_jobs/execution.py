@@ -153,7 +153,26 @@ def dispatch(
             request.request_id, request.attempt_id, request.kind, request.input_id,
             runtime, "candidate_prepared", features.artifact_id,
         )
+    from ..p1.baseline_spec import RUN_SCHEMA as P1_BASELINE_RUN_SCHEMA
     from ..p1.spec import RUN_SCHEMA as P1_RUN_SCHEMA
+
+    if store.get_manifest(request.input_id).parameters.value().get("schema") == (
+            P1_BASELINE_RUN_SCHEMA):
+        if backend is not None:
+            raise BoundaryError("compute", "P1_training_does_not_accept_feature_backend")
+        from ..p1.baseline_worker import execute_baseline_run
+
+        baseline_result = execute_baseline_run(
+            store, CandidateReporter(store, request.input_id, runtime, request=request),
+            request.input_id, runtime, attempt_id=request.attempt_id,
+            resume=request.resume, stop_after=request.stop_after,
+            mode="resume" if request.resume is not None else "start",
+        )
+        return ComputeReceipt(
+            request.request_id, request.attempt_id, request.kind, request.input_id, runtime,
+            "candidate_prepared" if baseline_result.state == "completed" else "paused",
+            baseline_result.result_id, baseline_result.checkpoint_id,
+        )
 
     if store.get_manifest(request.input_id).parameters.value().get("schema") == P1_RUN_SCHEMA:
         if backend is not None:
@@ -192,7 +211,17 @@ def preflight_training_request(store: ArtifactStore, request: ComputeRequest) ->
     run = store.get_manifest(request.input_id)
     if run.kind != "run" or run.producer != request.producer:
         raise BoundaryError("compute", "run_source_or_kind_mismatch")
+    from ..p1.baseline_spec import RUN_SCHEMA as P1_BASELINE_RUN_SCHEMA
     from ..p1.spec import RUN_SCHEMA as P1_RUN_SCHEMA
+
+    if run.parameters.value().get("schema") == P1_BASELINE_RUN_SCHEMA:
+        from ..p1.baseline_worker import verify_baseline_checkpoint
+        from ..p1.baseline_workload import verify_baseline_run
+
+        baseline_workload = verify_baseline_run(store, request.input_id, request.producer)
+        if request.resume is not None:
+            verify_baseline_checkpoint(store, request.resume, baseline_workload)
+        return
 
     if run.parameters.value().get("schema") == P1_RUN_SCHEMA:
         from ..p1.workload import verify_p1_run
@@ -256,7 +285,26 @@ def validate_receipt(
         validate_feature_output(store, request.input_id, receipt.output_id, runtime)
         return
     run = store.get_manifest(request.input_id)
+    from ..p1.baseline_spec import RUN_SCHEMA as P1_BASELINE_RUN_SCHEMA
     from ..p1.spec import RUN_SCHEMA as P1_RUN_SCHEMA
+
+    if run.parameters.value().get("schema") == P1_BASELINE_RUN_SCHEMA:
+        from ..p1.baseline_worker import verify_baseline_checkpoint, verify_baseline_result
+        from ..p1.baseline_workload import verify_baseline_run
+
+        baseline_workload = verify_baseline_run(store, request.input_id, runtime)
+        if receipt.checkpoint_id is None:
+            raise BoundaryError("compute_receipt", "P1_checkpoint_required")
+        verify_baseline_checkpoint(store, receipt.checkpoint_id, baseline_workload)
+        if receipt.state == "paused":
+            return
+        if receipt.output_id is None:
+            raise BoundaryError("compute_receipt", "missing_P1_result")
+        _, _, baseline_checkpoint = verify_baseline_result(
+            store, receipt.output_id, baseline_workload)
+        if baseline_checkpoint.manifest.artifact_id != receipt.checkpoint_id:
+            raise BoundaryError("compute_receipt", "P1_result_checkpoint_mismatch")
+        return
 
     if run.parameters.value().get("schema") == P1_RUN_SCHEMA:
         from ..p1.workload import verify_p1_run

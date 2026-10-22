@@ -74,6 +74,7 @@ def main(argv: list[str] | None = None) -> int:
             "collection-tool",
             "collection-upgrade",
             "collect-source3",
+            "p1-data",
         ),
     )
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
@@ -140,10 +141,13 @@ def main(argv: list[str] | None = None) -> int:
             "native-finish",
             "agent-request",
             "run-agent",
+            "prepare",
+            "freeze",
         ),
         help="local model action; generation changes require a stopped Workbench",
     )
     parser.add_argument("--credential-file", type=Path)
+    parser.add_argument("--input", type=Path, help="exact P1 data preparation or freeze JSON")
     parser.add_argument("--request-id", help="exact original pending native Runtime request ID")
     parser.add_argument("--intent-id", help="original native preparation intent ID")
     parser.add_argument(
@@ -257,7 +261,12 @@ def main(argv: list[str] | None = None) -> int:
             config = ProjectConfig.load(
                 args.config, require_current_combination=args.command not in {"status", "stop"}
             )
-            if args.command == "collect-source3":
+            if args.command == "p1-data":
+                from spireagent.workbench.p1_data_cli import p1_data_command
+
+                body = decode_json(args.input.read_bytes()) if args.input else {}
+                result = p1_data_command(config, args.action, body)
+            elif args.command == "collect-source3":
                 from spireagent.workbench.native_source3_collection import (
                     CollectionRequest,
                     collect_source3,

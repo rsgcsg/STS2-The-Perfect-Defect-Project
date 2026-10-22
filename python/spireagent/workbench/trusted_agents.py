@@ -19,9 +19,11 @@ TRUSTED_AGENT_ADAPTERS = frozenset(
         "stpd-native-public-program-teacher",
         "spireagent-global-public-program",
         "stpd-p1-mstd-agent",
+        "stpd-p1-baseline-agent",
     }
 )
 AGENT_PROFILES = (
+    ("p1-global-r1", "stpd-p1-baseline-agent", "p1-global-r1", True),
     ("p1-global-r1", "stpd-p1-mstd-agent", "p1-global-r1", True),
     ("p1-global-r1", "spireagent-global-public-program", "p1-global-r1", True),
     ("s1-v1", "s1-v1", "text-menu-v1", True),
@@ -45,6 +47,10 @@ def agent_capabilities() -> list[dict[str, Any]]:
 
 
 def trusted_agent_support(adapter_id: str) -> ModuleType:
+    if adapter_id == "stpd-p1-baseline-agent":
+        from stpd.p1 import baseline_installation
+
+        return baseline_installation
     if adapter_id == "stpd-p1-mstd-agent":
         from stpd.p1 import installation as p1_installation
 
