@@ -37,6 +37,7 @@ def installation(
         or manifest["input"].get("global", {}).get("revision") != INPUT_PROJECTION["revision"]
         or manifest["input"].get("state_recovery")
         != {"mode": "none", "max_state_bytes": 0, "model_bindings": []}
+        or manifest["input"].get("state_format_version") != "baseline-session-rng-1"
         or config.get("input_projection") != INPUT_PROJECTION
         or config.get("input_spec") != input_spec(model)
         or config.get("package_input_spec") != input_spec(model)
@@ -44,6 +45,7 @@ def installation(
         or config["checkpoint_sha256"] != payload["checkpoint_sha256"]
         or config["weights_sha256"] != digest(encode_checkpoint({"model": payload["model"]}))
         or config.get("seed") != payload["training_identity"]["config"]["seed"]
+        or type(config.get("seed")) is not int
         or config.get("agent_spec", {}).get("seed") != config["seed"]
     ):
         raise ValueError("baseline installation binding differs")

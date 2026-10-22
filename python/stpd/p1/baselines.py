@@ -7,6 +7,7 @@ scores. RNG belongs to the complete Agent's ACK commit, never to model scoring.
 from __future__ import annotations
 
 import copy
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -106,7 +107,10 @@ class BaselineModel:
         if not rows:
             return []
         features = torch.tensor(vectorize(observation, self.categories), dtype=torch.float32)
-        return (features @ self.weights).tolist()
+        scores = features @ self.weights
+        if not bool(torch.isfinite(scores).all()):
+            raise ValueError("non-finite baseline scores")
+        return scores.tolist()
 
     def state(self) -> dict[str, Any]:
         return {
@@ -119,6 +123,90 @@ class BaselineModel:
     @classmethod
     def from_state(cls, state: dict[str, Any]) -> BaselineModel:
         return cls(state["algorithm"], state["categories"], state["counts"], state["weights"])
+
+
+def validate_checkpoint_state(
+    state: dict[str, Any], config: BaselineConfig, train_points: int
+) -> None:
+    """The same progress/model inventory is checked by resume and result readers."""
+    batches = math.ceil(train_points / config.batch_size)
+    epochs = config.max_epochs if config.algorithm == "linear" else 1
+    max_fit = (
+        config.steps(train_points)
+        if config.algorithm == "linear"
+        else (batches if config.algorithm == "frequency" else 1)
+    )
+    for key, maximum in (
+        ("step", config.steps(train_points)),
+        ("fit_steps", max_fit),
+        ("epoch", epochs),
+        ("cursor", train_points),
+    ):
+        if type(state.get(key)) is not int or not 0 <= state[key] <= maximum:
+            raise ValueError("invalid baseline checkpoint progress")
+    order = state.get("order")
+    if (
+        not isinstance(order, list)
+        or any(type(i) is not int for i in order)
+        or sorted(order) != list(range(train_points))
+    ):
+        raise ValueError("invalid baseline checkpoint order")
+    phase = state.get("phase")
+    if phase not in {"training", "trained", "completed"}:
+        raise ValueError("invalid baseline checkpoint phase")
+    if phase == "training":
+        expected = state["epoch"] * batches + math.ceil(state["cursor"] / config.batch_size)
+        if (
+            state["epoch"] >= epochs
+            or state["cursor"] >= train_points
+            or state["cursor"] % config.batch_size != 0
+            or state["fit_steps"] != expected
+        ):
+            raise ValueError("invalid baseline checkpoint progress")
+    elif (
+        state["epoch"] != epochs or state["cursor"] != train_points or state["fit_steps"] != max_fit
+    ):
+        raise ValueError("incomplete baseline checkpoint claimed trained")
+    if (
+        config.algorithm == "linear"
+        and state["step"] != state["fit_steps"]
+        or config.algorithm != "linear"
+        and state["step"] != 0
+    ):
+        raise ValueError("baseline optimizer updates differ from actual work")
+    if config.algorithm == "random" and phase == "training" and state["fit_steps"] != 0:
+        raise ValueError("random Agent has no partial fitting")
+    model = BaselineModel.from_state(state["model"])
+    if model.algorithm != config.algorithm:
+        raise ValueError("baseline checkpoint algorithm differs")
+    best = state.get("best_model")
+    if best is not None:
+        selected = BaselineModel.from_state(best)
+        if (
+            selected.algorithm != model.algorithm
+            or selected.categories != model.categories
+            or type(state.get("best_step")) is not int
+            or not 0 <= state["best_step"] <= state["step"]
+        ):
+            raise ValueError("baseline selected model binding differs")
+    if (
+        config.algorithm == "linear"
+        and state["epoch"] > 0
+        and (
+            best is None
+            or state["best_step"] < 1
+            or state["best_step"] % batches != 0
+            or type(state.get("best_loss")) is not float
+            or not math.isfinite(state["best_loss"])
+        )
+    ):
+        raise ValueError("baseline DEV selection is missing or invalid")
+    if phase != "completed" and state.get("test_result") is not None:
+        raise ValueError("baseline TEST was evaluated before selection completed")
+    if phase == "completed" and (best is None or not isinstance(state.get("test_result"), dict)):
+        raise ValueError("baseline completed state lacks selected model or evaluation")
+    if (config.algorithm == "linear") != isinstance(state.get("optimizer"), dict):
+        raise ValueError("baseline optimizer inventory differs")
 
 
 class BaselineTrainer:
@@ -168,6 +256,11 @@ class BaselineTrainer:
                     "baseline_spec.py",
                     "numerics.py",
                 )
+            },
+            "runtime": {
+                "torch": str(torch.__version__),
+                "dtype": "float32",
+                "cpu_threads": config.cpu_threads,
             },
         }
 
@@ -238,6 +331,7 @@ class BaselineTrainer:
             "loss": loss_value,
             "phase": self.phase,
             "optimizer": "Adam+explicit_L2" if self.optimizer else None,
+            "dev": self.dev_result if self.cursor == len(self.order) or self.cursor == 0 else None,
         }
 
     def evaluate(
@@ -311,17 +405,13 @@ class BaselineTrainer:
         model = BaselineModel.from_state(state["model"])
         if model.algorithm != self.config.algorithm or model.categories != self.model.categories:
             raise ValueError("baseline checkpoint model binding differs")
-        if (
-            type(state["step"]) is not int
-            or not 0 <= state["step"] <= self.config.steps(len(self.order))
-            or state["phase"] not in {"training", "trained", "completed"}
-            or sorted(state["order"]) != list(range(len(self.order)))
-        ):
-            raise ValueError("invalid baseline checkpoint progress")
+        validate_checkpoint_state(state, self.config, len(self.order))
         self.model = model
         with torch.no_grad():
             self.parameter.copy_(model.weights)
         if self.optimizer is not None:
+            if state["optimizer"]["param_groups"] != self.optimizer.state_dict()["param_groups"]:
+                raise ValueError("baseline optimizer configuration differs")
             self.optimizer.load_state_dict(state["optimizer"])
         elif state["optimizer"] is not None or state["step"] != 0:
             raise ValueError("non-optimizer baseline claimed optimizer updates")

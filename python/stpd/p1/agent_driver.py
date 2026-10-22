@@ -117,6 +117,9 @@ def serve_session(
             _, value, scores, version, consumption, advanced = pending
             if value["observation"]["status"] == "terminal":
                 selected = None
+            elif not reuse_selection:
+                # Preserve the deterministic M-std program's original next-time argmax.
+                selected = None
             elif reuse_selection and not advanced and committed is not None:
                 selected = committed[2]
             else:
@@ -136,6 +139,10 @@ def serve_session(
             if value["observation"]["status"] == "terminal":
                 directive = {"type": "close", "reason": "native_terminal_observed"}
             else:
+                if not scores:
+                    raise ValueError("nonterminal P1 observation has no legal choices")
+                if not reuse_selection:
+                    selected = select(scores)
                 directive = {
                     "type": "act",
                     "basis_acquisition_id": value["acquisition_id"],

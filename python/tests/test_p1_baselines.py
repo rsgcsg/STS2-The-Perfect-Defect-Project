@@ -32,7 +32,7 @@ from stpd.p1.baseline_worker import (
 from stpd.p1.baseline_workload import prepare_baseline_run, verify_baseline_run
 from stpd.p1.baselines import BaselinePopulation, BaselineTrainer
 from stpd.p1.training import maximum_difference
-from stpd.workers.checkpoint_codec import decode_checkpoint
+from stpd.workers.checkpoint_codec import decode_checkpoint, encode_checkpoint
 
 
 def populations():
@@ -319,25 +319,29 @@ def test_linear_selects_dev_best_before_test_and_exports_selected_weights(tmp_pa
 @pytest.mark.parametrize("algorithm", ["random", "frequency", "linear"])
 def test_worker_pause_resume_uses_same_run_checkpoint_and_exact_result(tmp_path, algorithm):
     store = store_at(tmp_path / "store")
-    projections = [projection_fixture(store, "source-" + str(i))[0] for i in range(3)]
+    projections = [projection_fixture(store, "source-" + str(i))[0] for i in range(6)]
     snapshot = explicit_snapshot(store, projections)
     run = prepare_baseline_run(
         store,
         snapshot.artifact_id,
         PRODUCER,
-        BaselineConfig(algorithm=algorithm, max_epochs=2),
+        BaselineConfig(algorithm=algorithm, max_epochs=2, batch_size=1),
         "a" * 32,
     )
     reporter = ObjectStoreRunReporter(store, store.blobs)
 
     class Pause:
+        calls = 0
+
         def requested_action(self):
-            return "pause"
+            self.calls += 1
+            return "continue" if self.calls == 1 else "pause"
 
     paused = execute_baseline_run(
         store, reporter, run.artifact_id, PRODUCER, attempt_id="first", control=Pause()
     )
-    assert paused.state == "paused" and paused.optimizer_updates == 0
+    assert paused.state == "paused"
+    assert paused.optimizer_updates == (1 if algorithm == "linear" else 0)
     resumed = execute_baseline_run(
         store,
         reporter,
@@ -364,3 +368,22 @@ def test_worker_pause_resume_uses_same_run_checkpoint_and_exact_result(tmp_path,
         )
         == 0
     )
+
+
+@pytest.mark.parametrize("corruption", ["cursor", "best_step", "early_test", "optimizer_lr"])
+def test_resume_rejects_inconsistent_progress_selected_model_and_optimizer(corruption):
+    config = BaselineConfig(algorithm="linear", max_epochs=2)
+    trainer = BaselineTrainer(populations(), "snapshot", config)
+    trainer.advance()
+    state = decode_checkpoint(trainer.checkpoint())
+    if corruption == "cursor":
+        state["cursor"] = -1
+    elif corruption == "best_step":
+        state["best_step"] = 100
+    elif corruption == "early_test":
+        state["test_result"] = {"N": 1}
+    else:
+        state["optimizer"]["param_groups"][0]["lr"] = 1.0
+    replacement = BaselineTrainer(populations(), "snapshot", config)
+    with pytest.raises(ValueError):
+        replacement.restore(encode_checkpoint(state))

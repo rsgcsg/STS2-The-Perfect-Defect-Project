@@ -29,10 +29,12 @@ from stpd.workers.structured_control import (
 )
 
 from .baseline_export import export_model, input_spec, load_model
+from .baseline_features import FEATURE_SPEC
 from .baseline_spec import CHECKPOINT_SCHEMA, MODEL_SCHEMA
 from .baseline_workload import BaselineWorkload, populations_from_snapshot, verify_baseline_run
-from .baselines import BaselineModel, BaselineTrainer
+from .baselines import BaselineModel, BaselineTrainer, validate_checkpoint_state
 from .data import digest
+from .spec import TARGET_SPEC
 
 
 @dataclass(frozen=True)
@@ -61,10 +63,18 @@ def verify_baseline_checkpoint(
     state = decode_checkpoint(raw)
     identity = state.get("identity", {})
     model = BaselineModel.from_state(state["model"])
+    try:
+        validate_checkpoint_state(
+            state, workload.config, workload.training.parameters.value()["partition_N"]["train"]
+        )
+    except ValueError as error:
+        raise BoundaryError("p1_baseline", "checkpoint_content_binding_mismatch") from error
     if (
         state.get("schema") != CHECKPOINT_SCHEMA
         or identity.get("snapshot_id") != workload.snapshot.artifact_id
         or identity.get("config") != workload.config.to_dict()
+        or identity.get("target_spec") != TARGET_SPEC
+        or identity.get("feature_spec") != FEATURE_SPEC
         or identity.get("categories_sha256")
         != workload.training.parameters.value()["features_sha256"]
         or input_spec(model) != workload.training.parameters.value()["input_spec"]
@@ -133,6 +143,10 @@ def verify_baseline_result(
         or model.parent("training_input") != workload.training.artifact_id
         or model.parent("checkpoint") != checkpoint.manifest.artifact_id
         or info.get("optimizer_updates") != checkpoint.state["step"]
+        or info.get("fit_steps") != checkpoint.state["fit_steps"]
+        or info.get("selected_step") != checkpoint.state["best_step"]
+        or metadata.get("selected_step") != checkpoint.state["best_step"]
+        or metadata.get("algorithm") != workload.config.algorithm
         or metadata.get("input_spec") != workload.training.parameters.value()["input_spec"]
     ):
         raise BoundaryError("p1_baseline", "model_result_binding_mismatch")
@@ -154,6 +168,7 @@ def verify_baseline_result(
         evaluation.kind != "offline_evaluation"
         or evaluation.producer != workload.run.producer
         or evaluation.parent("model") != model.artifact_id
+        or evaluation.parameters.value().get("schema") != "stpd/p1-baseline-N-evaluation-1"
         or evaluation.parameters.value().get("test") != checkpoint.state["test_result"]
         or evaluation.parameters.value().get("dev") != checkpoint.state["dev_result"]
     ):
