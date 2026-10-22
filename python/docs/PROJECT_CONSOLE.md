@@ -1021,6 +1021,8 @@ python -m spireagent.workbench project p1-data --config PROJECT --action freeze 
 设 `reserve: true`，才沿原 ledger 认领用途。输出 `snapshot_id` 是不可变成员/Input 版本；
 以后新增录制或 prepare 不会改变已在训 Run。冻结后由正式 reader 重载，不授 Human、
 独立数据或研究资格。网络响应未知时不自动重投冻结；先按所选成员查已发布 Snapshot。
+数据 CLI 完整响应限16MiB，准备/冻结请求限1MiB；`local_response_too_large` 明确表示
+响应超过客户端边界，冻结时同样先查原 Snapshot，不能据此自动重投。
 
 ### 同一训练入口的三个对照
 
