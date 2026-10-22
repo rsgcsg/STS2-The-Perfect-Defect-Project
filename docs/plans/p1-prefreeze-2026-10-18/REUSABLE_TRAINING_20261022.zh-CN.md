@@ -1,9 +1,11 @@
 # 可复用数据与四 Agent 训练工程轮
 
 2026-10-22 Brisbane 19:13:36 开工，22:13:36 硬截止（UTC 12:13:36）；
-21:43:36 功能截止，留 30 分钟验证与收口。当前目标是持续新增数据可以增量准备、
+21:43:36 功能截止，留 30 分钟验证与收口。本轮目标是持续新增数据可以增量准备、
 冻结输入可以沿正常训练和产物链复用，随机/频率/线性/M-std 共享应用入口。
 本轮不启动正式长训，不改变正在录制的应用、Mod 或在用训练组合。
+本文件保留这次有界任务的交付与缺口，不自动派发后续工作。源改进已交，
+“除数据外全部ready”尚未达成；正式四Agent训练和同条件评价未开始。
 
 ## 基线、负责人和范围
 
@@ -59,8 +61,8 @@ fixture，不是实际安装或游戏运行。真实 producer 生成的7210唯�
 额外source点漏算，均修fixture并保留失败XML，不把这些失败称产品性能问题。
 baseline缺tokenizers在正常preflight拒绝、无operation或manifest写；无需safetensors。
 
-PR #212 已建立，source review接受范围仍只到其准确证据层；剩余是最新源码所选门禁。
-所选路由为full，不能借本轮focused tests声称portable全过。正常prepared数据响应限16MiB、
+PR #212 已建立，source review接受范围仍只到其准确证据层；精确PR head和门禁须查live ref。
+所选路由为full，不能借focused tests或旧head声称新导航候选portable全过。正常prepared数据响应限16MiB、
 请求限1MiB，超限及未知冻结结果先查原Snapshot，不自动重投。日常App/录制/配置未变。
 所有本机恢复沿用累计wall/scratch/attempt预算，不表示本机美元收费。
 
@@ -89,6 +91,15 @@ strict通过。B补丁只增加metadata参数注解和JSON descriptor类型声�
 改变；集成后按Python项目显式配置复验全量mypy并由最新head自然触发fresh full CI。
 本机完整424文件strict复验因缺transformers/peft/duckdb报5处环境导入错误；
 38个变更源文件strict亦有4处同类缺依赖，均保留原log，不改ignore或称通过。
+随后功能候选 `e38a388d79b094d2aa08345ddde2e6ddd49b9044` 的
+[CI39764176405](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/39764176405)
+两Linux shard与portable聚合实际通过：标准all-extras环境strict424文件通过，
+Python合计4798 passed、5 skipped、93 subtests。跳过分别是实际CUDA、Linux root
+UID资格、Windows文件共享、可选已安装Runtime包、Windows batch执行，均不算通过。
+独立docs/repository/Windows/windows-failures jobs按workflow路由跳过；repository
+等源门由full阶段执行。runner merge head `f00409cd` 的tree `b4e54520` 与e38一致，
+两个runner前后clean。这是source/test证据，未授安装、native、Human或模型效果。
+最后导航收口另版提交，其自身检查只以PR最新head为准，不提前声明通过。
 最终新增类型注解/文档的producer与64云producer分开，未为类型注解重建镜像或再训练。
 真实全量remote start仍同步传整个父闭包，可能超过600秒响应；未知只查原intent，
 未实现durable transfer-phase或异步prepare。本机Application/Scheduler仍需运行，

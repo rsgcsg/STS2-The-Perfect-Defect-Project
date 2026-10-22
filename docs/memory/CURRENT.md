@@ -1,11 +1,14 @@
-# 当前状态：可复用数据与四 Agent 训练工程轮执行中
+# 当前状态：可复用训练源交付与验证入口
 
 Resolve live GitHub refs before relying on this snapshot. 最新用户原话和现场证据 override this file。
 
 2026-10-22 Brisbane，本轮基线 `origin/develop=1e5d83100a8222f211a0e633120ea8123dd06427`。
-当前目标、写入 owner、授权、验收和硬截止只从
-[可复用训练当前任务](../plans/p1-prefreeze-2026-10-18/REUSABLE_TRAINING_20261022.zh-CN.md)进入。
-本轮 19:13:36 至 22:13:36，21:43:36 功能截止；不启动正式长训、不动用户日常录制。
+源交付在[PR212](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/212)，
+验收范围、owner、原授权与剩余从
+[可复用训练任务](../plans/p1-prefreeze-2026-10-18/REUSABLE_TRAINING_20261022.zh-CN.md)进入。
+功能候选 `e38a388d` 的所选Linux/full聚合通过；后续导航提交的检查以PR实际head为准，
+不借候选通过。原工程窗口19:13:36至22:13:36、21:43:36功能截止不构成自动续派。
+正式四Agent长训与同条件评价未开始；本轮未改变日常录制。继续工作需按新用户范围接续。
 PR211 的录制性能候选仍独立，不能当本轮已合依赖。
 
 下列为[前轮交付](../plans/p1-prefreeze-2026-10-18/FIVEH_EXECUTION_20261022.zh-CN.md)
