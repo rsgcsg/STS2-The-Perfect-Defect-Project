@@ -158,8 +158,12 @@ class Scheduler:
         except ComputeSubmissionUnknown as unknown:
             # A deterministic transport handle is observation capability, never
             # evidence of accepted submission or permission to invoke again.
-            handle = self.provider.restore_handle(unknown.handle.to_dict())
-            if (handle.request != request or handle.target_id != self.provider.target.target_id):
+            try:
+                handle = self.provider.restore_handle(unknown.handle.to_dict())
+                if (handle.request != request
+                        or handle.target_id != self.provider.target.target_id):
+                    raise BoundaryError("scheduler", "submission_handle_mismatch")
+            except (BoundaryError, TypeError, ValueError):
                 self.operations.compute_uncertain(job, token, row["attempt_id"], row["fence"],
                                                   "submission_handle_mismatch")
                 return self._reply("submission_unknown", job)

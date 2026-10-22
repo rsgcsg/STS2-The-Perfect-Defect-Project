@@ -20,7 +20,7 @@ from spireagent.compute import ComputeTermination
 from spireagent.json_boundary import BoundaryError, decode_json, json_bytes, object_fields
 from spireagent.source import source_identity
 from spireagent.ssh_compute import SshCall, SshTarget
-from stpd.cloud_jobs.contracts import ComputeReceipt
+from stpd.cloud_jobs.contracts import ComputeReceipt, ComputeRequest
 
 
 def atomic_json(path: Path, value: object) -> None:
@@ -186,6 +186,12 @@ def supervise(directory: Path) -> None:
         child: subprocess.Popen[Any] | None = None
         result = envelope(handle, "failed", error="execution_failed")
         try:
+            if (directory != Path(target.state_directory) / handle.target_id / handle.call_id
+                    or handle.target_id != target.target_id
+                    or handle.request.producer != target.producer
+                    or ComputeRequest.decode(decode_json((directory / "request.json").read_bytes()))
+                    != handle.request):
+                raise BoundaryError("ssh", "original_invocation_mismatch")
             verify_target(target)
             environment = private_environment(Path(target.private_env))
             with (directory / "worker-output.json").open("wb") as output:

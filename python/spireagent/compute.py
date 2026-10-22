@@ -70,7 +70,8 @@ class ComputeTermination:
         digest(self.request_id, "compute_termination.request_id")
         text(self.attempt_id, "compute_termination.attempt_id", maximum=128)
         text(self.call_id, "compute_termination.call_id", maximum=256)
-        if (self.outcome not in {"failed", "cancelled", "timeout"}
+        if (not isinstance(self.outcome, str)
+                or self.outcome not in {"failed", "cancelled", "timeout"}
                 or self.process_exited is not True):
             raise BoundaryError("compute_termination", "confirmed_terminal_process_required")
 

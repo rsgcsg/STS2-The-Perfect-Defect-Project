@@ -54,7 +54,7 @@ class SshTarget:
             raise BoundaryError("ssh_target", "host_alias_required")
         if type(self.timeout_seconds) is not int or not 1 <= self.timeout_seconds <= 86400:
             raise BoundaryError("ssh_target", "timeout_limit")
-        if self.gpu not in {"none", "L40S"}:
+        if not isinstance(self.gpu, str) or self.gpu not in {"none", "L40S"}:
             raise BoundaryError("ssh_target", "explicit_single_gpu_required")
         if any(PurePosixPath(getattr(self, field)).is_relative_to(PurePosixPath(self.checkout))
                for field in ("state_directory", "private_env")):
@@ -176,7 +176,8 @@ class SshProvider:
             result = self._exchange("poll", original)
         except (OSError, ValueError, subprocess.SubprocessError):
             raise BoundaryError("ssh", "result_unavailable") from None
-        if result["state"] == "running" and result["error"] is None and result["receipt"] is None:
+        if (result["state"] == "running" and result["error"] is None
+                and result["receipt"] is None and result.get("termination") is None):
             return None
         if result["state"] != "completed" or result["error"] is not None:
             if result.get("termination") is not None:
@@ -190,6 +191,8 @@ class SshProvider:
             if code not in {"execution_timeout", "execution_cancelled", "execution_failed"}:
                 code = "result_unavailable"
             raise BoundaryError("ssh", code)
+        if result.get("termination") is not None:
+            raise BoundaryError("ssh", "terminal_response_mismatch")
         receipt = ComputeReceipt.decode(result["receipt"])
         receipt.bind(original.request)
         return receipt
