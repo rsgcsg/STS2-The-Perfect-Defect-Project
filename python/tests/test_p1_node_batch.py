@@ -25,16 +25,23 @@ def deterministic_cpu(request):
     threads = torch.get_num_threads()
     deterministic = torch.are_deterministic_algorithms_enabled()
     warn_only = torch.is_deterministic_algorithms_warn_only_enabled()
+    settings = (torch.backends.cuda.matmul.allow_tf32, torch.backends.cudnn.allow_tf32,
+                torch.backends.cudnn.benchmark)
     torch.set_num_threads(2)
     torch.use_deterministic_algorithms(True)
     try:
         device = getattr(request.node, "callspec", None)
         if device is not None and device.params.get("device", "cpu").startswith("cuda"):
             assert os.environ.get("CUBLAS_WORKSPACE_CONFIG") in {":4096:8", ":16:8"}
+            torch.backends.cuda.matmul.allow_tf32 = False
+            torch.backends.cudnn.allow_tf32 = False
+            torch.backends.cudnn.benchmark = False
         yield
     finally:
         torch.set_num_threads(threads)
         torch.use_deterministic_algorithms(deterministic, warn_only=warn_only)
+        (torch.backends.cuda.matmul.allow_tf32, torch.backends.cudnn.allow_tf32,
+         torch.backends.cudnn.benchmark) = settings
 
 
 def rng_state(device):
