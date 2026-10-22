@@ -145,6 +145,9 @@ export function convertNativeSemanticOriginals(source, sdk, core, options = {}) 
     const nextMatch = core.matchNativeSemanticChoice(state, nextBasis, following);
     if (!['matched', 'ambiguous', 'continuation_required'].includes(nextMatch.status)) return match;
     const matches = Object.entries(match.reduction.lowering).filter(([, lowering]) => {
+      // Native Skip only returns to the reward page: the player may reopen it.
+      // As in sourceMapping, it cannot attest an irreversible P1 decline.
+      if (lowering.reward_intention?.kind === 'decline') return false;
       if (lowering.first?.bound_action_id !== row.bound_action.bound_action_id
         || lowering.first.verb !== row.bound_action.verb || lowering.follow.length !== 1
         || lowering.follow[0].optional) return false;

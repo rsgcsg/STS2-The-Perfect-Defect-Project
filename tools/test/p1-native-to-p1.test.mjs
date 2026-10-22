@@ -229,6 +229,17 @@ test('native reward opening never guesses a card without its original accepted s
   assert.equal(report.actions[0].choice_id, null);
 });
 
+test('physical Skip without a qualified return cannot attest an irreversible P1 decline', () => {
+  const { source, child } = nativeRewardSpan();
+  source.events[2].bound_action = child.snapshot.bound_actions.actions.find(action => action.bound_action_id === 'skip');
+  source.events[3].successor_basis = null;
+  const report = convertNativeSemanticOriginals(source, sdk, core);
+  assert.equal(report.actions[0].choice_id, null);
+  assert.equal(report.actions[0].continuation_decision_id, null);
+  assert.equal(report.complete, false);
+  assert.ok(report.issues.some(issue => issue.reason === 'accepted_action_needs_intention_or_continuation'));
+});
+
 test('native reward continuation cannot borrow a foreign original owner or receipt', () => {
   for (const defect of ['owner', 'receipt']) {
     const { source, child, retain } = nativeRewardSpan();
