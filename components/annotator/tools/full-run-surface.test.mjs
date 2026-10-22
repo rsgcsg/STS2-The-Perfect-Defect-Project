@@ -536,3 +536,15 @@ test("matched synchronous Commit admits only its exact unclaimed scope before pe
   assert.match(code, /if \(!accepted\) return false/);
   assert.ok(code.indexOf("bool accepted = ObserveAcceptedSemanticUiAction") < code.indexOf("return PersistTrackerMutationOrUnknown"));
 });
+
+test("recording reset clears both carrier directions and merchant invocations scope generic selectors", () => {
+  const reset = section(runtime, "private static void ResetNativeActionTrackingUnsafe()", "private static IReadOnlyList<string> LifecycleBlockers");
+  const roots = section(patches, "internal static class NativeUiCompletionRootBindings", "internal static class NativeTreasureChestChoicePatch");
+  const merchant = section(patches, "internal static class NativeShopPurchasePatch", "internal static class NativeShopRoomOpenPatch");
+  assert.match(reset, /NativeUiCompletionRootBindings\.Reset\(\)/u);
+  assert.match(roots, /Reset\(\) => Bindings\.Clear\(\)/u);
+  assert.match(merchant, /RememberOrFailClosed\([\s\S]*?EnterGenericSelectorParent\(/u);
+  assert.match(merchant, /EnterGenericSelectorParent\(\s*exactRoot!, __instance, nativeActionType\)/u);
+  assert.match(merchant, /__state\.NestedSelectorScope\?\.Dispose\(\)/u);
+  assert.doesNotMatch(merchant, /Kifuda|WoodenToken/u);
+});

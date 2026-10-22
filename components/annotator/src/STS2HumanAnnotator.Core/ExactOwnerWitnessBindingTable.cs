@@ -15,6 +15,17 @@ public sealed class ExactOwnerWitnessBindingTable<T>
     private readonly ConditionalWeakTable<T, OwnerBinding> _owners = new();
     private readonly ExactWitnessBindingTable<T> _witnesses = new();
 
+    /// <summary>End a recording lifetime, including carriers whose native owner
+    /// outlives the run (for example RunManager after victory without ActEntered).</summary>
+    public void Clear()
+    {
+        lock (_gate)
+        {
+            _owners.Clear();
+            _witnesses.Clear();
+        }
+    }
+
     public bool TryBind(T? owner, string? witnessId)
     {
         if (owner == null || string.IsNullOrWhiteSpace(witnessId))
@@ -30,7 +41,11 @@ public sealed class ExactOwnerWitnessBindingTable<T>
         }
     }
 
-    public bool Contains(T? owner) => owner != null && _owners.TryGetValue(owner, out _);
+    public bool Contains(T? owner)
+    {
+        lock (_gate)
+            return owner != null && _owners.TryGetValue(owner, out _);
+    }
 
     public bool TryGetWitness(T? owner, out string? witnessId)
     {
@@ -42,8 +57,11 @@ public sealed class ExactOwnerWitnessBindingTable<T>
                 && (witnessId = binding.WitnessId) != null;
     }
 
-    public bool TryGetOwner(string witnessId, out T? owner) =>
-        _witnesses.TryGet(witnessId, out owner);
+    public bool TryGetOwner(string witnessId, out T? owner)
+    {
+        lock (_gate)
+            return _witnesses.TryGet(witnessId, out owner);
+    }
 
     public string? Take(T? owner)
     {

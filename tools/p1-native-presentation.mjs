@@ -4,6 +4,10 @@
 const complete = value => value?.capture_status === 'complete' && value.missing.length === 0
   && value.snapshot.completeness.status === 'complete';
 const surface = value => value.snapshot.interaction.content.surface;
+const reversibleSelectorCallbacks = new Map([
+  ['native_combat_pile_selection', 'NCombatPileCardSelectScreen'],
+  ['native_simple_card_selection', 'NSimpleCardSelectScreen']
+].map(([kind, screen]) => [kind, `MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.${screen}.OnCardClicked`]));
 // Deck-card previews use the same zero-label round trip as upgrade previews.
 // Bind the actual native selector callbacks as well as the public request; a
 // cancelled purchase or a different selector is not a preview return.
@@ -11,6 +15,9 @@ function nativeDeckPreviewPair(row, next, end, secondEnd) {
   const prefix = 'MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.NDeckCardSelectScreen.';
   if (row.native_action_type !== `${prefix}OnCardClicked`
       || next.native_action_type !== `${prefix}PreviewCancel.Released`) return false;
+  return exactNonterminalSelectorPair(row, next, end, secondEnd);
+}
+function exactNonterminalSelectorPair(row, next, end, secondEnd) {
   if (!['session_id', 'timeline_id', 'run_id'].every(key =>
     [next, end, secondEnd].every(item => item[key] === row[key]))) return false;
   if (!['selector_owner_witness_id', 'parent_action_witness_id', 'parent_owner_witness_id'].every(key =>
@@ -66,6 +73,24 @@ export function classifyNativePresentation({ row, next, terminalById, basis, sta
           && complete(afterEnd) && surface(afterEnd).screen_entity_id === first.screen_entity_id
           && core.compareOriginalPresentationBases(afterEnd, middle).equal) {
         kind = 'selector_preview_return'; owner = first.request_entity_id;
+      } else if (reversibleSelectorCallbacks.has(first.kind) && first.stage === 'selecting'
+          && second.kind === first.kind && second.stage === first.stage
+          && typeof first.request_entity_id === 'string' && typeof first.screen_entity_id === 'string'
+          && first.screen_entity_id === second.screen_entity_id && first.request_entity_id === second.request_entity_id
+          && row.native_action_type === reversibleSelectorCallbacks.get(first.kind)
+          && next.native_action_type === row.native_action_type
+          && row.bound_action.verb === 'select' && next.bound_action.verb === 'deselect'
+          && typeof row.bound_action.subject_referent_id === 'string'
+          && row.bound_action.subject_referent_id === next.bound_action.subject_referent_id
+          && typeof row.native_witness?.selected_subject_witness_id === 'string'
+          && row.native_witness.selected_subject_witness_id === next.native_witness?.selected_subject_witness_id
+          && exactNonterminalSelectorPair(row, next, end, secondEnd)
+          && !first.selected_card_entity_ids?.includes(row.bound_action.subject_referent_id)
+          && second.selected_card_entity_ids?.length === first.selected_card_entity_ids?.length + 1
+          && second.selected_card_entity_ids.includes(row.bound_action.subject_referent_id)
+          && first.selected_card_entity_ids.every(id => second.selected_card_entity_ids.includes(id))
+          && complete(afterEnd) && core.compareOriginalPresentationBases(afterEnd, middle).equal) {
+        kind = 'selector_select_deselect'; owner = first.request_entity_id;
       } else if (first.kind === 'reward_claim' && row.bound_action.verb === 'activate'
           && second.kind === 'card_reward_selection' && ['skip', 'activate'].includes(next.bound_action.verb)) {
         const group = first.rewards?.find(group => group.entity_id === row.bound_action.subject_referent_id);

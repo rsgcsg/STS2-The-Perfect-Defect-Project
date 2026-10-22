@@ -591,6 +591,13 @@ rewrite old unknown records. The offline consumer still needs complete original
 before/selector/after information and an equal full public state; cancellation
 creates no successful label and does not itself establish replay continuity.
 
+The explicit receipt identifies the final cancel by exact child decision/witness,
+not its position after the parent. Earlier preview/return pairs are retained and
+must each prove the same selector/parent, nonterminal accepted completions and
+equal whole public originals. An unmatched input or changed/incomplete pair is
+blocking; it cannot be skipped to explain a later cancel. Legacy Smith unknown
+compatibility remains restricted to the original adjacent case.
+
 ## Queued execution catalog phase
 
 A `game_action` or an action with `native_queue_id` requires its execution

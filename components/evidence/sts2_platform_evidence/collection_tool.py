@@ -66,7 +66,7 @@ const result = await convertP1NativeBundle({bundle:process.argv[3],runId:process
 writeFileSync(process.argv[6],JSON.stringify(result.target_output,null,2)+'\\n',{flag:'wx'});
 console.log(JSON.stringify({blocking_issues:result.blocking_issues,
  whole_run_complete:result.whole_run_recording_complete??null,
- source_conversion_complete:result.source_conversion_complete??null}));
+ source_conversion_complete:result.complete}));
 """
 
 _P1_DERIVE = """

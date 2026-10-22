@@ -16,6 +16,12 @@ public sealed class ExactWitnessBindingTable<T>
     private readonly Dictionary<string, WeakReference<T>> _bindings =
         new(StringComparer.Ordinal);
 
+    public void Clear()
+    {
+        lock (_gate)
+            _bindings.Clear();
+    }
+
     public bool TryBind(string witnessId, T owner)
     {
         if (string.IsNullOrWhiteSpace(witnessId) || owner == null)

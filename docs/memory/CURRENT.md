@@ -1,4 +1,11 @@
-# 当前交付：近期未合并工作的组合审查与 develop 集成
+# 当前：P1 录制、转换与旧投影修复
+
+用户新要求“做一下真实修复，以及考虑之前修复过的有没有同类问题”。
+本轮唯一任务为[录制与数据修复](../plans/p1-prefreeze-2026-10-18/DATA_RECORDING_REPAIR_20261022.zh-CN.md)，
+root 在 `origin/develop=89106561` 的单一 topic 修复三份问题来源、复核同机制和另版转换旧投影。
+不补原事实、不改历史产物，不训练/付费/删资产；准确当前候选、验证和停止点见该任务。
+
+## 历史：近期未合并工作的组合审查与 develop 集成
 
 Resolve live GitHub refs before relying on this snapshot. 最新用户原话和现场证据 override this file。
 

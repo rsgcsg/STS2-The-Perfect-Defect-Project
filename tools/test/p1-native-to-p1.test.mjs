@@ -1279,3 +1279,117 @@ test('display animation open and Skip remain zero-label browsing with literal un
   assert.ok(report.actions.every(action => action.choice_id === null));
   assert.equal(report.strict_managed_comparison, 'not_run');
 });
+
+async function previewThenExplicitCancel(kind, defect = null) {
+  const f = await (kind === 'smith' ? explicitSmithSettlingExample() : explicitMerchantCancellationExample());
+  const { source, middle, retain } = f;
+  const child = source.events[1], prefix = child.native_action_type.replace('Close.Released', '');
+  const preview = structuredClone(middle), s = preview.snapshot.interaction.content.surface;
+  const selected = middle.snapshot.bound_actions.actions.find(action => action.verb === 'select');
+  s.stage = preview.snapshot.interaction.stage = s.selector_request.stage = 'preview';
+  s.selected_card_entity_ids = s.selector_request.selected_entity_ids = [selected.subject_referent_id];
+  s.selected_count = 1; s.cards[0].is_selected = s.preview_options[0].before.is_selected = true;
+  s.can_confirm = s.selector_request.can_finish_now = true; s.selector_request.can_decline_now = false;
+  s.selectable_card_entity_ids = []; s.current_controls = [{ entity_id: 'confirm', operation: 'confirm' }, { entity_id: 'cancel', operation: 'cancel_preview' }];
+  const back = { ...structuredClone(child.bound_action), bound_action_id: 'preview-back', subject_referent_id: 'cancel' };
+  preview.snapshot.bound_actions.actions = [back, { ...structuredClone(back), bound_action_id: 'preview-confirm', verb: 'confirm', subject_referent_id: 'confirm' }];
+  preview.snapshot.bound_actions.total_count = preview.snapshot.bound_actions.materialized_count = 2;
+  const restored = structuredClone(middle);
+  if (defect === 'changed_intermediate') restored.snapshot.persistent.content.player.gold++;
+  const rows = [['preview-select', middle, selected, preview, 'OnCardClicked'],
+    ['preview-back', preview, back, restored, 'PreviewCancel.Released']].flatMap(([id, before, action, after, callback]) => {
+    const accepted = { ...structuredClone(child), decision_id: id, action_witness_id: id, event_id: id,
+      native_action_type: prefix + callback, basis: retain(before), bound_action: structuredClone(action) };
+    accepted.native_receipt = { kind: 'semantic_ui_accepted', carrier_ref: id,
+      selector_callback: { native_callback: accepted.native_action_type, terminal: false, native_acceptance_proven: true } };
+    const end = { ...structuredClone(source.events[2]), decision_id: id, action_witness_id: id, event_id: id + '-end',
+      native_completion: { native_callback: accepted.native_action_type, terminal: false }, successor_basis: retain(after) };
+    return [accepted, end];
+  });
+  if (defect === 'foreign_parent') rows[0].native_witness.parent_action_witness_id = 'foreign';
+  if (defect === 'foreign_selector') rows[2].native_witness.selector_owner_witness_id = 'foreign';
+  if (defect === 'unknown_intermediate') rows[1].phase = 'unknown';
+  if (defect === 'missing_acceptance') rows[0].native_receipt.selector_callback.native_acceptance_proven = false;
+  if (defect === 'missing_intermediate_basis') rows[1].successor_basis = null;
+  source.events.splice(1, 0, ...rows);
+  if (defect === 'unpaired_input') source.events.splice(3, 2);
+  source.events.forEach((event, index) => event.sequence = index + 1);
+  return f;
+}
+for (const kind of ['smith', 'merchant']) {
+  test(`explicit ${kind} cancellation follows its exact child after proved preview return`, async () => {
+    const { source } = await previewThenExplicitCancel(kind), raw = structuredClone(source.events);
+    const report = convertNativeSemanticOriginals(source, sdk, core, { includeTargets: true, targetProjection: nativeTargetProjection });
+    assert.equal(report.complete, true, JSON.stringify(report.blocking_issues));
+    assert.equal(report.accepted_accounting.native_cancelled, 2);
+    assert.equal(report.accepted_accounting.presentation, 2);
+    assert.ok(report.actions.slice(0, 4).every(action => action.choice_id === null));
+    assert.deepEqual(source.events, raw);
+  });
+  for (const defect of ['foreign_parent', 'foreign_selector', 'changed_intermediate', 'unknown_intermediate',
+    'missing_acceptance', 'missing_intermediate_basis', 'unpaired_input'])
+    test(`${kind} cancellation cannot skip ${defect} before its named child`, async () => {
+      const { source } = await previewThenExplicitCancel(kind, defect);
+      const report = convertNativeSemanticOriginals(source, sdk, core);
+      assert.equal(report.native_cancellations.length, 0);
+      assert.equal(report.complete, false);
+    });
+}
+
+async function nativeSelectorReversalExample(kind, defect = null) {
+  const { selectorReversalPair } = await import('../../components/connector/sdk/typescript/test/fixtures/selector-forward.mjs');
+  const f = example(), { source, row, retain, original } = f; source.events.length = 0;
+  const { outer, selected, restored } = selectorReversalPair();
+  for (const value of [outer, selected, restored]) {
+    const s = value.snapshot.interaction.content.surface;
+    s.kind = value.snapshot.interaction.kind = kind;
+    value.snapshot.interaction.content_schema = `sts2.player-environment/surface/${kind}-1`;
+    value.snapshot.interaction.content.context = structuredClone(original.snapshot.interaction.content.context);
+    s.selector_request.family = kind === 'native_combat_pile_selection' ? 'combat_pile' : 'simple';
+    const piles = original.reads.filter(read => read.kind === 'combat_piles');
+    value.reads.push(...structuredClone(piles)); value.snapshot.reads.push(...structuredClone(original.snapshot.reads.filter(read => read.kind === 'combat_piles')));
+    for (const read of value.reads) read.response.expected_snapshot_id = read.response.observed_snapshot_id = value.snapshot.snapshot_id;
+  }
+  if (defect === 'changed_world') restored.snapshot.persistent.content.player.gold++;
+  if (defect === 'changed_read') restored.reads[0].response.content.new_fact = true;
+  if (defect === 'changed_directory') restored.snapshot.bound_actions.actions[0].label += ' changed';
+  const callback = 'MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.'
+    + (kind === 'native_combat_pile_selection' ? 'NCombatPileCardSelectScreen' : 'NSimpleCardSelectScreen') + '.OnCardClicked';
+  for (const [id, before, after, verb] of [['select', outer, selected, 'select'], ['deselect', selected, restored, 'deselect']]) {
+    row('decision_accepted', { decision_id: id, action_witness_id: id, native_action_type: callback,
+      basis: retain(before), bound_action: before.snapshot.bound_actions.actions.find(action => action.verb === verb),
+      native_witness: { selector_owner_witness_id: 'screen-owner', parent_action_witness_id: 'action-parent',
+        parent_owner_witness_id: 'action-parent', selected_subject_witness_id: 'native-card' },
+      native_receipt: { kind: 'semantic_ui_accepted', carrier_ref: id,
+        selector_callback: { native_callback: callback, terminal: false, native_acceptance_proven: true } } });
+    row('lifecycle', { decision_id: id, action_witness_id: id, phase: 'finished',
+      native_completion: { native_callback: callback, terminal: false }, successor_basis: retain(after) });
+  }
+  if (defect === 'foreign_owner') source.events[2].native_witness.selector_owner_witness_id = 'foreign';
+  if (defect === 'foreign_parent') source.events[2].native_witness.parent_action_witness_id = 'foreign';
+  if (defect === 'other_card') source.events[2].bound_action.subject_referent_id = 'second-original-card';
+  if (defect === 'terminal') source.events[3].native_completion.terminal = true;
+  if (defect === 'unknown') source.events[3].phase = 'unknown';
+  if (defect === 'missing_basis') source.events[3].successor_basis = null;
+  return f;
+}
+for (const kind of ['native_combat_pile_selection', 'native_simple_card_selection']) {
+test(`same ${kind} card select/deselect is a proved zero-label presentation round trip`, async () => {
+  const { source } = await nativeSelectorReversalExample(kind);
+  const report = convertNativeSemanticOriginals(source, sdk, core, { includeTargets: true, targetProjection: nativeTargetProjection });
+  assert.equal(report.native_presentations.length, 1, JSON.stringify(report.blocking_issues));
+  assert.equal(report.native_presentations[0].kind, 'selector_select_deselect');
+  assert.equal(report.native_presentations[0].comparison.equal, true);
+  assert.equal(report.accepted_accounting.presentation, 2);
+  assert.equal(report.blocking_issues.length, 0);
+  assert.ok(report.actions.every(action => action.choice_id === null));
+  assert.equal(report.target_output.points.filter(point => point.mask.N).length, 0);
+});
+for (const defect of ['foreign_owner', 'foreign_parent', 'other_card', 'terminal', 'unknown', 'missing_basis',
+  'changed_world', 'changed_read', 'changed_directory']) test(`${kind} reversal cannot erase ${defect}`, async () => {
+  const { source } = await nativeSelectorReversalExample(kind, defect);
+  const report = convertNativeSemanticOriginals(source, sdk, core);
+  assert.equal(report.accepted_accounting.presentation, 0);
+  assert.equal(report.complete, false);
+});
+}

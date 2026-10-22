@@ -193,9 +193,7 @@ export function convertNativeSemanticOriginals(source, sdk, core, options = {}) 
       if (transaction?.contextIds.has(row.decision_id)) match = { ...match, status: 'transaction_context',
         reason: 'native_selector_uncommitted_edit_context', choice_id: null, lowering: null };
       if (!awaitsExecution && !selectorCancellationByDecision.has(row.decision_id)) {
-        const index = acceptedRows.indexOf(row);
-        const span = classifyNativeSelectorCancellation({ row, child: acceptedRows[index + 1],
-          restored: acceptedRows[index + 2], terminalById, basis, state, core });
+        const span = classifyNativeSelectorCancellation({ row, acceptedRows, terminalById, basis, state, core });
         if (span) {
           span.before.observation = core.reduce(state, span.before.basis).observation;
           span.after.observation = core.reduce(state, span.after.basis).observation;
