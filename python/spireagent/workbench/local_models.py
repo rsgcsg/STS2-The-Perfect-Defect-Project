@@ -1648,24 +1648,10 @@ class LocalModelService:
             raise BoundaryError("local_model", "best_or_current_selection_required")
 
         def publish() -> None:
-            from spireagent.source import source_identity
-            from spireagent.storage.config import open_peer
-            from spireagent.storage.local import LocalBlobStore
-            from spireagent.storage.store import ArtifactStore, ManifestArtifactStore
-            from stpd.p1.checkpoint_export import publish_checkpoint_model
+            from spireagent.workbench.trusted_recipes import P1_MSTD_RECIPE, recipe_adapter
 
-            producer = source_identity(ROOT)
-            store: ArtifactStore
-            if self.config.remote_compute is not None:
-                store = open_peer(self.config.remote_compute.compute_store)
-            else:
-                reader = LocalModelExport(self.config)._workspace().store
-                if not isinstance(reader, ManifestArtifactStore) or not isinstance(
-                    reader.blobs, LocalBlobStore
-                ):
-                    raise BoundaryError("local_model", "configured_workspace_store_required")
-                store = ManifestArtifactStore(LocalBlobStore(reader.blobs.root, create=False))
-            result = publish_checkpoint_model(store, identity, producer, selection=selection)
+            result = recipe_adapter(P1_MSTD_RECIPE).export_checkpoint(
+                self.config, identity, selection=selection)
             with self.lock:
                 self.state["last_checkpoint_export"] = result
                 if self.client is None:
