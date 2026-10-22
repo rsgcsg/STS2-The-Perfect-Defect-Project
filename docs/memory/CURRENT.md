@@ -1,6 +1,15 @@
-# 当前状态：五小时工程交付收口；录制卡顿未完成
+# 当前状态：录制第二轮热点改善；日常升级与容量收口中
 
 Resolve live GitHub refs before relying on this snapshot. 最新用户原话和现场证据 override this file。
+
+2026-10-22 Brisbane 11:27，用户本轮仅授权录制再修一轮、随后释放约30GB；当前准确基线为
+`origin/develop=1e5d83100a8222f211a0e633120ea8123dd06427`，由[第二轮任务](../plans/p1-prefreeze-2026-10-18/RECORDING_ROUND2_20261022.zh-CN.md)恢复。
+rc58不可变方法元数据缓存已真实同场景核：9次rich mean57.395→32.219ms，required reads25.299→9.965ms。
+Recording观察长短不同（12100/6001帧），p99为20.794/22.291ms，max167.467/121.437ms；仍有峰值，
+不宣称整体帧尾或用户体感已解决。两次均3accepted/3terminal/0issue、正常Close/Host stop；临时部署后已恢复rc57。
+本轮唯一源码/构建/游戏owner为recording_stutter_round2，root非作者验收与容量owner；正常App70228保留。
+下一步原installer准备并升级日常组合，容量由root保原件/模型/账本后独立收口；未获新PR merge授权。
+下方五小时结果保历史身份，不再派发旧任务或借旧容量快照作当前结论。
 
 2026-10-22 Brisbane，本轮初始 `origin/develop=9561d262b27a619174cc735116930d2bbb067306`。
 用户批准范围、唯一负责人、准确产物与剩余义务归[本轮交付与停止点](../plans/p1-prefreeze-2026-10-18/FIVEH_EXECUTION_20261022.zh-CN.md)。
