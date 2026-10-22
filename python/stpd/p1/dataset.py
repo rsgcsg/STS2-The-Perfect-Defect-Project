@@ -591,6 +591,6 @@ def _iter_selected_points(
             ):
                 raise BoundaryError("p1_snapshot", "source_N_selection_drift")
             found.add(key)
-            yield ref, point["observation"]
+            yield copy.deepcopy(ref), point["observation"]
         if found != set(selected[artifact_id]):
             raise BoundaryError("p1_snapshot", "selected_point_missing")

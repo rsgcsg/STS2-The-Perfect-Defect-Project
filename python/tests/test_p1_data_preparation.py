@@ -254,6 +254,9 @@ def test_snapshot_reader_reuses_validation_but_rechecks_points(tmp_path, monkeyp
     reader = module.SnapshotReader(store, snapshot.artifact_id)
     selection = reader.selection
     selection["points"].clear()
+    first_read = list(reader.iter_points())
+    assert len(first_read) == 3
+    first_read[0][0]["split"] = "external_mutation"
     assert len(list(reader.iter_points())) == 3
     assert reader.selection["unique_N"] == 3
     assert len(calls) == 1
