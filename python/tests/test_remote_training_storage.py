@@ -1,10 +1,16 @@
 """Synthetic full-closure transfer and destination readback; no training/compute."""
 from __future__ import annotations
 
+import io
+import json
+from types import SimpleNamespace
+
 import pytest
 from test_p1_snapshot import explicit_snapshot, projection_fixture, store_at
 
+from spireagent.artifact_contracts import Manifest, Parent
 from spireagent.storage.blobs import StoreError
+from spireagent.workbench import p1_recording_storage
 from spireagent.workbench.p1_recording_storage import open_peer
 from spireagent.workbench.remote_training_storage import transfer_p1_input
 from stpd.p1.dataset import iter_snapshot_points
@@ -66,3 +72,52 @@ def test_existing_corrupt_remote_original_is_not_healed_or_reported_prepared(tmp
                           scratch=tmp_path / "scratch")
     assert corrupted.read_bytes() == b"corrupt"
     assert b"".join(local.read_payload(payload)) == original_bytes
+
+
+def test_reception_budgets_missing_bytes_without_reading_present_parent_payloads(
+    tmp_path, monkeypatch
+):
+    local, run, binding = inputs(tmp_path)
+    transfer_p1_input(local, binding, run.artifact_id, run.producer,
+                      scratch=tmp_path / "scratch")
+    peer = open_peer(binding)
+    payload = peer.put_payload("new-result", io.BytesIO(b"x" * 20))
+    result = Manifest("model", run.producer, (Parent("run", run.artifact_id),), (payload,))
+    peer.publish(result)
+    # The input ancestry is already local. The capacity calculation reads only
+    # small indexes and file sizes; final copy_artifact remains byte-verifying.
+    monkeypatch.setattr(peer, "read_payload", lambda _: pytest.fail("budget read parent bytes"))
+    monkeypatch.setattr(local, "read_payload", lambda _: pytest.fail("budget read local bytes"))
+    reserve = 512 * 1024**2
+    monkeypatch.setattr(p1_recording_storage.shutil, "disk_usage",
+                        lambda _: SimpleNamespace(free=reserve + 40))
+    facts = p1_recording_storage.storage_budget(
+        peer, result.artifact_id, scratch=tmp_path / "scratch", destination=local.blobs.root,
+        destination_store=local,
+    )
+    assert facts["persistent_budget_bytes"] == 20
+    assert facts["scratch_budget_bytes"] == 20
+    assert facts["required_available_bytes"] == reserve + 40
+    assert facts["destination_estimate"] == (
+        "missing_local_chunks_by_stat_then_transfer_verifies_bytes")
+
+
+def test_reception_missing_chunk_reserves_full_temporary_but_only_missing_persistent(tmp_path):
+    from test_artifact_store_v1 import PRODUCER
+
+    from spireagent.storage.store import CHUNK_BYTES
+
+    peer, local = store_at(tmp_path / "peer"), store_at(tmp_path / "local")
+    raw = b"a" * CHUNK_BYTES + b"b" * 20
+    payload = peer.put_payload("result", io.BytesIO(raw))
+    local.put_payload("result", io.BytesIO(raw))
+    result = Manifest("model", PRODUCER, payloads=(payload,))
+    peer.publish(result)
+    index = json.loads(local.blobs.get(f"payload-indexes/v1/{payload.sha256}.json"))
+    local.blobs._path("objects/sha256/" + index["chunks"][-1]["sha256"]).unlink()
+    facts = p1_recording_storage.storage_budget(
+        peer, result.artifact_id, scratch=tmp_path / "scratch", destination=local.blobs.root,
+        destination_store=local,
+    )
+    assert facts["persistent_budget_bytes"] == 20
+    assert facts["scratch_budget_bytes"] == len(raw)

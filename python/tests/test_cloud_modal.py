@@ -5,6 +5,8 @@ from types import SimpleNamespace
 
 import pytest
 from modal import exception as modal_exceptions
+from modal._serialization import serialize_data_format
+from modal_proto import api_pb2 as api
 from test_artifact_store_v1 import PRODUCER
 
 from spireagent.json_boundary import BoundaryError
@@ -46,12 +48,7 @@ class FakeCall:
     def __init__(self, value=None, error=None):
         self.value, self.error = value, error
         self.cancelled = False
-
-    def get(self, *, timeout):
-        assert timeout == 0
-        if self.error:
-            raise self.error
-        return self.value
+        self.pending = False
 
     def cancel(self, *, terminate_containers):
         assert terminate_containers
@@ -76,9 +73,28 @@ def sdk_for(function, selected):
         assert call_id == function.call.object_id
         return function.call
 
+    async def outputs(request, *, retry, timeout):
+        assert request.function_call_id == function.call.object_id
+        assert request.start_idx == request.end_idx == 0 and request.timeout == 0
+        assert request.clear_on_success is False and retry is None and timeout == 30
+        call = function.call
+        if call.error:
+            raise call.error
+        if call.pending:
+            return api.FunctionGetOutputsResponse(num_unfinished_inputs=1)
+        response = api.FunctionGetOutputsResponse()
+        response.outputs.add(idx=0, data_format=api.DATA_FORMAT_PICKLE).result.CopyFrom(
+            api.GenericResult(status=api.GenericResult.GENERIC_STATUS_SUCCESS,
+                              data=serialize_data_format(call.value, api.DATA_FORMAT_PICKLE))
+        )
+        return response
+
+    async def client():
+        return SimpleNamespace(stub=SimpleNamespace(FunctionGetOutputs=outputs))
+
     return SimpleNamespace(
         Function=SimpleNamespace(from_name=lookup), FunctionCall=SimpleNamespace(from_id=from_id),
-        exception=modal_exceptions,
+        Client=SimpleNamespace(from_env=SimpleNamespace(aio=client)), exception=modal_exceptions,
     )
 
 
@@ -98,18 +114,16 @@ def test_submit_serialize_poll_and_cancel_use_exact_target_and_receipt() -> None
     assert provider.poll(handle) == receipt
     provider.cancel(handle)
     assert call.cancelled and len(function.requests) == 1
-    call.error = modal_exceptions.TimeoutError()
+    call.pending = True
     assert provider.poll(handle) is None
+    call.pending = False
     call.error = RuntimeError("signed-URL-should-never-be-exposed")
     with pytest.raises(BoundaryError, match="result_unavailable") as error:
         provider.poll(handle)
     assert "signed-URL" not in str(error.value)
 
 
-@pytest.mark.parametrize("poll_timeout", [modal_exceptions.TimeoutError, TimeoutError])
-def test_sdk_poll_timeout_preserves_exact_handle_until_result_without_resubmission(
-    poll_timeout,
-) -> None:
+def test_fresh_pending_ack_preserves_exact_handle_until_result_without_resubmission() -> None:
     selected = target()
     request = ComputeRequest("training", "a" * 64, PRODUCER, "attempt-1")
     receipt = ComputeReceipt(
@@ -118,8 +132,8 @@ def test_sdk_poll_timeout_preserves_exact_handle_until_result_without_resubmissi
     )
     call = FakeCall(
         {"target_id": selected.target_id, "receipt": receipt.to_dict()},
-        poll_timeout("no result yet"),
     )
+    call.pending = True
     function = FakeFunction(call)
     provider = ModalProvider(selected, sdk=sdk_for(function, selected))
     handle = provider.submit(request)
@@ -128,7 +142,7 @@ def test_sdk_poll_timeout_preserves_exact_handle_until_result_without_resubmissi
     for _ in range(2):
         assert provider.poll(restored) is None
         assert restored.to_dict() == saved
-    call.error = None
+    call.pending = False
     assert provider.poll(restored) == receipt
     assert len(function.requests) == 1 and not call.cancelled
 
@@ -137,6 +151,9 @@ def test_sdk_poll_timeout_preserves_exact_handle_until_result_without_resubmissi
     "failure,code",
     [
         (modal_exceptions.FunctionTimeoutError, "execution_timeout"),
+        (modal_exceptions.OutputExpiredError, "result_unavailable"),
+        (modal_exceptions.TimeoutError, "result_unavailable"),
+        (TimeoutError, "result_unavailable"),
         (ConnectionError, "result_unavailable"),
         (RuntimeError, "result_unavailable"),
     ],

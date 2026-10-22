@@ -14,7 +14,7 @@ from spireagent.storage.store import ArtifactStore
 from stpd.fullrun.dataset_policy import training_sources
 
 from .data import digest, json_bytes
-from .dataset import iter_snapshot_points, load_snapshot
+from .dataset import SnapshotReader
 from .export import input_spec
 from .formal_training import Population
 from .input import INPUT_SPEC, fit_vocabulary, project
@@ -25,14 +25,19 @@ ENTRYPOINT = "stpd.workers.p1_run:execute_p1_run"
 
 
 def populations_from_snapshot(store: ArtifactStore, snapshot_id: str) -> dict[str, Population]:
-    _, selection = load_snapshot(store, snapshot_id)
+    return populations_from_reader(SnapshotReader(store, snapshot_id))
+
+
+def populations_from_reader(reader: SnapshotReader) -> dict[str, Population]:
+    """Project one already verified immutable read session, without reloading it."""
+    selection = reader.selection
     if selection["input_projection"] != INPUT_SPEC:
         raise BoundaryError("p1_workload", "current_InputSpec_required_for_new_training")
     counts = selection["partition_N"]
     if set(counts) - {"train", "dev", "test"} or not counts.get("train") or not counts.get("dev"):
         raise BoundaryError("p1_workload", "explicit_nonempty_train_dev_required")
     rows: dict[str, list[tuple[str, Any, int]]] = {s: [] for s in ("train", "dev", "test")}
-    for reference, observation in iter_snapshot_points(store, snapshot_id):
+    for reference, observation in reader.iter_points():
         frame = project(observation)
         target = [c["choice_id"] for c in frame.choices].index(reference["chosen"])
         rows[reference["split"]].append((reference["point_id"], frame, target))
@@ -60,10 +65,11 @@ def prepare_p1_run(
     """
     checked_digest(operation_id, "p1_workload.operation_id", length=32)
     training_sources(store, snapshot_id)
-    snapshot, _ = load_snapshot(store, snapshot_id)
+    reader = SnapshotReader(store, snapshot_id)
+    snapshot = reader.manifest
     if snapshot.parameters.value().get("purpose") != "engineering":
         raise BoundaryError("p1_workload", "engineering_snapshot_required_no_auto_admission")
-    populations = populations_from_snapshot(store, snapshot_id)
+    populations = populations_from_reader(reader)
     vocabulary = fit_vocabulary(list(populations["train"].frames))
     vocabulary_raw = json_bytes(vocabulary)
     payload = store.put_payload("vocabulary", io.BytesIO(vocabulary_raw), "application/json")
@@ -107,8 +113,9 @@ def prepare_p1_run(
             Parent("experiment", experiment.artifact_id),
             Parent("training_input", training.artifact_id),
         ),
-        parameters=FrozenObject.of({"schema": RUN_SCHEMA, "operation_id": operation_id,
-                                   "event_index": "run-events-v1"}),
+        parameters=FrozenObject.of(
+            {"schema": RUN_SCHEMA, "operation_id": operation_id, "event_index": "run-events-v1"}
+        ),
     )
     store.publish(run)
     return run
@@ -121,6 +128,7 @@ class P1Workload:
     snapshot: Manifest
     config: MStdConfig
     vocabulary: dict[str, Any]
+    reader: SnapshotReader
 
 
 def verify_p1_run(store: ArtifactStore, run_id: str, producer: Producer) -> P1Workload:
@@ -151,7 +159,8 @@ def verify_p1_run(store: ArtifactStore, run_id: str, producer: Producer) -> P1Wo
     ):
         raise BoundaryError("p1_workload", "training_input_binding_mismatch")
     config = MStdConfig.decode(info["config"])
-    snapshot, selection = load_snapshot(store, training.parent("source"))
+    reader = SnapshotReader(store, training.parent("source"))
+    snapshot, selection = reader.manifest, reader.selection
     if snapshot.parameters.value().get("purpose") != "engineering":
         raise BoundaryError("p1_workload", "engineering_snapshot_required_no_auto_admission")
     vocabulary_raw = b"".join(store.read_payload(training.payload("vocabulary")))
@@ -175,4 +184,4 @@ def verify_p1_run(store: ArtifactStore, run_id: str, producer: Producer) -> P1Wo
         or experiment.parent("training_input") != training.artifact_id
     ):
         raise BoundaryError("p1_workload", "experiment_input_mismatch")
-    return P1Workload(run, training, snapshot, config, vocabulary)
+    return P1Workload(run, training, snapshot, config, vocabulary, reader)

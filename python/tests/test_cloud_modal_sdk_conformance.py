@@ -44,6 +44,8 @@ class Wire:
         self.submit_error = None
         self.cancel_error = None
         self.result = None
+        self.reply = None
+        self.error = None
         self.execution_timeout = False
         self.live_app_unavailable = False
 
@@ -75,15 +77,22 @@ class Wire:
             pipelined_inputs=[api.FunctionPutInputsResponseItem(input_id="in-conformance")],
         )
 
-    async def FunctionGetOutputs(self, request, *, retry):
+    async def FunctionGetOutputs(self, request, *, retry, timeout=None):
         assert isinstance(request, api.FunctionGetOutputsRequest)
-        assert retry is not None  # Retain the actual SDK polling transport contract.
+        if timeout is None:
+            assert retry is not None  # SDK.get experiment retains its own transport contract.
+        else:
+            assert retry is None and timeout == 30  # Provider reads exactly one original ACK.
         self.polls.append(request)
         assert request.function_call_id == self.call_id
         assert request.timeout == 0 and request.start_idx == request.end_idx == 0
         assert request.clear_on_success is False
         if self.poll_clock is not None:
             self.poll_clock.after_reply()
+        if self.error is not None:
+            raise self.error
+        if self.reply is not None:
+            return self.reply
         if self.execution_timeout:
             result = api.GenericResult(
                 status=api.GenericResult.GENERIC_STATUS_TIMEOUT, exception="remote deadline",
@@ -122,7 +131,9 @@ def sdk_wire(monkeypatch):
 
     opened = AsyncMock(side_effect=AssertionError("SDK client open forbidden"))
     monkeypatch.setattr(_Client, "_open", opened)
-    monkeypatch.setattr(_Client, "from_env", AsyncMock(return_value=internal))
+    monkeypatch.setattr(_Client, "_client_from_env", internal)
+    monkeypatch.setattr(_Client, "_client_from_env_lock", None)
+    wire.client = client
     # Windows creates the dispatcher's self-pipe with a local TCP socket pair.
     # Open that local loop before guarding connects, with remote client opening
     # already forbidden. Otherwise the guard kills loop startup while the public
@@ -246,7 +257,7 @@ def test_real_sdk_empty_poll_and_remote_execution_timeout_remain_distinct(
     handle = provider.submit(request())
     saved = handle.to_dict()
     wire.execution_timeout = execution_timeout
-    for index in range(2):
+    for _ in range(2):
         first_poll = len(wire.polls)
         if execution_timeout:
             with pytest.raises(BoundaryError) as error:
@@ -255,30 +266,20 @@ def test_real_sdk_empty_poll_and_remote_execution_timeout_remain_distinct(
         else:
             assert provider.poll(handle) is None
         assert handle.to_dict() == saved
-        # Observe the application boundary independently of the SDK's internal
-        # read-only polling. One public get binds to the original call per poll;
-        # repeated wire reads never imply another FunctionMap or cancellation.
-        assert len(wire.gets) == index + 1
-        call, timeout, output_index = wire.gets[-1]
-        assert (call.object_id, timeout, output_index) == (saved["call_id"], 0, 0)
+        # The provider admits one original ACK per query, with no SDK get loop,
+        # including under a coarse wall clock; no submit or cancellation repeats.
+        assert not wire.gets
         assert len(wire.lookups) == len(wire.submissions) == 1
-        assert not wire.cancellations and len(wire.polls) > first_poll
-        if execution_timeout:
-            assert len(wire.polls) == first_poll + 1
-        elif poll_clock is not None:
-            assert len(wire.polls) == first_poll + 3
-            assert {item.requested_at for item in wire.polls[first_poll:]} == {
-                poll_clock.now - 1 / 64,
-            }
+        assert not wire.cancellations and len(wire.polls) == first_poll + 1
+        assert wire.polls[-1].function_call_id == saved["call_id"]
     if not execution_timeout:
         # Empty reads do not consume the result: reconcile the same original
         # saved call when the wire later publishes its actual serialized receipt.
         first_poll = len(wire.polls)
         expected = completed(wire, handle.request)
         assert provider.poll(provider.restore_handle(saved)) == expected
-        assert len(wire.polls) == first_poll + 1 and len(wire.gets) == 3
-        call, timeout, output_index = wire.gets[-1]
-        assert (call.object_id, timeout, output_index) == (saved["call_id"], 0, 0)
+        assert len(wire.polls) == first_poll + 1 and not wire.gets
+        assert wire.polls[-1].function_call_id == saved["call_id"]
         assert handle.to_dict() == saved
         assert len(wire.lookups) == len(wire.submissions) == 1 and not wire.cancellations
 

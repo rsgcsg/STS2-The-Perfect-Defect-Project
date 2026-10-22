@@ -3,6 +3,7 @@ import { decodePublicSourceSnapshot as decodePlayerSnapshot } from "../publicBas
 import { canonicalJson, isObject } from "./canonical.js";
 import { createSession, reduce, resolveFollowBasis, type Lowering, type P1Basis, type P1SessionState } from "./reducer.js";
 import { completeSelectorFacts, selectorOperation } from "./selectorForward.js";
+import { settledRewardTriggerDisplay } from "./rewardForward.js";
 
 /** A derived wrapper around verified Source4 originals. The adapter, not this
  * semantic matcher, verifies the bundle, original byte hashes and native origin. */
@@ -217,6 +218,22 @@ export function compareOriginalPresentationBases(before: P1Basis, after: P1Basis
   }
   visit(originalPresentationBasis(before), originalPresentationBasis(after), "$");
   return { equal: changes.length === 0, changes };
+}
+
+/** Called only after the native adapter has proved a same-reward open/return.
+ * Raw equality/differences stay strict; the approved display rule is separate. */
+export function compareRewardPresentationBases(before: P1Basis, after: P1Basis) {
+  const comparison = compareOriginalPresentationBases(before, after);
+  const display = settledRewardTriggerDisplay((before.snapshot as ObjectValue).persistent,
+    (after.snapshot as ObjectValue).persistent);
+  const displayChanges = display ? comparison.changes.filter(change => change.path === display.path
+    && change.before === 2 && change.after === 0) : [];
+  return { ...comparison,
+    presentation_equal: comparison.changes.length === displayChanges.length,
+    display_animation: displayChanges.length === 1 ? {
+      id: "lasting_candy_trigger_display_2_to_0", changes: displayChanges,
+      originals_preserved: true, model_input_unchanged: true
+    } : null };
 }
 
 // Preserve all original public fields except the declared selection decoration

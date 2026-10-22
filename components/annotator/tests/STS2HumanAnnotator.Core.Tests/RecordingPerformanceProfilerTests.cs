@@ -23,6 +23,23 @@ public sealed class RecordingPerformanceProfilerTests
     }
 
     [Fact]
+    public void SlowSamplesRetainBoundedTimeCorrelationAndRejectInvalidValues()
+    {
+        var profiler = new RecordingPerformanceProfiler();
+        Assert.Throws<ArgumentOutOfRangeException>(() => profiler.ObserveMicroseconds("frame", -1));
+        profiler.ObserveMicroseconds("deferred_subphase", 99_000);
+        Assert.Empty(profiler.Snapshot("same-session").SlowSamples);
+        long started = System.Diagnostics.Stopwatch.GetTimestamp();
+        for (int sample = 0; sample < 300; sample++) profiler.ObserveInterval("frame", started,
+            started + (30_000 + sample) * System.Diagnostics.Stopwatch.Frequency / 1_000_000);
+        var samples = profiler.Snapshot("same-session").SlowSamples;
+        Assert.Equal(256, samples.Count);
+        Assert.Equal(30_044, samples[0].ElapsedUs);
+        Assert.Equal(30_299, samples[^1].ElapsedUs);
+        Assert.All(samples, sample => { Assert.Equal("frame", sample.Phase); Assert.Equal(started, sample.StartedAtStopwatchTicks); Assert.Null(sample.StartedAtUtc); });
+    }
+
+    [Fact]
     public void ProfilerReportsOrderedBoundedPhaseStatistics()
     {
         var profiler = new RecordingPerformanceProfiler();

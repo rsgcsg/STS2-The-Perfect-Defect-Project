@@ -82,7 +82,8 @@ def configuration_id(config: ProjectConfig) -> str:
 
 def _local_request(url: str, *, token: str | None = None, timeout: float = 2,
                    body: dict[str, Any] | None = None,
-                   method: str | None = None) -> dict[str, Any]:
+                   method: str | None = None,
+                   response_limit: int = 1024 * 1024) -> dict[str, Any]:
     request = Request(
         url,
         data=(json.dumps(body).encode() if body is not None
@@ -92,7 +93,10 @@ def _local_request(url: str, *, token: str | None = None, timeout: float = 2,
         method=method,
     )
     with build_opener(ProxyHandler({})).open(request, timeout=timeout) as response:
-        value: Any = json.loads(response.read(1024 * 1024))
+        raw = response.read(response_limit + 1)
+    if len(raw) > response_limit:
+        raise BoundaryError("project", "local_response_too_large")
+    value: Any = json.loads(raw)
     if not isinstance(value, dict):
         raise BoundaryError("project", "invalid_local_response")
     return value
@@ -2174,6 +2178,48 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                     self.respond(409, json.dumps({"error": error.code}).encode())
                 except (OSError, ValueError, TypeError):
                     self.respond(400, b'{"error":"invalid_local_dataset_request"}')
+                return
+            if self.path.startswith("/api/p1-data/"):
+                if not (self.browser_write() or self.control_client()):
+                    self.respond(403, b'{"error":"browser_action_denied"}')
+                    return
+                try:
+                    from spireagent.source import source_identity
+                    from spireagent.workbench.p1_data_preparation import (
+                        freeze_p1_data,
+                        prepare_p1_data,
+                    )
+
+                    app._require_training_instance()
+                    owner, store, _ = app.local_datasets._selected()
+                    body = self.json_body(maximum=1024 * 1024)
+                    if self.path == "/api/p1-data/prepare":
+                        if set(body) - {"revision", "declared_origins", "projection_ids",
+                                        "selected_decisions", "split_salt", "cache",
+                                        "allocation_policy", "projection_names",
+                                        "tool_release_ids"}:
+                            raise ValueError
+                        value = prepare_p1_data(owner, store, **body)
+                    elif self.path == "/api/p1-data/freeze":
+                        if set(body) not in ({"selection"}, {"selection", "reserve"}):
+                            raise ValueError
+                        if type(body.get("reserve", False)) is not bool:
+                            raise ValueError
+                        selection = body["selection"]
+                        if not isinstance(selection, dict) or set(selection) - {
+                                "projection_ids", "split_salt", "split_by_group",
+                                "selected_decisions"}:
+                            raise ValueError
+                        value = freeze_p1_data(owner, store, source_identity(ROOT),
+                                               **selection, reserve=body.get("reserve", False))
+                    else:
+                        self.respond(404, b'{"error":"route_not_found"}')
+                        return
+                    self.respond(200, json.dumps(value).encode())
+                except BoundaryError as error:
+                    self.respond(409, json.dumps({"error": error.code}).encode())
+                except (OSError, ValueError, TypeError):
+                    self.respond(400, b'{"error":"invalid_p1_data_request"}')
                 return
             if self.path.startswith("/api/remote-training/"):
                 if not (self.browser_write() or self.control_client()):

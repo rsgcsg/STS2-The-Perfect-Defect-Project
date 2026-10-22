@@ -45,7 +45,17 @@ def verify_run_execution_policy(run: Any, operation: dict[str, Any]) -> dict[str
 
 
 def verify_resume_checkpoint(store: Any, operation: dict[str, Any], checkpoint_id: Any) -> None:
-    from spireagent.workbench.trusted_recipes import HISTORICAL_M0_RECIPE, REWARD_M0_RECIPE
+    from spireagent.workbench.trusted_recipes import (
+        HISTORICAL_M0_RECIPE,
+        P1_BASELINE_RECIPE,
+        REWARD_M0_RECIPE,
+    )
+
+    if operation["recipe"] == P1_BASELINE_RECIPE:
+        from spireagent.workbench.recipes.p1_baselines import verify_baseline_resume_checkpoint
+
+        verify_baseline_resume_checkpoint(store, operation, checkpoint_id)
+        return
 
     if operation["recipe"] == HISTORICAL_M0_RECIPE:
         from spireagent.workbench.recipes.historical_m0 import verify_historical_resume_checkpoint

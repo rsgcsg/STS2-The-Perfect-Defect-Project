@@ -47,9 +47,10 @@ def test_nonfinite_loss_does_not_update_parameters(monkeypatch):
     parameter = next(trainer.model.parameters())
     monkeypatch.setattr(
         trainer.model,
-        "forward",
-        lambda frame: parameter.reshape(-1)[:2] * 0
-        + torch.tensor([-3e38, 3e38]),
+        "forward_batch",
+        lambda frames: [
+            parameter.reshape(-1)[:2] * 0 + torch.tensor([-3e38, 3e38]) for _ in frames
+        ],
     )
     with pytest.raises(BoundaryError, match="non_finite_loss"):
         trainer.advance()

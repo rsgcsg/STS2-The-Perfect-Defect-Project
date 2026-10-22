@@ -37,6 +37,8 @@ class RemoteTrainingService:
         self._progress_reporters: dict[str, Any] = {}
 
     def capabilities(self) -> dict[str, Any]:
+        from spireagent.workbench.trusted_recipes import P1_BASELINE_RECIPE, P1_MSTD_RECIPE
+
         deployment = self.config.remote_compute
         configured = deployment is not None
         return {"schema": "spireagent/remote-training-capabilities-1",
@@ -45,6 +47,11 @@ class RemoteTrainingService:
                               and (self._injected_provider or
                                    deployment.compute_store.get("kind") == "s3")),
                 "provider": "trusted_injected_engineering" if self._injected_provider else "modal",
+                "recipes": [
+                    {"recipe_id": P1_MSTD_RECIPE, "devices": ["cpu", "cuda:index"]},
+                    {"recipe_id": P1_BASELINE_RECIPE, "devices": ["cpu"],
+                     "algorithms": ["random", "frequency", "linear"]},
+                ],
                 "supported_actions": (["status", "progress"] if deployment and
                                       deployment.observation_only else
                                       ["prepare", "start", "status", "progress", "cancel",
@@ -90,10 +97,11 @@ class RemoteTrainingService:
 
             def record_use(run: Manifest) -> None:
                 from spireagent.workbench.p1_training_data import record_p1_training_use
-                from stpd.p1.workload import verify_p1_run
+                from spireagent.workbench.remote_training_storage import verify_training_run
 
                 current_owner, current_store, _ = self.select()
-                workload = verify_p1_run(current_store, run.artifact_id, provider.target.producer)
+                workload = verify_training_run(current_store, run.artifact_id,
+                                               provider.target.producer)
                 record_p1_training_use(current_owner, current_store, workload.snapshot.artifact_id,
                                        run.parameters.value()["operation_id"])
 
@@ -150,6 +158,7 @@ class RemoteTrainingService:
 
     def preparation_status(self, intent_id: object) -> dict[str, Any]:
         """Observe only existing local facts, even while transfer holds its write lock."""
+        from stpd.p1.baseline_spec import RUN_SCHEMA as BASELINE_RUN_SCHEMA
         from stpd.p1.spec import RUN_SCHEMA
 
         intent = digest(intent_id, "remote_training.intent_id", length=32)
@@ -161,7 +170,8 @@ class RemoteTrainingService:
         _, local, _ = self.select()
         runs = [manifest for identity in local.manifest_ids()
                 if (manifest := local.get_manifest(identity)).parameters.value().get("schema")
-                == RUN_SCHEMA and manifest.parameters.value().get("operation_id") == intent]
+                in {RUN_SCHEMA, BASELINE_RUN_SCHEMA}
+                and manifest.parameters.value().get("operation_id") == intent]
         jobs = []
         if deployment.operations_path.is_file():
             operations = self._operations or Operations(deployment.operations_path)
@@ -271,11 +281,28 @@ class RemoteTrainingService:
         owner, store, provider, _ = self._context()
         deployment = self.config.remote_compute
         assert deployment is not None
-        obj = object_fields(body, {"intent_id", "source_id", "config", "max_seconds",
-                                    "stop_after"}, "remote_training.start")
+        recipe = body.get("recipe_id", "p1-mstd-N-v1") if isinstance(body, dict) else None
+        fields = {"intent_id", "source_id", "config", "max_seconds", "stop_after"}
+        obj = object_fields(body, fields | ({"recipe_id"} if isinstance(body, dict)
+                                             and "recipe_id" in body else set()),
+                            "remote_training.start")
         intent = digest(obj["intent_id"], "remote_training.intent_id", length=32)
         snapshot = digest(obj["source_id"], "remote_training.source_id")
-        config = MStdConfig.decode(obj["config"])
+        from spireagent.workbench.trusted_recipes import P1_BASELINE_RECIPE, P1_MSTD_RECIPE
+
+        config: Any
+        prepare_run: Callable[..., Manifest]
+        if recipe == P1_BASELINE_RECIPE:
+            from stpd.p1.baseline_spec import BaselineConfig
+            from stpd.p1.baseline_workload import prepare_baseline_run
+
+            config = BaselineConfig.decode(obj["config"])
+            prepare_run = prepare_baseline_run
+        elif recipe == P1_MSTD_RECIPE:
+            config = MStdConfig.decode(obj["config"])
+            prepare_run = prepare_p1_run
+        else:
+            raise BoundaryError("remote_training", "unsupported_training_recipe")
         target = provider.target
         gpu = getattr(target, "gpu", None)
         if ((config.device == "cpu") != (gpu == "none")):
@@ -284,7 +311,7 @@ class RemoteTrainingService:
         require_p1_snapshot(owner, store, snapshot)
         # Vocabulary fitting itself discloses training examples; reserve use first.
         record_p1_training_use(owner, store, snapshot, intent)
-        run = prepare_p1_run(store, snapshot, target.producer, config, intent)
+        run = prepare_run(store, snapshot, target.producer, config, intent)
         scratch = self.config.state_dir / "remote-training-transfer"
         scratch.mkdir(parents=True, exist_ok=True)
         facts = transfer_p1_input(store, deployment.compute_store, run.artifact_id,
@@ -337,6 +364,13 @@ class RemoteTrainingService:
                         scratch.mkdir(parents=True, exist_ok=True)
                         identity = result.get("output_id") or result.get("checkpoint_id")
                         if identity:
+                            from spireagent.workbench.p1_recording_storage import storage_budget
+
+                            # Receiving a result can include its immutable input
+                            # ancestry. Budget that closure before creating bytes;
+                            # copy_artifact reuses verified local payloads.
+                            storage_budget(self._compute_store, identity, scratch=scratch,
+                                           destination=store.blobs.root, destination_store=store)
                             copy_artifact(self._compute_store, store, identity, scratch=scratch)
                 else:
                     intent = digest(obj["intent_id"], "remote_training.intent_id", length=32)

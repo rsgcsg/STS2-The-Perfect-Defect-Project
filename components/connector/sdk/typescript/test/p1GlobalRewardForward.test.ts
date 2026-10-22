@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { applyCommitment, createSession, reduce, resolveFollowBasis, type P1Basis } from "../src/p1Global/index.js";
+import { applyCommitment, createSession, reduce, resolveFollowBasis, compareOriginalPresentationBases, compareRewardPresentationBases, type P1Basis } from "../src/p1Global/index.js";
 
-import { rewardForwardPair as pair } from "./fixtures/reward-forward.mjs";
+import { rewardForwardPair as pair, lastingCandyDisplay } from "./fixtures/reward-forward.mjs";
 const project = (basis: P1Basis) => reduce(createSession("reward-test", "reference"), basis);
 
 describe("complete forward reward intentions", () => {
@@ -163,4 +163,44 @@ describe("existing potion choices outside combat", () => {
     outer.reads.pop();
     expect(project(outer).complete).toBe(false);
   });
+});
+
+
+describe("same-reward LastingCandy display comparison", () => {
+  it("allows the proven 2 to 0 display while preserving original and model inputs", () => {
+    const { outer, child } = pair(); lastingCandyDisplay(outer, 2); lastingCandyDisplay(child, 0);
+    const originals = structuredClone({ outer, child });
+    const beforeModel = project(outer).observation, afterModel = project(child).observation;
+    const r = project(outer), take = r.observation.catalog.find(c => c.kind === "reward.take_card")!;
+    const low = r.lowering[take.choice_id]!;
+    expect(resolveFollowBasis(low.follow[0]!, low, child)?.bound_action_id).toBe("select-0");
+    const restored = structuredClone(outer); lastingCandyDisplay(restored, 0);
+    expect(compareOriginalPresentationBases(outer, restored).equal).toBe(false);
+    expect(compareRewardPresentationBases(outer, restored)).toMatchObject({ equal: false, presentation_equal: true,
+      display_animation: { id: "lasting_candy_trigger_display_2_to_0", originals_preserved: true, model_input_unchanged: true } });
+    expect({ outer, child }).toEqual(originals);
+    expect(project(outer).observation).toEqual(beforeModel);
+    expect(project(child).observation).toEqual(afterModel);
+    expect(JSON.stringify(beforeModel)).toContain('"counter":2');
+    expect(JSON.stringify(afterModel)).toContain('"counter":0');
+  });
+  it.each(["hp", "gold", "foreign-relic", "foreign-definition", "wrong-counter", "reverse", "duplicate", "owner", "candidate", "read"])
+    ("does not forgive %s drift", defect => {
+      const { outer, child } = pair(); lastingCandyDisplay(outer, 2); lastingCandyDisplay(child, 0);
+      const player = child.snapshot.persistent.content.player;
+      if (defect === "hp") player.hp--;
+      if (defect === "gold") player.gold++;
+      if (defect === "foreign-relic") player.relics[0].entity_id = "different-instance";
+      if (defect === "foreign-definition") player.relics[0].definition_id = "OTHER_RELIC";
+      if (defect === "wrong-counter") player.relics[0].counter = 1;
+      if (defect === "reverse") { lastingCandyDisplay(outer, 0); lastingCandyDisplay(child, 2); }
+      if (defect === "duplicate") for (const basis of [outer, child])
+        basis.snapshot.persistent.content.player.relics.push({ ...basis.snapshot.persistent.content.player.relics[0] });
+      if (defect === "owner") child.snapshot.interaction.content.surface.reward_set_id = "foreign-owner";
+      if (defect === "candidate") child.snapshot.interaction.content.surface.cards[0].description += " changed";
+      if (defect === "read") child.reads[0].response.content.extra_public_fact = "changed";
+      const r = project(outer), take = r.observation.catalog.find(c => c.kind === "reward.take_card")!;
+      const low = r.lowering[take.choice_id]!;
+      expect(resolveFollowBasis(low.follow[0]!, low, child)).toBeNull();
+    });
 });
