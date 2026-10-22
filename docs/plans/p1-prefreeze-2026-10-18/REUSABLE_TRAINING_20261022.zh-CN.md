@@ -87,10 +87,22 @@ compute估计约US$0.2641含startup/scaledown余量；未读取provider账单，
 类型错误，聚合失败；原窄mypy从仓库父目录运行，未加载Python项目strict配置，不能冒充
 strict通过。B补丁只增加metadata参数注解和JSON descriptor类型声明，无数值/控制逻辑
 改变；集成后按Python项目显式配置复验全量mypy并由最新head自然触发fresh full CI。
+本机完整424文件strict复验因缺transformers/peft/duckdb报5处环境导入错误；
+38个变更源文件strict亦有4处同类缺依赖，均保留原log，不改ignore或称通过。
 最终新增类型注解/文档的producer与64云producer分开，未为类型注解重建镜像或再训练。
 真实全量remote start仍同步传整个父闭包，可能超过600秒响应；未知只查原intent，
 未实现durable transfer-phase或异步prepare。本机Application/Scheduler仍需运行，
 这轮小fixture不证明真实1GB闭包无等待、全云无人值守或四Agent正式训练已完成。
+
+后续四 Agent 离线比较可复用同 Snapshot 和每个 Run 的最终 evaluation 原件：
+baseline 含 DEV/TEST N、score-softmax loss、并列均匀的期望正确数，M-std 含最终
+TEST N/loss/correct/multi 指标。现普通详情仅暴露 M-std DEV，baseline详情/统一四方
+TEST 对照消费者和指标口径未齐；不得据原件存在称四 Agent 评分已完成。
+Reference 串行 dispatcher 已有 ref-20 固定旧版本manifest、精确selection、阶段/总
+预算及全部20项失败/未派发分母，但不保证本轮P1候选匹配该manifest，也无自动四方
+配对统计。实际入口与缺项归回
+[原操作指南](../../../python/docs/PROJECT_CONSOLE.md#四-agent-后续评估的现有边界)，
+不以Managed evaluator、工程canary或本轮source/test代替正式同条件游戏比较。
 
 原用户范围、17 项和历史依据分别见外部当前执行原件
 `P1-REUSABLE-TRAINING-3H-EXECUTION-20261022.md`、

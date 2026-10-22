@@ -1048,6 +1048,37 @@ M-std 仍是普通 N-only，具体更新上限随固定 TRAIN 计算。
 | 只消费已有 Model | 按现入口 register/load/evaluate；无需重新准备数据或训练。 |
 | 改 P1 语义 | 先回协议 owner 确定语义，再更新受影响投影、Input 和消费者。 |
 
+### 四 Agent 后续评估的现有边界
+
+离线比较先固定同一 Snapshot、成员/Input 与 TRAIN/DEV/TEST 用途，再分别完成四个
+Run，核各自 result→Model→evaluation 的原件绑定。随机/频率/线性原 evaluation
+(`stpd/p1-baseline-N-evaluation-1`) 记录 DEV/最终 TEST 的 `N`、
+`mean_score_softmax_N_loss`、`expected_greedy_correct` 和 tie 语义；随机的正确数为
+均匀选择期望，频率/线性按并列最大值均匀分配，不是一次实采准确率。M-std 原
+`stpd/p1-N-evaluation-1` 记录 best DEV loss 与最终 TEST 的 `N`、`mean_N_loss`、
+`correct`、`multi_N`、`multi_correct`。G3/M-std 只用 DEV 选优；TEST 最终一次读取，
+不能看过 TEST 再调参并继续称独立留出。原件由 `verify_baseline_result` /
+`verify_p1_result` 校验；空 TEST 的 loss 为 null，不能当零误差。
+
+当前普通离线详情只支持 M-std 的 DEV 摘要，TEST 保持 sealed；baseline evaluation
+尚无该详情适配，也没有一个受支持的 CLI 一次输出四 Agent 同 TEST 对照表。
+现有原件提供描述性统计，未完成统一 tie/指标口径的四方评分、独立 lineage 资格或
+策略优劣结论。后续正式比较须先确定 TEST 开封用途与比较口径，再由原评估 owner
+补齐所缺消费者；无需另造训练链，也不能以 Managed evaluator 代替 P1 评估。
+
+真实 Reference 串行入口是 `python tools/evaluate_reference_suite.py --help`（从
+`python/`，调用已运行 Application）。它要求精确 `--config`、`--selection`、
+`--manifest stpd/evaluation/suites/ref-20.json` 及原 SHA、新 `--run-dir`，并明确
+`--preparation-seconds`、`--episode-seconds`、`--cleanup-seconds`、`--suite-seconds`、
+`--max-episodes` 和 `--run-profile short|extended`。manifest 固定 v0.111.0、
+Defect A0、Reference 20 seeds；不能改标当前游戏版本。每个 selection 的精确 Runtime/
+installed tuple/native readiness 均须先满足，预算由原请求绑定；同 seeds、预算、版本、
+输入/策略配置和运行条件才可作配对。dispatcher 不保证所选 P1 候选兼容该旧 manifest。
+其 report 在执行前保留全部20项，记录未开始、cleanup unknown、原生 win/loss、
+task completed/unproved/unknown、预算截断和 stop reason；技术失败和未派发项不得
+从分母删除，budget exhausted 不能算自然输赢。一个调用只评一个 selection，
+没有四 Agent 自动配对、完整胜率统计或跨 Host 等价资格。本轮未执行 Reference 游戏。
+
 The supported entry is `python -m spireagent.workbench training --help` from the
 Python environment. It calls the already running Application and its same
 `LocalTrainingService`; it does not start a second service or open a page.
