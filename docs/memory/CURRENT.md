@@ -1,6 +1,8 @@
 # 当前：审查近期未合并工作，组合收敛后才进入 develop
 
-最新用户要求和实际 Git/产物覆盖旧状态。当前唯一任务是
+Resolve live GitHub refs before relying on this snapshot. 最新用户原话和现场证据 override this file。
+
+当前唯一任务是
 [本批审查与集成](../plans/p1-prefreeze-2026-10-18/REVIEWED_INTEGRATION_20261022.zh-CN.md)，
 root 是唯一集成写入者；基线 `origin/develop=1e5d83100a8222f211a0e633120ea8123dd06427`。
 在独立 topic 组合 PR211、PR212、PR213，先核历史职责与实际连接，解决组合清单/入口冲突，
@@ -22,5 +24,8 @@ PR212 的真实 CUDA 只证明其原 source 的 step1/DEV/checkpoint；同 Run �
 P1 可替换协议、Host/Host Runtime 区分、来源与 profile requires、GUI/CLI 映射同一用例，
 沿 README → Architecture/Components/唯一链路图 → 原操作指南维护，不新增一套规范或控制链。
 旧 PR24/25/172/178/181 的保留、替代和未迁能力归本批任务；未授权删除或关闭它们。
+
+## Remaining Platform non-claims
+
 Managed 全机制等价、完整 Human/研究资格、模型质量、正式训练、统一 TEST 与实战评价仍未授通过。
 唯一下一步：完成组合检查与非作者复核，只在通过后执行本批条件式 develop 合并并核集成身份。

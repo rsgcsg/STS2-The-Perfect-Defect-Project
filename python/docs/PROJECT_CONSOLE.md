@@ -1208,7 +1208,12 @@ qualification. Synthetic injected-provider execution does not establish those fa
 `status --operation-id JOB` selects the original remote job. `cancel` and `reconcile`
 take `job_id` and `expected_attempt_id`. Cancel acknowledges intent without claiming
 terminal execution or selecting cancelled output. Reconcile polls only the saved
-handle; selected result/checkpoint closures are explicitly copied back to the
+handle. A Modal query reports pending only from a fresh original-call ACK with
+one unfinished input and no output. Expired output, missing ACK/RPC timeout or a
+mismatched output stays `result_uncertain` with the original handle; it neither
+proves the worker is running nor permits a new submission. The provider reads one
+non-consuming ACK per query, with a bounded RPC and no transport retry.
+Selected result/checkpoint closures are explicitly copied back to the
 original local Store for the existing Model consumer. Unknown submission never
 retries. Live pause is unsupported: choose `stop_after` before submission. Resume
 additionally takes a new budgeted `intent_id`, exact paused `checkpoint_id`,

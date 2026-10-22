@@ -33,16 +33,18 @@
 | PR211 | 本批整合其32路径候选，原 native/build/install/load 和 full CI 证据留原准确身份；剩余整体卡顿已由用户接受为已知表现 |
 | PR212 | 本批整合其55路径候选；原训练链、恢复/DEV/TEST 与边界非作者复核通过。正式四 Agent 长训、统一 TEST/实战评价、全云无人值守与 GPU 恢复仍未完成 |
 | PR213 | 本批整合其15路径候选；原件不改、共享语义核、窄动画规则及反例已独立复核。旧锁漏更新导致的失败保留；最终组合再核所有消费者与 BOM |
-| PR24 `0ffb3cf7`、PR25 `6b1d006f` | Workshop L1 元数据/preview 和 L2 exact staging 是独有发布消费者，当前 `workshop/`/stage 入口不存在；不谎称已迁。后续 L3/L4 已留原 [K3 去向](CHAIN_PURPOSES.md#历史24项未来复用的精确入口2026-10-18)。本批不恢复 Workshop 产品目标，也不把旧 root package/README 直接叠回 |
+| PR24 `0ffb3cf7`、PR25 `6b1d006f` | Workshop L1 元数据/preview 和 L2 exact staging 是独有发布消费者，当前 `workshop/`/stage 入口不存在；不谎称已迁。后续 L3/L4 已留原 [K3 去向](CHAIN_PURPOSES.md)。本批不恢复 Workshop 产品目标，也不把旧 root package/README 直接叠回 |
 | PR172 `c358d2b4` | 单 Skill 候选。后续 `6e5303d0` 的现 Skill 已明确当前 owner、已有授权、不另定 SOP、诊断和资格分开及未知不重发；保留旧候选供逐项复用，不用旧文件覆盖现行版本。未执行关闭 |
 | PR178 `41e20810` | 旧治理/系统图/计划栈；现 [DECISIONS](../../DECISIONS.md) 已明示选择性承接有效决定，WORKING_RULES/Architecture/CHAIN/P1 各有唯一 owner。旧 ENGINEERING_RULES/SYSTEM_MAP/SCOREBOARD 不再是当前入口；不恢复两个当前规范/派工入口，原能力目标不伪称实绩 |
-| PR181 `6cc2a0d7` | J-min 独有能力与后续 owner 正逐项复核；不先宣称整栈已迁或直接叠回旧 training controller。旧 CUDA 失败保原对象/条件；最终差额结论补在本节，不因此恢复旧任务预算 |
+| PR181 `6cc2a0d7` | 不整包合入。StructuredM2 独立 lane memory/cursor、label-mean TBPTT、StructuredDevicePolicy 和 CUDA oracle 未迁入，P1 无记忆 microbatch 不是替代；原 `python/stpd/models/structured_batch.py` 及测试从此 PR 定位。任务生命周期已有现 TrainingService/Ops/ComputeRequest 接替；原 wrapper 的纯 primitive/标准库闭包设计在现 `modal_app.py` 已满足，其独立反序列化 oracle 尚未迁。复核另发现现 ModalProvider 把过期输出/RPC超时误判 pending，本批仅将原 ACK 判断定点迁入现 provider，沿原 Scheduler uncertain/handle 路径，不引入旧 controller 或旧预算 |
 
 没有为“干净”删除/移动数据、模型、工作树或分支，没有以盘点替代未完成迁入。旧独有发布/数值能力保留原 PR/ref；未来有真实消费者时先查该原件，再在当前 owner 接回。
 
 ## 验证、证据与停止条件
 
-本轮属于 G2 跨组件组合；PR211 的既有 G3/G4 证据绑定其原 bytes，组合源码检查不自动给新的 installed/loaded/runtime/Human 或 Managed 资格。三个原 PR 的准确门、失败/跳过和未完成项分别保留，不拼计为新组合结果。
+本轮属于 G2 跨组件组合；PR211 的既有 G3/G4 证据绑定其原 bytes，组合源码检查不自动给新的 installed/loaded/runtime/Human 或 Managed 资格。本批额外修复 `ModalProvider.poll` 的原 ACK 误判：锁定SDK1.5.5 的 OutputExpiredError 继承 TimeoutError，而 builtin TimeoutError 同时可来自空 ACK 与传输；异常类型不是 pending 证据。只在原调用 idx0 的 typed ACK 明确一个未完成输入且无输出时返回 pending；过期、无 ACK 和绑定不符沿原 Scheduler 留 uncertain/原 handle，不重投。保留实际 SDK spawn/cancel/decoder 和粗时钟实验，迁入旧181的针对性反例；未部署新云 target。
+
+三个原 PR 的准确门、失败/跳过和未完成项分别保留，不拼计为新组合结果。
 
 编辑/冲突解决后先跑 SDK→native 转换与实际包消费者的忠实连接、根规则与 closeout；稳定候选才执行所选 full gate。非作者复核关注组合增量、清单/锁/历史身份和真实调用，不对未变源码重复全审。完整 CI 失败必须定位首错，不空重跑；路由 skipped 不算 passed。
 

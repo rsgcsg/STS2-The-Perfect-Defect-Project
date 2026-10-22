@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib
 import re
+import time
 from dataclasses import asdict, dataclass
 from typing import Any
 
@@ -15,6 +16,59 @@ from ..canonical import semantic_hash
 from .contracts import ComputeReceipt, ComputeRequest
 
 MODAL_SDK_VERSION = "1.5.5"
+
+
+def _original_output(sdk: Any, call_id: str) -> tuple[bool, Any]:
+    """Read this spawn's original ACK; an exception never establishes pending.
+
+    The locked SDK's get(timeout=0) uses built-in TimeoutError for both a fresh
+    empty ACK and an RPC timeout. OutputExpiredError also inherits its polling
+    TimeoutError. Keep this SDK-specific distinction inside the existing provider.
+    """
+    import asyncio
+
+    api = importlib.import_module("modal_proto.api_pb2")
+    decode = importlib.import_module("modal._utils.function_utils")._process_result
+    synchronizer = importlib.import_module("modal._utils.async_utils").synchronizer
+
+    async def read() -> tuple[bool, Any]:
+        client = await sdk.Client.from_env.aio()
+        response = await client.stub.FunctionGetOutputs(
+            api.FunctionGetOutputsRequest(
+                function_call_id=call_id, timeout=0, last_entry_id="0-0",
+                clear_on_success=False, requested_at=time.time(), start_idx=0, end_idx=0,
+            ),
+            retry=None, timeout=30,
+        )
+        if not isinstance(response, api.FunctionGetOutputsResponse):
+            raise BoundaryError("modal", "original_output_binding_mismatch")
+        if not response.outputs:
+            if response.num_unfinished_inputs == 1:
+                return True, None
+            if response.num_unfinished_inputs == 0:
+                raise sdk.exception.OutputExpiredError()
+            raise BoundaryError("modal", "original_output_binding_mismatch")
+        if (len(response.outputs) != 1 or response.outputs[0].idx != 0
+                or response.num_unfinished_inputs != 0):
+            raise BoundaryError("modal", "original_output_binding_mismatch")
+        output = response.outputs[0]
+        terminal_statuses = {
+            api.GenericResult.GENERIC_STATUS_SUCCESS, api.GenericResult.GENERIC_STATUS_FAILURE,
+            api.GenericResult.GENERIC_STATUS_TERMINATED, api.GenericResult.GENERIC_STATUS_TIMEOUT,
+            api.GenericResult.GENERIC_STATUS_INIT_FAILURE,
+            api.GenericResult.GENERIC_STATUS_INTERNAL_FAILURE,
+            api.GenericResult.GENERIC_STATUS_IDLE_TIMEOUT,
+            api.GenericResult.GENERIC_STATUS_MEMORY_MANAGER_EVICTION,
+        }
+        if not output.HasField("result") or output.result.status not in terminal_statuses:
+            raise BoundaryError("modal", "original_output_binding_mismatch")
+        return False, await decode(output.result, output.data_format, client.stub, client)
+
+    async def bounded() -> tuple[bool, Any]:
+        return await asyncio.wait_for(read(), timeout=30)
+
+    result: tuple[bool, Any] = synchronizer.create_blocking(bounded)()
+    return result
 
 
 @dataclass(frozen=True)
@@ -152,7 +206,8 @@ class ModalProvider:
     def poll(self, handle: ComputeHandle) -> ComputeReceipt | None:
         sdk = self._client()
         try:
-            value = self._call(handle).get(timeout=0)
+            self._call(handle)  # Validate the original target/source/handle before any I/O.
+            pending, value = _original_output(sdk, handle.call_id)
         except sdk.exception.FunctionTimeoutError:
             # This subclasses the SDK polling timeout, not Python's built-in
             # TimeoutError. Keep it distinct without inventing a terminal receipt.
@@ -160,15 +215,14 @@ class ModalProvider:
                 "modal", "execution_timeout",
                 "retain the exact call handle for terminal reconciliation; do not resubmit",
             ) from None
-        except (sdk.exception.TimeoutError, TimeoutError):
-            # SDK 1.5.5's empty-output poll raises the built-in TimeoutError.
-            return None
         except BoundaryError:
             raise
         except Exception:
             # Transport failure and remote failure are not guessed apart. Hub
             # retains uncertain until provider terminal evidence is available.
             raise BoundaryError("modal", "result_unavailable") from None
+        if pending:
+            return None
         result = object_fields(value, {"target_id", "receipt"}, "modal.response")
         if result["target_id"] != self.target.target_id:
             raise BoundaryError("modal", "deployed_target_mismatch")
