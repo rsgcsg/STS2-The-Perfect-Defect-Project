@@ -32,6 +32,16 @@ rc58构建 SHA256 `55ce85994d3e06bc886c2300100f7eea06e8a7e439479fab045b3e6cf4abc
 
 新候选31条慢样本中，首次94.165ms idle/readrich实际区间包含在104.007ms Recording帧内；最慢121.437ms帧没有重叠的≥30ms已测capture区间，仍可能含更短capture或其他引擎/系统工作，不能无据归因。旧rc57无慢区间字段，不能回填旧时间相关性。
 
-两个候选loaded-evidence均ready，正常录制仍 `artifact_unqualified` / execution=false；正常Close健康，Host HTTP200/code0/signalnull/unforced。临时部署后已由原Game Mod rollback恢复rc57，DLL SHA256 `b55a8e98852c0f560f5b6983412a9b321e76695c7ee78b0a3cad2c7556511e36` 复核。下一步仅原installer准备并升级正常日常组合、保持旧kit与配置可恢复；不以源码/退出正常替代该交付。
+两个隔离对照候选loaded-evidence均ready，录制兼容条件为 `artifact_unqualified` / execution=false；正常Close健康，Host HTTP200/code0/signalnull/unforced。临时部署后已由原Game Mod rollback恢复rc57，DLL SHA256 `b55a8e98852c0f560f5b6983412a9b321e76695c7ee78b0a3cad2c7556511e36` 复核。临时对照在此结束；后续正常日常交付已由原installer完成，见下。
 
 原始证据在共享交接目录 `replies/evidence/recording-stutter-round2-20261022/`，两原session、完整profile、命令请求/响应、loaded身份、退出和rollback均保留；汇总 `runtime-comparison01.json` SHA256 `2ffcb685a28d940e7036d7aa37f23483fac6c8b71abd3b360a0408f70a23c43d`。本文件仅摘要，不复制原始游戏数据。源码通过正常merge保持组件provenance；PR可开，未获本轮merge授权。
+
+## 正常日常交付已完成
+
+原installer产出并安装不可变kit `3e9f9e614e70ef07ec368d5c9cc026411366669661ca621af194c6ef3759f28c`（12,577,266字节、736文件、打包源 `d04bbfeebd538121b0ef446e9f408fcf928340cb`）。原prepare和隔离initialize通过，永久Python环境按原锁保留cloud与local-models功能，原Evidence安装身份及Torch导入检查通过。旧Workbench70228经原owner正常stop；collection-tool注册、launcher CAS替换、原native-access重绑、deploy和固定open入口均exit0，project配置SHA256仍为 `07df30d95fac4a2dfdce649577ec5deb084247b5c9044850a77f8e4aa32df44e`。
+
+2026-10-22 01:38:56 UTC正常冷启动游戏PID11422，新Workbench PID11378。kit自带owner `collectionSetup status` 确认实际rc58 SHA/MVID、01:38:58实载时间与进程代数，返回bound/connected且errors为空。原生Platform面板显示“已连接游戏工作台”；health HTTP200，Model idle/未加载，Training ready/idle；录制ready、无session、append/disk为not_open、无error/pending/recovery。`last_result`仍是另一历史runtime的Close，未借作本次Close证据。本次正常路径未开启新录制，也未操作游戏。
+
+正常日常launcher的既有source-canary路径报告 `canary_exact` / execution_available=true；这与前述隔离对照的artifact_unqualified/execution=false条件不同，分别记录，不提升动作、runtime或科研资格。原Model runtime保留旧代，没有重装、训练重跑或新资格声明。正常游戏和Workbench留给用户继续使用；本次无新增性能测量。browser专用read-only接口在control凭据下的401/400响应保留为边界结果，不计功能通过。
+
+最终日常收据为共享证据 `normal-delivery-final01.json`，SHA256 `fb9f9186fcbd33ddbcac0de30d1efaa17166ef940e21e8f73299930135dd5888`；原loaded/health/cutover收据均在同目录。旧kit `a9724a6762f49489ad0fb291e93ad9f47c7f73f585e7e45383a12514197badb4` 与私密配置、launcher/native-access备份保留在原workbench-recovery的recording-round2-20261022目录。回退须先原owner停游戏/Workbench，再用原installer将旧kit注册与launcher CAS恢复并deploy旧rc57；不直接覆盖运行中的DLL。源码以正常merge后revert回退，PR211仍未获merge授权。Hosted CI以PR实际最新head和原run状态为准，pending/skipped均不写通过。
