@@ -64,7 +64,7 @@ def test_failed_update_restores_process_settings(monkeypatch):
     def fail(frame):
         raise RuntimeError("fixture forward failure")
 
-    monkeypatch.setattr(trainer.model, "forward", fail)
+    monkeypatch.setattr(trainer.model, "forward_batch", fail)
     with pytest.raises(RuntimeError, match="fixture forward failure"):
         trainer.advance()
     unchanged(before)
