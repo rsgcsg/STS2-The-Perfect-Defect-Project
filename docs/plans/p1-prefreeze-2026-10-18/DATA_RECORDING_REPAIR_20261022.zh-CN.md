@@ -23,13 +23,39 @@ Evidence 修正 targets 回执误读不存在字段的问题，读取 converter 
 旧 `a267912d` 跨幕修复实际已在日常安装；本次残留是最终胜利无 ActEntered、长活 RunManager
 绑定未随会话清理，不是旧修复根本没装。LastingCandy/Skip 的 SDK rc.12 仍属已合源码、未装日常 Tool。
 
-已验：190 项转换/原生接线检查及35项 Store/consumer测试通过；Annotator 初次完整 check
-通过（450 Core 与 exact-game build 等），后续版本/锁/稳定候选完整门仍待。
-三份真实原件最新离线结果依序 `120025:413N/411next/6阻塞`、`121856:162N/162next/0阻塞`、
-`132000:867N/866next/2阻塞`；原分别414/406/9、162/161/2、868/861/3。
-剩余6项是缺失附魔父级原事实，2项是已发生的 carrier 失败与 unknown，不离线补造。
-旧 Skip 来源当前规则离线334N/334next；尚未另版发布到Store，旧337标签投影保持原样。
+产品固定候选为 `4b1ebf516da0227ceafb1db447eb6c9a45654944`；其后只更新本任务与CURRENT文档。
+Annotator rc.26、Evidence rc.33、Game Mod rc.59及Python实际依赖/组合声明和BOM已同步；
+非作者复核接纳主实现，并独立重现三份原件。190项转换/原生接线、35项Store/consumer、
+`check:exact-game`（含450 Core及准确v0.111.0统一Mod构建）、另行74项SourceNative测试通过。
+完整本地门保留两次失败：先补版本常量/标准依赖环境；第二次4866 passed/9 failed/6 skipped，
+9项均因漏同步发布组合Evidence pin，单字段修正后相关12项消费回归通过，其他组件门全部通过。
+没有将上述完整门改称通过；最终head完整CI由本批develop PR执行，结论以PR实际回执为准。
 
-下一步：冻结实现与版本，更新真实消费锁/BOM，稳定候选非作者复核及所选 full/精确游戏门；
-发布新固定 Tool 后沿正常 derive/Store/R2/reader 为本批旧来源另版派生和计数。
-root 唯一写入者；无付费、游戏控制、新 Human 或其它工程 worker。PR及日常安装按上方授权边界收口。
+固定Tool为 `0464d9e206a3d234678dafeba4e17380afde7d1b36ee4a5eb26ea1701333f340`，
+producer为4b1ebf51。沿现有recordings derive→Store→storage preserve→R2完整投影/原件archive回读，
+完成此前审计固定的25个declared-human来源分支；正式`inspect_projections`消费完整InputSpec/目录/唯一chosen，
+复算10319 N、10183 N with next、9885 N with end、136 N without next、0别名重复。
+25个observed groups独立性均未知，15份source conversion complete；这些不是25个独立游戏或研究资格。
+旧30个投影payload hash及25个原始manifest均未改变。
+
+| 固定范围 | 旧N / 合格next | 新N / 合格next | 剩余原件事实 |
+|---|---:|---:|---|
+| 新增八份 | 3118 / 3102 | 3116 / 3113 | 3个N缺next；不补造 |
+| 120025 | 414 / 406 | 413 / 411 | 6项缺失附魔父级事件，形成2个N缺next |
+| 121856 | 162 / 161 | 162 / 162 | Smith预览后取消现可证明，0阻塞 |
+| 132000 | 868 / 861 | 867 / 866 | 既有carrier失败与unknown两项，1个N缺next |
+| 已知Skip来源032233 | 337 / 326 | 334 / 334 | 三个物理Skip退回零标签；实际取牌换到完整父意图 |
+
+三份问题来源的新发布N事实及mask逐条等于原件复验；Skip来源全部334个N事实亦同。
+两个早期来源还分别恢复38与294个next，属于先前修复随新Tool应用到旧数据的收益。
+本批整份旧25来源的合格next为9832，新为10183；不能只报告新增八份的3处剩余而遗漏全库136处。
+
+唯一数据选择入口在证据目录的`repaired-projection-ids.json`，或现有prepare API的
+`repaired-source-filters.json`（declared_human及准确Tool release）。不要将旧别名混入此清单。
+关键收据为`rederivation-plan.json`、`batch-receipts/`、`repaired-selection-reader.json`、
+`published-skip-case-comparison.json`与`candidate-validation.json`；详细失败和原始日志同目录保留。
+共享交接为 `/Users/fire/Desktop/SpireAgentProject/claude-handoff-2026-10-13/replies/P1-RECORDING-DATA-REPAIR-20261022.md`。
+
+交付到本分支PR审查/完整CI及逐PR批准；不自动merge或日常安装。原生新行为仍待批准安装后的
+准确运行身份与有界Human验证，不把本地构建/离线转换提升为实际运行资格。
+未训练、未reserve/use/freeze、未改用途或划分、未付费、未清理资产或控制游戏；正常应用未重启。
