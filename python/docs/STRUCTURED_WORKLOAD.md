@@ -359,3 +359,8 @@ Separately typed confirmed process termination settles failed/cancelled transpor
 attempts through the original Ops fence without refunding cumulative reservations.
 Timeout, Stop or a normal process exit cannot synthesize a paused checkpoint; unknown
 termination remains active and cannot authorize resubmission or provider switching.
+For a confirmed failed/cancelled original attempt, the same Application resume
+command can explicitly select its durable checkpoint and a new budgeted intent.
+Admission verifies the original checkpoint family, Run/input/source and attempt,
+plus the immutable checkpoint event's original compute request/attempt binding.
+No latest-checkpoint search or cross-device restore exception is introduced.

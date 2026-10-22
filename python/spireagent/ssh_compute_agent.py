@@ -8,7 +8,6 @@ from __future__ import annotations
 import argparse
 import os
 import signal
-import stat
 import subprocess
 import sys
 import time
@@ -60,17 +59,13 @@ def runtime_identity(gpu: str) -> dict[str, str]:
 
 def private_environment(path: Path) -> dict[str, str]:
     """Read the existing dotenv mechanism privately, without echo or request copy."""
-    from dotenv import dotenv_values
+    from spireagent.workbench.service_process import cloud_environment
 
-    info = path.stat()
-    if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
-            or stat.S_IMODE(info.st_mode) & 0o077):
-        raise BoundaryError("ssh", "private_environment_permissions_required")
-    values = dotenv_values(path, interpolate=False)
-    if any(value is None for value in values.values()):
-        raise BoundaryError("ssh", "private_environment_invalid")
     environment = dict(os.environ)
-    environment.update({key: value for key, value in values.items() if value is not None})
+    # The original bounded private-file parser admits only cloud storage keys.
+    # Runtime variables (PYTHONPATH/CUDA_VISIBLE_DEVICES/LD_LIBRARY_PATH) cannot
+    # change between this process's target check and its worker's environment.
+    environment.update(cloud_environment(path))
     return environment
 
 

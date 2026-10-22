@@ -8,7 +8,7 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from spireagent.artifact_contracts import Manifest
-from spireagent.compute import ComputeProvider
+from spireagent.compute import ComputeProvider, ComputeTermination
 from spireagent.hub.database import Operations
 from spireagent.json_boundary import BoundaryError, digest, object_fields
 from spireagent.source import source_identity
@@ -120,6 +120,54 @@ class RemoteTrainingService:
                                         record_training_use=record_use)
         assert self._operations is not None
         return owner, store, provider, self._operations, self._scheduler
+
+    def _terminated_resume_checkpoint(
+        self, row: dict[str, Any], checkpoint_id: str, provider: ComputeProvider, ops: Operations,
+    ) -> None:
+        """Admit an explicitly selected durable checkpoint from this ended attempt."""
+        from spireagent.storage.run_reporter import ObjectStoreRunReporter
+        from stpd.cloud_jobs.contracts import ComputeRequest
+        from stpd.cloud_jobs.execution import preflight_training_request
+
+        saved = ops.compute_state(row["id"])
+        if (row["status"] not in {"failed", "cancelled"} or saved is None
+                or saved["handle"] is None or saved["attempt_id"] != row["attempt_id"]
+                or saved["fence"] != row["fence"] or saved["phase"] != row["status"]):
+            raise BoundaryError("remote_training", "confirmed_original_termination_required")
+        termination = ComputeTermination.decode(json.loads(row["result"] or "null"))
+        handle = provider.restore_handle(saved["handle"])
+        termination.bind(handle)
+        request = ComputeRequest.decode(saved["request"])
+        if (request != handle.request or request.kind != "training"
+                or request.input_id != row["input_id"] or request.attempt_id != row["attempt_id"]
+                or saved["target_id"] != provider.target.target_id
+                or row["provider_ref"] != handle.call_id):
+            raise BoundaryError("remote_training", "original_attempt_binding_mismatch")
+        # Reuse the installed family verifier for the complete checkpoint payload;
+        # numerical/GPU exact restore remains independently owned by the worker.
+        from dataclasses import replace
+
+        peer = self._compute_store
+        preflight_training_request(peer, replace(request, resume=checkpoint_id))
+        checkpoint = peer.get_manifest(checkpoint_id)
+        if checkpoint.parameters.value().get("attempt") != row["attempt_id"]:
+            raise BoundaryError("remote_training", "original_attempt_checkpoint_required")
+        events = ObjectStoreRunReporter(peer, peer.blobs).events(request.input_id)
+        for event in events:
+            info = event.parameters.value()
+            details = info.get("details", {})
+            if (event.producer == request.producer
+                    and {p.role for p in event.parents} == {"run"}
+                    and info.get("kind") == "checkpoint"
+                    and info.get("attempt") == request.attempt_id
+                    and type(info.get("step")) is int and info["step"] > 0
+                    and isinstance(details, dict) and details.get("checkpoint_id") == checkpoint_id
+                    and details.get("compute_request_id") == request.request_id
+                    and details.get("compute_attempt_id") == request.attempt_id
+                    and details.get("optimizer_updates") == checkpoint.parameters.value().get(
+                        "optimizer_updates")):
+                return
+        raise BoundaryError("remote_training", "bound_durable_checkpoint_event_required")
 
     def _launch_loop(self) -> None:
         if self._thread is not None and self._thread.is_alive():
@@ -386,8 +434,14 @@ class RemoteTrainingService:
                     intent = digest(obj["intent_id"], "remote_training.intent_id", length=32)
                     checkpoint = digest(obj["checkpoint_id"], "remote_training.checkpoint_id")
                     result = json.loads(row["result"]) if row["result"] else {}
-                    if row["status"] != "paused" or result.get("checkpoint_id") != checkpoint:
-                        raise BoundaryError("remote_training", "exact_paused_checkpoint_required")
+                    if row["status"] == "paused":
+                        if result.get("checkpoint_id") != checkpoint:
+                            raise BoundaryError("remote_training",
+                                                "exact_paused_checkpoint_required")
+                    else:
+                        self._terminated_resume_checkpoint(row, checkpoint, provider, ops)
+                    if intent == row["request_key"]:
+                        raise BoundaryError("remote_training", "new_remote_intent_required")
                     self._limits(obj, provider.target.timeout_seconds)
                     job_id = ops.enqueue("training", row["input_id"], intent,
                                          max_seconds=obj["max_seconds"],

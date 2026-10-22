@@ -1252,7 +1252,10 @@ and manages no school quota. The operator first authorizes the allocation, fixed
 reviewed source/`uv.lock`, environment, input/use selection and time/cost ceiling.
 Install that exact clean checkout and locked Python 3.11 environment on the allocated
 host. Keep the remote Store dotenv file outside the checkout, owner-only mode `0600`;
-its values enter only the worker environment. No secret belongs in project, target,
+the existing `cloud_environment` parser supplies only its supported AWS/STPD S3
+storage keys. Runtime keys such as `PYTHONPATH`, `LD_LIBRARY_PATH` and
+`CUDA_VISIBLE_DEVICES` are ignored, so the worker retains the verified runtime
+environment. No shell source/eval or dotenv interpolation is used. No secret belongs in project, target,
 request, command arguments or transport receipts. Configure the existing local
 OpenSSH `-F` file with the verified school host alias/ProxyJump and host keys.
 The provider forces BatchMode, strict host-key checking and one connection attempt.
@@ -1296,8 +1299,16 @@ the existing Ops fence, releasing the active slot while retaining the failed att
 handle and cumulative budget reservation. Modal transport errors retain their prior
 unknown semantics. No process exit manufactures a paused checkpoint or data result.
 Choose `stop_after` with enough save/transfer margin for a durable worker checkpoint;
-a hard-killed task may retain only earlier checkpoints and cannot use normal paused
-resume without its original checkpoint/worker admission. Do not edit Ops directly.
+a hard-killed task may retain only earlier checkpoints. Normal `resume` also accepts
+an explicit checkpoint for an original failed/cancelled job with confirmed typed
+termination, retained exact handle/attempt/fence and a new intent. It verifies the
+checkpoint through the original worker family and requires an immutable checkpoint
+event binding that exact original compute request and attempt. It never finds the
+latest checkpoint automatically or borrows one from another attempt. Unknown
+termination cannot use this route. The resumed job uses the same Run, original
+checkpoint and unchanged worker GPU/runtime restore gates, with a new cumulative
+budget reservation. The caller still owns total recovery-count and time/cost limits.
+Do not edit Ops directly or relabel the failed job as paused.
 
 Before long work, the operator validates the shortest real school submission,
 disconnect/restore, receipt, Stop, timeout and original source/GPU identity. Local

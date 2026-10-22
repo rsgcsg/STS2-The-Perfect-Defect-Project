@@ -68,7 +68,7 @@ def transport(tmp_path, monkeypatch):
 
     selected = target(tmp_path)
     secret = Path(selected.private_env)
-    secret.write_text("FIXTURE_STORAGE_SECRET=never-request-or-receipt\nFIXTURE_DELAY=0.3\n")
+    secret.write_text("AWS_ACCESS_KEY_ID=never-request-or-receipt\nSTPD_S3_PREFIX=0.3\n")
     secret.chmod(0o600)
     threads, commands, children = [], [], []
     original_popen, original_run = subprocess.Popen, subprocess.run
@@ -78,8 +78,8 @@ import json, os, sys, time
 from spireagent.json_boundary import decode_json, json_bytes
 from stpd.cloud_jobs.contracts import ComputeReceipt, ComputeRequest
 request = ComputeRequest.decode(decode_json(open(sys.argv[1], 'rb').read()))
-assert os.environ['FIXTURE_STORAGE_SECRET'] == 'never-request-or-receipt'
-time.sleep(float(os.environ['FIXTURE_DELAY']))
+assert os.environ['AWS_ACCESS_KEY_ID'] == 'never-request-or-receipt'
+time.sleep(float(os.environ['STPD_S3_PREFIX']))
 receipt = ComputeReceipt(request.request_id, request.attempt_id, request.kind,
                          request.input_id, request.producer, 'paused', None, 'b' * 64)
 sys.stdout.buffer.write(json_bytes(receipt.to_dict()))
@@ -194,7 +194,7 @@ def test_lost_submit_ack_observes_deterministic_original_without_resubmission(
 def test_running_lock_is_fresh_original_process_fact_and_missing_original_is_unknown(transport):
     selected, _, children, _, _ = transport
     Path(selected.private_env).write_text(
-        "FIXTURE_STORAGE_SECRET=never-request-or-receipt\nFIXTURE_DELAY=60\n")
+        "AWS_ACCESS_KEY_ID=never-request-or-receipt\nSTPD_S3_PREFIX=60\n")
     provider = SshProvider(selected)
     handle = provider.submit(request("running"))
     deadline = time.monotonic() + 5
@@ -238,7 +238,7 @@ def test_actual_ssh_handle_binds_same_operations_and_cancels_through_scheduler(t
 
     selected, _, _, _, _ = transport
     Path(selected.private_env).write_text(
-        "FIXTURE_STORAGE_SECRET=never-request-or-receipt\nFIXTURE_DELAY=60\n")
+        "AWS_ACCESS_KEY_ID=never-request-or-receipt\nSTPD_S3_PREFIX=60\n")
     store, _, _, job, _ = job_fixture(tmp_path / "store")
     operations = Operations(tmp_path / "ops.sqlite")
     identity = operations.enqueue("feature", job.artifact_id, "ssh-stop", max_seconds=30,
@@ -267,7 +267,7 @@ def test_stop_terminates_only_original_process_and_never_fabricates_paused(trans
     if stop == "timeout":
         selected = replace(selected, timeout_seconds=1)
     Path(selected.private_env).write_text(
-        "FIXTURE_STORAGE_SECRET=never-request-or-receipt\nFIXTURE_DELAY=60\n")
+        "AWS_ACCESS_KEY_ID=never-request-or-receipt\nSTPD_S3_PREFIX=60\n")
     provider = SshProvider(selected)
     unrelated = original_popen([sys.executable, "-c", "import time; time.sleep(60)"])
     try:
@@ -332,12 +332,19 @@ def test_remote_identity_and_private_environment_reject_before_execution(tmp_pat
     with pytest.raises(BoundaryError, match="runtime_execution_identity_mismatch"):
         agent.verify_target(selected)
     private = tmp_path / "private.env"
-    private.write_text("KEY=private\n")
+    private.write_text("AWS_ACCESS_KEY_ID=private\n")
     private.chmod(0o644)
-    with pytest.raises(BoundaryError, match="private_environment_permissions"):
+    with pytest.raises(BoundaryError, match="cloud_environment_private_file_required"):
         agent.private_environment(private)
     private.chmod(0o600)
-    assert agent.private_environment(private)["KEY"] == "private"
+    assert agent.private_environment(private)["AWS_ACCESS_KEY_ID"] == "private"
+    for key in ("PYTHONPATH", "LD_LIBRARY_PATH", "CUDA_VISIBLE_DEVICES"):
+        monkeypatch.setenv(key, "original-runtime")
+    private.write_text("AWS_ACCESS_KEY_ID=private\nPYTHONPATH=changed\n"
+                       "LD_LIBRARY_PATH=changed\nCUDA_VISIBLE_DEVICES=changed\n")
+    environment = agent.private_environment(private)
+    assert all(environment[key] == "original-runtime" for key in
+               ("PYTHONPATH", "LD_LIBRARY_PATH", "CUDA_VISIBLE_DEVICES"))
 
 
 def test_bad_original_response_and_receipt_binding_are_rejected(tmp_path, monkeypatch):
