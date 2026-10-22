@@ -70,6 +70,13 @@ def test_normal_private_child_original_model_registration_and_composition(
     assert model.parameters.value()["algorithm"] == algorithm
     models = LocalModelService(config)
     models.root = ROOT
+    models.prepare(model_id, source="store")
+    models.thread.join(timeout=10)
+    assert models.status()["last_download"]["parents_downloaded"] is False
+    models.close()
+    # The next process has only the own-byte cache, and uses the normal registration.
+    models = LocalModelService(config)
+    models.root = ROOT
     registration = LocalModelRegistration(config, LocalModelExport(config), models)
     monkeypatch.setattr(registration, "_native_runtime",
                         lambda **_: (tmp_path / "modules", Path(".")))

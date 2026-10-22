@@ -96,6 +96,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--no-browser", action="store_true")
     parser.add_argument("--artifact")
+    parser.add_argument("--download-source", choices=("configured", "hub", "store"),
+                        default="configured")
     parser.add_argument(
         "--role", action="append", help="own payload role, repeat for multiple roles"
     )
@@ -325,7 +327,7 @@ def main(argv: list[str] | None = None) -> int:
                     config,
                     args.action,
                     selection=args.selection,
-                    artifact=args.artifact,
+                    artifact=args.artifact, download_source=args.download_source,
                     request_id=args.request_id,
                     runtime_archive=args.runtime_archive,
                     runtime_profile=args.runtime_profile,

@@ -155,7 +155,8 @@ class OwnerClient:
         self.calls.append("submit")
         saved = sorted(self.run_dir.glob("*generated-request.json"))[-1].read_bytes()
         assert saved == canonical_json(request).encode()  # Exact HTTP body before offer.
-        assert len(json.loads((self.run_dir / "report.json").read_bytes())["episodes"]) == 20
+        assert len(json.loads((self.run_dir / "report.json").read_bytes())["episodes"]) == getattr(
+            self, "planned", 20)
         self.generated = copy.deepcopy(request)
         self.run_id = "run-" + str(self.number)
         self.operation_id = f"{self.number + 40:032x}"

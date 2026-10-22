@@ -708,6 +708,38 @@ def _global_program(outcome, value, manifest, events, original):
         reason_codes=["program_declares_no_task_success_predicate"],
         witness=None,
     )
+    _global_terminal(outcome, value, events)
+
+
+def _global_model(outcome, value, manifest, events, original):
+    """Bind original P1 metadata without loading tensors or inventing a Goal."""
+    package = json.loads(original) if original is not None else None
+    baseline = manifest.get("adapter", {}).get("id") == "stpd-p1-baseline-agent"
+    if (
+        not isinstance(package, dict)
+        or package.get("schema") != (
+            "stpd/p1-baseline-model-1" if baseline else "stpd/p1-mstd-model-1")
+        or package.get("package_sha256") != manifest["artifact"]["sha256"]
+        or package.get("agent_spec", {}).get("id") != manifest["agent"]["id"]
+        or package.get("agent_spec", {}).get("version") != manifest["agent"]["version"]
+        or baseline and package.get("input_spec") != manifest["input"]["input_spec"]
+        or manifest["input"]["state_recovery"]["model_bindings"] != []
+    ):
+        raise BoundaryError("agent_task_outcome", "global_original_model_unavailable")
+    model = dict(outcome["agent_composition"]["model"])
+    outcome["agent_composition"].update(
+        models=[model], model=model, program_spec=package["agent_spec"],
+        task_spec=package["agent_spec"].get("task_spec"),
+        binding="original_p1_model_artifact",
+    )
+    outcome["task_completion"].update(
+        status="unproved", task_spec=package["agent_spec"].get("task_spec"),
+        reason_codes=["program_declares_no_task_success_predicate"], witness=None,
+    )
+    _global_terminal(outcome, value, events)
+
+
+def _global_terminal(outcome, value, events):
     sources = {
         event["payload"]["ordinal"]: event["payload"]["artifact"]
         for event in events
@@ -781,7 +813,12 @@ def project(
         ]
         outcome["agent_composition"] = composition
         if native and manifest.get("input", {}).get("profile") == "p1-global-r1":
-            _global_program(outcome, value, manifest, events, native_package)
+            if manifest.get("adapter", {}).get("id") in {
+                "stpd-p1-mstd-agent", "stpd-p1-baseline-agent"
+            }:
+                _global_model(outcome, value, manifest, events, native_package)
+            else:
+                _global_program(outcome, value, manifest, events, native_package)
         elif native:
             package = None
             if native_package is not None:

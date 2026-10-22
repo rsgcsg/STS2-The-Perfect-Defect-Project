@@ -44,6 +44,8 @@ def native_episode_command(
     run_profile: str = "short",
     expected_instance_id: str | None = None,
     original_request: dict[str, Any] | None = None,
+    run_id: str | None = None,
+    peer: dict[str, Any] | None = None,
     timeout_seconds: float | None = None,
 ) -> dict[str, Any]:
     """Call one Application, optionally fenced to its original instance.
@@ -88,6 +90,17 @@ def native_episode_command(
                 "native_episode", "application_request_failed_check_original_status_no_retry"
             ) from error
 
+    if action == "evidence-publish":
+        if not isinstance(run_id, str) or not run_id:
+            raise BoundaryError("local_model", "original_run_required")
+        body: dict[str, Any] = {"run_id": run_id}
+        if peer is not None:
+            body["peer"] = peer
+        return call("/api/local-models/evidence/publish", body)
+    if action == "evidence-status":
+        return call("/api/local-recordings/import/status", None)
+    if action == "evidence-reconcile":
+        return call("/api/local-recordings/import/reconcile", {})
     if action in {"prepare-owned", "attach"}:
         from .native_episode_binding import preparation_body
 
@@ -142,6 +155,7 @@ def model_command(
     *,
     selection: str | None = None,
     artifact: str | None = None,
+    download_source: str = "configured",
     request_id: str | None = None,
     runtime_archive: Path | None = None,
     runtime_profile: str | None = None,
@@ -316,6 +330,10 @@ def model_command(
     elif action == "download":
         route += "/download"
         body = {"artifact_id": digest(artifact, "local_model.artifact")}
+        if download_source != "configured":
+            if download_source not in {"hub", "store"}:
+                raise BoundaryError("local_model", "invalid_download_source")
+            body["source"] = download_source
     elif action == "install-runtime":
         route += "/install-runtime"
         body = {}
