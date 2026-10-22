@@ -335,7 +335,8 @@ def merge_projection_inspections(
     if not inspections:
         raise BoundaryError("p1_snapshot", "explicit_unique_projections_required")
     spec = inspections[0]["input_projection"]
-    sources, fingerprints = [], []
+    sources: list[dict[str, Any]] = []
+    fingerprints: list[tuple[str, str]] = []
     selected = dict(selected_decisions or {})
     points: dict[str, dict[str, Any]] = {}
     exclusions: Counter[str] = Counter()
@@ -356,12 +357,16 @@ def merge_projection_inspections(
         if wanted is not None and not wanted <= available:
             raise BoundaryError("p1_snapshot", "selected_N_not_present")
         for group in value["groups"]:
-            fingerprints.extend((root, key) for root in group["root_run_ids"] for key in group["keys"])
+            fingerprints.extend(
+                (root, key) for root in group["root_run_ids"] for key in group["keys"]
+            )
         exclusions.update(value["exclusions"])
         count = 0
         for original in value["points"]:
-            refs = [{k: v for k, v in original.items() if k not in {"aliases", "group_id", "point_id"}},
-                    *original["aliases"]]
+            refs = [
+                {k: v for k, v in original.items() if k not in {"aliases", "group_id", "point_id"}},
+                *original["aliases"],
+            ]
             decision = original["source_decision_id"]
             if wanted is not None and decision not in wanted:
                 exclusions["explicit_selection"] += len(refs)
@@ -370,7 +375,9 @@ def merge_projection_inspections(
             for ref in refs:
                 if decision in points:
                     if points[decision]["N_fact_sha256"] != ref["N_fact_sha256"]:
-                        raise BoundaryError("p1_snapshot", "overlapping_projection_N_conflict_select_one")
+                        raise BoundaryError(
+                            "p1_snapshot", "overlapping_projection_N_conflict_select_one"
+                        )
                     points[decision]["aliases"].append(dict(ref))
                     duplicates += 1
                 else:
@@ -381,31 +388,45 @@ def merge_projection_inspections(
     group_ids = {root: digest(json_bytes(group)) for group in components for root in group}
     for decision, point in points.items():
         point["group_id"] = group_ids[point["root_run_id"]]
-        point["point_id"] = digest(json_bytes({"native_decision": decision,
-                                               "N_fact_sha256": point["N_fact_sha256"]}))
+        point["point_id"] = digest(
+            json_bytes({"native_decision": decision, "N_fact_sha256": point["N_fact_sha256"]})
+        )
     groups = []
     for component in components:
         identity = group_ids[component[0]]
         members = [s for s in sources if s["root_run_id"] in component]
-        groups.append({"group_id": identity,
-                       "keys": sorted({key for root, key in fingerprints if root in component}),
-                       "root_run_ids": sorted({s["root_run_id"] for s in members}),
-                       "N": sum(p["group_id"] == identity for p in points.values()),
-                       "independence_metadata_complete": all(
-                           s["lineage"].get("seed") is not None
-                           and s["lineage"].get("root_run_id") is not None
-                           and s["lineage"].get("ancestor_root_ids") is not None for s in members)})
-    return {"schema": SNAPSHOT_SCHEMA, "sources": sources,
-            "points": sorted(points.values(), key=lambda p: p["point_id"]), "groups": groups,
-            "unique_N": len(points), "exact_duplicate_N": duplicates,
-            "exclusions": dict(exclusions),
-            "selection": {k: sorted(v) for k, v in sorted(selected.items())},
-            "observed_group_count": len(groups),
-            "independent_group_count": sum(g["N"] > 0 for g in groups),
-            "unknown_independence_groups": sum(g["N"] > 0 and not g["independence_metadata_complete"]
-                                                for g in groups),
-            "input_projection": spec, "target_spec": TARGET_SPEC,
-            "use_scope": "engineering_only_not_research_admission"}
+        groups.append(
+            {
+                "group_id": identity,
+                "keys": sorted({key for root, key in fingerprints if root in component}),
+                "root_run_ids": sorted({s["root_run_id"] for s in members}),
+                "N": sum(p["group_id"] == identity for p in points.values()),
+                "independence_metadata_complete": all(
+                    s["lineage"].get("seed") is not None
+                    and s["lineage"].get("root_run_id") is not None
+                    and s["lineage"].get("ancestor_root_ids") is not None
+                    for s in members
+                ),
+            }
+        )
+    return {
+        "schema": SNAPSHOT_SCHEMA,
+        "sources": sources,
+        "points": sorted(points.values(), key=lambda p: p["point_id"]),
+        "groups": groups,
+        "unique_N": len(points),
+        "exact_duplicate_N": duplicates,
+        "exclusions": dict(exclusions),
+        "selection": {k: sorted(v) for k, v in sorted(selected.items())},
+        "observed_group_count": len(groups),
+        "independent_group_count": sum(g["N"] > 0 for g in groups),
+        "unknown_independence_groups": sum(
+            g["N"] > 0 and not g["independence_metadata_complete"] for g in groups
+        ),
+        "input_projection": spec,
+        "target_spec": TARGET_SPEC,
+        "use_scope": "engineering_only_not_research_admission",
+    }
 
 
 def publish_snapshot(

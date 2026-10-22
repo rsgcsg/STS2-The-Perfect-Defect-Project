@@ -13,7 +13,7 @@ from typing import Any
 from spireagent.json_boundary import BoundaryError
 from spireagent.json_boundary import digest as checked_digest
 from spireagent.research_curation import CurationLedger
-from stpd.p1.data import digest
+from stpd.p1.data import digest, json_bytes
 from stpd.p1.dataset import inspect_projections, load_snapshot, projection_payload_role
 
 
@@ -173,6 +173,154 @@ def require_p1_training_use(
 ) -> None:
     _, scopes = require_p1_snapshot(ledger, store, snapshot_id)
     train = scopes["train"]
-    ledger.require_training_use(
-        snapshot_id, train["projections"], train["roots"], operation_id
+    ledger.require_training_use(snapshot_id, train["projections"], train["roots"], operation_id)
+
+
+def draft_p1_allocation(
+    ledger: CurationLedger,
+    index: dict[str, Any],
+    *,
+    split_salt: str,
+    allocation_policy: str = "preserve_existing",
+) -> dict[str, Any]:
+    """Explain a reusable engineering allocation without changing claims or uses.
+
+    Prior roles and actual exposure constrain new versions. Unknown fresh groups
+    may be TRAIN, but never acquire held-out independence by an ID/hash alone.
+    """
+    from collections import Counter
+
+    from stpd.fullrun.data import split_run_fingerprints
+
+    if not isinstance(split_salt, str) or not split_salt:
+        raise BoundaryError("p1_training_data", "explicit_split_identity_required")
+    if allocation_policy not in {"preserve_existing", "observed_groups_engineering"}:
+        raise BoundaryError("p1_training_data", "unsupported_allocation_policy")
+    groups = [g for g in index["groups"] if g["N"]]
+    splits: dict[str, str] = {}
+    details, conflicts = [], []
+    fresh = []
+    excluded = []
+    with ledger.operations.transaction() as db:
+        for group in groups:
+            related = set(group["root_run_ids"])
+            for key in group["keys"]:
+                related.update(
+                    r[0]
+                    for r in db.execute(
+                        "SELECT run FROM curation_fingerprints WHERE fingerprint=?", (key,)
+                    )
+                )
+            related = ledger._groups(db, related)
+            claims = ledger._claims(db, related)
+            roles: set[str] = set()
+            reasons = []
+            if any(purpose == "gold" for purpose, _ in claims.values()):
+                reasons.append("gold_reserved_data")
+            for identity, (purpose, _) in claims.items():
+                if purpose == "training":
+                    roles.add("train")
+                elif purpose == "test":
+                    if identity.startswith("p1-N-dev:"):
+                        roles.add("dev")
+                    elif identity.startswith("p1-N-test:"):
+                        roles.add("test")
+                    else:
+                        reasons.append("heldout_claim_role_unknown")
+            exposed = any(
+                db.execute(
+                    "SELECT 1 FROM curation_uses WHERE run=? AND kind='training' UNION "
+                    "SELECT 1 FROM curation_source_uses u JOIN curation_source_runs r "
+                    "ON r.source=u.source WHERE r.run=? AND u.kind='training'",
+                    (run, run),
+                ).fetchone()
+                for run in related
+            )
+            if exposed:
+                roles.add("train")
+            if len(roles) > 1:
+                reasons.append("related_run_split_purpose_overlap")
+            if reasons:
+                conflicts.append(
+                    {
+                        "group_id": group["group_id"],
+                        "codes": sorted(set(reasons)),
+                        "claims": [
+                            {"claim_id": k, "purpose": v[0]} for k, v in sorted(claims.items())
+                        ],
+                        "training_exposure": exposed,
+                    }
+                )
+                splits[group["group_id"]] = "unassigned"
+            elif roles:
+                splits[group["group_id"]] = next(iter(roles))
+            else:
+                fresh.append(group)
+            details.append(
+                {
+                    "group_id": group["group_id"],
+                    "root_run_ids": group["root_run_ids"],
+                    "related_run_ids": sorted(related),
+                    "training_exposure": exposed,
+                    "independence_metadata_complete": group["independence_metadata_complete"],
+                    "basis": "prior_claim_or_permanent_exposure" if roles else "new_group",
+                }
+            )
+        for point in index["points"]:
+            row = db.execute(
+                "SELECT action,reason FROM curation_annotations WHERE occurrence=? "
+                "ORDER BY sequence DESC LIMIT 1",
+                (_occurrence(point["source_decision_id"]),),
+            ).fetchone()
+            if row is not None and row[0] == "exclude":
+                excluded.append(
+                    {"source_decision_id": point["source_decision_id"], "reason": row[1]}
+                )
+    known = [g for g in fresh if g["independence_metadata_complete"]]
+    allow_fresh_heldout = (
+        len(known) == len(fresh) or allocation_policy == "observed_groups_engineering"
     )
+    if not splits and allow_fresh_heldout and len(fresh) >= 3:
+        splits.update(
+            split_run_fingerprints(
+                ((g["group_id"], g["group_id"]) for g in fresh),
+                int(digest(split_salt.encode())[:16], 16),
+            ).value()
+        )
+    else:
+        for group in fresh:
+            splits[group["group_id"]] = "train"
+        if allow_fresh_heldout and fresh:
+            ordered = sorted(fresh, key=lambda g: digest(json_bytes([split_salt, g["group_id"]])))
+            # Fill absent held-out roles only from unclaimed, never-exposed groups.
+            # Previously reserved roles never move to meet a ratio.
+            prior_train = any(splits[g["group_id"]] == "train" for g in groups if g not in fresh)
+            minimum_remaining = 0 if prior_train else 1
+            for role in ("dev", "test"):
+                if role not in splits.values() and len(ordered) > minimum_remaining:
+                    splits[ordered.pop(0)["group_id"]] = role
+    counts: Counter[str] = Counter()
+    for point in index["points"]:
+        counts[splits[point["group_id"]]] += 1
+    blockers = []
+    if conflicts:
+        blockers.append("curation_allocation_conflicts")
+    if not counts["train"] or not counts["dev"] or not counts["test"]:
+        blockers.append("nonempty_train_dev_test_required_for_first_batch")
+    if excluded:
+        blockers.append("quality_excluded_N_requires_filtered_selection")
+    return {
+        "split_by_group": splits,
+        "partition_N": dict(counts),
+        "groups": details,
+        "conflicts": conflicts,
+        "quality_exclusions": excluded,
+        "blockers": blockers,
+        "ready_to_freeze": not blockers,
+        "policy": allocation_policy,
+        "isolation_claim": "observed_groups_only_not_statistical_independence",
+        "historical_external_exposure": "unknown",
+        "research_admission": "not_evaluated",
+        "purpose_reserved": False,
+        "training_use_recorded": False,
+    }
