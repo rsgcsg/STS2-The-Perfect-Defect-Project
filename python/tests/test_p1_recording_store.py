@@ -1209,10 +1209,13 @@ def test_target_derivation_receipt_uses_converter_complete_boolean(tmp_path, too
     manifest = json.loads(manifest_path.read_bytes())
     identity = manifest["identity"]
     identity["p1_native_support"] = P1_TARGET_SUPPORT
-    for relative in [str(converter.relative_to(tool.directory)), str(helper.relative_to(tool.directory))]:
+    for file in [converter, helper]:
+        relative = str(file.relative_to(tool.directory))
         raw = (tool.directory / relative).read_bytes()
         identity["files"] = [entry for entry in identity["files"] if entry["path"] != relative]
-        identity["files"].append({"path": relative, "bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest()})
+        identity["files"].append({
+            "path": relative, "bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest(),
+        })
     identity["files"].sort(key=lambda entry: entry["path"])
     release = digest(identity)
     manifest_path.write_text(json.dumps({**manifest, "release_id": release}))
