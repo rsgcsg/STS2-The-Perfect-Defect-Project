@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
+using System.Runtime.CompilerServices;
 using HarmonyLib;
 using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Localization.DynamicVars;
@@ -31,11 +32,14 @@ public static partial class NativeCardPreviewReadQualification
         catch { return false; }
     }
 
+    private static readonly ConditionalWeakTable<Type, ILookup<string, MethodInfo>> MethodTables = new();
+
     internal static bool MethodsUnpatched(Type owner, params string[] names)
     {
-        // Resolve immutable method metadata once per check. Patch state is
-        // still read anew for every overload on every invocation.
-        var methods = owner.GetMethods(NativeMembers).ToLookup(method => method.Name, StringComparer.Ordinal);
+        // CLR method metadata is immutable for each loaded Type. Reuse only
+        // that table; every requested overload's Harmony state remains live.
+        var methods = MethodTables.GetValue(owner, static type =>
+            type.GetMethods(NativeMembers).ToLookup(method => method.Name, StringComparer.Ordinal));
         return names.All(name => methods[name].Any() && methods[name].All(IsUnpatched));
     }
 

@@ -19,8 +19,8 @@ internal static partial class RecorderRuntime
         var state = _lifecycle.State;
         if (store != null && ReferenceEquals(store, _framePerformanceStore) && state == _framePerformanceState
             && state is RecordingLifecycleState.Recording or RecordingLifecycleState.Paused && _framePerformanceAt != 0)
-            store.ObservePerformance("game_process_frame_interval." + state.ToString().ToLowerInvariant(),
-                (long)Math.Ceiling((now - _framePerformanceAt) * 1_000_000d / Stopwatch.Frequency));
+            store.ObservePerformanceInterval("game_process_frame_interval." + state.ToString().ToLowerInvariant(),
+                _framePerformanceAt, now);
         _framePerformanceAt = now;
         _framePerformanceStore = store;
         _framePerformanceState = state;

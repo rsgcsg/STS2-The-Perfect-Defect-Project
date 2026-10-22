@@ -78,6 +78,7 @@ Each native render transaction qualifies its exact card once before capturing
 identity or updating previews; identity capture retains its pre-update order.
 This is scoped to the synchronous transaction and does not cache qualification
 across cards, captures, frames, or later native patches.
-Method-closure qualification resolves the owner's method table once per check;
-every requested overload still reads its current patch state on each invocation.
-No prior unpatched verdict is reused.
+Method-closure qualification reuses only the immutable method table of each loaded
+CLR Type. Every requested overload still reads its current patch state on each
+invocation, including after later patch/unpatch. No prior unpatched verdict,
+card/run fact or rendering result is reused.
