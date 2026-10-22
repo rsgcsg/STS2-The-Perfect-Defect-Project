@@ -176,6 +176,60 @@ def test_async_submit_observation_disconnect_restore_same_handle_and_original_re
     assert len([argv for argv in commands if "--supervise" in argv]) == 1
 
 
+def test_original_supervisor_waits_for_observers_short_flock_without_resubmission(
+    transport, monkeypatch,
+):
+    import fcntl
+
+    selected, commands, children, _, _ = transport
+    real_flock, launch = fcntl.flock, subprocess.Popen
+    attempted = threading.Event()
+    failures, observer_locks = [], []
+
+    def observed_flock(stream, operation):
+        supervisor = (threading.current_thread() is not threading.main_thread()
+                      and Path(stream.name).name == "running.lock")
+        if supervisor and operation & fcntl.LOCK_NB:
+            # Record the actual kernel rejection before notifying the observer;
+            # the old startup race therefore fails deterministically, not by timing.
+            try:
+                return real_flock(stream, operation)
+            except BlockingIOError as error:
+                failures.append(error)
+                raise
+            finally:
+                attempted.set()
+        if supervisor:
+            attempted.set()
+        return real_flock(stream, operation)
+
+    def observer_first(argv, **kwargs):
+        if "--supervise" in argv:
+            stream = (Path(argv[-1]) / "running.lock").open("a+b")
+            real_flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            observer_locks.append(stream)
+        return launch(argv, **kwargs)
+
+    monkeypatch.setattr(fcntl, "flock", observed_flock)
+    monkeypatch.setattr(subprocess, "Popen", observer_first)
+    provider = SshProvider(selected)
+    try:
+        handle = provider.submit(request("observer-first"))
+        saved = handle.to_dict()
+        assert attempted.wait(timeout=3), "original supervisor never attempted its real flock"
+        assert not failures, "short observer lock incorrectly killed the original supervisor"
+        assert not children  # The original owner is waiting, not starting another process.
+    finally:
+        for stream in observer_locks:
+            stream.close()
+    restored = provider.restore_handle(saved)
+    receipt = eventually(provider, restored)
+    assert receipt.request_id == handle.request.request_id
+    assert restored.to_dict() == saved
+    assert len([argv for argv in commands if "--supervise" in argv]) == 1
+    assert len([argv for argv in commands if argv[1:3] == ["-m", "stpd.cloud_jobs"]]) == 1
+
+
 def test_lost_submit_ack_observes_deterministic_original_without_resubmission(
     transport, monkeypatch,
 ):
