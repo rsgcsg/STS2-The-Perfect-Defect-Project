@@ -59,7 +59,7 @@ fixture，不是实际安装或游戏运行。真实 producer 生成的7210唯�
 额外source点漏算，均修fixture并保留失败XML，不把这些失败称产品性能问题。
 baseline缺tokenizers在正常preflight拒绝、无operation或manifest写；无需safetensors。
 
-剩余验收是稳定候选的所选门禁、PR source review及准确新source的有限云短验。
+PR #212 已建立，source review接受范围仍只到其准确证据层；剩余是最新源码所选门禁。
 所选路由为full，不能借本轮focused tests声称portable全过。正常prepared数据响应限16MiB、
 请求限1MiB，超限及未知冻结结果先查原Snapshot，不自动重投。日常App/录制/配置未变。
 所有本机恢复沿用累计wall/scratch/attempt预算，不表示本机美元收费。
@@ -69,6 +69,28 @@ immutable Modal parent经Git bundle刷新成准确候选，独立Application/Ops
 L4单容器/零retry/每调用至多300秒，最多一个Run的stop1与同Run恢复两次调用。
 build原入口900秒超时，费用计入本轮US$3总额；实际收据留外部artifacts与PR，
 不改旧Run/target或借旧GPU收据给新source，也不启动正式训练。
+
+实际云候选固定在 `64afd35ff7b84aef80c267028dc154b4302ff211`，同lock3ebe1850，
+image `im-EapjcjEbGg2gUmqh7bp9Ea`；fixture Snapshot `ae1e809d...91c6` 为
+TRAIN64/DEV8/TEST8，Run `b1910b88...66170`。首次调用真实L4/CUDA13完成step1，
+完整67,224,986B checkpoint `773eb457...94eec8` 已由正常reconcile取回并用原owner
+完整读字节、身份和Run绑定验证。源码/配置/输入身份保留，不授GPU提速或轨迹等价。
+第二次同Run恢复调用停在provider PENDING，task_id空，无该attempt started事件；
+Scheduler在原300秒deadline请求取消，原handle后独立读到TERMINATED。正常reconcile
+仍保留Ops `cancelling/result_unavailable`，没有业务completed、新Model或恢复完成证明。
+没有第三次调用或重投；最终provider统计0runner/0running_input/0backlog，隔离Application
+已正常stop/进程exit0，日常App/录制未动。US$0.50工程包络在原US$3内，配置时长保守
+compute估计约US$0.2641含startup/scaledown余量；未读取provider账单，不称实账。
+这次67MB checkpoint不能替代正式全量输入/候选的容量与时限检查。
+
+64候选首次full CI的Linux2通过，Linux1在全424源文件strict mypy处报两处baseline
+类型错误，聚合失败；原窄mypy从仓库父目录运行，未加载Python项目strict配置，不能冒充
+strict通过。B补丁只增加metadata参数注解和JSON descriptor类型声明，无数值/控制逻辑
+改变；集成后按Python项目显式配置复验全量mypy并由最新head自然触发fresh full CI。
+最终新增类型注解/文档的producer与64云producer分开，未为类型注解重建镜像或再训练。
+真实全量remote start仍同步传整个父闭包，可能超过600秒响应；未知只查原intent，
+未实现durable transfer-phase或异步prepare。本机Application/Scheduler仍需运行，
+这轮小fixture不证明真实1GB闭包无等待、全云无人值守或四Agent正式训练已完成。
 
 原用户范围、17 项和历史依据分别见外部当前执行原件
 `P1-REUSABLE-TRAINING-3H-EXECUTION-20261022.md`、
