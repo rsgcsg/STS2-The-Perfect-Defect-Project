@@ -156,6 +156,7 @@ def model_command(
     selection: str | None = None,
     artifact: str | None = None,
     download_source: str = "configured",
+    checkpoint_selection: str = "best",
     request_id: str | None = None,
     runtime_archive: Path | None = None,
     runtime_profile: str | None = None,
@@ -327,6 +328,12 @@ def model_command(
             raise BoundaryError("local_model", "selection_required")
         route += "/start"
         body = {"selection_id": selection}
+    elif action == "export-checkpoint":
+        if checkpoint_selection not in {"best", "current"}:
+            raise BoundaryError("local_model", "best_or_current_selection_required")
+        route += "/export-checkpoint"
+        body = {"checkpoint_id": digest(artifact, "local_model.checkpoint"),
+                "selection": checkpoint_selection}
     elif action == "download":
         route += "/download"
         body = {"artifact_id": digest(artifact, "local_model.artifact")}

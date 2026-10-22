@@ -1622,8 +1622,10 @@ class LocalModelService:
                 receipt = self.hub.download(identity, destination)
             else:
                 from spireagent.storage.config import open_peer
+                from spireagent.storage.store import ArtifactStore
                 from spireagent.workbench.hub_client import download_result
 
+                store: ArtifactStore
                 if self.config.remote_compute is not None:
                     store = open_peer(self.config.remote_compute.compute_store)
                 else:
@@ -1638,6 +1640,38 @@ class LocalModelService:
                     self.state["status"] = "idle"
 
         return self._begin("download", download)
+
+    def export_checkpoint(self, checkpoint_id: str, selection: str = "best") -> dict[str, Any]:
+        """Publish a diagnostic Model through this same application's operation slot."""
+        identity = digest(checkpoint_id, "local_model.checkpoint")
+        if not isinstance(selection, str) or selection not in {"best", "current"}:
+            raise BoundaryError("local_model", "best_or_current_selection_required")
+
+        def publish() -> None:
+            from spireagent.source import source_identity
+            from spireagent.storage.config import open_peer
+            from spireagent.storage.local import LocalBlobStore
+            from spireagent.storage.store import ArtifactStore, ManifestArtifactStore
+            from stpd.p1.checkpoint_export import publish_checkpoint_model
+
+            producer = source_identity(ROOT)
+            store: ArtifactStore
+            if self.config.remote_compute is not None:
+                store = open_peer(self.config.remote_compute.compute_store)
+            else:
+                reader = LocalModelExport(self.config)._workspace().store
+                if not isinstance(reader, ManifestArtifactStore) or not isinstance(
+                    reader.blobs, LocalBlobStore
+                ):
+                    raise BoundaryError("local_model", "configured_workspace_store_required")
+                store = ManifestArtifactStore(LocalBlobStore(reader.blobs.root, create=False))
+            result = publish_checkpoint_model(store, identity, producer, selection=selection)
+            with self.lock:
+                self.state["last_checkpoint_export"] = result
+                if self.client is None:
+                    self.state["status"] = "idle"
+
+        return self._begin("export-checkpoint", publish)
 
     def _run_profile(self, identity: str, profile: str) -> bool:
         if not isinstance(profile, str) or profile not in RUN_PROFILES:

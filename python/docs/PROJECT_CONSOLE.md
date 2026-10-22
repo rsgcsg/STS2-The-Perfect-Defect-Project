@@ -1054,6 +1054,35 @@ M-std 仍是普通 N-only，具体更新上限随固定 TRAIN 计算。
 | 只消费已有 Model | 按现入口 register/load/evaluate；无需重新准备数据或训练。 |
 | 改 P1 语义 | 先回协议 owner 确定语义，再更新受影响投影、Input 和消费者。 |
 
+### 训练中 Checkpoint 的诊断 Model
+
+长训中的精确保存点可以经原 Model owner 导出推理包，不必等最终 Run/result：
+
+```sh
+python -m spireagent.workbench project model --config PROJECT --action export-checkpoint \
+  --artifact CHECKPOINT_ID --checkpoint-selection best
+python -m spireagent.workbench project model --config PROJECT --action status
+```
+
+API是同Application的 `POST /api/local-models/export-checkpoint`，body为
+`{"checkpoint_id":"ID","selection":"best"}`；`current`明确选当前保存权重，默认`best`
+只取保存点中已有的DEV选优权重，没有best时拒绝。operation完成后从
+`last_checkpoint_export.model_id`取得精确ModelID，再走上文正常按ID下载、注册及CPU使用。
+Store沿已配置compute Store/R2或原workspace，不新建训练/存储控制链。
+
+导出读取原Run/training producer并调用原 `verify_p1_run` / `verify_p1_checkpoint`，
+核字节/hash、原Input/identity、代码、架构、step>=1、选中权重shape/dtype/finite；
+在CPU `fork_rng` 内strict-load，保持调用者CPU RNG。完整性验证会读取包括TEST在内的
+原投影/标签字节；导出不实例化TEST population、不传给模型、不评估、不据TEST选权重。
+产物保留原training_identity、checkpoint SHA及Run/Input/Checkpoint父ID，另记实际
+export producer、原training producer、selection/selected_step和
+`diagnostic_checkpoint_inference_not_final_result`角色。CPU导出不要求机器有原GPU，
+也不声称CPU环境与原GPU续训runtime完全一致。
+
+该Model仅为诊断推理包，不发布TEST/evaluation/result，不写RunReporter或覆盖Checkpoint，
+不代替正式final Model。读者可独立复核、保存和冷下载；发布结果未知时先查原operation/
+Store精确ID，不能把错误当成未发布并盲目重投。原权重和正式Run继续由训练owner管理。
+
 ### 四 Agent 最终 TEST 与 Reference 消费
 
 离线比较先固定同一 Snapshot、成员/Input 与 TRAIN/DEV/TEST 用途，再分别完成四个
