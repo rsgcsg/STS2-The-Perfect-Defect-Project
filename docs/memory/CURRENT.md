@@ -1,12 +1,13 @@
-# 当前：审查近期未合并工作，组合收敛后才进入 develop
+# 当前交付：近期未合并工作的组合审查与 develop 集成
 
 Resolve live GitHub refs before relying on this snapshot. 最新用户原话和现场证据 override this file。
 
-当前唯一任务是
+本批唯一收口原件是
 [本批审查与集成](../plans/p1-prefreeze-2026-10-18/REVIEWED_INTEGRATION_20261022.zh-CN.md)，
 root 是唯一集成写入者；基线 `origin/develop=1e5d83100a8222f211a0e633120ea8123dd06427`。
 在独立 topic 组合 PR211、PR212、PR213，先核历史职责与实际连接，解决组合清单/入口冲突，
-再按准确最终 head 完成审查和所选检查；未将单个分支的绿色当成组合通过，尚未合入。
+组合源码与定向检查已收齐；最终 head、完整 CI 与是否已合入，以本批 PR 的实际回执为准。
+单个原分支的绿色不代替组合检查，合入后本轮即结束，不自动启动下一项任务。
 
 原交付分开保留：[录制优化](../plans/p1-prefreeze-2026-10-18/RECORDING_ROUND2_20261022.zh-CN.md)
 是读取热点及诊断改善；用户已接受剩余整体卡顿为已知表现，不宣称整体帧尾已修。
@@ -28,4 +29,5 @@ P1 可替换协议、Host/Host Runtime 区分、来源与 profile requires、GUI
 ## Remaining Platform non-claims
 
 Managed 全机制等价、完整 Human/研究资格、模型质量、正式训练、统一 TEST 与实战评价仍未授通过。
-唯一下一步：完成组合检查与非作者复核，只在通过后执行本批条件式 develop 合并并核集成身份。
+本批门序：组合检查与非作者复核 → 固定候选的 full CI → 条件式 develop 合并及集成身份核验。
+源码复核及定向消费者检查已通过；最终执行结果和合入身份归本批 PR，不由此静态导航推断。
