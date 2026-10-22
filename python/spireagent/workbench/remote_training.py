@@ -37,6 +37,8 @@ class RemoteTrainingService:
         self._progress_reporters: dict[str, Any] = {}
 
     def capabilities(self) -> dict[str, Any]:
+        from spireagent.workbench.trusted_recipes import P1_BASELINE_RECIPE, P1_MSTD_RECIPE
+
         deployment = self.config.remote_compute
         configured = deployment is not None
         return {"schema": "spireagent/remote-training-capabilities-1",
@@ -45,6 +47,11 @@ class RemoteTrainingService:
                               and (self._injected_provider or
                                    deployment.compute_store.get("kind") == "s3")),
                 "provider": "trusted_injected_engineering" if self._injected_provider else "modal",
+                "recipes": [
+                    {"recipe_id": P1_MSTD_RECIPE, "devices": ["cpu", "cuda:index"]},
+                    {"recipe_id": P1_BASELINE_RECIPE, "devices": ["cpu"],
+                     "algorithms": ["random", "frequency", "linear"]},
+                ],
                 "supported_actions": (["status", "progress"] if deployment and
                                       deployment.observation_only else
                                       ["prepare", "start", "status", "progress", "cancel",
