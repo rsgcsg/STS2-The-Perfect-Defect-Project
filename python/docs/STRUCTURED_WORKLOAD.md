@@ -345,3 +345,22 @@ actual injected dependencies/CUDA, GPU numerics/resume, cost/utilization and ser
 availability remain real execution evidence. CPU tests or an unbuilt target template
 cannot supply those facts. Do not upload data, deploy, run paid compute or repeat an
 unknown submission without the applicable operator authorization.
+
+School execution is an alternative transport through the same ComputeProvider,
+Application, Operations/Scheduler and `python -m stpd.cloud_jobs` worker; its fixed
+target and operator procedure live in [the console guide](PROJECT_CONSOLE.md#school-ssh-execution).
+The SSH adapter verifies exact clean source/lock, interpreter, Python/Torch/CUDA and
+single GPU name/UUID/driver, and injects storage credentials from the original remote
+private environment file. It does not prepare data, select a checkpoint, own a lease,
+admit results or create a second Store/use ledger. An original invocation has one
+deterministic handle and request directory; disconnects only resume observation.
+Worker `candidate_prepared`/`paused` receipts retain their existing schema and checks.
+Separately typed confirmed process termination settles failed/cancelled transport
+attempts through the original Ops fence without refunding cumulative reservations.
+Timeout, Stop or a normal process exit cannot synthesize a paused checkpoint; unknown
+termination remains active and cannot authorize resubmission or provider switching.
+For a confirmed failed/cancelled original attempt, the same Application resume
+command can explicitly select its durable checkpoint and a new budgeted intent.
+Admission verifies the original checkpoint family, Run/input/source and attempt,
+plus the immutable checkpoint event's original compute request/attempt binding.
+No latest-checkpoint search or cross-device restore exception is introduced.

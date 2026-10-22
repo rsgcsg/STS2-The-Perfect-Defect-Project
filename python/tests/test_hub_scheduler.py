@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 from test_cloud_jobs import job_fixture
 
+from spireagent.compute import ComputeSubmissionUnknown, ComputeTerminated, ComputeTermination
 from spireagent.hub.database import CURRENT_SCHEMA, Operations
 from spireagent.hub.scheduler import Scheduler
 from spireagent.json_boundary import BoundaryError
@@ -94,6 +95,103 @@ def test_default_disabled_then_durable_features_request_and_validated_completion
         assert scheduler.tick(3)["state"] == "idle"
         assert len(provider.calls) == 1
         assert "lease_token" not in json.dumps(state)
+
+
+@pytest.mark.parametrize("outcome,cancelled", [("failed", False), ("timeout", False),
+                                               ("cancelled", True)])
+def test_confirmed_original_process_exit_releases_active_slot_retains_budget_after_restart(
+    pipeline, monkeypatch, outcome, cancelled,
+):
+    ops, store, provider, job = pipeline
+    with Scheduler(ops, store, provider, budget_limit=10) as scheduler:
+        assert scheduler.tick(1)["state"] == "submitted"
+        old_token = scheduler._tokens[job]
+        original = ops.compute_state(job)
+        row = ops.jobs()[0]
+        handle = provider.restore_handle(original["handle"])
+        terminal = ComputeTermination(handle.target_id, handle.request.request_id,
+                                      handle.request.attempt_id, handle.call_id, outcome, True)
+        if cancelled:
+            ops.cancel(job)
+        # Neither elapsed time nor cancel acknowledgement is terminal evidence.
+        assert scheduler.tick(2)["state"] in {"pending", "cancelling"}
+        assert ops.jobs()[0]["status"] in {"running", "cancelling"}
+
+    def ended(_handle):
+        raise ComputeTerminated(terminal)
+
+    monkeypatch.setattr(provider, "poll", ended)
+    with Scheduler(Operations(ops.path), store, provider, budget_limit=10) as recovered:
+        expected = "cancelled" if cancelled else "failed"
+        assert recovered.tick(3)["state"] == expected
+        current = ops.jobs()[0]
+        assert current["reserved_units"] == row["reserved_units"] == 1
+        assert current["provider_ref"] == row["provider_ref"]
+        assert json.loads(current["result"]) == terminal.to_dict()
+        assert ops.compute_state(job)["handle"] == original["handle"]
+        assert ops.compute_state(job)["receipt"] is None
+        with pytest.raises(BoundaryError, match="stale_attempt"):
+            ops.accept_compute_termination(job, old_token, row["attempt_id"], row["fence"],
+                                           terminal.to_dict())
+        # The ended attempt never retries, and its reservation is not refunded.
+        with pytest.raises(BoundaryError, match="budget_exhausted"):
+            ops.enqueue("feature", row["input_id"], "over-budget", max_seconds=300,
+                        reserved_units=1, budget_limit=1)
+        second = ops.enqueue("feature", row["input_id"], "next-budgeted", max_seconds=300,
+                             reserved_units=1, budget_limit=10)
+        assert recovered.tick(4)["state"] == "submitted"
+        assert next(value for value in ops.jobs() if value["id"] == second)["status"] == "running"
+    assert len(provider.calls) == 2
+
+
+def test_foreign_or_unconfirmed_terminal_fact_cannot_release_original_attempt(
+    pipeline, monkeypatch,
+):
+    ops, store, provider, job = pipeline
+    with Scheduler(ops, store, provider, budget_limit=10) as scheduler:
+        scheduler.tick(1)
+        saved = ops.compute_state(job)
+        handle = provider.restore_handle(saved["handle"])
+        terminal = ComputeTermination(handle.target_id, handle.request.request_id,
+                                      handle.request.attempt_id, handle.call_id, "failed", True)
+        with pytest.raises(BoundaryError, match="confirmed_terminal_process_required"):
+            ComputeTermination.decode({**terminal.to_dict(), "process_exited": False})
+
+        def foreign(_handle):
+            raise ComputeTerminated(replace(terminal, call_id="fc-foreign"))
+
+        monkeypatch.setattr(provider, "poll", foreign)
+        assert scheduler.tick(2)["state"] == "result_uncertain"
+        assert ops.jobs()[0]["status"] == "uncertain"
+        assert ops.jobs()[0]["result"] is None
+        assert len(provider.calls) == 1
+        row = ops.jobs()[0]
+        with pytest.raises(BoundaryError, match="original_handle_binding_mismatch"):
+            ops.accept_compute_termination(
+                job, scheduler._tokens[job], row["attempt_id"], row["fence"],
+                replace(terminal, target_id="f" * 64).to_dict())
+
+
+def test_known_original_handle_after_lost_submit_ack_is_observed_across_restart(
+    pipeline, monkeypatch,
+):
+    ops, store, provider, job = pipeline
+    submit = provider.submit
+
+    def lost(request):
+        raise ComputeSubmissionUnknown(submit(request))
+
+    monkeypatch.setattr(provider, "submit", lost)
+    with Scheduler(ops, store, provider, budget_limit=10) as scheduler:
+        assert scheduler.tick(1)["state"] == "submission_unknown"
+        assert ops.compute_state(job)["handle"] is not None
+        assert ops.jobs()[0]["status"] == "uncertain"
+    with Scheduler(Operations(ops.path), store, provider, budget_limit=10) as recovered:
+        assert recovered.tick(2)["state"] == "pending"
+        assert len(provider.calls) == 1
+        provider.ready = True
+        assert recovered.tick(3)["state"] == "completed"
+        assert len(provider.calls) == 1
 
 
 def test_submission_uncertainty_survives_restart_without_duplicate_spawn(pipeline):

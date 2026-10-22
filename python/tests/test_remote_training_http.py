@@ -13,6 +13,7 @@ import pytest
 from test_hub_scheduler import Provider
 from test_p1_application import workspace
 
+from spireagent.compute import ComputeTerminated, ComputeTermination
 from spireagent.hub.database import Operations
 from spireagent.json_boundary import BoundaryError
 from spireagent.source import source_identity
@@ -384,3 +385,89 @@ def test_status_observes_no_jobs_without_initializing_or_querying_remote(tmp_pat
         assert not deployment.operations_path.exists()
         with pytest.raises(BoundaryError, match="job_not_found"):
             service.status("0" * 32)
+
+
+@pytest.mark.parametrize("terminal_status", ["failed", "cancelled"])
+def test_explicit_terminated_attempt_checkpoint_resume_uses_original_worker_and_budget(
+    tmp_path, monkeypatch, terminal_status,
+):
+    from spireagent.json_boundary import FrozenObject
+
+    with client(tmp_path) as (app, call, provider, _store, _owner, snapshot, _path):
+        provider.ready = True
+        original_poll = provider.poll
+        published = []
+
+        def checkpoint_then_transport_failure(handle):
+            receipt = original_poll(handle)
+            published.append(receipt)
+            if terminal_status == "cancelled":
+                provider.ops.cancel(provider.ops.jobs()[0]["id"])
+            raise ComputeTerminated(ComputeTermination(
+                handle.target_id, handle.request.request_id, handle.request.attempt_id,
+                handle.call_id, "failed" if terminal_status == "failed" else "cancelled", True))
+
+        monkeypatch.setattr(provider, "poll", checkpoint_then_transport_failure)
+        body = {"intent_id": "1" * 32, "source_id": snapshot.artifact_id,
+                "config": MStdConfig(max_epochs=2).to_dict(), "max_seconds": 300,
+                "stop_after": 1}
+        first = call("start", body=body)["jobs"][0]
+        failed = settled(call, first["id"], terminal_status)
+        assert len(published) == 1 and published[0].checkpoint_id
+        assert failed["result"]["schema"] == "spireagent/compute-termination-1"
+        assert "checkpoint_id" not in failed["result"]
+        checkpoint_id = published[0].checkpoint_id
+        peer = provider.store
+        checkpoint = peer.get_manifest(checkpoint_id)
+        resume = {"job_id": failed["id"], "expected_attempt_id": failed["attempt_id"],
+                  "intent_id": "2" * 32, "checkpoint_id": checkpoint_id,
+                  "max_seconds": 300, "stop_after": None}
+        with pytest.raises(BoundaryError, match="new_remote_intent_required"):
+            call("resume", body={**resume, "intent_id": body["intent_id"]})
+        # A payload-valid same-run checkpoint without the original immutable
+        # compute-bound event is not evidence of this attempt's publication.
+        unrecorded = replace(checkpoint, parameters=FrozenObject.of({
+            **checkpoint.parameters.value(), "reason": "unrecorded-fixture"}))
+        peer.publish(unrecorded)
+        with pytest.raises(BoundaryError, match="bound_durable_checkpoint_event_required"):
+            call("resume", body={**resume, "checkpoint_id": unrecorded.artifact_id})
+        foreign = replace(checkpoint, parameters=FrozenObject.of({
+            **checkpoint.parameters.value(), "attempt": "foreign-attempt"}))
+        peer.publish(foreign)
+        with pytest.raises(BoundaryError, match="original_attempt_checkpoint_required"):
+            call("resume", body={**resume, "checkpoint_id": foreign.artifact_id})
+        assert len(provider.ops.jobs()) == 1 and len(provider.calls) == 1
+        monkeypatch.setattr(provider, "poll", original_poll)
+        second = call("resume", body=resume)["jobs"][0]
+        completed = settled(call, second["id"], "completed")
+        assert completed["input_id"] == failed["input_id"]
+        assert provider.calls[-1].resume == checkpoint_id
+        assert provider.calls[-1].attempt_id != published[0].attempt_id
+        assert sum(row["reserved_units"] for row in provider.ops.jobs()) == 2
+        assert provider.ops.jobs()[0]["status"] == terminal_status
+
+
+def test_unknown_attempt_cannot_resume_even_with_a_durable_checkpoint(tmp_path, monkeypatch):
+    with client(tmp_path) as (_app, call, provider, _store, _owner, snapshot, _path):
+        provider.ready = True
+        original_poll = provider.poll
+        published = []
+
+        def uncertain(handle):
+            if not published:
+                published.append(original_poll(handle))
+            raise BoundaryError("provider", "result_unavailable")
+
+        monkeypatch.setattr(provider, "poll", uncertain)
+        body = {"intent_id": "3" * 32, "source_id": snapshot.artifact_id,
+                "config": MStdConfig(max_epochs=2).to_dict(), "max_seconds": 300,
+                "stop_after": 1}
+        first = call("start", body=body)["jobs"][0]
+        unknown = settled(call, first["id"], "uncertain")
+        with pytest.raises(BoundaryError, match="confirmed_original_termination_required"):
+            call("resume", body={"job_id": unknown["id"],
+                                 "expected_attempt_id": unknown["attempt_id"],
+                                 "intent_id": "4" * 32,
+                                 "checkpoint_id": published[0].checkpoint_id,
+                                 "max_seconds": 300, "stop_after": None})
+        assert len(provider.ops.jobs()) == len(provider.calls) == 1
