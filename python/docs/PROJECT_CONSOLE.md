@@ -1060,8 +1060,10 @@ Run，核各自 result→Model→evaluation 的原件绑定。随机/频率/线�
 不能看过 TEST 再调参并继续称独立留出。原件由 `verify_baseline_result` /
 `verify_p1_result` 校验；空 TEST 的 loss 为 null，不能当零误差。
 
-当前普通离线详情只支持 M-std 的 DEV 摘要，TEST 保持 sealed；baseline evaluation
-尚无该详情适配，也没有一个受支持的 CLI 一次输出四 Agent 同 TEST 对照表。
+当前普通离线详情沿同一 summary API 支持 M-std 与 baseline 的 DEV 摘要；baseline
+核原 Model/Run/Input/Snapshot metadata 绑定、公开 DEV N、有限指标及并列语义，
+不重解权重或完整来源。TEST 保持 sealed，没有一个受支持的 CLI 一次输出四 Agent
+同 TEST 对照表。
 现有原件提供描述性统计，未完成统一 tie/指标口径的四方评分、独立 lineage 资格或
 策略优劣结论。后续正式比较须先确定 TEST 开封用途与比较口径，再由原评估 owner
 补齐所缺消费者；无需另造训练链，也不能以 Managed evaluator 代替 P1 评估。

@@ -43,6 +43,7 @@ window.SpireProject = (() => {
   ]);
   const supportedOfflineEvaluationSchemas = new Set([
     "stpd/p1-N-evaluation-1",
+    "stpd/p1-baseline-N-evaluation-1",
     "stpd/offline-ranking-evaluation-v1",
     "stpd/stage1a-ranking-evaluation-v1",
     "stpd/experimental-m2-offline-evaluation-v1",
@@ -3486,7 +3487,8 @@ window.SpireProject = (() => {
       summary.append(el("p", "封存测试评估不会在此读取或展示。", "small muted"));
       return summary;
     }
-    const p1Report = schema === "stpd/p1-N-evaluation-1";
+    const p1Baseline = schema === "stpd/p1-baseline-N-evaluation-1";
+    const p1Report = schema === "stpd/p1-N-evaluation-1" || p1Baseline;
     if ((!p1Report && parameters.partition !== "dev") || !hex(artifact.artifact_id)) {
       summary.append(el("p", "该对象未标明可展示的开发集分区；未请求评估摘要。", "small muted"));
       return summary;
@@ -3507,11 +3509,21 @@ window.SpireProject = (() => {
         return summary;
       }
       if (p1Report) {
-        if (value.test_metrics !== "sealed_not_exposed" || value.model_selection !== "dev_only")
+        const selection = p1Baseline && value.algorithm !== "linear" ? "none_fixed_recipe" : "dev_only";
+        if (value.test_metrics !== "sealed_not_exposed" || value.model_selection !== selection)
           throw new Error("invalid_p1_evaluation_scope");
-        summary.append(fields([["P1 DEV 样本数", count(value.decision_count)],
-          ["最佳 DEV N 损失", value.best_dev_N_loss], ["选模", "仅 DEV"],
-          ["测试指标", "封存，未展示"]]));
+        if (p1Baseline) {
+          if (!["random", "frequency", "linear"].includes(value.algorithm)
+              || value.dev?.tie_semantics !== "uniform among maxima")
+            throw new Error("invalid_p1_baseline_evaluation_scope");
+          summary.append(fields([["P1 DEV 样本数", count(value.decision_count)],
+            ["算法", value.algorithm], ["DEV score-softmax 损失", value.dev.mean_score_softmax_N_loss],
+            ["DEV 期望正确数（非实采准确率、非胜率）", value.dev.expected_greedy_correct],
+            ["并列语义", "最大值之间均匀选择"],
+            ["选模", selection === "dev_only" ? "仅 DEV" : "固定配方，无选模"],
+            ["测试指标", "封存，未展示"]]));
+        } else summary.append(fields([["P1 DEV 样本数", count(value.decision_count)],
+          ["最佳 DEV N 损失", value.best_dev_N_loss], ["选模", "仅 DEV"], ["测试指标", "封存，未展示"]]));
         if (hex(value.model_id)) summary.append(link("查看本机模型", route("local-workspace", value.model_id)));
         summary.append(technical(value, "记录身份与范围"));
         return summary;
@@ -5937,7 +5949,8 @@ window.SpireProject = (() => {
         const title = identity
           ? link(`${name} · ${identity.slice(0, 16)}`, route("local-workspace", identity))
           : el("span", name);
-        const partition = parameters.partition === "dev" || schema === "stpd/p1-N-evaluation-1" ? "开发集摘要" : "未知";
+        const partition = parameters.partition === "dev" || schema === "stpd/p1-N-evaluation-1"
+          || schema === "stpd/p1-baseline-N-evaluation-1" ? "开发集摘要" : "未知";
         return [title, partition, schema, technical(item, "查看评估metadata")];
       });
       box.append(table(["本机评估", "分区", "格式", "metadata"], rows));

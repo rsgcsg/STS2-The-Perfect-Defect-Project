@@ -7620,3 +7620,47 @@ test("P1 combined evaluation exposes only the recorded dev summary", async () =>
   assert.match(text(page),/封存，未展示/);
   assert.equal(post(env.calls).length,0);
 });
+
+for (const algorithm of ["random", "frequency", "linear"]) {
+  test(`P1 baseline ${algorithm} combined detail reads DEV only with explicit tie semantics`, async () => {
+    const evaluation=id("c"), schema="stpd/p1-baseline-N-evaluation-1";
+    const env=setup({identity:{status:"signed_out"},view:"local-workspace",query:`&id=${evaluation}`,
+      curationStatus:{schema:"stpd/local-curation-preparation-v1",status:"ready"},handler:async url=>{
+        if(url==="/api/local-workspace/managed") return {schema:"stpd/managed-local-workspace-registration-v1",status:"ready",curation_status:"ready"};
+        if(url===`/api/local-workspace/artifacts/${evaluation}`) return {artifact_id:evaluation,kind:"offline_evaluation",parameters:{schema}};
+        if(url===`/api/local-workspace/evaluations/${evaluation}`) return {
+          schema:"stpd/local-offline-evaluation-summary-v1",evaluation_id:evaluation,
+          evaluation_schema:schema,partition:"dev",model_id:id("a"),algorithm,
+          validation_scope:"recorded_report_and_parent_identities",
+          interpretation:"producer_recorded_summary_not_full_lineage_or_quality_verification",
+          decision_count:8,dev:{N:8,mean_score_softmax_N_loss:0.6,expected_greedy_correct:3.5,tie_semantics:"uniform among maxima"},
+          model_selection:algorithm==="linear"?"dev_only":"none_fixed_recipe",test_metrics:"sealed_not_exposed",
+        };
+        throw new Error(`unexpected route ${url}`);
+      }});
+    const page=await env.render();
+    assert.match(text(page),/DEV score-softmax 损失/);
+    assert.match(text(page),/DEV 期望正确数（非实采准确率、非胜率）/);
+    assert.match(text(page),/最大值之间均匀选择/);
+    assert.match(text(page),/封存，未展示/);
+    assert.match(text(page),algorithm==="linear"?/仅 DEV/:/固定配方，无选模/);
+    assert.equal(env.calls.filter(c=>c.url===`/api/local-workspace/evaluations/${evaluation}`).length,1);
+    assert.equal(post(env.calls).length,0);
+  });
+}
+
+test("P1 baseline catalog classifies a combined report as DEV without reading its summary", async () => {
+  const evaluation=id("c"),schema="stpd/p1-baseline-N-evaluation-1";
+  const env=setup({identity:{status:"signed_out"},view:"evaluations",handler:async url=>{
+    if(url==="/api/local-workspace?kind=offline_evaluation&limit=25&offset=0")return {
+      schema:"stpd/local-workspace-inventory-v1",kind:"offline_evaluation",total:1,
+      items:[{artifact_id:evaluation,kind:"offline_evaluation",parents:[],payloads:[],parameters:{schema}}]};
+    if(url==="/api/local-models")return {evaluations:[]};
+    throw new Error(`unexpected route ${url}`);
+  }});
+  const page=await env.render();
+  assert.match(text(page),/开发集摘要/);
+  assert.ok(find(page,e=>e.tagName==="A"&&e.href===`?view=local-workspace&id=${evaluation}`));
+  assert.equal(env.calls.some(c=>c.url===`/api/local-workspace/evaluations/${evaluation}`),false);
+  assert.equal(post(env.calls).length,0);
+});

@@ -301,6 +301,76 @@ def _structured_summary(store: ManifestArtifactStore, manifest: Any) -> dict[str
             "interpretation": "producer_recorded_summary_not_full_lineage_or_quality_verification"}
 
 
+def _p1_baseline_summary(store: ManifestArtifactStore, manifest: Any) -> dict[str, Any]:
+    """Read only recorded DEV metrics and parent metadata, leaving TEST sealed."""
+    from stpd.p1.baseline_spec import MODEL_SCHEMA, RUN_SCHEMA, TRAINING_SCHEMA
+    from stpd.p1.spec import SNAPSHOT_SCHEMA
+
+    info = manifest.parameters.value()
+    if (set(info) != {"schema", "dev", "test", "model_selection", "scientific_verdict"}
+            or manifest.payloads or [p.role for p in manifest.parents] != ["model"]
+            or info["scientific_verdict"] != "not_claimed"):
+        raise BoundaryError("local_evaluation", "invalid_p1_baseline_report")
+    model = store.get_manifest(manifest.parent("model"))
+    algorithm = model.parameters.value().get("algorithm")
+    if (model.kind != "model" or model.parameters.value().get("schema") != MODEL_SCHEMA
+            or model.producer != manifest.producer
+            or sorted(p.role for p in model.parents) != ["checkpoint", "run", "training_input"]
+            or not isinstance(algorithm, str) or algorithm not in {"random", "frequency", "linear"}
+            or info["model_selection"] != (
+                "dev_only" if algorithm == "linear" else "none_fixed_recipe")):
+        raise BoundaryError("local_evaluation", "invalid_p1_baseline_model_parent")
+    training = store.get_manifest(model.parent("training_input"))
+    run = store.get_manifest(model.parent("run"))
+    parameters = training.parameters.value()
+    counts = parameters.get("partition_N")
+    if (training.kind != "training_input" or parameters.get("schema") != TRAINING_SCHEMA
+            or training.producer != model.producer
+            or [p.role for p in training.parents] != ["source"]
+            or parameters.get("algorithm") != algorithm
+            or not isinstance(counts, dict) or set(counts) - {"train", "dev", "test"}
+            or any(type(v) is not int or v < 0 for v in counts.values())
+            or type(counts.get("dev")) is not int
+            or counts["dev"] < 1 or run.kind != "run" or run.producer != model.producer
+            or run.parameters.value().get("schema") != RUN_SCHEMA
+            or sorted(p.role for p in run.parents) != ["experiment", "training_input"]
+            or run.parent("training_input") != training.artifact_id):
+        raise BoundaryError("local_evaluation", "invalid_p1_baseline_input_parent")
+    source = store.get_manifest(training.parent("source"))
+    source_info = source.parameters.value()
+    source_counts = source_info.get("partition_N")
+    if (source.kind != "dataset" or source_info.get("schema") != SNAPSHOT_SCHEMA
+            or not isinstance(source_counts, dict)
+            or set(source_counts) - {"train", "dev", "test"}
+            or any(type(v) is not int or v < 0 for v in source_counts.values())
+            or any(source_counts.get(s, 0) != counts.get(s, 0) for s in ("train", "dev", "test"))
+            or parameters.get("snapshot_selection_sha256") != source.payload("selection").sha256):
+        raise BoundaryError("local_evaluation", "invalid_p1_baseline_source_parent")
+    dev = info["dev"]
+    if (not isinstance(dev, dict)
+            or set(dev) != {"N", "mean_score_softmax_N_loss",
+                            "expected_greedy_correct", "tie_semantics"}
+            or type(dev["N"]) is not int or dev["N"] != counts["dev"]
+            or dev["tie_semantics"] != "uniform among maxima"):
+        raise BoundaryError("local_evaluation", "invalid_p1_baseline_dev")
+    for name in ("mean_score_softmax_N_loss", "expected_greedy_correct"):
+        value = dev[name]
+        try:
+            valid = type(value) in {int, float} and math.isfinite(value) and value >= 0
+        except OverflowError:
+            valid = False
+        if not valid or (name == "expected_greedy_correct" and value > dev["N"]):
+            raise BoundaryError("local_evaluation", "invalid_p1_baseline_dev")
+    return {"schema": SCHEMA, "validation_scope": SCOPE,
+            "evaluation_id": manifest.artifact_id, "evaluation_schema": info["schema"],
+            "model_id": model.artifact_id, "evaluation_input_id": training.artifact_id,
+            "source_id": source.artifact_id, "partition": "dev", "algorithm": algorithm,
+            "decision_count": dev["N"], "dev": dev, "model_selection": info["model_selection"],
+            "scientific_verdict": "not_claimed", "test_metrics": "sealed_not_exposed",
+            "qualification": "engineering_descriptive",
+            "interpretation": "producer_recorded_summary_not_full_lineage_or_quality_verification"}
+
+
 def _p1_summary(store: ManifestArtifactStore, manifest: Any) -> dict[str, Any]:
     """P1 combines dev selection and sealed test metadata; expose dev loss only."""
     from stpd.p1.spec import MODEL_SCHEMA, TRAINING_SCHEMA
@@ -338,6 +408,8 @@ def summary(store: ManifestArtifactStore, evaluation_id: str) -> dict[str, Any]:
     """Open one recorded report; full typed revalidation remains a separate owner path."""
     manifest = store.get_manifest(digest(evaluation_id, "local_evaluation.artifact_id"))
     schema = manifest.parameters.value().get("schema")
+    if manifest.kind == "offline_evaluation" and schema == "stpd/p1-baseline-N-evaluation-1":
+        return _p1_baseline_summary(store, manifest)
     if manifest.kind == "offline_evaluation" and schema == "stpd/p1-N-evaluation-1":
         return _p1_summary(store, manifest)
     if (manifest.kind == "offline_evaluation" and

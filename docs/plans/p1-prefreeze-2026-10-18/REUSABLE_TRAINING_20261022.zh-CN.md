@@ -107,8 +107,9 @@ UID资格、Windows文件共享、可选已安装Runtime包、Windows batch执�
 
 后续四 Agent 离线比较可复用同 Snapshot 和每个 Run 的最终 evaluation 原件：
 baseline 含 DEV/TEST N、score-softmax loss、并列均匀的期望正确数，M-std 含最终
-TEST N/loss/correct/multi 指标。现普通详情仅暴露 M-std DEV，baseline详情/统一四方
-TEST 对照消费者和指标口径未齐；不得据原件存在称四 Agent 评分已完成。
+TEST N/loss/correct/multi 指标。普通详情现沿同一 summary API 映射两类 DEV 摘要，
+baseline 仅读 Model/Run/Input/Snapshot metadata 绑定并核 DEV N/有限值/并列语义，
+TEST封存；统一四方 TEST 对照消费者和指标口径仍未齐，不称四 Agent 评分已完成。
 Reference 串行 dispatcher 已有 ref-20 固定旧版本manifest、精确selection、阶段/总
 预算及全部20项失败/未派发分母，但不保证本轮P1候选匹配该manifest，也无自动四方
 配对统计。实际入口与缺项归回
