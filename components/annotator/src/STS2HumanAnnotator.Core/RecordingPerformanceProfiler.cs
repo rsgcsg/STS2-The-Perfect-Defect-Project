@@ -7,18 +7,27 @@ public sealed class RecordingPerformanceProfiler
     public const string ReportSchema = "sts2.human-annotator/recording-performance-profile-1";
     private const int MaximumSamplesPerPhase = 100_000;
     private readonly object _gate = new();
+    private readonly Queue<RecordingPerformanceSlowSample> _slowSamples = new();
+    [ThreadStatic] private static string? _activePhase;
     private readonly Dictionary<string, PhaseSamples> _phases = new(StringComparer.Ordinal);
 
     public T Measure<T>(string phase, Func<T> operation)
     {
         long started = Stopwatch.GetTimestamp();
+        DateTimeOffset startedAt = DateTimeOffset.UtcNow;
+        string? parent = _activePhase;
+        _activePhase = phase;
         try
         {
             return operation();
         }
         finally
         {
-            Observe(phase, Stopwatch.GetTimestamp() - started);
+            _activePhase = parent;
+            long ended = Stopwatch.GetTimestamp();
+            long microseconds = Microseconds(started, ended);
+            ObserveMicroseconds(phase, microseconds);
+            ObserveSlowInterval(phase, parent, startedAt, started, ended, microseconds);
         }
     }
 
@@ -48,6 +57,31 @@ public sealed class RecordingPerformanceProfiler
         }
     }
 
+    // The caller owns both actual Stopwatch boundaries (e.g. process frames).
+    // Deferred aggregate subphase observations never fabricate timed intervals.
+    public void ObserveInterval(string phase, long startedTicks, long endedTicks)
+    {
+        if (startedTicks < 0 || endedTicks < startedTicks) throw new ArgumentOutOfRangeException(nameof(startedTicks));
+        long microseconds = Microseconds(startedTicks, endedTicks);
+        ObserveMicroseconds(phase, microseconds);
+        ObserveSlowInterval(phase, _activePhase, null, startedTicks, endedTicks, microseconds);
+    }
+
+    private static long Microseconds(long startedTicks, long endedTicks) =>
+        (long)Math.Ceiling((endedTicks - startedTicks) * 1_000_000d / Stopwatch.Frequency);
+
+    private void ObserveSlowInterval(string phase, string? parent, DateTimeOffset? startedAt,
+        long startedTicks, long endedTicks, long microseconds)
+    {
+        if (microseconds < 30_000) return;
+        lock (_gate)
+        {
+            if (_slowSamples.Count == 256) _slowSamples.Dequeue();
+            _slowSamples.Enqueue(new(phase, parent, startedAt, DateTimeOffset.UtcNow,
+                startedTicks, endedTicks, microseconds, Environment.CurrentManagedThreadId));
+        }
+    }
+
     public RecordingPerformanceReport Snapshot(string sessionId)
     {
         lock (_gate)
@@ -64,17 +98,8 @@ public sealed class RecordingPerformanceProfiler
                 {
                     "Stopwatch timings are source/runtime diagnostics, not gameplay evidence.",
                     "A profile does not prove absence of game-frame stalls without an owner canary."
-                });
+                }) { SlowSamples = _slowSamples.ToArray() };
         }
-    }
-
-    private void Observe(string phase, long elapsedTicks)
-    {
-        if (string.IsNullOrWhiteSpace(phase))
-            throw new ArgumentException("Performance phase must be non-empty.", nameof(phase));
-        long microseconds = (long)Math.Ceiling(
-            elapsedTicks * 1_000_000d / Stopwatch.Frequency);
-        ObserveMicroseconds(phase, microseconds);
     }
 
     private sealed class PhaseSamples
@@ -136,4 +161,11 @@ public sealed record RecordingPerformanceReport(
     string SessionId,
     DateTimeOffset GeneratedAt,
     IReadOnlyList<RecordingPerformancePhase> Phases,
-    IReadOnlyList<string> NonClaims);
+    IReadOnlyList<string> NonClaims)
+{
+    public IReadOnlyList<RecordingPerformanceSlowSample> SlowSamples { get; init; } = Array.Empty<RecordingPerformanceSlowSample>();
+}
+
+public sealed record RecordingPerformanceSlowSample(string Phase, string? ParentPhase,
+    DateTimeOffset? StartedAtUtc, DateTimeOffset ObservedAtUtc, long StartedAtStopwatchTicks,
+    long EndedAtStopwatchTicks, long ElapsedUs, int ManagedThreadId);

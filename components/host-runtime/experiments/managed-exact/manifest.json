@@ -36,15 +36,15 @@
     "managed_artifact": "src/Sts2Headless/bin/Release/net9.0/Sts2Headless.dll"
   },
   "expected_build": {
-    "source_patch_sha256": "7f1584f786cb4ba5b695fd93e321af8268b8265308a4cef1245ae255801a40de",
-    "artifact_sha256": "0b376bf504b75522e3e8e9bb766decd30ea4905f9ce484c4cfcece23701cea24",
-    "artifact_mvid": "f9fcb312-3c64-4e22-96d0-7436aef82e1c",
+    "source_patch_sha256": "a46736eee8c0c4c65b574a53e769330831d2e39de7897563f4a4c16b48fc5e20",
+    "artifact_sha256": "39a6455c2f67c4313b3cf2b6b46a6783d41cc5ebe86cb62829a6a780c7d562b2",
+    "artifact_mvid": "a52dd778-7725-4794-80cb-4d532c4e528a",
     "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0"
   },
   "previous_candidate_build": {
-    "source_patch_sha256": "43e223e567c1a8610bbc80b377033e9579b72e1ece7081d5f9b27b36c211a3c8",
-    "artifact_sha256": "0426384c8c38e1a147dcfb2ba39c599ebdebe191f979acaaab8a4e302060943b",
-    "artifact_mvid": "1115859e-f311-4e2e-b103-0b3c91168250",
+    "source_patch_sha256": "7f1584f786cb4ba5b695fd93e321af8268b8265308a4cef1245ae255801a40de",
+    "artifact_sha256": "0b376bf504b75522e3e8e9bb766decd30ea4905f9ce484c4cfcece23701cea24",
+    "artifact_mvid": "f9fcb312-3c64-4e22-96d0-7436aef82e1c",
     "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0"
   },
   "last_measured_build": {
@@ -252,6 +252,12 @@
       "artifact_mvid": "8b84be95-3391-49d9-b11e-69aa29afa38a",
       "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0",
       "scope": "previous built-unqualified candidate before shared native source synchronization; no runtime qualification transferred"
+    },
+    {
+      "source_patch_sha256": "43e223e567c1a8610bbc80b377033e9579b72e1ece7081d5f9b27b36c211a3c8",
+      "artifact_sha256": "0426384c8c38e1a147dcfb2ba39c599ebdebe191f979acaaab8a4e302060943b",
+      "artifact_mvid": "1115859e-f311-4e2e-b103-0b3c91168250",
+      "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0"
     }
   ],
   "native_localization": {

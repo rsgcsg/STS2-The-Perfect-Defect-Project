@@ -189,6 +189,9 @@ public sealed partial class RecordingSessionStore : IDisposable
     public void ObservePerformance(string phase, long elapsedMicroseconds) =>
         _performance.ObserveMicroseconds(phase, elapsedMicroseconds);
 
+    public void ObservePerformanceInterval(string phase, long startedTicks, long endedTicks) =>
+        _performance.ObserveInterval(phase, startedTicks, endedTicks);
+
     public void MarkDecisionAccountingUnavailable()
     {
         lock (_gate) _decisions = _decisions with { AccountingComplete = false };

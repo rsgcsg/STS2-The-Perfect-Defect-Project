@@ -40,18 +40,21 @@ public sealed class NativeRewardCardRendererTests
     }
 
     [Fact]
-    public void OneQualificationResolvesNativeMethodTableOnceAndRechecksEveryOverloadPatch()
+    public void LoadedTypeResolvesNativeMethodTableOnceAndRechecksEveryOverloadPatch()
     {
         var owner = new CountedMethodType(typeof(CardModel));
         Assert.True(NativeCardPreviewReadQualification.MethodsUnpatched(owner,
             "GetDescriptionForPile", "get_Title", "get_Type"));
         Assert.Equal(1, owner.MethodTableReads);
         Assert.False(NativeCardPreviewReadQualification.MethodsUnpatched(owner, "missing_native_method"));
+        Assert.True(NativeCardPreviewReadQualification.MethodsUnpatched(owner, "get_Title"));
+        Assert.Equal(1, owner.MethodTableReads);
 
         var overloadOwner = typeof(OverloadFixture);
         var overloads = overloadOwner.GetMethods(NativeCardPreviewReadQualification.NativeMembers)
             .Where(method => method.Name == "Read").ToArray();
         Assert.Equal(2, overloads.Length);
+        Assert.True(NativeCardPreviewReadQualification.MethodsUnpatched(overloadOwner, "Read"));
         var guard = new Harmony("sts2-test-public-card-method-table");
         try
         {

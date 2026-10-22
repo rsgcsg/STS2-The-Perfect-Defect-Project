@@ -73,6 +73,9 @@ test("native read qualifiers admit only the audited patch-info query and keep pa
   const owner = "components/native-foundation/src/NativeRunHookReadQualification.cs";
   const read = "using HarmonyLib;\nvar patches = Harmony.GetPatchInfo(method);";
   assert.deepEqual(textBoundaryErrors(owner, read), []);
+  const cacheProse = "// that table; every requested overload's Harmony state remains live.";
+  assert.deepEqual(textBoundaryErrors(owner, `${read}\n${cacheProse}`), []);
+  assert.equal(textBoundaryErrors(owner, `${read}\n${cacheProse}\nHarmony.Patch(method);`).length, 1);
   assert.equal(textBoundaryErrors("components/native-foundation/src/Other.cs", read).length, 1);
   for (const mutation of ["new Harmony(id)", "Harmony.Patch(method)", "Harmony.UnpatchAll()",
     "typeof(Harmony)", "using H = HarmonyLib.Harmony;", "Harmony.CreateAndPatchAll(type)"]) {

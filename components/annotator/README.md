@@ -34,6 +34,13 @@ frame intervals in the same open session. Use Pause/Resume for a bounded OFF/ON
 comparison with the same scene/operation/speed/power conditions; transitions are
 excluded. Close publishes the profile. Read/capture counters and frame intervals
 are diagnostics, not automatic proof of acceptable user experience.
+The same profile retains at most 256 slow intervals (30ms or longer) with their
+actual Stopwatch boundaries, call site and enclosing measured phase. Capture
+`Measure` spans and process-frame spans can therefore be correlated after Close.
+Deferred aggregate subphase durations do not acquire invented start times; frame
+spans supply their original callback boundaries and only an observed UTC time.
+This bounded diagnostic history contains no gameplay facts and does not establish
+Human origin or qualification.
 
 For daily P1 collection attach to the running installed game through the existing
 Application API. Run `npm run recording:p1 -- status`, then use its exact runtime
