@@ -72,7 +72,8 @@ def compare_gradients(wanted, actual):
         assert name == other
         assert (old.grad is None) == (new.grad is None), name
         if old.grad is not None:
-            torch.testing.assert_close(new.grad, old.grad, rtol=3e-4, atol=2e-6, msg=name)
+            torch.testing.assert_close(new.grad, old.grad, rtol=3e-4, atol=2e-6,
+                                       msg=lambda message, label=name: f"{label}\n{message}")
 
 
 @pytest.mark.parametrize("training", [False, True])
@@ -144,11 +145,13 @@ def test_original_full_training_rng_gradients_and_next_optimizer_state(device):
     parameter_difference = state_difference = 0.0
     for (name, old), (_, new) in zip(wanted.named_parameters(), actual.named_parameters(),
                                    strict=True):
-        torch.testing.assert_close(new, old, rtol=3e-4, atol=2e-6, msg=name)
+        torch.testing.assert_close(new, old, rtol=3e-4, atol=2e-6,
+                                   msg=lambda message, label=name: f"{label}\n{message}")
         parameter_difference = max(parameter_difference, float((new - old).abs().max().detach()))
         for key, value in optimizers[0].state[old].items():
             torch.testing.assert_close(optimizers[1].state[new][key], value, rtol=3e-4, atol=2e-6,
-                                       msg=f"{name}.{key}")
+                                       msg=lambda message, label=f"{name}.{key}":
+                                       f"{label}\n{message}")
             state_difference = max(state_difference,
                                    float((optimizers[1].state[new][key] - value).abs().max()))
     print({"device": device, "deterministic_algorithms": True,
@@ -158,7 +161,7 @@ def test_original_full_training_rng_gradients_and_next_optimizer_state(device):
            "optimizer_state_max_abs": state_difference})
 
 
-def test_ragged_padding_is_linear_and_does_not_share_missing_nan(monkeypatch):
+def test_ragged_gathers_are_linear_and_do_not_share_missing_nan(monkeypatch):
     values = torch.randn(1025, 192)
     values[-1] = torch.nan
     rows = [list(range(1024)), *[[i] for i in range(1024)], [], [1024]]
@@ -173,7 +176,7 @@ def test_ragged_padding_is_linear_and_does_not_share_missing_nan(monkeypatch):
 
     monkeypatch.setattr(torch.Tensor, "index_select", record)
     result = _mean_terms(values, rows, values.new_zeros(192))
-    assert sum(sizes[:-1]) < 2 * sum(len(row) for row in rows)
+    assert sum(sizes[:-1]) == sum(len(row) for row in rows)
     assert sizes[-1] == len(rows)
     assert torch.isfinite(result[:-1]).all()
     assert torch.isnan(result[-1]).all()
