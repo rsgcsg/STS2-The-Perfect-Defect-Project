@@ -206,6 +206,32 @@ def discover_p1_projections(store: Any) -> list[dict[str, Any]]:
     return result
 
 
+def _string_list(value: object, field: str, *, optional: bool = True) -> None:
+    if value is None and optional:
+        return
+    if not isinstance(value, list) or any(not isinstance(x, str) or not x for x in value):
+        raise BoundaryError("p1_preparation", "invalid_" + field)
+
+
+def _selection_parameters(
+    projection_ids: object,
+    selected_decisions: object,
+    split_salt: object,
+    *,
+    projections_required: bool = False,
+) -> None:
+    _string_list(projection_ids, "projection_ids", optional=not projections_required)
+    if selected_decisions is not None:
+        if not isinstance(selected_decisions, dict):
+            raise BoundaryError("p1_preparation", "invalid_selected_decisions")
+        for identity, decisions in selected_decisions.items():
+            if not isinstance(identity, str) or not identity:
+                raise BoundaryError("p1_preparation", "invalid_selected_decisions")
+            _string_list(decisions, "selected_decisions", optional=False)
+    if not isinstance(split_salt, str) or not split_salt:
+        raise BoundaryError("p1_preparation", "explicit_split_identity_required")
+
+
 def prepare_p1_data(
     owner: Any,
     store: Any,
@@ -223,10 +249,24 @@ def prepare_p1_data(
     """Discover/filter/index/classify and draft allocation; never reserve or record use."""
     from spireagent.p1_curation import draft_p1_allocation
 
+    if type(cache) is not bool:
+        raise BoundaryError("p1_preparation", "invalid_cache_boolean")
+    for field, values in (
+        ("declared_origins", declared_origins),
+        ("projection_names", projection_names),
+        ("tool_release_ids", tool_release_ids),
+    ):
+        _string_list(values, field)
+    _selection_parameters(projection_ids, selected_decisions, split_salt)
+    if not isinstance(allocation_policy, str) or allocation_policy not in {
+        "preserve_existing",
+        "observed_groups_engineering",
+    }:
+        raise BoundaryError("p1_preparation", "unsupported_allocation_policy")
     started = time.monotonic()
     ledger = _ledger(owner, store)
     specs = {s["revision"]: s for s in (INPUT_SPEC, LEGACY_INPUT_SPEC)}
-    if revision not in specs:
+    if not isinstance(revision, str) or revision not in specs:
         raise BoundaryError("p1_preparation", "unsupported_revision")
     discovered = discover_p1_projections(store)
     requested = None if projection_ids is None else set(projection_ids)
@@ -324,6 +364,14 @@ def prepare_p1_data(
         "discovered": discovered,
         "excluded": excluded,
         "classification": quality,
+        "classification_scope": {
+            "unit": "per_projection_points_before_explicit_decision_selection_and_N_dedup",
+            "mask_counts": "all_projection_points",
+            "scene_and_chosen_action_counts": (
+                "N_true_projection_entries_including_alias_duplicates"
+            ),
+            "unique_N_count": "index.unique_N",
+        },
         "filters": {
             "declared_origins": declared_origins,
             "projection_names": projection_names,
@@ -374,6 +422,20 @@ def freeze_p1_data(
     """Freeze exact members through the authoritative reader, then optionally reserve."""
     from .p1_training_data import reserve_p1_snapshot
 
+    if type(reserve) is not bool:
+        raise BoundaryError("p1_preparation", "invalid_reserve_boolean")
+    _selection_parameters(projection_ids, selected_decisions, split_salt, projections_required=True)
+    if split_by_group is not None and (
+        not isinstance(split_by_group, dict)
+        or any(
+            not isinstance(group, str)
+            or not group
+            or not isinstance(role, str)
+            or role not in {"train", "dev", "test"}
+            for group, role in split_by_group.items()
+        )
+    ):
+        raise BoundaryError("p1_preparation", "invalid_split_by_group")
     _ledger(owner, store)
     manifest = publish_snapshot(
         store,

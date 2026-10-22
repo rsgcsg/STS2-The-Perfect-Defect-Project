@@ -331,3 +331,37 @@ def test_missing_original_manifest_never_reuses_success(tmp_path):
     for cache in (True, False):
         with pytest.raises(BoundaryError, match="object_not_found"):
             prepare_p1_data(owner, store, cache=cache)
+
+
+def test_wrong_json_parameter_types_fail_before_publication_or_reservation(tmp_path):
+    import pytest
+
+    from spireagent.json_boundary import BoundaryError
+
+    owner, store, projections = workspace(tmp_path)
+    original_ids = store.manifest_ids()
+    valid = {"projection_ids": [p.artifact_id for p in projections], "split_salt": "fixture"}
+    for reserve in ("false", 0, 1, None, []):
+        with pytest.raises(BoundaryError, match="invalid_reserve_boolean"):
+            freeze_p1_data(owner, store, PRODUCER, **valid, reserve=reserve)
+    for field, value in (
+        ("cache", "false"),
+        ("cache", 0),
+        ("cache", None),
+        ("declared_origins", "declared_human"),
+        ("declared_origins", [None]),
+        ("projection_ids", {"id": projections[0].artifact_id}),
+        ("projection_names", [True]),
+        ("tool_release_ids", "tool"),
+        ("selected_decisions", {projections[0].artifact_id: "decision-a"}),
+        ("revision", []),
+        ("allocation_policy", []),
+        ("split_salt", None),
+    ):
+        with pytest.raises(BoundaryError):
+            prepare_p1_data(owner, store, **{field: value})
+    assert store.manifest_ids() == original_ids
+    with owner.transaction() as db:
+        assert db.execute("SELECT count(*) FROM curation_claims").fetchone()[0] == 0
+        assert db.execute("SELECT count(*) FROM curation_uses").fetchone()[0] == 0
+    assert not owner.path.with_name(owner.path.stem + ".p1-preparation-cache.sqlite").exists()
