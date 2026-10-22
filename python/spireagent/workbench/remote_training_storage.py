@@ -43,6 +43,7 @@ def transfer_p1_input(
     """
     from stpd.p1.dataset import iter_snapshot_points
     from stpd.p1.input import project
+    from stpd.p1.workload import P1Workload
 
     budget = storage_budget(local, run_id, scratch=scratch, destination=None)
     peer = open_peer(peer_binding)
@@ -54,7 +55,9 @@ def transfer_p1_input(
     workload = verify_training_run(readback, run_id, producer)
     partition_N: dict[str, int] = {}
     catalog_choices = 0
-    for reference, observation in iter_snapshot_points(readback, workload.snapshot.artifact_id):
+    points = (workload.reader.iter_points() if isinstance(workload, P1Workload)
+              else iter_snapshot_points(readback, workload.snapshot.artifact_id))
+    for reference, observation in points:
         frame = project(observation)
         partition = reference["split"]
         partition_N[partition] = partition_N.get(partition, 0) + 1
