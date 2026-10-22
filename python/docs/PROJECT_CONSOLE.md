@@ -1040,6 +1040,14 @@ M-std 仍是普通 N-only，具体更新上限随固定 TRAIN 计算。
 后推进，重复 unit/next 复用原选择；新会话按包内 seed 重置，`state_recovery=none`
 不支持进程重启续接同一 RNG 流。安装/注册不证明真实游戏或策略质量。
 
+| 训练/使用场景 | 更换与复用 |
+|---|---|
+| 新增录制 | prepare 并冻结下一版 Snapshot；旧 Run 的成员和 Input 不动。 |
+| 同数据换算法或超参 | 复用固定 Snapshot 和原用途约束，选择新 recipe/config 创建新 Run。 |
+| 换 CPU/GPU/provider | 复用数据与业务控制；更换精确 target/backend 并重验 source、设备与结果边界。 |
+| 只消费已有 Model | 按现入口 register/load/evaluate；无需重新准备数据或训练。 |
+| 改 P1 语义 | 先回协议 owner 确定语义，再更新受影响投影、Input 和消费者。 |
+
 The supported entry is `python -m spireagent.workbench training --help` from the
 Python environment. It calls the already running Application and its same
 `LocalTrainingService`; it does not start a second service or open a page.
