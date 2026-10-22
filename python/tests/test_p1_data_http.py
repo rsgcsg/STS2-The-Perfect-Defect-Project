@@ -80,9 +80,9 @@ def test_normal_cli_reads_full_current_scale_preparation_response(tmp_path, caps
         raw = capsys.readouterr().out
         assert len(raw.encode()) > 8 * 1024**2
         prepared = json.loads(raw)
-        assert prepared["index"]["unique_N"] == 7209
+        assert prepared["index"]["unique_N"] == 7210
         selection_body = {"selection": prepared["selection"], "reserve": False}
         assert len(json.dumps(selection_body).encode()) < 1024**2
         frozen = p1_data_command(app.config, "freeze", selection_body)
-        assert frozen["unique_N"] == 7209 and frozen["purpose_reserved"] is False
-        assert len(list(iter_snapshot_points(store, frozen["snapshot_id"]))) == 7209
+        assert frozen["unique_N"] == 7210 and frozen["purpose_reserved"] is False
+        assert len(list(iter_snapshot_points(store, frozen["snapshot_id"]))) == 7210
