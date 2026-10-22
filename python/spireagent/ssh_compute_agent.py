@@ -18,7 +18,7 @@ from typing import Any
 from spireagent.compute import ComputeTermination
 from spireagent.json_boundary import BoundaryError, decode_json, json_bytes, object_fields
 from spireagent.source import source_identity
-from spireagent.ssh_compute import SshCall, SshTarget
+from spireagent.ssh_compute import CUBLAS_WORKSPACE, SshCall, SshTarget
 from stpd.cloud_jobs.contracts import ComputeReceipt, ComputeRequest
 
 
@@ -77,6 +77,8 @@ def verify_target(target: SshTarget) -> None:
         raise BoundaryError("ssh", "executing_interpreter_mismatch")
     if source_identity(root) != target.producer:
         raise BoundaryError("ssh", "runtime_source_lock_mismatch")
+    if target.gpu != "none" and os.environ.get("CUBLAS_WORKSPACE_CONFIG") != CUBLAS_WORKSPACE:
+        raise BoundaryError("ssh", "fixed_cublas_workspace_required")
     if runtime_identity(target.gpu) != target.runtime.value():
         raise BoundaryError("ssh", "runtime_execution_identity_mismatch")
 
