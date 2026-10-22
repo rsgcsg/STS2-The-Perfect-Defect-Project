@@ -1,10 +1,23 @@
-# 当前：P1 录制与旧投影修复候选已交付
+# 当前：四 Agent 首训的消费者与恢复候选
 
-用户新要求“做一下真实修复，以及考虑之前修复过的有没有同类问题”。
-本轮唯一任务为[录制与数据修复](../plans/p1-prefreeze-2026-10-18/DATA_RECORDING_REPAIR_20261022.zh-CN.md)，
-root 在 `origin/develop=89106561` 的单一 topic 完成原生/转换修复、非作者复核、exact-game 构建，
-并为固定25个来源另版发布投影及R2完整回读。新版正式reader为10319N/10183next；新增八份缺next从16降为3。
-不授训练或Human资格；完整CI与逐PR合入状态看本批PR实际回执，日常尚未升级。准确候选、选择清单和剩余缺口见任务。
+用户已另行批准首批随机、频次、线性和 M-std 的真实训练、同一冻结 TEST 比较、
+正常 Model 下载注册及新十种子 × 四 Agent 的 Reference 评价；root 是本批数据、
+预算、远端、游戏及集成唯一写入负责人。完整首训与全部40次评价仍未完成。
+先前[录制与数据修复](../plans/p1-prefreeze-2026-10-18/DATA_RECORDING_REPAIR_20261022.zh-CN.md)
+已交新版固定25来源投影；来源亲缘未知，不据观察组划分声称独立科学 holdout。
+
+本候选在既有 Application/Store/Ops/worker/Model 链补齐 own-byte 下载、checkpoint
+诊断导出、四结果显式 TEST 开封和40次 Reference 分母；合并已审查的学校 SSH
+启动数值环境与观察锁修复、训练 SnapshotReader 复用、周期完整保存/超时前软暂停，
+以及保持完整输入、同随机 draw 和参数结构的节点聚合优化。具体操作归原
+[P1 训练](../../python/docs/P1_T0.md)、[工作台](../../python/docs/PROJECT_CONSOLE.md)
+和[评价指南](../../python/docs/MANAGED_SUITE_EVALUATION.md)，本导航不另建控制或用途账。
+
+原可复用工程轮的预算和终止状态保留在[原任务](../plans/p1-prefreeze-2026-10-18/REUSABLE_TRAINING_20261022.zh-CN.md)，
+不能当本批新授权或新运行通过证据。本候选 source/test 复核与完整 CI 必须绑定 live PR216
+准确头；子 PR 的绿色不替代组合门。真实原 source 校准、数值恢复、冻结新组合、
+正式训练、R2冷读回、CPU消费、原生游戏和质量均按各自准确对象保留收据，不能互授资格。
+周期保存与软暂停不保证硬超时前一定保存成功；unknown 原请求不重投。
 
 ## 历史：近期未合并工作的组合审查与 develop 集成
 
