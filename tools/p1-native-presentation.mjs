@@ -97,23 +97,27 @@ export function classifyNativePresentation({ row, next, terminalById, basis, sta
     }
   }
   if (!kind || !complete(after)) return null;
-  const comparison = core.compareOriginalPresentationBases(before, after);
+  const comparison = kind === 'reward_open_return'
+    ? core.compareRewardPresentationBases(before, after) : core.compareOriginalPresentationBases(before, after);
+  const presentationEqual = comparison.presentation_equal ?? comparison.equal;
+  const remainingChanges = comparison.changes.filter(change =>
+    !comparison.display_animation?.changes.some(display => display.path === change.path));
   // User-approved existing stop_relic_refresh exception. No changed value is
   // erased, no successful label is emitted, and strict comparison still sees it.
   let exception = null;
-  if (!comparison.equal && kind === 'reward_open_return' && rewardGroup) {
+  if (!presentationEqual && kind === 'reward_open_return' && rewardGroup) {
     const groupIndex = first.rewards.indexOf(rewardGroup);
     const refIndex = before.snapshot.referents.findIndex(ref => ref.referent_id === rewardGroup.entity_id);
     const expected = new Set([`$.snapshot.interaction.content.surface.rewards.${groupIndex}.native_relic_refresh_subscription`,
       `$.snapshot.referents.${refIndex}.properties.native_relic_refresh_subscription`]);
-    if (refIndex >= 0 && comparison.changes.length === 2 && comparison.changes.every(change =>
+    if (refIndex >= 0 && remainingChanges.length === 2 && remainingChanges.every(change =>
       expected.has(change.path) && change.before === 'attached' && change.after === 'absent'))
       exception = { id: 'stop_relic_refresh', disposition: 'explained_native_side_effect',
         strict_comparison: 'preserve_actual_before_and_after_difference' };
   }
   return { kind, owner, decision_ids: members, before: { reference: row.basis, event: row, basis: before },
     after: { reference: afterReference, event: afterEvent, basis: after }, comparison,
-    disposition: comparison.equal ? 'presentation' : exception ? 'presentation_exception' : 'presentation_state_changed',
+    disposition: presentationEqual ? 'presentation' : exception ? 'presentation_exception' : 'presentation_state_changed',
     exception,
     successful_label: false, strict_managed_comparison: 'not_run' };
 }

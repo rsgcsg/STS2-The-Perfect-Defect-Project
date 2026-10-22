@@ -34,9 +34,9 @@
     },
     "policy_runtime": {
       "version": "0.1.0-rc.39",
-      "source_revision": "705e37285267a64544b33194f4ff2a598b0ea809",
-      "component_tree_revision": "9772e8bbfcca170bfdd251939223a10bd229a7a9",
-      "component_source_digest_sha256": "9d8d13b036e4aaea398fcb60ebf8439dc893de5973a913a3b5e8ed4fa4f507e1"
+      "source_revision": "f335053cf2ac94ce2d8c49ee443a7127fa60fa20",
+      "component_tree_revision": "60a5f6184686fc1186c76bb86ec9e04e37025315",
+      "component_source_digest_sha256": "8560d2926cfadf0108b634ce2f7b5409bc13b99b244ba0bf7390085116b06505"
     },
     "workbench": {
       "version": "0.1.0-rc.3",
@@ -57,7 +57,7 @@
       "component_source_digest_sha256": "2e0305ada4121c18c201db98e0a90dc0f0f478fbff6a53add398cbe7f94f8d3b"
     },
     "player_environment_protocol": "1.0.0",
-    "typescript_sdk": "1.3.0-rc.11"
+    "typescript_sdk": "1.3.0-rc.12"
   },
   "public_packages": {
     "connector_host": {
@@ -269,8 +269,8 @@
       "source_revision": "e19b30315015664a5647ab351cdcefb09417f275",
       "source_digest_sha256": "d227321727d07edd2d4c67928edec439c26f156494dd9cfab98d2bac4debf346",
       "version": "0.1.0-rc.1",
-      "current_component_source_revision": "705e37285267a64544b33194f4ff2a598b0ea809",
-      "current_component_source_digest_sha256": "9d8d13b036e4aaea398fcb60ebf8439dc893de5973a913a3b5e8ed4fa4f507e1",
+      "current_component_source_revision": "f335053cf2ac94ce2d8c49ee443a7127fa60fa20",
+      "current_component_source_digest_sha256": "8560d2926cfadf0108b634ce2f7b5409bc13b99b244ba0bf7390085116b06505",
       "current_component_version": "0.1.0-rc.39",
       "source_relation": "historical_runtime_source_precedes_standalone_consumer_package"
     },

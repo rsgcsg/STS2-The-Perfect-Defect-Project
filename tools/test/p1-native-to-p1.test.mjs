@@ -11,7 +11,7 @@ import * as core from '../../components/connector/sdk/typescript/dist/p1Global/i
 import { convertNativeSemanticOriginals } from '../p1-native-to-p1.mjs';
 import { buildNativeP1Targets, nativeTargetProjection } from '../p1-native-targets.mjs';
 import { nativeIssueSpan } from '../p1-native-issue-spans.mjs';
-import { rewardForwardPair } from '../../components/connector/sdk/typescript/test/fixtures/reward-forward.mjs';
+import { rewardForwardPair, lastingCandyDisplay } from '../../components/connector/sdk/typescript/test/fixtures/reward-forward.mjs';
 
 // Semantic-only fixture: actual Store/packer bytes are tested at the reader seam.
 // These bases exercise shared reduction and action bindings, not native gameplay.
@@ -181,8 +181,9 @@ test('an open durable prefix preserves pending acceptance without closing or inv
   assert.deepEqual(report.issues, []);
 });
 
-function nativeRewardSpan() {
+function nativeRewardSpan(display = false) {
   const { outer, child } = rewardForwardPair();
+  if (display) { lastingCandyDisplay(outer, 2); lastingCandyDisplay(child, 0); }
   const { source, blobs } = example();
   source.events = [];
   const retain = basis => {
@@ -227,6 +228,17 @@ test('native reward opening never guesses a card without its original accepted s
   const report = convertNativeSemanticOriginals(source, sdk, core);
   assert.equal(report.complete, false);
   assert.equal(report.actions[0].choice_id, null);
+});
+
+test('physical Skip without a qualified return cannot attest an irreversible P1 decline', () => {
+  const { source, child } = nativeRewardSpan();
+  source.events[2].bound_action = child.snapshot.bound_actions.actions.find(action => action.bound_action_id === 'skip');
+  source.events[3].successor_basis = null;
+  const report = convertNativeSemanticOriginals(source, sdk, core);
+  assert.equal(report.actions[0].choice_id, null);
+  assert.equal(report.actions[0].continuation_decision_id, null);
+  assert.equal(report.complete, false);
+  assert.ok(report.issues.some(issue => issue.reason === 'accepted_action_needs_intention_or_continuation'));
 });
 
 test('native reward continuation cannot borrow a foreign original owner or receipt', () => {
@@ -536,7 +548,9 @@ async function nativeBrowse(kind, change = null) {
       option.after = null; option.after_availability = 'not_applicable'; option.display_context = 'native_deck_card_before';
     }
   }
+  if (change === 'lasting-candy') { lastingCandyDisplay(before, 2); lastingCandyDisplay(middle, 0); }
   const restored = structuredClone(before);
+  if (change === 'lasting-candy') lastingCandyDisplay(restored, 0);
   restored.snapshot.snapshot_id += '-restored'; restored.snapshot.sequence++;
   for (const read of restored.reads) read.response.expected_snapshot_id = read.response.observed_snapshot_id = restored.snapshot.snapshot_id;
   if (change === 'world') restored.snapshot.persistent.content.player.gold++;
@@ -1134,13 +1148,15 @@ test('only the approved reward effect is ignored; other effects remain edge barr
   assert.equal(targets.timeline.spans[0].memory_crossing_approved, false);
 });
 
-test('the current targets join qualified choices across reward refresh while historical segments stay split', () => {
+for (const display of [false, true]) test(`current targets join qualified choices across reward refresh (display=${display}) while historical segments stay split`, () => {
   const { source, original, retain, row } = example(); source.events.length = 0;
   const { outer, child, group } = rewardForwardPair(); group.native_relic_refresh_subscription = 'attached';
   child.snapshot.interaction.content.surface.native_relic_refresh_subscription = 'attached';
   outer.snapshot.referents = [{ ...outer.snapshot.referents[0], referent_id: group.entity_id, properties: { ...group } }];
+  if (display) { lastingCandyDisplay(outer, 2); lastingCandyDisplay(child, 0); }
   const after = structuredClone(outer);
   after.snapshot.interaction.content.surface.rewards[0].native_relic_refresh_subscription = 'absent';
+  if (display) lastingCandyDisplay(after, 0);
   after.snapshot.referents[0].properties.native_relic_refresh_subscription = 'absent';
   const choice = (id, value, action, successor, kind = 'semantic_ui_accepted') => {
     row('decision_accepted', { decision_id: id, action_witness_id: id, basis: retain(value),
@@ -1162,7 +1178,7 @@ test('the current targets join qualified choices across reward refresh while his
   assert.ok(report.segment_output.gaps.some(g => g.reasons.includes('projection_exception:stop_relic_refresh')));
   const old = convertNativeSemanticOriginals(source, sdk, core, { includeSegments: true });
   assert.deepEqual(report.segment_output, old.segment_output);
-  assert.equal(report.target_output.timeline.spans[0].actual_changes.length, 2);
+  assert.equal(report.target_output.timeline.spans[0].actual_changes.length, display ? 3 : 2);
   assert.ok(report.actions.filter(a => ['open', 'back'].includes(a.decision_id)).every(a => a.choice_id === null));
 });
 
@@ -1235,4 +1251,31 @@ test('a terminal capture outside the original branch cannot provide an end targe
   const targets = buildNativeP1Targets(input);
   assert.equal(targets.end_target, null);
   assert.ok(targets.points.every(point => !point.mask.end && point.source_event_id !== capture.event_id));
+});
+
+
+test('display animation keeps the exact recorded take intention without changing original inputs', () => {
+  const { source } = nativeRewardSpan(true);
+  const original = JSON.stringify(source.events);
+  const report = convertNativeSemanticOriginals(source, sdk, core);
+  assert.equal(report.complete, true);
+  assert.equal(report.actions[0].choice.kind, 'reward.take_card');
+  assert.equal(report.actions[0].native_continuations[0].decision_id, 'select');
+  assert.equal(JSON.stringify(source.events), original);
+  assert.equal(report.captures[0].observation.player.content.relics[0].counter, 2);
+});
+
+test('display animation open and Skip remain zero-label browsing with literal unequal originals', async () => {
+  const report = await nativeBrowse('reward', 'lasting-candy');
+  assert.equal(report.native_presentations.length, 1);
+  const { comparison } = report.native_presentations[0];
+  assert.equal(comparison.equal, false);
+  assert.equal(comparison.presentation_equal, true);
+  assert.equal(comparison.display_animation.id, 'lasting_candy_trigger_display_2_to_0');
+  assert.deepEqual(comparison.changes.map(change => [change.before, change.after]), [[2, 0]]);
+  assert.equal(report.accepted_accounting.presentation, 2);
+  assert.equal(report.presentation_gaps.length, 0);
+  assert.equal(report.blocking_issues.length, 0);
+  assert.ok(report.actions.every(action => action.choice_id === null));
+  assert.equal(report.strict_managed_comparison, 'not_run');
 });
