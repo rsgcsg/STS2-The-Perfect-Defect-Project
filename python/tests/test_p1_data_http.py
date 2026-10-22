@@ -72,6 +72,10 @@ def test_normal_cli_reads_full_current_scale_preparation_response(tmp_path, caps
             points.append(point)
         value["segments"][0]["points"] = points
         projection_fixture(store, "large-prepare", original=original, value=value)
+        # Current data also has 1922 alias occurrences; these remain visible in
+        # the index while unique N keeps the original decision identities.
+        value["segments"][0]["points"] = points[:1922]
+        projection_fixture(store, "large-prepare", original=original, value=value)
         assert main(["p1-data", "--config", str(path), "--action", "prepare"]) == 0
         raw = capsys.readouterr().out
         assert len(raw.encode()) > 8 * 1024**2
