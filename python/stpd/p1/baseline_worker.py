@@ -102,7 +102,7 @@ def materialize_baseline_model(
             for chunk in store.read_payload(model.payload(role)):
                 target.write(chunk)
     loaded, package = load_model(destination / "model.tensor-tree", info["package_sha256"])
-    descriptor = json.loads((destination / "model.json").read_bytes())
+    descriptor: dict[str, Any] = json.loads((destination / "model.json").read_bytes())
     if (
         descriptor["package_sha256"] != info["package_sha256"]
         or package["input_spec"] != info["input_spec"]

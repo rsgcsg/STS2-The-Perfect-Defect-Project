@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from .baseline_agent import installation
@@ -44,7 +45,7 @@ def inspect(root, entry, manifest, policy_config, *, binding_root=None):
         }
 
 
-def metadata(owner, config, manifest) -> dict[str, Any]:
+def metadata(owner: Path, config: dict[str, Any], manifest: dict[str, Any]) -> dict[str, Any]:
     checked, checked_manifest, model, payload = installation(
         owner / "config.json", owner / "manifest.json", owner
     )
