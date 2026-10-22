@@ -65,8 +65,10 @@ def test_normal_cli_reads_full_current_scale_preparation_response(tmp_path, caps
         points = []
         for index in range(7206):
             point = copy.deepcopy(template)
-            point.update(index=index, source_event_id=f"event-{index}",
-                         source_decision_id=f"decision-{index}")
+            # Native correlation identifiers are substantially longer than the
+            # tiny fixture's names; retain realistic bytes as well as N count.
+            point.update(index=index, source_event_id=f"native-event-{index:064d}",
+                         source_decision_id=f"native-decision-{index:064d}")
             points.append(point)
         value["segments"][0]["points"] = points
         projection_fixture(store, "large-prepare", original=original, value=value)
