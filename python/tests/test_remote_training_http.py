@@ -81,7 +81,9 @@ def settled(call, job_id, state):
         threading.Event().wait(0.05)
 
 
-def test_normal_client_start_bounded_pause_same_run_resume_and_result(tmp_path, capsys):
+def test_normal_client_start_bounded_pause_same_run_resume_and_result(
+    tmp_path, capsys, monkeypatch
+):
     with client(tmp_path) as (app, call, provider, store, owner, snapshot, config_path):
         capabilities = call("capabilities")
         assert capabilities["live_pause_supported"] is False
@@ -143,6 +145,18 @@ def test_normal_client_start_bounded_pause_same_run_resume_and_result(tmp_path, 
         completed = settled(call, second["id"], "completed")
         assert second["input_id"] == paused["input_id"]
         assert completed["result"]["output_id"] not in store.manifest_ids()
+        from types import SimpleNamespace
+
+        from spireagent.workbench import p1_recording_storage
+
+        with monkeypatch.context() as insufficient:
+            insufficient.setattr(p1_recording_storage.shutil, "disk_usage",
+                                 lambda _: SimpleNamespace(free=0))
+            with pytest.raises(BoundaryError, match="space_insufficient"):
+                call("reconcile", body={"job_id": second["id"],
+                                        "expected_attempt_id": completed["attempt_id"]})
+        assert completed["result"]["output_id"] not in store.manifest_ids()
+        assert call("status", job_id=second["id"])["jobs"][0]["result"] == completed["result"]
         assert call("reconcile", body={"job_id": second["id"],
                                       "expected_attempt_id": completed["attempt_id"]})[
                                           "jobs"][0]["result"] == completed["result"]

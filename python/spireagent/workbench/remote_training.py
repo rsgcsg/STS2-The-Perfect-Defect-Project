@@ -337,6 +337,13 @@ class RemoteTrainingService:
                         scratch.mkdir(parents=True, exist_ok=True)
                         identity = result.get("output_id") or result.get("checkpoint_id")
                         if identity:
+                            from spireagent.workbench.p1_recording_storage import storage_budget
+
+                            # Receiving a result can include its immutable input
+                            # ancestry. Budget that closure before creating bytes;
+                            # copy_artifact reuses verified local payloads.
+                            storage_budget(self._compute_store, identity, scratch=scratch,
+                                           destination=store.blobs.root)
                             copy_artifact(self._compute_store, store, identity, scratch=scratch)
                 else:
                     intent = digest(obj["intent_id"], "remote_training.intent_id", length=32)
