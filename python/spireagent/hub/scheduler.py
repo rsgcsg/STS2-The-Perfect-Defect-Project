@@ -16,7 +16,12 @@ from collections.abc import Callable
 from typing import Any
 
 from spireagent.artifact_contracts import Manifest
-from spireagent.compute import ComputeHandle, ComputeProvider
+from spireagent.compute import (
+    ComputeHandle,
+    ComputeProvider,
+    ComputeSubmissionUnknown,
+    ComputeTerminated,
+)
 from spireagent.hub.database import Operations
 from spireagent.json_boundary import BoundaryError
 from spireagent.storage.store import ArtifactStore
@@ -150,6 +155,19 @@ class Scheduler:
             return self._reply("already_prepared_no_resubmit", job)
         try:
             handle = self.provider.submit(request)
+        except ComputeSubmissionUnknown as unknown:
+            # A deterministic transport handle is observation capability, never
+            # evidence of accepted submission or permission to invoke again.
+            handle = self.provider.restore_handle(unknown.handle.to_dict())
+            if (handle.request != request or handle.target_id != self.provider.target.target_id):
+                self.operations.compute_uncertain(job, token, row["attempt_id"], row["fence"],
+                                                  "submission_handle_mismatch")
+                return self._reply("submission_unknown", job)
+            self.operations.bind_compute_handle(job, token, row["attempt_id"], row["fence"],
+                                                handle.to_dict())
+            self.operations.compute_uncertain(job, token, row["attempt_id"], row["fence"],
+                                              "submission_unknown")
+            return self._reply("submission_unknown", job)
         except Exception:
             self.operations.compute_uncertain(
                 job,
@@ -233,7 +251,13 @@ class Scheduler:
         if cancelling:
             self._cancel(row, token, handle)
         try:
-            receipt = self.provider.poll(handle)
+            try:
+                receipt = self.provider.poll(handle)
+            except ComputeTerminated as terminal:
+                terminal.termination.bind(handle)
+                status = self.operations.accept_compute_termination(
+                    job, token, attempt, fence, terminal.termination.to_dict())
+                return self._reply(status, job, execution_outcome=terminal.termination.outcome)
             if receipt is not None:
                 receipt.bind(request)
                 if cancelling:

@@ -12,10 +12,10 @@ from spireagent.compute import ComputeProvider
 from spireagent.hub.database import Operations
 from spireagent.json_boundary import BoundaryError, digest, object_fields
 from spireagent.source import source_identity
+from spireagent.ssh_compute import provider_from_target
 from spireagent.storage.store import copy_artifact
 from spireagent.workbench.developer import ROOT, ProjectConfig
 from spireagent.workbench.p1_recording_storage import open_peer
-from stpd.cloud_jobs.modal import ModalProvider, ModalTarget
 
 if TYPE_CHECKING:
     from spireagent.hub.scheduler import Scheduler
@@ -46,7 +46,9 @@ class RemoteTrainingService:
                 "available": (deployment is not None and not self.config.hub_url
                               and (self._injected_provider or
                                    deployment.compute_store.get("kind") == "s3")),
-                "provider": "trusted_injected_engineering" if self._injected_provider else "modal",
+                "provider": ("trusted_injected_engineering" if self._injected_provider else
+                             "ssh" if deployment and self._target_schema() ==
+                             "spireagent/ssh-target-1" else "modal"),
                 "recipes": [
                     {"recipe_id": P1_MSTD_RECIPE, "devices": ["cpu", "cuda:index"]},
                     {"recipe_id": P1_BASELINE_RECIPE, "devices": ["cpu"],
@@ -74,8 +76,7 @@ class RemoteTrainingService:
             raise BoundaryError("remote_training", "shared_compute_store_required")
         owner, store, _ = self.select()
         if self._provider is None:
-            target = ModalTarget.decode(json.loads(deployment.target_path.read_bytes()))
-            self._provider = ModalProvider(target)
+            self._provider = provider_from_target(json.loads(deployment.target_path.read_bytes()))
         provider = self._provider
         if provider.target.producer != source_identity(ROOT):
             raise BoundaryError("remote_training", "target_source_lock_mismatch")
@@ -85,6 +86,15 @@ class RemoteTrainingService:
         if self._compute_store is None:
             self._compute_store = open_peer(deployment.compute_store)
         return owner, store, provider, self._compute_store
+
+    def _target_schema(self) -> str | None:
+        deployment = self.config.remote_compute
+        if deployment is None:
+            return None
+        try:
+            return str(json.loads(deployment.target_path.read_bytes()).get("schema"))
+        except (OSError, ValueError, AttributeError):
+            return None
 
     def _ready(self) -> tuple[Any, Any, ComputeProvider, Operations, Scheduler]:
         owner, store, provider, peer = self._context()

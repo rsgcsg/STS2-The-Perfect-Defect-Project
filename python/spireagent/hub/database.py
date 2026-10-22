@@ -772,9 +772,9 @@ class Operations:
         fence: int,
         handle: dict[str, Any],
     ) -> None:
-        from stpd.cloud_jobs.modal import ModalCall
+        from spireagent.compute import decode_compute_handle
 
-        value = ModalCall.decode(handle)
+        value = decode_compute_handle(handle)
         encoded = json.dumps(handle, sort_keys=True)
         with self.transaction() as db:
             row = self._compute_fenced(db, job, token, attempt, fence)
@@ -904,6 +904,38 @@ class Operations:
                 (target, encoded, job),
             )
             self._event(db, "scheduler", "compute_" + target, job, receipt)
+
+    def accept_compute_termination(
+        self, job: str, token: str, attempt: str, fence: int, termination: dict[str, Any],
+    ) -> str:
+        """Settle only a verified original process exit, retaining budget and handle."""
+        from spireagent.compute import ComputeTermination, decode_compute_handle
+        from stpd.cloud_jobs.contracts import ComputeRequest
+
+        value = ComputeTermination.decode(termination)
+        encoded = json.dumps(termination, sort_keys=True)
+        with self.transaction() as db:
+            row = self._compute_fenced(db, job, token, attempt, fence)
+            current = db.execute("SELECT * FROM compute_attempts WHERE job_id=?", (job,)).fetchone()
+            if (current is None or current["handle"] is None
+                    or current["attempt_id"] != attempt or current["fence"] != fence):
+                raise BoundaryError("hub", "compute_handle_required")
+            handle = decode_compute_handle(json.loads(current["handle"]))
+            value.bind(handle)
+            if (handle.request != ComputeRequest.decode(json.loads(current["request"]))
+                    or current["target_id"] != value.target_id
+                    or row["provider_ref"] != value.call_id):
+                raise BoundaryError("hub", "compute_termination_binding_mismatch")
+            if row["status"] in {"failed", "cancelled"} and row["result"] == encoded:
+                return str(row["status"])
+            if row["status"] not in {"running", "uncertain", "submission_unknown", "cancelling"}:
+                raise BoundaryError("hub", "stale_attempt")
+            status = "cancelled" if row["status"] == "cancelling" else "failed"
+            db.execute("UPDATE jobs SET status=?,result=? WHERE id=?", (status, encoded, job))
+            db.execute("UPDATE compute_attempts SET phase=?,last_error=? WHERE job_id=?",
+                       (status, "execution_" + value.outcome, job))
+            self._event(db, "scheduler", "compute_process_terminated", job, termination)
+            return status
 
     def begin_compute_cancel(self, job: str, token: str, attempt: str, fence: int) -> bool:
         with self.transaction() as db:
