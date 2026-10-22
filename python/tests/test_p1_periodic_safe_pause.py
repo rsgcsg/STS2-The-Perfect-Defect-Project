@@ -72,12 +72,12 @@ def test_periodic_checkpoint_full_resume_matches_without_extra_dev_test_or_doubl
             clock.now += 1800  # step3 is ordinary; step4 is milestone + epoch DEV.
         return progress
 
-    def observed_evaluate(trainer, model, population):
+    def observed_evaluate(model, population):
         evaluations[clock.attempt].append(tuple(population.point_ids))
-        return evaluate(trainer, model, population)
+        return evaluate(model, population)
 
     monkeypatch.setattr(MStdTrainer, "advance", observed_advance)
-    monkeypatch.setattr(MStdTrainer, "evaluate", observed_evaluate)
+    monkeypatch.setattr(MStdTrainer, "evaluate", staticmethod(observed_evaluate))
     request = ComputeRequest("training", run.artifact_id, PRODUCER, "reference")
     full = dispatch(store, request, PRODUCER)
     clock.timed, clock.attempt = True, "periodic"
