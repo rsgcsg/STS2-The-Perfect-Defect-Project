@@ -23,6 +23,7 @@ def training_command(
     config: ProjectConfig, action: str, *, body: dict[str, Any] | None = None,
     operation_id: str | None = None, execution: str = "local",
     intent_id: str | None = None, wait_seconds: int | None = None,
+    after_step: int | None = None,
 ) -> dict[str, Any]:
     """Offer once to the live owner; a transport failure never retries a write."""
     if execution not in {"local", "remote"}:
@@ -44,6 +45,10 @@ def training_command(
         raise BoundaryError("local_training", "training_body_mismatch")
     if operation_id is not None and action not in {"status", "progress"}:
         raise BoundaryError("local_training", "operation_query_requires_status")
+    if after_step is not None and (execution != "remote" or action != "progress"
+                                   or operation_id is None or type(after_step) is not int
+                                   or after_step < 0):
+        raise BoundaryError("remote_training", "progress_cursor_requires_remote_job")
     if action == "start" and execution == "local":
         TrainingRequest.from_dict(body)
     current = running(config)
@@ -56,6 +61,8 @@ def training_command(
     if intent_id is not None:
         route += "?" + urlencode({"intent_id": digest(
             intent_id, "remote_training.intent_id", length=32)})
+    if after_step is not None:
+        route += "&" + urlencode({"after_step": after_step})
     try:
         return _local_request(
             f"http://127.0.0.1:{current['port']}" + route,
@@ -82,6 +89,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--execution", choices=("local", "remote"), default="local")
     parser.add_argument("--intent-id", help="read only existing local Run and remote job facts")
     parser.add_argument("--wait-seconds", type=int, help="explicit transport wait; never retries")
+    parser.add_argument("--after-step", type=int,
+                        help="remote progress event cursor from the previous through_step")
     args = parser.parse_args(argv)
     try:
         body = json.loads(args.input.read_bytes()) if args.input is not None else None
@@ -90,7 +99,7 @@ def main(argv: list[str] | None = None) -> int:
         result = training_command(ProjectConfig.load(args.config), args.action,
                                   body=body, operation_id=args.operation_id,
                                   execution=args.execution, intent_id=args.intent_id,
-                                  wait_seconds=args.wait_seconds)
+                                  wait_seconds=args.wait_seconds, after_step=args.after_step)
     except (BoundaryError, OSError, ValueError) as error:
         code = error.code if isinstance(error, BoundaryError) else type(error).__name__
         print(json.dumps({"status": "failed", "error_code": code}))

@@ -103,6 +103,15 @@ def test_normal_client_start_bounded_pause_same_run_resume_and_result(tmp_path, 
         assert progress["latest_checkpoint"]["details"]["checkpoint_id"] == (
             paused["result"]["checkpoint_id"])
         assert progress["provider_queried"] is False
+        cursor = progress["through_step"]
+        unchanged = training_command(app.config, "progress", operation_id=first["id"],
+                                     execution="remote", after_step=cursor)
+        assert unchanged["events"] == []
+        assert unchanged["through_step"] == cursor
+        assert unchanged["latest_checkpoint"] == progress["latest_checkpoint"]
+        assert main(["progress", "--config", str(config_path), "--execution", "remote",
+                     "--operation-id", first["id"], "--after-step", str(cursor)]) == 0
+        assert json.loads(capsys.readouterr().out)["events"] == []
         observation_config = replace(app.config, remote_compute=replace(
             app.config.remote_compute, observation_only=True))
         observation_path = config_path.with_name("observation.json")
