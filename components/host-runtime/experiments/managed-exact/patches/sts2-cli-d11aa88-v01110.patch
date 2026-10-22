@@ -2121,14 +2121,15 @@ index 0000000..85112ee
 +}
 diff --git a/src/Sts2Headless/NativeCardPreviewReadQualification.cs b/src/Sts2Headless/NativeCardPreviewReadQualification.cs
 new file mode 100644
-index 0000000..4c989df
+index 0000000..7e067bc
 --- /dev/null
 +++ b/src/Sts2Headless/NativeCardPreviewReadQualification.cs
-@@ -0,0 +1,355 @@
+@@ -0,0 +1,359 @@
 +using System;
 +using System.Collections.Generic;
 +using System.Linq;
 +using System.Reflection;
++using System.Runtime.CompilerServices;
 +using HarmonyLib;
 +using MegaCrit.Sts2.Core.Entities.Cards;
 +using MegaCrit.Sts2.Core.Localization.DynamicVars;
@@ -2158,11 +2159,14 @@ index 0000000..4c989df
 +        catch { return false; }
 +    }
 +
++    private static readonly ConditionalWeakTable<Type, ILookup<string, MethodInfo>> MethodTables = new();
++
 +    internal static bool MethodsUnpatched(Type owner, params string[] names)
 +    {
-+        // Resolve immutable method metadata once per check. Patch state is
-+        // still read anew for every overload on every invocation.
-+        var methods = owner.GetMethods(NativeMembers).ToLookup(method => method.Name, StringComparer.Ordinal);
++        // CLR method metadata is immutable for each loaded Type. Reuse only
++        // that table; every requested overload's Harmony state remains live.
++        var methods = MethodTables.GetValue(owner, static type =>
++            type.GetMethods(NativeMembers).ToLookup(method => method.Name, StringComparer.Ordinal));
 +        return names.All(name => methods[name].Any() && methods[name].All(IsUnpatched));
 +    }
 +
