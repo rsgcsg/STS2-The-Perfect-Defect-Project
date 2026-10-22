@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
@@ -53,3 +54,29 @@ def test_data_write_requires_auth_and_wrong_reserve_never_claims(tmp_path):
                                                   "reserve": "false"})
         with owner.transaction() as db:
             assert db.execute("SELECT count(*) FROM curation_claims").fetchone() == (0,)
+
+
+def test_normal_cli_reads_full_current_scale_preparation_response(tmp_path, capsys):
+    # The real 7206-N preparation is about 8 MiB, much larger than health/status.
+    # Produce the index through the real Store/prepare/HTTP serialization paths.
+    with client(tmp_path, reserve=False) as (app, _call, _provider, store, _owner, _snapshot, path):
+        _, original, value = projection_fixture(store, "large-prepare")
+        template = value["segments"][0]["points"][0]
+        points = []
+        for index in range(7206):
+            point = copy.deepcopy(template)
+            point.update(index=index, source_event_id=f"event-{index}",
+                         source_decision_id=f"decision-{index}")
+            points.append(point)
+        value["segments"][0]["points"] = points
+        projection_fixture(store, "large-prepare", original=original, value=value)
+        assert main(["p1-data", "--config", str(path), "--action", "prepare"]) == 0
+        raw = capsys.readouterr().out
+        assert len(raw.encode()) > 8 * 1024**2
+        prepared = json.loads(raw)
+        assert prepared["index"]["unique_N"] == 7209
+        selection_body = {"selection": prepared["selection"], "reserve": False}
+        assert len(json.dumps(selection_body).encode()) < 1024**2
+        frozen = p1_data_command(app.config, "freeze", selection_body)
+        assert frozen["unique_N"] == 7209 and frozen["purpose_reserved"] is False
+        assert len(list(iter_snapshot_points(store, frozen["snapshot_id"]))) == 7209

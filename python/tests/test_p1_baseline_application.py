@@ -22,6 +22,32 @@ from stpd.p1.baseline_agent import installation
 from stpd.p1.baseline_spec import RECIPE, BaselineConfig
 
 
+def test_baseline_preflight_rejects_missing_tokenizers_before_owned_operation(
+    tmp_path, monkeypatch
+):
+    from spireagent.json_boundary import BoundaryError
+    from spireagent.workbench import local_model_dependencies
+    from spireagent.workbench.trusted_recipes import describe_recipe
+
+    config, store, owner, snapshot = workspace(tmp_path)
+    reserve_p1_snapshot(owner, store, snapshot.artifact_id)
+    service = LocalTrainingService(config)
+    before = store.manifest_ids()
+    monkeypatch.setattr(local_model_dependencies, "find_spec",
+                        lambda name: None if name == "tokenizers" else object())
+    assert describe_recipe(RECIPE)["dependencies_available"] is False
+    request = TrainingRequest(uuid.uuid4().hex, RECIPE, snapshot.artifact_id,
+                              BaselineConfig().to_dict())
+    with pytest.raises(BoundaryError, match="local_models_extra_required"):
+        service.start(request)
+    assert service.status()["operation"]["status"] == "idle"
+    assert service._thread is None
+    assert store.manifest_ids() == before
+    monkeypatch.setattr(local_model_dependencies, "find_spec",
+                        lambda name: None if name == "safetensors" else object())
+    assert describe_recipe(RECIPE)["dependencies_available"] is True
+
+
 @pytest.mark.parametrize("algorithm", ["random", "frequency", "linear"])
 def test_normal_private_child_original_model_registration_and_composition(
     tmp_path, monkeypatch, algorithm

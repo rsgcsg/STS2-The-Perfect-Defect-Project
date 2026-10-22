@@ -1028,6 +1028,8 @@ python -m spireagent.workbench project p1-data --config PROJECT --action freeze 
 仍用下列 TrainingRequest、同一 LocalTrainingService、私有 child、Run/Store 和注册。
 随机不拟合，频率只数 TRAIN；两者 `optimizer_updates=0`，`fit_steps` 单列工作量。
 线性是 TRAIN 手特征/L2，DEV 选优，TEST 仅最终；类别只从 TRAIN 拟合，缺值有显式标记。
+G3 是无交叉项的相加线性模型；同页 scene/player 全局常量在候选 softmax 比较中抵消，
+不能据此声称模型会按这些全局状态改变候选之间的相对偏好。
 默认 CPU 2 线程，seed1、batch64；完整配置先读 `training capabilities` 的该 recipe。
 M-std 仍是普通 N-only，具体更新上限随固定 TRAIN 计算。
 
@@ -1231,8 +1233,9 @@ Mac 睡眠、关机或断网不会把它变成常驻云控制器：已接受的 
 准确 target，不热改日常录制配置或旧 Run。目标 source/lock/image 任一变化须新候选。
 
 本机并发重任务一个；数值 CPU 2 线程（对照可明确设1），不使用 MPS 冒充 CUDA。
-本机同训操作 `scratch_bytes` 默认512MiB、允许16MiB–1GiB，wall1–3600秒，恢复累计
-计费；它是检测阈值而非磁盘或RAM硬预留。prepare/copy 另由实际闭包空间检查负责，
+本机同训操作 `scratch_bytes` 默认512MiB、允许16MiB–1GiB，wall1–3600秒；恢复沿用
+原累计 wall/scratch/attempt 预算，不表示本机美元收费。它是检测阈值而非磁盘或RAM硬预留。
+prepare/copy 另由实际闭包空间检查负责，
 默认至少保512MiB空闲，scratch为该文件系统上最大待临时payload。已有缓存按正常
 cache-configure/trim 管理，不删除活跃原件/模型；R2保长期原件与恢复材料。
 远端 target 冻结 CPU/memory/timeout，当前短验配置使用 CPU2/8192MiB、单容器、

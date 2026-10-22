@@ -82,7 +82,8 @@ def configuration_id(config: ProjectConfig) -> str:
 
 def _local_request(url: str, *, token: str | None = None, timeout: float = 2,
                    body: dict[str, Any] | None = None,
-                   method: str | None = None) -> dict[str, Any]:
+                   method: str | None = None,
+                   response_limit: int = 1024 * 1024) -> dict[str, Any]:
     request = Request(
         url,
         data=(json.dumps(body).encode() if body is not None
@@ -92,7 +93,10 @@ def _local_request(url: str, *, token: str | None = None, timeout: float = 2,
         method=method,
     )
     with build_opener(ProxyHandler({})).open(request, timeout=timeout) as response:
-        value: Any = json.loads(response.read(1024 * 1024))
+        raw = response.read(response_limit + 1)
+    if len(raw) > response_limit:
+        raise BoundaryError("project", "local_response_too_large")
+    value: Any = json.loads(raw)
     if not isinstance(value, dict):
         raise BoundaryError("project", "invalid_local_response")
     return value

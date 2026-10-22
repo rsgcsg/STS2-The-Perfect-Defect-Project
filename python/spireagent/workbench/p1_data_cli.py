@@ -22,11 +22,14 @@ def p1_data_command(config: ProjectConfig, action: str, body: object) -> dict[st
         return _local_request(
             f"http://127.0.0.1:{current['port']}/api/p1-data/{action}",
             token=current["control_token"], body=body, method="POST", timeout=600,
+            response_limit=16 * 1024**2,
         )
     except HTTPError as error:
         value = json.loads(error.read(1024 * 1024))
         code = value.get("error") if isinstance(value, dict) else None
         raise BoundaryError("p1_data", code or "application_request_rejected") from error
+    except BoundaryError:
+        raise
     except (OSError, ValueError) as error:
         raise BoundaryError(
             "p1_data", "request_failed_inspect_snapshot_no_automatic_retry"
