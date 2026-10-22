@@ -546,6 +546,20 @@ evicted; low-space failures retain the sealed source and original operation.
 | Old 03/default | `sts2.p1/native-segments-1`; `segments`; projection `native-selector-finalized-d-1` or `native-input-v1` |
 | B* | `sts2.p1/native-targets-1`; `targets`; projection `native-timeline-targets-1`; timeline/effects/exclusions/masks retained |
 
+New fixed Tools also classify an exact same-card select/deselect round trip on
+the native combat-pile or simple-grid selector as zero-label presentation. Both
+callbacks must be accepted, finished and nonterminal, on the same native selector,
+parent and subject, with complete equal whole PB1/Reads/catalog endpoints. This
+does not create a new P1 action, multi-card transaction or inferred Commit.
+Smith/removal cancellation can include independently proved preview/return pairs
+before its exact final child receipt. Missing native parent facts remain gaps.
+The conversion receipt's `source_conversion_complete` is the converter report's
+`complete` boolean, distinct from whole-run completeness and all N/next/end masks.
+Existing originals and named projections stay immutable: select a new fixed Tool,
+derive a new named projection through the same owner, preserve/read back it through
+the Store/R2 operations below, and use its explicit ID in the existing reader.
+Do not union superseded aliases into a clean-data count or change use/split admission.
+
 Both named formats have one `source` parent, exact source content/branch/run, fixed Tool/Core
 identity, `conversion_summary`, and derivation provenance. Select `(schema, projection)` to
 obtain the role; never silently read targets as segments. Old artifacts are immutable and are

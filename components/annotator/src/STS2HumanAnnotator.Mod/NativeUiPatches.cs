@@ -907,6 +907,8 @@ internal static class NativeUiCompletionRootBindings
 {
     private static readonly ExactOwnerWitnessBindingTable<object> Bindings = new();
 
+    internal static void Reset() => Bindings.Clear();
+
     internal static bool Remember(object? owner, string? actionWitnessId)
     {
         return Bindings.TryBind(owner, actionWitnessId);
@@ -2535,15 +2537,19 @@ internal static class NativeShopPurchasePatch
             ui,
             operation,
             nativeActionType,
-            __instance is MerchantCardRemovalEntry
-                && scope.ActionWitnessId != null
-                && NativeUiCompletionRootBindings.Remember(__instance, scope.ActionWitnessId)
+            scope.ActionWitnessId != null
+                && NativeUiCompletionRootBindings.RememberOrFailClosed(
+                    __instance, scope.ActionWitnessId, nativeActionType,
+                    "Exact merchant purchase parent could not bind its native entry.")
                 && NativeUiCompletionRootBindings.TryGet(__instance, out string? exactRoot)
-                ? NativeNestedSelectorBindings.EnterParent(
+                ? __instance is MerchantCardRemovalEntry
+                    ? NativeNestedSelectorBindings.EnterParent(
                     exactRoot!,
                     __instance,
                     "shop_inventory.card_removal_nested_selector",
                     CardRemovalNativeActionType)
+                    : NativeNestedSelectorBindings.EnterGenericSelectorParent(
+                        exactRoot!, __instance, nativeActionType)
                 : null);
     }
 

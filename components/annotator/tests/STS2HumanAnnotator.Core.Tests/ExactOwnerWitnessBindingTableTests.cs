@@ -6,6 +6,25 @@ namespace STS2HumanAnnotator.Core.Tests;
 public sealed class ExactOwnerWitnessBindingTableTests
 {
     [Fact]
+    public void SessionResetReleasesVictoryCarrierOnSurvivingRunManagerWithoutAcceptingLateOldRoot()
+    {
+        var table = new ExactOwnerWitnessBindingTable<object>();
+        var manager = new object(); var finalVote = new object(); var nextVote = new object();
+        Assert.True(table.TryBind(finalVote, "victory-ready"));
+        Assert.True(table.TryTransfer(finalVote, manager, "victory-ready"));
+        // Victory has no ActEntered: the recording's close/reset owns cleanup.
+        table.Clear();
+        Assert.False(table.Contains(manager));
+        Assert.False(table.TryGetOwner("victory-ready", out _));
+        Assert.True(table.TryBind(nextVote, "new-run-ready"));
+        Assert.True(table.TryTransfer(nextVote, manager, "new-run-ready"));
+        Assert.False(table.TakeIfMatches(manager, "victory-ready"));
+        Assert.True(table.TryGetWitness(manager, out var root));
+        Assert.Equal("new-run-ready", root);
+        Assert.True(table.TakeIfMatches(manager, "new-run-ready"));
+    }
+
+    [Fact]
     public void NonGameOwnerCannotReplaceAnotherWitnessOnSameObject()
     {
         var table = new ExactOwnerWitnessBindingTable<object>();

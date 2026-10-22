@@ -205,6 +205,15 @@ that selector share the opening parent's causal lineage and do not invalidate
 it as external Human effects. An actual unrelated next Human effect still does.
 The enclosing native Task/action remains subscribed through its real finish.
 
+Every recognized merchant purchase invocation carries its exact native entry and
+Human root into the existing generic selector scope, including selectors opened
+asynchronously by obtaining a relic. Card removal keeps its explicit family.
+Neither an item-name table nor an ambient current action supplies a parent.
+Completion-carrier bindings have recording-session lifetime: reset clears both
+owner and witness indexes with the existing action-tracking reset. This includes
+RunManager carriers left after final victory, which has no ActEntered callback;
+live collisions within one session still fail closed.
+
 A frozen process-local Connector query resolves exact owner, operation and
 operand; it cannot execute or publish an action. Post-input state is a successor
 only while the same native selector owns a complete catalog. Terminal selection

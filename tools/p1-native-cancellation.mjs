@@ -2,6 +2,7 @@
  * The recording reader owns original identity/bytes. Strict Managed comparison
  * still has to verify continuity across every retained cancellation checkpoint. */
 import { isDeepStrictEqual } from 'node:util';
+import { classifyNativePresentation } from './p1-native-presentation.mjs';
 
 const inputOf = row => row.native_input ?? (row.bound_action ? {
   verb: row.bound_action.verb, subject_referent_id: row.bound_action.subject_referent_id ?? null,
@@ -69,14 +70,21 @@ export function classifyNativeCancellation({ accepted, execution, terminal, huma
 /** Preserve the approved legacy Smith explanation. New recording cancellations
  * must carry their own normally-completed false Task and exact child receipt;
  * an old merchant unknown cannot acquire those facts from this adapter. */
-export function classifyNativeSelectorCancellation({ row, child, restored, terminalById, basis, state, core }) {
-  const parentEnd = terminalById.get(row.decision_id), childEnd = terminalById.get(child?.decision_id);
+export function classifyNativeSelectorCancellation({ row, acceptedRows, terminalById, basis, state, core }) {
+  const parentEnd = terminalById.get(row.decision_id);
   const parentCompletion = parentEnd?.native_completion;
   const smith = row.native_action_type === 'RestSiteSynchronizer.ChooseLocalOption';
   const merchant = row.native_action_type === 'MerchantCardRemovalEntry.OnTryPurchaseWrapper';
   const callback = 'MegaCrit.Sts2.Core.Nodes.Screens.CardSelection.'
     + (smith ? 'NDeckUpgradeSelectScreen' : 'NDeckCardSelectScreen') + '.Close.Released';
   const proof = parentCompletion?.explicit_selector_cancel;
+  const parentIndex = acceptedRows.indexOf(row);
+  // The durable explicit receipt names the final cancel. A preview/return may
+  // precede it; adjacency is only the older Smith compatibility case.
+  const childIndex = proof ? acceptedRows.findIndex(item => item.decision_id === proof.child_decision_id) : parentIndex + 1;
+  if (childIndex <= parentIndex) return null;
+  const child = acceptedRows[childIndex], restored = acceptedRows[childIndex + 1];
+  const childEnd = terminalById.get(child?.decision_id);
   const explicit = parentEnd?.phase === 'cancelled' && parentCompletion?.native_task_status === 'RanToCompletion'
     && parentCompletion.native_bool_result === false && proof?.native_callback === callback
     && proof.terminal === true && proof.native_acceptance_proven === true
@@ -124,6 +132,26 @@ export function classifyNativeSelectorCancellation({ row, child, restored, termi
     || ![child, parentEnd, childEnd, afterEvent].every(item => item.session_id === row.session_id && item.run_id === row.run_id)
     || !(row.sequence < child.sequence && child.sequence < childEnd.sequence
       && childEnd.sequence < parentEnd.sequence && (explicit || parentEnd.sequence < restored.sequence))) return null;
+  // Intervening inputs must themselves be complete zero-effect presentation
+  // pairs on this very selector and parent. Never jump over another action.
+  for (let index = parentIndex + 1; index < childIndex; index += 2) {
+    if (!explicit || index + 1 >= childIndex) return null;
+    const pair = acceptedRows.slice(index, index + 2);
+    if (!pair.every(item => ['selector_owner_witness_id', 'parent_action_witness_id', 'parent_owner_witness_id']
+      .every(key => typeof item.native_witness?.[key] === 'string'
+        && item.native_witness[key] === child.native_witness[key])
+      && item.session_id === row.session_id && item.run_id === row.run_id
+      && item.native_receipt?.carrier_ref === item.action_witness_id
+      && item.native_receipt.selector_callback?.native_callback === item.native_action_type
+      && item.native_receipt.selector_callback.native_acceptance_proven === true
+      && item.native_receipt.selector_callback.terminal === false
+      && terminalById.get(item.decision_id)?.native_completion?.native_callback === item.native_action_type
+      && terminalById.get(item.decision_id)?.native_completion?.terminal === false
+      && terminalById.get(item.decision_id)?.sequence < child.sequence)) return null;
+    const presentation = classifyNativePresentation({ row: pair[0], next: pair[1], terminalById, basis, state, core });
+    if (presentation?.kind !== 'selector_preview_return' || presentation.disposition !== 'presentation'
+      || !presentation.comparison.equal || !isDeepStrictEqual(presentation.decision_ids, pair.map(item => item.decision_id))) return null;
+  }
   const before = basis(row.basis), middle = basis(child.basis), after = basis(afterReference);
   if (![before, middle, after].every(value => completeInformation(value))) return null;
   const first = before.snapshot.interaction.content.surface, selector = middle.snapshot.interaction.content.surface;

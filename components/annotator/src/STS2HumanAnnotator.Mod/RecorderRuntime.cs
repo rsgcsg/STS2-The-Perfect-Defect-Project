@@ -774,6 +774,7 @@ internal static partial class RecorderRuntime
     private static void ResetNativeActionTrackingUnsafe()
     {
         Interlocked.Increment(ref _nativePostCommitGeneration);
+        NativeUiCompletionRootBindings.Reset();
         QueuedNativePostCommitCompletions.Clear();
         NativePostCommitCompletions.Reset();
         foreach (NativeActionLifecycleSubscription subscription in NativeActionSubscriptions.Values)

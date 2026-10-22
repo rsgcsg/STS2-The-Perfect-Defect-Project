@@ -1189,3 +1189,40 @@ def test_import_owner_allows_only_explicit_same_intent_expanded_recovery(tmp_pat
     importer.thread.join(5)
     assert status['storage_action'] == 'restore-expanded'
     assert status['artifact_id'] == artifact
+
+
+@pytest.mark.parametrize("complete", [False, True])
+def test_target_derivation_receipt_uses_converter_complete_boolean(tmp_path, tool, complete):
+    from sts2_platform_evidence.collection_tool import P1_TARGET_PROJECTION, P1_TARGET_SUPPORT
+
+    converter = tool.directory / P1_NATIVE_SUPPORT["converter_entrypoint"]
+    # The owner report exposes complete; it has no source_conversion_complete alias.
+    converter.write_text(
+        "export async function convertP1NativeBundle(options) {\n"
+        " if (!options.includeTargets || options.includeSegments) throw Error('wrong mode');\n"
+        f" return {{complete:{str(complete).lower()},whole_run_recording_complete:false,"
+        "blocking_issues:[],target_output:{schema:'sts2.p1/native-targets-1',points:[]}};\n}\n"
+    )
+    helper = tool.directory / "p1/tools/p1-native-targets.mjs"
+    helper.write_text("export {};\n")
+    manifest_path = tool.directory / "collection-tool.json"
+    manifest = json.loads(manifest_path.read_bytes())
+    identity = manifest["identity"]
+    identity["p1_native_support"] = P1_TARGET_SUPPORT
+    for file in [converter, helper]:
+        relative = str(file.relative_to(tool.directory))
+        raw = (tool.directory / relative).read_bytes()
+        identity["files"] = [entry for entry in identity["files"] if entry["path"] != relative]
+        identity["files"].append({
+            "path": relative, "bytes": len(raw), "sha256": hashlib.sha256(raw).hexdigest(),
+        })
+    identity["files"].sort(key=lambda entry: entry["path"])
+    release = digest(identity)
+    manifest_path.write_text(json.dumps({**manifest, "release_id": release}))
+    output = tmp_path / "targets.json"
+    result = CollectionTool(tool.directory, release).derive_p1_native(
+        tmp_path / "unused-bundle", output, run_id="run-0001", projection_id=P1_TARGET_PROJECTION,
+    )
+    assert result["source_conversion_complete"] is complete
+    assert result["whole_run_complete"] is False
+    assert json.loads(output.read_bytes())["points"] == []
