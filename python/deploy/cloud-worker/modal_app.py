@@ -22,6 +22,7 @@ target = ModalTarget.decode(decode_json(Path(os.environ["STPD_MODAL_TARGET"]).re
 if source_identity(Path(__file__).resolve().parents[2]) != target.producer:
     raise BoundaryError("modal_deploy", "wrapper_source_lock_mismatch")
 deployed_target_id = target.target_id
+deployed_timeout_seconds = target.timeout_seconds
 app = modal.App(target.app_name)
 image = (
     modal.Image.from_id(target.image)
@@ -74,7 +75,7 @@ def compute(request: dict, target_id: str) -> dict:
                 str(request_path),
                 # The synthetic measurement wrapper retains its original finite
                 # probe behavior. Normal P1 execution uses the provider wall bound.
-                *([] if profile else ["--wall-seconds", str(target.timeout_seconds)]),
+                *([] if profile else ["--wall-seconds", str(deployed_timeout_seconds)]),
             ],
             cwd="/opt/stpd/python",
             capture_output=True,

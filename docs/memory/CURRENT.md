@@ -1,4 +1,17 @@
-# 当前：四 Agent 首训的消费者与恢复候选
+# 当前：首批四 Agent 的 Modal 启动修复
+
+root 在 `origin/develop=0519ec9f` 的独占 topic
+`codex/four-agent-modal-wrapper-import-20261023` 修复本批真实云端启动失败。
+唯一错误事实是序列化 `compute` 引用了完整 `ModalTarget`，导致注入解释器在
+进入项目 venv 前导入不到 `stpd`；原调用、失败日志和取消记录保留，不重投。
+本次 G6 修复将 timeout 同原 target ID 一样冻结为原始值，复用既有 wrapper/
+worker/Store/Ops 链和原资源上限；模型、输入、配方、原 Run 均不改写。
+准确 SDK pickle 的隔离冷解码反例、原部署资源/命令回归、非作者审查和选定
+CI 通过后按本批已授权流程集成，再以新源码、镜像、target 和 Run 实测。
+源码通过不授云端训练资格；首批完整训练、固定 TEST 和40次实战仍未完成。
+操作和恢复继续归[原云端指南](../../python/deploy/cloud-worker/README.md)。
+
+## 历史：四 Agent 首训的消费者与恢复候选
 
 用户已另行批准首批随机、频次、线性和 M-std 的真实训练、同一冻结 TEST 比较、
 正常 Model 下载注册及新十种子 × 四 Agent 的 Reference 评价；root 是本批数据、
