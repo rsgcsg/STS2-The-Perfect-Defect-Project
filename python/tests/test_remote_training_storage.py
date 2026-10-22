@@ -11,6 +11,7 @@ from test_p1_snapshot import explicit_snapshot, projection_fixture, store_at
 from spireagent.artifact_contracts import Manifest, Parent
 from spireagent.storage.blobs import StoreError
 from spireagent.workbench import p1_recording_storage
+from spireagent.workbench import remote_training_storage as remote
 from spireagent.workbench.p1_recording_storage import open_peer
 from spireagent.workbench.remote_training_storage import transfer_p1_input
 from stpd.p1.dataset import iter_snapshot_points
@@ -72,6 +73,80 @@ def test_existing_corrupt_remote_original_is_not_healed_or_reported_prepared(tmp
                           scratch=tmp_path / "scratch")
     assert corrupted.read_bytes() == b"corrupt"
     assert b"".join(local.read_payload(payload)) == original_bytes
+
+
+@pytest.mark.parametrize("family", ["mstd", "baseline"])
+def test_transfer_uses_verified_same_store_reader_and_retains_baseline_path(
+    tmp_path, monkeypatch, family,
+):
+    from stpd.p1.baseline_spec import BaselineConfig
+    from stpd.p1.baseline_workload import prepare_baseline_run
+    from stpd.p1.dataset import SnapshotReader
+
+    local, run, binding = inputs(tmp_path)
+    if family == "baseline":
+        snapshot_id = local.get_manifest(run.parent("training_input")).parent("source")
+        run = prepare_baseline_run(local, snapshot_id, run.producer, BaselineConfig(), "b" * 32)
+    constructed, iterated, verified = [], [], []
+    initialize, iterate, verify = (SnapshotReader.__init__, SnapshotReader.iter_points,
+                                  remote.verify_training_run)
+
+    def initialized(reader, store, snapshot_id):
+        initialize(reader, store, snapshot_id)
+        constructed.append((reader, store))
+
+    def iterating(reader):
+        iterated.append(reader)
+        return iterate(reader)
+
+    def verified_run(store, run_id, producer):
+        workload = verify(store, run_id, producer)
+        verified.append((workload, store))
+        return workload
+
+    monkeypatch.setattr(SnapshotReader, "__init__", initialized)
+    monkeypatch.setattr(SnapshotReader, "iter_points", iterating)
+    monkeypatch.setattr(remote, "verify_training_run", verified_run)
+    facts = transfer_p1_input(local, binding, run.artifact_id, run.producer,
+                              scratch=tmp_path / "scratch")
+    assert len(constructed) == len(verified) == 1
+    reader, reader_store = constructed[0]
+    workload, verified_store = verified[0]
+    assert reader_store is verified_store and reader_store is not local
+    assert iterated == [reader]
+    if family == "mstd":
+        assert workload.reader is reader
+    else:
+        assert not hasattr(workload, "reader")  # Preserve the existing baseline verifier.
+    assert facts["unique_N"] == 3 and facts["catalog_choices"] == 6
+    assert facts["partition_N"] == {"train": 1, "dev": 1, "test": 1}
+    assert facts["compute_store"] == binding and facts["closure_payload_readback"] == "verified"
+
+
+def test_reused_reader_rehashes_projection_bytes_changed_after_run_verification(
+    tmp_path, monkeypatch,
+):
+    local, run, binding = inputs(tmp_path)
+    verify = remote.verify_training_run
+    altered = []
+
+    def verified_then_corrupted(store, run_id, producer):
+        workload = verify(store, run_id, producer)
+        projection = store.get_manifest(workload.reader.selection["sources"][0]["projection_id"])
+        payload = projection.payload("segments")
+        original = b"".join(local.read_payload(payload))
+        path = store.blobs._path("objects/sha256/" + payload.sha256)
+        path.write_bytes(b"corrupt-after-verification")
+        altered.append((payload, original, path))
+        return workload
+
+    monkeypatch.setattr(remote, "verify_training_run", verified_then_corrupted)
+    with pytest.raises(StoreError, match="payload_chunk_integrity_failure"):
+        transfer_p1_input(local, binding, run.artifact_id, run.producer,
+                          scratch=tmp_path / "scratch")
+    payload, original, path = altered[0]
+    assert path.read_bytes() == b"corrupt-after-verification"
+    assert b"".join(local.read_payload(payload)) == original
 
 
 def test_reception_budgets_missing_bytes_without_reading_present_parent_payloads(

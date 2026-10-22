@@ -298,3 +298,5 @@ def test_deployment_uses_exact_native_or_oci_image_with_same_resource_contract(
     }
     assert len(invoked) == 1
     assert invoked[0][2] == ("stpd.cloud_jobs.p1_gpu_profile" if profile else "stpd.cloud_jobs")
+    assert invoked[0][5:] == ([] if profile else
+                              ["--wall-seconds", str(selected.timeout_seconds)])

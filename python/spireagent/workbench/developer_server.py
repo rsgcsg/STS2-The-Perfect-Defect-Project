@@ -1223,8 +1223,16 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                 {"selection_id"}, {"selection_id", "run_profile"}
             ):
                 return app.models.start(body["selection_id"], body.get("run_profile", "short"))
-            if path == "/api/local-models/download" and set(body) == {"artifact_id"}:
-                return app.models.prepare(body["artifact_id"])
+            if path == "/api/local-models/export-checkpoint" and set(body) in (
+                {"checkpoint_id"}, {"checkpoint_id", "selection"}
+            ):
+                app.check_environment_instance()
+                return app.models.export_checkpoint(
+                    body["checkpoint_id"], body.get("selection", "best"))
+            if path == "/api/local-models/download" and set(body) in (
+                {"artifact_id"}, {"artifact_id", "source"}
+            ):
+                return app.models.prepare(body["artifact_id"], body.get("source", "configured"))
             if path == "/api/local-models/command" and set(body) == {"action"}:
                 return app.models.command(body["action"])
             if (path == "/api/local-models/command" and set(body) == {"action", "request_id"}

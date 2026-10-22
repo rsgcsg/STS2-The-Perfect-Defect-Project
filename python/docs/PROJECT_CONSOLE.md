@@ -573,8 +573,14 @@ python -m spireagent.workbench project model --config PROJECT --action registrat
 python -m spireagent.workbench project model --config PROJECT --action readiness --selection SELECTION_ID
 ```
 
-`download`使用该Application已配置的Hub；没有Hub时返回`hub_not_configured`。
-已在所选Store或其明确配置的同ID R2按需reader中的Model可直接注册。
+`download`默认使用已配置Hub；无Hub时使用已配置 `remote_compute.compute_store`，
+再无remote配置则使用原research workspace/managed workspace的Store。可明确指定
+`--download-source hub|store`（API body加`source`）；Store选择仍按上述固定配置，
+原请求失败后不会切换来源。R2凭据只在环境中。下载只缓存精确Model自己的payload与
+原manifest，`download.json`保留 `parents_downloaded=false`、
+`model_load_validated=false`，不复制私有祖先、不授权执行下载代码。已有缓存内容/hash不符
+直接失败，不能覆盖。空缓存可按ID下载，Application重启后再从同缓存注册/CPU使用。
+已在所选Store或其明确配置的同ID R2按需reader中的Model也可直接注册。
 新发布的Model若返回`cache_read_lease_missing`，先按
 [原Store缓存入口](DATA_LIFECYCLE.md#same-id-local-cache-misses)读取该Model manifest，
 再以现有peer、budget和retain原值执行`cache-configure`准备lease；双peer配置必须
@@ -1048,7 +1054,36 @@ M-std 仍是普通 N-only，具体更新上限随固定 TRAIN 计算。
 | 只消费已有 Model | 按现入口 register/load/evaluate；无需重新准备数据或训练。 |
 | 改 P1 语义 | 先回协议 owner 确定语义，再更新受影响投影、Input 和消费者。 |
 
-### 四 Agent 后续评估的现有边界
+### 训练中 Checkpoint 的诊断 Model
+
+长训中的精确保存点可以经原 Model owner 导出推理包，不必等最终 Run/result：
+
+```sh
+python -m spireagent.workbench project model --config PROJECT --action export-checkpoint \
+  --artifact CHECKPOINT_ID --checkpoint-selection best
+python -m spireagent.workbench project model --config PROJECT --action status
+```
+
+API是同Application的 `POST /api/local-models/export-checkpoint`，body为
+`{"checkpoint_id":"ID","selection":"best"}`；`current`明确选当前保存权重，默认`best`
+只取保存点中已有的DEV选优权重，没有best时拒绝。operation完成后从
+`last_checkpoint_export.model_id`取得精确ModelID，再走上文正常按ID下载、注册及CPU使用。
+Store沿已配置compute Store/R2或原workspace，不新建训练/存储控制链。
+
+导出读取原Run/training producer并调用原 `verify_p1_run` / `verify_p1_checkpoint`，
+核字节/hash、原Input/identity、代码、架构、step>=1、选中权重shape/dtype/finite；
+在CPU `fork_rng` 内strict-load，保持调用者CPU RNG。完整性验证会读取包括TEST在内的
+原投影/标签字节；导出不实例化TEST population、不传给模型、不评估、不据TEST选权重。
+产物保留原training_identity、checkpoint SHA及Run/Input/Checkpoint父ID，另记实际
+export producer、原training producer、selection/selected_step和
+`diagnostic_checkpoint_inference_not_final_result`角色。CPU导出不要求机器有原GPU，
+也不声称CPU环境与原GPU续训runtime完全一致。
+
+该Model仅为诊断推理包，不发布TEST/evaluation/result，不写RunReporter或覆盖Checkpoint，
+不代替正式final Model。读者可独立复核、保存和冷下载；发布结果未知时先查原operation/
+Store精确ID，不能把错误当成未发布并盲目重投。原权重和正式Run继续由训练owner管理。
+
+### 四 Agent 最终 TEST 与 Reference 消费
 
 离线比较先固定同一 Snapshot、成员/Input 与 TRAIN/DEV/TEST 用途，再分别完成四个
 Run，核各自 result→Model→evaluation 的原件绑定。随机/频率/线性原 evaluation
@@ -1060,26 +1095,49 @@ Run，核各自 result→Model→evaluation 的原件绑定。随机/频率/线�
 不能看过 TEST 再调参并继续称独立留出。原件由 `verify_baseline_result` /
 `verify_p1_result` 校验；空 TEST 的 loss 为 null，不能当零误差。
 
-当前普通离线详情沿同一 summary API 支持 M-std 与 baseline 的 DEV 摘要；baseline
-核原 Model/Run/Input/Snapshot metadata 绑定、公开 DEV N、有限指标及并列语义，
-不重解权重或完整来源。TEST 保持 sealed，没有一个受支持的 CLI 一次输出四 Agent
-同 TEST 对照表。
-现有原件提供描述性统计，未完成统一 tie/指标口径的四方评分、独立 lineage 资格或
-策略优劣结论。后续正式比较须先确定 TEST 开封用途与比较口径，再由原评估 owner
-补齐所缺消费者；无需另造训练链，也不能以 Managed evaluator 代替 P1 评估。
+普通离线详情沿同一 summary API 支持 M-std 与 baseline 的 DEV 摘要；TEST 仍封存。
+四个最终结果固定后，明确开封可从 `python/` 执行：
 
-真实 Reference 串行入口是 `python tools/evaluate_reference_suite.py --help`（从
-`python/`，调用已运行 Application）。它要求精确 `--config`、`--selection`、
-`--manifest stpd/evaluation/suites/ref-20.json` 及原 SHA、新 `--run-dir`，并明确
-`--preparation-seconds`、`--episode-seconds`、`--cleanup-seconds`、`--suite-seconds`、
-`--max-episodes` 和 `--run-profile short|extended`。manifest 固定 v0.111.0、
-Defect A0、Reference 20 seeds；不能改标当前游戏版本。每个 selection 的精确 Runtime/
-installed tuple/native readiness 均须先满足，预算由原请求绑定；同 seeds、预算、版本、
-输入/策略配置和运行条件才可作配对。dispatcher 不保证所选 P1 候选兼容该旧 manifest。
-其 report 在执行前保留全部20项，记录未开始、cleanup unknown、原生 win/loss、
-task completed/unproved/unknown、预算截断和 stop reason；技术失败和未派发项不得
-从分母删除，budget exhausted 不能算自然输赢。一个调用只评一个 selection，
-没有四 Agent 自动配对、完整胜率统计或跨 Host 等价资格。本轮未执行 Reference 游戏。
+```sh
+python tools/compare_p1_agents.py --config PROJECT --open-test \
+  --random-result RANDOM_RESULT --frequency-result FREQUENCY_RESULT \
+  --linear-result LINEAR_RESULT --mstd-result MSTD_RESULT > FINAL_TEST_COMPARISON.json
+```
+
+该消费者先核四个算法和同一准确Snapshot/selection成员，再复用原 `verify_*_run` /
+`verify_*_result` 校验Checkpoint/Model/evaluation绑定，公开同一TEST N、score-softmax N
+loss与greedy top1及各自原始指标。baseline并列正确数为均匀期望，M-std使用首个argmax；
+InputSpec各自记录，不把baseline手特征称为M-std Input。空TEST拒绝。命令不训练、不写
+Store/用途、不重新选优；开封后再调参不能继续称独立留出，描述性比较不授lineage/策略资格。
+
+原 `ref-20` / v0.111.0 manifest保持不变，单selection入口仍支持。新四方批次另版生成
+十个新seed，先按实际安装核准 `EXACT_GAME_VERSION`，不从旧manifest猜游戏版本：
+
+```sh
+python tools/prepare_reference_suite.py --game-version EXACT_GAME_VERSION --output NEW_SUITE.json
+python tools/evaluate_reference_suite.py --config PROJECT --manifest NEW_SUITE.json \
+  --manifest-sha256 MANIFEST_SHA --selections FOUR_SELECTIONS.json --evidence-peer R2_BINDING.json \
+  --run-profile extended --run-dir NEW_RUN_DIR --max-episodes 40 \
+  --preparation-seconds PREP --episode-seconds EPISODE --cleanup-seconds CLEANUP \
+  --suite-seconds TOTAL
+```
+
+`FOUR_SELECTIONS.json`为 `{"random":"SELECTION", "frequency":"SELECTION", "linear":"SELECTION",
+"mstd":"SELECTION"}`，四值不同且readiness核对应P1 Agent/adapter；`R2_BINDING.json`
+是既有Store peer binding（kind/bucket/endpoint/prefix/region），不含凭据。
+新suite为 `ref-first-four-10-20261023` 1.0.0、Reference Defect A0；每个新seed依次四Agent，
+执行前封存全部40项分母，十seed也加入既有evaluation种子排除query。原训练/收集owner
+是否已执行排除仍须分别核实。dispatcher经原request→run→finish→seal，不创建controller。
+准备后核实际installed game version与manifest完全相同，预算沿原请求；每个selection
+仍须满足精确Runtime/SDK/native readiness，不能用生成manifest证明运行兼容。
+
+每局结束保留请求、evaluation、原生win/loss、task/Stop、unknown、技术失败及未派发项；
+随后经原 `/api/local-models/evidence/publish`、`/api/local-recordings/import/status` 将原件
+送同Store/R2，核同run/peer与完整peer回读后才派下一局。该证据仍是Agent来源，不作Human。
+发布回复丢失/原件或cleanup未知即停止，不重投；恢复时读原import/status，必要时人工显式
+调用原 `/api/local-recordings/import/reconcile`，不重新开run或补造缺项。
+`--max-episodes`可做有界canary但report始终40项；canary完成不代表整套完成。
+本批源码/合入不证明本轮真实Reference运行或策略质量。
 
 The supported entry is `python -m spireagent.workbench training --help` from the
 Python environment. It calls the already running Application and its same
@@ -1259,6 +1317,13 @@ environment. No shell source/eval or dotenv interpolation is used. No secret bel
 request, command arguments or transport receipts. Configure the existing local
 OpenSSH `-F` file with the verified school host alias/ProxyJump and host keys.
 The provider forces BatchMode, strict host-key checking and one connection attempt.
+It starts the fixed helper with `/usr/bin/env CUBLAS_WORKSPACE_CONFIG=:4096:8`
+before the interpreter or Torch is imported, matching the existing worker image.
+The detached supervisor and original worker inherit that same fixed setting;
+GPU target preflight rejects missing or different values. It is a source-locked
+deployment setting, not a storage dotenv key or a configurable shell/script hook.
+The worker still records workspace in its original checkpoint execution identity
+and independently rejects an incompatible restore.
 
 The target JSON is a closed `spireagent/ssh-target-1` object:
 

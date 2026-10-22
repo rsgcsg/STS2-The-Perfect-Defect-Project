@@ -113,13 +113,15 @@ def _parents(
     model, runtime = store.get_manifest(model_id), store.get_manifest(runtime_id)
     if model.kind != "model" or model.payload("weights").sha256 != run["agent_artifact_sha256"]:
         raise BoundaryError("global_store", "original_model_parent_mismatch")
+    baseline = verified.agent_manifest.get("adapter", {}).get("id") == "stpd-p1-baseline-agent"
+    package_schema = "stpd/p1-baseline-model-1" if baseline else "stpd/p1-mstd-model-1"
     metadata = model.payload("package_manifest")
     if metadata.size > 1024**2:
         raise BoundaryError("global_store", "model_descriptor_capacity")
     descriptor = json.loads(b"".join(store.read_payload(metadata)))
     if (
         not isinstance(descriptor, dict)
-        or descriptor.get("schema") != "stpd/p1-mstd-model-1"
+        or descriptor.get("schema") != package_schema
         or descriptor.get("package_sha256") != model.payload("weights").sha256
         or model.parameters.value().get("input_spec") != descriptor.get("input_spec")
     ):
@@ -130,13 +132,19 @@ def _parents(
         if descriptor["input_spec"] != verified.agent_manifest["input"]["input_spec"]:
             raise BoundaryError("global_store", "original_model_descriptor_mismatch")
     else:
-        from stpd.p1.input import INPUT_SPEC
+        if baseline:
+            from stpd.p1.baseline_export import INPUT_PROJECTION
 
+            projection = INPUT_PROJECTION
+        else:
+            from stpd.p1.input import INPUT_SPEC
+
+            projection = INPUT_SPEC
         if (
             not isinstance(binding, dict)
             or binding.get("package_input_spec") != descriptor["input_spec"]
             or binding.get("input_spec") != verified.agent_manifest["input"]["input_spec"]
-            or binding.get("input_projection") != INPUT_SPEC
+            or binding.get("input_projection") != projection
         ):
             raise BoundaryError("global_store", "trusted_model_binding_mismatch")
     if (

@@ -1607,20 +1607,57 @@ class LocalModelService:
             self.thread.start()
             return cast(dict[str, Any], json.loads(json.dumps(self.state)))
 
-    def prepare(self, artifact_id: str) -> dict[str, Any]:
+    def prepare(self, artifact_id: str, source: str = "configured") -> dict[str, Any]:
         identity = digest(artifact_id, "local_model.artifact")
-        if self.hub is None:
+        if not isinstance(source, str) or source not in {"configured", "hub", "store"}:
+            raise BoundaryError("local_model", "invalid_download_source")
+        use_hub = source == "hub" or source == "configured" and self.hub is not None
+        if use_hub and self.hub is None:
             raise BoundaryError("local_model", "hub_not_configured")
 
         def download() -> None:
-            assert self.hub is not None
-            receipt = self.hub.download(identity, self.config.state_dir / "downloads")
+            destination = self.config.state_dir / "downloads"
+            if use_hub:
+                assert self.hub is not None
+                receipt = self.hub.download(identity, destination)
+            else:
+                from spireagent.storage.config import open_peer
+                from spireagent.storage.store import ArtifactStore
+                from spireagent.workbench.hub_client import download_result
+
+                store: ArtifactStore
+                if self.config.remote_compute is not None:
+                    store = open_peer(self.config.remote_compute.compute_store)
+                else:
+                    store = LocalModelExport(self.config)._workspace().store
+                model = store.get_manifest(identity)
+                if model.kind != "model":
+                    raise BoundaryError("local_model", "model_artifact_required")
+                receipt = download_result(model, destination, store.read_payload)
             with self.lock:
                 self.state["last_download"] = receipt
                 if self.client is None:
                     self.state["status"] = "idle"
 
         return self._begin("download", download)
+
+    def export_checkpoint(self, checkpoint_id: str, selection: str = "best") -> dict[str, Any]:
+        """Publish a diagnostic Model through this same application's operation slot."""
+        identity = digest(checkpoint_id, "local_model.checkpoint")
+        if not isinstance(selection, str) or selection not in {"best", "current"}:
+            raise BoundaryError("local_model", "best_or_current_selection_required")
+
+        def publish() -> None:
+            from spireagent.workbench.trusted_recipes import P1_MSTD_RECIPE, recipe_adapter
+
+            result = recipe_adapter(P1_MSTD_RECIPE).export_checkpoint(
+                self.config, identity, selection=selection)
+            with self.lock:
+                self.state["last_checkpoint_export"] = result
+                if self.client is None:
+                    self.state["status"] = "idle"
+
+        return self._begin("export-checkpoint", publish)
 
     def _run_profile(self, identity: str, profile: str) -> bool:
         if not isinstance(profile, str) or profile not in RUN_PROFILES:

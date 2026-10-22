@@ -9,7 +9,7 @@ from typing import Any
 from spireagent.json_boundary import BoundaryError, decode_json
 from spireagent.source import source_identity
 from spireagent.storage.run_reporter import ObjectStoreRunReporter
-from spireagent.workbench.developer import ROOT
+from spireagent.workbench.developer import ROOT, ProjectConfig
 from spireagent.workbench.p1_training_data import (
     record_p1_training_use,
     require_p1_snapshot,
@@ -32,6 +32,28 @@ class P1Preflight:
 
 
 class P1MStdRecipeAdapter(StructuredRecipeAdapter):
+    def export_checkpoint(self, config: ProjectConfig, checkpoint_id: str, *,
+                          selection: str = "best") -> dict[str, Any]:
+        """Recipe-owned publication; the Model supervisor only observes its operation."""
+        from spireagent.storage.config import open_peer
+        from spireagent.storage.local import LocalBlobStore
+        from spireagent.storage.store import ArtifactStore, ManifestArtifactStore
+        from spireagent.workbench.local_model_export import LocalModelExport
+        from stpd.p1.checkpoint_export import publish_checkpoint_model
+
+        producer = source_identity(ROOT)
+        store: ArtifactStore
+        if config.remote_compute is not None:
+            store = open_peer(config.remote_compute.compute_store)
+        else:
+            reader = LocalModelExport(config)._workspace().store
+            if not isinstance(reader, ManifestArtifactStore) or not isinstance(
+                reader.blobs, LocalBlobStore
+            ):
+                raise BoundaryError("local_model", "configured_workspace_store_required")
+            store = ManifestArtifactStore(LocalBlobStore(reader.blobs.root, create=False))
+        return publish_checkpoint_model(store, checkpoint_id, producer, selection=selection)
+
     def preflight(self, store: Any, owner: Any, source_id: str) -> P1Preflight:
         _, scopes = require_p1_snapshot(owner, store, source_id)
         return P1Preflight(tuple(_RunGroup(run) for run in sorted(scopes["train"]["roots"])))

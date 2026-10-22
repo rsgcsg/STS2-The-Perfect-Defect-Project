@@ -5,14 +5,14 @@ from __future__ import annotations
 import hashlib
 import os
 import tempfile
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
-from spireagent.artifact_contracts import Manifest
+from spireagent.artifact_contracts import Manifest, Payload
 from spireagent.hub.access import RESULT_KINDS
 from spireagent.json_boundary import BoundaryError, decode_json, digest, json_bytes
 from spireagent.workbench.developer import atomic_json, endpoint
@@ -104,102 +104,113 @@ class HubClient:
             json_bytes(self.get("/v1/artifacts/" + identity, timeout=self.download_timeout)),
             identity,
         )
-        if manifest.kind not in RESULT_KINDS:
-            raise BoundaryError("download", "not_a_result_artifact")
-        selected = manifest.payloads if roles is None else tuple(manifest.payload(r) for r in roles)
-        if roles is not None and len(set(roles)) != len(roles):
-            raise BoundaryError("download", "duplicate_payload_role")
-        directory = destination.expanduser().resolve() / identity
-        if directory.is_symlink():
+
+        def read_payload(payload: Payload) -> Iterator[bytes]:
+            route = "/v1/artifacts/" + identity + "/payloads/" + quote(payload.role, safe="")
+            with self._request(route, timeout=self.download_timeout) as response:
+                while chunk := response.read(1024 * 1024):
+                    yield chunk
+
+        return download_result(manifest, destination, read_payload, roles)
+
+
+def download_result(
+    manifest: Manifest, destination: Path, read_payload: Callable[[Payload], Iterator[bytes]],
+    roles: tuple[str, ...] | None = None,
+) -> dict[str, Any]:
+    """One verified own-byte cache format for Hub and configured Store consumers."""
+    identity = manifest.artifact_id
+    if manifest.kind not in RESULT_KINDS:
+        raise BoundaryError("download", "not_a_result_artifact")
+    selected = manifest.payloads if roles is None else tuple(manifest.payload(r) for r in roles)
+    if roles is not None and len(set(roles)) != len(roles):
+        raise BoundaryError("download", "duplicate_payload_role")
+    directory = destination.expanduser().resolve() / identity
+    if directory.is_symlink():
+        raise BoundaryError("download", "symlink_destination")
+    directory.mkdir(parents=True, exist_ok=True)
+    manifest_path = directory / "manifest.json"
+    if manifest_path.is_symlink():
+        raise BoundaryError("download", "symlink_destination")
+    files = []
+    for payload in selected:
+        filename = payload.sha256 + ".bin"
+        target = directory / filename
+        if target.is_symlink():
             raise BoundaryError("download", "symlink_destination")
-        directory.mkdir(parents=True, exist_ok=True)
-        manifest_path = directory / "manifest.json"
-        if manifest_path.is_symlink():
-            raise BoundaryError("download", "symlink_destination")
-        files = []
-        for payload in selected:
-            filename = payload.sha256 + ".bin"
-            target = directory / filename
-            if target.is_symlink():
-                raise BoundaryError("download", "symlink_destination")
-            if target.exists():
-                with target.open("rb") as source:
-                    valid = (
-                        target.stat().st_size == payload.size
-                        and hashlib.file_digest(source, "sha256").hexdigest() == payload.sha256
-                    )
-                if not valid:
-                    raise BoundaryError("download", "existing_payload_mismatch")
-            else:
-                descriptor, name = tempfile.mkstemp(prefix=".pending-", dir=directory)
-                temporary = Path(name)
-                try:
-                    size, checksum = 0, hashlib.sha256()
-                    route = (
-                        "/v1/artifacts/" + identity + "/payloads/" + quote(payload.role, safe="")
-                    )
-                    with os.fdopen(descriptor, "wb") as out, self._request(
-                        route, timeout=self.download_timeout
-                    ) as response:
-                        while chunk := response.read(1024 * 1024):
-                            size += len(chunk)
-                            if size > payload.size:
-                                raise BoundaryError("download", "payload_size_mismatch")
-                            checksum.update(chunk)
-                            out.write(chunk)
-                        out.flush()
-                        os.fsync(out.fileno())
-                    if size != payload.size or checksum.hexdigest() != payload.sha256:
-                        raise BoundaryError("download", "payload_integrity_failure")
-                    try:
-                        os.link(temporary, target)
-                    except FileExistsError:
-                        if target.is_symlink():
-                            raise BoundaryError(
-                                "download", "concurrent_payload_collision"
-                            ) from None
-                        with target.open("rb") as existing:
-                            same = (
-                                target.stat().st_size == payload.size
-                                and hashlib.file_digest(existing, "sha256").hexdigest()
-                                == payload.sha256
-                            )
-                        if not same:
-                            raise BoundaryError(
-                                "download", "concurrent_payload_collision"
-                            ) from None
-                finally:
-                    temporary.unlink(missing_ok=True)
-            files.append(
-                {
-                    "role": payload.role,
-                    "sha256": payload.sha256,
-                    "size": payload.size,
-                    "file": filename,
-                }
-            )
-        # Publish the original canonical manifest only after every selected payload.
-        descriptor, name = tempfile.mkstemp(prefix=".pending-", dir=directory)
-        temporary = Path(name)
-        try:
-            with os.fdopen(descriptor, "wb") as output:
-                output.write(manifest.to_bytes())
-                output.flush()
-                os.fsync(output.fileno())
+        if target.exists():
+            with target.open("rb") as source:
+                valid = (
+                    target.stat().st_size == payload.size
+                    and hashlib.file_digest(source, "sha256").hexdigest() == payload.sha256
+                )
+            if not valid:
+                raise BoundaryError("download", "existing_payload_mismatch")
+        else:
+            descriptor, name = tempfile.mkstemp(prefix=".pending-", dir=directory)
+            temporary = Path(name)
             try:
-                os.link(temporary, manifest_path)
-            except FileExistsError:
-                if manifest_path.is_symlink() or manifest_path.read_bytes() != manifest.to_bytes():
-                    raise BoundaryError("download", "manifest_cache_collision") from None
-        finally:
-            temporary.unlink(missing_ok=True)
-        receipt = {
-            "schema": "stpd/result-download-v1",
-            "artifact_id": identity,
-            "kind": manifest.kind,
-            "payloads": files,
-            "parents_downloaded": False,
-            "model_load_validated": False,
-        }
-        atomic_json(directory / "download.json", receipt)
-        return receipt
+                size, checksum = 0, hashlib.sha256()
+                with os.fdopen(descriptor, "wb") as out:
+                    for chunk in read_payload(payload):
+                        size += len(chunk)
+                        if size > payload.size:
+                            raise BoundaryError("download", "payload_size_mismatch")
+                        checksum.update(chunk)
+                        out.write(chunk)
+                    out.flush()
+                    os.fsync(out.fileno())
+                if size != payload.size or checksum.hexdigest() != payload.sha256:
+                    raise BoundaryError("download", "payload_integrity_failure")
+                try:
+                    os.link(temporary, target)
+                except FileExistsError:
+                    if target.is_symlink():
+                        raise BoundaryError(
+                            "download", "concurrent_payload_collision"
+                        ) from None
+                    with target.open("rb") as existing:
+                        same = (
+                            target.stat().st_size == payload.size
+                            and hashlib.file_digest(existing, "sha256").hexdigest()
+                            == payload.sha256
+                        )
+                    if not same:
+                        raise BoundaryError(
+                            "download", "concurrent_payload_collision"
+                        ) from None
+            finally:
+                temporary.unlink(missing_ok=True)
+        files.append(
+            {
+                "role": payload.role,
+                "sha256": payload.sha256,
+                "size": payload.size,
+                "file": filename,
+            }
+        )
+    # Publish the original canonical manifest only after every selected payload.
+    descriptor, name = tempfile.mkstemp(prefix=".pending-", dir=directory)
+    temporary = Path(name)
+    try:
+        with os.fdopen(descriptor, "wb") as output:
+            output.write(manifest.to_bytes())
+            output.flush()
+            os.fsync(output.fileno())
+        try:
+            os.link(temporary, manifest_path)
+        except FileExistsError:
+            if manifest_path.is_symlink() or manifest_path.read_bytes() != manifest.to_bytes():
+                raise BoundaryError("download", "manifest_cache_collision") from None
+    finally:
+        temporary.unlink(missing_ok=True)
+    receipt = {
+        "schema": "stpd/result-download-v1",
+        "artifact_id": identity,
+        "kind": manifest.kind,
+        "payloads": files,
+        "parents_downloaded": False,
+        "model_load_validated": False,
+    }
+    atomic_json(directory / "download.json", receipt)
+    return receipt

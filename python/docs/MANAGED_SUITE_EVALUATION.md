@@ -20,8 +20,12 @@ A0, purpose and `derive_game_seed(suite_id, ordinal_1_based)` seeds. Smoke/dev/t
 ref and five per-character generalization sets are disjoint. `seed_membership`
 and `require_non_evaluation_seed` expose the reserved seed exclusion query for
 training/collection owners. This module does not retrofit their existing jobs.
-`ref-20` is consumed by the Reference owner or future paired evaluator; the
-Managed CLI refuses to execute it. Pairing must reuse the same manifest.
+`ref-20` remains the original v0.111.0 Reference reservation. The separate
+`four_agent_reference_manifest(exact_game_version)` freezes ten new reserved seeds
+for `ref-first-four-10-20261023`; its real Reference consumer and four selections
+are documented in [Project Console](PROJECT_CONSOLE.md#四-agent-最终-test-与-reference-消费).
+The Managed CLI refuses Reference suites. Pairing must reuse the same manifest;
+this new reservation does not rewrite the old suite or qualify game execution.
 
 Run one private directory per attempt:
 

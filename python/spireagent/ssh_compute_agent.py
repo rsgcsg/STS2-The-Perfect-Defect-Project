@@ -18,7 +18,7 @@ from typing import Any
 from spireagent.compute import ComputeTermination
 from spireagent.json_boundary import BoundaryError, decode_json, json_bytes, object_fields
 from spireagent.source import source_identity
-from spireagent.ssh_compute import SshCall, SshTarget
+from spireagent.ssh_compute import CUBLAS_WORKSPACE, SshCall, SshTarget
 from stpd.cloud_jobs.contracts import ComputeReceipt, ComputeRequest
 
 
@@ -77,6 +77,8 @@ def verify_target(target: SshTarget) -> None:
         raise BoundaryError("ssh", "executing_interpreter_mismatch")
     if source_identity(root) != target.producer:
         raise BoundaryError("ssh", "runtime_source_lock_mismatch")
+    if target.gpu != "none" and os.environ.get("CUBLAS_WORKSPACE_CONFIG") != CUBLAS_WORKSPACE:
+        raise BoundaryError("ssh", "fixed_cublas_workspace_required")
     if runtime_identity(target.gpu) != target.runtime.value():
         raise BoundaryError("ssh", "runtime_execution_identity_mismatch")
 
@@ -177,7 +179,9 @@ def supervise(directory: Path) -> None:
     target = SshTarget.decode(value["target"])
     handle = SshCall.decode(value["handle"])
     with (directory / "running.lock").open("a+b") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        # submit's unique mkdir admits one supervisor. An observer can briefly
+        # hold this lock before startup; wait instead of abandoning that invocation.
+        fcntl.flock(lock, fcntl.LOCK_EX)
         child: subprocess.Popen[Any] | None = None
         result = envelope(handle, "failed", error="execution_failed")
         try:
@@ -193,7 +197,8 @@ def supervise(directory: Path) -> None:
                 os.chmod(directory / "worker-output.json", 0o600)
                 child = subprocess.Popen([target.interpreter, "-m", "stpd.cloud_jobs",
                                           "--request", str(directory / "request.json"),
-                                          "--store", "s3"], env=environment,
+                                          "--store", "s3", "--wall-seconds",
+                                          str(target.timeout_seconds)], env=environment,
                                          cwd=Path(target.checkout) / "python",
                                          stdin=subprocess.DEVNULL, stdout=output,
                                          stderr=subprocess.DEVNULL, start_new_session=True)

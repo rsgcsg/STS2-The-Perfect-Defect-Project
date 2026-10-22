@@ -20,7 +20,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--manifest-sha256", required=True)
-    parser.add_argument("--selection", required=True)
+    selections = parser.add_mutually_exclusive_group(required=True)
+    selections.add_argument("--selection")
+    selections.add_argument("--selections", type=Path,
+                            help="four Agent names to exact registered selection IDs")
+    parser.add_argument("--evidence-peer", type=Path,
+                        help="existing Store/R2 binding JSON without credentials")
     parser.add_argument("--run-profile", choices=("short", "extended"), required=True)
     parser.add_argument("--run-dir", type=Path, required=True)
     parser.add_argument("--display-mode", choices=("headless", "native-ui"), default="headless")
@@ -36,8 +41,11 @@ def main(argv: list[str] | None = None) -> int:
         limits = SuiteLimits(args.preparation_seconds, args.episode_seconds,
                              args.cleanup_seconds, args.suite_seconds, args.poll_seconds)
         client = WorkbenchReferenceClient(ProjectConfig.load(args.config))
+        selected = json.loads(args.selections.read_bytes()) if args.selections else None
+        peer = json.loads(args.evidence_peer.read_bytes()) if args.evidence_peer else None
         report = run_suite(args.manifest, args.manifest_sha256, client=client,
-                           run_dir=args.run_dir, selection=args.selection,
+                           run_dir=args.run_dir, selection=args.selection or "",
+                           selections=selected, evidence_peer=peer,
                            run_profile=args.run_profile, limits=limits,
                            max_episodes=args.max_episodes, display_mode=args.display_mode)
         # This is invocation provenance, not a replacement for original owner identities.

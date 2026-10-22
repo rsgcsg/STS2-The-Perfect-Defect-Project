@@ -9,7 +9,22 @@ from typing import Any
 from ..game_seed import derive_game_seed, require_canonical_game_seed
 
 MANIFEST_ROOT = Path(__file__).resolve().parent / "suites"
+FOUR_AGENT_SUITE_ID = "ref-first-four-10-20261023"
 CHARACTERS = ("Defect", "Ironclad", "Silent", "Regent", "Necrobinder")
+
+
+def four_agent_reference_manifest(game_version: str) -> dict[str, Any]:
+    """A new ten-seed reservation; bind the actual game version before use."""
+    if (not isinstance(game_version, str) or not game_version.startswith("v")
+            or not 2 <= len(game_version) <= 80
+            or any(not (c.isascii() and (c.isalnum() or c in ".-+")) for c in game_version)):
+        raise ValueError("explicit exact game version required")
+    return {"schema": "stpd/evaluation-suite-v1", "suite_id": FOUR_AGENT_SUITE_ID,
+            "version": "1.0.0", "game_version": game_version, "character": "Defect",
+            "ascension": 0, "host": "Reference", "purpose": "paired_reference",
+            "episode_count": 10,
+            "seed_derivation": "derive_game_seed(suite_id, ordinal_1_based)",
+            "seeds": [derive_game_seed(FOUR_AGENT_SUITE_ID, i) for i in range(1, 11)]}
 
 
 def load_suite(name: str) -> dict[str, Any]:
@@ -71,7 +86,9 @@ def suite_names() -> tuple[str, ...]:
 def seed_membership(seed: str) -> tuple[str, ...]:
     """All reserved evaluation sets, including the sealed test set, without exposure."""
     canonical = require_canonical_game_seed(seed)
-    return tuple(name for name in suite_names() if canonical in load_suite(name)["seeds"])
+    legacy = tuple(name for name in suite_names() if canonical in load_suite(name)["seeds"])
+    reserved = tuple(derive_game_seed(FOUR_AGENT_SUITE_ID, i) for i in range(1, 11))
+    return legacy + ((FOUR_AGENT_SUITE_ID,) if canonical in reserved else ())
 
 
 def require_non_evaluation_seed(seed: str) -> str:

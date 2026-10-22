@@ -26,6 +26,8 @@ from spireagent.json_boundary import (
 from stpd.canonical import semantic_hash
 from stpd.cloud_jobs.contracts import ComputeReceipt, ComputeRequest
 
+CUBLAS_WORKSPACE = ":4096:8"  # Same fixed deployment setting as the worker image.
+
 
 @dataclass(frozen=True)
 class SshTarget:
@@ -139,7 +141,8 @@ class SshProvider:
         # There is no caller-provided command. OpenSSH necessarily uses a remote
         # shell; quote only the fixed module invocation and explicit trusted paths.
         command = ("cd " + shlex.quote(self.target.checkout + "/python") + " && "
-                   + shlex.join([self.target.interpreter, "-m", "spireagent.ssh_compute_agent"]))
+                   + shlex.join(["/usr/bin/env", "CUBLAS_WORKSPACE_CONFIG=" + CUBLAS_WORKSPACE,
+                                 self.target.interpreter, "-m", "spireagent.ssh_compute_agent"]))
         argv = ["ssh", "-F", self.target.ssh_config, "-o", "BatchMode=yes",
                 "-o", "StrictHostKeyChecking=yes", "-o", "UpdateHostKeys=no",
                 "-o", "ConnectionAttempts=1", "-o", "ConnectTimeout=15",

@@ -96,6 +96,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--no-browser", action="store_true")
     parser.add_argument("--artifact")
+    parser.add_argument("--download-source", choices=("configured", "hub", "store"),
+                        default="configured")
     parser.add_argument(
         "--role", action="append", help="own payload role, repeat for multiple roles"
     )
@@ -124,6 +126,7 @@ def main(argv: list[str] | None = None) -> int:
             "register",
             "registration-status",
             "download",
+            "export-checkpoint",
             "install-runtime",
             "initialize-runtime-generation",
             "upgrade-runtime-generation",
@@ -148,6 +151,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--credential-file", type=Path)
     parser.add_argument("--input", type=Path, help="exact P1 data preparation or freeze JSON")
+    parser.add_argument("--checkpoint-selection", choices=("best", "current"), default="best")
     parser.add_argument("--request-id", help="exact original pending native Runtime request ID")
     parser.add_argument("--intent-id", help="original native preparation intent ID")
     parser.add_argument(
@@ -325,7 +329,8 @@ def main(argv: list[str] | None = None) -> int:
                     config,
                     args.action,
                     selection=args.selection,
-                    artifact=args.artifact,
+                    artifact=args.artifact, download_source=args.download_source,
+                    checkpoint_selection=args.checkpoint_selection,
                     request_id=args.request_id,
                     runtime_archive=args.runtime_archive,
                     runtime_profile=args.runtime_profile,

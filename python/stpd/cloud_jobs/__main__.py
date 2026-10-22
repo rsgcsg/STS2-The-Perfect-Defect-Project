@@ -14,7 +14,8 @@ from .contracts import ComputeRequest, load_feature_job
 from .execution import FeatureBackend, dispatch
 
 
-def execute_request(value: object, *, store_location: str = "s3") -> dict:
+def execute_request(value: object, *, store_location: str = "s3",
+                    wall_seconds: int | None = None) -> dict:
     request = ComputeRequest.decode(value)
     runtime = source_identity(Path(__file__).resolve().parents[2])
     if runtime != request.producer:
@@ -41,19 +42,22 @@ def execute_request(value: object, *, store_location: str = "s3") -> dict:
                 Path(snapshot), control=control, device=qwen["device"],
                 random_seed=qwen.get("random_seed"),
             )
-    return dispatch(store, request, runtime, backend=backend).to_dict()
+    return dispatch(store, request, runtime, backend=backend, wall_seconds=wall_seconds).to_dict()
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--request", required=True, help="Frozen JSON request file")
     parser.add_argument("--store", default="s3")
+    parser.add_argument("--wall-seconds", type=int,
+                        help="provider hard timeout; P1 pauses 300 seconds before it")
     args = parser.parse_args(argv)
     try:
         raw = Path(args.request).read_bytes()
         if len(raw) > 64 * 1024:
             raise BoundaryError("compute", "request_size_limit")
-        receipt = execute_request(decode_json(raw), store_location=args.store)
+        receipt = execute_request(decode_json(raw), store_location=args.store,
+                                  wall_seconds=args.wall_seconds)
         print(json_bytes(receipt).decode(), end="")
         return 0
     except Exception as error:

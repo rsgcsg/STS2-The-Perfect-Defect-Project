@@ -24,6 +24,7 @@ from spireagent.workbench import agent_run_request, local_model_cli
 from spireagent.workbench.developer import ROOT, ProjectConfig, atomic_json
 from spireagent.workbench.developer_server import running
 from spireagent.workbench.native_episode_binding import checked_context
+from stpd.evaluation.suites import FOUR_AGENT_SUITE_ID, four_agent_reference_manifest
 from stpd.game_seed import derive_game_seed, require_canonical_game_seed
 
 REPORT_SCHEMA = "spireagent/reference-suite-report-v1"
@@ -40,6 +41,14 @@ def load_manifest(path: Path, sha256: str) -> tuple[bytes, dict[str, Any]]:
     if hashlib.sha256(raw).hexdigest() != sha256:
         _reject("manifest_hash_mismatch")
     value = decode_json(raw)
+    if isinstance(value, dict) and value.get("suite_id") == FOUR_AGENT_SUITE_ID:
+        game_version = value.get("game_version")
+        if not isinstance(game_version, str):
+            _reject("manifest_configuration_changed")
+        expected = four_agent_reference_manifest(game_version)
+        if json_bytes(value) != json_bytes(expected):
+            _reject("manifest_configuration_changed")
+        return raw, value
     expected = {"schema": "stpd/evaluation-suite-v1", "suite_id": "ref-20", "version": "1.0.0",
                 "game_version": "v0.111.0", "character": "Defect", "ascension": 0,
                 "host": "Reference", "purpose": "paired_reference", "episode_count": 20,
@@ -95,6 +104,8 @@ class ReferenceClient(Protocol):
     def finish(self, ref: str, timeout: float) -> dict[str, Any]: ...
     def originals(self, evaluation: dict[str, Any], request: dict[str, Any],
                   startup: dict[str, Any]) -> tuple[bytes, bytes]: ...
+    def preserve(self, run_id: str, peer: dict[str, Any], timeout: float) -> dict[str, Any]: ...
+    def preservation_status(self, timeout: float) -> dict[str, Any]: ...
 
 
 class WorkbenchReferenceClient:
@@ -140,6 +151,12 @@ class WorkbenchReferenceClient:
 
     def finish(self, ref: str, timeout: float) -> dict[str, Any]:
         return self._native("native-finish", timeout, environment_ref=ref)
+
+    def preserve(self, run_id: str, peer: dict[str, Any], timeout: float) -> dict[str, Any]:
+        return self._native("evidence-publish", timeout, run_id=run_id, peer=peer)
+
+    def preservation_status(self, timeout: float) -> dict[str, Any]:
+        return self._native("evidence-status", timeout)
 
     def originals(self, evaluation: dict[str, Any], request: dict[str, Any],
                   startup: dict[str, Any]) -> tuple[bytes, bytes]:
@@ -204,15 +221,33 @@ def _error(error: Exception) -> str:
 def run_suite(
     manifest_path: Path, manifest_sha256: str, *, client: ReferenceClient, run_dir: Path,
     selection: str, run_profile: str, limits: SuiteLimits, max_episodes: int = 1,
+    selections: dict[str, str] | None = None, evidence_peer: dict[str, Any] | None = None,
     display_mode: str = "headless", clock: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep, should_stop: Callable[[], bool] = lambda: False,
 ) -> dict[str, Any]:
     """New attempt only. Existing run directories are read-only recovery artifacts."""
-    if (type(max_episodes) is not int or not 1 <= max_episodes <= 20
+    if (type(max_episodes) is not int or not 1 <= max_episodes <= 40
             or run_profile not in {"short", "extended"} or not isinstance(selection, str)
-            or not selection or display_mode not in {"headless", "native-ui"}):
+            or not (selection or selections) or display_mode not in {"headless", "native-ui"}):
         _reject("invalid_attempt_configuration")
     raw_manifest, manifest = load_manifest(manifest_path, manifest_sha256)
+    four = manifest["suite_id"] == FOUR_AGENT_SUITE_ID
+    agents = ("random", "frequency", "linear", "mstd")
+    if four:
+        if (not isinstance(selections, dict) or set(selections) != set(agents)
+                or any(not isinstance(v, str) or not v for v in selections.values())
+                or len(set(selections.values())) != 4 or not isinstance(evidence_peer, dict)):
+            _reject("four_distinct_selections_and_evidence_peer_required")
+        selected = {a: selections[a] for a in agents}
+    else:
+        if selections is not None or max_episodes > 20:
+            _reject("legacy_suite_requires_single_selection")
+        selected = {"agent": selection}
+    plan = [(index + 1, seed, agent, identity)
+            for index, seed in enumerate(manifest["seeds"])
+            for agent, identity in selected.items()]
+    if max_episodes > len(plan):
+        _reject("invalid_attempt_configuration")
     artifacts = _Artifacts(run_dir)
     started = clock()
     report: dict[str, Any] = {"schema": REPORT_SCHEMA, "attempt_id": uuid.uuid4().hex,
@@ -224,12 +259,14 @@ def run_suite(
         "client_source_sha256": hashlib.sha256(
             Path(local_model_cli.__file__).read_bytes()).hexdigest(),
         "max_episodes": max_episodes, "workers": 1, "display_mode": display_mode,
-        "speed": "instant", "planned": 20, "status": "running", "stop_reason": None,
+        "speed": "instant", "planned": len(plan), "status": "running", "stop_reason": None,
         "world_offers": 0, "actor_started": 0,
-        "episodes": [{"ordinal": index + 1, "seed": seed, "intent_id": uuid.uuid4().hex,
+        "selections": selected, "evidence_peer": evidence_peer,
+        "episodes": [{"ordinal": index + 1, "seed_ordinal": ordinal, "seed": seed,
+                      "agent": agent, "selection_id": identity, "intent_id": uuid.uuid4().hex,
                       "status": "not_started", "reason": "not_dispatched", "artifacts": [],
                       "world_mutation_offered": False, "actor_started": False}
-                     for index, seed in enumerate(manifest["seeds"])],
+                     for index, (ordinal, seed, agent, identity) in enumerate(plan)],
         "non_claims": ["not_Human_origin", "not_strategy_quality_qualification",
                        "not_Host_equivalence", "not_new_P1_profile_support"]}
     artifacts.save(report)  # The entire denominator exists before even readiness.
@@ -241,12 +278,27 @@ def run_suite(
         return min(cap, remaining)
 
     try:
-        ready = client.readiness(selection, timeout(started + limits.suite_seconds))
-        report["readiness"] = artifacts.put("readiness.json", json_bytes(ready))
-        if ready.get("status") != "ready_to_load" or ready.get("selection_id") != selection:
-            _reject("selection_not_ready")
-        composition = ready["agent_composition"]
-        report["composition_id"] = composition["composition_id"]
+        compositions = {}
+        for agent, identity in selected.items():
+            ready = client.readiness(identity, timeout(started + limits.suite_seconds))
+            report["readiness_" + agent] = artifacts.put("readiness.json", json_bytes(ready))
+            if ready.get("status") != "ready_to_load" or ready.get("selection_id") != identity:
+                _reject("selection_not_ready")
+            composition = ready["agent_composition"]
+            if four and (
+                composition.get("semantic_definition", {}).get("agent", {}).get("id")
+                != "p1-" + agent
+                or composition.get("semantic_definition", {}).get("input", {}).get("profile")
+                != "p1-global-r1"
+                or composition.get("implementation", {}).get("adapter", {}).get("id")
+                != ("stpd-p1-mstd-agent" if agent == "mstd" else "stpd-p1-baseline-agent")
+            ):
+                _reject("four_agent_selection_identity_mismatch")
+            compositions[identity] = composition
+        report["composition_ids"] = {key: value["composition_id"]
+                                     for key, value in compositions.items()}
+        if not four:
+            report["composition_id"] = compositions[selection]["composition_id"]
         artifacts.save(report)
     except (OSError, ValueError, KeyError, TypeError) as error:
         report.update(status="blocked", stop_reason=_error(error))
@@ -257,6 +309,8 @@ def run_suite(
         return report
 
     for row in report["episodes"][:max_episodes]:
+        selection = row["selection_id"]
+        composition = compositions[selection]
         if should_stop() or clock() >= started + limits.suite_seconds:
             report["stop_reason"] = "stop_requested" if should_stop() else "suite_wall_limit"
             break
@@ -485,6 +539,36 @@ def run_suite(
                 row.update(status="unknown", persistence_error=_error(error))
                 clean = False
                 reason = "report_persistence_failed"
+        if evaluation is not None and evidence_peer is not None:
+            try:
+                preservation = client.preserve(row["run_id"], evidence_peer,
+                                               timeout(started + limits.suite_seconds))
+                row["preservation_offer"] = artifacts.put(
+                    "preservation-offer.json", json_bytes(preservation))
+                operation_id = preservation.get("operation_id")
+                if not isinstance(operation_id, str):
+                    _reject("preservation_operation_missing")
+                while preservation.get("status") == "pending":
+                    if should_stop():
+                        _reject("stop_requested")
+                    sleep(min(limits.poll_seconds, timeout(started + limits.suite_seconds)))
+                    preservation = client.preservation_status(
+                        timeout(started + limits.suite_seconds))
+                    if preservation.get("operation_id") != operation_id:
+                        _reject("preservation_operation_changed")
+                row["preservation"] = artifacts.put("preservation.json", json_bytes(preservation))
+                if (preservation.get("status") != "completed"
+                        or preservation.get("run_id") != row["run_id"]
+                        or preservation.get("peer") != evidence_peer
+                        or not preservation.get("artifact_id")
+                        or not preservation.get("peer_readback")):
+                    _reject("original_evidence_not_preserved")
+                row["stored_evidence_id"] = preservation["artifact_id"]
+                artifacts.save(report)
+            except (OSError, ValueError, KeyError, TypeError) as error:
+                row["preservation_error"] = _error(error)
+                reason = "preservation_unknown_or_failed"
+                artifacts.save(report)
         if not clean or reason not in {
             "runtime_stopped", "actor_returned_human", "owner_finalized",
         }:
@@ -496,6 +580,9 @@ def run_suite(
     report["summary"] = {
         "not_started": sum(row["status"] == "not_started" for row in report["episodes"]),
         "cleanup_unknown": sum(row["status"] == "unknown" for row in report["episodes"]),
+        "preserved_evidence": sum("stored_evidence_id" in row for row in report["episodes"]),
+        "preservation_failed_or_unknown": sum(
+            "preservation_error" in row for row in report["episodes"]),
         "natural_results": {result: sum(
             row.get("agent_task_outcome", {}).get("terminal_observation", {}).get("status")
             == "observed" and row["agent_task_outcome"]["terminal_observation"].get("result")

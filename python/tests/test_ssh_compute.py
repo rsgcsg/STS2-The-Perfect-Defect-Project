@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import subprocess
 import sys
 import threading
@@ -20,7 +21,13 @@ from test_artifact_store_v1 import PRODUCER
 
 from spireagent.compute import ComputeSubmissionUnknown, ComputeTerminated
 from spireagent.json_boundary import BoundaryError, FrozenObject
-from spireagent.ssh_compute import SshCall, SshProvider, SshTarget, provider_from_target
+from spireagent.ssh_compute import (
+    CUBLAS_WORKSPACE,
+    SshCall,
+    SshProvider,
+    SshTarget,
+    provider_from_target,
+)
 from stpd.cloud_jobs.contracts import ComputeReceipt, ComputeRequest
 
 
@@ -94,7 +101,9 @@ sys.stdout.buffer.write(json_bytes(receipt.to_dict()))
             threads.append(thread)
             return SimpleNamespace(pid=0)
         assert argv[1:3] == ["-m", "stpd.cloud_jobs"]
-        assert argv[-2:] == ["--store", "s3"]
+        invocation = json.loads((Path(argv[4]).parent / "invocation.json").read_bytes())
+        assert argv[-4:] == ["--store", "s3", "--wall-seconds",
+                             str(invocation["target"]["timeout_seconds"])]
         kwargs["cwd"] = Path(__file__).parents[1]
         child = original_popen([sys.executable, "-c", worker, argv[4]], **kwargs)
         children.append(child)
@@ -167,6 +176,60 @@ def test_async_submit_observation_disconnect_restore_same_handle_and_original_re
     with pytest.raises(ComputeSubmissionUnknown, match="submission_unknown"):
         provider.submit(request())
     assert len([argv for argv in commands if "--supervise" in argv]) == 1
+
+
+def test_original_supervisor_waits_for_observers_short_flock_without_resubmission(
+    transport, monkeypatch,
+):
+    import fcntl
+
+    selected, commands, children, _, _ = transport
+    real_flock, launch = fcntl.flock, subprocess.Popen
+    attempted = threading.Event()
+    failures, observer_locks = [], []
+
+    def observed_flock(stream, operation):
+        supervisor = (threading.current_thread() is not threading.main_thread()
+                      and Path(stream.name).name == "running.lock")
+        if supervisor and operation & fcntl.LOCK_NB:
+            # Record the actual kernel rejection before notifying the observer;
+            # the old startup race therefore fails deterministically, not by timing.
+            try:
+                return real_flock(stream, operation)
+            except BlockingIOError as error:
+                failures.append(error)
+                raise
+            finally:
+                attempted.set()
+        if supervisor:
+            attempted.set()
+        return real_flock(stream, operation)
+
+    def observer_first(argv, **kwargs):
+        if "--supervise" in argv:
+            stream = (Path(argv[-1]) / "running.lock").open("a+b")
+            real_flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            observer_locks.append(stream)
+        return launch(argv, **kwargs)
+
+    monkeypatch.setattr(fcntl, "flock", observed_flock)
+    monkeypatch.setattr(subprocess, "Popen", observer_first)
+    provider = SshProvider(selected)
+    try:
+        handle = provider.submit(request("observer-first"))
+        saved = handle.to_dict()
+        assert attempted.wait(timeout=3), "original supervisor never attempted its real flock"
+        assert not failures, "short observer lock incorrectly killed the original supervisor"
+        assert not children  # The original owner is waiting, not starting another process.
+    finally:
+        for stream in observer_locks:
+            stream.close()
+    restored = provider.restore_handle(saved)
+    receipt = eventually(provider, restored)
+    assert receipt.request_id == handle.request.request_id
+    assert restored.to_dict() == saved
+    assert len([argv for argv in commands if "--supervise" in argv]) == 1
+    assert len([argv for argv in commands if argv[1:3] == ["-m", "stpd.cloud_jobs"]]) == 1
 
 
 def test_lost_submit_ack_observes_deterministic_original_without_resubmission(
@@ -310,6 +373,80 @@ def test_ssh_options_bounded_unknown_and_no_raw_transport_error(tmp_path, monkey
     assert "ConnectionAttempts=1" in argv and kwargs["timeout"] == 45
     assert argv[-2] == "uq-fixture"
     assert "spireagent.ssh_compute_agent" in argv[-1]
+    launch = shlex.split(argv[-1])
+    assert launch[3:] == ["/usr/bin/env", "CUBLAS_WORKSPACE_CONFIG=:4096:8",
+                          provider.target.interpreter, "-m", "spireagent.ssh_compute_agent"]
+
+
+def test_fixed_ssh_launch_environment_reaches_supervisor_and_original_worker_environment(
+    tmp_path, monkeypatch,
+):
+    if os.name == "nt":
+        pytest.skip("The school launch environment is POSIX")
+    selected = target(tmp_path)
+    private = Path(selected.private_env)
+    private.write_text("AWS_ACCESS_KEY_ID=fixture-storage\nCUBLAS_WORKSPACE_CONFIG=:16:8\n")
+    private.chmod(0o600)
+    monkeypatch.setenv("CUBLAS_WORKSPACE_CONFIG", "wrong-parent-value")
+    original_run = subprocess.run
+    supervisor_fixture = """
+import json, os, subprocess, sys
+assert os.environ['CUBLAS_WORKSPACE_CONFIG'] == ':4096:8'
+from spireagent.ssh_compute_agent import private_environment
+value = json.load(sys.stdin)
+environment = private_environment(__import__('pathlib').Path(value['target']['private_env']))
+subprocess.run([sys.executable, '-c',
+    "import os; assert os.environ['CUBLAS_WORKSPACE_CONFIG'] == ':4096:8'; "
+    "assert os.environ['AWS_ACCESS_KEY_ID'] == 'fixture-storage'"],
+    env=environment, check=True, stdout=subprocess.DEVNULL)
+print(json.dumps({'target_id': value['handle']['target_id'],
+                  'call_id': value['handle']['call_id'], 'state': 'running',
+                  'receipt': None, 'error': None, 'termination': None}))
+"""
+
+    def local_ssh(argv, **kwargs):
+        launch = shlex.split(argv[-1])[3:]
+        assert launch[-2:] == ["-m", "spireagent.ssh_compute_agent"]
+        # SSH is faked; execute the actual fixed env+interpreter prefix locally.
+        # Only the remote endpoint is replaced by a supervisor process fixture.
+        return original_run([*launch[:-2], "-c", supervisor_fixture], **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", local_ssh)
+    provider = SshProvider(selected)
+    original = request("fixed-environment")
+    handle = SshCall(selected.target_id, original, original.request_id)
+    assert provider.poll(handle) is None
+
+
+@pytest.mark.parametrize("workspace", [None, "incorrect", ":16:8", ":4096:8"])
+def test_gpu_target_requires_fixed_workspace_before_runtime_probe(tmp_path, monkeypatch, workspace):
+    if os.name == "nt":
+        pytest.skip("The school target uses POSIX checkout/interpreter paths")
+    import spireagent.ssh_compute_agent as agent
+
+    selected = target(tmp_path, checkout=str(Path(__file__).parents[2]), gpu="L40S",
+                      runtime=FrozenObject.of({"python": "3.11.9", "torch": "2.7.0",
+                                               "cuda": "12.8", "gpu_name": "NVIDIA L40S",
+                                               "gpu_uuid": "GPU-fixture", "driver": "595"}))
+    monkeypatch.setattr(agent, "source_identity", lambda root: PRODUCER)
+    probes = []
+
+    def runtime(gpu):
+        probes.append(gpu)
+        return selected.runtime.value()
+
+    monkeypatch.setattr(agent, "runtime_identity", runtime)
+    if workspace is None:
+        monkeypatch.delenv("CUBLAS_WORKSPACE_CONFIG", raising=False)
+    else:
+        monkeypatch.setenv("CUBLAS_WORKSPACE_CONFIG", workspace)
+    if workspace == CUBLAS_WORKSPACE:
+        agent.verify_target(selected)
+        assert probes == ["L40S"]
+    else:
+        with pytest.raises(BoundaryError, match="fixed_cublas_workspace_required"):
+            agent.verify_target(selected)
+        assert probes == []
 
 
 def test_remote_identity_and_private_environment_reject_before_execution(tmp_path, monkeypatch):
