@@ -181,6 +181,24 @@ baseline plus valid pause/resume, report the missing part or reuse an already
 verified compatible pause; do not weaken the recipe, relabel cancellation as pause
 or silently add a call.
 
+For normal P1 M-std/baseline execution, Modal and the SSH supervisor pass the
+frozen `target.timeout_seconds` to the same cloud CLI as `--wall-seconds`.
+`execute_request`/`dispatch` keep this execution allowance outside ComputeRequest
+and Model configuration. The existing ExecutionControl requests pause300 seconds
+before timeout and the original worker returns its complete checkpoint/paused
+receipt at an update boundary, before final TEST. P1 allowances<=300 reject as
+insufficient. The provider hard timeout remains active; non-P1 workers and the
+synthetic-only profile entry keep their prior hard-timeout behavior.
+
+M-std also uses its existing codec/Store/Reporter to save after1800 monotonic
+seconds without a successful save, coalescing with milestone/DEV-best saves on the
+same update. These are complete recovery states, not extra evaluation points or a
+new selection/checkpoint ledger. An indivisible update/DEV pass, slow I/O or startup
+can exceed the margin; then the hard timeout may still interrupt the attempt. Only
+actual verified immutable checkpoints and original typed receipt/termination facts
+establish what survived. Measure and freeze adequate headroom before a long run;
+do not relabel a hard timeout as a successful pause or retry unknown delivery.
+
 Acceptance separates provider terminal/zero running inputs from selected
 RunResult/Model closure, complete baseline-versus-resume checkpoint state and CPU
 package tensor/scoring consumption. Record startup, worker, checkpoint/transfer

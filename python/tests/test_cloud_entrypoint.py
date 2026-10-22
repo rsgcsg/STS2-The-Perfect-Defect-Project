@@ -93,6 +93,7 @@ def test_modal_definition_bounds_runtime_and_invokes_only_locked_worker(
             "stpd.cloud_jobs",
             "--request",
         ]
+        assert argv[5:] == ["--wall-seconds", str(selected.timeout_seconds)]
         assert kwargs["cwd"] == "/opt/stpd/python"
         assert json.loads(Path(argv[4]).read_text()) == {"example": "request"}
         return SimpleNamespace(returncode=0, stdout='{"example":"receipt"}')

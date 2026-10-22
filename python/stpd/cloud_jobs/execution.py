@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import time
 from dataclasses import asdict, dataclass, replace
-from typing import Protocol
+from typing import Literal, Protocol
 
 from spireagent.artifact_contracts import Manifest, Producer
 from spireagent.json_boundary import BoundaryError, FrozenObject, unsigned
@@ -24,6 +25,24 @@ from ..workers.contracts import (
 from ..workers.ranking import TrainingPlan, make_training_plan
 from ..workers.worker import CHECKPOINT_SCHEMA, MODEL_SCHEMA, execute
 from .contracts import ComputeReceipt, ComputeRequest, load_feature_job
+
+SAVE_MARGIN_SECONDS = 300
+
+
+@dataclass(frozen=True)
+class _PauseBeforeTimeout:
+    pause_at: float
+
+    def requested_action(self) -> Literal["continue", "pause"]:
+        return "pause" if time.monotonic() >= self.pause_at else "continue"
+
+
+def _wall_pause(wall_seconds: int | None) -> _PauseBeforeTimeout | None:
+    if wall_seconds is None:
+        return None
+    if wall_seconds <= SAVE_MARGIN_SECONDS:
+        raise BoundaryError("compute", "wall_seconds_must_exceed_save_margin")
+    return _PauseBeforeTimeout(time.monotonic() + wall_seconds - SAVE_MARGIN_SECONDS)
 
 
 class FeatureBackend(QwenBackend, Protocol):
@@ -141,10 +160,13 @@ def prepare_feature_run(
 
 def dispatch(
     store: ManifestArtifactStore, request: ComputeRequest, runtime: Producer,
-    *, backend: FeatureBackend | None = None,
+    *, backend: FeatureBackend | None = None, wall_seconds: int | None = None,
 ) -> ComputeReceipt:
     if request.producer != runtime:
         raise BoundaryError("compute", "runtime_source_lock_mismatch")
+    if (wall_seconds is not None
+            and not 1 <= unsigned(wall_seconds, "compute.wall_seconds") <= 86400):
+        raise BoundaryError("compute", "wall_seconds_out_of_range")
     if request.kind == "features":
         if backend is None:
             raise BoundaryError("compute", "feature_backend_required")
@@ -167,6 +189,7 @@ def dispatch(
             request.input_id, runtime, attempt_id=request.attempt_id,
             resume=request.resume, stop_after=request.stop_after,
             mode="resume" if request.resume is not None else "start",
+            control=_wall_pause(wall_seconds),
         )
         return ComputeReceipt(
             request.request_id, request.attempt_id, request.kind, request.input_id, runtime,
@@ -184,6 +207,7 @@ def dispatch(
             request.input_id, runtime, attempt_id=request.attempt_id,
             resume=request.resume, stop_after=request.stop_after,
             mode="resume" if request.resume is not None else "start",
+            control=_wall_pause(wall_seconds),
         )
         return ComputeReceipt(
             request.request_id, request.attempt_id, request.kind, request.input_id, runtime,
