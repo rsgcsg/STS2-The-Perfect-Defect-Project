@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 import uuid
 from pathlib import Path
 from types import SimpleNamespace
@@ -71,3 +72,49 @@ def test_normal_private_child_original_model_registration_and_composition(
 
     composition = describe(entry, manifest, bound, json.loads(raw))
     assert composition["semantic_definition"]["state"]["kind"] == "ACK_committed_session_rng"
+
+
+def test_normal_cli_start_status_and_model_registration_status(tmp_path, monkeypatch, capsys):
+    from test_remote_training_http import client
+
+    from spireagent.workbench.developer_cli import main as project_main
+    from spireagent.workbench.training_cli import main as training_main
+
+    with client(tmp_path) as (app, _call, _provider, _store, _owner, snapshot, config_path):
+        request = TrainingRequest(uuid.uuid4().hex, RECIPE, snapshot.artifact_id,
+                                  BaselineConfig(algorithm="frequency").to_dict())
+        path = tmp_path / "request.json"
+        path.write_text(json.dumps(request.to_dict()))
+        assert training_main(["start", "--config", str(config_path),
+                              "--input", str(path)]) == 0
+        started = json.loads(capsys.readouterr().out)["operation"]
+        deadline = time.monotonic() + 30
+        while True:
+            assert training_main(["status", "--config", str(config_path),
+                                  "--operation-id", started["operation_id"]]) == 0
+            operation = json.loads(capsys.readouterr().out)["operation"]
+            if operation["status"] != "pending":
+                break
+            assert time.monotonic() < deadline
+            time.sleep(0.05)
+        assert operation["status"] == "completed", operation
+        model_id = operation["model_id"]
+        registration = app.local_model_registration
+        monkeypatch.setattr(registration, "_native_runtime",
+                            lambda **_: (tmp_path / "modules", Path(".")))
+
+        def envelope(_runtime, _options, _artifact, adapter, selection, _deadline):
+            return {"schema": "sts2.policy-runtime/agent-manifest-1", "manifest_id": selection,
+                    "input": {"profile": "p1-global-r1",
+                              "global": {"core_sha256": "a" * 64, "revision": "r1.5"}},
+                    "environment": {"kind": "native"}, "adapter": adapter}
+
+        monkeypatch.setattr(registration, "_global_environment_manifest", envelope)
+        monkeypatch.setattr(app.models, "_public_manifest_contract", lambda *_: None)
+        assert project_main(["model", "--config", str(config_path), "--action", "register",
+                             "--artifact", model_id]) == 0
+        registered = json.loads(capsys.readouterr().out)
+        assert registered["status"] == "registered"
+        assert project_main(["model", "--config", str(config_path),
+                             "--action", "registration-status", "--artifact", model_id]) == 0
+        assert json.loads(capsys.readouterr().out)["selection_id"] == registered["selection_id"]
