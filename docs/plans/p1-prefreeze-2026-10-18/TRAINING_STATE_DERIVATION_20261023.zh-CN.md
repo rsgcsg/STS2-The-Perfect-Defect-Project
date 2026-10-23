@@ -74,7 +74,8 @@ Ops 入队、Scheduler/worker/Store/Receipt 均复用原路径。
 
 ## 隔离 CUDA 资格验证（待 root 单独安排）
 
-只用获准隔离 clone `31205303485980068a49f97914fff9fdbcdba61e8281d58809f9dad19f87718af6c`，
+只用获准隔离 clone：step312，artifact ID
+`05303485980068a49f97914fff9fdbcdba61e8281d58809f9dad19f87718af6c`，
 它不是已选择的实际切换点。原运行、原控制应用和原自动接续不触碰。
 先固定稳定源码/锁/镜像并非作者复核。先验 reference；packed 独立再验，
 不能把 reference 的通过转授 packed，也不必再做性能扫参。
