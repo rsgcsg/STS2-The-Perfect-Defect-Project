@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, urlencode
 
 from spireagent.json_boundary import BoundaryError, digest
+from spireagent.workbench.local_models import GLOBAL_MODEL_ADAPTERS
 from spireagent.workbench.native_workbench_access import NativePair, fail
 
 if TYPE_CHECKING:
@@ -345,6 +346,8 @@ class NativeWorkbenchApi:
                 and not session.get("loaded")
                 and not loading
                 and session.get("status") not in {"command_unknown", "recovery_required"}
+                and native_environment["data"].get("phase") not in {
+                    "preparing", "closing", "unknown", "recovery_required"}
             )
             runtime = session.get("runtime")
             pending = runtime.get("pending_request") if isinstance(runtime, dict) else None
@@ -992,6 +995,11 @@ class NativeWorkbenchApi:
                 raise fail("invalid_native_payload")
             context = {"request_id": request_id, "binding": pair.to_dict()}
             authorize = app.native_access.intent_authorizer(context, pair)
+            if app.models.selection(body["selection_id"])["adapter"] in GLOBAL_MODEL_ADAPTERS:
+                app.models._run_profile(body["selection_id"], body["run_profile"])
+                authorize()
+                body = {**body, "native_episode_ref": app.prepare_current_native_episode(
+                    pair.runtime_instance_id, body.get("native_episode_ref"))}
             if "native_episode_ref" in body:
                 episode = app.local_environment.native_episode_context(body["native_episode_ref"])
                 if episode["binding"]["runtime_instance_id"] != pair.runtime_instance_id:

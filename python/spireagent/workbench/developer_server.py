@@ -670,6 +670,42 @@ class Application:
     def native_episode_status(self) -> dict[str, Any]:
         return self.local_environment.native_episode_status()
 
+    def prepare_current_native_episode(self, runtime_id: str,
+                                       environment_ref: object | None = None) -> str:
+        """Bind a display to the current game, without resetting an attached game.
+
+        Owned seeded episodes retain their exact reuse rules. An attached display
+        starts a fresh cold segment only after the previous Actor has a clean seal.
+        """
+        self.check_environment_instance()
+        record = self.native_episode_status()
+        if environment_ref is not None and record.get("environment_ref") != environment_ref:
+            raise BoundaryError("native_episode", "resource_binding_changed")
+        if record.get("preparation", {}).get("ownership") == "owned":
+            context = self.local_environment.native_episode_context(record["environment_ref"])
+            if context["binding"]["runtime_instance_id"] != runtime_id:
+                raise BoundaryError("native_episode", "native_model_context_changed")
+            return cast(str, record["environment_ref"])
+        if record.get("phase") == "actor-associated":
+            context = self.local_environment.native_episode_context(record["environment_ref"])
+            # This proof rejects running, tainted and unresolved Actors; Start never
+            # implicitly stops an old model or retries its unknown operation.
+            self.models.native_actor_retirement_proof(context, record["actor"]["run_id"])
+            record = self.finish_native_episode(record["environment_ref"])
+        if record.get("phase") in {"idle", "closed", "failed"}:
+            record = self.prepare_native_episode({
+                "ownership": "attached", "intent_id": secrets.token_hex(16)})
+            worker = self.local_environment.native_worker
+            if worker is not None:
+                worker.join(timeout=10)
+            record = self.native_episode_status()
+        if record.get("phase") != "ready":
+            raise BoundaryError("native_episode", "native_preparation_unconfirmed")
+        context = self.local_environment.native_episode_context(record["environment_ref"])
+        if context["binding"]["runtime_instance_id"] != runtime_id:
+            raise BoundaryError("native_episode", "native_model_context_changed")
+        return cast(str, record["environment_ref"])
+
     def finish_native_episode(self, environment_ref: object) -> dict[str, Any]:
         self.reference_evaluation.check_access("stop")
         record, client, first = self.local_environment.begin_native_finish(environment_ref)

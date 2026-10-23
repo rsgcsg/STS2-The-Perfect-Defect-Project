@@ -59,6 +59,18 @@ parity and native qualification gates in the native Model guide.
 
 ### Native episode preparation and explicit finish
 
+For the in-game display on an already running ordinary game, `models.takeover`
+uses the same Application preparation and Agent-request owners to attach a fresh
+`cold_current_segment`. It does not seed/reset the game or change speed. After
+explicit Stop, the original typed clean seal is checked before detaching the old
+attached segment and preparing the current game again; changing Model or opening
+a new game never rewrites the old request/evidence. Running, tainted or unknown
+Actors require their original recovery and cannot be silently replaced. CLI/API
+users can use the existing `native-episode attach`, `agent-request` and `run-agent`
+steps over the same owners. A normal Game Mod launch with the selected workbench
+is the current-game entry; a seeded `prepare-owned` Reference is a different,
+explicit mode whose original seed/profile identity checks remain unchanged.
+
 The existing Application exposes prepare/status/finish in its local-environment
 namespace and continues `/api/local-models/run-agent` for execution. Bodies
 select only owned or attached preparation, an intent ID, explicit canonical seed
