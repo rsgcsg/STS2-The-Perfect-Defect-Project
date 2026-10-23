@@ -59,7 +59,8 @@ def test_complete_TRAIN_batches_and_source_checkpoint_are_immutable(calibration_
     assert state["step"] == 1 and len(capsule.parameters.value()["point_ids"]) == 128
     report = measure(store, capsule.artifact_id, PRODUCER,
                      {"variants": [MStdExecution().to_dict(), MStdExecution(
-                         implementation="row-fused-v1", defer_score_sync=True).to_dict()],
+                         implementation="row-fused-v1", defer_score_sync=True).to_dict(),
+                         MStdExecution().to_dict()],
                       "profile": False}, device="cpu")
     value = report.parameters.value()
     assert report.kind == "performance"
@@ -69,7 +70,12 @@ def test_complete_TRAIN_batches_and_source_checkpoint_are_immutable(calibration_
     assert value["DEV_TEST_frames_scored"] is False
     assert value["DEV_TEST_gradients"] is False
     assert value["model_published"] is False and value["formal_resume"] is False
-    assert len(value["variants"]) == 2
+    assert len(value["variants"]) == 3
+    assert (value["variants"][0]["final_numerical_sha256"]
+            == value["variants"][-1]["final_numerical_sha256"])
+    for variant in value["variants"]:
+        assert variant["post_update_raw_scores_within_declared_tolerance"] is True
+        assert set(variant["final_numerical_sha256"]) == {"model", "optimizer", "rng"}
     for variant in value["variants"]:
         assert variant["measured_updates"] == 1 and len(variant["updates"]) == 2
         assert variant["steady_N_per_second"] > 0

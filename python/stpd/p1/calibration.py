@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import argparse
 import copy
+import hashlib
 import io
 import json
 import math
+import platform
 import statistics
 import time
 from dataclasses import asdict
@@ -174,6 +176,8 @@ def measure(
     import torch
     from torch.nn import functional as F
 
+    from stpd.workers.checkpoint_codec import encode_checkpoint
+
     from .model import MStd
     from .numerics import TrainingNumerics
     from .optimization import optimizer_update
@@ -183,8 +187,6 @@ def measure(
             or type(obj["profile"]) is not bool):
         raise BoundaryError("p1_calibration", "bounded_explicit_variants_required")
     executions = [MStdExecution.decode(value) for value in obj["variants"]]
-    if len({json_bytes(value.to_dict()) for value in executions}) != len(executions):
-        raise BoundaryError("p1_calibration", "duplicate_execution_variant")
     started = time.perf_counter()
     manifest, frames, targets, vocabulary, state = read_input(store, input_id)
     read_seconds = time.perf_counter() - started
@@ -195,8 +197,9 @@ def measure(
         raise BoundaryError("p1_calibration", "explicit_available_CPU_or_CUDA_required")
     reports = []
     reference_scores = None
+    reference_final_scores = None
     trace = None
-    for execution in executions:
+    for variant_index, execution in enumerate(executions):
         numerics = TrainingNumerics(config.seed, execution.cpu_threads, selected_device)
         with numerics.scope():
             model = MStd(vocabulary, execution).to(selected_device)
@@ -250,8 +253,31 @@ def measure(
                   "peak_reserved_bytes": torch.cuda.max_memory_reserved(selected_device)
                   if selected_device.type == "cuda" else None,
                   "numerical_trajectory": "explicit_clone_not_formal_resume"}
+        # Diagnostics stay outside the synchronized throughput windows. Hash full
+        # numerical contents, rather than treating equal scalar norms as equal AdamW.
+        report["variant_index"] = variant_index
+        report["final_numerical_sha256"] = {
+            name: hashlib.sha256(encode_checkpoint({"value": value})).hexdigest()
+            for name, value in (("model", model.state_dict()),
+                                ("optimizer", optimizer.state_dict()), ("rng", numerics.rng))
+        }
+        report["gradient_present"] = [name for name, parameter in model.named_parameters()
+                                      if parameter.grad is not None]
+        with numerics.scope(), torch.inference_mode():
+            model.eval()
+            final_scores = [model(frame).detach().cpu() for frame in frames[:4]]
+        if reference_final_scores is None:
+            reference_final_scores = final_scores
+        report["post_update_complete_raw_scores_max_abs_vs_first_variant"] = max(
+            float((wanted - actual).abs().max())
+            for wanted, actual in zip(reference_final_scores, final_scores, strict=True))
+        report["post_update_raw_scores_within_declared_tolerance"] = all(
+            torch.allclose(actual, wanted, rtol=3e-4, atol=2e-5)
+            for wanted, actual in zip(reference_final_scores, final_scores, strict=True))
         reports.append(report)
-        if trace_path is not None and obj["profile"] and trace is None:
+        # Instrument only after every variant's throughput measurement. Profiling
+        # inside the comparison can alter subsequent execution costs.
+        if trace_path is not None and obj["profile"] and variant_index == len(executions) - 1:
             activities = [torch.profiler.ProfilerActivity.CPU]
             if selected_device.type == "cuda":
                 activities.append(torch.profiler.ProfilerActivity.CUDA)
@@ -279,13 +305,15 @@ def measure(
             "source_checkpoint": manifest.parent("checkpoint"), "device": device,
             "source_step": state["step"], "sample_count": len(frames),
             "torch": str(torch.__version__), "cuda": torch.version.cuda,
+            "python": platform.python_version(),
+            "source_runtime": state["identity"]["runtime"],
             "gpu": torch.cuda.get_device_name(selected_device)
             if selected_device.type == "cuda" else None,
             "read_seconds": read_seconds, "total_wall_seconds": time.perf_counter() - started,
             "variants": reports, "DEV_consumed": False, "TEST_consumed": False,
-                         "consumed_means": "model_forward_gradient_or_selection",
-                         "snapshot_validation_reads_all_partitions": True,
-                         "DEV_TEST_frames_scored": False, "DEV_TEST_gradients": False,
+            "consumed_means": "model_forward_gradient_or_selection",
+            "snapshot_validation_reads_all_partitions": True,
+            "DEV_TEST_frames_scored": False, "DEV_TEST_gradients": False,
             "formal_resume": False, "model_published": False}
     artifact = Manifest("performance", producer, (Parent("calibration_input", input_id),),
                         () if trace is None else (trace,), FrozenObject.of(info))

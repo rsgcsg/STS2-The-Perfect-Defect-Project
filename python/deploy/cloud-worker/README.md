@@ -260,11 +260,15 @@ these explanatory fields remain immutable.
 
 Build the exact clean candidate with the ordinary immutable image refresh first.
 The plan JSON contains exactly `variants` (one to eight complete `MStdExecution`
-objects) and `profile` (boolean). A first complete optimizer update is warmup;
+objects; repetitions allow an A/B/B/A control) and `profile` (boolean).
+A first complete optimizer update is warmup;
 remaining updates measure the shared production numerical path. An optional trace
-covers one whole real TRAIN frame, with backward and no extra optimizer update;
+is collected only after all throughput variants and covers one whole real TRAIN
+frame of the last variant, with backward and no extra optimizer update;
 it is not full-batch timing. Keep thread count, microbatch policy and numerical
-trajectory differences explicit in comparisons.
+trajectory differences explicit in comparisons. Post-update raw scores and full
+model/AdamW/RNG digests are measured outside the throughput windows; repeated
+variants must preserve their own state, and differing digests never prove exact resume.
 
 ```bash
 python deploy/cloud-worker/calibrate_p1.py --image EXACT_IM_ID \
