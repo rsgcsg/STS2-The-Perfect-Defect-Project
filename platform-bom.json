@@ -46,9 +46,9 @@
     },
     "live_ui": {
       "version": "0.1.0-rc.19",
-      "source_revision": "9cf03b9ed49068f5f276bb9271dcb98dc2175eb0",
-      "component_tree_revision": "7b7c6290f09da7dca431286dadab46a65e897731",
-      "component_source_digest_sha256": "ab4ad5adf4e56a00624543170c0a646f24c1353c4ed92a2f3b102aea7f815905"
+      "source_revision": "7a9ef76d6d771d353836d9f922c8432ce4bbdc53",
+      "component_tree_revision": "edcdffdceba337e040b519c6ee88feccd427ce29",
+      "component_source_digest_sha256": "f51b41980b1efd77016949ee130914218755e801192824cbe4ae35eaf52c11b3"
     },
     "game_mod": {
       "version": "0.2.0-rc.61",
@@ -900,8 +900,8 @@
     "live_ui": {
       "source_revision": "305a2cac80f0bd3126d66cfc5818477c583a8ce5",
       "source_digest_sha256": "c2a75214cb69678913fceb965ae4d41784a6cb1580311b53a2cc5b4c0c4cb1c4",
-      "current_component_source_revision": "9cf03b9ed49068f5f276bb9271dcb98dc2175eb0",
-      "current_component_source_digest_sha256": "ab4ad5adf4e56a00624543170c0a646f24c1353c4ed92a2f3b102aea7f815905",
+      "current_component_source_revision": "7a9ef76d6d771d353836d9f922c8432ce4bbdc53",
+      "current_component_source_digest_sha256": "f51b41980b1efd77016949ee130914218755e801192824cbe4ae35eaf52c11b3",
       "source_relation": "loaded_ui_source_precedes_current_component",
       "artifact_sha256": "04104ca5cd47c82329be185a8aa7017f7982b2062048fbf825488bead231d1c1",
       "artifact_mvid": "7408a183-f5a8-4f95-a997-dbf588b1536b"
@@ -910,7 +910,7 @@
       "version": "0.2.0-rc.1",
       "platform_source_revision": "b5389a0b4a1bbed37e6a9718776fdf38f06f50c9",
       "platform_source_digest_sha256": "dbcd6ec1df10cad5ad011eb61a2f2ca533d7a110cd3f1296efa9c154b98d0cea",
-      "current_component_source_revision": "9cf03b9ed49068f5f276bb9271dcb98dc2175eb0",
+      "current_component_source_revision": "7a9ef76d6d771d353836d9f922c8432ce4bbdc53",
       "current_component_source_digest_sha256": "9e0313dd83c4e7ca603f393286025364ca3041c6bee8c2410ad32be697221fe6",
       "artifact_sha256": "04104ca5cd47c82329be185a8aa7017f7982b2062048fbf825488bead231d1c1",
       "artifact_mvid": "7408a183-f5a8-4f95-a997-dbf588b1536b",
