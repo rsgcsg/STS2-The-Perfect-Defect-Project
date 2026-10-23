@@ -16,11 +16,10 @@ from .data import digest, json_bytes
 from .execution import MStdExecution
 from .input import INPUT_SPEC, validate_input_spec
 from .model import ARCHITECTURE, MStd
+from .spec import EXECUTION_PACKAGE_SCHEMA, PACKAGE_SCHEMA
 
 ADAPTER = "stpd-p1-mstd-agent"
 PROTOCOL = "sts2.policy-runtime/agent-session-ndjson-1"
-PACKAGE_SCHEMA = "stpd/p1-mstd-model-1"
-EXECUTION_PACKAGE_SCHEMA = "stpd/p1-mstd-model-2"
 
 
 def adapter_identity() -> dict[str, str]:
@@ -154,7 +153,9 @@ def register(
     shutil.copyfile(package / "model.tensor-tree", path)
     model, payload = load_model(path, descriptor["package_sha256"])
     if (
-        descriptor["input_spec"] != input_spec(model.vocabulary)
+        descriptor.get("schema") != payload["schema"]
+        or descriptor.get("inference_execution") != payload.get("inference_execution")
+        or descriptor["input_spec"] != input_spec(model.vocabulary)
         or descriptor["checkpoint_sha256"] != payload["checkpoint_sha256"]
     ):
         raise ValueError("model descriptor differs from package")

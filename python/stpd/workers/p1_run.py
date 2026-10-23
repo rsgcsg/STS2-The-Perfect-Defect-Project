@@ -114,7 +114,9 @@ def materialize_p1_model(store: ArtifactStore, model_id: str, destination: Path)
     loaded, package = load_model(destination / "model.tensor-tree", info["package_sha256"])
     descriptor: dict[str, Any] = json.loads((destination / "model.json").read_bytes())
     if (
-        descriptor["package_sha256"] != info["package_sha256"]
+        descriptor.get("schema") != package["schema"]
+        or descriptor.get("inference_execution") != package.get("inference_execution")
+        or descriptor["package_sha256"] != info["package_sha256"]
         or package["input_spec"] != info["input_spec"]
         or descriptor["input_spec"] != info["input_spec"]
         or sum(p.numel() for p in loaded.parameters()) != descriptor["parameters"]

@@ -6,7 +6,11 @@
 范围、阶段验收及成本检查点归[本轮任务](../plans/p1-prefreeze-2026-10-18/TRAINING_PERFORMANCE_20261023.zh-CN.md)。
 候选与原 f7 worker/31fa 控制应用隔离。用户须先看结果并进一步明确同意，才能
 停止原训练、选定实际切换点或使用新版；开发和实验不构成现场切换许可。
-校准、数值候选和完整状态迁移分别验收；当前不称GPU收益或可切换性通过。
+真实TRAIN短测：row吞吐1.19倍，experimental-packed约9.13倍但改变FP32轨迹；
+只授同轮更新窗口收益，不授总墙时/质量。正常新Run配置/保存恢复/模型2消费者正在
+完成稳定候选复核；原f7跨源码完整迁移仍未实现/验证，不能直接在下一检查点切换。
+性能工程在原recipe/model、Store和应用/Compute各负责层落实，生命周期/SOP归
+[原训练指南](../../python/docs/FULLRUN_TRAINING.md#training-performance-belongs-to-the-existing-chain)，不新增控制器。
 父任务四Agent、最终TEST、40次Reference及完整R2交付仍未完成。
 
 ## 已集成：训练自动接续与首批训练连续性

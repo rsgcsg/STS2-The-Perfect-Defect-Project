@@ -45,6 +45,10 @@ class Population:
                 raise BoundaryError("p1_training", "target_outside_full_catalog")
 
 
+FORMAL_CODE_FILES = ("formal_training.py", "spec.py", "input.py", "model.py", "numerics.py",
+                     "execution.py", "optimization.py")
+
+
 class MStdTrainer:
     """One real epoch visits each train point once, including the true tail batch."""
 
@@ -65,6 +69,8 @@ class MStdTrainer:
             raise BoundaryError("p1_training", "point_leakage_between_partitions")
         self.populations, self.vocabulary, self.config = populations, vocabulary, config
         self.execution = execution or MStdExecution()
+        if self.execution.cpu_threads != config.cpu_threads:
+            raise BoundaryError("p1_training", "formal_recipe_cpu_threads_mismatch")
         self.device = torch.device(config.device)
         cuda_runtime = None
         if self.device.type == "cuda":
@@ -137,8 +143,7 @@ class MStdTrainer:
             },
             "code": {
                 name: digest((root / name).read_bytes())
-                for name in ("formal_training.py", "spec.py", "input.py", "model.py", "numerics.py",
-                             "execution.py", "optimization.py")
+                for name in FORMAL_CODE_FILES
             },
             "codec_sha256": digest((root.parent / "workers/checkpoint_codec.py").read_bytes()),
         }

@@ -20,6 +20,7 @@ from spireagent.task_outcome import AgentTaskOutcome, _empty
 from spireagent.task_outcome import OperationEnd as OperationEnd
 from spireagent.task_outcome import TaskCompletion as TaskCompletion
 from spireagent.task_outcome import TerminalObservation as TerminalObservation
+from stpd.p1.spec import MSTD_PACKAGE_SCHEMAS
 
 MAX_EVENTS_BYTES = 64 * 1024 * 1024
 MAX_BODY_BYTES = 16 * 1024 * 1024
@@ -717,8 +718,8 @@ def _global_model(outcome, value, manifest, events, original):
     baseline = manifest.get("adapter", {}).get("id") == "stpd-p1-baseline-agent"
     if (
         not isinstance(package, dict)
-        or package.get("schema") != (
-            "stpd/p1-baseline-model-1" if baseline else "stpd/p1-mstd-model-1")
+        or package.get("schema") not in (
+            {"stpd/p1-baseline-model-1"} if baseline else MSTD_PACKAGE_SCHEMAS)
         or package.get("package_sha256") != manifest["artifact"]["sha256"]
         or package.get("agent_spec", {}).get("id") != manifest["agent"]["id"]
         or package.get("agent_spec", {}).get("version") != manifest["agent"]["version"]

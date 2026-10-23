@@ -58,6 +58,7 @@ from spireagent.workbench.runtime_install import (
     v2_sdk_available,
     validate_runtime_install,
 )
+from stpd.p1.spec import MSTD_PACKAGE_SCHEMAS
 
 SCHEMA = "stpd/local-models-v1"
 RUNTIME_PACKAGE = "@rsgcsg/sts2-policy-runtime"
@@ -1284,6 +1285,7 @@ class LocalModelService:
                         continue
                     p1_registration = downloaded.parameters.value().get("schema") in {
                         "stpd/p1-mstd-trained-model-1", "stpd/p1-mstd-model-1",
+                        "stpd/p1-mstd-model-2",
                         "stpd/p1-baseline-trained-model-1"}
                     export_supported = False
                     try:
@@ -3175,10 +3177,10 @@ class LocalModelService:
                     return None, "original_package_metadata_changed"
                 package = decode_json(raw)
                 if (not isinstance(package, dict)
-                        or package.get("schema") != (
-                            "stpd/p1-baseline-model-1"
+                        or package.get("schema") not in (
+                            {"stpd/p1-baseline-model-1"}
                             if entry["adapter"] == GLOBAL_BASELINE_ADAPTER
-                            else "stpd/p1-mstd-model-1")
+                            else MSTD_PACKAGE_SCHEMAS)
                         or package.get("package_sha256") != original["artifact"]["sha256"]
                         or package.get("input_spec")
                         != config["package_input_spec"]
