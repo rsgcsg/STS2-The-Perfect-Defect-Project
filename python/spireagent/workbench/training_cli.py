@@ -15,7 +15,7 @@ from spireagent.workbench.developer_server import _local_request, running
 from spireagent.workbench.recipe_contracts import TrainingRequest
 
 ACTIONS = ("capabilities", "status", "progress", "prepare", "start", "pause", "resume", "cancel",
-           "reconcile",
+           "reconcile", "auto-continue", "stop-continuation",
            "amend_wall_budget")
 
 

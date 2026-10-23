@@ -1,4 +1,15 @@
-# 当前：首批四 Agent 的 Modal 启动修复
+# 当前：训练自动接续与首批训练连续性
+
+用户已批准把有界自动接续用于当前首批四 Agent 训练。root 在 develop
+`33de5875` 的独占 `codex/training-auto-continuation-20261023` 实现同一
+Application/Ops/Scheduler 的持久接续，准确范围、验收及停止条件归
+[本轮任务](../plans/p1-prefreeze-2026-10-18/TRAINING_CONTINUATION_20261023.zh-CN.md)。
+已有 f7 worker/Run/输入/配方继续，控制应用候选不替换其 producer。
+source/test、当前部署及实际自动跨段分别验收；目前不称自动接管完成。
+原首批训练、统一 TEST、40次 Reference 与最终 R2 交付仍未完成。
+
+## 历史：首批四 Agent 的 Modal 启动修复
+
 
 root 在 `origin/develop=0519ec9f` 的独占 topic
 `codex/four-agent-modal-wrapper-import-20261023` 修复本批真实云端启动失败。

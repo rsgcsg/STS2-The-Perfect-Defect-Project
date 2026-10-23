@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
+from spireagent.artifact_contracts import Producer
 from spireagent.json_boundary import BoundaryError, decode_json, digest, object_fields, text
 from spireagent.package_identity import PackageIdentityError, validate_installed_package
 from spireagent.source import REPOSITORY_URLS
@@ -127,12 +128,15 @@ class RemoteComputeConfig:
     compute_store: dict[str, Any]
     deployment: str = "local_scheduler"
     observation_only: bool = False
+    execution_producer: Producer | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {"deployment": self.deployment, "operations_path": str(self.operations_path),
                 "target_path": str(self.target_path), "budget_limit": self.budget_limit,
                 "reserved_units": self.reserved_units, "compute_store": dict(self.compute_store),
-                **({"observation_only": True} if self.observation_only else {})}
+                **({"observation_only": True} if self.observation_only else {}),
+                **({"execution_producer": self.execution_producer.to_dict()}
+                   if self.execution_producer is not None else {})}
 
     @classmethod
     def decode(cls, value: object) -> RemoteComputeConfig:
@@ -140,8 +144,13 @@ class RemoteComputeConfig:
                             if isinstance(value, dict) else False)
         if type(observation_only) is not bool:
             raise BoundaryError("remote_compute", "invalid_observation_mode")
+        execution_producer = (
+            Producer.decode(value["execution_producer"])
+            if isinstance(value, dict) and "execution_producer" in value else None
+        )
         if isinstance(value, dict):
-            value = {key: item for key, item in value.items() if key != "observation_only"}
+            value = {key: item for key, item in value.items()
+                     if key not in {"observation_only", "execution_producer"}}
         obj = object_fields(value, {"deployment", "operations_path", "target_path",
                                     "budget_limit", "reserved_units", "compute_store"},
                             "remote_compute")
@@ -166,7 +175,7 @@ class RemoteComputeConfig:
         else:
             raise BoundaryError("remote_compute", "invalid_compute_store_binding")
         return cls(paths[0], paths[1], obj["budget_limit"], obj["reserved_units"], dict(binding),
-                   observation_only=observation_only)
+                   observation_only=observation_only, execution_producer=execution_producer)
 
 
 @dataclass(frozen=True)

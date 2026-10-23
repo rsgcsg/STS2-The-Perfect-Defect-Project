@@ -1458,3 +1458,57 @@ transport timeout therefore leaves the domain outcome unknown; never resend
 only confirms local preparation; transfer completion is explicitly not inferred.
 After that same request creates a job, follow its exact job/Run/attempt. Detailed
 durable transfer-phase progress and asynchronous preparation are not yet provided.
+
+
+### 同一 remote Run 的有界自动接续
+
+`training auto-continue --execution remote --config PROJECT --input policy.json`
+经同一个 Application HTTP 入口记录授权。正文准确包含 `job_id`、
+`expected_attempt_id`、`deadline_unix`（UTC Unix秒）、`max_new_segments`（1–64）
+及 `max_seconds`（每新分段原 Ops wall 预约，必须覆盖 target timeout）。截止应按
+本批真实累计资源上限计算，预留准备/保存与收尾；本接口不会替用户增加预算或
+退还历史预约。`status` 返回同 Ops 的 `continuation` 和全部原 job，`progress`
+继续按准确 job/attempt 看实际更新。没有专用 GUI 按钮也可完成全部控制。
+
+应先确认配置的 target、冻结 Run/recipe、用途授权、费用/资源上限和原句柄，
+再开启接续。每段 worker 正常保存后，Scheduler 校验完整 receipt/checkpoint 并
+持久接受 PAUSED；应用仅选该 receipt 的准确 CP，生成新 intent。新 job 的预约、
+入队和策略游标在同一 Ops 事务提交；进程重启不会重复消费授权。下一次派发仍由
+原 Scheduler 做完整 workload/checkpoint/use preflight。保留所有旧 CP、attempt、
+失败分母；百分比/DEV-best/周期保存规则和模型选择不因接续改变。
+
+`training stop-continuation --execution remote --config PROJECT --input control.json`
+正文为策略 root 或 current 的 `job_id` 和其 `expected_attempt_id`。它关闭未来接续，
+取消该策略尚未启动的排队段；运行段继续受其原硬超时约束。要停运行段，仍用
+`cancel` 原 current job。开启策略时手动 `resume` 同 Run 会拒绝，应先关闭策略，
+避免两条分支各自继续。重开/扩额是新的显式授权动作，不由时钟自动增加。
+
+原请求 `running/uncertain/submission_unknown` 时只由原 Scheduler 查原 handle，
+不创建下一段。原结果失败/取消、正常完成、截止/分段数/累计预约耗尽、身份不符
+会停止接续并保留原因。暂停全局 Ops 时不接续。服务在下一段排队后离线很久，
+恢复时若已不够完整分段预约时间，会取消该排队段，保留预约，禁止迟到启动。
+网络读取失败不证明 worker 终止；检查原 status/progress/provider 原请求，不重投。
+恢复时使用同一私有 Ops/Curation/Store 和可信部署配置，先查 status 的策略与当前
+job/attempt/handle，再核实际更新。备份/恢复沿原 Ops SOP，不复制认证或另起调度账。
+
+默认仍要求控制应用源码与 target 执行 producer 相同。确需在冻结训练期间升级
+控制应用时，可信 `remote_compute.execution_producer` 可显式填入原 target 的完整
+Producer 三字段；必须完全相等。这个例外仅用于既有 Run 的观察、恢复和接续；
+`prepare/start` 新建 Run/Input 仍要求当前应用源码与 target producer 相等，禁止把
+升级代码构造的新原件标成旧源码。升级前验证新应用能读原 Run/CP且受影响消费者
+通过，停旧本地 owner（不取消远端 worker），备份原 Ops/配置，启动唯一新 owner，
+核原 handle 未变，再开启策略。worker 自身源码、lock、target、Run/CP producer不改。
+回滚前先关闭策略，取消未运行的接续队列，再恢复旧应用/配置；不删除原 Ops 历史。
+
+本地应用只在电脑醒着、网络可用时派发接续；合盖/睡眠不等于 remote Stop，远端
+worker仍按本段硬超时/保存规则运行。恢复后同 owner 查原账接续；要求本地长期离线
+仍及时接续时，把同一应用 owner 移到常在线机器并转交唯一调度锁。当前不承诺自动
+部署、跨设备数值恢复、所有配方资格或聊天永久准时。聊天 heartbeat 用于异常与
+最终交付提醒，不能代替持久生命周期能力。
+
+准入截止随自动生成的 job 选项持久绑定；Scheduler 在完整 preflight 之后、提交
+provider之前，再按真实墙钟检查是否仍够一整段 `max_seconds`。不能仅依靠入队前
+检查。为 transport 和 provider 内部准备留余量：本批 wall预约9000秒、target原生
+7200秒。冻结 SSH 监督器仍以实际启动为起点执行其原相对硬超时；本特性没有把新
+绝对截止传入旧监督器，不能声称远端在截止秒必定被强杀。总资源账仍应保守计所有
+准备/闲置时间，硬限前留足停机余量，异常由原句柄核对；不能靠本机永不睡眠证明。

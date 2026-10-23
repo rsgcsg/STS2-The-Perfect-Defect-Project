@@ -412,7 +412,8 @@ class Operations:
         options: dict[str, Any] | None = None,
     ) -> str:
         options = {} if options is None else options
-        if not isinstance(options, dict) or set(options) - {"resume", "stop_after"}:
+        if (not isinstance(options, dict)
+                or set(options) - {"resume", "stop_after", "execution_deadline_unix"}):
             raise BoundaryError("hub", "invalid_job_options")
         resume, stop_after = options.get("resume"), options.get("stop_after")
         if resume is not None and (
@@ -425,6 +426,12 @@ class Operations:
             raise BoundaryError("hub", "invalid_stop_after")
         if kind == "feature" and (resume is not None or stop_after is not None):
             raise BoundaryError("hub", "feature_resume_not_supported")
+        absolute_deadline = options.get("execution_deadline_unix")
+        if absolute_deadline is not None and (
+            kind != "training" or type(absolute_deadline) not in {int, float}
+            or not math.isfinite(absolute_deadline) or absolute_deadline <= 0
+        ):
+            raise BoundaryError("hub", "invalid_execution_deadline")
         encoded_options = json.dumps(options, sort_keys=True, separators=(",", ":"))
         if (
             kind not in {"feature", "training"}
@@ -443,37 +450,43 @@ class Operations:
         ):
             raise BoundaryError("hub", "invalid_budget")
         with self.transaction() as db:
-            old = db.execute("SELECT * FROM jobs WHERE request_key=?", (request_key,)).fetchone()
-            if old is not None:
-                if (
-                    old["kind"],
-                    old["input_id"],
-                    old["max_seconds"],
-                    old["reserved_units"],
-                    old["options"],
-                ) != (
-                    kind,
-                    input_id,
-                    max_seconds,
-                    reserved_units,
-                    encoded_options,
-                ):
-                    raise BoundaryError("hub", "job_request_conflict")
-                return str(old["id"])
-            # Reservations remain consumed after completion until an explicit new campaign.
-            total = int(
-                db.execute("SELECT COALESCE(SUM(reserved_units),0) FROM jobs").fetchone()[0]
-            )
-            if total + reserved_units > budget_limit:
-                raise BoundaryError("hub", "budget_exhausted")
-            job_id = secrets.token_hex(16)
-            db.execute(
-                "INSERT INTO jobs(id,request_key,kind,input_id,max_seconds,reserved_units,"
-                "status,options) VALUES(?,?,?,?,?,?,'queued',?)",
-                (job_id, request_key, kind, input_id, max_seconds, reserved_units, encoded_options),
-            )
-            self._event(db, "admin", "job_enqueued", job_id, {"input_id": input_id})
-            return job_id
+            return self._enqueue(db, kind, input_id, request_key, max_seconds,
+                                 reserved_units, budget_limit, encoded_options)
+
+    def _enqueue(self, db: sqlite3.Connection, kind: str, input_id: str, request_key: str,
+                 max_seconds: int, reserved_units: int, budget_limit: int,
+                 encoded_options: str) -> str:
+        old = db.execute("SELECT * FROM jobs WHERE request_key=?", (request_key,)).fetchone()
+        if old is not None:
+            if (
+                old["kind"],
+                old["input_id"],
+                old["max_seconds"],
+                old["reserved_units"],
+                old["options"],
+            ) != (
+                kind,
+                input_id,
+                max_seconds,
+                reserved_units,
+                encoded_options,
+            ):
+                raise BoundaryError("hub", "job_request_conflict")
+            return str(old["id"])
+        # Reservations remain consumed after completion until an explicit new campaign.
+        total = int(
+            db.execute("SELECT COALESCE(SUM(reserved_units),0) FROM jobs").fetchone()[0]
+        )
+        if total + reserved_units > budget_limit:
+            raise BoundaryError("hub", "budget_exhausted")
+        job_id = secrets.token_hex(16)
+        db.execute(
+            "INSERT INTO jobs(id,request_key,kind,input_id,max_seconds,reserved_units,"
+            "status,options) VALUES(?,?,?,?,?,?,'queued',?)",
+            (job_id, request_key, kind, input_id, max_seconds, reserved_units, encoded_options),
+        )
+        self._event(db, "admin", "job_enqueued", job_id, {"input_id": input_id})
+        return job_id
 
     def jobs(self) -> list[dict[str, Any]]:
         with self.transaction() as db:

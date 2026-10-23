@@ -372,7 +372,7 @@ def test_status_observes_no_jobs_without_initializing_or_querying_remote(tmp_pat
         monkeypatch.setattr(app.remote_training, "_context", no_remote_context)
         assert call("status") == {
             "schema": "spireagent/remote-training-status-1", "jobs": [],
-            "scheduler_error": None, "automatic_retry": False}
+            "scheduler_error": None, "automatic_retry": False, "continuation": None}
         assert app.remote_training._scheduler is None
         assert app.remote_training._operations is None
         assert app.remote_training._thread is None and not provider.calls
