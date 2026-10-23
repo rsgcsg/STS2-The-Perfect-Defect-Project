@@ -80,6 +80,8 @@ def prepare_p1_run(
         raise BoundaryError("p1_workload", "formal_recipe_cpu_threads_mismatch")
     original = None
     if initial_checkpoint is not None:
+        if execution_policy is None:
+            raise BoundaryError("p1_derivation", "explicit_frozen_execution_policy_required")
         from .derivation import require_execution, source_workload
 
         checked_digest(initial_checkpoint, "p1_workload.initial_checkpoint")
@@ -225,6 +227,8 @@ def verify_p1_run(store: ArtifactStore, run_id: str, producer: Producer) -> P1Wo
     if info_run["schema"] == DERIVED_RUN_SCHEMA:
         from .derivation import DERIVATION, LEGACY_PRODUCER, require_execution
 
+        if "execution_policy" not in info_run:
+            raise BoundaryError("p1_derivation", "explicit_frozen_execution_policy_required")
         require_execution(execution)
         original_cp = store.get_manifest(run.parent("original_checkpoint"))
         original_run = store.get_manifest(run.parent("original_run"))

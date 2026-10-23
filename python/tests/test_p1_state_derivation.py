@@ -131,6 +131,36 @@ def test_full_state_preserved_DAG_remapped_pause_replacement_result_export(tmp_p
     assert run.parameters.value()["schema"] == DERIVED_RUN_SCHEMA
     assert run.parent("original_run") == original.artifact_id
     workload = verify_p1_run(store, run.artifact_id, PRODUCER)
+    with pytest.raises(BoundaryError, match="explicit_frozen_execution_policy"):
+        prepare_p1_run(
+            store,
+            snapshot.artifact_id,
+            PRODUCER,
+            workload.config,
+            "d" * 32,
+            initial_checkpoint=checkpoint,
+        )
+    missing_policy = replace(
+        run,
+        parameters=FrozenObject.of(
+            {k: v for k, v in run.parameters.value().items() if k != "execution_policy"}
+        ),
+    )
+    store.publish(missing_policy)
+    with pytest.raises(BoundaryError, match="explicit_frozen_execution_policy"):
+        verify_p1_run(store, missing_policy.artifact_id, PRODUCER)
+    from stpd.p1.derivation import source_checkpoint_dag
+    from stpd.p1.preparation import input_transfer_inventory
+
+    inventory = input_transfer_inventory(store, run.artifact_id)
+    computed = {
+        r["artifact_id"]
+        for p in inventory["compute_payloads"]
+        for r in p["references"]
+        if r["role"] == "checkpoint"
+    }
+    assert computed == {m.artifact_id for m in source_checkpoint_dag(store, checkpoint, original)}
+    assert "original_full_checkpoint_DAG" in inventory["worker_reads"]
     with pytest.raises(BoundaryError, match="checkpoint_execution_identity"):
         MStdTrainer(
             populations_from_reader(workload.reader),
@@ -216,6 +246,12 @@ Path(sys.argv[3]).write_text(json.dumps(receipt.to_dict()))
 
     loaded, package = load_model(tmp_path / "export/model.tensor-tree", metadata["package_sha256"])
     assert loaded.execution.to_dict() == policy
+    import torch
+
+    with torch.inference_mode():
+        frame = populations_from_reader(workload.reader)["dev"].frames[0]
+        scores = loaded(frame)
+    assert bool(torch.isfinite(scores).all()) and scores.numel() == len(frame.choices)
     assert package["schema"] == (
         "stpd/p1-mstd-model-1" if policy == MStdExecution().to_dict() else "stpd/p1-mstd-model-2"
     )
@@ -313,6 +349,8 @@ def test_normal_Application_CLI_curation_Ops_derived_start_and_resume(tmp_path):
             "execution_policy": POLICY,
             "initial_checkpoint": checkpoint,
         }
+        with pytest.raises(BoundaryError, match="explicit_frozen_execution_policy"):
+            call("start", body={k: v for k, v in body.items() if k != "execution_policy"})
         provider.ready = True
         first = call("start", body=body)["jobs"][0]
         paused = settled(call, first["id"], "paused")
@@ -413,7 +451,11 @@ def test_qualification_tool_real_updates_receipts_and_fixed_DEV_without_TEST(tmp
     assert report["ending_step"] - report["starting_step"] == 4
     assert report["TEST_scored"] is False
     assert report["quality_or_live_switch_qualified"] is False
+    import torch
+
+    rng = torch.get_rng_state().clone()
     dev = fixed_dev_comparison(store, run.artifact_id, receipt2.checkpoint_id)
+    assert torch.equal(rng, torch.get_rng_state())
     assert dev["TEST_scored"] is False
     assert dev["reference_DEV"]["N"] == dev["target_DEV"]["N"] == 1
     assert dev["historical_selection_recomputed"] is False

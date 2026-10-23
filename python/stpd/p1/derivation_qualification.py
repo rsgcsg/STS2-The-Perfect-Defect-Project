@@ -154,6 +154,9 @@ def fixed_dev_comparison(store: ArtifactStore, run_id: str, checkpoint_id: str) 
 
     Run on the explicitly provisioned qualification worker after both update calls.
     No optimizer step, TEST evaluation, selection mutation or artifact publication.
+    Trusted worker precondition: the normal Application already required/reserved
+    Curation use before preparing this Run. This function cannot grant or check
+    that local-ledger authority from a remote Store and must not replace admission.
     """
     import torch
 
@@ -175,8 +178,11 @@ def fixed_dev_comparison(store: ArtifactStore, run_id: str, checkpoint_id: str) 
         workload.execution,
     )
     trainer.restore(checkpoint.raw)
-    with trainer._numerics.scope(), torch.random.fork_rng(devices=[]):
-        reference = MStd(workload.vocabulary, MStdExecution()).to(trainer.device)
+    devices = [trainer.device.index or 0] if trainer.device.type == "cuda" else []
+    with trainer._numerics.scope(), torch.random.fork_rng(devices=devices):
+        with torch.device("cpu"):
+            reference = MStd(workload.vocabulary, MStdExecution())
+        reference = reference.to(trainer.device)
         reference.load_state_dict(trainer.model.state_dict(), strict=True)
         ref = trainer.evaluate(reference, trainer.populations["dev"])
         target = trainer.evaluate(trainer.model, trainer.populations["dev"])

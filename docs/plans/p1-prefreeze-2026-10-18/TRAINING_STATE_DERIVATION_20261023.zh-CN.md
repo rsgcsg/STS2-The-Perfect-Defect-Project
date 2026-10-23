@@ -94,7 +94,9 @@ Ops 入队、Scheduler/worker/Store/Receipt 均复用原路径。
 4. `report` 子命令读取两次真正的请求/receipt，核派生初始全状态 SHA、来源/DAG、
    总4步、有限模型/AdamW/RNG/sampler、模型和 AdamW 确有更新、TEST 始终 null。
    在已授权的隔离 GPU worker 运行 `fixed-dev`，用同一最新权重、完整固定 DEV
-   做 reference/target 描述性对照；不改历史选择、不调参、不读 TEST 评分。
+   做 reference/target 描述性对照；不改历史选择、不调参、不读 TEST 评分。`fixed-dev` 是受信任隔离 worker 的工具：
+   normal Application 须预先 require/reserve/use 并准备此 Run；工具不能从远端
+   Store 自行检查或授予本机 Curation 账权限，单独运行不能取代这一步。
    Store 的 Snapshot 完整性验证会物理读取所有分区，不等于 TEST 数值使用。
 5. 完整冷读回目标 CP 与 typed receipt、实际原/目标身份、worker 终止/费用和未完成项，
    再由 root 决定是否已达到可提交给用户的具体切换候选。实际切换须用户进一步批准。
@@ -108,8 +110,17 @@ request 提案和审计原收据；是否分配资源、真实调用和终止证
 不是实际 f7 字节证明。真实目标链覆盖 Store/ComputeRequest/worker、全状态 hash、
 DAG、暂停、新 Python 进程恢复、最终 best/result/导出/model2，及 source/lock/code/
 TEST/phase/Snapshot/config/runtime/partition/sampler/未知字段反例。
-reference 政策、正常 Application/CLI/Curation/Ops 和资格工具检查在本候选继续完成，
-最终准确结果由本任务后续追加及提交收据绑定，不借首轮结果称新代码全部通过。
+`0625d156` clean 候选扩展 CPU 16 passed /80.86s，原 workload/transfer/Scheduler
+回归17 passed /25.07s；两政策、正常 Application/CLI/Curation/Ops、旧 best
+最终保留、实际 CPU inference 与资格工具都走实际消费者。10源码 mypy、ruff、
+closeout、diff-check 通过；closeout 选择包含 PR226 依赖的 full gate，未在本子任务
+另跑全套或称 CI 通过。非作者已复核并提出两处真实缺口：显式政策应强制、派生
+compute-read 库存需含原 CP DAG。修正及相关重验绑定后续 head，原16+17结果不
+覆盖这些新增改动。完整源码/测试原件位于作者的独立 evidence 目录，供 root 亲核。
+
+派生准备库存现在与实际转换共用有限元数据 DAG 遍历，把原 root/best/里程碑
+CP payload 纳入 compute-read unique bytes，完整 provenance copy 仍沿原 Store。
+逐个加载和释放数值状态，不在历史递归栈保留多份70MB checkpoint。
 
 此轮用例已通过后，仅移除作者专属 `pytest-301` 的4.2GB合成夹具，
 `df` available 从1.0GiB变4.4GiB（实际净增约3.4GiB），未碰其他测试/数据/缓存。

@@ -473,6 +473,8 @@ class RemoteTrainingService:
             execution_options["execution_policy"] = checked_recipe_execution_policy(
                 recipe, obj["execution_policy"])
         if "initial_checkpoint" in obj:
+            if "execution_policy" not in obj:
+                raise BoundaryError("remote_training", "explicit_frozen_execution_policy_required")
             if recipe != P1_MSTD_RECIPE:
                 raise BoundaryError("remote_training", "derivation_requires_M_std_recipe")
             execution_options["initial_checkpoint"] = digest(

@@ -19,7 +19,7 @@ from stpd.workers.checkpoint_codec import decode_checkpoint, encode_checkpoint
 
 from .data import digest
 from .execution import MStdExecution
-from .spec import CHECKPOINT_SCHEMA, DERIVED_CHECKPOINT_SCHEMA
+from .spec import CHECKPOINT_FRACTIONS, CHECKPOINT_SCHEMA, DERIVED_CHECKPOINT_SCHEMA
 
 LEGACY_PRODUCER = Producer(
     "rsgcsg/STS2-The-Perfect-Defect-Project",
@@ -165,6 +165,67 @@ def transfer_state(state: dict[str, Any], trainer: Any) -> tuple[bytes, str]:
     return raw, before
 
 
+def source_checkpoint_dag(
+    store: ArtifactStore,
+    checkpoint_id: str,
+    run: Manifest,
+) -> tuple[Manifest, ...]:
+    """Bound, verify metadata edges and order the exact f7 CP read set without tensors."""
+    if run.producer != LEGACY_PRODUCER:
+        raise BoundaryError("p1_derivation", "unsupported_original_source_or_lock")
+    ordered: list[Manifest] = []
+    seen: set[str] = set()
+    visiting: set[str] = set()
+
+    def visit(identity: str) -> None:
+        if identity in seen:
+            return
+        if identity in visiting or len(seen) + len(visiting) >= MAX_CHECKPOINTS:
+            raise BoundaryError("p1_derivation", "historical_checkpoint_DAG_limit_or_cycle")
+        visiting.add(identity)
+        manifest = store.get_manifest(identity)
+        info = manifest.parameters.value()
+        prior = info.get("prior_checkpoints")
+        if (
+            manifest.kind != "checkpoint"
+            or manifest.producer != LEGACY_PRODUCER
+            or manifest.parent("run") != run.artifact_id
+            or manifest.parent("training_input") != run.parent("training_input")
+            or info.get("schema") != CHECKPOINT_SCHEMA
+            or set(info)
+            != {
+                "schema",
+                "attempt",
+                "optimizer_updates",
+                "phase",
+                "reason",
+                "fractions",
+                "prior_checkpoints",
+                "prior_best_checkpoint",
+                "became_best",
+            }
+            or not isinstance(prior, dict)
+            or any(k not in {str(f) for f in CHECKPOINT_FRACTIONS} for k in prior)
+            or {p.role for p in manifest.payloads} != {"checkpoint"}
+        ):
+            raise BoundaryError("p1_derivation", "historical_checkpoint_binding_mismatch")
+        refs = {"checkpoint_" + k: v for k, v in prior.items()}
+        if info.get("prior_best_checkpoint") is not None:
+            refs["prior_best"] = info["prior_best_checkpoint"]
+        if {p.role for p in manifest.parents} != {"run", "training_input", *refs}:
+            raise BoundaryError("p1_derivation", "historical_checkpoint_parent_mismatch")
+        for role, origin in sorted(refs.items()):
+            if manifest.parent(role) != origin:
+                raise BoundaryError("p1_derivation", "historical_checkpoint_parent_mismatch")
+            visit(origin)
+        seen.add(identity)
+        visiting.remove(identity)
+        ordered.append(manifest)
+
+    visit(checkpoint_id)
+    return tuple(ordered)
+
+
 def derive_checkpoints(
     store: ArtifactStore,
     workload: Any,
@@ -179,29 +240,15 @@ def derive_checkpoints(
     original_id = workload.run.parent("original_checkpoint")
     source, root = source_workload(store, original_id)
     mapped: dict[str, str] = {}
-    visiting: set[str] = set()
     root_identity = root.state["identity"]
     transfer_state(root.state, trainer)  # validate root/runtime before publishing any derived CP
-
-    def visit(identity: str) -> str:
-        if identity in mapped:
-            return mapped[identity]
-        if identity in visiting or len(mapped) + len(visiting) >= MAX_CHECKPOINTS:
-            raise BoundaryError("p1_derivation", "historical_checkpoint_DAG_limit_or_cycle")
-        visiting.add(identity)
-        # Traverse manifests first. Holding every decoded 70MB checkpoint on a
-        # recursive best chain would multiply memory by historical chain length.
-        manifest = store.get_manifest(identity)
-        info = manifest.parameters.value()
-        if (
-            manifest.kind != "checkpoint"
-            or manifest.producer != source.run.producer
-            or info.get("schema") != CHECKPOINT_SCHEMA
-            or not isinstance(info.get("prior_checkpoints"), dict)
-        ):
-            raise BoundaryError("p1_derivation", "historical_checkpoint_binding_mismatch")
-        prior = {k: visit(v) for k, v in sorted(info["prior_checkpoints"].items())}
-        best = visit(info["prior_best_checkpoint"]) if info.get("prior_best_checkpoint") else None
+    # Only manifests survive traversal. Full decoded 70MB states are processed
+    # one at a time, rather than held along a recursive historical best chain.
+    for original in source_checkpoint_dag(store, original_id, source.run):
+        identity = original.artifact_id
+        info = original.parameters.value()
+        prior = {k: mapped[v] for k, v in sorted(info["prior_checkpoints"].items())}
+        best = mapped[info["prior_best_checkpoint"]] if info["prior_best_checkpoint"] else None
         checked = verify_p1_checkpoint(store, identity, source)
         if checked.state["identity"] != root_identity or checked.state["step"] > root.state["step"]:
             raise BoundaryError(
@@ -244,7 +291,6 @@ def derive_checkpoints(
         )
         store.publish(manifest)
         mapped[identity] = manifest.artifact_id
-        visiting.remove(identity)
         publish_event(
             "checkpoint",
             checkpoint_id=manifest.artifact_id,
@@ -253,9 +299,7 @@ def derive_checkpoints(
             original_checkpoint=identity,
             preserved_state_sha256=preserved,
         )
-        return manifest.artifact_id
-
-    derived = visit(original_id)
+    derived = mapped[original_id]
     checked = verify_p1_checkpoint(store, derived, workload)
     trainer.restore(checked.raw)
     if state_sha256(decode_checkpoint(trainer.checkpoint())) != state_sha256(root.state):
