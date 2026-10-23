@@ -116,7 +116,16 @@ TEST/phase/Snapshot/config/runtime/partition/sampler/未知字段反例。
 closeout、diff-check 通过；closeout 选择包含 PR226 依赖的 full gate，未在本子任务
 另跑全套或称 CI 通过。非作者已复核并提出两处真实缺口：显式政策应强制、派生
 compute-read 库存需含原 CP DAG。修正及相关重验绑定后续 head，原16+17结果不
-覆盖这些新增改动。完整源码/测试原件位于作者的独立 evidence 目录，供 root 亲核。
+覆盖这些新增改动。
+
+修正后的 clean `c847e55e`：迁移16 passed /75.58s；原普通 inventory 单项
+1 passed /0.69s；10源码 mypy、ruff、closeout、diff-check 通过。非作者复查
+A/B 修正、共享 DAG、normal CLI 四 phase，独立验证漏 policy 在 source 读取前
+拒绝，并核全部 f7 code/codec 常量与原 Git 字节一致；源码范围可接受。
+原17项中未受本轮修正影响的路径沿原收据复用，没有虚称全部重跑。
+原件和绑定 producer/日志 SHA 的收据位于作者独立目录
+`training-state-derivation-evidence`，root 须亲核后集成；完整选定 CI 仍归组合候选，
+实际 f7 checkpoint 字节、CUDA、新部署和原训练切换继续明确未验证。
 
 派生准备库存现在与实际转换共用有限元数据 DAG 遍历，把原 root/best/里程碑
 CP payload 纳入 compute-read unique bytes，完整 provenance copy 仍沿原 Store。
