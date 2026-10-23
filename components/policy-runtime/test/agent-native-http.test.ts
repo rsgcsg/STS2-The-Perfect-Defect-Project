@@ -4,8 +4,8 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { createRequire } from "node:module";
 import { createServer } from "node:net";
 import { fileURLToPath } from "node:url";
-import { execFileSync } from "node:child_process";
-import { mkdtemp, symlink, writeFile, rm } from "node:fs/promises";
+import { execFileSync, spawnSync } from "node:child_process";
+import { mkdtemp, symlink, writeFile, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { nativeRuntimeFixture, CHILD } from "./native-runtime-fixtures.js";
@@ -44,7 +44,7 @@ describe("same native Runtime HTTP/CLI application surface", () => {
       expect(f.source.requests.filter(r => r.path.includes("/actions/"))).toHaveLength(0);
       const reconciled = await fetch(`${service.address}/v2/reconcile`, { method: "POST", headers, body: JSON.stringify({ request_id: id }) });
       expect(await reconciled.json()).toMatchObject({ schema: "sts2.policy-runtime/http-2", request_id: id, resolution: "resolved",
-        status: { schema: "sts2.policy-runtime/agent-session-status-1", mode: "human", pending_request: null } });
+        status: { schema: "sts2.policy-runtime/agent-session-status-2", mode: "human", pending_request: null } });
       expect(f.source.requests.filter(r => r.path.includes("/actions/"))).toHaveLength(1);
     } finally { await f.close(); await service.close(); }
   });
@@ -70,7 +70,14 @@ describe("same native Runtime HTTP/CLI application surface", () => {
       if (compiled) await rm(compiled, { recursive: true, force: true });
       progress("compiled-source-cleaned");
     });
-    it("native CLI strictly selects the new manifest and produces public startup/status without legacy fields or executable details", async () => {
+    it.each(["--max-auto-submissions", "--max-policy-calls", "--auto-deadline-ms"])("rejects continuous mixed with %s before opening any artifact or adapter", cap => {
+      const result = spawnSync(process.execPath, [join(compiled!, "cli.js"), "--manifest", "/not-opened.json", "--adapter-command", "/not-launched",
+        "--autonomy-mode", "continuous", cap, "1"], { encoding: "utf8", timeout: 2000 });
+      expect(result.status).toBe(1); expect(result.stdout).toBe("");
+      expect(result.stderr).toContain("continuous cannot include finite cap flags");
+      expect(result.stderr).not.toContain("ENOENT");
+    });
+    it.each(["bounded", "continuous"] as const)("native CLI strictly selects the manifest and produces v2 startup/status (%s)", async autonomyMode => {
       const f = await nativeRuntimeFixture(); await f.runtime.stop();
       // Its first temporary Runtime is closed; the CLI owns a separate explicit run.
       const listen = await freePort();
@@ -79,7 +86,7 @@ describe("same native Runtime HTTP/CLI application surface", () => {
         const cli = join(compiled!, "cli.js");
         child = spawn(process.execPath, [cli, "--manifest", f.manifestPath, "--adapter-command", process.execPath,
           "--adapter-arg", CHILD, "--adapter-arg", f.manifestPath, "--connector-endpoint", f.source.address,
-          "--listen-port", String(listen), "--evidence-root", f.root, "--mode", "human"], { stdio: ["ignore", "pipe", "pipe"] });
+          "--listen-port", String(listen), "--evidence-root", f.root, "--mode", autonomyMode === "continuous" ? "auto" : "human", ...(autonomyMode === "continuous" ? ["--autonomy-mode", "continuous"] : [])], { stdio: ["ignore", "pipe", "pipe"] });
         closed = once(child, "close");
         progress("cli-spawned");
         let diagnostics = ""; child.stderr!.on("data", data => { diagnostics += String(data); });
@@ -92,20 +99,38 @@ describe("same native Runtime HTTP/CLI application surface", () => {
           });
         });
         progress("startup-observed");
-        expect(startup).toMatchObject({ schema: "sts2.policy-runtime/agent-session-startup-1", managed_environment: null,
-          agent_manifest_id: f.manifest.manifest_id, mode: "human", adapter: f.manifest.adapter });
+        expect(startup).toMatchObject({ schema: "sts2.policy-runtime/agent-session-startup-2", managed_environment: null,
+          agent_manifest_id: f.manifest.manifest_id, mode: autonomyMode === "continuous" ? "auto" : "human", adapter: f.manifest.adapter,
+          autonomy_budget: autonomyMode === "continuous" ? { mode: "continuous" } : { mode: "bounded", maxSubmissions: 16, maxPolicyCalls: 32, deadlineMs: 60000 } });
         expect(startup).not.toHaveProperty("policy_artifact_sha256"); expect(startup).not.toHaveProperty("manifest_id");
         expect(JSON.stringify(startup)).not.toContain(CHILD); expect(JSON.stringify(startup)).not.toContain(f.manifestPath);
         const status = await (await fetch(`${startup.address}/status`)).json();
-        expect(status.status.schema).toBe("sts2.policy-runtime/agent-session-status-1");
+        expect(status.status.schema).toBe("sts2.policy-runtime/agent-session-status-2");
+        expect(status.status.autonomy_budget).toMatchObject({ mode: autonomyMode,
+          max_submissions: autonomyMode === "continuous" ? null : 16,
+          remaining_ms: autonomyMode === "continuous" ? null : 60000 });
         expect(status.status.agent_manifest_sha256).toBe(startup.agent_manifest_sha256);
         progress("status-verified");
-        const stopped = await fetch(`${startup.address}/v2/stop`, { method: "POST",
-          headers: { "content-type": "application/json", "x-sts2-policy-run-id": String(startup.run_id) }, body: "{}" });
-        expect(stopped.status).toBe(200); expect((await stopped.json()).status.lifecycle).toBe("stopped");
-        progress("stop-confirmed");
+        if (autonomyMode === "continuous") {
+          const started = performance.now();
+          while (!f.source.requests.some(request => request.path.endsWith("/actions"))) {
+            if (performance.now() - started > 2000) throw new Error("continuous CLI did not offer its real native action");
+            await new Promise(resolve => setTimeout(resolve, 5));
+          }
+          child.kill("SIGTERM");
+        } else {
+          const stopped = await fetch(`${startup.address}/v2/stop`, { method: "POST",
+            headers: { "content-type": "application/json", "x-sts2-policy-run-id": String(startup.run_id) }, body: "{}" });
+          expect(stopped.status).toBe(200); expect((await stopped.json()).status.lifecycle).toBe("stopped");
+        }
+        progress("shutdown-requested");
         const [code] = await closed; expect(code, diagnostics).toBe(0);
         progress("cli-close-observed");
+        if (autonomyMode === "continuous") {
+          const rows = (await readFile(join(f.root, String(startup.run_id), "events.jsonl"), "utf8")).trim().split("\n").map(line => JSON.parse(line));
+          expect(rows.at(-1)).toMatchObject({ schema: "sts2.policy-runtime/agent-session-event-2", kind: "stopped", payload: { controller: "released", pending_request: null } });
+          expect(rows.some(event => event.kind === "controller_released")).toBe(true);
+        }
       } finally {
         if (child && child.exitCode === null && child.signalCode === null && !child.killed) child.kill("SIGKILL");
         if (closed) await closed;

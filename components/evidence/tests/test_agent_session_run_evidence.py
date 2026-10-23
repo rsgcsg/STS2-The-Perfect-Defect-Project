@@ -33,6 +33,78 @@ def sha(value: bytes) -> str:
 
 
 class NativeAgentSessionEvidenceTests(unittest.TestCase):
+    def test_v2_budget_vectors_and_exact_startup_event_pairing(self) -> None:
+        vectors = json.loads((ROOT / "policy-runtime/test/fixtures/autonomy-v2.json").read_bytes())
+        original = copy.deepcopy(self.events)
+        for mode in ("bounded", "continuous"):
+            with self.subTest(mode=mode):
+                self.events = copy.deepcopy(original)
+                self.startup["schema"] = "sts2.policy-runtime/agent-session-startup-2"
+                for event in self.events:
+                    event["schema"] = "sts2.policy-runtime/agent-session-event-2"
+                    if "autonomy_budget" in event["payload"]:
+                        event["payload"]["autonomy_budget"] = copy.deepcopy(vectors[f"{mode}_status_v2"])
+                self.startup["autonomy_budget"] = vectors[f"{mode}_startup_v2"]
+                self.write()
+                self.check()
+                self.startup["autonomy_budget"] = vectors["continuous_startup_v2" if mode == "bounded" else "bounded_startup_v2"]
+                self.check(False)
+                self.startup["autonomy_budget"] = vectors[f"{mode}_startup_v2"]
+                self.startup["schema"] = "sts2.policy-runtime/agent-session-startup-1"
+                self.check(False)
+                self.startup["schema"] = "sts2.policy-runtime/agent-session-startup-2"
+                self.events[-1]["schema"] = "sts2.policy-runtime/agent-session-event-1"
+                self.write()
+                self.check(False)
+
+    def test_v2_continuous_rejects_rehashed_caps_exhaustion_and_negative_counts(self) -> None:
+        vectors = json.loads((ROOT / "policy-runtime/test/fixtures/autonomy-v2.json").read_bytes())
+        for event in self.events:
+            event["schema"] = "sts2.policy-runtime/agent-session-event-2"
+            if "autonomy_budget" in event["payload"]:
+                event["payload"]["autonomy_budget"] = copy.deepcopy(vectors["continuous_status_v2"])
+        self.startup["schema"] = "sts2.policy-runtime/agent-session-startup-2"
+        original = copy.deepcopy(self.events)
+        for field, invalid in (("deadline_ms", 60000), ("remaining_ms", 0), ("state", "exhausted"),
+                               ("policy_calls_used", -1), ("elapsed_ms", True)):
+            with self.subTest(field=field):
+                self.events = copy.deepcopy(original)
+                self.events[-1]["payload"]["autonomy_budget"][field] = invalid
+                self.write()
+                self.check(False)
+
+    def test_expected_bounded_caps_bind_each_fact_and_v2_caps_cannot_change(self) -> None:
+        original = copy.deepcopy(self.events)
+        for version in (1, 2):
+            with self.subTest(version=version):
+                self.events = copy.deepcopy(original)
+                self.startup["schema"] = f"sts2.policy-runtime/agent-session-startup-{version}"
+                config = {"maxSubmissions": self.budget["max_submissions"], "maxPolicyCalls": self.budget["max_policy_calls"], "deadlineMs": self.budget["deadline_ms"]}
+                if version == 2:
+                    config["mode"] = "bounded"
+                    for event in self.events:
+                        event["schema"] = "sts2.policy-runtime/agent-session-event-2"
+                        if "autonomy_budget" in event["payload"]:
+                            event["payload"]["autonomy_budget"] = {**event["payload"]["autonomy_budget"], "mode": "bounded"}
+                            if event["kind"] == "mode_changed":
+                                event["payload"]["autonomy_budget"].update(state="active", ended_reason=None, submissions_used=0,
+                                                                          policy_calls_used=0, elapsed_ms=0, remaining_ms=config["deadlineMs"])
+                self.startup["autonomy_budget"] = config
+                self.write()
+                self.check()
+                for key in ("maxSubmissions", "maxPolicyCalls", "deadlineMs"):
+                    self.startup["autonomy_budget"] = {**config, key: config[key] + 1}
+                    self.check(False)
+                self.startup["autonomy_budget"] = None
+                self.check(False)
+                self.startup["autonomy_budget"] = config
+                if version == 2:
+                    self.events[-1]["payload"]["autonomy_budget"]["max_submissions"] += 1
+                    self.write()
+                    result = verify_agent_session_run_evidence(self.directory)
+                    self.assertFalse(result.passed, result.findings)
+                    self.assertEqual(result.findings[0].code, "native_session_budget_config_changed")
+
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
         self.directory = Path(self.temporary.name) / "run-fixture"

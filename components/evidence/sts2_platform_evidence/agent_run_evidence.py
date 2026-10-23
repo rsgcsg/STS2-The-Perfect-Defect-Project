@@ -139,7 +139,7 @@ class AgentRunEvidenceVerifier:
         representation = policy_manifest.get("representation")
         input_schema = representation.get("input_schema") if isinstance(representation, dict) else None
         events = _verify_events(directory / _EVENTS_FILE, manifest, input_schema,
-                                adapter_protocol=policy_manifest["adapter"]["protocol"])
+                                adapter_protocol=policy_manifest["adapter"]["protocol"], expected_startup=expected)
         if input_schema == _TEXT_V2_SNAPSHOT_SCHEMA:
             _verify_v2_run_association(policy_manifest, manifest, events)
         if policy_manifest["adapter"]["protocol"] == "sts2.policy-runtime/decision-only-ndjson-4":
@@ -271,6 +271,8 @@ def _verify_manifest(value: Mapping[str, Any], expected: Mapping[str, object] | 
         raise AgentRunEvidenceError("taint_drift", "tainted status requires tainted=true", _MANIFEST_FILE)
     _literal(value, "append_only", True)
     if expected is not None:
+        if "schema" in expected and expected["schema"] not in {"sts2.policy-runtime/startup-1", "sts2.policy-runtime/startup-2"}:
+            raise AgentRunEvidenceError("expected_startup_schema", "unsupported expected Policy startup schema", _MANIFEST_FILE)
         for key in (
             "run_id",
             "manifest_id",
@@ -759,9 +761,13 @@ def _verify_public_decision_binding(decision: Mapping[str, Any], resolved: str |
 
 
 def _verify_events(path: Path, manifest: Mapping[str, Any], input_schema: str | None, *,
-                   adapter_protocol: str) -> list[Mapping[str, Any]]:
+                   adapter_protocol: str, expected_startup: Mapping[str, object] | None = None) -> list[Mapping[str, Any]]:
     raw = path.read_bytes()
     if not raw:
+        if expected_startup is not None and "autonomy_budget" in expected_startup:
+            _autonomy_config_limits(expected_startup["autonomy_budget"], 2 if expected_startup.get("schema") == "sts2.policy-runtime/startup-2" else 1)
+        if expected_startup is not None and expected_startup.get("schema") == "sts2.policy-runtime/startup-2":
+            raise AgentRunEvidenceError("expected_event_version", "v2 startup has no event version to bind", _EVENTS_FILE)
         return []
     lines = raw.split(b"\n")
     if lines[-1] != b"":
@@ -800,6 +806,10 @@ def _verify_events(path: Path, manifest: Mapping[str, Any], input_schema: str | 
     autonomy_mode: bool | None = None
     observed_mode: str | None = None
     managed_stopped = False
+    event_schema: str | None = None
+    event_version = 1
+    authorization_limits: tuple[object, ...] | None = None
+    expected_limits: tuple[object, ...] | None = None
     for sequence, content in enumerate(lines[:-1], start=1):
         if content.endswith(b"\r"):
             content = content[:-1]
@@ -807,10 +817,32 @@ def _verify_events(path: Path, manifest: Mapping[str, Any], input_schema: str | 
             raise AgentRunEvidenceError("blank_event", f"blank event line: {sequence}", _EVENTS_FILE)
         value = _load_json_object_bytes(content, f"events.jsonl:{sequence}")
         _exact_keys(value, {"schema", "sequence", "recorded_at", "kind", "payload"}, "agent-run event")
-        _literal(value, "schema", AGENT_RUN_EVENT_SCHEMA, _EVENTS_FILE)
+        if event_schema is None:
+            event_schema = value.get("schema")
+            if event_schema not in {AGENT_RUN_EVENT_SCHEMA, "sts2.policy-runtime/agent-run-event-2"}:
+                raise AgentRunEvidenceError("schema_value", "unsupported agent-run event schema", _EVENTS_FILE)
+            event_version = 2 if event_schema.endswith("-2") else 1
+            if expected_startup is not None:
+                if "schema" in expected_startup and expected_startup["schema"] != f"sts2.policy-runtime/startup-{event_version}":
+                    raise AgentRunEvidenceError("expected_event_version", "expected startup and event versions differ", _EVENTS_FILE)
+                if "autonomy_budget" in expected_startup:
+                    expected_limits = _autonomy_config_limits(expected_startup["autonomy_budget"], event_version)
+        _literal(value, "schema", event_schema, _EVENTS_FILE)
         if type(value.get("sequence")) is not int or value["sequence"] != sequence:
             raise AgentRunEvidenceError("event_sequence_gap", f"event sequence is not contiguous at line {sequence}", _EVENTS_FILE)
         _timestamp(value, "recorded_at", _EVENTS_FILE)
+        raw_payload = value.get("payload")
+        payload_budget = raw_payload.get("autonomy_budget") if isinstance(raw_payload, dict) else None
+        if payload_budget is None and value.get("kind") == "autonomy_budget_exhausted" and isinstance(raw_payload, dict):
+            payload_budget = raw_payload.get("budget")
+        if payload_budget is not None and (event_version == 2 or expected_limits is not None):
+            parsed_budget = _verify_autonomy_budget(payload_budget, event_version)
+            limits = _recorded_budget_limits(parsed_budget, event_version)
+            if expected_limits is not None and expected_limits != limits:
+                raise AgentRunEvidenceError("expected_budget_drift", "recorded authorization differs from expected startup", _EVENTS_FILE)
+            if event_version == 2 and authorization_limits is not None and authorization_limits != limits:
+                raise AgentRunEvidenceError("budget_config_changed", "a run cannot replace its authorization mode or caps", _EVENTS_FILE)
+            authorization_limits = limits
         kind = value.get("kind")
         if not isinstance(kind, str) or not kind or "\n" in kind or "\r" in kind:
             raise AgentRunEvidenceError("invalid_event_kind", f"invalid event kind at line {sequence}", _EVENTS_FILE)
@@ -930,11 +962,15 @@ def _verify_events(path: Path, manifest: Mapping[str, Any], input_schema: str | 
         elif kind == "stale_whole_bundle_discarded":
             _verify_stale_event(payload)
         elif kind == "mode_changed":
-            if set(payload) not in ({"mode"}, {"mode", "autonomy_budget"}):
+            if (event_version == 2 and set(payload) != {"mode", "autonomy_budget"}) or set(payload) not in ({"mode"}, {"mode", "autonomy_budget"}):
                 raise AgentRunEvidenceError("schema_keys", "mode_changed payload has invalid fields", _EVENTS_FILE)
             _mode(payload, "mode", _EVENTS_FILE)
             if "autonomy_budget" in payload:
-                _verify_autonomy_budget(payload["autonomy_budget"])
+                _verify_autonomy_budget(payload["autonomy_budget"], event_version)
+            if event_version == 2 and payload["mode"] != "human":
+                budget = payload["autonomy_budget"]
+                if budget["state"] != "active" or (budget["mode"] == "bounded" and budget["remaining_ms"] <= 0):
+                    raise AgentRunEvidenceError("budget_association", "autonomy entry requires an active authorization", _EVENTS_FILE)
             observed_mode = payload["mode"]
             next_autonomy_mode = observed_mode in {"one_step", "auto", "shadow"}
             if next_autonomy_mode and not autonomy_mode:
@@ -952,7 +988,7 @@ def _verify_events(path: Path, manifest: Mapping[str, Any], input_schema: str | 
                   else {"held", "released"}, _EVENTS_FILE)
             if managed_control is not None and payload["controller"] == "released":
                 raise AgentRunEvidenceError("managed_control", "budget event claims release without Managed release confirmation", _EVENTS_FILE)
-            budget = _verify_autonomy_budget(payload["budget"])
+            budget = _verify_autonomy_budget(payload["budget"], event_version)
             if budget["state"] != "exhausted" or budget["exhausted_reason"] != payload["reason"]:
                 raise AgentRunEvidenceError("budget_association", "exhaustion event and budget differ", _EVENTS_FILE)
             # Runtime's deadline/limit handoff sets Human without mode_changed.
@@ -1097,18 +1133,18 @@ def _verify_events(path: Path, manifest: Mapping[str, Any], input_schema: str | 
             _text(payload, "reason", _EVENTS_FILE)
             autonomy_mode = False
         elif kind == "one_step_completed":
-            if set(payload) not in (set(), {"autonomy_budget"}):
+            if (event_version == 2 and set(payload) != {"autonomy_budget"}) or set(payload) not in (set(), {"autonomy_budget"}):
                 raise AgentRunEvidenceError("schema_keys", "one_step_completed payload has invalid fields", _EVENTS_FILE)
             if "autonomy_budget" in payload:
-                _verify_autonomy_budget(payload["autonomy_budget"])
+                _verify_autonomy_budget(payload["autonomy_budget"], event_version)
             autonomy_mode = False
         elif kind == "stopped":
             if "environment_binding" in manifest:
                 managed_stopped = True
-            if set(payload) not in (set(), {"autonomy_budget", "controller"}):
+            if (event_version == 2 and set(payload) != {"autonomy_budget", "controller"}) or set(payload) not in (set(), {"autonomy_budget", "controller"}):
                 raise AgentRunEvidenceError("schema_keys", "stopped payload has invalid fields", _EVENTS_FILE)
             if "autonomy_budget" in payload:
-                _verify_autonomy_budget(payload["autonomy_budget"])
+                _verify_autonomy_budget(payload["autonomy_budget"], event_version)
                 _enum(payload, "controller", {"held", "released", "unknown"} if "environment_binding" in manifest
                       else {"held", "released"}, _EVENTS_FILE)
                 if managed_control is not None and payload["controller"] == "released":
@@ -1125,6 +1161,8 @@ def _verify_events(path: Path, manifest: Mapping[str, Any], input_schema: str | 
             _literal(payload, "retry", False, _EVENTS_FILE)
             autonomy_mode = False
         events.append(value)
+    if event_version == 2 and expected_limits is not None and authorization_limits is None:
+        raise AgentRunEvidenceError("expected_budget_absent", "v2 startup has no recorded authorization facts", _EVENTS_FILE)
     if pending_text_input is not None and manifest["status"] != "tainted":
         raise AgentRunEvidenceError("text_decision_order", "unmatched text input in finalized run", _EVENTS_FILE)
     if pending_public_input is not None and manifest["status"] != "tainted":
@@ -2336,8 +2374,54 @@ def _verify_text_observed_successor(payload: Mapping[str, Any], environment: Map
     return decision_id
 
 
-def _verify_autonomy_budget(raw: object) -> Mapping[str, Any]:
+def _autonomy_config_limits(raw: object, version: int) -> tuple[object, ...]:
+    mode = _verify_autonomy_budget_config(raw, version)
+    config = _object(raw, "autonomy budget config")
+    return (mode, *(config[key] if mode == "bounded" else None for key in ("maxSubmissions", "maxPolicyCalls", "deadlineMs")))
+
+
+def _recorded_budget_limits(budget: Mapping[str, Any], version: int) -> tuple[object, ...]:
+    return (budget["mode"] if version == 2 else "bounded", *(budget[key] for key in ("max_submissions", "max_policy_calls", "deadline_ms")))
+
+
+def _verify_autonomy_budget_config(raw: object, version: int) -> str:
+    config = _object(raw, "autonomy budget config")
+    mode = "bounded" if version == 1 else config.get("mode")
+    if mode == "continuous":
+        _exact_keys(config, {"mode"}, "continuous autonomy config")
+    elif mode == "bounded":
+        _exact_keys(config, {"maxSubmissions", "maxPolicyCalls", "deadlineMs"} | ({"mode"} if version == 2 else set()), "bounded autonomy config")
+        for key in ("maxSubmissions", "maxPolicyCalls", "deadlineMs"):
+            _positive_int(config, key, _EVENTS_FILE)
+            if config[key] > 2**53 - 1:
+                raise AgentRunEvidenceError("budget_schema", "autonomy cap exceeds the wire integer range", _EVENTS_FILE)
+    else:
+        raise AgentRunEvidenceError("budget_schema", "invalid autonomy config mode", _EVENTS_FILE)
+    return mode
+
+
+def _verify_autonomy_budget(raw: object, version: int = 1) -> Mapping[str, Any]:
     budget = _object(raw, "autonomy budget")
+    if version == 2:
+        fields = {"mode", "state", "max_submissions", "submissions_used", "max_policy_calls", "policy_calls_used", "deadline_ms", "elapsed_ms", "remaining_ms", "exhausted_reason", "ended_reason"}
+        _exact_keys(budget, fields, "v2 autonomy budget")
+        _enum(budget, "mode", {"bounded", "continuous"}, _EVENTS_FILE)
+        for key in ("max_submissions", "submissions_used", "max_policy_calls", "policy_calls_used", "deadline_ms", "elapsed_ms", "remaining_ms"):
+            if budget[key] is not None and (type(budget[key]) is not int or budget[key] > 2**53 - 1):
+                raise AgentRunEvidenceError("budget_schema", "autonomy fact exceeds the wire integer range", _EVENTS_FILE)
+        if budget["mode"] == "bounded":
+            _verify_autonomy_budget({key: value for key, value in budget.items() if key != "mode"})
+        else:
+            _enum(budget, "state", {"inactive", "active"}, _EVENTS_FILE)
+            for key in ("max_submissions", "max_policy_calls", "deadline_ms", "remaining_ms", "exhausted_reason"):
+                _literal(budget, key, None, _EVENTS_FILE)
+            for key in ("submissions_used", "policy_calls_used", "elapsed_ms"):
+                _nonnegative_int(budget, key, _EVENTS_FILE)
+            if budget["ended_reason"] is not None:
+                _enum(budget, "ended_reason", {"human_recovery", "mode_changed", "stopped"}, _EVENTS_FILE)
+            if budget["state"] != "inactive" and budget["ended_reason"] is not None:
+                raise AgentRunEvidenceError("budget_schema", "continuous budget state and end reason differ", _EVENTS_FILE)
+        return budget
     _exact_keys(budget, {"state", "max_submissions", "submissions_used", "max_policy_calls", "policy_calls_used", "deadline_ms", "elapsed_ms", "remaining_ms", "exhausted_reason", "ended_reason"}, "autonomy budget")
     _enum(budget, "state", {"inactive", "active", "exhausted"}, _EVENTS_FILE)
     for key in ("max_submissions", "max_policy_calls", "deadline_ms"):

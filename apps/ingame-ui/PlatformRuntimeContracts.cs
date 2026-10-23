@@ -29,19 +29,28 @@ public sealed class PlatformRuntimeStatusConverter : JsonConverter<IPlatformRunt
         JsonElement root = document.RootElement;
         if (root.ValueKind != JsonValueKind.Object || !root.TryGetProperty("schema", out JsonElement schema))
             throw new JsonException("Runtime status discriminator is required.");
-        if (schema.GetString() == PolicyRuntimeStatus.CurrentSchema)
+        string? schemaName = schema.GetString();
+        if (schemaName is PolicyRuntimeStatus.CurrentSchema or PolicyRuntimeStatus.V2Schema
+            or NativeAgentRuntimeStatus.CurrentSchema or NativeAgentRuntimeStatus.V2Schema)
+        {
+            if (root.TryGetProperty("autonomy_budget", out JsonElement budget))
+                PlatformRuntimeBudget.Validate(budget, schemaName.EndsWith("-2", StringComparison.Ordinal));
+            else if (schemaName.EndsWith("-2", StringComparison.Ordinal)) throw new JsonException("Runtime v2 budget absent.");
+        }
+        if (schema.GetString() is PolicyRuntimeStatus.CurrentSchema or PolicyRuntimeStatus.V2Schema)
         {
             if (root.TryGetProperty("agent", out _) || root.TryGetProperty("pending_request", out _))
                 throw new JsonException("Native Agent fields cannot enter a Policy status.");
             return root.Deserialize<PolicyRuntimeStatus>(options) ?? throw new JsonException("Policy status absent.");
         }
-        if (schema.GetString() == NativeAgentRuntimeStatus.CurrentSchema)
+        if (schema.GetString() is NativeAgentRuntimeStatus.CurrentSchema or NativeAgentRuntimeStatus.V2Schema)
         {
             string[] fields = ["schema", "runtime", "run_id", "agent_manifest_sha256", "agent", "lifecycle",
                 "mode", "controller", "autonomy_budget", "tainted", "taint_reason", "refreshing",
                 "invalidations", "errors", "environment", "session", "last_observation", "last_directive",
                 "last_result", "pending_request"];
-            if (root.EnumerateObject().Count() != fields.Length || fields.Any(field => !root.TryGetProperty(field, out _)))
+            if ((root.EnumerateObject().Count() != fields.Length
+                && !(root.EnumerateObject().Count() == fields.Length + 1 && root.TryGetProperty("global_no_progress", out _))) || fields.Any(field => !root.TryGetProperty(field, out _)))
                 throw new JsonException("Native Agent status fields are incomplete or foreign.");
             var nativeOptions = new JsonSerializerOptions(options)
             {
@@ -100,6 +109,8 @@ public sealed record PolicyRuntimeStatus(
     [property: JsonPropertyName("environment")] PolicyRuntimeEnvironmentStatus? Environment) : IPlatformRuntimeStatus
 {
     public const string CurrentSchema = "sts2.policy-runtime/status-1";
+    public const string V2Schema = "sts2.policy-runtime/status-2";
+    [JsonPropertyName("autonomy_budget")] public JsonElement? AutonomyBudget { get; init; }
 }
 
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
@@ -126,6 +137,8 @@ public sealed record NativeAgentRuntimeStatus(
     [property: JsonPropertyName("pending_request")] NativeAgentPendingRequest? PendingRequest) : IPlatformRuntimeStatus
 {
     public const string CurrentSchema = "sts2.policy-runtime/agent-session-status-1";
+    public const string V2Schema = "sts2.policy-runtime/agent-session-status-2";
+    [JsonPropertyName("global_no_progress")] public JsonElement? GlobalNoProgress { get; init; }
 }
 
 [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
@@ -250,3 +263,44 @@ public sealed record PolicyRuntimeEnvironmentStatus(
     [property: JsonPropertyName("modset_status")] string ModsetStatus,
     [property: JsonPropertyName("modset_fingerprint")] string ModsetFingerprint,
     [property: JsonPropertyName("loaded_mod_ids")] IReadOnlyList<string> LoadedModIds);
+
+internal static class PlatformRuntimeBudget
+{
+    public static void Validate(JsonElement value, bool v2)
+    {
+        try { ValidateFields(value, v2); }
+        catch (InvalidOperationException error) { throw new JsonException("Runtime budget type invalid.", error); }
+    }
+
+    private static void ValidateFields(JsonElement value, bool v2)
+    {
+        string[] fields = ["state", "max_submissions", "submissions_used", "max_policy_calls",
+            "policy_calls_used", "deadline_ms", "elapsed_ms", "remaining_ms", "exhausted_reason", "ended_reason"];
+        if (!PlatformNativeWorkbenchPair.Names(value, v2 ? [.. fields, "mode"] : fields))
+            throw new JsonException("Runtime budget fields invalid.");
+        string? state = value.GetProperty("state").GetString();
+        string? mode = v2 ? value.GetProperty("mode").GetString() : "bounded";
+        string? exhausted = value.GetProperty("exhausted_reason").GetString();
+        string? ended = value.GetProperty("ended_reason").GetString();
+        if (state is not ("active" or "inactive" or "exhausted") || mode is not ("bounded" or "continuous")
+            || exhausted is not (null or "submission_attempt_limit" or "policy_call_limit" or "deadline")
+            || ended is not (null or "human_recovery" or "mode_changed" or "stopped")
+            || (state == "exhausted") != (exhausted is not null) || (state != "inactive" && ended is not null))
+            throw new JsonException("Runtime budget state invalid.");
+        foreach (string key in new[] { "submissions_used", "policy_calls_used", "elapsed_ms" })
+            if (!value.GetProperty(key).TryGetInt64(out long count) || count < 0)
+                throw new JsonException("Runtime budget counter invalid.");
+        foreach (string key in new[] { "max_submissions", "max_policy_calls", "deadline_ms", "remaining_ms" })
+            if (mode == "continuous" ? value.GetProperty(key).ValueKind != JsonValueKind.Null
+                : !value.GetProperty(key).TryGetInt64(out long count) || count < (key == "remaining_ms" ? 0 : 1))
+                throw new JsonException("Runtime budget limit invalid.");
+        if (mode == "continuous" && state == "exhausted") throw new JsonException("Continuous budget cannot exhaust.");
+        if (mode == "bounded" && (value.GetProperty("submissions_used").GetInt64() > value.GetProperty("max_submissions").GetInt64()
+            || value.GetProperty("policy_calls_used").GetInt64() > value.GetProperty("max_policy_calls").GetInt64()
+            || value.GetProperty("elapsed_ms").GetInt64() > value.GetProperty("deadline_ms").GetInt64()
+            || value.GetProperty("remaining_ms").GetInt64() > value.GetProperty("deadline_ms").GetInt64()
+            || value.GetProperty("elapsed_ms").GetInt64() + value.GetProperty("remaining_ms").GetInt64() != value.GetProperty("deadline_ms").GetInt64()))
+            throw new JsonException("Runtime bounded counters invalid.");
+    }
+
+}

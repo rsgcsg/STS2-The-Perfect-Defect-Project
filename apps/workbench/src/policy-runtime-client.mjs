@@ -34,7 +34,7 @@ export function decodePolicyRuntimeStatus(value) {
   ];
   if (Object.hasOwn(status, "autonomy_budget")) keys.push("autonomy_budget");
   exactKeys(status, keys, "Policy Runtime status");
-  if (status.schema !== POLICY_RUNTIME_STATUS_SCHEMA) invalid("Policy Runtime status schema is unsupported");
+  if (![POLICY_RUNTIME_STATUS_SCHEMA, "sts2.policy-runtime/status-2"].includes(status.schema)) invalid("Policy Runtime status schema is unsupported");
   const runtime = object(status.runtime, "Policy Runtime runtime");
   exactKeys(runtime, ["version", "code_sha256"], "Policy Runtime runtime");
   nonEmpty(runtime.version, "runtime.version");
@@ -43,7 +43,8 @@ export function decodePolicyRuntimeStatus(value) {
   if (!new Set(["held", "released"]).has(status.controller)) invalid("Policy Runtime controller is unsupported");
   if (!new Set(["running", "stopped"]).has(status.lifecycle)) invalid("Policy Runtime lifecycle is unsupported");
   if (typeof status.tainted !== "boolean" || typeof status.refreshing !== "boolean") invalid("Policy Runtime status flags are invalid");
-  if (status.autonomy_budget !== undefined) validateAutonomyBudget(status.autonomy_budget);
+  if (status.autonomy_budget !== undefined) validateAutonomyBudget(status.autonomy_budget, status.schema.endsWith("-2"));
+  else if (status.schema.endsWith("-2")) invalid("v2 autonomy_budget is required");
   stringOrNull(status.taint_reason, "taint_reason");
   stringOrNull(status.last_snapshot_id, "last_snapshot_id");
   const policy = object(status.policy, "Policy Runtime policy");
@@ -100,16 +101,24 @@ export function decodePolicyRuntimeStatus(value) {
   return status;
 }
 
-function validateAutonomyBudget(value) {
+function validateAutonomyBudget(value, v2) {
   const budget = object(value, "Policy Runtime autonomy_budget");
-  exactKeys(budget, ["state", "max_submissions", "submissions_used", "max_policy_calls", "policy_calls_used", "deadline_ms", "elapsed_ms", "remaining_ms", "exhausted_reason", "ended_reason"], "Policy Runtime autonomy_budget");
+  exactKeys(budget, [...(v2 ? ["mode"] : []), "state", "max_submissions", "submissions_used", "max_policy_calls", "policy_calls_used", "deadline_ms", "elapsed_ms", "remaining_ms", "exhausted_reason", "ended_reason"], "Policy Runtime autonomy_budget");
+  if (v2 && !["bounded", "continuous"].includes(budget.mode)) invalid("autonomy_budget.mode is unsupported");
+  if (v2 && budget.mode === "continuous") {
+    for (const key of ["max_submissions", "max_policy_calls", "deadline_ms", "remaining_ms"]) if (budget[key] !== null) invalid(`continuous ${key} must be null`);
+    for (const key of ["submissions_used", "policy_calls_used", "elapsed_ms"]) if (!Number.isSafeInteger(budget[key]) || budget[key] < 0) invalid(`continuous ${key} is invalid`);
+    if (!["active", "inactive"].includes(budget.state) || budget.exhausted_reason !== null || !["human_recovery", "mode_changed", "stopped", null].includes(budget.ended_reason) || (budget.state === "active" && budget.ended_reason !== null)) invalid("continuous budget state is invalid");
+    return;
+  }
   if (!new Set(["inactive", "active", "exhausted"]).has(budget.state)) invalid("autonomy_budget.state is unsupported");
   for (const key of ["max_submissions", "submissions_used", "max_policy_calls", "policy_calls_used", "deadline_ms", "elapsed_ms", "remaining_ms"]) {
     if (!Number.isSafeInteger(budget[key]) || budget[key] < 0 || (["max_submissions", "max_policy_calls", "deadline_ms"].includes(key) && budget[key] < 1)) invalid(`autonomy_budget.${key} is invalid`);
   }
-  if (budget.submissions_used > budget.max_submissions || budget.policy_calls_used > budget.max_policy_calls || budget.remaining_ms > budget.deadline_ms) invalid("autonomy_budget counters are invalid");
+  if (budget.submissions_used > budget.max_submissions || budget.policy_calls_used > budget.max_policy_calls || budget.remaining_ms > budget.deadline_ms || budget.elapsed_ms + budget.remaining_ms !== budget.deadline_ms) invalid("autonomy_budget counters are invalid");
   if (!["submission_attempt_limit", "policy_call_limit", "deadline", null].includes(budget.exhausted_reason)) invalid("autonomy_budget.exhausted_reason is unsupported");
   if (!["human_recovery", "mode_changed", "stopped", null].includes(budget.ended_reason)) invalid("autonomy_budget.ended_reason is unsupported");
+  if ((budget.state === "exhausted") !== (budget.exhausted_reason !== null) || (budget.state !== "inactive" && budget.ended_reason !== null)) invalid("autonomy_budget state/reason mismatch");
 }
 
 export function validatePolicyMode(value) {

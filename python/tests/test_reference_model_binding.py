@@ -222,3 +222,47 @@ def test_negotiate_timeout_is_not_retried_or_followed_by_runtime(reference_p1, m
                                 native_episode_ref=resource["environment_ref"])
     assert len(attempts) == 1 and len(app.local_model_registration._entries()) == before
     assert app.models.thread is None and app.models.process is None
+
+
+@pytest.mark.parametrize("p1_registration", ["trained"], indirect=True)
+def test_native_start_passes_ready_reference_through_original_application_and_request(
+    reference_p1, monkeypatch,
+):
+    from spireagent.workbench.native_workbench_access import NativePair
+    from spireagent.workbench.native_workbench_api import NativeWorkbenchApi
+
+    app, world, selection, prepare, original, manifest_path, config_path = reference_p1
+    ready = prepare("native-ui", "d" * 32)
+    pair = NativePair(world.caps["host"]["runtime_instance_id"], app.instance_id,
+                      configuration_id(app.config), "http://127.0.0.1:12345/", "a" * 32, 9999999999)
+    calls = []
+    monkeypatch.setattr(app.native_access, "intent_authorizer", lambda context, expected:
+                        lambda: calls.append(("pair", context, expected)))
+    monkeypatch.setattr(app.models, "readiness",
+        lambda _: {"checks": {"runtime_package": {"status": "pass"}}})
+
+    def start(identity, intent, profile="short"):
+        calls.append(("start", identity, profile))
+        from types import SimpleNamespace
+
+        app.models.client = SimpleNamespace(request=lambda _: {"status": {
+            "lifecycle": "running", "mode": "human"}})
+        app.models.state.update(status="loaded", loaded=True)
+    monkeypatch.setattr(app.models, "_start", start)
+    monkeypatch.setattr(app.models, "_execute_command", lambda mode, *args: calls.append((mode,)))
+    api = NativeWorkbenchApi(app)
+    api._dispatch("models.takeover", {"selection_id": selection, "run_profile": "continuous",
+        "native_episode_ref": ready["environment_ref"]}, pair=pair, request_id="b" * 32)
+    app.models.thread.join(5)
+    assert app.models.state["operation"]["status"] == "completed"
+    request_ref = app.models.state["agent_run_request"]
+    request = json.loads((app.models.directory / request_ref["path"]).read_bytes())
+    assert request["budget"]["limits"] == {"mode": "continuous"}
+    assert request["admission_context"]["native_episode"] == ready["admission_context"]
+    assert request["admission_context"]["native_intent"] is None
+    assert app.models.state["_native_intent"]["binding"] == pair.to_dict()
+    assert request["selection_id"] != selection
+    assert [entry[0] for entry in calls if entry[0] in {"start", "auto"}] == ["start", "auto"]
+    assert (manifest_path.read_bytes(), config_path.read_bytes()) == original[:2]
+    app.models.client = None
+    app.models.state.update(status="stopped", loaded=False)

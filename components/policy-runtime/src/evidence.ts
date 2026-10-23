@@ -174,7 +174,7 @@ export class AgentRunEvidence {
       this.sequence += 1;
       const event = {
         schema: this.policyManifest.schema === "sts2.policy-runtime/agent-manifest-1"
-          ? "sts2.policy-runtime/agent-session-event-1" : "sts2.policy-runtime/agent-run-event-1",
+          ? "sts2.policy-runtime/agent-session-event-2" : "sts2.policy-runtime/agent-run-event-2",
         sequence: this.sequence,
         recorded_at: now,
         kind,

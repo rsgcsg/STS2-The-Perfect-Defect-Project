@@ -276,12 +276,14 @@ class Application:
             native_episode_authorizer=self.local_environment.authorize_native_episode,
             native_episode_guard=self.local_environment.native_admission_guard,
             native_episode_associate=self.local_environment.associate_native_actor,
+            native_episode_creation_guard=self.local_environment.verify_retired_native_world,
         )
         from spireagent.workbench.reference_evaluation import ReferenceEvaluationService
 
         self.reference_evaluation = ReferenceEvaluationService(self)
         self.models.execution_admission_guard = self.reference_evaluation.check_access
         self._native_episode_shutdown = False
+        self.local_environment.native_workbench_prepare = self._stage_native_workbench
         self.local_environment.bind_native_application(
             lock=self.models.lock,
             application_instance_id=self.instance_id,
@@ -583,6 +585,55 @@ class Application:
         ):
             raise BoundaryError("native_episode", "actor_active_or_unknown")
 
+    def _stage_native_workbench(self, identity: dict[str, Any], state_root: Path) -> None:
+        """Use the exact returned Host profile; never change the daily selected slot."""
+        import sys
+
+        from .native_workbench_access import (
+            NativeBootstrap,
+            selected_directory,
+            stage_selected_native_access,
+        )
+
+        # Native embedding is opt-in through the original selected launcher. A
+        # normal CLI-only preparation does not gain a bootstrap requirement.
+        if (sys.platform != "darwin" or self.config_path is None
+                or not (selected_directory() / "native-access.json").exists()):
+            return
+        try:
+            NativeBootstrap.read(selected_directory(), self.config_path)
+        except BoundaryError as error:
+            if error.code == "native_configuration_mismatch":
+                return  # A different selected launcher is not this App's opt-in.
+            raise
+        self.native_access.bootstrap()  # Exact current App source/config identity.
+        profile = identity["profile"]
+        root = Path(profile["profile_root"])
+        profiles = state_root / "profiles"
+        if (not root.is_absolute() or root.resolve() != root or root.parent != profiles
+                or root.is_symlink() or not root.is_dir()):
+            raise BoundaryError("native_workbench", "native_owned_profile_required")
+        marker = json.loads((root / "headless-profile.json").read_bytes())
+        if (marker.get("generation_id") != profile.get("generation_id")
+                or marker.get("profile_id") != profile.get("profile_id")):
+            raise BoundaryError("native_workbench", "native_owned_profile_changed")
+        stage_selected_native_access(root / "home", self.config_path,
+                                     identity["host"]["implementation"]["artifact_sha256"])
+
+    def _workbench_runtime_identity(self, runtime: str) -> bool:
+        """The fixed native bridge and selected Connector must identify the same game."""
+        try:
+            self.check_environment_instance()
+            selected = self.models.native_tasks.connector_instance(self.config.platform_url)
+            if selected != runtime:
+                return False
+            record = self.local_environment.native_episode_status()
+            context = record.get("admission_context")
+            return (not isinstance(context, dict)
+                    or context["binding"]["runtime_instance_id"] == runtime)
+        except (OSError, ValueError, KeyError):
+            return False
+
     def model_agent_request(self, identity: str, operation: str, run_profile: str,
                             *, native_episode_ref: object | None = None,
                             global_no_progress: object = None) -> dict[str, Any]:
@@ -593,6 +644,14 @@ class Application:
         if native_episode_ref is not None:
             context = self.local_environment.native_episode_context(native_episode_ref)
             with self.models.lock:
+                record = self.local_environment.native_episode_status()
+                if record.get("phase") == "actor-associated":
+                    actor = record.get("actor")
+                    if not isinstance(actor, dict):
+                        raise BoundaryError("native_episode", "actor_retirement_binding_changed")
+                    proof = self.models.native_actor_retirement_proof(context, actor["run_id"])
+                    self.local_environment.verify_native_actor_reuse(context)
+                    self.local_environment.retire_native_actor(context, proof)
                 self.models._require_model_admission(context, action="creation")
             identity = self.local_model_registration.bind_reference_selection(identity, context)
             if identity == original["selection_id"]:
@@ -2629,10 +2688,10 @@ def serve(config: ProjectConfig, *, config_path: Path | None = None) -> dict[str
             )
             # The Mod bridge belongs to this local native Connector. A remote or
             # custom Host configuration must not silently bind to another game.
-            if config.platform_url in {"http://127.0.0.1:15526", "http://localhost:15526"}:
+            if config.platform_url.startswith(("http://127.0.0.1:", "http://localhost:")):
                 registration = start_workbench_registration(
                     f"http://127.0.0.1:{server.server_port}/", app.instance_id,
-                    access=app.native_access,
+                    access=app.native_access, runtime_identity=app._workbench_runtime_identity,
                 )
             app.p1_maintenance.start()
             app.remote_training.start_loop()

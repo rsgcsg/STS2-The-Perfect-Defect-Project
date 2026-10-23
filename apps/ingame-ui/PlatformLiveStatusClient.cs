@@ -270,7 +270,8 @@ public sealed class PlatformLiveStatusClient : IDisposable
         {
             throw new JsonException($"Policy Runtime HTTP schema is unsupported: {envelopeSchema}");
         }
-        if (status.Schema != PolicyRuntimeStatus.CurrentSchema && status.Schema != NativeAgentRuntimeStatus.CurrentSchema)
+        if (status.Schema is not (PolicyRuntimeStatus.CurrentSchema or PolicyRuntimeStatus.V2Schema
+            or NativeAgentRuntimeStatus.CurrentSchema or NativeAgentRuntimeStatus.V2Schema))
             throw new JsonException($"Policy Runtime status schema is unsupported: {status.Schema}");
         if (status.Runtime == null || string.IsNullOrWhiteSpace(status.Runtime.Version))
             throw new JsonException("Policy Runtime software identity is absent.");
@@ -306,6 +307,13 @@ public sealed class PlatformLiveStatusClient : IDisposable
                 throw new JsonException("Native Agent result status is invalid.");
             if (native.LastDirective is { } directive) EnsureNativeDirective(directive);
         }
+        JsonElement? budget = status switch {
+            NativeAgentRuntimeStatus agent => agent.AutonomyBudget,
+            PolicyRuntimeStatus policyStatus => policyStatus.AutonomyBudget,
+            _ => null
+        };
+        if (budget is JsonElement declared) PlatformRuntimeBudget.Validate(declared, status.Schema.EndsWith("-2", StringComparison.Ordinal));
+        else if (status.Schema.EndsWith("-2", StringComparison.Ordinal)) throw new JsonException("Runtime v2 budget absent.");
         if (string.IsNullOrWhiteSpace(status.RunId))
             throw new JsonException("Policy Runtime run identity is absent.");
         if (status.Lifecycle is not ("running" or "stopped")

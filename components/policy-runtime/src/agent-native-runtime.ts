@@ -16,7 +16,7 @@ import {
   type NativeLogicalScopeField, type NativeLogicalRetentionLease, type NativeLogicalOwnedCurrentReply, type NativeLogicalDispatchBinding
 } from "@rsgcsg/sts2-connector-client";
 import { AgentRunEvidence, canonicalJson } from "./evidence.js";
-import { RUNTIME_ENVIRONMENT_SCHEMA, type AutonomyBudgetConfig, type RuntimeControlPreconditions,
+import { RUNTIME_ENVIRONMENT_SCHEMA, type AutonomyBudgetInput, type RuntimeControlPreconditions,
   type RuntimeEnvironmentBinding, type RuntimeMode, type RuntimeStatus } from "./contracts.js";
 import { RuntimeControlPreconditionError, RuntimeLifecycleOwner } from "./runtime-owner.js";
 import { AgentByteBudget } from "./agent-session-budget.js";
@@ -39,7 +39,7 @@ interface SharedAgentRuntimeOptions {
   evidence: AgentRunEvidence;
   runtimeIdentity: { version: string; code_sha256: string };
   mode?: RuntimeMode;
-  autoBudget?: Partial<AutonomyBudgetConfig>;
+  autoBudget?: AutonomyBudgetInput;
   globalNoProgress?: GlobalNoProgressConfig;
   monotonicNow?: () => number;
   now?: () => string;
@@ -202,7 +202,7 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
 
   status(): AgentRuntimeStatus {
     const budget = this.owner.status(() => this.expireBudget());
-    return { schema: "sts2.policy-runtime/agent-session-status-1", runtime: { ...this.options.runtimeIdentity },
+    return { schema: "sts2.policy-runtime/agent-session-status-2", runtime: { ...this.options.runtimeIdentity },
       agent: { manifest_id: this.manifest.manifest_id, agent_id: this.manifest.agent.id,
         agent_version: this.manifest.agent.version, provider: this.manifest.agent.provider,
         architecture: this.manifest.agent.architecture, artifact_id: this.manifest.artifact.id,
@@ -299,7 +299,8 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
           case "await": {
             if (!this.knownCursors.has(output.directive.after_cursor)) throw new AgentSessionError("unknown_await_cursor");
             const waitId = randomUUID().replaceAll("-", "");
-            const timeout = Math.min(output.directive.timeout_ms, this.budgetStatus().remaining_ms);
+            const remaining = this.budgetStatus().remaining_ms;
+            const timeout = remaining === null ? output.directive.timeout_ms : Math.min(output.directive.timeout_ms, remaining);
             if (timeout <= 0) { this.expireBudget(); return { type: "not_admitted", reason: "autonomy_budget_exhausted", status: this.status() }; }
             if (this.options.globalTransport) { await globalDelay(timeout, active.signal); this.checkActive(epoch, active.signal); return { type: "awaited", status: this.status() }; }
             const result = (await this.native!.await({ waitId, afterCursor: output.directive.after_cursor,

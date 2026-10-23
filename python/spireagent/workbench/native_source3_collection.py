@@ -407,7 +407,8 @@ def _verified_fresh_predecessor(marker: Path, request: CollectionRequest) -> dic
     if (
         not isinstance(old_runtime, str)
         or not old_runtime
-        or public.get("schema") != "sts2.policy-runtime/agent-session-status-1"
+        or public.get("schema") not in {"sts2.policy-runtime/agent-session-status-1",
+                            "sts2.policy-runtime/agent-session-status-2"}
         or public.get("lifecycle") != "stopped"
         or public.get("mode") != "human"
         or public.get("controller") != "released"
@@ -1169,7 +1170,8 @@ def _body(status: dict[str, Any], kind: str, actor: str | None = None) -> dict[s
 def runtime_status(value: Any, runtime: str | None, request: CollectionRequest) -> dict[str, Any]:
     if (
         not isinstance(value, dict)
-        or value.get("schema") != "sts2.policy-runtime/agent-session-status-1"
+        or value.get("schema") not in {"sts2.policy-runtime/agent-session-status-1",
+                            "sts2.policy-runtime/agent-session-status-2"}
         or not isinstance(value.get("autonomy_budget"), dict)
         or not isinstance(value.get("session"), dict)
         or value["session"].get("profile") != "native-logical-v1"
@@ -1177,6 +1179,9 @@ def runtime_status(value: Any, runtime: str | None, request: CollectionRequest) 
         raise fail("public_runtime_status_required")
     if runtime is not None and value.get("environment", {}).get("runtime_instance_id") != runtime:
         raise fail("public_runtime_environment_changed")
+    if (value["schema"].endswith("-2") and value["autonomy_budget"].get("mode") != "bounded"
+            or not value["schema"].endswith("-2") and "mode" in value["autonomy_budget"]):
+        raise fail("public_runtime_bounded_budget_required")
     budget = value["autonomy_budget"]
     if (
         type(budget.get("submissions_used")) is not int
@@ -1522,7 +1527,8 @@ def collect_source3(
                     if (
                         summary["schema"] != "spireagent/native-agent-runtime-summary-v1"
                         or summary["public_status_schema"]
-                        != "sts2.policy-runtime/agent-session-status-1"
+                        not in {"sts2.policy-runtime/agent-session-status-1",
+                            "sts2.policy-runtime/agent-session-status-2"}
                         or type(summary["submissions_used"]) is not int
                         or not 0 <= summary["submissions_used"] <= request.max_submissions
                         or type(summary["policy_calls_used"]) is not int

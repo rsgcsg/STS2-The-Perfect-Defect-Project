@@ -182,11 +182,11 @@ internal sealed class PlatformNativeWorkbenchPanel : IDisposable
                 "accepted" => write.Action.StartsWith("recording.", StringComparison.Ordinal)
                     ? "操作已收到，正在刷新录制状态。"
                     : "服务已接收操作；请查看所属任务的实际进度。",
-                "rejected" => "操作未投递：" + result.ErrorCode,
+                "rejected" => _section == "play" ? PlayRecoveryMessage(result.ErrorCode) : "操作未投递：" + result.ErrorCode,
                 _ => "操作响应未确认。保留原任务上下文；不会自动重发。请明确核对或恢复原任务。"
             };
             Clear(_result);
-            if (result.OwnerResponse is JsonElement owner)
+            if (_section != "play" && result.OwnerResponse is JsonElement owner)
             {
                 _result.AddChild(Label("最近操作 · " + write.Action));
                 RenderSummary(_result, owner);
@@ -243,6 +243,23 @@ internal sealed class PlatformNativeWorkbenchPanel : IDisposable
         ["preview_id"]="已核对预览", ["artifact_id"]="来源对象", ["input_id"]="训练输入", ["run_id"]="训练运行", ["consent_required"]="需要明确采集授权",
         ["result_id"]="训练结果", ["model_id"]="模型产物", ["evaluation_id"]="评估产物"
     };
+    private static string PlayRecoveryMessage(string? code) => code switch {
+        "runtime_command_unknown" or "native_task_command_unknown" or "previous_operation_requires_recovery"
+            or "clean_sealed_actor_required" => "操作结果还未核对。请先恢复并交还人工，或结束当前展示；不会自动重发。",
+        "runtime_status_unavailable_or_identity_drift" or "runtime_environment_unavailable_or_identity_drift"
+            or "native_model_context_changed" or "native_pair_changed" or "native_pair_expired_or_missing"
+            or "native_task_game_identity_mismatch" => "游戏连接已变化。请刷新连接，再恢复原任务。",
+        "model_not_loaded" => "请先选择模型并开始展示。",
+        "operation_in_progress" or "runtime_already_running" => "正在处理当前操作，请稍候；需要时可暂停或结束。",
+        "unsupported_run_profile" or "continuous_requires_runtime_v2" or "extended_requires_text_menu_runtime"
+            => "此模型或运行组件还不支持连续展示，请在模型设置中检查。",
+        "native_world_identity_changed" or "native_world_identity_unavailable"
+            => "当前游戏与原展示记录无法核对。请手动继续游戏，或明确准备新的展示。",
+        "stopped_actor_required" or "resource_already_associated" => "请先暂停或结束当前模型，再选择另一个模型。",
+        "model_readiness_blocked" or "text_runtime_local_install_required" => "模型准备尚未完成，请先在模型设置中检查本机运行组件。",
+        _ => "当前展示需要处理。请尝试恢复并交还人工，或结束；详细原因可在诊断中查看。"
+    };
+
     private void RenderSummary(VBoxContainer target, JsonElement data)
     {
         if (String(data, "schema") == "spireagent/native-recording-maintenance-view-1")
@@ -315,8 +332,8 @@ internal sealed class PlatformNativeWorkbenchPanel : IDisposable
         _recordingButtons.Visible = daily;
         _maintenanceStatus.Visible = daily || diagnostics;
         _cards.Visible = !daily && !diagnostics;
-        _items.Visible = !daily && !diagnostics;
-        _pager.Visible = !daily && !diagnostics;
+        _items.Visible = !daily && !diagnostics && _section != "play";
+        _pager.Visible = !daily && !diagnostics && _section != "play";
         _forms.Visible = !daily && !diagnostics;
         _result.Visible = !daily;
     }
@@ -340,6 +357,28 @@ internal sealed class PlatformNativeWorkbenchPanel : IDisposable
                 _ => _cards
             };
             JsonElement data = card.GetProperty("data");
+            if (_section == "play")
+            {
+                if (owner == "models" && Object(data, "session") is JsonElement play)
+                {
+                    target.AddChild(Label(Boolean(play, "loaded") ? "模型已加载" : "选择模型，开始连续展示；暂停和结束随时可用。"));
+                    if (Object(play, "runtime") is JsonElement runtime)
+                    {
+                        if (OwnerData(view, "native_environment") is JsonElement resource
+                            && String(resource, "phase") == "recovery_required")
+                            target.AddChild(Label(String(runtime, "mode") == "human" && String(runtime, "controller") == "released"
+                                ? "后台已断开，已交还人工；当前游戏可手动继续。"
+                                : "后台已断开，请先恢复并交还人工，或结束。"));
+                        target.AddChild(Label(String(runtime, "mode") == "auto" ? "正在展示" : "已暂停，人工控制"));
+                        if (Object(runtime, "autonomy_budget") is JsonElement budget && String(budget, "mode") == "continuous")
+                            target.AddChild(Label("连续运行，直到暂停或结束。"));
+                        if (Boolean(runtime, "tainted") || Object(runtime, "pending_request") is not null)
+                            target.AddChild(Label("当前操作结果待核对，请先恢复或结束；不会自动重投。"));
+                    }
+                    if (String(play, "error_code") is string error) target.AddChild(Label(PlayRecoveryMessage(error)));
+                }
+                continue;
+            }
             if (_section == "data" && PlatformNativeRecordingPresentation.DataRows(owner, data, workspaceMissing) is { } rows)
             {
                 foreach (string row in rows) target.AddChild(Label(row));
@@ -398,8 +437,11 @@ internal sealed class PlatformNativeWorkbenchPanel : IDisposable
             return String(card, "owner") + ":" + (operation is JsonElement task ?
                 (String(task, "operation_id") ?? String(task, "id")) + ":" + String(task, "attempt_id") : "");
         }));
+        string modelChoices = _section == "play" && OwnerData(view, "models") is JsonElement catalog
+            && catalog.TryGetProperty("policies", out JsonElement policies) ? policies.GetRawText() : "";
         string formsKey = _section + ":" + _context + ":" + connection.Binding.PairId + ":"
-            + ownerContexts + ":" + capabilities.GetRawText() + ":" + _commands.Unconfirmed.Length;
+            + ownerContexts + ":" + capabilities.GetRawText() + ":" + _commands.Unconfirmed.Length
+            + ":" + modelChoices;
         if (formsKey != _formsKey)
         {
             _formsKey = formsKey; string? focused = _fields.FirstOrDefault(item => item.Value.HasFocus()).Key;
@@ -410,13 +452,14 @@ internal sealed class PlatformNativeWorkbenchPanel : IDisposable
                 if (action is null || !PlatformNativeWorkbenchClient.Actions.Contains(action)) continue;
                 bool recordingAction = action.StartsWith("recording.", StringComparison.Ordinal);
                 if (recordingAction != daily || diagnostics) continue;
+                if (_section == "play" && action is not ("models.takeover" or "models.auto" or "models.human" or "models.stop" or "models.reconcile")) continue;
                 if (action == "training.start") BuildTrainingForm(view, connection, descriptor);
                 else BuildActionForm(view, connection, descriptor, action);
             }
-            foreach (string capability in new[] { "source_aware_prepare", "remote_execution" })
+            foreach (string capability in (_section == "play" ? Array.Empty<string>() : new[] { "source_aware_prepare", "remote_execution" }))
                 if (capabilities.TryGetProperty(capability, out JsonElement support) && !Boolean(support, "enabled"))
                     _forms.AddChild(Label((capability == "remote_execution" ? "远端计算" : "新来源准备") + "暂不可用：" + String(support, "reason")));
-            _forms.AddChild(Button("在外部继续此对象/任务", OpenExternalContext));
+            if (_section != "play") _forms.AddChild(Button("在外部继续此对象/任务", OpenExternalContext));
             if (focused is not null && _fields.TryGetValue(focused, out Control? next)) next.GrabFocus();
         }
     }
@@ -470,9 +513,15 @@ internal sealed class PlatformNativeWorkbenchPanel : IDisposable
             else if (type is "enum" or "selection")
             {
                 var select = new OptionButton(); select.AddItem("请选择"); select.SetItemMetadata(0, "");
+                JsonElement selections = _section == "play" && OwnerData(view, "models") is JsonElement catalog
+                    && catalog.TryGetProperty("policies", out JsonElement policies) ? policies : view.GetProperty("items");
                 if (type == "selection")
-                    foreach (JsonElement item in view.GetProperty("items").EnumerateArray())
-                    { string? identity = String(item, "selection_id"); if (identity is null) continue; select.AddItem(String(item, "label") ?? identity); select.SetItemMetadata(select.ItemCount - 1, identity); }
+                    foreach (JsonElement item in selections.EnumerateArray())
+                    { string? identity = String(item, "selection_id"); if (identity is null) continue;
+                      if (_section == "play" && action == "models.takeover"
+                          && (String(item, "environment_kind") != "native" || !item.TryGetProperty("run_profiles", out JsonElement profiles)
+                              || !profiles.EnumerateArray().Any(profile => String(profile, "id") == "continuous"))) continue;
+                      select.AddItem(String(item, "label") ?? identity); select.SetItemMetadata(select.ItemCount - 1, identity); }
                 else foreach (JsonElement option in declared.GetProperty("options").EnumerateArray())
                 { string? optionValue = String(option, "value");
                   select.AddItem(recordingAction ? PlatformNativeRecordingPresentation.OptionLabel(name, optionValue, String(option, "label") ?? "") : String(option, "label"));
@@ -486,6 +535,9 @@ internal sealed class PlatformNativeWorkbenchPanel : IDisposable
                 input.TextChanged += value => _drafts[key] = value; control = input;
             }
             _fields[key] = control; controls[name] = (type, control); form.AddChild(control);
+            if (_section == "play" && (action == "models.takeover" && name == "run_profile"
+                || action == "models.reconcile" && name == "request_id"))
+            { control.Visible = false; fieldLabel.Visible = false; }
         }
         if (recordingAction && controls.TryGetValue("actor_id", out var actor))
         {
@@ -527,6 +579,13 @@ internal sealed class PlatformNativeWorkbenchPanel : IDisposable
                         if (item.Value.Type == "artifact" && !PlatformNativeWorkbenchPair.Hex(value, 64)) throw new InvalidOperationException("请选择完整对象编号。");
                         if (item.Value.Type is "selection" or "enum" && value.Length == 0) throw new InvalidOperationException("请选择服务声明的选项。");
                         body[item.Key] = selected;
+                    }
+                    if (_section == "play" && action == "models.takeover")
+                    {
+                        body["run_profile"] = "continuous";
+                        JsonElement? episode = OwnerData(view, "native_environment");
+                        if (episode is JsonElement resource && String(resource, "phase") is "ready" or "actor-associated")
+                            body["native_episode_ref"] = String(resource, "environment_ref");
                     }
                     if (action is "models.auto" or "models.shadow" or "models.one_step" or "models.tick")
                     {

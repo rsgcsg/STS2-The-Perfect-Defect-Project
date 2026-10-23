@@ -167,7 +167,8 @@ def main(argv: list[str] | None = None) -> int:
         choices=("start", "prepare-and-load", "prepare-and-takeover"),
         default="prepare-and-takeover",
     )
-    parser.add_argument("--run-profile", choices=("short", "extended"), default="short")
+    parser.add_argument(
+        "--run-profile", choices=("short", "extended", "continuous"), default="short")
     parser.add_argument(
         "--tool-directory", type=Path, help="absolute public CollectionTool directory"
     )

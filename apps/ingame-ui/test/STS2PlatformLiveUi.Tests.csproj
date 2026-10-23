@@ -23,6 +23,7 @@
     <Compile Include="../PlatformWorkbenchOpen.cs" Link="PlatformWorkbenchOpen.cs" />
     <Compile Include="../PlatformNativeWorkbenchPair.cs" Link="PlatformNativeWorkbenchPair.cs" />
     <Compile Include="../PlatformNativeWorkbenchClient.cs" Link="PlatformNativeWorkbenchClient.cs" />
+    <None Include="../../../components/policy-runtime/test/fixtures/autonomy-v2.json" Link="autonomy-v2.json" CopyToOutputDirectory="PreserveNewest" />
     <None Include="../../../docs/design/fixtures/native_workbench_pair_v1.json" Link="native_workbench_pair_v1.json" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
   <ItemGroup>

@@ -615,6 +615,18 @@ python -m spireagent.workbench project model --config PROJECT --action readiness
 不手拼另一套注册或native operands。Stop后还须核实际terminal和密封证据读回，
 不能以控制请求ACK或进程退出当完整运行/自然结局。
 
+游戏内 `Platform → 模型实战` 使用真实登记的模型下拉；选择模型后点“开始展示”，
+明确使用连续授权，直到点“暂停”或“结束”。“继续”只恢复同一活 App 的原运行；
+“结束”经原 Stop 封存。换模型须先结束，原证据、控制释放及当前 Host 身份均可核对
+后才接受新 Actor，同一过程不重置游戏、不另投 seed。Runtime、Mod、App 和 Evidence
+须为匹配的新候选；旧安装不会因源码更新自动获得此能力。
+CLI/API用同一流程：原 `agent-request --run-profile continuous` 带准确
+`--native-episode-ref`，原样交 `run-agent`。`short`/`extended`及固定最终评测仍有限。
+页面重开或配对刷新可以回到同一活 App。App进程重启后若原 Host 管道生命周期已丢失，
+只提供准确原 Runtime 的“恢复并交还人工”或“结束”；不能声称继续原世界成功。
+不同种子/实例/profile 或未知操作均拒绝复用，不自动重试。条件与恢复边界归
+[原模型任务指南](LOCAL_MODEL_TASK_FLOW.md#continuous-display-and-changing-model-in-the-same-owned-world)。
+
 注册失败保留原code、ModelID和日志关联ID，按对应owner修缺依赖/身份/资源；
 不改模型包、跳过校验或改数据库。`source_binding_changed`需明确新注册，不能据
 旧selection强行加载。写请求未确认时只查原status/request并沿原reconcile/Human/Stop，

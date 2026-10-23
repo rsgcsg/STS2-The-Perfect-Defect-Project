@@ -11,12 +11,31 @@ import re
 import subprocess
 from pathlib import Path
 from typing import Any, Mapping
-from .agent_run_evidence import _canonical_json, _file_entry, _read_checksums
+from .agent_run_evidence import _canonical_json, _file_entry, _read_checksums, _autonomy_config_limits, _recorded_budget_limits, _verify_autonomy_budget
 from .agent_session_run_evidence import AgentSessionRunEvidence, _object, _json, _require, _sha, _digest, _time, _integer
 
 BASE = {"manifest.json", "agent-manifest.json", "adapter-attestation.json", "events.jsonl"}
 EXTRA = {"checksums.sha256", "evidence-manifest.json"}
 ARTIFACT = re.compile(r"global-([a-f0-9]{64})\.bin\Z")
+
+
+def _verify_global_budget_facts(events: bytes, requested: Mapping[str, object], version: int) -> None:
+    """Bind recorded budget facts after trusted shared semantic replay; no live eligibility claim."""
+    if "schema" in requested:
+        _require(requested["schema"] == f"sts2.policy-runtime/agent-session-startup-{version}", "global_expected_event_version")
+    expected_limits = _autonomy_config_limits(requested["autonomy_budget"], version) if "autonomy_budget" in requested else None
+    authorization_limits: tuple[object, ...] | None = None
+    for line in events.splitlines():
+        event = json.loads(line)
+        if "autonomy_budget" in event["payload"] and (version == 2 or expected_limits is not None):
+            budget = _verify_autonomy_budget(event["payload"]["autonomy_budget"], version)
+            limits = _recorded_budget_limits(budget, version)
+            _require(expected_limits is None or expected_limits == limits, "global_expected_budget_drift")
+            if version == 2:
+                _require(authorization_limits is None or authorization_limits == limits, "global_budget_config_changed")
+                authorization_limits = limits
+    if version == 2 and expected_limits is not None:
+        _require(authorization_limits is not None, "global_expected_budget_absent")
 
 
 def verify_global_session(directory: Path, expected: Mapping[str, object] | None) -> AgentSessionRunEvidence:
@@ -60,7 +79,7 @@ def verify_global_session(directory: Path, expected: Mapping[str, object] | None
     for module in modules:
         digest.update(module.name.encode()); digest.update(b"\0"); digest.update(module.read_bytes()); digest.update(b"\0")
     _require(digest.hexdigest() == run["runtime_code_sha256"], "global_trusted_runtime_code_drift")
-    _require(requested.get("schema", "sts2.policy-runtime/agent-session-startup-1") == "sts2.policy-runtime/agent-session-startup-1", "global_expected_namespace")
+    _require(requested.get("schema", "sts2.policy-runtime/agent-session-startup-1") in {"sts2.policy-runtime/agent-session-startup-1", "sts2.policy-runtime/agent-session-startup-2"}, "global_expected_namespace")
     aliases = {"agent_manifest_id": "manifest_id"}
     for key in ("run_id", "agent_manifest_id", "agent_id", "agent_version", "agent_manifest_sha256", "agent_artifact_sha256", "runtime_version", "runtime_code_sha256"):
         if key in requested:
@@ -79,6 +98,9 @@ def verify_global_session(directory: Path, expected: Mapping[str, object] | None
              and report.get("verdict") == "verified" and report.get("native_qualification") is False
              and report.get("human_origin") is False and report.get("research_admission") is False, "global_shared_replay_report")
     events = (directory / "events.jsonl").read_bytes()
+    first = json.loads(events.splitlines()[0])
+    version = 2 if first.get("schema") == "sts2.policy-runtime/agent-session-event-2" else 1
+    _verify_global_budget_facts(events, requested, version)
     _require(events.endswith(b"\n"), "global_journal_truncated")
     count = len(events.splitlines()); _integer(count, positive=True, maximum=65536)
     identity = {"schema": "sts2.evidence/store-directory-1", "files": [_file_entry(directory / n, n) for n in sorted(names)]}

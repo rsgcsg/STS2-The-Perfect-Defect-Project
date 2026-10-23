@@ -107,7 +107,9 @@ def native_app(tmp_path, monkeypatch, native_endpoint, native_caps):
         "host": caps["host"],
         "game": caps["game"],
         "disk": {"sts2_assembly": {"sha256": "e" * 64}},
-        "episode_provenance": {"verdict": "provenance_pass", "actual_seed": "ABC123"},
+        "episode_provenance": {"verdict": "provenance_pass", "actual_seed": "ABC123",
+            "requested_seed": "ABC123",
+            "runtime_instance_id": native_caps["host"]["runtime_instance_id"]},
         "profile": {
             "template_id": "defect-a0-s0",
             "template_payload_sha256": "f" * 64,
@@ -588,3 +590,62 @@ console.log(JSON.stringify(captureProfileTemplate({localRoot:root,profileId:'tem
     assert (root / "profile-templates/defect-a0-s0/template.json").is_file()
     assert (root / "evidence/fixture-episodes.jsonl").is_file()
     assert not (package / ".local").exists()
+
+
+def test_retiring_actor_preserves_original_resource_and_fences_failed_publication(
+    native_app, monkeypatch,
+):
+    app = native_app[0]
+    ready = prepared(app)
+    context = ready["admission_context"]
+    request = {"path": "requests/original.json", "sha256": "1" * 64}
+    # This isolates the Environment's internal consumer boundary. Actual typed
+    # Stop/seal proof is covered by the common-Teacher process test.
+    proof = {"run_id": "run-original", "request": request,
+             "admission_context": context, "evaluation": {"source": "typed-owner-fixture"}}
+    app.local_environment.associate_native_actor(context, "run-original", request)
+    before = app.local_environment.native_episode_status()
+    with pytest.raises(BoundaryError, match="actor_retirement_binding_changed"):
+        app.local_environment.retire_native_actor(context, {**proof, "run_id": "run-foreign"})
+    assert app.local_environment.native_episode_status() == before
+    with monkeypatch.context() as patch:
+        def failed_save():
+            raise OSError("fixture publication unavailable")
+        patch.setattr(app.local_environment, "_save_native", failed_save)
+        with pytest.raises(BoundaryError, match="actor_retirement_persistence_unconfirmed"):
+            app.local_environment.retire_native_actor(context, proof)
+        assert app.local_environment.native_record["phase"] == "actor-associated"
+        assert app.local_environment.native_record["actor"] == before["actor"]
+        with pytest.raises(BoundaryError, match="resource_already_associated"):
+            app.local_environment.native_admission_guard(context, "creation")
+
+
+@pytest.mark.parametrize("field", ["actual_seed", "requested_seed", "runtime_instance_id",
+                                   "generation_id", "missing"])
+def test_reuse_rejects_changed_host_identity_before_retiring_original_actor(
+    native_app, monkeypatch, field,
+):
+    app = native_app[0]
+    ready = prepared(app)
+    context = ready["admission_context"]
+    request = {"path": "requests/original.json", "sha256": "1" * 64}
+    app.local_environment.associate_native_actor(context, "run-original", request)
+    original = app.local_environment.native_episode_status()
+    client = app.local_environment.native_client
+    # Real public Host client/JSONL producer supplies the complete identity. Only
+    # the synthetic World's subsequent readback is changed at this wire seam.
+    identity = client.episode_identity()
+    app.local_environment.verify_native_actor_reuse(context)
+    changed = json.loads(json.dumps(identity))
+    if field == "generation_id":
+        changed["profile"][field] = "another-generation"
+    elif field == "missing":
+        del changed["episode_provenance"]["actual_seed"]
+    else:
+        changed["episode_provenance"][field] = "another-world"
+    monkeypatch.setattr(client, "episode_identity", lambda: changed)
+    with pytest.raises(BoundaryError, match="native_world_identity_(changed|unavailable)"):
+        app.local_environment.verify_native_actor_reuse(context)
+    assert app.local_environment.native_episode_status() == original
+    with pytest.raises(BoundaryError, match="resource_already_associated"):
+        app.local_environment.native_admission_guard(context, "creation")

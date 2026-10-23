@@ -304,6 +304,9 @@ def isolated_port(monkeypatch):
             self.socket = socket.socket()
             return self
 
+        def setsockopt(self, *args):
+            self.socket.setsockopt(*args)
+
         def bind(self, address):
             assert address == ("127.0.0.1", 15527)
             self.socket.bind(("127.0.0.1", 0))
@@ -311,7 +314,11 @@ def isolated_port(monkeypatch):
         def __exit__(self, *args):
             self.socket.close()
 
-    monkeypatch.setattr(runtime_install, "socket", SimpleNamespace(socket=Probe))
+    monkeypatch.setattr(runtime_install, "socket", SimpleNamespace(socket=Probe, **{
+        name: getattr(socket, name)
+        for name in ("SOL_SOCKET", "SO_REUSEADDR", "SO_EXCLUSIVEADDRUSE")
+        if hasattr(socket, name)
+    }))
 
 
 @pytest.fixture
@@ -659,6 +666,9 @@ def test_install_rejects_occupied_port_before_touching_release(tmp_path, monkeyp
                 self.socket = socket.socket()
                 return self
 
+            def setsockopt(self, *args):
+                self.socket.setsockopt(*args)
+
             def bind(self, address):
                 assert address == ("127.0.0.1", 15527)
                 self.socket.bind(occupied)
@@ -666,7 +676,11 @@ def test_install_rejects_occupied_port_before_touching_release(tmp_path, monkeyp
             def __exit__(self, *args):
                 self.socket.close()
 
-        monkeypatch.setattr(runtime_install, "socket", SimpleNamespace(socket=Probe))
+        monkeypatch.setattr(runtime_install, "socket", SimpleNamespace(socket=Probe, **{
+            name: getattr(socket, name)
+            for name in ("SOL_SOCKET", "SO_REUSEADDR", "SO_EXCLUSIVEADDRUSE")
+            if hasattr(socket, name)
+        }))
         calls = []
         monkeypatch.setattr(runtime_install.subprocess, "run", lambda *a, **k: calls.append(a))
         with pytest.raises(BoundaryError, match="stop_runtime_before_install"):
@@ -674,3 +688,50 @@ def test_install_rejects_occupied_port_before_touching_release(tmp_path, monkeyp
         assert calls == []
         assert not (tmp_path / "state/runtime").exists()
         assert not list((tmp_path / "state").glob(".runtime-install-*"))
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX Node SO_REUSEADDR/TIME_WAIT regression")
+def test_install_does_not_confuse_closed_node_time_wait_with_a_listening_runtime(
+    tmp_path, monkeypatch, release,
+):
+    pin, connector, archive, _ = release
+    server = socket.socket()
+    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    server.bind(("127.0.0.1", 0))
+    server.listen()
+    closed = server.getsockname()
+    client = socket.create_connection(closed)
+    accepted, _ = server.accept()
+    accepted.shutdown(socket.SHUT_WR)
+    assert client.recv(1) == b""
+    client.close()
+    accepted.close()
+    server.close()
+    with socket.socket() as old_probe, pytest.raises(OSError):
+        old_probe.bind(closed)
+
+    class Probe:
+        def __enter__(self):
+            self.socket = socket.socket()
+            return self
+
+        def setsockopt(self, *args):
+            self.socket.setsockopt(*args)
+
+        def bind(self, address):
+            assert address == ("127.0.0.1", 15527)
+            self.socket.bind(closed)
+
+        def __exit__(self, *args):
+            self.socket.close()
+
+    monkeypatch.setattr(runtime_install, "socket", SimpleNamespace(socket=Probe, **{
+        name: getattr(socket, name)
+        for name in ("SOL_SOCKET", "SO_REUSEADDR", "SO_EXCLUSIVEADDRUSE")
+        if hasattr(socket, name)
+    }))
+    archive.write_bytes(b"changed archive")
+    # The original installer reaches its next checksum gate, not an active-owner
+    # rejection. No npm runs and no installed identity assertion is weakened.
+    with pytest.raises(BoundaryError, match="runtime_archive_checksum_mismatch"):
+        runtime_install.install_runtime(tmp_path / "state", pin, connector, archive=archive)

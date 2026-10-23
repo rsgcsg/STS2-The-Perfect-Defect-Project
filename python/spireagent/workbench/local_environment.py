@@ -545,6 +545,7 @@ class LocalEnvironmentService:
         self.native_configuration_id: Callable[[], str] | None = None
         self.native_admit_prepare: Callable[[], None] | None = None
         self.native_actor_lost: Callable[[dict[str, Any]], None] | None = None
+        self.native_workbench_prepare: Callable[[dict[str, Any], Path], None] | None = None
         self.native_client_factory: Callable[..., Any] = self._public_native_client
         self.native_capabilities: Callable[[str], dict[str, Any]] = self._native_capabilities
         self._native_endpoint: str | None = None
@@ -1358,6 +1359,8 @@ class LocalEnvironmentService:
                     or provenance.get("actual_seed") != body["seed"]
                 ):
                     raise BoundaryError("native_episode", "owned_seed_unproven")
+                if self.native_workbench_prepare is not None:
+                    self.native_workbench_prepare(identity, state_root)
                 handoff = dict(client.release_bootstrap(runtime))
                 binding = self._native_base_binding(record, runtime, endpoint, tuple_value, "owned")
                 observed_speed, owned_profile = identity["native_speed"], identity["profile"]
@@ -1536,6 +1539,79 @@ class LocalEnvironmentService:
                 phase="actor-associated", actor={"run_id": run_id, "request": request_ref}
             )
             self._save_native()
+
+    def verify_native_actor_reuse(self, context: dict[str, Any]) -> None:
+        """Read existing Host provenance before explicit reuse; never adopt a new world."""
+        with self.native_lock:
+            self.native_admission_guard(context, "control")
+            record = native_binding.detached(self.native_record)
+            client = self.native_client
+        binding = context["binding"]
+        if binding["ownership"] != "owned" or client is None:
+            raise BoundaryError("native_episode", "native_world_identity_unavailable")
+        try:
+            identity = client.episode_identity()
+            provenance, profile = identity["episode_provenance"], identity["profile"]
+            expected_profile = binding["profile"]
+            if (identity["host"]["runtime_instance_id"] != binding["runtime_instance_id"]
+                    or provenance["verdict"] != "provenance_pass"
+                    or provenance["actual_seed"] != record["preparation"]["seed"]
+                    or provenance["requested_seed"] != record["preparation"]["seed"]
+                    or provenance["runtime_instance_id"] != binding["runtime_instance_id"]
+                    or any(profile[key] != expected_profile[key] for key in (
+                        "template_id", "template_payload_sha256", "generation_id"))):
+                raise BoundaryError("native_episode", "native_world_identity_changed")
+        except BoundaryError:
+            raise
+        except Exception as error:
+            raise BoundaryError("native_episode", "native_world_identity_unavailable") from error
+        with self.native_lock:
+            self.native_admission_guard(context, "control")
+            if self.native_client is not client or self.native_record != record:
+                raise BoundaryError("native_episode", "resource_binding_changed")
+
+    def verify_retired_native_world(self, context: dict[str, Any]) -> None:
+        # Only a new Actor after retirement uses this extra Host read. Ordinary
+        # ticks/initial creation do not add another provenance polling lane.
+        with self.native_lock:
+            self.native_admission_guard(context, "control")
+            retained = self._native_operation_store()
+            if retained is None:
+                return
+            actors = retained[0].root / "operations" / context["environment_ref"] / "actors"
+            if not actors.exists():
+                return
+            if not _ordinary(actors, directory=True):
+                raise BoundaryError("native_episode", "native_original_operation_unsafe")
+        self.verify_native_actor_reuse(context)
+
+    def retire_native_actor(self, context: dict[str, Any], proof: dict[str, Any]) -> None:
+        """Keep the exact Reference world; immutably retain the released Actor before reuse."""
+        with self.native_lock:
+            self.native_admission_guard(context, "control")
+            actor = self.native_record.get("actor")
+            if (self.native_record.get("phase") != "actor-associated"
+                    or not isinstance(actor, dict) or actor.get("run_id") != proof.get("run_id")
+                    or actor.get("request") != proof.get("request")
+                    or proof.get("admission_context") != context):
+                raise BoundaryError("native_episode", "actor_retirement_binding_changed")
+            retained = self._native_operation_store(create=True)
+            assert retained is not None
+            snapshot = native_binding.detached(self.native_record)
+            raw = json_bytes({"schema": "spireagent/native-actor-retirement-1",
+                              "resource": snapshot, "proof": proof})
+            key = (f"operations/{self.native_record['environment_ref']}/actors/"
+                   f"{actor['run_id']}.json")
+            retained[0].put_if_absent(key, raw)
+            self.native_record.update(phase="ready", actor=None)
+            try:
+                self._save_native()
+            except (OSError, ValueError, StoreError):
+                # Never open creation from an unconfirmed persistence transition.
+                self.native_record = snapshot
+                self.native_record["persistence_error"] = "native_operation_persistence_unconfirmed"
+                raise BoundaryError(
+                    "native_episode", "actor_retirement_persistence_unconfirmed") from None
 
     def begin_native_finish(
         self, environment_ref: object

@@ -183,7 +183,7 @@ def test_application_stop_window_is_in_original_request_and_runtime_spawn(
     models.state["agent_run_request"] = publish(models.directory, request, "original-operation")
     monkeypatch.setattr(models, "readiness", lambda _: {"status": "ready_to_load"})
     monkeypatch.setattr(models, "_runtime_package", lambda _: {
-        "version": "synthetic", "code_sha256": "b" * 64})
+        "version": "0.1.0-rc.40", "code_sha256": "b" * 64})
     monkeypatch.setattr(models, "_node_modules", lambda _: Path("/trusted/node_modules"))
     monkeypatch.setattr(local_models, "_check_runtime_port", lambda _: None)
     commands = []
@@ -241,7 +241,7 @@ def stopped_context(p1_registration, monkeypatch):
     import json
 
     manifest = json.loads(models.entry_path(entry, "manifest").read_bytes())
-    package = {"version": "synthetic", "code_sha256": "b" * 64}
+    package = {"version": "0.1.0-rc.40", "code_sha256": "b" * 64}
     startup = {**_startup_identity(manifest, package),
                "run_id": "run-11111111-1111-1111-1111-111111111111"}
     models.state.update(status="stopped", startup=startup, loaded=False)
@@ -342,7 +342,7 @@ def test_http_owned_global_run_reaches_original_importer_and_readonly_reconcile(
     code = b"// synthetic Runtime bytes; never executed\n"
     (runtime / "global-replay.js").write_bytes(code)
     atomic_json(runtime.parent / "package.json", {
-        "name": "@rsgcsg/sts2-policy-runtime", "version": "synthetic"})
+        "name": "@rsgcsg/sts2-policy-runtime", "version": startup["runtime_version"]})
     startup["runtime_code_sha256"] = hashlib.sha256(
         b"global-replay.js\0" + code + b"\0").hexdigest()
     monkeypatch.setattr(models, "_node_modules", lambda _: modules)
@@ -353,7 +353,7 @@ def test_http_owned_global_run_reaches_original_importer_and_readonly_reconcile(
         "schema": global_evidence_store.RUN_SCHEMA, "run_id": startup["run_id"],
         "agent_artifact_sha256": startup["agent_artifact_sha256"],
         "runtime_code_sha256": startup["runtime_code_sha256"],
-        "runtime_version": "synthetic", "status": "stopped", "tainted": False})
+        "runtime_version": startup["runtime_version"], "status": "stopped", "tainted": False})
     entry = models.selection(startup["agent_manifest_id"])
     (original / "agent-manifest.json").write_bytes(
         models.entry_path(entry, "manifest").read_bytes())

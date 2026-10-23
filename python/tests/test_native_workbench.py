@@ -519,3 +519,16 @@ def test_signed_registrar_refuses_arbitrary_callback_port_before_signing_post(si
     assert result == {"native_status": "unavailable", "native_reason": "native_workbench_changed"}
     assert [path for path, _ in calls] == ["/v1/workbench/status"]
     assert app.native_access.current() is None
+
+
+
+def test_custom_connector_identity_must_match_fixed_native_bridge_before_registration(game_bridge):
+    _, calls, _ = game_bridge
+    registrar = NativeWorkbenchRegistrar(runtime_identity=lambda runtime: runtime == "other-game")
+    assert registrar.register("http://127.0.0.1:8787/", "a" * 32) == {
+        "status": "unavailable", "reason": "game_identity_mismatch"}
+    assert [call[0] for call in calls] == ["/v1/workbench/status"]
+    calls.clear()
+    registrar = NativeWorkbenchRegistrar(runtime_identity=lambda runtime: runtime == "game-current")
+    assert registrar.register("http://127.0.0.1:8787/", "a" * 32)["status"] == "registered"
+    assert [call[0] for call in calls] == ["/v1/workbench/status", "/v1/workbench/register"]

@@ -16,13 +16,14 @@ public sealed record PlatformModelContext(string RuntimeStatusSchema, string Run
         try { SourceSessionContract.Identifier(RuntimeRunId); }
         catch (InvalidDataException) { throw new ArgumentException("invalid_model_context"); }
         if (RecoveryEpoch is < 0 or > 9007199254740991
-            || RuntimeStatusSchema is not ("sts2.policy-runtime/status-1" or "sts2.policy-runtime/agent-session-status-1")
-            || (RuntimeStatusSchema == "sts2.policy-runtime/agent-session-status-1" && !IsAgentProfile(InputProfile))
-            || (RuntimeStatusSchema == "sts2.policy-runtime/status-1" && InputProfile is not (null or "text-menu-v1" or "text-menu-v2")))
+            || RuntimeStatusSchema is not ("sts2.policy-runtime/status-1" or "sts2.policy-runtime/status-2"
+                or "sts2.policy-runtime/agent-session-status-1" or "sts2.policy-runtime/agent-session-status-2")
+            || (RuntimeStatusSchema is ("sts2.policy-runtime/agent-session-status-1" or "sts2.policy-runtime/agent-session-status-2") && !IsAgentProfile(InputProfile))
+            || (RuntimeStatusSchema is ("sts2.policy-runtime/status-1" or "sts2.policy-runtime/status-2") && InputProfile is not (null or "text-menu-v1" or "text-menu-v2")))
             throw new ArgumentException("invalid_model_context");
     }
     [JsonIgnore]
-    public bool NativeAgent => RuntimeStatusSchema == "sts2.policy-runtime/agent-session-status-1" && InputProfile == "native-logical-v1";
+    public bool NativeAgent => RuntimeStatusSchema is ("sts2.policy-runtime/agent-session-status-1" or "sts2.policy-runtime/agent-session-status-2") && InputProfile == "native-logical-v1";
 }
 public sealed record PlatformModelPreparationRequestV2(string Schema, string RuntimeInstanceId, string? RecordingSessionId,
     string? SourceSegmentId, string CommandId, PlatformModelContext ModelContext);

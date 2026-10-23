@@ -8,7 +8,7 @@ import path from "node:path";
 import { parseArgs } from "../bin/workbench.mjs";
 import { createWorkbenchService } from "../src/workbench-service.mjs";
 import { createWorkbenchServer } from "../src/server.mjs";
-import { PolicyRuntimeClient } from "../src/policy-runtime-client.mjs";
+import { PolicyRuntimeClient, decodePolicyRuntimeStatus } from "../src/policy-runtime-client.mjs";
 
 let tempRoot;
 
@@ -484,4 +484,27 @@ test("Workbench rejects cross-origin and rebound-host policy forwarding", async 
     assert.equal(response.status, 200);
     assert.equal(forwarded, 1);
   } finally { await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve())); }
+});
+
+
+test("Runtime v2 decoder keeps continuous null limits and rejects old-schema disguise", () => {
+  const budget = { mode: "continuous", state: "active", max_submissions: null,
+    submissions_used: 17, max_policy_calls: null, policy_calls_used: 33,
+    deadline_ms: null, elapsed_ms: 61001, remaining_ms: null, exhausted_reason: null, ended_reason: null };
+  const status = { ...POLICY_STATUS, schema: "sts2.policy-runtime/status-2", mode: "auto",
+    controller: "held", autonomy_budget: budget };
+  assert.deepEqual(decodePolicyRuntimeStatus(status).autonomy_budget, budget);
+  assert.throws(() => decodePolicyRuntimeStatus({ ...status, schema: "sts2.policy-runtime/status-1" }));
+  for (const field of ["max_submissions", "max_policy_calls", "deadline_ms", "remaining_ms"])
+    assert.throws(() => decodePolicyRuntimeStatus({ ...status, autonomy_budget: { ...budget, [field]: 1 } }));
+  assert.throws(() => decodePolicyRuntimeStatus({ ...status, autonomy_budget: { ...budget, state: "exhausted" } }));
+});
+
+
+test("v2 bounded time counters match the original producer equation", async () => {
+  const vectors = JSON.parse(await readFile(new URL("../../../components/policy-runtime/test/fixtures/autonomy-v2.json", import.meta.url), "utf8"));
+  const status = { ...POLICY_STATUS, schema: "sts2.policy-runtime/status-2", autonomy_budget: vectors.bounded_status_v2 };
+  assert.deepEqual(decodePolicyRuntimeStatus(status).autonomy_budget, vectors.bounded_status_v2);
+  assert.throws(() => decodePolicyRuntimeStatus({ ...status,
+    autonomy_budget: { ...vectors.bounded_status_v2, remaining_ms: 50000 } }));
 });

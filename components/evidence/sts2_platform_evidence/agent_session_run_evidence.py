@@ -23,6 +23,9 @@ from .agent_run_evidence import (
     _file_entry,
     _load_json_object_bytes,
     _read_checksums,
+    _verify_autonomy_budget,
+    _autonomy_config_limits,
+    _recorded_budget_limits,
 )
 from .source_session_bundle import (SourceSessionError, _catalog_digest, _capture_shape, _json as _source_json)
 from .core import VerificationFinding, VerificationResult, VerifierDescriptor
@@ -848,7 +851,9 @@ def _recorded_readiness(witness: Mapping[str, Any], refused: Mapping[str, Any]) 
             "native_session_refused_query_metadata")
 
 
-def _budget(value: object) -> dict[str, Any]:
+def _budget(value: object, version: int = 1) -> dict[str, Any]:
+    if version == 2:
+        return dict(_verify_autonomy_budget(value, 2))
     budget = _object(
         value,
         {
@@ -1240,7 +1245,7 @@ class AgentSessionRunEvidenceVerifier:
             aliases = {"agent_manifest_id": "manifest_id"}
             _require(
                 expected.get("schema", "sts2.policy-runtime/agent-session-startup-1")
-                == "sts2.policy-runtime/agent-session-startup-1",
+                in {"sts2.policy-runtime/agent-session-startup-1", "sts2.policy-runtime/agent-session-startup-2"},
                 "native_session_expected_namespace",
             )
             for key in (
@@ -1335,7 +1340,8 @@ class AgentSessionRunEvidenceVerifier:
             "native_session_immutable_manifest",
         )
         events, terminal_counts = self._events(
-            directory, run, agent, attestation["status"] == "attested", state_files, sample_files
+            directory, run, agent, attestation["status"] == "attested", state_files, sample_files,
+            expected
         )
         identity = {
             "schema": "sts2.evidence/store-directory-1",
@@ -1359,11 +1365,19 @@ class AgentSessionRunEvidenceVerifier:
         attested: bool,
         state_files: set[str],
         sample_files: set[str],
+        expected_startup: Mapping[str, object] | None = None,
     ) -> tuple[list[dict[str, Any]], tuple[int, int, int, int, int] | None]:
         # The executable producer's exported AgentRuntimeEventPayloads map is closed.
         raw = (directory / "events.jsonl").read_bytes()
         _require(not raw or raw.endswith(b"\n"), "native_session_event_termination")
         events = [_json(line, "events.jsonl") for line in raw.splitlines()]
+        event_schema = events[0].get("schema") if events else None
+        _require(event_schema in {EVENT_SCHEMA, "sts2.policy-runtime/agent-session-event-2"}, "native_session_event_schema")
+        event_version = 2 if event_schema.endswith("-2") else 1
+        if expected_startup is not None and "schema" in expected_startup:
+            _require(expected_startup["schema"] == f"sts2.policy-runtime/agent-session-startup-{event_version}", "native_session_expected_event_version")
+        expected_limits = _autonomy_config_limits(expected_startup["autonomy_budget"], event_version) if expected_startup is not None and "autonomy_budget" in expected_startup else None
+        authorization_limits: tuple[object, ...] | None = None
         session_id: str | None = None
         epoch = 0
         witnesses: dict[str, dict[str, Any]] = {}
@@ -1436,7 +1450,7 @@ class AgentSessionRunEvidenceVerifier:
         for sequence, event in enumerate(events, 1):
             event = _object(event, {"schema", "sequence", "recorded_at", "kind", "payload"})
             _require(
-                event["schema"] == EVENT_SCHEMA
+                event["schema"] == event_schema
                 and type(event["sequence"]) is int
                 and event["sequence"] == sequence,
                 "native_session_event_sequence",
@@ -1909,12 +1923,19 @@ class AgentSessionRunEvidenceVerifier:
                 "handoff_to_human",
                 "stopped",
             }:
-                recorded_budget = _budget(payload["autonomy_budget"])
+                recorded_budget = _budget(payload["autonomy_budget"], event_version)
+                limits = _recorded_budget_limits(recorded_budget, event_version)
+                _require(expected_limits is None or expected_limits == limits, "native_session_expected_budget_drift")
+                if event_version == 2:
+                    _require(authorization_limits is None or authorization_limits == limits, "native_session_budget_config_changed")
+                    authorization_limits = limits
                 _require(
                     payload["controller"] in {"held", "released", "unknown"},
                     "native_session_controller",
                 )
                 controller = payload["controller"]
+                if event_version == 2 and kind == "autonomy_budget_exhausted":
+                    _require(recorded_budget["state"] == "exhausted" and recorded_budget["exhausted_reason"] == payload["reason"], "native_session_budget_exhaustion")
                 if kind == "mode_changed":
                     _require(
                         payload["mode"] in {"human", "shadow", "one_step", "auto"},
@@ -1922,6 +1943,8 @@ class AgentSessionRunEvidenceVerifier:
                     )
                     if agent["input"]["history_mode"] == "sampled_current" and sample_ended:
                         _require(payload["mode"] == "human", "native_session_sample_reentry")
+                    if event_version == 2 and payload["mode"] != "human":
+                        _require(recorded_budget["state"] == "active" and (recorded_budget["mode"] == "continuous" or recorded_budget["remaining_ms"] > 0), "native_session_mode_without_active_budget")
                     mode = payload["mode"]
                 else:
                     mode = "human"

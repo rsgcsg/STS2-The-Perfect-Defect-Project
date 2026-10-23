@@ -53,9 +53,9 @@ describe("GLOBAL through the existing Runtime, real HTTP and real supervised Age
       expect(messages.some(m=>m.message_type==="next")).toBe(true);
     }finally{await f.close();}
   });
-  it.each(["banana","wrong_request","wrong_action","unknown"])("fences %s after one original submission with no retry",async variant=>{
+  it.each(["banana","wrong_request","wrong_action","unknown"].flatMap(variant=>(["bounded","continuous"] as const).map(mode=>({variant,mode}))))("fences $variant after one original submission with no retry ($mode)",async({variant,mode})=>{
     const source=new GlobalHttpFixture();if(variant==="wrong_request")source.wrongRequest=true;else if(variant==="wrong_action")source.wrongAction=true;else source.delivery=variant;
-    const f=await globalRuntimeFixture({source});try{expect((await f.runtime.tick()).type).toBe("unknown");await f.runtime.tick();expect(source.steps).toBe(1);expect(f.runtime.status().tainted).toBe(true);}finally{await f.close();}
+    const f=await globalRuntimeFixture({source,autoBudget:mode==="continuous"?{mode}:undefined});try{expect((await f.runtime.tick()).type).toBe("unknown");await f.runtime.tick();expect(source.steps).toBe(1);expect(f.runtime.status().tainted).toBe(true);}finally{await f.close();}
   });
   it("Stop cancels an in-flight source capture without acquiring control or sending actions",async()=>{
     const f=await globalRuntimeFixture();const blocked=gate();f.source.captureGate=blocked.promise;

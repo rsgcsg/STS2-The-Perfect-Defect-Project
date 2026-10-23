@@ -1178,14 +1178,14 @@ describe("runtime integration fake", () => {
     expect(policy).toHaveBeenCalledTimes(1);
   });
 
-  it("does not retry an unconfirmed release or seal Stop after a one-shot failure", async () => {
+  it.each(["bounded", "continuous"] as const)("does not retry an unconfirmed release or seal Stop after a one-shot failure (%s)", async mode => {
     const connector = new FakeConnector(bundle(["a"]));
     connector.stale = false;
     connector.releaseController = vi.fn(async () => {
       connector.releaseCount += 1;
       if (connector.releaseCount === 1) throw new Error("release transport lost");
     });
-    const runtime = new PolicyRuntime({ manifest: manifest(), connector, mode: "auto", runId: "run-unconfirmed-release", policy: input => ({ candidate_digest: input.candidate_digest, scores: [1], selected_index: 0 }) });
+    const runtime = new PolicyRuntime({ manifest: manifest(), connector, mode: "auto", runId: "run-unconfirmed-release", autoBudget: mode === "continuous" ? { mode } : undefined, policy: input => ({ candidate_digest: input.candidate_digest, scores: [1], selected_index: 0 }) });
     expect((await runtime.tick()).type).toBe("delivered");
     await expect(runtime.setMode("human")).rejects.toThrow("release transport lost");
     expect(runtime.status()).toMatchObject({ mode: "human", controller: "held", tainted: true, autonomy_budget: { state: "inactive" } });

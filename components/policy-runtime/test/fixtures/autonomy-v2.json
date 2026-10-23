@@ -1,0 +1,62 @@
+{
+  "bounded_startup_v2": {
+    "mode": "bounded",
+    "maxSubmissions": 16,
+    "maxPolicyCalls": 32,
+    "deadlineMs": 60000
+  },
+  "continuous_startup_v2": {
+    "mode": "continuous"
+  },
+  "bounded_status_v1": {
+    "state": "active",
+    "max_submissions": 16,
+    "submissions_used": 1,
+    "max_policy_calls": 32,
+    "policy_calls_used": 2,
+    "deadline_ms": 60000,
+    "elapsed_ms": 1000,
+    "remaining_ms": 59000,
+    "exhausted_reason": null,
+    "ended_reason": null
+  },
+  "bounded_status_v2": {
+    "mode": "bounded",
+    "state": "active",
+    "max_submissions": 16,
+    "submissions_used": 1,
+    "max_policy_calls": 32,
+    "policy_calls_used": 2,
+    "deadline_ms": 60000,
+    "elapsed_ms": 1000,
+    "remaining_ms": 59000,
+    "exhausted_reason": null,
+    "ended_reason": null
+  },
+  "continuous_status_v2": {
+    "state": "active",
+    "max_submissions": null,
+    "submissions_used": 17,
+    "max_policy_calls": null,
+    "policy_calls_used": 33,
+    "deadline_ms": null,
+    "elapsed_ms": 61001,
+    "remaining_ms": null,
+    "exhausted_reason": null,
+    "ended_reason": null,
+    "mode": "continuous"
+  },
+  "continuous_paused_v2": {
+    "state": "inactive",
+    "max_submissions": null,
+    "submissions_used": 17,
+    "max_policy_calls": null,
+    "policy_calls_used": 33,
+    "deadline_ms": null,
+    "elapsed_ms": 61001,
+    "remaining_ms": null,
+    "exhausted_reason": null,
+    "ended_reason": "human_recovery",
+    "mode": "continuous"
+  }
+}

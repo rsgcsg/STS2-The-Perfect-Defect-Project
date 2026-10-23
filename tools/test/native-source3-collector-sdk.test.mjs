@@ -502,7 +502,7 @@ for (const privateWriteFailure of [false, true]) {
     const { wireFinal, full, seen, output } = await collect(t, { largeStatus: true, privateWriteFailure });
     const quiesced = seen.pipe.find(value => value.type === "quiesced");
     assert.ok(Buffer.byteLength(JSON.stringify(quiesced)) > 16 * 1024);
-    assert.equal(quiesced.runtime_status.schema, "sts2.policy-runtime/agent-session-status-1");
+    assert.equal(quiesced.runtime_status.schema, "sts2.policy-runtime/agent-session-status-2");
     assert.ok(quiesced.runtime_status.errors.length > 0);
     assert.equal(wireFinal.source_closed, true);
     assert.equal(wireFinal.control_release.confirmed, true);

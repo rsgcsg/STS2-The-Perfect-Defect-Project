@@ -1,4 +1,15 @@
-# 当前：隔离性能候选，原训练继续
+# 当前：游戏内连续模型展示候选，原现场不变
+
+用户要求真实模型下拉、持续展示、简单暂停/继续/结束与诚实恢复。D/T从
+`origin/develop=93e90df`独占联合source候选，沿原Application/Environment/Runtime/
+Evidence接线；范围、负责人、验收与停止点归
+[本轮任务](../plans/p1-prefreeze-2026-10-18/INGAME_CONTINUOUS_MODEL_PLAY_20261023.zh-CN.md)。
+普通本地源码检查不授安装/加载/实战或模型质量；原用户App/Host/游戏及训练保留。
+Runtime40/Evidence34/Live UI18/Mod60/Workbench4必须匹配，旧安装不自动升级。
+性能优化已延期；App重启丢失Host管道时只恢复准确Human/Stop/封存，不能冒称继续同世界。
+原首批训练、最终TEST、40次Reference和完整R2交付仍未完成。
+
+# 历史已延期：隔离性能候选，原训练继续
 
 用户批准在原首批训练继续时完成性能候选、必要内部工具和真实 TRAIN 短实验，
 新增独立 USD10 上限（按需花费），学校累计40小时不变。root 的独占分支
@@ -11,7 +22,6 @@
 完成稳定候选复核；原f7跨源码完整迁移仍未实现/验证，不能直接在下一检查点切换。
 性能工程在原recipe/model、Store和应用/Compute各负责层落实，生命周期/SOP归
 [原训练指南](../../python/docs/FULLRUN_TRAINING.md#training-performance-belongs-to-the-existing-chain)，不新增控制器。
-父任务四Agent、最终TEST、40次Reference及完整R2交付仍未完成。
 
 ## 已集成：训练自动接续与首批训练连续性
 
