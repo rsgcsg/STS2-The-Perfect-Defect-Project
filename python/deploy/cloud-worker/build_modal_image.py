@@ -71,6 +71,7 @@ def main() -> int:
     root = Path(__file__).resolve().parents[2]
     sys.path.insert(0, str(root))
     from spireagent.source import source_identity
+    from spireagent.workbench.developer import atomic_json
     from stpd.cloud_jobs.modal import MODAL_SDK_VERSION
 
     parser = argparse.ArgumentParser(description=__doc__)
@@ -116,7 +117,7 @@ def main() -> int:
     args.output.parent.mkdir(parents=True, exist_ok=True)
 
     def save() -> None:
-        args.output.write_text(json.dumps(receipt, sort_keys=True, indent=2) + "\n")
+        atomic_json(args.output, receipt)
 
     save()
     app = modal.App("stpd-image-build-" + args.source[:12])

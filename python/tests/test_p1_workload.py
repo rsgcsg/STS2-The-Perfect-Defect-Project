@@ -16,6 +16,7 @@ from spireagent.storage.store import copy_artifact
 from stpd.cloud_jobs.contracts import ComputeRequest
 from stpd.cloud_jobs.execution import dispatch, preflight_training_request, validate_receipt
 from stpd.p1.dataset import iter_snapshot_points
+from stpd.p1.execution import MStdExecution
 from stpd.p1.export import load_model
 from stpd.p1.input import project
 from stpd.p1.spec import MStdConfig
@@ -24,16 +25,21 @@ from stpd.p1.workload import prepare_p1_run, verify_p1_run
 from stpd.workers.p1_run import materialize_p1_model, verify_p1_checkpoint, verify_p1_result
 
 
-def small_run(tmp_path):
+def small_run(tmp_path, execution_policy=None):
     store = store_at(tmp_path / "store")
     projections = [projection_fixture(store, "source-" + str(i))[0] for i in range(3)]
     snapshot = explicit_snapshot(store, projections)
-    run = prepare_p1_run(store, snapshot.artifact_id, PRODUCER, MStdConfig(max_epochs=2), "a" * 32)
+    run = prepare_p1_run(store, snapshot.artifact_id, PRODUCER, MStdConfig(max_epochs=2), "a" * 32,
+                         **({"execution_policy": execution_policy}
+                            if execution_policy is not None else {}))
     return store, snapshot, run
 
 
-def test_same_worker_full_pause_resume_candidate_and_exact_model_readback(tmp_path):
-    store, snapshot, run = small_run(tmp_path)
+@pytest.mark.parametrize("implementation", [None, "row-fused-v1", "experimental-packed-v1"])
+def test_same_worker_full_pause_resume_candidate_and_exact_model_readback(tmp_path, implementation):
+    policy = (MStdExecution(implementation=implementation).to_dict()
+              if implementation is not None else None)
+    store, snapshot, run = small_run(tmp_path, policy)
     request = ComputeRequest("training", run.artifact_id, PRODUCER, "full")
     preflight_training_request(store, request)
     full = dispatch(store, request, PRODUCER)
@@ -57,6 +63,7 @@ def test_same_worker_full_pause_resume_candidate_and_exact_model_readback(tmp_pa
     assert completed_event["timing"]["worker_seconds"] > 0
     workload = verify_p1_run(store, run.artifact_id, PRODUCER)
     complete = verify_p1_checkpoint(store, full.checkpoint_id, workload)
+    assert complete.state["identity"]["execution"] == (policy or MStdExecution().to_dict())
     paused_request = replace(request, attempt_id="bounded-pause", stop_after=1)
     paused = dispatch(store, paused_request, PRODUCER)
     validate_receipt(store, paused_request, paused)
@@ -87,6 +94,8 @@ def test_same_worker_full_pause_resume_candidate_and_exact_model_readback(tmp_pa
     destination = tmp_path / "export"
     metadata = materialize_p1_model(readback, model.artifact_id, destination)
     loaded, package = load_model(destination / "model.tensor-tree", metadata["package_sha256"])
+    assert loaded.execution.to_dict() == (policy or MStdExecution().to_dict())
+    assert package["schema"] == ("stpd/p1-mstd-model-2" if policy else "stpd/p1-mstd-model-1")
     row = next(iter_snapshot_points(readback, snapshot.artifact_id))
     frame = project(row[1])
     with torch.inference_mode():

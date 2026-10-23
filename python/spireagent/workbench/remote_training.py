@@ -154,7 +154,8 @@ class RemoteTrainingService:
         checkpoint = peer.get_manifest(checkpoint_id)
         if checkpoint.parameters.value().get("attempt") != row["attempt_id"]:
             raise BoundaryError("remote_training", "original_attempt_checkpoint_required")
-        events = ObjectStoreRunReporter(peer, peer.blobs).events(request.input_id)
+        events = ObjectStoreRunReporter(peer, peer.blobs, read_concurrency=8).events(
+            request.input_id)
         for event in events:
             info = event.parameters.value()
             details = info.get("details", {})
@@ -391,7 +392,8 @@ class RemoteTrainingService:
         reporter = self._progress_reporters.get(row["input_id"])
         if reporter is None:
             peer = open_peer(deployment.compute_store)
-            reporter = ObjectStoreRunReporter(peer, peer.blobs, cache_events=True)
+            reporter = ObjectStoreRunReporter(peer, peer.blobs, cache_events=True,
+                                               read_concurrency=8)
             self._progress_reporters[row["input_id"]] = reporter
         observed_store = reporter.store
         run = observed_store.get_manifest(row["input_id"])
@@ -443,8 +445,9 @@ class RemoteTrainingService:
         assert deployment is not None
         recipe = body.get("recipe_id", "p1-mstd-N-v1") if isinstance(body, dict) else None
         fields = {"intent_id", "source_id", "config", "max_seconds", "stop_after"}
-        obj = object_fields(body, fields | ({"recipe_id"} if isinstance(body, dict)
-                                             and "recipe_id" in body else set()),
+        optional = {key for key in ("recipe_id", "execution_policy")
+                    if isinstance(body, dict) and key in body}
+        obj = object_fields(body, fields | optional,
                             "remote_training.start")
         intent = digest(obj["intent_id"], "remote_training.intent_id", length=32)
         snapshot = digest(obj["source_id"], "remote_training.source_id")
@@ -463,6 +466,12 @@ class RemoteTrainingService:
             prepare_run = prepare_p1_run
         else:
             raise BoundaryError("remote_training", "unsupported_training_recipe")
+        execution_options: dict[str, Any] = {}
+        if "execution_policy" in obj:
+            from spireagent.workbench.trusted_recipes import checked_recipe_execution_policy
+
+            execution_options["execution_policy"] = checked_recipe_execution_policy(
+                recipe, obj["execution_policy"])
         target = provider.target
         gpu = getattr(target, "gpu", None)
         if ((config.device == "cpu") != (gpu == "none")):
@@ -471,7 +480,7 @@ class RemoteTrainingService:
         require_p1_snapshot(owner, store, snapshot)
         # Vocabulary fitting itself discloses training examples; reserve use first.
         record_p1_training_use(owner, store, snapshot, intent)
-        run = prepare_run(store, snapshot, target.producer, config, intent)
+        run = prepare_run(store, snapshot, target.producer, config, intent, **execution_options)
         scratch = self.config.state_dir / "remote-training-transfer"
         scratch.mkdir(parents=True, exist_ok=True)
         facts = transfer_p1_input(store, deployment.compute_store, run.artifact_id,

@@ -28,6 +28,7 @@ from spireagent.workbench.developer_cli import main as project_main
 from spireagent.workbench.developer_server import Application, configuration_id, create_server
 from stpd.p1.checkpoint_export import publish_checkpoint_model
 from stpd.p1.dataset import SnapshotReader
+from stpd.p1.execution import MStdExecution
 from stpd.p1.export import load_model
 from stpd.p1.formal_training import MStdTrainer
 from stpd.workers.checkpoint_codec import decode_checkpoint, encode_checkpoint
@@ -36,12 +37,13 @@ from stpd.workers.p1_run import execute_p1_run, materialize_p1_model
 EXPORTER = replace(PRODUCER, source_revision="f" * 40)
 
 
-@pytest.fixture(scope="module")
-def saved_checkpoint(tmp_path_factory):
+@pytest.fixture(scope="module", params=[None, "experimental-packed-v1"])
+def saved_checkpoint(tmp_path_factory, request):
     previous_threads = torch.get_num_threads()
     torch.set_num_threads(2)
     root = tmp_path_factory.mktemp("diagnostic-checkpoint")
-    store, snapshot, run = small_run(root)
+    policy = (MStdExecution(implementation=request.param).to_dict() if request.param else None)
+    store, snapshot, run = small_run(root, policy)
     reporter = ObjectStoreRunReporter(store, store.blobs)
     result = execute_p1_run(store, reporter, run.artifact_id, PRODUCER,
                             attempt_id="one-step", stop_after=1)
@@ -90,6 +92,7 @@ def test_real_checkpoint_export_preserves_training_identity_rng_and_originals(
     descriptor = materialize_p1_model(store, model.artifact_id, tmp_path / "package")
     loaded, package = load_model(tmp_path / "package/model.tensor-tree",
                                  descriptor["package_sha256"])
+    assert loaded.execution.to_dict() == state["identity"]["execution"]
     assert package["training_identity"] == state["identity"]
     assert package["training_identity"]["snapshot_id"] == snapshot.artifact_id
     assert package["checkpoint_sha256"] == checkpoint.payload("checkpoint").sha256

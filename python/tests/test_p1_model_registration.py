@@ -17,12 +17,15 @@ from spireagent.workbench.local_model_export import LocalModelExport
 from spireagent.workbench.local_model_registration import REGISTRY, LocalModelRegistration
 from spireagent.workbench.local_models import LocalModelService
 from stpd.p1.agent import installation
+from stpd.p1.execution import MStdExecution
 from stpd.p1.export import export_model
 from stpd.p1.input import LEGACY_INPUT_SPEC, fit_vocabulary, project
 from stpd.p1.model import MStd
 
 
-@pytest.fixture(params=["detached", "trained", "legacy-detached"])
+@pytest.fixture(params=[
+    "detached", "trained", "legacy-detached", "packed-detached", "packed-trained",
+])
 def p1_registration(tmp_path, monkeypatch, request):
     store = store_at(tmp_path / "store")
     package = tmp_path / "original"
@@ -35,13 +38,16 @@ def p1_registration(tmp_path, monkeypatch, request):
     vocabulary = fit_vocabulary([project(value, input_projection=projection)])
     if projection is not None:
         vocabulary["input_spec"] = dict(projection)
-    descriptor = export_model(MStd(vocabulary), checkpoint, package, {"scope": "synthetic"})
+    execution = (MStdExecution(implementation="experimental-packed-v1")
+                 if request.param.startswith("packed-") else MStdExecution())
+    descriptor = export_model(MStd(vocabulary, execution), checkpoint, package,
+                              {"scope": "synthetic"})
     payloads = tuple(store.put_payload(role, io.BytesIO((package / name).read_bytes()), media)
                      for role, name, media in (
                          ("weights", "model.tensor-tree", "application/vnd.stpd.tensor-tree"),
                          ("package_manifest", "model.json", "application/json")))
     metadata = {**descriptor, "training_ancestry": "unknown"}
-    if request.param == "trained":
+    if request.param in {"trained", "packed-trained"}:
         metadata["schema"] = "stpd/p1-mstd-trained-model-1"
     model = Manifest("model", PRODUCER, payloads=payloads,
                      parameters=FrozenObject.of(metadata))

@@ -14,6 +14,9 @@ TRAINING_SCHEMA = "stpd/p1-mstd-training-input-1"
 RUN_SCHEMA = "stpd/p1-mstd-run-1"
 CHECKPOINT_SCHEMA = "stpd/p1-mstd-formal-checkpoint-1"
 MODEL_SCHEMA = "stpd/p1-mstd-trained-model-1"
+PACKAGE_SCHEMA = "stpd/p1-mstd-model-1"
+EXECUTION_PACKAGE_SCHEMA = "stpd/p1-mstd-model-2"
+MSTD_PACKAGE_SCHEMAS = frozenset({PACKAGE_SCHEMA, EXECUTION_PACKAGE_SCHEMA})
 TARGET_SPEC = {
     "id": "p1-current-catalog-N-1",
     "version": "1",

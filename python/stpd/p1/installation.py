@@ -60,7 +60,9 @@ def metadata(owner: Path, config: dict[str, Any], manifest: dict[str, Any]) -> d
     if config != checked_config or manifest != checked_manifest:
         raise ValueError("P1 installation metadata changed")
     return {
-        "schema": "stpd/p1-mstd-model-1",
+        "schema": payload["schema"],
+        **({"inference_execution": payload["inference_execution"]}
+           if "inference_execution" in payload else {}),
         "input_spec": manifest["input"]["input_spec"],
         "input_projection": config["input_projection"],
         "package_input_spec": config["package_input_spec"],

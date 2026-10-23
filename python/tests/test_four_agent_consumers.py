@@ -60,8 +60,11 @@ def test_store_download_own_bytes_without_private_parent_or_hub_fallback(tmp_pat
         models.close()
 
 
-@pytest.mark.parametrize("baseline", [False, True])
-def test_model_outcome_keeps_model_binding_without_claiming_task_success(baseline, tmp_path):
+@pytest.mark.parametrize("baseline,schema", [(False, "stpd/p1-mstd-model-1"),
+    (False, "stpd/p1-mstd-model-2"), (True, "stpd/p1-baseline-model-1")])
+def test_model_outcome_keeps_model_binding_without_claiming_task_success(
+    baseline, schema, tmp_path,
+):
     spec = {"id": "p1-frequency" if baseline else "p1-mstd", "version": "1",
             "task_spec": {"id": "current-public-semantic-choice", "version": "1"}}
     input_spec = {"id": "input", "version": "1", "sha256": "a" * 64}
@@ -70,7 +73,7 @@ def test_model_outcome_keeps_model_binding_without_claiming_task_success(baselin
                 "artifact": {"sha256": "b" * 64},
                 "input": {"profile": "p1-global-r1", "input_spec": input_spec,
                           "state_recovery": {"model_bindings": []}}}
-    descriptor = {"schema": "stpd/p1-baseline-model-1" if baseline else "stpd/p1-mstd-model-1",
+    descriptor = {"schema": schema,
                   "package_sha256": "b" * 64, "agent_spec": spec, "input_spec": input_spec}
     outcome = _empty("pass")
     outcome["agent_composition"]["model"] = {"runtime_artifact_sha256": "b" * 64}
@@ -135,6 +138,26 @@ def test_baseline_evidence_parent_uses_baseline_projection(tmp_path, monkeypatch
     expected["model_binding"]["input_projection"] = INPUT_SPEC
     with pytest.raises(BoundaryError, match="trusted_model_binding_mismatch"):
         _parents(store, baseline.artifact_id, runtime.artifact_id, value, expected)
+
+
+def test_packed_original_package_is_accepted_as_global_evidence_parent(tmp_path, monkeypatch):
+    store, _, directory, expected, model, runtime, _ = _setup(tmp_path, monkeypatch)
+    descriptor = json.loads(b"".join(store.read_payload(model.payload("package_manifest"))))
+    descriptor["schema"] = "stpd/p1-mstd-model-2"
+    payload = store.put_bytes("package_manifest", json_bytes(descriptor), "application/json")
+    packed = replace(model, payloads=(model.payload("weights"), payload))
+    store.publish(packed)
+    value = SimpleNamespace(manifest=json.loads((directory / "manifest.json").read_bytes()),
+                            agent_manifest={"adapter": {"id": "stpd-p1-mstd-agent"},
+                                            "input": {"input_spec": descriptor["input_spec"]}})
+    parents = _parents(store, packed.artifact_id, runtime.artifact_id, value, expected)
+    assert parents[0].artifact_id == packed.artifact_id
+    descriptor["package_sha256"] = "0" * 64
+    wrong = replace(packed, payloads=(packed.payload("weights"), store.put_bytes(
+        "package_manifest", json_bytes(descriptor), "application/json")))
+    store.publish(wrong)
+    with pytest.raises(BoundaryError, match="original_model_descriptor_mismatch"):
+        _parents(store, wrong.artifact_id, runtime.artifact_id, value, expected)
 
 
 def test_new_reference_manifest_has_new_reserved_seeds_and_explicit_version(tmp_path):

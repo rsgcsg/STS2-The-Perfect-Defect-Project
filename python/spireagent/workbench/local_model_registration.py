@@ -1171,6 +1171,7 @@ class LocalModelRegistration:
             raise
         return model.kind == "model" and model.parameters.value().get("schema") in {
             "stpd/p1-mstd-trained-model-1", "stpd/p1-mstd-model-1",
+            "stpd/p1-mstd-model-2",
             "stpd/p1-baseline-trained-model-1"}
 
     def _p1_source(self, identity: str) -> tuple[Any, Manifest]:
@@ -1178,6 +1179,7 @@ class LocalModelRegistration:
         model = source.get_manifest(identity)
         if (model.kind != "model" or model.parameters.value().get("schema") not in {
                 "stpd/p1-mstd-trained-model-1", "stpd/p1-mstd-model-1",
+                "stpd/p1-mstd-model-2",
                 "stpd/p1-baseline-trained-model-1"}):
             raise BoundaryError("local_model_registration", "P1_model_required")
         return source, model
@@ -1261,7 +1263,9 @@ class LocalModelRegistration:
                     descriptor = _object_file(package / "model.json")
                     _, payload = load_model(package / "model.tensor-tree",
                                             model.parameters.value()["package_sha256"])
-                    if (descriptor.get("schema") != "stpd/p1-mstd-model-1"
+                    if (descriptor.get("schema") != payload["schema"]
+                            or descriptor.get("inference_execution")
+                            != payload.get("inference_execution")
                             or descriptor.get("package_sha256")
                             != model.parameters.value()["package_sha256"]
                             or descriptor.get("input_spec") != payload["input_spec"]

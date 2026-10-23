@@ -23,6 +23,7 @@ from spireagent.json_boundary import BoundaryError, FrozenObject, json_bytes
 from spireagent.storage.archives import _extract_tar
 from spireagent.storage.local import LocalBlobStore
 from spireagent.storage.store import CHUNK_BYTES, ManifestArtifactStore
+from stpd.p1.spec import MSTD_PACKAGE_SCHEMAS
 
 from .p1_recording_storage import require_workspace_space
 from .p1_recording_store import _verify_archive
@@ -57,7 +58,7 @@ def publish_detached_p1_model(
     descriptor = json.loads(descriptor_path.read_bytes())
     if (
         not isinstance(descriptor, dict)
-        or descriptor.get("schema") != "stpd/p1-mstd-model-1"
+        or descriptor.get("schema") not in MSTD_PACKAGE_SCHEMAS
         or not isinstance(descriptor.get("input_spec"), dict)
     ):
         raise BoundaryError("global_store", "original_model_package_required")
@@ -114,14 +115,14 @@ def _parents(
     if model.kind != "model" or model.payload("weights").sha256 != run["agent_artifact_sha256"]:
         raise BoundaryError("global_store", "original_model_parent_mismatch")
     baseline = verified.agent_manifest.get("adapter", {}).get("id") == "stpd-p1-baseline-agent"
-    package_schema = "stpd/p1-baseline-model-1" if baseline else "stpd/p1-mstd-model-1"
+    package_schemas = {"stpd/p1-baseline-model-1"} if baseline else MSTD_PACKAGE_SCHEMAS
     metadata = model.payload("package_manifest")
     if metadata.size > 1024**2:
         raise BoundaryError("global_store", "model_descriptor_capacity")
     descriptor = json.loads(b"".join(store.read_payload(metadata)))
     if (
         not isinstance(descriptor, dict)
-        or descriptor.get("schema") != package_schema
+        or descriptor.get("schema") not in package_schemas
         or descriptor.get("package_sha256") != model.payload("weights").sha256
         or model.parameters.value().get("input_spec") != descriptor.get("input_spec")
     ):

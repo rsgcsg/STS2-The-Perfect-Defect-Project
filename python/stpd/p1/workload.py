@@ -15,6 +15,7 @@ from stpd.fullrun.dataset_policy import training_sources
 
 from .data import digest, json_bytes
 from .dataset import SnapshotReader
+from .execution import MStdExecution
 from .export import input_spec
 from .formal_training import Population
 from .input import INPUT_SPEC, fit_vocabulary, project
@@ -57,6 +58,7 @@ def prepare_p1_run(
     producer: Producer,
     config: MStdConfig,
     operation_id: str,
+    *, execution_policy: dict[str, Any] | None = None,
 ) -> Manifest:
     """Caller reserves the existing application/Hub use before fitting vocabulary.
 
@@ -64,6 +66,10 @@ def prepare_p1_run(
     is never promoted here into formal research admission.
     """
     checked_digest(operation_id, "p1_workload.operation_id", length=32)
+    execution = (MStdExecution() if execution_policy is None
+                 else MStdExecution.decode(execution_policy))
+    if execution.cpu_threads != config.cpu_threads:
+        raise BoundaryError("p1_workload", "formal_recipe_cpu_threads_mismatch")
     training_sources(store, snapshot_id)
     reader = SnapshotReader(store, snapshot_id)
     snapshot = reader.manifest
@@ -114,7 +120,8 @@ def prepare_p1_run(
             Parent("training_input", training.artifact_id),
         ),
         parameters=FrozenObject.of(
-            {"schema": RUN_SCHEMA, "operation_id": operation_id, "event_index": "run-events-v1"}
+            {"schema": RUN_SCHEMA, "operation_id": operation_id, "event_index": "run-events-v1",
+             **({"execution_policy": execution.to_dict()} if execution_policy is not None else {})}
         ),
     )
     store.publish(run)
@@ -129,6 +136,7 @@ class P1Workload:
     config: MStdConfig
     vocabulary: dict[str, Any]
     reader: SnapshotReader
+    execution: MStdExecution
 
 
 def verify_p1_run(store: ArtifactStore, run_id: str, producer: Producer) -> P1Workload:
@@ -143,6 +151,8 @@ def verify_p1_run(store: ArtifactStore, run_id: str, producer: Producer) -> P1Wo
         raise BoundaryError("p1_workload", "run_source_or_schema_mismatch")
     info_run = run.parameters.value()
     checked_digest(info_run.get("operation_id"), "p1_workload.operation_id", length=32)
+    execution = (MStdExecution.decode(info_run["execution_policy"])
+                 if "execution_policy" in info_run else MStdExecution())
     training = store.get_manifest(run.parent("training_input"))
     info = training.parameters.value()
     if (
@@ -159,6 +169,8 @@ def verify_p1_run(store: ArtifactStore, run_id: str, producer: Producer) -> P1Wo
     ):
         raise BoundaryError("p1_workload", "training_input_binding_mismatch")
     config = MStdConfig.decode(info["config"])
+    if execution.cpu_threads != config.cpu_threads:
+        raise BoundaryError("p1_workload", "formal_recipe_cpu_threads_mismatch")
     reader = SnapshotReader(store, training.parent("source"))
     snapshot, selection = reader.manifest, reader.selection
     if snapshot.parameters.value().get("purpose") != "engineering":
@@ -184,4 +196,4 @@ def verify_p1_run(store: ArtifactStore, run_id: str, producer: Producer) -> P1Wo
         or experiment.parent("training_input") != training.artifact_id
     ):
         raise BoundaryError("p1_workload", "experiment_input_mismatch")
-    return P1Workload(run, training, snapshot, config, vocabulary, reader)
+    return P1Workload(run, training, snapshot, config, vocabulary, reader, execution)

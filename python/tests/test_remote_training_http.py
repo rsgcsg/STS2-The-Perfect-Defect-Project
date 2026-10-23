@@ -23,6 +23,7 @@ from spireagent.workbench.p1_recording_storage import open_peer
 from spireagent.workbench.p1_training_data import reserve_p1_snapshot
 from spireagent.workbench.remote_training import RemoteTrainingService
 from spireagent.workbench.training_cli import main, training_command
+from stpd.p1.execution import MStdExecution
 from stpd.p1.spec import MStdConfig
 from stpd.p1.workload import verify_p1_run
 from stpd.workers.p1_run import verify_p1_result
@@ -82,8 +83,9 @@ def settled(call, job_id, state):
         threading.Event().wait(0.05)
 
 
+@pytest.mark.parametrize("implementation", [None, "experimental-packed-v1"])
 def test_normal_client_start_bounded_pause_same_run_resume_and_result(
-    tmp_path, capsys, monkeypatch
+    tmp_path, capsys, monkeypatch, implementation,
 ):
     with client(tmp_path) as (app, call, provider, store, owner, snapshot, config_path):
         capabilities = call("capabilities")
@@ -96,10 +98,14 @@ def test_normal_client_start_bounded_pause_same_run_resume_and_result(
         body = {"intent_id": "a" * 32, "source_id": snapshot.artifact_id,
                 "config": MStdConfig(max_epochs=2).to_dict(), "max_seconds": 300,
                 "stop_after": 1}
+        if implementation is not None:
+            body["execution_policy"] = MStdExecution(implementation=implementation).to_dict()
         first = call("start", body=body)["jobs"][0]
         # The initiating client is gone; the Application scheduler owns this task.
         paused = settled(call, first["id"], "paused")
         assert paused["result"]["checkpoint_id"]
+        assert store.get_manifest(first["input_id"]).parameters.value().get(
+            "execution_policy") == body.get("execution_policy")
         progress = call("progress", job_id=first["id"])
         assert progress["run_id"] == first["input_id"]
         assert progress["latest_progress"]["details"]["optimizer_updates"] == 1

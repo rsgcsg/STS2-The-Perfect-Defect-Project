@@ -22,10 +22,12 @@ from spireagent.json_boundary import BoundaryError
 from stpd.workers.checkpoint_codec import decode_checkpoint, encode_checkpoint
 
 from .data import digest, json_bytes
+from .execution import MStdExecution, microbatches
 from .export import input_spec
 from .input import Frame
 from .model import ARCHITECTURE, MStd
 from .numerics import TrainingNumerics, training_scope
+from .optimization import optimizer_update
 from .spec import CHECKPOINT_FRACTIONS, CHECKPOINT_SCHEMA, TARGET_SPEC, MStdConfig
 
 
@@ -43,6 +45,10 @@ class Population:
                 raise BoundaryError("p1_training", "target_outside_full_catalog")
 
 
+FORMAL_CODE_FILES = ("formal_training.py", "spec.py", "input.py", "model.py", "numerics.py",
+                     "execution.py", "optimization.py")
+
+
 class MStdTrainer:
     """One real epoch visits each train point once, including the true tail batch."""
 
@@ -52,6 +58,7 @@ class MStdTrainer:
         vocabulary: dict[str, Any],
         snapshot_id: str,
         config: MStdConfig,
+        execution: MStdExecution | None = None,
     ) -> None:
         if set(populations) != {"train", "dev", "test"}:
             raise BoundaryError("p1_training", "partition_inventory_mismatch")
@@ -61,6 +68,9 @@ class MStdTrainer:
         if len(set(ids)) != len(ids):
             raise BoundaryError("p1_training", "point_leakage_between_partitions")
         self.populations, self.vocabulary, self.config = populations, vocabulary, config
+        self.execution = execution or MStdExecution()
+        if self.execution.cpu_threads != config.cpu_threads:
+            raise BoundaryError("p1_training", "formal_recipe_cpu_threads_mismatch")
         self.device = torch.device(config.device)
         cuda_runtime = None
         if self.device.type == "cuda":
@@ -78,9 +88,9 @@ class MStdTrainer:
                 "cudnn_tf32": False,
                 "cudnn_benchmark": False,
             }
-        self._numerics = TrainingNumerics(config.seed, config.cpu_threads, self.device)
+        self._numerics = TrainingNumerics(config.seed, self.execution.cpu_threads, self.device)
         with self._numerics.scope():
-            self.model = MStd(vocabulary).to(self.device)
+            self.model = MStd(vocabulary, self.execution).to(self.device)
             self.optimizer = torch.optim.AdamW(
                 self.model.parameters(), lr=config.learning_rate, weight_decay=config.weight_decay
             )
@@ -121,6 +131,7 @@ class MStdTrainer:
             },
             "vocabulary_sha256": digest(json_bytes(vocabulary)),
             "planned_steps": self.planned_steps,
+            "execution": self.execution.to_dict(),
             "runtime": {
                 "python": platform.python_version(),
                 "torch": str(torch.__version__),
@@ -128,11 +139,11 @@ class MStdTrainer:
                 "dtype": config.dtype,
                 "cuda": torch.version.cuda if self.device.type == "cuda" else None,
                 "cuda_runtime": cuda_runtime,
-                "cpu_threads": config.cpu_threads,
+                "cpu_threads": self.execution.cpu_threads,
             },
             "code": {
                 name: digest((root / name).read_bytes())
-                for name in ("formal_training.py", "spec.py", "input.py", "model.py", "numerics.py")
+                for name in FORMAL_CODE_FILES
             },
             "codec_sha256": digest((root.parent / "workers/checkpoint_codec.py").read_bytes()),
         }
@@ -153,25 +164,7 @@ class MStdTrainer:
         A large single observation is still processed whole. Frame order is kept;
         no length sorting changes the sampler or which examples share an update.
         """
-        group: list[int] = []
-        maximum = text_count = text_width = 0
-        for index in indices:
-            size = len(frames[index].entities)
-            texts = {text for node in frames[index].entities for _, text in node.text}
-            width = max((len(model.tokenize(text)[0]) for text in texts), default=0) if model else 0
-            padded = max(maximum, size)
-            text_area = (text_count + len(texts)) * max(text_width, width) ** 2
-            if group and (
-                len(group) == 8 or padded * padded * (len(group) + 1) > 262144 or text_area > 262144
-            ):
-                yield group
-                group, maximum, text_count, text_width = [], 0, 0, 0
-            group.append(index)
-            maximum = max(maximum, size)
-            text_count += len(texts)
-            text_width = max(text_width, width)
-        if group:
-            yield group
+        yield from microbatches(frames, indices, model)
 
     @staticmethod
     def evaluate(model: MStd, population: Population) -> dict[str, Any]:
@@ -210,31 +203,9 @@ class MStdTrainer:
         train = self.populations["train"]
         indices = self.order[self.cursor : self.cursor + self.config.batch_size]
         lr = self._lr()
-        for parameter_group in self.optimizer.param_groups:
-            parameter_group["lr"] = lr
-        self.optimizer.zero_grad(set_to_none=True)
-        self.model.train()
-        losses: list[torch.Tensor] = []
-        for group in self.batches(train.frames, indices, self.model):
-            scores = self.model.forward_batch([train.frames[i] for i in group])
-            packed = torch.nn.utils.rnn.pad_sequence(
-                scores, batch_first=True, padding_value=-torch.inf
-            )
-            targets = torch.tensor([train.targets[i] for i in group], device=self.device)
-            loss = F.cross_entropy(packed, targets, reduction="none")
-            (loss.sum() / len(indices)).backward()
-            losses.extend(loss.detach().unbind())
-        # One device-to-host read per optimizer batch. Keep the original Python
-        # summation order and reject invalid loss before any parameter update.
-        loss_values = torch.stack(losses).cpu().tolist()
-        if not all(math.isfinite(loss) for loss in loss_values):
-            raise BoundaryError("p1_training", "non_finite_loss")
-        total_loss = sum(loss_values)
-        gradients = [p.grad.norm() for p in self.model.parameters() if p.grad is not None]
-        norm = float(torch.linalg.vector_norm(torch.stack(gradients)))
-        if not math.isfinite(norm):
-            raise BoundaryError("p1_training", "non_finite_gradient")
-        self.optimizer.step()
+        update = optimizer_update(self.model, self.optimizer,
+                                  [train.frames[i] for i in indices],
+                                  [train.targets[i] for i in indices], lr)
         train_seconds = time.perf_counter() - started
         self.step += 1
         self.cursor += len(indices)
@@ -243,9 +214,9 @@ class MStdTrainer:
             "epoch": self.epoch + 1,
             "examples": len(indices),
             "batch_sha256": digest(json_bytes([train.point_ids[i] for i in indices])),
-            "mean_N_loss": total_loss / len(indices),
+            "mean_N_loss": update["mean_N_loss"],
             "lr": lr,
-            "gradient_norm": norm,
+            "gradient_norm": update["gradient_norm"],
         }
         self.history.append(dict(progress))
         improved = False
@@ -313,7 +284,7 @@ class MStdTrainer:
             raise BoundaryError("p1_training", "no_dev_selected_model")
         # Construction must not consume training RNG or mutate the continuing last model.
         with torch.random.fork_rng(devices=[]):
-            model = MStd(self.vocabulary)
+            model = MStd(self.vocabulary, self.execution)
         model.load_state_dict(self.best_weights, strict=True)
         return model.eval()
 

@@ -1,4 +1,19 @@
-# 当前：训练自动接续与首批训练连续性
+# 当前：隔离性能候选，原训练继续
+
+用户批准在原首批训练继续时完成性能候选、必要内部工具和真实 TRAIN 短实验，
+新增独立 USD10 上限（按需花费），学校累计40小时不变。root 的独占分支
+`codex/training-performance-switch-20261023` 基于 `origin/develop=58d445f5`；
+范围、阶段验收及成本检查点归[本轮任务](../plans/p1-prefreeze-2026-10-18/TRAINING_PERFORMANCE_20261023.zh-CN.md)。
+候选与原 f7 worker/31fa 控制应用隔离。用户须先看结果并进一步明确同意，才能
+停止原训练、选定实际切换点或使用新版；开发和实验不构成现场切换许可。
+真实TRAIN短测：row吞吐1.19倍，experimental-packed约9.13倍但改变FP32轨迹；
+只授同轮更新窗口收益，不授总墙时/质量。正常新Run配置/保存恢复/模型2消费者正在
+完成稳定候选复核；原f7跨源码完整迁移仍未实现/验证，不能直接在下一检查点切换。
+性能工程在原recipe/model、Store和应用/Compute各负责层落实，生命周期/SOP归
+[原训练指南](../../python/docs/FULLRUN_TRAINING.md#training-performance-belongs-to-the-existing-chain)，不新增控制器。
+父任务四Agent、最终TEST、40次Reference及完整R2交付仍未完成。
+
+## 已集成：训练自动接续与首批训练连续性
 
 用户已批准把有界自动接续用于当前首批四 Agent 训练。root 在 develop
 `33de5875` 的独占 `codex/training-auto-continuation-20261023` 实现同一

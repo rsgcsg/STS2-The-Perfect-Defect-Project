@@ -172,6 +172,11 @@ def test_test_labels_do_not_choose_the_model_or_change_updates():
 
 def test_invalid_partitions_target_and_unavailable_device_fail_explicitly():
     trainer = engine()
+    from stpd.p1.execution import MStdExecution
+
+    with pytest.raises(BoundaryError, match="formal_recipe_cpu_threads_mismatch"):
+        MStdTrainer(trainer.populations, trainer.vocabulary, "a" * 64, trainer.config,
+                    MStdExecution(cpu_threads=4))
     bad = {**trainer.populations, "dev": trainer.populations["train"]}
     with pytest.raises(BoundaryError, match="point_leakage"):
         MStdTrainer(bad, trainer.vocabulary, "a" * 64, trainer.config)

@@ -37,6 +37,10 @@ def main(argv: list[str] | None = None) -> int:
         from spireagent.workbench.training_cli import main as training_main
 
         return training_main(arguments[1:])
+    if arguments and arguments[0] == "training-calibration":
+        from spireagent.workbench.training_calibration import main as calibration_main
+
+        return calibration_main(arguments[1:])
     if arguments and arguments[0] == "project":
         from spireagent.workbench.developer_cli import main as project_main
 

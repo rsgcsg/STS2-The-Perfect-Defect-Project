@@ -61,7 +61,7 @@ class CandidateReporter:
         *, request: ComputeRequest | None = None,
     ) -> None:
         self.store, self.run_id, self.runtime = store, run_id, runtime
-        self._events = ObjectStoreRunReporter(store, store.blobs)
+        self._events = ObjectStoreRunReporter(store, store.blobs, read_concurrency=8)
         if request is not None and (
             request.kind != "training" or request.input_id != run_id or request.producer != runtime
         ):

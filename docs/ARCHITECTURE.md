@@ -166,6 +166,13 @@ These distinctions apply to the existing roles in the
 | Evaluation | Research metrics and application Task/result readers | Actual scene/run/exposure, completion/censor/unknown, delivery versus effect, quality/cost metrics and the evidence supporting each conclusion. |
 | Shared applications | Existing CLI/API/Workbench/native UI owners | The same use cases, capabilities, permissions and operation/result references; interfaces do not create another ledger, controller or training manager. |
 
+Training performance work follows these existing owners. Numerical execution and
+packing belong to the research recipe/model; resource deployment belongs to
+Compute; admission, budgets and attempts remain in the shared application chain.
+The [training lifecycle and measurement SOP](../python/docs/FULLRUN_TRAINING.md#training-performance-belongs-to-the-existing-chain)
+explains profile reuse, repeated runs, live observation and evaluation. No separate
+optimization service or second training control chain is introduced.
+
 Decouple source format from model input through a declared projection, not by
 pretending all sources contain the same facts. Offline training need not run a
 live SDK; its projector and the Agent's online adapter must agree where matching

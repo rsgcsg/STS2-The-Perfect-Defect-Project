@@ -1284,6 +1284,7 @@ class LocalModelService:
                         continue
                     p1_registration = downloaded.parameters.value().get("schema") in {
                         "stpd/p1-mstd-trained-model-1", "stpd/p1-mstd-model-1",
+                        "stpd/p1-mstd-model-2",
                         "stpd/p1-baseline-trained-model-1"}
                     export_supported = False
                     try:
@@ -3175,10 +3176,10 @@ class LocalModelService:
                     return None, "original_package_metadata_changed"
                 package = decode_json(raw)
                 if (not isinstance(package, dict)
-                        or package.get("schema") != (
-                            "stpd/p1-baseline-model-1"
+                        or package.get("schema") not in (
+                            {"stpd/p1-baseline-model-1"}
                             if entry["adapter"] == GLOBAL_BASELINE_ADAPTER
-                            else "stpd/p1-mstd-model-1")
+                            else {"stpd/p1-mstd-model-1", "stpd/p1-mstd-model-2"})
                         or package.get("package_sha256") != original["artifact"]["sha256"]
                         or package.get("input_spec")
                         != config["package_input_spec"]
