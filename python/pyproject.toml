@@ -55,6 +55,8 @@ include = ["stpd*", "spireagent*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests", "deploy/hub"]
+# Release successful synthetic Stores between cases; retain failed-call directories.
+tmp_path_retention_policy = "failed"
 
 [tool.ruff]
 target-version = "py311"
