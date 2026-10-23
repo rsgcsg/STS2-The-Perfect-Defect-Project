@@ -1,0 +1,301 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "sts2.policy-runtime/status-2",
+  "title": "STS2 Policy Runtime status",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "runtime",
+    "policy",
+    "run_id",
+    "lifecycle",
+    "mode",
+    "controller",
+    "autonomy_budget",
+    "tainted",
+    "taint_reason",
+    "refreshing",
+    "last_snapshot_id",
+    "last_snapshot",
+    "last_decision",
+    "last_receipt",
+    "reads",
+    "invalidations",
+    "errors",
+    "environment"
+  ],
+  "properties": {
+    "schema": {"const": "sts2.policy-runtime/status-2"},
+    "runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "code_sha256"],
+      "properties": {"version": {"type": "string", "minLength": 1}, "code_sha256": {"oneOf": [{"type": "null"}, {"type": "string", "pattern": "^[a-f0-9]{64}$"}]}}
+    },
+    "policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["manifest_id", "policy_id", "policy_version", "provider", "architecture", "artifact_sha256"],
+      "properties": {
+        "manifest_id": {"type": "string", "minLength": 1},
+        "policy_id": {"type": "string", "minLength": 1},
+        "policy_version": {"type": "string", "minLength": 1},
+        "provider": {"type": "string", "minLength": 1},
+        "architecture": {"type": "string", "minLength": 1},
+        "artifact_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+      }
+    },
+    "run_id": {"type": "string", "minLength": 1},
+    "lifecycle": {"enum": ["running", "stopped"]},
+    "mode": {"enum": ["human", "shadow", "one_step", "auto"]},
+    "controller": {"enum": ["held", "released", "unknown"]},
+    "autonomy_budget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "state",
+        "max_submissions",
+        "submissions_used",
+        "max_policy_calls",
+        "policy_calls_used",
+        "deadline_ms",
+        "elapsed_ms",
+        "remaining_ms",
+        "exhausted_reason",
+        "ended_reason"
+      ],
+      "properties": {
+        "state": {"enum": ["inactive", "active", "exhausted"]},
+        "max_submissions": {"type": ["integer", "null"], "minimum": 1, "maximum": 9007199254740991},
+        "submissions_used": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+        "max_policy_calls": {"type": ["integer", "null"], "minimum": 1, "maximum": 9007199254740991},
+        "policy_calls_used": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+        "deadline_ms": {"type": ["integer", "null"], "minimum": 1, "maximum": 9007199254740991},
+        "elapsed_ms": {"type": "integer", "minimum": 0, "maximum": 9007199254740991},
+        "remaining_ms": {"type": ["integer", "null"], "minimum": 0, "maximum": 9007199254740991},
+        "exhausted_reason": {"enum": ["submission_attempt_limit", "policy_call_limit", "deadline", null]},
+        "ended_reason": {"enum": ["human_recovery", "mode_changed", "stopped", null]},
+        "mode": {"enum": ["bounded", "continuous"]}
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "mode": {"const": "bounded"},
+            "max_submissions": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+            "max_policy_calls": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+            "deadline_ms": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+            "remaining_ms": {"type": "integer", "minimum": 0, "maximum": 9007199254740991}
+          }
+        },
+        {
+          "properties": {
+            "mode": {"const": "continuous"},
+            "state": {"enum": ["inactive", "active"]},
+            "exhausted_reason": {"type": "null"},
+            "max_submissions": {"type": "null"},
+            "max_policy_calls": {"type": "null"},
+            "deadline_ms": {"type": "null"},
+            "remaining_ms": {"type": "null"}
+          }
+        }
+      ]
+    },
+    "tainted": {"type": "boolean"},
+    "taint_reason": {"type": ["string", "null"]},
+    "refreshing": {"type": "boolean"},
+    "last_snapshot_id": {"type": ["string", "null"]},
+    "last_snapshot": {
+      "oneOf": [
+        {"type": "null"},
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["snapshot_id", "sequence", "status", "runtime_instance_id", "environment_fingerprint"],
+          "properties": {
+            "snapshot_id": {"type": "string", "minLength": 1},
+            "sequence": {"type": "integer", "minimum": 1},
+            "status": {"enum": ["interactive", "visible_unsupported", "settling", "observed"]},
+            "runtime_instance_id": {"type": "string", "minLength": 1},
+            "environment_fingerprint": {"type": "string", "minLength": 1}
+          }
+        }
+      ]
+    },
+    "last_decision": {
+      "oneOf": [
+        {"type": "null"},
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["decision_id", "candidate_digest", "candidate_count", "scores", "selected_index", "bound_action_id", "bound_action_label"],
+          "properties": {
+            "decision_id": {"type": "string", "minLength": 1},
+            "candidate_digest": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+            "candidate_count": {"type": "integer", "minimum": 0},
+            "scores": {"type": "array", "items": {"type": "number"}},
+            "selected_index": {"type": ["integer", "null"], "minimum": 0},
+            "bound_action_id": {"type": ["string", "null"]},
+            "bound_action_label": {"type": ["string", "null"]}
+          }
+        }
+      ]
+    },
+    "last_receipt": {
+      "oneOf": [
+        {"type": "null"},
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["request_id", "delivery", "reason_code", "successor_snapshot_id"],
+          "properties": {
+            "request_id": {"type": "string", "minLength": 1},
+            "delivery": {"enum": ["delivered", "not_delivered", "unknown"]},
+            "reason_code": {"type": ["string", "null"]},
+            "successor_snapshot_id": {"type": ["string", "null"]}
+          }
+        }
+      ]
+    },
+    "reads": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["read_id", "kind", "content_schema", "target_referent_id"],
+        "properties": {
+          "read_id": {"type": "string", "minLength": 1},
+          "kind": {"type": "string", "minLength": 1},
+          "content_schema": {"type": "string", "minLength": 1},
+          "target_referent_id": {"type": ["string", "null"]}
+        }
+      }
+    },
+    "invalidations": {"type": "array", "items": {"type": "string"}},
+    "errors": {"type": "array", "items": {"type": "string"}},
+    "environment": {
+      "oneOf": [
+        {"type": "null"},
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "runtime_instance_id",
+            "environment_fingerprint",
+            "host_kind",
+            "connector_protocol_version",
+            "connector_version",
+            "connector_source_revision",
+            "connector_artifact_sha256",
+            "connector_module_version_id",
+            "game_version",
+            "game_commit",
+            "modset_status",
+            "modset_fingerprint",
+            "loaded_mod_ids"
+          ],
+          "properties": {
+            "runtime_instance_id": {"type": "string", "minLength": 1},
+            "environment_fingerprint": {"type": "string", "minLength": 1},
+            "host_kind": {"enum": ["live_ui", "headless", "replay", "test"]},
+            "connector_protocol_version": {"type": "string", "minLength": 1},
+            "connector_version": {"type": "string", "minLength": 1},
+            "connector_source_revision": {"type": ["string", "null"]},
+            "connector_artifact_sha256": {"oneOf": [{"type": "null"}, {"type": "string", "pattern": "^[a-f0-9]{64}$"}]},
+            "connector_module_version_id": {"type": ["string", "null"]},
+            "game_version": {"type": ["string", "null"]},
+            "game_commit": {"type": ["string", "null"]},
+            "modset_status": {"type": "string", "minLength": 1},
+            "modset_fingerprint": {"type": "string", "minLength": 1},
+            "loaded_mod_ids": {"type": "array", "items": {"type": "string", "minLength": 1}, "uniqueItems": true}
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "binding_sha256",
+            "service_instance_id",
+            "runtime_instance_id",
+            "environment_fingerprint",
+            "game_continuity_id",
+            "text_protocol_version",
+            "input_profile",
+            "host_package_identity",
+            "host_identity",
+            "candidate_build",
+            "game_version",
+            "game_commit",
+            "game_assembly_sha256",
+            "episode_provenance"
+          ],
+          "properties": {
+            "kind": {"const": "managed_text_v2"},
+            "binding_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+            "service_instance_id": {"type": "string", "minLength": 1},
+            "runtime_instance_id": {"type": "string", "minLength": 1},
+            "environment_fingerprint": {"type": "string", "minLength": 1},
+            "game_continuity_id": {"type": "string", "minLength": 1},
+            "text_protocol_version": {"type": "string", "minLength": 1},
+            "input_profile": {"const": "text-menu-v2"},
+            "host_package_identity": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["package", "version", "source_revision", "component_tree_revision", "release_asset_sha256", "package_content_sha256"],
+              "properties": {
+                "package": {"const": "@rsgcsg/sts2-host-runtime"},
+                "version": {"type": "string", "minLength": 1},
+                "source_revision": {"type": "string", "minLength": 1},
+                "component_tree_revision": {"type": "string", "minLength": 1},
+                "release_asset_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+                "package_content_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+              }
+            },
+            "host_identity": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["package_name", "version", "distribution_kind", "source_revision", "component_tree_revision", "source_digest_sha256"],
+              "properties": {
+                "package_name": {"type": "string", "minLength": 1},
+                "version": {"type": "string", "minLength": 1},
+                "distribution_kind": {"enum": ["installed_package", "git_checkout"]},
+                "source_revision": {"type": ["string", "null"]},
+                "component_tree_revision": {"type": ["string", "null"]},
+                "source_digest_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+              }
+            },
+            "candidate_build": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["upstream_revision", "source_patch_sha256", "artifact_sha256", "artifact_mvid", "original_sts2_sha256", "runtime_sts2_sha256"],
+              "properties": {
+                "upstream_revision": {"type": "string", "minLength": 1},
+                "source_patch_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+                "artifact_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+                "artifact_mvid": {"type": "string", "minLength": 1},
+                "original_sts2_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+                "runtime_sts2_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+              }
+            },
+            "game_version": {"type": "string", "minLength": 1},
+            "game_commit": {"type": "string", "minLength": 1},
+            "game_assembly_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+            "episode_provenance": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["verdict", "requested_seed", "actual_seed", "runtime_instance_id"],
+              "properties": {
+                "verdict": {"const": "provenance_pass"},
+                "requested_seed": {"type": "string", "minLength": 1},
+                "actual_seed": {"type": "string", "minLength": 1},
+                "runtime_instance_id": {"type": "string", "minLength": 1}
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

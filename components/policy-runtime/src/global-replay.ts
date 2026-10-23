@@ -1,3 +1,4 @@
+import { parseAutonomyBudgetStatus } from "./contracts.js";
 import { GlobalNoProgressWindow } from "./global-no-progress.js";
 import { restoreGlobalCaptureResponse } from "./global-capture-storage.js";
 import { createHash } from "node:crypto";
@@ -40,6 +41,9 @@ export async function replayGlobalAgentRun(directory: string) {
   require(rawEvents.length > 0 && rawEvents.length <= 128 * 1024 * 1024 && rawEvents.at(-1) === 10, "global_incomplete_journal");
   const events: { schema: string; sequence: number; recorded_at: string; kind: string; payload: any }[] = new TextDecoder("utf-8", { fatal: true }).decode(rawEvents).trim().split("\n").map(line => JSON.parse(line));
   require(events.length <= 65536 && events.at(-1)?.kind === "stopped", "global_stop_required");
+  const eventSchema = events[0]?.schema;
+  require(eventSchema === "sts2.policy-runtime/agent-session-event-1" || eventSchema === "sts2.policy-runtime/agent-session-event-2", "global_event_schema");
+  const eventVersion = eventSchema === "sts2.policy-runtime/agent-session-event-2" ? 2 : 1;
   const referenced = new Set<string>();
   const artifact = async (ref: GlobalArtifact, role: GlobalArtifact["role"]): Promise<Buffer> => {
     exact(ref, ["role", "path", "bytes", "sha256"]);
@@ -54,6 +58,7 @@ export async function replayGlobalAgentRun(directory: string) {
   const sources = new Map<number, { full: FullPublicBasis; reduction?: ReturnType<typeof reduce>; classified: boolean; valid: boolean; before?: P1SessionState }>();
   let noProgress: GlobalNoProgressWindow | undefined, noProgressStopped = false;
   let mode: string | null = null, control = "released", permanentlyFenced = false;
+  let authorizationMode: "bounded" | "continuous" | undefined;
   let ledger: AgentConsumptionLedger | undefined;
   let consumedAcquisition: string | null = null;
   const durableAcks = new Map<string, any>();
@@ -80,11 +85,17 @@ export async function replayGlobalAgentRun(directory: string) {
   };
   for (const [index, event] of events.entries()) {
     exact(event, ["schema", "sequence", "recorded_at", "kind", "payload"]);
-    require(event.schema === "sts2.policy-runtime/agent-session-event-1" && event.sequence === index + 1 && Number.isFinite(Date.parse(event.recorded_at)) && !stopped, "global_journal_sequence");
+    require(event.schema === eventSchema && event.sequence === index + 1 && Number.isFinite(Date.parse(event.recorded_at)) && !stopped, "global_journal_sequence");
     const p = event.payload, extra = event.kind === "global_transport_response" ? p.operation === "step" ? ["request_id"] : ["capture_request_id"] : [];
     require(fields[event.kind], "global_unknown_event_kind"); exact(p, ["session_id", "recovery_epoch", ...fields[event.kind]!, ...extra]);
     require(typeof p.session_id === "string" && (!session || session === p.session_id) && Number.isSafeInteger(p.recovery_epoch) && p.recovery_epoch >= epoch, "global_context_order");
     session = p.session_id; epoch = p.recovery_epoch;
+    if (Object.hasOwn(p, "autonomy_budget")) {
+      const budget = parseAutonomyBudgetStatus(p.autonomy_budget, eventVersion);
+      require(authorizationMode === undefined || authorizationMode === budget.mode, "global_budget_mode_changed");
+      authorizationMode = budget.mode;
+      if (event.kind === "autonomy_budget_exhausted") require(budget.state === "exhausted" && budget.exhausted_reason === p.reason, "global_budget_exhaustion");
+    }
     if (event.kind === "global_initialized") {
       require(!identity && same(p.core, p1CoreIdentity()), "global_initial_identity"); identity = p.identity;
       const expected = manifest.requirements.environment; require("kind" in expected && identity, "global_environment_contract");
@@ -295,8 +306,10 @@ export async function replayGlobalAgentRun(directory: string) {
     } else if (event.kind === "mode_changed") {
       require(identity && ["human", "auto", "one_step", "shadow"].includes(p.mode)
         && p.controller === control && (!permanentlyFenced || p.mode === "human"), "global_mode_transition");
-      if (p.mode !== "human") require(p.autonomy_budget?.state === "active" && p.autonomy_budget.remaining_ms > 0,
-        "global_mode_without_active_budget");
+      if (p.mode !== "human") {
+        const budget = parseAutonomyBudgetStatus(p.autonomy_budget, eventVersion);
+        require(budget.state === "active" && (budget.mode === "continuous" || budget.remaining_ms > 0), "global_mode_without_active_budget");
+      }
       mode = p.mode;
     } else if (event.kind === "controller_acquired") {
       require(mode !== null && mode !== "human" && mode !== "shadow" && !permanentlyFenced

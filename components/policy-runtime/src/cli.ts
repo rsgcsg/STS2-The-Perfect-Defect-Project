@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, isAbsolute, resolve } from "node:path";
 import process from "node:process";
 import { PlayerEnvironmentRestClient } from "@rsgcsg/sts2-connector-client";
-import { DEFAULT_AUTONOMY_BUDGET, POLICY_RUNTIME_VERSION, validatePolicyManifest, type AutonomyBudgetConfig, type RuntimeMode } from "./contracts.js";
+import { DEFAULT_AUTONOMY_BUDGET, normalizeAutonomyBudget, POLICY_RUNTIME_VERSION, validatePolicyManifest, type AutonomyBudgetConfig, type RuntimeMode } from "./contracts.js";
 import { ConnectorPolicyClient } from "./connector.js";
 import { AgentRunEvidence, canonicalJson } from "./evidence.js";
 import { ReferenceGlobalTransport } from "./global-transport.js";
@@ -147,7 +147,7 @@ async function main(): Promise<void> {
   }
 
   process.stdout.write(`${JSON.stringify({
-    schema: "sts2.policy-runtime/startup-1",
+    schema: "sts2.policy-runtime/startup-2",
     address: service.address,
     run_id: evidence.runId,
     manifest_id: manifest.manifest_id,
@@ -218,7 +218,7 @@ async function runAgent(options: CliOptions, manifestPath: string, manifest: Age
     } finally { port?.close(); }
     throw error;
   }
-  const startup: AgentRuntimeStartup = { schema: "sts2.policy-runtime/agent-session-startup-1", address: service.address,
+  const startup: AgentRuntimeStartup = { schema: "sts2.policy-runtime/agent-session-startup-2", address: service.address,
     run_id: evidence.runId, agent_manifest_id: manifest.manifest_id, agent_artifact_sha256: artifactSha256,
     agent_manifest_sha256: agentManifestSha256, runtime_version: POLICY_RUNTIME_VERSION, runtime_code_sha256: runtimeCodeSha256,
     mode: runtime.status().mode, autonomy_budget: options.autoBudget,
@@ -246,7 +246,7 @@ function parseArgs(args: string[]): CliOptions {
     if (!value) throw new Error(`${key} requires a value`);
     index += 1;
     if (key === "--adapter-arg") adapterArgs.push(value);
-    else if (["--observation-acquisition", "--manifest", "--adapter-command", "--adapter-cwd", "--connector-endpoint", "--listen-port", "--evidence-root", "--mode", "--max-auto-submissions", "--max-policy-calls", "--auto-deadline-ms", "--no-progress-window", "--no-progress-repeats", "--managed-binding", "--managed-attachment", "--managed-expected-service-instance-id", "--managed-expected-runtime-instance-id", "--managed-expected-game-continuity-id"].includes(key)) values.set(key, value);
+    else if (["--observation-acquisition", "--manifest", "--adapter-command", "--adapter-cwd", "--connector-endpoint", "--listen-port", "--evidence-root", "--mode", "--autonomy-mode", "--max-auto-submissions", "--max-policy-calls", "--auto-deadline-ms", "--no-progress-window", "--no-progress-repeats", "--managed-binding", "--managed-attachment", "--managed-expected-service-instance-id", "--managed-expected-runtime-instance-id", "--managed-expected-game-continuity-id"].includes(key)) values.set(key, value);
     else throw new Error(`unknown argument: ${key}`);
   }
   const manifestPath = required(values, "--manifest");
@@ -261,11 +261,16 @@ function parseArgs(args: string[]): CliOptions {
     throw new Error("--observation-acquisition must be direct or sealed-text-menu-v2");
   const mode = values.get("--mode") ?? "human";
   if (mode !== "human" && mode !== "shadow" && mode !== "one_step" && mode !== "auto") throw new Error("--mode is invalid");
-  const autoBudget = {
+  const autonomyMode = values.get("--autonomy-mode") ?? "bounded";
+  if (autonomyMode !== "bounded" && autonomyMode !== "continuous") throw new Error("--autonomy-mode must be bounded or continuous");
+  if (autonomyMode === "continuous" && ["--max-auto-submissions", "--max-policy-calls", "--auto-deadline-ms"].some(key => values.has(key)))
+    throw new Error("--autonomy-mode continuous cannot include finite cap flags");
+  const autoBudget = normalizeAutonomyBudget(autonomyMode === "continuous" ? { mode: "continuous" } : {
+    mode: "bounded",
     maxSubmissions: positiveOption(values, "--max-auto-submissions", DEFAULT_AUTONOMY_BUDGET.maxSubmissions),
     maxPolicyCalls: positiveOption(values, "--max-policy-calls", DEFAULT_AUTONOMY_BUDGET.maxPolicyCalls),
     deadlineMs: positiveOption(values, "--auto-deadline-ms", DEFAULT_AUTONOMY_BUDGET.deadlineMs)
-  };
+  });
   const managedKeys = ["--managed-binding", "--managed-attachment", "--managed-expected-service-instance-id", "--managed-expected-runtime-instance-id", "--managed-expected-game-continuity-id"];
   const managed = managedKeys.some((key) => values.has(key)) ? {
     bindingPath: required(values, "--managed-binding"),

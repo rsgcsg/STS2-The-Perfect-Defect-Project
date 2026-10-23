@@ -50,7 +50,7 @@ async function handoff(runtime: NativeAgentRuntimeOwner) {
 
 // Real SDK assembly/dispatch and OS Ndjson child, with explicitly scripted
 // source/authority responses. This does not replace the real C# Store pressure gate.
-async function fixture(options: { legacy?: boolean; continuous?: boolean; window?: boolean; causalStale?: boolean; maxSubmissions?: number; maxPolicyCalls?: number; deadlineMs?: number; scenario?: string; failRenewal?: boolean; teacher?: boolean } = {}) {
+async function fixture(options: { autonomyMode?: "bounded" | "continuous"; legacy?: boolean; continuous?: boolean; window?: boolean; causalStale?: boolean; maxSubmissions?: number; maxPolicyCalls?: number; deadlineMs?: number; scenario?: string; failRenewal?: boolean; teacher?: boolean } = {}) {
   const root = await mkdtemp(join(tmpdir(), "owned-stale-runtime-")), source = new SyntheticNativeHttp(1, "interactive", options.failRenewal ? 1000 : 120000);
   const manifest = structuredClone(shared.manifest) as AgentManifest;
   // RED selects the original supported v1 policy deliberately, since the old
@@ -167,7 +167,7 @@ async function fixture(options: { legacy?: boolean; continuous?: boolean; window
   port.next = (...args) => { inputs.push(structuredClone(args[1])); return next(...args); };
   let runtime: NativeAgentRuntimeOwner;
   try { runtime = await PolicyRuntime.forAgent({ manifest, environment, port, evidence, mode: "auto", monotonicNow: () => clock,
-    runtimeIdentity: { version: "fixture", code_sha256: "1".repeat(64) }, autoBudget: { maxSubmissions: options.maxSubmissions ?? 200, maxPolicyCalls: options.maxPolicyCalls ?? 1000, deadlineMs: options.deadlineMs ?? 60000 } }); }
+    runtimeIdentity: { version: "fixture", code_sha256: "1".repeat(64) }, autoBudget: options.autonomyMode === "continuous" ? { mode: "continuous" } : { maxSubmissions: options.maxSubmissions ?? 200, maxPolicyCalls: options.maxPolicyCalls ?? 1000, deadlineMs: options.deadlineMs ?? 60000 } }); }
   catch (error) { const diagnostics = Buffer.concat((port as unknown as { stderrChunks: Buffer[] }).stderrChunks).toString(); await closePort(); await rm(root, { recursive: true, force: true }); throw new Error(String(error) + "\n" + diagnostics, { cause: error }); }
   cleanup.push(async () => { await runtime.stop().catch(() => undefined); await closePort(); await rm(root, { recursive: true, force: true }); });
   const events = async () => (await readFile(join(evidence.directory, "events.jsonl"), "utf8")).trim().split("\n").filter(Boolean).map(line => JSON.parse(line));
@@ -269,9 +269,9 @@ describe("native policy3 exact composition contract", () => {
 });
 
 describe("native policy3 original owner deadline and cleanup", () => {
-  it("expires while idle with no second tick or GET and freezes earlier local attribution", async () => {
+  it.each(["bounded", "continuous"] as const)("expires while idle with no second tick or GET and freezes earlier local attribution (%s)", async autonomyMode => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-    const f = await fixture({ window: true, causalStale: true });
+    const f = await fixture({ window: true, causalStale: true, autonomyMode });
     expect((await f.runtime.tick()).type).toBe("fresh_decision_required");
     f.clock(10000); await vi.advanceTimersByTimeAsync(10000); await handoff(f.runtime);
     const events = await f.events();

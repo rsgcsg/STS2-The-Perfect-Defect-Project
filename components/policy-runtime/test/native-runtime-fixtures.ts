@@ -168,7 +168,7 @@ export class SyntheticNativeHttp {
 }
 
 export async function nativeRuntimeFixture(options: { count?: number; status?: NativeLogicalObservation["status"]; child?: string; mode?: "human" | "shadow" | "one_step" | "auto";
-  deadlineMs?: number; maxPolicyCalls?: number; gapPolicy?: "handoff" | "explicit_reset";
+  autoBudget?: import("../src/contracts.js").AutonomyBudgetInput; deadlineMs?: number; maxPolicyCalls?: number; gapPolicy?: "handoff" | "explicit_reset";
   retentionMs?: number;
   monotonicNow?: () => number;
   progress?: ReturnType<typeof fixtureProgress>;
@@ -255,7 +255,7 @@ export async function nativeRuntimeFixture(options: { count?: number; status?: N
     port!.next = (...args) => observed("agent-next", () => next(...args));
     return PolicyRuntime.forAgent({ manifest, environment, port: port!, evidence,
     mode: options.mode ?? "human", monotonicNow: options.monotonicNow, runtimeIdentity: { version: "fixture", code_sha256: "1".repeat(64) },
-    autoBudget: { deadlineMs: options.deadlineMs ?? 10000, maxPolicyCalls: options.maxPolicyCalls ?? 32, maxSubmissions: 16 } }); }); }
+    autoBudget: options.autoBudget ?? { deadlineMs: options.deadlineMs ?? 10000, maxPolicyCalls: options.maxPolicyCalls ?? 32, maxSubmissions: 16 } }); }); }
   catch (error) {
     const diagnostics = Buffer.concat((port as unknown as { stderrChunks: Buffer[] }).stderrChunks).toString("utf8");
     await observed("port-close", closePort); await observed("server-close", () => source!.close());

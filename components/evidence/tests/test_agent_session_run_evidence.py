@@ -33,6 +33,46 @@ def sha(value: bytes) -> str:
 
 
 class NativeAgentSessionEvidenceTests(unittest.TestCase):
+    def test_v2_budget_vectors_and_exact_startup_event_pairing(self) -> None:
+        vectors = json.loads((ROOT / "policy-runtime/test/fixtures/autonomy-v2.json").read_bytes())
+        original = copy.deepcopy(self.events)
+        for mode in ("bounded", "continuous"):
+            with self.subTest(mode=mode):
+                self.events = copy.deepcopy(original)
+                self.startup["schema"] = "sts2.policy-runtime/agent-session-startup-2"
+                for event in self.events:
+                    event["schema"] = "sts2.policy-runtime/agent-session-event-2"
+                    if "autonomy_budget" in event["payload"]:
+                        event["payload"]["autonomy_budget"] = copy.deepcopy(vectors[f"{mode}_status_v2"])
+                self.startup["autonomy_budget"] = vectors[f"{mode}_startup_v2"]
+                self.write()
+                self.check()
+                self.startup["autonomy_budget"] = vectors["continuous_startup_v2" if mode == "bounded" else "bounded_startup_v2"]
+                self.check(False)
+                self.startup["autonomy_budget"] = vectors[f"{mode}_startup_v2"]
+                self.startup["schema"] = "sts2.policy-runtime/agent-session-startup-1"
+                self.check(False)
+                self.startup["schema"] = "sts2.policy-runtime/agent-session-startup-2"
+                self.events[-1]["schema"] = "sts2.policy-runtime/agent-session-event-1"
+                self.write()
+                self.check(False)
+
+    def test_v2_continuous_rejects_rehashed_caps_exhaustion_and_negative_counts(self) -> None:
+        vectors = json.loads((ROOT / "policy-runtime/test/fixtures/autonomy-v2.json").read_bytes())
+        for event in self.events:
+            event["schema"] = "sts2.policy-runtime/agent-session-event-2"
+            if "autonomy_budget" in event["payload"]:
+                event["payload"]["autonomy_budget"] = copy.deepcopy(vectors["continuous_status_v2"])
+        self.startup["schema"] = "sts2.policy-runtime/agent-session-startup-2"
+        original = copy.deepcopy(self.events)
+        for field, invalid in (("deadline_ms", 60000), ("remaining_ms", 0), ("state", "exhausted"),
+                               ("policy_calls_used", -1), ("elapsed_ms", True)):
+            with self.subTest(field=field):
+                self.events = copy.deepcopy(original)
+                self.events[-1]["payload"]["autonomy_budget"][field] = invalid
+                self.write()
+                self.check(False)
+
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
         self.directory = Path(self.temporary.name) / "run-fixture"

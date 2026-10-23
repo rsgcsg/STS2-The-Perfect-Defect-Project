@@ -6,7 +6,7 @@ import type { PlayerEnvironmentBoundAction, PlayerEnvironmentReceipt, PlayerEnvi
 import { admitWholeDecision } from "./admission.js";
 import { AgentRunEvidence, canonicalJson } from "./evidence.js";
 import { candidateOrderDigest } from "./digest.js";
-import { DEFAULT_AUTONOMY_BUDGET, POLICY_RUNTIME_VERSION, assertAdapterDecision, decisionActionId, decisionActions, isTextMenuSnapshot, validateAdapterDecision, validatePolicyDecision, validatePolicyManifest, type AdapterDecision, type ApplicationResult, type AutonomyBudgetConfig, type AutonomyBudgetEndReason, type AutonomyBudgetExhaustionReason, type AnyDecisionBundle, type ConfirmedInteraction, type DecisionAction, type ManagedCapabilities, type ManagedControlConfirmation, type Policy, type PolicyConnector, type PolicyDecision, type PolicyDecisionInput, type PolicyManifest, type RuntimeCommand, type RuntimeMode, type RuntimeStatus, type StatefulPolicy, type StatefulPolicyDecisionInput, type ObservationCompletion, type TextAction, type TextActionResult, type TextInputProfile, type TextSnapshot, type TickResult } from "./contracts.js";
+import { DEFAULT_AUTONOMY_BUDGET, POLICY_RUNTIME_VERSION, assertAdapterDecision, decisionActionId, decisionActions, isTextMenuSnapshot, validateAdapterDecision, validatePolicyDecision, validatePolicyManifest, type AdapterDecision, type ApplicationResult, type AutonomyBudgetInput, type AutonomyBudgetConfig, type AutonomyBudgetEndReason, type AutonomyBudgetExhaustionReason, type AnyDecisionBundle, type ConfirmedInteraction, type DecisionAction, type ManagedCapabilities, type ManagedControlConfirmation, type Policy, type PolicyConnector, type PolicyDecision, type PolicyDecisionInput, type PolicyManifest, type RuntimeCommand, type RuntimeMode, type RuntimeStatus, type StatefulPolicy, type StatefulPolicyDecisionInput, type ObservationCompletion, type TextAction, type TextActionResult, type TextInputProfile, type TextSnapshot, type TickResult } from "./contracts.js";
 import { StaleWholeBundleError } from "./connector.js";
 import { RUNTIME_ENVIRONMENT_SCHEMA, type RuntimeControlPreconditions, type RuntimeEnvironmentBinding } from "./contracts.js";
 import type { PublicStatefulPolicy, PublicStatefulPolicyDecisionInput, PublicObservationCompletion } from "./contracts.js";
@@ -31,9 +31,9 @@ export interface RuntimeOptions {
   successorWaitDiagnosticSink?: SuccessorWaitDiagnosticSink;
   policyTimeoutMs?: number;
   sleep?: (milliseconds: number) => Promise<void>;
-  /** Monotonic clock used for the finite Shadow/Auto authorization. */
+  /** Monotonic clock used for Shadow/Auto authorization accounting. */
   monotonicNow?: () => number;
-  autoBudget?: Partial<AutonomyBudgetConfig>;
+  autoBudget?: AutonomyBudgetInput;
   now?: () => string;
   runtimeIdentity?: { version: string; code_sha256: string | null };
   /** Digest of the validated, separately sealed Managed environment binding. */
@@ -210,7 +210,7 @@ export class PolicyRuntime {
 
   status(): RuntimeStatus {
     const budget = this.autonomyBudgetStatus();
-    return { schema: "sts2.policy-runtime/status-1", runtime: this.options.runtimeIdentity ?? { version: POLICY_RUNTIME_VERSION, code_sha256: null }, policy: { manifest_id: this.options.manifest.manifest_id, policy_id: this.options.manifest.policy.id, policy_version: this.options.manifest.policy.version, provider: this.options.manifest.policy.provider, architecture: this.options.manifest.policy.architecture, artifact_sha256: this.options.manifest.artifact.sha256 }, run_id: this.runId, lifecycle: this.stopped ? "stopped" : "running", mode: this.mode, controller: this.controllerStatus(), autonomy_budget: budget, tainted: this.tainted, taint_reason: this.taintReason, refreshing: this.refreshing, last_snapshot_id: this.lastSnapshotId, last_snapshot: this.lastSnapshot, last_decision: this.lastDecision, last_receipt: this.lastReceipt, reads: [...this.lastReads], invalidations: [...this.invalidations], errors: [...this.errors] , environment: this.environment };
+    return { schema: "sts2.policy-runtime/status-2", runtime: this.options.runtimeIdentity ?? { version: POLICY_RUNTIME_VERSION, code_sha256: null }, policy: { manifest_id: this.options.manifest.manifest_id, policy_id: this.options.manifest.policy.id, policy_version: this.options.manifest.policy.version, provider: this.options.manifest.policy.provider, architecture: this.options.manifest.policy.architecture, artifact_sha256: this.options.manifest.artifact.sha256 }, run_id: this.runId, lifecycle: this.stopped ? "stopped" : "running", mode: this.mode, controller: this.controllerStatus(), autonomy_budget: budget, tainted: this.tainted, taint_reason: this.taintReason, refreshing: this.refreshing, last_snapshot_id: this.lastSnapshotId, last_snapshot: this.lastSnapshot, last_decision: this.lastDecision, last_receipt: this.lastReceipt, reads: [...this.lastReads], invalidations: [...this.invalidations], errors: [...this.errors] , environment: this.environment };
   }
 
   private controllerStatus(): RuntimeStatus["controller"] {
@@ -908,8 +908,9 @@ export class PolicyRuntime {
     if (this.mode === "auto" && !this.tainted && submissionEpoch === this.recoveryEpoch
         && !this.mutationCancellationRequested() && this.autonomyBudgetState.state === "active"
         && episode === this.staleRecovery) {
-      const remaining = Math.min(episode.deadline - this.monotonicNow(),
-        this.autoBudget.deadlineMs - this.budgetElapsedMs());
+      const localRemaining = episode.deadline - this.monotonicNow();
+      const remaining = this.autoBudget.mode === "bounded" ? Math.min(localRemaining,
+        this.autoBudget.deadlineMs - this.budgetElapsedMs()) : localRemaining;
       if (remaining > 0) this.staleSubmissionCooldown = { eligibleAt: this.monotonicNow()
         + Math.min(episode.attempts === 1 ? 250 : episode.attempts === 2 ? 500 : 1000, remaining),
         epoch: submissionEpoch, generation: this.autonomyBudgetGeneration };
@@ -1162,7 +1163,7 @@ export class PolicyRuntime {
     // may finish late; neither its result nor its cleanup owns a later scope.
     if (waitController) this.activePolicy = { controller: waitController };
     const cancelled = (): boolean => {
-      if (publicAuto && this.autonomyBudgetState.state === "active"
+      if (publicAuto && this.autoBudget.mode === "bounded" && this.autonomyBudgetState.state === "active"
           && this.budgetElapsedMs() >= this.autoBudget.deadlineMs) this.requestAutonomyBudgetHandoff();
       return this.mutationCancellationRequested() || epoch !== this.recoveryEpoch
         || generation !== this.autonomyBudgetGeneration;
@@ -1231,7 +1232,7 @@ export class PolicyRuntime {
         category = "wait_error";
         const more = publicAuto ? unusable < this.successorPoll.maxAttempts : attempt < this.successorPoll.maxAttempts;
         if (more && intervalMs > 0) {
-          const delayMs = publicAuto ? Math.min(intervalMs, Math.max(0, this.autoBudget.deadlineMs - this.budgetElapsedMs())) : intervalMs;
+          const delayMs = publicAuto && this.autoBudget.mode === "bounded" ? Math.min(intervalMs, Math.max(0, this.autoBudget.deadlineMs - this.budgetElapsedMs())) : intervalMs;
           if (delayMs > 0) {
             const waiting = this.sleep(delayMs);
             if (waitController) await withTimeout(waiting, null, "", waitController.signal);

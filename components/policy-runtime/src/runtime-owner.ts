@@ -1,4 +1,4 @@
-import { DEFAULT_AUTONOMY_BUDGET, type AutonomyBudgetConfig, type AutonomyBudgetEndReason,
+import { normalizeAutonomyBudget, type AutonomyBudgetInput, type AutonomyBudgetConfig, type AutonomyBudgetEndReason,
   type AutonomyBudgetExhaustionReason, type RuntimeMode, type RuntimeStatus } from "./contracts.js";
 
 /** Known-unapplied owner fence, shared by every Runtime profile. */
@@ -13,8 +13,8 @@ export interface RuntimeBudgetState {
   endedReason: AutonomyBudgetEndReason | null;
 }
 
-/** One selected profile owns this queue, fence, cancellation scope and finite
- * wallet. Neither profile nor the HTTP server creates another lifecycle owner. */
+/** One selected profile owns this queue, fence, cancellation scope and
+ * authorization. Neither profile nor HTTP creates another lifecycle owner. */
 export class RuntimeLifecycleOwner {
   private operation: Promise<unknown> = Promise.resolve();
   private timer: ReturnType<typeof setTimeout> | undefined;
@@ -25,15 +25,9 @@ export class RuntimeLifecycleOwner {
   state: RuntimeBudgetState;
   readonly budget: AutonomyBudgetConfig;
 
-  constructor(value: Partial<AutonomyBudgetConfig> | undefined,
+  constructor(value: AutonomyBudgetInput | undefined,
     readonly monotonicNow: () => number, mode: RuntimeMode) {
-    this.budget = {
-      maxSubmissions: value?.maxSubmissions ?? DEFAULT_AUTONOMY_BUDGET.maxSubmissions,
-      maxPolicyCalls: value?.maxPolicyCalls ?? DEFAULT_AUTONOMY_BUDGET.maxPolicyCalls,
-      deadlineMs: value?.deadlineMs ?? DEFAULT_AUTONOMY_BUDGET.deadlineMs
-    };
-    if (Object.values(this.budget).some(item => !Number.isSafeInteger(item) || item < 1))
-      throw new Error("autoBudget requires positive safe integer maxSubmissions, maxPolicyCalls and deadlineMs");
+    this.budget = normalizeAutonomyBudget(value);
     const started = mode !== "human";
     this.state = { state: started ? "active" : "inactive", submissionsUsed: 0,
       policyCallsUsed: 0, startedAt: started ? monotonicNow() : null,
@@ -79,12 +73,13 @@ export class RuntimeLifecycleOwner {
     return Math.max(this.state.elapsedMs, elapsed);
   }
   exhaust(reason: AutonomyBudgetExhaustionReason): void {
-    if (this.state.state !== "active") return;
+    if (this.state.state !== "active" || this.budget.mode === "continuous") return;
     this.clearDeadline(); this.state.state = "exhausted"; this.state.exhaustedReason = reason;
     this.state.elapsedMs = Math.min(this.elapsed(), this.budget.deadlineMs); this.state.startedAt = null;
   }
   available(): boolean {
     if (this.state.state !== "active") return false;
+    if (this.budget.mode === "continuous") return true;
     if (this.elapsed() >= this.budget.deadlineMs) { this.exhaust("deadline"); return false; }
     if (this.state.submissionsUsed >= this.budget.maxSubmissions) { this.exhaust("submission_attempt_limit"); return false; }
     if (this.state.policyCallsUsed >= this.budget.maxPolicyCalls) { this.exhaust("policy_call_limit"); return false; }
@@ -96,17 +91,22 @@ export class RuntimeLifecycleOwner {
   }
   consumeSubmission(): boolean {
     if (this.state.state !== "active") return false;
-    if (this.elapsed() >= this.budget.deadlineMs) { this.exhaust("deadline"); return false; }
-    if (this.state.submissionsUsed >= this.budget.maxSubmissions) { this.exhaust("submission_attempt_limit"); return false; }
+    if (this.budget.mode === "bounded") {
+      if (this.elapsed() >= this.budget.deadlineMs) { this.exhaust("deadline"); return false; }
+      if (this.state.submissionsUsed >= this.budget.maxSubmissions) { this.exhaust("submission_attempt_limit"); return false; }
+    }
     this.state.submissionsUsed += 1; return true;
   }
   status(onDeadline: () => void): RuntimeStatus["autonomy_budget"] {
     const state = this.state, elapsed = this.elapsed();
+    if (this.budget.mode === "continuous") return { mode: "continuous", state: state.state as "active" | "inactive",
+      max_submissions: null, submissions_used: state.submissionsUsed, max_policy_calls: null, policy_calls_used: state.policyCallsUsed,
+      deadline_ms: null, elapsed_ms: Math.max(0, Math.round(elapsed)), remaining_ms: null, exhausted_reason: null, ended_reason: state.endedReason };
     if (state.state === "active" && state.exhaustedReason === null && elapsed >= this.budget.deadlineMs) {
       this.exhaust("deadline"); onDeadline();
     }
     const effective = Math.min(state.state === "active" ? elapsed : state.elapsedMs, this.budget.deadlineMs);
-    return { state: state.state, max_submissions: this.budget.maxSubmissions,
+    return { mode: "bounded", state: state.state, max_submissions: this.budget.maxSubmissions,
       submissions_used: state.submissionsUsed, max_policy_calls: this.budget.maxPolicyCalls,
       policy_calls_used: state.policyCallsUsed, deadline_ms: this.budget.deadlineMs,
       elapsed_ms: Math.max(0, Math.round(effective)),
@@ -122,14 +122,16 @@ export class RuntimeLifecycleOwner {
     this.clearDeadline();
     if (this.state.state !== "active") return;
     const generation = this.generation;
-    const remaining = Math.min(this.budget.deadlineMs - this.elapsed(),
-      local ? local.at - this.monotonicNow() : Infinity);
+    const globalRemaining = this.budget.mode === "bounded" ? this.budget.deadlineMs - this.elapsed() : null;
+    if (globalRemaining === null && !local) return;
+    const localRemaining = local ? local.at - this.monotonicNow() : null;
+    const remaining = globalRemaining === null ? localRemaining! : localRemaining === null ? globalRemaining : Math.min(globalRemaining, localRemaining);
     const expire = () => {
       if (generation !== this.generation || this.state.state !== "active") return;
       // The global wallet keeps priority, including equal absolute deadlines.
-      if (this.elapsed() >= this.budget.deadlineMs || !local) {
+      if (this.budget.mode === "bounded" && this.elapsed() >= this.budget.deadlineMs) {
         this.exhaust("deadline"); onDeadline();
-      } else if (this.monotonicNow() >= local.at) local.onDeadline();
+      } else if (local && this.monotonicNow() >= local.at) local.onDeadline();
       else this.scheduleDeadline(onDeadline, local);
     };
     if (remaining <= 0) { expire(); return; }

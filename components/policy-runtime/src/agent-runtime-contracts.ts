@@ -1,11 +1,11 @@
-import type { ManagedEnvironmentStatus, RuntimeEnvironmentBinding, RuntimeMode, RuntimeStatus } from "./contracts.js";
+import type { AutonomyBudgetConfig, ManagedEnvironmentStatus, RuntimeEnvironmentBinding, RuntimeMode, RuntimeStatus } from "./contracts.js";
 import type { AgentAdapterIdentity, AgentDirective, AgentInputSpec, AgentPrefix } from "./agent-session-contracts.js";
 import type { NativeLogicalDispatchBinding } from "@rsgcsg/sts2-connector-client";
 
 /** Operational native profile projection. It exposes neither package paths nor
  * adapter commands, environment credentials, native operands or Model state. */
 export interface AgentRuntimeStatus {
-  schema: "sts2.policy-runtime/agent-session-status-1";
+  schema: "sts2.policy-runtime/agent-session-status-2";
   runtime: RuntimeStatus["runtime"];
   agent: {
     manifest_id: string; agent_id: string; agent_version: string; provider: string;
@@ -66,11 +66,11 @@ export type ManagedStartupEnvironment = Pick<ManagedEnvironmentStatus,
   "binding_sha256" | "service_instance_id" | "runtime_instance_id" | "game_continuity_id">;
 
 export interface AgentRuntimeStartup {
-  schema: "sts2.policy-runtime/agent-session-startup-1";
+  schema: "sts2.policy-runtime/agent-session-startup-2";
   address: string; run_id: string; agent_manifest_id: string;
   agent_artifact_sha256: string; agent_manifest_sha256: string;
   runtime_version: string; runtime_code_sha256: string; mode: RuntimeMode;
-  autonomy_budget: { maxSubmissions: number; maxPolicyCalls: number; deadlineMs: number };
+  autonomy_budget: AutonomyBudgetConfig;
   managed_environment: ManagedStartupEnvironment | null; adapter: AgentAdapterIdentity;
 }
 

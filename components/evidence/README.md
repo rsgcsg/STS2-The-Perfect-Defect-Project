@@ -147,6 +147,8 @@ and sealed checksums. Declared opaque state files require exact inventory, byte
 hashes and durable consumption metadata. The legacy Policy-run verifier retains
 its original namespace and rejects native Agent fields.
 
+Evidence rc34 explicitly reads historical numeric bounded Runtime event-1/startup-1 and the rc40 event-2/startup-2 union. Version 2 adds a fixed `bounded` or `continuous` authorization mode; continuous requires null caps/remaining time, actual nonnegative safe-integer counts/elapsed time, and no budget exhaustion state or reason. Bounded retains finite count/time consistency checks. A journal cannot mix envelope versions or replace its configured authorization mode; an expected startup must match the event version and configuration mode. Native and legacy Policy run manifests and immutable-evidence-manifest-1 remain unchanged. GLOBAL still requires trusted installed Runtime code whose complete compiled digest matches the producing run, then invokes its shared semantic replay; archives cannot select executable paths. No new reader rewrites historical evidence or proves current live eligibility.
+
 Consumption metadata follows the Runtime ledger's occurrence, revision,
 authorized scope, fresh consumption ID and publication-prefix rules. A new
 Current capture of the same unit can be neutral and retain an earlier consumed

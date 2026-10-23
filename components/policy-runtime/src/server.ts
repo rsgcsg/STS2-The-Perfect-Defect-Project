@@ -140,7 +140,7 @@ async function dispatch(runtime: RuntimeServiceOwner, request: IncomingMessage, 
         // the entire POST as known-unapplied. Preserve the completed prefix.
         if (!(error instanceof RuntimeControlPreconditionError) || results.length === 0) throw error;
         const status = runtime.status();
-        if (status.schema === "sts2.policy-runtime/agent-session-status-1")
+        if (status.schema === "sts2.policy-runtime/agent-session-status-2")
           results.push({ type: "not_admitted", reason: error.code, status });
         else results.push({ type: "not_admitted", reason: error.code, status });
         break;
