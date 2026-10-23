@@ -65,6 +65,12 @@ precedes any future SDK-direct driver, under the same execution guarantees.
 | 执行资源 | `spireagent.compute`及现provider/worker接缝，见[结构化执行](../python/docs/STRUCTURED_WORKLOAD.md) | 同一具名任务/输入/产物承诺、资源和恢复能力 → 本地/远端实际handle与返回产物；unknown不换provider重投 |
 | 产物到Agent、评估 | 原Model注册、policy adapter与Runtime，见[模型交付](../python/docs/STRUCTURED_MODEL_DELIVERY.md)、[Agent执行](../python/docs/AGENT_EXECUTION_CONTRACT.md) | 兼容权重/Input、完整动作目录和明确Task → 完整Agent执行与固定条件结果；模型包不自获游戏控制权 |
 
+有界自动接续属于同一任务生命周期：Application 持久记录批准的 Run、准确 target/
+producer、截止和新分段上限；同 Ops 原子预约、入队和推进游标，同 Scheduler 仅从
+已接受的 PAUSED receipt 接续。unknown/失败/取消不自动重投；配方的完整状态和
+恢复条件仍归原 worker/workload。控制应用可升级，执行 producer 必须另有准确
+部署绑定；不把新应用 SHA 冒充旧训练来源。操作与限制见原训练控制 SOP。
+
 T0是CPU工程验证入口。正式GPU任务复用相同的用途、任务、checkpoint、Store和产物消费者；当前后端是否完成实证由其运行证据决定，不能从上述映射或旧GPU训练推出。学校资源在接入资料到齐后适配真实差异，不预设调度器或跨设备exact resume。
 
 The user's 2026-10-20 freeze requirement covers every historical/current function,
