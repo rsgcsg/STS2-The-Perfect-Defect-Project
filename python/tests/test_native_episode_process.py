@@ -163,17 +163,20 @@ def finish_operation(models):
     return state
 
 
-def common_start(app, ready, selection, world, log, run_profile="short", *, reuse=False):
+def common_start(app, ready, selection, world, log, run_profile="short", *, reuse=False,
+                 native=None):
     # Synthetic native Recorder owner remains on a real local HTTP seam. The
     # Application's production NativeTasks preparation checks are unmodified.
     app.models.native_tasks.address = world.endpoint
     request = app.models.agent_request(
-        selection, "start", run_profile, native_episode_ref=ready["environment_ref"]
+        selection, "prepare-and-load" if native else "start", run_profile,
+        native_episode_ref=ready["environment_ref"]
     )
     assert request["admission_context"]["native_episode"] == ready["admission_context"]
     original = copy.deepcopy(request)
     before = log.read_bytes()
-    app.models.run_agent(request)
+    app.models.run_agent(request, **({"native_context": native[0],
+        "native_authorizer": native[1]} if native else {}))
     state = finish_operation(app.models)
     assert state["loaded"] is True
     assert app.models.process is not None and app.models.process.poll() is None
@@ -451,7 +454,7 @@ def common_finish(app, ready, startup, reference, raw, host_before, log, world):
 
 @pytest.mark.parametrize("run_profile", ["short", "continuous"])
 def test_owned_episode_common_teacher_process_ack_stop_seal_then_host_close(
-    native_runtime, world, native_app, run_profile
+    native_runtime, world, native_app, run_profile, tmp_path, monkeypatch,
 ):
     from spireagent.workbench.native_teacher_support import ADAPTER, installation_config
     from stpd.policy.native_teacher_agent import descriptor, write_artifact
@@ -475,8 +478,15 @@ def test_owned_episode_common_teacher_process_ack_stop_seal_then_host_close(
     assert app.models.readiness("fixture-teacher")["status"] == "ready_to_load"
     log = native_app[3]
     ready = prepared(app)
+    native = None
+    if run_profile == "continuous":
+        from test_native_workbench_access import paired_app
+        _, pair, _, _, _ = paired_app(tmp_path, monkeypatch, application=app,
+            runtime_id=world.caps["host"]["runtime_instance_id"])
+        context = {"request_id": "b" * 32, "binding": pair.to_dict()}
+        native = (context, app.native_access.intent_authorizer(context, pair))
     startup, reference, raw, host_before = common_start(
-        app, ready, "fixture-teacher", world, log, run_profile)
+        app, ready, "fixture-teacher", world, log, run_profile, native=native)
     app.models.command("one_step")
     finish_operation(app.models)
     assert world.submitted == 1
@@ -492,6 +502,20 @@ def test_owned_episode_common_teacher_process_ack_stop_seal_then_host_close(
         first_events = (app.models.directory / "agent-runs" / startup["run_id"] / "events.jsonl")
         frozen_events = first_events.read_bytes()
         assert proof["evaluation"]["controller_at_stop"] == "released"
+        terminal = app.models.native_model_terminal()
+        assert terminal["schema"] == "spireagent/native-model-terminal-1"
+        assert terminal["binding"] == context["binding"]
+        assert terminal["native_request_id"] == context["request_id"]
+        assert terminal["run_id"] == startup["run_id"]
+        app.models.state["_native_intent"]["run_id"] = "different-actor"
+        assert app.models.native_model_terminal() == {"status": "unavailable"}
+        app.models.state["_native_intent"]["run_id"] = startup["run_id"]
+        evaluation_path = (app.models.directory / "evaluations"
+                           / (terminal["evaluation_id"] + ".json"))
+        original_report = evaluation_path.read_bytes()
+        evaluation_path.write_bytes(b"changed")
+        assert app.models.native_model_terminal() == {"status": "unavailable"}
+        evaluation_path.write_bytes(original_report)
         assert not world.held and log.read_bytes() == host_before
         app.local_environment.verify_native_actor_reuse(ready["admission_context"])
         app.local_environment.retire_native_actor(ready["admission_context"], proof)

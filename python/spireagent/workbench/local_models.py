@@ -852,7 +852,8 @@ class LocalModelService:
             if episode["binding"]["ownership"] == "attached":
                 state = composition["semantic_definition"]["state"]
                 if not (
-                    state["kind"] in {"stateless_current", "qualified_public_W"}
+                    state["kind"] in {"stateless_current", "qualified_public_W",
+                                      "ACK_committed_session_rng"}
                     or (
                         state["kind"] == "ACK_committed_script"
                         and composition["semantic_definition"]["input"].get("history_mode")
@@ -1924,6 +1925,44 @@ class LocalModelService:
                 raise BoundaryError("local_model", "native_model_intent_superseded")
             return cast(dict[str, Any], json.loads(json.dumps(context)))
 
+    def native_model_terminal(self) -> dict[str, Any]:
+        """Presentation-only release of the exact admitted native Model intent.
+
+        The stop owner already verified the sealed original. This small view
+        checks its immutable report and current process state; creating another
+        Actor still requires native_actor_retirement_proof's fresh typed read.
+        """
+        with self.lock:
+            native = self.state.get("_native_intent")
+            startup = self.state.get("startup")
+            report = self.state.get("evaluation")
+            operation = self.state.get("operation") or {}
+            if (self.closed or self.client is not None or self.state.get("loaded")
+                    or self.state.get("status") != "stopped"
+                    or self.process is not None and self.process.poll() is None
+                    or self.thread is not None and self.thread.is_alive()
+                    or operation.get("status") == "pending"
+                    or not isinstance(native, dict) or not isinstance(startup, dict)
+                    or not isinstance(report, dict)
+                    or native.get("run_id") != startup.get("run_id")
+                    or report.get("run_id") != startup.get("run_id")
+                    or report.get("evidence_verification") != "pass"
+                    or report.get("controller_at_stop") != "released"
+                    or report.get("tainted") is not False
+                    or report.get("pending_request") is not None
+                    or report.get("agent_execution", {}).get("status") != "bound"
+                    or report.get("agent_run_request") != self.state.get("agent_run_request")):
+                return {"status": "unavailable"}
+            identity = report.get("evaluation_id")
+            if not isinstance(identity, str) or re.fullmatch(r"[a-f0-9]{64}", identity) is None:
+                return {"status": "unavailable"}
+            sealed = self.directory / "evaluations" / (identity + ".json")
+            if sealed.is_symlink() or sealed.read_bytes() != canonical_json(report).encode():
+                return {"status": "unavailable"}
+            return {"schema": "spireagent/native-model-terminal-1", "status": "stopped",
+                    "native_request_id": native["request_id"], "binding": native["binding"],
+                    "run_id": startup["run_id"], "evaluation_id": identity}
+
     def recover_native_intent(self, request_id: object, action: str) -> dict[str, Any]:
         if action not in {"human", "stop"}:
             raise BoundaryError("local_model", "native_recovery_action_required")
@@ -2189,6 +2228,8 @@ class LocalModelService:
                         "admission_context": episode_context,
                     }
                 self.client = client
+                if isinstance(native_context, dict):
+                    self.state["_native_intent"]["run_id"] = startup["run_id"]
                 self.state.update(
                     status="loaded",
                     loaded=True,
@@ -2382,6 +2423,7 @@ class LocalModelService:
                 self.state["_native_intent"] = {
                     **json.loads(json.dumps(native_context)),
                     "intent_generation": intent,
+                    "run_id": client.startup["run_id"],
                 }
                 self._native_authorizer = native_authorizer
 

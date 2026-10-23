@@ -183,7 +183,9 @@ def test_corrupt_payload_and_nonfinite_tensor_reject_before_any_model_write(
     assert store.manifest_ids() == before
 
 
-def test_original_cli_application_export_and_own_byte_download(saved_checkpoint, tmp_path, capsys):
+def test_original_cli_application_export_and_own_byte_download(
+    saved_checkpoint, tmp_path, capsys, monkeypatch,
+):
     _, store, _, _, checkpoint, _ = saved_checkpoint
     registry = tmp_path / "registry.sqlite"
     SQLiteRegistry(registry)
@@ -192,6 +194,9 @@ def test_original_cli_application_export_and_own_byte_download(saved_checkpoint,
     config_path = tmp_path / "project.json"
     atomic_json(config_path, config.to_dict())
     app = Application(config, config_path=config_path)
+    def unavailable_game():
+        raise AssertionError("Pure checkpoint publication must not check a running game")
+    monkeypatch.setattr(app, "check_environment_instance", unavailable_game)
     server = create_server(app)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     atomic_json(config.state_dir / "runtime.json", {

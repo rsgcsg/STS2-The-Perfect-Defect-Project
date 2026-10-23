@@ -1,0 +1,15 @@
+# 游戏内“开始展示”连接当前局
+
+用户实际遇到换局后“开始展示”没有效果，并要求快速修复真实UI流程、少分工。root为唯一源码writer，基线develop2dbb96c6，topic codex/native-current-display-20261023。用户随后要求整体GUI真实效果稳定、训练结束安全核实并导出少量有用权重，同一上层链与原SOP/解耦，90分钟硬截止2026-10-23T18:27:00Z，不因后续修复重置。原App已正常停止后才继续修改；当前游戏保留，更新Mod需正常保存/关闭/冷加载。Runtime41的Pause修复已独立集成，本轮不改Runtime/SDK/Evidence或训练；Live UI rc19/Mod rc61仅映射Model终态恢复与反馈。
+
+第一处缺口在Application映射：普通游戏的P1开始入口没有准备当前局的attached资源，而受控评估局的owned引用又只能用于原seed。现在Native UI的原models.takeover/load沿同一prepare/current-binding→Model negotiation→Agent request→run-agent链接当前游戏；attached的再次开始先核原Actor正常Stop/typed clean seal，再正常detach并以新ref冷附着。源封装只组合既有owner，不建立第二套控制、规则或合法性。owned评估的seed/profile验证不变，unknown不重投，旧失败和原件不改。
+
+验收是普通Game Mod当前局的原生下拉Mstd→开始→实际动作→暂停/继续→结束→换Model，另确认新开局后开始生成新attached segment且旧证据不改。开发已有真实Application/HTTP/native-resource测试与真实SDK/Runtime/Model协商的合成World短链；它们不证明原生现场。稳定后一次selected CI与同冻结候选的短现场可并行；新源码/CI不覆盖旧运行或父训练/TEST/40局/R2未完项。操作入口归原模型流程指南，不新增私有业务脚本。
+
+非作者复核发现首候选25be1d41在Model admission前提前调用intent授权，真实回调会因本request尚未建立而拒绝；已保留该失败并删除提前调用，原pair/config检查及admission后的真实授权保留。回归复用真实NativeAccess与Model admission，仅游戏pair peer、Runtime进程启动/命令为明确替身；不再mock整个授权回调。
+
+8c1ceebf的独立完整CI通过，现场Mstd实际Start/动作/Stop成立，但三个基线仍被状态准入白名单拒绝；保留失败与CI范围，不宣称全GUI通过。本次补上既有ACK提交会话RNG声明，新增原生页面的Model精确终态卡；卡只解除匹配的表示层unknown，下一次Actor仍走原typed seal复验。纯CPU checkpoint导出移除游戏存活检查，登记标签从原Model元数据区分步数/最佳/当前权重。链路位置是⑩产物→⑪Agent→⑫实际运行的表示/传输修复，上游提供原Model/Stop与身份，下游要求可开始/恢复且不重复投递；未新增训练、调度、执行或状态权威。
+
+原训练已自然早停2190步/最佳1460，最终产物与原worker唯一一次TEST已核；学校分配已正常Stop并回到选择页。最终best与current2190沿同一配方/Store/Model入口交付。父任务固定40局、完整最终比较与总R2索引未完成，不因本轮GUI或子门禁通过而关闭。到硬截止如实交付已完成与未完项，不自动复活后续工作。
+
+准确Mod61冷加载后发现新游戏配对被已关闭资源的历史runtime身份挡住，页面因而未连接。Application配对检查改为只用活动资源约束当前游戏；idle/closed/failed仍先经Environment原状态读取及实际选中Connector身份核对，不清除未知/活动任务。回归从真实公开Host pipe准备并正常结束原资源，保留原admission_context，再验证新selected游戏可配对、活动旧资源和未选中游戏仍拒绝。原App先正常停止后才改源码，Mod/Runtime不因此重编或替换。

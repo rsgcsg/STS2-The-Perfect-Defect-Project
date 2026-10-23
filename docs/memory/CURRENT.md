@@ -1,6 +1,6 @@
-# 当前：原生 Pause capture 修复
+# 当前：游戏内开始展示连接当前局
 
-Runtime40 的 Human/Pause 撤销旧 capture 后被误 taint；Runtime41沿同一owner修正归类，App显式消费40/41，边界见[本轮修复](../plans/p1-prefreeze-2026-10-18/NATIVE_PAUSE_CAPTURE_20261023.zh-CN.md)。原生连续模型展示仍归[原任务](../plans/p1-prefreeze-2026-10-18/INGAME_CONTINUOUS_MODEL_PLAY_20261023.zh-CN.md)；真实失败/原件不改，源码和新包不授现场通过。Mod60/Tool/Host37/Evidence34/SDK资产不变。性能优化延期；训练、最终TEST、40次Reference和完整R2仍未完成。
+root按用户真实UI失败修Application当前局映射，范围和验收归[本轮入口](../plans/p1-prefreeze-2026-10-18/NATIVE_CURRENT_DISPLAY_20261023.zh-CN.md)。Runtime41 Pause修复已合入2dbb96c6，原[暂停任务](../plans/p1-prefreeze-2026-10-18/NATIVE_PAUSE_CAPTURE_20261023.zh-CN.md)及失败原件保留。本轮只组合原attached准备/Model协商/Agent请求，owned评估seed不变；不改Runtime/Mod/SDK/Evidence/训练，不做界面美化。源码/合成短链不授原生通过，最终TEST/40Reference/R2未完成。
 
 # 历史已延期：隔离性能候选，原训练继续
 

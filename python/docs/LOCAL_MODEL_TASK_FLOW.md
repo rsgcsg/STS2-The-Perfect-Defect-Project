@@ -59,6 +59,38 @@ parity and native qualification gates in the native Model guide.
 
 ### Native episode preparation and explicit finish
 
+For the in-game display on an already running ordinary game, `models.takeover`
+uses the same Application preparation and Agent-request owners to attach a fresh
+`cold_current_segment`. It does not seed/reset the game or change speed. After
+explicit Stop, the original typed clean seal is checked before detaching the old
+attached segment and preparing the current game again; changing Model or opening
+a new game never rewrites the old request/evidence. Running, tainted or unknown
+Actors require their original recovery and cannot be silently replaced. CLI/API
+users can use the existing `native-episode attach`, `agent-request` and `run-agent`
+steps over the same owners. A normal Game Mod launch with the selected workbench
+is the current-game entry; a seeded `prepare-owned` Reference is a different,
+explicit mode whose original seed/profile identity checks remain unchanged.
+
+Native Start admits the same declared `ACK_committed_session_rng` used by the
+random/frequency/linear baselines. A fresh attached segment creates a fresh Agent
+session and seeded RNG; Pause/Continue retains the same Actor and committed state.
+The GUI adds no RNG owner. A rejected `current_start_unsupported` is an admission
+failure, not an unknown delivery. When a Model POST response is lost, use Stop on
+the original task and wait for its actual stopped/sealed result. Only the Model
+owner's exact request/binding/run terminal card clears that presentation fence;
+ACK, a renewed connection or another task's completion does not. If no admitted
+Actor or clean original seal can be proven, keep the uncertainty and use the
+existing diagnostics/recovery path instead of repeatedly clicking Start.
+
+Checkpoint publication is CPU/Store work, independent of a running game. Use
+`tools/project.py model --config <project.json> --action export-checkpoint
+--artifact <checkpoint-id> --checkpoint-selection best|current`; inspect that
+same Model operation's completed `last_checkpoint_export`, then use the normal
+Model download and registration commands. The recipe adapter owns publication;
+GUI/CLI/API only map to it. Download does not establish training ancestry or
+qualify gameplay. Registrations label available authoritative selected steps and
+distinguish final training results from best/current checkpoint previews.
+
 The existing Application exposes prepare/status/finish in its local-environment
 namespace and continues `/api/local-models/run-agent` for execution. Bodies
 select only owned or attached preparation, an intent ID, explicit canonical seed

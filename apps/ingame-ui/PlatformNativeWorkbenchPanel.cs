@@ -340,6 +340,8 @@ internal sealed class PlatformNativeWorkbenchPanel : IDisposable
 
     private void Render(JsonElement view, PlatformNativeWorkbenchConnection connection)
     {
+        if (OwnerData(view, "model_terminal") is JsonElement terminal)
+            _commands.ObserveModelTerminal(terminal);
         bool daily = _section == "recording", diagnostics = _section == "diagnostics";
         ApplySectionVisibility();
         _connection.Text = diagnostics ? "工作台实例：" + connection.Binding.WorkbenchInstanceId : "已连接游戏工作台";
@@ -362,6 +364,8 @@ internal sealed class PlatformNativeWorkbenchPanel : IDisposable
                 if (owner == "models" && Object(data, "session") is JsonElement play)
                 {
                     target.AddChild(Label(Boolean(play, "loaded") ? "模型已加载" : "选择模型，开始连续展示；暂停和结束随时可用。"));
+                    if (_commands.Unconfirmed.Length > 0)
+                        target.AddChild(Label("原操作结果还未确认，请先结束原模型并等待完成；不会重复提交。"));
                     if (Object(play, "runtime") is JsonElement runtime)
                     {
                         if (OwnerData(view, "native_environment") is JsonElement resource

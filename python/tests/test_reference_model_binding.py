@@ -224,20 +224,24 @@ def test_negotiate_timeout_is_not_retried_or_followed_by_runtime(reference_p1, m
     assert app.models.thread is None and app.models.process is None
 
 
-@pytest.mark.parametrize("p1_registration", ["trained"], indirect=True)
+@pytest.mark.parametrize("p1_registration", ["trained", "baseline-random", "baseline-frequency",
+                                           "baseline-linear"], indirect=True)
+@pytest.mark.parametrize("preparation", ["owned", "current"])
 def test_native_start_passes_ready_reference_through_original_application_and_request(
-    reference_p1, monkeypatch,
+    reference_p1, monkeypatch, preparation, tmp_path,
 ):
-    from spireagent.workbench.native_workbench_access import NativePair
+    from test_native_workbench_access import paired_app
+
     from spireagent.workbench.native_workbench_api import NativeWorkbenchApi
 
     app, world, selection, prepare, original, manifest_path, config_path = reference_p1
-    ready = prepare("native-ui", "d" * 32)
-    pair = NativePair(world.caps["host"]["runtime_instance_id"], app.instance_id,
-                      configuration_id(app.config), "http://127.0.0.1:12345/", "a" * 32, 9999999999)
+    if preparation == "owned":
+        ready = prepare("native-ui", "d" * 32)
+    else:
+        world.caps["host"]["host_kind"] = "live_ui"
+    _, pair, _, _, peer = paired_app(tmp_path, monkeypatch, application=app,
+                                    runtime_id=world.caps["host"]["runtime_instance_id"])
     calls = []
-    monkeypatch.setattr(app.native_access, "intent_authorizer", lambda context, expected:
-                        lambda: calls.append(("pair", context, expected)))
     monkeypatch.setattr(app.models, "readiness",
         lambda _: {"checks": {"runtime_package": {"status": "pass"}}})
 
@@ -251,18 +255,36 @@ def test_native_start_passes_ready_reference_through_original_application_and_re
     monkeypatch.setattr(app.models, "_start", start)
     monkeypatch.setattr(app.models, "_execute_command", lambda mode, *args: calls.append((mode,)))
     api = NativeWorkbenchApi(app)
-    api._dispatch("models.takeover", {"selection_id": selection, "run_profile": "continuous",
-        "native_episode_ref": ready["environment_ref"]}, pair=pair, request_id="b" * 32)
-    app.models.thread.join(5)
-    assert app.models.state["operation"]["status"] == "completed"
-    request_ref = app.models.state["agent_run_request"]
-    request = json.loads((app.models.directory / request_ref["path"]).read_bytes())
-    assert request["budget"]["limits"] == {"mode": "continuous"}
-    assert request["admission_context"]["native_episode"] == ready["admission_context"]
-    assert request["admission_context"]["native_intent"] is None
-    assert app.models.state["_native_intent"]["binding"] == pair.to_dict()
-    assert request["selection_id"] != selection
-    assert [entry[0] for entry in calls if entry[0] in {"start", "auto"}] == ["start", "auto"]
-    assert (manifest_path.read_bytes(), config_path.read_bytes()) == original[:2]
-    app.models.client = None
-    app.models.state.update(status="stopped", loaded=False)
+    body = {"selection_id": selection, "run_profile": "continuous"}
+    if preparation == "owned":
+        body["native_episode_ref"] = ready["environment_ref"]
+    else:
+        with pytest.raises(BoundaryError, match="unsupported_run_profile"):
+            api._dispatch("models.takeover", {**body, "run_profile": "infinite"},
+                          pair=pair, request_id="c" * 32)
+        assert app.native_episode_status()["phase"] == "idle"
+    try:
+        api._dispatch("models.takeover", body, pair=pair, request_id="b" * 32)
+        if preparation == "current":
+            ready = app.native_episode_status()
+            assert ready["admission_context"]["binding"]["initialization"] == "cold_current_segment"
+            assert not ready["world_mutation_offered"]
+            assert app.local_environment.native_client is None
+        app.models.thread.join(5)
+        assert app.models.state["operation"]["status"] == "completed"
+        # _start is the declared Runtime-process stub. Exercise its real retained
+        # authorization now: admission must have created this exact Model intent.
+        app.models._native_authorizer()
+        request_ref = app.models.state["agent_run_request"]
+        request = json.loads((app.models.directory / request_ref["path"]).read_bytes())
+        assert request["budget"]["limits"] == {"mode": "continuous"}
+        assert request["admission_context"]["native_episode"] == ready["admission_context"]
+        assert request["admission_context"]["native_intent"] is None
+        assert app.models.state["_native_intent"]["binding"] == pair.to_dict()
+        assert peer.calls  # Real authorize_intent/authenticate; only the game peer is synthetic.
+        assert request["selection_id"] != selection
+        assert [entry[0] for entry in calls if entry[0] in {"start", "auto"}] == ["start", "auto"]
+        assert (manifest_path.read_bytes(), config_path.read_bytes()) == original[:2]
+    finally:
+        app.models.client = None
+        app.models.state.update(status="stopped", loaded=False)

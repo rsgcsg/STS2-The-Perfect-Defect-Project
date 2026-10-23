@@ -1383,7 +1383,11 @@ class LocalModelRegistration:
                         parameters["algorithm"]] if baseline else "M-std")
                     if parameters.get("export_role") == (
                             "diagnostic_checkpoint_inference_not_final_result"):
-                        label += "（中途预览）"
+                        label += (f"（{parameters['selected_step']} 步，"
+                                  + ("最佳权重预览" if parameters["selection"] == "best"
+                                     else "当前权重预览") + "）")
+                    elif not baseline and type(parameters.get("selected_step")) is int:
+                        label += f"（训练结果，最佳 {parameters['selected_step']} 步）"
                     entry = register(package, target, envelope, entry_id=selection, label=label)
                     manifest_path = target / "manifest.json"
                     manifest = _object_file(manifest_path)

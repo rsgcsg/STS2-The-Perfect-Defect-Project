@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, urlencode
 
 from spireagent.json_boundary import BoundaryError, digest
+from spireagent.workbench.local_models import GLOBAL_MODEL_ADAPTERS
 from spireagent.workbench.native_workbench_access import NativePair, fail
 
 if TYPE_CHECKING:
@@ -93,6 +94,7 @@ _PRECONDITION_CODES = frozenset(
         "native_model_intent_superseded",
         "native_model_context_changed",
         "continuous_requires_runtime_v2", "unsupported_run_profile",
+        "current_start_unsupported",
         "stopped_actor_required", "clean_sealed_actor_required",
         "native_world_identity_changed", "native_world_identity_unavailable",
         "resource_already_associated", "resource_binding_changed",
@@ -334,6 +336,7 @@ class NativeWorkbenchApi:
         if page == "play":
             catalog = self.card("models", app.models.catalog)
             cards.append(catalog)
+            cards.append(self.card("model_terminal", app.models.native_model_terminal))
             native_environment = self.card("native_environment", app.native_episode_status)
             cards.append(native_environment)
             items = catalog["data"].get("policies", [])
@@ -345,6 +348,8 @@ class NativeWorkbenchApi:
                 and not session.get("loaded")
                 and not loading
                 and session.get("status") not in {"command_unknown", "recovery_required"}
+                and native_environment["data"].get("phase") not in {
+                    "preparing", "closing", "unknown", "recovery_required"}
             )
             runtime = session.get("runtime")
             pending = runtime.get("pending_request") if isinstance(runtime, dict) else None
@@ -992,6 +997,10 @@ class NativeWorkbenchApi:
                 raise fail("invalid_native_payload")
             context = {"request_id": request_id, "binding": pair.to_dict()}
             authorize = app.native_access.intent_authorizer(context, pair)
+            if app.models.selection(body["selection_id"])["adapter"] in GLOBAL_MODEL_ADAPTERS:
+                app.models._run_profile(body["selection_id"], body["run_profile"])
+                body = {**body, "native_episode_ref": app.prepare_current_native_episode(
+                    pair.runtime_instance_id, body.get("native_episode_ref"))}
             if "native_episode_ref" in body:
                 episode = app.local_environment.native_episode_context(body["native_episode_ref"])
                 if episode["binding"]["runtime_instance_id"] != pair.runtime_instance_id:

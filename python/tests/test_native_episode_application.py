@@ -353,6 +353,63 @@ def test_attached_resource_never_bootstraps_writes_speed_or_closes_host(native_a
     assert closed["cleanup"]["host_close"] == "not_applicable" and not log.exists()
 
 
+def test_current_display_prepares_real_attached_resource_without_reset(native_app, monkeypatch):
+    app, _profile, _fixture, log = native_app
+    monkeypatch.setattr(app.local_environment, "_native_unheld", lambda *_args: None)
+    ref = app.prepare_current_native_episode("runtime-original")
+    record = app.native_episode_status()
+    assert record["environment_ref"] == ref and record["phase"] == "ready"
+    assert record["preparation"]["ownership"] == "attached"
+    assert record["admission_context"]["binding"]["initialization"] == "cold_current_segment"
+    assert app.prepare_current_native_episode("runtime-original", ref) == ref
+    assert not log.exists() and app.local_environment.native_client is None
+    with pytest.raises(BoundaryError, match="native_model_context_changed"):
+        app.prepare_current_native_episode("foreign-runtime", ref)
+    with pytest.raises(BoundaryError, match="resource_binding_changed"):
+        app.prepare_current_native_episode("runtime-original", "foreign-ref")
+    assert app.native_episode_status()["environment_ref"] == ref
+
+
+def test_current_display_never_replaces_owned_seeded_episode(native_app):
+    app, _profile, _fixture, log = native_app
+    ready = prepared(app)
+    before = log.read_bytes()
+    assert app.prepare_current_native_episode("runtime-original") == ready["environment_ref"]
+    assert app.native_episode_status() == ready and log.read_bytes() == before
+
+
+@pytest.mark.parametrize("next_runtime", ["runtime-original", "runtime-next"])
+def test_current_display_new_segment_requires_original_actor_seal(
+    native_app, monkeypatch, next_runtime,
+):
+    app, _profile, _fixture, log = native_app
+    monkeypatch.setattr(app.local_environment, "_native_unheld", lambda *_args: None)
+    ref = app.prepare_current_native_episode("runtime-original")
+    context = app.local_environment.native_episode_context(ref)
+    request = {"path": "requests/original.json", "sha256": "1" * 64}
+    app.local_environment.associate_native_actor(context, "run-original", request)
+    original = app.native_episode_status()
+    # The real Model owner has no stopped/sealed Actor here: it must refuse
+    # before the Environment can detach or create a replacement segment.
+    with pytest.raises(BoundaryError, match="stopped_actor_required"):
+        app.prepare_current_native_episode("runtime-original", ref)
+    assert app.native_episode_status() == original
+    # Isolate only the already-tested typed Model seal boundary. The real
+    # Environment must archive/detach and prepare a different attached resource;
+    # it must never issue Host reset/close, speed or native gameplay writes.
+    monkeypatch.setattr(app.models, "native_actor_retirement_proof", lambda *_: {})
+    monkeypatch.setattr(app.models, "stop_native_episode_actor", lambda *_args, **_kw: {
+        "status": "stopped", "run_id": "run-original", "seal": "confirmed"})
+    current = capabilities()
+    current["host"]["runtime_instance_id"] = next_runtime
+    monkeypatch.setattr(app.local_environment, "native_capabilities", lambda _: current)
+    successor = app.prepare_current_native_episode(next_runtime, ref)
+    assert successor != ref
+    assert app.native_episode_status()["admission_context"]["binding"]["initialization"] == (
+        "cold_current_segment")
+    assert not log.exists()
+
+
 def test_legacy_request_shape_stays_exact_and_optional_native_binding_is_by_value():
     composition = {
         "selection_id": "fixture",
@@ -649,3 +706,19 @@ def test_reuse_rejects_changed_host_identity_before_retiring_original_actor(
     assert app.local_environment.native_episode_status() == original
     with pytest.raises(BoundaryError, match="resource_already_associated"):
         app.local_environment.native_admission_guard(context, "creation")
+
+
+def test_closed_original_resource_does_not_block_replacement_game_pair(native_app, monkeypatch):
+    app = native_app[0]
+    ready = prepared(app)
+    original = ready["admission_context"]
+    replacement = "new-selected-game"
+    # Only the Connector read is synthetic; closure below is the real public
+    # Host pipe/Environment terminal producer and keeps the original context.
+    monkeypatch.setattr(app.models.native_tasks, "connector_instance", lambda _: replacement)
+    assert not app._workbench_runtime_identity(replacement)
+    closed = app.finish_native_episode(ready["environment_ref"])
+    assert closed["phase"] == "closed" and closed["finish_complete"]
+    assert closed["admission_context"] == original
+    assert app._workbench_runtime_identity(replacement)
+    assert not app._workbench_runtime_identity("another-unselected-game")
