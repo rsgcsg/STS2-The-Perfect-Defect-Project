@@ -100,8 +100,9 @@ Actor or clean original seal can be proven, keep the uncertainty and use the
 existing diagnostics/recovery path instead of repeatedly clicking Start.
 
 Checkpoint publication is CPU/Store work, independent of a running game. Use
-`tools/project.py model --config <project.json> --action export-checkpoint
---artifact <checkpoint-id> --checkpoint-selection best|current`; inspect that
+`python -m spireagent.workbench project model --config <project.json>
+--action export-checkpoint --artifact <checkpoint-id>
+--checkpoint-selection best|current` from the locked `python/` environment; inspect that
 same Model operation's completed `last_checkpoint_export`, then use the normal
 Model download and registration commands. The recipe adapter owns publication;
 GUI/CLI/API only map to it. Download does not establish training ancestry or
