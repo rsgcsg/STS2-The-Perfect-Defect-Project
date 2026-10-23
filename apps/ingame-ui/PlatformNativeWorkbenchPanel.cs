@@ -437,8 +437,11 @@ internal sealed class PlatformNativeWorkbenchPanel : IDisposable
             return String(card, "owner") + ":" + (operation is JsonElement task ?
                 (String(task, "operation_id") ?? String(task, "id")) + ":" + String(task, "attempt_id") : "");
         }));
+        string modelChoices = _section == "play" && OwnerData(view, "models") is JsonElement catalog
+            && catalog.TryGetProperty("policies", out JsonElement policies) ? policies.GetRawText() : "";
         string formsKey = _section + ":" + _context + ":" + connection.Binding.PairId + ":"
-            + ownerContexts + ":" + capabilities.GetRawText() + ":" + _commands.Unconfirmed.Length;
+            + ownerContexts + ":" + capabilities.GetRawText() + ":" + _commands.Unconfirmed.Length
+            + ":" + modelChoices;
         if (formsKey != _formsKey)
         {
             _formsKey = formsKey; string? focused = _fields.FirstOrDefault(item => item.Value.HasFocus()).Key;
