@@ -11,11 +11,11 @@ import { replayGlobalAgentRun } from "../src/global-replay.js";
 import { canonicalJson } from "../src/evidence.js";
 const sha=(b:Buffer|string)=>createHash("sha256").update(b).digest("hex");
 const runtime=fileURLToPath(new URL("../dist/",import.meta.url));
-function pythonVerify(directory:string, trusted=true){
+function pythonVerify(directory:string, trusted=true, mode?: "bounded" | "continuous", version=2){
  const python=[process.env.STS2_EVIDENCE_PYTHON,process.env.PYTHON,"python","python3"].find(p=>p&&spawnSync(p,["-c","import sys;assert sys.version_info >= (3,11)"],{stdio:"ignore"}).status===0);
  if(!python)throw new Error("Python >=3.11 required; set PYTHON to the existing supported interpreter");
- const code=`import json,sys\nfrom sts2_platform_evidence import verify_agent_session_run_evidence\nr=verify_agent_session_run_evidence(sys.argv[1], {'global_runtime_directory':sys.argv[2]} if sys.argv[2] else None)\nprint(json.dumps({'passed':r.passed,'findings':[f.code for f in r.findings]}))`;
- return JSON.parse(execFileSync(python,["-c",code,directory,trusted?runtime:""],
+ const code=`import json,sys\nfrom sts2_platform_evidence import verify_agent_session_run_evidence\nexpected={'global_runtime_directory':sys.argv[2]} if sys.argv[2] else {}\nif sys.argv[3]: expected.update(schema='sts2.policy-runtime/agent-session-startup-'+sys.argv[4],autonomy_budget=json.loads(sys.argv[3]))\nr=verify_agent_session_run_evidence(sys.argv[1], expected or None)\nprint(json.dumps({'passed':r.passed,'findings':[f.code for f in r.findings]}))`;
+ return JSON.parse(execFileSync(python,["-c",code,directory,trusted?runtime:"",mode?JSON.stringify(mode==="continuous"?{mode}:{mode,maxSubmissions:20,maxPolicyCalls:40,deadlineMs:10000}):"",String(version)],
   {env:{...process.env,PYTHONPATH:fileURLToPath(new URL("../../evidence/",import.meta.url))},encoding:"utf8",timeout:30000}));
 }
 async function reseal(directory:string){
@@ -28,16 +28,21 @@ async function reseal(directory:string){
  await writeFile(join(directory,"checksums.sha256"),checks.join("\n")+"\n");
 }
 describe("GLOBAL original semantic replay and production Python Evidence verifier",()=>{
- it("verifies actual source→offered framed bytes→ACK→dispatch/result and rejects rehashed omissions",async()=>{
-  const f=await globalRuntimeFixture();
+ it.each(["bounded", "continuous"] as const)("verifies actual source→offered framed bytes→ACK→dispatch/result and rejects rehashed omissions (%s)",async mode=>{
+  const f=await globalRuntimeFixture({autoBudget:mode==="continuous"?{mode}:undefined});
   try{
    expect((await f.runtime.tick()).type).toBe("delivered");expect((await f.runtime.tick()).type).toBe("closed");
    const report=await replayGlobalAgentRun(f.evidence.directory);expect(report).toMatchObject({verdict:"verified",consumed:2,results:1,sources:2});
-   expect(pythonVerify(f.evidence.directory)).toEqual({passed:true,findings:[]});
+   expect(pythonVerify(f.evidence.directory,true,mode)).toEqual({passed:true,findings:[]});
+   expect(pythonVerify(f.evidence.directory,true,mode,1).passed).toBe(false);
+   expect(pythonVerify(f.evidence.directory,true,mode==="continuous"?"bounded":"continuous").passed).toBe(false);
    expect(pythonVerify(f.evidence.directory,false).passed).toBe(false);
-   for(const variant of ["truncate","drop_source","drop_input","fake_projection","fake_agent_offer","fake_ack","held_close","handoff_before_dispatch","wrong_chunk_total","wrong_chunk_end","wrong_chunk_base64","wrong_reference_offset","wrong_reference_source","wrong_reference_original_hash"]){
+   for(const variant of ["truncate","drop_source","drop_input","fake_projection","fake_agent_offer","fake_ack","held_close","handoff_before_dispatch","wrong_chunk_total","wrong_chunk_end","wrong_chunk_base64","wrong_reference_offset","wrong_reference_source","wrong_reference_original_hash","mixed_event_versions","invalid_budget_mode","invalid_budget_caps"]){
     const directory=join(f.root,variant);await cp(f.evidence.directory,directory,{recursive:true});
     let rows=(await readFile(join(directory,"events.jsonl"),"utf8")).trim().split("\n").map(line=>JSON.parse(line));
+    if(variant==="mixed_event_versions")rows[0].schema="sts2.policy-runtime/agent-session-event-1";
+    if(variant==="invalid_budget_mode")rows.at(-1).payload.autonomy_budget.mode=mode==="continuous"?"bounded":"continuous";
+    if(variant==="invalid_budget_caps")rows.at(-1).payload.autonomy_budget.remaining_ms=mode==="continuous"?0:null;
     if(variant==="truncate")rows=rows.slice(0,-1);
     if(variant==="drop_source")rows=rows.filter(e=>e.kind!=="global_source");
     if(variant==="drop_input")rows=rows.filter(e=>e.kind!=="global_input");

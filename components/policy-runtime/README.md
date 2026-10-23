@@ -118,7 +118,7 @@ Modset status/fingerprint, and the complete ordered list of loaded Mod IDs. Any
 field drift fails closed before Snapshot observation or policy scoring.
 
 A separate, explicit `managed_text_v2` Manifest branch supports the same v2
-snapshot, complete menu, port-3 confirmed-interaction, finite budget, and
+snapshot, complete menu, port-3 confirmed-interaction, configured authorization, and
 Agent-run evidence without claiming Connector MVID, Modset, or HTTP lease
 facts. Its model requirements declare text protocol/profile and game support;
 they do not contain a Host package, service, game continuity ID, or seed. A
@@ -323,7 +323,7 @@ For a Managed Manifest, the caller must supply `--managed-binding`,
 `--managed-expected-runtime-instance-id`, and
 `--managed-expected-game-continuity-id`. These select one existing Host-owned
 service and episode; the Managed CLI rejects `--connector-endpoint`. Its
-`startup-1` includes the verified binding digest and selected service/runtime/
+`startup-2` includes the verified binding digest and selected service/runtime/
 continuity IDs without a token, private path, or seed.
 
 The command fails before startup when the policy artifact is absent, its
@@ -333,11 +333,13 @@ service is not published until the parent verifies it. At runtime, any pinned
 environment field drift fails before observation,
 scoring or controller acquisition. Adapter decisions time out after 30 seconds
 and return to Human before controller acquisition. Each Shadow/Auto/One-Step
-authorization also receives one finite Runtime-owned budget: by default 16
+authorization selects one Runtime-owned authorization mode. The default `bounded` mode permits 16
 submission attempts, 32 policy calls and 60 seconds of monotonic time. The CLI
 accepts `--max-auto-submissions`, `--max-policy-calls` and
 `--auto-deadline-ms`; omitted values use those finite defaults and never mean
-unlimited operation. The wallet is shared by background Auto and HTTP ticks,
+unlimited operation. `--autonomy-mode continuous` explicitly removes these three aggregate caps and cannot be combined with any cap flag. Library callers select `autoBudget: { mode: "continuous" }`; omitted or partial numeric inputs remain bounded (including optional undefined values), while null or invalid caps fail before execution. Continuous configuration accepts only its mode key.
+
+The authorization is shared by background Auto and HTTP ticks,
 is consumed before each real submission and before each policy call, and is not
 renewed by polling, reconnects or new snapshots. At a limit the Runtime
 cancels pending policy work, records `autonomy_budget_exhausted`, hands back to
@@ -375,7 +377,9 @@ verification rejects any digest, identity or event-association drift.
 
 `GET /status` and every command response include `autonomy_budget` with the
 configured limits, consumed submission/policy-call counts, monotonic elapsed and
-remaining time, and the exhaustion/end reason. Budget exhaustion is a safety
+remaining time, and the exhaustion/end reason. Runtime rc40 uniformly emits `status-2`/`startup-2` (native/GLOBAL: `agent-session-status-2`/`agent-session-startup-2`) and event envelopes `agent-run-event-2`/`agent-session-event-2`. Budgets carry `mode`; continuous caps and `remaining_ms` are null, never zero or defaults. Used counters and elapsed time remain real and can exceed the bounded defaults. Counters describe one explicit authorization segment, not the cumulative run. Human/Pause freezes that segment; explicit Continue from Human starts a new segment using the same fixed mode, with no automatic reauthorization. Continuous mode has no aggregate deadline timer. Per-call timeouts, known-stale recovery windows, GLOBAL no-progress, controller leases, evidence/memory limits and unknown-delivery fences still apply.
+
+New typed readers explicitly accept archived v1 numeric bounded events and v2 unions; they reject mixed event versions or authorization modes within a run. The original status-1 schema remains archived beside `status-v2.schema.json`. Run manifests and immutable evidence manifests remain version 1 because their shapes did not change. No archived bytes, checksums or exact-code identity are rewritten. Budget exhaustion is a safety
 handoff, not a completed task or a gameplay-success claim.
 
 HTTP envelopes use `sts2.policy-runtime/http-2` (ticks append `/tick-1`). Every

@@ -32,6 +32,25 @@ def sha256(value: bytes) -> str:
 
 
 class AgentRunEvidenceTests(unittest.TestCase):
+    def test_v2_budget_union_preserves_v1_and_rejects_mixed_rehashed_journals(self) -> None:
+        vectors = json.loads((Path(__file__).resolve().parents[2] / "policy-runtime/test/fixtures/autonomy-v2.json").read_bytes())
+        for mode in ("bounded", "continuous"):
+            directory = self._evidence(f"run-{mode}")
+            events = [json.loads(line) for line in (directory / "events.jsonl").read_text().splitlines()]
+            events.insert(1, {"schema": "sts2.policy-runtime/agent-run-event-2", "sequence": 2, "recorded_at": "2026-08-25T00:00:01.500Z",
+                              "kind": "mode_changed", "payload": {"mode": "shadow", "autonomy_budget": vectors[f"{mode}_status_v2"]}})
+            for sequence, event in enumerate(events, 1):
+                event["sequence"] = sequence
+                event["schema"] = "sts2.policy-runtime/agent-run-event-2"
+                if event["kind"] == "mode_changed":
+                    event["payload"]["autonomy_budget"] = vectors[f"{mode}_status_v2"]
+            self._rewrite_events(directory, events)
+            result = AgentRunEvidenceVerifier().verify(directory)
+            self.assertTrue(result.passed, result.findings)
+            events[-1]["schema"] = AGENT_RUN_EVENT_SCHEMA
+            self._rewrite_events(directory, events)
+            self.assertFalse(AgentRunEvidenceVerifier().verify(directory).passed)
+
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)

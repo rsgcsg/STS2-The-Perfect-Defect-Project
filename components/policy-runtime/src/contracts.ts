@@ -24,7 +24,7 @@ export const POLICY_PORT_V3_SCHEMA = "sts2.policy-runtime/policy-port-3" as cons
 export const POLICY_PORT_V4_SCHEMA = "sts2.policy-runtime/policy-port-4" as const;
 export const PUBLIC_STATEFUL_PROFILE = "sts2.policy-runtime/public-observation-stateful-v1" as const;
 export const EVIDENCE_MANIFEST_SCHEMA = "sts2.policy-runtime/immutable-evidence-manifest-1" as const;
-export const POLICY_RUNTIME_VERSION = "0.1.0-rc.39" as const;
+export const POLICY_RUNTIME_VERSION = "0.1.0-rc.40" as const;
 export const RUNTIME_ENVIRONMENT_SCHEMA = "sts2.policy-runtime/environment-1" as const;
 
 /** Read-only observation used by control clients before preparing a command. */
@@ -45,20 +45,46 @@ export type RuntimeMode = "human" | "shadow" | "one_step" | "auto";
 export type DecisionDisposition = "admit" | "abstain";
 
 /**
- * A finite wallet for one Shadow/Auto authorization.  The limits are owned by
+ * One Shadow/Auto authorization. The mode and limits are owned by
  * the Runtime, not by an HTTP request or a background worker.
  */
-export interface AutonomyBudgetConfig {
+export interface BoundedAutonomyBudgetConfig {
+  mode: "bounded";
   maxSubmissions: number;
   maxPolicyCalls: number;
   deadlineMs: number;
 }
+export type AutonomyBudgetConfig = BoundedAutonomyBudgetConfig | { mode: "continuous" };
+/** Numeric partial inputs remain bounded for existing library callers. */
+export type AutonomyBudgetInput = Partial<BoundedAutonomyBudgetConfig> | { mode: "continuous" };
 
-export const DEFAULT_AUTONOMY_BUDGET: AutonomyBudgetConfig = Object.freeze({
+export const DEFAULT_AUTONOMY_BUDGET: BoundedAutonomyBudgetConfig = Object.freeze({
+  mode: "bounded",
   maxSubmissions: 16,
   maxPolicyCalls: 32,
   deadlineMs: 60_000
 });
+
+export function normalizeAutonomyBudget(value?: AutonomyBudgetInput): AutonomyBudgetConfig {
+  if (value === undefined) return { ...DEFAULT_AUTONOMY_BUDGET };
+  if (value === null || typeof value !== "object" || Array.isArray(value)) throw new Error("invalid autoBudget");
+  const allowed = ["mode", "maxSubmissions", "maxPolicyCalls", "deadlineMs"];
+  if (Object.keys(value).some(key => !allowed.includes(key))) throw new Error("unknown autoBudget field");
+  if (value.mode === "continuous") {
+    if (Object.keys(value).length !== 1) throw new Error("continuous autoBudget cannot include finite caps");
+    return { mode: "continuous" };
+  }
+  if (value.mode !== undefined && value.mode !== "bounded") throw new Error("invalid autoBudget mode");
+  const result: BoundedAutonomyBudgetConfig = {
+    mode: "bounded",
+    maxSubmissions: value.maxSubmissions === undefined ? DEFAULT_AUTONOMY_BUDGET.maxSubmissions : value.maxSubmissions,
+    maxPolicyCalls: value.maxPolicyCalls === undefined ? DEFAULT_AUTONOMY_BUDGET.maxPolicyCalls : value.maxPolicyCalls,
+    deadlineMs: value.deadlineMs === undefined ? DEFAULT_AUTONOMY_BUDGET.deadlineMs : value.deadlineMs
+  };
+  if ([result.maxSubmissions, result.maxPolicyCalls, result.deadlineMs].some(item => !Number.isSafeInteger(item) || item < 1))
+    throw new Error("autoBudget requires positive safe integer maxSubmissions, maxPolicyCalls and deadlineMs");
+  return result;
+}
 
 export type AutonomyBudgetExhaustionReason = "submission_attempt_limit" | "policy_call_limit" | "deadline";
 export type AutonomyBudgetEndReason = "human_recovery" | "mode_changed" | "stopped";
@@ -352,26 +378,54 @@ export type RuntimeCommand =
   | { type: "status" }
   | { type: "stop" };
 
+interface AutonomyBudgetStatusCommon {
+  state: AutonomyBudgetState;
+  submissions_used: number;
+  policy_calls_used: number;
+  elapsed_ms: number;
+  exhausted_reason: AutonomyBudgetExhaustionReason | null;
+  ended_reason: AutonomyBudgetEndReason | null;
+}
+export type AutonomyBudgetStatus =
+  | (AutonomyBudgetStatusCommon & { mode: "bounded"; max_submissions: number; max_policy_calls: number; deadline_ms: number; remaining_ms: number })
+  | (AutonomyBudgetStatusCommon & { mode: "continuous"; state: "inactive" | "active"; max_submissions: null; max_policy_calls: null; deadline_ms: null; remaining_ms: null; exhausted_reason: null });
+
+/** Parse recorded wire facts by their envelope version; never infer continuous from missing caps. */
+export function parseAutonomyBudgetStatus(value: unknown, version: 1 | 2): AutonomyBudgetStatus {
+  const budget = object(value, "autonomy budget");
+  exactKeys(budget, ["state", "max_submissions", "submissions_used", "max_policy_calls", "policy_calls_used", "deadline_ms", "elapsed_ms", "remaining_ms", "exhausted_reason", "ended_reason", ...(version === 2 ? ["mode"] : [])]);
+  const mode = version === 1 ? "bounded" : budget.mode;
+  if (mode !== "bounded" && mode !== "continuous") throw new Error("invalid autonomy budget mode");
+  for (const key of ["submissions_used", "policy_calls_used", "elapsed_ms"])
+    if (!Number.isSafeInteger(budget[key]) || (budget[key] as number) < 0) throw new Error("invalid autonomy budget count");
+  if (!["inactive", "active", "exhausted"].includes(budget.state as string)) throw new Error("invalid autonomy budget state");
+  if (budget.ended_reason !== null && !["human_recovery", "mode_changed", "stopped"].includes(budget.ended_reason as string)) throw new Error("invalid autonomy budget end reason");
+  if (budget.state !== "inactive" && budget.ended_reason !== null) throw new Error("invalid autonomy budget end state");
+  if (mode === "continuous") {
+    if (["max_submissions", "max_policy_calls", "deadline_ms", "remaining_ms", "exhausted_reason"].some(key => budget[key] !== null)
+      || budget.state === "exhausted") throw new Error("invalid continuous autonomy budget");
+  } else {
+    for (const key of ["max_submissions", "max_policy_calls", "deadline_ms"])
+      if (!Number.isSafeInteger(budget[key]) || (budget[key] as number) < 1) throw new Error("invalid bounded autonomy budget cap");
+    if (!Number.isSafeInteger(budget.remaining_ms) || (budget.remaining_ms as number) < 0
+      || (budget.submissions_used as number) > (budget.max_submissions as number)
+      || (budget.policy_calls_used as number) > (budget.max_policy_calls as number)
+      || (budget.elapsed_ms as number) + (budget.remaining_ms as number) !== budget.deadline_ms) throw new Error("inconsistent bounded autonomy budget");
+    if (budget.exhausted_reason !== null && !["submission_attempt_limit", "policy_call_limit", "deadline"].includes(budget.exhausted_reason as string)) throw new Error("invalid autonomy budget exhaustion");
+    if ((budget.state === "exhausted") !== (budget.exhausted_reason !== null)) throw new Error("invalid autonomy budget exhaustion state");
+  }
+  return { ...budget, mode } as AutonomyBudgetStatus;
+}
+
 export interface RuntimeStatus {
-  schema: "sts2.policy-runtime/status-1";
+  schema: "sts2.policy-runtime/status-2";
   runtime: { version: string; code_sha256: string | null };
   policy: { manifest_id: string; policy_id: string; policy_version: string; provider: string; architecture: string; artifact_sha256: string };
   run_id: string;
   lifecycle: "running" | "stopped";
   mode: RuntimeMode;
   controller: "held" | "released" | "unknown";
-  autonomy_budget: {
-    state: AutonomyBudgetState;
-    max_submissions: number;
-    submissions_used: number;
-    max_policy_calls: number;
-    policy_calls_used: number;
-    deadline_ms: number;
-    elapsed_ms: number;
-    remaining_ms: number;
-    exhausted_reason: AutonomyBudgetExhaustionReason | null;
-    ended_reason: AutonomyBudgetEndReason | null;
-  };
+  autonomy_budget: AutonomyBudgetStatus;
   tainted: boolean;
   taint_reason: string | null;
   refreshing: boolean;

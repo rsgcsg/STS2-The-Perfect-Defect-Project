@@ -235,8 +235,8 @@ describe("native Agent branch with real SDK, HTTP transport and stdio process", 
       expect(acquisitions.every(e => e.payload.witness.catalog_materialized === true)).toBe(true);
     } finally { await f.close(); }
   });
-  it("cleans the actual subscription, child and shared buffers when Stop evidence fails", async () => {
-    const f = await nativeRuntimeFixture({ mode: "auto" });
+  it.each(["bounded", "continuous"] as const)("cleans the actual subscription, child and shared buffers when Stop evidence fails (%s)", async mode => {
+    const f = await nativeRuntimeFixture({ mode: "auto", autoBudget: mode === "continuous" ? { mode } : undefined });
     try {
       expect((await f.runtime.tick()).type).toBe("delivered");
       const append = f.evidence.append.bind(f.evidence);
@@ -297,7 +297,7 @@ describe("native Agent branch with real SDK, HTTP transport and stdio process", 
   it("attaches once without control and uses only the original initial publication before one actual SDK submit", async () => {
     const f = await nativeRuntimeFixture();
     try {
-      expect(f.runtime.status().schema).toBe("sts2.policy-runtime/agent-session-status-1");
+      expect(f.runtime.status().schema).toBe("sts2.policy-runtime/agent-session-status-2");
       expect(f.runtime.status()).not.toHaveProperty("policy");
       expect(f.source.requests.filter(r => r.path.includes("/controller/"))).toHaveLength(0);
       await f.runtime.setMode("one_step");
@@ -369,8 +369,8 @@ describe("native Agent branch with real SDK, HTTP transport and stdio process", 
       expect(events.find(e => e.kind === "native_request_reconciled").payload.original.request_id).toBe(id);
     } finally { await f.close(); }
   });
-  it.each(["unknown", "partial", "transport_error"] as const)("fences %s delivery without another submit", async delivery => {
-    const f = await nativeRuntimeFixture({ mode: "auto" }); f.source.behavior = delivery;
+  it.each((["unknown", "partial", "transport_error"] as const).flatMap(delivery => (["bounded", "continuous"] as const).map(mode => ({ delivery, mode }))))("fences $delivery delivery without another submit ($mode)", async ({ delivery, mode }) => {
+    const f = await nativeRuntimeFixture({ mode: "auto", autoBudget: mode === "continuous" ? { mode } : undefined }); f.source.behavior = delivery;
     try {
       expect((await f.runtime.tick()).type).toBe("unknown");
       expect(f.runtime.status().tainted).toBe(true);
@@ -395,8 +395,8 @@ describe("native Agent branch with real SDK, HTTP transport and stdio process", 
       expect(f.runtime.status().session.state_version).toBe(1);
     } finally { await f.close(); }
   });
-  it("Human aborts an owned Await and releases before serialized cleanup without another action", async () => {
-    const f = await nativeRuntimeFixture({ count: 0, mode: "auto" }); const wait = gate(); f.source.waitGate = wait.promise;
+  it.each(["bounded", "continuous"] as const)("Human aborts an owned Await and releases before serialized cleanup without another action (%s)", async mode => {
+    const f = await nativeRuntimeFixture({ count: 0, mode: "auto", autoBudget: mode === "continuous" ? { mode } : undefined }); const wait = gate(); f.source.waitGate = wait.promise;
     try {
       const tick = f.runtime.tick();
       await eventually(() => f.source.requests.some(r => r.path.endsWith("/await")));
@@ -409,8 +409,8 @@ describe("native Agent branch with real SDK, HTTP transport and stdio process", 
       expect(f.source.requests.filter(r => r.path.endsWith("/actions"))).toHaveLength(0);
     } finally { wait.release(); await f.close(); }
   });
-  it("Human after POST keeps its actual original terminal result and cannot submit another action", async () => {
-    const f = await nativeRuntimeFixture({ mode: "auto" }); const submit = gate(); f.source.submitGate = submit.promise;
+  it.each(["bounded", "continuous"] as const)("Human after POST keeps its actual original terminal result and cannot submit another action (%s)", async mode => {
+    const f = await nativeRuntimeFixture({ mode: "auto", autoBudget: mode === "continuous" ? { mode } : undefined }); const submit = gate(); f.source.submitGate = submit.promise;
     try {
       const tick = f.runtime.tick();
       await eventually(() => f.source.requests.some(r => r.path.endsWith("/actions")));

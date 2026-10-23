@@ -294,7 +294,7 @@ reply and acquisition_id is null. The result method must match the pending query
 Unknown/mismatched query results are rejected. Child queries cannot submit,
 acquire/release control, change attachment or run arbitrary predicates/programs.
 Late results from revoked epochs are discarded; all calls consume query/byte/time
-budgets. They cannot outlive the authorization deadline.
+budgets. In bounded mode they cannot outlive the authorization deadline; continuous mode retains their original finite per-call timeout.
 
 The query helper may send a consumed report while Next is pending. Runtime first
 validates/acknowledges it, then accepts a directive only if its final watermark
@@ -414,8 +414,9 @@ Runtime-only opaque byte tests do not establish numerical restore parity.
 
 The implemented native branch is selected by `PolicyRuntime.forAgent`; the
 existing CLI accepts it through `--manifest` and the same loopback HTTP service
-reports `agent-session-startup-1` and `agent-session-status-1`. One shared lifecycle
-owner provides serialization, epoch cancellation, wallet/deadline and Stop.
+reports `agent-session-startup-2` and `agent-session-status-2`. One shared lifecycle
+owner provides serialization, epoch cancellation, explicit bounded/continuous authorization and Stop.
+The CLI selects continuous authorization with `--autonomy-mode continuous`, mutually exclusive with all three finite-cap flags. Startup carries `{mode:"continuous"}`; status and operational event budgets carry real consumed counts and elapsed time with null limits/remaining time. Bounded remains the default 16 submissions/32 policy calls/60000ms, including legacy partial library inputs. Human/Pause ends the current segment; explicit Continue creates a new segment in the fixed configured mode. Continuous removes aggregate count/time handoffs only: local recovery, per-call timeouts, controller release confirmation, unknown-delivery and no-progress fences remain. New runs uniformly use `agent-session-event-2`; readers validate archived numeric bounded event-1 separately and reject mixed journals. Run/immutable-evidence manifest-1 and the Agent NDJSON protocol are unchanged.
 Capabilities, existing registration and atomic Attach precede source Events.
 Every SDK-decoded source event carries a captured view or explicit missing fact.
 Its open `kind` classifies source/Await timing and does not filter input eligibility:

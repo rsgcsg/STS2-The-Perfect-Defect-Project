@@ -531,9 +531,9 @@ try {
     new Promise((resolve, reject) => { lines.once("line", (line) => { try { resolve(JSON.parse(line)); } catch (error) { reject(error); } }); child.once("exit", () => reject(new Error(stderr || "CLI exited before startup"))); }),
     new Promise((_, reject) => { const timer = setTimeout(() => reject(new Error("CLI startup timeout")), 5000); timer.unref(); })
   ]);
-  assert.equal(startup.schema, "sts2.policy-runtime/startup-1");
+  assert.equal(startup.schema, "sts2.policy-runtime/startup-2");
   assert.equal(startup.runtime_version, POLICY_RUNTIME_VERSION);
-  assert.deepEqual(startup.autonomy_budget, { maxSubmissions: 16, maxPolicyCalls: 32, deadlineMs: 60000 });
+  assert.deepEqual(startup.autonomy_budget, { mode: "bounded", maxSubmissions: 16, maxPolicyCalls: 32, deadlineMs: 60000 });
   assert.equal((await (await fetch(`${startup.address}/status`)).json()).status.mode, "human");
   await post(startup.address, "stop", {}, startup.run_id);
   const exitResult = await Promise.race([childExit, new Promise((_, reject) => { const timer = setTimeout(() => reject(new Error("CLI did not exit after POST /v2/stop")), 5000); timer.unref(); })]);
