@@ -69,3 +69,67 @@ print('cold_calibration_decoded')
     assert command[command.index("--expected-lock") + 1] == "e" * 64
     assert options["env"]["CUBLAS_WORKSPACE_CONFIG"] == ":4096:8"
     assert options["timeout"] == 1190
+
+
+def test_receipt_short_write_preserves_original_App_without_respawn(tmp_path, monkeypatch):
+    """A spawn can succeed while receipt publication fails; original App survives."""
+    import importlib.metadata
+    from contextlib import nullcontext
+
+    import pytest
+
+    import spireagent.source
+
+    owner = runpy.run_path(str(Path(__file__).parents[1]
+                              / "deploy/cloud-worker/calibrate_p1.py"))
+    receipt = tmp_path / "operation.json"
+    plan = tmp_path / "plan.json"
+    from stpd.p1.execution import MStdExecution
+    plan.write_text(json.dumps({"variants": [MStdExecution().to_dict()], "profile": False}))
+    calls = []
+
+    def spawn(*args):
+        calls.append(args)
+        return SimpleNamespace(object_id="fc-exact-call", get=lambda **kw: pytest.fail(
+            "must not wait after receipt publication failed"))
+
+    class App:
+        app_id = "ap-exact-original"
+
+        def __init__(self, name):
+            pass
+
+        def function(self, **options):
+            return lambda function: SimpleNamespace(spawn=spawn)
+
+        def run(self, **options):
+            return nullcontext()
+
+    sdk = SimpleNamespace(App=App, enable_output=nullcontext,
+                          Image=SimpleNamespace(from_id=lambda identity: identity),
+                          Secret=SimpleNamespace(from_name=lambda name: name))
+    monkeypatch.setitem(sys.modules, "modal", sdk)
+    producer = SimpleNamespace(source_revision="a" * 40, uv_lock_sha256="b" * 64,
+                               to_dict=lambda: {"source_revision": "a" * 40,
+                                                "uv_lock_sha256": "b" * 64})
+    monkeypatch.setattr(spireagent.source, "source_identity", lambda root: producer)
+    monkeypatch.setattr(importlib.metadata, "version", lambda package: "1.5.5")
+    original_dump = json.dump
+
+    def short_write(value, stream, **options):
+        if isinstance(value, dict) and "call_id" in value:
+            stream.write('{"partial_write"')
+            raise OSError("simulated full device")
+        return original_dump(value, stream, **options)
+
+    monkeypatch.setattr(json, "dump", short_write)
+    monkeypatch.setattr(sys, "argv", ["calibrate", "--image", "im-" + "a" * 22,
+                                     "--input", "c" * 64, "--plan", str(plan),
+                                     "--receipt", str(receipt)])
+    with pytest.raises(OSError, match="simulated full device"):
+        owner["main"]()
+    assert len(calls) == 1
+    saved = json.loads(receipt.read_bytes())
+    assert saved["app_id"] == "ap-exact-original"
+    assert saved["state"] == "offered"
+    assert not list(tmp_path.glob(".pending-*"))

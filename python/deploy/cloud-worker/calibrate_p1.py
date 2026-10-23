@@ -74,6 +74,7 @@ def main() -> int:
 
     from spireagent.json_boundary import digest
     from spireagent.source import source_identity
+    from spireagent.workbench.developer import atomic_json
     from stpd.cloud_jobs.modal import MODAL_SDK_VERSION
     from stpd.p1.execution import MStdExecution
 
@@ -119,7 +120,7 @@ def main() -> int:
     args.receipt.parent.mkdir(parents=True, exist_ok=True)
 
     def save() -> None:
-        args.receipt.write_text(json.dumps(receipt, indent=2) + "\n")
+        atomic_json(args.receipt, receipt)
 
     save()
     try:

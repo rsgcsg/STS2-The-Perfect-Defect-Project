@@ -91,7 +91,10 @@ def prepare(
                          "input_spec": state["identity"]["input_spec"],
                          "purpose": "engineering_performance_calibration",
                          "formal_resume": False, "publishes_model": False,
-                         "DEV_consumed": False, "TEST_consumed": False}),
+                         "DEV_consumed": False, "TEST_consumed": False,
+                         "consumed_means": "model_forward_gradient_or_selection",
+                         "snapshot_validation_reads_all_partitions": True,
+                         "DEV_TEST_frames_scored": False, "DEV_TEST_gradients": False}),
     )
     store.publish(manifest)
     return manifest
@@ -280,6 +283,9 @@ def measure(
             if selected_device.type == "cuda" else None,
             "read_seconds": read_seconds, "total_wall_seconds": time.perf_counter() - started,
             "variants": reports, "DEV_consumed": False, "TEST_consumed": False,
+                         "consumed_means": "model_forward_gradient_or_selection",
+                         "snapshot_validation_reads_all_partitions": True,
+                         "DEV_TEST_frames_scored": False, "DEV_TEST_gradients": False,
             "formal_resume": False, "model_published": False}
     artifact = Manifest("performance", producer, (Parent("calibration_input", input_id),),
                         () if trace is None else (trace,), FrozenObject.of(info))

@@ -252,6 +252,12 @@ Store and scoped worker Secret, and publishes a `performance` artifact. It does
 not deploy a long-lived training service, select a Model, enqueue a formal job or
 alter an existing Run. The synthetic-only `p1_gpu_profile` restriction is unchanged.
 
+Snapshot and projection integrity validation reads all partitions before selecting
+TRAIN. `DEV_consumed=false` and `TEST_consumed=false` mean no model forward,
+gradient or selection use; they do not claim held-out bytes were never read. The
+explicit report fields record this distinction. Source capsules created before
+these explanatory fields remain immutable.
+
 Build the exact clean candidate with the ordinary immutable image refresh first.
 The plan JSON contains exactly `variants` (one to eight complete `MStdExecution`
 objects) and `profile` (boolean). A first complete optimizer update is warmup;
@@ -269,7 +275,8 @@ python deploy/cloud-worker/calibrate_p1.py --image EXACT_IM_ID \
 
 The launcher binds actual clean source/lock/image/input/plan/resources, uses one
 L40S, fixed CPU/RAM pairs, startup120 seconds, scaledown2, single-use container and
-zero retries. It writes an offer receipt before spawn and preserves original
+zero retries. It atomically publishes receipts (same-directory temporary file, fsync and replace),
+preserving the previous complete App/call identity on a failed write. It writes an offer receipt before spawn and preserves original
 App/call IDs before waiting. Budget all allocations, startup, failed attempts,
 CPU builds and transfer; a cap is not a consumption target. After unknown output,
 inspect that exact App/call and stop the original resource if necessary; never

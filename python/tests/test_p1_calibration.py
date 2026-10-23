@@ -65,6 +65,9 @@ def test_complete_TRAIN_batches_and_source_checkpoint_are_immutable(calibration_
     assert report.kind == "performance"
     assert report.parent("calibration_input") == capsule.artifact_id
     assert value["DEV_consumed"] is False and value["TEST_consumed"] is False
+    assert value["snapshot_validation_reads_all_partitions"] is True
+    assert value["DEV_TEST_frames_scored"] is False
+    assert value["DEV_TEST_gradients"] is False
     assert value["model_published"] is False and value["formal_resume"] is False
     assert len(value["variants"]) == 2
     for variant in value["variants"]:
