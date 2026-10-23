@@ -887,7 +887,9 @@ def test_native_workbench_registration_follows_server_lifecycle(
 
     path, original = project
     config = replace(original, platform_url=platform)
-    native = platform in {"http://127.0.0.1:15526", "http://localhost:15526"}
+    native = platform in {
+        "http://127.0.0.1:15526", "http://localhost:15526", "http://127.0.0.1:25526",
+    }
     events = []
     real_create = developer_server.create_server
 
@@ -895,12 +897,13 @@ def test_native_workbench_registration_follows_server_lifecycle(
         def close(self):
             events.append("unregister")
 
-    def register(url, instance_id, *, access):
+    def register(url, instance_id, *, access, runtime_identity):
         runtime = json.loads((config.state_dir / "runtime.json").read_bytes())
         assert url == f"http://127.0.0.1:{runtime['port']}/"
         assert instance_id == runtime["instance_id"]
         assert access.app.instance_id == instance_id
         assert access.app.config == config and access.app.config_path == path
+        assert runtime_identity == access.app._workbench_runtime_identity
         events.append("register")
         return Registration()
 

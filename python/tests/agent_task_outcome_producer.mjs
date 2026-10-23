@@ -103,7 +103,10 @@ if (["handoff-continued", "handoff-resumed-no-step", "handoff-tainted", "handoff
 }
 if (variant === "handoff-failed") await evidence.append("fail_closed", { reason: "synthetic_post_handoff_cleanup_failure" });
 if (variant === "handoff-cleanup") await evidence.append("controller_released", {});
-if (variant === "handoff-substantive") await evidence.append("one_step_completed", {});
+const substantiveTailBudget = structuredClone(runtime.status().autonomy_budget);
+if (variant === "handoff-substantive") await evidence.append("one_step_completed", {
+  autonomy_budget: substantiveTailBudget
+});
 if (variant === "handoff-unknown") await evidence.append("future_substantive_record", {});
 await runtime.stop();
 let directory = evidence.directory;
@@ -173,7 +176,9 @@ if (legacyM0 && !["m0-legacy-summary", "m0-legacy-cleanup-failure", "m0-legacy-l
     later.payload.decision.decision_id += "-later";
     events.splice(-1, 0, later);
   }
-  if (variant === "m0-legacy-substantive-tail") events.splice(-1, 0, { kind: "one_step_completed", payload: {} });
+  if (variant === "m0-legacy-substantive-tail") events.splice(-1, 0, {
+    kind: "one_step_completed", payload: { autonomy_budget: substantiveTailBudget }
+  });
   if (variant === "m0-legacy-unknown-tail") events.splice(-1, 0, { kind: "future_substantive_record", payload: {} });
   if (variant === "m0-legacy-budget-stop") Object.assign(events.at(-1).payload.autonomy_budget, {
     state: "exhausted", max_policy_calls: events.at(-1).payload.autonomy_budget.policy_calls_used,
