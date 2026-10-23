@@ -22,7 +22,6 @@ Runtime40/Evidence34/Live UI18/Mod60/Workbench4必须匹配，旧安装不自动
 完成稳定候选复核；原f7跨源码完整迁移仍未实现/验证，不能直接在下一检查点切换。
 性能工程在原recipe/model、Store和应用/Compute各负责层落实，生命周期/SOP归
 [原训练指南](../../python/docs/FULLRUN_TRAINING.md#training-performance-belongs-to-the-existing-chain)，不新增控制器。
-父任务四Agent、最终TEST、40次Reference及完整R2交付仍未完成。
 
 ## 已集成：训练自动接续与首批训练连续性
 
