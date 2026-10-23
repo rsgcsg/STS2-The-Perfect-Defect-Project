@@ -224,7 +224,8 @@ def test_negotiate_timeout_is_not_retried_or_followed_by_runtime(reference_p1, m
     assert app.models.thread is None and app.models.process is None
 
 
-@pytest.mark.parametrize("p1_registration", ["trained"], indirect=True)
+@pytest.mark.parametrize("p1_registration", ["trained", "baseline-random", "baseline-frequency",
+                                           "baseline-linear"], indirect=True)
 @pytest.mark.parametrize("preparation", ["owned", "current"])
 def test_native_start_passes_ready_reference_through_original_application_and_request(
     reference_p1, monkeypatch, preparation, tmp_path,

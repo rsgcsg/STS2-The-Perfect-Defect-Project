@@ -40,13 +40,32 @@ def p1_registration(tmp_path, monkeypatch, request):
         vocabulary["input_spec"] = dict(projection)
     execution = (MStdExecution(implementation="experimental-packed-v1")
                  if request.param.startswith("packed-") else MStdExecution())
-    descriptor = export_model(MStd(vocabulary, execution), checkpoint, package,
-                              {"scope": "synthetic"})
+    if request.param.startswith("baseline-"):
+        from test_p1_baselines import populations
+
+        from stpd.p1.baseline_export import export_model as baseline_export
+        from stpd.p1.baseline_spec import BaselineConfig
+        from stpd.p1.baselines import BaselineTrainer
+
+        trainer = BaselineTrainer(populations(), "synthetic-snapshot",
+                                  BaselineConfig(algorithm=request.param.removeprefix("baseline-"),
+                                                 max_epochs=1))
+        while trainer.phase == "training":
+            trainer.advance()
+        trainer.finish()
+        checkpoint.write_bytes(trainer.checkpoint())
+        descriptor = baseline_export(
+            trainer.selected_model(), checkpoint, package, trainer.identity)
+    else:
+        descriptor = export_model(MStd(vocabulary, execution), checkpoint, package,
+                                  {"scope": "synthetic"})
     payloads = tuple(store.put_payload(role, io.BytesIO((package / name).read_bytes()), media)
                      for role, name, media in (
                          ("weights", "model.tensor-tree", "application/vnd.stpd.tensor-tree"),
                          ("package_manifest", "model.json", "application/json")))
     metadata = {**descriptor, "training_ancestry": "unknown"}
+    if request.param.startswith("baseline-"):
+        metadata["schema"] = "stpd/p1-baseline-trained-model-1"
     if request.param in {"trained", "packed-trained"}:
         metadata["schema"] = "stpd/p1-mstd-trained-model-1"
     model = Manifest("model", PRODUCER, payloads=payloads,

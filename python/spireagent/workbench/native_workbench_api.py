@@ -94,6 +94,7 @@ _PRECONDITION_CODES = frozenset(
         "native_model_intent_superseded",
         "native_model_context_changed",
         "continuous_requires_runtime_v2", "unsupported_run_profile",
+        "current_start_unsupported",
         "stopped_actor_required", "clean_sealed_actor_required",
         "native_world_identity_changed", "native_world_identity_unavailable",
         "resource_already_associated", "resource_binding_changed",
@@ -335,6 +336,7 @@ class NativeWorkbenchApi:
         if page == "play":
             catalog = self.card("models", app.models.catalog)
             cards.append(catalog)
+            cards.append(self.card("model_terminal", app.models.native_model_terminal))
             native_environment = self.card("native_environment", app.native_episode_status)
             cards.append(native_environment)
             items = catalog["data"].get("policies", [])

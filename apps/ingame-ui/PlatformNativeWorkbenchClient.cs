@@ -201,6 +201,7 @@ internal sealed class PlatformNativeWorkbenchCommands
     private readonly HashSet<string> _pending = new(StringComparer.Ordinal);
     private readonly Dictionary<string, int> _pendingOwners = new(StringComparer.Ordinal);
     private readonly Dictionary<string, string> _unknown = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, NativeModelIntent> _unknownModels = new(StringComparer.Ordinal);
     internal static bool Recovery(string action) => action is "models.human" or "models.stop" or "models.reconcile"
         or "training.pause" or "training.cancel" or "training.reconcile" or "training.resume" or "identity.poll"
         or "recording.close" or "recording.start";
@@ -224,6 +225,32 @@ internal sealed class PlatformNativeWorkbenchCommands
             && (Recovery(action) || (!_pendingOwners.ContainsKey(owner) && !_unknown.ContainsKey(owner)));
     }
     internal string[] Unconfirmed { get { lock (_gate) return _unknown.Values.ToArray(); } }
+
+    internal void ObserveModelTerminal(JsonElement proof)
+    {
+        try { ObserveModelTerminalCore(proof); }
+        catch (Exception error) when (error is JsonException or InvalidOperationException or ArgumentException) { }
+    }
+
+    private void ObserveModelTerminalCore(JsonElement proof)
+    {
+        if (!PlatformNativeWorkbenchPair.Names(proof, "schema", "status", "native_request_id", "binding", "run_id", "evaluation_id")
+            || proof.GetProperty("schema").GetString() != "spireagent/native-model-terminal-1"
+            || proof.GetProperty("status").GetString() != "stopped"
+            || !PlatformNativeWorkbenchPair.Hex(proof.GetProperty("native_request_id").GetString(), 32)
+            || !PlatformNativeWorkbenchPair.Hex(proof.GetProperty("evaluation_id").GetString(), 64)
+            || string.IsNullOrEmpty(proof.GetProperty("run_id").GetString())) return;
+        PlatformNativeWorkbenchPair binding = PlatformNativeWorkbenchPair.Read(proof.GetProperty("binding"));
+        string scope = Scope(binding.ConfigurationId, "models.takeover");
+        lock (_gate)
+        {
+            if (_pendingOwners.ContainsKey(scope) || !_unknownModels.TryGetValue(scope, out NativeModelIntent? original)
+                || original.RequestId != proof.GetProperty("native_request_id").GetString()
+                || original.Connection.Binding != binding) return;
+            _unknown.Remove(scope);
+            _unknownModels.Remove(scope);
+        }
+    }
 
     internal async Task<PlatformNativeWorkbenchCommandResult> RunAsync(PlatformNativeWorkbenchClient client,
         PlatformNativeWorkbenchConnection connection, string action, object payload, CancellationToken token)
@@ -250,7 +277,12 @@ internal sealed class PlatformNativeWorkbenchCommands
             PlatformNativeWorkbenchCommandResult result = await client.CommandAsync(connection, action, payload, requestId, token).ConfigureAwait(false);
             lock (_gate)
             {
-                if (result.Status == "unconfirmed") _unknown[scope] = action + " · " + requestId;
+                if (result.Status == "unconfirmed")
+                {
+                    _unknown.TryAdd(scope, action + " · " + requestId);
+                    if (Owner(action) == "models" && _nativeModel is not null)
+                        _unknownModels.TryAdd(scope, _nativeModel);
+                }
                 if (result.Status == "rejected" && _nativeModel?.RequestId == requestId) _nativeModel = previousModel;
                 // An accepted recovery ACK can still be pending; no status read or new
                 // auth pair erases the original uncertainty. Owner terminal proof is separate.

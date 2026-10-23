@@ -1356,7 +1356,6 @@ def create_server(app: Application) -> ThreadingHTTPServer:
             if path == "/api/local-models/export-checkpoint" and set(body) in (
                 {"checkpoint_id"}, {"checkpoint_id", "selection"}
             ):
-                app.check_environment_instance()
                 return app.models.export_checkpoint(
                     body["checkpoint_id"], body.get("selection", "best"))
             if path == "/api/local-models/download" and set(body) in (

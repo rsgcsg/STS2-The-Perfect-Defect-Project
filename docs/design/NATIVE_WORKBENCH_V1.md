@@ -214,9 +214,20 @@ One visible-page read at a time, bounded retention; closed panels stop reads.
 Mutation and recovery transport are separate from reads. Model Human/Stop and
 existing direct Policy recovery are independent of slow catalog/training/load
 requests. Every mutation is submitted once. Lost response leaves a visible
-unconfirmed fence scoped to exact owner/context; status polling cannot erase it
+unconfirmed fence scoped to exact owner/context; ordinary status polling cannot erase it
 or automatically resubmit. Auth renewal/restart preserves visible unconfirmed-command fences and selected
 owner/context references; a new pair never clears uncertainty or replays a command.
+The Model owner may return a `model_terminal` card with exactly `schema=
+spireagent/native-model-terminal-1`, `status=stopped`, `native_request_id`, original
+six-field `binding`, `run_id` and `evaluation_id`. It is available only after that
+admitted native intent's Actor has stopped, its process/client/operation are no
+longer active, and the original typed Stop report proves released controller,
+untainted state and no pending request. The view checks the immutable report bytes
+and exact request/run association. The presentation removes only its matching
+Model fence, after all pending Model POSTs finish; a recovery ACK, different
+request/config/pair or other owner's completion cannot clear it. This card grants
+no execution authority. A later Actor creation still re-verifies the original
+sealed runtime evidence through the existing Environment/Model retirement owner.
 Existing direct Policy Human/Stop remains available when pairing is stale.
 The global external-window header is explicitly the legacy compatibility browser
 entry and keeps its existing URL/health/launcher behavior. A native object's

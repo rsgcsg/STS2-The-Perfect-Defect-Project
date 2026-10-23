@@ -196,6 +196,19 @@ public sealed class PlatformNativeWorkbenchTests
         var tooOld = await recoveryClient.CommandAsync(overGrace, "models.stop", new { native_request_id = submittedId }, new string('8', 32));
         Assert.Equal("rejected", tooOld.Status); Assert.Equal(2, posts);
         Assert.Single(commands.Unconfirmed); // Recovery ACK did not invent termination.
+        JsonElement Proof(PlatformNativeWorkbenchPair pair, string? id, string status = "stopped") =>
+            JsonSerializer.SerializeToElement(new { schema = "spireagent/native-model-terminal-1",
+                status, native_request_id = id, binding = pair,
+                run_id = "run-11111111-1111-1111-1111-111111111111", evaluation_id = new string('e', 64) });
+        Assert.False(commands.CanSubmit(connection.Binding.ConfigurationId, "models.takeover"));
+        commands.ObserveModelTerminal(Proof(connection.Binding, new string('f', 32)));
+        commands.ObserveModelTerminal(Proof(connection.Binding with { ConfigurationId = new string('a', 64) }, submittedId));
+        commands.ObserveModelTerminal(Proof(connection.Binding, submittedId, "pending"));
+        commands.ObserveModelTerminal(JsonSerializer.SerializeToElement(new { status = "stopped" }));
+        Assert.Single(commands.Unconfirmed);
+        commands.ObserveModelTerminal(Proof(connection.Binding, submittedId));
+        Assert.Empty(commands.Unconfirmed);
+        Assert.True(commands.CanSubmit(connection.Binding.ConfigurationId, "models.takeover"));
     }
 
     [Theory]
