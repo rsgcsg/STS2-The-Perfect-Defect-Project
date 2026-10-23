@@ -24,7 +24,8 @@ from .agent_run_evidence import (
     _load_json_object_bytes,
     _read_checksums,
     _verify_autonomy_budget,
-    _verify_autonomy_budget_config,
+    _autonomy_config_limits,
+    _recorded_budget_limits,
 )
 from .source_session_bundle import (SourceSessionError, _catalog_digest, _capture_shape, _json as _source_json)
 from .core import VerificationFinding, VerificationResult, VerifierDescriptor
@@ -1340,8 +1341,7 @@ class AgentSessionRunEvidenceVerifier:
         )
         events, terminal_counts = self._events(
             directory, run, agent, attestation["status"] == "attested", state_files, sample_files,
-            expected.get("schema") if expected is not None else None,
-            expected.get("autonomy_budget") if expected is not None else None
+            expected
         )
         identity = {
             "schema": "sts2.evidence/store-directory-1",
@@ -1365,8 +1365,7 @@ class AgentSessionRunEvidenceVerifier:
         attested: bool,
         state_files: set[str],
         sample_files: set[str],
-        expected_startup_schema: str | None = None,
-        expected_budget_config: object = None,
+        expected_startup: Mapping[str, object] | None = None,
     ) -> tuple[list[dict[str, Any]], tuple[int, int, int, int, int] | None]:
         # The executable producer's exported AgentRuntimeEventPayloads map is closed.
         raw = (directory / "events.jsonl").read_bytes()
@@ -1375,9 +1374,10 @@ class AgentSessionRunEvidenceVerifier:
         event_schema = events[0].get("schema") if events else None
         _require(event_schema in {EVENT_SCHEMA, "sts2.policy-runtime/agent-session-event-2"}, "native_session_event_schema")
         event_version = 2 if event_schema.endswith("-2") else 1
-        if expected_startup_schema is not None:
-            _require(expected_startup_schema == f"sts2.policy-runtime/agent-session-startup-{event_version}", "native_session_expected_event_version")
-        authorization_mode = _verify_autonomy_budget_config(expected_budget_config, event_version) if expected_budget_config is not None else None
+        if expected_startup is not None and "schema" in expected_startup:
+            _require(expected_startup["schema"] == f"sts2.policy-runtime/agent-session-startup-{event_version}", "native_session_expected_event_version")
+        expected_limits = _autonomy_config_limits(expected_startup["autonomy_budget"], event_version) if expected_startup is not None and "autonomy_budget" in expected_startup else None
+        authorization_limits: tuple[object, ...] | None = None
         session_id: str | None = None
         epoch = 0
         witnesses: dict[str, dict[str, Any]] = {}
@@ -1924,9 +1924,11 @@ class AgentSessionRunEvidenceVerifier:
                 "stopped",
             }:
                 recorded_budget = _budget(payload["autonomy_budget"], event_version)
+                limits = _recorded_budget_limits(recorded_budget, event_version)
+                _require(expected_limits is None or expected_limits == limits, "native_session_expected_budget_drift")
                 if event_version == 2:
-                    _require(authorization_mode is None or authorization_mode == recorded_budget["mode"], "native_session_budget_mode_changed")
-                    authorization_mode = recorded_budget["mode"]
+                    _require(authorization_limits is None or authorization_limits == limits, "native_session_budget_config_changed")
+                    authorization_limits = limits
                 _require(
                     payload["controller"] in {"held", "released", "unknown"},
                     "native_session_controller",
