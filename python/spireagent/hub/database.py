@@ -412,7 +412,8 @@ class Operations:
         options: dict[str, Any] | None = None,
     ) -> str:
         options = {} if options is None else options
-        if not isinstance(options, dict) or set(options) - {"resume", "stop_after", "execution_deadline_unix"}:
+        if (not isinstance(options, dict)
+                or set(options) - {"resume", "stop_after", "execution_deadline_unix"}):
             raise BoundaryError("hub", "invalid_job_options")
         resume, stop_after = options.get("resume"), options.get("stop_after")
         if resume is not None and (
