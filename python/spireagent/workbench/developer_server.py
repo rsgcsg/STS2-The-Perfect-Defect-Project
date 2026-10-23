@@ -315,6 +315,8 @@ class Application:
         self.local_recordings = LocalRecordingCatalog(config)
         # Keep command-time owner observations separate from concurrent browser GET scans.
         self.local_recording_import = LocalRecordingImporter(config, LocalRecordingCatalog(config))
+        self.local_recording_import.operation_admission_guard = (
+            self.reference_evaluation.check_access)
         from .p1_recording_maintenance import P1RecordingMaintenance
 
         self.p1_maintenance = P1RecordingMaintenance(self.local_recording_import)
@@ -1847,6 +1849,19 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                 self.respond(404, b"{}")
 
         def do_POST(self) -> None:
+            nonce = self.headers.get("X-Reference-Group-Scope")
+            if nonce is None:
+                return self.application_post()
+            if not self.control_client():
+                self.respond(403, b'{"error":"local_control_authentication_required"}')
+                return
+            try:
+                with app.reference_evaluation.request_scope(nonce):
+                    self.application_post()
+            except BoundaryError as error:
+                self.respond(403, json.dumps({"error": error.code}).encode())
+
+        def application_post(self) -> None:
             if self.path.startswith("/api/reference-evaluations/"):
                 if not self.browser_write() and not self.control_client():
                     self.respond(403, b'{"error":"browser_action_denied"}')

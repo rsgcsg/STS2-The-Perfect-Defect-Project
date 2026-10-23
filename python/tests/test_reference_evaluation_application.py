@@ -17,6 +17,9 @@ from test_reference_evaluation import GroupOwner
 from spireagent.json_boundary import BoundaryError
 from spireagent.workbench.developer import ProjectConfig, atomic_json, combination
 from spireagent.workbench.developer_server import Application, configuration_id, create_server
+from spireagent.workbench.reference_evaluation import (
+    ApplicationReferenceClient as BoundedGroupClient,
+)
 from spireagent.workbench.reference_evaluation import ReferenceEvaluationService
 from tools.evaluate_reference_group import command
 
@@ -111,6 +114,17 @@ def test_group_http_cli_pause_and_exact_operation_control(group_app, monkeypatch
         paused = await_status(app, "paused")
         assert paused["report"]["episodes"][0]["stored_evidence_id"] == "e" * 64
         assert paused["report"]["episodes"][1]["status"] == "not_started"
+        for require_human in (True, False):
+            with (pytest.raises(BoundaryError, match="reference_group_owns_execution"),
+                  app.models.reserve_recording_source_mutation(require_human=require_human)):
+                pytest.fail("foreign recording source reservation was admitted")
+        assert app.models._recording_source_reservation is None
+        for mutation in (lambda: app.local_recording_import.start("a" * 64),
+                         lambda: app.local_recording_import.start_global_evidence(
+                             {}, body["evidence_peer"]),
+                         lambda: app.local_recording_import.start_cache_trim(())):
+            with pytest.raises(BoundaryError, match="reference_group_owns_execution"):
+                mutation()
         command(app.config, action, control)
         app.reference_evaluation.thread.join(timeout=5)
         final = command(app.config, "status")
@@ -248,3 +262,84 @@ def test_explicit_reconciliation_retires_only_proved_original_and_keeps_unknown(
         assert clients[0].calls.count("submit") == 1
     finally:
         app.models.state["loaded"] = False
+
+
+def test_group_client_keeps_original_http_observation_deadline(group_app, monkeypatch):
+    """A slow synchronous owner cannot turn a 100 ms allowance into its own 3 s wait."""
+    app, _clients, _body, _port = group_app
+    entered, release, done = threading.Event(), threading.Event(), threading.Event()
+    calls = []
+
+    def slow_owner():
+        calls.append("status")
+        entered.set()
+        try:
+            assert release.wait(timeout=3)
+            return {"status": "idle"}
+        finally:
+            done.set()
+
+    monkeypatch.setattr(app.models, "status", slow_owner)
+    client = BoundedGroupClient(app)
+    started = time.monotonic()
+    try:
+        with pytest.raises(BoundaryError,
+                           match="workbench_request_failed_check_status_before_retry"):
+            client.status(0.1)
+        assert time.monotonic() - started < 1
+        assert entered.is_set() and not done.is_set()
+        assert calls == ["status"]  # Observation failure never repeats the request.
+    finally:
+        release.set()
+        assert done.wait(timeout=1)
+
+
+def test_group_scope_nonce_requires_original_auth_and_does_not_escape(group_app, monkeypatch):
+    import json
+
+    app, _clients, body, port = group_app
+    entered, release = threading.Event(), threading.Event()
+    original = GroupOwner.preserve
+
+    def preserve(self, run_id, peer, timeout):
+        entered.set()
+        assert release.wait(timeout=5)
+        return original(self, run_id, peer, timeout)
+
+    monkeypatch.setattr(GroupOwner, "preserve", preserve)
+    started = command(app.config, "start", body)
+    try:
+        assert entered.wait(timeout=5)
+        nonce = app.reference_evaluation._http_nonce
+        before = command(app.config, "status")
+        assert nonce not in json.dumps(before)
+        for provided, authorized, expected in ((None, True, 409), ("0" * 64, True, 403),
+                                                (nonce, False, 403)):
+            headers = {"Content-Type": "application/json"}
+            if provided is not None:
+                headers["X-Reference-Group-Scope"] = provided
+            if authorized:
+                headers["Authorization"] = "Bearer " + app.control_token
+            request = Request(f"http://127.0.0.1:{port}/api/local-models/command",
+                              data=b'{"action":"stop"}', headers=headers)
+            assert nonce not in request.full_url
+            with pytest.raises(HTTPError) as refused:
+                urlopen(request, timeout=2)
+            assert refused.value.code == expected
+            error = refused.value.read().decode()
+            assert nonce not in error and "0" * 64 not in error
+        assert nonce not in Path(before["report_path"]).read_text()
+    finally:
+        command(app.config, "stop", {"operation_id": started["operation_id"]})
+        release.set()
+        app.reference_evaluation.thread.join(timeout=5)
+
+
+def test_group_client_rejects_replaced_application_before_owner_request(group_app, monkeypatch):
+    from spireagent.workbench import reference_suite
+
+    app, _clients, _body, _port = group_app
+    monkeypatch.setattr(reference_suite, "running", lambda _config: {
+        "instance_id": "0" * 32, "configuration_id": "b" * 64})
+    with pytest.raises(BoundaryError, match="application_instance_mismatch"):
+        BoundedGroupClient(app)

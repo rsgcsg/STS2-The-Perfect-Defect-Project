@@ -1456,6 +1456,8 @@ class LocalModelService:
         """Reserve application sequencing, never gameplay or external SDK authority."""
         reservation = object()
         with self.lock:
+            if self.execution_admission_guard is not None:
+                self.execution_admission_guard("recording")
             if self.native_episode_guard is not None:
                 self.native_episode_guard(None, "recording")
             if require_human and (self.closed or self._recording_recovery_required(self.state)):

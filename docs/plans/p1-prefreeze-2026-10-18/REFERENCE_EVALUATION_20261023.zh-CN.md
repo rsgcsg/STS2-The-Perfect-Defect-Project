@@ -41,6 +41,9 @@ Managed reset/observe/step/close与raw-grammar outcome，不消费用户所选Mo
 - 同 Application `ReferenceEvaluationService` 调用原suite及Model/native/import owner。
   原models lock与不透明scope reservation挡冲突写操作；实际原Model异步线程继承该scope，
   不靠threadname、PID扫描或第二控制权登记。状态/readiness/原报告仍可读。
+  调用复用原HTTP客户端的身份、有限观察timeout和unknown语义；仅原认证本机handler
+  接纳进程内nonce的scope，nonce不进status/report/URL/log。原录制source reservation与
+  共享importer operation均在各自原锁下核同一group占用，导入idle检查和组激活原子衔接。
 - pause只在局已finish、seal并peer回读后生效；resume仅在同应用活着时派下一个未派发
   seed。Stop使用原组ref/原Actor收尾，不追随“最新Actor”。暂停仍计整组上限。
   App关闭先请求组停止，再沿原native/Model关闭；不持Model锁join。

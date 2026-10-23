@@ -289,6 +289,10 @@ def test_group_http_cli_pause_resume_is_serial_and_fences_manual_actor(
         paused = command(app.config, "status")
         assert paused["status"] == "paused", paused
         assert len(offers) == len(saved) == 1
+        for require_human in (True, False):
+            with (pytest.raises(BoundaryError, match="reference_group_owns_execution"),
+                  app.models.reserve_recording_source_mutation(require_human=require_human)):
+                pytest.fail("foreign recording source reservation was admitted")
         assert paused["report"]["episodes"][0]["stored_evidence_id"] == "f" * 64
         assert paused["report"]["episodes"][1]["status"] == "not_started"
         with pytest.raises(BoundaryError, match="reference_group_owns_execution"):

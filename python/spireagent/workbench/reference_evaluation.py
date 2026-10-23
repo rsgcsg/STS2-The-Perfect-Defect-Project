@@ -9,6 +9,7 @@ import contextvars
 import copy
 import hashlib
 import json
+import secrets
 import threading
 import time
 import uuid
@@ -45,61 +46,18 @@ def reject(code: str) -> NoReturn:
 
 
 class ApplicationReferenceClient(WorkbenchReferenceClient):
-    """In-process mapping of the same Application methods used by HTTP/CLI."""
+    """Original bounded HTTP client, admitted into this Application's group scope."""
     def __init__(self, app: Application) -> None:
-        from spireagent.workbench.developer_server import configuration_id
-
-        self.app = app
-        self.config = app.config
-        self.identity = {"application_instance_id": app.instance_id,
-                         "configuration_id": configuration_id(app.config)}
-
-    def _check(self) -> None:
-        self.app.check_environment_instance()
-        self.app.reference_evaluation.check_access()
-
-    def readiness(self, selection: str, timeout: float) -> dict[str, Any]:
-        self._check()
-        return self.app.models.readiness(selection)
-
-    def prepare(self, body: dict[str, Any], timeout: float) -> dict[str, Any]:
-        self._check()
-        return self.app.prepare_native_episode(body)
-
-    def native_status(self, timeout: float) -> dict[str, Any]:
-        self._check()
-        return self.app.native_episode_status()
-
-    def request(self, selection: str, ref: str, profile: str, timeout: float) -> dict[str, Any]:
-        self._check()
-        return self.app.models.agent_request(selection, "prepare-and-takeover", profile,
-                                             native_episode_ref=ref)
-
-    def submit(self, request: dict[str, Any], ref: str, timeout: float) -> dict[str, Any]:
-        self._check()
-        return self.app.models.run_agent(request)
-
-    def status(self, timeout: float) -> dict[str, Any]:
-        self._check()
-        return self.app.models.status()
-
-    def finish(self, ref: str, timeout: float) -> dict[str, Any]:
-        self._check()
-        return self.app.finish_native_episode(ref)
-
-    def preserve(self, run_id: str, peer: dict[str, Any], timeout: float) -> dict[str, Any]:
-        self._check()
-        return self.app.start_global_evidence(run_id, peer)
-
-    def preservation_status(self, timeout: float) -> dict[str, Any]:
-        self._check()
-        return self.app.local_recording_import.status()
+        super().__init__(app.config, _execution_scope=app.reference_evaluation._http_nonce)
+        if self.identity["application_instance_id"] != app.instance_id:
+            reject("application_instance_mismatch")
 
 
 class ReferenceEvaluationService:
     def __init__(self, app: Application) -> None:
         self.app = app
         self.reservation = object()
+        self._http_nonce = secrets.token_hex(32)
         self.root = app.config.state_dir / "reference-evaluations"
         self.path = self.root / "operation.json"
         self.thread: threading.Thread | None = None
@@ -125,6 +83,16 @@ class ReferenceEvaluationService:
             yield
         finally:
             _SCOPE.reset(token)
+
+    @contextmanager
+    def request_scope(self, nonce: str) -> Iterator[None]:
+        # Transport-private correlation only. The handler still requires the
+        # original local control authentication and every body/owner validator.
+        if (len(nonce) != 64 or not nonce.isascii()
+                or not secrets.compare_digest(nonce, self._http_nonce)):
+            reject("reference_group_scope_invalid")
+        with self.scope():
+            yield
 
     def check_access(self, action: str = "creation") -> None:
         """Called under the Model owner lock at actual admission, including Stop."""
@@ -186,7 +154,7 @@ class ReferenceEvaluationService:
         from spireagent.storage.config import open_peer
 
         open_peer(peer)  # Validate the existing binding, without writing or publishing.
-        with self.app.models.lock, self.lock:
+        with self.app.models.lock, self.lock, self.app.local_recording_import.lock:
             self.app.check_environment_instance()
             if self.closed or self.operation["status"] in ACTIVE | {"recovery_required"}:
                 reject("reference_group_active_or_requires_recovery")
@@ -194,7 +162,10 @@ class ReferenceEvaluationService:
             native = self.app.native_episode_status()
             if native.get("phase") not in {"idle", "closed"}:
                 reject("native_episode_must_be_finished")
-            if self.app.local_recording_import.status().get("status") == "pending":
+            self.app.local_recording_import._native_recovery_guard()
+            importer = self.app.local_recording_import
+            if (importer.status().get("status") == "pending"
+                    or importer.thread is not None and importer.thread.is_alive()):
                 reject("evidence_operation_in_progress")
             raw = json_bytes(manifest)
             directory = self.root / group_id
@@ -205,6 +176,8 @@ class ReferenceEvaluationService:
                               "request": copy.deepcopy(body), "evidence_peer": copy.deepcopy(peer),
                               "manifest_sha256": hashlib.sha256(raw).hexdigest(),
                               "report_path": str(directory / "attempt" / "report.json")}
+            self.reservation = object()
+            self._http_nonce = secrets.token_hex(32)
             self.stop.clear()
             self.pause = False
             self._save()

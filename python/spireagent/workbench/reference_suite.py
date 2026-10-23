@@ -124,23 +124,24 @@ class ReferenceClient(Protocol):
 class WorkbenchReferenceClient:
     """One already-running Application, fenced before every HTTP request."""
 
-    def __init__(self, config: ProjectConfig) -> None:
+    def __init__(self, config: ProjectConfig, *, _execution_scope: str | None = None) -> None:
         current = running(config)
         if current is None:
             _reject("open_workbench_first")
         self.config = config
+        self._execution_scope = _execution_scope
         self.identity = {"application_instance_id": current["instance_id"],
                          "configuration_id": current["configuration_id"]}
 
     def _native(self, action: str, timeout: float, **kwargs: Any) -> dict[str, Any]:
         return local_model_cli.native_episode_command(
             self.config, action, expected_instance_id=self.identity["application_instance_id"],
-            timeout_seconds=timeout, **kwargs)
+            timeout_seconds=timeout, _execution_scope=self._execution_scope, **kwargs)
 
     def _model(self, action: str, timeout: float, **kwargs: Any) -> dict[str, Any]:
         return local_model_cli.model_command(
             self.config, action, expected_instance_id=self.identity["application_instance_id"],
-            timeout_seconds=timeout, **kwargs)
+            timeout_seconds=timeout, _execution_scope=self._execution_scope, **kwargs)
 
     def readiness(self, selection: str, timeout: float) -> dict[str, Any]:
         return self._model("readiness", timeout, selection=selection)

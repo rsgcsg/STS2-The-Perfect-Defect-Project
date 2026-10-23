@@ -1108,8 +1108,10 @@ catalog-only random Agent、直接消费 Managed 环境与原 raw outcome，不�
 “当前局结束后暂停”是组的局间边界：当前局已 finish、密封并保存回读后，才显示已暂停；
 “继续本组”在同一 Application 活着时运行下一个未派发种子，不恢复局内状态或重放当前局。
 “停止种子组”只收尾原组当前 reference 对应的 Actor/Host，不派下一局；保存已发出时
-继续读原保存 operation，不重投。组持有执行期间，单局 Model/环境/录制的冲突写操作被
-同一 admission owner 拒绝，读状态与 readiness 仍可用。整组上限包含暂停/保存；
+继续读原保存 operation，不重投。组持有执行期间，单局 Model/环境/录制及共享导入owner的冲突写操作被
+同一 admission owner 拒绝，读状态与 readiness 仍可用。组调用复用原本机HTTP客户端的
+准确Application身份、请求验证和每次观察timeout；回复未知不重投，原owner可继续收尾，
+只读核原状态。内部scope nonce仅在进程内/已认证本机header传递，不写入报告或URL。整组上限包含暂停/保存；
 超时后原局收尾仍有单独有限 allowance。网页关闭不停止组。
 
 Agent/CLI 用同一 API，从 `python/` 执行：
