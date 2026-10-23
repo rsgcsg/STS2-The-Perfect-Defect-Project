@@ -2305,7 +2305,7 @@ window.SpireProject = (() => {
     );
     return box;
   }
-  function localStatus(ctx, data, onBudgetHost, catalog) {
+  function localStatus(ctx, data, onBudgetHost, catalog, groupOwnsExecution = false) {
     const box = panel(
       "本机运行状态",
       "状态来自本机服务与其管理的唯一 Runtime。操作请求已接收与执行成功分开显示。",
@@ -2437,13 +2437,14 @@ window.SpireProject = (() => {
             await reload(ctx);
           },
           {
-            disabled: recovery ? !recoverable : action === "tick" ? !tickSafe : !safe,
+            disabled: groupOwnsExecution || (recovery ? !recoverable : action === "tick" ? !tickSafe : !safe),
             danger: action === "stop",
           },
         ),
       );
     }
     box.append(el("p", "开始测试会先结束真人录制，再由模型操作游戏。随时点“暂停并接管”；结束后生成独立实战记录。", "small muted"), actions, advanced);
+    if (groupOwnsExecution) box.append(el("p", "种子组持有本次运行，请使用上方种子组的暂停或停止。", "small muted"));
     if (runtime)
       box.append(
         technical(
@@ -2609,6 +2610,66 @@ window.SpireProject = (() => {
     }, "查看报告身份"));
     return box;
   }
+  async function referenceGroup(ctx, catalog, modelState) {
+    const box = panel("种子组实战检查 · Reference", "选择已登记的 P1 Model Agent，自动逐局运行新种子并保存原件。沿用配置中的证据存储；未配置时请按操作指南指定保存位置。诊断结果不等同于最终评估或策略质量证明。");
+    let state;
+    try {
+      state = await request(ctx, "/api/reference-evaluations/status");
+      if (state.schema !== "spireagent/reference-evaluation-operation-v1" ||
+          !["idle", "running", "pause_requested", "paused", "stopping", "completed", "stopped", "blocked", "recovery_required"].includes(state.status))
+        throw new Error("invalid_reference_group_status");
+    }
+    catch (_) { box.append(empty("种子组状态暂不可用", "请刷新状态后再操作。")); return {panel: box, state: null}; }
+    const active = ["running", "pause_requested", "paused", "stopping"].includes(state.status);
+    const candidates = (catalog?.policies || []).filter(item => item.reference_group_supported === true && selectionId(item.selection_id));
+    const form = el("div");
+    const saved = drafts.get(`reference-group:${ctx.scope}`) || {};
+    const choice = select(form, "Agent", "reference-group-selection", candidates.map(item => [item.selection_id, item.label || item.selection_id]), saved.selection_id || candidates[0]?.selection_id || "");
+    const countInput = input(form, "本组局数（1–10）", "reference-group-count", saved.seed_count || 2, "number");
+    countInput.min = "1"; countInput.max = "10";
+    const version = input(form, "准确游戏版本", "reference-group-version", saved.game_version || "");
+    const display = select(form, "显示方式", "reference-group-display", [["headless", "无窗口"], ["native-ui", "显示游戏窗口"]], saved.display_mode || "headless");
+    const speed = select(form, "游戏速度", "reference-group-speed", [["instant", "即时"], ["fast", "快速"], ["normal", "正常"]], saved.speed || "instant");
+    const advancedLimits = el("details");
+    advancedLimits.append(el("summary", "每局授权与上限"));
+    const profile = select(advancedLimits, "每局自主授权", "reference-group-profile", [["short", "短时检查"], ["extended", "较长尝试（最多30分钟）"]], saved.run_profile || "short");
+    const prep = input(advancedLimits, "每局准备上限（秒）", "reference-group-preparation", saved.limits?.preparation_seconds || 120, "number");
+    const episode = input(advancedLimits, "每局运行上限（秒）", "reference-group-episode", saved.limits?.episode_seconds || 120, "number");
+    const cleanup = input(advancedLimits, "每局收尾上限（秒）", "reference-group-cleanup", saved.limits?.cleanup_seconds || 120, "number");
+    const total = input(form, "整组上限（秒，含暂停和保存）", "reference-group-total", saved.limits?.suite_seconds || 900, "number");
+    form.append(advancedLimits);
+    const requestBody = () => ({selection_id: choice.value, seed_count: Number(countInput.value), game_version: version.value,
+      run_profile: profile.value, display_mode: display.value, speed: speed.value,
+      limits: {preparation_seconds: Number(prep.value), episode_seconds: Number(episode.value), cleanup_seconds: Number(cleanup.value), suite_seconds: Number(total.value)}});
+    for (const control of [choice, countInput, version, display, speed, profile, prep, episode, cleanup, total]) {
+      control.disabled = active || state.status === "recovery_required";
+      control.addEventListener("change", () => drafts.set(`reference-group:${ctx.scope}`, requestBody()));
+    }
+    box.append(fields([["组状态", show(state.status)], ["已开始 / 全部分母", state.report ? `${count((state.report.episodes || []).filter(row => row.actor_started === true).length)} / ${count(state.report.planned)}` : "尚未开始"],
+      ["原生胜 / 负", state.report?.summary ? `${count(state.report.summary.natural_results.win)} / ${count(state.report.summary.natural_results.loss)}` : "尚无最终汇总"]]));
+    if (state.stop_reason || state.error_code) box.append(el("p", state.stop_reason || state.error_code, "banner warning"));
+    box.append(form, el("p", "暂停在当前局结束、封存并保存后生效；继续运行本组下一个未派发种子。停止会收尾本组当前局。关闭网页不停止任务；关闭应用或结果未知时只保留原报告供恢复审查。暂停时间计入整组上限；超时后收尾仍可使用每局收尾上限。", "small muted"));
+    box.append(command(ctx, "reference-group-start", "开始种子组", async () => {
+      const body = requestBody();
+      drafts.set(`reference-group:${ctx.scope}`, body);
+      await request(ctx, "/api/reference-evaluations/start", body);
+      await reload(ctx);
+    }, {primary: true, disabled: active || state.status === "recovery_required" || !candidates.length || modelState?.loaded || modelState?.operation?.status === "pending"}));
+    for (const [action, label] of [["pause", "当前局结束后暂停"], ["resume", "继续本组"], ["stop", "停止种子组"]])
+      box.append(command(ctx, `reference-group-${action}`, label, async () => {
+        await request(ctx, `/api/reference-evaluations/${action}`, {operation_id: state.operation_id});
+        await reload(ctx);
+      }, {disabled: !active || (action === "resume" && !["paused", "pause_requested"].includes(state.status)) || state.status === "stopping", danger: action === "stop"}));
+    if (state.status === "recovery_required")
+      box.append(command(ctx, "reference-group-reconcile", "核对原运行并解除占用", async () => {
+        await request(ctx, "/api/reference-evaluations/reconcile", {
+          operation_id: state.operation_id, report_sha256: state.report_sha256});
+        await reload(ctx);
+      }, {disabled: !hex(state.report_sha256)}), el("p", "先按原运行与保存状态完成停止、封存和保存回读。此按钮只核对原组并解除占用；旧报告及未知结果保留，不会重新开局。", "small muted"));
+    box.append(command(ctx, "reference-group-refresh", "刷新种子组状态", async () => { await reload(ctx); }));
+    if (state.report) box.append(technical({operation_id: state.operation_id, report_path: state.report_path, report: state.report}));
+    return {panel: box, state};
+  }
   async function localModels(ctx) {
     const box = el("div", null, "project-page");
     if (!local) {
@@ -2628,7 +2689,11 @@ window.SpireProject = (() => {
     if (replies[0].status === "fulfilled") catalog = replies[0].value;
     if (replies[1].status === "fulfilled") state = replies[1].value;
     let budgetHost = null;
-    if (state) box.append(localStatus(ctx, state, (node) => { budgetHost = node; }, catalog));
+    const group = await referenceGroup(ctx, catalog, state);
+    box.append(group.panel);
+    const groupOwnsExecution = ["running", "pause_requested", "paused", "stopping"].includes(group.state?.status);
+    const groupBlocksStart = groupOwnsExecution || group.state?.status === "recovery_required";
+    if (state) box.append(localStatus(ctx, state, (node) => { budgetHost = node; }, catalog, groupOwnsExecution));
     else
       box.append(empty(
           "本机 Runtime 状态暂不可用",
@@ -2644,7 +2709,7 @@ window.SpireProject = (() => {
     const lastSetup = state?.last_text_runtime_preparation;
     if (lastSetup?.status === "ready")
       runtimeSetup.append(el("p", `上次${["text-menu-m2-v1", "text-menu-m2-v2"].includes(lastSetup.runtime_profile) ? "记忆模型" : "文本菜单"}运行组件准备已通过核验；实际加载仍会重新检查。`, "small muted"));
-    const canPrepareRuntime = state && !state.loaded &&
+    const canPrepareRuntime = !groupBlocksStart && state && !state.loaded &&
       state.operation?.status !== "pending" &&
       !["command_unknown", "recovery_required"].includes(state.status);
     for (const [profile, label] of [
@@ -2727,7 +2792,7 @@ window.SpireProject = (() => {
         ? currentProfile : "";
       const profileChoice = select(row, "本次运行配置", `model-run-profile-${item.selection_id}`,
         profiles.map(profile => [profile.id, runProfileTitle(profile)]), selectedProfile);
-      profileChoice.disabled = !state || state.loaded === true ||
+      profileChoice.disabled = groupBlocksStart || !state || state.loaded === true ||
         state.operation?.status === "pending" ||
         ["command_unknown", "recovery_required"].includes(state.status) ||
         !selectedProfile;
@@ -2781,6 +2846,7 @@ window.SpireProject = (() => {
           {
             primary: true,
             disabled:
+              groupBlocksStart ||
               !state ||
               !selectedProfile ||
               state.loaded === true ||

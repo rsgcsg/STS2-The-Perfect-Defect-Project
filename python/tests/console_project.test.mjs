@@ -7664,3 +7664,78 @@ test("P1 baseline catalog classifies a combined report as DEV without reading it
   assert.equal(env.calls.some(c=>c.url===`/api/local-workspace/evaluations/${evaluation}`),false);
   assert.equal(post(env.calls).length,0);
 });
+
+test("Reference diagnostic group maps catalog and exact controls to the existing Application", async () => {
+  const selection = "p1-model-fixture", op = "a".repeat(32);
+  let group = {schema:"spireagent/reference-evaluation-operation-v1",status:"idle"};
+  const env = setup({view:"local-models",renderOnReload:true,identity:{status:"signed_out"},
+    handler:async (url, options) => {
+      if (url === "/api/local-models") return {policies:[
+        {selection_id:selection,label:"P1 Model",environment_kind:"native",reference_group_supported:true},
+        {selection_id:"managed-fixture",label:"Managed",environment_kind:"managed",reference_group_supported:false},
+        {selection_id:"teacher-fixture",label:"Teacher",environment_kind:"native",reference_group_supported:false},
+      ],evaluations:[]};
+      if (url === "/api/local-models/status") return {status:"idle",loaded:false};
+      if (url === "/api/reference-evaluations/status") return group;
+      if (url === "/api/reference-evaluations/start") {
+        const value = JSON.parse(options.body);
+        assert.equal(value.selection_id, selection);
+        assert.equal(value.seed_count, 2);
+        assert.equal(value.game_version, "v0.111.0");
+        assert.equal(value.display_mode, "native-ui");
+        assert.equal(value.speed, "normal");
+        assert.equal(value.limits.suite_seconds, 900);
+        group = {...group,status:"running",operation_id:op};
+        return group;
+      }
+      if (url === "/api/reference-evaluations/pause") {
+        assert.deepEqual(JSON.parse(options.body), {operation_id:op});
+        group = {...group,status:"paused"}; return group;
+      }
+      if (url === "/api/reference-evaluations/resume") {
+        assert.deepEqual(JSON.parse(options.body), {operation_id:op});
+        group = {...group,status:"running"}; return group;
+      }
+      throw new Error(`unexpected route ${url}`);
+    }});
+  const page = await env.render();
+  assert.equal(post(env.calls).length, 0, "render does not start any Agent or game");
+  assert.deepEqual(field(page,"reference-group-selection").children.map(item => item.value), [selection]);
+  field(page,"reference-group-version").value = "v0.111.0";
+  field(page,"reference-group-display").value = "native-ui";
+  field(page,"reference-group-speed").value = "normal";
+  await action(page,"reference-group-start").onclick();
+  assert.equal(action(env.livePage,"reference-group-start").disabled, true);
+  assert.equal(action(env.livePage,"model-command-stop").disabled, true,
+    "single-Actor Stop does not compete with group Stop");
+  await action(env.livePage,"reference-group-pause").onclick();
+  assert.equal(action(env.livePage,"reference-group-resume").disabled, false);
+  await action(env.livePage,"reference-group-resume").onclick();
+  assert.equal(post(env.calls).length, 3);
+});
+
+test("Reference recovery sends the original group and report hash without retrying a game", async () => {
+  const op = "a".repeat(32), sha = "b".repeat(64);
+  const report = {planned:2,episodes:[{actor_started:true,status:"unknown"},{actor_started:false,status:"not_started"}],stop_reason:"preservation_unknown_or_failed"};
+  let group = {schema:"spireagent/reference-evaluation-operation-v1",status:"recovery_required",operation_id:op,report_sha256:sha,report};
+  const env = setup({view:"local-models",renderOnReload:true,identity:{status:"signed_out"},
+    handler:async (url,options) => {
+      if (url === "/api/local-models") return {policies:[],evaluations:[]};
+      if (url === "/api/local-models/status") return {status:"stopped",loaded:false};
+      if (url === "/api/reference-evaluations/status") return group;
+      if (url === "/api/reference-evaluations/reconcile") {
+        assert.deepEqual(JSON.parse(options.body), {operation_id:op,report_sha256:sha});
+        group = {...group,status:"stopped"}; return group;
+      }
+      throw new Error(`unexpected route ${url}`);
+    }});
+  const page = await env.render();
+  assert.equal(post(env.calls).length, 0);
+  assert.match(text(page), /核对原运行并解除占用/);
+  assert.equal(action(page,"reference-group-start").disabled, true);
+  await action(page,"reference-group-reconcile").onclick();
+  assert.equal(post(env.calls).length, 1);
+  assert.equal(group.report, report);
+  assert.equal(group.report.episodes[0].status,"unknown");
+  assert.equal(env.calls.some(call => call.url === "/api/reference-evaluations/start"),false);
+});

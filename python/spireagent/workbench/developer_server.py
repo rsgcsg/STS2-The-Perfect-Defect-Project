@@ -277,6 +277,10 @@ class Application:
             native_episode_guard=self.local_environment.native_admission_guard,
             native_episode_associate=self.local_environment.associate_native_actor,
         )
+        from spireagent.workbench.reference_evaluation import ReferenceEvaluationService
+
+        self.reference_evaluation = ReferenceEvaluationService(self)
+        self.models.execution_admission_guard = self.reference_evaluation.check_access
         self._native_episode_shutdown = False
         self.local_environment.bind_native_application(
             lock=self.models.lock,
@@ -578,6 +582,8 @@ class Application:
             raise BoundaryError("native_episode", "actor_active_or_unknown")
 
     def prepare_native_episode(self, value: object) -> dict[str, Any]:
+        with self.models.lock:
+            self.reference_evaluation.check_access()
         self.check_environment_instance()
         return self.local_environment.prepare_native_episode(value)
 
@@ -585,6 +591,7 @@ class Application:
         return self.local_environment.native_episode_status()
 
     def finish_native_episode(self, environment_ref: object) -> dict[str, Any]:
+        self.reference_evaluation.check_access("stop")
         record, client, first = self.local_environment.begin_native_finish(environment_ref)
         if not first:
             return record
@@ -1107,6 +1114,7 @@ class Application:
         return self.local_model_registration.register_teacher(variant=variant)
 
     def close(self) -> None:
+        self.reference_evaluation.close()
         self.remote_training.close()
         self.p1_maintenance.close()
         # The same Application admission lock fences an in-flight handler before
@@ -1116,7 +1124,7 @@ class Application:
             self._native_episode_shutdown = True
             native = self.local_environment.native_episode_status()
         if native.get("environment_ref") is not None and native.get("phase") != "closed":
-            with contextlib.suppress(OSError, ValueError):
+            with contextlib.suppress(OSError, ValueError), self.reference_evaluation.scope():
                 self.finish_native_episode(native["environment_ref"])
             self.local_environment.native_finish_done.wait(timeout=90)
         self.local_environment.close()
@@ -1288,6 +1296,15 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                 self.respond(200, json.dumps({"instance_id": app.instance_id}).encode())
             elif parsed.path == "/api/status":
                 self.respond(200, json.dumps(_safe_value(app.snapshot())).encode())
+            elif parsed.path == "/api/reference-evaluations/status":
+                if not self.authenticated_browser() and not self.control_client():
+                    self.respond(401, b'{"error":"browser_session_required"}')
+                    return
+                if parsed.query:
+                    self.respond(400, b'{"error":"invalid_reference_group_request"}')
+                    return
+                self.respond(200, json.dumps({**app.reference_evaluation.status(),
+                                              "csrf_token": app.account.csrf}).encode())
             elif (
                 parsed.path == "/api/local-environment"
                 or parsed.path == ("/api/local-environment/reports")
@@ -1830,6 +1847,28 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                 self.respond(404, b"{}")
 
         def do_POST(self) -> None:
+            if self.path.startswith("/api/reference-evaluations/"):
+                if not self.browser_write() and not self.control_client():
+                    self.respond(403, b'{"error":"browser_action_denied"}')
+                    return
+                try:
+                    app.check_environment_instance()
+                    body = self.json_body(maximum=8192, reject_duplicate=True)
+                    action = self.path.removeprefix("/api/reference-evaluations/")
+                    if action == "start":
+                        value = app.reference_evaluation.start(body)
+                    elif action == "reconcile":
+                        value = app.reference_evaluation.reconcile(body)
+                    elif action in {"pause", "resume", "stop"}:
+                        value = app.reference_evaluation.control(action, body)
+                    else:
+                        raise BoundaryError("reference_evaluation", "route_not_found")
+                    self.respond(200, json.dumps(value).encode())
+                except BoundaryError as error:
+                    self.respond(409, json.dumps({"error": error.code}).encode())
+                except (OSError, ValueError, TypeError, KeyError):
+                    self.respond(400, b'{"error":"invalid_reference_group_request"}')
+                return
             if self.path.startswith("/api/native-workbench/v1/"):
                 from spireagent.workbench.native_workbench_api import (
                     ACTIONS,
@@ -1868,6 +1907,9 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                     self.respond(403, b'{"error":"browser_action_denied"}')
                     return
                 try:
+                    with app.models.lock:
+                        app.reference_evaluation.check_access(
+                            "stop" if self.path.endswith("/finish") else "creation")
                     native_route = self.path.startswith("/api/local-environment/native/")
                     body = self.json_body(
                         maximum=1024 if native_route else 512, reject_duplicate=native_route

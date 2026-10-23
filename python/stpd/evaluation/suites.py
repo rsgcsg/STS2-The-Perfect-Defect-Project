@@ -27,6 +27,25 @@ def four_agent_reference_manifest(game_version: str) -> dict[str, Any]:
             "seeds": [derive_game_seed(FOUR_AGENT_SUITE_ID, i) for i in range(1, 11)]}
 
 
+def diagnostic_reference_manifest(game_version: str, group_id: str, count: int) -> dict[str, Any]:
+    """Small engineering group, separate from every reserved evaluation suite."""
+    # Reuse the existing exact-version grammar, retaining the final suite unchanged.
+    four_agent_reference_manifest(game_version)
+    if (not isinstance(group_id, str) or len(group_id) != 32
+            or any(c not in "0123456789abcdef" for c in group_id)
+            or type(count) is not int or not 1 <= count <= 10):
+        raise ValueError("diagnostic group identity and 1..10 seeds required")
+    suite_id = "ref-diagnostic-" + group_id
+    seeds = [derive_game_seed(suite_id, i) for i in range(1, count + 1)]
+    if any(seed_membership(seed) for seed in seeds):
+        raise ValueError("diagnostic seed overlaps a reserved evaluation seed")
+    return {"schema": "stpd/evaluation-suite-v1", "suite_id": suite_id,
+            "version": "1.0.0", "group_id": group_id, "game_version": game_version,
+            "character": "Defect", "ascension": 0, "host": "Reference",
+            "purpose": "diagnostic_reference", "episode_count": count,
+            "seed_derivation": "derive_game_seed(suite_id, ordinal_1_based)", "seeds": seeds}
+
+
 def load_suite(name: str) -> dict[str, Any]:
     if name not in suite_names():
         raise ValueError("unknown evaluation suite")

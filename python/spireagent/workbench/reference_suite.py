@@ -24,7 +24,11 @@ from spireagent.workbench import agent_run_request, local_model_cli
 from spireagent.workbench.developer import ROOT, ProjectConfig, atomic_json
 from spireagent.workbench.developer_server import running
 from spireagent.workbench.native_episode_binding import checked_context
-from stpd.evaluation.suites import FOUR_AGENT_SUITE_ID, four_agent_reference_manifest
+from stpd.evaluation.suites import (
+    FOUR_AGENT_SUITE_ID,
+    diagnostic_reference_manifest,
+    four_agent_reference_manifest,
+)
 from stpd.game_seed import derive_game_seed, require_canonical_game_seed
 
 REPORT_SCHEMA = "spireagent/reference-suite-report-v1"
@@ -47,6 +51,15 @@ def load_manifest(path: Path, sha256: str) -> tuple[bytes, dict[str, Any]]:
             _reject("manifest_configuration_changed")
         expected = four_agent_reference_manifest(game_version)
         if json_bytes(value) != json_bytes(expected):
+            _reject("manifest_configuration_changed")
+        return raw, value
+    if isinstance(value, dict) and value.get("purpose") == "diagnostic_reference":
+        version, group, count = (value.get("game_version"), value.get("group_id"),
+                                 value.get("episode_count"))
+        if not isinstance(version, str) or not isinstance(group, str) or type(count) is not int:
+            _reject("manifest_configuration_changed")
+        expected_diagnostic = diagnostic_reference_manifest(version, group, count)
+        if json_bytes(value) != json_bytes(expected_diagnostic):
             _reject("manifest_configuration_changed")
         return raw, value
     expected = {"schema": "stpd/evaluation-suite-v1", "suite_id": "ref-20", "version": "1.0.0",
@@ -222,15 +235,20 @@ def run_suite(
     manifest_path: Path, manifest_sha256: str, *, client: ReferenceClient, run_dir: Path,
     selection: str, run_profile: str, limits: SuiteLimits, max_episodes: int = 1,
     selections: dict[str, str] | None = None, evidence_peer: dict[str, Any] | None = None,
-    display_mode: str = "headless", clock: Callable[[], float] = time.monotonic,
+    display_mode: str = "headless", speed: str = "instant",
+    before_episode: Callable[[dict[str, Any]], bool] = lambda _report: True,
+    clock: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep, should_stop: Callable[[], bool] = lambda: False,
 ) -> dict[str, Any]:
     """New attempt only. Existing run directories are read-only recovery artifacts."""
     if (type(max_episodes) is not int or not 1 <= max_episodes <= 40
             or run_profile not in {"short", "extended"} or not isinstance(selection, str)
-            or not (selection or selections) or display_mode not in {"headless", "native-ui"}):
+            or not (selection or selections) or display_mode not in {"headless", "native-ui"}
+            or speed not in {"normal", "fast", "instant"}):
         _reject("invalid_attempt_configuration")
     raw_manifest, manifest = load_manifest(manifest_path, manifest_sha256)
+    if manifest.get("purpose") != "diagnostic_reference" and speed != "instant":
+        _reject("fixed_suite_requires_instant_speed")
     four = manifest["suite_id"] == FOUR_AGENT_SUITE_ID
     agents = ("random", "frequency", "linear", "mstd")
     if four:
@@ -240,7 +258,7 @@ def run_suite(
             _reject("four_distinct_selections_and_evidence_peer_required")
         selected = {a: selections[a] for a in agents}
     else:
-        if selections is not None or max_episodes > 20:
+        if selections is not None or max_episodes > manifest["episode_count"]:
             _reject("legacy_suite_requires_single_selection")
         selected = {"agent": selection}
     plan = [(index + 1, seed, agent, identity)
@@ -259,7 +277,7 @@ def run_suite(
         "client_source_sha256": hashlib.sha256(
             Path(local_model_cli.__file__).read_bytes()).hexdigest(),
         "max_episodes": max_episodes, "workers": 1, "display_mode": display_mode,
-        "speed": "instant", "planned": len(plan), "status": "running", "stop_reason": None,
+        "speed": speed, "planned": len(plan), "status": "running", "stop_reason": None,
         "world_offers": 0, "actor_started": 0,
         "selections": selected, "evidence_peer": evidence_peer,
         "episodes": [{"ordinal": index + 1, "seed_ordinal": ordinal, "seed": seed,
@@ -311,6 +329,9 @@ def run_suite(
     for row in report["episodes"][:max_episodes]:
         selection = row["selection_id"]
         composition = compositions[selection]
+        if not before_episode(report):
+            report["stop_reason"] = "stop_requested"
+            break
         if should_stop() or clock() >= started + limits.suite_seconds:
             report["stop_reason"] = "stop_requested" if should_stop() else "suite_wall_limit"
             break
@@ -325,7 +346,7 @@ def run_suite(
         try:
             row.update(status="preparing", reason=None)
             body = {"ownership": "owned", "intent_id": row["intent_id"], "seed": row["seed"],
-                    "display_mode": display_mode, "speed": "instant"}
+                    "display_mode": display_mode, "speed": speed}
             row["artifacts"].append(artifacts.put("prepare-request.json", json_bytes(body)))
             artifacts.save(report)
             resource = client.prepare(body, timeout(phase_deadline))
@@ -351,8 +372,8 @@ def run_suite(
                     or any(binding[key] != value for key, value in client.identity.items())
                     or resource["preparation"] != body
                     or binding["installed_tuple"]["game_version"] != manifest["game_version"]
-                    or binding["speed"]["requested"] != "instant"
-                    or binding["speed"]["effective"] != "instant"
+                    or binding["speed"]["requested"] != speed
+                    or binding["speed"]["effective"] != speed
                     or binding["presentation"]["requested"] != display_mode):
                 _reject("prepared_binding_changed")
             row["admission_context"] = context
@@ -549,8 +570,6 @@ def run_suite(
                 if not isinstance(operation_id, str):
                     _reject("preservation_operation_missing")
                 while preservation.get("status") == "pending":
-                    if should_stop():
-                        _reject("stop_requested")
                     sleep(min(limits.poll_seconds, timeout(started + limits.suite_seconds)))
                     preservation = client.preservation_status(
                         timeout(started + limits.suite_seconds))
