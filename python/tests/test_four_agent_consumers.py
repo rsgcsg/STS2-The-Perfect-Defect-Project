@@ -150,8 +150,8 @@ def test_packed_original_package_is_accepted_as_global_evidence_parent(tmp_path,
     value = SimpleNamespace(manifest=json.loads((directory / "manifest.json").read_bytes()),
                             agent_manifest={"adapter": {"id": "stpd-p1-mstd-agent"},
                                             "input": {"input_spec": descriptor["input_spec"]}})
-    assert _parents(store, packed.artifact_id, runtime.artifact_id, value, expected)[0].artifact_id \
-        == packed.artifact_id
+    parents = _parents(store, packed.artifact_id, runtime.artifact_id, value, expected)
+    assert parents[0].artifact_id == packed.artifact_id
     descriptor["package_sha256"] = "0" * 64
     wrong = replace(packed, payloads=(packed.payload("weights"), store.put_bytes(
         "package_manifest", json_bytes(descriptor), "application/json")))
