@@ -258,6 +258,7 @@ def execute_p1_run(
     checkpoints: dict[str, str] = {}
     best_checkpoint: str | None = None
     checkpoint_id: str | None = None
+    restore_started = time.perf_counter()
     if resume is not None:
         if authority is not None:
             authority.authorize_resume(run_id, attempt_id, resume)
@@ -268,7 +269,10 @@ def execute_p1_run(
         checkpoints.update({str(f): resume for f in metadata["fractions"]})
         best_checkpoint = resume if metadata["became_best"] else metadata["prior_best_checkpoint"]
         checkpoint_id = resume
+    restore_seconds = time.perf_counter() - restore_started
+    history_started = time.perf_counter()
     event_step = max((e.parameters.value()["step"] for e in reporter.events(run_id)), default=0)
+    history_seconds = time.perf_counter() - history_started
 
     def event(kind: str, **details: Any) -> None:
         nonlocal event_step
@@ -360,6 +364,8 @@ def execute_p1_run(
             "verify_run_seconds": verified_seconds,
             "population_seconds": population_seconds,
             "trainer_construction_seconds": construction_seconds,
+            "checkpoint_restore_seconds": restore_seconds,
+            "history_read_seconds": history_seconds,
             "partition_N": {key: len(value.frames) for key, value in populations.items()},
         },
     )

@@ -243,3 +243,39 @@ It prepares explicit synthetic input on CPU, compiles features in a separate pro
 pauses training, resumes in a replacement process and compares learned weights and dev
 metrics to an uninterrupted process. The final result identities can differ because
 checkpoint audit RNG bytes belong to their actual process; those bytes are never rewritten.
+
+## Isolated real-TRAIN calibration on Modal
+
+`calibrate_p1.py` is an explicit one-call engineering operation. It consumes the
+verified TRAIN capsule from `training-calibration prepare/push`, reuses the same
+Store and scoped worker Secret, and publishes a `performance` artifact. It does
+not deploy a long-lived training service, select a Model, enqueue a formal job or
+alter an existing Run. The synthetic-only `p1_gpu_profile` restriction is unchanged.
+
+Build the exact clean candidate with the ordinary immutable image refresh first.
+The plan JSON contains exactly `variants` (one to eight complete `MStdExecution`
+objects) and `profile` (boolean). A first complete optimizer update is warmup;
+remaining updates measure the shared production numerical path. An optional trace
+covers one whole real TRAIN frame, with backward and no extra optimizer update;
+it is not full-batch timing. Keep thread count, microbatch policy and numerical
+trajectory differences explicit in comparisons.
+
+```bash
+python deploy/cloud-worker/calibrate_p1.py --image EXACT_IM_ID \
+  --input EXACT_CALIBRATION_INPUT --plan /absolute/plan.json \
+  --receipt /absolute/fresh-operation.json --environment spireagent-b \
+  --timeout 1200 --cpu 2 --memory-mib 16384
+```
+
+The launcher binds actual clean source/lock/image/input/plan/resources, uses one
+L40S, fixed CPU/RAM pairs, startup120 seconds, scaledown2, single-use container and
+zero retries. It writes an offer receipt before spawn and preserves original
+App/call IDs before waiting. Budget all allocations, startup, failed attempts,
+CPU builds and transfer; a cap is not a consumption target. After unknown output,
+inspect that exact App/call and stop the original resource if necessary; never
+relaunch as a transport retry or treat an ACK as termination. Read the published
+report/trace through their exact Store IDs and verify actual stopped resources.
+
+Source checks plus a cold locked-SDK decoder test establish wrapper preparation,
+not account, CUDA, full checkpoint migration or a speed benefit. CPU calibration
+is explicitly diagnostic; it never claims an exact GPU checkpoint continuation.

@@ -13,6 +13,7 @@ import torch
 from tokenizers import Tokenizer
 from torch import Tensor, nn
 
+from .execution import MStdExecution
 from .input import Frame, normalized, signed_log
 
 ARCHITECTURE: dict[str, Any] = {
@@ -74,8 +75,9 @@ def _mean_terms(values: Tensor, rows: list[list[int]], empty: Tensor) -> Tensor:
 
 
 class MStd(nn.Module):
-    def __init__(self, vocabulary: dict[str, Any]):
+    def __init__(self, vocabulary: dict[str, Any], execution: MStdExecution | None = None):
         super().__init__()
+        self.execution = execution or MStdExecution()
         self.vocabulary = vocabulary
         self.tokenizer = Tokenizer.from_str(vocabulary["tokenizer"])
         self.tables = {
@@ -218,9 +220,20 @@ class MStd(nn.Module):
                 vectors[text_rows[text]] + self.fields.weight[self.index("fields", key)]
                 for key, text in entity.text
             ]
-            features.append((torch.stack(text_terms).mean(0) if text_terms else 0)
-                            + number_features[row])
-        nodes = nodes + torch.stack(features)
+            if self.execution.implementation == "row-fused-v1":
+                features.append(torch.stack(text_terms).mean(0) if text_terms
+                                else nodes.new_zeros(192))
+            else:
+                features.append((torch.stack(text_terms).mean(0) if text_terms else 0)
+                                + number_features[row])
+        if self.execution.implementation == "row-fused-v1":
+            # Numeric rows occur exactly once: adding the complete matrix avoids
+            # one SelectBackward/full-zero gradient per entity. Keep text/ref
+            # operations and their accumulation paths unchanged.
+            features_tensor = torch.stack(features) + number_features
+        else:
+            features_tensor = torch.stack(features)
+        nodes = nodes + features_tensor
         linked = torch.stack(
             [nodes[e.refs].mean(0) if e.refs else torch.zeros_like(nodes[0]) for e in entities]
         )
@@ -229,7 +242,7 @@ class MStd(nn.Module):
     def forward(self, frame: Frame) -> Tensor:
         return self.forward_batch([frame])[0]
 
-    def forward_batch(self, frames: list[Frame]) -> list[Tensor]:
+    def forward_batch(self, frames: list[Frame], *, check_finite: bool = True) -> list[Tensor]:
         """Independent scenes with full catalogs; padding is never a public input.
 
         Texts are deduplicated within each frame exactly as in single-frame scoring,
@@ -263,10 +276,12 @@ class MStd(nn.Module):
             )
             if frame.choices:
                 source = torch.stack(
-                    [scene[batch, s] if s >= 0 else self.absent_roles[0] for s, _ in frame.roles]
+                    [scene[batch, s] if s >= 0 else self.absent_roles[0]
+                     for s, _ in frame.roles]
                 )
                 target = torch.stack(
-                    [scene[batch, t] if t >= 0 else self.absent_roles[1] for _, t in frame.roles]
+                    [scene[batch, t] if t >= 0 else self.absent_roles[1]
+                     for _, t in frame.roles]
                 )
                 action = action + self.source_role(source) + self.target_role(target)
             actions.append(action)
@@ -282,6 +297,6 @@ class MStd(nn.Module):
         if any(
             score.shape != (len(frame.choices),)
             for score, frame in zip(outputs, frames, strict=True)
-        ) or not bool(torch.isfinite(torch.cat(outputs)).all()):
+        ) or (check_finite and not bool(torch.isfinite(torch.cat(outputs)).all())):
             raise ValueError("non-finite or incomplete model scores")
         return outputs

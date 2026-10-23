@@ -154,7 +154,8 @@ class RemoteTrainingService:
         checkpoint = peer.get_manifest(checkpoint_id)
         if checkpoint.parameters.value().get("attempt") != row["attempt_id"]:
             raise BoundaryError("remote_training", "original_attempt_checkpoint_required")
-        events = ObjectStoreRunReporter(peer, peer.blobs).events(request.input_id)
+        events = ObjectStoreRunReporter(peer, peer.blobs, read_concurrency=8).events(
+            request.input_id)
         for event in events:
             info = event.parameters.value()
             details = info.get("details", {})
@@ -391,7 +392,8 @@ class RemoteTrainingService:
         reporter = self._progress_reporters.get(row["input_id"])
         if reporter is None:
             peer = open_peer(deployment.compute_store)
-            reporter = ObjectStoreRunReporter(peer, peer.blobs, cache_events=True)
+            reporter = ObjectStoreRunReporter(peer, peer.blobs, cache_events=True,
+                                               read_concurrency=8)
             self._progress_reporters[row["input_id"]] = reporter
         observed_store = reporter.store
         run = observed_store.get_manifest(row["input_id"])
