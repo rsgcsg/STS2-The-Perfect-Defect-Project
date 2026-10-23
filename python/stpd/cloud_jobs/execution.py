@@ -176,7 +176,7 @@ def dispatch(
             runtime, "candidate_prepared", features.artifact_id,
         )
     from ..p1.baseline_spec import RUN_SCHEMA as P1_BASELINE_RUN_SCHEMA
-    from ..p1.spec import RUN_SCHEMA as P1_RUN_SCHEMA
+    from ..p1.spec import RUN_SCHEMAS as P1_RUN_SCHEMAS
 
     if store.get_manifest(request.input_id).parameters.value().get("schema") == (
             P1_BASELINE_RUN_SCHEMA):
@@ -197,7 +197,7 @@ def dispatch(
             baseline_result.result_id, baseline_result.checkpoint_id,
         )
 
-    if store.get_manifest(request.input_id).parameters.value().get("schema") == P1_RUN_SCHEMA:
+    if store.get_manifest(request.input_id).parameters.value().get("schema") in P1_RUN_SCHEMAS:
         if backend is not None:
             raise BoundaryError("compute", "P1_training_does_not_accept_feature_backend")
         from ..workers.p1_run import execute_p1_run
@@ -236,7 +236,7 @@ def preflight_training_request(store: ArtifactStore, request: ComputeRequest) ->
     if run.kind != "run" or run.producer != request.producer:
         raise BoundaryError("compute", "run_source_or_kind_mismatch")
     from ..p1.baseline_spec import RUN_SCHEMA as P1_BASELINE_RUN_SCHEMA
-    from ..p1.spec import RUN_SCHEMA as P1_RUN_SCHEMA
+    from ..p1.spec import RUN_SCHEMAS as P1_RUN_SCHEMAS
 
     if run.parameters.value().get("schema") == P1_BASELINE_RUN_SCHEMA:
         from ..p1.baseline_worker import verify_baseline_checkpoint
@@ -247,7 +247,7 @@ def preflight_training_request(store: ArtifactStore, request: ComputeRequest) ->
             verify_baseline_checkpoint(store, request.resume, baseline_workload)
         return
 
-    if run.parameters.value().get("schema") == P1_RUN_SCHEMA:
+    if run.parameters.value().get("schema") in P1_RUN_SCHEMAS:
         from ..p1.workload import verify_p1_run
         from ..workers.p1_run import verify_p1_checkpoint
 
@@ -310,7 +310,7 @@ def validate_receipt(
         return
     run = store.get_manifest(request.input_id)
     from ..p1.baseline_spec import RUN_SCHEMA as P1_BASELINE_RUN_SCHEMA
-    from ..p1.spec import RUN_SCHEMA as P1_RUN_SCHEMA
+    from ..p1.spec import RUN_SCHEMAS as P1_RUN_SCHEMAS
 
     if run.parameters.value().get("schema") == P1_BASELINE_RUN_SCHEMA:
         from ..p1.baseline_worker import verify_baseline_checkpoint, verify_baseline_result
@@ -330,7 +330,7 @@ def validate_receipt(
             raise BoundaryError("compute_receipt", "P1_result_checkpoint_mismatch")
         return
 
-    if run.parameters.value().get("schema") == P1_RUN_SCHEMA:
+    if run.parameters.value().get("schema") in P1_RUN_SCHEMAS:
         from ..p1.workload import verify_p1_run
         from ..workers.p1_run import verify_p1_checkpoint, verify_p1_result
 
