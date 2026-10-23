@@ -583,6 +583,25 @@ class Application:
         ):
             raise BoundaryError("native_episode", "actor_active_or_unknown")
 
+    def model_agent_request(self, identity: str, operation: str, run_profile: str,
+                            *, native_episode_ref: object | None = None,
+                            global_no_progress: object = None) -> dict[str, Any]:
+        """One GUI/CLI/API mapping from selected Model to exact execution binding."""
+        self.check_environment_instance()
+        original = self.models.agent_request(identity, operation, run_profile,
+            native_episode_ref=native_episode_ref, global_no_progress=global_no_progress)
+        if native_episode_ref is not None:
+            context = self.local_environment.native_episode_context(native_episode_ref)
+            with self.models.lock:
+                self.models._require_model_admission(context, action="creation")
+            identity = self.local_model_registration.bind_reference_selection(identity, context)
+            if identity == original["selection_id"]:
+                return original
+        else:
+            return original
+        return self.models.agent_request(identity, operation, run_profile,
+            native_episode_ref=native_episode_ref, global_no_progress=global_no_progress)
+
     def prepare_native_episode(self, value: object) -> dict[str, Any]:
         with self.models.lock:
             self.reference_evaluation.check_access()
@@ -1204,14 +1223,15 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                     and not set(body) - {"selection_id", "operation", "run_profile",
                                          "native_episode_ref", "global_no_progress"}):
                 app.check_environment_instance()
-                return app.models.agent_request(
+                return app.model_agent_request(
                     body["selection_id"],
                     body["operation"],
                     body["run_profile"],
                     **({"global_no_progress": body["global_no_progress"]}
                        if "global_no_progress" in body else {}),
                     **(
-                        {"native_episode_ref": body["native_episode_ref"]}
+                        {"native_episode_ref": digest(body["native_episode_ref"],
+                            "native_episode.reference", length=32)}
                         if "native_episode_ref" in body
                         else {}
                     ),
@@ -1221,9 +1241,14 @@ def create_server(app: Application) -> ThreadingHTTPServer:
             if (path == "/api/local-models/evidence/publish"
                     and set(body) in ({"run_id"}, {"run_id", "peer"})):
                 return app.start_global_evidence(body["run_id"], body.get("peer"))
-            if path == "/api/local-models/prepare" and set(body) in (
-                {"selection_id"}, {"selection_id", "run_profile"}
-            ):
+            if (path == "/api/local-models/prepare" and "selection_id" in body
+                    and not set(body) - {"selection_id", "run_profile", "native_episode_ref"}):
+                if "native_episode_ref" in body:
+                    original = app.model_agent_request(body["selection_id"], "prepare-and-load",
+                        body.get("run_profile", "short"),
+                        native_episode_ref=digest(body["native_episode_ref"],
+                            "native_episode.reference", length=32))
+                    return app.models.run_agent(original)
                 return app.models.prepare_and_load(
                     body["selection_id"], body.get("run_profile", "short")
                 )

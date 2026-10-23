@@ -7739,3 +7739,42 @@ test("Reference recovery sends the original group and report hash without retryi
   assert.equal(group.report.episodes[0].status,"unknown");
   assert.equal(env.calls.some(call => call.url === "/api/reference-evaluations/start"),false);
 });
+
+test("same Reference Model load maps the exact ready resource and never takes over", async () => {
+  const ref = "b".repeat(32);
+  const env = setup({view:"local-models",handler:(url,options) => {
+    if (url === "/api/local-environment/native") return {
+      schema:"spireagent/native-episode-resource-v1",phase:"ready",environment_ref:ref,
+      generation_id:"c".repeat(32),presentation:{requested:"native-ui"}};
+    if (url === "/api/local-models") {
+      const catalog = modelHandler(url,options);
+      catalog.policies[0].reference_group_supported = true;
+      return catalog;
+    }
+    return modelHandler(url,options);
+  }});
+  const page = await env.render();
+  assert.equal(post(env.calls).length,0);
+  await action(page,"model-start-audited-cpu").onclick();
+  assert.deepEqual(body(post(env.calls)[0]),{
+    selection_id:"audited-cpu",run_profile:"short",native_episode_ref:ref});
+  assert.equal(post(env.calls).length,1);
+  assert.equal(post(env.calls)[0].url,"/api/local-models/prepare");
+  assert.equal(env.calls.some(call => call.url.includes("takeover")),false);
+});
+
+test("Reference Model load stays disabled without an exact ready resource", async () => {
+  const env = setup({view:"local-models",handler:(url,options) => {
+    if (url === "/api/local-environment/native") return {
+      schema:"spireagent/native-episode-resource-v1",phase:"preparing",environment_ref:"b".repeat(32)};
+    if (url === "/api/local-models") {
+      const catalog = modelHandler(url,options);
+      catalog.policies[0].reference_group_supported = true;
+      return catalog;
+    }
+    return modelHandler(url,options);
+  }});
+  const page = await env.render();
+  assert.equal(action(page,"model-start-audited-cpu").disabled,true);
+  assert.equal(post(env.calls).length,0);
+});

@@ -71,3 +71,25 @@ Managed reset/observe/step/close与raw-grammar outcome，不消费用户所选Mo
 新增组pause/resume/互斥/reconcile在主管协调释放窗口后通过真实Runtime+synthetic World
 检查；该fixture的Model eligibility与peer保存transport显式替换，不授真实Model/R2运行证明。
 测试未消耗最终保留seed或真实游戏局数。
+
+## 同 Model 的 Reference 显示接缝修复
+
+用户补充明确 GUI 只是映射，headless/native-ui 均沿同一 Reference 业务链。本轮据真实
+失败修复：原 P1 注册冻结了 headless 的 producer hash，切 native-ui 后 capabilities 的
+`host.host_kind=live_ui` 改变 producer hash；原 request 仍取旧 composition，Runtime 在
+0动作时明确拒绝 `global_environment_identity_drift`。旧 GUI 未带 ready ref 的 load 则被
+原 `native_resource_reserved` 门正确拒绝。两次原现场失败均保留，不由测试补为成功。
+
+修复归 Application 公共 Model request/prepare 与原 registration owner：准确 typed ref、
+generation 和当前 endpoint 先核，再用原 Reference Runtime/SDK negotiate 提供实际完整
+requirements/support。原 Model/weights/输入/Agent 语义和原 selection 不改；必要时创建
+仅元数据的不可变私有运行 selection，共用原已验权重路径；往返时复用准确旧 binding。
+GUI/API/CLI 与 group dispatcher 均沿这个入口，原请求/Runtime attestation/hash语义不变。
+私有运行项不再作为另一模型列给用户；报告保留用户选择与实际 execution selection 的链。
+prepare 只 Human load，显式开始才 Auto；错ref/换owner/协商未知拒绝且不自动重投。
+
+原 CI39923955716 的两项冷启动 torch eager import 和诊断测试数量断言失败另已修；原
+两项 training_continuation 失败尚未定因，后续 EDQUOT 保留为独立分母。真实 Model Store、
+原 package/SDK 协商、typed resource、HTTP/CLI 与 group serializer 的新反例在本层验证；
+physical World 是合成，load dispatch 测试替换 `_start` 以不占现场 Runtime 端口，不能
+据此声称实际 GUI 游戏或 Runtime 加载实战通过。准确候选/结果见本轮收据与增量审查。

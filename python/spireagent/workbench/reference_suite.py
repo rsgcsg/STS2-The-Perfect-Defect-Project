@@ -381,12 +381,14 @@ def run_suite(
             row["artifacts"].append(artifacts.put("ready.json", json_bytes(resource)))
             request = client.request(selection, ref, run_profile, timeout(phase_deadline))
             if (request.get("schema") != agent_run_request.SCHEMA
-                    or request.get("selection_id") != selection or request.get("target") != "native"
+                    or request.get("target") != "native"
                     or request.get("operation") != "prepare-and-takeover"
                     or request.get("run_profile") != run_profile
-                    or json_bytes(request.get("composition")) != json_bytes(composition)
+                    or not _same_model_binding(composition, request)
                     or request.get("admission_context", {}).get("native_episode") != context):
                 _reject("generated_request_changed")
+            row.update(execution_selection_id=request["selection_id"],
+                       execution_composition_id=request["composition_id"])
             # The existing HTTP helper offers canonical JSON without a newline.
             row["request"] = artifacts.put(
                 "generated-request.json", canonical_json(request).encode())
@@ -622,6 +624,33 @@ def run_suite(
         report.update(status="stopped", stop_reason="report_persistence_failed",
                       persistence_error=_error(error))
     return report
+
+
+def _same_model_binding(selected: dict[str, Any], request: dict[str, Any]) -> bool:
+    """An exact registration or an environment-only P1 execution registration."""
+    actual = request.get("composition")
+    if (not isinstance(actual, dict) or request.get("selection_id") != actual.get("selection_id")
+            or request.get("composition_id") != actual.get("composition_id")):
+        return False
+    if request.get("selection_id") == selected.get("selection_id"):
+        return json_bytes(actual) == json_bytes(selected)
+    original, effective = selected.get("semantic_definition"), actual.get("semantic_definition")
+    implementation = actual.get("implementation", {})
+    return not (not isinstance(original, dict) or not isinstance(effective, dict)
+            or selected.get("implementation", {}).get("adapter", {}).get("id")
+            not in {"stpd-p1-baseline-agent", "stpd-p1-mstd-agent"}
+            or request.get("selection_id") != actual.get("selection_id")
+            or request.get("composition_id") != actual.get("composition_id")
+            or hashlib.sha256(canonical_json({key: value for key, value in actual.items()
+                if key != "composition_id"}).encode()).hexdigest() != actual.get("composition_id")
+            or json_bytes({key: value for key, value in original.items() if key != "environment"})
+            != json_bytes({key: value for key, value in effective.items() if key != "environment"})
+            or any(json_bytes(implementation.get(key))
+                   != json_bytes(selected.get("implementation", {}).get(key))
+                   for key in ("adapter", "runtime_artifact"))
+            or effective.get("environment", {}).get("profile") != "p1-global-r1"
+            or effective.get("environment", {}).get("requirements", {})
+            .get("environment", {}).get("host_kind") != "reference")
 
 
 def _seal(client: ReferenceClient, artifacts: _Artifacts, row: dict[str, Any],

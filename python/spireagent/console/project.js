@@ -2305,6 +2305,11 @@ window.SpireProject = (() => {
     );
     return box;
   }
+  function readyReferenceRef(value) {
+    return value?.schema === "spireagent/native-episode-resource-v1" &&
+      value.phase === "ready" && /^[a-f0-9]{32}$/.test(value.environment_ref || "")
+      ? value.environment_ref : null;
+  }
   function localStatus(ctx, data, onBudgetHost, catalog, groupOwnsExecution = false) {
     const box = panel(
       "本机运行状态",
@@ -2313,7 +2318,8 @@ window.SpireProject = (() => {
     const runtime = data.runtime,
       operation = data.operation;
     const selectedPolicy = Array.isArray(catalog?.policies) ?
-      catalog.policies.find(item => item.selection_id === data.selection_id) : null;
+      catalog.policies.find(item => item.selection_id ===
+        (data.requested_selection_id || data.selection_id)) : null;
     const selectedProfile = runProfiles(selectedPolicy).find(
       profile => profile.id === data.run_profile);
     const profileStatus = data.run_profile === undefined
@@ -2681,13 +2687,16 @@ window.SpireProject = (() => {
       );
       return box;
     }
-    let catalog, state;
+    let catalog, state, nativeResource;
     const replies = await Promise.allSettled([
       request(ctx, "/api/local-models"),
       request(ctx, "/api/local-models/status"),
+      request(ctx, "/api/local-environment/native"),
     ]);
     if (replies[0].status === "fulfilled") catalog = replies[0].value;
     if (replies[1].status === "fulfilled") state = replies[1].value;
+    if (replies[2].status === "fulfilled") nativeResource = replies[2].value;
+    const readyReference = readyReferenceRef(nativeResource);
     let budgetHost = null;
     const group = await referenceGroup(ctx, catalog, state);
     box.append(group.panel);
@@ -2786,7 +2795,8 @@ window.SpireProject = (() => {
       const profileKey = `model-run-profile:${ctx.scope}:${item.selection_id}`;
       const savedProfile = profiles.some(profile => profile.id === drafts.get(profileKey))
         ? drafts.get(profileKey) : null;
-      const currentProfile = state?.loaded && state.selection_id === item.selection_id
+      const currentProfile = state?.loaded &&
+        (state.requested_selection_id || state.selection_id) === item.selection_id
         ? state.run_profile : savedProfile || item.default_run_profile;
       const selectedProfile = profiles.some(profile => profile.id === currentProfile)
         ? currentProfile : "";
@@ -2801,12 +2811,16 @@ window.SpireProject = (() => {
           drafts.set(profileKey, profileChoice.value);
       };
       if (!selectedProfile)
-        row.append(el("p", state?.loaded && state.selection_id === item.selection_id
+        row.append(el("p", state?.loaded &&
+          (state.requested_selection_id || state.selection_id) === item.selection_id
           ? "本次已加载配置未能核对；不会改写当前运行。"
           : "本机服务未提供可核对的运行配置；暂不能请求加载。", "small muted"));
       if (item.run_profile_unavailable_reason === "extended_requires_text_menu_runtime")
         row.append(el("p", "这项旧模型选择仅支持默认短局；较长局需要文本菜单运行环境。", "small muted"));
       const report = readiness.get(item.selection_id);
+      const requiresReference = item.reference_group_supported === true;
+      if (requiresReference && !readyReference)
+        row.append(el("p", "单局加载需要已准备的 Reference。上方种子组可选 1 局并自动准备。", "small muted"));
       const actions = el("div", null, "project-actions");
       actions.append(
         command(
@@ -2836,6 +2850,7 @@ window.SpireProject = (() => {
             await request(ctx, "/api/local-models/prepare", {
               selection_id: item.selection_id,
               run_profile: profileChoice.value,
+              ...(requiresReference ? {native_episode_ref: readyReference} : {}),
             });
             note(
               ctx,
@@ -2849,6 +2864,7 @@ window.SpireProject = (() => {
               groupBlocksStart ||
               !state ||
               !selectedProfile ||
+              (requiresReference && !readyReference) ||
               state.loaded === true ||
               state.operation?.status === "pending" ||
               ["command_unknown", "recovery_required"].includes(state.status),
@@ -3355,6 +3371,12 @@ window.SpireProject = (() => {
       card.append(el("p", "此模型已登记。使用时复用已核验的导出、登记和运行环境，加载完成后由你操作游戏。实际加载仍会重新检查兼容性，Runtime 会在决策前重新检查。", "small muted"));
       let state;
       try { state = await request(ctx, "/api/local-models/status"); } catch { state = null; }
+      const requiresReference = !managed && expectedProfile === "p1-global-r1";
+      let readyReference = null;
+      if (requiresReference) {
+        try { readyReference = readyReferenceRef(await request(ctx, "/api/local-environment/native")); }
+        catch { /* An unconfirmed resource cannot authorize loading. */ }
+      }
       if (!live(ctx)) return card;
       const knownState = state?.schema === "stpd/local-models-v1"
         && typeof state.loaded === "boolean"
@@ -3366,20 +3388,23 @@ window.SpireProject = (() => {
           && ["completed", "failed"].includes(state.operation.status));
       const canUse = knownState && state.loaded === false
         && ["idle", "stopped", "failed"].includes(state.status)
-        && knownOperation && !!csrf;
+        && knownOperation && !!csrf && (!requiresReference || !!readyReference);
       let useSent = false;
       card.append(command(ctx, managed ? "use-managed-model" : "use-local-model", "使用这个模型", async () => {
         if (!live(ctx) || !canUse || useSent || !supportsLocalModelExport(model, support)) return;
         useSent = true;
         try {
-          await request(ctx, "/api/local-models/prepare", {selection_id:status.selection_id}, csrf);
+          await request(ctx, "/api/local-models/prepare", {selection_id:status.selection_id,
+            ...(requiresReference ? {native_episode_ref:readyReference} : {})}, csrf);
         } catch (error) {
           if (error.message !== "request_unknown") throw error;
           // Observe the original outcome on the model page; never resubmit it.
         }
         if (live(ctx)) window.SpireProject.navigate("local-models", status.selection_id);
       }, {primary:true, disabled:() => !canUse || useSent}));
-      if (!canUse) card.append(el("p", state?.loaded
+      if (!canUse) card.append(el("p", requiresReference && !readyReference
+        ? "单局加载需要已准备的 Reference。可在模型页选择 1 局种子组并开始。"
+        : state?.loaded
         ? "当前已有模型会话；请在模型页查看或结束后再使用。"
         : "当前运行状态尚未确认可加载；请到模型页核对状态后再使用。", "small muted"));
       card.append(link("打开此模型选择", route("local-models", status.selection_id)));

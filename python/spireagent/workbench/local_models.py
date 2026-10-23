@@ -1229,6 +1229,8 @@ class LocalModelService:
     def catalog(self) -> dict[str, Any]:
         entries = []
         for entry in self.registry()["policies"]:
+            if entry["id"].startswith("reference-binding-"):
+                continue  # Private execution binding, not another selectable Model.
             manifest = _object_file(self.entry_path(entry, "manifest"))
             bounded = entry.get("runtime_profile") in {
                 *TEXT_PROFILES,
@@ -2061,6 +2063,9 @@ class LocalModelService:
             ):
                 self.state.pop(key, None)
             self.state.update(status="loading", loaded=False, connector_endpoint=connector)
+            config = _object_file(self.entry_path(entry, "config"))
+            self.state["requested_selection_id"] = config.get(
+                "reference_binding_source_selection_id", identity)
             if selected_target is None:
                 self.state.pop("managed_environment", None)
             else:

@@ -1087,6 +1087,11 @@ Store精确ID，不能把错误当成未发布并盲目重投。原权重和正�
 
 正常单局仍在同一“模型与评估”页：选择 Agent → 检查本机加载条件 → 准备并加载
 （Human）→ 开始测试；“暂停并接管”交还当前 Actor 的控制，“结束测试”结束当前运行。
+P1 单局加载须已有准确 ready 的 Reference resource；网页把本次读到的 ref 交给同一
+公共加载入口，资源更换则明确拒绝。没有准备好的单局时，可用下方种子组选择 1 局开始；
+它会沿正常 Host owner 自行准备。已有 CLI/API 的 `prepare-owned` / `attach` 同样可准备
+单局，再用 `native-episode --action run-agent --run-operation prepare-and-load`
+与原 `--native-episode-ref` 加载为 Human；此命令沿同一服务生成并原样提交请求。
 需要自动跑少量新种子时，在同页“种子组实战检查 · Reference”选择已登记的 native
 P1 Model Agent、1–10局、准确游戏版本、显示方式/速度、每局授权和有限运行上限，再
 明确开始。组会自己 prepare、生成并原样提交 Agent 请求、finish、核密封原件、保存并
@@ -1104,6 +1109,15 @@ Managed Model 的同协议多局接缝，因此此处不提供 Managed 组选择
 另有[Managed suite CLI](MANAGED_SUITE_EVALUATION.md)可批量运行版本化场景；它固定
 catalog-only random Agent、直接消费 Managed 环境与原 raw outcome，不接受所选 Model，
 不能替代此处 Model/AgentRun 的评估与保存链。
+
+同一已选 P1 Model 在无窗口与显示窗口之间切换，不要求用户重新登记另一模型。
+Application 先核准确 ready ref/generation/current endpoint，再复用原注册 owner 的实际
+Reference 协商，按需生成或复用私有运行 selection/composition。原 Model、权重、输入和
+Agent 语义、原登记不改；实际 producer hash 原样保留，Runtime 仍严格核身份。
+“准备并加载”只进入 Human，明确“开始测试”或启动种子组才授权自主运行。
+组报告的 `selection_id` 记录用户所选项；每局 `execution_selection_id` /
+`execution_composition_id` 与原请求、密封 evaluation 绑定实际执行项，二者不混写。
+协商/原投递未知不会自动重投或改用最新资源；先核原 operation/ref/request 状态。
 
 “当前局结束后暂停”是组的局间边界：当前局已 finish、密封并保存回读后，才显示已暂停；
 “继续本组”在同一 Application 活着时运行下一个未派发种子，不恢复局内状态或重放当前局。

@@ -77,3 +77,63 @@ def test_two_seed_group_checks_config_and_preserves_before_boundary(tmp_path, sp
     assert boundary[1]["episodes"][0]["cleanup_accepted"] is True
     saved = json.loads((directory / "report.json").read_bytes())
     assert saved == report
+
+
+@pytest.mark.parametrize("display,fault", [("native-ui", None), ("headless", None),
+                                           ("native-ui", "lost_submit")])
+def test_group_preserves_selected_model_and_actual_bound_execution(tmp_path, display, fault):
+    from spireagent.encoding import canonical_json
+    from spireagent.workbench.agent_run_request import create
+
+    class BoundModelOwner(GroupOwner):
+        def __init__(self, directory):
+            super().__init__(directory, fault=fault)
+            self.composition["semantic_definition"].update(
+                agent={"id": "p1-mstd", "version": "1"},
+                models=[{"model_id": "immutable-package", "weights_sha256": "a" * 64}],
+                input={"profile": "p1-global-r1"},
+                environment={"profile": "p1-global-r1", "requirements": {
+                    "environment": {"host_kind": "reference", "producer_sha256": "b" * 64}}})
+            self.composition["implementation"].update(
+                adapter={"id": "stpd-p1-mstd-agent", "code_sha256": "c" * 64},
+                runtime_artifact={"id": "immutable-package", "sha256": "d" * 64})
+            self.composition.pop("composition_id")
+            self.composition["composition_id"] = hashlib.sha256(
+                canonical_json(self.composition).encode()).hexdigest()
+
+        def request(self, selection, ref, profile, timeout):
+            self.calls.append("request")
+            bound = copy.deepcopy(self.composition)
+            bound["selection_id"] = "reference-binding-" + ref
+            bound["semantic_definition"]["environment"]["requirements"]["environment"][
+                "producer_sha256"] = "e" * 64
+            bound["implementation"]["original_manifest_id"] = bound["selection_id"]
+            bound.pop("composition_id")
+            bound["composition_id"] = hashlib.sha256(canonical_json(bound).encode()).hexdigest()
+            return create(bound, "prepare-and-takeover", profile,
+                          {"max_submissions": 16, "max_policy_calls": 32, "deadline_ms": 60000},
+                          "native", native_episode_context=self.context)
+
+    raw = json_bytes(diagnostic_reference_manifest("v0.111.0", "c" * 32, 2))
+    path = tmp_path / "manifest.json"
+    path.write_bytes(raw)
+    directory = tmp_path / "attempt"
+    client, clock = BoundModelOwner(directory), Clock()
+    report = run_suite(path, hashlib.sha256(raw).hexdigest(), client=client, run_dir=directory,
+        selection="existing-agent", run_profile="short", max_episodes=2, display_mode=display,
+        speed="normal", evidence_peer={"kind": "fixture"}, limits=SuiteLimits(10, 10, 10, 60),
+        clock=clock, sleep=clock.sleep)
+    row = report["episodes"][0]
+    assert row["selection_id"] == report["selection_id"] == "existing-agent"
+    assert row["execution_selection_id"] == "reference-binding-" + row["environment_ref"]
+    request_raw = (directory / row["original_request"]["path"]).read_bytes()
+    admitted = json.loads(request_raw)
+    assert admitted["selection_id"] == row["execution_selection_id"]
+    assert admitted["composition_id"] == row["execution_composition_id"]
+    assert admitted["composition"]["semantic_definition"]["models"] == [
+        {"model_id": "immutable-package", "weights_sha256": "a" * 64}]
+    if fault is None:
+        assert report["status"] == "completed" and report["summary"]["preserved_evidence"] == 2
+    else:
+        assert client.calls.count("submit") == client.calls.count("prepare") == 1
+        assert report["episodes"][1]["status"] == "not_started"
