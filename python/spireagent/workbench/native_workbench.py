@@ -31,7 +31,9 @@ class NativeWorkbenchRegistrar:
 
     address = GAME_BRIDGE_URL
 
-    def __init__(self, *, opener: Any | None = None) -> None:
+    def __init__(self, *, opener: Any | None = None,
+                 runtime_identity: Callable[[str], bool] | None = None) -> None:
+        self.runtime_identity = runtime_identity
         self.opener = opener or build_opener(ProxyHandler({}), _NoRedirect())
 
     @staticmethod
@@ -100,6 +102,8 @@ class NativeWorkbenchRegistrar:
             ):
                 return {"status": "unavailable", "reason": "game_identity_unavailable"}
             runtime_instance_id = current["runtime_instance_id"]
+            if self.runtime_identity is not None and not self.runtime_identity(runtime_instance_id):
+                return {"status": "unavailable", "reason": "game_identity_mismatch"}
             expected_workbench_instance_id: str | None = None
             if current["status"] == "registered":
                 current_instance = current.get("workbench_instance_id")
@@ -164,6 +168,8 @@ class NativeWorkbenchRegistrar:
                     or current["status"] not in {"registered", "unregistered"}):
                 raise BoundaryError("native_workbench", "invalid_game_status")
             runtime_id = bounded_string(current["runtime_instance_id"], 128)
+            if self.runtime_identity is not None and not self.runtime_identity(runtime_id):
+                raise BoundaryError("native_workbench", "game_identity_mismatch")
             # Legacy browser URL/instance is intentionally not native authority.
             pair, bootstrap, generation = access.registration_candidate(
                 url, instance_id, runtime_id, self)
@@ -374,8 +380,11 @@ class WorkbenchRegistrationLoop:
 
 
 def start_workbench_registration(url: str, instance_id: str, *,
-                                 access: Any | None = None) -> WorkbenchRegistrationLoop:
+                                 access: Any | None = None,
+                                 runtime_identity: Callable[[str], bool] | None = None,
+                                 ) -> WorkbenchRegistrationLoop:
     """Create/start the loop from Workbench ``serve`` when platform is configured."""
-    loop = WorkbenchRegistrationLoop(url, instance_id, access=access)
+    loop = WorkbenchRegistrationLoop(url, instance_id, access=access,
+        registrar=NativeWorkbenchRegistrar(runtime_identity=runtime_identity))
     loop.start()
     return loop

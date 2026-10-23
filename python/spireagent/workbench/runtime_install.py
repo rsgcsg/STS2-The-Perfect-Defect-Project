@@ -9,6 +9,7 @@ import re
 import shutil
 import socket
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -303,6 +304,12 @@ def _install_runtime(
         raise BoundaryError("local_model", "pinned_runtime_or_npm_missing")
     # Never replace the package beneath a runtime, including a previous workbench's process.
     with socket.socket() as probe:
+        # Match the Runtime's Node listener and existing Model start probe:
+        # closed TIME_WAIT sockets are not a running owner; LISTEN still rejects.
+        if sys.platform == "win32":
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        else:
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             probe.bind(("127.0.0.1", 15527))
         except OSError:

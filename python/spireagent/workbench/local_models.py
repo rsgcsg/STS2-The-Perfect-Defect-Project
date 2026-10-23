@@ -65,8 +65,11 @@ RUNTIME_PACKAGE = "@rsgcsg/sts2-policy-runtime"
 MODES = frozenset({"human", "shadow", "one_step", "auto"})
 AGENT_STARTUP = "sts2.policy-runtime/agent-session-startup-1"
 AGENT_STATUS = "sts2.policy-runtime/agent-session-status-1"
+AGENT_STARTUPS = frozenset({AGENT_STARTUP, "sts2.policy-runtime/agent-session-startup-2"})
+AGENT_STATUSES = frozenset({AGENT_STATUS, "sts2.policy-runtime/agent-session-status-2"})
 JSON_LIMIT = 1024 * 1024
-RUN_PROFILES = {
+RUN_PROFILES: dict[str, dict[str, Any]] = {
+    "continuous": {"mode": "continuous"},
     "short": {"max_submissions": 16, "max_policy_calls": 32, "deadline_ms": 60_000},
     "extended": {"max_submissions": 2_000, "max_policy_calls": 4_000,
                  "deadline_ms": 1_800_000},
@@ -150,7 +153,23 @@ def _recorded_budget(value: object) -> dict[str, Any] | None:
         return None
     fields = ("max_submissions", "submissions_used", "max_policy_calls",
               "policy_calls_used", "deadline_ms", "elapsed_ms")
-    if any(type(value.get(key)) is not int or value[key] < 0 for key in fields):
+    mode = value.get("mode")
+    if mode is not None and mode not in {"bounded", "continuous"}:
+        return None
+    continuous = mode == "continuous"
+    counters = ("submissions_used", "policy_calls_used", "elapsed_ms")
+    limits = ("max_submissions", "max_policy_calls", "deadline_ms")
+    if any(type(value.get(key)) is not int or value[key] < 0 for key in counters):
+        return None
+    if continuous:
+        if (any(value.get(key) is not None or key not in value
+                for key in (*limits, "remaining_ms"))
+                or value["state"] == "exhausted" or value.get("exhausted_reason") is not None):
+            return None
+    elif any(type(value.get(key)) is not int or value[key] <= 0 for key in limits):
+        return None
+    if mode == "bounded" and (type(value.get("remaining_ms")) is not int
+                              or value["remaining_ms"] < 0):
         return None
     exhausted = value.get("exhausted_reason")
     ended = value.get("ended_reason")
@@ -159,9 +178,15 @@ def _recorded_budget(value: object) -> dict[str, Any] | None:
             or ended is not None and (
                 not isinstance(ended, str) or ended not in _BUDGET_END)):
         return None
-    return {key: value[key] for key in fields} | {
+    if ((value["state"] == "exhausted") != (exhausted is not None)
+            or value["state"] != "inactive" and ended is not None):
+        return None
+    result = {key: value[key] for key in fields} | {
         "state": value["state"], "exhausted_reason": exhausted, "ended_reason": ended,
     }
+    if mode is not None:
+        result.update(mode=mode, remaining_ms=value["remaining_ms"])
+    return result
 
 
 def _terminal_screen(value: object) -> str | None:
@@ -207,12 +232,69 @@ def _loopback(url: str) -> str:
     return str(result)
 
 
+def _runtime_wire_version(package: dict[str, Any]) -> int:
+    version = package.get("version")
+    if version == "0.1.0-rc.40":
+        return 2
+    if version in {f"0.1.0-rc.{revision}" for revision in range(1, 40)}:
+        return 1
+    raise BoundaryError("local_model", "unsupported_runtime_startup_contract")
+
+
+def _startup_budget(profile: str, wire: int) -> dict[str, Any]:
+    limits = RUN_PROFILES[profile]
+    if profile == "continuous":
+        if wire != 2:
+            raise BoundaryError("local_model", "continuous_requires_runtime_v2")
+        return {"mode": "continuous"}
+    return {**({"mode": "bounded"} if wire == 2 else {}),
+            "maxSubmissions": limits["max_submissions"],
+            "maxPolicyCalls": limits["max_policy_calls"], "deadlineMs": limits["deadline_ms"]}
+
+
+def _validate_status_budget(value: object, startup: dict[str, Any]) -> None:
+    wire = 2 if startup["schema"].endswith("-2") else 1
+    fields = {"state", "max_submissions", "submissions_used", "max_policy_calls",
+              "policy_calls_used", "deadline_ms", "elapsed_ms", "remaining_ms",
+              "exhausted_reason", "ended_reason"}
+    if wire == 2:
+        fields.add("mode")
+    if not isinstance(value, dict) or set(value) != fields or _recorded_budget(value) is None:
+        raise ValueError("invalid Runtime budget")
+    config = startup.get("autonomy_budget")
+    if not isinstance(config, dict):
+        raise ValueError("missing startup budget")
+    if wire == 2:
+        mode = config.get("mode")
+        if mode not in {"bounded", "continuous"} or value["mode"] != mode:
+            raise ValueError("Runtime budget mode changed")
+        if mode == "continuous":
+            if set(config) != {"mode"}:
+                raise ValueError("continuous budget has limits")
+            return
+    if set(config) != ({"mode"} if wire == 2 else set()) | {
+            "maxSubmissions", "maxPolicyCalls", "deadlineMs"}:
+        raise ValueError("invalid bounded startup budget")
+    for before, after in (("maxSubmissions", "max_submissions"),
+                          ("maxPolicyCalls", "max_policy_calls"), ("deadlineMs", "deadline_ms")):
+        if type(config[before]) is not int or config[before] <= 0 or value[after] != config[before]:
+            raise ValueError("Runtime budget limits changed")
+    if (type(value["remaining_ms"]) is not int or value["remaining_ms"] < 0
+            or value["submissions_used"] > value["max_submissions"]
+            or value["policy_calls_used"] > value["max_policy_calls"]
+            or value["elapsed_ms"] > value["deadline_ms"]
+            or value["remaining_ms"] > value["deadline_ms"]
+            or value["elapsed_ms"] + value["remaining_ms"] != value["deadline_ms"]):
+        raise ValueError("invalid bounded counters")
+
+
 def _startup_identity(manifest: dict[str, Any], package: dict[str, Any], *,
                       managed_environment: dict[str, str] | None = None) -> dict[str, Any]:
     native = manifest.get("schema") == "sts2.policy-runtime/agent-manifest-1"
     prefix = "agent" if native else "policy"
     return {
-        "schema": AGENT_STARTUP if native else "sts2.policy-runtime/startup-1",
+        "schema": ("sts2.policy-runtime/agent-session-startup-" if native
+                   else "sts2.policy-runtime/startup-") + str(_runtime_wire_version(package)),
         "agent_manifest_id" if native else "manifest_id": manifest["manifest_id"],
         f"{prefix}_artifact_sha256": manifest["artifact"]["sha256"],
         f"{prefix}_manifest_sha256": hashlib.sha256(canonical_json(manifest).encode()).hexdigest(),
@@ -281,7 +363,7 @@ class RuntimeClient:
             or (
                 route == "/reconcile"
                 and (
-                    self.startup.get("schema") != AGENT_STARTUP
+                    self.startup.get("schema") not in AGENT_STARTUPS
                     or binding is None
                     or not isinstance(body, dict)
                     or set(body) != {"request_id"}
@@ -350,7 +432,7 @@ class RuntimeClient:
                     },
                     503: {"runtime_environment_unavailable"},
                 }
-                if self.startup.get("schema") == AGENT_STARTUP:
+                if self.startup.get("schema") in AGENT_STARTUPS:
                     allowed[409].update({"runtime_run_mismatch", "runtime_pending_request_mismatch",
                                          "runtime_profile_reconcile_unsupported",
                                          "runtime_reconcile_requires_human"})
@@ -367,14 +449,15 @@ class RuntimeClient:
             raise BoundaryError("local_model", fallback) from None
 
     def validate_status(self, status: object) -> None:
-        if not isinstance(status, dict):
+        if (not isinstance(status, dict) or self.startup.get("schema") not in AGENT_STARTUPS | {
+                "sts2.policy-runtime/startup-1", "sts2.policy-runtime/startup-2"}):
             raise ValueError
-        if self.startup.get("schema") == AGENT_STARTUP:
+        if self.startup.get("schema") in AGENT_STARTUPS:
             self._validate_agent_status(status)
             return
         policy, runtime = status.get("policy"), status.get("runtime")
         if (
-            status.get("schema") != "sts2.policy-runtime/status-1"
+            status.get("schema") != self.startup["schema"].replace("startup-", "status-")
             or status.get("run_id") != self.startup["run_id"]
             or status.get("mode") not in MODES
             or status.get("lifecycle") not in {"running", "stopped"}
@@ -388,21 +471,9 @@ class RuntimeClient:
             or runtime.get("code_sha256") != self.startup["runtime_code_sha256"]
         ):
             raise ValueError
-        startup_budget = self.startup.get("autonomy_budget")
-        if isinstance(startup_budget, dict) and all(
-            type(startup_budget.get(key)) is int
-            for key in ("maxSubmissions", "maxPolicyCalls", "deadlineMs")
-        ):
-            current_budget = status.get("autonomy_budget")
-            if not isinstance(current_budget, dict) or any(
-                current_budget.get(status_key) != startup_budget[startup_key]
-                for startup_key, status_key in (
-                    ("maxSubmissions", "max_submissions"),
-                    ("maxPolicyCalls", "max_policy_calls"),
-                    ("deadlineMs", "deadline_ms"),
-                )
-            ):
-                raise ValueError
+        if ("autonomy_budget" in self.startup or "autonomy_budget" in status
+                or status["schema"].endswith("-2")):
+            _validate_status_budget(status.get("autonomy_budget"), self.startup)
 
     def _validate_agent_status(self, status: dict[str, Any]) -> None:
         fields = {
@@ -430,7 +501,7 @@ class RuntimeClient:
         agent, runtime = status.get("agent"), status.get("runtime")
         if (
             set(status) not in (fields, fields | {"global_no_progress"})
-            or status["schema"] != AGENT_STATUS
+            or status["schema"] != self.startup["schema"].replace("startup-", "status-")
             or status["run_id"] != self.startup["run_id"]
             or status["agent_manifest_sha256"] != self.startup["agent_manifest_sha256"]
             or status["mode"] not in MODES
@@ -485,35 +556,7 @@ class RuntimeClient:
                 not isinstance(item, str) for item in status[key]
             ):
                 raise ValueError
-        budget = status["autonomy_budget"]
-        if (
-            not isinstance(budget, dict)
-            or set(budget)
-            != {
-                "state",
-                "max_submissions",
-                "submissions_used",
-                "max_policy_calls",
-                "policy_calls_used",
-                "deadline_ms",
-                "elapsed_ms",
-                "remaining_ms",
-                "exhausted_reason",
-                "ended_reason",
-            }
-            or type(budget.get("remaining_ms")) is not int
-            or budget["remaining_ms"] < 0
-        ):
-            raise ValueError
-        if _recorded_budget(budget) is None or any(
-            budget[status_key] != self.startup["autonomy_budget"][startup_key]
-            for startup_key, status_key in (
-                ("maxSubmissions", "max_submissions"),
-                ("maxPolicyCalls", "max_policy_calls"),
-                ("deadlineMs", "deadline_ms"),
-            )
-        ):
-            raise ValueError
+        _validate_status_budget(status["autonomy_budget"], self.startup)
         pending = status["pending_request"]
         if pending is not None and (
             not isinstance(pending, dict)
@@ -561,6 +604,7 @@ class LocalModelService:
         native_episode_authorizer: Callable[[object], dict[str, Any]] | None = None,
         native_episode_guard: Callable[[dict[str, Any] | None, str], None] | None = None,
         native_episode_associate: Callable[[dict[str, Any], str, Any], None] | None = None,
+        native_episode_creation_guard: Callable[[dict[str, Any]], None] | None = None,
     ) -> None:
         self.config, self.hub = config, hub
         self.managed_target = managed_target
@@ -568,6 +612,7 @@ class LocalModelService:
         self.native_episode_authorizer = native_episode_authorizer
         self.native_episode_guard = native_episode_guard
         self.native_episode_associate = native_episode_associate
+        self.native_episode_creation_guard = native_episode_creation_guard
         self.root = ROOT
         self.directory = config.state_dir / "models"
         # The checkout supplies executable code and the shipped catalog. This
@@ -871,7 +916,7 @@ class LocalModelService:
             identity,
             operation,
             profile,
-            native_context=native_context,
+            native_context=native_context if episode is None else None,
             **({"native_episode_ref": episode["environment_ref"]} if episode is not None else {}),
             global_no_progress=budget.get("no_progress"),
         )
@@ -1242,6 +1287,9 @@ class LocalModelService:
             profiles = [{"id": "short", "label": "短时检查" if bounded else "默认运行",
                          "limits": RUN_PROFILES["short"] if bounded else None}]
             if bounded:
+                if self._continuous_profile(entry["id"]):
+                    profiles.append({"id": "continuous", "label": "连续，直到暂停或结束",
+                                     "limits": {"mode": "continuous"}})
                 profiles.append({"id": "extended",
                                  "label": "较长尝试（每次自主授权最多 30 分钟）",
                                  "limits": RUN_PROFILES["extended"]})
@@ -1537,7 +1585,8 @@ class LocalModelService:
                     agent_request["operation"],
                     agent_request["run_profile"],
                     global_no_progress=agent_request.get("budget", {}).get("no_progress"),
-                    **({"native_context": request_context} if request_context is not None else {}),
+                    **({"native_context": request_context}
+                       if request_context is not None and native_episode_context is None else {}),
                     **(
                         {"native_episode_ref": native_episode_context["environment_ref"]}
                         if native_episode_context is not None
@@ -1674,6 +1723,13 @@ class LocalModelService:
 
         return self._begin("export-checkpoint", publish)
 
+    def _continuous_profile(self, identity: str) -> bool:
+        try:
+            _directory, package = self.runtime_profile(identity)
+            return package.get("version") == "0.1.0-rc.40"
+        except (OSError, ValueError):
+            return False
+
     def _run_profile(self, identity: str, profile: str) -> bool:
         if not isinstance(profile, str) or profile not in RUN_PROFILES:
             raise BoundaryError("local_model", "unsupported_run_profile")
@@ -1681,8 +1737,10 @@ class LocalModelService:
             *TEXT_PROFILES,
             NATIVE_PROFILE, PUBLIC_M0_PROFILE, PUBLIC_M2_PROFILE, GLOBAL_PROFILE,
         }
-        if profile == "extended" and not bounded:
+        if profile in {"extended", "continuous"} and not bounded:
             raise BoundaryError("local_model", "extended_requires_text_menu_runtime")
+        if profile == "continuous" and not self._continuous_profile(identity):
+            raise BoundaryError("local_model", "continuous_requires_runtime_v2")
         return bounded
 
     def start(
@@ -1964,6 +2022,8 @@ class LocalModelService:
                      _loopback(self.config.platform_url or "http://127.0.0.1:15526"))
         if episode_context is not None:
             connector = self._authorize_native_episode(episode_context)["endpoint"]
+            if self.native_episode_creation_guard is not None:
+                self.native_episode_creation_guard(episode_context)
         if target is not None:
             environment_arguments = runtime_arguments(target, self.private_root)
         else:
@@ -2012,10 +2072,14 @@ class LocalModelService:
             command.extend(("--no-progress-window", str(progress["windowDecisions"]),
                             "--no-progress-repeats", str(progress["maxRepeats"])))
         if bounded:
-            limits = RUN_PROFILES[run_profile]
-            command.extend(("--max-auto-submissions", str(limits["max_submissions"]),
-                            "--max-policy-calls", str(limits["max_policy_calls"]),
-                            "--auto-deadline-ms", str(limits["deadline_ms"])))
+            requested_budget = _startup_budget(run_profile, _runtime_wire_version(package))
+            if run_profile == "continuous":
+                command.extend(("--autonomy-mode", "continuous"))
+            else:
+                limits = RUN_PROFILES[run_profile]
+                command.extend(("--max-auto-submissions", str(limits["max_submissions"]),
+                                "--max-policy-calls", str(limits["max_policy_calls"]),
+                                "--auto-deadline-ms", str(limits["deadline_ms"])))
         environment = dict(os.environ)
         environment.update(HF_HUB_OFFLINE="1", TRANSFORMERS_OFFLINE="1")
         for name in tuple(environment):
@@ -2088,23 +2152,27 @@ class LocalModelService:
                 startup.get(key) != value for key, value in expected.items()
             ) or not re.fullmatch(r"run-[a-f0-9-]{36}", startup.get("run_id", "")):
                 raise ValueError
-            if expected["schema"] == AGENT_STARTUP and set(startup) != {
+            if expected["schema"] in AGENT_STARTUPS and set(startup) != {
                 *expected, "run_id", "autonomy_budget"}:
                 raise ValueError
             if startup.get("managed_environment") != selected_target:
                 raise ValueError
-            if bounded and startup.get("autonomy_budget") != {
-                "maxSubmissions": limits["max_submissions"],
-                "maxPolicyCalls": limits["max_policy_calls"],
-                "deadlineMs": limits["deadline_ms"],
-            }:
+            if bounded and startup.get("autonomy_budget") != requested_budget:
                 raise ValueError
             client = RuntimeClient(startup["address"], startup)
             runtime = client.request("/status")["status"]
-            if bounded and (not isinstance(runtime.get("autonomy_budget"), dict)
-                              or any(runtime["autonomy_budget"].get(key) != value
-                                     for key, value in limits.items())):
-                raise ValueError
+            if bounded:
+                status_limits: dict[str, Any] = ({"mode": "continuous", "max_submissions": None,
+                                  "max_policy_calls": None, "deadline_ms": None,
+                                  "remaining_ms": None}
+                                 if run_profile == "continuous" else {
+                                     **RUN_PROFILES[run_profile],
+                                     **({"mode": "bounded"}
+                                        if _runtime_wire_version(package) == 2 else {})})
+                if (not isinstance(runtime.get("autonomy_budget"), dict)
+                        or any(runtime["autonomy_budget"].get(key) != value
+                               for key, value in status_limits.items())):
+                    raise ValueError
             if episode_context is not None:
                 self._authorize_native_episode(episode_context)
             with self.lock:
@@ -2266,7 +2334,7 @@ class LocalModelService:
                 pending = observed.get("pending_request") if isinstance(observed, dict) else None
                 if (
                     not isinstance(observed, dict)
-                    or observed.get("schema") != AGENT_STATUS
+                    or observed.get("schema") not in AGENT_STATUSES
                     or not isinstance(pending, dict)
                     or pending.get("request_id") != request_id
                 ):
@@ -2336,7 +2404,7 @@ class LocalModelService:
                            pending_request: dict[str, Any]) -> None:
         self._require_intent(intent)
         observed = client.request("/status")["status"]
-        if (observed.get("schema") != AGENT_STATUS
+        if (observed.get("schema") not in AGENT_STATUSES
                 or observed.get("pending_request") != pending_request):
             raise BoundaryError("local_model", "native_pending_request_changed")
         binding = RuntimeControlBinding.from_environment(
@@ -2545,7 +2613,7 @@ class LocalModelService:
         from sts2_platform_evidence import verify_agent_run_evidence
 
         startup = previous.get("startup")
-        native = isinstance(startup, dict) and startup.get("schema") == AGENT_STARTUP
+        native = isinstance(startup, dict) and startup.get("schema") in AGENT_STARTUPS
         required = {
             "run_id", "agent_manifest_id" if native else "manifest_id",
             "agent_manifest_sha256" if native else "policy_manifest_sha256",
@@ -2793,7 +2861,7 @@ class LocalModelService:
         from .agent_task_outcome import project
 
         startup = self.state["startup"]
-        if startup.get("schema") == AGENT_STARTUP:
+        if startup.get("schema") in AGENT_STARTUPS:
             self._native_operation_handoff(startup)
             return
         directory = self.directory / "agent-runs" / startup["run_id"]
@@ -2946,6 +3014,33 @@ class LocalModelService:
         with self.lock:
             self.state["evaluation"] = report
 
+    def native_actor_retirement_proof(self, context: dict[str, Any], run_id: str) -> dict[str, Any]:
+        """Reverify the exact stopped original before explicitly changing Model in one world."""
+        with self.lock:
+            self._require_stopped_runtime()
+            startup = self.state.get("startup")
+            if (self.state.get("status") != "stopped" or self.state.get("native_episode") != context
+                    or self.thread is not None and self.thread.is_alive()
+                    or not isinstance(startup, dict) or startup.get("run_id") != run_id
+                    or startup.get("schema") not in AGENT_STARTUPS):
+                raise BoundaryError("native_episode", "stopped_actor_required")
+            # This invokes the original typed reader and checks immutable event bytes;
+            # a cached 'pass' field or ordinary process exit is not release proof.
+            self._native_operation_handoff(startup)
+            report = self.state.get("evaluation")
+            if (not isinstance(report, dict) or report.get("run_id") != run_id
+                    or report.get("evidence_verification") != "pass"
+                    or report.get("controller_at_stop") != "released"
+                    or report.get("tainted") is not False
+                    or report.get("pending_request") is not None
+                    or report.get("agent_execution", {}).get("status") != "bound"
+                    or report.get("agent_execution", {}).get(
+                        "native_episode", {}).get("status") != "bound"):
+                raise BoundaryError("native_episode", "clean_sealed_actor_required")
+            return json.loads(json.dumps({"run_id": run_id,
+                "request": self.state.get("agent_run_request"),
+                "evaluation": report, "admission_context": context}))
+
     def stopped_agent_evidence_context(self, run_id: object) -> dict[str, Any]:
         """Bind one owned stopped P1 run to its original registered Model and Runtime."""
         with self.lock:
@@ -2954,7 +3049,7 @@ class LocalModelService:
             if (self.state.get("status") != "stopped"
                     or self.thread is not None and self.thread.is_alive()
                     or not isinstance(startup, dict)
-                    or startup.get("schema") != AGENT_STARTUP
+                    or startup.get("schema") not in AGENT_STARTUPS
                     or not isinstance(run_id, str)
                     or re.fullmatch(r"run-[a-f0-9-]{36}", run_id) is None
                     or startup.get("run_id") != run_id):
@@ -3014,9 +3109,13 @@ class LocalModelService:
             "runtime_code_sha256": startup["runtime_code_sha256"],
             "evidence_verification": result.status,
             "findings": [finding.code for finding in result.findings],
-            "scope": "bounded_global_program_operation"
+            "scope": ("continuous_global_program_operation"
+                      if startup.get("autonomy_budget", {}).get("mode") == "continuous"
+                      else "bounded_global_program_operation")
             if self.selection(startup["agent_manifest_id"])["adapter"] == GLOBAL_ADAPTER
-            else "bounded_native_agent_operation",
+            else ("continuous_native_agent_operation"
+                  if startup.get("autonomy_budget", {}).get("mode") == "continuous"
+                  else "bounded_native_agent_operation"),
             "game_outcome": "not_measured",
             "scientific_verdict": "not_claimed",
             "training_admission": "not_claimed",

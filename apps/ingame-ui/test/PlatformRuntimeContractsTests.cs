@@ -17,7 +17,7 @@ public sealed class PlatformRuntimeContractsTests
             adapter = new { id = "adapter-synthetic", version = "1", protocol = "sts2.policy-runtime/agent-session-ndjson-1", code_sha256 = new string('d', 64) } },
         ["lifecycle"] = "running", ["mode"] = "human", ["controller"] = "released",
         ["autonomy_budget"] = new { max_submissions = 16, submissions_used = 0, max_policy_calls = 32, policy_calls_used = 0,
-            deadline_ms = 60000, elapsed_ms = 0, state = "inactive", exhausted_reason = (string?)null, ended_reason = (string?)null },
+            deadline_ms = 60000, elapsed_ms = 0, remaining_ms = 60000, state = "inactive", exhausted_reason = (string?)null, ended_reason = (string?)null },
         ["tainted"] = false, ["taint_reason"] = null, ["refreshing"] = false,
         ["invalidations"] = Array.Empty<string>(), ["errors"] = Array.Empty<string>(), ["environment"] = null,
         ["session"] = null, ["last_observation"] = null, ["last_directive"] = null, ["last_result"] = null,
@@ -115,4 +115,45 @@ public sealed class PlatformRuntimeContractsTests
         Assert.True(PlatformNativeWorkbenchCommands.Recovery("models.reconcile"));
         Assert.False(PlatformNativeWorkbenchCommands.Recovery("models.takeover"));
     }
+    [Fact]
+    public void V2ContinuousPreservesNullCapsAndRealCountersAndRejectsV1Disguise()
+    {
+        Dictionary<string, object?> status = Native();
+        status["schema"] = NativeAgentRuntimeStatus.V2Schema;
+        var budget = new Dictionary<string, object?> {
+            ["mode"] = "continuous", ["state"] = "active", ["max_submissions"] = null,
+            ["submissions_used"] = 17, ["max_policy_calls"] = null, ["policy_calls_used"] = 33,
+            ["deadline_ms"] = null, ["elapsed_ms"] = 61001, ["remaining_ms"] = null,
+            ["exhausted_reason"] = null, ["ended_reason"] = null };
+        status["autonomy_budget"] = budget;
+        NativeAgentRuntimeStatus parsed = Assert.IsType<NativeAgentRuntimeStatus>(Parse(status));
+        Assert.Equal(JsonValueKind.Null, parsed.AutonomyBudget.GetProperty("remaining_ms").ValueKind);
+        Assert.Equal(61001, parsed.AutonomyBudget.GetProperty("elapsed_ms").GetInt64());
+        status["schema"] = NativeAgentRuntimeStatus.CurrentSchema;
+        Assert.Throws<JsonException>(() => Parse(status));
+        status["schema"] = NativeAgentRuntimeStatus.V2Schema;
+        foreach (string key in new[] { "max_submissions", "max_policy_calls", "deadline_ms", "remaining_ms" })
+        {
+            budget[key] = 1;
+            Assert.Throws<JsonException>(() => Parse(status));
+            budget[key] = null;
+        }
+        budget["state"] = "exhausted";
+        Assert.Throws<JsonException>(() => Parse(status));
+    }
+
+    [Fact]
+    public void V2BoundedCountersUseTheOriginalRuntimeTimeEquation()
+    {
+        using JsonDocument vectors = JsonDocument.Parse(File.ReadAllBytes(Path.Combine(AppContext.BaseDirectory, "autonomy-v2.json")));
+        var budget = vectors.RootElement.GetProperty("bounded_status_v2").EnumerateObject()
+            .ToDictionary(property => property.Name, property => (object?)property.Value.Clone());
+        Dictionary<string, object?> status = Native();
+        status["schema"] = NativeAgentRuntimeStatus.V2Schema;
+        status["autonomy_budget"] = budget;
+        Assert.IsType<NativeAgentRuntimeStatus>(Parse(status));
+        budget["remaining_ms"] = 50000;
+        Assert.Throws<JsonException>(() => Parse(status));
+    }
+
 }

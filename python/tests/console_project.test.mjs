@@ -4903,7 +4903,7 @@ test("a legacy short-only choice and an unknown loaded profile stay distinct", a
       downloaded_models:[], evaluations:[]};
     if (url === "/api/local-models/status") return {status:"loaded", loaded:true,
       selection_id:"legacy-cpu", run_profile:"/private/secret", operation:null,
-      runtime:{run_id:"run-1", lifecycle:"running", mode:"human", controller:"released",
+      runtime:{schema:"sts2.policy-runtime/status-1", run_id:"run-1", lifecycle:"running", mode:"human", controller:"released",
         tainted:false, errors:[]}};
     return modelHandler(url, options);
   }});
@@ -4994,6 +4994,8 @@ test("status selects the supported receipt schema and never infers delivery from
   const terminal = {...receipt, status:"terminal"};
   for (const [runtime, expected] of [
     [{schema:agentSchema, last_result:terminal}, /已有动作投递结果记录：已送达/],
+    [{schema:"sts2.policy-runtime/agent-session-status-2", last_result:terminal}, /已有动作投递结果记录：已送达/],
+    [{schema:"sts2.policy-runtime/status-2", last_receipt:receipt}, /已有动作投递结果记录：已送达/],
     [{schema:policySchema, last_receipt:receipt}, /已有动作投递结果记录：已送达/],
     [{schema:agentSchema, last_result:{...terminal, delivery:"partially_delivered"}}, /记录：部分送达/],
     [{schema:agentSchema, last_result:{...terminal, delivery:"unknown"}}, /记录：未确认/],
@@ -5105,7 +5107,7 @@ test("accepted model load converges from pending by read-only status without ano
   assert.equal(env.timerCount, 1);
   status = {status:"loaded", loaded:true,
     operation:{id:"prepare-1", action:"prepare-and-load", status:"completed"},
-    runtime:{run_id:"run-1", lifecycle:"running", mode:"human", controller:"released",
+    runtime:{schema:"sts2.policy-runtime/status-1", run_id:"run-1", lifecycle:"running", mode:"human", controller:"released",
       tainted:false, errors:[], last_receipt:null}};
   const before = env.reloads;
   await env.advanceTimer();
@@ -5122,7 +5124,7 @@ test("accepted Auto reaches budget handoff by status reads and never restarts it
     max_policy_calls:32, policy_calls_used:20, deadline_ms:60000, elapsed_ms:45000,
     remaining_ms:15000, exhausted_reason:reason, ended_reason:null});
   let status = {status:"loaded", loaded:true, operation:null,
-    runtime:{run_id:"run-1", lifecycle:"running", mode:"human", controller:"released",
+    runtime:{schema:"sts2.policy-runtime/status-1", run_id:"run-1", lifecycle:"running", mode:"human", controller:"released",
       tainted:false, errors:[], last_receipt:null}};
   const env = setup({view:"local-models", renderOnReload:true, handler:(url, options) => {
     if (url === "/api/local-models/status") return status;
@@ -5154,7 +5156,7 @@ test("accepted Auto reaches budget handoff by status reads and never restarts it
 test("unchanged autonomous status updates budget without repeatedly reloading the page", async () => {
   let status = {status:"loaded", loaded:true,
     operation:{id:"auto-1", action:"auto", status:"completed"},
-    runtime:{run_id:"run-1", lifecycle:"running", mode:"auto", controller:"held",
+    runtime:{schema:"sts2.policy-runtime/status-1", run_id:"run-1", lifecycle:"running", mode:"auto", controller:"held",
       tainted:false, errors:[], autonomy_budget:{state:"active", max_submissions:16,
         submissions_used:1, max_policy_calls:32, policy_calls_used:2, deadline_ms:60000,
         elapsed_ms:1000, remaining_ms:59000, exhausted_reason:null, ended_reason:null}}};
@@ -5250,7 +5252,7 @@ test("a status change on the final allowed read still reports observation paused
 
 test("model page owns automatic refresh even after its bounded watcher pauses", async () => {
   const status = {status:"loaded", loaded:true,
-    runtime:{run_id:"run-1", lifecycle:"running", mode:"human", controller:"released",
+    runtime:{schema:"sts2.policy-runtime/status-1", run_id:"run-1", lifecycle:"running", mode:"human", controller:"released",
       tainted:false, errors:[]}};
   const env = setup({view:"local-models", query:"&id=audited-cpu", handler:(url, options) =>
     url === "/api/local-models/status" ? status : modelHandler(url, options)});
@@ -6106,7 +6108,7 @@ test("local Runtime autonomy budget is read-only, bounded and separate from game
   const base = {
     status: "loaded", loaded: true, error_code: null,
     runtime: {
-      lifecycle: "running", mode: "human", controller: "released",
+      schema:"sts2.policy-runtime/status-1", lifecycle: "running", mode: "human", controller: "released",
       tainted: false, errors: [], last_receipt: null,
     },
   };
@@ -6163,7 +6165,7 @@ test("active local Runtime budget requires a running autonomous mode without cha
   for (const [mode, controller] of [["auto", "held"], ["shadow", "released"], ["one_step", "released"]]) {
     const state = {
       status: "loaded", loaded: true,
-      runtime: {lifecycle: "running", mode, controller, tainted: false,
+      runtime: {schema:"sts2.policy-runtime/status-1", lifecycle: "running", mode, controller, tainted: false,
         errors: [], last_receipt: null, autonomy_budget: activeBudget},
     };
     const env = setup({view: "local-models", handler: url =>
@@ -6191,7 +6193,7 @@ test("active budget with Human mode or stopped lifecycle is unknown without affe
   for (const runtime of cases) {
     const render = async (budget) => {
       const state = {status: "loaded", loaded: true,
-        runtime: {...runtime, errors: [], last_receipt: null, ...(budget ? {autonomy_budget: budget} : {})}};
+        runtime: {schema:"sts2.policy-runtime/status-1", ...runtime, errors: [], last_receipt: null, ...(budget ? {autonomy_budget: budget} : {})}};
       const env = setup({view: "local-models", handler: url =>
         url === "/api/local-models/status" ? state : modelHandler(url)});
       return {page: await env.render(), env};
@@ -6212,7 +6214,7 @@ test("old or unrecognized Runtime budget data is not replaced with a default or 
     node.children[0]?.textContent === "本次自主操作预算"));
   const state = {
     status: "loaded", loaded: true,
-    runtime: {lifecycle: "running", mode: "human", controller: "released",
+    runtime: {schema:"sts2.policy-runtime/status-1", lifecycle: "running", mode: "human", controller: "released",
       tainted: false, errors: [], last_receipt: null},
   };
   const env = setup({view: "local-models", handler: url =>
@@ -7879,4 +7881,23 @@ test("Reference Model load stays disabled without an exact ready resource", asyn
   const page = await env.render();
   assert.equal(action(page,"model-start-audited-cpu").disabled,true);
   assert.equal(post(env.calls).length,0);
+});
+
+
+test("continuous Runtime display retains null limits and bounded v2 rejects inconsistent time", async () => {
+  const vectors = JSON.parse(readFileSync(new URL("../../components/policy-runtime/test/fixtures/autonomy-v2.json", import.meta.url), "utf8"));
+  const state = {status:"loaded", loaded:true, runtime:{schema:"sts2.policy-runtime/status-2",
+    lifecycle:"running", mode:"auto", controller:"held", tainted:false, errors:[], last_receipt:null,
+    autonomy_budget:structuredClone(vectors.continuous_status_v2)}};
+  const env = setup({view:"local-models", handler:url => url === "/api/local-models/status" ? state : modelHandler(url)});
+  let page = await env.render();
+  const budget = view => text(find(view, node => node.tagName === "SECTION" && node.children[0]?.textContent === "本次自主操作预算"));
+  assert.match(budget(page), /连续，直到暂停或结束/);
+  assert.match(budget(page), /17 \/ 不限/);
+  assert.match(budget(page), /33 \/ 不限/);
+  assert.doesNotMatch(budget(page), /剩余|\/ 16|\/ 32/);
+  state.runtime.autonomy_budget = {...vectors.bounded_status_v2, remaining_ms:50000};
+  page = await env.render();
+  assert.match(budget(page), /预算状态未提供或格式无法识别/);
+  assert.equal(post(env.calls).length, 0);
 });

@@ -470,7 +470,8 @@ class NativeTasks:
         ):
             raise BoundaryError("local_model", "native_task_game_identity_mismatch")
         profile = None
-        if schema == "sts2.policy-runtime/agent-session-status-1":
+        if schema in {"sts2.policy-runtime/agent-session-status-1",
+                "sts2.policy-runtime/agent-session-status-2"}:
             session = runtime.get("session")
             if (
                 not isinstance(session, dict)
@@ -480,7 +481,8 @@ class NativeTasks:
             ):
                 raise BoundaryError("local_model", "native_task_game_identity_mismatch")
             profile = session["profile"]
-        elif schema != "sts2.policy-runtime/status-1":
+        elif schema not in {"sts2.policy-runtime/status-1",
+                                                "sts2.policy-runtime/status-2"}:
             raise BoundaryError("local_model", "native_task_unavailable")
         value = {
             "runtime_status_schema": schema,
@@ -504,10 +506,12 @@ class NativeTasks:
         ):
             return False
         return (
-            value["runtime_status_schema"] == "sts2.policy-runtime/agent-session-status-1"
+            value["runtime_status_schema"] in {"sts2.policy-runtime/agent-session-status-1",
+                "sts2.policy-runtime/agent-session-status-2"}
             and value["input_profile"] in ("native-logical-v1", "p1-global-r1")
         ) or (
-            value["runtime_status_schema"] == "sts2.policy-runtime/status-1"
+            value["runtime_status_schema"] in {"sts2.policy-runtime/status-1",
+                                                "sts2.policy-runtime/status-2"}
             and (
                 value["input_profile"] is None
                 or value["input_profile"] in ("text-menu-v1", "text-menu-v2")
@@ -613,7 +617,8 @@ class NativeTasks:
             raise BoundaryError("local_model", "native_task_unavailable")
         if context["runtime_status_schema"] != runtime.get("schema"):
             raise BoundaryError("local_model", "native_task_unavailable")
-        if context["runtime_status_schema"] == "sts2.policy-runtime/agent-session-status-1":
+        if context["runtime_status_schema"] in {"sts2.policy-runtime/agent-session-status-1",
+                "sts2.policy-runtime/agent-session-status-2"}:
             fresh = self.model_context(
                 runtime, context["runtime_run_id"], context["recovery_epoch"]
             )
@@ -679,7 +684,9 @@ class NativeTasks:
         if value["ready_for_model"]:
             if disposition == "retained_agent_protocol":
                 if (
-                    context["runtime_status_schema"] != "sts2.policy-runtime/agent-session-status-1"
+                    context["runtime_status_schema"] not in {
+                        "sts2.policy-runtime/agent-session-status-1",
+                        "sts2.policy-runtime/agent-session-status-2"}
                     or context["input_profile"] != "native-logical-v1"
                     or not status["can_preserve_for_native_agent"]
                     or status["source_segment_id"] != observed["source_segment_id"]

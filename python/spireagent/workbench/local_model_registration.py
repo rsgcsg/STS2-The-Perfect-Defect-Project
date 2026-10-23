@@ -1378,9 +1378,12 @@ class LocalModelRegistration:
                     runtime, options, package / "model.tensor-tree", adapter_identity(),
                     selection, deadline)
                 try:
-                    label = (("P1 baseline · " if baseline else "P1 M-std · ")
-                             + ("Reference" if environment_kind == "native"
-                                              else "Managed") + " · " + identity[:8])
+                    parameters = model.parameters.value()
+                    label = ({"random": "随机", "frequency": "频次", "linear": "线性"}[
+                        parameters["algorithm"]] if baseline else "M-std")
+                    if parameters.get("export_role") == (
+                            "diagnostic_checkpoint_inference_not_final_result"):
+                        label += "（中途预览）"
                     entry = register(package, target, envelope, entry_id=selection, label=label)
                     manifest_path = target / "manifest.json"
                     manifest = _object_file(manifest_path)

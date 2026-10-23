@@ -125,6 +125,55 @@ closure does not auto-close the Host. Explicit finish and App shutdown use the
 same Actor Stop/seal then owned-close sequence. The existing Managed lifecycle,
 records and APIs retain their semantics.
 
+### Continuous display and changing Model in the same owned world
+
+The same Application `agent-request` / `run-agent` flow accepts
+`run_profile: "continuous"` only with the explicitly supported Runtime rc40
+installation pin. CLI selects `--run-profile continuous`; direct Runtime CLI uses
+`--autonomy-mode continuous` and rejects finite cap flags alongside it. Omitted
+Application profiles remain the original finite `short`, and `extended`, Source3
+collection and frozen evaluation suites retain their finite limits.
+
+Runtime rc40 emits startup/status/event-2 for both modes. Continuous config is
+only `{mode: "continuous"}`. Status caps and remaining are null, while actual
+submission/call counts and elapsed time remain visible. Human pauses the current
+segment and releases control; explicit Auto continues the same run with a new
+segment under its retained configuration. Stop ends that Runtime run and seals
+its original bytes. Local call/recovery/no-progress limits, unknown delivery and
+release uncertainty retain their existing fail-closed behavior; no automatic
+rearm, resubmit or new game is added.
+
+The native play page selects a real registered catalog entry. Its ready Reference
+is passed separately from the signed local pair to the same Application request
+owner, which creates the fresh Reference selection binding. A new explicit Model
+start may retire the existing Actor only after the original typed verifier
+rechecks its exact stopped run/request, released controller, no taint and no
+pending request. The original Host `episode_identity` must also confirm the same
+runtime, profile generation/template and requested/actual seed before retirement,
+and again before creating the replacement Actor. A changed or unavailable readback
+rejects reuse and retains the original Actor/report. The Environment's original
+private operation store immutably retains the resource, request and verified
+report before the live Actor pointer becomes ready. Persistence failure leaves
+creation fenced. No new seed, reset or game closure is part of changing Model.
+A same-seed manual restart is not independently proven to be the same native run
+by this provenance check; original native generation/epoch gates still apply.
+
+Closing/reopening a panel or renewing its pair keeps the same live App/run.
+Restarting the App process permits only exact original Runtime Human/Stop/seal
+recovery. Lost Host stdio ownership remains recovery-required; it does not enable
+Continue/new Actor or adopt a process by PID. The game may remain manually usable;
+that does not confirm its original world or cleanup lifecycle. Explicit native
+finish remains separate from Model Stop.
+
+For a source candidate already selected through the original installer, owned
+native preparation verifies the returned Host profile path and generation, then
+copies the same private launcher/open/native-access bytes to that isolated game
+HOME. It creates no credential and never edits the daily selected slot. The
+fixed native bridge is paired only when its runtime matches the selected local
+Connector endpoint, including a custom loopback Reference port. A different
+running game or conflicting existing bootstrap is rejected. Ordinary Host start
+and old-save adoption do not gain this owned-preparation route implicitly.
+
 An operator can explicitly change one private text Runtime profile while the
 Workbench is closed and port 15527 is free. `developer model --action
 initialize-runtime-generation` is the first-install path when the selected

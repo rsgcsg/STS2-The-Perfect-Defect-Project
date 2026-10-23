@@ -492,7 +492,7 @@ def test_ordinary_start_after_failed_native_load_ignores_revoked_native_authoriz
 
     monkeypatch.setattr(app.models, "readiness", lambda _: {"status": "ready_to_load"})
     monkeypatch.setattr(app.models, "_runtime_package", lambda _: {
-        "version": "fixture", "code_sha256": "b" * 64,
+        "version": "0.1.0-rc.39", "code_sha256": "b" * 64,
     })
     monkeypatch.setattr(local_models, "_check_runtime_port", lambda _: None)
     monkeypatch.setattr(local_models.subprocess, "Popen", Process)

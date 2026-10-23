@@ -166,6 +166,38 @@ class NativeBootstrap:
         )
 
 
+def stage_selected_native_access(game_home: Path, config_path: Path, expected_mod: str) -> None:
+    """Materialize the same selected private binding in an owned isolated game HOME.
+
+    No new credential/launcher is created. Callers prove the Host profile generation
+    and containment before calling; copied files are private and idempotent only.
+    """
+    source = selected_directory()
+    original = NativeBootstrap.read(source, config_path)
+    if original.game_mod_sha256 != expected_mod or game_home.resolve() == Path.home().resolve():
+        raise fail("native_isolated_game_binding_required")
+    target = game_home / "Library/Application Support/spireagent/workbench"
+    for parent in (game_home, *target.parents):
+        if parent.is_symlink():
+            raise fail("private_native_path_required")
+    target.mkdir(mode=0o700, parents=True, exist_ok=True)
+    for name in ("launcher.json", "open", "native-access.json"):
+        raw = private_bytes(source / name)
+        path = target / name
+        if path.exists() or path.is_symlink():
+            if private_bytes(path) != raw:
+                raise fail("native_isolated_selection_changed")
+        else:
+            descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL
+                                 | getattr(os, "O_NOFOLLOW", 0), 0o700 if name == "open" else 0o600)
+            with os.fdopen(descriptor, "wb") as handle:
+                handle.write(raw)
+                handle.flush()
+                os.fsync(handle.fileno())
+    if NativeBootstrap.read(target, config_path) != original:
+        raise fail("native_isolated_selection_changed")
+
+
 @dataclass(frozen=True)
 class NativePair:
     runtime_instance_id: str

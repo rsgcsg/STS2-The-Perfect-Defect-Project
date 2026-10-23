@@ -211,6 +211,7 @@ def finished(service):
 
 def startup():
     return {
+        "schema": "sts2.policy-runtime/startup-1",
         "run_id": "run-00000000-0000-0000-0000-000000000000",
         "manifest_id": "fixture-policy",
         "policy_artifact_sha256": "a" * 64,
@@ -391,6 +392,8 @@ def test_runtime_status_budget_identity_checked_when_startup_records_it(runtime_
         "maxSubmissions": 2000, "maxPolicyCalls": 4000, "deadlineMs": 1800000,
     }
     state["autonomy_budget"] = {
+        "state": "inactive", "submissions_used": 0, "policy_calls_used": 0,
+        "elapsed_ms": 0, "remaining_ms": 1800000, "exhausted_reason": None, "ended_reason": None,
         "max_submissions": 2000, "max_policy_calls": 4000, "deadline_ms": 1800000,
     }
     client.request("/status")
@@ -1256,7 +1259,7 @@ def test_managed_global_command_reads_owned_startup_adapter_identity(
         {"schema": "sts2.policy-runtime/agent-manifest-1",
          "manifest_id": "global-fixture", "artifact": {"sha256": "a" * 64},
          "adapter": adapter_identity()},
-        {"version": "fixture", "code_sha256": "b" * 64},
+        {"version": "0.1.0-rc.39", "code_sha256": "b" * 64},
     )
     owned_startup["run_id"] = transport.startup["run_id"]
     service.client = SimpleNamespace(startup=owned_startup, request=transport.request)
@@ -1333,7 +1336,7 @@ def test_managed_load_binds_cli_and_checks_actual_startup_target(
     monkeypatch.setattr(service, "_run_profile", lambda *_: True)
     monkeypatch.setattr(service, "readiness", lambda _: {"status": "ready_to_load"})
     monkeypatch.setattr(service, "_runtime_package", lambda _: {
-        "version": "managed-candidate", "code_sha256": "b" * 64})
+        "version": "0.1.0-rc.39", "code_sha256": "b" * 64})
     monkeypatch.setattr(service, "_node_modules", lambda _: tmp_path / "node_modules")
     monkeypatch.setattr(local_models, "_check_runtime_port", lambda _: None)
     monkeypatch.setattr(service, "start_observer", lambda: None)
@@ -1347,7 +1350,7 @@ def test_managed_load_binds_cli_and_checks_actual_startup_target(
         "agent_manifest_id" if global_program else "manifest_id": manifest["manifest_id"],
         f"{prefix}_artifact_sha256": manifest["artifact"]["sha256"],
         f"{prefix}_manifest_sha256": hashlib.sha256(canonical_json(manifest).encode()).hexdigest(),
-        "runtime_version": "managed-candidate", "runtime_code_sha256": "b" * 64,
+        "runtime_version": "0.1.0-rc.39", "runtime_code_sha256": "b" * 64,
         "address": "http://127.0.0.1:15527", "run_id": startup()["run_id"],
         "managed_environment": claimed_target,
         "autonomy_budget": {"maxSubmissions": limits["max_submissions"],
@@ -1423,7 +1426,7 @@ def test_global_recovery_keeps_original_managed_target_and_reference_null(
         "run_id": startup()["run_id"], "agent_manifest_id": manifest["manifest_id"],
         "agent_artifact_sha256": manifest["artifact"]["sha256"],
         "agent_manifest_sha256": hashlib.sha256(canonical_json(manifest).encode()).hexdigest(),
-        "runtime_version": "fixture", "runtime_code_sha256": "b" * 64,
+        "runtime_version": "0.1.0-rc.39", "runtime_code_sha256": "b" * 64,
         "adapter": manifest["adapter"],
         "managed_environment": None if reference else original_target,
     }
@@ -1442,7 +1445,7 @@ def test_global_recovery_keeps_original_managed_target_and_reference_null(
     monkeypatch.setattr(service, "selection", lambda _: {"id": "global-fixture"})
     monkeypatch.setattr(service, "entry_path", lambda *_: manifest_path)
     monkeypatch.setattr(service, "_runtime_package", lambda *_: {
-        "version": "fixture", "code_sha256": "b" * 64})
+        "version": "0.1.0-rc.39", "code_sha256": "b" * 64})
     monkeypatch.setattr(service, "start_observer", lambda: None)
     calls = []
 
@@ -2431,3 +2434,71 @@ def test_finalized_stop_recovery_requires_exact_evidence_and_free_port(
     assert service.state["previous_session"] == previous
     assert service.state["status"] == "recovery_required"
     assert not (service.directory / "session-archives").exists()
+
+
+@pytest.mark.parametrize("mode", ["bounded", "continuous"])
+def test_runtime_v2_consumer_preserves_original_budget_mode_and_nullable_limits(mode):
+    original = {**startup(), "schema": "sts2.policy-runtime/startup-2",
+                "runtime_version": "0.1.0-rc.40",
+                "autonomy_budget": local_models._startup_budget(
+                    "continuous" if mode == "continuous" else "short", 2)}
+    observed = status()
+    observed.update(schema="sts2.policy-runtime/status-2", runtime={
+        "version": original["runtime_version"], "code_sha256": original["runtime_code_sha256"]})
+    vectors = json.loads((Path(local_models.__file__).resolve().parents[3]
+        / "components/policy-runtime/test/fixtures/autonomy-v2.json").read_bytes())
+    assert original["autonomy_budget"] == vectors[mode + "_startup_v2"]
+    budget = vectors[mode + "_status_v2"]
+    observed["autonomy_budget"] = budget
+    client = RuntimeClient("http://127.0.0.1:15527", original)
+    client.validate_status(observed)
+    if mode == "bounded":
+        inconsistent = copy.deepcopy(observed)
+        inconsistent["autonomy_budget"]["remaining_ms"] = 50000
+        with pytest.raises(ValueError):
+            client.validate_status(inconsistent)
+    assert local_models._recorded_budget(budget)["mode"] == mode
+    for key in ("max_submissions", "max_policy_calls", "deadline_ms", "remaining_ms"):
+        broken = copy.deepcopy(observed)
+        broken["autonomy_budget"][key] = 1 if mode == "continuous" else None
+        with pytest.raises(ValueError):
+            client.validate_status(broken)
+    broken = copy.deepcopy(observed)
+    broken["schema"] = "sts2.policy-runtime/status-1"
+    with pytest.raises(ValueError):
+        client.validate_status(broken)
+    broken = copy.deepcopy(observed)
+    broken["autonomy_budget"]["mode"] = "other"
+    with pytest.raises(ValueError):
+        client.validate_status(broken)
+
+
+@pytest.mark.parametrize("version", ["0.1.0-rc.41", "0.2.0", "broken", None])
+def test_unknown_runtime_version_never_selects_a_guessed_startup_contract(version):
+    with pytest.raises(BoundaryError, match="unsupported_runtime_startup_contract"):
+        local_models._runtime_wire_version({"version": version})
+
+
+def test_old_runtime_never_silently_runs_continuous_as_finite_default():
+    with pytest.raises(BoundaryError, match="continuous_requires_runtime_v2"):
+        local_models._startup_budget("continuous", 1)
+    assert local_models._startup_budget("continuous", 2) == {"mode": "continuous"}
+
+
+def test_actor_retirement_reverifies_typed_original_and_never_uses_cached_pass(
+    service, monkeypatch,
+):
+    context = {"synthetic": "world-binding"}
+    service.state.update(status="stopped", loaded=False, native_episode=context,
+        startup={"schema": local_models.AGENT_STARTUP, "run_id": "run-original"},
+        evaluation={"evidence_verification": "pass", "controller_at_stop": "released"})
+    calls = []
+
+    def changed_original(startup):
+        calls.append(startup["run_id"])
+        raise BoundaryError("local_model", "finalized_stop_evidence_changed")
+    monkeypatch.setattr(service, "_native_operation_handoff", changed_original)
+    with pytest.raises(BoundaryError, match="finalized_stop_evidence_changed"):
+        service.native_actor_retirement_proof(context, "run-original")
+    assert calls == ["run-original"]
+    assert service.state["status"] == "stopped"

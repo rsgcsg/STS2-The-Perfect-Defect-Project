@@ -2391,9 +2391,9 @@ window.SpireProject = (() => {
         : `最近一次 Runtime 诊断（历史记录）：${runtimeFailure}。它不单独决定当前操作资格；需要恢复时请明确点击操作，不会自动重发。`;
       box.append(el("p", explanation, "banner warning"));
     }
-    const agentStatus = runtime?.schema === "sts2.policy-runtime/agent-session-status-1";
+    const agentStatus = ["sts2.policy-runtime/agent-session-status-1", "sts2.policy-runtime/agent-session-status-2"].includes(runtime?.schema);
     const receipt = agentStatus ? runtime.last_result
-      : runtime?.schema === "sts2.policy-runtime/status-1" ? runtime.last_receipt : null;
+      : ["sts2.policy-runtime/status-1", "sts2.policy-runtime/status-2"].includes(runtime?.schema) ? runtime.last_receipt : null;
     const deliveryLabels = {delivered:"已送达", not_delivered:"未送达", unknown:"未确认",
       not_started:"未开始", rejected_before_input:"输入前被拒绝", partially_delivered:"部分送达"};
     const recordedDelivery = receipt && typeof receipt === "object" && !Array.isArray(receipt)
@@ -2486,7 +2486,7 @@ window.SpireProject = (() => {
     const budget = runtime?.autonomy_budget;
     const box = panel(
       "本次自主操作预算",
-      "预算只约束当前自主授权，不是对局计时或结果。",
+      "计数对应当前授权段，不是对局累计或结果。",
     );
     if (budget === undefined || budget === null) {
       box.append(el("p", "此 Runtime 未提供预算信息。", "small muted"));
@@ -2517,12 +2517,19 @@ window.SpireProject = (() => {
         : budget.state === "exhausted"
           ? runtime.mode === "human"
           : runtime.mode === "human");
-    const validCounters = budget && typeof budget === "object" &&
-      counters.every((key) => Number.isSafeInteger(budget[key]) && budget[key] >= 0) &&
-      budget.max_submissions > 0 && budget.max_policy_calls > 0 && budget.deadline_ms > 0 &&
-      budget.submissions_used <= budget.max_submissions &&
-      budget.policy_calls_used <= budget.max_policy_calls &&
-      budget.elapsed_ms <= budget.deadline_ms && budget.remaining_ms <= budget.deadline_ms;
+    const v2 = ["sts2.policy-runtime/status-2", "sts2.policy-runtime/agent-session-status-2"].includes(runtime?.schema);
+    const v1 = ["sts2.policy-runtime/status-1", "sts2.policy-runtime/agent-session-status-1"].includes(runtime?.schema);
+    const continuous = v2 && budget.mode === "continuous";
+    const validCounters = continuous
+      ? ["max_submissions", "max_policy_calls", "deadline_ms", "remaining_ms"].every(key => budget[key] === null)
+        && ["submissions_used", "policy_calls_used", "elapsed_ms"].every(key => Number.isSafeInteger(budget[key]) && budget[key] >= 0)
+        && budget.state !== "exhausted"
+      : ((v1 && !Object.hasOwn(budget, "mode")) || (v2 && budget.mode === "bounded")) &&
+        counters.every((key) => Number.isSafeInteger(budget[key]) && budget[key] >= 0) &&
+        budget.max_submissions > 0 && budget.max_policy_calls > 0 && budget.deadline_ms > 0 &&
+        budget.submissions_used <= budget.max_submissions && budget.policy_calls_used <= budget.max_policy_calls &&
+        budget.elapsed_ms <= budget.deadline_ms && budget.remaining_ms <= budget.deadline_ms &&
+        budget.elapsed_ms + budget.remaining_ms === budget.deadline_ms;
     const stateKnown = budget && states.has(budget.state);
     const reasonKnown = budget.state === "exhausted"
       ? Object.hasOwn(exhaustion, budget.exhausted_reason) && budget.ended_reason === null
@@ -2543,9 +2550,10 @@ window.SpireProject = (() => {
           : "尚未开始";
     box.append(fields([
       ["状态", stateText],
-      ["自主提交", `${count(budget.submissions_used)} / ${count(budget.max_submissions)}`],
-      ["模型评分", `${count(budget.policy_calls_used)} / ${count(budget.max_policy_calls)}`],
-      ["时间", `${duration(budget.elapsed_ms)} / ${duration(budget.deadline_ms)}（剩余 ${duration(budget.remaining_ms)}）`],
+      ["授权", continuous ? "连续，直到暂停或结束" : "有限授权"],
+      ["自主提交", `${count(budget.submissions_used)} / ${budget.mode === "continuous" ? "不限" : count(budget.max_submissions)}`],
+      ["模型评分", `${count(budget.policy_calls_used)} / ${budget.mode === "continuous" ? "不限" : count(budget.max_policy_calls)}`],
+      ["时间", continuous ? `已用 ${duration(budget.elapsed_ms)}，直到暂停或结束` : `${duration(budget.elapsed_ms)} / ${duration(budget.deadline_ms)}（剩余 ${duration(budget.remaining_ms)}）`],
     ]));
     if (budget.state === "exhausted") {
       box.append(el("p", "预算耗尽表示当前自主授权到限；不代表这一局已经结束或结果已确认。控制器是否释放请以上方状态为准。", "small muted"));
@@ -2557,7 +2565,7 @@ window.SpireProject = (() => {
   function evaluationPanel(value) {
     const box = panel(
       "本机已封装的评估记录",
-      "这是有界 Runtime 操作与证据检查结果，不是游戏胜率或训练准入。",
+      "这是 Runtime 操作与证据检查结果，不是游戏胜率或训练准入。",
     );
     const verified = value.evidence_verification === "pass";
     const native = value.schema === "stpd/local-native-agent-operation-handoff-v1";
@@ -2583,9 +2591,13 @@ window.SpireProject = (() => {
     const budget = value.budget_summary;
     const budgetCounts = recorded && budget && typeof budget === "object" && !Array.isArray(budget) &&
       ["inactive", "active", "exhausted"].includes(budget.state) &&
-      ["max_submissions", "submissions_used", "max_policy_calls", "policy_calls_used",
-        "deadline_ms", "elapsed_ms"].every(key =>
-        Number.isSafeInteger(budget[key]) && budget[key] >= 0);
+      (budget.mode === "continuous"
+        ? budget.state !== "exhausted" && budget.exhausted_reason === null &&
+          ["max_submissions", "max_policy_calls", "deadline_ms", "remaining_ms"].every(key => budget[key] === null) &&
+          ["submissions_used", "policy_calls_used", "elapsed_ms"].every(key => Number.isSafeInteger(budget[key]) && budget[key] >= 0)
+        : (budget.mode === undefined || budget.mode === "bounded") &&
+          ["max_submissions", "submissions_used", "max_policy_calls", "policy_calls_used", "deadline_ms", "elapsed_ms"]
+            .every(key => Number.isSafeInteger(budget[key]) && budget[key] >= 0));
     const budgetReason = native
       ? budgetCounts && budget.state === "exhausted" ? budget.exhausted_reason : null
       : value.budget_end_reason;
@@ -2629,8 +2641,8 @@ window.SpireProject = (() => {
       deliveries.map(([kind, total]) => [kind, count(total)])) :
       el("p", "投递结果：未从已验证证据确认。", "small muted"));
     if (budgetCounts) box.append(fields([
-      ["预算提交", `${count(budget.submissions_used)} / ${count(budget.max_submissions)}`],
-      ["预算评分", `${count(budget.policy_calls_used)} / ${count(budget.max_policy_calls)}`],
+      ["预算提交", `${count(budget.submissions_used)} / ${budget.mode === "continuous" ? "不限" : count(budget.max_submissions)}`],
+      ["预算评分", `${count(budget.policy_calls_used)} / ${budget.mode === "continuous" ? "不限" : count(budget.max_policy_calls)}`],
     ]));
     box.append(technical({
       evaluation_id:hex(value.evaluation_id) ? value.evaluation_id : null,

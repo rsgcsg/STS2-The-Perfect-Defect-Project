@@ -163,12 +163,12 @@ def finish_operation(models):
     return state
 
 
-def common_start(app, ready, selection, world, log):
+def common_start(app, ready, selection, world, log, run_profile="short", *, reuse=False):
     # Synthetic native Recorder owner remains on a real local HTTP seam. The
     # Application's production NativeTasks preparation checks are unmodified.
     app.models.native_tasks.address = world.endpoint
     request = app.models.agent_request(
-        selection, "start", native_episode_ref=ready["environment_ref"]
+        selection, "start", run_profile, native_episode_ref=ready["environment_ref"]
     )
     assert request["admission_context"]["native_episode"] == ready["admission_context"]
     original = copy.deepcopy(request)
@@ -188,8 +188,13 @@ def common_start(app, ready, selection, world, log):
     assert "native_episode" not in json.dumps(
         original["composition"]["semantic_definition"]["input"]
     )
-    assert log.read_bytes() == before  # No Host-driver RPC during Actor life.
-    return state["startup"], reference, raw, before
+    after = log.read_bytes()
+    if reuse:
+        observed = [json.loads(line)["event"] for line in after[len(before):].splitlines()]
+        assert observed == ["identity"]
+    else:
+        assert after == before  # Ordinary Actor life does not poll Host identity.
+    return state["startup"], reference, raw, after
 
 
 def accepted_original_exit(exit_code, calls):
@@ -444,8 +449,9 @@ def common_finish(app, ready, startup, reference, raw, host_before, log, world):
     return events
 
 
+@pytest.mark.parametrize("run_profile", ["short", "continuous"])
 def test_owned_episode_common_teacher_process_ack_stop_seal_then_host_close(
-    native_runtime, world, native_app
+    native_runtime, world, native_app, run_profile
 ):
     from spireagent.workbench.native_teacher_support import ADAPTER, installation_config
     from stpd.policy.native_teacher_agent import descriptor, write_artifact
@@ -469,12 +475,45 @@ def test_owned_episode_common_teacher_process_ack_stop_seal_then_host_close(
     assert app.models.readiness("fixture-teacher")["status"] == "ready_to_load"
     log = native_app[3]
     ready = prepared(app)
-    startup, reference, raw, host_before = common_start(app, ready, "fixture-teacher", world, log)
+    startup, reference, raw, host_before = common_start(
+        app, ready, "fixture-teacher", world, log, run_profile)
     app.models.command("one_step")
     finish_operation(app.models)
     assert world.submitted == 1
     assert log.read_bytes() == host_before
+    if run_profile == "continuous":
+        assert startup["schema"] == "sts2.policy-runtime/agent-session-startup-2"
+        assert startup["autonomy_budget"] == {"mode": "continuous"}
+        app.models.command("stop")
+        finish_operation(app.models)
+        proof = app.models.native_actor_retirement_proof(
+            ready["admission_context"], startup["run_id"])
+        first_report = app.models.state["evaluation"]
+        first_events = (app.models.directory / "agent-runs" / startup["run_id"] / "events.jsonl")
+        frozen_events = first_events.read_bytes()
+        assert proof["evaluation"]["controller_at_stop"] == "released"
+        assert not world.held and log.read_bytes() == host_before
+        app.local_environment.verify_native_actor_reuse(ready["admission_context"])
+        app.local_environment.retire_native_actor(ready["admission_context"], proof)
+        retired = app.local_environment.native_episode_status()
+        assert retired["phase"] == "ready" and retired["actor"] is None
+        assert retired["admission_context"] == ready["admission_context"]
+        retained, _ = app.local_environment._native_operation_store()
+        history = json.loads(retained.get(
+            f"operations/{ready['environment_ref']}/actors/{startup['run_id']}.json"))
+        assert history["proof"]["request"] == reference
+        assert history["proof"]["evaluation"] == first_report
+        assert (app.models.directory / reference["path"]).read_bytes() == raw
+        old_run = startup["run_id"]
+        startup, reference, raw, host_before = common_start(
+            app, ready, "fixture-teacher", world, log, run_profile, reuse=True)
+        assert startup["run_id"] != old_run
+        assert first_events.read_bytes() == frozen_events
+        assert world.submitted == 1  # Restarting the Actor did not replay or reset the world.
+        assert log.read_bytes() == host_before
     events = common_finish(app, ready, startup, reference, raw, host_before, log, world)
+    if run_profile == "continuous":
+        return
     kinds = [event["kind"] for event in events]
     assert "agent_consumed" in kinds and "agent_sample_consume_ack_offered" in kinds
     assert kinds.count("native_submission_requested") == 1

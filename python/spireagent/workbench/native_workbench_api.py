@@ -92,6 +92,10 @@ _PRECONDITION_CODES = frozenset(
         "new_experiment_precondition_failed",
         "native_model_intent_superseded",
         "native_model_context_changed",
+        "continuous_requires_runtime_v2", "unsupported_run_profile",
+        "stopped_actor_required", "clean_sealed_actor_required",
+        "native_world_identity_changed", "native_world_identity_unavailable",
+        "resource_already_associated", "resource_binding_changed",
         "invalid_model_control_context",
         "invalid_runtime_control_binding",
         "runtime_run_mismatch",
@@ -330,6 +334,8 @@ class NativeWorkbenchApi:
         if page == "play":
             catalog = self.card("models", app.models.catalog)
             cards.append(catalog)
+            native_environment = self.card("native_environment", app.native_episode_status)
+            cards.append(native_environment)
             items = catalog["data"].get("policies", [])
             total, items = len(items), items[offset : offset + limit]
             session = catalog["data"].get("session", {})
@@ -347,7 +353,8 @@ class NativeWorkbenchApi:
                 session.get("loaded") is True
                 and isinstance(runtime, dict)
                 and isinstance(pending, dict)
-                and runtime.get("schema") == "sts2.policy-runtime/agent-session-status-1"
+                and runtime.get("schema") in {"sts2.policy-runtime/agent-session-status-1",
+                                          "sts2.policy-runtime/agent-session-status-2"}
                 and isinstance(request_id, str)
                 and bool(request_id)
                 and pending.get("run_id") == runtime.get("run_id")
@@ -371,6 +378,7 @@ class NativeWorkbenchApi:
                 and isinstance(runtime, dict)
                 and not runtime.get("tainted")
                 and pending is None
+                and native_environment["data"].get("phase") != "recovery_required"
             )
             controls.extend(
                 action(
@@ -380,7 +388,7 @@ class NativeWorkbenchApi:
                     reason=None if can_control else "owner_control_not_available",
                 )
                 for mode, label in (
-                    ("auto", "开始测试"),
+                    ("auto", "继续"),
                     ("shadow", "只评分（不操作）"),
                     ("one_step", "执行一个决策"),
                     ("tick", "当前模式推进一次 Tick"),
@@ -410,15 +418,16 @@ class NativeWorkbenchApi:
                     ),
                     action(
                         "models.takeover",
-                        "加载并接管",
+                        "开始展示",
                         [
                             field("selection_id", "已注册模型", "selection", context_id or ""),
                             field(
                                 "run_profile",
                                 "运行范围",
                                 "enum",
-                                "short",
+                                "continuous",
                                 [
+                                    {"value": "continuous", "label": "连续，直到暂停或结束"},
                                     {"value": "short", "label": "短时检查"},
                                     {"value": "extended", "label": "较长有界尝试"},
                                 ],
@@ -427,11 +436,13 @@ class NativeWorkbenchApi:
                         enabled=can_load,
                         reason=None if can_load else "owner_load_not_available",
                     ),
-                    action("models.human", "暂停并交还 Human"),
-                    action("models.stop", "结束模型运行"),
+                    action("models.human", "恢复并交还人工"
+                           if session.get("status") in {"command_unknown", "recovery_required"}
+                           or session.get("previous_session") else "暂停"),
+                    action("models.stop", "结束"),
                     action(
                         "models.reconcile",
-                        "明确查询原始待定请求",
+                        "恢复待定操作",
                         [
                             field(
                                 "request_id",
@@ -976,24 +987,25 @@ class NativeWorkbenchApi:
             exact(body, {"artifact_id"})
             return app.models.prepare(body["artifact_id"])
         if action_id in {"models.load", "models.takeover"}:
-            exact(body, {"selection_id", "run_profile"})
+            if set(body) not in ({"selection_id", "run_profile"},
+                                {"selection_id", "run_profile", "native_episode_ref"}):
+                raise fail("invalid_native_payload")
             context = {"request_id": request_id, "binding": pair.to_dict()}
-
             authorize = app.native_access.intent_authorizer(context, pair)
-
+            if "native_episode_ref" in body:
+                episode = app.local_environment.native_episode_context(body["native_episode_ref"])
+                if episode["binding"]["runtime_instance_id"] != pair.runtime_instance_id:
+                    raise fail("native_model_context_changed")
+                request = app.model_agent_request(body["selection_id"],
+                    "prepare-and-load" if action_id == "models.load" else "prepare-and-takeover",
+                    body["run_profile"], native_episode_ref=body["native_episode_ref"])
+                return app.models.run_agent(request, native_context=context,
+                                             native_authorizer=authorize)
             if action_id == "models.load":
-                return app.models.prepare_and_load(
-                    body["selection_id"],
-                    body["run_profile"],
-                    native_context=context,
-                    native_authorizer=authorize,
-                )
-            return app.models.prepare_and_takeover(
-                body["selection_id"],
-                body["run_profile"],
-                native_context=context,
-                native_authorizer=authorize,
-            )
+                return app.models.prepare_and_load(body["selection_id"], body["run_profile"],
+                    native_context=context, native_authorizer=authorize)
+            return app.models.prepare_and_takeover(body["selection_id"], body["run_profile"],
+                native_context=context, native_authorizer=authorize)
         if action_id in {"models.auto", "models.shadow", "models.one_step", "models.tick"}:
             exact(body, {"runtime_run_id", "runtime_instance_id", "recovery_epoch"})
             app.models.read_control_context(body)

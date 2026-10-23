@@ -125,3 +125,67 @@ def test_candidate_binding_matches_source_mod_tool_and_installed_environment(tmp
     (output / "STS2_PLATFORM.dll").write_bytes(b"other dll")
     with pytest.raises(BoundaryError, match="source_candidate_mod_mismatch"):
         install._source_candidate_binding(source, config, python, tool, home)
+
+
+def test_owned_game_home_receives_exact_selected_binding_without_new_credential(
+    tmp_path, monkeypatch,
+):
+    from spireagent.workbench import native_workbench_access as access
+
+    home, config, _ = candidate(tmp_path, monkeypatch)
+    install.prepare_source_candidate_access(tmp_path / "source", config, Path("/trusted/python"),
+                                            tmp_path / "tool", home=home)
+    selected = install._launcher_directory(home=home)
+    monkeypatch.setattr(access, "selected_directory", lambda: selected)
+    game_home = tmp_path / "owned-profile" / "home"
+    original = {name: (selected / name).read_bytes()
+                for name in ("launcher.json", "open", "native-access.json")}
+    access.stage_selected_native_access(game_home, config, "d" * 64)
+    target = install._launcher_directory(home=game_home)
+    assert {name: (target / name).read_bytes() for name in original} == original
+    assert NativeBootstrap.read(target, config) == NativeBootstrap.read(selected, config)
+    access.stage_selected_native_access(game_home, config, "d" * 64)
+    with pytest.raises(BoundaryError, match="native_isolated_game_binding_required"):
+        access.stage_selected_native_access(tmp_path / "wrong-game", config, "0" * 64)
+    (target / "native-access.json").write_bytes(b"changed")
+    with pytest.raises(BoundaryError, match="native_isolated_selection_changed"):
+        access.stage_selected_native_access(game_home, config, "d" * 64)
+    assert {name: (selected / name).read_bytes() for name in original} == original
+
+
+
+def test_application_stages_binding_only_in_exact_returned_host_generation(tmp_path, monkeypatch):
+    from spireagent.workbench import native_workbench_access as access
+    from spireagent.workbench.developer_server import Application
+
+    home, config_path, binding = candidate(tmp_path, monkeypatch)
+    install.prepare_source_candidate_access(tmp_path / "source", config_path,
+        Path("/trusted/python"), tmp_path / "tool", home=home)
+    selected = install._launcher_directory(home=home)
+    monkeypatch.setattr(access, "selected_directory", lambda: selected)
+    config = ProjectConfig.load(config_path)
+    app = Application(config, config_path=config_path)
+    app.identity = {"working_tree_clean": True, **{key: binding[key] for key in (
+        "source_revision", "workbench_sha256", "uv_lock_sha256")}}
+    state_root = config.state_dir / "native-host"
+    profile = state_root / "profiles" / "owned-profile"
+    (profile / "home").mkdir(parents=True)
+    atomic_json(profile / "headless-profile.json", {
+        "profile_id": "owned-profile", "generation_id": "exact-generation"})
+    identity = {"profile": {"profile_root": str(profile), "profile_id": "owned-profile",
+                            "generation_id": "wrong-generation"},
+                "host": {"implementation": {"artifact_sha256": "d" * 64}}}
+    try:
+        with pytest.raises(BoundaryError, match="native_owned_profile_changed"):
+            app._stage_native_workbench(identity, state_root)
+        assert not install._launcher_directory(home=profile / "home").exists()
+        identity["profile"]["generation_id"] = "exact-generation"
+        app._stage_native_workbench(identity, state_root)
+        target = install._launcher_directory(home=profile / "home")
+        assert (NativeBootstrap.read(target, config_path)
+                == NativeBootstrap.read(selected, config_path))
+        identity["profile"]["profile_root"] = str(tmp_path / "unowned-profile")
+        with pytest.raises(BoundaryError, match="native_owned_profile_required"):
+            app._stage_native_workbench(identity, state_root)
+    finally:
+        app.close()
