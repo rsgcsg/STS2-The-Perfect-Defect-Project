@@ -2391,9 +2391,21 @@ window.SpireProject = (() => {
         : `最近一次 Runtime 诊断（历史记录）：${runtimeFailure}。它不单独决定当前操作资格；需要恢复时请明确点击操作，不会自动重发。`;
       box.append(el("p", explanation, "banner warning"));
     }
-    box.append(el("p", runtime?.last_receipt
-      ? "已收到动作回执，具体送达结果见下方记录。"
-      : "尚无游戏动作送达记录。模型已加载不代表正在操作游戏。", "small"));
+    const agentStatus = runtime?.schema === "sts2.policy-runtime/agent-session-status-1";
+    const receipt = agentStatus ? runtime.last_result
+      : runtime?.schema === "sts2.policy-runtime/status-1" ? runtime.last_receipt : null;
+    const deliveryLabels = {delivered:"已送达", not_delivered:"未送达", unknown:"未确认",
+      not_started:"未开始", rejected_before_input:"输入前被拒绝", partially_delivered:"部分送达"};
+    const recordedDelivery = receipt && typeof receipt === "object" && !Array.isArray(receipt)
+      && typeof receipt.request_id === "string" && receipt.request_id.length > 0
+      && (!agentStatus || receipt.status === "terminal")
+      && typeof receipt.delivery === "string"
+      && (agentStatus || ["delivered", "not_delivered", "unknown"].includes(receipt.delivery))
+      && Object.hasOwn(deliveryLabels, receipt.delivery)
+      ? deliveryLabels[receipt.delivery] : null;
+    box.append(el("p", recordedDelivery
+      ? `已有动作投递结果记录：${recordedDelivery}。送达不等于游戏接受或结局。`
+      : "动作投递结果尚未确认。模型已加载不代表正在操作游戏。", "small"));
     const actions = el("div", null, "project-actions");
     actions.append(command(ctx, "model-refresh-status", "刷新运行状态", async () => {
       stopModelWatch();
@@ -2461,6 +2473,7 @@ window.SpireProject = (() => {
             taint_reason: runtime.taint_reason,
             last_decision: runtime.last_decision,
             last_receipt: runtime.last_receipt,
+            last_result: runtime.last_result,
             environment: runtime.environment,
           },
           "决策、回执与精确运行身份",
@@ -2547,6 +2560,9 @@ window.SpireProject = (() => {
       "这是有界 Runtime 操作与证据检查结果，不是游戏胜率或训练准入。",
     );
     const verified = value.evidence_verification === "pass";
+    const native = value.schema === "stpd/local-native-agent-operation-handoff-v1";
+    const legacy = value.schema === "stpd/local-runtime-evaluation-handoff-v1";
+    const recorded = verified && (native || legacy);
     const recordedCounts = (counts) => {
       if (!counts || typeof counts !== "object" || Array.isArray(counts)) return null;
       const entries = Object.entries(counts);
@@ -2555,21 +2571,28 @@ window.SpireProject = (() => {
         !Number.isSafeInteger(total) || total < 0)) return null;
       return entries.sort(([left], [right]) => left.localeCompare(right));
     };
-    const actions = verified ? recordedCounts(value.recorded_action_verbs) : null;
-    const deliveries = verified ? recordedCounts(value.delivery_counts) : null;
+    const actions = recorded && legacy ? recordedCounts(value.recorded_action_verbs) : null;
+    const deliveries = recorded ? recordedCounts(native
+      ? value.request_outcome_counts : value.delivery_counts) : null;
+    const attempts = native ? value.submission_attempt_count : value.native_submission_attempts;
     const budgetReasons = {
       submission_attempt_limit:"自主提交次数已到限额",
       policy_call_limit:"模型评分次数已到限额",
       deadline:"自主运行时间已到限额",
     };
     const budget = value.budget_summary;
-    const budgetCounts = verified && budget && typeof budget === "object" &&
+    const budgetCounts = recorded && budget && typeof budget === "object" && !Array.isArray(budget) &&
       ["inactive", "active", "exhausted"].includes(budget.state) &&
       ["max_submissions", "submissions_used", "max_policy_calls", "policy_calls_used",
         "deadline_ms", "elapsed_ms"].every(key =>
         Number.isSafeInteger(budget[key]) && budget[key] >= 0);
-    const terminal = value.terminal_screen_observation;
+    const budgetReason = native
+      ? budgetCounts && budget.state === "exhausted" ? budget.exhausted_reason : null
+      : value.budget_end_reason;
+    const terminal = legacy ? value.terminal_screen_observation : null;
     const terminalLabel = !verified ? "证据未通过核验"
+      : !native && !legacy ? "报告格式未能识别"
+      : native ? "此报告未提供此项观测"
       : !Object.hasOwn(value, "terminal_screen_observation")
       ? "旧报告未提供此项观测"
       : terminal === null ? "未观察到"
@@ -2582,11 +2605,13 @@ window.SpireProject = (() => {
         ["模型选择", value.selection_id],
         ["run ID", value.run_id],
         ["证据验证", value.evidence_verification || "未提供"],
-        ["事件数", count(value.event_count)],
-        ["原生投递尝试", verified && Number.isSafeInteger(value.native_submission_attempts) &&
-          value.native_submission_attempts >= 0 ? count(value.native_submission_attempts) : "未确认"],
-        ["预算耗尽原因", verified && Object.hasOwn(budgetReasons, value.budget_end_reason)
-          ? budgetReasons[value.budget_end_reason] : "未从已验证证据确认"],
+        ["事件数", Number.isSafeInteger(value.event_count) && value.event_count >= 0
+          ? count(value.event_count) : "未确认"],
+        ["原生投递尝试", recorded && Number.isSafeInteger(attempts) &&
+          attempts >= 0 ? count(attempts) : "未确认"],
+        ["预算耗尽原因", recorded && typeof budgetReason === "string"
+          && Object.hasOwn(budgetReasons, budgetReason)
+          ? budgetReasons[budgetReason] : "未从已验证证据确认"],
         ["本次记录观察到的结局页", terminalLabel],
         [
           "游戏结果",

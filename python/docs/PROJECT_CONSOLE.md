@@ -345,6 +345,13 @@ read (at most 100), with passed, failed and unconfirmed verification kept separa
 **评估结果** for each full local report and its explicit sharing control; the model-page
 summary does not imply a complete history, a latest result or a game outcome.
 
+The current Runtime summary reads the supported status schema's original receipt:
+Agent sessions use a terminal `last_result`; legacy policy sessions use `last_receipt`.
+Loaded state and consumed budget do not establish delivery. Current-operation and
+history reports use their own handoff schema's verified attempt/outcome/budget fields.
+Missing native action-type or terminal-page observations remain unconfirmed; counts
+and delivered input never establish a full game, a win or model quality.
+
 Existing view URLs remain usable. Secondary statistics/download/detail views belong to these
 main tasks. See [the unified member flow](UNIFIED_TASK_FLOW.zh-CN.md) for first-use and daily use.
 

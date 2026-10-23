@@ -4917,7 +4917,8 @@ test("a legacy short-only choice and an unknown loaded profile stay distinct", a
 });
 
 test("verified report shows action, delivery and budget facts without claiming a game outcome", async () => {
-  const evaluation = {evaluation_id:id("e"), selection_id:"audited-cpu", run_id:"run-1",
+  const evaluation = {schema:"stpd/local-runtime-evaluation-handoff-v1",
+    evaluation_id:id("e"), selection_id:"audited-cpu", run_id:"run-1",
     evidence_verification:"pass", event_count:12, game_outcome:"not_measured",
     recorded_action_verbs:{select:5, confirm:2}, native_submission_attempts:7,
     delivery_counts:{delivered:6, unknown:1}, budget_end_reason:"submission_attempt_limit",
@@ -4955,6 +4956,107 @@ test("verified report shows action, delivery and budget facts without claiming a
   const failed = text(await env.render());
   assert.match(failed, /证据未通过核验/);
   assert.doesNotMatch(failed, /select\s+5|自主运行时间已到限额|本次记录观察到的结局页\s+失败/);
+});
+
+// Minimal fields from the GUI5 Stop owner's actual JSON; opaque identities are
+// synthetic. This is a display fixture, not replayed game/runtime evidence.
+const guiNativeSummary = JSON.parse(readFileSync(
+  new URL("./fixtures/gui_native_summary.json", import.meta.url), "utf8"));
+
+test("GUI5 native summary maps original status and verified report in current and history views", async () => {
+  for (const view of ["local-models", "evaluations"]) {
+    const state = structuredClone(guiNativeSummary);
+    const env = setup({view, identity:{status:"signed_out"}, handler:url =>
+      url === "/api/local-models/status" ? state :
+        url === "/api/local-models" ? {evaluations:[state.evaluation]} : emptyList()});
+    const page = await env.render();
+    const rendered = text(page);
+    if (view === "local-models") {
+      assert.match(rendered, /已有动作投递结果记录：已送达/);
+      assert.doesNotMatch(rendered, /动作投递结果尚未确认/);
+    }
+    assert.match(rendered, /原生投递尝试\s+15/);
+    assert.match(rendered, /delivered\s+15/);
+    assert.match(rendered, /模型评分次数已到限额/);
+    assert.match(rendered, /预算提交\s+15 \/ 16/);
+    assert.match(rendered, /预算评分\s+32 \/ 32/);
+    assert.match(rendered, /动作类型：未从已验证证据确认/);
+    assert.match(rendered, /本次记录观察到的结局页\s+此报告未提供此项观测/);
+    assert.match(rendered, /游戏结果\s+未测量/);
+    assert.equal(post(env.calls).length, 0);
+  }
+});
+
+test("status selects the supported receipt schema and never infers delivery from load or budget", async () => {
+  const agentSchema = "sts2.policy-runtime/agent-session-status-1";
+  const policySchema = "sts2.policy-runtime/status-1";
+  const receipt = {request_id:"fixture-request", delivery:"delivered"};
+  const terminal = {...receipt, status:"terminal"};
+  for (const [runtime, expected] of [
+    [{schema:agentSchema, last_result:terminal}, /已有动作投递结果记录：已送达/],
+    [{schema:policySchema, last_receipt:receipt}, /已有动作投递结果记录：已送达/],
+    [{schema:agentSchema, last_result:{...terminal, delivery:"partially_delivered"}}, /记录：部分送达/],
+    [{schema:agentSchema, last_result:{...terminal, delivery:"unknown"}}, /记录：未确认/],
+    [{schema:agentSchema, last_result:{...terminal, delivery:"not_started"}}, /记录：未开始/],
+    [{schema:agentSchema, last_result:{...terminal, delivery:"rejected_before_input"}}, /记录：输入前被拒绝/],
+    [{schema:agentSchema, last_result:{...terminal, delivery:"not_delivered"}}, /记录：未送达/],
+    [{schema:policySchema, last_receipt:{...receipt, delivery:"not_started"}}, /动作投递结果尚未确认/],
+    [{schema:agentSchema, last_result:{...terminal, status:"pending"}}, /动作投递结果尚未确认/],
+    [{schema:agentSchema, last_result:{...terminal, delivery:["delivered"]}}, /动作投递结果尚未确认/],
+    [{schema:agentSchema, last_result:{...terminal, request_id:true}}, /动作投递结果尚未确认/],
+    [{schema:agentSchema, last_result:null, last_receipt:receipt}, /动作投递结果尚未确认/],
+    [{schema:policySchema, last_receipt:null, last_result:terminal}, /动作投递结果尚未确认/],
+    [{schema:"future-status", last_result:terminal}, /动作投递结果尚未确认/],
+  ]) {
+    const state = structuredClone(guiNativeSummary);
+    delete state.evaluation;
+    state.loaded = true;
+    state.runtime = {...state.runtime, ...runtime};
+    const env = setup({view:"local-models", handler:url =>
+      url === "/api/local-models/status" ? state : emptyList()});
+    assert.match(text(await env.render()), expected);
+    assert.equal(post(env.calls).length, 0);
+  }
+});
+
+test("native report rejects malformed counts and cross-schema substitutes without promoting unknowns", async () => {
+  for (const invalid of [true, false, -1, 1.5, Number.MAX_SAFE_INTEGER + 1,
+    Infinity, NaN, "15", null, [], {}]) {
+    const evaluation = structuredClone(guiNativeSummary.evaluation);
+    evaluation.submission_attempt_count = invalid;
+    evaluation.request_outcome_counts = {delivered:invalid};
+    evaluation.budget_summary.policy_calls_used = invalid;
+    // Old field names cannot fill a malformed native report.
+    evaluation.native_submission_attempts = 777;
+    evaluation.delivery_counts = {delivered:777};
+    evaluation.budget_end_reason = "deadline";
+    const env = setup({view:"evaluations", handler:url =>
+      url === "/api/local-models" ? {evaluations:[evaluation]} : emptyList()});
+    const rendered = text(await env.render());
+    assert.match(rendered, /原生投递尝试\s+未确认/);
+    assert.match(rendered, /投递结果：未从已验证证据确认/);
+    assert.match(rendered, /预算耗尽原因\s+未从已验证证据确认/);
+    assert.doesNotMatch(rendered, /预算评分|delivered\s+777|原生投递尝试\s+777|自主运行时间已到限额/);
+    assert.equal(post(env.calls).length, 0);
+  }
+});
+
+test("unverified or unsupported native reports cannot display operational claims", async () => {
+  for (const verification of ["fail", "failed", "unknown", "PASS", true, null]) {
+    const evaluation = {...structuredClone(guiNativeSummary.evaluation), evidence_verification:verification};
+    const env = setup({view:"evaluations", handler:url =>
+      url === "/api/local-models" ? {evaluations:[evaluation]} : emptyList()});
+    const rendered = text(await env.render());
+    assert.match(rendered, /原生投递尝试\s+未确认/);
+    assert.doesNotMatch(rendered, /delivered\s+15|预算提交|预算评分|模型评分次数已到限额/);
+  }
+  const evaluation = {...structuredClone(guiNativeSummary.evaluation), schema:"future-report"};
+  const env = setup({view:"evaluations", handler:url =>
+    url === "/api/local-models" ? {evaluations:[evaluation]} : emptyList()});
+  const rendered = text(await env.render());
+  assert.match(rendered, /报告格式未能识别/);
+  assert.match(rendered, /原生投递尝试\s+未确认/);
+  assert.doesNotMatch(rendered, /delivered\s+15|预算提交|预算评分|模型评分次数已到限额/);
 });
 
 test("model page summarizes returned evaluation history while evaluation page keeps every report", async () => {
@@ -5989,7 +6091,7 @@ test("runtime environment rejection remains historical until an explicit fresh s
   let page = await env.render();
   assert.match(text(page), /游戏环境与模型绑定不一致/);
   assert.match(text(page), /历史诊断/);
-  assert.match(text(page), /尚无游戏动作送达记录/);
+  assert.match(text(page), /动作投递结果尚未确认/);
   assert.equal(action(page, "model-command-auto").disabled, false);
   assert.equal(action(page, "model-command-stop").disabled, false);
   assert.equal(post(env.calls).length, 0);
