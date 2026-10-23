@@ -1493,7 +1493,9 @@ job/attempt/handle，再核实际更新。备份/恢复沿原 Ops SOP，不复�
 
 默认仍要求控制应用源码与 target 执行 producer 相同。确需在冻结训练期间升级
 控制应用时，可信 `remote_compute.execution_producer` 可显式填入原 target 的完整
-Producer 三字段；必须完全相等。升级前验证新应用能读原 Run/CP且受影响消费者
+Producer 三字段；必须完全相等。这个例外仅用于既有 Run 的观察、恢复和接续；
+`prepare/start` 新建 Run/Input 仍要求当前应用源码与 target producer 相等，禁止把
+升级代码构造的新原件标成旧源码。升级前验证新应用能读原 Run/CP且受影响消费者
 通过，停旧本地 owner（不取消远端 worker），备份原 Ops/配置，启动唯一新 owner，
 核原 handle 未变，再开启策略。worker 自身源码、lock、target、Run/CP producer不改。
 回滚前先关闭策略，取消未运行的接续队列，再恢复旧应用/配置；不删除原 Ops 历史。

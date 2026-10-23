@@ -177,6 +177,10 @@ def test_explicit_execution_producer_is_separate_from_control_application(tmp_pa
         assert ProjectConfig.load(config_path) == config
         service = RemoteTrainingService(config, app.remote_training.select, provider=provider)
         assert service._context()[2].target.producer == old
+        before = len(provider.calls)
+        with pytest.raises(BoundaryError, match="new_run_requires_current_execution_source"):
+            service.prepare({})
+        assert len(provider.calls) == before
         service.config = replace(config, remote_compute=replace(
             config.remote_compute, execution_producer=changed))
         with pytest.raises(BoundaryError, match="target_source_lock_mismatch"):

@@ -435,6 +435,10 @@ class RemoteTrainingService:
         from stpd.p1.workload import prepare_p1_run
 
         owner, store, provider, _ = self._context()
+        # A control upgrade may resume an existing frozen Run. New Run/Input
+        # construction executes here and must retain this code's actual provenance.
+        if provider.target.producer != source_identity(ROOT):
+            raise BoundaryError("remote_training", "new_run_requires_current_execution_source")
         deployment = self.config.remote_compute
         assert deployment is not None
         recipe = body.get("recipe_id", "p1-mstd-N-v1") if isinstance(body, dict) else None
