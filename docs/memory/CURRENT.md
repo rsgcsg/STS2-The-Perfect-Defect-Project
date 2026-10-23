@@ -1,3 +1,7 @@
+# 当前增量：原生 Pause 的 post-delivery capture 取消修复
+
+真实 Runtime40 Pause 后旧capture因owner epoch撤销被拒，却被错误taint。新版Runtime41沿同一owner修正取消归类，App显式消费40/41，具体边界与非claim见[本轮修复](../plans/p1-prefreeze-2026-10-18/NATIVE_PAUSE_CAPTURE_20261023.zh-CN.md)。原始失败运行保持原状；source/package不授现场修复通过，旧Mod/Tool/Host/Evidence资产不变。
+
 # 当前：游戏内连续模型展示候选，原现场不变
 
 用户要求真实模型下拉、持续展示、简单暂停/继续/结束与诚实恢复。D/T从

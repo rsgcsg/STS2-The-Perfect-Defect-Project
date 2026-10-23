@@ -8,7 +8,7 @@ import type { GlobalArtifact, GlobalCaptureStagingRef } from "./evidence.js";
 import type { ConnectorPolicyRequirements } from "./contracts.js";
 import { createHash, randomUUID } from "node:crypto";
 import {
-  EnvironmentControllerSession, NativeLogicalSession,
+  EnvironmentControllerSession, NativeLogicalSession, PlayerEnvironmentHttpError,
   PlayerEnvironmentRestClient, validateNativeLogicalRequest,
   type JsonObject, type NativeLogicalAction, type NativeLogicalByteBudget,
   type NativeLogicalCapabilities, type NativeLogicalCapturedObservation,
@@ -445,7 +445,10 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
   }
   private budgetStatus() { return this.owner.status(() => this.expireBudget()); }
   private checkActive(epoch: number, signal: AbortSignal): void {
-    this.checkKnownStaleDeadline(); this.owner.checkEpoch(epoch); signal.throwIfAborted();
+    this.checkKnownStaleDeadline();
+    if (signal.aborted && signal.reason instanceof NativeRuntimeRevocation && epoch !== this.owner.epoch)
+      throw signal.reason;
+    this.owner.checkEpoch(epoch); signal.throwIfAborted();
   }
   private admitMutation(): void {
     this.checkKnownStaleDeadline();
@@ -461,7 +464,7 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
   private revoke(reason: "human_recovery" | "stopped"): void {
     this.terminationReason ??= reason;
     this.knownStaleWindow = null;
-    this.owner.advanceEpoch(); this.owner.cancelActive(reason); this.mode = "human"; this.owner.end(reason);
+    this.owner.advanceEpoch(); this.owner.cancelActive(new NativeRuntimeRevocation(reason)); this.mode = "human"; this.owner.end(reason);
   }
   private async freshRuntime(): Promise<string> {
     try {
@@ -1285,6 +1288,7 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
     const captureRequestId = `capture-request-${randomUUID()}`;
     await this.emitGlobal("global_capture_requested", { request_id: captureRequestId });
     const responseReservations: AgentByteReservation[] = [];
+    let transportFailure: unknown, transportRevocation: NativeRuntimeRevocation | undefined;
     try {
     const responses: { bytes: Buffer; stage: GlobalCaptureStagingRef }[] = [];
     let responseBytes = 0;
@@ -1304,10 +1308,21 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
           });
           return responseWrite;
         } });
+      } catch (error) {
+        // The SDK wraps fetch aborts in its typed transport error. Recover only
+        // this revoked read's owner token; durable writes, cleanup aggregates
+        // and native identity validation stay outside this classification.
+        if (signal.aborted && signal.reason instanceof NativeRuntimeRevocation
+          && signal.reason.reason === "human_recovery" && epoch !== this.owner.epoch
+          && error instanceof PlayerEnvironmentHttpError && error.statusCode === undefined) {
+          transportFailure = error; transportRevocation = signal.reason;
+        }
+        throw error;
       } finally {
         // Cancellation may overtake the bounded response hook. Finish the
         // original durable staging before flushing an interrupted capture.
-        await responseWrite;
+        try { await responseWrite; }
+        catch (error) { transportRevocation = undefined; throw error; }
       }
     } catch (error) {
       // Partial/failed captures have no source owner: retain their original
@@ -1340,7 +1355,11 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
       if (postDelivery) await this.emitGlobal("global_source_retained", { source_ordinal: ordinal, disposition: "pending_next_receive" });
       return { full, artifact, ordinal };
     } catch (error) { await this.emitGlobal("global_source_rejected", { source_ordinal: ordinal, reason: errorMessage(error) }); throw error; }
-    } catch (error) { await this.emitGlobal("global_capture_error", { request_id: captureRequestId, reason: errorMessage(error) }); throw error; }
+    } catch (error) {
+      await this.emitGlobal("global_capture_error", { request_id: captureRequestId, reason: errorMessage(error) });
+      if (transportRevocation && error === transportFailure) throw transportRevocation;
+      throw error;
+    }
     finally { for (const reservation of responseReservations) reservation.release(); }
   }
   private async receiveGlobal(signal: AbortSignal, epoch: number, handlers: AgentPortHandlers, offer: { pending: boolean }): Promise<void> {
@@ -1504,7 +1523,10 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
         if (!next && !rule.optional) status = "interrupted_known";
       } catch (error) {
         status = "interrupted_known";
-        if (!this.stopping && !this.budgetFenced) await this.taint(`global_post_delivery_capture:${errorMessage(error)}`);
+        const humanRevoked = signal.aborted && signal.reason instanceof NativeRuntimeRevocation
+          && signal.reason.reason === "human_recovery" && error === signal.reason && epoch !== this.owner.epoch;
+        if (!this.stopping && !this.budgetFenced && !humanRevoked)
+          await this.taint(`global_post_delivery_capture:${errorMessage(error)}`);
         break;
       }
     }
@@ -1533,6 +1555,14 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
       await (this.options.globalTransport ? this.options.globalTransport.release() : this.controller!.releaseControl()).catch(() => undefined);
       throw error;
     }
+  }
+}
+
+// Private operation-scope identity: intentional owner revocation is not a
+// failed native capture. Keep the existing recovery error on the raw journal.
+class NativeRuntimeRevocation extends RuntimeControlPreconditionError {
+  constructor(readonly reason: "human_recovery" | "stopped") {
+    super("runtime_recovery_epoch_mismatch", 409);
   }
 }
 
