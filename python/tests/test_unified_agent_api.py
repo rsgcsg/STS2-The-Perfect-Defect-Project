@@ -127,11 +127,13 @@ def native_entry_api(tmp_path, monkeypatch):
     from test_native_episode_application import capabilities, prepare_body
     from test_unified_agent_execution import m2
 
-    from spireagent.json_boundary import BoundaryError, digest, json_bytes
+    from spireagent.json_boundary import json_bytes
     from spireagent.workbench import local_model_cli
     from spireagent.workbench.native_episode_binding import (
         ADMISSION_SCHEMA,
         BINDING_SCHEMA,
+        PROFILE_FILE,
+        PROFILE_SCHEMA,
         checked_context,
         installed_tuple,
         preparation_body,
@@ -198,29 +200,50 @@ def native_entry_api(tmp_path, monkeypatch):
             },
         }
     )
+    # Owned request admission validates its staged profile even though this
+    # fixture never spawns or verifies a Host package or game.
+    package, game = tmp_path / "host-package", tmp_path / "game"
+    for directory in (package, game, config.state_dir / "native-host"):
+        directory.mkdir()
+    atomic_json(config.state_dir / PROFILE_FILE, {
+        "schema": PROFILE_SCHEMA,
+        "host_package_directory": str(package),
+        "host_package_pin": context["binding"]["host_package_pin"],
+        "game_directory": str(game),
+        "template_id": "defect-a0-s0",
+        "endpoint": "http://127.0.0.1:15526",
+        "installed_tuple": context["binding"]["installed_tuple"],
+        "preparation_timeout_seconds": 5,
+        "cleanup_timeout_seconds": 5,
+        "candidate_admission": {"game": "exact_canary", "connector": "exact_canary"},
+        "default_speed": None,
+    })
+
     effects, requests = [], []
-    record = {"phase": "idle", "environment_ref": None, "admission_context": None}
+    # Preparation is a synthetic process leaf, but all request/context admission
+    # uses the same Environment record and immutable request as the real owner.
+    record = app.local_environment.native_record
 
     def prepare(value):
         body = preparation_body(value)
         effects.append(("prepare", copy.deepcopy(body)))
-        record.update(phase="ready", environment_ref=reference, admission_context=context)
+        record.update(
+            phase="ready",
+            environment_ref=reference,
+            generation_id=context["binding"]["generation_id"],
+            intent_id=body["intent_id"],
+            preparation=body,
+            configuration_id=configuration_id(config),
+            profile_sha256=app.local_environment._read_native_profile()[1],
+            application_instance_id=app.instance_id,
+            actor=None,
+            admission_context=context,
+        )
+        app.local_environment._accept_native_request(record)
         return copy.deepcopy(record)
 
-    def resolve(value):
-        if (
-            digest(value, "native_episode.reference", length=32) != reference
-            or record["phase"] != "ready"
-        ):
-            raise BoundaryError("native_episode", "resource_not_found")
-        return checked_context(context)
-
-    def guard(value, _action):
-        if value is not None and checked_context(value) != context:
-            raise BoundaryError("native_episode", "resource_binding_changed")
-
     def begin_finish(value):
-        resolve(value)
+        app.local_environment.native_episode_context(value)
         effects.append(("finish", value))
         return {**record, "admission_context": None}, None, True
 
@@ -234,13 +257,14 @@ def native_entry_api(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(app.local_environment, "begin_native_finish", begin_finish)
     monkeypatch.setattr(app.local_environment, "close_native_after_actor", close_after_actor)
-    app.models.native_episode_resolver = resolve
-    app.models.native_episode_guard = guard
     monkeypatch.setattr(app.models, "_run_profile", lambda *_args: True)
     monkeypatch.setattr(app.models, "composition", lambda _identity: m2())
     manifest = tmp_path / "manifest.json"
     manifest.write_bytes(json_bytes({"schema": "sts2.policy-runtime/policy-manifest-1"}))
-    monkeypatch.setattr(app.models, "selection", lambda _identity: {"id": "public-m2"})
+    monkeypatch.setattr(app.models, "selection", lambda _identity: {
+        "id": "public-m2", "adapter": "stpd-public-m2-decision-adapter",
+        "runtime_profile": "public-snapshot-m2-v1",
+    })
     monkeypatch.setattr(app.models, "entry_path", lambda *_args: manifest)
 
     def launch(identity, profile, **kwargs):
