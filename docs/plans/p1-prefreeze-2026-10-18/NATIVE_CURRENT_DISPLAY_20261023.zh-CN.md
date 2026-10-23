@@ -13,3 +13,15 @@
 原训练已自然早停2190步/最佳1460，最终产物与原worker唯一一次TEST已核；学校分配已正常Stop并回到选择页。最终best与current2190沿同一配方/Store/Model入口交付。父任务固定40局、完整最终比较与总R2索引未完成，不因本轮GUI或子门禁通过而关闭。到硬截止如实交付已完成与未完项，不自动复活后续工作。
 
 准确Mod61冷加载后发现新游戏配对被已关闭资源的历史runtime身份挡住，页面因而未连接。Application配对检查改为只用活动资源约束当前游戏；idle/closed/failed仍先经Environment原状态读取及实际选中Connector身份核对，不清除未知/活动任务。回归从真实公开Host pipe准备并正常结束原资源，保留原admission_context，再验证新selected游戏可配对、活动旧资源和未选中游戏仍拒绝。原App先正常停止后才改源码，Mod/Runtime不因此重编或替换。
+
+## 90分钟交付记录与停止边界
+
+源码修复PR232准确25ca3adb186c9e8440be8defbea93db6a5c30100，非作者接受；唯一最终头CI39996990249 attempt1完整5114项=5098PASS+16skip、0失败，3官方ZIP SHA与原verifyPytestShards/validReceipt通过。执行testmerge9ad9e032的base/head父节点正确，tree52eb80216d150a35eafa2439b5cbb60ec8a7e65f；普通合并7f3c711cddd214dceea3fcc947cded315dce5416保留相同树和组件provenance。旧8c CI仅属旧头，514候选CI被正常取消，不改写失败/取消分母。
+
+本地Mod61 SHA3f5cac623a9fd1f8fcb3faeddd3cfd7b2d7b188176792e32cbd1a08e68d30ef4/MVIDc9cb7e0c-3918-4e9c-8367-be8c70c41b39真实构建、部署、冷加载已核。新Python候选沿该native source set，不以Python提交改变Mod身份。正常Host/App保留打开，主菜单无Auto，最终最佳1460模型已选中。原用户目录和存档、deployment rollback、source-candidate与封存证据均保留；一次误选默认Steam安装已在任何Actor前按正常Host Stop退出。
+
+现场random和frequency原生Start、实际动作及干净封存分别成立；前者46次提交/90次policy call、后者145次/280次，控制权释放、无taint/pending。random在卡包selector出现required:selector:invalid_content后正确交人工；root CUA选择卡包后同Actor Continue，操作主体为AI，不记Human。原生截图分别观察第3/12层落败，但封存记录无合格terminal body、任务完成unproved，不能用截图补造typed胜负/研究结论。两次Pause都晚于自然落败，暂停未通过现场验收。唯一新世界已结束，不追加开局；线性和最终Mstd在新版的GUI实测未完成。Connector公开Read能力缺口保留，本轮不扩为新Connector修复。
+
+原训练best1460 Model a6094264d992fce7addf4e398f1892a1f0178d7043a624a97523145de61c4412，current2190预览Model a7abbc9ddabaacce01d57d1307ef4988f877975a2383a868fdf42b851576884b，原配方发布且正常下载/登记。原四模型结果的相同Snapshot615318fe…/TEST558：random期望准确率20.52%/loss1.862816，frequency45.48%/1.620546，linear53.00%/1.202984，Mstd确定性计数355/558=63.62%/1.024594；前三按并列最高分均匀选择计算期望，loss为原score-softmax N-loss，非胜率。最终TEST不用于调参，只有原worker已有结果metadata读回，没有新增forward。
+
+学校1654正常释放，17:14:55UTC门户已无活动分配；精确结束秒数未知，学校累计保守上界20.645h/40h含旧7498秒，不是门户余额。全输出自有R2校验不等于总祖先链冷恢复，固定40局、最终Mstd新版实际Agent使用和完整聚合R2恢复仍未完成。截止2026-10-23T18:27:00Z后停止本轮自动推进，不以本PR/文档/CI关闭父任务或自动生成新任务。准确原件私有交付索引：`/Users/fire/Documents/Codex/2026-10-23/first-four-agent-training/evidence/FINAL-DELIVERY-INDEX.json`；游戏原件：`/Users/fire/Documents/Codex/2026-10-23/ingame-continuous-model-play/current-display-repair/evidence/`，不提交原始数据或凭据。

@@ -71,6 +71,23 @@ steps over the same owners. A normal Game Mod launch with the selected workbench
 is the current-game entry; a seeded `prepare-owned` Reference is a different,
 explicit mode whose original seed/profile identity checks remain unchanged.
 
+In the native panel, open 模型实战 and select a normally registered Model. On a
+running game, 开始展示 requests Auto on that current game; it does not create or
+reset a game. 暂停 returns control while retaining the same Actor, 继续 uses that
+Actor, and 结束 seals the operation. Wait for the original stopped/sealed result
+before selecting another Model and starting another segment. At the main menu,
+enter a normal game first. Model registration and a visible selection alone do
+not prove inference or a successful Start.
+
+When public input is unavailable (for example `selector:invalid_content`), the
+Runtime hands control back. Inspect the reason and resolve the native screen
+manually only when the original operation is known and released; then use its
+explicit Continue. Unknown delivery or taint instead uses original recovery;
+do not click Start repeatedly. A clean Stop and a loss screenshot do not prove
+a qualified game outcome or successful Task. These control semantics describe
+the supported path; a version's actual canary limitations stay in its task and
+recording, including buttons that were not exercised before the game ended.
+
 Native Start admits the same declared `ACK_committed_session_rng` used by the
 random/frequency/linear baselines. A fresh attached segment creates a fresh Agent
 session and seeded RNG; Pause/Continue retains the same Actor and committed state.
