@@ -65,6 +65,8 @@ def verify_p1_checkpoint(
         or identity.get("input_spec") != training["input_spec"]
         or identity.get("vocabulary_sha256") != training["vocabulary_sha256"]
         or identity.get("target_spec") != TARGET_SPEC
+        or identity.get("execution", workload.execution.to_dict()) != workload.execution.to_dict()
+        or ("execution_policy" in workload.run.parameters.value() and "execution" not in identity)
         or type(state.get("step")) is not int
         or not 0 <= state["step"] <= training["planned_steps"]
         or state.get("step") != info.get("optimizer_updates")
@@ -253,6 +255,7 @@ def execute_p1_run(
         workload.vocabulary,
         workload.snapshot.artifact_id,
         workload.config,
+        execution=workload.execution,
     )
     construction_seconds = time.perf_counter() - construction_started
     checkpoints: dict[str, str] = {}

@@ -83,6 +83,16 @@ def typed_recipe_is_scoped(recipe_id: str) -> bool:
 
 
 def checked_recipe_execution_policy(recipe_id: str, value: object) -> dict[str, Any]:
+    if recipe_id == P1_MSTD_RECIPE:
+        from stpd.p1.execution import MStdExecution
+
+        try:
+            execution = MStdExecution.decode(value)
+            if execution.cpu_threads != 2:
+                raise BoundaryError("p1_execution", "formal_recipe_cpu_threads_mismatch")
+            return execution.to_dict()
+        except BoundaryError as error:
+            raise BoundaryError("local_training", "invalid_training_request") from error
     from stpd.native_sampled_carry_spec import RECIPE as SAMPLED_RECIPE
     from stpd.policy.native_execution_policy import checked_execution_policy
 

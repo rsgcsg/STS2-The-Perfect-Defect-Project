@@ -13,19 +13,22 @@ import torch
 from stpd.workers.checkpoint_codec import decode_checkpoint, encode_checkpoint
 
 from .data import digest, json_bytes
+from .execution import MStdExecution
 from .input import INPUT_SPEC, validate_input_spec
 from .model import ARCHITECTURE, MStd
 
 ADAPTER = "stpd-p1-mstd-agent"
 PROTOCOL = "sts2.policy-runtime/agent-session-ndjson-1"
 PACKAGE_SCHEMA = "stpd/p1-mstd-model-1"
+EXECUTION_PACKAGE_SCHEMA = "stpd/p1-mstd-model-2"
 
 
 def adapter_identity() -> dict[str, str]:
     root = Path(__file__).parent
     closure = {
         name: digest((root / name).read_bytes())
-        for name in ("agent.py", "agent_driver.py", "export.py", "input.py", "model.py", "data.py")
+        for name in ("agent.py", "agent_driver.py", "export.py", "input.py", "model.py", "data.py",
+                     "execution.py")
     }
     closure["checkpoint_codec.py"] = digest(
         (root.parent / "workers/checkpoint_codec.py").read_bytes()
@@ -63,9 +66,13 @@ def export_model(
     state = dict(model.state_dict())
     if not all(bool(torch.isfinite(value).all()) for value in state.values()):
         raise ValueError("cannot export non-finite weights")
+    execution_fields = ({"inference_execution": model.execution.to_dict()}
+                        if model.execution != MStdExecution() else {})
+    schema = EXECUTION_PACKAGE_SCHEMA if execution_fields else PACKAGE_SCHEMA
     raw = encode_checkpoint(
         {
-            "schema": PACKAGE_SCHEMA,
+            "schema": schema,
+            **execution_fields,
             "architecture": ARCHITECTURE,
             "vocabulary": model.vocabulary,
             "input_spec": input_spec(model.vocabulary),
@@ -77,7 +84,8 @@ def export_model(
     path = destination / "model.tensor-tree"
     path.write_bytes(raw)
     descriptor = {
-        "schema": PACKAGE_SCHEMA,
+        "schema": schema,
+        **execution_fields,
         "package_sha256": digest(raw),
         "checkpoint_sha256": digest(checkpoint.read_bytes()),
         "input_spec": input_spec(model.vocabulary),
@@ -101,14 +109,18 @@ def load_model(path: Path, expected_sha256: str) -> tuple[MStd, dict[str, Any]]:
         raise ValueError("model package checksum mismatch")
     value = decode_checkpoint(raw)
     if (
-        value.get("schema") != PACKAGE_SCHEMA
+        value.get("schema") not in {PACKAGE_SCHEMA, EXECUTION_PACKAGE_SCHEMA}
         or value.get("architecture") != ARCHITECTURE
         or value.get("input_spec") != input_spec(value["vocabulary"])
     ):
         raise ValueError("model package architecture/InputSpec mismatch")
+    if value["schema"] == PACKAGE_SCHEMA and "inference_execution" in value:
+        raise ValueError("legacy model package cannot select a new execution")
+    execution = (MStdExecution.decode(value.get("inference_execution"))
+                 if value["schema"] == EXECUTION_PACKAGE_SCHEMA else MStdExecution())
     # Inference construction must not alter process random state.
     with torch.random.fork_rng(devices=[]):
-        model = MStd(value["vocabulary"])
+        model = MStd(value["vocabulary"], execution)
     expected = model.state_dict()
     weights = value["weights"]
     if set(expected) != set(weights) or any(

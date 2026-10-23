@@ -134,13 +134,17 @@ def run_p1_child(args: Any, channel: Any, store: Any, fence: Any, producer: Any)
     require_p1_training_use(owner, store, request.source_id, args.operation_id)
     fenced = FencedStore(store, fence)
     if operation["mode"] == "start":
-        run = prepare_p1_run(fenced, request.source_id, producer, config, args.operation_id)
+        run = prepare_p1_run(fenced, request.source_id, producer, config, args.operation_id,
+                             **({"execution_policy": request.execution_policy}
+                                if request.execution_policy is not None else {}))
         fence.bind_run(run)
         channel.emit("prepared", run_id=run.artifact_id, input_id=run.parent("training_input"))
         fence.wait_for_parent_run(run.artifact_id, run.parent("training_input"))
     else:
         workload = verify_p1_run(store, operation["run_id"], producer)
-        if workload.config != config:
+        if (workload.config != config
+                or workload.run.parameters.value().get("execution_policy")
+                != request.execution_policy):
             raise BoundaryError("p1_recipe", "resume_config_mismatch")
         run = workload.run
     reporter = ChildReporter(ObjectStoreRunReporter(fenced, FencedSlots(store.blobs, fence)),

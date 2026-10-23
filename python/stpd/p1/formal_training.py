@@ -279,7 +279,7 @@ class MStdTrainer:
             raise BoundaryError("p1_training", "no_dev_selected_model")
         # Construction must not consume training RNG or mutate the continuing last model.
         with torch.random.fork_rng(devices=[]):
-            model = MStd(self.vocabulary)
+            model = MStd(self.vocabulary, self.execution)
         model.load_state_dict(self.best_weights, strict=True)
         return model.eval()
 
