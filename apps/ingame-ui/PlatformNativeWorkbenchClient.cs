@@ -280,7 +280,11 @@ internal sealed class PlatformNativeWorkbenchCommands
                 if (result.Status == "unconfirmed")
                 {
                     _unknown.TryAdd(scope, action + " · " + requestId);
-                    if (Owner(action) == "models" && _nativeModel is not null)
+                    bool originalRecovery = action is "models.human" or "models.stop"
+                        && JsonSerializer.SerializeToElement(payload).TryGetProperty("native_request_id", out JsonElement recoveryRequest)
+                        && recoveryRequest.ValueKind == JsonValueKind.String
+                        && recoveryRequest.GetString() == _nativeModel?.RequestId;
+                    if (_nativeModel is not null && (_nativeModel.RequestId == requestId || originalRecovery))
                         _unknownModels.TryAdd(scope, _nativeModel);
                 }
                 if (result.Status == "rejected" && _nativeModel?.RequestId == requestId) _nativeModel = previousModel;
