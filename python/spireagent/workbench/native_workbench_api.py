@@ -997,7 +997,6 @@ class NativeWorkbenchApi:
             authorize = app.native_access.intent_authorizer(context, pair)
             if app.models.selection(body["selection_id"])["adapter"] in GLOBAL_MODEL_ADAPTERS:
                 app.models._run_profile(body["selection_id"], body["run_profile"])
-                authorize()
                 body = {**body, "native_episode_ref": app.prepare_current_native_episode(
                     pair.runtime_instance_id, body.get("native_episode_ref"))}
             if "native_episode_ref" in body:

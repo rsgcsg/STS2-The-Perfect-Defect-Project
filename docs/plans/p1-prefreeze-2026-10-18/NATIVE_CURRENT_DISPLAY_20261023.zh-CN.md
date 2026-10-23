@@ -5,3 +5,5 @@
 第一处缺口在Application映射：普通游戏的P1开始入口没有准备当前局的attached资源，而受控评估局的owned引用又只能用于原seed。现在Native UI的原models.takeover/load沿同一prepare/current-binding→Model negotiation→Agent request→run-agent链接当前游戏；attached的再次开始先核原Actor正常Stop/typed clean seal，再正常detach并以新ref冷附着。源封装只组合既有owner，不建立第二套控制、规则或合法性。owned评估的seed/profile验证不变，unknown不重投，旧失败和原件不改。
 
 验收是普通Game Mod当前局的原生下拉Mstd→开始→实际动作→暂停/继续→结束→换Model，另确认新开局后开始生成新attached segment且旧证据不改。开发已有真实Application/HTTP/native-resource测试与真实SDK/Runtime/Model协商的合成World短链；它们不证明原生现场。稳定后一次selected CI与同冻结候选的短现场可并行；新源码/CI不覆盖旧运行或父训练/TEST/40局/R2未完项。操作入口归原模型流程指南，不新增私有业务脚本。
+
+非作者复核发现首候选25be1d41在Model admission前提前调用intent授权，真实回调会因本request尚未建立而拒绝；已保留该失败并删除提前调用，原pair/config检查及admission后的真实授权保留。回归复用真实NativeAccess与Model admission，仅游戏pair peer、Runtime进程启动/命令为明确替身；不再mock整个授权回调。

@@ -25,13 +25,17 @@ from spireagent.workbench.native_workbench_access import (
 FIXTURE = Path(__file__).parents[2] / "docs/design/fixtures/native_workbench_pair_v1.json"
 
 
-def paired_app(tmp_path, monkeypatch):
-    state = tmp_path / "state"
-    state.mkdir()
-    config = ProjectConfig(state, "", "http://127.0.0.1:15526", None, combination())
-    config_path = tmp_path / "project.json"
-    atomic_json(config_path, config.to_dict())
-    app = Application(config, config_path=config_path)
+def paired_app(tmp_path, monkeypatch, *, application=None, runtime_id="fixture-game"):
+    if application is None:
+        state = tmp_path / "state"
+        state.mkdir()
+        config = ProjectConfig(state, "", "http://127.0.0.1:15526", None, combination())
+        config_path = tmp_path / "project.json"
+        atomic_json(config_path, config.to_dict())
+        app = Application(config, config_path=config_path)
+    else:
+        app = application
+        state, config, config_path = app.config.state_dir, app.config, app.config_path
     root = tmp_path / "selected-launcher"
     root.mkdir()
     identity = {
@@ -66,7 +70,7 @@ def paired_app(tmp_path, monkeypatch):
         {"instance_id": app.instance_id, "configuration_id": configuration_id(config)},
     )
     pair = NativePair(
-        "fixture-game",
+        runtime_id,
         app.instance_id,
         configuration_id(config),
         "http://127.0.0.1:12345/",
