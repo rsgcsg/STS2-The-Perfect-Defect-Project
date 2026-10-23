@@ -84,6 +84,70 @@ describe("GLOBAL through the existing Runtime, real HTTP and real supervised Age
       await f.runtime.stop();expect((await replayGlobalAgentRun(f.evidence.directory)).unknown_delivery).toBe(false);
     }finally{await f.close();}
   });
+  it.each(["none", "identity", "release", "evidence"])("Human Pause preserves known delivery and real failure=%s", async fault => {
+    const tainted = fault !== "none";
+    const source = new GlobalHttpFixture(), entered = gate(), resume = gate();
+    source.terminalAfterStep = false;
+    if (fault === "identity") source.afterStepContinuity = "replaced-episode";
+    const f = await globalRuntimeFixture({ source, autoBudget: { mode: "continuous" } });
+    const store = f.evidence.storeGlobalArtifact.bind(f.evidence);
+    let blocked = false;
+    f.evidence.storeGlobalArtifact = async (role, bytes) => {
+      if (role === "source" && source.steps === 1 && !blocked) {
+        blocked = true; entered.release(); await resume.promise;
+        if (fault === "evidence") throw new Error("fixture_source_persistence_failure");
+      }
+      return store(role, bytes);
+    };
+    try {
+      const tick = f.runtime.tick(); await within(entered.promise);
+      const released = gate(); source.releaseObserved = released.release;
+      if (fault === "release") source.releaseFailure = true;
+      const pause = f.runtime.setMode("human").then(() => null, error => error);
+      await within(released.promise);
+      resume.release(); await within(tick);
+      const pauseError = await within(pause);
+      expect(pauseError !== null).toBe(fault === "release");
+      expect(f.runtime.status()).toMatchObject({ mode: "human", controller: fault === "release" ? "unknown" : "released", tainted, pending_request: null });
+      const events = await f.events();
+      expect(events.find(e => e.kind === "global_result").payload.result).toMatchObject({
+        status: "interrupted_known", steps: [{ delivery: "delivered" }], commitment_delta: null
+      });
+      expect(events.some(e => e.kind === "global_source_rejected")).toBe(fault !== "evidence");
+      expect(events.some(e => e.kind === "global_capture_error")).toBe(true);
+      expect(events.some(e => e.kind === "runtime_tainted")).toBe(fault === "identity" || fault === "evidence");
+      expect(events.some(e => e.kind === "controller_release_unknown")).toBe(fault === "release");
+      expect(source.steps).toBe(1);
+      if (!tainted) {
+        expect((await f.runtime.tick()).type).toBe("human"); expect(source.steps).toBe(1);
+        await f.runtime.setMode("auto");
+        expect((await f.runtime.tick()).type).toBe("delivered"); expect(source.steps).toBe(2);
+      }
+      if (fault === "release" || fault === "evidence") await expect(f.runtime.stop()).rejects.toBeDefined();
+      else await f.runtime.stop();
+      expect(f.runtime.status()).toMatchObject({ mode: "human", controller: fault === "release" ? "unknown" : "released", tainted, pending_request: null });
+      if (fault === "none" || fault === "identity") expect((await replayGlobalAgentRun(f.evidence.directory)).unknown_delivery).toBe(false);
+    } finally { resume.release(); await f.close(); }
+  });
+
+  it("Human Pause aborts an in-flight post-delivery HTTP capture without taint", async () => {
+    const source = new GlobalHttpFixture(), entered = gate(), resume = gate();
+    source.postCaptureEntered = entered.release; source.postCaptureGate = resume.promise;
+    const f = await globalRuntimeFixture({ source, autoBudget: { mode: "continuous" } });
+    try {
+      const tick = f.runtime.tick(); await within(entered.promise);
+      const pause = f.runtime.setMode("human"); await within(tick); await within(pause);
+      expect(f.runtime.status()).toMatchObject({ mode: "human", controller: "released", tainted: false, pending_request: null });
+      const events = await f.events();
+      expect(events.find(e => e.kind === "global_result").payload.result).toMatchObject({ status: "interrupted_known", steps: [{ delivery: "delivered" }] });
+      expect(events.some(e => e.kind === "global_capture_error")).toBe(true);
+      expect(events.some(e => e.kind === "runtime_tainted")).toBe(false);
+      expect(source.steps).toBe(1); await f.runtime.stop();
+      expect(f.runtime.status().tainted).toBe(false);
+      expect((await replayGlobalAgentRun(f.evidence.directory)).unknown_delivery).toBe(false);
+    } finally { resume.release(); await f.close(); }
+  });
+
   it("Stop during the mandatory single-step post-delivery capture preserves known delivery",async()=>{
     const source=new GlobalHttpFixture(), entered=gate(), release=gate();source.postCaptureGate=release.promise;source.postCaptureEntered=entered.release;
     const f=await globalRuntimeFixture({source});try{

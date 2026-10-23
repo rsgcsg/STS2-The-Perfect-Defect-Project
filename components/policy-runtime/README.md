@@ -440,6 +440,17 @@ unapplied or retry already executed actions. Existing unknown-delivery handling
 is unchanged. This fence coordinates control intent; it is not authentication,
 new game legality, or proof of scientific model quality.
 
+Runtime rc41 corrects Human/Pause during a mandatory GLOBAL post-delivery
+capture: the same lifecycle owner identifies its revoked operation by a private
+cancellation token. The known Receipt remains `interrupted_known`; the original
+capture rejection/error stays in the journal, control is released, and an
+intentional Human revocation alone does not taint the run. A wrapped transport
+abort is classified only at that revoked read boundary, after preserving its
+original error. Identity drift, unknown delivery, storage or release failure
+still fence/taint normally. Explicit Continue starts a fresh authorization and
+never reuses the rejected capture. Rc40 is retained as an older exact package;
+rc41 keeps the existing startup/status/event v2 contracts.
+
 While a policy decision is pending, Human and Stop signal that decision's
 recovery scope and invalidate its epoch before entering the serialized control
 operation. The Runtime returns the old tick as `not_admitted` and never lets a

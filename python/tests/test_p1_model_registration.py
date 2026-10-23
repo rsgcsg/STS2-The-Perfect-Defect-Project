@@ -168,8 +168,9 @@ def test_normal_application_http_control_token_registers_p1_model(
         thread.join(timeout=3)
 
 
+@pytest.mark.parametrize("runtime_version", ["0.1.0-rc.40", "0.1.0-rc.41"])
 def test_application_stop_window_is_in_original_request_and_runtime_spawn(
-    p1_registration, monkeypatch,
+    p1_registration, monkeypatch, runtime_version,
 ):
     from spireagent.workbench import local_models
     from spireagent.workbench.agent_run_request import publish
@@ -177,13 +178,18 @@ def test_application_stop_window_is_in_original_request_and_runtime_spawn(
     service, models, _, model, _, _ = p1_registration
     selection = service.register(model.artifact_id)["selection_id"]
     progress = {"windowDecisions": 32, "maxRepeats": 8}
+    monkeypatch.setattr(models, "runtime_profile", lambda _: (
+        Path("/trusted/runtime"), {"version": runtime_version}))
+    assert models._continuous_profile(selection)
+    continuous = models.agent_request(selection, "start", run_profile="continuous")
+    assert continuous["run_profile"] == "continuous"
     request = models.agent_request(selection, "start", global_no_progress=progress)
     assert request["budget"]["no_progress"] == progress
     assert "no_progress" not in models.agent_request(selection, "start")["budget"]
     models.state["agent_run_request"] = publish(models.directory, request, "original-operation")
     monkeypatch.setattr(models, "readiness", lambda _: {"status": "ready_to_load"})
     monkeypatch.setattr(models, "_runtime_package", lambda _: {
-        "version": "0.1.0-rc.40", "code_sha256": "b" * 64})
+        "version": runtime_version, "code_sha256": "b" * 64})
     monkeypatch.setattr(models, "_node_modules", lambda _: Path("/trusted/node_modules"))
     monkeypatch.setattr(local_models, "_check_runtime_port", lambda _: None)
     commands = []

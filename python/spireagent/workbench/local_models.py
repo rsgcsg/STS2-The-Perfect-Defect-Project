@@ -234,7 +234,7 @@ def _loopback(url: str) -> str:
 
 def _runtime_wire_version(package: dict[str, Any]) -> int:
     version = package.get("version")
-    if version == "0.1.0-rc.40":
+    if version in {"0.1.0-rc.40", "0.1.0-rc.41"}:
         return 2
     if version in {f"0.1.0-rc.{revision}" for revision in range(1, 40)}:
         return 1
@@ -1726,7 +1726,7 @@ class LocalModelService:
     def _continuous_profile(self, identity: str) -> bool:
         try:
             _directory, package = self.runtime_profile(identity)
-            return package.get("version") == "0.1.0-rc.40"
+            return package.get("version") in {"0.1.0-rc.40", "0.1.0-rc.41"}
         except (OSError, ValueError):
             return False
 
