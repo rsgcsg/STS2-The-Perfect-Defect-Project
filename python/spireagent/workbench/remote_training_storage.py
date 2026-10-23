@@ -13,10 +13,10 @@ from spireagent.workbench.p1_recording_storage import open_peer, storage_budget
 def verify_training_run(store: Any, run_id: str, producer: Producer) -> Any:
     """Select only the two installed P1 families; metadata never chooses an import."""
     from stpd.p1.baseline_spec import RUN_SCHEMA as BASELINE_RUN_SCHEMA
-    from stpd.p1.spec import RUN_SCHEMA
+    from stpd.p1.spec import RUN_SCHEMAS
 
     schema = store.get_manifest(run_id).parameters.value().get("schema")
-    if schema == RUN_SCHEMA:
+    if schema in RUN_SCHEMAS:
         from stpd.p1.workload import verify_p1_run
 
         return verify_p1_run(store, run_id, producer)

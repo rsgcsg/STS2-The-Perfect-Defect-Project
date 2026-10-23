@@ -15,12 +15,20 @@ from stpd.fullrun.dataset_policy import training_sources
 
 from .data import digest, json_bytes
 from .dataset import SnapshotReader
+from .derivation import DERIVATION
 from .execution import MStdExecution
 from .export import input_spec
 from .formal_training import Population
 from .input import INPUT_SPEC, fit_vocabulary, project
 from .model import ARCHITECTURE
-from .spec import RUN_SCHEMA, TARGET_SPEC, TRAINING_SCHEMA, MStdConfig
+from .spec import (
+    DERIVED_RUN_SCHEMA,
+    RUN_SCHEMA,
+    RUN_SCHEMAS,
+    TARGET_SPEC,
+    TRAINING_SCHEMA,
+    MStdConfig,
+)
 
 ENTRYPOINT = "stpd.workers.p1_run:execute_p1_run"
 
@@ -58,7 +66,7 @@ def prepare_p1_run(
     producer: Producer,
     config: MStdConfig,
     operation_id: str,
-    *, execution_policy: dict[str, Any] | None = None,
+    *, execution_policy: dict[str, Any] | None = None, initial_checkpoint: str | None = None,
 ) -> Manifest:
     """Caller reserves the existing application/Hub use before fitting vocabulary.
 
@@ -70,6 +78,17 @@ def prepare_p1_run(
                  else MStdExecution.decode(execution_policy))
     if execution.cpu_threads != config.cpu_threads:
         raise BoundaryError("p1_workload", "formal_recipe_cpu_threads_mismatch")
+    original = None
+    if initial_checkpoint is not None:
+        if execution_policy is None:
+            raise BoundaryError("p1_derivation", "explicit_frozen_execution_policy_required")
+        from .derivation import require_execution, source_workload
+
+        checked_digest(initial_checkpoint, "p1_workload.initial_checkpoint")
+        require_execution(execution)
+        original, _ = source_workload(store, initial_checkpoint)
+        if original.snapshot.artifact_id != snapshot_id or original.config != config:
+            raise BoundaryError("p1_derivation", "same_snapshot_and_config_required")
     training_sources(store, snapshot_id)
     reader = SnapshotReader(store, snapshot_id)
     snapshot = reader.manifest
@@ -118,10 +137,16 @@ def prepare_p1_run(
         (
             Parent("experiment", experiment.artifact_id),
             Parent("training_input", training.artifact_id),
+            *((Parent("original_run", original.run.artifact_id),
+               Parent("original_checkpoint", initial_checkpoint))
+              if original is not None and initial_checkpoint is not None else ()),
         ),
         parameters=FrozenObject.of(
-            {"schema": RUN_SCHEMA, "operation_id": operation_id, "event_index": "run-events-v1",
-             **({"execution_policy": execution.to_dict()} if execution_policy is not None else {})}
+            {"schema": DERIVED_RUN_SCHEMA if original is not None else RUN_SCHEMA,
+             "operation_id": operation_id, "event_index": "run-events-v1",
+             **({"execution_policy": execution.to_dict()} if execution_policy is not None else {}),
+             **({"derivation": DERIVATION}
+                if original is not None else {})}
         ),
     )
     store.publish(run)
@@ -145,8 +170,11 @@ def verify_p1_run(store: ArtifactStore, run_id: str, producer: Producer) -> P1Wo
     if (
         run.kind != "run"
         or run.producer != producer
-        or run.parameters.value().get("schema") != RUN_SCHEMA
-        or {p.role for p in run.parents} != {"experiment", "training_input"}
+        or run.parameters.value().get("schema") not in RUN_SCHEMAS
+        or {p.role for p in run.parents} != (
+            {"experiment", "training_input", "original_run", "original_checkpoint"}
+            if run.parameters.value().get("schema") == DERIVED_RUN_SCHEMA
+            else {"experiment", "training_input"})
     ):
         raise BoundaryError("p1_workload", "run_source_or_schema_mismatch")
     info_run = run.parameters.value()
@@ -196,4 +224,25 @@ def verify_p1_run(store: ArtifactStore, run_id: str, producer: Producer) -> P1Wo
         or experiment.parent("training_input") != training.artifact_id
     ):
         raise BoundaryError("p1_workload", "experiment_input_mismatch")
+    if info_run["schema"] == DERIVED_RUN_SCHEMA:
+        from .derivation import DERIVATION, LEGACY_PRODUCER, require_execution
+
+        if "execution_policy" not in info_run:
+            raise BoundaryError("p1_derivation", "explicit_frozen_execution_policy_required")
+        require_execution(execution)
+        original_cp = store.get_manifest(run.parent("original_checkpoint"))
+        original_run = store.get_manifest(run.parent("original_run"))
+        original_training = store.get_manifest(original_run.parent("training_input"))
+        if (info_run.get("derivation") != DERIVATION
+                or original_cp.kind != "checkpoint" or original_cp.producer != LEGACY_PRODUCER
+                or original_run.kind != "run" or original_run.producer != LEGACY_PRODUCER
+                or original_run.parameters.value().get("schema") != RUN_SCHEMA
+                or original_cp.parent("run") != original_run.artifact_id
+                or original_cp.parent("training_input") != original_training.artifact_id
+                or original_training.parameters != training.parameters
+                or original_training.payloads != training.payloads
+                or original_training.parents != training.parents):
+            raise BoundaryError("p1_derivation", "original_training_lineage_mismatch")
+    elif "derivation" in info_run:
+        raise BoundaryError("p1_derivation", "explicit_derived_run_schema_required")
     return P1Workload(run, training, snapshot, config, vocabulary, reader, execution)

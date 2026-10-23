@@ -80,9 +80,9 @@ def record_use(
     *,
     nodes: tuple[Manifest, ...] = (),
 ) -> None:
-    from stpd.p1.spec import RUN_SCHEMA as P1_RUN_SCHEMA
+    from stpd.p1.spec import RUN_SCHEMAS as P1_RUN_SCHEMAS
 
-    if kind == "training" and manifest.parameters.value().get("schema") == P1_RUN_SCHEMA:
+    if kind == "training" and manifest.parameters.value().get("schema") in P1_RUN_SCHEMAS:
         from spireagent.p1_curation import record_p1_training_use
         from stpd.p1.workload import verify_p1_run
 

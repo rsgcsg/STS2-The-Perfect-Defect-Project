@@ -13,7 +13,7 @@ from spireagent.json_boundary import BoundaryError
 from spireagent.storage.store import ArtifactStore
 
 from .dataset import SnapshotReader, projection_payload_role
-from .spec import RUN_SCHEMA, SNAPSHOT_SCHEMA
+from .spec import DERIVED_RUN_SCHEMA, RUN_SCHEMAS, SNAPSHOT_SCHEMA
 from .workload import verify_p1_run
 
 
@@ -62,11 +62,17 @@ def input_transfer_inventory(store: ArtifactStore, identity: str) -> dict[str, A
     item = store.get_manifest(identity)
     schema = item.parameters.value().get("schema")
     compute = []
-    if schema == RUN_SCHEMA:
+    if schema in RUN_SCHEMAS:
         workload = verify_p1_run(store, identity, item.producer)
         snapshot = workload.snapshot
         reader = workload.reader
         compute.append((workload.training, "vocabulary"))
+        if schema == DERIVED_RUN_SCHEMA:
+            from .derivation import source_checkpoint_dag
+
+            original_run = store.get_manifest(workload.run.parent("original_run"))
+            compute.extend((checkpoint, "checkpoint") for checkpoint in source_checkpoint_dag(
+                store, workload.run.parent("original_checkpoint"), original_run))
     elif schema == SNAPSHOT_SCHEMA:
         snapshot = item
         reader = SnapshotReader(store, identity)
@@ -115,7 +121,10 @@ def input_transfer_inventory(store: ArtifactStore, identity: str) -> dict[str, A
         "copy_artifact_payloads": closure,
         "copy_artifact_unique_payload_bytes": sum(p["bytes"] for p in closure),
         "copy_behavior": "all_parent_payloads_streamed_via_one_temporary_payload_file",
-        "worker_reads": "named_projection_payloads_selection_vocabulary_and_ancestor_manifests",
+        "worker_reads": (
+            "named_projection_payloads_selection_vocabulary_original_full_checkpoint_DAG"
+            "_and_ancestor_manifests" if schema == DERIVED_RUN_SCHEMA else
+            "named_projection_payloads_selection_vocabulary_and_ancestor_manifests"),
         "worker_archive_payload_reads": False,
         "placement": "existing_ArtifactStore_binding_not_embedded_local_paths",
         "upload_performed": False,
