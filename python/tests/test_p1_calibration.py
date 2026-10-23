@@ -115,3 +115,54 @@ def test_calibration_requires_bounded_complete_optimizer_batches(calibration_inp
     with pytest.raises(BoundaryError, match="bounded_two_to_eight_updates_required"):
         prepare(store, capsule.parent("run"), capsule.parent("checkpoint"), PRODUCER,
                 "c" * 32, updates=updates)
+
+
+def test_training_profiler_runs_after_all_throughput_windows(
+    calibration_input, tmp_path, monkeypatch,
+):
+    from contextlib import contextmanager
+
+    import torch
+
+    from stpd.p1 import optimization
+    from stpd.p1.model import MStd
+
+    store, capsule = calibration_input
+    stages = {"updates": 0, "profiling": False, "profile_forwards": 0}
+    original_update = optimization.optimizer_update
+    original_forward = MStd.forward_batch
+    original_profile = torch.profiler.profile
+
+    def update(*args, **kwargs):
+        result = original_update(*args, **kwargs)
+        stages["updates"] += 1
+        return result
+
+    def forward(self, *args, **kwargs):
+        if stages["profiling"]:
+            assert stages["updates"] == 4  # both repeated variants finished
+            assert self.training
+            stages["profile_forwards"] += 1
+        return original_forward(self, *args, **kwargs)
+
+    @contextmanager
+    def profile(*args, **kwargs):
+        assert stages["updates"] == 4
+        with original_profile(*args, **kwargs) as profiler:
+            stages["profiling"] = True
+            try:
+                yield profiler
+            finally:
+                stages["profiling"] = False
+
+    monkeypatch.setattr(optimization, "optimizer_update", update)
+    monkeypatch.setattr(MStd, "forward_batch", forward)
+    monkeypatch.setattr(torch.profiler, "profile", profile)
+    report = measure(store, capsule.artifact_id, PRODUCER,
+                     {"variants": [MStdExecution().to_dict()] * 2, "profile": True},
+                     device="cpu", trace_path=tmp_path / "trace.json")
+    assert stages["profile_forwards"] == 1
+    variants = report.parameters.value()["variants"]
+    assert "trace_scope" not in variants[0]
+    assert "training mode" in variants[1]["trace_scope"]
+    assert report.payload("trace").size > 0

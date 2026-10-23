@@ -283,6 +283,7 @@ def measure(
             activities = [torch.profiler.ProfilerActivity.CPU]
             if selected_device.type == "cuda":
                 activities.append(torch.profiler.ProfilerActivity.CUDA)
+            model.train()
             model.zero_grad(set_to_none=True)
             with numerics.scope(), torch.profiler.profile(
                 activities=activities, record_shapes=True, profile_memory=True,
@@ -294,7 +295,8 @@ def measure(
             profiler.export_chrome_trace(str(trace_path))
             trace = store.put_payload("trace", io.BytesIO(trace_path.read_bytes()),
                                       "application/json")
-            report["trace_scope"] = "one complete real TRAIN frame; backward; no optimizer update"
+            report["trace_scope"] = ("one complete real TRAIN frame; training mode; "
+                                     "backward; no optimizer update")
             report["profiler_summary"] = profiler.key_averages().table(
                 sort_by="self_cpu_time_total", row_limit=20)
             del score, profiler
