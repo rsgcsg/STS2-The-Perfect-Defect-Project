@@ -3037,9 +3037,9 @@ class LocalModelService:
                     or report.get("agent_execution", {}).get(
                         "native_episode", {}).get("status") != "bound"):
                 raise BoundaryError("native_episode", "clean_sealed_actor_required")
-            return json.loads(json.dumps({"run_id": run_id,
+            return cast(dict[str, Any], json.loads(json.dumps({"run_id": run_id,
                 "request": self.state.get("agent_run_request"),
-                "evaluation": report, "admission_context": context}))
+                "evaluation": report, "admission_context": context})))
 
     def stopped_agent_evidence_context(self, run_id: object) -> dict[str, Any]:
         """Bind one owned stopped P1 run to its original registered Model and Runtime."""
