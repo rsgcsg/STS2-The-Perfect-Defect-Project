@@ -1,0 +1,66 @@
+{
+  "schema": "stpd/local-models-v1",
+  "status": "stopped",
+  "loaded": false,
+  "operation": {
+    "id": "fixture-stop",
+    "action": "stop",
+    "status": "completed"
+  },
+  "runtime": {
+    "schema": "sts2.policy-runtime/agent-session-status-1",
+    "lifecycle": "stopped",
+    "mode": "human",
+    "controller": "released",
+    "tainted": false,
+    "errors": [],
+    "autonomy_budget": {
+      "state": "exhausted",
+      "max_submissions": 16,
+      "submissions_used": 15,
+      "max_policy_calls": 32,
+      "policy_calls_used": 32,
+      "deadline_ms": 60000,
+      "elapsed_ms": 37833,
+      "remaining_ms": 22167,
+      "exhausted_reason": "policy_call_limit",
+      "ended_reason": null
+    },
+    "last_result": {
+      "request_id": "fixture-request",
+      "snapshot_id": "fixture-state",
+      "action_id": "fixture-action",
+      "status": "terminal",
+      "delivery": "delivered",
+      "execution": null,
+      "effect": null,
+      "cancel": null,
+      "reason": null
+    }
+  },
+  "evaluation": {
+    "schema": "stpd/local-native-agent-operation-handoff-v1",
+    "scope": "bounded_native_agent_operation",
+    "evidence_verification": "pass",
+    "event_count": 1746,
+    "submission_attempt_count": 15,
+    "request_outcome_counts": {
+      "delivered": 15
+    },
+    "budget_summary": {
+      "max_submissions": 16,
+      "submissions_used": 15,
+      "max_policy_calls": 32,
+      "policy_calls_used": 32,
+      "deadline_ms": 60000,
+      "elapsed_ms": 37833,
+      "state": "exhausted",
+      "exhausted_reason": "policy_call_limit",
+      "ended_reason": null
+    },
+    "game_outcome": "not_measured",
+    "evaluation_id": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "selection_id": "fixture-model",
+    "run_id": "fixture-run"
+  }
+}
