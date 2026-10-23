@@ -24,7 +24,14 @@ from spireagent.storage.store import ArtifactStore
 from ..p1.data import digest
 from ..p1.export import export_model, load_model
 from ..p1.formal_training import MStdTrainer
-from ..p1.spec import CHECKPOINT_FRACTIONS, CHECKPOINT_SCHEMA, MODEL_SCHEMA, TARGET_SPEC
+from ..p1.spec import (
+    CHECKPOINT_FRACTIONS,
+    CHECKPOINT_SCHEMA,
+    DERIVED_CHECKPOINT_SCHEMA,
+    DERIVED_RUN_SCHEMA,
+    MODEL_SCHEMA,
+    TARGET_SPEC,
+)
 from ..p1.workload import P1Workload, populations_from_reader, verify_p1_run
 from .checkpoint_codec import decode_checkpoint
 from .reporting import RunReporter
@@ -48,7 +55,7 @@ def verify_p1_checkpoint(
     if (
         checkpoint.kind != "checkpoint"
         or checkpoint.producer != workload.run.producer
-        or info.get("schema") != CHECKPOINT_SCHEMA
+        or info.get("schema") not in {CHECKPOINT_SCHEMA, DERIVED_CHECKPOINT_SCHEMA}
         or checkpoint.parent("run") != workload.run.artifact_id
         or checkpoint.parent("training_input") != workload.training.artifact_id
         or {p.role for p in checkpoint.payloads} != {"checkpoint"}
@@ -89,6 +96,59 @@ def verify_p1_checkpoint(
         required.add("prior_best")
         if checkpoint.parent("prior_best") != info["prior_best_checkpoint"]:
             raise BoundaryError("p1_worker", "checkpoint_best_parent_mismatch")
+    if info.get("schema") == DERIVED_CHECKPOINT_SCHEMA:
+        from ..p1.derivation import (
+            DERIVATION,
+            LEGACY_CODE,
+            LEGACY_CODEC,
+            LEGACY_PRODUCER,
+            runtime_compatibility,
+            state_sha256,
+        )
+
+        required.add("original_checkpoint")
+        original = store.get_manifest(checkpoint.parent("original_checkpoint"))
+        original_state = decode_checkpoint(
+            b"".join(store.read_payload(original.payload("checkpoint"))))
+        original_info = original.parameters.value()
+        unchanged_info = {k: v for k, v in original_info.items()
+                          if k not in {"schema", "attempt", "prior_checkpoints",
+                                       "prior_best_checkpoint"}}
+        actual_info = {k: info.get(k) for k in unchanged_info}
+        original_identity = original_state["identity"]
+        unchanged_identity = {k: v for k, v in original_identity.items()
+                              if k not in {"code", "runtime"}}
+        target_identity = {k: v for k, v in identity.items()
+                           if k not in {"code", "runtime", "execution"}}
+        if (workload.run.parameters.value().get("schema") != DERIVED_RUN_SCHEMA
+                or original.producer != LEGACY_PRODUCER or original.kind != "checkpoint"
+                or original.parent("run") != workload.run.parent("original_run")
+                or info.get("original_checkpoint") != original.artifact_id
+                or info.get("original_payload_sha256") != original.payload("checkpoint").sha256
+                or info.get("derivation") != DERIVATION
+                or info.get("preserved_state_sha256") != state_sha256(state)
+                or state_sha256(original_state) != info["preserved_state_sha256"]
+                or original_identity.get("code") != LEGACY_CODE
+                or original_identity.get("codec_sha256") != LEGACY_CODEC
+                or "execution" in original_identity or unchanged_identity != target_identity
+                or actual_info != unchanged_info
+                or info.get("runtime_compatibility") != runtime_compatibility(
+                    original_identity["runtime"], identity["runtime"])):
+            raise BoundaryError("p1_worker", "derived_checkpoint_origin_mismatch")
+        expected_refs = {"checkpoint_" + k: v
+                         for k, v in original_info["prior_checkpoints"].items()}
+        if original_info["prior_best_checkpoint"] is not None:
+            expected_refs["prior_best"] = original_info["prior_best_checkpoint"]
+        if set(prior) != set(original_info["prior_checkpoints"]):
+            raise BoundaryError("p1_worker", "derived_checkpoint_DAG_mismatch")
+        for role, origin in expected_refs.items():
+            mapped = store.get_manifest(checkpoint.parent(role))
+            if (mapped.parameters.value().get("schema") != DERIVED_CHECKPOINT_SCHEMA
+                    or mapped.parent("original_checkpoint") != origin
+                    or mapped.parent("run") != workload.run.artifact_id):
+                raise BoundaryError("p1_worker", "derived_checkpoint_DAG_mismatch")
+    elif "derivation" in info:
+        raise BoundaryError("p1_worker", "explicit_derived_checkpoint_schema_required")
     if {p.role for p in checkpoint.parents} != required:
         raise BoundaryError("p1_worker", "checkpoint_parent_inventory_mismatch")
     for fraction, previous_id in prior.items():
@@ -263,18 +323,6 @@ def execute_p1_run(
     checkpoints: dict[str, str] = {}
     best_checkpoint: str | None = None
     checkpoint_id: str | None = None
-    restore_started = time.perf_counter()
-    if resume is not None:
-        if authority is not None:
-            authority.authorize_resume(run_id, attempt_id, resume)
-        saved = verify_p1_checkpoint(store, resume, workload)
-        trainer.restore(saved.raw)
-        metadata = saved.manifest.parameters.value()
-        checkpoints = dict(metadata["prior_checkpoints"])
-        checkpoints.update({str(f): resume for f in metadata["fractions"]})
-        best_checkpoint = resume if metadata["became_best"] else metadata["prior_best_checkpoint"]
-        checkpoint_id = resume
-    restore_seconds = time.perf_counter() - restore_started
     history_started = time.perf_counter()
     event_step = max((e.parameters.value()["step"] for e in reporter.events(run_id)), default=0)
     history_seconds = time.perf_counter() - history_started
@@ -299,6 +347,29 @@ def execute_p1_run(
                 ),
             )
         )
+
+    restore_started = time.perf_counter()
+    if resume is None and workload.run.parameters.value().get("schema") == DERIVED_RUN_SCHEMA:
+        from ..p1.derivation import derive_checkpoints
+
+        saved = derive_checkpoints(store, workload, trainer, attempt_id, event, guard)
+        metadata = saved.manifest.parameters.value()
+        checkpoint_id = saved.manifest.artifact_id
+        checkpoints = dict(metadata["prior_checkpoints"])
+        checkpoints.update({str(f): checkpoint_id for f in metadata["fractions"]})
+        best_checkpoint = (checkpoint_id if metadata["became_best"]
+                           else metadata["prior_best_checkpoint"])
+    if resume is not None:
+        if authority is not None:
+            authority.authorize_resume(run_id, attempt_id, resume)
+        saved = verify_p1_checkpoint(store, resume, workload)
+        trainer.restore(saved.raw)
+        metadata = saved.manifest.parameters.value()
+        checkpoints = dict(metadata["prior_checkpoints"])
+        checkpoints.update({str(f): resume for f in metadata["fractions"]})
+        best_checkpoint = resume if metadata["became_best"] else metadata["prior_best_checkpoint"]
+        checkpoint_id = resume
+    restore_seconds = time.perf_counter() - restore_started
 
     last_saved_at = time.monotonic()
 

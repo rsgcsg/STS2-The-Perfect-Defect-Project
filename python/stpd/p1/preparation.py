@@ -13,7 +13,7 @@ from spireagent.json_boundary import BoundaryError
 from spireagent.storage.store import ArtifactStore
 
 from .dataset import SnapshotReader, projection_payload_role
-from .spec import RUN_SCHEMA, SNAPSHOT_SCHEMA
+from .spec import RUN_SCHEMAS, SNAPSHOT_SCHEMA
 from .workload import verify_p1_run
 
 
@@ -62,7 +62,7 @@ def input_transfer_inventory(store: ArtifactStore, identity: str) -> dict[str, A
     item = store.get_manifest(identity)
     schema = item.parameters.value().get("schema")
     compute = []
-    if schema == RUN_SCHEMA:
+    if schema in RUN_SCHEMAS:
         workload = verify_p1_run(store, identity, item.producer)
         snapshot = workload.snapshot
         reader = workload.reader

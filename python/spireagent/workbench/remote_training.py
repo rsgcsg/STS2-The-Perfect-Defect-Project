@@ -313,7 +313,7 @@ class RemoteTrainingService:
     def preparation_status(self, intent_id: object) -> dict[str, Any]:
         """Observe only existing local facts, even while transfer holds its write lock."""
         from stpd.p1.baseline_spec import RUN_SCHEMA as BASELINE_RUN_SCHEMA
-        from stpd.p1.spec import RUN_SCHEMA
+        from stpd.p1.spec import RUN_SCHEMAS
 
         intent = digest(intent_id, "remote_training.intent_id", length=32)
         if self.config.hub_url:
@@ -324,7 +324,7 @@ class RemoteTrainingService:
         _, local, _ = self.select()
         runs = [manifest for identity in local.manifest_ids()
                 if (manifest := local.get_manifest(identity)).parameters.value().get("schema")
-                in {RUN_SCHEMA, BASELINE_RUN_SCHEMA}
+                in {*RUN_SCHEMAS, BASELINE_RUN_SCHEMA}
                 and manifest.parameters.value().get("operation_id") == intent]
         jobs = []
         if deployment.operations_path.is_file():
@@ -445,7 +445,7 @@ class RemoteTrainingService:
         assert deployment is not None
         recipe = body.get("recipe_id", "p1-mstd-N-v1") if isinstance(body, dict) else None
         fields = {"intent_id", "source_id", "config", "max_seconds", "stop_after"}
-        optional = {key for key in ("recipe_id", "execution_policy")
+        optional = {key for key in ("recipe_id", "execution_policy", "initial_checkpoint")
                     if isinstance(body, dict) and key in body}
         obj = object_fields(body, fields | optional,
                             "remote_training.start")
@@ -472,6 +472,11 @@ class RemoteTrainingService:
 
             execution_options["execution_policy"] = checked_recipe_execution_policy(
                 recipe, obj["execution_policy"])
+        if "initial_checkpoint" in obj:
+            if recipe != P1_MSTD_RECIPE:
+                raise BoundaryError("remote_training", "derivation_requires_M_std_recipe")
+            execution_options["initial_checkpoint"] = digest(
+                obj["initial_checkpoint"], "remote_training.initial_checkpoint")
         target = provider.target
         gpu = getattr(target, "gpu", None)
         if ((config.device == "cpu") != (gpu == "none")):
