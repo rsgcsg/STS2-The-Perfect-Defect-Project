@@ -1083,6 +1083,107 @@ export producer、原training producer、selection/selected_step和
 不代替正式final Model。读者可独立复核、保存和冷下载；发布结果未知时先查原operation/
 Store精确ID，不能把错误当成未发布并盲目重投。原权重和正式Run继续由训练owner管理。
 
+### 小种子组实战检查（Reference）
+
+正常单局仍在同一“模型与评估”页：选择 Agent → 检查本机加载条件 → 准备并加载
+（Human）→ 开始测试；“暂停并接管”交还当前 Actor 的控制，“结束测试”结束当前运行。
+P1 单局加载须已有准确 ready 的 Reference resource；网页把本次读到的 ref 交给同一
+公共加载入口，资源更换则明确拒绝。没有准备好的单局时，可用下方种子组选择 1 局开始；
+它会沿正常 Host owner 自行准备。已有 CLI/API 的 `prepare-owned` / `attach` 同样可准备
+单局，再用 `native-episode --action run-agent --run-operation prepare-and-load`
+与原 `--native-episode-ref` 加载为 Human；此命令沿同一服务生成并原样提交请求。
+需要自动跑少量新种子时，在同页“种子组实战检查 · Reference”选择已登记的 native
+P1 Model Agent、1–10局、准确游戏版本、显示方式/速度、每局授权和有限运行上限，再
+明确开始。组会自己 prepare、生成并原样提交 Agent 请求、finish、核密封原件、保存并
+回读后，才派下一局；不必先手动加载一个 Actor。
+
+当前组入口只列原保存 owner 完整支持的 P1 baseline/M-std Model；Teacher 与其它
+Agent 的现有单局能力不因此取消。Reference 的 `headless` / `native-ui` 是显示配置，
+`normal` / `fast` / `instant` 是速度配置，默认即时。实际准备仍核准确 installed tuple、
+游戏版本、显示和速度读回。Model/Agent 兼容性由原 readiness 与 Runtime 决定，切换
+显示或速度不提供新模型能力。Managed 另有实际 Host/Model 单局路径：先沿
+[原模型执行操作](LOCAL_MODEL_TASK_FLOW.md#prepare-and-load)准备受支持场景，
+用匹配 Managed 的 Model selection 加载/执行；同页“本机游戏环境”与原
+`/api/local-environment`、Model API 是其入口。现有 Reference 组 dispatcher 没有
+Managed Model 的同协议多局接缝，因此此处不提供 Managed 组选择，也不声称 Host 等价。
+另有[Managed suite CLI](MANAGED_SUITE_EVALUATION.md)可批量运行版本化场景；它固定
+catalog-only random Agent、直接消费 Managed 环境与原 raw outcome，不接受所选 Model，
+不能替代此处 Model/AgentRun 的评估与保存链。
+
+同一已选 P1 Model 在无窗口与显示窗口之间切换，不要求用户重新登记另一模型。
+Application 先核准确 ready ref/generation/current endpoint，再复用原注册 owner 的实际
+Reference 协商，按需生成或复用私有运行 selection/composition。原 Model、权重、输入和
+Agent 语义、原登记不改；实际 producer hash 原样保留，Runtime 仍严格核身份。
+“准备并加载”只进入 Human，明确“开始测试”或启动种子组才授权自主运行。
+组报告的 `selection_id` 记录用户所选项；每局 `execution_selection_id` /
+`execution_composition_id` 与原请求、密封 evaluation 绑定实际执行项，二者不混写。
+协商/原投递未知不会自动重投或改用最新资源；先核原 operation/ref/request 状态。
+
+“当前局结束后暂停”是组的局间边界：当前局已 finish、密封并保存回读后，才显示已暂停；
+“继续本组”在同一 Application 活着时运行下一个未派发种子，不恢复局内状态或重放当前局。
+“停止种子组”只收尾原组当前 reference 对应的 Actor/Host，不派下一局；保存已发出时
+继续读原保存 operation，不重投。组持有执行期间，单局 Model/环境/录制及共享导入owner的冲突写操作被
+同一 admission owner 拒绝，读状态与 readiness 仍可用。组调用复用原本机HTTP客户端的
+准确Application身份、请求验证和每次观察timeout；回复未知不重投，原owner可继续收尾，
+只读核原状态。内部scope nonce仅在进程内/已认证本机header传递，不写入报告或URL。整组上限包含暂停/保存；
+超时后原局收尾仍有单独有限 allowance。网页关闭不停止组。
+
+Agent/CLI 用同一 API，从 `python/` 执行：
+
+```sh
+python tools/evaluate_reference_group.py --config PROJECT start --input GROUP.json
+python tools/evaluate_reference_group.py --config PROJECT status
+python tools/evaluate_reference_group.py --config PROJECT pause --input CONTROL.json
+python tools/evaluate_reference_group.py --config PROJECT resume --input CONTROL.json
+python tools/evaluate_reference_group.py --config PROJECT stop --input CONTROL.json
+python tools/evaluate_reference_group.py --config PROJECT reconcile --input RECOVERY.json
+```
+
+`GROUP.json` 为同一 `POST /api/reference-evaluations/start` 的 body，例如以下两局诊断：
+
+```json
+{
+  "selection_id": "EXACT_NATIVE_P1_MODEL_SELECTION",
+  "seed_count": 2,
+  "game_version": "EXACT_GAME_VERSION",
+  "run_profile": "short",
+  "display_mode": "headless",
+  "speed": "instant",
+  "limits": {
+    "preparation_seconds": 120,
+    "episode_seconds": 120,
+    "cleanup_seconds": 120,
+    "suite_seconds": 900
+  }
+}
+```
+
+保存沿当前配置的 `remote_compute.compute_store`；没有该配置时，CLI/API 明确追加
+`evidence_peer`（原 Store 的非凭据 binding）。没有 peer 拒绝开始；不另造存储链。
+`GET /api/reference-evaluations/status` 返回 `operation_id`、状态与原 report；
+`CONTROL.json` 只有 `{"operation_id":"原组ID"}`，同 body 调用 pause/resume/stop。
+写请求回复未知只读该 status，不自动重复 start/control。
+
+每组生成独立 `diagnostic_reference` 1.0.0 manifest 与 SHA，全部分母在首个世界请求前
+写入；种子按该组ID确定性派生并排除所有保留评测集。它不消费旧 ref-20 或最终四Agent
+十种子的额度，不改变最终40项协议。原 manifest、请求、evaluation、完整未派发分母、
+失败/unknown 和 Store peer 回读收据保存在 `state_dir/reference-evaluations/组ID/`；
+`attempt/report.json` 是证据原件，`operation.json` 只导航当前组和控制意图。后台保存失败、
+结果未知或 Application 重启时，原报告只读，组进入恢复审查，不自动继续或重放。
+按原 Model/native/import status 与原 reconcile 入口审查准确 run/ref/保存 operation；
+原组不提供跨进程继续。原owner已完成停止、封存与保存回读后，页面可明确点击
+“核对原运行并解除占用”；CLI/API的 `RECOVERY.json` 只有原 `operation_id` 与当前
+status返回的 `report_sha256`，调用同一 `POST /api/reference-evaluations/reconcile`。
+它核原组manifest/hash、准确ref/generation/intent/run、原request/evaluation、完整cleanup
+及同peer的local/remote `full_readback=true` / typed pass；原仍活跃、不同ref、hash改变或
+仅有ACK均拒绝。通过后独立写 `recovery-*` 观察引用，只退休旧组占用；旧report、失败、
+unknown与分母字节不改，不重发动作或保存，也不开新局。之后可另行明确开始新组。
+缺原ref/run/请求或完整证明时继续恢复审查，不手动清除状态冒充原结果已确认。
+
+诊断会保留原生胜负、任务完成/截断、投递、unknown 和未开始项；完成两局只证明这两次
+流程在对应条件下结束，不授策略质量、Human、全部机制或 Host 等价资格。源码候选也不
+等于当前日常安装已经支持，准确安装及真实 Model canary 从 CURRENT/当前任务核对。
+
 ### 四 Agent 最终 TEST 与 Reference 消费
 
 离线比较先固定同一 Snapshot、成员/Input 与 TRAIN/DEV/TEST 用途，再分别完成四个

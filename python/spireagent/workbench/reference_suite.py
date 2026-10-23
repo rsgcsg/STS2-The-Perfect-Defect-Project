@@ -24,7 +24,11 @@ from spireagent.workbench import agent_run_request, local_model_cli
 from spireagent.workbench.developer import ROOT, ProjectConfig, atomic_json
 from spireagent.workbench.developer_server import running
 from spireagent.workbench.native_episode_binding import checked_context
-from stpd.evaluation.suites import FOUR_AGENT_SUITE_ID, four_agent_reference_manifest
+from stpd.evaluation.suites import (
+    FOUR_AGENT_SUITE_ID,
+    diagnostic_reference_manifest,
+    four_agent_reference_manifest,
+)
 from stpd.game_seed import derive_game_seed, require_canonical_game_seed
 
 REPORT_SCHEMA = "spireagent/reference-suite-report-v1"
@@ -47,6 +51,15 @@ def load_manifest(path: Path, sha256: str) -> tuple[bytes, dict[str, Any]]:
             _reject("manifest_configuration_changed")
         expected = four_agent_reference_manifest(game_version)
         if json_bytes(value) != json_bytes(expected):
+            _reject("manifest_configuration_changed")
+        return raw, value
+    if isinstance(value, dict) and value.get("purpose") == "diagnostic_reference":
+        version, group, count = (value.get("game_version"), value.get("group_id"),
+                                 value.get("episode_count"))
+        if not isinstance(version, str) or not isinstance(group, str) or type(count) is not int:
+            _reject("manifest_configuration_changed")
+        expected_diagnostic = diagnostic_reference_manifest(version, group, count)
+        if json_bytes(value) != json_bytes(expected_diagnostic):
             _reject("manifest_configuration_changed")
         return raw, value
     expected = {"schema": "stpd/evaluation-suite-v1", "suite_id": "ref-20", "version": "1.0.0",
@@ -111,23 +124,24 @@ class ReferenceClient(Protocol):
 class WorkbenchReferenceClient:
     """One already-running Application, fenced before every HTTP request."""
 
-    def __init__(self, config: ProjectConfig) -> None:
+    def __init__(self, config: ProjectConfig, *, _execution_scope: str | None = None) -> None:
         current = running(config)
         if current is None:
             _reject("open_workbench_first")
         self.config = config
+        self._execution_scope = _execution_scope
         self.identity = {"application_instance_id": current["instance_id"],
                          "configuration_id": current["configuration_id"]}
 
     def _native(self, action: str, timeout: float, **kwargs: Any) -> dict[str, Any]:
         return local_model_cli.native_episode_command(
             self.config, action, expected_instance_id=self.identity["application_instance_id"],
-            timeout_seconds=timeout, **kwargs)
+            timeout_seconds=timeout, _execution_scope=self._execution_scope, **kwargs)
 
     def _model(self, action: str, timeout: float, **kwargs: Any) -> dict[str, Any]:
         return local_model_cli.model_command(
             self.config, action, expected_instance_id=self.identity["application_instance_id"],
-            timeout_seconds=timeout, **kwargs)
+            timeout_seconds=timeout, _execution_scope=self._execution_scope, **kwargs)
 
     def readiness(self, selection: str, timeout: float) -> dict[str, Any]:
         return self._model("readiness", timeout, selection=selection)
@@ -222,15 +236,20 @@ def run_suite(
     manifest_path: Path, manifest_sha256: str, *, client: ReferenceClient, run_dir: Path,
     selection: str, run_profile: str, limits: SuiteLimits, max_episodes: int = 1,
     selections: dict[str, str] | None = None, evidence_peer: dict[str, Any] | None = None,
-    display_mode: str = "headless", clock: Callable[[], float] = time.monotonic,
+    display_mode: str = "headless", speed: str = "instant",
+    before_episode: Callable[[dict[str, Any]], bool] = lambda _report: True,
+    clock: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep, should_stop: Callable[[], bool] = lambda: False,
 ) -> dict[str, Any]:
     """New attempt only. Existing run directories are read-only recovery artifacts."""
     if (type(max_episodes) is not int or not 1 <= max_episodes <= 40
             or run_profile not in {"short", "extended"} or not isinstance(selection, str)
-            or not (selection or selections) or display_mode not in {"headless", "native-ui"}):
+            or not (selection or selections) or display_mode not in {"headless", "native-ui"}
+            or speed not in {"normal", "fast", "instant"}):
         _reject("invalid_attempt_configuration")
     raw_manifest, manifest = load_manifest(manifest_path, manifest_sha256)
+    if manifest.get("purpose") != "diagnostic_reference" and speed != "instant":
+        _reject("fixed_suite_requires_instant_speed")
     four = manifest["suite_id"] == FOUR_AGENT_SUITE_ID
     agents = ("random", "frequency", "linear", "mstd")
     if four:
@@ -240,7 +259,7 @@ def run_suite(
             _reject("four_distinct_selections_and_evidence_peer_required")
         selected = {a: selections[a] for a in agents}
     else:
-        if selections is not None or max_episodes > 20:
+        if selections is not None or max_episodes > manifest["episode_count"]:
             _reject("legacy_suite_requires_single_selection")
         selected = {"agent": selection}
     plan = [(index + 1, seed, agent, identity)
@@ -259,7 +278,7 @@ def run_suite(
         "client_source_sha256": hashlib.sha256(
             Path(local_model_cli.__file__).read_bytes()).hexdigest(),
         "max_episodes": max_episodes, "workers": 1, "display_mode": display_mode,
-        "speed": "instant", "planned": len(plan), "status": "running", "stop_reason": None,
+        "speed": speed, "planned": len(plan), "status": "running", "stop_reason": None,
         "world_offers": 0, "actor_started": 0,
         "selections": selected, "evidence_peer": evidence_peer,
         "episodes": [{"ordinal": index + 1, "seed_ordinal": ordinal, "seed": seed,
@@ -311,6 +330,9 @@ def run_suite(
     for row in report["episodes"][:max_episodes]:
         selection = row["selection_id"]
         composition = compositions[selection]
+        if not before_episode(report):
+            report["stop_reason"] = "stop_requested"
+            break
         if should_stop() or clock() >= started + limits.suite_seconds:
             report["stop_reason"] = "stop_requested" if should_stop() else "suite_wall_limit"
             break
@@ -325,7 +347,7 @@ def run_suite(
         try:
             row.update(status="preparing", reason=None)
             body = {"ownership": "owned", "intent_id": row["intent_id"], "seed": row["seed"],
-                    "display_mode": display_mode, "speed": "instant"}
+                    "display_mode": display_mode, "speed": speed}
             row["artifacts"].append(artifacts.put("prepare-request.json", json_bytes(body)))
             artifacts.save(report)
             resource = client.prepare(body, timeout(phase_deadline))
@@ -351,20 +373,22 @@ def run_suite(
                     or any(binding[key] != value for key, value in client.identity.items())
                     or resource["preparation"] != body
                     or binding["installed_tuple"]["game_version"] != manifest["game_version"]
-                    or binding["speed"]["requested"] != "instant"
-                    or binding["speed"]["effective"] != "instant"
+                    or binding["speed"]["requested"] != speed
+                    or binding["speed"]["effective"] != speed
                     or binding["presentation"]["requested"] != display_mode):
                 _reject("prepared_binding_changed")
             row["admission_context"] = context
             row["artifacts"].append(artifacts.put("ready.json", json_bytes(resource)))
             request = client.request(selection, ref, run_profile, timeout(phase_deadline))
             if (request.get("schema") != agent_run_request.SCHEMA
-                    or request.get("selection_id") != selection or request.get("target") != "native"
+                    or request.get("target") != "native"
                     or request.get("operation") != "prepare-and-takeover"
                     or request.get("run_profile") != run_profile
-                    or json_bytes(request.get("composition")) != json_bytes(composition)
+                    or not _same_model_binding(composition, request)
                     or request.get("admission_context", {}).get("native_episode") != context):
                 _reject("generated_request_changed")
+            row.update(execution_selection_id=request["selection_id"],
+                       execution_composition_id=request["composition_id"])
             # The existing HTTP helper offers canonical JSON without a newline.
             row["request"] = artifacts.put(
                 "generated-request.json", canonical_json(request).encode())
@@ -549,8 +573,6 @@ def run_suite(
                 if not isinstance(operation_id, str):
                     _reject("preservation_operation_missing")
                 while preservation.get("status") == "pending":
-                    if should_stop():
-                        _reject("stop_requested")
                     sleep(min(limits.poll_seconds, timeout(started + limits.suite_seconds)))
                     preservation = client.preservation_status(
                         timeout(started + limits.suite_seconds))
@@ -602,6 +624,33 @@ def run_suite(
         report.update(status="stopped", stop_reason="report_persistence_failed",
                       persistence_error=_error(error))
     return report
+
+
+def _same_model_binding(selected: dict[str, Any], request: dict[str, Any]) -> bool:
+    """An exact registration or an environment-only P1 execution registration."""
+    actual = request.get("composition")
+    if (not isinstance(actual, dict) or request.get("selection_id") != actual.get("selection_id")
+            or request.get("composition_id") != actual.get("composition_id")):
+        return False
+    if request.get("selection_id") == selected.get("selection_id"):
+        return json_bytes(actual) == json_bytes(selected)
+    original, effective = selected.get("semantic_definition"), actual.get("semantic_definition")
+    implementation = actual.get("implementation", {})
+    return not (not isinstance(original, dict) or not isinstance(effective, dict)
+            or selected.get("implementation", {}).get("adapter", {}).get("id")
+            not in {"stpd-p1-baseline-agent", "stpd-p1-mstd-agent"}
+            or request.get("selection_id") != actual.get("selection_id")
+            or request.get("composition_id") != actual.get("composition_id")
+            or hashlib.sha256(canonical_json({key: value for key, value in actual.items()
+                if key != "composition_id"}).encode()).hexdigest() != actual.get("composition_id")
+            or json_bytes({key: value for key, value in original.items() if key != "environment"})
+            != json_bytes({key: value for key, value in effective.items() if key != "environment"})
+            or any(json_bytes(implementation.get(key))
+                   != json_bytes(selected.get("implementation", {}).get(key))
+                   for key in ("adapter", "runtime_artifact"))
+            or effective.get("environment", {}).get("profile") != "p1-global-r1"
+            or effective.get("environment", {}).get("requirements", {})
+            .get("environment", {}).get("host_kind") != "reference")
 
 
 def _seal(client: ReferenceClient, artifacts: _Artifacts, row: dict[str, Any],

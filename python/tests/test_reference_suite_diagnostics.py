@@ -230,9 +230,14 @@ def test_projection_size_is_bounded_and_marks_detail_omission(returned_report, t
 def test_native_call_arguments_remain_exact_and_diagnostics_follow_return():
     source = Path(__file__).with_name("test_reference_suite_application.py").read_text()
     tree = ast.parse(source)
-    cases = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name.startswith("test_")]
-    assert len(cases) == 2
-    for case in cases:
+    case_names = {
+        "test_two_serial_http_episodes_use_original_request_auto_ack_seal_and_exact_finish",
+        "test_late_ready_and_accepted_http_reply_loss_never_reoffer_actor",
+    }
+    cases = {n.name: n for n in tree.body
+             if isinstance(n, ast.FunctionDef) and n.name in case_names}
+    assert set(cases) == case_names
+    for case in cases.values():
         run = next(
             n
             for n in ast.walk(case)

@@ -17,6 +17,7 @@ import tempfile
 import threading
 import time
 import uuid
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
@@ -279,6 +280,7 @@ class LocalRecordingImporter:
         self.config, self.catalog = config, catalog
         self.lock = threading.RLock()
         self.thread: threading.Thread | None = None
+        self.operation_admission_guard: Callable[[], None] | None = None
         self.path = config.state_dir / OPERATION_FILE
         self.operation: dict[str, Any] = {"schema": SCHEMA, "status": "idle"}
         self._native_intents: dict[str, dict[str, Any]] = {}
@@ -405,6 +407,8 @@ class LocalRecordingImporter:
     def _native_recovery_guard(self, intent: str | None = None,
                                requested: dict[str, Any] | None = None) -> None:
         """All journaled unresolved intents survive changes of the current caller."""
+        if self.operation_admission_guard is not None:
+            self.operation_admission_guard()
         if (self.operation.get("recording_type") in {"p1_native", "p1_global"}
                 and self.operation.get("status") in {
                     "pending", "publication_unknown", "interrupted_unknown"}):
@@ -1208,6 +1212,8 @@ class LocalRecordingImporter:
         from .p1_recording_storage import storage_intent
 
         with self.lock:
+            if self.operation_admission_guard is not None:
+                self.operation_admission_guard()
             if self.thread is not None and self.thread.is_alive():
                 raise BoundaryError("local_import", "operation_in_progress")
             restoring_interrupted = (

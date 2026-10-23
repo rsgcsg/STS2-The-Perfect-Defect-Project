@@ -7,6 +7,7 @@ request state, including uncertain requests that must never be retried.
 
 from __future__ import annotations
 
+import contextvars
 import hashlib
 import json
 import os
@@ -577,6 +578,7 @@ class LocalModelService:
         self.control_send_lock = threading.Lock()
         self.intent_generation = 0
         self._recording_source_reservation: object | None = None
+        self.execution_admission_guard: Callable[[str], None] | None = None
         self._recording_admission_guard: Callable[[], bool] | None = None
         self._native_authorizer: Callable[[], None] | None = None
         self.process: subprocess.Popen[bytes] | None = None
@@ -1227,6 +1229,8 @@ class LocalModelService:
     def catalog(self) -> dict[str, Any]:
         entries = []
         for entry in self.registry()["policies"]:
+            if entry["id"].startswith("reference-binding-"):
+                continue  # Private execution binding, not another selectable Model.
             manifest = _object_file(self.entry_path(entry, "manifest"))
             bounded = entry.get("runtime_profile") in {
                 *TEXT_PROFILES,
@@ -1244,6 +1248,9 @@ class LocalModelService:
             entries.append(
                 {
                     "selection_id": entry["id"],
+                    "environment_kind": "managed" if managed_manifest(manifest) else "native",
+                    "reference_group_supported": (entry["adapter"] in GLOBAL_MODEL_ADAPTERS
+                                                  and not managed_manifest(manifest)),
                     "agent_composition": self.composition(entry["id"]),
                     "label": entry["label"],
                     "support": manifest.get("support"),
@@ -1451,6 +1458,8 @@ class LocalModelService:
         """Reserve application sequencing, never gameplay or external SDK authority."""
         reservation = object()
         with self.lock:
+            if self.execution_admission_guard is not None:
+                self.execution_admission_guard("recording")
             if self.native_episode_guard is not None:
                 self.native_episode_guard(None, "recording")
             if require_human and (self.closed or self._recording_recovery_required(self.state)):
@@ -1475,6 +1484,8 @@ class LocalModelService:
             self._recording_admission_guard = guard
 
     def _require_source_admission(self) -> None:
+        if self.execution_admission_guard is not None:
+            self.execution_admission_guard("creation")
         if self._recording_source_reservation is not None or (
             self._recording_admission_guard is not None and self._recording_admission_guard()
         ):
@@ -1501,6 +1512,8 @@ class LocalModelService:
         native_episode_context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         with self.lock:
+            if self.execution_admission_guard is not None:
+                self.execution_admission_guard(action)
             if self.closed:
                 raise BoundaryError("local_model", "service_closed")
             if not recovery:
@@ -1602,7 +1615,8 @@ class LocalModelService:
                     with self.lock:
                         self._save()
 
-            self.thread = threading.Thread(target=run, daemon=True)
+            self.thread = threading.Thread(
+                target=contextvars.copy_context().run, args=(run,), daemon=True)
             self.threads = [thread for thread in self.threads if thread.is_alive()]
             self.threads.append(self.thread)
             self.thread.start()
@@ -2049,6 +2063,9 @@ class LocalModelService:
             ):
                 self.state.pop(key, None)
             self.state.update(status="loading", loaded=False, connector_endpoint=connector)
+            config = _object_file(self.entry_path(entry, "config"))
+            self.state["requested_selection_id"] = config.get(
+                "reference_binding_source_selection_id", identity)
             if selected_target is None:
                 self.state.pop("managed_environment", None)
             else:
@@ -2229,6 +2246,8 @@ class LocalModelService:
             if fresh["recovery_epoch"] != expected[1].recovery_epoch:
                 raise BoundaryError("local_model", "runtime_recovery_epoch_mismatch")
         with self.lock:
+            if self.execution_admission_guard is not None:
+                self.execution_admission_guard(action)
             if observed_generation is not None and observed_generation != self.intent_generation:
                 raise BoundaryError("local_model", "native_model_context_changed")
             if expected is not None and (

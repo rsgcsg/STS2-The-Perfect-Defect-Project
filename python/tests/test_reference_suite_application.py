@@ -28,7 +28,7 @@ from test_reference_suite import suite_manifest
 from spireagent.encoding import canonical_json
 from spireagent.json_boundary import json_bytes
 from spireagent.workbench.developer import atomic_json
-from spireagent.workbench.developer_server import configuration_id, create_server
+from spireagent.workbench.developer_server import Application, configuration_id, create_server
 from spireagent.workbench.reference_suite import (
     SuiteLimits,
     WorkbenchReferenceClient,
@@ -226,3 +226,107 @@ def test_late_ready_and_accepted_http_reply_loss_never_reoffer_actor(
     events = [json.loads(line)["event"] for line in host_log.read_bytes().splitlines()]
     assert events.count("reset_started") == events.count("close") == 1
     assert "step" not in events
+
+
+def test_group_http_cli_pause_resume_is_serial_and_fences_manual_actor(
+    tmp_path, suite_app, monkeypatch,
+):
+    """Real group API/Runtime; synthetic World + explicit synthetic preservation seam.
+
+    The fixture Teacher has no Model artifact and cannot use P1 Model storage.
+    Production P1 Model eligibility/Store transfer are tested by their actual owners.
+    """
+    import time
+
+    from spireagent.json_boundary import BoundaryError
+    from tools.evaluate_reference_group import command
+
+    app, offers, _host_log, world = suite_app
+    group = app.reference_evaluation
+    # This synthetic Teacher fixture only substitutes the Model admission and
+    # preservation seam, leaving request serializers, Runtime and native ownership real.
+    monkeypatch.setattr(group, "_validate_selection", lambda *_: None)
+    preserving, release = threading.Event(), threading.Event()
+    saved = []
+    peer = {"kind": "local", "directory": str(tmp_path / "peer")}
+
+    def preserve(run_id, actual_peer):
+        saved.append(run_id)
+        assert actual_peer == peer
+        if len(saved) == 1:
+            preserving.set()
+            assert release.wait(timeout=10)
+        return {"status": "completed", "operation_id": "e" * 32, "run_id": run_id,
+                "peer": peer, "artifact_id": "f" * 64, "peer_readback": {"fixture": True}}
+
+    monkeypatch.setattr(app, "start_global_evidence", preserve)
+    body = {"selection_id": "fixture-reference-teacher", "seed_count": 2,
+            "game_version": "v0.111.0", "run_profile": "short", "display_mode": "headless",
+            "speed": "instant", "limits": {"preparation_seconds": 15, "episode_seconds": 20,
+                "cleanup_seconds": 15, "suite_seconds": 90, "poll_seconds": 0.05,
+                "http_seconds": 10}, "evidence_peer": peer}
+    started = command(app.config, "start", body)
+    control = {"operation_id": started["operation_id"]}
+    try:
+        assert preserving.wait(timeout=20), command(app.config, "status")
+        assert command(app.config, "pause", control)["status"] == "pause_requested"
+        for mutation in (lambda: app.models.command("auto"),
+                         lambda: app.models.command("human"),
+                         lambda: app.models.command("stop"),
+                         lambda: Application.prepare_native_episode(
+                             app, {**offers[0], "intent_id": "a" * 32}),
+                         lambda: app.finish_native_episode(
+                             app.native_episode_status()["environment_ref"])):
+            with pytest.raises(BoundaryError,
+                               match="reference_group_owns_execution_use_group_controls"):
+                mutation()
+        # Reads and readiness remain available while the group owns execution.
+        assert app.models.readiness("fixture-reference-teacher")["status"] == "ready_to_load"
+        release.set()
+        deadline = time.monotonic() + 5
+        while command(app.config, "status")["status"] != "paused" and time.monotonic() < deadline:
+            time.sleep(0.05)
+        paused = command(app.config, "status")
+        assert paused["status"] == "paused", paused
+        assert len(offers) == len(saved) == 1
+        for require_human in (True, False):
+            with (pytest.raises(BoundaryError, match="reference_group_owns_execution"),
+                  app.models.reserve_recording_source_mutation(require_human=require_human)):
+                pytest.fail("foreign recording source reservation was admitted")
+        assert paused["report"]["episodes"][0]["stored_evidence_id"] == "f" * 64
+        assert paused["report"]["episodes"][1]["status"] == "not_started"
+        with pytest.raises(BoundaryError, match="reference_group_owns_execution"):
+            app.models.command("stop")
+        command(app.config, "resume", control)
+        group.thread.join(timeout=30)
+        assert not group.thread.is_alive()
+        final = command(app.config, "status")
+        assert final["status"] == "completed", final
+        assert final["report"]["planned"] == final["report"]["actor_started"] == 2
+        assert final["report"]["summary"]["preserved_evidence"] == 2
+        assert len(offers) == len(saved) == world.submitted == 2
+        # A process can die after the original report is complete but before the
+        # navigation status is saved. Reconciliation reuses real sealed originals;
+        # only this fixture's peer readback transport remains synthetic.
+        group.operation["status"] = "recovery_required"
+        group._save()
+        final = command(app.config, "status")
+        last = final["report"]["episodes"][-1]
+        readback = {"artifact_id": "f" * 64, "run_id": last["run_id"],
+                    "content_id": last["evidence_content_id"],
+                    "full_readback": True, "typed_verification": "pass"}
+        monkeypatch.setattr(app.local_recording_import, "status", lambda: {
+            "status": "completed", "operation_id": "e" * 32, "run_id": last["run_id"],
+            "peer": peer, "artifact_id": "f" * 64,
+            "local_readback": readback, "peer_readback": readback})
+        original_report = (tmp_path / "state" / "reference-evaluations" /
+                           control["operation_id"] / "attempt" / "report.json").read_bytes()
+        retired = command(app.config, "reconcile", {
+            **control, "report_sha256": final["report_sha256"]})
+        assert retired["status"] == "stopped", retired
+        assert (tmp_path / "state" / "reference-evaluations" / control["operation_id"] /
+                "attempt" / "report.json").read_bytes() == original_report
+        assert len(offers) == world.submitted == 2
+    finally:
+        release.set()
+        group.close()

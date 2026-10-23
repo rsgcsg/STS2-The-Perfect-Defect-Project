@@ -47,6 +47,7 @@ def native_episode_command(
     run_id: str | None = None,
     peer: dict[str, Any] | None = None,
     timeout_seconds: float | None = None,
+    _execution_scope: str | None = None,
 ) -> dict[str, Any]:
     """Call one Application, optionally fenced to its original instance.
 
@@ -75,6 +76,7 @@ def native_episode_command(
             headers={
                 "Content-Type": "application/json",
                 "Authorization": "Bearer " + current["control_token"],
+                **({"X-Reference-Group-Scope": _execution_scope} if _execution_scope else {}),
             },
         )
         remaining = _response_remaining(deadline, 90)
@@ -166,6 +168,7 @@ def model_command(
     archived_profile_sha256: str | None = None,
     expected_instance_id: str | None = None,
     timeout_seconds: float | None = None,
+    _execution_scope: str | None = None,
 ) -> dict[str, Any]:
     """Call one Application, or install offline without an instance guard.
 
@@ -360,6 +363,7 @@ def model_command(
         headers={
             "Content-Type": "application/json",
             "Authorization": "Bearer " + current["control_token"],
+            **({"X-Reference-Group-Scope": _execution_scope} if _execution_scope else {}),
         },
     )
     opener = build_opener(ProxyHandler({}), NoRedirect())

@@ -6,6 +6,7 @@ remain separate, and the current Connector remains the environment authority.
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import logging
@@ -1190,6 +1191,8 @@ class LocalModelRegistration:
         adapter = "stpd-p1-baseline-agent" if baseline else "stpd-p1-mstd-agent"
         package_sha = model.parameters.value().get("package_sha256")
         for entry in reversed(self._entries()):
+            if entry["id"].startswith("reference-binding-"):
+                continue
             if entry.get("adapter") != adapter:
                 continue
             config = _object_file(self.models.entry_path(entry, "config"))
@@ -1211,6 +1214,105 @@ class LocalModelRegistration:
                 return _public(identity, "registered", selection_id=entry["id"],
                                profile="p1-global-r1")
         return _public(identity, "not_registered", profile="p1-global-r1")
+
+    def bind_reference_selection(self, selection: str, context: dict[str, Any]) -> str:
+        """Bind unchanged P1 Model bytes to one exact, ready Reference resource.
+
+        The selected registration stays immutable. Runtime negotiation supplies
+        the actual environment requirements; no producer field is normalized.
+        Private execution registrations share the original verified weight file.
+        """
+        from spireagent.workbench.local_models import GLOBAL_MODEL_ADAPTERS
+
+        entry = self.models.selection(selection)
+        if entry["adapter"] not in GLOBAL_MODEL_ADAPTERS:
+            return selection
+        manifest_path = self.models.entry_path(entry, "manifest")
+        config_path = self.models.entry_path(entry, "config")
+        manifest = _object_file(manifest_path)
+        if managed_manifest(manifest):
+            raise BoundaryError("native_episode", "native_episode_target_conflict")
+        from stpd.p1 import agent, baseline_agent
+
+        installation = (baseline_agent.installation if entry["adapter"]
+                        == "stpd-p1-baseline-agent" else agent.installation)
+        config, manifest, _, _ = installation(config_path, manifest_path,
+                                             self.models.entry_root(entry))
+        with self.models.lock:
+            self.models._require_model_admission(context, action="creation")
+        authorization = self.models._authorize_native_episode(context)
+        deadline = monotonic() + REGISTRATION_SECONDS
+        node_modules, _ = self._native_runtime(deadline=deadline)
+        envelope = self._global_environment_manifest(
+            node_modules / RUNTIME_PACKAGE / "dist",
+            {"connector-endpoint": _loopback(authorization["endpoint"])},
+            Path(config["package_path"]), manifest["adapter"], selection, deadline)
+        if (envelope.get("requirements", {}).get("environment", {}).get("host_kind")
+                != "reference" or envelope.get("input", {}).get("global")
+                != manifest["input"]["global"]):
+            raise BoundaryError("local_model_registration", "reference_binding_contract_changed")
+        rebound = copy.deepcopy(manifest)
+        rebound.update(requirements=envelope["requirements"], support=envelope["support"])
+        original_selection = config.get("reference_binding_source_selection_id", selection)
+        original_config = {key: value for key, value in config.items()
+                           if key != "reference_binding_source_selection_id"}
+        metadata_path = config_path.parent / "model.json"
+        _object_file(metadata_path)
+        metadata = metadata_path.read_bytes()
+        if hashlib.sha256(metadata).hexdigest() != config.get("package_manifest_sha256"):
+            raise BoundaryError("local_model_registration", "original_package_metadata_changed")
+        private = self.models.private_root
+        with instance_lock(private / LOCK):
+            # Reuse either presentation's exact registration when returning to it.
+            for candidate in self.models.registry()["policies"]:
+                if candidate["adapter"] != entry["adapter"]:
+                    continue
+                candidate_config = _object_file(self.models.entry_path(candidate, "config"))
+                candidate_manifest = _object_file(self.models.entry_path(candidate, "manifest"))
+                expected = {**rebound, "manifest_id": candidate_manifest.get("manifest_id")}
+                candidate_original = {key: value for key, value in candidate_config.items()
+                                      if key != "reference_binding_source_selection_id"}
+                if (json_bytes(candidate_original) == json_bytes(original_config)
+                        and json_bytes(candidate_manifest) == json_bytes(expected)):
+                    installation(self.models.entry_path(candidate, "config"),
+                                 self.models.entry_path(candidate, "manifest"),
+                                 self.models.entry_root(candidate))
+                    self.models._authorize_native_episode(context)
+                    with self.models.lock:
+                        self.models._require_model_admission(context, action="creation")
+                    return cast(str, candidate["id"])
+            identity = "reference-binding-" + uuid.uuid4().hex
+            folder = private / REGISTRATIONS
+            if folder.is_symlink():
+                raise BoundaryError("local_model_registration", "registration_metadata_invalid")
+            folder.mkdir(mode=0o700, exist_ok=True)
+            target = folder / identity
+            target.mkdir(mode=0o700)
+            publishing = False
+            try:
+                rebound["manifest_id"] = identity
+                atomic_json(target / "manifest.json", rebound)
+                atomic_json(target / "config.json", {**original_config,
+                    "reference_binding_source_selection_id": original_selection})
+                (target / "model.json").write_bytes(metadata)
+                installation(target / "config.json", target / "manifest.json", private)
+                self.models._public_manifest_contract(target / "manifest.json")
+                self.models._authorize_native_episode(context)
+                with self.models.lock:
+                    self.models._require_model_admission(context, action="creation")
+                derived_entry = {**entry, "id": identity,
+                    "manifest": (target / "manifest.json").relative_to(private).as_posix(),
+                    "config": (target / "config.json").relative_to(private).as_posix()}
+                publishing = True
+                atomic_json(private / REGISTRY, {"schema": "stpd/local-token-policies-v1",
+                    "policies": [*self._entries(), derived_entry]})
+            except Exception:
+                if not publishing:
+                    shutil.rmtree(target)
+                # After publication was offered, retain its exact target even
+                # if directory fsync failed after replace. No Runtime was offered.
+                raise
+        return identity
 
     def _register_p1(self, identity: str, environment_kind: str) -> dict[str, Any]:
         """Materialize the original Model, then bind it to the existing Runtime owner."""
