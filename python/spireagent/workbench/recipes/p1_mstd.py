@@ -135,8 +135,7 @@ def run_p1_child(args: Any, channel: Any, store: Any, fence: Any, producer: Any)
     fenced = FencedStore(store, fence)
     if operation["mode"] == "start":
         run = prepare_p1_run(fenced, request.source_id, producer, config, args.operation_id,
-                             **({"execution_policy": request.execution_policy}
-                                if request.execution_policy is not None else {}))
+                             execution_policy=request.execution_policy)
         fence.bind_run(run)
         channel.emit("prepared", run_id=run.artifact_id, input_id=run.parent("training_input"))
         fence.wait_for_parent_run(run.artifact_id, run.parent("training_input"))
