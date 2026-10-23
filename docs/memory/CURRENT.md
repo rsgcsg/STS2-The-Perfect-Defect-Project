@@ -1,17 +1,6 @@
-# 当前增量：原生 Pause 的 post-delivery capture 取消修复
+# 当前：原生 Pause capture 修复
 
-真实 Runtime40 Pause 后旧capture因owner epoch撤销被拒，却被错误taint。新版Runtime41沿同一owner修正取消归类，App显式消费40/41，具体边界与非claim见[本轮修复](../plans/p1-prefreeze-2026-10-18/NATIVE_PAUSE_CAPTURE_20261023.zh-CN.md)。原始失败运行保持原状；source/package不授现场修复通过，旧Mod/Tool/Host/Evidence资产不变。
-
-# 当前：游戏内连续模型展示候选，原现场不变
-
-用户要求真实模型下拉、持续展示、简单暂停/继续/结束与诚实恢复。D/T从
-`origin/develop=93e90df`独占联合source候选，沿原Application/Environment/Runtime/
-Evidence接线；范围、负责人、验收与停止点归
-[本轮任务](../plans/p1-prefreeze-2026-10-18/INGAME_CONTINUOUS_MODEL_PLAY_20261023.zh-CN.md)。
-普通本地源码检查不授安装/加载/实战或模型质量；原用户App/Host/游戏及训练保留。
-Runtime40/Evidence34/Live UI18/Mod60/Workbench4必须匹配，旧安装不自动升级。
-性能优化已延期；App重启丢失Host管道时只恢复准确Human/Stop/封存，不能冒称继续同世界。
-原首批训练、最终TEST、40次Reference和完整R2交付仍未完成。
+Runtime40 的 Human/Pause 撤销旧 capture 后被误 taint；Runtime41沿同一owner修正归类，App显式消费40/41，边界见[本轮修复](../plans/p1-prefreeze-2026-10-18/NATIVE_PAUSE_CAPTURE_20261023.zh-CN.md)。原生连续模型展示仍归[原任务](../plans/p1-prefreeze-2026-10-18/INGAME_CONTINUOUS_MODEL_PLAY_20261023.zh-CN.md)；真实失败/原件不改，源码和新包不授现场通过。Mod60/Tool/Host37/Evidence34/SDK资产不变。性能优化延期；训练、最终TEST、40次Reference和完整R2仍未完成。
 
 # 历史已延期：隔离性能候选，原训练继续
 
