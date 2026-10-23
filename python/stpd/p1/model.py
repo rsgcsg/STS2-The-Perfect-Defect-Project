@@ -74,6 +74,16 @@ def _mean_terms(values: Tensor, rows: list[list[int]], empty: Tensor) -> Tensor:
     return torch.cat(parts).index_select(0, torch.tensor(inverse, device=values.device))
 
 
+def _role_vectors(scene: Tensor, indices: list[int], absent: Tensor) -> Tensor:
+    """Gather complete roles without attaching an unused absence parameter."""
+    if any(index < 0 for index in indices):
+        values = torch.cat((scene, absent[None]), 0)
+        indices = [index if index >= 0 else len(scene) for index in indices]
+    else:
+        values = scene
+    return values.index_select(0, torch.tensor(indices, dtype=torch.long, device=scene.device))
+
+
 class MStd(nn.Module):
     def __init__(self, vocabulary: dict[str, Any], execution: MStdExecution | None = None):
         super().__init__()
@@ -212,6 +222,32 @@ class MStd(nn.Module):
                          for row in number_owners]
         number_values = torch.cat(number_parts) if number_parts else nodes.new_zeros((0, 192))
         number_features = _mean_terms(number_values, number_owners, self.no_numbers)
+        if self.execution.implementation == "experimental-packed-v1":
+            # Same complete terms and per-row reduction lengths; batched gathers
+            # change FP32 gradient accumulation. This is a separate trajectory,
+            # not the rejected prototype relabeled as an exact-resume success.
+            packed_fields: list[int] = []
+            text_indices: list[int] = []
+            rows: list[list[int]] = []
+            for entity in entities:
+                row_indices = []
+                for key, text in entity.text:
+                    row_indices.append(len(packed_fields))
+                    packed_fields.append(self.index("fields", key))
+                    text_indices.append(text_rows[text])
+                rows.append(row_indices)
+            if packed_fields:
+                packed_text_terms = vectors.index_select(
+                    0, torch.tensor(text_indices, device=device))
+                packed_text_terms = packed_text_terms + self.fields(
+                    torch.tensor(packed_fields, device=device))
+            else:
+                packed_text_terms = vectors.new_zeros((0, 192))
+            packed_features = (_mean_terms(packed_text_terms, rows, nodes.new_zeros(192))
+                               + number_features)
+            nodes = nodes + packed_features
+            linked = _mean_terms(nodes, [entity.refs for entity in entities], nodes.new_zeros(192))
+            return cast(Tensor, self.node_norm(nodes + self.relations(linked)))
         features = []
         # Keep the original text and reference autograd accumulation paths:
         # reordering tiny text gradients can exceed the next-Adam-state tolerance.
@@ -275,14 +311,20 @@ class MStd(nn.Module):
                 )
             )
             if frame.choices:
-                source = torch.stack(
-                    [scene[batch, s] if s >= 0 else self.absent_roles[0]
-                     for s, _ in frame.roles]
-                )
-                target = torch.stack(
-                    [scene[batch, t] if t >= 0 else self.absent_roles[1]
-                     for _, t in frame.roles]
-                )
+                if self.execution.implementation == "experimental-packed-v1":
+                    source = _role_vectors(scene[batch], [s for s, _ in frame.roles],
+                                           self.absent_roles[0])
+                    target = _role_vectors(scene[batch], [t for _, t in frame.roles],
+                                           self.absent_roles[1])
+                else:
+                    source = torch.stack(
+                        [scene[batch, s] if s >= 0 else self.absent_roles[0]
+                         for s, _ in frame.roles]
+                    )
+                    target = torch.stack(
+                        [scene[batch, t] if t >= 0 else self.absent_roles[1]
+                         for _, t in frame.roles]
+                    )
                 action = action + self.source_role(source) + self.target_role(target)
             actions.append(action)
         if not any(frame.choices for frame in frames):

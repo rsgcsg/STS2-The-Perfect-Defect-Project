@@ -252,7 +252,9 @@ def measure(
                   if selected_device.type == "cuda" else None,
                   "peak_reserved_bytes": torch.cuda.max_memory_reserved(selected_device)
                   if selected_device.type == "cuda" else None,
-                  "numerical_trajectory": "explicit_clone_not_formal_resume"}
+                  "numerical_trajectory": "explicit_clone_not_formal_resume",
+                  "FP32_accumulation_reordered":
+                  execution.implementation == "experimental-packed-v1"}
         # Diagnostics stay outside the synchronized throughput windows. Hash full
         # numerical contents, rather than treating equal scalar norms as equal AdamW.
         report["variant_index"] = variant_index

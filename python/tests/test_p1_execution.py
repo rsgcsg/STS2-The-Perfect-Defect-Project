@@ -20,13 +20,14 @@ from stpd.p1.profiling import synthetic_frame
 
 
 @pytest.mark.parametrize("training", [False, True])
-def test_fused_rows_complete_node_terms_gradients_and_rng(training):
+@pytest.mark.parametrize("implementation", ["row-fused-v1", "experimental-packed-v1"])
+def test_fused_rows_complete_node_terms_gradients_and_rng(training, implementation):
     torch.manual_seed(73)
     torch.set_num_threads(2)
     frame = edge_frame()
     reference = MStd(fit_vocabulary([frame])).train(training)
     packed = copy.deepcopy(reference)
-    packed.execution = MStdExecution(implementation="row-fused-v1")
+    packed.execution = MStdExecution(implementation=implementation)
     texts = sorted({text for entity in frame.entities for _, text in entity.text})
     values = torch.randn(len(texts), 192, requires_grad=True)
     other = values.detach().clone().requires_grad_()
@@ -104,3 +105,24 @@ def test_deferred_sync_still_rejects_nonfinite_before_any_parameter_update(monke
 def test_execution_rejects_invalid_configuration(change):
     with pytest.raises(BoundaryError):
         replace(MStdExecution(), **change)
+
+
+def test_future_packed_complete_catalog_gradients_absence_and_draws():
+    """Initial mathematics is checked; multi-update exact-trajectory remains unproved."""
+    frames = [edge_frame(), project(observation())]
+    torch.manual_seed(97)
+    reference = MStd(fit_vocabulary(frames))
+    packed = copy.deepcopy(reference)
+    packed.execution = MStdExecution(implementation="experimental-packed-v1")
+    scopes = [TrainingNumerics(11, 2, torch.device("cpu")) for _ in range(2)]
+    outputs = []
+    for model, scope in zip([reference, packed], scopes, strict=True):
+        with scope.scope():
+            scores = model.forward_batch(frames)
+            outputs.append([value.detach() for value in scores])
+            sum(value.square().sum() for value in scores).backward()
+    for frame, wanted, actual in zip(frames, *outputs, strict=True):
+        assert actual.shape == (len(frame.choices),)
+        torch.testing.assert_close(actual, wanted, rtol=3e-4, atol=2e-5)
+    compare_gradients(reference, packed)
+    assert torch.equal(scopes[0].rng["torch_cpu"], scopes[1].rng["torch_cpu"])
