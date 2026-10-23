@@ -628,6 +628,10 @@ class Application:
             if selected != runtime:
                 return False
             record = self.local_environment.native_episode_status()
+            if record.get("phase") in {"idle", "closed", "failed"}:
+                # Terminal resources retain historical admission identity. Only
+                # an active resource constrains the selected game's new pair.
+                return True
             context = record.get("admission_context")
             return (not isinstance(context, dict)
                     or context["binding"]["runtime_instance_id"] == runtime)

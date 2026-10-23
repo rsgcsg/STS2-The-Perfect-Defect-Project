@@ -706,3 +706,19 @@ def test_reuse_rejects_changed_host_identity_before_retiring_original_actor(
     assert app.local_environment.native_episode_status() == original
     with pytest.raises(BoundaryError, match="resource_already_associated"):
         app.local_environment.native_admission_guard(context, "creation")
+
+
+def test_closed_original_resource_does_not_block_replacement_game_pair(native_app, monkeypatch):
+    app = native_app[0]
+    ready = prepared(app)
+    original = ready["admission_context"]
+    replacement = "new-selected-game"
+    # Only the Connector read is synthetic; closure below is the real public
+    # Host pipe/Environment terminal producer and keeps the original context.
+    monkeypatch.setattr(app.models.native_tasks, "connector_instance", lambda _: replacement)
+    assert not app._workbench_runtime_identity(replacement)
+    closed = app.finish_native_episode(ready["environment_ref"])
+    assert closed["phase"] == "closed" and closed["finish_complete"]
+    assert closed["admission_context"] == original
+    assert app._workbench_runtime_identity(replacement)
+    assert not app._workbench_runtime_identity("another-unselected-game")

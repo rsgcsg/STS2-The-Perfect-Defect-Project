@@ -11,3 +11,5 @@
 8c1ceebf的独立完整CI通过，现场Mstd实际Start/动作/Stop成立，但三个基线仍被状态准入白名单拒绝；保留失败与CI范围，不宣称全GUI通过。本次补上既有ACK提交会话RNG声明，新增原生页面的Model精确终态卡；卡只解除匹配的表示层unknown，下一次Actor仍走原typed seal复验。纯CPU checkpoint导出移除游戏存活检查，登记标签从原Model元数据区分步数/最佳/当前权重。链路位置是⑩产物→⑪Agent→⑫实际运行的表示/传输修复，上游提供原Model/Stop与身份，下游要求可开始/恢复且不重复投递；未新增训练、调度、执行或状态权威。
 
 原训练已自然早停2190步/最佳1460，最终产物与原worker唯一一次TEST已核；学校分配已正常Stop并回到选择页。最终best与current2190沿同一配方/Store/Model入口交付。父任务固定40局、完整最终比较与总R2索引未完成，不因本轮GUI或子门禁通过而关闭。到硬截止如实交付已完成与未完项，不自动复活后续工作。
+
+准确Mod61冷加载后发现新游戏配对被已关闭资源的历史runtime身份挡住，页面因而未连接。Application配对检查改为只用活动资源约束当前游戏；idle/closed/failed仍先经Environment原状态读取及实际选中Connector身份核对，不清除未知/活动任务。回归从真实公开Host pipe准备并正常结束原资源，保留原admission_context，再验证新selected游戏可配对、活动旧资源和未选中游戏仍拒绝。原App先正常停止后才改源码，Mod/Runtime不因此重编或替换。
