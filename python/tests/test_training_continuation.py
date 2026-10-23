@@ -49,7 +49,8 @@ def test_real_pause_atomic_next_intent_restart_and_original_result(tmp_path):
         new = continuation.read(ops)
         assert new["new_segments"] == 1
         assert len(ops.jobs()) == 2
-        assert json.loads(ops.jobs()[1]["options"]) == {"resume": cp, "stop_after": None}
+        assert json.loads(ops.jobs()[1]["options"]) == {
+            "resume": cp, "stop_after": None, "execution_deadline_unix": policy["deadline_unix"]}
         app._continue_training(time.time())
         assert len(ops.jobs()) == 2
     finally:
@@ -180,3 +181,28 @@ def test_explicit_execution_producer_is_separate_from_control_application(tmp_pa
             config.remote_compute, execution_producer=changed))
         with pytest.raises(BoundaryError, match="target_source_lock_mismatch"):
             service._context()
+
+
+def test_delayed_preflight_cannot_submit_after_continuation_deadline(tmp_path, monkeypatch):
+    store, ops, provider, scheduler, policy, job, _ = setup(tmp_path)
+    try:
+        assert scheduler.tick(time.time())["state"] == "paused"
+        app = service(store, ops, provider, scheduler)
+        app._continue_training(time.time())
+        original_preflight = scheduler._preflight
+        def slow_preflight(row):
+            request = original_preflight(row)
+            monkeypatch.setattr("spireagent.hub.scheduler.time.time",
+                                lambda: policy["deadline_unix"] + 1)
+            return request
+        monkeypatch.setattr(scheduler, "_preflight", slow_preflight)
+        result = scheduler.tick(time.time())
+        assert result["state"] == "preflight_failed"
+        assert result["code"] == "continuation_launch_deadline_exhausted"
+        assert len(provider.calls) == 1
+        assert ops.jobs()[1]["status"] == "failed"
+        app._continue_training(time.time())
+        assert not continuation.read(ops)["enabled"]
+        assert sum(row["reserved_units"] for row in ops.jobs()) == 2
+    finally:
+        scheduler.close()

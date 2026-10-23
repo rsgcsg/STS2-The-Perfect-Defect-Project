@@ -87,7 +87,8 @@ def advance(ops: Operations, policy: dict[str, Any], job: dict[str, Any], checkp
             return policy
         intent = hashlib.sha256((policy["root_job_id"] + job["id"] + job["attempt_id"]
                                  + checkpoint).encode()).hexdigest()[:32]
-        options = json.dumps({"resume": checkpoint, "stop_after": None},
+        options = json.dumps({"resume": checkpoint, "stop_after": None,
+                              "execution_deadline_unix": policy["deadline_unix"]},
                              sort_keys=True, separators=(",", ":"))
         successor = ops._enqueue(db, "training", policy["run_id"], intent,
                                  policy["max_seconds"], reserved_units, budget_limit, options)

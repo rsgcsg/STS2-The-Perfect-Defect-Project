@@ -12,6 +12,7 @@ import json
 import math
 import os
 import threading
+import time
 from collections.abc import Callable
 from typing import Any
 
@@ -141,6 +142,10 @@ class Scheduler:
         self._tokens[job] = token
         try:
             request = self._preflight(row)
+            absolute_deadline = json.loads(row["options"]).get("execution_deadline_unix")
+            if (absolute_deadline is not None
+                    and time.time() + row["max_seconds"] > absolute_deadline):
+                raise BoundaryError("scheduler", "continuation_launch_deadline_exhausted")
         except (BoundaryError, OSError, ValueError) as error:
             code = error.code if isinstance(error, BoundaryError) else "input_unavailable"
             self.operations.fail_before_compute(job, token, code, now=now)

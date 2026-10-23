@@ -412,7 +412,7 @@ class Operations:
         options: dict[str, Any] | None = None,
     ) -> str:
         options = {} if options is None else options
-        if not isinstance(options, dict) or set(options) - {"resume", "stop_after"}:
+        if not isinstance(options, dict) or set(options) - {"resume", "stop_after", "execution_deadline_unix"}:
             raise BoundaryError("hub", "invalid_job_options")
         resume, stop_after = options.get("resume"), options.get("stop_after")
         if resume is not None and (
@@ -425,6 +425,12 @@ class Operations:
             raise BoundaryError("hub", "invalid_stop_after")
         if kind == "feature" and (resume is not None or stop_after is not None):
             raise BoundaryError("hub", "feature_resume_not_supported")
+        absolute_deadline = options.get("execution_deadline_unix")
+        if absolute_deadline is not None and (
+            kind != "training" or type(absolute_deadline) not in {int, float}
+            or not math.isfinite(absolute_deadline) or absolute_deadline <= 0
+        ):
+            raise BoundaryError("hub", "invalid_execution_deadline")
         encoded_options = json.dumps(options, sort_keys=True, separators=(",", ":"))
         if (
             kind not in {"feature", "training"}
