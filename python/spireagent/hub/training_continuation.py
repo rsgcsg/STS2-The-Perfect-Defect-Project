@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from typing import Any
+from typing import Any, cast
 
 from spireagent.hub.database import Operations
 from spireagent.json_boundary import BoundaryError
@@ -31,7 +31,7 @@ def arm(ops: Operations, job: dict[str, Any], *, target_id: str, producer: dict[
     with ops.transaction() as db:
         old = db.execute("SELECT value FROM settings WHERE key=?", (KEY,)).fetchone()
         if old and json.loads(old[0])["enabled"]:
-            existing = json.loads(old[0])
+            existing = cast(dict[str, Any], json.loads(old[0]))
             if all(existing[k] == policy[k] for k in (
                     "root_job_id", "run_id", "target_id", "producer", "deadline_unix",
                     "max_new_segments", "max_seconds")):
@@ -51,7 +51,7 @@ def stop(ops: Operations, root: str, reason: str) -> dict[str, Any]:
         row = db.execute("SELECT value FROM settings WHERE key=?", (KEY,)).fetchone()
         if row is None or json.loads(row[0])["root_job_id"] != root:
             raise BoundaryError("remote_training", "continuation_not_found")
-        policy = json.loads(row[0])
+        policy = cast(dict[str, Any], json.loads(row[0]))
         if policy["enabled"]:
             policy.update(enabled=False, state=reason)
             _save(ops, db, policy)
