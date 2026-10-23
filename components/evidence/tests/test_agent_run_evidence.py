@@ -51,6 +51,59 @@ class AgentRunEvidenceTests(unittest.TestCase):
             self._rewrite_events(directory, events)
             self.assertFalse(AgentRunEvidenceVerifier().verify(directory).passed)
 
+    def test_expected_startup_binds_event_version_mode_and_every_bounded_cap(self) -> None:
+        vectors = json.loads((Path(__file__).resolve().parents[2] / "policy-runtime/test/fixtures/autonomy-v2.json").read_bytes())
+        verifier = AgentRunEvidenceVerifier()
+        for version, mode in ((1, "bounded"), (2, "bounded"), (2, "continuous")):
+            with self.subTest(version=version, mode=mode):
+                directory = self._evidence(f"expected-{version}-{mode}")
+                events = [json.loads(line) for line in (directory / "events.jsonl").read_text().splitlines()]
+                budget = vectors[f"{mode}_status_v{version}"]
+                events.insert(1, {"schema": f"sts2.policy-runtime/agent-run-event-{version}", "sequence": 2,
+                                  "recorded_at": "2026-08-25T00:00:01.500Z", "kind": "mode_changed",
+                                  "payload": {"mode": "shadow", "autonomy_budget": budget}})
+                for sequence, event in enumerate(events, 1):
+                    event["sequence"] = sequence
+                    event["schema"] = f"sts2.policy-runtime/agent-run-event-{version}"
+                self._rewrite_events(directory, events)
+                manifest = json.loads((directory / "manifest.json").read_bytes())
+                config = dict(vectors[f"{mode}_startup_v2"])
+                if version == 1:
+                    config.pop("mode")
+                expected = {"schema": f"sts2.policy-runtime/startup-{version}", "autonomy_budget": config,
+                            **{key: manifest[key] for key in ("run_id", "runtime_version", "runtime_code_sha256")}}
+                self.assertTrue(verifier.verify(directory, expected).passed)
+                for schema in (f"sts2.policy-runtime/startup-{3-version}", "sts2.policy-runtime/agent-session-startup-2", "unsupported"):
+                    self.assertFalse(verifier.verify(directory, {**expected, "schema": schema}).passed)
+                self.assertFalse(verifier.verify(directory, {**expected, "autonomy_budget": None}).passed)
+                for invalid_payload in (None, []):
+                    malformed = json.loads(json.dumps(events))
+                    malformed[1].update(kind="autonomy_budget_exhausted", payload=invalid_payload)
+                    self._rewrite_events(directory, malformed)
+                    self.assertFalse(verifier.verify(directory, expected).passed)
+                self._rewrite_events(directory, events)
+                if mode == "bounded":
+                    for key in ("maxSubmissions", "maxPolicyCalls", "deadlineMs"):
+                        self.assertFalse(verifier.verify(directory, {**expected, "autonomy_budget": {**config, key: config[key] + 1}}).passed)
+                    if version == 2:
+                        # Preserve a valid bounded shape/clock while changing only the fixed configuration.
+                        changed = {**budget, "max_submissions": budget["max_submissions"] + 1, "state": "inactive", "ended_reason": "stopped"}
+                        events.append({"schema": "sts2.policy-runtime/agent-run-event-2", "sequence": len(events) + 1,
+                                       "recorded_at": "2026-08-25T00:00:02.500Z", "kind": "stopped",
+                                       "payload": {"autonomy_budget": changed, "controller": "released"}})
+                        self._rewrite_events(directory, events)
+                        result = verifier.verify(directory)
+                        self.assertFalse(result.passed)
+                        self.assertEqual(result.findings[0].code, "budget_config_changed")
+                else:
+                    self.assertFalse(verifier.verify(directory, {**expected, "autonomy_budget": vectors["bounded_startup_v2"]}).passed)
+
+    def test_historical_v1_without_budget_facts_keeps_its_original_reader_rules(self) -> None:
+        directory = self._evidence("v1-no-budget")
+        expected = {"schema": "sts2.policy-runtime/startup-1", "autonomy_budget": {"maxSubmissions": 16, "maxPolicyCalls": 32, "deadlineMs": 60000}}
+        self.assertTrue(AgentRunEvidenceVerifier().verify(directory, expected).passed)
+        self.assertFalse(AgentRunEvidenceVerifier().verify(directory, {**expected, "schema": "sts2.policy-runtime/startup-2"}).passed)
+
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
