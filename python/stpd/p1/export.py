@@ -27,7 +27,7 @@ def adapter_identity() -> dict[str, str]:
     closure = {
         name: digest((root / name).read_bytes())
         for name in ("agent.py", "agent_driver.py", "export.py", "input.py", "model.py", "data.py",
-                     "execution.py")
+                     "execution.py", "spec.py")
     }
     closure["checkpoint_codec.py"] = digest(
         (root.parent / "workers/checkpoint_codec.py").read_bytes()
