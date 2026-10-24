@@ -636,3 +636,20 @@ HP/character/ascension and terminal `game_over` context.result; no HP or process
 exit invents a win/loss. Metrics and typed Task completion are separate. Model
 quality is a paired research comparison, not Human or research admission. Store/R2
 preservation follows the existing evidence-publish owner, never a second registry.
+
+
+For serial follow-up attempts, `--completed-report /ABS/report.json` freezes and
+references an already finished original with the same manifest, selection,
+Reference configuration and peer. Its exact closed finish and publication
+receipt must still match their hashes. It is retained as `reused` with its original
+run/identity, never relabeled as a newly executed episode. Unknown or unfinished
+world offers reject before any new preparation; reconcile through the original
+Environment first. The new run directory stays distinct. `--max-episodes` limits
+new offers only. Keep original report directories available for their referenced
+files; Store/R2 remains the durable recording owner.
+
+Repeated GLOBAL publication reuses exact immutable parent manifests already in
+the peer, so each new run does not re-stream the training checkpoint ancestry.
+New original bytes still receive full peer readback and typed verification.
+Ordinary `copy_artifact` and empty-directory recovery keep full lineage byte
+verification; publication reuse is not a claim that such a recovery was performed.

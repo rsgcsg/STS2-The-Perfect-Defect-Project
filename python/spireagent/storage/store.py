@@ -228,8 +228,14 @@ class ManifestArtifactStore:
 
 
 def copy_artifact(source: ArtifactStore, target: ArtifactStore, artifact_id: str, *,
-                  scratch: Path | None = None) -> str:
-    """Copy an exact lineage closure, publishing every manifest after its parents/bytes."""
+                  scratch: Path | None = None, reuse_published_parents: bool = False) -> str:
+    """Copy exact lineage, publishing manifests after parents/bytes.
+
+    Normal copy re-verifies all bytes. Repeated original publication may reuse
+    immutable already-published parent manifests without re-streaming their
+    ancestry; absent parents are copied normally. The new root is always fully
+    checked. This option is not an empty-directory recovery/audit guarantee.
+    """
     visited: set[str] = set()
     visiting: set[str] = set()
     pending: list[tuple[str, Manifest | None]] = [(artifact_id, None)]
@@ -242,6 +248,18 @@ def copy_artifact(source: ArtifactStore, target: ArtifactStore, artifact_id: str
                 raise StoreError("lineage_cycle")
             visiting.add(identity)
             manifest = source.get_manifest(identity)
+            if reuse_published_parents and identity != artifact_id:
+                try:
+                    existing = target.get_manifest(identity)
+                except StoreError as error:
+                    if error.code != "object_not_found":
+                        raise
+                else:
+                    if existing != manifest:
+                        raise StoreError("transfer_manifest_mismatch")
+                    visiting.remove(identity)
+                    visited.add(identity)
+                    continue
             pending.append((identity, manifest))
             pending.extend((p.artifact_id, None) for p in reversed(manifest.parents))
             continue

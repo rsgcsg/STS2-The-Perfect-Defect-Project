@@ -254,11 +254,62 @@ def _error(error: Exception) -> str:
     return error.code if isinstance(error, BoundaryError) else type(error).__name__
 
 
+
+def _completed_rows(paths: tuple[Path, ...], manifest_sha: str, *, profile: str,
+                    display: str, speed: str, peer: dict[str, Any] | None,
+                    selected: dict[str, str], artifacts: _Artifacts,
+                    ) -> dict[tuple[str, str], dict[str, Any]]:
+    """Reuse finished originals only. An uncertain offer must be reconciled by its owner."""
+    result: dict[tuple[str, str], dict[str, Any]] = {}
+    for path in paths:
+        raw = _read(path)
+        previous = decode_json(raw)
+        if (not isinstance(previous, dict) or previous.get("schema") != REPORT_SCHEMA
+                or previous.get("manifest", {}).get("sha256") != manifest_sha
+                or previous.get("run_profile") != profile or previous.get("speed") != speed
+                or previous.get("display_mode") != display
+                or previous.get("evidence_peer") != peer):
+            _reject("previous_attempt_configuration_changed")
+        frozen = artifacts.put("previous-report.json", raw)
+        for row in previous.get("episodes", []):
+            if row.get("status") == "not_started" and not row.get("world_mutation_offered"):
+                continue
+            if (row.get("status") != "finished" or not row.get("stored_evidence_id")
+                    or row.get("preservation_error") or row.get("cleanup_accepted") is not True):
+                _reject("previous_offered_attempt_requires_reconciliation")
+            key = (row["seed"], row["selection_id"])
+            if row["selection_id"] not in selected.values():
+                _reject("previous_selection_not_in_plan")
+            if key in result:
+                _reject("duplicate_previous_episode")
+            finish_ref = row["finish"]
+            finish_raw = _read(path.parent / finish_ref["path"])
+            if (hashlib.sha256(finish_raw).hexdigest() != finish_ref["sha256"]
+                    or len(finish_raw) != finish_ref["bytes"]
+                    or decode_json(finish_raw).get("phase") != "closed"):
+                _reject("previous_finish_unproved")
+            # The durable preservation receipt is checked against the original report.
+            ref = row["preservation"]
+            receipt_raw = _read(path.parent / ref["path"])
+            if (len(receipt_raw) != ref["bytes"]
+                    or hashlib.sha256(receipt_raw).hexdigest() != ref["sha256"]):
+                _reject("previous_receipt_changed")
+            receipt = decode_json(receipt_raw)
+            if (receipt.get("status") != "completed" or receipt.get("run_id") != row["run_id"]
+                    or receipt.get("artifact_id") != row["stored_evidence_id"]
+                    or not receipt.get("peer_readback")):
+                _reject("previous_preservation_unproved")
+            result[key] = {"previous_report": frozen, "original_report_path": str(path.resolve()),
+                           "original_row": row}
+    return result
+
+
 def run_suite(
     manifest_path: Path, manifest_sha256: str, *, client: ReferenceClient, run_dir: Path,
     selection: str, run_profile: str, limits: SuiteLimits, max_episodes: int = 1,
     selections: dict[str, str] | None = None, evidence_peer: dict[str, Any] | None = None,
     display_mode: str = "headless", speed: str = "instant",
+    completed_reports: tuple[Path, ...] = (),
     before_episode: Callable[[dict[str, Any]], bool] = lambda _report: True,
     clock: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep, should_stop: Callable[[], bool] = lambda: False,
@@ -319,6 +370,13 @@ def run_suite(
                      for index, (ordinal, seed, agent, identity) in enumerate(plan)],
         "non_claims": ["not_Human_origin", "not_strategy_quality_qualification",
                        "not_Host_equivalence", "not_new_P1_profile_support"]}
+    completed = _completed_rows(completed_reports, manifest_sha256, profile=run_profile,
+        display=display_mode, speed=speed, peer=evidence_peer, selected=selected,
+        artifacts=artifacts)
+    for row in report["episodes"]:
+        prior = completed.get((row["seed"], row["selection_id"]))
+        if prior is not None:
+            row.update(status="reused", reason="previous_finished_original", **prior)
     artifacts.save(report)  # The entire denominator exists before even readiness.
 
     def timeout(deadline: float, cap: float = limits.http_seconds) -> float:
@@ -347,7 +405,7 @@ def run_suite(
             compositions[identity] = composition
         report["composition_ids"] = {key: value["composition_id"]
                                      for key, value in compositions.items()}
-        if not four:
+        if selection in compositions:
             report["composition_id"] = compositions[selection]["composition_id"]
         artifacts.save(report)
     except (OSError, ValueError, KeyError, TypeError) as error:
@@ -358,7 +416,8 @@ def run_suite(
             artifacts.save(report)
         return report
 
-    for row in report["episodes"][:max_episodes]:
+    pending_rows = [row for row in report["episodes"] if row["status"] != "reused"]
+    for row in pending_rows[:max_episodes]:
         selection = row["selection_id"]
         composition = compositions[selection]
         if not before_episode(report):
@@ -645,6 +704,7 @@ def run_suite(
             row["reason"] = report["stop_reason"] or "canary_limit"
     report["summary"] = {
         "not_started": sum(row["status"] == "not_started" for row in report["episodes"]),
+        "reused_finished": sum(row["status"] == "reused" for row in report["episodes"]),
         "cleanup_unknown": sum(row["status"] == "unknown" for row in report["episodes"]),
         "preserved_evidence": sum("stored_evidence_id" in row for row in report["episodes"]),
         "preservation_failed_or_unknown": sum(

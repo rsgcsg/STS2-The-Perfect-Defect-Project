@@ -88,8 +88,11 @@ def test_model_outcome_keeps_model_binding_without_claiming_task_success(
 
     from spireagent.workbench.agent_task_outcome import project
 
-    basis = {"capture_status": "complete", "snapshot": {"interaction": {"content": {
-        "surface": {"victory": True}}}}}
+    basis = {"capture_status": "complete", "snapshot": {
+        "schema": "sts2.player-environment/snapshot-1", "interaction": {
+            "kind": "game_over", "content_schema": "sts2.player-environment/surface/game_over-1",
+            "content": {"surface": {"kind": "game_over", "stage": "intro"},
+                        "context": {"kind": "game_over", "result": "win"}}}}}
     record = json_bytes({"serialized_observation": json.dumps(basis)})
     original = {"path": "source.json", "sha256": hashlib.sha256(record).hexdigest(),
                 "bytes": len(record)}

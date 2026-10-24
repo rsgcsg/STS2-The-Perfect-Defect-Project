@@ -1150,7 +1150,7 @@ class LocalRecordingImporter:
             if intent["peer"] is not None:
                 peer = open_peer(intent["peer"])
                 phase = "peer_delivery"
-                copy_artifact(store, peer, artifact.artifact_id)
+                copy_artifact(store, peer, artifact.artifact_id, reuse_published_parents=True)
                 phase = "peer_readback"
                 remote = verify_global_artifact(
                     peer, artifact.artifact_id, expected=context["expected"],

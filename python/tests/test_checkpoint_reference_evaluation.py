@@ -119,3 +119,52 @@ def test_terminal_and_metrics_use_original_public_context_not_missing_victory(tm
     with pytest.raises(BoundaryError, match='original_changed'):
         read_reference_metrics(tmp_path, evaluation,
                                {'binding': {'runtime_instance_id': 'runtime'}})
+
+
+def test_checkpoint_multi_selection_reaches_original_prepare(tmp_path):
+    from test_reference_suite import Clock, OwnerClient
+
+    from spireagent.workbench.reference_suite import SuiteLimits, run_suite
+    manifest = checkpoint_reference_manifest('v0.111.0')
+    path = tmp_path / 'manifest.json'
+    path.write_bytes(json_bytes(manifest))
+    directory = tmp_path / 'matrix'
+    client = OwnerClient(directory, 'lost_prepare')
+    clock = Clock()
+    result = run_suite(path, hashlib.sha256(path.read_bytes()).hexdigest(), client=client,
+        run_dir=directory, selection='', selections={'first': 'model-a', 'last': 'model-b'},
+        run_profile='short', max_episodes=1, limits=SuiteLimits(2, 2, 2, 20, .01),
+        clock=clock, sleep=clock.sleep)
+    assert client.calls.count('readiness') == 2
+    assert 'prepare' in client.calls
+    assert result['world_offers'] == 1
+    assert result['planned'] == 20
+    assert result['episodes'][0]['seed'] == result['episodes'][1]['seed']
+    assert [r['selection_id'] for r in result['episodes'][:2]] == ['model-a', 'model-b']
+
+
+def test_completed_original_is_retained_without_reoffer_and_unknown_rejected(tmp_path):
+    from spireagent.workbench.reference_suite import _Artifacts, _completed_rows
+    def ref(name, value):
+        raw = json_bytes(value)
+        (tmp_path / name).write_bytes(raw)
+        return {'path': name, 'sha256': hashlib.sha256(raw).hexdigest(), 'bytes': len(raw)}
+    row = {'seed': 'seed', 'selection_id': 'model', 'status': 'finished',
+           'world_mutation_offered': True, 'cleanup_accepted': True, 'stored_evidence_id': 'a'*64,
+           'run_id': 'original-run', 'finish': ref('finish.json', {'phase': 'closed'}),
+           'preservation': ref('preserve.json', {'status': 'completed', 'run_id': 'original-run',
+                'artifact_id': 'a'*64, 'peer_readback': {'typed_verification': 'pass'}})}
+    report = {'schema': 'spireagent/reference-suite-report-v1', 'manifest': {'sha256': 'b'*64},
+              'run_profile': 'continuous', 'speed': 'instant', 'display_mode': 'headless',
+              'evidence_peer': None, 'episodes': [row]}
+    original = tmp_path / 'report.json'
+    original.write_bytes(json_bytes(report))
+    def load(name):
+        return _completed_rows((original,), 'b'*64, profile='continuous', display='headless',
+            speed='instant', peer=None, selected={'last': 'model'},
+            artifacts=_Artifacts(tmp_path/name))
+    assert load('one')[('seed', 'model')]['original_row']['run_id'] == 'original-run'
+    report['episodes'][0]['status'] = 'unknown'
+    original.write_bytes(json_bytes(report))
+    with pytest.raises(BoundaryError, match='requires_reconciliation'):
+        load('two')
