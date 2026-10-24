@@ -35,3 +35,8 @@
 修复候选e3ff包rc62通过postcommit BOM/仓库规则、981Host、182Logical、450Annotator及相关Node门，独立游戏副本coldload SHA9f4483ac/MVIDcbeefe与build一致，7原Model正常重新登记。headless首Silent1460新局在第7层PunchOff触发Native SIGABRT，随后renderer-only native-ui实验仍在同点无限创建VFX/报Element limit；两局独立原件保留unknown，正常finish记录实际异常/强制退出，不作模型loss或回填。
 
 exact v0.111.0 PunchOff.AfterEventStarted同步启动while动画循环，每次等待Cmd.Wait(0.1/1.2)，而原生FastMode.Instant使Cmd.Wait无yield，游戏主线程可能无法返回。UI替换不足以修复。此为环境速度条件问题，不给Native加timer/规则patch。原Reference dispatcher对新checkpoint_reference也无条件套用了固定benchmark的instant限制，拒绝受支持的Fast且在任何world offer前失败。现局部允许checkpoint suite显式指定既有normal/fast/instant；ref20/four-agent限制不变，速度冻结、typed实际readback、异速度禁止报告复用均保留。所有checkpoint同一headless Fast新批次，用同一20固定种子和七权重；旧Instant批次分开。错误动作不重投、partial Read不放宽；Fast真实事件/Regent机制仍待实战核验。
+
+
+### 独立CI同步收尾（开发截止不重置）
+
+ABE的真实Fast批次保持冻结，源码不在线改。CI指出受控Managed补丁的两份NativeFoundation镜像落后于同源预览修复，以及注释中的polling命中原代码关键字断言。root在独立CI工作树逐字同步原15文件镜像契约、改正注释措辞，保全部断言；Host源码版本rc38，实战仍原Host37。Managed同步改变patch摘要，不能把原39a6455c/a52dd旧构建标为新源码：已按原prepare正常重建，准确新patch b4d284f1、新artifact bef5d6b9/MVID622752e4，原构建完整归historical_candidate_builds，last_measured/旧runtime/资格不改。正常inspectManagedCandidateBuild全tuple通过，423Host检查通过、5项proprietary runtime未提供而skip；没有据此授Managed运行资格或替换实战Native包。

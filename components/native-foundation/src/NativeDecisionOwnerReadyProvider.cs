@@ -66,7 +66,7 @@ public static class NativeDecisionOwnerReadyProvider
     }
 
     // SetupLayout awaits native UI work before its options become available.
-    // Publish the exact completed layout seam rather than polling a settling frame.
+    // Publish the exact completed layout seam for consumer recapture.
     public static bool ObserveEventLayoutReady(NEventLayout layout)
     {
         NEventRoom? room = NEventRoom.Instance;
