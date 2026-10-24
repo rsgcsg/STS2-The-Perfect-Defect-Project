@@ -6,6 +6,7 @@ from typing import Any
 
 from spireagent.artifact_contracts import Producer
 from spireagent.json_boundary import BoundaryError
+from spireagent.local_diagnostics import phase
 from spireagent.storage.store import ManifestArtifactStore, copy_artifact
 from spireagent.workbench.p1_recording_storage import open_peer, storage_budget
 
@@ -45,23 +46,28 @@ def transfer_p1_input(
     from stpd.p1.input import project
     from stpd.p1.workload import P1Workload
 
-    budget = storage_budget(local, run_id, scratch=scratch, destination=None)
-    peer = open_peer(peer_binding)
-    copy_artifact(local, peer, run_id, scratch=scratch)
+    with phase("remote.transfer.budget"):
+        budget = storage_budget(local, run_id, scratch=scratch, destination=None)
+    with phase("remote.transfer.copy"):
+        peer = open_peer(peer_binding)
+        copy_artifact(local, peer, run_id, scratch=scratch)
     # Reopen the configured destination and use its actual payload reader for
     # every byte, including original parents that are not themselves model input.
-    readback = open_peer(peer_binding)
-    copy_artifact(readback, readback, run_id, scratch=scratch)
-    workload = verify_training_run(readback, run_id, producer)
-    partition_N: dict[str, int] = {}
-    catalog_choices = 0
-    points = (workload.reader.iter_points() if isinstance(workload, P1Workload)
-              else iter_snapshot_points(readback, workload.snapshot.artifact_id))
-    for reference, observation in points:
-        frame = project(observation)
-        partition = reference["split"]
-        partition_N[partition] = partition_N.get(partition, 0) + 1
-        catalog_choices += len(frame.choices)
+    with phase("remote.transfer.readback"):
+        readback = open_peer(peer_binding)
+        copy_artifact(readback, readback, run_id, scratch=scratch)
+    with phase("remote.transfer.verify"):
+        workload = verify_training_run(readback, run_id, producer)
+    with phase("remote.transfer.consume"):
+        partition_N: dict[str, int] = {}
+        catalog_choices = 0
+        points = (workload.reader.iter_points() if isinstance(workload, P1Workload)
+                  else iter_snapshot_points(readback, workload.snapshot.artifact_id))
+        for reference, observation in points:
+            frame = project(observation)
+            partition = reference["split"]
+            partition_N[partition] = partition_N.get(partition, 0) + 1
+            catalog_choices += len(frame.choices)
     info = workload.training.parameters.value()
     return {
         "schema": "spireagent/p1-remote-input-readback-1",
