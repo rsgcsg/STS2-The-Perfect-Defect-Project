@@ -4,7 +4,7 @@ root 是本轮唯一源码、BOM与清理写入者；开发从 00:31 AEST 到 04
 
 交付是[原数据生命周期里的存储页](../../../python/docs/DATA_LIFECYCLE.md#项目存储真身工位与本机删除条件)、同一处容量操作、现WORKING_RULES第8节和原入口的容量保护；不另建Store、账本、调度器或自动清理服务。源码/测试与在用服务的实际安装保护分开。旧Runtime单局512MiB容量缺陷不在本轮修复，不重投第25局unknown。
 
-用户直接批准归位表v1的A+B+C，A仅111个具名依赖叶；B/C只有R2完整闭包、空目录全量读回和原Store/codec核验通过后才冷却objects。主Store已有2GiB上限，保留两个明确R2 peer，不改20G；不碰workbench/replay使用目录。B另获直接批准：按完整payload分批物化、每批留收据，临时Store仅R2，批量不超过实时空闲减至少5GiB余量，全部对象逐项对齐后才整行冷却；任一失败整行保留。未获本轮merge授权。
+用户直接批准归位表v1的A+B+C，A仅111个具名依赖叶；B/C只有R2完整闭包、空目录全量读回和原Store/codec核验通过后才冷却objects。主Store已有2GiB上限，保留两个明确R2 peer，不改20G；不碰workbench/replay使用目录。B另获直接批准：按完整payload分批物化、每批留收据，临时Store仅R2，批量不超过实时空闲减至少6GiB余量（后续用户更新），全部对象逐项对齐后才整行冷却；任一失败整行保留。未获本轮merge授权。
 
 当前实物报告和逐路径表由用户指定的共享 `claude-handoff-2026-10-13/replies/DISK-CLEANUP-AND-RULES-REPORT-20261024.md` 与 `DISK-CLEANUP-TABLE-20261024.md` 拥有；执行收据在本轮任务目录 `work/`，收口给可恢复R2指针。任何du估算不能当释放量，每批前后df才是系统净变化，达不到40GiB不扩表外范围。
 
