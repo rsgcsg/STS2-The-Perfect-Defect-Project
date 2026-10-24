@@ -244,6 +244,32 @@ def require_workspace_space(
     }
 
 
+
+# Shared workstation operating reserve. This is a measured preflight, not a quota.
+# The 2 GiB OS margin follows the existing capacity planning SOP; each caller
+# separately adds its real input/scratch or next-episode peak.
+WORKSPACE_RESERVE_BYTES = 2 * 1024**3
+NEXT_EPISODE_PEAK_BYTES = 2 * 1024**3
+
+
+def require_long_task_space(
+    scratch: Path, temporary_bytes: int, *, persistent_bytes: int = 0,
+    destination: Path | None = None,
+) -> dict[str, Any]:
+    value = os.environ.get("SPIREAGENT_MIN_FREE_BYTES")
+    if value is not None and (len(value) > 19 or not value.isascii() or not value.isdecimal()):
+        raise BoundaryError("p1_storage", "invalid_workspace_reserve")
+    reserve = WORKSPACE_RESERVE_BYTES if value is None else int(value)
+    if reserve > 2**63 - 1:
+        raise BoundaryError("p1_storage", "invalid_workspace_reserve")
+    if any(type(n) is not int or n < 0 for n in (temporary_bytes, persistent_bytes)):
+        raise BoundaryError("p1_storage", "invalid_workspace_workload")
+    return require_workspace_space(
+        scratch, temporary_bytes, persistent_bytes=persistent_bytes,
+        destination=destination, reserve_bytes=reserve,
+    )
+
+
 def _missing_local_payload(payload: Payload, target: ManifestArtifactStore) -> int:
     """Capacity estimate only; the subsequent transfer still verifies every byte.
 

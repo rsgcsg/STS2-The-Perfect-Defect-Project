@@ -8,6 +8,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import tomllib
 from pathlib import Path
@@ -116,7 +117,13 @@ def check(root: Path, base: str | None = None,
           pytest_shard: tuple[int, int] | None = None) -> None:
     require(sys.version_info[:2] == (3, 11), "run via the locked Python 3.11 uv environment")
     validate_repository(root)
+    from spireagent.workbench.p1_recording_storage import require_long_task_space
+
     for command in portable_commands(pytest_shard=pytest_shard):
+        require_long_task_space(
+            Path(tempfile.gettempdir()), 4 * 1024**3,
+            persistent_bytes=2 * 1024**3, destination=root,
+        )
         invoke(command, root)
     if base and base != "0" * 40:
         require(re.fullmatch(r"[0-9a-f]{40}", base) is not None, "base must be an exact SHA")

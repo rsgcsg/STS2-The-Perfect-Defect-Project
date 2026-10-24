@@ -259,3 +259,25 @@ def test_hub_P1_preflight_checks_the_same_roles_before_provider_submit(tmp_path,
         used = {r[0] for r in db.execute("SELECT run FROM curation_uses WHERE kind='training'")}
     assert used == (train if fault == "valid" else
                     dev if fault == "dev_training_exposure" else set())
+
+
+def test_training_capacity_refuses_before_pending_use_or_child(tmp_path, monkeypatch):
+    from spireagent.workbench.local_training import LocalTrainingService
+
+    config, store, owner, snapshot = workspace(tmp_path)
+    reserve_p1_snapshot(owner, store, snapshot.artifact_id)
+    service = LocalTrainingService(config)
+    before = set(store.manifest_ids())
+    monkeypatch.setenv("SPIREAGENT_MIN_FREE_BYTES", str(2**60))
+    request = TrainingRequest.from_dict({
+        "schema": "spireagent/training-request-v1", "intent_id": "a" * 32,
+        "recipe_id": RECIPE, "source_id": snapshot.artifact_id,
+        "config": MStdConfig(max_epochs=1).to_dict(), "placement_id": "local-cpu",
+        "limits": {"wall_seconds": 30, "scratch_bytes": 64 * 1024**2},
+    })
+    with pytest.raises(BoundaryError, match="space_insufficient"):
+        service.start(request)
+    path, _ = service._paths(owner)
+    assert not path.exists()
+    assert set(store.manifest_ids()) == before
+    assert service._thread is None

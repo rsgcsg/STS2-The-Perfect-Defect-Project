@@ -368,3 +368,17 @@ def test_wrong_json_parameter_types_fail_before_publication_or_reservation(tmp_p
         assert db.execute("SELECT count(*) FROM curation_claims").fetchone()[0] == 0
         assert db.execute("SELECT count(*) FROM curation_uses").fetchone()[0] == 0
     assert not owner.path.with_name(owner.path.stem + ".p1-preparation-cache.sqlite").exists()
+
+
+def test_capacity_refusal_does_not_create_a_preparation_cache_or_reserve_use(tmp_path, monkeypatch):
+    import pytest
+
+    from spireagent.json_boundary import BoundaryError
+
+    owner, store, _ = workspace(tmp_path)
+    before = {p: p.read_bytes() for p in owner.store_dir.glob("*.json")}
+    monkeypatch.setenv("SPIREAGENT_MIN_FREE_BYTES", str(2**60))
+    with pytest.raises(BoundaryError, match="space_insufficient"):
+        prepare_p1_data(owner, store)
+    assert not owner.path.with_name(owner.path.stem + ".p1-preparation-cache.sqlite").exists()
+    assert {p: p.read_bytes() for p in owner.store_dir.glob("*.json")} == before

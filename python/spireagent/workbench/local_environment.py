@@ -1162,6 +1162,15 @@ class LocalEnvironmentService:
             self.native_admit_prepare()  # Existing Source/Model guard, same lock.
             if self._managed_start_reservation or self.record.get("status") in ACTIVE | UNRESOLVED:
                 raise BoundaryError("native_episode", "managed_resource_active")
+            # The Application owns the actual Host/evidence write location. This
+            # also covers CLI/API callers that do not use the suite dispatcher.
+            if body["ownership"] == "owned":
+                from .p1_recording_storage import (
+                    NEXT_EPISODE_PEAK_BYTES,
+                    require_long_task_space,
+                )
+
+                require_long_task_space(self.config.state_dir, NEXT_EPISODE_PEAK_BYTES)
             # Original terminal facts survive replacing the sole live pointer.
             self._archive_native_terminal()
             ref = uuid.uuid4().hex

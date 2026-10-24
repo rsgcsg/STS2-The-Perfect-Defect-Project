@@ -477,3 +477,18 @@ def test_unknown_attempt_cannot_resume_even_with_a_durable_checkpoint(tmp_path, 
                                  "checkpoint_id": published[0].checkpoint_id,
                                  "max_seconds": 300, "stop_after": None})
         assert len(provider.ops.jobs()) == len(provider.calls) == 1
+
+
+def test_normal_remote_prepare_refuses_space_before_use_or_provider_submission(
+    tmp_path, monkeypatch,
+):
+    with client(tmp_path) as (_app, call, provider, store, _owner, snapshot, _path):
+        before = set(store.manifest_ids())
+        monkeypatch.setenv("SPIREAGENT_MIN_FREE_BYTES", str(2**60))
+        with pytest.raises(BoundaryError, match="space_insufficient"):
+            call("prepare", body={"intent_id": "f" * 32, "source_id": snapshot.artifact_id,
+                "config": MStdConfig(max_epochs=1).to_dict(), "max_seconds": 300,
+                "stop_after": 1})
+        assert set(store.manifest_ids()) == before
+        assert not provider.calls
+        assert not provider.ops.jobs()

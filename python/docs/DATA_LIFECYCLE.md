@@ -1,5 +1,33 @@
 # End-to-End Data Lifecycle
 
+## 项目存储：真身、工位与本机删除条件
+
+R2 是项目数据唯一的长期真身；GitHub 是代码、文档和规则的权威版本；Mac 是可替换工位。
+存储沿[同一职责链](../../docs/ARCHITECTURE.md#responsibility-refinement)：原件/派生/用途/消费各守其合同；换存储不改来源、训练准入或动作含义。
+GUI、CLI、API、Agent 共用现 Store/transfer/reader，不另建归档账本；[日常操作](#daily-p1-store-and-r2-operations)给同 ID 保全和恢复。
+
+| 类型 | 长期真身 | 本机保留上限/范围 | 何时可删本机副本 |
+|---|---|---|---|
+| 原始录制 | R2 不可变原件及父引用 | 当前录制及现维护策略最新两份；活动原件保护 | 本轮不删 recordings；另获批准且完整空目录读回、原 reader 和无占用核验后才冷却副本 |
+| 数据集/派生/输入 | R2 具名 artifact 与完整祖先 | 当前实验固定输入；可逐出块受 Store 显式预算约束 | 同 ID 全量读回和实际消费者通过，无活动读者且有批准 |
+| 模型/检查点 | R2 全状态与来源绑定 | 当前使用、恢复和回滚集，逐项具名；现 trim 保护此类 | 独有产物先发布、空目录恢复及模型/checkpoint reader 通过，另获批准 |
+| 评估结果/证据/任务原件 | R2 不可变 artifact | 当前任务、未封存/unknown 原件及最近恢复所需 | 全分母与失败原件纳入可恢复清单，空目录核验且获批准；unknown 不重投 |
+| 已安装 release/工具 | GitHub 版本/发布及可重建来源；独有构建证据归 R2 | 在用、上一可回滚版本及其他被具名任务引用者 | 核实际进程/配置/安装绑定、可恢复发布后，清单获批；不按版本号猜闲置 |
+| 依赖/缓存 | 锁文件/源码/原下载源 | 活动环境及有界缓存；不用的重建副本不作长期资产 | 有收口文件且满 7 天的可重建部分可清；整目录仍先批，不动活动依赖 |
+| Codex 任务目录 | 源码/文档归 GitHub；独有证据/原件归 R2 | 当前任务、具名恢复工作集；收口写结果/原件去向和可删范围 | Git 独有提交、未跟踪/ignored 原件先归位，按收口与清单审批；不用日期推断可删 |
+| 对话历史 | 用户原话长期归 R2 可验证备份；当前 sessions 仍是本机原件 | 保留可检索原话；未验证工具兼容前不改扩展名/压缩 | 本轮不删 sessions；备份读回不等于 Codex 支持 .gz，压缩须另验正常检索 |
+| 游戏安装/反编译资料 | 仅本地合法安装/可重建来源 | 当前游戏与必要开发资料；不进 R2、不进 Git | 本轮保留；换工位需重装，属于恢复目标的明确例外 |
+| 用途账/运行操作账/配置 | 项目数据账备份归 R2；非秘密配置/恢复说明归 GitHub | 当前原 owner 状态，禁止并发修改活账 | 按原账备份/恢复 SOP；凭据仅原授权环境提供，不归档到报告/Git |
+
+本地 Store 位置以实际 ProjectConfig 为准，不假定在 ~/.local/share/spireagent；缓存预算只约束可逐出块，保护对象/展开副本另计。
+长任务在生产者写入前、评估每局新游戏前检查各实际写入卷的工作量加保留余量；不足应拒绝或停在局间，并保存未启动分母。
+评估/训练活动期间，重测试须通过同卷空间检查并由负责人排期；空间检查不是磁盘配额，不能承诺抵御其他进程无限写入。
+删除先审批清单；独有内容先 R2 空目录完整读回和真实消费者验证；运行中东西不动；合并须用户同意。
+Modal/学校 GPU 是执行节点，工作集临时，产出回同一 R2；Elements 是可重建冷副本，不能成为项目数据另一真身。
+换新 Mac 能否按 GitHub/R2/配置完整恢复仍是待验目标，不能由本页或上传成功宣称已证明。
+
+## Existing research lane scope
+
 This guide specifies physical storage, derivation and training-host transfer for
 the strict ResearchTransition/combat-v0/Scheme1 lane. Its Parquet/B0 and optional
 frozen-Qwen contracts remain unchanged; they are not a required intermediate form
@@ -135,6 +163,50 @@ retry and exact reconstruction. The local experiment proves only the measured 10
 layout. No remote transfer, full-corpus profile, real-Qwen compile, optimizer run,
 model-quality improvement or training-host throughput is claimed.
 
+
+## Workstation capacity before long tasks
+
+Use the normal entry, on its actual source and data volumes. The existing
+`require_workspace_space` still owns scratch/destination accounting; its 512 MiB
+transfer reserve is not the complete long-task budget. New admission uses a 2 GiB
+operating margin plus the workload below. `SPIREAGENT_MIN_FREE_BYTES` explicitly
+sets that margin, in nonnegative integer bytes, for the process being started.
+An invalid value rejects admission. Changing a shell does not reconfigure an
+already running Application or game; normal upgrade/launch remains separate.
+
+| Supported entry | Work allowance added to the margin | Insufficient space |
+|---|---|---|
+| Reference `run_suite` before every new game | 2 GiB for next-episode capture/packing; suite report volume checked | Suite stops, remaining rows stay `not_started`, no new world/Actor offer or unknown |
+| Application `prepare_native_episode` for a new owned world | Same next-episode allowance on actual Application state volume | Reject before replacing resource intent/starting Host; exact old intent replay still returns its original fact |
+| Native Recorder shared `RecordingSessionStore` writer | Same 2 GiB next-session allowance on the recording directory's actual filesystem | All current Create variants reject before making a session directory; API/lifecycle retains its normal explicit rejected-start result |
+| P1 `prepare_p1_data` | Selected projection payload sizes plus two 64 MiB cache/transaction budgets | Reject before cache creation/inspection or use reservation; no unrelated raw-ancestor download required |
+| Local training start/resume | Declared scratch budget for attempt plus equal artifact allowance; legacy start uses 512 MiB each | Reject before pending intent/use/child; retained attempts still count in existing cumulative limits |
+| Remote training prepare | 512 MiB temporary + 512 MiB persistent for preparation; exact input transfer budget remains separate | Reject before vocabulary fit/use/new Run/provider submission |
+| `npm run check` / Python full gate | 6 GiB planned build/test work plus operating margin; workspace and actual temp filesystem checked again before each stage | Refuse before heavy subprocess; no automatic cleanup or modification of existing jobs |
+
+The 2 GiB next-session work allowance rounds up the observed 563,136,269-byte
+capture prefix and simultaneous archive/extraction copies. The existing
+checkpoint/input planning case was about 2.7 GiB; the full gate allows 6 GiB of
+work for that envelope and build/test scratch. These are conservative planning
+inputs, not measured upper bounds for arbitrary complete games, datasets or test
+fixtures. Before larger work, derive the extra margin from that task's measured
+peak and existing scratch/output limits; record the selected bytes and conditions
+in its task receipt. An artificial margin of `1152921504606846976` verifies
+rejection without filling a disk. Restore the selected normal margin afterward.
+
+Preflight does not allocate filesystem blocks. One owner schedules shared heavy
+writes and includes other active work; independently passing checks do not grant
+concurrent capacity. A single unbounded recording or an unrelated process can
+still exhaust space. The Runtime's separate single-run capture limit is not fixed
+by adding free disk, and old unknown results remain unchanged.
+
+At task close, write `CLOSEOUT.md` with `closed_at`, result/source/PR links, exact
+R2 artifact IDs and normal restore entry, allowed rebuildable leaves and required
+retention. After seven full days the rebuildable leaves may be cleared only when
+inactive, untracked and reconstructible from retained sources/locks. Whole task
+folders still require a reviewed deletion table. This is the existing work rule,
+not another cleanup service or permission to remove unique data. A new task reads
+the closeout and verifies current processes/Git/receipts before acting.
 
 ## Daily P1 Store and R2 operations
 

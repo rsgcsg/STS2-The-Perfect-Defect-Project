@@ -722,3 +722,17 @@ def test_closed_original_resource_does_not_block_replacement_game_pair(native_ap
     assert closed["admission_context"] == original
     assert app._workbench_runtime_identity(replacement)
     assert not app._workbench_runtime_identity("another-unselected-game")
+
+
+
+def test_native_prepare_capacity_rejects_before_host_offer_or_resource_mutation(
+    native_app, monkeypatch,
+):
+    app, _profile, _fixture, log = native_app
+    before = app.native_episode_status()
+    monkeypatch.setenv("SPIREAGENT_MIN_FREE_BYTES", str(2**60))
+    with pytest.raises(BoundaryError, match="space_insufficient"):
+        app.prepare_native_episode(prepare_body())
+    assert app.native_episode_status() == before
+    assert app.local_environment.native_worker is None
+    assert not log.exists()

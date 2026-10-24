@@ -255,6 +255,8 @@ not a fabricated guarantee. A long full product suite may be justified by its
 change; a management edit must explain why it would need that suite. Changes to
 required scope are reviewed code/policy changes, never manual silent skips.
 
+Long local gates use the [workstation capacity SOP](../python/docs/DATA_LIFECYCLE.md#workstation-capacity-before-long-tasks) before spawning and before each stage. The wrapper checks the workspace and actual temporary filesystem, not an old `df` snapshot; direct Python full checks use the same owning storage check. During live evaluation/training the lead must budget overlapping writes or keep the heavy slot serial. A space refusal is a blocked execution, never a green test or evidence of runtime failure. The check is not a filesystem reservation.
+
 ## Hosted CI contract
 
 GitHub-hosted CI is intentionally a **source/test portability gate**, not an
