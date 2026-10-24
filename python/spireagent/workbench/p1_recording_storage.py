@@ -330,8 +330,13 @@ def storage_budget(
     destination: Path | None,
     reserve_bytes: int = 512 * 1024**2,
     destination_store: ManifestArtifactStore | None = None,
+    source_transfer_scratch: bool = False,
 ) -> dict[str, Any]:
-    """Budget the actual lineage closure, one copy temporary and compressed readback."""
+    """Budget closure transfer separately from optional local-cache growth.
+
+    Sending a locally hot payload to a missing peer still materializes a complete
+    temporary payload; destination reception alone stages only missing payloads.
+    """
     if reserve_bytes < 0:
         raise BoundaryError("p1_storage", "invalid_reserve")
     scratch.mkdir(parents=True, exist_ok=True)
@@ -352,8 +357,8 @@ def storage_budget(
             raise BoundaryError("p1_storage", "destination_store_binding_mismatch")
         missing = {key: _missing_local_payload(payload, destination_store)
                    for key, payload in payloads.items()}
-        scratch_bytes = max((payloads[key].size for key, count in missing.items() if count),
-                            default=0)
+        scratch_bytes = max((payloads[key].size for key, count in missing.items()
+                             if count or source_transfer_scratch), default=0)
         persistent_bytes = sum(missing.values())
     else:
         scratch_bytes = max((payload.size for payload in payloads.values()), default=0)

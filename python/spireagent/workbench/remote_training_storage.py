@@ -54,7 +54,7 @@ def transfer_p1_input(
     budget = storage_budget(
         local, run_id, scratch=scratch, destination=destination,
         destination_store=local if destination is not None else None,
-        reserve_bytes=workspace_reserve_bytes(),
+        reserve_bytes=workspace_reserve_bytes(), source_transfer_scratch=True,
     )
     peer = open_peer(peer_binding)
     copy_artifact(local, peer, run_id, scratch=scratch)
