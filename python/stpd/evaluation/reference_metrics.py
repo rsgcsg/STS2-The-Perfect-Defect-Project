@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from spireagent.json_boundary import BoundaryError
-from spireagent.workbench.agent_task_outcome import _public_terminal
+from spireagent.task_outcome import public_terminal
 
 
 def read_reference_metrics(directory: Path, evaluation: dict[str, Any],
@@ -61,7 +61,7 @@ def read_reference_metrics(directory: Path, evaluation: dict[str, Any],
                "character": player.get("character_definition_id"),
                "ascension": run.get("ascension"), "source_sha256": ref["sha256"]}
         observations.append(row)
-        result = _public_terminal(snapshot) if basis["capture_status"] == "complete" else None
+        result = public_terminal(snapshot) if basis["capture_status"] == "complete" else None
         if result is not None:
             results.append({**row, "result": result,
                             "context": snapshot["interaction"]["content"]["context"]})

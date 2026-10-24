@@ -20,6 +20,7 @@ from spireagent.task_outcome import AgentTaskOutcome, _empty
 from spireagent.task_outcome import OperationEnd as OperationEnd
 from spireagent.task_outcome import TaskCompletion as TaskCompletion
 from spireagent.task_outcome import TerminalObservation as TerminalObservation
+from spireagent.task_outcome import public_terminal as _public_terminal
 from stpd.p1.spec import MSTD_PACKAGE_SCHEMAS
 
 MAX_EVENTS_BYTES = 64 * 1024 * 1024
@@ -117,28 +118,6 @@ def _public_task(manifest: dict[str, Any]) -> dict[str, Any] | None:
         )
     except BoundaryError:
         return None
-
-
-def _public_terminal(snapshot: Any) -> str | None:
-    if (
-        not isinstance(snapshot, dict)
-        or snapshot.get("schema") != "sts2.player-environment/snapshot-1"
-    ):
-        return None
-    interaction = snapshot.get("interaction", {})
-    if (
-        interaction.get("kind") != "game_over"
-        or interaction.get("content_schema") != "sts2.player-environment/surface/game_over-1"
-    ):
-        return None
-    content = interaction.get("content", {})
-    context, surface = content.get("context", {}), content.get("surface", {})
-    result = context.get("result")
-    return (
-        result
-        if (context.get("kind") == surface.get("kind") == "game_over" and result in {"win", "loss"})
-        else None
-    )
 
 
 def _m0_frame(
