@@ -13,6 +13,8 @@ from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
 from typing import Any
 
+from stpd.p1.spec import MSTD_PACKAGE_SCHEMAS
+
 from spireagent.encoding import canonical_json, semantic_hash
 from spireagent.json_boundary import BoundaryError
 from spireagent.task_outcome import SCHEMA as SCHEMA
@@ -21,7 +23,6 @@ from spireagent.task_outcome import OperationEnd as OperationEnd
 from spireagent.task_outcome import TaskCompletion as TaskCompletion
 from spireagent.task_outcome import TerminalObservation as TerminalObservation
 from spireagent.task_outcome import public_terminal as _public_terminal
-from stpd.p1.spec import MSTD_PACKAGE_SCHEMAS
 
 MAX_EVENTS_BYTES = 64 * 1024 * 1024
 MAX_BODY_BYTES = 16 * 1024 * 1024
@@ -734,7 +735,12 @@ def _global_terminal(outcome, value, events):
         ):
             continue
         ref = sources[event["payload"]["source_ordinal"]]
-        record = json.loads(_verified_bytes(value, ref["path"], MAX_BODY_BYTES))
+        from sts2_platform_evidence import read_global_artifact
+
+        _verified_bytes(value, ref["path"], MAX_BODY_BYTES)
+        record = json.loads(read_global_artifact(
+            Path(value.directory), ref, maximum=MAX_BODY_BYTES,
+        ))
         basis = json.loads(record["serialized_observation"])
         result = _public_terminal(basis["snapshot"])
         if basis["capture_status"] == "complete" and result is not None:

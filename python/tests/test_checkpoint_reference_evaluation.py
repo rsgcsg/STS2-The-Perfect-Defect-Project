@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import gzip
 import hashlib
 import json
 
@@ -76,7 +77,8 @@ def test_reserved_paired_sets_are_frozen_and_cannot_be_used_for_training(tmp_pat
     assert len(all_seeds) == 20
 
 
-def test_terminal_and_metrics_use_original_public_context_not_missing_victory(tmp_path):
+@pytest.mark.parametrize("compressed", [False, True])
+def test_terminal_and_metrics_use_original_public_context_not_missing_victory(tmp_path, compressed):
     from types import SimpleNamespace
 
     from spireagent.workbench.agent_task_outcome import _global_terminal
@@ -94,8 +96,12 @@ def test_terminal_and_metrics_use_original_public_context_not_missing_victory(tm
     raw = json_bytes({'capture': {'session': {'runtime_instance_id': 'runtime'}},
                       'serialized_observation': json.dumps(
                           {'capture_status': 'complete', 'snapshot': snapshot})})
-    (tmp_path / 'source.bin').write_bytes(raw)
-    ref = {'path': 'source.bin', 'sha256': hashlib.sha256(raw).hexdigest(), 'bytes': len(raw)}
+    sha = hashlib.sha256(raw).hexdigest()
+    name = f'global-{sha}.bin' + ('.gz' if compressed else '')
+    stored = gzip.compress(raw) if compressed else raw
+    (tmp_path / name).write_bytes(stored)
+    ref = {'path': name, 'sha256': sha, 'bytes': len(raw)}
+    physical = {'path': name, 'sha256': hashlib.sha256(stored).hexdigest(), 'bytes': len(stored)}
     events = [{'sequence': 1, 'kind': 'global_source',
                'payload': {'ordinal': 1, 'artifact': ref}},
               {'sequence': 2, 'kind': 'global_observation',
@@ -104,7 +110,7 @@ def test_terminal_and_metrics_use_original_public_context_not_missing_victory(tm
     (tmp_path / 'events.jsonl').write_bytes(events_raw)
     events_ref = {'path': 'events.jsonl', 'sha256': hashlib.sha256(events_raw).hexdigest(),
                   'bytes': len(events_raw)}
-    value = SimpleNamespace(directory=tmp_path, evidence_manifest={'files': [ref, events_ref]})
+    value = SimpleNamespace(directory=tmp_path, evidence_manifest={'files': [physical, events_ref]})
     outcome = {'terminal_observation': {}}
     _global_terminal(outcome, value, events)
     assert outcome['terminal_observation']['result'] == 'loss'
@@ -115,7 +121,7 @@ def test_terminal_and_metrics_use_original_public_context_not_missing_victory(tm
     assert metrics['terminal_result'] == 'loss' and metrics['max_observed_floor'] == 12
     # Original source changed after the accepted events: never trust HP or a stale PASS.
     snapshot['interaction']['content']['context']['result'] = 'win'
-    (tmp_path / 'source.bin').write_bytes(json_bytes(snapshot))
+    (tmp_path / name).write_bytes(json_bytes(snapshot))
     with pytest.raises(BoundaryError, match='original_changed'):
         read_reference_metrics(tmp_path, evaluation,
                                {'binding': {'runtime_instance_id': 'runtime'}})

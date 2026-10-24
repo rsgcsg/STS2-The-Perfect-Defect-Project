@@ -11,6 +11,7 @@ import { validateAgentManifest, validateAgentConsumption, validateAgentDirective
 import { globalDigest, assertGlobalIdentity, assertGlobalProgramSupport, type GlobalIdentity } from "./global-transport.js";
 import { AgentConsumptionLedger } from "./agent-session-consumption.js";
 import type { GlobalArtifact } from "./evidence.js";
+import { readGlobalArtifact } from "./global-artifact-storage.js";
 
 function require(condition: unknown, reason: string): asserts condition { if (!condition) throw new Error(reason); }
 function exact(value: any, keys: string[]): Record<string, any> {
@@ -47,10 +48,21 @@ export async function replayGlobalAgentRun(directory: string) {
   const referenced = new Set<string>();
   const artifact = async (ref: GlobalArtifact, role: GlobalArtifact["role"]): Promise<Buffer> => {
     exact(ref, ["role", "path", "bytes", "sha256"]);
-    require(ref.role === role && /^[a-f0-9]{64}$/u.test(ref.sha256) && ref.path === `global-${ref.sha256}.bin`
-      && Number.isSafeInteger(ref.bytes) && ref.bytes > 0 && ref.bytes <= 96 * 1024 * 1024, "global_artifact_reference");
-    const path = join(directory, ref.path), stat = await lstat(path); require(stat.isFile() && !stat.isSymbolicLink() && stat.size === ref.bytes, "global_artifact_file");
-    const bytes = await readFile(path); require(sha(bytes) === ref.sha256, "global_artifact_bytes"); referenced.add(ref.path); return bytes;
+    require(ref.role === role, "global_artifact_reference");
+    const bytes = await readGlobalArtifact(directory, ref); referenced.add(ref.path); return bytes;
+  };
+  // Capture chunks reference the same original source. Decode/verify that source
+  // once per capture instead of reparsing the whole public state for every chunk.
+  // Bound the cache independently of run length; all wire hashes still verify.
+  const sourceRecords = new Map<string, FullPublicBasis>();
+  const sourceRecord = async (ref: GlobalArtifact): Promise<FullPublicBasis> => {
+    exact(ref, ["role", "path", "bytes", "sha256"]);
+    require(ref.role === "source", "global_artifact_reference");
+    const key = canonicalJson(ref), found = sourceRecords.get(key);
+    if (found) return found;
+    const full = await readPublicBasisRecord(new TextDecoder("utf-8", { fatal: true }).decode(await artifact(ref, "source")));
+    if (sourceRecords.size >= 2) sourceRecords.delete(sourceRecords.keys().next().value!);
+    sourceRecords.set(key, full); return full;
   };
   let state: P1SessionState | undefined, identity: GlobalIdentity | undefined, epoch = -1, session: string | undefined, lastSource = 0;
   let lastDirective: any = null, active: { acquisition: string; choice: string; lowering: Lowering; occurrence: number; epoch: number; deliveries: any[]; dispatches: any[]; postSources: Map<string, number[]>; errors: Set<string> } | null = null;
@@ -220,7 +232,7 @@ export async function replayGlobalAgentRun(directory: string) {
       active.dispatches.push(p); dispatches.set(p.request_id, p);
     } else if (event.kind === "global_transport_response") {
       const stored = await artifact(p.artifact, "response"); require(["capture", "step"].includes(p.operation), "global_transport_operation");
-      const bytes = p.operation === "capture" ? await restoreGlobalCaptureResponse(stored, ref => artifact(ref, "source")) : stored;
+      const bytes = p.operation === "capture" ? await restoreGlobalCaptureResponse(stored, ref => artifact(ref, "source"), sourceRecord) : stored;
       if (p.operation === "step") { require(dispatches.has(p.request_id), "global_response_without_dispatch"); responses.set(p.request_id, [...(responses.get(p.request_id) ?? []), bytes]); }
       else {
         const request = captureRequests.get(p.capture_request_id); require(request && !request.terminal, "global_capture_response_identity");

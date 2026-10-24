@@ -16,7 +16,7 @@ from .agent_session_run_evidence import AgentSessionRunEvidence, _object, _json,
 
 BASE = {"manifest.json", "agent-manifest.json", "adapter-attestation.json", "events.jsonl"}
 EXTRA = {"checksums.sha256", "evidence-manifest.json"}
-ARTIFACT = re.compile(r"global-([a-f0-9]{64})\.bin\Z")
+ARTIFACT = re.compile(r"global-([a-f0-9]{64})\.bin(?:\.gz)?\Z")
 
 
 def _verify_global_budget_facts(events: bytes, requested: Mapping[str, object], version: int) -> None:

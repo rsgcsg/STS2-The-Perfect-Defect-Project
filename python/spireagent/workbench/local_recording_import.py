@@ -447,7 +447,6 @@ class LocalRecordingImporter:
 
     def _native_agent_existing(self, store: ManifestArtifactStore,
                                content_id: str, cohort: str, relation: object) -> Manifest | None:
-        from spireagent.storage.blobs import MAX_BLOB_BYTES
         from stpd.fullrun.native_agent_sampled_source import (
             _bytes,
             _inventory,
@@ -459,6 +458,8 @@ class LocalRecordingImporter:
             MAX_ORIGINAL_FILES,
             RAW_SCHEMA,
         )
+
+        from spireagent.storage.blobs import MAX_BLOB_BYTES
 
         matches = []
         for identity in store.manifest_ids():
@@ -1163,8 +1164,55 @@ class LocalRecordingImporter:
                                       local_readback=local, peer_readback=remote)
                 self._save()
         except Exception as error:
+            # A real failed Stop can supply an immutable diagnostic prefix.
+            # Preserve it through this same operation, retaining failed status;
+            # the diagnostic ID must never become a qualified recording ID.
+            marker = Path(context["directory"]) / "diagnostic-manifest.json"
+            diagnostic_uncertain = False
+            if phase == "validation" and marker.is_file():
+                try:
+                    from .global_evidence_store import (
+                        publish_global_diagnostic,
+                        verify_global_diagnostic,
+                    )
+
+                    def before_diagnostic(manifest: Manifest) -> None:
+                        with self.lock:
+                            self.operation["diagnostic_artifact_id"] = manifest.artifact_id
+                            self._save()
+
+                    phase = "diagnostic_publication"
+                    diagnostic = publish_global_diagnostic(
+                        store, Path(context["directory"]), producer, expected=context["expected"],
+                        scratch=self.config.state_dir, before_publish=before_diagnostic,
+                    )
+                    if intent["peer"] is not None:
+                        phase = "diagnostic_peer_delivery"
+                        peer = open_peer(intent["peer"])
+                        copy_artifact(store, peer, diagnostic.artifact_id,
+                                      reuse_published_parents=True)
+                    else:
+                        peer = store
+                    phase = "diagnostic_readback"
+                    receipt = verify_global_diagnostic(
+                        peer, diagnostic.artifact_id, expected=context["expected"],
+                        scratch=self.config.state_dir,
+                    )
+                    with self.lock:
+                        self.operation["diagnostic_readback"] = receipt
+                        self._save()
+                    phase = "validation"
+                except Exception as diagnostic_error:
+                    diagnostic_uncertain = (phase != "validation" and (
+                        isinstance(diagnostic_error, StoreError)
+                        or not isinstance(diagnostic_error, BoundaryError)))
+                    with self.lock:
+                        self.operation["diagnostic_error"] = getattr(
+                            diagnostic_error, "code", "unsealed_diagnostic_preservation_failed",
+                        )
+                        self._save()
             with self.lock:
-                uncertain = phase != "validation" and (
+                uncertain = diagnostic_uncertain or phase != "validation" and (
                     isinstance(error, StoreError) or not isinstance(error, BoundaryError))
                 status = "publication_unknown" if uncertain else "failed"
                 self.operation.update(status=status,
@@ -1174,7 +1222,7 @@ class LocalRecordingImporter:
 
     def reconcile_global_evidence(self) -> dict[str, Any]:
         """Read the original ID only; never repeat publication or cloud delivery."""
-        from .global_evidence_store import verify_global_artifact
+        from .global_evidence_store import verify_global_artifact, verify_global_diagnostic
         from .p1_recording_storage import open_peer
 
         with self.lock:
@@ -1183,6 +1231,24 @@ class LocalRecordingImporter:
             if self.operation.get("action") != "global-evidence":
                 raise BoundaryError("local_import", "global_evidence_intent_required")
             identity = self.operation.get("artifact_id")
+            diagnostic_id = self.operation.get("diagnostic_artifact_id")
+            if identity is None and diagnostic_id is not None:
+                context = self.operation["_global_context"]
+                try:
+                    store, _ = _selected_store(self.config, require_curation=False)
+                    peer = (open_peer(self.operation["peer"])
+                            if self.operation["peer"] is not None else store)
+                    receipt = verify_global_diagnostic(
+                        peer, diagnostic_id, expected=context["expected"],
+                        scratch=self.config.state_dir,
+                    )
+                    # Recover preservation only, retaining the original typed failure.
+                    self.operation.update(status="failed", diagnostic_readback=receipt)
+                except Exception as error:
+                    self.operation.update(status="publication_unknown",
+                        diagnostic_error=getattr(error, "code", "diagnostic_readback_failed"))
+                self._save()
+                return self.status()
             if identity is None:
                 return self.status()
             context = self.operation["_global_context"]

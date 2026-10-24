@@ -9,6 +9,7 @@ from typing import Any
 
 from spireagent.json_boundary import BoundaryError
 from spireagent.task_outcome import public_terminal
+from sts2_platform_evidence import read_global_artifact
 
 
 def read_reference_metrics(directory: Path, evaluation: dict[str, Any],
@@ -23,6 +24,13 @@ def read_reference_metrics(directory: Path, evaluation: dict[str, Any],
         path = directory / name
         if path.is_symlink():
             raise BoundaryError("reference_metrics", "original_path")
+        if name.endswith(".bin.gz"):
+            try:
+                return read_global_artifact(
+                    directory, {"path": name, "sha256": sha, "bytes": size}, maximum=limit,
+                )
+            except (ValueError, OSError) as error:
+                raise BoundaryError("reference_metrics", "original_changed") from error
         with path.open("rb") as stream:
             raw = stream.read(limit + 1)
         if len(raw) != size or hashlib.sha256(raw).hexdigest() != sha:
