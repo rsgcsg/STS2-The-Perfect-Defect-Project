@@ -500,7 +500,16 @@ class RemoteTrainingService:
             if ((config.device == "cpu") != (gpu == "none")):
                 raise BoundaryError("remote_training", "explicit_target_device_mismatch")
             self._limits(obj, target.timeout_seconds)
+        from .training_scratch import require_training_space
+
+        # Admit named cold reads before the purpose verifier can populate CAS.
         with phase("remote.prepare.snapshot_verify"):
+            require_training_space(
+                owner, store, snapshot, 512 * 1024**2, recipe,
+                scratch=self.config.state_dir / "remote-training-transfer",
+                checkpoint_id=execution_options.get("initial_checkpoint"),
+                initial_checkpoint="initial_checkpoint" in execution_options,
+            )
             require_p1_snapshot(owner, store, snapshot)
         # Vocabulary fitting itself discloses training examples; reserve use first.
         with phase("remote.prepare.record_use"):

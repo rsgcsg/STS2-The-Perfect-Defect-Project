@@ -67,6 +67,7 @@ public sealed partial class RecordingSessionStore : IDisposable
         DirectoryPath = directory;
         Manifest = manifest;
         _humanCaptureProfile = captureProfile;
+        RecordingStorageCapacity.Require(directory);
         Directory.CreateDirectory(directory);
         if (manifest.RecoverySchemaVersion == 1)
             _ownerLease = new FileStream(Path.Combine(directory, "recording-owner.lock"),

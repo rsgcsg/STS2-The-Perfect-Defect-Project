@@ -612,3 +612,33 @@ def test_explicit_native_allowance_is_shared_by_health_and_both_offers(
         assert [item[1] for item in offered] == pytest.approx([0.8, 0.5])
     assert offered[0][0].endswith("/request")
     assert offered[0][1] == pytest.approx(0.8)
+
+
+def test_low_space_keeps_full_denominator_and_offers_no_world(tmp_path, monkeypatch):
+    monkeypatch.setenv("SPIREAGENT_MIN_FREE_BYTES", str(2**60))
+    report, client, _ = execute(tmp_path, count=2)
+    assert report["status"] == "stopped"
+    assert report["stop_reason"] == "workspace_capacity_insufficient"
+    assert report["world_offers"] == report["actor_started"] == 0
+    assert report["summary"]["not_started"] == report["planned"] == 20
+    assert report["summary"]["cleanup_unknown"] == 0
+    assert not {"prepare", "submit", "finish"} & set(client.calls)
+
+
+def test_space_is_rechecked_before_the_second_game(tmp_path, monkeypatch):
+    from collections import namedtuple
+
+    from spireagent.workbench import p1_recording_storage
+
+    disk = namedtuple("Disk", "total used free")
+    free = iter([8 * 1024**3, 3 * 1024**3])
+    monkeypatch.delenv("SPIREAGENT_MIN_FREE_BYTES", raising=False)
+    monkeypatch.setattr(p1_recording_storage.shutil, "disk_usage",
+                        lambda _path: disk(40 * 1024**3, 0, next(free)))
+    report, client, _ = execute(tmp_path, count=2)
+    assert report["status"] == "stopped"
+    assert report["stop_reason"] == "workspace_capacity_insufficient"
+    assert client.calls.count("prepare") == client.calls.count("submit") == 1
+    assert report["episodes"][0]["status"] == "finished"
+    assert report["summary"]["not_started"] == 19
+    assert report["summary"]["cleanup_unknown"] == 0

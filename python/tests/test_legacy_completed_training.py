@@ -55,6 +55,17 @@ class MetadataBlobs(LocalBlobStore):
         return super().get(key)
 
 
+
+def _successor_source_id(fixture):
+    # The archive/admission tests still stub numerical recipe validation, but
+    # capacity planning now needs a real immutable source manifest. This metadata
+    # publication grants no recipe admission and reads no weight payloads.
+    source = Manifest("dataset", PRODUCER, parameters=FrozenObject.of({
+        "scope": "synthetic_successor_metadata_for_archive_boundary",
+    }))
+    return fixture.store.publish(source)
+
+
 def _build_closed_legacy(tmp_path):
     blobs = MetadataBlobs(tmp_path / "store")
     store = ManifestArtifactStore(blobs)
@@ -626,7 +637,7 @@ def test_explicit_successor_archives_before_pending_and_preserves_nested_history
     request = TrainingRequest(
         "9" * 32,
         RECIPE,
-        "9" * 64,
+        _successor_source_id(f),
         RewardM0Config().to_dict(),
         limits={"wall_seconds": 900, "scratch_bytes": 1024**3},
         after_completed_operation_id=f.journal["operation_id"],
@@ -678,7 +689,7 @@ def test_preflight_refusal_does_not_archive_or_replace_legacy(closed_legacy, mon
     req = TrainingRequest(
         "9" * 32,
         RECIPE,
-        "9" * 64,
+        _successor_source_id(f),
         RewardM0Config().to_dict(),
         limits={"wall_seconds": 900, "scratch_bytes": 1024**3},
         after_completed_operation_id=f.journal["operation_id"],
@@ -816,7 +827,7 @@ def test_archive_failure_prevents_pending_replacement_or_child_preparation(
     request = TrainingRequest(
         "9" * 32,
         RECIPE,
-        "9" * 64,
+        _successor_source_id(f),
         RewardM0Config().to_dict(),
         limits={"wall_seconds": 900, "scratch_bytes": 1024**3},
         after_completed_operation_id=f.journal["operation_id"],

@@ -157,3 +157,15 @@ test('overlapping Windows histories retain both runs without double counting', (
   assert.deepEqual(combined.map(entry => entry.test).sort(), ['only-left', 'only-right', 'shared']);
   assert.deepEqual(combined.find(entry => entry.test === 'shared').runs, ['1', '2', '3']);
 });
+
+
+test("Linux scratch placement stays outside checkout and avoids system tmp defaults", () => {
+  const error = "Linux portable scratch must use the runner temp directory outside checkout";
+  for (const name of ["TMPDIR", "TMP", "TEMP"]) {
+    const source = currentSource().replace(
+      `echo "${name}=$RUNNER_TEMP/spireagent-portable" >> "$GITHUB_ENV"`, "echo omitted");
+    assert.ok(ciWorkflowErrors(source).includes(error));
+  }
+  assert.ok(ciWorkflowErrors(currentSource().replace(
+    'mkdir -p "$RUNNER_TEMP/spireagent-portable"', "mkdir -p /tmp/unused")).includes(error));
+});
