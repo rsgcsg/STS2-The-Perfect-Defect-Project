@@ -11,6 +11,23 @@ from ..game_seed import derive_game_seed, require_canonical_game_seed
 MANIFEST_ROOT = Path(__file__).resolve().parent / "suites"
 FOUR_AGENT_SUITE_ID = "ref-first-four-10-20261023"
 CHARACTERS = ("Defect", "Ironclad", "Silent", "Regent", "Necrobinder")
+CHECKPOINT_SUITE_ID = "ref-checkpoints-20261024"
+
+
+def checkpoint_reference_manifest(game_version: str, character: str = "Defect",
+                                  ascension: int = 0) -> dict[str, Any]:
+    """One frozen fresh paired seed set; model selection is a separate input."""
+    four_agent_reference_manifest(game_version)
+    if (character not in CHARACTERS or type(ascension) is not int
+            or ascension not in {0, 10} or ascension == 10 and character != "Defect"):
+        raise ValueError("unsupported checkpoint evaluation scenario")
+    count = 10 if character == "Defect" and ascension == 0 else 2
+    name = f"{CHECKPOINT_SUITE_ID}-{character}-a{ascension}"
+    return {"schema": "stpd/evaluation-suite-v1", "suite_id": name, "version": "1.0.0",
+            "game_version": game_version, "character": character, "ascension": ascension,
+            "host": "Reference", "purpose": "checkpoint_reference", "episode_count": count,
+            "seed_derivation": "derive_game_seed(suite_id, ordinal_1_based)",
+            "seeds": [derive_game_seed(name, i) for i in range(1, count + 1)]}
 
 
 def four_agent_reference_manifest(game_version: str) -> dict[str, Any]:
@@ -107,7 +124,11 @@ def seed_membership(seed: str) -> tuple[str, ...]:
     canonical = require_canonical_game_seed(seed)
     legacy = tuple(name for name in suite_names() if canonical in load_suite(name)["seeds"])
     reserved = tuple(derive_game_seed(FOUR_AGENT_SUITE_ID, i) for i in range(1, 11))
-    return legacy + ((FOUR_AGENT_SUITE_ID,) if canonical in reserved else ())
+    checkpoint = tuple(m["suite_id"] for m in (
+        *(checkpoint_reference_manifest("v0.111.0", character) for character in CHARACTERS),
+        checkpoint_reference_manifest("v0.111.0", "Defect", 10),
+    ) if canonical in m["seeds"])
+    return legacy + ((FOUR_AGENT_SUITE_ID,) if canonical in reserved else ()) + checkpoint
 
 
 def require_non_evaluation_seed(seed: str) -> str:

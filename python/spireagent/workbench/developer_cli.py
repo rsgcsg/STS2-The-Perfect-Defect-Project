@@ -152,6 +152,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--credential-file", type=Path)
     parser.add_argument("--input", type=Path, help="exact P1 data preparation or freeze JSON")
     parser.add_argument("--checkpoint-selection", choices=("best", "current"), default="best")
+    parser.add_argument("--character",
+                        choices=("Defect", "Ironclad", "Silent", "Regent", "Necrobinder"))
+    parser.add_argument("--ascension", type=int)
     parser.add_argument("--request-id", help="exact original pending native Runtime request ID")
     parser.add_argument("--intent-id", help="original native preparation intent ID")
     parser.add_argument(
@@ -319,6 +322,8 @@ def main(argv: list[str] | None = None) -> int:
                     seed=args.native_seed,
                     display_mode=args.display_mode,
                     speed=args.native_speed,
+                    character=args.character,
+                    ascension=args.ascension,
                     selection=args.selection,
                     operation=args.run_operation,
                     run_profile=args.run_profile,

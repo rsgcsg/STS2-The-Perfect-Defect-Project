@@ -1,5 +1,7 @@
 """Platform Evidence component public API."""
 
+from .global_artifact_storage import read_global_artifact
+
 from .core import (
     VerificationFinding,
     VerificationResult,
@@ -65,6 +67,7 @@ from .transfer import (
 )
 
 __all__ = [
+    "read_global_artifact",
     "SUPPORTED_POLICY_DECISION_PROTOCOLS",
     "SUPPORTED_AGENT_EXECUTION_POLICY_SCHEMAS",
     "SourceSessionBundleV4",

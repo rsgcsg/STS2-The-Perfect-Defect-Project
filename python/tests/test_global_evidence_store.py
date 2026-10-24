@@ -25,6 +25,41 @@ from spireagent.storage.store import ManifestArtifactStore, copy_artifact
 from spireagent.workbench import global_evidence_store as global_store
 
 
+def test_failed_stop_diagnostic_restores_without_becoming_a_typed_recording(tmp_path, monkeypatch):
+    store, producer, directory, expected, *_ = _setup(tmp_path, monkeypatch)
+    run_path = directory / "manifest.json"
+    run = json.loads(run_path.read_bytes())
+    run["agent_manifest_sha256"] = "a" * 64
+    run_path.write_bytes(json_bytes(run))
+    expected.update(run_id=run["run_id"], agent_manifest_sha256=run["agent_manifest_sha256"])
+    files = []
+    for path in sorted(directory.iterdir()):
+        files.append({"path": path.name, "bytes": path.stat().st_size,
+                      "sha256": hashlib.sha256(path.read_bytes()).hexdigest()})
+    marker = {"schema": "sts2.policy-runtime/unsealed-diagnostic-1", "run_id": run["run_id"],
+              "complete": False, "status": "unsealed", "ended_at": "2026-10-24T08:00:00Z",
+              "reason": "capture staging incomplete", "files": files,
+              "manifest_sha256": semantic_hash({"run_id": run["run_id"], "files": files})}
+    (directory / "diagnostic-manifest.json").write_bytes(json_bytes(marker))
+    offered = []
+    manifest = global_store.publish_global_diagnostic(
+        store, directory, producer, expected=expected, scratch=tmp_path / "scratch",
+        before_publish=lambda item: offered.append(item.artifact_id),
+    )
+    peer = ManifestArtifactStore(LocalBlobStore(tmp_path / "peer"))
+    copy_artifact(store, peer, manifest.artifact_id)
+    shutil.rmtree(directory)
+    result = global_store.verify_global_diagnostic(
+        peer, manifest.artifact_id, expected=expected, scratch=tmp_path / "scratch",
+    )
+    assert result["full_readback"] is True and result["typed_recording_qualified"] is False
+    assert offered == [manifest.artifact_id] and manifest.kind == "analysis"
+    with pytest.raises(BoundaryError, match="global_original_required"):
+        global_store.verify_global_artifact(
+            peer, manifest.artifact_id, expected=expected, scratch=tmp_path / "scratch",
+        )
+
+
 def _setup(tmp_path, monkeypatch):
     directory = tmp_path / "closed"
     directory.mkdir()

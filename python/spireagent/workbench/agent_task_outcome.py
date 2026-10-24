@@ -20,9 +20,12 @@ from spireagent.task_outcome import AgentTaskOutcome, _empty
 from spireagent.task_outcome import OperationEnd as OperationEnd
 from spireagent.task_outcome import TaskCompletion as TaskCompletion
 from spireagent.task_outcome import TerminalObservation as TerminalObservation
+from spireagent.task_outcome import public_terminal as _public_terminal
 from stpd.p1.spec import MSTD_PACKAGE_SCHEMAS
 
-MAX_EVENTS_BYTES = 64 * 1024 * 1024
+# Match the largest journal accepted by the trusted GLOBAL producer/replayer.
+# Each profile's own SDK verification still precedes this projection reader.
+MAX_EVENTS_BYTES = 128 * 1024 * 1024
 MAX_BODY_BYTES = 16 * 1024 * 1024
 MAX_METADATA_BYTES = 1024 * 1024
 
@@ -117,28 +120,6 @@ def _public_task(manifest: dict[str, Any]) -> dict[str, Any] | None:
         )
     except BoundaryError:
         return None
-
-
-def _public_terminal(snapshot: Any) -> str | None:
-    if (
-        not isinstance(snapshot, dict)
-        or snapshot.get("schema") != "sts2.player-environment/snapshot-1"
-    ):
-        return None
-    interaction = snapshot.get("interaction", {})
-    if (
-        interaction.get("kind") != "game_over"
-        or interaction.get("content_schema") != "sts2.player-environment/surface/game_over-1"
-    ):
-        return None
-    content = interaction.get("content", {})
-    context, surface = content.get("context", {}), content.get("surface", {})
-    result = context.get("result")
-    return (
-        result
-        if (context.get("kind") == surface.get("kind") == "game_over" and result in {"win", "loss"})
-        else None
-    )
 
 
 def _m0_frame(
@@ -755,11 +736,14 @@ def _global_terminal(outcome, value, events):
         ):
             continue
         ref = sources[event["payload"]["source_ordinal"]]
-        record = json.loads(_verified_bytes(value, ref["path"], MAX_BODY_BYTES))
+        from sts2_platform_evidence import read_global_artifact
+
+        _verified_bytes(value, ref["path"], MAX_BODY_BYTES)
+        record = json.loads(read_global_artifact(
+            Path(value.directory), ref, maximum=MAX_BODY_BYTES,
+        ))
         basis = json.loads(record["serialized_observation"])
-        surface = basis["snapshot"]["interaction"]["content"]["surface"]
-        victory = surface.get("victory")
-        result = "win" if victory is True else "loss" if victory is False else None
+        result = _public_terminal(basis["snapshot"])
         if basis["capture_status"] == "complete" and result is not None:
             terminals.append(
                 {

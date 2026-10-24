@@ -120,10 +120,11 @@ internal sealed class RewardClaimSurfaceReader : ILiveSurfaceReader
                           && NativeSemanticActionCatalog.ContainsExactlyOnce(
                               nativeDecision.Actions,
                               "proceed");
-        bool hasCurrentCommand = rewards.Any(reward => reward.Enabled)
+        bool terminalProceedPending = NativeRewardDecisionProvider.IsTerminalProceedPending(screen);
+        bool hasCurrentCommand = !terminalProceedPending && (rewards.Any(reward => reward.Enabled)
                                  || discardablePotions.Length > 0
                                     && exactPlayer.CanUseOrRemovePotions
-                                 || canProceed;
+                                 || canProceed);
         string readiness = !catalogBoundExactly
             ? "settling"
             : hasCurrentCommand ? "ready" : "settling";
@@ -148,6 +149,7 @@ internal sealed class RewardClaimSurfaceReader : ILiveSurfaceReader
         string signature = StableIdentityHash.Object(new
         {
             game.Version,
+            terminalProceedPending,
             surface
         });
         return new LiveObservation(

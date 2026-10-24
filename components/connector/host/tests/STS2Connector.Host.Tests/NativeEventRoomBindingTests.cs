@@ -14,6 +14,14 @@ public sealed class NativeEventRoomBindingTests
         (T)RuntimeHelpers.GetUninitializedObject(typeof(T));
 
     [Fact]
+    public void ClosedMapTravelFlagDoesNotObscureTheExactlyMountedEvent()
+    {
+        Assert.False(NativeEventRoomBinding.IsBlockingMapTravel(false, true));
+        Assert.True(NativeEventRoomBinding.IsBlockingMapTravel(true, true));
+        Assert.False(NativeEventRoomBinding.IsBlockingMapTravel(true, false));
+    }
+
+    [Fact]
     public void NativeOwnerFieldsResolveThePinnedActualObjects()
     {
         var synchronizer = Uninitialized<EventSynchronizer>();

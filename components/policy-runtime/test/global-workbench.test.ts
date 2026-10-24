@@ -1,5 +1,5 @@
 import { it, expect } from "vitest";
-import { cp, mkdir, writeFile } from "node:fs/promises";
+import { cp, mkdir, readFile, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { execFile, execFileSync, spawnSync } from "node:child_process";
@@ -26,7 +26,13 @@ it("Workbench registers only the code-owned GLOBAL program and exposes zero lear
 it("the exact registered Python program consumes, ACK-commits, selects and closes through original NDJSON",async()=>{
  const env={...process.env,PYTHONPATH:fileURLToPath(new URL("../../../python/",import.meta.url))};
  const declared=JSON.parse(execFileSync(python(),["-c","import json;from spireagent.workbench.global_program_agent import descriptor;print(json.dumps(descriptor()))"],{env,encoding:"utf8"}));
- const f=await globalRuntimeFixture({program:{command:python(),args:["-m","spireagent.workbench.global_program_agent","--manifest","{manifest}"],adapter:declared.adapter,artifact:Buffer.from(JSON.stringify(declared)),env}});
+ const source=new GlobalHttpFixture();
+ // Use the current Reference producer shape. Preserve the old Managed fixture as historical.
+ const terminal=JSON.parse(await readFile(new URL("../../connector/sdk/typescript/test/fixtures/p1-global/reference-game_over.json",import.meta.url),"utf8"));
+ terminal.snapshot.session=structuredClone(source.basis.snapshot.session);
+ for(const read of terminal.reads)read.response.session=structuredClone(source.basis.snapshot.session);
+ source.nextBases=[terminal];
+ const f=await globalRuntimeFixture({source,program:{command:python(),args:["-m","spireagent.workbench.global_program_agent","--manifest","{manifest}"],adapter:declared.adapter,artifact:Buffer.from(JSON.stringify(declared)),env}});
  try{expect((await f.runtime.tick()).type).toBe("delivered");expect((await f.runtime.tick()).type).toBe("closed");
   expect((await f.events()).filter(e=>e.kind==="global_consumed")).toHaveLength(2);expect(f.source.steps).toBe(1);
   const code="import json,sys;from pathlib import Path;from sts2_platform_evidence import verify_agent_session_run_evidence;from spireagent.workbench.agent_task_outcome import project;r=verify_agent_session_run_evidence(sys.argv[1],{'global_runtime_directory':sys.argv[2]});assert r.passed;r=project(r,native=True,native_package=Path(sys.argv[3]).read_bytes());print(json.dumps({'models':r['agent_composition']['models'],'task':r['task_completion']['status'],'terminal':r['terminal_observation']['status']}))";

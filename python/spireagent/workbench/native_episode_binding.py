@@ -22,6 +22,7 @@ RESERVED_PHASES = frozenset(
 MODES = frozenset({"normal", "fast", "instant"})
 DEFAULT_NATIVE_SPEED = "instant"
 PRESENTATIONS = frozenset({"headless", "native-ui"})
+CHARACTERS = frozenset({"Defect", "Ironclad", "Silent", "Regent", "Necrobinder"})
 TUPLE_FIELDS = {
     "game_version",
     "game_commit",
@@ -55,6 +56,8 @@ def preparation_body(value: object) -> dict[str, Any]:
         if owned
         else {"ownership", "intent_id"}
     )
+    if owned and ("character" in value or "ascension" in value):
+        fields |= {"character", "ascension"}
     body = object_fields(value, fields, "native_episode")
     if body["ownership"] not in {"owned", "attached"}:
         raise BoundaryError("native_episode", "invalid_ownership")
@@ -68,7 +71,17 @@ def preparation_body(value: object) -> dict[str, Any]:
         or not 1 <= len(body["seed"]) <= 64
     ):
         raise BoundaryError("native_episode", "unsupported_run_configuration")
+    if owned:
+        scenario(body)
     return detached(body)
+
+
+def scenario(value: dict[str, Any]) -> dict[str, Any]:
+    character, ascension = value.get("character", "Defect"), value.get("ascension", 0)
+    if (not isinstance(character, str) or character not in CHARACTERS
+            or type(ascension) is not int or not 0 <= ascension <= 10):
+        raise BoundaryError("native_episode", "unsupported_character_or_ascension")
+    return {"character": character, "ascension": ascension}
 
 
 def installed_tuple(
@@ -130,6 +143,8 @@ def checked_context(value: object) -> dict[str, Any]:
     }
     if owned:
         fields |= {"host_package_pin", "profile", "presentation", "speed", "handoff"}
+        if "scenario" in binding:
+            fields.add("scenario")
     body = object_fields(binding, fields, "native_episode.binding")
     if body["schema"] != BINDING_SCHEMA or body["ownership"] not in {"owned", "attached"}:
         raise BoundaryError("native_episode", "unsupported_binding")
@@ -138,8 +153,13 @@ def checked_context(value: object) -> dict[str, Any]:
     for name in ("configuration_id", "endpoint_binding_sha256"):
         digest(body[name], "native_episode." + name)
     identifier(body["runtime_instance_id"])
-    if body["initialization"] != ("fresh_seeded_defect_a0" if owned else "cold_current_segment"):
+    initialization = ("fresh_seeded_reference_scenario" if "scenario" in body
+                      else "fresh_seeded_defect_a0") if owned else "cold_current_segment"
+    if body["initialization"] != initialization:
         raise BoundaryError("native_episode", "unsupported_initialization")
+    if owned and "scenario" in body:
+        object_fields(body["scenario"], {"character", "ascension"}, "native_episode.scenario")
+        scenario(body["scenario"])
     tuple_fields = TUPLE_FIELDS | ({"game_assembly_sha256"} if owned else set())
     tuple_value = object_fields(
         body["installed_tuple"], tuple_fields, "native_episode.installed_tuple"

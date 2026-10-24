@@ -7,6 +7,7 @@ import { AGENT_RUN_SCHEMA, EVIDENCE_MANIFEST_SCHEMA } from "./contracts.js";
 import { validateAgentManifest, type AgentAdapterIdentity, type AgentManifest, type AgentInputSpec } from "./agent-session-contracts.js";
 import { validateAgentStateMetadata, type AgentStateMetadata } from "./agent-session-state.js";
 import { agentJsonByteLength, encodeBoundedAgentJson } from "./agent-session-json.js";
+import { encodeGlobalArtifact } from "./global-artifact-storage.js";
 
 export interface EvidenceOptions {
   root: string;
@@ -329,13 +330,18 @@ export class AgentRunEvidence {
     const bytes = Buffer.from(data); this.pendingSampleBytes += bytes.length;
     try { return await this.serialize(async () => {
       if (this.sealed || this.sampleStorageFailed) throw new Error("global_evidence_sealed_or_failed");
-      const sha256 = sha256Bytes(bytes), path = `global-${sha256}.bin`;
+      const sha256 = sha256Bytes(bytes), encoded = await encodeGlobalArtifact(bytes);
+      const path = `global-${sha256}${encoded.suffix}`;
+      // Reject a predictable capacity boundary before opening a file; it is not
+      // a partial write. Temporary capture staging remains independently bounded.
+      if (!this.sampleFiles.has(path) && (this.sampleFiles.size >= 65536
+        || this.sampleBytes + this.globalStagedBytes + encoded.stored.length > 512 * 1024 * 1024))
+        throw new Error("global_storage_capacity");
       try {
         if (!this.sampleFiles.has(path)) {
-          if (this.sampleFiles.size >= 65536 || this.sampleBytes + this.globalStagedBytes + bytes.length > 512 * 1024 * 1024) throw new Error("global_storage_capacity");
           const handle = await open(join(this.directory, path), "wx", 0o600);
-          try { await handle.writeFile(bytes); await handle.sync(); } finally { await handle.close(); }
-          this.sampleFiles.add(path); this.sampleBytes += bytes.length;
+          try { await handle.writeFile(encoded.stored); await handle.sync(); } finally { await handle.close(); }
+          this.sampleFiles.add(path); this.sampleBytes += encoded.stored.length;
         }
         return { role, path, bytes: bytes.length, sha256 };
       } catch (error) { this.sampleStorageFailed = true; throw error; }
@@ -379,6 +385,26 @@ export class AgentRunEvidence {
       this.sealed = true;
       return evidenceManifest;
     });
+  }
+
+  /** Only the real Stop path closes a diagnostic prefix. A failed speculative
+   * finalize call may still be followed by normal completion of in-flight IO. */
+  async finalizeForStop(input: Parameters<AgentRunEvidence["finalize"]>[0]): Promise<ImmutableEvidenceManifest> {
+    try { return await this.finalize(input); }
+    catch (error) {
+      await this.serialize(async () => {
+        const names = (await readdir(this.directory)).filter(n => n !== "diagnostic-manifest.json");
+        const files = await fileEntries(names, this.directory);
+        const diagnostic = { schema: "sts2.policy-runtime/unsealed-diagnostic-1", run_id: this.runId,
+          ended_at: input.now ?? new Date().toISOString(), status: "unsealed", complete: false,
+          reason: error instanceof Error ? error.message : String(error), files,
+          manifest_sha256: sha256Bytes(Buffer.from(canonicalJson({ run_id: this.runId, files }))) };
+        const handle = await open(join(this.directory, "diagnostic-manifest.json"), "wx", 0o600);
+        try { await handle.writeFile(`${canonicalJson(diagnostic)}\n`); await handle.sync(); }
+        finally { await handle.close(); }
+      });
+      throw error;
+    }
   }
 
   private serialize<T>(operation: () => Promise<T>): Promise<T> {

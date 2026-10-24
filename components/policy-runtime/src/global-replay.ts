@@ -2,8 +2,10 @@ import { parseAutonomyBudgetStatus } from "./contracts.js";
 import { GlobalNoProgressWindow } from "./global-no-progress.js";
 import { restoreGlobalCaptureResponse } from "./global-capture-storage.js";
 import { createHash } from "node:crypto";
+import { createRequire } from "node:module";
 import { readFile, readdir, lstat } from "node:fs/promises";
-import { join } from "node:path";
+import { join, dirname, relative } from "node:path";
+import { fileURLToPath } from "node:url";
 import { readPublicBasisRecord, decodePublicSourceReceipt, verifyPublicBasis, decodePublicBasisHandle, decodePublicBasisChunk, assemblePublicBasis, type FullPublicBasis } from "@rsgcsg/sts2-connector-client";
 import { createSession, reduce, modelView, applyCommitment, resolveFollowBasis, commitmentView, P1G_RESULT_SCHEMA, canonicalJson, type P1SessionState, type Lowering } from "@rsgcsg/sts2-connector-client/p1-global";
 import { p1CoreIdentity } from "./p1-global/core-identity.js";
@@ -11,6 +13,7 @@ import { validateAgentManifest, validateAgentConsumption, validateAgentDirective
 import { globalDigest, assertGlobalIdentity, assertGlobalProgramSupport, type GlobalIdentity } from "./global-transport.js";
 import { AgentConsumptionLedger } from "./agent-session-consumption.js";
 import type { GlobalArtifact } from "./evidence.js";
+import { readGlobalArtifact } from "./global-artifact-storage.js";
 
 function require(condition: unknown, reason: string): asserts condition { if (!condition) throw new Error(reason); }
 function exact(value: any, keys: string[]): Record<string, any> {
@@ -24,6 +27,47 @@ export async function globalRuntimeCodeDigest(directory: string): Promise<string
   const names = (await readdir(directory)).filter(name => name.endsWith(".js")).sort(); require(names.length, "runtime_code_absent");
   for (const name of names) digest.update(name).update("\0").update(await readFile(join(directory, name))).update("\0");
   return digest.digest("hex");
+}
+/** Fresh identity for a memoized offline proof, including the SDK/core actually
+ * resolved by this module and its validation dependency. Declared core metadata
+ * alone cannot attest that the installed semantic implementation is unchanged. */
+export async function globalReplaySemanticIdentity() {
+  const runtime = dirname(fileURLToPath(import.meta.url));
+  const sdkEntry = fileURLToPath(import.meta.resolve("@rsgcsg/sts2-connector-client/p1-global"));
+  let sdk = dirname(sdkEntry);
+  while (true) {
+    try {
+      const info = JSON.parse(await readFile(join(sdk, "package.json"), "utf8"));
+      if (info.name === "@rsgcsg/sts2-connector-client") break;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+    const parent = dirname(sdk); require(parent !== sdk, "global_semantic_sdk_root"); sdk = parent;
+  }
+  const dependencyRequire = createRequire(sdkEntry);
+  const zod = dirname(dependencyRequire.resolve("zod/package.json"));
+  const digest = createHash("sha256");
+  digest.update(JSON.stringify({ node: process.versions.node, v8: process.versions.v8,
+    icu: process.versions.icu, locale: new Intl.Collator().resolvedOptions().locale,
+    platform: process.platform, arch: process.arch }));
+  const tree = async (root: string, label: string, directory = root): Promise<void> => {
+    for (const entry of (await readdir(directory, { withFileTypes: true })).sort((a, b) => a.name.localeCompare(b.name))) {
+      const path = join(directory, entry.name);
+      require(!entry.isSymbolicLink(), "global_semantic_code_symlink");
+      if (entry.isDirectory()) await tree(root, label, path);
+      else if (/\.(?:js|mjs|cjs|json|node)$/u.test(entry.name))
+        digest.update(label).update("\0").update(relative(root, path)).update("\0").update(await readFile(path)).update("\0");
+    }
+  };
+  await tree(runtime, "runtime");
+  await tree(join(sdk, "dist"), "connector-sdk");
+  digest.update(await readFile(join(sdk, "package.json")));
+  // Include the actual resolved entry even if a future explicit export moves.
+  digest.update(sdkEntry).update(await readFile(sdkEntry));
+  await tree(zod, "zod");
+  return { schema: "sts2.policy-runtime/global-replay-code-1",
+    runtime_code_sha256: await globalRuntimeCodeDigest(runtime),
+    semantic_dependencies_sha256: digest.digest("hex"), core: p1CoreIdentity() };
 }
 /** Original source accounting and actual Agent bytes are replayed independently of saved projections.
  * No network, native execution, inference, native qualification or research admission. */
@@ -47,15 +91,29 @@ export async function replayGlobalAgentRun(directory: string) {
   const referenced = new Set<string>();
   const artifact = async (ref: GlobalArtifact, role: GlobalArtifact["role"]): Promise<Buffer> => {
     exact(ref, ["role", "path", "bytes", "sha256"]);
-    require(ref.role === role && /^[a-f0-9]{64}$/u.test(ref.sha256) && ref.path === `global-${ref.sha256}.bin`
-      && Number.isSafeInteger(ref.bytes) && ref.bytes > 0 && ref.bytes <= 96 * 1024 * 1024, "global_artifact_reference");
-    const path = join(directory, ref.path), stat = await lstat(path); require(stat.isFile() && !stat.isSymbolicLink() && stat.size === ref.bytes, "global_artifact_file");
-    const bytes = await readFile(path); require(sha(bytes) === ref.sha256, "global_artifact_bytes"); referenced.add(ref.path); return bytes;
+    require(ref.role === role, "global_artifact_reference");
+    const bytes = await readGlobalArtifact(directory, ref); referenced.add(ref.path); return bytes;
+  };
+  // Capture chunks reference the same original source. Decode/verify that source
+  // once per capture instead of reparsing the whole public state for every chunk.
+  // Bound the cache independently of run length; all wire hashes still verify.
+  const sourceRecords = new Map<string, FullPublicBasis>();
+  const sourceRecord = async (ref: GlobalArtifact): Promise<FullPublicBasis> => {
+    exact(ref, ["role", "path", "bytes", "sha256"]);
+    require(ref.role === "source", "global_artifact_reference");
+    const key = canonicalJson(ref), found = sourceRecords.get(key);
+    if (found) return found;
+    const full = await readPublicBasisRecord(new TextDecoder("utf-8", { fatal: true }).decode(await artifact(ref, "source")));
+    if (sourceRecords.size >= 2) sourceRecords.delete(sourceRecords.keys().next().value!);
+    sourceRecords.set(key, full); return full;
   };
   let state: P1SessionState | undefined, identity: GlobalIdentity | undefined, epoch = -1, session: string | undefined, lastSource = 0;
   let lastDirective: any = null, active: { acquisition: string; choice: string; lowering: Lowering; occurrence: number; epoch: number; deliveries: any[]; dispatches: any[]; postSources: Map<string, number[]>; errors: Set<string> } | null = null;
   let observations = 0, consumed = 0, results = 0, unknown = false, stopped = false, episode: string | null = null;
-  const sources = new Map<number, { full: FullPublicBasis; reduction?: ReturnType<typeof reduce>; classified: boolean; valid: boolean; before?: P1SessionState }>();
+  // Historical bookkeeping must not retain every decoded public snapshot.
+  // Original files remain immutable and are re-read through the bounded cache.
+  const sources = new Map<number, { artifact: GlobalArtifact; complete: boolean;
+    reduction?: ReturnType<typeof reduce>; classified: boolean; valid: boolean; before?: P1SessionState }>();
   let noProgress: GlobalNoProgressWindow | undefined, noProgressStopped = false;
   let mode: string | null = null, control = "released", permanentlyFenced = false;
   let authorizationMode: "bounded" | "continuous" | undefined;
@@ -119,19 +177,23 @@ export async function replayGlobalAgentRun(directory: string) {
       captureRequests.set(p.request_id, { terminal: false, chunks: [] });
     } else if (event.kind === "global_capture_error") {
       const request = captureRequests.get(p.request_id); require(request && typeof p.reason === "string", "global_capture_error_identity"); request.terminal = true;
+      request.chunks = []; delete request.completed; delete request.handle;
     } else if (event.kind === "global_source") {
       require(identity && state && p.ordinal === ++lastSource, "global_source_order");
-      const full = await readPublicBasisRecord(new TextDecoder("utf-8", { fatal: true }).decode(await artifact(p.artifact, "source")));
+      const full = await sourceRecord(p.artifact);
       const request = captureRequests.get(p.capture_request_id);
       require(request && !request.terminal && request.completed && same(request.completed.capture, full.capture)
         && request.completed.serializedObservation === full.serializedObservation, "global_source_not_original_transport"); request.terminal = true;
       const valid = same(full.capture.session, identity.session) && (identity.game_continuity_id === null || identity.game_continuity_id === full.capture.game_continuity_id)
         && (episode === null || episode === full.capture.game_continuity_id);
-      sources.set(p.ordinal, { full, classified: false, valid });
+      sources.set(p.ordinal, { artifact: p.artifact, complete: full.basis.capture_status === "complete", classified: false, valid });
+      // All handle/chunk/full equality assertions above have completed. Keeping
+      // these payloads after the join caused whole-run heap growth and OOM.
+      request.chunks = []; delete request.completed; delete request.handle;
     } else if (event.kind === "global_episode_bound") {
-      const source = sources.get(p.source_ordinal);
+      const source = sources.get(p.source_ordinal), full = source && await sourceRecord(source.artifact);
       require(episode === null && source?.valid && typeof p.game_continuity_id === "string" && p.game_continuity_id.length
-        && source.full.capture.game_continuity_id === p.game_continuity_id, "global_episode_binding"); episode = p.game_continuity_id;
+        && full!.capture.game_continuity_id === p.game_continuity_id, "global_episode_binding"); episode = p.game_continuity_id;
     } else if (event.kind === "global_source_rejected") {
       const source = sources.get(p.source_ordinal); require(source && !source.classified && typeof p.reason === "string", "global_source_rejection"); source.classified = true;
     } else if (event.kind === "global_source_retained") {
@@ -144,15 +206,18 @@ export async function replayGlobalAgentRun(directory: string) {
       active.postSources.set(dispatch.request_id, [...prior, p.source_ordinal]);
     } else if (event.kind === "global_observation") {
       const source = sources.get(p.source_ordinal); require(source?.valid && state && !source.reduction, "global_observation_source");
+      const full = await sourceRecord(source.artifact);
       source.before = state;
-      const reduction = reduce(state, source.full.basis); source.reduction = reduction; source.classified = true; observations++;
+      const reduction = reduce(state, full.basis); source.reduction = reduction; source.classified = true; observations++;
       require(p.observation_sha256 === globalDigest(reduction.observation) && p.occurrence === reduction.observation.envelope.occurrence
         && p.complete === reduction.complete && p.status === reduction.observation.status && same(p.missing, reduction.missing) && same(p.excluded, reduction.excluded), "global_projection_changed");
-      const snapshot = source.full.basis.snapshot;
+      const snapshot = full.basis.snapshot;
       if (snapshot.status !== "settling" && !(snapshot.status === "observed" && reduction.observation.status !== "terminal")
-        && source.full.basis.capture_status === "complete" && reduction.complete && reduction.observation.status !== "unsupported") state = reduction.state;
+        && full.basis.capture_status === "complete" && reduction.complete && reduction.observation.status !== "unsupported") state = reduction.state;
     } else if (event.kind === "global_input") {
-      const source = sources.get(p.source_ordinal), r = source?.reduction; require(r?.complete && (episode !== null || r.observation.status === "terminal") && source!.full.basis.capture_status === "complete" && !inputs.has(p.acquisition_id), "global_input_source_incomplete");
+      const source = sources.get(p.source_ordinal), r = source?.reduction;
+      const full = source && await sourceRecord(source.artifact);
+      require(r?.complete && (episode !== null || r.observation.status === "terminal") && full!.basis.capture_status === "complete" && !inputs.has(p.acquisition_id), "global_input_source_incomplete");
       require(supportsProfileValue(manifest.support.interaction_kinds, r.observation.scene.native_kind), "global_interaction_unsupported");
       const input = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(await artifact(p.artifact, "public_input")));
       exact(input, ["acquisition_id", "input_spec", "continuity_token", "previous_consumption_id", "observation", "catalog", "consumption_unit"]);
@@ -160,8 +225,8 @@ export async function replayGlobalAgentRun(directory: string) {
         && p.occurrence === r.observation.envelope.occurrence && same(input.observation, modelView(r.observation)) && same(input.catalog, r.observation.catalog), "global_actual_public_input_changed");
       ledger ??= new AgentConsumptionLedger(manifest, input.continuity_token);
       require(input.previous_consumption_id === ledger.consumptionId && input.continuity_token === ledger.continuityToken, "global_input_ledger_prefix");
-      ledger.registerGlobal({ acquisition_id: p.acquisition_id, capture: { source_ordinal: p.source_ordinal, source_sha256: source!.full.capture.sha256 },
-        observation: input.observation, catalog: input.catalog, catalog_materialized: true, publication_index: String(p.occurrence) }, source!.full.basis, source!.before!);
+      ledger.registerGlobal({ acquisition_id: p.acquisition_id, capture: { source_ordinal: p.source_ordinal, source_sha256: full!.capture.sha256 },
+        observation: input.observation, catalog: input.catalog, catalog_materialized: true, publication_index: String(p.occurrence) }, full!.basis, source!.before!);
       inputs.set(p.acquisition_id, { input, source: p.source_ordinal, occurrence: p.occurrence });
     } else if (event.kind === "global_agent_frame") {
       require(p.direction === "in" || p.direction === "out", "global_frame_direction");
@@ -207,20 +272,21 @@ export async function replayGlobalAgentRun(directory: string) {
     } else if (event.kind === "global_dispatch") {
       require(active && mode !== null && mode !== "human" && mode !== "shadow" && control === "held" && !permanentlyFenced && !unknown && p.acquisition_id === active.acquisition && p.choice_id === active.choice && p.step_index === active.dispatches.length && !dispatches.has(p.request_id), "global_dispatch_sequence");
       const source = sources.get(p.source_ordinal); require(source?.valid, "global_dispatch_source"); source.classified = true;
-      const bound = (source.full.basis.snapshot.bound_actions as any).actions.find((a: any) => a.bound_action_id === p.bound_action.bound_action_id);
+      const full = await sourceRecord(source.artifact);
+      const bound = (full.basis.snapshot.bound_actions as any).actions.find((a: any) => a.bound_action_id === p.bound_action.bound_action_id);
       if (p.step_index > 0) {
         const prior = active.dispatches.at(-1)!;
         require(active.deliveries.at(-1)?.delivery === "delivered"
           && active.postSources.get(prior.request_id)?.at(-1) === p.source_ordinal, "global_fold_not_current_post_source");
       }
       const step = p.step_index === 0 ? active.lowering.first : active.lowering.follow[p.step_index - 1]
-        && source.full.basis.capture_status === "complete"
-        && resolveFollowBasis(active.lowering.follow[p.step_index - 1]!, active.lowering, source.full.basis);
-      require(bound && step && step.bound_action_id === bound.bound_action_id && same(bound, p.bound_action) && p.expected_snapshot_id === source.full.basis.snapshot.snapshot_id, "global_dispatch_not_shared_lowering");
+        && full.basis.capture_status === "complete"
+        && resolveFollowBasis(active.lowering.follow[p.step_index - 1]!, active.lowering, full.basis);
+      require(bound && step && step.bound_action_id === bound.bound_action_id && same(bound, p.bound_action) && p.expected_snapshot_id === full.basis.snapshot.snapshot_id, "global_dispatch_not_shared_lowering");
       active.dispatches.push(p); dispatches.set(p.request_id, p);
     } else if (event.kind === "global_transport_response") {
       const stored = await artifact(p.artifact, "response"); require(["capture", "step"].includes(p.operation), "global_transport_operation");
-      const bytes = p.operation === "capture" ? await restoreGlobalCaptureResponse(stored, ref => artifact(ref, "source")) : stored;
+      const bytes = p.operation === "capture" ? await restoreGlobalCaptureResponse(stored, ref => artifact(ref, "source"), sourceRecord) : stored;
       if (p.operation === "step") { require(dispatches.has(p.request_id), "global_response_without_dispatch"); responses.set(p.request_id, [...(responses.get(p.request_id) ?? []), bytes]); }
       else {
         const request = captureRequests.get(p.capture_request_id); require(request && !request.terminal, "global_capture_response_identity");
@@ -286,15 +352,16 @@ export async function replayGlobalAgentRun(directory: string) {
           : delivered === active.deliveries.length && delivered === active.dispatches.length && delivered > 0), "global_completion_unproved");
         for (const dispatch of active.dispatches) {
           const postOrdinal = active.postSources.get(dispatch.request_id)?.at(-1);
-          require(postOrdinal && sources.get(postOrdinal)?.full.basis.capture_status === "complete", "global_completed_post_source_missing_or_partial");
+          require(postOrdinal && sources.get(postOrdinal)?.complete === true, "global_completed_post_source_missing_or_partial");
         }
         if (active.lowering.first) {
           const nextRule = active.lowering.follow[delivered - 1];
           if (nextRule) {
             const last = active.dispatches.at(-1)!;
             const post = sources.get(active.postSources.get(last.request_id)!.at(-1)!)!;
-            require(nextRule.optional && post.full.basis.capture_status === "complete"
-              && !resolveFollowBasis(nextRule, active.lowering, post.full.basis), "global_required_fold_omitted");
+            const full = await sourceRecord(post.artifact);
+            require(nextRule.optional && full.basis.capture_status === "complete"
+              && !resolveFollowBasis(nextRule, active.lowering, full.basis), "global_required_fold_omitted");
           }
           require(delivered <= 1 + active.lowering.follow.length, "global_extra_fold");
         }

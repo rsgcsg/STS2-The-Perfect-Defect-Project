@@ -186,3 +186,28 @@ def test_mutable_manifest_collections_are_rejected() -> None:
 def test_durable_credential_aliases_are_rejected(field: str) -> None:
     with pytest.raises(BoundaryError, match="secret_metadata"):
         Manifest("analysis", PRODUCER, parameters=FrozenObject.of({field: "fixture-secret"}))
+
+
+def test_published_parent_reuse_keeps_new_original_and_empty_restore(tmp_path, monkeypatch):
+    source, target = store(tmp_path / "source"), store(tmp_path / "peer")
+    training = source.put_bytes("training", b"original training checkpoint")
+    parent = Manifest("model", PRODUCER, payloads=(training,))
+    source.publish(parent)
+    copy_artifact(source, target, parent.artifact_id)
+    original = source.put_bytes("archive", b"new sealed original")
+    child = Manifest("dataset", PRODUCER, payloads=(original,),
+                     parents=(Parent("model", parent.artifact_id),))
+    source.publish(child)
+    read = target.read_payload
+    def bounded(payload):
+        assert payload != training, "published parent must not re-stream training ancestry"
+        yield from read(payload)
+    monkeypatch.setattr(target, "read_payload", bounded)
+    assert copy_artifact(source, target, child.artifact_id,
+                         reuse_published_parents=True) == child.artifact_id
+    assert target.bytes(original) == b"new sealed original"
+    monkeypatch.setattr(target, "read_payload", read)
+    assert target.bytes(training) == b"original training checkpoint"
+    empty = store(tmp_path / "empty")
+    copy_artifact(source, empty, child.artifact_id, reuse_published_parents=True)
+    assert empty.bytes(training) == b"original training checkpoint"

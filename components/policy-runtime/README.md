@@ -678,3 +678,29 @@ no model dependency; the ordinary installed package, environment, readiness,
 Agent request and explicit load/takeover checks still apply. Its current-choice
 Task declares no success predicate. Terminal observations and operation closure
 therefore remain separate from Task success and strategy quality.
+
+### GLOBAL originals at full-run scale
+
+GLOBAL original references retain their exact decoded SHA-256 and byte length.
+Large blobs (at least64KiB, when compression saves bytes) use lossless gzip storage
+v1 with explicit `global-<original-sha256>.bin.gz` paths; small/incompressible blobs
+retain `.bin`. The immutable directory inventory/checksums bind stored bytes,
+while the shared replay decodes with the original length bound and verifies the
+original hash. Old `.bin` archives remain readable. Sampling, capture frequency,
+P1, Model inputs, native delivery and successor semantics are unchanged.
+
+The existing512MiB GLOBAL writer limit bounds physical blob/staging occupancy;
+it is not a logical uncompressed full-run limit. No files are silently discarded.
+A real Stop whose complete seal fails fsyncs `diagnostic-manifest.json` binding the
+unchanged failure prefix. This is explicitly `complete=false/status=unsealed`,
+not a recording seal; ordinary typed verification still rejects it. The same
+Application publication operation may preserve it as an analysis diagnostic,
+reporting a separate diagnostic ID and retaining failed/unknown recording status.
+Reconciliation reads that ID only; it never replays an action or republishes.
+
+The normal Application Store path compresses the sealed directory, transfers it
+to the configured R2 peer and validates empty-directory restoration. R2 owns
+long-term retention; local data is the bounded active working set. Cool an inactive
+expanded copy only after its exact artifact, all hashes and actual consumer restore
+pass. This path archives per completed run; it does not add cloud latency to native
+capture or introduce a second Runtime/cloud storage controller.

@@ -2121,10 +2121,10 @@ index 0000000..85112ee
 +}
 diff --git a/src/Sts2Headless/NativeCardPreviewReadQualification.cs b/src/Sts2Headless/NativeCardPreviewReadQualification.cs
 new file mode 100644
-index 0000000..7e067bc
+index 0000000..2484711
 --- /dev/null
 +++ b/src/Sts2Headless/NativeCardPreviewReadQualification.cs
-@@ -0,0 +1,359 @@
+@@ -0,0 +1,366 @@
 +using System;
 +using System.Collections.Generic;
 +using System.Linq;
@@ -2310,6 +2310,13 @@ index 0000000..7e067bc
 +        && MethodsUnpatched(typeof(LocalCostModifier), "Clone", "get_Amount", "set_Amount", "get_Type", "get_Expiration", "get_IsReduceOnly")
 +        && FixedConstructorsUnpatched(typeof(LocalCostModifier));
 +
++    private static bool CopyAfterClonedQualified(Type type) =>
++        BaseImplementation(type, typeof(CardModel), "AfterCloned")
++        // Exact v0.111.0 SovereignBlade only calls base.AfterCloned and clears
++        // its copied CreatedThroughForge presentation state. No scope/run write.
++        || type == typeof(SovereignBlade)
++            && MethodsUnpatched(typeof(SovereignBlade), "AfterCloned", "set_CreatedThroughForge");
++
 +    internal static bool TryPreflightCopy(CardModel card, out string? gap)
 +    {
 +        gap = "native_preview_copy_closure_unqualified";
@@ -2320,7 +2327,7 @@ index 0000000..7e067bc
 +                || card.GetType().Namespace != "MegaCrit.Sts2.Core.Models.Cards"
 +                || Mutable?.GetValue(card) is not true || !CopyClosureUnpatched()
 +                || !BaseImplementation(card.GetType(), typeof(CardModel), "DeepCloneFields")
-+                || !BaseImplementation(card.GetType(), typeof(CardModel), "AfterCloned")
++                || !CopyAfterClonedQualified(card.GetType())
 +                || !BaseImplementation(card.GetType(), typeof(CardModel), "get_CanonicalEnergyCost")
 +                // Native X-cost cards override this display fact. Reuse the
 +                // exact-game effective-getter qualification used by rendering.
@@ -2902,13 +2909,14 @@ index 0000000..381119e
 +}
 diff --git a/src/Sts2Headless/NativeDetachedCardCopy.cs b/src/Sts2Headless/NativeDetachedCardCopy.cs
 new file mode 100644
-index 0000000..3f046fd
+index 0000000..6742e80
 --- /dev/null
 +++ b/src/Sts2Headless/NativeDetachedCardCopy.cs
-@@ -0,0 +1,74 @@
+@@ -0,0 +1,78 @@
 +using System;
 +using System.Runtime.CompilerServices;
 +using MegaCrit.Sts2.Core.Models;
++using MegaCrit.Sts2.Core.Models.Cards;
 +using MegaCrit.Sts2.Core.Nodes.Cards;
 +
 +namespace STS2Platform.NativeFoundation;
@@ -2940,7 +2948,8 @@ index 0000000..3f046fd
 +        Forged(copy) = null;
 +        ExecutionFinished(copy) = null;
 +        DeepCloneFields(copy);
-+        AfterCloned(copy);
++        if (copy is SovereignBlade blade) AfterCloned(blade);
++        else AfterCloned(copy);
 +        return copy;
 +    }
 +
@@ -2979,6 +2988,8 @@ index 0000000..3f046fd
 +    private static extern void DeepCloneFields(CardModel copy);
 +    [UnsafeAccessor(UnsafeAccessorKind.Method, Name = "AfterCloned")]
 +    private static extern void AfterCloned(CardModel copy);
++    [UnsafeAccessor(UnsafeAccessorKind.Method, Name = "AfterCloned")]
++    private static extern void AfterCloned(SovereignBlade copy);
 +}
 diff --git a/src/Sts2Headless/NativeDetachedCardPreview.cs b/src/Sts2Headless/NativeDetachedCardPreview.cs
 new file mode 100644
