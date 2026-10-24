@@ -24,7 +24,9 @@ from spireagent.task_outcome import TaskCompletion as TaskCompletion
 from spireagent.task_outcome import TerminalObservation as TerminalObservation
 from spireagent.task_outcome import public_terminal as _public_terminal
 
-MAX_EVENTS_BYTES = 64 * 1024 * 1024
+# Match the largest journal accepted by the trusted GLOBAL producer/replayer.
+# Each profile's own SDK verification still precedes this projection reader.
+MAX_EVENTS_BYTES = 128 * 1024 * 1024
 MAX_BODY_BYTES = 16 * 1024 * 1024
 MAX_METADATA_BYTES = 1024 * 1024
 

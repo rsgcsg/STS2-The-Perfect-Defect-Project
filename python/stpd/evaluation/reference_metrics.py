@@ -37,7 +37,7 @@ def read_reference_metrics(directory: Path, evaluation: dict[str, Any],
             raise BoundaryError("reference_metrics", "original_changed")
         return raw
 
-    raw = read(events_ref["path"], events_ref["sha256"], events_ref["bytes"], 64 * 1024**2)
+    raw = read(events_ref["path"], events_ref["sha256"], events_ref["bytes"], 128 * 1024**2)
     events = [json.loads(line) for line in raw.splitlines()]
     runtime = context["binding"]["runtime_instance_id"]
     floors: list[int] = []
