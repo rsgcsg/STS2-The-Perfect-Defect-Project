@@ -44,6 +44,20 @@ from spireagent.workbench.service_process import service_environment, service_pr
 
 # Fixed diagnostic labels only; this table never authorizes or dispatches a request.
 _DIAGNOSTIC_PATHS = frozenset({
+    '/api/remote-training/prepare',
+    '/api/remote-training/start',
+    '/api/remote-training/resume',
+    '/api/remote-training/pause',
+    '/api/remote-training/cancel',
+    '/api/remote-training/reconcile',
+    '/api/remote-training/auto-continue',
+    '/api/remote-training/stop-continuation',
+    '/api/local-training/start',
+    '/api/local-training/pause',
+    '/api/local-training/cancel',
+    '/api/local-training/resume',
+    '/api/local-training/reconcile',
+    '/api/local-training/amend_wall_budget',
     '/api/local-datasets/human-preview',
     '/api/local-datasets/native-agent-preview',
     '/api/local-datasets/preview',
