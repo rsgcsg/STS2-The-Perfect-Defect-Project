@@ -1,13 +1,15 @@
-# 当前：续接评估Native读取修复与新100局矩阵
+# 当前：检查点评估被完整局证据容量阻塞
 
 Resolve live GitHub refs before relying on this snapshot. 最新用户原话和现场证据 override this file。
 
-用户续接原任务并授权修复遇到问题；本次起04:54:48UTC，开发硬05:54:48UTC，其他主动工作累计1h，真实运行另计。root独占源码/安装/执行，最多原一个子代理只检查原7模型导出/评估。旧轮30局（27loss+3unknown）、70未启动及R2完整原件保持历史地位，不借新环境覆盖。
+唯一任务：[检查点Reference评估](../plans/p1-prefreeze-2026-10-18/CHECKPOINT_REFERENCE_EVALUATION_20261024.zh-CN.md)。用户原1h开发及续接1h均已到限，后追加20分钟仅修Boss奖励换幕/两处CI格式，硬2026-10-24T07:41:59Z已冻结。root唯一源码/安装/执行owner，最多原一个检查点子代理已完成复核，无新训练。当前等待用户决定是否追加开发；未经明确同意不继续改代码。
 
-唯一任务：[检查点Reference评估](../plans/p1-prefreeze-2026-10-18/CHECKPOINT_REFERENCE_EVALUATION_20261024.zh-CN.md)。源码在独占reference-checkpoint-evaluation续接f94/PR234，基线origin/develop7f3c711c；现有idle App在另一clean992目录，不改活源。两机制修复：关闭地图残留旅行标志与原生事件布局ready通知；君王之剑真实AfterCloned的只读升级预览资格。68项定向、981Host/182Logical/450Annotator、提交后BOM/仓库规则通过；e3ff包rc62独立安装/加载准确，7原Model正常重新注册。两次Instant现场在PunchOff分别Native abort/无限VFX，分开保留unknown；exact原生while+Cmd.Wait在Instant无yield已定位。当前允许checkpoint suite显式Fast（旧固定benchmark仍Instant），新批次正常headless Fast；实际事件/Regent机制仍待实战，不从source/test借资格。
+源码候选9afcad47、Native源026c5599/rc63，topic codex/reference-checkpoint-evaluation-20261024/PR234，base develop7f3c711c，未合入。986 exact-game Host、正式build/deploy/coldload/7原模型正常注册、postcommit BOM/repository/closeout通过；CI40074653990的两个Linux分片与汇总门通过。实际App来自另一干净ABE，Host37/Runtime41不变，禁止在线改活源。rc62的PunchOff与SovereignBlade实战机制已通过。用户使用过Instant；本自动化Modded Instant失败/Fast通过不证明普通原版独占根因。
 
-新环境另开完整100槽位，仍七状态各10新DefectA0+2A10，其他4角色各2A0对比1460/2190。原7包现时正常CPU加载/参数摘要再次通过，不需要导出或训练。source、Native包/tuple、Model选择与原件由本次准确收据固定；不降低完整Read、不重投unknown、不改变游戏规则或合法性，不授Human/研究/模型质量资格。
+rc63同438检查点/同原种子已从原17层Boss奖励故障穿过并进入第二幕，至少到24层，定向换幕修复通过。随后Runtime对单局全量负载+暂存写死512MiB导致global_storage_capacity，送达后捕获失败且不重试；封存缺checksums，正式Evidence拒绝global_archive_inventory。Host正常关闭不改变封存/自然结果未知。当前最新100格：1启动/1工程未知/0自然结果/99未启动，队列已停。旧rc62 Fast14（13自然loss+1未知、86未启动）及最初30（27loss+3未知、70未启动）独立保留，不能拼成新100或合并比较模型。
+
+本地准确交付与收据：/Users/fire/Documents/Codex/2026-10-24/checkpoint-evaluation-act-ready/REPORT.zh-CN.md、CURRENT.md及matrix；两未封存失败原件的独立诊断R2 artifact a74d67e3772d0dd15dbcf16410ebfa86fe6dc9f9b89d66a26c984f2f4c405e12，空目录全hash/ZIP CRC通过，本地原件保留。它不是typed recording资格。DEV7检查点/446点配对和原真实路径分歧分析见相邻checkpoint-evaluation/checkpoint-exports；不足以断言某检查点普遍实战最强。完整矩阵、容量/失败封存和效果验收仍未完成。
 
 ## Remaining Platform non-claims
 
-完整Human、研究准入、策略质量及正式训练资格均不由源码、编译或正常退出推定；新Native候选的实际安装/加载/实战和最终CI另归准确收据。
+source/test、build、install/load、单机制实战、自然胜负、数据资格、Human、研究准入和模型效果分别报告。不得用退出正常、CI绿或诊断备份代替完整封存/100局；unknown不重投、不回填，不为赶时间抬常量或删暂存求绿。

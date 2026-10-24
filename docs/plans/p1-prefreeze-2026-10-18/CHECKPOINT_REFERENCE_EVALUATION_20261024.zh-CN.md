@@ -46,3 +46,13 @@ ABE的真实Fast批次保持冻结，源码不在线改。CI指出受控Managed�
 用户07:21:59UTC明确批准追加最多20分钟，仅奖励离开/后继判定和两处CI行长；硬07:41:59UTC，不重置其他预算，不训练。旧Fast14启动：13自然loss/R2通过、1个438在floor17未终局而交回，86未启动；旧记录不改、不重投原请求。原始错误是已送达Boss奖励Proceed后仍发布该旧页为新决策。exact NRewardsScreen的Boss/victory分支禁用按钮并设置_disableProceedForever，再由ActChangeSynchronizer排入原生换幕投票；NativeReader却因仍存在弃药命令而给ready，P1才报reward_owner_reopened_after_leave。此处不是已批准的普通卡奖励open→return例外，不扩充或放宽P1单向合同。
 
 在Native Foundation只读观察该exact字段与已注册terminal owner，Connector奖励Reader把这一真实native pending transition标settling，保原完整公开内容与完整性标准；Runtime原等待会等实际后继。没有新计时器、策略条件、游戏规则/Commit修改或gap忽略。986 exact-game Host检查通过，含真实Native字段访问与读不改验证；Python两行格式按项目显式配置Ruff通过。新Native版本rc63，正常独立安装/加载/7模型注册与定向438原种子新候选canary另验；旧Native41/rc62记录不借新候选资格。Instant普通玩法根因尚未隔离，用户确认用过Instant；仅本自动化Instant两失败/Fast通过，不泛称vanilla必现bug。
+
+### 07:54UTC收口事实：换幕定向通过，容量阻塞，等待追加决定
+
+追加20分钟已于07:41:59UTC停止开发，9afcad47（Native源026c5599/rc63）保持准确候选。986 exact-game Host/正式build/deploy/coldload/7原模型正常注册通过；CI40074653990的两个Linux分片和portable汇总已通过，旧df6 E501失败不抹去，PR234未合入。实际App仍另一clean ABE、Host37/Runtime41，不在线改源。
+
+同438步检查点、原DefectA0种子首canary确实从原17层Boss奖励穿过换幕并到第二幕至少24层；evidence/Defect438-act-ready-canary.json引用原公开source/hash/事件与真实tuple。随后Runtime evidence.ts单局负载+暂存硬512MiB触发global_storage_capacity（原event22412），送达后捕获失败而tainted，不重试EndTurn。原manifest未封存/缺checksums导致正式global_archive_inventory拒绝；正常Host ACK/exit0/closed只是退出事实。最新100计划仅1启动/1未知/0自然结果/99未启动，队列已停；旧Fast14=13loss+1未知及更早30=27loss+3未知另存，不跨版本合并。
+
+两份未封存原件（旧bdb、新929）另以analysis诊断artifact a74d67e3772d0dd15dbcf16410ebfa86fe6dc9f9b89d66a26c984f2f4c405e12备份R2，111225672字节/24202原文件，空目录全SHA/CRC通过，不升格为typed录制、自然结果或Human，原件未删。当前报告/逐格表/配对DEV与已证机制、SOP和限制归本地checkpoint-evaluation-act-ready/REPORT.zh-CN.md及CURRENT.md；没有伪造100局评估曲线。
+
+原目标和未完义务不取消。解决完整局真实规模与失败封存需新Runtime/Evidence开发，必须先经用户明确追加预算。已提供追加30分钟或当前失败报告收口的选择，未得到答复不继续写代码。不得仅抬512MiB常量、删暂存/补checksums、重投原动作或借旧包资格声称稳定。用户确认使用过Instant，普通原版独占根因未证明；以此纠正早期解释，原失败记录保留。
