@@ -1,6 +1,6 @@
 {
   "name": "@rsgcsg/sts2-platform-evidence-workspace",
-  "version": "0.1.0-rc.35",
+  "version": "0.1.0-rc.36",
   "private": true,
   "description": "Platform Evidence Python component workspace wrapper",
   "license": "MIT",

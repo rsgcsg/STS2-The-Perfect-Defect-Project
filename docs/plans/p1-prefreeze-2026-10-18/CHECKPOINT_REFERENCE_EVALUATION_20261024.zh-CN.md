@@ -64,3 +64,11 @@ ABE的真实Fast批次保持冻结，源码不在线改。CI指出受控Managed�
 链路位置为⑤⑥原件→存储→⑫评估，变更类别为表示/传输和原owner实现修复，不变信息/动作/学习语义。实测563.1MB中462.4MB为2251份完整公开basis，387次决策；已验证无损压缩负载约63MB。选择原Runtime压缩不可变blob，保原逻辑字节/SHA，由现Evidence/metrics统一有界解码、物理inventory另绑压缩字节；保原512MiB物理上限，不裁剪/降采样/丢因果。局末复用原Store压缩传R2并读回/冷却，有界本地工作集符合R2长期存储方向。当前需求不必另建实时云日志owner。Stop失败原前缀独立diagnostic清单/analysis保全，保原typed拒绝和unknown不重试。
 
 验收先过生产writer的>512MiB逻辑规模无损恢复、真实Python终局/metrics和正式replay、篡改/截尾/损坏压缩拒绝、失败诊断R2空目录恢复且不升格，再正常包/安装/7权重登记和原长局canary。旧录制/诊断/权重及失败分母保留，不为“全绿”修改原件；后续原100矩阵仍必须有完整逐格结果/未完项与明确资格。
+
+### 用户限定续修：长局共享回放内存与CI
+
+用户明确追加最多1小时，仅回放内存保留与已定位CI，随后续原评估；起09:38:58UTC，硬10:38:58UTC（布里斯班20:38:58），实际游戏另计，旧各轮预算与失败不重置。旧Runtime42实际33层原件未经修改，已封存/公开loss但SDK共享回放30秒不可用；同原安装回放器只读诊断约69秒在4GiB堆处OOM。完整原件22000文件/121457533字节ZIP已R2空目录全hash/CRC通过，analysis98cb58f69b70a17d7909b8fa193244993ed926080ba2bb15f8e8e419ea587d7d，runtime父ec35cb72c9c4e7ea46459a5477ffdfef926c412f210321ca8abc5b4373b04f4b；不提升为typed录制。
+
+先在旧33层原件验证新读者，严格scope仅source/test兼容性能，不改原件producer身份/不借新代码给旧42授资格。历史source改存artifact索引与必要判定，完整basis经原SHA/SDK解码按需读、最多2条缓存；捕获原文join全部断言完成后清已消费chunks/completed，不删原件、不去掉ACK/投递/后继/最后全部归账断言。1GiB堆限下实际完整回放58.4秒、峰值RSS583090176字节、551消费/550结果且verdict verified；新43真实生产资格另验。
+
+基于该实测成本，Evidence共享回放有120秒有限预算。相同全目录content_id及实际语义依赖身份，允许进程内16条已通过的纯语义结果复用；每次仍重新检查全部文件/checksum/immutable、当前Runtime/真实SDK/core/依赖代码、上下文和预算。实际语义依赖由原受信Runtime模块现场解析/哈希，包括SDK实际解析入口与dist、zod、Runtime全部嵌套代码及执行引擎；旧不支持身份函数的包不缓存、仍完整回放，不猜协议。失败不缓存、变更数据/SDK/core不借旧pass，没有新存储账本。缓存的资格负例和普通unittest组件入口必须通过。CI修复仅Evidence测试改回标准库unittest及按python目录实际Ruff入口整理导入，不新增pytest依赖、不删有效断言。

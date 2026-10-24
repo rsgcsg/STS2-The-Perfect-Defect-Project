@@ -447,6 +447,7 @@ class LocalRecordingImporter:
 
     def _native_agent_existing(self, store: ManifestArtifactStore,
                                content_id: str, cohort: str, relation: object) -> Manifest | None:
+        from spireagent.storage.blobs import MAX_BLOB_BYTES
         from stpd.fullrun.native_agent_sampled_source import (
             _bytes,
             _inventory,
@@ -458,8 +459,6 @@ class LocalRecordingImporter:
             MAX_ORIGINAL_FILES,
             RAW_SCHEMA,
         )
-
-        from spireagent.storage.blobs import MAX_BLOB_BYTES
 
         matches = []
         for identity in store.manifest_ids():

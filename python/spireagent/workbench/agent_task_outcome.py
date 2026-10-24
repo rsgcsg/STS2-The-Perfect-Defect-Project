@@ -13,8 +13,6 @@ from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
 from typing import Any
 
-from stpd.p1.spec import MSTD_PACKAGE_SCHEMAS
-
 from spireagent.encoding import canonical_json, semantic_hash
 from spireagent.json_boundary import BoundaryError
 from spireagent.task_outcome import SCHEMA as SCHEMA
@@ -23,6 +21,7 @@ from spireagent.task_outcome import OperationEnd as OperationEnd
 from spireagent.task_outcome import TaskCompletion as TaskCompletion
 from spireagent.task_outcome import TerminalObservation as TerminalObservation
 from spireagent.task_outcome import public_terminal as _public_terminal
+from stpd.p1.spec import MSTD_PACKAGE_SCHEMAS
 
 # Match the largest journal accepted by the trusted GLOBAL producer/replayer.
 # Each profile's own SDK verification still precedes this projection reader.

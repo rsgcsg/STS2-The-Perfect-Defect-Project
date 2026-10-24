@@ -7,9 +7,10 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
+from sts2_platform_evidence import read_global_artifact
+
 from spireagent.json_boundary import BoundaryError
 from spireagent.task_outcome import public_terminal
-from sts2_platform_evidence import read_global_artifact
 
 
 def read_reference_metrics(directory: Path, evaluation: dict[str, Any],

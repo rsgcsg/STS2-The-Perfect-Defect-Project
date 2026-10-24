@@ -15,7 +15,6 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-from stpd.p1.spec import MSTD_PACKAGE_SCHEMAS
 from sts2_platform_evidence import AgentSessionRunEvidence, DirectoryTransferManifest
 
 from spireagent.artifact_contracts import Manifest, Parent, Producer
@@ -24,6 +23,7 @@ from spireagent.json_boundary import BoundaryError, FrozenObject, json_bytes
 from spireagent.storage.archives import _extract_tar
 from spireagent.storage.local import LocalBlobStore
 from spireagent.storage.store import CHUNK_BYTES, ManifestArtifactStore
+from stpd.p1.spec import MSTD_PACKAGE_SCHEMAS
 
 from .p1_recording_storage import require_workspace_space
 from .p1_recording_store import _verify_archive
