@@ -1727,7 +1727,7 @@ class LocalModelService:
     def _continuous_profile(self, identity: str) -> bool:
         try:
             _directory, package = self.runtime_profile(identity)
-            return package.get("version") in {"0.1.0-rc.40", "0.1.0-rc.41"}
+            return _runtime_wire_version(package) == 2
         except (OSError, ValueError):
             return False
 
