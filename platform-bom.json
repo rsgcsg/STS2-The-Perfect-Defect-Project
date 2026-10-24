@@ -4,9 +4,9 @@
   "components": {
     "native_foundation": {
       "version": "0.1.0-rc.9",
-      "source_revision": "e3ff0e40e0f377e8e27e3d30b2110fb9d12bf408",
-      "component_tree_revision": "cccbd22afa1f7f2b3c69f62259303c4dea0caaf0",
-      "component_source_digest_sha256": "ef5ac31722dfaf26164acabc8a9fa47f98c180dff1ec2cf688a60679bc17af7b"
+      "source_revision": "628b1f083e769062d5b2f34ab4997023f02646af",
+      "component_tree_revision": "787f24f7a6536d43215603843b4800dcfbdd07b8",
+      "component_source_digest_sha256": "fb051b3a7974015ae60fdc46cef82afaef7c89856708513045ef5d2fb65d6198"
     },
     "connector": {
       "version": "1.3.0-rc.33",
@@ -15,10 +15,10 @@
       "component_source_digest_sha256": "630ff630ec38c511020cb0dfb8d26618b4a8481ba1305b0c0db62663be042b4a"
     },
     "host_runtime": {
-      "version": "1.1.0-rc.37",
-      "source_revision": "03f53af49067e06d4748934ef342e0572fba52bf",
-      "component_tree_revision": "2001715ffc9b863cbb0367ae53c7913d1313cad2",
-      "component_source_digest_sha256": "96fe3eeef974e684809f989cf0439243ef00b51ff5953decd8da12ad30cf14ac"
+      "version": "1.1.0-rc.38",
+      "source_revision": "628b1f083e769062d5b2f34ab4997023f02646af",
+      "component_tree_revision": "78ab45be3fbb83d5b5a66c642c65a9e4c0c26237",
+      "component_source_digest_sha256": "16879dc90dfb856421999241ba92354131a9bb4feead811ca85ad95e586a4219"
     },
     "annotator": {
       "version": "0.3.0-rc.26",
