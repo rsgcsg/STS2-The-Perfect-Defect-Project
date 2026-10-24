@@ -28,8 +28,8 @@ ROUTES = [
     ("POST", "/api/local-recordings/derive", "invalid_p1_derivation_request"),
     ("POST", "/api/local-recordings/preview", "invalid_local_preview_request"),
     ("POST", "/api/local-recordings/import", "invalid_local_import_request"),
-    ("POST", "/api/local-datasets/build", "invalid_local_dataset_request"),
-    ("POST", "/api/p1-data/build", "invalid_p1_data_request"),
+    ("POST", "/api/local-datasets/preview", "invalid_local_dataset_request"),
+    ("POST", "/api/p1-data/prepare", "invalid_p1_data_request"),
     ("POST", "/api/remote-training/start", "invalid_remote_training_request"),
     ("POST", "/api/local-training/start", "invalid_local_training_request"),
     ("POST", "/api/local-memory-evaluations/start", "invalid_local_memory_evaluation_request"),
@@ -92,7 +92,10 @@ def test_all_18_fallbacks_preserve_response_and_correlate_private_error(
             assert record["exception_type"] == error_type.__name__
             assert record["stack"] and record["stack"][-1]["function"] == "fail"
             assert record["path"].startswith("/api/") and record["stage"]
-            assert record["action"] == method and record["elapsed_ms"] >= 0
+            safe_path = path.partition("?")[0]
+            assert record["path"] == safe_path
+            assert record["action"] == safe_path.rsplit("/", 1)[-1]
+            assert record["elapsed_ms"] >= 0
             assert record["time_utc"] and record["operation_id"]
         assert SENTINEL not in "".join(p.read_text() for p in (tmp_path / "logs").glob("*"))
     finally:

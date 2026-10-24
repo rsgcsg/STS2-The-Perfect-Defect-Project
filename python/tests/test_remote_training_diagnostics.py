@@ -8,6 +8,7 @@ import pytest
 from test_remote_training_http import client, settled
 
 from spireagent.json_boundary import BoundaryError
+from spireagent.local_diagnostics import LocalDiagnostics
 from stpd.p1.spec import MStdConfig
 
 
@@ -95,3 +96,23 @@ def test_middle_transfer_failure_names_stage_and_never_submits(tmp_path, monkeyp
         assert secret not in json.dumps(errors)
         failed = [p for p in records(app, "phases.jsonl") if p.get("outcome") == "failed"]
         assert failed and {p["error_id"] for p in failed} == {errors[0]["error_id"]}
+
+
+def test_paused_operations_do_not_claim_a_new_intent_or_self_parent(tmp_path):
+    from test_training_continuation import service, setup
+
+    store, ops, provider, scheduler, _, first, _ = setup(tmp_path)
+    try:
+        assert scheduler.tick(time.time())["state"] == "paused"
+        ops.pause(True)
+        app = service(store, ops, provider, scheduler)
+        with LocalDiagnostics(tmp_path).operation("remote-training", "auto-continue"):
+            app._continue_training(time.time())
+        phases = [json.loads(line) for line in
+                  (tmp_path / "logs/phases.jsonl").read_text().splitlines()]
+        assert "continuation.advance" in {p["stage"] for p in phases}
+        assert "continuation.new_intent" not in {p["stage"] for p in phases}
+        assert all(p.get("parent_job_id") != first for p in phases)
+        assert len(ops.jobs()) == 1 and len(provider.calls) == 1
+    finally:
+        scheduler.close()

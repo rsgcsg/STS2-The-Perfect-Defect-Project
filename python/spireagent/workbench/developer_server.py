@@ -42,6 +42,53 @@ from spireagent.workbench.native_workbench import (
 )
 from spireagent.workbench.service_process import service_environment, service_process
 
+# Fixed diagnostic labels only; this table never authorizes or dispatches a request.
+_DIAGNOSTIC_PATHS = frozenset({
+    '/api/local-datasets/human-preview',
+    '/api/local-datasets/native-agent-preview',
+    '/api/local-datasets/preview',
+    '/api/local-datasets/publish',
+    '/api/local-datasets/source3-preview',
+    '/api/local-datasets/status',
+    '/api/local-memory-evaluations/start',
+    '/api/local-memory-evaluations/status',
+    '/api/local-model-exports/start',
+    '/api/local-model-exports/status',
+    '/api/local-model-exports/support',
+    '/api/local-model-registrations/register',
+    '/api/local-model-registrations/register-composition',
+    '/api/local-model-registrations/register-global-program',
+    '/api/local-model-registrations/register-teacher',
+    '/api/local-model-registrations/status',
+    '/api/local-recordings',
+    '/api/local-recordings/derive',
+    '/api/local-recordings/derive/reconcile',
+    '/api/local-recordings/import',
+    '/api/local-recordings/import/native-agent',
+    '/api/local-recordings/import/reconcile',
+    '/api/local-recordings/import/status',
+    '/api/local-recordings/maintenance',
+    '/api/local-recordings/preview',
+    '/api/local-recordings/preview/status',
+    '/api/local-recordings/storage',
+    '/api/local-recordings/storage/peer',
+    '/api/local-recordings/storage/reconcile',
+    '/api/local-recordings/store',
+    '/api/local-training/capabilities',
+    '/api/local-training/status',
+    '/api/local-workspace/curation',
+    '/api/local-workspace/curation/prepare',
+    '/api/local-workspace/managed',
+    '/api/local-workspace/managed/create',
+    '/api/native-recording/command',
+    '/api/native-recording/status',
+    '/api/p1-data/freeze',
+    '/api/p1-data/prepare',
+    '/api/remote-training/capabilities',
+    '/api/remote-training/progress',
+    '/api/remote-training/status',
+})
+
 
 @contextlib.contextmanager
 def open_lock(path: Path, *, timeout: float = 20.0) -> Iterator[None]:
@@ -1275,7 +1322,10 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                 super().handle_one_request()
 
         def diagnostic_bad_request(self, error: Exception, code: str, route: str) -> None:
-            error_id = diagnostics.error(error, path=route, action=self.command, stage=route)
+            parsed_path = urlsplit(self.path).path
+            safe_path = parsed_path if parsed_path in _DIAGNOSTIC_PATHS else route
+            action = safe_path.rsplit("/", 1)[-1] if parsed_path in _DIAGNOSTIC_PATHS else self.command
+            error_id = diagnostics.error(error, path=safe_path, action=action, stage=safe_path)
             self.respond(400, json.dumps({"error": code, "error_id": error_id}).encode())
 
         def log_message(self, format: str, *args: Any) -> None:

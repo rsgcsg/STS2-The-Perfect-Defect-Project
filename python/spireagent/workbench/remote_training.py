@@ -245,11 +245,13 @@ class RemoteTrainingService:
                 assert receipt.checkpoint_id is not None
                 deployment = self.config.remote_compute
                 assert deployment is not None
-            with phase("continuation.new_intent"):
+            with phase("continuation.advance"):
                 advanced = continuation.advance(ops, policy, job, receipt.checkpoint_id, now=now,
                                                 reserved_units=deployment.reserved_units,
                                                 budget_limit=deployment.budget_limit)
-                bind_job(advanced["current_job_id"], parent_job_id=job["id"])
+            if advanced["current_job_id"] != job["id"]:
+                with phase("continuation.new_intent"):
+                    bind_job(advanced["current_job_id"], parent_job_id=job["id"])
         except (BoundaryError, OSError, ValueError) as error:
             code = error.code if isinstance(error, BoundaryError) else type(error).__name__
             continuation.stop(ops, policy["root_job_id"], code)
