@@ -75,6 +75,10 @@ export function ciWorkflowErrors(rawSource) {
     requireMatch(errors, "Linux portability must use ubuntu-latest", linux, /runs-on:\s*ubuntu-latest/u);
     requireMatch(errors, "Linux portability must run the selected root check", linux, /run:\s*node tools\/check-plan\.mjs execute --pytest-shard \$\{\{ matrix\.shard \}\}\/2\s*$/mu);
     requireMatch(errors, "Linux portability must run git diff --check", linux, /run:\s*git diff --check\s*$/mu);
+    if (!linux.includes('mkdir -p "$GITHUB_WORKSPACE/.local/portable-tmp"') ||
+        !["TMPDIR", "TMP", "TEMP"].every(name => linux.includes(
+          `echo "${name}=$GITHUB_WORKSPACE/.local/portable-tmp" >> "$GITHUB_ENV"`)))
+      errors.push("Linux portable scratch must use the observed workspace filesystem");
     requireMatch(errors, "Linux checkout must fetch full history", linux, /fetch-depth:\s*0/u);
     requireMatch(errors, "Linux checkout must not persist credentials", linux, /persist-credentials:\s*false/u);
     requireMatch(errors, "Dependency review must remain on pull requests", linux,

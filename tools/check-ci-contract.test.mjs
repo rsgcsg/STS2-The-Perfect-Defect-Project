@@ -157,3 +157,15 @@ test('overlapping Windows histories retain both runs without double counting', (
   assert.deepEqual(combined.map(entry => entry.test).sort(), ['only-left', 'only-right', 'shared']);
   assert.deepEqual(combined.find(entry => entry.test === 'shared').runs, ['1', '2', '3']);
 });
+
+
+test("Linux scratch placement cannot silently fall back to the small system temp volume", () => {
+  const error = "Linux portable scratch must use the observed workspace filesystem";
+  for (const name of ["TMPDIR", "TMP", "TEMP"]) {
+    const source = currentSource().replace(
+      `echo "${name}=$GITHUB_WORKSPACE/.local/portable-tmp" >> "$GITHUB_ENV"`, "echo omitted");
+    assert.ok(ciWorkflowErrors(source).includes(error));
+  }
+  assert.ok(ciWorkflowErrors(currentSource().replace(
+    'mkdir -p "$GITHUB_WORKSPACE/.local/portable-tmp"', "mkdir -p /tmp/unused")).includes(error));
+});

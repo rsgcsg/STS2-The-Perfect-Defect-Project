@@ -203,6 +203,12 @@ raw-source expansion during planning. The later remote transfer is different: it
 verifies full ancestry and may rehydrate missing source chunks. Its preflight also
 budgets that local CAS growth; a failed prepared transfer keeps its original intent.
 
+Hosted Linux CI places `TMPDIR/TMP/TEMP` in its checkout's ignored
+`.local/portable-tmp` before the selected gate. The observed system temp filesystem
+had less than the unchanged 8 GiB requirement even while the workspace had ample
+capacity. This selects the actual write volume; it does not lower the margin or
+skip admission. Each isolated runner owns and discards its own scratch.
+
 Preflight does not allocate filesystem blocks. One owner schedules shared heavy
 writes and includes other active work; independently passing checks do not grant
 concurrent capacity. A single unbounded recording or an unrelated process can
