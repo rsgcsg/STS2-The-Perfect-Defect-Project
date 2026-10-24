@@ -1292,9 +1292,9 @@ class LocalEnvironmentService:
                     "--display-mode",
                     body["display_mode"],
                     "--character",
-                    "DEFECT",
+                    native_binding.scenario(body)["character"].upper(),
                     "--ascension",
-                    "0",
+                    str(native_binding.scenario(body)["ascension"]),
                     "--timeout-ms",
                     str(profile["preparation_timeout_seconds"] * 1000),
                     "--request-timeout-ms",
@@ -1359,10 +1359,20 @@ class LocalEnvironmentService:
                     or provenance.get("actual_seed") != body["seed"]
                 ):
                     raise BoundaryError("native_episode", "owned_seed_unproven")
+                if "character" in body and (
+                    identity.get("requested_character_id")
+                    != native_binding.scenario(body)["character"].upper()
+                    or identity.get("requested_ascension")
+                    != native_binding.scenario(body)["ascension"]
+                ):
+                    raise BoundaryError("native_episode", "owned_scenario_unproven")
                 if self.native_workbench_prepare is not None:
                     self.native_workbench_prepare(identity, state_root)
                 handoff = dict(client.release_bootstrap(runtime))
                 binding = self._native_base_binding(record, runtime, endpoint, tuple_value, "owned")
+                if "character" in body:
+                    binding.update(initialization="fresh_seeded_reference_scenario",
+                                   scenario=native_binding.scenario(body))
                 observed_speed, owned_profile = identity["native_speed"], identity["profile"]
                 if (
                     observed_speed.get("ready") is not True
@@ -1560,6 +1570,11 @@ class LocalEnvironmentService:
                     or provenance["runtime_instance_id"] != binding["runtime_instance_id"]
                     or any(profile[key] != expected_profile[key] for key in (
                         "template_id", "template_payload_sha256", "generation_id"))):
+                raise BoundaryError("native_episode", "native_world_identity_changed")
+            if "scenario" in binding and (
+                identity.get("requested_character_id") != binding["scenario"]["character"].upper()
+                or identity.get("requested_ascension") != binding["scenario"]["ascension"]
+            ):
                 raise BoundaryError("native_episode", "native_world_identity_changed")
         except BoundaryError:
             raise

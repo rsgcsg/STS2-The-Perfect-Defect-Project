@@ -44,8 +44,12 @@ test("built native act-selection source and retained measured builds remain expl
     createHash("sha256").update(sourcePatch).digest("hex"),
     manifest.expected_build.source_patch_sha256
   );
-  assert.equal(manifest.expected_build.artifact_sha256, "39a6455c2f67c4313b3cf2b6b46a6783d41cc5ebe86cb62829a6a780c7d562b2");
-  assert.equal(manifest.expected_build.artifact_mvid, "a52dd778-7725-4794-80cb-4d532c4e528a");
+  assert.equal(manifest.expected_build.artifact_sha256, "bef5d6b922875ad1fb294af3ea9149eed064e8e37af2949791f31ae0d2039525");
+  assert.equal(manifest.expected_build.artifact_mvid, "622752e4-9fc1-4e26-a79c-2b3e1e150e88");
+  assert.equal(manifest.historical_candidate_builds.some(build =>
+    build.source_patch_sha256 === "a46736eee8c0c4c65b574a53e769330831d2e39de7897563f4a4c16b48fc5e20"
+    && build.artifact_sha256 === "39a6455c2f67c4313b3cf2b6b46a6783d41cc5ebe86cb62829a6a780c7d562b2"
+    && build.artifact_mvid === "a52dd778-7725-4794-80cb-4d532c4e528a"), true);
   assert.equal(manifest.historical_candidate_builds.some(build =>
     build.source_patch_sha256 === "41b15fbf27ef26ef4c04650adbdb8a437969743931bc8dc7263b88910b3e312d"
     && build.artifact_sha256 === "ef907317a47900204caad7400c341213f5dc533549d7c33a913066e83e522766"

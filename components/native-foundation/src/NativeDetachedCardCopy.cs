@@ -1,6 +1,7 @@
 using System;
 using System.Runtime.CompilerServices;
 using MegaCrit.Sts2.Core.Models;
+using MegaCrit.Sts2.Core.Models.Cards;
 using MegaCrit.Sts2.Core.Nodes.Cards;
 
 namespace STS2Platform.NativeFoundation;
@@ -32,7 +33,8 @@ internal static class NativeDetachedCardCopy
         Forged(copy) = null;
         ExecutionFinished(copy) = null;
         DeepCloneFields(copy);
-        AfterCloned(copy);
+        if (copy is SovereignBlade blade) AfterCloned(blade);
+        else AfterCloned(copy);
         return copy;
     }
 
@@ -71,4 +73,6 @@ internal static class NativeDetachedCardCopy
     private static extern void DeepCloneFields(CardModel copy);
     [UnsafeAccessor(UnsafeAccessorKind.Method, Name = "AfterCloned")]
     private static extern void AfterCloned(CardModel copy);
+    [UnsafeAccessor(UnsafeAccessorKind.Method, Name = "AfterCloned")]
+    private static extern void AfterCloned(SovereignBlade copy);
 }

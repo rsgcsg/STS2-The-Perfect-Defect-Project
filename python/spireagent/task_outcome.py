@@ -73,3 +73,25 @@ def _empty(verification: str) -> AgentTaskOutcome:
         "evidence": {"verification": verification, "content_id": None, "events": None},
         "strategy_quality": "not_assessed",
     }
+
+
+def public_terminal(snapshot: Any) -> str | None:
+    if (
+        not isinstance(snapshot, dict)
+        or snapshot.get("schema") != "sts2.player-environment/snapshot-1"
+    ):
+        return None
+    interaction = snapshot.get("interaction", {})
+    if (
+        interaction.get("kind") != "game_over"
+        or interaction.get("content_schema") != "sts2.player-environment/surface/game_over-1"
+    ):
+        return None
+    content = interaction.get("content", {})
+    context, surface = content.get("context", {}), content.get("surface", {})
+    result = context.get("result")
+    return (
+        result
+        if (context.get("kind") == surface.get("kind") == "game_over" and result in {"win", "loss"})
+        else None
+    )

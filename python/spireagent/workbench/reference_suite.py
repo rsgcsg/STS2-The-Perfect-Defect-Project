@@ -26,6 +26,7 @@ from spireagent.workbench.developer_server import running
 from spireagent.workbench.native_episode_binding import checked_context
 from stpd.evaluation.suites import (
     FOUR_AGENT_SUITE_ID,
+    checkpoint_reference_manifest,
     diagnostic_reference_manifest,
     four_agent_reference_manifest,
 )
@@ -33,6 +34,7 @@ from stpd.game_seed import derive_game_seed, require_canonical_game_seed
 
 REPORT_SCHEMA = "spireagent/reference-suite-report-v1"
 MAX_JSON = 1024 * 1024
+MAX_REPORT_BYTES = 64 * MAX_JSON
 
 
 def _reject(code: str) -> NoReturn:
@@ -45,6 +47,17 @@ def load_manifest(path: Path, sha256: str) -> tuple[bytes, dict[str, Any]]:
     if hashlib.sha256(raw).hexdigest() != sha256:
         _reject("manifest_hash_mismatch")
     value = decode_json(raw)
+    if isinstance(value, dict) and value.get("purpose") == "checkpoint_reference":
+        version, character, ascension = (value.get("game_version"), value.get("character"),
+                                         value.get("ascension"))
+        if (not isinstance(version, str) or not isinstance(character, str)
+                or type(ascension) is not int):
+            _reject("manifest_configuration_changed")
+        expected_checkpoint = checkpoint_reference_manifest(
+            version, character, ascension)
+        if json_bytes(value) != json_bytes(expected_checkpoint):
+            _reject("manifest_configuration_changed")
+        return raw, value
     if isinstance(value, dict) and value.get("suite_id") == FOUR_AGENT_SUITE_ID:
         game_version = value.get("game_version")
         if not isinstance(game_version, str):
@@ -77,12 +90,12 @@ def load_manifest(path: Path, sha256: str) -> tuple[bytes, dict[str, Any]]:
     return raw, value
 
 
-def _read(path: Path) -> bytes:
+def _read(path: Path, *, max_bytes: int = MAX_JSON) -> bytes:
     if any(parent.is_symlink() for parent in (path, *path.parents)) or not path.is_file():
         _reject("unsafe_or_missing_original")
     with path.open("rb") as stream:
-        raw = stream.read(MAX_JSON + 1)
-    if len(raw) > MAX_JSON:
+        raw = stream.read(max_bytes + 1)
+    if len(raw) > max_bytes:
         _reject("original_over_limit")
     return raw
 
@@ -119,6 +132,7 @@ class ReferenceClient(Protocol):
                   startup: dict[str, Any]) -> tuple[bytes, bytes]: ...
     def preserve(self, run_id: str, peer: dict[str, Any], timeout: float) -> dict[str, Any]: ...
     def preservation_status(self, timeout: float) -> dict[str, Any]: ...
+    def metrics(self, evaluation: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]: ...
 
 
 class WorkbenchReferenceClient:
@@ -148,7 +162,9 @@ class WorkbenchReferenceClient:
 
     def prepare(self, body: dict[str, Any], timeout: float) -> dict[str, Any]:
         return self._native("prepare-owned", timeout, **{
-            key: body[key] for key in ("intent_id", "seed", "display_mode", "speed")})
+            key: body[key] for key in (
+                "intent_id", "seed", "display_mode", "speed", "character", "ascension")
+            if key in body})
 
     def native_status(self, timeout: float) -> dict[str, Any]:
         return self._native("native-status", timeout)
@@ -188,6 +204,13 @@ class WorkbenchReferenceClient:
         if raw != canonical_json(evaluation).encode():
             _reject("original_evaluation_changed")
         return request_raw, raw
+
+    def metrics(self, evaluation: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+        from stpd.evaluation.reference_metrics import read_reference_metrics
+
+        return read_reference_metrics(
+            self.config.state_dir / "models" / "agent-runs" / evaluation["run_id"],
+            evaluation, context)
 
 
 class _Artifacts:
@@ -232,25 +255,79 @@ def _error(error: Exception) -> str:
     return error.code if isinstance(error, BoundaryError) else type(error).__name__
 
 
+
+def _completed_rows(paths: tuple[Path, ...], manifest_sha: str, *, profile: str,
+                    display: str, speed: str, peer: dict[str, Any] | None,
+                    selected: dict[str, str], artifacts: _Artifacts,
+                    ) -> dict[tuple[str, str], dict[str, Any]]:
+    """Reuse finished originals only. An uncertain offer must be reconciled by its owner."""
+    result: dict[tuple[str, str], dict[str, Any]] = {}
+    for path in paths:
+        raw = _read(path, max_bytes=MAX_REPORT_BYTES)
+        previous = decode_json(raw)
+        if (not isinstance(previous, dict) or previous.get("schema") != REPORT_SCHEMA
+                or previous.get("manifest", {}).get("sha256") != manifest_sha
+                or previous.get("run_profile") != profile or previous.get("speed") != speed
+                or previous.get("display_mode") != display
+                or previous.get("evidence_peer") != peer):
+            _reject("previous_attempt_configuration_changed")
+        frozen = artifacts.put("previous-report.json", raw)
+        for row in previous.get("episodes", []):
+            if row.get("status") == "not_started" and not row.get("world_mutation_offered"):
+                continue
+            if (row.get("status") != "finished" or not row.get("stored_evidence_id")
+                    or row.get("preservation_error") or row.get("cleanup_accepted") is not True):
+                _reject("previous_offered_attempt_requires_reconciliation")
+            key = (row["seed"], row["selection_id"])
+            if row["selection_id"] not in selected.values():
+                _reject("previous_selection_not_in_plan")
+            if key in result:
+                _reject("duplicate_previous_episode")
+            finish_ref = row["finish"]
+            finish_raw = _read(path.parent / finish_ref["path"])
+            if (hashlib.sha256(finish_raw).hexdigest() != finish_ref["sha256"]
+                    or len(finish_raw) != finish_ref["bytes"]
+                    or decode_json(finish_raw).get("phase") != "closed"):
+                _reject("previous_finish_unproved")
+            # The durable preservation receipt is checked against the original report.
+            ref = row["preservation"]
+            receipt_raw = _read(path.parent / ref["path"])
+            if (len(receipt_raw) != ref["bytes"]
+                    or hashlib.sha256(receipt_raw).hexdigest() != ref["sha256"]):
+                _reject("previous_receipt_changed")
+            receipt = decode_json(receipt_raw)
+            if (receipt.get("status") != "completed" or receipt.get("run_id") != row["run_id"]
+                    or receipt.get("artifact_id") != row["stored_evidence_id"]
+                    or not receipt.get("peer_readback")):
+                _reject("previous_preservation_unproved")
+            result[key] = {"previous_report": frozen, "original_report_path": str(path.resolve()),
+                           "original_row": row}
+    return result
+
+
 def run_suite(
     manifest_path: Path, manifest_sha256: str, *, client: ReferenceClient, run_dir: Path,
     selection: str, run_profile: str, limits: SuiteLimits, max_episodes: int = 1,
     selections: dict[str, str] | None = None, evidence_peer: dict[str, Any] | None = None,
     display_mode: str = "headless", speed: str = "instant",
+    completed_reports: tuple[Path, ...] = (),
     before_episode: Callable[[dict[str, Any]], bool] = lambda _report: True,
     clock: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep, should_stop: Callable[[], bool] = lambda: False,
 ) -> dict[str, Any]:
     """New attempt only. Existing run directories are read-only recovery artifacts."""
-    if (type(max_episodes) is not int or not 1 <= max_episodes <= 40
-            or run_profile not in {"short", "extended"} or not isinstance(selection, str)
+    if (type(max_episodes) is not int or not 1 <= max_episodes <= 200
+            or run_profile not in {"short", "extended", "continuous"}
+            or not isinstance(selection, str)
             or not (selection or selections) or display_mode not in {"headless", "native-ui"}
             or speed not in {"normal", "fast", "instant"}):
         _reject("invalid_attempt_configuration")
     raw_manifest, manifest = load_manifest(manifest_path, manifest_sha256)
-    if manifest.get("purpose") != "diagnostic_reference" and speed != "instant":
+    if (manifest.get("purpose") not in {"diagnostic_reference", "checkpoint_reference"}
+            and speed != "instant"):
         _reject("fixed_suite_requires_instant_speed")
     four = manifest["suite_id"] == FOUR_AGENT_SUITE_ID
+    checkpoint = manifest.get("purpose") == "checkpoint_reference"
     agents = ("random", "frequency", "linear", "mstd")
     if four:
         if (not isinstance(selections, dict) or set(selections) != set(agents)
@@ -258,6 +335,13 @@ def run_suite(
                 or len(set(selections.values())) != 4 or not isinstance(evidence_peer, dict)):
             _reject("four_distinct_selections_and_evidence_peer_required")
         selected = {a: selections[a] for a in agents}
+    elif checkpoint and selections is not None:
+        if (not selections or len(selections) > 12
+                or any(not isinstance(k, str) or not k or not isinstance(v, str) or not v
+                       for k, v in selections.items())
+                or len(set(selections.values())) != len(selections)):
+            _reject("distinct_checkpoint_selections_required")
+        selected = dict(selections)
     else:
         if selections is not None or max_episodes > manifest["episode_count"]:
             _reject("legacy_suite_requires_single_selection")
@@ -288,6 +372,13 @@ def run_suite(
                      for index, (ordinal, seed, agent, identity) in enumerate(plan)],
         "non_claims": ["not_Human_origin", "not_strategy_quality_qualification",
                        "not_Host_equivalence", "not_new_P1_profile_support"]}
+    completed = _completed_rows(completed_reports, manifest_sha256, profile=run_profile,
+        display=display_mode, speed=speed, peer=evidence_peer, selected=selected,
+        artifacts=artifacts)
+    for row in report["episodes"]:
+        prior = completed.get((row["seed"], row["selection_id"]))
+        if prior is not None:
+            row.update(status="reused", reason="previous_finished_original", **prior)
     artifacts.save(report)  # The entire denominator exists before even readiness.
 
     def timeout(deadline: float, cap: float = limits.http_seconds) -> float:
@@ -316,7 +407,7 @@ def run_suite(
             compositions[identity] = composition
         report["composition_ids"] = {key: value["composition_id"]
                                      for key, value in compositions.items()}
-        if not four:
+        if selection in compositions:
             report["composition_id"] = compositions[selection]["composition_id"]
         artifacts.save(report)
     except (OSError, ValueError, KeyError, TypeError) as error:
@@ -327,7 +418,8 @@ def run_suite(
             artifacts.save(report)
         return report
 
-    for row in report["episodes"][:max_episodes]:
+    pending_rows = [row for row in report["episodes"] if row["status"] != "reused"]
+    for row in pending_rows[:max_episodes]:
         selection = row["selection_id"]
         composition = compositions[selection]
         if not before_episode(report):
@@ -348,6 +440,8 @@ def run_suite(
             row.update(status="preparing", reason=None)
             body = {"ownership": "owned", "intent_id": row["intent_id"], "seed": row["seed"],
                     "display_mode": display_mode, "speed": speed}
+            if checkpoint:
+                body.update(character=manifest["character"], ascension=manifest["ascension"])
             row["artifacts"].append(artifacts.put("prepare-request.json", json_bytes(body)))
             artifacts.save(report)
             resource = client.prepare(body, timeout(phase_deadline))
@@ -377,6 +471,10 @@ def run_suite(
                     or binding["speed"]["effective"] != speed
                     or binding["presentation"]["requested"] != display_mode):
                 _reject("prepared_binding_changed")
+            if checkpoint and binding.get("scenario") != {
+                "character": manifest["character"], "ascension": manifest["ascension"]
+            }:
+                _reject("prepared_scenario_changed")
             row["admission_context"] = context
             row["artifacts"].append(artifacts.put("ready.json", json_bytes(resource)))
             request = client.request(selection, ref, run_profile, timeout(phase_deadline))
@@ -556,6 +654,16 @@ def run_suite(
                 row["agent_task_outcome"] = evaluation.get("agent_task_outcome")
                 row["delivery"] = {key: evaluation.get(key) for key in (
                     "tainted", "pending_request", "request_outcome_counts", "delivery_counts")}
+                if checkpoint:
+                    try:
+                        metrics = client.metrics(evaluation, row["admission_context"])
+                        row["game_metrics"] = {
+                            k: v for k, v in metrics.items() if k != "observations"
+                        }
+                        row["metrics"] = artifacts.put(
+                            "game-metrics.json", json_bytes(metrics))
+                    except (OSError, ValueError, KeyError, TypeError) as error:
+                        row["metrics_error"] = _error(error)
             row["elapsed_seconds"] = clock() - episode_started
             try:
                 artifacts.save(report)
@@ -601,6 +709,7 @@ def run_suite(
             row["reason"] = report["stop_reason"] or "canary_limit"
     report["summary"] = {
         "not_started": sum(row["status"] == "not_started" for row in report["episodes"]),
+        "reused_finished": sum(row["status"] == "reused" for row in report["episodes"]),
         "cleanup_unknown": sum(row["status"] == "unknown" for row in report["episodes"]),
         "preserved_evidence": sum("stored_evidence_id" in row for row in report["episodes"]),
         "preservation_failed_or_unknown": sum(

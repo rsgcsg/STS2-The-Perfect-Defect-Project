@@ -183,6 +183,13 @@ public static partial class NativeCardPreviewReadQualification
         && MethodsUnpatched(typeof(LocalCostModifier), "Clone", "get_Amount", "set_Amount", "get_Type", "get_Expiration", "get_IsReduceOnly")
         && FixedConstructorsUnpatched(typeof(LocalCostModifier));
 
+    private static bool CopyAfterClonedQualified(Type type) =>
+        BaseImplementation(type, typeof(CardModel), "AfterCloned")
+        // Exact v0.111.0 SovereignBlade only calls base.AfterCloned and clears
+        // its copied CreatedThroughForge presentation state. No scope/run write.
+        || type == typeof(SovereignBlade)
+            && MethodsUnpatched(typeof(SovereignBlade), "AfterCloned", "set_CreatedThroughForge");
+
     internal static bool TryPreflightCopy(CardModel card, out string? gap)
     {
         gap = "native_preview_copy_closure_unqualified";
@@ -193,7 +200,7 @@ public static partial class NativeCardPreviewReadQualification
                 || card.GetType().Namespace != "MegaCrit.Sts2.Core.Models.Cards"
                 || Mutable?.GetValue(card) is not true || !CopyClosureUnpatched()
                 || !BaseImplementation(card.GetType(), typeof(CardModel), "DeepCloneFields")
-                || !BaseImplementation(card.GetType(), typeof(CardModel), "AfterCloned")
+                || !CopyAfterClonedQualified(card.GetType())
                 || !BaseImplementation(card.GetType(), typeof(CardModel), "get_CanonicalEnergyCost")
                 // Native X-cost cards override this display fact. Reuse the
                 // exact-game effective-getter qualification used by rendering.

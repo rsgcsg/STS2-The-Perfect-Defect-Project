@@ -1233,7 +1233,7 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
       this.samplePayloads.clear(); this.freshDecision = null;
       await attempt(() => this.emit("stopped", { ...this.context(), autonomy_budget: this.budgetStatus(), controller: this.controllerStatus(),
         pending_request: this.pending, agent_state: this.agentUncertain ? "uncertain" : "known" }));
-      await attempt(() => this.options.evidence.finalize({ status: this.tainted ? "tainted" : "stopped", tainted: this.tainted, mode: "human", now: this.now() }));
+      await attempt(() => this.options.evidence.finalizeForStop({ status: this.tainted ? "tainted" : "stopped", tainted: this.tainted, mode: "human", now: this.now() }));
       this.stopped = true;
     }
     if (errors.length) throw new AggregateError(errors, "native Stop attempted all owned cleanup");
@@ -1263,7 +1263,7 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
       this.actionReservations.clear();
       for (const payload of this.samplePayloads.values()) payload.reservation.release();
       this.samplePayloads.clear();
-      try { await this.options.evidence.finalize({ status: this.tainted ? "tainted" : "stopped", tainted: this.tainted, mode: "human", now: this.now() }); }
+      try { await this.options.evidence.finalizeForStop({ status: this.tainted ? "tainted" : "stopped", tainted: this.tainted, mode: "human", now: this.now() }); }
       finally { this.stopped = true; }
     }
   }

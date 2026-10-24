@@ -35,6 +35,100 @@ MAX_BYTES = 768 * 1024**2
 MAX_FILES = 65542
 
 
+def _diagnostic(directory: Path, expected: Mapping[str, object]) -> dict[str, Any]:
+    """An exact closed failure prefix, explicitly never a verified recording."""
+    marker = directory / "diagnostic-manifest.json"
+    if (marker.is_symlink() or not marker.is_file() or marker.stat().st_size > 16 * 1024**2):
+        raise BoundaryError("global_store", "unsealed_diagnostic_required")
+    value: dict[str, Any] = json.loads(marker.read_bytes())
+    run = json.loads((directory / "manifest.json").read_bytes())
+    if (value.get("schema") != "sts2.policy-runtime/unsealed-diagnostic-1"
+            or value.get("complete") is not False or value.get("status") != "unsealed"
+            or value.get("run_id") != run.get("run_id")
+            or not isinstance(value.get("ended_at"), str)
+            or any(run.get(key) != expected.get(key) for key in (
+                "run_id", "runtime_code_sha256", "agent_manifest_sha256"))):
+        raise BoundaryError("global_store", "unsealed_diagnostic_binding")
+    actual = []
+    for path in sorted(directory.iterdir()):
+        if path.is_symlink() or not path.is_file():
+            raise BoundaryError("global_store", "unsealed_diagnostic_file")
+        if path.name != marker.name:
+            with path.open("rb") as source:
+                digest = hashlib.file_digest(source, "sha256").hexdigest()
+            actual.append({"path": path.name, "bytes": path.stat().st_size, "sha256": digest})
+    if (actual != value.get("files") or value.get("manifest_sha256") != semantic_hash(
+            {"run_id": value["run_id"], "files": actual})):
+        raise BoundaryError("global_store", "unsealed_diagnostic_inventory")
+    return value
+
+
+def publish_global_diagnostic(store: ManifestArtifactStore, directory: Path, producer: Producer,
+                              *, expected: Mapping[str, object], scratch: Path,
+                              before_publish: Callable[[Manifest], None]) -> Manifest:
+    """Preserve the producer's failed Stop through the same Store/transfer owner."""
+    diagnostic = _diagnostic(directory, expected)
+    transfer = DirectoryTransferManifest.from_directory(
+        directory, content_id=diagnostic["manifest_sha256"],
+        artifact_type="global-unsealed-diagnostic",
+    )
+    bound = sum(item.bytes for item in transfer.files) + 4096 * len(transfer.files) + 1024**2
+    require_workspace_space(scratch, bound + CHUNK_BYTES)
+    from .local_recording_import import _archive_verified_bundle
+
+    with tempfile.TemporaryDirectory(prefix="global-diagnostic-", dir=scratch) as tmp:
+        archive = Path(tmp) / "diagnostic.tar.gz"
+        _archive_verified_bundle(directory, archive, transfer, max_bytes=MAX_BYTES,
+                                 max_files=MAX_FILES, max_archive_bytes=bound)
+        _verify_archive(archive, transfer)
+        with archive.open("rb") as source:
+            payload = store.put_payload("archive", source, "application/gzip")
+    index = store.put_bytes("transfer", json_bytes(transfer.to_dict()))
+    manifest = Manifest("analysis", producer, payloads=(payload, index),
+                        parameters=FrozenObject.of({
+        "schema": "spireagent/global-unsealed-diagnostic-1", "run_id": diagnostic["run_id"],
+        "diagnostic_digest": diagnostic["manifest_sha256"], "complete": False,
+        "typed_recording_qualified": False, "human_origin_verified": False,
+        "research_admission": "not_evaluated",
+    }))
+    before_publish(manifest)
+    store.publish(manifest)
+    return manifest
+
+
+def verify_global_diagnostic(store: ManifestArtifactStore, artifact_id: str, *,
+                             expected: Mapping[str, object], scratch: Path) -> dict[str, Any]:
+    manifest = store.get_manifest(artifact_id)
+    info = manifest.parameters.value()
+    if (manifest.kind != "analysis" or info.get("schema")
+            != "spireagent/global-unsealed-diagnostic-1"
+            or info.get("complete") is not False
+            or info.get("typed_recording_qualified") is not False
+            or {p.role for p in manifest.payloads} != {"archive", "transfer"}
+            or manifest.payload("transfer").size > 16 * 1024**2):
+        raise BoundaryError("global_store", "unsealed_diagnostic_artifact")
+    with tempfile.TemporaryDirectory(prefix="diagnostic-readback-", dir=scratch) as tmp:
+        root = Path(tmp)
+        transfer = DirectoryTransferManifest.read(
+            store.materialize(manifest.payload("transfer"), root / "transfer.json"),
+        )
+        if (transfer.artifact_type != "global-unsealed-diagnostic"
+                or transfer.content_id != info["diagnostic_digest"]):
+            raise BoundaryError("global_store", "unsealed_diagnostic_transfer")
+        archive = store.materialize(manifest.payload("archive"), root / "diagnostic.tar.gz")
+        _verify_archive(archive, transfer)
+        directory = root / "original"
+        directory.mkdir()
+        with gzip.open(archive, "rb") as stream:
+            _extract_tar(stream, directory, max_bytes=MAX_BYTES, max_files=MAX_FILES)
+        diagnostic = _diagnostic(directory, expected)
+        if (diagnostic["manifest_sha256"] != info["diagnostic_digest"]
+                or diagnostic["run_id"] != info["run_id"]):
+            raise BoundaryError("global_store", "unsealed_diagnostic_changed")
+    return {"artifact_id": artifact_id, "run_id": diagnostic["run_id"], "full_readback": True,
+            "typed_recording_qualified": False, "scope": "unsealed_diagnostic_only"}
+
+
 def publish_detached_p1_model(
     store: ManifestArtifactStore,
     package_directory: Path,

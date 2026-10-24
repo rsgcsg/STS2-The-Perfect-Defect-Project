@@ -27,7 +27,8 @@ export function normalizeGlobalCaptureResponse(bytes: Uint8Array, source: Global
 /** Legacy wire objects are returned unchanged. New references are reconstructed
  * before the existing SDK decoder/assembler applies every original invariant. */
 export async function restoreGlobalCaptureResponse(bytes: Buffer,
-  sourceBytes: (ref: GlobalArtifact) => Promise<Buffer>): Promise<Buffer> {
+  sourceBytes: (ref: GlobalArtifact) => Promise<Buffer>,
+  sourceRecord?: (ref: GlobalArtifact) => Promise<FullPublicBasis>): Promise<Buffer> {
   let stored: any;
   try { stored = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)); } catch { return bytes; }
   if (stored?.schema !== GLOBAL_CAPTURE_RESPONSE_STORAGE) return bytes;
@@ -35,7 +36,8 @@ export async function restoreGlobalCaptureResponse(bytes: Buffer,
     || typeof stored.prefix !== "string" || typeof stored.suffix !== "string" || !/^[a-f0-9]{64}$/u.test(stored.original_sha256)
     || !Number.isSafeInteger(stored.original_bytes) || stored.original_bytes < 1 || stored.original_bytes > 96 * 1024 * 1024)
     throw new Error("global_capture_storage_fields");
-  const full = await readPublicBasisRecord(new TextDecoder("utf-8", { fatal: true }).decode(await sourceBytes(stored.source)));
+  const full = sourceRecord ? await sourceRecord(stored.source)
+    : await readPublicBasisRecord(new TextDecoder("utf-8", { fatal: true }).decode(await sourceBytes(stored.source)));
   const e = stored.envelope, payload = Buffer.from(full.serializedObservation, "utf8");
   if (!Number.isSafeInteger(e?.offset) || e.offset < 0 || !Number.isSafeInteger(stored.slice_bytes) || stored.slice_bytes < 1
     || e.offset + stored.slice_bytes > payload.length || e.sha256 !== full.capture.sha256 || e.total_bytes !== payload.length)

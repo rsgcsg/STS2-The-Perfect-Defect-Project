@@ -1,0 +1,74 @@
+# 原检查点真实Reference配对评估
+
+用户本轮要求先打通稳定评估链，再完成检查点实战、其他角色和详细原因分析。root唯一链路源码/运行owner；最多1个子代理，仅负责原检查点正常CPU导出和DEV配对分析。起点2026-10-24T01:58:45Z；开发接线最多1小时，硬02:58:45Z冻结；其他分析工作累计最多1小时，独立计时不因等待或换上下文重置。真实评估运行不设此时间上限，但每局/批次仍有明确预算、Stop和结果。禁止新训练/付费GPU；要新训练先另问。旧90分钟轮已关闭，这是一轮新授权，失败/unknown/旧资源总账不改。
+
+基线origin/develop7f3c711c；独占codex/reference-checkpoint-evaluation-20261024，链路⑩checkpoint/Model→⑪Agent→⑫Reference运行→结果/Store。Host原有角色与难度配置由应用原owned准备入口传递，并由原Host初始公开状态检查；不新增世界/合法性/执行owner。GUI/CLI/API继续同应用入口，Reference headless/native-ui及normal/fast/instant是同Host配置。新训练和模型包语义不变。
+
+用户确认矩阵：每个选定检查点共用10个全新Defect A0种子和2个Defect A10种子；其他Ironclad/Silent/Regent/Necrobinder每角色2个A0种子，比较1460最佳NLL与2190最终权重。固定并配对，不能挑种子或因失败重开求更好结果。当前原件7个不同状态219/438/876/1460/1752/2051/2190；2044未存，2051不得称准确率峰。best1460成品实际来自last2190保存的best_model，不谎称其parent是1460CP；新导出用各CP current权重，保原Run/CP/参数哈希。
+
+先走一局正常prepare→实际初始角色/难度/seed→原Model协商→Runtime→Stop/typed seal→原件结果提取/Store保全，再扩大。原始失败/未知/截断全部分母保留，unknown不重投或自动重置；只在准确干净Stop与Host退出后开启下一个新intent。每局有有限wall和cleanup，连续模式只取消短测提交数上限，不取消批次外部Stop。
+
+旧教训：上轮random的selector:invalid_content必须保留/定位，不能用人工选择静默补成自然局；Pause点击太迟不算通过；正常退出/CI绿不能替原生胜负。已发现Global结果投影读取surface.victory而当前公开原件是game_over context.result，按原件在读者层修，不借HP0或截图造结果。研究指标只读取原typed接受的完整原件，不加第二实时旁观控制链。旧记录不追写，新的派生报告另有身份。
+
+交付：准确冻结矩阵/版本/Model与CP清单、全部逐局原件/录制/失败、配对胜负/层数/成本/覆盖、DEV逐样本与闭环分布/排序/置信度假说的实证边界，原SOP与唯一CURRENT更新。用户“最佳NLL实战差于最后”视为待检验观察，不预先写成统计结论。不得将10个seed称大样本或把相邻CP当独立训练重复。到开发硬限停止新功能并交明确能力边界，真实运行继续用准确冻结候选；无法支持的场景或Read缺口如实报告，不无限补丁。
+
+第一局last2190/新DefectA0 seed1沿原入口自然loss，第13层，120submissions/224calls、运行约44秒，原Task声明无成功谓词仍unproved，公开终局loss独立确认；Host正常封存closed/清理，R2 recording 77066dd11d6968155226d51c6ac471c3c550ff5fab140dc718971aec8a98874d完整读回typed pass。9分钟保全瓶颈为反复流读整个训练祖先链；原Store copy新增明确reuse_published_parents选项，只复用已发布且ID/manifest一致的父节点，缺失父按原闭包复制，新root仍完整校验/读回。原默认copy/空目录恢复不放宽。首局报告不改写，后续显式completed-report在同配置/selection下核closed与保全收据hash并冻结引用，遇unknown或未封存world offer拒绝，不重开求绿。
+
+同一checkpoint子代理非作者复核发现多selections仍查单selection空ID的KeyError，已在原入口修正，并用真实run_suite多Model/同seed进入prepare回归。旧Managed终局测试fixture只有surface.victory，当前实际producer也用完整game_over/context.result，因此修fixture保胜负断言，不加无合同兼容。相关105PASS，包含原Application真实HTTP/suite、Store传输读回与旧结果消费者；结果仍只属源码/测试。全矩阵与每个实际原生场景分别待运行；100局冻结分母在任何扩批offer前落盘，唯一运行owner=root。
+
+
+冻结992候选的完整CI40054734958：shard2通过，shard1发现研究metrics依赖workbench违反原边界（真实产品层依赖错误），以及GLOBAL互操作测试仍用旧Managed终局shape。前者把完全相同public_terminal只读函数移到既有共享task_outcome，应用alias和研究同用，不复制事实；后者仅该测试改用已有current Reference终局，并按原fixture owner绑定同一snapshot/reads session，原Managed历史fixture和全部有效断言保留。初次换fixture漏session导致not_delivered，原失败保留，按真实严格校验修正后2/2通过；相关Python119通过、Ruff/相关mypy/closeout通过，同一子代理已非作者修后接受。开发修正发生在原02:58:45前，完整CI在新头重新跑，旧失败不抹去。
+
+运行中的100局仍固定992 clean checkout，不在线改源、不转移Runtime身份。修后源码候选在另一quiescent checkout；原992记录、准确source/runtime身份及原public producer语义全部保留。函数纯搬迁不重写既有结果，但不能把992现场直接标为修后源码全候选资格。第1A10种子best1460层5/last2190层6只是小样本；逐种子结果在冻结矩阵原件，不从NLL推胜率。离线分析已结束，不再追加实验。
+
+## 用户续接修复（04:54:48UTC起）
+
+用户再次明确继续原任务、修复遇到问题，沿用开发1h、其他主动工作1h、真实评估另计，禁止新训练、最多原一个检查点评估子代理。此次开发截止05:54:48UTC，最后10分钟留提交后身份/收尾。root唯一源码/Native安装/运行writer；现有App仍用另一clean992目录，不在运行目录改源。基线origin/develop7f3c711c，续接同PR234的f94，旧30局及R2包不改写。
+
+本次修复属于原观察/就绪/只读预览实现：NMapScreen.TravelToMapCoord置IsTraveling且不自行清零，关闭的地图不能继续占据输入owner；保留canonical/local/node/layout全部exact校验，只有地图打开时旅行标志才阻挡旧事件。NEventLayout.OnSetupComplete原生回调补现有NativeDecisionOwnerReady通知，由Connector原subscriber重新捕获/验完整帧，无轮询/计时/策略。君王之剑当前卡面完整但升级预览拒绝其AfterCloned override；exact v0.111.0该方法仅调用base并清副本CreatedThroughForge，按原copy资格桥增加这一准确原生调用，原卡/回调不变，不注册副本为操作数。定向68项通过，实际加载和两机制canary另核。
+
+新Native包将单独版本/安装目录及tuple，旧30不计新环境完整100分母；复用原冻结种子和七个原权重，通过正常Model环境重新绑定。历史失败保留。source/test/build/install/load/真实运行/数据与策略资格分层，BOM在源码提交后同步并重验，不以提交前检查代替。
+
+
+### 原生Instant失败与显式Fast配置（同轮开发预算内）
+
+修复候选e3ff包rc62通过postcommit BOM/仓库规则、981Host、182Logical、450Annotator及相关Node门，独立游戏副本coldload SHA9f4483ac/MVIDcbeefe与build一致，7原Model正常重新登记。headless首Silent1460新局在第7层PunchOff触发Native SIGABRT，随后renderer-only native-ui实验仍在同点无限创建VFX/报Element limit；两局独立原件保留unknown，正常finish记录实际异常/强制退出，不作模型loss或回填。
+
+exact v0.111.0 PunchOff.AfterEventStarted同步启动while动画循环，每次等待Cmd.Wait(0.1/1.2)，而原生FastMode.Instant使Cmd.Wait无yield，游戏主线程可能无法返回。UI替换不足以修复。此为环境速度条件问题，不给Native加timer/规则patch。原Reference dispatcher对新checkpoint_reference也无条件套用了固定benchmark的instant限制，拒绝受支持的Fast且在任何world offer前失败。现局部允许checkpoint suite显式指定既有normal/fast/instant；ref20/four-agent限制不变，速度冻结、typed实际readback、异速度禁止报告复用均保留。所有checkpoint同一headless Fast新批次，用同一20固定种子和七权重；旧Instant批次分开。错误动作不重投、partial Read不放宽；Fast真实事件/Regent机制仍待实战核验。
+
+
+### 独立CI同步收尾（开发截止不重置）
+
+ABE的真实Fast批次保持冻结，源码不在线改。CI指出受控Managed补丁的两份NativeFoundation镜像落后于同源预览修复，以及注释中的polling命中原代码关键字断言。root在独立CI工作树逐字同步原15文件镜像契约、改正注释措辞，保全部断言；Host源码版本rc38，实战仍原Host37。Managed同步改变patch摘要，不能把原39a6455c/a52dd旧构建标为新源码：已按原prepare正常重建，准确新patch b4d284f1、新artifact bef5d6b9/MVID622752e4，原构建完整归historical_candidate_builds，last_measured/旧runtime/资格不改。正常inspectManagedCandidateBuild全tuple通过，423Host检查通过、5项proprietary runtime未提供而skip；没有据此授Managed运行资格或替换实战Native包。
+
+### 用户追加20分钟：原生Boss奖励换幕就绪边界
+
+用户07:21:59UTC明确批准追加最多20分钟，仅奖励离开/后继判定和两处CI行长；硬07:41:59UTC，不重置其他预算，不训练。旧Fast14启动：13自然loss/R2通过、1个438在floor17未终局而交回，86未启动；旧记录不改、不重投原请求。原始错误是已送达Boss奖励Proceed后仍发布该旧页为新决策。exact NRewardsScreen的Boss/victory分支禁用按钮并设置_disableProceedForever，再由ActChangeSynchronizer排入原生换幕投票；NativeReader却因仍存在弃药命令而给ready，P1才报reward_owner_reopened_after_leave。此处不是已批准的普通卡奖励open→return例外，不扩充或放宽P1单向合同。
+
+在Native Foundation只读观察该exact字段与已注册terminal owner，Connector奖励Reader把这一真实native pending transition标settling，保原完整公开内容与完整性标准；Runtime原等待会等实际后继。没有新计时器、策略条件、游戏规则/Commit修改或gap忽略。986 exact-game Host检查通过，含真实Native字段访问与读不改验证；Python两行格式按项目显式配置Ruff通过。新Native版本rc63，正常独立安装/加载/7模型注册与定向438原种子新候选canary另验；旧Native41/rc62记录不借新候选资格。Instant普通玩法根因尚未隔离，用户确认用过Instant；仅本自动化Instant两失败/Fast通过，不泛称vanilla必现bug。
+
+### 07:54UTC收口事实：换幕定向通过，容量阻塞，等待追加决定
+
+追加20分钟已于07:41:59UTC停止开发，9afcad47（Native源026c5599/rc63）保持准确候选。986 exact-game Host/正式build/deploy/coldload/7原模型正常注册通过；CI40074653990的两个Linux分片和portable汇总已通过，旧df6 E501失败不抹去，PR234未合入。实际App仍另一clean ABE、Host37/Runtime41，不在线改源。
+
+同438步检查点、原DefectA0种子首canary确实从原17层Boss奖励穿过换幕并到第二幕至少24层；evidence/Defect438-act-ready-canary.json引用原公开source/hash/事件与真实tuple。随后Runtime evidence.ts单局负载+暂存硬512MiB触发global_storage_capacity（原event22412），送达后捕获失败而tainted，不重试EndTurn。原manifest未封存/缺checksums导致正式global_archive_inventory拒绝；正常Host ACK/exit0/closed只是退出事实。最新100计划仅1启动/1未知/0自然结果/99未启动，队列已停；旧Fast14=13loss+1未知及更早30=27loss+3未知另存，不跨版本合并。
+
+两份未封存原件（旧bdb、新929）另以analysis诊断artifact a74d67e3772d0dd15dbcf16410ebfa86fe6dc9f9b89d66a26c984f2f4c405e12备份R2，111225672字节/24202原文件，空目录全SHA/CRC通过，不升格为typed录制、自然结果或Human，原件未删。当前报告/逐格表/配对DEV与已证机制、SOP和限制归本地checkpoint-evaluation-act-ready/REPORT.zh-CN.md及CURRENT.md；没有伪造100局评估曲线。
+
+原目标和未完义务不取消。解决完整局真实规模与失败封存需新Runtime/Evidence开发，必须先经用户明确追加预算。已提供追加30分钟或当前失败报告收口的选择，未得到答复不继续写代码。不得仅抬512MiB常量、删暂存/补checksums、重投原动作或借旧包资格声称稳定。用户确认使用过Instant，普通原版独占根因未证明；以此纠正早期解释，原失败记录保留。
+
+### 用户授权本轮完整存储优化与原评估续接
+
+用户明确要求按真实需求优化该链路后继续原任务，并确认最多1小时开发；起08:10:12UTC，硬09:10:12UTC，09:00:12UTC前冻结功能并留10分钟收尾。真实游戏另计，无训练，最多原一个检查点评估子代理只读验消费者。广义教训是避免反复调查/补丁/重跑却无可用结果：前15分钟收敛，30分钟争取真实Store/R2恢复闭环；同目标两种原因失败就复查连接，不扩全库审计或第二存储系统，不把恢复/汇报当完成。
+
+链路位置为⑤⑥原件→存储→⑫评估，变更类别为表示/传输和原owner实现修复，不变信息/动作/学习语义。实测563.1MB中462.4MB为2251份完整公开basis，387次决策；已验证无损压缩负载约63MB。选择原Runtime压缩不可变blob，保原逻辑字节/SHA，由现Evidence/metrics统一有界解码、物理inventory另绑压缩字节；保原512MiB物理上限，不裁剪/降采样/丢因果。局末复用原Store压缩传R2并读回/冷却，有界本地工作集符合R2长期存储方向。当前需求不必另建实时云日志owner。Stop失败原前缀独立diagnostic清单/analysis保全，保原typed拒绝和unknown不重试。
+
+验收先过生产writer的>512MiB逻辑规模无损恢复、真实Python终局/metrics和正式replay、篡改/截尾/损坏压缩拒绝、失败诊断R2空目录恢复且不升格，再正常包/安装/7权重登记和原长局canary。旧录制/诊断/权重及失败分母保留，不为“全绿”修改原件；后续原100矩阵仍必须有完整逐格结果/未完项与明确资格。
+
+### 用户限定续修：长局共享回放内存与CI
+
+用户明确追加最多1小时，仅回放内存保留与已定位CI，随后续原评估；起09:38:58UTC，硬10:38:58UTC（布里斯班20:38:58），实际游戏另计，旧各轮预算与失败不重置。旧Runtime42实际33层原件未经修改，已封存/公开loss但SDK共享回放30秒不可用；同原安装回放器只读诊断约69秒在4GiB堆处OOM。完整原件22000文件/121457533字节ZIP已R2空目录全hash/CRC通过，analysis98cb58f69b70a17d7909b8fa193244993ed926080ba2bb15f8e8e419ea587d7d，runtime父ec35cb72c9c4e7ea46459a5477ffdfef926c412f210321ca8abc5b4373b04f4b；不提升为typed录制。
+
+先在旧33层原件验证新读者，严格scope仅source/test兼容性能，不改原件producer身份/不借新代码给旧42授资格。历史source改存artifact索引与必要判定，完整basis经原SHA/SDK解码按需读、最多2条缓存；捕获原文join全部断言完成后清已消费chunks/completed，不删原件、不去掉ACK/投递/后继/最后全部归账断言。1GiB堆限下实际完整回放58.4秒、峰值RSS583090176字节、551消费/550结果且verdict verified；新43真实生产资格另验。
+
+基于该实测成本，Evidence共享回放有120秒有限预算。相同全目录content_id及实际语义依赖身份，允许进程内16条已通过的纯语义结果复用；每次仍重新检查全部文件/checksum/immutable、当前Runtime/真实SDK/core/依赖代码、上下文和预算。实际语义依赖由原受信Runtime模块现场解析/哈希，包括SDK实际解析入口与dist、zod、Runtime全部嵌套代码及执行引擎；旧不支持身份函数的包不缓存、仍完整回放，不猜协议。失败不缓存、变更数据/SDK/core不借旧pass，没有新存储账本。缓存的资格负例和普通unittest组件入口必须通过。CI修复仅Evidence测试改回标准库unittest及按python目录实际Ruff入口整理导入，不新增pytest依赖、不删有效断言。

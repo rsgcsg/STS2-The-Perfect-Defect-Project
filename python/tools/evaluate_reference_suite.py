@@ -26,11 +26,13 @@ def main(argv: list[str] | None = None) -> int:
                             help="four Agent names to exact registered selection IDs")
     parser.add_argument("--evidence-peer", type=Path,
                         help="existing Store/R2 binding JSON without credentials")
-    parser.add_argument("--run-profile", choices=("short", "extended"), required=True)
+    parser.add_argument("--run-profile", choices=("short", "extended", "continuous"), required=True)
     parser.add_argument("--run-dir", type=Path, required=True)
     parser.add_argument("--display-mode", choices=("headless", "native-ui"), default="headless")
     parser.add_argument("--speed", choices=("normal", "fast", "instant"), default="instant")
     parser.add_argument("--max-episodes", type=int, default=1)
+    parser.add_argument("--completed-report", type=Path, action="append", default=[],
+                        help="retain finished originals without replay; uncertain offers reject")
     parser.add_argument("--preparation-seconds", type=float, required=True)
     parser.add_argument("--episode-seconds", type=float, required=True)
     parser.add_argument("--cleanup-seconds", type=float, default=180)
@@ -49,7 +51,7 @@ def main(argv: list[str] | None = None) -> int:
                            selections=selected, evidence_peer=peer,
                            run_profile=args.run_profile, limits=limits,
                            max_episodes=args.max_episodes, display_mode=args.display_mode,
-                           speed=args.speed)
+                           speed=args.speed, completed_reports=tuple(args.completed_report))
         # This is invocation provenance, not a replacement for original owner identities.
         print(json.dumps({"status": report["status"], "report": str(args.run_dir / "report.json"),
                           "attempt_id": report["attempt_id"], "planned": report["planned"],
