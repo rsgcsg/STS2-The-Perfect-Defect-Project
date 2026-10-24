@@ -2,6 +2,8 @@ using System;
 using System.Runtime.CompilerServices;
 using Godot;
 using MegaCrit.Sts2.Core.Nodes.Screens.GameOverScreen;
+using MegaCrit.Sts2.Core.Nodes.Events;
+using MegaCrit.Sts2.Core.Nodes.Rooms;
 using MegaCrit.Sts2.Core.Nodes.Screens.Overlays;
 using MegaCrit.Sts2.Core.Nodes.Screens.Map;
 using MegaCrit.Sts2.Core.Nodes.Screens.ScreenContext;
@@ -60,6 +62,23 @@ public static class NativeDecisionOwnerReadyProvider
         Observed?.Invoke(new NativeDecisionOwnerReadyObservation(
             "map_navigation", screen, screen.GetType().FullName ?? screen.GetType().Name,
             nativeMechanism));
+        return true;
+    }
+
+    // SetupLayout awaits native UI work before its options become available.
+    // Publish the exact completed layout seam rather than polling a settling frame.
+    public static bool ObserveEventLayoutReady(NEventLayout layout)
+    {
+        NEventRoom? room = NEventRoom.Instance;
+        RunState? run = RunManager.Instance.DebugOnlyGetState();
+        if (room == null || run?.CurrentRoom is not EventRoom || run.IsGameOver
+            || RunManager.Instance.IsCleaningUp || run.Players.Count != 1
+            || !ReferenceEquals(room.Layout, layout) || !layout.IsInsideTree()
+            || !layout.IsVisibleInTree() || NMapScreen.Instance?.IsOpen == true
+            || RunManager.Instance.EventSynchronizer?.GetLocalEvent() is not { } model
+            || !ReferenceEquals(model.Node, layout)) return false;
+        Observed?.Invoke(new NativeDecisionOwnerReadyObservation("event_option", layout,
+            layout.GetType().FullName ?? layout.GetType().Name, "NEventLayout.OnSetupComplete.postfix"));
         return true;
     }
 

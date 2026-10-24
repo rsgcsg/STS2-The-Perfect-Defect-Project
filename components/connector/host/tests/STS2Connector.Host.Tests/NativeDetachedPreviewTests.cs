@@ -43,6 +43,26 @@ public sealed class NativeDetachedPreviewTests
     });
 
     [Fact]
+    public void SovereignBladeCopyUsesItsNativeAfterClonedWithoutChangingLiveForgeState()
+    {
+        var blade = (SovereignBlade)Mutable<SovereignBlade>();
+        blade.CreatedThroughForge = true;
+        _ = blade.DynamicVars;
+        _ = blade.EnergyCost;
+        string before = Values(blade);
+        Assert.True(NativeCardPreviewReadQualification.TryPreflightCopy(blade, out string? gap), gap);
+        var copy = (SovereignBlade)NativeDetachedCardCopy.CreateQualifiedCopy(blade);
+        Assert.True(blade.CreatedThroughForge);
+        Assert.False(copy.CreatedThroughForge);
+        Assert.True(NativeDetachedCardPreviewFactory.TryDeckUpgrade(blade, out var preview, out gap), gap);
+        Assert.Equal(1, preview!.Display.EnergyCost.GetWithModifiers(CostModifiers.Local));
+        Assert.True(blade.CreatedThroughForge);
+        Assert.Equal(before, Values(blade));
+        Assert.NotSame(blade.DynamicVars, copy.DynamicVars);
+        Assert.NotSame(blade.EnergyCost, copy.EnergyCost);
+    }
+
+    [Fact]
     public void FixedUpgradeMethodInventoryIsPinnedToTheAuditedNativeBodies()
     {
         Assert.Equal(new Guid("57785517-0b16-42b9-8b36-bad6fb28384b"), typeof(CardModel).Module.ModuleVersionId);

@@ -36,7 +36,7 @@ internal static class NativeEventRoomBinding
             || expectedUiRoom == null
             || !ReferenceEquals(NEventRoom.Instance, expectedUiRoom)
             || !ConnectorMod.IsLiveNode(expectedUiRoom)
-            || NMapScreen.Instance?.IsTraveling == true
+            || IsBlockingMapTravel(NMapScreen.Instance?.IsOpen == true, NMapScreen.Instance?.IsTraveling == true)
             || synchronizer == null
             || !ReferenceEquals(expectedRoom.CanonicalEvent, CanonicalEvent(synchronizer))
             || synchronizer.Events.Count != 1)
@@ -46,12 +46,17 @@ internal static class NativeEventRoomBinding
         if (model.Node is not NEventLayout layout || !ConnectorMod.IsLiveNode(layout)
             || !Matches(expectedRoom.CanonicalEvent, CanonicalEvent(synchronizer),
                 model, MountedEvent(expectedUiRoom), model.Node, expectedUiRoom.Layout,
-                NMapScreen.Instance?.IsTraveling == true))
+                IsBlockingMapTravel(NMapScreen.Instance?.IsOpen == true, NMapScreen.Instance?.IsTraveling == true)))
             return false;
 
         current = new(expectedRoom, expectedUiRoom, model, layout);
         return true;
     }
+
+    // IsTraveling survives TravelToMapCoord until a later map lifecycle reset.
+    // Once closed, the map is not the current input owner. Exact event model,
+    // mounted node and layout identity still fence the previous room.
+    internal static bool IsBlockingMapTravel(bool mapOpen, bool mapTraveling) => mapOpen && mapTraveling;
 
     internal static bool Matches(
         object? roomCanonicalEvent,

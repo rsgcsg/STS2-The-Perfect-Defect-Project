@@ -20,3 +20,11 @@
 冻结992候选的完整CI40054734958：shard2通过，shard1发现研究metrics依赖workbench违反原边界（真实产品层依赖错误），以及GLOBAL互操作测试仍用旧Managed终局shape。前者把完全相同public_terminal只读函数移到既有共享task_outcome，应用alias和研究同用，不复制事实；后者仅该测试改用已有current Reference终局，并按原fixture owner绑定同一snapshot/reads session，原Managed历史fixture和全部有效断言保留。初次换fixture漏session导致not_delivered，原失败保留，按真实严格校验修正后2/2通过；相关Python119通过、Ruff/相关mypy/closeout通过，同一子代理已非作者修后接受。开发修正发生在原02:58:45前，完整CI在新头重新跑，旧失败不抹去。
 
 运行中的100局仍固定992 clean checkout，不在线改源、不转移Runtime身份。修后源码候选在另一quiescent checkout；原992记录、准确source/runtime身份及原public producer语义全部保留。函数纯搬迁不重写既有结果，但不能把992现场直接标为修后源码全候选资格。第1A10种子best1460层5/last2190层6只是小样本；逐种子结果在冻结矩阵原件，不从NLL推胜率。离线分析已结束，不再追加实验。
+
+## 用户续接修复（04:54:48UTC起）
+
+用户再次明确继续原任务、修复遇到问题，沿用开发1h、其他主动工作1h、真实评估另计，禁止新训练、最多原一个检查点评估子代理。此次开发截止05:54:48UTC，最后10分钟留提交后身份/收尾。root唯一源码/Native安装/运行writer；现有App仍用另一clean992目录，不在运行目录改源。基线origin/develop7f3c711c，续接同PR234的f94，旧30局及R2包不改写。
+
+本次修复属于原观察/就绪/只读预览实现：NMapScreen.TravelToMapCoord置IsTraveling且不自行清零，关闭的地图不能继续占据输入owner；保留canonical/local/node/layout全部exact校验，只有地图打开时旅行标志才阻挡旧事件。NEventLayout.OnSetupComplete原生回调补现有NativeDecisionOwnerReady通知，由Connector原subscriber重新捕获/验完整帧，无轮询/计时/策略。君王之剑当前卡面完整但升级预览拒绝其AfterCloned override；exact v0.111.0该方法仅调用base并清副本CreatedThroughForge，按原copy资格桥增加这一准确原生调用，原卡/回调不变，不注册副本为操作数。定向68项通过，实际加载和两机制canary另核。
+
+新Native包将单独版本/安装目录及tuple，旧30不计新环境完整100分母；复用原冻结种子和七个原权重，通过正常Model环境重新绑定。历史失败保留。source/test/build/install/load/真实运行/数据与策略资格分层，BOM在源码提交后同步并重验，不以提交前检查代替。

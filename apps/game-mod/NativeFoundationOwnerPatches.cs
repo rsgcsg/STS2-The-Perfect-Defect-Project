@@ -12,6 +12,7 @@ using MegaCrit.Sts2.Core.Nodes.Screens;
 using MegaCrit.Sts2.Core.Nodes.Screens.GameOverScreen;
 using MegaCrit.Sts2.Core.Nodes.Screens.CardSelection;
 using MegaCrit.Sts2.Core.Nodes.Rooms;
+using MegaCrit.Sts2.Core.Nodes.Events;
 using MegaCrit.Sts2.Core.Nodes.CommonUi;
 using MegaCrit.Sts2.Core.Nodes.Combat;
 using MegaCrit.Sts2.Core.Nodes.GodotExtensions;
@@ -126,6 +127,9 @@ internal static class NativeFoundationOwnerPatches
             harmony,
             AccessTools.Method(typeof(NGameOverContinueButton), "OnEnable"),
             AccessTools.Method(typeof(NativeGameOverReadyPatch), nameof(NativeGameOverReadyPatch.Postfix)));
+        PatchPostfix(harmony,
+            AccessTools.Method(typeof(NEventLayout), nameof(NEventLayout.OnSetupComplete)),
+            AccessTools.Method(typeof(NativeEventLayoutReadyPatch), nameof(NativeEventLayoutReadyPatch.Postfix)));
         _initialized = true;
     }
 
@@ -353,5 +357,15 @@ internal static class NativeGameOverReadyPatch
         {
             GD.PrintErr($"[STS2 Platform] native game-over ready observation failed: {exception}");
         }
+    }
+}
+
+
+internal static class NativeEventLayoutReadyPatch
+{
+    internal static void Postfix(NEventLayout __instance)
+    {
+        try { NativeDecisionOwnerReadyProvider.ObserveEventLayoutReady(__instance); }
+        catch (Exception exception) { GD.PrintErr($"[STS2 Platform] event layout readiness observation failed: {exception}"); }
     }
 }
