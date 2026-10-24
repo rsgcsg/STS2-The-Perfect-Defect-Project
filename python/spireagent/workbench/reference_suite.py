@@ -26,6 +26,7 @@ from spireagent.workbench.developer_server import running
 from spireagent.workbench.native_episode_binding import checked_context
 from stpd.evaluation.suites import (
     FOUR_AGENT_SUITE_ID,
+    checkpoint_reference_manifest,
     diagnostic_reference_manifest,
     four_agent_reference_manifest,
 )
@@ -45,6 +46,17 @@ def load_manifest(path: Path, sha256: str) -> tuple[bytes, dict[str, Any]]:
     if hashlib.sha256(raw).hexdigest() != sha256:
         _reject("manifest_hash_mismatch")
     value = decode_json(raw)
+    if isinstance(value, dict) and value.get("purpose") == "checkpoint_reference":
+        version, character, ascension = (value.get("game_version"), value.get("character"),
+                                         value.get("ascension"))
+        if (not isinstance(version, str) or not isinstance(character, str)
+                or type(ascension) is not int):
+            _reject("manifest_configuration_changed")
+        expected_checkpoint = checkpoint_reference_manifest(
+            version, character, ascension)
+        if json_bytes(value) != json_bytes(expected_checkpoint):
+            _reject("manifest_configuration_changed")
+        return raw, value
     if isinstance(value, dict) and value.get("suite_id") == FOUR_AGENT_SUITE_ID:
         game_version = value.get("game_version")
         if not isinstance(game_version, str):
@@ -119,6 +131,7 @@ class ReferenceClient(Protocol):
                   startup: dict[str, Any]) -> tuple[bytes, bytes]: ...
     def preserve(self, run_id: str, peer: dict[str, Any], timeout: float) -> dict[str, Any]: ...
     def preservation_status(self, timeout: float) -> dict[str, Any]: ...
+    def metrics(self, evaluation: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]: ...
 
 
 class WorkbenchReferenceClient:
@@ -148,7 +161,9 @@ class WorkbenchReferenceClient:
 
     def prepare(self, body: dict[str, Any], timeout: float) -> dict[str, Any]:
         return self._native("prepare-owned", timeout, **{
-            key: body[key] for key in ("intent_id", "seed", "display_mode", "speed")})
+            key: body[key] for key in (
+                "intent_id", "seed", "display_mode", "speed", "character", "ascension")
+            if key in body})
 
     def native_status(self, timeout: float) -> dict[str, Any]:
         return self._native("native-status", timeout)
@@ -188,6 +203,13 @@ class WorkbenchReferenceClient:
         if raw != canonical_json(evaluation).encode():
             _reject("original_evaluation_changed")
         return request_raw, raw
+
+    def metrics(self, evaluation: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+        from stpd.evaluation.reference_metrics import read_reference_metrics
+
+        return read_reference_metrics(
+            self.config.state_dir / "models" / "agent-runs" / evaluation["run_id"],
+            evaluation, context)
 
 
 class _Artifacts:
@@ -242,8 +264,9 @@ def run_suite(
     sleep: Callable[[float], None] = time.sleep, should_stop: Callable[[], bool] = lambda: False,
 ) -> dict[str, Any]:
     """New attempt only. Existing run directories are read-only recovery artifacts."""
-    if (type(max_episodes) is not int or not 1 <= max_episodes <= 40
-            or run_profile not in {"short", "extended"} or not isinstance(selection, str)
+    if (type(max_episodes) is not int or not 1 <= max_episodes <= 200
+            or run_profile not in {"short", "extended", "continuous"}
+            or not isinstance(selection, str)
             or not (selection or selections) or display_mode not in {"headless", "native-ui"}
             or speed not in {"normal", "fast", "instant"}):
         _reject("invalid_attempt_configuration")
@@ -251,6 +274,7 @@ def run_suite(
     if manifest.get("purpose") != "diagnostic_reference" and speed != "instant":
         _reject("fixed_suite_requires_instant_speed")
     four = manifest["suite_id"] == FOUR_AGENT_SUITE_ID
+    checkpoint = manifest.get("purpose") == "checkpoint_reference"
     agents = ("random", "frequency", "linear", "mstd")
     if four:
         if (not isinstance(selections, dict) or set(selections) != set(agents)
@@ -258,6 +282,13 @@ def run_suite(
                 or len(set(selections.values())) != 4 or not isinstance(evidence_peer, dict)):
             _reject("four_distinct_selections_and_evidence_peer_required")
         selected = {a: selections[a] for a in agents}
+    elif checkpoint and selections is not None:
+        if (not selections or len(selections) > 12
+                or any(not isinstance(k, str) or not k or not isinstance(v, str) or not v
+                       for k, v in selections.items())
+                or len(set(selections.values())) != len(selections)):
+            _reject("distinct_checkpoint_selections_required")
+        selected = dict(selections)
     else:
         if selections is not None or max_episodes > manifest["episode_count"]:
             _reject("legacy_suite_requires_single_selection")
@@ -348,6 +379,8 @@ def run_suite(
             row.update(status="preparing", reason=None)
             body = {"ownership": "owned", "intent_id": row["intent_id"], "seed": row["seed"],
                     "display_mode": display_mode, "speed": speed}
+            if checkpoint:
+                body.update(character=manifest["character"], ascension=manifest["ascension"])
             row["artifacts"].append(artifacts.put("prepare-request.json", json_bytes(body)))
             artifacts.save(report)
             resource = client.prepare(body, timeout(phase_deadline))
@@ -377,6 +410,10 @@ def run_suite(
                     or binding["speed"]["effective"] != speed
                     or binding["presentation"]["requested"] != display_mode):
                 _reject("prepared_binding_changed")
+            if checkpoint and binding.get("scenario") != {
+                "character": manifest["character"], "ascension": manifest["ascension"]
+            }:
+                _reject("prepared_scenario_changed")
             row["admission_context"] = context
             row["artifacts"].append(artifacts.put("ready.json", json_bytes(resource)))
             request = client.request(selection, ref, run_profile, timeout(phase_deadline))
@@ -556,6 +593,13 @@ def run_suite(
                 row["agent_task_outcome"] = evaluation.get("agent_task_outcome")
                 row["delivery"] = {key: evaluation.get(key) for key in (
                     "tainted", "pending_request", "request_outcome_counts", "delivery_counts")}
+                if checkpoint:
+                    try:
+                        row["game_metrics"] = client.metrics(evaluation, row["admission_context"])
+                        row["metrics"] = artifacts.put(
+                            "game-metrics.json", json_bytes(row["game_metrics"]))
+                    except (OSError, ValueError, KeyError, TypeError) as error:
+                        row["metrics_error"] = _error(error)
             row["elapsed_seconds"] = clock() - episode_started
             try:
                 artifacts.save(report)

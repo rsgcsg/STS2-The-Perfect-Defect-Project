@@ -26,7 +26,7 @@ def main(argv: list[str] | None = None) -> int:
                             help="four Agent names to exact registered selection IDs")
     parser.add_argument("--evidence-peer", type=Path,
                         help="existing Store/R2 binding JSON without credentials")
-    parser.add_argument("--run-profile", choices=("short", "extended"), required=True)
+    parser.add_argument("--run-profile", choices=("short", "extended", "continuous"), required=True)
     parser.add_argument("--run-dir", type=Path, required=True)
     parser.add_argument("--display-mode", choices=("headless", "native-ui"), default="headless")
     parser.add_argument("--speed", choices=("normal", "fast", "instant"), default="instant")

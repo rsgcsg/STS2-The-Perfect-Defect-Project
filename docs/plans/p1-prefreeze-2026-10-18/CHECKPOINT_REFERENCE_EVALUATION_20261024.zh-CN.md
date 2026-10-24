@@ -1,0 +1,13 @@
+# 原检查点真实Reference配对评估
+
+用户本轮要求先打通稳定评估链，再完成检查点实战、其他角色和详细原因分析。root唯一链路源码/运行owner；最多1个子代理，仅负责原检查点正常CPU导出和DEV配对分析。起点2026-10-24T01:58:45Z；开发接线最多1小时，硬02:58:45Z冻结；其他分析工作累计最多1小时，独立计时不因等待或换上下文重置。真实评估运行不设此时间上限，但每局/批次仍有明确预算、Stop和结果。禁止新训练/付费GPU；要新训练先另问。旧90分钟轮已关闭，这是一轮新授权，失败/unknown/旧资源总账不改。
+
+基线origin/develop7f3c711c；独占codex/reference-checkpoint-evaluation-20261024，链路⑩checkpoint/Model→⑪Agent→⑫Reference运行→结果/Store。Host原有角色与难度配置由应用原owned准备入口传递，并由原Host初始公开状态检查；不新增世界/合法性/执行owner。GUI/CLI/API继续同应用入口，Reference headless/native-ui及normal/fast/instant是同Host配置。新训练和模型包语义不变。
+
+用户确认矩阵：每个选定检查点共用10个全新Defect A0种子和2个Defect A10种子；其他Ironclad/Silent/Regent/Necrobinder每角色2个A0种子，比较1460最佳NLL与2190最终权重。固定并配对，不能挑种子或因失败重开求更好结果。当前原件7个不同状态219/438/876/1460/1752/2051/2190；2044未存，2051不得称准确率峰。best1460成品实际来自last2190保存的best_model，不谎称其parent是1460CP；新导出用各CP current权重，保原Run/CP/参数哈希。
+
+先走一局正常prepare→实际初始角色/难度/seed→原Model协商→Runtime→Stop/typed seal→原件结果提取/Store保全，再扩大。原始失败/未知/截断全部分母保留，unknown不重投或自动重置；只在准确干净Stop与Host退出后开启下一个新intent。每局有有限wall和cleanup，连续模式只取消短测提交数上限，不取消批次外部Stop。
+
+旧教训：上轮random的selector:invalid_content必须保留/定位，不能用人工选择静默补成自然局；Pause点击太迟不算通过；正常退出/CI绿不能替原生胜负。已发现Global结果投影读取surface.victory而当前公开原件是game_over context.result，按原件在读者层修，不借HP0或截图造结果。研究指标只读取原typed接受的完整原件，不加第二实时旁观控制链。旧记录不追写，新的派生报告另有身份。
+
+交付：准确冻结矩阵/版本/Model与CP清单、全部逐局原件/录制/失败、配对胜负/层数/成本/覆盖、DEV逐样本与闭环分布/排序/置信度假说的实证边界，原SOP与唯一CURRENT更新。用户“最佳NLL实战差于最后”视为待检验观察，不预先写成统计结论。不得将10个seed称大样本或把相邻CP当独立训练重复。到开发硬限停止新功能并交明确能力边界，真实运行继续用准确冻结候选；无法支持的场景或Read缺口如实报告，不无限补丁。

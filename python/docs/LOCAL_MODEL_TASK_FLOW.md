@@ -83,8 +83,8 @@ Actor or clean original seal can be proven, keep the uncertainty and use the
 existing diagnostics/recovery path instead of repeatedly clicking Start.
 
 Checkpoint publication is CPU/Store work, independent of a running game. Use
-`tools/project.py model --config <project.json> --action export-checkpoint
---artifact <checkpoint-id> --checkpoint-selection best|current`; inspect that
+`python -m spireagent.workbench project model --config <project.json>
+--action export-checkpoint --artifact <checkpoint-id> --checkpoint-selection best|current`; inspect that
 same Model operation's completed `last_checkpoint_export`, then use the normal
 Model download and registration commands. The recipe adapter owns publication;
 GUI/CLI/API only map to it. Download does not establish training ancestry or
@@ -596,3 +596,43 @@ A later mode, decision, submission, consumption, directive or unknown
 substantive event blocks reuse of an older handoff. Explicit Stop reasons and
 existing failure, uncertainty and budget precedence remain unchanged; the reason
 does not prove Task completion or a terminal game result.
+
+## Paired checkpoint Reference evaluation
+
+The existing owned native-episode preparation also accepts `character` and
+`ascension` together. Omission retains the original Defect A0 contract. Explicit
+configuration supports Defect, Ironclad, Silent, Regent and Necrobinder at A0–A10;
+Host selects through its native bootstrap and verifies the actual initial public
+character/ascension. The original template is an isolated starting profile, not a
+claim that every selected run is Defect A0. General scenarios carry a bound
+`fresh_seeded_reference_scenario` initialization and exact `scenario`; old bindings
+remain readable. CLI uses the locked Python environment:
+
+```sh
+python -m spireagent.workbench project native-episode --config /ABS/project.json \
+  --action prepare-owned --intent-id NEW_32_HEX --native-seed CANONICAL_SEED \
+  --display-mode headless --native-speed instant --character Silent --ascension 0
+```
+
+Use the same `agent-request`, `run-agent`, status and `native-finish` chain; changing
+character never chooses a separate Runtime or bypasses Model negotiation. Unknown
+original preparation/delivery is not retried. Finish and confirm the exact prior
+Actor/Host before the next intent.
+
+`stpd.evaluation.suites.checkpoint_reference_manifest` produces the fixed fresh
+checkpoint comparison manifests: ten Defect A0 seeds, two Defect A10 seeds, and
+two A0 seeds per other character. They are reserved from collection/training.
+`tools/evaluate_reference_suite.py --manifest ... --manifest-sha256 ... --selections
+/ABS/checkpoints.json` accepts checkpoint labels mapped to distinct normally
+registered selections. Every checkpoint uses the same seeds and configuration;
+exact Model/package/current-vs-best/step identities belong in the frozen input
+index. Use `--run-profile continuous` with finite per-episode, suite and cleanup
+seconds for full games; short/extended profiles retain their existing limits.
+Headless/native-ui and speed remain Reference configurations.
+
+Reports retain all planned, failed, censored, unknown and unstarted episodes.
+Sealed public-source metrics bind original source hashes and runtime to floor,
+HP/character/ascension and terminal `game_over` context.result; no HP or process
+exit invents a win/loss. Metrics and typed Task completion are separate. Model
+quality is a paired research comparison, not Human or research admission. Store/R2
+preservation follows the existing evidence-publish owner, never a second registry.

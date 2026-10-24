@@ -757,9 +757,7 @@ def _global_terminal(outcome, value, events):
         ref = sources[event["payload"]["source_ordinal"]]
         record = json.loads(_verified_bytes(value, ref["path"], MAX_BODY_BYTES))
         basis = json.loads(record["serialized_observation"])
-        surface = basis["snapshot"]["interaction"]["content"]["surface"]
-        victory = surface.get("victory")
-        result = "win" if victory is True else "loss" if victory is False else None
+        result = _public_terminal(basis["snapshot"])
         if basis["capture_status"] == "complete" and result is not None:
             terminals.append(
                 {

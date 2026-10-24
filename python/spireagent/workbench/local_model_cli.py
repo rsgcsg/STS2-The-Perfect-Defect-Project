@@ -39,6 +39,8 @@ def native_episode_command(
     seed: str | None = None,
     display_mode: str = "headless",
     speed: str = "default",
+    character: str | None = None,
+    ascension: int | None = None,
     selection: str | None = None,
     operation: str = "prepare-and-takeover",
     run_profile: str = "short",
@@ -112,6 +114,8 @@ def native_episode_command(
         }
         if action == "prepare-owned":
             body.update(seed=seed, display_mode=display_mode, speed=speed)
+            if character is not None or ascension is not None:
+                body.update(character=character, ascension=ascension)
         return call("/api/local-environment/native/prepare", preparation_body(body))
     if action == "native-status":
         return call("/api/local-environment/native", None)
