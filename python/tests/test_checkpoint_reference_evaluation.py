@@ -121,7 +121,8 @@ def test_terminal_and_metrics_use_original_public_context_not_missing_victory(tm
                                {'binding': {'runtime_instance_id': 'runtime'}})
 
 
-def test_checkpoint_multi_selection_reaches_original_prepare(tmp_path):
+@pytest.mark.parametrize('speed', ['instant', 'fast'])
+def test_checkpoint_multi_selection_reaches_original_prepare(tmp_path, speed):
     from test_reference_suite import Clock, OwnerClient
 
     from spireagent.workbench.reference_suite import SuiteLimits, run_suite
@@ -133,8 +134,10 @@ def test_checkpoint_multi_selection_reaches_original_prepare(tmp_path):
     clock = Clock()
     result = run_suite(path, hashlib.sha256(path.read_bytes()).hexdigest(), client=client,
         run_dir=directory, selection='', selections={'first': 'model-a', 'last': 'model-b'},
-        run_profile='short', max_episodes=1, limits=SuiteLimits(2, 2, 2, 20, .01),
+        run_profile='short', speed=speed, max_episodes=1, limits=SuiteLimits(2, 2, 2, 20, .01),
         clock=clock, sleep=clock.sleep)
+    assert client.resource['preparation']['speed'] == speed
+    assert result['speed'] == speed
     assert client.calls.count('readiness') == 2
     assert 'prepare' in client.calls
     assert result['world_offers'] == 1
@@ -164,7 +167,24 @@ def test_completed_original_is_retained_without_reoffer_and_unknown_rejected(tmp
             speed='instant', peer=None, selected={'last': 'model'},
             artifacts=_Artifacts(tmp_path/name))
     assert load('one')[('seed', 'model')]['original_row']['run_id'] == 'original-run'
+    with pytest.raises(BoundaryError, match='previous_attempt_configuration_changed'):
+        _completed_rows((original,), 'b'*64, profile='continuous', display='headless',
+            speed='fast', peer=None, selected={'last': 'model'},
+            artifacts=_Artifacts(tmp_path/'different-speed'))
     report['episodes'][0]['status'] = 'unknown'
     original.write_bytes(json_bytes(report))
     with pytest.raises(BoundaryError, match='requires_reconciliation'):
         load('two')
+
+
+def test_fixed_ref20_keeps_original_instant_precondition(tmp_path):
+    from test_reference_suite import OwnerClient, suite_manifest
+
+    from spireagent.workbench.reference_suite import SuiteLimits, run_suite
+    path, sha = suite_manifest(tmp_path)
+    client = OwnerClient(tmp_path/'attempt')
+    with pytest.raises(BoundaryError, match='fixed_suite_requires_instant_speed'):
+        run_suite(path, sha, client=client, run_dir=tmp_path/'attempt',
+            selection='model', run_profile='continuous', speed='fast',
+            limits=SuiteLimits(2, 2, 2, 20))
+    assert not client.calls

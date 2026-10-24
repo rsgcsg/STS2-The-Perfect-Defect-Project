@@ -653,3 +653,17 @@ the peer, so each new run does not re-stream the training checkpoint ancestry.
 New original bytes still receive full peer readback and typed verification.
 Ordinary `copy_artifact` and empty-directory recovery keep full lineage byte
 verification; publication reuse is not a claim that such a recovery was performed.
+
+
+### Checkpoint Reference execution speed
+
+`checkpoint_reference` uses the same owned Reference suite and may explicitly select
+normal, fast or instant native speed. The report freezes that requested speed and
+every preparation verifies the typed effective readback; completed report reuse
+requires identical speed and presentation. The fixed ref-20/four-agent benchmark
+continues to require instant. For STS2 v0.111.0, vanilla PunchOff's persistent
+animation loop awaits Cmd.Wait, which does not yield in native Instant mode; both
+headless and native-ui Instant can starve or crash the process. Use an explicit
+Fast cohort for this checkpoint evaluation. Preserve Instant failures separately,
+never retry their unknown deliveries or silently mix conditions. No timing hook,
+Native rule patch, partial Read acceptance or automatic speed fallback is added.

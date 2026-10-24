@@ -322,7 +322,7 @@ def run_suite(
             or speed not in {"normal", "fast", "instant"}):
         _reject("invalid_attempt_configuration")
     raw_manifest, manifest = load_manifest(manifest_path, manifest_sha256)
-    if manifest.get("purpose") != "diagnostic_reference" and speed != "instant":
+    if manifest.get("purpose") not in {"diagnostic_reference", "checkpoint_reference"} and speed != "instant":
         _reject("fixed_suite_requires_instant_speed")
     four = manifest["suite_id"] == FOUR_AGENT_SUITE_ID
     checkpoint = manifest.get("purpose") == "checkpoint_reference"

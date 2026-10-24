@@ -28,3 +28,10 @@
 本次修复属于原观察/就绪/只读预览实现：NMapScreen.TravelToMapCoord置IsTraveling且不自行清零，关闭的地图不能继续占据输入owner；保留canonical/local/node/layout全部exact校验，只有地图打开时旅行标志才阻挡旧事件。NEventLayout.OnSetupComplete原生回调补现有NativeDecisionOwnerReady通知，由Connector原subscriber重新捕获/验完整帧，无轮询/计时/策略。君王之剑当前卡面完整但升级预览拒绝其AfterCloned override；exact v0.111.0该方法仅调用base并清副本CreatedThroughForge，按原copy资格桥增加这一准确原生调用，原卡/回调不变，不注册副本为操作数。定向68项通过，实际加载和两机制canary另核。
 
 新Native包将单独版本/安装目录及tuple，旧30不计新环境完整100分母；复用原冻结种子和七个原权重，通过正常Model环境重新绑定。历史失败保留。source/test/build/install/load/真实运行/数据与策略资格分层，BOM在源码提交后同步并重验，不以提交前检查代替。
+
+
+### 原生Instant失败与显式Fast配置（同轮开发预算内）
+
+修复候选e3ff包rc62通过postcommit BOM/仓库规则、981Host、182Logical、450Annotator及相关Node门，独立游戏副本coldload SHA9f4483ac/MVIDcbeefe与build一致，7原Model正常重新登记。headless首Silent1460新局在第7层PunchOff触发Native SIGABRT，随后renderer-only native-ui实验仍在同点无限创建VFX/报Element limit；两局独立原件保留unknown，正常finish记录实际异常/强制退出，不作模型loss或回填。
+
+exact v0.111.0 PunchOff.AfterEventStarted同步启动while动画循环，每次等待Cmd.Wait(0.1/1.2)，而原生FastMode.Instant使Cmd.Wait无yield，游戏主线程可能无法返回。UI替换不足以修复。此为环境速度条件问题，不给Native加timer/规则patch。原Reference dispatcher对新checkpoint_reference也无条件套用了固定benchmark的instant限制，拒绝受支持的Fast且在任何world offer前失败。现局部允许checkpoint suite显式指定既有normal/fast/instant；ref20/four-agent限制不变，速度冻结、typed实际readback、异速度禁止报告复用均保留。所有checkpoint同一headless Fast新批次，用同一20固定种子和七权重；旧Instant批次分开。错误动作不重投、partial Read不放宽；Fast真实事件/Regent机制仍待实战核验。
