@@ -40,7 +40,7 @@ def _diagnostic(directory: Path, expected: Mapping[str, object]) -> dict[str, An
     marker = directory / "diagnostic-manifest.json"
     if (marker.is_symlink() or not marker.is_file() or marker.stat().st_size > 16 * 1024**2):
         raise BoundaryError("global_store", "unsealed_diagnostic_required")
-    value = json.loads(marker.read_bytes())
+    value: dict[str, Any] = json.loads(marker.read_bytes())
     run = json.loads((directory / "manifest.json").read_bytes())
     if (value.get("schema") != "sts2.policy-runtime/unsealed-diagnostic-1"
             or value.get("complete") is not False or value.get("status") != "unsealed"
@@ -99,18 +99,31 @@ def publish_global_diagnostic(store: ManifestArtifactStore, directory: Path, pro
 def verify_global_diagnostic(store: ManifestArtifactStore, artifact_id: str, *,
                              expected: Mapping[str, object], scratch: Path) -> dict[str, Any]:
     manifest = store.get_manifest(artifact_id)
-    if (manifest.kind != "analysis" or manifest.parameters.value().get("schema")
-            != "spireagent/global-unsealed-diagnostic-1"):
+    info = manifest.parameters.value()
+    if (manifest.kind != "analysis" or info.get("schema")
+            != "spireagent/global-unsealed-diagnostic-1"
+            or info.get("complete") is not False
+            or info.get("typed_recording_qualified") is not False
+            or {p.role for p in manifest.payloads} != {"archive", "transfer"}
+            or manifest.payload("transfer").size > 16 * 1024**2):
         raise BoundaryError("global_store", "unsealed_diagnostic_artifact")
     with tempfile.TemporaryDirectory(prefix="diagnostic-readback-", dir=scratch) as tmp:
         root = Path(tmp)
+        transfer = DirectoryTransferManifest.read(
+            store.materialize(manifest.payload("transfer"), root / "transfer.json"),
+        )
+        if (transfer.artifact_type != "global-unsealed-diagnostic"
+                or transfer.content_id != info["diagnostic_digest"]):
+            raise BoundaryError("global_store", "unsealed_diagnostic_transfer")
         archive = store.materialize(manifest.payload("archive"), root / "diagnostic.tar.gz")
+        _verify_archive(archive, transfer)
         directory = root / "original"
         directory.mkdir()
         with gzip.open(archive, "rb") as stream:
             _extract_tar(stream, directory, max_bytes=MAX_BYTES, max_files=MAX_FILES)
         diagnostic = _diagnostic(directory, expected)
-        if diagnostic["manifest_sha256"] != manifest.parameters.value()["diagnostic_digest"]:
+        if (diagnostic["manifest_sha256"] != info["diagnostic_digest"]
+                or diagnostic["run_id"] != info["run_id"]):
             raise BoundaryError("global_store", "unsealed_diagnostic_changed")
     return {"artifact_id": artifact_id, "run_id": diagnostic["run_id"], "full_readback": True,
             "typed_recording_qualified": False, "scope": "unsealed_diagnostic_only"}
