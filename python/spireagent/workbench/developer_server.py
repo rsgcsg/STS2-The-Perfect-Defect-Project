@@ -1324,7 +1324,8 @@ def create_server(app: Application) -> ThreadingHTTPServer:
         def diagnostic_bad_request(self, error: Exception, code: str, route: str) -> None:
             parsed_path = urlsplit(self.path).path
             safe_path = parsed_path if parsed_path in _DIAGNOSTIC_PATHS else route
-            action = safe_path.rsplit("/", 1)[-1] if parsed_path in _DIAGNOSTIC_PATHS else self.command
+            action = (safe_path.rsplit("/", 1)[-1]
+                      if parsed_path in _DIAGNOSTIC_PATHS else self.command)
             error_id = diagnostics.error(error, path=safe_path, action=action, stage=safe_path)
             self.respond(400, json.dumps({"error": code, "error_id": error_id}).encode())
 
