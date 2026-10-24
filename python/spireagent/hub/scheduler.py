@@ -25,6 +25,7 @@ from spireagent.compute import (
 )
 from spireagent.hub.database import Operations
 from spireagent.json_boundary import BoundaryError
+from spireagent.local_diagnostics import bind_job, phase
 from spireagent.storage.store import ArtifactStore
 from stpd.cloud_jobs.contracts import ComputeReceipt, ComputeRequest, load_feature_job
 from stpd.cloud_jobs.execution import preflight_training_request, validate_receipt
@@ -123,7 +124,8 @@ class Scheduler:
         if kind == "features":
             load_feature_job(self.store, request.input_id, target.producer)
         else:
-            preflight_training_request(self.store, request)
+            with phase("scheduler.input_verify"):
+                preflight_training_request(self.store, request)
         manifest = self.store.get_manifest(request.input_id)
         if self._record_training_use is None:
             from spireagent.hub.curation_access import record_use
@@ -134,14 +136,17 @@ class Scheduler:
         else:
             # Trusted application composition can retain its existing LocalLedger
             # (including host claim guards); this is never a request-supplied hook.
-            self._record_training_use(manifest)
+            with phase("scheduler.record_use"):
+                self._record_training_use(manifest)
         return request
 
     def _submit(self, row: dict[str, Any], now: float) -> dict[str, Any]:
         job, token = row["id"], row["lease_token"]
         self._tokens[job] = token
+        bind_job(job)
         try:
-            request = self._preflight(row)
+            with phase("scheduler.preflight"):
+                request = self._preflight(row)
             absolute_deadline = json.loads(row["options"]).get("execution_deadline_unix")
             if (absolute_deadline is not None
                     and time.time() + row["max_seconds"] > absolute_deadline):
@@ -159,7 +164,8 @@ class Scheduler:
         ):
             return self._reply("already_prepared_no_resubmit", job)
         try:
-            handle = self.provider.submit(request)
+            with phase("scheduler.provider_submit_to_handle"):
+                handle = self.provider.submit(request)
         except ComputeSubmissionUnknown as unknown:
             # A deterministic transport handle is observation capability, never
             # evidence of accepted submission or permission to invoke again.
@@ -187,13 +193,14 @@ class Scheduler:
             )
             return self._reply("submission_unknown", job)
         # A crash before this transaction leaves durable 'submitting', never permission to retry.
-        self.operations.bind_compute_handle(
-            job,
-            token,
-            row["attempt_id"],
-            row["fence"],
-            handle.to_dict(),
-        )
+        with phase("scheduler.bind_handle"):
+            self.operations.bind_compute_handle(
+                job,
+                token,
+                row["attempt_id"],
+                row["fence"],
+                handle.to_dict(),
+            )
         return self._reply("submitted", job, request_id=request.request_id)
 
     def _cancel(self, row: dict[str, Any], token: str, handle: ComputeHandle) -> None:
@@ -236,6 +243,7 @@ class Scheduler:
 
     def _poll(self, row: dict[str, Any], now: float) -> dict[str, Any]:
         job, attempt, fence = row["id"], row["attempt_id"], row["fence"]
+        bind_job(job)
         token = self._token(row, now)
         saved = self.operations.compute_state(job)
         if saved is None or saved["handle"] is None:
@@ -275,11 +283,14 @@ class Scheduler:
                         job, token, attempt, fence, receipt.to_dict(), cancelled=True
                     )
                     return self._reply("cancelled", job)
-                validate_receipt(self.store, request, receipt)
-                self.operations.accept_compute(job, token, attempt, fence, receipt.to_dict())
+                with phase("scheduler.receipt_verify"):
+                    validate_receipt(self.store, request, receipt)
+                with phase("scheduler.receipt_accept"):
+                    self.operations.accept_compute(job, token, attempt, fence, receipt.to_dict())
                 # Result selection is already durable. A disposable metadata index cannot
                 # turn completed compute back into uncertain or resubmit an invocation.
-                indexed = self._index_result(receipt)
+                with phase("scheduler.result_index"):
+                    indexed = self._index_result(receipt)
                 return self._reply(
                     "paused" if receipt.state == "paused" else "completed",
                     job,
