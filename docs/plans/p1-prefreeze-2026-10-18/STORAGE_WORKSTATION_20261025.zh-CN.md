@@ -1,5 +1,10 @@
 # 项目存储归位与长任务容量（2026-10-25）
 
+本轮批准范围执行结果（03:01 AEST现场）：A111叶全删/0跳，C001的65manifest/138payload/405对象、C002的75manifest/143payload/442对象完成完整驻留空目录恢复及原Store离线读后冷却。B3440原manifest全闭包发布到R2，含总索引3441manifest；17批873完整payload全SHA/原codec、2752对象集合逐项相等，最小观测空闲12.63GiB。复用全部873个payload独占租约（首次unlink前全部取得，持到末次）后冷却2752对象，原metadata不变；原Store只读R2冷读及SHA通过，objects仍0。B总索引`a59f5ca8e9f29a75a65c223904c0bedd010362669faa24a159d8e65a440cffd0`；对象去重17,288,073,928B，完整payload物化17,469,800,483B。B原核验器将数字序父tuple与规范字典序误判不等，规范字节/SHA和重建反例均证实原因；原失败未改。
+
+各批df净增：A1.872、B16.105、C0012.248、C0020.300GiB，均是各自窗口的系统变化，受并发写盘影响，不能拿du当释放或相加冒充总净值。开工9.009GiB，03:01现场29.77GiB，总系统净增20.76GiB；40GiB未达、不扩范围。主Store2GiB双peer不变，副本4payload冷读/trim证明不等于live维护正常；真实API maintenance_failed/enabled=false，未触动服务。源候选31b7fa62远端CI40110940598两Linux和portable通过，Windows跳过；最终收口文档head看PR236。完整本机门被用户停止、exact-game/安装加载未完成，仍Draft且未merge。共享replies报告/表与任务CLOSEOUT拥有详细收据和恢复入口。
+
+
 root 是本轮唯一源码、BOM与清理写入者；开发从 00:31 AEST 到 04:01 AEST，上传/读回等待单列，01:16 自查。基线 `develop@9abab77a66eefc0761df4d9b9044bd76731f48b4`；短分支 `codex/storage-workstation-rules-20261025`。类别为 G3：给既有写入owner加容量准入，含Native录制writer；不改游戏、训练配方、P1/unknown或数据用途含义。
 
 交付是[原数据生命周期里的存储页](../../../python/docs/DATA_LIFECYCLE.md#项目存储真身工位与本机删除条件)、同一处容量操作、现WORKING_RULES第8节和原入口的容量保护；不另建Store、账本、调度器或自动清理服务。源码/测试与在用服务的实际安装保护分开。旧Runtime单局512MiB容量缺陷不在本轮修复，不重投第25局unknown。
