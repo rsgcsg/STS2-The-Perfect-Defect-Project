@@ -17,4 +17,4 @@ root 是本轮唯一源码、BOM与清理写入者；开发从 00:31 AEST 到 04
 
 用户后续明确评估剩余75局优先占盘：本聊天已停止本机full门（SIGINT，partial/cancelled保留），不再启动重测试。B后续批次改至少6GiB实时余量，每批只R2物化，不足停止且B原件整行保留；不再触碰任何`2026-10-24/checkpoint-evaluation-*`目录及评估App。C此前已按原条件完成，旧5GiB收据不回写成6GiB。exact-game构建/完整本地门保留未完成，不借远端CI或窄测授安装/运行保护。
 
-首轮远端CI因为系统临时卷只有约7.76GiB而正确拒绝8GiB需求；工作区有约81GiB。Linux gate前把实际TMPDIR/TMP/TEMP放到该工作区的忽略目录，保留原空间检查/余量；原CI失败保留，不以降低阈值求绿。
+首轮远端CI因为系统临时卷只有约7.76GiB而正确拒绝8GiB需求；工作区有约81GiB。第一次把TMPDIR放checkout内部后，目录fixture继承外层Git导致governance测试失败；路线复查确认还须在源码Git之外。最终沿已有RUNNER_TEMP/spireagent-portable，显式实际TMPDIR/TMP/TEMP，原容量检查/余量不变；两次失败保留，不改governance断言或降门。

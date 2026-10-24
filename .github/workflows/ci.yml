@@ -128,12 +128,12 @@ jobs:
         run: npm ci --prefix python
       - name: Install dependencies
         run: npm ci
-      - name: Use workspace filesystem for portable scratch
+      - name: Use runner filesystem outside checkout for portable scratch
         run: |
-          mkdir -p "$GITHUB_WORKSPACE/.local/portable-tmp"
-          echo "TMPDIR=$GITHUB_WORKSPACE/.local/portable-tmp" >> "$GITHUB_ENV"
-          echo "TMP=$GITHUB_WORKSPACE/.local/portable-tmp" >> "$GITHUB_ENV"
-          echo "TEMP=$GITHUB_WORKSPACE/.local/portable-tmp" >> "$GITHUB_ENV"
+          mkdir -p "$RUNNER_TEMP/spireagent-portable"
+          echo "TMPDIR=$RUNNER_TEMP/spireagent-portable" >> "$GITHUB_ENV"
+          echo "TMP=$RUNNER_TEMP/spireagent-portable" >> "$GITHUB_ENV"
+          echo "TEMP=$RUNNER_TEMP/spireagent-portable" >> "$GITHUB_ENV"
       - name: Run selected portable source/test gate
         env:
           CHECK_SCOPE: ${{ needs.plan.outputs.scope }}
