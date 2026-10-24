@@ -180,8 +180,8 @@ already running Application or game; normal upgrade/launch remains separate.
 | Application `prepare_native_episode` for a new owned world | Same next-episode allowance on actual Application state volume | Reject before replacing resource intent/starting Host; exact old intent replay still returns its original fact |
 | Native Recorder shared `RecordingSessionStore` writer | Same 2 GiB next-session allowance on the recording directory's actual filesystem | All current Create variants reject before making a session directory; API/lifecycle retains its normal explicit rejected-start result |
 | P1 `prepare_p1_data` | Selected projection payload sizes plus two 64 MiB cache/transaction budgets | Reject before cache creation/inspection or use reservation; no unrelated raw-ancestor download required |
-| Local training start/resume | Declared scratch budget for attempt plus equal artifact allowance; legacy start uses 512 MiB each | Reject before pending intent/use/child; retained attempts still count in existing cumulative limits |
-| Remote training prepare | 512 MiB temporary + 512 MiB persistent for preparation; exact input transfer budget remains separate | Reject before vocabulary fit/use/new Run/provider submission |
+| Local training start/resume | Actual owner operation/scratch volume, equal artifact allowance on Store, plus missing named P1 input/checkpoint chunks; legacy start uses 512 MiB each | Reject before cold payload read, pending intent/use/child; retained attempts still count in existing cumulative limits |
+| Remote training prepare | 512 MiB temporary + 512 MiB persistent plus named input/checkpoint cold reads; purpose ledger and actual transfer scratch volumes checked | First-consumption refusal precedes purpose verification/vocabulary fit/use; subsequent full-closure transfer retains exact budget and failure intent, no provider submission |
 | `npm run check` / Python full gate | 6 GiB planned build/test work plus operating margin; workspace and actual temp filesystem checked again before each stage | Refuse before heavy subprocess; no automatic cleanup or modification of existing jobs |
 
 The 2 GiB next-session work allowance rounds up the observed 563,136,269-byte
@@ -193,6 +193,15 @@ fixtures. Before larger work, derive the extra margin from that task's measured
 peak and existing scratch/output limits; record the selected bytes and conditions
 in its task receipt. An artificial margin of `1152921504606846976` verifies
 rejection without filling a disk. Restore the selected normal margin afterward.
+
+P1 read planning uses immutable manifest descriptions before `read_payload`: the
+snapshot selection, its direct projection payloads, the run's vocabulary/features,
+and the exact selected checkpoint. Derived checkpoints include their original;
+initial derivation uses the existing explicit source checkpoint DAG. Missing local
+chunks are estimated by the same Store index/stat helper, with no tensor read or
+raw-source expansion during planning. The later remote transfer is different: it
+verifies full ancestry and may rehydrate missing source chunks. Its preflight also
+budgets that local CAS growth; a failed prepared transfer keeps its original intent.
 
 Preflight does not allocate filesystem blocks. One owner schedules shared heavy
 writes and includes other active work; independently passing checks do not grant

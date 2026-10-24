@@ -484,15 +484,17 @@ class RemoteTrainingService:
         if ((config.device == "cpu") != (gpu == "none")):
             raise BoundaryError("remote_training", "explicit_target_device_mismatch")
         self._limits(obj, target.timeout_seconds)
-        require_p1_snapshot(owner, store, snapshot)
-        from .p1_recording_storage import require_long_task_space
+        from .training_scratch import require_training_space
 
-        # Budget preparation on the Mac before use is recorded or vocabulary is
-        # fitted; input transfer retains its existing exact payload-size check.
-        require_long_task_space(
-            self.config.state_dir, 512 * 1024**2,
-            persistent_bytes=512 * 1024**2, destination=owner.store_dir,
+        # Snapshot/projection and optional checkpoint cold reads must be admitted
+        # before the real purpose verifier can populate the local CAS.
+        require_training_space(
+            owner, store, snapshot, 512 * 1024**2, recipe,
+            scratch=self.config.state_dir / "remote-training-transfer",
+            checkpoint_id=execution_options.get("initial_checkpoint"),
+            initial_checkpoint="initial_checkpoint" in execution_options,
         )
+        require_p1_snapshot(owner, store, snapshot)
         # Vocabulary fitting itself discloses training examples; reserve use first.
         record_p1_training_use(owner, store, snapshot, intent)
         run = prepare_run(store, snapshot, target.producer, config, intent, **execution_options)

@@ -6,8 +6,13 @@ from typing import Any
 
 from spireagent.artifact_contracts import Producer
 from spireagent.json_boundary import BoundaryError
+from spireagent.storage.local import LocalBlobStore
 from spireagent.storage.store import ManifestArtifactStore, copy_artifact
-from spireagent.workbench.p1_recording_storage import open_peer, storage_budget
+from spireagent.workbench.p1_recording_storage import (
+    open_peer,
+    storage_budget,
+    workspace_reserve_bytes,
+)
 
 
 def verify_training_run(store: Any, run_id: str, producer: Producer) -> Any:
@@ -45,7 +50,12 @@ def transfer_p1_input(
     from stpd.p1.input import project
     from stpd.p1.workload import P1Workload
 
-    budget = storage_budget(local, run_id, scratch=scratch, destination=None)
+    destination = local.blobs.root if isinstance(local.blobs, LocalBlobStore) else None
+    budget = storage_budget(
+        local, run_id, scratch=scratch, destination=destination,
+        destination_store=local if destination is not None else None,
+        reserve_bytes=workspace_reserve_bytes(),
+    )
     peer = open_peer(peer_binding)
     copy_artifact(local, peer, run_id, scratch=scratch)
     # Reopen the configured destination and use its actual payload reader for

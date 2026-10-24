@@ -438,12 +438,9 @@ class LocalTrainingService:
             if previous.get("schema") == SCHEMA_V3 and _request is None:
                 _request = TrainingRequest(uuid.uuid4().hex, str(recipe), dataset_id, {},
                                            limits={}, after_completed_operation_id=after_completed)
-            from .p1_recording_storage import require_long_task_space
+            from .training_scratch import require_training_space
 
-            require_long_task_space(
-                self.config.state_dir, 512 * 1024**2,
-                persistent_bytes=512 * 1024**2, destination=owner.store_dir,
-            )
+            require_training_space(owner, store, dataset_id, 512 * 1024**2, str(recipe))
             require_recipe_dependencies(str(recipe), "local_training")
             identity = uuid.uuid4().hex
             operation = {"schema": (SCHEMA_V2 if recipe in MEMORY_RECIPES
@@ -752,12 +749,10 @@ class LocalTrainingService:
             if (previous["status"] == "completed" and previous["dataset_id"] == request.source_id
                     and after is None):
                 raise BoundaryError("local_training", "new_experiment_precondition_failed")
-            from .p1_recording_storage import require_long_task_space
+            from .training_scratch import require_training_space
 
-            require_long_task_space(
-                self.config.state_dir, request.limits["scratch_bytes"],
-                persistent_bytes=request.limits["scratch_bytes"], destination=owner.store_dir,
-            )
+            require_training_space(owner, store, request.source_id,
+                                   request.limits["scratch_bytes"], request.recipe_id)
             require_recipe_dependencies(request.recipe_id, "local_training")
             # Fail admission before writing a pending operation. This is read-only
             # verification; use reservation remains prior to preparation/fit.
@@ -977,6 +972,18 @@ class LocalTrainingService:
                             "local_training", "orphan_child_still_running") from error
                 if len(value["attempts"])+1 >= MAX_TOTAL_ATTEMPTS:
                     raise BoundaryError("local_training", "operation_attempt_limit")
+                def require_capacity() -> None:
+                    from .training_scratch import require_training_space
+
+                    capacity_limits = effective_training_limits(value)
+                    require_training_space(
+                        owner, store, value["request"]["source_id"],
+                        capacity_limits["scratch_bytes"], value["recipe"],
+                        run_id=value.get("run_id"), checkpoint_id=checkpoint_id,
+                    )
+
+                if mode != "resume":
+                    require_capacity()
                 if mode == "resume":
                     if (not value["writer_terminal"] or value["status"] not in
                             {"paused", "cancelled", "interrupted_unknown"}):
@@ -990,6 +997,7 @@ class LocalTrainingService:
                         raise BoundaryError("local_training", "cumulative_budget_exhausted")
                     from spireagent.workbench.recipes.structured import verify_resume_checkpoint
 
+                    require_capacity()
                     verify_resume_checkpoint(store, value, checkpoint_id)
                     if any(item.get("intent_id") == intent_id for item in value["attempts"]) or (
                         value["intent_id"] == intent_id or any(
@@ -1018,13 +1026,6 @@ class LocalTrainingService:
                 verify_run_execution_policy(store.get_manifest(value["run_id"]), value)
                 if "selected_result" not in value:
                     value["selected_result"] = value["status"] != "cancelled"
-                from .p1_recording_storage import require_long_task_space
-
-                capacity_limits = effective_training_limits(value)
-                require_long_task_space(
-                    self.config.state_dir, capacity_limits["scratch_bytes"],
-                    persistent_bytes=capacity_limits["scratch_bytes"], destination=owner.store_dir,
-                )
                 prior = {key: value.get(key) for key in ("attempt_id", "intent_id", "status",
                          "writer_terminal", "checkpoint_id", "attempt_started_at", "child_exit")}
                 if value["recipe"] in TYPED_RECIPES and typed_recipe_is_scoped(

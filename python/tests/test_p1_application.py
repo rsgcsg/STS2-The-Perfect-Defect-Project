@@ -184,6 +184,28 @@ def test_real_service_pause_resume_keeps_run_input_and_optimizer_state(tmp_path,
     assert state["step"] == 1 and state["optimizer"]["state"]
     assert all(float(slot["step"]) == 1 for slot in state["optimizer"]["state"].values())
     assert ObjectStoreRunReporter(store, store.blobs).completed(paused["run_id"]) is None
+    # A resume verifier would populate a missing checkpoint before a late guard.
+    # Seed a real peer, evict only this synthetic chunk and keep the exact request.
+
+    from spireagent.storage.cache import configure_cache
+    from spireagent.storage.store import copy_artifact
+
+    peer = ManifestArtifactStore(LocalBlobStore(tmp_path / "resume-peer"))
+    copy_artifact(store, peer, paused["checkpoint_id"], scratch=tmp_path)
+    configure_cache(store, str(peer.blobs.root), max_bytes=2 * 1024**3)
+    payload = saved.payload("checkpoint")
+    index = json.loads(store.blobs.get(f"payload-indexes/v1/{payload.sha256}.json"))
+    missing = store.blobs.root / "objects/sha256" / index["chunks"][0]["sha256"]
+    missing.unlink()
+    operation_path, _ = service._paths(owner)
+    before_operation = operation_path.read_bytes()
+    with monkeypatch.context() as low:
+        low.setenv("SPIREAGENT_MIN_FREE_BYTES", str(2**60))
+        with pytest.raises(BoundaryError, match="space_insufficient"):
+            service.resume(paused["operation_id"], paused["attempt_id"], paused["checkpoint_id"],
+                           uuid.uuid4().hex, request.limits)
+    assert not missing.exists()
+    assert operation_path.read_bytes() == before_operation
     service.resume(paused["operation_id"], paused["attempt_id"], paused["checkpoint_id"],
                    uuid.uuid4().hex, request.limits)
     service._thread.join(timeout=120)
@@ -274,6 +296,7 @@ def test_training_capacity_refuses_before_pending_use_or_child(tmp_path, monkeyp
         "recipe_id": RECIPE, "source_id": snapshot.artifact_id,
         "config": MStdConfig(max_epochs=1).to_dict(), "placement_id": "local-cpu",
         "limits": {"wall_seconds": 30, "scratch_bytes": 64 * 1024**2},
+        "after_completed_operation_id": None,
     })
     with pytest.raises(BoundaryError, match="space_insufficient"):
         service.start(request)
@@ -281,3 +304,40 @@ def test_training_capacity_refuses_before_pending_use_or_child(tmp_path, monkeyp
     assert not path.exists()
     assert set(store.manifest_ids()) == before
     assert service._thread is None
+
+
+
+def test_explicit_research_volume_combines_real_scratch_and_store_allowances(tmp_path, monkeypatch):
+    import os
+    from dataclasses import replace
+    from types import SimpleNamespace
+
+    from spireagent.workbench import p1_recording_storage
+    from spireagent.workbench.developer import LocalResearchWorkspaceConfig
+    from spireagent.workbench.local_training import LocalTrainingService
+
+    config, store, owner, snapshot = workspace(tmp_path)
+    reserve_p1_snapshot(owner, store, snapshot.artifact_id)
+    app_state = tmp_path / "other-volume"
+    app_state.mkdir()
+    config = replace(config, state_dir=app_state, research_workspace=LocalResearchWorkspaceConfig(
+        owner.store_dir, owner.path.parent / "registry.sqlite"))
+    service = LocalTrainingService(config)
+    real_stat = type(app_state).stat
+
+    def stat_on_two_volumes(path, **kwargs):
+        info = real_stat(path, **kwargs)
+        device = 1 if path.is_relative_to(app_state) else 2
+        return os.stat_result((info.st_mode, info.st_ino, device, *info[3:]))
+
+    monkeypatch.setattr(type(app_state), "stat", stat_on_two_volumes)
+    monkeypatch.setattr(p1_recording_storage.shutil, "disk_usage", lambda path: SimpleNamespace(
+        free=(20 * 1024**3 if path.is_relative_to(app_state) else 7 * 1024**3 // 2)))
+    monkeypatch.delenv("SPIREAGENT_MIN_FREE_BYTES", raising=False)
+    request = TrainingRequest(uuid.uuid4().hex, RECIPE, snapshot.artifact_id,
+        MStdConfig(max_epochs=1).to_dict(),
+        limits={"wall_seconds": 30, "scratch_bytes": 1024**3})
+    with pytest.raises(BoundaryError, match="space_insufficient"):
+        service.start(request)
+    path, _ = service._paths(owner)
+    assert not path.exists() and service._thread is None

@@ -252,22 +252,34 @@ WORKSPACE_RESERVE_BYTES = 2 * 1024**3
 NEXT_EPISODE_PEAK_BYTES = 2 * 1024**3
 
 
-def require_long_task_space(
-    scratch: Path, temporary_bytes: int, *, persistent_bytes: int = 0,
-    destination: Path | None = None,
-) -> dict[str, Any]:
+def workspace_reserve_bytes() -> int:
     value = os.environ.get("SPIREAGENT_MIN_FREE_BYTES")
     if value is not None and (len(value) > 19 or not value.isascii() or not value.isdecimal()):
         raise BoundaryError("p1_storage", "invalid_workspace_reserve")
     reserve = WORKSPACE_RESERVE_BYTES if value is None else int(value)
     if reserve > 2**63 - 1:
         raise BoundaryError("p1_storage", "invalid_workspace_reserve")
+    return reserve
+
+
+def require_long_task_space(
+    scratch: Path, temporary_bytes: int, *, persistent_bytes: int = 0,
+    destination: Path | None = None,
+) -> dict[str, Any]:
     if any(type(n) is not int or n < 0 for n in (temporary_bytes, persistent_bytes)):
         raise BoundaryError("p1_storage", "invalid_workspace_workload")
     return require_workspace_space(
         scratch, temporary_bytes, persistent_bytes=persistent_bytes,
-        destination=destination, reserve_bytes=reserve,
+        destination=destination, reserve_bytes=workspace_reserve_bytes(),
     )
+
+
+def missing_local_read_bytes(store: ManifestArtifactStore, payloads: tuple[Payload, ...]) -> int:
+    """Named consumer reads, not recursive transfer ancestry or payload hashing."""
+    if not isinstance(store.blobs, LocalBlobStore):
+        return 0  # A remote Store reader does not populate a local CAS.
+    return sum(_missing_local_payload(payload, store) for payload in
+               {p.sha256: p for p in payloads}.values())
 
 
 def _missing_local_payload(payload: Payload, target: ManifestArtifactStore) -> int:
