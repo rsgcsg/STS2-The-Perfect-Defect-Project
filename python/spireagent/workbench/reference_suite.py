@@ -34,6 +34,7 @@ from stpd.game_seed import derive_game_seed, require_canonical_game_seed
 
 REPORT_SCHEMA = "spireagent/reference-suite-report-v1"
 MAX_JSON = 1024 * 1024
+MAX_REPORT_BYTES = 64 * MAX_JSON
 
 
 def _reject(code: str) -> NoReturn:
@@ -89,12 +90,12 @@ def load_manifest(path: Path, sha256: str) -> tuple[bytes, dict[str, Any]]:
     return raw, value
 
 
-def _read(path: Path) -> bytes:
+def _read(path: Path, *, max_bytes: int = MAX_JSON) -> bytes:
     if any(parent.is_symlink() for parent in (path, *path.parents)) or not path.is_file():
         _reject("unsafe_or_missing_original")
     with path.open("rb") as stream:
-        raw = stream.read(MAX_JSON + 1)
-    if len(raw) > MAX_JSON:
+        raw = stream.read(max_bytes + 1)
+    if len(raw) > max_bytes:
         _reject("original_over_limit")
     return raw
 
@@ -262,7 +263,7 @@ def _completed_rows(paths: tuple[Path, ...], manifest_sha: str, *, profile: str,
     """Reuse finished originals only. An uncertain offer must be reconciled by its owner."""
     result: dict[tuple[str, str], dict[str, Any]] = {}
     for path in paths:
-        raw = _read(path)
+        raw = _read(path, max_bytes=MAX_REPORT_BYTES)
         previous = decode_json(raw)
         if (not isinstance(previous, dict) or previous.get("schema") != REPORT_SCHEMA
                 or previous.get("manifest", {}).get("sha256") != manifest_sha
@@ -654,9 +655,10 @@ def run_suite(
                     "tainted", "pending_request", "request_outcome_counts", "delivery_counts")}
                 if checkpoint:
                     try:
-                        row["game_metrics"] = client.metrics(evaluation, row["admission_context"])
+                        metrics = client.metrics(evaluation, row["admission_context"])
+                        row["game_metrics"] = {k: v for k, v in metrics.items() if k != "observations"}
                         row["metrics"] = artifacts.put(
-                            "game-metrics.json", json_bytes(row["game_metrics"]))
+                            "game-metrics.json", json_bytes(metrics))
                     except (OSError, ValueError, KeyError, TypeError) as error:
                         row["metrics_error"] = _error(error)
             row["elapsed_seconds"] = clock() - episode_started

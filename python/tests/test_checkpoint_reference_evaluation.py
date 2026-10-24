@@ -159,13 +159,16 @@ def test_completed_original_is_retained_without_reoffer_and_unknown_rejected(tmp
                 'artifact_id': 'a'*64, 'peer_readback': {'typed_verification': 'pass'}})}
     report = {'schema': 'spireagent/reference-suite-report-v1', 'manifest': {'sha256': 'b'*64},
               'run_profile': 'continuous', 'speed': 'instant', 'display_mode': 'headless',
-              'evidence_peer': None, 'episodes': [row]}
+              'evidence_peer': None, 'episodes': [row], 'notes': 'x'*(1024*1024+1)}
     original = tmp_path / 'report.json'
     original.write_bytes(json_bytes(report))
     def load(name):
         return _completed_rows((original,), 'b'*64, profile='continuous', display='headless',
             speed='instant', peer=None, selected={'last': 'model'},
             artifacts=_Artifacts(tmp_path/name))
+    from spireagent.workbench.reference_suite import _read
+    with pytest.raises(BoundaryError, match='original_over_limit'):
+        _read(original)
     assert load('one')[('seed', 'model')]['original_row']['run_id'] == 'original-run'
     with pytest.raises(BoundaryError, match='previous_attempt_configuration_changed'):
         _completed_rows((original,), 'b'*64, profile='continuous', display='headless',

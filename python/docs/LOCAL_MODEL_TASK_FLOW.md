@@ -667,3 +667,5 @@ headless and native-ui Instant can starve or crash the process. Use an explicit
 Fast cohort for this checkpoint evaluation. Preserve Instant failures separately,
 never retry their unknown deliveries or silently mix conditions. No timing hook,
 Native rule patch, partial Read acceptance or automatic speed fallback is added.
+
+Suite reports have a separate bounded 64MiB reader for completed-report reuse; manifests and individual request/evaluation originals retain the 1MiB limit. Per-observation metric details remain in the immutable game-metrics.json artifact; the aggregate row stores only the summary and its exact artifact reference. This keeps long Fast cohorts recoverable without copying every observation into every aggregate report.
