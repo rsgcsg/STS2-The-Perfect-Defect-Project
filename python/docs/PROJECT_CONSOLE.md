@@ -1580,6 +1580,34 @@ After that same request creates a job, follow its exact job/Run/attempt. Detaile
 durable transfer-phase progress and asynchronous preparation are not yet provided.
 
 
+### Local private error and phase diagnostics
+
+The selected local API fallback errors retain HTTP400 and their existing `error`
+code and add an `error_id`. Find that ID in `state_dir/logs/errors.jsonl` (including
+`.1` and `.2` rotations). The record contains UTC time, a request/operation ID,
+a safe known API path/action, the failing local stage, exception type, stack
+frames (file, line, function), and elapsed milliseconds. Existing `BoundaryError`
+HTTP409 responses keep their original shape. Access logging stays disabled.
+
+`state_dir/logs/phases.jsonl` records start/end and monotonic duration for local
+remote-training validation, preparation, copy, readback, request checks and
+queueing. Scheduler submission is split into preflight, provider call through
+returned handle, and handle binding. Accepted receipts, local result indexing,
+continuation advance and actual new-intent creation have separate markers;
+job IDs correlate work across the request and Scheduler threads. A finished
+phase only means that local call returned; it does not prove worker success,
+checkpoint durability or permission to retry. Use the original intent/job and
+normal `training status`/`progress` commands for control and recovery.
+
+These are private local diagnostic files, not Ops state or Evidence, and are
+not uploaded to R2 or read by dispatch. Each stream is bounded to1MiB plus two
+backups (at most6MiB total). New files use owner-only permissions on POSIX and
+the state directory's inherited protection on Windows. Messages, exception-chain
+messages, source lines, locals, request bodies, query values, configuration and
+environment values are omitted. A logging I/O failure does not change the
+original business result. Existing running installations receive no hot update;
+use these diagnostics only after explicitly selecting the new Application source.
+
 ### 同一 remote Run 的有界自动接续
 
 `training auto-continue --execution remote --config PROJECT --input policy.json`

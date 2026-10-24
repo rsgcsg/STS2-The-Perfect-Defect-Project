@@ -12,6 +12,7 @@ from spireagent.artifact_contracts import Manifest
 from spireagent.compute import ComputeProvider, ComputeTermination
 from spireagent.hub.database import Operations
 from spireagent.json_boundary import BoundaryError, digest, object_fields
+from spireagent.local_diagnostics import LocalDiagnostics, bind_job, phase
 from spireagent.source import source_identity
 from spireagent.ssh_compute import provider_from_target
 from spireagent.storage.store import copy_artifact
@@ -26,6 +27,7 @@ class RemoteTrainingService:
     def __init__(self, config: ProjectConfig, select: Callable[[], Any], *,
                  provider: ComputeProvider | None = None) -> None:
         self.config, self.select, self._provider = config, select, provider
+        self.diagnostics = LocalDiagnostics(config.state_dir)
         self._injected_provider = provider is not None
         self._lock = threading.RLock()
         self._scheduler: Scheduler | None = None
@@ -183,7 +185,7 @@ class RemoteTrainingService:
     def _run(self) -> None:
         while not self._stop.is_set():
             try:
-                with self._lock:
+                with self.diagnostics.operation("remote-training.scheduler", "tick"), self._lock:
                     _, _, _, _, scheduler = self._ready()
                     self._continue_training(time.time())
                     scheduler.tick(time.time())
@@ -219,31 +221,37 @@ class RemoteTrainingService:
             return
         if job["status"] != "paused":
             return  # Unknown/running/queued is observed by the same Scheduler, never retried.
+        bind_job(job["id"])
         try:
-            saved = ops.compute_state(job["id"])
-            if (saved is None or saved["phase"] != "paused" or saved["handle"] is None
-                    or saved["attempt_id"] != job["attempt_id"]
-                    or saved["fence"] != job["fence"]
-                    or saved["target_id"] != policy["target_id"]
-                    or provider.target.target_id != policy["target_id"]
-                    or provider.target.producer.to_dict() != policy["producer"]):
-                raise BoundaryError("remote_training", "continuation_identity_mismatch")
-            request = ComputeRequest.decode(saved["request"])
-            handle = provider.restore_handle(saved["handle"])
-            receipt = ComputeReceipt.decode(json.loads(job["result"]))
-            receipt.bind(request)
-            if (handle.request != request or handle.call_id != job["provider_ref"]
-                    or request.input_id != policy["run_id"] or receipt.state != "paused"
-                    or request.producer != provider.target.producer):
-                raise BoundaryError("remote_training", "continuation_identity_mismatch")
-            # Only Scheduler's accepted, fully validated PAUSED receipt reaches here.
-            # Next submission still runs the existing full checkpoint/use preflight.
-            assert receipt.checkpoint_id is not None
-            deployment = self.config.remote_compute
-            assert deployment is not None
-            continuation.advance(ops, policy, job, receipt.checkpoint_id, now=now,
-                                 reserved_units=deployment.reserved_units,
-                                 budget_limit=deployment.budget_limit)
+            with phase("continuation.paused_accepted"):
+                saved = ops.compute_state(job["id"])
+                if (saved is None or saved["phase"] != "paused" or saved["handle"] is None
+                        or saved["attempt_id"] != job["attempt_id"]
+                        or saved["fence"] != job["fence"]
+                        or saved["target_id"] != policy["target_id"]
+                        or provider.target.target_id != policy["target_id"]
+                        or provider.target.producer.to_dict() != policy["producer"]):
+                    raise BoundaryError("remote_training", "continuation_identity_mismatch")
+                request = ComputeRequest.decode(saved["request"])
+                handle = provider.restore_handle(saved["handle"])
+                receipt = ComputeReceipt.decode(json.loads(job["result"]))
+                receipt.bind(request)
+                if (handle.request != request or handle.call_id != job["provider_ref"]
+                        or request.input_id != policy["run_id"] or receipt.state != "paused"
+                        or request.producer != provider.target.producer):
+                    raise BoundaryError("remote_training", "continuation_identity_mismatch")
+                # Only Scheduler's accepted, fully validated PAUSED receipt reaches here.
+                # Next submission still runs the existing full checkpoint/use preflight.
+                assert receipt.checkpoint_id is not None
+                deployment = self.config.remote_compute
+                assert deployment is not None
+            with phase("continuation.advance"):
+                advanced = continuation.advance(ops, policy, job, receipt.checkpoint_id, now=now,
+                                                reserved_units=deployment.reserved_units,
+                                                budget_limit=deployment.budget_limit)
+            if advanced["current_job_id"] != job["id"]:
+                with phase("continuation.new_intent"):
+                    bind_job(advanced["current_job_id"], parent_job_id=job["id"])
         except (BoundaryError, OSError, ValueError) as error:
             code = error.code if isinstance(error, BoundaryError) else type(error).__name__
             continuation.stop(ops, policy["root_job_id"], code)
@@ -428,6 +436,11 @@ class RemoteTrainingService:
                 "automatic_retry": False, "observation": "persisted_run_events_only"}
 
     def prepare(self, body: object) -> dict[str, Any]:
+        with (self.diagnostics.operation("/api/remote-training/prepare", "prepare"),
+              phase("remote.prepare")):
+            return self._prepare(body)
+
+    def _prepare(self, body: object) -> dict[str, Any]:
         from spireagent.workbench.p1_training_data import (
             record_p1_training_use,
             require_p1_snapshot,
@@ -436,67 +449,81 @@ class RemoteTrainingService:
         from stpd.p1.spec import MStdConfig
         from stpd.p1.workload import prepare_p1_run
 
-        owner, store, provider, _ = self._context()
-        # A control upgrade may resume an existing frozen Run. New Run/Input
-        # construction executes here and must retain this code's actual provenance.
-        if provider.target.producer != source_identity(ROOT):
-            raise BoundaryError("remote_training", "new_run_requires_current_execution_source")
-        deployment = self.config.remote_compute
-        assert deployment is not None
-        recipe = body.get("recipe_id", "p1-mstd-N-v1") if isinstance(body, dict) else None
-        fields = {"intent_id", "source_id", "config", "max_seconds", "stop_after"}
-        optional = {key for key in ("recipe_id", "execution_policy", "initial_checkpoint")
-                    if isinstance(body, dict) and key in body}
-        obj = object_fields(body, fields | optional,
-                            "remote_training.start")
-        intent = digest(obj["intent_id"], "remote_training.intent_id", length=32)
-        snapshot = digest(obj["source_id"], "remote_training.source_id")
-        from spireagent.workbench.trusted_recipes import P1_BASELINE_RECIPE, P1_MSTD_RECIPE
+        with phase("remote.prepare.context"):
+            owner, store, provider, _ = self._context()
+        with phase("remote.prepare.request_validate"):
+            # A control upgrade may resume an existing frozen Run. New Run/Input
+            # construction executes here and must retain this code's actual provenance.
+            if provider.target.producer != source_identity(ROOT):
+                raise BoundaryError("remote_training", "new_run_requires_current_execution_source")
+            deployment = self.config.remote_compute
+            assert deployment is not None
+            recipe = body.get("recipe_id", "p1-mstd-N-v1") if isinstance(body, dict) else None
+            fields = {"intent_id", "source_id", "config", "max_seconds", "stop_after"}
+            optional = {key for key in ("recipe_id", "execution_policy", "initial_checkpoint")
+                        if isinstance(body, dict) and key in body}
+            obj = object_fields(body, fields | optional,
+                                "remote_training.start")
+            intent = digest(obj["intent_id"], "remote_training.intent_id", length=32)
+            snapshot = digest(obj["source_id"], "remote_training.source_id")
+            from spireagent.workbench.trusted_recipes import P1_BASELINE_RECIPE, P1_MSTD_RECIPE
 
-        config: Any
-        prepare_run: Callable[..., Manifest]
-        if recipe == P1_BASELINE_RECIPE:
-            from stpd.p1.baseline_spec import BaselineConfig
-            from stpd.p1.baseline_workload import prepare_baseline_run
+            config: Any
+            prepare_run: Callable[..., Manifest]
+            if recipe == P1_BASELINE_RECIPE:
+                from stpd.p1.baseline_spec import BaselineConfig
+                from stpd.p1.baseline_workload import prepare_baseline_run
 
-            config = BaselineConfig.decode(obj["config"])
-            prepare_run = prepare_baseline_run
-        elif recipe == P1_MSTD_RECIPE:
-            config = MStdConfig.decode(obj["config"])
-            prepare_run = prepare_p1_run
-        else:
-            raise BoundaryError("remote_training", "unsupported_training_recipe")
-        execution_options: dict[str, Any] = {}
-        if "execution_policy" in obj:
-            from spireagent.workbench.trusted_recipes import checked_recipe_execution_policy
+                config = BaselineConfig.decode(obj["config"])
+                prepare_run = prepare_baseline_run
+            elif recipe == P1_MSTD_RECIPE:
+                config = MStdConfig.decode(obj["config"])
+                prepare_run = prepare_p1_run
+            else:
+                raise BoundaryError("remote_training", "unsupported_training_recipe")
+            execution_options: dict[str, Any] = {}
+            if "execution_policy" in obj:
+                from spireagent.workbench.trusted_recipes import checked_recipe_execution_policy
 
-            execution_options["execution_policy"] = checked_recipe_execution_policy(
-                recipe, obj["execution_policy"])
-        if "initial_checkpoint" in obj:
-            if "execution_policy" not in obj:
-                raise BoundaryError("remote_training", "explicit_frozen_execution_policy_required")
-            if recipe != P1_MSTD_RECIPE:
-                raise BoundaryError("remote_training", "derivation_requires_M_std_recipe")
-            execution_options["initial_checkpoint"] = digest(
-                obj["initial_checkpoint"], "remote_training.initial_checkpoint")
-        target = provider.target
-        gpu = getattr(target, "gpu", None)
-        if ((config.device == "cpu") != (gpu == "none")):
-            raise BoundaryError("remote_training", "explicit_target_device_mismatch")
-        self._limits(obj, target.timeout_seconds)
-        require_p1_snapshot(owner, store, snapshot)
+                execution_options["execution_policy"] = checked_recipe_execution_policy(
+                    recipe, obj["execution_policy"])
+            if "initial_checkpoint" in obj:
+                if "execution_policy" not in obj:
+                    raise BoundaryError("remote_training",
+                                        "explicit_frozen_execution_policy_required")
+                if recipe != P1_MSTD_RECIPE:
+                    raise BoundaryError("remote_training", "derivation_requires_M_std_recipe")
+                execution_options["initial_checkpoint"] = digest(
+                    obj["initial_checkpoint"], "remote_training.initial_checkpoint")
+            target = provider.target
+            gpu = getattr(target, "gpu", None)
+            if ((config.device == "cpu") != (gpu == "none")):
+                raise BoundaryError("remote_training", "explicit_target_device_mismatch")
+            self._limits(obj, target.timeout_seconds)
+        with phase("remote.prepare.snapshot_verify"):
+            require_p1_snapshot(owner, store, snapshot)
         # Vocabulary fitting itself discloses training examples; reserve use first.
-        record_p1_training_use(owner, store, snapshot, intent)
-        run = prepare_run(store, snapshot, target.producer, config, intent, **execution_options)
-        scratch = self.config.state_dir / "remote-training-transfer"
-        scratch.mkdir(parents=True, exist_ok=True)
-        facts = transfer_p1_input(store, deployment.compute_store, run.artifact_id,
-                                  target.producer, scratch=scratch)
+        with phase("remote.prepare.record_use"):
+            record_p1_training_use(owner, store, snapshot, intent)
+        with phase("remote.prepare.build_run"):
+            run = prepare_run(store, snapshot, target.producer, config, intent, **execution_options)
+        with phase("remote.prepare.transfer_and_readback"):
+            scratch = self.config.state_dir / "remote-training-transfer"
+            scratch.mkdir(parents=True, exist_ok=True)
+            facts = transfer_p1_input(store, deployment.compute_store, run.artifact_id,
+                                      target.producer, scratch=scratch)
         return {"schema": "spireagent/remote-training-prepared-1", "state": "prepared",
                 "run_id": run.artifact_id, "input": facts, "enqueued": False,
                 "provider_submitted": False, "gpu_qualification": "not_established"}
 
     def command(self, action: str, body: object) -> dict[str, Any]:
+        label = action if action in {"prepare", "start", "resume", "pause", "cancel", "reconcile",
+                                    "auto-continue", "stop-continuation"} else "command"
+        with (self.diagnostics.operation("/api/remote-training/" + label, label),
+              phase("remote.command.dispatch")):
+            return self._command(action, body)
+
+    def _command(self, action: str, body: object) -> dict[str, Any]:
         if self.config.remote_compute is not None and self.config.remote_compute.observation_only:
             raise BoundaryError("remote_training", "observation_only_original_writer_required")
         if action == "pause":
@@ -507,19 +534,23 @@ class RemoteTrainingService:
             if action == "prepare":
                 return self.prepare(body)
             if action == "start":
-                prepared = self.prepare(body)
+                with phase("remote.start.prepare"):
+                    prepared = self.prepare(body)
                 assert isinstance(body, dict)  # prepare checked the exact request grammar.
                 obj = body
-                _, _, _, ops, _ = self._ready()
+                with phase("remote.start.scheduler_ready"):
+                    _, _, _, ops, _ = self._ready()
                 deployment = self.config.remote_compute
                 assert deployment is not None
-                job_id = ops.enqueue("training", prepared["run_id"], obj["intent_id"],
-                                     max_seconds=obj["max_seconds"],
-                                     reserved_units=deployment.reserved_units,
-                                     budget_limit=deployment.budget_limit,
-                                     options={"stop_after": obj["stop_after"]})
+                with phase("remote.start.enqueue"):
+                    job_id = ops.enqueue("training", prepared["run_id"], obj["intent_id"],
+                                         max_seconds=obj["max_seconds"],
+                                         reserved_units=deployment.reserved_units,
+                                         budget_limit=deployment.budget_limit,
+                                         options={"stop_after": obj["stop_after"]})
             elif action in {"cancel", "reconcile", "resume"}:
-                owner, store, provider, ops, _ = self._ready()
+                with phase("remote.control.scheduler_ready"):
+                    owner, store, provider, ops, _ = self._ready()
                 deployment = self.config.remote_compute
                 assert deployment is not None
                 fields = {"job_id", "expected_attempt_id"}
@@ -551,34 +582,39 @@ class RemoteTrainingService:
                                            destination=store.blobs.root, destination_store=store)
                             copy_artifact(self._compute_store, store, identity, scratch=scratch)
                 else:
-                    from spireagent.hub.training_continuation import read as read_continuation
+                    with phase("remote.resume.request_validate"):
+                        from spireagent.hub.training_continuation import read as read_continuation
 
-                    policy = read_continuation(ops)
-                    if policy and policy["enabled"] and policy["run_id"] == row["input_id"]:
-                        raise BoundaryError("remote_training",
-                                            "manual_resume_requires_stop_continuation")
-                    intent = digest(obj["intent_id"], "remote_training.intent_id", length=32)
-                    checkpoint = digest(obj["checkpoint_id"], "remote_training.checkpoint_id")
-                    result = json.loads(row["result"]) if row["result"] else {}
-                    if row["status"] == "paused":
-                        if result.get("checkpoint_id") != checkpoint:
+                        policy = read_continuation(ops)
+                        if policy and policy["enabled"] and policy["run_id"] == row["input_id"]:
                             raise BoundaryError("remote_training",
-                                                "exact_paused_checkpoint_required")
-                    else:
-                        self._terminated_resume_checkpoint(row, checkpoint, provider, ops)
-                    if intent == row["request_key"]:
-                        raise BoundaryError("remote_training", "new_remote_intent_required")
-                    self._limits(obj, provider.target.timeout_seconds)
-                    job_id = ops.enqueue("training", row["input_id"], intent,
-                                         max_seconds=obj["max_seconds"],
-                                         reserved_units=deployment.reserved_units,
-                                         budget_limit=deployment.budget_limit,
-                                         options={"resume": checkpoint,
-                                                  "stop_after": obj["stop_after"]})
+                                                "manual_resume_requires_stop_continuation")
+                        intent = digest(obj["intent_id"], "remote_training.intent_id", length=32)
+                        checkpoint = digest(obj["checkpoint_id"], "remote_training.checkpoint_id")
+                        result = json.loads(row["result"]) if row["result"] else {}
+                        if row["status"] == "paused":
+                            if result.get("checkpoint_id") != checkpoint:
+                                raise BoundaryError("remote_training",
+                                                    "exact_paused_checkpoint_required")
+                        else:
+                            self._terminated_resume_checkpoint(row, checkpoint, provider, ops)
+                        if intent == row["request_key"]:
+                            raise BoundaryError("remote_training", "new_remote_intent_required")
+                        self._limits(obj, provider.target.timeout_seconds)
+                    with phase("remote.resume.enqueue"):
+                        job_id = ops.enqueue("training", row["input_id"], intent,
+                                             max_seconds=obj["max_seconds"],
+                                             reserved_units=deployment.reserved_units,
+                                             budget_limit=deployment.budget_limit,
+                                             options={"resume": checkpoint,
+                                                      "stop_after": obj["stop_after"]})
             else:
                 raise BoundaryError("remote_training", "unsupported_training_action")
-            self._launch_loop()
-            return self.status(job_id)
+            bind_job(job_id)
+            with phase("remote.scheduler.launch"):
+                self._launch_loop()
+            with phase("remote.command.readback"):
+                return self.status(job_id)
 
     @staticmethod
     def _limits(obj: dict[str, Any], timeout: int) -> None:

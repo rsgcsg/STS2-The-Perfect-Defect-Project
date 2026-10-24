@@ -194,6 +194,7 @@ def test_support_get_authentication_and_strict_query_without_a_socket(tmp_path, 
 
     service, model = source(tmp_path, {"schema": "stpd/source3-ordered-native-m2-model-v1"})
     app = SimpleNamespace(
+        config=SimpleNamespace(state_dir=tmp_path),
         local_model_export=service,
         account=SimpleNamespace(cookie_name="workbench", cookie="approved-cookie"),
     )

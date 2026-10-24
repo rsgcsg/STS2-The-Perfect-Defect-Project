@@ -27,6 +27,7 @@ from urllib.request import ProxyHandler, Request, build_opener
 
 from spireagent.console.page import CSP, asset, render_shell
 from spireagent.json_boundary import BoundaryError, digest
+from spireagent.local_diagnostics import LocalDiagnostics
 from spireagent.workbench.console import LocalConsole
 from spireagent.workbench.dashboard import _safe_value
 from spireagent.workbench.developer import ROOT, ProjectConfig, atomic_json, doctor, tool_identity
@@ -40,6 +41,67 @@ from spireagent.workbench.native_workbench import (
     start_workbench_registration,
 )
 from spireagent.workbench.service_process import service_environment, service_process
+
+# Fixed diagnostic labels only; this table never authorizes or dispatches a request.
+_DIAGNOSTIC_PATHS = frozenset({
+    '/api/remote-training/prepare',
+    '/api/remote-training/start',
+    '/api/remote-training/resume',
+    '/api/remote-training/pause',
+    '/api/remote-training/cancel',
+    '/api/remote-training/reconcile',
+    '/api/remote-training/auto-continue',
+    '/api/remote-training/stop-continuation',
+    '/api/local-training/start',
+    '/api/local-training/pause',
+    '/api/local-training/cancel',
+    '/api/local-training/resume',
+    '/api/local-training/reconcile',
+    '/api/local-training/amend_wall_budget',
+    '/api/local-datasets/human-preview',
+    '/api/local-datasets/native-agent-preview',
+    '/api/local-datasets/preview',
+    '/api/local-datasets/publish',
+    '/api/local-datasets/source3-preview',
+    '/api/local-datasets/status',
+    '/api/local-memory-evaluations/start',
+    '/api/local-memory-evaluations/status',
+    '/api/local-model-exports/start',
+    '/api/local-model-exports/status',
+    '/api/local-model-exports/support',
+    '/api/local-model-registrations/register',
+    '/api/local-model-registrations/register-composition',
+    '/api/local-model-registrations/register-global-program',
+    '/api/local-model-registrations/register-teacher',
+    '/api/local-model-registrations/status',
+    '/api/local-recordings',
+    '/api/local-recordings/derive',
+    '/api/local-recordings/derive/reconcile',
+    '/api/local-recordings/import',
+    '/api/local-recordings/import/native-agent',
+    '/api/local-recordings/import/reconcile',
+    '/api/local-recordings/import/status',
+    '/api/local-recordings/maintenance',
+    '/api/local-recordings/preview',
+    '/api/local-recordings/preview/status',
+    '/api/local-recordings/storage',
+    '/api/local-recordings/storage/peer',
+    '/api/local-recordings/storage/reconcile',
+    '/api/local-recordings/store',
+    '/api/local-training/capabilities',
+    '/api/local-training/status',
+    '/api/local-workspace/curation',
+    '/api/local-workspace/curation/prepare',
+    '/api/local-workspace/managed',
+    '/api/local-workspace/managed/create',
+    '/api/native-recording/command',
+    '/api/native-recording/status',
+    '/api/p1-data/freeze',
+    '/api/p1-data/prepare',
+    '/api/remote-training/capabilities',
+    '/api/remote-training/progress',
+    '/api/remote-training/status',
+})
 
 
 @contextlib.contextmanager
@@ -1266,7 +1328,21 @@ class Application:
 
 
 def create_server(app: Application) -> ThreadingHTTPServer:
+    diagnostics = LocalDiagnostics(app.config.state_dir)
+
     class Handler(BaseHTTPRequestHandler):
+        def handle_one_request(self) -> None:
+            with diagnostics.operation("http", "request"):
+                super().handle_one_request()
+
+        def diagnostic_bad_request(self, error: Exception, code: str, route: str) -> None:
+            parsed_path = urlsplit(self.path).path
+            safe_path = parsed_path if parsed_path in _DIAGNOSTIC_PATHS else route
+            action = (safe_path.rsplit("/", 1)[-1]
+                      if parsed_path in _DIAGNOSTIC_PATHS else self.command)
+            error_id = diagnostics.error(error, path=safe_path, action=action, stage=safe_path)
+            self.respond(400, json.dumps({"error": code, "error_id": error_id}).encode())
+
         def log_message(self, format: str, *args: Any) -> None:
             return
 
@@ -1587,8 +1663,9 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                     self.respond(200, json.dumps({"sources": rows}).encode())
                 except BoundaryError as error:
                     self.respond(409, json.dumps({"error": error.code}).encode())
-                except (OSError, ValueError, TypeError):
-                    self.respond(400, b'{"error":"invalid_p1_query"}')
+                except (OSError, ValueError, TypeError) as error:
+                    self.diagnostic_bad_request(error, "invalid_p1_query",
+                                                "/api/local-recordings/store")
             elif parsed.path == "/api/local-recordings/maintenance":
                 if not self.authenticated_browser() and not self.control_client():
                     self.respond(401, b'{"error":"browser_session_required"}')
@@ -1683,8 +1760,9 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                     self.respond(200, json.dumps(value).encode())
                 except BoundaryError as error:
                     self.respond(409, json.dumps({"error": error.code}).encode())
-                except (OSError, ValueError, TypeError):
-                    self.respond(400, b'{"error":"invalid_remote_training_request"}')
+                except (OSError, ValueError, TypeError) as error:
+                    self.diagnostic_bad_request(error, "invalid_remote_training_request",
+                                                "/api/remote-training/progress")
             elif parsed.path in {"/api/remote-training/status",
                                  "/api/remote-training/capabilities"}:
                 if not (self.authenticated_browser() or self.control_client()):
@@ -1708,8 +1786,9 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                     self.respond(200, json.dumps(value).encode())
                 except BoundaryError as error:
                     self.respond(409, json.dumps({"error": error.code}).encode())
-                except (OSError, ValueError, TypeError):
-                    self.respond(400, b'{"error":"invalid_remote_training_request"}')
+                except (OSError, ValueError, TypeError) as error:
+                    self.diagnostic_bad_request(error, "invalid_remote_training_request",
+                                                "/api/remote-training/{status,capabilities}")
             elif parsed.path in {"/api/local-training/status", "/api/local-training/capabilities"}:
                 if not (self.authenticated_browser() or self.control_client()):
                     self.respond(401, b'{"error":"browser_session_required"}')
@@ -2191,8 +2270,9 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                     self.respond(200, json.dumps(value).encode())
                 except BoundaryError as error:
                     self.respond(409, json.dumps({"error": error.code}).encode())
-                except (OSError, ValueError, TypeError):
-                    self.respond(400, b'{"error":"invalid_local_curation_request"}')
+                except (OSError, ValueError, TypeError) as error:
+                    self.diagnostic_bad_request(error, "invalid_local_curation_request",
+                                                "/api/local-workspace/curation/prepare")
                 return
             if self.path.startswith("/api/native-recording/"):
                 if not self.browser_write() and not self.control_client():
@@ -2207,8 +2287,9 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                     self.respond(200, json.dumps(value).encode())
                 except BoundaryError as error:
                     self.respond(409, json.dumps({"error": error.code}).encode())
-                except (OSError, ValueError, TypeError):
-                    self.respond(400, b'{"error":"invalid_native_recording_command"}')
+                except (OSError, ValueError, TypeError) as error:
+                    self.diagnostic_bad_request(error, "invalid_native_recording_command",
+                                                "/api/native-recording/command")
                 return
             if self.path == "/api/local-recordings/maintenance":
                 if not self.browser_write() and not self.control_client():
@@ -2224,8 +2305,9 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                     self.respond(200, json.dumps(value).encode())
                 except BoundaryError as error:
                     self.respond(409, json.dumps({"error": error.code}).encode())
-                except (OSError, ValueError, TypeError):
-                    self.respond(400, b'{"error":"invalid_p1_maintenance_policy"}')
+                except (OSError, ValueError, TypeError) as error:
+                    self.diagnostic_bad_request(error, "invalid_p1_maintenance_policy",
+                                                "/api/local-recordings/maintenance")
                 return
             if self.path in {"/api/local-recordings/storage",
                               "/api/local-recordings/storage/reconcile"}:
@@ -2244,8 +2326,9 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                     self.respond(200, json.dumps(value).encode())
                 except BoundaryError as error:
                     self.respond(409, json.dumps({"error": error.code}).encode())
-                except (OSError, ValueError, TypeError):
-                    self.respond(400, b'{"error":"invalid_p1_storage_request"}')
+                except (OSError, ValueError, TypeError) as error:
+                    self.diagnostic_bad_request(error, "invalid_p1_storage_request",
+                                                "/api/local-recordings/storage")
                 return
             if self.path.startswith("/api/local-recordings/derive"):
                 if not self.browser_write():
@@ -2263,8 +2346,9 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                     self.respond(200, json.dumps(value).encode())
                 except BoundaryError as error:
                     self.respond(409, json.dumps({"error": error.code}).encode())
-                except (OSError, ValueError, TypeError):
-                    self.respond(400, b'{"error":"invalid_p1_derivation_request"}')
+                except (OSError, ValueError, TypeError) as error:
+                    self.diagnostic_bad_request(error, "invalid_p1_derivation_request",
+                                                "/api/local-recordings/derive")
                 return
             if self.path.startswith("/api/local-recordings/preview"):
                 if not self.browser_write():
@@ -2281,8 +2365,9 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                     self.respond(200, json.dumps(value).encode())
                 except BoundaryError as error:
                     self.respond(409, json.dumps({"error": error.code}).encode())
-                except (OSError, ValueError, TypeError):
-                    self.respond(400, b'{"error":"invalid_local_preview_request"}')
+                except (OSError, ValueError, TypeError) as error:
+                    self.diagnostic_bad_request(error, "invalid_local_preview_request",
+                                                "/api/local-recordings/preview")
                 return
             if self.path.startswith("/api/local-recordings/import"):
                 if not self.browser_write() and not (
@@ -2323,8 +2408,9 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                     self.respond(200, json.dumps(value).encode())
                 except BoundaryError as error:
                     self.respond(409, json.dumps({"error": error.code}).encode())
-                except (OSError, ValueError, TypeError):
-                    self.respond(400, b'{"error":"invalid_local_import_request"}')
+                except (OSError, ValueError, TypeError) as error:
+                    self.diagnostic_bad_request(error, "invalid_local_import_request",
+                                                "/api/local-recordings/import")
                 return
             if self.path.startswith("/api/local-datasets/"):
                 if not self.browser_write():
@@ -2364,8 +2450,9 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                     self.respond(200, json.dumps(value).encode())
                 except BoundaryError as error:
                     self.respond(409, json.dumps({"error": error.code}).encode())
-                except (OSError, ValueError, TypeError):
-                    self.respond(400, b'{"error":"invalid_local_dataset_request"}')
+                except (OSError, ValueError, TypeError) as error:
+                    self.diagnostic_bad_request(error, "invalid_local_dataset_request",
+                                                "/api/local-datasets/:action")
                 return
             if self.path.startswith("/api/p1-data/"):
                 if not (self.browser_write() or self.control_client()):
@@ -2406,8 +2493,9 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                     self.respond(200, json.dumps(value).encode())
                 except BoundaryError as error:
                     self.respond(409, json.dumps({"error": error.code}).encode())
-                except (OSError, ValueError, TypeError):
-                    self.respond(400, b'{"error":"invalid_p1_data_request"}')
+                except (OSError, ValueError, TypeError) as error:
+                    self.diagnostic_bad_request(error, "invalid_p1_data_request",
+                                                "/api/p1-data/:action")
                 return
             if self.path.startswith("/api/remote-training/"):
                 if not (self.browser_write() or self.control_client()):
@@ -2420,8 +2508,9 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                     self.respond(200, json.dumps(value).encode())
                 except BoundaryError as error:
                     self.respond(409, json.dumps({"error": error.code}).encode())
-                except (OSError, ValueError, TypeError):
-                    self.respond(400, b'{"error":"invalid_remote_training_request"}')
+                except (OSError, ValueError, TypeError) as error:
+                    self.diagnostic_bad_request(error, "invalid_remote_training_request",
+                                                "/api/remote-training/:action")
                 return
             if self.path.startswith("/api/local-training/"):
                 if not (self.browser_write() or self.control_client()):
@@ -2465,8 +2554,9 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                     self.respond(200, json.dumps(value).encode())
                 except BoundaryError as error:
                     self.respond(409, json.dumps({"error": error.code}).encode())
-                except (OSError, ValueError, TypeError):
-                    self.respond(400, b'{"error":"invalid_local_training_request"}')
+                except (OSError, ValueError, TypeError) as error:
+                    self.diagnostic_bad_request(error, "invalid_local_training_request",
+                                                "/api/local-training/:action")
                 return
             if self.path.startswith("/api/local-memory-evaluations/"):
                 if not self.browser_write():
@@ -2488,8 +2578,9 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                     self.respond(200, json.dumps(value).encode())
                 except BoundaryError as error:
                     self.respond(409, json.dumps({"error": error.code}).encode())
-                except (OSError, ValueError, TypeError):
-                    self.respond(400, b'{"error":"invalid_local_memory_evaluation_request"}')
+                except (OSError, ValueError, TypeError) as error:
+                    self.diagnostic_bad_request(error, "invalid_local_memory_evaluation_request",
+                                                "/api/local-memory-evaluations/:action")
                 return
             if self.path.startswith("/api/local-model-exports/"):
                 if not self.browser_write():
@@ -2506,8 +2597,9 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                     self.respond(200, json.dumps(value).encode())
                 except BoundaryError as error:
                     self.respond(409, json.dumps({"error": error.code}).encode())
-                except (OSError, ValueError, TypeError):
-                    self.respond(400, b'{"error":"invalid_local_model_export_request"}')
+                except (OSError, ValueError, TypeError) as error:
+                    self.diagnostic_bad_request(error, "invalid_local_model_export_request",
+                                                "/api/local-model-exports/:action")
                 return
             if self.path.startswith("/api/local-model-registrations/"):
                 if not self.browser_write() and not self.control_client():
@@ -2568,8 +2660,9 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                         self.respond(500, json.dumps(error.public_failure()).encode())
                     else:
                         self.respond(409, json.dumps({"error": error.code}).encode())
-                except (OSError, ValueError, TypeError):
-                    self.respond(400, b'{"error":"invalid_local_model_registration_request"}')
+                except (OSError, ValueError, TypeError) as error:
+                    self.diagnostic_bad_request(error, "invalid_local_model_registration_request",
+                                                "/api/local-model-registrations/:action")
                 return
             if self.path.startswith("/api/local-workspace/managed/"):
                 if not self.browser_write():
@@ -2587,8 +2680,9 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                     self.respond(200, json.dumps(value).encode())
                 except BoundaryError as error:
                     self.respond(409, json.dumps({"error": error.code}).encode())
-                except (OSError, ValueError, TypeError):
-                    self.respond(400, b'{"error":"invalid_managed_workspace_request"}')
+                except (OSError, ValueError, TypeError) as error:
+                    self.diagnostic_bad_request(error, "invalid_managed_workspace_request",
+                                                "/api/local-workspace/managed/:action")
                 return
             if self.path.startswith(("/api/member/", "/api/local-models/")):
                 if not self.browser_write() and not (
