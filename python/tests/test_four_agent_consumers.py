@@ -94,7 +94,8 @@ def test_model_outcome_keeps_model_binding_without_claiming_task_success(
             "content": {"surface": {"kind": "game_over", "stage": "intro"},
                         "context": {"kind": "game_over", "result": "win"}}}}}
     record = json_bytes({"serialized_observation": json.dumps(basis)})
-    original = {"path": "source.json", "sha256": hashlib.sha256(record).hexdigest(),
+    digest = hashlib.sha256(record).hexdigest()
+    original = {"path": f"global-{digest}.bin", "sha256": digest,
                 "bytes": len(record)}
     events = [
         {"kind": "global_source", "sequence": 1,
@@ -105,7 +106,7 @@ def test_model_outcome_keeps_model_binding_without_claiming_task_success(
          "payload": {"controller": "released", "reason": "agent_closed"}},
     ]
     raw = b"".join(json_bytes(e) for e in events)
-    (tmp_path / "source.json").write_bytes(record)
+    (tmp_path / original["path"]).write_bytes(record)
     (tmp_path / "events.jsonl").write_bytes(raw)
     files = [original, {"path": "events.jsonl", "sha256": hashlib.sha256(raw).hexdigest(),
                         "bytes": len(raw)}]
