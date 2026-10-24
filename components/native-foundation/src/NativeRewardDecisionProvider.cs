@@ -36,6 +36,18 @@ public static class NativeRewardDecisionProvider
             ? new NativeRewardDecisionOwner(owner.Set, owner.IsTerminal)
             : null;
 
+    // The exact boss/victory Proceed path sets this latch before the act-ready
+    // vote. A retained rewards overlay is not a new player decision owner.
+    [UnsafeAccessor(UnsafeAccessorKind.Field, Name = "_disableProceedForever")]
+    private static extern ref bool DisableProceedForever(NRewardsScreen screen);
+
+    public static bool IsTerminalProceedPending(NRewardsScreen screen) =>
+        Owners.TryGetValue(screen, out Owner? owner)
+        && TerminalProceedPending(owner.IsTerminal, DisableProceedForever(screen));
+
+    public static bool TerminalProceedPending(bool isTerminal, bool disabledForever) =>
+        isTerminal && disabledForever;
+
     public static NativeRewardDecision Capture(
         NRewardsScreen screen,
         INativeReferentIdentity identities)
