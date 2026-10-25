@@ -262,3 +262,81 @@ python -m spireagent.workbench training package --execution remote \
 本卡用原数据生成的演练包固定 `stop_after=8`；它不是下一轮正式数据包。
 录完新局后先重跑卡 A 的盘点和整局分配，再运行上述准备命令。正式请求的 `stop_after=null`、
 目标 timeout 和总额度须在用户说“开训”之前明确；不修改已有包来改变这些条件。
+
+### Repeating the P1 whole-run inventory before a new training batch
+
+Curation still owns purpose and permanent exposure; `stpd.p1.cohort` only drafts
+an explicit selection and reports its weights. It reads closed immutable Store
+artifacts through the existing P1 reader, merges native-decision/seed/ancestry
+fingerprints there, and retains existing Curation roles. Conflicting old/new
+projections must be resolved by explicit projection IDs or a fixed Tool release;
+there is no implicit “latest” union. Unknown ancestry remains unknown.
+
+From `python/`, with the normal locked research environment and existing project:
+
+```bash
+uv run --locked python tools/p1_cohort.py \
+  --config /ABS/project.json --selection /ABS/cohort-selection.json \
+  --output /ABS/new-inventory-directory
+```
+
+The selection is the existing `selection` object from a frozen request, or
+`{"tool_release_ids":["EXACT_RELEASE_ID"]}`. New recordings first use the normal
+recordings import/derive entry; this command does not convert originals. It
+requires 15 GiB free on the output and Store volumes, uses a read-only local
+Store with its pinned peers, and never reserves purpose, records training use,
+publishes a snapshot, starts a worker or controls a game. A missing read lease
+must be handled by the existing Store owner, not by bypassing it. An older
+installed App may be inventoried without replacing its combination; this is
+read authority, not installed-version admission.
+
+Outputs are `index.json`, `facts.json`, `allocation.json`, `plan.json` and the
+source catalog. `plan.configuration_id` binds exact projection/source identities,
+selected decisions, whole-group roles, per-run evidence and weight parameters.
+The user-fixed progress rule is: win 3; loss or unknown outcome
+`0.25 + 1.25 * (recorded_floor / finish_floor)^2 + 0.25 * witnessed_boss_victories`.
+Use the same difficulty's recorded winning floor; if absent, read the final-act
+boss map's final row in global floor coordinates. Only A10 may fall back to A0,
+and that fallback is explicit. Conflicting denominators or any nonwin weight
+at least 3 stop the plan. Unknown outcomes retain their observed progress and a
+separate reason/count. Missing boss evidence grants no bonus; a boss map icon
+or reaching a later floor is never a victory. The current positive witness is
+an observed boss encounter followed by its reward at the same act/floor.
+Distinct A10 final bosses occupy distinct recorded floors and count separately.
+
+Weights apply only to TRAIN N losses; DEV and TEST remain unweighted. The plan
+retains the former candidate 2 solely for a requested component-share comparison.
+It does not implement numerical weighting: the training recipe/worker consumer
+must bind this configuration, support weights, and prove all-one equivalence
+before weighted training. A plan marked awaiting pre-freeze confirmation is not
+a training input or permission to train.
+
+To extend holdouts, optionally pass `--holdout-targets /ABS/targets.json`, e.g.
+`{"dev":{"0":4,"10":3},"test":{"0":4,"10":3}}`. These are total whole-group
+counts, not percentages or added counts. The draft preserves every existing
+role and exposure; it fills missing strata only from new unexposed whole groups
+with native start/end witnesses, selected by difficulty and a fixed salted hash,
+without using win/loss or length to choose members. Shortfalls are reported and
+`ready_to_freeze` stays false. Persist confirmed roles through the existing
+snapshot/Curation path before adding the next batch, so subsequent discoveries
+do not reshuffle old holdouts. Seed/restore ancestry still limits the independence
+claim. Keep the first-round TEST separately labelled for historical comparison;
+new unused TEST groups measure transfer to new runs. Never move old TRAIN into TEST.
+
+Before freezing, inspect the per-run table, unknowns, exclusions and component
+shares; confirm with the user when required by the active task. Then pass the
+exact same plan to the training preparation owner. Do not silently refit
+vocabulary/tokenizer from DEV/TEST. Current M-std public run `ascension` is a
+numeric InputSpec field; TRAIN-only symbolic vocabularies still limit other
+characters, and this workflow does not repair that limitation.
+
+For repeated batches, the selection can also contain the frozen
+`projection_ids` plus `new_source_tool_release_ids:["REVIEWED_TOOL_ID"]`.
+Previously selected originals keep their exact version; newly discovered originals
+are added only when exactly one r1.5 Human projection matches the reviewed Tool
+set. Multiple matching versions stop with `new_source_projection_version_ambiguous`.
+Originals without a selected/reviewed projection remain in `pending_sources.json`
+with a reason, so a rerun cannot silently claim that eight new raw sessions added
+eight usable runs. Review a genuinely new conversion Tool once before adding its
+ID to this explicit policy. The same per-batch native start/end, gap, provenance,
+whole-group and exposure constraints remain in effect.
