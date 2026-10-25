@@ -133,8 +133,12 @@ def main() -> int:
         from spireagent.workbench.developer import ProjectConfig
         from spireagent.workbench.training_calibration import authorize_qualification
 
+        # This entry only reads the original Curation owner. It starts no local
+        # runtime and must not require upgrading that profile's game combination.
+        # The remote source/lock and all data/use identities remain checked.
         qualification = {"binding": authorize_qualification(
-            ProjectConfig.load(args.config), args.input, args.operation_id), "steps": args.steps}
+            ProjectConfig.load(args.config, require_current_combination=False),
+            args.input, args.operation_id), "steps": args.steps}
     identity = {"producer": producer.to_dict(), "image": args.image,
                 "input_id": args.input, "plan": plan, "cpu": args.cpu,
                 "memory_mib": args.memory_mib, "gpu": "L40S", "timeout": args.timeout,

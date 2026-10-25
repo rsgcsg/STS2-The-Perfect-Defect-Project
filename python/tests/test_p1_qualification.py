@@ -207,3 +207,43 @@ def test_module_entry_orchestrates_canonical_replacement_children(
                                    tmp_path / "qualification", device="cpu")
     assert report.parameters.value()["state"] == "completed"
     assert modes == ["train", "resume"]
+
+
+def test_qualification_reads_original_curation_profile_without_runtime_upgrade(
+    tmp_path, monkeypatch,
+):
+    import importlib.metadata
+    import runpy
+
+    import spireagent.source
+    from spireagent.workbench import training_calibration
+    from spireagent.workbench.developer import ProjectConfig
+
+    class BeforeAnyModalOffer(Exception):
+        pass
+
+    original = ProjectConfig(tmp_path / "original-state", "", "", None,
+                             {"old_installed_combination": "retained"})
+    config_path = tmp_path / "project.json"
+    config_path.write_bytes(json_bytes(original.to_dict()))
+    with pytest.raises(BoundaryError, match="combination_changed"):
+        ProjectConfig.load(config_path)
+    seen = []
+    monkeypatch.setattr(training_calibration, "authorize_qualification", lambda config, *args:
+                        seen.append(config.combination))
+    monkeypatch.setattr(spireagent.source, "source_identity", lambda root: PRODUCER)
+    monkeypatch.setattr(importlib.metadata, "version", lambda package: "1.5.5")
+    monkeypatch.setitem(sys.modules, "modal", SimpleNamespace(App=lambda name:
+                        (_ for _ in ()).throw(BeforeAnyModalOffer())))
+    plan = tmp_path / "plan.json"
+    plan.write_bytes(json_bytes({"variants": [MStdExecution().to_dict()], "profile": False}))
+    monkeypatch.setattr(sys, "argv", ["calibrate", "--image", "im-" + "a" * 22,
+        "--input", "b" * 64, "--plan", str(plan), "--receipt", str(tmp_path / "receipt.json"),
+        "--qualify", "--config", str(config_path), "--operation-id", "c" * 32, "--steps", "200"])
+    owner = runpy.run_path(str(Path(__file__).parents[1]
+                              / "deploy/cloud-worker/calibrate_p1.py"))
+    with pytest.raises(BeforeAnyModalOffer):
+        owner["main"]()
+    assert seen == [original.combination]
+    assert json.loads(config_path.read_bytes()) == original.to_dict()
+    assert not (tmp_path / "receipt.json").exists()
