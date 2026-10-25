@@ -236,3 +236,25 @@ python -m spireagent.workbench project model --action register \
 运行必须再获用户同意。当前该 `plan` 只支持导入带原运行条件的历史矩阵，全新未开矩阵会拒绝
 `original_conditions_required`；此缺口归评估链owner，本卡不改其代码，不伪造一次原局来绕过。
 未来候选尚不存在时只给显式待绑定草案，不伪造Model/selection或宣称可执行账本已完成。
+
+卡 A 的已确认 `weight-candidates.json` 可直接作为上游输入。将完整配方、全新 intent、
+`max_seconds` 和 `stop_after` 保存为请求 JSON，**不填 `source_id`**；命令会把该计划的
+原成员、去重选择和整局切分直接交给已有 `p1-data freeze(reserve=True)`，再核实际 Snapshot，
+把确认的 configuration_id、规则定义与逐局权重一起交原 prepare。不会重新选择规则或切分。
+正常冻结/恢复会由 Store owner 建好 lease；缺 lease 应先走原 owner 恢复，不能在此绕过。
+
+```sh
+python -m spireagent.workbench training package --execution remote \
+  --config /ABS/training-project.json --input /ABS/recipe-request.json \
+  --cohort-plan /ABS/weight-candidates.json --configuration-id CONFIRMED_64_HEX \
+  --output /ABS/new-package.json --wait-seconds 7200
+```
+
+已有准确 Snapshot 时也可在请求中填 `source_id`，此时只核上游计划与它一致，不另冻数据。
+更新数据后使用新配置ID、新 intent、新输出；已有输出会在冻结或预留之前拒绝。
+只接受用户已确认的配置；配置文件可读或哈希正确本身不构成训练授权。若 freeze/prepare
+响应不明，保留原 Snapshot/预留/intent 并查原状态，不自动重冻或重投。
+
+本卡用原数据生成的演练包固定 `stop_after=8`；它不是下一轮正式数据包。
+录完新局后先重跑卡 A 的盘点和整局分配，再运行上述准备命令。正式请求的 `stop_after=null`、
+目标 timeout 和总额度须在用户说“开训”之前明确；不修改已有包来改变这些条件。
