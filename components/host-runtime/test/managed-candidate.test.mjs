@@ -44,8 +44,8 @@ test("built native act-selection source and retained measured builds remain expl
     createHash("sha256").update(sourcePatch).digest("hex"),
     manifest.expected_build.source_patch_sha256
   );
-  assert.equal(manifest.expected_build.artifact_sha256, "bef5d6b922875ad1fb294af3ea9149eed064e8e37af2949791f31ae0d2039525");
-  assert.equal(manifest.expected_build.artifact_mvid, "622752e4-9fc1-4e26-a79c-2b3e1e150e88");
+  assert.equal(manifest.expected_build.artifact_sha256, "5960486c06384bbac882bed3fbaee088225700cc71b12c9658c73ac5e4e39cab");
+  assert.equal(manifest.expected_build.artifact_mvid, "612ce054-a6b0-48cc-a0aa-3935830f046f");
   assert.equal(manifest.historical_candidate_builds.some(build =>
     build.source_patch_sha256 === "a46736eee8c0c4c65b574a53e769330831d2e39de7897563f4a4c16b48fc5e20"
     && build.artifact_sha256 === "39a6455c2f67c4313b3cf2b6b46a6783d41cc5ebe86cb62829a6a780c7d562b2"
@@ -126,6 +126,7 @@ test("fresh candidate preparation admits added source files into the audited dif
     "src/Sts2Headless/DeckUpgradeCallScope.cs",
     "src/Sts2Headless/DeckUpgradeSelection.cs",
     "src/Sts2Headless/FairPileProjection.cs",
+    "src/Sts2Headless/ManagedBundlePresentation.cs",
     "src/Sts2Headless/ManagedEventPresentation.cs",
     "src/Sts2Headless/ManagedGameOverPresentation.cs",
     "src/Sts2Headless/ManagedInitialProgress.cs",

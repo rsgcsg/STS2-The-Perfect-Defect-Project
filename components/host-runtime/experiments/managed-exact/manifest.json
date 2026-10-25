@@ -36,9 +36,9 @@
     "managed_artifact": "src/Sts2Headless/bin/Release/net9.0/Sts2Headless.dll"
   },
   "expected_build": {
-    "source_patch_sha256": "b4d284f105ca0f7c77d1bf576bb89e6fb43f3475a6359eb2c470f1552df93e40",
-    "artifact_sha256": "bef5d6b922875ad1fb294af3ea9149eed064e8e37af2949791f31ae0d2039525",
-    "artifact_mvid": "622752e4-9fc1-4e26-a79c-2b3e1e150e88",
+    "source_patch_sha256": "32a9dd138a0176c35289c6fbb645ccb9d484ceda7b333f250f4d41376c9863d5",
+    "artifact_sha256": "5960486c06384bbac882bed3fbaee088225700cc71b12c9658c73ac5e4e39cab",
+    "artifact_mvid": "612ce054-a6b0-48cc-a0aa-3935830f046f",
     "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0"
   },
   "previous_candidate_build": {
@@ -269,5 +269,11 @@
   "native_localization": {
     "resource_pack_filename": "Slay the Spire 2.pck",
     "resource_pack_sha256": "b3c9f133143f98a1c329c3d2efc7d8a9feb395db46fd3965b899487bf1f4d106"
+  },
+  "pre_bundle_presentation_build": {
+    "source_patch_sha256": "b4d284f105ca0f7c77d1bf576bb89e6fb43f3475a6359eb2c470f1552df93e40",
+    "artifact_sha256": "bef5d6b922875ad1fb294af3ea9149eed064e8e37af2949791f31ae0d2039525",
+    "artifact_mvid": "622752e4-9fc1-4e26-a79c-2b3e1e150e88",
+    "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0"
   }
 }

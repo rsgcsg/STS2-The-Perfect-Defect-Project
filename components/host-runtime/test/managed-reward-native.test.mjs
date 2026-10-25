@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import { readFileSync } from "node:fs";
 import path from "node:path";
@@ -29,10 +30,17 @@ test("exact native reward factory preserves Skip/reroll/sacrifice without select
   const candidate = process.env.STS2_MANAGED_TEST_CANDIDATE;
   if (!candidate) { context.skip("set STS2_MANAGED_TEST_CANDIDATE for exact proprietary native component fixtures"); return; }
   const dotnet = await resolveDotnet();
+  const artifact = path.join(candidate, "src/Sts2Headless/bin/Release/net9.0/Sts2Headless.dll");
+  const before = createHash("sha256").update(readFileSync(artifact)).digest("hex");
   const { stdout } = await promisify(execFile)(dotnet.command,
-    ["run", "--project", path.join(candidate, "native-tests/NativeMechanisms.csproj"), "--configuration", "Release"],
+    ["run", "--project", path.join(candidate, "native-tests/NativeMechanisms.csproj"), "--configuration", "Release",
+      "-p:Deterministic=true", `-p:PathMap=${path.resolve(candidate)}=/_/candidate/`],
     { cwd: candidate, timeout: 180_000, maxBuffer: 4 * 1024 * 1024 });
-  assert.match(stdout, /14 exact native reward factory checks passed/u);
+  assert.equal(createHash("sha256").update(readFileSync(artifact)).digest("hex"), before,
+    "native mechanism tests must retain the prepared candidate artifact identity");
+  assert.match(stdout, /17 exact native reward factory checks passed/u);
+  assert.match(stdout, /8 exact Managed selector view binding checks passed/u);
+  assert.match(stdout, /8 exact Managed bundle owner checks passed/u);
   assert.match(stdout, /23 exact native relic command checks passed/u);
   assert.match(stdout, /7 exact native free travel checks passed/u);
   assert.match(stdout, /1 exact native wire null serialization check passed/u);
@@ -44,6 +52,8 @@ test("exact native reward factory preserves Skip/reroll/sacrifice without select
   assert.equal(outer.render_complete, true);
   assert.equal(outer.description, "Deal 6 damage.");
   assert.equal(outer.target_type, "AnyEnemy");
+  assert.equal(outer.public_details.upgrade_preview.status, "available");
+  assert.equal(outer.public_details.upgrade_preview.card.is_upgraded, true);
   const emitted = stdout.split(/\r?\n/u).find(line => line.startsWith("native-reward-json="));
   assert.ok(emitted);
   const facts = JSON.parse(emitted.slice("native-reward-json=".length));

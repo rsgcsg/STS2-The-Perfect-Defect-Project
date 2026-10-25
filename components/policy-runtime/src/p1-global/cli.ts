@@ -58,8 +58,8 @@ function compare(args: string[]): void {
   process.stdout.write(JSON.stringify(report, null, 2) + "\n");
 }
 
-function trajectory(args: string[]): void {
-  const value = extractTrajectory(abs(required(args, "--run-directory")));
+async function trajectory(args: string[]): Promise<void> {
+  const value = await extractTrajectory(abs(required(args, "--run-directory")));
   const out = option(args, "--out");
   if (out) writeFileSync(abs(out), JSON.stringify(value));
   process.stdout.write(JSON.stringify({ schema: value.schema, points: value.points.length, out }) + "\n");

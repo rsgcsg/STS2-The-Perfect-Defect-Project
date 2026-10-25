@@ -1197,17 +1197,13 @@ function currentSurface(state, ctx) {
           return visiblePotion;
         })
         : [];
-      if (state.is_terminal === true && state.can_proceed === true) {
+      if (state.can_proceed === true) {
         ctx.action({
           verb: "activate",
           label: rewards.length === 0 ? "Continue from rewards" : "Skip remaining rewards and continue",
-          raw: { cmd: "action", action: "proceed", args: { room_ref: state.room_ref } }
-        });
-      } else if (state.is_terminal !== true && state.can_skip === true) {
-        ctx.action({
-          verb: "skip",
-          label: "Skip remaining rewards",
-          raw: { cmd: "action", action: "skip_rewards" }
+          raw: state.is_terminal === true
+            ? { cmd: "action", action: "proceed", args: { room_ref: state.room_ref } }
+            : { cmd: "action", action: "skip_rewards" }
         });
       }
       const terminalIdentityComplete = state.is_terminal !== true
@@ -1224,7 +1220,7 @@ function currentSurface(state, ctx) {
           rewards,
           potion_slots_full: potionSlotsFull,
           discardable_potions: discardablePotions,
-          can_proceed: state.is_terminal === true && state.can_proceed === true,
+          can_proceed: state.can_proceed === true,
           can_leave_with_unclaimed_rewards: state.can_leave_with_unclaimed_rewards ?? null,
           proceed_skips_remaining_rewards: rewards.length > 0
         },
@@ -1397,31 +1393,57 @@ function currentSurface(state, ctx) {
       };
     }
     case "bundle_select": {
-      const bundles = (state.bundles ?? []).map((bundle, index) => {
-        const item = ctx.referent({
-          role: "card_bundle",
-          label: `Bundle ${index + 1}`,
-          occurrence: index,
-          properties: {
-            index: bundle.index ?? index,
-            cards: (bundle.cards ?? []).map(cardProperties)
-          }
+      const rawBundles = Array.isArray(state.bundles) ? state.bundles : [];
+      const preview = state.stage === "preview";
+      const refs = rawBundles.map(bundle => bundle.native_ref);
+      const exact = state.bundle_public === true && typeof state.selector_ref === "string"
+        && ["choosing", "preview"].includes(state.stage) && rawBundles.length > 0
+        && refs.every(ref => typeof ref === "string" && ref.length > 0)
+        && new Set(refs).size === refs.length
+        && (preview ? rawBundles.length === 1 && state.selected_bundle_ref === refs[0] : state.selected_bundle_ref === null)
+        && rawBundles.every(bundle => Array.isArray(bundle.cards) && bundle.cards.length > 0
+          && bundle.cards.every(card => typeof card.native_ref === "string"));
+      const missing = [...(Array.isArray(state.bundle_missing) ? state.bundle_missing : ["native_bundle_public_capture"]),
+        ...(exact ? [] : ["exact_current_native_bundle_binding"])];
+      const bundles = rawBundles.map((bundle, index) => {
+        const id = ctx.entityId("card_bundle", bundle.native_ref);
+        const cards = (bundle.cards ?? []).map(raw => {
+          const { target_type: _targetType, ...card } = rewardCardBase(raw, ctx.entityId("card", raw.native_ref));
+          ctx.detailReads.push(publicCardDetailRead(ctx, card, raw.public_details,
+            Array.isArray(raw.public_details_missing) ? raw.public_details_missing : ["native_bundle_card_details"],
+            "bundle_preview", id));
+          ctx.referent({ role: "card", id: card.entity_id, label: card.name, properties: card });
+          return card;
         });
-        ctx.action({
-          verb: "select",
-          subject: item,
-          label: `Take bundle ${index + 1}`,
-          raw: { cmd: "action", action: "select_bundle", args: { bundle_index: bundle.index ?? index } }
-        });
-        return item.properties;
+        const subject = ctx.referent({ role: "bundle", id, label: `Bundle ${index + 1}`,
+          enabled: exact, properties: { cards } });
+        const args = { selector_ref: state.selector_ref, bundle_ref: bundle.native_ref };
+        if (exact && !preview) ctx.action({ verb: "select", subject,
+          label: `Preview bundle: ${cards.map(card => card.name ?? card.definition_id).join(", ")}`,
+          raw: { cmd: "action", action: "preview_bundle", args } });
+        if (exact && preview) {
+          ctx.action({ verb: "confirm", subject, label: "Add the previewed bundle to the run deck",
+            raw: { cmd: "action", action: "confirm_bundle", args } });
+          ctx.action({ verb: "cancel", subject, label: "Return to bundle choices",
+            raw: { cmd: "action", action: "cancel_bundle_preview", args } });
+        }
+        return { entity_id: id, cards };
       });
+      const context = state.selector_context;
       return {
-        kind: "card_bundle_selection",
-        stage: "choosing",
-        prompt: null,
-        surface: { kind: "card_bundle_selection", stage: "choosing", bundles },
-        context: { ...commonContext, kind: "selection" },
-        ...supported
+        kind: "card_bundle_selection", stage: state.stage, prompt: state.prompt,
+        surface: { kind: "card_bundle_selection", stage: state.stage, prompt: state.prompt, bundles,
+          ...(preview ? { selected_bundle_entity_id: bundles[0]?.entity_id } : {}),
+          selectable_bundle_entity_ids: preview ? [] : bundles.map(bundle => bundle.entity_id).sort(),
+          can_confirm: exact && preview, can_cancel_preview: exact && preview },
+        context: plainObject(context) && context.kind === "event"
+          ? { kind: "event", event_id: context.event_id, name: visibleText(context.name),
+            ancient: context.ancient, in_dialogue: context.in_dialogue,
+            ...(context.body == null ? {} : { body: visibleText(context.body) }) }
+          : { ...commonContext, kind: "selection" },
+        complete: exact && missing.length === 0, actionComplete: exact,
+        visibleInformation: "contract_complete_for_two_stage_visible_card_bundle_selection",
+        interactionDiscovery: "exact_original_bundle_request_and_current_preview_controls", missing
       };
     }
     case "deck_upgrade_select": {
@@ -2279,7 +2301,7 @@ function rewardCandidateDetailRead(ctx, raw, entityId, ownerId) {
     missing.push("current_native_reward_card_render_incomplete");
   return publicCardDetailRead(ctx,
     Object.fromEntries(Object.entries(base).filter(([, value]) => value !== null)),
-    { keywords, card_previews: cardPreviews }, missing, "reward_candidate", ownerId);
+    raw.public_details, missing, "reward_candidate", ownerId);
 }
 
 function deckCardDetailReads(ctx, state, deckRead) {
@@ -2333,6 +2355,9 @@ function deckCardDetailReads(ctx, state, deckRead) {
 function combatPilesRead(ctx, state) {
   if (!Array.isArray(state.combat_piles)) return null;
   const { snapshotId, id: makeId } = ctx;
+  const nativeIdentityComplete = state.combat_piles.every(zone => Array.isArray(zone.cards)
+    && zone.cards.every(card => typeof card.native_ref === "string" && card.native_ref.length > 0)
+    && new Set(zone.cards.map(card => card.native_ref)).size === zone.cards.length);
   const parentReadId = makeId("read", snapshotId, "combat_piles");
   return {
     descriptor: {
@@ -2360,14 +2385,23 @@ function combatPilesRead(ctx, state) {
             return a < b ? -1 : a > b ? 1 : 0;
           });
         }
+        // Allocate from normalized public order, then use only those public
+        // aliases to break ties. A previously visible original keeps its identity
+        // across hand, selector and pile views without revealing a draw ordinal.
+        for (const card of cards) card.entityId = ctx.entityId("card", card.raw.native_ref);
+        if (zone.pile === "draw") cards.sort((left, right) => {
+          const a = JSON.stringify(canonicalValue(left.sort)), b = JSON.stringify(canonicalValue(right.sort));
+          return a < b ? -1 : a > b ? 1 : left.entityId.localeCompare(right.entityId);
+        });
         return {
           zone: zone.pile,
           card_count: cards.length,
           ordering_semantics: zone.pile === "draw" ? "unordered_multiset" : "native_visible_order",
           cards: cards.map(({ raw, visible }, index) => {
             const { target_type: _target, can_play: _canPlay, ...base } = visible;
-            const card = { ...base, entity_id: makeId("pile_card", snapshotId, zone.pile, index, visible) };
-            ctx.referent({ role: "card", id: card.entity_id, label: card.name, properties: card });
+            const card = { ...base, entity_id: cards[index].entityId };
+            if (!ctx.referents.some(referent => referent.referent_id === card.entity_id))
+              ctx.referent({ role: "card", id: card.entity_id, label: card.name, properties: card });
             ctx.detailReads.push(publicCardDetailRead(ctx, card, raw.public_details,
               Array.isArray(raw.public_details_missing) ? raw.public_details_missing : [], zone.pile, null, parentReadId));
             return card;
@@ -2376,10 +2410,10 @@ function combatPilesRead(ctx, state) {
       })
     },
     completeness: {
-      status: "complete",
+      status: nativeIdentityComplete ? "complete" : "partial",
       visible_information: "complete_for_player_visible_combat_pile_contents_without_draw_order",
       interaction_discovery: "read_only",
-      missing: [],
+      missing: nativeIdentityComplete ? [] : ["exact_native_combat_pile_card_identity"],
       hidden_by_policy: ["draw_pile_true_order"]
     }
   };

@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { P1Observation } from "@rsgcsg/sts2-connector-client/p1-global";
 import { comparePublicPoint, type FirstDifference } from "./compare.js";
+import { readGlobalArtifact } from "../global-artifact-storage.js";
 
 /**
  * One Agent decision point of a recorded GLOBAL run: the model view the Agent was
@@ -28,13 +29,13 @@ const withEnvelope = (observation: Record<string, unknown>, index: number): P1Ob
   envelope: { ...(observation.envelope as object ?? {}), occurrence: index, required_information_complete: true } as P1Observation["envelope"]
 });
 
-export function extractTrajectory(runDirectory: string): Trajectory {
+export async function extractTrajectory(runDirectory: string): Promise<Trajectory> {
   const events = readFileSync(join(runDirectory, "events.jsonl"), "utf8").trim().split("\n").map(line => JSON.parse(line));
   const points: TrajectoryPoint[] = [];
   let offered: Record<string, unknown> | null = null;
   for (const event of events) {
     if (event.kind !== "global_agent_frame" || !event.payload?.artifact?.path) continue;
-    const frame = JSON.parse(readFileSync(join(runDirectory, event.payload.artifact.path), "utf8"));
+    const frame = JSON.parse((await readGlobalArtifact(runDirectory, event.payload.artifact)).toString("utf8"));
     if (frame.message_type === "consume") offered = frame.input.observation;
     else if (frame.message_type === "directive" && offered) {
       const directive = frame.output.directive;

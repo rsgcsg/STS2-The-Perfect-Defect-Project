@@ -212,6 +212,7 @@ def launch_managed_host_service(*, host_package_dir: Path | str,
                                 diagnostics_file: Path | str | None = None,
                                 port: int = 0,
                                 character: str = "Ironclad",
+                                language: str = "en",
                                 timeout_ms: int = 10_000,
                                 startup_timeout: float = 120.0) -> ManagedHostServiceLaunch:
     """Explicitly start a detached Host. Dropping this object never closes it."""
@@ -234,7 +235,7 @@ def launch_managed_host_service(*, host_package_dir: Path | str,
     args = [node, str(tool), "--candidate", str(Path(candidate_dir).resolve()),
             "--client-attachment", str(client_file),
             "--manager-attachment", str(manager_file),
-            "--port", str(port), "--character", character,
+            "--port", str(port), "--character", character, "--language", language,
             "--timeout-ms", str(timeout_ms), "--quiet-diagnostics"]
     if game_dir is not None:
         args.extend(["--game-dir", str(Path(game_dir).resolve())])
