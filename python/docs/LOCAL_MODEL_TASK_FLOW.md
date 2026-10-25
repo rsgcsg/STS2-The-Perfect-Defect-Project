@@ -74,7 +74,8 @@ python -m spireagent.workbench evaluation report --ledger /ABS/ledger --output /
 封存不发送Stop、Host close或证据重发布。原失败快照和当前App确认分别追加；写入/读回/fsync失败不激活放行。
 若同App还留有GLOBAL `publication_unknown`，preview一并给出原发布operation/run/字节摘要；同次显式封存保留其完整原字节，再确认放行。原发布仍unknown，同一run禁止重发，后续新run才可接原发布入口。
 App重启后，若当前资源仍是该unknown，即使旧确认文件存在也须显式再确认并重查无占用；`run`先停在该检查，不预留新槽。
-不同App不能借旧PID/端口无响应推导无占用；使用准确pin的Host进程枚举、原生关闭收据及实际句柄检查，任一不可证就拒绝。
+不同App不能借旧PID/端口无响应推导无占用；现场检查Actor/worker、Reference driver、准确pin的Host游戏进程枚举、状态/模型句柄和本机endpoint明确拒绝连接，任一不可证就拒绝。
+ENOSPC可能使关闭收据只留在旧App内存；重启后原closing记录和缺失的关闭事实保持unknown，封存只凭现场无占用证明放行，不补造finish_complete或关闭收据。
 `run`成功局沿正常evidence-publish完成R2读回，再经空目录恢复和清单复核冷却非活动副本；冷却失败保留证据并停，不自动重试。
 有新unknown就停等显式处理；崩溃后只读原attempt补账，不重发原准备/动作/finish/publish。证据阶段故障可封存账本unknown，原环境closed事实不改。
 空间不足在投递前返回`workspace_capacity_insufficient`，余槽未开。创建`ledger/STOP`显式停止；已有有副作用投递按原owner完成收束和原分母记账。

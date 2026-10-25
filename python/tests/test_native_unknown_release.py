@@ -53,6 +53,7 @@ def interrupted(app, monkeypatch):
 @pytest.fixture
 def absent_os(monkeypatch):
     monkeypatch.setattr(native_unknown, "no_handles", lambda _path: None)
+    monkeypatch.setattr(native_unknown, "no_execution_processes", lambda _path: None)
     monkeypatch.setattr(native_unknown, "unoccupied", lambda *_args: {
         "game_process_census": "absent", "host_state_handles": "absent",
         "endpoint_observation": "connection_refused"})
@@ -92,6 +93,94 @@ def test_changed_expected_identity_rejects(native_app, monkeypatch, absent_os, f
     with pytest.raises(BoundaryError, match="identity_mismatch"):
         app.seal_native_unknown(expected)
     assert app.local_environment.native_unknown_release() is None
+
+
+def test_restart_after_terminal_enospc_releases_only_by_fresh_absence(
+    native_app, monkeypatch, absent_os,
+):
+    from spireagent.workbench.local_environment import LocalEnvironmentService
+
+    app, *_ = native_app
+    service = app.local_environment
+    ready = prepared(app)
+    service.native_record["actor"] = {"run_id": "run-" + "a" * 36}
+    service._save_native()
+    record, client, first = service.begin_native_finish(ready["environment_ref"])
+    assert first
+    original = (app.config.state_dir / RESOURCE_FILE).read_bytes()
+
+    def enospc():
+        raise OSError(28, "No space left on device")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(service, "_save_native", enospc)
+        final = service.close_native_after_actor(record, client, {"status": "stopped"})
+    assert final["finish_complete"] is True
+    assert final["cleanup"]["driver_exit_code"] == 0
+    assert (app.config.state_dir / RESOURCE_FILE).read_bytes() == original
+
+    reopened = LocalEnvironmentService(app.config)
+    reopened.seed_normalizer = service.seed_normalizer
+    reopened.native_capabilities = service.native_capabilities
+    reopened.native_client_factory = service.native_client_factory
+    reopened.bind_native_application(
+        lock=app.models.lock, application_instance_id=app.instance_id,
+        configuration_id=app.native_episode_configuration,
+        admit_prepare=app._admit_native_preparation, actor_lost=lambda _context: None)
+    app.local_environment = reopened
+    preview = app.native_unknown_preview()
+    assert preview["resource"]["phase"] == "recovery_required"
+    assert preview["resource"].get("finish_complete") is not True
+    assert preview["resource"]["cleanup"] is None
+    with monkeypatch.context() as patch:
+        patch.setattr(native_unknown, "no_execution_processes", lambda _path: (
+            native_unknown.reject("native_host_driver_still_present")))
+        with pytest.raises(BoundaryError, match="host_driver_still_present"):
+            app.seal_native_unknown(preview["expected"])
+    assert reopened.native_unknown_release() is None
+    with pytest.raises(BoundaryError, match="native_resource_reserved"):
+        app.prepare_native_episode(prepare_body("b" * 32))
+    receipt = app.seal_native_unknown(preview["expected"])
+    assert receipt["released"] is True and receipt["result"] == "unknown"
+    assert receipt["original"]["cleanup"] is None
+    assert receipt["original"].get("finish_complete") is not True
+    assert receipt["occupancy"]["host_driver_census"] == "absent"
+    candidate = reopened._native_unknown_candidate()
+    assert candidate["value"]["native_exit"]["native_exit_disposition"] == "unknown"
+    assert (app.config.state_dir / RESOURCE_FILE).read_bytes() == original
+    assert prepared(app, prepare_body("b" * 32))["environment_ref"] != (
+        ready["environment_ref"])
+
+
+@pytest.mark.parametrize("kind", ["host", "runtime", "adapter"])
+def test_orphan_without_state_handles_rejects_by_fresh_process_census(tmp_path, kind):
+    models = tmp_path / "models"
+    marker = {"host": "/installed-host/tools/reference-pe-driver.mjs",
+              "runtime": str(models / "runtime/node_modules/@rsgcsg"
+                             / "sts2-policy-runtime/dist/cli.js"),
+              "adapter": str(models)}[kind]
+    process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)", marker])
+    try:
+        with pytest.raises(BoundaryError, match=("host_driver_still_present" if kind == "host"
+                                               else "actor_process_still_present")):
+            native_unknown.no_execution_processes(models)
+    finally:
+        process.terminate()
+        process.wait(timeout=5)
+
+
+@pytest.mark.parametrize("code,stdout,stderr", [
+    (1, "", ""), (0, "", ""), (0, "  1 launchd", "denied"),
+    (0, "truncated", ""), (0, "  1 launchd\n  20 python", ""),
+])
+def test_process_census_requires_complete_observation(tmp_path, monkeypatch, code, stdout, stderr):
+    monkeypatch.setattr(native_unknown.subprocess, "run", lambda *_a, **_k: SimpleNamespace(
+        returncode=code, stdout=stdout, stderr=stderr))
+    if code == 0 and stdout == "  1 launchd\n  20 python" and not stderr:
+        native_unknown.no_execution_processes(tmp_path / "models")
+    else:
+        with pytest.raises(BoundaryError, match="occupancy_unproved"):
+            native_unknown.no_execution_processes(tmp_path / "models")
 
 
 def test_live_actor_process_rejects_even_with_a_known_native_close(

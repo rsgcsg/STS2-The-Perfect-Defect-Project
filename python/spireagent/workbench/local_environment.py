@@ -990,7 +990,13 @@ class LocalEnvironmentService:
         """Explicit release, called under the shared Model lock after Actor checks."""
         from datetime import UTC, datetime
 
-        from .native_unknown import SCHEMA, durable_readback, expected, unoccupied
+        from .native_unknown import (
+            SCHEMA,
+            durable_readback,
+            expected,
+            no_execution_processes,
+            unoccupied,
+        )
 
         with self.native_lock:
             record = self.native_episode_status()
@@ -1002,7 +1008,6 @@ class LocalEnvironmentService:
                 return prior
             self._validate_native_request(record)
             if (record.get("phase") not in {"unknown", "recovery_required", "closed"}
-                    or record.get("finish_complete") is not True
                     or record.get("preparation", {}).get("ownership") != "owned"
                     or not isinstance(record.get("actor", {}).get("run_id"), str)
                     or self.native_worker is not None and self.native_worker.is_alive()
@@ -1017,13 +1022,12 @@ class LocalEnvironmentService:
                 "runtime_instance_id")
             close = cleanup.get("close_result") or {}
             disposition = native_binding.native_exit_disposition(close.get("exit"), runtime)
-            if (close.get("type") != "close_result" or cleanup.get("driver_exit_code") != 0
-                    or cleanup.get("forced_fallback") is not False
-                    or cleanup.get("cleanup_error") is not None
-                    or disposition["native_exit_disposition"] == "unknown"
-                    or disposition["native_shutdown_ack"] != "runtime_bound_acknowledged"):
-                raise BoundaryError("native_episode", "native_owned_exit_unproved")
+            # An ENOSPC terminal write may leave only the original closing
+            # record across restart. Keep that missing history unknown; release
+            # depends on the fresh occupancy proof, not an invented close.
+            no_execution_processes(self.config.state_dir / "models")
             proof = unoccupied(profile, self._native_state_root(profile))
+            proof.update(host_driver_census="absent", actor_process_census="absent")
             retained = self._native_operation_store(create=True)
             assert retained is not None
             store = retained[0]
