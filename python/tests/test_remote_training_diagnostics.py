@@ -53,8 +53,8 @@ def test_start_and_continuation_log_local_phases_without_changing_dispatch(
         assert provider.calls[0].input_id == provider.calls[1].input_id == first["input_id"]
         phases = records(app, "phases.jsonl")
         started = [p["stage"] for p in phases if p["event"] == "phase_started"]
-        expected = ["remote.prepare.request_validate", "remote.transfer.budget",
-                    "remote.transfer.copy", "remote.transfer.readback", "remote.transfer.verify",
+        expected = ["remote.prepare.request_validate", "remote.transfer.verify",
+                    "remote.transfer.budget", "remote.transfer.copy_readback",
                     "remote.transfer.consume", "remote.start.enqueue", "scheduler.preflight",
                     "scheduler.provider_submit_to_handle", "scheduler.bind_handle",
                     "scheduler.receipt_verify", "scheduler.receipt_accept",
@@ -77,7 +77,7 @@ def test_start_and_continuation_log_local_phases_without_changing_dispatch(
 
 
 def test_middle_transfer_failure_names_stage_and_never_submits(tmp_path, monkeypatch):
-    from spireagent.workbench import remote_training_storage
+    from spireagent.storage import input_transfer
 
     secret = "DO_NOT_LOG_PROVIDER_CREDENTIAL_19d3"
 
@@ -85,13 +85,13 @@ def test_middle_transfer_failure_names_stage_and_never_submits(tmp_path, monkeyp
         raise ValueError(secret)
 
     with client(tmp_path) as (app, call, provider, _, _, snapshot, _):
-        monkeypatch.setattr(remote_training_storage, "copy_artifact", fail)
+        monkeypatch.setattr(input_transfer, "copy_input_artifact", fail)
         with pytest.raises(BoundaryError, match="invalid_remote_training_request"):
             call("start", body={"intent_id": "a" * 32, "source_id": snapshot.artifact_id,
                 "config": MStdConfig(max_epochs=2).to_dict(), "max_seconds": 300, "stop_after": 1})
         assert provider.calls == [] and call("status")["jobs"] == []
         errors = records(app, "errors.jsonl")
-        assert len(errors) == 1 and errors[0]["stage"] == "remote.transfer.copy"
+        assert len(errors) == 1 and errors[0]["stage"] == "remote.transfer.copy_readback"
         assert errors[0]["action"] == "start" and errors[0]["exception_type"] == "ValueError"
         assert secret not in json.dumps(errors)
         failed = [p for p in records(app, "phases.jsonl") if p.get("outcome") == "failed"]
