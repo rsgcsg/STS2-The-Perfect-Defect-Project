@@ -260,6 +260,30 @@ def _error(error: Exception) -> str:
 
 
 
+def verify_completed_row(path: Path, row: dict[str, Any]) -> None:
+    """Same finished-original verifier for suite reuse and the slot ledger."""
+    if (row.get("status") != "finished" or not row.get("stored_evidence_id")
+            or row.get("preservation_error") or row.get("cleanup_accepted") is not True):
+        _reject("previous_offered_attempt_requires_reconciliation")
+    finish_ref = row["finish"]
+    finish_raw = _read(path.parent / finish_ref["path"])
+    if (hashlib.sha256(finish_raw).hexdigest() != finish_ref["sha256"]
+            or len(finish_raw) != finish_ref["bytes"]
+            or decode_json(finish_raw).get("phase") != "closed"):
+        _reject("previous_finish_unproved")
+    # The durable preservation receipt is checked against the original report.
+    ref = row["preservation"]
+    receipt_raw = _read(path.parent / ref["path"])
+    if (len(receipt_raw) != ref["bytes"]
+            or hashlib.sha256(receipt_raw).hexdigest() != ref["sha256"]):
+        _reject("previous_receipt_changed")
+    receipt = decode_json(receipt_raw)
+    if (receipt.get("status") != "completed" or receipt.get("run_id") != row["run_id"]
+            or receipt.get("artifact_id") != row["stored_evidence_id"]
+            or not receipt.get("peer_readback")):
+        _reject("previous_preservation_unproved")
+
+
 def _completed_rows(paths: tuple[Path, ...], manifest_sha: str, *, profile: str,
                     display: str, speed: str, peer: dict[str, Any] | None,
                     selected: dict[str, str], artifacts: _Artifacts,
@@ -287,23 +311,7 @@ def _completed_rows(paths: tuple[Path, ...], manifest_sha: str, *, profile: str,
                 _reject("previous_selection_not_in_plan")
             if key in result:
                 _reject("duplicate_previous_episode")
-            finish_ref = row["finish"]
-            finish_raw = _read(path.parent / finish_ref["path"])
-            if (hashlib.sha256(finish_raw).hexdigest() != finish_ref["sha256"]
-                    or len(finish_raw) != finish_ref["bytes"]
-                    or decode_json(finish_raw).get("phase") != "closed"):
-                _reject("previous_finish_unproved")
-            # The durable preservation receipt is checked against the original report.
-            ref = row["preservation"]
-            receipt_raw = _read(path.parent / ref["path"])
-            if (len(receipt_raw) != ref["bytes"]
-                    or hashlib.sha256(receipt_raw).hexdigest() != ref["sha256"]):
-                _reject("previous_receipt_changed")
-            receipt = decode_json(receipt_raw)
-            if (receipt.get("status") != "completed" or receipt.get("run_id") != row["run_id"]
-                    or receipt.get("artifact_id") != row["stored_evidence_id"]
-                    or not receipt.get("peer_readback")):
-                _reject("previous_preservation_unproved")
+            verify_completed_row(path, row)
             result[key] = {"previous_report": frozen, "original_report_path": str(path.resolve()),
                            "original_row": row}
     return result
@@ -315,6 +323,7 @@ def run_suite(
     selections: dict[str, str] | None = None, evidence_peer: dict[str, Any] | None = None,
     display_mode: str = "headless", speed: str = "instant",
     completed_reports: tuple[Path, ...] = (),
+    episode_keys: tuple[tuple[str, str], ...] | None = None,
     before_episode: Callable[[dict[str, Any]], bool] = lambda _report: True,
     clock: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep, should_stop: Callable[[], bool] = lambda: False,
@@ -353,6 +362,12 @@ def run_suite(
     plan = [(index + 1, seed, agent, identity)
             for index, seed in enumerate(manifest["seeds"])
             for agent, identity in selected.items()]
+    if episode_keys is not None:
+        available = {(seed, identity) for _, seed, _, identity in plan}
+        if (not episode_keys or len(set(episode_keys)) != len(episode_keys)
+                or not set(episode_keys) <= available):
+            _reject("selected_episodes_not_in_frozen_plan")
+        plan = [item for item in plan if (item[1], item[3]) in episode_keys]
     if max_episodes > len(plan):
         _reject("invalid_attempt_configuration")
     artifacts = _Artifacts(run_dir)
@@ -663,6 +678,8 @@ def run_suite(
             clean = _clean(cleanup, evaluation) and "persistence_error" not in row
             row["cleanup_accepted"] = clean
             row["status"] = "finished" if clean else "unknown"
+            if reason == "workspace_capacity_insufficient" and ref is None:
+                row["status"] = "not_started"
             if evaluation is not None:
                 row["agent_task_outcome"] = evaluation.get("agent_task_outcome")
                 row["delivery"] = {key: evaluation.get(key) for key in (

@@ -283,6 +283,8 @@ class LocalRecordingImporter:
         self.operation_admission_guard: Callable[[], None] | None = None
         self.path = config.state_dir / OPERATION_FILE
         self.operation: dict[str, Any] = {"schema": SCHEMA, "status": "idle"}
+        self._released_global_unknown: dict[str, Any] | None = None
+        self.global_run_retired: Callable[[str], bool] | None = None
         self._native_intents: dict[str, dict[str, Any]] = {}
         self._storage_receipts: dict[str, dict[str, Any]] = {}
         self._maintenance: dict[str, Any] = {"policy": {
@@ -367,6 +369,47 @@ class LocalRecordingImporter:
                     self.operation = {"schema": SCHEMA, "status": "unavailable",
                                       "error_code": "operation_file_invalid"}
 
+    def global_unknown_snapshot(self) -> dict[str, Any] | None:
+        """The current uncertain GLOBAL intent, never a replay or reconciliation."""
+        if (self.operation.get("recording_type") != "p1_global"
+                or self.operation.get("action") != "global-evidence"
+                or self.operation.get("status") not in {
+                    "publication_unknown", "interrupted_unknown"}):
+            return None
+        if self.path.is_symlink() or not self.path.is_file():
+            raise BoundaryError("local_import", "original_global_intent_unavailable")
+        with self.path.open("rb") as source:
+            raw = source.read(16 * 1024**2 + 1)
+        original = json.loads(raw)
+        if (len(raw) > 16 * 1024**2 or not isinstance(original, dict)
+                or original.get("operation_id") != self.operation.get("operation_id")
+                or original.get("run_id") != self.operation.get("run_id")
+                or original.get("_global_context", {}).get("expected", {}).get("run_id")
+                != original.get("run_id")):
+            raise BoundaryError("local_import", "original_global_intent_changed")
+        identity = digest(original["operation_id"], "local_import.operation_id", length=32)
+        return {"operation_id": identity, "run_id": original["run_id"], "raw": raw,
+                "sha256": hashlib.sha256(raw).hexdigest()}
+
+    def global_unknown_released(self) -> bool:
+        snapshot = self.global_unknown_snapshot()
+        release = self._released_global_unknown
+        if (snapshot is None or release is None
+                or release["operation_id"] != snapshot["operation_id"]
+                or release["operation_sha256"] != snapshot["sha256"]):
+            return False
+        # Before replacing the live operation pointer, recheck both retained
+        # originals and the explicit confirmation that authorized this handoff.
+        for ref in (release["archive"], release["confirmation"]):
+            if hashlib.sha256(release["store"].get(ref["key"])).hexdigest() != ref["sha256"]:
+                raise BoundaryError("local_import", "global_unknown_archive_changed")
+        return True
+
+    def require_publication_admission(self) -> None:
+        with self.lock:
+            if self.global_unknown_snapshot() is not None and not self.global_unknown_released():
+                raise BoundaryError("local_import", "original_intent_reconciliation_required")
+
     def status(self) -> dict[str, Any]:
         with self.lock:
             return {**{key: value for key, value in self.operation.items()
@@ -411,7 +454,8 @@ class LocalRecordingImporter:
             self.operation_admission_guard()
         if (self.operation.get("recording_type") in {"p1_native", "p1_global"}
                 and self.operation.get("status") in {
-                    "pending", "publication_unknown", "interrupted_unknown"}):
+                    "pending", "publication_unknown", "interrupted_unknown"}
+                and not self.global_unknown_released()):
             raise BoundaryError("local_import", "original_intent_reconciliation_required")
         blocked = {key for key, snapshot in self._native_intents.items()
                    if snapshot["status"] in {"pending", *NATIVE_IMPORT_UNCERTAIN}}
@@ -1079,12 +1123,20 @@ class LocalRecordingImporter:
         from .p1_recording_storage import open_peer
 
         with self.lock:
+            run_id = context.get("expected", {}).get("run_id")
+            if (isinstance(run_id, str) and self.global_run_retired is not None
+                    and self.global_run_retired(run_id)):
+                raise BoundaryError("local_import", "retired_unknown_publication_no_retry")
             self._native_recovery_guard()
             if self.thread is not None and self.thread.is_alive():
                 raise BoundaryError("local_import", "operation_in_progress")
             if self.operation.get("status") in {
-                    "pending", "publication_unknown", "interrupted_unknown"}:
+                    "pending", "publication_unknown", "interrupted_unknown"} \
+                    and not self.global_unknown_released():
                 raise BoundaryError("local_import", "original_intent_reconciliation_required")
+            if (self.global_unknown_released()
+                    and context["expected"]["run_id"] == self.operation.get("run_id")):
+                raise BoundaryError("local_import", "retired_unknown_publication_no_retry")
             if peer is not None:
                 open_peer(peer)
             producer = source_identity(ROOT)
@@ -1097,6 +1149,7 @@ class LocalRecordingImporter:
                 "model_artifact_id": frozen["model_artifact_id"],
                 "_global_context": frozen, "_producer": producer.to_dict(),
             }
+            self._released_global_unknown = None
             self._save()
             self.thread = threading.Thread(target=self._run_global_evidence, daemon=True)
             self.thread.start()
