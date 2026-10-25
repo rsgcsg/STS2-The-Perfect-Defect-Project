@@ -234,7 +234,7 @@ def _loopback(url: str) -> str:
 
 def _runtime_wire_version(package: dict[str, Any]) -> int:
     version = package.get("version")
-    if version in {"0.1.0-rc.40", "0.1.0-rc.41", "0.1.0-rc.42", "0.1.0-rc.43"}:
+    if version in {"0.1.0-rc.40", "0.1.0-rc.41", "0.1.0-rc.42", "0.1.0-rc.43", "0.1.0-rc.44"}:
         return 2
     if version in {f"0.1.0-rc.{revision}" for revision in range(1, 40)}:
         return 1
