@@ -299,7 +299,15 @@ def test_normal_prepare_verifies_separate_peer_without_enqueue_or_submit(tmp_pat
         for identity in peer.manifest_ids():
             manifest = peer.get_manifest(identity)
             for payload in manifest.payloads:
-                assert b"".join(peer.read_payload(payload)) == b"".join(local.read_payload(payload))
+                if manifest.kind == "evidence":
+                    from spireagent.storage.blobs import StoreError
+
+                    with pytest.raises(StoreError, match="object_not_found"):
+                        b"".join(peer.read_payload(payload))
+                    assert b"".join(local.read_payload(payload))
+                else:
+                    assert (b"".join(peer.read_payload(payload))
+                            == b"".join(local.read_payload(payload)))
         with owner.transaction() as db:
             assert db.execute("SELECT count(*) FROM curation_uses").fetchone() == (1,)
         normal_provider = RemoteTrainingService(app.config, app.local_datasets._selected)
