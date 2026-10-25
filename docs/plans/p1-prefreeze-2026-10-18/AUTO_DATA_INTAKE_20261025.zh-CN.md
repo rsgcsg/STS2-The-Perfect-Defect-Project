@@ -35,3 +35,27 @@
 | 固定预览、确认后冻结 | Snapshot/Curation与训练cohort adapter已在 | 一条CLI显示权重/确认/原freeze，训练读同一固定文件 |
 | Hub、队列、团队账号/云控制台 | 历史实现保留，10-18决定冻结 | 不恢复，复用本机Workbench与R2 |
 | Gold/继承保护/模型血统/质量标注 | 历史Curation部分已有 | 不接入本轮流程，不增加门槛 |
+
+## P卡读取的准确接口
+
+用户10-26补充：P读取Q冻结结果构建训练包；Q把已有证据位置/格式说清，不为P重排计划。可以消除相同内容的重复解析/相同环境的重复验证，但“曾验过”不能直接变成任意接收端字节或训练准入的资格。真实传输仍由原Store校验当前接收字节；原Curation用途/曝光及输入版本检查继续由消费者负责，不授予删校验的泛许可。
+
+| P需要什么 | Q实际提供、位置和绑定编号 |
+| --- | --- |
+| 冻结交付文件 | 同一profile的 `state_dir/cohorts/<configuration_id>/weight-candidates.json`；正常profile实际根为 `/Users/fire/.local/share/spireagent/workbench/p1-development`。不是旧Codex outputs目录。 |
+| 冻结格式 | 沿已有 `training-data-weight-selection-20261025-v1` envelope：`status=frozen_user_confirmed`、`selected_configuration_id`、`configuration`（原 `stpd/p1-cohort-plan-1`）、`snapshot_id`。plan含sources/selection/splits/runs/definition/partitions；TRAIN权重同局一致，DEV/TEST无权重。configuration_id为去掉自身字段后的完整plan canonical SHA256，原 `checked_cohort_plan`复算；Snapshot ID是原Store不可变artifact ID。P/训练CLI用既有`--cohort-plan`与`--configuration-id`读同一个文件；不得读preview代确认。 |
+| 原件导入时校验 | 原固定CollectionTool核完整文件清单/字节与Close/原生journal，原 `publish_p1_original`保存archive+transfer等payload及原件逐文件SHA；准确原件ID=`plan.sources[].source_id`，其manifest保存`content_id`、`tool_release_id`、`raw_file_sha256`、Close、run_journal和原始Recorder producer。它保全原件，不证明Human或完整局资格。 |
+| 派生时校验 | 原 `derive_p1_recording`从已核archive物化，用准确Tool转换；`publish_p1_projection`核来源content、run/branch、投影schema/profile/revision、全输出SHA及回读标志。准确投影ID=`plan.sources[].projection_id`；该manifest的 `derivation_receipt` payload含source_content_id/tool_release_id/payload_sha256/full_readback/owner_diagnostics，`conversion_summary`保留转换完整性/缺口。projection parameters还绑定`tool_source_revision`与`core_inventory_sha256`。完整性false/unknown不会因字节正确而升级。 |
+| R2保全时校验 | 原 `storage preserve`复制原件/投影闭包，远端完整payload读回，archive逐member与transfer清单核长度/SHA；原operation文件 `_storage_receipts[operation_id]`保存artifact_id、peer、storage_action、storage_receipt.full_readback/verified_at，投影收据内含原件source_archive回读。这里是原存储操作UUID，不是另建证据编号；旧历史批处理回执不会伪装成这次维护的新回执。 |
+| 盘点时校验 | 原 `inspect_projections`真实InputSpec校验完整公开catalog、唯一chosen、N mask、native event/decision ID、输入投影；合并索引做同源去重/整局及已知亲缘分组。每次从原Curation读用途/训练曝光，填新整局DEV/TEST缺口。最终freeze仍由原Application发布/re-read Snapshot并原ledger保留用途。 |
+| P1PreparationCache位置 | 原Curation ledger旁：`ledger.with_name(ledger.stem + '.p1-preparation-cache.sqlite')`。本profile实际为 `/Users/fire/Documents/Codex/2026-10-20/users-fire-desktop-spireagentproject-claude-handoff-2/work/p1-store-readback01/store/.curation.p1-preparation-cache.sqlite`，不是新数据库权威。`projection_cache`每行以投影artifact ID定位，identity绑定`preparation_identity()`（依赖文件/uv.lock哈希）、投影ID和InputSpec，payload_sha256及body SHA独立保存。body是`{index, quality}`，quality新增cohort_facts；命中仍经原Store stream hash/lease读当前payload。P可复用原owner接口，不能导出私有SQLite当跨机可信回执。 |
+
+替换性视图：`state_dir/cohort-preview.json`是未确认plan，`recording-summary.json/html`是最后盘点；它们不保留用途、不记录training use。冻结请求先在固定配置目录记`freeze_requested`，丢回应拒绝重发，`recordings cohort reconcile`仅核原Snapshot/ledger/weighting后收齐原文件。
+
+## B/Q一次安装与Tool批准（用户10-26确认）
+
+由B唯一安装同一Workbench/profile；两边各自CI通过、普通merge develop，后合者先普通并最新develop。B从含两边的准确develop生成Workbench kit；Q不写安装、注册、launcher或原profile。若Q赶不上B03:13 AEST硬限，B先装，Q以后从develop再装，不能互相覆盖。下一局用户正常录制同时验B与Q，未发生前均不冒充验收。
+
+B本身未改P1主转换器，但相对Q旧批准Tool `0464d9e2…`，新固定Tool `5171897f083a5abd77bad879ad7314c2c47fbd3633a19f07eaaa27f1489bf227` 的完整P1 inventory仅admission/reducer及对应d.ts/maps、SDK package版本不同，来自已合PR241的c520d39c/902b2fb4：整包选择/确认映射selector.choose/selector.finish，补bundle形状/完整性，显式排除preview cancel。Q先停止批准并向用户说明，用户明确允许这项PR241差异仅用于新录制、旧25保持原版；现规则优先0464，其次5171，按每来源/run选一个，不重转或覆盖旧25。
+
+新Tool目录为B的 `work/collection-tool-8f4d`（已核固定release/member SHA）；workspace_revision=8f4de36c、Annotator source_revision=ff7bce35。Mod/Tool先固定，Q把准确ID写入Python policy后不重发Tool，最终Workbench kit复用这份字节、由原sourceSetMatches/packager核编译输入身份，避免workspace_revision自引用。任何后续native或转换依赖变化都重新核准确对象；新的转换差异不在此次批准范围。

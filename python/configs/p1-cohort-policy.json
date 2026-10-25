@@ -3,7 +3,8 @@
   "revision": "r1.5",
   "projection": "native-timeline-targets-1",
   "tool_release_priority": [
-    "0464d9e206a3d234678dafeba4e17380afde7d1b36ee4a5eb26ea1701333f340"
+    "0464d9e206a3d234678dafeba4e17380afde7d1b36ee4a5eb26ea1701333f340",
+    "5171897f083a5abd77bad879ad7314c2c47fbd3633a19f07eaaa27f1489bf227"
   ],
   "superseded_tool_release_ids": [
     "486d816c3ef3b9b5e471de059d88b89355145337bbd07537820e22816476575d",

@@ -1764,9 +1764,9 @@ def create_server(app: Application) -> ThreadingHTTPServer:
             elif parsed.path == "/recording-summary":
                 from .p1_cohort_intake import render_summary
 
-                value = render_summary(app.config,
-                                       app.local_recording_import.status()["maintenance"])
-                self.respond(200, value.encode(), "text/html")
+                summary_html = render_summary(app.config,
+                                              app.local_recording_import.status()["maintenance"])
+                self.respond(200, summary_html.encode(), "text/html")
             elif parsed.path == "/api/local-recordings/storage/peer":
                 if not self.authenticated_browser():
                     self.respond(401, b'{"error":"browser_session_required"}')

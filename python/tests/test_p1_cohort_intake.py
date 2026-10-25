@@ -139,6 +139,11 @@ def test_version_rules_select_one_view_and_stop_unknown_tools(tmp_path):
     ids, excluded = select_versions(store, explicit, discover_p1_projections(store))
     assert len(ids) == 3 and newer.artifact_id in ids and original.artifact_id not in ids
     assert any(row["reason"] == "superseded_by_approved_priority" for row in excluded)
+    # User keeps the 25 prior original views even after approving a new Tool.
+    # Approved priority is explicit; it must not implicitly mean latest wins.
+    prior_first = {**policy, "tool_release_priority": [TOOL, "d" * 64]}
+    kept = select_versions(store, prior_first, discover_p1_projections(store))[0]
+    assert original.artifact_id in kept and newer.artifact_id not in kept
 
 
 def test_freeze_lost_ack_reconciles_original_without_republication(tmp_path, monkeypatch):
