@@ -6,12 +6,12 @@ from typing import Any
 
 from spireagent.json_boundary import BoundaryError
 from spireagent.storage.run_reporter import ObjectStoreRunReporter
-from spireagent.storage.store import ArtifactStore
+from spireagent.storage.store import ManifestArtifactStore
 
 from .spec import RUN_SCHEMAS
 
 
-def checkpoint_shortlist(store: ArtifactStore, run_id: str) -> dict[str, Any]:
+def checkpoint_shortlist(store: ManifestArtifactStore, run_id: str) -> dict[str, Any]:
     run = store.get_manifest(run_id)
     if run.kind != "run" or run.parameters.value().get("schema") not in RUN_SCHEMAS:
         raise BoundaryError("p1_shortlist", "M_std_run_required")
