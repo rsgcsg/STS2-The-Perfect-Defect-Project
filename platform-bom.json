@@ -46,9 +46,9 @@
     },
     "live_ui": {
       "version": "0.1.0-rc.20",
-      "source_revision": "e6839dcfb30c6004d6a0bf969982320916c9b860",
-      "component_tree_revision": "5605a0d97c83bfda1757270a06eb926766fcf505",
-      "component_source_digest_sha256": "0f0c4afc943de99d277c5546d30cb4792474d2eed9dd47f13af395e03eb210e5"
+      "source_revision": "8ac1da9668dd826c5086441bb4a5369e245187ef",
+      "component_tree_revision": "e87f68121bc3a0d4bab5444c4163196bd5496a6a",
+      "component_source_digest_sha256": "c62370e7154b859d395fa472a046087637c2c806ae09c634ff55d680b182c54a"
     },
     "game_mod": {
       "version": "0.2.0-rc.65",
@@ -900,8 +900,8 @@
     "live_ui": {
       "source_revision": "305a2cac80f0bd3126d66cfc5818477c583a8ce5",
       "source_digest_sha256": "c2a75214cb69678913fceb965ae4d41784a6cb1580311b53a2cc5b4c0c4cb1c4",
-      "current_component_source_revision": "e6839dcfb30c6004d6a0bf969982320916c9b860",
-      "current_component_source_digest_sha256": "0f0c4afc943de99d277c5546d30cb4792474d2eed9dd47f13af395e03eb210e5",
+      "current_component_source_revision": "8ac1da9668dd826c5086441bb4a5369e245187ef",
+      "current_component_source_digest_sha256": "c62370e7154b859d395fa472a046087637c2c806ae09c634ff55d680b182c54a",
       "source_relation": "loaded_ui_source_precedes_current_component",
       "artifact_sha256": "04104ca5cd47c82329be185a8aa7017f7982b2062048fbf825488bead231d1c1",
       "artifact_mvid": "7408a183-f5a8-4f95-a997-dbf588b1536b"
