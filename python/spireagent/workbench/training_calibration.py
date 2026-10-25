@@ -46,6 +46,53 @@ def prepare_calibration(
             "sample_count": updates * 64, "gpu_submitted": False, "formal_run_changed": False}
 
 
+def authorize_qualification(
+    config: ProjectConfig, input_id: str, operation_id: str,
+) -> dict:
+    """Verify the capsule's prior Curation use; project only on remote compute.
+
+    The new operation is receipt provenance, not a newly recorded ledger use.
+    This bounded entry cannot authorize another Snapshot or a formal Run.
+    """
+    from spireagent import p1_curation
+    from spireagent.json_boundary import digest
+    from stpd.p1.calibration import INPUT_SCHEMA
+
+    digest(operation_id, "p1_qualification.operation_id", length=32)
+
+    if config.research_workspace is not None:
+        from spireagent.workbench.inplace_curation import configured_owner
+
+        owner = configured_owner(config)
+    else:
+        from spireagent.workbench.managed_local_workspace import inspect_managed_workspace
+
+        managed_owner = inspect_managed_workspace(config.state_dir).get("curation_owner")
+        if managed_owner is None:
+            raise BoundaryError("p1_calibration", "original_curation_owner_required")
+        owner = managed_owner
+    store = ManifestArtifactStore(LocalBlobStore(owner.store_dir, create=False))
+    capsule = store.get_manifest(input_id)
+    if capsule.parameters.value().get("schema") != INPUT_SCHEMA:
+        raise BoundaryError("p1_calibration", "calibration_input_required")
+    run = store.get_manifest(capsule.parent("run"))
+    checkpoint = store.get_manifest(capsule.parent("checkpoint"))
+    training = store.get_manifest(run.parent("training_input"))
+    snapshot_id = training.parent("source")
+    if (snapshot_id != capsule.parent("snapshot") or checkpoint.parent("run") != run.artifact_id
+            or checkpoint.producer != run.producer):
+        raise BoundaryError("p1_calibration", "source_parent_binding_mismatch")
+    producer = source_identity(ROOT)
+    original_operation = capsule.parameters.value()["operation_id"]
+    p1_curation.require_recorded_p1_training_use(owner.ledger, store, snapshot_id,
+                                               original_operation)
+    return {"calibration_input_id": input_id, "operation_id": operation_id,
+            "source_run_id": run.artifact_id, "checkpoint_id": checkpoint.artifact_id,
+            "snapshot_id": snapshot_id, "training_use_recorded": False,
+            "original_training_use_verified": True, "training_use_reference": original_operation,
+            "producer": producer.to_dict(), "formal_run_changed": False}
+
+
 def publish_calibration(source: ArtifactStore, peer: ArtifactStore, identity: str) -> dict:
     """Publish the bounded compute read set; original provenance stays in the same peer.
 
