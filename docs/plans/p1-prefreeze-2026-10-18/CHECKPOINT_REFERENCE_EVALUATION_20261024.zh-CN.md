@@ -2,6 +2,22 @@
 
 ## 可续跑链路与原100槽位续接（2026-10-25当前任务）
 
+### 本轮停线收口实物（2026-10-25 16:08 AEST）
+
+当前结果覆盖本节下方实施前状态；原失败与历史原件继续保留。PR237普通merge `b62310da`，PR238普通merge `8d628cf2f4f0f92e0f61a8eeb14c480840c903d5`；后者tree与通过全门的468dc624完全相同。实际App0.2.0/8d正常open/doctor PASS，仍用原project.json与repair/state，固定Runtime43/Evidence36/Native rc63及七模型。468完整本地门5253通过、17跳过、93子测试及所有选定组件通过；CI40162610396 plan/两Linux/portable通过，其余按计划skip不算pass。非作者分别接受源码和真实原25封存＋首原未开槽的链路；不把这些授为全100或模型效果通过。
+
+原25在旧App内存的关闭收据因ENOSPC未落盘，重启后仍closing。PR238以现场driver/Actor/worker/游戏/句柄/endpoint无占用证明替代缺失历史前置，关闭事实仍unknown；foreign-App finish/关停只读旧资源，无自有Runtime的Model服务不覆盖旧session。旧b623 finalizer尚无此保护，因此只在准确PID88432/实例/启动代际、完整无占用及四个原指针追加快照/fsync后，精确SIGKILL此空闲自有App以避免重写原件；不称正常关闭，不杀游戏/他人，不清状态。新App随后正常启动，四原字节逐一未变。
+
+原25显式seal成功，seal SHA`e62a0a719c6a6b0f2b584b74c215f7f12b73be4082e351f2d46560d1b42fd561`、当前App confirmation SHA`087b2e081b6fdd6e17c831734c831b73bf3df3598325669733876947693a5c6b`；原GLOBAL意图完整归档且旧run永久禁止重发。原unknown2085文件/16590001字节在升级、封存与首新局后全SHA一致。旧首次seal拒绝、b895全门2失败/5250通过（fixture泄漏，后修）、851门主动取消/incomplete均保留，不改称通过。
+
+原75实际新开10槽：9自然负＋1新unknown；9自然局均R2完整typed读回、空目录恢复、完整清单比对并冷却。新35槽为876／Defect A0／第5种子`STPD001CD240927660A80533376D9837`，run`run-275592dd-edcd-4996-aef4-500b425c6c73`。首层1次提交/2次策略调用后，第2份source observation32缺`required:selector:invalid_content`，Runtime按`global_required_information_unavailable` fail-closed，suite记`actor_returned_human`；没有自然胜负，human模式不等于人工来源。Actor Stop和Native graceful closed均确认，随后OS无占用。原事件、来源包和完整typed R2 artifact`cb44f2a732c63f7cb890447b90e5bb8eb4ad301aa799f8cad1574b4203c0f792`均保留；unknown未显式封存、未重投、未冷却，没有后续开局。
+
+固定100总分母：35开过、0胜、33自然负、2unknown、65未开、0替换/0reserved。七检查点A0胜率均0%，均层按219/438/876/1460/1752/2051/2190依次7.60/17.00/15.50/9.50/14.00/13.60/13.40；自然计分分母依次5/5/4/4/5/5/5。A10的14槽、其他四角色各4槽均未开，指标未测。旧84ee条件unknown1/25（4%），新8d条件1/10（10%）；已记录Native崩溃均0，旧原报表另有1个关闭事实不足。完整typed R2已有34份=33自然局＋新unknown；产品账本`R2_original_receipts=33`仅统计finished行，unknown保全从原attempt收据另列，不把保全当胜负。
+
+唯一账本：`/Users/fire/Documents/Codex/2026-10-24/checkpoint-evaluation-replay/ledger-20261025`；本轮报告与100槽JSON/分组表/两份封存及失败收据在`/Users/fire/Documents/Codex/2026-10-25/users-fire-desktop-spireagentproject-claude-handoff-2/outputs/`，共享回报仍是`replies/EVAL-CHAIN-REPORT-20261025.md`。本轮按新unknown硬停线，不修新selector缺口、不人工补选、不追加模型/包改动、不继续65槽、不自动封存。下一步需用户决定是否另行调查及显式封存后续跑；不是新派工或追加预算授权。当前App保留运行，评估/防睡眠子进程结束；收口闹钟停用。开发累计4h含先前约6m，CI/游戏等待另计，未因换上下文重置。
+
+### 实施约束与经过（以下保留为历史）
+
 本节覆盖下方旧轮次的派工/预算状态，旧失败、原件和历史预算不变。用户直接授权本卡范围内完成定义、最小接缝、检查/CI、合入、App升级与原75槽续跑；常设授权第二档允许必跑门全过、CI全绿、讨论已解决、不改合同或删独有数据后普通merge进develop，main/新任务/额外预算/合同语义等第三档仍问用户。原卡和常设授权在共享`claude-handoff-2026-10-13/replies/`，最新用户原话优先。
 
 链路位置：CHAIN_PURPOSES⑩ Model→Agent→评估/新原件；补Application编排与环境占用实现，不改P1、Agent/Runtime、Host/Native合同含义，不动模型和已装包。唯一写入/现场owner=root；稳定候选做一次只读非作者复核。实际代码基线为PR236普通merge后的develop `6808583f`；本轮topic `codex/evaluation-ledger-20261025`。一页定义和正常入口见[原操作指南](../../../python/docs/LOCAL_MODEL_TASK_FLOW.md#可续跑的评估链路)。
