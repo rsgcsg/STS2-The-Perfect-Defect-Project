@@ -74,6 +74,14 @@ read-only status check; unknown delivery needs owner investigation and is not re
 After an automatic terminal seal, the next run retains P1 profile/origin and gets
 its own session; manual Close/Pause still stops continuous recording.
 
+New recording writers check the actual recording filesystem before creating a
+session, including automatic next-session starts and the current Source variants.
+The [workstation capacity SOP](../../python/docs/DATA_LIFECYCLE.md#workstation-capacity-before-long-tasks)
+owns the operating margin and next-session allowance. Low space gives an explicit
+start rejection and creates no partial session directory. This is admission only;
+it does not promise unlimited recording or add an in-run disk quota. The change
+requires a new normal build/install before it protects an already installed Mod.
+
 A fixed Collection Tool release declares `p1_native_support` and ships that client,
 the existing `audit-p1-native`/`pack-p1-native` Tool commands and the converter's
 executable SDK/zod closure. Its new-output conversion entry is

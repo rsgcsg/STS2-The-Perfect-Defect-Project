@@ -24,6 +24,10 @@ from spireagent.workbench import agent_run_request, local_model_cli
 from spireagent.workbench.developer import ROOT, ProjectConfig, atomic_json
 from spireagent.workbench.developer_server import running
 from spireagent.workbench.native_episode_binding import checked_context
+from spireagent.workbench.p1_recording_storage import (
+    NEXT_EPISODE_PEAK_BYTES,
+    require_long_task_space,
+)
 from stpd.evaluation.suites import (
     FOUR_AGENT_SUITE_ID,
     checkpoint_reference_manifest,
@@ -428,6 +432,15 @@ def run_suite(
         if should_stop() or clock() >= started + limits.suite_seconds:
             report["stop_reason"] = "stop_requested" if should_stop() else "suite_wall_limit"
             break
+        # Stop between episodes before marking a world/Actor offer. All remaining
+        # slots retain their original denominator and are explicitly not started.
+        try:
+            capacity = require_long_task_space(run_dir, NEXT_EPISODE_PEAK_BYTES)
+        except (OSError, BoundaryError) as error:
+            report["stop_reason"] = "workspace_capacity_insufficient"
+            report["capacity_error"] = _error(error)
+            break
+        report["capacity"] = capacity
         episode_started = clock()
         phase_deadline = episode_started + limits.preparation_seconds
         ref = None

@@ -196,3 +196,22 @@ def test_reception_missing_chunk_reserves_full_temporary_but_only_missing_persis
     )
     assert facts["persistent_budget_bytes"] == 20
     assert facts["scratch_budget_bytes"] == len(raw)
+
+
+
+def test_upload_budgets_full_warm_payload_scratch_before_copy_to_empty_peer(tmp_path, monkeypatch):
+    from spireagent.json_boundary import BoundaryError
+
+    local, run, binding = inputs(tmp_path)
+    largest = max(p.size for identity in local.manifest_ids()
+                  for p in local.get_manifest(identity).payloads)
+    # All source chunks are hot: missing-local bytes are zero. The original copy
+    # still needs a full TemporaryFile when the peer has never seen the payload.
+    monkeypatch.delenv("SPIREAGENT_MIN_FREE_BYTES", raising=False)
+    monkeypatch.setattr(p1_recording_storage.shutil, "disk_usage",
+                        lambda _path: SimpleNamespace(free=2 * 1024**3 + largest - 1))
+    monkeypatch.setattr(remote, "copy_artifact",
+                        lambda *_args, **_kwargs: pytest.fail("capacity must reject before copy"))
+    with pytest.raises(BoundaryError, match="space_insufficient"):
+        transfer_p1_input(local, binding, run.artifact_id, run.producer,
+                          scratch=tmp_path / "upload-scratch")

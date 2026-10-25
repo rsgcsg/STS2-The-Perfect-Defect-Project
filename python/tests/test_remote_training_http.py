@@ -477,3 +477,58 @@ def test_unknown_attempt_cannot_resume_even_with_a_durable_checkpoint(tmp_path, 
                                  "checkpoint_id": published[0].checkpoint_id,
                                  "max_seconds": 300, "stop_after": None})
         assert len(provider.ops.jobs()) == len(provider.calls) == 1
+
+
+def test_normal_remote_prepare_refuses_space_before_use_or_provider_submission(
+    tmp_path, monkeypatch,
+):
+    with client(tmp_path) as (_app, call, provider, store, _owner, snapshot, _path):
+        before = set(store.manifest_ids())
+        monkeypatch.setenv("SPIREAGENT_MIN_FREE_BYTES", str(2**60))
+        with pytest.raises(BoundaryError, match="space_insufficient"):
+            call("prepare", body={"intent_id": "f" * 32, "source_id": snapshot.artifact_id,
+                "config": MStdConfig(max_epochs=1).to_dict(), "max_seconds": 300,
+                "stop_after": 1})
+        assert set(store.manifest_ids()) == before
+        assert not provider.calls
+        assert not provider.ops.jobs()
+
+
+
+def test_cold_projection_is_budgeted_before_remote_prepare_reads_it(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from spireagent.storage.cache import configure_cache
+    from spireagent.storage.store import ManifestArtifactStore, copy_artifact
+    from spireagent.workbench import p1_recording_storage
+    from stpd.p1.dataset import projection_payload_role
+
+    with client(tmp_path) as (_app, call, provider, store, _owner, snapshot, _path):
+        peer_binding = {"kind": "local", "directory": str(tmp_path / "cold-peer")}
+        peer = open_peer(peer_binding)
+        copy_artifact(store, peer, snapshot.artifact_id, scratch=tmp_path)
+        configure_cache(store, peer_binding, max_bytes=2 * 1024**3)
+        projection = store.get_manifest(snapshot.parents[0].artifact_id)
+        payload = projection.payload(projection_payload_role(projection))
+        index = json.loads(store.blobs.get(f"payload-indexes/v1/{payload.sha256}.json"))
+        missing = store.blobs.root / "objects/sha256" / index["chunks"][0]["sha256"]
+        size = missing.stat().st_size
+        missing.unlink()
+        reads = []
+        original_read = ManifestArtifactStore.read_payload
+
+        def observe_read(selected, value):
+            if getattr(selected.blobs, "root", None) == store.blobs.root:
+                reads.append(value.sha256)
+            yield from original_read(selected, value)
+
+        monkeypatch.setattr(ManifestArtifactStore, "read_payload", observe_read)
+        monkeypatch.delenv("SPIREAGENT_MIN_FREE_BYTES", raising=False)
+        monkeypatch.setattr(p1_recording_storage.shutil, "disk_usage",
+                            lambda _path: SimpleNamespace(free=3 * 1024**3 + size - 1))
+        with pytest.raises(BoundaryError, match="space_insufficient"):
+            call("prepare", body={"intent_id": "f" * 32, "source_id": snapshot.artifact_id,
+                "config": MStdConfig(max_epochs=1).to_dict(), "max_seconds": 300,
+                "stop_after": 1})
+        assert not missing.exists() and not reads
+        assert not provider.calls and not provider.ops.jobs()

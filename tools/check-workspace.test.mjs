@@ -169,3 +169,28 @@ test("cancellation EPERM retains its original error and exact owned-group diagno
       assert.deepEqual(denied.results[0].cleanup_diagnostic, result.cleanup_diagnostic);
     });
   });
+
+test("capacity checks the actual path and rejects low space before a full gate can spawn", async () => {
+  const { workspaceCapacity } = await import("./check-workspace.mjs");
+  const gib = 1024n ** 3n;
+  const seen = [];
+  const observe = (directory, options) => {
+    seen.push([directory, options.bigint]); return { bavail: 8n * gib, bsize: 1n };
+  };
+  assert.equal(workspaceCapacity("actual-workspace", {environment: {}, observe}).sufficient, true);
+  assert.deepEqual(seen, [["actual-workspace", true]]);
+  assert.equal(workspaceCapacity("actual-workspace", {
+    environment: {SPIREAGENT_MIN_FREE_BYTES: String(3n * gib)}, observe,
+  }).sufficient, false);
+  for (const value of ["", "-1", "1.5", "9223372036854775808"])
+    assert.throws(() => workspaceCapacity("unused", {
+      environment: {SPIREAGENT_MIN_FREE_BYTES: value}, observe,
+    }), /invalid_workspace_reserve/u);
+  const { spawnSync } = await import("node:child_process");
+  const refused = spawnSync(process.execPath, [path.join(root, "tools/check-workspace.mjs"), "full"], {
+    encoding: "utf8", env: {...process.env, SPIREAGENT_MIN_FREE_BYTES: String(1n << 60n)},
+  });
+  assert.equal(refused.status, 1);
+  assert.equal(JSON.parse(refused.stdout).stage, "workspace_capacity");
+  assert.ok(!refused.stdout.includes('"stage":"workspace_gate"'));
+});

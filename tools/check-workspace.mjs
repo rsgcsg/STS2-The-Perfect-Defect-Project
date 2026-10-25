@@ -2,6 +2,7 @@
 // Execute the existing portable gates; collect independent failures, never qualification.
 import fs from "node:fs";
 import path from "node:path";
+import os from "node:os";
 import { spawn, execFileSync, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
@@ -68,6 +69,23 @@ export function scriptIncludesGuard(scripts, name, guard, visited = new Set()) {
   if (command === "node tools/check-workspace.mjs full") references.push(...workspaceStages("full")
     .filter(stage => stage.args[0] === "run").map(stage => stage.args[1]));
   return references.some(reference => scriptIncludesGuard(scripts, reference, guard, visited));
+}
+
+// Same workstation reserve as the owning storage SOP. This observer does not
+// reserve blocks or give permission to overlap heavy tests with a live run.
+export function workspaceCapacity(directory, { environment = process.env, observe = fs.statfsSync } = {}) {
+  const value = environment.SPIREAGENT_MIN_FREE_BYTES;
+  if (value !== undefined && (!/^[0-9]{1,19}$/u.test(value) || BigInt(value) > (1n << 63n) - 1n))
+    throw new Error("invalid_workspace_reserve");
+  const reserve = value === undefined ? 2n * 1024n ** 3n : BigInt(value);
+  // Six GiB covers the existing 2.7 GiB checkpoint/input planning envelope plus
+  // concurrent build/test scratch. Larger measured work needs an explicit margin.
+  const work = 6n * 1024n ** 3n;
+  const stat = observe(directory, { bigint: true });
+  const available = stat.bavail * stat.bsize;
+  return { available_bytes: String(available), reserve_bytes: String(reserve),
+    work_bytes: String(work), required_bytes: String(reserve + work),
+    sufficient: available >= reserve + work, observation: "not_a_reservation" };
 }
 
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
@@ -184,6 +202,12 @@ export function sourceAccepted(before, after, scope) {
 
 async function main(scope, pytestShard) {
   const stages = workspaceStages(scope, {pytestShard});
+  const capacity = [workspaceCapacity(root), workspaceCapacity(os.tmpdir())];
+  if (capacity.some(item => !item.sufficient)) {
+    process.stdout.write(JSON.stringify({ stage: "workspace_capacity", status: "blocked", filesystems: capacity }) + "\n");
+    process.exitCode = 1;
+    return;
+  }
   const before = sourceIdentity();
   const directory = path.join(root, ".local", "checks");
   fs.mkdirSync(directory, { recursive: true });
@@ -195,7 +219,7 @@ async function main(scope, pytestShard) {
   const report = { schema: "spireagent/portable-stage-results-1", scope,
     pytest_partition: pytestPartition(pytestShard),
     started_at: new Date().toISOString(), platform: process.platform, architecture: process.arch,
-    node: process.version, source_at_start: before, results: [], verdict: "running",
+    node: process.version, source_at_start: before, capacity_checks: [...capacity], results: [], verdict: "running",
     non_claims: ["installed", "loaded", "native", "Human", "learning", "qualification"] };
   const save = () => {
     fs.writeFileSync(output + ".tmp", JSON.stringify(report, null, 2) + "\n");
@@ -204,6 +228,9 @@ async function main(scope, pytestShard) {
   save();
   try {
     const outcome = await runStages(stages, async stage => {
+      const available = [workspaceCapacity(root), workspaceCapacity(os.tmpdir())];
+      report.capacity_checks.push(...available.map(item => ({ stage: stage.id, ...item }))); save();
+      if (available.some(item => !item.sufficient)) return { code: 1, error: "workspace_capacity_insufficient" };
       active = ownedCommand(process.platform === "win32" ? "npm.cmd" : "npm", stage.args,
         { cwd: root, stdio: "inherit", shell: process.platform === "win32" });
       const result = await active.completion; active = null; return result;

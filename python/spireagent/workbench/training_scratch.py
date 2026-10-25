@@ -129,3 +129,46 @@ def retained_scratch_bytes(
     except OSError as error:
         raise invalid("os_error") from error
     return size
+
+
+
+def require_training_space(
+    owner: Any, store: Any, source_id: str, scratch_bytes: int, recipe: str, *,
+    scratch: Path | None = None, run_id: str | None = None,
+    checkpoint_id: str | None = None, initial_checkpoint: bool = False,
+) -> dict[str, Any]:
+    """Use the real attempt volume and budget cold reads before the reader runs."""
+    from .p1_recording_storage import (
+        missing_local_read_bytes,
+        require_long_task_space,
+        storage_budget,
+        workspace_reserve_bytes,
+    )
+    from .trusted_recipes import P1_BASELINE_RECIPE, P1_MSTD_RECIPE
+
+    directory = owner.path.parent if scratch is None else scratch
+    # Reject even a cold metadata lookup when the selected write volumes are low.
+    require_long_task_space(directory, scratch_bytes, persistent_bytes=scratch_bytes,
+                            destination=owner.store_dir)
+    if directory != owner.path.parent:
+        require_long_task_space(owner.path.parent, 0)  # The purpose/operation ledger.
+    if recipe in {P1_BASELINE_RECIPE, P1_MSTD_RECIPE}:
+        from .p1_training_data import p1_read_payloads
+
+        payloads = p1_read_payloads(
+            store, source_id, run_id=run_id, checkpoint_id=checkpoint_id,
+            initial_checkpoint=initial_checkpoint,
+        )
+        missing = missing_local_read_bytes(store, payloads)
+    else:
+        budget = storage_budget(
+            store, checkpoint_id or source_id, scratch=directory,
+            destination=owner.store_dir, destination_store=store,
+            reserve_bytes=workspace_reserve_bytes(),
+        )
+        missing = budget["persistent_budget_bytes"]
+    capacity = require_long_task_space(
+        directory, scratch_bytes, persistent_bytes=scratch_bytes + missing,
+        destination=owner.store_dir,
+    )
+    return {**capacity, "cache_read_budget_bytes": missing}

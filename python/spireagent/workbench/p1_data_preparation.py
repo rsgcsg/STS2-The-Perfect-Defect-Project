@@ -295,6 +295,16 @@ def prepare_p1_data(
             excluded.append({**row, "reason": reason})
         else:
             rows.append(row)
+    from .p1_recording_storage import require_long_task_space
+
+    # Projection bytes may need to rehydrate into this Store, while SQLite and
+    # its transaction scratch coexist. Do not budget unrelated raw ancestors.
+    payloads = {p.sha256: p.size for row in rows
+                for p in store.get_manifest(row["projection_id"]).payloads}
+    require_long_task_space(
+        owner.path.parent, CACHE_LIMIT * 2,
+        persistent_bytes=sum(payloads.values()), destination=owner.store_dir,
+    )
     derived = P1PreparationCache(owner.path) if cache else None
     inspections, quality, conflicts = [], {}, []
     for row in rows:
