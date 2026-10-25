@@ -198,7 +198,7 @@ def run_weight(facts: dict[str, Any], rule: str = RULE_ID) -> float:
              + WEIGHT_PARAMETERS["boss_bonus"] * bosses)
     if value >= WEIGHT_PARAMETERS["nonwin_stop_at"]:
         raise BoundaryError("p1_cohort", "nonwin_weight_not_below_win_stop_and_report")
-    return value
+    return float(value)
 
 
 

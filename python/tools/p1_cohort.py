@@ -7,6 +7,7 @@ import json
 import os
 import shutil
 from pathlib import Path
+from typing import Any
 
 from spireagent.json_boundary import BoundaryError
 from spireagent.storage.local import LocalBlobStore
@@ -19,8 +20,13 @@ from spireagent.workbench.service_process import cloud_environment
 from stpd.p1.cohort import inspect_cohort
 
 
-def selection_ids(store, request, discovered) -> list[str]:
-    ids = request.get("projection_ids")
+def selection_ids(
+    store: ManifestArtifactStore, request: dict[str, Any], discovered: list[dict[str, Any]]
+) -> list[str]:
+    ids: list[str] | None = request.get("projection_ids")
+    if ids is not None and (not isinstance(ids, list)
+                            or any(not isinstance(identity, str) for identity in ids)):
+        raise BoundaryError("p1_cohort", "explicit_projection_ids_required")
     if ids is None:
         tools = request.get("tool_release_ids")
         if not isinstance(tools, list) or not tools or any(not isinstance(t, str) for t in tools):
