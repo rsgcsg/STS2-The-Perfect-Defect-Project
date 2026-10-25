@@ -335,7 +335,9 @@ class RemoteTrainingService:
                 raise BoundaryError("remote_training", "invalid_continuation_limits")
             self._limits({"max_seconds": obj["max_seconds"], "stop_after": None},
                          provider.target.timeout_seconds)
-            if time.time() + obj["max_seconds"] > deadline:
+            preparation = self._preparation_options(obj["max_seconds"]).get(
+                "preparation_seconds", 0)
+            if time.time() + preparation + obj["max_seconds"] > deadline:
                 raise BoundaryError("remote_training", "continuation_deadline_insufficient")
             continuation.arm(ops, job, target_id=provider.target.target_id,
                              producer=provider.target.producer.to_dict(), deadline=deadline,
@@ -744,9 +746,10 @@ class RemoteTrainingService:
                             from .p1_recording_storage import require_long_task_space
 
                             payloads = result_read_payloads(self._compute_store, identity)
-                            require_long_task_space(scratch, max(p.size for p in payloads),
-                                                    persistent_bytes=sum(p.size for p in payloads),
-                                                    destination=store.blobs.root)
+                            require_long_task_space(
+                                scratch, sum(sorted((p.size for p in payloads), reverse=True)[:8]),
+                                persistent_bytes=sum(p.size for p in payloads),
+                                destination=store.blobs.root)
                             copy_input_artifact(self._compute_store, store, identity, payloads,
                                                 scratch=scratch)
                 else:
