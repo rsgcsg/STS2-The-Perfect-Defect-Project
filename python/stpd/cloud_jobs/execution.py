@@ -30,7 +30,7 @@ from .contracts import ComputeReceipt, ComputeRequest, load_feature_job
 SAVE_MARGIN_SECONDS = 300
 
 
-@dataclass(frozen=True)
+@dataclass
 class _PauseBeforeTimeout:
     seconds: int
     on_start: Callable[[], None] | None = None

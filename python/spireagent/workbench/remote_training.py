@@ -17,7 +17,6 @@ from spireagent.local_diagnostics import LocalDiagnostics, bind_job, phase
 from spireagent.source import source_identity
 from spireagent.ssh_compute import provider_from_target
 from spireagent.storage.read_session import VerifiedReadSession
-from spireagent.storage.store import copy_artifact
 from spireagent.workbench.developer import ROOT, ProjectConfig
 from spireagent.workbench.p1_recording_storage import open_peer
 
@@ -228,7 +227,15 @@ class RemoteTrainingService:
                 with self.diagnostics.operation("remote-training.scheduler", "tick"), self._lock:
                     _, _, _, _, scheduler = self._ready()
                     self._continue_training(time.time())
-                    scheduler.tick(time.time())
+                    outcome = scheduler.tick(time.time())
+                    if outcome.get("job_id") and outcome["state"] in {
+                        "submitted", "preflight_failed", "submission_unknown",
+                        "already_prepared_no_resubmit", "paused", "completed", "failed",
+                    }:
+                        job = self._job(self._operations, outcome["job_id"])
+                        session = self._prepared_sessions.pop(job["input_id"], None)
+                        if session is not None:
+                            session.close()
                     self._continue_training(time.time())
                     self._error = None
             except (BoundaryError, OSError, ValueError) as error:
@@ -489,6 +496,9 @@ class RemoteTrainingService:
     def _prepare(self, body: object) -> dict[str, Any]:
         with phase("remote.prepare.context"):
             owner, store, producer, target = self._preparation_context()
+        for previous in self._prepared_sessions.values():
+            previous.close()
+        self._prepared_sessions.clear()
         session = VerifiedReadSession(
             store, scratch=self.config.state_dir / "remote-training-transfer")
         try:
@@ -624,26 +634,32 @@ class RemoteTrainingService:
         from .remote_training_storage import verify_training_run
 
         session = self._prepared_sessions.get(run_id)
+        fresh = session is None
         if session is None:
             # A package is not a persisted trust token. After a process restart,
-            # verify the actual peer inputs once before caching this operation.
+            # verify actual peer inputs and all intent/use bindings before cache.
             session = VerifiedReadSession(
                 self._compute_store, scratch=self.config.state_dir / "remote-training-transfer")
-            try:
+        try:
+            if fresh:
                 self._prefetch_run(session, run_id)
-                verify_training_run(session, run_id, provider.target.producer)
-            except BaseException:
+            workload = verify_training_run(session, run_id, provider.target.producer)
+            if workload.run.parameters.value()["operation_id"] != intent:
+                raise BoundaryError("remote_training", "prepared_run_intent_mismatch")
+            gpu = getattr(provider.target, "gpu", None)
+            if (workload.config.device == "cpu") != (gpu == "none"):
+                raise BoundaryError("remote_training", "explicit_target_device_mismatch")
+            require_recorded_p1_training_use(
+                owner.ledger, store, workload.snapshot.artifact_id, intent)
+        except BaseException:
+            if fresh:
                 session.close()
-                raise
+            raise
+        if fresh:
+            for previous in self._prepared_sessions.values():
+                previous.close()
+            self._prepared_sessions.clear()
             self._prepared_sessions[run_id] = session
-        workload = verify_training_run(session, run_id, provider.target.producer)
-        if workload.run.parameters.value()["operation_id"] != intent:
-            raise BoundaryError("remote_training", "prepared_run_intent_mismatch")
-        gpu = getattr(provider.target, "gpu", None)
-        if (workload.config.device == "cpu") != (gpu == "none"):
-            raise BoundaryError("remote_training", "explicit_target_device_mismatch")
-        require_recorded_p1_training_use(
-            owner.ledger, store, workload.snapshot.artifact_id, intent)
         return {"run_id": run_id}
 
     @staticmethod
@@ -695,7 +711,7 @@ class RemoteTrainingService:
                                          reserved_units=deployment.reserved_units,
                                          budget_limit=deployment.budget_limit,
                                          options={"stop_after": obj["stop_after"],
-                                                  **self._preparation_options()})
+                                                  **self._preparation_options(obj["max_seconds"])})
             elif action in {"cancel", "reconcile", "resume"}:
                 with phase("remote.control.scheduler_ready"):
                     owner, store, provider, ops, _ = self._ready()
@@ -721,14 +737,17 @@ class RemoteTrainingService:
                         scratch.mkdir(parents=True, exist_ok=True)
                         identity = result.get("output_id") or result.get("checkpoint_id")
                         if identity:
-                            from spireagent.workbench.p1_recording_storage import storage_budget
+                            from spireagent.storage.input_transfer import copy_input_artifact
+                            from stpd.p1.workload import result_read_payloads
 
-                            # Receiving a result can include its immutable input
-                            # ancestry. Budget that closure before creating bytes;
-                            # copy_artifact reuses verified local payloads.
-                            storage_budget(self._compute_store, identity, scratch=scratch,
-                                           destination=store.blobs.root, destination_store=store)
-                            copy_artifact(self._compute_store, store, identity, scratch=scratch)
+                            from .p1_recording_storage import require_long_task_space
+
+                            payloads = result_read_payloads(self._compute_store, identity)
+                            require_long_task_space(scratch, max(p.size for p in payloads),
+                                                    persistent_bytes=sum(p.size for p in payloads),
+                                                    destination=store.blobs.root)
+                            copy_input_artifact(self._compute_store, store, identity, payloads,
+                                                scratch=scratch)
                 else:
                     with phase("remote.resume.request_validate"):
                         from spireagent.hub.training_continuation import read as read_continuation
@@ -756,7 +775,7 @@ class RemoteTrainingService:
                                              budget_limit=deployment.budget_limit,
                                              options={"resume": checkpoint,
                                                       "stop_after": obj["stop_after"],
-                                                      **self._preparation_options()})
+                                                      **self._preparation_options(obj["max_seconds"])})
             else:
                 raise BoundaryError("remote_training", "unsupported_training_action")
             bind_job(job_id)
@@ -765,12 +784,19 @@ class RemoteTrainingService:
             with phase("remote.command.readback"):
                 return self.status(job_id)
 
-    def _preparation_options(self) -> dict[str, int]:
+    def _preparation_options(self, max_seconds: int) -> dict[str, int]:
         assert self._provider is not None
         preparation = getattr(self._provider.target, "preparation_seconds", 0)
         # The provider separately bounds worker preparation. Ops remains the
         # conservative whole-attempt watchdog, including controller preflight.
-        return {"preparation_seconds": preparation + 300} if preparation else {}
+        if not preparation:
+            return {}
+        deployment = self.config.remote_compute
+        assert deployment is not None
+        if deployment.reserved_units < max_seconds + preparation + 300:
+            raise BoundaryError(
+                "remote_training", "reservation_must_cover_preparation_and_training")
+        return {"preparation_seconds": preparation + 300}
 
     @staticmethod
     def _limits(obj: dict[str, Any], timeout: int) -> None:

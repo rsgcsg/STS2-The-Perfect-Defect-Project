@@ -76,8 +76,21 @@ def copy_input_artifact(
 
     with ThreadPoolExecutor(max_workers=concurrency) as pool:
         results = list(pool.map(transfer, payloads.values()))
-    for manifest in ordered:
-        if target.publish_reference(manifest) != manifest.artifact_id:
+    def existing(manifest: Manifest) -> bool:
+        try:
+            actual = target.get_manifest(manifest.artifact_id)
+        except StoreError as error:
+            if error.code == "object_not_found":
+                return False
+            raise
+        if actual != manifest:
+            raise StoreError("transfer_manifest_mismatch")
+        return True
+
+    with ThreadPoolExecutor(max_workers=concurrency) as pool:
+        present = list(pool.map(existing, ordered))
+    for manifest, found in zip(ordered, present, strict=True):
+        if not found and target.publish_reference(manifest) != manifest.artifact_id:
             raise StoreError("transfer_manifest_mismatch")
     omitted = {p.sha256: p for p in available if p.sha256 not in payloads}
     return {

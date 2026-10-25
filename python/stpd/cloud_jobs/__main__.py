@@ -75,7 +75,9 @@ def main(argv: list[str] | None = None) -> int:
         if len(raw) > 64 * 1024:
             raise BoundaryError("compute", "request_size_limit")
         receipt = execute_request(decode_json(raw), store_location=args.store,
-                                  wall_seconds=args.wall_seconds, ready_file=args.ready_file)
+                                  wall_seconds=args.wall_seconds,
+                                  **({"ready_file": args.ready_file}
+                                     if args.ready_file is not None else {}))
         print(json_bytes(receipt).decode(), end="")
         return 0
     except Exception as error:

@@ -468,3 +468,34 @@ def test_qualification_tool_real_updates_receipts_and_fixed_DEV_without_TEST(tmp
         replacement_request(store, first, receipt1, first.attempt_id)
     with pytest.raises(BoundaryError):
         qualification_report(store, first, receipt1, second, receipt1)
+
+
+def test_derived_run_to_empty_compute_and_checkpoint_to_empty_receiver(tmp_path):
+    from spireagent.storage.input_transfer import copy_input_artifact
+    from spireagent.workbench.remote_training_storage import transfer_p1_input
+    from stpd.p1.derivation import source_checkpoint_dag
+    from stpd.p1.workload import result_read_payloads
+
+    store, snapshot, original, checkpoint = legacy_fixture(tmp_path)
+    run = derive(store, snapshot, original, checkpoint)
+    binding = {"kind": "local", "directory": str(tmp_path / "compute")}
+    transfer_p1_input(store, binding, run.artifact_id, PRODUCER, scratch=tmp_path / "scratch")
+    peer = store_at(tmp_path / "compute")
+    for saved in source_checkpoint_dag(store, checkpoint, original):
+        payload = saved.payload("checkpoint")
+        assert b"".join(peer.read_payload(payload)) == b"".join(store.read_payload(payload))
+    request = ComputeRequest("training", run.artifact_id, PRODUCER, "empty-peer", stop_after=1)
+    receipt = dispatch(peer, request, PRODUCER)
+    validate_receipt(peer, request, receipt)
+    assert receipt.state == "paused"
+    # The result reception also has no hidden raw closure. An empty receiver
+    # can verify exact CP/run/input identity using the same payload plan.
+    cold = store_at(tmp_path / "cold")
+    copied = copy_input_artifact(
+        peer, cold, receipt.checkpoint_id, result_read_payloads(peer, receipt.checkpoint_id),
+        scratch=tmp_path / "scratch")
+    restored = verify_p1_checkpoint(
+        cold, receipt.checkpoint_id, verify_p1_run(cold, run.artifact_id, PRODUCER))
+    assert restored.state["step"] == 3
+    assert copied["reference_only_payload_count"] > 0
+    assert copied["raw_closure_restored"] is False

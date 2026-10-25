@@ -292,15 +292,20 @@ def execute_p1_run(
 
     from ..p1.workload import read_payloads
 
+    started = time.perf_counter()
     # Each worker independently verifies its inputs. Only the named required
     # payloads are prefetched; original recordings remain exact references.
     run = store.get_manifest(run_id)
     training = store.get_manifest(run.parent("training_input"))
     with VerifiedReadSession(store) as session:
-        session.prefetch(read_payloads(session, training.parent("source"), run_id=run_id))
+        payloads = read_payloads(session, training.parent("source"), run_id=run_id)
+        session.prefetch(payloads)
+        prefetch_seconds = time.perf_counter() - started
         return _execute_p1_run(
             session, reporter, run_id, runtime, attempt_id=attempt_id, resume=resume,
-            stop_after=stop_after, authority=authority, control=control, mode=mode)
+            stop_after=stop_after, authority=authority, control=control, mode=mode,
+            started=started, prefetch_seconds=prefetch_seconds,
+            prefetch_bytes=sum(p.size for p in payloads), prefetch_count=len(payloads))
 
 
 def _execute_p1_run(
@@ -315,10 +320,14 @@ def _execute_p1_run(
     authority: AttemptAuthority | None = None,
     control: ExecutionControl | None = None,
     mode: str = "start",
+    started: float,
+    prefetch_seconds: float,
+    prefetch_bytes: int,
+    prefetch_count: int,
 ) -> StructuredExecutionResult:
-    started = time.perf_counter()
+    verification_started = time.perf_counter()
     workload = verify_p1_run(store, run_id, runtime)
-    verified_seconds = time.perf_counter() - started
+    verified_seconds = time.perf_counter() - verification_started
     operation_id = workload.run.parameters.value()["operation_id"]
     if mode not in {"start", "resume", "reconcile"} or (mode == "resume") != (resume is not None):
         raise BoundaryError("p1_worker", "explicit_execution_mode_required")
@@ -479,6 +488,9 @@ def _execute_p1_run(
         planned_steps=trainer.planned_steps,
         device=workload.config.device,
         preparation={
+            "input_prefetch_seconds": prefetch_seconds,
+            "input_payload_bytes": prefetch_bytes,
+            "input_payload_count": prefetch_count,
             "verify_run_seconds": verified_seconds,
             "population_seconds": population_seconds,
             "trainer_construction_seconds": construction_seconds,

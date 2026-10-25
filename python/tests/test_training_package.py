@@ -161,7 +161,8 @@ def test_selected_cohort_reuses_Q_snapshot_or_uses_normal_freeze(tmp_path, capsy
         run = verify_p1_run(store, package["start"]["run_id"], provider.target.producer)
         assert (run.snapshot.artifact_id == snapshot.artifact_id) is already_frozen
         assert run.reader.selection["split_by_group"] == plan["splits"]
-        assert run.reader.selection["split_salt"] == "cohort-" + identity
+        assert run.reader.selection["split_salt"] == (
+            selected["split_salt"] if already_frozen else "cohort-" + identity)
         assert run.training.parameters.value()["loss_weighting"]["rule_id"] == identity
         assert run.training.parameters.value()["loss_weighting"]["definition"] == plan["definition"]
         assert provider.calls == []

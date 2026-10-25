@@ -300,8 +300,21 @@ def read_payloads(
             for saved in source_checkpoint_dag(store, identity, run):
                 payload = saved.payload("checkpoint")
                 payloads[payload.sha256] = payload
-    for identity in runs:
+    seen_runs = set()
+    while runs:
+        identity = runs.pop()
+        if identity in seen_runs:
+            continue
+        seen_runs.add(identity)
         run = store.get_manifest(identity)
+        if any(p.role == "original_checkpoint" for p in run.parents):
+            original_run = store.get_manifest(run.parent("original_run"))
+            runs.add(original_run.artifact_id)
+            for saved in source_checkpoint_dag(
+                store, run.parent("original_checkpoint"), original_run
+            ):
+                payload = saved.payload("checkpoint")
+                payloads[payload.sha256] = payload
         training = store.get_manifest(run.parent("training_input"))
         for payload in training.payloads:
             payloads[payload.sha256] = payload
@@ -314,4 +327,36 @@ def read_payloads(
             projection = store.get_manifest(parent.artifact_id)
             payload = projection.payload(projection_payload_role(projection))
             payloads[payload.sha256] = payload
+    return tuple(payloads.values())
+
+
+
+def result_read_payloads(store: Any, identity: str) -> tuple[Any, ...]:
+    """Plan a P1 result/CP reception, retaining raw ancestry as references.
+
+    Result-side model/evaluation payloads are consumed by the installed result
+    verifier. Prior milestone/best CP edges are metadata except for the explicit
+    original-state import handled by read_payloads.
+    """
+    result = store.get_manifest(identity)
+    if result.kind not in {"checkpoint", "run_result"}:
+        raise BoundaryError("p1_workload", "checkpoint_or_result_required")
+    run = store.get_manifest(result.parent("run"))
+    training = store.get_manifest(run.parent("training_input"))
+    payloads = {p.sha256: p for p in read_payloads(
+        store, training.parent("source"), run_id=run.artifact_id,
+        checkpoint_id=identity if result.kind == "checkpoint" else None)}
+    seen, pending = set(), [identity]
+    while pending:
+        key = pending.pop()
+        if key in seen:
+            continue
+        seen.add(key)
+        item = store.get_manifest(key)
+        if item.kind in {"run", "training_input", "dataset", "evidence"}:
+            continue
+        for payload in item.payloads:
+            payloads[payload.sha256] = payload
+        pending.extend(p.artifact_id for p in item.parents
+                       if p.role != "prior_best" and not p.role.startswith("checkpoint_"))
     return tuple(payloads.values())
