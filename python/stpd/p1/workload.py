@@ -335,8 +335,8 @@ def result_read_payloads(store: Any, identity: str) -> tuple[Any, ...]:
     """Plan a P1 result/CP reception, retaining raw ancestry as references.
 
     Result-side model/evaluation payloads are consumed by the installed result
-    verifier. Prior milestone/best CP edges are metadata except for the explicit
-    original-state import handled by read_payloads.
+    verifier, including the milestone/best checkpoint payloads it checks.
+    The explicit original-state import is also handled by read_payloads.
     """
     result = store.get_manifest(identity)
     if result.kind not in {"checkpoint", "run_result"}:
@@ -357,6 +357,5 @@ def result_read_payloads(store: Any, identity: str) -> tuple[Any, ...]:
             continue
         for payload in item.payloads:
             payloads[payload.sha256] = payload
-        pending.extend(p.artifact_id for p in item.parents
-                       if p.role != "prior_best" and not p.role.startswith("checkpoint_"))
+        pending.extend(p.artifact_id for p in item.parents)
     return tuple(payloads.values())

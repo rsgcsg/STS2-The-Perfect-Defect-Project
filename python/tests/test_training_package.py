@@ -33,6 +33,7 @@ def test_normal_package_then_start_original_prepared_run(tmp_path, capsys, monke
         assert provider.calls == []
         saved = json.loads(package.read_text())
         run_id = saved["start"]["run_id"]
+        read_session = app.remote_training._prepared_sessions[run_id]
         assert verify_p1_run(store, run_id, provider.target.producer).training.parameters.value()[
             "loss_weighting"] == body["loss_weighting"]
         # Poison prepare: a start of this package must not fit/transfer again.
@@ -46,6 +47,7 @@ def test_normal_package_then_start_original_prepared_run(tmp_path, capsys, monke
         paused = settled(call, started["id"], "paused")
         assert paused["result"]["checkpoint_id"]
         assert len(provider.calls) == 1
+        assert read_session.closed and app.remote_training._prepared_sessions == {}
         # Mismatching the original purpose-use intent fails before any submission.
         with pytest.raises(BoundaryError, match="prepared_run_intent_mismatch"):
             call("start-prepared", body={**saved["start"], "intent_id": "c" * 32})

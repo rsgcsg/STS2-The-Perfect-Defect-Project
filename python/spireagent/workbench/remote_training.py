@@ -232,6 +232,7 @@ class RemoteTrainingService:
                         "submitted", "preflight_failed", "submission_unknown",
                         "already_prepared_no_resubmit", "paused", "completed", "failed",
                     }:
+                        assert self._operations is not None
                         job = self._job(self._operations, outcome["job_id"])
                         session = self._prepared_sessions.pop(job["input_id"], None)
                         if session is not None:
@@ -506,9 +507,9 @@ class RemoteTrainingService:
         except BaseException:
             session.close()
             raise
-        previous = self._prepared_sessions.pop(result["run_id"], None)
-        if previous is not None:
-            previous.close()
+        previous_session = self._prepared_sessions.pop(result["run_id"], None)
+        if previous_session is not None:
+            previous_session.close()
         self._prepared_sessions[result["run_id"]] = session
         return result
 
