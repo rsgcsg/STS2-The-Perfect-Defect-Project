@@ -11,17 +11,22 @@ from spireagent.workbench.developer import ProjectConfig
 from spireagent.workbench.developer_server import _local_request, running
 
 
-def p1_data_command(config: ProjectConfig, action: str, body: object) -> dict[str, Any]:
+def p1_data_command(config: ProjectConfig, action: str, body: object, *,
+                    wait_seconds: int | None = None) -> dict[str, Any]:
     """Offer once; callers inspect the original immutable selection after uncertainty."""
     if action not in {"prepare", "freeze"} or not isinstance(body, dict):
         raise BoundaryError("p1_data", "invalid_data_request")
+    if wait_seconds is not None and (type(wait_seconds) is not int
+                                     or not 1 <= wait_seconds <= 86400):
+        raise BoundaryError("p1_data", "invalid_transport_wait_seconds")
     current = running(config)
     if current is None:
         raise BoundaryError("p1_data", "open_workbench_first")
     try:
         return _local_request(
             f"http://127.0.0.1:{current['port']}/api/p1-data/{action}",
-            token=current["control_token"], body=body, method="POST", timeout=600,
+            token=current["control_token"], body=body, method="POST",
+            timeout=600 if wait_seconds is None else wait_seconds,
             response_limit=16 * 1024**2,
         )
     except HTTPError as error:

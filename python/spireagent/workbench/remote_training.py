@@ -59,7 +59,8 @@ class RemoteTrainingService:
                 ],
                 "supported_actions": (["status", "progress"] if deployment and
                                       deployment.observation_only else
-                                      ["prepare", "start", "status", "progress", "cancel",
+                                      ["prepare", "start", "start-prepared", "status", "progress",
+                                       "cancel",
                                        "reconcile", "resume", "auto-continue",
                                        "stop-continuation"]),
                 "observation_only": deployment.observation_only if deployment else False,
@@ -90,6 +91,28 @@ class RemoteTrainingService:
         if self._compute_store is None:
             self._compute_store = open_peer(deployment.compute_store)
         return owner, store, provider, self._compute_store
+
+    def _preparation_context(self) -> tuple[Any, Any, Any, Any | None]:
+        """Data preparation may finish before a school machine is allocated.
+
+        An absent target is not an invented hardware identity. Start must bind
+        and verify an actual target, source, device and timeout before enqueue.
+        """
+        deployment = self.config.remote_compute
+        if deployment is None or deployment.target_path.exists() or self._injected_provider:
+            owner, store, provider, _ = self._context()
+            return owner, store, provider.target.producer, provider.target
+        if deployment.observation_only:
+            raise BoundaryError("remote_training", "observation_only_original_writer_required")
+        if self.config.hub_url:
+            raise BoundaryError("remote_training", "configured_hub_requires_hub_scheduler_route")
+        if deployment.compute_store.get("kind") != "s3":
+            raise BoundaryError("remote_training", "shared_compute_store_required")
+        producer = deployment.execution_producer or source_identity(ROOT)
+        owner, store, _ = self.select()
+        if deployment.operations_path.resolve() == owner.path.resolve():
+            raise BoundaryError("remote_training", "separate_operations_database_required")
+        return owner, store, producer, None
 
     def _target_schema(self) -> str | None:
         deployment = self.config.remote_compute
@@ -296,7 +319,8 @@ class RemoteTrainingService:
 
     def start_loop(self) -> None:
         if (self.config.remote_compute is not None and not self.config.hub_url
-                and not self.config.remote_compute.observation_only):
+                and not self.config.remote_compute.observation_only
+                and (self._injected_provider or self.config.remote_compute.target_path.exists())):
             with self._lock:
                 self._ready()
                 self._launch_loop()
@@ -450,17 +474,18 @@ class RemoteTrainingService:
         from stpd.p1.workload import prepare_p1_run
 
         with phase("remote.prepare.context"):
-            owner, store, provider, _ = self._context()
+            owner, store, producer, target = self._preparation_context()
         with phase("remote.prepare.request_validate"):
             # A control upgrade may resume an existing frozen Run. New Run/Input
             # construction executes here and must retain this code's actual provenance.
-            if provider.target.producer != source_identity(ROOT):
+            if producer != source_identity(ROOT):
                 raise BoundaryError("remote_training", "new_run_requires_current_execution_source")
             deployment = self.config.remote_compute
             assert deployment is not None
             recipe = body.get("recipe_id", "p1-mstd-N-v1") if isinstance(body, dict) else None
             fields = {"intent_id", "source_id", "config", "max_seconds", "stop_after"}
-            optional = {key for key in ("recipe_id", "execution_policy", "initial_checkpoint")
+            optional = {key for key in ("recipe_id", "execution_policy", "initial_checkpoint",
+                                       "loss_weighting", "checkpoint_policy")
                         if isinstance(body, dict) and key in body}
             obj = object_fields(body, fields | optional,
                                 "remote_training.start")
@@ -495,11 +520,21 @@ class RemoteTrainingService:
                     raise BoundaryError("remote_training", "derivation_requires_M_std_recipe")
                 execution_options["initial_checkpoint"] = digest(
                     obj["initial_checkpoint"], "remote_training.initial_checkpoint")
-            target = provider.target
-            gpu = getattr(target, "gpu", None)
-            if ((config.device == "cpu") != (gpu == "none")):
-                raise BoundaryError("remote_training", "explicit_target_device_mismatch")
-            self._limits(obj, target.timeout_seconds)
+            for key in ("loss_weighting", "checkpoint_policy"):
+                if key in obj:
+                    if recipe != P1_MSTD_RECIPE:
+                        raise BoundaryError("remote_training", "weighting_requires_M_std_recipe")
+                    execution_options[key] = obj[key]
+            if "checkpoint_policy" in execution_options:
+                from stpd.p1.weighting import CHECKPOINT_POLICY
+
+                if execution_options["checkpoint_policy"] not in (None, CHECKPOINT_POLICY):
+                    raise BoundaryError("remote_training", "unsupported_checkpoint_policy")
+            if target is not None:
+                gpu = getattr(target, "gpu", None)
+                if ((config.device == "cpu") != (gpu == "none")):
+                    raise BoundaryError("remote_training", "explicit_target_device_mismatch")
+            self._limits(obj, target.timeout_seconds if target is not None else 1)
         from .training_scratch import require_training_space
 
         # Admit named cold reads before the purpose verifier can populate CAS.
@@ -510,23 +545,50 @@ class RemoteTrainingService:
                 checkpoint_id=execution_options.get("initial_checkpoint"),
                 initial_checkpoint="initial_checkpoint" in execution_options,
             )
-            require_p1_snapshot(owner, store, snapshot)
+            selection, _ = require_p1_snapshot(owner, store, snapshot)
+            if "loss_weighting" in execution_options:
+                from stpd.p1.weighting import checked_weights
+
+                execution_options["loss_weighting"] = checked_weights(
+                    execution_options["loss_weighting"], selection)
         # Vocabulary fitting itself discloses training examples; reserve use first.
         with phase("remote.prepare.record_use"):
             record_p1_training_use(owner, store, snapshot, intent)
         with phase("remote.prepare.build_run"):
-            run = prepare_run(store, snapshot, target.producer, config, intent, **execution_options)
+            run = prepare_run(store, snapshot, producer, config, intent, **execution_options)
         with phase("remote.prepare.transfer_and_readback"):
             scratch = self.config.state_dir / "remote-training-transfer"
             scratch.mkdir(parents=True, exist_ok=True)
             facts = transfer_p1_input(store, deployment.compute_store, run.artifact_id,
-                                      target.producer, scratch=scratch)
+                                      producer, scratch=scratch)
         return {"schema": "spireagent/remote-training-prepared-1", "state": "prepared",
                 "run_id": run.artifact_id, "input": facts, "enqueued": False,
+                "compute_target_bound": target is not None,
                 "provider_submitted": False, "gpu_qualification": "not_established"}
 
+    def _prepared_for_start(self, body: object) -> dict[str, Any]:
+        """Consume the original prepared Run; Scheduler still owns admission/submit."""
+        obj = object_fields(body, {"run_id", "intent_id", "max_seconds", "stop_after"},
+                            "remote_training.start_prepared")
+        run_id = digest(obj["run_id"], "remote_training.run_id")
+        intent = digest(obj["intent_id"], "remote_training.intent_id", length=32)
+        owner, store, provider, _ = self._context()
+        self._limits(obj, provider.target.timeout_seconds)
+        from .p1_training_data import require_p1_training_use
+        from .remote_training_storage import verify_training_run
+
+        workload = verify_training_run(store, run_id, provider.target.producer)
+        if workload.run.parameters.value()["operation_id"] != intent:
+            raise BoundaryError("remote_training", "prepared_run_intent_mismatch")
+        gpu = getattr(provider.target, "gpu", None)
+        if (workload.config.device == "cpu") != (gpu == "none"):
+            raise BoundaryError("remote_training", "explicit_target_device_mismatch")
+        require_p1_training_use(owner, store, workload.snapshot.artifact_id, intent)
+        return {"run_id": run_id}
+
     def command(self, action: str, body: object) -> dict[str, Any]:
-        label = action if action in {"prepare", "start", "resume", "pause", "cancel", "reconcile",
+        label = action if action in {"prepare", "start", "start-prepared", "resume",
+                                    "pause", "cancel", "reconcile",
                                     "auto-continue", "stop-continuation"} else "command"
         with (self.diagnostics.operation("/api/remote-training/" + label, label),
               phase("remote.command.dispatch")):
@@ -542,10 +604,15 @@ class RemoteTrainingService:
                 return self._configure_continuation(action, body)
             if action == "prepare":
                 return self.prepare(body)
-            if action == "start":
+            if action in {"start", "start-prepared"}:
                 with phase("remote.start.prepare"):
-                    prepared = self.prepare(body)
+                    prepared = (self.prepare(body) if action == "start"
+                                else self._prepared_for_start(body))
                 assert isinstance(body, dict)  # prepare checked the exact request grammar.
+                if action == "start":
+                    self._prepared_for_start({"run_id": prepared["run_id"],
+                                              **{k: body[k] for k in (
+                                                  "intent_id", "max_seconds", "stop_after")}})
                 obj = body
                 with phase("remote.start.scheduler_ready"):
                     _, _, _, ops, _ = self._ready()

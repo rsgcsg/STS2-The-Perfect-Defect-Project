@@ -22,10 +22,15 @@ from .model import MStd
 
 def optimizer_update(
     model: MStd, optimizer: torch.optim.Optimizer, frames: list[Frame],
-    targets: list[int], learning_rate: float,
+    targets: list[int], learning_rate: float, *, weights: list[float] | None = None,
 ) -> dict[str, Any]:
     if not frames or len(frames) != len(targets):
         raise BoundaryError("p1_training", "optimizer_batch_length_mismatch")
+    if weights is not None and (len(weights) != len(frames) or any(
+            type(w) not in {int, float} or not math.isfinite(w) or w <= 0 for w in weights)):
+        raise BoundaryError("p1_training", "invalid_loss_weights")
+    # Preserve the original expression and RNG exactly for the all-one control.
+    weighted = weights is not None and any(w != 1 for w in weights)
     began = time.perf_counter()
     device = model.ids.weight.device
     for parameter_group in optimizer.param_groups:
@@ -48,6 +53,10 @@ def optimizer_update(
         packed = torch.nn.utils.rnn.pad_sequence(scores, batch_first=True, padding_value=-torch.inf)
         labels = torch.tensor([targets[index] for index in group], device=device)
         loss = F.cross_entropy(packed, labels, reduction="none")
+        if weighted:
+            assert weights is not None
+            loss = loss * torch.tensor([weights[i] for i in group], device=device,
+                                       dtype=loss.dtype)
         (loss.sum() / len(frames)).backward()
         losses.extend(loss.detach().unbind())
     if finite_scores:

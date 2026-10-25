@@ -14,7 +14,11 @@ from spireagent.workbench.developer import ProjectConfig
 from spireagent.workbench.developer_server import _local_request, running
 from spireagent.workbench.recipe_contracts import TrainingRequest
 
-ACTIONS = ("capabilities", "status", "progress", "prepare", "start", "pause", "resume", "cancel",
+PACKAGE_SCHEMA = "spireagent/p1-training-package-1"
+
+ACTIONS = ("package", "shortlist", "capabilities", "status", "progress", "prepare", "start",
+           "start-prepared",
+           "pause", "resume", "cancel",
            "reconcile", "auto-continue", "stop-continuation",
            "amend_wall_budget")
 
@@ -35,8 +39,9 @@ def training_command(
                                      or not 1 <= wait_seconds <= 86400):
         raise BoundaryError("local_training", "invalid_transport_wait_seconds")
     timeout = wait_seconds if wait_seconds is not None else (
-        300 if execution == "remote" and action in {"prepare", "start", "reconcile"} else 15)
-    if action in {"prepare", "progress"} and execution != "remote":
+        300 if execution == "remote" and action in {
+            "prepare", "start", "start-prepared", "reconcile"} else 15)
+    if action in {"prepare", "progress", "start-prepared"} and execution != "remote":
         raise BoundaryError("local_training", "prepare_requires_remote_execution")
     if action not in ACTIONS:
         raise BoundaryError("local_training", "unsupported_training_action")
@@ -84,6 +89,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("action", choices=ACTIONS)
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--input", type=Path, help="exact start request or control JSON body")
+    parser.add_argument("--cohort-plan", type=Path, help="exact upstream cohort proposal JSON")
+    parser.add_argument("--configuration-id", help="explicit selected cohort content identity")
+    parser.add_argument("--output", type=Path, help="new prepared package JSON; never overwrite")
     parser.add_argument("--operation-id",
                         help="optional exact local operation or remote job status")
     parser.add_argument("--execution", choices=("local", "remote"), default="local")
@@ -96,7 +104,45 @@ def main(argv: list[str] | None = None) -> int:
         body = json.loads(args.input.read_bytes()) if args.input is not None else None
         if body is not None and not isinstance(body, dict):
             raise BoundaryError("local_training", "training_body_mismatch")
-        result = training_command(ProjectConfig.load(args.config), args.action,
+        action = args.action
+        if action != "package" and (args.cohort_plan is not None
+                                    or args.configuration_id is not None):
+            raise BoundaryError("training_cohort", "cohort_binding_requires_package")
+        if action == "shortlist":
+            import os
+
+            from spireagent.storage.config import open_peer
+            from stpd.p1.shortlist import checkpoint_shortlist
+
+            from .developer import atomic_json
+            from .service_process import cloud_environment
+
+            config = ProjectConfig.load(args.config)
+            if (config.remote_compute is None or not isinstance(body, dict)
+                    or set(body) != {"run_id"}):
+                raise BoundaryError("p1_shortlist", "configured_peer_and_exact_run_required")
+            os.environ.update(cloud_environment(config.cloud_environment_file))
+            result = checkpoint_shortlist(open_peer(config.remote_compute.compute_store),
+                                          body["run_id"])
+            if args.output:
+                atomic_json(args.output, result)
+            print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+            return 0
+        if action == "package":
+            from .training_package import prepare_package
+
+            result = prepare_package(
+                args.config, body, args.output, args.execution, wait_seconds=args.wait_seconds,
+                cohort_plan=(json.loads(args.cohort_plan.read_bytes())
+                             if args.cohort_plan is not None else None),
+                configuration_id=args.configuration_id)
+            print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+            return 0
+        if action == "start" and isinstance(body, dict) and body.get("schema") == PACKAGE_SCHEMA:
+            from .training_package import package_start
+
+            action, body = "start-prepared", package_start(body)
+        result = training_command(ProjectConfig.load(args.config), action,
                                   body=body, operation_id=args.operation_id,
                                   execution=args.execution, intent_id=args.intent_id,
                                   wait_seconds=args.wait_seconds, after_step=args.after_step)
