@@ -22,9 +22,10 @@ from .inplace_curation import configured_owner
 from .managed_local_workspace import inspect_managed_workspace
 
 
-def checked_cohort_plan(value: object, configuration_id: str) -> dict[str, Any]:
-    if not isinstance(value, dict):
+def checked_cohort_plan(raw: object, configuration_id: str) -> dict[str, Any]:
+    if not isinstance(raw, dict):
         raise BoundaryError("training_cohort", "cohort_object_required")
+    value: dict[str, Any] = raw
     if value.get("schema") == "training-data-weight-selection-20261025-v1":
         if (value.get("status") != "frozen_user_confirmed"
                 or value.get("selected_configuration_id") != configuration_id
