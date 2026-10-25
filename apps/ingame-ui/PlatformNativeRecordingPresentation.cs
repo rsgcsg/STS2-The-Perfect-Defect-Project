@@ -1,11 +1,33 @@
 using System.Text.Json;
 using System.Globalization;
+using STS2HumanAnnotator.Core;
 
 namespace STS2PlatformLiveUi;
 
 /// <summary>Read-only labels from the recording owner's current status.</summary>
 public static class PlatformNativeRecordingPresentation
 {
+    public static string QuickRecordingLabel(RecordingApplicationStatus status)
+    {
+        bool failed = status.Health.Append == "failed" || status.Health.Disk == "failed";
+        if (failed) return status.Lifecycle.State switch {
+            RecordingLifecycleState.Ready or RecordingLifecycleState.Closed => "录制未开始 · 查看原因",
+            RecordingLifecycleState.Closing => "封存未完成 · 查看原因",
+            _ => "录制保存异常 · 查看原因"
+        };
+        bool p1 = status.Session?.CaptureProfileId == P1NativeRecordingContract.ProfileId;
+        return status.Lifecycle.State switch {
+            RecordingLifecycleState.Recording => $"正在录制 · {status.Counters.Records} 次操作",
+            RecordingLifecycleState.Paused => p1 ? "继续录制" : "查看录制",
+            RecordingLifecycleState.Closing => "正在封存 · 查看",
+            _ => status.Continuous?.Armed == true ? "录制待命 · 查看" : "开始本人录制"
+        };
+    }
+
+    public static string? PersistenceFailure(RecordingApplicationStatus status) =>
+        status.Health.Append == "failed" || status.Health.Disk == "failed"
+            ? QuickRecordingLabel(status) + "：" + (status.Health.LastError ?? status.Detail) : null;
+
     public static IReadOnlyList<string> MaintenanceRows(JsonElement status, bool details)
     {
         string? state = Text(status, "status");

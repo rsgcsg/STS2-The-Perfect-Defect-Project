@@ -1,58 +1,39 @@
 # Platform Live UI
 
-## 日常 P1 录制：从游戏内进入
+## 日常 P1 录制：打开游戏即可用
 
-人的默认入口是游戏内 **Platform → 顶栏“录制” → 项目内“录制”页**。
-**资料管理**单独浏览和导入资料；技术详情、**兼容录制窗口**及运行恢复在
-**诊断**页。顶栏**项目**回同一工作台，**兼容浏览器**是外部备选入口；
-CLI/API服务Agent和自动化。这些入口共享RecorderRuntime，不另建状态机。
+沿用户平时的 mac 启动台或 Steam 游戏库打开游戏，点屏幕上的
+**开始本人录制**。这个按钮同时明确声明由本人操作并开始 P1 录制；
+它直接映射 `RecordingApplicationService`，与 `npm run recording:p1`
+使用同一命令和准确的 runtime/session 前置条件，不依赖 Workbench 的配对。
+这是一项来源声明，不是机器验证的真人证明。AI 界面操作测试使用原 API 的
+`agent_native_ui`，不能点“开始本人录制”冒作 Human。
 
-显式打开顶栏**录制**或**项目**会通过已经安装的固定启动入口确认后台工作台，
-需要时启动同一个独立Application，然后继续游戏内页面；不会因此打开外部浏览器。
-刷新状态不会反复启动服务；**兼容浏览器**仍明确打开外部页面。
-同一已验证配对的后台刷新保留最后已确认的连接文案；首次读取或配对变化才显示
-正在读取。读取失败、未连接和过期仍显示实际原因。
+录制期间小按钮显示**正在录制**和已接受操作数；点它查看详情。顶栏
+**录制**打开同一个录制服务的控制，**项目**仍打开配对的工作台。
+录制窗口可以显式选 AI 界面/未知来源；P1 不需要兼容格式的操作者代号。
+**暂停**仅停采集，游戏继续；**继续**恢复当前会话；**结束并封存**停止
+待命并封存，只有后台 lifecycle/closeout 均为 closed 才算完成。
+收起面板不停止采集，也不重发命令。
 
-适用条件：已按[固定开发工具安装指南](../../python/docs/DEVELOPER_KIT_INSTALL.md)
-选择准确的Mod/Application组合并核实安装、装载及本机配对；页面须实际连接该
-游戏实例。以下标签对应当前UI源码；源码中的默认按钮或可用能力声明不能证明
-旧安装已升级，准确构建、装载与视觉仍须分开核验。配对或服务
-不可用时，按页面理由回原安装/`native-access`流程处理，不绕过配对、不停止他人
-服务。本段描述源码支持的操作，准确候选的build/install/load、实际点击与Human
-短录须分别验收；当前结果从[CURRENT](../../docs/memory/CURRENT.md)进入。
+每局终局由原生边界自动封存；下一局自动使用同一 P1 格式和原声明来源。
+成功开始/继续会把待命偏好写在录制根的 `recording-standby.json`，只保存
+启用与来源，不保存旧 session、动作、运行时或游戏存档。正常保存退出会
+封存当前片段；重启后按原生 Continue 或新开局时开启新的录制片段。
+退出、续玩、unknown 仍按真实边界保留，不拼造一场完整自然局。
+**暂停**或**结束并封存**会取消跨重启待命；在主菜单待命时也可以取消。
+偏好损坏会显示待命异常而不自动猜来源；明确开始可重设偏好。
+偏好保存失败时，操作结果明确说明当前录制命令已应用、重启设置未保存，
+不要重发刚才的命令。
 
-1. 在**谁在操作？**明确选择实际操作者，例如**我本人操作（本人声明）**、
-   **AI 操作游戏界面**或**不确定操作来源**；不会默选Human。录制内容默认
-   **日常录制（P1，默认）**，不要求旧兼容格式的操作者代号。点**开始录制**，
-   核页面变为**正在录制**。Human录制仍由用户亲手玩游戏；高级来源/兼容模式
-   只按服务实际提供的选项选择，不因改了显示名改变原来源语义。
-2. 需要暂停采集时用**暂停**，核状态为**已暂停**；游戏本身继续。用**继续录制**
-   恢复同一会话。刷新、关闭或重开面板只改变显示，不停止后台录制，也不重发命令。
-3. 结束时点**结束并保存**（原Close），等待**保存中，请稍等**变为**已保存**，
-   再明确选择来源开始下一次。诊断页或原API可核准确session、profile和保存健康；
-   “已保存”仍只在lifecycle和closeout均为`closed`时出现。请求返回或零错误不能
-   代替完成；下一次须是新的session，不能重复开始旧会话。
-4. 主控件下方显示同一后台的**自动整理**、**远端备份**、**本地空间周转**和
-   **录制磁盘剩余**。开启过的一次性维护配置由后台继续使用，不要求每局再点上传。
-   远端完整核验份数只统计当前保存目标的实际完整读回；它不是上传请求数。
-   容量是后台最近一次检查的录制磁盘余量，诊断页可看检查时间，缺失时显示暂不可用。
-   自动整理未启用或报错时，不能把本机“已保存”当成远端备份完成；保留原件并按
-   [原Application资料流程](../../python/docs/PROJECT_CONSOLE.md#本机资料)处理。
-5. 原件保存在本机既有录制root，准确路径、CLI与恢复方法由
-   [采集指南](../../docs/ANNOTATOR_COLLECTION.md#current-p1-daily-collection)及
-   [Annotator P1操作](../../components/annotator/README.md#p1-native-semantic-recording)
-   拥有。未启用自动整理时，保留**资料管理**中的手动恢复入口：用**刷新已结束的录制**
-   选原候选编号，再用**保存已结束的录制**进入原Store导入。核原operation结果和
-   录制artifact读回，不能只据目录出现或日常页“已保存”判定入库成功。派生、上传与用途资格沿
-   [原Application资料流程](../../python/docs/PROJECT_CONSOLE.md#本机资料)，不由GUI授予。
+录制的原件和 Close 继续归 Annotator；封存之后由既有应用维护链处理。
+**Source3/Source4**控制和资料管理/训练/模型操作仍经配对工作台。
+配对未连接时按原安装指南核对选择的工作台、Mod 和 native-access 身份，
+不放宽哈希校验、不从多个工作台中随意选一个。新 Mod、Tool、工作台和
+本机访问绑定应作为准确组合安装，不能只更新 DLL 后保留旧绑定。
 
-失败时保留当前session、原command/operation、保存错误和原件。按钮禁用先看其
-owner理由；保存health报错或记账不完整不能当成功继续批量采集。未知提交只查询
-原状态并用原恢复/Close路径，不再次点击以重投；重开面板或续配对不能清除unknown。
-卡在封存或进程中断时，按
-[原Tool恢复](../../components/annotator/README.md#recover-an-interrupted-p1-recording)
-保留可验证前缀及真实失败。确认原会话封存后才明确新建下一会话；仍有不确定性
-就保留记录，不能据新session倒推原请求成功。
+源码、构建、安装/加载、实际点选、Human 整局和训练用途分别验收。
+本轮准确对象与剩余验收见[录制稳定任务](../../docs/plans/p1-prefreeze-2026-10-18/HUMAN_RECORDING_STABILITY_20261025.zh-CN.md)。
 
 ## 兼容录制诊断与Agent Run
 
@@ -79,8 +60,8 @@ available in those details. Missing metadata stays unavailable. Canonical
 recording does not itself establish Full-Run qualification or research admission.
 
 The Recorder retains **兼容语义录制** as its original native Human capability.
-**P1 录制（工作台）** controls navigate explicitly to the paired Workbench Data page;
-active P1/Source3/Source4 lifecycle always uses that owner, regardless of profile dropdown.
+**日常 P1 录制** maps directly to the same RecordingApplicationService used by the supported CLI.
+Active Source3/Source4 lifecycle retains its paired Workbench owner regardless of the dropdown.
 The Workbench defaults to P1; the explicitly selected compatibility formats
 `native-logical-source-v3` and `native-logical-source-v4` retain their own semantics
 (Source4 retains the public basis for offline P1 conversion). For these Source

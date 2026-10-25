@@ -66,6 +66,41 @@ public sealed class PlatformRecordingCommandsTests
     }
 
     [Theory]
+    [InlineData("declared_human")]
+    [InlineData("agent_native_ui")]
+    [InlineData("unknown")]
+    public void NativeButtonAndHttpStartProduceTheSameApplicationCommand(string origin)
+    {
+        var http = Read(P1Request(origin: origin));
+        var native = PlatformRecordingCommands.ForP1Status(Status(), RecordingCommandKind.StartNewSession,
+            http.Command.CommandId, origin);
+        Assert.Equal(http.Command, native);
+        string? expectedSession = "not-called";
+        RecordingCommand? applied = null;
+        var result = PlatformRecordingCommands.Execute(new("game-1", null, native), () => "game-1",
+            () => Status(P1NativeRecordingContract.ProfileId), (command, session) => {
+                applied = command; expectedSession = session;
+                return new(true, false, "session_started", "started", Status().Lifecycle);
+            });
+        Assert.True(result.Accepted);
+        Assert.Equal(http.Command, applied);
+        Assert.Null(expectedSession);
+    }
+
+    [Fact]
+    public void P1ButtonsDoNotDefaultAnOriginOrControlAnActiveSourceFormat()
+    {
+        Assert.Throws<ArgumentException>(() => PlatformRecordingCommands.ForP1Status(Status(),
+            RecordingCommandKind.StartNewSession, Guid.NewGuid().ToString("D")));
+        Assert.Throws<ArgumentException>(() => PlatformRecordingCommands.ForP1Status(Status(SourceSessionContractV3.ProfileId),
+            RecordingCommandKind.Close, Guid.NewGuid().ToString("D")));
+        var resume = PlatformRecordingCommands.ForP1Status(Status(P1NativeRecordingContract.ProfileId),
+            RecordingCommandKind.Resume, Guid.NewGuid().ToString("D"));
+        Assert.Null(resume.P1NativeOrigin);
+        Assert.Null(resume.CaptureProfileId);
+    }
+
+    [Theory]
     [InlineData(null)]
     [InlineData("human")]
     public void P1NativeStartRequiresARecognizedOrigin(string? origin) =>

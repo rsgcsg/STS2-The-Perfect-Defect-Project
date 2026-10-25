@@ -161,6 +161,7 @@ internal sealed class PlatformLivePanel : IDisposable
     private PanelContainer _workspace = null!;
     private Control _workspaceSurface = null!;
     private Button _launcher = null!;
+    private Button _quickRecording = null!;
     private Control _normalView = null!;
     private Control _compactView = null!;
     private Label _compactSummary = null!;
@@ -304,6 +305,11 @@ internal sealed class PlatformLivePanel : IDisposable
         _launcher.Position = new Vector2(12, 12);
         _launcher.CustomMinimumSize = new Vector2(102, 32);
         Root.AddChild(_launcher);
+        _quickRecording = BuildHeaderButton("开始本人录制", StartDailyRecording,
+            "声明本局由本人操作并开始 P1 录制；按局自动封存。录制不依赖工作台连接。");
+        _quickRecording.Name = "P1RecordingLauncher";
+        _quickRecording.Position = new Vector2(122, 12);
+        Root.AddChild(_quickRecording);
         _workspace = new PanelContainer
         {
             Position = _layout.WorkspacePosition,
@@ -370,7 +376,7 @@ internal sealed class PlatformLivePanel : IDisposable
         titleRow.AddChild(_workspaceTitle);
         _workbenchButton = BuildHeaderButton("项目", () => { SelectSurface(2); BeginOpenWorkbench(false); }, "Open the native project Workbench.");
         titleRow.AddChild(_workbenchButton);
-        titleRow.AddChild(BuildHeaderButton("录制", () => OpenNativeWorkbenchPage("data"), "开始、查看和封存当前 P1 录制。"));
+        titleRow.AddChild(BuildHeaderButton("录制", () => SelectSurface(1), "查看同一录制服务的状态与控制。"));
         _externalWorkbenchButton = BuildHeaderButton("兼容浏览器", BeginOpenWorkbench, "Open the registered legacy compatibility browser service.");
         titleRow.AddChild(_externalWorkbenchButton);
         titleRow.AddChild(BuildHeaderButton("缩小", MinimizePanel, "Keep a small live view during play."));
@@ -682,7 +688,7 @@ internal sealed class PlatformLivePanel : IDisposable
         var declaration = new HBoxContainer { MouseFilter = MouseFilterEnum.Stop };
         _recordingProfile = new OptionButton();
         _recordingProfile.AddItem("兼容语义录制", 0);
-        _recordingProfile.AddItem("P1 录制（工作台）", 1);
+        _recordingProfile.AddItem("日常 P1 录制", 1);
         _recordingProfile.Selected = 1;
         declaration.AddChild(_recordingProfile);
         _recordingSourceKind = new OptionButton();
@@ -691,6 +697,7 @@ internal sealed class PlatformLivePanel : IDisposable
         _recordingSourceKind.AddItem("AI 界面操作", 2);
         _recordingSourceKind.AddItem("Agent 协议", 3);
         _recordingSourceKind.AddItem("未知来源", 4);
+        _recordingSourceKind.Selected = 1;
         declaration.AddChild(_recordingSourceKind);
         _recordingActor = new LineEdit { PlaceholderText = "操作者 ID（字母、数字、_、-、.）", MaxLength = 128,
             SizeFlagsHorizontal = SizeFlags.ExpandFill };
@@ -1016,6 +1023,7 @@ internal sealed class PlatformLivePanel : IDisposable
     {
         bool workspaceVisible = _workspace.Visible;
         _launcher.Visible = !workspaceVisible;
+        _quickRecording.Visible = !workspaceVisible;
         _normalView.Visible = !_layout.Compact;
         _compactView.Visible = _layout.Compact;
         _resizeHandle.Visible = !_layout.Compact;
@@ -1096,23 +1104,45 @@ internal sealed class PlatformLivePanel : IDisposable
         return MakePanelStyle(background, border, 8, 1, 4);
     }
 
-    private void ApplyRecordingCommand(STS2HumanAnnotator.Core.RecordingCommandKind kind)
+    private void StartDailyRecording()
+    {
+        var status = STS2HumanAnnotator.Mod.RecordingApplicationService.Instance.QueryStatus();
+        if (PlatformNativeRecordingPresentation.PersistenceFailure(status) != null)
+        { ShowPanel(); SelectSurface(1); return; }
+        bool inactive = status.Lifecycle.State is STS2HumanAnnotator.Core.RecordingLifecycleState.Ready
+            or STS2HumanAnnotator.Core.RecordingLifecycleState.Closed;
+        if (inactive && status.Continuous?.Armed != true)
+        {
+            _recordingProfile.Selected = 1;
+            ApplyRecordingCommand(STS2HumanAnnotator.Core.RecordingCommandKind.StartNewSession, "declared_human");
+        }
+        else if (status.Lifecycle.State == STS2HumanAnnotator.Core.RecordingLifecycleState.Paused
+            && status.Session?.CaptureProfileId == STS2HumanAnnotator.Core.P1NativeRecordingContract.ProfileId)
+            ApplyRecordingCommand(STS2HumanAnnotator.Core.RecordingCommandKind.Resume);
+        else { ShowPanel(); SelectSurface(1); }
+    }
+
+    private void ApplyRecordingCommand(STS2HumanAnnotator.Core.RecordingCommandKind kind, string? dailyOrigin = null)
     {
         try
         {
             var owner = STS2HumanAnnotator.Mod.RecordingApplicationService.Instance;
             var before = owner.QueryStatus();
-            bool sourceStart = kind == STS2HumanAnnotator.Core.RecordingCommandKind.StartNewSession && _recordingProfile.Selected == 1;
+            bool p1Start = kind == STS2HumanAnnotator.Core.RecordingCommandKind.StartNewSession && _recordingProfile.Selected == 1;
             bool activeSource = before.Session?.CaptureProfileId is STS2HumanAnnotator.Core.SourceSessionContractV3.ProfileId
-                or STS2HumanAnnotator.Core.SourceSessionContractV4.ProfileId
-                or STS2HumanAnnotator.Core.P1NativeRecordingContract.ProfileId;
+                or STS2HumanAnnotator.Core.SourceSessionContractV4.ProfileId;
+            bool activeP1 = before.Session?.CaptureProfileId == STS2HumanAnnotator.Core.P1NativeRecordingContract.ProfileId;
             bool inactive = before.Lifecycle.State is STS2HumanAnnotator.Core.RecordingLifecycleState.Ready or STS2HumanAnnotator.Core.RecordingLifecycleState.Closed;
-            if (sourceStart || (activeSource && (kind != STS2HumanAnnotator.Core.RecordingCommandKind.StartNewSession || !inactive)))
+            if (activeSource && (kind != STS2HumanAnnotator.Core.RecordingCommandKind.StartNewSession || !inactive))
             { OpenNativeWorkbenchPage("data"); return; }
-            var declaration = sourceStart || kind == STS2HumanAnnotator.Core.RecordingCommandKind.ChangeSource
+            var declaration = kind == STS2HumanAnnotator.Core.RecordingCommandKind.ChangeSource
                 ? ReadSourceDeclaration() : null;
-            var command = PlatformRecordingCommands.ForStatus(before, kind, Guid.NewGuid().ToString("D"),
-                sourceStart ? STS2HumanAnnotator.Core.SourceSessionContractV3.ProfileId : null, declaration);
+            string? origin = p1Start ? dailyOrigin ?? (_recordingSourceKind.Selected switch {
+                1 => "declared_human", 2 => "agent_native_ui", 4 => "unknown",
+                _ => throw new ArgumentException("p1_native_profile_and_origin_required") }) : null;
+            var command = p1Start || activeP1 && kind != STS2HumanAnnotator.Core.RecordingCommandKind.StartNewSession
+                ? PlatformRecordingCommands.ForP1Status(before, kind, Guid.NewGuid().ToString("D"), origin)
+                : PlatformRecordingCommands.ForStatus(before, kind, Guid.NewGuid().ToString("D"), declaration: declaration);
             string runtime = STS2Connector.PlayerEnvironment.PlayerEnvironmentService.GetPlayerEnvironmentControlSnapshot().RuntimeInstanceId;
             var result = PlatformRecordingCommands.Execute(new(runtime, before.Lifecycle.SessionId, command),
                 () => STS2Connector.PlayerEnvironment.PlayerEnvironmentService.GetPlayerEnvironmentControlSnapshot().RuntimeInstanceId,
@@ -1124,13 +1154,20 @@ internal sealed class PlatformLivePanel : IDisposable
                 STS2HumanAnnotator.Core.RecordingCommandKind.ChangeSource => "来源声明已更新。",
                 _ => result.Status.RecordingLifecycle == "closed" ? "录制已结束。" : "录制正在封存；请等待实际完成。"
             } : "录制操作被拒绝：" + result.Code;
+            if (result.Code == "recording_standby_stopped") _command.Text = "自动录制待命已停止。";
+            if (result.Code == "recording_standby_save_failed")
+                _command.Text += " 重启待命设置保存失败，请先查看录制状态；不要重发刚才的操作。";
             PushToast($"recording.{kind}", _command.Text);
             var authoritative = owner.QueryStatus();
             RefreshActionFeed(authoritative);
             ApplyRecordingAvailability(authoritative);
+            if (dailyOrigin != null && !result.Accepted) { ShowPanel(); SelectSurface(1); }
         }
         catch (Exception error) when (error is ArgumentException or InvalidDataException or InvalidOperationException)
-        { _command.Text = "录制操作未确认：" + PlatformRecordingCommands.PublicCode(error.Message, "source_declaration_required"); }
+        {
+            _command.Text = "录制操作未确认：" + PlatformRecordingCommands.PublicCode(error.Message, "source_declaration_required");
+            if (dailyOrigin != null) { ShowPanel(); SelectSurface(1); }
+        }
     }
 
     private STS2HumanAnnotator.Core.SourceDeclaration ReadSourceDeclaration()
@@ -1159,7 +1196,15 @@ internal sealed class PlatformLivePanel : IDisposable
             ApplyRecordingAvailability(STS2HumanAnnotator.Mod.RecordingApplicationService.Instance.QueryStatus());
     }
 
-    private void OnPollTimeout() => RefreshVisibleStatus();
+    private void OnPollTimeout()
+    {
+        if (_disposed) return;
+        // The small recording button remains visible while the workspace is closed.
+        // This is an in-process status read, with no Connector capture or HTTP polling.
+        if (!_workspace.Visible)
+            ApplyQuickRecordingStatus(STS2HumanAnnotator.Mod.RecordingApplicationService.Instance.QueryStatus());
+        RefreshVisibleStatus();
+    }
 
     private void RefreshVisibleStatus()
     {
@@ -1361,19 +1406,34 @@ internal sealed class PlatformLivePanel : IDisposable
         STS2HumanAnnotator.Core.RecordingLifecycleState state = recording.Lifecycle.State;
         bool inactive = state is STS2HumanAnnotator.Core.RecordingLifecycleState.Ready or STS2HumanAnnotator.Core.RecordingLifecycleState.Closed;
         bool isSource = recording.SourceV2 is not null || recording.Source is not null;
-        bool sourceControls = (inactive && _recordingProfile.Selected == 1)
-            || recording.Session?.CaptureProfileId is STS2HumanAnnotator.Core.SourceSessionContractV3.ProfileId
-                or STS2HumanAnnotator.Core.SourceSessionContractV4.ProfileId
-                or STS2HumanAnnotator.Core.P1NativeRecordingContract.ProfileId;
-        bool sourceFields = !sourceControls && ((inactive && _recordingProfile.Selected == 1) || (!inactive && isSource));
+        bool p1 = recording.Session?.CaptureProfileId == STS2HumanAnnotator.Core.P1NativeRecordingContract.ProfileId;
+        bool p1Start = inactive && _recordingProfile.Selected == 1;
+        bool sourceControls = recording.Session?.CaptureProfileId is STS2HumanAnnotator.Core.SourceSessionContractV3.ProfileId
+            or STS2HumanAnnotator.Core.SourceSessionContractV4.ProfileId;
+        bool sourceFields = p1Start || !inactive && isSource;
         _recordingProfile.Disabled = !inactive;
-        _recordingSourceKind.Visible = _recordingActor.Visible = sourceFields;
-        _sourceDeclarationNotice.Visible = sourceFields || sourceControls;
+        _recordingSourceKind.Visible = sourceFields;
+        _recordingActor.Visible = sourceFields && !p1Start && !p1;
+        _sourceDeclarationNotice.Visible = sourceFields || sourceControls || p1;
         _recordingSourceKind.Disabled = !inactive && state != STS2HumanAnnotator.Core.RecordingLifecycleState.Paused;
         _recordingActor.Editable = !_recordingSourceKind.Disabled;
         var sourceDeclaration = recording.SourceV2?.Declaration ?? recording.Source?.Declaration;
-        _sourceDeclarationNotice.Text = (sourceControls ? "P1 / Source3 / Source4 录制在工作台录制页操作。" : "") + "来源仅由操作员声明，不是机器验证的真人证明。"
+        _sourceDeclarationNotice.Text = (sourceControls ? "Source3 / Source4 录制在工作台录制页操作。" : "") + "来源由所按按钮明确声明。自动逐局封存，保存退出后续玩另开片段。"
             + (isSource && sourceDeclaration is not null ? $" 当前：{SourceKindLabel(sourceDeclaration.SourceKind)} · {sourceDeclaration.ActorId}" : "");
+        ApplyQuickRecordingStatus(recording);
+        if (p1)
+        {
+            string health = $"已接受 {recording.Counters.Records} 次操作 · 保存 {recording.Health.Append}/{recording.Health.Disk}";
+            _recorderHealth.Text = health;
+            _recorderCountScope.Text = $"P1 原始操作计数；不是派生样本数。\n{recording.Detail}";
+            _actionFeedList.Visible = false;
+            _decisionInspector.Visible = false;
+            if (_layout.ActiveSurface == "human_recorder") _compactRecent.Text = health;
+        }
+        if (recording.Blockers.Any(value => value.StartsWith("recording_standby_", StringComparison.Ordinal)))
+            _recorderHealth.Text += " · 重启待命设置异常，请查看详情";
+        if (PlatformNativeRecordingPresentation.PersistenceFailure(recording) is string failure)
+            _recorderHealth.Text = failure;
         if (isSource)
         {
             long observations = recording.SourceV2?.Observations ?? recording.Source!.Observations;
@@ -1393,10 +1453,10 @@ internal sealed class PlatformLivePanel : IDisposable
             }
             _decisionInspector.Visible = false;
         }
-        _actionFeedList.Visible = !isSource;
+        _actionFeedList.Visible = !isSource && !p1;
         _recordingButtons[STS2HumanAnnotator.Core.RecordingCommandKind.StartNewSession].Disabled =
             recording.Continuous?.Armed == true || !inactive
-                || (_recordingProfile.Selected == 1 && !sourceControls && !HasSourceDeclaration());
+                || (p1Start && _recordingSourceKind.Selected is not (1 or 2 or 4));
         _recordingButtons[STS2HumanAnnotator.Core.RecordingCommandKind.Pause].Disabled =
             state != STS2HumanAnnotator.Core.RecordingLifecycleState.Recording;
         _recordingButtons[STS2HumanAnnotator.Core.RecordingCommandKind.Resume].Disabled =
@@ -1408,13 +1468,23 @@ internal sealed class PlatformLivePanel : IDisposable
             !isSource || state != STS2HumanAnnotator.Core.RecordingLifecycleState.Paused || (!sourceControls && !HasSourceDeclaration());
         foreach (var entry in _recordingButtons)
         {
-            bool navigate = sourceControls && (entry.Key != STS2HumanAnnotator.Core.RecordingCommandKind.StartNewSession || _recordingProfile.Selected == 1 || !inactive);
+            bool navigate = sourceControls && (entry.Key != STS2HumanAnnotator.Core.RecordingCommandKind.StartNewSession || !inactive);
             string label = entry.Key switch { STS2HumanAnnotator.Core.RecordingCommandKind.StartNewSession => "开始录制",
                 STS2HumanAnnotator.Core.RecordingCommandKind.Pause => "暂停", STS2HumanAnnotator.Core.RecordingCommandKind.Resume => "继续",
                 STS2HumanAnnotator.Core.RecordingCommandKind.ChangeSource => "更改来源", _ => "结束并封存" };
+            if (p1Start && entry.Key == STS2HumanAnnotator.Core.RecordingCommandKind.StartNewSession)
+                label = _recordingSourceKind.Selected switch { 1 => "开始本人录制", 2 => "开始 AI 界面录制", 4 => "开始未知来源录制", _ => "请选择来源" };
             entry.Value.Text = navigate ? "在工作台" + label : label;
         }
 
+    }
+
+    private void ApplyQuickRecordingStatus(STS2HumanAnnotator.Core.RecordingApplicationStatus recording)
+    {
+        _quickRecording.Text = PlatformNativeRecordingPresentation.QuickRecordingLabel(recording);
+        _quickRecording.TooltipText = recording.Blockers.Any(value => value.StartsWith("recording_standby_", StringComparison.Ordinal))
+            ? "重启待命设置异常，请打开录制详情。当前录制按实际状态显示；不要重发未知命令。"
+            : "本人开始按钮明确声明由本人操作；录制状态和封存由同一后台服务提供。";
     }
 
     private void RefreshActionFeed(

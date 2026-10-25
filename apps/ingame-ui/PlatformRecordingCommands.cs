@@ -224,6 +224,23 @@ public static class PlatformRecordingCommands
                 ? status.SourceV2?.SegmentId ?? status.Source?.SegmentId : null
         };
 
+    /// <summary>The native P1 buttons and HTTP client map to the same recording application command.</summary>
+    public static RecordingCommand ForP1Status(RecordingApplicationStatus status, RecordingCommandKind kind,
+        string commandId, string? startOrigin = null)
+    {
+        if (kind == RecordingCommandKind.StartNewSession)
+        {
+            if (startOrigin is not ("declared_human" or "agent_native_ui" or "unknown"))
+                throw new ArgumentException("p1_native_profile_and_origin_required");
+        }
+        else if (startOrigin != null || status.Session?.CaptureProfileId != P1NativeRecordingContract.ProfileId
+            || kind is not (RecordingCommandKind.Pause or RecordingCommandKind.Resume
+                or RecordingCommandKind.Close or RecordingCommandKind.ExportP1NativePrefix))
+            throw new ArgumentException("p1_native_command_fields_not_applicable");
+        return ForStatus(status, kind, commandId, P1NativeRecordingContract.ProfileId)
+            with { P1NativeOrigin = startOrigin };
+    }
+
     // Never include arbitrary owner exception text or local paths in public operational views.
     public static string PublicCode(string? value, string fallback = "recording_unavailable") =>
         value is { Length: > 0 and <= 96 } && value.All(c => c is >= 'a' and <= 'z' or >= '0' and <= '9' or '_')
