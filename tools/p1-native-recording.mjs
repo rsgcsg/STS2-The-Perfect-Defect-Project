@@ -44,7 +44,9 @@ export class P1NativeRecordingClient {
     const before = await this.status(runtimeInstanceId);
     if (before.recording_session_id !== sessionId)
       throw new RecordingOperationError('recording_session_changed', 'not_sent', before);
-    if (kind !== 'start_new_session' && before.capture_profile_id !== profile)
+    const stopStandby = kind === 'close' && before.recording_lifecycle === 'ready'
+      && before.recording_session_id === null;
+    if (kind !== 'start_new_session' && before.capture_profile_id !== profile && !stopStandby)
       throw new RecordingOperationError('p1_recording_session_required', 'not_sent', before);
     // Consume the existing status/bound contract. There is no "validate" setup command.
     const setup = await this.setup('status', setupOptions);

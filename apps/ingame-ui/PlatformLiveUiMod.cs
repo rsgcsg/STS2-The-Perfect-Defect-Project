@@ -1107,6 +1107,8 @@ internal sealed class PlatformLivePanel : IDisposable
     private void StartDailyRecording()
     {
         var status = STS2HumanAnnotator.Mod.RecordingApplicationService.Instance.QueryStatus();
+        if (PlatformNativeRecordingPresentation.PersistenceFailure(status) != null)
+        { ShowPanel(); SelectSurface(1); return; }
         bool inactive = status.Lifecycle.State is STS2HumanAnnotator.Core.RecordingLifecycleState.Ready
             or STS2HumanAnnotator.Core.RecordingLifecycleState.Closed;
         if (inactive && status.Continuous?.Armed != true)
@@ -1430,6 +1432,8 @@ internal sealed class PlatformLivePanel : IDisposable
         }
         if (recording.Blockers.Any(value => value.StartsWith("recording_standby_", StringComparison.Ordinal)))
             _recorderHealth.Text += " · 重启待命设置异常，请查看详情";
+        if (PlatformNativeRecordingPresentation.PersistenceFailure(recording) is string failure)
+            _recorderHealth.Text = failure;
         if (isSource)
         {
             long observations = recording.SourceV2?.Observations ?? recording.Source!.Observations;
@@ -1477,16 +1481,7 @@ internal sealed class PlatformLivePanel : IDisposable
 
     private void ApplyQuickRecordingStatus(STS2HumanAnnotator.Core.RecordingApplicationStatus recording)
     {
-        bool p1 = recording.Session?.CaptureProfileId == STS2HumanAnnotator.Core.P1NativeRecordingContract.ProfileId;
-        _quickRecording.Text = recording.Lifecycle.State switch {
-            STS2HumanAnnotator.Core.RecordingLifecycleState.Recording => $"正在录制 · {recording.Counters.Records} 次操作",
-            STS2HumanAnnotator.Core.RecordingLifecycleState.Paused => p1 ? "继续录制" : "查看录制",
-            STS2HumanAnnotator.Core.RecordingLifecycleState.Closing => "正在封存 · 查看",
-            _ => recording.Continuous?.Armed == true ? "录制待命 · 查看" : "开始本人录制"
-        };
-        if (recording.Lifecycle.State == STS2HumanAnnotator.Core.RecordingLifecycleState.Recording
-            && (recording.Health.Append == "failed" || recording.Health.Disk == "failed"))
-            _quickRecording.Text = "录制保存异常 · 查看";
+        _quickRecording.Text = PlatformNativeRecordingPresentation.QuickRecordingLabel(recording);
         _quickRecording.TooltipText = recording.Blockers.Any(value => value.StartsWith("recording_standby_", StringComparison.Ordinal))
             ? "重启待命设置异常，请打开录制详情。当前录制按实际状态显示；不要重发未知命令。"
             : "本人开始按钮明确声明由本人操作；录制状态和封存由同一后台服务提供。";

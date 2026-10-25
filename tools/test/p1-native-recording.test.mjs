@@ -45,6 +45,26 @@ test('prefix and pending close retain the exact owner result without automatic p
   }
 });
 
+test('CLI can cancel restored standby before a native run without weakening session or setup binding', async () => {
+  const current = { ...status(), recording_lifecycle: 'ready', recording_session_id: null, capture_profile_id: null };
+  const f = fixture({ current });
+  const result = await f.client.command({ ...f.request, kind: 'close', origin: null, sessionId: null }, f.retain);
+  assert.equal(result.delivery, 'accepted');
+  const posts = f.calls.filter(call => call.method === 'POST');
+  assert.equal(posts.length, 1);
+  const request = JSON.parse(posts[0].body);
+  assert.equal(request.recording_session_id, null);
+  assert.equal(request.runtime_instance_id, 'runtime-one');
+  assert.equal(request.command.capture_profile_id, null);
+  assert.equal(request.command.p1_native_origin, null);
+  for (const kind of ['pause', 'resume', 'export_p1_native_prefix']) {
+    const other = fixture({ current });
+    await assert.rejects(other.client.command({ ...other.request, kind, origin: null, sessionId: null }, other.retain),
+      error => error.code === 'p1_recording_session_required');
+    assert.equal(other.calls.filter(call => call.method === 'POST').length, 0);
+  }
+});
+
 test('wrong runtime, session, profile and blocked setup stop before any POST', async () => {
   for (const change of ['runtime', 'session', 'profile', 'setup', 'setup-runtime']) {
     const current = status(), bound = setup();
