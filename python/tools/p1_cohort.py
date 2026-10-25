@@ -19,6 +19,31 @@ from spireagent.workbench.service_process import cloud_environment
 from stpd.p1.cohort import inspect_cohort
 
 
+def selection_ids(store, request, discovered) -> list[str]:
+    ids = request.get("projection_ids")
+    if ids is None:
+        tools = request.get("tool_release_ids")
+        if not isinstance(tools, list) or not tools or any(not isinstance(t, str) for t in tools):
+            raise BoundaryError("p1_cohort", "explicit_projection_versions_required")
+        ids = [r["projection_id"] for r in discovered
+               if r["tool_release_id"] in tools and r["revision"] == "r1.5"
+               and r["declared_origin"] == "declared_human"]
+    elif request.get("new_source_tool_release_ids") is not None:
+        tools = request["new_source_tool_release_ids"]
+        if not isinstance(tools, list) or not tools or any(not isinstance(t, str) for t in tools):
+            raise BoundaryError("p1_cohort", "explicit_new_source_tool_versions_required")
+        anchored = {store.get_manifest(identity).parent("source") for identity in ids}
+        fresh: dict[str, list[str]] = {}
+        for row in discovered:
+            if (row["source_id"] not in anchored and row["tool_release_id"] in tools
+                    and row["revision"] == "r1.5" and row["declared_origin"] == "declared_human"):
+                fresh.setdefault(row["source_id"], []).append(row["projection_id"])
+        if any(len(versions) != 1 for versions in fresh.values()):
+            raise BoundaryError("p1_cohort", "new_source_projection_version_ambiguous")
+        ids = [*ids, *(versions[0] for _, versions in sorted(fresh.items()))]
+    return ids
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, required=True)
@@ -42,20 +67,20 @@ def main() -> None:
     store = ManifestArtifactStore(LocalBlobStore(owner.store_dir, create=False, readonly=True))
     request = json.loads(args.selection.read_text())
     request = request.get("selection", request)
-    ids = request.get("projection_ids")
-    if ids is None:
-        tools = request.get("tool_release_ids")
-        if not isinstance(tools, list) or not tools or any(not isinstance(t, str) for t in tools):
-            raise BoundaryError("p1_cohort", "explicit_projection_versions_required")
-        ids = [r["projection_id"] for r in discover_p1_projections(store)
-               if r["tool_release_id"] in tools and r["revision"] == "r1.5"
-               and r["declared_origin"] == "declared_human"]
+    ids = selection_ids(store, request, discover_p1_projections(store))
     result = inspect_cohort(store, owner.ledger, ids,
                             selected_decisions=request.get("selected_decisions"),
                             split_salt=request.get("split_salt", "p1-next-training-20261025-v1"),
                             holdout_targets=(json.loads(args.holdout_targets.read_text())
                                              if args.holdout_targets else None))
     result["source_catalog"] = query_p1_sources(store)
+    selected_sources = {row["source_id"] for row in result["index"]["sources"]}
+    result["pending_sources"] = [
+        {"source_id": row["artifact_id"], "session_id": row["session_id"],
+         "reason": "no_projection" if not row["projections"] else "projection_version_not_selected"}
+        for row in result["source_catalog"]
+        if row["declared_origin"] == "declared_human" and row["artifact_id"] not in selected_sources
+    ]
     args.output.mkdir(parents=True, exist_ok=False)
     for name, body in result.items():
         (args.output / (name + ".json")).write_text(

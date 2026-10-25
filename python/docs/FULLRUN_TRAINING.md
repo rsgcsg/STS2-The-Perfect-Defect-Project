@@ -208,3 +208,14 @@ exact same plan to the training preparation owner. Do not silently refit
 vocabulary/tokenizer from DEV/TEST. Current M-std public run `ascension` is a
 numeric InputSpec field; TRAIN-only symbolic vocabularies still limit other
 characters, and this workflow does not repair that limitation.
+
+For repeated batches, the selection can also contain the frozen
+`projection_ids` plus `new_source_tool_release_ids:["REVIEWED_TOOL_ID"]`.
+Previously selected originals keep their exact version; newly discovered originals
+are added only when exactly one r1.5 Human projection matches the reviewed Tool
+set. Multiple matching versions stop with `new_source_projection_version_ambiguous`.
+Originals without a selected/reviewed projection remain in `pending_sources.json`
+with a reason, so a rerun cannot silently claim that eight new raw sessions added
+eight usable runs. Review a genuinely new conversion Tool once before adding its
+ID to this explicit policy. The same per-batch native start/end, gap, provenance,
+whole-group and exposure constraints remain in effect.

@@ -168,3 +168,37 @@ def test_unknown_only_train_can_compare_with_zero_baseline(tmp_path):
     plan = cohort_plan(index, facts, allocation)
     assert plan["TRAIN_component_shares"]["unknown_outcome"]["weighted_share"] == 1
     assert plan["TRAIN_component_shares"]["unknown_outcome"]["baseline2_weighted_share"] is None
+
+
+def test_refresh_keeps_anchor_versions_and_rejects_ambiguous_new_source(tmp_path):
+    from dataclasses import replace
+
+    from test_p1_snapshot import projection_fixture
+
+    from spireagent.json_boundary import FrozenObject
+    from spireagent.workbench.p1_data_preparation import discover_p1_projections
+    from tools.p1_cohort import selection_ids
+
+    _, store, originals = workspace(tmp_path)
+    projections = []
+    for name, original_projection in zip(("a", "b", "c"), originals, strict=True):
+        original_source = store.get_manifest(original_projection.parent("source"))
+        human = replace(original_source, parameters=FrozenObject.of({
+            **original_source.parameters.value(), "declared_origin": "declared_human"}))
+        store.publish(human)
+        projections.append(projection_fixture(store, name, original=human)[0])
+    anchor = projections[0].artifact_id
+    request = {"projection_ids": [anchor], "new_source_tool_release_ids": ["tool-release-fixture"]}
+    assert set(selection_ids(store, request, discover_p1_projections(store))) == {
+        p.artifact_id for p in projections}
+    # A second version of an anchored source cannot replace the selected version.
+    alias = replace(projections[0], parameters=FrozenObject.of({
+        **projections[0].parameters.value(), "conversion_variant": "other"}))
+    store.publish(alias)
+    assert alias.artifact_id not in selection_ids(store, request, discover_p1_projections(store))
+    # Two reviewed versions of a fresh source require an explicit operator choice.
+    alias = replace(projections[1], parameters=FrozenObject.of({
+        **projections[1].parameters.value(), "conversion_variant": "other"}))
+    store.publish(alias)
+    with pytest.raises(BoundaryError, match="new_source_projection_version_ambiguous"):
+        selection_ids(store, request, discover_p1_projections(store))
