@@ -69,3 +69,22 @@ Defect-list entry: online chain Connector -> P1 shared reducer; first known
 observed occurrence 2026-10-23 random GUI run, repeated 2026-10-25 evaluation
 slot 35; blocks Agent progress at the starting bundle page; repair the bundle
 DTO admission and existing forward selector mapping; regression is linked above.
+
+## First native validation and preview conformance correction
+
+The independent checkpoint-876/fifth-seed repair run on Runtime rc.44/SDK rc.13
+passed the two-pack choosing page, selected and confirmed its preview, continued
+to floor 9, and recorded public `game_over.context.result=loss`. All 88 reduced
+observations were complete; all 92 native deliveries were delivered, with no
+taint, pending request or Human handoff. Its typed original was sealed and fully
+read back from R2. It remains excluded from the original evaluation ledger.
+
+Those exact preview bytes exposed a fixture-conformance error: the real native
+referent role is `selected_bundle`, while the synthetic preview fixture had used
+`bundle`. The first candidate therefore used the existing `selector.confirm`
+fallback. The corrected mapping binds that real role to the already-declared
+`selector.finish`. Local replay of the sealed native preview proves one complete
+finish choice, the same exact native confirmation action, and the same excluded
+return. The fixture now mirrors the actual producer role. SDK rc.14/Runtime
+rc.45 are a separate immutable delivery, preserving rc.13/rc.44 evidence rather
+than relabeling it as a later candidate's live qualification.

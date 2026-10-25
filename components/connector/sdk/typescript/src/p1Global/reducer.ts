@@ -179,6 +179,7 @@ const KIND_TABLE: Readonly<Record<string, string>> = {
   "card_selection|cancel|": "selector.cancel",
   "card_bundle_selection|select|bundle": "selector.choose",
   "card_bundle_selection|confirm|bundle": "selector.finish",
+  "card_bundle_selection|confirm|selected_bundle": "selector.finish",
   "combat_hand_card_selection|select|card": "selector.choose",
   "combat_hand_card_selection|deselect|card": "selector.deselect",
   "combat_hand_card_selection|confirm|": "selector.confirm",

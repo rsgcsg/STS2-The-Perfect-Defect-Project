@@ -52,6 +52,8 @@ preview's return under the existing append-only rule. Confirmation remains an
 explicit current native action, not an inferred automatic input. Regress both
 stages and malformed content in `p1GlobalBundleSelector.test.ts`; use the sealed
 original basis for local incident verification, never commit raw recordings.
+The native preview referent role is `selected_bundle` (the choosing page uses
+`bundle`); the confirmation mapping must cover that actual serialized role.
 
 ## Current Production Path
 

@@ -22,7 +22,8 @@ function basis(stage: "choosing" | "preview" = "choosing"): any {
     ancient: true, in_dialogue: false } };
   b.snapshot.reads = b.snapshot.reads.filter((r: any) => r.kind !== "combat_piles");
   b.reads = b.reads.filter((r: any) => r.kind !== "combat_piles");
-  b.snapshot.referents.push(...surface.bundles.map(pack => ({ referent_id: pack!.entity_id, kind: "entity", role: "bundle",
+  b.snapshot.referents.push(...surface.bundles.map(pack => ({ referent_id: pack!.entity_id, kind: "entity",
+    role: stage === "preview" ? "selected_bundle" : "bundle",
     label: "Visible bundle", state: { visible: true, observation_basis: "native_visible_fact" },
     properties_schema: "sts2.player-environment/referent/bundle-1", properties: pack })));
   const action = b.snapshot.bound_actions.actions[0];
