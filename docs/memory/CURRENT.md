@@ -8,7 +8,7 @@ Resolve live GitHub refs before relying on this snapshot. 最新用户原话和�
 
 用户10-25常设授权适用于本卡：必跑检查全过、CI全绿、讨论已解决且不改合同/删独有数据后，可自行普通merge进develop并报告提交号。main、新任务、追加预算、合同含义、付费训练等第三档仍问用户。开发累计4小时，先前文档段约6分钟已花；CI/批准/游戏等待另计，45分钟/2小时复盘，不因续接重置。依赖等待设闹钟，不提前收口。
 
-源码分支codex/evaluation-ledger-20261025基于develop `6808583f`（PR236已普通合并）。当前做账本、显式unknown封存/无占用确认和正常R2恢复后的副本冷却；代码检查/CI/合入、App升级、实际25封存和75局均未完成。现有真实评估App仍来自干净84ee，Runtime43/Evidence36/Native rc63与七个模型固定；新App只在合入后正常升级。不得把候选源码或测试标成已安装/已运行。
+PR237已普通合并为`b62310da`；同版App已正常安装并通过doctor，Runtime43/Evidence36/Native rc63与七模型未变。原矩阵已导入为24负＋1unknown＋75未开。首次25封存被拒绝且未重发：ENOSPC使原关闭收据只留旧App内存，落盘仍closing。root在独立codex/eval-restart-unknown-20261025修复封存前提：现场证明driver/Actor/worker/游戏/句柄/endpoint均不占用，缺失的历史关闭事实保持unknown；候选尚未合入/安装。新App和原状态继续保留；25尚未放行，75局未开。
 
 原输入及收据位于`/Users/fire/Documents/Codex/2026-10-24/checkpoint-evaluation-replay/`的CURRENT、FINAL-DELIVERY、matrix与R2-RECORDING-INDEX。原文件和失败字节只读，新账本不更换原project.json/state。新unknown停队列；不自动重试、清状态、绕过占用/落盘检查、改Runtime/Native/模型、读凭据或碰磁盘卡目录。评估与重测试串行。
 
