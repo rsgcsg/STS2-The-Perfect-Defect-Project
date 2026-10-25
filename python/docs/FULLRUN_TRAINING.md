@@ -210,7 +210,8 @@ python -m spireagent.workbench training start --execution remote \
   --configuration-id CONFIG_ID --output /ABS/new-package.json --wait-seconds 900
 ```
 
-读取Q同一schema、配置ID及snapshot_id；已有snapshot_id不另freeze，当前切分/用途/曝光仍实查。
+读取Q同一schema、配置ID及snapshot_id；配方请求可省略source_id，由冻结文件提供。
+若显式source_id与冻结文件不同，提交前拒绝。已有snapshot_id不另freeze，当前切分/用途/曝光仍实查。
 先沿原package保存原intent，再沿原start-prepared提交，未增加控制器或训练链。
 `--output`必须不存在；若响应丢失，查已存包/原intent/job/句柄，不能重复命令碰运气。
 `--wait-seconds`只是单次HTTP等待，不能冒充三/五分钟性能已达标。
