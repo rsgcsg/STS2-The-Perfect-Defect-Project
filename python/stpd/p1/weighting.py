@@ -11,7 +11,12 @@ CHECKPOINT_POLICY = "early-quarter-epochs-v1"
 
 
 def checked_weights(value: object, selection: dict[str, Any]) -> dict[str, Any]:
-    obj = object_fields(value, {"schema", "rule_id", "weights_by_root"}, "p1_weights")
+    fields = {"schema", "rule_id", "weights_by_root"}
+    if isinstance(value, dict) and "definition" in value:
+        fields.add("definition")
+    obj = object_fields(value, fields, "p1_weights")
+    if "definition" in obj and not isinstance(obj["definition"], dict):
+        raise BoundaryError("p1_weights", "object_rule_definition_required")
     weights = obj["weights_by_root"]
     roots = {p["root_run_id"] for p in selection["points"] if p["split"] == "train"}
     if (obj["schema"] != SCHEMA or not isinstance(obj["rule_id"], str)
@@ -22,6 +27,7 @@ def checked_weights(value: object, selection: dict[str, Any]) -> dict[str, Any]:
            for w in weights.values()):
         raise BoundaryError("p1_weights", "positive_finite_game_weights_required")
     return {"schema": SCHEMA, "rule_id": obj["rule_id"],
+            **({"definition": obj["definition"]} if "definition" in obj else {}),
             "weights_by_root": {k: float(weights[k]) for k in sorted(weights)}}
 
 

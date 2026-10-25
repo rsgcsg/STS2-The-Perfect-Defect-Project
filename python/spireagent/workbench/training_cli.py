@@ -89,6 +89,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("action", choices=ACTIONS)
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--input", type=Path, help="exact start request or control JSON body")
+    parser.add_argument("--cohort-plan", type=Path, help="exact upstream cohort proposal JSON")
+    parser.add_argument("--configuration-id", help="explicit selected cohort content identity")
     parser.add_argument("--output", type=Path, help="new prepared package JSON; never overwrite")
     parser.add_argument("--operation-id",
                         help="optional exact local operation or remote job status")
@@ -103,6 +105,8 @@ def main(argv: list[str] | None = None) -> int:
         if body is not None and not isinstance(body, dict):
             raise BoundaryError("local_training", "training_body_mismatch")
         action = args.action
+        if action != "package" and (args.cohort_plan is not None or args.configuration_id is not None):
+            raise BoundaryError("training_cohort", "cohort_binding_requires_package")
         if action == "shortlist":
             import os
 
@@ -125,6 +129,18 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if action == "package":
             from .training_package import prepare_package
+
+            if args.cohort_plan is not None:
+                from .training_cohort import cohort_weighting
+
+                if (not isinstance(body, dict) or "loss_weighting" in body
+                        or args.configuration_id is None):
+                    raise BoundaryError("training_cohort", "explicit_single_weighting_source_required")
+                body = {**body, "loss_weighting": cohort_weighting(
+                    ProjectConfig.load(args.config), json.loads(args.cohort_plan.read_bytes()),
+                    args.configuration_id, body["source_id"])}
+            elif args.configuration_id is not None:
+                raise BoundaryError("training_cohort", "cohort_plan_required")
 
             result = prepare_package(args.config, body, args.output, args.execution,
                                      wait_seconds=args.wait_seconds)
