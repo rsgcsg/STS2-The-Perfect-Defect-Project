@@ -36,6 +36,7 @@ CACHE_LIMIT = 64 * 1024**2
 ENTRY_LIMIT = 16 * 1024**2
 DEPENDENCIES = (
     "stpd/p1/dataset.py",
+    "stpd/p1/cohort.py",
     "stpd/p1/input.py",
     "stpd/p1/data.py",
     "stpd/p1/spec.py",
@@ -137,6 +138,8 @@ class P1PreparationCache:
 
 
 def _quality(projection: Any) -> dict[str, Any]:
+    from stpd.p1.cohort import projection_facts
+
     masks: Counter[str] = Counter()
     scenes: Counter[str] = Counter()
     actions: Counter[str] = Counter()
@@ -163,6 +166,7 @@ def _quality(projection: Any) -> dict[str, Any]:
         "scene_N": dict(scenes),
         "chosen_action_N": dict(actions),
         "quality_scope": "projection_masks_not_native_Human_or_research_qualification",
+        "cohort_facts": projection_facts(projection),
     }
 
 
@@ -197,6 +201,7 @@ def discover_p1_projections(store: Any) -> list[dict[str, Any]]:
             {
                 "projection_id": identity,
                 "source_id": source.artifact_id,
+                "run_id": info.get("run_id"),
                 "revision": info.get("revision"),
                 "projection": info.get("projection_id"),
                 "tool_release_id": info.get("tool_release_id"),

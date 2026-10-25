@@ -176,7 +176,7 @@ def test_existing_maintenance_owner_trims_and_persists_receipt(tmp_path, monkeyp
 
     class Catalog:
         def read(self):
-            return {"status": "ready", "candidates": []}
+            return {"status": "ready", "game_running": False, "candidates": []}
 
     config = ProjectConfig(tmp_path / "state", "", "", None, combination())
     config.state_dir.mkdir()
@@ -237,7 +237,7 @@ def test_maintenance_rechecks_active_reader_after_backoff(tmp_path, monkeypatch)
 
     class Catalog:
         def read(self):
-            return {"status": "ready", "candidates": []}
+            return {"status": "ready", "game_running": False, "candidates": []}
 
     config = ProjectConfig(tmp_path / "state", "", "", None, combination())
     config.state_dir.mkdir()

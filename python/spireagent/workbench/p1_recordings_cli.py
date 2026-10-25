@@ -74,6 +74,10 @@ def _main(argv: list[str] | None = None) -> int:
     arguments = sys.argv[1:] if argv is None else argv
     if arguments and arguments[0] == "maintenance":
         return _maintenance(arguments[1:])
+    if arguments and arguments[0] == "cohort":
+        from .p1_cohort_cli import main as cohort_command
+
+        return cohort_command(arguments[1:])
     if arguments and arguments[0] == "storage":
         return _storage(arguments[1:])
     if arguments and arguments[0] == "control":
@@ -503,7 +507,9 @@ def _maintenance(argv: list[str]) -> int:
     )
     parser.add_argument("--candidate-id", action="append")
     parser.add_argument("--from-now", action="store_true")
-    parser.add_argument("--cool-recent", action="store_true",
+    parser.add_argument("--cohort-policy", type=Path,
+                        help="fixed intake/version/holdout policy; keeps the existing owner")
+    parser.add_argument("--cool-recent", action=argparse.BooleanOptionalAction, default=None,
                         help="retain newest two scoped sessions after full independent restore")
     parser.add_argument(
         "--origin",
@@ -532,8 +538,10 @@ def _maintenance(argv: list[str]) -> int:
                     if args.from_now
                     else policy.get("scope")
                 ),
-                **({"cool_recent": True}
-                   if args.cool_recent or policy.get("cool_recent") is True else {}),
+                "cool_recent": (args.cool_recent if args.cool_recent is not None
+                                else policy.get("cool_recent", False)),
+                **({"cohort_policy": str(args.cohort_policy.resolve())}
+                   if args.cohort_policy else {}),
             },
         )
     print(json.dumps(value, ensure_ascii=False, sort_keys=True))

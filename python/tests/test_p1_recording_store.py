@@ -582,6 +582,7 @@ def test_closed_recording_maintenance_uses_import_owner_and_survives_reopen(
         def read(self):
             return {
                 "status": "ready",
+                "game_running": False,
                 "candidates": [{"candidate_id": identity, "recording_type": "p1_native"}],
             }
 
@@ -711,7 +712,8 @@ def test_changed_maintenance_policy_rechecks_previously_completed_sources(
         def read(self):
             return {
                 "status": "ready",
-                "space": {"free_bytes": 12345, "total_bytes": 56789},
+                "game_running": False,
+                "space": {"free_bytes": 20 * 1024**3, "total_bytes": 40 * 1024**3},
                 "observed_at": "2026-10-21T00:00:00Z",
                 "candidates": [{"candidate_id": identity, "recording_type": "p1_native"}],
             }
@@ -730,7 +732,7 @@ def test_changed_maintenance_policy_rechecks_previously_completed_sources(
     maintenance.configure(True, None, projection_id=None)
     assert maintenance.tick()["status"] == "completed"
     assert importer.status()["maintenance"]["space"] == {
-        "free_bytes": 12345, "total_bytes": 56789,
+        "free_bytes": 20 * 1024**3, "total_bytes": 40 * 1024**3,
     }
     assert importer.status()["maintenance"]["space_observed_at"] == "2026-10-21T00:00:00Z"
     assert not importer._storage_receipts
@@ -873,7 +875,9 @@ def test_maintenance_derives_each_original_run_without_inventing_empty_run(
         parameters=SimpleNamespace(value=lambda: info)))
     config = ProjectConfig(tmp_path / "state", "", "", None, combination())
     config.state_dir.mkdir()
-    importer = local_recording_import.LocalRecordingImporter(config, None)
+    catalog = SimpleNamespace(read=lambda: {
+        "status": "ready", "game_running": False, "candidates": []})
+    importer = local_recording_import.LocalRecordingImporter(config, catalog)
     importer._maintenance["active"] = {"candidate_id": identity, "source_artifact_id": source,
         "scope_facts": {"candidate_id": identity}}
     monkeypatch.setattr(local_recording_import, "_selected_store", lambda *a, **kw: (store, None))
@@ -1130,7 +1134,7 @@ def test_recent_two_policy_schedules_only_the_oldest_in_scope_session(tmp_path, 
 
     class Catalog:
         def read(self):
-            return {"status": "ready", "candidates": []}
+            return {"status": "ready", "game_running": False, "candidates": []}
 
     config = ProjectConfig(tmp_path / "state", "", "", None, combination())
     config.state_dir.mkdir()

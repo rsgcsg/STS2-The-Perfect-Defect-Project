@@ -83,6 +83,7 @@ _DIAGNOSTIC_PATHS = frozenset({
     '/api/local-recordings/import/reconcile',
     '/api/local-recordings/import/status',
     '/api/local-recordings/maintenance',
+    '/api/local-recordings/cohort/refresh',
     '/api/local-recordings/preview',
     '/api/local-recordings/preview/status',
     '/api/local-recordings/storage',
@@ -1760,6 +1761,12 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                     return
                 value = app.local_recording_import.status()["maintenance"]
                 self.respond(200, json.dumps(value).encode())
+            elif parsed.path == "/recording-summary":
+                from .p1_cohort_intake import render_summary
+
+                summary_html = render_summary(app.config,
+                                              app.local_recording_import.status()["maintenance"])
+                self.respond(200, summary_html.encode(), "text/html")
             elif parsed.path == "/api/local-recordings/storage/peer":
                 if not self.authenticated_browser():
                     self.respond(401, b'{"error":"browser_session_required"}')
@@ -2394,7 +2401,7 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                     body = self.json_body(maximum=2048, reject_duplicate=True)
                     if (not {"enabled", "peer", "projection_id"} <= set(body)
                             or set(body) - {"enabled", "peer", "projection_id", "scope",
-                                            "cool_recent"}):
+                                            "cool_recent", "cohort_policy"}):
                         raise ValueError
                     value = app.p1_maintenance.configure(**body)
                     self.respond(200, json.dumps(value).encode())
@@ -2403,6 +2410,26 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                 except (OSError, ValueError, TypeError) as error:
                     self.diagnostic_bad_request(error, "invalid_p1_maintenance_policy",
                                                 "/api/local-recordings/maintenance")
+                return
+            if self.path == "/api/local-recordings/cohort/refresh":
+                if not self.browser_write() and not self.control_client():
+                    self.respond(403, b'{"error":"browser_action_denied"}')
+                    return
+                try:
+                    if self.json_body(maximum=128):
+                        raise ValueError
+                    with app.local_recording_import.lock:
+                        state = app.local_recording_import._maintenance
+                        if not state["policy"].get("cohort_policy"):
+                            raise BoundaryError("p1_cohort", "configure_cohort_policy_first")
+                        state.pop("cohort_signature", None)
+                        app.local_recording_import._save()
+                    self.respond(200, b'{"status":"refresh_requested"}')
+                except BoundaryError as error:
+                    self.respond(409, json.dumps({"error": error.code}).encode())
+                except (OSError, ValueError, TypeError) as error:
+                    self.diagnostic_bad_request(error, "invalid_p1_cohort_request",
+                                                "/api/local-recordings/cohort/refresh")
                 return
             if self.path in {"/api/local-recordings/storage",
                               "/api/local-recordings/storage/reconcile"}:
