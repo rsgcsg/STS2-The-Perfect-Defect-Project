@@ -47,6 +47,24 @@ strategy qualification. A new Runtime package carries the corrected bundled
 SDK; package identity, actual install and one same-checkpoint/seed native-game
 validation must be recorded separately before completion.
 
+## Bounded historical impact
+
+The current Store catalog contains 33 source artifacts, including 28 declared
+human sources. Reading all 28 original archives through the existing Store and
+verifying their transfer inventories/member hashes found 32,261 public bases:
+1,003 selector bases, zero structurally incomplete selectors, and zero bundle
+pages. Thus this bundle-admission defect has zero observed affected bases in
+that historical human-source inventory. Source artifacts are not necessarily
+independent games, and declared origin is not Human verification. There are
+separately 72 `selector_decision_pre_or_lineage_unavailable` issue events; this
+repair does not fix or qualify those missing-source events.
+
+Of 66 named projections for those sources, 65 passed the current projection
+reader; one remains `projection_identity_mismatch`, without relaxing its
+admission. No inspected incomplete observation had an N supervision mask.
+The training reader independently requires complete current information before
+accepting N. These counts do not claim a census of unindexed historical files.
+
 Defect-list entry: online chain Connector -> P1 shared reducer; first known
 observed occurrence 2026-10-23 random GUI run, repeated 2026-10-25 evaluation
 slot 35; blocks Agent progress at the starting bundle page; repair the bundle

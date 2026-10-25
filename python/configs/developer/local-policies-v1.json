@@ -3,10 +3,10 @@
   "runtime_package": {
     "package": "@rsgcsg/sts2-policy-runtime",
     "version": "0.1.0-rc.44",
-    "source_revision": "c520d39cab2cb00cef198bb926c3acb899deb574",
-    "component_tree_revision": "e240fdf58b99cb01bb01af624e30a7f3cb6418dc",
-    "release_asset_sha256": "e03489e60664e3a2ea1df6b02697193f5c95f59ac3ce78c40576370c8f9c3243",
-    "package_content_sha256": "3dc5e03bbf1728e4904442f75f1c8dceee5e3d3c4d06faf9cf903095a7e447e6",
+    "source_revision": "0db0c3654eb6fd861bf4d2c4fc77fcf5a53d000b",
+    "component_tree_revision": "82275d49e250edf338ced957ca1f5740251a82c4",
+    "release_asset_sha256": "a9570670266fbae72351ccbc001c2592a44628852015ed6400aeca8d55520166",
+    "package_content_sha256": "00bf2e621bf64b1ab94000794c2df78fbca2b709b8bcc334037ca5aef84095fb",
     "dependency_layout": "bundled_source_candidate",
     "bundled_connector_pin": {
       "mode": "bundled_source_candidate",
