@@ -117,3 +117,24 @@ def test_weighted_input_reaches_real_worker_checkpoint_and_resume(tmp_path):
                         execution=workload.execution, checkpoint_policy=CHECKPOINT_POLICY)
     with pytest.raises(BoundaryError):
         other.restore(checkpoint.raw)
+
+
+def test_shortlist_uses_current_measured_DEV_states_and_no_test_evaluation(tmp_path):
+    from stpd.p1.shortlist import checkpoint_shortlist
+
+    store = store_at(tmp_path / "store")
+    projections = [projection_fixture(store, "shortlist-" + str(i))[0] for i in range(3)]
+    snapshot = explicit_snapshot(store, projections)
+    run = prepare_p1_run(store, snapshot.artifact_id, PRODUCER, MStdConfig(max_epochs=4), "f" * 32,
+                         checkpoint_policy=CHECKPOINT_POLICY)
+    with pytest.raises(BoundaryError, match="completed_run_required"):
+        checkpoint_shortlist(store, run.artifact_id)
+    result = dispatch(store, ComputeRequest("training", run.artifact_id, PRODUCER, "full"), PRODUCER)
+    assert result.state == "candidate_prepared"
+    report = checkpoint_shortlist(store, run.artifact_id)
+    assert 3 <= len(report["candidates"]) <= 4
+    assert all(c["selection"] == "current" for c in report["candidates"])
+    assert report["test_scored"] is report["gameplay_run"] is False
+    assert report["progress_observations"] == 4
+    assert report["candidates"][0]["mean_N_loss"] == min(
+        row["mean_N_loss"] for row in report["candidates"])

@@ -16,7 +16,8 @@ from spireagent.workbench.recipe_contracts import TrainingRequest
 
 PACKAGE_SCHEMA = "spireagent/p1-training-package-1"
 
-ACTIONS = ("package", "capabilities", "status", "progress", "prepare", "start", "start-prepared",
+ACTIONS = ("package", "shortlist", "capabilities", "status", "progress", "prepare", "start",
+           "start-prepared",
            "pause", "resume", "cancel",
            "reconcile", "auto-continue", "stop-continuation",
            "amend_wall_budget")
@@ -102,6 +103,26 @@ def main(argv: list[str] | None = None) -> int:
         if body is not None and not isinstance(body, dict):
             raise BoundaryError("local_training", "training_body_mismatch")
         action = args.action
+        if action == "shortlist":
+            import os
+
+            from spireagent.storage.config import open_peer
+            from stpd.p1.shortlist import checkpoint_shortlist
+
+            from .developer import atomic_json
+            from .service_process import cloud_environment
+
+            config = ProjectConfig.load(args.config)
+            if (config.remote_compute is None or not isinstance(body, dict)
+                    or set(body) != {"run_id"}):
+                raise BoundaryError("p1_shortlist", "configured_peer_and_exact_run_required")
+            os.environ.update(cloud_environment(config.cloud_environment_file))
+            result = checkpoint_shortlist(open_peer(config.remote_compute.compute_store),
+                                          body["run_id"])
+            if args.output:
+                atomic_json(args.output, result)
+            print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+            return 0
         if action == "package":
             from .training_package import prepare_package
 
