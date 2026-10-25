@@ -196,3 +196,41 @@ def test_invalid_weight_or_checkpoint_policy_does_not_record_training_use(tmp_pa
             call("prepare", body={**body, "loss_weighting": None})
         with pytest.raises(BoundaryError, match="unsupported_checkpoint_policy"):
             call("prepare", body={**body, "checkpoint_policy": []})
+
+
+@pytest.mark.parametrize("wait_seconds,expected", [(None, 600), (7200, 7200)])
+def test_freeze_transport_wait_is_explicit_and_single_offer(monkeypatch, wait_seconds, expected):
+    from spireagent.workbench import p1_data_cli
+
+    calls = []
+    monkeypatch.setattr(p1_data_cli, "running",
+                        lambda config: {"port": 12345, "control_token": "fixture-token"})
+
+    def exchange(url, **kwargs):
+        calls.append((url, kwargs))
+        return {"purpose_reserved": True}
+
+    monkeypatch.setattr(p1_data_cli, "_local_request", exchange)
+    result = p1_data_cli.p1_data_command(None, "freeze", {}, wait_seconds=wait_seconds)
+    assert result == {"purpose_reserved": True}
+    assert len(calls) == 1 and calls[0][1]["timeout"] == expected
+    assert calls[0][1]["body"] == {} and calls[0][1]["method"] == "POST"
+
+    def lost_response(url, **kwargs):
+        calls.append((url, kwargs))
+        raise OSError("fixture response lost")
+
+    monkeypatch.setattr(p1_data_cli, "_local_request", lost_response)
+    with pytest.raises(BoundaryError, match="request_failed_inspect_snapshot_no_automatic_retry"):
+        p1_data_cli.p1_data_command(None, "freeze", {}, wait_seconds=wait_seconds)
+    assert len(calls) == 2  # One new explicit offer, never an implicit second send.
+
+
+@pytest.mark.parametrize("wait_seconds", [True, 0, 86401, 1.5, "7200"])
+def test_invalid_freeze_wait_fails_before_opening_or_offering(monkeypatch, wait_seconds):
+    from spireagent.workbench import p1_data_cli
+
+    monkeypatch.setattr(p1_data_cli, "running",
+                        lambda *a: pytest.fail("invalid wait reached owner"))
+    with pytest.raises(BoundaryError, match="invalid_transport_wait_seconds"):
+        p1_data_cli.p1_data_command(None, "freeze", {}, wait_seconds=wait_seconds)

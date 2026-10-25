@@ -42,7 +42,8 @@ def prepare_package(config_path: Path, body: object, output: Path | None, execut
         if configuration_id is None or "loss_weighting" in body:
             raise BoundaryError("training_cohort", "explicit_single_weighting_source_required")
         if "source_id" not in body:
-            body = {**body, "source_id": freeze_cohort(config, cohort_plan, configuration_id)}
+            body = {**body, "source_id": freeze_cohort(
+                config, cohort_plan, configuration_id, wait_seconds=wait_seconds)}
         body = {**body, "loss_weighting": cohort_weighting(
             config, cohort_plan, configuration_id, body["source_id"])}
     elif configuration_id is not None:

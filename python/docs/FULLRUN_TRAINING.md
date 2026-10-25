@@ -221,13 +221,15 @@ python -m spireagent.workbench training shortlist --execution remote \
 python -m spireagent.workbench project model --action export-checkpoint \
   --config /ABS/training-project.json --artifact CHECKPOINT_ID --checkpoint-selection current
 python -m spireagent.workbench project model --action register \
-  --config /ABS/training-project.json --artifact MODEL_ID
+  --config /ABS/evaluation-project.json --artifact MODEL_ID
 ```
 
 `shortlist`读完整原事件索引，以DEV NLL最低、Top1最高、最早有DEV的已存状态、其余NLL最佳
 依次去重，最多4个；不足3个明确标记。保留原attempt/重复进度分母，绑定准确checkpoint和指标事件。
 只读DEV，不重评分TEST、不运行游戏；导出必须选 `current`，不能把几个检查点里的同一 `best_model`
 重复当成多个候选。导出/登记仍走原Model入口，准确source/字节身份门不放宽。
+登记使用将执行实战的已合格 Application 配置；438与新候选须在同一评估registry中可见。
+导出端必须具备该检查点的准确数值代码，评估端须正常读到同一Store/R2的Model产物。
 
 新3–4候选加第一轮438，使用 `stpd.evaluation.suites.checkpoint_reference_manifest` 已保留的
 同10个Defect A0及2个A10种子。训练/采集排除这些种子。固定同版本、Host、速度、画面、
@@ -254,6 +256,8 @@ python -m spireagent.workbench training package --execution remote \
 更新数据后使用新配置ID、新 intent、新输出；已有输出会在冻结或预留之前拒绝。
 只接受用户已确认的配置；配置文件可读或哈希正确本身不构成训练授权。若 freeze/prepare
 响应不明，保留原 Snapshot/预留/intent 并查原状态，不自动重冻或重投。
+`--wait-seconds`同时传给原freeze和prepare的单次HTTP等待；默认freeze仍为600秒，显式值
+限1–86400秒。它不改变整个任务的总截止、学校额度或worker时限，超时也不重投。
 
 本卡用原数据生成的演练包固定 `stop_after=8`；它不是下一轮正式数据包。
 录完新局后先重跑卡 A 的盘点和整局分配，再运行上述准备命令。正式请求的 `stop_after=null`、

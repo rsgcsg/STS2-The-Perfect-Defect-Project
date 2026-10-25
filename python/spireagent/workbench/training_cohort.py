@@ -69,7 +69,8 @@ def _loss_weighting(plan: dict[str, Any]) -> dict[str, Any]:
                                 for r in plan["runs"] if r["split"] == "train"}}
 
 
-def freeze_cohort(config: ProjectConfig, value: object, configuration_id: str) -> str:
+def freeze_cohort(config: ProjectConfig, value: object, configuration_id: str, *,
+                  wait_seconds: int | None = None) -> str:
     """An explicitly selected upstream plan goes through the original data owner."""
     from .p1_data_cli import p1_data_command
 
@@ -77,7 +78,7 @@ def freeze_cohort(config: ProjectConfig, value: object, configuration_id: str) -
     receipt = p1_data_command(config, "freeze", {"reserve": True, "selection": {
         "projection_ids": sorted(s["projection_id"] for s in plan["sources"]),
         "selected_decisions": plan["selection"], "split_by_group": plan["splits"],
-        "split_salt": "cohort-" + configuration_id}})
+        "split_salt": "cohort-" + configuration_id}}, wait_seconds=wait_seconds)
     if receipt.get("purpose_reserved") is not True:
         raise BoundaryError("training_cohort", "normal_snapshot_reservation_required")
     return str(receipt["snapshot_id"])
