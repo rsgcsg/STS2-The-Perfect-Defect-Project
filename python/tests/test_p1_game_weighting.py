@@ -129,7 +129,8 @@ def test_shortlist_uses_current_measured_DEV_states_and_no_test_evaluation(tmp_p
                          checkpoint_policy=CHECKPOINT_POLICY)
     with pytest.raises(BoundaryError, match="completed_run_required"):
         checkpoint_shortlist(store, run.artifact_id)
-    result = dispatch(store, ComputeRequest("training", run.artifact_id, PRODUCER, "full"), PRODUCER)
+    request = ComputeRequest("training", run.artifact_id, PRODUCER, "full")
+    result = dispatch(store, request, PRODUCER)
     assert result.state == "candidate_prepared"
     report = checkpoint_shortlist(store, run.artifact_id)
     assert 3 <= len(report["candidates"]) <= 4

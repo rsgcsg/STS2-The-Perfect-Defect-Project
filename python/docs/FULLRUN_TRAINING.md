@@ -141,3 +141,98 @@ Platform qualification, final Standard serializer profiling/freeze, real Human G
 cloud execution and final STS2 live evaluation remain separate later evidence gates. The [local operations](PREFULLRUN_OPERATIONS.md) surface now provides CLI, generic provider
 launch, dashboard/analysis, Gold tooling and the clean-checkout CPU E2E. Latest-head
 qualification receipts independently establish the result of those gates.
+
+## 下一轮 M-std：先准备，再一条命令开训
+
+本入口沿同一 Snapshot → TrainingInput → Run → Ops/Scheduler → SSH worker → Store/R2；
+`package` 只准备和读回，不分配 GPU、不提交 worker。正式训练须在新数据和整局切分完成、
+用户选定权重并明确说“开训”后启动。短校准使用独立 intent、固定 `stop_after`，不冒作正式训练。
+
+1. 使用当前干净源码及 `uv sync --locked --all-extras` 环境，保持原 Curation/Store owner。
+   卡 A 更新切分后，取其**新 Snapshot ID**及已选的每局权重，生成一个新的请求 JSON。
+   不能按文件夹合并数据、跨 TRAIN/DEV/TEST 重分局，也不能把可读的数据包当作训练用途批准。
+2. 正常打开独立的训练 Application 配置。`remote_compute.compute_store` 指向现有 R2 peer；
+   `execution_producer` 固定当前 source/lock；`target_path` 可指向尚不存在的本轮学校目标文件。
+   没有目标时，准备阶段不会构造 provider 或启动 Scheduler；不能伪造 GPU UUID。
+   登录学校和分配机器之前先完成下面的 `package`，记录实测准备耗时。
+3. 请求字段为 `intent_id`（新32位hex）、`source_id`（A的Snapshot）、`config`（完整 MStdConfig）、
+   `max_seconds`、`stop_after`（正式为 null），可附 `loss_weighting` 和 `checkpoint_policy`。
+   新 Run 默认 `mstd-training-v1`。`loss_weighting` 例子是
+   `{"schema":"stpd/p1-game-loss-weights-1","rule_id":"用户选定的规则版本","weights_by_root":{"准确TRAIN原局键":2.0}}`。
+   必须列全且只列 TRAIN 原局；值须有限且大于0。剔除局在 A 的 Snapshot 里处理。
+
+```sh
+python -m spireagent.workbench training package --execution remote \
+  --config /ABS/training-project.json --input /ABS/next-request.json \
+  --output /ABS/next-package.json --wait-seconds 7200
+```
+
+成功包记录原 Run、Snapshot、TrainingInput、完整 R2 闭包读回收据和原 intent，带内容摘要。
+原件不覆盖；更新切分/权重/配方后用新 intent 和新输出路径重做。准备失败先按原 intent
+查询 `training status --execution remote --intent-id ...`；响应丢失不盲目重投。
+这不是免检 token：启动仍验证原训练用途、准确 Run/source/lock/目标，worker 再验输入。
+
+准备完成才由本人登录学校/MFA，分配一张 L40S；复用既有严格 SSH host-key/ProxyJump 入口，
+在新的独立 checkout 安装同 source/lock、固定 `CUBLAS_WORKSPACE_CONFIG=:4096:8`，
+核实际 Python/Torch/CUDA/GPU UUID/driver，冻结真实 SshTarget。私有 R2 环境文件在源码外，
+不得复制进数据包、日志、Git或报告。关闭准备用 Application，绑定真实目标后正常重开同一配置；
+`max_seconds` 须覆盖目标 timeout，Ops预算同时覆盖本轮分配（含闲置/失败）及存档余量。
+GPU 小测计入整轮8小时上限；下次正式整轮按实际样本数、实测步时和剩余额度再核。
+
+用户说“开训”以后只需：
+
+```sh
+python -m spireagent.workbench training start --execution remote \
+  --config /ABS/training-project.json --input /ABS/next-package.json
+```
+
+这会启动**原已准备 Run**，不重复拟合词表或重新构造数据闭包。原 Scheduler 负责执行和结果接纳，
+worker 把周期、DEV最佳、早期、暂停和最终检查点直接发布到已选 R2 Store。
+正常 `training status/progress` 查看原 job；unknown先查原句柄，不自动重投。
+本命令不会替用户在学校门户分配机器，也不保证学校认证会话永久有效。
+需要续段时使用既有同Ops显式 `auto-continue`，保留总绝对截止与剩余额度；不另起监督进程。
+
+### 权重、配方与检查点
+
+每个训练决策乘所属原局权重；以**全 TRAIN 决策的权重均值**归一化到1，再对原 optimizer batch
+取均值。微批不单独归一化；原顺序、随机过程和 batch64 保留。长局仍贡献更多决策，
+这不是“每局总损失相同”。全1使用原计算表达式；DEV/TEST不加权。规则、完整原局权重表、
+Snapshot selection 摘要共同进入 TrainingInput 身份，规范化逐点权重摘要进入检查点恢复身份。
+换规则须开新 Run，不在旧 Run 上热换。TRAIN 的 `mean_N_loss` 在带权Run中是带权损失。
+
+建议下轮先保持 AdamW峰值LR3e-4、weight_decay0.01、dropout0.1、ID-mask0.1、warmup5%、
+FP32、batch64、CPU2、patience5；将**最多15轮**作为建议上限。第一轮10→15轮TRAIN继续降而
+DEV NLL升14.82%，且DEV仅1个原局，不能由此断言LR或模型容量必错；先改善独立局覆盖，
+本轮不引入未经质量对照的AMP、微批或更强正则。15轮改变余弦总计划，是新Run配方，
+不宣称与旧30轮轨迹等价；用户可保留30轮，须在请求中明确且预算够用。
+
+可选 `checkpoint_policy: "early-quarter-epochs-v1"`：前3轮每四分之一轮（按update向上取整）
+做DEV并存当前状态，之后每完整轮保留；同时保留原5/10/20/40/60/80/100%与1800秒周期存档。
+同一步重叠只存一次。额外DEV不提前消耗“完整轮”patience，但可选出更早最佳。
+学校短测须实测新增DEV/保存成本；更多存档不等于更好模型。
+
+### 训练后马上筛候选，再按实战定
+
+将 `{"run_id":"完成Run的64位ID"}` 保存为 `/ABS/completed-run.json`：
+
+```sh
+python -m spireagent.workbench training shortlist --execution remote \
+  --config /ABS/training-project.json --input /ABS/completed-run.json --output /ABS/shortlist.json
+python -m spireagent.workbench project model --action export-checkpoint \
+  --config /ABS/training-project.json --artifact CHECKPOINT_ID --checkpoint-selection current
+python -m spireagent.workbench project model --action register \
+  --config /ABS/training-project.json --artifact MODEL_ID
+```
+
+`shortlist`读完整原事件索引，以DEV NLL最低、Top1最高、最早有DEV的已存状态、其余NLL最佳
+依次去重，最多4个；不足3个明确标记。保留原attempt/重复进度分母，绑定准确checkpoint和指标事件。
+只读DEV，不重评分TEST、不运行游戏；导出必须选 `current`，不能把几个检查点里的同一 `best_model`
+重复当成多个候选。导出/登记仍走原Model入口，准确source/字节身份门不放宽。
+
+新3–4候选加第一轮438，使用 `stpd.evaluation.suites.checkpoint_reference_manifest` 已保留的
+同10个Defect A0及2个A10种子。训练/采集排除这些种子。固定同版本、Host、速度、画面、
+协议与预算；按自然胜负、unknown/失败、未开及配对局报告，不用HP或进程退出推导胜负。
+本轮只交计划。训练后登记得到真实selection，再冻结矩阵/CSV，调用已有 `evaluation plan`；
+运行必须再获用户同意。当前该 `plan` 只支持导入带原运行条件的历史矩阵，全新未开矩阵会拒绝
+`original_conditions_required`；此缺口归评估链owner，本卡不改其代码，不伪造一次原局来绕过。
+未来候选尚不存在时只给显式待绑定草案，不伪造Model/selection或宣称可执行账本已完成。
