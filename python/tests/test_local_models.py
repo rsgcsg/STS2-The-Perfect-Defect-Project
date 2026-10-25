@@ -2436,7 +2436,9 @@ def test_finalized_stop_recovery_requires_exact_evidence_and_free_port(
     assert not (service.directory / "session-archives").exists()
 
 
-@pytest.mark.parametrize("version", ["0.1.0-rc.40", "0.1.0-rc.41", "0.1.0-rc.42", "0.1.0-rc.43", "0.1.0-rc.44"])
+@pytest.mark.parametrize("version", [
+    "0.1.0-rc.40", "0.1.0-rc.41", "0.1.0-rc.42", "0.1.0-rc.43", "0.1.0-rc.44",
+])
 @pytest.mark.parametrize("mode", ["bounded", "continuous"])
 def test_runtime_v2_consumer_preserves_original_budget_mode_and_nullable_limits(mode, version):
     original = {**startup(), "schema": "sts2.policy-runtime/startup-2",
