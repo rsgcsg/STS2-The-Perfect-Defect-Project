@@ -46,6 +46,7 @@ from spireagent.workbench.service_process import service_environment, service_pr
 _DIAGNOSTIC_PATHS = frozenset({
     '/api/remote-training/prepare',
     '/api/remote-training/start',
+    '/api/remote-training/start-prepared',
     '/api/remote-training/resume',
     '/api/remote-training/pause',
     '/api/remote-training/cancel',
@@ -2598,7 +2599,8 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                 action = self.path.removeprefix("/api/remote-training/")
                 try:
                     app._require_training_instance()
-                    value = app.remote_training.command(action, self.json_body(maximum=8192))
+                    value = app.remote_training.command(action, self.json_body(
+                        maximum=1024 * 1024 if action in {"prepare", "start"} else 8192))
                     self.respond(200, json.dumps(value).encode())
                 except BoundaryError as error:
                     self.respond(409, json.dumps({"error": error.code}).encode())

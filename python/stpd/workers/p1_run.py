@@ -72,6 +72,7 @@ def verify_p1_checkpoint(
         or identity.get("input_spec") != training["input_spec"]
         or identity.get("vocabulary_sha256") != training["vocabulary_sha256"]
         or identity.get("target_spec") != TARGET_SPEC
+        or identity.get("checkpoint_policy") != training.get("checkpoint_policy")
         or identity.get("execution", workload.execution.to_dict()) != workload.execution.to_dict()
         or (bool({"execution_policy", "execution_plan"} & workload.run.parameters.value().keys())
             and "execution" not in identity)
@@ -83,6 +84,16 @@ def verify_p1_checkpoint(
         or not isinstance(state.get("model"), dict)
     ):
         raise BoundaryError("p1_worker", "checkpoint_content_binding_mismatch")
+    if "loss_weighting" in training:
+        from ..p1.data import json_bytes
+        from ..p1.weighting import point_weights
+
+        weights = point_weights(training["loss_weighting"], workload.reader.selection)
+        expected = tuple(weights[k] for k in sorted(weights))
+        if identity.get("train_weights_sha256") != digest(json_bytes(expected)):
+            raise BoundaryError("p1_worker", "checkpoint_loss_weighting_mismatch")
+    elif "train_weights_sha256" in identity:
+        raise BoundaryError("p1_worker", "checkpoint_unexpected_loss_weighting")
     prior = info.get("prior_checkpoints")
     fractions = info.get("fractions")
     if (
@@ -310,7 +321,8 @@ def execute_p1_run(
     if mode == "reconcile":
         raise BoundaryError("p1_worker", "no_selected_result_reconcile_only")
     preparation_started = time.perf_counter()
-    populations = populations_from_reader(workload.reader)
+    populations = populations_from_reader(
+        workload.reader, workload.training.parameters.value().get("loss_weighting"))
     population_seconds = time.perf_counter() - preparation_started
     construction_started = time.perf_counter()
     trainer = MStdTrainer(
@@ -319,6 +331,7 @@ def execute_p1_run(
         workload.snapshot.artifact_id,
         workload.config,
         execution=workload.execution,
+        checkpoint_policy=workload.training.parameters.value().get("checkpoint_policy"),
     )
     construction_seconds = time.perf_counter() - construction_started
     checkpoints: dict[str, str] = {}
@@ -473,7 +486,8 @@ def execute_p1_run(
             )
         progress = trainer.advance()
         event("progress", optimizer_updates=trainer.step, **progress)
-        if progress["checkpoint_fractions"] or progress["best_improved"]:
+        if (progress["checkpoint_fractions"] or progress["best_improved"]
+                or progress.get("retain_checkpoint")):
             save("scheduled_or_dev_best", progress["checkpoint_fractions"])
         elif time.monotonic() - last_saved_at >= PERIODIC_CHECKPOINT_SECONDS:
             save("periodic")
