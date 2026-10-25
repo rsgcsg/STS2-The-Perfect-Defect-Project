@@ -1,5 +1,21 @@
 # 原检查点真实Reference配对评估
 
+## 可续跑链路与原100槽位续接（2026-10-25当前任务）
+
+本节覆盖下方旧轮次的派工/预算状态，旧失败、原件和历史预算不变。用户直接授权本卡范围内完成定义、最小接缝、检查/CI、合入、App升级与原75槽续跑；常设授权第二档允许必跑门全过、CI全绿、讨论已解决、不改合同或删独有数据后普通merge进develop，main/新任务/额外预算/合同语义等第三档仍问用户。原卡和常设授权在共享`claude-handoff-2026-10-13/replies/`，最新用户原话优先。
+
+链路位置：CHAIN_PURPOSES⑩ Model→Agent→评估/新原件；补Application编排与环境占用实现，不改P1、Agent/Runtime、Host/Native合同含义，不动模型和已装包。唯一写入/现场owner=root；稳定候选做一次只读非作者复核。实际代码基线为PR236普通merge后的develop `6808583f`；本轮topic `codex/evaluation-ledger-20261025`。一页定义和正常入口见[原操作指南](../../../python/docs/LOCAL_MODEL_TASK_FLOW.md#可续跑的评估链路)。
+
+原100槽位只读输入为`2026-10-24/checkpoint-evaluation-replay/matrix/FROZEN-MATRIX.json`与`EPISODES.csv`，24自然负、1原unknown、75未开；七模型、种子、headless/Fast、continuous和原Runtime43/Evidence36/Native rc63均固定。第25局run-b91e4519-7aa7-4548-ae19-741db4f6355e永不重投。账本是独立评估原件，不是新Application state；原project.json/state、报告及失败原字节不改删。
+
+最小实现：复用原suite执行/完成原局验证，追加槽位事实并只派未开槽；unknown快照和当前App显式确认分别追加，证明worker、Actor、Host、游戏均无占用、落盘读回成功后才释放占用，结果仍unknown。PR236的两个空间门直接复用；投递前容量拒绝保持未开。每局正常R2 typed读回后，原Store空目录恢复/清单和两次句柄复核通过才冷却非活动副本。report只读全分母；replace、等价工具、Managed与跨计划比较不实现。
+
+验收反例：活占用/错误expected/候选或确认写后抛错均不放行；新App不自动采用旧确认；已closed但证据失败可封存账本unknown而不改closed事实；finished尚无R2时崩溃可落unknown、不永久reserved；运行时status/report可读；续跑不重复结束槽；容量拒绝不生unknown。源码/合入与真实封存/75局/R2/模型效果分别报告。用户批准的开发累计4小时，旧段约6分钟已用；CI/批准/游戏等待另计，45分钟和2小时复盘，到限不追加。
+
+顺序：定义 → 最小实现/回归/非作者复核/规定门与CI → 第二档普通merge → 正常App升级且固定包/模型不变 → 显式封存25 → 原75槽串行运行、20分钟闹钟 → 全100结果及CURRENT分数板。新unknown立即停且不重试；占用/持久化证明不足不放行；不碰磁盘卡目录/分支，不读凭据，不在评估期间跑重测试。依赖等待设闹钟继续，只有第三档/方向决定/超过半天或对方失败才找用户。共享报告为`replies/EVAL-CHAIN-REPORT-20261025.md`。
+
+## 原轮次历史（以下不重新派工）
+
 用户本轮要求先打通稳定评估链，再完成检查点实战、其他角色和详细原因分析。root唯一链路源码/运行owner；最多1个子代理，仅负责原检查点正常CPU导出和DEV配对分析。起点2026-10-24T01:58:45Z；开发接线最多1小时，硬02:58:45Z冻结；其他分析工作累计最多1小时，独立计时不因等待或换上下文重置。真实评估运行不设此时间上限，但每局/批次仍有明确预算、Stop和结果。禁止新训练/付费GPU；要新训练先另问。旧90分钟轮已关闭，这是一轮新授权，失败/unknown/旧资源总账不改。
 
 基线origin/develop7f3c711c；独占codex/reference-checkpoint-evaluation-20261024，链路⑩checkpoint/Model→⑪Agent→⑫Reference运行→结果/Store。Host原有角色与难度配置由应用原owned准备入口传递，并由原Host初始公开状态检查；不新增世界/合法性/执行owner。GUI/CLI/API继续同应用入口，Reference headless/native-ui及normal/fast/instant是同Host配置。新训练和模型包语义不变。

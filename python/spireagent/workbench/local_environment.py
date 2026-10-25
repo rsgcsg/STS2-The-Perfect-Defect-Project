@@ -540,6 +540,7 @@ class LocalEnvironmentService:
         self.native_lock = threading.RLock()
         self.native_record = self._load_native_resource()
         self.native_client: Any | None = None
+        self._native_unknown_confirmations: dict[str, dict[str, str]] = {}
         self.native_worker: threading.Thread | None = None
         self.native_application_instance_id: str | None = None
         self.native_configuration_id: Callable[[], str] | None = None
@@ -884,6 +885,10 @@ class LocalEnvironmentService:
         record = self.native_record
         if record.get("environment_ref") is None:
             return
+        if self.native_unknown_release() is not None:
+            # The independent immutable release already preserves the original
+            # unknown. Do not invent its missing results/{intent}.json.
+            return
         if not (record.get("finish_complete") is True or record.get("phase") == "failed"):
             raise BoundaryError("native_episode", "native_original_resource_not_terminal")
         self._validate_native_request(record)
@@ -894,6 +899,145 @@ class LocalEnvironmentService:
         # facts. Retrying local publication never changes the immutable result.
         result = {key: value for key, value in record.items() if key != "persistence_error"}
         store.put_if_absent(f"results/{record['intent_id']}.json", json_bytes(result))
+
+    def _native_unknown_candidate(self) -> dict[str, Any] | None:
+        from .native_unknown import SCHEMA, expected
+
+        record = self.native_record
+        ref = record.get("environment_ref")
+        retained = self._native_operation_store()
+        if ref is None or retained is None:
+            return None
+        key = f"operations/{ref}/unknown-seal.json"
+        try:
+            raw = retained[0].get(key)
+        except StoreError as error:
+            if error.code == "object_not_found":
+                return None
+            raise
+        value = decode_json(raw)
+        original_raw = (self.config.state_dir / native_binding.RESOURCE_FILE).read_bytes()
+        if (not isinstance(value, dict) or value.get("schema") != SCHEMA
+                or value.get("result") != "unknown"
+                or value.get("expected_original") != expected(record, original_raw, None)
+                or value.get("original_resource_utf8", "").encode() != original_raw
+                or value.get("request_sha256") != record.get("request_sha256")):
+            raise BoundaryError("native_episode", "native_unknown_seal_original_changed")
+        self._validate_native_request(record)
+        return {"key": key, "sha256": hashlib.sha256(raw).hexdigest(), "value": value}
+
+    def native_unknown_release(self) -> dict[str, Any] | None:
+        """Only a confirmation completed by this live owner activates admission.
+
+        A marker left by a failed write or an earlier App is never silently
+        adopted. Explicit seal-unknown can preserve/read it and confirm afresh.
+        """
+        ref = self.native_record.get("environment_ref")
+        if not isinstance(ref, str):
+            return None
+        confirmation = self._native_unknown_confirmations.get(ref)
+        if confirmation is None:
+            return None
+        candidate = self._native_unknown_candidate()
+        retained = self._native_operation_store()
+        assert retained is not None and candidate is not None
+        raw = retained[0].get(confirmation["key"])
+        value = decode_json(raw)
+        if (hashlib.sha256(raw).hexdigest() != confirmation["sha256"]
+                or value.get("seal_sha256") != candidate["sha256"]
+                or value.get("application_instance_id") != self.native_application_instance_id):
+            raise BoundaryError("native_episode", "native_unknown_confirmation_changed")
+        return {"schema": "spireagent/native-unknown-release-v1", "result": "unknown",
+                "released": True, "expected": value["expected"],
+                "original": candidate["value"]["original"],
+                "seal": {k: candidate[k] for k in ("key", "sha256")},
+                "confirmation": confirmation, "occupancy": value["occupancy"]}
+
+    def native_unknown_preview(self) -> dict[str, Any]:
+        from .native_unknown import expected
+
+        with self.native_lock:
+            raw = (self.config.state_dir / native_binding.RESOURCE_FILE).read_bytes()
+            candidate = self._native_unknown_candidate()
+            return {"expected": expected(
+                        self.native_record, raw, self.native_application_instance_id),
+                    "resource": self.native_episode_status(),
+                    "preserved_unknown": ({k: candidate[k] for k in ("key", "sha256")}
+                                          if candidate is not None else None),
+                    "release": self.native_unknown_release()}
+
+    def seal_native_unknown(self, value: dict[str, Any]) -> dict[str, Any]:
+        """Explicit release, called under the shared Model lock after Actor checks."""
+        from datetime import UTC, datetime
+
+        from .native_unknown import SCHEMA, durable_readback, expected, unoccupied
+
+        with self.native_lock:
+            record = self.native_episode_status()
+            raw = (self.config.state_dir / native_binding.RESOURCE_FILE).read_bytes()
+            if value != expected(record, raw, self.native_application_instance_id):
+                raise BoundaryError("native_episode", "native_unknown_release_identity_mismatch")
+            prior = self.native_unknown_release()
+            if prior is not None:
+                return prior
+            self._validate_native_request(record)
+            if (record.get("phase") not in {"unknown", "recovery_required", "closed"}
+                    or record.get("finish_complete") is not True
+                    or record.get("preparation", {}).get("ownership") != "owned"
+                    or not isinstance(record.get("actor", {}).get("run_id"), str)
+                    or self.native_worker is not None and self.native_worker.is_alive()
+                    or not self.native_finish_done.is_set()):
+                raise BoundaryError("native_episode", "native_unknown_release_not_applicable")
+            profile, profile_sha = self._read_native_profile()
+            if profile_sha != record["profile_sha256"]:
+                raise BoundaryError("native_episode", "native_profile_changed")
+            self._verify_native_package(profile)
+            cleanup = record.get("cleanup") or {}
+            runtime = record.get("admission_context", {}).get("binding", {}).get(
+                "runtime_instance_id")
+            close = cleanup.get("close_result") or {}
+            disposition = native_binding.native_exit_disposition(close.get("exit"), runtime)
+            if (close.get("type") != "close_result" or cleanup.get("driver_exit_code") != 0
+                    or cleanup.get("forced_fallback") is not False
+                    or cleanup.get("cleanup_error") is not None
+                    or disposition["native_exit_disposition"] == "unknown"
+                    or disposition["native_shutdown_ack"] != "runtime_bound_acknowledged"):
+                raise BoundaryError("native_episode", "native_owned_exit_unproved")
+            proof = unoccupied(profile, self._native_state_root(profile))
+            retained = self._native_operation_store(create=True)
+            assert retained is not None
+            store = retained[0]
+            ref = record["environment_ref"]
+            candidate = self._native_unknown_candidate()
+            if candidate is None:
+                seal = {"schema": SCHEMA, "result": "unknown",
+                        "sealed_at": datetime.now(UTC).isoformat(),
+                        "expected_original": expected(record, raw, None),
+                        "request_sha256": record["request_sha256"], "original": record,
+                        "original_resource_utf8": raw.decode("utf-8"), "native_exit": disposition}
+                key = f"operations/{ref}/unknown-seal.json"
+                store.put_if_absent(key, json_bytes(seal))
+                durable_readback(store.root / key, json_bytes(seal))
+                candidate = self._native_unknown_candidate()
+            assert candidate is not None
+            # A fresh, explicitly requested confirmation has its own immutable
+            # name. Failure after publication leaves evidence, never permission.
+            confirmed = {"schema": "spireagent/native-unknown-confirmation-v1",
+                         "application_instance_id": self.native_application_instance_id,
+                         "expected": value, "seal_sha256": candidate["sha256"],
+                         "confirmed_at": datetime.now(UTC).isoformat(), "occupancy": proof}
+            key = f"operations/{ref}/confirmations/{uuid.uuid4().hex}.json"
+            store.put_if_absent(key, json_bytes(confirmed))
+            durable_readback(store.root / key, json_bytes(confirmed))
+            self._native_unknown_confirmations[ref] = {
+                "key": key, "sha256": hashlib.sha256(json_bytes(confirmed)).hexdigest()}
+            try:
+                result = self.native_unknown_release()
+                assert result is not None
+                return result
+            except (OSError, ValueError, StoreError):
+                self._native_unknown_confirmations.pop(ref, None)
+                raise
 
     def bind_native_application(
         self,
@@ -1155,8 +1299,14 @@ class LocalEnvironmentService:
             existing = self._native_existing_intent(body)
             if existing is not None:
                 return existing
-            if self.native_record.get("phase") in native_binding.RESERVED_PHASES:
+            if (self.native_episode_status().get("phase") in native_binding.RESERVED_PHASES
+                    and self.native_unknown_release() is None):
                 raise BoundaryError("native_episode", "native_resource_reserved")
+            if self.native_unknown_release() is not None:
+                from .native_unknown import unoccupied
+
+                assert profile is not None
+                unoccupied(profile, self._native_state_root(profile))
             if self.native_admit_prepare is None:
                 raise BoundaryError("native_episode", "application_owner_required")
             self.native_admit_prepare()  # Existing Source/Model guard, same lock.

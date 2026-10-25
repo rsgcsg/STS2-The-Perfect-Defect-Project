@@ -142,6 +142,8 @@ def main(argv: list[str] | None = None) -> int:
             "attach",
             "native-status",
             "native-finish",
+            "unknown-status",
+            "seal-unknown",
             "agent-request",
             "run-agent",
             "prepare",
@@ -327,6 +329,7 @@ def main(argv: list[str] | None = None) -> int:
                     selection=args.selection,
                     operation=args.run_operation,
                     run_profile=args.run_profile,
+                    expected_release=decode_json(args.input.read_bytes()) if args.input else None,
                 )
             elif args.command == "model":
                 from spireagent.workbench.local_model_cli import model_command

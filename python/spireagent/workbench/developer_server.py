@@ -798,6 +798,18 @@ class Application:
             }
         return self.local_environment.close_native_after_actor(record, client, actor)
 
+    def seal_native_unknown(self, body: dict[str, Any]) -> dict[str, Any]:
+        """An operator release is not a retry or a successful Actor evaluation."""
+        from .native_unknown import no_handles
+
+        with self.models.lock:
+            self.reference_evaluation.check_access("stop")
+            self.models._require_stopped_runtime()
+            if self.models.thread is not None and self.models.thread.is_alive():
+                raise BoundaryError("native_episode", "actor_still_active")
+            no_handles(self.models.directory)
+            return self.local_environment.seal_native_unknown(body)
+
     def create_managed_local_workspace(self) -> dict[str, Any]:
         if self.config_path is None:
             raise BoundaryError("managed_workspace", "running_instance_unavailable")
@@ -1512,6 +1524,7 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                 or parsed.path == ("/api/local-environment/scenes")
                 or parsed.path == ("/api/local-environment/comparisons")
                 or parsed.path == ("/api/local-environment/native")
+                or parsed.path == "/api/local-environment/native/unknown-release"
                 or parsed.path.startswith(
                     (
                         "/api/local-environment/reports/",
@@ -1522,7 +1535,9 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                 )
             ):
                 if not self.authenticated_browser() and not (
-                    parsed.path == "/api/local-environment/native" and self.control_client()
+                    parsed.path in {"/api/local-environment/native",
+                                    "/api/local-environment/native/unknown-release"}
+                    and self.control_client()
                 ):
                     self.respond(401, b'{"error":"browser_session_required"}')
                     return
@@ -1531,6 +1546,8 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                         raise ValueError
                     if parsed.path == "/api/local-environment/native":
                         value = app.native_episode_status()
+                    elif parsed.path == "/api/local-environment/native/unknown-release":
+                        value = app.local_environment.native_unknown_preview()
                     elif parsed.path == "/api/local-environment":
                         value = {
                             **app.local_environment.status(),
@@ -2133,6 +2150,13 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                     )
                     if self.path == "/api/local-environment/native/prepare":
                         value = app.prepare_native_episode(body)
+                    elif self.path == "/api/local-environment/native/seal-unknown":
+                        value = app.seal_native_unknown(body)
+                    elif (self.path == "/api/local-environment/native/cool-evidence"
+                          and set(body) == {"run_id"}):
+                        from .evaluation_cache import cool_completed
+
+                        value = cool_completed(app, body["run_id"])
                     elif self.path == "/api/local-environment/native/finish" and set(body) == {
                         "environment_ref"
                     }:
