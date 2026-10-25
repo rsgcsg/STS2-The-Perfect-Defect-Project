@@ -48,6 +48,7 @@ def test_full_shape_tail_and_projection_cache_cannot_be_replaced(tmp_path):
     model = SimpleNamespace(execution=MStdExecution(), tokenize=lambda text: ([1, 2], []))
     report, indices = qualification.shape_report(population, model)
     assert report["TRAIN_N"] == 4 and report["all_TRAIN_shapes_scanned"]
+    assert "not_sampler" in report["reference_grouping_order"]
     assert report["distributions"]["entities"]["max"]["value"] == len(frames[-1].entities)
     assert 3 in indices and report["distributions"]["entities"]["max"]["point_id"] == "3"
     cache = tmp_path / "cache.json"
@@ -209,8 +210,9 @@ def test_module_entry_orchestrates_canonical_replacement_children(
     assert modes == ["train", "resume"]
 
 
+@pytest.mark.parametrize("timeout,memory", [(1800, 32768), (7200, 131072)])
 def test_qualification_reads_original_curation_profile_without_runtime_upgrade(
-    tmp_path, monkeypatch,
+    tmp_path, monkeypatch, timeout, memory,
 ):
     import importlib.metadata
     import runpy
@@ -239,7 +241,8 @@ def test_qualification_reads_original_curation_profile_without_runtime_upgrade(
     plan.write_bytes(json_bytes({"variants": [MStdExecution().to_dict()], "profile": False}))
     monkeypatch.setattr(sys, "argv", ["calibrate", "--image", "im-" + "a" * 22,
         "--input", "b" * 64, "--plan", str(plan), "--receipt", str(tmp_path / "receipt.json"),
-        "--qualify", "--config", str(config_path), "--operation-id", "c" * 32, "--steps", "200"])
+        "--qualify", "--config", str(config_path), "--operation-id", "c" * 32, "--steps", "200",
+        "--timeout", str(timeout), "--memory-mib", str(memory)])
     owner = runpy.run_path(str(Path(__file__).parents[1]
                               / "deploy/cloud-worker/calibrate_p1.py"))
     with pytest.raises(BeforeAnyModalOffer):
@@ -247,3 +250,27 @@ def test_qualification_reads_original_curation_profile_without_runtime_upgrade(
     assert seen == [original.combination]
     assert json.loads(config_path.read_bytes()) == original.to_dict()
     assert not (tmp_path / "receipt.json").exists()
+
+
+@pytest.mark.parametrize("qualify,timeout,memory", [
+    (False, 1801, 32768), (False, 1800, 32769),
+    (True, 7201, 131072), (True, 7200, 131073),
+])
+def test_qualification_resource_limits_preserve_legacy_probe_bounds(
+    tmp_path, monkeypatch, qualify, timeout, memory,
+):
+    import importlib.metadata
+    import runpy
+
+    import spireagent.source
+
+    monkeypatch.setattr(spireagent.source, "source_identity", lambda root: PRODUCER)
+    monkeypatch.setattr(importlib.metadata, "version", lambda package: "1.5.5")
+    monkeypatch.setattr(sys, "argv", ["calibrate", "--image", "im-" + "a" * 22,
+        "--input", "b" * 64, "--plan", str(tmp_path / "unused.json"),
+        "--receipt", str(tmp_path / "receipt.json"), "--timeout", str(timeout),
+        "--memory-mib", str(memory), *(["--qualify"] if qualify else [])])
+    owner = runpy.run_path(str(Path(__file__).parents[1]
+                              / "deploy/cloud-worker/calibrate_p1.py"))
+    with pytest.raises(ValueError, match="fresh_receipt_and_bounded_resources_required"):
+        owner["main"]()

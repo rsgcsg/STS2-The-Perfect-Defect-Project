@@ -100,6 +100,7 @@ def shape_report(population: Population, model: MStd) -> tuple[dict, list[int]]:
             "representative_point_ids": [population.point_ids[i] for i in sorted(selected)],
             "reference_microbatch_size_counts": {str(size): sum(len(g) == size for g in groups)
                                                     for size in sorted({len(g) for g in groups})},
+            "reference_grouping_order": "sorted_TRAIN_point_ids_in_64_sample_groups_not_sampler",
             "all_TRAIN_shapes_scanned": True}, sorted(selected)
 
 

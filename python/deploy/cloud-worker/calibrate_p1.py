@@ -114,8 +114,13 @@ def main() -> int:
     digest(args.input, "calibration.input_id")
     if not re.fullmatch(r"im-[A-Za-z0-9]{22}", args.image):
         raise ValueError("exact_immutable_native_worker_image_required")
-    if args.receipt.exists() or not (60 <= args.timeout <= 1800
-                                   and 1 <= args.cpu <= 8 and 8192 <= args.memory_mib <= 32768):
+    # Full-corpus preparation scales with membership, independently of the
+    # bounded update count. Keep the old short-window bounds; larger explicit
+    # qualification allocations still require their own operator spending grant.
+    maximum_timeout, maximum_memory = (7200, 131072) if args.qualify else (1800, 32768)
+    if args.receipt.exists() or not (60 <= args.timeout <= maximum_timeout
+                                   and 1 <= args.cpu <= 8
+                                   and 8192 <= args.memory_mib <= maximum_memory):
         raise ValueError("fresh_receipt_and_bounded_resources_required")
     plan = json.loads(args.plan.read_bytes())
     if not isinstance(plan, dict) or set(plan) != {"variants", "profile"}:
