@@ -26,7 +26,7 @@ from urllib.parse import parse_qs, urlsplit
 from urllib.request import ProxyHandler, Request, build_opener
 
 from spireagent.console.page import CSP, asset, render_shell
-from spireagent.json_boundary import BoundaryError, digest
+from spireagent.json_boundary import BoundaryError, digest, json_bytes
 from spireagent.local_diagnostics import LocalDiagnostics
 from spireagent.workbench.console import LocalConsole
 from spireagent.workbench.dashboard import _safe_value
@@ -379,6 +379,7 @@ class Application:
         self.local_recordings = LocalRecordingCatalog(config)
         # Keep command-time owner observations separate from concurrent browser GET scans.
         self.local_recording_import = LocalRecordingImporter(config, LocalRecordingCatalog(config))
+        self.local_recording_import.global_run_retired = self.local_environment.global_run_retired
         self.local_recording_import.operation_admission_guard = (
             self.reference_evaluation.check_access)
         from .p1_recording_maintenance import P1RecordingMaintenance
@@ -632,6 +633,7 @@ class Application:
         # Called only under the existing shared Model admission lock. Native
         # reservation itself is committed by Environment before that lock exits.
         self.models._require_source_admission()
+        self.local_recording_import.require_publication_admission()
         if (
             self._native_episode_shutdown
             or self.models.closed
@@ -797,6 +799,86 @@ class Application:
                 else "actor_stop_or_seal_failed",
             }
         return self.local_environment.close_native_after_actor(record, client, actor)
+
+    def native_unknown_preview(self) -> dict[str, Any]:
+        with self.models.lock, self.local_recording_import.lock:
+            result = self.local_environment.native_unknown_preview()
+            publication = self.local_recording_import.global_unknown_snapshot()
+            if publication is not None:
+                result["expected"].update(
+                    expected_publication_operation_id=publication["operation_id"],
+                    expected_publication_run_id=publication["run_id"],
+                    expected_publication_sha256=publication["sha256"])
+                result["publication"] = {
+                    k: publication[k] for k in ("operation_id", "run_id", "sha256")}
+                result["publication"]["requires_confirmation"] = (
+                    not self.local_recording_import.global_unknown_released())
+            return result
+
+    def seal_native_unknown(self, body: dict[str, Any]) -> dict[str, Any]:
+        """An operator release is not a retry or a successful Actor evaluation."""
+        from .native_unknown import durable_readback, no_handles
+
+        with self.models.lock, self.local_recording_import.lock:
+            self.reference_evaluation.check_access("stop")
+            self.models._require_stopped_runtime()
+            if self.models.thread is not None and self.models.thread.is_alive():
+                raise BoundaryError("native_episode", "actor_still_active")
+            if (self.local_recording_import.thread is not None
+                    and self.local_recording_import.thread.is_alive()):
+                raise BoundaryError("native_episode", "publication_worker_still_active")
+            preview = self.native_unknown_preview()
+            if body != preview["expected"]:
+                raise BoundaryError("native_episode", "native_unknown_release_identity_mismatch")
+            if (preview.get("release") is not None
+                    and not (preview.get("publication") or {}).get("requires_confirmation")):
+                return {**preview["release"], "expected": body}
+            no_handles(self.models.directory)
+            native_expected = self.local_environment.native_unknown_preview()["expected"]
+            publication = self.local_recording_import.global_unknown_snapshot()
+            related = None
+            store = None
+            if publication is not None:
+                if publication["run_id"] != native_expected["expected_run_id"]:
+                    raise BoundaryError("native_episode", "publication_native_run_mismatch")
+                retained = self.local_environment._native_operation_store(create=True)
+                assert retained is not None
+                store = retained[0]
+                raw = json_bytes({
+                    "schema": "spireagent/global-publication-unknown-snapshot-v1",
+                    "result": "unknown", "operation_id": publication["operation_id"],
+                    "run_id": publication["run_id"], "original_sha256": publication["sha256"],
+                    "original_utf8": publication["raw"].decode("utf-8")})
+                key = (f"operations/{native_expected['expected_environment_ref']}/publication/"
+                       f"{publication['operation_id']}/{publication['sha256']}.json")
+                store.put_if_absent(key, raw)
+                durable_readback(store.root / key, raw)
+                related = {"key": key, "sha256": hashlib.sha256(raw).hexdigest(),
+                           "operation_id": publication["operation_id"],
+                           "operation_sha256": publication["sha256"],
+                           "run_id": publication["run_id"]}
+            try:
+                result = self.local_environment.seal_native_unknown(
+                    native_expected, publication=related)
+                if related is not None:
+                    assert store is not None
+                    key = f"retired-global-publications/{related['run_id']}.json"
+                    retired = json_bytes({"schema": "spireagent/retired-global-publication-v1",
+                                          "run_id": related["run_id"], "result": "unknown"})
+                    store.put_if_absent(key, retired)
+                    durable_readback(store.root / key, retired)
+                    self.local_recording_import._released_global_unknown = {
+                        "operation_id": related["operation_id"],
+                        "operation_sha256": related["operation_sha256"], "store": store,
+                        "archive": related, "confirmation": result["confirmation"]}
+                    if not self.local_recording_import.global_unknown_released():
+                        raise BoundaryError("local_import", "global_unknown_release_unconfirmed")
+                return {**result, "expected": body}
+            except (OSError, ValueError):
+                ref = native_expected["expected_environment_ref"]
+                self.local_environment._native_unknown_confirmations.pop(ref, None)
+                self.local_recording_import._released_global_unknown = None
+                raise
 
     def create_managed_local_workspace(self) -> dict[str, Any]:
         if self.config_path is None:
@@ -1512,6 +1594,7 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                 or parsed.path == ("/api/local-environment/scenes")
                 or parsed.path == ("/api/local-environment/comparisons")
                 or parsed.path == ("/api/local-environment/native")
+                or parsed.path == "/api/local-environment/native/unknown-release"
                 or parsed.path.startswith(
                     (
                         "/api/local-environment/reports/",
@@ -1522,7 +1605,9 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                 )
             ):
                 if not self.authenticated_browser() and not (
-                    parsed.path == "/api/local-environment/native" and self.control_client()
+                    parsed.path in {"/api/local-environment/native",
+                                    "/api/local-environment/native/unknown-release"}
+                    and self.control_client()
                 ):
                     self.respond(401, b'{"error":"browser_session_required"}')
                     return
@@ -1531,6 +1616,8 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                         raise ValueError
                     if parsed.path == "/api/local-environment/native":
                         value = app.native_episode_status()
+                    elif parsed.path == "/api/local-environment/native/unknown-release":
+                        value = app.native_unknown_preview()
                     elif parsed.path == "/api/local-environment":
                         value = {
                             **app.local_environment.status(),
@@ -2133,6 +2220,13 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                     )
                     if self.path == "/api/local-environment/native/prepare":
                         value = app.prepare_native_episode(body)
+                    elif self.path == "/api/local-environment/native/seal-unknown":
+                        value = app.seal_native_unknown(body)
+                    elif (self.path == "/api/local-environment/native/cool-evidence"
+                          and set(body) == {"run_id"}):
+                        from .evaluation_cache import cool_completed
+
+                        value = cool_completed(app, body["run_id"])
                     elif self.path == "/api/local-environment/native/finish" and set(body) == {
                         "environment_ref"
                     }:

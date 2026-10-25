@@ -6,6 +6,7 @@ import math
 from pathlib import Path
 from time import monotonic
 from typing import Any
+from urllib.error import HTTPError
 from urllib.parse import urlencode
 from urllib.request import ProxyHandler, Request, build_opener
 
@@ -48,6 +49,7 @@ def native_episode_command(
     original_request: dict[str, Any] | None = None,
     run_id: str | None = None,
     peer: dict[str, Any] | None = None,
+    expected_release: dict[str, Any] | None = None,
     timeout_seconds: float | None = None,
     _execution_scope: str | None = None,
 ) -> dict[str, Any]:
@@ -89,6 +91,18 @@ def native_episode_command(
             if len(raw) > 1024 * 1024 or not isinstance(value, dict):
                 raise ValueError
             return value
+        except HTTPError as error:
+            # A typed pre-admission capacity refusal is known not to have
+            # offered a world. Other errors retain the no-retry unknown path.
+            if action == "prepare-owned" and error.code == 409:
+                value = decode_json(error.read(4096))
+                if (isinstance(value, dict)
+                        and value.get("error") == "workspace_capacity_insufficient"):
+                    raise BoundaryError(
+                        "native_episode", "workspace_capacity_insufficient") from error
+            raise BoundaryError(
+                "native_episode", "application_request_failed_check_original_status_no_retry"
+            ) from error
         except (OSError, ValueError) as error:
             raise BoundaryError(
                 "native_episode", "application_request_failed_check_original_status_no_retry"
@@ -119,6 +133,16 @@ def native_episode_command(
         return call("/api/local-environment/native/prepare", preparation_body(body))
     if action == "native-status":
         return call("/api/local-environment/native", None)
+    if action == "unknown-status":
+        return call("/api/local-environment/native/unknown-release", None)
+    if action == "seal-unknown":
+        if not isinstance(expected_release, dict):
+            raise BoundaryError("native_episode", "expected_unknown_identity_required")
+        return call("/api/local-environment/native/seal-unknown", expected_release)
+    if action == "cool-evidence":
+        if not isinstance(run_id, str) or not run_id:
+            raise BoundaryError("native_episode", "original_run_required")
+        return call("/api/local-environment/native/cool-evidence", {"run_id": run_id})
     if action == "native-finish":
         return call(
             "/api/local-environment/native/finish",

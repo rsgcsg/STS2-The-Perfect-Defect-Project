@@ -1,15 +1,19 @@
-# 当前：存储归位已按批准范围交付，整体验收仍有缺口
+# 当前：评估链路最小接缝，原100槽位尚未续跑
 
 Resolve live GitHub refs before relying on this snapshot. 最新用户原话和现场证据 override this file.
 
-本轮是[工位存储归位](../plans/p1-prefreeze-2026-10-18/STORAGE_WORKSTATION_20261025.zh-CN.md)，root唯一写入；初始develop9abab77a，同步至74da29f0，分支codex/storage-workstation-rules-20261025，Draft PR236。00:31 AEST开工，04:01开发硬限不重置。存储页在原DATA_LIFECYCLE，五路径新读者验收通过；本轮不改变数据用途、训练配方或unknown含义。
+分数板：固定100槽，25开过，0胜、24自然负、1 unknown、75未开；24正常局有原R2完整typed读回收据。第25局run-b91e4519-7aa7-4548-ae19-741db4f6355e因ENOSPC中断，永不重投。A10的14槽及其他四角色各4槽均未开；不据不齐样本选最优模型。
 
-用户批准表v1的A111依赖叶已删/0跳过；C两项完整空目录驻留恢复和原Store离线读取通过后仅冷却objects。B完整R2发布、3441远端manifest、17批873完整payload/2752对象全SHA和原codec均通过，最小观测余量12.63GiB；持全部873个既有payload独占租约后冷却2752对象，metadata不变，随后原Store正常只读R2冷读通过。B总索引是a59f5ca8e9f29a75a65c223904c0bedd010362669faa24a159d8e65a440cffd0。03:01 AEST实测df空闲29.77GiB，开工9.009GiB，系统净增20.76GiB；40GiB未达，未扩审批范围。逐项收据/早期失败/最终表归指定共享replies与本轮任务CLOSEOUT。
+当前唯一任务：[可续跑链路与原100槽位续接](../plans/p1-prefreeze-2026-10-18/CHECKPOINT_REFERENCE_EVALUATION_20261024.zh-CN.md#可续跑链路与原100槽位续接2026-10-25当前任务)。root唯一源码/安装/现场owner，稳定候选仅做有界只读非作者复核。一页定义与CLI/SOP在[原操作指南](../../python/docs/LOCAL_MODEL_TASK_FLOW.md#可续跑的评估链路)；不另建控制器、存储或游戏协议。
 
-源码候选31b7fa62的远端CI40110940598两Linux分片和portable通过，Windows按计划跳过；最终收口文档提交的CI看PR准确head。本机full由用户为评估75局优先SIGINT停止，保留2697项/3失败/2skip部分XML；三个metadata fixture已按真实manifest修复并窄测通过，未重跑完整本地门。exact-game/构建安装/加载未完成，未merge或部署。实际主Store仍是10-20任务中的2GiB双peer配置；副本普通冷读/trim通过，但live维护maintenance_failed/enabled=false，本轮未修改或重启。源码保护不能当在用版本保护。
+用户10-25常设授权适用于本卡：必跑检查全过、CI全绿、讨论已解决且不改合同/删独有数据后，可自行普通merge进develop并报告提交号。main、新任务、追加预算、合同含义、付费训练等第三档仍问用户。开发累计4小时，先前文档段约6分钟已花；CI/批准/游戏等待另计，45分钟/2小时复盘，不因续接重置。依赖等待设闹钟，不提前收口。
 
-本轮不访问或修改2026-10-24/checkpoint-evaluation-*、repair/state、评估App或当前原始录制/Store/模型/release；不重投unknown。剩余是最终门、安装运行与主Store维护缺口，需按用户后续决定安排，合并仍须用户同意；不自动继续旧任务或宣称后台监测。
+源码分支codex/evaluation-ledger-20261025基于develop `6808583f`（PR236已普通合并）。当前做账本、显式unknown封存/无占用确认和正常R2恢复后的副本冷却；代码检查/CI/合入、App升级、实际25封存和75局均未完成。现有真实评估App仍来自干净84ee，Runtime43/Evidence36/Native rc63与七个模型固定；新App只在合入后正常升级。不得把候选源码或测试标成已安装/已运行。
+
+原输入及收据位于`/Users/fire/Documents/Codex/2026-10-24/checkpoint-evaluation-replay/`的CURRENT、FINAL-DELIVERY、matrix与R2-RECORDING-INDEX。原文件和失败字节只读，新账本不更换原project.json/state。新unknown停队列；不自动重试、清状态、绕过占用/落盘检查、改Runtime/Native/模型、读凭据或碰磁盘卡目录。评估与重测试串行。
+
+存储卡历史入口为[原存储任务](../plans/p1-prefreeze-2026-10-18/STORAGE_WORKSTATION_20261025.zh-CN.md)。PR236的开局空间门已集成；其清理、R2原件与主Store维护缺口仍归原owner，不在本卡重启或扩展。
 
 ## Remaining Platform non-claims
 
-之前的[检查点评估](../plans/p1-prefreeze-2026-10-18/CHECKPOINT_REFERENCE_EVALUATION_20261024.zh-CN.md)保留原失败和未启动分母；Runtime单局512MiB限额与实际ENOSPC不同，不从本轮清理恢复旧派工或资格。源码、构建安装、真实运行、Human/研究准入与模型效果分别验。完整换Mac恢复未验。
+source/test、构建、安装/加载、实际运行、Human/数据资格与模型效果分别报告。原100未完成，未开训练，不借旧CI或正常退出补造胜负、封存或资格。

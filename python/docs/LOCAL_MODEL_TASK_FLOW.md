@@ -13,6 +13,74 @@ Teacher and Public M2 admission, request/run association and their different Tas
 witnesses. This guide continues to own the existing preparation, control, Stop,
 sharing and recovery flow; the common contract adds no second execution owner.
 
+## 可续跑的评估链路
+
+这是长期职责定义；本轮补Reference矩阵续跑和显式unknown放行，实际安装/运行与模型效果另验。
+链路：录制 → 数据集 → 训练 → R2检查点 → 注册/完整Agent → 评估 → CURRENT顶部的分数板 → 下一轮训练决策。
+评估消费Connector/Native/Policy Runtime的公开协议、动作和结果，不拥有合法性、游戏规则或第二个控制器；GUI、CLI、API映射同一Application用例。
+
+|职责|唯一事实及现有owner|本轮最小接缝|
+|---|---|---|
+|计划|`stpd/evaluation/suites.py`的保留种子；冻结模型/输入、决策方式、角色、难度及运行条件|导入原矩阵和100槽位，原文件不变|
+|槽位账本|持久化的槽位、投递事实、原report/收据引用；不依赖调度进程存活|补跨attempt账本，按原计划选择未开槽位|
+|执行|`reference_suite.run_suite`及`ReferenceEvaluationService`沿原Model/native owner串行执行|复用原执行和完成局验证，不重写Agent或未知投递|
+|环境占用|`LocalEnvironmentService`拥有原生资源身份、worker及Host生命周期|人显式封存unknown；证明无占用、追加记录落盘后才放行|
+|证据和存储|原evidence-publish、Store/R2 typed读回与缓存owner|复用开局空间门；R2完整读回且无占用才冷却本机副本|
+|报告|从账本和原证据派生的全分母统计；结果可重算|不反写账本；未完成也能报告，不把封存算成功|
+
+这些是职责，不要求六个服务或六套schema；计划冻结、槽位事实追加，报告和缓存可重建。
+槽位以计划摘要及原矩阵行绑定模型/输入身份、角色、难度和种子；本地selection只是执行引用，不能代替权重身份。
+生命周期（未开/已投递/结束/unknown）与自然胜负、证据是否合格、环境是否释放分别记录，进程退出不能推导胜负。
+首次投递前持久化意图；重复`run`只选择从未投递槽位，崩溃或响应丢失先核原请求，不自动重试或重开。
+unknown只属于该槽位；新unknown停止当前调度，待人封存后可继续其余槽位，原unknown及失败分母永久保留。
+`seal-unknown`是人触发操作：核expected应用/资源/generation/Actor身份，并当场证明worker、Actor、Host和游戏均无占用。
+原请求、终态与证据不改删；单独追加封存/释放收据并确认落盘，任何身份、占用或写入证明不足都保持阻塞。
+`evaluation plan/run/status/report`是薄账本入口；现有suite及`--completed-report`仍是执行和已完成原局复用入口。
+原24负＋1unknown＋75未开按原身份导入；封存跳过unknown不等于将其伪装成completed-report合格局。
+空间不足发生在新局投递前时保持未开并正常停止；若已有有副作用投递，按原owner事实记账，不能回写成未开。
+冷却只移除有R2完整typed读回、空目录实际恢复/清单比对通过且无句柄的非活动副本；失败原件不因节省空间删除。
+
+可比性分四组：被测对象/计划轴（模型、输入、决策、种子、角色、难度），协议（P1及版本/暴露），世界（Host、游戏、Native），运行条件（画面、速度、App、机器）。
+模型等是分组比较轴，不能把不同模型混成一个胜率；配对须共享计划和其余受控条件。producer身份如实保留，不归一化。
+不同协议默认不可比；跨Host须有在该协议及声明范围下的等价证据，Reference为基准，本轮不合并Managed。
+跨画面/速度/App等运行条件须有明确等价证据才合并策略统计；协议观察和动作流一致的有限配对只证明其覆盖范围，unknown/崩溃率始终按实际条件分报。
+现有`--completed-report`严格核同manifest/selection/profile/速度/画面/peer及原finish/保全收据，不因新App修改旧producer或放宽校验；native-ui会改变原生producer，沿已有Reference重新绑定入口处理。
+绑定计划槽位的native-ui局计入评估，未绑定的是演示；界面不另长业务链。分数板列计划、开过、胜、负、unknown、替换和未开，并标证据缺口。
+以后：人显式`replace`追加关联的新槽位且保留原失败；`equivalence`生成有协议/范围的等价记录；Managed路线、跨计划比较及现有评估模块整合另定，不属于本轮实现。
+
+### 从原矩阵接续（Reference）
+
+使用已选择的干净Application源码、正常锁定Python环境和同一`project.json`；原运行state、模型与包不换。
+下列`/ABS/ledger`只放评估计划/账本/attempt原件，不是新Application状态；原矩阵、CSV、report、失败原件均只读。
+正常解释器执行 `python -m spireagent.workbench evaluation`，操作如下：
+
+```sh
+python -m spireagent.workbench evaluation plan --config /ABS/project.json \
+  --matrix /ABS/FROZEN-MATRIX.json --episodes /ABS/EPISODES.csv --ledger /ABS/ledger \
+  --output /ABS/import-report.json
+python -m spireagent.workbench project native-episode --config /ABS/project.json --action unknown-status
+```
+
+操作者核对preview的当前App/原App、资源、generation、run及原字节摘要，将`expected`对象保存为普通JSON，再显式调用：
+
+```sh
+python -m spireagent.workbench evaluation seal-unknown --config /ABS/project.json \
+  --ledger /ABS/ledger --expected /ABS/expected.json --output /ABS/unknown-release.json
+python -m spireagent.workbench evaluation run --config /ABS/project.json --ledger /ABS/ledger
+python -m spireagent.workbench evaluation status --ledger /ABS/ledger
+python -m spireagent.workbench evaluation report --ledger /ABS/ledger --output /ABS/scoreboard.json
+```
+
+封存不发送Stop、Host close或证据重发布。原失败快照和当前App确认分别追加；写入/读回/fsync失败不激活放行。
+若同App还留有GLOBAL `publication_unknown`，preview一并给出原发布operation/run/字节摘要；同次显式封存保留其完整原字节，再确认放行。原发布仍unknown，同一run禁止重发，后续新run才可接原发布入口。
+App重启后，若当前资源仍是该unknown，即使旧确认文件存在也须显式再确认并重查无占用；`run`先停在该检查，不预留新槽。
+不同App不能借旧PID/端口无响应推导无占用；使用准确pin的Host进程枚举、原生关闭收据及实际句柄检查，任一不可证就拒绝。
+`run`成功局沿正常evidence-publish完成R2读回，再经空目录恢复和清单复核冷却非活动副本；冷却失败保留证据并停，不自动重试。
+有新unknown就停等显式处理；崩溃后只读原attempt补账，不重发原准备/动作/finish/publish。证据阶段故障可封存账本unknown，原环境closed事实不改。
+空间不足在投递前返回`workspace_capacity_insufficient`，余槽未开。创建`ledger/STOP`显式停止；已有有副作用投递按原owner完成收束和原分母记账。
+`status/report`可在串行writer运行时读取已原子追加的前缀，不获取长任务写锁，不触发游戏或恢复。
+只做了已结束子集时不称完整评估；报告保留每槽原report和R2收据引用，CURRENT分数板从报告派生。回退App后旧封存/账本原件保留，旧版不理解的新放行默认拒绝。
+
 The existing `LocalModelExport.start` owner accepts the explicit closed
 `compatibility_profile="native-evidence-rc27-to-rc29-v1"` for a supported original
 sampled native Model. Ordinary calls keep strict original export behavior. The
