@@ -10,7 +10,7 @@ import torch
 from test_artifact_store_v1 import PRODUCER
 from test_p1_snapshot import explicit_snapshot, projection_fixture, store_at
 
-from spireagent.json_boundary import BoundaryError
+from spireagent.json_boundary import BoundaryError, FrozenObject
 from spireagent.storage.run_reporter import ObjectStoreRunReporter
 from spireagent.storage.store import copy_artifact
 from stpd.cloud_jobs.contracts import ComputeRequest
@@ -33,6 +33,27 @@ def small_run(tmp_path, execution_policy=None):
                          **({"execution_policy": execution_policy}
                             if execution_policy is not None else {}))
     return store, snapshot, run
+
+
+def test_new_run_named_default_and_legacy_missing_tag_are_separate(tmp_path):
+    store, _, run = small_run(tmp_path)
+    assert run.parameters.value()["execution_plan"] == "mstd-training-v1"
+    assert verify_p1_run(store, run.artifact_id, PRODUCER).execution == MStdExecution.for_plan(
+        "mstd-training-v1")
+    legacy = replace(run, parameters=FrozenObject.of({
+        key: value for key, value in run.parameters.value().items() if key != "execution_plan"
+    }))
+    store.publish(legacy)
+    assert verify_p1_run(store, legacy.artifact_id, PRODUCER).execution == MStdExecution()
+    explicit, _, reference = small_run(tmp_path / "reference", MStdExecution().to_dict())
+    assert "execution_plan" not in reference.parameters.value()
+    assert verify_p1_run(explicit, reference.artifact_id, PRODUCER).execution == MStdExecution()
+    ambiguous = replace(run, parameters=FrozenObject.of({
+        **run.parameters.value(), "execution_policy": MStdExecution().to_dict()
+    }))
+    store.publish(ambiguous)
+    with pytest.raises(BoundaryError, match="ambiguous_execution_configuration"):
+        verify_p1_run(store, ambiguous.artifact_id, PRODUCER)
 
 
 @pytest.mark.parametrize("implementation", [None, "row-fused-v1", "experimental-packed-v1"])
@@ -63,7 +84,8 @@ def test_same_worker_full_pause_resume_candidate_and_exact_model_readback(tmp_pa
     assert completed_event["timing"]["worker_seconds"] > 0
     workload = verify_p1_run(store, run.artifact_id, PRODUCER)
     complete = verify_p1_checkpoint(store, full.checkpoint_id, workload)
-    assert complete.state["identity"]["execution"] == (policy or MStdExecution().to_dict())
+    expected = policy or MStdExecution.for_plan("mstd-training-v1").to_dict()
+    assert complete.state["identity"]["execution"] == expected
     paused_request = replace(request, attempt_id="bounded-pause", stop_after=1)
     paused = dispatch(store, paused_request, PRODUCER)
     validate_receipt(store, paused_request, paused)
@@ -94,8 +116,8 @@ def test_same_worker_full_pause_resume_candidate_and_exact_model_readback(tmp_pa
     destination = tmp_path / "export"
     metadata = materialize_p1_model(readback, model.artifact_id, destination)
     loaded, package = load_model(destination / "model.tensor-tree", metadata["package_sha256"])
-    assert loaded.execution.to_dict() == (policy or MStdExecution().to_dict())
-    assert package["schema"] == ("stpd/p1-mstd-model-2" if policy else "stpd/p1-mstd-model-1")
+    assert loaded.execution.to_dict() == expected
+    assert package["schema"] == "stpd/p1-mstd-model-2"
     row = next(iter_snapshot_points(readback, snapshot.artifact_id))
     frame = project(row[1])
     with torch.inference_mode():

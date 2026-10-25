@@ -26,7 +26,8 @@ def definition(app: Any, sdk: Any, image: str, *, timeout: int, cpu: int, memory
         max_containers=1, min_containers=0, buffer_containers=0,
         single_use_containers=True, secrets=[sdk.Secret.from_name(secret_name)], serialized=True,
     )
-    def calibrate(input_id: str, plan: dict, expected_source: str, expected_lock: str) -> dict:
+    def calibrate(input_id: str, plan: dict, expected_source: str, expected_lock: str,
+                  qualification: dict | None = None) -> dict:
         import json
         import os
         import subprocess
@@ -41,13 +42,27 @@ def definition(app: Any, sdk: Any, image: str, *, timeout: int, cpu: int, memory
             request.write_text(json.dumps(plan), encoding="utf-8")
             environment = dict(os.environ)
             environment["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
-            result = subprocess.run(
-                ["/opt/stpd/python/.venv/bin/python", "-m", "stpd.p1.calibration",
-                 "--store", "s3", "--input", input_id, "--plan", str(request),
-                 "--expected-source", expected_source, "--expected-lock", expected_lock,
-                 "--trace", str(path / "trace.json")], cwd="/opt/stpd/python",
-                env=environment, text=True, capture_output=True, timeout=frozen_timeout - 10,
-            )
+            extra = ["--trace", str(path / "trace.json")]
+            module = "stpd.p1.calibration"
+            if qualification is not None:
+                module = "stpd.p1.qualification"
+                binding_path = path / "binding.json"
+                binding_path.write_text(json.dumps(qualification["binding"]), encoding="utf-8")
+                extra = ["--binding", str(binding_path), "--directory", str(path / "qualification"),
+                         "--steps", str(qualification["steps"])]
+            try:
+                result = subprocess.run(
+                    ["/opt/stpd/python/.venv/bin/python", "-m", module,
+                     "--store", "s3", "--input", input_id, "--plan", str(request),
+                     "--expected-source", expected_source, "--expected-lock", expected_lock,
+                     *extra], cwd="/opt/stpd/python",
+                    env=environment, text=True, capture_output=True, timeout=frozen_timeout - 10,
+                )
+            except subprocess.TimeoutExpired:
+                progress = path / "qualification" / "progress.json"
+                partial = json.loads(progress.read_bytes()) if progress.is_file() else {}
+                return {**partial, "state": "failed", "error_code": "worker_wall_timeout",
+                        "original_subprocess_timeout_seconds": frozen_timeout - 10}
         # No SDK/worker stderr or arbitrary exception text crosses this boundary.
         try:
             value = json.loads(result.stdout)
@@ -88,6 +103,10 @@ def main() -> int:
     parser.add_argument("--timeout", type=int, default=1200)
     parser.add_argument("--cpu", type=int, default=2)
     parser.add_argument("--memory-mib", type=int, default=16384)
+    parser.add_argument("--qualify", action="store_true")
+    parser.add_argument("--config", type=Path)
+    parser.add_argument("--operation-id")
+    parser.add_argument("--steps", type=int, default=256)
     args = parser.parse_args()
     if importlib.metadata.version("modal") != MODAL_SDK_VERSION:
         raise ValueError("locked_Modal_SDK_required")
@@ -95,8 +114,13 @@ def main() -> int:
     digest(args.input, "calibration.input_id")
     if not re.fullmatch(r"im-[A-Za-z0-9]{22}", args.image):
         raise ValueError("exact_immutable_native_worker_image_required")
-    if args.receipt.exists() or not (60 <= args.timeout <= 1800
-                                   and 1 <= args.cpu <= 8 and 8192 <= args.memory_mib <= 32768):
+    # Full-corpus preparation scales with membership, independently of the
+    # bounded update count. Keep the old short-window bounds; larger explicit
+    # qualification allocations still require their own operator spending grant.
+    maximum_timeout, maximum_memory = (7200, 131072) if args.qualify else (1800, 32768)
+    if args.receipt.exists() or not (60 <= args.timeout <= maximum_timeout
+                                   and 1 <= args.cpu <= 8
+                                   and 8192 <= args.memory_mib <= maximum_memory):
         raise ValueError("fresh_receipt_and_bounded_resources_required")
     plan = json.loads(args.plan.read_bytes())
     if not isinstance(plan, dict) or set(plan) != {"variants", "profile"}:
@@ -106,9 +130,24 @@ def main() -> int:
         raise ValueError("bounded_explicit_calibration_plan_required")
     for value in plan["variants"]:
         MStdExecution.decode(value)
+    qualification = None
+    if args.qualify:
+        if (args.config is None or args.operation_id is None
+                or not 200 <= args.steps <= 320):
+            raise ValueError("qualification_requires_original_Curation_and_200_to_320_updates")
+        from spireagent.workbench.developer import ProjectConfig
+        from spireagent.workbench.training_calibration import authorize_qualification
+
+        # This entry only reads the original Curation owner. It starts no local
+        # runtime and must not require upgrading that profile's game combination.
+        # The remote source/lock and all data/use identities remain checked.
+        qualification = {"binding": authorize_qualification(
+            ProjectConfig.load(args.config, require_current_combination=False),
+            args.input, args.operation_id), "steps": args.steps}
     identity = {"producer": producer.to_dict(), "image": args.image,
                 "input_id": args.input, "plan": plan, "cpu": args.cpu,
-                "memory_mib": args.memory_mib, "gpu": "L40S", "timeout": args.timeout}
+                "memory_mib": args.memory_mib, "gpu": "L40S", "timeout": args.timeout,
+                **({"qualification": qualification} if qualification is not None else {})}
     run_key = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
     app = modal.App("stpd-TRAIN-calibration-" + run_key[:40])
     function = definition(app, modal, args.image, timeout=args.timeout, cpu=args.cpu,
@@ -127,8 +166,10 @@ def main() -> int:
         with modal.enable_output(), app.run(environment_name=args.environment):
             receipt["app_id"] = app.app_id
             save()
-            call = function.spawn(args.input, plan, producer.source_revision,
-                                  producer.uv_lock_sha256)
+            arguments = [args.input, plan, producer.source_revision, producer.uv_lock_sha256]
+            if qualification is not None:
+                arguments.append(qualification)
+            call = function.spawn(*arguments)
             receipt.update(state="submitted", call_id=call.object_id)
             save()
             result = call.get(timeout=args.timeout + 180)

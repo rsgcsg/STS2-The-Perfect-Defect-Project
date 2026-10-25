@@ -1,3 +1,5 @@
+> Historical task; current training optimization definition and execution-plan SOP supersede its forward guidance: [FULLRUN_TRAINING](../../../python/docs/FULLRUN_TRAINING.md#training-performance-belongs-to-the-existing-chain). Original evidence and body remain unchanged.
+
 # 首批训练性能候选与检查点切换准备
 
 root 负责本轮完整交付，基线 `origin/develop=58d445f534c608260fbf825bdc5ae204772f8011`，

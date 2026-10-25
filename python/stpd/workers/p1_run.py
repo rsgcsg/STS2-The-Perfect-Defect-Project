@@ -73,7 +73,8 @@ def verify_p1_checkpoint(
         or identity.get("vocabulary_sha256") != training["vocabulary_sha256"]
         or identity.get("target_spec") != TARGET_SPEC
         or identity.get("execution", workload.execution.to_dict()) != workload.execution.to_dict()
-        or ("execution_policy" in workload.run.parameters.value() and "execution" not in identity)
+        or (bool({"execution_policy", "execution_plan"} & workload.run.parameters.value().keys())
+            and "execution" not in identity)
         or type(state.get("step")) is not int
         or not 0 <= state["step"] <= training["planned_steps"]
         or state.get("step") != info.get("optimizer_updates")

@@ -9,72 +9,71 @@ its scientific protocol are retained unchanged.
 
 ## Training performance belongs to the existing chain
 
-Performance engineering measures and improves the complete useful result per wall
-second and per cost under a stated quality requirement. It is a process across
-owners, not another top-level training manager or a new model authority.
-[Architecture roles](../../docs/ARCHITECTURE.md) and
-[chain purposes](../../docs/plans/p1-prefreeze-2026-10-18/CHAIN_PURPOSES.md) continue to own those boundaries.
+Training optimization is bounded engineering of the existing research training edge:
+turn approved data and a learning protocol into a recoverable, consumable result
+in less total wall time and cost. It spans existing owners; it creates no manager.
+The **execution plan** is its versioned trainer/model configuration, not the whole
+optimization process, trainer, resource allocation or lifecycle. See [chain purposes](../../docs/plans/p1-prefreeze-2026-10-18/CHAIN_PURPOSES.md).
 
-| Work or fact | Owning implementation |
+| Independent fact | Authority and relationship to a plan |
 | --- | --- |
-| Objective, data/split, architecture, optimizer, selection and quality protocol | Research recipe and its existing evaluation protocol |
-| Tensor packing, numerical kernels, microbatches, precision, synchronization and model-compatible export | That recipe's trainer/model implementation; freeze the selected execution in its Run and package |
-| Source/data-use admission, one intent, budget, attempt, fencing, continuation and accepted result | Existing Application / TrainingService / Curation / Ops / Scheduler |
-| Immutable bytes, verified readers, event indexes, checkpoint transfer and durability | Existing Store / RunReporter; no model-specific second cache authority |
-| GPU/CPU/RAM/timeouts, launch, original-handle observation and termination | Existing Compute provider/worker deployment |
-| Fair public observations, complete legal action catalogs and receipts | Platform contracts; training optimization adds no gameplay authority |
+| Learning goal, architecture, optimizer, sampling, loss, selection/early stopping | Research recipe; a plan must preserve the approved protocol |
+| Immutable membership, splits and exposure | Snapshot/Curation; read-only input, never modified to fit a speed target |
+| Packing, kernels, synchronization, microbatches, precision and CPU preparation | Recipe trainer/model; this is the execution plan, frozen by the Run/source |
+| Hardware, libraries, CPU/RAM, launch and timeout | Compute provider/worker; measured applicability conditions, not plan-owned resources |
+| Intent, admission, budget, checkpoint cadence, pause, continuation and unknown | Application/TrainingService/Ops/Scheduler; independent lifecycle, no second controller |
+| Checkpoint/event bytes, immutable indexes, transfer and cold readback | Store/RunReporter; tune their own parameters, no second cache authority |
+| Export/registration and downstream consumption | Existing artifact/contracts; a plan cannot silently change their meaning |
+| Stage timings, failed/unknown attempts and cost | Existing events/receipts; evidence for a plan, not authority to train |
 
-Changing a numerical implementation is distinct from changing the learning
-objective or judging quality. Same mathematical intent need not mean the same
-floating-point path. No throughput result alone grants exact resume, quality,
-installed use or live-game qualification. CPU/GPU code separation is an
-implementation choice within the recipe; a machine or process is not a new
-logical owner. CLI/API and optional GUI call the same use cases.
+Execution equivalence preserves sample/update membership, weights, complete inputs,
+loss weighting and stochastic draws. FP32 accumulation order may differ within
+predeclared loss/gradient tolerances; compare gradients including None versus zero
+and full shape tails. Microbatching/precision are not classified by their names:
+changed dropout draws, update semantics or precision need a separate quality
+comparison. A speed result grants neither quality nor exact old-checkpoint resume.
 
-Use this bounded lifecycle in the existing task and original recipe guide:
+Measure the complete path (cold prepare/read, update, DEV, save/readback, recovery,
+export/consume); change one candidate; check equal-weight real-TRAIN loss/gradients,
+full TRAIN shapes and bounded short training with replacement-process restore;
+then freeze a named plan and its applicable shape/model/runtime envelope in a new Run.
+Use E + V + H + T/s < T to decide if nonoverlapped implementation/verification,
+transition and remaining training costs justify a measured speedup. Do not multiply
+independent short-window factors into an end-to-end promise.
 
-1. Before training, freeze input/shape, recipe, execution, library/device identity,
-   budget and restore requirements. Reuse a measured profile whose conditions
-   still apply. For new or materially changed conditions, run a short real-TRAIN
-   clone through the recipe's actual update path. Check complete updates and
-   full save/restore before committing a long allocation.
-2. Separate preparation/read, tensor construction/transfer, forward/backward,
-   optimizer, DEV/selection, checkpoint publication, reconciliation and downstream
-   consumption. Normalize examples and complete optimizer updates; distinguish
-   cold start, warmup and steady state. Compare interleaved/reverse controls on
-   the same allocation. Collect diagnostic traces outside throughput windows.
-   Measure only enough to decide the first bottleneck; do not profile every step.
-3. During training, observe phase wall times, actual updates, loss/gradients,
-   checkpoint durability and the original job/attempt/handle. Investigate a
-   measured regression or stalled phase in its owner. An apparent empty GPU or
-   blank UI is not enough to change a live numerical policy. Unknown execution
-   stays on the original handle and is not resubmitted.
-4. After training, apply the frozen DEV/TEST protocol, CPU Model consumption and
-   required Agent/Reference evaluation with all failed/unknown/censored attempts.
-   Record useful outcome, quality, total wall/cost, remaining limits and applicable
-   performance conditions. Keep negative experiments and original source records.
+Reuse evidence only while its conditions hold. New shape tails, material data growth,
+model/representation, hardware/library or precision changes require affected short
+calibration. During a Run, retain its plan and original-handle unknown handling;
+stop on a regression, preserve that Run, and choose reference on a new Run.
+CLI/API and optional GUI use the same application; machines do not define owners.
 
-Same-Run recovery creates a new attempt with the same admitted source/config and
-exact compatible full checkpoint. An intentional repeated independent training
-creates a new Run/use/cost with its declared seed; it can reuse valid measurement
-knowledge without rerunning every profiler. Changed data/shape/model/library/
-hardware/precision invalidates affected claims, not every unrelated result.
-Cross-source state transfer requires an explicit reviewed derivation preserving
-full optimizer/RNG/sampler/cursor/DEV-best/early-stop/history and original lineage;
-it is not ordinary resume or a weights-only import. Keep the old Run immutable.
-A new implementation may also run from scratch under a new Run without claiming
-state continuity.
+### Historical choices and their present use
 
-Future RL can reuse these lifecycle/Store/Compute boundaries, while an RL recipe
-must own its actor/learner, policy version and lag, buffer/exposure, environment
-steps versus learner updates, and return/censor/cost evaluation. Those are future
-recipe contracts; this change implements neither RL nor a generic executor
-framework. Current N-only M-std remains supervised imitation. Quality changes
-follow the existing [research roadmap](research/RESEARCH_ROADMAP.zh-CN.md), independently of a
-performance-only comparison.
+These are bounded original results, not inherited qualification. Exact raw evidence
+and archived-source references are in [the 2026-10-25 evidence record](../../docs/evidence/P1_TRAINING_SPEEDUP_2026-10-25.md).
 
-The concrete P1 operation and measured limits are in [P1 T0](P1_T0.md#bounded-real-train-performance-calibration)
-and the [current optimization task](../../docs/plans/p1-prefreeze-2026-10-18/TRAINING_PERFORMANCE_20261023.zh-CN.md).
+| Method / owner | Original outcome | Present disposition and reason |
+| --- | --- | --- |
+| Packed gathers / model | CP312+256 TRAIN, 4 updates: ABBA 19.949→2.186s/update; FP32 model/Adam differ, same RNG in that window | Candidate for real-tail/gradient/restore qualification; old 9.13x is not a full-run result |
+| Row-fused / model | Same short window about 1.19x, exact model/Adam/RNG | Retain as explicit diagnostic/control and prior consumer; not the preferred v1 |
+| Micro2 / execution | 1.530s/update but RNG changed and scores differed 0.1833 | Exclude v1; needs quality comparison, not equivalent-execution admission |
+| Deferred finite checks / trainer | Old row short window 10.702→10.764s: no measured gain | Retest alone; retain full scores/loss/gradient guards before step, including unselected -inf |
+| Parallel events / Store reporter | 647 events 73.089→9.037s, identical event-ID digest | Reuse existing read_concurrency=8 consumers; retain serial default/API and integrity checks |
+| Migration lineA / Run+Ops | Normal start HTTP400; no jobs/attempts/GPU submissions; original detailed cause unknown | No migration in v1; new Run keeps original Run/checkpoints immutable |
+| lineB / qualification | Five calls support short-window throughput, not full quality/restore | Preserve limited verdict and original failures; add current evidence |
+| Auto continuation PR225 / Ops | Original final events: 9 pauses; final delivery records six automatic new segments | Reuse same Ops/Scheduler as failure insurance; longer segments still save periodic CP/DEV |
+| Token/CPU packing caches / model | Existing token memoization and host text packing already exist | Reuse; do not claim existing work as a new speed gain or cache learned embeddings |
+| CPU threads / resource+execution | Earlier 2/4-thread variants did not establish a repeatable gain | Keep recipe CPU2; no resource expansion based on low utilization |
+| J-min CUDA / old numeric worker | Fixed-weight math checks close, q07 raw parameter tolerance failed; later observation-only | Reuse predeclared tolerances and exact restore discipline; do not erase historical FAIL |
+| #141 / old M0 provider | Journal original call once; unknown output is never resubmitted | Reuse principle through current Ops, not the old model-specific controller |
+| #147 / old request transport | Bounded compressed wire validates logical length/hash; rejects truncated/trailing input | Current Store streaming suffices; no extra codec without a measured need |
+| #150 / old M2 engine | Real formal Adam+stage exceeded 128MiB; tiny fixture missed scale and repeated DEV cost | Verify real tails and full CP, not tiny-fixture capacity |
+| #158 / export/GUI | CUDA-trained artifact consumed by CPU with training/inference device separate | Reuse normal export/load/register contract; GPU training does not require GPU inference |
+| #161/#163 / old campaign | Submit intent persisted first; unknown original paid result blocks redispatch | Reuse existing Ops; do not resurrect campaign journal/scheduler |
+
+The concrete current plan and operator steps are in [P1 T0](P1_T0.md#bounded-real-train-performance-calibration).
+Future RL may reuse lifecycle/Store/Compute, while its recipe owns actor/learner,
+policy lag, buffer exposure and environment/update denominators. This task adds no RL.
 
 ## Immutable input pipeline
 

@@ -33,18 +33,30 @@ def optimizer_update(
     optimizer.zero_grad(set_to_none=True)
     model.train()
     losses: list[torch.Tensor] = []
+    finite_scores: list[torch.Tensor] = []
     sizes = []
     for group in microbatches(frames, list(range(len(frames))), model):
         sizes.append(len(group))
         batch_frames = [frames[index] for index in group]
         scores = (model.forward_batch(batch_frames, check_finite=False)
                   if model.execution.defer_score_sync else model.forward_batch(batch_frames))
+        if model.execution.defer_score_sync:
+            # Preserve the full-score guard, including unselected -inf scores
+            # whose cross-entropy and gradient can both remain finite. These
+            # device flags cause only one host synchronization per update.
+            finite_scores.append(torch.isfinite(torch.cat(scores)).all())
         packed = torch.nn.utils.rnn.pad_sequence(scores, batch_first=True, padding_value=-torch.inf)
         labels = torch.tensor([targets[index] for index in group], device=device)
         loss = F.cross_entropy(packed, labels, reduction="none")
         (loss.sum() / len(frames)).backward()
         losses.extend(loss.detach().unbind())
-    loss_values = torch.stack(losses).cpu().tolist()
+    if finite_scores:
+        values = torch.cat((torch.stack(losses), torch.stack(finite_scores))).cpu().tolist()
+        loss_values = values[:len(losses)]
+        if not all(values[len(losses):]):
+            raise BoundaryError("p1_training", "non_finite_scores")
+    else:
+        loss_values = torch.stack(losses).cpu().tolist()
     if not all(math.isfinite(loss) for loss in loss_values):
         raise BoundaryError("p1_training", "non_finite_loss")
     gradients = [p.grad.norm() for p in model.parameters() if p.grad is not None]

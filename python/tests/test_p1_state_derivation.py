@@ -46,6 +46,11 @@ def legacy_fixture(tmp_path, store=None, snapshot=None):
     run = prepare_p1_run(
         store, snapshot.artifact_id, LEGACY_PRODUCER, MStdConfig(max_epochs=4), "a" * 32
     )
+    # This fixture deliberately represents a legacy Run with no execution tag.
+    run = replace(run, parameters=FrozenObject.of({
+        key: value for key, value in run.parameters.value().items() if key != "execution_plan"
+    }))
+    store.publish(run)
     request = ComputeRequest(
         "training", run.artifact_id, LEGACY_PRODUCER, "synthetic-original", stop_after=2
     )

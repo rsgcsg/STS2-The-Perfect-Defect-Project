@@ -69,6 +69,48 @@ def test_prior_training_exposure_or_cross_purpose_overlap_rejects_heldout(tmp_pa
         reserve_p1_snapshot(owner, store, snapshot.artifact_id)
 
 
+@pytest.mark.parametrize("fault", ["valid", "unrecorded", "excluded", "heldout_exposed"])
+def test_recorded_calibration_use_rechecks_ledger_without_local_reprojection(
+    tmp_path, monkeypatch, fault,
+):
+    from spireagent import p1_curation
+
+    _, store, owner, snapshot = workspace(tmp_path)
+    reserve_p1_snapshot(owner, store, snapshot.artifact_id)
+    record_p1_training_use(owner, store, snapshot.artifact_id, "d" * 32)
+    _, selection = load_snapshot(store, snapshot.artifact_id)
+    expected = None
+    reference = "d" * 32
+    if fault == "unrecorded":
+        reference, expected = "e" * 32, "training_source_use_missing"
+    elif fault == "excluded":
+        chosen = next(point for point in selection["points"] if point["split"] == "train")
+        owner.ledger.annotate(p1_curation._occurrence(chosen["source_decision_id"]),
+                              "engineering-test", "exclude", "quality exclusion")
+        expected = "snapshot_selected_excluded_N"
+    elif fault == "heldout_exposed":
+        dev = {p["root_run_id"] for p in selection["points"] if p["split"] == "dev"}
+        owner.ledger.use(dev, "training", "previous-training")
+        expected = "held_out_run_has_training_exposure"
+
+    def no_reprojection(*_args, **_kwargs):
+        pytest.fail("existing-use check must not project the full Snapshot locally")
+
+    monkeypatch.setattr(p1_curation, "load_snapshot", no_reprojection)
+    with owner.transaction() as db:
+        before = db.execute("SELECT COUNT(*) FROM curation_uses").fetchone()[0]
+    if expected:
+        with pytest.raises(BoundaryError, match=expected):
+            p1_curation.require_recorded_p1_training_use(
+                owner.ledger, store, snapshot.artifact_id, reference)
+    else:
+        actual, scopes = p1_curation.require_recorded_p1_training_use(
+            owner.ledger, store, snapshot.artifact_id, reference)
+        assert actual == selection and set(scopes) == {"train", "dev", "test"}
+    with owner.transaction() as db:
+        assert db.execute("SELECT COUNT(*) FROM curation_uses").fetchone()[0] == before
+
+
 def test_real_service_child_store_result_model_export_and_score(tmp_path):
     from spireagent.workbench.local_training import LocalTrainingService
 

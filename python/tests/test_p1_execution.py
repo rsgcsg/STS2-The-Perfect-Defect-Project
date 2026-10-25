@@ -98,6 +98,55 @@ def test_deferred_sync_still_rejects_nonfinite_before_any_parameter_update(monke
     assert all(torch.equal(value, before[key]) for key, value in model.state_dict().items())
 
 
+def test_deferred_sync_rejects_nonfinite_unselected_score_with_finite_loss(monkeypatch):
+    """A loss-only guard misses -inf on an unselected legal candidate."""
+    frame = project(observation())
+    model = MStd(fit_vocabulary([frame]), MStdExecution.for_plan("mstd-training-v1"))
+    optimizer = torch.optim.AdamW(model.parameters(), lr=3e-4)
+    parameter = next(model.parameters())
+    scores = parameter.reshape(-1)[:2] * 0 + torch.tensor([0.0, -torch.inf])
+    assert torch.isfinite(torch.nn.functional.cross_entropy(scores[None], torch.tensor([0])))
+    monkeypatch.setattr(model, "forward_batch", lambda frames, **kw: [scores for _ in frames])
+    with pytest.raises(BoundaryError, match="non_finite_scores"):
+        optimizer_update(model, optimizer, [frame], [0], 3e-4)
+    assert not optimizer.state
+
+
+def test_named_training_plan_keeps_legacy_constructor_and_full_microbatch_policy():
+    plan = MStdExecution.for_plan("mstd-training-v1")
+    assert MStdExecution().implementation == "reference"
+    assert MStdExecution.for_plan("reference-v1") == MStdExecution()
+    assert plan.implementation == "experimental-packed-v1" and plan.defer_score_sync
+    assert (plan.microbatch_size, plan.scene_attention_area, plan.text_attention_area) == (
+        8, 262144, 262144)
+    assert MStdExecution.decode(plan.to_dict()) == plan
+    with pytest.raises(BoundaryError, match="unsupported_execution_plan"):
+        MStdExecution.for_plan("latest")
+
+
+def test_legacy_checkpoint_package_keeps_identical_inference_after_new_plan(tmp_path):
+    from stpd.p1.export import export_model, load_model
+    from stpd.workers.checkpoint_codec import encode_checkpoint
+
+    frame = project(observation())
+    torch.manual_seed(413)
+    legacy = MStd(fit_vocabulary([frame])).eval()
+    checkpoint = tmp_path / "legacy.tensor-tree"
+    checkpoint.write_bytes(encode_checkpoint({"model": legacy.state_dict()}))
+    with torch.inference_mode():
+        before = legacy(frame).clone()
+    descriptor = export_model(legacy, checkpoint, tmp_path / "package", {"fixture": "legacy"})
+    assert descriptor["schema"] == "stpd/p1-mstd-model-1"
+    # Resolving the new training default must never mutate inference defaults.
+    assert MStdExecution.for_plan("mstd-training-v1").implementation == "experimental-packed-v1"
+    loaded, package = load_model(tmp_path / "package/model.tensor-tree",
+                                 descriptor["package_sha256"])
+    assert "inference_execution" not in package
+    assert loaded.execution == MStdExecution()
+    with torch.inference_mode():
+        assert torch.equal(before, loaded(frame))
+
+
 @pytest.mark.parametrize("change", [
     {"microbatch_size": True}, {"cpu_threads": 0}, {"scene_attention_area": 0},
     {"text_attention_area": 2**29}, {"defer_score_sync": 1}, {"implementation": "automatic"},
