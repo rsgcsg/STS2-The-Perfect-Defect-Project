@@ -911,7 +911,7 @@
       "platform_source_revision": "b5389a0b4a1bbed37e6a9718776fdf38f06f50c9",
       "platform_source_digest_sha256": "dbcd6ec1df10cad5ad011eb61a2f2ca533d7a110cd3f1296efa9c154b98d0cea",
       "current_component_source_revision": "e6839dcfb30c6004d6a0bf969982320916c9b860",
-      "current_component_source_digest_sha256": "5d0f9bea50fb9a9014342ea7d6b6cbaea1bf2a3a9d24e2935db32a37bd6b5224",
+      "current_component_source_digest_sha256": "2200d45ac871f9edb0e67435b0f8f1d492b24e72e4ca5dbe0f2f4faa45e5a478",
       "artifact_sha256": "04104ca5cd47c82329be185a8aa7017f7982b2062048fbf825488bead231d1c1",
       "artifact_mvid": "7408a183-f5a8-4f95-a997-dbf588b1536b",
       "installed": "pass",
