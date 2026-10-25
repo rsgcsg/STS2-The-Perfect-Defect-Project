@@ -76,6 +76,7 @@ python -m spireagent.workbench evaluation report --ledger /ABS/ledger --output /
 App重启后，若当前资源仍是该unknown，即使旧确认文件存在也须显式再确认并重查无占用；`run`先停在该检查，不预留新槽。
 不同App不能借旧PID/端口无响应推导无占用；现场检查Actor/worker、Reference driver、准确pin的Host游戏进程枚举、状态/模型句柄和本机endpoint明确拒绝连接，任一不可证就拒绝。
 ENOSPC可能使关闭收据只留在旧App内存；重启后原closing记录和缺失的关闭事实保持unknown，封存只凭现场无占用证明放行，不补造finish_complete或关闭收据。
+新App对旧App资源的finish（含关停）只读返回，不重试关闭；没有自有Runtime的模型服务关停也不覆盖旧会话收据。
 `run`成功局沿正常evidence-publish完成R2读回，再经空目录恢复和清单复核冷却非活动副本；冷却失败保留证据并停，不自动重试。
 有新unknown就停等显式处理；崩溃后只读原attempt补账，不重发原准备/动作/finish/publish。证据阶段故障可封存账本unknown，原环境closed事实不改。
 空间不足在投递前返回`workspace_capacity_insufficient`，余槽未开。创建`ledger/STOP`显式停止；已有有副作用投递按原owner完成收束和原分母记账。

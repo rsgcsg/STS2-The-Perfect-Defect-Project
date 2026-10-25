@@ -22,7 +22,7 @@ from spireagent.json_boundary import BoundaryError
 from spireagent.storage.blobs import StoreError
 from spireagent.storage.local import LocalBlobStore
 from spireagent.workbench import native_unknown
-from spireagent.workbench.developer_server import create_server
+from spireagent.workbench.developer_server import Application, create_server
 from spireagent.workbench.local_model_cli import native_episode_command
 from spireagent.workbench.native_episode_binding import RESOURCE_FILE
 
@@ -95,12 +95,7 @@ def test_changed_expected_identity_rejects(native_app, monkeypatch, absent_os, f
     assert app.local_environment.native_unknown_release() is None
 
 
-def test_restart_after_terminal_enospc_releases_only_by_fresh_absence(
-    native_app, monkeypatch, absent_os,
-):
-    from spireagent.workbench.local_environment import LocalEnvironmentService
-
-    app, *_ = native_app
+def lost_terminal_write(app, monkeypatch):
     service = app.local_environment
     ready = prepared(app)
     service.native_record["actor"] = {"run_id": "run-" + "a" * 36}
@@ -118,6 +113,47 @@ def test_restart_after_terminal_enospc_releases_only_by_fresh_absence(
     assert final["finish_complete"] is True
     assert final["cleanup"]["driver_exit_code"] == 0
     assert (app.config.state_dir / RESOURCE_FILE).read_bytes() == original
+    return ready, original
+
+
+def test_reopened_application_finish_and_shutdown_preserve_previous_owner_bytes(
+    native_app, monkeypatch,
+):
+    app, *_ = native_app
+    ready, _original = lost_terminal_write(app, monkeypatch)
+    # The actual Model serializer keeps the previous Stop's unknown fact.
+    app.models.state.update(status="stopped", loaded=False,
+                            operation={"id": "e" * 32, "action": "stop", "status": "unknown"})
+    app.models._save()
+    paths = [app.config.state_dir / RESOURCE_FILE, app.models.directory / "session.json",
+             app.config.state_dir / "native-episode-operations-v1" / "operations"
+             / ready["environment_ref"] / "status.json"]
+    originals = {path: path.read_bytes() for path in paths}
+    reopened = Application(app.config, config_path=app.config_path)
+    assert reopened.instance_id != app.instance_id
+
+    def forbid_actor_stop(*_args, **_kwargs):
+        pytest.fail("a reopened App must not retry the original Actor Stop")
+
+    monkeypatch.setattr(reopened.models, "stop_native_episode_actor", forbid_actor_stop)
+    try:
+        status = reopened.finish_native_episode(ready["environment_ref"])
+        assert status["phase"] == "recovery_required"
+        assert status.get("finish_complete") is not True
+        assert {path: path.read_bytes() for path in paths} == originals
+    finally:
+        reopened.close()
+    assert {path: path.read_bytes() for path in paths} == originals
+
+
+def test_restart_after_terminal_enospc_releases_only_by_fresh_absence(
+    native_app, monkeypatch, absent_os,
+):
+    from spireagent.workbench.local_environment import LocalEnvironmentService
+
+    app, *_ = native_app
+    service = app.local_environment
+    ready, original = lost_terminal_write(app, monkeypatch)
 
     reopened = LocalEnvironmentService(app.config)
     reopened.seed_normalizer = service.seed_normalizer

@@ -1834,6 +1834,12 @@ class LocalEnvironmentService:
                 return self.native_episode_status(), None, False
             if self.native_record.get("phase") == "closing":
                 return self.native_episode_status(), None, False
+            if (self.native_application_instance_id is not None
+                    and self.native_record.get("application_instance_id")
+                    != self.native_application_instance_id):
+                # Reloading a foreign owner's unknown does not acquire its
+                # handles or permission to repeat finish, including at shutdown.
+                return self.native_episode_status(), None, False
             if self.native_record.get("phase") == "preparing":
                 self.native_record.update(
                     preparation_outcome="unknown"
