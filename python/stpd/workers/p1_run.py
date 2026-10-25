@@ -381,6 +381,8 @@ def _execute_p1_run(
     def event(kind: str, **details: Any) -> None:
         nonlocal event_step
         guard()
+        details.update(worker_elapsed_seconds=time.perf_counter() - started,
+                       worker_observed_unix=time.time())
         event_step += 1
         reporter.emit(
             Manifest(

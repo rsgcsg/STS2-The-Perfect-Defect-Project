@@ -85,3 +85,5 @@ Date: YYYY-MM-DD
 
 Keep numbering monotonic. A missing or unindexed ADR fails repository governance
 checks.
+
+- [ADR-0018: Explicit compute input availability](0018-explicit-compute-input-availability.md)

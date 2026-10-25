@@ -105,9 +105,9 @@ def main(argv: list[str] | None = None) -> int:
         if body is not None and not isinstance(body, dict):
             raise BoundaryError("local_training", "training_body_mismatch")
         action = args.action
-        if action != "package" and (args.cohort_plan is not None
-                                    or args.configuration_id is not None):
-            raise BoundaryError("training_cohort", "cohort_binding_requires_package")
+        if action not in {"package", "start"} and (args.cohort_plan is not None
+                                                   or args.configuration_id is not None):
+            raise BoundaryError("training_cohort", "cohort_binding_requires_package_or_start")
         if action == "shortlist":
             import os
 
@@ -138,6 +138,21 @@ def main(argv: list[str] | None = None) -> int:
                 configuration_id=args.configuration_id)
             print(json.dumps(result, ensure_ascii=False, sort_keys=True))
             return 0
+        if action == "start" and (args.cohort_plan is not None
+                                  or args.configuration_id is not None):
+            from .training_package import package_start, prepare_package
+
+            # One command, the same prepare/package and original Scheduler.
+            # Saving the package first retains the original intent if submission
+            # loses its response. Existing output rejects before another offer.
+            if args.cohort_plan is None:
+                raise BoundaryError("training_cohort", "cohort_plan_required")
+            prepare_package(
+                args.config, body, args.output, args.execution, wait_seconds=args.wait_seconds,
+                cohort_plan=json.loads(args.cohort_plan.read_bytes()),
+                configuration_id=args.configuration_id)
+            assert args.output is not None  # prepare_package checked before offering.
+            action, body = "start-prepared", package_start(json.loads(args.output.read_bytes()))
         if action == "start" and isinstance(body, dict) and body.get("schema") == PACKAGE_SCHEMA:
             from .training_package import package_start
 

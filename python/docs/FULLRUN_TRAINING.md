@@ -154,7 +154,8 @@ qualification receipts independently establish the result of those gates.
 2. 正常打开独立的训练 Application 配置。`remote_compute.compute_store` 指向现有 R2 peer；
    `execution_producer` 固定当前 source/lock；`target_path` 可指向尚不存在的本轮学校目标文件。
    没有目标时，准备阶段不会构造 provider 或启动 Scheduler；不能伪造 GPU UUID。
-   登录学校和分配机器之前先完成下面的 `package`，记录实测准备耗时。
+   可在分配前先做 `package`；计量“冻结结果→提交”时，应先准备好实际分配和准确环境，
+   再消费冻结结果。首次登录/分配/安装单独计时，不藏进提速数字。
 3. 请求字段为 `intent_id`（新32位hex）、`source_id`（A的Snapshot）、`config`（完整 MStdConfig）、
    `max_seconds`、`stop_after`（正式为 null），可附 `loss_weighting` 和 `checkpoint_policy`。
    新 Run 默认 `mstd-training-v1`。`loss_weighting` 例子是
@@ -167,12 +168,14 @@ python -m spireagent.workbench training package --execution remote \
   --output /ABS/next-package.json --wait-seconds 7200
 ```
 
-成功包记录原 Run、Snapshot、TrainingInput、完整 R2 闭包读回收据和原 intent，带内容摘要。
+成功包记录原 Run、Snapshot、TrainingInput、实际训练载荷 R2 读回收据和原 intent，带内容摘要。
+全部来源manifest/父编号保留；原始录制仅引用，不随计算输入复制或重读。
+这不声明原件完整冷恢复；原件保全仍用普通完整复制及原存储校验。
 原件不覆盖；更新切分/权重/配方后用新 intent 和新输出路径重做。准备失败先按原 intent
 查询 `training status --execution remote --intent-id ...`；响应丢失不盲目重投。
 这不是免检 token：启动仍验证原训练用途、准确 Run/source/lock/目标，worker 再验输入。
 
-准备完成才由本人登录学校/MFA，分配一张 L40S；复用既有严格 SSH host-key/ProxyJump 入口，
+由本人完成学校登录/MFA，分配一张 L40S；复用既有严格 SSH host-key/ProxyJump 入口，
 在新的独立 checkout 安装同 source/lock、固定 `CUBLAS_WORKSPACE_CONFIG=:4096:8`，
 核实际 Python/Torch/CUDA/GPU UUID/driver，冻结真实 SshTarget。私有 R2 环境文件在源码外，
 不得复制进数据包、日志、Git或报告。关闭准备用 Application，绑定真实目标后正常重开同一配置；
@@ -183,15 +186,36 @@ GPU 小测计入整轮8小时上限；下次正式整轮按实际样本数、实
 Jupyter 只用于首次核验或连接诊断，不另起一套浏览器训练控制器。新分配须核新主机身份；
 若门户指纹字段与 SSH 返回值不一致，先从已认证学校入口核对主机公钥，不能关闭校验。
 
-`max_seconds` 是原 Ops 任务的总墙钟上限，从领取任务起计，**包括提交前校验**；
-`target.timeout_seconds` 是远端监督进程的上限。两者不能按“纯训练步时”设置成同一个紧限，
-须分别计入实际输入校验、加载、计算、存档及接纳余量，并保持原总额度。
-2026-10-25 的10319 N真实输入短测中，start-prepared校验116.29秒，Scheduler输入校验
-174.68秒、用途登记175.37秒、SSH提交8.09秒；900秒Ops上限到达时仍未交付持久训练指标或CP，
-Scheduler正常取消并证实进程退出。该尝试只证明准确L40S环境可安装及严格SSH可用，
-未证明每步耗时、学校训练或检查点R2往返。不得把进程活着或数据包准备成功当作小测通过，
-本次保留原包和失败记录，无续时或重投。后续小测须另定足以覆盖冷加载的预算，
-或使用原有已批准的小读集校准入口；按实际结果重新估算整轮时间。
+新学校目标使用 `spireagent/ssh-target-2`，保留严格 source/lock、实际环境和host-key绑定，
+另固定 `preparation_seconds`（本轮300秒）。数据验证/加载/恢复结束、第一次控制检查前，
+worker写出绑定同request/attempt的本机ready观察，随后才起 `timeout_seconds` 训练时钟。
+准备和训练任一超时都停止同一进程组，unknown不重投。300秒存档余量仍保留在训练控制内。
+Ops仍作为整个尝试的保守看门狗：`max_seconds`＋worker准备＋控制端准备300秒；
+此学校配置的预约单位按秒，`reserved_units`必须至少覆盖这三项，否则提交前拒绝。
+例如训练900秒、worker准备300秒，则预约至少1500秒；总 `budget_limit`仍按批准的剩余秒数，
+且学校实际分配、安装、闲置、失败成本另外记入整轮8小时，不因“准备免费”而消失。
+同Ops自动续段也继承准备预算并服从原绝对截止。
+旧 `spireagent/ssh-target-1` 的序列化身份、总墙钟含义和旧配置不变，不静默迁移旧Run。
+
+历史失败保留：2026-10-25 的10319 N短测在旧900秒总墙钟下，start-prepared116.29秒、
+Scheduler输入校验174.68秒、用途登记175.37秒、SSH提交8.09秒，最终正常取消，无已确认更新或CP。
+新源码/缓存/CI均不能改写该失败；新短测另建同数据/配方/权重的新Run，绑定新准确source。
+
+Q已确认冻结后可直接用一条命令准备包并提交原Scheduler（已有分配/准确环境和正常Application）：
+
+```sh
+python -m spireagent.workbench training start --execution remote \
+  --config /ABS/training-project.json --input /ABS/next-request.json \
+  --cohort-plan /ABS/state/cohorts/CONFIG_ID/weight-candidates.json \
+  --configuration-id CONFIG_ID --output /ABS/new-package.json --wait-seconds 900
+```
+
+读取Q同一schema、配置ID及snapshot_id；已有snapshot_id不另freeze，当前切分/用途/曝光仍实查。
+先沿原package保存原intent，再沿原start-prepared提交，未增加控制器或训练链。
+`--output`必须不存在；若响应丢失，查已存包/原intent/job/句柄，不能重复命令碰运气。
+`--wait-seconds`只是单次HTTP等待，不能冒充三/五分钟性能已达标。
+操作内缓存只保当前一次准备/提交，提交后或下一次准备时释放；跨进程重新验证实际输入。
+Q的P1PreparationCache仍核代码/输入身份与实际SHA，缓存的是索引/局事实，未缓存模型Frame。
 
 
 用户说“开训”以后只需：
@@ -206,6 +230,11 @@ worker 把周期、DEV最佳、早期、暂停和最终检查点直接发布到�
 正常 `training status/progress` 查看原 job；unknown先查原句柄，不自动重投。
 本命令不会替用户在学校门户分配机器，也不保证学校认证会话永久有效。
 需要续段时使用既有同Ops显式 `auto-continue`，保留总绝对截止与剩余额度；不另起监督进程。
+
+检查点/结果冷接收使用 `storage.input_transfer.copy_input_artifact` 和已安装消费者的
+`stpd.p1.workload.result_read_payloads`；包括验证器实际需要的CP/模型/输入，全部raw编号仍在。
+不能对引用式计算Store使用完整 `copy_artifact` 并把缺少raw解释成检查点损坏。
+普通完整保全/恢复的接口及哈希要求保持不变。详见[计算输入约定](DATA_LIFECYCLE.md#p1-compute-input-availability)。
 
 ### 权重、配方与检查点
 

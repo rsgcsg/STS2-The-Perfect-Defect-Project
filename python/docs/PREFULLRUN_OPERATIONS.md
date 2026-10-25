@@ -45,6 +45,8 @@ Push/pull copy exact transitive parent closure and verified payloads, then publi
 artifact storage must be retained. Run completion slots are per-store conditional selections;
 copying a RunResult transfers its evidence, not a remote worker lease or completion slot.
 Use `--store <directory>` and `--registry <file>` for independent local workspaces.
+P1 compute preparation/result reception has an explicit [required-payload inventory](DATA_LIFECYCLE.md#p1-compute-input-availability):
+it retains exact raw-parent IDs but does not copy their payloads. This does not change full push/pull preservation.
 
 ## S3-compatible storage and disposable Linux compute
 
