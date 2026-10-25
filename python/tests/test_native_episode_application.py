@@ -10,6 +10,7 @@ import json
 import shutil
 import sys
 import threading
+from contextlib import ExitStack, suppress
 from pathlib import Path
 
 import pytest
@@ -161,14 +162,28 @@ def native_app(tmp_path, monkeypatch, native_endpoint, native_caps):
     service = app.local_environment
     monkeypatch.setattr(service, "seed_normalizer", lambda *_args: _args[-1])
     monkeypatch.setattr(service, "native_capabilities", lambda _endpoint: native_caps)
+    owned_drivers = ExitStack()
+
+    def contain_fixture_driver(current):
+        # Fake Actor failures correctly block production Host close. The test
+        # still owns this synthetic driver, including a failed ready constructor.
+        # Preserve an existing unknown native-close receipt; this cleanup
+        # proves only that the fixture driver process has exited.
+        with suppress(public_client.DriverCleanupError):
+            current.close(force=True)
+        assert current.close_receipt()["driver_exit_code"] is not None
 
     def client(command, _profile, **callbacks):
         assert (
             not app.models.lock._is_owned()
         )  # Network/process await lane is outside the admission lock.
+        def started(current):
+            owned_drivers.callback(contain_fixture_driver, current)
+            if callbacks.get("on_started") is not None:
+                callbacks["on_started"](current)
+
         return public_client.ReferencePlayerEnvironment(
-            command, response_timeout_seconds=5, **callbacks
-        )
+            command, response_timeout_seconds=5, **{**callbacks, "on_started": started})
 
     monkeypatch.setattr(service, "native_client_factory", client)
     yield app, profile, fixture, log
@@ -177,7 +192,11 @@ def native_app(tmp_path, monkeypatch, native_endpoint, native_caps):
         if current.get("environment_ref") and not current.get("finish_complete"):
             app.finish_native_episode(current["environment_ref"])
     finally:
-        app.close()
+        try:
+            app.close()
+        finally:
+            # ExitStack runs every owned cleanup even if another one fails.
+            owned_drivers.close()
 
 
 def prepared(app, body=None):
