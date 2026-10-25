@@ -105,7 +105,8 @@ def main(argv: list[str] | None = None) -> int:
         if body is not None and not isinstance(body, dict):
             raise BoundaryError("local_training", "training_body_mismatch")
         action = args.action
-        if action != "package" and (args.cohort_plan is not None or args.configuration_id is not None):
+        if action != "package" and (args.cohort_plan is not None
+                                    or args.configuration_id is not None):
             raise BoundaryError("training_cohort", "cohort_binding_requires_package")
         if action == "shortlist":
             import os
@@ -135,7 +136,8 @@ def main(argv: list[str] | None = None) -> int:
 
                 if (not isinstance(body, dict) or "loss_weighting" in body
                         or args.configuration_id is None):
-                    raise BoundaryError("training_cohort", "explicit_single_weighting_source_required")
+                    raise BoundaryError("training_cohort",
+                                        "explicit_single_weighting_source_required")
                 body = {**body, "loss_weighting": cohort_weighting(
                     ProjectConfig.load(args.config), json.loads(args.cohort_plan.read_bytes()),
                     args.configuration_id, body["source_id"])}

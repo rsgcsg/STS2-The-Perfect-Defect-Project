@@ -83,3 +83,40 @@ def test_prepare_before_allocation_has_no_target_or_provider_call(tmp_path, monk
         assert prepared["provider_submitted"] is False
         assert provider.calls == []
         assert store.get_manifest(prepared["run_id"]).producer == provider.target.producer
+
+
+def test_cohort_binds_exact_split_membership_counts_and_definition(tmp_path):
+    from collections import Counter
+    from copy import deepcopy
+
+    from spireagent.workbench.training_cohort import cohort_weighting
+    from stpd.p1.data import digest, json_bytes
+    from stpd.p1.dataset import SnapshotReader
+
+    with client(tmp_path) as (app, _call, _provider, store, _owner, snapshot, _path):
+        selection = SnapshotReader(store, snapshot.artifact_id).selection
+        counts = Counter((p["root_run_id"], p["group_id"], p["split"])
+                         for p in selection["points"])
+        body = {"schema": "stpd/p1-cohort-plan-1", "definition": {"rule": "fixture-v1"},
+                "sources": selection["sources"], "selection": selection["selection"],
+                "splits": selection["split_by_group"],
+                "runs": [{"root_run_id": r, "group_id": g, "split": s,
+                          "N": n, "train_weight": 3 if s == "train" else None}
+                         for (r, g, s), n in counts.items()]}
+        identity = digest(json_bytes(body))
+        plan = {**body, "configuration_id": identity}
+        weighting = cohort_weighting(app.config, plan, identity, snapshot.artifact_id)
+        assert weighting["rule_id"] == identity
+        assert weighting["definition"] == body["definition"]
+        assert set(weighting["weights_by_root"].values()) == {3.0}
+        for key in ("definition", "splits"):
+            changed = deepcopy(plan)
+            changed[key]["changed"] = "changed"
+            with pytest.raises(BoundaryError, match="exact_cohort_configuration_required"):
+                cohort_weighting(app.config, changed, identity, snapshot.artifact_id)
+        changed_body = deepcopy(body)
+        changed_body["runs"][0]["N"] += 1
+        new_id = digest(json_bytes(changed_body))
+        with pytest.raises(BoundaryError, match="cohort_snapshot_run_counts_mismatch"):
+            cohort_weighting(app.config, {**changed_body, "configuration_id": new_id},
+                             new_id, snapshot.artifact_id)

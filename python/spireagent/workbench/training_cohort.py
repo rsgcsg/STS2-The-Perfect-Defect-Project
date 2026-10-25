@@ -32,7 +32,13 @@ def cohort_weighting(config: ProjectConfig, plan: dict[str, Any],
              inspect_managed_workspace(config.state_dir).get("curation_owner"))
     if owner is None:
         raise BoundaryError("training_cohort", "original_curation_owner_required")
-    store = ManifestArtifactStore(LocalBlobStore(Path(owner.store_dir), create=False, readonly=True))
+    import os
+
+    from .service_process import cloud_environment
+
+    os.environ.update(cloud_environment(config.cloud_environment_file))
+    store = ManifestArtifactStore(
+        LocalBlobStore(Path(owner.store_dir), create=False, readonly=True))
     reader = SnapshotReader(store, snapshot_id)
     selection = reader.selection
     sources = {s["projection_id"] for s in plan["sources"]}
