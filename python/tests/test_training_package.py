@@ -57,3 +57,29 @@ def test_normal_package_then_start_original_prepared_run(tmp_path, capsys, monke
                      "--input", str(request), "--output", str(package)]) == 1
         assert json.loads(capsys.readouterr().out)["error_code"] == (
             "new_remote_package_output_required")
+
+
+def test_prepare_before_allocation_has_no_target_or_provider_call(tmp_path, monkeypatch):
+    from dataclasses import replace
+
+    from spireagent.workbench.remote_training import RemoteTrainingService
+
+    with client(tmp_path) as (app, _call, provider, store, _owner, snapshot, _path):
+        config = replace(app.config, remote_compute=replace(
+            app.config.remote_compute,
+            compute_store={"kind": "s3", "bucket": "test-bucket", "prefix": "test",
+                           "endpoint": "https://example.invalid", "region": "auto"},
+            execution_producer=provider.target.producer))
+        service = RemoteTrainingService(config, app.local_datasets._selected)
+        monkeypatch.setattr(service, "_context", lambda: pytest.fail("provider was constructed"))
+        monkeypatch.setattr("spireagent.workbench.remote_training_storage.transfer_p1_input",
+                            lambda *a, **k: {"provider_submitted": False})
+        service.start_loop()
+        assert service._thread is None
+        prepared = service.prepare({"intent_id": "d" * 32, "source_id": snapshot.artifact_id,
+                                    "config": MStdConfig(max_epochs=2).to_dict(),
+                                    "max_seconds": 300, "stop_after": 1})
+        assert prepared["compute_target_bound"] is False
+        assert prepared["provider_submitted"] is False
+        assert provider.calls == []
+        assert store.get_manifest(prepared["run_id"]).producer == provider.target.producer
