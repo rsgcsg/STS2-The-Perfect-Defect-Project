@@ -33,6 +33,7 @@ def test_normal_package_then_start_original_prepared_run(tmp_path, capsys, monke
         assert provider.calls == []
         saved = json.loads(package.read_text())
         run_id = saved["start"]["run_id"]
+        read_session = app.remote_training._prepared_sessions[run_id]
         assert verify_p1_run(store, run_id, provider.target.producer).training.parameters.value()[
             "loss_weighting"] == body["loss_weighting"]
         # Poison prepare: a start of this package must not fit/transfer again.
@@ -46,6 +47,7 @@ def test_normal_package_then_start_original_prepared_run(tmp_path, capsys, monke
         paused = settled(call, started["id"], "paused")
         assert paused["result"]["checkpoint_id"]
         assert len(provider.calls) == 1
+        assert read_session.closed and app.remote_training._prepared_sessions == {}
         # Mismatching the original purpose-use intent fails before any submission.
         with pytest.raises(BoundaryError, match="prepared_run_intent_mismatch"):
             call("start-prepared", body={**saved["start"], "intent_id": "c" * 32})
@@ -122,7 +124,8 @@ def test_cohort_binds_exact_split_membership_counts_and_definition(tmp_path):
                              new_id, snapshot.artifact_id)
 
 
-def test_selected_cohort_without_snapshot_uses_normal_freeze_then_package(tmp_path, capsys):
+@pytest.mark.parametrize("already_frozen", [False, True])
+def test_selected_cohort_reuses_Q_snapshot_or_uses_normal_freeze(tmp_path, capsys, already_frozen):
     from collections import Counter
 
     from stpd.p1.data import digest, json_bytes
@@ -143,6 +146,8 @@ def test_selected_cohort_without_snapshot_uses_normal_freeze_then_package(tmp_pa
         envelope = {"schema": "training-data-weight-selection-20261025-v1",
                     "status": "frozen_user_confirmed", "selected_configuration_id": identity,
                     "configuration": plan}
+        if already_frozen:
+            envelope["snapshot_id"] = snapshot.artifact_id
         cohort = tmp_path / "cohort.json"
         cohort.write_text(json.dumps(envelope))
         request = tmp_path / "recipe.json"
@@ -156,9 +161,10 @@ def test_selected_cohort_without_snapshot_uses_normal_freeze_then_package(tmp_pa
         assert json.loads(capsys.readouterr().out)["provider_submitted"] is False
         package = json.loads(output.read_text())
         run = verify_p1_run(store, package["start"]["run_id"], provider.target.producer)
-        assert run.snapshot.artifact_id != snapshot.artifact_id
+        assert (run.snapshot.artifact_id == snapshot.artifact_id) is already_frozen
         assert run.reader.selection["split_by_group"] == plan["splits"]
-        assert run.reader.selection["split_salt"] == "cohort-" + identity
+        assert run.reader.selection["split_salt"] == (
+            selected["split_salt"] if already_frozen else "cohort-" + identity)
         assert run.training.parameters.value()["loss_weighting"]["rule_id"] == identity
         assert run.training.parameters.value()["loss_weighting"]["definition"] == plan["definition"]
         assert provider.calls == []
@@ -234,3 +240,48 @@ def test_invalid_freeze_wait_fails_before_opening_or_offering(monkeypatch, wait_
                         lambda *a: pytest.fail("invalid wait reached owner"))
     with pytest.raises(BoundaryError, match="invalid_transport_wait_seconds"):
         p1_data_cli.p1_data_command(None, "freeze", {}, wait_seconds=wait_seconds)
+
+
+def test_one_command_from_Q_frozen_file_saves_same_package_and_submits_once(tmp_path, capsys):
+    from collections import Counter
+
+    from stpd.p1.data import digest, json_bytes
+    from stpd.p1.dataset import SnapshotReader
+
+    with client(tmp_path) as (_app, call, provider, store, _owner, snapshot, config_path):
+        selected = SnapshotReader(store, snapshot.artifact_id).selection
+        counts = Counter((p["root_run_id"], p["group_id"], p["split"])
+                         for p in selected["points"])
+        plan = {"schema": "stpd/p1-cohort-plan-1", "definition": {"rule": "fixture-v1"},
+                "sources": selected["sources"], "selection": selected["selection"],
+                "splits": selected["split_by_group"],
+                "runs": [{"root_run_id": r, "group_id": g, "split": s,
+                          "N": n, "train_weight": 2 if s == "train" else None}
+                         for (r, g, s), n in counts.items()]}
+        identity = digest(json_bytes(plan))
+        plan["configuration_id"] = identity
+        cohort = tmp_path / "weight-candidates.json"
+        cohort.write_text(json.dumps({
+            "schema": "training-data-weight-selection-20261025-v1",
+            "status": "frozen_user_confirmed", "selected_configuration_id": identity,
+            "configuration": plan, "snapshot_id": snapshot.artifact_id}))
+        request = tmp_path / "recipe.json"
+        request.write_text(json.dumps({"intent_id": "f" * 32,
+                                       "config": MStdConfig(max_epochs=2).to_dict(),
+                                       "max_seconds": 300, "stop_after": 1}))
+        output = tmp_path / "package.json"
+        provider.ready = True
+        args = ["start", "--config", str(config_path), "--execution", "remote",
+                "--input", str(request), "--cohort-plan", str(cohort),
+                "--configuration-id", identity, "--output", str(output)]
+        assert main(args) == 0
+        job = json.loads(capsys.readouterr().out)["jobs"][0]
+        saved = json.loads(output.read_bytes())
+        assert saved["start"]["run_id"] == job["input_id"]
+        assert saved["prepared"]["input"]["snapshot_id"] == snapshot.artifact_id
+        assert settled(call, job["id"], "paused")["result"]["checkpoint_id"]
+        assert len(provider.calls) == 1
+        # This is an original offer. Repeating a command with its existing
+        # output cannot repeat preparation or submit another attempt.
+        assert main(args) == 1
+        assert len(provider.calls) == 1

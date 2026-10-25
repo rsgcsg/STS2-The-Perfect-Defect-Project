@@ -73,7 +73,8 @@ def advance(ops: Operations, policy: dict[str, Any], job: dict[str, Any], checkp
         if db.execute("SELECT value FROM settings WHERE key='paused'").fetchone()[0] == "1":
             return policy
         reason = None
-        if now + policy["max_seconds"] > policy["deadline_unix"]:
+        preparation = json.loads(job["options"]).get("preparation_seconds", 0)
+        if now + preparation + policy["max_seconds"] > policy["deadline_unix"]:
             reason = "deadline_exhausted"
         elif policy["new_segments"] >= policy["max_new_segments"]:
             reason = "segment_limit_reached"
@@ -88,7 +89,8 @@ def advance(ops: Operations, policy: dict[str, Any], job: dict[str, Any], checkp
         intent = hashlib.sha256((policy["root_job_id"] + job["id"] + job["attempt_id"]
                                  + checkpoint).encode()).hexdigest()[:32]
         options = json.dumps({"resume": checkpoint, "stop_after": None,
-                              "execution_deadline_unix": policy["deadline_unix"]},
+                              "execution_deadline_unix": policy["deadline_unix"],
+                              **({"preparation_seconds": preparation} if preparation else {})},
                              sort_keys=True, separators=(",", ":"))
         successor = ops._enqueue(db, "training", policy["run_id"], intent,
                                  policy["max_seconds"], reserved_units, budget_limit, options)

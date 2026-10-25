@@ -6,6 +6,7 @@ contain credentials or shell commands. Durable worker receipts remain unchanged.
 from __future__ import annotations
 
 import argparse
+import math
 import os
 import signal
 import subprocess
@@ -197,17 +198,37 @@ def supervise(directory: Path) -> None:
                 os.chmod(directory / "worker-output.json", 0o600)
                 child = subprocess.Popen([target.interpreter, "-m", "stpd.cloud_jobs",
                                           "--request", str(directory / "request.json"),
+                                          *(["--ready-file", str(directory / "training-ready.json")]
+                                            if target.preparation_seconds else []),
                                           "--store", "s3", "--wall-seconds",
                                           str(target.timeout_seconds)], env=environment,
                                          cwd=Path(target.checkout) / "python",
                                          stdin=subprocess.DEVNULL, stdout=output,
                                          stderr=subprocess.DEVNULL, start_new_session=True)
-                deadline = time.monotonic() + target.timeout_seconds
+                launched = time.monotonic()
+                deadline = launched + (target.preparation_seconds or target.timeout_seconds)
+                training_started = not bool(target.preparation_seconds)
                 while child.poll() is None:
                     if (directory / "cancel").exists():
                         result = envelope(handle, "failed", error="execution_cancelled")
                         break
+                    ready_path = directory / "training-ready.json"
+                    if not training_started and ready_path.exists():
+                        ready = object_fields(decode_json(ready_path.read_bytes()),
+                                              {"request_id", "attempt_id", "monotonic", "unix"},
+                                              "ssh.training_ready")
+                        stamp = ready["monotonic"]
+                        if (ready["request_id"] != handle.request.request_id
+                                or ready["attempt_id"] != handle.request.attempt_id
+                                or type(stamp) not in {int, float} or not math.isfinite(stamp)
+                                or not launched <= stamp <= time.monotonic()
+                                or stamp > deadline):
+                            raise BoundaryError("ssh", "training_ready_binding_mismatch")
+                        deadline = stamp + target.timeout_seconds
+                        training_started = True
                     if time.monotonic() >= deadline:
+                        atomic_json(directory / "timeout-phase.json",
+                                    {"phase": "training" if training_started else "preparation"})
                         result = envelope(handle, "failed", error="execution_timeout")
                         break
                     time.sleep(0.1)

@@ -210,3 +210,36 @@ def test_delayed_preflight_cannot_submit_after_continuation_deadline(tmp_path, m
         assert sum(row["reserved_units"] for row in ops.jobs()) == 2
     finally:
         scheduler.close()
+
+
+def test_split_target_continuation_cannot_increase_time_beyond_reservation(tmp_path):
+    from types import SimpleNamespace
+
+    from test_remote_training_http import client, settled
+
+    from spireagent.json_boundary import BoundaryError
+    from stpd.p1.spec import MStdConfig
+
+    with client(tmp_path) as (app, call, provider, _store, _owner, snapshot, _):
+        first = call("start", body={"intent_id": "e" * 32,
+            "source_id": snapshot.artifact_id, "config": MStdConfig(max_epochs=2).to_dict(),
+            "max_seconds": 300, "stop_after": 1})["jobs"][0]
+        running = settled(call, first["id"], "running")
+        old_target = provider.target
+        provider.target = SimpleNamespace(
+            producer=old_target.producer, target_id=old_target.target_id,
+            timeout_seconds=300, gpu="none", preparation_seconds=300)
+        app.remote_training.config = replace(app.config, remote_compute=replace(
+            app.config.remote_compute, reserved_units=1500, budget_limit=3000))
+        body = {"job_id": first["id"], "expected_attempt_id": running["attempt_id"],
+                "deadline_unix": time.time() + 5000, "max_new_segments": 1,
+                "max_seconds": 2000}
+        with pytest.raises(BoundaryError, match="reservation_must_cover_preparation_and_training"):
+            call("auto-continue", body=body)
+        # Even an otherwise funded short segment must fit its preparation
+        # and training inside the original absolute authorization window.
+        body.update(max_seconds=900, deadline_unix=time.time() + 1200)
+        with pytest.raises(BoundaryError, match="continuation_deadline_insufficient"):
+            call("auto-continue", body=body)
+        assert call("status")["continuation"] is None
+        assert len(call("status")["jobs"]) == 1

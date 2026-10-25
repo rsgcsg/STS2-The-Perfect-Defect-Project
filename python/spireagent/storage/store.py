@@ -184,6 +184,18 @@ class ManifestArtifactStore:
         self.blobs.put_if_absent(f"manifests/{manifest.artifact_id}.json", manifest.to_bytes())
         return manifest.artifact_id
 
+    def publish_reference(self, manifest: Manifest) -> str:
+        """Retain exact lineage without promising local availability of payloads.
+
+        Compute input transfers intentionally retain raw-original references.
+        Callers must separately verify their explicit required payload inventory.
+        Ordinary publication/preservation continues to use ``publish``.
+        """
+        for parent in manifest.parents:
+            self.get_manifest(parent.artifact_id)
+        self.blobs.put_if_absent(f"manifests/{manifest.artifact_id}.json", manifest.to_bytes())
+        return manifest.artifact_id
+
     def get_manifest(self, artifact_id: str) -> Manifest:
         digest(artifact_id, "artifact_id")
         key = f"manifests/{artifact_id}.json"

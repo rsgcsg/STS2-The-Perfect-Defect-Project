@@ -7,12 +7,10 @@ from typing import Any
 from spireagent.artifact_contracts import Producer
 from spireagent.json_boundary import BoundaryError
 from spireagent.local_diagnostics import phase
-from spireagent.storage.local import LocalBlobStore
-from spireagent.storage.store import ManifestArtifactStore, copy_artifact
+from spireagent.storage.store import ArtifactStore
 from spireagent.workbench.p1_recording_storage import (
     open_peer,
-    storage_budget,
-    workspace_reserve_bytes,
+    require_long_task_space,
 )
 
 
@@ -34,50 +32,45 @@ def verify_training_run(store: Any, run_id: str, producer: Producer) -> Any:
 
 
 def transfer_p1_input(
-    local: ManifestArtifactStore,
+    local: ArtifactStore,
     peer_binding: dict[str, Any],
     run_id: str,
     producer: Producer,
     *,
     scratch: Path,
 ) -> dict[str, Any]:
-    """Copy/read the full parent closure and consume every selected N at the peer.
+    """Transfer only the installed consumer's payloads, retaining every parent ID.
 
-    The caller owns purpose/use before vocabulary fitting, then creates the Run.
-    This helper neither queues work nor submits a provider call. A failed copy
-    stays visible; immutable partial objects never imply successful preparation.
+    The original Store's verified selection establishes semantics. Destination
+    readback checks the same exact bytes; it need not reproject identical N data.
+    Worker verification remains independent. This is not raw preservation.
     """
+    from spireagent.storage.input_transfer import copy_input_artifact
+    from spireagent.workbench.p1_training_data import p1_read_payloads
     from stpd.p1.dataset import iter_snapshot_points
-    from stpd.p1.input import project
     from stpd.p1.workload import P1Workload
 
-    with phase("remote.transfer.budget"):
-        destination = local.blobs.root if isinstance(local.blobs, LocalBlobStore) else None
-        budget = storage_budget(
-            local, run_id, scratch=scratch, destination=destination,
-            destination_store=local if destination is not None else None,
-            reserve_bytes=workspace_reserve_bytes(), source_transfer_scratch=True,
-        )
-    with phase("remote.transfer.copy"):
-        peer = open_peer(peer_binding)
-        copy_artifact(local, peer, run_id, scratch=scratch)
-    # Reopen the configured destination and use its actual payload reader for
-    # every byte, including original parents that are not themselves model input.
-    with phase("remote.transfer.readback"):
-        readback = open_peer(peer_binding)
-        copy_artifact(readback, readback, run_id, scratch=scratch)
     with phase("remote.transfer.verify"):
-        workload = verify_training_run(readback, run_id, producer)
+        workload = verify_training_run(local, run_id, producer)
+    with phase("remote.transfer.budget"):
+        payloads = p1_read_payloads(local, workload.snapshot.artifact_id, run_id=run_id)
+        budget = require_long_task_space(
+            scratch, 2 * sum(p.size for p in payloads)
+            + sum(sorted((p.size for p in payloads), reverse=True)[:8]))
+    with phase("remote.transfer.copy_readback"):
+        peer = open_peer(peer_binding)
+        transfer = copy_input_artifact(local, peer, run_id, payloads, scratch=scratch)
     with phase("remote.transfer.consume"):
         partition_N: dict[str, int] = {}
         catalog_choices = 0
         points = (workload.reader.iter_points() if isinstance(workload, P1Workload)
-                  else iter_snapshot_points(readback, workload.snapshot.artifact_id))
+                  else iter_snapshot_points(local, workload.snapshot.artifact_id))
         for reference, observation in points:
-            frame = project(observation)
+            # Snapshot validation already exercised the full InputSpec, including
+            # a cache hit's content/code-bound inspection. Do not project again.
             partition = reference["split"]
             partition_N[partition] = partition_N.get(partition, 0) + 1
-            catalog_choices += len(frame.choices)
+            catalog_choices += len(observation["catalog"])
     info = workload.training.parameters.value()
     return {
         "schema": "spireagent/p1-remote-input-readback-1",
@@ -92,7 +85,9 @@ def transfer_p1_input(
         "unique_N": sum(partition_N.values()),
         "catalog_choices": catalog_choices,
         "budget": budget,
-        "closure_payload_readback": "verified",
+        "required_payload_readback": "verified",
+        "transfer": transfer,
+        "raw_closure_restored": False,
         "provider_submitted": False,
         "gpu_qualification": "not_established",
     }

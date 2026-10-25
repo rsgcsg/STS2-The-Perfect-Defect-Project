@@ -86,7 +86,17 @@ from spireagent.json_boundary import decode_json, json_bytes
 from stpd.cloud_jobs.contracts import ComputeReceipt, ComputeRequest
 request = ComputeRequest.decode(decode_json(open(sys.argv[1], 'rb').read()))
 assert os.environ['AWS_ACCESS_KEY_ID'] == 'never-request-or-receipt'
-time.sleep(float(os.environ['STPD_S3_PREFIX']))
+duration = float(os.environ['STPD_S3_PREFIX'])
+if os.environ.get('STPD_S3_REGION') == 'split-phase':
+    from pathlib import Path
+    time.sleep(0.6)
+    marker = Path(sys.argv[1]).with_name('training-ready.json')
+    pending = marker.with_suffix('.pending')
+    pending.write_bytes(json_bytes({'request_id': request.request_id,
+                                   'attempt_id': request.attempt_id,
+                                   'monotonic': time.monotonic(), 'unix': time.time()}))
+    pending.replace(marker)
+time.sleep(duration)
 receipt = ComputeReceipt(request.request_id, request.attempt_id, request.kind,
                          request.input_id, request.producer, 'paused', None, 'b' * 64)
 sys.stdout.buffer.write(json_bytes(receipt.to_dict()))
@@ -522,3 +532,46 @@ def test_normal_application_configuration_selects_ssh_without_provider_injection
     assert service._context()[:2] == (owner, "same-local-store")
     assert isinstance(service._context()[2], SshProvider)
     assert service._context()[3] == "same-compute-peer"
+
+
+
+def test_split_preparation_target_has_distinct_identity_and_strict_codec(tmp_path):
+    original = target(tmp_path)
+    split = replace(original, preparation_seconds=300)
+    assert split.to_dict()["schema"] == "spireagent/ssh-target-2"
+    assert split.target_id != original.target_id
+    assert SshTarget.decode(split.to_dict()) == split
+    assert "preparation_seconds" not in original.to_dict()
+    for invalid in (True, -1, 3601):
+        with pytest.raises(BoundaryError):
+            replace(split, preparation_seconds=invalid)
+
+
+def test_worker_preparation_does_not_spend_training_timeout(transport):
+    selected, _commands, _children, _agent, _popen = transport
+    selected = replace(selected, timeout_seconds=1, preparation_seconds=2)
+    Path(selected.private_env).write_text(
+        "AWS_ACCESS_KEY_ID=never-request-or-receipt\n"
+        "STPD_S3_PREFIX=0.6\nSTPD_S3_REGION=split-phase\n")
+    provider = SshProvider(selected)
+    handle = provider.submit(request())
+    receipt = eventually(provider, handle)
+    assert receipt.state == "paused"
+    directory = Path(selected.state_directory) / selected.target_id / handle.call_id
+    assert (directory / "training-ready.json").is_file()
+    assert not (directory / "timeout-phase.json").exists()
+
+
+@pytest.mark.parametrize("phase", ["preparation", "training"])
+def test_each_split_phase_has_its_own_hard_timeout_and_no_retry(transport, phase):
+    selected, _commands, children, _agent, _popen = transport
+    selected = replace(selected, timeout_seconds=1, preparation_seconds=1)
+    Path(selected.private_env).write_text(
+        "AWS_ACCESS_KEY_ID=never-request-or-receipt\nSTPD_S3_PREFIX=3\n"
+        + ("STPD_S3_REGION=split-phase\n" if phase == "training" else ""))
+    provider = SshProvider(selected)
+    handle = provider.submit(request())
+    eventually(provider, handle, error="execution_timeout")
+    directory = Path(selected.state_directory) / selected.target_id / handle.call_id
+    assert json.loads((directory / "timeout-phase.json").read_bytes()) == {"phase": phase}
+    assert len(children) == 1 and children[0].poll() is not None

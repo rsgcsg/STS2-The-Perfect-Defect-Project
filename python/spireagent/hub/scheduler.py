@@ -51,12 +51,15 @@ class Scheduler:
         *,
         budget_limit: int = 0,
         record_training_use: Callable[[Manifest], None] | None = None,
+        verify_training_input: Callable[[ComputeRequest], None] | None = None,
     ) -> None:
         if type(budget_limit) is not int or budget_limit < 0:
             raise BoundaryError("scheduler", "invalid_budget")
         self.operations, self.store, self.provider = operations, store, provider
         self.budget_limit = budget_limit
         self._record_training_use = record_training_use
+        self._verify_training_input = verify_training_input or (
+            lambda request: preflight_training_request(self.store, request))
         self._tokens: dict[str, str] = {}
         self._serial = threading.Lock()
         self._closed = False
@@ -125,7 +128,7 @@ class Scheduler:
             load_feature_job(self.store, request.input_id, target.producer)
         else:
             with phase("scheduler.input_verify"):
-                preflight_training_request(self.store, request)
+                self._verify_training_input(request)
         manifest = self.store.get_manifest(request.input_id)
         if self._record_training_use is None:
             from spireagent.hub.curation_access import record_use
@@ -145,11 +148,15 @@ class Scheduler:
         self._tokens[job] = token
         bind_job(job)
         try:
+            preparation_started = time.monotonic()
             with phase("scheduler.preflight"):
                 request = self._preflight(row)
+            preparation = json.loads(row["options"]).get("preparation_seconds", 0)
+            if preparation and time.monotonic() - preparation_started > 300:
+                raise BoundaryError("scheduler", "controller_preparation_deadline_exhausted")
             absolute_deadline = json.loads(row["options"]).get("execution_deadline_unix")
             if (absolute_deadline is not None
-                    and time.time() + row["max_seconds"] > absolute_deadline):
+                    and time.time() + preparation + row["max_seconds"] > absolute_deadline):
                 raise BoundaryError("scheduler", "continuation_launch_deadline_exhausted")
         except (BoundaryError, OSError, ValueError) as error:
             code = error.code if isinstance(error, BoundaryError) else "input_unavailable"

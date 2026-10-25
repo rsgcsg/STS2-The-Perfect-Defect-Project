@@ -271,3 +271,91 @@ def verify_p1_run(store: ArtifactStore, run_id: str, producer: Producer) -> P1Wo
     elif "derivation" in info_run:
         raise BoundaryError("p1_derivation", "explicit_derived_run_schema_required")
     return P1Workload(run, training, snapshot, config, vocabulary, reader, execution)
+
+
+def read_payloads(
+    store: Any, snapshot_id: str, *, run_id: str | None = None,
+    checkpoint_id: str | None = None, initial_checkpoint: bool = False,
+) -> tuple[Any, ...]:
+    """Plan the existing P1 consumer's named reads using only manifest metadata."""
+    from stpd.p1.dataset import projection_payload_role
+    from stpd.p1.derivation import source_checkpoint_dag
+
+    payloads = {}
+    snapshots, runs, checkpoints = {snapshot_id}, set(), set()
+    if run_id is not None:
+        runs.add(run_id)
+    if checkpoint_id is not None:
+        checkpoints.add(checkpoint_id)
+    while checkpoints:
+        identity = checkpoints.pop()
+        checkpoint = store.get_manifest(identity)
+        payload = checkpoint.payload("checkpoint")
+        payloads[payload.sha256] = payload
+        runs.add(checkpoint.parent("run"))
+        original = [p.artifact_id for p in checkpoint.parents if p.role == "original_checkpoint"]
+        checkpoints.update(original)
+        if initial_checkpoint:
+            run = store.get_manifest(checkpoint.parent("run"))
+            for saved in source_checkpoint_dag(store, identity, run):
+                payload = saved.payload("checkpoint")
+                payloads[payload.sha256] = payload
+    seen_runs = set()
+    while runs:
+        identity = runs.pop()
+        if identity in seen_runs:
+            continue
+        seen_runs.add(identity)
+        run = store.get_manifest(identity)
+        if any(p.role == "original_checkpoint" for p in run.parents):
+            original_run = store.get_manifest(run.parent("original_run"))
+            runs.add(original_run.artifact_id)
+            for saved in source_checkpoint_dag(
+                store, run.parent("original_checkpoint"), original_run
+            ):
+                payload = saved.payload("checkpoint")
+                payloads[payload.sha256] = payload
+        training = store.get_manifest(run.parent("training_input"))
+        for payload in training.payloads:
+            payloads[payload.sha256] = payload
+        snapshots.add(training.parent("source"))
+    for identity in snapshots:
+        snapshot = store.get_manifest(identity)
+        selection = snapshot.payload("selection")
+        payloads[selection.sha256] = selection
+        for parent in snapshot.parents:
+            projection = store.get_manifest(parent.artifact_id)
+            payload = projection.payload(projection_payload_role(projection))
+            payloads[payload.sha256] = payload
+    return tuple(payloads.values())
+
+
+
+def result_read_payloads(store: Any, identity: str) -> tuple[Any, ...]:
+    """Plan a P1 result/CP reception, retaining raw ancestry as references.
+
+    Result-side model/evaluation payloads are consumed by the installed result
+    verifier, including the milestone/best checkpoint payloads it checks.
+    The explicit original-state import is also handled by read_payloads.
+    """
+    result = store.get_manifest(identity)
+    if result.kind not in {"checkpoint", "run_result"}:
+        raise BoundaryError("p1_workload", "checkpoint_or_result_required")
+    run = store.get_manifest(result.parent("run"))
+    training = store.get_manifest(run.parent("training_input"))
+    payloads = {p.sha256: p for p in read_payloads(
+        store, training.parent("source"), run_id=run.artifact_id,
+        checkpoint_id=identity if result.kind == "checkpoint" else None)}
+    seen, pending = set(), [identity]
+    while pending:
+        key = pending.pop()
+        if key in seen:
+            continue
+        seen.add(key)
+        item = store.get_manifest(key)
+        if item.kind in {"run", "training_input", "dataset", "evidence"}:
+            continue
+        for payload in item.payloads:
+            payloads[payload.sha256] = payload
+        pending.extend(p.artifact_id for p in item.parents)
+    return tuple(payloads.values())

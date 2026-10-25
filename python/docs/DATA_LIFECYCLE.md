@@ -486,3 +486,27 @@ Keep the original source/target/compute-Store binding, stop the original writer,
 review this staged owner, and reconcile its exact recorded handles before enabling
 dispatch. An unknown external outcome remains unknown; restoring bytes does not
 permit resubmission. Backup availability and actual worker recovery are distinct.
+
+
+<a id="p1-compute-input-availability"></a>
+## P1计算输入可用性与原件保全
+
+用户2026-10-25批准：[ADR-0018](../../docs/adr/0018-explicit-compute-input-availability.md)。
+P1训练/结果接收沿同一Store保留完整精确manifest父链，但物理传输只包括安装消费者声明的载荷：
+Snapshot selection、选定命名投影、词表、显式初始/恢复检查点及验证器需要的结果载荷。
+原始录制的archive/transfer/index继续存在原Store/R2，通过原ID追溯，不在每次训练复制/重读。
+`copy_input_artifact`逐份核目标实际SHA，缺少才传输；八路有界并行，manifest引用在必需载荷读回后发布。
+`publish_reference`明确只表示编号可追，不承诺每个祖先payload在该位置可用。
+返回的`raw_closure_restored=false`不能当原件冷恢复或Human/研究资格。
+
+`workload.read_payloads`与`result_read_payloads`由真实训练/结果消费者拥有，包含派生Run的原CP DAG。
+普通`copy_artifact`、push/pull和原件保全继续完整读取/复制所有祖先，不继承计算模式的省略。
+原件校验由原import/derive及R2保全入口负责；计算接收仍完整验证每个实际输入。
+一次操作内的VerifiedReadSession只重用它实际验证过的字节/选择；跨进程、淘汰及空目录恢复重新验证。
+当前Curation用途/排斥/曝光实时查原ledger，worker独立验证其Store输入。缓存及传输从不授权训练。
+
+Q冻结仍产出`cohorts/<configuration_id>/weight-candidates.json`的原确认envelope与snapshot_id。
+P直接消费同一文件/编号；已有snapshot_id不重复freeze，不导出SQLite作为跨机可信回执。
+已有P1PreparationCache绑定内容、代码、uv.lock并经Store核实际字节，只省解析/投影索引重算。
+09-15 B的结果下载同样只取选定自身payload，文档中的“不隐藏下载raw父链”不是旧P1worker资格。
+当前P1从10-21通用完整复制改为上述显式可用性清单，原始来源和用途权威没有迁移。

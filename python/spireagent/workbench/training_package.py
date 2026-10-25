@@ -41,6 +41,15 @@ def prepare_package(config_path: Path, body: object, output: Path | None, execut
 
         if configuration_id is None or "loss_weighting" in body:
             raise BoundaryError("training_cohort", "explicit_single_weighting_source_required")
+        frozen_snapshot = (cohort_plan.get("snapshot_id")
+                           if isinstance(cohort_plan, dict) else None)
+        if frozen_snapshot is not None:
+            from spireagent.json_boundary import digest
+
+            digest(frozen_snapshot, "training_cohort.snapshot_id")
+            if body.get("source_id", frozen_snapshot) != frozen_snapshot:
+                raise BoundaryError("training_cohort", "frozen_snapshot_id_mismatch")
+            body = {**body, "source_id": frozen_snapshot}
         if "source_id" not in body:
             body = {**body, "source_id": freeze_cohort(
                 config, cohort_plan, configuration_id, wait_seconds=wait_seconds)}

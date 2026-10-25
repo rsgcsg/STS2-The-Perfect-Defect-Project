@@ -289,7 +289,7 @@ def test_normal_prepare_verifies_separate_peer_without_enqueue_or_submit(tmp_pat
         assert not result["provider_submitted"] and not provider.calls
         assert result["input"]["unique_N"] == 3
         assert result["input"]["catalog_choices"] == 6
-        assert result["input"]["closure_payload_readback"] == "verified"
+        assert result["input"]["required_payload_readback"] == "verified"
         assert app.remote_training._operations is None
         assert app.remote_training._thread is None
         assert provider.ops.jobs() == []
@@ -299,7 +299,15 @@ def test_normal_prepare_verifies_separate_peer_without_enqueue_or_submit(tmp_pat
         for identity in peer.manifest_ids():
             manifest = peer.get_manifest(identity)
             for payload in manifest.payloads:
-                assert b"".join(peer.read_payload(payload)) == b"".join(local.read_payload(payload))
+                if manifest.kind == "evidence":
+                    from spireagent.storage.blobs import StoreError
+
+                    with pytest.raises(StoreError, match="object_not_found"):
+                        b"".join(peer.read_payload(payload))
+                    assert b"".join(local.read_payload(payload))
+                else:
+                    assert (b"".join(peer.read_payload(payload))
+                            == b"".join(local.read_payload(payload)))
         with owner.transaction() as db:
             assert db.execute("SELECT count(*) FROM curation_uses").fetchone() == (1,)
         normal_provider = RemoteTrainingService(app.config, app.local_datasets._selected)
@@ -532,3 +540,22 @@ def test_cold_projection_is_budgeted_before_remote_prepare_reads_it(tmp_path, mo
                 "stop_after": 1})
         assert not missing.exists() and not reads
         assert not provider.calls and not provider.ops.jobs()
+
+
+def test_split_target_reservation_must_cover_all_preparation_before_enqueue(tmp_path):
+    from types import SimpleNamespace
+
+    with client(tmp_path) as (app, call, provider, _store, _owner, snapshot, _path):
+        original = provider.target
+        provider.target = SimpleNamespace(
+            producer=original.producer, target_id=original.target_id,
+            timeout_seconds=original.timeout_seconds, gpu="none", preparation_seconds=300)
+        body = {"intent_id": "d" * 32, "source_id": snapshot.artifact_id,
+                "config": MStdConfig(max_epochs=2).to_dict(), "max_seconds": 300,
+                "stop_after": 1}
+        prepared = call("prepare", body=body)
+        with pytest.raises(BoundaryError, match="reservation_must_cover_preparation_and_training"):
+            call("start-prepared", body={"run_id": prepared["run_id"],
+                                         **{k: body[k] for k in (
+                                             "intent_id", "max_seconds", "stop_after")}})
+        assert provider.calls == [] and call("status")["jobs"] == []
