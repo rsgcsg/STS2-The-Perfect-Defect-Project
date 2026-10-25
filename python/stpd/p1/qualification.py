@@ -360,8 +360,9 @@ def qualify(store: ArtifactStore, input_id: str, producer: Producer, plan: dict,
         for mode in ("train", "resume"):
             phase("short_" + mode)
             result_path = directory / (mode + "-result.json")
-            completed = subprocess.run([sys.executable, "-m", __name__, "--child", mode,
-                                        "--job", str(job_path), "--result", str(result_path)],
+            completed = subprocess.run([sys.executable, "-m", "stpd.p1.qualification",
+                                        "--child", mode, "--job", str(job_path),
+                                        "--result", str(result_path)],
                                        capture_output=True, text=True, check=False)
             if not result_path.is_file():
                 report["child_returncode"] = completed.returncode

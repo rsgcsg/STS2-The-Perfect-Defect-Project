@@ -168,3 +168,42 @@ def test_application_checks_existing_use(calibration_input, monkeypatch):  # noq
     assert result["training_use_recorded"] is False
     assert result["training_use_reference"] == capsule.parameters.value()["operation_id"]
     assert result["operation_id"] == "e" * 32
+
+
+
+def test_module_entry_orchestrates_canonical_replacement_children(
+    calibration_input, tmp_path, monkeypatch,  # noqa: F811
+):
+    """The production -m entry has __name__='__main__'; children use its module."""
+    store, capsule = calibration_input
+    frame = synthetic_frame(2)
+    populations = {split: Population((frame,), (0,), (split + "-point",))
+                   for split in ("train", "dev", "test")}
+    monkeypatch.setattr(qualification, "__name__", "__main__")
+    monkeypatch.setattr(qualification, "verify_p1_run", lambda *args:
+                        SimpleNamespace(reader=object()))
+    monkeypatch.setattr(qualification, "populations_from_reader", lambda reader: populations)
+    monkeypatch.setattr(qualification, "read_input", lambda *args: (None, [], [], {}, {}))
+    monkeypatch.setattr(MStdExecution, "for_plan", classmethod(lambda cls, name: cls()),
+                        raising=False)
+    monkeypatch.setattr(qualification, "MStd", lambda vocabulary: object())
+    monkeypatch.setattr(qualification, "shape_report", lambda *args: ({"TRAIN_N": 1}, [0]))
+    monkeypatch.setattr(qualification, "parity", lambda *args: {"passed": True})
+    throughput = Manifest("performance", PRODUCER)
+    monkeypatch.setattr(qualification, "measure", lambda *args, **kwargs: throughput)
+    monkeypatch.setattr(qualification, "_cache_populations", lambda *args: "f" * 64)
+    modes = []
+
+    def run(command, **settings):
+        assert command[:3] == [sys.executable, "-m", "stpd.p1.qualification"]
+        mode = command[command.index("--child") + 1]
+        modes.append(mode)
+        result_path = Path(command[command.index("--result") + 1])
+        result_path.write_bytes(json_bytes({"pid": len(modes)}))
+        return SimpleNamespace(returncode=0, stderr="")
+
+    monkeypatch.setattr(subprocess, "run", run)
+    report = qualification.qualify(store, capsule.artifact_id, PRODUCER, {}, binding(capsule),
+                                   tmp_path / "qualification", device="cpu")
+    assert report.parameters.value()["state"] == "completed"
+    assert modes == ["train", "resume"]
