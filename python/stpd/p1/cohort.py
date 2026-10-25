@@ -337,8 +337,6 @@ def inspect_cohort(store: Any, ledger: Any, projection_ids: list[str], *,
                    split_salt: str = "p1-next-training-20261025-v1",
                    holdout_targets: dict[str, dict[str, int]] | None = None) -> dict[str, Any]:
     """Use exact named versions; conflicts fail in the existing reader."""
-    from spireagent.p1_curation import draft_p1_allocation
-
     facts: dict[str, dict[str, Any]] = {}
 
     def observe(projection: Projection) -> None:
@@ -350,6 +348,19 @@ def inspect_cohort(store: Any, ledger: Any, projection_ids: list[str], *,
 
     index = inspect_projections(store, projection_ids, selected_decisions=selected_decisions,
                                 on_projection=observe)
+    return plan_cohort(index, facts, ledger, split_salt=split_salt,
+                       holdout_targets=holdout_targets)
+
+
+def plan_cohort(index: dict[str, Any], facts: dict[str, dict[str, Any]], ledger: Any, *,
+                split_salt: str, holdout_targets: dict[str, dict[str, int]] | None = None
+                ) -> dict[str, Any]:
+    """Compose verified inspections, including the existing private preparation cache.
+
+    Allocation is always read afresh from Curation; a cache never reserves a role.
+    """
+    from spireagent.p1_curation import draft_p1_allocation
+
     facts = bind_finish_floors(facts)
     allocation = draft_p1_allocation(ledger, index, split_salt=split_salt,
                                     allocation_policy="preserve_existing")

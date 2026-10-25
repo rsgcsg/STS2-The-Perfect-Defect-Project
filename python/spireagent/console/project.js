@@ -4408,6 +4408,7 @@ window.SpireProject = (() => {
       "选择已结束的录制，验证后加入本机资料库。原始录制保留，不会上传或开始训练。",
     );
     const {csrf_token: localCsrfToken, ...safeImportStatus} = importStatus;
+    section.append(link("录制数据小结（自动更新）", "/recording-summary"));
     if (importStatus.status === "pending") {
       section.append(el("p", "本机正在打包并验证所选录制；可离开本页，稍后刷新状态。", "small muted"));
     } else if (importStatus.status === "completed") {

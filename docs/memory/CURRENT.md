@@ -30,4 +30,6 @@ PR237/238已按第二档普通合并为`b62310da`/`8d628cf2`。实际App0.2.0/8d
 
 ## Remaining Platform non-claims
 
+录后自动维护修复与固定盘点页正在[Q任务](../plans/p1-prefreeze-2026-10-18/AUTO_DATA_INTAKE_20261025.zh-CN.md)推进；原维护线程ENOSPC失败、旧Tool注册不匹配均已定位，源码/相关回归已过，尚未安装或验收下一局。操作归[RECOUNT-SOP](../../python/docs/RECOUNT-SOP.zh-CN.md)，不自动冻结/训练，不改变原100槽与已冻结配置。
+
 source/test、构建、安装/加载、实际运行、Human/数据资格与模型效果分别报告。原100未完成；本轮按新unknown停线收口，未开训练，不借旧CI或正常退出补造胜负、封存或资格。

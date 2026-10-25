@@ -1,0 +1,91 @@
+# 录完自动维护与一条命令冻结
+
+日常只需打开原来的 Workbench，照常录制并封存。原 `P1RecordingMaintenance`
+发现 Close 后，沿原 importer → Store → 固定 Tool 派生 → R2 保全/完整读回 →
+P1 准备缓存 → Curation 盘点更新小结。**不自动冻结，也不启动训练。**
+
+## 看小结
+
+Workbench「本机录制来源」的 **录制数据小结（自动更新）** 打开同一服务的
+`/recording-summary`。固定文件位于所用 `project.json` 的 `state_dir` 下：
+`recording-summary.html`；本页每15秒刷新，断开服务也可直接打开该文件看最后结果。
+页面同时显示更新时间、维护是否启用、卡住原因和排队项；静态文件只代表最后写盘状态。
+
+- 已进入当前盘点的总局数、A0/A10、胜/负/未知、有效决策步和本次新增步数；
+- TRAIN/DEV/TEST 局数，以及 DEV/TEST 各自还缺多少 A0、A10；
+- 已封存但排队、没有已批准投影或版本不符的来源；权重表和精确配置 ID。
+
+一份 session 可能含多局；未派生验证的封存份数不会冒充完整局数。
+胜负只用已记录的终局事实，关闭录制或进程退出不会变成胜负。
+这些是观察到的分组；未知种子/祖先不授予统计独立性，模型强弱仍看真游戏评估。
+
+**游戏运行时只观察封存元数据，不启动新的打包、转换、上传、盘点或冷却重步骤。**
+游戏退出后自动继续，无需敲命令；如果一直开着游戏，小结会显示「等游戏退出后处理」。
+已启动的单个 importer 步骤保留原操作，不能通过杀线程或重发来“暂停”；开启下一次
+录制前可从小结确认本次处理完成。此调度门证明派发条件，不声称测过所有游戏场景的零卡顿。
+
+## 冻结一次
+
+在所选最新 develop 或已安装的准确发布版 `python/` 中运行：
+
+```sh
+uv run --locked --extra cloud python -m spireagent.workbench recordings cohort freeze --config /ABS/project.json
+```
+
+同一条命令先打印每局用途、难度、胜负、决策步、TRAIN 权重和缺口，输入 `yes` 才冻结。
+也可在页面查看表后使用 `--confirm 页面显示的完整配置ID`；页面已变则拒绝。
+不要用自动取「最新ID」的脚本代替确认。冻结会沿原 Application 的
+`p1-data/freeze` 发布 Snapshot 并由原 Curation 保留用途；DEV/TEST不进入TRAIN，
+既有用途、已训练曝光和已知亲缘仍由该 ledger 检查。
+
+成功打印精确 Snapshot ID 与固定交付文件：
+`state_dir/cohorts/配置ID/weight-candidates.json`。
+训练准备（P卡）及训练入口统一读这个文件，通过已有 `--cohort-plan` / `--configuration-id`
+绑定同一个 Snapshot；不从小结或另一份手写名单选数据。重复同一成功确认只读原收据。
+已冻结 `414fb84d…` 的文件与配置不改，新成员/规则/选定版本形成新ID。
+
+## 一次配置与版本升级
+
+这是维护者步骤，录完每局无需执行。原 Workbench 必须运行，使用其原 profile。
+保留当前保存 peer 的命令（已有 peer 指向 R2 时不改 prefix）：
+
+```sh
+uv run --locked --extra cloud python -m spireagent.workbench recordings maintenance enable --config /ABS/project.json --from-now --origin declared_human --no-cool-recent --cohort-policy /ABS/source/python/configs/p1-cohort-policy.json
+```
+
+新 profile 尚无 peer 时，按 [原 Store/R2 指南](DATA_LIFECYCLE.md#daily-p1-store-and-r2-operations)
+显式配置其已授权的 peer；不要把别的 profile、整根历史原件或猜测的 R2 prefix 混进来。
+`--from-now` 固定启用时的 Close 时间，不上传范围外旧数据。维护策略在原 importer
+operation 文件保存，Workbench 正常重启后续接；启动/封存仍归 Recorder。
+
+版本、投影、切分盐、DEV/TEST目标唯一在 `python/configs/p1-cohort-policy.json`。
+按来源/原生 run 选择一个已批准版本，优先级明确；已知淘汰版本只展示原因、不并入N。
+未列出的新 Tool（包括新版本数据）明确停止，并显示完整 release ID。
+升级前核 Tool 的发布/兼容证据，普通 PR 更新这一个文件；不要改25份投影名单，
+也不要仅因「版本更新了」自动批准。注册Tool必须匹配实际安装，不能放宽身份检查。
+
+## 出错与恢复
+
+```sh
+uv run --locked --extra cloud python -m spireagent.workbench recordings maintenance status --config /ABS/project.json
+uv run --locked --extra cloud python -m spireagent.workbench recordings cohort refresh --config /ABS/project.json
+```
+
+`refresh` 只让原维护器下次重算视图，仍服从游戏退出、空间和原操作状态；不重试导入。
+原 `python/tools/p1_cohort.py --config /ABS/project.json --output /ABS/new-report` 可从
+仓库默认规则导出一次盘点，不再依赖旧Codex目录；`--selection`保留为历史精确复算入口。
+导出同样使用原Store/Curation和校验缓存，不保留用途。
+
+| 页面/命令结果 | 下一步 |
+| --- | --- |
+| 等游戏退出 | 正常退出游戏，原服务自动继续；无需关Workbench或重新封存 |
+| 空闲不足15GiB | 停止派发，按已批准清理/容量流程处理；不能扩大删除范围 |
+| `disk_full` / `ENOSPC` | 查看磁盘和原服务日志；失败状态保留在内存/API，空间恢复后只补存状态。修因后显式enable，不重启求绿 |
+| `installed_artifact_mismatch` / 工具不可用 | 核真实Mod/Tool组合，经原注册入口修复；不跳过匹配 |
+| `unapproved_tool_release:…` | 核这个准确版本，再由维护者更新唯一版本规则；未批准前不派生/混入 |
+| 原操作pending/unknown/索引未确认 | 先按 [原录制流程](B_PIPELINE_HANDOFF.md#p1-originals-and-named-projections-in-the-existing-local-store) 使用对应reconcile，只读核原结果；不重复写入 |
+| 冻结请求结果未知 | 原文件停留`freeze_requested`，再次freeze拒绝；核原Snapshot及用途后，以`cohort reconcile --confirm 原配置ID --snapshot-id 原SnapshotID`只读收齐，不重新publish/reserve |
+
+持久准备缓存位于原Curation ledger旁，绑定投影/输入/实现身份；命中仍由Store读字节、核SHA和lease。
+旧数据只免重复解析，分组与历史用途每次从原ledger读取；缓存损坏按原机制重验。
+这份缓存、preview和小结都可重建，不是第二个Store、录制账本或用途权威。
