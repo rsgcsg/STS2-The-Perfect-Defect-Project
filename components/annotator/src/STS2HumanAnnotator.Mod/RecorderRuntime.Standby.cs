@@ -14,7 +14,8 @@ internal static partial class RecorderRuntime
                 .NextSession("restart-standby");
             if (command != null) Continuous.Arm(command.CaptureProfileId, command.P1NativeOrigin);
         }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or System.Text.Json.JsonException)
+        catch (Exception exception) when (exception is IOException or InvalidDataException
+            or UnauthorizedAccessException or System.Text.Json.JsonException)
         {
             // A broken preference never disables the Recorder or invents an origin.
             // The next explicit operator command can replace it; originals are untouched.
