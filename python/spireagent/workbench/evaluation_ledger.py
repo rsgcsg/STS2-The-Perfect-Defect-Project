@@ -211,7 +211,7 @@ class EvaluationLedger:
         if len(rows) != 1:
             reject("unknown_slot_identity_mismatch")
         receipt = native_episode_command(config, "seal-unknown", expected_release=expected,
-                                        timeout_seconds=60)
+                                        timeout_seconds=120)
         if (receipt.get("released") is not True or receipt.get("result") != "unknown"
                 or receipt.get("expected") != expected):
             reject("unknown_release_unconfirmed")
@@ -254,15 +254,23 @@ class EvaluationLedger:
             return {"status": "stopped", "stop_reason": "unknown_requires_explicit_seal"}
         client = WorkbenchReferenceClient(config)
         resource = client.native_status(30)
-        if any(r["status"] == "unknown"
-               and r.get("environment_ref") == resource.get("environment_ref")
-               for r in self.slots()):
+        if resource.get("environment_ref") is not None:
             preview = native_episode_command(
                 config, "unknown-status", expected_instance_id=client.identity[
                     "application_instance_id"], timeout_seconds=30)
-            if preview.get("release") is None:
+            if (preview.get("publication") or {}).get("requires_confirmation"):
+                return {"status": "stopped",
+                        "stop_reason": "publication_unknown_requires_explicit_seal"}
+            old_unknown = any(r["status"] == "unknown"
+                              and r.get("environment_ref") == resource["environment_ref"]
+                              for r in self.slots())
+            if old_unknown and preview.get("release") is None:
                 return {"status": "stopped",
                         "stop_reason": "unknown_requires_current_Application_confirmation"}
+            if (resource.get("phase") not in {"idle", "closed", "failed"}
+                    and preview.get("release") is None):
+                return {"status": "stopped",
+                        "stop_reason": "native_environment_busy_or_unknown"}
         limits = limits or SuiteLimits(150, 1800, 180, 86400, 2, 30)
         conditions = self.plan["conditions"]
         count = 0

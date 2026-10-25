@@ -10,6 +10,8 @@
 
 最小实现：复用原suite执行/完成原局验证，追加槽位事实并只派未开槽；unknown快照和当前App显式确认分别追加，证明worker、Actor、Host、游戏均无占用、落盘读回成功后才释放占用，结果仍unknown。PR236的两个空间门直接复用；投递前容量拒绝保持未开。每局正常R2 typed读回后，原Store空目录恢复/清单和两次句柄复核通过才冷却非活动副本。report只读全分母；replace、等价工具、Managed与跨计划比较不实现。
 
+现场只读核实还发现25的GLOBAL发布owner为publication_unknown（operation6e50449d36ea4c1ebf2ddc035c1148a0，无artifact_id）。同次显式封存必须先保存发布意图原字节、再做当前App确认；不改旧发布unknown，不重发同run，不清publisher状态，后续新run沿正常入口替换唯一活动指针。相关回归须证明Native已closed但发布仍unknown时照样阻塞、写后失败保持阻塞、原字节保留、新run能进入且同run被拒绝。
+
 验收反例：活占用/错误expected/候选或确认写后抛错均不放行；新App不自动采用旧确认；已closed但证据失败可封存账本unknown而不改closed事实；finished尚无R2时崩溃可落unknown、不永久reserved；运行时status/report可读；续跑不重复结束槽；容量拒绝不生unknown。源码/合入与真实封存/75局/R2/模型效果分别报告。用户批准的开发累计4小时，旧段约6分钟已用；CI/批准/游戏等待另计，45分钟和2小时复盘，到限不追加。
 
 顺序：定义 → 最小实现/回归/非作者复核/规定门与CI → 第二档普通merge → 正常App升级且固定包/模型不变 → 显式封存25 → 原75槽串行运行、20分钟闹钟 → 全100结果及CURRENT分数板。新unknown立即停且不重试；占用/持久化证明不足不放行；不碰磁盘卡目录/分支，不读凭据，不在评估期间跑重测试。依赖等待设闹钟继续，只有第三档/方向决定/超过半天或对方失败才找用户。共享报告为`replies/EVAL-CHAIN-REPORT-20261025.md`。

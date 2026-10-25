@@ -39,6 +39,11 @@ class CheckpointClient(OwnerClient):
                 "run_id": run_id, "peer": peer, "artifact_id": "f" * 64,
                 "peer_readback": {"full_readback": True, "typed_verification": "pass"}}
 
+    def finish(self, ref, timeout):
+        result = super().finish(ref, timeout)
+        self.resource = copy.deepcopy(result)
+        return result
+
     def metrics(self, evaluation, context):
         return {"max_observed_floor": 12}
 

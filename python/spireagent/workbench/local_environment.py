@@ -926,6 +926,24 @@ class LocalEnvironmentService:
         self._validate_native_request(record)
         return {"key": key, "sha256": hashlib.sha256(raw).hexdigest(), "value": value}
 
+    def global_run_retired(self, run_id: str) -> bool:
+        """Immutable lookup survives changing the sole live publication pointer."""
+        native_binding.identifier(run_id)
+        retained = self._native_operation_store()
+        if retained is None:
+            return False
+        try:
+            raw = retained[0].get(f"retired-global-publications/{run_id}.json")
+        except StoreError as error:
+            if error.code == "object_not_found":
+                return False
+            raise
+        expected = {"schema": "spireagent/retired-global-publication-v1",
+                    "run_id": run_id, "result": "unknown"}
+        if raw != json_bytes(expected):
+            raise BoundaryError("native_episode", "retired_global_publication_invalid")
+        return True
+
     def native_unknown_release(self) -> dict[str, Any] | None:
         """Only a confirmation completed by this live owner activates admission.
 
@@ -951,7 +969,8 @@ class LocalEnvironmentService:
                 "released": True, "expected": value["expected"],
                 "original": candidate["value"]["original"],
                 "seal": {k: candidate[k] for k in ("key", "sha256")},
-                "confirmation": confirmation, "occupancy": value["occupancy"]}
+                "confirmation": confirmation, "occupancy": value["occupancy"],
+                "publication": value.get("publication")}
 
     def native_unknown_preview(self) -> dict[str, Any]:
         from .native_unknown import expected
@@ -966,7 +985,8 @@ class LocalEnvironmentService:
                                           if candidate is not None else None),
                     "release": self.native_unknown_release()}
 
-    def seal_native_unknown(self, value: dict[str, Any]) -> dict[str, Any]:
+    def seal_native_unknown(self, value: dict[str, Any], *,
+                            publication: dict[str, Any] | None = None) -> dict[str, Any]:
         """Explicit release, called under the shared Model lock after Actor checks."""
         from datetime import UTC, datetime
 
@@ -978,7 +998,7 @@ class LocalEnvironmentService:
             if value != expected(record, raw, self.native_application_instance_id):
                 raise BoundaryError("native_episode", "native_unknown_release_identity_mismatch")
             prior = self.native_unknown_release()
-            if prior is not None:
+            if prior is not None and prior.get("publication") == publication:
                 return prior
             self._validate_native_request(record)
             if (record.get("phase") not in {"unknown", "recovery_required", "closed"}
@@ -1025,6 +1045,7 @@ class LocalEnvironmentService:
             confirmed = {"schema": "spireagent/native-unknown-confirmation-v1",
                          "application_instance_id": self.native_application_instance_id,
                          "expected": value, "seal_sha256": candidate["sha256"],
+                         "publication": publication,
                          "confirmed_at": datetime.now(UTC).isoformat(), "occupancy": proof}
             key = f"operations/{ref}/confirmations/{uuid.uuid4().hex}.json"
             store.put_if_absent(key, json_bytes(confirmed))

@@ -72,6 +72,7 @@ python -m spireagent.workbench evaluation report --ledger /ABS/ledger --output /
 ```
 
 封存不发送Stop、Host close或证据重发布。原失败快照和当前App确认分别追加；写入/读回/fsync失败不激活放行。
+若同App还留有GLOBAL `publication_unknown`，preview一并给出原发布operation/run/字节摘要；同次显式封存保留其完整原字节，再确认放行。原发布仍unknown，同一run禁止重发，后续新run才可接原发布入口。
 App重启后，若当前资源仍是该unknown，即使旧确认文件存在也须显式再确认并重查无占用；`run`先停在该检查，不预留新槽。
 不同App不能借旧PID/端口无响应推导无占用；使用准确pin的Host进程枚举、原生关闭收据及实际句柄检查，任一不可证就拒绝。
 `run`成功局沿正常evidence-publish完成R2读回，再经空目录恢复和清单复核冷却非活动副本；冷却失败保留证据并停，不自动重试。
