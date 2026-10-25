@@ -131,21 +131,11 @@ def main(argv: list[str] | None = None) -> int:
         if action == "package":
             from .training_package import prepare_package
 
-            if args.cohort_plan is not None:
-                from .training_cohort import cohort_weighting
-
-                if (not isinstance(body, dict) or "loss_weighting" in body
-                        or args.configuration_id is None):
-                    raise BoundaryError("training_cohort",
-                                        "explicit_single_weighting_source_required")
-                body = {**body, "loss_weighting": cohort_weighting(
-                    ProjectConfig.load(args.config), json.loads(args.cohort_plan.read_bytes()),
-                    args.configuration_id, body["source_id"])}
-            elif args.configuration_id is not None:
-                raise BoundaryError("training_cohort", "cohort_plan_required")
-
-            result = prepare_package(args.config, body, args.output, args.execution,
-                                     wait_seconds=args.wait_seconds)
+            result = prepare_package(
+                args.config, body, args.output, args.execution, wait_seconds=args.wait_seconds,
+                cohort_plan=(json.loads(args.cohort_plan.read_bytes())
+                             if args.cohort_plan is not None else None),
+                configuration_id=args.configuration_id)
             print(json.dumps(result, ensure_ascii=False, sort_keys=True))
             return 0
         if action == "start" and isinstance(body, dict) and body.get("schema") == PACKAGE_SCHEMA:

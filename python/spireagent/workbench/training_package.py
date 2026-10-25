@@ -29,12 +29,25 @@ def package_start(value: object) -> dict[str, Any]:
 
 
 def prepare_package(config_path: Path, body: object, output: Path | None, execution: str,
-                    *, wait_seconds: int | None = None) -> dict[str, Any]:
+                    *, wait_seconds: int | None = None, cohort_plan: object = None,
+                    configuration_id: str | None = None) -> dict[str, Any]:
     if execution != "remote" or output is None or output.exists():
         raise BoundaryError("remote_training", "new_remote_package_output_required")
     if not isinstance(body, dict):
         raise BoundaryError("remote_training", "exact_prepare_request_required")
-    prepared = training_command(ProjectConfig.load(config_path), "prepare", body=body,
+    config = ProjectConfig.load(config_path)
+    if cohort_plan is not None:
+        from .training_cohort import cohort_weighting, freeze_cohort
+
+        if configuration_id is None or "loss_weighting" in body:
+            raise BoundaryError("training_cohort", "explicit_single_weighting_source_required")
+        if "source_id" not in body:
+            body = {**body, "source_id": freeze_cohort(config, cohort_plan, configuration_id)}
+        body = {**body, "loss_weighting": cohort_weighting(
+            config, cohort_plan, configuration_id, body["source_id"])}
+    elif configuration_id is not None:
+        raise BoundaryError("training_cohort", "cohort_plan_required")
+    prepared = training_command(config, "prepare", body=body,
                                 execution="remote", wait_seconds=wait_seconds)
     start = {"run_id": prepared.get("run_id"), "intent_id": body["intent_id"],
              "max_seconds": body["max_seconds"], "stop_after": body["stop_after"]}

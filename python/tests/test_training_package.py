@@ -120,3 +120,79 @@ def test_cohort_binds_exact_split_membership_counts_and_definition(tmp_path):
         with pytest.raises(BoundaryError, match="cohort_snapshot_run_counts_mismatch"):
             cohort_weighting(app.config, {**changed_body, "configuration_id": new_id},
                              new_id, snapshot.artifact_id)
+
+
+def test_selected_cohort_without_snapshot_uses_normal_freeze_then_package(tmp_path, capsys):
+    from collections import Counter
+
+    from stpd.p1.data import digest, json_bytes
+    from stpd.p1.dataset import SnapshotReader
+
+    with client(tmp_path) as (app, _call, provider, store, _owner, snapshot, config_path):
+        selected = SnapshotReader(store, snapshot.artifact_id).selection
+        counts = Counter((p["root_run_id"], p["group_id"], p["split"])
+                         for p in selected["points"])
+        plan = {"schema": "stpd/p1-cohort-plan-1", "definition": {"rule": "fixture-v1"},
+                "sources": selected["sources"], "selection": selected["selection"],
+                "splits": selected["split_by_group"],
+                "runs": [{"root_run_id": r, "group_id": g, "split": s,
+                          "N": n, "train_weight": 2 if s == "train" else None}
+                         for (r, g, s), n in counts.items()]}
+        identity = digest(json_bytes(plan))
+        plan["configuration_id"] = identity
+        envelope = {"schema": "training-data-weight-selection-20261025-v1",
+                    "status": "frozen_user_confirmed", "selected_configuration_id": identity,
+                    "configuration": plan}
+        cohort = tmp_path / "cohort.json"
+        cohort.write_text(json.dumps(envelope))
+        request = tmp_path / "recipe.json"
+        request.write_text(json.dumps({"intent_id": "e" * 32,
+                                       "config": MStdConfig(max_epochs=2).to_dict(),
+                                       "max_seconds": 300, "stop_after": None}))
+        output = tmp_path / "ready.json"
+        assert main(["package", "--config", str(config_path), "--execution", "remote",
+                     "--input", str(request), "--cohort-plan", str(cohort),
+                     "--configuration-id", identity, "--output", str(output)]) == 0
+        assert json.loads(capsys.readouterr().out)["provider_submitted"] is False
+        package = json.loads(output.read_text())
+        run = verify_p1_run(store, package["start"]["run_id"], provider.target.producer)
+        assert run.snapshot.artifact_id != snapshot.artifact_id
+        assert run.reader.selection["split_by_group"] == plan["splits"]
+        assert run.reader.selection["split_salt"] == "cohort-" + identity
+        assert run.training.parameters.value()["loss_weighting"]["rule_id"] == identity
+        assert run.training.parameters.value()["loss_weighting"]["definition"] == plan["definition"]
+        assert provider.calls == []
+
+
+@pytest.mark.parametrize("value", [None, [], {}, {"schema": "stpd/p1-cohort-plan-1"}])
+def test_malformed_cohort_is_a_typed_boundary_error(value):
+    from spireagent.workbench.training_cohort import checked_cohort_plan
+
+    with pytest.raises(BoundaryError):
+        checked_cohort_plan(value, "a" * 64)
+
+
+def test_existing_output_rejects_before_any_cohort_freeze(tmp_path, monkeypatch):
+    from spireagent.workbench.training_package import prepare_package
+
+    output = tmp_path / "existing.json"
+    output.write_text("original")
+    monkeypatch.setattr("spireagent.workbench.training_cohort.freeze_cohort",
+                        lambda *a: pytest.fail("output rejected after freezing"))
+    with pytest.raises(BoundaryError, match="new_remote_package_output_required"):
+        prepare_package(tmp_path / "no-config-needed.json", {}, output, "remote",
+                        cohort_plan={}, configuration_id="a" * 64)
+    assert output.read_text() == "original"
+
+
+def test_invalid_weight_or_checkpoint_policy_does_not_record_training_use(tmp_path, monkeypatch):
+    with client(tmp_path) as (app, call, _provider, _store, _owner, snapshot, _path):
+        body = {"intent_id": "f" * 32, "source_id": snapshot.artifact_id,
+                "config": MStdConfig(max_epochs=2).to_dict(), "max_seconds": 300,
+                "stop_after": 1}
+        monkeypatch.setattr("spireagent.workbench.p1_training_data.record_p1_training_use",
+                            lambda *a: pytest.fail("invalid recipe recorded use"))
+        with pytest.raises(BoundaryError):
+            call("prepare", body={**body, "loss_weighting": None})
+        with pytest.raises(BoundaryError, match="unsupported_checkpoint_policy"):
+            call("prepare", body={**body, "checkpoint_policy": []})

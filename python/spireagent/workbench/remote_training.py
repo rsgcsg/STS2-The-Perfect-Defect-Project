@@ -525,6 +525,11 @@ class RemoteTrainingService:
                     if recipe != P1_MSTD_RECIPE:
                         raise BoundaryError("remote_training", "weighting_requires_M_std_recipe")
                     execution_options[key] = obj[key]
+            if "checkpoint_policy" in execution_options:
+                from stpd.p1.weighting import CHECKPOINT_POLICY
+
+                if execution_options["checkpoint_policy"] not in (None, CHECKPOINT_POLICY):
+                    raise BoundaryError("remote_training", "unsupported_checkpoint_policy")
             if target is not None:
                 gpu = getattr(target, "gpu", None)
                 if ((config.device == "cpu") != (gpu == "none")):
@@ -540,7 +545,12 @@ class RemoteTrainingService:
                 checkpoint_id=execution_options.get("initial_checkpoint"),
                 initial_checkpoint="initial_checkpoint" in execution_options,
             )
-            require_p1_snapshot(owner, store, snapshot)
+            selection, _ = require_p1_snapshot(owner, store, snapshot)
+            if "loss_weighting" in execution_options:
+                from stpd.p1.weighting import checked_weights
+
+                execution_options["loss_weighting"] = checked_weights(
+                    execution_options["loss_weighting"], selection)
         # Vocabulary fitting itself discloses training examples; reserve use first.
         with phase("remote.prepare.record_use"):
             record_p1_training_use(owner, store, snapshot, intent)
