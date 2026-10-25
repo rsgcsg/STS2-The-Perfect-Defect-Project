@@ -14,7 +14,7 @@
 
 固定100总分母：35开过、0胜、33自然负、2unknown、65未开、0替换/0reserved。七检查点A0胜率均0%，均层按219/438/876/1460/1752/2051/2190依次7.60/17.00/15.50/9.50/14.00/13.60/13.40；自然计分分母依次5/5/4/4/5/5/5。A10的14槽、其他四角色各4槽均未开，指标未测。旧84ee条件unknown1/25（4%），新8d条件1/10（10%）；已记录Native崩溃均0，旧原报表另有1个关闭事实不足。完整typed R2已有34份=33自然局＋新unknown；产品账本`R2_original_receipts=33`仅统计finished行，unknown保全从原attempt收据另列，不把保全当胜负。
 
-唯一账本：`/Users/fire/Documents/Codex/2026-10-24/checkpoint-evaluation-replay/ledger-20261025`；本轮报告与100槽JSON/分组表/两份封存及失败收据在`/Users/fire/Documents/Codex/2026-10-25/users-fire-desktop-spireagentproject-claude-handoff-2/outputs/`，共享回报仍是`replies/EVAL-CHAIN-REPORT-20261025.md`。本轮按新unknown硬停线，不修新selector缺口、不人工补选、不追加模型/包改动、不继续65槽、不自动封存。下一步需用户决定是否另行调查及显式封存后续跑；不是新派工或追加预算授权。当前App保留运行，评估/防睡眠子进程结束；收口闹钟停用。开发累计4h含先前约6m，CI/游戏等待另计，未因换上下文重置。
+唯一账本：`/Users/fire/Documents/Codex/2026-10-24/checkpoint-evaluation-replay/ledger-20261025`；本轮报告与100槽JSON/分组表/原25封存收据与新35失败收据在`/Users/fire/Documents/Codex/2026-10-25/users-fire-desktop-spireagentproject-claude-handoff-2/outputs/`，共享回报仍是`replies/EVAL-CHAIN-REPORT-20261025.md`。本轮按新unknown硬停线，不修新selector缺口、不人工补选、不追加模型/包改动、不继续65槽、不自动封存。下一步需用户决定是否另行调查及显式封存后续跑；不是新派工或追加预算授权。当前App保留运行，评估/防睡眠子进程结束；本轮闹钟在文档门禁收尾后停用。开发硬限4h（含先前约6m），CI/游戏等待另计，未因换上下文重置。
 
 ### 实施约束与经过（以下保留为历史）
 
