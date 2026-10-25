@@ -122,6 +122,11 @@ internal static partial class RecorderRuntime
                 _detail = result.Detail;
             }
             if (_store?.IsSourceSession == true) _lastSourceStatus = _store.GetSourceStatus();
+            if (result.Accepted)
+            {
+                Continuous.Disarm();
+                result = SaveRecordingStandby(command, result);
+            }
             SourceCommands.Add(command.CommandId, (fingerprint, result));
             CommandLedger.Remember(command.CommandId, result);
             _runtimeState = RuntimeStatusForLifecycle(_lifecycle.State, _runtimeState);

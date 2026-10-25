@@ -72,6 +72,11 @@ internal static partial class RecorderRuntime
             catch (Exception exception)
             { result = RejectedCommand("source_recording_command_failed", exception.GetType().Name + ":" + exception.Message); _detail = result.Detail; }
             _lastSourceStatusV2 = _store?.GetSourceStatusV2() ?? _lastSourceStatusV2;
+            if (result.Accepted)
+            {
+                Continuous.Disarm();
+                result = SaveRecordingStandby(command, result);
+            }
             SourceCommands.Add(command.CommandId, (fingerprint, result)); CommandLedger.Remember(command.CommandId, result);
             _runtimeState = RuntimeStatusForLifecycle(_lifecycle.State, _runtimeState);
         }

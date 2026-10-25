@@ -42,6 +42,19 @@ spans supply their original callback boundaries and only an observed UTC time.
 This bounded diagnostic history contains no gameplay facts and does not establish
 Human origin or qualification.
 
+Daily native UI recording uses **开始本人录制**, an explicit Human-origin declaration
+mapped to the same `RecordingApplicationService` and exact runtime/session command as
+the CLI below. Workbench pairing is not a prerequisite for recording or sealing.
+Successful explicit Start/Resume retains only P1 profile/origin standby preferences
+in `recording-standby.json` at the configured recording root. A subsequent native
+Launch opens a new session, including after ordinary Save & Quit or process restart.
+No old runtime/session/action identities or run-completeness facts are restored.
+Explicit Pause/Close cancels standby; automatic exit/terminal Close preserves it.
+Missing preferences default to disabled; invalid preferences remain visibly blocked
+until an explicit operator choice. A preference write failure reports an applied
+recording command with `recording_standby_save_failed`; never retry that Start/Close.
+The recording and its original persistence health remain separate from this warning.
+
 For daily P1 collection attach to the running installed game through the existing
 Application API. Run `npm run recording:p1 -- status`, then use its exact runtime
 and session (`none` before the first session):
