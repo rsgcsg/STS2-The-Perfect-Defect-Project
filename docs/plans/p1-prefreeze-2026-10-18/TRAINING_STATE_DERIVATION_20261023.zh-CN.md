@@ -1,3 +1,5 @@
+> Historical task; current training optimization definition and execution-plan SOP supersede its forward guidance: [FULLRUN_TRAINING](../../../python/docs/FULLRUN_TRAINING.md#training-performance-belongs-to-the-existing-chain). Original evidence and body remain unchanged.
+
 # f7 M-std 完整状态显式派生（2026-10-23）
 
 本任务只交源码候选、正常 CPU 链检查和隔离 CUDA 资格验证工具。原长训继续，

@@ -1,3 +1,5 @@
+> Historical task; current training optimization definition and execution-plan SOP supersede its forward guidance: [FULLRUN_TRAINING](../../../python/docs/FULLRUN_TRAINING.md#training-performance-belongs-to-the-existing-chain). Original evidence and body remain unchanged.
+
 # 同一训练 Run 的有界自动接续
 
 本轮用户已授权把自动接续直接用于正在学校 L40S 上运行的首批四 Agent 训练，

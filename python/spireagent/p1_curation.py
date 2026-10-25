@@ -8,6 +8,7 @@ admission is created here.
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from spireagent.json_boundary import BoundaryError
@@ -15,6 +16,7 @@ from spireagent.json_boundary import digest as checked_digest
 from spireagent.research_curation import CurationLedger
 from stpd.p1.data import digest, json_bytes
 from stpd.p1.dataset import inspect_projections, load_snapshot, projection_payload_role
+from stpd.p1.spec import SNAPSHOT_SCHEMA
 
 
 def _occurrence(decision: str) -> str:
@@ -27,6 +29,10 @@ def _scope(
     manifest, value = load_snapshot(store, snapshot_id)
     if manifest.parameters.value().get("purpose") != "engineering":
         raise BoundaryError("p1_training_data", "engineering_snapshot_required")
+    return value, _selection_scopes(value, snapshot_id)
+
+
+def _selection_scopes(value: dict[str, Any], snapshot_id: str) -> dict[str, Any]:
     if not value["partition_N"].get("train") or not value["partition_N"].get("dev"):
         raise BoundaryError("p1_training_data", "nonempty_train_dev_allocation_required")
     if set(value["partition_N"]) - {"train", "dev", "test"}:
@@ -43,7 +49,7 @@ def _scope(
             "projections": {p["projection_id"] for p in references},
             "points": refs,
         }
-    return value, scopes
+    return scopes
 
 
 def _require_purposes(
@@ -174,6 +180,34 @@ def require_p1_training_use(
     _, scopes = require_p1_snapshot(ledger, store, snapshot_id)
     train = scopes["train"]
     ledger.require_training_use(snapshot_id, train["projections"], train["roots"], operation_id)
+
+
+def require_recorded_p1_training_use(
+    ledger: CurationLedger, store: Any, snapshot_id: str, operation_id: str,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Check an existing use without reprojecting its immutable source locally.
+
+    Only the original, already admitted operation can be reused. This creates no
+    use or permission and does not verify the source data for computation. The
+    remote calibration must still run the ordinary full Snapshot/Run reader
+    before any forward/update; no SnapshotReader accepts this metadata as proof.
+    Current purpose, related exposure and exclusion checks remain local.
+    """
+    checked_digest(operation_id, "p1_training_data.operation_id", length=32)
+    manifest = store.get_manifest(snapshot_id)
+    info = manifest.parameters.value()
+    if (manifest.kind != "dataset" or info.get("schema") != SNAPSHOT_SCHEMA
+            or info.get("purpose") != "engineering"):
+        raise BoundaryError("p1_training_data", "engineering_snapshot_required")
+    value = json.loads(b"".join(store.read_payload(manifest.payload("selection"))))
+    if (digest(json_bytes(value)) != info.get("selection_sha256")
+            or value.get("schema") != SNAPSHOT_SCHEMA):
+        raise BoundaryError("p1_training_data", "snapshot_selection_binding_mismatch")
+    scopes = _selection_scopes(value, snapshot_id)
+    _require_purposes(ledger, snapshot_id, scopes)
+    train = scopes["train"]
+    ledger.require_training_use(snapshot_id, train["projections"], train["roots"], operation_id)
+    return value, scopes
 
 
 def draft_p1_allocation(

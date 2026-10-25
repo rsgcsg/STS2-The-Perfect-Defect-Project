@@ -74,7 +74,7 @@ def prepare_p1_run(
     is never promoted here into formal research admission.
     """
     checked_digest(operation_id, "p1_workload.operation_id", length=32)
-    execution = (MStdExecution() if execution_policy is None
+    execution = (MStdExecution.for_plan("mstd-training-v1") if execution_policy is None
                  else MStdExecution.decode(execution_policy))
     if execution.cpu_threads != config.cpu_threads:
         raise BoundaryError("p1_workload", "formal_recipe_cpu_threads_mismatch")
@@ -144,7 +144,8 @@ def prepare_p1_run(
         parameters=FrozenObject.of(
             {"schema": DERIVED_RUN_SCHEMA if original is not None else RUN_SCHEMA,
              "operation_id": operation_id, "event_index": "run-events-v1",
-             **({"execution_policy": execution.to_dict()} if execution_policy is not None else {}),
+             **({"execution_policy": execution.to_dict()} if execution_policy is not None
+                else {"execution_plan": "mstd-training-v1"}),
              **({"derivation": DERIVATION}
                 if original is not None else {})}
         ),
@@ -179,8 +180,12 @@ def verify_p1_run(store: ArtifactStore, run_id: str, producer: Producer) -> P1Wo
         raise BoundaryError("p1_workload", "run_source_or_schema_mismatch")
     info_run = run.parameters.value()
     checked_digest(info_run.get("operation_id"), "p1_workload.operation_id", length=32)
+    if "execution_policy" in info_run and "execution_plan" in info_run:
+        raise BoundaryError("p1_workload", "ambiguous_execution_configuration")
     execution = (MStdExecution.decode(info_run["execution_policy"])
-                 if "execution_policy" in info_run else MStdExecution())
+                 if "execution_policy" in info_run else
+                 MStdExecution.for_plan(info_run["execution_plan"])
+                 if "execution_plan" in info_run else MStdExecution())
     training = store.get_manifest(run.parent("training_input"))
     info = training.parameters.value()
     if (

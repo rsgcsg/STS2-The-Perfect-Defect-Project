@@ -33,6 +33,19 @@ class MStdExecution:
         return asdict(self)
 
     @classmethod
+    def for_plan(cls, name: str) -> MStdExecution:
+        """Versioned new-Run plans; the legacy constructor stays reference.
+
+        A plan name is resolved by the admitted source and frozen in its Run.
+        Existing packages/checkpoints without a plan retain their original path.
+        """
+        if name == "reference-v1":
+            return cls()
+        if name == "mstd-training-v1":
+            return cls(implementation="experimental-packed-v1", defer_score_sync=True)
+        raise BoundaryError("p1_execution", "unsupported_execution_plan")
+
+    @classmethod
     def decode(cls, value: object) -> MStdExecution:
         return cls(**object_fields(value, set(cls.__dataclass_fields__), "p1_execution"))
 

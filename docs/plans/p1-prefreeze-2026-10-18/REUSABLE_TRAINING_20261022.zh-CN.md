@@ -1,3 +1,5 @@
+> Historical task; current training optimization definition and execution-plan SOP supersede its forward guidance: [FULLRUN_TRAINING](../../../python/docs/FULLRUN_TRAINING.md#training-performance-belongs-to-the-existing-chain). Original evidence and body remain unchanged.
+
 # 可复用数据与四 Agent 训练工程轮
 
 2026-10-22 Brisbane 19:13:36 开工，22:13:36 硬截止（UTC 12:13:36）；
