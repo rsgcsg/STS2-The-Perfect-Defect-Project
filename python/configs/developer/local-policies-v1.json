@@ -2,21 +2,21 @@
   "schema": "stpd/local-policy-registry-v1",
   "runtime_package": {
     "package": "@rsgcsg/sts2-policy-runtime",
-    "version": "0.1.0-rc.43",
-    "source_revision": "0a089d1f20aaaa3d6868f392cb83a2a7c147c11b",
-    "component_tree_revision": "56cb39cd6d2e8d4b0f5cc002fa58987beeddbcc5",
-    "release_asset_sha256": "429ec9f30b59d91ad8e80beca92d4c797979a36aed955b39446463ff9c7565f3",
-    "package_content_sha256": "2e64212aba3f92fe00f48fc95e0a74acd94ebdb66e18528e1479452817a8644e",
+    "version": "0.1.0-rc.44",
+    "source_revision": "c520d39cab2cb00cef198bb926c3acb899deb574",
+    "component_tree_revision": "e240fdf58b99cb01bb01af624e30a7f3cb6418dc",
+    "release_asset_sha256": "e03489e60664e3a2ea1df6b02697193f5c95f59ac3ce78c40576370c8f9c3243",
+    "package_content_sha256": "3dc5e03bbf1728e4904442f75f1c8dceee5e3d3c4d06faf9cf903095a7e447e6",
     "dependency_layout": "bundled_source_candidate",
     "bundled_connector_pin": {
       "mode": "bundled_source_candidate",
       "name": "@rsgcsg/sts2-connector-client",
-      "version": "1.3.0-rc.12",
-      "source_revision": "026c55996d35b87fd72d28364f0abb87bacf304e",
-      "component_tree_revision": "d419550dfa5923d972cd92b122c86176e9716908",
-      "component_source_digest_sha256": "344da23ea5086cc24123cfe3707b61ad552b3b9ae9635a9058d33fb2d3a4cb53",
-      "public_contract_digest_sha256": "92ae5bcb6353e35d3b1d475a869cdebb473e9b329d79207a33e1310692428e28",
-      "bundle_sha256": "bf616b5270d187d91b63915589997275c6af2a2e53071b1f45fab8b1d9db8457",
+      "version": "1.3.0-rc.13",
+      "source_revision": "c520d39cab2cb00cef198bb926c3acb899deb574",
+      "component_tree_revision": "392f8836209472b0be783ad037de53af2f51bf6d",
+      "component_source_digest_sha256": "4a42393cac2b797c2d268007198765de27b022a0a25e00965a70c33c1ef78d90",
+      "public_contract_digest_sha256": "868b7b79cc5ab6addc771a4fbfe4ef049bedcba039ebd8fb7481e6e834595236",
+      "bundle_sha256": "32d17f0addb7b324d2d9f9e70936755e5f663b53db7fbd70473471b953c86ccb",
       "transitive_zod": {
         "version": "3.25.76",
         "url": "https://registry.npmjs.org/zod/-/zod-3.25.76.tgz",
@@ -28,7 +28,7 @@
   "policies": [
     {
       "id": "s1-human-combat-v4",
-      "label": "S1 \u00b7 Defect A0 \u666e\u901a\u6218\u6597",
+      "label": "S1 · Defect A0 普通战斗",
       "adapter": "s1-v1",
       "manifest": "policy-manifests/s1-policy-adapter-v7.json",
       "config": "configs/v0/experiments/s1-human-combat-live-v2.json"
