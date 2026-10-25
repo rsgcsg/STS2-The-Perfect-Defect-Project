@@ -57,8 +57,31 @@ export function completeCombat(value: unknown): boolean {
   return new Set(value.enemies.map(enemy => (enemy as Record<string, unknown>).entity_id)).size === value.enemies.length;
 }
 
-/** Common typed selector fields; bundle/other shapes need their own contract. */
+/** The native bundle chooser selects one whole pack, then confirms its preview.
+ * Its cards are public contents, not independently selectable grid entries. */
+export function completeCardBundleSelector(value: unknown): boolean {
+  if (!isObject(value) || value.kind !== "card_bundle_selection"
+      || !["choosing", "preview"].includes(String(value.stage))
+      || !(value.prompt === undefined || value.prompt === null || typeof value.prompt === "string")
+      || typeof value.can_confirm !== "boolean" || typeof value.can_cancel_preview !== "boolean"
+      || !Array.isArray(value.bundles) || value.bundles.length === 0
+      || !Array.isArray(value.selectable_bundle_entity_ids)) return false;
+  const bundles = value.bundles;
+  if (!bundles.every(bundle => isObject(bundle) && text(bundle.entity_id)
+        && completeCards(bundle.cards) && bundle.cards.length > 0)
+      || new Set(bundles.map(bundle => bundle.entity_id)).size !== bundles.length
+      || !completeCards(bundles.flatMap(bundle => bundle.cards))
+      || new Set(value.selectable_bundle_entity_ids).size !== value.selectable_bundle_entity_ids.length
+      || !value.selectable_bundle_entity_ids.every(id => bundles.some(bundle => bundle.entity_id === id))) return false;
+  return value.stage === "choosing"
+    ? value.selected_bundle_entity_id == null && value.can_confirm === false && value.can_cancel_preview === false
+    : bundles.length === 1 && value.selected_bundle_entity_id === bundles[0].entity_id
+      && value.selectable_bundle_entity_ids.length === 0;
+}
+
+/** Native selectors have distinct bundle, generated-card and selected-set shapes. */
 export function completeSelector(value: unknown): boolean {
+  if (isObject(value) && value.kind === "card_bundle_selection") return completeCardBundleSelector(value);
   if (isObject(value) && value.kind === "native_generated_card_choice") {
     // This native chooser commits one visible card directly; it is not a
     // min/max grid with a selected set and a separate confirmation stage.
