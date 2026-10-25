@@ -53,8 +53,10 @@ def selection_ids(
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, required=True)
-    parser.add_argument("--selection", type=Path, required=True,
+    parser.add_argument("--selection", type=Path,
                         help="existing explicit selection, or explicit tool_release_ids filter")
+    parser.add_argument("--policy", type=Path,
+                        help="intake version/holdout policy; default is the repository policy")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--holdout-targets", type=Path,
                         help="DEV/TEST group targets per difficulty; prior roles preserved")
@@ -62,6 +64,17 @@ def main() -> None:
     # Inventory reads the configured Store owner even if the running App is older.
     # It does not start/upgrade the App or admit its installed combination.
     config = ProjectConfig.load(args.config, require_current_combination=False)
+    if args.selection is None:
+        from spireagent.workbench.p1_cohort_intake import DEFAULT_POLICY, refresh_cohort
+
+        args.output.mkdir(parents=True, exist_ok=False)
+        summary = refresh_cohort(config, args.policy or DEFAULT_POLICY, output_dir=args.output)
+        print(json.dumps({"output": str(args.output), "unique_N": summary["N"],
+                          "configuration_id": summary["configuration_id"],
+                          "purpose_reserved": False, "training_use_recorded": False}))
+        return
+    if args.policy is not None:
+        parser.error("choose --policy or historical --selection, not both")
     if config.cloud_environment_file:
         os.environ.update(cloud_environment(config.cloud_environment_file))
     owner = _selected_curation_owner(config)

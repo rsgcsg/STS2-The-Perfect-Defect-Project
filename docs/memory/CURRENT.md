@@ -30,4 +30,6 @@ PR237/238已按第二档普通合并为`b62310da`/`8d628cf2`。实际App0.2.0/8d
 
 ## Remaining Platform non-claims
 
+录后自动维护、小结与确认冻结归[Q任务](../plans/p1-prefreeze-2026-10-18/AUTO_DATA_INTAKE_20261025.zh-CN.md)及[RECOUNT-SOP](../../python/docs/RECOUNT-SOP.zh-CN.md)；复用原维护器/Store/R2/P1缓存/Curation，不自动冻结/训练。B从含B/Q的develop统一安装，准确安装与下一局收据沿任务中的固定报告查，不由源码通过推断实机通过；原100槽与已冻结配置不变。
+
 source/test、构建、安装/加载、实际运行、Human/数据资格与模型效果分别报告。原100未完成；本轮按新unknown停线收口，未开训练，不借旧CI或正常退出补造胜负、封存或资格。

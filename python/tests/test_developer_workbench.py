@@ -471,6 +471,20 @@ def test_local_server_auth_identity_and_safe_render(project):
     try:
         with urlopen(url + "/health", timeout=2) as response:
             assert json.load(response)["instance_id"] == app.instance_id
+        with urlopen(url + "/recording-summary", timeout=2) as response:
+            assert "尚无盘点结果" in response.read().decode()
+        from spireagent.workbench.developer_server import _local_request
+        from spireagent.workbench.p1_cohort_intake import DEFAULT_POLICY
+
+        with pytest.raises(HTTPError) as error:
+            _local_request(url + "/api/local-recordings/cohort/refresh", body={})
+        assert error.value.code == 403
+        _local_request(url + "/api/local-recordings/maintenance", token=app.control_token,
+                       body={"enabled": False, "peer": None,
+                             "projection_id": "native-timeline-targets-1",
+                             "cohort_policy": str(DEFAULT_POLICY)})
+        assert _local_request(url + "/api/local-recordings/cohort/refresh",
+                              token=app.control_token, body={})["status"] == "refresh_requested"
         with pytest.raises(HTTPError) as error:
             urlopen(Request(url + "/api/status", headers={"Host": "attacker.example"}), timeout=2)
         assert error.value.code == 403

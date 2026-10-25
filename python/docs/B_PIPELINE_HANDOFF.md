@@ -540,6 +540,12 @@ writer; the managed consumer lock remains exclusive. Cooling reduces expanded ra
 copies only. Compressed Store archives/projections still grow and are not silently
 evicted; low-space failures retain the sealed source and original operation.
 
+The current [automatic intake and recount SOP](RECOUNT-SOP.zh-CN.md) connects this same
+maintenance worker to the existing P1 preparation cache and Curation. It provides the
+fixed summary page, explicit version policy and a user-confirmed one-command cohort
+freeze. New heavy steps wait for a positive game-stopped observation; unknown original
+operations remain blocked, and a full-disk failure cannot kill the maintenance thread.
+
 | Data | Explicit schema/profile and payload role |
 |---|---|
 | Original | P1-native bundle; `archive` + `transfer`; original producer/declaration/raw hashes/Close/journal retained; optional exact `preservation` parent |

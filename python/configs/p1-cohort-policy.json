@@ -1,0 +1,21 @@
+{
+  "schema": "spireagent/p1-cohort-policy-1",
+  "revision": "r1.5",
+  "projection": "native-timeline-targets-1",
+  "tool_release_priority": [
+    "0464d9e206a3d234678dafeba4e17380afde7d1b36ee4a5eb26ea1701333f340",
+    "5171897f083a5abd77bad879ad7314c2c47fbd3633a19f07eaaa27f1489bf227"
+  ],
+  "superseded_tool_release_ids": [
+    "486d816c3ef3b9b5e471de059d88b89355145337bbd07537820e22816476575d",
+    "2cd19ac34d466004bcfeb1d6a2ab7f778f74ba202ab952f19af676922411f3f2",
+    "30e18845b72f161e704e0858d330ffc9e5e945e4a2562a717e3a810935f77e86",
+    "9a489cd024e601472ac25608a8fb6857c40b4393ae8b2277b9d57281ac2f3ef6",
+    "62891b52436b42a190329bc75458ef430481b37a0ff228663f3ae5e2435f606b",
+    "e0592b6d30bf2e6705114eb59d034c566c13baaeb6aeb6ee4c0e2aaa40241304",
+    "2928a825591e59ab3675ca94e69eeb32414a762e0f4d6e0e5c13c7e6e85e9ffd",
+    "3e9efdc25416dd7591148ddd906693348e5a91332434a6ae562b486d0e35f819"
+  ],
+  "split_salt": "p1-first-four-agent-20261023-v1",
+  "holdout_targets": {"dev": {"0": 4, "10": 3}, "test": {"0": 4, "10": 3}}
+}
