@@ -45,17 +45,23 @@ def test_normalization_uses_train_point_mass_and_exact_root_inventory():
 
 @pytest.mark.parametrize("plan", ["reference-v1", "mstd-training-v1"])
 def test_all_one_matches_original_loss_gradient_optimizer_and_rng(plan):
-    left = engine(train_count=3)
-    right = engine(train_count=3)
-    # Compare the same approved execution, including dropout/ID-mask draws.
-    left.model.execution = right.model.execution = MStdExecution.for_plan(plan)
-    pop = right.populations["train"]
-    right.populations["train"] = replace(pop, weights=(1.0,) * 3)
+    template = engine(train_count=3)
+    pops = template.populations
+    weighted_pops = {**pops, "train": replace(pops["train"], weights=(1.0,) * 3)}
+    execution = MStdExecution.for_plan(plan)
+    left = MStdTrainer(pops, template.vocabulary, "a" * 64, template.config,
+                       execution=execution)
+    right = MStdTrainer(weighted_pops, template.vocabulary, "a" * 64, template.config,
+                        execution=execution)
+    assert "train_weights_sha256" not in left.identity
+    assert right.identity["train_weights_sha256"] == digest(json_bytes((1.0,) * 3))
     a, b = left.advance(), right.advance()
     assert a["mean_N_loss"] == b["mean_N_loss"]
     assert a["gradient_norm"] == b["gradient_norm"]
-    assert maximum_difference(decode_checkpoint(left.checkpoint()),
-                              decode_checkpoint(right.checkpoint())) == 0
+    original, weighted = decode_checkpoint(left.checkpoint()), decode_checkpoint(right.checkpoint())
+    # Identity records the new explicit rule; all numeric state and RNG stay exact.
+    weighted["identity"].pop("train_weights_sha256")
+    assert maximum_difference(original, weighted) == 0
     for x, y in zip(left.model.parameters(), right.model.parameters(), strict=True):
         assert (x.grad is None) == (y.grad is None)
         if x.grad is not None:
@@ -86,23 +92,26 @@ def test_weighted_microbatch_uses_global_mean_then_optimizer_batch_mean(monkeypa
 
 def test_weighted_input_reaches_real_worker_checkpoint_and_resume(tmp_path):
     store = store_at(tmp_path / "store")
-    projections = [projection_fixture(store, "weighted-" + str(i))[0] for i in range(3)]
+    projections = [projection_fixture(store, "weighted-" + str(i))[0] for i in range(4)]
     snapshot = explicit_snapshot(store, projections)
     reader = SnapshotReader(store, snapshot.artifact_id)
     roots = {p["root_run_id"] for p in reader.selection["points"] if p["split"] == "train"}
-    weights = {"schema": SCHEMA, "rule_id": "unit-control",
-               "weights_by_root": dict.fromkeys(roots, 1)}
+    weights = {"schema": SCHEMA, "rule_id": "two-game-example",
+               "weights_by_root": {r: i + 1 for i, r in enumerate(sorted(roots))}}
     run = prepare_p1_run(store, snapshot.artifact_id, PRODUCER, MStdConfig(max_epochs=2), "a" * 32,
                          loss_weighting=weights, checkpoint_policy=CHECKPOINT_POLICY)
     workload = verify_p1_run(store, run.artifact_id, PRODUCER)
     assert workload.training.parameters.value()["loss_weighting"] == weights
     pops = populations_from_reader(reader, weights)
-    assert pops["train"].weights == (1.0,)
+    expected_weights = point_weights(weights, reader.selection)
+    expected = tuple(expected_weights[k] for k in sorted(expected_weights))
+    assert pops["train"].weights == expected
+    assert set(expected) == {2 / 3, 4 / 3}
     request = ComputeRequest("training", run.artifact_id, PRODUCER, "weighted-pause", stop_after=1)
     paused = dispatch(store, request, PRODUCER)
     validate_receipt(store, request, paused)
     checkpoint = verify_p1_checkpoint(store, paused.checkpoint_id, workload)
-    assert checkpoint.state["identity"]["train_weights_sha256"] == digest(json_bytes((1.0,)))
+    assert checkpoint.state["identity"]["train_weights_sha256"] == digest(json_bytes(expected))
     resumed = dispatch(store, replace(request, attempt_id="weighted-resume", stop_after=None,
                                       resume=paused.checkpoint_id), PRODUCER)
     validate_receipt(store, replace(request, attempt_id="weighted-resume", stop_after=None,
@@ -111,7 +120,7 @@ def test_weighted_input_reaches_real_worker_checkpoint_and_resume(tmp_path):
     # A changed frozen policy cannot restore the original optimizer/cursor.
     trainer = MStdTrainer(pops, workload.vocabulary, snapshot.artifact_id, workload.config,
                           execution=workload.execution, checkpoint_policy=CHECKPOINT_POLICY)
-    trainer.populations["train"] = replace(pops["train"], weights=(2.0,))
+    trainer.populations["train"] = replace(pops["train"], weights=(2.0, 2.0))
     other = MStdTrainer(trainer.populations, workload.vocabulary, snapshot.artifact_id,
                         workload.config,
                         execution=workload.execution, checkpoint_policy=CHECKPOINT_POLICY)
