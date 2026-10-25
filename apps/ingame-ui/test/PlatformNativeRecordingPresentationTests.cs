@@ -1,9 +1,29 @@
 using System.Text.Json;
 using STS2PlatformLiveUi;
+using STS2HumanAnnotator.Core;
+using STS2PlatformLiveUiTests;
 using Xunit;
 
 public sealed class PlatformNativeRecordingPresentationTests
 {
+    [Theory]
+    [InlineData(RecordingLifecycleState.Ready, "录制未开始")]
+    [InlineData(RecordingLifecycleState.Closed, "录制未开始")]
+    [InlineData(RecordingLifecycleState.Closing, "封存未完成")]
+    [InlineData(RecordingLifecycleState.Recording, "录制保存异常")]
+    public void ArmedNeverHidesAStartOrSealFailure(RecordingLifecycleState state, string label)
+    {
+        var recording = new ContinuousRecording(); recording.Arm(P1NativeRecordingContract.ProfileId, "declared_human");
+        var status = PlatformRecordingCommandsTests.Status(null, state) with {
+            Continuous = recording.Snapshot(), RuntimeState = "session_start_failed",
+            Detail = "Recording session started.",
+            Health = new("not_checked", "failed", "failed", "recording_space_insufficient: available=1; required=2", DateTimeOffset.UtcNow)
+        };
+        Assert.StartsWith(label, PlatformNativeRecordingPresentation.QuickRecordingLabel(status));
+        Assert.Contains("recording_space_insufficient", PlatformNativeRecordingPresentation.PersistenceFailure(status));
+        Assert.DoesNotContain("录制待命", PlatformNativeRecordingPresentation.QuickRecordingLabel(status));
+    }
+
     private static string[] Rows(string lifecycle, string closeout, string? error = null)
     {
         using JsonDocument document = JsonDocument.Parse(JsonSerializer.Serialize(new

@@ -16,6 +16,8 @@
     <Compile Include="../../src/STS2HumanAnnotator.Mod/SourcePublicationBinding.cs" Link="SourcePublicationBinding.cs" />
     <Compile Include="../../src/STS2HumanAnnotator.Mod/RecorderRuntime.ProfileRouting.cs" Link="RecorderRuntime.ProfileRouting.cs" />
     <Compile Include="../../src/STS2HumanAnnotator.Mod/RecorderRuntime.P1Selector.cs" Link="RecorderRuntime.P1Selector.cs" />
+    <Compile Include="../../src/STS2HumanAnnotator.Mod/RecorderRuntime.Standby.cs" Link="RecorderRuntime.Standby.cs" />
+    <Compile Include="../../src/STS2HumanAnnotator.Mod/AnnotatorConfiguration.cs" Link="AnnotatorConfiguration.cs" />
   </ItemGroup>
   <ItemGroup><None Include="../../../connector/sdk/typescript/test/fixtures/p1-global/synthetic-complete-combat.json" Link="p1-complete-combat.json" CopyToOutputDirectory="PreserveNewest" /></ItemGroup>
 </Project>

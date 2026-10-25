@@ -146,6 +146,7 @@ internal static partial class RecorderRuntime
             _initialized = true;
             _runtimeState = "ready";
             _detail = _lifecycle.Detail;
+            RestoreRecordingStandby();
         }
         PublishApplicationEvent(RecordingEventKind.RuntimeReady, detail: _detail);
         WriteStatus(null, null, new[] { "no_open_recording_session", "no_current_exact_frame" });
@@ -200,7 +201,7 @@ internal static partial class RecorderRuntime
                 _detail ?? _lifecycle.Detail,
                 _lastEnvironment,
                 _lastSnapshotId,
-                _lastBlockers.ToArray(),
+                _lastBlockers.Concat(_standbyError == null ? Array.Empty<string>() : new[] { _standbyError }).ToArray(),
                 ApplicationEvents.LatestSequence,
                 Continuous.Snapshot())
             {
@@ -258,14 +259,16 @@ internal static partial class RecorderRuntime
                 snapshotId = _lastSnapshotId;
                 blockers = _lastBlockers;
             }
-            else if (IsStateNoOp(command.Kind, _lifecycle.State))
+            else if (IsStateNoOp(command.Kind, _lifecycle.State)
+                || command.Kind == RecordingCommandKind.Close && Continuous.Armed
+                    && _lifecycle.State == RecordingLifecycleState.Ready)
             {
                 string state = _lifecycle.State.ToString().ToLowerInvariant();
                 result = new RecordingCommandResult(
                     true,
                     _lifecycle.State == RecordingLifecycleState.Closing,
-                    $"already_{state}",
-                    $"Recording is already {state}.",
+                    _lifecycle.State == RecordingLifecycleState.Ready ? "recording_standby_stopped" : $"already_{state}",
+                    _lifecycle.State == RecordingLifecycleState.Ready ? "Automatic recording standby stopped; no session was open." : $"Recording is already {state}.",
                     _lifecycle);
                 environment = _lastEnvironment;
                 snapshotId = _lastSnapshotId;
@@ -340,6 +343,8 @@ internal static partial class RecorderRuntime
                     Continuous.Pause();
                 else if (command.Kind == RecordingCommandKind.Close)
                     Continuous.Disarm();
+                result = SaveRecordingStandby(command, result);
+                _detail = result.Detail;
             }
             if (result.Accepted && command.Kind == RecordingCommandKind.Close
                 && _lifecycle.State == RecordingLifecycleState.Closing)
@@ -5012,7 +5017,9 @@ internal static partial class RecorderRuntime
         // Cleanup is an observed exit boundary, not victory/defeat evidence.
         lock (Gate)
         {
-            if (!graceful) Continuous.Disarm();
+            // P1 standby is the operator's intent across Save & Quit/Continue,
+            // not a claim that the newly opened fragment is uninterrupted.
+            if (!graceful && !IsP1Recording) Continuous.Disarm();
             if (_store == null) return;
             TerminalSeal.Reset();
             AppendJournal("recording_segment_exit", null, _lastSnapshotId,

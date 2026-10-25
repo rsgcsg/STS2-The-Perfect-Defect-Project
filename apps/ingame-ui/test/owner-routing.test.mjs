@@ -18,7 +18,7 @@ test("ordinary runtime product controls navigate to the existing Workbench owner
 test("active Source3/Source4 controls cannot bypass the paired application through a profile dropdown",()=>{
   const flow=mod.slice(mod.indexOf("private void ApplyRecordingCommand"),mod.indexOf("private STS2HumanAnnotator.Core.SourceDeclaration ReadSourceDeclaration"));
   assert.match(flow,/activeSource = before.Session\?\.CaptureProfileId is .*SourceSessionContractV3.ProfileId/);
-  assert.match(flow,/sourceStart \|\| \(activeSource/);
+  assert.match(flow,/if \(activeSource &&/);
   assert.ok(flow.indexOf('OpenNativeWorkbenchPage("data")')<flow.indexOf("PlatformRecordingCommands.Execute"));
   assert.match(flow,/owner.ExecuteForSession/); // legacy native Human capability retained
   assert.match(panel,/internal void OpenPage\(string page\)/);
@@ -38,13 +38,14 @@ test("direct Human Stop recovery retains exact remembered run while normal pairi
   assert.match(panel,/直接归还 Human/);assert.match(panel,/直接停止当前 Runtime/);
 });
 
-test("P1 recording has a direct native Workbench entry and cannot fall through legacy controls",()=>{
-  assert.match(mod,/BuildHeaderButton\("录制", \(\) => OpenNativeWorkbenchPage\("data"\)/);
+test("P1 recording buttons map to the existing application without requiring a Workbench connection",()=>{
+  assert.match(mod,/BuildHeaderButton\("录制", \(\) => SelectSurface\(1\)/);
+  assert.match(mod,/BuildHeaderButton\("开始本人录制", StartDailyRecording/);
   assert.match(mod,/"兼容录制诊断"/);
   assert.match(mod,/_recordingProfile.Selected = 1/);
   const flow=mod.slice(mod.indexOf("private void ApplyRecordingCommand"),mod.indexOf("private STS2HumanAnnotator.Core.SourceDeclaration ReadSourceDeclaration"));
-  assert.match(flow,/or STS2HumanAnnotator.Core.P1NativeRecordingContract.ProfileId/);
-  assert.ok(flow.indexOf('OpenNativeWorkbenchPage("data")')<flow.indexOf("PlatformRecordingCommands.Execute"));
+  assert.match(flow,/PlatformRecordingCommands.ForP1Status/);
+  assert.match(flow,/owner.ExecuteForSession/);
   assert.match(panel,/PlatformNativeRecordingPresentation.Rows\(recording\)/);
   assert.match(panel,/body.GetValueOrDefault\("capture_profile_id"\)[\s\S]*P1NativeRecordingContract.ProfileId\)[\s\S]*body\["actor_id"\] = null/);
 });
