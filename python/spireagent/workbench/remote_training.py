@@ -529,7 +529,7 @@ class RemoteTrainingService:
                 gpu = getattr(target, "gpu", None)
                 if ((config.device == "cpu") != (gpu == "none")):
                     raise BoundaryError("remote_training", "explicit_target_device_mismatch")
-            self._limits(obj, target.timeout_seconds if target is not None else 86400)
+            self._limits(obj, target.timeout_seconds if target is not None else 1)
         from .training_scratch import require_training_space
 
         # Admit named cold reads before the purpose verifier can populate CAS.
