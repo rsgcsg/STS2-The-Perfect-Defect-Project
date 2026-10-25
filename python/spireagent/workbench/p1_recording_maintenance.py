@@ -168,7 +168,9 @@ class P1RecordingMaintenance:
                 except OSError:
                     self.importer._maintenance["persistence_error"] = persistence_error
                     return dict(self.importer._maintenance)
-        if policy.get("cohort_policy") and state.get("status") in {"completed", "up_to_date"}:
+        if policy.get("cohort_policy") and state.get("status") in {
+            "completed", "up_to_date", "cache_over_budget",
+        }:
             from stpd.p1.data import digest as content_digest
             from stpd.p1.data import json_bytes
 

@@ -105,7 +105,7 @@ def test_fresh_holdouts_whole_groups_preserve_exposure_and_ignore_result():
     from stpd.p1.cohort import extend_holdouts
 
     names = ["old-train", "old-dev", "old-test", "a", "b", "c", "d", "e", "f"]
-    index = {"groups": [{"group_id": n, "root_run_ids": [n]} for n in names],
+    index = {"groups": [{"group_id": n, "root_run_ids": [n], "N": 1} for n in names],
              "points": [{"group_id": n} for n in names]}
     facts = {n: fact(native_start=True, native_end=True, ascension=10) for n in names}
     allocation = {

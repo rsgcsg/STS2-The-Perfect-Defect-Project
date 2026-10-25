@@ -37,7 +37,7 @@ from stpd.p1.dataset import SOURCE_SCHEMA, TARGETS_SCHEMA
 TOOL = "a" * 64
 
 
-def projection(store, name, *, level=0, result="win", tool=TOOL):
+def projection(store, name, *, level=0, result="win", tool=TOOL, valid_N=True):
     branch = {"session_id": "session-" + name, "timeline_id": "timeline-" + name,
               "run_id": "run-0001"}
     journal = [{"kind": "run_started_native", "run_id": branch["run_id"]}]
@@ -62,7 +62,7 @@ def projection(store, name, *, level=0, result="win", tool=TOOL):
     obs["player"] = {"content": {"character_definition_id": "DEFECT"}}
     point = {"point_id": "point-" + name, "observation": obs, "chosen": "c9",
              "source_decision_id": "decision-" + name, "source_event_id": "event-" + name,
-             "mask": {"N": True, "next": False, "end": result is not None},
+             "mask": {"N": valid_N, "next": False, "end": result is not None},
              "end_target": {"result": result} if result else None}
     value = {"schema": TARGETS_SCHEMA, "profile": "p1-global-r1", "revision": "r1.5",
              "branch": branch, "source_content_id": digest(name.encode()), "points": [point]}
@@ -144,6 +144,31 @@ def test_version_rules_select_one_view_and_stop_unknown_tools(tmp_path):
     prior_first = {**policy, "tool_release_priority": [TOOL, "d" * 64]}
     kept = select_versions(store, prior_first, discover_p1_projections(store))[0]
     assert original.artifact_id in kept and newer.artifact_id not in kept
+
+
+def test_existing_cache_over_budget_does_not_starve_summary_refresh(tmp_path, monkeypatch):
+    _, _, config, policy = fixture(tmp_path)
+    importer = LocalRecordingImporter(config, None)
+    service = P1RecordingMaintenance(importer)
+    service.configure(True, None, cohort_policy=str(policy))
+    importer._maintenance["status"] = "cache_over_budget"
+    # The real _tick only returns this status after positive game-exit and space
+    # checks and after the original trim finished. No concurrent heavy operation.
+    monkeypatch.setattr(service, "_tick", lambda: dict(importer._maintenance))
+    result = service.tick()
+    assert result["status"] == "cache_over_budget"
+    assert result["cohort_N"] == 3
+    assert (config.state_dir / "recording-summary.html").exists()
+
+
+def test_zero_eligible_decisions_remain_visible_and_do_not_fill_holdouts(tmp_path):
+    _, store, config, policy = fixture(tmp_path)
+    projection(store, "empty-N", level=10, valid_N=False)
+    summary = refresh_cohort(config, policy)
+    assert summary["runs"] == 3 and summary["A10"] == 0
+    assert summary["holdout_shortfall"]["dev"]["10"] == 1
+    assert summary["holdout_shortfall"]["test"]["10"] == 1
+    assert any(row["reason"] == "no_eligible_N" for row in summary["pending_sources"])
 
 
 def test_freeze_lost_ack_reconciles_original_without_republication(tmp_path, monkeypatch):

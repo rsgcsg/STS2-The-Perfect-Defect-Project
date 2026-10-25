@@ -143,6 +143,9 @@ def refresh_cohort(config: ProjectConfig, policy_path: Path, *,
                for row in query_p1_sources(store)
                if row["declared_origin"] == "declared_human"
                and row["artifact_id"] not in selected_sources]
+    pending.extend({"source_id": row["source_id"], "projection_id": row["projection_id"],
+                    "session_id": row["branch"]["session_id"], "reason": "no_eligible_N"}
+                   for row in plan["sources"] if row["selected_N_before_dedup"] == 0)
     runs = plan["runs"]
     counts = Counter(row["result"] or "unknown" for row in runs)
     total_N = result["index"]["unique_N"]
@@ -177,6 +180,7 @@ STATUS_TEXT = {
     "completed": "本局处理完成", "up_to_date": "已更新，等待下一局",
     "operation_in_progress": "正在处理原操作", "refreshing_cohort": "正在增量盘点",
     "cooling": "正在按原策略周转热副本", "cache_trimming": "正在维护原 Store 缓存",
+    "cache_over_budget": "缓存暂超上限，原件保留；盘点仍按已验证数据更新",
 }
 
 
@@ -233,7 +237,10 @@ def render_summary(config: ProjectConfig, maintenance: dict[str, Any], *,
         parts.append("<details><summary>查看卡住或排队的录制</summary><ul>")
         parts.extend("<li><code>" + esc(row.get("session_id") or row.get("candidate_id")
                                          or row.get("source_id")) + "</code> · " +
-                     esc(row.get("reason", message)) + "</li>" for row in [*pending, *sources])
+                     esc({"no_eligible_N": "没有可用决策步，未计入局数或补足DEV/TEST缺口",
+                          "no_approved_projection": "尚无已批准版本的派生结果"}.get(
+                              row.get("reason"), row.get("reason", message))) + "</li>"
+                     for row in [*pending, *sources])
         parts.append("</ul></details>")
     if value:
         parts += ["<details><summary>冻结前权重表</summary>",

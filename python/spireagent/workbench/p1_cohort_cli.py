@@ -73,10 +73,16 @@ def reconcile_freeze(config: ProjectConfig, configuration_id: str,
 
 def _reconcile_freeze(config: ProjectConfig, configuration_id: str,
                        snapshot_id: str) -> dict[str, Any]:
+    import os
+
     from .local_recording_import import _selected_curation_owner, _selected_store
     from .p1_training_data import require_p1_snapshot
+    from .service_process import cloud_environment
     from .training_cohort import cohort_weighting
 
+    # The first Snapshot read can rehydrate cold payloads through the Store.
+    # Load the configured environment before that read, as the normal App does.
+    os.environ.update(cloud_environment(config.cloud_environment_file))
     target = config.state_dir / "cohorts" / configuration_id / "weight-candidates.json"
     request = json.loads(target.read_bytes())
     if (request.get("status") == "frozen_user_confirmed"

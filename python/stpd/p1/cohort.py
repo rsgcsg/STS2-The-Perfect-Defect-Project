@@ -218,6 +218,7 @@ def extend_holdouts(index: dict[str, Any], facts: dict[str, dict[str, Any]],
         raise BoundaryError("p1_cohort", "invalid_holdout_targets")
     result = copy.deepcopy(allocation)
     details = {g["group_id"]: g for g in allocation["groups"]}
+    nonempty = {g["group_id"] for g in index["groups"] if g["N"] > 0}
     strata = {}
     eligible = set()
     for group in index["groups"]:
@@ -225,7 +226,7 @@ def extend_holdouts(index: dict[str, Any], facts: dict[str, dict[str, Any]],
         rows = [facts[root] for root in group["root_run_ids"]]
         levels = {r.get("ascension") for r in rows}
         strata[gid] = str(next(iter(levels))) if len(levels) == 1 else None
-        if (details[gid]["basis"] == "new_group"
+        if (group["N"] > 0 and details[gid]["basis"] == "new_group"
                 and details[gid]["training_exposure"] is False
                 and allocation["split_by_group"][gid] == "train"
                 and all(r.get("native_start") and r.get("native_end")
@@ -238,7 +239,7 @@ def extend_holdouts(index: dict[str, Any], facts: dict[str, dict[str, Any]],
     for role in ("dev", "test"):
         shortfall[role] = {}
         for level in ("0", "10"):
-            present = sum(split == role and strata[gid] == level
+            present = sum(split == role and strata[gid] == level and gid in nonempty
                           for gid, split in result["split_by_group"].items())
             needed = max(0, targets[role][level] - present)
             selected = [gid for gid in ordered if strata[gid] == level][:needed]
