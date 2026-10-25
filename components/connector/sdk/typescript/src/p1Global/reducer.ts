@@ -177,6 +177,8 @@ const KIND_TABLE: Readonly<Record<string, string>> = {
   "card_selection|confirm|": "selector.confirm",
   "card_selection|deselect|card": "selector.deselect",
   "card_selection|cancel|": "selector.cancel",
+  "card_bundle_selection|select|bundle": "selector.choose",
+  "card_bundle_selection|confirm|bundle": "selector.finish",
   "combat_hand_card_selection|select|card": "selector.choose",
   "combat_hand_card_selection|deselect|card": "selector.deselect",
   "combat_hand_card_selection|confirm|": "selector.confirm",
@@ -644,7 +646,8 @@ function reduceCatalog(state: P1SessionState, basis: P1Basis, execution?: readon
   const declined = new Set(reward?.declined ?? []);
   const excluded: ExcludedNative[] = [];
   const qualifiedSelector = completeSelectorFacts(surface);
-  const selectionFamily = nativeKind !== "native_generated_card_choice"
+  const bundleSelection = nativeKind === "card_bundle_selection" && completeSelector(surface);
+  const selectionFamily = !["native_generated_card_choice", "card_bundle_selection"].includes(nativeKind)
     && ["selector", "upgrade", "enchant"].includes(family) && completeSelector(surface);
   const selectionCanFinish = surface.selected_count !== 0 || surface.can_confirm === true
     || qualifiedSelector && surface.selector_request.can_finish_now === true;
@@ -666,6 +669,9 @@ function reduceCatalog(state: P1SessionState, basis: P1Basis, execution?: readon
       if (first) excluded.push({ ...first, rule });
       else missing.push(`required:execution_action_exclusion:${rule}`);
     };
+    if (bundleSelection && action.verb === "cancel") {
+      exclude("forward_profile:selection_append_only"); continue;
+    }
     if (nativeKind === "potion_popup" && action.verb === "cancel" && subjectId === null) {
       exclude("forward_profile:complete_potion_public_presentation"); continue;
     }

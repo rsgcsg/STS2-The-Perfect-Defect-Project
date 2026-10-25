@@ -42,6 +42,17 @@ pin the Tool release, and derive new immutable projections from the originals.
 Keep old IDs and gaps; changing only a revision or relabeling an old choice is
 not migration or runtime qualification.
 
+`card_bundle_selection` uses its own two-stage wire shape: `bundles[].cards`
+contains each whole pack and `selectable_bundle_entity_ids` names the available
+packs. It has no single-card `cards`/`min_select`/`max_select` grid. The shared
+admission validator checks the pack contents and choosing/preview state. P1
+preserves pack membership, maps the native pack selection to `selector.choose`
+and the current preview confirmation to `selector.finish`, and excludes the
+preview's return under the existing append-only rule. Confirmation remains an
+explicit current native action, not an inferred automatic input. Regress both
+stages and malformed content in `p1GlobalBundleSelector.test.ts`; use the sealed
+original basis for local incident verification, never commit raw recordings.
+
 ## Current Production Path
 
 ```text
