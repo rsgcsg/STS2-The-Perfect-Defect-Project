@@ -6,7 +6,7 @@
     "source_revision": "0db0c3654eb6fd861bf4d2c4fc77fcf5a53d000b",
     "component_tree_revision": "82275d49e250edf338ced957ca1f5740251a82c4",
     "release_asset_sha256": "a9570670266fbae72351ccbc001c2592a44628852015ed6400aeca8d55520166",
-    "package_content_sha256": "00bf2e621bf64b1ab94000794c2df78fbca2b709b8bcc334037ca5aef84095fb",
+    "package_content_sha256": "33ee3aa1af562344d7815c4599d26e060f80fe7d1d1e11cc3d529b0bfc7cf3dc",
     "dependency_layout": "bundled_source_candidate",
     "bundled_connector_pin": {
       "mode": "bundled_source_candidate",
@@ -28,7 +28,7 @@
   "policies": [
     {
       "id": "s1-human-combat-v4",
-      "label": "S1 · Defect A0 普通战斗",
+      "label": "S1 \u00b7 Defect A0 \u666e\u901a\u6218\u6597",
       "adapter": "s1-v1",
       "manifest": "policy-manifests/s1-policy-adapter-v7.json",
       "config": "configs/v0/experiments/s1-human-combat-live-v2.json"
