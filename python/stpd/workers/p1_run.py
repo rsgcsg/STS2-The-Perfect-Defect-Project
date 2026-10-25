@@ -288,6 +288,34 @@ def execute_p1_run(
     control: ExecutionControl | None = None,
     mode: str = "start",
 ) -> StructuredExecutionResult:
+    from spireagent.storage.read_session import VerifiedReadSession
+
+    from ..p1.workload import read_payloads
+
+    # Each worker independently verifies its inputs. Only the named required
+    # payloads are prefetched; original recordings remain exact references.
+    run = store.get_manifest(run_id)
+    training = store.get_manifest(run.parent("training_input"))
+    with VerifiedReadSession(store) as session:
+        session.prefetch(read_payloads(session, training.parent("source"), run_id=run_id))
+        return _execute_p1_run(
+            session, reporter, run_id, runtime, attempt_id=attempt_id, resume=resume,
+            stop_after=stop_after, authority=authority, control=control, mode=mode)
+
+
+def _execute_p1_run(
+    store: ArtifactStore,
+    reporter: RunReporter,
+    run_id: str,
+    runtime: Producer,
+    *,
+    attempt_id: str,
+    resume: str | None = None,
+    stop_after: int | None = None,
+    authority: AttemptAuthority | None = None,
+    control: ExecutionControl | None = None,
+    mode: str = "start",
+) -> StructuredExecutionResult:
     started = time.perf_counter()
     workload = verify_p1_run(store, run_id, runtime)
     verified_seconds = time.perf_counter() - started

@@ -1,4 +1,4 @@
-"""Synthetic full-closure transfer and destination readback; no training/compute."""
+"""Synthetic selective compute transfer and full required-byte readback."""
 from __future__ import annotations
 
 import io
@@ -29,7 +29,7 @@ def inputs(tmp_path):
     return local, run, peer_binding
 
 
-def test_full_original_input_vocabulary_closure_and_all_N_read_from_reopened_peer(tmp_path):
+def test_required_input_bytes_and_exact_original_references_on_reopened_peer(tmp_path):
     local, run, binding = inputs(tmp_path)
     before = local.manifest_ids()
     facts = transfer_p1_input(local, binding, run.artifact_id, run.producer,
@@ -40,15 +40,20 @@ def test_full_original_input_vocabulary_closure_and_all_N_read_from_reopened_pee
         original = local.get_manifest(identity)
         assert peer.get_manifest(identity) == original
         for payload in original.payloads:
-            assert b"".join(peer.read_payload(payload)) == b"".join(local.read_payload(payload))
+            if original.kind == "evidence":
+                with pytest.raises(StoreError, match="object_not_found"):
+                    b"".join(peer.read_payload(payload))
+                assert b"".join(local.read_payload(payload))
+            else:
+                assert b"".join(peer.read_payload(payload)) == b"".join(local.read_payload(payload))
     checked = verify_p1_run(peer, run.artifact_id, run.producer)
     assert len(list(iter_snapshot_points(peer, checked.snapshot.artifact_id))) == 3
     assert facts["unique_N"] == 3 and facts["catalog_choices"] == 6
     assert facts["partition_N"] == {"train": 1, "dev": 1, "test": 1}
     assert facts["vocabulary_sha256"] == checked.training.payload("vocabulary").sha256
     assert facts["compute_store"] == binding and facts["provider_submitted"] is False
-    assert facts["closure_payload_readback"] == "verified"
-    assert facts["budget"]["lineage_manifests"] == len(before)
+    assert facts["required_payload_readback"] == "verified"
+    assert facts["transfer"]["manifest_count"] == len(before)
     assert local.manifest_ids() == before
     # The exact immutable preparation can be explicitly read/copy verified again.
     repeated = transfer_p1_input(local, binding, run.artifact_id, run.producer,
@@ -57,14 +62,14 @@ def test_full_original_input_vocabulary_closure_and_all_N_read_from_reopened_pee
     assert repeated["vocabulary_sha256"] == facts["vocabulary_sha256"]
 
 
-def test_existing_corrupt_remote_original_is_not_healed_or_reported_prepared(tmp_path):
+def test_existing_corrupt_remote_required_input_is_not_healed_or_reported_prepared(tmp_path):
     local, run, binding = inputs(tmp_path)
     transfer_p1_input(local, binding, run.artifact_id, run.producer,
                       scratch=tmp_path / "scratch")
     peer = open_peer(binding)
     original = next(peer.get_manifest(i) for i in peer.manifest_ids()
-                    if any(p.role == "archive" for p in peer.get_manifest(i).payloads))
-    payload = original.payload("archive")
+                    if any(p.role == "segments" for p in peer.get_manifest(i).payloads))
+    payload = original.payload("segments")
     original_bytes = b"".join(local.read_payload(payload))
     corrupted = tmp_path / "peer" / "objects" / "sha256" / payload.sha256
     corrupted.write_bytes(b"corrupt")
@@ -112,7 +117,7 @@ def test_transfer_uses_verified_same_store_reader_and_retains_baseline_path(
     assert len(constructed) == len(verified) == 1
     reader, reader_store = constructed[0]
     workload, verified_store = verified[0]
-    assert reader_store is verified_store and reader_store is not local
+    assert reader_store is verified_store and reader_store is local
     assert iterated == [reader]
     if family == "mstd":
         assert workload.reader is reader
@@ -120,7 +125,7 @@ def test_transfer_uses_verified_same_store_reader_and_retains_baseline_path(
         assert not hasattr(workload, "reader")  # Preserve the existing baseline verifier.
     assert facts["unique_N"] == 3 and facts["catalog_choices"] == 6
     assert facts["partition_N"] == {"train": 1, "dev": 1, "test": 1}
-    assert facts["compute_store"] == binding and facts["closure_payload_readback"] == "verified"
+    assert facts["compute_store"] == binding and facts["required_payload_readback"] == "verified"
 
 
 def test_reused_reader_rehashes_projection_bytes_changed_after_run_verification(
@@ -146,7 +151,7 @@ def test_reused_reader_rehashes_projection_bytes_changed_after_run_verification(
                           scratch=tmp_path / "scratch")
     payload, original, path = altered[0]
     assert path.read_bytes() == b"corrupt-after-verification"
-    assert b"".join(local.read_payload(payload)) == original
+    assert original != path.read_bytes()
 
 
 def test_reception_budgets_missing_bytes_without_reading_present_parent_payloads(
@@ -210,8 +215,41 @@ def test_upload_budgets_full_warm_payload_scratch_before_copy_to_empty_peer(tmp_
     monkeypatch.delenv("SPIREAGENT_MIN_FREE_BYTES", raising=False)
     monkeypatch.setattr(p1_recording_storage.shutil, "disk_usage",
                         lambda _path: SimpleNamespace(free=2 * 1024**3 + largest - 1))
-    monkeypatch.setattr(remote, "copy_artifact",
+    from spireagent.storage import input_transfer
+
+    monkeypatch.setattr(input_transfer, "copy_input_artifact",
                         lambda *_args, **_kwargs: pytest.fail("capacity must reject before copy"))
     with pytest.raises(BoundaryError, match="space_insufficient"):
         transfer_p1_input(local, binding, run.artifact_id, run.producer,
                           scratch=tmp_path / "upload-scratch")
+
+
+def test_omitted_original_stays_referenced_and_full_preservation_still_reads_it(tmp_path):
+    from spireagent.storage.store import copy_artifact
+
+    local, run, binding = inputs(tmp_path)
+    facts = transfer_p1_input(local, binding, run.artifact_id, run.producer,
+                              scratch=tmp_path / "scratch")
+    assert facts["raw_closure_restored"] is False
+    assert facts["transfer"]["reference_only_payload_count"] > 0
+    assert facts["transfer"]["raw_closure_restored"] is False
+    peer = open_peer(binding)
+    # A full-preservation caller does not inherit the selective availability
+    # claim. The ordinary API must actually restore all missing original bytes.
+    copy_artifact(local, peer, run.artifact_id, scratch=tmp_path / "scratch")
+    for identity in peer.manifest_ids():
+        for payload in peer.get_manifest(identity).payloads:
+            assert b"".join(peer.read_payload(payload)) == b"".join(local.read_payload(payload))
+
+
+def test_warm_required_transfer_rehashes_but_never_reuploads(tmp_path, monkeypatch):
+    local, run, binding = inputs(tmp_path)
+    transfer_p1_input(local, binding, run.artifact_id, run.producer,
+                      scratch=tmp_path / "scratch")
+    peer = open_peer(binding)
+    monkeypatch.setattr(peer, "put_payload", lambda *a: pytest.fail("duplicate input upload"))
+    monkeypatch.setattr(remote, "open_peer", lambda _: peer)
+    facts = transfer_p1_input(local, binding, run.artifact_id, run.producer,
+                              scratch=tmp_path / "scratch")
+    assert facts["transfer"]["copied_payload_count"] == 0
+    assert facts["transfer"]["required_payload_readback"] == "verified"

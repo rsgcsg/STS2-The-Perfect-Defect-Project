@@ -122,7 +122,8 @@ def test_cohort_binds_exact_split_membership_counts_and_definition(tmp_path):
                              new_id, snapshot.artifact_id)
 
 
-def test_selected_cohort_without_snapshot_uses_normal_freeze_then_package(tmp_path, capsys):
+@pytest.mark.parametrize("already_frozen", [False, True])
+def test_selected_cohort_reuses_Q_snapshot_or_uses_normal_freeze(tmp_path, capsys, already_frozen):
     from collections import Counter
 
     from stpd.p1.data import digest, json_bytes
@@ -143,6 +144,8 @@ def test_selected_cohort_without_snapshot_uses_normal_freeze_then_package(tmp_pa
         envelope = {"schema": "training-data-weight-selection-20261025-v1",
                     "status": "frozen_user_confirmed", "selected_configuration_id": identity,
                     "configuration": plan}
+        if already_frozen:
+            envelope["snapshot_id"] = snapshot.artifact_id
         cohort = tmp_path / "cohort.json"
         cohort.write_text(json.dumps(envelope))
         request = tmp_path / "recipe.json"
@@ -156,7 +159,7 @@ def test_selected_cohort_without_snapshot_uses_normal_freeze_then_package(tmp_pa
         assert json.loads(capsys.readouterr().out)["provider_submitted"] is False
         package = json.loads(output.read_text())
         run = verify_p1_run(store, package["start"]["run_id"], provider.target.producer)
-        assert run.snapshot.artifact_id != snapshot.artifact_id
+        assert (run.snapshot.artifact_id == snapshot.artifact_id) is already_frozen
         assert run.reader.selection["split_by_group"] == plan["splits"]
         assert run.reader.selection["split_salt"] == "cohort-" + identity
         assert run.training.parameters.value()["loss_weighting"]["rule_id"] == identity

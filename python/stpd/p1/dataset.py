@@ -492,7 +492,26 @@ def publish_snapshot(
     return manifest
 
 
-def load_snapshot(store: ArtifactStore, snapshot_id: str) -> tuple[Manifest, dict[str, Any]]:
+def load_snapshot(store: ArtifactStore, snapshot_id: str, *,
+                  inspection_cache: Any = None) -> tuple[Manifest, dict[str, Any]]:
+    """Verify once per explicit read session; never accept an external trust tuple.
+
+    The existing private preparation cache can supply content/code-bound source
+    inspections. It still hashes each source through Store; selection, aliases,
+    groups and splits are reproduced and checked by this owning reader.
+    """
+    from spireagent.storage.read_session import VerifiedReadSession
+
+    if isinstance(store, VerifiedReadSession):
+        manifest, value = store.memoize(
+            "p1.snapshot", snapshot_id,
+            lambda: _load_snapshot(store, snapshot_id, inspection_cache=inspection_cache))
+        return manifest, copy.deepcopy(value)
+    return _load_snapshot(store, snapshot_id, inspection_cache=inspection_cache)
+
+
+def _load_snapshot(store: ArtifactStore, snapshot_id: str, *,
+                   inspection_cache: Any = None) -> tuple[Manifest, dict[str, Any]]:
     manifest = store.get_manifest(snapshot_id)
     info = manifest.parameters.value()
     if manifest.kind != "dataset" or info.get("schema") != SNAPSHOT_SCHEMA:
@@ -519,12 +538,18 @@ def load_snapshot(store: ArtifactStore, snapshot_id: str) -> tuple[Manifest, dic
     # Match the existing decision-selection/union contract: re-read immutable
     # parents and reproduce the selected facts, aliases and lineage groups. A
     # checksum alone cannot make a forged group/split allocation trustworthy.
-    expected = inspect_projections(
-        store,
-        [s["projection_id"] for s in value["sources"]],
-        selected_decisions=value["selection"],
-        input_projection=spec,
-    )
+    if inspection_cache is None:
+        expected = inspect_projections(
+            store,
+            [s["projection_id"] for s in value["sources"]],
+            selected_decisions=value["selection"],
+            input_projection=spec,
+        )
+    else:
+        inspections = [inspection_cache.inspect(store, s["projection_id"], spec)[0]
+                       for s in value["sources"]]
+        expected = merge_projection_inspections(
+            inspections, selected_decisions=value["selection"])
     reproduced = {
         k: v
         for k, v in value.items()

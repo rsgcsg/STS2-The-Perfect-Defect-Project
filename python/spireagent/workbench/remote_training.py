@@ -6,6 +6,7 @@ import math
 import threading
 import time
 from collections.abc import Callable
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from spireagent.artifact_contracts import Manifest
@@ -15,6 +16,7 @@ from spireagent.json_boundary import BoundaryError, digest, object_fields
 from spireagent.local_diagnostics import LocalDiagnostics, bind_job, phase
 from spireagent.source import source_identity
 from spireagent.ssh_compute import provider_from_target
+from spireagent.storage.read_session import VerifiedReadSession
 from spireagent.storage.store import copy_artifact
 from spireagent.workbench.developer import ROOT, ProjectConfig
 from spireagent.workbench.p1_recording_storage import open_peer
@@ -38,6 +40,7 @@ class RemoteTrainingService:
         self._error: str | None = None
         self._progress_lock = threading.Lock()
         self._progress_reporters: dict[str, Any] = {}
+        self._prepared_sessions: dict[str, VerifiedReadSession] = {}
 
     def capabilities(self) -> dict[str, Any]:
         from spireagent.workbench.trusted_recipes import P1_BASELINE_RECIPE, P1_MSTD_RECIPE
@@ -50,8 +53,9 @@ class RemoteTrainingService:
                               and (self._injected_provider or
                                    deployment.compute_store.get("kind") == "s3")),
                 "provider": ("trusted_injected_engineering" if self._injected_provider else
-                             "ssh" if deployment and self._target_schema() ==
-                             "spireagent/ssh-target-1" else "modal"),
+                             "ssh" if deployment and self._target_schema() in {
+                                 "spireagent/ssh-target-1", "spireagent/ssh-target-2"}
+                             else "modal"),
                 "recipes": [
                     {"recipe_id": P1_MSTD_RECIPE, "devices": ["cpu", "cuda:index"]},
                     {"recipe_id": P1_BASELINE_RECIPE, "devices": ["cpu"],
@@ -133,18 +137,31 @@ class RemoteTrainingService:
             self._operations = Operations(deployment.operations_path)
 
             def record_use(run: Manifest) -> None:
-                from spireagent.workbench.p1_training_data import record_p1_training_use
-                from spireagent.workbench.remote_training_storage import verify_training_run
+                from spireagent.p1_curation import require_recorded_p1_training_use
 
                 current_owner, current_store, _ = self.select()
-                workload = verify_training_run(current_store, run.artifact_id,
-                                               provider.target.producer)
-                record_p1_training_use(current_owner, current_store, workload.snapshot.artifact_id,
-                                       run.parameters.value()["operation_id"])
+                training = current_store.get_manifest(run.parent("training_input"))
+                require_recorded_p1_training_use(
+                    current_owner.ledger, current_store, training.parent("source"),
+                    run.parameters.value()["operation_id"])
+
+            def verify_input(request: Any) -> None:
+                from stpd.cloud_jobs.execution import preflight_training_request
+
+                session = self._prepared_sessions.get(request.input_id)
+                if session is not None and request.resume is None:
+                    preflight_training_request(session, request)
+                else:
+                    with VerifiedReadSession(
+                        peer, scratch=self.config.state_dir / "remote-training-transfer"
+                    ) as readback:
+                        self._prefetch_run(readback, request.input_id)
+                        preflight_training_request(readback, request)
 
             self._scheduler = Scheduler(self._operations, peer, provider,
                                         budget_limit=deployment.budget_limit,
-                                        record_training_use=record_use)
+                                        record_training_use=record_use,
+                                        verify_training_input=verify_input)
         assert self._operations is not None
         return owner, store, provider, self._operations, self._scheduler
 
@@ -235,7 +252,9 @@ class RemoteTrainingService:
                 ops.cancel(job["id"])
             continuation.stop(ops, policy["root_job_id"], "continuation_identity_mismatch")
             return
-        if job["status"] == "queued" and now + policy["max_seconds"] > policy["deadline_unix"]:
+        preparation = json.loads(job["options"]).get("preparation_seconds", 0)
+        if (job["status"] == "queued"
+                and now + preparation + policy["max_seconds"] > policy["deadline_unix"]):
             ops.cancel(job["id"])
             continuation.stop(ops, policy["root_job_id"], "deadline_exhausted")
             return
@@ -333,6 +352,9 @@ class RemoteTrainingService:
                 raise BoundaryError("remote_training", "scheduler_shutdown_pending")
         if self._scheduler is not None:
             self._scheduler.close()
+        for session in self._prepared_sessions.values():
+            session.close()
+        self._prepared_sessions.clear()
 
     @staticmethod
     def _job(ops: Operations, job_id: object) -> dict[str, Any]:
@@ -465,6 +487,23 @@ class RemoteTrainingService:
             return self._prepare(body)
 
     def _prepare(self, body: object) -> dict[str, Any]:
+        with phase("remote.prepare.context"):
+            owner, store, producer, target = self._preparation_context()
+        session = VerifiedReadSession(
+            store, scratch=self.config.state_dir / "remote-training-transfer")
+        try:
+            result = self._prepare_input(body, owner, session, producer, target)
+        except BaseException:
+            session.close()
+            raise
+        previous = self._prepared_sessions.pop(result["run_id"], None)
+        if previous is not None:
+            previous.close()
+        self._prepared_sessions[result["run_id"]] = session
+        return result
+
+    def _prepare_input(self, body: object, owner: Any, store: VerifiedReadSession,
+                       producer: Any, target: Any) -> dict[str, Any]:
         from spireagent.workbench.p1_training_data import (
             record_p1_training_use,
             require_p1_snapshot,
@@ -473,8 +512,6 @@ class RemoteTrainingService:
         from stpd.p1.spec import MStdConfig
         from stpd.p1.workload import prepare_p1_run
 
-        with phase("remote.prepare.context"):
-            owner, store, producer, target = self._preparation_context()
         with phase("remote.prepare.request_validate"):
             # A control upgrade may resume an existing frozen Run. New Run/Input
             # construction executes here and must retain this code's actual provenance.
@@ -545,6 +582,14 @@ class RemoteTrainingService:
                 checkpoint_id=execution_options.get("initial_checkpoint"),
                 initial_checkpoint="initial_checkpoint" in execution_options,
             )
+            from stpd.p1.dataset import load_snapshot
+
+            from .p1_data_preparation import P1PreparationCache
+
+            # Reuse Q's existing index and integrity policy; this is not a new
+            # verification receipt or a frame cache. The reader reproduces the
+            # exact selection/groups and all source bytes are still hashed.
+            load_snapshot(store, snapshot, inspection_cache=P1PreparationCache(owner.path))
             selection, _ = require_p1_snapshot(owner, store, snapshot)
             if "loss_weighting" in execution_options:
                 from stpd.p1.weighting import checked_weights
@@ -574,17 +619,43 @@ class RemoteTrainingService:
         intent = digest(obj["intent_id"], "remote_training.intent_id", length=32)
         owner, store, provider, _ = self._context()
         self._limits(obj, provider.target.timeout_seconds)
-        from .p1_training_data import require_p1_training_use
+        from spireagent.p1_curation import require_recorded_p1_training_use
+
         from .remote_training_storage import verify_training_run
 
-        workload = verify_training_run(store, run_id, provider.target.producer)
+        session = self._prepared_sessions.get(run_id)
+        if session is None:
+            # A package is not a persisted trust token. After a process restart,
+            # verify the actual peer inputs once before caching this operation.
+            session = VerifiedReadSession(
+                self._compute_store, scratch=self.config.state_dir / "remote-training-transfer")
+            try:
+                self._prefetch_run(session, run_id)
+                verify_training_run(session, run_id, provider.target.producer)
+            except BaseException:
+                session.close()
+                raise
+            self._prepared_sessions[run_id] = session
+        workload = verify_training_run(session, run_id, provider.target.producer)
         if workload.run.parameters.value()["operation_id"] != intent:
             raise BoundaryError("remote_training", "prepared_run_intent_mismatch")
         gpu = getattr(provider.target, "gpu", None)
         if (workload.config.device == "cpu") != (gpu == "none"):
             raise BoundaryError("remote_training", "explicit_target_device_mismatch")
-        require_p1_training_use(owner, store, workload.snapshot.artifact_id, intent)
+        require_recorded_p1_training_use(
+            owner.ledger, store, workload.snapshot.artifact_id, intent)
         return {"run_id": run_id}
+
+    @staticmethod
+    def _prefetch_run(session: VerifiedReadSession, run_id: str) -> None:
+        from .p1_recording_storage import require_long_task_space
+        from .p1_training_data import p1_read_payloads
+
+        run = session.get_manifest(run_id)
+        training = session.get_manifest(run.parent("training_input"))
+        payloads = p1_read_payloads(session, training.parent("source"), run_id=run_id)
+        require_long_task_space(Path(session._directory.name), sum(p.size for p in payloads))
+        session.prefetch(payloads)
 
     def command(self, action: str, body: object) -> dict[str, Any]:
         label = action if action in {"prepare", "start", "start-prepared", "resume",
@@ -623,7 +694,8 @@ class RemoteTrainingService:
                                          max_seconds=obj["max_seconds"],
                                          reserved_units=deployment.reserved_units,
                                          budget_limit=deployment.budget_limit,
-                                         options={"stop_after": obj["stop_after"]})
+                                         options={"stop_after": obj["stop_after"],
+                                                  **self._preparation_options()})
             elif action in {"cancel", "reconcile", "resume"}:
                 with phase("remote.control.scheduler_ready"):
                     owner, store, provider, ops, _ = self._ready()
@@ -683,7 +755,8 @@ class RemoteTrainingService:
                                              reserved_units=deployment.reserved_units,
                                              budget_limit=deployment.budget_limit,
                                              options={"resume": checkpoint,
-                                                      "stop_after": obj["stop_after"]})
+                                                      "stop_after": obj["stop_after"],
+                                                      **self._preparation_options()})
             else:
                 raise BoundaryError("remote_training", "unsupported_training_action")
             bind_job(job_id)
@@ -691,6 +764,13 @@ class RemoteTrainingService:
                 self._launch_loop()
             with phase("remote.command.readback"):
                 return self.status(job_id)
+
+    def _preparation_options(self) -> dict[str, int]:
+        assert self._provider is not None
+        preparation = getattr(self._provider.target, "preparation_seconds", 0)
+        # The provider separately bounds worker preparation. Ops remains the
+        # conservative whole-attempt watchdog, including controller preflight.
+        return {"preparation_seconds": preparation + 300} if preparation else {}
 
     @staticmethod
     def _limits(obj: dict[str, Any], timeout: int) -> None:

@@ -98,8 +98,20 @@ def cohort_weighting(config: ProjectConfig, value: object,
     os.environ.update(cloud_environment(config.cloud_environment_file))
     store = ManifestArtifactStore(
         LocalBlobStore(Path(owner.store_dir), create=False, readonly=True))
-    reader = SnapshotReader(store, snapshot_id)
-    selection = reader.selection
+    from spireagent.storage.read_session import VerifiedReadSession
+    from stpd.p1.dataset import load_snapshot
+
+    from .p1_data_preparation import P1PreparationCache
+    from .p1_recording_storage import require_long_task_space
+    from .p1_training_data import p1_read_payloads
+
+    payloads = p1_read_payloads(store, snapshot_id)
+    scratch = config.state_dir / "cohort-read"
+    require_long_task_space(scratch, sum(p.size for p in payloads))
+    with VerifiedReadSession(store, scratch=scratch) as session:
+        load_snapshot(session, snapshot_id, inspection_cache=P1PreparationCache(owner.path))
+        reader = SnapshotReader(session, snapshot_id)
+        selection = reader.selection
     sources = {s["projection_id"] for s in plan["sources"]}
     if (sources != {p.artifact_id for p in reader.manifest.parents}
             or plan["selection"] != selection["selection"]

@@ -41,6 +41,7 @@ class SshTarget:
     timeout_seconds: int
     gpu: str
     runtime: FrozenObject
+    preparation_seconds: int = 0
 
     def __post_init__(self) -> None:
         if not isinstance(self.producer, Producer):
@@ -56,6 +57,9 @@ class SshTarget:
             raise BoundaryError("ssh_target", "host_alias_required")
         if type(self.timeout_seconds) is not int or not 1 <= self.timeout_seconds <= 86400:
             raise BoundaryError("ssh_target", "timeout_limit")
+        if (type(self.preparation_seconds) is not int
+                or not 0 <= self.preparation_seconds <= 3600):
+            raise BoundaryError("ssh_target", "preparation_timeout_limit")
         if not isinstance(self.gpu, str) or self.gpu not in {"none", "L40S"}:
             raise BoundaryError("ssh_target", "explicit_single_gpu_required")
         if any(PurePosixPath(getattr(self, field)).is_relative_to(PurePosixPath(self.checkout))
@@ -78,7 +82,11 @@ class SshTarget:
             raise BoundaryError("ssh_target", "gpu_identity_required")
 
     def to_dict(self) -> dict[str, Any]:
-        return {"schema": "spireagent/ssh-target-1", **asdict(self),
+        value = asdict(self)
+        if not self.preparation_seconds:
+            value.pop("preparation_seconds")
+        return {"schema": ("spireagent/ssh-target-2" if self.preparation_seconds
+                           else "spireagent/ssh-target-1"), **value,
                 "runtime": self.runtime.value()}
 
     @property
@@ -87,9 +95,15 @@ class SshTarget:
 
     @classmethod
     def decode(cls, value: object) -> SshTarget:
-        obj = dict(object_fields(value, {"schema", *cls.__dataclass_fields__}, "ssh_target"))
-        if obj.pop("schema") != "spireagent/ssh-target-1":
+        schema = value.get("schema") if isinstance(value, dict) else None
+        fields = {"schema", *cls.__dataclass_fields__}
+        if schema == "spireagent/ssh-target-1":
+            fields.remove("preparation_seconds")
+        obj = dict(object_fields(value, fields, "ssh_target"))
+        if obj.pop("schema") not in {"spireagent/ssh-target-1", "spireagent/ssh-target-2"}:
             raise BoundaryError("ssh_target", "unsupported_schema")
+        if schema == "spireagent/ssh-target-2" and not obj["preparation_seconds"]:
+            raise BoundaryError("ssh_target", "explicit_preparation_timeout_required")
         obj["producer"] = Producer.decode(obj["producer"])
         obj["runtime"] = FrozenObject.of(obj["runtime"])
         return cls(**obj)
@@ -212,7 +226,9 @@ class SshProvider:
 
 def provider_from_target(value: object) -> Any:
     """Decode only supported fixed target contracts; no import/command hooks."""
-    if isinstance(value, dict) and value.get("schema") == "spireagent/ssh-target-1":
+    if isinstance(value, dict) and value.get("schema") in {
+        "spireagent/ssh-target-1", "spireagent/ssh-target-2"
+    }:
         return SshProvider(SshTarget.decode(value))
     from stpd.cloud_jobs.modal import ModalProvider, ModalTarget
 

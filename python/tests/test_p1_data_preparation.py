@@ -382,3 +382,31 @@ def test_capacity_refusal_does_not_create_a_preparation_cache_or_reserve_use(tmp
         prepare_p1_data(owner, store)
     assert not owner.path.with_name(owner.path.stem + ".p1-preparation-cache.sqlite").exists()
     assert {p: p.read_bytes() for p in owner.store_dir.glob("*.json")} == before
+
+
+def test_training_reader_reuses_Q_inspection_but_still_verifies_actual_input(tmp_path, monkeypatch):
+    import pytest
+
+    import stpd.p1.dataset as dataset
+    from spireagent.storage.blobs import StoreError
+    from spireagent.storage.read_session import VerifiedReadSession
+
+    owner, store, projections = workspace(tmp_path)
+    proposal = prepare_p1_data(owner, store)
+    frozen = freeze_p1_data(owner, store, PRODUCER, **proposal["selection"], reserve=True)
+    expected = dataset.load_snapshot(store, frozen["snapshot_id"])
+    cache = P1PreparationCache(owner.path)
+    monkeypatch.setattr(dataset, "project", lambda *a, **k: pytest.fail("reprojected cache hit"))
+    with VerifiedReadSession(store, scratch=tmp_path / "reads") as session:
+        actual = dataset.load_snapshot(session, frozen["snapshot_id"], inspection_cache=cache)
+        assert actual == expected
+        assert cache.hits == 3 and cache.decoded == 0
+        actual[1]["points"].clear()
+        # Callers cannot mutate the session's verified selection.
+        assert dataset.load_snapshot(session, frozen["snapshot_id"]) == expected
+    payload = projections[0].payload("segments")
+    index = json.loads(store.blobs.get(f"payload-indexes/v1/{payload.sha256}.json"))
+    store.blobs._path("objects/sha256/" + index["chunks"][0]["sha256"]).write_bytes(b"bad")
+    with (VerifiedReadSession(store, scratch=tmp_path / "reads") as session,
+          pytest.raises(StoreError, match="payload_chunk_integrity_failure")):
+        dataset.load_snapshot(session, frozen["snapshot_id"], inspection_cache=cache)

@@ -413,7 +413,8 @@ class Operations:
     ) -> str:
         options = {} if options is None else options
         if (not isinstance(options, dict)
-                or set(options) - {"resume", "stop_after", "execution_deadline_unix"}):
+                or set(options) - {"resume", "stop_after", "execution_deadline_unix",
+                                   "preparation_seconds"}):
             raise BoundaryError("hub", "invalid_job_options")
         resume, stop_after = options.get("resume"), options.get("stop_after")
         if resume is not None and (
@@ -427,6 +428,10 @@ class Operations:
         if kind == "feature" and (resume is not None or stop_after is not None):
             raise BoundaryError("hub", "feature_resume_not_supported")
         absolute_deadline = options.get("execution_deadline_unix")
+        preparation = options.get("preparation_seconds", 0)
+        if (type(preparation) is not int or not 0 <= preparation <= 7200
+                or (preparation and kind != "training")):
+            raise BoundaryError("hub", "invalid_preparation_budget")
         if absolute_deadline is not None and (
             kind != "training" or type(absolute_deadline) not in {int, float}
             or not math.isfinite(absolute_deadline) or absolute_deadline <= 0
@@ -511,7 +516,8 @@ class Operations:
                 return None
             token = secrets.token_urlsafe(32)
             attempt = secrets.token_hex(16)
-            deadline = now + int(row["max_seconds"])
+            preparation = json.loads(row["options"]).get("preparation_seconds", 0)
+            deadline = now + preparation + int(row["max_seconds"])
             db.execute(
                 "UPDATE jobs SET status='running',fence=fence+1,attempt_id=?,lease_hash=?,"
                 "lease_until=?,deadline=?,provider_ref=NULL WHERE id=?",
