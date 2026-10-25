@@ -29,6 +29,7 @@ from .spec import (
     TRAINING_SCHEMA,
     MStdConfig,
 )
+from .weighting import CHECKPOINT_POLICY, checked_weights, point_weights
 
 ENTRYPOINT = "stpd.workers.p1_run:execute_p1_run"
 
@@ -37,7 +38,9 @@ def populations_from_snapshot(store: ArtifactStore, snapshot_id: str) -> dict[st
     return populations_from_reader(SnapshotReader(store, snapshot_id))
 
 
-def populations_from_reader(reader: SnapshotReader) -> dict[str, Population]:
+def populations_from_reader(
+    reader: SnapshotReader, loss_weighting: dict[str, Any] | None = None,
+) -> dict[str, Population]:
     """Project one already verified immutable read session, without reloading it."""
     selection = reader.selection
     if selection["input_projection"] != INPUT_SPEC:
@@ -45,6 +48,7 @@ def populations_from_reader(reader: SnapshotReader) -> dict[str, Population]:
     counts = selection["partition_N"]
     if set(counts) - {"train", "dev", "test"} or not counts.get("train") or not counts.get("dev"):
         raise BoundaryError("p1_workload", "explicit_nonempty_train_dev_required")
+    weights = point_weights(loss_weighting, selection) if loss_weighting is not None else {}
     rows: dict[str, list[tuple[str, Any, int]]] = {s: [] for s in ("train", "dev", "test")}
     for reference, observation in reader.iter_points():
         frame = project(observation)
@@ -55,6 +59,8 @@ def populations_from_reader(reader: SnapshotReader) -> dict[str, Population]:
             tuple(row[1] for row in sorted(samples)),
             tuple(row[2] for row in sorted(samples)),
             tuple(row[0] for row in sorted(samples)),
+            (tuple(weights[row[0]] for row in sorted(samples))
+             if split == "train" and weights else ()),
         )
         for split, samples in rows.items()
     }
@@ -67,12 +73,17 @@ def prepare_p1_run(
     config: MStdConfig,
     operation_id: str,
     *, execution_policy: dict[str, Any] | None = None, initial_checkpoint: str | None = None,
+    loss_weighting: dict[str, Any] | None = None, checkpoint_policy: str | None = None,
 ) -> Manifest:
     """Caller reserves the existing application/Hub use before fitting vocabulary.
 
     This batch implements engineering runs only. Snapshot publication/readability
     is never promoted here into formal research admission.
     """
+    if checkpoint_policy not in {None, CHECKPOINT_POLICY}:
+        raise BoundaryError("p1_workload", "unsupported_checkpoint_policy")
+    if initial_checkpoint is not None and (loss_weighting is not None or checkpoint_policy):
+        raise BoundaryError("p1_workload", "new_protocol_cannot_derive_old_run")
     checked_digest(operation_id, "p1_workload.operation_id", length=32)
     execution = (MStdExecution.for_plan("mstd-training-v1") if execution_policy is None
                  else MStdExecution.decode(execution_policy))
@@ -94,7 +105,9 @@ def prepare_p1_run(
     snapshot = reader.manifest
     if snapshot.parameters.value().get("purpose") != "engineering":
         raise BoundaryError("p1_workload", "engineering_snapshot_required_no_auto_admission")
-    populations = populations_from_reader(reader)
+    weighting = (checked_weights(loss_weighting, reader.selection)
+                 if loss_weighting is not None else None)
+    populations = populations_from_reader(reader, weighting)
     vocabulary = fit_vocabulary(list(populations["train"].frames))
     vocabulary_raw = json_bytes(vocabulary)
     payload = store.put_payload("vocabulary", io.BytesIO(vocabulary_raw), "application/json")
@@ -106,6 +119,8 @@ def prepare_p1_run(
         FrozenObject.of(
             {
                 "schema": TRAINING_SCHEMA,
+                **({"loss_weighting": weighting} if weighting is not None else {}),
+                **({"checkpoint_policy": checkpoint_policy} if checkpoint_policy else {}),
                 "entrypoint": ENTRYPOINT,
                 "config": config.to_dict(),
                 "purpose": "engineering",
@@ -208,6 +223,11 @@ def verify_p1_run(store: ArtifactStore, run_id: str, producer: Producer) -> P1Wo
     snapshot, selection = reader.manifest, reader.selection
     if snapshot.parameters.value().get("purpose") != "engineering":
         raise BoundaryError("p1_workload", "engineering_snapshot_required_no_auto_admission")
+    if ("loss_weighting" in info
+            and checked_weights(info["loss_weighting"], selection) != info["loss_weighting"]):
+        raise BoundaryError("p1_workload", "noncanonical_loss_weighting")
+    if info.get("checkpoint_policy") not in {None, CHECKPOINT_POLICY}:
+        raise BoundaryError("p1_workload", "unsupported_checkpoint_policy")
     vocabulary_raw = b"".join(store.read_payload(training.payload("vocabulary")))
     vocabulary = json.loads(vocabulary_raw)
     if (

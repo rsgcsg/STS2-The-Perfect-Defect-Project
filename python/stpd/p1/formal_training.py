@@ -36,17 +36,22 @@ class Population:
     frames: tuple[Frame, ...]
     targets: tuple[int, ...]
     point_ids: tuple[str, ...]
+    weights: tuple[float, ...] = ()
 
     def __post_init__(self) -> None:
         if len(self.frames) != len(self.targets) or len(self.frames) != len(self.point_ids):
             raise BoundaryError("p1_training", "population_length_mismatch")
+        if self.weights and (len(self.weights) != len(self.frames) or any(
+                type(w) not in {int, float} or not math.isfinite(w) or w <= 0
+                for w in self.weights)):
+            raise BoundaryError("p1_training", "invalid_population_weights")
         for frame, target in zip(self.frames, self.targets, strict=True):
             if type(target) is not int or not 0 <= target < len(frame.choices):
                 raise BoundaryError("p1_training", "target_outside_full_catalog")
 
 
 FORMAL_CODE_FILES = ("formal_training.py", "spec.py", "input.py", "model.py", "numerics.py",
-                     "execution.py", "optimization.py")
+                     "execution.py", "optimization.py", "weighting.py")
 
 
 class MStdTrainer:
@@ -59,6 +64,7 @@ class MStdTrainer:
         snapshot_id: str,
         config: MStdConfig,
         execution: MStdExecution | None = None,
+        *, checkpoint_policy: str | None = None,
     ) -> None:
         if set(populations) != {"train", "dev", "test"}:
             raise BoundaryError("p1_training", "partition_inventory_mismatch")
@@ -71,6 +77,11 @@ class MStdTrainer:
         self.execution = execution or MStdExecution()
         if self.execution.cpu_threads != config.cpu_threads:
             raise BoundaryError("p1_training", "formal_recipe_cpu_threads_mismatch")
+        from .weighting import CHECKPOINT_POLICY
+
+        if checkpoint_policy not in {None, CHECKPOINT_POLICY}:
+            raise BoundaryError("p1_training", "unsupported_checkpoint_policy")
+        self.checkpoint_policy = checkpoint_policy
         self.device = torch.device(config.device)
         cuda_runtime = None
         if self.device.type == "cuda":
@@ -115,6 +126,9 @@ class MStdTrainer:
             fraction: max(1, math.ceil(self.planned_steps * fraction / 100))
             for fraction in CHECKPOINT_FRACTIONS
         }
+        per_epoch = math.ceil(len(populations["train"].frames) / config.batch_size)
+        self.early_checkpoint_steps = ({max(1, math.ceil(per_epoch * q / 4))
+                                        for q in range(1, 13)} if checkpoint_policy else set())
         root = Path(__file__).parent
         self.identity = {
             "snapshot_id": snapshot_id,
@@ -132,6 +146,9 @@ class MStdTrainer:
             "vocabulary_sha256": digest(json_bytes(vocabulary)),
             "planned_steps": self.planned_steps,
             "execution": self.execution.to_dict(),
+            **({"checkpoint_policy": checkpoint_policy} if checkpoint_policy else {}),
+            **({"train_weights_sha256": digest(json_bytes(populations["train"].weights))}
+               if populations["train"].weights else {}),
             "runtime": {
                 "python": platform.python_version(),
                 "torch": str(torch.__version__),
@@ -205,7 +222,9 @@ class MStdTrainer:
         lr = self._lr()
         update = optimizer_update(self.model, self.optimizer,
                                   [train.frames[i] for i in indices],
-                                  [train.targets[i] for i in indices], lr)
+                                  [train.targets[i] for i in indices], lr,
+                                  **({"weights": [train.weights[i] for i in indices]}
+                                     if train.weights else {}))
         train_seconds = time.perf_counter() - started
         self.step += 1
         self.cursor += len(indices)
@@ -248,7 +267,7 @@ class MStdTrainer:
             else:
                 self.order = torch.randperm(len(train.frames), generator=self.generator).tolist()
                 self.cursor = 0
-        elif fractions:
+        elif fractions or self.step in self.early_checkpoint_steps:
             dev = self.evaluate(self.model, self.populations["dev"])
             dev_loss = dev["mean_N_loss"]
             if dev_loss is None or not math.isfinite(dev_loss):
@@ -258,6 +277,9 @@ class MStdTrainer:
                 {"step": self.step, "epoch": self.epoch + 1, "fractions": fractions, **dev}
             )
             progress["dev_checkpoint"] = dev
+        if self.checkpoint_policy:
+            progress["retain_checkpoint"] = (self.step in self.early_checkpoint_steps
+                                              or "dev" in progress)
         progress["best_improved"] = improved
         progress["checkpoint_fractions"] = fractions
         progress["phase"] = self.phase
