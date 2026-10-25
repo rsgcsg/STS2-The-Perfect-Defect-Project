@@ -16,8 +16,8 @@ public sealed class PlatformNativeRecordingPresentationTests
         var recording = new ContinuousRecording(); recording.Arm(P1NativeRecordingContract.ProfileId, "declared_human");
         var status = PlatformRecordingCommandsTests.Status(null, state) with {
             Continuous = recording.Snapshot(), RuntimeState = "session_start_failed",
-            Detail = "recording_space_insufficient: available=1; required=2",
-            Health = new("not_checked", "failed", "failed", "disk full", DateTimeOffset.UtcNow)
+            Detail = "Recording session started.",
+            Health = new("not_checked", "failed", "failed", "recording_space_insufficient: available=1; required=2", DateTimeOffset.UtcNow)
         };
         Assert.StartsWith(label, PlatformNativeRecordingPresentation.QuickRecordingLabel(status));
         Assert.Contains("recording_space_insufficient", PlatformNativeRecordingPresentation.PersistenceFailure(status));

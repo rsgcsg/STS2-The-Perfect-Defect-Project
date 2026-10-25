@@ -26,7 +26,7 @@ public static class PlatformNativeRecordingPresentation
 
     public static string? PersistenceFailure(RecordingApplicationStatus status) =>
         status.Health.Append == "failed" || status.Health.Disk == "failed"
-            ? QuickRecordingLabel(status) + "：" + status.Detail : null;
+            ? QuickRecordingLabel(status) + "：" + (status.Health.LastError ?? status.Detail) : null;
 
     public static IReadOnlyList<string> MaintenanceRows(JsonElement status, bool details)
     {
