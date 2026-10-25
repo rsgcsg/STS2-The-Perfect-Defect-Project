@@ -31,7 +31,8 @@ def clock_worker(monkeypatch, clock):
     import stpd.workers.p1_run as worker
 
     monkeypatch.setattr(worker, "time", SimpleNamespace(
-        perf_counter=time.perf_counter, monotonic=lambda: clock.now))
+        perf_counter=time.perf_counter, monotonic=lambda: clock.now,
+        time=lambda: 1_700_000_000 + clock.now))
 
 
 def longer_run(tmp_path):
