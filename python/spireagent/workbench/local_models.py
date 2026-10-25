@@ -3382,6 +3382,7 @@ class LocalModelService:
             self.closed = True
             self.intent_generation += 1
             client = self.client
+            owned_runtime = client is not None or self.process is not None
         # Stop only the exact Runtime. A recovered client has no owned process
         # handle, so a lost reply cannot be turned into a confirmed shutdown.
         observed = None
@@ -3416,4 +3417,7 @@ class LocalModelService:
                         error_code="runtime_command_unknown",
                     )
                 self.client = None
-            self._save()
+            if owned_runtime:
+                # An idle reopened service has not changed session facts. Its
+                # default view must not overwrite the previous owner's receipt.
+                self._save()

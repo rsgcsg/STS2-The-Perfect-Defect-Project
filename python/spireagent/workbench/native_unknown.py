@@ -42,11 +42,35 @@ def no_handles(directory: Path) -> None:
         reject("native_process_occupancy_unproved")
 
 
+def no_execution_processes(models_directory: Path) -> None:
+    """A driver can wait on stdin after its game and file handles disappear.
+
+    Conservatively reject any Reference driver, including another installation,
+    and commands referring to this owner's model directory. Both the Runtime
+    and its adapters carry that path in their fixed public launch arguments;
+    an orphan adapter can have no open files after loading its model.
+    Never log the command census, which may contain private args.
+    """
+    result = subprocess.run(
+        ["ps", "-axww", "-o", "pid=", "-o", "command="],
+        capture_output=True, text=True, timeout=15, check=False)
+    if result.returncode or result.stderr or not result.stdout.strip():
+        reject("native_process_occupancy_unproved")
+    for line in result.stdout.splitlines():
+        fields = line.strip().split(None, 1)
+        if len(fields) != 2 or not fields[0].isdigit() or int(fields[0]) <= 0:
+            reject("native_process_occupancy_unproved")
+        if "reference-pe-driver.mjs" in fields[1]:
+            reject("native_host_driver_still_present")
+        if str(models_directory) in fields[1]:
+            reject("native_actor_process_still_present")
+
+
 def unoccupied(profile: dict[str, Any], state_root: Path) -> dict[str, Any]:
-    """Fresh OS observation plus the exact owner receipt, not port absence alone.
+    """Fresh driver/game/handle census and a positive local endpoint refusal.
 
     Reject even another STS2 process: never adopt, kill, or inspect its state.
-    The caller separately verifies the exact original native close receipt.
+    Historical close facts can be missing after ENOSPC; absence is proved now.
     """
     # The exact installed Host owns platform executable names and fail-closed
     # enumeration (including macOS's spaced executable name).
