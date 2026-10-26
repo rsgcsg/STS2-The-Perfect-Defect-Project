@@ -159,7 +159,7 @@ class ManagedEpisodeExecutor:
             required_paths=("dist/cli.js", "dist/global-replay.js", "dist/managed.js"))
         if (mode["mode"] == "central_batch"
                 and json.loads((self.runtime.parent / "package.json").read_bytes()).get("version")
-                != "0.1.0-rc.50"):
+                not in {"0.1.0-rc.50", "0.1.0-rc.51"}):
             reject("runtime_explicit_adapter_environment_required")
         if configuration["agent_adapter"] != export.adapter_identity():
             reject("frozen_agent_implementation_changed")
