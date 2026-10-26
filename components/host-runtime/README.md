@@ -528,3 +528,11 @@ root, partitioned by profile and generation, outside resettable game-profile
 payloads. They cannot enter the daily Human recording intake through inherited
 Annotator configuration. Shared/personal launches keep their explicit settings.
 These private outputs are evidence; resetting a game profile does not delete them.
+
+## Managed P1 interface equivalence
+
+See [Managed P1 equivalence and use boundary](docs/MANAGED_P1_EQUIVALENCE.md)
+for per-interface denominators, complete Result/model-input distinctions, the
+explicit r1.6 order contract, existing phase timings and pooling limits. Shared
+game assemblies and natural terminal results alone do not qualify Reference
+replacement. The dated comparison report owns actual paired counts and hashes.
