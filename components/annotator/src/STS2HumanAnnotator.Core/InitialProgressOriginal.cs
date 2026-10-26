@@ -2,12 +2,24 @@ using System.Text.Json;
 
 namespace STS2HumanAnnotator.Core;
 
+public sealed record InitialRunSeedWitness(string Status, string Source, string? Seed, string? Reason)
+{
+    public static InitialRunSeedWitness Observe(string? seed, string? reason = null) =>
+        !string.IsNullOrWhiteSpace(seed) && seed.Length <= 128 && reason == null
+            ? new("captured", "native_run_rng", seed, null)
+            : new("unknown", "native_run_rng", null, reason ?? "native_run_seed_unavailable");
+
+    internal bool Valid => Source == "native_run_rng" && (Status == "captured"
+        ? !string.IsNullOrWhiteSpace(Seed) && Seed.Length <= 128 && Reason == null
+        : Status == "unknown" && Seed == null && !string.IsNullOrWhiteSpace(Reason));
+}
+
 // Private recording provenance only. This is never part of a player observation,
 // a native action binding or a research eligibility decision.
 public sealed record InitialProgressOriginal(
     string Schema, string Status, string SessionId, string TimelineId, string RunId,
     DateTimeOffset CapturedAt, int? NativeProfileId, string Source, string? PayloadRef,
-    long? Bytes, string? Sha256, string? Reason)
+    long? Bytes, string? Sha256, string? Reason, InitialRunSeedWitness? RunSeed = null)
 {
     public const string CurrentSchema = "sts2.human-annotator/initial-progress-original-1";
     public const int MaximumBytes = 16 * 1024 * 1024;
@@ -29,6 +41,7 @@ public sealed record InitialProgressOriginal(
                     || value.TimelineId != manifest.TimelineId || Path.GetFileName(path) != value.RunId + ".json"
                     || value.Source != "native_progress_file" || value.CapturedAt == default)
                     throw new InvalidDataException();
+                if (value.RunSeed != null && !value.RunSeed.Valid) throw new InvalidDataException();
                 if (value.Status == "captured")
                 {
                     if (value.Sha256 == null || value.Sha256.Length != 64 || !value.Sha256.All(Uri.IsHexDigit)
@@ -53,9 +66,10 @@ public sealed record InitialProgressOriginal(
 public sealed partial class RecordingSessionStore
 {
     public bool TryPersistInitialProgressOriginal(string runId, DateTimeOffset capturedAt,
-        int? nativeProfileId, byte[]? raw, string? reason = null, Action<Exception>? reportFailure = null)
+        int? nativeProfileId, byte[]? raw, string? reason = null, Action<Exception>? reportFailure = null,
+        InitialRunSeedWitness? runSeed = null)
     {
-        try { PersistInitialProgressOriginal(runId, capturedAt, nativeProfileId, raw, reason); return true; }
+        try { PersistInitialProgressOriginal(runId, capturedAt, nativeProfileId, raw, reason, runSeed); return true; }
         catch (Exception error)
         {
             // Optional provenance and even its diagnostic sink cannot alter
@@ -66,9 +80,10 @@ public sealed partial class RecordingSessionStore
     }
 
     private void PersistInitialProgressOriginal(string runId, DateTimeOffset capturedAt,
-        int? nativeProfileId, byte[]? raw, string? reason = null)
+        int? nativeProfileId, byte[]? raw, string? reason, InitialRunSeedWitness? runSeed)
     {
         SessionBundlePacker.ValidateIdentifier(runId, nameof(runId));
+        if (runSeed != null && !runSeed.Valid) throw new InvalidDataException("initial_run_seed_invalid");
         lock (_gate)
         {
             if (_closed || _disposed) throw new InvalidOperationException("recording_closed");
@@ -90,7 +105,7 @@ public sealed partial class RecordingSessionStore
             var value = new InitialProgressOriginal(InitialProgressOriginal.CurrentSchema,
                 sha == null ? "unknown" : "captured", Manifest.SessionId, Manifest.TimelineId, runId,
                 capturedAt, nativeProfileId, "native_progress_file", payload, sha == null ? null : raw!.LongLength,
-                sha, sha == null ? reason ?? "native_progress_file_unavailable" : null);
+                sha, sha == null ? reason ?? "native_progress_file_unavailable" : null, runSeed);
             WriteCreateNew(metadata, JsonSerializer.Serialize(value, EvidenceJson.IndentedOptions));
         }
     }

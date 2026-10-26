@@ -4944,7 +4944,7 @@ internal static partial class RecorderRuntime
     /// a saved run; only new setup can produce a fresh native start marker.
     /// The recorder never infers a native start from a status poll.
     /// </summary>
-    internal static void ObserveNativeRunStarted(string journalKind)
+    internal static void ObserveNativeRunStarted(string journalKind, RunState runState)
     {
         if (IsSourceRecordingV2) return; // The neutral native lifecycle seam records V2 without legacy automatic Close.
         bool closePrevious;
@@ -4980,25 +4980,31 @@ internal static partial class RecorderRuntime
                 null,
                 null,
                 "RunManager.Launch completed; exact RunState setup provenance: " + journalKind);
-            PersistInitialProgressOriginal(journalKind);
+            PersistInitialProgressOriginal(journalKind, runState);
         }
         PublishApplicationEvent(RecordingEventKind.RunStarted, detail: journalKind);
     }
 
     // Copy the actual save-store bytes at the native launch boundary. Reading or
     // snapshot failure cannot change Human input, P1 content or recording flow.
-    private static void PersistInitialProgressOriginal(string journalKind)
+    private static void PersistInitialProgressOriginal(string journalKind, RunState runState)
     {
         int? profile = null;
         byte[]? raw = null;
         string? reason = journalKind == "run_started_native" ? null : "resumed_run_initial_progress_not_observed";
+        InitialRunSeedWitness seed;
+        try { seed = InitialRunSeedWitness.Observe(reason == null ? runState.Rng.Seed : null, reason); }
+        catch { seed = InitialRunSeedWitness.Observe(null, "native_run_seed_read_failed"); }
         try
         {
             if (reason == null)
             {
                 var save = SaveManager.Instance;
                 profile = save.CurrentProfileId;
-                string path = ProgressSaveManager.GetProgressPathForProfile(profile.Value);
+                // GetProgressPathForProfile is relative to SaveStore's account
+                // root. Godot FileAccess needs the full native user:// path.
+                string path = UserDataPathProvider.GetProfileScopedPath(profile.Value, UserDataPathProvider.SavesDir)
+                    + "/" + ProgressSaveManager.fileName;
                 if (Godot.FileAccess.FileExists(path)) raw = Godot.FileAccess.GetFileAsBytes(path);
                 if (raw is not { Length: > 0 and <= InitialProgressOriginal.MaximumBytes })
                 { raw = null; reason = "native_progress_file_unavailable_or_capacity"; }
@@ -5009,7 +5015,7 @@ internal static partial class RecorderRuntime
             error => {
                 try { AppendJournal("initial_progress_original_unavailable", null, null, error.GetType().Name); } catch { }
                 GD.PrintErr("[STS2 Human Annotator] initial progress original unavailable: " + error.GetType().Name);
-            });
+            }, runSeed: seed);
     }
 
     private static void SealAfterNativeTerminal()
