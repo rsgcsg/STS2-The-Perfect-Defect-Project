@@ -4993,7 +4993,7 @@ internal static partial class RecorderRuntime
         byte[]? raw = null;
         string? reason = journalKind == "run_started_native" ? null : "resumed_run_initial_progress_not_observed";
         InitialRunSeedWitness seed;
-        try { seed = InitialRunSeedWitness.Observe(reason == null ? runState.Rng.Seed : null, reason); }
+        try { seed = InitialRunSeedWitness.Observe(reason == null ? runState.Rng.StringSeed : null, reason); }
         catch { seed = InitialRunSeedWitness.Observe(null, "native_run_seed_read_failed"); }
         try
         {

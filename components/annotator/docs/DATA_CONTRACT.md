@@ -709,7 +709,7 @@ grant Human origin, research admission or cross-Host equivalence. Recording
 input and lifecycle behavior remain unchanged.
 
 From Annotator rc.30, the same private sidecar optionally includes `run_seed`
-with `source=native_run_rng`, `status=captured` and the exact `RunState.Rng.Seed`
+with `source=native_run_rng`, `status=captured` and the exact `RunState.Rng.StringSeed`
 observed at a new native Launch. Resumes or seed read failures explicitly record
 `status=unknown`, no seed and a reason. Historical absence remains unknown.
 Progress and seed availability are independent; neither an unknown witness nor

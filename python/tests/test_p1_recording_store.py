@@ -149,7 +149,9 @@ def test_private_launch_originals_do_not_reach_real_p1_or_model_input(tmp_path, 
     )
     report = json.loads(output.read_bytes())
     assert "X2-PRIVATE" not in output.read_text()
-    observations = [capture["observation"] for capture in report["captures"] if capture["observation"]]
+    observations = [
+        capture["observation"] for capture in report["captures"] if capture["observation"]
+    ]
     assert observations
     for observation in observations:
         frame = asdict(project(observation))
