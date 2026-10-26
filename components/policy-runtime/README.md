@@ -56,6 +56,13 @@ const port = new NdjsonAgentSessionPort(
 //   manifest.limits, { executionPolicy: manifest.execution_policy });
 ```
 
+The trusted Agent caller may repeat `--adapter-env-key NAME` to forward selected
+environment variables through the CLI, matching the process API's explicit
+`env` option. Only names appear in arguments; values stay in the process
+environment and are absent from startup/evidence. The default limited inherited
+environment is unchanged. Invalid or unavailable names fail before opening the
+manifest. Manifests cannot choose executable code or environment credentials.
+
 The Connector supplies one complete ordered `BoundAction` catalog. A policy
 adapter receives that exact Snapshot and Read bundle, echoes the catalog digest,
 returns one score per candidate and an optional selected index, and never returns

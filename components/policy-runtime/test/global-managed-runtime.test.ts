@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { once } from "node:events";
 import { createServer } from "node:net";
 import { createRequire } from "node:module";
-import { execFileSync, spawn, type ChildProcess } from "node:child_process";
+import { execFileSync, spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -63,6 +63,13 @@ describe("original GLOBAL CLI startup and control",()=>{
   await writeFile(join(compiled,"package.json"),'{"type":"module"}');
  });
  afterAll(async()=>{if(compiled)await rm(compiled,{recursive:true,force:true});});
+ it.each(["invalid=key","STPD_TEST_UNAVAILABLE_EXPLICIT_KEY"])("rejects unavailable/invalid explicit key %s before opening a manifest",key=>{
+  const environment={...process.env};delete environment.STPD_TEST_UNAVAILABLE_EXPLICIT_KEY;
+  const result=spawnSync(process.execPath,[join(compiled,"cli.js"),"--manifest","/not-opened.json",
+   "--adapter-command","/not-launched","--adapter-env-key",key],{env:environment,encoding:"utf8",timeout:2000});
+  expect(result.status).toBe(1);expect(result.stderr).toContain("Agent environment key");
+  expect(result.stderr).not.toContain("ENOENT");expect(result.stdout).toBe("");
+ });
  it.each(["managed","reference"] as const)("attests %s startup and performs one original step/Stop",async(kind)=>{
   const source=kind==="managed"?await managedSource():undefined;
   const transport=source?await ManagedServicePolicyClient.attachGlobal(source.bindingPath,source.attachmentPath,source.target,"run-00000000-0000-4000-8000-000000000001"):undefined;
@@ -72,10 +79,13 @@ describe("original GLOBAL CLI startup and control",()=>{
    const listener=createServer();listener.listen(0,"127.0.0.1");await once(listener,"listening");
    const address=listener.address();if(!address||typeof address==="string")throw Error("test listener unavailable");
    const port=address.port;await new Promise<void>(done=>listener.close(()=>done()));
-   const manifestPath=join(f.root,"agent.json"),agent=fileURLToPath(new URL("./fixtures/global-agent-child.mjs",import.meta.url));
+   const manifestPath=join(f.root,"agent.json");
+   const agent=join(f.root,"explicit-environment-agent.mjs");
+   await writeFile(agent,`if(process.env.STPD_TEST_SELECTED!=="local-test-capability"||process.env.STPD_TEST_UNSELECTED!==undefined)throw Error("Agent environment selection differs");\nawait import(${JSON.stringify(new URL("./fixtures/global-agent-child.mjs",import.meta.url).href)});\n`);
    const args=[join(compiled,"cli.js"),"--manifest",manifestPath,"--adapter-command",process.execPath,
     "--adapter-arg",agent,"--adapter-arg",manifestPath,"--listen-port",String(kind==="managed"?0:port),"--evidence-root",f.root,
-    "--mode","human","--max-auto-submissions","1","--max-policy-calls","8","--auto-deadline-ms","10000"];
+    "--mode","human","--max-auto-submissions","1","--max-policy-calls","8","--auto-deadline-ms","10000",
+    "--adapter-env-key","STPD_TEST_SELECTED"];
    if(source)args.push("--managed-binding",source.bindingPath,"--managed-attachment",source.attachmentPath,
     "--managed-expected-service-instance-id",source.target.serviceInstanceId,"--managed-expected-runtime-instance-id",source.target.runtimeInstanceId,
     "--managed-expected-game-continuity-id",source.target.gameContinuityId);
@@ -89,7 +99,8 @@ describe("original GLOBAL CLI startup and control",()=>{
     await writeFile(path,descriptor);await writeFile(join(f.root,"initial-progress.bin"),raw);
     args.push("--initial-progress-original",path,"--initial-progress-original-sha256",createHash("sha256").update(descriptor).digest("hex"));
    }
-   child=spawn(process.execPath,args,{stdio:["ignore","pipe","pipe"]});closed=once(child,"close");
+   child=spawn(process.execPath,args,{stdio:["ignore","pipe","pipe"],env:{...process.env,
+    STPD_TEST_SELECTED:"local-test-capability",STPD_TEST_UNSELECTED:"must-not-inherit"}});closed=once(child,"close");
    let diagnostics="";child.stderr!.on("data",chunk=>{diagnostics+=String(chunk);});
    const startup=await new Promise<any>((resolve,reject)=>{
     let text="";const timer=setTimeout(()=>reject(Error("GLOBAL CLI startup timeout:"+diagnostics)),5000);
@@ -99,6 +110,7 @@ describe("original GLOBAL CLI startup and control",()=>{
    const expected=source?{binding_sha256:createHash("sha256").update(canonicalJson(JSON.parse(await readFile(source.bindingPath,"utf8")))).digest("hex"),
     service_instance_id:source.target.serviceInstanceId,runtime_instance_id:source.target.runtimeInstanceId,game_continuity_id:source.target.gameContinuityId}:null;
    expect(startup).toMatchObject({schema:"sts2.policy-runtime/agent-session-startup-2",runtime_version:POLICY_RUNTIME_VERSION,managed_environment:expected,mode:"human"});
+   expect(JSON.stringify(startup)).not.toContain("local-test-capability");
    expect(Number(new URL(startup.address).port)).toBeGreaterThan(0);
    if(source){const attachment=JSON.parse(await readFile(source.attachmentPath,"utf8"));expect(JSON.stringify(startup)).not.toContain(attachment.token);expect(JSON.stringify(startup)).not.toContain(source.attachmentPath);}
    const environment=await(await fetch(startup.address+"/v2/environment")).json();
@@ -112,6 +124,7 @@ describe("original GLOBAL CLI startup and control",()=>{
    const replay=await replayGlobalAgentRun(join(f.root,startup.run_id));
    expect(replay.verdict).toBe("verified");
    expect(replay.initial_progress_original?.status??null).toBe(kind==="reference"?"captured":null);
+   expect(await readFile(join(f.root,startup.run_id,"events.jsonl"),"utf8")).not.toContain("local-test-capability");
    expect(source?source.actions:f.source.steps).toBe(1);
   }finally{
    if(child&&child.exitCode===null&&child.signalCode===null&&!child.killed)child.kill("SIGKILL");

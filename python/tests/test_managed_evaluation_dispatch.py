@@ -340,3 +340,19 @@ def test_invalid_frozen_runtime_budget_rejects_before_a_host_or_model_is_read(li
     with pytest.raises(BoundaryError, match="invalid_runtime_submission_budget"):
         ManagedEpisodeExecutor({"max_auto_submissions": limit},
                                episode_seconds=10, cleanup_seconds=10)
+
+
+def test_central_inference_requires_cli_environment_before_world_audit(tmp_path, monkeypatch):
+    from spireagent.workbench import managed_evaluation as backend
+
+    actual = Producer("rsgcsg/STS2-The-Perfect-Defect-Project", "b" * 40, "c" * 64)
+    monkeypatch.setattr(backend, "source_identity", lambda _: actual)
+    monkeypatch.setattr(backend, "_verify_host", lambda *_: None)
+    monkeypatch.setattr(backend, "validate_installed_package", lambda *_, **__: None)
+    monkeypatch.setattr(backend, "_audit", lambda *_: pytest.fail("must reject before world audit"))
+    (tmp_path / "package.json").write_text('{"version":"0.1.0-rc.47"}')
+    configuration = {"producer": actual.to_dict(), "inference": {"mode": "central_batch"},
+        "host_directory": str(tmp_path), "candidate_directory": str(tmp_path),
+        "runtime_directory": str(tmp_path / "dist"), "host_pin": {}, "runtime_pin": {}}
+    with pytest.raises(BoundaryError, match="runtime_explicit_adapter_environment_required"):
+        backend.ManagedEpisodeExecutor(configuration, episode_seconds=10, cleanup_seconds=10)

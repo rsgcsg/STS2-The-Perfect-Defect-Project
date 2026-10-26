@@ -144,6 +144,10 @@ class ManagedEpisodeExecutor:
         _verify_host(self.host, configuration["host_pin"])
         validate_installed_package(self.runtime.parent, configuration["runtime_pin"],
             required_paths=("dist/cli.js", "dist/global-replay.js", "dist/managed.js"))
+        if (mode["mode"] == "central_batch"
+                and json.loads((self.runtime.parent / "package.json").read_bytes()).get("version")
+                != "0.1.0-rc.50"):
+            reject("runtime_explicit_adapter_environment_required")
         if configuration["agent_adapter"] != export.adapter_identity():
             reject("frozen_agent_implementation_changed")
         self.build = _candidate_audit(_audit(self.host, self.candidate))
@@ -306,7 +310,10 @@ class ManagedEpisodeExecutor:
                 attachment.write_bytes(binding)
                 row["inference_binding"] = artifacts.put("local-inference-binding.json", binding)
                 args.extend(["--adapter-arg=--local-inference", "--adapter-arg=" + str(attachment)])
-                environment.update(self.inference_pool.environment())
+                credentials = self.inference_pool.environment()
+                environment.update(credentials)
+                for name in credentials:
+                    args.extend(["--adapter-env-key", name])
             row.update(status="running", actor_started=True)
             checkpoint()
             with (
