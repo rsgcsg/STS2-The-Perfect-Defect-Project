@@ -725,7 +725,14 @@ function canonicalSelectorSurface(state, ctx, commonContext) {
     if (!operations[operation]) { missing.push("unregistered_native_selector_control"); continue; }
     const [verb, action] = operations[operation];
     const id = ctx.entityId("selector_control", `${state.selector_ref}:${operation}`);
-    const label = operation === "toggle_upgrade_view" ? "Toggle upgrade view" : operation;
+    const label = ({
+      open_preview: "Preview the selected cards",
+      toggle_upgrade_view: state.showing_upgrade_previews ? "Show current card versions" : "Show upgraded card previews",
+      confirm: "Confirm card upgrade",
+      confirm_selection: ["simple", "combat_pile"].includes(request.family) ? "Confirm selected cards" : "Confirm the selected cards",
+      cancel_preview: "Return to card selection",
+      cancel_selection: request.family === "deck_upgrade" ? "Cancel card upgrade selection" : "Cancel card selection"
+    })[operation];
     const subject = ctx.referent({ role: "selector_control", id, label,
       enabled: true, kind: "control", properties: null });
     controls.push({ entity_id: id, operation });
@@ -1680,6 +1687,7 @@ function currentSurface(state, ctx) {
       const combat = state.origin === "combat_pile";
       const manual = state.require_manual_confirmation;
       const hud = state.combat_context;
+      const runChoice = choose && state.selector_domain === "run" && hud === null && state.combat_piles === null;
       const text = (value) => typeof value === "string" && value.trim().length > 0
         && !/[{}]|\[img/iu.test(value);
       const cardComplete = (card, depth = 0) => depth < 16 && plainObject(card)
@@ -1734,7 +1742,7 @@ function currentSurface(state, ctx) {
         && (choose ? !manual && selected.length === 0 && cards.length <= 3 && state.display_pile === "none"
           && state.min_select === (state.can_skip ? 0 : 1)
           : !state.can_skip && state.min_select === 1 && ["draw", "discard", "exhaust"].includes(state.display_pile))
-        && hudComplete;
+        && (runChoice || hudComplete);
       const publicCard = (card, id, depth = 0) => ({
         ...visibleCombatCard(card, id), is_selected: card?.is_selected === true,
         is_selectable: card?.is_selectable === true, is_deselectable: card?.is_deselectable === true,
@@ -2076,9 +2084,12 @@ function currentSurface(state, ctx) {
         && !unsupportedCardTarget
         && !unsupportedPotionTarget;
       const actionComplete = identityComplete
-        && playWindowOpen
         && !unsupportedCardTarget
         && !unsupportedPotionTarget;
+      if (!playWindowOpen) {
+        ctx.actions.length = 0;
+        ctx.bindings.clear();
+      }
       return {
         kind: "combat_turn",
         stage: playWindowOpen ? "ready" : "settling",
@@ -2125,7 +2136,6 @@ function currentSurface(state, ctx) {
           ...(identityComplete ? [] : ["native_combat_operand_identity"]),
           ...(semanticFactsComplete ? [] : ["complete_visible_combat_context",
             ...(typeof state.combat_hud_gap === "string" ? [`combat_hud_gap:${state.combat_hud_gap}`] : [])]),
-          ...(playWindowOpen ? [] : ["native_combat_play_window_closed"]),
           ...(unsupportedCardTarget ? ["native_unsupported_card_target_type"] : []),
           ...(unsupportedPotionTarget ? ["native_unsupported_potion_target_type_or_binding"] : [])
         ],
@@ -2522,7 +2532,8 @@ export function projectManagedCandidateDecision({
     snapshot_id: ctx.snapshotId,
     sequence,
     observed_at: new Date().toISOString(),
-    status: actionProjectionComplete && ctx.actions.length > 0
+    status: surface.kind === "combat_turn" && surface.stage === "settling" && contractComplete
+      ? "settling" : actionProjectionComplete && ctx.actions.length > 0
       ? "interactive"
       : terminal && contractComplete ? "observed" : "visible_unsupported",
     persistent: persistent.content,

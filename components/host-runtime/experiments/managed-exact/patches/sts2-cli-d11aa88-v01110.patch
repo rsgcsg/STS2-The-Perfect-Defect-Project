@@ -81,6 +81,74 @@ index 0000000..e914248
 +        Console.WriteLine($"PASS {checks} native initial-progress checks; no Launch or game input");
 +    }
 +}
+diff --git a/native-run-choice-tests/NativeRunChoice.csproj b/native-run-choice-tests/NativeRunChoice.csproj
+new file mode 100644
+index 0000000..b8c2e3a
+--- /dev/null
++++ b/native-run-choice-tests/NativeRunChoice.csproj
+@@ -0,0 +1,4 @@
++<Project Sdk="Microsoft.NET.Sdk">
++<PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net9.0</TargetFramework><ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable><OutputPath>../src/Sts2Headless/bin/RunChoiceTests/</OutputPath></PropertyGroup>
++<ItemGroup><ProjectReference Include="../src/Sts2Headless/Sts2Headless.csproj"/><Reference Include="sts2"><HintPath>../lib/sts2.dll</HintPath><Private>true</Private></Reference></ItemGroup>
++</Project>
+diff --git a/native-run-choice-tests/Program.cs b/native-run-choice-tests/Program.cs
+new file mode 100644
+index 0000000..758c0d5
+--- /dev/null
++++ b/native-run-choice-tests/Program.cs
+@@ -0,0 +1,52 @@
++using System.Reflection;
++using System.Runtime.Loader;
++using System.Text.Json;
++using MegaCrit.Sts2.Core.Commands;
++using MegaCrit.Sts2.Core.Entities.Players;
++using MegaCrit.Sts2.Core.GameActions.Multiplayer;
++using MegaCrit.Sts2.Core.Models;
++using MegaCrit.Sts2.Core.Runs;
++using STS2Platform.NativeFoundation;
++class Program
++{
++ static int checks;
++ static void Check(bool value,string reason) { if(!value)throw new Exception(reason);checks++; }
++ static void Main()
++ {
++  string root=Path.GetFullPath(Path.Combine(AppContext.BaseDirectory,"..","..","..","..",".."));
++  AssemblyLoadContext.Default.Resolving+=(_,name)=>File.Exists(Path.Combine(root,"lib",name.Name+".dll")) ? AssemblyLoadContext.Default.LoadFromAssemblyPath(Path.Combine(root,"lib",name.Name+".dll")) : null;
++  Test();
++ }
++ static void Test()
++ {
++  var assembly=typeof(NativeCardRewardAlternativePreview).Assembly;
++  var simulator=assembly.GetType("Sts2Headless.RunSimulator")!;
++  object sim=Activator.CreateInstance(simulator)!;
++  const BindingFlags flags=BindingFlags.Instance|BindingFlags.NonPublic|BindingFlags.Public;
++  var started=(Dictionary<string,object?>)simulator.GetMethod("StartRun")!.Invoke(sim,new object?[]{"Defect",0,"NATIVE_RUN_CHOICE_COMPONENT_FIXTURE","en",null})!;
++  Check(started["type"] as string=="decision","native run starts: "+JsonSerializer.Serialize(started));
++  var run=(RunState)simulator.GetField("_runState",flags)!.GetValue(sim)!;
++  Player player=run.Players[0];
++  Check(player.Creature.CombatState==null,"original choice is outside combat");
++  var options=new[]{run.CreateCard(ModelDb.Card<MegaCrit.Sts2.Core.Models.Cards.Impatience>(),player),run.CreateCard(ModelDb.Card<MegaCrit.Sts2.Core.Models.Cards.Salvo>(),player)};
++  object selector=simulator.GetField("_cardSelector",flags)!.GetValue(sim)!;
++  var type=selector.GetType();
++  var task=CardSelectCmd.FromChooseACardScreen(new BlockingPlayerChoiceContext(),options,player,false);
++  Check(!task.IsCompleted,"original native choose command suspends on original callback");
++  var capture=(Dictionary<string,object?>)type.GetMethod("CaptureNativeSelector")!.Invoke(selector,new object[]{player})!;
++  Check(capture["native_selector_complete"] is true,"native run domain renders completely: "+JsonSerializer.Serialize(capture));
++  Check((string)capture["selector_domain"]! == "run" && capture["combat_context"]==null,"no combat HUD fabricated");
++  var cards=(Dictionary<string,object?>[])capture["cards"]!;
++  string reference=(string)capture["selector_ref"]!;
++  object? Change(object owner,object scope,object card)=>type.GetMethod("ChangeNativeSelector")!.Invoke(selector,new object?[]{owner,scope,card,null,"select_native_card"});
++  Check(Change(player,"stale-selector",cards[0]["native_ref"]!) is string&&!task.IsCompleted,"stale owner refuses without completing callback");
++  Check(Change(player,reference,"foreign-card") is string&&!task.IsCompleted,"unoffered card refuses");
++  Check(Change(player,reference,cards[1]["native_ref"]!)==null,"exact native run choice is delivered");
++  Check(ReferenceEquals(task.WaitAsync(TimeSpan.FromSeconds(2)).GetAwaiter().GetResult(),options[1]),"native command returns original offered card object");
++  Check(type.GetMethod("CaptureNativeSelector")!.Invoke(selector,new object[]{player})==null,"completed original callback releases domain");
++  Console.WriteLine($"{checks} exact native run generated-choice checks passed");
++  var state=new Dictionary<string,object?>(started);
++  foreach(var item in capture)state[item.Key]=item.Value;state["decision"]="native_card_select";
++  Console.WriteLine("native-run-choice-state="+JsonSerializer.Serialize(state));
++ }
++}
 diff --git a/native-tests/NativeMechanisms.csproj b/native-tests/NativeMechanisms.csproj
 new file mode 100644
 index 0000000..05b940b
@@ -4597,7 +4665,7 @@ index 0000000..0d507e5
 +}
 diff --git a/src/Sts2Headless/NativeSelectorSelection.cs b/src/Sts2Headless/NativeSelectorSelection.cs
 new file mode 100644
-index 0000000..9b3d33b
+index 0000000..ec7b1b1
 --- /dev/null
 +++ b/src/Sts2Headless/NativeSelectorSelection.cs
 @@ -0,0 +1,141 @@
@@ -4636,14 +4704,13 @@ index 0000000..9b3d33b
 +
 +    internal bool Current(Player player)
 +    {
-+        if (Completion is not { IsCompleted: false } || Combat==null || Run==null || !player.Creature.IsAlive || !ReferenceEquals(Context.Player,player) || !ReferenceEquals(player.RunState,Run)
++        if (Completion is not { IsCompleted: false } || (!IsChoose && Combat==null) || Run==null || !player.Creature.IsAlive || !ReferenceEquals(Context.Player,player) || !ReferenceEquals(player.RunState,Run)
 +            || !ReferenceEquals(player.Creature.CombatState,Combat)
 +            || !ReferenceEquals(CardSelectCmd.Selector,Context.Selector)
 +            || Options.Count==0 || Options.Distinct(ReferenceEqualityComparer.Instance).Count()!=Options.Count
 +            || Options.Any(card=>!card.IsMutable || !ReferenceEquals(card.Owner,player))) return false;
 +        if (IsChoose)
-+            return Options.SequenceEqual(Context.Offered!,ReferenceEqualityComparer.Instance)
-+                && Options.All(card=>Combat?.ContainsCard(card)==true || player.RunState.ContainsCard(card));
++            return Options.SequenceEqual(Context.Offered!,ReferenceEqualityComparer.Instance);
 +        var p=Context.Preferences;
 +        // Bounded native 1-of-1 mechanics, including manual single-option input.
 +        // Other preferences remain captured but unavailable until native mapping exists.
@@ -4673,7 +4740,7 @@ index 0000000..9b3d33b
 +        try
 +        {
 +            if(!Current(player)) missing.Add("exact_native_selector_current_domain");
-+            else hud=NativeSelectorHud.Capture(player,Combat!);
++            else if (Combat != null) hud=NativeSelectorHud.Capture(player,Combat);
 +            prompt=Prompt;
 +            if(string.IsNullOrWhiteSpace(prompt))missing.Add("native_selector_prompt");
 +            if(!Current(player))missing.Add("exact_native_selector_changed_during_capture");
@@ -4708,6 +4775,7 @@ index 0000000..9b3d33b
 +            ["selected_refs"]=Selected.Select(NativeObjectIdentity.Get).ToArray(),["can_skip"]=CanSkip,
 +            ["require_manual_confirmation"]=Manual,["can_confirm"]=CanConfirm,["cancelable"]=false,
 +            ["display_pile"]=DisplayPile.ToString().ToLowerInvariant(),["combat_context"]=hud,
++            ["selector_domain"]=Combat == null ? "run" : "combat",
 +            ["combat_piles"]=hud?.GetValueOrDefault("combat_piles"),
 +            ["native_selector_complete"]=RenderReady,["native_selector_missing"]=missing.Distinct().ToArray()
 +        };

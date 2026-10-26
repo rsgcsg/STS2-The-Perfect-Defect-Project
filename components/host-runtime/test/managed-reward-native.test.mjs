@@ -8,8 +8,31 @@ import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { resolveDotnet } from "../src/managed-candidate.mjs";
 import { JsonLineProcess } from "../src/json-line-process.mjs";
+import { projectManagedCandidateDecision } from "../src/managed-player-environment.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+
+test('exact native run-domain generated choice retains callback ownership and complete public projection', async context => {
+  const candidate = process.env.STS2_MANAGED_TEST_CANDIDATE;
+  if (!candidate) { context.skip('set STS2_MANAGED_TEST_CANDIDATE for exact proprietary native component fixtures'); return; }
+  const dotnet = await resolveDotnet();
+  const artifact = path.join(candidate, 'src/Sts2Headless/bin/Release/net9.0/Sts2Headless.dll');
+  const before = createHash('sha256').update(readFileSync(artifact)).digest('hex');
+  const { stdout } = await promisify(execFile)(dotnet.command,
+    ['run', '--project', path.join(candidate, 'native-run-choice-tests/NativeRunChoice.csproj'), '-c', 'Release',
+      '-p:Deterministic=true', `-p:PathMap=${path.resolve(candidate)}=/_/candidate/`],
+    { cwd: candidate, timeout: 180000, maxBuffer: 4 * 1024 * 1024 });
+  assert.equal(createHash('sha256').update(readFileSync(artifact)).digest('hex'), before);
+  assert.match(stdout, /10 exact native run generated-choice checks passed/u);
+  const state = JSON.parse(stdout.split(/\r?\n/u).find(line => line.startsWith('native-run-choice-state=')).slice('native-run-choice-state='.length));
+  const projection = projectManagedCandidateDecision({ state, sequence: 1,
+    runtimeInstanceId: 'native-run-choice-fixture', environmentFingerprint: 'native-run-choice-fixture' });
+  assert.equal(projection.snapshot.completeness.status, 'complete');
+  assert.equal(projection.snapshot.status, 'interactive');
+  assert.equal(projection.snapshot.interaction.content.context.kind, 'selection');
+  assert.equal(projection.snapshot.bound_actions.actions.length, 2);
+  assert.deepEqual(projection.snapshot.bound_actions.actions.map(action => action.label), ['Choose Impatience', 'Choose Salvo']);
+});
 
 test("both exact Hosts compile the same native reward/read qualification source", () => {
   const patch = readFileSync(path.join(root, "experiments/managed-exact/patches/sts2-cli-d11aa88-v01110.patch"), "utf8");

@@ -34,7 +34,14 @@ The experimental Managed text adapter covers current treasure chest, relic
 selection, and completion pages with exact room/relic bindings. Its build and
 non-claims are recorded in [Managed Exact Candidate](experiments/managed-exact/README.md).
 Its bounded shop card-removal path uses an exact staged deck selector while
-unscoped card selection remains unavailable.
+unscoped card selection remains unavailable. Exact generated-card commands may
+retain either their native combat domain or their native run domain. A run-domain
+choice retains the original offered card objects, player/run/selector and pending
+Task; it does not fabricate a combat HUD. Complete enemy-turn facts publish a
+settling snapshot with an empty complete action catalog, so Runtime waits through
+the native turn. Incomplete facts still publish partial/unsupported information.
+Selector control labels mirror the current Reference producer; older recordings
+retain their original labels and comparison differences.
 The adapter also preserves a complete observed native terminal page with no
 menu actions and its exact win/loss fact.
 
