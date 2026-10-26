@@ -628,7 +628,8 @@ export function formatCloseout(workspaceRoot = root) {
     if (lineCount > 40) {
       throw new Error(`Current handoff preflight failed: CURRENT has ${lineCount} lines; maximum is 40.`);
     }
-    if (/^ {0,3}#{1,6}[\t ]+.*(?:历史|\bhistor(?:y|ical)\b)/imu.test(source)) {
+    if (/^ {0,3}#{1,6}[\t ]+.*(?:历史|\bhistor(?:y|ical)\b)/imu.test(source)
+        || /^ {0,3}[^\n]*(?:历史|\bhistor(?:y|ical)\b)[^\n]*\n {0,3}(?:=+|-+)[\t ]*$/imu.test(source)) {
       throw new Error("Current handoff preflight failed: move CURRENT history sections to their owning report.");
     }
   }

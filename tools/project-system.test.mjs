@@ -121,7 +121,8 @@ test("closeout keeps CURRENT within forty lines without history sections", () =>
     write(root, "docs/memory/CURRENT.md", fortyOneLines);
     assert.throws(() => formatCloseout(root), /41 lines; maximum is 40/u);
     assert.equal(fs.readFileSync(path.join(root, "docs/memory/CURRENT.md"), "utf8"), fortyOneLines);
-    for (const heading of ["## 历史记录", "### History", "# Historical results"]) {
+    for (const heading of ["## 历史记录", "### History", "# Historical results",
+      "历史记录\n===", "History\n---"]) {
       write(root, "docs/memory/CURRENT.md", `${required}\n${heading}\n`);
       assert.throws(() => formatCloseout(root), /move CURRENT history sections/u);
     }
