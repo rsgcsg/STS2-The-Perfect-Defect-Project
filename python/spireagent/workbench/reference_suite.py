@@ -51,6 +51,9 @@ def load_manifest(path: Path, sha256: str) -> tuple[bytes, dict[str, Any]]:
     if hashlib.sha256(raw).hexdigest() != sha256:
         _reject("manifest_hash_mismatch")
     value = decode_json(raw)
+    if not isinstance(value, dict) or value.get("host") not in {"Reference", "Managed"}:
+        _reject("manifest_host_required")
+    host = value["host"]
     if isinstance(value, dict) and value.get("purpose") == "checkpoint_reference":
         version, character, ascension = (value.get("game_version"), value.get("character"),
                                          value.get("ascension"))
@@ -59,6 +62,7 @@ def load_manifest(path: Path, sha256: str) -> tuple[bytes, dict[str, Any]]:
             _reject("manifest_configuration_changed")
         expected_checkpoint = checkpoint_reference_manifest(
             version, character, ascension)
+        expected_checkpoint["host"] = host
         if json_bytes(value) != json_bytes(expected_checkpoint):
             _reject("manifest_configuration_changed")
         return raw, value
@@ -67,6 +71,7 @@ def load_manifest(path: Path, sha256: str) -> tuple[bytes, dict[str, Any]]:
         if not isinstance(game_version, str):
             _reject("manifest_configuration_changed")
         expected = four_agent_reference_manifest(game_version)
+        expected["host"] = host
         if json_bytes(value) != json_bytes(expected):
             _reject("manifest_configuration_changed")
         return raw, value
@@ -76,12 +81,13 @@ def load_manifest(path: Path, sha256: str) -> tuple[bytes, dict[str, Any]]:
         if not isinstance(version, str) or not isinstance(group, str) or type(count) is not int:
             _reject("manifest_configuration_changed")
         expected_diagnostic = diagnostic_reference_manifest(version, group, count)
+        expected_diagnostic["host"] = host
         if json_bytes(value) != json_bytes(expected_diagnostic):
             _reject("manifest_configuration_changed")
         return raw, value
     expected = {"schema": "stpd/evaluation-suite-v1", "suite_id": "ref-20", "version": "1.0.0",
                 "game_version": "v0.111.0", "character": "Defect", "ascension": 0,
-                "host": "Reference", "purpose": "paired_reference", "episode_count": 20,
+                "host": host, "purpose": "paired_reference", "episode_count": 20,
                 "seed_derivation": "derive_game_seed(suite_id, ordinal_1_based)"}
     seeds = [derive_game_seed("ref-20", ordinal) for ordinal in range(1, 21)]
     if (not isinstance(value, dict) or set(value) != {*expected, "seeds"}
@@ -318,7 +324,7 @@ def _completed_rows(paths: tuple[Path, ...], manifest_sha: str, *, profile: str,
 
 
 def run_suite(
-    manifest_path: Path, manifest_sha256: str, *, client: ReferenceClient, run_dir: Path,
+    manifest_path: Path, manifest_sha256: str, *, client: ReferenceClient | None, run_dir: Path,
     selection: str, run_profile: str, limits: SuiteLimits, max_episodes: int = 1,
     selections: dict[str, str] | None = None, evidence_peer: dict[str, Any] | None = None,
     display_mode: str = "headless", speed: str = "instant",
@@ -327,6 +333,8 @@ def run_suite(
     before_episode: Callable[[dict[str, Any]], bool] = lambda _report: True,
     clock: Callable[[], float] = time.monotonic,
     sleep: Callable[[float], None] = time.sleep, should_stop: Callable[[], bool] = lambda: False,
+    host_kind: str = "reference",
+    episode_executor: Callable[..., None] | None = None,
 ) -> dict[str, Any]:
     """New attempt only. Existing run directories are read-only recovery artifacts."""
     if (type(max_episodes) is not int or not 1 <= max_episodes <= 200
@@ -336,6 +344,10 @@ def run_suite(
             or speed not in {"normal", "fast", "instant"}):
         _reject("invalid_attempt_configuration")
     raw_manifest, manifest = load_manifest(manifest_path, manifest_sha256)
+    if (host_kind not in {"reference", "managed"} or manifest["host"].lower() != host_kind
+            or host_kind == "reference" and (client is None or episode_executor is not None)
+            or host_kind == "managed" and (client is not None or episode_executor is None)):
+        _reject("host_executor_or_manifest_mismatch")
     if (manifest.get("purpose") not in {"diagnostic_reference", "checkpoint_reference"}
             and speed != "instant"):
         _reject("fixed_suite_requires_instant_speed")
@@ -375,7 +387,9 @@ def run_suite(
     report: dict[str, Any] = {"schema": REPORT_SCHEMA, "attempt_id": uuid.uuid4().hex,
         "manifest": artifacts.put("manifest.json", raw_manifest),
         "selection_id": selection, "run_profile": run_profile,
-        "application": dict(client.identity), "limits": asdict(limits),
+        "application": (dict(client.identity) if client is not None
+                        else {"deployment": "local_command"}),
+        "host_kind": host_kind, "pooling": "separate_host_conditions", "limits": asdict(limits),
         "source": source_identity(ROOT, require_clean=False).to_dict(),
         "suite_source_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
         "client_source_sha256": hashlib.sha256(
@@ -408,7 +422,8 @@ def run_suite(
 
     try:
         compositions = {}
-        for agent, identity in selected.items():
+        for agent, identity in (selected.items() if client is not None else ()):
+            assert client is not None
             ready = client.readiness(identity, timeout(started + limits.suite_seconds))
             report["readiness_" + agent] = artifacts.put("readiness.json", json_bytes(ready))
             if ready.get("status") != "ready_to_load" or ready.get("selection_id") != identity:
@@ -440,7 +455,7 @@ def run_suite(
     pending_rows = [row for row in report["episodes"] if row["status"] != "reused"]
     for row in pending_rows[:max_episodes]:
         selection = row["selection_id"]
-        composition = compositions[selection]
+        composition = compositions.get(selection, {})
         if not before_episode(report):
             report["stop_reason"] = "stop_requested"
             break
@@ -456,6 +471,20 @@ def run_suite(
             report["capacity_error"] = _error(error)
             break
         report["capacity"] = capacity
+        if episode_executor is not None:
+            episode_started = clock()
+            try:
+                episode_executor(row, manifest, artifacts, lambda: artifacts.save(report))
+            except (OSError, ValueError, KeyError, TypeError) as error:
+                row.update(status="unknown" if row.get("world_mutation_offered") else "not_started",
+                           reason=_error(error))
+            row["elapsed_seconds"] = clock() - episode_started
+            artifacts.save(report)
+            if row.get("status") != "finished":
+                report["stop_reason"] = row.get("reason") or "episode_not_finished"
+                break
+            continue
+        assert client is not None
         episode_started = clock()
         phase_deadline = episode_started + limits.preparation_seconds
         ref = None

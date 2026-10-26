@@ -10,6 +10,9 @@ import csv
 import hashlib
 import io
 import json
+import shutil
+import time
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from contextlib import nullcontext
 from datetime import UTC, datetime
 from pathlib import Path
@@ -175,10 +178,229 @@ class EvaluationLedger:
         LocalBlobStore(directory).put_if_absent("plan.json", json_bytes(plan))
         return cls(directory)
 
+    @classmethod
+    def create(
+        cls,
+        directory: Path,
+        manifest_path: Path,
+        manifest_sha256: str,
+        *,
+        selections: dict[str, str],
+        execution: Path,
+    ) -> EvaluationLedger:
+        """Freeze a new Managed denominator; never clone or reset an old ledger."""
+        if directory.exists() or not selections or len(set(selections.values())) != len(selections):
+            reject("new_directory_and_distinct_selections_required")
+        _, manifest = load_manifest(manifest_path, manifest_sha256)
+        if manifest["host"] != "Managed":
+            reject("managed_manifest_required")
+        raw = _read(execution)
+        configuration = json.loads(raw)
+        if configuration.get("schema") != "spireagent/managed-evaluation-execution-v1" or set(
+            configuration["models"]
+        ) != set(selections.values()):
+            reject("execution_selection_mismatch")
+        slots = []
+        for ordinal, seed in enumerate(manifest["seeds"], 1):
+            for step, selection in selections.items():
+                slot = {
+                    "character": manifest["character"],
+                    "ascension": manifest["ascension"],
+                    "seed": seed,
+                    "seed_ordinal": ordinal,
+                    "step": step,
+                    "selection_id": selection,
+                    "manifest": reference(manifest_path),
+                    "host_kind": "managed",
+                    "status": "not_started",
+                }
+                slot["slot_id"] = digest(json_bytes(slot))
+                slots.append(slot)
+        plan = {
+            "schema": SCHEMA,
+            "created_at": datetime.now(UTC).isoformat(),
+            "host_kind": "managed",
+            "execution": reference(execution),
+            "originals": [reference(manifest_path), reference(execution)],
+            "conditions": {
+                "run_profile": "extended",
+                "display_mode": "headless",
+                "speed": "instant",
+                "evidence_peer": configuration["peer"],
+            },
+            "slots": slots,
+            "planned": len(slots),
+            "retry_unknown": False,
+            "replacements": "not_implemented",
+        }
+        LocalBlobStore(directory).put_if_absent("plan.json", json_bytes(plan))
+        return cls(directory)
+
+    @staticmethod
+    def _managed_result(row: dict[str, Any], path: Path) -> dict[str, Any]:
+        if row.get("status") == "finished":
+            value = result_row(row, path)
+        else:
+            value = {
+                "status": row.get("status", "unknown"),
+                "reason": row.get("reason"),
+                "run_id": row.get("run_id"),
+                "report": reference(path),
+                "stored_evidence_id": row.get("stored_evidence_id"),
+                "world_mutation_offered": row.get("world_mutation_offered") is True,
+            }
+        return {
+            **value,
+            "host_kind": "managed",
+            "elapsed_seconds": row.get("elapsed_seconds"),
+            "cleanup_accepted": row.get("cleanup_accepted") is True,
+        }
+
+    def run_managed(
+        self,
+        *,
+        max_episodes: int = 200,
+        workers: int = 1,
+        limits: SuiteLimits | None = None,
+        executor: Any = None,
+    ) -> dict[str, Any]:
+        """The calling command holds the ledger lock; only this thread appends events.
+
+        Workers receive one already-reserved slot each and never touch the queue.
+        Unknown/censored results belong to their own slots; other isolated workers
+        continue. Unconfirmed cleanup stops admission because a process may still
+        consume the bounded worker capacity. No unknown slot is offered again.
+        """
+        if (
+            self.plan.get("host_kind") != "managed"
+            or type(workers) is not int
+            or not 1 <= workers <= 16
+            or type(max_episodes) is not int
+            or not 1 <= max_episodes <= 200
+        ):
+            reject("invalid_managed_dispatch")
+        self.reconcile_reports()
+        if any(
+            row["status"] in {"unknown", "reserved"} and not row.get("cleanup_accepted")
+            for row in self.slots()
+        ):
+            return {"status": "stopped", "stop_reason": "unknown_cleanup_requires_owner_read"}
+        configuration = json.loads(read_reference(self.plan["execution"]))
+        if shutil.disk_usage(self.directory).free < configuration.get("minimum_free_bytes", 0):
+            return {"status": "stopped", "stop_reason": "workspace_capacity_insufficient"}
+        limits = limits or SuiteLimits(150, 1800, 60, 86400, 1, 30)
+        if executor is None:
+            from .managed_evaluation import ManagedEpisodeExecutor
+
+            executor = ManagedEpisodeExecutor(
+                configuration,
+                episode_seconds=limits.episode_seconds,
+                cleanup_seconds=limits.cleanup_seconds,
+            )
+        pending = iter(
+            [row for row in self.slots() if row["status"] == "not_started"][:max_episodes]
+        )
+        active: dict[Any, tuple[dict[str, Any], Path]] = {}
+        stop_reason = None
+        began = time.monotonic()
+        dispatched = 0
+        finished = 0
+        conditions = self.plan["conditions"]
+
+        def episode(slot: dict[str, Any], attempt: Path) -> dict[str, Any]:
+            return run_suite(
+                Path(slot["manifest"]["path"]),
+                slot["manifest"]["sha256"],
+                client=None,
+                host_kind="managed",
+                episode_executor=executor,
+                run_dir=attempt,
+                selection=slot["selection_id"],
+                episode_keys=((slot["seed"], slot["selection_id"]),),
+                run_profile=conditions["run_profile"],
+                display_mode=conditions["display_mode"],
+                speed=conditions["speed"],
+                evidence_peer=conditions["evidence_peer"],
+                limits=limits,
+                max_episodes=1,
+                should_stop=lambda: (self.directory / "STOP").exists(),
+            )
+
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            exhausted = False
+            while active or not exhausted and stop_reason is None:
+                while len(active) < workers and not exhausted and stop_reason is None:
+                    if (
+                        self.directory / "STOP"
+                    ).exists() or time.monotonic() - began >= limits.suite_seconds:
+                        stop_reason = "stop_requested_or_suite_wall_limit"
+                        break
+                    if shutil.disk_usage(self.directory).free < configuration.get(
+                        "minimum_free_bytes", 0
+                    ):
+                        stop_reason = "workspace_capacity_insufficient"
+                        break
+                    slot = next(pending, None)
+                    if slot is None:
+                        exhausted = True
+                        break
+                    number = len(self.store.keys("events/")) + 1
+                    attempt = self.directory / "attempts" / f"{number:06d}"
+                    self.event(
+                        slot["slot_id"], "reserved", report_path=str(attempt / "report.json")
+                    )
+                    active[pool.submit(episode, slot, attempt)] = (slot, attempt / "report.json")
+                    dispatched += 1
+                if not active:
+                    break
+                done, _ = wait(active, return_when=FIRST_COMPLETED)
+                for future in done:
+                    slot, path = active.pop(future)
+                    try:
+                        result = future.result()
+                        value = self._managed_result(result["episodes"][0], path)
+                    except Exception as error:
+                        value = {
+                            "status": "unknown",
+                            "reason": (
+                                error.code
+                                if isinstance(error, BoundaryError)
+                                else type(error).__name__
+                            ),
+                            "cleanup_accepted": False,
+                        }
+                    self.event(slot["slot_id"], "result", result=value)
+                    finished += value["status"] == "finished"
+                    print(
+                        json.dumps(
+                            {
+                                "slot_id": slot["slot_id"],
+                                "seed_ordinal": slot["seed_ordinal"],
+                                **value,
+                            }
+                        ),
+                        flush=True,
+                    )
+                    if not value.get("cleanup_accepted"):
+                        stop_reason = "unknown_cleanup_requires_owner_read"
+        return {
+            "status": "stopped" if stop_reason else "completed",
+            "stop_reason": stop_reason,
+            "host_kind": "managed",
+            "workers": workers,
+            "dispatched": dispatched,
+            "new_finished": finished,
+            "elapsed_seconds": time.monotonic() - began,
+        }
+
     def event(self, slot_id: str, kind: str, **value: Any) -> None:
         number = len(self.store.keys("events/")) + 1
-        self.store.put_if_absent(f"events/{number:06d}.json", json_bytes({
-            "slot_id": slot_id, "kind": kind, "at": datetime.now(UTC).isoformat(), **value}))
+        self.store.put_if_absent(
+            f"events/{number:06d}.json",
+            json_bytes(
+                {"slot_id": slot_id, "kind": kind, "at": datetime.now(UTC).isoformat(), **value}
+            ),
+        )
 
     def slots(self) -> list[dict[str, Any]]:
         rows = {r["slot_id"]: dict(r) for r in self.plan["slots"]}
@@ -232,7 +454,10 @@ class EvaluationLedger:
                               "environment_ref": row.get("environment_ref"),
                               "world_mutation_offered": row.get("world_mutation_offered") is True,
                               "report": reference(path)}
-                    if row.get("status") == "finished" and not row.get("preservation_error"):
+                    if (self.plan.get("host_kind") == "managed"
+                            and report.get("status") != "running"):
+                        result = self._managed_result(row, path)
+                    elif row.get("status") == "finished" and not row.get("preservation_error"):
                         try:
                             result = result_row(row, path)
                         except (OSError, ValueError, KeyError, TypeError) as error:
@@ -256,21 +481,30 @@ class EvaluationLedger:
         resource = client.native_status(30)
         if resource.get("environment_ref") is not None:
             preview = native_episode_command(
-                config, "unknown-status", expected_instance_id=client.identity[
-                    "application_instance_id"], timeout_seconds=30)
+                config,
+                "unknown-status",
+                expected_instance_id=client.identity["application_instance_id"],
+                timeout_seconds=30,
+            )
             if (preview.get("publication") or {}).get("requires_confirmation"):
-                return {"status": "stopped",
-                        "stop_reason": "publication_unknown_requires_explicit_seal"}
-            old_unknown = any(r["status"] == "unknown"
-                              and r.get("environment_ref") == resource["environment_ref"]
-                              for r in self.slots())
+                return {
+                    "status": "stopped",
+                    "stop_reason": "publication_unknown_requires_explicit_seal",
+                }
+            old_unknown = any(
+                r["status"] == "unknown" and r.get("environment_ref") == resource["environment_ref"]
+                for r in self.slots()
+            )
             if old_unknown and preview.get("release") is None:
-                return {"status": "stopped",
-                        "stop_reason": "unknown_requires_current_Application_confirmation"}
-            if (resource.get("phase") not in {"idle", "closed", "failed"}
-                    and preview.get("release") is None):
-                return {"status": "stopped",
-                        "stop_reason": "native_environment_busy_or_unknown"}
+                return {
+                    "status": "stopped",
+                    "stop_reason": "unknown_requires_current_Application_confirmation",
+                }
+            if (
+                resource.get("phase") not in {"idle", "closed", "failed"}
+                and preview.get("release") is None
+            ):
+                return {"status": "stopped", "stop_reason": "native_environment_busy_or_unknown"}
         limits = limits or SuiteLimits(150, 1800, 180, 86400, 2, 30)
         conditions = self.plan["conditions"]
         count = 0
@@ -286,40 +520,68 @@ class EvaluationLedger:
             report_path = attempt / "report.json"
             self.event(slot["slot_id"], "reserved", report_path=str(report_path))
             result = run_suite(
-                Path(slot["manifest"]["path"]), slot["manifest"]["sha256"], client=client,
-                run_dir=attempt, selection="", selections={slot["step"]: slot["selection_id"]},
+                Path(slot["manifest"]["path"]),
+                slot["manifest"]["sha256"],
+                client=client,
+                run_dir=attempt,
+                selection="",
+                selections={slot["step"]: slot["selection_id"]},
                 episode_keys=((slot["seed"], slot["selection_id"]),),
-                run_profile=conditions["run_profile"], display_mode=conditions["display_mode"],
-                speed=conditions["speed"], evidence_peer=conditions["evidence_peer"],
-                limits=limits, max_episodes=1,
+                run_profile=conditions["run_profile"],
+                display_mode=conditions["display_mode"],
+                speed=conditions["speed"],
+                evidence_peer=conditions["evidence_peer"],
+                limits=limits,
+                max_episodes=1,
                 should_stop=lambda: (self.directory / "STOP").exists(),
             )
             row = result["episodes"][0]
             if row["status"] == "not_started":
-                value = {"status": "not_started", "reason": result["stop_reason"],
-                         "report": reference(report_path)}
+                value = {
+                    "status": "not_started",
+                    "reason": result["stop_reason"],
+                    "report": reference(report_path),
+                }
             elif row["status"] == "finished" and not row.get("preservation_error"):
                 value = result_row(row, report_path)
             else:
-                value = {"status": "unknown", "run_id": row.get("run_id"),
-                         "environment_ref": row.get("environment_ref"),
-                         "reason": result["stop_reason"],
-                         "world_mutation_offered": row.get("world_mutation_offered") is True,
-                         "report": reference(report_path)}
+                value = {
+                    "status": "unknown",
+                    "run_id": row.get("run_id"),
+                    "environment_ref": row.get("environment_ref"),
+                    "reason": result["stop_reason"],
+                    "world_mutation_offered": row.get("world_mutation_offered") is True,
+                    "report": reference(report_path),
+                }
             self.event(slot["slot_id"], "result", result=value)
-            progress = {k: v for k, v in value.items()
-                        if k in {"status", "run_id", "natural_result", "reason"}}
-            print(json.dumps({"slot_id": slot["slot_id"], "step": slot["step"],
-                              "seed_ordinal": slot["seed_ordinal"], **progress}), flush=True)
+            progress = {
+                k: v
+                for k, v in value.items()
+                if k in {"status", "run_id", "natural_result", "reason"}
+            }
+            print(
+                json.dumps(
+                    {
+                        "slot_id": slot["slot_id"],
+                        "step": slot["step"],
+                        "seed_ordinal": slot["seed_ordinal"],
+                        **progress,
+                    }
+                ),
+                flush=True,
+            )
             if value["status"] != "finished" or result["status"] != "completed":
                 return {"status": "stopped", "stop_reason": result["stop_reason"] or "unknown"}
             if cool:
                 # The service owns credentials and exact current producer context.
                 # The CLI never reads a credential file or opens a second Store.
                 receipt = native_episode_command(
-                    config, "cool-evidence", run_id=row["run_id"],
+                    config,
+                    "cool-evidence",
+                    run_id=row["run_id"],
                     expected_instance_id=client.identity["application_instance_id"],
-                    timeout_seconds=180)
+                    timeout_seconds=180,
+                )
                 self.event(slot["slot_id"], "cache", receipt=receipt)
             count += 1
         return {"status": "completed", "new_finished": count}
@@ -327,33 +589,55 @@ class EvaluationLedger:
     def report(self) -> dict[str, Any]:
         rows = self.slots()
         groups = []
-        for character, ascension, step in sorted({(r["character"], r["ascension"], r["step"])
-                                                  for r in rows}):
-            selected = [r for r in rows if (r["character"], r["ascension"], r["step"])
-                        == (character, ascension, step)]
+        for character, ascension, step in sorted(
+            {(r["character"], r["ascension"], r["step"]) for r in rows}
+        ):
+            selected = [
+                r
+                for r in rows
+                if (r["character"], r["ascension"], r["step"]) == (character, ascension, step)
+            ]
             finished = [r for r in selected if r["status"] == "finished"]
-            floors = [r["max_observed_floor"] for r in finished
-                      if r.get("max_observed_floor") is not None]
-            groups.append({"character": character, "ascension": ascension, "step": step,
-                           "planned": len(selected), "scored": len(finished),
-                           "win": sum(r.get("natural_result") == "win" for r in finished),
-                           "loss": sum(r.get("natural_result") == "loss" for r in finished),
-                           "mean_floor": sum(floors) / len(floors) if floors else None})
-        return {"schema": SCHEMA, "planned": len(rows),
-                "started": sum(r.get("world_mutation_offered") is True for r in rows),
-                "win": sum(r.get("natural_result") == "win" for r in rows),
-                "loss": sum(r.get("natural_result") == "loss" for r in rows),
-                "unknown": sum(r["status"] == "unknown" for r in rows),
-                "unknown_sealed": sum(bool(r.get("unknown_release")) for r in rows),
-                "not_started": sum(r["status"] == "not_started" for r in rows),
-                "reserved": sum(r["status"] == "reserved" for r in rows), "replaced": 0,
-                "R2_original_receipts": sum(bool(r.get("stored_evidence_id")) for r in rows),
-                "groups": groups, "slots": rows}
+            floors = [
+                r["max_observed_floor"] for r in finished if r.get("max_observed_floor") is not None
+            ]
+            groups.append(
+                {
+                    "character": character,
+                    "ascension": ascension,
+                    "step": step,
+                    "planned": len(selected),
+                    "scored": len(finished),
+                    "win": sum(r.get("natural_result") == "win" for r in finished),
+                    "loss": sum(r.get("natural_result") == "loss" for r in finished),
+                    "mean_floor": sum(floors) / len(floors) if floors else None,
+                }
+            )
+        return {
+            "schema": SCHEMA,
+            "host_kind": self.plan.get("host_kind", "reference"),
+            "pooling": "separate_host_conditions",
+            "planned": len(rows),
+            "censored": sum(r["status"] == "censored" for r in rows),
+            "started": sum(r.get("world_mutation_offered") is True for r in rows),
+            "win": sum(r.get("natural_result") == "win" for r in rows),
+            "loss": sum(r.get("natural_result") == "loss" for r in rows),
+            "unknown": sum(r["status"] == "unknown" for r in rows),
+            "unknown_sealed": sum(bool(r.get("unknown_release")) for r in rows),
+            "not_started": sum(r["status"] == "not_started" for r in rows),
+            "reserved": sum(r["status"] == "reserved" for r in rows),
+            "replaced": 0,
+            "R2_original_receipts": sum(bool(r.get("stored_evidence_id")) for r in rows),
+            "groups": groups,
+            "slots": rows,
+        }
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("plan", "run", "status", "report", "seal-unknown"))
+    parser.add_argument(
+        "action", choices=("plan", "create", "run", "status", "report", "seal-unknown")
+    )
     parser.add_argument("--ledger", type=Path, required=True)
     parser.add_argument("--config", type=Path)
     parser.add_argument("--matrix", type=Path)
@@ -361,18 +645,52 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--expected", type=Path)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--max-episodes", type=int, default=200)
+    parser.add_argument("--host", choices=("reference", "managed"), default="reference")
+    parser.add_argument("--workers", type=int, default=1)
+    parser.add_argument("--manifest", type=Path)
+    parser.add_argument("--manifest-sha256")
+    parser.add_argument("--selections", type=Path)
+    parser.add_argument("--execution", type=Path)
+    parser.add_argument("--cloud-environment", type=Path)
     args = parser.parse_args(argv)
     try:
+        if args.cloud_environment:
+            import os
+
+            from .service_process import cloud_environment
+
+            os.environ.update(cloud_environment(args.cloud_environment.resolve()))
         directory = args.ledger.resolve()
-        lock = (nullcontext() if args.action in {"status", "report"} else
-                instance_lock(directory.parent / (directory.name + ".lock")))
+        lock = (
+            nullcontext()
+            if args.action in {"status", "report"}
+            else instance_lock(directory.parent / (directory.name + ".lock"))
+        )
         with lock:
             config = ProjectConfig.load(args.config) if args.config else None
-            if args.action == "plan":
+            if args.action == "create":
+                if (
+                    args.host != "managed"
+                    or args.manifest is None
+                    or args.manifest_sha256 is None
+                    or args.selections is None
+                    or args.execution is None
+                ):
+                    reject("managed_manifest_execution_and_selections_required")
+                ledger = EvaluationLedger.create(
+                    directory,
+                    args.manifest.resolve(),
+                    args.manifest_sha256,
+                    selections=json.loads(_read(args.selections)),
+                    execution=args.execution.resolve(),
+                )
+                result = ledger.report()
+            elif args.action == "plan":
                 if config is None or args.matrix is None or args.episodes is None:
                     reject("matrix_episodes_and_config_required")
-                ledger = EvaluationLedger.import_matrix(directory, args.matrix.resolve(),
-                                                         args.episodes.resolve(), config)
+                ledger = EvaluationLedger.import_matrix(
+                    directory, args.matrix.resolve(), args.episodes.resolve(), config
+                )
                 result = ledger.report()
             else:
                 ledger = EvaluationLedger(directory)
@@ -381,9 +699,18 @@ def main(argv: list[str] | None = None) -> int:
                         reject("expected_identity_and_config_required")
                     result = ledger.seal_unknown(config, json.loads(_read(args.expected)))
                 elif args.action == "run":
-                    if config is None or not 1 <= args.max_episodes <= 200:
+                    if args.host == "managed":
+                        result = ledger.run_managed(
+                            max_episodes=args.max_episodes, workers=args.workers
+                        )
+                    elif (
+                        config is None
+                        or args.workers != 1
+                        or ledger.plan.get("host_kind", "reference") != "reference"
+                    ):
                         reject("config_and_bounded_new_episodes_required")
-                    result = ledger.run(config, max_episodes=args.max_episodes)
+                    else:
+                        result = ledger.run(config, max_episodes=args.max_episodes)
                 else:
                     result = ledger.report()
             if args.output:
@@ -395,8 +722,16 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(result, ensure_ascii=False))
             return 0 if result.get("status") != "stopped" else 1
     except (OSError, ValueError, KeyError, TypeError) as error:
-        print(json.dumps({"status": "stopped", "error": error.code
-                          if isinstance(error, BoundaryError) else type(error).__name__}))
+        print(
+            json.dumps(
+                {
+                    "status": "stopped",
+                    "error": error.code
+                    if isinstance(error, BoundaryError)
+                    else type(error).__name__,
+                }
+            )
+        )
         return 1
 
 

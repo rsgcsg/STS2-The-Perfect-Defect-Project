@@ -740,17 +740,32 @@ Native rule patch, partial Read acceptance or automatic speed fallback is added.
 
 Suite reports have a separate bounded 64MiB reader for completed-report reuse; manifests and individual request/evaluation originals retain the 1MiB limit. Per-observation metric details remain in the immutable game-metrics.json artifact; the aggregate row stores only the summary and its exact artifact reference. This keeps long Fast cohorts recoverable without copying every observation into every aggregate report.
 
-### Managed 并行、调度与强化学习的位置（2026-10-26 收口）
+### Managed 评估、并行、调度与强化学习的位置
 
 链路位置：①世界/Host 的实现替换；②Connector 提供公开环境、③P1 提供观察与完整动作目录、④Agent 做决定。Managed 和 Reference 使用同一 P1 Runtime 与模型包。注册按 Host 分开，是环境要求、运行身份与清理责任不同；不是再造模型、策略或另一套 P1。
 
-应用层的评估计划和槽位账本负责调度。单个协调者先持久化槽位预留，再分配给独占 Host、Runtime、注册目录和证据目录的执行者；结果仍回原有报告与 ArtifactStore。unknown 只记在自己的槽位，不重投；停止新派发，已运行邻局正常收尾。未证明已清理的进程不能计为可用容量。Host Runtime 继续只管生命周期、隔离与恢复；Policy Runtime 继续只管受控执行、预算与 Stop。
+应用层的评估计划和槽位账本负责调度。单个协调者先持久化槽位预留，再分配给独占 Host、Runtime、注册目录和证据目录的执行者；结果仍回原有报告与 ArtifactStore。unknown 只记在自己的槽位，不重投；确认清理后，其他独立槽位继续。未确认进程清理时停止新派发，已运行邻局正常收尾，避免把仍占用资源的进程算成空闲容量。Host Runtime 继续只管生命周期、隔离与恢复；Policy Runtime 继续只管受控执行、预算与 Stop。
 
-本轮已保存采用该结构的共享评估候选，但磁盘触发15GiB停止线后，用户选择按硬限收口；真实执行链和带模型并发未实跑，候选未并入本次修复PR。正式评估入口仍保留原Reference行为。旧 `stpd.evaluation.managed_suite` 是 catalog-only 工程可靠性资产，与完整P1模型输入和任务绑定不同，完整保留，不能把它的结果改名为P1模型评估。
+现有 `EvaluationLedger` 的同一 `create/run/status/report` 命令以 `--host managed` 选择 Managed 执行者。每局仍通过原 `run_suite`、正常 `export.register`、P1 Runtime CLI、`stpd.p1.agent`、typed Evidence 与 Store/R2；新接口不执行另一套动作循环。Reference 的原 `plan/run --config` 行为保持。旧 `stpd.evaluation.managed_suite` 是直接选择完整 BoundAction ID 的 catalog-only 工程可靠性资产，没有完整 P1 模型输入、Model 任务绑定和 Runtime 证据链；其循环不能并作 P1 模型评估。原资产与用途保留。
+
+冻结执行 JSON（`spireagent/managed-evaluation-execution-v1`）需要正常打包的 Host/Runtime 目录和完整 package pin、准确候选目录、已核对的 `initial_progress`、Python 路径、`export.adapter_identity()`、原 Model artifact ID 与包目录、实际源码 `Producer`、Store/peer 与空间下限。`producer` 是预期版本，执行前必须与干净源码和原 uv.lock 相符；不能用旧配置给新代码冒标来源。`store="s3"` 使用冻结的 peer 位置，环境只提供凭据；本地 Store 则指定自己的绝对目录。配置和附件保持私有，不复制凭据到报告。复制既有规范 manifest 后只改 Host，保留规范种子，不编辑旧计划。
+
+```sh
+python -m spireagent.workbench.evaluation_ledger create --host managed \
+  --ledger /ABS/new-ledger --manifest /ABS/managed-ref-20.json \
+  --manifest-sha256 SHA --selections /ABS/selections.json --execution /ABS/execution.json
+python -m spireagent.workbench.evaluation_ledger run --host managed \
+  --ledger /ABS/new-ledger --workers 1 --max-episodes 1 \
+  --cloud-environment /ABS/private-cloud.env
+python -m spireagent.workbench.evaluation_ledger report \
+  --ledger /ABS/new-ledger --output /ABS/report.json
+```
+
+先确认这一槽自然终局、完整 typed 读回、controller release 和 Host/service 正常关闭，才继续其余槽位。调度命令结束不等于每槽通过；报告保留全部 unknown/censored/unstarted。增加 `--workers N` 只改变同一账本的并发容量，协调者持有 OS lock，worker 不写槽位事件。恢复只派发 `not_started`，崩溃后的 reservation 先读原报告，未知状态不会回队列。STOP 文件、总时限、空间下限或未确认清理均停止新派发。每个并行比较使用预先冻结的独立试验账本；原失败和 unknown 分母不被另一次试验覆盖。
 
 本机库和命令是先做的部署方式；以后按需云CPU执行者、持久调度进程复用同一计划/槽位/结果接口。现有 Hub 仅有 feature/training 作业且每DB一个活动任务，不能直接声称已支持评估池；将来只复用其队列、租约和预算思想，不另引一套业务记录。云部署、集中批量推理、常驻服务器均未实现。当前最短真实验证应先用每个执行者一份既有CPU Agent，再与统一批量推理做相同输入/模型的独立基准；没有带推理数据前不判断哪种更快。
 
-08-21的6–8个Managed实例约1373–1687决策/秒属于旧准确版本的Host-only容量；真游戏1/2/4实例约0.482/0.976/1.868决策/秒也是历史条件。两者都不是当前P1模型吞吐或本机新上限。当前真游戏多开仍须等用户本批32局完成后另行分配游戏占用，核独立profile、端口、原生运行身份、存档、Steam与正常关闭；本轮没有测试，也没有当前提速结论。
+08-21的6–8个Managed实例约1373–1687决策/秒属于旧准确版本的Host-only容量；真游戏1/2/4实例约0.482/0.976/1.868决策/秒也是历史条件。两者都不是当前 P1 模型吞吐或本机新上限。真游戏多开需按当前用户授权登记游戏占用，核独立 profile、端口、原生运行身份、存档、Steam 与正常关闭。用户要录制时立即让出；工程产物根和 Annotator 配置必须隔离于 Human 录制与自动维护扫描根。具体当前测量留在准确版本的实验报告，不从历史数字继承资格。
 
 强化学习在研究侧：在线P1对局及原记录链产出→Store→明确用途/划分→派生→训练→新检查点→同一评估链。奖励、学习算法、采样/更新比例、Human与自我对局的权重及验收由研究方案定义，不能由Host或调度自行决定。吞吐预算应从目标对局/决策量、当前带推理成本、记录/存储和学习器耗时算起。已有“先Human示范、后审议强化学习”的方向，未批准本轮RL配置；本轮不训练、不实现RL、不启动云机器。
 
