@@ -127,6 +127,10 @@ class ManagedEpisodeExecutor:
         mode = configuration.get("inference", {"mode": "per_actor"})
         if not isinstance(mode, dict) or mode.get("mode") not in {"per_actor", "central_batch"}:
             reject("unsupported_inference_implementation")
+        self.max_auto_submissions = configuration.get("max_auto_submissions", 10000)
+        if (type(self.max_auto_submissions) is not int
+                or not 1 <= self.max_auto_submissions <= 10000):
+            reject("invalid_runtime_submission_budget")
         # The frozen producer is an expected pin, never a caller-supplied claim
         # about whatever code happens to execute this invocation.
         self.producer = source_identity(ROOT)
@@ -287,7 +291,7 @@ class ManagedEpisodeExecutor:
                 "--evidence-root",
                 str(artifacts.root / "runs"),
                 "--max-auto-submissions",
-                "10000",
+                str(self.max_auto_submissions),
                 "--max-policy-calls",
                 "20000",
                 "--auto-deadline-ms",

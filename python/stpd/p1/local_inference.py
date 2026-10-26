@@ -11,6 +11,7 @@ import json
 import os
 import queue
 import secrets
+import socket
 import threading
 import time
 from concurrent.futures import Future
@@ -57,6 +58,7 @@ class LocalInferencePool:
         self.auth = secrets.token_bytes(32)
         self.adapter = adapter_identity()
         self.listener = Listener(("127.0.0.1", 0), authkey=self.auth)
+        self.address = self.listener.address
         self.queue: queue.Queue[_Request | None] = queue.Queue()
         self.stopping = threading.Event()
         self.connections: list[threading.Thread] = []
@@ -80,7 +82,7 @@ class LocalInferencePool:
         return {
             "schema": SCHEMA,
             "pool_id": self.pool_id,
-            "address": list(self.listener.address),
+            "address": list(self.address),
             "adapter": self.adapter,
             "max_batch": self.max_batch,
             "window_ms": self.window * 1000,
@@ -94,9 +96,9 @@ class LocalInferencePool:
         while not self.stopping.is_set():
             try:
                 connection = self.listener.accept()
-            except AuthenticationError:
+            except (AuthenticationError, EOFError, ConnectionError):
                 continue
-            except (OSError, EOFError):
+            except OSError:
                 return
             if self.stopping.is_set():
                 connection.close()
@@ -193,9 +195,11 @@ class LocalInferencePool:
     def close(self) -> dict[str, Any]:
         if not self.stopping.is_set():
             self.stopping.set()
-            # Wake this command's own blocking accept before closing its listener.
-            with Client(self.listener.address, authkey=self.auth):
-                pass
+            # Wake accept without waiting for an authentication reply. An already
+            # failed acceptor cannot answer a self-authenticated Client handshake.
+            if self.acceptor.is_alive():
+                with socket.create_connection(self.address, timeout=2):
+                    pass
             self.acceptor.join(timeout=5)
             self.listener.close()
             for thread in self.connections:

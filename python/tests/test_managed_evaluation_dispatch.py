@@ -331,3 +331,12 @@ def test_original_runtime_exit_racing_http_is_read_without_reposting_stop(
     ) == startup
     assert calls == (["/status"] if failed_route == "/status" else ["/status", "/stop"])
     assert "runtime_http_error" in row
+
+
+@pytest.mark.parametrize("limit", [None, True, 0, -1, 10001, "32"])
+def test_invalid_frozen_runtime_budget_rejects_before_a_host_or_model_is_read(limit):
+    from spireagent.workbench.managed_evaluation import ManagedEpisodeExecutor
+
+    with pytest.raises(BoundaryError, match="invalid_runtime_submission_budget"):
+        ManagedEpisodeExecutor({"max_auto_submissions": limit},
+                               episode_seconds=10, cleanup_seconds=10)

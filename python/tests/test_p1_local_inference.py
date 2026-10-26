@@ -145,3 +145,69 @@ def test_existing_agent_consume_ack_next_is_identical_with_local_scoring(tmp_pat
     finally:
         summary = pool.close()
     assert summary["requests"] == 1  # Repeated next never scores or consumes again.
+
+
+def test_actor_authentication_interruption_is_local_and_close_never_self_authenticates():
+    import socket
+    import threading
+
+    pool = LocalInferencePool({}, max_batch=1, window_ms=0)
+    with socket.create_connection(pool.address, timeout=2) as abandoned:
+        assert abandoned.recv(128)  # Real multiprocessing authentication challenge.
+    # Complete another real authenticated connection: the acceptor survived EOF.
+    from multiprocessing.connection import Client
+
+    with Client(pool.address, authkey=pool.auth):
+        pass
+    finished = threading.Event()
+    outcome = []
+
+    def close():
+        try:
+            outcome.append(pool.close())
+        finally:
+            finished.set()
+
+    closer = threading.Thread(target=close, daemon=True)
+    closer.start()
+    assert finished.wait(5), "an abandoned actor must not block evaluator close"
+    closer.join(timeout=1)
+    assert outcome[0]["closed"] is True
+    assert not pool.acceptor.is_alive() and not pool.worker.is_alive()
+
+
+def test_close_after_acceptor_failure_has_no_authentication_wait(monkeypatch):
+    import threading
+
+    import stpd.p1.local_inference as inference
+
+    # Exercise a failed real listener owner, rather than an Actor scoring stub.
+    real_listener = inference.Listener
+
+    def failed_listener(*args, **kwargs):
+        listener = real_listener(*args, **kwargs)
+
+        def accept():
+            raise OSError("listener failure fixture")
+
+        listener.accept = accept
+        return listener
+
+    monkeypatch.setattr(inference, "Listener", failed_listener)
+    pool = LocalInferencePool({}, max_batch=1, window_ms=0)
+    pool.acceptor.join(timeout=1)
+    assert not pool.acceptor.is_alive()
+    finished = threading.Event()
+    outcome = []
+
+    def close():
+        try:
+            outcome.append(pool.close())
+        finally:
+            finished.set()
+
+    closer = threading.Thread(target=close, daemon=True)
+    closer.start()
+    assert finished.wait(3), "dead acceptor must not cause an authentication wait"
+    closer.join(timeout=1)
+    assert outcome[0]["closed"] is True
