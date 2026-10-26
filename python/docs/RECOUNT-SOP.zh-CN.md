@@ -112,6 +112,8 @@ Q小结还依赖锁定的 `local-models` extra（tokenizers）；collection-only
 此项不下载模型权重、不训练，也不选择Managed/评估Runtime。
 真人自动验收仍等用户正常下一局，完成事实只记在 Q3 报告。
 
+X2 使用 Annotator30 固定 Tool `5afc7d7688d5ac221937cc033ea56a97f059929143b3d2a7d85885f6f56709ba`，只向新封存原件附加真实开局种子、修正完整账号/profile路径后的原样进度；不进玩家快照、P1或模型。缺失仍unknown，旧原件不补填。该Tool仅追加在原优先级末尾，继续沿同原件候选别名避免重复派生，414冻结与用途不变。安装/隔离工程重建及下一局正常录制的验收分别见 X2 报告，不继承旧Human资格。
+
 ## 出错与恢复
 
 ```sh
