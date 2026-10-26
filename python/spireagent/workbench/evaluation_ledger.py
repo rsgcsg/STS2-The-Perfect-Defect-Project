@@ -24,6 +24,7 @@ from spireagent.storage.local import LocalBlobStore
 
 from .developer import ProjectConfig
 from .local_model_cli import native_episode_command
+from .p1_recording_storage import NEXT_EPISODE_PEAK_BYTES, workspace_reserve_bytes
 from .reference_suite import (
     MAX_REPORT_BYTES,
     SuiteLimits,
@@ -286,7 +287,8 @@ class EvaluationLedger:
         ):
             return {"status": "stopped", "stop_reason": "unknown_cleanup_requires_owner_read"}
         configuration = json.loads(read_reference(self.plan["execution"]))
-        if shutil.disk_usage(self.directory).free < configuration.get("minimum_free_bytes", 0):
+        reserve = max(configuration.get("minimum_free_bytes", 0), workspace_reserve_bytes())
+        if shutil.disk_usage(self.directory).free < reserve + NEXT_EPISODE_PEAK_BYTES:
             return {"status": "stopped", "stop_reason": "workspace_capacity_insufficient"}
         limits = limits or SuiteLimits(150, 1800, 60, 86400, 1, 30)
         owns_executor = executor is None
@@ -298,9 +300,8 @@ class EvaluationLedger:
                 episode_seconds=limits.episode_seconds,
                 cleanup_seconds=limits.cleanup_seconds,
             )
-        pending = iter(
-            [row for row in self.slots() if row["status"] == "not_started"][:max_episodes]
-        )
+        pending_slots = [row for row in self.slots() if row["status"] == "not_started"][:max_episodes]
+        pending = iter(pending_slots)
         active: dict[Any, tuple[dict[str, Any], Path]] = {}
         stop_reason = None
         began = time.monotonic()
@@ -338,15 +339,24 @@ class EvaluationLedger:
             exhausted = False
             while active or not exhausted and stop_reason is None:
                 while len(active) < workers and not exhausted and stop_reason is None:
+                    if dispatched == len(pending_slots):
+                        exhausted = True
+                        break
                     if (
                         self.directory / "STOP"
                     ).exists() or time.monotonic() - began >= limits.suite_seconds:
                         stop_reason = "stop_requested_or_suite_wall_limit"
                         break
-                    if shutil.disk_usage(self.directory).free < configuration.get(
-                        "minimum_free_bytes", 0
-                    ):
-                        stop_reason = "workspace_capacity_insufficient"
+                    # Only this coordinator admits workers. Charge each active
+                    # slot its full existing peak until cleanup/Store readback
+                    # returns; concurrent workers must not spend the same free
+                    # blocks. This is conservative accounting, not a disk quota.
+                    required = reserve + NEXT_EPISODE_PEAK_BYTES * (len(active) + 1)
+                    if shutil.disk_usage(self.directory).free < required:
+                        # In-flight work can finish and release its allowance.
+                        # Leave the next slot untouched, drain, then reconsider.
+                        if not active:
+                            stop_reason = "workspace_capacity_insufficient"
                         break
                     slot = next(pending, None)
                     if slot is None:

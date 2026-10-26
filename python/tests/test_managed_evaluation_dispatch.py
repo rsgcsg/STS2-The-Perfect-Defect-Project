@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -22,7 +23,7 @@ from spireagent.workbench.reference_suite import SuiteLimits, load_manifest
 
 
 @pytest.fixture
-def ledger(tmp_path):
+def ledger(tmp_path, request):
     path, _ = suite_manifest(tmp_path)
     manifest = json.loads(path.read_bytes())
     manifest["host"] = "Managed"
@@ -34,7 +35,7 @@ def ledger(tmp_path):
                 "schema": "spireagent/managed-evaluation-execution-v1",
                 "models": {"same-weight": {}},
                 "peer": {"kind": "local", "directory": str(tmp_path)},
-                "minimum_free_bytes": 0,
+                "minimum_free_bytes": getattr(request, "param", 0),
             }
         )
     )
@@ -186,6 +187,77 @@ def test_unconfirmed_process_cleanup_stops_admission_without_retrying_slot(ledge
     assert seen == [1]
     assert ledger.report()["unknown"] == 1
     assert ledger.report()["not_started"] == 19
+
+
+@pytest.mark.parametrize("ledger", [10 * 1024**3], indirect=True)
+def test_parallel_capacity_charges_inflight_peaks_and_drains_before_readmission(
+    ledger, monkeypatch
+):
+    gib = 1024**3
+    # Frozen floor 10 GiB, free 14 GiB: exactly two existing 2 GiB peaks.
+    monkeypatch.setenv("SPIREAGENT_MIN_FREE_BYTES", str(2 * gib))
+    monkeypatch.setattr(shutil, "disk_usage", lambda _: type("Space", (), {"free": 14 * gib})())
+    barrier = threading.Barrier(2)
+    lock = threading.Lock()
+    active = peak = 0
+
+    def executor(row, manifest, artifacts, checkpoint):
+        nonlocal active, peak
+        with lock:
+            active += 1
+            peak = max(peak, active)
+        barrier.wait(timeout=5)
+        complete(row, artifacts, checkpoint)
+        with lock:
+            active -= 1
+
+    result = ledger.run_managed(workers=4, max_episodes=4, executor=executor)
+    assert result["status"] == "completed" and result["dispatched"] == 4
+    assert peak == 2
+    assert ledger.report()["loss"] == 4 and ledger.report()["not_started"] == 16
+
+
+def test_capacity_stop_preserves_next_slot_and_restart_uses_only_not_started(ledger, monkeypatch):
+    gib = 1024**3
+    free = 4 * gib
+    monkeypatch.setenv("SPIREAGENT_MIN_FREE_BYTES", str(2 * gib))
+    monkeypatch.setattr(shutil, "disk_usage", lambda _: type("Space", (), {"free": free})())
+    seen = []
+    def executor(row, manifest, artifacts, checkpoint):
+        nonlocal free
+        seen.append(row["seed_ordinal"])
+        complete(row, artifacts, checkpoint)
+        free = 3 * gib
+
+    result = ledger.run_managed(workers=4, max_episodes=4, executor=executor)
+    assert result["dispatched"] == 1 and result["stop_reason"] == "workspace_capacity_insufficient"
+    assert ledger.report()["not_started"] == 19 and ledger.report()["unknown"] == 0
+    free = 4 * gib
+    EvaluationLedger(ledger.directory).run_managed(workers=4, max_episodes=4, executor=executor)
+    assert seen == [1, 2]
+    # A higher existing workstation reserve still applies to a zero-floor plan.
+    monkeypatch.setenv("SPIREAGENT_MIN_FREE_BYTES", str(3 * gib))
+    free = 4 * gib
+    result = ledger.run_managed(executor=executor)
+    assert result["stop_reason"] == "workspace_capacity_insufficient" and seen == [1, 2]
+
+
+def test_finished_bounded_batch_does_not_require_capacity_for_an_unrequested_next_slot(
+    ledger, monkeypatch
+):
+    gib = 1024**3
+    free = 4 * gib
+    monkeypatch.setenv("SPIREAGENT_MIN_FREE_BYTES", str(2 * gib))
+    monkeypatch.setattr(shutil, "disk_usage", lambda _: type("Space", (), {"free": free})())
+
+    def executor(row, manifest, artifacts, checkpoint):
+        nonlocal free
+        complete(row, artifacts, checkpoint)
+        free = 3 * gib
+
+    result = ledger.run_managed(workers=4, max_episodes=1, executor=executor)
+    assert result["status"] == "completed" and result["stop_reason"] is None
+    assert result["dispatched"] == 1 and ledger.report()["not_started"] == 19
 
 
 def test_crashed_reservation_is_unknown_and_blocks_new_admission(ledger):
