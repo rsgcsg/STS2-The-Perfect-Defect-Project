@@ -104,6 +104,12 @@ uv run --locked --extra cloud python -m spireagent.workbench recordings maintena
 Q3 安装使用 Annotator29 固定 Tool `aa168b7e…`，由统一 Mod 提供未来开局进度原件；
 旧进度未知不补填。新 Tool 的SDK15新增显式 r1.6 支持；当前转换仍用 r1.5，另核验可选进度附件，
 固定版本检查仍有效，旧 Tool 优先级、切分盐、目标与已冻结配置不变。
+已完整完成的同一原件在Tool升级后，只沿原封存哈希/身份与原完成记录识别新候选别名，
+不重复派生旧局、不重写原入库耗时。改peer/范围/投影会清完成记录，不沿旧完成跳过。
+Q小结还依赖锁定的 `local-models` extra（tokenizers）；collection-only kit初始化后，
+维护者须在Workbench停止时沿原环境入口补齐：
+`uv sync --project /ABS/release/source/python --locked --extra cloud --extra local-models`。
+此项不下载模型权重、不训练，也不选择Managed/评估Runtime。
 真人自动验收仍等用户正常下一局，完成事实只记在 Q3 报告。
 
 ## 出错与恢复

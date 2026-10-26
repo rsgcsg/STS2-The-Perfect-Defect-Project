@@ -428,6 +428,23 @@ class P1RecordingMaintenance:
                 source = importer._existing_candidate(
                     store, identity, candidate, verify_payloads=False
                 )
+                # The catalog binds candidate IDs to the currently registered Tool.
+                # A Tool upgrade must not rederive an identical, fully completed
+                # original. _existing_candidate above still checks all seal hashes
+                # and recording identity; policy changes clear completed IDs.
+                previous = state.get("sessions", {}).get(source, {})
+                previous_scope = previous.get("scope_facts", {})
+                if (source is not None
+                        and previous.get("source_artifact_id") == source
+                        and previous.get("session_id") == candidate.get("session_id")
+                        and previous.get("timeline_id") == candidate.get("timeline_id")
+                        and previous_scope.get("candidate_id") in completed
+                        and _in_scope(previous_scope, policy.get("scope"))):
+                    completed.append(identity)
+                    state.update(status="completed", error_code=None)
+                    self._pending(catalog)
+                    importer._save()
+                    return dict(state)  # Keep original last_intake and its timings.
                 active = {
                     "candidate_id": identity,
                     "source_artifact_id": source,
