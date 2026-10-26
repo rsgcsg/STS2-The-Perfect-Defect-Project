@@ -1,13 +1,14 @@
 import { join } from "node:path";
 import {
   applyCommitment, canonicalJson, createSession, reduce, resolveFollowBasis, sha256Hex,
-  P1G_LIMITS, P1G_RESULT_SCHEMA,
+  P1G_LIMITS,
   type Lowering, type P1Basis, type P1Observation, type P1Result, type P1SessionState, type P1StepRecord, type ReadCapture
 } from "@rsgcsg/sts2-connector-client/p1-global";
 import { AgentPort, AgentPortError, type AgentLaunch } from "./agent-port.js";
 import { HostDriver, HostDriverError, type HostLaunch } from "./host-driver.js";
 import { EpisodeRecorder } from "./recorder.js";
 import { p1CoreIdentity } from "./core-identity.js";
+import { buildP1Result } from "../p1-result.js";
 
 export interface EpisodeOptions {
   readonly seed: string;
@@ -200,10 +201,10 @@ export async function runEpisode(options: EpisodeOptions): Promise<EpisodeRow> {
       }
       if (status === "unknown") { row.unknown_delivery = true; row.censor_reason = "unknown_delivery"; }
       if (status === "completed") state = applyCommitment(state, lowering, true);
-      const result: P1Result = { schema: P1G_RESULT_SCHEMA, occurrence: observation.envelope.occurrence,
+      const result = buildP1Result({ occurrence: observation.envelope.occurrence,
         choice_id: choiceId, status, steps, commitment_delta: status === "completed" && lowering.commitment
           ? { declined_reward_groups: (state.reward?.declined ?? []).map((key) => state.aliases[key] ?? "unaliased").sort(),
-            reward_page_left: state.reward?.left ?? false } : null };
+            reward_page_left: state.reward?.left ?? false } : null });
       recorder.append("p1_result", { result });
       agent.result(result);
       if (status === "unknown") break;

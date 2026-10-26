@@ -709,3 +709,17 @@ long-term retention; local data is the bounded active working set. Cool an inact
 expanded copy only after its exact artifact, all hashes and actual consumer restore
 pass. This path archives per completed run; it does not add cloud latency to native
 capture or introduce a second Runtime/cloud storage controller.
+
+### Offline original Result comparison
+
+Trajectory extraction reads original lossless GLOBAL Agent frames and Runtime
+Results. It binds consume/directive/Result to the original acquisition and input
+occurrence; it never manufactures a Result from a native Human recording.
+`tools/p1-native-replay.mjs` compares the complete Result together with its original
+observation and choice under one existing public entity mapping. Every literal
+step field, status and extension remains part of comparison. The wire constructor
+is shared with Runtime producers; execution and commitment decisions stay with
+each owner. Original unknown or invalid/unbound Results fail before Host start.
+Failed replay execution retains its actual known/unknown step prefix before
+comparison and stops without retry. Diagnostic location preserves all mismatches
+and cannot establish whole-run P1 equivalence.

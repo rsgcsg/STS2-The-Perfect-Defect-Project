@@ -1,5 +1,5 @@
 import { canonicalJson, completeCards, completeCombatSurface, completeCombat, completeDeck, completeMap, completePiles, completeSelector, createPublicGraphComparator, modelView, PublicGraphDifference, P1G_INFORMATION_SHAPES,
-  createPublicIdentityPolicy, normalizePublicPath, publicFieldPath, completeRewardSurface, completeCardRewardSurface, P1G_REVISION, type P1Observation } from "@rsgcsg/sts2-connector-client/p1-global";
+  createPublicIdentityPolicy, normalizePublicPath, publicFieldPath, completeRewardSurface, completeCardRewardSurface, P1G_REVISION, P1G_LIMITS, P1G_RESULT_SCHEMA, type P1Observation, type P1Result } from "@rsgcsg/sts2-connector-client/p1-global";
 
 /** Formal full-public comparison. No text key is globally erased. Locale-specific
  * transformations require an owning schema/path declaration; r1.3 uses literal text.
@@ -37,8 +37,11 @@ function graphPolicy(identicalFacts: boolean, observation: P1Observation, shopCa
   return createPublicGraphComparator({
     alias(value, _key, path) {
       const p = normalizePublicPath(path);
-      if (p === "$.chosen" || p === "catalog[].choice_id") return { kind: "action", id: value };
-      return policy.relation(path) ? { kind: "entity", id: value } : null;
+      if (p === "$.chosen" || p === "catalog[].choice_id" || p === "$.result.choice_id") return { kind: "action", id: value };
+      // Result commitments use the same schema-owned entity relations and the
+      // same bijection as their original observation, never a second mapping.
+      const relationPath = path.replace(/^\$\.result\.commitment_delta(?=\.|\[|$)/u, "$.observation.commitments");
+      return policy.relation(relationPath) ? { kind: "entity", id: value } : null;
     },
     unorderedSuffix(path) {
       // The unique catalog remains fixed at index 0. Only the current typed
@@ -106,16 +109,46 @@ function bounded(value: unknown): boolean {
 /** One observation (+ optional chosen choice) against another, through the same full public graph. */
 export function comparePublicPoint(left: P1Observation, right: P1Observation, chosenLeft: string | null, chosenRight: string | null):
   { verdict: Verdict; difference: FirstDifference | null } { return comparePoint(left, right, chosenLeft, chosenRight); }
-function comparePoint(left: P1Observation, right: P1Observation, chosenLeft: string | null, chosenRight: string | null):
+
+function resultIssue(value: unknown): string | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return "invalid_result";
+  const result = value as Record<string, unknown>;
+  if (result.schema !== P1G_RESULT_SCHEMA || !Number.isSafeInteger(result.occurrence) || (result.occurrence as number) < 0
+      || typeof result.choice_id !== "string" || typeof result.status !== "string"
+      || !["completed", "interrupted_known", "not_started", "unknown"].includes(result.status)
+      || !Array.isArray(result.steps) || result.steps.length > P1G_LIMITS.macro_steps
+      || !(result.commitment_delta === null || typeof result.commitment_delta === "object" && !Array.isArray(result.commitment_delta)))
+    return "invalid_result";
+  for (const [index, step] of result.steps.entries()) {
+    if (!step || typeof step !== "object" || step.index !== index
+        || !["agent_choice", "fold", "forced"].includes(step.origin)
+        || typeof step.native_verb !== "string" || typeof step.label !== "string"
+        || !["delivered", "not_delivered", "unknown"].includes(step.delivery)
+        || !(step.reason_code === null || typeof step.reason_code === "string")) return "invalid_result_step";
+  }
+  return result.status === "unknown" || result.steps.some(step => step.delivery === "unknown") ? "unknown_result_delivery" : null;
+}
+
+/** Complete recorded Result plus its original public graph. Occurrence, status,
+ * every step field and all unqualified extension fields remain literal facts. */
+export function comparePublicResult(left: P1Observation, right: P1Observation, leftResult: P1Result, rightResult: P1Result):
   { verdict: Verdict; difference: FirstDifference | null } {
-  if (!bounded(left) || !bounded(right)) return { verdict: "incomparable",
+  const issue = resultIssue(leftResult) ?? resultIssue(rightResult);
+  if (issue) return { verdict: "incomparable", difference: { path: "$.result", left: null, right: null, reason: issue } };
+  return comparePoint(left, right, leftResult.choice_id, rightResult.choice_id, [leftResult, rightResult]);
+}
+function comparePoint(left: P1Observation, right: P1Observation, chosenLeft: string | null, chosenRight: string | null,
+  results?: readonly [P1Result, P1Result]): { verdict: Verdict; difference: FirstDifference | null } {
+  if (!bounded(results ? { observation: left, result: results[0] } : left)
+      || !bounded(results ? { observation: right, result: results[1] } : right)) return { verdict: "incomparable",
     difference: { path: "$", left: null, right: null, reason: "comparison_work_bound" } };
   const unsupported = supported(left) ?? supported(right);
   if (unsupported) return { verdict: "incomparable", difference: { path: "$", left: null, right: null, reason: unsupported } };
   if (chosenLeft !== null && !left.catalog.some(choice => choice.choice_id === chosenLeft)
       || chosenRight !== null && !right.catalog.some(choice => choice.choice_id === chosenRight))
     return { verdict: "incomparable", difference: { path: "$.chosen", left: chosenLeft, right: chosenRight, reason: "choice_not_in_catalog" } };
-  const a = { observation: modelView(left), chosen: chosenLeft }; const b = { observation: modelView(right), chosen: chosenRight };
+  const a = { observation: modelView(left), chosen: chosenLeft, ...(results ? { result: results[0] } : {}) };
+  const b = { observation: modelView(right), chosen: chosenRight, ...(results ? { result: results[1] } : {}) };
   // Identity is itself a bijection and preserves every field/edge, including duplicates.
   if (canonicalJson(a) === canonicalJson(b)) return { verdict: "equal", difference: null };
   try {
