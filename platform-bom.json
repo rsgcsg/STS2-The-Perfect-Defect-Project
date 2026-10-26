@@ -21,10 +21,10 @@
       "component_source_digest_sha256": "5051443ed7daa3649737f75d87710946beec6c609fd331caa9dfe5d636a33a18"
     },
     "annotator": {
-      "version": "0.3.0-rc.28",
-      "source_revision": "ff7bce35361bd3419a5e5e248dd8d085810f9def",
-      "component_tree_revision": "7a523e81de0184fe98bc4e515b690daa95f6ff46",
-      "component_source_digest_sha256": "1e27fb00da59304e583faac50715fc2f9752b6b6521910d839e03a25df6add34"
+      "version": "0.3.0-rc.29",
+      "source_revision": "43dab6a1e39054798e4ddb93f4254facf45ca9c8",
+      "component_tree_revision": "808654c0ee2f76cf755e72b97ed938341cb06186",
+      "component_source_digest_sha256": "e1b837f4681840eaecc62482cbc27cf4c8628238f19d5ea3e0ef1d99eaf67178"
     },
     "evidence": {
       "version": "0.1.0-rc.36",
@@ -33,10 +33,10 @@
       "component_source_digest_sha256": "156db31267fef80ab723b1f6095521a74f3bff3f3b1eded3acfd688aa8c547f3"
     },
     "policy_runtime": {
-      "version": "0.1.0-rc.48",
-      "source_revision": "d77fb11872c6d164759bc20899761c6090ba7dac",
-      "component_tree_revision": "7e1b93647a4038baa9d0eb867a34398fa368e6bf",
-      "component_source_digest_sha256": "ab7de9ae9e8da6c73ace9cb5f3dd002d362113ed340b6eb6cc8ec31a8fd7768c"
+      "version": "0.1.0-rc.49",
+      "source_revision": "43dab6a1e39054798e4ddb93f4254facf45ca9c8",
+      "component_tree_revision": "d2372fd7c55c7205ce38ee2e16f1089c93c0d980",
+      "component_source_digest_sha256": "7c4e7a18d0181e02cdac306b6ff8416863d0449eb325ddf0ca9415f1156717a9"
     },
     "workbench": {
       "version": "0.1.0-rc.4",
@@ -170,8 +170,8 @@
     "annotator": {
       "source_revision": "09e5c2363fff64b2e8cfa07d16ec7cf22d8ad3b5",
       "source_digest_sha256": "8d23f1015a7b0df800f78a7545da5c86bfee521131c4391b398c884ff917918f",
-      "current_component_source_revision": "ff7bce35361bd3419a5e5e248dd8d085810f9def",
-      "current_component_source_digest_sha256": "1e27fb00da59304e583faac50715fc2f9752b6b6521910d839e03a25df6add34",
+      "current_component_source_revision": "43dab6a1e39054798e4ddb93f4254facf45ca9c8",
+      "current_component_source_digest_sha256": "e1b837f4681840eaecc62482cbc27cf4c8628238f19d5ea3e0ef1d99eaf67178",
       "source_relation": "loaded_human_v2_artifact_precedes_unified_platform_source",
       "artifact_sha256": "4e911dd616afa55753a5320a42c11ce0cebe9d4d10fefd66c8f8a431884cf105",
       "artifact_mvid": "692e9dd9-4bc7-4203-ae12-511ef95a5331",
@@ -269,16 +269,16 @@
       "source_revision": "e19b30315015664a5647ab351cdcefb09417f275",
       "source_digest_sha256": "d227321727d07edd2d4c67928edec439c26f156494dd9cfab98d2bac4debf346",
       "version": "0.1.0-rc.1",
-      "current_component_source_revision": "d77fb11872c6d164759bc20899761c6090ba7dac",
-      "current_component_source_digest_sha256": "ab7de9ae9e8da6c73ace9cb5f3dd002d362113ed340b6eb6cc8ec31a8fd7768c",
-      "current_component_version": "0.1.0-rc.48",
+      "current_component_source_revision": "43dab6a1e39054798e4ddb93f4254facf45ca9c8",
+      "current_component_source_digest_sha256": "7c4e7a18d0181e02cdac306b6ff8416863d0449eb325ddf0ca9415f1156717a9",
+      "current_component_version": "0.1.0-rc.49",
       "source_relation": "historical_runtime_source_precedes_standalone_consumer_package"
     },
     "annotator": {
       "source_revision": "cb20bfa6e4e0e64b3ee8fdf0e1d472e8a668450b",
       "source_digest_sha256": "3910bcbc71599610b125c91c62e9860541ce9edea9b2c0a9f41842eb53651071",
-      "current_component_source_revision": "ff7bce35361bd3419a5e5e248dd8d085810f9def",
-      "current_component_source_digest_sha256": "1e27fb00da59304e583faac50715fc2f9752b6b6521910d839e03a25df6add34",
+      "current_component_source_revision": "43dab6a1e39054798e4ddb93f4254facf45ca9c8",
+      "current_component_source_digest_sha256": "e1b837f4681840eaecc62482cbc27cf4c8628238f19d5ea3e0ef1d99eaf67178",
       "source_relation": "loaded_native_source_precedes_current_audit_closeout_source",
       "artifact_sha256": "04104ca5cd47c82329be185a8aa7017f7982b2062048fbf825488bead231d1c1",
       "artifact_mvid": "7408a183-f5a8-4f95-a997-dbf588b1536b"
