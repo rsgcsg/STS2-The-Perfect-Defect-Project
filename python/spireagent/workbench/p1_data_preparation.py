@@ -7,6 +7,7 @@ reservations. A frozen snapshot is always published and re-read by dataset.py.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sqlite3
 import stat
@@ -324,6 +325,11 @@ def prepare_p1_data(
             inspections.append(current_index)
             quality[identity] = classification
         except (BoundaryError, ValueError, KeyError, TypeError, OSError) as error:
+            # Keep the producing exception/traceback locally. The stable conflict
+            # code remains the caller's boundary; it must not erase the cause.
+            logging.getLogger(__name__).exception(
+                "P1 projection inspection failed: projection_id=%s", identity
+            )
             conflicts.append(
                 {"projection_id": identity, "code": getattr(error, "code", "invalid_projection")}
             )

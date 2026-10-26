@@ -60,3 +60,44 @@ def test_control_token_maps_cooling_and_restore_to_original_recording_owner(tmp_
         server.server_close()
         app.close()
         thread.join(timeout=3)
+
+
+def test_summary_http_failure_and_explicit_refresh_of_failed_generation(tmp_path):
+    from spireagent.workbench.p1_cohort_intake import DEFAULT_POLICY
+
+    config = ProjectConfig(tmp_path / "state", "", "", None, combination())
+    app = Application(config)
+    service = app.p1_maintenance
+    service.configure(True, None, cohort_policy=str(DEFAULT_POLICY))
+    service._failed(ValueError("synthetic inspection failure"))
+    app.local_recording_import._maintenance["cohort_failed_signature"] = "a" * 64
+    app.local_recording_import._save()
+    server = create_server(app)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_port}"
+    try:
+        with urlopen(base + "/recording-summary", timeout=5) as response:
+            html = response.read().decode()
+            assert "script-src 'self'" in response.headers["Content-Security-Policy"]
+        assert "class='status danger' role='alert'" in html
+        assert "自动维护失败" in html
+        assert "状态最后核对" in html
+        assert "<script src='/assets/recording-summary.js' defer></script>" in html
+        assert "<script>" not in html
+        with urlopen(base + "/assets/recording-summary.js", timeout=5) as response:
+            assert response.headers.get_content_type() == "text/javascript"
+            assert response.headers.get_content_charset() == "utf-8"
+            assert b"maintenance-stale" in response.read()
+        request = Request(base + "/api/local-recordings/cohort/refresh", data=b"{}",
+                          headers={"Authorization": "Bearer " + app.control_token,
+                                   "Content-Type": "application/json"})
+        with urlopen(request, timeout=5) as response:
+            assert json.load(response)["status"] == "refresh_requested"
+        assert "cohort_failed_signature" not in app.local_recording_import._maintenance
+        assert app.local_recording_import._maintenance["policy"]["enabled"] is False
+    finally:
+        server.shutdown()
+        server.server_close()
+        app.close()
+        thread.join(timeout=3)

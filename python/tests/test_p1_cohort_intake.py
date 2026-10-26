@@ -239,3 +239,193 @@ def test_disk_full_during_failure_save_does_not_kill_worker_or_retry(tmp_path, m
     assert calls == [True, False]
     assert importer._maintenance["error_code"] == "disk_full"
     assert importer._maintenance["persistence_error"] == "ENOSPC"
+
+
+def test_failure_page_is_published_immediately_and_recovery_clears_alert(tmp_path):
+    _, _, config, policy = fixture(tmp_path)
+    candidates = [{"candidate_id": "a" * 64, "recording_type": "p1_native",
+                   "session_id": "new-session"}]
+    catalog = SimpleNamespace(read=lambda: {"status": "ready", "game_running": True,
+                                           "candidates": candidates})
+    importer = LocalRecordingImporter(config, catalog)
+    service = P1RecordingMaintenance(importer)
+    service.configure(True, None, cohort_policy=str(policy))
+    service._failed(OSError(errno.EMFILE, "synthetic failure"))
+    page = (config.state_dir / "recording-summary.html").read_text()
+    assert "class='status danger' role='alert'" in page
+    assert "自动维护失败" in page and "状态最后核对" in page
+    assert page.index("maintenance-status") < page.index("<h1>")
+    assert importer._maintenance["status_since"]
+    # Persisted failure still observes new Close metadata without dispatching work.
+    reopened = LocalRecordingImporter(config, catalog)
+    service = P1RecordingMaintenance(reopened)
+    state = service.tick()
+    assert state["pending_candidates"][0]["session_id"] == "new-session"
+    assert reopened.thread is None and reopened.operation["status"] == "idle"
+    assert "已封存待处理 1 份" in (config.state_dir / "recording-summary.html").read_text()
+    service.configure(True, None)
+    service.tick()
+    page = (config.state_dir / "recording-summary.html").read_text()
+    assert "自动维护失败" not in page
+    assert "class='status normal' role='status'" in page
+
+
+def test_cohort_conflict_preserves_complete_view_and_does_not_disable_intake(tmp_path, monkeypatch):
+    from spireagent.workbench.p1_data_preparation import P1PreparationCache
+
+    _, store, config, policy = fixture(tmp_path)
+    refresh_cohort(config, policy)
+    before = {name: (config.state_dir / name).read_bytes()
+              for name in ("recording-summary.json", "cohort-preview.json")}
+    importer = LocalRecordingImporter(config, None)
+    service = P1RecordingMaintenance(importer)
+    service.configure(True, None, cohort_policy=str(policy))
+    monkeypatch.setattr(service, "_tick", lambda: {**importer._maintenance, "status": "up_to_date"})
+    calls = []
+
+    def failed_inspection(*args):
+        calls.append(args[2])
+        raise OSError(errno.EMFILE, "synthetic historical projection read failure")
+
+    original = P1PreparationCache.inspect
+    monkeypatch.setattr(P1PreparationCache, "inspect", failed_inspection)
+    state = service.tick()
+    assert state["policy"]["enabled"] is True
+    assert state["cohort_error"].startswith("projection_conflicts:")
+    assert {name: (config.state_dir / name).read_bytes() for name in before} == before
+    assert "盘点失败：入库与保全仍可继续" in (
+        config.state_dir / "recording-summary.html").read_text()
+    attempts = len(calls)
+    service.tick()
+    assert len(calls) == attempts  # No unbounded repeated reads of the failed generation.
+    projection(store, "new-closed-run")
+    service.tick()
+    assert len(calls) > attempts  # New inputs are still discovered with dispatch enabled.
+    monkeypatch.setattr(P1PreparationCache, "inspect", original)
+    importer._maintenance.pop("cohort_failed_signature")  # Explicit operator refresh.
+    state = service.tick()
+    assert "cohort_error" not in state
+    assert state["cohort_N"] == 4
+
+
+def test_empty_sqlite_wal_does_not_cause_recount_loop(tmp_path, monkeypatch):
+    owner, _, config, policy = fixture(tmp_path)
+    importer = LocalRecordingImporter(config, None)
+    service = P1RecordingMaintenance(importer)
+    service.configure(True, None, cohort_policy=str(policy))
+    monkeypatch.setattr(service, "_tick", lambda: {**importer._maintenance, "status": "up_to_date"})
+    first = service.tick()["cohort_updated_at"]
+    for _ in range(4):
+        assert service.tick()["cohort_updated_at"] == first
+    # The real ledger still invalidates the view when its actual contents change.
+    owner.ledger.use(["a"], "training", "synthetic-usage")
+    assert service.tick()["cohort_updated_at"] != first
+    again = importer._maintenance["cohort_updated_at"]
+    assert service.tick()["cohort_updated_at"] == again
+
+
+def test_page_write_failure_does_not_stop_recording_preservation(tmp_path, monkeypatch, caplog):
+    from spireagent.workbench import p1_cohort_intake
+
+    _, _, config, policy = fixture(tmp_path)
+    catalog = SimpleNamespace(read=lambda: {"status": "ready", "game_running": True,
+                                           "candidates": []})
+    importer = LocalRecordingImporter(config, catalog)
+    service = P1RecordingMaintenance(importer)
+    service.configure(True, None, cohort_policy=str(policy))
+    monkeypatch.setattr(p1_cohort_intake, "write_page", lambda *a: (_ for _ in ()).throw(
+        OSError(errno.EACCES, "synthetic view permission failure")))
+    assert service.tick()["policy"]["enabled"] is True
+    assert importer.operation["status"] == "idle"
+    assert "summary page could not be written" in caplog.text
+
+
+def test_unknown_operation_updates_queue_metadata_but_never_retries(tmp_path):
+    config = ProjectConfig(tmp_path, "", "", None, combination())
+    catalog = SimpleNamespace(read=lambda: {"status": "ready", "game_running": True,
+        "candidates": [{"candidate_id": "b" * 64, "recording_type": "p1_native"}]})
+    importer = LocalRecordingImporter(config, catalog)
+    service = P1RecordingMaintenance(importer)
+    service.configure(True, None)
+    importer.operation.update(status="publication_unknown", operation_id="original-unknown")
+    state = service.tick()
+    assert state["status"] == "blocked" and len(state["pending_candidates"]) == 1
+    assert importer.thread is None
+    assert importer.operation["operation_id"] == "original-unknown"
+    assert importer.operation["status"] == "publication_unknown"
+
+
+@pytest.mark.parametrize("busy,checked_age,status_age,warning", [
+    (False, 20, 20, None),
+    (False, 120, 120, "无法确认自动入库仍在工作"),
+    (True, 30, 601, "当前步骤已持续"),
+    (True, 601, 601, "无法确认自动入库仍在工作"),
+])
+def test_saved_page_clock_detects_stale_or_slow_state(busy, checked_age, status_age, warning):
+    import shutil
+    import subprocess
+
+    from spireagent.console.page import asset
+
+    node = shutil.which("node")
+    assert node, "the project portable gate requires Node"
+    script = asset("recording-summary.js")[1].decode()
+    # Execute the shipped script with a frozen clock and the three real DOM IDs.
+    bootstrap = """
+const now = Date.parse('2026-10-26T06:00:00Z');
+Date.now = () => now;
+const elements = {
+ 'maintenance-status': {dataset: DATA},
+ 'maintenance-stale': {hidden: true, textContent: ''},
+ 'maintenance-duration': {textContent: ''}
+};
+globalThis.document = {getElementById: id => elements[id]};
+globalThis.setInterval = () => {};
+"""
+    data = {"busy": str(busy).lower(),
+            "checkedAt": "2026-10-26T06:00:00Z", "since": "2026-10-26T06:00:00Z"}
+    bootstrap = bootstrap.replace("DATA", json.dumps(data))
+    bootstrap += (f"elements['maintenance-status'].dataset.checkedAt = "
+                  f"new Date(now - {checked_age} * 1000).toISOString();\n"
+                  f"elements['maintenance-status'].dataset.since = "
+                  f"new Date(now - {status_age} * 1000).toISOString();\n")
+    result = subprocess.run([node, "-e", bootstrap + script +
+        "console.log(JSON.stringify(elements['maintenance-stale']));"],
+        text=True, capture_output=True, check=True)
+    visible = json.loads(result.stdout)
+    assert visible["hidden"] is (warning is None)
+    if warning:
+        assert warning in visible["textContent"]
+
+
+def test_fatal_intake_failure_takes_priority_over_prior_cohort_error(tmp_path):
+    config = ProjectConfig(tmp_path, "", "", None, combination())
+    page = render_summary(config, {"status": "failed", "policy": {"enabled": False},
+        "error_code": "disk_full", "cohort_error": "old_projection_error"})
+    assert "自动维护失败" in page and "磁盘写入失败" in page
+    assert "入库与保全仍可继续" not in page
+
+
+def test_ledger_change_after_summary_write_is_not_marked_as_already_counted(tmp_path, monkeypatch):
+    from spireagent.workbench import p1_cohort_intake
+
+    owner, _, config, policy = fixture(tmp_path)
+    importer = LocalRecordingImporter(config, None)
+    service = P1RecordingMaintenance(importer)
+    service.configure(True, None, cohort_policy=str(policy))
+    monkeypatch.setattr(service, "_tick", lambda: {**importer._maintenance, "status": "up_to_date"})
+    refresh = p1_cohort_intake.refresh_cohort
+    calls = []
+
+    def concurrent_usage(*args, **kwargs):
+        result = refresh(*args, **kwargs)
+        calls.append(result["configuration_id"])
+        if len(calls) == 1:
+            root = next(row["root_run_id"] for row in result["weights"] if row["split"] == "dev")
+            owner.ledger.use([root], "training", "concurrent-synthetic-usage")
+        return result
+
+    monkeypatch.setattr(p1_cohort_intake, "refresh_cohort", concurrent_usage)
+    first = service.tick()["cohort_configuration_id"]
+    second = service.tick()["cohort_configuration_id"]
+    assert len(calls) == 2 and first != second
