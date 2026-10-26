@@ -95,7 +95,7 @@ test("hosted planning rejects committed EOF whitespace before publishing a lane 
         const selected = fs.readFileSync(output, "utf8").match(/^scope=(.+)$/m)?.[1];
         environment.CHECK_SCOPE = selected;
         const executed = cli("execute");
-        assert.equal(executed.status, 0, executed.stderr);
+        assert.equal(executed.status, 0, `${scope}: selected lane failed\n${executed.stdout}\n${executed.stderr}`);
       }
       if (bad) {
         assert.notEqual(planned.status, 0, `${scope}: committed bad patch published a lane`);
