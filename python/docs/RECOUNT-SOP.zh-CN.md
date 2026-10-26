@@ -101,7 +101,7 @@ uv run --locked --extra cloud python -m spireagent.workbench recordings maintena
 或索引未确认时不能直接恢复；盘点失败保留最后完整计数，修因后用原 `cohort refresh`。
 
 Q3 安装使用 Annotator29 固定 Tool `aa168b7e…`，由统一 Mod 提供未来开局进度原件；
-旧进度未知不补填。新 Tool 的 P1 转换差异为已合入SDK15的公开顺序处理与可选进度附件，
+旧进度未知不补填。新 Tool 的SDK15新增显式 r1.6 支持；当前转换仍用 r1.5，另核验可选进度附件，
 固定版本检查仍有效，旧 Tool 优先级、切分盐、目标与已冻结配置不变。
 真人自动验收仍等用户正常下一局，完成事实只记在 Q3 报告。
 
