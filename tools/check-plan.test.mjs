@@ -6,6 +6,12 @@ import { execFileSync, spawn, spawnSync } from "node:child_process";
 import test from "node:test";
 import { classifyChanges, parseDiff, makePlan, aggregatePassed, scopeCommands, parseRawDiff, checkCommittedPatch } from "./check-plan.mjs";
 
+// These CLI fixtures run marker-writing children, not heavyweight checks. Give
+// only their planner process a deterministic filesystem observation; production
+// capacity admission and its low-space rejection tests remain unchanged.
+const fixtureCapacity = "data:text/javascript," + encodeURIComponent(
+  "import fs from 'node:fs'; fs.statfsSync = () => ({bavail: 64n * 1024n ** 3n, bsize: 1n});");
+
 test("only modified editorial surfaces select docs; additions, deletion and rename stay full", () => {
   assert.equal(classifyChanges([{ status: "M", file: "README.md", oldMode: "100644", newMode: "100644" }]).scope, "docs");
   for (const file of ["AGENTS.md", "docs/TESTING.md", "docs/adr/example.md", "components/annotator/docs/DATA_CONTRACT.md", "python/uv.lock", "python/tools/pytest-file-costs.json", ".github/workflows/ci.yml", "tools/check-plan.mjs", "new.md"]) {
@@ -44,10 +50,10 @@ test("hosted planning rejects committed EOF whitespace before publishing a lane 
   const output = path.join(temporary, "route.outputs");
   const marker = path.join(temporary, "expensive.started");
   const environment = { ...process.env, GITHUB_ACTIONS: "false", GITHUB_OUTPUT: output,
-    TEST_EXPENSIVE_MARKER: marker, CHECK_FULL: "false" };
+    TEST_EXPENSIVE_MARKER: marker, CHECK_FULL: "false", SPIREAGENT_MIN_FREE_BYTES: "2147483648" };
   delete environment.GH_TOKEN;
   delete environment.GITHUB_STEP_SUMMARY;
-  const cli = (...args) => spawnSync(process.execPath, ["tools/check-plan.mjs", ...args], {
+  const cli = (...args) => spawnSync(process.execPath, ["--import", fixtureCapacity, "tools/check-plan.mjs", ...args], {
     cwd, env: environment, encoding: "utf8",
   });
   try {
@@ -336,9 +342,9 @@ test("top-level full and Python routers cancel their owned descendants and block
       for (const [scope, args] of [["full", ["--full", "--run", "--base", "HEAD"]], ["python", ["execute"]]]) {
         const ready = path.join(temporary, `${scope}.ready`), ack = ready + ".ack", later = ready + ".later";
         // Synthetic children write only tiny markers. This is not a real full gate.
-        const child = spawn(process.execPath, ["tools/check-plan.mjs", ...args], {cwd,
+        const child = spawn(process.execPath, ["--import", fixtureCapacity, "tools/check-plan.mjs", ...args], {cwd,
           env: {...process.env, CHECK_SCOPE: scope, CHECK_FULL: "false", GITHUB_ACTIONS: "false",
-            SPIREAGENT_MIN_FREE_BYTES: "0", TEST_READY: ready, TEST_ACK: ack, TEST_LATER: later},
+            SPIREAGENT_MIN_FREE_BYTES: "2147483648", TEST_READY: ready, TEST_ACK: ack, TEST_LATER: later},
           stdio: ["ignore", "pipe", "pipe"]});
         let output = ""; child.stdout.on("data", b => output += b); child.stderr.on("data", b => output += b);
         const ended = new Promise(resolve => child.on("exit", (code, signal) => resolve({code, signal})));
