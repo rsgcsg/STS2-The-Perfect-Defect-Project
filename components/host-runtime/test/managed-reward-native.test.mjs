@@ -23,7 +23,7 @@ test('exact native hand callback stages original objects through explicit confir
       '-p:Deterministic=true', `-p:PathMap=${path.resolve(candidate)}=/_/candidate/`],
     { cwd: candidate, timeout: 180000, maxBuffer: 4 * 1024 * 1024 });
   assert.equal(createHash('sha256').update(readFileSync(artifact)).digest('hex'), before);
-  assert.match(stdout, /25 exact native hand-selection checks passed/u);
+  assert.match(stdout, /31 exact native hand-selection checks passed/u);
   const state = JSON.parse(stdout.split(/\r?\n/u).find(line => line.startsWith('native-hand-state=')).slice('native-hand-state='.length));
   const projection = projectManagedCandidateDecision({ state, sequence: 1,
     runtimeInstanceId: 'native-hand-fixture', environmentFingerprint: 'native-hand-fixture' });
