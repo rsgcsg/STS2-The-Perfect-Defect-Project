@@ -12,6 +12,8 @@ import json
 import os
 import subprocess
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, NoReturn
 
@@ -54,6 +56,17 @@ def _load_host_api(path: Path) -> Any:
     sys.modules[spec.name] = api  # dataclasses resolves annotations through this owner.
     exec(compile(path.read_bytes(), str(path), "exec"), api.__dict__)
     return api
+
+
+@contextmanager
+def _phase(row: dict[str, Any], name: str) -> Iterator[None]:
+    """Monotonic, disjoint phase cost; partial failures retain elapsed time."""
+    began = time.monotonic()
+    try:
+        yield
+    finally:
+        phases = row.setdefault("phase_seconds", {})
+        phases[name] = phases.get(name, 0.0) + time.monotonic() - began
 
 
 def _finish_runtime(process: subprocess.Popen, stdout: Path, row: dict[str, Any],
@@ -198,126 +211,130 @@ class ManagedEpisodeExecutor:
         row.update(host_kind="managed", status="preparing", reason=None)
         checkpoint()
         try:
-            launch = self.api.launch_managed_host_service(
-                host_package_dir=self.host,
-                candidate_dir=self.candidate,
-                client_attachment=client_path,
-                manager_attachment=manager_path,
-                log_file=private / "host.log",
-                diagnostics_file=private / "native-diagnostics.json",
-                character=manifest["character"],
-                language=self.configuration.get("language", "en"),
-                timeout_ms=60000,
-                startup_timeout=min(120, self.episode_seconds),
-            )
-            client = self.api.ManagedHostServiceClient.from_attachment(client_path)
-            manager = self.api.ManagedHostServiceManager.from_attachment(manager_path)
-            ready = client.ready()
-            row["host_service_instance_id"] = ready["service_instance_id"]
-            row["host_service_pid"] = launch.pid
-            row["world_mutation_offered"] = True
-            checkpoint()  # Durable offer BEFORE reset, never reoffer on a lost reply.
-            reset = manager.reset(
-                row["seed"],
-                expected_runtime_instance_id=ready["adapter_runtime_instance_id"],
-                expected_game_continuity_id=ready["episode"].get("game_continuity_id"),
-                initial_progress=self.configuration["initial_progress"],
-            )
-            row["reset"] = artifacts.put("managed-reset.json", json_bytes(reset))
-            ready = client.ready()
-            identity = manager.request({"command": "episode_identity"})["result"]["identity"]
-            provenance = identity["episode_provenance"]
-            if (
-                provenance["verdict"] != "provenance_pass"
-                or provenance["actual_seed"] != row["seed"]
-                or identity["initial_progress"]["run_unlock_state_matches"] is not True
-                or identity["initial_progress"]["progress_sha256"]
-                != self.configuration["initial_progress"]["progress_sha256"]
-            ):
-                reject("prepared_seed_or_progress_changed")
-            row["episode_identity"] = artifacts.put("episode-identity.json", json_bytes(identity))
-            target = {
-                "input_profile": "public-basis-1",
-                "profile_sha256": hashlib.sha256(
-                    json_bytes(
-                        {
-                            "host_pin": self.configuration["host_pin"],
-                            "candidate_build": self.build,
-                            "initial_progress": self.configuration["initial_progress"],
-                        }
-                    )
-                ).hexdigest(),
-                "host_package_pin": self.configuration["host_pin"],
-                "candidate_build": self.build,
-                "client_attachment": client_path,
-                "service_instance_id": ready["service_instance_id"],
-                "runtime_instance_id": ready["adapter_runtime_instance_id"],
-                "game_continuity_id": ready["episode"]["game_continuity_id"],
-            }
-            host_args = runtime_arguments(target, private)
-            options = {
-                host_args[i].removeprefix("--"): host_args[i + 1]
-                for i in range(0, len(host_args), 2)
-            }
-            package = Path(model["package_directory"])
-            envelope = global_environment_manifest(
-                self.runtime,
-                options,
-                package / "model.tensor-tree",
-                export.adapter_identity(),
-                row["intent_id"],
-                started + self.episode_seconds,
-            )
-            registration = private / "registration"
-            export.register(package, registration, envelope, entry_id=row["selection_id"])
-            remaining = self.episode_seconds - (time.monotonic() - started)
-            if remaining <= 0:
-                reject("preparation_wall_limit")
-            args = [
-                "node",
-                str(self.runtime / "cli.js"),
-                "--manifest",
-                str(registration / "manifest.json"),
-                "--adapter-command",
-                self.configuration["python_executable"],
-                "--adapter-arg=-m",
-                "--adapter-arg=stpd.p1.agent",
-                "--adapter-arg=--config",
-                "--adapter-arg=" + str(registration / "config.json"),
-                "--adapter-arg=--manifest",
-                "--adapter-arg=" + str(registration / "manifest.json"),
-                "--adapter-arg=--binding-root",
-                "--adapter-arg=" + str(registration),
-                "--listen-port",
-                "0",
-                "--mode",
-                "auto",
-                "--evidence-root",
-                str(artifacts.root / "runs"),
-                "--max-auto-submissions",
-                str(self.max_auto_submissions),
-                "--max-policy-calls",
-                "20000",
-                "--auto-deadline-ms",
-                str(int(remaining * 1000)),
-                *host_args,
-            ]
-            environment = os.environ.copy()
-            row["inference_mode"] = "central_batch" if self.inference_pool else "per_actor"
-            if self.inference_pool is not None:
-                attachment = registration / "local-inference.json"
-                binding = json_bytes(self.inference_pool.attachment())
-                attachment.write_bytes(binding)
-                row["inference_binding"] = artifacts.put("local-inference-binding.json", binding)
-                args.extend(["--adapter-arg=--local-inference", "--adapter-arg=" + str(attachment)])
-                credentials = self.inference_pool.environment()
-                environment.update(credentials)
-                for name in credentials:
-                    args.extend(["--adapter-env-key", name])
+            with _phase(row, "prepare"):
+                launch = self.api.launch_managed_host_service(
+                    host_package_dir=self.host,
+                    candidate_dir=self.candidate,
+                    client_attachment=client_path,
+                    manager_attachment=manager_path,
+                    log_file=private / "host.log",
+                    diagnostics_file=private / "native-diagnostics.json",
+                    character=manifest["character"],
+                    language=self.configuration.get("language", "en"),
+                    timeout_ms=60000,
+                    startup_timeout=min(120, self.episode_seconds),
+                )
+                client = self.api.ManagedHostServiceClient.from_attachment(client_path)
+                manager = self.api.ManagedHostServiceManager.from_attachment(manager_path)
+                ready = client.ready()
+                row["host_service_instance_id"] = ready["service_instance_id"]
+                row["host_service_pid"] = launch.pid
+                row["world_mutation_offered"] = True
+                checkpoint()  # Durable offer BEFORE reset, never reoffer on a lost reply.
+                reset = manager.reset(
+                    row["seed"],
+                    expected_runtime_instance_id=ready["adapter_runtime_instance_id"],
+                    expected_game_continuity_id=ready["episode"].get("game_continuity_id"),
+                    initial_progress=self.configuration["initial_progress"],
+                )
+                row["reset"] = artifacts.put("managed-reset.json", json_bytes(reset))
+                ready = client.ready()
+                identity = manager.request({"command": "episode_identity"})["result"]["identity"]
+                provenance = identity["episode_provenance"]
+                if (
+                    provenance["verdict"] != "provenance_pass"
+                    or provenance["actual_seed"] != row["seed"]
+                    or identity["initial_progress"]["run_unlock_state_matches"] is not True
+                    or identity["initial_progress"]["progress_sha256"]
+                    != self.configuration["initial_progress"]["progress_sha256"]
+                ):
+                    reject("prepared_seed_or_progress_changed")
+                row["episode_identity"] = artifacts.put(
+                    "episode-identity.json", json_bytes(identity))
+                target = {
+                    "input_profile": "public-basis-1",
+                    "profile_sha256": hashlib.sha256(
+                        json_bytes(
+                            {
+                                "host_pin": self.configuration["host_pin"],
+                                "candidate_build": self.build,
+                                "initial_progress": self.configuration["initial_progress"],
+                            }
+                        )
+                    ).hexdigest(),
+                    "host_package_pin": self.configuration["host_pin"],
+                    "candidate_build": self.build,
+                    "client_attachment": client_path,
+                    "service_instance_id": ready["service_instance_id"],
+                    "runtime_instance_id": ready["adapter_runtime_instance_id"],
+                    "game_continuity_id": ready["episode"]["game_continuity_id"],
+                }
+                host_args = runtime_arguments(target, private)
+                options = {
+                    host_args[i].removeprefix("--"): host_args[i + 1]
+                    for i in range(0, len(host_args), 2)
+                }
+                package = Path(model["package_directory"])
+                envelope = global_environment_manifest(
+                    self.runtime,
+                    options,
+                    package / "model.tensor-tree",
+                    export.adapter_identity(),
+                    row["intent_id"],
+                    started + self.episode_seconds,
+                )
+                registration = private / "registration"
+                export.register(package, registration, envelope, entry_id=row["selection_id"])
+                remaining = self.episode_seconds - (time.monotonic() - started)
+                if remaining <= 0:
+                    reject("preparation_wall_limit")
+                args = [
+                    "node",
+                    str(self.runtime / "cli.js"),
+                    "--manifest",
+                    str(registration / "manifest.json"),
+                    "--adapter-command",
+                    self.configuration["python_executable"],
+                    "--adapter-arg=-m",
+                    "--adapter-arg=stpd.p1.agent",
+                    "--adapter-arg=--config",
+                    "--adapter-arg=" + str(registration / "config.json"),
+                    "--adapter-arg=--manifest",
+                    "--adapter-arg=" + str(registration / "manifest.json"),
+                    "--adapter-arg=--binding-root",
+                    "--adapter-arg=" + str(registration),
+                    "--listen-port",
+                    "0",
+                    "--mode",
+                    "auto",
+                    "--evidence-root",
+                    str(artifacts.root / "runs"),
+                    "--max-auto-submissions",
+                    str(self.max_auto_submissions),
+                    "--max-policy-calls",
+                    "20000",
+                    "--auto-deadline-ms",
+                    str(int(remaining * 1000)),
+                    *host_args,
+                ]
+                environment = os.environ.copy()
+                row["inference_mode"] = "central_batch" if self.inference_pool else "per_actor"
+                if self.inference_pool is not None:
+                    attachment = registration / "local-inference.json"
+                    binding = json_bytes(self.inference_pool.attachment())
+                    attachment.write_bytes(binding)
+                    row["inference_binding"] = artifacts.put(
+                        "local-inference-binding.json", binding)
+                    args.extend(["--adapter-arg=--local-inference",
+                        "--adapter-arg=" + str(attachment)])
+                    credentials = self.inference_pool.environment()
+                    environment.update(credentials)
+                    for name in credentials:
+                        args.extend(["--adapter-env-key", name])
             row.update(status="running", actor_started=True)
             checkpoint()
             with (
-                (private / "runtime.stdout").open("xb") as stdout,
+                _phase(row, "execute"), (private / "runtime.stdout").open("xb") as stdout,
                 (private / "runtime.stderr").open("xb") as stderr,
             ):
                 runtime_started = time.monotonic()
@@ -332,82 +349,85 @@ class ManagedEpisodeExecutor:
                     runtime_process, private / "runtime.stdout", row, artifacts,
                     started + self.episode_seconds, self.cleanup_seconds)
                 row["runtime_window_seconds"] = time.monotonic() - runtime_started
-            if runtime_process.returncode != 0:
-                reject("runtime_process_failed")
-            run = artifacts.root / "runs" / startup["run_id"]
-            installed = json.loads((registration / "config.json").read_bytes())
-            expected = {
-                key: startup[key]
-                for key in (
-                    "run_id",
-                    "runtime_version",
-                    "runtime_code_sha256",
-                    "agent_manifest_sha256",
-                    "agent_artifact_sha256",
+            with _phase(row, "finish"):
+                if runtime_process.returncode != 0:
+                    reject("runtime_process_failed")
+                run = artifacts.root / "runs" / startup["run_id"]
+                installed = json.loads((registration / "config.json").read_bytes())
+                expected = {
+                    key: startup[key]
+                    for key in (
+                        "run_id",
+                        "runtime_version",
+                        "runtime_code_sha256",
+                        "agent_manifest_sha256",
+                        "agent_artifact_sha256",
+                    )
+                }
+                expected.update(
+                    global_runtime_directory=str(self.runtime),
+                    model_binding={
+                        key: installed[key]
+                        for key in ("package_input_spec", "input_spec", "input_projection")
+                    },
                 )
-            }
-            expected.update(
-                global_runtime_directory=str(self.runtime),
-                model_binding={
-                    key: installed[key]
-                    for key in ("package_input_spec", "input_spec", "input_projection")
-                },
-            )
-            result = verify_agent_session_run_evidence(run, expected)
-            if not result.passed or result.value is None:
-                reject("typed_original_verification_failed")
-            outcome = project(
-                result, native=True, native_package=(package / "model.json").read_bytes()
-            )
-            row["agent_task_outcome"] = outcome
-            row["typed_verification"] = artifacts.put(
-                "typed-verification.json",
-                json_bytes(
+                result = verify_agent_session_run_evidence(run, expected)
+                if not result.passed or result.value is None:
+                    reject("typed_original_verification_failed")
+                outcome = project(
+                    result, native=True, native_package=(package / "model.json").read_bytes()
+                )
+                row["agent_task_outcome"] = outcome
+                row["typed_verification"] = artifacts.put(
+                    "typed-verification.json",
+                    json_bytes(
+                        {
+                            "status": result.status,
+                            "content_id": result.value.content_id,
+                            "expected": expected,
+                        }
+                    ),
+                )
+                metrics = read_reference_metrics(
+                    run,
                     {
-                        "status": result.status,
-                        "content_id": result.value.content_id,
-                        "expected": expected,
-                    }
-                ),
-            )
-            metrics = read_reference_metrics(
-                run,
-                {
-                    "evidence_verification": "pass",
-                    "agent_task_outcome": outcome,
-                    "run_id": startup["run_id"],
-                    "evidence_content_id": result.value.content_id,
-                },
-                {"binding": {"runtime_instance_id": target["runtime_instance_id"]}},
-            )
-            row["game_metrics"] = metrics
-            runtime = publish_global_runtime(self.store, self.producer, expected)
-            stored = publish_global_evidence(
-                self.store,
-                run,
-                self.producer,
-                expected=expected,
-                model_artifact_id=model["artifact_id"],
-                runtime_artifact_id=runtime.artifact_id,
-                scratch=private,
-            )
-            copy_artifact(self.store, self.peer, stored.artifact_id, reuse_published_parents=True)
-            readback = verify_global_artifact(
-                self.peer, stored.artifact_id, expected=expected, scratch=private
-            )
-            row["stored_evidence_id"] = stored.artifact_id
-            row["preservation"] = artifacts.put(
-                "preservation.json",
-                json_bytes(
-                    {
-                        "status": "completed",
+                        "evidence_verification": "pass",
+                        "agent_task_outcome": outcome,
                         "run_id": startup["run_id"],
-                        "artifact_id": stored.artifact_id,
-                        "peer": self.configuration["peer"],
-                        "peer_readback": readback,
-                    }
-                ),
-            )
+                        "evidence_content_id": result.value.content_id,
+                    },
+                    {"binding": {"runtime_instance_id": target["runtime_instance_id"]}},
+                )
+                row["game_metrics"] = metrics
+            with _phase(row, "preserve"):
+                runtime = publish_global_runtime(self.store, self.producer, expected)
+                stored = publish_global_evidence(
+                    self.store,
+                    run,
+                    self.producer,
+                    expected=expected,
+                    model_artifact_id=model["artifact_id"],
+                    runtime_artifact_id=runtime.artifact_id,
+                    scratch=private,
+                )
+                copy_artifact(self.store, self.peer, stored.artifact_id,
+                    reuse_published_parents=True)
+                readback = verify_global_artifact(
+                    self.peer, stored.artifact_id, expected=expected, scratch=private
+                )
+                row["stored_evidence_id"] = stored.artifact_id
+                row["preservation"] = artifacts.put(
+                    "preservation.json",
+                    json_bytes(
+                        {
+                            "status": "completed",
+                            "run_id": startup["run_id"],
+                            "artifact_id": stored.artifact_id,
+                            "peer": self.configuration["peer"],
+                            "peer_readback": readback,
+                        }
+                    ),
+                )
             terminal = outcome["terminal_observation"]
             end = outcome["operation_end"]
             clean = (end.get("status") in {"task_ended", "censored"}
@@ -427,6 +447,7 @@ class ManagedEpisodeExecutor:
                 reason=error.code if isinstance(error, BoundaryError) else type(error).__name__,
             )
         finally:
+            close_started = time.monotonic()
             close = None
             try:
                 if runtime_process is not None and runtime_process.poll() is None:
@@ -464,5 +485,7 @@ class ManagedEpisodeExecutor:
                     cleanup_error=type(error).__name__,
                     cleanup_accepted=False,
                 )
+            row.setdefault("phase_seconds", {})["close"] = time.monotonic() - close_started
             row["elapsed_seconds"] = time.monotonic() - started
+            row["phase_timing_schema"] = "spireagent/managed-phase-seconds-v1"
             checkpoint()

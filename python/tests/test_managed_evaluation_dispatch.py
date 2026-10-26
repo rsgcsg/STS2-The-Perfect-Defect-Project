@@ -428,3 +428,20 @@ def test_central_inference_requires_cli_environment_before_world_audit(tmp_path,
         "runtime_directory": str(tmp_path / "dist"), "host_pin": {}, "runtime_pin": {}}
     with pytest.raises(BoundaryError, match="runtime_explicit_adapter_environment_required"):
         backend.ManagedEpisodeExecutor(configuration, episode_seconds=10, cleanup_seconds=10)
+
+def test_phase_cost_keeps_failed_elapsed_and_disjoint_nodes(monkeypatch):
+    """A preservation failure retains its cost without inventing unvisited nodes."""
+    from spireagent.workbench import managed_evaluation as backend
+
+    ticks = iter([0.0, 3.0, 3.0, 8.0, 8.0, 10.0])
+    monkeypatch.setattr(backend.time, "monotonic", lambda: next(ticks))
+    row = {}
+    with backend._phase(row, "execute"):
+        pass
+    with pytest.raises(ValueError, match="original failure"), backend._phase(row, "preserve"):
+        raise ValueError("original failure")
+    with backend._phase(row, "close"):
+        pass
+    assert row["phase_seconds"] == {"execute": 3.0, "preserve": 5.0, "close": 2.0}
+    assert sum(row["phase_seconds"].values()) == 10.0
+    assert "finish" not in row["phase_seconds"]
