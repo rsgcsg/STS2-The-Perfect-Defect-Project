@@ -52,7 +52,20 @@ public sealed record InitialProgressOriginal(
 
 public sealed partial class RecordingSessionStore
 {
-    public void PersistInitialProgressOriginal(string runId, DateTimeOffset capturedAt,
+    public bool TryPersistInitialProgressOriginal(string runId, DateTimeOffset capturedAt,
+        int? nativeProfileId, byte[]? raw, string? reason = null, Action<Exception>? reportFailure = null)
+    {
+        try { PersistInitialProgressOriginal(runId, capturedAt, nativeProfileId, raw, reason); return true; }
+        catch (Exception error)
+        {
+            // Optional provenance and even its diagnostic sink cannot alter
+            // the native launch/recording path when storage is unavailable.
+            try { reportFailure?.Invoke(error); } catch { }
+            return false;
+        }
+    }
+
+    private void PersistInitialProgressOriginal(string runId, DateTimeOffset capturedAt,
         int? nativeProfileId, byte[]? raw, string? reason = null)
     {
         SessionBundlePacker.ValidateIdentifier(runId, nameof(runId));

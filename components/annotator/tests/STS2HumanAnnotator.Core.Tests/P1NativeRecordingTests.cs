@@ -22,9 +22,9 @@ public sealed class P1NativeRecordingTests
             {
                 directory = store.DirectoryPath;
                 Assert.Empty(InitialProgressOriginal.Audit(directory, manifest));
-                store.PersistInitialProgressOriginal("run-0001", DateTimeOffset.UtcNow, 1, raw);
-                store.PersistInitialProgressOriginal("run-0001", DateTimeOffset.UtcNow, 1, new byte[] { 1 });
-                store.PersistInitialProgressOriginal("run-0002", DateTimeOffset.UtcNow, 1, null,
+                store.TryPersistInitialProgressOriginal("run-0001", DateTimeOffset.UtcNow, 1, raw);
+                store.TryPersistInitialProgressOriginal("run-0001", DateTimeOffset.UtcNow, 1, new byte[] { 1 });
+                store.TryPersistInitialProgressOriginal("run-0002", DateTimeOffset.UtcNow, 1, null,
                     "resumed_run_initial_progress_not_observed");
             }
             var original = JsonSerializer.Deserialize<InitialProgressOriginal>(File.ReadAllBytes(
@@ -39,6 +39,24 @@ public sealed class P1NativeRecordingTests
             Assert.Equal("resumed_run_initial_progress_not_observed", unknown.Reason);
             File.WriteAllBytes(payload, new byte[] { 1, 2 });
             Assert.Contains("initial_progress_original_invalid", InitialProgressOriginal.Audit(directory, manifest));
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [Fact]
+    public void OptionalInitialProgressPersistenceAndDiagnosticFailuresCannotEscape()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "initial-progress-io-failure-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            using var store = RecordingSessionStore.Create(root, Manifest(), P1NativeRecordingContract.Profile);
+            File.WriteAllText(Path.Combine(store.DirectoryPath, "initial-progress"), "blocks-directory");
+            bool diagnosed = false;
+            Assert.False(store.TryPersistInitialProgressOriginal("run-0001", DateTimeOffset.UtcNow, 1,
+                new byte[] { 1 }, reportFailure: error => { diagnosed = true; throw new IOException("diagnostic failed too"); }));
+            Assert.True(diagnosed);
+            Assert.Equal("healthy", store.GetSnapshot().AppendHealth);
         }
         finally { Directory.Delete(root, true); }
     }

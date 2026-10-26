@@ -5005,9 +5005,11 @@ internal static partial class RecorderRuntime
             }
         }
         catch { reason = "native_progress_file_read_failed"; }
-        try { _store?.PersistInitialProgressOriginal(_currentRunId, DateTimeOffset.UtcNow, profile, raw, reason); }
-        catch (Exception error) when (error is IOException or UnauthorizedAccessException or InvalidOperationException)
-        { AppendJournal("initial_progress_original_unavailable", null, null, error.GetType().Name); }
+        _store?.TryPersistInitialProgressOriginal(_currentRunId, DateTimeOffset.UtcNow, profile, raw, reason,
+            error => {
+                try { AppendJournal("initial_progress_original_unavailable", null, null, error.GetType().Name); } catch { }
+                GD.PrintErr("[STS2 Human Annotator] initial progress original unavailable: " + error.GetType().Name);
+            });
     }
 
     private static void SealAfterNativeTerminal()
