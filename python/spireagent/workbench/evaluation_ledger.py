@@ -300,7 +300,9 @@ class EvaluationLedger:
                 episode_seconds=limits.episode_seconds,
                 cleanup_seconds=limits.cleanup_seconds,
             )
-        pending_slots = [row for row in self.slots() if row["status"] == "not_started"][:max_episodes]
+        pending_slots = [
+            row for row in self.slots() if row["status"] == "not_started"
+        ][:max_episodes]
         pending = iter(pending_slots)
         active: dict[Any, tuple[dict[str, Any], Path]] = {}
         stop_reason = None
