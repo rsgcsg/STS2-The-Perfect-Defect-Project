@@ -369,3 +369,16 @@ The current full candidate built from integration f434 uses patch 43e223e5 and a
 previous8397 and a70 builds in history. Source/build inspection accepts only the
 new measured identity. Installed product, Reads and strict cross-Host gameplay
 qualification remain separate actual gates.
+
+The exact `CardSelectCmd.FromHand` / `FromHandForUpgrade` callback now retains
+its original player/run/combat domain, preferences, filter, offered card objects,
+selector and pending Task. The private presentation stages the pinned
+`NPlayerHand` select/replace/deselect transitions and requires the original
+explicit confirmation. Only then does it return the original selected objects
+to the native parent, which owns discard/exhaust/upgrade effects and RNG. It
+publishes the existing `combat_hand_card_selection` surface, current HUD and
+card details; it does not repurpose the one-card pile selector. Native zero and
+forced-one paths still finish before this callback. Unbound callbacks,
+unsupported presentation preferences, stale ownership or incomplete rendering
+expose no complete catalog. Component checks cover native callbacks and original
+object identity; full replay qualification remains bound to its saved report.

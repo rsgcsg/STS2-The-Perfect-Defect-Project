@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { readInitialProgressOriginal } from "./initial-progress-original.js";
 import type { GlobalNoProgressConfig } from "./global-no-progress.js";
 
 import { createHash, randomUUID } from "node:crypto";
@@ -17,7 +18,7 @@ import { PolicyRuntime } from "./runtime.js";
 import { successorWaitStderrSink } from "./successor-wait-diagnostics.js";
 import { startPolicyRuntimeHttpServer } from "./server.js";
 import { AGENT_MANIFEST_SCHEMA, validateAgentManifest, type AgentManifest } from "./agent-session-contracts.js";
-import { NdjsonAgentSessionPort } from "./agent-session-port.js";
+import { NdjsonAgentSessionPort, agentProcessEnvironment } from "./agent-session-port.js";
 import type { NativeAgentRuntimeOwner } from "./agent-native-runtime.js";
 import type { AgentRuntimeStartup } from "./agent-runtime-contracts.js";
 
@@ -26,6 +27,7 @@ interface CliOptions {
   adapterCommand: string;
   adapterArgs: string[];
   adapterCwd?: string;
+  adapterEnvironment?: NodeJS.ProcessEnv;
   connectorEndpoint: string;
   connectorEndpointExplicit: boolean;
   observationAcquisition: "direct" | "sealed-text-menu-v2";
@@ -35,6 +37,7 @@ interface CliOptions {
   mode: RuntimeMode;
   autoBudget: AutonomyBudgetConfig;
   globalNoProgress?: GlobalNoProgressConfig;
+  initialProgressOriginal?: { path: string; sha256: string };
 }
 
 async function main(): Promise<void> {
@@ -46,6 +49,8 @@ async function main(): Promise<void> {
     await runAgent(options, manifestPath, validateAgentManifest(rawManifest)); return;
   }
   const manifest = validatePolicyManifest(rawManifest);
+  if (options.adapterEnvironment) throw new Error("explicit adapter environment requires an Agent manifest");
+  if (options.initialProgressOriginal) throw new Error("initial progress original requires a GLOBAL Agent manifest");
   if (options.globalNoProgress) throw new Error("no-progress window requires a GLOBAL Agent manifest");
   const isManaged = "kind" in manifest.requirements.environment;
   if (options.observationAcquisition === "sealed-text-menu-v2"
@@ -173,6 +178,7 @@ async function main(): Promise<void> {
 
 async function runAgent(options: CliOptions, manifestPath: string, manifest: AgentManifest): Promise<void> {
   const global = manifest.input.profile === "p1-global-r1";
+  if (!global && options.initialProgressOriginal) throw new Error("initial progress original requires a GLOBAL Agent manifest");
   if ((!global && options.managed) || options.observationAcquisition !== "direct")
     throw new Error("native Agent session does not support Managed or legacy sealed text acquisition");
   const artifactPath = isAbsolute(manifest.artifact.path) ? manifest.artifact.path : resolve(dirname(manifestPath), manifest.artifact.path);
@@ -198,7 +204,7 @@ async function runAgent(options: CliOptions, manifestPath: string, manifest: Age
   };
   try {
     port = NdjsonAgentSessionPort.spawn(options.adapterCommand, options.adapterArgs,
-      manifest.adapter, manifest.limits, { cwd: options.adapterCwd, executionPolicy: manifest.execution_policy });
+      manifest.adapter, manifest.limits, { cwd: options.adapterCwd, env: options.adapterEnvironment, executionPolicy: manifest.execution_policy });
     const environment = new PlayerEnvironmentRestClient(options.connectorEndpoint, manifest.limits.agent_timeout_ms);
     if (global && options.managed)
       managedTransport = await ManagedServicePolicyClient.attachGlobal(options.managed.bindingPath, options.managed.attachmentPath, options.managed.target, evidence.runId);
@@ -208,6 +214,7 @@ async function runAgent(options: CliOptions, manifestPath: string, manifest: Age
       : { environment };
     runtime = await PolicyRuntime.forAgent({ manifest, ...selected,
       port, evidence, mode: options.mode, autoBudget: options.autoBudget, globalNoProgress: options.globalNoProgress,
+      initialProgressOriginal: options.initialProgressOriginal ? await readInitialProgressOriginal(resolve(options.initialProgressOriginal.path), options.initialProgressOriginal.sha256) : undefined,
       runtimeIdentity: { version: POLICY_RUNTIME_VERSION, code_sha256: runtimeCodeSha256 } });
     service = await startPolicyRuntimeHttpServer(runtime, { port: options.listenPort, autoDrive: true,
       deferAutoDrive: true, onStopped: shutdown });
@@ -233,6 +240,7 @@ async function runAgent(options: CliOptions, manifestPath: string, manifest: Age
 function parseArgs(args: string[]): CliOptions {
   const values = new Map<string, string>();
   const adapterArgs: string[] = [];
+  const adapterEnvironmentKeys: string[] = [];
   for (let index = 0; index < args.length; index += 1) {
     const key = args[index];
     if (!key?.startsWith("--")) throw new Error(`unexpected argument: ${String(key)}`);
@@ -246,7 +254,8 @@ function parseArgs(args: string[]): CliOptions {
     if (!value) throw new Error(`${key} requires a value`);
     index += 1;
     if (key === "--adapter-arg") adapterArgs.push(value);
-    else if (["--observation-acquisition", "--manifest", "--adapter-command", "--adapter-cwd", "--connector-endpoint", "--listen-port", "--evidence-root", "--mode", "--autonomy-mode", "--max-auto-submissions", "--max-policy-calls", "--auto-deadline-ms", "--no-progress-window", "--no-progress-repeats", "--managed-binding", "--managed-attachment", "--managed-expected-service-instance-id", "--managed-expected-runtime-instance-id", "--managed-expected-game-continuity-id"].includes(key)) values.set(key, value);
+    else if (key === "--adapter-env-key") adapterEnvironmentKeys.push(value);
+    else if (["--observation-acquisition", "--manifest", "--adapter-command", "--adapter-cwd", "--connector-endpoint", "--listen-port", "--evidence-root", "--mode", "--autonomy-mode", "--max-auto-submissions", "--max-policy-calls", "--auto-deadline-ms", "--no-progress-window", "--no-progress-repeats", "--initial-progress-original", "--initial-progress-original-sha256", "--managed-binding", "--managed-attachment", "--managed-expected-service-instance-id", "--managed-expected-runtime-instance-id", "--managed-expected-game-continuity-id"].includes(key)) values.set(key, value);
     else throw new Error(`unknown argument: ${key}`);
   }
   const manifestPath = required(values, "--manifest");
@@ -255,7 +264,7 @@ function parseArgs(args: string[]): CliOptions {
   const parsedEndpoint = new URL(connectorEndpoint);
   if (parsedEndpoint.protocol !== "http:" || !["127.0.0.1", "localhost", "::1", "[::1]"].includes(parsedEndpoint.hostname)) throw new Error("Connector endpoint must be loopback HTTP");
   const listenPort = Number(values.get("--listen-port") ?? "15527");
-  if (!Number.isSafeInteger(listenPort) || listenPort < 1 || listenPort > 65535) throw new Error("--listen-port must be a valid TCP port");
+  if (!Number.isSafeInteger(listenPort) || listenPort < 0 || listenPort > 65535) throw new Error("--listen-port must be 0 (OS assigned) or a valid TCP port");
   const observationAcquisition = values.get("--observation-acquisition") ?? "direct";
   if (observationAcquisition !== "direct" && observationAcquisition !== "sealed-text-menu-v2")
     throw new Error("--observation-acquisition must be direct or sealed-text-menu-v2");
@@ -283,9 +292,13 @@ function parseArgs(args: string[]): CliOptions {
   } : undefined;
   return {
     observationAcquisition,
+    ...(values.has("--initial-progress-original") || values.has("--initial-progress-original-sha256") ? {
+      initialProgressOriginal: { path: required(values, "--initial-progress-original"), sha256: required(values, "--initial-progress-original-sha256") }
+    } : {}),
     manifestPath,
     adapterCommand,
     adapterArgs,
+    ...(adapterEnvironmentKeys.length ? { adapterEnvironment: agentProcessEnvironment(adapterEnvironmentKeys) } : {}),
     adapterCwd: values.get("--adapter-cwd"),
     connectorEndpoint,
     connectorEndpointExplicit: values.has("--connector-endpoint"),

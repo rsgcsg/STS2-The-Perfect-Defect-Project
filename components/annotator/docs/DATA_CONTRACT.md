@@ -694,3 +694,16 @@ Recovery is not a native event or full-run proof. Existing immutable canonical
 rows remain available for separately admitted decision views; interrupted
 recordings cannot qualify as uninterrupted sequence evidence. A completed delivery
 generation includes both the verified recovered copy and unchanged original bytes.
+
+## Optional original initial progress
+
+New native-start P1 recordings may retain `initial-progress/<run-id>.json` and
+a content-addressed `.bin` containing the actual native `progress.save` bytes.
+`InitialProgressOriginal` binds session, timeline, local run and native profile
+at the observed Launch boundary. It performs no JSON normalization and exposes
+no account progress to P1. Repeated launch observation cannot overwrite/backfill
+a snapshot. Resumes, read failures and capacity failures remain explicitly
+unknown; old sessions with no sidecar remain unknown. The existing bundle copies
+all raw files and audits the optional snapshot hashes; this metadata does not
+grant Human origin, research admission or cross-Host equivalence. Recording
+input and lifecycle behavior remain unchanged.

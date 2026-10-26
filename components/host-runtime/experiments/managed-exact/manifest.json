@@ -36,9 +36,9 @@
     "managed_artifact": "src/Sts2Headless/bin/Release/net9.0/Sts2Headless.dll"
   },
   "expected_build": {
-    "source_patch_sha256": "32a9dd138a0176c35289c6fbb645ccb9d484ceda7b333f250f4d41376c9863d5",
-    "artifact_sha256": "5960486c06384bbac882bed3fbaee088225700cc71b12c9658c73ac5e4e39cab",
-    "artifact_mvid": "612ce054-a6b0-48cc-a0aa-3935830f046f",
+    "source_patch_sha256": "2c475056c871b4a823f280e9085e5db8f208c730fc7f6fe1df728093cccc69bc",
+    "artifact_sha256": "c3eed8fa9930d7428af0d9028a4ca0a0e5234853d8040bc99dd478f99fdd4df4",
+    "artifact_mvid": "570a999a-e5e3-42e4-a000-0a733aea0ff3",
     "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0"
   },
   "previous_candidate_build": {
@@ -206,6 +206,18 @@
       "kind": "host_lifecycle_and_presentation_adapter",
       "risk": "high",
       "effect": "Bind the original standard single-player run to its isolated native MockGodotFileIo profile with upload opt-out. Capture existing native victory OnEnded or complete the TestMode-omitted loss OnEnded once; scope original ShouldSave and original synchronous final map stats, preserving native progress/history composition. A real headless Continue commits native-computed badges through the exact nonvisual mutation bridge, native score/epoch primitives, and original discovery facts. Summary remains incomplete until real return/timeline navigation exists; no Godot input owner is invented."
+    },
+    {
+      "id": "native_screen_shake_presentation",
+      "kind": "harmony_presentation_callsite",
+      "risk": "low",
+      "effect": "Only remaps the five pure NGame.ScreenShakeTrauma calls in exact PunchOff/Amalgamator native continuations when Managed TestMode has no scene; surrounding native effects remain original."
+    },
+    {
+      "id": "native_hand_selection_presentation",
+      "kind": "exact_native_callback_presentation",
+      "risk": "medium",
+      "effect": "Captures original CardSelectCmd.FromHand/FromHandForUpgrade preferences, filter, offered objects and pending Task. Stages the pinned NPlayerHand selection/replacement/deselection transitions and returns original objects only on explicit confirm; the native parent retains all discard/exhaust/upgrade effects. No arbitrary callback auto-selection."
     }
   ],
   "admission": {
@@ -264,6 +276,13 @@
       "artifact_sha256": "39a6455c2f67c4313b3cf2b6b46a6783d41cc5ebe86cb62829a6a780c7d562b2",
       "artifact_mvid": "a52dd778-7725-4794-80cb-4d532c4e528a",
       "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0"
+    },
+    {
+      "source_patch_sha256": "e0d2a366914235be272f9c25e8fb592d386959b27de1a7a92880098295cf57ce",
+      "artifact_sha256": "0adc673c1e601079fb5c7b61e5bbf22ab8f2acffead27302201751574a743c7a",
+      "artifact_mvid": "86ca119d-ecaf-40c5-bd7e-a643819114df",
+      "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0",
+      "scope": "F2 Host rc40 frozen model engineering trials and native fixtures; originals and candidate preserved, no qualification transferred to rc41"
     }
   ],
   "native_localization": {
@@ -274,6 +293,12 @@
     "source_patch_sha256": "b4d284f105ca0f7c77d1bf576bb89e6fb43f3475a6359eb2c470f1552df93e40",
     "artifact_sha256": "bef5d6b922875ad1fb294af3ea9149eed064e8e37af2949791f31ae0d2039525",
     "artifact_mvid": "622752e4-9fc1-4e26-a79c-2b3e1e150e88",
+    "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0"
+  },
+  "pre_hand_selection_build": {
+    "source_patch_sha256": "ee2414db2a54d7437486d231ef1f21317582e4d528b0b1aee19ef44379a6cd8e",
+    "artifact_sha256": "b8386bf8bd54086b1921ddade3cd4fb4a5156072ad45456bc3310e2b62275c8f",
+    "artifact_mvid": "f4434818-caa4-4773-bee3-194863e86203",
     "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0"
   }
 }

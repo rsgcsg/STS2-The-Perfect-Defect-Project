@@ -510,3 +510,10 @@ P直接消费同一文件/编号；已有snapshot_id不重复freeze，不导出S
 已有P1PreparationCache绑定内容、代码、uv.lock并经Store核实际字节，只省解析/投影索引重算。
 09-15 B的结果下载同样只取选定自身payload，文档中的“不隐藏下载raw父链”不是旧P1worker资格。
 当前P1从10-21通用完整复制改为上述显式可用性清单，原始来源和用途权威没有迁移。
+
+Native initial-progress originals are unique evidence, not rebuildable cache.
+Recording sidecars belong to the existing raw session and its bundle. Owned
+Reference snapshots belong to the existing native resource until a supporting
+Runtime has sealed them into the run, then follow the existing GLOBAL Store/R2
+retention and readback rules. Missing/unknown legacy bytes remain unknown; no
+cleanup may treat these copies as temporary merely because they are small.

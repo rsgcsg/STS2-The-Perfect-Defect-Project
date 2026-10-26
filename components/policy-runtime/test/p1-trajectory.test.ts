@@ -11,10 +11,10 @@ it("extracts original P1 frames through lossless storage and rejects changed ori
   try {
     const observation = { status: "ready", description: "完整公开事实".repeat(15000) };
     const frames = [
-      { message_type: "consume", input: { observation } },
-      { message_type: "directive", output: { directive: { type: "act", selection: { action_id: "choice-1" } } } },
+      { message_type: "consume", input: { acquisition_id: "acq-1", observation } },
+      { message_type: "directive", output: { directive: { type: "act", basis_acquisition_id: "acq-1", selection: { action_id: "choice-1" } } } },
     ];
-    const events = [];
+    const events: any[] = [{ kind: "global_input", payload: { acquisition_id: "acq-1", occurrence: 7 } }];
     for (const [index, frame] of frames.entries()) {
       const bytes = Buffer.from(JSON.stringify(frame) + "\n");
       const sha256 = createHash("sha256").update(bytes).digest("hex");
@@ -27,9 +27,9 @@ it("extracts original P1 frames through lossless storage and rejects changed ori
     await writeFile(join(directory, "events.jsonl"), events.map(event => JSON.stringify(event)).join("\n") + "\n");
     const trajectory = await extractTrajectory(directory);
     expect(trajectory.points).toEqual([{ index: 0, chosen: "choice-1", observation: {
-      ...observation, envelope: { occurrence: 0, required_information_complete: true },
+      ...observation, envelope: { occurrence: 7, required_information_complete: true },
     } }]);
-    const path = join(directory, events[1]!.payload.artifact.path);
+    const path = join(directory, events[2]!.payload.artifact.path);
     const changed = (await readFile(path)).toString().replace("choice-1", "choice-2");
     await writeFile(path, changed);
     await expect(extractTrajectory(directory)).rejects.toThrow("global_artifact_bytes");

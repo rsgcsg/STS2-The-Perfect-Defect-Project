@@ -15,16 +15,16 @@
       "component_source_digest_sha256": "7498caaf4db2a9ff33b5dc3c5e7a8e4eb2cbd59b7ce9be8ced47793787893121"
     },
     "host_runtime": {
-      "version": "1.1.0-rc.39",
-      "source_revision": "47bb8ec456d8ffe466f82921b9d7cc19c255ea8a",
-      "component_tree_revision": "d9f84531f7efc6bc9a59caa12d6d97015ad0b096",
-      "component_source_digest_sha256": "ee9ca0cabfe19cfa2dd5af57947d874b7220166e2f4ba5ab465ef34a08854632"
+      "version": "1.1.0-rc.44",
+      "source_revision": "3ba2515d333ed1f282a6821ea9bfbbffccc2b7e1",
+      "component_tree_revision": "af21396f87b7358d136d8f861f2389f31ea1b3ba",
+      "component_source_digest_sha256": "f72bbd61de5eb8303836672a274a5d8c53559bffee9b1b54906354eaddc67d51"
     },
     "annotator": {
-      "version": "0.3.0-rc.28",
-      "source_revision": "ff7bce35361bd3419a5e5e248dd8d085810f9def",
-      "component_tree_revision": "7a523e81de0184fe98bc4e515b690daa95f6ff46",
-      "component_source_digest_sha256": "1e27fb00da59304e583faac50715fc2f9752b6b6521910d839e03a25df6add34"
+      "version": "0.3.0-rc.29",
+      "source_revision": "3ba2515d333ed1f282a6821ea9bfbbffccc2b7e1",
+      "component_tree_revision": "591d1a7f1db6c0064c6a86a08048e8b0bb21b9d9",
+      "component_source_digest_sha256": "01384da57879a10e919f9f3a4e635f00e9b78a8f213ba76e602a54d70e91af87"
     },
     "evidence": {
       "version": "0.1.0-rc.36",
@@ -33,10 +33,10 @@
       "component_source_digest_sha256": "156db31267fef80ab723b1f6095521a74f3bff3f3b1eded3acfd688aa8c547f3"
     },
     "policy_runtime": {
-      "version": "0.1.0-rc.46",
-      "source_revision": "8ad3bb43abef9024258e2eba9e17bccc8042e08d",
-      "component_tree_revision": "98a0fe565104d9952ca5486d1c41fd46950a12df",
-      "component_source_digest_sha256": "e8aa3aba15765f19b1cdb01ab137243391acdfd4f954ec91ca39fd1a0efb651e"
+      "version": "0.1.0-rc.50",
+      "source_revision": "3ba2515d333ed1f282a6821ea9bfbbffccc2b7e1",
+      "component_tree_revision": "6b53da1fb1cc5ce40ee20fc04743f9c7757143e6",
+      "component_source_digest_sha256": "b1193eb475fa1e088f9faae72667eb5a8b8840d75f75490d2302e6f9a643099d"
     },
     "workbench": {
       "version": "0.1.0-rc.4",
@@ -170,8 +170,8 @@
     "annotator": {
       "source_revision": "09e5c2363fff64b2e8cfa07d16ec7cf22d8ad3b5",
       "source_digest_sha256": "8d23f1015a7b0df800f78a7545da5c86bfee521131c4391b398c884ff917918f",
-      "current_component_source_revision": "ff7bce35361bd3419a5e5e248dd8d085810f9def",
-      "current_component_source_digest_sha256": "1e27fb00da59304e583faac50715fc2f9752b6b6521910d839e03a25df6add34",
+      "current_component_source_revision": "3ba2515d333ed1f282a6821ea9bfbbffccc2b7e1",
+      "current_component_source_digest_sha256": "01384da57879a10e919f9f3a4e635f00e9b78a8f213ba76e602a54d70e91af87",
       "source_relation": "loaded_human_v2_artifact_precedes_unified_platform_source",
       "artifact_sha256": "4e911dd616afa55753a5320a42c11ce0cebe9d4d10fefd66c8f8a431884cf105",
       "artifact_mvid": "692e9dd9-4bc7-4203-ae12-511ef95a5331",
@@ -269,16 +269,16 @@
       "source_revision": "e19b30315015664a5647ab351cdcefb09417f275",
       "source_digest_sha256": "d227321727d07edd2d4c67928edec439c26f156494dd9cfab98d2bac4debf346",
       "version": "0.1.0-rc.1",
-      "current_component_source_revision": "8ad3bb43abef9024258e2eba9e17bccc8042e08d",
-      "current_component_source_digest_sha256": "e8aa3aba15765f19b1cdb01ab137243391acdfd4f954ec91ca39fd1a0efb651e",
-      "current_component_version": "0.1.0-rc.46",
+      "current_component_source_revision": "3ba2515d333ed1f282a6821ea9bfbbffccc2b7e1",
+      "current_component_source_digest_sha256": "b1193eb475fa1e088f9faae72667eb5a8b8840d75f75490d2302e6f9a643099d",
+      "current_component_version": "0.1.0-rc.50",
       "source_relation": "historical_runtime_source_precedes_standalone_consumer_package"
     },
     "annotator": {
       "source_revision": "cb20bfa6e4e0e64b3ee8fdf0e1d472e8a668450b",
       "source_digest_sha256": "3910bcbc71599610b125c91c62e9860541ce9edea9b2c0a9f41842eb53651071",
-      "current_component_source_revision": "ff7bce35361bd3419a5e5e248dd8d085810f9def",
-      "current_component_source_digest_sha256": "1e27fb00da59304e583faac50715fc2f9752b6b6521910d839e03a25df6add34",
+      "current_component_source_revision": "3ba2515d333ed1f282a6821ea9bfbbffccc2b7e1",
+      "current_component_source_digest_sha256": "01384da57879a10e919f9f3a4e635f00e9b78a8f213ba76e602a54d70e91af87",
       "source_relation": "loaded_native_source_precedes_current_audit_closeout_source",
       "artifact_sha256": "04104ca5cd47c82329be185a8aa7017f7982b2062048fbf825488bead231d1c1",
       "artifact_mvid": "7408a183-f5a8-4f95-a997-dbf588b1536b"

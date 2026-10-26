@@ -1,3 +1,4 @@
+import { assertInitialProgressOriginalBytes, validateInitialProgressOriginal, type InitialProgressOriginalMetadata } from "./initial-progress-original.js";
 import { parseAutonomyBudgetStatus } from "./contracts.js";
 import { GlobalNoProgressWindow } from "./global-no-progress.js";
 import { restoreGlobalCaptureResponse } from "./global-capture-storage.js";
@@ -107,6 +108,7 @@ export async function replayGlobalAgentRun(directory: string) {
     if (sourceRecords.size >= 2) sourceRecords.delete(sourceRecords.keys().next().value!);
     sourceRecords.set(key, full); return full;
   };
+  let initialProgressOriginal: InitialProgressOriginalMetadata | null = null;
   let state: P1SessionState | undefined, identity: GlobalIdentity | undefined, epoch = -1, session: string | undefined, lastSource = 0;
   let lastDirective: any = null, active: { acquisition: string; choice: string; lowering: Lowering; occurrence: number; epoch: number; deliveries: any[]; dispatches: any[]; postSources: Map<string, number[]>; errors: Set<string> } | null = null;
   let observations = 0, consumed = 0, results = 0, unknown = false, stopped = false, episode: string | null = null;
@@ -130,6 +132,7 @@ export async function replayGlobalAgentRun(directory: string) {
     global_capture_requested: ["request_id"], global_capture_error: ["request_id", "reason"],
     global_no_progress_config: ["windowDecisions", "maxRepeats"],
     global_no_progress: ["acquisition_id", "choice_id", "state_sha256", "choice_sha256", "repeats", "novel_state", "exhausted"],
+    global_initial_progress_original: ["original", "artifact"],
     global_initialized: ["identity", "core"], global_transport_response: ["artifact", "operation"], global_source: ["ordinal", "artifact", "capture_request_id"],
     global_observation: ["source_ordinal", "occurrence", "complete", "missing", "status", "excluded", "observation_sha256"],
     global_input: ["acquisition_id", "source_ordinal", "occurrence", "artifact", "unit"], global_agent_frame: ["direction", "artifact"],
@@ -158,6 +161,12 @@ export async function replayGlobalAgentRun(directory: string) {
       require(!identity && same(p.core, p1CoreIdentity()), "global_initial_identity"); identity = p.identity;
       const expected = manifest.requirements.environment; require("kind" in expected && identity, "global_environment_contract");
       assertGlobalIdentity(identity, expected); assertGlobalProgramSupport(identity, manifest); state = createSession(run.run_id, identity.kind);
+    } else if (event.kind === "global_initial_progress_original") {
+      require(identity?.kind === "reference" && !initialProgressOriginal && sources.size === 0, "initial_progress_original_order");
+      const metadata = validateInitialProgressOriginal(p.original);
+      require(metadata.runtime_instance_id === identity.session.runtime_instance_id, "initial_progress_original_runtime_binding");
+      const bytes = p.artifact === null ? null : await artifact(p.artifact, "source");
+      assertInitialProgressOriginalBytes(metadata, bytes); initialProgressOriginal = metadata;
     } else if (event.kind === "global_no_progress_config") {
       require(identity && !noProgress && sources.size === 0, "global_no_progress_config_order");
       noProgress = new GlobalNoProgressWindow({ windowDecisions: p.windowDecisions, maxRepeats: p.maxRepeats });
@@ -399,6 +408,7 @@ export async function replayGlobalAgentRun(directory: string) {
   require(stopped && !active && [...captureRequests.values()].every(r => r.terminal) && [...sources.values()].every(s => s.classified), "global_unaccounted_original_source_or_operation");
   const files = (await readdir(directory)).filter(name => /^global-/u.test(name)); require(files.every(name => referenced.has(name)) && referenced.size === files.length, "global_unreferenced_or_missing_original_artifact");
   return { schema: "sts2.policy-runtime/global-replay-1", run_id: run.run_id, sources: sources.size, observations, consumed, results,
+    initial_progress_original: initialProgressOriginal,
     unknown_delivery: unknown, technical_stop: noProgressStopped ? "no_progress" : null, profile: manifest.input.profile, core: p1CoreIdentity(), verdict: "verified" as const,
     scope: "original_public_basis_semantic_replay_and_actual_agent_dispatch_joins", native_qualification: false, human_origin: false, research_admission: false };
 }

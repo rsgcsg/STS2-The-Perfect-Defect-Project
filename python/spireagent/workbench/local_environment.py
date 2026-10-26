@@ -1550,6 +1550,18 @@ class LocalEnvironmentService:
                     != native_binding.scenario(body)["ascension"]
                 ):
                     raise BoundaryError("native_episode", "owned_scenario_unproven")
+                from .initial_progress_original import capture_owned_progress
+
+                try:
+                    progress_original = capture_owned_progress(identity, state_root,
+                        generation=record["generation_id"], seed=body["seed"])
+                except (OSError, BoundaryError):
+                    progress_original = {"status": "unknown", "path": None,
+                        "reason": "initial_progress_original_persistence_unavailable"}
+                with self.native_lock:
+                    self._require_native_prepare(ref)
+                    self.native_record["initial_progress_original"] = progress_original
+                    self._save_native()
                 if self.native_workbench_prepare is not None:
                     self.native_workbench_prepare(identity, state_root)
                 handoff = dict(client.release_bootstrap(runtime))
@@ -1722,7 +1734,9 @@ class LocalEnvironmentService:
             self.native_admission_guard(context, "control")
             if self.native_record["generation_id"] != record["generation_id"]:
                 raise BoundaryError("native_episode", "resource_binding_changed")
-        return {"endpoint": endpoint, "admission_context": context}
+        return {"endpoint": endpoint, "admission_context": context,
+                **({"initial_progress_original": record["initial_progress_original"]}
+                   if "initial_progress_original" in record else {})}
 
     def associate_native_actor(
         self, context: dict[str, Any], run_id: str, request_ref: dict[str, Any] | None

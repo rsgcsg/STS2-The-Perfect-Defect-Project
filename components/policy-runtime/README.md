@@ -5,6 +5,11 @@ lifecycle, Human/Shadow/One-Step/Auto modes, stale refresh, delivery safety,
 stable-successor polling, and Agent-run evidence. It does not own game legality,
 model inference, or native operands.
 
+`--listen-port 0` asks the OS for an available loopback port. The startup line
+reports the actual address; callers must use that address. The default remains
+15527. This lets isolated evaluation workers use the same CLI without racing to
+reserve a port in a separate process.
+
 The manual P1 chooser (`examples/p1/human-chooser.mjs`, Agent version 4) starts
 each choice with the complete action list. The person consults the real game
 screen; `help` lists the retained public-observation browsing commands and
@@ -50,6 +55,13 @@ const port = new NdjsonAgentSessionPort(
 // Or: NdjsonAgentSessionPort.spawn(command, args, manifest.adapter,
 //   manifest.limits, { executionPolicy: manifest.execution_policy });
 ```
+
+The trusted Agent caller may repeat `--adapter-env-key NAME` to forward selected
+environment variables through the CLI, matching the process API's explicit
+`env` option. Only names appear in arguments; values stay in the process
+environment and are absent from startup/evidence. The default limited inherited
+environment is unchanged. Invalid or unavailable names fail before opening the
+manifest. Manifests cannot choose executable code or environment credentials.
 
 The Connector supplies one complete ordered `BoundAction` catalog. A policy
 adapter receives that exact Snapshot and Read bundle, echoes the catalog digest,
@@ -704,3 +716,31 @@ long-term retention; local data is the bounded active working set. Cool an inact
 expanded copy only after its exact artifact, all hashes and actual consumer restore
 pass. This path archives per completed run; it does not add cloud latency to native
 capture or introduce a second Runtime/cloud storage controller.
+
+### Offline original Result comparison
+
+Trajectory extraction reads original lossless GLOBAL Agent frames and Runtime
+Results. It binds consume/directive/Result to the original acquisition and input
+occurrence; it never manufactures a Result from a native Human recording.
+`tools/p1-native-replay.mjs` compares the complete Result together with its original
+observation and choice under one existing public entity mapping. Every literal
+step field, status and extension remains part of comparison. The wire constructor
+is shared with Runtime producers; execution and commitment decisions stay with
+each owner. Original unknown or invalid/unbound Results fail before Host start.
+Failed replay execution retains its actual known/unknown step prefix before
+comparison and stops without retry. Diagnostic location preserves all mismatches
+and cannot establish whole-run P1 equivalence.
+
+### Private initial-progress original
+
+A GLOBAL Reference Runtime may receive `--initial-progress-original PATH` plus
+`--initial-progress-original-sha256 SHA256` from its existing owned Environment.
+The descriptor binds the actual native `progress.save` copy to the runtime and
+is validated before driving. Raw bytes are retained as a private GLOBAL artifact
+with `global_initial_progress_original`, sealed and transferred with the run.
+The shared verifier checks metadata, runtime binding, byte length/hash and event
+order. The snapshot never enters Agent input, P1 observations or action bindings.
+An absent/unknown snapshot remains unknown; old originals are never backfilled.
+Only rc49 advertises this CLI addition. Older pinned Runtime registrations keep
+their behavior and require normal re-registration against this version to carry
+the copy into their sealed original; the Environment still retains its own copy.

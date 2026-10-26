@@ -8,6 +8,7 @@ import { componentRoot, fileTreeSha256, npm, packageRuntime } from "./package.mj
 
 const root = mkdtempSync(path.join(os.tmpdir(), "sts2-policy-installed-check-"));
 try {
+  writeFileSync(path.join(root, "package.json"), JSON.stringify({ name: "policy-runtime-package-smoke", version: "1.0.0", private: true }));
   const first = packageRuntime(path.join(root, "first"), { allowDirty: true });
   const second = packageRuntime(path.join(root, "second"), { allowDirty: true });
   assert.equal(first.sha256, second.sha256, "identical source/build must pack identical bytes");
