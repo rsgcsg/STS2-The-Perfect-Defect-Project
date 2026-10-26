@@ -28,7 +28,8 @@ export function deriveOrderTrajectory(raw) {
   return { trajectory, bytes, receipt: { schema: 'sts2.p1/order-derivation-1',
     source_sha256: sha(raw), derived_sha256: sha(bytes), from_revision: 'r1.5', to_revision: 'r1.6',
     only_changed_field: 'observation.revision', observations,
-    arrays_changed: false, results_changed: false, model_input_changed: false,
+    arrays_changed: false, results_changed: false, original_model_input_rewritten: false,
+    inference_performed: false,
     nonclaims: ['original_consumer_used_r1_6', 'Human_qualification', 'model_order_invariance', 'Host_equivalence'] } };
 }
 
