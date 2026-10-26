@@ -68,7 +68,8 @@ Known obligations retain their existing exception IDs: old initial progress
 M003; frozen model order sensitivity M023/M024 and the concrete M049 decision
 counterexample; old Producer field/Result-label differences M034; chest Skip
 M035; Joss Paper display timing M038; Human replay prerequisites M048; current
-Managed enemy-turn progress M051. M034 is a user-accepted old-version exception,
+Managed enemy-turn progress M051; noncombat generated-card context and policy
+declaration differences M052. M034 is a user-accepted old-version exception,
 still counted as different. M035/M038 are not accepted display exemptions. Fixed
 tool issues are marked pending migration to RESOLVED_ISSUES in the existing
 exception list; this guide does not create another registry or approval gate.
