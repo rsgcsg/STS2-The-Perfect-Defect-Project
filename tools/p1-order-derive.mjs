@@ -24,6 +24,9 @@ export function deriveOrderTrajectory(raw) {
     (point.continuity_checks ?? []).forEach((check, checkIndex) =>
       derive(check.observation, `points[${index}].continuity_checks[${checkIndex}].observation`));
   });
+  (trajectory.native_presentations ?? []).forEach((span, spanIndex) =>
+    (span.native_replay_steps ?? []).forEach((step, stepIndex) =>
+      derive(step.observation, `native_presentations[${spanIndex}].native_replay_steps[${stepIndex}].observation`)));
   const bytes = Buffer.from(JSON.stringify(trajectory));
   return { trajectory, bytes, receipt: { schema: 'sts2.p1/order-derivation-1',
     source_sha256: sha(raw), derived_sha256: sha(bytes), from_revision: 'r1.5', to_revision: 'r1.6',
