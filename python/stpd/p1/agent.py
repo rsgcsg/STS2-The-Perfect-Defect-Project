@@ -64,6 +64,8 @@ def serve(
     owner: Path,
     source: TextIO = sys.stdin,
     destination: TextIO = sys.stdout,
+    *,
+    local_inference: Path | None = None,
 ) -> None:
     config, manifest, model, _ = installation(config_path, manifest_path, owner)
     from .agent_driver import serve_session
@@ -73,13 +75,32 @@ def serve(
         with torch.inference_mode():
             return model(frame).tolist() if frame.choices else []
 
-    serve_session(
-        manifest,
-        score,
-        lambda scores: max(range(len(scores)), key=scores.__getitem__),
-        source,
-        destination,
-    )
+    client = None
+    if local_inference is not None:
+        import json
+
+        from spireagent.policy_files import bound_path
+
+        from .local_inference import LocalInferenceClient
+
+        path = bound_path(owner, local_inference, stage="native_agent_support")
+        attachment = json.loads(path.read_bytes())
+        client = LocalInferenceClient(
+            attachment, config["package_sha256"], config["input_projection"])
+        # Installation still verifies the normal model binding; only scoring is
+        # shared. Each actor retains its own original protocol state.
+        del model
+    try:
+        serve_session(
+            manifest,
+            score if client is None else client,
+            lambda scores: max(range(len(scores)), key=scores.__getitem__),
+            source,
+            destination,
+        )
+    finally:
+        if client is not None:
+            client.close()
 
 
 def main() -> None:
@@ -87,10 +108,12 @@ def main() -> None:
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--binding-root", type=Path, required=True)
+    parser.add_argument("--local-inference", type=Path)
     args = parser.parse_args()
     # The CLI owns its dedicated process; the reusable serve() does not.
     torch.set_num_threads(2)
-    serve(args.config.resolve(), args.manifest.resolve(), args.binding_root.resolve())
+    serve(args.config.resolve(), args.manifest.resolve(), args.binding_root.resolve(),
+          local_inference=args.local_inference.resolve() if args.local_inference else None)
 
 
 if __name__ == "__main__":

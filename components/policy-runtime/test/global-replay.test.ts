@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { globalRuntimeFixture } from "./global-runtime-fixtures.js";
+import { globalRuntimeFixture, GlobalHttpFixture } from "./global-runtime-fixtures.js";
 import { replayGlobalAgentRun } from "../src/global-replay.js";
 import { canonicalJson } from "../src/evidence.js";
 const sha=(b:Buffer|string)=>createHash("sha256").update(b).digest("hex");
@@ -92,3 +92,25 @@ describe("GLOBAL original semantic replay and production Python Evidence verifie
   }finally{await f.close();}
  },30000);
 });
+
+ it("seals private raw initial progress in the original and verifies it through production Python Evidence",async()=>{
+  const source=new GlobalHttpFixture(),raw=Buffer.from([255,0,13,10,123,125,10]);
+  const metadata={schema:"spireagent/native-initial-progress-original-v1" as const,source:"native_progress_file" as const,status:"captured" as const,
+   runtime_instance_id:source.capabilities.host.runtime_instance_id,profile_generation_id:"fixture-generation",native_profile_id:1,
+   seed:"fixture-seed",captured_at:new Date().toISOString(),bytes:raw.length,sha256:sha(raw),reason:null};
+  const f=await globalRuntimeFixture({source,initialProgressOriginal:{metadata,bytes:raw}});
+  try{
+   await f.runtime.tick();await f.runtime.tick();
+   expect((await replayGlobalAgentRun(f.evidence.directory)).initial_progress_original).toEqual(metadata);
+   expect(pythonVerify(f.evidence.directory)).toEqual({passed:true,findings:[]});
+   const event=(await f.events()).find(e=>e.kind==="global_initial_progress_original");
+   expect(event.payload.artifact.sha256).toBe(sha(raw));
+   const directory=join(f.root,"progress-wrong-runtime");await cp(f.evidence.directory,directory,{recursive:true});
+   const rows=(await readFile(join(directory,"events.jsonl"),"utf8")).trim().split("\n").map(line=>JSON.parse(line));
+   rows.find(e=>e.kind==="global_initial_progress_original").payload.original.runtime_instance_id="foreign-runtime";
+   await writeFile(join(directory,"events.jsonl"),rows.map(e=>JSON.stringify(e)).join("\n")+"\n");await reseal(directory);
+   expect(pythonVerify(directory).passed).toBe(false);
+   await writeFile(join(f.evidence.directory,event.payload.artifact.path),Buffer.from("changed original"));
+   expect(pythonVerify(f.evidence.directory).passed).toBe(false);
+  }finally{await f.close();}
+ });

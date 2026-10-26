@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { packageHostRuntime } from "./package.mjs";
 import { packageFileTreeSha256 } from "../../../tools/bundle-connector-sdk.mjs";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, realpathSync } from "node:fs";
+import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -15,6 +15,8 @@ import {
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const npmExecPath = process.env.npm_execpath;
 const smokeRoot = mkdtempSync(path.join(os.tmpdir(), "sts2-host-runtime-package-smoke-"));
+try {
+writeFileSync(path.join(smokeRoot, "package.json"), JSON.stringify({ name: "host-runtime-package-smoke", version: "1.0.0", private: true }));
 const report = packageHostRuntime(path.join(smokeRoot, "first"), { allowDirty: true });
 const second = packageHostRuntime(path.join(smokeRoot, "second"), { allowDirty: true });
 assert.equal(report.sha256, second.sha256, "same source/build must produce identical Host archive bytes");
@@ -160,3 +162,6 @@ console.log(JSON.stringify({
     deterministic_bytes: true
   }
 }, null, 2));
+} finally {
+  rmSync(smokeRoot, { recursive: true, force: true });
+}

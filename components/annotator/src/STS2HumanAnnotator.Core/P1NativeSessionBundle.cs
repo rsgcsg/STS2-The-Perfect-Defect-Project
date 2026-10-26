@@ -27,6 +27,7 @@ public static class P1NativeSessionBundlePacker
             if (EvidenceIdentity.Sha256File(Path.Combine(directory, pair.Item1)) != close[pair.Item2]?.GetValue<string>())
                 errors.Add("p1_native_stream_hash_mismatch");
         if (!File.Exists(Path.Combine(directory, "session-close-receipt.json"))) errors.Add("recording_close_missing");
+        errors.AddRange(InitialProgressOriginal.Audit(directory, manifest));
         long sequence = 0, accepted = 0, issues = 0;
         foreach (string line in File.ReadLines(Path.Combine(directory, P1NativeRecordingContract.EventFile)))
         {

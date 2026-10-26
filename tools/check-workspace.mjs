@@ -200,7 +200,7 @@ export function sourceAccepted(before, after, scope) {
     (scope === "components" || (!before.dirty && !after.dirty));
 }
 
-async function main(scope, pytestShard) {
+export async function runWorkspaceChecks(scope, pytestShard) {
   const stages = workspaceStages(scope, {pytestShard});
   const capacity = [workspaceCapacity(root), workspaceCapacity(os.tmpdir())];
   if (capacity.some(item => !item.sufficient)) {
@@ -264,5 +264,5 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   if (args.length && (args.length !== 2 || args[0] !== "--pytest-shard")) {
     throw new Error("unknown_workspace_arguments");
   }
-  await main(scope, args[1]);
+  await runWorkspaceChecks(scope, args[1]);
 }

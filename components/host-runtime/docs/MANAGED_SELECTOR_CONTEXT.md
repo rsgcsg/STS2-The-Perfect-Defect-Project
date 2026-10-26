@@ -98,3 +98,20 @@ This is bounded source/build/native-fixture and replay evidence, not all-surface
 support, full result-object equality, installed/Human evidence, model performance
 or permission to pool Host results. Further experiments stopped at the task's
 15GiB free-space limit by the user's explicit choice.
+
+## Native event visual calls in the F2 candidate
+
+The exact `PunchOff.Nab` continuation adds its native Injury before calling
+`NGame.Instance.ScreenShakeTrauma`. The absent Managed scene made that pure
+visual call fail and left native delivery unknown. The current candidate remaps
+that call to a TestMode-only null-scene presentation shim; the event method,
+CardPileCmd, RewardsCmd, RNG, original Task and event completion remain native.
+
+An exact assembly call-site inventory found the same gameplay dependency in both
+`Amalgamator` combination continuations. Their four calls use the same shim. Each
+native async owner and expected call count is checked; UI dispatcher/settings
+calls are outside this adapter. A non-TestMode null call still fails normally.
+Native component fixtures cover PunchOff's curse/reward/completion and both
+Amalgamator branches' original two-card selection/removal and one-card creation.
+The prior canary unknown is preserved and never replayed as a recovered slot.
+These fixtures do not qualify a new complete model game or broader replay corpus.

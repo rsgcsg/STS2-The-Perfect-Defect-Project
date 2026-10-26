@@ -60,6 +60,57 @@ from spireagent.workbench.runtime_install import (
 )
 
 
+def global_environment_manifest(runtime: Path, options: dict[str, str], artifact_path: Path,
+                                adapter: dict[str, str], selection: str,
+                                deadline: float) -> dict[str, Any]:
+    """Negotiate the owner-supplied complete public P1 environment envelope."""
+    script = (
+        "import{pathToFileURL}from'node:url';"
+        "import{readFile}from'node:fs/promises';import{randomUUID}from'node:crypto';"
+        "const d=process.argv[1],o=JSON.parse(process.argv[2]),"
+        "p=process.argv[3],a=JSON.parse(process.argv[4]);"
+        "const r=await import(pathToFileURL(d+'/index.js'));let t;"
+        "if(o['managed-binding']){const m=await import(pathToFileURL(d+'/managed.js'));"
+        "t=await m.ManagedServicePolicyClient.attachGlobal("
+        "o['managed-binding'],o['managed-attachment'],"
+        "{serviceInstanceId:o['managed-expected-service-instance-id'],"
+        "runtimeInstanceId:o['managed-expected-runtime-instance-id'],"
+        "gameContinuityId:o['managed-expected-game-continuity-id']},'run-'+randomUUID());}"
+        "else{const s=await import(pathToFileURL("
+        "d+'/../node_modules/@rsgcsg/sts2-connector-client/dist/index.js'));"
+        "t=new r.ReferenceGlobalTransport("
+        "new s.PlayerEnvironmentRestClient(o['connector-endpoint'],3000),"
+        "{productVersion:'1',clientInstanceId:'global-registration'});}"
+        "const identity=await t.negotiate(AbortSignal.timeout(5000));"
+        "console.log(JSON.stringify(r.createGlobalProgramManifest("
+        "{episodeId:process.argv[5],manifestId:process.argv[5],"
+        "identity,artifactPath:p,artifactBytes:await readFile(p),adapter:a})));"
+    )
+    reply = subprocess.run(
+        [
+            "node",
+            "--input-type=module",
+            "-e",
+            script,
+            str(runtime),
+            json.dumps(options),
+            str(artifact_path),
+            json.dumps(adapter),
+            selection,
+        ],
+        capture_output=True,
+        text=True,
+        timeout=_remaining(deadline),
+        check=False,
+    )
+    if reply.returncode != 0 or len(reply.stdout) > 1024 * 1024:
+        raise BoundaryError("global_program", "public_environment_unavailable")
+    value = json.loads(reply.stdout)
+    if not isinstance(value, dict):
+        raise BoundaryError("global_program", "public_environment_unavailable")
+    return value
+
+
 class RegistrationStorageError(BoundaryError):
     """A terminal storage failure with a safe correlation ID for the local log."""
 
@@ -1429,52 +1480,8 @@ class LocalModelRegistration:
     def _global_environment_manifest(self, runtime: Path, options: dict[str, str],
                                      artifact_path: Path, adapter: dict[str, str],
                                      selection: str, deadline: float) -> dict[str, Any]:
-        """Negotiate the owner-supplied complete public P1 environment envelope."""
-        script = (
-            "import{pathToFileURL}from'node:url';"
-            "import{readFile}from'node:fs/promises';import{randomUUID}from'node:crypto';"
-            "const d=process.argv[1],o=JSON.parse(process.argv[2]),"
-            "p=process.argv[3],a=JSON.parse(process.argv[4]);"
-            "const r=await import(pathToFileURL(d+'/index.js'));let t;"
-            "if(o['managed-binding']){const m=await import(pathToFileURL(d+'/managed.js'));"
-            "t=await m.ManagedServicePolicyClient.attachGlobal("
-            "o['managed-binding'],o['managed-attachment'],"
-            "{serviceInstanceId:o['managed-expected-service-instance-id'],"
-            "runtimeInstanceId:o['managed-expected-runtime-instance-id'],"
-            "gameContinuityId:o['managed-expected-game-continuity-id']},'run-'+randomUUID());}"
-            "else{const s=await import(pathToFileURL("
-            "d+'/../node_modules/@rsgcsg/sts2-connector-client/dist/index.js'));"
-            "t=new r.ReferenceGlobalTransport("
-            "new s.PlayerEnvironmentRestClient(o['connector-endpoint'],3000),"
-            "{productVersion:'1',clientInstanceId:'global-registration'});}"
-            "const identity=await t.negotiate(AbortSignal.timeout(5000));"
-            "console.log(JSON.stringify(r.createGlobalProgramManifest("
-            "{episodeId:process.argv[5],manifestId:process.argv[5],"
-            "identity,artifactPath:p,artifactBytes:await readFile(p),adapter:a})));"
-        )
-        reply = subprocess.run(
-            [
-                "node",
-                "--input-type=module",
-                "-e",
-                script,
-                str(runtime),
-                json.dumps(options),
-                str(artifact_path),
-                json.dumps(adapter),
-                selection,
-            ],
-            capture_output=True,
-            text=True,
-            timeout=_remaining(deadline),
-            check=False,
-        )
-        if reply.returncode != 0 or len(reply.stdout) > 1024 * 1024:
-            raise BoundaryError("global_program", "public_environment_unavailable")
-        value = json.loads(reply.stdout)
-        if not isinstance(value, dict):
-            raise BoundaryError("global_program", "public_environment_unavailable")
-        return value
+        return global_environment_manifest(runtime, options, artifact_path, adapter,
+                                           selection, deadline)
 
     def register_global_program(self, *, environment_kind: str = "native") -> dict[str, Any]:
         """Fixed public program registration; no model, downloaded command or inference."""

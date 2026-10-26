@@ -235,7 +235,8 @@ def _loopback(url: str) -> str:
 def _runtime_wire_version(package: dict[str, Any]) -> int:
     version = package.get("version")
     if version in {"0.1.0-rc.40", "0.1.0-rc.41", "0.1.0-rc.42", "0.1.0-rc.43", "0.1.0-rc.44",
-                   "0.1.0-rc.45", "0.1.0-rc.46"}:
+                   "0.1.0-rc.45", "0.1.0-rc.46", "0.1.0-rc.47", "0.1.0-rc.48", "0.1.0-rc.49",
+                   "0.1.0-rc.50"}:
         return 2
     if version in {f"0.1.0-rc.{revision}" for revision in range(1, 40)}:
         return 1
@@ -2060,8 +2061,11 @@ class LocalModelService:
         selected_target = public_target(target) if target is not None else None
         connector = (None if managed else
                      _loopback(self.config.platform_url or "http://127.0.0.1:15526"))
+        initial_progress_original = None
         if episode_context is not None:
-            connector = self._authorize_native_episode(episode_context)["endpoint"]
+            admitted_environment = self._authorize_native_episode(episode_context)
+            connector = admitted_environment["endpoint"]
+            initial_progress_original = admitted_environment.get("initial_progress_original")
             if self.native_episode_creation_guard is not None:
                 self.native_episode_creation_guard(episode_context)
         if target is not None:
@@ -2108,6 +2112,14 @@ class LocalModelService:
             "--mode",
             "human",
         ]
+        if (initial_progress_original is not None
+                and initial_progress_original.get("path") is not None
+                and entry["adapter"] in GLOBAL_ADAPTERS
+                and package.get("version") in {"0.1.0-rc.49", "0.1.0-rc.50"}):
+            command.extend((
+                "--initial-progress-original", initial_progress_original["path"],
+                "--initial-progress-original-sha256", initial_progress_original["sha256"],
+            ))
         if progress is not None:
             command.extend(("--no-progress-window", str(progress["windowDecisions"]),
                             "--no-progress-repeats", str(progress["maxRepeats"])))

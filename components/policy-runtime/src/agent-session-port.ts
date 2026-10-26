@@ -59,6 +59,19 @@ interface Pending {
   stateCall?: StateCall;
 }
 
+/** The trusted caller selects extra names; values never enter a manifest or log. */
+export function agentProcessEnvironment(extraKeys: readonly string[] = []): NodeJS.ProcessEnv {
+  const environment: NodeJS.ProcessEnv = {};
+  for (const key of ["PATH", "LANG", "LC_ALL", "SYSTEMROOT", "WINDIR", "TMPDIR", "TEMP", "TMP", "PYTHONPATH", "VIRTUAL_ENV", "OMP_NUM_THREADS"])
+    if (process.env[key] !== undefined) environment[key] = process.env[key];
+  for (const key of extraKeys) {
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/u.test(key)) throw new Error("invalid explicit Agent environment key");
+    if (process.env[key] === undefined) throw new Error(`explicit Agent environment key is unavailable: ${key}`);
+    environment[key] = process.env[key];
+  }
+  return environment;
+}
+
 /** Strict duplex process transport. Controller and native SDK ownership stay outside. */
 export class NdjsonAgentSessionPort {
   private readonly pending = new Map<string, Pending>();
@@ -126,11 +139,8 @@ export class NdjsonAgentSessionPort {
     options: { cwd?: string; env?: NodeJS.ProcessEnv; byteBudget?: AgentByteBudget; executionPolicy?: Readonly<AgentExecutionPolicy> } = {}): NdjsonAgentSessionPort {
     const executionPolicy = options.executionPolicy === undefined ? undefined : validateAgentExecutionPolicy(options.executionPolicy);
     // The trusted application explicitly chooses code/environment. No manifest selects a command.
-    const inherited: NodeJS.ProcessEnv = {};
-    for (const key of ["PATH", "LANG", "LC_ALL", "SYSTEMROOT", "WINDIR", "TMPDIR", "TEMP", "TMP", "PYTHONPATH", "VIRTUAL_ENV", "OMP_NUM_THREADS"])
-      if (process.env[key] !== undefined) inherited[key] = process.env[key];
     return new NdjsonAgentSessionPort(spawn(command, args, { cwd: options.cwd,
-      env: options.env ?? inherited, stdio: ["pipe", "pipe", "pipe"] }), expected, limits, options.byteBudget, executionPolicy);
+      env: options.env ?? agentProcessEnvironment(), stdio: ["pipe", "pipe", "pipe"] }), expected, limits, options.byteBudget, executionPolicy);
   }
 
   async ready(timeoutMs = this.limits.agent_timeout_ms, signal?: AbortSignal): Promise<AgentAdapterIdentity> {

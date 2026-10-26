@@ -44,8 +44,9 @@ test("built native act-selection source and retained measured builds remain expl
     createHash("sha256").update(sourcePatch).digest("hex"),
     manifest.expected_build.source_patch_sha256
   );
-  assert.equal(manifest.expected_build.artifact_sha256, "5960486c06384bbac882bed3fbaee088225700cc71b12c9658c73ac5e4e39cab");
-  assert.equal(manifest.expected_build.artifact_mvid, "612ce054-a6b0-48cc-a0aa-3935830f046f");
+  assert.equal(manifest.pre_hand_selection_build.artifact_sha256, "b8386bf8bd54086b1921ddade3cd4fb4a5156072ad45456bc3310e2b62275c8f");
+  assert.equal(manifest.expected_build.artifact_sha256, "c3eed8fa9930d7428af0d9028a4ca0a0e5234853d8040bc99dd478f99fdd4df4");
+  assert.equal(manifest.expected_build.artifact_mvid, "570a999a-e5e3-42e4-a000-0a733aea0ff3");
   assert.equal(manifest.historical_candidate_builds.some(build =>
     build.source_patch_sha256 === "a46736eee8c0c4c65b574a53e769330831d2e39de7897563f4a4c16b48fc5e20"
     && build.artifact_sha256 === "39a6455c2f67c4313b3cf2b6b46a6783d41cc5ebe86cb62829a6a780c7d562b2"
@@ -117,6 +118,10 @@ test("fresh candidate preparation admits added source files into the audited dif
   assert.deepEqual(addedPatchPaths(patch), [
     "initial-progress-tests/InitialProgressTests.csproj",
     "initial-progress-tests/Program.cs",
+    "native-hand-tests/NativeHand.csproj",
+    "native-hand-tests/Program.cs",
+    "native-run-choice-tests/NativeRunChoice.csproj",
+    "native-run-choice-tests/Program.cs",
     "native-tests/NativeMechanisms.csproj",
     "native-tests/Program.cs",
     "src/Sts2Headless/DeckEnchantCallScope.cs",
@@ -143,6 +148,7 @@ test("fresh candidate preparation admits added source files into the audited dif
     "src/Sts2Headless/NativeDetachedCardPreview.cs",
     "src/Sts2Headless/NativeEnchantmentMethodInventory.cs",
     "src/Sts2Headless/NativeEventOptionAdmission.cs",
+    "src/Sts2Headless/NativeHandSelection.cs",
     "src/Sts2Headless/NativeMapReadProjection.cs",
     "src/Sts2Headless/NativeMerchantPotionCost.cs",
     "src/Sts2Headless/NativeMerchantRemovalAdmission.cs",
@@ -152,6 +158,7 @@ test("fresh candidate preparation admits added source files into the audited dif
     "src/Sts2Headless/NativeRelicPresentation.cs",
     "src/Sts2Headless/NativeRewardSetObservation.cs",
     "src/Sts2Headless/NativeRunHookReadQualification.cs",
+    "src/Sts2Headless/NativeScreenShakePresentation.cs",
     "src/Sts2Headless/NativeSelectorCallScope.cs",
     "src/Sts2Headless/NativeSelectorCardDisplay.cs",
     "src/Sts2Headless/NativeSelectorHud.cs",

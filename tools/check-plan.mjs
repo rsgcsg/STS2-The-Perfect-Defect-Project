@@ -6,7 +6,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { eligibleEvent, findReceipt } from "./check-receipt.mjs";
 import {repositoryOnlyWorkflowChange} from "./check-ci-contract.mjs";
-import {pytestPartition} from "./check-workspace.mjs";
+import {pytestPartition, runWorkspaceChecks} from "./check-workspace.mjs";
 import {currentShardIdentity, verifyPytestShards} from "./verify-pytest-shards.mjs";
 
 const root = path.resolve(import.meta.dirname, "..");
@@ -158,9 +158,12 @@ export function scopeCommands(scope) {
   if (scope === "full") return ["check"];
   throw new Error("unknown_check_scope");
 }
-function execute(scope, pytestShard) {
+async function execute(scope, pytestShard) {
   const partition = pytestPartition(pytestShard);
   if (partition && !["full", "python"].includes(scope)) throw new Error("pytest_shard_requires_python_scope");
+  // Keep one signal/child owner. A synchronous npm wrapper could exit on INT
+  // while its detached workspace runner continued admitting later gates.
+  if (["full", "python"].includes(scope)) return runWorkspaceChecks(scope, pytestShard);
   for (const command of scopeCommands(scope)) {
     const result = spawnSync(process.platform === "win32" ? "npm.cmd" : "npm",
       ["run", command, ...(partition ? ["--", "--pytest-shard", pytestShard] : [])],
@@ -194,7 +197,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     }
   } else if (args[0] === "execute") {
     if (args.length !== 1 && (args.length !== 3 || args[1] !== "--pytest-shard")) throw new Error("unknown_execute_arguments");
-    execute(process.env.CHECK_SCOPE, args[2]);
+    await execute(process.env.CHECK_SCOPE, args[2]);
   } else {
     const baseIndex = args.indexOf("--base");
     const headIndex = args.indexOf("--head");
@@ -227,7 +230,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     if (process.env.GITHUB_OUTPUT) fs.appendFileSync(process.env.GITHUB_OUTPUT, `scope=${plan.scope}\nproof=${plan.proof?.url || ""}\n`);
     if (process.env.GITHUB_STEP_SUMMARY) fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, `Check scope: **${plan.scope}** (${plan.reason}). Base ${plan.base}; tested checkout ${plan.head}. Source/test only.\n`);
     if (args.includes("--run")) {
-      execute(plan.scope);
+      await execute(plan.scope);
     }
   }
 }

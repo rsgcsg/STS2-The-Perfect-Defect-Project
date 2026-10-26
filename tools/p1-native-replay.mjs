@@ -9,6 +9,8 @@ import * as core from '../components/connector/sdk/typescript/dist/p1Global/inde
 import { HostDriver } from '../components/policy-runtime/dist/p1-global/host-driver.js';
 import { EpisodeRecorder } from '../components/policy-runtime/dist/p1-global/recorder.js';
 import { matchReferenceChoice } from '../components/policy-runtime/dist/p1-global/trajectory.js';
+import { comparePublicResult } from '../components/policy-runtime/dist/p1-global/compare.js';
+import { buildP1Result } from '../components/policy-runtime/dist/p1-result.js';
 import { convertP1NativeBundle } from './p1-native-to-p1.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -39,7 +41,11 @@ export async function replayNativeTrajectory({ trajectory, driver, core: kernel 
     native_presentations_replayed: 0, native_presentation_steps: 0,
     native_steps: 0, unknown_delivery: false, first_divergence: null, completed: false,
     comparison_mode: diagnosticLocator ? 'diagnostic_not_equivalence' : 'strict',
-    compared_points: 0, matching_points: 0, diagnostic_choices: 0, differences: [], by_surface: {} };
+    compared_points: 0, matching_points: 0, diagnostic_choices: 0, differences: [], by_surface: {},
+    result_scope: trajectory.result_source === 'runtime_global_result' ? 'original_runtime_results'
+      : trajectory.origin === 'native_semantic_recording' ? 'not_recorded_in_native_original' : 'unavailable_in_trajectory',
+    expected_results: trajectory.points.filter(point => point.chosen !== null).length,
+    compared_results: 0, matching_results: 0, original_unknown: false, full_p1_equivalence_complete: false };
   let index = 0;
   const log = (kind, data) => record.append(kind, data);
   const compare = (reference, actual, detail) => {
@@ -70,12 +76,16 @@ export async function replayNativeTrajectory({ trajectory, driver, core: kernel 
     return driver.request({ command, ...extra }, Math.min(60000, deadline - Date.now()));
   };
   async function capture() {
-    const full = (await call('capture')).full;
+    let full = (await call('capture')).full;
+    while (full?.basis?.snapshot?.status === 'settling') {
+      await new Promise(resolve => setTimeout(resolve, 50));
+      full = (await call('capture')).full;
+    }
     if (full?.basis?.capture_status !== 'complete' || full.basis.missing.length !== 0)
       throw new Error('offline_replay_public_basis_incomplete');
     return full.basis;
   }
-  async function step(input, basis, origin) {
+  async function step(input, basis, origin, resultSteps = null) {
     if (!basis.snapshot.bound_actions.actions.some(action => action.bound_action_id === input.bound_action_id
       && action.verb === input.verb)) throw new Error('native_replay_not_in_current_catalog');
     const mutationId = driver.newMutationId();
@@ -83,8 +93,18 @@ export async function replayNativeTrajectory({ trajectory, driver, core: kernel 
     let receipt;
     try { receipt = (await call('step', { mutation_request_id: mutationId,
       expected_snapshot_id: basis.snapshot.snapshot_id, bound_action_id: input.bound_action_id })).receipt; }
-    catch (error) { report.unknown_delivery = true; throw error; }
+    catch (error) {
+      report.unknown_delivery = true;
+      if (resultSteps) resultSteps.push({ index: resultSteps.length,
+        origin: resultSteps.length ? 'fold' : 'agent_choice', native_verb: input.verb,
+        label: input.label, delivery: 'unknown', reason_code: 'response_unclassified' });
+      throw error;
+    }
     report.native_steps++;
+    log('p1_receipt', { index, origin, receipt });
+    if (resultSteps) resultSteps.push({ index: resultSteps.length,
+      origin: origin === 'p1_choice' ? 'agent_choice' : 'fold', native_verb: input.verb,
+      label: input.label, delivery: receipt?.delivery ?? 'unknown', reason_code: receipt?.reason_code ?? null });
     if (receipt?.delivery === 'unknown' || receipt?.delivery == null) {
       report.unknown_delivery = true; throw new Error('offline_replay_unknown_delivery');
     }
@@ -92,6 +112,24 @@ export async function replayNativeTrajectory({ trajectory, driver, core: kernel 
     return capture();
   }
   try {
+    if (trajectory.result_source === 'runtime_global_result') {
+      const terminal = trajectory.points.at(-1);
+      if (terminal?.chosen !== null || terminal.observation.status !== 'terminal'
+          || !['win', 'loss'].includes(terminal.observation.terminal?.outcome))
+        throw new Error('offline_replay_known_original_terminal_required');
+      for (const point of trajectory.points.filter(point => point.chosen !== null)) {
+        if (!point.result || point.result.choice_id !== point.chosen)
+          throw new Error('offline_replay_original_result_missing_or_unbound');
+        if (point.result.status === 'unknown' || Array.isArray(point.result.steps)
+            && point.result.steps.some(step => step?.delivery === 'unknown')) {
+          report.original_unknown = true;
+          throw new Error('offline_replay_original_unknown_must_not_be_reoffered');
+        }
+        if (point.result.occurrence !== point.observation.envelope.occurrence
+            || comparePublicResult(point.observation, point.observation, point.result, point.result).verdict !== 'equal')
+          throw new Error('offline_replay_original_result_invalid_or_occurrence_unbound');
+      }
+    }
     await driver.start();
     await call('reset', { seed, initial_progress: initialProgress });
     report.episode_identity = (await call('episode_identity')).identity;
@@ -140,19 +178,51 @@ export async function replayNativeTrajectory({ trajectory, driver, core: kernel 
         report.matching_terminal = true;
         report.reached_reference_terminal = true;
         report.completed = report.differences.length === 0;
+        report.full_p1_equivalence_complete = report.completed && !diagnosticLocator && report.result_scope === 'original_runtime_results'
+          && report.compared_results === report.expected_results && report.matching_results === report.expected_results;
         break;
       }
       if (match.choice_id == null) throw new Error('offline_replay_choice_unmapped');
       const lowering = reduced.lowering[match.choice_id];
       if (!lowering) throw new Error('offline_replay_lowering_missing');
+      const resultSteps = [];
+      let resultStatus = 'completed', executionError = null;
       log('p1_choice', { index, choice_id: match.choice_id, reference_choice: point.chosen });
-      if (lowering.first) basis = await step(lowering.first, basis, 'p1_choice');
-      for (const rule of lowering.follow) {
-        const follow = kernel.resolveFollowBasis(rule, lowering, basis);
-        if (!follow) { if (rule.optional) break; throw new Error('offline_replay_required_follow_missing'); }
-        basis = await step(follow, basis, 'p1_follow');
+      try {
+        if (lowering.first) basis = await step(lowering.first, basis, 'p1_choice', resultSteps);
+        for (const rule of lowering.follow) {
+          if (resultSteps.length >= kernel.P1G_LIMITS.macro_steps)
+            throw new Error('offline_replay_macro_step_limit');
+          const follow = kernel.resolveFollowBasis(rule, lowering, basis);
+          if (!follow) { if (rule.optional) break; throw new Error('offline_replay_required_follow_missing'); }
+          basis = await step(follow, basis, 'p1_follow', resultSteps);
+        }
+        state = kernel.applyCommitment(state, lowering, true);
+      } catch (error) {
+        executionError = error;
+        resultStatus = report.unknown_delivery ? 'unknown'
+          : resultSteps.length === 0 || resultSteps.length === 1 && resultSteps[0].delivery === 'not_delivered'
+            ? 'not_started' : 'interrupted_known';
       }
-      state = kernel.applyCommitment(state, lowering, true);
+      if (trajectory.result_source === 'runtime_global_result') {
+        const actual = buildP1Result({ occurrence: reduced.observation.envelope.occurrence,
+          choice_id: match.choice_id, status: resultStatus, steps: resultSteps,
+          commitment_delta: resultStatus === 'completed' && lowering.commitment ? kernel.commitmentView(state) : null });
+        const comparison = comparePublicResult(point.observation, reduced.observation, point.result, actual);
+        log('p1_result', { index, original: point.result, actual, comparison });
+        report.compared_results++;
+        report.matching_results += Number(comparison.verdict === 'equal');
+        const surface = report.by_surface[point.observation.scene.native_kind];
+        surface.results_compared = (surface.results_compared ?? 0) + 1;
+        surface.results_matching = (surface.results_matching ?? 0) + Number(comparison.verdict === 'equal');
+        if (comparison.verdict !== 'equal') {
+          const difference = { index, phase: 'result', ...comparison };
+          report.first_divergence ??= difference;
+          report.differences.push(difference);
+          if (!diagnosticLocator) throw new Error('strict_result_difference');
+        }
+      }
+      if (executionError) throw executionError;
       if (!lowering.first) basis = await capture();
       if (match.diagnostic) report.diagnostic_choices++;
       else report.matching_choices++;

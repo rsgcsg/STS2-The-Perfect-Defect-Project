@@ -1,7 +1,9 @@
+import { assertInitialProgressOriginalBytes, type InitialProgressOriginal } from "./initial-progress-original.js";
 import { GlobalNoProgressWindow, type GlobalNoProgressConfig } from "./global-no-progress.js";
 import { normalizeGlobalCaptureResponse } from "./global-capture-storage.js";
 import { type FullPublicBasis, serializePublicBasisRecord, decodePublicSourceReceipt } from "@rsgcsg/sts2-connector-client";
-import { createSession, reduce, modelView, applyCommitment, resolveFollowBasis, commitmentView, P1G_LIMITS, P1G_RESULT_SCHEMA, type P1SessionState, type P1Result, type P1StepRecord } from "@rsgcsg/sts2-connector-client/p1-global";
+import { createSession, reduce, modelView, applyCommitment, resolveFollowBasis, commitmentView, P1G_LIMITS, type P1SessionState, type P1Result, type P1StepRecord } from "@rsgcsg/sts2-connector-client/p1-global";
+import { buildP1Result } from "./p1-result.js";
 import { type GlobalTransport, type GlobalIdentity, assertGlobalIdentity, assertGlobalProgramSupport, globalDigest } from "./global-transport.js";
 import { p1CoreIdentity } from "./p1-global/core-identity.js";
 import type { GlobalArtifact, GlobalCaptureStagingRef } from "./evidence.js";
@@ -41,6 +43,7 @@ interface SharedAgentRuntimeOptions {
   mode?: RuntimeMode;
   autoBudget?: AutonomyBudgetInput;
   globalNoProgress?: GlobalNoProgressConfig;
+  initialProgressOriginal?: InitialProgressOriginal;
   monotonicNow?: () => number;
   now?: () => string;
 }
@@ -1277,6 +1280,14 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
     this.environment = { kind: "global_public_basis", ...identity.session, host_kind: identity.kind,
       producer_sha256: globalDigest(identity.producer), game_sha256: globalDigest(identity.game), game_continuity_id: identity.game_continuity_id };
     await this.emitGlobal("global_initialized", { identity, core: p1CoreIdentity() });
+    if (this.options.initialProgressOriginal) {
+      const original = this.options.initialProgressOriginal;
+      assertInitialProgressOriginalBytes(original.metadata, original.bytes);
+      if (identity.kind !== "reference" || original.metadata.runtime_instance_id !== identity.session.runtime_instance_id)
+        throw new AgentSessionError("initial_progress_original_runtime_binding");
+      const artifact = original.bytes === null ? null : await this.options.evidence.storeGlobalArtifact("source", original.bytes);
+      await this.emitGlobal("global_initial_progress_original", { original: original.metadata, artifact });
+    }
     if (this.globalNoProgress) await this.emitGlobal("global_no_progress_config", { ...this.globalNoProgress.config });
     await this.emit("mode_changed", { ...this.context(), mode: this.mode, autonomy_budget: this.budgetStatus(), controller: this.controllerStatus() });
   }
@@ -1534,8 +1545,8 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
       try { this.checkActive(epoch, signal); this.globalState = applyCommitment(this.globalState!, lowering, true); }
       catch { status = steps.length ? "interrupted_known" : "not_started"; }
     }
-    const result: P1Result = { schema: P1G_RESULT_SCHEMA, occurrence: prepared.reduction.observation.envelope.occurrence,
-      choice_id: choiceId, status, steps, commitment_delta: status === "completed" && lowering.commitment ? commitmentView(this.globalState!) : null };
+    const result = buildP1Result({ occurrence: prepared.reduction.observation.envelope.occurrence,
+      choice_id: choiceId, status, steps, commitment_delta: status === "completed" && lowering.commitment ? commitmentView(this.globalState!) : null });
     await this.emitGlobal("global_result", { acquisition_id: this.basisId, result });
     if (status === "unknown") { await this.taint("global_delivery_unknown"); return { type: "unknown", error: "global_delivery_unknown", status: this.status() }; }
     if (this.mode === "one_step") await this.handoff("global_one_step_completed");

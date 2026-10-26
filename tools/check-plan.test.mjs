@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import test from "node:test";
 import { classifyChanges, parseDiff, makePlan, aggregatePassed, scopeCommands, parseRawDiff, checkCommittedPatch } from "./check-plan.mjs";
 
@@ -58,8 +58,17 @@ test("hosted planning rejects committed EOF whitespace before publishing a lane 
       "import fs from 'node:fs'; fs.writeFileSync(process.env.TEST_EXPENSIVE_MARKER, 'started');\n");
     fs.writeFileSync(path.join(cwd, "package.json"), JSON.stringify({ scripts: {
       "check:docs": "node runner.mjs", "check:repository": "node runner.mjs", "check:python-scope": "node runner.mjs",
+      "precheck:s0": "node runner.mjs", "check:s0-tests": "node runner.mjs", "check:python": "node runner.mjs",
       check: "node runner.mjs",
     } }));
+    fs.writeFileSync(path.join(cwd, ".gitignore"), ".local/\n");
+    for (const owner of ["components/connector", "components/host-runtime", "components/annotator",
+      "components/evidence", "components/policy-runtime", "apps/workbench", "apps/ingame-ui", "apps/game-mod"]) {
+      fs.mkdirSync(path.join(cwd, owner), {recursive: true});
+      fs.writeFileSync(path.join(cwd, owner, "package.json"), JSON.stringify({scripts: {
+        check: "node ../../runner.mjs", test: "node ../../runner.mjs",
+      }}));
+    }
     const scopes = [["docs", "README.md"], ["repository", "tools/project-system.test.mjs"], ["python", "python/stpd/fixture.py"],
       ["full", "components/fixture.txt"]];
     for (const [, file] of scopes) {
@@ -297,3 +306,62 @@ test("Windows outcomes never hold the required PR aggregate", () => {
     assert.ok(aggregatePassed("python", {plan: "success", repository: "skipped", docs: "skipped", linux: "success", windows}));
   }
 });
+
+test("top-level full and Python routers cancel their owned descendants and block later gates",
+  {skip: process.platform === "win32", timeout: 30000}, async () => {
+    const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "check-plan-cancel-"));
+    const cwd = path.join(temporary, "repo");
+    fs.mkdirSync(cwd);
+    const git = (...args) => execFileSync("git", args, {cwd, stdio: "pipe"});
+    const alive = pid => { try { process.kill(pid, 0); return true; } catch { return false; } };
+    try {
+      fs.cpSync(import.meta.dirname, path.join(cwd, "tools"), {recursive: true});
+      fs.writeFileSync(path.join(cwd, ".gitignore"), ".local/\n");
+      fs.writeFileSync(path.join(cwd, "package.json"), JSON.stringify({scripts: {
+        "check:repository": "node runner.mjs", "precheck:s0": "node later.mjs",
+      }}));
+      fs.writeFileSync(path.join(cwd, "later.mjs"), "import fs from 'node:fs';fs.writeFileSync(process.env.TEST_LATER,'unexpected');");
+      fs.writeFileSync(path.join(cwd, "descendant.mjs"), `
+        import fs from 'node:fs';
+        process.on('SIGINT',()=>{fs.writeFileSync(process.env.TEST_ACK,'INT');process.exit(0)});
+        fs.writeFileSync(process.env.TEST_READY, String(process.pid));setInterval(()=>{},1000);
+      `);
+      fs.writeFileSync(path.join(cwd, "runner.mjs"), `
+        import {spawn} from 'node:child_process';
+        const child=spawn(process.execPath,['descendant.mjs'],{stdio:'inherit'});
+        process.on('SIGINT',()=>{});child.on('exit',()=>process.exit(0));
+      `);
+      git("init"); git("config", "user.email", "test@example.invalid"); git("config", "user.name", "Test");
+      git("add", "."); git("commit", "-m", "fixture");
+      for (const [scope, args] of [["full", ["--full", "--run", "--base", "HEAD"]], ["python", ["execute"]]]) {
+        const ready = path.join(temporary, `${scope}.ready`), ack = ready + ".ack", later = ready + ".later";
+        // Synthetic children write only tiny markers. This is not a real full gate.
+        const child = spawn(process.execPath, ["tools/check-plan.mjs", ...args], {cwd,
+          env: {...process.env, CHECK_SCOPE: scope, CHECK_FULL: "false", GITHUB_ACTIONS: "false",
+            SPIREAGENT_MIN_FREE_BYTES: "0", TEST_READY: ready, TEST_ACK: ack, TEST_LATER: later},
+          stdio: ["ignore", "pipe", "pipe"]});
+        let output = ""; child.stdout.on("data", b => output += b); child.stderr.on("data", b => output += b);
+        const ended = new Promise(resolve => child.on("exit", (code, signal) => resolve({code, signal})));
+        let descendant;
+        try {
+          for (let n = 0; n < 300 && !fs.existsSync(ready) && child.exitCode === null; n++)
+            await new Promise(resolve => setTimeout(resolve, 20));
+          assert.ok(fs.existsSync(ready), output);
+          descendant = Number(fs.readFileSync(ready, "utf8"));
+          child.kill("SIGINT");
+          const exit = await ended;
+          assert.equal(exit.code, 1, output);
+          assert.equal(fs.readFileSync(ack, "utf8"), "INT");
+          assert.equal(alive(descendant), false);
+          assert.equal(fs.existsSync(later), false);
+          const report = JSON.parse(fs.readFileSync(path.join(cwd, `.local/checks/workspace-${scope}-${process.platform}.json`)));
+          assert.equal(report.verdict, "failed"); assert.equal(report.interrupted_signal, "SIGINT");
+          assert.equal(report.results[0].status, "cancelled");
+          assert.ok(report.results.slice(1).every(row => row.status === "blocked"));
+        } finally {
+          if (child.exitCode === null && child.signalCode === null) {child.kill("SIGTERM"); await ended;}
+          if (descendant && alive(descendant)) process.kill(descendant, "SIGTERM");
+        }
+      }
+    } finally {fs.rmSync(temporary, {recursive: true, force: true});}
+  });

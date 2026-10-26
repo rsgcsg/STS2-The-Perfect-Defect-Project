@@ -725,7 +725,14 @@ function canonicalSelectorSurface(state, ctx, commonContext) {
     if (!operations[operation]) { missing.push("unregistered_native_selector_control"); continue; }
     const [verb, action] = operations[operation];
     const id = ctx.entityId("selector_control", `${state.selector_ref}:${operation}`);
-    const label = operation === "toggle_upgrade_view" ? "Toggle upgrade view" : operation;
+    const label = ({
+      open_preview: "Preview the selected cards",
+      toggle_upgrade_view: state.showing_upgrade_previews ? "Show current card versions" : "Show upgraded card previews",
+      confirm: "Confirm card upgrade",
+      confirm_selection: ["simple", "combat_pile"].includes(request.family) ? "Confirm selected cards" : "Confirm the selected cards",
+      cancel_preview: "Return to card selection",
+      cancel_selection: request.family === "deck_upgrade" ? "Cancel card upgrade selection" : "Cancel card selection"
+    })[operation];
     const subject = ctx.referent({ role: "selector_control", id, label,
       enabled: true, kind: "control", properties: null });
     controls.push({ entity_id: id, operation });
@@ -906,6 +913,75 @@ function gameOverSurface(state, ctx) {
     visibleInformation: "contract_complete_for_current_game_over_intro_and_executable_summary_advance",
     interactionDiscovery: "derived_from_original_native_end_and_current_headless_presentation_owner"
   };
+}
+
+function nativeSelectorText(value) { return typeof value === "string" && value.trim().length > 0
+    && !/[{}]|\[img/iu.test(value); }
+function nativeSelectorCardComplete(card, depth = 0) { return depth < 16 && plainObject(card)
+    && ["id", "name", "type", "cost", "rarity", "description", "target_type"].every((key) => nativeSelectorText(card[key]))
+    && typeof card.is_upgraded === "boolean"
+    && Array.isArray(card.keywords) && card.keywords.every((tip) => nativeSelectorText(tip?.name) && nativeSelectorText(tip?.description))
+    && Array.isArray(card.card_previews) && card.card_previews.every((preview) => nativeSelectorCardComplete(preview, depth + 1))
+    && (card.enchantment == null || nativeSelectorText(card.enchantment) && nativeSelectorText(card.enchantment_description)); }
+function publicNativeSelectorCard(card, id, ctx, depth = 0) { return ({
+        ...visibleCombatCard(card, id), is_selected: card?.is_selected === true,
+        is_selectable: card?.is_selectable === true, is_deselectable: card?.is_deselectable === true,
+        keywords: Array.isArray(card?.keywords) ? card.keywords.map((tip) => ({ name: visibleText(tip?.name), description: visibleText(tip?.description) })) : [],
+        card_previews: depth < 16 && Array.isArray(card?.card_previews) ? card.card_previews.map((preview, index) =>
+          publicNativeSelectorCard(preview, ctx.id("hover_card", id, depth, index), ctx, depth + 1)) : []
+      });
+}
+
+function projectNativeSelectorHud(state, ctx, baseCards) {
+  const hud = state.combat_context;
+  const statusComplete = (values) => Array.isArray(values) && values.every((value) =>
+    nativeSelectorText(value?.id) && nativeSelectorText(value?.name) && nativeSelectorText(value?.description) && Number.isFinite(value?.amount));
+  const complete = canonicalHudComplete(hud) && hud.player_ref === state.player?.native_ref
+    && Number.isSafeInteger(hud.round) && hud.round >= 1 && nativeSelectorText(hud.turn_owner)
+    && ["hp", "max_hp", "block", "energy", "max_energy", "draw_pile_count", "discard_pile_count",
+      "exhaust_pile_count", "orb_slots"].every((key) => Number.isFinite(hud[key]))
+    && Array.isArray(hud.hand) && hud.hand.every((card) => nativeSelectorText(card?.native_ref)
+      && card.render_complete === true && nativeSelectorCardComplete(card))
+    && new Set(hud.hand.map((card) => card.native_ref)).size === hud.hand.length
+    && Array.isArray(state.combat_piles) && state.combat_piles.length === 3
+    && ["draw", "discard", "exhaust"].every((pile) => {
+      const zones = state.combat_piles.filter((zone) => zone?.pile === pile);
+      return zones.length === 1 && zones[0].ordering_semantics === (pile === "draw" ? "unordered_multiset" : "native_visible_order")
+        && Array.isArray(zones[0].cards) && zones[0].cards.length === hud[`${pile}_pile_count`]
+        && zones[0].cards.every((card) => card?.render_complete === true && nativeSelectorCardComplete(card));
+    })
+    && statusComplete(hud.statuses) && Array.isArray(hud.orbs) && hud.orbs.every((orb) => nativeSelectorText(orb?.native_ref)
+      && nativeSelectorText(orb?.id) && nativeSelectorText(orb?.name) && Number.isFinite(orb.passive) && Number.isFinite(orb.evoke)
+      && Array.isArray(orb.keywords) && orb.keywords.every((tip) => nativeSelectorText(tip?.name) && nativeSelectorText(tip?.description)))
+    && Array.isArray(hud.companions) && hud.companions.every((pet) => nativeSelectorText(pet?.native_ref) && nativeSelectorText(pet?.id)
+      && typeof pet.alive === "boolean" && typeof pet.health_bar_visible === "boolean" && nativeSelectorText(pet.health_display)
+      && (pet.hp === null || Number.isFinite(pet.hp)) && (pet.max_hp === null || Number.isFinite(pet.max_hp))
+      && Number.isFinite(pet.block) && statusComplete(pet.statuses))
+    && Array.isArray(hud.enemies) && hud.enemies.every((enemy) => nativeSelectorText(enemy?.native_ref) && nativeSelectorText(enemy?.id)
+      && nativeSelectorText(enemy?.name) && typeof enemy?.health_bar_visible === "boolean" && nativeSelectorText(enemy?.health_display)
+      && (enemy.hp === null || Number.isFinite(enemy.hp)) && (enemy.max_hp === null || Number.isFinite(enemy.max_hp))
+      && Number.isFinite(enemy.block) && statusComplete(enemy.statuses)
+      && Array.isArray(enemy.intents) && enemy.intents.every((intent) =>
+        ["type", "title", "description"].every((key) => nativeSelectorText(intent?.[key]))
+        && (intent.label === "" || nativeSelectorText(intent.label))));
+  const context = complete ? {
+        kind: "combat", encounter_type: hud.encounter_type, is_play_phase: hud.is_play_phase,
+        round: hud.round, turn_owner: hud.turn_owner,
+        player: { player_entity_id: ctx.entityId("player", hud.player_ref),
+          hand: hud.hand.map((card) => baseCards
+            ? visibleCardBase(card, ctx.entityId("card", card.native_ref)) : publicNativeSelectorCard(card, ctx.entityId("card", card.native_ref), ctx)),
+          ...Object.fromEntries(["hp", "max_hp", "block", "energy", "max_energy", "stars", "draw_pile_count",
+            "discard_pile_count", "exhaust_pile_count", "orb_slots"].filter(key => !(baseCards && ["hp", "max_hp"].includes(key))
+              && (!baseCards || key !== "stars" || hud.stars != null)).map((key) => [key, hud[key]])),
+          statuses: hud.statuses.map(visibleStatus), orbs: hud.orbs.map((orb) => visibleOrb(orb, ctx, !baseCards)),
+          potion_states: hud.potion_states.map((potion) => ({ entity_id: ctx.entityId("potion", potion.native_ref),
+            target_type: potion.target_type, can_use: potion.can_use, automatic: potion.automatic })),
+          companions: hud.companions.map((pet) => visibleCompanion(pet, ctx)) },
+        enemies: hud.enemies.map((enemy) => ({ entity_id: ctx.entityId("enemy", enemy.native_ref),
+          definition_id: definitionId(enemy.id), name: visibleText(enemy.name), combat_id: enemy.combat_id, ...visibleHealth(enemy),
+          statuses: enemy.statuses.map(visibleStatus), intents: enemy.intents.map(visibleIntent) }))
+      } : null;
+  return { complete, context };
 }
 
 function currentSurface(state, ctx) {
@@ -1672,6 +1748,70 @@ function currentSurface(state, ctx) {
         missing: exact ? [] : [`exact_current_${selectionKind}_binding`]
       };
     }
+    case "native_hand_select": {
+      const cards = Array.isArray(state.cards) ? state.cards : [];
+      const selected = Array.isArray(state.selected_refs) ? state.selected_refs : [];
+      const refs = cards.map(card => card?.native_ref);
+      const upgrade = state.selection_mode === "upgrade_select";
+      const { complete: hudComplete, context } = projectNativeSelectorHud(state, ctx, true);
+      const complete = state.native_hand_complete === true && Array.isArray(state.native_hand_missing)
+        && state.native_hand_missing.length === 0 && nativeSelectorText(state.selector_ref)
+        && nativeSelectorText(state.prompt) && state.stage === "ready"
+        && ["simple_select", "upgrade_select"].includes(state.selection_mode)
+        && Number.isSafeInteger(state.min_select) && state.min_select >= 0
+        && Number.isSafeInteger(state.max_select) && state.max_select >= Math.max(1, state.min_select)
+        && (!upgrade || state.min_select === 1 && state.max_select === 1)
+        && state.require_manual_confirmation === true && state.is_peeking === false && state.can_close_peek === false
+        && cards.length > 0 && cards.length * 2 + 1 <= ACTION_LIMIT && new Set(refs).size === cards.length
+        && selected.length <= state.max_select && new Set(selected).size === selected.length
+        && selected.every(ref => refs.includes(ref))
+        && state.can_confirm === (selected.length >= state.min_select && selected.length <= state.max_select)
+        && cards.every(card => nativeSelectorText(card?.native_ref) && nativeSelectorCardComplete(card)
+          && card.render_complete === true && card.is_selected === selected.includes(card.native_ref)
+          && card.is_selectable === !card.is_selected && card.is_deselectable === (!upgrade && card.is_selected)
+          && plainObject(card.public_details) && Array.isArray(card.public_details.keywords)
+          && Array.isArray(card.public_details.card_previews) && Array.isArray(card.public_details_missing)
+          && card.public_details_missing.length === 0)
+        && hudComplete;
+      const items = cards.map((card, index) => {
+        const id = nativeSelectorText(card?.native_ref) && refs.filter(ref => ref === card.native_ref).length === 1
+          ? ctx.entityId("card", card.native_ref) : ctx.id("unbound_hand_card", index);
+        const { target_type: _target, can_play: _play, unplayable_reason: _reason, ...base } = visibleCardBase(card, id);
+        const visible = { ...base, is_selected: card?.is_selected === true };
+        const item = ctx.referent({ role: "card", id, label: visible.name,
+          enabled: complete && (card.is_selectable || card.is_deselectable), selected: visible.is_selected, properties: visible });
+        ctx.detailReads.push(publicCardDetailRead(ctx, visible, card.public_details,
+          Array.isArray(card.public_details_missing) ? card.public_details_missing : ["current_native_hand_card_details"],
+          "surface:combat_hand_card_selection", null));
+        return item;
+      });
+      const selectedIds = items.filter((_, index) => cards[index]?.is_selected).map(item => item.referent_id).sort();
+      const selectableIds = items.filter((_, index) => cards[index]?.is_selectable).map(item => item.referent_id).sort();
+      const deselectableIds = items.filter((_, index) => cards[index]?.is_deselectable).map(item => item.referent_id).sort();
+      if (complete) {
+        for (const [ids, verb, operation] of [[selectableIds, "select", "select_native_card"], [deselectableIds, "deselect", "deselect_native_card"]]) {
+          for (const id of ids) {
+            const index = items.findIndex(item => item.referent_id === id); const item = items[index];
+            const replace = verb === "select" && (upgrade ? selected.length > 0 : selected.length >= state.max_select);
+            ctx.action({ verb, subject: item, label: `${replace ? "Replace current selection with" : verb === "select" ? "Select" : "Deselect"} ${item.label}`,
+              raw: { cmd: "action", action: operation, args: { selector_ref: state.selector_ref, card_ref: cards[index].native_ref } } });
+          }
+        }
+        if (state.can_confirm) ctx.action({ verb: "confirm", label: "Confirm selected cards",
+          raw: { cmd: "action", action: "confirm_native_selection", args: { selector_ref: state.selector_ref, selected_refs: selected.join(",") } } });
+      }
+      return { kind: "combat_hand_card_selection", stage: "ready", prompt: state.prompt ?? null,
+        surface: { kind: "combat_hand_card_selection", prompt: state.prompt ?? null, selection_mode: state.selection_mode,
+          min_select: state.min_select, max_select: state.max_select, selected_count: selected.length,
+          selected_card_entity_ids: selectedIds, require_manual_confirmation: state.require_manual_confirmation,
+          is_peeking: state.is_peeking, selectable_card_entity_ids: selectableIds, deselectable_card_entity_ids: deselectableIds,
+          can_confirm: state.can_confirm, can_close_peek: state.can_close_peek, cards: items.map(item => item.properties) },
+        context: context ?? { ...commonContext, kind: "selection" }, complete,
+        missing: complete ? [] : ["exact_current_native_hand_selection_and_details"],
+        visibleInformation: "original_native_hand_selection_and_current_combat_hud",
+        interactionDiscovery: "original_native_hand_callback_task_and_offered_objects",
+        hiddenByPolicy: ["hidden_rng", "draw_pile_true_order", "future_enemy_moves", "future_rewards", "future_events"] };
+    }
     case "native_card_select": {
       const cards = Array.isArray(state.cards) ? state.cards : [];
       const selected = Array.isArray(state.selected_refs) ? state.selected_refs : [];
@@ -1680,44 +1820,10 @@ function currentSurface(state, ctx) {
       const combat = state.origin === "combat_pile";
       const manual = state.require_manual_confirmation;
       const hud = state.combat_context;
-      const text = (value) => typeof value === "string" && value.trim().length > 0
-        && !/[{}]|\[img/iu.test(value);
-      const cardComplete = (card, depth = 0) => depth < 16 && plainObject(card)
-        && ["id", "name", "type", "cost", "rarity", "description", "target_type"].every((key) => text(card[key]))
-        && typeof card.is_upgraded === "boolean"
-        && Array.isArray(card.keywords) && card.keywords.every((tip) => text(tip?.name) && text(tip?.description))
-        && Array.isArray(card.card_previews) && card.card_previews.every((preview) => cardComplete(preview, depth + 1))
-        && (card.enchantment == null || text(card.enchantment) && text(card.enchantment_description));
-      const statusComplete = (values) => Array.isArray(values) && values.every((value) =>
-        text(value?.id) && text(value?.name) && text(value?.description) && Number.isFinite(value?.amount));
-      const hudComplete = canonicalHudComplete(hud) && hud.player_ref === state.player?.native_ref
-        && Number.isSafeInteger(hud.round) && hud.round >= 1 && text(hud.turn_owner)
-        && ["hp", "max_hp", "block", "energy", "max_energy", "draw_pile_count", "discard_pile_count",
-          "exhaust_pile_count", "orb_slots"].every((key) => Number.isFinite(hud[key]))
-        && Array.isArray(hud.hand) && hud.hand.every((card) => text(card?.native_ref)
-          && card.render_complete === true && cardComplete(card))
-        && new Set(hud.hand.map((card) => card.native_ref)).size === hud.hand.length
-        && Array.isArray(state.combat_piles) && state.combat_piles.length === 3
-        && ["draw", "discard", "exhaust"].every((pile) => {
-          const zones = state.combat_piles.filter((zone) => zone?.pile === pile);
-          return zones.length === 1 && zones[0].ordering_semantics === (pile === "draw" ? "unordered_multiset" : "native_visible_order")
-            && Array.isArray(zones[0].cards) && zones[0].cards.length === hud[`${pile}_pile_count`]
-            && zones[0].cards.every((card) => card?.render_complete === true && cardComplete(card));
-        })
-        && statusComplete(hud.statuses) && Array.isArray(hud.orbs) && hud.orbs.every((orb) => text(orb?.native_ref)
-          && text(orb?.id) && text(orb?.name) && Number.isFinite(orb.passive) && Number.isFinite(orb.evoke)
-          && Array.isArray(orb.keywords) && orb.keywords.every((tip) => text(tip?.name) && text(tip?.description)))
-        && Array.isArray(hud.companions) && hud.companions.every((pet) => text(pet?.native_ref) && text(pet?.id)
-          && typeof pet.alive === "boolean" && typeof pet.health_bar_visible === "boolean" && text(pet.health_display)
-          && (pet.hp === null || Number.isFinite(pet.hp)) && (pet.max_hp === null || Number.isFinite(pet.max_hp))
-          && Number.isFinite(pet.block) && statusComplete(pet.statuses))
-        && Array.isArray(hud.enemies) && hud.enemies.every((enemy) => text(enemy?.native_ref) && text(enemy?.id)
-          && text(enemy?.name) && typeof enemy?.health_bar_visible === "boolean" && text(enemy?.health_display)
-          && (enemy.hp === null || Number.isFinite(enemy.hp)) && (enemy.max_hp === null || Number.isFinite(enemy.max_hp))
-          && Number.isFinite(enemy.block) && statusComplete(enemy.statuses)
-          && Array.isArray(enemy.intents) && enemy.intents.every((intent) =>
-            ["type", "title", "description"].every((key) => text(intent?.[key]))
-            && (intent.label === "" || text(intent.label))));
+      const runChoice = choose && state.selector_domain === "run" && hud === null && state.combat_piles === null;
+      const text = nativeSelectorText;
+      const cardComplete = nativeSelectorCardComplete;
+      const { complete: hudComplete, context: publicHud } = projectNativeSelectorHud(state, ctx, choose || plainObject(state.selector_public));
       const exact = (choose || combat) && state.native_selector_complete === true
         && Array.isArray(state.native_selector_missing) && state.native_selector_missing.length === 0
         && text(state.selector_ref) && text(state.prompt) && state.stage === "choosing" && state.cancelable === false
@@ -1734,31 +1840,8 @@ function currentSurface(state, ctx) {
         && (choose ? !manual && selected.length === 0 && cards.length <= 3 && state.display_pile === "none"
           && state.min_select === (state.can_skip ? 0 : 1)
           : !state.can_skip && state.min_select === 1 && ["draw", "discard", "exhaust"].includes(state.display_pile))
-        && hudComplete;
-      const publicCard = (card, id, depth = 0) => ({
-        ...visibleCombatCard(card, id), is_selected: card?.is_selected === true,
-        is_selectable: card?.is_selectable === true, is_deselectable: card?.is_deselectable === true,
-        keywords: Array.isArray(card?.keywords) ? card.keywords.map((tip) => ({ name: visibleText(tip?.name), description: visibleText(tip?.description) })) : [],
-        card_previews: depth < 16 && Array.isArray(card?.card_previews) ? card.card_previews.map((preview, index) =>
-          publicCard(preview, ctx.id("hover_card", id, depth, index), depth + 1)) : []
-      });
-      const publicHud = hudComplete ? {
-        kind: "combat", encounter_type: hud.encounter_type, is_play_phase: hud.is_play_phase,
-        round: hud.round, turn_owner: hud.turn_owner,
-        player: { player_entity_id: ctx.entityId("player", hud.player_ref),
-          hand: hud.hand.map((card) => (choose || plainObject(state.selector_public))
-            ? visibleCardBase(card, ctx.entityId("card", card.native_ref)) : publicCard(card, ctx.entityId("card", card.native_ref))),
-          ...Object.fromEntries(["hp", "max_hp", "block", "energy", "max_energy", "stars", "draw_pile_count",
-            "discard_pile_count", "exhaust_pile_count", "orb_slots"].filter(key => !((choose || plainObject(state.selector_public)) && ["hp", "max_hp"].includes(key))
-              && (!(choose || plainObject(state.selector_public)) || key !== "stars" || hud.stars != null)).map((key) => [key, hud[key]])),
-          statuses: hud.statuses.map(visibleStatus), orbs: hud.orbs.map((orb) => visibleOrb(orb, ctx, !(choose || plainObject(state.selector_public)))),
-          potion_states: hud.potion_states.map((potion) => ({ entity_id: ctx.entityId("potion", potion.native_ref),
-            target_type: potion.target_type, can_use: potion.can_use, automatic: potion.automatic })),
-          companions: hud.companions.map((pet) => visibleCompanion(pet, ctx)) },
-        enemies: hud.enemies.map((enemy) => ({ entity_id: ctx.entityId("enemy", enemy.native_ref),
-          definition_id: definitionId(enemy.id), name: visibleText(enemy.name), combat_id: enemy.combat_id, ...visibleHealth(enemy),
-          statuses: enemy.statuses.map(visibleStatus), intents: enemy.intents.map(visibleIntent) }))
-      } : null;
+        && (runChoice || hudComplete);
+      const publicCard = (card, id, depth = 0) => publicNativeSelectorCard(card, id, ctx, depth);
       if (plainObject(state.selector_public)) {
         const canonical = canonicalSelectorSurface(state, ctx, commonContext);
         return { ...canonical, context: publicHud ?? canonical.context,
@@ -2076,9 +2159,12 @@ function currentSurface(state, ctx) {
         && !unsupportedCardTarget
         && !unsupportedPotionTarget;
       const actionComplete = identityComplete
-        && playWindowOpen
         && !unsupportedCardTarget
         && !unsupportedPotionTarget;
+      if (!playWindowOpen) {
+        ctx.actions.length = 0;
+        ctx.bindings.clear();
+      }
       return {
         kind: "combat_turn",
         stage: playWindowOpen ? "ready" : "settling",
@@ -2125,7 +2211,6 @@ function currentSurface(state, ctx) {
           ...(identityComplete ? [] : ["native_combat_operand_identity"]),
           ...(semanticFactsComplete ? [] : ["complete_visible_combat_context",
             ...(typeof state.combat_hud_gap === "string" ? [`combat_hud_gap:${state.combat_hud_gap}`] : [])]),
-          ...(playWindowOpen ? [] : ["native_combat_play_window_closed"]),
           ...(unsupportedCardTarget ? ["native_unsupported_card_target_type"] : []),
           ...(unsupportedPotionTarget ? ["native_unsupported_potion_target_type_or_binding"] : [])
         ],
@@ -2522,7 +2607,8 @@ export function projectManagedCandidateDecision({
     snapshot_id: ctx.snapshotId,
     sequence,
     observed_at: new Date().toISOString(),
-    status: actionProjectionComplete && ctx.actions.length > 0
+    status: surface.kind === "combat_turn" && surface.stage === "settling" && contractComplete
+      ? "settling" : actionProjectionComplete && ctx.actions.length > 0
       ? "interactive"
       : terminal && contractComplete ? "observed" : "visible_unsupported",
     persistent: persistent.content,

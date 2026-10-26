@@ -273,12 +273,15 @@ test("upgrade and transform view controls dispatch only to the same pending Mana
       return { ...structuredClone(state), showing_upgrade_previews: true };
     } } });
     const initial = await session.mount({ seed: "synthetic-upgrade-view-binding" });
-    const action = initial.bound_actions.actions.find(action => action.label === "Toggle upgrade view");
+    const operation = initial.interaction.content.surface.current_controls.find(control => control.operation === "toggle_upgrade_view");
+    const action = initial.bound_actions.actions.find(action => action.subject_referent_id === operation.entity_id);
+    assert.equal(action.label, "Show upgraded card previews");
     assert.equal(action.verb, "open");
     const receipt = await session.submit({ requestId: family, expectedSnapshotId: initial.snapshot_id, boundActionId: action.bound_action_id });
     assert.equal(receipt.delivery, "delivered");assert.equal(submitted.length, 1);
     const before = initial.interaction.content.surface, after = receipt.successor.interaction.content.surface;
     assert.equal(after.showing_upgrade_previews, true);assert.equal(after.request_entity_id, before.request_entity_id);
+    assert.equal(receipt.successor.bound_actions.actions.find(action => action.verb === "open").label, "Show current card versions");
     assert.deepEqual(after.selected_card_entity_ids, before.selected_card_entity_ids);
     assert.deepEqual(after.preview_options, before.preview_options);
   }
