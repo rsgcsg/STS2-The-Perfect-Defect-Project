@@ -255,7 +255,7 @@ function parseArgs(args: string[]): CliOptions {
   const parsedEndpoint = new URL(connectorEndpoint);
   if (parsedEndpoint.protocol !== "http:" || !["127.0.0.1", "localhost", "::1", "[::1]"].includes(parsedEndpoint.hostname)) throw new Error("Connector endpoint must be loopback HTTP");
   const listenPort = Number(values.get("--listen-port") ?? "15527");
-  if (!Number.isSafeInteger(listenPort) || listenPort < 1 || listenPort > 65535) throw new Error("--listen-port must be a valid TCP port");
+  if (!Number.isSafeInteger(listenPort) || listenPort < 0 || listenPort > 65535) throw new Error("--listen-port must be 0 (OS assigned) or a valid TCP port");
   const observationAcquisition = values.get("--observation-acquisition") ?? "direct";
   if (observationAcquisition !== "direct" && observationAcquisition !== "sealed-text-menu-v2")
     throw new Error("--observation-acquisition must be direct or sealed-text-menu-v2");

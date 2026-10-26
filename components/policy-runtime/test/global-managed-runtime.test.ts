@@ -74,7 +74,7 @@ describe("original GLOBAL CLI startup and control",()=>{
    const port=address.port;await new Promise<void>(done=>listener.close(()=>done()));
    const manifestPath=join(f.root,"agent.json"),agent=fileURLToPath(new URL("./fixtures/global-agent-child.mjs",import.meta.url));
    const args=[join(compiled,"cli.js"),"--manifest",manifestPath,"--adapter-command",process.execPath,
-    "--adapter-arg",agent,"--adapter-arg",manifestPath,"--listen-port",String(port),"--evidence-root",f.root,
+    "--adapter-arg",agent,"--adapter-arg",manifestPath,"--listen-port",String(kind==="managed"?0:port),"--evidence-root",f.root,
     "--mode","human","--max-auto-submissions","1","--max-policy-calls","8","--auto-deadline-ms","10000"];
    if(source)args.push("--managed-binding",source.bindingPath,"--managed-attachment",source.attachmentPath,
     "--managed-expected-service-instance-id",source.target.serviceInstanceId,"--managed-expected-runtime-instance-id",source.target.runtimeInstanceId,
@@ -90,6 +90,7 @@ describe("original GLOBAL CLI startup and control",()=>{
    const expected=source?{binding_sha256:createHash("sha256").update(canonicalJson(JSON.parse(await readFile(source.bindingPath,"utf8")))).digest("hex"),
     service_instance_id:source.target.serviceInstanceId,runtime_instance_id:source.target.runtimeInstanceId,game_continuity_id:source.target.gameContinuityId}:null;
    expect(startup).toMatchObject({schema:"sts2.policy-runtime/agent-session-startup-2",runtime_version:POLICY_RUNTIME_VERSION,managed_environment:expected,mode:"human"});
+   expect(Number(new URL(startup.address).port)).toBeGreaterThan(0);
    if(source){const attachment=JSON.parse(await readFile(source.attachmentPath,"utf8"));expect(JSON.stringify(startup)).not.toContain(attachment.token);expect(JSON.stringify(startup)).not.toContain(source.attachmentPath);}
    const environment=await(await fetch(startup.address+"/v2/environment")).json();
    const headers={"content-type":"application/json","x-sts2-policy-run-id":startup.run_id,"x-sts2-game-instance-id":environment.runtime_instance_id,"x-sts2-recovery-epoch":String(environment.recovery_epoch)};

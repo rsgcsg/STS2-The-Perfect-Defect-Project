@@ -5,6 +5,11 @@ lifecycle, Human/Shadow/One-Step/Auto modes, stale refresh, delivery safety,
 stable-successor polling, and Agent-run evidence. It does not own game legality,
 model inference, or native operands.
 
+`--listen-port 0` asks the OS for an available loopback port. The startup line
+reports the actual address; callers must use that address. The default remains
+15527. This lets isolated evaluation workers use the same CLI without racing to
+reserve a port in a separate process.
+
 The manual P1 chooser (`examples/p1/human-chooser.mjs`, Agent version 4) starts
 each choice with the complete action list. The person consults the real game
 screen; `help` lists the retained public-observation browsing commands and
