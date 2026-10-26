@@ -2815,7 +2815,7 @@ internal static class NativeRunStartedPatch
     {
         try { NativeRunLifecycleProvider.ObserveLaunch(__result); }
         catch (Exception exception) { NativeUiObservationSafety.Report("run.launch.source", exception); }
-        RecorderRuntime.ObserveNativeRunStarted(Origins.JournalKind(__result));
+        RecorderRuntime.ObserveNativeRunStarted(Origins.JournalKind(__result), __result);
     }
 }
 

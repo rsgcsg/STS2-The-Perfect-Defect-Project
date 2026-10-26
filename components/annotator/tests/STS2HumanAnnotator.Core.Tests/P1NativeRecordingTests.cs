@@ -22,14 +22,22 @@ public sealed class P1NativeRecordingTests
             {
                 directory = store.DirectoryPath;
                 Assert.Empty(InitialProgressOriginal.Audit(directory, manifest));
-                store.TryPersistInitialProgressOriginal("run-0001", DateTimeOffset.UtcNow, 1, raw);
-                store.TryPersistInitialProgressOriginal("run-0001", DateTimeOffset.UtcNow, 1, new byte[] { 1 });
+                store.TryPersistInitialProgressOriginal("run-0001", DateTimeOffset.UtcNow, 1, raw,
+                    runSeed: InitialRunSeedWitness.Observe("X2-PRIVATE-SEED"));
+                store.TryPersistInitialProgressOriginal("run-0001", DateTimeOffset.UtcNow, 1, new byte[] { 1 },
+                    runSeed: InitialRunSeedWitness.Observe("MUST-NOT-OVERWRITE"));
                 store.TryPersistInitialProgressOriginal("run-0002", DateTimeOffset.UtcNow, 1, null,
-                    "resumed_run_initial_progress_not_observed");
+                    "resumed_run_initial_progress_not_observed",
+                    runSeed: InitialRunSeedWitness.Observe(null, "resumed_run_initial_progress_not_observed"));
+                store.TryPersistInitialProgressOriginal("run-0003", DateTimeOffset.UtcNow, 1, null,
+                    "native_progress_file_unavailable_or_capacity", runSeed: InitialRunSeedWitness.Observe("SEED-WITHOUT-FILE"));
+                store.TryPersistInitialProgressOriginal("run-0003", DateTimeOffset.UtcNow, 1, raw,
+                    runSeed: InitialRunSeedWitness.Observe("MUST-NOT-RETRY-UNKNOWN"));
             }
             var original = JsonSerializer.Deserialize<InitialProgressOriginal>(File.ReadAllBytes(
                 Path.Combine(directory, "initial-progress", "run-0001.json")), EvidenceJson.Options)!;
             Assert.Equal("captured", original.Status);
+            Assert.Equal("X2-PRIVATE-SEED", original.RunSeed!.Seed);
             string payload = Path.Combine(directory, original.PayloadRef!);
             Assert.Equal(raw, File.ReadAllBytes(payload));
             Assert.Empty(InitialProgressOriginal.Audit(directory, manifest));
@@ -37,6 +45,11 @@ public sealed class P1NativeRecordingTests
                 Path.Combine(directory, "initial-progress", "run-0002.json")), EvidenceJson.Options)!;
             Assert.Equal("unknown", unknown.Status); Assert.Null(unknown.PayloadRef);
             Assert.Equal("resumed_run_initial_progress_not_observed", unknown.Reason);
+            Assert.Equal("unknown", unknown.RunSeed!.Status); Assert.Null(unknown.RunSeed.Seed);
+            var missingFile = JsonSerializer.Deserialize<InitialProgressOriginal>(File.ReadAllBytes(
+                Path.Combine(directory, "initial-progress", "run-0003.json")), EvidenceJson.Options)!;
+            Assert.Equal("unknown", missingFile.Status); Assert.Null(missingFile.PayloadRef);
+            Assert.Equal("SEED-WITHOUT-FILE", missingFile.RunSeed!.Seed);
             File.WriteAllBytes(payload, new byte[] { 1, 2 });
             Assert.Contains("initial_progress_original_invalid", InitialProgressOriginal.Audit(directory, manifest));
         }
@@ -161,6 +174,9 @@ public sealed class P1NativeRecordingTests
             {
                 directory = store.DirectoryPath;
                 byte[] bytes = Basis(); string snapshot = JsonNode.Parse(bytes)!["snapshot"]!["snapshot_id"]!.GetValue<string>();
+                store.TryPersistInitialProgressOriginal("run-synthetic", DateTimeOffset.UtcNow, 1,
+                    Encoding.UTF8.GetBytes("{\"private_progress\":\"X2-PRIVATE-PROGRESS\"}\n"),
+                    runSeed: InitialRunSeedWitness.Observe("X2-PRIVATE-SEED"));
                 var basis = store.PersistP1NativeBasis(snapshot, bytes);
                 Assert.Equal(bytes, File.ReadAllBytes(Path.Combine(directory, basis.PayloadRef)));
                 var actions = JsonNode.Parse(bytes)!["snapshot"]!["bound_actions"]!["actions"]!.AsArray();
@@ -186,6 +202,8 @@ public sealed class P1NativeRecordingTests
             var outer = JsonNode.Parse(File.ReadAllText(Path.Combine(packed.BundleDirectory, "session-bundle-manifest.json")))!;
             Assert.False(outer["content_identity"]!["human_origin_attestation"]!["attested"]!.GetValue<bool>());
             Assert.Equal(packed.BundleContentId, EvidenceIdentity.Sha256File(Path.Combine(packed.BundleDirectory, "content-identity.json")));
+            Assert.Equal(File.ReadAllBytes(Path.Combine(directory, "initial-progress", "run-synthetic.json")),
+                File.ReadAllBytes(Path.Combine(packed.BundleDirectory, "raw", "initial-progress", "run-synthetic.json")));
             if (exported != null) File.WriteAllText(Path.Combine(root, "production-fixture-result.json"), JsonSerializer.Serialize(packed, EvidenceJson.IndentedOptions));
         }
         finally { if (exported == null) Directory.Delete(root, true); }

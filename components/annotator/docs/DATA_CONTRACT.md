@@ -707,3 +707,16 @@ unknown; old sessions with no sidecar remain unknown. The existing bundle copies
 all raw files and audits the optional snapshot hashes; this metadata does not
 grant Human origin, research admission or cross-Host equivalence. Recording
 input and lifecycle behavior remain unchanged.
+
+From Annotator rc.30, the same private sidecar optionally includes `run_seed`
+with `source=native_run_rng`, `status=captured` and the exact `RunState.Rng.StringSeed`
+observed at a new native Launch. Resumes or seed read failures explicitly record
+`status=unknown`, no seed and a reason. Historical absence remains unknown.
+Progress and seed availability are independent; neither an unknown witness nor
+a captured one is overwritten by a later launch. The full native account/profile
+`user://` path is used for byte reads: `GetProgressPathForProfile` alone is a
+SaveStore-relative path, not a Godot file path. No save is written or normalized.
+Seed/progress stay in sealed raw evidence and its ordinary integrity inventory,
+never in public bases, Connector snapshots, P1 observations or model input.
+These witnesses enable a separately checked replay attempt; seed equality alone
+does not establish Managed or whole-game equivalence.

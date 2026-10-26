@@ -132,6 +132,34 @@ def test_pinned_original_reader_and_store_roundtrip_reuse(tmp_path, original, to
     } == before
 
 
+def test_private_launch_originals_do_not_reach_real_p1_or_model_input(tmp_path, original):
+    import subprocess
+    from dataclasses import asdict
+
+    from stpd.p1.input import project
+
+    witness = json.loads((original / "raw/initial-progress/run-synthetic.json").read_bytes())
+    assert witness["run_seed"]["seed"] == "X2-PRIVATE-SEED"
+    assert b"X2-PRIVATE-PROGRESS" in (original / "raw" / witness["payload_ref"]).read_bytes()
+    output = tmp_path / "actual-p1.json"
+    subprocess.run(
+        ["node", str(ROOT / "tools/p1-native-to-p1.mjs"), "--bundle", str(original),
+         "--output", str(output)],
+        cwd=ROOT, check=True, capture_output=True, text=True, timeout=60,
+    )
+    report = json.loads(output.read_bytes())
+    assert "X2-PRIVATE" not in output.read_text()
+    observations = [
+        capture["observation"] for capture in report["captures"] if capture["observation"]
+    ]
+    assert observations
+    for observation in observations:
+        frame = asdict(project(observation))
+        serialized = json.dumps(frame)
+        assert "X2-PRIVATE" not in serialized
+        assert "run_seed" not in serialized and "initial_progress" not in serialized
+
+
 def test_original_tampering_and_mutated_fixed_release_are_rejected(tmp_path, original, tool):
     (original / "raw/p1-native-events.jsonl").write_bytes(b"{}\n")
     with pytest.raises(CollectionFailure, match="reader/converter failed"):
