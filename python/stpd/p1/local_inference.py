@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from multiprocessing import AuthenticationError
 from multiprocessing.connection import Client, Connection, Listener
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import torch
 
@@ -58,7 +58,7 @@ class LocalInferencePool:
         self.auth = secrets.token_bytes(32)
         self.adapter = adapter_identity()
         self.listener = Listener(("127.0.0.1", 0), authkey=self.auth)
-        self.address = self.listener.address
+        self.address = cast(tuple[str, int], self.listener.address)
         self.queue: queue.Queue[_Request | None] = queue.Queue()
         self.stopping = threading.Event()
         self.connections: list[threading.Thread] = []
@@ -251,7 +251,7 @@ class LocalInferenceClient:
         response = json.loads(self.connection.recv_bytes(MAX_BYTES))
         if response.get("request_id") != self.request_id or "error" in response:
             raise ValueError("local inference score failed")
-        return response["scores"]
+        return cast(list[float], response["scores"])
 
     def close(self) -> None:
         self.connection.close()
