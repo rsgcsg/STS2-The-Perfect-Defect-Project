@@ -93,8 +93,8 @@ export function comparePublicPointBindings(left: P1Observation, right: P1Observa
   const b = { observation: modelView(right), chosen: null };
   const graph = graphPolicy(canonicalJson(a.observation) === canonicalJson(b.observation), left);
   try {
-    graph.compareWhole(a, b);
-    return { ...result, bindings: graph.bindings() };
+    const bindings = graph.compareWhole(a, b);
+    return { ...result, bindings };
   } catch (error) {
     if (error instanceof PublicGraphDifference) return {
       verdict: error.incomparable ? "incomparable" as const : "different" as const,

@@ -87,7 +87,7 @@ export function createPublicGraphComparator(policy: PublicGraphPolicy) {
    * Each branch retains one global bijection and verifies every remaining field;
    * equal local signatures only select candidates, never establish equality.
    * The existing work bound covers all branches, including failed ones. */
-  function compareWhole(a: unknown, b: unknown, path = "$"): void {
+  function compareWhole(a: unknown, b: unknown, path = "$") {
     type Task = { kind: "value"; a: unknown; b: unknown; path: string; key: string;
       parent: Record<string, unknown> | null; depth: number }
       | { kind: "members"; a: readonly unknown[]; b: readonly unknown[]; index: number; offset: number; path: string; key: string; depth: number };
@@ -156,7 +156,12 @@ export function createPublicGraphComparator(policy: PublicGraphPolicy) {
         forward.clear(); reverse.clear();
         for (const [key, value] of state.forward) forward.set(key, value);
         for (const [key, value] of state.reverse) reverse.set(key, value);
-        return;
+        // Export only this successful whole-graph snapshot, never the mutable
+        // partial map from compare() or an earlier failed invocation.
+        return [...state.forward].map(([key, right]) => {
+          const colon = key.indexOf(":");
+          return { kind: key.slice(0, colon), left: key.slice(colon + 1), right };
+        });
       } catch (error) {
         if (!(error instanceof PublicGraphDifference) || error.incomparable) throw error;
         firstFailure ??= error;
@@ -164,11 +169,5 @@ export function createPublicGraphComparator(policy: PublicGraphPolicy) {
     }
     throw firstFailure!;
   }
-  /** Evidence consumers may inspect the successful whole-graph mapping. This
-   * neither selects a native action nor creates a second identity relation. */
-  const bindings = () => [...forward].map(([key, right]) => {
-    const colon = key.indexOf(":");
-    return { kind: key.slice(0, colon), left: key.slice(colon + 1), right };
-  });
-  return { compare, unordered, compareWhole, bindings };
+  return { compare, unordered, compareWhole };
 }

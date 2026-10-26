@@ -33,3 +33,17 @@ describe("P1 r1.6 order declaration, explicitly selected", () => {
     expect(publicOrderingIssue(o)).toBeNull();
   });
 });
+
+it("only returns a mapping from a successful complete graph invocation", async () => {
+  const { createPublicGraphComparator } = await import("../src/p1Global/index.js");
+  const graph = createPublicGraphComparator({ alias: (value, key) => key === "entity_id" ? { kind: "entity", id: value } : null });
+  expect(() => graph.compare({ entity_id: "x", value: 1 }, { entity_id: "y", value: 2 })).toThrow();
+  expect("bindings" in graph).toBe(false);
+  const mapping = graph.compareWhole({ entity_id: "a", value: 1 }, { entity_id: "b", value: 1 });
+  expect(mapping).toEqual([{ kind: "entity", left: "a", right: "b" }]);
+  expect(() => graph.compareWhole({ entity_id: "c", value: 1 }, { entity_id: "d", value: 2 })).toThrow();
+  expect(mapping).toEqual([{ kind: "entity", left: "a", right: "b" }]);
+  mapping[0]!.right = "caller-modified";
+  expect(graph.compareWhole({ entity_id: "a", value: 1 }, { entity_id: "b", value: 1 }))
+    .toEqual([{ kind: "entity", left: "a", right: "b" }]);
+});
