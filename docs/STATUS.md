@@ -5,6 +5,12 @@ source and scope; refresh its owning status/identity before an operational actio
 CURRENT owns the active task and next step; its linked active plan owns progress.
 Historical execution matrices retain their original observations and obligations.
 
+## 最新可恢复入口（2026-10-27）
+
+[本轮事实收据](evidence/CONVERGENCE_BASELINE_20261027.md)汇合D/F/Q2/Q3/X1/X2：第35槽已封存，旧100仍未完成；Managed20局与Reference分开；Q3/X2已在正常真人局验收，新局有种子/原样进度，个人profile的Managed整局重演未通过。日常安装与源码版本分别列出，不从Mod包65推所有组件相同。
+
+当前能力入口见[地图](DOCUMENT_MAP.md)，当前派工见[CURRENT](memory/CURRENT.md)。下面各节都是其原日期、原候选的历史观察，不是今日待办，也不把旧“current”一词当作新指令。
+
 ## P1 integration baseline candidate, observed 2026-10-16
 
 PR180 normally merged at02636a94. PR187/405ba001 full dual-OS run38724470159

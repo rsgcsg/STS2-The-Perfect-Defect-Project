@@ -1,5 +1,7 @@
 # 游戏内“开始展示”连接当前局
 
+> 参考：本页记录10-23的任务与未完现场义务，不是当前派工。最新能力/当前任务从[地图](../../DOCUMENT_MAP.md)和[CURRENT](../../memory/CURRENT.md)进入；本轮只定点接回PR233独有文字，原版本与失败不改。
+
 用户实际遇到换局后“开始展示”没有效果，并要求快速修复真实UI流程、少分工。root为唯一源码writer，基线develop2dbb96c6，topic codex/native-current-display-20261023。用户随后要求整体GUI真实效果稳定、训练结束安全核实并导出少量有用权重，同一上层链与原SOP/解耦，90分钟硬截止2026-10-23T18:27:00Z，不因后续修复重置。原App已正常停止后才继续修改；当前游戏保留，更新Mod需正常保存/关闭/冷加载。Runtime41的Pause修复已独立集成，本轮不改Runtime/SDK/Evidence或训练；Live UI rc19/Mod rc61仅映射Model终态恢复与反馈。
 
 第一处缺口在Application映射：普通游戏的P1开始入口没有准备当前局的attached资源，而受控评估局的owned引用又只能用于原seed。现在Native UI的原models.takeover/load沿同一prepare/current-binding→Model negotiation→Agent request→run-agent链接当前游戏；attached的再次开始先核原Actor正常Stop/typed clean seal，再正常detach并以新ref冷附着。源封装只组合既有owner，不建立第二套控制、规则或合法性。owned评估的seed/profile验证不变，unknown不重投，旧失败和原件不改。
@@ -13,3 +15,11 @@
 原训练已自然早停2190步/最佳1460，最终产物与原worker唯一一次TEST已核；学校分配已正常Stop并回到选择页。最终best与current2190沿同一配方/Store/Model入口交付。父任务固定40局、完整最终比较与总R2索引未完成，不因本轮GUI或子门禁通过而关闭。到硬截止如实交付已完成与未完项，不自动复活后续工作。
 
 准确Mod61冷加载后发现新游戏配对被已关闭资源的历史runtime身份挡住，页面因而未连接。Application配对检查改为只用活动资源约束当前游戏；idle/closed/failed仍先经Environment原状态读取及实际选中Connector身份核对，不清除未知/活动任务。回归从真实公开Host pipe准备并正常结束原资源，保留原admission_context，再验证新selected游戏可配对、活动旧资源和未选中游戏仍拒绝。原App先正常停止后才改源码，Mod/Runtime不因此重编或替换。
+
+## 2026-10-23 历史收口（本轮定点接回）
+
+来源为PR233准确head `dab9541c3a2aee0b822206cf6b61d25078423cea` 的本任务收口段。PR232普通合并 `7f3c711c`，准确候选 `25ca3adb` 的源码/CI、Mod61安装/冷加载、random/frequency原生Start/动作和干净封存分别有原件。random因selector缺口交还控制后，由AI手动选包并同Actor Continue，不记Human；封存缺合格terminal body，截图不补typed胜负。
+
+两次Pause均晚于自然落败，**当时暂停现场验收未完成**；新版linear/最终Mstd GUI当时未测。完整聚合R2冷恢复仍不能由自有输出校验代替。详细模型ID、原件/费用在PR233原交付索引保留，不把旧版本当今日安装。
+
+selector缺口后来由[PR241修复验证](../../evidence/SELECTOR_BUNDLE_ADMISSION_2026-10-25.md)承接；旧GUI失败不追认通过。原40局/最终比较后来由[checkpoint评估任务](CHECKPOINT_REFERENCE_EVALUATION_20261024.zh-CN.md)接续为原100槽，不能复制“40局未开始”成今日派工。其余未完项保留原任务，后续若要结项须有对应准确候选证据；本轮不启动游戏或恢复试验。

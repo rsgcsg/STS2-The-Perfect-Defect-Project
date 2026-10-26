@@ -1,5 +1,7 @@
 # K1 全项目资产账本（只读，2026-10-18）
 
+> 2026-10-27参考定位：本目录保原任务/合同/盘点快照，当前能力和运行节点从[根地图](../../DOCUMENT_MAP.md)进入，派工只看[CURRENT](../../memory/CURRENT.md)。[本轮去向增量](../CONVERGENCE_DISPOSITION_20261027.md)补K后的变化；K3已有执行收据优先于旧“未执行”摘要。本轮未移动原目录或改写下面历史正文。
+
 **交付**：[项目地图入口](README.md)；本仓保留一次完整 [CSV](asset-ledger.csv)，共2063行；原完整JSON和详情文件的精确路径/大小/SHA见[source index](asset-sources.json)。每行有是什么、层、独有成果或未核实、状态、建议去向和出处。目录/ref/文档/副本相互重叠，行数不是功能数、局数或可释放空间。
 
 日常先从[操作导航](../../DOCUMENT_MAP.md#按我要做什么进入)进入现owner；遇到旧native-ui、Recorder连录、Store/R2或GPU恢复，从[已有解法](../../RESOLVED_ISSUES.zh-CN.md)直接到代码/原收据。本账是2026-10-18元数据盘点，不能用它的目录、PR、dirty或空间数字操作当前资源。功能迁入与支持入口只在[原功能表](FEATURE_STATUS.md)维护；未核语义不能靠归档标签或该账的行数完成。

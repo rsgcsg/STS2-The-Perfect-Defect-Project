@@ -1,25 +1,25 @@
-# SpireAgent：先从这里看
+# SpireAgent：让《杀戮尖塔 2》Agent 一圈一圈变强
 
-目标是做出最强、能真实使用的《杀戮尖塔2》Agent，靠采集、数据管理、训练、接入、评估和迭代持续提高能力。环境与平台服务这个目标；P1是当前选定的交互协议，以后可以替换。
+这个项目把**录制 → 保存和选数据 → 训练 → 接入游戏 → 评估 → 改进**接成可重复的闭环。目标是做出强、能实际使用的 Agent，并让每一圈少花时间、不丢已有成果。平台和文档都为这个目标服务。
 
-## 一套职责，一个当前入口
+现在已经有日常真人录制、录后自动入库和小结、R2 保存、学校 GPU 训练入口、模型接入和评估工具。模型强度仍低；Managed 模拟环境有明确差异，不能把它的成绩当真游戏成绩。准确分数、当前任务和下一步只看 [CURRENT](docs/memory/CURRENT.md)。
 
-从[架构职责与局部细分](docs/ARCHITECTURE.md#responsibility-refinement)理解目标、职责和实现；[唯一链路图和连接表](docs/plans/p1-prefreeze-2026-10-18/CHAIN_PURPOSES.md#唯一上层图与连接要求新任务入口2026-10-19)：在线连接游戏、Host、公开环境、交互协议和完整Agent；记录连接不可变原件与派生；研究连接用途、输入/目标、训练、模型和新运行。图和requires/provides只在该处维护。
+## 从这四页接手
 
-- **项目现在做到哪、卡在哪、下一步是什么**：[CURRENT](docs/memory/CURRENT.md)。当前任务、正式计数、预检和安装状态都从这里查，不能从设计或旧报告推断通过。
-- **执行中的现场与停止点**：只从CURRENT进入其链接的当前任务。任务给准确分支、负责人、进程、验收和停止点；本地检查点是恢复线索，不另派发工作。
-- **先前怎么解决过**：[已有解法与适用边界](docs/RESOLVED_ISSUES.zh-CN.md)。遇到同类问题，先读相关行及其原件，再决定复用还是修改；不是重读全部历史。
+1. 本页：项目为什么存在。
+2. [项目地图](docs/DOCUMENT_MAP.md)：有什么、到什么程度、在哪操作、由哪里负责。
+3. [工作规则](docs/WORKING_RULES.zh-CN.md)：新事怎么放、怎么做、何时交用户决定。
+4. [CURRENT](docs/memory/CURRENT.md)：本轮正在做什么；顺着它进入唯一当前任务。
 
-## 按要做的事找
+先读这四页，再按任务进入原指南；不用重读全部历史。人和 Agent 共用同一业务能力，GUI 是方便人操作的映射，CLI/API/库是受支持的工程入口。
 
-[日常操作导航](docs/DOCUMENT_MAP.md#按我要做什么进入)按目标进入录制、安装恢复、数据/R2、训练控制、模型/Agent与评估，以及开发测试、协议迁移、发布、账号事故和协作。它只路由到原有操作指南，不另抄一套流程。
+## 最常用的入口
 
-新成员先看[共同工作规则](docs/WORKING_RULES.zh-CN.md)和适用的[工程入门](docs/NEW_ENGINEER_GUIDE.md)；Agent另读[协作与续接](docs/AI_COLLABORATION.md)。遇到旧问题，从[已有解法与边界](docs/RESOLVED_ISSUES.zh-CN.md)直接找原代码和证据。历史资产由[原账本](docs/plans/p1-prefreeze-2026-10-18/ASSETS.md)定位，不把旧结果当当前通过。
+- **我要录一局**：按[日常采集](docs/ANNOTATOR_COLLECTION.md#current-p1-daily-collection)在游戏内开始本人录制；录完查看[自动小结](python/docs/RECOUNT-SOP.zh-CN.md)，正常流程不需要补命令。
+- **我要训练或评估**：从[地图](docs/DOCUMENT_MAP.md#按我要做什么进入)选择原操作指南。可读数据不等于获准训练，训练完成也不等于策略变强。
+- **我要加功能或修问题**：先找地图中的负责处，再查[已有解法与边界](docs/RESOLVED_ISSUES.zh-CN.md)，按[开发流程](docs/DEVELOPMENT_WORKFLOW.md)和[测试指南](docs/TESTING.md)做最短的忠实验证。
+- **我要查以前定过什么或旧东西去哪了**：[决定及替代关系](docs/DECISIONS.md)、[历史资产和本轮增量](docs/plans/CONVERGENCE_DISPOSITION_20261027.md)。保存下来了，不代表已经接入当前能力。
 
-工程权威、公共合同与证据变更按[工程治理](docs/ENGINEERING_GOVERNANCE.md)处理；已有专用工作流从[技能目录](.agents/skills/README.md)按适用范围选择，普通开发不必另用Skill。
+STS2 决定游戏规则；Connector 提供公平信息和合法动作；Host 管运行与隔离；记录和存储保原件；研究负责模型、训练和评估。P1 是当前选用的交互协议，Model 只是完整 Agent 的一部分。细节按需查[架构](docs/ARCHITECTURE.md)、[组件](docs/COMPONENTS.md)、[工程治理](docs/ENGINEERING_GOVERNANCE.md)；专用 Agent 操作见[技能目录](.agents/skills/README.md)。
 
-STS2决定规则和原生执行；Connector决定公开信息、动作绑定和执行时复验；Host Runtime管进程与隔离；Annotator/Evidence管原件；Policy Runtime管受控执行；应用管用户入口；研究管模型、训练与评估。Mod是装载包装，GUI映射同一应用用例，不再造一套控制或数据链。
-
-源码/测试、实际构建安装、真实运行、Human来源与策略质量分别有证据。旧失败和原件保留；合入、正常退出或一个检查通过都不能替其它层授予资格。
-
-开发环境沿用Node20+、uv和项目所需.NET；初始化/命令按[新工程师指南](docs/NEW_ENGINEER_GUIDE.md)与[开发流程](docs/DEVELOPMENT_WORKFLOW.md)，已有依赖不重复安装。可用 `npm run project:context -- --component <name>` 查局部入口。历史仓库导入由 `migration/project-import.json` 保留，不因新版本重写旧记录。
+开发环境沿用 Node 20+、uv 和所需 .NET；首次设置按[工程入门](docs/NEW_ENGINEER_GUIDE.md)，已有依赖不重复安装。运行中的录制、原件、模型和失败记录都要保护；文档 PR 不会自动升级正在用的程序。

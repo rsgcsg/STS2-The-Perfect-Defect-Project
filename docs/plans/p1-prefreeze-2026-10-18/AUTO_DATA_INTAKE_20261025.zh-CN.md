@@ -1,5 +1,7 @@
 # 录后自动维护：本轮任务
 
+> 2026-10-27状态头：原Q已由Q3正常真人局自动入库→派生→R2→小结验收完成；Q2/Q3已安装，X2再升级为Annotator30。仍未证明零卡顿，查询超时/下一局重活归可选X3；本轮不动生产Q。 最新[事实收据](../../evidence/CONVERGENCE_BASELINE_20261027.md)与[CURRENT](../../memory/CURRENT.md)替代下面旧任务派工；历史正文和分母保留。
+
 当前：root 已完成源码修复和127项相关Python回归、340项控制台回归，已普通并入B的develop `9b87d215`，正在最终组合CI阶段。目标是一局封存后沿原维护器导入、派生、R2保全、增量盘点，固定一页小结；用户查看权重后，一条命令冻结。起点为 `21fd85ea`，写入分支 `codex/auto-data-intake-20261025`，唯一源码写入者为本对话 root；B唯一负责共同版本安装。准确合入/安装/下一局结果以本轮固定 `replies/AUTO-DATA-INTAKE-REPORT-20261025.md` 与B安装报告为准，未取得的结果不由源码授予。
 
 链路位置：⑤ Store → ⑥ P1派生 → ⑦ Curation，属于原组件实现修复和已有能力接入。上游提供 Recorder 的不可变 Close 原件；下游读取同一 Curation 整局用途、Snapshot 与精确 cohort 文件。失败保留原意图和原件，unknown 不自动重试。
