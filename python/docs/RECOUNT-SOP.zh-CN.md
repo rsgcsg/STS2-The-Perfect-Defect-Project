@@ -82,6 +82,29 @@ operation 文件保存，Workbench 正常重启后续接；启动/封存仍归 R
 变化重发Tool，以原打包器核身份。具体完整ID及变更核对见
 [Q任务的B/Q安装段](../../docs/plans/p1-prefreeze-2026-10-18/AUTO_DATA_INTAKE_20261025.zh-CN.md#bq一次安装与tool批准用户10-26确认)。
 
+## Q2 状态区与维护者恢复
+
+页面顶部显示自动维护状态、状态核对与计数更新时间。失败、停用、阻塞会醒目提示；
+超过90秒未更新提示不能确认仍在工作，步骤超过10分钟提示核对原操作。
+旧静态文件只代表最后写盘结果，不能据它确认服务在线。
+
+看到告警由维护者先核 `maintenance status`、原 Workbench 日志及原 importer 操作。
+只有原操作已完成、没有 pending/unknown、身份/哈希及空间检查通过，并已处理停用原因，
+才能沿原入口恢复；保持 peer、scope.closed_after、origin、cool_recent 和 cohort 策略，
+不要重新使用 `--from-now` 改掉原范围：
+
+```sh
+uv run --locked --extra cloud python -m spireagent.workbench recordings maintenance enable --config /ABS/project.json
+```
+
+结果未知时先只读核原请求，不重发。身份/版本不符、空间不足、原操作 pending/unknown
+或索引未确认时不能直接恢复；盘点失败保留最后完整计数，修因后用原 `cohort refresh`。
+
+Q3 安装使用 Annotator29 固定 Tool `aa168b7e…`，由统一 Mod 提供未来开局进度原件；
+旧进度未知不补填。新 Tool 的 P1 转换差异为已合入SDK15的公开顺序处理与可选进度附件，
+固定版本检查仍有效，旧 Tool 优先级、切分盐、目标与已冻结配置不变。
+真人自动验收仍等用户正常下一局，完成事实只记在 Q3 报告。
+
 ## 出错与恢复
 
 ```sh
