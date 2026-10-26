@@ -60,12 +60,24 @@ def _in_scope(candidate: dict[str, Any], scope: dict[str, Any] | None) -> bool:
         return False  # A date-scoped policy excludes an undated source; the original stays intact.
 
 
+def _ledger_stamp(path: Path) -> list[tuple[int, int]]:
+    """Ignore SQLite's empty, connection-created WAL; retain actual ledger writes."""
+    result = []
+    for current in (path, path.with_name(path.name + "-wal")):
+        try:
+            info = current.stat()
+        except FileNotFoundError:
+            continue
+        if current == path or info.st_size:
+            result.append((info.st_mtime_ns, info.st_size))
+    return result
+
+
 class P1RecordingMaintenance:
     def __init__(self, importer: LocalRecordingImporter) -> None:
         self.importer = importer
         self.stop = threading.Event()
         self.thread: threading.Thread | None = None
-        self._page_signature: str | None = None
 
     def configure(
         self,
@@ -110,7 +122,8 @@ class P1RecordingMaintenance:
                 "cool_recent": cooling,
                 **({"cohort_policy": selected_cohort} if selected_cohort else {}),
             }
-            state.update(status="running" if enabled else "disabled", error_code=None)
+            state.update(status="running" if enabled else "disabled", error_code=None,
+                         status_since=datetime.now(UTC).isoformat())
             state.pop("persistence_error", None)
             try:
                 self.importer._save()
@@ -144,7 +157,7 @@ class P1RecordingMaintenance:
         logging.getLogger(__name__).error("Recording maintenance stopped", exc_info=error)
         with self.importer.lock:
             state = self.importer._maintenance
-            state.update(status="failed", error_code=(
+            state.update(status="failed", status_since=datetime.now(UTC).isoformat(), error_code=(
                 "disk_full" if isinstance(error, OSError) and error.errno == errno.ENOSPC
                 else getattr(error, "code", "maintenance_failed")))
             state["policy"]["enabled"] = False
@@ -156,8 +169,42 @@ class P1RecordingMaintenance:
                     "Maintenance failure remains in memory; state could not be saved",
                     exc_info=save_error,
                 )
+        self._observe(("failed", state.get("error_code")))
 
     def tick(self) -> dict[str, Any]:
+        before = self.importer._maintenance
+        previous = (before.get("status"), before.get("error_code"))
+        try:
+            self._tick_and_refresh()
+        finally:
+            # Status publication is independent of successful intake/recount.
+            # The existing operation remains the only persistent state owner.
+            self._observe(previous)
+        return dict(self.importer._maintenance)
+
+    def _observe(self, previous: tuple[Any, Any]) -> None:
+        with self.importer.lock:
+            state = self.importer._maintenance
+            now = datetime.now(UTC).isoformat()
+            if previous != (state.get("status"), state.get("error_code")):
+                state["status_since"] = now
+            state.setdefault("status_since", now)
+            state["checked_at"] = now
+            try:
+                self.importer._save()
+            except OSError as error:
+                state["persistence_error"] = errno.errorcode.get(error.errno or 0, "OSError")
+                logging.getLogger(__name__).exception("Maintenance observation could not be saved")
+        if state["policy"].get("cohort_policy"):
+            from .p1_cohort_intake import write_page
+
+            try:
+                write_page(self.importer.config, state)
+            except (OSError, ValueError, KeyError, TypeError):
+                # A replaceable HTML view must not stop source preservation.
+                logging.getLogger(__name__).exception("Recording summary page could not be written")
+
+    def _tick_and_refresh(self) -> dict[str, Any]:
         state = self._tick()
         policy = state["policy"]
         if state.get("persistence_error") and not policy["enabled"]:
@@ -183,24 +230,39 @@ class P1RecordingMaintenance:
                 raise BoundaryError("p1_maintenance", "curation_owner_required")
             store, _ = _selected_store(self.importer.config, require_curation=False)
             path = Path(policy["cohort_policy"])
-            signature = content_digest(json_bytes([
-                load_policy(path), discover_p1_projections(store),
-                [(p.stat().st_mtime_ns, p.stat().st_size) for p in
-                 (owner.path, owner.path.with_name(owner.path.name + "-wal")) if p.exists()],
-            ]))
-            if signature != state.get("cohort_signature"):
+            inputs = [load_policy(path), discover_p1_projections(store)]
+            signature = content_digest(json_bytes([*inputs, _ledger_stamp(owner.path)]))
+            if signature not in {state.get("cohort_signature"),
+                                 state.get("cohort_failed_signature")}:
                 with self.importer.lock:
                     self.importer._maintenance.update(status="refreshing_cohort")
                     self.importer._save()
                 # Parsing/cache work never holds the importer's status/control lock.
-                summary = refresh_cohort(self.importer.config, path,
-                                         previous_N=state.get("cohort_N"))
+                try:
+                    summary = refresh_cohort(self.importer.config, path,
+                                             previous_N=state.get("cohort_N"))
+                except Exception as error:
+                    # A recount is a replaceable view, not an import/Store write.
+                    # Preserve the last complete cohort, report the failure, and
+                    # continue admitting/preserving new closed sources. Never
+                    # silently drop a projection to manufacture a new cohort.
+                    logging.getLogger(__name__).exception("Recording cohort refresh failed")
+                    with self.importer.lock:
+                        self.importer._maintenance.update(
+                            cohort_error=getattr(error, "code", type(error).__name__),
+                            cohort_error_at=datetime.now(UTC).isoformat(),
+                            cohort_failed_signature=signature, status=state["status"],
+                        )
+                        self.importer._save()
+                    return dict(self.importer._maintenance)
                 with self.importer.lock:
                     self.importer._maintenance.update(
                         cohort_signature=signature, cohort_N=summary["N"],
                         cohort_configuration_id=summary["configuration_id"],
                         cohort_updated_at=summary["updated_at"], status=state["status"],
                     )
+                    for key in ("cohort_error", "cohort_error_at", "cohort_failed_signature"):
+                        self.importer._maintenance.pop(key, None)
                     last = self.importer._maintenance.get("last_intake")
                     if last is not None:
                         last.update(summary_updated_at=summary["updated_at"],
@@ -208,13 +270,6 @@ class P1RecordingMaintenance:
                                         datetime.fromisoformat(summary["updated_at"]) -
                                         datetime.fromisoformat(last["closed_at"])).total_seconds())
                     self.importer._save()
-        if policy.get("cohort_policy"):
-            from .p1_cohort_intake import render_summary, write_page
-
-            content = render_summary(self.importer.config, self.importer._maintenance)
-            if content != self._page_signature:
-                write_page(self.importer.config, self.importer._maintenance)
-                self._page_signature = content
         return dict(self.importer._maintenance)
 
     def _tick(self) -> dict[str, Any]:
@@ -227,6 +282,12 @@ class P1RecordingMaintenance:
             state = importer._maintenance
             policy = state["policy"]
             if not policy["enabled"]:
+                # Metadata-only inventory remains visible while dispatch is off.
+                # No Store/pack/derive/cloud work is admitted on this path.
+                if importer.catalog is not None:
+                    catalog = importer.catalog.read()
+                    self._pending(catalog)
+                    state["catalog_status"] = catalog.get("status")
                 return dict(state)
             operation = importer.operation
             if importer.thread is not None and importer.thread.is_alive():
@@ -238,6 +299,8 @@ class P1RecordingMaintenance:
                 "interrupted_unknown",
                 "published_index_unavailable",
             }:
+                if importer.catalog is not None:
+                    self._pending(importer.catalog.read())
                 state.update(
                     status="blocked", error_code="original_operation_reconciliation_required"
                 )
@@ -263,13 +326,8 @@ class P1RecordingMaintenance:
             catalog = importer.catalog.read()
             state["space"] = catalog.get("space")
             state["space_observed_at"] = catalog.get("observed_at")
+            self._pending(catalog)
             completed = state.setdefault("completed_candidates", [])
-            state["pending_candidates"] = [
-                {k: c[k] for k in ("candidate_id", "session_id", "closed_at") if k in c}
-                for c in catalog.get("candidates", [])
-                if c.get("recording_type") == "p1_native"
-                and c["candidate_id"] not in completed and _in_scope(c, policy.get("scope"))
-            ]
             if catalog.get("status") != "ready":
                 state.update(status="unavailable",
                              error_code=catalog.get("error_code", "catalog_unavailable"),
@@ -457,3 +515,17 @@ class P1RecordingMaintenance:
                 }
             importer._save()
             return dict(state)
+
+    def _pending(self, catalog: dict[str, Any]) -> None:
+        state = self.importer._maintenance
+        state["catalog_status"] = catalog.get("status")
+        if catalog.get("status") != "ready":
+            return  # Keep the last observed queue, explicitly labelled unavailable.
+        state["queue_checked_at"] = catalog.get("observed_at") or datetime.now(UTC).isoformat()
+        completed = state.setdefault("completed_candidates", [])
+        state["pending_candidates"] = [
+            {k: c[k] for k in ("candidate_id", "session_id", "closed_at") if k in c}
+            for c in catalog.get("candidates", [])
+            if c.get("recording_type") == "p1_native"
+            and c["candidate_id"] not in completed and _in_scope(c, state["policy"].get("scope"))
+        ]

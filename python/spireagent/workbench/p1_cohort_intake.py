@@ -184,6 +184,64 @@ STATUS_TEXT = {
 }
 
 
+def _status_banner(maintenance: dict[str, Any], summary: dict[str, Any]) -> str:
+    """Project the existing operation's health; never dispatch or recover work."""
+    def esc(value: Any) -> str:
+        return html.escape(str(value), quote=True)
+
+    status = maintenance.get("status", "disabled")
+    enabled = maintenance.get("policy", {}).get("enabled", False)
+    reason = maintenance.get("error_code")
+    severity = "normal"
+    action = "无需操作；录制封存后，原维护器会在游戏退出且空间足够时处理。"
+    message = STATUS_TEXT.get(status, status)
+    if not enabled or status in {"failed", "blocked", "unavailable", "low_space"}:
+        severity = "danger"
+        if not enabled and status != "failed":
+            message = "自动入库已停用"
+        action = ("请让维护者核对原操作与错误后恢复；不要重复导入或重试 unknown。"
+                  if status != "low_space" else "需要先恢复足够磁盘空间；当前不会派发新处理。")
+    cohort_only = (maintenance.get("cohort_error") and enabled
+                   and status not in {"failed", "blocked", "unavailable", "low_space"})
+    if cohort_only:
+        severity = "danger"
+        message = "盘点失败：入库与保全仍可继续，下方计数是最后一次完整盘点"
+        reason = maintenance["cohort_error"]
+        action = "需要维护者检查该投影；未剔除坏数据，也未生成不完整的新盘点。"
+    busy = status in {"running", "operation_in_progress", "refreshing_cohort",
+                      "cooling", "cache_trimming"}
+    since = (maintenance.get("cohort_error_at") if cohort_only
+             else maintenance.get("status_since"))
+    checked = maintenance.get("checked_at")
+    queue = len(maintenance.get("pending_candidates", []))
+    waiting = (f"最近确认待处理 {queue} 份；当前录制目录无法核实。"
+               if maintenance.get("catalog_status") not in {None, "ready"}
+               else f"已封存待处理 {queue} 份（未验证前不当作完整局数）。")
+    detail = ""
+    if reason:
+        if str(reason).startswith("projection_conflicts:"):
+            detail = "某份投影未通过完整检查。"
+        elif reason == "disk_full":
+            detail = "磁盘写入失败。"
+        else:
+            detail = "原维护器报告了错误或阻塞。"
+        detail += "<details><summary>查看原错误</summary><code>" + esc(reason) + "</code></details>"
+    return (
+        "<section id='maintenance-stale' class='status danger' role='alert' hidden></section>"
+        f"<section id='maintenance-status' class='status {severity}' "
+        f"role='{'alert' if severity == 'danger' else 'status'}' "
+        f"data-checked-at='{esc(checked or '')}' data-since='{esc(since or '')}' "
+        f"data-busy='{str(busy).lower()}'>"
+        f"<strong>{esc(message)}</strong><p>{waiting}</p>"
+        f"<p>{esc(action)}</p>{detail}"
+        f"<p>本状态开始于 {esc(since or '未记录')}；"
+        "持续 <span id='maintenance-duration'>未记录</span>。<br>"
+        f"状态最后核对：{esc(checked or '尚未记录')}；"
+        f"队列最后核对：{esc(maintenance.get('queue_checked_at') or '尚未记录')}。<br>"
+        f"计数最后更新：{esc(summary.get('updated_at') or '尚无完整盘点')}。</p></section>"
+    )
+
+
 def render_summary(config: ProjectConfig, maintenance: dict[str, Any], *,
                    standalone: bool = False) -> str:
     """Render saved counts and live failure status; no Store reads or work dispatch."""
@@ -196,15 +254,13 @@ def render_summary(config: ProjectConfig, maintenance: dict[str, Any], *,
 
     status = maintenance.get("status", "disabled")
     message = STATUS_TEXT.get(status, status)
-    if not maintenance.get("policy", {}).get("enabled") and status != "failed":
-        message = "自动维护已暂停 · " + message
     style = (("<style>" + (ROOT / "spireagent/console/recording-summary.css").read_text() +
               "</style>") if standalone
              else "<link rel='stylesheet' href='/assets/recording-summary.css'>")
     parts = ["<!doctype html><html lang='zh-CN'><meta charset='utf-8'>",
              "<meta http-equiv='refresh' content='15'><title>录制数据小结</title>",
              style,
-             "<h1>录制数据小结</h1><p class='status'>" + esc(message) + "</p>"]
+             _status_banner(maintenance, value), "<h1>录制数据小结</h1>"]
     if maintenance.get("error_code"):
         parts.append("<p>卡住原因：<code>" + esc(maintenance["error_code"]) + "</code></p>")
     if maintenance.get("persistence_error"):
@@ -257,7 +313,10 @@ def render_summary(config: ProjectConfig, maintenance: dict[str, Any], *,
         parts += ["</table></details><p>配置 ID：<code>" + esc(value["configuration_id"]) +
                   "</code></p><small>这些是观察到的整局分组；未知祖先/种子不等于独立性证明。"
                   "盘点不冻结、不训练；模型强弱以真实游戏评估为准。</small>"]
-    return "".join(parts) + "</html>"
+    clock = ("<script>" +
+             (ROOT / "spireagent/console/recording-summary.js").read_text() + "</script>"
+             if standalone else "<script src='/assets/recording-summary.js' defer></script>")
+    return "".join(parts) + clock + "</html>"
 
 
 def write_page(config: ProjectConfig, maintenance: dict[str, Any]) -> None:

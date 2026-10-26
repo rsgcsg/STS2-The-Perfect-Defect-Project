@@ -12,6 +12,7 @@ ASSETS = {
     "identity.js": "text/javascript",
     "project.js": "text/javascript",
     "recording-summary.css": "text/css",
+    "recording-summary.js": "text/javascript",
 }
 CSP = (
     "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; "
