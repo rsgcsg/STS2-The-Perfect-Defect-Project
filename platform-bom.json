@@ -170,8 +170,8 @@
     "annotator": {
       "source_revision": "09e5c2363fff64b2e8cfa07d16ec7cf22d8ad3b5",
       "source_digest_sha256": "8d23f1015a7b0df800f78a7545da5c86bfee521131c4391b398c884ff917918f",
-      "current_component_source_revision": "5f788ff4db994e6024a3d9ad3da023186192e903",
-      "current_component_source_digest_sha256": "6d641cae7921eed1be09d56a88348e2c7b2f2eb5a65aa32347b879a7d3df6096",
+      "current_component_source_revision": "3ba2515d333ed1f282a6821ea9bfbbffccc2b7e1",
+      "current_component_source_digest_sha256": "01384da57879a10e919f9f3a4e635f00e9b78a8f213ba76e602a54d70e91af87",
       "source_relation": "loaded_human_v2_artifact_precedes_unified_platform_source",
       "artifact_sha256": "4e911dd616afa55753a5320a42c11ce0cebe9d4d10fefd66c8f8a431884cf105",
       "artifact_mvid": "692e9dd9-4bc7-4203-ae12-511ef95a5331",
