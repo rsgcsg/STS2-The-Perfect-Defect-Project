@@ -35,7 +35,10 @@ export function resolvePresentationInput(witness, reduction) {
 export async function replayNativeTrajectory({ trajectory, driver, core: kernel = core,
   record, seed, initialProgress, budgetMs = 1200000, diagnosticLocator = null }) {
   const deadline = Date.now() + budgetMs;
-  let state = kernel.createSession(`native-strict-${randomUUID()}`, 'managed');
+  // An r1.6 comparison is explicitly selected by its hash-bound derivative.
+  // Live consumers/default r1.5 and all original observation arrays stay frozen.
+  let state = kernel.createSession(`native-strict-${randomUUID()}`, 'managed',
+    trajectory.points[0]?.observation.revision);
   const report = { schema: 'sts2.p1/native-strict-replay-1', seed,
     planned_points: trajectory.points.length, matching_choices: 0, matching_terminal: false,
     native_presentations_replayed: 0, native_presentation_steps: 0,
