@@ -1,4 +1,4 @@
-import { canonicalJson, completeCards, completeCombatSurface, completeCombat, completeDeck, completeMap, completePiles, completeSelector, createPublicGraphComparator, modelView, PublicGraphDifference, P1G_INFORMATION_SHAPES,
+import { canonicalJson, createPublicOrderingPolicy, publicOrderingIssue, P1G_ORDER_REVISION, completeCombatSurface, completeCombat, completeDeck, completeMap, completePiles, completeSelector, createPublicGraphComparator, modelView, PublicGraphDifference, P1G_INFORMATION_SHAPES,
   createPublicIdentityPolicy, normalizePublicPath, publicFieldPath, completeRewardSurface, completeCardRewardSurface, P1G_REVISION, P1G_LIMITS, P1G_RESULT_SCHEMA, type P1Observation, type P1Result } from "@rsgcsg/sts2-connector-client/p1-global";
 
 /** Formal full-public comparison. No text key is globally erased. Locale-specific
@@ -20,20 +20,8 @@ function closedEntityRelations(observation: P1Observation): boolean {
   visit(modelView(observation), "");
   return referenced.every(value => declared.has(value));
 }
-function shopCardDetailSuffix(observation: P1Observation): boolean {
-  const [catalog, ...cards] = observation.extra_reads;
-  const content = catalog?.content as Record<string, unknown> | null;
-  return catalog?.kind === "shop_catalog" && catalog.availability === "available"
-    && content?.kind === "shop_catalog"
-    && ["inventory_open", "inventory_closed_open_to_inspect"].includes(String(content.access_state))
-    && [content.cards, content.relics, content.potions].every(Array.isArray)
-    && cards.every(read => read.kind === "surface_card" && read.availability === "available" && completeCards([read.content]));
-}
-function graphPolicy(identicalFacts: boolean, observation: P1Observation, shopCardSuffix: boolean) {
+function graphPolicy(identicalFacts: boolean, observation: P1Observation) {
   const policy = createPublicIdentityPolicy(observation.scene.native_kind, observation.extra_reads, observation.scene.content);
-  // This declared inventory is entirely current-card DTOs. Unknown extra Read
-  // schemas retain their literal order and identity policy.
-  const cardInventory = observation.extra_reads.every(read => read.kind === "surface_card" && completeCards([read.content]));
   return createPublicGraphComparator({
     alias(value, _key, path) {
       const p = normalizePublicPath(path);
@@ -43,28 +31,14 @@ function graphPolicy(identicalFacts: boolean, observation: P1Observation, shopCa
       const relationPath = path.replace(/^\$\.result\.commitment_delta(?=\.|\[|$)/u, "$.observation.commitments");
       return policy.relation(relationPath) ? { kind: "entity", id: value } : null;
     },
-    unorderedSuffix(path) {
-      // The unique catalog remains fixed at index 0. Only the current typed
-      // card-detail tail has the already declared multiset semantics.
-      return !identicalFacts && shopCardSuffix && path === "$.observation.extra_reads" ? 1 : null;
-    },
-    unordered(path, parent) {
-      // r1.3: only these schema-owned legal target domains are sets. All
-      // members still participate in the same global entity bijection.
-      const targetDomain = observation.scene.native_kind === "combat_turn" && [
-        "$.observation.scene.content.surface.playable_cards[].target_entity_ids",
-        "$.observation.scene.content.surface.usable_potions[].target_entity_ids"
-      ].includes(path);
-      return path === "$.observation.catalog" || targetDomain || !identicalFacts && (
-        ["$.observation.deck.content.cards", "$.observation.map.content.nodes"].includes(path)
-        || path === "$.observation.extra_reads" && cardInventory
-        || path === "$.observation.piles.content.zones[].cards" && parent?.ordering === "unordered_multiset");
-    }
+    ...createPublicOrderingPolicy(observation, identicalFacts)
   });
 }
 function supported(observation: P1Observation): string | null {
-  if (observation.schema !== "sts2.p1/observation-1" || observation.profile !== "p1-global-r1" || observation.revision !== P1G_REVISION)
+  if (observation.schema !== "sts2.p1/observation-1" || observation.profile !== "p1-global-r1" || ![P1G_REVISION, P1G_ORDER_REVISION].includes(observation.revision))
     return "unsupported_profile_revision";
+  const orderIssue = publicOrderingIssue(observation);
+  if (orderIssue) return orderIssue;
   if (observation.scene.content_schema !== `sts2.player-environment/surface/${observation.scene.native_kind}-1`
       || (observation.scene.content as any)?.surface?.kind !== observation.scene.native_kind) return "unsupported_scene_schema_or_kind";
   if (!observation.envelope.required_information_complete) return "incomplete_required_information";
@@ -110,6 +84,25 @@ function bounded(value: unknown): boolean {
 export function comparePublicPoint(left: P1Observation, right: P1Observation, chosenLeft: string | null, chosenRight: string | null):
   { verdict: Verdict; difference: FirstDifference | null } { return comparePoint(left, right, chosenLeft, chosenRight); }
 
+/** Retain the successful complete graph's action/entity bijection for paired
+ * model probability analysis. A failed comparison never exports partial maps. */
+export function comparePublicPointBindings(left: P1Observation, right: P1Observation) {
+  const result = comparePublicPoint(left, right, null, null);
+  if (result.verdict !== "equal") return { ...result, bindings: [] };
+  const a = { observation: modelView(left), chosen: null };
+  const b = { observation: modelView(right), chosen: null };
+  const graph = graphPolicy(canonicalJson(a.observation) === canonicalJson(b.observation), left);
+  try {
+    const bindings = graph.compareWhole(a, b);
+    return { ...result, bindings };
+  } catch (error) {
+    if (error instanceof PublicGraphDifference) return {
+      verdict: error.incomparable ? "incomparable" as const : "different" as const,
+      difference: { path: error.path, left: null, right: null, reason: error.reason }, bindings: [] };
+    throw error;
+  }
+}
+
 function resultIssue(value: unknown): string | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return "invalid_result";
   const result = value as Record<string, unknown>;
@@ -142,7 +135,7 @@ function comparePoint(left: P1Observation, right: P1Observation, chosenLeft: str
   if (!bounded(results ? { observation: left, result: results[0] } : left)
       || !bounded(results ? { observation: right, result: results[1] } : right)) return { verdict: "incomparable",
     difference: { path: "$", left: null, right: null, reason: "comparison_work_bound" } };
-  const unsupported = supported(left) ?? supported(right);
+  const unsupported = left.revision !== right.revision ? "different_profile_revision" : supported(left) ?? supported(right);
   if (unsupported) return { verdict: "incomparable", difference: { path: "$", left: null, right: null, reason: unsupported } };
   if (chosenLeft !== null && !left.catalog.some(choice => choice.choice_id === chosenLeft)
       || chosenRight !== null && !right.catalog.some(choice => choice.choice_id === chosenRight))
@@ -154,8 +147,7 @@ function comparePoint(left: P1Observation, right: P1Observation, chosenLeft: str
   try {
     // Inventory order is transport metadata. Repeated cards/Reads must be solved
     // jointly with their catalog and chosen edges, under one global bijection.
-    const graph = graphPolicy(canonicalJson(a.observation) === canonicalJson(b.observation), left,
-      shopCardDetailSuffix(left) && shopCardDetailSuffix(right));
+    const graph = graphPolicy(canonicalJson(a.observation) === canonicalJson(b.observation), left);
     graph.compareWhole(a, b);
     return { verdict: "equal", difference: null };
   } catch (error) {

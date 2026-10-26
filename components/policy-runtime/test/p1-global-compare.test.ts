@@ -261,3 +261,81 @@ describe("P1 r1.1 full-public graph comparison", () => {
     expect(new Set(replies.filter(m => m.type === "choose").map(m => m.choice_id))).toEqual(new Set(["one", "two"]));
   });
 });
+
+it("r1.6 compares bundle membership as a set with one global alias map, preserving old semantics", () => {
+  const a = unambiguousObservation();
+  (a as any).revision = "r1.6";
+  const cards = content(a.combat).player.hand.slice(0, 2).map((c: any) => structuredClone(c));
+  (a as any).scene = { family: "selector", native_kind: "card_bundle_selection", stage: "selecting", prompt: null,
+    content_schema: "sts2.player-environment/surface/card_bundle_selection-1", content: { surface: {
+      kind: "card_bundle_selection", stage: "choosing", can_confirm: false, can_cancel_preview: false,
+      screen_entity_id: "bundle-screen", selected_bundle_entity_id: null,
+      bundles: cards.map((card: any, i: number) => ({ entity_id: `bundle-${i}`, cards: [card] })),
+      selectable_bundle_entity_ids: ["bundle-0", "bundle-1"], can_skip: false
+    } } };
+  (a as any).catalog = cards.map((_c: any, i: number) => ({ choice_id: `pick-${i}`, kind: "bundle.select",
+    label: `Pick ${i}`, subject: `bundle-${i}`, target: null, mapped: true }));
+  const b = structuredClone(a), surface = content(b.scene).surface;
+  surface.selectable_bundle_entity_ids.reverse();
+  for (const [index, bundle] of surface.bundles.entries()) {
+    bundle.entity_id = `renamed-bundle-${index}`;
+    (b.catalog[index] as any).subject = bundle.entity_id;
+  }
+  surface.selectable_bundle_entity_ids = ["renamed-bundle-1", "renamed-bundle-0"];
+  expect(compare(a, b, "pick-0").verdict).toBe("equal");
+  expect(compare(a, b, "pick-0", "pick-1").verdict).toBe("different");
+  for (const variant of ["missing", "duplicate", "unknown", "ordered_cards", "extension"]) {
+    const bad = structuredClone(b), s = content(bad.scene).surface;
+    if (variant === "missing") s.selectable_bundle_entity_ids.pop();
+    if (variant === "duplicate") s.selectable_bundle_entity_ids[0] = s.selectable_bundle_entity_ids[1];
+    if (variant === "unknown") s.selectable_bundle_entity_ids[0] = "not-a-declared-bundle";
+    if (variant === "ordered_cards") s.bundles.reverse();
+    if (variant === "extension") {
+      content(a.scene).surface.extension = { selectable_bundle_entity_ids: ["a", "b"] };
+      s.extension = { selectable_bundle_entity_ids: ["b", "a"] };
+    }
+    expect(compare(a, bad).verdict, variant).not.toBe("equal");
+  }
+  const oldA = structuredClone(b), oldB = structuredClone(b);
+  (oldA as any).revision = (oldB as any).revision = "r1.5";
+  content(oldB.scene).surface.selectable_bundle_entity_ids.reverse();
+  expect(compare(oldA, oldB).verdict).toBe("different");
+  expect(compare(oldA, b).verdict).toBe("incomparable");
+});
+
+it("r1.6 unordered membership does not erase selected card order, display order or field presence", () => {
+  const a = unambiguousObservation(); (a as any).revision = "r1.6";
+  const cards = content(a.combat).player.hand.slice(0, 3).map((card: any, i: number) => ({ ...structuredClone(card), is_selected: i < 2 }));
+  const ids = cards.map((card: any) => card.entity_id);
+  (a as any).scene = { family: "selector", native_kind: "combat_hand_card_selection", stage: "selecting", prompt: null,
+    content_schema: "sts2.player-environment/surface/combat_hand_card_selection-1", content: { surface: {
+      kind: "combat_hand_card_selection", cards, min_select: 0, max_select: 3,
+      selected_count: 2, selected_card_entity_ids: ids.slice(0, 2), selectable_card_entity_ids: [ids[2]],
+      deselectable_card_entity_ids: ids.slice(0, 2), can_confirm: true, cancelable: true
+    } } };
+  const b = structuredClone(a); content(b.scene).surface.deselectable_card_entity_ids.reverse();
+  expect(compare(a, b).verdict).toBe("equal");
+  for (const variant of ["selected", "display", "presence", "duplicate"]) {
+    const bad = structuredClone(b), surface = content(bad.scene).surface;
+    if (variant === "selected") surface.selected_card_entity_ids.reverse();
+    if (variant === "display") surface.cards.reverse();
+    if (variant === "presence") delete surface.deselectable_card_entity_ids;
+    if (variant === "duplicate") surface.deselectable_card_entity_ids[1] = surface.deselectable_card_entity_ids[0];
+    expect(compare(a, bad).verdict, variant).not.toBe("equal");
+  }
+});
+
+it("exports only the same successful full-graph bijection for probability alignment", async () => {
+  const { comparePublicPointBindings } = await import("../src/p1-global/compare.js");
+  const a = unambiguousObservation(), b = renamed(a);
+  const report = comparePublicPointBindings(a, b);
+  expect(report.verdict).toBe("equal");
+  const actions = report.bindings.filter(item => item.kind === "action");
+  expect(actions).toHaveLength(a.catalog.length);
+  for (const mapping of actions)
+    expect(compare(a, b, mapping.left, mapping.right).verdict).toBe("equal");
+  content(b.combat).player.hand[0].description += " changed";
+  const failed = comparePublicPointBindings(a, b);
+  expect(failed.verdict).toBe("different");
+  expect(failed.bindings).toEqual([]);
+});

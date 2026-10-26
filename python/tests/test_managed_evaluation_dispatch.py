@@ -414,17 +414,49 @@ def test_invalid_frozen_runtime_budget_rejects_before_a_host_or_model_is_read(li
                                episode_seconds=10, cleanup_seconds=10)
 
 
-def test_central_inference_requires_cli_environment_before_world_audit(tmp_path, monkeypatch):
+@pytest.mark.parametrize("version, admitted", [
+    ("0.1.0-rc.47", False), ("0.1.0-rc.50", True),
+    ("0.1.0-rc.51", True), ("0.1.0-rc.52", False),
+])
+def test_central_inference_requires_cli_environment_before_world_audit(
+    tmp_path, monkeypatch, version, admitted
+):
     from spireagent.workbench import managed_evaluation as backend
 
     actual = Producer("rsgcsg/STS2-The-Perfect-Defect-Project", "b" * 40, "c" * 64)
     monkeypatch.setattr(backend, "source_identity", lambda _: actual)
     monkeypatch.setattr(backend, "_verify_host", lambda *_: None)
     monkeypatch.setattr(backend, "validate_installed_package", lambda *_, **__: None)
-    monkeypatch.setattr(backend, "_audit", lambda *_: pytest.fail("must reject before world audit"))
-    (tmp_path / "package.json").write_text('{"version":"0.1.0-rc.47"}')
+    def audit(*_):
+        if not admitted:
+            pytest.fail("must reject before world audit")
+        raise RuntimeError("admitted_runtime_before_world_audit")
+
+    monkeypatch.setattr(backend, "_audit", audit)
+    (tmp_path / "package.json").write_bytes(json_bytes({"version": version}))
     configuration = {"producer": actual.to_dict(), "inference": {"mode": "central_batch"},
         "host_directory": str(tmp_path), "candidate_directory": str(tmp_path),
-        "runtime_directory": str(tmp_path / "dist"), "host_pin": {}, "runtime_pin": {}}
-    with pytest.raises(BoundaryError, match="runtime_explicit_adapter_environment_required"):
+        "runtime_directory": str(tmp_path / "dist"), "host_pin": {}, "runtime_pin": {},
+        "agent_adapter": backend.export.adapter_identity()}
+    error = RuntimeError if admitted else BoundaryError
+    reason = ("admitted_runtime_before_world_audit" if admitted
+              else "runtime_explicit_adapter_environment_required")
+    with pytest.raises(error, match=reason):
         backend.ManagedEpisodeExecutor(configuration, episode_seconds=10, cleanup_seconds=10)
+
+def test_phase_cost_keeps_failed_elapsed_and_disjoint_nodes(monkeypatch):
+    """A preservation failure retains its cost without inventing unvisited nodes."""
+    from spireagent.workbench import managed_evaluation as backend
+
+    ticks = iter([0.0, 3.0, 3.0, 8.0, 8.0, 10.0])
+    monkeypatch.setattr(backend.time, "monotonic", lambda: next(ticks))
+    row = {}
+    with backend._phase(row, "execute"):
+        pass
+    with pytest.raises(ValueError, match="original failure"), backend._phase(row, "preserve"):
+        raise ValueError("original failure")
+    with backend._phase(row, "close"):
+        pass
+    assert row["phase_seconds"] == {"execute": 3.0, "preserve": 5.0, "close": 2.0}
+    assert sum(row["phase_seconds"].values()) == 10.0
+    assert "finish" not in row["phase_seconds"]
