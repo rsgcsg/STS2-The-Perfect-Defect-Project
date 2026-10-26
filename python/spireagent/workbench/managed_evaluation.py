@@ -124,6 +124,9 @@ class ManagedEpisodeExecutor:
         self, configuration: dict[str, Any], *, episode_seconds: float, cleanup_seconds: float
     ) -> None:
         self.configuration = configuration
+        mode = configuration.get("inference", {"mode": "per_actor"})
+        if not isinstance(mode, dict) or mode.get("mode") not in {"per_actor", "central_batch"}:
+            reject("unsupported_inference_implementation")
         # The frozen producer is an expected pin, never a caller-supplied claim
         # about whatever code happens to execute this invocation.
         self.producer = source_identity(ROOT)
@@ -157,6 +160,21 @@ class ManagedEpisodeExecutor:
                 != (Path(model["package_directory"]) / "model.json").read_bytes()
             ):
                 reject("original_model_binding_changed")
+
+        self.inference_pool = None
+        if mode["mode"] == "central_batch":
+            from stpd.p1.local_inference import LocalInferencePool
+
+            packages = {}
+            for model in configuration["models"].values():
+                package = Path(model["package_directory"])
+                descriptor = json.loads((package / "model.json").read_bytes())
+                packages[descriptor["package_sha256"]] = package / "model.tensor-tree"
+            self.inference_pool = LocalInferencePool(packages,
+                max_batch=mode["max_batch"], window_ms=mode["window_ms"])
+
+    def close(self) -> dict[str, Any] | None:
+        return self.inference_pool.close() if self.inference_pool else None
 
     def __call__(
         self, row: dict[str, Any], manifest: dict[str, Any], artifacts: Any, checkpoint: Any
@@ -276,6 +294,15 @@ class ManagedEpisodeExecutor:
                 str(int(remaining * 1000)),
                 *host_args,
             ]
+            environment = os.environ.copy()
+            row["inference_mode"] = "central_batch" if self.inference_pool else "per_actor"
+            if self.inference_pool is not None:
+                attachment = registration / "local-inference.json"
+                binding = json_bytes(self.inference_pool.attachment())
+                attachment.write_bytes(binding)
+                row["inference_binding"] = artifacts.put("local-inference-binding.json", binding)
+                args.extend(["--adapter-arg=--local-inference", "--adapter-arg=" + str(attachment)])
+                environment.update(self.inference_pool.environment())
             row.update(status="running", actor_started=True)
             checkpoint()
             with (
@@ -288,7 +315,7 @@ class ManagedEpisodeExecutor:
                     stdin=subprocess.DEVNULL,
                     stdout=stdout,
                     stderr=stderr,
-                    env=os.environ.copy(),
+                    env=environment,
                 )
                 startup = _finish_runtime(
                     runtime_process, private / "runtime.stdout", row, artifacts,

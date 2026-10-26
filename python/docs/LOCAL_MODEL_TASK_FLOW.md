@@ -46,7 +46,7 @@ unknown只属于该槽位；新unknown停止当前调度，待人封存后可继
 跨画面/速度/App等运行条件须有明确等价证据才合并策略统计；协议观察和动作流一致的有限配对只证明其覆盖范围，unknown/崩溃率始终按实际条件分报。
 现有`--completed-report`严格核同manifest/selection/profile/速度/画面/peer及原finish/保全收据，不因新App修改旧producer或放宽校验；native-ui会改变原生producer，沿已有Reference重新绑定入口处理。
 绑定计划槽位的native-ui局计入评估，未绑定的是演示；界面不另长业务链。分数板列计划、开过、胜、负、unknown、替换和未开，并标证据缺口。
-以后：人显式`replace`追加关联的新槽位且保留原失败；`equivalence`生成有协议/范围的等价记录；Managed路线、跨计划比较及现有评估模块整合另定，不属于本轮实现。
+该历史 Reference 轮的边界：人显式`replace`追加关联的新槽位且保留原失败；`equivalence`生成有协议/范围的等价记录。后续 Managed 执行已接入同一账本，见下文“Managed 评估、并行、调度与强化学习的位置”；旧计划与失败保持原样。
 
 ### 从原矩阵接续（Reference）
 
@@ -763,7 +763,9 @@ python -m spireagent.workbench.evaluation_ledger report \
 
 先确认这一槽自然终局、完整 typed 读回、controller release 和 Host/service 正常关闭，才继续其余槽位。调度命令结束不等于每槽通过；报告保留全部 unknown/censored/unstarted。增加 `--workers N` 只改变同一账本的并发容量，协调者持有 OS lock，worker 不写槽位事件。恢复只派发 `not_started`，崩溃后的 reservation 先读原报告，未知状态不会回队列。STOP 文件、总时限、空间下限或未确认清理均停止新派发。每个并行比较使用预先冻结的独立试验账本；原失败和 unknown 分母不被另一次试验覆盖。
 
-本机库和命令是先做的部署方式；以后按需云CPU执行者、持久调度进程复用同一计划/槽位/结果接口。现有 Hub 仅有 feature/training 作业且每DB一个活动任务，不能直接声称已支持评估池；将来只复用其队列、租约和预算思想，不另引一套业务记录。云部署、集中批量推理、常驻服务器均未实现。当前最短真实验证应先用每个执行者一份既有CPU Agent，再与统一批量推理做相同输入/模型的独立基准；没有带推理数据前不判断哪种更快。
+本机库和命令是先做的部署方式；以后按需云CPU执行者、持久调度进程复用同一计划/槽位/结果接口。现有 Hub 仅有 feature/training 作业且每DB一个活动任务，不能直接声称已支持评估池；将来只复用其队列、租约和预算思想，不另引一套业务记录。云部署和常驻服务器未实现。
+
+冻结执行文件可选 `inference={"mode":"per_actor"}`（默认）或 `{"mode":"central_batch","max_batch":4,"window_ms":2}`；这是同一 Agent 的评分实现，不能按名字推断速度。集中方式由当前评估命令持有一次性本机队列，复用研究模型原有 `MStd.forward_batch`，只接收完整公开 P1 观察；各 Actor 仍独立运行原有 consume/ACK/next、选择、Runtime、Host 和证据链。原包、InputSpec、projection 和 adapter 源码摘要逐项绑定，不改变观察排序、不省略候选、不共享 Actor 状态。一次评分失败不重试、不静默回退；坏输入只回到对应 Actor。连接能力仅在子进程环境中，私有附件只有非秘密的队列位置和身份。命令等待所有 Actor 收尾后关闭自己的队列，留下 `inference-pool-summary.json`；它没有独立服务入口、注册表或常驻进程。每局报告记录方式与附件摘要，比较试验先冻结同一模型/输入和独立账本，保留全部失败分母。实际带推理吞吐与内存上限由准确版本报告确定，Host-only 测速不能替代。
 
 08-21的6–8个Managed实例约1373–1687决策/秒属于旧准确版本的Host-only容量；真游戏1/2/4实例约0.482/0.976/1.868决策/秒也是历史条件。两者都不是当前 P1 模型吞吐或本机新上限。真游戏多开需按当前用户授权登记游戏占用，核独立 profile、端口、原生运行身份、存档、Steam 与正常关闭。用户要录制时立即让出；工程产物根和 Annotator 配置必须隔离于 Human 录制与自动维护扫描根。具体当前测量留在准确版本的实验报告，不从历史数字继承资格。
 

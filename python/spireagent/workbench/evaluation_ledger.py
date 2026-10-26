@@ -13,7 +13,7 @@ import json
 import shutil
 import time
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
-from contextlib import nullcontext
+from contextlib import ExitStack, nullcontext
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, NoReturn
@@ -289,6 +289,7 @@ class EvaluationLedger:
         if shutil.disk_usage(self.directory).free < configuration.get("minimum_free_bytes", 0):
             return {"status": "stopped", "stop_reason": "workspace_capacity_insufficient"}
         limits = limits or SuiteLimits(150, 1800, 60, 86400, 1, 30)
+        owns_executor = executor is None
         if executor is None:
             from .managed_evaluation import ManagedEpisodeExecutor
 
@@ -326,7 +327,14 @@ class EvaluationLedger:
                 should_stop=lambda: (self.directory / "STOP").exists(),
             )
 
-        with ThreadPoolExecutor(max_workers=workers) as pool:
+        def close_executor() -> None:
+            summary = executor.close()
+            if summary is not None:
+                (self.directory / "inference-pool-summary.json").write_bytes(json_bytes(summary))
+
+        with ExitStack() as lifecycle, ThreadPoolExecutor(max_workers=workers) as pool:
+            if owns_executor:
+                lifecycle.callback(close_executor)
             exhausted = False
             while active or not exhausted and stop_reason is None:
                 while len(active) < workers and not exhausted and stop_reason is None:
