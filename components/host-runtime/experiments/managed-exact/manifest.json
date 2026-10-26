@@ -270,6 +270,13 @@
       "artifact_sha256": "39a6455c2f67c4313b3cf2b6b46a6783d41cc5ebe86cb62829a6a780c7d562b2",
       "artifact_mvid": "a52dd778-7725-4794-80cb-4d532c4e528a",
       "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0"
+    },
+    {
+      "source_patch_sha256": "e0d2a366914235be272f9c25e8fb592d386959b27de1a7a92880098295cf57ce",
+      "artifact_sha256": "0adc673c1e601079fb5c7b61e5bbf22ab8f2acffead27302201751574a743c7a",
+      "artifact_mvid": "86ca119d-ecaf-40c5-bd7e-a643819114df",
+      "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0",
+      "scope": "F2 Host rc40 frozen model engineering trials and native fixtures; originals and candidate preserved, no qualification transferred to rc41"
     }
   ],
   "native_localization": {
