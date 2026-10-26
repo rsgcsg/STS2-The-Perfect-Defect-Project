@@ -7,6 +7,7 @@ import test from "node:test";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { resolveDotnet } from "../src/managed-candidate.mjs";
+import { JsonLineProcess } from "../src/json-line-process.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -45,6 +46,7 @@ test("exact native reward factory preserves Skip/reroll/sacrifice without select
   assert.match(stdout, /7 exact native free travel checks passed/u);
   assert.match(stdout, /1 exact native wire null serialization check passed/u);
   assert.match(stdout, /15 exact native card parent checks passed/u);
+  assert.match(stdout, /3 exact native screenshake scope checks passed/u);
   const paired = stdout.split(/\r?\n/u).find(line => line.startsWith("native-reward-card-pair="));
   assert.ok(paired, "original native outer and opened callback card renderings must be retained");
   const { outer, opened } = JSON.parse(paired.slice("native-reward-card-pair=".length));
@@ -63,3 +65,94 @@ test("exact native reward factory preserves Skip/reroll/sacrifice without select
     ["Skip", "end_selection_and_do_not_complete_reward"], ["SACRIFICE", "end_selection_and_complete_reward"]
   ]);
 });
+
+test('exact PunchOff Nab retains native curse, relic reward and event completion without a scene', async context => {
+  const candidate = process.env.STS2_MANAGED_TEST_CANDIDATE;
+  if (!candidate) { context.skip('set STS2_MANAGED_TEST_CANDIDATE for exact proprietary native component fixtures'); return; }
+  const artifact = path.join(candidate, 'src/Sts2Headless/bin/Release/net9.0/Sts2Headless.dll');
+  const before = createHash('sha256').update(readFileSync(artifact)).digest('hex');
+  const dotnet = await resolveDotnet();
+  const native = new JsonLineProcess({ command: dotnet.command, args: [artifact], cwd: candidate });
+  try {
+    assert.equal((await native.nextMessage(60000)).type, 'ready');
+    const initial = await native.request({ cmd: 'reset_run', character: 'Defect', ascension: 0,
+      seed: 'PUNCHOFF_NATIVE_COMPONENT_FIXTURE', lang: 'en' }, 60000);
+    assert.equal(initial.type, 'decision');
+    // Explicit component fixture setup, not a gameplay evaluation or a retry of
+    // the failed canary. The bound option itself executes the original event.
+    const event = await native.request({ cmd: 'enter_room', type: 'event', event: 'PUNCH_OFF' }, 60000);
+    assert.equal(event.type, 'decision');
+    assert.equal(event.event_id, 'PUNCH_OFF');
+    const injuries = value => value.player.deck.filter(card => card.id === 'INJURY').length;
+    const originalInjuries = injuries(event), originalSize = event.player.deck_size;
+    const reward = await native.request({ cmd: 'action', action: 'choose_option', args: {
+      option_index: 0, room_ref: event.room_ref, event_ref: event.event_ref,
+      option_ref: event.options[0].native_ref
+    } }, 60000);
+    assert.equal(reward.type, 'decision', JSON.stringify(reward));
+    assert.equal(reward.decision, 'reward_set');
+    assert.equal(injuries(reward), originalInjuries + 1, 'original CardPileCmd adds the real Injury once');
+    assert.equal(reward.player.deck_size, originalSize + 1);
+    assert.equal(reward.rewards.length, 1);
+    assert.equal(reward.rewards[0].kind, 'relic', 'original RewardsCmd/RelicReward remains awaited');
+    const completed = await native.request({ cmd: 'action', action: 'select_reward', args: {
+      reward_ref: reward.rewards[0].native_ref
+    } }, 60000);
+    assert.equal(completed.type, 'decision', JSON.stringify(completed));
+    assert.equal(completed.decision, 'event_choice');
+    assert.equal(injuries(completed), originalInjuries + 1);
+    assert.equal(completed.options.length, 1);
+    assert.equal(completed.options[0].is_proceed, true, 'original Nab finishes only after its reward');
+  } finally {
+    const exit = await native.stop({ request: { cmd: 'quit' }, timeoutMs: 5000 });
+    assert.equal(exit.code, 0);
+    assert.equal(createHash('sha256').update(readFileSync(artifact)).digest('hex'), before);
+  }
+});
+
+for (const [optionIndex, oldCard, newCard] of [[0, 'STRIKE_DEFECT', 'ULTIMATE_STRIKE'], [1, 'DEFEND_DEFECT', 'ULTIMATE_DEFEND']]) {
+  test(`exact Amalgamator option ${optionIndex} keeps two native removals and one creation around both visual calls`, async context => {
+    const candidate = process.env.STS2_MANAGED_TEST_CANDIDATE;
+    if (!candidate) { context.skip('set STS2_MANAGED_TEST_CANDIDATE for exact proprietary native component fixtures'); return; }
+    const dotnet = await resolveDotnet();
+    const native = new JsonLineProcess({ command: dotnet.command,
+      args: [path.join(candidate, 'src/Sts2Headless/bin/Release/net9.0/Sts2Headless.dll')], cwd: candidate });
+    try {
+      await native.nextMessage(60000);
+      await native.request({ cmd: 'reset_run', character: 'Defect', ascension: 0,
+        seed: `AMALGAMATOR_NATIVE_FIXTURE_${optionIndex}`, lang: 'en' }, 60000);
+      const event = await native.request({ cmd: 'enter_room', type: 'event', event: 'AMALGAMATOR' }, 60000);
+      assert.equal(event.type, 'decision');
+      const count = (state, id) => state.player.deck.filter(card => card.id === id).length;
+      const before = count(event, oldCard), size = event.player.deck_size;
+      let state = await native.request({ cmd: 'action', action: 'choose_option', args: {
+        option_index: optionIndex, room_ref: event.room_ref, event_ref: event.event_ref,
+        option_ref: event.options[optionIndex].native_ref
+      } }, 60000);
+      assert.equal(state.decision, 'deck_card_select');
+      assert.equal(state.min_select, 2);
+      assert.equal(state.max_select, 2);
+      for (let index = 0; index < 2; index++) {
+        const card = state.cards.find(item => item.is_selectable);
+        assert.ok(card);
+        state = await native.request({ cmd: 'action', action: 'select_deck_card', args: {
+          selector_ref: state.selector_ref, card_ref: card.native_ref
+        } }, 60000);
+        assert.equal(state.type, 'decision', JSON.stringify(state));
+      }
+      assert.equal(state.stage, 'preview');
+      assert.equal(state.player.deck_size, size, 'tentative presentation does not perform native removals');
+      const completed = await native.request({ cmd: 'action', action: 'confirm_deck_selection', args: {
+        selector_ref: state.selector_ref, selected_refs: state.selected_refs.join(',')
+      } }, 60000);
+      assert.equal(completed.type, 'decision', JSON.stringify(completed));
+      assert.equal(completed.decision, 'event_choice');
+      assert.equal(count(completed, oldCard), before - 2);
+      assert.equal(count(completed, newCard), 1);
+      assert.equal(completed.player.deck_size, size - 1);
+      assert.equal(completed.options[0].is_proceed, true);
+    } finally {
+      assert.equal((await native.stop({ request: { cmd: 'quit' }, timeoutMs: 5000 })).code, 0);
+    }
+  });
+}

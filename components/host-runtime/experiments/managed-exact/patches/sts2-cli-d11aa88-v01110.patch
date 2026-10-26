@@ -101,10 +101,10 @@ index 0000000..05b940b
 +</Project>
 diff --git a/native-tests/Program.cs b/native-tests/Program.cs
 new file mode 100644
-index 0000000..7af0921
+index 0000000..4eff354
 --- /dev/null
 +++ b/native-tests/Program.cs
-@@ -0,0 +1,353 @@
+@@ -0,0 +1,380 @@
 +using System.Collections;
 +using System.Reflection;
 +using System.Runtime.CompilerServices;
@@ -220,6 +220,33 @@ index 0000000..7af0921
 +        TestBundleOwner(player, card);
 +        TestMapFreeTravel();
 +        TestRelic();
++        TestScreenShakeScope();
++    }
++
++    private static void TestScreenShakeScope()
++    {
++        int before = checks;
++        Type bridge = typeof(NativeCardRewardAlternativePreview).Assembly.GetType("Sts2Headless.NativeScreenShakePresentation")!;
++        const BindingFlags flags = BindingFlags.Static | BindingFlags.NonPublic;
++        Check((bool)bridge.GetProperty("HookReady", flags)!.GetValue(null)!
++            && ((IReadOnlyList<string>)bridge.GetProperty("CallSites", flags)!.GetValue(null)!).Count == 3,
++            "all three exact native gameplay screenshake continuations are installed");
++        var method = bridge.GetMethod("Shake", flags)!;
++        object strength = Enum.GetValues(method.GetParameters()[1].ParameterType).GetValue(0)!;
++        bool wasTest = TestMode.IsOn;
++        try
++        {
++            TestMode.IsOn = true;
++            method.Invoke(null, new object?[] { null, strength });
++            Check(true, "missing headless scene only suppresses visual trauma");
++            TestMode.IsOn = false;
++            bool refused = false;
++            try { method.Invoke(null, new object?[] { null, strength }); }
++            catch (TargetInvocationException ex) when (ex.InnerException is NullReferenceException) { refused = true; }
++            Check(refused, "ordinary non-TestMode null call retains native failure");
++        }
++        finally { TestMode.IsOn = wasTest; }
++        Console.WriteLine($"{checks-before} exact native screenshake scope checks passed");
 +    }
 +
 +    private static void TestSelectorView(Player player, CardModel card)
@@ -4218,6 +4245,81 @@ index 0000000..9e2ddd1
 +    public static bool StillCurrent(IRunState run, IReadOnlyList<AbstractModel> listeners) =>
 +        TryCaptureListeners(run, out var current, out _) && listeners.SequenceEqual(current, ReferenceEqualityComparer.Instance);
 +}
+diff --git a/src/Sts2Headless/NativeScreenShakePresentation.cs b/src/Sts2Headless/NativeScreenShakePresentation.cs
+new file mode 100644
+index 0000000..5acf850
+--- /dev/null
++++ b/src/Sts2Headless/NativeScreenShakePresentation.cs
+@@ -0,0 +1,69 @@
++using System.Reflection;
++using System.Reflection.Emit;
++using System.Runtime.CompilerServices;
++using MegaCrit.Sts2.Core.Models.Events;
++using HarmonyLib;
++using MegaCrit.Sts2.Core.Nodes.Vfx.Utilities;
++using MegaCrit.Sts2.Core.Nodes;
++using MegaCrit.Sts2.Core.TestSupport;
++
++namespace Sts2Headless;
++
++// The exact native method only calls _screenShake.AddTrauma(strength). Managed
++// has no NGame scene object. Remap its call sites, retaining every surrounding
++// native rule/effect/await; never replace an event option or its gameplay body.
++internal static class NativeScreenShakePresentation
++{
++    private static readonly MethodInfo Native = AccessTools.Method(typeof(NGame), nameof(NGame.ScreenShakeTrauma),
++        new[] { typeof(ShakeStrength) }) ?? throw new MissingMethodException("Exact native screenshake changed");
++    internal static bool HookReady { get; private set; }
++    internal static IReadOnlyList<string> CallSites { get; private set; } = Array.Empty<string>();
++
++    internal static void Install(Harmony harmony)
++    {
++        if (HookReady) return;
++        // The exact assembly's gameplay call-site inventory has these three
++        // methods. The other calls are the Godot UI dispatcher/settings screen,
++        // which Managed never instantiates. Each expected call count is checked.
++        var sites = new List<string>();
++        foreach (var (type, name, calls) in new[] {
++            (typeof(PunchOff), "Nab", 1),
++            (typeof(Amalgamator), "CombineDefends", 2),
++            (typeof(Amalgamator), "CombineStrikes", 2)
++        })
++        {
++            var original = AccessTools.DeclaredMethod(type, name)
++                ?? throw new MissingMethodException($"Exact {type.Name}.{name} changed");
++            var stateMachine = original.GetCustomAttribute<AsyncStateMachineAttribute>()?.StateMachineType
++                ?? throw new MissingMethodException($"Exact {type.Name}.{name} async owner changed");
++            var method = AccessTools.DeclaredMethod(stateMachine, "MoveNext")
++                ?? throw new MissingMethodException($"Exact {type.Name}.{name} continuation changed");
++            if (PatchProcessor.GetOriginalInstructions(method).Count(instruction => instruction.Calls(Native)) != calls)
++                throw new MissingMethodException($"Exact {type.Name}.{name} screenshake call count changed");
++            harmony.Patch(method, transpiler: new HarmonyMethod(typeof(NativeScreenShakePresentation), nameof(Remap)));
++            sites.Add(method.DeclaringType!.FullName + "." + method.Name);
++        }
++        CallSites = sites;
++        HookReady = true;
++    }
++
++    private static IEnumerable<CodeInstruction> Remap(IEnumerable<CodeInstruction> instructions)
++    {
++        var replacement = AccessTools.Method(typeof(NativeScreenShakePresentation), nameof(Shake));
++        foreach (var instruction in instructions)
++        {
++            if (instruction.Calls(Native))
++            {
++                instruction.opcode = OpCodes.Call;
++                instruction.operand = replacement;
++            }
++            yield return instruction;
++        }
++    }
++
++    internal static void Shake(NGame? game, ShakeStrength strength)
++    {
++        if (game is null && TestMode.IsOn) return;
++        game!.ScreenShakeTrauma(strength);
++    }
++}
 diff --git a/src/Sts2Headless/NativeSelectorCallScope.cs b/src/Sts2Headless/NativeSelectorCallScope.cs
 new file mode 100644
 index 0000000..0dc1e17
@@ -5773,7 +5875,7 @@ index 800f139..0da0544 100644
  
              case "action":
 diff --git a/src/Sts2Headless/RunSimulator.cs b/src/Sts2Headless/RunSimulator.cs
-index 6b9de4a..ffd7821 100644
+index 6b9de4a..d019f0e 100644
 --- a/src/Sts2Headless/RunSimulator.cs
 +++ b/src/Sts2Headless/RunSimulator.cs
 @@ -1,4 +1,7 @@
@@ -7789,7 +7891,7 @@ index 6b9de4a..ffd7821 100644
 +                        AdvancePendingHostOperation();
                      }
 -                    catch (Exception ex) { Log($"Event choose: {ex.Message}"); }
-+                    catch (Exception ex) { return Error($"Event choice delivery is unknown: {ex.Message}"); }
++                    catch (Exception ex) { Console.Error.WriteLine(ex); return Error($"Event choice delivery is unknown: {ex.Message}"); }
                  }
  
                  // Note: do NOT force-finish on `optCountAfter == optCountBefore`. Events can
@@ -10793,7 +10895,7 @@ index 6b9de4a..ffd7821 100644
          /// <summary>Harmony prefix: make Cmd.Wait() return completed task immediately (no-op in headless).</summary>
          public static bool CmdWaitPrefix(ref Task __result)
          {
-@@ -3447,178 +4727,87 @@ public class RunSimulator
+@@ -3447,178 +4727,88 @@ public class RunSimulator
  
      private static void InitLocManager()
      {
@@ -10941,6 +11043,7 @@ index 6b9de4a..ffd7821 100644
 +            SetNativeLocalizationLanguage("en");
 +
 +            var harmony = new Harmony("sts2headless.presentationpatch");
++            NativeScreenShakePresentation.Install(harmony);
 +            NativeMerchantPotionCost.Install(harmony);
 +            ManagedGameOverPresentation.Install(harmony);
 +            NativeRelicPresentation.Install(harmony);
@@ -11043,7 +11146,7 @@ index 6b9de4a..ffd7821 100644
  
              // Patch FromChooseABundleScreen to use our card selector
              try
-@@ -3634,42 +4823,6 @@ public class RunSimulator
+@@ -3634,42 +4824,6 @@ public class RunSimulator
                  }
              }
              catch (Exception ex) { Console.Error.WriteLine($"[WARN] Bundle patch: {ex.Message}"); }
@@ -11086,7 +11189,7 @@ index 6b9de4a..ffd7821 100644
          }
          catch (Exception ex)
          {
-@@ -3677,85 +4830,79 @@ public class RunSimulator
+@@ -3677,85 +4831,79 @@ public class RunSimulator
          }
      }
  
@@ -11235,7 +11338,7 @@ index 6b9de4a..ffd7821 100644
          /// <summary>
          /// Intercept bundle selection — store bundles and wait for player to pick a pack index.
          /// </summary>
-@@ -3776,6 +4923,7 @@ public class RunSimulator
+@@ -3776,6 +4924,7 @@ public class RunSimulator
              {
                  sim._pendingBundles = bundles;
                  sim._pendingBundleTcs = new TaskCompletionSource<IEnumerable<CardModel>>();
@@ -11243,7 +11346,7 @@ index 6b9de4a..ffd7821 100644
                  Console.Error.WriteLine($"[SIM] Bundle selection pending: {bundles.Count} packs");
  
                  __result = sim._pendingBundleTcs.Task;
-@@ -3789,16 +4937,12 @@ public class RunSimulator
+@@ -3789,16 +4938,12 @@ public class RunSimulator
          // Static reference so Harmony patch can access the simulator instance
          internal static RunSimulator? _bundleSimRef;
  
@@ -11262,7 +11365,7 @@ index 6b9de4a..ffd7821 100644
      }
  
      private static Dictionary<string, object?> Error(string message) =>
-@@ -3826,36 +4970,54 @@ public class RunSimulator
+@@ -3826,36 +4971,54 @@ public class RunSimulator
          var currentCoord = _runState.CurrentMapCoord;
          var visited = _runState.VisitedMapCoords;
  
@@ -11336,7 +11439,7 @@ index 6b9de4a..ffd7821 100644
          // Boss node
          var bossNode = new Dictionary<string, object?>
          {
-@@ -3867,13 +5029,12 @@ public class RunSimulator
+@@ -3867,13 +5030,12 @@ public class RunSimulator
          // Add boss name/id — use BossEncounter?.Id?.Entry
          try
          {
@@ -11353,7 +11456,7 @@ index 6b9de4a..ffd7821 100644
              }
          }
          catch { }
-@@ -3896,15 +5057,124 @@ public class RunSimulator
+@@ -3896,15 +5058,124 @@ public class RunSimulator
      {
          try
          {

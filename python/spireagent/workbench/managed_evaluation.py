@@ -35,11 +35,73 @@ from .global_evidence_store import (
 )
 from .local_environment import _audit, _candidate_audit, _verify_host
 from .local_model_registration import global_environment_manifest
+from .local_models import JSON_LIMIT, RuntimeClient
 from .managed_model_target import runtime_arguments
 
 
 def reject(code: str) -> NoReturn:
     raise BoundaryError("managed_evaluation", code)
+
+
+def _finish_runtime(process: subprocess.Popen, stdout: Path, row: dict[str, Any],
+                    artifacts: Any, deadline: float, cleanup_seconds: float) -> dict[str, Any]:
+    """Observe the existing Runtime owner and send one exact-run Stop on handoff.
+
+    Handoff/taint can leave the HTTP service alive; terminal Close can exit it.
+    Process exit is cleanup evidence, never the game's terminal classifier.
+    """
+    startup_deadline = min(deadline, time.monotonic() + 120)
+    startup = None
+    while time.monotonic() < startup_deadline:
+        if stdout.stat().st_size > JSON_LIMIT:
+            reject("runtime_startup_too_large")
+        raw = stdout.read_bytes()
+        if b"\n" in raw:
+            startup = json.loads(raw.split(b"\n", 1)[0])
+            break
+        if process.poll() is not None:
+            reject("runtime_exited_before_startup")
+        time.sleep(0.05)
+    if not isinstance(startup, dict) or startup.get("schema") != (
+        "sts2.policy-runtime/agent-session-startup-2"
+    ):
+        reject("runtime_startup_missing")
+    client = RuntimeClient(startup["address"], startup)
+    row["run_id"] = startup["run_id"]
+    row["startup"] = artifacts.put("runtime-startup.json", json_bytes(startup))
+    operation = "status"
+    try:
+        while process.poll() is None:
+            state = client.request("/status")["status"]
+            expired = time.monotonic() >= deadline
+            if (state["lifecycle"] == "stopped" or state["mode"] == "human"
+                    or state["tainted"] or state["autonomy_budget"]["state"] == "exhausted"
+                    or expired):
+                row["runtime_final_status"] = artifacts.put(
+                    "runtime-final-status.json", json_bytes(state))
+                if expired:
+                    row["wall_limit_reached"] = True
+                if state["lifecycle"] != "stopped":
+                    operation = "stop"
+                    receipt = client.request("/stop", {})
+                    row["runtime_stop"] = artifacts.put("runtime-stop.json", json_bytes(receipt))
+                break
+            time.sleep(0.2)
+    except (OSError, ValueError) as error:
+        row["runtime_http_error"] = artifacts.put("runtime-http-error.json", json_bytes({
+            "operation": operation,
+            "error": error.code if isinstance(error, BoundaryError) else type(error).__name__,
+            "request_retried": False,
+        }))
+        # The original process may close HTTP between poll/status, or after
+        # accepting Stop but before its reply arrives. Read its own exit handle;
+        # only the later returncode and typed original can establish the outcome.
+        try:
+            process.wait(timeout=min(2.0, cleanup_seconds))
+        except subprocess.TimeoutExpired:
+            raise error from None
+    process.wait(timeout=cleanup_seconds)
+    return startup
 
 
 class ManagedEpisodeExecutor:
@@ -114,6 +176,7 @@ class ManagedEpisodeExecutor:
                 client_attachment=client_path,
                 manager_attachment=manager_path,
                 log_file=private / "host.log",
+                diagnostics_file=private / "native-diagnostics.json",
                 character=manifest["character"],
                 language=self.configuration.get("language", "en"),
                 timeout_ms=60000,
@@ -217,6 +280,7 @@ class ManagedEpisodeExecutor:
                 (private / "runtime.stdout").open("xb") as stdout,
                 (private / "runtime.stderr").open("xb") as stderr,
             ):
+                runtime_started = time.monotonic()
                 runtime_process = subprocess.Popen(
                     args,
                     stdin=subprocess.DEVNULL,
@@ -224,20 +288,12 @@ class ManagedEpisodeExecutor:
                     stderr=stderr,
                     env=os.environ.copy(),
                 )
-                try:
-                    runtime_process.wait(timeout=remaining)
-                except subprocess.TimeoutExpired:
-                    runtime_process.terminate()  # Runtime Stop seals before returning.
-                    runtime_process.wait(timeout=self.cleanup_seconds)
-                    row["wall_limit_reached"] = True
+                startup = _finish_runtime(
+                    runtime_process, private / "runtime.stdout", row, artifacts,
+                    started + self.episode_seconds, self.cleanup_seconds)
+                row["runtime_window_seconds"] = time.monotonic() - runtime_started
             if runtime_process.returncode != 0:
                 reject("runtime_process_failed")
-            lines = (private / "runtime.stdout").read_bytes().splitlines()
-            startup = json.loads(lines[0])
-            if startup.get("schema") != "sts2.policy-runtime/agent-session-startup-2":
-                reject("runtime_startup_missing")
-            row["run_id"] = startup["run_id"]
-            row["startup"] = artifacts.put("runtime-startup.json", json_bytes(startup))
             run = artifacts.root / "runs" / startup["run_id"]
             installed = json.loads((registration / "config.json").read_bytes())
             expected = {

@@ -44,8 +44,8 @@ test("built native act-selection source and retained measured builds remain expl
     createHash("sha256").update(sourcePatch).digest("hex"),
     manifest.expected_build.source_patch_sha256
   );
-  assert.equal(manifest.expected_build.artifact_sha256, "5960486c06384bbac882bed3fbaee088225700cc71b12c9658c73ac5e4e39cab");
-  assert.equal(manifest.expected_build.artifact_mvid, "612ce054-a6b0-48cc-a0aa-3935830f046f");
+  assert.equal(manifest.expected_build.artifact_sha256, "0adc673c1e601079fb5c7b61e5bbf22ab8f2acffead27302201751574a743c7a");
+  assert.equal(manifest.expected_build.artifact_mvid, "86ca119d-ecaf-40c5-bd7e-a643819114df");
   assert.equal(manifest.historical_candidate_builds.some(build =>
     build.source_patch_sha256 === "a46736eee8c0c4c65b574a53e769330831d2e39de7897563f4a4c16b48fc5e20"
     && build.artifact_sha256 === "39a6455c2f67c4313b3cf2b6b46a6783d41cc5ebe86cb62829a6a780c7d562b2"
@@ -152,6 +152,7 @@ test("fresh candidate preparation admits added source files into the audited dif
     "src/Sts2Headless/NativeRelicPresentation.cs",
     "src/Sts2Headless/NativeRewardSetObservation.cs",
     "src/Sts2Headless/NativeRunHookReadQualification.cs",
+    "src/Sts2Headless/NativeScreenShakePresentation.cs",
     "src/Sts2Headless/NativeSelectorCallScope.cs",
     "src/Sts2Headless/NativeSelectorCardDisplay.cs",
     "src/Sts2Headless/NativeSelectorHud.cs",

@@ -219,3 +219,96 @@ def test_stale_producer_cannot_label_new_evidence_or_start_host(monkeypatch):
         managed_evaluation.ManagedEpisodeExecutor(
             {"producer": expected}, episode_seconds=10, cleanup_seconds=10
         )
+
+
+@pytest.mark.parametrize("handoff", [
+    {"mode": "human", "tainted": False},
+    {"mode": "auto", "tainted": True},
+])
+def test_live_http_runtime_is_stopped_once_after_handoff_not_waited_to_deadline(
+    tmp_path, monkeypatch, handoff
+):
+    # Scheduling fixture only. The existing real CLI test covers transport,
+    # exact-run headers, Stop sealing and actual process exit.
+    from spireagent.workbench import managed_evaluation
+    from spireagent.workbench.reference_suite import _Artifacts
+
+    artifacts = _Artifacts(tmp_path / "attempt")
+    stdout = tmp_path / "stdout"
+    startup = {"schema": "sts2.policy-runtime/agent-session-startup-2",
+               "run_id": "owned-run", "address": "http://127.0.0.1:12345"}
+    stdout.write_bytes(json_bytes(startup))
+    calls = []
+
+    class Process:
+        returncode = None
+
+        def poll(self):
+            return self.returncode
+
+        def wait(self, timeout):
+            assert calls == [("/status", None), ("/stop", {})]
+            assert timeout == 3
+            self.returncode = 0
+
+    process = Process()
+
+    class Client:
+        def request(self, route, body=None):
+            calls.append((route, body))
+            state = {"lifecycle": "running", "autonomy_budget": {"state": "inactive"},
+                     **handoff}
+            return {"status": state}
+
+    monkeypatch.setattr(managed_evaluation, "RuntimeClient", lambda address, original: Client())
+    row = {}
+    observed = managed_evaluation._finish_runtime(
+        process, stdout, row, artifacts, managed_evaluation.time.monotonic() + 1800, 3
+    )
+    assert observed == startup
+    assert row["run_id"] == "owned-run"
+    assert "runtime_stop" in row and "wall_limit_reached" not in row
+
+
+@pytest.mark.parametrize("failed_route", ["/status", "/stop"])
+def test_original_runtime_exit_racing_http_is_read_without_reposting_stop(
+    tmp_path, monkeypatch, failed_route
+):
+    from spireagent.workbench import managed_evaluation
+    from spireagent.workbench.reference_suite import _Artifacts
+
+    artifacts = _Artifacts(tmp_path / "attempt")
+    stdout = tmp_path / "stdout"
+    startup = {"schema": "sts2.policy-runtime/agent-session-startup-2",
+               "run_id": "owned-run", "address": "http://127.0.0.1:12345"}
+    stdout.write_bytes(json_bytes(startup))
+    calls = []
+
+    class Process:
+        returncode = None
+
+        def poll(self):
+            return self.returncode
+
+        def wait(self, timeout):
+            assert self.returncode == 0
+            return self.returncode
+
+    process = Process()
+
+    class Client:
+        def request(self, route, body=None):
+            calls.append(route)
+            if route == failed_route:
+                process.returncode = 0
+                raise BoundaryError("local_model", "runtime_command_unknown")
+            return {"status": {"lifecycle": "running", "mode": "human", "tainted": False,
+                               "autonomy_budget": {"state": "inactive"}}}
+
+    monkeypatch.setattr(managed_evaluation, "RuntimeClient", lambda address, original: Client())
+    row = {}
+    assert managed_evaluation._finish_runtime(
+        process, stdout, row, artifacts, managed_evaluation.time.monotonic() + 1800, 3
+    ) == startup
+    assert calls == (["/status"] if failed_route == "/status" else ["/status", "/stop"])
+    assert "runtime_http_error" in row

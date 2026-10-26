@@ -36,9 +36,9 @@
     "managed_artifact": "src/Sts2Headless/bin/Release/net9.0/Sts2Headless.dll"
   },
   "expected_build": {
-    "source_patch_sha256": "32a9dd138a0176c35289c6fbb645ccb9d484ceda7b333f250f4d41376c9863d5",
-    "artifact_sha256": "5960486c06384bbac882bed3fbaee088225700cc71b12c9658c73ac5e4e39cab",
-    "artifact_mvid": "612ce054-a6b0-48cc-a0aa-3935830f046f",
+    "source_patch_sha256": "e0d2a366914235be272f9c25e8fb592d386959b27de1a7a92880098295cf57ce",
+    "artifact_sha256": "0adc673c1e601079fb5c7b61e5bbf22ab8f2acffead27302201751574a743c7a",
+    "artifact_mvid": "86ca119d-ecaf-40c5-bd7e-a643819114df",
     "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0"
   },
   "previous_candidate_build": {
@@ -206,6 +206,12 @@
       "kind": "host_lifecycle_and_presentation_adapter",
       "risk": "high",
       "effect": "Bind the original standard single-player run to its isolated native MockGodotFileIo profile with upload opt-out. Capture existing native victory OnEnded or complete the TestMode-omitted loss OnEnded once; scope original ShouldSave and original synchronous final map stats, preserving native progress/history composition. A real headless Continue commits native-computed badges through the exact nonvisual mutation bridge, native score/epoch primitives, and original discovery facts. Summary remains incomplete until real return/timeline navigation exists; no Godot input owner is invented."
+    },
+    {
+      "id": "native_screen_shake_presentation",
+      "kind": "harmony_presentation_callsite",
+      "risk": "low",
+      "effect": "Only remaps the five pure NGame.ScreenShakeTrauma calls in exact PunchOff/Amalgamator native continuations when Managed TestMode has no scene; surrounding native effects remain original."
     }
   ],
   "admission": {
