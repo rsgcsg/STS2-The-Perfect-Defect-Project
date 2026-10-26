@@ -31,20 +31,36 @@ export function resolvePresentationInput(witness, reduction) {
 }
 
 export async function replayNativeTrajectory({ trajectory, driver, core: kernel = core,
-  record, seed, initialProgress, budgetMs = 1200000 }) {
+  record, seed, initialProgress, budgetMs = 1200000, diagnosticLocator = null }) {
   const deadline = Date.now() + budgetMs;
   let state = kernel.createSession(`native-strict-${randomUUID()}`, 'managed');
   const report = { schema: 'sts2.p1/native-strict-replay-1', seed,
     planned_points: trajectory.points.length, matching_choices: 0, matching_terminal: false,
     native_presentations_replayed: 0, native_presentation_steps: 0,
-    native_steps: 0, unknown_delivery: false, first_divergence: null, completed: false };
+    native_steps: 0, unknown_delivery: false, first_divergence: null, completed: false,
+    comparison_mode: diagnosticLocator ? 'diagnostic_not_equivalence' : 'strict',
+    compared_points: 0, matching_points: 0, diagnostic_choices: 0, differences: [], by_surface: {} };
   let index = 0;
   const log = (kind, data) => record.append(kind, data);
   const compare = (reference, actual, detail) => {
     const match = matchReferenceChoice(reference, actual);
     log('p1_observation', { index, comparison: match, ...detail, observation: actual });
+    if (detail.phase === 'choice') {
+      report.compared_points++;
+      report.matching_points += Number(match.verdict === 'equal');
+      const counts = report.by_surface[reference.observation.scene.native_kind] ??= { compared: 0, matching: 0 };
+      counts.compared++; counts.matching += Number(match.verdict === 'equal');
+    }
     if (match.verdict !== 'equal') {
-      report.first_divergence = { index, ...detail, ...match };
+      const difference = { index, ...detail, ...match };
+      report.first_divergence ??= difference;
+      report.differences.push(difference);
+      if (diagnosticLocator && detail.phase === 'choice' && reference.chosen !== null) {
+        const located = diagnosticLocator(reference, actual, index);
+        log('diagnostic_locator', { index, equivalence_claim: false, evidence: located });
+        if (located?.choice_id && actual.catalog.some(choice => choice.choice_id === located.choice_id))
+          return { ...match, choice_id: located.choice_id, diagnostic: true };
+      }
       throw new Error('strict_public_difference');
     }
     return match;
@@ -121,7 +137,10 @@ export async function replayNativeTrajectory({ trajectory, driver, core: kernel 
         if (index !== trajectory.points.length - 1 || point.observation.status !== 'terminal'
           || !['win', 'loss'].includes(point.observation.terminal?.outcome))
           throw new Error('offline_replay_reference_terminal_required');
-        report.matching_terminal = true; report.completed = true; break;
+        report.matching_terminal = true;
+        report.reached_reference_terminal = true;
+        report.completed = report.differences.length === 0;
+        break;
       }
       if (match.choice_id == null) throw new Error('offline_replay_choice_unmapped');
       const lowering = reduced.lowering[match.choice_id];
@@ -135,7 +154,8 @@ export async function replayNativeTrajectory({ trajectory, driver, core: kernel 
       }
       state = kernel.applyCommitment(state, lowering, true);
       if (!lowering.first) basis = await capture();
-      report.matching_choices++;
+      if (match.diagnostic) report.diagnostic_choices++;
+      else report.matching_choices++;
     }
   } catch (error) {
     report.error = error.message;

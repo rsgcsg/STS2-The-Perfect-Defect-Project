@@ -67,3 +67,34 @@ The frozen macOS artifact is produced by normal GitHub candidate preparation,
 including SourceLink metadata. An earlier local-remote build had identical tracked
 source and method IL but different module/debug identities; it is not the admitted
 normal-prepare artifact. Exact SHA/MVID checks remain mandatory.
+
+## Current bundle, reward and combat-pile repair (2026-10-26)
+
+The absent-UI bundle presentation binds the original Player, run, offered bundle
+objects and suspended native Task. Select opens the existing pack preview;
+cancel retains that Task and exact roster; confirm alone completes it. Replaced
+owners, Tasks and changed rosters are rejected. The original raw bundle route is
+retained, with invalid indexes rejected rather than redirected to the first pack.
+
+Reward candidates retain the original native public details including upgrade
+previews. Empty reward proceed uses the same native eligibility fact as Reference;
+its nonterminal dispatch remains the existing skip-rewards operation. Combat
+selector powers use the shared native visible-text projection, piles retain their
+original-card identity across views, and combat-pile public facts include the
+current displayed multiplicity and manual/nonmanual transition classification.
+None of these changes alters the P1 contract or Reference implementation.
+
+A preserved current Reference run was replayed through 88 public observation and
+catalog points: 87 complete graph matches, one diagnostic choice, matching natural
+terminal and no unknown delivery. The diagnostic choice is never an equality pass.
+The remaining pack-selection mismatch is the opaque-ID ordering relationship in
+`selectable_bundle_entity_ids`; the comparison rule is unchanged and awaits the
+user's decision. Original initial-progress bytes were not retained by that
+Reference run, so whole-condition equivalence is also unproved. A later native
+fixture covers both combat transition classifications and bundle cancel/stale
+ownership; that final candidate was not granted the earlier replay's identity.
+
+This is bounded source/build/native-fixture and replay evidence, not all-surface
+support, full result-object equality, installed/Human evidence, model performance
+or permission to pool Host results. Further experiments stopped at the task's
+15GiB free-space limit by the user's explicit choice.

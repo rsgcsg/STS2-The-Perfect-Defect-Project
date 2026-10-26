@@ -739,3 +739,19 @@ never retry their unknown deliveries or silently mix conditions. No timing hook,
 Native rule patch, partial Read acceptance or automatic speed fallback is added.
 
 Suite reports have a separate bounded 64MiB reader for completed-report reuse; manifests and individual request/evaluation originals retain the 1MiB limit. Per-observation metric details remain in the immutable game-metrics.json artifact; the aggregate row stores only the summary and its exact artifact reference. This keeps long Fast cohorts recoverable without copying every observation into every aggregate report.
+
+### Managed 并行、调度与强化学习的位置（2026-10-26 收口）
+
+链路位置：①世界/Host 的实现替换；②Connector 提供公开环境、③P1 提供观察与完整动作目录、④Agent 做决定。Managed 和 Reference 使用同一 P1 Runtime 与模型包。注册按 Host 分开，是环境要求、运行身份与清理责任不同；不是再造模型、策略或另一套 P1。
+
+应用层的评估计划和槽位账本负责调度。单个协调者先持久化槽位预留，再分配给独占 Host、Runtime、注册目录和证据目录的执行者；结果仍回原有报告与 ArtifactStore。unknown 只记在自己的槽位，不重投；停止新派发，已运行邻局正常收尾。未证明已清理的进程不能计为可用容量。Host Runtime 继续只管生命周期、隔离与恢复；Policy Runtime 继续只管受控执行、预算与 Stop。
+
+本轮已保存采用该结构的共享评估候选，但磁盘触发15GiB停止线后，用户选择按硬限收口；真实执行链和带模型并发未实跑，候选未并入本次修复PR。正式评估入口仍保留原Reference行为。旧 `stpd.evaluation.managed_suite` 是 catalog-only 工程可靠性资产，与完整P1模型输入和任务绑定不同，完整保留，不能把它的结果改名为P1模型评估。
+
+本机库和命令是先做的部署方式；以后按需云CPU执行者、持久调度进程复用同一计划/槽位/结果接口。现有 Hub 仅有 feature/training 作业且每DB一个活动任务，不能直接声称已支持评估池；将来只复用其队列、租约和预算思想，不另引一套业务记录。云部署、集中批量推理、常驻服务器均未实现。当前最短真实验证应先用每个执行者一份既有CPU Agent，再与统一批量推理做相同输入/模型的独立基准；没有带推理数据前不判断哪种更快。
+
+08-21的6–8个Managed实例约1373–1687决策/秒属于旧准确版本的Host-only容量；真游戏1/2/4实例约0.482/0.976/1.868决策/秒也是历史条件。两者都不是当前P1模型吞吐或本机新上限。当前真游戏多开仍须等用户本批32局完成后另行分配游戏占用，核独立profile、端口、原生运行身份、存档、Steam与正常关闭；本轮没有测试，也没有当前提速结论。
+
+强化学习在研究侧：在线P1对局及原记录链产出→Store→明确用途/划分→派生→训练→新检查点→同一评估链。奖励、学习算法、采样/更新比例、Human与自我对局的权重及验收由研究方案定义，不能由Host或调度自行决定。吞吐预算应从目标对局/决策量、当前带推理成本、记录/存储和学习器耗时算起。已有“先Human示范、后审议强化学习”的方向，未批准本轮RL配置；本轮不训练、不实现RL、不启动云机器。
+
+不同Host的结果保留各自世界条件。当前尚无可合并统计的等价资格；单局绝大多数公开观测匹配或旧测速不授权合并胜率、unknown分母或性能曲线。

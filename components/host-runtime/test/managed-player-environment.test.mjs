@@ -1331,6 +1331,7 @@ test("populated reward candidate Reads retain each actual native card, group and
     type: "Attack", rarity: "Common", target_type: "AnyEnemy", is_upgraded: false,
     description: "造成6点伤害。生成1个冰霜充能球。", render_complete: true, render_missing: [],
     keywords: [{ name: "冰霜", description: "获得格挡。" }], card_previews: [] };
+  card.public_details = { keywords: card.keywords, card_previews: [] };
   const aliases = new Map(), common = eventState();
   const project = state => projectManagedCandidateDecision({ ...projectionIdentity, state,
     publicEntityAliases: aliases });
@@ -1430,6 +1431,11 @@ test("reward candidate previews retain native null star cost without changing th
   const card = { native_ref: "gunk-up", id: "CARD.GUNK_UP", name: "Gunk Up", type: "Skill", cost: 1,
     star_cost: null, description: "Add a Slimed.", rarity: "Common", render_complete: true,
     keywords: [], card_previews: [slimed, { ...slimed, id: "CARD.STAR_PREVIEW", star_cost: 2 }] };
+  card.public_details = { keywords: [], card_previews: card.card_previews.map(({ id, ...preview }) => ({
+    ...preview, definition_id: id.slice(5), entity_id: null, cost: String(preview.cost),
+    star_cost: preview.star_cost == null ? null : String(preview.star_cost),
+    is_upgraded: false, is_selected: false, target_type: null, can_play: null,
+  })) };
   const state = { ...eventState(), decision: "reward_set", reward_set_ref: "native-set",
     rewards: [{ native_ref: "native-reward", kind: "card_choice", name: "Add card", card_options: [card] }] };
   const projection = projectManagedCandidateDecision({ state, ...projectionIdentity });

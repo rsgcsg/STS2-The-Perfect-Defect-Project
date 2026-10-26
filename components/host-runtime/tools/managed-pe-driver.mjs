@@ -29,6 +29,7 @@ const started = await startManagedPlayerEnvironmentSession({
   candidateDirectory,
   diskIdentity: readDiskIdentity(resolveInstallation(gameDirectory)),
   character: option(args, "--character", "Ironclad"),
+  language: option(args, "--language", "en"),
   requestTimeoutMs,
   quietDiagnostics: args.includes("--quiet-diagnostics")
 });
