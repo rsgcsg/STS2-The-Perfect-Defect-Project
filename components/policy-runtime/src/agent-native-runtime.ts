@@ -1,3 +1,4 @@
+import { assertInitialProgressOriginalBytes, type InitialProgressOriginal } from "./initial-progress-original.js";
 import { GlobalNoProgressWindow, type GlobalNoProgressConfig } from "./global-no-progress.js";
 import { normalizeGlobalCaptureResponse } from "./global-capture-storage.js";
 import { type FullPublicBasis, serializePublicBasisRecord, decodePublicSourceReceipt } from "@rsgcsg/sts2-connector-client";
@@ -42,6 +43,7 @@ interface SharedAgentRuntimeOptions {
   mode?: RuntimeMode;
   autoBudget?: AutonomyBudgetInput;
   globalNoProgress?: GlobalNoProgressConfig;
+  initialProgressOriginal?: InitialProgressOriginal;
   monotonicNow?: () => number;
   now?: () => string;
 }
@@ -1278,6 +1280,14 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
     this.environment = { kind: "global_public_basis", ...identity.session, host_kind: identity.kind,
       producer_sha256: globalDigest(identity.producer), game_sha256: globalDigest(identity.game), game_continuity_id: identity.game_continuity_id };
     await this.emitGlobal("global_initialized", { identity, core: p1CoreIdentity() });
+    if (this.options.initialProgressOriginal) {
+      const original = this.options.initialProgressOriginal;
+      assertInitialProgressOriginalBytes(original.metadata, original.bytes);
+      if (identity.kind !== "reference" || original.metadata.runtime_instance_id !== identity.session.runtime_instance_id)
+        throw new AgentSessionError("initial_progress_original_runtime_binding");
+      const artifact = original.bytes === null ? null : await this.options.evidence.storeGlobalArtifact("source", original.bytes);
+      await this.emitGlobal("global_initial_progress_original", { original: original.metadata, artifact });
+    }
     if (this.globalNoProgress) await this.emitGlobal("global_no_progress_config", { ...this.globalNoProgress.config });
     await this.emit("mode_changed", { ...this.context(), mode: this.mode, autonomy_budget: this.budgetStatus(), controller: this.controllerStatus() });
   }

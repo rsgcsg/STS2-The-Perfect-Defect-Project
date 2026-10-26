@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { readInitialProgressOriginal } from "./initial-progress-original.js";
 import type { GlobalNoProgressConfig } from "./global-no-progress.js";
 
 import { createHash, randomUUID } from "node:crypto";
@@ -35,6 +36,7 @@ interface CliOptions {
   mode: RuntimeMode;
   autoBudget: AutonomyBudgetConfig;
   globalNoProgress?: GlobalNoProgressConfig;
+  initialProgressOriginal?: { path: string; sha256: string };
 }
 
 async function main(): Promise<void> {
@@ -46,6 +48,7 @@ async function main(): Promise<void> {
     await runAgent(options, manifestPath, validateAgentManifest(rawManifest)); return;
   }
   const manifest = validatePolicyManifest(rawManifest);
+  if (options.initialProgressOriginal) throw new Error("initial progress original requires a GLOBAL Agent manifest");
   if (options.globalNoProgress) throw new Error("no-progress window requires a GLOBAL Agent manifest");
   const isManaged = "kind" in manifest.requirements.environment;
   if (options.observationAcquisition === "sealed-text-menu-v2"
@@ -173,6 +176,7 @@ async function main(): Promise<void> {
 
 async function runAgent(options: CliOptions, manifestPath: string, manifest: AgentManifest): Promise<void> {
   const global = manifest.input.profile === "p1-global-r1";
+  if (!global && options.initialProgressOriginal) throw new Error("initial progress original requires a GLOBAL Agent manifest");
   if ((!global && options.managed) || options.observationAcquisition !== "direct")
     throw new Error("native Agent session does not support Managed or legacy sealed text acquisition");
   const artifactPath = isAbsolute(manifest.artifact.path) ? manifest.artifact.path : resolve(dirname(manifestPath), manifest.artifact.path);
@@ -208,6 +212,7 @@ async function runAgent(options: CliOptions, manifestPath: string, manifest: Age
       : { environment };
     runtime = await PolicyRuntime.forAgent({ manifest, ...selected,
       port, evidence, mode: options.mode, autoBudget: options.autoBudget, globalNoProgress: options.globalNoProgress,
+      initialProgressOriginal: options.initialProgressOriginal ? await readInitialProgressOriginal(resolve(options.initialProgressOriginal.path), options.initialProgressOriginal.sha256) : undefined,
       runtimeIdentity: { version: POLICY_RUNTIME_VERSION, code_sha256: runtimeCodeSha256 } });
     service = await startPolicyRuntimeHttpServer(runtime, { port: options.listenPort, autoDrive: true,
       deferAutoDrive: true, onStopped: shutdown });
@@ -246,7 +251,7 @@ function parseArgs(args: string[]): CliOptions {
     if (!value) throw new Error(`${key} requires a value`);
     index += 1;
     if (key === "--adapter-arg") adapterArgs.push(value);
-    else if (["--observation-acquisition", "--manifest", "--adapter-command", "--adapter-cwd", "--connector-endpoint", "--listen-port", "--evidence-root", "--mode", "--autonomy-mode", "--max-auto-submissions", "--max-policy-calls", "--auto-deadline-ms", "--no-progress-window", "--no-progress-repeats", "--managed-binding", "--managed-attachment", "--managed-expected-service-instance-id", "--managed-expected-runtime-instance-id", "--managed-expected-game-continuity-id"].includes(key)) values.set(key, value);
+    else if (["--observation-acquisition", "--manifest", "--adapter-command", "--adapter-cwd", "--connector-endpoint", "--listen-port", "--evidence-root", "--mode", "--autonomy-mode", "--max-auto-submissions", "--max-policy-calls", "--auto-deadline-ms", "--no-progress-window", "--no-progress-repeats", "--initial-progress-original", "--initial-progress-original-sha256", "--managed-binding", "--managed-attachment", "--managed-expected-service-instance-id", "--managed-expected-runtime-instance-id", "--managed-expected-game-continuity-id"].includes(key)) values.set(key, value);
     else throw new Error(`unknown argument: ${key}`);
   }
   const manifestPath = required(values, "--manifest");
@@ -283,6 +288,9 @@ function parseArgs(args: string[]): CliOptions {
   } : undefined;
   return {
     observationAcquisition,
+    ...(values.has("--initial-progress-original") || values.has("--initial-progress-original-sha256") ? {
+      initialProgressOriginal: { path: required(values, "--initial-progress-original"), sha256: required(values, "--initial-progress-original-sha256") }
+    } : {}),
     manifestPath,
     adapterCommand,
     adapterArgs,

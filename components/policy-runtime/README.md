@@ -723,3 +723,17 @@ each owner. Original unknown or invalid/unbound Results fail before Host start.
 Failed replay execution retains its actual known/unknown step prefix before
 comparison and stops without retry. Diagnostic location preserves all mismatches
 and cannot establish whole-run P1 equivalence.
+
+### Private initial-progress original
+
+A GLOBAL Reference Runtime may receive `--initial-progress-original PATH` plus
+`--initial-progress-original-sha256 SHA256` from its existing owned Environment.
+The descriptor binds the actual native `progress.save` copy to the runtime and
+is validated before driving. Raw bytes are retained as a private GLOBAL artifact
+with `global_initial_progress_original`, sealed and transferred with the run.
+The shared verifier checks metadata, runtime binding, byte length/hash and event
+order. The snapshot never enters Agent input, P1 observations or action bindings.
+An absent/unknown snapshot remains unknown; old originals are never backfilled.
+Only rc49 advertises this CLI addition. Older pinned Runtime registrations keep
+their behavior and require normal re-registration against this version to carry
+the copy into their sealed original; the Environment still retains its own copy.

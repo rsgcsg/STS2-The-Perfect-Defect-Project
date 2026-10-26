@@ -14,6 +14,8 @@ using MegaCrit.Sts2.Core.Nodes.Cards.Holders;
 using MegaCrit.Sts2.Core.Nodes.Combat;
 using MegaCrit.Sts2.Core.Nodes.Screens.CardSelection;
 using MegaCrit.Sts2.Core.Runs;
+using MegaCrit.Sts2.Core.Saves;
+using MegaCrit.Sts2.Core.Saves.Managers;
 using STS2Connector.PlayerEnvironment.Protocol;
 using STS2Connector.PlayerEnvironment.Witness;
 using STS2HumanAnnotator.Core;
@@ -4978,8 +4980,34 @@ internal static partial class RecorderRuntime
                 null,
                 null,
                 "RunManager.Launch completed; exact RunState setup provenance: " + journalKind);
+            PersistInitialProgressOriginal(journalKind);
         }
         PublishApplicationEvent(RecordingEventKind.RunStarted, detail: journalKind);
+    }
+
+    // Copy the actual save-store bytes at the native launch boundary. Reading or
+    // snapshot failure cannot change Human input, P1 content or recording flow.
+    private static void PersistInitialProgressOriginal(string journalKind)
+    {
+        int? profile = null;
+        byte[]? raw = null;
+        string? reason = journalKind == "run_started_native" ? null : "resumed_run_initial_progress_not_observed";
+        try
+        {
+            if (reason == null)
+            {
+                var save = SaveManager.Instance;
+                profile = save.CurrentProfileId;
+                string path = ProgressSaveManager.GetProgressPathForProfile(profile.Value);
+                if (Godot.FileAccess.FileExists(path)) raw = Godot.FileAccess.GetFileAsBytes(path);
+                if (raw is not { Length: > 0 and <= InitialProgressOriginal.MaximumBytes })
+                { raw = null; reason = "native_progress_file_unavailable_or_capacity"; }
+            }
+        }
+        catch { reason = "native_progress_file_read_failed"; }
+        try { _store?.PersistInitialProgressOriginal(_currentRunId, DateTimeOffset.UtcNow, profile, raw, reason); }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException or InvalidOperationException)
+        { AppendJournal("initial_progress_original_unavailable", null, null, error.GetType().Name); }
     }
 
     private static void SealAfterNativeTerminal()

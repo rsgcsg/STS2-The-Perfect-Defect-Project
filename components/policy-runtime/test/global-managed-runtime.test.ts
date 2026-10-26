@@ -79,7 +79,16 @@ describe("original GLOBAL CLI startup and control",()=>{
    if(source)args.push("--managed-binding",source.bindingPath,"--managed-attachment",source.attachmentPath,
     "--managed-expected-service-instance-id",source.target.serviceInstanceId,"--managed-expected-runtime-instance-id",source.target.runtimeInstanceId,
     "--managed-expected-game-continuity-id",source.target.gameContinuityId);
-   else args.push("--connector-endpoint",f.source.address);
+   else {
+    args.push("--connector-endpoint",f.source.address);
+    const raw=Buffer.from([255,0,13,10,123,125,10]);
+    const original={schema:"spireagent/native-initial-progress-original-v1",source:"native_progress_file",status:"captured",
+     runtime_instance_id:f.source.capabilities.host.runtime_instance_id,profile_generation_id:"fixture-generation",native_profile_id:1,
+     seed:"fixture-seed",captured_at:new Date().toISOString(),bytes:raw.length,sha256:createHash("sha256").update(raw).digest("hex"),reason:null};
+    const descriptor=JSON.stringify(original),path=join(f.root,"initial-progress-original.json");
+    await writeFile(path,descriptor);await writeFile(join(f.root,"initial-progress.bin"),raw);
+    args.push("--initial-progress-original",path,"--initial-progress-original-sha256",createHash("sha256").update(descriptor).digest("hex"));
+   }
    child=spawn(process.execPath,args,{stdio:["ignore","pipe","pipe"]});closed=once(child,"close");
    let diagnostics="";child.stderr!.on("data",chunk=>{diagnostics+=String(chunk);});
    const startup=await new Promise<any>((resolve,reject)=>{
@@ -100,7 +109,9 @@ describe("original GLOBAL CLI startup and control",()=>{
    const stop=await fetch(startup.address+"/v2/stop",{method:"POST",headers:{"content-type":"application/json","x-sts2-policy-run-id":startup.run_id},body:"{}"});expect(stop.status).toBe(200);
    expect((await stop.json()).status).toMatchObject({lifecycle:"stopped",controller:"released",pending_request:null});
    const [code]=await closed;expect(code,diagnostics).toBe(0);
-   expect((await replayGlobalAgentRun(join(f.root,startup.run_id))).verdict).toBe("verified");
+   const replay=await replayGlobalAgentRun(join(f.root,startup.run_id));
+   expect(replay.verdict).toBe("verified");
+   expect(replay.initial_progress_original?.status??null).toBe(kind==="reference"?"captured":null);
    expect(source?source.actions:f.source.steps).toBe(1);
   }finally{
    if(child&&child.exitCode===null&&child.signalCode===null&&!child.killed)child.kill("SIGKILL");

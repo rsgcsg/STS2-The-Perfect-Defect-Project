@@ -9,6 +9,41 @@ namespace STS2HumanAnnotator.Tests;
 public sealed class P1NativeRecordingTests
 {
     [Fact]
+    public void InitialProgressOriginalRetainsRawBytesOnceAndAuditsTampering()
+    {
+        string root = Path.Combine(Path.GetTempPath(), "initial-progress-original-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            string directory;
+            byte[] raw = { 255, 0, 13, 10, 123, 32, 125, 10 };
+            var manifest = Manifest();
+            using (var store = RecordingSessionStore.Create(root, manifest, P1NativeRecordingContract.Profile))
+            {
+                directory = store.DirectoryPath;
+                Assert.Empty(InitialProgressOriginal.Audit(directory, manifest));
+                store.PersistInitialProgressOriginal("run-0001", DateTimeOffset.UtcNow, 1, raw);
+                store.PersistInitialProgressOriginal("run-0001", DateTimeOffset.UtcNow, 1, new byte[] { 1 });
+                store.PersistInitialProgressOriginal("run-0002", DateTimeOffset.UtcNow, 1, null,
+                    "resumed_run_initial_progress_not_observed");
+            }
+            var original = JsonSerializer.Deserialize<InitialProgressOriginal>(File.ReadAllBytes(
+                Path.Combine(directory, "initial-progress", "run-0001.json")), EvidenceJson.Options)!;
+            Assert.Equal("captured", original.Status);
+            string payload = Path.Combine(directory, original.PayloadRef!);
+            Assert.Equal(raw, File.ReadAllBytes(payload));
+            Assert.Empty(InitialProgressOriginal.Audit(directory, manifest));
+            var unknown = JsonSerializer.Deserialize<InitialProgressOriginal>(File.ReadAllBytes(
+                Path.Combine(directory, "initial-progress", "run-0002.json")), EvidenceJson.Options)!;
+            Assert.Equal("unknown", unknown.Status); Assert.Null(unknown.PayloadRef);
+            Assert.Equal("resumed_run_initial_progress_not_observed", unknown.Reason);
+            File.WriteAllBytes(payload, new byte[] { 1, 2 });
+            Assert.Contains("initial_progress_original_invalid", InitialProgressOriginal.Audit(directory, manifest));
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    [Fact]
     public void P1BasisPersistenceDiagnosticUsesProductionStore()
     {
         string? output = Environment.GetEnvironmentVariable("STS2_P1_BASIS_DIAGNOSTIC_OUT");

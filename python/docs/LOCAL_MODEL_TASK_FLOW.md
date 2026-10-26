@@ -770,3 +770,18 @@ python -m spireagent.workbench.evaluation_ledger report \
 强化学习在研究侧：在线P1对局及原记录链产出→Store→明确用途/划分→派生→训练→新检查点→同一评估链。奖励、学习算法、采样/更新比例、Human与自我对局的权重及验收由研究方案定义，不能由Host或调度自行决定。吞吐预算应从目标对局/决策量、当前带推理成本、记录/存储和学习器耗时算起。已有“先Human示范、后审议强化学习”的方向，未批准本轮RL配置；本轮不训练、不实现RL、不启动云机器。
 
 不同Host的结果保留各自世界条件。当前尚无可合并统计的等价资格；单局绝大多数公开观测匹配或旧测速不授权合并胜率、unknown分母或性能曲线。
+
+### Original account progress at an owned native start
+
+Environment copies the actual isolated `saves/progress.save` bytes immediately
+after reset/seed verification and before bootstrap handoff. It retains a private
+resource-generation descriptor even if the file is unknown; it never falls back
+to normalized baseline JSON or a personal profile. The GLOBAL rc49 Runtime
+registration accepts the descriptor plus its frozen SHA, binds it to its current
+Reference runtime, and seals the raw artifact with its original. The normal Store
+and R2 archive/readback then carry it without a second storage path. Older pinned
+Runtime registrations keep their version and require ordinary re-registration
+against rc49 for this private archive addition. No old original is backfilled.
+The new Human P1 native recorder also copies raw progress at its observed native
+start; resumes remain unknown. Neither path exposes progress in P1, changes
+recording control, or qualifies cross-Host pooling.
