@@ -633,8 +633,48 @@ def test_closed_recording_maintenance_uses_import_owner_and_survives_reopen(
     assert len(calls) == 1
     if cohort_failed:
         assert reopened._maintenance["cohort_error"] == "projection_conflicts:synthetic-old-view"
+    # Real Store, immutable raw fixture and persisted completed state survive a
+    # registered Tool upgrade. Only the catalog candidate identity changes.
+    import copy
+
+    old_identity = identity
+    old_intake = copy.deepcopy(reopened._maintenance["last_intake"])
+    old_manifests = set(store.manifest_ids())
+    upgraded_dir = tmp_path / "upgraded-tool"
+    shutil.copytree(tool.directory, upgraded_dir)
+    definition = json.loads((upgraded_dir / "collection-tool.json").read_bytes())
+    definition["identity"]["source_revision"] = "c" * 40
+    definition["release_id"] = digest(definition["identity"])
+    (upgraded_dir / "collection-tool.json").write_text(json.dumps(definition))
+    upgraded = CollectionTool(upgraded_dir, definition["release_id"])
+    candidate["tool_release_id"] = upgraded.release_id
+    identity = digest({"closed": candidate["p1_close_sha256"], "tool": upgraded.release_id})
+    assert identity != old_identity
+    monkeypatch.setattr(importing, "current_collection_tool",
+                        lambda _: (upgraded.directory, upgraded.release_id))
+    reopened = importing.LocalRecordingImporter(config, Catalog())
+    assert P1RecordingMaintenance(reopened).tick()["status"] == "completed"
+    assert reopened._maintenance["completed_candidates"] == [old_identity, identity]
+    assert reopened._maintenance["pending_candidates"] == []
+    assert reopened._maintenance["last_intake"] == old_intake
+    assert set(store.manifest_ids()) == old_manifests
+    assert len(calls) == 1
+
+    # A sessions entry alone is insufficient: without its old completed ID the
+    # ordinary pipeline must finish again, including normal intake accounting.
+    reopened._maintenance["completed_candidates"].clear()
+    assert P1RecordingMaintenance(reopened).tick()["status"] == "completed"
+    assert reopened._maintenance["last_intake"] != old_intake
+    # Changing peer clears completion and must preserve to that actual new peer.
+    owner = P1RecordingMaintenance(reopened)
+    owner.configure(True, peer_binding(str(tmp_path / "other-cold")), projection_id=None)
+    owner.tick()
+    reopened.thread.join(timeout=10)
+    assert reopened.status()["storage_receipt"]["full_readback"] is True
+    assert reopened.operation["peer"] == peer_binding(str(tmp_path / "other-cold"))
+    assert owner.tick()["status"] == "completed"
     reopened.operation.update(status="interrupted_unknown")
-    assert P1RecordingMaintenance(reopened).tick()["status"] == "blocked"
+    assert owner.tick()["status"] == "blocked"
     assert len(calls) == 1
 
 

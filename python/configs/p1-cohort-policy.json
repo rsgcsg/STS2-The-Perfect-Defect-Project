@@ -4,7 +4,8 @@
   "projection": "native-timeline-targets-1",
   "tool_release_priority": [
     "0464d9e206a3d234678dafeba4e17380afde7d1b36ee4a5eb26ea1701333f340",
-    "5171897f083a5abd77bad879ad7314c2c47fbd3633a19f07eaaa27f1489bf227"
+    "5171897f083a5abd77bad879ad7314c2c47fbd3633a19f07eaaa27f1489bf227",
+    "aa168b7e76b714b2a33533a25631062865be514352429db74e388bc5a2a64cfb"
   ],
   "superseded_tool_release_ids": [
     "486d816c3ef3b9b5e471de059d88b89355145337bbd07537820e22816476575d",
@@ -17,5 +18,14 @@
     "3e9efdc25416dd7591148ddd906693348e5a91332434a6ae562b486d0e35f819"
   ],
   "split_salt": "p1-first-four-agent-20261023-v1",
-  "holdout_targets": {"dev": {"0": 4, "10": 3}, "test": {"0": 4, "10": 3}}
+  "holdout_targets": {
+    "dev": {
+      "0": 4,
+      "10": 3
+    },
+    "test": {
+      "0": 4,
+      "10": 3
+    }
+  }
 }
