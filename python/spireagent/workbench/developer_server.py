@@ -2423,6 +2423,7 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                         if not state["policy"].get("cohort_policy"):
                             raise BoundaryError("p1_cohort", "configure_cohort_policy_first")
                         state.pop("cohort_signature", None)
+                        state.pop("cohort_failed_signature", None)
                         app.local_recording_import._save()
                     self.respond(200, b'{"status":"refresh_requested"}')
                 except BoundaryError as error:

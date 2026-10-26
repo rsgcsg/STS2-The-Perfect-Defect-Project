@@ -554,11 +554,13 @@ def test_p1_pack_returns_original_receipt_location_and_rejects_bad_results(
             tool.pack_p1_native(tmp_path / "session", output, "worker", "campaign")
 
 
+@pytest.mark.parametrize("cohort_failed", [False, True])
 def test_closed_recording_maintenance_uses_import_owner_and_survives_reopen(
     tmp_path,
     original,
     tool,
     monkeypatch,
+    cohort_failed,
 ):
     import shutil
 
@@ -612,6 +614,9 @@ def test_closed_recording_maintenance_uses_import_owner_and_survives_reopen(
     importer = importing.LocalRecordingImporter(config, Catalog())
     maintenance = P1RecordingMaintenance(importer)
     maintenance.configure(True, peer_binding(str(tmp_path / "cold")), projection_id=None)
+    if cohort_failed:
+        importer._maintenance.update(cohort_error="projection_conflicts:synthetic-old-view",
+                                     cohort_error_at="2026-10-26T06:00:00Z")
     maintenance.tick()
     importer.thread.join(timeout=10)
     assert importer.status()["status"] == "completed"
@@ -626,6 +631,8 @@ def test_closed_recording_maintenance_uses_import_owner_and_survives_reopen(
     assert reopened._maintenance["completed_candidates"] == [identity]
     assert P1RecordingMaintenance(reopened).tick()["status"] == "up_to_date"
     assert len(calls) == 1
+    if cohort_failed:
+        assert reopened._maintenance["cohort_error"] == "projection_conflicts:synthetic-old-view"
     reopened.operation.update(status="interrupted_unknown")
     assert P1RecordingMaintenance(reopened).tick()["status"] == "blocked"
     assert len(calls) == 1

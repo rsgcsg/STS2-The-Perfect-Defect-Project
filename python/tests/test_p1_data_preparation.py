@@ -410,3 +410,27 @@ def test_training_reader_reuses_Q_inspection_but_still_verifies_actual_input(tmp
     with (VerifiedReadSession(store, scratch=tmp_path / "reads") as session,
           pytest.raises(StoreError, match="payload_chunk_integrity_failure")):
         dataset.load_snapshot(session, frozen["snapshot_id"], inspection_cache=cache)
+
+
+def test_projection_conflict_retains_producing_exception_in_log(tmp_path, monkeypatch, caplog):
+    import errno
+    import logging
+
+    owner, store, projections = workspace(tmp_path)
+    original = P1PreparationCache.inspect
+    bad = projections[0].artifact_id
+
+    def inspect(self, selected_store, identity, spec):
+        if identity == bad:
+            raise OSError(errno.EMFILE, "synthetic descriptor exhaustion")
+        return original(self, selected_store, identity, spec)
+
+    monkeypatch.setattr(P1PreparationCache, "inspect", inspect)
+    with caplog.at_level(logging.ERROR):
+        result = prepare_p1_data(owner, store)
+    assert result["selection"] is None
+    assert result["conflicts"] == [{"projection_id": bad, "code": "invalid_projection"}]
+    record = next(r for r in caplog.records if bad in r.getMessage())
+    assert record.exc_info[0] is OSError
+    assert record.exc_info[1].errno == errno.EMFILE
+    assert "synthetic descriptor exhaustion" in caplog.text

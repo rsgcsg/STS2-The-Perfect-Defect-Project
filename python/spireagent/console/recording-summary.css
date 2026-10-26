@@ -4,4 +4,8 @@ table { border-collapse: collapse; width: 100%; background: white; }
 td, th { padding: 8px; text-align: left; border-bottom: 1px solid #d8e0e8; }
 code { overflow-wrap: anywhere; font-size: 13px; }
 .status { padding: 14px; background: #e7eef7; border-radius: 8px; }
+.status.danger { background: #fff0ed; border: 3px solid #b42318; color: #751c15; }
+.status strong { font-size: 1.12em; }
+.status p { margin: 6px 0; }
+[hidden] { display: none !important; }
 small { color: #506077; }
