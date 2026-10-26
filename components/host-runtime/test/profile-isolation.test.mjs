@@ -115,3 +115,25 @@ test("refuses to infer consent across a settings schema change", () => {
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('isolated recorder outputs are per-generation evidence and survive game-profile reset', () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'sts2-recorder-isolation-'));
+  try {
+    const first = isolatedProfileLaunch(root, 'worker-a');
+    const second = isolatedProfileLaunch(root, 'worker-b');
+    const names = ['STS2_HUMAN_ANNOTATOR_RECORDING_ROOT', 'STS2_HUMAN_ANNOTATOR_STATUS_PATH'];
+    for (const name of names) {
+      assert.ok(first.environment[name].startsWith(path.join(root, 'evidence', 'annotator') + path.sep));
+      assert.notEqual(first.environment[name], second.environment[name]);
+      assert.equal(first.environment[name].startsWith(first.profile_root + path.sep), false);
+    }
+    const directory = first.environment[names[0]], original = path.join(directory, 'unique-original.json');
+    mkdirSync(directory, { recursive: true }); writeFileSync(original, 'preserve this evidence');
+    resetIsolatedProfile(root, 'worker-a');
+    const replacement = isolatedProfileLaunch(root, 'worker-a');
+    assert.equal(readFileSync(original, 'utf8'), 'preserve this evidence');
+    assert.notEqual(replacement.environment[names[0]], directory);
+    const personal = resolveLaunchProfile({ localRoot: root, sharedProfileAcknowledged: true });
+    for (const name of names) assert.equal(personal.environment[name], undefined);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});

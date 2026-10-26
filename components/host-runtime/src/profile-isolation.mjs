@@ -101,9 +101,16 @@ export function resetIsolatedProfile(localRoot, profileId, platform = process.pl
 
 export function isolatedProfileLaunch(localRoot, profileId, platform = process.platform) {
   const profile = prepareIsolatedProfile(localRoot, profileId, platform);
+  // The installed Annotator config may contain absolute daily Human paths.
+  // An isolated Host owns its output namespace as well as its game profile.
+  // Keep unique evidence outside resettable profile payloads.
+  const recorderRoot = path.resolve(localRoot, "evidence", "annotator", profileId,
+    profile.generation.generation_id);
   const environment = {
     HOME: profile.home,
-    USERPROFILE: profile.home
+    USERPROFILE: profile.home,
+    STS2_HUMAN_ANNOTATOR_RECORDING_ROOT: path.join(recorderRoot, "recordings"),
+    STS2_HUMAN_ANNOTATOR_STATUS_PATH: path.join(recorderRoot, "runtime.json")
   };
   if (platform === "win32") {
     environment.APPDATA = profile.appdata;

@@ -521,3 +521,10 @@ and forbidden-file checks and additionally proves deterministic archives,
 offline installation outside this workspace, original Managed service imports,
 public-basis SDK exports, and SDK/Zod bundle hashes. Packaging remains separate
 from game build, load, runtime and native qualification.
+
+Isolated profiles also override the installed Annotator's absolute recording
+and runtime-status paths. Their outputs live under the existing Host evidence
+root, partitioned by profile and generation, outside resettable game-profile
+payloads. They cannot enter the daily Human recording intake through inherited
+Annotator configuration. Shared/personal launches keep their explicit settings.
+These private outputs are evidence; resetting a game profile does not delete them.
