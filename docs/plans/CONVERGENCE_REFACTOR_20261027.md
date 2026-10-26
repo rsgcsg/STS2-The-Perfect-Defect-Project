@@ -12,3 +12,5 @@
 | **不做：把两个同名run_suite硬合并** | [正常账本](../../python/spireagent/workbench/evaluation_ledger.py#L296)已共用应用 `reference_suite.run_suite`＋Managed executor；`stpd/evaluation/managed_suite.py`仍被catalog-only uniform工程CLI/结果验证器调用。F最终报告和源码一致。 | 两者消费者/证据不同；卡里的“第二条438评分链”线索不成立。保留并标用途；只有真实同一业务状态机再重复时，才评估合并公共机制。删旧资产或合并语义会比保留更贵。 |
 
 M051等待点、M052/53、M035/38等首先是原owner的缺陷/证据缺口，不能因出现在重构表就顺手改合同；去向保在[原待修表](CONVERGENCE_BASELINE_20261027.zh-CN.md#待修与重构去向)。没有实测收益的统一框架、统一venv或全量目录搬家本轮不做。
+
+工程成本线索：本轮G0也因原路由闭集之外的DECISIONS/RESOLVED、嵌套专题和Python指南而选择full。没有为了省CI改判或借旧绿；本轮仅修改收口两检查与已有导航。下一次同类文档任务若仍反复付出整套产品CI成本，可在原check-plan中有界评估这些已知管理面的分类，保未知/合同/组件/可执行文件的强门及正反例；不把所有md一律放轻。

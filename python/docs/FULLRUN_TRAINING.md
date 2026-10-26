@@ -149,7 +149,7 @@ qualification receipts independently establish the result of those gates.
 用户选定权重并明确说“开训”后启动。短校准使用独立 intent、固定 `stop_after`，不冒作正式训练。
 
 1. 使用当前干净源码及 `uv sync --locked --all-extras` 环境，保持原 Curation/Store owner。
-   卡 A 更新切分后，取其**新 Snapshot ID**及已选的每局权重，生成一个新的请求 JSON。
+   按[整局切分和确认冻结 SOP](RECOUNT-SOP.zh-CN.md)取得本轮**新 Snapshot ID**及用户已选每局权重，生成新的请求 JSON。旧“卡 A”是已交付的盘点任务，不是要重新派发的前置。
    不能按文件夹合并数据、跨 TRAIN/DEV/TEST 重分局，也不能把可读的数据包当作训练用途批准。
 2. 正常打开独立的训练 Application 配置。`remote_compute.compute_store` 指向现有 R2 peer；
    `execution_producer` 固定当前 source/lock；`target_path` 可指向尚不存在的本轮学校目标文件。
