@@ -744,3 +744,8 @@ An absent/unknown snapshot remains unknown; old originals are never backfilled.
 Only rc49 advertises this CLI addition. Older pinned Runtime registrations keep
 their behavior and require normal re-registration against this version to carry
 the copy into their sealed original; the Environment still retains its own copy.
+
+The full-public comparer consumes SDK-owned P1 ordering declarations. It accepts
+matching r1.5 or explicitly derived r1.6 views and rejects mixed revisions.
+Runtime's existing live r1.5 handshake and model input remain unchanged. New
+r1.6 membership semantics do not prove equality of frozen 438 inputs/probabilities.

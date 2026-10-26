@@ -162,3 +162,10 @@ source-test prerequisite. Their test-only helper builds the zero-package portabl
 bridge once, or accepts an explicitly prebuilt `STS2_OWNED_CURRENT_BRIDGE_DLL`.
 They measure production retained bytes through SDK HTTP/assembly; they do not
 load a game, native Service/Executor, or inference backend.
+
+P1 order revision r1.6 is explicitly selectable with
+`createSession(episodeId, hostKind, "r1.6")`; the existing two-argument call keeps
+its frozen r1.5 output. The order declaration is exported by
+`p1-global/publicOrdering`. Full-public comparison requires matching revisions.
+An offline r1.6 derivative changes only observation revision and retains original
+and per-observation hashes; it does not upgrade an old model or recording.

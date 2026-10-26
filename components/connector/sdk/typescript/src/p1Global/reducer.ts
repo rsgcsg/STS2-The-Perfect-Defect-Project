@@ -48,6 +48,7 @@ export interface RewardLedger {
 }
 
 export interface P1SessionState {
+  readonly revision: P1Observation["revision"];
   readonly episode_id: string;
   readonly host_kind: HostKind;
   readonly occurrence: number;
@@ -114,8 +115,9 @@ export interface Reduction {
   readonly missing: readonly string[];
 }
 
-export function createSession(episodeId: string, hostKind: HostKind): P1SessionState {
-  return { episode_id: episodeId, host_kind: hostKind, occurrence: 0, last_snapshot_id: null, last_commitments: null,
+export function createSession(episodeId: string, hostKind: HostKind, revision: P1Observation["revision"] = P1G_REVISION): P1SessionState {
+  if (!["r1.5", "r1.6"].includes(revision)) throw new Error("unsupported_p1_revision");
+  return { revision, episode_id: episodeId, host_kind: hostKind, occurrence: 0, last_snapshot_id: null, last_commitments: null,
     aliases: {}, alias_counts: {}, reward_pages: 0, reward: null };
 }
 
@@ -827,7 +829,7 @@ function reduceCatalog(state: P1SessionState, basis: P1Basis, execution?: readon
   };
 
   const observation: P1Observation = {
-    schema: P1G_OBSERVATION_SCHEMA, profile: P1G_PROFILE, revision: P1G_REVISION,
+    schema: P1G_OBSERVATION_SCHEMA, profile: P1G_PROFILE, revision: state.revision,
     envelope: { episode_id: state.episode_id, occurrence, host_kind: state.host_kind,
       source_snapshot_id: String(snapshot.snapshot_id), source_sequence: Number(snapshot.sequence), required_information_complete: false,
       read_instances: readInstances.map(({ listed }) => ({ read_id: String(listed.read_id), kind: String(listed.kind),

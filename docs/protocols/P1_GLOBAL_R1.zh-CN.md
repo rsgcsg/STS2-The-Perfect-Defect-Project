@@ -455,3 +455,41 @@ E3的全部条件：
 - T7：Runtime已按原生settling等待，短真实回归已跨过原过渡；新暴露升级activate映射缺口，尚未全机制验收。
 - 历史第15节只保留当时结果；当前覆盖以同候选原件和逐项检查为准，不能从旧摘要自动继承支持或缺口。
 - 不声明：胜率或策略强度、第二幕以后的覆盖、胜利终局、发布级资格、训练数据可用性。
+
+## r1.6：列表顺序声明（2026-10-26，按用户已批原则）
+
+用户原则为“顺序不重要的东西在协议里面就是顺序不重要，其他的再说”。
+本修订仅声明顺序，不改变公开信息、动作、Result、原生执行或模型编码。
+SDK `createSession(episode, host, "r1.6")` 显式选择本版；未指定版本的在线
+消费者继续生成其冻结的 r1.5，原438模型/InputSpec与录制组合不自动升级。
+这是可并存的协议版本，不能把发布了比较能力说成旧Agent已符合新声明。
+
+顺序权威位于 SDK `p1Global/publicOrdering.ts`，比较器直接消费这份声明。
+已有无序域为动作目录、卡组库存、地图节点库存、明确标为
+`unordered_multiset` 的牌堆、完整当前卡详情Read库存（商店保持catalog首项）、
+战斗出牌/药水合法目标集合。重复实例、完整文字、内容、显示context和全部关联仍保留。
+
+本版新增以下**无重复的成员资格集合**，数组位置不表达显示次序或选择先后：
+
+| schema-owned界面 | `scene.content.surface` 下的无序字段 |
+|---|---|
+| card_selection、combat_hand_card_selection、native_combat_pile_selection、native_deck_card_selection、native_generated_card_choice、native_simple_card_selection、deck_transform_selection、deck_card_selection、deck_upgrade_selection、deck_enchant_selection | selectable_card_entity_ids、deselectable_card_entity_ids（存在时） |
+| card_reward_selection | selectable_card_entity_ids |
+| card_bundle_selection | selectable_bundle_entity_ids |
+| treasure_room、treasure_chest、treasure_relic_selection、treasure_completion、relic_choice、native_boss_relic_selection | selectable_relic_entity_ids（存在时） |
+
+理由：这些字段由当前原生可执行动作的 subject 成员域导出，消费者以成员资格绑定动作；
+实际卡牌/卡包/遗物显示列表另存，顺序继续保留。声明不适用于同名扩展字段。
+缺项、增项、重复、错绑实体、改变显示或效果顺序仍不相等；引用必须闭合并服从
+同一个全局实体双射。资源上限或无法唯一匹配仍是 incomparable。
+
+尚未证明无序的字段继续按序比较：`selected_card_entity_ids`、
+`selector_request.selected_entity_ids`、`selection_progress.selected_card_entity_ids`、
+卡牌/卡包/遗物显示数组、敌人、手牌、discard/exhaust、遗物触发次序、
+地图边数组、承诺处置数组和未知扩展。某些已选集合的当前实现会排序，但不能据此
+推断所有多选效果都无顺序；扩大声明须有原生消费证据，拿不准的交用户决定。
+
+旧 r1.5 原件、帧、概率、438包及既有结果冻结。离线比较新语义时生成独立 r1.6
+衍生件，保存原件hash、每份观察前后hash；唯一变化是观察revision，数组和事实不改。
+不同revision直接比较必须incomparable。新声明下公开图相等不抹去原r1.5的严格差异，
+也不证明438输入或概率相同。两Host统计合并、训练输入的无序编码与新训练另行决定。

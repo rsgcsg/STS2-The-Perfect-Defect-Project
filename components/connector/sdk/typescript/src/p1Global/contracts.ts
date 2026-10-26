@@ -11,6 +11,10 @@
  */
 export const P1G_PROFILE = "p1-global-r1" as const;
 export const P1G_REVISION = "r1.5" as const;
+/** Explicit opt-in order contract. Existing live consumers retain their frozen
+ * r1.5 handshake; a new r1.6 view must identify its derivation, never relabel raw. */
+export const P1G_ORDER_REVISION = "r1.6" as const;
+export type P1Revision = typeof P1G_REVISION | typeof P1G_ORDER_REVISION;
 /** Approved noncombat belt boundary. Other scenes retain their original contract. */
 export const P1G_NONCOMBAT_POTION_SCENES: readonly string[] = Object.freeze([
   "event_option", "event_dialogue", "map_navigation", "rest_site", "shop_room", "shop_inventory",
@@ -81,7 +85,7 @@ export interface P1Commitments {
 export interface P1Observation {
   readonly schema: typeof P1G_OBSERVATION_SCHEMA;
   readonly profile: typeof P1G_PROFILE;
-  readonly revision: typeof P1G_REVISION;
+  readonly revision: P1Revision;
   readonly envelope: P1Envelope;
   readonly status: "decision" | "terminal" | "unsupported";
   readonly scene: {
