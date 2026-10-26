@@ -164,5 +164,11 @@ export function createPublicGraphComparator(policy: PublicGraphPolicy) {
     }
     throw firstFailure!;
   }
-  return { compare, unordered, compareWhole };
+  /** Evidence consumers may inspect the successful whole-graph mapping. This
+   * neither selects a native action nor creates a second identity relation. */
+  const bindings = () => [...forward].map(([key, right]) => {
+    const colon = key.indexOf(":");
+    return { kind: key.slice(0, colon), left: key.slice(colon + 1), right };
+  });
+  return { compare, unordered, compareWhole, bindings };
 }

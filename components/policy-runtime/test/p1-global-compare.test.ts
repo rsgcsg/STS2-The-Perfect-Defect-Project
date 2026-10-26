@@ -324,3 +324,18 @@ it("r1.6 unordered membership does not erase selected card order, display order 
     expect(compare(a, bad).verdict, variant).not.toBe("equal");
   }
 });
+
+it("exports only the same successful full-graph bijection for probability alignment", async () => {
+  const { comparePublicPointBindings } = await import("../src/p1-global/compare.js");
+  const a = unambiguousObservation(), b = renamed(a);
+  const report = comparePublicPointBindings(a, b);
+  expect(report.verdict).toBe("equal");
+  const actions = report.bindings.filter(item => item.kind === "action");
+  expect(actions).toHaveLength(a.catalog.length);
+  for (const mapping of actions)
+    expect(compare(a, b, mapping.left, mapping.right).verdict).toBe("equal");
+  content(b.combat).player.hand[0].description += " changed";
+  const failed = comparePublicPointBindings(a, b);
+  expect(failed.verdict).toBe("different");
+  expect(failed.bindings).toEqual([]);
+});

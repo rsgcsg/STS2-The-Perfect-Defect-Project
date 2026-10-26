@@ -84,6 +84,25 @@ function bounded(value: unknown): boolean {
 export function comparePublicPoint(left: P1Observation, right: P1Observation, chosenLeft: string | null, chosenRight: string | null):
   { verdict: Verdict; difference: FirstDifference | null } { return comparePoint(left, right, chosenLeft, chosenRight); }
 
+/** Retain the successful complete graph's action/entity bijection for paired
+ * model probability analysis. A failed comparison never exports partial maps. */
+export function comparePublicPointBindings(left: P1Observation, right: P1Observation) {
+  const result = comparePublicPoint(left, right, null, null);
+  if (result.verdict !== "equal") return { ...result, bindings: [] };
+  const a = { observation: modelView(left), chosen: null };
+  const b = { observation: modelView(right), chosen: null };
+  const graph = graphPolicy(canonicalJson(a.observation) === canonicalJson(b.observation), left);
+  try {
+    graph.compareWhole(a, b);
+    return { ...result, bindings: graph.bindings() };
+  } catch (error) {
+    if (error instanceof PublicGraphDifference) return {
+      verdict: error.incomparable ? "incomparable" as const : "different" as const,
+      difference: { path: error.path, left: null, right: null, reason: error.reason }, bindings: [] };
+    throw error;
+  }
+}
+
 function resultIssue(value: unknown): string | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return "invalid_result";
   const result = value as Record<string, unknown>;
