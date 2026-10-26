@@ -12,6 +12,28 @@ import { projectManagedCandidateDecision } from "../src/managed-player-environme
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
+test('exact native hand callback stages original objects through explicit confirm and complete Host projection', async context => {
+  const candidate = process.env.STS2_MANAGED_TEST_CANDIDATE;
+  if (!candidate) { context.skip('set STS2_MANAGED_TEST_CANDIDATE for exact proprietary native component fixtures'); return; }
+  const dotnet = await resolveDotnet();
+  const artifact = path.join(candidate, 'src/Sts2Headless/bin/Release/net9.0/Sts2Headless.dll');
+  const before = createHash('sha256').update(readFileSync(artifact)).digest('hex');
+  const { stdout } = await promisify(execFile)(dotnet.command,
+    ['run', '--project', path.join(candidate, 'native-hand-tests/NativeHand.csproj'), '-c', 'Release',
+      '-p:Deterministic=true', `-p:PathMap=${path.resolve(candidate)}=/_/candidate/`],
+    { cwd: candidate, timeout: 180000, maxBuffer: 4 * 1024 * 1024 });
+  assert.equal(createHash('sha256').update(readFileSync(artifact)).digest('hex'), before);
+  assert.match(stdout, /25 exact native hand-selection checks passed/u);
+  const state = JSON.parse(stdout.split(/\r?\n/u).find(line => line.startsWith('native-hand-state=')).slice('native-hand-state='.length));
+  const projection = projectManagedCandidateDecision({ state, sequence: 1,
+    runtimeInstanceId: 'native-hand-fixture', environmentFingerprint: 'native-hand-fixture' });
+  assert.equal(projection.snapshot.completeness.status, 'complete');
+  const surface = projection.snapshot.interaction.content.surface;
+  assert.equal(surface.kind, 'combat_hand_card_selection');
+  assert.equal(surface.selected_count, 2);
+  assert.ok(projection.snapshot.bound_actions.actions.some(action => action.label === 'Confirm selected cards'));
+});
+
 test('exact native run-domain generated choice retains callback ownership and complete public projection', async context => {
   const candidate = process.env.STS2_MANAGED_TEST_CANDIDATE;
   if (!candidate) { context.skip('set STS2_MANAGED_TEST_CANDIDATE for exact proprietary native component fixtures'); return; }

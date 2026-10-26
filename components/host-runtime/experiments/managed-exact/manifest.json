@@ -36,9 +36,9 @@
     "managed_artifact": "src/Sts2Headless/bin/Release/net9.0/Sts2Headless.dll"
   },
   "expected_build": {
-    "source_patch_sha256": "ee2414db2a54d7437486d231ef1f21317582e4d528b0b1aee19ef44379a6cd8e",
-    "artifact_sha256": "b8386bf8bd54086b1921ddade3cd4fb4a5156072ad45456bc3310e2b62275c8f",
-    "artifact_mvid": "f4434818-caa4-4773-bee3-194863e86203",
+    "source_patch_sha256": "1a93305d4556594eb1d379113c037196eb863c97bf70b693e508c0a1640cdf00",
+    "artifact_sha256": "f04499e70af4b080ffdba64f5863e2042294eb394f77673185969ed773f4df4e",
+    "artifact_mvid": "f625a23d-7f6b-4947-9c6e-cfb9dc62bc80",
     "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0"
   },
   "previous_candidate_build": {
@@ -212,6 +212,12 @@
       "kind": "harmony_presentation_callsite",
       "risk": "low",
       "effect": "Only remaps the five pure NGame.ScreenShakeTrauma calls in exact PunchOff/Amalgamator native continuations when Managed TestMode has no scene; surrounding native effects remain original."
+    },
+    {
+      "id": "native_hand_selection_presentation",
+      "kind": "exact_native_callback_presentation",
+      "risk": "medium",
+      "effect": "Captures original CardSelectCmd.FromHand/FromHandForUpgrade preferences, filter, offered objects and pending Task. Stages the pinned NPlayerHand selection/replacement/deselection transitions and returns original objects only on explicit confirm; the native parent retains all discard/exhaust/upgrade effects. No arbitrary callback auto-selection."
     }
   ],
   "admission": {
@@ -287,6 +293,12 @@
     "source_patch_sha256": "b4d284f105ca0f7c77d1bf576bb89e6fb43f3475a6359eb2c470f1552df93e40",
     "artifact_sha256": "bef5d6b922875ad1fb294af3ea9149eed064e8e37af2949791f31ae0d2039525",
     "artifact_mvid": "622752e4-9fc1-4e26-a79c-2b3e1e150e88",
+    "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0"
+  },
+  "pre_hand_selection_build": {
+    "source_patch_sha256": "ee2414db2a54d7437486d231ef1f21317582e4d528b0b1aee19ef44379a6cd8e",
+    "artifact_sha256": "b8386bf8bd54086b1921ddade3cd4fb4a5156072ad45456bc3310e2b62275c8f",
+    "artifact_mvid": "f4434818-caa4-4773-bee3-194863e86203",
     "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0"
   }
 }

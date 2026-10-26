@@ -44,8 +44,9 @@ test("built native act-selection source and retained measured builds remain expl
     createHash("sha256").update(sourcePatch).digest("hex"),
     manifest.expected_build.source_patch_sha256
   );
-  assert.equal(manifest.expected_build.artifact_sha256, "b8386bf8bd54086b1921ddade3cd4fb4a5156072ad45456bc3310e2b62275c8f");
-  assert.equal(manifest.expected_build.artifact_mvid, "f4434818-caa4-4773-bee3-194863e86203");
+  assert.equal(manifest.pre_hand_selection_build.artifact_sha256, "b8386bf8bd54086b1921ddade3cd4fb4a5156072ad45456bc3310e2b62275c8f");
+  assert.equal(manifest.expected_build.artifact_sha256, "f04499e70af4b080ffdba64f5863e2042294eb394f77673185969ed773f4df4e");
+  assert.equal(manifest.expected_build.artifact_mvid, "f625a23d-7f6b-4947-9c6e-cfb9dc62bc80");
   assert.equal(manifest.historical_candidate_builds.some(build =>
     build.source_patch_sha256 === "a46736eee8c0c4c65b574a53e769330831d2e39de7897563f4a4c16b48fc5e20"
     && build.artifact_sha256 === "39a6455c2f67c4313b3cf2b6b46a6783d41cc5ebe86cb62829a6a780c7d562b2"
@@ -117,6 +118,8 @@ test("fresh candidate preparation admits added source files into the audited dif
   assert.deepEqual(addedPatchPaths(patch), [
     "initial-progress-tests/InitialProgressTests.csproj",
     "initial-progress-tests/Program.cs",
+    "native-hand-tests/NativeHand.csproj",
+    "native-hand-tests/Program.cs",
     "native-run-choice-tests/NativeRunChoice.csproj",
     "native-run-choice-tests/Program.cs",
     "native-tests/NativeMechanisms.csproj",
@@ -145,6 +148,7 @@ test("fresh candidate preparation admits added source files into the audited dif
     "src/Sts2Headless/NativeDetachedCardPreview.cs",
     "src/Sts2Headless/NativeEnchantmentMethodInventory.cs",
     "src/Sts2Headless/NativeEventOptionAdmission.cs",
+    "src/Sts2Headless/NativeHandSelection.cs",
     "src/Sts2Headless/NativeMapReadProjection.cs",
     "src/Sts2Headless/NativeMerchantPotionCost.cs",
     "src/Sts2Headless/NativeMerchantRemovalAdmission.cs",
