@@ -43,6 +43,19 @@ def reject(code: str) -> NoReturn:
     raise BoundaryError("managed_evaluation", code)
 
 
+def _load_host_api(path: Path) -> Any:
+    """Execute the already-pinned source without reading/writing package pycache."""
+    spec = importlib.util.spec_from_file_location("managed_evaluation_host_client", path)
+    if spec is None or spec.loader is None:
+        reject("host_client_unavailable")
+    import sys
+
+    api = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = api  # dataclasses resolves annotations through this owner.
+    exec(compile(path.read_bytes(), str(path), "exec"), api.__dict__)
+    return api
+
+
 def _finish_runtime(process: subprocess.Popen, stdout: Path, row: dict[str, Any],
                     artifacts: Any, deadline: float, cleanup_seconds: float) -> dict[str, Any]:
     """Observe the existing Runtime owner and send one exact-run Stop on handoff.
@@ -127,18 +140,7 @@ class ManagedEpisodeExecutor:
         if configuration["agent_adapter"] != export.adapter_identity():
             reject("frozen_agent_implementation_changed")
         self.build = _candidate_audit(_audit(self.host, self.candidate))
-        spec = importlib.util.spec_from_file_location(
-            "managed_evaluation_host_client",
-            self.host / "consumers/python/sts2_headless/managed_service.py",
-        )
-        if spec is None or spec.loader is None:
-            reject("host_client_unavailable")
-        # dataclasses resolves annotations through sys.modules.
-        import sys
-
-        self.api = importlib.util.module_from_spec(spec)
-        sys.modules[spec.name] = self.api
-        spec.loader.exec_module(self.api)
+        self.api = _load_host_api(self.host / "consumers/python/sts2_headless/managed_service.py")
         self.peer = open_peer(configuration["peer"])
         # Remote execution writes to this already-frozen peer binding. Credentials
         # remain environment-only; bucket/endpoint/prefix cannot follow env drift.

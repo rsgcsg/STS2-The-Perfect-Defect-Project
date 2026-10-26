@@ -221,6 +221,25 @@ def test_stale_producer_cannot_label_new_evidence_or_start_host(monkeypatch):
         )
 
 
+def test_repeated_pinned_host_client_loads_do_not_mutate_package_hash(tmp_path):
+    from spireagent.package_identity import directory_sha256
+    from spireagent.workbench.managed_evaluation import _load_host_api
+
+    # The actual shipped consumer, including its dataclasses and standard-library
+    # imports. Package pins must survive both the first and subsequent load.
+    original = Path(__file__).resolve().parents[2] / (
+        "components/host-runtime/consumers/python/sts2_headless/managed_service.py"
+    )
+    source = tmp_path / "managed_service.py"
+    source.write_bytes(original.read_bytes())
+    expected = directory_sha256(tmp_path)
+    for _ in range(2):
+        api = _load_host_api(source)
+        assert api.ManagedHostServiceClient and api.ManagedHostServiceManager
+        assert directory_sha256(tmp_path) == expected
+    assert not (tmp_path / "__pycache__").exists()
+
+
 @pytest.mark.parametrize("handoff", [
     {"mode": "human", "tainted": False},
     {"mode": "auto", "tainted": True},
