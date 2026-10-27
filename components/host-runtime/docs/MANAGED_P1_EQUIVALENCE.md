@@ -13,6 +13,41 @@ identify wait, UI, selection, reward and asynchronous task adaptations. These
 seams need differential evidence; sharing an unmodified `sts2.dll` alone is not
 proof of execution, presentation or P1 equivalence.
 
+## Settled logic, native rules and replaceable Host implementation
+
+The user approved this design on 2026-10-27: P1 observes public logical facts at
+a decision boundary after preceding effects have settled, rather than an
+animation frame. A child selection is a real boundary even while its parent
+effect awaits that input. The exact field/version policy belongs to
+[P1_GLOBAL_R1](../../../docs/protocols/P1_GLOBAL_R1.zh-CN.md); the general principle
+does not silently change existing counter values, comparison rules or originals.
+
+| Rule | Managed responsibility |
+|---|---|
+| M-1 | The original game assembly owns rules, RNG, effect results and legality. Do not implement a second rules engine. |
+| M-2 | Host clock, animation, waits, UI/SceneTree, scheduling, processes and recovery may be replaced substantially when the same P1 logical result is preserved. |
+| M-3 | Align settled public logic, not native presentation timing. Distinguish a wrong game result from a transient display value before choosing the owner to repair. |
+| M-4 | Normal clock and the shipped game are diagnostic controls only. Slowing Managed is not the repair or default. A rule truly dependent on real time requires an explicit user decision. |
+| M-5 | Register each replaced native seam, unchanged rule/result rationale, differential evidence and regression in the existing candidate manifest `semantic_shims`; do not create a second registry. |
+| M-6 | Locate the actual blocked or faulted native operation. Complete its logical work through the registered Host adaptation; waiting longer or retrying an unknown is not a repair. |
+| M-7 | The replaceable implementation promises native rules/RNG and qualified P1 equivalence, not native animation or wall-clock timing. A future Host must pass the same declared interface checks. |
+| M-8 | Concrete P1 meaning/comparison changes need an explicit new version and user-approved field list. Keep old raw/projections immutable and state exactly which old sources can be reprojected. Internal repairs preserving M-1 and public results follow the task's standing engineering authorization. |
+
+For a timing-dependent field first use its separate native logical value in both
+Hosts. If that value is itself delayed behind presentation, only an explicitly
+versioned, mechanism-specific function of the **same snapshot's public facts**
+may supply the settled value. Never splice later frames or expose private total
+counters. If neither route is justified, retain a field-level unresolved
+difference for the user. `LASTING_CANDY`'s historical display exception remains
+limited to its original approved conditions; it is not a general counter rewrite.
+
+The M2a investigation found a concrete M051 counterexample: the original
+Phantasmal Gardener enemy move calls missing `Godot.Mathf.Log(float)`, so its
+native turn task faults before the next play boundary. Its Host stub must match
+the shipped Godot `MathF.Log` implementation. This is a missing dependency
+method, not evidence that the combat needs a slower clock. Source/native fixture
+and full-seed runtime confirmation remain separate evidence levels.
+
 ## Compare the actual interface, then the consumer
 
 For each interface retain the compared denominator, complete-public matching
@@ -136,5 +171,37 @@ frozen packages do not advertise this diagnostic and are not silently upgraded.
 Runtime rc52's Managed settling watchdog bounds a repeated snapshot wait. The
 application defaults to 120,000 ms and retains the episode as unknown with reason
 `managed_settling_stalled`; exact original evidence and accepted Host shutdown
-remain separate facts. M051's original offer is never reissued, and its underlying
-native asynchronous wait remains an M2 obligation.
+remain separate facts. M051's original offer is never reissued. M2a located the
+missing exact Godot logarithm binding and verified the original three native turns
+plus one separate new full-seed validation slot (natural loss at floor17, no
+unknown, complete typed R2 readback). This closes that counterexample, not all
+possible native waits or full-game equivalence.
+
+M2a's explicit r1.7 path implements only the two user-approved public remainders
+(KUSARIGAMA/LASTING_CANDY). Both Hosts use the shared read-only Native Foundation
+seam at the original capture boundary, with PB3 snapshot/session/exact-game
+witnesses. See the versioned P1 section above for fields, legacy ambiguity and
+opt-in commands. Raw display counters and default PB1/PB2/P1 r1.5 remain unchanged.
+The pure JungleMazeAdventure debug audio call is separately remapped only when
+Managed TestMode has no audio singleton; native GainGold hooks and finish remain.
+All replaced seams and their exact native regressions are in the existing manifest.
+
+
+M2a's frozen Host49 new40 retained one delivery unknown at Glasswork+ / lethal
+GlassOrb / Decimillipede last-segment death. A separate component counterexample
+proved `ReattachPower.DoFadeOutOnAllSegments` faults during JIT because the stub
+lacks shipped `Node.GetIndex(bool)`, even though its original no-scene path would
+return. Host51 adds that dependency binding over the existing ordinary child
+list (orphan index -1), preserving native death/revival/reward and strict delivery.
+The original Host49 slot remains unknown; the new native regression is separate.
+Internal-child SceneTree support is not inferred from this stub repair.
+
+
+M056 was separately traced to a public projection error, not a changed P1 meaning:
+Reference's current EndlessConveyor button is enabled while its EventOption is
+locked; native SetVisuallyLocked changes styling and OnRelease still refuses it.
+Host52's existing event presentation owner represents ready current buttons
+independently of `IsLocked`, with no enablement for foreign/unpresented options.
+The original native and JS action admission keep the locked guard. The exact
+17-gold native fixture, no-effect refusal and real serialized JS catalog cover
+this distinction; old M3 strict results remain immutable.

@@ -183,6 +183,7 @@ function createProjectionContext({
     catalogReads: [],
     id: makeId,
     entityId,
+    existingEntityId: (kind, nativeRef) => publicEntityAliases.get(JSON.stringify([kind, nativeRef])) ?? null,
     referent,
     action
   };
@@ -192,6 +193,7 @@ function withoutDeck(player) {
   if (!plainObject(player)) return null;
   const {
     deck: _deck,
+    settled_relic_counter_game_mvid: _settledGameMvid,
     native_ref: _nativeRef,
     relics = [],
     potions = [],
@@ -204,6 +206,7 @@ function withoutDeck(player) {
       binding_supported: _bindingSupported,
       hover_facts_complete: _hoverFactsComplete,
       vars: _dynamicVariables,
+      settled_relic_counter: _settledCounter,
       ...publicItem
     } = item;
     return publicItem;
@@ -765,15 +768,20 @@ function canonicalSelectorSurface(state, ctx, commonContext) {
       cancelable: exact ? state.cancelable : null, current_controls: controls,
       is_peeking: false, showing_upgrade_previews: state.showing_upgrade_previews === true,
       ordering_basis: "exact_current_native_grid_logical_list" },
-    context: plainObject(state.selector_context) && state.selector_context.kind === "event"
-      ? { kind: "event", event_id: state.selector_context.event_id, name: visibleText(state.selector_context.name),
-        ancient: state.selector_context.ancient, in_dialogue: state.selector_context.in_dialogue,
-        ...(state.selector_context.body == null ? {} : { body: visibleText(state.selector_context.body) }) }
-      : plainObject(state.selector_context) && ["rest", "shop"].includes(state.selector_context.kind)
-        ? { kind: state.selector_context.kind } : { ...commonContext, kind: "selection" }, complete, actionComplete: exact,
+    context: selectorParentContext(state.selector_context, commonContext), complete, actionComplete: exact,
     visibleInformation: "complete_entered_native_logical_grid_list",
     interactionDiscovery: "registered_native_card_model_callbacks_and_current_controls", missing
   };
+}
+
+function selectorParentContext(context, commonContext) {
+  if (plainObject(context) && context.kind === "event") return {
+    kind: "event", event_id: context.event_id, name: visibleText(context.name),
+    ancient: context.ancient, in_dialogue: context.in_dialogue,
+    ...(context.body == null ? {} : { body: visibleText(context.body) })
+  };
+  return plainObject(context) && ["rest", "shop"].includes(context.kind)
+    ? { kind: context.kind } : { ...commonContext, kind: "selection" };
 }
 
 function canonicalShopSurface(state, ctx, inventoryOpen = true, surfaceActive = true) {
@@ -825,6 +833,7 @@ function canonicalShopSurface(state, ctx, inventoryOpen = true, surfaceActive = 
     const raw = entry.relic;
     const relic = raw == null ? null : { entity_id: ctx.entityId("relic", raw.native_ref), definition_id: raw.id,
       name: raw.name, description: visibleText(raw.description), keywords: visibleHoverKeywords(raw.keywords),
+      ...(raw.counter == null ? {} : { counter: raw.counter }),
       card_previews: visibleHoverCards(raw.card_previews, "relic", raw.native_ref, ctx.entityId) };
     if (entry.is_stocked && relic == null) missing.push("native_shop_stocked_relic_display");
     return bind(entry, "shop_relic", { ...base(entry), ...(relic == null ? {} : { relic }) }, relic?.name ?? "Sold relic", "buy_relic");
@@ -1512,11 +1521,7 @@ function currentSurface(state, ctx) {
           ...(preview ? { selected_bundle_entity_id: bundles[0]?.entity_id } : {}),
           selectable_bundle_entity_ids: preview ? [] : bundles.map(bundle => bundle.entity_id).sort(),
           can_confirm: exact && preview, can_cancel_preview: exact && preview },
-        context: plainObject(context) && context.kind === "event"
-          ? { kind: "event", event_id: context.event_id, name: visibleText(context.name),
-            ancient: context.ancient, in_dialogue: context.in_dialogue,
-            ...(context.body == null ? {} : { body: visibleText(context.body) }) }
-          : { ...commonContext, kind: "selection" },
+        context: selectorParentContext(context, commonContext),
         complete: exact && missing.length === 0, actionComplete: exact,
         visibleInformation: "contract_complete_for_two_stage_visible_card_bundle_selection",
         interactionDiscovery: "exact_original_bundle_request_and_current_preview_controls", missing
@@ -1871,11 +1876,12 @@ function currentSurface(state, ctx) {
           surface: { kind: "native_generated_card_choice",stage: "choosing",prompt: state.prompt ?? null,
             cards: generated,selectable_card_entity_ids: complete ? generated.map(card => card.entity_id) : [],
             is_peeking: false,can_skip: complete && state.can_skip },
-          context: publicHud ?? { ...commonContext, kind: "selection" },complete,
+          context: publicHud ?? selectorParentContext(state.selector_context, commonContext),complete,
           missing: complete ? [] : ["exact_current_native_generated_choice_and_details"],
           visibleInformation: "same_capture_original_native_generated_cards_and_post_prefix_combat_hud",
           interactionDiscovery: "original_native_choose_callback_task_and_offered_objects",
-          hiddenByPolicy: ["hidden_rng", "draw_pile_true_order", "future_enemy_moves", "future_rewards", "future_events"] };
+          hiddenByPolicy: runChoice ? ["hidden_rng", "future_rewards", "future_events"]
+            : ["hidden_rng", "draw_pile_true_order", "future_enemy_moves", "future_rewards", "future_events"] };
       }
       const referents = cards.map((card, index) => {
         const unique = typeof card?.native_ref === "string" && refs.filter((ref) => ref === card.native_ref).length === 1;
@@ -2653,6 +2659,7 @@ export function projectManagedCandidateDecision({
   return Object.freeze({
     snapshot,
     bindings: ctx.bindings,
+    captureSettledRelicCounters: () => managedSettledRelicCounterWitness(state, ctx, snapshot, reads),
     raw_state_sha256: ctx.rawStateSha,
     reads: new Map(reads.map((read) => [read.descriptor.read_id, read])),
     performance: Object.freeze({
@@ -2695,6 +2702,54 @@ function receipt({ requestId, delivery, action, reasonCode, detail, retry, succe
 function validateManagedAscension(ascension) {
   if (!Number.isSafeInteger(ascension) || ascension < 0 || ascension > 10)
     throw new Error("managed_ascension_invalid");
+}
+
+function managedSettledRelicCounterWitness(state, ctx, snapshot, reads) {
+  const supported = new Set(["KUSARIGAMA", "LASTING_CANDY"]);
+  const carriers = new Map(), native = new Map(), missing = [];
+  const visit = (value, accept) => {
+    if (Array.isArray(value)) { for (const item of value) visit(item, accept); return; }
+    if (!plainObject(value)) return;
+    accept(value);
+    for (const child of Object.values(value)) visit(child, accept);
+  };
+  const publicCarrier = item => {
+    if (!supported.has(item.definition_id) || item.counter == null) return;
+    if (typeof item.entity_id !== "string" || !Number.isSafeInteger(item.counter)) {
+      missing.push("invalid_public_relic_carrier"); return;
+    }
+    const previous = carriers.get(item.entity_id);
+    if (previous && (previous.definition_id !== item.definition_id || previous.counter !== item.counter))
+      missing.push(`inconsistent_public_relic_carrier:${item.entity_id}`);
+    carriers.set(item.entity_id, { definition_id: item.definition_id, counter: item.counter });
+  };
+  visit(snapshot, publicCarrier);
+  for (const read of reads) visit(read.content, publicCarrier);
+  visit(state, item => {
+    if (!supported.has(item.id) || typeof item.native_ref !== "string") return;
+    // This lookup never creates an alias for a hidden/unpresented native object.
+    const id = ctx.existingEntityId("relic", item.native_ref);
+    if (!carriers.has(id)) return;
+    const value = item.settled_relic_counter;
+    if (!plainObject(value)) { missing.push(`native_logical_value_unavailable:${id}`); return; }
+    const previous = native.get(id);
+    if (previous && digest(previous) !== digest(value)) missing.push(`inconsistent_native_logical_value:${id}`);
+    native.set(id, value);
+  });
+  const facts = [];
+  for (const [id, original] of [...carriers].sort(([a], [b]) => a.localeCompare(b))) {
+    const value = native.get(id);
+    if (!value || !Array.isArray(value.missing) || value.missing.length
+        || value.definition_id !== original.definition_id || value.display_counter !== original.counter
+        || !Number.isSafeInteger(value.logical_counter)) {
+      missing.push(`native_logical_value_unavailable:${id}`); continue;
+    }
+    facts.push({ entity_id: id, definition_id: value.definition_id, display_counter: value.display_counter,
+      logical_counter: value.logical_counter, rule_id: value.rule_id });
+  }
+  return { schema: "sts2.player-environment/settled-relic-counters-1", source_snapshot_id: snapshot.snapshot_id,
+    session: structuredClone(snapshot.session), game_mvid: state.player?.settled_relic_counter_game_mvid ?? "unavailable",
+    source_kind: "native_same_capture", facts, missing: [...new Set(missing)] };
 }
 
 export class ManagedPlayerEnvironmentSession {
@@ -2833,6 +2888,12 @@ export class ManagedPlayerEnvironmentSession {
       throw new Error("managed_session_tainted_after_successor_projection_failure");
     if (this.#projection == null) throw new Error("No managed run is mounted.");
     return this.#projection.snapshot;
+  }
+
+  settledRelicCounters(expectedSnapshotId) {
+    const snapshot = this.observe();
+    if (snapshot.snapshot_id !== expectedSnapshotId) throw new Error("stale_snapshot");
+    return this.#projection.captureSettledRelicCounters();
   }
 
   read({ readId, expectedSnapshotId }) {

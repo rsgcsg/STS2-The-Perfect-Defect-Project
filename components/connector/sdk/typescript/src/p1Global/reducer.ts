@@ -1,3 +1,4 @@
+import { reprojectSettledRelicCounters, type SettledRelicCounterProjection } from "../settledRelicCounters.js";
 import { decodePlayerRead } from "../protocol.js";
 import { decodePublicSourceSnapshot as decodePlayerSnapshot } from "../publicBasis.js";
 import { hasFinitePublicNumbers } from "../publicCombat.js";
@@ -33,6 +34,8 @@ export interface ReadCapture {
 export interface P1Basis {
   /** Exact snapshot-1 as delivered by the Host (observe result or receipt successor). */
   readonly snapshot: unknown;
+  /** Optional PB3 same-capture native witness; ignored by frozen r1.5/r1.6. */
+  readonly settled_relic_counters?: unknown;
   /** Every Read the snapshot advertises, captured against that snapshot id. */
   readonly reads: readonly ReadCapture[];
 }
@@ -80,6 +83,8 @@ export type Commitment = "decline_group" | "consume_group" | "decline_open_group
   | "open_group" | "consume_open_group";
 
 export interface Lowering {
+  /** Private continuation interpretation; absent on frozen revisions. */
+  readonly p1_revision?: "r1.7";
   /** First native step; null for a pure P1 commitment that performs no native input. */
   readonly first: NativeStep | null;
   /** Offline execution evidence only; never a public dispatch binding. */
@@ -103,6 +108,8 @@ export interface Lowering {
 export interface ExcludedNative { readonly bound_action_id: string; readonly verb: string; readonly label: string; readonly rule: string }
 
 export interface Reduction {
+  /** Private derivation receipt, never included in observation/modelView. */
+  readonly settled_relic_counter_projection?: SettledRelicCounterProjection;
   readonly state: P1SessionState;
   readonly observation: P1Observation;
   /** Private: never sent to the Agent. */
@@ -116,7 +123,7 @@ export interface Reduction {
 }
 
 export function createSession(episodeId: string, hostKind: HostKind, revision: P1Observation["revision"] = P1G_REVISION): P1SessionState {
-  if (!["r1.5", "r1.6"].includes(revision)) throw new Error("unsupported_p1_revision");
+  if (!["r1.5", "r1.6", "r1.7"].includes(revision)) throw new Error("unsupported_p1_revision");
   return { revision, episode_id: episodeId, host_kind: hostKind, occurrence: 0, last_snapshot_id: null, last_commitments: null,
     aliases: {}, alias_counts: {}, reward_pages: 0, reward: null };
 }
@@ -328,7 +335,12 @@ export function reduceNativeExecution(state: P1SessionState, basis: P1Basis,
 }
 
 function reduceCatalog(state: P1SessionState, basis: P1Basis, execution?: readonly NativeExecutionAction[], executionScope?: string): Reduction {
-  const snapshot = decodePlayerSnapshot(basis.snapshot).raw as Record<string, any>;
+  // Validate the original navigation capsule before counter projection. Its
+  // unfurled PB remains literal capture provenance, not another model carrier.
+  const originalSnapshot = decodePlayerSnapshot(basis.snapshot).raw as Record<string, any>;
+  const settled = state.revision === "r1.7" ? reprojectSettledRelicCounters(basis) : null;
+  if (settled) basis = settled.basis;
+  const snapshot = settled ? basis.snapshot as Record<string, any> : originalSnapshot;
   let interaction = snapshot.interaction as Record<string, any>;
   const sourcePlayer = snapshot.interaction.content.context?.player;
   const nonCombatPotionExecution = executionScope === "potion_belt_non_combat_use"
@@ -392,7 +404,7 @@ function reduceCatalog(state: P1SessionState, basis: P1Basis, execution?: readon
   }
   const nativeKind = String(interaction.kind);
   const family: SceneFamily = FAMILY[nativeKind] ?? "other";
-  const missing: string[] = [];
+  const missing: string[] = [...(settled?.receipt.missing ?? [])];
   if (invalidExecution) missing.push("required:native_execution_catalog_operands");
   if (!hasFinitePublicNumbers(basis)) missing.push("required:finite_public_numbers");
   // An accepted combat input can execute while a different potion popup is
@@ -853,9 +865,12 @@ function reduceCatalog(state: P1SessionState, basis: P1Basis, execution?: readon
     aliases: Object.fromEntries(Object.entries(work.aliases).filter(([id]) => !anonymous.has(id))),
     alias_counts: { ...work.counts, a: 0 }, reward_pages: rewardPages, reward
   };
+  if (state.revision === "r1.7") for (const item of Object.values(lowering))
+    (item as { p1_revision?: "r1.7" }).p1_revision = "r1.7";
   const complete = missing.length === 0 || (status === "terminal" && missing.every((item) => item.startsWith("read:")));
   return { state: nextState, observation: { ...observation, envelope: { ...observation.envelope, required_information_complete: complete } },
-    lowering, forced_choice_id: forced, excluded, complete, missing };
+    lowering, forced_choice_id: forced, excluded, complete, missing,
+    ...(settled ? { settled_relic_counter_projection: settled.receipt } : {}) };
 }
 
 /** Full public protocol state after a delivered commitment, shared with replay. */
@@ -920,8 +935,13 @@ export function resolveFollow(rule: FollowRule, lowering: Lowering, successor: u
 
 /** Resolve a continuation only from a complete sealed successor basis. */
 export function resolveFollowBasis(rule: FollowRule, lowering: Lowering, basis: P1Basis): NativeStep | null {
-  const next = reduce(createSession("continuation-check", "reference"), basis);
+  const next = reduce(createSession("continuation-check", "reference", lowering.p1_revision ?? P1G_REVISION), basis);
+  if (lowering.p1_revision === "r1.7") basis = reprojectSettledRelicCounters(basis).basis;
   if (!next.complete || next.observation.status !== "decision") return null;
+  // reduce above validated the original source; do not revalidate a derived
+  // persistent counter against the untouched raw navigation provenance.
+  const currentSnapshot = () => lowering.p1_revision === "r1.7"
+    ? basis.snapshot as Record<string, any> : decodePlayerSnapshot(basis.snapshot).raw as Record<string, any>;
   if (rule.rule_id === "shop_leave" && lowering.shop_leave && !rule.optional
       && rule.expect_native_kind === "shop_room" && rule.expect_verb === "activate") {
     const snapshot = basis.snapshot as Record<string, any>;
@@ -936,7 +956,7 @@ export function resolveFollowBasis(rule: FollowRule, lowering: Lowering, basis: 
   if (rule.rule_id === "selector_intention" && lowering.selector_intention && !rule.optional
       && rule.expect_native_kind === lowering.selector_intention.native_kind
       && rule.expect_verb === "confirm" && matchesSelectorIntention(lowering.selector_intention, basis)) {
-    const snapshot = decodePlayerSnapshot(basis.snapshot).raw as Record<string, any>;
+    const snapshot = currentSnapshot();
     const surface = snapshot.interaction.content.surface;
     const controls = surface.current_controls.filter((c: Record<string, any>) => (c.operation === "confirm" || c.operation === "confirm_selection"));
     if (controls.length !== 1) return null;
@@ -950,7 +970,7 @@ export function resolveFollowBasis(rule: FollowRule, lowering: Lowering, basis: 
       || rule.expect_native_kind !== "card_reward_selection" || rule.optional) return null;
   const plan = lowering.reward_intention;
   if (!matchesRewardIntention(plan, basis)) return null;
-  const snapshot = decodePlayerSnapshot(basis.snapshot).raw as Record<string, any>;
+  const snapshot = currentSnapshot();
   const surface = snapshot.interaction.content.surface;
   const actions = snapshot.bound_actions.actions as NativeAction[];
   let matches: NativeAction[];

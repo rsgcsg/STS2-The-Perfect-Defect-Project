@@ -11,6 +11,7 @@ public static class PublicBasisContract
     public const string Profile = "public-basis-1";
     public const string Revision = "1";
     public const string ExecutionRevision = "2";
+    public const string SettledRelicRevision = "3";
     public const string Schema = "sts2.player-environment/public-basis-1";
     public const string ReadProfile = "public-basis-sealed-1";
     public const string CaptureSchema = "sts2.player-environment/public-basis-handle-1";
@@ -29,4 +30,8 @@ public sealed record PublicBasisRead(
 
 public sealed record PublicBasisObservation(
     string Schema, string Revision, string CaptureScope, string CaptureStatus,
-    JsonObject Snapshot, IReadOnlyList<PublicBasisRead> Reads, IReadOnlyList<string> Missing);
+    JsonObject Snapshot, IReadOnlyList<PublicBasisRead> Reads, IReadOnlyList<string> Missing)
+{
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public JsonObject? SettledRelicCounters { get; init; }
+}

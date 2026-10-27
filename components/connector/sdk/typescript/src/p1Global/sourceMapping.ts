@@ -197,6 +197,9 @@ export function isSourceP1ReversibleSelect(input: SourceP1TraceInput): boolean {
 function originalPresentationBasis(basis: P1Basis): ObjectValue {
   snapshot(basis); // Validate every advertised Read against its own frozen snapshot.
   const copy = structuredClone(basis) as ObjectValue;
+  // PB3 native witnesses are capture provenance, not an extra public-world field.
+  // The original displayed counters remain in snapshot/Reads and compare strictly.
+  delete copy.settled_relic_counters;
   delete copy.snapshot.snapshot_id; delete copy.snapshot.sequence; delete copy.snapshot.observed_at;
   for (const read of copy.reads) {
     delete read.response.expected_snapshot_id; delete read.response.observed_snapshot_id; delete read.response.observed_at;

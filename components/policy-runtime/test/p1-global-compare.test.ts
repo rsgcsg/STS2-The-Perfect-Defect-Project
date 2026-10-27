@@ -339,3 +339,16 @@ it("exports only the same successful full-graph bijection for probability alignm
   expect(failed.verdict).toBe("different");
   expect(failed.bindings).toEqual([]);
 });
+
+
+it("r1.7 uses the full public graph and refuses cross-revision comparison", () => {
+  const a = unambiguousObservation(); (a as any).revision = "r1.7";
+  const b = structuredClone(a);
+  expect(compare(a,b).verdict).toBe("equal");
+  content(b.player).gold++;
+  expect(compare(a,b).verdict).toBe("different");
+  for (const revision of ["r1.5","r1.6"]) {
+    const old = structuredClone(a); (old as any).revision = revision;
+    expect(compare(a,old).verdict).toBe("incomparable");
+  }
+});

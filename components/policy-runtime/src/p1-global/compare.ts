@@ -1,4 +1,4 @@
-import { canonicalJson, createPublicOrderingPolicy, publicOrderingIssue, P1G_ORDER_REVISION, completeCombatSurface, completeCombat, completeDeck, completeMap, completePiles, completeSelector, createPublicGraphComparator, modelView, PublicGraphDifference, P1G_INFORMATION_SHAPES,
+import { canonicalJson, createPublicOrderingPolicy, publicOrderingIssue, P1G_ORDER_REVISION, P1G_SETTLED_REVISION, completeCombatSurface, completeCombat, completeDeck, completeMap, completePiles, completeSelector, createPublicGraphComparator, modelView, PublicGraphDifference, P1G_INFORMATION_SHAPES,
   createPublicIdentityPolicy, normalizePublicPath, publicFieldPath, completeRewardSurface, completeCardRewardSurface, P1G_REVISION, P1G_LIMITS, P1G_RESULT_SCHEMA, type P1Observation, type P1Result } from "@rsgcsg/sts2-connector-client/p1-global";
 
 /** Formal full-public comparison. No text key is globally erased. Locale-specific
@@ -35,7 +35,7 @@ function graphPolicy(identicalFacts: boolean, observation: P1Observation) {
   });
 }
 function supported(observation: P1Observation): string | null {
-  if (observation.schema !== "sts2.p1/observation-1" || observation.profile !== "p1-global-r1" || ![P1G_REVISION, P1G_ORDER_REVISION].includes(observation.revision))
+  if (observation.schema !== "sts2.p1/observation-1" || observation.profile !== "p1-global-r1" || ![P1G_REVISION, P1G_ORDER_REVISION, P1G_SETTLED_REVISION].includes(observation.revision))
     return "unsupported_profile_revision";
   const orderIssue = publicOrderingIssue(observation);
   if (orderIssue) return orderIssue;
