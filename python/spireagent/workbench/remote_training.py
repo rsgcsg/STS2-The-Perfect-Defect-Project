@@ -611,7 +611,9 @@ class RemoteTrainingService:
                     execution_options["loss_weighting"], selection)
         # Vocabulary fitting itself discloses training examples; reserve use first.
         with phase("remote.prepare.record_use"):
-            record_p1_training_use(owner, store, snapshot, intent)
+            record_p1_training_use(owner, store, snapshot, intent,
+                                   loss_weighting=execution_options.get("loss_weighting"),
+                                   initial_checkpoint=execution_options.get("initial_checkpoint"))
         with phase("remote.prepare.build_run"):
             run = prepare_run(store, snapshot, producer, config, intent, **execution_options)
         with phase("remote.prepare.transfer_and_readback"):

@@ -9,6 +9,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from legacy_p1_fixture import reserve_p1_snapshot
 from test_p1_application import workspace
 
 from spireagent.workbench.developer import ROOT
@@ -16,7 +17,6 @@ from spireagent.workbench.local_model_export import LocalModelExport
 from spireagent.workbench.local_model_registration import LocalModelRegistration
 from spireagent.workbench.local_models import LocalModelService
 from spireagent.workbench.local_training import LocalTrainingService
-from spireagent.workbench.p1_training_data import reserve_p1_snapshot
 from spireagent.workbench.recipe_contracts import TrainingRequest
 from stpd.p1.baseline_agent import installation
 from stpd.p1.baseline_spec import RECIPE, BaselineConfig

@@ -32,6 +32,9 @@ def checked_cohort_plan(raw: object, configuration_id: str) -> dict[str, Any]:
                 or not isinstance(value.get("configuration"), dict)):
             raise BoundaryError("training_cohort", "selected_cohort_configuration_required")
         value = value["configuration"]
+    if (value.get("definition", {}).get("rule") == "progress-boss-a10-progress-v1"
+            and "experiment" not in value):
+        raise BoundaryError("training_cohort", "new_weight_rule_requires_model_experiment")
     required = {"schema", "configuration_id", "sources", "definition", "selection",
                 "splits", "runs"}
     if not required <= value.keys():
@@ -75,10 +78,16 @@ def freeze_cohort(config: ProjectConfig, value: object, configuration_id: str, *
     from .p1_data_cli import p1_data_command
 
     plan = checked_cohort_plan(value, configuration_id)
+    experiment = ({**plan["experiment"], "configuration_id": configuration_id,
+                   "weight_definition": plan["definition"],
+                   "weights_by_root": _loss_weighting(plan)["weights_by_root"]}
+                  if "experiment" in plan else None)
     receipt = p1_data_command(config, "freeze", {"reserve": True, "selection": {
         "projection_ids": sorted(s["projection_id"] for s in plan["sources"]),
         "selected_decisions": plan["selection"], "split_by_group": plan["splits"],
-        "split_salt": "cohort-" + configuration_id}}, wait_seconds=wait_seconds)
+        "split_salt": "cohort-" + configuration_id,
+        **({"experiment": experiment} if experiment is not None else {})}},
+        wait_seconds=wait_seconds)
     if receipt.get("purpose_reserved") is not True:
         raise BoundaryError("training_cohort", "normal_snapshot_reservation_required")
     return str(receipt["snapshot_id"])

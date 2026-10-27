@@ -11,6 +11,7 @@ from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
+from legacy_p1_fixture import freeze_p1_data
 from test_artifact_store_v1 import PRODUCER
 from test_p1_data_preparation import workspace
 from test_p1_t0 import observation
@@ -28,7 +29,7 @@ from spireagent.workbench.p1_cohort_intake import (
     render_summary,
     select_versions,
 )
-from spireagent.workbench.p1_data_preparation import discover_p1_projections, freeze_p1_data
+from spireagent.workbench.p1_data_preparation import discover_p1_projections
 from spireagent.workbench.p1_recording_maintenance import P1RecordingMaintenance
 from spireagent.workbench.p1_training_data import record_p1_training_use
 from stpd.p1.data import digest, json_bytes
@@ -80,6 +81,7 @@ def fixture(tmp_path):
     owner, store, _ = workspace(tmp_path, names=())
     config = ProjectConfig(tmp_path / "state", "", "", None, combination())
     policy = {**load_policy(DEFAULT_POLICY), "tool_release_priority": [TOOL],
+              "allocation_mode": "legacy",
               "holdout_targets": {"dev": {"0": 1, "10": 1}, "test": {"0": 1, "10": 1}}}
     path = tmp_path / "policy.json"
     path.write_text(json.dumps(policy))
@@ -456,3 +458,14 @@ def test_ledger_change_after_summary_write_is_not_marked_as_already_counted(tmp_
     first = service.tick()["cohort_configuration_id"]
     second = service.tick()["cohort_configuration_id"]
     assert len(calls) == 2 and first != second
+
+
+def test_new_weight_on_legacy_plan_requires_explicit_model_experiment(tmp_path, monkeypatch):
+    from spireagent.workbench import p1_cohort_cli
+
+    _, _, config, policy = fixture(tmp_path)
+    refresh_cohort(config, policy)
+    monkeypatch.setattr(p1_cohort_cli.ProjectConfig, "load", lambda *a, **k: config)
+    with pytest.raises(BoundaryError, match="new_weight_rule_requires_model_experiment"):
+        p1_cohort_cli.main(["freeze", "--config", str(tmp_path / "project.json"),
+                            "--weight-rule", "a10-progress-v1"])

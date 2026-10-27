@@ -4,11 +4,12 @@ from __future__ import annotations
 import copy
 
 import pytest
+from legacy_p1_fixture import freeze_p1_data
 from test_p1_data_preparation import workspace
 
 from spireagent.json_boundary import BoundaryError
 from spireagent.p1_curation import draft_p1_allocation
-from spireagent.workbench.p1_data_preparation import freeze_p1_data, prepare_p1_data
+from spireagent.workbench.p1_data_preparation import prepare_p1_data
 from spireagent.workbench.p1_training_data import record_p1_training_use
 from stpd.p1.cohort import bind_finish_floors, cohort_plan, projection_facts, run_weight
 from stpd.p1.dataset import inspect_projections, load_projection
@@ -202,3 +203,42 @@ def test_refresh_keeps_anchor_versions_and_rejects_ambiguous_new_source(tmp_path
     store.publish(alias)
     with pytest.raises(BoundaryError, match="new_source_projection_version_ambiguous"):
         selection_ids(store, request, discover_p1_projections(store))
+
+
+def test_a10_progress_new_plan_preserves_original_and_consumes_weights(tmp_path):
+    from spireagent.workbench.training_cohort import _loss_weighting, checked_cohort_plan
+    from stpd.p1.cohort import a10_progress_weight, with_a10_progress
+    from stpd.p1.weighting import checked_weights
+
+    early = fact(ascension=10, result="loss", floor_reached=15,
+                 finish_floor_evidence={"floor": 49})
+    assert a10_progress_weight(early) == pytest.approx(run_weight(early) * (1 + 15 / 49))
+    assert a10_progress_weight(fact(ascension=10)) == 6
+    assert a10_progress_weight(fact(ascension=10), maximum=3) == 9
+    assert a10_progress_weight(fact(ascension=10, result="loss", boss_count=3)) == 3
+    assert a10_progress_weight(fact(ascension=0)) == 3
+    owner, store, projections = workspace(tmp_path)
+    prepared = prepare_p1_data(owner, store)
+    facts = {s["root_run_id"]: fact(root_run_id=s["root_run_id"], source_id=s["source_id"],
+                                    ascension=10, result="loss", floor_reached=15,
+                                    finish_floor_evidence={"floor": 49})
+             for s in prepared["index"]["sources"]}
+    original = cohort_plan(prepared["index"], facts, prepared["allocation"])
+    saved = copy.deepcopy(original)
+    revised = with_a10_progress(original)
+    assert original == saved and revised["configuration_id"] != original["configuration_id"]
+    assert revised["selection"] == original["selection"] and revised["splits"] == original["splits"]
+    assert revised["partitions"]["dev"] == original["partitions"]["dev"]
+    assert revised["partitions"]["test"] == original["partitions"]["test"]
+    from stpd.p1.data import digest, json_bytes
+
+    with pytest.raises(BoundaryError, match="new_weight_rule_requires_model_experiment"):
+        checked_cohort_plan(revised, revised["configuration_id"])
+    revised["experiment"] = {"model_id": "synthetic-new-stage", "parent_model_id": None}
+    revised["configuration_id"] = digest(json_bytes({k: v for k, v in revised.items()
+                                                     if k != "configuration_id"}))
+    envelope = {"schema": "training-data-weight-selection-20261025-v1",
+                "status": "frozen_user_confirmed",
+                "selected_configuration_id": revised["configuration_id"], "configuration": revised}
+    assert checked_cohort_plan(envelope, revised["configuration_id"]) == revised
+    checked_weights(_loss_weighting(revised), {"points": revised["runs"]})
