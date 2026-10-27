@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import test from "node:test";
+import { processExecuting } from "./test/process-witness.mjs";
 import { ownedCommand, runStages, scriptIncludesGuard, sourceAccepted, workspaceStages, pytestPartition,
   PYTEST_SHARD_COUNT, PYTEST_SHARD_INDEXES } from "./check-workspace.mjs";
 
@@ -140,7 +141,8 @@ test("cancelling an actual owned parent terminates its continuing grandchild bef
     const bytes = fs.readFileSync(marker);
     await new Promise(resolve => setTimeout(resolve, 80));
     assert.deepEqual(fs.readFileSync(marker), bytes, "grandchild continues writing after cancellation");
-    for (const pid of JSON.parse(fs.readFileSync(pids))) assert.throws(() => process.kill(pid, 0), /ESRCH|no such process/i);
+    // A reparented grandchild may stay a zombie until init reaps it; it can no longer execute.
+    for (const pid of JSON.parse(fs.readFileSync(pids))) assert.equal(processExecuting(pid), false, `pid ${pid} still executing`);
   } finally {
     await owned.cancel("SIGKILL"); fs.rmSync(directory, { recursive: true, force: true });
   }

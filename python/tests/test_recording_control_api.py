@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import json
 import threading
-import time
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
@@ -91,14 +90,14 @@ def test_maintenance_read_and_summary_are_bounded_while_owner_lock_is_busy(
     owner.start()
     assert owner_started.wait(3)
     try:
-        start = time.monotonic()
         assert main(["maintenance", "status", "--config", str(path)]) == 0
         assert json.loads(capsys.readouterr().out)["status"] == "busy"
         with urlopen(base + "/recording-summary", timeout=1) as response:
             html = response.read().decode()
         assert "在忙，稍后再查" in html
         assert "自动入库已停用" not in html
-        assert time.monotonic() - start < 1
+        # Both answers arrived while the owner still held the lock: neither waited for it.
+        assert owner.is_alive() and not release.is_set()
     finally:
         release.set()
         owner.join(timeout=3)

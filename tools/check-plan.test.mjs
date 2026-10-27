@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import test from "node:test";
+import { processExecuting } from "./test/process-witness.mjs";
 import { classifyChanges, parseDiff, makePlan, aggregatePassed, scopeCommands, parseRawDiff, checkCommittedPatch } from "./check-plan.mjs";
 
 // These CLI fixtures run marker-writing children, not heavyweight checks. Give
@@ -316,17 +317,7 @@ test("Windows outcomes never hold the required PR aggregate", () => {
   }
 });
 
-// kill(pid, 0) also succeeds for a terminated Linux zombie. This witness
-// checks whether owned descendants can still execute, not whether init reaped a PID.
-function cancellationProcessExecuting(pid) {
-  try { process.kill(pid, 0); }
-  catch (error) { if (error.code === "ESRCH") return false; throw error; }
-  if (process.platform !== "linux") return true;
-  try {
-    const stat = fs.readFileSync(`/proc/${pid}/stat`, "utf8");
-    return stat.slice(stat.lastIndexOf(")") + 2).split(" ")[0] !== "Z";
-  } catch (error) { if (error.code === "ENOENT") return false; throw error; }
-}
+const cancellationProcessExecuting = processExecuting;
 
 test("Linux cancellation witness distinguishes a terminated zombie from an executing owner",
   {skip: process.platform !== "linux", timeout: 10000}, async t => {
