@@ -749,3 +749,19 @@ The full-public comparer consumes SDK-owned P1 ordering declarations. It accepts
 matching r1.5 or explicitly derived r1.6 views and rejects mixed revisions.
 Runtime's existing live r1.5 handshake and model input remain unchanged. New
 r1.6 membership semantics do not prove equality of frozen 438 inputs/probabilities.
+
+
+Managed-only settling budget (Runtime rc52): the normal Managed evaluation
+executor passes `--managed-settling-timeout-ms 120000`. The API option is
+`managedSettlingTimeoutMs`, a positive integer in milliseconds. It is opt-in at
+the generic Runtime/CLI boundary and rejected for Reference or a non-GLOBAL
+Agent; existing Reference behavior and P1 information/actions are unchanged.
+The monotonic clock starts on the first accepted settling snapshot. A different
+native snapshot ID or a non-settling snapshot resets it; receiving another
+capture of the same native snapshot is not progress. The check covers both
+initial readiness and the successor wait after a delivered action. It never
+resubmits that action. On expiry, `managed_settling_stalled` uses the existing
+handoff/taint and owned Stop paths, retains and classifies the captured source,
+releases control, closes the Agent and seals the original. The application keeps
+the episode **unknown**, including when technical cleanup and full typed readback
+succeed. This bounds wasted waiting; it does not fix the underlying native wait.

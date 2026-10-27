@@ -416,7 +416,7 @@ def test_invalid_frozen_runtime_budget_rejects_before_a_host_or_model_is_read(li
 
 @pytest.mark.parametrize("version, admitted", [
     ("0.1.0-rc.47", False), ("0.1.0-rc.50", True),
-    ("0.1.0-rc.51", True), ("0.1.0-rc.52", False),
+    ("0.1.0-rc.51", True), ("0.1.0-rc.52", True),
 ])
 def test_central_inference_requires_cli_environment_before_world_audit(
     tmp_path, monkeypatch, version, admitted
@@ -434,7 +434,8 @@ def test_central_inference_requires_cli_environment_before_world_audit(
 
     monkeypatch.setattr(backend, "_audit", audit)
     (tmp_path / "package.json").write_bytes(json_bytes({"version": version}))
-    configuration = {"producer": actual.to_dict(), "inference": {"mode": "central_batch"},
+    configuration = {"producer": actual.to_dict(), "settling_timeout_ms": None,
+        "inference": {"mode": "central_batch"},
         "host_directory": str(tmp_path), "candidate_directory": str(tmp_path),
         "runtime_directory": str(tmp_path / "dist"), "host_pin": {}, "runtime_pin": {},
         "agent_adapter": backend.export.adapter_identity()}
@@ -460,3 +461,61 @@ def test_phase_cost_keeps_failed_elapsed_and_disjoint_nodes(monkeypatch):
     assert row["phase_seconds"] == {"execute": 3.0, "preserve": 5.0, "close": 2.0}
     assert sum(row["phase_seconds"].values()) == 10.0
     assert "finish" not in row["phase_seconds"]
+
+
+@pytest.mark.parametrize("limit", [True, 0, -1, 1.5, "120000", 2**53])
+def test_settling_budget_is_validated_before_reading_packages(limit):
+    from spireagent.workbench.managed_evaluation import ManagedEpisodeExecutor
+
+    with pytest.raises(BoundaryError, match="invalid_settling_timeout"):
+        ManagedEpisodeExecutor({"settling_timeout_ms": limit},
+                               episode_seconds=10, cleanup_seconds=10)
+
+
+def test_clean_technical_settling_stop_remains_unknown_even_with_typed_preservation():
+    from spireagent.workbench.managed_evaluation import _outcome_status
+
+    outcome = {"terminal_observation": {"status": "not_observed"},
+               "operation_end": {"status": "censored", "controller": "released", "tainted": False}}
+    assert _outcome_status(outcome, settling_stalled=False)["status"] == "censored"
+    assert _outcome_status(outcome, settling_stalled=True) == {
+        "status": "unknown", "reason": "managed_settling_stalled"}
+    outcome["terminal_observation"] = {"status": "observed", "result": "loss"}
+    outcome["operation_end"]["status"] = "task_ended"
+    assert _outcome_status(outcome, settling_stalled=False) == {
+        "status": "finished", "reason": "natural_terminal"}
+
+
+@pytest.mark.parametrize("setting", [None, 0, 1, "true"])
+def test_host_diagnostics_setting_is_boolean_before_a_world_is_offered(setting):
+    from spireagent.workbench.managed_evaluation import ManagedEpisodeExecutor
+
+    with pytest.raises(BoundaryError, match="invalid_host_performance_setting"):
+        ManagedEpisodeExecutor({"measure_host_performance": setting},
+                               episode_seconds=10, cleanup_seconds=10)
+
+
+@pytest.mark.parametrize("failure", [TimeoutError("synthetic"),
+    BoundaryError("managed", "performance_unavailable")])
+def test_optional_host_measurement_failure_does_not_abort_preservation(failure):
+    from spireagent.workbench.managed_evaluation import _host_performance
+
+    class Manager:
+        def request(self, command):
+            assert command["command"] == "performance"
+            raise failure
+
+    result = _host_performance(Manager(), {"runtime_instance_id": "owned-runtime",
+                                          "game_continuity_id": "owned-episode"})
+    assert result == {"type": "performance_unavailable", "status": "unavailable", "error":
+                      failure.code if isinstance(failure, BoundaryError) else "TimeoutError"}
+
+
+def test_original_settling_reason_survives_a_missing_final_http_status():
+    from spireagent.workbench.managed_evaluation import _outcome_status
+
+    outcome = {"terminal_observation": {"status": "not_observed"},
+               "operation_end": {"status": "failed", "controller": "released", "tainted": True,
+                   "recorded_reason": "global_post_delivery_capture:managed_settling_stalled"}}
+    assert _outcome_status(outcome, settling_stalled=False) == {
+        "status": "unknown", "reason": "managed_settling_stalled"}
