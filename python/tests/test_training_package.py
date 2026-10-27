@@ -501,7 +501,8 @@ def test_one_command_from_Q_frozen_file_saves_same_package_and_submits_once(
 
             workload = verify_p1_run(store, job["input_id"], provider.target.producer)
             assert workload.vocabulary["input_spec"] == recipe["input_projection"]
-            verify_p1_checkpoint(store, checkpoint, workload)
+            # The worker publishes this checkpoint to the original compute peer.
+            verify_p1_checkpoint(provider.store, checkpoint, workload)
         assert len(provider.calls) == 1
         # This is an original offer. Repeating a command with its existing
         # output cannot repeat preparation or submit another attempt.
