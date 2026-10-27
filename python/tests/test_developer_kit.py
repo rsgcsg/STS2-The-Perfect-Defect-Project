@@ -288,8 +288,9 @@ def test_verified_kit_runtime_inventory_selects_only_locked_model_extra(profile)
     receipt = {pair[4]: "not_bundled" for pair in KIT_RUNTIME_PAIRS.values()}
     if profile is not None:
         receipt[KIT_RUNTIME_PAIRS[profile][4]] = "bundled_installation_not_checked"
-    assert _environment_extras(receipt) == (["--extra", "cloud"] if profile is None else
-                                            ["--extra", "cloud", "--extra", "local-models"])
+    intake = ["--extra", "cloud", "--extra", "recording-intake"]
+    assert _environment_extras(receipt) == (intake if profile is None else
+                                            [*intake, "--extra", "local-models"])
 
 
 @pytest.mark.parametrize("with_model", [False, True])
@@ -308,9 +309,9 @@ def test_register_uses_same_verified_kit_extra_selection(tmp_path, monkeypatch,
     args, cwd = commands.pop()
     assert cwd == target / "source"
     assert args[:5] == ["uv", "run", "--project", "python", "--locked"]
-    assert args[5:5 + (4 if with_model else 2)] == (
-        ["--extra", "cloud", "--extra", "local-models"] if with_model else
-        ["--extra", "cloud"])
+    assert args[5:5 + (6 if with_model else 4)] == (
+        ["--extra", "cloud", "--extra", "recording-intake", "--extra", "local-models"]
+        if with_model else ["--extra", "cloud", "--extra", "recording-intake"])
 
 
 def test_optional_m2_runtime_is_separate_from_text_and_requires_exact_pair(
@@ -457,7 +458,7 @@ def test_v2_kit_pair_is_inventoried_staged_and_selected_without_caller_path(
             owner_steps.append("model")
             assert developer_cli.main(args[args.index("model"):]) == 0
             return capsys.readouterr().out
-        return ""
+        return "recording_intake_missing=\n" if "-c" in args else ""
     monkeypatch.setattr(install, "run", initialize_run)
     actual_process_run = install.subprocess.run
     monkeypatch.setattr(
@@ -471,10 +472,12 @@ def test_v2_kit_pair_is_inventoried_staged_and_selected_without_caller_path(
     )
     initialized = install.initialize(target, config_path)
     assert owner_steps == ["setup", "model"]
-    assert len(environment_steps) == 3
+    probes = [args for args in environment_steps if install.RECORDING_INTAKE_PROBE in args]
+    assert len(probes) == 1 and len(environment_steps) == 4
     assert all([
-        item for item in args if item in {"--extra", "cloud", "local-models"}
-    ] == ["--extra", "cloud", "--extra", "local-models"] for args in environment_steps)
+        item for item in args if item in {"--extra", "cloud", "recording-intake", "local-models"}
+    ] == ["--extra", "cloud", "--extra", "recording-intake", "--extra", "local-models"]
+        for args in environment_steps)
     assert initialized["m2_v2_runtime"] == "installed_verified_by_runtime_owner"
     assert owner_install == [((service.directory / "text-menu-m2-v2", pin, {}),
                               {"archive": staged_archive,

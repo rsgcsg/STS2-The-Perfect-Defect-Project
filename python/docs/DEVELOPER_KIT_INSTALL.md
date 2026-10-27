@@ -209,9 +209,14 @@ hash these on-disk files while the game is running; it does not inspect process 
 claim that the running process loaded those same bytes. This read-only snapshot has no lock
 against a concurrent process state change or local file replacement. Deploy still requires
 the game to be closed and independently rechecks native game identity before writing.
-The verified kit inventory selects the locked environment: collection-only kits
-install the `cloud` extra; a kit containing any fixed text Runtime pair also
-installs `local-models` (Torch, Tokenizers and Safetensors). It does not install
+The verified kit inventory selects the locked environment: every kit installs the
+`cloud` and `recording-intake` extras (Tokenizers only, which Workbench recording
+intake imports); a kit containing any fixed text Runtime pair also installs
+`local-models` (Torch, Tokenizers and Safetensors). Right after the locked sync,
+`initialize` imports the recording-intake modules in that environment and rejects
+with `recording_intake_imports_failed_<package>` before any owner setup when one
+is missing. Releases installed before this check keep their environment until
+they are reinitialized. It does not install
 Qwen/Transformers or download model weights. Opening the local Workbench later
 retains these installed optional dependencies. The local home, model setup and
 recorded-report reading do not require team login; team account pairing is
@@ -233,7 +238,7 @@ Live UI 的编译身份覆盖 C# 输入，BOM 的组件身份覆盖整个组件�
 
 ### P1 Model 的正常 CPU 环境
 
-录制专用 kit 默认仍使用 `cloud`；需要在同一正常 Application 注册并运行
+录制专用 kit 默认使用 `cloud` 与 `recording-intake`；需要在同一正常 Application 注册并运行
 P1 M-std Model 时，先停止该 Application，在所选永久 release 的 `source/`
 运行原锁定依赖入口，再用原固定 launcher 重开：
 

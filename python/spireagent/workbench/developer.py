@@ -346,7 +346,8 @@ def _setup_unlocked(
         log = config.state_dir / "logs" / "setup.log"
         with log.open("ab") as output:
             for command in (
-                ["uv", "sync", "--locked", "--extra", "cloud", "--inexact"],
+                ["uv", "sync", "--locked", "--extra", "cloud", "--extra", "recording-intake",
+                 "--inexact"],
                 ["npm", "ci"],
             ):
                 executable = shutil.which(command[0])

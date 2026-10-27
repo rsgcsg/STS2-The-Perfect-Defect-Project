@@ -9,11 +9,11 @@ import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { globalRuntimeFixture } from "./global-runtime-fixtures.js";
 import { replayGlobalAgentRun } from "../src/global-replay.js";
+import { projectPython } from "../../../tools/project-python.mjs";
 
 const modelExport = process.env.STPD_T0_MODEL_EXPORT;
 it.skipIf(!modelExport)("runs exact trained M-std via ACK, score-bound choice, Receipt and terminal", async () => {
-  const python = process.env.STPD_TEST_PYTHON!;
-  if (!python) throw new Error("STPD_TEST_PYTHON is required for the local CPU artifact test");
+  const python = projectPython(["STPD_TEST_PYTHON"]);
   const root = await mkdtemp(join(tmpdir(), "p1-mstd-runtime-"));
   const registration = join(root, "models");
   const env = { ...process.env, PYTHONPATH: resolve("python"), PYTHONDONTWRITEBYTECODE: "1" };
