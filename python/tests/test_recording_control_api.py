@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
@@ -60,6 +61,102 @@ def test_control_token_maps_cooling_and_restore_to_original_recording_owner(tmp_
         server.server_close()
         app.close()
         thread.join(timeout=3)
+
+
+def test_maintenance_read_and_summary_are_bounded_while_owner_lock_is_busy(
+    tmp_path, monkeypatch, capsys,
+):
+    from spireagent.workbench import developer_server
+    from spireagent.workbench.developer import atomic_json
+    from spireagent.workbench.p1_recordings_cli import main
+
+    config = ProjectConfig(tmp_path / "state", "", "", None, combination())
+    app = Application(config)
+    path = tmp_path / "project.json"
+    atomic_json(path, config.to_dict())
+    server = create_server(app)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_port}"
+    monkeypatch.setattr(developer_server, "running", lambda _: {
+        "port": server.server_port, "control_token": app.control_token})
+    owner_started, release = threading.Event(), threading.Event()
+
+    def hold_owner_lock():
+        with app.local_recording_import.lock:
+            owner_started.set()
+            release.wait(10)
+
+    owner = threading.Thread(target=hold_owner_lock)
+    owner.start()
+    assert owner_started.wait(3)
+    try:
+        start = time.monotonic()
+        assert main(["maintenance", "status", "--config", str(path)]) == 0
+        assert json.loads(capsys.readouterr().out)["status"] == "busy"
+        with urlopen(base + "/recording-summary", timeout=1) as response:
+            html = response.read().decode()
+        assert "在忙，稍后再查" in html
+        assert "自动入库已停用" not in html
+        assert time.monotonic() - start < 1
+    finally:
+        release.set()
+        owner.join(timeout=3)
+        server.shutdown()
+        server.server_close()
+        app.close()
+        thread.join(timeout=3)
+
+
+@pytest.mark.parametrize("wrapped", [False, True])
+def test_status_transport_timeout_is_busy_and_never_repeats_a_mutation(
+    tmp_path, monkeypatch, capsys, wrapped,
+):
+    from urllib.error import URLError
+
+    from spireagent.workbench import developer_server
+    from spireagent.workbench.developer import atomic_json
+    from spireagent.workbench.p1_recordings_cli import main
+
+    config = ProjectConfig(tmp_path / "state", "", "", None, combination())
+    path = tmp_path / "project.json"
+    atomic_json(path, config.to_dict())
+    monkeypatch.setattr(developer_server, "running", lambda _: {"port": 1234,
+                                                               "control_token": "synthetic"})
+    calls = []
+
+    def request(url, **kwargs):
+        calls.append(kwargs)
+        raise URLError(TimeoutError()) if wrapped else TimeoutError()
+
+    monkeypatch.setattr(developer_server, "_local_request", request)
+    assert main(["maintenance", "status", "--config", str(path)]) == 0
+    assert json.loads(capsys.readouterr().out)["status"] == "busy"
+    assert main(["maintenance", "disable", "--config", str(path)]) == 1
+    assert json.loads(capsys.readouterr().out)["error_code"] == "busy_try_later"
+    assert len(calls) == 2 and all(call["method"] == "GET" for call in calls)
+
+
+def test_summary_names_the_live_cache_step_even_after_next_tick(tmp_path):
+    from spireagent.workbench.p1_cohort_intake import render_summary
+
+    config = ProjectConfig(tmp_path / "state", "", "", None, combination())
+    app = Application(config)
+    release = threading.Event()
+    worker = threading.Thread(target=lambda: release.wait(10))
+    app.local_recording_import.thread = worker
+    app.local_recording_import.operation.update(action="store-cache-trim", status="pending")
+    app.local_recording_import._maintenance.update(
+        status="operation_in_progress", policy={"enabled": True})
+    worker.start()
+    try:
+        html = render_summary(config, app.local_recording_import.maintenance_status())
+        assert "正在整理缓存" in html
+        assert "游戏运行时不再开始下一步" in html
+    finally:
+        release.set()
+        worker.join(timeout=3)
+        app.close()
 
 
 def test_summary_http_failure_and_explicit_refresh_of_failed_generation(tmp_path):

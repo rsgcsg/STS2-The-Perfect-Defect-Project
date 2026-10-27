@@ -410,6 +410,24 @@ class LocalRecordingImporter:
             if self.global_unknown_snapshot() is not None and not self.global_unknown_released():
                 raise BoundaryError("local_import", "original_intent_reconciliation_required")
 
+    def maintenance_status(self) -> dict[str, Any]:
+        """A bounded read, even while maintenance holds the operation lock."""
+        if not self.lock.acquire(timeout=0.05):
+            return {"status": "busy", "message": "在忙，稍后再查",
+                    "retry_after_seconds": 1}
+        try:
+            value = copy.deepcopy(self._maintenance)
+            if (self.thread is not None and self.thread.is_alive()
+                    and self.operation.get("status") in {"pending", "running"}):
+                value["current_step"] = {
+                    key: self.operation[key]
+                    for key in ("action", "storage_action", "started_at")
+                    if key in self.operation
+                }
+            return value
+        finally:
+            self.lock.release()
+
     def status(self) -> dict[str, Any]:
         with self.lock:
             return {**{key: value for key, value in self.operation.items()
@@ -1410,13 +1428,18 @@ class LocalRecordingImporter:
         from spireagent.storage.cache import trim_cache
 
         intent = dict(self.operation)
+        started, cpu_started = time.monotonic(), time.thread_time()
         try:
             store, _ = _selected_store(self.config, require_curation=False)
             receipt = trim_cache(store, protected=tuple(intent["protected_artifact_ids"]))
+            resources = {"elapsed_seconds": time.monotonic() - started,
+                         "thread_cpu_seconds": time.thread_time() - cpu_started,
+                         "cache_bytes_removed": receipt["before_bytes"] - receipt["after_bytes"]}
             with self.lock:
                 self.operation = {**intent, "status": "completed", "finished_at": _now(),
-                                  "storage_receipt": receipt}
+                                  "storage_receipt": receipt, "resource_usage": resources}
                 self._maintenance["cache"] = receipt
+                self._maintenance["cache_resource_usage"] = resources
                 self._maintenance["cache_trim_signature"] = [
                     receipt["after_bytes"], len(store.manifest_ids()), store._cache_policy]
                 self._maintenance["cache_retry_after"] = (

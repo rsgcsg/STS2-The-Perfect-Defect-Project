@@ -28,7 +28,7 @@
 
 | 问题 / 位置 | 原事实与解法 | 现在复用什么、不能推出什么 |
 |---|---|---|
-| **Q静默停用，坏派生拖停所有新原件**；派生→维护 | Q2查到13:13旧投影检查→全局故障→停用；Q3开工旧版再次停。原[维护器](../python/spireagent/workbench/p1_recording_maintenance.py)隔离可重建视图失败，保留原件和硬依赖门；页面显示失败、队列/状态/计数新鲜度。 | 复用原维护状态机和告警，不造第二入库链。Q3真人自动验收已做；旧底层errno仍未知，不能倒推已查明。status超时/下一局重活仍归X3。 |
+| **Q静默停用，坏派生拖停所有新原件**；派生→维护 | Q2查到13:13旧投影检查→全局故障→停用；Q3开工旧版再次停。原[维护器](../python/spireagent/workbench/p1_recording_maintenance.py)隔离可重建视图失败，保留原件和硬依赖门；页面显示失败、队列/状态/计数新鲜度。 | 复用原维护状态机和告警，不造第二入库链。Q3真人自动验收已做；旧底层errno仍未知，不能倒推已查明。[X3](evidence/Q_POLISH_X3_20261027.md)沿原owner补50ms忙响应、每步新派发前重核游戏及运行缓存步骤可见；已开始单步不强停。源码交付与实际安装分开。 |
 | **空SQLite WAL触发反复盘点**；用途账→签名 | 空连接WAL的mtime改变触发盘点→读热数据→整理缓存；Q2原签名只忽略空WAL，真实非空写入仍更新；4次tick盘点一次有回归。 | 复用同owner的内容/用途变更判定，不能忽略全部WAL，也没有证据证明空WAL就是旧底层故障根因。 |
 | **异常被统一包装，丢失原原因**；准备/派生→维护 | [准备层](../python/spireagent/workbench/p1_data_preparation.py)在负责捕获处记录projection ID、原异常类型/消息/堆栈，保稳定conflict返回；维护器保异常链。 | 修最早丢事实的层，不在下游猜errno。后来检查成功不是旧故障根因证据；敏感配置不进日志。 |
 | **换Tool把同一原件当新候选重处理**；采集升级→入库 | Q3沿原 `_existing_candidate` 的session/timeline/revision与三份seal hash找同source，核当前completed和新旧scope后只补别名；X2再次升级沿用，旧projection/完成时间未变。 | 复用原Store和身份比较；peer/scope/projection变化仍清完成记录，unknown/version/容量门不绕。不能仅同session就去重。 |

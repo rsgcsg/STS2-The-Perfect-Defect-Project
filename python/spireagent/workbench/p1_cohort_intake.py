@@ -179,7 +179,8 @@ STATUS_TEXT = {
     "low_space": "空间不足 15 GiB，已停止派发", "running": "正在串行处理封存录制",
     "completed": "本局处理完成", "up_to_date": "已更新，等待下一局",
     "operation_in_progress": "正在处理原操作", "refreshing_cohort": "正在增量盘点",
-    "cooling": "正在按原策略周转热副本", "cache_trimming": "正在维护原 Store 缓存",
+    "cooling": "正在按原策略周转热副本", "cache_trimming": "正在整理缓存",
+    "busy": "在忙，稍后再查",
     "cache_over_budget": "缓存暂超上限，原件保留；盘点仍按已验证数据更新",
 }
 
@@ -195,7 +196,12 @@ def _status_banner(maintenance: dict[str, Any], summary: dict[str, Any]) -> str:
     severity = "normal"
     action = "无需操作；录制封存后，原维护器会在游戏退出且空间足够时处理。"
     message = STATUS_TEXT.get(status, status)
-    if not enabled or status in {"failed", "blocked", "unavailable", "low_space"}:
+    activity = ""
+    if maintenance.get("current_step", {}).get("action") == "store-cache-trim":
+        activity = "正在整理缓存；当前步骤完成后，游戏运行时不再开始下一步"
+    if status == "busy":
+        action = "状态读取繁忙；请稍后再查，不要重复导入。下方计数保留最后完整盘点。"
+    elif not enabled or status in {"failed", "blocked", "unavailable", "low_space"}:
         severity = "danger"
         if not enabled and status != "failed":
             message = "自动入库已停用"
@@ -209,7 +215,7 @@ def _status_banner(maintenance: dict[str, Any], summary: dict[str, Any]) -> str:
         reason = maintenance["cohort_error"]
         action = "需要维护者检查该投影；未剔除坏数据，也未生成不完整的新盘点。"
     busy = status in {"running", "operation_in_progress", "refreshing_cohort",
-                      "cooling", "cache_trimming"}
+                      "cooling", "cache_trimming", "busy"}
     since = (maintenance.get("cohort_error_at") if cohort_only
              else maintenance.get("status_since"))
     checked = maintenance.get("checked_at")
@@ -217,6 +223,8 @@ def _status_banner(maintenance: dict[str, Any], summary: dict[str, Any]) -> str:
     waiting = (f"最近确认待处理 {queue} 份；当前录制目录无法核实。"
                if maintenance.get("catalog_status") not in {None, "ready"}
                else f"已封存待处理 {queue} 份（未验证前不当作完整局数）。")
+    if status == "busy":
+        waiting = "状态读取繁忙，待处理份数暂未核实。"
     detail = ""
     if reason:
         if str(reason).startswith("projection_conflicts:"):
@@ -233,6 +241,7 @@ def _status_banner(maintenance: dict[str, Any], summary: dict[str, Any]) -> str:
         f"data-checked-at='{esc(checked or '')}' data-since='{esc(since or '')}' "
         f"data-busy='{str(busy).lower()}'>"
         f"<strong>{esc(message)}</strong><p>{waiting}</p>"
+        + (f"<p>{esc(activity)}</p>" if activity else "") +
         f"<p>{esc(action)}</p>{detail}"
         f"<p>本状态开始于 {esc(since or '未记录')}；"
         "持续 <span id='maintenance-duration'>未记录</span>。<br>"
@@ -287,7 +296,8 @@ def render_summary(config: ProjectConfig, maintenance: dict[str, Any], *,
         parts.append("<p>尚无盘点结果；等待游戏退出后首次更新。</p>")
     pending = maintenance.get("pending_candidates", [])
     sources = value.get("pending_sources", [])
-    parts.append(f"<p>封存后待处理 {len(pending)} 份；Store 内未入选 {len(sources)} 份。"
+    pending_count = str(len(pending)) if status != "busy" else "暂未核实"
+    parts.append(f"<p>封存后待处理 {pending_count} 份；Store 内未入选 {len(sources)} 份。"
                  "一份录制可能含多局，未验证前不加进上面的局数。</p>")
     if pending or sources:
         parts.append("<details><summary>查看卡住或排队的录制</summary><ul>")
