@@ -46,10 +46,10 @@ test("built native act-selection source and retained measured builds remain expl
   );
   assert.equal(manifest.pre_hand_selection_build.artifact_sha256, "b8386bf8bd54086b1921ddade3cd4fb4a5156072ad45456bc3310e2b62275c8f");
   assert.equal(manifest.pre_m2a_recording_launch_build.artifact_sha256, "0d51a9cc9f9af64ead27ec978a7eb35573353e4b61c3e7d3bd1b5bebc7c7d5a2");
-  assert.equal(manifest.expected_build.artifact_sha256, "d48bb00238d04f2dcaeb95d386ad306c4766b358969521203fc35f0c90c7a2b4");
+  assert.equal(manifest.expected_build.artifact_sha256, "06d0344fd88bf0a36b2d8e4c03402c4bce601758301a0757526cc688b67d540a");
   assert.equal(manifest.historical_candidate_builds.some(build => build.artifact_sha256 === "c3eed8fa9930d7428af0d9028a4ca0a0e5234853d8040bc99dd478f99fdd4df4"), true);
   assert.equal(manifest.pre_m2a_recording_launch_build.artifact_mvid, "30cbfc58-f916-44ff-a60e-788194dbf4d4");
-  assert.equal(manifest.expected_build.artifact_mvid, "776eda00-665a-43bd-9b1f-1535d7a0a806");
+  assert.equal(manifest.expected_build.artifact_mvid, "4c9e5f56-654e-4aa7-a144-27ee7dc28d6d");
   assert.equal(manifest.historical_candidate_builds.some(build =>
     build.source_patch_sha256 === "a46736eee8c0c4c65b574a53e769330831d2e39de7897563f4a4c16b48fc5e20"
     && build.artifact_sha256 === "39a6455c2f67c4313b3cf2b6b46a6783d41cc5ebe86cb62829a6a780c7d562b2"
@@ -150,6 +150,7 @@ test("fresh candidate preparation admits added source files into the audited dif
     "src/Sts2Headless/NativeCardRewardAlternativePreview.cs",
     "src/Sts2Headless/NativeCardRewardParentPresentation.cs",
     "src/Sts2Headless/NativeCardRewardSelectionObservation.cs",
+    "src/Sts2Headless/NativeDebugAudioPresentation.cs",
     "src/Sts2Headless/NativeDetachedCardCopy.cs",
     "src/Sts2Headless/NativeDetachedCardPreview.cs",
     "src/Sts2Headless/NativeEnchantmentMethodInventory.cs",
@@ -169,6 +170,7 @@ test("fresh candidate preparation admits added source files into the audited dif
     "src/Sts2Headless/NativeSelectorCardDisplay.cs",
     "src/Sts2Headless/NativeSelectorHud.cs",
     "src/Sts2Headless/NativeSelectorSelection.cs",
+    "src/Sts2Headless/NativeSettledRelicCounter.cs",
     "src/Sts2Headless/NativeTreasureChestAdmission.cs",
     "src/Sts2Headless/NativeUpgradeMethodInventory.cs",
     "src/Sts2Headless/NativeVisibleText.cs",

@@ -103,4 +103,26 @@ public sealed class PublicBasisTests
         var snapshot = Snapshot(); snapshot["large_public_text"] = new string('x', SealedObservationContract.MaxCapsuleBytes);
         Assert.Throws<SealedObservationException>(() => PublicBasisAssembly.Freeze(snapshot, new[] { Read(snapshot) }, null, Options));
     }
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void OptInWitnessVersionsExactFrozenSourceAndCarriesGaps(bool gap)
+    {
+        var snapshot = Snapshot(); var read = Read(snapshot);
+        var original = PublicBasisAssembly.Freeze(snapshot, new[] { read }, null, Options).Bytes;
+        int calls = 0;
+        var frozen = PublicBasisAssembly.Freeze(snapshot, new[] { read }, null, Options,
+            captureSettledRelics: (sameSnapshot, sameReads) => {
+                calls++; Assert.Same(snapshot, sameSnapshot); Assert.Same(read, sameReads[0]);
+                return new JsonObject { ["source_snapshot_id"] = sameSnapshot["snapshot_id"]!.DeepClone(),
+                    ["missing"] = gap ? new JsonArray("native_logical_value_unavailable:relic") : new JsonArray() };
+            });
+        var basis = JsonNode.Parse(frozen.Bytes)!;
+        Assert.Equal(1, calls); Assert.Equal("3", basis["revision"]!.GetValue<string>());
+        Assert.Equal(gap ? "partial" : "complete", basis["capture_status"]!.GetValue<string>());
+        Assert.Equal("snapshot-original", basis["settled_relic_counters"]!["source_snapshot_id"]!.GetValue<string>());
+        if (gap) Assert.Equal("settled_relic_counters:native_logical_value_unavailable:relic", basis["missing"]![0]!.GetValue<string>());
+        Assert.Equal(original, PublicBasisAssembly.Freeze(snapshot, new[] { read }, null, Options).Bytes);
+        Assert.Null(JsonNode.Parse(original)!["settled_relic_counters"]);
+    }
 }

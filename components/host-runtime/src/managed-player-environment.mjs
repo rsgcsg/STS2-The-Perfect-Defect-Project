@@ -183,6 +183,7 @@ function createProjectionContext({
     catalogReads: [],
     id: makeId,
     entityId,
+    existingEntityId: (kind, nativeRef) => publicEntityAliases.get(JSON.stringify([kind, nativeRef])) ?? null,
     referent,
     action
   };
@@ -192,6 +193,7 @@ function withoutDeck(player) {
   if (!plainObject(player)) return null;
   const {
     deck: _deck,
+    settled_relic_counter_game_mvid: _settledGameMvid,
     native_ref: _nativeRef,
     relics = [],
     potions = [],
@@ -204,6 +206,7 @@ function withoutDeck(player) {
       binding_supported: _bindingSupported,
       hover_facts_complete: _hoverFactsComplete,
       vars: _dynamicVariables,
+      settled_relic_counter: _settledCounter,
       ...publicItem
     } = item;
     return publicItem;
@@ -2656,6 +2659,7 @@ export function projectManagedCandidateDecision({
   return Object.freeze({
     snapshot,
     bindings: ctx.bindings,
+    captureSettledRelicCounters: () => managedSettledRelicCounterWitness(state, ctx, snapshot, reads),
     raw_state_sha256: ctx.rawStateSha,
     reads: new Map(reads.map((read) => [read.descriptor.read_id, read])),
     performance: Object.freeze({
@@ -2698,6 +2702,54 @@ function receipt({ requestId, delivery, action, reasonCode, detail, retry, succe
 function validateManagedAscension(ascension) {
   if (!Number.isSafeInteger(ascension) || ascension < 0 || ascension > 10)
     throw new Error("managed_ascension_invalid");
+}
+
+function managedSettledRelicCounterWitness(state, ctx, snapshot, reads) {
+  const supported = new Set(["KUSARIGAMA", "LASTING_CANDY"]);
+  const carriers = new Map(), native = new Map(), missing = [];
+  const visit = (value, accept) => {
+    if (Array.isArray(value)) { for (const item of value) visit(item, accept); return; }
+    if (!plainObject(value)) return;
+    accept(value);
+    for (const child of Object.values(value)) visit(child, accept);
+  };
+  const publicCarrier = item => {
+    if (!supported.has(item.definition_id) || item.counter == null) return;
+    if (typeof item.entity_id !== "string" || !Number.isSafeInteger(item.counter)) {
+      missing.push("invalid_public_relic_carrier"); return;
+    }
+    const previous = carriers.get(item.entity_id);
+    if (previous && (previous.definition_id !== item.definition_id || previous.counter !== item.counter))
+      missing.push(`inconsistent_public_relic_carrier:${item.entity_id}`);
+    carriers.set(item.entity_id, { definition_id: item.definition_id, counter: item.counter });
+  };
+  visit(snapshot, publicCarrier);
+  for (const read of reads) visit(read.content, publicCarrier);
+  visit(state, item => {
+    if (!supported.has(item.id) || typeof item.native_ref !== "string") return;
+    // This lookup never creates an alias for a hidden/unpresented native object.
+    const id = ctx.existingEntityId("relic", item.native_ref);
+    if (!carriers.has(id)) return;
+    const value = item.settled_relic_counter;
+    if (!plainObject(value)) { missing.push(`native_logical_value_unavailable:${id}`); return; }
+    const previous = native.get(id);
+    if (previous && digest(previous) !== digest(value)) missing.push(`inconsistent_native_logical_value:${id}`);
+    native.set(id, value);
+  });
+  const facts = [];
+  for (const [id, original] of [...carriers].sort(([a], [b]) => a.localeCompare(b))) {
+    const value = native.get(id);
+    if (!value || !Array.isArray(value.missing) || value.missing.length
+        || value.definition_id !== original.definition_id || value.display_counter !== original.counter
+        || !Number.isSafeInteger(value.logical_counter)) {
+      missing.push(`native_logical_value_unavailable:${id}`); continue;
+    }
+    facts.push({ entity_id: id, definition_id: value.definition_id, display_counter: value.display_counter,
+      logical_counter: value.logical_counter, rule_id: value.rule_id });
+  }
+  return { schema: "sts2.player-environment/settled-relic-counters-1", source_snapshot_id: snapshot.snapshot_id,
+    session: structuredClone(snapshot.session), game_mvid: state.player?.settled_relic_counter_game_mvid ?? "unavailable",
+    source_kind: "native_same_capture", facts, missing: [...new Set(missing)] };
 }
 
 export class ManagedPlayerEnvironmentSession {
@@ -2836,6 +2888,12 @@ export class ManagedPlayerEnvironmentSession {
       throw new Error("managed_session_tainted_after_successor_projection_failure");
     if (this.#projection == null) throw new Error("No managed run is mounted.");
     return this.#projection.snapshot;
+  }
+
+  settledRelicCounters(expectedSnapshotId) {
+    const snapshot = this.observe();
+    if (snapshot.snapshot_id !== expectedSnapshotId) throw new Error("stale_snapshot");
+    return this.#projection.captureSettledRelicCounters();
   }
 
   read({ readId, expectedSnapshotId }) {

@@ -8,7 +8,10 @@ import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
 import { resolveDotnet } from "../src/managed-candidate.mjs";
 import { JsonLineProcess } from "../src/json-line-process.mjs";
-import { projectManagedCandidateDecision } from "../src/managed-player-environment.mjs";
+import { ManagedPlayerEnvironmentSession, projectManagedCandidateDecision } from "../src/managed-player-environment.mjs";
+
+import { captureManagedPublicBasis } from "../src/managed-public-basis.mjs";
+import { createSession, reduce } from "@rsgcsg/sts2-connector-client/p1-global";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -25,8 +28,27 @@ test("native return-to-hand delivery, multi-pile choice, Plasma HUD and gardener
       "-p:Deterministic=true", `-p:PathMap=${path.resolve(candidate)}=/_/candidate/`],
     { cwd: candidate, timeout: 180000, maxBuffer: 4 * 1024 * 1024 });
   assert.deepEqual(hashes(), before, "native regressions retain the frozen candidate bytes");
-  assert.match(stdout, /45 exact native M2a checks passed/u);
+  assert.match(stdout, /51 exact native M2a checks passed/u);
   assert.match(stdout, /exact native gardener turns reached round 4/u);
+  assert.match(stdout, /exact native jungle option retained gold hooks and completion/u);
+  const counterState = JSON.parse(stdout.split(/\r?\n/u).find(line => line.startsWith("native-m2a-counter-state=")).slice("native-m2a-counter-state=".length));
+  const session = new ManagedPlayerEnvironmentSession({ process: { request: async () => counterState },
+    runtimeInstanceId: "same-native-counter", environmentFingerprint: "same-native-counter" });
+  const mounted = await session.mount({ seed: "NATIVE_COMPONENT_FIXTURE" });
+  const beforePublic = structuredClone(mounted);
+  const legacy = captureManagedPublicBasis(session, { ordinal: 1 });
+  assert.equal(legacy.basis.revision, "1");
+  assert.equal(legacy.basis.settled_relic_counters, undefined);
+  const captured = captureManagedPublicBasis(session, { ordinal: 2, settledRelicCounters: true });
+  assert.equal(captured.basis.revision, "3");
+  assert.equal(captured.basis.capture_status, "complete");
+  assert.deepEqual(captured.basis.settled_relic_counters.facts.map(v => [v.definition_id,v.display_counter,v.logical_counter]).sort(),
+    [["KUSARIGAMA",3,2],["LASTING_CANDY",2,1]]);
+  assert.deepEqual(session.observe(), beforePublic, "witness capture does not mutate original public snapshot");
+  const derived = reduce(createSession("native-witness", "managed", "r1.7"), captured.basis);
+  assert.equal(derived.complete, true);
+  assert.deepEqual(derived.observation.player.content.relics.filter(r => ["KUSARIGAMA", "LASTING_CANDY"].includes(r.definition_id)).map(r => r.counter).sort(), [1,2]);
+  assert.throws(() => session.settledRelicCounters("foreign-snapshot"), /stale_snapshot/u);
   for (const [prefix, kind] of [["native-m2a-pile-state=", "native_combat_pile_selection"],
     ["native-m2a-hand-state=", "combat_hand_card_selection"]]) {
     const state = JSON.parse(stdout.split(/\r?\n/u).find(line => line.startsWith(prefix)).slice(prefix.length));
@@ -93,7 +115,7 @@ test("both exact Hosts compile the same native reward/read qualification source"
     "NativeMapReadProjection.cs", "NativeCardRenderTransaction.cs",
     "NativeCalculatedVariableInventory.cs", "NativeCardPreviewReadQualification.Rendering.cs", "NativeCardPreviewReadQualification.cs",
     "NativeDetachedCardCopy.cs", "NativeDetachedCardPreview.cs", "NativeEnchantmentMethodInventory.cs",
-    "NativeUpgradeMethodInventory.cs", "NativePublicCardDetails.cs", "NativeVisibleText.cs"])
+    "NativeSettledRelicCounter.cs", "NativeUpgradeMethodInventory.cs", "NativePublicCardDetails.cs", "NativeVisibleText.cs"])
     assert.equal(files.get(`src/Sts2Headless/${name}`),
       readFileSync(path.join(root, "../native-foundation/src", name), "utf8"));
 });

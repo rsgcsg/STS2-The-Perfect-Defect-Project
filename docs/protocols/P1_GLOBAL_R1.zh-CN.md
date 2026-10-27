@@ -499,3 +499,26 @@ SDK `createSession(episode, host, "r1.6")` 显式选择本版；未指定版本�
 衍生件，保存原件hash、每份观察前后hash；唯一变化是观察revision，数组和事实不改。
 不同revision直接比较必须incomparable。新声明下公开图相等不抹去原r1.5的严格差异，
 也不证明438输入或概率相同。两Host统计合并、训练输入的无序编码与新训练另行决定。
+
+## r1.7：两个遗物的同帧逻辑计数（2026-10-27，用户已批）
+
+本版仅改已有公开 `counter` 的 KUSARIGAMA、LASTING_CANDY；继承 r1.6 的顺序声明。
+SDK `createSession(episode, host, "r1.7")` 显式选择，默认 r1.5、r1.6、438及其InputSpec不变。
+两个Host通过同一次同步capture读取原生逻辑值：锁镰的当前攻击数 `%3`、糖果的
+`CombatRewardsSeen %2`。只发余数，不发累计攻击数、动画标志或隐藏遗物。
+
+公开原始Snapshot/Read仍保存显示计数。显式HTTP `settled_relic_counters=1` 或Managed
+capture `{settled_relic_counters:true}` 返回 Public Basis revision3，附
+`settled_relic_counters` 同帧见证。见证绑定原snapshot_id、session及准确game MVID
+`57785517-0b16-42b9-8b36-bad6fb28384b`，每项含entity_id、definition_id、原显示值、
+逻辑余数和注册rule_id；见证缺失保留missing/partial，不授予完整资格。PB1/2拒绝见证。
+默认HTTP仍PB2、Managed仍PB1；未来新采集用新组合保存PB3，安装另行授权。
+
+r1.7仅在派生副本替换这两个已有counter；玩家遗物、表面遗物、referent、商店Read保持一致。
+同帧见证不进入模型视图。旧件只允许由同一Snapshot明确恢复的非触发值（锁镰0..2、糖果0..1）
+按注册identity规则派生；锁镰3、糖果2无见证时保留歧义，不能硬改0、借后帧或新标签。
+`convertP1NativeBundle({p1Revision:"r1.7"})` / `--p1-revision r1.7` 输出独立投影与恢复收据，
+保留原点数、原N分母及missing；缺失点不用于新训练标签，不修改旧原件/旧投影/旧例外。
+
+其他19项展示计数的调查不构成改义授权，字段清单与逐机制证据归本轮M2a报告。
+新语义的相等不推翻旧r1.5严格差异，也不证明旧438输入/概率或整局资格等价。

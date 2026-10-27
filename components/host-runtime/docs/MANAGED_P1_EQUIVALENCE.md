@@ -173,3 +173,12 @@ application defaults to 120,000 ms and retains the episode as unknown with reaso
 `managed_settling_stalled`; exact original evidence and accepted Host shutdown
 remain separate facts. M051's original offer is never reissued, and its underlying
 native asynchronous wait remains an M2 obligation.
+
+M2a's explicit r1.7 path implements only the two user-approved public remainders
+(KUSARIGAMA/LASTING_CANDY). Both Hosts use the shared read-only Native Foundation
+seam at the original capture boundary, with PB3 snapshot/session/exact-game
+witnesses. See the versioned P1 section above for fields, legacy ambiguity and
+opt-in commands. Raw display counters and default PB1/PB2/P1 r1.5 remain unchanged.
+The pure JungleMazeAdventure debug audio call is separately remapped only when
+Managed TestMode has no audio singleton; native GainGold hooks and finish remain.
+All replaced seams and their exact native regressions are in the existing manifest.

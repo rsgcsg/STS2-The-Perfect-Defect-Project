@@ -36,9 +36,9 @@
     "managed_artifact": "src/Sts2Headless/bin/Release/net9.0/Sts2Headless.dll"
   },
   "expected_build": {
-    "source_patch_sha256": "70b32c6da0e638788a6b541f74135ce35bd0c2e29687aa2e233034c08078da50",
-    "artifact_sha256": "d48bb00238d04f2dcaeb95d386ad306c4766b358969521203fc35f0c90c7a2b4",
-    "artifact_mvid": "776eda00-665a-43bd-9b1f-1535d7a0a806",
+    "source_patch_sha256": "1f1a1c05422bf8dce78c9ad8e4881a898f41bc6b5b3d12749c103e0d485f9b33",
+    "artifact_sha256": "06d0344fd88bf0a36b2d8e4c03402c4bce601758301a0757526cc688b67d540a",
+    "artifact_mvid": "4c9e5f56-654e-4aa7-a144-27ee7dc28d6d",
     "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0"
   },
   "previous_candidate_build": {
@@ -253,6 +253,20 @@
       "risk": "medium",
       "effect": "copies actual ShowCounter/DisplayAmount for original offered shop relics, preserving zero, nonzero and absence; no new logical-counter meaning or default zero",
       "regression": "managed-shop-public.test.mjs; same-version original PEN_NIB/TUNING_FORK counter0 and DRAGON_FRUIT absence evidence"
+    },
+    {
+      "id": "native_debug_audio_presentation",
+      "kind": "harmony_presentation_callsite",
+      "risk": "low",
+      "effect": "Only remaps the original JungleMazeAdventure.SafetyInNumbers debug audio Play call when Managed TestMode has no audio singleton; original gold hooks, RNG, waits and event completion stay native.",
+      "regression": "m2a-native-tests: native gold delta and event finish; non-TestMode null retains failure"
+    },
+    {
+      "id": "same_capture_settled_relic_counter",
+      "kind": "read_only_native_witness",
+      "risk": "medium",
+      "effect": "Explicit PB3/r1.7 witness for the two approved KUSARIGAMA/LASTING_CANDY public remainder mechanisms; default public projections retain raw displays and never expose cumulative private totals.",
+      "regression": "m2a-native-tests and managed-reward-native.test.mjs real producer/serializer/PB3/r1.7 seam"
     }
   ],
   "admission": {
@@ -346,6 +360,12 @@
     "source_patch_sha256": "7cf16011ef6035b7d52c84f2fc1e9a7ae4b15fe75d4b5e4fea0705072b5a9163",
     "artifact_sha256": "0d51a9cc9f9af64ead27ec978a7eb35573353e4b61c3e7d3bd1b5bebc7c7d5a2",
     "artifact_mvid": "30cbfc58-f916-44ff-a60e-788194dbf4d4",
+    "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0"
+  },
+  "pre_m2a_pb3_build": {
+    "source_patch_sha256": "70b32c6da0e638788a6b541f74135ce35bd0c2e29687aa2e233034c08078da50",
+    "artifact_sha256": "d48bb00238d04f2dcaeb95d386ad306c4766b358969521203fc35f0c90c7a2b4",
+    "artifact_mvid": "776eda00-665a-43bd-9b1f-1535d7a0a806",
     "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0"
   }
 }

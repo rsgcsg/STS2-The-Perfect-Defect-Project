@@ -299,3 +299,15 @@ test("unqualified generated selector without HUD publishes a partial decodable b
   assert.deepEqual(snapshot.bound_actions.actions, []);
   assert.equal(projection.bindings.size, 0);
 });
+
+
+test("private counter evidence cannot change default selector Snapshot or enter public context", () => {
+  const original = selector({ choose: true });
+  const next = structuredClone(original);
+  next.player.settled_relic_counter_game_mvid = "private-game-mvid";
+  next.player.relics[0].settled_relic_counter = { logical_counter: 99, rule_id: "private-rule" };
+  const before = project(original).snapshot, after = project(next).snapshot;
+  after.observed_at = before.observed_at;
+  assert.deepEqual(after, before);
+  assert.doesNotMatch(JSON.stringify(after), /private-game-mvid|logical_counter|private-rule/u);
+});
