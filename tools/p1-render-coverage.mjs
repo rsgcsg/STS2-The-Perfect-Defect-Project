@@ -18,7 +18,7 @@ for (const [identity, job] of Object.entries(ledger.jobs)) {
     else throw error;
   }
   reports.push({ ...report, diagnostic_id: identity, status: job.status,
-    source_session_id: job.session_id, unknown_delivery: job.unknown_delivery ?? report.unknown_delivery, error: report.error ?? job.error ?? job.disposition });
+    source_session_id: job.session_id, storage_status: job.storage_status, storage_receipt: job.storage_receipt, unknown_delivery: Object.hasOwn(job, "unknown_delivery") ? job.unknown_delivery : report.unknown_delivery, error: report.error ?? job.error ?? job.disposition });
 }
 writeFileSync(out + '.pending', coverageHtml(reports));
 renameSync(out + '.pending', out);

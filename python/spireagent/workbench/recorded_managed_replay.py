@@ -21,7 +21,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-import psutil  # type: ignore[import-untyped]
 from sts2_platform_evidence import DirectoryTransferManifest
 
 from spireagent.artifact_contracts import Manifest, Parent, Producer
@@ -148,12 +147,13 @@ def _game_idle(source_root: Path) -> bool:
 
 
 def _group_alive(pgid: int) -> bool:
-    for process in psutil.process_iter(["pid", "status"]):
-        try:
-            if process.info["status"] != psutil.STATUS_ZOMBIE and os.getpgid(process.pid) == pgid:
-                return True
-        except (ProcessLookupError, psutil.NoSuchProcess):
-            continue
+    observed = subprocess.run(
+        ["ps", "-axo", "pgid=,stat="], capture_output=True, text=True, timeout=5, check=True
+    )
+    for row in observed.stdout.splitlines():
+        values = row.split()
+        if len(values) >= 2 and values[0] == str(pgid) and not values[1].startswith("Z"):
+            return True
     return False
 
 
@@ -332,6 +332,11 @@ def _promote(
     root: Path,
 ) -> None:
     config = importer.config
+    if not _game_idle(root):
+        with importer.lock:
+            job["storage_status"] = "pending_diagnostic_publication_game_exit"
+            importer._save()
+        return
     identity = job.get("diagnostic_artifact_id")
     if identity is None:
 
@@ -388,7 +393,8 @@ def _tick(maintenance: P1RecordingMaintenance) -> None:
             for source in eligible
             if source not in jobs
             or jobs[source].get("status") in {"running", "not_started", "interrupted_unknown"}
-            or jobs[source].get("storage_status") == "pending_game_exit_or_peer"
+            or jobs[source].get("storage_status")
+            in {"pending_game_exit_or_peer", "pending_diagnostic_publication_game_exit"}
         ]
         if not pending:
             return
@@ -401,6 +407,20 @@ def _tick(maintenance: P1RecordingMaintenance) -> None:
         require_long_task_space(config.state_dir, 1024**3)
         from .local_recording_import import _selected_store
 
+        for job in jobs.values():
+            if job.get("status") in {"running", "interrupted_unknown"}:
+                pid = job.get("worker_pid")
+                if not isinstance(pid, int) or _group_alive(pid):
+                    with importer.lock:
+                        job.update(
+                            status="interrupted_unknown",
+                            unknown_delivery=None,
+                            attempt_unconfirmed=True,
+                            storage_status="local_files_retained_reconciliation_required",
+                        )
+                        importer._save()
+                    _render(config, execution, jobs)
+                    return
         store, _registry = _selected_store(config, require_curation=False)
         jobs = state.setdefault("managed_replays", {})
         after = datetime.fromisoformat(execution["closed_after"])
@@ -418,7 +438,8 @@ def _tick(maintenance: P1RecordingMaintenance) -> None:
                     with importer.lock:
                         previous.update(
                             status="interrupted_unknown",
-                            unknown_delivery=True,
+                            unknown_delivery=None,
+                            attempt_unconfirmed=True,
                             error="previous_attempt_unconfirmed_no_retry",
                         )
                         importer._save()
@@ -429,6 +450,10 @@ def _tick(maintenance: P1RecordingMaintenance) -> None:
                     output = config.state_dir / "managed-replays" / source
                     previous.update(status="failed", ended_at=datetime.now(UTC).isoformat())
                     atomic_json(output / "job.json", previous)
+                    _promote(store, output, source, previous, importer, root)
+                    break
+                if previous.get("storage_status") == "pending_diagnostic_publication_game_exit":
+                    output = config.state_dir / "managed-replays" / source
                     _promote(store, output, source, previous, importer, root)
                     break
                 if previous.get("storage_status") == "pending_game_exit_or_peer":
@@ -507,15 +532,15 @@ def _tick(maintenance: P1RecordingMaintenance) -> None:
                             else "failed",
                             disposition=disposition,
                             completed=report.get("completed", False),
-                            unknown_delivery=report.get(
-                                "unknown_delivery", disposition.endswith("unknown") or not report
-                            ),
+                            unknown_delivery=report.get("unknown_delivery"),
+                            attempt_unconfirmed=not bool(report),
                         )
             except Exception as error:
                 job.update(
                     status="failed",
                     error=getattr(error, "code", type(error).__name__),
-                    unknown_delivery="worker_pid" in job,
+                    unknown_delivery=None if "worker_pid" in job else False,
+                    attempt_unconfirmed="worker_pid" in job,
                 )
             finally:
                 job["ended_at"] = datetime.now(UTC).isoformat()

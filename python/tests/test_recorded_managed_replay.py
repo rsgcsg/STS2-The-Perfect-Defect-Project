@@ -11,7 +11,6 @@ import threading
 from pathlib import Path
 from types import SimpleNamespace
 
-import psutil
 import pytest
 from test_artifact_store_v1 import PRODUCER
 from test_p1_recording_store import original, tool  # noqa: F401
@@ -177,10 +176,10 @@ def test_restart_interrupted_attempt_preserves_existing_files_without_world_retr
     )
     replay.tick(maintenance)
     job = maintenance.importer._maintenance["managed_replays"][raw.artifact_id]
-    assert job["status"] == "failed" and job["unknown_delivery"] is True
+    assert job["status"] == "failed" and job["unknown_delivery"] is None
     assert job["storage_receipt"]["full_readback"] is True
     page = (maintenance.importer.config.state_dir / replay.PAGE).read_text()
-    assert "previous_attempt_unconfirmed_no_retry" in page and "unknown true" in page
+    assert "previous_attempt_unconfirmed_no_retry" in page and "unknown 未确认" in page
 
 
 def test_renderer_includes_skipped_owner_row_without_output_directory(tmp_path):
@@ -236,10 +235,17 @@ def test_owned_group_cleanup_even_after_leader_exit(tmp_path, monkeypatch, obser
     )
     pid = int(child_pid.read_text())
     try:
-        assert not psutil.pid_exists(pid) or psutil.Process(pid).status() == psutil.STATUS_ZOMBIE
+        observed = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "stat="], capture_output=True, text=True
+        )
+        assert (
+            observed.returncode != 0
+            or not observed.stdout.strip()
+            or observed.stdout.strip().startswith("Z")
+        )
         assert disposition == ("game_observer_failed_unknown" if observer_error else "finished")
     finally:
-        if psutil.pid_exists(pid) and psutil.Process(pid).status() != psutil.STATUS_ZOMBIE:
+        with __import__("contextlib").suppress(ProcessLookupError):
             os.kill(pid, signal.SIGKILL)
 
 
