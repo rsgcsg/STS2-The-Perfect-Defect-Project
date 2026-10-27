@@ -221,6 +221,16 @@ if (newGaps.Count > 0)
     foreach (var gap in newGaps.Take(50)) Console.Error.WriteLine($"  {gap}");
     return 4;
 }
+// Scanner self-check: every game reference must resolve in the shipped GodotSharp,
+// otherwise a misread signature could hide a gap.
+var unresolved = types.Values.Where(t => t.InReference == false).Select(t => $"type {t.Name}")
+    .Concat(members.Values.Where(m => m.Reference != null && m.Reference.Status != "present").Select(m => $"member {m.Key}")).ToList();
+if (referenceModel != null && unresolved.Count > 0)
+{
+    Console.Error.WriteLine($"Godot stub coverage: {unresolved.Count} game reference(s) do not resolve in the shipped GodotSharp:");
+    foreach (var item in unresolved.Take(50)) Console.Error.WriteLine($"  {item}");
+    return 5;
+}
 return 0;
 
 static int Usage()

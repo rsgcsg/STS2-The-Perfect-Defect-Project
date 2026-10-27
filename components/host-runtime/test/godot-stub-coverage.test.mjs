@@ -90,6 +90,27 @@ test("coverage gate refuses a baseline reviewed for another game", async () => {
   /reviewed for a different exact game/u);
 });
 
+test("coverage gate refuses a report whose game references do not all resolve in shipped Godot", async () => {
+  const { manifest } = loadManagedCandidateManifest(ROOT);
+  const directory = mkdtempSync(path.join(os.tmpdir(), "sts2-m2c-unresolved-"));
+  try {
+    // Stand-in for `dotnet run`: writes a zero-new-gap report with one unresolved reference.
+    const fake = path.join(directory, "fake-dotnet.mjs");
+    writeFileSync(fake, `#!/usr/bin/env node
+import { writeFileSync } from "node:fs";
+const out = process.argv[process.argv.indexOf("--output") + 1];
+writeFileSync(out, JSON.stringify({ totals: { gaps: 0, new_gaps: 0, reference_unresolved_types: 0,
+  reference_unresolved_members: 1 }, stale_accepted: [], inputs: { stub: { sha256: "0" } } }));
+`, { mode: 0o755 });
+    await assert.rejects(checkGodotStubCoverage({ root: ROOT, candidateDirectory: directory, manifest,
+      referenceAssembly: path.join(directory, "GodotSharp.dll"), outputFile: path.join(directory, "out.json"),
+      dotnet: { command: fake } }),
+    /every game reference resolves in the shipped GodotSharp/u);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("exact native Godot stub bindings match shipped Godot and the gate names a new gap", async context => {
   const candidate = process.env.STS2_MANAGED_TEST_CANDIDATE;
   if (!candidate) { context.skip("set STS2_MANAGED_TEST_CANDIDATE for exact proprietary native component fixtures"); return; }

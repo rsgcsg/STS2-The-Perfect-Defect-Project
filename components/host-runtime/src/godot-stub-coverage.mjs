@@ -6,6 +6,7 @@ import { stageDotnetToolProject } from "./assembly-fingerprint-project.mjs";
 
 const execFileAsync = promisify(execFile);
 const NEW_GAPS_EXIT = 4;
+const UNRESOLVED_REFERENCE_EXIT = 5;
 
 /** The reviewed coverage gate settings of the admitted candidate manifest. */
 export function godotStubCoverageContract(manifest) {
@@ -54,6 +55,9 @@ export async function checkGodotStubCoverage({
       if (error?.code === NEW_GAPS_EXIT) {
         throw new Error(`Godot stub coverage found gaps outside the reviewed baseline:\n${String(error.stderr).trim()}`);
       }
+      if (error?.code === UNRESOLVED_REFERENCE_EXIT) {
+        throw new Error(`Godot stub coverage could not resolve game references in the shipped GodotSharp:\n${String(error.stderr).trim()}`);
+      }
       throw error;
     }
   } finally {
@@ -61,6 +65,9 @@ export async function checkGodotStubCoverage({
   }
   const report = JSON.parse(readFileSync(outputFile, "utf8"));
   if (report.totals?.new_gaps !== 0) throw new Error("Godot stub coverage report did not confirm zero new gaps.");
+  if (report.totals.reference_unresolved_types !== 0 || report.totals.reference_unresolved_members !== 0) {
+    throw new Error("Godot stub coverage report did not confirm every game reference resolves in the shipped GodotSharp.");
+  }
   return {
     report_file: outputFile,
     baseline: contract.baseline,

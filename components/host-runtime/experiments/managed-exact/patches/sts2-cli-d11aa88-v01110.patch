@@ -446,10 +446,10 @@ index 0000000..2f0521f
 +</Project>
 diff --git a/m2c-godot-stub-tests/Program.cs b/m2c-godot-stub-tests/Program.cs
 new file mode 100644
-index 0000000..23c6529
+index 0000000..c27f470
 --- /dev/null
 +++ b/m2c-godot-stub-tests/Program.cs
-@@ -0,0 +1,238 @@
+@@ -0,0 +1,243 @@
 +using System.Reflection;
 +using System.Runtime.CompilerServices;
 +using System.Runtime.Loader;
@@ -514,14 +514,17 @@ index 0000000..23c6529
 +        string Order() => string.Join(",", parent.GetChildren().Select(n => n == a ? "a" : n == b ? "b" : n == c ? "c" : n == sibling ? "s" : "?"));
 +        parent.MoveChild(c, 0); Check(Order() == "c,a,b", "move_child to front");
 +        parent.MoveChild(c, -1); Check(Order() == "a,b,c", "move_child negative index counts from end");
-+        parent.MoveChild(a, 3); Check(Order() == "a,b,c", "move_child out of range is ignored");
++        parent.MoveChild(a, 3); Check(Order() == "b,c,a", "move_child one past the end moves to last");
++        parent.MoveChild(a, 0); parent.MoveChild(a, 4); parent.MoveChild(a, -4); Check(Order() == "a,b,c", "move_child beyond count+1 or -count is ignored");
 +        parent.MoveChild(orphan, 0); Check(Order() == "a,b,c" && orphan.GetIndex() == -1, "move_child of a non-child is ignored; orphan index -1");
 +        a.AddSibling(sibling); Check(Order() == "a,s,b,c" && sibling.GetParent() == parent && sibling.GetIndex() == 1, "add_sibling inserts after self");
 +        orphan.AddSibling(new Node()); Check(orphan.GetParent() == null, "add_sibling without parent is a no-op");
 +        Check(b.GetParent<Node>() == parent && orphan.GetParent<Node>() == null, "typed get_parent");
 +        var item = new CanvasItem(); parent.AddChild(item); parent.MoveChild(item, 0); item.MoveToFront();
 +        Check(parent.GetChildren()[^1] == item, "move_to_front moves to last child");
-+        var other = new Node(); c.Reparent(other, false); Check(c.GetParent() == other && Order() == "a,s,b,?", "reparent(keepGlobalTransform)");
++        b.Reparent(parent); Check(Order() == "a,s,b,c,?", "reparent to the current parent is a no-op");
++        var other = new Node(); orphan.Reparent(other); Check(orphan.GetParent() == null, "reparent without a parent is a no-op");
++        c.Reparent(other, false); Check(c.GetParent() == other && Order() == "a,s,b,?", "reparent(keepGlobalTransform)");
 +        Check(!a.IsNodeReady() && ((string)a.GetPath()).Length == 0 && a.GetNodeOrNull(new NodePath("x")) == null, "out-of-tree node is not ready and has an empty path");
 +
 +        // Display setters keep their logical value; signals/deferred names stay no-ops.
@@ -531,7 +534,7 @@ index 0000000..23c6529
 +        Check(control.Connect("pressed", Callable.From(() => { })) == Error.Ok, "connect returns OK");
 +        Check(SceneTreeTimer.SignalName.Timeout.ToString() == "timeout", "SceneTreeTimer timeout signal name");
 +        var resource = new Resource { ResourcePath = "res://m2c" }; var copy = resource.Duplicate();
-+        Check(!ReferenceEquals(copy, resource) && copy.ResourcePath == resource.ResourcePath, "resource duplicate");
++        Check(!ReferenceEquals(copy, resource) && copy.ResourcePath == "" && resource.ResourcePath == "res://m2c", "resource duplicate is a new instance without resource_path");
 +        var particles = new GpuParticles2D(); particles.Restart(); Check(particles.Emitting, "particles restart emits");
 +
 +        // Callable: zero-argument Func (GameAction cancel uses TrySetCanceled) now runs.
@@ -543,6 +546,7 @@ index 0000000..23c6529
 +        using (IEnumerator<int> e = array.GetEnumerator()) while (e.MoveNext()) sum += e.Current;
 +        Check(sum == 6, "Array<T>.GetEnumerator as IEnumerator<T>");
 +        int sign = Mathf.Sign(-2.5f); Check(sign == -1 && Mathf.Sign(0) == 0, "Sign(float) returns int");
++        Check(Mathf.IsEqualApprox(float.PositiveInfinity, float.PositiveInfinity) && Mathf.IsEqualApprox(1000f, 1000.0005f) && !Mathf.IsEqualApprox(1f, 1.00001f), "IsEqualApprox: exact infinities and relative tolerance");
 +    }
 +
 +    private static void NativeOracle(string shippedPath)
@@ -550,7 +554,8 @@ index 0000000..23c6529
 +        var context = new AssemblyLoadContext("m2c-shipped-godot", isCollectible: true);
 +        var shipped = context.LoadFromAssemblyPath(Path.GetFullPath(shippedPath));
 +        Check(shipped.GetName().Version == typeof(Node).Assembly.GetName().Version, "stub and shipped GodotSharp versions match");
-+        var floats = new[] { 0f, -0f, 1f, -1f, 0.5f, -0.75f, 2.25f, 3.14159274f, -6.5f, 10f, 1e-7f, 359f, -720.5f, 0.0001f };
++        var floats = new[] { 0f, -0f, 1f, -1f, 0.5f, -0.75f, 2.25f, 3.14159274f, -6.5f, 10f, 1e-7f, 359f, -720.5f, 0.0001f,
++            float.NaN, float.PositiveInfinity, float.NegativeInfinity, float.MaxValue };
 +        var doubles = floats.Select(f => (double)f).Concat(new[] { 1.0 / 3.0, -123.456, 90.0, 1e-12 }).ToArray();
 +        var ints = new[] { 0, 1, -1, 7, -13, int.MaxValue, int.MinValue + 1 };
 +        object[] Values(Type type) => type == typeof(float) ? floats.Cast<object>().ToArray()
@@ -1405,7 +1410,7 @@ index ba3e9f4..755b4ef 100644
  
  // Godot Dictionary
 diff --git a/src/GodotStubs/Core.cs b/src/GodotStubs/Core.cs
-index b80bedc..d4d1a8a 100644
+index b80bedc..e16e588 100644
 --- a/src/GodotStubs/Core.cs
 +++ b/src/GodotStubs/Core.cs
 @@ -2,6 +2,81 @@ using System.Runtime.CompilerServices;
@@ -1537,14 +1542,17 @@ index b80bedc..d4d1a8a 100644
  
      public virtual void AddChild(Node child, bool forceReadableName = false, InternalMode mode = InternalMode.Disabled)
      {
-@@ -73,12 +167,30 @@ public class Node : GodotObject
+@@ -73,12 +167,34 @@ public class Node : GodotObject
          _children.Remove(child);
      }
  
 -    public void Reparent(Node newParent)
++    // Godot reparent: needs a current parent; same parent or self is a no-op.
 +    public void Reparent(Node newParent, bool keepGlobalTransform = true)
      {
-         _parent?.RemoveChild(this);
+-        _parent?.RemoveChild(this);
++        if (newParent == null || _parent == null || newParent == this || newParent == _parent) return;
++        _parent.RemoveChild(this);
          newParent.AddChild(this);
      }
  
@@ -1555,13 +1563,15 @@ index b80bedc..d4d1a8a 100644
 +        _parent.MoveChild(sibling, GetIndex() + 1);
 +    }
 +
-+    // Godot move_child: negative index counts from the end; out of range is ignored.
++    // Godot move_child: negative index counts from the end, one past the end means
++    // last, anything else out of range is ignored.
 +    public void MoveChild(Node childNode, int toIndex)
 +    {
 +        var from = _children.IndexOf(childNode);
 +        if (from < 0) return;
 +        if (toIndex < 0) toIndex += _children.Count;
-+        if (toIndex < 0 || toIndex >= _children.Count) return;
++        if (toIndex < 0 || toIndex > _children.Count) return;
++        if (toIndex == _children.Count) toIndex--;
 +        _children.RemoveAt(from);
 +        _children.Insert(toIndex, childNode);
 +    }
@@ -1569,7 +1579,7 @@ index b80bedc..d4d1a8a 100644
      public virtual void QueueFree() { }
  
      public SceneTree GetTree() => Engine.GetMainLoop() as SceneTree ?? new SceneTree();
-@@ -90,8 +202,6 @@ public class Node : GodotObject
+@@ -90,8 +206,6 @@ public class Node : GodotObject
      public bool IsInsideTree() => false;
      public int GetChildCount(bool includeInternal = false) => _children.Count;
  
@@ -1578,7 +1588,7 @@ index b80bedc..d4d1a8a 100644
      public virtual void _Ready() { }
      public virtual void _EnterTree() { }
      public virtual void _ExitTree() { }
-@@ -122,6 +232,11 @@ public class SceneTree : MainLoop
+@@ -122,6 +236,11 @@ public class SceneTree : MainLoop
  
  public class SceneTreeTimer : GodotObject
  {
@@ -1648,7 +1658,7 @@ index 35b1ba0..91c5d63 100644
    </PropertyGroup>
  </Project>
 diff --git a/src/GodotStubs/Math.cs b/src/GodotStubs/Math.cs
-index e1be94d..e224864 100644
+index e1be94d..60710f2 100644
 --- a/src/GodotStubs/Math.cs
 +++ b/src/GodotStubs/Math.cs
 @@ -50,6 +50,28 @@ public struct Vector2I
@@ -1688,7 +1698,7 @@ index e1be94d..e224864 100644
      public static float Pow(float @base, float exp) => MathF.Pow(@base, exp);
      public static float Abs(float s) => MathF.Abs(s);
      public static float Floor(float s) => MathF.Floor(s);
-@@ -140,12 +163,39 @@ public static class Mathf
+@@ -140,12 +163,46 @@ public static class Mathf
      public static int Clamp(int value, int min, int max) => Math.Clamp(value, min, max);
      public static float Lerp(float from, float to, float weight) => from + (to - from) * weight;
      public static float DegToRad(float deg) => deg * (Pi / 180f);
@@ -1726,8 +1736,16 @@ index e1be94d..e224864 100644
      {
          return ostart + (ostop - ostart) * ((value - istart) / (istop - istart));
      }
-     public static bool IsEqualApprox(float a, float b) => MathF.Abs(a - b) < Epsilon;
+-    public static bool IsEqualApprox(float a, float b) => MathF.Abs(a - b) < Epsilon;
 -    public static float Snapped(float value, float step) => step != 0 ? MathF.Round(value / step) * step : value;
++    // M2c: shipped Godot checks exact equality first (infinities), then a relative tolerance.
++    public static bool IsEqualApprox(float a, float b)
++    {
++        if (a == b) return true;
++        float tolerance = EpsilonF * Math.Abs(a);
++        if (tolerance < EpsilonF) tolerance = EpsilonF;
++        return Math.Abs(a - b) < tolerance;
++    }
 +    // M2c: shipped Godot rounds half up via Floor(x + 0.5), not banker's MathF.Round.
 +    public static float Snapped(float s, float step) => step != 0f ? MathF.Floor((s / step) + 0.5f) * step : s;
  }
@@ -1757,7 +1775,7 @@ index fb9b33f..abecdd1 100644
  }
  
 diff --git a/src/GodotStubs/UI.cs b/src/GodotStubs/UI.cs
-index 7017644..4637f22 100644
+index 7017644..bcf31f3 100644
 --- a/src/GodotStubs/UI.cs
 +++ b/src/GodotStubs/UI.cs
 @@ -9,6 +9,15 @@ public class CanvasItem : Node
@@ -1792,15 +1810,21 @@ index 7017644..4637f22 100644
      public void EmitSignal(StringName signal, params Variant[] args) { }
  }
  
-@@ -75,6 +89,7 @@ public class Node2D : CanvasItem
+@@ -75,6 +89,13 @@ public class Node2D : CanvasItem
  public class Resource : GodotObject
  {
      public string ResourcePath { get; set; } = "";
-+    public Resource Duplicate(bool subresources = false) => (Resource)MemberwiseClone();
++    // Godot copies stored properties into a new instance; resource_path is not stored.
++    public Resource Duplicate(bool subresources = false)
++    {
++        var copy = (Resource)MemberwiseClone();
++        copy.ResourcePath = "";
++        return copy;
++    }
      public class MethodName { }
      public class PropertyName { }
      public class SignalName { }
-@@ -179,6 +194,8 @@ public class TextureRect : Control
+@@ -179,6 +200,8 @@ public class TextureRect : Control
      public new class PropertyName : Control.PropertyName { }
      public new class SignalName : Control.SignalName { }
      public Texture2D? Texture { get; set; }
@@ -1809,7 +1833,7 @@ index 7017644..4637f22 100644
  }
  
  public class ColorRect : Control
-@@ -323,6 +340,7 @@ public class InputEvent : Resource
+@@ -323,6 +346,7 @@ public class InputEvent : Resource
  public class InputEventKey : InputEvent { }
  public class InputEventMouseButton : InputEvent
  {
@@ -1817,7 +1841,7 @@ index 7017644..4637f22 100644
      public Vector2 Position { get; set; }
      public Vector2 GlobalPosition { get; set; }
  }
-@@ -384,6 +402,7 @@ public class GpuParticles2D : Node2D
+@@ -384,6 +408,7 @@ public class GpuParticles2D : Node2D
      public bool OneShot { get; set; }
      public float Explosiveness { get; set; }
      public Texture2D? Texture { get; set; }
