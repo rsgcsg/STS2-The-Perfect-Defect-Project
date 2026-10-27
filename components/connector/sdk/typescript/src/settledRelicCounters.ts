@@ -102,7 +102,11 @@ export interface SettledRelicCounterProjection {
  * makes those public values unambiguous. K=3/Candy=2 have no unique inverse
  * (a further trigger can run while the one-second display is still active).
  * They remain incomplete, never default to zero and never borrow another frame.
- * Only counter fields that already exist are replaced on a deep copy. */
+ * Only counter fields that already exist are replaced on a deep copy. Nested
+ * raw_native_navigation_basis capsules stay literal provenance and are not P1
+ * carriers. The returned working copy is not a replacement native PB capsule:
+ * validate original source bindings before projection, never re-seal this copy
+ * under its original capture identity. reduce performs that validation first. */
 export function reprojectSettledRelicCounters<T extends SettledCounterBasis>(basis: T): {
   basis: T; receipt: SettledRelicCounterProjection;
 } {

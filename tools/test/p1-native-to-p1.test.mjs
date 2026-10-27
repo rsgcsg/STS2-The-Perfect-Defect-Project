@@ -1459,3 +1459,31 @@ test('r1.7 can fully reproject nontrigger old getters and rejects an undeclared 
   assert.throws(() => convertNativeSemanticOriginals(source, sdk, core, { p1Revision: 'r1.7',
     includeTargets: true, targetProjection: 'future' }), /target_projection_unknown/);
 });
+
+test('r1.7 an unprojectable final boundary cannot leave a shorter apparently complete trajectory', () => {
+  const f = settledCounterExample({ display: 1 });
+  const later = f.nextBasis('-later-native-boundary');
+  later.snapshot.persistent.content.player.relics.push({ entity_id: 'r17-kusarigama', definition_id: 'KUSARIGAMA',
+    name: 'Kusarigama', description: 'Every three attacks', keywords: [], card_previews: [], counter: 3 });
+  f.row('observation', { basis: f.retain(later), reason: 'native_decision_owner_ready' });
+  const legacy = convertNativeSemanticOriginals(f.source, sdk, core);
+  assert.equal(legacy.complete, true);
+  const next = convertNativeSemanticOriginals(f.source, sdk, core, { p1Revision: 'r1.7' });
+  assert.equal(next.complete, false); assert.equal(next.trajectory, null);
+  assert.equal(next.settled_relic_reprojection.points.length, legacy.trajectory.points.length);
+  assert.equal(next.settled_relic_reprojection.points.at(-1).input_complete, false);
+  assert.equal(next.settled_relic_reprojection.denominator.N, 2);
+});
+
+test('r1.7 retains its explicit target revision with no observations or eligible points', () => {
+  const { source } = example();
+  source.events = [{ ...source.events[0], basis: null, basis_missing_reason: 'original_public_basis_missing' }];
+  const next = convertNativeSemanticOriginals(source, sdk, core, { p1Revision: 'r1.7', runId: 'run-1',
+    includeTargets: true, targetProjection: nativeTargetProjection });
+  assert.equal(next.complete, false); assert.equal(next.trajectory, null);
+  assert.equal(next.target_output.revision, 'r1.7');
+  assert.equal(next.captures[0].observation, null);
+  assert.equal(next.settled_relic_reprojection.denominator.points, 0);
+  assert.equal(next.settled_relic_reprojection.denominator.N, 0);
+  assert.deepEqual(next.settled_relic_reprojection.points, []);
+});

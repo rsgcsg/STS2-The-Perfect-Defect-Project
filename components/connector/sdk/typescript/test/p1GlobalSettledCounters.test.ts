@@ -136,6 +136,14 @@ it("r1.7 reward continuations compare the same normalized world without relaxing
       game_mvid: SETTLED_RELIC_GAME_MVID, source_kind: "native_same_capture",
       facts: [{ entity_id: "same-candy", definition_id: "LASTING_CANDY", display_counter: display,
         logical_counter: 0, rule_id: "lasting-candy-rewards-mod2-1" }], missing: [] };
+    // A same-capture noncombat popup can be unfurled into either reward page.
+    basis.snapshot.input_profile = "public-basis-1";
+    const navigation = { schema: "sts2.player-environment/public-basis-1", revision: "2",
+      capture_scope: "current_public_snapshot_and_advertised_read_instances", capture_status: "complete",
+      snapshot: structuredClone(basis.snapshot), reads: structuredClone(basis.reads), missing: [] };
+    Object.assign(navigation.snapshot.interaction, { kind: "potion_popup", content_schema: "sts2.player-environment/surface/potion_popup-1",
+      content: { surface: { kind: "potion_popup", can_use: false, can_discard: true }, context: { kind: "event" } } });
+    basis.snapshot.raw_native_navigation_basis = navigation;
   }
   const r = reduce(createSession("reward-counter", "reference", "r1.7"), outer);
   expect(r.complete).toBe(true);
@@ -178,4 +186,22 @@ it("an explicit full witness request refuses a legacy reply and still releases i
   await expect(client.getFullPublicBasis({ settledRelicCounters: true })).rejects.toThrow(/revision 3/);
   expect(released).toBe(1);
   expect((await client.getFullPublicBasis()).basis.revision).toBe("1"); expect(released).toBe(2);
+});
+
+it("r1.7 validates unfurled navigation originals before projecting and keeps their bytes intact", () => {
+  const b = witnessed(); b.snapshot.input_profile = "public-basis-1";
+  const navigation = structuredClone(b); navigation.revision = "2"; delete navigation.settled_relic_counters;
+  Object.assign(navigation.snapshot.interaction, { kind: "potion_popup", content_schema: "sts2.player-environment/surface/potion_popup-1",
+    content: { surface: { kind: "potion_popup", can_use: false, can_discard: true }, context: { kind: "event" } } });
+  b.snapshot.raw_native_navigation_basis = navigation;
+  expect(decodePublicBasis(b)).toEqual(b);
+  const original = JSON.stringify(b), state = createSession("navigation", "reference", "r1.7");
+  const projected = reduce(state, b);
+  expect(projected.complete).toBe(true);
+  expect((projected.observation.player.content as any).relics.slice(-2).map((r: any) => r.counter)).toEqual([1, 0]);
+  expect(reduce(state, b)).toEqual(projected);
+  expect(JSON.stringify(b)).toBe(original); expect(decodePublicBasis(b)).toEqual(b);
+  expect(JSON.stringify(modelView(projected.observation))).not.toContain("raw_native_navigation_basis");
+  const broken = structuredClone(b); broken.snapshot.raw_native_navigation_basis.snapshot.persistent.content.player.gold++;
+  expect(() => reduce(state, broken)).toThrow(/same public capture/);
 });

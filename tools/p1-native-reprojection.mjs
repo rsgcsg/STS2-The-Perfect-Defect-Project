@@ -65,6 +65,9 @@ export function reprojectNativeSemanticOriginals(source, sdk, core, options, con
   };
   if (points.some(point => !point.input_complete)) {
     current.complete = false; current.whole_run_recording_complete = false;
+    // The old final boundary still owns a slot; a shorter new tail is not a
+    // complete replacement trajectory. Partial observations remain in receipts.
+    current.trajectory = null;
   }
   current.projection_claims = { ...current.projection_claims, revision: 'r1.7',
     settled_relic_counters: { mechanisms: ['KUSARIGAMA', 'LASTING_CANDY'],
@@ -74,7 +77,11 @@ export function reprojectNativeSemanticOriginals(source, sdk, core, options, con
     current.trajectory.projection_claims = current.projection_claims;
     current.trajectory.revision = 'r1.7';
   }
-  if (current.target_output) current.target_output.projection_claims = current.projection_claims;
+  if (current.target_output) {
+    current.target_output.projection_claims = current.projection_claims;
+    current.target_output.revision = "r1.7";
+  }
+  if (current.segment_output) current.segment_output.revision = "r1.7";
   if (!requestedTargets) delete current.target_output;
   return current;
 }
