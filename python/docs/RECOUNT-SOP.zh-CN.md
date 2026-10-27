@@ -142,3 +142,21 @@ uv run --locked --extra cloud python -m spireagent.workbench recordings cohort r
 持久准备缓存位于原Curation ledger旁，绑定投影/输入/实现身份；命中仍由Store读字节、核SHA和lease。
 旧数据只免重复解析，分组与历史用途每次从原ledger读取；缓存损坏按原机制重验。
 这份缓存、preview和小结都可重建，不是第二个Store、录制账本或用途权威。
+
+## A10 进度权重候选（W1）
+
+在现有小结对应的同一批数据上，`--weight-rule a10-progress-v1` 选择新版；省略时
+仍是原规则。先将 `freeze` 换成 `preview` 查看，再核对完整配置 ID 和每局表：
+
+```sh
+uv run --locked --extra cloud python -m spireagent.workbench recordings cohort preview --config /ABS/project.json --weight-rule a10-progress-v1
+uv run --locked --extra cloud python -m spireagent.workbench recordings cohort freeze --config /ABS/project.json --weight-rule a10-progress-v1
+```
+
+新版冻结必须在该次显示的表后输入 `yes`；小结更新后配置 ID 会改变，应重新审表。
+规则在原整局权重上：A0 不变；A10 非胜乘 `1 + min(层数/同难度终点层数, 1)`，
+结果最高 3；A10 胜乘 2（权重 6）。未知仍按非胜进度计算并单列，绝不认作负。
+DEV/TEST 不加权，原用途不变；版本、参数与各局权重一起参与配置 ID。旧 414 及其冻结
+文件不改。A1–A9 目前不在原盘点的准入范围，不为假设数据添加规则。
+`--confirm` 保留原规则的既有行为；新版须交互输入 yes。若缺口未满足或其他数据准入条件
+失败，按原 Curation 处理，权重预览不代表获得训练资格。

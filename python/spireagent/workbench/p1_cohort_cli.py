@@ -106,6 +106,8 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--confirm",
                         help="exact reviewed configuration ID; omit for interactive table")
+    parser.add_argument("--weight-rule", choices=("original", "a10-progress-v1"),
+                        default="original", help="select reviewed whole-run weighting")
     parser.add_argument("--snapshot-id",
                         help="original Snapshot for read-only freeze reconciliation")
     args = parser.parse_args(argv)
@@ -127,6 +129,11 @@ def main(argv: list[str]) -> int:
         return 0
     plan = json.loads((config.state_dir / PREVIEW).read_bytes())
     plan = checked_cohort_plan(plan, plan["configuration_id"])
+    if args.weight_rule == "a10-progress-v1":
+        from stpd.p1.cohort import with_a10_progress
+
+        plan = with_a10_progress(plan)
+        plan = checked_cohort_plan(plan, plan["configuration_id"])
     print(weight_table(plan))
     print("配置 ID：", plan["configuration_id"])
     print("DEV / TEST 缺口：", json.dumps(plan.get("holdout_shortfall_groups"), ensure_ascii=False))
@@ -134,6 +141,8 @@ def main(argv: list[str]) -> int:
         print("小结：", config.state_dir / SUMMARY)
         return 0
     if args.confirm is not None:
+        if args.weight_rule == "a10-progress-v1":
+            raise BoundaryError("p1_cohort", "a10_rule_requires_interactive_yes")
         if args.confirm != plan["configuration_id"]:
             raise BoundaryError("p1_cohort", "preview_changed_review_new_configuration")
     elif input("确认按上表冻结？输入 yes：").strip() != "yes":

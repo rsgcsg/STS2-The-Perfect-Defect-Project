@@ -429,3 +429,20 @@ def test_ledger_change_after_summary_write_is_not_marked_as_already_counted(tmp_
     first = service.tick()["cohort_configuration_id"]
     second = service.tick()["cohort_configuration_id"]
     assert len(calls) == 2 and first != second
+
+
+def test_new_weight_cli_requires_interactive_yes(tmp_path, monkeypatch, capsys):
+    from spireagent.workbench import p1_cohort_cli
+
+    _, _, config, policy = fixture(tmp_path)
+    refresh_cohort(config, policy)
+    monkeypatch.setattr(p1_cohort_cli.ProjectConfig, "load", lambda *a, **k: config)
+    calls = []
+    monkeypatch.setattr(p1_cohort_cli, "freeze_preview", lambda *a: calls.append(a))
+    args = ["freeze", "--config", str(tmp_path / "project.json"),
+            "--weight-rule", "a10-progress-v1"]
+    with pytest.raises(BoundaryError, match="a10_rule_requires_interactive_yes"):
+        p1_cohort_cli.main([*args, "--confirm", "anything"])
+    monkeypatch.setattr("builtins.input", lambda _: "no")
+    assert p1_cohort_cli.main(args) == 0
+    assert calls == [] and "未冻结" in capsys.readouterr().out

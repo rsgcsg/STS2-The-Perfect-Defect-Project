@@ -202,6 +202,54 @@ def run_weight(facts: dict[str, Any], rule: str = RULE_ID) -> float:
 
 
 
+A10_PROGRESS_RULE = "progress-boss-a10-progress-v1"
+
+
+def a10_progress_weight(facts: dict[str, Any], *, maximum: int = 2) -> float:
+    """Apply the new A10 multiplier to the existing whole-run rule."""
+    if maximum not in (2, 3):
+        raise BoundaryError("p1_cohort", "unsupported_a10_multiplier")
+    original = run_weight(facts)
+    if facts.get("ascension") != 10 or original == 0:
+        return original
+    if facts.get("result") == "win":
+        return original * maximum
+    floor = facts.get("floor_reached")
+    if floor is None:
+        floor = facts.get("last_recorded_floor")
+    total = (facts.get("finish_floor_evidence") or {}).get("floor")
+    progress = min(1.0, floor / total)
+    return min(3.0, original * (1 + (maximum - 1) * progress))
+
+
+def with_a10_progress(plan: dict[str, Any]) -> dict[str, Any]:
+    """Derive a new content-addressed proposal from an existing cohort plan."""
+    if plan["definition"].get("rule") != RULE_ID:
+        raise BoundaryError("p1_cohort", "original_progress_rule_required")
+    result = copy.deepcopy(plan)
+    result.pop("configuration_id")
+    result["definition"] = {**result["definition"], "rule": A10_PROGRESS_RULE,
+        "base_rule": RULE_ID, "difficulty_multiplier": {
+            "A0": 1, "A10_maximum": 2, "progress": "min(floor/finish_floor,1); win=1",
+            "nonwin_cap": 3, "version": 1}}
+    for row in result["runs"]:
+        proposed = a10_progress_weight(row)
+        row["proposed_run_weight"] = proposed
+        row["train_weight"] = proposed if row["split"] == "train" else None
+    train = [r for r in result["runs"] if r["split"] == "train"]
+    total = sum(r["N"] * r["train_weight"] for r in train)
+    result["partitions"]["train"]["weighted_N"] = total
+    for key, predicate in {
+        "A0": lambda r: r["ascension"] == 0, "A10": lambda r: r["ascension"] == 10,
+        "win": lambda r: r["result"] == "win", "loss": lambda r: r["result"] == "loss",
+        "unknown_outcome": lambda r: r["result"] is None,
+    }.items():
+        weighted = sum(r["N"] * r["train_weight"] for r in train if predicate(r))
+        result["TRAIN_component_shares"][key]["weighted_N"] = weighted
+        result["TRAIN_component_shares"][key]["weighted_share"] = weighted / total
+    return {**result, "configuration_id": digest(json_bytes(result))}
+
+
 def extend_holdouts(index: dict[str, Any], facts: dict[str, dict[str, Any]],
                     allocation: dict[str, Any], targets: dict[str, dict[str, int]], *,
                     split_salt: str) -> dict[str, Any]:
