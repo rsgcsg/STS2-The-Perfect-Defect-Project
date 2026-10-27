@@ -319,12 +319,13 @@ def _validate_private_pin(pin: dict[str, Any]) -> None:
 def _checked_initial_progress(value: object, pin: Mapping[str, Any]) -> dict[str, str]:
     if (not isinstance(value, dict)
             or set(value) != {"recipe", "progress_json", "progress_sha256"}
-            or value["recipe"] != "normal-sp-all-unlocked-v1"
+            or value["recipe"] not in ("normal-sp-all-unlocked-v1", "captured-native-progress-v1")
             or not isinstance(value["progress_json"], str)
             or hashlib.sha256(value["progress_json"].encode("utf-8")).hexdigest()
             != value["progress_sha256"]):
         raise BoundaryError("local_environment", "managed_initial_progress_invalid")
-    if int(str(pin["version"]).rsplit(".", 1)[1]) < 32:
+    if int(str(pin["version"]).rsplit(".", 1)[1]) < (
+            47 if value["recipe"] == "captured-native-progress-v1" else 32):
         raise BoundaryError("local_environment", "managed_initial_progress_capability_required")
     return dict(value)
 

@@ -203,6 +203,8 @@ export async function replayNativeTrajectory({ trajectory, driver, core: kernel 
         state = kernel.applyCommitment(state, lowering, true);
       } catch (error) {
         executionError = error;
+        report.execution_error = { index, code: error.message };
+        log('env_error', { phase: 'p1_execution', ...report.execution_error });
         resultStatus = report.unknown_delivery ? 'unknown'
           : resultSteps.length === 0 || resultSteps.length === 1 && resultSteps[0].delivery === 'not_delivered'
             ? 'not_started' : 'interrupted_known';

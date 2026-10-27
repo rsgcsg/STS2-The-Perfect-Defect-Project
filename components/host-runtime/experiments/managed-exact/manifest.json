@@ -36,9 +36,9 @@
     "managed_artifact": "src/Sts2Headless/bin/Release/net9.0/Sts2Headless.dll"
   },
   "expected_build": {
-    "source_patch_sha256": "2c475056c871b4a823f280e9085e5db8f208c730fc7f6fe1df728093cccc69bc",
-    "artifact_sha256": "c3eed8fa9930d7428af0d9028a4ca0a0e5234853d8040bc99dd478f99fdd4df4",
-    "artifact_mvid": "570a999a-e5e3-42e4-a000-0a733aea0ff3",
+    "source_patch_sha256": "7cf16011ef6035b7d52c84f2fc1e9a7ae4b15fe75d4b5e4fea0705072b5a9163",
+    "artifact_sha256": "0d51a9cc9f9af64ead27ec978a7eb35573353e4b61c3e7d3bd1b5bebc7c7d5a2",
+    "artifact_mvid": "30cbfc58-f916-44ff-a60e-788194dbf4d4",
     "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0"
   },
   "previous_candidate_build": {
@@ -283,6 +283,12 @@
       "artifact_mvid": "86ca119d-ecaf-40c5-bd7e-a643819114df",
       "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0",
       "scope": "F2 Host rc40 frozen model engineering trials and native fixtures; originals and candidate preserved, no qualification transferred to rc41"
+    },
+    {
+      "source_patch_sha256": "2c475056c871b4a823f280e9085e5db8f208c730fc7f6fe1df728093cccc69bc",
+      "artifact_sha256": "c3eed8fa9930d7428af0d9028a4ca0a0e5234853d8040bc99dd478f99fdd4df4",
+      "artifact_mvid": "570a999a-e5e3-42e4-a000-0a733aea0ff3",
+      "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0"
     }
   ],
   "native_localization": {

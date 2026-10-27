@@ -1488,3 +1488,16 @@ test("noncombat belt discard preserves event options, exact native slot and post
   assert.equal(after.snapshot.bound_actions.actions.length, 1);
   assert.deepEqual(after.snapshot.interaction.content.surface.non_combat_discardable_potions, []);
 });
+
+test("manager A10 setup reaches the native initializer while defaults remain A0", async () => {
+  for (const ascension of [0, 10]) {
+    const requests = [];
+    const session = new ManagedPlayerEnvironmentSession({ process: { async request(input) {
+      requests.push(input); return eventState();
+    } }, runtimeInstanceId: "ascension-test", environmentFingerprint: "fixture", ascension });
+    await session.mount({ seed: "ASCENSIONFIXTURE" });
+    assert.equal(requests[0].ascension, ascension);
+  }
+  for (const ascension of [-1, 11, 1.5, "10", NaN])
+    assert.throws(() => new ManagedPlayerEnvironmentSession({ process: { request() {} }, ascension }), /managed_ascension_invalid/u);
+});
