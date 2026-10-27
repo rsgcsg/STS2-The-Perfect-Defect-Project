@@ -289,14 +289,14 @@ export async function startManagedHostService(started, {
 
       if (request.url === "/v1/command") {
         const command = body.command;
-        if (!CLIENT_COMMANDS.has(command) && !(role === "manager" && command === "step")) {
+        if (!CLIENT_COMMANDS.has(command) && !(role === "manager" && ["step", "performance"].includes(command))) {
           error(response, 403, "managed_service_command_not_allowed"); return;
         }
         if ((command === "step" || command === "text_submit" || command === "release_control")
           && (!nonempty(body.control_token) || !nonempty(body.control_epoch))) {
           error(response, 428, "managed_service_control_required"); return;
         }
-        if ((command === "claim_control" || command === "capture" || command === "step") && (!nonempty(body.expected_runtime_instance_id)
+        if ((command === "claim_control" || command === "capture" || command === "step" || command === "performance") && (!nonempty(body.expected_runtime_instance_id)
           || !nonempty(body.expected_game_continuity_id))) {
           error(response, 428, "managed_service_episode_precondition_required"); return;
         }

@@ -43,6 +43,8 @@ interface SharedAgentRuntimeOptions {
   mode?: RuntimeMode;
   autoBudget?: AutonomyBudgetInput;
   globalNoProgress?: GlobalNoProgressConfig;
+  /** Opt-in Managed settling budget; capture traffic is not native progress. */
+  managedSettlingTimeoutMs?: number;
   initialProgressOriginal?: InitialProgressOriginal;
   monotonicNow?: () => number;
   now?: () => string;
@@ -73,6 +75,7 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
   private globalPrepared?: GlobalPrepared;
   private globalPendingSource: GlobalSource | null = null;
   private globalSourceOrdinal = 0;
+  private settling: { snapshotId: string; since: number } | null = null;
   private globalEpisode: string | null = null;
   private readonly globalNoProgress?: GlobalNoProgressWindow;
   private readonly budget: AgentByteBudget;
@@ -141,6 +144,9 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
       if (!options.globalTransport) throw new AgentSessionError("global_no_progress_profile_required");
       this.globalNoProgress = new GlobalNoProgressWindow(options.globalNoProgress, options.port.byteBudget);
     }
+    if (options.managedSettlingTimeoutMs !== undefined
+      && (!options.globalTransport || !Number.isSafeInteger(options.managedSettlingTimeoutMs) || options.managedSettlingTimeoutMs < 1))
+      throw new AgentSessionError("managed_settling_timeout_invalid");
     this.manifestSha256 = createHash("sha256").update(canonicalJson(this.manifest)).digest("hex");
     this.now = options.now ?? (() => new Date().toISOString());
     this.mode = options.mode ?? "human";
@@ -1275,7 +1281,10 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
     if (!("kind" in expected) || expected.kind !== "global-public-basis" || !this.manifest.input.global
       || this.manifest.input.global.core_sha256 !== p1CoreIdentity().module_digest) throw new AgentSessionError("global_core_or_environment_contract");
     const identity = await transport.negotiate(signal); this.checkActive(this.owner.epoch, signal);
-    assertGlobalIdentity(identity, expected); assertGlobalProgramSupport(identity, this.manifest); this.globalIdentity = identity;
+    assertGlobalIdentity(identity, expected); assertGlobalProgramSupport(identity, this.manifest);
+    if (this.options.managedSettlingTimeoutMs !== undefined && identity.kind !== "managed")
+      throw new AgentSessionError("managed_settling_profile_required");
+    this.globalIdentity = identity;
     this.globalState = createSession(this.options.evidence.runId, transport.kind);
     this.environment = { kind: "global_public_basis", ...identity.session, host_kind: identity.kind,
       producer_sha256: globalDigest(identity.producer), game_sha256: globalDigest(identity.game), game_continuity_id: identity.game_continuity_id };
@@ -1373,6 +1382,16 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
     }
     finally { for (const reservation of responseReservations) reservation.release(); }
   }
+  private checkManagedSettling(source: GlobalSource): void {
+    const timeout = this.options.managedSettlingTimeoutMs;
+    if (timeout === undefined) return;
+    const snapshot = source.full.basis.snapshot;
+    if (snapshot.status !== "settling") { this.settling = null; return; }
+    const now = this.owner.monotonicNow();
+    const snapshotId = String(snapshot.snapshot_id), prior = this.settling;
+    if (!prior || prior.snapshotId !== snapshotId) this.settling = { snapshotId, since: now };
+    else if (now - prior.since >= timeout) throw new AgentSessionError("managed_settling_stalled");
+  }
   private async receiveGlobal(signal: AbortSignal, epoch: number, handlers: AgentPortHandlers, offer: { pending: boolean }): Promise<void> {
     this.refreshing = true;
     try { for (;;) {
@@ -1383,6 +1402,7 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
       await this.emitGlobal("global_observation", { source_ordinal: source.ordinal, occurrence: reduction.observation.envelope.occurrence,
         complete: reduction.complete, missing: [...reduction.missing], status: reduction.observation.status, excluded: reduction.excluded,
         observation_sha256: globalDigest(reduction.observation) });
+      this.checkManagedSettling(source);
       const snapshot = source.full.basis.snapshot;
       if (snapshot.status === "settling" || snapshot.status === "observed" && reduction.observation.status !== "terminal") {
         await globalDelay(50, signal); continue;
@@ -1519,6 +1539,7 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
       try {
         this.checkActive(epoch, signal);
         source = await this.captureGlobal(signal, epoch, true); this.globalPendingSource = source;
+        this.checkManagedSettling(source);
         // Native readiness and capture completeness are different facts. The
         // Reference Host already publishes settling/no_action during e.g. combat
         // setup, even when an advertised map Read is temporarily unavailable.
@@ -1527,6 +1548,7 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
         while (source.full.basis.snapshot.status === "settling") {
           await globalDelay(50, signal); this.checkActive(epoch, signal);
           source = await this.captureGlobal(signal, epoch, true); this.globalPendingSource = source;
+          this.checkManagedSettling(source);
         }
         if (source.full.basis.capture_status !== "complete") throw new AgentSessionError("global_post_delivery_capture_incomplete");
         if (!rule) break;

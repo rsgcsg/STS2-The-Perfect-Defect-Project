@@ -37,6 +37,7 @@ interface CliOptions {
   mode: RuntimeMode;
   autoBudget: AutonomyBudgetConfig;
   globalNoProgress?: GlobalNoProgressConfig;
+  managedSettlingTimeoutMs?: number;
   initialProgressOriginal?: { path: string; sha256: string };
 }
 
@@ -49,6 +50,7 @@ async function main(): Promise<void> {
     await runAgent(options, manifestPath, validateAgentManifest(rawManifest)); return;
   }
   const manifest = validatePolicyManifest(rawManifest);
+  if (options.managedSettlingTimeoutMs !== undefined) throw new Error("settling timeout requires a Managed GLOBAL Agent manifest");
   if (options.adapterEnvironment) throw new Error("explicit adapter environment requires an Agent manifest");
   if (options.initialProgressOriginal) throw new Error("initial progress original requires a GLOBAL Agent manifest");
   if (options.globalNoProgress) throw new Error("no-progress window requires a GLOBAL Agent manifest");
@@ -178,6 +180,8 @@ async function main(): Promise<void> {
 
 async function runAgent(options: CliOptions, manifestPath: string, manifest: AgentManifest): Promise<void> {
   const global = manifest.input.profile === "p1-global-r1";
+  if (options.managedSettlingTimeoutMs !== undefined && (!global || !options.managed))
+    throw new Error("settling timeout requires a Managed GLOBAL Agent manifest");
   if (!global && options.initialProgressOriginal) throw new Error("initial progress original requires a GLOBAL Agent manifest");
   if ((!global && options.managed) || options.observationAcquisition !== "direct")
     throw new Error("native Agent session does not support Managed or legacy sealed text acquisition");
@@ -213,7 +217,7 @@ async function runAgent(options: CliOptions, manifestPath: string, manifest: Age
       : new ReferenceGlobalTransport(environment, { productVersion: POLICY_RUNTIME_VERSION, clientInstanceId: evidence.runId }) }
       : { environment };
     runtime = await PolicyRuntime.forAgent({ manifest, ...selected,
-      port, evidence, mode: options.mode, autoBudget: options.autoBudget, globalNoProgress: options.globalNoProgress,
+      port, evidence, mode: options.mode, autoBudget: options.autoBudget, globalNoProgress: options.globalNoProgress, managedSettlingTimeoutMs: options.managedSettlingTimeoutMs,
       initialProgressOriginal: options.initialProgressOriginal ? await readInitialProgressOriginal(resolve(options.initialProgressOriginal.path), options.initialProgressOriginal.sha256) : undefined,
       runtimeIdentity: { version: POLICY_RUNTIME_VERSION, code_sha256: runtimeCodeSha256 } });
     service = await startPolicyRuntimeHttpServer(runtime, { port: options.listenPort, autoDrive: true,
@@ -255,7 +259,7 @@ function parseArgs(args: string[]): CliOptions {
     index += 1;
     if (key === "--adapter-arg") adapterArgs.push(value);
     else if (key === "--adapter-env-key") adapterEnvironmentKeys.push(value);
-    else if (["--observation-acquisition", "--manifest", "--adapter-command", "--adapter-cwd", "--connector-endpoint", "--listen-port", "--evidence-root", "--mode", "--autonomy-mode", "--max-auto-submissions", "--max-policy-calls", "--auto-deadline-ms", "--no-progress-window", "--no-progress-repeats", "--initial-progress-original", "--initial-progress-original-sha256", "--managed-binding", "--managed-attachment", "--managed-expected-service-instance-id", "--managed-expected-runtime-instance-id", "--managed-expected-game-continuity-id"].includes(key)) values.set(key, value);
+    else if (["--observation-acquisition", "--manifest", "--adapter-command", "--adapter-cwd", "--connector-endpoint", "--listen-port", "--evidence-root", "--mode", "--autonomy-mode", "--max-auto-submissions", "--max-policy-calls", "--auto-deadline-ms", "--no-progress-window", "--no-progress-repeats", "--managed-settling-timeout-ms", "--initial-progress-original", "--initial-progress-original-sha256", "--managed-binding", "--managed-attachment", "--managed-expected-service-instance-id", "--managed-expected-runtime-instance-id", "--managed-expected-game-continuity-id"].includes(key)) values.set(key, value);
     else throw new Error(`unknown argument: ${key}`);
   }
   const manifestPath = required(values, "--manifest");
@@ -291,6 +295,7 @@ function parseArgs(args: string[]): CliOptions {
     }
   } : undefined;
   return {
+    ...(values.has("--managed-settling-timeout-ms") ? { managedSettlingTimeoutMs: positiveOption(values, "--managed-settling-timeout-ms", 120000) } : {}),
     observationAcquisition,
     ...(values.has("--initial-progress-original") || values.has("--initial-progress-original-sha256") ? {
       initialProgressOriginal: { path: required(values, "--initial-progress-original"), sha256: required(values, "--initial-progress-original-sha256") }

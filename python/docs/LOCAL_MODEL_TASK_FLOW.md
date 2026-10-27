@@ -761,6 +761,11 @@ Suite reports have a separate bounded 64MiB reader for completed-report reuse; m
 
 冻结执行 JSON（`spireagent/managed-evaluation-execution-v1`）需要正常打包的 Host/Runtime 目录和完整 package pin、准确候选目录、已核对的 `initial_progress`、Python 路径、`export.adapter_identity()`、原 Model artifact ID 与包目录、实际源码 `Producer`、Store/peer 与空间下限。`producer` 是预期版本，执行前必须与干净源码和原 uv.lock 相符；不能用旧配置给新代码冒标来源。`store="s3"` 使用冻结的 peer 位置，环境只提供凭据；本地 Store 则指定自己的绝对目录。配置和附件保持私有，不复制凭据到报告。复制既有规范 manifest 后只改 Host，保留规范种子，不编辑旧计划。
 
+Managed 早停默认 `settling_timeout_ms=120000`，要求 Runtime rc52；新执行配置必须正常绑定该准确新包，不能冒用旧 pin。只要同一个原生 snapshot 连续处于 settling 两分钟就停止，保全原件并记 `unknown / managed_settling_stalled`，不重投动作或槽位。普通变化的 snapshot 和正常终局沿原逻辑处理。显式 `null` 仅保留旧冻结 Runtime 的工程执行方式，须在该次配置/报告中声明没有启用此预算，不能声称已获得早停能力；它不替代单局总墙钟上限。
+
+可选 `measure_host_performance: true` 要求 Host rc46，记录执行前后的 manager-only 计数；默认不采这组额外诊断。`phase_seconds` 仍是 prepare/execute/finish/preserve/close 的互不重叠时长；`detail_seconds` 是其中的启动与保存细分，`host_performance` 两个快照的查询另计诊断开销，不能重复相加。保存依然等待完整 typed Store/peer 读回后才收成绩和关闭 Host；本次没有实施后台保存、复用进程或改变正式证据内容。
+
+
 ```sh
 python -m spireagent.workbench.evaluation_ledger create --host managed \
   --ledger /ABS/new-ledger --manifest /ABS/managed-ref-20.json \
