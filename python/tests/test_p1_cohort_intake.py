@@ -150,7 +150,8 @@ def test_version_rules_select_one_view_and_stop_unknown_tools(tmp_path):
 
 def test_existing_cache_over_budget_does_not_starve_summary_refresh(tmp_path, monkeypatch):
     _, _, config, policy = fixture(tmp_path)
-    importer = LocalRecordingImporter(config, None)
+    catalog = SimpleNamespace(read=lambda: {"status": "ready", "game_running": False})
+    importer = LocalRecordingImporter(config, catalog)
     service = P1RecordingMaintenance(importer)
     service.configure(True, None, cohort_policy=str(policy))
     importer._maintenance["status"] = "cache_over_budget"
@@ -161,6 +162,29 @@ def test_existing_cache_over_budget_does_not_starve_summary_refresh(tmp_path, mo
     assert result["status"] == "cache_over_budget"
     assert result["cohort_N"] == 3
     assert (config.state_dir / "recording-summary.html").exists()
+
+
+def test_cohort_refresh_rechecks_game_after_signature_inventory(tmp_path, monkeypatch):
+    _, _, config, policy = fixture(tmp_path)
+
+    class Catalog:
+        reads = 0
+        starting = True
+
+        def read(self):
+            self.reads += 1
+            return {"status": "ready", "game_running": self.starting and self.reads > 1}
+
+    catalog = Catalog()
+    importer = LocalRecordingImporter(config, catalog)
+    service = P1RecordingMaintenance(importer)
+    service.configure(True, None, cohort_policy=str(policy))
+    monkeypatch.setattr(service, "_tick", lambda: {**importer._maintenance, "status": "up_to_date"})
+    assert service.tick()["status"] == "waiting_for_game_exit"
+    assert "cohort_signature" not in importer._maintenance
+    assert not (config.state_dir / "recording-summary.json").exists()
+    catalog.starting = False
+    assert service.tick()["cohort_N"] == 3
 
 
 def test_zero_eligible_decisions_remain_visible_and_do_not_fill_holdouts(tmp_path):
@@ -279,7 +303,8 @@ def test_cohort_conflict_preserves_complete_view_and_does_not_disable_intake(tmp
     refresh_cohort(config, policy)
     before = {name: (config.state_dir / name).read_bytes()
               for name in ("recording-summary.json", "cohort-preview.json")}
-    importer = LocalRecordingImporter(config, None)
+    catalog = SimpleNamespace(read=lambda: {"status": "ready", "game_running": False})
+    importer = LocalRecordingImporter(config, catalog)
     service = P1RecordingMaintenance(importer)
     service.configure(True, None, cohort_policy=str(policy))
     monkeypatch.setattr(service, "_tick", lambda: {**importer._maintenance, "status": "up_to_date"})
@@ -312,7 +337,8 @@ def test_cohort_conflict_preserves_complete_view_and_does_not_disable_intake(tmp
 
 def test_empty_sqlite_wal_does_not_cause_recount_loop(tmp_path, monkeypatch):
     owner, _, config, policy = fixture(tmp_path)
-    importer = LocalRecordingImporter(config, None)
+    catalog = SimpleNamespace(read=lambda: {"status": "ready", "game_running": False})
+    importer = LocalRecordingImporter(config, catalog)
     service = P1RecordingMaintenance(importer)
     service.configure(True, None, cohort_policy=str(policy))
     monkeypatch.setattr(service, "_tick", lambda: {**importer._maintenance, "status": "up_to_date"})
@@ -412,7 +438,8 @@ def test_ledger_change_after_summary_write_is_not_marked_as_already_counted(tmp_
     from spireagent.workbench import p1_cohort_intake
 
     owner, _, config, policy = fixture(tmp_path)
-    importer = LocalRecordingImporter(config, None)
+    catalog = SimpleNamespace(read=lambda: {"status": "ready", "game_running": False})
+    importer = LocalRecordingImporter(config, catalog)
     service = P1RecordingMaintenance(importer)
     service.configure(True, None, cohort_policy=str(policy))
     monkeypatch.setattr(service, "_tick", lambda: {**importer._maintenance, "status": "up_to_date"})

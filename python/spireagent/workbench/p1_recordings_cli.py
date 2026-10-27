@@ -7,6 +7,7 @@ import json
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from urllib.error import URLError
 
 from sts2_platform_evidence.collection_tool import P1_SELECTOR_PROJECTION, CollectionTool
 
@@ -521,8 +522,18 @@ def _maintenance(argv: list[str]) -> int:
     if current is None:
         raise BoundaryError("p1_maintenance", "open_workbench_first")
     url = f"http://127.0.0.1:{current['port']}/api/local-recordings/maintenance"
-    value = _local_request(url, token=current["control_token"], method="GET")
+    try:
+        value = _local_request(url, token=current["control_token"], method="GET")
+    except TimeoutError:
+        # Only this read may be queried again. A timed-out mutation is never retried.
+        value = {"status": "busy", "message": "在忙，稍后再查", "retry_after_seconds": 1}
+    except URLError as error:
+        if not isinstance(error.reason, TimeoutError):
+            raise
+        value = {"status": "busy", "message": "在忙，稍后再查", "retry_after_seconds": 1}
     if args.action != "status":
+        if value.get("status") == "busy":
+            raise BoundaryError("p1_maintenance", "busy_try_later")
         policy = value["policy"]
         value = _local_request(
             url,
