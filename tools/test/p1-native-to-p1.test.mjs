@@ -1456,4 +1456,6 @@ test('r1.7 can fully reproject nontrigger old getters and rejects an undeclared 
   assert.equal(r.complete, true); assert.equal(r.settled_relic_reprojection.reprojected.eligible_N, 2);
   assert.equal(r.settled_relic_reprojection.points[0].settled_relic_counter_projection.facts[0].recovery, 'legacy_same_snapshot_public_rule');
   assert.throws(() => convertNativeSemanticOriginals(source, sdk, core, { p1Revision: 'future' }), /revision_unknown/);
+  assert.throws(() => convertNativeSemanticOriginals(source, sdk, core, { p1Revision: 'r1.7',
+    includeTargets: true, targetProjection: 'future' }), /target_projection_unknown/);
 });

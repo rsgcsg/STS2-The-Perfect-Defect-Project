@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { decodePublicBasis, SETTLED_RELIC_COUNTERS_SCHEMA, SETTLED_RELIC_GAME_MVID,
@@ -147,4 +148,34 @@ it("r1.7 reward continuations compare the same normalized world without relaxing
   expect(comparison.equal).toBe(false);
   expect(comparison.changes.some(change => change.path.includes("settled_relic_counters"))).toBe(false);
   expect(comparison.changes.some(change => change.path.endsWith("counter") && change.before === 2 && change.after === 0)).toBe(true);
+});
+
+
+it("accepts each logical residue during the two native activation displays", () => {
+  for (const k of [0, 1, 2]) for (const candy of [0, 1]) {
+    const b = witnessed(); b.settled_relic_counters.facts[0].logical_counter = k;
+    b.settled_relic_counters.facts[1].logical_counter = candy;
+    expect(decodePublicBasis(b)).toEqual(b);
+    expect(counters(reprojectSettledRelicCounters(b).basis)).toEqual([k, candy]);
+  }
+});
+
+it("an explicit full witness request refuses a legacy reply and still releases its retained bytes", async () => {
+  const b = fixture(), bytes = Buffer.from(JSON.stringify(b));
+  const sha = createHash("sha256").update(bytes).digest("hex"); let released = 0;
+  const capture = { schema: "sts2.player-environment/public-basis-handle-1", read_profile: "public-basis-sealed-1",
+    input_profile: "public-basis-1", capture_id: "capture", source_snapshot_id: b.snapshot.snapshot_id,
+    session: b.snapshot.session, generation_id: "generation", game_continuity_id: "run",
+    captured_at: "2026-10-27T00:00:00Z", expires_at: "2026-10-27T00:01:00Z", total_bytes: bytes.length,
+    sha256: sha, first_cursor: "cursor", capture_ordinal: 1 };
+  const client = new PlayerEnvironmentRestClient("http://unused", 1000, async url => {
+    const path = new URL(String(url)).pathname;
+    if (path.endsWith("/current")) return new Response(JSON.stringify(capture));
+    if (path.endsWith("/read")) return new Response(JSON.stringify({ schema: "sts2.player-environment/public-basis-chunk-1",
+      capture_id: "capture", sha256: sha, offset: 0, total_bytes: bytes.length, data_base64: bytes.toString("base64"), next_cursor: null, end: true }));
+    released++; return new Response(JSON.stringify({ schema: "sts2.player-environment/public-basis-release-1", capture_id: "capture", released: true }));
+  });
+  await expect(client.getFullPublicBasis({ settledRelicCounters: true })).rejects.toThrow(/revision 3/);
+  expect(released).toBe(1);
+  expect((await client.getFullPublicBasis()).basis.revision).toBe("1"); expect(released).toBe(2);
 });
