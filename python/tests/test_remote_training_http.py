@@ -10,6 +10,7 @@ from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 import pytest
+from legacy_p1_fixture import reserve_p1_snapshot
 from test_hub_scheduler import Provider
 from test_p1_application import workspace
 
@@ -20,7 +21,6 @@ from spireagent.source import source_identity
 from spireagent.workbench.developer import ROOT, ProjectConfig, RemoteComputeConfig
 from spireagent.workbench.developer_server import Application, configuration_id, create_server
 from spireagent.workbench.p1_recording_storage import open_peer
-from spireagent.workbench.p1_training_data import reserve_p1_snapshot
 from spireagent.workbench.remote_training import RemoteTrainingService
 from spireagent.workbench.training_cli import main, training_command
 from stpd.p1.execution import MStdExecution
@@ -30,8 +30,8 @@ from stpd.workers.p1_run import verify_p1_result
 
 
 @contextmanager
-def client(tmp_path, *, reserve=True, peer_binding=None):
-    config, store, owner, snapshot = workspace(tmp_path)
+def client(tmp_path, *, reserve=True, peer_binding=None, human_cohort=False):
+    config, store, owner, snapshot = workspace(tmp_path, human_cohort=human_cohort)
     if reserve:
         reserve_p1_snapshot(owner, store, snapshot.artifact_id)
     binding = peer_binding or {"kind": "local", "directory": str(tmp_path / "peer")}

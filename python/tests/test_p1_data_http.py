@@ -17,20 +17,70 @@ from stpd.p1.dataset import iter_snapshot_points
 
 
 def test_normal_data_prepare_freeze_increment_and_fixed_reader(tmp_path, capsys):
-    with client(tmp_path, reserve=False) as (app, _call, _provider, store, owner, _snapshot, path):
-        first = p1_data_command(app.config, "prepare", {})
+    with client(tmp_path, reserve=False, human_cohort=True) as items:
+        app, _call, _provider, store, owner, _snapshot, path = items
+        request = {"allocation_policy": "pool"}
+        first = p1_data_command(app.config, "prepare", request)
         assert first["cache"]["decoded_projections"] == 3
-        assert first["ready_to_freeze"] and not first["purpose_reserved"]
-        assert main(["p1-data", "--config", str(path), "--action", "prepare"]) == 0
+        assert not first["ready_to_freeze"] and not first["purpose_reserved"]
+        assert set(first["allocation"]["split_by_group"].values()) == {"pool"}
+        preparation = tmp_path / "prepare.json"
+        preparation.write_text(json.dumps(request))
+        assert (
+            main(
+                [
+                    "p1-data",
+                    "--config",
+                    str(path),
+                    "--action",
+                    "prepare",
+                    "--input",
+                    str(preparation),
+                ]
+            )
+            == 0
+        )
         second = json.loads(capsys.readouterr().out)
         assert second["selection"] == first["selection"]
         assert second["cache"]["decoded_projections"] == 0 and second["cache"]["hits"] == 3
-        frozen = p1_data_command(app.config, "freeze", {"selection": second["selection"],
-                                                        "reserve": True})
+        from spireagent.workbench.p1_cohort_cli import weight_rule_identity
+        from spireagent.workbench.training_cohort import _loss_weighting
+        from stpd.p1.cohort import experiment_plan, pool_plan
+
+        facts = {
+            r["cohort_facts"]["root_run_id"]: r["cohort_facts"]
+            for r in second["classification"].values()
+        }
+        pool = pool_plan(second["index"], facts)
+        plan = experiment_plan(
+            pool,
+            owner.ledger,
+            {
+                "model_id": "synthetic-http-experiment",
+                "parent_model_id": None,
+                "split_salt": "http",
+                "dev_fraction": 1 / 3,
+                "test_fraction": 1 / 3,
+            },
+        )
+        rule, definition = weight_rule_identity(plan)
+        with owner.ledger.operations.transaction() as db:
+            db.execute("INSERT INTO curation_p1_weight_approvals VALUES(?,?)", (rule, definition))
+        selection = {
+            **second["selection"],
+            "split_by_group": plan["splits"],
+            "experiment": {
+                **plan["experiment"],
+                "configuration_id": plan["configuration_id"],
+                "weight_definition": plan["definition"],
+                "weights_by_root": _loss_weighting(plan)["weights_by_root"],
+            },
+        }
+        frozen = p1_data_command(app.config, "freeze", {"selection": selection, "reserve": True})
         assert frozen["purpose_reserved"] and frozen["unique_N"] == 3
         assert len(list(iter_snapshot_points(store, frozen["snapshot_id"]))) == 3
         projection_fixture(store, "normal-data-new")
-        third = p1_data_command(app.config, "prepare", {})
+        third = p1_data_command(app.config, "prepare", request)
         assert third["cache"]["decoded_projections"] == 1 and third["cache"]["hits"] == 3
         assert third["index"]["unique_N"] == 4
         assert len(list(iter_snapshot_points(store, frozen["snapshot_id"]))) == 3
@@ -43,15 +93,19 @@ def test_data_write_requires_auth_and_wrong_reserve_never_claims(tmp_path):
     with client(tmp_path, reserve=False) as items:
         app, _call, _provider, _store, owner, _snapshot, _path = items
         runtime = json.loads((app.config.state_dir / "runtime.json").read_bytes())
-        request = Request(f"http://127.0.0.1:{runtime['port']}/api/p1-data/prepare", data=b"{}",
-                          headers={"Content-Type": "application/json"})
+        request = Request(
+            f"http://127.0.0.1:{runtime['port']}/api/p1-data/prepare",
+            data=b"{}",
+            headers={"Content-Type": "application/json"},
+        )
         with pytest.raises(HTTPError) as error:
             urlopen(request, timeout=5)
         assert error.value.code == 403
         prepared = p1_data_command(app.config, "prepare", {})
         with pytest.raises(ValueError, match="invalid_p1_data_request"):
-            p1_data_command(app.config, "freeze", {"selection": prepared["selection"],
-                                                  "reserve": "false"})
+            p1_data_command(
+                app.config, "freeze", {"selection": prepared["selection"], "reserve": "false"}
+            )
         with owner.transaction() as db:
             assert db.execute("SELECT count(*) FROM curation_claims").fetchone() == (0,)
 
@@ -67,8 +121,11 @@ def test_normal_cli_reads_full_current_scale_preparation_response(tmp_path, caps
             point = copy.deepcopy(template)
             # Native correlation identifiers are substantially longer than the
             # tiny fixture's names; retain realistic bytes as well as N count.
-            point.update(index=index, source_event_id=f"native-event-{index:064d}",
-                         source_decision_id=f"native-decision-{index:064d}")
+            point.update(
+                index=index,
+                source_event_id=f"native-event-{index:064d}",
+                source_decision_id=f"native-decision-{index:064d}",
+            )
             points.append(point)
         value["segments"][0]["points"] = points
         projection_fixture(store, "large-prepare", original=original, value=value)
