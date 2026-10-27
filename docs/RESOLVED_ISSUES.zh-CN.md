@@ -28,7 +28,7 @@
 
 | 问题 / 位置 | 原事实与解法 | 现在复用什么、不能推出什么 |
 |---|---|---|
-| **Q静默停用，坏派生拖停所有新原件**；派生→维护 | Q2查到13:13旧投影检查→全局故障→停用；Q3开工旧版再次停。原[维护器](../python/spireagent/workbench/p1_recording_maintenance.py)隔离可重建视图失败，保留原件和硬依赖门；页面显示失败、队列/状态/计数新鲜度。 | 复用原维护状态机和告警，不造第二入库链。Q3真人自动验收已做；旧底层errno仍未知，不能倒推已查明。status超时/下一局重活仍归X3。 |
+| **Q静默停用，坏派生拖停所有新原件**；派生→维护 | Q2查到13:13旧投影检查→全局故障→停用；Q3开工旧版再次停。原[维护器](../python/spireagent/workbench/p1_recording_maintenance.py)隔离可重建视图失败，保留原件和硬依赖门；页面显示失败、队列/状态/计数新鲜度。 | 复用原维护状态机和告警，不造第二入库链。Q3真人自动验收已做；旧底层errno仍未知，不能倒推已查明。[X3](evidence/Q_POLISH_X3_20261027.md)沿原owner补50ms忙响应、每步新派发前重核游戏及运行缓存步骤可见；已开始单步不强停。源码交付与实际安装分开。 |
 | **空SQLite WAL触发反复盘点**；用途账→签名 | 空连接WAL的mtime改变触发盘点→读热数据→整理缓存；Q2原签名只忽略空WAL，真实非空写入仍更新；4次tick盘点一次有回归。 | 复用同owner的内容/用途变更判定，不能忽略全部WAL，也没有证据证明空WAL就是旧底层故障根因。 |
 | **异常被统一包装，丢失原原因**；准备/派生→维护 | [准备层](../python/spireagent/workbench/p1_data_preparation.py)在负责捕获处记录projection ID、原异常类型/消息/堆栈，保稳定conflict返回；维护器保异常链。 | 修最早丢事实的层，不在下游猜errno。后来检查成功不是旧故障根因证据；敏感配置不进日志。 |
 | **换Tool把同一原件当新候选重处理**；采集升级→入库 | Q3沿原 `_existing_candidate` 的session/timeline/revision与三份seal hash找同source，核当前completed和新旧scope后只补别名；X2再次升级沿用，旧projection/完成时间未变。 | 复用原Store和身份比较；peer/scope/projection变化仍清完成记录，unknown/version/容量门不绕。不能仅同session就去重。 |
@@ -37,7 +37,8 @@
 | **Managed公开投影和原生owner不齐**；M002/M005/M006/M008–13/M030/M033/M036/M039 | 旧字段已有历史修复；新修复分别在语言透传、bundle预览/确认、reward detail/proceed、可见文本、跨视图entity alias/holder/manual selector、无HUD事件、手牌选择和取消owner。原生规则继续由原对象/Task负责。 | 原Host [对照指南](../components/host-runtime/docs/MANAGED_P1_EQUIVALENCE.md)和准确patch保入口。M036基本FromHand已接，支持域/连续处理剩余仍保留；不能把这些局部修复或旧88点算全语料通过。 |
 | **原件提取/Result/比较映射不完整**；M004/M017/M050 | 原 `readGlobalArtifact` 读压缩GLOBAL，F2补完整Result；r1.6衍生补native presentation里的replay observation，成功完整图返回独立mapping，不暴露失败/旧映射。 | 复用同一reader、reducer、严格全图比较和逐观察hash，不删字段/放宽work bound。r1.6显式选择，不改原r1.5/438。 |
 | **准备身份、位置漂移及退出/取消/容量**；M027–29/M032/M045/M046 | 原冻结producer与干净源码比，S3位置从冻结peer读；CLI显式端口0；Runtime按真实状态一次Stop封存；顶层取消交原workspace owner；协调者预留所有在途2GiB峰值，暂满先drain。 | 原 [evaluation ledger](../python/spireagent/workbench/evaluation_ledger.py) / [工程检查owner](../tools/check-plan.mjs)保同一状态机。已offer的启动失败仍unknown；容量只是本协调者估算，不是跨进程硬配额或新机器上限。 |
-| **函数级推理通过、真实Actor入口失败**；M022/M040/M041/M054 | EOF误停整池/close卡住由原listener有界关闭修复；central4在CLI环境过滤丢AUTH，Runtime50映射显式env key；Python能力表分别接46/51且未来未知仍拒绝。 | 复用正常Runtime CLI和完整consumer负例，不把函数serve测试当整链。原central4全部unknown、0评分保留，源码修复不证明当前推理吞吐已测。 |
+| **函数级推理通过、真实Actor入口失败**；M022/M040/M041/M054 | EOF误停整池/close卡住由原listener有界关闭修复；central4在CLI环境过滤丢AUTH，Runtime50映射显式env key；Python能力表分别接46/51且未来未知仍拒绝。 | 复用正常Runtime CLI和完整consumer负例，不把函数serve测试当整链。原central4全部unknown、0评分保留；[M1](evidence/MANAGED_SPEED_M1_20261027.md)另用4新槽实测，池308请求/0错误，3自然负1capture unknown；不从不同轨迹吞吐或305点argmax同推全数值/全游戏等价。 |
+| **同一Managed敌回合settling一直录到容量门**；⑩运行→⑤原件 | M051及M1新基线两槽均长等至容量、仍unknown；未修具体原生异步等待。 | [M1事实/准确版本](evidence/MANAGED_SPEED_M1_20261027.md)：Runtime52按同native snapshot 120秒预算走原handoff/Stop，新2槽unknown、完整typed读回、Host退出确认；可选Host诊断失败隔离，旧Runtime未封前缀按analysis完整保全。 适用边界：只复用有界等待与原Stop/账本，M051原生根因仍归后续；不重试unknown，不宣称所有循环或全游戏已修。 |
 | **报告首屏派发旧任务**；M047及本轮CURRENT | F首屏旧head/时限/进行中状态已被替换并标历史；本轮又查到CURRENT仍派发已结束的评估、35槽未封存。 | 当前摘要整段替换，历史回原任务；closeout的40行/无历史段只控形状，不能证明内容新鲜。恢复须核refs、原件和进程。 |
 | **CI模拟测试受真实磁盘余量干扰**；X1 | [PR253](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/253)的两个轻量模拟测试给固定容量观测并保失败stdout，31项与准确合并CI通过。 | 区分测试夹具和生产容量策略；保留真实低空间拒绝检查，不削弱生产门槛、不碰运气重跑。 |
 
