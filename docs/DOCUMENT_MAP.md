@@ -18,7 +18,7 @@
 | 录后自动入库、派生、R2、小结：能用 | 原件→派生→用途；`python/spireagent/workbench` | [Q 的小结与冻结 SOP](../python/docs/RECOUNT-SOP.zh-CN.md)；正常局封存后自动处理，权重确认后才冻结 | Q2/Q3 已修停用可见性；查询超时、已开始重活遇下一局仍待 X3 |
 | 种子和原样开局进度：新局能存 | 采集见证；`components/annotator` | [采集指南](ANNOTATOR_COLLECTION.md)、[X2 收据](evidence/CONVERGENCE_BASELINE_20261027.md#录制和自动入库) | 私有附件只在原件；不进 P1/模型，旧未知不补。个人存档的 Managed 重演仍待 M3 |
 | R2 保存、按 ID 恢复、本地热集：能用 | 保存与传输；`python/spireagent/storage`、Workbench Store | [存储与容量 SOP](../python/docs/DATA_LIFECYCLE.md#项目存储真身工位与本机删除条件) | 有完整读回和实际 reader 才谈冷却；R2 是已保全内容的长期家，未保全本机原件仍须保护 |
-| 选数据、用途、整局切分和权重：能用 | 派生→训练；Curation 与 `python/stpd/p1` | [数据管理](../python/docs/research/DATA_MANAGEMENT.zh-CN.md)、[预览/确认冻结](../python/docs/RECOUNT-SOP.zh-CN.md) | 旧冻结 414 不变；新 A10 权重预览归 W1，DEV/TEST 不加权 |
+| 选数据、用途、整局切分和权重：能用 | 派生→训练；Curation 与 `python/stpd/p1` | [数据管理](../python/docs/research/DATA_MANAGEMENT.zh-CN.md)、[预览/确认冻结](../python/docs/RECOUNT-SOP.zh-CN.md) | 旧冻结 414 不变；录后入池，每次实验选局/权重并按模型血统隔离考试；DEV/TEST 不加权 |
 | 学校 GPU 训练与恢复入口：能用，有 8 步短测 | 训练；`python/stpd`、原 TrainingService/Ops/Scheduler | [准备包→提交→看进度→检查点](../python/docs/FULLRUN_TRAINING.md#下一轮-m-std先准备再一条命令开训) | 先 package，明确“开训”后 start；短测不算新正式训练。输入 v2/T2 准备归 T1 |
 | 模型下载、注册、完整 Agent 接入：能用 | 模型→运行；`python/stpd/p1`、Workbench | [模型/Agent 操作](../python/docs/PROJECT_CONSOLE.md#p1-model正常下载注册与使用)、[运行入口](../python/docs/LOCAL_MODEL_TASK_FLOW.md#prepare-and-load) | 注册不等于激活；旧 438 输入仍受排列影响，权重和旧包保留 |
 | 真游戏 Reference 评估：能续接，原 100 槽未完成 | 运行→评估；Workbench `evaluation_ledger` / `reference_suite` | [可续跑评估链路](../python/docs/LOCAL_MODEL_TASK_FLOW.md#可续跑的评估链路) | 35 槽已开/2 unknown 均保留；第 35 槽已封存，未重投，65 未开；不自动续跑 |

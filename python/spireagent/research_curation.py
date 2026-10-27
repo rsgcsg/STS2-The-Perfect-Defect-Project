@@ -27,6 +27,10 @@ class CurationTransactions(Protocol):
     def transaction(self) -> AbstractContextManager[sqlite3.Connection]: ...
 
 
+P1_EXPERIMENT_TABLES = {"curation_p1_legacy_snapshots", "curation_p1_weight_approvals",
+                        "curation_p1_experiments", "curation_p1_experiment_runs",
+                        "curation_p1_model_uses"}
+
 InventoryPending = Callable[[sqlite3.Connection], bool]
 ClaimGuard = Callable[[sqlite3.Connection, str, set[str]], None]
 
@@ -43,7 +47,21 @@ class CurationLedger:
         self._inventory_pending = inventory_pending
         self._claim_guard = claim_guard
         with operations.transaction() as db:
+            migrate_p1 = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' "
+                                    "AND name='curation_p1_legacy_snapshots'").fetchone() is None
             for statement in (
+                "CREATE TABLE IF NOT EXISTS curation_p1_legacy_snapshots("
+                "snapshot TEXT PRIMARY KEY)",
+                "CREATE TABLE IF NOT EXISTS curation_p1_weight_approvals("
+                "id TEXT PRIMARY KEY,definition TEXT NOT NULL)",
+                "CREATE TABLE IF NOT EXISTS curation_p1_experiments("
+                "snapshot TEXT PRIMARY KEY,model TEXT UNIQUE NOT NULL,parent TEXT,"
+                "configuration TEXT NOT NULL,created REAL NOT NULL)",
+                "CREATE TABLE IF NOT EXISTS curation_p1_experiment_runs("
+                "snapshot TEXT NOT NULL,run TEXT NOT NULL,role TEXT NOT NULL,weight REAL,"
+                "PRIMARY KEY(snapshot,run))",
+                "CREATE TABLE IF NOT EXISTS curation_p1_model_uses("
+                "reference TEXT PRIMARY KEY,snapshot TEXT NOT NULL)",
                 "CREATE TABLE IF NOT EXISTS curation_sources("
                 "id TEXT PRIMARY KEY,archive TEXT NOT NULL,complete INTEGER NOT NULL)",
                 "CREATE TABLE IF NOT EXISTS curation_source_decisions("
@@ -81,6 +99,9 @@ class CurationLedger:
                 "curation_annotations(occurrence,sequence)",
             ):
                 db.execute(statement)
+            if migrate_p1:
+                db.execute("INSERT INTO curation_p1_legacy_snapshots SELECT DISTINCT artifact "
+                           "FROM curation_claims WHERE purpose='training' AND artifact IS NOT NULL")
 
     def index_source(self, source: str, projection: SourceProjection) -> None:
         """Called only on the installed verifier's typed output, never HTTP JSON."""

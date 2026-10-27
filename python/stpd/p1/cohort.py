@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import copy
 from collections import Counter
-from typing import Any
+from typing import Any, cast
 
 from spireagent.json_boundary import BoundaryError
 
@@ -218,8 +218,8 @@ def a10_progress_weight(facts: dict[str, Any], *, maximum: int = 2) -> float:
     if floor is None:
         floor = facts.get("last_recorded_floor")
     total = (facts.get("finish_floor_evidence") or {}).get("floor")
-    progress = min(1.0, floor / total)
-    return min(3.0, original * (1 + (maximum - 1) * progress))
+    progress = min(1.0, cast(int, floor) / cast(int, total))
+    return float(min(3.0, original * (1 + (maximum - 1) * progress)))
 
 
 def with_a10_progress(plan: dict[str, Any]) -> dict[str, Any]:
@@ -228,10 +228,7 @@ def with_a10_progress(plan: dict[str, Any]) -> dict[str, Any]:
         raise BoundaryError("p1_cohort", "original_progress_rule_required")
     result = copy.deepcopy(plan)
     result.pop("configuration_id")
-    result["definition"] = {**result["definition"], "rule": A10_PROGRESS_RULE,
-        "base_rule": RULE_ID, "difficulty_multiplier": {
-            "A0": 1, "A10_maximum": 2, "progress": "min(floor/finish_floor,1); win=1",
-            "nonwin_cap": 3, "version": 1}}
+    result["definition"] = weight_definition(A10_PROGRESS_RULE)
     for row in result["runs"]:
         proposed = a10_progress_weight(row)
         row["proposed_run_weight"] = proposed
@@ -340,15 +337,7 @@ def cohort_plan(index: dict[str, Any], facts: dict[str, dict[str, Any]],
             "weighted_N": sum(r["N"] * (r["train_weight"] if split == "train" else 1)
                               for r in active),
         }
-    definition = {"rule": rule, "parameters": WEIGHT_PARAMETERS,
-                  "gate": "declared_human_DEFECT_A0_A10_valid_N",
-                  "partial_recordings": "valid_N_retained_with_observed_progress",
-                  "unknown_terminal": "same_progress_formula_separate_unknown_outcome_count",
-                  "finish_floor": "same_difficulty_wins_else_final_boss_map_else_A0_marked",
-                  "boss_bonus": "actual_positive_witness_only_never_floor_inference",
-                  "weight_scope": "TRAIN_only_same_multiplier_per_run",
-                  "loss": "sum(w_run * NLL_point) / sum(w_run); all_ones_original_mean",
-                  "holdout": "preserve_Curation_roles_unweighted_DEV_TEST"}
+    definition = weight_definition(rule)
     train = [r for r in rows if r["split"] == "train"]
     component_shares = {}
     for label, predicate in {
@@ -418,3 +407,89 @@ def plan_cohort(index: dict[str, Any], facts: dict[str, dict[str, Any]], ledger:
                                      split_salt=split_salt)
     return {"index": index, "facts": facts, "allocation": allocation,
             "plan": cohort_plan(index, facts, allocation, rule=RULE_ID)}
+
+
+def pool_plan(index: dict[str, Any], facts: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """Inventory facts and selection without assigning any experiment role."""
+    facts = bind_finish_floors(facts)
+    counts = Counter(p["root_run_id"] for p in index["points"])
+    roots = {r: g["group_id"] for g in index["groups"] for r in g["root_run_ids"]}
+    body = {"schema": "stpd/p1-cohort-pool-1", "sources": index["sources"],
+            "selection": index["selection"], "groups": index["groups"], "points": index["points"],
+            "runs": [{**facts[root], "root_run_id": root, "group_id": roots[root],
+                      "N": n, "split": "pool", "train_weight": None,
+                      "proposed_run_weight": None} for root, n in sorted(counts.items())],
+            "partitions": {"pool": {"runs": len(counts), "N": sum(counts.values())}},
+            "holdout_shortfall_groups": None, "isolation_claim": "pool_no_experiment_roles",
+            "status": "pool_not_assigned_not_frozen"}
+    return {**body, "configuration_id": digest(json_bytes(body))}
+
+
+def experiment_plan(pool: dict[str, Any], ledger: Any, request: dict[str, Any], *,
+                    weight_rule: str = "a10-progress-v1") -> dict[str, Any]:
+    from spireagent.p1_curation import draft_model_allocation
+
+    if (pool.get("schema") != "stpd/p1-cohort-pool-1" or
+            digest(json_bytes({k: v for k, v in pool.items() if k != "configuration_id"})) !=
+            pool.get("configuration_id")):
+        raise BoundaryError("p1_cohort", "verified_pool_plan_required")
+    required = {"model_id", "parent_model_id", "split_salt"}
+    if (not isinstance(request, dict) or not required <= request.keys() or
+            set(request) - (required | {"dev_fraction", "test_fraction",
+                                        "split_by_group", "selected_group_ids"})):
+        raise BoundaryError("p1_cohort", "explicit_experiment_request_required")
+    index = copy.deepcopy({k: pool[k] for k in ("sources", "selection", "groups", "points")})
+    selected = request.get("selected_group_ids")
+    if selected is not None:
+        known = {g["group_id"] for g in index["groups"] if g["N"]}
+        if (not isinstance(selected, list) or not selected or
+                any(not isinstance(g, str) for g in selected) or
+                len(set(selected)) != len(selected) or set(selected) - known):
+            raise BoundaryError("p1_cohort", "explicit_unique_pool_groups_required")
+        index["points"] = [p for p in index["points"] if p["group_id"] in selected]
+        for group in index["groups"]:
+            if group["group_id"] not in selected:
+                group["N"] = 0
+        decisions: dict[str, list[str]] = {s["projection_id"]: [] for s in index["sources"]}
+        for point in index["points"]:
+            for ref in [point, *point["aliases"]]:
+                decisions[ref["projection_id"]].append(ref["source_decision_id"])
+        index["selection"] = {k: sorted(set(v)) for k, v in decisions.items()}
+        for source in index["sources"]:
+            source["selected_N_before_dedup"] = len(index["selection"][source["projection_id"]])
+    allocation = draft_model_allocation(ledger, index, **{k: v for k, v in request.items()
+                                                        if k != "selected_group_ids"})
+    facts = {r["root_run_id"]: {k: v for k, v in r.items() if k not in {
+        "N", "split", "train_weight", "proposed_run_weight", "group_id"}} for r in pool["runs"]}
+    result = cohort_plan(index, facts, allocation)
+    if weight_rule == "a10-progress-v1":
+        result = with_a10_progress(result)
+    elif weight_rule != "original":
+        raise BoundaryError("p1_cohort", "unknown_weight_rule")
+    result.pop("configuration_id")
+    result["experiment"] = {k: request[k] for k in ("model_id", "parent_model_id")}
+    result["allocation_request"] = request
+    result["pool_configuration_id"] = pool["configuration_id"]
+    result["status"] = "experiment_draft_not_frozen"
+    return {**result, "configuration_id": digest(json_bytes(result))}
+
+
+
+def weight_definition(rule: str = RULE_ID) -> dict[str, Any]:
+    """One versioned definition shared by preview and authoritative freeze validation."""
+    base = {"rule": RULE_ID, "parameters": WEIGHT_PARAMETERS,
+                  "gate": "declared_human_DEFECT_A0_A10_valid_N",
+                  "partial_recordings": "valid_N_retained_with_observed_progress",
+                  "unknown_terminal": "same_progress_formula_separate_unknown_outcome_count",
+                  "finish_floor": "same_difficulty_wins_else_final_boss_map_else_A0_marked",
+                  "boss_bonus": "actual_positive_witness_only_never_floor_inference",
+                  "weight_scope": "TRAIN_only_same_multiplier_per_run",
+                  "loss": "sum(w_run * NLL_point) / sum(w_run); all_ones_original_mean",
+                  "holdout": "preserve_Curation_roles_unweighted_DEV_TEST"}
+    if rule == RULE_ID:
+        return copy.deepcopy(base)
+    if rule == A10_PROGRESS_RULE:
+        return {**copy.deepcopy(base), "rule": A10_PROGRESS_RULE, "base_rule": RULE_ID,
+                "difficulty_multiplier": {"A0": 1, "A10_maximum": 2,
+                    "progress": "min(floor/finish_floor,1); win=1", "nonwin_cap": 3, "version": 1}}
+    raise BoundaryError("p1_cohort", "unknown_weight_rule")

@@ -2606,7 +2606,7 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                         selection = body["selection"]
                         if not isinstance(selection, dict) or set(selection) - {
                                 "projection_ids", "split_salt", "split_by_group",
-                                "selected_decisions"}:
+                                "selected_decisions", "experiment"}:
                             raise ValueError
                         value = freeze_p1_data(owner, store, source_identity(ROOT),
                                                **selection, reserve=body.get("reserve", False))

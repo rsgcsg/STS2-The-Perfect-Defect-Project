@@ -6,6 +6,7 @@ import copy
 import json
 from dataclasses import replace
 
+from legacy_p1_fixture import freeze_p1_data, reserve_p1_snapshot
 from test_artifact_store_v1 import PRODUCER
 from test_p1_snapshot import explicit_snapshot, projection_fixture
 
@@ -16,11 +17,10 @@ from spireagent.storage.store import ManifestArtifactStore
 from spireagent.workbench.managed_local_workspace import ROOT_NAME, create_managed_workspace
 from spireagent.workbench.p1_data_preparation import (
     P1PreparationCache,
-    freeze_p1_data,
     preparation_identity,
     prepare_p1_data,
 )
-from spireagent.workbench.p1_training_data import record_p1_training_use, reserve_p1_snapshot
+from spireagent.workbench.p1_training_data import record_p1_training_use
 from stpd.p1.dataset import inspect_projections, iter_snapshot_points, merge_projection_inspections
 
 

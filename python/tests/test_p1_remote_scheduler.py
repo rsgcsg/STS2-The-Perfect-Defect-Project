@@ -8,6 +8,7 @@ import json
 from dataclasses import replace
 
 import pytest
+from legacy_p1_fixture import reserve_p1_snapshot
 from test_hub_scheduler import Provider
 from test_p1_application import workspace
 
@@ -15,7 +16,7 @@ from spireagent.artifact_contracts import Manifest
 from spireagent.hub.database import Operations
 from spireagent.hub.scheduler import Scheduler
 from spireagent.json_boundary import BoundaryError
-from spireagent.p1_curation import record_p1_training_use, reserve_p1_snapshot
+from spireagent.p1_curation import record_p1_training_use
 from stpd.p1.spec import RUN_SCHEMA, MStdConfig
 from stpd.p1.workload import prepare_p1_run, verify_p1_run
 from stpd.workers.p1_run import verify_p1_result

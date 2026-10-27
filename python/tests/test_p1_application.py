@@ -5,6 +5,7 @@ import uuid
 
 import pytest
 import torch
+from legacy_p1_fixture import reserve_p1_snapshot
 from test_p1_snapshot import explicit_snapshot, projection_fixture
 
 from spireagent.json_boundary import BoundaryError
@@ -17,7 +18,6 @@ from spireagent.workbench.managed_local_workspace import ROOT_NAME, create_manag
 from spireagent.workbench.p1_training_data import (
     record_p1_training_use,
     require_p1_snapshot,
-    reserve_p1_snapshot,
 )
 from spireagent.workbench.recipe_contracts import TrainingRequest
 from spireagent.workbench.trusted_recipes import describe_recipe, validate_recipe_config

@@ -14,8 +14,10 @@ def _ledger(owner: Any, store: Any) -> Any:
     return owner.ledger
 
 
-def reserve_p1_snapshot(owner: Any, store: Any, snapshot_id: str) -> dict[str, Any]:
-    return p1_curation.reserve_p1_snapshot(_ledger(owner, store), store, snapshot_id)
+def reserve_p1_snapshot(owner: Any, store: Any, snapshot_id: str, *,
+                        experiment: dict[str, Any] | None = None) -> dict[str, Any]:
+    return p1_curation.reserve_p1_snapshot(_ledger(owner, store), store, snapshot_id,
+                                         experiment=experiment)
 
 
 def require_p1_snapshot(
@@ -24,8 +26,12 @@ def require_p1_snapshot(
     return p1_curation.require_p1_snapshot(_ledger(owner, store), store, snapshot_id)
 
 
-def record_p1_training_use(owner: Any, store: Any, snapshot_id: str, operation_id: str) -> None:
-    p1_curation.record_p1_training_use(_ledger(owner, store), store, snapshot_id, operation_id)
+def record_p1_training_use(owner: Any, store: Any, snapshot_id: str, operation_id: str, *,
+                           loss_weighting: dict[str, Any] | None = None,
+                           initial_checkpoint: str | None = None) -> None:
+    p1_curation.record_p1_training_use(_ledger(owner, store), store, snapshot_id, operation_id,
+                                     loss_weighting=loss_weighting,
+                                     initial_checkpoint=initial_checkpoint)
 
 
 def require_p1_training_use(owner: Any, store: Any, snapshot_id: str, operation_id: str) -> None:

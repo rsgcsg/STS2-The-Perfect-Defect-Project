@@ -23,7 +23,7 @@ Workbench「本机录制来源」的 **录制数据小结（自动更新）** �
 才再次盘点。修复原因后使用原入口恢复，不修改或替换出错投影。
 
 - 已进入当前盘点的总局数、A0/A10、胜/负/未知、有效决策步和本次新增步数；
-- TRAIN/DEV/TEST 局数，以及 DEV/TEST 各自还缺多少 A0、A10；
+- 数据池局数和可用步数；新默认不预分 TRAIN/DEV/TEST，也不先补考试集；
 - 已封存但排队、没有已批准投影或版本不符的来源；权重表和精确配置 ID。
 
 一份 session 可能含多局；未派生验证的封存份数不会冒充完整局数。
@@ -36,25 +36,65 @@ Workbench「本机录制来源」的 **录制数据小结（自动更新）** �
 已启动的单个 importer 步骤保留原操作，不能通过杀线程或重发来“暂停”；开启下一次
 录制前可从小结确认本次处理完成。此调度门证明派发条件，不声称测过所有游戏场景的零卡顿。
 
-## 冻结一次
+## 每次训练选局、审权重、冻结一次
 
-在所选最新 develop 或已安装的准确发布版 `python/` 中运行：
+录后默认只更新池 `cohort-preview.json`（`stpd/p1-cohort-pool-1`），不申请用途。
+原始录制、选定版本的 P1 轨迹照常保存在 Store/R2。每次实验单独确定模型阶段 ID、
+父模型阶段、整局成员、DEV/TEST 比例或明确的整局角色；同一局可以进入多个实验的训练。
+池变化后已有草稿不自动增补成员。旧 profile 的旧策略仍能读取；要使用新默认，维护者
+按下一节原升级步骤选含新版的源码/发布与策略，不把普通合并冒称已安装。
 
-```sh
-uv run --locked --extra cloud python -m spireagent.workbench recordings cohort freeze --config /ABS/project.json
+先创建本次请求 JSON，例如从头训练的 T2 草稿（80/10/10 为本次建议，可改）：
+
+```json
+{"model_id":"t2-scratch-20261027","parent_model_id":null,
+ "split_salt":"t2-draft-20261027-v1","dev_fraction":0.1,"test_fraction":0.1}
 ```
 
-同一条命令先打印每局用途、难度、胜负、决策步、TRAIN 权重和缺口，输入 `yes` 才冻结。
-也可在页面查看表后使用 `--confirm 页面显示的完整配置ID`；页面已变则拒绝。
-不要用自动取「最新ID」的脚本代替确认。冻结会沿原 Application 的
-`p1-data/freeze` 发布 Snapshot 并由原 Curation 保留用途；DEV/TEST不进入TRAIN，
-既有用途、已训练曝光和已知亲缘仍由该 ledger 检查。
+比例按整局分组数量四舍五入，不按步数/输赢挑选；可用 `selected_group_ids` 选择池内
+整组子集，用 `split_by_group` 指定该子集的完整用途。DEV 至少一组、TRAIN 至少一组；
+TEST 可为零。比例不适合当前池或未练过的考试局不够时明确拒绝，不偷偷改比例。
 
-成功打印精确 Snapshot ID 与固定交付文件：
-`state_dir/cohorts/配置ID/weight-candidates.json`。
-训练准备（P卡）及训练入口统一读这个文件，通过已有 `--cohort-plan` / `--configuration-id`
-绑定同一个 Snapshot；不从小结或另一份手写名单选数据。重复同一成功确认只读原收据。
-已冻结 `414fb84d…` 的文件与配置不改，新成员/规则/选定版本形成新ID。
+在最新 develop 的 `python/` 运行：
+
+```sh
+uv run --locked --extra cloud python -m spireagent.workbench recordings cohort preview --config /ABS/project.json --plan-file /ABS/pool/cohort-preview.json --experiment /ABS/t2-request.json --weight-rule a10-progress-v1 --output /ABS/t2-draft.json
+uv run --locked --extra cloud python -m spireagent.workbench recordings cohort freeze --config /ABS/project.json --plan-file /ABS/t2-draft.json
+```
+
+第一条只产草稿并展示整局表；第二条才请求冻结。权重定义从未批准或改变时显示表并问
+`yes`，批准 ID 存在原 Curation SQLite 内；成员、分配、模型阶段变了而规则定义不变，
+明确运行 freeze 即沿用批准，不反复问 yes。preview 永远不记批准，也不冻结。
+可给 freeze 传 `--confirm 草稿完整ID` 额外防止拿错表；它不能替代新规则首次 yes。
+本次 W1 只交草稿，不为真实规则登记批准或冻结。
+
+冻结仍走原 Application `p1-data/freeze`、Snapshot 和 Curation；每次另生成内容身份，
+在同一本台账记录模型阶段/父阶段、TRAIN/DEV/TEST 局、各局权重与完整权重定义。
+冻结是计划用途，实际 prepare 记录使用后才计作训练曝光；构造词表本身已属于使用。
+成功后同一路径 `state_dir/cohorts/配置ID/weight-candidates.json` 交给训练原有
+`--cohort-plan` / `--configuration-id`；配置与成员都绑定该 Snapshot。
+未知投递不重试，按下方原 reconcile 核原请求。
+
+模型阶段 ID 每次独立训练/接着练用新 ID；`parent_model_id=null` 只用于真正从头训练。
+接着练填写已登记父阶段，考试局不得和本阶段 TRAIN 或任一祖先的实际训练局/已知亲缘
+重叠；不同新血统可以重新洗牌。旧权重/检查点不会因填写 null 自动成为从头训练。
+旧模型先以原已冻结收据、Snapshot 和已记录训练 operation 绑定历史（不重冻）：
+
+```sh
+uv run --locked --extra cloud python -m spireagent.workbench recordings cohort adopt-model --config /ABS/project.json --plan-file /ABS/old/weight-candidates.json --snapshot-id OLD_SNAPSHOT --training-reference OLD_OPERATION_32HEX --model-id OLD_MODEL_STAGE
+```
+
+有父阶段时另加 `--parent-model-id`；缺历史拒绝，不猜“没练过”。该入口只绑定已核实的
+旧使用。当前训练实现的 `initial_checkpoint` 仍只支持原 Snapshot/config 的历史派生，
+**跨新数据集续训尚未实现**；本卡已支持续训分配草稿和隔离台账，不改 T1 的训练实现。
+未知种子/祖先仍不授予统计独立性；台账只对已记录的本项目使用和已知亲缘负责。
+暂不新增所有血统禁用的公共考试集：池小，当前硬要求可由血统隔离满足；以后若需要
+跨模型固定公开评分，再单独确定考试集及曝光规则。
+
+升级时仅将台账中已存在的 training Snapshot 记为历史；新冻结必须有模型实验信息，
+不能省略 experiment 绕过批准。历史快照的新版权重会被拒绝，原进度权重仍按原事实核值。
+旧已冻结 `414fb84d…` 的成员、权重和文件不改，旧入口可读。它不是新实验固定标签。
+新血统训练旧考试局不会污染旧血统；旧模型历史不完整时不能静默给后代考试资格。
 
 ## 一次配置与版本升级
 
@@ -70,7 +110,7 @@ uv run --locked --extra cloud python -m spireagent.workbench recordings maintena
 `--from-now` 固定启用时的 Close 时间，不上传范围外旧数据。维护策略在原 importer
 operation 文件保存，Workbench 正常重启后续接；启动/封存仍归 Recorder。
 
-版本、投影、切分盐、DEV/TEST目标唯一在 `python/configs/p1-cohort-policy.json`。
+版本、投影和录后盘点模式唯一在 `python/configs/p1-cohort-policy.json`。
 按来源/原生 run 选择一个已批准版本，优先级明确；已知淘汰版本只展示原因、不并入N。
 未列出的新 Tool（包括新版本数据）明确停止，并显示完整 release ID。
 升级前核 Tool 的发布/兼容证据，普通 PR 更新这一个文件；不要改25份投影名单，
@@ -143,20 +183,10 @@ uv run --locked --extra cloud python -m spireagent.workbench recordings cohort r
 旧数据只免重复解析，分组与历史用途每次从原ledger读取；缓存损坏按原机制重验。
 这份缓存、preview和小结都可重建，不是第二个Store、录制账本或用途权威。
 
-## A10 进度权重候选（W1）
+## 每次实验的整局权重
 
-在现有小结对应的同一批数据上，`--weight-rule a10-progress-v1` 选择新版；省略时
-仍是原规则。先将 `freeze` 换成 `preview` 查看，再核对完整配置 ID 和每局表：
-
-```sh
-uv run --locked --extra cloud python -m spireagent.workbench recordings cohort preview --config /ABS/project.json --weight-rule a10-progress-v1
-uv run --locked --extra cloud python -m spireagent.workbench recordings cohort freeze --config /ABS/project.json --weight-rule a10-progress-v1
-```
-
-新版冻结必须在该次显示的表后输入 `yes`；小结更新后配置 ID 会改变，应重新审表。
-规则在原整局权重上：A0 不变；A10 非胜乘 `1 + min(层数/同难度终点层数, 1)`，
-结果最高 3；A10 胜乘 2（权重 6）。未知仍按非胜进度计算并单列，绝不认作负。
-DEV/TEST 不加权，原用途不变；版本、参数与各局权重一起参与配置 ID。旧 414 及其冻结
-文件不改。A1–A9 目前不在原盘点的准入范围，不为假设数据添加规则。
-`--confirm` 保留原规则的既有行为；新版须交互输入 yes。若缺口未满足或其他数据准入条件
-失败，按原 Curation 处理，权重预览不代表获得训练资格。
+`--weight-rule original` 沿用旧规则；`a10-progress-v1` 为新版。A0 不变；A10 在原
+整局权重上乘 `1 + min(层数/同难度终点层数, 1)`，非胜最高 3，胜局乘 2 得 6。
+未知按非胜进度计算并单列，不变成负。DEV/TEST 始终不加权；版本和参数参与配置 ID。
+最高系数 3 只作本轮对照，不是已选配置。A1–A9 目前没有原准入支持，不提前加入。
+重算只生成新配置，不改已保存的数据。旧无 experiment 的历史草稿保留原确认语义。

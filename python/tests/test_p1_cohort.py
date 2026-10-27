@@ -4,11 +4,12 @@ from __future__ import annotations
 import copy
 
 import pytest
+from legacy_p1_fixture import freeze_p1_data
 from test_p1_data_preparation import workspace
 
 from spireagent.json_boundary import BoundaryError
 from spireagent.p1_curation import draft_p1_allocation
-from spireagent.workbench.p1_data_preparation import freeze_p1_data, prepare_p1_data
+from spireagent.workbench.p1_data_preparation import prepare_p1_data
 from spireagent.workbench.p1_training_data import record_p1_training_use
 from stpd.p1.cohort import bind_finish_floors, cohort_plan, projection_facts, run_weight
 from stpd.p1.dataset import inspect_projections, load_projection
@@ -205,7 +206,7 @@ def test_refresh_keeps_anchor_versions_and_rejects_ambiguous_new_source(tmp_path
 
 
 def test_a10_progress_new_plan_preserves_original_and_consumes_weights(tmp_path):
-    from spireagent.workbench.training_cohort import checked_cohort_plan, _loss_weighting
+    from spireagent.workbench.training_cohort import _loss_weighting, checked_cohort_plan
     from stpd.p1.cohort import a10_progress_weight, with_a10_progress
     from stpd.p1.weighting import checked_weights
 
@@ -229,6 +230,13 @@ def test_a10_progress_new_plan_preserves_original_and_consumes_weights(tmp_path)
     assert revised["selection"] == original["selection"] and revised["splits"] == original["splits"]
     assert revised["partitions"]["dev"] == original["partitions"]["dev"]
     assert revised["partitions"]["test"] == original["partitions"]["test"]
+    from stpd.p1.data import digest, json_bytes
+
+    with pytest.raises(BoundaryError, match="new_weight_rule_requires_model_experiment"):
+        checked_cohort_plan(revised, revised["configuration_id"])
+    revised["experiment"] = {"model_id": "synthetic-new-stage", "parent_model_id": None}
+    revised["configuration_id"] = digest(json_bytes({k: v for k, v in revised.items()
+                                                     if k != "configuration_id"}))
     envelope = {"schema": "training-data-weight-selection-20261025-v1",
                 "status": "frozen_user_confirmed",
                 "selected_configuration_id": revised["configuration_id"], "configuration": revised}

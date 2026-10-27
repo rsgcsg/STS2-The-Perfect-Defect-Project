@@ -37,12 +37,17 @@ def load_policy(path: Path) -> dict[str, Any]:
     value = json.loads(path.read_bytes())
     fields = {"schema", "revision", "projection", "tool_release_priority",
               "superseded_tool_release_ids", "split_salt", "holdout_targets"}
-    if (not isinstance(value, dict) or set(value) != fields
+    if (isinstance(value, dict) and value.get("allocation_mode") == "per_training"
+            and "holdout_targets" not in value):
+        fields.remove("holdout_targets")
+    if (not isinstance(value, dict) or set(value) - {"allocation_mode"} != fields
             or value["schema"] != "spireagent/p1-cohort-policy-1"
             or value["revision"] != "r1.5"
             or value["projection"] != "native-timeline-targets-1"
             or not isinstance(value["split_salt"], str) or not value["split_salt"]):
         raise BoundaryError("p1_cohort", "invalid_intake_policy")
+    if value.get("allocation_mode", "legacy") not in {"legacy", "per_training"}:
+        raise BoundaryError("p1_cohort", "invalid_allocation_mode")
     releases: list[str] = []
     for field in ("tool_release_priority", "superseded_tool_release_ids"):
         if not isinstance(value[field], list) or (field == "tool_release_priority"
@@ -51,6 +56,8 @@ def load_policy(path: Path) -> dict[str, Any]:
         releases.extend(digest(v, "p1_cohort.tool") for v in value[field])
     if len(releases) != len(set(releases)):
         raise BoundaryError("p1_cohort", "duplicate_tool_versions")
+    if value.get("allocation_mode") == "per_training":
+        return value
     targets = value["holdout_targets"]
     if (not isinstance(targets, dict) or set(targets) != {"dev", "test"}
             or any(not isinstance(v, dict) or set(v) != {"0", "10"}
@@ -122,7 +129,9 @@ def refresh_cohort(config: ProjectConfig, policy_path: Path, *,
     ids, excluded = select_versions(store, policy, discover_p1_projections(store))
     if not ids:
         raise BoundaryError("p1_cohort", "no_approved_projections")
-    prepared = prepare_p1_data(owner, store, projection_ids=ids, split_salt=policy["split_salt"])
+    prepared = prepare_p1_data(owner, store, projection_ids=ids, split_salt=policy["split_salt"],
+                               allocation_policy=("pool" if policy.get("allocation_mode") ==
+                                                  "per_training" else "preserve_existing"))
     if prepared["conflicts"] or prepared["index"] is None:
         raise BoundaryError("p1_cohort", "projection_conflicts:" +
                             json.dumps(prepared["conflicts"]))
@@ -133,10 +142,19 @@ def refresh_cohort(config: ProjectConfig, policy_path: Path, *,
         if root in facts and fact != facts[root]:
             raise BoundaryError("p1_cohort", "conflicting_run_facts_select_one_projection")
         facts[root] = fact
-    result = plan_cohort(prepared["index"], facts, owner.ledger,
-                         split_salt=policy["split_salt"],
-                         holdout_targets=policy["holdout_targets"])
-    plan = result["plan"]
+    result = {}
+    if policy.get("allocation_mode") != "per_training":
+        result = plan_cohort(prepared["index"], facts, owner.ledger,
+                             split_salt=policy["split_salt"],
+                             holdout_targets=policy["holdout_targets"])
+    if policy.get("allocation_mode") == "per_training":
+        from stpd.p1.cohort import pool_plan
+
+        plan = pool_plan(prepared["index"], facts)
+        result = {"plan": plan, "index": prepared["index"],
+                  "allocation": prepared["allocation"]}
+    else:
+        plan = result["plan"]
     selected_sources = {row["source_id"] for row in plan["sources"]}
     pending = [{"source_id": row["artifact_id"], "session_id": row["session_id"],
                 "reason": "no_approved_projection"}
@@ -161,6 +179,7 @@ def refresh_cohort(config: ProjectConfig, policy_path: Path, *,
         "holdout_shortfall": result["allocation"].get("holdout_shortfall_groups"),
         "ready_to_freeze": result["allocation"]["ready_to_freeze"],
         "pending_sources": pending, "excluded_versions": excluded,
+        "allocation_mode": policy.get("allocation_mode", "legacy"),
         "weights": [{k: row[k] for k in ("root_run_id", "split", "ascension", "result", "N",
                                          "train_weight", "proposed_run_weight")} for row in runs],
         "cache": prepared["cache"], "elapsed_seconds": prepared["elapsed_seconds"],
@@ -276,7 +295,7 @@ def render_summary(config: ProjectConfig, maintenance: dict[str, Any], *,
                   f"<p>胜 {outcomes['win']} · 负 {outcomes['loss']} · 未知 {outcomes['unknown']}"
                   f"<br>有效决策 {value['N']:,} 步，本次新增 {value['added_N']:+,} 步</p>",
                   "<table><tr><th>用途</th><th>现有局数</th><th>A0 还缺</th><th>A10 还缺</th></tr>"]
-        for role in ("train", "dev", "test"):
+        for role in value["partitions"]:
             gaps = (value.get("holdout_shortfall") or {}).get(role, {})
             parts.append(f"<tr><td>{role.upper()}</td>"
                          f"<td>{value['partitions'][role]['runs']}</td>"
@@ -300,8 +319,9 @@ def render_summary(config: ProjectConfig, maintenance: dict[str, Any], *,
         parts.append("</ul></details>")
     if value:
         parts += ["<details><summary>冻结前权重表</summary>",
-                  "<p>胜局 3；负/未知按原进度与 Boss 公式。DEV/TEST 不加权。"
-                  "确认本表的配置 ID 后，运行 SOP 中的一条冻结命令。</p>",
+                  ("<p>数据池仅保存事实与可用步数；每次训练另选局和权重。当前未分配用途。</p>"
+                   if value.get("allocation_mode") == "per_training" else
+                   "<p>历史分配草稿；确认配置 ID 后按 SOP 冻结。</p>"),
                   "<table><tr><th>局</th><th>用途</th><th>难度</th><th>结果</th>"
                   "<th>决策步</th><th>TRAIN 权重</th></tr>"]
         for n, row in enumerate(value["weights"], 1):

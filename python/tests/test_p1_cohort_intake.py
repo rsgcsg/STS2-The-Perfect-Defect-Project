@@ -11,6 +11,7 @@ from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
+from legacy_p1_fixture import freeze_p1_data
 from test_artifact_store_v1 import PRODUCER
 from test_p1_data_preparation import workspace
 from test_p1_t0 import observation
@@ -28,7 +29,7 @@ from spireagent.workbench.p1_cohort_intake import (
     render_summary,
     select_versions,
 )
-from spireagent.workbench.p1_data_preparation import discover_p1_projections, freeze_p1_data
+from spireagent.workbench.p1_data_preparation import discover_p1_projections
 from spireagent.workbench.p1_recording_maintenance import P1RecordingMaintenance
 from spireagent.workbench.p1_training_data import record_p1_training_use
 from stpd.p1.data import digest, json_bytes
@@ -80,6 +81,7 @@ def fixture(tmp_path):
     owner, store, _ = workspace(tmp_path, names=())
     config = ProjectConfig(tmp_path / "state", "", "", None, combination())
     policy = {**load_policy(DEFAULT_POLICY), "tool_release_priority": [TOOL],
+              "allocation_mode": "legacy",
               "holdout_targets": {"dev": {"0": 1, "10": 1}, "test": {"0": 1, "10": 1}}}
     path = tmp_path / "policy.json"
     path.write_text(json.dumps(policy))
@@ -431,49 +433,12 @@ def test_ledger_change_after_summary_write_is_not_marked_as_already_counted(tmp_
     assert len(calls) == 2 and first != second
 
 
-def test_new_weight_cli_requires_interactive_yes(tmp_path, monkeypatch, capsys):
+def test_new_weight_on_legacy_plan_requires_explicit_model_experiment(tmp_path, monkeypatch):
     from spireagent.workbench import p1_cohort_cli
 
     _, _, config, policy = fixture(tmp_path)
     refresh_cohort(config, policy)
     monkeypatch.setattr(p1_cohort_cli.ProjectConfig, "load", lambda *a, **k: config)
-    calls = []
-    monkeypatch.setattr(p1_cohort_cli, "freeze_preview", lambda *a: calls.append(a))
-    args = ["freeze", "--config", str(tmp_path / "project.json"),
-            "--weight-rule", "a10-progress-v1"]
-    with pytest.raises(BoundaryError, match="a10_rule_requires_interactive_yes"):
-        p1_cohort_cli.main([*args, "--confirm", "anything"])
-    monkeypatch.setattr("builtins.input", lambda _: "no")
-    assert p1_cohort_cli.main(args) == 0
-    assert calls == [] and "未冻结" in capsys.readouterr().out
-
-
-def test_new_rule_frozen_receipt_reads_through_snapshot_consumer(tmp_path, monkeypatch):
-    from spireagent.workbench import p1_data_cli
-    from spireagent.workbench.local_recordings import LocalRecordingCatalog
-    from spireagent.workbench.training_cohort import checked_cohort_plan, cohort_weighting
-    from stpd.p1.cohort import with_a10_progress
-
-    owner, store, config, policy = fixture(tmp_path)
-    for name in ("d", "e", "f"):
-        projection(store, name, level=10, result="loss")
-    refresh_cohort(config, policy)
-    old = json.loads((config.state_dir / PREVIEW).read_bytes())
-    plan = with_a10_progress(old)
-    monkeypatch.setattr(LocalRecordingCatalog, "read", lambda _: {
-        "status": "ready", "game_running": False})
-
-    def freeze(_config, action, body, **kwargs):
-        assert action == "freeze"
-        return freeze_p1_data(owner, store, PRODUCER, **body["selection"], reserve=True)
-
-    monkeypatch.setattr(p1_data_cli, "p1_data_command", freeze)
-    receipt = freeze_preview(config, plan)
-    frozen = json.loads((config.state_dir / "cohorts" / plan["configuration_id"] /
-                         "weight-candidates.json").read_bytes())
-    selected = checked_cohort_plan(frozen, plan["configuration_id"])
-    weights = cohort_weighting(config, selected, plan["configuration_id"], receipt["snapshot_id"])
-    assert weights["definition"]["rule"] == "progress-boss-a10-progress-v1"
-    for row in plan["runs"]:
-        if row["split"] == "train":
-            assert weights["weights_by_root"][row["root_run_id"]] == row["train_weight"]
+    with pytest.raises(BoundaryError, match="new_weight_rule_requires_model_experiment"):
+        p1_cohort_cli.main(["freeze", "--config", str(tmp_path / "project.json"),
+                            "--weight-rule", "a10-progress-v1"])

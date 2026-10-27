@@ -10,6 +10,7 @@ from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 import pytest
+from legacy_p1_fixture import reserve_p1_snapshot
 from test_hub_scheduler import Provider
 from test_p1_application import workspace
 
@@ -20,7 +21,6 @@ from spireagent.source import source_identity
 from spireagent.workbench.developer import ROOT, ProjectConfig, RemoteComputeConfig
 from spireagent.workbench.developer_server import Application, configuration_id, create_server
 from spireagent.workbench.p1_recording_storage import open_peer
-from spireagent.workbench.p1_training_data import reserve_p1_snapshot
 from spireagent.workbench.remote_training import RemoteTrainingService
 from spireagent.workbench.training_cli import main, training_command
 from stpd.p1.execution import MStdExecution
