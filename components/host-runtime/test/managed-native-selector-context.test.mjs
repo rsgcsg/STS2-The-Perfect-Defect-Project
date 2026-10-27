@@ -22,6 +22,27 @@ const identity = { runtimeInstanceId: "selector-runtime", environmentFingerprint
 
 function project(state) { return projectManagedCandidateDecision({ state, ...identity }); }
 
+test("generated choices in a native event keep the event context and noncombat visibility", () => {
+  const state = selector({ choose: true });
+  state.selector_domain = "run";
+  state.combat_context = null;
+  state.combat_piles = null;
+  state.selector_context = { kind: "event", event_id: "NEOW", name: "涅奥", ancient: true,
+    in_dialogue: false, body: null, private_owner: "must-stay-private" };
+  const snapshot = project(state).snapshot;
+  assert.equal(snapshot.completeness.status, "complete");
+  assert.deepEqual(snapshot.interaction.content.context, {
+    kind: "event", event_id: "NEOW", name: "涅奥", ancient: true, in_dialogue: false
+  });
+  assert.deepEqual(snapshot.completeness.hidden_by_policy.toSorted(), ["future_events", "future_rewards", "hidden_rng"]);
+  assert.equal(JSON.stringify(snapshot).includes("must-stay-private"), false);
+  assert.equal(snapshot.bound_actions.actions.filter(action => action.verb === "select").length, 2);
+
+  const combat = project(selector({ choose: true })).snapshot;
+  assert.ok(combat.completeness.hidden_by_policy.includes("draw_pile_true_order"));
+  assert.ok(combat.completeness.hidden_by_policy.includes("future_enemy_moves"));
+});
+
 test("choose and combat publish every original occurrence, current HUD and strict Host/text-menu catalog", () => {
   for (const state of [selector(), selector({ choose: true, skip: true }), selector({ choose: true })]) {
     const p = project(state); const s = decodePlayerSnapshot(p.snapshot).data;

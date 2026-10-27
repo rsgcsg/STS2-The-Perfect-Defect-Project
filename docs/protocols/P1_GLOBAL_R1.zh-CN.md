@@ -60,6 +60,12 @@ Managed：sts2.dll 无界面宿主 + 投影                 ┴→ 两端共用�
 
 ### 4.1 录制原件派生P1的requires（用户已批准）
 
+**结算态总原则（2026-10-27 用户批准；具体字段清单另批）**：P1观察是在真实决策边界上、此前动作逻辑已经结算后的公开事实。父效果等候子选择时，该选择本身就是新决策边界；不要求先完成尚需Agent输入的父效果。动画帧、闪烁计数、滚数、飘字和未承诺的滚动展示不定义P1事实。
+
+取值顺序为：①两Host读取原生中与显示分开的逻辑字段，只输出该字段的公开含义；②若逻辑更新本身被动画延后，仅允许按**同一快照的公开事实**和逐机制声明、有版本的固定规则算结算值，不借后帧拼接；③两者都不可行则保留字段级差异交用户。规则、随机数、效果结果和合法性仍由原生决定，不能因这个原则补造原生状态或隐藏信息。正常时钟仅作诊断，不用放慢Managed来修公开字段。
+
+本条是已批准的取值原则，不等于已批准某一机制改值。任何具体P1字段含义或比较规则的变化，都必须列出全部实际载体、取值来源、旧数据可恢复性与准确新版本，获用户批准后实施；旧原件与旧固定投影不改写。缺同快照见证时明确无法完整重投影，不默认补零、不删分母。锁镰/永续糖果的新逻辑counter当前仍待具体清单批准；下述已批LASTING_CANDY限定比较收据原样有效，不扩大为一般的2→0或3→0映射。Managed实现边界见[Host规则M-1～M-8](../../components/host-runtime/docs/MANAGED_P1_EQUIVALENCE.md#settled-logic-native-rules-and-replaceable-host-implementation)。
+
 **奖励触发显示动画（2026-10-22 用户批准）**：同一完整奖励意图、同一reward owner/组/候选/Read不变时，共享核只在一致性比较中识别同一唯一`LASTING_CANDY`遗物实例counter `2→0`的已证实触发显示动画。原始PB1、模型观察中的2/0及严格`comparison.equal=false`均保留；已证open→Skip→同一奖励页可另记`presentation_equal=true`与`lasting_candy_trigger_display_2_to_0`收据，0成功label，不仅因此切断原件已证明的连续边。HP/gold、其他遗物/计数、owner、候选、Read或其它公开差异仍严格检查；与既有`stop_relic_refresh`并存时分别保留真实差异与解释。该规则不证明跨Host严格相等，不新增在线动作，不更改end资格或补造next；新共享核/Tool以新身份交付，旧原件及固定投影不改。
 
 **原生Skip与P1放弃的区分**：领卡页物理Skip只证明返回奖励页，真人仍可重新打开同一组；不能仅凭打开→Skip两步就标成不可撤回的`reward.decline_group`。native converter与既有Source mapper使用同一含义。合格open/return保留原始端点并作0标签presentation（及另行明确批准的effect）；返回端点缺失或发生未获批准的变化仍保gap，不能用decline标签消除缺口。

@@ -46,6 +46,8 @@
 
 ## 5. 缺陷、重构、资源
 
+Managed 对齐结算后的公开逻辑事实，正常时钟只作诊断；实现按[Host M-1～M-8](../components/host-runtime/docs/MANAGED_P1_EQUIVALENCE.md#settled-logic-native-rules-and-replaceable-host-implementation)，字段取值与另版审批按[P1结算态原则](protocols/P1_GLOBAL_R1.zh-CN.md#41-录制原件派生p1的requires用户已批准)。
+
 - 未修项进当前任务的原待办：位置、首次出现、挡什么、负责人/待派发卡。能复现且打断录制、训练数据或评估，立即形成修复卡并安排授权；发现者不在别的任务中顺手修。修后用原失败复查、补 RESOLVED_ISSUES；原 offer 的 unknown 不重投。
 - 第二份业务实现、同坑反复、无关组件被牵连、上游大升级时评估重构。同 owner 且不改含义可随原任务；跨组件/身份/真人数据或含义变更先有界提案。按总成本排序，用同一忠实测试/重放比前后，不能见到两个同名函数就合并。
 - 用户录制优先。游戏/安装先核进程和当前任务链接的共享登记，再登记占用、用完释放；用户可能在录时先问，一批用一个 Mod 组合。旧“空闲”不能覆盖用户新声明。

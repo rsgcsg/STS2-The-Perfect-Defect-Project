@@ -36,9 +36,9 @@
     "managed_artifact": "src/Sts2Headless/bin/Release/net9.0/Sts2Headless.dll"
   },
   "expected_build": {
-    "source_patch_sha256": "7cf16011ef6035b7d52c84f2fc1e9a7ae4b15fe75d4b5e4fea0705072b5a9163",
-    "artifact_sha256": "0d51a9cc9f9af64ead27ec978a7eb35573353e4b61c3e7d3bd1b5bebc7c7d5a2",
-    "artifact_mvid": "30cbfc58-f916-44ff-a60e-788194dbf4d4",
+    "source_patch_sha256": "70b32c6da0e638788a6b541f74135ce35bd0c2e29687aa2e233034c08078da50",
+    "artifact_sha256": "d48bb00238d04f2dcaeb95d386ad306c4766b358969521203fc35f0c90c7a2b4",
+    "artifact_mvid": "776eda00-665a-43bd-9b1f-1535d7a0a806",
     "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0"
   },
   "previous_candidate_build": {
@@ -218,6 +218,41 @@
       "kind": "exact_native_callback_presentation",
       "risk": "medium",
       "effect": "Captures original CardSelectCmd.FromHand/FromHandForUpgrade preferences, filter, offered objects and pending Task. Stages the pinned NPlayerHand selection/replacement/deselection transitions and returns original objects only on explicit confirm; the native parent retains all discard/exhaust/upgrade effects. No arbitrary callback auto-selection."
+    },
+    {
+      "id": "godot_math_log_binding",
+      "kind": "exact_godot_api_stub",
+      "risk": "medium",
+      "effect": "supplies missing Mathf.Log(float) with the shipped Godot MathF.Log implementation; original PhantasmalGardener.EnlargeMove and native Strength/effect/RNG execute unchanged instead of faulting the turn loop",
+      "regression": "m2a-native-tests/M2aNative.csproj: original three enemy turns reach round4; original CurrentScale formula retained"
+    },
+    {
+      "id": "exact_card_play_delivery_witness",
+      "kind": "native_execution_observation",
+      "risk": "medium",
+      "effect": "observes the exact original PlayCardAction and new CardPlayStartedEntry with no native exception; a legal Feral return to hand is a game result, never evidence of failed delivery",
+      "regression": "m2a-native-tests/M2aNative.csproj: original Feral first zero-cost attack returns to hand; second goes to discard; stale card refuses"
+    },
+    {
+      "id": "native_combat_pile_multiselect",
+      "kind": "exact_native_callback_presentation",
+      "risk": "high",
+      "effect": "represents original FromCombatPile preferences and selected HashSet with native 0..N staging, deselection, count-clamped completion and exact confirmation; original native Task resumes with the same offered objects and native enumeration order",
+      "regression": "m2a-native-tests/M2aNative.csproj: 0/1/2 original cards, deselect/re-add, stale scope and changed commitment refusals"
+    },
+    {
+      "id": "native_selector_parent_and_orb_text",
+      "kind": "native_public_presentation_projection",
+      "risk": "medium",
+      "effect": "keeps original event context for noncombat generated-card choice; uses shared NativeVisibleText for Plasma orb HUD text without changing card or orb effects",
+      "regression": "m2a-native-tests/M2aNative.csproj plus managed-native-selector-context.test.mjs: exact serialized Plasma HUD and Neow parent"
+    },
+    {
+      "id": "native_shop_relic_counter",
+      "kind": "native_public_presentation_projection",
+      "risk": "medium",
+      "effect": "copies actual ShowCounter/DisplayAmount for original offered shop relics, preserving zero, nonzero and absence; no new logical-counter meaning or default zero",
+      "regression": "managed-shop-public.test.mjs; same-version original PEN_NIB/TUNING_FORK counter0 and DRAGON_FRUIT absence evidence"
     }
   ],
   "admission": {
@@ -305,6 +340,12 @@
     "source_patch_sha256": "ee2414db2a54d7437486d231ef1f21317582e4d528b0b1aee19ef44379a6cd8e",
     "artifact_sha256": "b8386bf8bd54086b1921ddade3cd4fb4a5156072ad45456bc3310e2b62275c8f",
     "artifact_mvid": "f4434818-caa4-4773-bee3-194863e86203",
+    "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0"
+  },
+  "pre_m2a_recording_launch_build": {
+    "source_patch_sha256": "7cf16011ef6035b7d52c84f2fc1e9a7ae4b15fe75d4b5e4fea0705072b5a9163",
+    "artifact_sha256": "0d51a9cc9f9af64ead27ec978a7eb35573353e4b61c3e7d3bd1b5bebc7c7d5a2",
+    "artifact_mvid": "30cbfc58-f916-44ff-a60e-788194dbf4d4",
     "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0"
   }
 }

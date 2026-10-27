@@ -13,6 +13,41 @@ identify wait, UI, selection, reward and asynchronous task adaptations. These
 seams need differential evidence; sharing an unmodified `sts2.dll` alone is not
 proof of execution, presentation or P1 equivalence.
 
+## Settled logic, native rules and replaceable Host implementation
+
+The user approved this design on 2026-10-27: P1 observes public logical facts at
+a decision boundary after preceding effects have settled, rather than an
+animation frame. A child selection is a real boundary even while its parent
+effect awaits that input. The exact field/version policy belongs to
+[P1_GLOBAL_R1](../../../docs/protocols/P1_GLOBAL_R1.zh-CN.md); the general principle
+does not silently change existing counter values, comparison rules or originals.
+
+| Rule | Managed responsibility |
+|---|---|
+| M-1 | The original game assembly owns rules, RNG, effect results and legality. Do not implement a second rules engine. |
+| M-2 | Host clock, animation, waits, UI/SceneTree, scheduling, processes and recovery may be replaced substantially when the same P1 logical result is preserved. |
+| M-3 | Align settled public logic, not native presentation timing. Distinguish a wrong game result from a transient display value before choosing the owner to repair. |
+| M-4 | Normal clock and the shipped game are diagnostic controls only. Slowing Managed is not the repair or default. A rule truly dependent on real time requires an explicit user decision. |
+| M-5 | Register each replaced native seam, unchanged rule/result rationale, differential evidence and regression in the existing candidate manifest `semantic_shims`; do not create a second registry. |
+| M-6 | Locate the actual blocked or faulted native operation. Complete its logical work through the registered Host adaptation; waiting longer or retrying an unknown is not a repair. |
+| M-7 | The replaceable implementation promises native rules/RNG and qualified P1 equivalence, not native animation or wall-clock timing. A future Host must pass the same declared interface checks. |
+| M-8 | Concrete P1 meaning/comparison changes need an explicit new version and user-approved field list. Keep old raw/projections immutable and state exactly which old sources can be reprojected. Internal repairs preserving M-1 and public results follow the task's standing engineering authorization. |
+
+For a timing-dependent field first use its separate native logical value in both
+Hosts. If that value is itself delayed behind presentation, only an explicitly
+versioned, mechanism-specific function of the **same snapshot's public facts**
+may supply the settled value. Never splice later frames or expose private total
+counters. If neither route is justified, retain a field-level unresolved
+difference for the user. `LASTING_CANDY`'s historical display exception remains
+limited to its original approved conditions; it is not a general counter rewrite.
+
+The M2a investigation found a concrete M051 counterexample: the original
+Phantasmal Gardener enemy move calls missing `Godot.Mathf.Log(float)`, so its
+native turn task faults before the next play boundary. Its Host stub must match
+the shipped Godot `MathF.Log` implementation. This is a missing dependency
+method, not evidence that the combat needs a slower clock. Source/native fixture
+and full-seed runtime confirmation remain separate evidence levels.
+
 ## Compare the actual interface, then the consumer
 
 For each interface retain the compared denominator, complete-public matching

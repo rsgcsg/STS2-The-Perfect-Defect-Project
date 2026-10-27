@@ -765,15 +765,20 @@ function canonicalSelectorSurface(state, ctx, commonContext) {
       cancelable: exact ? state.cancelable : null, current_controls: controls,
       is_peeking: false, showing_upgrade_previews: state.showing_upgrade_previews === true,
       ordering_basis: "exact_current_native_grid_logical_list" },
-    context: plainObject(state.selector_context) && state.selector_context.kind === "event"
-      ? { kind: "event", event_id: state.selector_context.event_id, name: visibleText(state.selector_context.name),
-        ancient: state.selector_context.ancient, in_dialogue: state.selector_context.in_dialogue,
-        ...(state.selector_context.body == null ? {} : { body: visibleText(state.selector_context.body) }) }
-      : plainObject(state.selector_context) && ["rest", "shop"].includes(state.selector_context.kind)
-        ? { kind: state.selector_context.kind } : { ...commonContext, kind: "selection" }, complete, actionComplete: exact,
+    context: selectorParentContext(state.selector_context, commonContext), complete, actionComplete: exact,
     visibleInformation: "complete_entered_native_logical_grid_list",
     interactionDiscovery: "registered_native_card_model_callbacks_and_current_controls", missing
   };
+}
+
+function selectorParentContext(context, commonContext) {
+  if (plainObject(context) && context.kind === "event") return {
+    kind: "event", event_id: context.event_id, name: visibleText(context.name),
+    ancient: context.ancient, in_dialogue: context.in_dialogue,
+    ...(context.body == null ? {} : { body: visibleText(context.body) })
+  };
+  return plainObject(context) && ["rest", "shop"].includes(context.kind)
+    ? { kind: context.kind } : { ...commonContext, kind: "selection" };
 }
 
 function canonicalShopSurface(state, ctx, inventoryOpen = true, surfaceActive = true) {
@@ -825,6 +830,7 @@ function canonicalShopSurface(state, ctx, inventoryOpen = true, surfaceActive = 
     const raw = entry.relic;
     const relic = raw == null ? null : { entity_id: ctx.entityId("relic", raw.native_ref), definition_id: raw.id,
       name: raw.name, description: visibleText(raw.description), keywords: visibleHoverKeywords(raw.keywords),
+      ...(raw.counter == null ? {} : { counter: raw.counter }),
       card_previews: visibleHoverCards(raw.card_previews, "relic", raw.native_ref, ctx.entityId) };
     if (entry.is_stocked && relic == null) missing.push("native_shop_stocked_relic_display");
     return bind(entry, "shop_relic", { ...base(entry), ...(relic == null ? {} : { relic }) }, relic?.name ?? "Sold relic", "buy_relic");
@@ -1512,11 +1518,7 @@ function currentSurface(state, ctx) {
           ...(preview ? { selected_bundle_entity_id: bundles[0]?.entity_id } : {}),
           selectable_bundle_entity_ids: preview ? [] : bundles.map(bundle => bundle.entity_id).sort(),
           can_confirm: exact && preview, can_cancel_preview: exact && preview },
-        context: plainObject(context) && context.kind === "event"
-          ? { kind: "event", event_id: context.event_id, name: visibleText(context.name),
-            ancient: context.ancient, in_dialogue: context.in_dialogue,
-            ...(context.body == null ? {} : { body: visibleText(context.body) }) }
-          : { ...commonContext, kind: "selection" },
+        context: selectorParentContext(context, commonContext),
         complete: exact && missing.length === 0, actionComplete: exact,
         visibleInformation: "contract_complete_for_two_stage_visible_card_bundle_selection",
         interactionDiscovery: "exact_original_bundle_request_and_current_preview_controls", missing
@@ -1871,11 +1873,12 @@ function currentSurface(state, ctx) {
           surface: { kind: "native_generated_card_choice",stage: "choosing",prompt: state.prompt ?? null,
             cards: generated,selectable_card_entity_ids: complete ? generated.map(card => card.entity_id) : [],
             is_peeking: false,can_skip: complete && state.can_skip },
-          context: publicHud ?? { ...commonContext, kind: "selection" },complete,
+          context: publicHud ?? selectorParentContext(state.selector_context, commonContext),complete,
           missing: complete ? [] : ["exact_current_native_generated_choice_and_details"],
           visibleInformation: "same_capture_original_native_generated_cards_and_post_prefix_combat_hud",
           interactionDiscovery: "original_native_choose_callback_task_and_offered_objects",
-          hiddenByPolicy: ["hidden_rng", "draw_pile_true_order", "future_enemy_moves", "future_rewards", "future_events"] };
+          hiddenByPolicy: runChoice ? ["hidden_rng", "future_rewards", "future_events"]
+            : ["hidden_rng", "draw_pile_true_order", "future_enemy_moves", "future_rewards", "future_events"] };
       }
       const referents = cards.map((card, index) => {
         const unique = typeof card?.native_ref === "string" && refs.filter((ref) => ref === card.native_ref).length === 1;

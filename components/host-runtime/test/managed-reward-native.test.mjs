@@ -12,6 +12,32 @@ import { projectManagedCandidateDecision } from "../src/managed-player-environme
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
+test("native return-to-hand delivery, multi-pile choice, Plasma HUD and gardener turns cross the real serializer", async context => {
+  const candidate = process.env.STS2_MANAGED_TEST_CANDIDATE;
+  if (!candidate) { context.skip("set STS2_MANAGED_TEST_CANDIDATE for exact proprietary native component fixtures"); return; }
+  const dotnet = await resolveDotnet();
+  const artifacts = ["Sts2Headless.dll", "GodotSharp.dll"].map(name =>
+    path.join(candidate, "src/Sts2Headless/bin/Release/net9.0", name));
+  const hashes = () => artifacts.map(file => createHash("sha256").update(readFileSync(file)).digest("hex"));
+  const before = hashes();
+  const { stdout } = await promisify(execFile)(dotnet.command,
+    ["run", "--project", path.join(candidate, "m2a-native-tests/M2aNative.csproj"), "-c", "Release",
+      "-p:Deterministic=true", `-p:PathMap=${path.resolve(candidate)}=/_/candidate/`],
+    { cwd: candidate, timeout: 180000, maxBuffer: 4 * 1024 * 1024 });
+  assert.deepEqual(hashes(), before, "native regressions retain the frozen candidate bytes");
+  assert.match(stdout, /45 exact native M2a checks passed/u);
+  assert.match(stdout, /exact native gardener turns reached round 4/u);
+  for (const [prefix, kind] of [["native-m2a-pile-state=", "native_combat_pile_selection"],
+    ["native-m2a-hand-state=", "combat_hand_card_selection"]]) {
+    const state = JSON.parse(stdout.split(/\r?\n/u).find(line => line.startsWith(prefix)).slice(prefix.length));
+    const projection = projectManagedCandidateDecision({ state, sequence: 1,
+      runtimeInstanceId: "native-m2a-fixture", environmentFingerprint: "native-m2a-fixture" });
+    assert.equal(projection.snapshot.completeness.status, "complete");
+    assert.equal(projection.snapshot.interaction.kind, kind);
+    assert.ok(projection.snapshot.bound_actions.actions.length > 0);
+  }
+});
+
 test('exact native hand callback stages original objects through explicit confirm and complete Host projection', async context => {
   const candidate = process.env.STS2_MANAGED_TEST_CANDIDATE;
   if (!candidate) { context.skip('set STS2_MANAGED_TEST_CANDIDATE for exact proprietary native component fixtures'); return; }
