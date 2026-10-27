@@ -268,6 +268,7 @@ class EvaluationLedger:
         workers: int = 1,
         limits: SuiteLimits | None = None,
         executor: Any = None,
+        slot_ids: tuple[str, ...] | None = None,
     ) -> dict[str, Any]:
         """The calling command holds the ledger lock; only this thread appends events.
 
@@ -284,6 +285,14 @@ class EvaluationLedger:
             or not 1 <= max_episodes <= 200
         ):
             reject("invalid_managed_dispatch")
+        selected = None
+        if slot_ids is not None:
+            if (not isinstance(slot_ids, tuple) or not slot_ids
+                    or any(not isinstance(identity, str) for identity in slot_ids)
+                    or len(set(slot_ids)) != len(slot_ids)
+                    or not set(slot_ids) <= {row["slot_id"] for row in self.plan["slots"]}):
+                reject("invalid_managed_slot_selection")
+            selected = set(slot_ids)
         self.reconcile_reports()
         if any(
             row["status"] in {"unknown", "reserved"} and not row.get("cleanup_accepted")
@@ -311,6 +320,7 @@ class EvaluationLedger:
                                      json_bytes(executor.preparation))
         pending_slots = [
             row for row in self.slots() if row["status"] == "not_started"
+            and (selected is None or row["slot_id"] in selected)
         ][:max_episodes]
         pending = iter(pending_slots)
         active: dict[Any, tuple[dict[str, Any], Path]] = {}
@@ -676,6 +686,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--max-episodes", type=int, default=200)
     parser.add_argument("--host", choices=("reference", "managed"), default="reference")
     parser.add_argument("--workers", type=int, default=1)
+    parser.add_argument("--slot-id", action="append")
     parser.add_argument("--manifest", type=Path)
     parser.add_argument("--manifest-sha256")
     parser.add_argument("--selections", type=Path)
@@ -683,6 +694,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--cloud-environment", type=Path)
     args = parser.parse_args(argv)
     try:
+        if args.slot_id and (args.action != "run" or args.host != "managed"):
+            reject("slot_selection_requires_managed_run")
         if args.cloud_environment:
             import os
 
@@ -730,7 +743,8 @@ def main(argv: list[str] | None = None) -> int:
                 elif args.action == "run":
                     if args.host == "managed":
                         result = ledger.run_managed(
-                            max_episodes=args.max_episodes, workers=args.workers
+                            max_episodes=args.max_episodes, workers=args.workers,
+                            slot_ids=tuple(args.slot_id) if args.slot_id else None,
                         )
                     elif (
                         config is None
