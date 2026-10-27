@@ -179,3 +179,22 @@ def test_native_abandonment_is_masked_through_original_journal_and_population(tm
         assert pop.values[0][0] == (None if abandoned else 0.0)
         if abandoned:
             assert pop.values[0] == (None, None)
+
+
+def test_register_rejects_descriptor_architecture_tampering(tmp_path):
+    import json
+
+    from stpd.p1.export import register
+
+    vocab = fit_vocabulary([project(observation())])
+    model = MStd(vocab, value_heads=True)
+    checkpoint = tmp_path / "checkpoint"
+    checkpoint.write_bytes(b"synthetic fixture")
+    package = tmp_path / "package"
+    export_model(model, checkpoint, package, {})
+    path = package / "model.json"
+    descriptor = json.loads(path.read_bytes())
+    descriptor["architecture"]["id"] = "false-large-identity"
+    path.write_text(json.dumps(descriptor))
+    with pytest.raises(ValueError, match="descriptor differs"):
+        register(package, tmp_path / "private", {})

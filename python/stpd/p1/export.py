@@ -180,7 +180,8 @@ def register(
     if (
         descriptor.get("schema") != payload["schema"]
         or descriptor.get("inference_execution") != payload.get("inference_execution")
-        or descriptor["input_spec"] != input_spec(model.vocabulary)
+        or descriptor.get("architecture") != payload["architecture"]
+        or descriptor["input_spec"] != input_spec(model.vocabulary]
         or descriptor["checkpoint_sha256"] != payload["checkpoint_sha256"]
     ):
         raise ValueError("model descriptor differs from package")
@@ -198,7 +199,7 @@ def register(
             "id": "p1-mstd",
             "version": "1",
             "provider": "stpd",
-            "architecture": descriptor["architecture"]["id"],
+            "architecture": payload["architecture"]["id"],
         },
         adapter=adapter_identity(),
         artifact={
