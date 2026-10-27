@@ -296,6 +296,9 @@ class EvaluationLedger:
             "cleanup_accepted": row.get("cleanup_accepted") is True,
             "score_eligible": eligible,
             "retention": row.get("retention"),
+            "reason": row.get("reason"),
+            "execution_status": row.get("execution_status"),
+            "execution_reason": row.get("execution_reason"),
         }
 
     def run_managed(

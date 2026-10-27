@@ -732,6 +732,10 @@ def test_restart_after_mutable_save_checkpoint_recovers_save_without_an_offer(le
     assert second["dispatched"] == 0
     assert executor.offers == 1 and executor.saves == 2
     assert EvaluationLedger(ledger.directory).report()["loss"] == 1
+    slot = next(r for r in EvaluationLedger(ledger.directory).slots()
+                if r["status"] == "finished")
+    assert slot["reason"] == "natural_terminal"
+    assert slot["execution_status"] == "finished"
 
 
 def reference_digest(path):
