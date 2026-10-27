@@ -5,7 +5,13 @@ source and scope; refresh its owning status/identity before an operational actio
 CURRENT owns the active task and next step; its linked active plan owns progress.
 Historical execution matrices retain their original observations and obligations.
 
-## 最新可恢复入口（2026-10-27）
+## 最新可恢复入口（2026-10-28）
+
+第一批八张卡（M1/X3/W1/M3/M1R2/T1/M2a/M2b）都已普通合入develop，固定在[`convergence-2026-10-28`](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/tree/convergence-2026-10-28)。各卡事实只在原收据：[M1](evidence/MANAGED_SPEED_M1_20261027.md)、[X3](evidence/Q_POLISH_X3_20261027.md)、[M1R2](evidence/MANAGED_SAVE_M1R2_20261027.md)、[M2a](evidence/MANAGED_M2A_20261027.md)、[M2b](evidence/MANAGED_TIERS_M2B_20261027.md)、[M3](plans/MANAGED_COVERAGE_20261027.zh-CN.md)、[T1输入v2](../python/docs/P1_T0.md#model-input-v2-and-the-separate-content-sorted-438-projection)；W1/T1见PR258/263。该tag只是源码/文档基线：不含日常安装变化（日常Workbench另由T2a升级，r1.7未装），不含T2冻结/训练、E1a测试修复或任何新游戏/数据/模型证据。
+
+Managed现状：Host52/Runtime53源码；M2a新40局1 unknown（已另版修根因），M2b正式档8局0 unknown、约118正常局/小时（4路）。仍开差异与归属见M2a收据和原例外表；整局等价、Human资格、RL资格均未授。
+
+## 2026-10-27 入口（已被上节替代，保留原文）
 
 收敛文档PR256已普通合入develop；获批6个旧PR/34条分支的归档处置完成，固定版本见[收敛基线](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/tree/convergence-2026-10-27)，[执行收据](evidence/CONVERGENCE_DISPOSITION_EXECUTED_20261027.md)保每项SHA与归档位置。这里只宣布文档/资产收口，不改变下面游戏、数据或模型证据层。
 

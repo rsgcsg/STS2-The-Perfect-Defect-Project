@@ -582,6 +582,9 @@ class SnapshotReader:
     def iter_points(self) -> Iterator[tuple[dict[str, Any], dict[str, Any]]]:
         return _iter_selected_points(self._store, self._selection)
 
+    def iter_supervised_points(self) -> Iterator[tuple[dict[str, Any], dict[str, Any]]]:
+        return _iter_selected_points(self._store, self._selection, run_facts=True)
+
 
 def iter_snapshot_points(
     store: ArtifactStore, snapshot_id: str
@@ -591,13 +594,18 @@ def iter_snapshot_points(
 
 
 def _iter_selected_points(
-    store: ArtifactStore, snapshot: dict[str, Any],
+    store: ArtifactStore, snapshot: dict[str, Any], *, run_facts: bool = False,
 ) -> Iterator[tuple[dict[str, Any], dict[str, Any]]]:
     selected: dict[str, dict[tuple[str, int], dict[str, Any]]] = {}
     for ref in snapshot["points"]:
         selected.setdefault(ref["projection_id"], {})[(ref["segment_id"], ref["point_index"])] = ref
     for artifact_id in sorted(selected):
         projection = load_projection(store, artifact_id)
+        facts = None
+        if run_facts:
+            from .value_targets import supervision_facts
+
+            facts = supervision_facts(projection)
         found = set()
         for segment, index, point in _points(projection):
             key = segment, index
@@ -616,6 +624,9 @@ def _iter_selected_points(
             ):
                 raise BoundaryError("p1_snapshot", "source_N_selection_drift")
             found.add(key)
-            yield copy.deepcopy(ref), point["observation"]
+            reference = copy.deepcopy(ref)
+            if facts is not None:
+                reference["auxiliary_run_facts"] = facts
+            yield reference, point["observation"]
         if found != set(selected[artifact_id]):
             raise BoundaryError("p1_snapshot", "selected_point_missing")

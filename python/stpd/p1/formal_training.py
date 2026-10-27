@@ -25,10 +25,15 @@ from .data import digest, json_bytes
 from .execution import MStdExecution, microbatches
 from .export import input_spec
 from .input import Frame
-from .model import ARCHITECTURE, MStd
+from .model import MStd
 from .numerics import TrainingNumerics, training_scope
 from .optimization import optimizer_update
-from .spec import CHECKPOINT_FRACTIONS, CHECKPOINT_SCHEMA, TARGET_SPEC, MStdConfig
+from .spec import CHECKPOINT_FRACTIONS, MStdConfig
+
+
+def checkpoint_schema(value_heads: bool = False) -> str:
+    return ("stpd/p1-mstd-formal-checkpoint-2" if value_heads
+            else "stpd/p1-mstd-formal-checkpoint-1")
 
 
 @dataclass(frozen=True)
@@ -37,6 +42,7 @@ class Population:
     targets: tuple[int, ...]
     point_ids: tuple[str, ...]
     weights: tuple[float, ...] = ()
+    values: tuple[tuple[float | None, float | None], ...] = ()
 
     def __post_init__(self) -> None:
         if len(self.frames) != len(self.targets) or len(self.frames) != len(self.point_ids):
@@ -45,6 +51,11 @@ class Population:
                 type(w) not in {int, float} or not math.isfinite(w) or w <= 0
                 for w in self.weights)):
             raise BoundaryError("p1_training", "invalid_population_weights")
+        if self.values and (len(self.values) != len(self.frames) or any(
+                len(pair) != 2 or any(v is not None and (type(v) not in {int, float}
+                    or not math.isfinite(v) or not 0 <= v <= 1) for v in pair)
+                for pair in self.values)):
+            raise BoundaryError("p1_training", "invalid_value_targets")
         for frame, target in zip(self.frames, self.targets, strict=True):
             if type(target) is not int or not 0 <= target < len(frame.choices):
                 raise BoundaryError("p1_training", "target_outside_full_catalog")
@@ -52,7 +63,8 @@ class Population:
 
 FORMAL_CODE_FILES = ("formal_training.py", "spec.py", "input.py", "model.py", "numerics.py",
                      "execution.py", "optimization.py", "weighting.py", "input_order.py",
-                     "vocabulary.py", "public_vocabulary_v1.json", "input_identity.py")
+                     "vocabulary.py", "public_vocabulary_v1.json", "input_identity.py",
+                     "value_targets.py")
 
 
 class MStdTrainer:
@@ -102,7 +114,8 @@ class MStdTrainer:
             }
         self._numerics = TrainingNumerics(config.seed, self.execution.cpu_threads, self.device)
         with self._numerics.scope():
-            self.model = MStd(vocabulary, self.execution).to(self.device)
+            self.model = MStd(vocabulary, self.execution, value_heads=config.value_heads,
+                              model_size=config.model_size).to(self.device)
             self.optimizer = torch.optim.AdamW(
                 self.model.parameters(), lr=config.learning_rate, weight_decay=config.weight_decay
             )
@@ -131,16 +144,22 @@ class MStdTrainer:
         self.early_checkpoint_steps = ({max(1, math.ceil(per_epoch * q / 4))
                                         for q in range(1, 13)} if checkpoint_policy else set())
         root = Path(__file__).parent
+        from .value_targets import target_spec
+
+        if config.value_heads and any(p.frames and not p.values for p in populations.values()):
+            raise BoundaryError("p1_training", "explicit_value_targets_required")
         self.identity = {
             "snapshot_id": snapshot_id,
             "config": config.to_dict(),
-            "architecture": ARCHITECTURE,
+            "architecture": self.model.architecture,
             "input_spec": input_spec(vocabulary),
-            "target_spec": TARGET_SPEC,
+            "target_spec": target_spec(config.value_heads),
             "partitions": {
                 k: {
                     "points_sha256": digest(json_bytes(p.point_ids)),
                     "targets_sha256": digest(json_bytes(p.targets)),
+                    **({"value_targets_sha256": digest(json_bytes(p.values))}
+                       if config.value_heads else {}),
                 }
                 for k, p in populations.items()
             },
@@ -224,8 +243,10 @@ class MStdTrainer:
         update = optimizer_update(self.model, self.optimizer,
                                   [train.frames[i] for i in indices],
                                   [train.targets[i] for i in indices], lr,
-                                  **({"weights": [train.weights[i] for i in indices]}
-                                     if train.weights else {}))
+                                  weights=([train.weights[i] for i in indices]
+                                           if train.weights else None),
+                                  value_targets=([train.values[i] for i in indices]
+                                                if self.config.value_heads else None))
         train_seconds = time.perf_counter() - started
         self.step += 1
         self.cursor += len(indices)
@@ -235,6 +256,7 @@ class MStdTrainer:
             "examples": len(indices),
             "batch_sha256": digest(json_bytes([train.point_ids[i] for i in indices])),
             "mean_N_loss": update["mean_N_loss"],
+            **({"auxiliary_loss": update["auxiliary_loss"]} if self.config.value_heads else {}),
             "lr": lr,
             "gradient_norm": update["gradient_norm"],
         }
@@ -307,7 +329,8 @@ class MStdTrainer:
             raise BoundaryError("p1_training", "no_dev_selected_model")
         # Construction must not consume training RNG or mutate the continuing last model.
         with torch.random.fork_rng(devices=[]):
-            model = MStd(self.vocabulary, self.execution)
+            model = MStd(self.vocabulary, self.execution, value_heads=self.config.value_heads,
+                         model_size=self.config.model_size)
         model.load_state_dict(self.best_weights, strict=True)
         return model.eval()
 
@@ -325,7 +348,7 @@ class MStdTrainer:
     def checkpoint(self) -> bytes:
         return encode_checkpoint(
             {
-                "schema": CHECKPOINT_SCHEMA,
+                "schema": checkpoint_schema(self.config.value_heads),
                 "identity": self.identity,
                 "model": dict(self.model.state_dict()),
                 "optimizer": self.optimizer.state_dict(),
@@ -354,7 +377,8 @@ class MStdTrainer:
 
     def restore(self, raw: bytes) -> None:
         value = decode_checkpoint(raw)
-        if value.get("schema") != CHECKPOINT_SCHEMA or value.get("identity") != self.identity:
+        if (value.get("schema") != checkpoint_schema(self.config.value_heads)
+                or value.get("identity") != self.identity):
             raise BoundaryError("p1_training", "checkpoint_execution_identity_mismatch")
         self.model.load_state_dict(value["model"], strict=True)
         self.optimizer.load_state_dict(value["optimizer"])

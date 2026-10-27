@@ -91,10 +91,25 @@ def _view_role_vectors(scene: Tensor, roles: list[Role], absent: Tensor) -> Tens
     return _mean_terms(scene, rows, absent)
 
 
+VALUE_ARCHITECTURE = {**ARCHITECTURE, "id": "q3-m-std-value-2",
+                      "auxiliary_heads": ["win-linear-192-1", "progress-linear-192-1"]}
+
+
+def architecture(value_heads: bool = False, model_size: str = "standard") -> dict[str, Any]:
+    base = VALUE_ARCHITECTURE if value_heads else ARCHITECTURE
+    return ({**base, "id": "q3-m-large-value-1", "text_layers": 4, "scene_layers": 6}
+            if model_size == "large" else base)
+
+
 class MStd(nn.Module):
-    def __init__(self, vocabulary: dict[str, Any], execution: MStdExecution | None = None):
+    def __init__(self, vocabulary: dict[str, Any], execution: MStdExecution | None = None,
+                 *, value_heads: bool = False, model_size: str = "standard"):
+        if model_size not in {"standard", "large"}:
+            raise ValueError("unsupported model size")
         super().__init__()
         self.execution = execution or MStdExecution()
+        self.model_size = model_size
+        self.architecture = architecture(value_heads, model_size)
         self.vocabulary = vocabulary
         if vocabulary.get("input_spec") == V2_INPUT_SPEC:
             from .vocabulary import validate_vocabulary
@@ -111,7 +126,7 @@ class MStd(nn.Module):
         self.text_numbers = nn.Linear(1, 128, bias=False)
         self.text_blocks = nn.TransformerEncoder(
             nn.TransformerEncoderLayer(128, 4, 512, dropout=0.1, batch_first=True),
-            2,
+            self.architecture["text_layers"],
             enable_nested_tensor=False,
         )
         self.text_projection = nn.Linear(128, 192)
@@ -127,7 +142,7 @@ class MStd(nn.Module):
         self.node_norm = nn.LayerNorm(192)
         self.scene = nn.TransformerEncoder(
             nn.TransformerEncoderLayer(192, 4, 768, dropout=0.1, batch_first=True),
-            3,
+            self.architecture["scene_layers"],
             enable_nested_tensor=False,
         )
         self.action_types = nn.Embedding(len(vocabulary["actions"]), 192)
@@ -136,6 +151,11 @@ class MStd(nn.Module):
         self.absent_roles = nn.Parameter(torch.zeros(2, 192))
         self.cross = nn.MultiheadAttention(192, 4, dropout=0.1, batch_first=True)
         self.head = nn.Sequential(nn.Linear(384, 192), nn.GELU(), nn.Linear(192, 1))
+        self.value_heads = value_heads
+        # Initialize after the action graph, preserving its original initialization.
+        if value_heads:
+            self.win_head = nn.Linear(192, 1)
+            self.progress_head = nn.Linear(192, 1)
         self._tokens: dict[str, tuple[list[int], list[float]]] = {}
 
     def index(self, table: str, value: str) -> int:
@@ -293,13 +313,25 @@ class MStd(nn.Module):
         return self.forward_batch([frame])[0]
 
     def forward_batch(self, frames: list[Frame], *, check_finite: bool = True) -> list[Tensor]:
+        return self._forward_batch(frames, check_finite=check_finite)[0]
+
+    def forward_with_values(self, frames: list[Frame], *, check_finite: bool = True
+                            ) -> tuple[list[Tensor], Tensor]:
+        if not self.value_heads:
+            raise ValueError("value heads are not enabled")
+        scores, current = self._forward_batch(frames, check_finite=check_finite)
+        values = torch.cat((self.win_head(current), self.progress_head(current)), dim=1)
+        return scores, values
+
+    def _forward_batch(self, frames: list[Frame], *, check_finite: bool = True
+                       ) -> tuple[list[Tensor], Tensor]:
         """Independent scenes with full catalogs; padding is never a public input.
 
         Texts are deduplicated within each frame exactly as in single-frame scoring,
         never across frames (each occurrence owns its training dropout).
         """
         if not frames:
-            return []
+            return [], self.ids.weight.new_empty((0, 192))
         device = self.ids.weight.device
         texts = [
             sorted({text for node in frame.entities for _, text in node.text}) for frame in frames
@@ -348,11 +380,11 @@ class MStd(nn.Module):
                     )
                 action = action + self.source_role(source) + self.target_role(target)
             actions.append(action)
+        current = (scene * (~mask).unsqueeze(-1)).sum(1) / lengths.unsqueeze(-1)
         if not any(frame.choices for frame in frames):
-            return [self.ids.weight.new_empty((0,)) for _ in frames]
+            return [self.ids.weight.new_empty((0,)) for _ in frames], current
         action = nn.utils.rnn.pad_sequence(actions, batch_first=True)
         read, _ = self.cross(action, scene, scene, key_padding_mask=mask, need_weights=False)
-        current = (scene * (~mask).unsqueeze(-1)).sum(1) / lengths.unsqueeze(-1)
         scores = self.head(
             torch.cat((action + read, current[:, None, :].expand(-1, action.shape[1], -1)), -1)
         ).squeeze(-1)
@@ -362,4 +394,4 @@ class MStd(nn.Module):
             for score, frame in zip(outputs, frames, strict=True)
         ) or (check_finite and not bool(torch.isfinite(torch.cat(outputs)).all())):
             raise ValueError("non-finite or incomplete model scores")
-        return outputs
+        return outputs, current

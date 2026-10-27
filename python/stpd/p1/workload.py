@@ -20,15 +20,15 @@ from .execution import MStdExecution
 from .export import input_spec
 from .formal_training import Population
 from .input import INPUT_SPEC, V2_INPUT_SPEC, fit_vocabulary, project, training_projection
-from .model import ARCHITECTURE
+from .model import architecture
 from .spec import (
     DERIVED_RUN_SCHEMA,
     RUN_SCHEMA,
     RUN_SCHEMAS,
-    TARGET_SPEC,
     TRAINING_SCHEMA,
     MStdConfig,
 )
+from .value_targets import from_run_facts, target_spec
 from .weighting import CHECKPOINT_POLICY, checked_weights, point_weights
 
 ENTRYPOINT = "stpd.workers.p1_run:execute_p1_run"
@@ -40,7 +40,7 @@ def populations_from_snapshot(store: ArtifactStore, snapshot_id: str) -> dict[st
 
 def populations_from_reader(
     reader: SnapshotReader, loss_weighting: dict[str, Any] | None = None,
-    input_projection: dict[str, Any] | None = None,
+    input_projection: dict[str, Any] | None = None, *, value_heads: bool = False,
 ) -> dict[str, Population]:
     """Project one already verified immutable read session, without reloading it."""
     selection = reader.selection
@@ -50,11 +50,13 @@ def populations_from_reader(
     if set(counts) - {"train", "dev", "test"} or not counts.get("train") or not counts.get("dev"):
         raise BoundaryError("p1_workload", "explicit_nonempty_train_dev_required")
     weights = point_weights(loss_weighting, selection) if loss_weighting is not None else {}
-    rows: dict[str, list[tuple[str, Any, int]]] = {s: [] for s in ("train", "dev", "test")}
-    for reference, observation in reader.iter_points():
+    rows: dict[str, list[tuple[str, Any, int, Any]]] = {s: [] for s in ("train", "dev", "test")}
+    points = reader.iter_supervised_points() if value_heads else reader.iter_points()
+    for reference, observation in points:
         frame = project(observation, input_projection=input_projection)
         target = [c["choice_id"] for c in frame.choices].index(reference["chosen"])
-        rows[reference["split"]].append((reference["point_id"], frame, target))
+        values = from_run_facts(reference["auxiliary_run_facts"]) if value_heads else None
+        rows[reference["split"]].append((reference["point_id"], frame, target, values))
     return {
         split: Population(
             tuple(row[1] for row in sorted(samples)),
@@ -62,6 +64,7 @@ def populations_from_reader(
             tuple(row[0] for row in sorted(samples)),
             (tuple(weights[row[0]] for row in sorted(samples))
              if split == "train" and weights else ()),
+            tuple(row[3] for row in sorted(samples)) if value_heads else (),
         )
         for split, samples in rows.items()
     }
@@ -85,7 +88,10 @@ def prepare_p1_run(
     if checkpoint_policy not in {None, CHECKPOINT_POLICY}:
         raise BoundaryError("p1_workload", "unsupported_checkpoint_policy")
     projection = training_projection(INPUT_SPEC if input_projection is None else input_projection)
-    if initial_checkpoint is not None and (loss_weighting is not None or checkpoint_policy
+    if config.value_heads and projection != V2_INPUT_SPEC:
+        raise BoundaryError("p1_workload", "value_heads_require_v2_input")
+    if initial_checkpoint is not None and (config.value_heads or loss_weighting is not None
+                                           or checkpoint_policy
                                            or projection != INPUT_SPEC):
         raise BoundaryError("p1_workload", "new_protocol_cannot_derive_old_run")
     checked_digest(operation_id, "p1_workload.operation_id", length=32)
@@ -107,11 +113,19 @@ def prepare_p1_run(
     training_sources(store, snapshot_id)
     reader = SnapshotReader(store, snapshot_id)
     snapshot = reader.manifest
+    # Known fixed evaluation seeds are forbidden even through the direct Run API.
+    from stpd.evaluation.suites import t2_managed_manifest
+
+    reserved = {seed for level in (0, 10)
+                for seed in t2_managed_manifest("v0.111.0", level)["seeds"]}
+    if any(source["lineage"].get("seed") in reserved for source in reader.selection["sources"]):
+        raise BoundaryError("p1_workload", "evaluation_seed_reserved")
     if snapshot.parameters.value().get("purpose") != "engineering":
         raise BoundaryError("p1_workload", "engineering_snapshot_required_no_auto_admission")
     weighting = (checked_weights(loss_weighting, reader.selection)
                  if loss_weighting is not None else None)
-    populations = populations_from_reader(reader, weighting, projection)
+    populations = populations_from_reader(reader, weighting, projection,
+                                          value_heads=config.value_heads)
     if projection == V2_INPUT_SPEC:
         from .vocabulary import public_vocabulary
 
@@ -137,8 +151,8 @@ def prepare_p1_run(
                 "snapshot_selection_sha256": snapshot.payload("selection").sha256,
                 "input_spec": input_spec(vocabulary),
                 "input_projection": projection,
-                "target_spec": TARGET_SPEC,
-                "architecture": ARCHITECTURE,
+                "target_spec": target_spec(config.value_heads),
+                "architecture": architecture(config.value_heads, config.model_size),
                 "partition_N": {s: len(p.frames) for s, p in populations.items()},
                 "planned_steps": config.steps(len(populations["train"].frames)),
                 "vocabulary_sha256": digest(vocabulary_raw),
@@ -220,8 +234,9 @@ def verify_p1_run(store: ArtifactStore, run_id: str, producer: Producer) -> P1Wo
         or {p.role for p in training.parents} != {"source"}
         or {p.role for p in training.payloads} != {"vocabulary"}
         or info.get("input_projection") not in (INPUT_SPEC, V2_INPUT_SPEC)
-        or info.get("target_spec") != TARGET_SPEC
-        or info.get("architecture") != ARCHITECTURE
+        or info.get("target_spec") != target_spec(MStdConfig.decode(info["config"]).value_heads)
+        or info.get("architecture") != architecture(MStdConfig.decode(info["config"]).value_heads,
+                                                    MStdConfig.decode(info["config"]).model_size)
         or info.get("purpose") != "engineering"
     ):
         raise BoundaryError("p1_workload", "training_input_binding_mismatch")
