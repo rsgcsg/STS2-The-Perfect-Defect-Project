@@ -12,6 +12,7 @@ import hashlib
 import json
 import re
 from pathlib import Path
+from typing import Any
 
 from tokenizers import Tokenizer, models, pre_tokenizers, trainers
 
@@ -24,19 +25,20 @@ CATEGORIES = ("Cards", "Relics", "Potions", "Powers", "Monsters", "Events", "Cha
               "Afflictions", "Enchantments", "Orbs", "Acts", "Modifiers", "Encounters")
 
 
-def sha(raw):
+def sha(raw: bytes) -> str:
     return hashlib.sha256(raw).hexdigest()
 
 
 def build(localization: Path, model_types: Path, shapes: Path, sdk: Path, base: Path | None,
-          assembly_sha256: str):
+          assembly_sha256: str) -> dict[str, Any]:
     if re.fullmatch(r"[0-9a-f]{64}", assembly_sha256) is None:
         raise ValueError("exact game assembly SHA256 required")
     receipt = json.loads((localization / "manifest.json").read_bytes())
-    ids, descriptions = {"Skip", "SMITH"}, set()
+    ids = {"Skip", "SMITH"}
+    descriptions: set[str] = set()
     sources, counts = [], {}
     for table in TABLES:
-        terms = set()
+        terms: set[str] = set()
         for language in ("eng", "zhs"):
             raw = (localization / language / (table + ".json")).read_bytes()
             expected = next(f["sha256"] for f in receipt["files"]
@@ -76,7 +78,7 @@ def build(localization: Path, model_types: Path, shapes: Path, sdk: Path, base: 
                                       raw.decode()))
     actions.update(f"{family}.{action}" for family in ("selector", "upgrade", "enchant")
                    for action in ("confirm", "cancel", "back", "finish"))
-    terms = {"ids": ids, "kinds": kinds, "fields": fields, "actions": actions}
+    tables = {"ids": ids, "kinds": kinds, "fields": fields, "actions": actions}
     previous = json.loads(base.read_bytes()) if base else None
     if previous:
         if previous["input_spec"] != V2_INPUT_SPEC:
@@ -90,9 +92,10 @@ def build(localization: Path, model_types: Path, shapes: Path, sdk: Path, base: 
             special_tokens=["[PAD]", "[UNK]", "<NUM>", "<MISSING>", "<REF>", "<EMPTY>"],
             initial_alphabet=pre_tokenizers.ByteLevel.alphabet()))
         tokenizer = token.to_str()
-    vocabulary = {"tokenizer": tokenizer, "input_spec": V2_INPUT_SPEC,
-                  "vocabulary_version": previous["vocabulary_version"] + 1 if previous else 1}
-    for name, values in terms.items():
+    vocabulary: dict[str, Any] = {
+        "tokenizer": tokenizer, "input_spec": V2_INPUT_SPEC,
+        "vocabulary_version": previous["vocabulary_version"] + 1 if previous else 1}
+    for name, values in tables.items():
         old = previous[name] if previous else ["[UNK]"]
         vocabulary[name] = old + sorted(values - set(old))
     if len(vocabulary["ids"]) > 8192:
@@ -109,7 +112,7 @@ def build(localization: Path, model_types: Path, shapes: Path, sdk: Path, base: 
     return vocabulary
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--localization", type=Path, required=True)
     parser.add_argument("--model-types", type=Path, required=True)
