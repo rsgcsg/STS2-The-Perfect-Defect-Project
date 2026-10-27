@@ -1559,7 +1559,9 @@ export async function checkPlatformBom(platformRoot = PLATFORM_ROOT) {
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  const { BOM_REFRESH_HINT, identityDrift } = await import("./refresh-bom-identity.mjs");
   const report = await checkPlatformBom();
+  if (identityDrift(report.errors)) report.repair = BOM_REFRESH_HINT;
   process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
   if (report.errors.length > 0) process.exitCode = 1;
 }

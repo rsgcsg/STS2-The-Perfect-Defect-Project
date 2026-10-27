@@ -2479,10 +2479,27 @@ def test_runtime_v2_consumer_preserves_original_budget_mode_and_nullable_limits(
         client.validate_status(broken)
 
 
-@pytest.mark.parametrize("version", ["0.1.0-rc.54", "0.2.0", "broken", None])
+# A version that is never published, so a Runtime release cannot turn this
+# rejection fixture into a supported version (rc.53 and rc.54 both did).
+NEVER_RELEASED_RUNTIME = "0.1.0-rc.999999"
+
+
+@pytest.mark.parametrize("version", [NEVER_RELEASED_RUNTIME, "0.2.0", "broken", None])
 def test_unknown_runtime_version_never_selects_a_guessed_startup_contract(version):
     with pytest.raises(BoundaryError, match="unsupported_runtime_startup_contract"):
         local_models._runtime_wire_version({"version": version})
+
+
+def test_current_policy_runtime_version_is_explicitly_admitted():
+    package = json.loads((Path(__file__).resolve().parents[2] / "components" / "policy-runtime"
+                          / "package.json").read_text(encoding="utf-8"))
+    try:
+        local_models._runtime_wire_version(package)
+    except BoundaryError as error:
+        pytest.fail(f"Policy Runtime {package['version']} is not admitted: a Runtime version "
+                    "bump must explicitly admit it in local_models._runtime_wire_version (and "
+                    "the central_batch set in workbench/managed_evaluation.py) when its startup "
+                    f"contract is unchanged; {error}")
 
 
 def test_old_runtime_never_silently_runs_continuous_as_finite_default():

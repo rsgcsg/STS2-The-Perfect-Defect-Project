@@ -6,6 +6,7 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { actionsHome, catalogText, inspectCommand, overview, runHumanChooser } from "../examples/p1/human-chooser.mjs";
+import { projectPython } from "../../../tools/project-python.mjs";
 const script = fileURLToPath(new URL("../examples/p1/human-chooser.mjs", import.meta.url));
 const observation = () => ({ status: "decision", envelope: { occurrence: 17 },
   scene: { native_kind: "card_reward_selection", content: { surface: { cards: [{ entity_id: "card-one", name: "压缩", description: "完整描述", card_previews: [{ definition_id: "FUEL", description: "燃料完整描述" }] }] } } },
@@ -165,7 +166,7 @@ while select.select([master],[],[],0.2)[0]:
 os.close(master)
 print(json.dumps({'ready':ready,'choice':choice,'exit':p.returncode,'terminal':text.decode('utf8')}))
 `;
-    const result = spawnSync("python3", ["-c", python, process.execPath, script, JSON.stringify(observation()), mode,
+    const result = spawnSync(projectPython(), ["-c", python, process.execPath, script, JSON.stringify(observation()), mode,
       fileURLToPath(new URL("../examples/p1/session-bridge.mjs", import.meta.url)),
       fileURLToPath(new URL("../contracts/fixtures/agent-session-v1.json", import.meta.url))], { encoding: "utf8", timeout: 10000 });
     expect(result.status, result.stderr).toBe(0);
@@ -197,7 +198,7 @@ while p.poll() is None:
    os.write(master,b'1\n');selected=True
 os.close(master);sys.exit(p.wait())
 `;
-    const f = await globalRuntimeFixture({ program: { command: "python3",
+    const f = await globalRuntimeFixture({ program: { command: projectPython(),
       args: ["-c", python, process.execPath, bridge, "{manifest}", process.execPath, script],
       artifact: Buffer.from("synthetic PTY human chooser conformance"),
       adapter: { id: "p1-session-bridge", version: "1", protocol: "sts2.policy-runtime/agent-session-ndjson-1",

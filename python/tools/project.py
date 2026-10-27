@@ -62,9 +62,14 @@ def validate_repository(root: Path) -> None:
                     f"{route}: broken local document link: {link}")
 
 
+# Must equal tools/pytest_shard.SHARD_COUNT; the plugin rejects any other count.
+PYTEST_SHARD_COUNT = 3
+
+
 def parse_pytest_shard(value: str) -> tuple[int, int]:
-    require(value in ("1/2", "2/2"), "pytest shard must be 1/2 or 2/2")
-    return int(value[0]), 2
+    allowed = tuple(f"{index}/{PYTEST_SHARD_COUNT}" for index in range(1, PYTEST_SHARD_COUNT + 1))
+    require(value in allowed, f"pytest shard must be one of {', '.join(allowed)}")
+    return int(value.split("/")[0]), PYTEST_SHARD_COUNT
 
 
 def portable_commands(python: str = sys.executable, *,
@@ -91,7 +96,7 @@ def portable_commands(python: str = sys.executable, *,
         ("git", "diff", "--check"),
         ("git", "show", "--format=", "--check", "HEAD"),
     )
-    if pytest_shard is not None and pytest_shard[0] == 2:
+    if pytest_shard is not None and pytest_shard[0] != 1:
         return tuple(command for command in commands if command[1:3] == ("-m", "pytest"))
     return commands
 
@@ -135,7 +140,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("command", choices=("context", "check", "closeout"))
     parser.add_argument("--base", help="exact base SHA for committed patch hygiene")
     parser.add_argument("--pytest-shard",
-                        help="explicit top-level hosted pytest partition: 1/2 or 2/2")
+                        help="explicit top-level hosted pytest partition: N/PYTEST_SHARD_COUNT")
     args = parser.parse_args(argv)
     try:
         if args.command == "context":

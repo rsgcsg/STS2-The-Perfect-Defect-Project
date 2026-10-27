@@ -23,7 +23,8 @@ def main() -> int:
         print("Install uv and Node 20+ once, then run this launcher again.")
         return 1
     # Never replace configuration, switch branches, download models or start gameplay.
-    commands = [[uv, "sync", "--locked", "--extra", "cloud", "--inexact"], [npm, "ci"]]
+    commands = [[uv, "sync", "--locked", "--extra", "cloud", "--extra", "recording-intake",
+                 "--inexact"], [npm, "ci"]]
     base = [uv, "run", "--locked", "python", "-m", "spireagent.workbench", "project"]
     if not args.config.exists():
         commands.append(

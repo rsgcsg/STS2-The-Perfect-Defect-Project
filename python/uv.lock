@@ -1348,6 +1348,9 @@ ml = [
     { name = "torch", version = "2.11.0+cu128", source = { registry = "https://download.pytorch.org/whl/cu128" }, marker = "sys_platform == 'win32'" },
     { name = "torch", version = "2.13.0", source = { registry = "https://pypi.org/simple" }, marker = "sys_platform != 'win32'" },
 ]
+recording-intake = [
+    { name = "tokenizers" },
+]
 research = [
     { name = "boto3" },
     { name = "duckdb" },
@@ -1379,6 +1382,7 @@ requires-dist = [
     { name = "safetensors", marker = "extra == 'local-models'", specifier = ">=0.5,<1" },
     { name = "tokenizers", marker = "extra == 'l1'", specifier = ">=0.21,<1" },
     { name = "tokenizers", marker = "extra == 'local-models'", specifier = ">=0.21,<1" },
+    { name = "tokenizers", marker = "extra == 'recording-intake'", specifier = ">=0.21,<1" },
     { name = "torch", marker = "sys_platform == 'win32' and extra == 'local-models'", specifier = ">=2.7,<3", index = "https://download.pytorch.org/whl/cu128" },
     { name = "torch", marker = "sys_platform == 'win32' and extra == 'ml'", specifier = ">=2.7,<3", index = "https://download.pytorch.org/whl/cu128" },
     { name = "torch", marker = "sys_platform != 'win32' and extra == 'local-models'", specifier = ">=2.7,<3" },
@@ -1386,7 +1390,7 @@ requires-dist = [
     { name = "transformers", marker = "extra == 'l2'", specifier = ">=5,<6" },
     { name = "waitress", marker = "extra == 'cloud'", specifier = ">=3,<4" },
 ]
-provides-extras = ["cloud", "local-models", "research", "l1", "ml", "l2", "lora"]
+provides-extras = ["cloud", "local-models", "recording-intake", "research", "l1", "ml", "l2", "lora"]
 
 [package.metadata.requires-dev]
 dev = [

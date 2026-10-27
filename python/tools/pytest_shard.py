@@ -26,6 +26,8 @@ def normalized_nodeid(nodeid: str) -> str:
 
 PROFILE_PATH = Path(__file__).with_name("pytest-file-costs.json")
 ALGORITHM = "lpt-whole-file-gates-1"
+# Hosted Linux/Windows run this many isolated shards; shard1 also owns non-pytest gates.
+SHARD_COUNT = 3
 MAX_SAFE_INTEGER = 2**53 - 1
 
 
@@ -61,8 +63,10 @@ def validated_profile(profile: Any) -> dict[str, Any]:
     if not isinstance(sources, list) or not sources:
         raise ValueError("invalid portable cost provenance")
     for group in sources:
-        if not isinstance(group, list) or len(group) != 2:
-            raise ValueError("invalid portable cost source pair")
+        # One retained run supplies every shard it had; that run may predate
+        # the current shard count, so the group is complete, not fixed-size.
+        if not isinstance(group, list) or not group:
+            raise ValueError("invalid portable cost source group")
         for index, source in enumerate(group, 1):
             if (not isinstance(source, dict) or set(source) != source_keys
                     or not isinstance(source["run_id"], str)
@@ -80,7 +84,7 @@ def validated_profile(profile: Any) -> dict[str, Any]:
                 if (not isinstance(value, str) or len(value) != length
                         or any(char not in "0123456789abcdef" for char in value)):
                     raise ValueError("invalid portable cost source digest")
-        if group[0]["run_id"] != group[1]["run_id"]:
+        if any(source["run_id"] != group[0]["run_id"] for source in group):
             raise ValueError("portable cost source pair differs")
     return profile
 
@@ -94,18 +98,18 @@ def load_profile(file: Path = PROFILE_PATH) -> dict[str, Any]:
 
 def selected_ids(collection: list[dict[str, str]], index: int, count: int,
                  profile: dict[str, Any] | None = None) -> list[str]:
-    if count != 2 or index not in (1, 2):
-        raise ValueError("portable pytest requires shard 1/2 or 2/2")
+    if count != SHARD_COUNT or not 1 <= index <= SHARD_COUNT:
+        raise ValueError(f"portable pytest requires shard 1..{SHARD_COUNT}/{SHARD_COUNT}")
     profile = load_profile() if profile is None else validated_profile(profile)
     costs = profile["file_cost_ms"]
     files = {item["file"] for item in collection}
     weights = {file: costs.get(file, profile["unknown_file_ms"]) for file in files}
     if sum(weights.values()) + profile["first_shard_overhead_ms"] > MAX_SAFE_INTEGER:
         raise ValueError("portable selection exceeds safe integer sum")
-    bins: list[set[str]] = [set(), set()]
-    loads = [profile["first_shard_overhead_ms"], 0]
+    bins: list[set[str]] = [set() for _ in range(count)]
+    loads = [profile["first_shard_overhead_ms"], *[0] * (count - 1)]
     for file in sorted(files, key=lambda file: (-weights[file], file.encode("utf-8"))):
-        target = 0 if loads[0] <= loads[1] else 1
+        target = loads.index(min(loads))
         bins[target].add(file)
         loads[target] += weights[file]
     return sorted((item["nodeid"] for item in collection if item["file"] in bins[index - 1]),
@@ -141,7 +145,7 @@ def pytest_configure(config: pytest.Config) -> None:
     index = config.getoption("--portable-shard-index")
     count = config.getoption("--portable-shard-count")
     manifest = config.getoption("--portable-shard-manifest")
-    if count != 2 or index not in (1, 2) or not manifest:
+    if count != SHARD_COUNT or index not in range(1, SHARD_COUNT + 1) or not manifest:
         raise pytest.UsageError("explicit shard index/count/manifest are required")
     config.pluginmanager.register(ShardRecorder(config, index, count, Path(manifest)),
                                   "portable-shard-recorder")

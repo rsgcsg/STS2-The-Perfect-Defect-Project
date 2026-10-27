@@ -14,16 +14,23 @@ from pathlib import Path
 import pytest
 
 from tools.project import RepositoryGateError, parse_pytest_shard, portable_commands
-from tools.pytest_shard import load_profile, normalized_nodeid, selected_ids, validated_profile
+from tools.pytest_shard import (
+    SHARD_COUNT,
+    load_profile,
+    normalized_nodeid,
+    selected_ids,
+    validated_profile,
+)
 
 ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_default_inventory_and_explicit_top_level_only() -> None:
     full = portable_commands("python")
-    for value in ("1/2", "2/2"):
+    values = tuple(f"{index}/{SHARD_COUNT}" for index in range(1, SHARD_COUNT + 1))
+    for value in values:
         sharded = portable_commands("python", pytest_shard=parse_pytest_shard(value))
-        originals = (full if value == "1/2" else
+        originals = (full if value == values[0] else
                      tuple(c for c in full if c[:3] == ("python", "-m", "pytest")))
         assert len(originals) == len(sharded)
         for original, partition in zip(originals, sharded, strict=True):
@@ -31,13 +38,13 @@ def test_default_inventory_and_explicit_top_level_only() -> None:
                 assert partition[:len(original)] == original
                 assert partition[len(original):] == (
                     "-p", "tools.pytest_shard", f"--portable-shard-index={value[0]}",
-                    "--portable-shard-count=2",
+                    f"--portable-shard-count={SHARD_COUNT}",
                     "--portable-shard-manifest=.local/pytest-shard.json",
                 )
             else:
                 assert partition == original
     assert not any("tools.pytest_shard" in command for command in full)
-    for value in ("0/2", "3/2", "1/3", "", "all"):
+    for value in ("0/3", "4/3", "1/2", "2/2", "1/4", "", "all"):
         with pytest.raises(RepositoryGateError):
             parse_pytest_shard(value)
     assert normalized_nodeid(r"tests\test_a.py::TestClass::test_x[one]") == (
@@ -49,10 +56,10 @@ def test_default_inventory_and_explicit_top_level_only() -> None:
     collection = [{"file": file, "nodeid": file + "::test_x[one]"} for file in (
         "tests/test_z.py", "deploy/hub/test_a.py", "tests/test_new.py",
     )]
-    assert set(selected_ids(collection, 1, 2)).isdisjoint(selected_ids(collection, 2, 2))
-    assert sorted(selected_ids(collection, 1, 2) + selected_ids(collection, 2, 2)) == sorted(
-        item["nodeid"] for item in collection
-    )
+    shards = [selected_ids(collection, index, SHARD_COUNT) for index in range(1, SHARD_COUNT + 1)]
+    assert sorted(sum(shards, [])) == sorted(item["nodeid"] for item in collection)
+    with pytest.raises(ValueError):
+        selected_ids(collection, 1, 2)
 
 
 def git(root: Path, *args: str) -> str:
@@ -137,6 +144,19 @@ def test_two():
     return root
 
 
+FIXTURE_FILES = ("deploy/hub/test_a.py", "tests/test_b.py", "tests/test_c.py",
+                 "tests/test_nested.py")
+
+
+def shard_of(file: str) -> int:
+    """The golden fixture's shard for one file under the committed routing."""
+    profile = load_profile()
+    profile["first_shard_overhead_ms"] = 0
+    collection = [{"file": item, "nodeid": item + "::test"} for item in FIXTURE_FILES]
+    return next(index for index in range(1, SHARD_COUNT + 1)
+                if file + "::test" in selected_ids(collection, index, SHARD_COUNT, profile))
+
+
 def run_shard(root: Path, index: int) -> tuple[int, dict]:
     environment = dict(os.environ)
     environment.pop("PYTEST_ADDOPTS", None)
@@ -149,7 +169,7 @@ def run_shard(root: Path, index: int) -> tuple[int, dict]:
                         "RUNNER_OS": platform.system(),
                         "GITHUB_SHA": git(root, "rev-parse", "HEAD")})
     command = [sys.executable, "-m", "pytest", "-q", "-p", "tools.pytest_shard",
-               f"--portable-shard-index={index}", "--portable-shard-count=2",
+               f"--portable-shard-index={index}", f"--portable-shard-count={SHARD_COUNT}",
                "--portable-shard-manifest=.local/pytest-shard.json", "--junitxml=.local/pytest.xml"]
     started = datetime.now(UTC).isoformat()
     process = subprocess.Popen(command, cwd=root / "python", env=environment,
@@ -173,7 +193,7 @@ def run_shard(root: Path, index: int) -> tuple[int, dict]:
 def test_real_collection_module_lifetime_nested_child_and_aggregate(tmp_path: Path) -> None:
     source = golden_repo(tmp_path / "source")
     manifests = []
-    for index in (1, 2):
+    for index in range(1, SHARD_COUNT + 1):
         clone = tmp_path / f"clone-{index}"
         git(tmp_path, "clone", "--no-hardlinks", str(source), str(clone))
         code, report = run_shard(clone, index)
@@ -184,21 +204,25 @@ def test_real_collection_module_lifetime_nested_child_and_aggregate(tmp_path: Pa
             (clone / "python/.local/pytest.xml").read_bytes()
         ).hexdigest()
         assert all(item["finished"] for item in report["executed"])
-    assert manifests[0]["collection"] == manifests[1]["collection"]
-    selected = manifests[0]["selected_nodeids"] + manifests[1]["selected_nodeids"]
+    assert all(item["collection"] == manifests[0]["collection"] for item in manifests)
+    selected = [nodeid for item in manifests for nodeid in item["selected_nodeids"]]
     assert len(selected) == len(set(selected)) == len(manifests[0]["collection"]) == 5
-    assert (tmp_path / "clone-2/python/.local/fixture-count").read_text() == "once"
-    assert (tmp_path / "clone-2/python/.local/nested-items").read_text().splitlines() == [
+    local = "python/.local"
+    count = tmp_path / f"clone-{shard_of('tests/test_b.py')}" / local / "fixture-count"
+    assert count.read_text() == "once"
+    nested = tmp_path / f"clone-{shard_of('tests/test_nested.py')}" / local / "nested-items"
+    assert nested.read_text().splitlines() == [
         "one", "two",
     ]
     # Real pytest originals enter the production verifier; broad owner stages are modeled here.
     script = '''import fs from 'node:fs'; import path from 'node:path';
 import {verifyPytestShards} from './tools/verify-pytest-shards.mjs';
-import {workspaceStages,pytestPartition} from './tools/check-workspace.mjs';
+import {workspaceStages,pytestPartition,PYTEST_SHARD_COUNT,PYTEST_SHARD_INDEXES}
+ from './tools/check-workspace.mjs';
 const base=process.argv[1], os=process.argv[2];
 const artifact=path.join(base,'artifacts'); fs.mkdirSync(artifact);
 let expected;
-for(const index of [1,2]) {
+for(const index of PYTEST_SHARD_INDEXES) {
  const original=path.join(base,`clone-${index}`);
  const dir=path.join(artifact,`pytest-${os}-shard-${index}-1`);
  fs.mkdirSync(path.join(dir,'python'),{recursive:true});
@@ -211,8 +235,8 @@ for(const index of [1,2]) {
  const workspace={schema:'spireagent/portable-stage-results-1',scope:'full',
    platform:{Darwin:'darwin',Linux:'linux',Windows:'win32'}[os],verdict:'passed',
    source_accepted:true,interrupted_signal:null,source_at_start:identity,source_at_end:identity,
-   pytest_partition:pytestPartition(`${index}/2`),
-   results:workspaceStages('full',{pytestShard:`${index}/2`}).map(stage=>
+   pytest_partition:pytestPartition(`${index}/${PYTEST_SHARD_COUNT}`),
+   results:workspaceStages('full',{pytestShard:`${index}/${PYTEST_SHARD_COUNT}`}).map(stage=>
      ({id:stage.id,args:stage.args,status:'passed',exit_code:0,signal:null}))};
  fs.mkdirSync(path.join(dir,'.local','checks'),{recursive:true});
  fs.writeFileSync(path.join(dir,'.local','checks',`workspace-full-${workspace.platform}.json`),JSON.stringify(workspace));
@@ -233,7 +257,7 @@ console.log(JSON.stringify(verifyPytestShards(artifact,expected,{oses:[os],profi
 ])
 def test_real_negative_outcomes_remain_original(tmp_path: Path, failure: str) -> None:
     root = golden_repo(tmp_path / "source", failure)
-    code, report = run_shard(root, 1)
+    code, report = run_shard(root, shard_of("tests/test_c.py"))
     if failure == "skip":
         assert code == 0
         assert any(item["status"] == "skipped" for item in report["executed"])
@@ -270,25 +294,28 @@ def test_integer_lpt_whole_files_unknown_cost_and_utf8_ties() -> None:
                   for file in ("tests/test_a.py", "tests/test_b.py", "tests/test_c.py",
                                "tests/test_d.py", "tests/new.py")
                   for case in ("test_one", "OtherClass::test_two[param]")]
-    first, second = (selected_ids(collection, index, 2, profile) for index in (1, 2))
-    assert {item.split("::")[0] for item in first} == {"tests/test_a.py", "tests/test_c.py"}
-    assert {item.split("::")[0] for item in second} == {
-        "tests/test_b.py", "tests/test_d.py", "tests/new.py"}
-    assert sorted(first + second) == sorted(item["nodeid"] for item in collection)
-    assert selected_ids(list(reversed(collection)), 1, 2, profile) == first
+    first, second, third = (selected_ids(collection, index, SHARD_COUNT, profile)
+                            for index in range(1, SHARD_COUNT + 1))
+    assert {item.split("::")[0] for item in first} == {"tests/test_a.py"}
+    assert {item.split("::")[0] for item in second} == {"tests/test_b.py"}
+    assert {item.split("::")[0] for item in third} == {
+        "tests/new.py", "tests/test_c.py", "tests/test_d.py"}
+    assert sorted(first + second + third) == sorted(item["nodeid"] for item in collection)
+    assert selected_ids(list(reversed(collection)), 1, SHARD_COUNT, profile) == first
     profile["file_cost_ms"] = {"tests/é.py": 50, "tests/z.py": 50}
     collection = [{"file": file, "nodeid": file + "::test_case"}
                   for file in ("tests/é.py", "tests/z.py")]
-    assert selected_ids(collection, 1, 2, profile) == ["tests/z.py::test_case"]
+    assert selected_ids(collection, 1, SHARD_COUNT, profile) == ["tests/z.py::test_case"]
 
     profile["first_shard_overhead_ms"] = 100000
     profile["file_cost_ms"] = {"tests/a.py": 200000, "tests/b.py": 180000,
                                "tests/c.py": 100000}
     weighted = [{"file": file, "nodeid": file + "::test_case"}
                 for file in profile["file_cost_ms"]]
-    assert selected_ids(weighted, 1, 2, profile) == ["tests/b.py::test_case"]
-    assert selected_ids(weighted, 2, 2, profile) == ["tests/a.py::test_case",
-                                                  "tests/c.py::test_case"]
+    # Shard1 starts at its measured non-pytest overhead, so it takes the smallest file here.
+    assert [selected_ids(weighted, index, SHARD_COUNT, profile)
+            for index in range(1, SHARD_COUNT + 1)] == [
+        ["tests/c.py::test_case"], ["tests/a.py::test_case"], ["tests/b.py::test_case"]]
 
 
 @pytest.mark.parametrize("mutation", [

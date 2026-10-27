@@ -417,7 +417,7 @@ def test_invalid_frozen_runtime_budget_rejects_before_a_host_or_model_is_read(li
 @pytest.mark.parametrize("version, admitted", [
     ("0.1.0-rc.47", False), ("0.1.0-rc.50", True),
     ("0.1.0-rc.51", True), ("0.1.0-rc.52", True),
-    ("0.1.0-rc.53", True), ("0.1.0-rc.54", False),
+    ("0.1.0-rc.53", True), ("0.1.0-rc.999999", False),  # never released
 ])
 def test_central_inference_requires_cli_environment_before_world_audit(
     tmp_path, monkeypatch, version, admitted
