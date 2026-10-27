@@ -32,6 +32,7 @@ test("native return-to-hand delivery, multi-pile choice, Plasma HUD and gardener
   assert.match(stdout, /exact native gardener turns reached round 4/u);
   assert.match(stdout, /exact native jungle option retained gold hooks and completion/u);
   assert.match(stdout, /exact native decimillipede last-segment death reached rewards/u);
+  assert.match(stdout, /exact native locked event kept independent enabled and locked facts/u);
   const counterState = JSON.parse(stdout.split(/\r?\n/u).find(line => line.startsWith("native-m2a-counter-state=")).slice("native-m2a-counter-state=".length));
   const session = new ManagedPlayerEnvironmentSession({ process: { request: async () => counterState },
     runtimeInstanceId: "same-native-counter", environmentFingerprint: "same-native-counter" });
@@ -51,13 +52,19 @@ test("native return-to-hand delivery, multi-pile choice, Plasma HUD and gardener
   assert.deepEqual(derived.observation.player.content.relics.filter(r => ["KUSARIGAMA", "LASTING_CANDY"].includes(r.definition_id)).map(r => r.counter).sort(), [1,2]);
   assert.throws(() => session.settledRelicCounters("foreign-snapshot"), /stale_snapshot/u);
   for (const [prefix, kind] of [["native-m2a-pile-state=", "native_combat_pile_selection"],
-    ["native-m2a-hand-state=", "combat_hand_card_selection"]]) {
+    ["native-m2a-hand-state=", "combat_hand_card_selection"],
+    ["native-m2a-locked-event-state=", "event_option"]]) {
     const state = JSON.parse(stdout.split(/\r?\n/u).find(line => line.startsWith(prefix)).slice(prefix.length));
     const projection = projectManagedCandidateDecision({ state, sequence: 1,
       runtimeInstanceId: "native-m2a-fixture", environmentFingerprint: "native-m2a-fixture" });
     assert.equal(projection.snapshot.completeness.status, "complete");
     assert.equal(projection.snapshot.interaction.kind, kind);
     assert.ok(projection.snapshot.bound_actions.actions.length > 0);
+    if (kind === "event_option") {
+      const locked = projection.snapshot.interaction.content.surface.options.find(option => option.is_locked);
+      assert.equal(locked.is_enabled, true);
+      assert.equal(projection.snapshot.bound_actions.actions.some(action => action.subject_referent_id === locked.entity_id), false);
+    }
   }
 });
 

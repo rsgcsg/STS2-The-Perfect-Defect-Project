@@ -109,10 +109,10 @@ index 0000000..172d413
 +</Project>
 diff --git a/m2a-native-tests/Program.cs b/m2a-native-tests/Program.cs
 new file mode 100644
-index 0000000..768810f
+index 0000000..12b56f4
 --- /dev/null
 +++ b/m2a-native-tests/Program.cs
-@@ -0,0 +1,279 @@
+@@ -0,0 +1,314 @@
 +using System.Reflection;
 +using System.Runtime.Loader;
 +using System.Text.Json;
@@ -141,8 +141,43 @@ index 0000000..768810f
 +        string root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
 +        AssemblyLoadContext.Default.Resolving += (_, name) => File.Exists(Path.Combine(root, "lib", name.Name + ".dll"))
 +            ? AssemblyLoadContext.Default.LoadFromAssemblyPath(Path.Combine(root, "lib", name.Name + ".dll")) : null;
-+        if (args.Contains("gardener")) Gardener(); else { Test(); Gardener(); EventAudio(); Decimillipede(); }
++        if (args.Contains("gardener")) Gardener(); else { Test(); Gardener(); EventAudio(); Decimillipede(); LockedEvent(); }
 +    }
++    private static void LockedEvent()
++    {
++        var assembly = typeof(NativeCardRewardAlternativePreview).Assembly;
++        var simulator = assembly.GetType("Sts2Headless.RunSimulator")!;
++        object sim = Activator.CreateInstance(simulator)!;
++        try
++        {
++            simulator.GetMethod("StartRun")!.Invoke(sim, new object?[] { "Defect", 0, "M2A_LOCKED_EVENT_COMPONENT_REGRESSION_V1", "zh", null });
++            var run = (RunState)simulator.GetField("_runState", Flags)!.GetValue(sim)!;
++            var player = run.Players[0]; player.Gold = 17;
++            var state = (Dictionary<string, object?>)simulator.GetMethod("EnterRoom")!.Invoke(sim,
++                new object?[] { "event", null, "ENDLESS_CONVEYOR" })!;
++            var room = (MegaCrit.Sts2.Core.Rooms.EventRoom)run.CurrentRoom;
++            var model = room.LocalMutableEvent!;
++            var options = (List<Dictionary<string, object?>>)state["options"]!;
++            int index = options.FindIndex(option => option["is_locked"] is true);
++            Check(index >= 0 && options[index]["is_enabled"] is true,
++                "native locked bankrupt option remains an enabled presented button");
++            object presentation = simulator.GetField("_eventPresentation", Flags)!.GetValue(sim)!;
++            var foreign = new MegaCrit.Sts2.Core.Events.EventOption(model, () => Task.CompletedTask, "PROCEED", false, true);
++            Check(presentation.GetType().GetMethod("IsEnabled", Flags)!.Invoke(presentation, new object[] { foreign }) is false,
++                "unpresented option does not acquire button enablement");
++            string Ref(object value) => (string)assembly.GetType("Sts2Headless.NativeObjectIdentity")!.GetMethod("Get")!.Invoke(null, new[] { value })!;
++            var option = model.CurrentOptions[index]; int gold = player.Gold;
++            var result = (Dictionary<string, object?>)simulator.GetMethod("ExecuteAction")!.Invoke(sim,
++                new object?[] { "choose_option", new Dictionary<string, object?> { ["option_index"] = index,
++                    ["room_ref"] = Ref(room), ["event_ref"] = Ref(model), ["option_ref"] = Ref(option) } })!;
++            Check(result.GetValueOrDefault("type") as string == "error" && !option.WasChosen && player.Gold == gold,
++                "enabled is not legality: locked native option stays refused without effects");
++            Console.WriteLine("native-m2a-locked-event-state=" + JsonSerializer.Serialize(state));
++            Console.WriteLine("exact native locked event kept independent enabled and locked facts");
++        }
++        finally { simulator.GetMethod("CleanUp")!.Invoke(sim, null); }
++    }
++
 +    private static void Decimillipede()
 +    {
 +        var parent = new Godot.Node(); var first = new Godot.Node(); var second = new Godot.Node();
@@ -1848,10 +1883,10 @@ index 0000000..66c7e46
 +}
 diff --git a/src/Sts2Headless/ManagedEventPresentation.cs b/src/Sts2Headless/ManagedEventPresentation.cs
 new file mode 100644
-index 0000000..749d9ee
+index 0000000..9f6d4fb
 --- /dev/null
 +++ b/src/Sts2Headless/ManagedEventPresentation.cs
-@@ -0,0 +1,38 @@
+@@ -0,0 +1,44 @@
 +using MegaCrit.Sts2.Core.Events;
 +using MegaCrit.Sts2.Core.Models;
 +using MegaCrit.Sts2.Core.Rooms;
@@ -1878,6 +1913,12 @@ index 0000000..749d9ee
 +    internal bool Matches(EventRoom room, EventModel model) =>
 +        ReferenceEquals(Room, room) && ReferenceEquals(Event, model)
 +        && ReferenceEquals(room.LocalMutableEvent, model);
++
++    // At this ready event boundary, native AnimateIn/EnableButton has enabled
++    // each presented button. IsLocked only changes styling and OnRelease's
++    // separate refusal; it does not disable the button itself.
++    internal bool IsEnabled(EventOption option) =>
++        Matches(Room, Event) && CurrentOptions.Any(current => ReferenceEquals(current, option));
 +
 +    internal IReadOnlyList<EventOption> CurrentOptions
 +    {
@@ -6729,7 +6770,7 @@ index 800f139..0da0544 100644
  
              case "action":
 diff --git a/src/Sts2Headless/RunSimulator.cs b/src/Sts2Headless/RunSimulator.cs
-index 6b9de4a..7a99b1e 100644
+index 6b9de4a..b9496d6 100644
 --- a/src/Sts2Headless/RunSimulator.cs
 +++ b/src/Sts2Headless/RunSimulator.cs
 @@ -1,4 +1,7 @@
@@ -10239,7 +10280,7 @@ index 6b9de4a..7a99b1e 100644
 +                ["index"] = i, ["native_ref"] = NativeObjectIdentity.Get(opt),
 +                ["title"] = StripVisibleText(opt.Title?.GetFormattedText()),
 +                ["description"] = StripVisibleText(opt.Description?.GetFormattedText()),
-+                ["is_locked"] = opt.IsLocked, ["is_enabled"] = !opt.IsLocked,
++                ["is_locked"] = opt.IsLocked, ["is_enabled"] = _eventPresentation.IsEnabled(opt),
 +                ["is_proceed"] = opt.IsProceed, ["was_chosen"] = opt.WasChosen,
 +                ["will_kill_player"] = opt.WillKillPlayer?.Invoke(localEvent.Owner ?? throw new InvalidOperationException("event_owner_missing")) ?? false,
 +                ["relic_name"] = opt.Relic == null ? null : StripVisibleText(opt.Relic.Title.GetFormattedText()),

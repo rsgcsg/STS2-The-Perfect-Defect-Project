@@ -195,3 +195,13 @@ return. Host51 adds that dependency binding over the existing ordinary child
 list (orphan index -1), preserving native death/revival/reward and strict delivery.
 The original Host49 slot remains unknown; the new native regression is separate.
 Internal-child SceneTree support is not inferred from this stub repair.
+
+
+M056 was separately traced to a public projection error, not a changed P1 meaning:
+Reference's current EndlessConveyor button is enabled while its EventOption is
+locked; native SetVisuallyLocked changes styling and OnRelease still refuses it.
+Host52's existing event presentation owner represents ready current buttons
+independently of `IsLocked`, with no enablement for foreign/unpresented options.
+The original native and JS action admission keep the locked guard. The exact
+17-gold native fixture, no-effect refusal and real serialized JS catalog cover
+this distinction; old M3 strict results remain immutable.

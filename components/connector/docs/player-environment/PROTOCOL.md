@@ -44,7 +44,7 @@ foreign/duplicate facts and invalid rule/range fail strict decoding. The sealed
 handle hash and retention lifecycle cover the entire original PB3 bytes.
 
 The versioned fields, safe legacy recovery and ambiguity rules are owned by
-[P1 r1.7](../../../../docs/protocols/P1_GLOBAL_R1.zh-CN.md).
+[P1 r1.7](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/blob/develop/docs/protocols/P1_GLOBAL_R1.zh-CN.md).
 New recording uses the new producer/Tool combination; build support is separate
 from installation, Human qualification and training admission.
 
