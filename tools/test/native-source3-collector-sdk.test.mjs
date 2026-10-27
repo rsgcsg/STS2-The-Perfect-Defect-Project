@@ -8,6 +8,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { PassThrough } from "node:stream";
 import test from "node:test";
+import { projectPython } from "../project-python.mjs";
 import * as sdk from "../../components/connector/sdk/typescript/dist/index.js";
 import * as runtimeApi from "../../components/policy-runtime/dist/index.js";
 import { createCollectionLifetime, createPipePeer, OWNED_EXECUTION_POLICY, OWNED_PIPE_SCHEMA,
@@ -704,7 +705,6 @@ agent.time.sleep=paced
 sys.argv=[sys.argv[0],"--manifest",sys.argv[1]]
 agent.main()
 `;
-import { projectPython } from "../project-python.mjs";
   // Windows venv python.exe can be a redirector. Bind the public port to the
   // actual interpreter, retaining the selected environment's exact import paths.
   assert.ok(path.isAbsolute(prepared.interpreter));

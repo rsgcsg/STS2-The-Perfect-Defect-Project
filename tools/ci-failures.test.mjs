@@ -27,6 +27,21 @@ test("pytest, node:test and vitest failures surface with their first error line"
   assert.equal(failures[3].detail, "exit 1", "a stage with named test failures does not repeat them");
 });
 
+test("a node:test file that fails to load shows its echoed error and location", () => {
+  const [failure] = logFailures([
+    "ok 1 - earlier file",
+    "# file:///home/runner/work/r/r/tools/test/native-source3-collector-sdk.test.mjs:707",
+    "# import { projectPython } from \"../project-python.mjs\";",
+    "#        ^",
+    "# SyntaxError: Unexpected token '{'",
+    "#     at compileSourceTextModule (node:internal/modules/esm/utils:346:16)",
+    "not ok 2 - /home/runner/work/r/r/tools/test/native-source3-collector-sdk.test.mjs",
+    "  ---",
+    "  error: 'test failed'",
+  ].join("\n"));
+  assert.equal(failure.detail, "SyntaxError: Unexpected token '{' at native-source3-collector-sdk.test.mjs:707");
+});
+
 test("a lint or docs stage without test names shows its own cause, not only its exit code", () => {
   const failures = logFailures([
     gate("repository", "passed", { exit_code: 0 }),

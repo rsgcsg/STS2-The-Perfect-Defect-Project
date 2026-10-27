@@ -37,6 +37,18 @@ export function logFailures(raw) {
     }
     return "";
   };
+  // A node:test file that fails to load reports only "test failed"; the child's
+  // own error and location were echoed as "# " comments just before it.
+  const loadError = start => {
+    let error = "", location = "";
+    for (let index = start - 1; index >= Math.max(0, start - 30); index--) {
+      const line = lines[index].trim();
+      if (/^(?:not )?ok \d+ /u.test(line)) break;
+      error ||= /^# (\w*Error: .*)$/u.exec(line)?.[1] ?? "";
+      if (error) location ||= /^# (?:file:\/\/)?\S*?([^/\s]+:\d+)$/u.exec(line)?.[1] ?? "";
+    }
+    return error && location ? `${error} at ${location}` : error;
+  };
   // A failed stage without its own test summary (lint, type, docs, contract)
   // shows the first cause-shaped lines it printed since the previous stage.
   const cause = (from, to) => lines.slice(from, to).filter(line =>
@@ -47,7 +59,10 @@ export function logFailures(raw) {
     let match;
     if ((match = /^(?:FAILED|ERROR) (\S+::\S+)(?: - (.*))?$/u.exec(line))) add(match[1], match[2] ?? "");
     else if ((match = /^\s*(?:FAIL|×)\s+(\S+\.(?:test|spec)\.[cm]?[jt]sx?(?: > .+)?)$/u.exec(line))) add(match[1], nextError(index));
-    else if ((match = /^not ok \d+ - (.+)$/u.exec(line))) add(match[1], nextError(index));
+    else if ((match = /^not ok \d+ - (.+)$/u.exec(line))) {
+      const detail = nextError(index);
+      add(match[1], /^error: 'test failed'$/u.test(detail) ? loadError(index) || detail : detail);
+    }
     else if ((match = /^\{"stage":"workspace_gate".*"status":"(failed|blocked|cancelled)"/u.exec(line))) {
       const stage = JSON.parse(line);
       const own = failures.length === failuresAtStage ? cause(stageStart, index) : "";
