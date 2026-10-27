@@ -231,8 +231,9 @@ export class PlayerEnvironmentRestClient {
   async publicBasisCapabilities(options?: PublicTransportOptions): Promise<PublicBasisCapabilities> {
     return decodePublicBasisCapabilities(await this.get(`${PUBLIC_BASIS_ROUTE}/capabilities`, options));
   }
-  async readCurrentPublicBasis(input: { expectedSnapshotId?: string } = {}, options?: PublicTransportOptions): Promise<PublicBasisHandle> {
+  async readCurrentPublicBasis(input: { expectedSnapshotId?: string; settledRelicCounters?: boolean } = {}, options?: PublicTransportOptions): Promise<PublicBasisHandle> {
     const query = new URLSearchParams({ input_profile: PUBLIC_BASIS_PROFILE });
+    if (input.settledRelicCounters === true) query.set("settled_relic_counters", "1");
     if (input.expectedSnapshotId !== undefined) query.set("expected_snapshot_id", input.expectedSnapshotId);
     const capture = decodePublicBasisHandle(await this.get(`${PUBLIC_BASIS_ROUTE}/current?${query}`, options));
     if (input.expectedSnapshotId !== undefined && capture.source_snapshot_id !== input.expectedSnapshotId)
@@ -250,11 +251,15 @@ export class PlayerEnvironmentRestClient {
     if (release.capture_id !== captureId) throw new PlayerEnvironmentHttpError("Public basis release identity mismatch");
     return release;
   }
-  async getFullPublicBasis(input: { expectedSnapshotId?: string; maxBytes?: number } = {}, options?: PublicTransportOptions): Promise<FullPublicBasis> {
+  async getFullPublicBasis(input: { expectedSnapshotId?: string; maxBytes?: number; settledRelicCounters?: boolean } = {}, options?: PublicTransportOptions): Promise<FullPublicBasis> {
     if (input.maxBytes !== undefined) validateSealedChunkLimit(input.maxBytes);
     const capture = await this.readCurrentPublicBasis(input, options);
     let failure: unknown; let failed = false; let full: FullPublicBasis | undefined;
-    try { full = await assemblePublicBasis(capture, request => this.readPublicBasis(request, options), input.maxBytes); }
+    try {
+      full = await assemblePublicBasis(capture, request => this.readPublicBasis(request, options), input.maxBytes);
+      if (input.settledRelicCounters === true && full.basis.revision !== "3")
+        throw new PlayerEnvironmentHttpError("Requested settled relic witness requires public basis revision 3");
+    }
     catch (error) { failure = error; failed = true; }
     // Cleanup remains bounded and independent of revoked action authorization.
     try { await this.releasePublicBasis(capture.capture_id, { timeoutMs: this.timeoutMs }); }

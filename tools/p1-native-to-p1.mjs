@@ -5,6 +5,7 @@ import { createHash } from 'node:crypto';
 import { writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { reprojectNativeSemanticOriginals } from './p1-native-reprojection.mjs';
 import { classifyNativeCancellation, classifyNativeSelectorCancellation } from './p1-native-cancellation.mjs';
 import { classifyNativePresentation } from './p1-native-presentation.mjs';
 import { buildNativeP1Segments } from './p1-native-segments.mjs';
@@ -18,12 +19,16 @@ const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
 /** Pure interpretation seam. `source` is returned by the owning bundle reader;
  * this export also permits production-shaped semantic fixtures without disk IO. */
 export function convertNativeSemanticOriginals(source, sdk, core, options = {}) {
+  if (options.p1Revision !== undefined && options.p1Revision !== "r1.7")
+    throw new Error("native_p1_revision_unknown");
   if (options.selectorTransactions !== undefined && options.selectorTransactions !== selectorTransactionProjection)
     throw new Error('native_p1_selector_transaction_projection_unknown');
   if (options.targetProjection !== undefined && options.targetProjection !== nativeTargetProjection)
     throw new Error('native_p1_target_projection_unknown');
   if (options.includeTargets && options.targetProjection !== nativeTargetProjection)
     throw new Error('native_p1_target_projection_required');
+  if (options.p1Revision === "r1.7")
+    return reprojectNativeSemanticOriginals(source, sdk, core, options, convertNativeSemanticOriginals, nativeTargetProjection);
   const openPrefix = source.manifest.schema === 'sts2.human-annotator/p1-native-prefix-1';
   if (!openPrefix && source.manifest.schema !== 'sts2.human-annotator/p1-native-session-bundle-1')
     throw new Error('native_p1_recording_schema_required');
@@ -89,7 +94,8 @@ export function convertNativeSemanticOriginals(source, sdk, core, options = {}) 
       bases.set(reference.sha256, value);
     }
     if (value.snapshot.snapshot_id !== reference.snapshot_id) throw new Error('native_p1_basis_snapshot_mismatch');
-    return { snapshot: value.snapshot, reads: value.reads, capture_status: value.capture_status, missing: value.missing };
+    return { snapshot: value.snapshot, reads: value.reads, capture_status: value.capture_status, missing: value.missing,
+      ...(value.settled_relic_counters === undefined ? {} : { settled_relic_counters: value.settled_relic_counters }) };
   }
 
   function capture(reference, row, origin, reduction = null, promote = true) {
@@ -102,7 +108,8 @@ export function convertNativeSemanticOriginals(source, sdk, core, options = {}) 
     const value = basis(reference);
     const reduced = reduction ?? core.reduce(state, value);
     const item = { sequence: row.sequence, event_id: row.event_id, origin, public_basis: reference,
-      complete: reduced.complete, missing: [...reduced.missing], observation: reduced.observation };
+      complete: reduced.complete, missing: [...reduced.missing], observation: reduced.observation,
+      ...(reduced.settled_relic_counter_projection ? { settled_relic_counter_projection: reduced.settled_relic_counter_projection } : {}) };
     report.captures.push(item);
     if (options.includeSegments || options.includeTargets) {
       const pending = [...active.values()].filter(action => action.decision_id !== row.decision_id
@@ -562,8 +569,8 @@ async function main() {
     const keys = { '--bundle': 'bundle', '--prefix': 'prefix', '--manifest-sha256': 'manifestSha256',
       '--sdk-root': 'sdkRoot', '--run-id': 'runId', '--output': 'output', '--through-sequence': 'throughSequence',
       '--segments-output': 'segmentsOutput', '--selector-transactions': 'selectorTransactions',
-      '--targets-output': 'targetsOutput', '--target-projection': 'targetProjection' };
-    if (!keys[args[i]] || !args[i + 1]) throw new Error('usage: --bundle PATH | --prefix PATH --manifest-sha256 SHA [--sdk-root PATH] [--run-id ID] [--output PATH] [--segments-output PATH]');
+      '--targets-output': 'targetsOutput', '--target-projection': 'targetProjection', '--p1-revision': 'p1Revision' };
+    if (!keys[args[i]] || !args[i + 1]) throw new Error('usage: --bundle PATH | --prefix PATH --manifest-sha256 SHA [--sdk-root PATH] [--run-id ID] [--p1-revision r1.7] [--output PATH] [--segments-output PATH]');
     options[keys[args[i]]] = keys[args[i]] === "throughSequence" ? Number(args[i + 1]) : args[i + 1];
   }
   options.includeSegments = Boolean(options.segmentsOutput);

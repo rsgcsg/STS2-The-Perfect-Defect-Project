@@ -2,6 +2,7 @@ import { z } from "zod";
 import { isJsonObject, type JsonObject } from "./json.js";
 import { decodePlayerRead, decodePlayerSnapshot, decodePlayerReceipt,
   type DecodedPlayerPayload, type PlayerEnvironmentSnapshot, type PlayerEnvironmentReceipt } from "./protocol.js";
+import { decodeSettledRelicCounters, type SettledRelicCounters } from "./settledRelicCounters.js";
 import { hasFinitePublicNumbers } from "./publicCombat.js";
 import { assembleRetainedBytes, publicBytesSha256 } from "./retainedBytes.js";
 import { SEALED_OBSERVATION_MAX_BYTES, SEALED_OBSERVATION_DEFAULT_CHUNK_BYTES,
@@ -44,11 +45,13 @@ const capabilitiesSchema = z.object({ schema: z.literal(wire("capabilities")), r
   && value.default_chunk_bytes <= value.max_chunk_bytes, "inconsistent retention capability");
 const readSchema = z.object({ read_id: id, kind: z.string().min(1), response: z.record(z.unknown()).nullable(),
   error: z.string().min(1).nullable() }).strict();
-const basisSchema = z.object({ schema: z.literal(PUBLIC_BASIS_SCHEMA), revision: z.enum(["1", "2"]),
+const basisSchema = z.object({ schema: z.literal(PUBLIC_BASIS_SCHEMA), revision: z.enum(["1", "2", "3"]),
   capture_scope: z.literal(PUBLIC_BASIS_SCOPE), capture_status: z.enum(["complete", "partial"]),
-  snapshot: z.record(z.unknown()), reads: z.array(readSchema).max(10_000), missing: z.array(z.string().min(1))
+  snapshot: z.record(z.unknown()), reads: z.array(readSchema).max(10_000), missing: z.array(z.string().min(1)),
+  settled_relic_counters: z.unknown().optional()
 }).strict();
-export type PublicBasis = z.infer<typeof basisSchema>;
+export type PublicBasis = Omit<z.infer<typeof basisSchema>, "settled_relic_counters">
+  & { readonly settled_relic_counters?: SettledRelicCounters };
 export type PublicBasisHandle = z.infer<typeof handleSchema>;
 export type PublicBasisChunk = z.infer<typeof chunkSchema>;
 export type PublicBasisRelease = z.infer<typeof releaseSchema>;
@@ -122,8 +125,10 @@ export function decodePublicBasis(value: unknown): PublicBasis {
   if (!isJsonObject(value)) throw new Error("public basis must contain only finite JSON facts");
   const basis = basisSchema.parse(value);
   if (!hasFinitePublicNumbers(basis)) throw new Error("public basis has nonfinite facts");
-  const snapshot = basis.revision === "2"
-    ? decodePublicBasisSnapshot(basis.snapshot).data : decodePlayerSnapshot(basis.snapshot).data;
+  if (basis.revision !== "3" && Object.hasOwn(basis, "settled_relic_counters"))
+    throw new Error("settled relic counters require public basis revision 3");
+  const snapshot = basis.revision === "3" ? decodePublicSourceSnapshot(basis.snapshot).data
+    : basis.revision === "2" ? decodePublicBasisSnapshot(basis.snapshot).data : decodePlayerSnapshot(basis.snapshot).data;
   if (snapshot.information_policy.includes_hidden_information !== false) throw new Error("source is not public");
   if (basis.reads.length !== snapshot.reads.length || new Set(basis.reads.map(read => read.read_id)).size !== basis.reads.length
     || new Set(snapshot.reads.map(read => read.read_id)).size !== snapshot.reads.length)
@@ -147,9 +152,13 @@ export function decodePublicBasis(value: unknown): PublicBasis {
     if (read.completeness.status !== "complete" || read.completeness.missing.length) missing.push(`read:${listed.read_id}:partial`);
   }
   if (snapshot.completeness.status !== "complete" || snapshot.completeness.missing.length) missing.push("snapshot:partial");
+  if (basis.revision === "3") {
+    const witness = decodeSettledRelicCounters(basis.settled_relic_counters, basis);
+    missing.push(...witness.missing.map(reason => `settled_relic_counters:${reason}`));
+  }
   if (canonical(basis.missing) !== canonical(missing) || basis.capture_status !== (missing.length ? "partial" : "complete"))
     throw new Error("public capture status does not match original inventory");
-  return basis;
+  return basis as PublicBasis;
 }
 
 export async function verifyPublicBasis(capture: PublicBasisHandle, serializedObservation: string): Promise<FullPublicBasis> {
