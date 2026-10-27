@@ -14,10 +14,10 @@ index 0000000..94d1c56
 +</Project>
 diff --git a/initial-progress-tests/Program.cs b/initial-progress-tests/Program.cs
 new file mode 100644
-index 0000000..e914248
+index 0000000..ead6060
 --- /dev/null
 +++ b/initial-progress-tests/Program.cs
-@@ -0,0 +1,63 @@
+@@ -0,0 +1,72 @@
 +using System.Reflection;
 +using System.Text.Json;
 +using MegaCrit.Sts2.Core.DevConsole.ConsoleCommands;
@@ -27,19 +27,21 @@ index 0000000..e914248
 +using MegaCrit.Sts2.Core.Runs;
 +using MegaCrit.Sts2.Core.Saves;
 +using MegaCrit.Sts2.Core.Saves.Test;
++using MegaCrit.Sts2.Core.Timeline;
 +using Sts2Headless;
 +
 +class Program
 +{
 +    static int checks;
 +    static void Check(bool value, string message) { if (!value) throw new Exception(message); checks++; }
-+    static JsonElement Input(string json, string? sha = null) => JsonSerializer.SerializeToElement(new {
-+        recipe = "normal-sp-all-unlocked-v1", progress_json = json,
++    static JsonElement Input(string json, string? sha = null, string recipe = "normal-sp-all-unlocked-v1") => JsonSerializer.SerializeToElement(new {
++        recipe, progress_json = json,
 +        progress_sha256 = sha ?? ManagedInitialProgress.Sha(json) });
 +    static void Main()
 +    {
 +        typeof(RunSimulator).GetMethod("EnsureModelDbInitialized", BindingFlags.Static | BindingFlags.NonPublic)!.Invoke(null, null);
 +        var save = SaveManager.Instance;
++        string personalJson = SaveManager.ToJson(save.Progress.ToSerializable());
 +        new UnlockConsoleCmd().Process(null, new[] { "all" });
 +        foreach (var encounter in ModelDb.AllEncounters) save.Progress.GetOrCreateEncounterStats(encounter.Id);
 +        save.Progress.GetOrCreateCharacterStats(ModelDb.GetId<Defect>()).TotalLosses = 1;
@@ -62,6 +64,13 @@ index 0000000..e914248
 +        before = Writes();
 +        try { failed.Prepare(Input(json)); throw new Exception("retried uncertain write"); }
 +        catch (InvalidOperationException ex) { Check(ex.Message == "initial_progress_already_attempted" && Writes() == before, "unknown write never retried"); }
++        var personalOwner = new ManagedInitialProgress();
++        personalOwner.Prepare(Input(personalJson, recipe: "captured-native-progress-v1"));
++        Check(SaveManager.ToJson(save.Progress.ToSerializable()) == personalJson, "personal progress is loaded by native owner without adding unlocks");
++        Check(!save.GenerateUnlockStateFromProgress().ToSerializable().UnlockedEpochs.ToHashSet(StringComparer.Ordinal).SetEquals(EpochModel.AllEpochIds),
++            "personal fixture really is not all-unlocked");
++        try { new ManagedInitialProgress().Prepare(Input(personalJson)); throw new Exception("baseline restriction lost"); }
++        catch (InvalidOperationException ex) { Check(ex.Message == "initial_progress_baseline_incomplete", "original all-unlocked recipe remains strict"); }
 +        var owner = new ManagedInitialProgress();
 +        owner.Prepare(Input(json));
 +        Check(SaveManager.ToJson(save.Progress.ToSerializable()) == normalized, "same native progress normalization survives memory write and reload");
@@ -1833,10 +1842,10 @@ index 0000000..9ecb038
 +}
 diff --git a/src/Sts2Headless/ManagedInitialProgress.cs b/src/Sts2Headless/ManagedInitialProgress.cs
 new file mode 100644
-index 0000000..bde41ea
+index 0000000..0b401a9
 --- /dev/null
 +++ b/src/Sts2Headless/ManagedInitialProgress.cs
-@@ -0,0 +1,75 @@
+@@ -0,0 +1,78 @@
 +using System.Reflection;
 +using System.Security.Cryptography;
 +using System.Text;
@@ -1860,6 +1869,7 @@ index 0000000..bde41ea
 +{
 +    private bool attempted;
 +    private string? inputSha;
++    private string? recipe;
 +    private string? normalizedSha;
 +    private string? unlockJson;
 +    internal static string Sha(string value) => Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value))).ToLowerInvariant();
@@ -1875,7 +1885,8 @@ index 0000000..bde41ea
 +        if (input == null) return;
 +        if (attempted) throw new InvalidOperationException("initial_progress_already_attempted");
 +        var value = input.Value;
-+        if (value.ValueKind != JsonValueKind.Object || value.GetProperty("recipe").GetString() != "normal-sp-all-unlocked-v1")
++        string? requestedRecipe = value.ValueKind == JsonValueKind.Object ? value.GetProperty("recipe").GetString() : null;
++        if (requestedRecipe is not ("normal-sp-all-unlocked-v1" or "captured-native-progress-v1"))
 +            throw new InvalidOperationException("initial_progress_recipe_invalid");
 +        string json = value.GetProperty("progress_json").GetString() ?? throw new InvalidOperationException("initial_progress_missing");
 +        string sha = value.GetProperty("progress_sha256").GetString() ?? "";
@@ -1896,17 +1907,18 @@ index 0000000..bde41ea
 +        if (!loaded.Success || loaded.SaveData == null || actual != expected)
 +            throw new InvalidOperationException("initial_progress_native_reload_mismatch");
 +        var unlocks = saves.GenerateUnlockStateFromProgress();
-+        if (saves.Progress.EnableFtues || unlocks.NumberOfRuns <= 0
++        if (requestedRecipe == "normal-sp-all-unlocked-v1" && (saves.Progress.EnableFtues || unlocks.NumberOfRuns <= 0
 +            || !unlocks.ToSerializable().UnlockedEpochs.ToHashSet(StringComparer.Ordinal).SetEquals(EpochModel.AllEpochIds)
 +            || ModelDb.AllEncounters.Any(encounter => !unlocks.HasSeenEncounter(encounter))
-+            || ModelDb.AllCharacters.Any(character => saves.Progress.GetStatsForCharacter(character.Id)?.MaxAscension != 10))
++            || ModelDb.AllCharacters.Any(character => saves.Progress.GetStatsForCharacter(character.Id)?.MaxAscension != 10)))
 +            throw new InvalidOperationException("initial_progress_baseline_incomplete");
++        recipe = requestedRecipe;
 +        inputSha = sha;
 +        normalizedSha = Sha(actual);
 +        unlockJson = JsonSerializer.Serialize(DescribeUnlocks(unlocks));
 +    }
 +    internal object? Observe(RunState? run) => inputSha == null ? null : new {
-+        recipe = "normal-sp-all-unlocked-v1", progress_sha256 = inputSha,
++        recipe, progress_sha256 = inputSha,
 +        normalized_progress_sha256 = normalizedSha,
 +        unlock_state = run == null ? null : DescribeUnlocks(run.UnlockState),
 +        run_unlock_state_matches = run != null && JsonSerializer.Serialize(DescribeUnlocks(run.UnlockState)) == unlockJson

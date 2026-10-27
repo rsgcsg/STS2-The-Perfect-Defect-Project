@@ -154,6 +154,9 @@ for (const failure of ['capture_incomplete', 'capture_throws', 'required_follow_
       ] }, driver, record: { append(kind, data) { events.push({ kind, data }); } }, seed: 'fixture', initialProgress: {} });
       assert.equal(second.unknown_delivery, true);
       assert.equal(second.compared_results, 1);
+      assert.equal(second.error, "strict_result_difference");
+      assert.equal(second.execution_error.index, 0);
+      assert.equal(second.execution_error.code, failure === "response_lost" ? "response_lost" : "offline_replay_unknown_delivery");
     } else {
       assert.equal(report.compared_results, 1);
       assert.equal(report.matching_results, 1);

@@ -382,3 +382,16 @@ forced-one paths still finish before this callback. Unbound callbacks,
 unsupported presentation preferences, stale ownership or incomplete rendering
 expose no complete catalog. Component checks cover native callbacks and original
 object identity; full replay qualification remains bound to its saved report.
+
+### Captured personal initial progress (M3)
+
+Manager-only `captured-native-progress-v1` accepts exact UTF-8 sealed initial
+progress, verified by SHA, native parse/reload and the native frozen UnlockState.
+It writes only the TestMode memory store, never a personal profile. The existing
+`normal-sp-all-unlocked-v1` recipe keeps its complete-baseline assertions. The
+stdio driver forwards explicit `--ascension 0..10`; default remains 0. These
+private launch inputs never become Agent/P1 observation fields.
+
+Use the [recording diagnostic SOP](../../../../python/docs/MANAGED_RECORDING_REPLAY.zh-CN.md)
+for exact-original replay, optional idle Q dispatch and the Reference coverage
+plan. A first-combat prefix or matching graph does not qualify a whole game.

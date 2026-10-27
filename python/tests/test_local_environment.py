@@ -2206,3 +2206,21 @@ def test_initial_progress_manager_proof_precedes_claim_and_stays_private(tmp_pat
         wait_status(service, "stopped")
     assert '"initial_progress":' not in json.dumps(service.record)
     assert INITIAL_PROGRESS["progress_json"] not in json.dumps(service.record)
+
+
+def test_personal_initial_progress_needs_its_actual_host_capability():
+    from spireagent.workbench.local_environment import _checked_initial_progress
+
+    for recipe in ([], {}, None, 7):
+        with pytest.raises(BoundaryError, match="managed_initial_progress_invalid"):
+            _checked_initial_progress(
+                {**INITIAL_PROGRESS, "recipe": recipe}, {"version": "1.1.0-rc.47"}
+            )
+    personal = {**INITIAL_PROGRESS, "recipe": "captured-native-progress-v1"}
+    with pytest.raises(BoundaryError, match="managed_initial_progress_capability_required"):
+        _checked_initial_progress(personal, {"version": "1.1.0-rc.46"})
+    assert _checked_initial_progress(personal, {"version": "1.1.0-rc.47"}) == personal
+    assert (
+        _checked_initial_progress(INITIAL_PROGRESS, {"version": "1.1.0-rc.32"})
+        == INITIAL_PROGRESS
+    )

@@ -2692,12 +2692,18 @@ function receipt({ requestId, delivery, action, reasonCode, detail, retry, succe
   return value;
 }
 
+function validateManagedAscension(ascension) {
+  if (!Number.isSafeInteger(ascension) || ascension < 0 || ascension > 10)
+    throw new Error("managed_ascension_invalid");
+}
+
 export class ManagedPlayerEnvironmentSession {
   #process;
   #runtimeInstanceId;
   #environmentFingerprint;
   #character;
   #language;
+  #ascension;
   #sequence = 0;
   #projection = null;
   #ledger = new Map();
@@ -2714,6 +2720,7 @@ export class ManagedPlayerEnvironmentSession {
     environmentFingerprint,
     character = "Ironclad",
     language = "en",
+    ascension = 0,
     identityMode = "crypto",
     validateSdk = true
   }) {
@@ -2725,6 +2732,8 @@ export class ManagedPlayerEnvironmentSession {
     this.#environmentFingerprint = environmentFingerprint;
     this.#character = character;
     this.#language = language;
+    validateManagedAscension(ascension);
+    this.#ascension = ascension;
     this.#identityMode = identityMode;
     this.#validateSdk = validateSdk;
   }
@@ -2771,6 +2780,7 @@ export class ManagedPlayerEnvironmentSession {
         character: this.#character,
         seed,
         lang: this.#language,
+        ascension: this.#ascension,
         ...(initialProgress == null ? {} : { initial_progress: initialProgress })
       }, timeoutMs);
       this.#record("mount_transport_and_native", performance.now() - mountStarted);
@@ -3029,11 +3039,13 @@ export async function startManagedPlayerEnvironmentSession({
   diskIdentity,
   character = "Ironclad",
   language = "en",
+  ascension = 0,
   requestTimeoutMs = 10_000,
   identityMode = "crypto",
   validateSdk = true,
   quietDiagnostics = false
 }) {
+  validateManagedAscension(ascension);
   const runtime = await startManagedCandidateRuntime({
     root,
     candidateDirectory,
@@ -3055,6 +3067,7 @@ export async function startManagedPlayerEnvironmentSession({
       environmentFingerprint,
       character,
       language,
+      ascension,
       identityMode,
       validateSdk
     }),
