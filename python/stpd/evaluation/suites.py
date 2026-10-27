@@ -30,6 +30,20 @@ def checkpoint_reference_manifest(game_version: str, character: str = "Defect",
             "seeds": [derive_game_seed(name, i) for i in range(1, count + 1)]}
 
 
+def t2_managed_manifest(game_version: str, ascension: int = 0) -> dict[str, Any]:
+    """Fixed T2+ evaluation set: preserve original 10/2, extend to 40/10."""
+    original = checkpoint_reference_manifest(game_version, "Defect", ascension)
+    count = 40 if ascension == 0 else 10
+    name = f"managed-t2-fixed-20261028-Defect-a{ascension}"
+    seeds = original["seeds"] + [derive_game_seed(name, i)
+                                for i in range(len(original["seeds"]) + 1, count + 1)]
+    return {**original, "suite_id": name, "host": "Managed", "purpose": "fixed_evaluation_only",
+            "episode_count": count, "seeds": seeds,
+            "seed_derivation": ("original checkpoint 10/2 prefix; "
+                                "derive_game_seed(T2 suite, ordinal)"),
+            "collection_training_RL": "forbidden"}
+
+
 def four_agent_reference_manifest(game_version: str) -> dict[str, Any]:
     """A new ten-seed reservation; bind the actual game version before use."""
     if (not isinstance(game_version, str) or not game_version.startswith("v")
@@ -128,7 +142,9 @@ def seed_membership(seed: str) -> tuple[str, ...]:
         *(checkpoint_reference_manifest("v0.111.0", character) for character in CHARACTERS),
         checkpoint_reference_manifest("v0.111.0", "Defect", 10),
     ) if canonical in m["seeds"])
-    return legacy + ((FOUR_AGENT_SUITE_ID,) if canonical in reserved else ()) + checkpoint
+    t2 = tuple(m["suite_id"] for m in (t2_managed_manifest("v0.111.0", a) for a in (0, 10))
+               if canonical in m["seeds"])
+    return legacy + ((FOUR_AGENT_SUITE_ID,) if canonical in reserved else ()) + checkpoint + t2
 
 
 def require_non_evaluation_seed(seed: str) -> str:

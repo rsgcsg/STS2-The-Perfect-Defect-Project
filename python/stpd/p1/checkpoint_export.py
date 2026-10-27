@@ -20,7 +20,7 @@ from stpd.workers.p1_run import verify_p1_checkpoint
 from .data import digest
 from .export import export_model
 from .formal_training import FORMAL_CODE_FILES
-from .model import ARCHITECTURE, MStd
+from .model import MStd, architecture
 from .spec import MODEL_SCHEMA
 from .workload import verify_p1_run
 
@@ -41,7 +41,9 @@ def publish_checkpoint_model(
     state, identity = checked.state, checked.state["identity"]
     root = Path(__file__).parent
     code = {name: digest((root / name).read_bytes()) for name in FORMAL_CODE_FILES}
-    if (identity.get("code") != code or identity.get("architecture") != ARCHITECTURE
+    if (identity.get("code") != code
+            or identity.get("architecture") != architecture(workload.config.value_heads,
+                                                              workload.config.model_size)
             or identity.get("codec_sha256")
             != digest((root.parent / "workers/checkpoint_codec.py").read_bytes())
             or identity.get("planned_steps")
@@ -56,7 +58,8 @@ def publish_checkpoint_model(
         raise BoundaryError("p1_checkpoint_export", "selected_checkpoint_weights_unavailable")
     # CPU initialization must not change the caller's RNG or require the training GPU.
     with torch.random.fork_rng(devices=[]), torch.device("cpu"):
-        model = MStd(workload.vocabulary, workload.execution)
+        model = MStd(workload.vocabulary, workload.execution,
+                     value_heads=workload.config.value_heads, model_size=workload.config.model_size)
         reference = model.state_dict()
         for name, original in reference.items():
             value = weights.get(name)
