@@ -22,8 +22,8 @@ from stpd.p1.spec import MStdConfig
 from stpd.p1.workload import prepare_p1_run
 
 
-@pytest.fixture(scope="module")
-def calibration_input(tmp_path_factory):
+@pytest.fixture(scope="module", params=[False, True], ids=["input-v1", "input-v2"])
+def calibration_input(tmp_path_factory, request):
     store = store_at(tmp_path_factory.mktemp("TRAIN-calibration") / "store")
     projections = []
     for name, count in (("train", 192), ("dev", 1), ("test", 1)):
@@ -42,9 +42,12 @@ def calibration_input(tmp_path_factory):
     splits = {group["group_id"]: group["root_run_ids"][0] for group in inspected["groups"]}
     snapshot = publish_snapshot(store, [p.artifact_id for p in projections], PRODUCER,
                                 split_salt="explicit-calibration-fixture", split_by_group=splits)
-    run = prepare_p1_run(store, snapshot.artifact_id, PRODUCER, MStdConfig(max_epochs=2), "a" * 32)
-    request = ComputeRequest("training", run.artifact_id, PRODUCER, "first", None, 1)
-    paused = dispatch(store, request, PRODUCER)
+    from stpd.p1.input import V2_INPUT_SPEC
+
+    run = prepare_p1_run(store, snapshot.artifact_id, PRODUCER, MStdConfig(max_epochs=2), "a" * 32,
+                         **({"input_projection": V2_INPUT_SPEC} if request.param else {}))
+    compute = ComputeRequest("training", run.artifact_id, PRODUCER, "first", None, 1)
+    paused = dispatch(store, compute, PRODUCER)
     capsule = prepare(store, run.artifact_id, paused.checkpoint_id, PRODUCER, "b" * 32, updates=2)
     return store, capsule
 
@@ -56,6 +59,8 @@ def test_complete_TRAIN_batches_and_source_checkpoint_are_immutable(calibration_
     manifest, frames, targets, vocabulary, state = read_input(store, capsule.artifact_id)
     assert manifest.artifact_id == capsule.artifact_id
     assert len(frames) == len(targets) == 128
+    assert all(isinstance(role, (int, tuple)) for frame in frames for pair in frame.roles
+               for role in pair)
     assert state["step"] == 1 and len(capsule.parameters.value()["point_ids"]) == 128
     report = measure(store, capsule.artifact_id, PRODUCER,
                      {"variants": [MStdExecution().to_dict(), MStdExecution(

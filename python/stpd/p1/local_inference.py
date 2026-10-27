@@ -24,8 +24,8 @@ from typing import Any, cast
 import torch
 
 from .data import json_bytes
-from .export import adapter_identity, load_model
-from .input import INPUT_SPEC, project
+from .export import adapter_identity, bound_projection, load_model
+from .input import project, validate_input_spec
 
 AUTH_ENV = "STPD_P1_LOCAL_INFERENCE_AUTH"
 SCHEMA = "stpd/p1-local-inference-1"
@@ -38,6 +38,7 @@ class _Request:
     model: str
     observation: dict[str, Any]
     answer: Future
+    projection: dict[str, Any]
 
 
 class LocalInferencePool:
@@ -119,12 +120,14 @@ class LocalInferencePool:
                     or value.get("pool_id") != self.pool_id
                     or value.get("adapter") != self.adapter
                     or value.get("package_sha256") not in self.models
-                    or value.get("input_projection") != INPUT_SPEC
                     or type(value.get("request_id")) is not int
                 ):
                     raise ValueError("local inference binding differs")
+                projection = bound_projection(
+                    self.models[value["package_sha256"]].vocabulary, value.get("input_projection"))
                 answer: Future = Future()
-                self.queue.put(_Request(value["package_sha256"], value["observation"], answer))
+                self.queue.put(_Request(value["package_sha256"], value["observation"], answer,
+                                        projection))
                 try:
                     response = {
                         "request_id": value["request_id"],
@@ -164,7 +167,8 @@ class LocalInferencePool:
                 valid = []
                 for item in jobs:
                     try:
-                        valid.append((item, project(item.observation, input_projection=INPUT_SPEC)))
+                        valid.append((item, project(item.observation,
+                                                    input_projection=item.projection)))
                     except Exception as error:
                         item.answer.set_exception(error)
                         self.stats["errors"] += 1
@@ -222,7 +226,7 @@ class LocalInferenceClient:
         if (
             attachment.get("schema") != SCHEMA
             or attachment.get("adapter") != adapter_identity()
-            or projection != INPUT_SPEC
+            or validate_input_spec(projection) != projection
         ):
             raise ValueError("local inference attachment differs")
         self.attachment, self.package, self.projection = attachment, package, projection

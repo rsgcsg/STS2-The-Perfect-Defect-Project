@@ -61,6 +61,20 @@ def test_full_shape_tail_and_projection_cache_cannot_be_replaced(tmp_path):
         qualification._read_cache(cache, expected)
 
 
+def test_v2_projection_cache_keeps_multi_view_roles_and_weights(tmp_path):
+    from test_p1_input_v2 import public_state
+
+    from stpd.p1.input import V2_INPUT_SPEC, project
+    from stpd.p1.vocabulary import public_vocabulary
+
+    frame = project(public_state(), input_projection=V2_INPUT_SPEC)
+    populations = {"train": Population((frame,), (0,), ("point",), (1.5,))}
+    path = tmp_path / "v2-cache.json"
+    digest = qualification._cache_populations(path, populations, public_vocabulary())
+    restored, vocabulary = qualification._read_cache(path, digest)
+    assert restored == populations and vocabulary == public_vocabulary()
+
+
 def test_failure_preserves_phase_and_original_redacted_reason(tmp_path, monkeypatch):
     from test_p1_snapshot import store_at
 
@@ -181,9 +195,16 @@ def test_module_entry_orchestrates_canonical_replacement_children(
     populations = {split: Population((frame,), (0,), (split + "-point",))
                    for split in ("train", "dev", "test")}
     monkeypatch.setattr(qualification, "__name__", "__main__")
+    source_run = store.get_manifest(capsule.parent("run"))
+    training = store.get_manifest(source_run.parent("training_input"))
+    vocabulary = json.loads(b"".join(store.read_payload(capsule.payload("vocabulary"))))
     monkeypatch.setattr(qualification, "verify_p1_run", lambda *args:
-                        SimpleNamespace(reader=object()))
-    monkeypatch.setattr(qualification, "populations_from_reader", lambda reader: populations)
+                        SimpleNamespace(reader=object(), training=training, vocabulary=vocabulary))
+    def project_populations(reader, weights, projection):
+        assert weights == training.parameters.value().get("loss_weighting")
+        assert projection == vocabulary["input_spec"]
+        return populations
+    monkeypatch.setattr(qualification, "populations_from_reader", project_populations)
     monkeypatch.setattr(qualification, "read_input", lambda *args: (None, [], [], {}, {}))
     monkeypatch.setattr(MStdExecution, "for_plan", classmethod(lambda cls, name: cls()),
                         raising=False)

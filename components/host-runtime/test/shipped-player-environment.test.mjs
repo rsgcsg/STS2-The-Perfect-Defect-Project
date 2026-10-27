@@ -78,7 +78,10 @@ test("Reference JSONL requests preserve exact action and snapshot bindings", asy
   assert.equal(identity.identity.episode_provenance.verdict, "provenance_pass");
 });
 
-test("Reference delivery observes settling without retrying the mutation", async () => {
+test("Reference delivery observes settling without retrying the mutation", async (t) => {
+  // Check observation semantics independently of host scheduling delays.
+  const ticks = [0, 0, 1, 50];
+  t.mock.method(Date, "now", () => ticks.length > 1 ? ticks.shift() : ticks[0]);
   const observed = [
     { snapshot_id: "before", status: "settling" },
     { snapshot_id: "after", status: "interactive" }
@@ -101,6 +104,27 @@ test("Reference delivery observes settling without retrying the mutation", async
   assert.equal(receipt.successor.snapshot_id, "after");
   assert.equal(receipt.successor_observation, "driver_observed_after_delivery");
   assert.equal(polls, 2);
+});
+
+test("Reference delivery retains delivered input when successor observation times out", async (t) => {
+  const ticks = [0, 0, 50];
+  t.mock.method(Date, "now", () => ticks.length > 1 ? ticks.shift() : ticks[0]);
+  const settling = { snapshot_id: "before", status: "settling" };
+  let polls = 0;
+  const receipt = await settleReferenceReceipt({
+    receipt: { request_id: "mutation-1", delivery: "delivered", successor: settling },
+    expectedSnapshotId: "before",
+    observe: async () => { polls++; return settling; },
+    child: { exitCode: null, signalCode: null },
+    timeoutMs: 50,
+    pollIntervalMs: 0
+  });
+  assert.equal(receipt.delivery, "delivered");
+  assert.equal(receipt.request_id, "mutation-1");
+  assert.equal(receipt.successor, null);
+  assert.equal(receipt.successor_observation, "timeout_after_delivered_input");
+  assert.deepEqual(receipt.last_observed_successor, settling);
+  assert.equal(polls, 1);
 });
 
 test("Reference runtimes receive an isolated loopback endpoint", async () => {

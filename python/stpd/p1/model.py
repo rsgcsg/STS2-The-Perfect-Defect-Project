@@ -14,7 +14,7 @@ from tokenizers import Tokenizer
 from torch import Tensor, nn
 
 from .execution import MStdExecution
-from .input import Frame, normalized, signed_log
+from .input import V2_INPUT_SPEC, Frame, Role, normalized, signed_log
 
 ARCHITECTURE: dict[str, Any] = {
     "id": "q3-m-std-1",
@@ -84,11 +84,22 @@ def _role_vectors(scene: Tensor, indices: list[int], absent: Tensor) -> Tensor:
     return values.index_select(0, torch.tensor(indices, dtype=torch.long, device=scene.device))
 
 
+def _view_role_vectors(scene: Tensor, roles: list[Role], absent: Tensor) -> Tensor:
+    """Input-v2 role binding: every public view has equal status, no new weights."""
+    rows = [list(role) if isinstance(role, tuple) else [role] if role >= 0 else []
+            for role in roles]
+    return _mean_terms(scene, rows, absent)
+
+
 class MStd(nn.Module):
     def __init__(self, vocabulary: dict[str, Any], execution: MStdExecution | None = None):
         super().__init__()
         self.execution = execution or MStdExecution()
         self.vocabulary = vocabulary
+        if vocabulary.get("input_spec") == V2_INPUT_SPEC:
+            from .vocabulary import validate_vocabulary
+
+            validate_vocabulary(vocabulary)
         self.tokenizer = Tokenizer.from_str(vocabulary["tokenizer"])
         self.tables = {
             key: {name: i for i, name in enumerate(vocabulary[key])}
@@ -133,7 +144,10 @@ class MStd(nn.Module):
     def tokenize(self, text: str) -> tuple[list[int], list[float]]:
         if text not in self._tokens:
             normalized_text, numbers = normalized(text)
-            ids = self.tokenizer.encode(normalized_text).ids or [1]
+            ids = self.tokenizer.encode(normalized_text).ids or [
+                self.tokenizer.token_to_id("<EMPTY>")
+                if self.vocabulary.get("input_spec") == V2_INPUT_SPEC else 1
+            ]
             numeric = [0.0] * len(ids)
             cursor = 0
             for i, token in enumerate(ids):
@@ -311,19 +325,26 @@ class MStd(nn.Module):
                 )
             )
             if frame.choices:
-                if self.execution.implementation == "experimental-packed-v1":
-                    source = _role_vectors(scene[batch], [s for s, _ in frame.roles],
+                source_roles = [s for s, _ in frame.roles]
+                target_roles = [t for _, t in frame.roles]
+                if self.vocabulary.get("input_spec") == V2_INPUT_SPEC:
+                    source = _view_role_vectors(scene[batch], source_roles, self.absent_roles[0])
+                    target = _view_role_vectors(scene[batch], target_roles, self.absent_roles[1])
+                elif any(not isinstance(role, int) for role in source_roles + target_roles):
+                    raise ValueError("single-view InputSpec received multi-view roles")
+                elif self.execution.implementation == "experimental-packed-v1":
+                    source = _role_vectors(scene[batch], cast(list[int], source_roles),
                                            self.absent_roles[0])
-                    target = _role_vectors(scene[batch], [t for _, t in frame.roles],
+                    target = _role_vectors(scene[batch], cast(list[int], target_roles),
                                            self.absent_roles[1])
                 else:
                     source = torch.stack(
                         [scene[batch, s] if s >= 0 else self.absent_roles[0]
-                         for s, _ in frame.roles]
+                         for s in cast(list[int], source_roles)]
                     )
                     target = torch.stack(
                         [scene[batch, t] if t >= 0 else self.absent_roles[1]
-                         for _, t in frame.roles]
+                         for t in cast(list[int], target_roles)]
                     )
                 action = action + self.source_role(source) + self.target_role(target)
             actions.append(action)

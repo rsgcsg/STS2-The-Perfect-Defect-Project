@@ -14,7 +14,7 @@ from stpd.workers.checkpoint_codec import decode_checkpoint, encode_checkpoint
 
 from .data import digest, json_bytes
 from .execution import MStdExecution
-from .input import INPUT_SPEC, validate_input_spec
+from .input import INPUT_SPEC, LEGACY_INPUT_SPEC, SORTED_INPUT_SPEC, validate_input_spec
 from .model import ARCHITECTURE, MStd
 from .spec import EXECUTION_PACKAGE_SCHEMA, PACKAGE_SCHEMA
 
@@ -27,7 +27,8 @@ def adapter_identity() -> dict[str, str]:
     closure = {
         name: digest((root / name).read_bytes())
         for name in ("agent.py", "agent_driver.py", "local_inference.py", "export.py", "input.py",
-                     "model.py", "data.py", "execution.py", "spec.py")
+                     "model.py", "data.py", "execution.py", "spec.py", "input_order.py",
+                     "vocabulary.py", "public_vocabulary_v1.json", "input_identity.py")
     }
     closure["checkpoint_codec.py"] = digest(
         (root.parent / "workers/checkpoint_codec.py").read_bytes()
@@ -56,6 +57,19 @@ def input_spec(
             json_bytes({"projection": spec, "vocabulary_sha256": digest(json_bytes(vocabulary))})
         ),
     }
+
+
+def runtime_projection(vocabulary: dict[str, Any]) -> dict[str, Any]:
+    spec = validate_input_spec(vocabulary["input_spec"])
+    return INPUT_SPEC if spec == LEGACY_INPUT_SPEC else spec
+
+
+def bound_projection(vocabulary: dict[str, Any], projection: object) -> dict[str, Any]:
+    spec = validate_input_spec(projection)
+    default = runtime_projection(vocabulary)
+    if spec != default and not (default == INPUT_SPEC and spec == SORTED_INPUT_SPEC):
+        raise ValueError("projection incompatible with model vocabulary lineage")
+    return spec
 
 
 def export_model(
@@ -138,6 +152,7 @@ def register(
     *,
     entry_id: str = "t0-p1-mstd",
     label: str = "T0 P1 M-std (CPU engineering)",
+    input_projection: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Environment owner supplies the existing exact P1 environment envelope.
 
@@ -152,6 +167,8 @@ def register(
     path = (root / "model.tensor-tree").resolve()
     shutil.copyfile(package / "model.tensor-tree", path)
     model, payload = load_model(path, descriptor["package_sha256"])
+    projection = bound_projection(model.vocabulary, runtime_projection(model.vocabulary)
+                                  if input_projection is None else input_projection)
     if (
         descriptor.get("schema") != payload["schema"]
         or descriptor.get("inference_execution") != payload.get("inference_execution")
@@ -183,7 +200,7 @@ def register(
         },
     )
     manifest["input"].update(
-        input_spec=input_spec(model.vocabulary, INPUT_SPEC),
+        input_spec=input_spec(model.vocabulary, projection),
         state_format_version="mstd-stateless-1",
         state_recovery={"mode": "none", "max_state_bytes": 0, "model_bindings": []},
     )
@@ -195,8 +212,8 @@ def register(
         "weights_sha256": digest(encode_checkpoint({"weights": payload["weights"]})),
         "checkpoint_sha256": payload["checkpoint_sha256"],
         "agent_spec": descriptor["agent_spec"],
-        "input_spec": input_spec(model.vocabulary, INPUT_SPEC),
-        "input_projection": INPUT_SPEC,
+        "input_spec": input_spec(model.vocabulary, projection),
+        "input_projection": projection,
         "package_input_spec": input_spec(model.vocabulary),
     }
     (root / "manifest.json").write_bytes(json_bytes(manifest))
