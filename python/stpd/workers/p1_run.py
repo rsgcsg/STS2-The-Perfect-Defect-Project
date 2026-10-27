@@ -22,7 +22,7 @@ from spireagent.json_boundary import BoundaryError, FrozenObject
 from spireagent.storage.store import ArtifactStore
 
 from ..p1.data import digest
-from ..p1.export import export_model, load_model
+from ..p1.export import action_weights, export_model, load_model
 from ..p1.formal_training import MStdTrainer, checkpoint_schema
 from ..p1.spec import (
     CHECKPOINT_FRACTIONS,
@@ -241,6 +241,8 @@ def verify_p1_result(
         )
     ):
         raise BoundaryError("p1_worker", "dev_best_checkpoint_mismatch")
+    expected_action_weights = action_weights(state["best_model"],
+                                             value_heads=workload.config.value_heads)
     with tempfile.TemporaryDirectory(prefix="p1-model-verify-") as temporary:
         destination = Path(temporary) / "package"
         materialize_p1_model(store, model.artifact_id, destination)
@@ -248,9 +250,9 @@ def verify_p1_result(
         if (
             package["checkpoint_sha256"] != digest(last.raw)
             or package["training_identity"] != state["identity"]
-            or loaded.state_dict().keys() != state["best_model"].keys()
+            or loaded.state_dict().keys() != expected_action_weights.keys()
             or any(
-                not torch.equal(value, state["best_model"][key])
+                not torch.equal(value, expected_action_weights[key])
                 for key, value in loaded.state_dict().items()
             )
         ):

@@ -72,12 +72,20 @@ def bound_projection(vocabulary: dict[str, Any], projection: object) -> dict[str
     return spec
 
 
+def action_weights(state: dict[str, torch.Tensor], *, value_heads: bool = False
+                   ) -> dict[str, torch.Tensor]:
+    """Remove exactly the declared auxiliary tensors, preserving all action tensors."""
+    removed = {"win_head.weight", "win_head.bias", "progress_head.weight", "progress_head.bias"}
+    if value_heads and not removed <= state.keys():
+        raise ValueError("declared auxiliary parameter inventory is incomplete")
+    return {key: value for key, value in state.items() if not value_heads or key not in removed}
+
+
 def export_model(
     model: MStd, checkpoint: Path, destination: Path, training_identity: dict[str, Any]
 ) -> dict[str, Any]:
     destination.mkdir(parents=True, exist_ok=False)
-    state = {key: value for key, value in model.state_dict().items()
-             if not key.startswith(("win_head.", "progress_head."))}
+    state = action_weights(dict(model.state_dict()), value_heads=model.value_heads)
     if not all(bool(torch.isfinite(value).all()) for value in state.values()):
         raise ValueError("cannot export non-finite weights")
     execution_fields = ({"inference_execution": model.execution.to_dict()}
@@ -181,7 +189,7 @@ def register(
         descriptor.get("schema") != payload["schema"]
         or descriptor.get("inference_execution") != payload.get("inference_execution")
         or descriptor.get("architecture") != payload["architecture"]
-        or descriptor["input_spec"] != input_spec(model.vocabulary]
+        or descriptor["input_spec"] != input_spec(model.vocabulary)
         or descriptor["checkpoint_sha256"] != payload["checkpoint_sha256"]
     ):
         raise ValueError("model descriptor differs from package")

@@ -198,3 +198,44 @@ def test_register_rejects_descriptor_architecture_tampering(tmp_path):
     path.write_text(json.dumps(descriptor))
     with pytest.raises(ValueError, match="descriptor differs"):
         register(package, tmp_path / "private", {})
+
+
+@pytest.mark.parametrize("model_size", ["standard", "large"])
+def test_completed_value_run_roundtrips_final_result_and_action_model(tmp_path, model_size):
+    from stpd.workers.p1_run import materialize_p1_model, verify_p1_result
+
+    store = store_at(tmp_path / "store")
+    projections = [projection_fixture(store, "source-" + str(i))[0] for i in range(3)]
+    snapshot = explicit_snapshot(store, projections)
+    run = prepare_p1_run(store, snapshot.artifact_id, PRODUCER,
+                         MStdConfig(max_epochs=1, value_heads=True, model_size=model_size),
+                         "c" * 32, input_projection=V2_INPUT_SPEC)
+    workload = verify_p1_run(store, run.artifact_id, PRODUCER)
+    receipt = dispatch(store, ComputeRequest("training", run.artifact_id, PRODUCER,
+                                             "natural-complete"), PRODUCER)
+    result, model, checkpoint = verify_p1_result(store, receipt.output_id, workload)
+    assert checkpoint.state["phase"] == "completed"
+    descriptor = materialize_p1_model(store, model.artifact_id, tmp_path / "export")
+    loaded, payload = load_model(tmp_path / "export/model.tensor-tree",
+                                 descriptor["package_sha256"])
+    assert loaded.model_size == model_size and not loaded.value_heads
+    original = checkpoint.state["best_model"]
+    assert set(original) - set(payload["weights"]) == {
+        "win_head.weight", "win_head.bias", "progress_head.weight", "progress_head.bias"}
+    assert all(torch.equal(value, original[key]) for key, value in payload["weights"].items())
+
+
+def test_local_application_rejects_remote_only_value_protocol():
+    from spireagent.json_boundary import BoundaryError
+    from spireagent.workbench.trusted_recipes import validate_recipe_config
+
+    with pytest.raises(BoundaryError, match="value_heads_require_remote_training"):
+        validate_recipe_config("p1-mstd-N-v1", MStdConfig(value_heads=True).to_dict())
+
+
+@pytest.mark.parametrize("model_size", [None, [], {}])
+def test_model_size_type_boundary_is_explicit(model_size):
+    from spireagent.json_boundary import BoundaryError
+
+    with pytest.raises(BoundaryError, match="unsupported_model_size"):
+        MStdConfig(model_size=model_size)

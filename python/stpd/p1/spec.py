@@ -47,7 +47,7 @@ class MStdConfig:
     model_size: str = "standard"
 
     def __post_init__(self) -> None:
-        if self.model_size not in {"standard", "large"}:
+        if type(self.model_size) is not str or self.model_size not in {"standard", "large"}:
             raise BoundaryError("p1_training", "unsupported_model_size")
         if self.model_size == "large" and not self.value_heads:
             raise BoundaryError("p1_training", "large_model_requires_value_protocol")

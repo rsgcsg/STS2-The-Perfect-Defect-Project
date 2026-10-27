@@ -448,7 +448,7 @@ whole-group and exposure constraints remain in effect.
 
 ## T2 outcome auxiliary heads
 
-For a new input-v2 run, `config.value_heads=true` adds win/progress supervision;
+For a new remote input-v2 run, `config.value_heads=true` adds win/progress supervision;
 `model_size` defaults to `standard`. The optional `large` comparison doubles
 text/scene depth while preserving widths and the recipe. Missing optional fields
 retain the historical N-only configuration and package reader. See
