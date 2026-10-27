@@ -20,6 +20,34 @@ GET  /api/player-environment/evidence/native-pages/sessions/{session_id}
 POST /api/player-environment/evidence/native-pages/sessions/{session_id}/return|recover
 ```
 
+## Public Basis and explicit settled-counter witnesses
+
+The existing Public Basis current/capture/chunk/release routes freeze one Snapshot
+and its complete advertised Read inventory under the same synchronous capture guard.
+Default Reference observations keep revision2; default Managed observations keep
+revision1. Their raw display counters and current execution/input profile remain.
+
+For the user-approved P1 r1.7 consumers only, request
+`GET /api/player-environment/public-basis?settled_relic_counters=1`, or use the SDK
+`readCurrentPublicBasis({settledRelicCounters:true})` /
+`getFullPublicBasis({settledRelicCounters:true})`. Retained capture accepts the same
+query. Managed manager capture accepts `settled_relic_counters: true`.
+The reply is Public Basis revision3 with a same-capture `settled_relic_counters`
+witness bound to the original snapshot/session and exact game MVID. A server that
+ignores the opt-in is rejected by the SDK; it never silently downgrades.
+
+Only already shown KUSARIGAMA/LASTING_CANDY counters receive a fact. Raw Snapshot
+and Read still contain their literal display value; the witness contains the
+registered logical remainder, never the cumulative private total or animation flag.
+Unavailable native values remain `missing` with partial capture. Wrong binding,
+foreign/duplicate facts and invalid rule/range fail strict decoding. The sealed
+handle hash and retention lifecycle cover the entire original PB3 bytes.
+
+The versioned fields, safe legacy recovery and ambiguity rules are owned by
+[P1 r1.7](../../../../docs/protocols/P1_GLOBAL_R1.zh-CN.md#r17两个遗物的同帧逻辑计数2026-10-27用户已批).
+New recording uses the new producer/Tool combination; build support is separate
+from installation, Human qualification and training admission.
+
 ## Original client lifetime and final revocation (source foundation)
 
 An original client has a 30-minute idle deadline measured by the Host's

@@ -222,9 +222,9 @@ class ManagedEpisodeExecutor:
         runtime_version = json.loads(
             (self.runtime.parent / "package.json").read_bytes()).get("version")
         if (mode["mode"] == "central_batch"
-                and runtime_version not in {"0.1.0-rc.50", "0.1.0-rc.51", "0.1.0-rc.52"}):
+                and runtime_version not in {"0.1.0-rc.50", "0.1.0-rc.51", "0.1.0-rc.52", "0.1.0-rc.53"}):
             reject("runtime_explicit_adapter_environment_required")
-        if self.settling_timeout_ms is not None and runtime_version != "0.1.0-rc.52":
+        if self.settling_timeout_ms is not None and runtime_version not in {"0.1.0-rc.52", "0.1.0-rc.53"}:
             reject("runtime_settling_watchdog_required")
         if configuration["agent_adapter"] != export.adapter_identity():
             reject("frozen_agent_implementation_changed")

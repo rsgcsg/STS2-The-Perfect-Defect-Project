@@ -171,8 +171,11 @@ frozen packages do not advertise this diagnostic and are not silently upgraded.
 Runtime rc52's Managed settling watchdog bounds a repeated snapshot wait. The
 application defaults to 120,000 ms and retains the episode as unknown with reason
 `managed_settling_stalled`; exact original evidence and accepted Host shutdown
-remain separate facts. M051's original offer is never reissued, and its underlying
-native asynchronous wait remains an M2 obligation.
+remain separate facts. M051's original offer is never reissued. M2a located the
+missing exact Godot logarithm binding and verified the original three native turns
+plus one separate new full-seed validation slot (natural loss at floor17, no
+unknown, complete typed R2 readback). This closes that counterexample, not all
+possible native waits or full-game equivalence.
 
 M2a's explicit r1.7 path implements only the two user-approved public remainders
 (KUSARIGAMA/LASTING_CANDY). Both Hosts use the shared read-only Native Foundation
