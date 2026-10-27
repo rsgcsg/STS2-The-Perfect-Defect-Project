@@ -770,7 +770,7 @@ Managed 早停默认 `settling_timeout_ms=120000`，要求 Runtime rc52；新执
 
 断网/复制/读回失败时，原 run、本地 manifest/payload 保留，槽位仍按原账本记 unknown；本地发布后立刻持久化 `preservation_artifact_id` 与 `preservation-pending.json`（准确 Store、peer、expected），只有本次 peer 完整 typed 读回通过才有 `stored_evidence_id` 与 completed preservation。恢复只搬验该 artifact：用原 `copy_artifact(local, peer, artifact_id, reuse_published_parents=True)`，随后 `verify_global_artifact(peer, artifact_id, expected=原expected, scratch=私有目录, read_concurrency=8)`。沿原可信 Runtime 包提供 expected，不执行归档代码；补存收据不能改写旧 unknown 或再开同局。失败发生在本地发布前时沿原封存 run 和 typed-verification 中的 expected 恢复原保存操作，不重新 offer 游戏。
 
-留给 M2b 的接点是同一 `ManagedEpisodeExecutor._preserve` 同步保存方法、既有 phase/detail_seconds 与 pending/full-readback 身份；本轮没有档位、等待保存队列或执行/保存重叠，正式证据内容保持原样。M2b 如改调度，仍须让同一账本拥有槽位/分母，成功条件仍在完整 peer 读回之后。
+M1R2 的同步 `_preserve`、phase/detail_seconds 与 pending/full-readback 身份保留；M2b 在同一账本接封存→关闭→有界保存，并增加用途分档。新账本的配置、恢复、失败含义及训练节点读取格式见 [Managed 保存 owner](MANAGED_PRESERVATION.md)。正式档仍在完整 peer typed 读回后出分，诊断/轨迹档不出分。
 
 
 ```sh
