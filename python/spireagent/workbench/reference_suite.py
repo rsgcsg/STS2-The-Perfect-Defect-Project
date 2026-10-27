@@ -231,6 +231,17 @@ class _Artifacts:
         self.root = root
         self.sequence = 0
 
+    @classmethod
+    def reopen(cls, root: Path) -> _Artifacts:
+        """Continue a closed Managed attempt's save only; no new world offer."""
+        if any(parent.is_symlink() for parent in (root, *root.parents)) or not root.is_dir():
+            _reject("unsafe_run_directory")
+        value = cls.__new__(cls)
+        value.root = root
+        value.sequence = max((int(path.name.split("-", 1)[0]) for path in root.iterdir()
+                              if path.name[:4].isdigit() and path.name[4:5] == "-"), default=0)
+        return value
+
     def put(self, label: str, raw: bytes) -> dict[str, Any]:
         self.sequence += 1
         name = f"{self.sequence:04d}-{label}"
