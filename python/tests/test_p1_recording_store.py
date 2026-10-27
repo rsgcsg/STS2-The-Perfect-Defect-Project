@@ -609,10 +609,14 @@ def test_closed_recording_maintenance_uses_import_owner_and_survives_reopen(
     identity = "a" * 64
 
     class Catalog:
+        start_during_tick = False
+        reads = 0
+
         def read(self):
+            self.reads += 1
             return {
                 "status": "ready",
-                "game_running": False,
+                "game_running": self.start_during_tick and self.reads > 1,
                 "candidates": [{"candidate_id": identity, "recording_type": "p1_native"}],
             }
 
@@ -645,12 +649,22 @@ def test_closed_recording_maintenance_uses_import_owner_and_survives_reopen(
     if cohort_failed:
         importer._maintenance.update(cohort_error="projection_conflicts:synthetic-old-view",
                                      cohort_error_at="2026-10-26T06:00:00Z")
+    # The game starts after the tick's first observation, before packing.
+    importer.catalog.start_during_tick = True
+    assert maintenance.tick()["status"] == "waiting_for_game_exit"
+    assert importer.thread is None and importer._maintenance["active"] is None
+    assert importer.operation["status"] == "idle"
+    importer.catalog.start_during_tick = False
     maintenance.tick()
     importer.thread.join(timeout=10)
     assert importer.status()["status"] == "completed"
     assert calls == [{"human_origin_attested": False}], (
         "preservation must not invent Human attestation"
     )
+    importer.catalog.start_during_tick, importer.catalog.reads = True, 0
+    assert maintenance.tick()["status"] == "waiting_for_game_exit"
+    assert importer.operation["action"] != "storage"
+    importer.catalog.start_during_tick = False
     maintenance.tick()
     importer.thread.join(timeout=10)
     assert importer.status()["storage_receipt"]["full_readback"] is True
@@ -950,8 +964,9 @@ def test_maintenance_derives_each_original_run_without_inventing_empty_run(
         parameters=SimpleNamespace(value=lambda: info)))
     config = ProjectConfig(tmp_path / "state", "", "", None, combination())
     config.state_dir.mkdir()
+    game = False
     catalog = SimpleNamespace(read=lambda: {
-        "status": "ready", "game_running": False, "candidates": []})
+        "status": "ready", "game_running": game, "candidates": []})
     importer = local_recording_import.LocalRecordingImporter(config, catalog)
     importer._maintenance["active"] = {"candidate_id": identity, "source_artifact_id": source,
         "scope_facts": {"candidate_id": identity}}
@@ -969,6 +984,19 @@ def test_maintenance_derives_each_original_run_without_inventing_empty_run(
     monkeypatch.setattr(importer, "start_p1_derivation", derive)
     maintenance = P1RecordingMaintenance(importer)
     maintenance.configure(True, None, scope={"candidate_ids": [identity]})
+    matching = recordings._matching
+
+    def start_during_lookup(*args, **kwargs):
+        nonlocal game
+        game = True
+        return matching(*args, **kwargs)
+
+    if runs:
+        monkeypatch.setattr(recordings, "_matching", start_during_lookup)
+        assert maintenance.tick()["status"] == "waiting_for_game_exit"
+        assert not calls and importer._maintenance["completed_candidates"] == []
+        monkeypatch.setattr(recordings, "_matching", matching)
+        game = False
     for _ in runs:
         assert maintenance.tick().get("completed_candidates") == []
     assert maintenance.tick()["status"] == "completed"
@@ -1208,8 +1236,13 @@ def test_recent_two_policy_schedules_only_the_oldest_in_scope_session(tmp_path, 
     from spireagent.workbench.p1_recording_maintenance import P1RecordingMaintenance
 
     class Catalog:
+        reads = 0
+        starting = True
+
         def read(self):
-            return {"status": "ready", "game_running": False, "candidates": []}
+            self.reads += 1
+            return {"status": "ready", "game_running": self.starting and self.reads > 1,
+                    "candidates": []}
 
     config = ProjectConfig(tmp_path / "state", "", "", None, combination())
     config.state_dir.mkdir()
@@ -1228,6 +1261,9 @@ def test_recent_two_policy_schedules_only_the_oldest_in_scope_session(tmp_path, 
     peer = {"kind": "local", "directory": str(tmp_path / "cold")}
     maintenance.configure(True, peer, projection_id=None,
                           scope={"candidate_ids": ids[:3]}, cool_recent=True)
+    assert maintenance.tick()["status"] == "waiting_for_game_exit"
+    assert not calls
+    importer.catalog.starting = False
     assert maintenance.tick()["status"] == "cooling"
     assert calls == [("cool", ids[0], peer)]
     # The newest two scoped sessions and the unrelated fourth session stay hot.
