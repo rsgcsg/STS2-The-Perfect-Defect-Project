@@ -509,3 +509,13 @@ def test_optional_host_measurement_failure_does_not_abort_preservation(failure):
                                           "game_continuity_id": "owned-episode"})
     assert result == {"type": "performance_unavailable", "status": "unavailable", "error":
                       failure.code if isinstance(failure, BoundaryError) else "TimeoutError"}
+
+
+def test_original_settling_reason_survives_a_missing_final_http_status():
+    from spireagent.workbench.managed_evaluation import _outcome_status
+
+    outcome = {"terminal_observation": {"status": "not_observed"},
+               "operation_end": {"status": "failed", "controller": "released", "tainted": True,
+                   "recorded_reason": "global_post_delivery_capture:managed_settling_stalled"}}
+    assert _outcome_status(outcome, settling_stalled=False) == {
+        "status": "unknown", "reason": "managed_settling_stalled"}

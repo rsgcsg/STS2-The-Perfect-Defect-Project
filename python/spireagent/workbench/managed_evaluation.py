@@ -149,7 +149,8 @@ def _host_performance(manager: Any, target: dict[str, Any]) -> dict[str, Any]:
 
 
 def _outcome_status(outcome: dict[str, Any], *, settling_stalled: bool) -> dict[str, str]:
-    if settling_stalled:
+    recorded_reason = outcome["operation_end"].get("recorded_reason") or ""
+    if settling_stalled or "managed_settling_stalled" in recorded_reason:
         return {"status": "unknown", "reason": "managed_settling_stalled"}
     terminal, end = outcome["terminal_observation"], outcome["operation_end"]
     clean = (end.get("status") in {"task_ended", "censored"}
