@@ -12,7 +12,9 @@ import net from "node:net";
 
 const opt = (n, d = null) => { const i = process.argv.indexOf(n); return i >= 0 ? process.argv[i + 1] : d; };
 const worktree = resolve(opt("--worktree", join(dirname(fileURLToPath(import.meta.url)), ".."))), candidate = opt("--candidate") ? resolve(opt("--candidate")) : null, outDir = resolve(opt("--out"));
-const agentCmd = opt("--agent").split(" ").filter(Boolean);
+const agentCmd = opt("--agent-json") ? JSON.parse(opt("--agent-json")) : opt("--agent").split(" ").filter(Boolean);
+if (!Array.isArray(agentCmd) || !agentCmd.length || agentCmd.some(value => typeof value !== "string" || !value))
+  throw new Error("agent command must be a nonempty string array");
 let seeds = opt("--seeds") ? opt("--seeds").split(",") : JSON.parse(readFileSync(opt("--suite"), "utf8")).seeds;
 seeds = seeds.slice(0, Number(opt("--limit", String(seeds.length))));
 const sha = (b) => createHash("sha256").update(b).digest("hex");
