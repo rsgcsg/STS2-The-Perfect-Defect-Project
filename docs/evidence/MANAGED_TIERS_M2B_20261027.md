@@ -27,8 +27,7 @@ M2a40槽结束/40份R2已先核；本机M2a完整测试仅与中断批重叠，�
 首次节点Store为对已静止M1R2工作集的只读源APFS clone（0.5004秒），不是R2冷恢复；每批constructor准备已计入墙钟。
 本机Runtime临时原件按原保留规则保护；长期远端轨迹档只发训练所需分片和规定的全档，不新增清理系统。
 
-验收：相关回归、非作者审查、真实闭环与本次R2读取分别保留。最终完整源码门在冻结候选的CI跑一次，
-本机只跑相关增量及真实Managed/R2，避免再占录制节点重复同套portable全检；合并头核新身份和可复用的完整执行收据。
+验收：相关回归、非作者审查、真实闭环与本次R2读取分别保留。最终完整源码门在冻结候选CI执行，本机只跑相关增量及真实Managed/R2。首候选前置mypy曾从仓库根运行，未加载Python组件严格配置，漏报5处本卡类型注解缺陷；改用组件入口、补齐注解后按新候选重跑规定CI，原尝试保留。此为本卡代码/自检入口错误，不归环境或测试修复卡。合并头核新身份和可复用的完整执行收据。
 准确PR/CI结果及原日志、逐槽SHA、资源采样、所有分片/完整artifact ID归用户指定
 claude-handoff-2026-10-13/replies/M2B-REPORT-20261027.md及本任务outputs/evidence、outputs/measurement。
 未知原因为原记录 global_post_delivery_capture:global_post_delivery_capture_incomplete；本卡只保全，不越权修Host或接受其为等价例外。

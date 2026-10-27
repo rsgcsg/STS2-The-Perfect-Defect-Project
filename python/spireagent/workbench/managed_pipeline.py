@@ -80,13 +80,16 @@ def verify_unscored_save(row: dict[str, Any], path: Path) -> None:
 
 
 class PipelinedManagedExecutor(ManagedEpisodeExecutor):
-    def __init__(self, configuration, **kwargs):
+    def __init__(self, configuration: dict[str, Any], *, episode_seconds: float,
+                 cleanup_seconds: float) -> None:
         if (retention_configuration(configuration)["tier"] == "diagnostic"
                 and configuration.get("store") == "s3"):
             raise BoundaryError("managed_pipeline", "diagnostic_requires_node_store")
-        super().__init__(configuration, **kwargs)
+        super().__init__(configuration, episode_seconds=episode_seconds,
+                         cleanup_seconds=cleanup_seconds)
 
-    def __call__(self, row, manifest, artifacts, checkpoint) -> None:
+    def __call__(self, row: dict[str, Any], manifest: dict[str, Any], artifacts: Any,
+                 checkpoint: Any) -> None:
         row["pipeline_started_at"] = time.time()
         row["retention"] = retention_configuration(self.configuration)
         row["scenario"] = {"character": manifest["character"], "ascension": manifest["ascension"]}
@@ -102,12 +105,14 @@ class PipelinedManagedExecutor(ManagedEpisodeExecutor):
             row.update(status="save_pending", reason="closed_host_waiting_for_preservation")
         checkpoint()
 
-    def _preserve(self, row, artifacts, checkpoint, run, expected, model, private) -> None:
+    def _preserve(self, row: dict[str, Any], artifacts: Any, checkpoint: Any, run: Path,
+                  expected: dict[str, Any], model: dict[str, Any], private: Path) -> None:
         # No new execution/close implementation: the base calls this only after
         # its typed seal. It then classifies the original and closes the Host.
         self._write_job(row, artifacts, checkpoint, expected, mode="sealed")
 
-    def _write_job(self, row, artifacts, checkpoint, expected, *, mode):
+    def _write_job(self, row: dict[str, Any], artifacts: Any, checkpoint: Any,
+                   expected: dict[str, Any], *, mode: str) -> None:
         model = self.configuration["models"][row["selection_id"]]
         row["save_job"] = artifacts.put("save-job.json", json_bytes({
             "schema": "spireagent/managed-save-job-1", "expected": expected,
@@ -121,7 +126,7 @@ class PipelinedManagedExecutor(ManagedEpisodeExecutor):
         checkpoint()
 
     def preserve_report(self, path: Path) -> dict[str, Any]:
-        report = json.loads(_read(path, max_bytes=MAX_REPORT_BYTES))
+        report: dict[str, Any] = json.loads(_read(path, max_bytes=MAX_REPORT_BYTES))
         row = report["episodes"][0]
         artifacts = _Artifacts.reopen(path.parent)
 
@@ -222,7 +227,8 @@ class PipelinedManagedExecutor(ManagedEpisodeExecutor):
         checkpoint()
         return report
 
-    def _preserve_failure(self, row, artifacts, job, private) -> None:
+    def _preserve_failure(self, row: dict[str, Any], artifacts: Any, job: dict[str, Any],
+                          private: Path) -> None:
         validate_installed_package(self.runtime.parent, self.configuration["runtime_pin"],
             required_paths=("dist/cli.js", "dist/global-replay.js", "dist/managed.js"))
         digest = hashlib.sha256()
