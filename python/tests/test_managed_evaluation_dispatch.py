@@ -782,3 +782,23 @@ def test_save_only_recovery_does_not_reserve_another_game_peak(ledger, monkeypat
         workers=1, max_episodes=1, executor=executor)
     assert fresh["stop_reason"] == "workspace_capacity_insufficient"
     assert executor.offers == 1
+
+
+def test_immutable_nonformal_plan_controls_score_even_for_a_legacy_executor(ledger, tmp_path):
+    execution = tmp_path / "diagnostic-execution.json"
+    configuration = json.loads(Path(ledger.plan["execution"]["path"]).read_bytes())
+    configuration["retention"] = {"tier": "diagnostic", "audit_every": 100}
+    execution.write_bytes(json_bytes(configuration))
+    manifest = ledger.plan["slots"][0]["manifest"]
+    unscored = EvaluationLedger.create(tmp_path / "diagnostic-ledger",
+        Path(manifest["path"]), manifest["sha256"], selections={"438": "same-weight"},
+        execution=execution)
+
+    def legacy(row, manifest, artifacts, checkpoint):
+        complete(row, artifacts, checkpoint)
+
+    result = unscored.run_managed(max_episodes=1, executor=legacy)
+    report = unscored.report()
+    assert result["new_finished"] == 0
+    assert report["win"] == report["loss"] == 0
+    assert all(group["scored"] == 0 for group in report["groups"])

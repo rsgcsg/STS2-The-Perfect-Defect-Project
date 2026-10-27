@@ -491,7 +491,7 @@ class EvaluationLedger:
                         active[saves.submit(executor.preserve_report, path)] = (slot, path, "save")
                     if value["status"] == "trajectory_pending":
                         trajectory_wait.append((slot, path))
-                    finished += value["status"] == "finished"
+                    finished += value["status"] == "finished" and value.get("score_eligible", True)
                     print(json.dumps({"slot_id": slot["slot_id"],
                                       "seed_ordinal": slot["seed_ordinal"], **value}), flush=True)
                     if not value.get("cleanup_accepted"):
@@ -723,6 +723,7 @@ class EvaluationLedger:
 
     def report(self) -> dict[str, Any]:
         rows = self.slots()
+        eligible = (self.plan.get("retention") or {}).get("score_eligible", True)
         groups = []
         for character, ascension, step in sorted(
             {(r["character"], r["ascension"], r["step"]) for r in rows}
@@ -732,7 +733,7 @@ class EvaluationLedger:
                 for r in rows
                 if (r["character"], r["ascension"], r["step"]) == (character, ascension, step)
             ]
-            finished = [r for r in selected if r["status"] == "finished"]
+            finished = [r for r in selected if eligible and r["status"] == "finished"]
             floors = [
                 r["max_observed_floor"] for r in finished if r.get("max_observed_floor") is not None
             ]
@@ -755,8 +756,8 @@ class EvaluationLedger:
             "planned": len(rows),
             "censored": sum(r["status"] == "censored" for r in rows),
             "started": sum(r.get("world_mutation_offered") is True for r in rows),
-            "win": sum(r.get("natural_result") == "win" for r in rows),
-            "loss": sum(r.get("natural_result") == "loss" for r in rows),
+            "win": sum(eligible and r.get("natural_result") == "win" for r in rows),
+            "loss": sum(eligible and r.get("natural_result") == "loss" for r in rows),
             "unknown": sum(r["status"] == "unknown" for r in rows),
             "unknown_sealed": sum(bool(r.get("unknown_release")) for r in rows),
             "not_started": sum(r["status"] == "not_started" for r in rows),
