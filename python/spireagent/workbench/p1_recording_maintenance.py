@@ -195,11 +195,12 @@ class P1RecordingMaintenance:
             except OSError as error:
                 state["persistence_error"] = errno.errorcode.get(error.errno or 0, "OSError")
                 logging.getLogger(__name__).exception("Maintenance observation could not be saved")
+            snapshot = self.importer.maintenance_status()
         if state["policy"].get("cohort_policy"):
             from .p1_cohort_intake import write_page
 
             try:
-                write_page(self.importer.config, state)
+                write_page(self.importer.config, snapshot)
             except (OSError, ValueError, KeyError, TypeError):
                 # A replaceable HTML view must not stop source preservation.
                 logging.getLogger(__name__).exception("Recording summary page could not be written")
@@ -218,6 +219,8 @@ class P1RecordingMaintenance:
         if policy.get("cohort_policy") and state.get("status") in {
             "completed", "up_to_date", "cache_over_budget",
         }:
+            if not self._admit_step():
+                return dict(self.importer._maintenance)
             from stpd.p1.data import digest as content_digest
             from stpd.p1.data import json_bytes
 
@@ -234,9 +237,12 @@ class P1RecordingMaintenance:
             signature = content_digest(json_bytes([*inputs, _ledger_stamp(owner.path)]))
             if signature not in {state.get("cohort_signature"),
                                  state.get("cohort_failed_signature")}:
+                if not self._admit_step():
+                    return dict(self.importer._maintenance)
                 with self.importer.lock:
                     self.importer._maintenance.update(status="refreshing_cohort")
                     self.importer._save()
+                self._observe((state.get("status"), state.get("error_code")))
                 # Parsing/cache work never holds the importer's status/control lock.
                 try:
                     summary = refresh_cohort(self.importer.config, path,
@@ -271,6 +277,28 @@ class P1RecordingMaintenance:
                                         datetime.fromisoformat(last["closed_at"])).total_seconds())
                     self.importer._save()
         return dict(self.importer._maintenance)
+
+    def _admit_step(self) -> bool:
+        """Recheck the original game owner immediately before each new heavy step.
+
+        Work already admitted finishes normally. This is an admission observation,
+        not a game-start interlock or permission to interrupt an unknown operation.
+        """
+        with self.importer.lock:
+            state = self.importer._maintenance
+            if not state["policy"]["enabled"] or self.stop.is_set():
+                return False
+            catalog = self.importer.catalog.read()
+            if catalog.get("status") == "ready" and catalog.get("game_running") is False:
+                return True
+            state.update(
+                status=("waiting_for_game_exit" if catalog.get("status") == "ready"
+                        else "unavailable"),
+                error_code=(None if catalog.get("status") == "ready"
+                            else catalog.get("error_code", "catalog_unavailable")),
+            )
+            self.importer._save()
+            return False
 
     def _tick(self) -> dict[str, Any]:
         from .collection_tool_registration import current_collection_tool
@@ -364,6 +392,8 @@ class P1RecordingMaintenance:
                     return dict(state)
             store, _ = _selected_store(importer.config, require_curation=False)
             if policy.get("cohort_policy"):
+                if not self._admit_step():
+                    return dict(state)
                 from .p1_cohort_intake import load_policy, select_versions
                 from .p1_data_preparation import discover_p1_projections
 
@@ -389,6 +419,8 @@ class P1RecordingMaintenance:
                         ))
                         for session in sessions[:-2]:
                             if session.get("expanded_state", "hot") == "hot":
+                                if not self._admit_step():
+                                    return dict(state)
                                 importer.start_p1_storage(
                                     "cool", session["source_artifact_id"], policy["peer"],
                                 )
@@ -406,10 +438,12 @@ class P1RecordingMaintenance:
                                      and time.time() >= retry_after)
                         if (usage > cache_policy["max_bytes"] and (
                                 state.get("cache_trim_signature") != signature or retry_due)):
-                            state["cache_trim_signature"] = signature
                             recent = sorted(state.get("sessions", {}).values(),
                                             key=lambda row: row["scope_facts"].get("closed_at", ""))
                             protected = tuple(row["source_artifact_id"] for row in recent[-2:])
+                            if not self._admit_step():
+                                return dict(state)
+                            state["cache_trim_signature"] = signature
                             importer.start_cache_trim(protected)
                             state.update(status="cache_trimming", error_code=None)
                             importer._save()
@@ -445,6 +479,8 @@ class P1RecordingMaintenance:
                     self._pending(catalog)
                     importer._save()
                     return dict(state)  # Keep original last_intake and its timings.
+                if source is None and not self._admit_step():
+                    return dict(state)
                 active = {
                     "candidate_id": identity,
                     "source_artifact_id": source,
@@ -479,6 +515,8 @@ class P1RecordingMaintenance:
                     for row in importer._storage_receipts.values()
                 )
                 if not verified:
+                    if not self._admit_step():
+                        return dict(state)
                     importer.start_p1_storage("preserve", source, policy["peer"])
                     return dict(state)
             projection = policy["projection_id"]
@@ -499,6 +537,8 @@ class P1RecordingMaintenance:
                         run_id=run_id,
                     )
                     if existing is None:
+                        if not self._admit_step():
+                            return dict(state)
                         importer.start_p1_derivation(source, projection, run_id=run_id)
                         return dict(state)
                     if policy["peer"] is not None and not any(
@@ -508,6 +548,8 @@ class P1RecordingMaintenance:
                         and row["storage_receipt"].get("full_readback") is True
                         for row in importer._storage_receipts.values()
                     ):
+                        if not self._admit_step():
+                            return dict(state)
                         importer.start_p1_storage("preserve", existing.artifact_id, policy["peer"])
                         return dict(state)
             state.setdefault("completed_candidates", []).append(active["candidate_id"])

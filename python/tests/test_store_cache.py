@@ -156,6 +156,7 @@ def test_readonly_cache_never_initializes_missing_lease(tmp_path, monkeypatch):
 def test_existing_maintenance_owner_trims_and_persists_receipt(tmp_path, monkeypatch):
     import io
     import os
+    import threading
 
     from test_artifact_store_v1 import PRODUCER
 
@@ -175,8 +176,13 @@ def test_existing_maintenance_owner_trims_and_persists_receipt(tmp_path, monkeyp
     configure_cache(local, str(tmp_path / "peer"), max_bytes=0)
 
     class Catalog:
+        reads = 0
+        start_during_tick = True
+
         def read(self):
-            return {"status": "ready", "game_running": False, "candidates": []}
+            self.reads += 1
+            return {"status": "ready", "game_running": self.start_during_tick and self.reads > 1,
+                    "candidates": []}
 
     config = ProjectConfig(tmp_path / "state", "", "", None, combination())
     config.state_dir.mkdir()
@@ -185,13 +191,34 @@ def test_existing_maintenance_owner_trims_and_persists_receipt(tmp_path, monkeyp
     maintenance = P1RecordingMaintenance(importer)
     maintenance.configure(True, {"kind": "local", "directory": str(tmp_path / "peer")},
                           projection_id=None)
+    assert maintenance.tick()["status"] == "waiting_for_game_exit"
+    assert importer.thread is None and "cache_trim_signature" not in importer._maintenance
+    assert len(list(local.blobs.keys("objects/sha256/"))) == 4
+    importer.catalog.start_during_tick = False
+    allowed = threading.Event()
+    trim = importer._run_cache_trim
+
+    def blocked_trim():
+        assert allowed.wait(3)
+        trim()
+
+    monkeypatch.setattr(importer, "_run_cache_trim", blocked_trim)
     assert maintenance.tick()["status"] == "cache_trimming"
+    importer.catalog.start_during_tick = True
+    assert maintenance.tick()["status"] == "operation_in_progress"
+    assert importer.maintenance_status()["current_step"]["action"] == "store-cache-trim"
+    allowed.set()
     importer.thread.join(timeout=3)
     assert not importer.thread.is_alive()
     assert importer.operation["status"] == "completed"
     assert len(importer.operation["storage_receipt"]["removed_chunks"]) == 2
     reopened = importing.LocalRecordingImporter(config, Catalog())
     assert reopened._maintenance["cache"] == importer.operation["storage_receipt"]
+    assert reopened._maintenance["cache_resource_usage"] == importer.operation["resource_usage"]
+    assert importer.operation["resource_usage"]["cache_bytes_removed"] == 2
+    assert importer.operation["resource_usage"]["thread_cpu_seconds"] >= 0
+    assert maintenance.tick()["status"] == "waiting_for_game_exit"
+    importer.catalog.start_during_tick = False
     assert maintenance.tick()["status"] == "cache_over_budget"
 
 
@@ -215,6 +242,7 @@ def test_new_publication_prepares_lease_for_future_readonly_consumer(tmp_path):
 def test_maintenance_rechecks_active_reader_after_backoff(tmp_path, monkeypatch):
     import io
     import os
+    import threading
 
     from test_artifact_store_v1 import PRODUCER
 
@@ -246,17 +274,29 @@ def test_maintenance_rechecks_active_reader_after_backoff(tmp_path, monkeypatch)
     maintenance = maintaining.P1RecordingMaintenance(importer)
     maintenance.configure(True, {"kind": "local", "directory": str(tmp_path / "peer")},
                           projection_id=None)
+    # Synchronize the asynchronous step, rather than racing its final status.
+    allowed = threading.Event()
+    trim = importer._run_cache_trim
+
+    def blocked_trim():
+        assert allowed.wait(3)
+        trim()
+
+    monkeypatch.setattr(importer, "_run_cache_trim", blocked_trim)
     reader = local.read_payload(manifests[0].payload("data"))
     next(reader)
     assert maintenance.tick()["status"] == "cache_trimming"
+    allowed.set()
     importer.thread.join(timeout=3)
     assert importer._maintenance["cache"]["active_chunks"]
     assert maintenance.tick()["status"] == "cache_over_budget"
     reader.close()
     # Closed reader alone is not success. The scheduled retry must actually trim.
+    allowed.clear()
     monkeypatch.setattr(maintaining.time, "time",
                         lambda: importer._maintenance["cache_retry_after"] + 1)
     assert maintenance.tick()["status"] == "cache_trimming"
+    allowed.set()
     importer.thread.join(timeout=3)
     assert importer._maintenance["cache"]["within_budget"]
     assert maintenance.tick()["status"] == "up_to_date"

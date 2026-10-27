@@ -1759,13 +1759,13 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                 if not self.authenticated_browser() and not self.control_client():
                     self.respond(401, b'{"error":"browser_session_required"}')
                     return
-                value = app.local_recording_import.status()["maintenance"]
+                value = app.local_recording_import.maintenance_status()
                 self.respond(200, json.dumps(value).encode())
             elif parsed.path == "/recording-summary":
                 from .p1_cohort_intake import render_summary
 
                 summary_html = render_summary(app.config,
-                                              app.local_recording_import.status()["maintenance"])
+                                              app.local_recording_import.maintenance_status())
                 self.respond(200, summary_html.encode(), "text/html")
             elif parsed.path == "/api/local-recordings/storage/peer":
                 if not self.authenticated_browser():
