@@ -13,8 +13,10 @@ from stpd.p1.weighting import CHECKPOINT_POLICY, SCHEMA
 from stpd.p1.workload import verify_p1_run
 
 
-@pytest.mark.parametrize("input_v2", [False, True])
-def test_normal_package_then_start_original_prepared_run(tmp_path, capsys, monkeypatch, input_v2):
+@pytest.mark.parametrize("input_v2,value_heads", [(False, False), (True, False), (True, True)])
+def test_normal_package_then_start_original_prepared_run(
+    tmp_path, capsys, monkeypatch, input_v2, value_heads,
+):
     with client(tmp_path) as (app, call, provider, store, owner, snapshot, config_path):
         from stpd.p1.dataset import SnapshotReader
 
@@ -23,7 +25,7 @@ def test_normal_package_then_start_original_prepared_run(tmp_path, capsys, monke
         body = {
             "intent_id": "b" * 32,
             "source_id": snapshot.artifact_id,
-            "config": MStdConfig(max_epochs=2).to_dict(),
+            "config": MStdConfig(max_epochs=2, value_heads=value_heads).to_dict(),
             "max_seconds": 300,
             "stop_after": 1,
             "checkpoint_policy": CHECKPOINT_POLICY,
@@ -96,6 +98,14 @@ def test_normal_package_then_start_original_prepared_run(tmp_path, capsys, monke
         assert started["input_id"] == run_id
         paused = settled(call, started["id"], "paused")
         assert paused["result"]["checkpoint_id"]
+        if value_heads:
+            from stpd.workers.p1_run import verify_p1_checkpoint
+
+            workload = verify_p1_run(provider.store, run_id, provider.target.producer)
+            checkpoint = verify_p1_checkpoint(
+                provider.store, paused["result"]["checkpoint_id"], workload)
+            assert checkpoint.state["schema"] == "stpd/p1-mstd-formal-checkpoint-2"
+            assert "win_head.weight" in checkpoint.state["model"]
         assert len(provider.calls) == 1
         assert read_session.closed and app.remote_training._prepared_sessions == {}
         # Mismatching the original purpose-use intent fails before any submission.

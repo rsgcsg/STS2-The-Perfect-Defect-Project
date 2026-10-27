@@ -23,15 +23,14 @@ from spireagent.storage.store import ArtifactStore
 
 from ..p1.data import digest
 from ..p1.export import export_model, load_model
-from ..p1.formal_training import MStdTrainer
+from ..p1.formal_training import MStdTrainer, checkpoint_schema
 from ..p1.spec import (
     CHECKPOINT_FRACTIONS,
-    CHECKPOINT_SCHEMA,
     DERIVED_CHECKPOINT_SCHEMA,
     DERIVED_RUN_SCHEMA,
     MODEL_SCHEMA,
-    TARGET_SPEC,
 )
+from ..p1.value_targets import target_spec
 from ..p1.workload import P1Workload, populations_from_reader, verify_p1_run
 from .checkpoint_codec import decode_checkpoint
 from .reporting import RunReporter
@@ -55,7 +54,8 @@ def verify_p1_checkpoint(
     if (
         checkpoint.kind != "checkpoint"
         or checkpoint.producer != workload.run.producer
-        or info.get("schema") not in {CHECKPOINT_SCHEMA, DERIVED_CHECKPOINT_SCHEMA}
+        or info.get("schema") not in {checkpoint_schema(workload.config.value_heads),
+                                      DERIVED_CHECKPOINT_SCHEMA}
         or checkpoint.parent("run") != workload.run.artifact_id
         or checkpoint.parent("training_input") != workload.training.artifact_id
         or {p.role for p in checkpoint.payloads} != {"checkpoint"}
@@ -66,12 +66,12 @@ def verify_p1_checkpoint(
     identity = state.get("identity", {})
     training = workload.training.parameters.value()
     if (
-        state.get("schema") != CHECKPOINT_SCHEMA
+        state.get("schema") != checkpoint_schema(workload.config.value_heads)
         or identity.get("snapshot_id") != workload.snapshot.artifact_id
         or identity.get("config") != workload.config.to_dict()
         or identity.get("input_spec") != training["input_spec"]
         or identity.get("vocabulary_sha256") != training["vocabulary_sha256"]
-        or identity.get("target_spec") != TARGET_SPEC
+        or identity.get("target_spec") != target_spec(workload.config.value_heads)
         or identity.get("checkpoint_policy") != training.get("checkpoint_policy")
         or identity.get("execution", workload.execution.to_dict()) != workload.execution.to_dict()
         or (bool({"execution_policy", "execution_plan"} & workload.run.parameters.value().keys())
@@ -360,7 +360,7 @@ def _execute_p1_run(
     preparation_started = time.perf_counter()
     populations = populations_from_reader(
         workload.reader, workload.training.parameters.value().get("loss_weighting"),
-        workload.vocabulary["input_spec"])
+        workload.vocabulary["input_spec"], value_heads=workload.config.value_heads)
     population_seconds = time.perf_counter() - preparation_started
     construction_started = time.perf_counter()
     trainer = MStdTrainer(
@@ -448,7 +448,7 @@ def _execute_p1_run(
             (payload,),
             FrozenObject.of(
                 {
-                    "schema": CHECKPOINT_SCHEMA,
+                    "schema": checkpoint_schema(workload.config.value_heads),
                     "attempt": attempt_id,
                     "optimizer_updates": trainer.step,
                     "phase": trainer.phase,

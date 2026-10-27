@@ -445,3 +445,31 @@ with a reason, so a rerun cannot silently claim that eight new raw sessions adde
 eight usable runs. Review a genuinely new conversion Tool once before adding its
 ID to this explicit policy. The same per-batch native start/end, gap, provenance,
 whole-group and exposure constraints remain in effect.
+
+## T2 outcome auxiliary heads
+
+For a new input-v2 run, `config.value_heads=true` adds win/progress supervision;
+`model_size` defaults to `standard`. The optional `large` comparison doubles
+text/scene depth while preserving widths and the recipe. Missing optional fields
+retain the historical N-only configuration and package reader. See
+[T2 preparation](../../docs/evidence/T2_VALUE_PREPARATION_20261028.md).
+
+Natural native terminal witnesses alone supervise outcomes. Unknown/technical
+stops are masked, while their admitted imitation points remain unchanged. The
+fixed A0=48/A10=49 progress map, 0.01 auxiliary loss coefficients, Architecture,
+TargetSpec and full checkpoint schema are explicit identities. DEV action NLL is
+still the sole selection/early-stop metric. Export removes both heads, so Runtime
+continues to select solely by action logits.
+
+`training package` sends preparation to the configured Application, whose executing
+source must match `execution_producer`; running a newer CLI against an older daily
+Application does not add the new graph. Use a separate training Application with
+this exact source/lock and its own state/Ops/target configuration, bound to the same
+Store and Curation owner. Do not silently replace the daily recording installation.
+Prepare the package without submitting a provider, then start that saved Run once
+the displayed split/weights and final freeze are user-confirmed. Never repeat a
+start after an uncertain response; inspect its original intent/job/handle.
+
+T2's fixed evaluation suite is `t2_managed_manifest`: 40 A0/10 A10, including the
+old 10/2 prefix. All are reserved against collection/training and future RL seeds.
+Freeze the current cohort once; later recordings belong to a later experiment.

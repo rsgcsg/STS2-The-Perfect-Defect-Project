@@ -43,8 +43,16 @@ class MStdConfig:
     device: str = "cpu"
     dtype: str = "float32"
     cpu_threads: int = 2
+    value_heads: bool = False
+    model_size: str = "standard"
 
     def __post_init__(self) -> None:
+        if self.model_size not in {"standard", "large"}:
+            raise BoundaryError("p1_training", "unsupported_model_size")
+        if self.model_size == "large" and not self.value_heads:
+            raise BoundaryError("p1_training", "large_model_requires_value_protocol")
+        if type(self.value_heads) is not bool:
+            raise BoundaryError("p1_training", "boolean_value_heads_required")
         if type(self.seed) is not int or not 0 <= self.seed < 2**63:
             raise BoundaryError("p1_training", "invalid_seed")
         if type(self.max_epochs) is not int or not 1 <= self.max_epochs <= 30:
@@ -69,11 +77,21 @@ class MStdConfig:
             raise BoundaryError("p1_training", "explicit_device_required")
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        value = asdict(self)
+        if not self.value_heads:
+            value.pop("value_heads")
+        if self.model_size == "standard":
+            value.pop("model_size")
+        return value
 
     @classmethod
     def decode(cls, value: object) -> MStdConfig:
-        return cls(**object_fields(value, set(cls.__dataclass_fields__), "p1_training.config"))
+        fields = set(cls.__dataclass_fields__)
+        if isinstance(value, dict) and "value_heads" not in value:
+            fields.remove("value_heads")
+        if isinstance(value, dict) and "model_size" not in value:
+            fields.remove("model_size")
+        return cls(**object_fields(value, fields, "p1_training.config"))
 
     def steps(self, train_points: int) -> int:
         if type(train_points) is not int or train_points < 1:
