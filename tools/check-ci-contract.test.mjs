@@ -44,8 +44,8 @@ test("CI contract rejects replacing selected gates with a hand-picked subset", (
 
 test("partition scheduling cannot drop siblings, defaults, diagnostics or original artifact isolation", () => {
   for (const [before, after, error] of [
-    ["fail-fast: false", "fail-fast: true", "Linux must retain two isolated pytest shards"],
-    ["shard: [1, 2]", "shard: [1]", "Linux must retain two isolated pytest shards"],
+    ["fail-fast: false", "fail-fast: true", "Linux must retain three isolated pytest shards"],
+    ["shard: [1, 2, 3]", "shard: [1, 2]", "Linux must retain three isolated pytest shards"],
     ["timeout-minutes: 55", "timeout-minutes: 60", "Linux must retain its 55-minute budget"],
     ["python/.local/fixture-diagnostics/**", "omitted.json", "Linux must retain uniquely named original shard diagnostics"],
     ["python/.local/pytest-shard.json", "omitted.json", "Linux must retain uniquely named original shard diagnostics"],

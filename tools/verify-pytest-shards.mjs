@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 import {execFileSync} from "node:child_process";
-import {workspaceStages, pytestPartition} from "./check-workspace.mjs";
+import {workspaceStages, pytestPartition, PYTEST_SHARD_COUNT, PYTEST_SHARD_INDEXES} from "./check-workspace.mjs";
 
 const equal = (left, right) => JSON.stringify(left) === JSON.stringify(right);
 const hash = bytes => crypto.createHash("sha256").update(bytes).digest("hex");
@@ -34,7 +34,8 @@ export function validatedCostProfile(profile) {
     "cost_profile_sum");
   requireProof(Array.isArray(profile.sources) && profile.sources.length > 0, "cost_profile_sources");
   for (const group of profile.sources) {
-    requireProof(Array.isArray(group) && group.length === 2, "cost_profile_source_pair");
+    // One retained run supplies every shard it had, possibly under an earlier shard count.
+    requireProof(Array.isArray(group) && group.length > 0, "cost_profile_source_group");
     for (const [offset, source] of group.entries()) requireProof(
       exactKeys(source, ["run_id", "os", "shard", "execution_checkout", "collection_count", "collection_sha256",
         "junit_sha256", "exit_code", "all_selected_terminal"]) &&
@@ -43,7 +44,7 @@ export function validatedCostProfile(profile) {
       typeof source.execution_checkout === "string" && /^[0-9a-f]{40}$/u.test(source.execution_checkout) && typeof source.collection_sha256 === "string" && /^[0-9a-f]{64}$/u.test(source.collection_sha256) &&
       typeof source.junit_sha256 === "string" && /^[0-9a-f]{64}$/u.test(source.junit_sha256) && [0, 1].includes(source.exit_code) &&
       source.all_selected_terminal === true, "cost_profile_source_identity");
-    requireProof(group[0].run_id === group[1].run_id, "cost_profile_source_run");
+    requireProof(group.every(source => source.run_id === group[0].run_id), "cost_profile_source_run");
   }
   return profile;
 }
@@ -57,16 +58,17 @@ export function readCostProfile(root = defaultRoot) {
 }
 
 export function selectedNodeids(collection, index, profile) {
-  requireProof([1, 2].includes(index), "selection_index");
+  requireProof(PYTEST_SHARD_INDEXES.includes(index), "selection_index");
   validatedCostProfile(profile);
   const costs = new Map(Object.entries(profile.file_cost_ms));
   const files = [...new Set(collection.map(item => item.file))];
   const weight = file => costs.get(file) ?? profile.unknown_file_ms;
   requireProof(Number.isSafeInteger(files.reduce((sum, file) => sum + weight(file), profile.first_shard_overhead_ms)), "selection_sum");
   files.sort((left, right) => weight(right) - weight(left) || Buffer.compare(Buffer.from(left), Buffer.from(right)));
-  const bins = [new Set(), new Set()], loads = [profile.first_shard_overhead_ms, 0];
+  const bins = PYTEST_SHARD_INDEXES.map(() => new Set());
+  const loads = PYTEST_SHARD_INDEXES.map(index => index === 1 ? profile.first_shard_overhead_ms : 0);
   for (const file of files) {
-    const target = loads[0] <= loads[1] ? 0 : 1;
+    const target = loads.indexOf(Math.min(...loads));
     bins[target].add(file); loads[target] += weight(file);
   }
   return sort(collection.filter(item => bins[index - 1].has(item.file)).map(item => item.nodeid));
@@ -145,8 +147,8 @@ function verifyWorkspace(report, expected, os, index) {
   requireProof(report.schema === "spireagent/portable-stage-results-1" && report.scope === expected.scope &&
     report.platform === platform && report.verdict === "passed" && report.source_accepted === true &&
     report.interrupted_signal === null && equal(report.source_at_start, identity) && equal(report.source_at_end, identity) &&
-    equal(report.pytest_partition, pytestPartition(`${index}/2`)), "workspace_identity_or_result");
-  const stages = workspaceStages(expected.scope, {pytestShard: `${index}/2`});
+    equal(report.pytest_partition, pytestPartition(`${index}/${PYTEST_SHARD_COUNT}`)), "workspace_identity_or_result");
+  const stages = workspaceStages(expected.scope, {pytestShard: `${index}/${PYTEST_SHARD_COUNT}`});
   requireProof(Array.isArray(report.results) && report.results.length === stages.length, "workspace_inventory");
   for (const [position, stage] of stages.entries()) {
     const actual = report.results[position];
@@ -163,10 +165,10 @@ export function verifyPytestShards(directory, expected, {oses = ["Linux", "Windo
     expected.source?.routing_algorithm === algorithm, "cost_profile_identity");
   requireProof(["full", "python"].includes(expected.scope) && /^[\w.-]+\/[\w.-]+$/.test(expected.repository ?? "") &&
     /^[1-9][0-9]*$/.test(expected.run_id ?? "") && /^[1-9][0-9]*$/.test(expected.run_attempt ?? ""), "expected_run");
-  const names = oses.flatMap(os => [1, 2].map(index => `pytest-${os}-shard-${index}-${expected.run_attempt}`));
+  const names = oses.flatMap(os => PYTEST_SHARD_INDEXES.map(index => `pytest-${os}-shard-${index}-${expected.run_attempt}`));
   requireProof(equal(sort(fs.readdirSync(directory)), sort(names)), "missing_or_extra_artifact");
   const proofs = [], collections = new Map(), selections = new Map();
-  for (const os of oses) for (const index of [1, 2]) {
+  for (const os of oses) for (const index of PYTEST_SHARD_INDEXES) {
     const name = `pytest-${os}-shard-${index}-${expected.run_attempt}`;
     const artifact = path.join(directory, name);
     requireProof(fs.lstatSync(artifact).isDirectory() && !fs.lstatSync(artifact).isSymbolicLink(), "artifact_directory");
@@ -176,7 +178,7 @@ export function verifyPytestShards(directory, expected, {oses = ["Linux", "Windo
       job: os === "Linux" ? "linux-portability" : os === "Windows" ? "windows-portability" : "fixture",
       os, scope: expected.scope};
     requireProof(report.schema === "spireagent/pytest-shard-2" && equal(report.run, run) &&
-      equal(report.shard, {index, count: 2}) && equal(report.source_at_start, expected.source) &&
+      equal(report.shard, {index, count: PYTEST_SHARD_COUNT}) && equal(report.source_at_start, expected.source) &&
       equal(report.source_at_end, expected.source) && report.state === "completed" &&
       Array.isArray(report.errors) && report.errors.length === 0 &&
       Array.isArray(report.collection_errors) && report.collection_errors.length === 0, "leaf_identity_or_result");
@@ -184,7 +186,7 @@ export function verifyPytestShards(directory, expected, {oses = ["Linux", "Windo
     requireProof(invocation?.exit_code === 0 && Number.isInteger(invocation.pid) && invocation.pid > 0 &&
       Number.isFinite(Date.parse(invocation.started_at)) && Date.parse(invocation.ended_at) >= Date.parse(invocation.started_at) &&
       Array.isArray(invocation.argv) && invocation.argv[1] === "-m" && invocation.argv[2] === "pytest" &&
-      invocation.argv.includes(`--portable-shard-index=${index}`) && invocation.argv.includes("--portable-shard-count=2") &&
+      invocation.argv.includes(`--portable-shard-index=${index}`) && invocation.argv.includes(`--portable-shard-count=${PYTEST_SHARD_COUNT}`) &&
       invocation.argv.includes("tools.pytest_shard"), "invocation");
     const collection = verifiedCollection(report);
     if (collections.has(os)) requireProof(equal(collection, collections.get(os)), "same_os_collection_changed");
@@ -204,6 +206,6 @@ export function verifyPytestShards(directory, expected, {oses = ["Linux", "Windo
       collection_sha256: report.collection_sha256, selected: selected.length, ...counts});
   }
   for (const os of oses) idsMatch(selections.get(os), collections.get(os).map(item => item.nodeid), "exhaustive_union");
-  return {schema: "spireagent/pytest-coverage-2", complete: true, shards_per_os: 2,
+  return {schema: "spireagent/pytest-coverage-2", complete: true, shards_per_os: PYTEST_SHARD_COUNT,
     routing: {algorithm, cost_profile: expected.source.cost_profile, sha256: cost.sha256}, leaves: proofs};
 }

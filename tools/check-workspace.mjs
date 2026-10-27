@@ -19,10 +19,16 @@ const owners = [
   ["game-mod", "apps/game-mod", "check"],
 ];
 
+// Must equal python/tools/pytest_shard.py SHARD_COUNT and the CI shard matrices.
+export const PYTEST_SHARD_COUNT = 3;
+export const PYTEST_SHARD_INDEXES = Object.freeze(Array.from({length: PYTEST_SHARD_COUNT}, (_, index) => index + 1));
+
 export function pytestPartition(value) {
   if (value === undefined) return null;
-  if (!/^[12]\/2$/.test(value)) throw new Error("invalid_pytest_shard");
-  return {index: Number(value[0]), count: 2, complete: false,
+  const match = /^([1-9])\/([1-9])$/.exec(value ?? "");
+  if (!match || Number(match[2]) !== PYTEST_SHARD_COUNT || !PYTEST_SHARD_INDEXES.includes(Number(match[1])))
+    throw new Error("invalid_pytest_shard");
+  return {index: Number(match[1]), count: PYTEST_SHARD_COUNT, complete: false,
     manifest: "python/.local/pytest-shard.json"};
 }
 
@@ -31,7 +37,7 @@ export function workspaceStages(scope, {pytestShard} = {}) {
   const partition = pytestPartition(pytestShard);
   if (partition && scope === "components") throw new Error("pytest_shard_requires_python_scope");
   // Shard 1 owns non-pytest gates. Each isolated runner still builds its own clients.
-  const pythonOnly = partition?.index === 2;
+  const pythonOnly = partition !== null && partition.index !== 1;
   // A seconds-long environment preflight precedes every gate it can invalidate.
   const stages = [{ id: "preflight", args: ["run", "check:preflight", "--", scope], requires: [] }];
   const guards = scope === "components" || pythonOnly ? ["preflight"] : ["preflight", "repository"];

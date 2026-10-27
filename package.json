@@ -21,7 +21,7 @@
   "scripts": {
     "identity": "node tools/component-identity.mjs",
     "check:governance": "node --test tools/check-governance.test.mjs && node tools/check-governance.mjs",
-    "check:ci": "node --test tools/check-ci-contract.test.mjs tools/check-plan.test.mjs tools/check-receipt.test.mjs tools/verify-pytest-shards.test.mjs tools/ci-failures.test.mjs && node tools/check-ci-contract.mjs",
+    "check:ci": "node --test tools/check-ci-contract.test.mjs tools/check-plan.test.mjs tools/check-receipt.test.mjs tools/verify-pytest-shards.test.mjs tools/ci-failures.test.mjs tools/refresh-pytest-costs.test.mjs && node tools/check-ci-contract.mjs",
     "check:identity": "node --test tools/component-identity.test.mjs tools/repository-eol.test.mjs && node tools/component-identity.mjs --quiet",
     "check:entrypoints": "node --test tools/root-entrypoints.test.mjs tools/check-workspace.test.mjs tools/project-python.test.mjs",
     "check:bom": "node --test tools/check-platform-bom.test.mjs && node tools/check-platform-bom.mjs",
@@ -81,6 +81,7 @@
     "check:preflight": "node tools/workspace-preflight.mjs",
     "check:quick": "node tools/check-quick.mjs",
     "ci:failures": "node tools/ci-failures.mjs",
+    "ci:pytest-costs": "node tools/refresh-pytest-costs.mjs",
     "setup:worktree": "npm run setup:python && npm ci && npm ci --prefix python && node tools/workspace-preflight.mjs setup",
     "check:docs": "npm run check:repository && git diff --check",
     "check:repository": "npm run project:check && npm run check:governance && npm run check:ci && npm run check:identity && npm run check:entrypoints && npm run check:bom && npm run check:boundaries && npm run check:history",

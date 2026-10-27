@@ -3,29 +3,34 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import test from "node:test";
-import { ownedCommand, runStages, scriptIncludesGuard, sourceAccepted, workspaceStages, pytestPartition } from "./check-workspace.mjs";
+import { ownedCommand, runStages, scriptIncludesGuard, sourceAccepted, workspaceStages, pytestPartition,
+  PYTEST_SHARD_COUNT, PYTEST_SHARD_INDEXES } from "./check-workspace.mjs";
 
 const root = path.resolve(import.meta.dirname, "..");
 
 test("partition union retains every gate once and fresh builds on both leaves", () => {
   for (const scope of ["full", "python"]) {
     const original = workspaceStages(scope);
-    const first = workspaceStages(scope, {pytestShard: "1/2"});
-    const second = workspaceStages(scope, {pytestShard: "2/2"});
+    const [first, ...others] = PYTEST_SHARD_INDEXES.map(index =>
+      workspaceStages(scope, {pytestShard: `${index}/${PYTEST_SHARD_COUNT}`}));
     assert.deepEqual(first.map(stage => stage.id), original.map(stage => stage.id));
-    assert.deepEqual(second.map(stage => stage.id), ["preflight", "shared-client-build", "python"]);
-    assert.deepEqual(second[0].requires, []);
-    assert.deepEqual(second[1].requires, ["preflight"]);
-    assert.deepEqual(second[2].requires, ["shared-client-build"]);
-    for (const [index, stages] of [[1, first], [2, second]]) {
+    assert.equal(others.length, PYTEST_SHARD_COUNT - 1);
+    for (const other of others) {
+      assert.deepEqual(other.map(stage => stage.id), ["preflight", "shared-client-build", "python"]);
+      assert.deepEqual(other[0].requires, []);
+      assert.deepEqual(other[1].requires, ["preflight"]);
+      assert.deepEqual(other[2].requires, ["shared-client-build"]);
+    }
+    for (const [position, stages] of [first, ...others].entries()) {
+      const value = `${position + 1}/${PYTEST_SHARD_COUNT}`;
       assert.deepEqual(stages.find(stage => stage.id === "python").args,
-        ["run", "check:python", "--", "--pytest-shard", `${index}/2`]);
-      assert.equal(pytestPartition(`${index}/2`).complete, false);
+        ["run", "check:python", "--", "--pytest-shard", value]);
+      assert.equal(pytestPartition(value).complete, false);
     }
   }
   assert.equal(pytestPartition(undefined), null);
-  for (const value of ["", "0/2", "3/2", "1/1", "1/3", "all"]) assert.throws(() => pytestPartition(value));
-  assert.throws(() => workspaceStages("components", {pytestShard: "1/2"}));
+  for (const value of ["", "0/3", "4/3", "1/2", "2/2", "1/1", "1/4", "all"]) assert.throws(() => pytestPartition(value));
+  assert.throws(() => workspaceStages("components", {pytestShard: `1/${PYTEST_SHARD_COUNT}`}));
 });
 
 test("full and Python gates keep their required inventory; short real-consumer checks precede broad tests", () => {
