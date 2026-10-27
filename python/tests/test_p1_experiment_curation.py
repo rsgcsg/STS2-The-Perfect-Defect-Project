@@ -139,9 +139,14 @@ def test_rule_approval_is_cached_by_definition_not_membership(tmp_path, monkeypa
     monkeypatch.setattr(cli.ProjectConfig, "load", lambda *a, **k: config)
     calls = []
     monkeypatch.setattr(cli, "freeze_preview", lambda c, p: calls.append(p) or {})
+    args = ["freeze", "--config", str(tmp_path / "project.json"), "--plan-file", str(path)]
+    monkeypatch.setattr("builtins.input", lambda _: "no")
+    assert cli.main(args) == 0
+    assert calls == []
+    with owner.ledger.operations.transaction() as db:
+        assert db.execute("SELECT count(*) FROM curation_p1_weight_approvals").fetchone()[0] == 0
     answers = []
     monkeypatch.setattr("builtins.input", lambda _: answers.append("yes") or "yes")
-    args = ["freeze", "--config", str(tmp_path / "project.json"), "--plan-file", str(path)]
     cli.main(args)
     cli.main(args)
     assert len(answers) == 1 and len(calls) == 2
