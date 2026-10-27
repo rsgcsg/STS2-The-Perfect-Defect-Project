@@ -73,7 +73,7 @@ export function ciWorkflowErrors(rawSource) {
 
   if (linux) {
     requireMatch(errors, "Linux portability must use ubuntu-latest", linux, /runs-on:\s*ubuntu-latest/u);
-    requireMatch(errors, "Linux portability must run the selected root check", linux, /run:\s*node tools\/check-plan\.mjs execute --pytest-shard \$\{\{ matrix\.shard \}\}\/2\s*$/mu);
+    requireMatch(errors, "Linux portability must run the selected root check", linux, /run:\s*node tools\/check-plan\.mjs execute --pytest-shard \$\{\{ matrix\.shard \}\}\/3\s*$/mu);
     requireMatch(errors, "Linux portability must run git diff --check", linux, /run:\s*git diff --check\s*$/mu);
     if (!linux.includes('mkdir -p "$RUNNER_TEMP/spireagent-portable"') ||
         !["TMPDIR", "TMP", "TEMP"].every(name => linux.includes(
@@ -90,8 +90,8 @@ export function ciWorkflowErrors(rawSource) {
       /run:\s*uv sync --project python --locked --all-extras\s*$/mu);
     requireMatch(errors, `${label} must install Python consumer packages`, lane,
       /run:\s*npm ci --prefix python\s*$/mu);
-    requireMatch(errors, `${label} must retain two isolated pytest shards`, lane,
-      /strategy:\s*\n      fail-fast: false\s*\n      matrix:\s*\n        shard: \[1, 2\]/u);
+    requireMatch(errors, `${label} must retain three isolated pytest shards`, lane,
+      /strategy:\s*\n      fail-fast: false\s*\n      matrix:\s*\n        shard: \[1, 2, 3\]/u);
     requireMatch(errors, `${label} must retain its ${minutes}-minute budget`, lane,
       new RegExp(`^    timeout-minutes: ${minutes}[ \\t]*$`, "mu"));
     if (!lane.includes("name: pytest-${{ runner.os }}-shard-${{ matrix.shard }}-${{ github.run_attempt }}") ||
@@ -108,7 +108,7 @@ export function ciWorkflowErrors(rawSource) {
     errors.push("Windows must retain its failure checklist");
   if (windows) {
     requireMatch(errors, "Windows portability must use windows-latest", windows, /runs-on:\s*windows-latest/u);
-    requireMatch(errors, "Windows portability must run the selected root check", windows, /run:\s*node tools\/check-plan\.mjs execute --pytest-shard \$\{\{ matrix\.shard \}\}\/2\s*$/mu);
+    requireMatch(errors, "Windows portability must run the selected root check", windows, /run:\s*node tools\/check-plan\.mjs execute --pytest-shard \$\{\{ matrix\.shard \}\}\/3\s*$/mu);
     requireMatch(errors, "Windows portability must run git diff --check", windows, /run:\s*git diff --check\s*$/mu);
     requireMatch(errors, "Windows checkout must fetch full history", windows, /fetch-depth:\s*0/u);
     requireMatch(errors, "Windows checkout must not persist credentials", windows, /persist-credentials:\s*false/u);

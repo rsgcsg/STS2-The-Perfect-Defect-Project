@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { globalRuntimeFixture } from "./global-runtime-fixtures.js";
+import { projectPython } from "../../../tools/project-python.mjs";
 
 describe("GLOBAL exact semantic dependency identity and restored-copy proofs", () => {
   it("runs the real SDK proof once and rechecks an identical restored copy and later tampering", async () => {
@@ -27,7 +28,7 @@ with tempfile.TemporaryDirectory() as tmp, patch.object(owner.subprocess,'run',w
  assert not verify_agent_session_run_evidence(restored,expected).passed
  print(json.dumps({'semantic_calls':len(semantic),'restored_copy':'verified','changed_copy':'rejected'}))`;
       const evidenceRoot = fileURLToPath(new URL("../../evidence", import.meta.url));
-      const output = execFileSync("python3", ["-c", script, f.evidence.directory,
+      const output = execFileSync(projectPython(["STS2_EVIDENCE_PYTHON"]), ["-c", script, f.evidence.directory,
         fileURLToPath(new URL("../dist", import.meta.url))], {
         encoding: "utf8", timeout: 15000,
         env: { ...process.env, PYTHONPATH: evidenceRoot },

@@ -2,11 +2,12 @@ import { it, expect } from "vitest";
 import { cp, mkdir, readFile, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
-import { execFile, execFileSync, spawnSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
 import { GlobalHttpFixture, globalRuntimeFixture } from "./global-runtime-fixtures.js";
+import { projectPython } from "../../../tools/project-python.mjs";
 const exec=promisify(execFile);
-const python=()=>[process.env.STS2_EVIDENCE_PYTHON,process.env.PYTHON,"python","python3"].find(p=>p&&spawnSync(p,["-c","import sys;assert sys.version_info>=(3,11)"],{stdio:"ignore"}).status===0)!;
+const python=()=>projectPython(["STS2_EVIDENCE_PYTHON"]);
 it("Workbench registers only the code-owned GLOBAL program and exposes zero learned models",async()=>{
  const source=new GlobalHttpFixture(),f=await globalRuntimeFixture({source});
  const root=f.root,modules=join(root,"node_modules"),runtime=join(modules,"@rsgcsg/sts2-policy-runtime"),sdk=join(runtime,"node_modules/@rsgcsg/sts2-connector-client");

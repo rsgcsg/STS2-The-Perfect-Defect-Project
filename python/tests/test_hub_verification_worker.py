@@ -3,7 +3,6 @@ from __future__ import annotations
 import subprocess
 import sys
 import threading
-import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -29,7 +28,6 @@ def test_supervisor_reaps_actual_child_on_deadline_or_shutdown(cancel: bool) -> 
     shutdown = threading.Event()
     if cancel:
         shutdown.set()
-    started = time.monotonic()
     with (
         patch("spireagent.hub.verification_worker.subprocess.Popen", side_effect=spawn),
         patch(
@@ -39,8 +37,8 @@ def test_supervisor_reaps_actual_child_on_deadline_or_shutdown(cancel: bool) -> 
         failures = []
         assert not run_verifier([], timeout=0.15, shutdown=shutdown, on_failure=failures.append)
     assert failures == ["worker_interrupted" if cancel else "worker_timeout"]
-    assert time.monotonic() - started < 5
-    assert len(children) == 1 and children[0].poll() is not None
+    # The 30 s child was terminated (nonzero), not awaited until it exited by itself.
+    assert len(children) == 1 and children[0].poll() not in (None, 0)
     assert all(not path.exists() for path in scratches)
 
 

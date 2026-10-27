@@ -5,7 +5,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import test from "node:test";
 import {verifyPytestShards, readCostProfile, selectedNodeids, validatedCostProfile} from "./verify-pytest-shards.mjs";
-import {workspaceStages, pytestPartition} from "./check-workspace.mjs";
+import {workspaceStages, pytestPartition, PYTEST_SHARD_COUNT, PYTEST_SHARD_INDEXES} from "./check-workspace.mjs";
 
 const hash = bytes => crypto.createHash("sha256").update(bytes).digest("hex");
 const write = (file, value) => { fs.mkdirSync(path.dirname(file), {recursive: true}); fs.writeFileSync(file, JSON.stringify(value)); };
@@ -25,13 +25,13 @@ function fixture() {
   const collection = ["deploy/hub/test_a.py", "tests/test_b.py", "tests/test_c.py"].flatMap(file =>
     ["one", "two"].map(value => ({file, nodeid: `${file}::test_value[${value}]`})));
   const leaves = [];
-  for (const os of ["Linux", "Windows"]) for (const index of [1, 2]) {
+  for (const os of ["Linux", "Windows"]) for (const index of PYTEST_SHARD_INDEXES) {
     const root = path.join(directory, `pytest-${os}-shard-${index}-1`);
     const selected = selectedNodeids(collection, index, profile);
     const report = {schema: "spireagent/pytest-shard-2", run: {repository: expected.repository,
       run_id: "123", run_attempt: "1", job: os === "Linux" ? "linux-portability" : "windows-portability", os, scope: "full"},
-      shard: {index, count: 2}, source_at_start: expected.source, source_at_end: expected.source,
-      invocation: {argv: ["python", "-m", "pytest", "-p", "tools.pytest_shard", `--portable-shard-index=${index}`, "--portable-shard-count=2"],
+      shard: {index, count: PYTEST_SHARD_COUNT}, source_at_start: expected.source, source_at_end: expected.source,
+      invocation: {argv: ["python", "-m", "pytest", "-p", "tools.pytest_shard", `--portable-shard-index=${index}`, `--portable-shard-count=${PYTEST_SHARD_COUNT}`],
         pid: index, started_at: "2026-01-01T00:00:00Z", ended_at: "2026-01-01T00:00:01Z", exit_code: 0},
       collection, collection_sha256: hash(JSON.stringify(collection)), selected_nodeids: selected,
       executed: selected.map(nodeid => ({nodeid, finished: true, status: "passed", phases:
@@ -41,7 +41,8 @@ function fixture() {
     const workspace = {schema: "spireagent/portable-stage-results-1", scope: "full",
       platform: os === "Linux" ? "linux" : "win32", verdict: "passed", source_accepted: true,
       interrupted_signal: null, source_at_start: identity, source_at_end: identity,
-      pytest_partition: pytestPartition(`${index}/2`), results: workspaceStages("full", {pytestShard: `${index}/2`}).map(stage =>
+      pytest_partition: pytestPartition(`${index}/${PYTEST_SHARD_COUNT}`),
+      results: workspaceStages("full", {pytestShard: `${index}/${PYTEST_SHARD_COUNT}`}).map(stage =>
         ({id: stage.id, args: stage.args, status: "passed", exit_code: 0, signal: null}))};
     const manifest = path.join(root, "python", ".local", "pytest-shard.json");
     const stageFile = path.join(root, ".local", "checks", `workspace-full-${workspace.platform}.json`);
@@ -57,9 +58,10 @@ test("complete deterministic same-OS selections seal a small digest/count proof"
   try {
     const result = verifyPytestShards(data.directory, data.expected, {profileRoot: data.profileRoot});
     assert.equal(result.complete, true);
-    assert.equal(result.leaves.length, 4);
+    assert.equal(result.leaves.length, 2 * PYTEST_SHARD_COUNT);
     assert.equal(result.leaves.reduce((total, leaf) => total + leaf.selected, 0), 12);
-    assert.ok(JSON.stringify(result).length < 2000);
+    // The same 500-byte-per-leaf budget as the original 4-leaf/2000-byte bound.
+    assert.ok(JSON.stringify(result).length < 500 * result.leaves.length);
     // Existing per-test skips are retained, not a whole-shard skip.
     const item = data.leaves[0].report.executed[0];
     item.phases = ["setup", "teardown"].map(when => ({when, outcome: when === "setup" ? "skipped" : "passed", subtest: false, wasxfail: null}));
@@ -132,10 +134,11 @@ test("integer LPT keeps whole files, unknown files and UTF-8 ties deterministic"
     "tests/test_c.py": 20000, "tests/test_d.py": 10000, "tests/retired.py": 999999000};
   const collection = ["tests/test_a.py", "tests/test_b.py", "tests/test_c.py", "tests/test_d.py", "tests/new.py"]
     .flatMap(file => ["test_one", "OtherClass::test_two[param]"].map(name => ({file, nodeid: `${file}::${name}`})));
-  const first = selectedNodeids(collection, 1, profile), second = selectedNodeids(collection, 2, profile);
-  assert.deepEqual([...new Set(first.map(id => id.split("::")[0]))], ["tests/test_a.py", "tests/test_c.py"]);
-  assert.deepEqual([...new Set(second.map(id => id.split("::")[0]))], ["tests/new.py", "tests/test_b.py", "tests/test_d.py"]);
-  assert.deepEqual([...first, ...second].sort(), collection.map(item => item.nodeid).sort());
+  const [first, second, third] = PYTEST_SHARD_INDEXES.map(index => selectedNodeids(collection, index, profile));
+  const files = ids => [...new Set(ids.map(id => id.split("::")[0]))];
+  assert.deepEqual([files(first), files(second), files(third)],
+    [["tests/test_a.py"], ["tests/test_b.py"], ["tests/new.py", "tests/test_c.py", "tests/test_d.py"]]);
+  assert.deepEqual([...first, ...second, ...third].sort(), collection.map(item => item.nodeid).sort());
   assert.deepEqual(selectedNodeids([...collection].reverse(), 1, profile), first);
   profile.file_cost_ms = {"tests/é.py": 50, "tests/z.py": 50};
   assert.deepEqual(selectedNodeids(Object.keys(profile.file_cost_ms).map(file => ({file, nodeid: `${file}::test_case`})), 1, profile),
@@ -143,8 +146,21 @@ test("integer LPT keeps whole files, unknown files and UTF-8 ties deterministic"
   profile.first_shard_overhead_ms = 100000;
   profile.file_cost_ms = {"tests/a.py": 200000, "tests/b.py": 180000, "tests/c.py": 100000};
   const weighted = Object.keys(profile.file_cost_ms).map(file => ({file, nodeid: `${file}::test_case`}));
-  assert.deepEqual(selectedNodeids(weighted, 1, profile), ["tests/b.py::test_case"]);
-  assert.deepEqual(selectedNodeids(weighted, 2, profile), ["tests/a.py::test_case", "tests/c.py::test_case"]);
+  // Shard1 starts at its measured non-pytest overhead, so it takes the smallest file here.
+  assert.deepEqual(PYTEST_SHARD_INDEXES.map(index => selectedNodeids(weighted, index, profile)),
+    [["tests/c.py::test_case"], ["tests/a.py::test_case"], ["tests/b.py::test_case"]]);
+  assert.throws(() => selectedNodeids(weighted, PYTEST_SHARD_COUNT + 1, profile), /selection_index/);
+  assert.throws(() => pytestPartition("2/2"), /invalid_pytest_shard/);
+  assert.throws(() => pytestPartition(`${PYTEST_SHARD_COUNT + 1}/${PYTEST_SHARD_COUNT}`), /invalid_pytest_shard/);
+});
+
+test("cost provenance may come from a run with another shard count, but only one whole run", () => {
+  const profile = structuredClone(readCostProfile().profile);
+  const [group] = profile.sources;
+  assert.ok(group.length >= 1);
+  assert.doesNotThrow(() => validatedCostProfile({...profile, sources: [group.slice(0, 1)]}));
+  for (const sources of [[[]], [[{...group[0], shard: 2}]], [[group[0], {...group[0], shard: 2, run_id: "1"}]]])
+    assert.throws(() => validatedCostProfile({...profile, sources}));
 });
 
 test("invalid cost definitions never fall back to an unverified assignment", () => {
@@ -163,7 +179,7 @@ test("invalid cost definitions never fall back to an unverified assignment", () 
 test("an exhaustive whole-file swap and a foreign cost definition cannot seal coverage", () => {
   const data = fixture();
   try {
-    for (let offset = 0; offset < 4; offset += 2) {
+    for (let offset = 0; offset < data.leaves.length; offset += PYTEST_SHARD_COUNT) {
       const first = structuredClone(data.leaves[offset].report);
       const second = structuredClone(data.leaves[offset + 1].report);
       for (const [leaf, other] of [[data.leaves[offset], second], [data.leaves[offset + 1], first]]) {

@@ -4,15 +4,16 @@ import { describe, it, expect } from "vitest";
 import { cp, readFile, writeFile, readdir, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { globalRuntimeFixture, GlobalHttpFixture } from "./global-runtime-fixtures.js";
 import { replayGlobalAgentRun } from "../src/global-replay.js";
 import { canonicalJson } from "../src/evidence.js";
+import { projectPython } from "../../../tools/project-python.mjs";
 const sha=(b:Buffer|string)=>createHash("sha256").update(b).digest("hex");
 const runtime=fileURLToPath(new URL("../dist/",import.meta.url));
 function pythonVerify(directory:string, trusted=true, mode?: "bounded" | "continuous", version=2){
- const python=[process.env.STS2_EVIDENCE_PYTHON,process.env.PYTHON,"python","python3"].find(p=>p&&spawnSync(p,["-c","import sys;assert sys.version_info >= (3,11)"],{stdio:"ignore"}).status===0);
+ const python=projectPython(["STS2_EVIDENCE_PYTHON"]);
  if(!python)throw new Error("Python >=3.11 required; set PYTHON to the existing supported interpreter");
  const code=`import json,sys\nfrom sts2_platform_evidence import verify_agent_session_run_evidence\nexpected={'global_runtime_directory':sys.argv[2]} if sys.argv[2] else {}\nif sys.argv[3]: expected.update(schema='sts2.policy-runtime/agent-session-startup-'+sys.argv[4],autonomy_budget=json.loads(sys.argv[3]))\nr=verify_agent_session_run_evidence(sys.argv[1], expected or None)\nprint(json.dumps({'passed':r.passed,'findings':[f.code for f in r.findings]}))`;
  return JSON.parse(execFileSync(python,["-c",code,directory,trusted?runtime:"",mode?JSON.stringify(mode==="continuous"?{mode}:{mode,maxSubmissions:20,maxPolicyCalls:40,deadlineMs:10000}):"",String(version)],

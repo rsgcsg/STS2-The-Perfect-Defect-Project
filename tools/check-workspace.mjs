@@ -5,6 +5,7 @@ import path from "node:path";
 import os from "node:os";
 import { spawn, execFileSync, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { resolveProjectPython } from "./project-python.mjs";
 
 const root = path.resolve(import.meta.dirname, "..");
 const owners = [
@@ -18,10 +19,16 @@ const owners = [
   ["game-mod", "apps/game-mod", "check"],
 ];
 
+// Must equal python/tools/pytest_shard.py SHARD_COUNT and the CI shard matrices.
+export const PYTEST_SHARD_COUNT = 3;
+export const PYTEST_SHARD_INDEXES = Object.freeze(Array.from({length: PYTEST_SHARD_COUNT}, (_, index) => index + 1));
+
 export function pytestPartition(value) {
   if (value === undefined) return null;
-  if (!/^[12]\/2$/.test(value)) throw new Error("invalid_pytest_shard");
-  return {index: Number(value[0]), count: 2, complete: false,
+  const match = /^([1-9])\/([1-9])$/.exec(value ?? "");
+  if (!match || Number(match[2]) !== PYTEST_SHARD_COUNT || !PYTEST_SHARD_INDEXES.includes(Number(match[1])))
+    throw new Error("invalid_pytest_shard");
+  return {index: Number(match[1]), count: PYTEST_SHARD_COUNT, complete: false,
     manifest: "python/.local/pytest-shard.json"};
 }
 
@@ -30,11 +37,12 @@ export function workspaceStages(scope, {pytestShard} = {}) {
   const partition = pytestPartition(pytestShard);
   if (partition && scope === "components") throw new Error("pytest_shard_requires_python_scope");
   // Shard 1 owns non-pytest gates. Each isolated runner still builds its own clients.
-  const pythonOnly = partition?.index === 2;
-  const guards = scope === "components" || pythonOnly ? [] : ["repository"];
-  const stages = scope === "components" || pythonOnly ? [] : [
-    { id: "repository", args: ["run", "check:repository"], requires: [] },
-  ];
+  const pythonOnly = partition !== null && partition.index !== 1;
+  // A seconds-long environment preflight precedes every gate it can invalidate.
+  const stages = [{ id: "preflight", args: ["run", "check:preflight", "--", scope], requires: [] }];
+  const guards = scope === "components" || pythonOnly ? ["preflight"] : ["preflight", "repository"];
+  if (scope !== "components" && !pythonOnly)
+    stages.push({ id: "repository", args: ["run", "check:repository"], requires: ["preflight"] });
   stages.push({ id: "shared-client-build", args: ["run", "precheck:s0"], requires: guards });
   if (scope !== "components" && !pythonOnly) stages.push({
     id: "s0-consumers", args: ["run", "check:s0-tests"], requires: ["shared-client-build"],
@@ -209,6 +217,11 @@ export async function runWorkspaceChecks(scope, pytestShard) {
     return;
   }
   const before = sourceIdentity();
+  // Every child, including nested test processes, sees the same project Python.
+  // An unresolved interpreter leaves PYTHON untouched; the preflight stage fails.
+  let python = null;
+  try { python = resolveProjectPython(); } catch { /* reported by the preflight stage */ }
+  const environment = python ? { ...process.env, PYTHON: python.executable } : process.env;
   const directory = path.join(root, ".local", "checks");
   fs.mkdirSync(directory, { recursive: true });
   const output = path.join(directory, `workspace-${scope}-${process.platform}.json`);
@@ -219,7 +232,8 @@ export async function runWorkspaceChecks(scope, pytestShard) {
   const report = { schema: "spireagent/portable-stage-results-1", scope,
     pytest_partition: pytestPartition(pytestShard),
     started_at: new Date().toISOString(), platform: process.platform, architecture: process.arch,
-    node: process.version, source_at_start: before, capacity_checks: [...capacity], results: [], verdict: "running",
+    node: process.version, python: python && { executable: python.executable, version: python.version,
+      source: python.source }, source_at_start: before, capacity_checks: [...capacity], results: [], verdict: "running",
     non_claims: ["installed", "loaded", "native", "Human", "learning", "qualification"] };
   const save = () => {
     fs.writeFileSync(output + ".tmp", JSON.stringify(report, null, 2) + "\n");
@@ -232,7 +246,7 @@ export async function runWorkspaceChecks(scope, pytestShard) {
       report.capacity_checks.push(...available.map(item => ({ stage: stage.id, ...item }))); save();
       if (available.some(item => !item.sufficient)) return { code: 1, error: "workspace_capacity_insufficient" };
       active = ownedCommand(process.platform === "win32" ? "npm.cmd" : "npm", stage.args,
-        { cwd: root, stdio: "inherit", shell: process.platform === "win32" });
+        { cwd: root, env: environment, stdio: "inherit", shell: process.platform === "win32" });
       const result = await active.completion; active = null; return result;
     }, { cancelled: () => Boolean(interrupted), record: result => {
       const existing = report.results.findIndex(item => item.id === result.id);
