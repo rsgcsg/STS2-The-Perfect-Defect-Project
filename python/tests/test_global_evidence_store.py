@@ -478,3 +478,142 @@ def test_global_peer_delivery_store_error_is_unknown_and_cannot_redispatch(tmp_p
     with pytest.raises(BoundaryError, match='original_intent_reconciliation_required'):
         importer.start_global_evidence(context, peer)
     assert len(deliveries) == 1
+
+
+@pytest.mark.parametrize("concurrency", [2, 8])
+def test_parallel_readback_is_bounded_fresh_and_reads_all_parent_payloads(
+    tmp_path, monkeypatch, concurrency,
+):
+    from collections import Counter
+    from threading import Barrier, Lock
+
+    setup = _setup(tmp_path, monkeypatch)
+    store, _, _, expected, model, runtime, _ = setup
+    manifest = _publish(setup, tmp_path / "scratch")
+    peer = ManifestArtifactStore(LocalBlobStore(tmp_path / "peer"))
+    copy_artifact(store, peer, manifest.artifact_id)
+    original = peer.read_payload
+    counts = Counter()
+    mutex = Lock()
+    active = peak = 0
+    barrier = Barrier(2)
+    concurrent = {model.payload("weights").sha256, runtime.payloads[0].sha256}
+
+    def observed(payload):
+        nonlocal active, peak
+        with mutex:
+            counts[payload.sha256] += 1
+            active += 1
+            peak = max(peak, active)
+        try:
+            if payload.sha256 in concurrent:
+                barrier.wait(timeout=5)
+            yield from original(payload)
+        finally:
+            with mutex:
+                active -= 1
+
+    monkeypatch.setattr(peer, "read_payload", observed)
+    for _ in range(2):
+        result = global_store.verify_global_artifact(peer, manifest.artifact_id,
+            expected=expected, scratch=tmp_path / "scratch", read_concurrency=concurrency)
+        assert result["full_readback"] and result["typed_verification"] == "pass"
+    assert 2 <= peak <= concurrency
+    assert counts == Counter({p.sha256: 2 for m in (manifest, model, runtime) for p in m.payloads})
+    assert not list((tmp_path / "scratch").glob("verified-read-*"))
+
+
+@pytest.mark.parametrize("failure", ["missing", "tampered", "rate_limited", "wrong_parent"])
+def test_parallel_readback_rejects_new_remote_failures_and_wrong_parent(
+    tmp_path, monkeypatch, failure,
+):
+    from spireagent.artifact_contracts import Parent
+
+    setup = _setup(tmp_path, monkeypatch)
+    store, _, _, expected, model, runtime, _ = setup
+    manifest = _publish(setup, tmp_path / "scratch")
+    peer = ManifestArtifactStore(LocalBlobStore(tmp_path / "peer"))
+    copy_artifact(store, peer, manifest.artifact_id)
+    global_store.verify_global_artifact(peer, manifest.artifact_id, expected=expected,
+        scratch=tmp_path / "scratch", read_concurrency=8)
+    if failure == "wrong_parent":
+        wrong = replace(runtime, parameters=FrozenObject.of({
+            **runtime.parameters.value(), "runtime_code_sha256": "0" * 64}))
+        peer.publish(wrong)
+        changed = replace(manifest, parents=(Parent("model", model.artifact_id),
+                                             Parent("runtime", wrong.artifact_id)))
+        peer.publish(changed)
+        identity = changed.artifact_id
+        reason = "original_runtime_parent_mismatch"
+    else:
+        identity = manifest.artifact_id
+        payload = runtime.payloads[0]
+        index = json.loads(peer.blobs.get(f"payload-indexes/v1/{payload.sha256}.json"))
+        key = "objects/sha256/" + index["chunks"][0]["sha256"]
+        original = peer.blobs.get
+
+        def failing(name):
+            if name == key:
+                if failure == "tampered":
+                    return b"corrupted remote bytes"
+                raise StoreError("s3_throttled" if failure == "rate_limited"
+                                 else "object_not_found")
+            return original(name)
+
+        monkeypatch.setattr(peer.blobs, "get", failing)
+        reason = {"missing": "object_not_found", "tampered": "integrity",
+                  "rate_limited": "s3_throttled"}[failure]
+    with pytest.raises((BoundaryError, StoreError), match=reason):
+        global_store.verify_global_artifact(peer, identity, expected=expected,
+            scratch=tmp_path / "scratch", read_concurrency=8)
+    assert not list((tmp_path / "scratch").glob("verified-read-*"))
+
+
+@pytest.mark.parametrize("phase", ["copy_peer", "peer_readback"])
+def test_managed_preservation_failure_keeps_original_and_exact_resume_identity(
+    tmp_path, monkeypatch, phase,
+):
+    from spireagent.workbench import managed_evaluation as backend
+
+    setup = _setup(tmp_path, monkeypatch)
+    store, producer, directory, expected, model, _, _ = setup
+    expected["run_id"] = "run-fixture"
+    before = {p.name: p.read_bytes() for p in directory.iterdir()}
+    executor = backend.ManagedEpisodeExecutor.__new__(backend.ManagedEpisodeExecutor)
+    executor.store = store
+    executor.peer = ManifestArtifactStore(LocalBlobStore(tmp_path / "peer"))
+    executor.producer = producer
+    executor.preparation = {"store": str(store.blobs.root)}
+    executor.configuration = {"peer": {"kind": "local", "directory": str(tmp_path / "peer")}}
+    executor.read_concurrency = 8
+    written = {}
+    checkpoints = []
+
+    class Artifacts:
+        def put(self, name, raw):
+            written[name] = json.loads(raw)
+            return {"path": name}
+
+    def fail(*args, **kwargs):
+        raise StoreError("s3_throttled")
+
+    monkeypatch.setattr(backend, "copy_artifact" if phase == "copy_peer"
+                        else "verify_global_artifact", fail)
+    row = {}
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    with pytest.raises(StoreError, match="s3_throttled"):
+        executor._preserve(row, Artifacts(), lambda: checkpoints.append(dict(row)),
+            directory, expected, {"artifact_id": model.artifact_id}, scratch)
+    assert {p.name: p.read_bytes() for p in directory.iterdir()} == before
+    assert "stored_evidence_id" not in row and "preservation" not in row
+    assert checkpoints[-1]["preservation_artifact_id"] == row["preservation_artifact_id"]
+    pending = written["preservation-pending.json"]
+    assert pending["expected"] == expected
+    assert pending["artifact_id"] == row["preservation_artifact_id"]
+    assert phase in row["detail_seconds"]
+    # Restore this exact save operation, without a second game or changed original.
+    copy_artifact(store, executor.peer, pending["artifact_id"])
+    result = global_store.verify_global_artifact(executor.peer, pending["artifact_id"],
+        expected=pending["expected"], scratch=scratch, read_concurrency=8)
+    assert result["full_readback"] and result["run_id"] == "run-fixture"

@@ -519,3 +519,120 @@ def test_original_settling_reason_survives_a_missing_final_http_status():
                    "recorded_reason": "global_post_delivery_capture:managed_settling_stalled"}}
     assert _outcome_status(outcome, settling_stalled=False) == {
         "status": "unknown", "reason": "managed_settling_stalled"}
+
+
+def test_new_ledger_freezes_node_store_and_read_concurrency(ledger, monkeypatch, tmp_path):
+    from spireagent.workbench import managed_evaluation as backend
+
+    assert Path(ledger.plan["storage"]["store"]).is_absolute()
+    assert ledger.plan["storage"]["read_concurrency"] == 8
+    assert backend.storage_configuration({"store": "s3", "read_concurrency": 1}) == {
+        "store": "s3", "read_concurrency": 1}
+    observed = []
+
+    class Executor:
+        preparation = {"elapsed_seconds": 2, "model_seconds": 1}
+
+        def __init__(self, configuration, **kwargs):
+            observed.append(configuration)
+
+        def __call__(self, row, manifest, artifacts, checkpoint):
+            complete(row, artifacts, checkpoint)
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(backend, "ManagedEpisodeExecutor", Executor)
+    # The frozen node path survives a changed home/environment at dispatch.
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "other-home")
+    ledger.run_managed(max_episodes=1)
+    assert observed[0]["store"] == ledger.plan["storage"]["store"]
+    assert json.loads((ledger.directory / "managed-preparations/000001.json").read_bytes()) == (
+        Executor.preparation)
+
+
+@pytest.mark.parametrize("concurrency", [True, 0, -1, 9, 1.5, None])
+def test_bad_managed_read_concurrency_fails_before_packages_or_world(concurrency):
+    from spireagent.workbench.managed_evaluation import ManagedEpisodeExecutor
+
+    with pytest.raises(BoundaryError, match="invalid_read_concurrency"):
+        ManagedEpisodeExecutor({"read_concurrency": concurrency},
+                               episode_seconds=10, cleanup_seconds=10)
+
+
+
+def test_slot_selection_is_sparse_in_plan_order_and_keeps_full_denominator(ledger):
+    original = ledger.store.get("plan.json")
+    slots = ledger.slots()
+    selected = tuple(slots[i]["slot_id"] for i in (6, 2, 0))
+    seen = []
+
+    def executor(row, manifest, artifacts, checkpoint):
+        seen.append(row["seed"])
+        complete(row, artifacts, checkpoint)
+
+    result = ledger.run_managed(slot_ids=selected, max_episodes=2, executor=executor)
+    assert result["dispatched"] == 2
+    assert seen == [slots[0]["seed"], slots[2]["seed"]]
+    assert ledger.store.get("plan.json") == original
+    assert ledger.report()["planned"] == 20 and ledger.report()["not_started"] == 18
+    again = ledger.run_managed(slot_ids=selected, executor=executor)
+    assert again["dispatched"] == 1
+    assert seen[-1] == slots[6]["seed"]
+    assert ledger.run_managed(slot_ids=selected, executor=executor)["dispatched"] == 0
+
+
+@pytest.mark.parametrize("selection", [(), ("f" * 64,), ("duplicate", "duplicate"),
+                                       (None,), "not-a-tuple"])
+def test_bad_slot_selection_rejects_before_reservation(ledger, selection):
+    with pytest.raises(BoundaryError, match="invalid_managed_slot_selection"):
+        ledger.run_managed(slot_ids=selection, executor=lambda *_: pytest.fail("no offer"))
+    assert not ledger.store.keys("events/")
+
+
+def test_selected_unknown_is_not_reoffered_and_unselected_cleanup_still_fences(ledger):
+    slots = ledger.slots()
+    first = slots[0]["slot_id"]
+    seen = []
+
+    def unknown(row, manifest, artifacts, checkpoint):
+        seen.append(row["seed"])
+        row.update(status="unknown", reason="lost_reply", world_mutation_offered=True,
+                   cleanup_accepted=True)
+        checkpoint()
+
+    ledger.run_managed(slot_ids=(first,), executor=unknown)
+    assert ledger.run_managed(slot_ids=(first,), executor=unknown)["dispatched"] == 0
+    assert seen == [slots[0]["seed"]] and ledger.report()["unknown"] == 1
+    # This global fence cannot be bypassed by selecting some different slot.
+    def unconfirmed(row, manifest, artifacts, checkpoint):
+        row.update(status="unknown", reason="close_lost", world_mutation_offered=True,
+                   cleanup_accepted=False)
+        checkpoint()
+
+    ledger.run_managed(slot_ids=(slots[1]["slot_id"],), executor=unconfirmed)
+    result = ledger.run_managed(slot_ids=(slots[2]["slot_id"],),
+                               executor=lambda *_: pytest.fail("cleanup fence"))
+    assert result["stop_reason"] == "unknown_cleanup_requires_owner_read"
+
+
+def test_cli_forwards_slot_ids_and_rejects_non_managed_actions(ledger, monkeypatch, capsys):
+    from spireagent.workbench import evaluation_ledger as module
+
+    selected = ledger.slots()[2]["slot_id"]
+    calls = []
+
+    def run(self, **kwargs):
+        calls.append(kwargs)
+        return {"status": "completed"}
+
+    monkeypatch.setattr(module.EvaluationLedger, "run_managed", run)
+    assert module.main(["run", "--host", "managed", "--ledger", str(ledger.directory),
+                        "--slot-id", selected]) == 0
+    assert calls[0]["slot_ids"] == (selected,)
+    assert module.main(["run", "--ledger", str(ledger.directory),
+                        "--slot-id", selected]) == 1
+    assert "slot_selection_requires_managed_run" in capsys.readouterr().out
+    assert module.main(["status", "--host", "managed", "--ledger", str(ledger.directory),
+                        "--slot-id", selected]) == 1
+    assert len(calls) == 1
