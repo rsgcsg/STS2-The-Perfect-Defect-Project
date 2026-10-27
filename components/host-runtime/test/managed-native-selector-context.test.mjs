@@ -22,6 +22,27 @@ const identity = { runtimeInstanceId: "selector-runtime", environmentFingerprint
 
 function project(state) { return projectManagedCandidateDecision({ state, ...identity }); }
 
+test("generated choices in a native event keep the event context and noncombat visibility", () => {
+  const state = selector({ choose: true });
+  state.selector_domain = "run";
+  state.combat_context = null;
+  state.combat_piles = null;
+  state.selector_context = { kind: "event", event_id: "NEOW", name: "涅奥", ancient: true,
+    in_dialogue: false, body: null, private_owner: "must-stay-private" };
+  const snapshot = project(state).snapshot;
+  assert.equal(snapshot.completeness.status, "complete");
+  assert.deepEqual(snapshot.interaction.content.context, {
+    kind: "event", event_id: "NEOW", name: "涅奥", ancient: true, in_dialogue: false
+  });
+  assert.deepEqual(snapshot.completeness.hidden_by_policy.toSorted(), ["future_events", "future_rewards", "hidden_rng"]);
+  assert.equal(JSON.stringify(snapshot).includes("must-stay-private"), false);
+  assert.equal(snapshot.bound_actions.actions.filter(action => action.verb === "select").length, 2);
+
+  const combat = project(selector({ choose: true })).snapshot;
+  assert.ok(combat.completeness.hidden_by_policy.includes("draw_pile_true_order"));
+  assert.ok(combat.completeness.hidden_by_policy.includes("future_enemy_moves"));
+});
+
 test("choose and combat publish every original occurrence, current HUD and strict Host/text-menu catalog", () => {
   for (const state of [selector(), selector({ choose: true, skip: true }), selector({ choose: true })]) {
     const p = project(state); const s = decodePlayerSnapshot(p.snapshot).data;
@@ -277,4 +298,16 @@ test("unqualified generated selector without HUD publishes a partial decodable b
   assert.equal(snapshot.bound_actions.status, "unavailable");
   assert.deepEqual(snapshot.bound_actions.actions, []);
   assert.equal(projection.bindings.size, 0);
+});
+
+
+test("private counter evidence cannot change default selector Snapshot or enter public context", () => {
+  const original = selector({ choose: true });
+  const next = structuredClone(original);
+  next.player.settled_relic_counter_game_mvid = "private-game-mvid";
+  next.player.relics[0].settled_relic_counter = { logical_counter: 99, rule_id: "private-rule" };
+  const before = project(original).snapshot, after = project(next).snapshot;
+  after.observed_at = before.observed_at;
+  assert.deepEqual(after, before);
+  assert.doesNotMatch(JSON.stringify(after), /private-game-mvid|logical_counter|private-rule/u);
 });

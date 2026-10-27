@@ -45,9 +45,11 @@ test("built native act-selection source and retained measured builds remain expl
     manifest.expected_build.source_patch_sha256
   );
   assert.equal(manifest.pre_hand_selection_build.artifact_sha256, "b8386bf8bd54086b1921ddade3cd4fb4a5156072ad45456bc3310e2b62275c8f");
-  assert.equal(manifest.expected_build.artifact_sha256, "0d51a9cc9f9af64ead27ec978a7eb35573353e4b61c3e7d3bd1b5bebc7c7d5a2");
+  assert.equal(manifest.pre_m2a_recording_launch_build.artifact_sha256, "0d51a9cc9f9af64ead27ec978a7eb35573353e4b61c3e7d3bd1b5bebc7c7d5a2");
+  assert.equal(manifest.expected_build.artifact_sha256, "e0eda87653fe08a749a27bdcb4aa2c3041a3ed4d9f89617cd6e16036a73fff39");
   assert.equal(manifest.historical_candidate_builds.some(build => build.artifact_sha256 === "c3eed8fa9930d7428af0d9028a4ca0a0e5234853d8040bc99dd478f99fdd4df4"), true);
-  assert.equal(manifest.expected_build.artifact_mvid, "30cbfc58-f916-44ff-a60e-788194dbf4d4");
+  assert.equal(manifest.pre_m2a_recording_launch_build.artifact_mvid, "30cbfc58-f916-44ff-a60e-788194dbf4d4");
+  assert.equal(manifest.expected_build.artifact_mvid, "77fb5aa2-6c03-4e9b-9cdf-ba46668497c1");
   assert.equal(manifest.historical_candidate_builds.some(build =>
     build.source_patch_sha256 === "a46736eee8c0c4c65b574a53e769330831d2e39de7897563f4a4c16b48fc5e20"
     && build.artifact_sha256 === "39a6455c2f67c4313b3cf2b6b46a6783d41cc5ebe86cb62829a6a780c7d562b2"
@@ -119,6 +121,8 @@ test("fresh candidate preparation admits added source files into the audited dif
   assert.deepEqual(addedPatchPaths(patch), [
     "initial-progress-tests/InitialProgressTests.csproj",
     "initial-progress-tests/Program.cs",
+    "m2a-native-tests/M2aNative.csproj",
+    "m2a-native-tests/Program.cs",
     "native-hand-tests/NativeHand.csproj",
     "native-hand-tests/Program.cs",
     "native-run-choice-tests/NativeRunChoice.csproj",
@@ -139,12 +143,14 @@ test("fresh candidate preparation admits added source files into the audited dif
     "src/Sts2Headless/ManagedMerchantPresentation.cs",
     "src/Sts2Headless/ManagedSelectorPublicCapture.cs",
     "src/Sts2Headless/NativeCalculatedVariableInventory.cs",
+    "src/Sts2Headless/NativeCardDeliveryObservation.cs",
     "src/Sts2Headless/NativeCardPreviewReadQualification.Rendering.cs",
     "src/Sts2Headless/NativeCardPreviewReadQualification.cs",
     "src/Sts2Headless/NativeCardRenderTransaction.cs",
     "src/Sts2Headless/NativeCardRewardAlternativePreview.cs",
     "src/Sts2Headless/NativeCardRewardParentPresentation.cs",
     "src/Sts2Headless/NativeCardRewardSelectionObservation.cs",
+    "src/Sts2Headless/NativeDebugAudioPresentation.cs",
     "src/Sts2Headless/NativeDetachedCardCopy.cs",
     "src/Sts2Headless/NativeDetachedCardPreview.cs",
     "src/Sts2Headless/NativeEnchantmentMethodInventory.cs",
@@ -164,6 +170,7 @@ test("fresh candidate preparation admits added source files into the audited dif
     "src/Sts2Headless/NativeSelectorCardDisplay.cs",
     "src/Sts2Headless/NativeSelectorHud.cs",
     "src/Sts2Headless/NativeSelectorSelection.cs",
+    "src/Sts2Headless/NativeSettledRelicCounter.cs",
     "src/Sts2Headless/NativeTreasureChestAdmission.cs",
     "src/Sts2Headless/NativeUpgradeMethodInventory.cs",
     "src/Sts2Headless/NativeVisibleText.cs",

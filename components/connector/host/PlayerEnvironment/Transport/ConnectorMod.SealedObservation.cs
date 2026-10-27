@@ -35,6 +35,12 @@ public static partial class ConnectorMod
                         return;
                     }
                     string? expected = request.QueryString["expected_snapshot_id"];
+                    string? settledRequest = request.QueryString["settled_relic_counters"];
+                    if (settledRequest != null && (format != SealedPublicFormat.PublicBasis || settledRequest != "1"))
+                    {
+                        SendApiError(response, 400, "invalid_settled_relic_capture", "The explicit settled-relic capture flag must be 1 on the public-basis route.");
+                        return;
+                    }
                     if (expected != null && !IsSafeProtocolIdentifier(expected, 128))
                     {
                         SendApiError(response, 400, "invalid_snapshot_id", "Expected snapshot ID is invalid.");
@@ -43,7 +49,7 @@ public static partial class ConnectorMod
                     var task = RunOnMainThread(() => format switch
                     {
                         SealedPublicFormat.LegacyP1C1 => PlayerEnvironmentService.ReadCurrentP1Capture(expected),
-                        SealedPublicFormat.PublicBasis => PlayerEnvironmentService.ReadCurrentPublicBasis(expected),
+                        SealedPublicFormat.PublicBasis => PlayerEnvironmentService.ReadCurrentPublicBasis(expected, settledRequest == "1"),
                         _ => PlayerEnvironmentService.ReadCurrentSealedObservation(expected)
                     });
                     SendJson(response, task.GetAwaiter().GetResult());

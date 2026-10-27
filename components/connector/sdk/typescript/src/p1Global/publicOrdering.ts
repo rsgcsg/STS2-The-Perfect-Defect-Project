@@ -19,7 +19,7 @@ export function publicMembershipFields(nativeKind: string): readonly string[] {
 }
 
 export function publicOrderingIssue(observation: P1Observation): string | null {
-  if (observation.revision !== P1G_ORDER_REVISION) return null;
+  if (![P1G_ORDER_REVISION, "r1.7"].includes(observation.revision)) return null;
   const surface = (observation.scene.content as Record<string, any>)?.surface;
   for (const field of publicMembershipFields(observation.scene.native_kind)) {
     const value = surface?.[field];
@@ -40,7 +40,7 @@ export function createPublicOrderingPolicy(observation: P1Observation, identical
     && ["inventory_open", "inventory_closed_open_to_inspect"].includes(String(content.access_state))
     && [content.cards, content.relics, content.potions].every(Array.isArray)
     && cards.every(read => read.kind === "surface_card" && read.availability === "available" && completeCards([read.content]));
-  const membership = new Set(observation.revision === P1G_ORDER_REVISION
+  const membership = new Set([P1G_ORDER_REVISION, "r1.7"].includes(observation.revision)
     ? publicMembershipFields(observation.scene.native_kind).map(field => `$.observation.scene.content.surface.${field}`) : []);
   return {
     unorderedSuffix(path: string): number | null {

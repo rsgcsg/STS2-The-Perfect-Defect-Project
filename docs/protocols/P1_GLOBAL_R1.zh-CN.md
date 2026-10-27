@@ -60,6 +60,12 @@ Managed：sts2.dll 无界面宿主 + 投影                 ┴→ 两端共用�
 
 ### 4.1 录制原件派生P1的requires（用户已批准）
 
+**结算态总原则（2026-10-27 用户批准；具体字段清单另批）**：P1观察是在真实决策边界上、此前动作逻辑已经结算后的公开事实。父效果等候子选择时，该选择本身就是新决策边界；不要求先完成尚需Agent输入的父效果。动画帧、闪烁计数、滚数、飘字和未承诺的滚动展示不定义P1事实。
+
+取值顺序为：①两Host读取原生中与显示分开的逻辑字段，只输出该字段的公开含义；②若逻辑更新本身被动画延后，仅允许按**同一快照的公开事实**和逐机制声明、有版本的固定规则算结算值，不借后帧拼接；③两者都不可行则保留字段级差异交用户。规则、随机数、效果结果和合法性仍由原生决定，不能因这个原则补造原生状态或隐藏信息。正常时钟仅作诊断，不用放慢Managed来修公开字段。
+
+本条是已批准的取值原则，不等于已批准某一机制改值。任何具体P1字段含义或比较规则的变化，都必须列出全部实际载体、取值来源、旧数据可恢复性与准确新版本，获用户批准后实施；旧原件与旧固定投影不改写。缺同快照见证时明确无法完整重投影，不默认补零、不删分母。锁镰/永续糖果的新逻辑counter当前仍待具体清单批准；下述已批LASTING_CANDY限定比较收据原样有效，不扩大为一般的2→0或3→0映射。Managed实现边界见[Host规则M-1～M-8](../../components/host-runtime/docs/MANAGED_P1_EQUIVALENCE.md#settled-logic-native-rules-and-replaceable-host-implementation)。
+
 **奖励触发显示动画（2026-10-22 用户批准）**：同一完整奖励意图、同一reward owner/组/候选/Read不变时，共享核只在一致性比较中识别同一唯一`LASTING_CANDY`遗物实例counter `2→0`的已证实触发显示动画。原始PB1、模型观察中的2/0及严格`comparison.equal=false`均保留；已证open→Skip→同一奖励页可另记`presentation_equal=true`与`lasting_candy_trigger_display_2_to_0`收据，0成功label，不仅因此切断原件已证明的连续边。HP/gold、其他遗物/计数、owner、候选、Read或其它公开差异仍严格检查；与既有`stop_relic_refresh`并存时分别保留真实差异与解释。该规则不证明跨Host严格相等，不新增在线动作，不更改end资格或补造next；新共享核/Tool以新身份交付，旧原件及固定投影不改。
 
 **原生Skip与P1放弃的区分**：领卡页物理Skip只证明返回奖励页，真人仍可重新打开同一组；不能仅凭打开→Skip两步就标成不可撤回的`reward.decline_group`。native converter与既有Source mapper使用同一含义。合格open/return保留原始端点并作0标签presentation（及另行明确批准的effect）；返回端点缺失或发生未获批准的变化仍保gap，不能用decline标签消除缺口。
@@ -493,3 +499,26 @@ SDK `createSession(episode, host, "r1.6")` 显式选择本版；未指定版本�
 衍生件，保存原件hash、每份观察前后hash；唯一变化是观察revision，数组和事实不改。
 不同revision直接比较必须incomparable。新声明下公开图相等不抹去原r1.5的严格差异，
 也不证明438输入或概率相同。两Host统计合并、训练输入的无序编码与新训练另行决定。
+
+## r1.7：两个遗物的同帧逻辑计数（2026-10-27，用户已批）
+
+本版仅改已有公开 `counter` 的 KUSARIGAMA、LASTING_CANDY；继承 r1.6 的顺序声明。
+SDK `createSession(episode, host, "r1.7")` 显式选择，默认 r1.5、r1.6、438及其InputSpec不变。
+两个Host通过同一次同步capture读取原生逻辑值：锁镰的当前攻击数 `%3`、糖果的
+`CombatRewardsSeen %2`。只发余数，不发累计攻击数、动画标志或隐藏遗物。
+
+公开原始Snapshot/Read仍保存显示计数。显式HTTP `settled_relic_counters=1` 或Managed
+capture `{settled_relic_counters:true}` 返回 Public Basis revision3，附
+`settled_relic_counters` 同帧见证。见证绑定原snapshot_id、session及准确game MVID
+`57785517-0b16-42b9-8b36-bad6fb28384b`，每项含entity_id、definition_id、原显示值、
+逻辑余数和注册rule_id；见证缺失保留missing/partial，不授予完整资格。PB1/2拒绝见证。
+默认HTTP仍PB2、Managed仍PB1；未来新采集用新组合保存PB3，安装另行授权。
+
+r1.7仅在派生副本替换这两个已有counter；玩家遗物、表面遗物、referent、商店Read保持一致。
+同帧见证不进入模型视图。旧件只允许由同一Snapshot明确恢复的非触发值（锁镰0..2、糖果0..1）
+按注册identity规则派生；锁镰3、糖果2无见证时保留歧义，不能硬改0、借后帧或新标签。
+`convertP1NativeBundle({p1Revision:"r1.7"})` / `--p1-revision r1.7` 输出独立投影与恢复收据，
+保留原点数、原N分母及missing；缺失点不用于新训练标签，不修改旧原件/旧投影/旧例外。
+
+其他19项展示计数的调查不构成改义授权，字段清单与逐机制证据归本轮M2a报告。
+新语义的相等不推翻旧r1.5严格差异，也不证明旧438输入/概率或整局资格等价。

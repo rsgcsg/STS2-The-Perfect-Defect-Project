@@ -275,7 +275,7 @@ public static class PlayerEnvironmentNativeWitness
         var profiler = new ProcessLocalCaptureProfiler();
         return PlayerEnvironmentService.CapturePublicBasisBuild((built, frozen) =>
             CreateFrame(built, Array.Empty<string>(), profiler,
-                new(frozen.SnapshotId, frozen.Bytes, frozen.CapturedAt)), profiler);
+                new(frozen.SnapshotId, frozen.Bytes, frozen.CapturedAt)), profiler, settledRelicCounters: true);
     }
     public static ProcessLocalNativeWitnessFrame Capture(
         IReadOnlyCollection<string>? requiredReadKinds = null)

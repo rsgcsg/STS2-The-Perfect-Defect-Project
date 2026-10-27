@@ -1393,3 +1393,97 @@ for (const defect of ['foreign_owner', 'foreign_parent', 'other_card', 'terminal
   assert.equal(report.complete, false);
 });
 }
+
+function settledCounterExample({ witness = false, display = 3, logical = 1 } = {}) {
+  const f = example(), references = new Map();
+  for (const row of f.source.events) for (const key of ['basis', 'successor_basis']) {
+    const reference = row[key]; if (!reference || references.has(reference.sha256)) continue;
+    const basis = JSON.parse(f.blobs.get(reference.payload_ref).toString('utf8'));
+    basis.snapshot.persistent.content.player.relics.push({ entity_id: 'r17-kusarigama', definition_id: 'KUSARIGAMA',
+      name: 'Kusarigama', description: 'Every three attacks', keywords: [], card_previews: [], counter: display });
+    if (witness) {
+      basis.revision = '3'; basis.settled_relic_counters = {
+        schema: 'sts2.player-environment/settled-relic-counters-1', source_snapshot_id: basis.snapshot.snapshot_id,
+        session: basis.snapshot.session, game_mvid: '57785517-0b16-42b9-8b36-bad6fb28384b', source_kind: 'native_same_capture',
+        facts: [{ entity_id: 'r17-kusarigama', definition_id: 'KUSARIGAMA', display_counter: display,
+          logical_counter: logical, rule_id: 'kusarigama-attacks-mod3-1' }], missing: [] };
+    }
+    const bytes = Buffer.from(JSON.stringify(basis)), sha = createHash('sha256').update(bytes).digest('hex');
+    const path = `public-bases/sha256/${sha.slice(0, 2)}/${sha}.json`; f.blobs.set(path, bytes);
+    references.set(reference.sha256, { ...reference, sha256: sha, byte_count: bytes.length, payload_ref: path });
+  }
+  for (const row of f.source.events) for (const key of ['basis', 'successor_basis'])
+    if (row[key]) row[key] = references.get(row[key].sha256);
+  return f;
+}
+
+test('explicit r1.7 native reprojection binds original hashes, keeps all point/N slots, and never changes the old default', () => {
+  const f = settledCounterExample({ witness: true }), before = [...f.blobs].map(([path, bytes]) => [path, bytes.toString('hex')]);
+  const legacy = convertNativeSemanticOriginals(f.source, sdk, core);
+  const next = convertNativeSemanticOriginals(f.source, sdk, core, { p1Revision: 'r1.7' });
+  assert.equal(legacy.trajectory.points[0].observation.revision, 'r1.5');
+  assert.equal(legacy.trajectory.points[0].observation.player.content.relics.at(-1).counter, 3);
+  assert.equal(next.trajectory.points[0].observation.revision, 'r1.7');
+  assert.equal(next.trajectory.points[0].observation.player.content.relics.at(-1).counter, 1);
+  const receipt = next.settled_relic_reprojection;
+  assert.equal(receipt.denominator.points, legacy.trajectory.points.length);
+  assert.equal(receipt.denominator.N, legacy.trajectory.points.filter(point => point.chosen !== null).length);
+  assert.equal(receipt.points.length, receipt.denominator.points);
+  assert.equal(receipt.points[0].source_public_basis.sha256, f.source.events[1].basis.sha256);
+  assert.equal(receipt.points[0].settled_relic_counter_projection.facts[0].recovery, 'native_same_capture');
+  assert.equal(next.complete, true); assert.equal(receipt.complete, true);
+  assert.deepEqual([...f.blobs].map(([path, bytes]) => [path, bytes.toString('hex')]), before);
+  assert.equal(JSON.stringify(next.trajectory.points[0].observation).includes('game_mvid'), false);
+});
+
+test('r1.7 old ambiguous displays retain the same denominator and immutable bytes without a new label or whole-run claim', () => {
+  const f = settledCounterExample(), legacy = convertNativeSemanticOriginals(f.source, sdk, core);
+  const next = convertNativeSemanticOriginals(f.source, sdk, core, { p1Revision: 'r1.7' });
+  const r = next.settled_relic_reprojection;
+  assert.equal(r.denominator.points, legacy.trajectory.points.length);
+  assert.equal(r.denominator.N, 2); assert.equal(r.points.length, legacy.trajectory.points.length);
+  assert.equal(next.complete, false); assert.equal(next.whole_run_recording_complete, false);
+  assert.equal(r.reprojected.eligible_N, 0); assert.equal(r.complete, false);
+  assert.ok(r.points.every(point => point.input_complete === false && point.mask.N === false));
+  assert.ok(r.points.every(point => point.missing.some(reason => reason.includes('ambiguous_missing_witness'))));
+  assert.ok(r.points.filter(point => point.source_mask.N).every(point => point.source_chosen !== null && point.chosen === null));
+  assert.equal(r.points[0].observation.player.content.relics.at(-1).counter, 3);
+});
+
+test('r1.7 can fully reproject nontrigger old getters and rejects an undeclared revision', () => {
+  const { source } = settledCounterExample({ display: 2 });
+  const r = convertNativeSemanticOriginals(source, sdk, core, { p1Revision: 'r1.7' });
+  assert.equal(r.complete, true); assert.equal(r.settled_relic_reprojection.reprojected.eligible_N, 2);
+  assert.equal(r.settled_relic_reprojection.points[0].settled_relic_counter_projection.facts[0].recovery, 'legacy_same_snapshot_public_rule');
+  assert.throws(() => convertNativeSemanticOriginals(source, sdk, core, { p1Revision: 'future' }), /revision_unknown/);
+  assert.throws(() => convertNativeSemanticOriginals(source, sdk, core, { p1Revision: 'r1.7',
+    includeTargets: true, targetProjection: 'future' }), /target_projection_unknown/);
+});
+
+test('r1.7 an unprojectable final boundary cannot leave a shorter apparently complete trajectory', () => {
+  const f = settledCounterExample({ display: 1 });
+  const later = f.nextBasis('-later-native-boundary');
+  later.snapshot.persistent.content.player.relics.push({ entity_id: 'r17-kusarigama', definition_id: 'KUSARIGAMA',
+    name: 'Kusarigama', description: 'Every three attacks', keywords: [], card_previews: [], counter: 3 });
+  f.row('observation', { basis: f.retain(later), reason: 'native_decision_owner_ready' });
+  const legacy = convertNativeSemanticOriginals(f.source, sdk, core);
+  assert.equal(legacy.complete, true);
+  const next = convertNativeSemanticOriginals(f.source, sdk, core, { p1Revision: 'r1.7' });
+  assert.equal(next.complete, false); assert.equal(next.trajectory, null);
+  assert.equal(next.settled_relic_reprojection.points.length, legacy.trajectory.points.length);
+  assert.equal(next.settled_relic_reprojection.points.at(-1).input_complete, false);
+  assert.equal(next.settled_relic_reprojection.denominator.N, 2);
+});
+
+test('r1.7 retains its explicit target revision with no observations or eligible points', () => {
+  const { source } = example();
+  source.events = [{ ...source.events[0], basis: null, basis_missing_reason: 'original_public_basis_missing' }];
+  const next = convertNativeSemanticOriginals(source, sdk, core, { p1Revision: 'r1.7', runId: 'run-1',
+    includeTargets: true, targetProjection: nativeTargetProjection });
+  assert.equal(next.complete, false); assert.equal(next.trajectory, null);
+  assert.equal(next.target_output.revision, 'r1.7');
+  assert.equal(next.captures[0].observation, null);
+  assert.equal(next.settled_relic_reprojection.denominator.points, 0);
+  assert.equal(next.settled_relic_reprojection.denominator.N, 0);
+  assert.deepEqual(next.settled_relic_reprojection.points, []);
+});

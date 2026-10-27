@@ -72,6 +72,7 @@ test("fixed P1 release includes a real executable reader/core/SDK closure and ex
       componentSourceRevision: "b".repeat(40), componentTreeRevision: "c".repeat(40) }, files);
     assert.deepEqual(identity.p1_native_support, p1NativeSupport);
     assert.ok(files.some(file => file.path === "p1/node_modules/zod/package.json"));
+    assert.ok(files.some(file => file.path === "p1/tools/p1-native-reprojection.mjs"));
     assert.ok(files.some(file => file.path === p1NativeSupport.recording_client_entrypoint));
     const asUrl = file => new URL(`file://${file}`).href;
     const code = `import {convertNativeSemanticOriginals as convert} from ${JSON.stringify(asUrl(path.join(directory, p1NativeSupport.converter_entrypoint)))};

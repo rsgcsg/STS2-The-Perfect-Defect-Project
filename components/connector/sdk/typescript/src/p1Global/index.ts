@@ -8,3 +8,5 @@ export * from "./publicOrdering.js";
 export * from "./rewardForward.js";
 export * from "./sourceMapping.js";
 export * from "./nativeSemantic.js";
+
+export { reprojectSettledRelicCounters, type SettledRelicCounterProjection } from "../settledRelicCounters.js";

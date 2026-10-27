@@ -18,3 +18,5 @@ export * from "./p1Capture.js";
 export * from "./publicBasis.js";
 
 export { nativeCardSelectionProblems } from "./nativeCardSelection.js";
+
+export * from "./settledRelicCounters.js";

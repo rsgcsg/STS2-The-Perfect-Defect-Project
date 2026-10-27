@@ -20,13 +20,14 @@ internal static partial class PlayerEnvironmentService
         SealedObservationContract.MaxCapsules, SealedObservationContract.TtlMs, SealedObservationContract.DefaultChunkBytes,
         SealedObservationContract.MinChunkBytes, SealedObservationContract.MaxChunkBytes, false, PublicBasisContract.Scope);
 
-    internal static SealedObservationCapture ReadCurrentPublicBasis(string? expectedSnapshotId) =>
-        SealedObservations.Capture(CapturePublicBasis, expectedSnapshotId);
+    internal static SealedObservationCapture ReadCurrentPublicBasis(string? expectedSnapshotId, bool settledRelicCounters = false) =>
+        SealedObservations.Capture(() => CapturePublicBasis(settledRelicCounters), expectedSnapshotId);
 
-    private static FrozenPublicObservation CapturePublicBasis() => CapturePublicBasisBuild((_, frozen) => frozen);
+    private static FrozenPublicObservation CapturePublicBasis(bool settledRelicCounters) =>
+        CapturePublicBasisBuild((_, frozen) => frozen, settledRelicCounters: settledRelicCounters);
 
     internal static T CapturePublicBasisBuild<T>(Func<SnapshotBuildResult, FrozenPublicObservation, T> assemble,
-        Witness.ProcessLocalCaptureProfiler? profiler = null)
+        Witness.ProcessLocalCaptureProfiler? profiler = null, bool settledRelicCounters = false)
     {
         using var guard = new P1CaptureGuard();
         NativeSourceInputProvider.BeforePrefix += P1CaptureGuard.InvalidateActive;
@@ -35,7 +36,7 @@ internal static partial class PlayerEnvironmentService
             var before = P1NativeCaptureBoundary.Capture();
             SnapshotBuildResult built = BuildSnapshot(inputProfile: PublicBasisContract.Profile, captureProfiler: profiler);
             FrozenPublicObservation Freeze() => FreezePublicBasis(built,
-                before.Run == null ? null : Entities.GetId(before.Run, "run"), built.Snapshot.ObservedAt);
+                before.Run == null ? null : Entities.GetId(before.Run, "run"), built.Snapshot.ObservedAt, settledRelicCounters);
             var frozen = profiler == null ? Freeze() : profiler.Measure("public_basis_reads_and_serialization", Freeze);
             T result = assemble(built, frozen);
             guard.RequireStable(before.Matches(P1NativeCaptureBoundary.Capture()));
@@ -97,7 +98,8 @@ internal static partial class PlayerEnvironmentService
 
     // Share this assembly with original-source capture. Passing a built Snapshot is essential:
     // this method cannot call BuildSnapshot/Read or obtain another live version.
-    internal static FrozenPublicObservation FreezePublicBasis(SnapshotBuildResult built, string? continuity, DateTimeOffset? captureTime = null)
+    internal static FrozenPublicObservation FreezePublicBasis(SnapshotBuildResult built, string? continuity,
+        DateTimeOffset? captureTime = null, bool settledRelicCounters = false)
     {
         var reads = new List<PublicBasisRead>();
         var cardDetails = built.Snapshot.Reads.Any(read => read.Kind == "surface_card" && read.TargetReferentId != null)
@@ -126,7 +128,9 @@ internal static partial class PlayerEnvironmentService
                 ((JsonArray)snapshot["completeness"]!["missing"]!).Add("raw_native_navigation_basis_incomplete");
             }
         }
-        return PublicBasisAssembly.Freeze(snapshot, reads, continuity, ConnectorMod._jsonOptions, captureTime);
+        return PublicBasisAssembly.Freeze(snapshot, reads, continuity, ConnectorMod._jsonOptions, captureTime,
+            settledRelicCounters ? (current, captured) =>
+                SettledRelicCounterWitness.Capture(current, captured.Select(read => (JsonNode?)read.Response), Entities) : null);
     }
 
     internal static SealedObservationChunk ReadPublicBasis(string captureId, string cursor, int maxBytes) =>

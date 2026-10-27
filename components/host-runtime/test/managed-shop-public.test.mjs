@@ -15,6 +15,18 @@ function inventory() {
   state.card_removal={...offer(3),next_price_increase:25};return state;
 }
 const identity={runtimeInstanceId:"shop-public",environmentFingerprint:"synthetic",sequence:1};
+
+test("shop relic counter preserves native zero, nonzero and absent display separately", () => {
+  for (const counter of [0, 2, null, undefined]) {
+    const state = inventory();
+    if (counter !== undefined) state.relics[0].relic.counter = counter;
+    const projection = projectManagedCandidateDecision({ state, ...identity });
+    assert.equal(projection.snapshot.completeness.status, "complete");
+    const relic = projection.snapshot.interaction.content.surface.relics[0].relic;
+    assert.equal(Object.hasOwn(relic, "counter"), counter != null);
+    if (counter != null) assert.equal(relic.counter, counter);
+  }
+});
 test("shop keeps original product instances and exact entry prices while publishing resolved nested facts",()=>{
   const state=inventory();const projected=projectManagedCandidateDecision({state,...identity});
   const surface=projected.snapshot.interaction.content.surface;

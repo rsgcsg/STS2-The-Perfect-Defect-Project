@@ -417,6 +417,7 @@ def test_invalid_frozen_runtime_budget_rejects_before_a_host_or_model_is_read(li
 @pytest.mark.parametrize("version, admitted", [
     ("0.1.0-rc.47", False), ("0.1.0-rc.50", True),
     ("0.1.0-rc.51", True), ("0.1.0-rc.52", True),
+    ("0.1.0-rc.53", True), ("0.1.0-rc.54", False),
 ])
 def test_central_inference_requires_cli_environment_before_world_audit(
     tmp_path, monkeypatch, version, admitted
@@ -434,7 +435,8 @@ def test_central_inference_requires_cli_environment_before_world_audit(
 
     monkeypatch.setattr(backend, "_audit", audit)
     (tmp_path / "package.json").write_bytes(json_bytes({"version": version}))
-    configuration = {"producer": actual.to_dict(), "settling_timeout_ms": None,
+    configuration = {"producer": actual.to_dict(),
+        "settling_timeout_ms": 120000 if version == "0.1.0-rc.53" else None,
         "inference": {"mode": "central_batch"},
         "host_directory": str(tmp_path), "candidate_directory": str(tmp_path),
         "runtime_directory": str(tmp_path / "dist"), "host_pin": {}, "runtime_pin": {},
