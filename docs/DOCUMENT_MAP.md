@@ -42,7 +42,7 @@
 - 新任务按[工作规则](WORKING_RULES.zh-CN.md)回答目标、位置、历史复用、变更种类和停止点；规格/ADR 管含义，功能指南管 SOP，任务管本轮，CURRENT 只指路。模型输入和游戏协议是不同合同。
 - [当前待办和卡顺序](plans/CONVERGENCE_BASELINE_20261027.zh-CN.md#收敛后待派发不是执行许可)：T1/W1 是模仿线，M1→M2 是 Managed/RL 基础，M3 是覆盖，X3 可选。没有正式训练或 RL 执行许可。
 - [已解决问题](RESOLVED_ISSUES.zh-CN.md)给原解法和边界；[DECISIONS](DECISIONS.md)给已定事项与替代；[架构](ARCHITECTURE.md)和 [ADR](adr/README.md)给长期理由。
-- [旧资产账本和本轮增量去向](plans/CONVERGENCE_DISPOSITION_20261027.md)区分建议、已执行和独有成果。旧 PR24 是 Workshop L1 发行边界，PR25 是 L2 staging；开工时均保原 ref，未迁入当前，拟归档后关闭/删除须批。`p1-prefreeze-2026-10-18/` 留原处作参考，不是新任务队列。
+- [旧资产账本和本轮增量去向](plans/CONVERGENCE_DISPOSITION_20261027.md)区分建议、已执行和独有成果。旧PR24的Workshop L1发行边界和PR25的L2 staging已按用户批准关闭，原分支已归档后删除；独有源码保在精确tag，未冒称已接入当前，见[执行收据](evidence/CONVERGENCE_DISPOSITION_EXECUTED_20261027.md)。`p1-prefreeze-2026-10-18/` 留原处作参考，不是新任务队列。
 
 ## 按需参考
 
