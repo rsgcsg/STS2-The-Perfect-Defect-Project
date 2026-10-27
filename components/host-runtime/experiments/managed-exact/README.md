@@ -20,6 +20,22 @@ committed. `prepare` discovers the user's exact installation, copies required
 files only into ignored `.local/`, refuses a modified runtime `sts2.dll`,
 builds with .NET 9+, and records provenance.
 
+Every `prepare` also runs the Godot stub coverage gate (M2c). The reviewed
+`tools/dotnet/GodotStubCoverage` tool reads, without executing, the exact game's
+`sts2.dll`, `Steamworks.NET.dll` and `Sentry.Godot.dll`, collects every Godot API
+type and member they reference, and resolves each against the built headless
+`GodotSharp.dll` stub the way CoreCLR does (including its base hierarchy and BCL
+bases). Missing types, missing members, signature mismatches and throw-only stub
+bodies are gaps; `godot-stub-coverage-baseline.json` lists the reviewed,
+deliberately unbound ones by category (display, tooling, platform, engine
+bridge, save file IO, telemetry, text rendering, locale, input, resource loader)
+and holds only Godot API names and signatures. A gap outside that list fails the
+build and names the member; the full report is written next to the prepare
+report under `.local/evidence/`. The gate is **local-only**: hosted CI has no
+game assemblies, so CI checks only the baseline schema and wiring. A newly
+filled stub member must also be removed from the baseline and registered in
+`semantic_shims` with its counterexample regression.
+
 ```bash
 npm run experiment:managed -- prepare
 npm run experiment:managed -- audit --candidate .local/candidates/<candidate>

@@ -205,3 +205,17 @@ independently of `IsLocked`, with no enablement for foreign/unpresented options.
 The original native and JS action admission keep the locked guard. The exact
 17-gold native fixture, no-effect refusal and real serialized JS catalog cover
 this distinction; old M3 strict results remain immutable.
+
+
+M2c generalizes the Mathf.Log and GetIndex lessons instead of waiting for the
+next unknown: CoreCLR fails a whole method at JIT when any referenced Godot
+member is absent, even behind a TestMode or null-node early return. Host53 binds
+the shipped Godot members referenced from game logic namespaces (math, Vector2I,
+Colors, Capitalize/ToSnakeCase, node-tree ordering, signal/deferred no-ops,
+Callable overloads), compared bit-for-bit with the shipped GodotSharp where the
+code is managed and with Godot's own string tests where it is engine code. A JIT
+sweep of the exact `sts2.dll` reduces logic-namespace JIT failures from 68
+(Host52) to 37, all in listed categories (save file IO, telemetry, text server,
+locale, input gestures, resource loader, engine bridge). Old unknowns stay
+unknown; the stub coverage gate in `prepare` keeps any new gap from reaching a
+batch silently. Display gaps remain unbound and are not proven per call site.
