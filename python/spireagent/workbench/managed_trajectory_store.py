@@ -11,8 +11,11 @@ from typing import Any
 
 from spireagent.artifact_contracts import Manifest, Parent, Producer
 from spireagent.json_boundary import BoundaryError, FrozenObject, json_bytes
-from spireagent.storage.store import ManifestArtifactStore
+from spireagent.storage.local import LocalBlobStore
+from spireagent.storage.store import CHUNK_BYTES, ManifestArtifactStore
 from stpd.p1.trajectory import MAX_EPISODE_BYTES, validate_trajectory
+
+from .p1_recording_storage import require_workspace_space
 
 SCHEMA = "spireagent/p1-trajectory-shard-1"
 MAX_EPISODES = 8
@@ -35,6 +38,11 @@ def publish_shard(store: ManifestArtifactStore, episodes: Sequence[dict[str, Any
     if not 1 <= len(episodes) <= MAX_EPISODES:
         raise BoundaryError("trajectory_store", "shard_episode_limit")
     _model_bindings(store, episodes)
+    estimated = sum(len(json_bytes(value)) for value in episodes)
+    if estimated > MAX_SHARD_BYTES:
+        raise BoundaryError("trajectory_store", "shard_byte_limit")
+    require_workspace_space(scratch, estimated + CHUNK_BYTES, persistent_bytes=estimated,
+        destination=store.blobs.root if isinstance(store.blobs, LocalBlobStore) else None)
     index = []
     total = 0
     with tempfile.TemporaryDirectory(prefix="trajectory-pack-", dir=scratch) as tmp:
@@ -80,6 +88,7 @@ def read_shard(store: ManifestArtifactStore, artifact_id: str, *,
     payload = manifest.payload("trajectory")
     if payload.size > MAX_SHARD_BYTES:
         raise BoundaryError("trajectory_store", "compressed_shard_limit")
+    require_workspace_space(scratch, payload.size + CHUNK_BYTES)
     models = _model_bindings(store, info["episodes"])
     if manifest.parents != tuple(Parent(f"model_{i}", model) for i, model in enumerate(models)):
         raise BoundaryError("trajectory_store", "shard_model_parent_mismatch")

@@ -13,11 +13,21 @@ from spireagent.workbench.managed_pipeline import PipelinedManagedExecutor
 from spireagent.workbench.reference_suite import _Artifacts
 
 
-def test_failure_before_typed_seal_keeps_all_available_originals(tmp_path, monkeypatch):
+@pytest.mark.parametrize("startup_known", [True, False])
+def test_failure_before_typed_seal_keeps_all_available_originals(
+        tmp_path, monkeypatch, startup_known):
     executor = PipelinedManagedExecutor.__new__(PipelinedManagedExecutor)
     executor.producer = Producer("synthetic-pipeline", "a"*40, "b"*64)
     executor.runtime = tmp_path / "runtime"
     executor.runtime.mkdir()
+    (executor.runtime/"cli.js").write_bytes(b"// synthetic runtime fixture\n")
+    (tmp_path/"package.json").write_bytes(json_bytes({
+        "name": "@rsgcsg/sts2-policy-runtime", "version": "fixture"}))
+    from spireagent.workbench import managed_pipeline
+
+    # Package admission is replaced with this synthetic compiled fixture. Archive,
+    # Runtime publication, transfer and full peer readers below are production.
+    monkeypatch.setattr(managed_pipeline, "validate_installed_package", lambda *_, **__: None)
     executor.store = open_store(str(tmp_path / "store"))
     executor.peer = open_store(str(tmp_path / "peer"))
     model = Manifest("model", executor.producer,
@@ -44,6 +54,8 @@ def test_failure_before_typed_seal_keeps_all_available_originals(tmp_path, monke
         run.mkdir(parents=True)
         (run / "events.jsonl").write_bytes(b'{"incomplete":true}\n')
         row["finish"] = artifacts.put("finish.json", json_bytes({"phase": "closed"}))
+        if not startup_known:
+            row.pop("run_id")
         checkpoint()
 
     monkeypatch.setattr(ManagedEpisodeExecutor, "__call__", failed_original)
@@ -59,7 +71,8 @@ def test_failure_before_typed_seal_keeps_all_available_originals(tmp_path, monke
     assert receipt["full_readback"] and receipt["typed_recording_qualified"] is False
     manifest = executor.peer.get_manifest(final["stored_failure_id"])
     transfer = json.loads(b"".join(executor.peer.read_payload(manifest.payload("transfer"))))
-    assert [f["path"] for f in transfer["files"]] == ["events.jsonl"]
+    assert [f["path"] for f in transfer["files"]] == (
+        ["events.jsonl"] if startup_known else ["failed-one/events.jsonl"])
     assert (artifacts.root/"runs/failed-one/events.jsonl").read_bytes() == b'{"incomplete":true}\n'
     assert calls == [1]
 

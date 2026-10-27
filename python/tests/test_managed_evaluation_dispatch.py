@@ -757,3 +757,22 @@ def test_restart_between_base_close_and_wrapper_checkpoint_keeps_save_job(ledger
     assert result["dispatched"] == 0
     assert executor.offers == 1 and executor.saves == 2
     assert EvaluationLedger(ledger.directory).report()["loss"] == 1
+
+
+def test_save_only_recovery_does_not_reserve_another_game_peak(ledger, monkeypatch):
+    from spireagent.workbench import evaluation_ledger as module
+
+    executor = QueuedSaveExecutor(fail_once=True)
+    ledger.run_managed(workers=1, max_episodes=1, executor=executor)
+    usage = shutil.disk_usage(ledger.directory)
+    monkeypatch.setattr(module, "workspace_reserve_bytes", lambda: 15*1024**3)
+    monkeypatch.setattr(module.shutil, "disk_usage", lambda _: usage._replace(free=16*1024**3))
+    result = EvaluationLedger(ledger.directory).run_managed(
+        workers=1, max_episodes=1, executor=executor)
+    assert result["dispatched"] == 0 and result["new_finished"] == 1
+    assert executor.offers == 1
+    # The exact same free space still rejects a NEW world offer.
+    fresh = EvaluationLedger(ledger.directory).run_managed(
+        workers=1, max_episodes=1, executor=executor)
+    assert fresh["stop_reason"] == "workspace_capacity_insufficient"
+    assert executor.offers == 1

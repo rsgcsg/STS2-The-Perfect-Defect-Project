@@ -14,6 +14,7 @@ from typing import Any
 from sts2_platform_evidence import verify_agent_session_run_evidence
 
 from spireagent.json_boundary import BoundaryError, json_bytes
+from spireagent.package_identity import validate_installed_package
 from spireagent.storage.store import copy_artifact
 from stpd.p1.trajectory import MAX_EPISODE_BYTES, extract_trajectory
 
@@ -112,6 +113,8 @@ class PipelinedManagedExecutor(ManagedEpisodeExecutor):
             "schema": "spireagent/managed-save-job-1", "expected": expected,
             "run": f"runs/{row['run_id']}" if row.get("run_id") else None,
             "mode": mode, "selection_id": row["selection_id"],
+            "episode": {"seed": row["seed"], "manifest_sha256": row["manifest_sha256"],
+                        "scenario": row["scenario"]},
             "model_artifact_id": model["artifact_id"], "producer": self.producer.to_dict(),
             "retention": row["retention"], "peer": self.configuration["peer"],
             "store": self.preparation["store"]}))
@@ -143,6 +146,8 @@ class PipelinedManagedExecutor(ManagedEpisodeExecutor):
                     or row["retention"] != retention_configuration(self.configuration)
                     or job["model_artifact_id"] != model["artifact_id"]
                     or job["selection_id"] != row["selection_id"]
+                    or job["episode"] != {"seed": row["seed"],
+                        "manifest_sha256": row["manifest_sha256"], "scenario": row["scenario"]}
                     or expected["run_id"] != row.get("run_id")
                     or expected["global_runtime_directory"] != str(self.runtime)
                     or job["run"] != (f"runs/{row['run_id']}" if row.get("run_id") else None)):
@@ -218,14 +223,27 @@ class PipelinedManagedExecutor(ManagedEpisodeExecutor):
         return report
 
     def _preserve_failure(self, row, artifacts, job, private) -> None:
+        validate_installed_package(self.runtime.parent, self.configuration["runtime_pin"],
+            required_paths=("dist/cli.js", "dist/global-replay.js", "dist/managed.js"))
+        digest = hashlib.sha256()
+        for module in sorted(self.runtime.glob("*.js")):
+            digest.update(module.name.encode())
+            digest.update(b"\0")
+            digest.update(module.read_bytes())
+            digest.update(b"\0")
+        runtime = publish_global_runtime(self.store, self.producer, {
+            "global_runtime_directory": str(self.runtime),
+            "runtime_version": json.loads((self.runtime.parent / "package.json").read_bytes())[
+                "version"], "runtime_code_sha256": digest.hexdigest()})
         facts = {"run_id": row.get("run_id"), "seed": row["seed"],
             "model_artifact_id": job["model_artifact_id"], "producer": job["producer"],
+            "runtime_artifact_id": runtime.artifact_id,
             "host_pin": self.configuration["host_pin"],
             "runtime_pin": self.configuration["runtime_pin"], "retention": row["retention"],
             "initial_progress_sha256": self.configuration["initial_progress"]["progress_sha256"],
             "status": row["execution_status"], "reason": row["execution_reason"],
             "finish": json.loads(_referenced(artifacts.root, row["finish"]))}
-        source = artifacts.root / job["run"] if job["run"] else None
+        source = artifacts.root / (job["run"] or "runs")
         with _phase(row, "preserve"):
             stored = publish_failure(self.store, source, self.producer, facts, scratch=private)
             row["failure_pending"] = artifacts.put("failure-pending.json", json_bytes({

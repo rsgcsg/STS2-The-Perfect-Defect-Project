@@ -111,7 +111,8 @@ from spireagent.workbench.managed_trajectory_store import read_shard
 
 # peer 是原已冻结的非秘密 bucket/endpoint/prefix binding；凭据只在环境中。
 store = open_peer(peer)
-for episode in read_shard(store, shard_artifact_id, scratch=Path('/ABS/private-scratch')):
+episodes = list(read_shard(store, shard_artifact_id, scratch=Path('/ABS/private-scratch')))
+for episode in episodes:
     for step in episode['steps']:
         before = episode['observations'][step['observation_index']]['observation']
         after_index = step['next_observation_index']

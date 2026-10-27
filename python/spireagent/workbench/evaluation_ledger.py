@@ -338,8 +338,11 @@ class EvaluationLedger:
             return {"status": "stopped", "stop_reason": "unknown_cleanup_requires_owner_read"}
         configuration = json.loads(read_reference(self.plan["execution"]))
         configuration.update(self.plan.get("storage", {}))
+        recoveries = [r for r in self.slots() if r["status"] in {
+            "save_pending", "save_failed", "trajectory_pending"}]
         reserve = max(configuration.get("minimum_free_bytes", 0), workspace_reserve_bytes())
-        if shutil.disk_usage(self.directory).free < reserve + NEXT_EPISODE_PEAK_BYTES:
+        if shutil.disk_usage(self.directory).free < reserve + (
+                0 if recoveries else NEXT_EPISODE_PEAK_BYTES):
             return {"status": "stopped", "stop_reason": "workspace_capacity_insufficient"}
         limits = limits or SuiteLimits(150, 1800, 60, 86400, 1, 30)
         owns_executor = executor is None
@@ -355,8 +358,6 @@ class EvaluationLedger:
             number = len(self.store.keys("managed-preparations/")) + 1
             self.store.put_if_absent(f"managed-preparations/{number:06d}.json",
                                      json_bytes(executor.preparation))
-        recoveries = [r for r in self.slots() if r["status"] in {
-            "save_pending", "save_failed", "trajectory_pending"}]
         pending_slots = [
             row for row in self.slots() if row["status"] == "not_started"
             and (selected is None or row["slot_id"] in selected)

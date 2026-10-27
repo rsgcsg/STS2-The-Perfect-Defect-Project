@@ -43,7 +43,8 @@ def publish_failure(store: ManifestArtifactStore, source: Path | None, producer:
             payload = store.put_payload("archive", stream, "application/gzip")
         index = store.put_bytes("transfer", json_bytes(transfer.to_dict()))
     manifest = Manifest("analysis", producer,
-        parents=(Parent("model", facts["model_artifact_id"]),), payloads=(payload, index),
+        parents=(Parent("model", facts["model_artifact_id"]),
+                 Parent("runtime", facts["runtime_artifact_id"])), payloads=(payload, index),
         parameters=FrozenObject.of({"schema": SCHEMA, "facts": facts,
             "content_id": transfer.content_id, "typed_recording_qualified": False,
             "score_eligible": False, "research_admission": "not_evaluated"}))
@@ -58,7 +59,8 @@ def verify_failure(store: ManifestArtifactStore, artifact_id: str, *, facts: dic
     if (manifest.kind != "analysis" or info.get("schema") != SCHEMA
             or info.get("facts") != facts or info.get("typed_recording_qualified") is not False
             or info.get("score_eligible") is not False
-            or manifest.parents != (Parent("model", facts["model_artifact_id"]),)
+            or manifest.parents != (Parent("model", facts["model_artifact_id"]),
+                                    Parent("runtime", facts["runtime_artifact_id"]))
             or {p.role for p in manifest.payloads} != {"archive", "transfer"}
             or manifest.payload("transfer").size > 16 * 1024**2
             or manifest.payload("archive").size > MAX_BYTES + 256 * 1024**2):
