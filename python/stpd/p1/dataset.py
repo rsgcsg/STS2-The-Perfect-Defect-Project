@@ -603,9 +603,9 @@ def _iter_selected_points(
         projection = load_projection(store, artifact_id)
         facts = None
         if run_facts:
-            from .cohort import projection_facts
+            from .value_targets import supervision_facts
 
-            facts = projection_facts(projection)
+            facts = supervision_facts(projection)
         found = set()
         for segment, index, point in _points(projection):
             key = segment, index

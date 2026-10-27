@@ -150,3 +150,32 @@ def test_new_optional_config_keeps_legacy_wire_shape_and_rejects_invalid_flags()
         MStdConfig(value_heads=1)
     with pytest.raises(BoundaryError, match='large_model_requires_value_protocol'):
         MStdConfig(model_size='large')
+
+
+@pytest.mark.parametrize("abandoned", [False, True])
+def test_native_abandonment_is_masked_through_original_journal_and_population(tmp_path, abandoned):
+    from spireagent.json_boundary import FrozenObject
+    from stpd.p1.dataset import SnapshotReader
+    from stpd.p1.workload import populations_from_reader
+
+    store = store_at(tmp_path / "store")
+    projections = []
+    for i in range(3):
+        name = "source-" + str(i)
+        _, original, value = projection_fixture(store, name)
+        journal = [{"run_id": "run-0001", "kind": "run_ended_native",
+                    "detail": "RunManager.OnEnded(isVictory=false)"}]
+        if abandoned:
+            journal.append({"run_id": "run-0001", "kind": "run_abandoned_native",
+                            "detail": "RunManager.OnEnded observed IsAbandoned=true."})
+        original = replace(original, parameters=FrozenObject.of({
+            **original.parameters.value(), "run_journal": journal}))
+        store.publish(original)
+        projections.append(projection_fixture(store, name, value=value, original=original)[0])
+    snapshot = explicit_snapshot(store, projections)
+    populations = populations_from_reader(SnapshotReader(store, snapshot.artifact_id),
+                                           input_projection=V2_INPUT_SPEC, value_heads=True)
+    for pop in populations.values():
+        assert pop.values[0][0] == (None if abandoned else 0.0)
+        if abandoned:
+            assert pop.values[0] == (None, None)
