@@ -124,3 +124,29 @@ def test_direct_training_refuses_reserved_t2_seed(tmp_path):
     with pytest.raises(BoundaryError, match="evaluation_seed_reserved"):
         prepare_p1_run(store, snapshot.artifact_id, PRODUCER,
                        MStdConfig(max_epochs=1), "e" * 32)
+
+
+def test_trusted_targets_update_both_heads_and_report_action_nll_separately():
+    populations = {name: replace(population(1, name), values=((1.0, 0.5),))
+                   for name in ('train', 'dev', 'test')}
+    vocab = fit_vocabulary(list(populations['train'].frames))
+    trainer = MStdTrainer(populations, vocab, 'a' * 64,
+                          MStdConfig(max_epochs=1, value_heads=True))
+    before = {name: value.clone() for name, value in trainer.model.state_dict().items()}
+    progress = trainer.advance()
+    assert progress['mean_N_loss'] >= 0 and 0 < progress['auxiliary_loss'] < .1
+    for name in ('win_head.weight', 'progress_head.weight'):
+        assert not torch.equal(before[name], trainer.model.state_dict()[name])
+    assert trainer.best_loss == progress['dev']['mean_N_loss']
+
+
+def test_new_optional_config_keeps_legacy_wire_shape_and_rejects_invalid_flags():
+    from spireagent.json_boundary import BoundaryError
+
+    legacy = MStdConfig().to_dict()
+    assert 'value_heads' not in legacy and 'model_size' not in legacy
+    assert MStdConfig.decode(legacy) == MStdConfig()
+    with pytest.raises(BoundaryError, match='boolean_value_heads_required'):
+        MStdConfig(value_heads=1)
+    with pytest.raises(BoundaryError, match='large_model_requires_value_protocol'):
+        MStdConfig(model_size='large')
