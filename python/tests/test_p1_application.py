@@ -5,6 +5,7 @@ import uuid
 
 import pytest
 import torch
+from legacy_p1_fixture import reserve_p1_snapshot
 from test_p1_snapshot import explicit_snapshot, projection_fixture
 
 from spireagent.json_boundary import BoundaryError
@@ -17,7 +18,6 @@ from spireagent.workbench.managed_local_workspace import ROOT_NAME, create_manag
 from spireagent.workbench.p1_training_data import (
     record_p1_training_use,
     require_p1_snapshot,
-    reserve_p1_snapshot,
 )
 from spireagent.workbench.recipe_contracts import TrainingRequest
 from spireagent.workbench.trusted_recipes import describe_recipe, validate_recipe_config
@@ -29,14 +29,19 @@ from stpd.p1.workload import verify_p1_run
 from stpd.workers.p1_run import materialize_p1_model, verify_p1_result
 
 
-def workspace(tmp_path):
+def workspace(tmp_path, *, human_cohort=False):
     state = tmp_path / "state"
     state.mkdir()
     selected = create_managed_workspace(state)
     directory = state / ROOT_NAME / selected["workspace_id"]
     owner = selected["curation_owner"]
     store = ManifestArtifactStore(LocalBlobStore(directory / "store", create=False))
-    projections = [projection_fixture(store, "application-" + str(i))[0] for i in range(3)]
+    if human_cohort:
+        from test_p1_cohort_intake import projection
+
+        projections = [projection(store, "application-" + str(i)) for i in range(3)]
+    else:
+        projections = [projection_fixture(store, "application-" + str(i))[0] for i in range(3)]
     snapshot = explicit_snapshot(store, projections)
     config = ProjectConfig(state, "", "", None, combination())
     return config, store, owner, snapshot
@@ -269,12 +274,12 @@ def test_real_service_pause_resume_keeps_run_input_and_optimizer_state(tmp_path,
     ],
 )
 def test_hub_P1_preflight_checks_the_same_roles_before_provider_submit(tmp_path, fault):
+    from legacy_p1_fixture import reserve_p1_snapshot as reserve_shared
     from test_hub_scheduler import Provider
 
     from spireagent.hub.curation import CurationLedger
     from spireagent.hub.database import Operations
     from spireagent.hub.scheduler import Scheduler
-    from spireagent.p1_curation import reserve_p1_snapshot as reserve_shared
     from stpd.p1.workload import prepare_p1_run
 
     _, store, _, snapshot = workspace(tmp_path)

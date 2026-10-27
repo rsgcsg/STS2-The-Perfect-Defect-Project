@@ -30,7 +30,7 @@ from spireagent.artifact_contracts import Manifest
 from spireagent.hub.database import create_private_database
 from spireagent.json_boundary import BoundaryError, digest, json_bytes, object_fields
 from spireagent.package_identity import file_sha256
-from spireagent.research_curation import CurationLedger, InventoryPending
+from spireagent.research_curation import P1_EXPERIMENT_TABLES, CurationLedger, InventoryPending
 from spireagent.storage.local import LocalBlobStore
 from spireagent.storage.store import ManifestArtifactStore
 
@@ -205,7 +205,8 @@ class LocalCurationOwner:
         LocalCurationOwner._validate_existing(db)
         tables = {row[0] for row in db.execute(
             "SELECT name FROM sqlite_master WHERE type='table'")}
-        if tables - REQUIRED_TABLES - {"sqlite_sequence", "local_legacy_unknown_runs"}:
+        if tables - REQUIRED_TABLES - P1_EXPERIMENT_TABLES - {
+                "sqlite_sequence", "local_legacy_unknown_runs"}:
             raise BoundaryError("local_curation", "private_curation_database_required")
         if (db.execute("SELECT workspace,ledger,store,store_path "
                        "FROM local_curation_identity").fetchall() != [identity]

@@ -1,4 +1,5 @@
 """Normal client prepare/package/start avoids repeated fitting, keeps original intent."""
+
 import json
 
 import pytest
@@ -19,11 +20,19 @@ def test_normal_package_then_start_original_prepared_run(tmp_path, capsys, monke
 
         selection = SnapshotReader(store, snapshot.artifact_id).selection
         roots = {p["root_run_id"] for p in selection["points"] if p["split"] == "train"}
-        body = {"intent_id": "b" * 32, "source_id": snapshot.artifact_id,
-                "config": MStdConfig(max_epochs=2).to_dict(), "max_seconds": 300,
-                "stop_after": 1, "checkpoint_policy": CHECKPOINT_POLICY,
-                "loss_weighting": {"schema": SCHEMA, "rule_id": "unit-control",
-                                   "weights_by_root": dict.fromkeys(roots, 1)}}
+        body = {
+            "intent_id": "b" * 32,
+            "source_id": snapshot.artifact_id,
+            "config": MStdConfig(max_epochs=2).to_dict(),
+            "max_seconds": 300,
+            "stop_after": 1,
+            "checkpoint_policy": CHECKPOINT_POLICY,
+            "loss_weighting": {
+                "schema": SCHEMA,
+                "rule_id": "unit-control",
+                "weights_by_root": dict.fromkeys(roots, 1),
+            },
+        }
         if input_v2:
             from stpd.p1.input import V2_INPUT_SPEC
 
@@ -31,25 +40,58 @@ def test_normal_package_then_start_original_prepared_run(tmp_path, capsys, monke
         request = tmp_path / "request.json"
         package = tmp_path / "package.json"
         request.write_text(json.dumps(body))
-        assert main(["package", "--config", str(config_path), "--execution", "remote",
-                     "--input", str(request), "--output", str(package)]) == 0
+        assert (
+            main(
+                [
+                    "package",
+                    "--config",
+                    str(config_path),
+                    "--execution",
+                    "remote",
+                    "--input",
+                    str(request),
+                    "--output",
+                    str(package),
+                ]
+            )
+            == 0
+        )
         result = json.loads(capsys.readouterr().out)
         assert result["provider_submitted"] is False
         assert provider.calls == []
         saved = json.loads(package.read_text())
         run_id = saved["start"]["run_id"]
         read_session = app.remote_training._prepared_sessions[run_id]
-        assert verify_p1_run(store, run_id, provider.target.producer).training.parameters.value()[
-            "loss_weighting"] == body["loss_weighting"]
+        assert (
+            verify_p1_run(store, run_id, provider.target.producer).training.parameters.value()[
+                "loss_weighting"
+            ]
+            == body["loss_weighting"]
+        )
         if input_v2:
-            assert verify_p1_run(store, run_id, provider.target.producer).vocabulary[
-                "input_spec"] == body["input_projection"]
+            assert (
+                verify_p1_run(store, run_id, provider.target.producer).vocabulary["input_spec"]
+                == body["input_projection"]
+            )
         # Poison prepare: a start of this package must not fit/transfer again.
-        monkeypatch.setattr(app.remote_training, "prepare",
-                            lambda *a: pytest.fail("prepared run was rebuilt"))
+        monkeypatch.setattr(
+            app.remote_training, "prepare", lambda *a: pytest.fail("prepared run was rebuilt")
+        )
         provider.ready = True
-        assert main(["start", "--config", str(config_path), "--execution", "remote",
-                     "--input", str(package)]) == 0
+        assert (
+            main(
+                [
+                    "start",
+                    "--config",
+                    str(config_path),
+                    "--execution",
+                    "remote",
+                    "--input",
+                    str(package),
+                ]
+            )
+            == 0
+        )
         started = json.loads(capsys.readouterr().out)["jobs"][0]
         assert started["input_id"] == run_id
         paused = settled(call, started["id"], "paused")
@@ -63,10 +105,25 @@ def test_normal_package_then_start_original_prepared_run(tmp_path, capsys, monke
         saved["start"]["stop_after"] = 8
         with pytest.raises(BoundaryError, match="prepared_package_digest_mismatch"):
             package_start(saved)
-        assert main(["package", "--config", str(config_path), "--execution", "remote",
-                     "--input", str(request), "--output", str(package)]) == 1
+        assert (
+            main(
+                [
+                    "package",
+                    "--config",
+                    str(config_path),
+                    "--execution",
+                    "remote",
+                    "--input",
+                    str(request),
+                    "--output",
+                    str(package),
+                ]
+            )
+            == 1
+        )
         assert json.loads(capsys.readouterr().out)["error_code"] == (
-            "new_remote_package_output_required")
+            "new_remote_package_output_required"
+        )
 
 
 def test_prepare_before_allocation_has_no_target_or_provider_call(tmp_path, monkeypatch):
@@ -75,20 +132,37 @@ def test_prepare_before_allocation_has_no_target_or_provider_call(tmp_path, monk
     from spireagent.workbench.remote_training import RemoteTrainingService
 
     with client(tmp_path) as (app, _call, provider, store, _owner, snapshot, _path):
-        config = replace(app.config, remote_compute=replace(
-            app.config.remote_compute,
-            compute_store={"kind": "s3", "bucket": "test-bucket", "prefix": "test",
-                           "endpoint": "https://example.invalid", "region": "auto"},
-            execution_producer=provider.target.producer))
+        config = replace(
+            app.config,
+            remote_compute=replace(
+                app.config.remote_compute,
+                compute_store={
+                    "kind": "s3",
+                    "bucket": "test-bucket",
+                    "prefix": "test",
+                    "endpoint": "https://example.invalid",
+                    "region": "auto",
+                },
+                execution_producer=provider.target.producer,
+            ),
+        )
         service = RemoteTrainingService(config, app.local_datasets._selected)
         monkeypatch.setattr(service, "_context", lambda: pytest.fail("provider was constructed"))
-        monkeypatch.setattr("spireagent.workbench.remote_training_storage.transfer_p1_input",
-                            lambda *a, **k: {"provider_submitted": False})
+        monkeypatch.setattr(
+            "spireagent.workbench.remote_training_storage.transfer_p1_input",
+            lambda *a, **k: {"provider_submitted": False},
+        )
         service.start_loop()
         assert service._thread is None
-        prepared = service.prepare({"intent_id": "d" * 32, "source_id": snapshot.artifact_id,
-                                    "config": MStdConfig(max_epochs=2).to_dict(),
-                                    "max_seconds": 300, "stop_after": 1})
+        prepared = service.prepare(
+            {
+                "intent_id": "d" * 32,
+                "source_id": snapshot.artifact_id,
+                "config": MStdConfig(max_epochs=2).to_dict(),
+                "max_seconds": 300,
+                "stop_after": 1,
+            }
+        )
         assert prepared["compute_target_bound"] is False
         assert prepared["provider_submitted"] is False
         assert provider.calls == []
@@ -105,14 +179,24 @@ def test_cohort_binds_exact_split_membership_counts_and_definition(tmp_path):
 
     with client(tmp_path) as (app, _call, _provider, store, _owner, snapshot, _path):
         selection = SnapshotReader(store, snapshot.artifact_id).selection
-        counts = Counter((p["root_run_id"], p["group_id"], p["split"])
-                         for p in selection["points"])
-        body = {"schema": "stpd/p1-cohort-plan-1", "definition": {"rule": "fixture-v1"},
-                "sources": selection["sources"], "selection": selection["selection"],
-                "splits": selection["split_by_group"],
-                "runs": [{"root_run_id": r, "group_id": g, "split": s,
-                          "N": n, "train_weight": 3 if s == "train" else None}
-                         for (r, g, s), n in counts.items()]}
+        counts = Counter((p["root_run_id"], p["group_id"], p["split"]) for p in selection["points"])
+        body = {
+            "schema": "stpd/p1-cohort-plan-1",
+            "definition": {"rule": "fixture-v1"},
+            "sources": selection["sources"],
+            "selection": selection["selection"],
+            "splits": selection["split_by_group"],
+            "runs": [
+                {
+                    "root_run_id": r,
+                    "group_id": g,
+                    "split": s,
+                    "N": n,
+                    "train_weight": 3 if s == "train" else None,
+                }
+                for (r, g, s), n in counts.items()
+            ],
+        }
         identity = digest(json_bytes(body))
         plan = {**body, "configuration_id": identity}
         weighting = cohort_weighting(app.config, plan, identity, snapshot.artifact_id)
@@ -128,8 +212,12 @@ def test_cohort_binds_exact_split_membership_counts_and_definition(tmp_path):
         changed_body["runs"][0]["N"] += 1
         new_id = digest(json_bytes(changed_body))
         with pytest.raises(BoundaryError, match="cohort_snapshot_run_counts_mismatch"):
-            cohort_weighting(app.config, {**changed_body, "configuration_id": new_id},
-                             new_id, snapshot.artifact_id)
+            cohort_weighting(
+                app.config,
+                {**changed_body, "configuration_id": new_id},
+                new_id,
+                snapshot.artifact_id,
+            )
 
 
 @pytest.mark.parametrize("already_frozen", [False, True])
@@ -139,40 +227,88 @@ def test_selected_cohort_reuses_Q_snapshot_or_uses_normal_freeze(tmp_path, capsy
     from stpd.p1.data import digest, json_bytes
     from stpd.p1.dataset import SnapshotReader
 
-    with client(tmp_path) as (app, _call, provider, store, _owner, snapshot, config_path):
+    with client(tmp_path, human_cohort=True) as (
+        app,
+        _call,
+        provider,
+        store,
+        _owner,
+        snapshot,
+        config_path,
+    ):
         selected = SnapshotReader(store, snapshot.artifact_id).selection
-        counts = Counter((p["root_run_id"], p["group_id"], p["split"])
-                         for p in selected["points"])
-        plan = {"schema": "stpd/p1-cohort-plan-1", "definition": {"rule": "fixture-v1"},
-                "sources": selected["sources"], "selection": selected["selection"],
-                "splits": selected["split_by_group"],
-                "runs": [{"root_run_id": r, "group_id": g, "split": s,
-                          "N": n, "train_weight": 2 if s == "train" else None}
-                         for (r, g, s), n in counts.items()]}
+        counts = Counter((p["root_run_id"], p["group_id"], p["split"]) for p in selected["points"])
+        plan = {
+            "schema": "stpd/p1-cohort-plan-1",
+            "definition": {"rule": "fixture-v1"},
+            "sources": selected["sources"],
+            "selection": selected["selection"],
+            "splits": selected["split_by_group"],
+            "runs": [
+                {
+                    "root_run_id": r,
+                    "group_id": g,
+                    "split": s,
+                    "N": n,
+                    "train_weight": 2 if s == "train" else None,
+                }
+                for (r, g, s), n in counts.items()
+            ],
+        }
+        modern_experiment(_owner, plan)
         identity = digest(json_bytes(plan))
         plan["configuration_id"] = identity
-        envelope = {"schema": "training-data-weight-selection-20261025-v1",
-                    "status": "frozen_user_confirmed", "selected_configuration_id": identity,
-                    "configuration": plan}
+        envelope = {
+            "schema": "training-data-weight-selection-20261025-v1",
+            "status": "frozen_user_confirmed",
+            "selected_configuration_id": identity,
+            "configuration": plan,
+        }
         if already_frozen:
+            bind_modern_snapshot(_owner, store, snapshot, plan)
             envelope["snapshot_id"] = snapshot.artifact_id
         cohort = tmp_path / "cohort.json"
         cohort.write_text(json.dumps(envelope))
         request = tmp_path / "recipe.json"
-        request.write_text(json.dumps({"intent_id": "e" * 32,
-                                       "config": MStdConfig(max_epochs=2).to_dict(),
-                                       "max_seconds": 300, "stop_after": None}))
+        request.write_text(
+            json.dumps(
+                {
+                    "intent_id": "e" * 32,
+                    "config": MStdConfig(max_epochs=2).to_dict(),
+                    "max_seconds": 300,
+                    "stop_after": None,
+                }
+            )
+        )
         output = tmp_path / "ready.json"
-        assert main(["package", "--config", str(config_path), "--execution", "remote",
-                     "--input", str(request), "--cohort-plan", str(cohort),
-                     "--configuration-id", identity, "--output", str(output)]) == 0
+        assert (
+            main(
+                [
+                    "package",
+                    "--config",
+                    str(config_path),
+                    "--execution",
+                    "remote",
+                    "--input",
+                    str(request),
+                    "--cohort-plan",
+                    str(cohort),
+                    "--configuration-id",
+                    identity,
+                    "--output",
+                    str(output),
+                ]
+            )
+            == 0
+        )
         assert json.loads(capsys.readouterr().out)["provider_submitted"] is False
         package = json.loads(output.read_text())
         run = verify_p1_run(store, package["start"]["run_id"], provider.target.producer)
         assert (run.snapshot.artifact_id == snapshot.artifact_id) is already_frozen
         assert run.reader.selection["split_by_group"] == plan["splits"]
         assert run.reader.selection["split_salt"] == (
-            selected["split_salt"] if already_frozen else "cohort-" + identity)
+            selected["split_salt"] if already_frozen else "cohort-" + identity
+        )
         assert run.training.parameters.value()["loss_weighting"]["rule_id"] == identity
         assert run.training.parameters.value()["loss_weighting"]["definition"] == plan["definition"]
         assert provider.calls == []
@@ -191,21 +327,35 @@ def test_existing_output_rejects_before_any_cohort_freeze(tmp_path, monkeypatch)
 
     output = tmp_path / "existing.json"
     output.write_text("original")
-    monkeypatch.setattr("spireagent.workbench.training_cohort.freeze_cohort",
-                        lambda *a: pytest.fail("output rejected after freezing"))
+    monkeypatch.setattr(
+        "spireagent.workbench.training_cohort.freeze_cohort",
+        lambda *a: pytest.fail("output rejected after freezing"),
+    )
     with pytest.raises(BoundaryError, match="new_remote_package_output_required"):
-        prepare_package(tmp_path / "no-config-needed.json", {}, output, "remote",
-                        cohort_plan={}, configuration_id="a" * 64)
+        prepare_package(
+            tmp_path / "no-config-needed.json",
+            {},
+            output,
+            "remote",
+            cohort_plan={},
+            configuration_id="a" * 64,
+        )
     assert output.read_text() == "original"
 
 
 def test_invalid_weight_or_checkpoint_policy_does_not_record_training_use(tmp_path, monkeypatch):
     with client(tmp_path) as (app, call, _provider, _store, _owner, snapshot, _path):
-        body = {"intent_id": "f" * 32, "source_id": snapshot.artifact_id,
-                "config": MStdConfig(max_epochs=2).to_dict(), "max_seconds": 300,
-                "stop_after": 1}
-        monkeypatch.setattr("spireagent.workbench.p1_training_data.record_p1_training_use",
-                            lambda *a: pytest.fail("invalid recipe recorded use"))
+        body = {
+            "intent_id": "f" * 32,
+            "source_id": snapshot.artifact_id,
+            "config": MStdConfig(max_epochs=2).to_dict(),
+            "max_seconds": 300,
+            "stop_after": 1,
+        }
+        monkeypatch.setattr(
+            "spireagent.workbench.p1_training_data.record_p1_training_use",
+            lambda *a: pytest.fail("invalid recipe recorded use"),
+        )
         with pytest.raises(BoundaryError):
             call("prepare", body={**body, "loss_weighting": None})
         with pytest.raises(BoundaryError, match="unsupported_checkpoint_policy"):
@@ -222,8 +372,9 @@ def test_freeze_transport_wait_is_explicit_and_single_offer(monkeypatch, wait_se
     from spireagent.workbench import p1_data_cli
 
     calls = []
-    monkeypatch.setattr(p1_data_cli, "running",
-                        lambda config: {"port": 12345, "control_token": "fixture-token"})
+    monkeypatch.setattr(
+        p1_data_cli, "running", lambda config: {"port": 12345, "control_token": "fixture-token"}
+    )
 
     def exchange(url, **kwargs):
         calls.append((url, kwargs))
@@ -249,52 +400,143 @@ def test_freeze_transport_wait_is_explicit_and_single_offer(monkeypatch, wait_se
 def test_invalid_freeze_wait_fails_before_opening_or_offering(monkeypatch, wait_seconds):
     from spireagent.workbench import p1_data_cli
 
-    monkeypatch.setattr(p1_data_cli, "running",
-                        lambda *a: pytest.fail("invalid wait reached owner"))
+    monkeypatch.setattr(
+        p1_data_cli, "running", lambda *a: pytest.fail("invalid wait reached owner")
+    )
     with pytest.raises(BoundaryError, match="invalid_transport_wait_seconds"):
         p1_data_cli.p1_data_command(None, "freeze", {}, wait_seconds=wait_seconds)
 
 
-def test_one_command_from_Q_frozen_file_saves_same_package_and_submits_once(tmp_path, capsys):
+@pytest.mark.parametrize("input_v2", [False, True])
+def test_one_command_from_Q_frozen_file_saves_same_package_and_submits_once(
+    tmp_path, capsys, input_v2
+):
     from collections import Counter
 
     from stpd.p1.data import digest, json_bytes
     from stpd.p1.dataset import SnapshotReader
 
-    with client(tmp_path) as (_app, call, provider, store, _owner, snapshot, config_path):
+    with client(tmp_path, human_cohort=True) as (
+        _app,
+        call,
+        provider,
+        store,
+        _owner,
+        snapshot,
+        config_path,
+    ):
         selected = SnapshotReader(store, snapshot.artifact_id).selection
-        counts = Counter((p["root_run_id"], p["group_id"], p["split"])
-                         for p in selected["points"])
-        plan = {"schema": "stpd/p1-cohort-plan-1", "definition": {"rule": "fixture-v1"},
-                "sources": selected["sources"], "selection": selected["selection"],
-                "splits": selected["split_by_group"],
-                "runs": [{"root_run_id": r, "group_id": g, "split": s,
-                          "N": n, "train_weight": 2 if s == "train" else None}
-                         for (r, g, s), n in counts.items()]}
+        counts = Counter((p["root_run_id"], p["group_id"], p["split"]) for p in selected["points"])
+        plan = {
+            "schema": "stpd/p1-cohort-plan-1",
+            "definition": {"rule": "fixture-v1"},
+            "sources": selected["sources"],
+            "selection": selected["selection"],
+            "splits": selected["split_by_group"],
+            "runs": [
+                {
+                    "root_run_id": r,
+                    "group_id": g,
+                    "split": s,
+                    "N": n,
+                    "train_weight": 2 if s == "train" else None,
+                }
+                for (r, g, s), n in counts.items()
+            ],
+        }
+        modern_experiment(_owner, plan)
         identity = digest(json_bytes(plan))
         plan["configuration_id"] = identity
+        bind_modern_snapshot(_owner, store, snapshot, plan)
         cohort = tmp_path / "weight-candidates.json"
-        cohort.write_text(json.dumps({
-            "schema": "training-data-weight-selection-20261025-v1",
-            "status": "frozen_user_confirmed", "selected_configuration_id": identity,
-            "configuration": plan, "snapshot_id": snapshot.artifact_id}))
+        cohort.write_text(
+            json.dumps(
+                {
+                    "schema": "training-data-weight-selection-20261025-v1",
+                    "status": "frozen_user_confirmed",
+                    "selected_configuration_id": identity,
+                    "configuration": plan,
+                    "snapshot_id": snapshot.artifact_id,
+                }
+            )
+        )
         request = tmp_path / "recipe.json"
-        request.write_text(json.dumps({"intent_id": "f" * 32,
-                                       "config": MStdConfig(max_epochs=2).to_dict(),
-                                       "max_seconds": 300, "stop_after": 1}))
+        recipe = {
+            "intent_id": "f" * 32,
+            "config": MStdConfig(max_epochs=2).to_dict(),
+            "max_seconds": 300,
+            "stop_after": 1,
+        }
+        if input_v2:
+            from stpd.p1.input import V2_INPUT_SPEC
+
+            recipe["input_projection"] = V2_INPUT_SPEC
+        request.write_text(json.dumps(recipe))
         output = tmp_path / "package.json"
         provider.ready = True
-        args = ["start", "--config", str(config_path), "--execution", "remote",
-                "--input", str(request), "--cohort-plan", str(cohort),
-                "--configuration-id", identity, "--output", str(output)]
+        args = [
+            "start",
+            "--config",
+            str(config_path),
+            "--execution",
+            "remote",
+            "--input",
+            str(request),
+            "--cohort-plan",
+            str(cohort),
+            "--configuration-id",
+            identity,
+            "--output",
+            str(output),
+        ]
         assert main(args) == 0
         job = json.loads(capsys.readouterr().out)["jobs"][0]
         saved = json.loads(output.read_bytes())
         assert saved["start"]["run_id"] == job["input_id"]
         assert saved["prepared"]["input"]["snapshot_id"] == snapshot.artifact_id
-        assert settled(call, job["id"], "paused")["result"]["checkpoint_id"]
+        checkpoint = settled(call, job["id"], "paused")["result"]["checkpoint_id"]
+        assert checkpoint
+        if input_v2:
+            from stpd.workers.p1_run import verify_p1_checkpoint
+
+            workload = verify_p1_run(store, job["input_id"], provider.target.producer)
+            assert workload.vocabulary["input_spec"] == recipe["input_projection"]
+            verify_p1_checkpoint(store, checkpoint, workload)
         assert len(provider.calls) == 1
         # This is an original offer. Repeating a command with its existing
         # output cannot repeat preparation or submit another attempt.
         assert main(args) == 1
         assert len(provider.calls) == 1
+
+
+def modern_experiment(owner, plan):
+    """A real approved progress rule, with consent scoped to synthetic data."""
+    from spireagent.workbench.p1_cohort_cli import weight_rule_identity
+    from stpd.p1.cohort import weight_definition
+
+    plan["definition"] = weight_definition()
+    plan["experiment"] = {"model_id": "synthetic-package-model", "parent_model_id": None}
+    for row in plan["runs"]:
+        row["train_weight"] = 3.0 if row["split"] == "train" else None
+    rule, definition = weight_rule_identity(plan)
+    with owner.ledger.operations.transaction() as db:
+        db.execute(
+            "INSERT OR IGNORE INTO curation_p1_weight_approvals VALUES(?,?)", (rule, definition)
+        )
+
+
+def bind_modern_snapshot(owner, store, snapshot, plan):
+    from spireagent.workbench.p1_training_data import reserve_p1_snapshot
+    from spireagent.workbench.training_cohort import _loss_weighting
+
+    reserve_p1_snapshot(
+        owner,
+        store,
+        snapshot.artifact_id,
+        experiment={
+            **plan["experiment"],
+            "configuration_id": plan["configuration_id"],
+            "weight_definition": plan["definition"],
+            "weights_by_root": _loss_weighting(plan)["weights_by_root"],
+        },
+    )

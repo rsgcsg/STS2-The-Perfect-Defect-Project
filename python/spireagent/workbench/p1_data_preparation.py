@@ -266,7 +266,7 @@ def prepare_p1_data(
     _selection_parameters(projection_ids, selected_decisions, split_salt)
     if not isinstance(allocation_policy, str) or allocation_policy not in {
         "preserve_existing",
-        "observed_groups_engineering",
+        "observed_groups_engineering", "pool",
     }:
         raise BoundaryError("p1_preparation", "unsupported_allocation_policy")
     started = time.monotonic()
@@ -439,12 +439,15 @@ def freeze_p1_data(
     split_by_group: dict[str, str] | None = None,
     selected_decisions: dict[str, list[str]] | None = None,
     reserve: bool = False,
+    experiment: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Freeze exact members through the authoritative reader, then optionally reserve."""
     from .p1_training_data import reserve_p1_snapshot
 
     if type(reserve) is not bool:
         raise BoundaryError("p1_preparation", "invalid_reserve_boolean")
+    if experiment is not None and (not isinstance(experiment, dict) or not reserve):
+        raise BoundaryError("p1_preparation", "experiment_requires_reserved_object")
     _selection_parameters(projection_ids, selected_decisions, split_salt, projections_required=True)
     if split_by_group is not None and (
         not isinstance(split_by_group, dict)
@@ -467,7 +470,8 @@ def freeze_p1_data(
         selected_decisions=selected_decisions,
     )
     _, value = load_snapshot(store, manifest.artifact_id)
-    allocation = reserve_p1_snapshot(owner, store, manifest.artifact_id) if reserve else None
+    allocation = reserve_p1_snapshot(owner, store, manifest.artifact_id,
+                                     experiment=experiment) if reserve else None
     return {
         "snapshot_id": manifest.artifact_id,
         "partition_N": value["partition_N"],

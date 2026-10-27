@@ -19,14 +19,5 @@
     "3e9efdc25416dd7591148ddd906693348e5a91332434a6ae562b486d0e35f819"
   ],
   "split_salt": "p1-first-four-agent-20261023-v1",
-  "holdout_targets": {
-    "dev": {
-      "0": 4,
-      "10": 3
-    },
-    "test": {
-      "0": 4,
-      "10": 3
-    }
-  }
+  "allocation_mode": "per_training"
 }

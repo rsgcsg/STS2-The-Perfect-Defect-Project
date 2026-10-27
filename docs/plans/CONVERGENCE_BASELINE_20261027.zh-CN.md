@@ -20,7 +20,7 @@
 | 卡 / 原文件 | 放在哪、交什么 | 启动条件与交接 | 写入和资源冲突 |
 |---|---|---|---|
 | T1 `MODEL-INPUT-V2-CARD-20261026.md` | 研究输入/训练；438 新投影、新 InputSpec、价值头方案、T2 可执行准备 | 收敛后核卡；不正式训练、不改438权重，数据资格沿原 Curation | 与 W1 共用 cohort/训练接线须先分写入人；与 M1 保持输入/执行边界，adapter/注册版本仍有共享连接 |
-| W1 `A10-WEIGHT-CARD-20261027.md` | 研究数据权重；新配置与 A0/A10 新旧预览 | 收敛后核卡，可与 T1 独立部分并行；用户看表说 yes 才冻结，交 T2 | 不改414/用途/DEV/TEST；训练读取接线若与T1同文件，由一人写 |
+| W1 `A10-WEIGHT-CARD-20261027.md` | 用户10-27扩展：录后入池、每次实验选局/权重、模型血统使用台账及T2草稿 | PR258；新规则首次看表说yes，原定义批准可复用；本卡只合代码不冻结 | 旧414原文件不改、DEV/TEST不加权；Curation核实际权重/父初始化，跨新Snapshot续训仍归训练实现 |
 | M1 `MANAGED-SPEED-CARD-20261026.md` | 后续已由用户派发：查清/出方案、同snapshot早停与细分计时；[本轮事实](../evidence/MANAGED_SPEED_M1_20261027.md) / [下一版提案](MANAGED_SPEED_NEXT_20261027.zh-CN.md) | 本轮27新槽收尾，原unknown保留；释放执行位/后台队列按更新卡先出方案，未实施 | `managed_evaluation.py`/Runtime供M2接现有结果；Host service/driver诊断与M3后续普通merge协调，未改native-baseline；录制优先 |
 | M2 `MANAGED-TIERS-AND-FIXES-CARD-20261026.md` | 同评估/Store owner；保存档位、打包、M051等根因和RL轨迹格式 | **M1合入后**；轨迹格式交RL准备consumer，正式成绩证据不减 | 与M3同Managed支持域/对照代码须错峰或同一写入人；不因一张卡已批就接受协议例外 |
 | M3 `MANAGED-COVERAGE-CARD-20261026.md` | Host初始化→录后诊断；个人原样进度重建、自动重演/逐点覆盖 | X2的种子/进度保存已做，跳过2.1；先证个人profile支持，再接Q后诊断。真游戏headless诊断仍须用户选择/窗口 | 与M1/M2的Host及M2诊断档、X3的Q维护接线有实际依赖，不能宣称全文件不重叠；录制/Q写入另派窗口 |
