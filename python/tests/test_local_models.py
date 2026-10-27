@@ -2439,7 +2439,7 @@ def test_finalized_stop_recovery_requires_exact_evidence_and_free_port(
 @pytest.mark.parametrize("version", [
     "0.1.0-rc.40", "0.1.0-rc.41", "0.1.0-rc.42", "0.1.0-rc.43", "0.1.0-rc.44", "0.1.0-rc.45",
     "0.1.0-rc.46", "0.1.0-rc.47", "0.1.0-rc.48", "0.1.0-rc.49", "0.1.0-rc.50",
-    "0.1.0-rc.51",
+    "0.1.0-rc.51", "0.1.0-rc.52",
 ])
 @pytest.mark.parametrize("mode", ["bounded", "continuous"])
 def test_runtime_v2_consumer_preserves_original_budget_mode_and_nullable_limits(mode, version):
@@ -2479,7 +2479,7 @@ def test_runtime_v2_consumer_preserves_original_budget_mode_and_nullable_limits(
         client.validate_status(broken)
 
 
-@pytest.mark.parametrize("version", ["0.1.0-rc.52", "0.2.0", "broken", None])
+@pytest.mark.parametrize("version", ["0.1.0-rc.53", "0.2.0", "broken", None])
 def test_unknown_runtime_version_never_selects_a_guessed_startup_contract(version):
     with pytest.raises(BoundaryError, match="unsupported_runtime_startup_contract"):
         local_models._runtime_wire_version({"version": version})

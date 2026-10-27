@@ -1,0 +1,3462 @@
+{
+  "schema": "M1/bounded-managed-speed-index-v1",
+  "base_revision": "4a3af053d7f44eb81674efcf832fe3ee35233502",
+  "planned": 43,
+  "world_offers": 27,
+  "unstarted_recording_priority_group": 16,
+  "natural_losses": 17,
+  "unknown": 10,
+  "wins": 0,
+  "all_host_cleanup_accepted": true,
+  "normal_typed_readbacks": 25,
+  "analysis_diagnostic_readbacks": 2,
+  "retries": 0,
+  "raw_engine_benchmark": {
+    "measured_decisions": 0,
+    "status": "failed_in_warmup",
+    "reason": "observed_native_card_reward_option_no_longer_selectable",
+    "planned_measured_episodes": 3,
+    "warmup_world_attempts": 1,
+    "unstarted_measured_episodes": 3
+  },
+  "records": [
+    {
+      "family": "baseline",
+      "group": "serial-ledger",
+      "seed": "STPD8781A4E593539F41D0B9F2ACCDC8",
+      "seed_ordinal": 3,
+      "status": "finished",
+      "reason": "natural_terminal",
+      "run_id": "run-89e38167-fab4-4adc-ab52-7666c826852d",
+      "elapsed_seconds": 226.78643279196694,
+      "phase_seconds": {
+        "close": 0.11260066705290228,
+        "execute": 86.26976458297577,
+        "finish": 20.202935333014466,
+        "prepare": 10.319178459001705,
+        "preserve": 109.8699249579804
+      },
+      "detail_seconds": {
+        "copy_peer": 6.246788208023645,
+        "host_launch": 6.192314874962904,
+        "host_reset": 3.4588208749191836,
+        "peer_readback": 22.004040792002343,
+        "publish_evidence": 27.516583750024438,
+        "publish_runtime": 54.10116429196205,
+        "runtime_startup": 3.068639541976154
+      },
+      "stored_evidence_id": "70ee723d560a61fba1f7ff737e29f98fdae36f6fbaec694a7d195ffa5753af63",
+      "cleanup_accepted": true,
+      "report_sha256": "0a0f5fd755b6b0921d69938d162c7edbae5f99c46eb53721eaab1609173c2e04",
+      "report_producer": {
+        "repository": "rsgcsg/STS2-The-Perfect-Defect-Project",
+        "source_revision": "28a26a724bd2a832bcf2c90225ed35bedced544c",
+        "uv_lock_sha256": "23fed3426d340c85b32769ef2b7347a6cb9bf33b151cb48aad80a41d6fcc9e68"
+      },
+      "host_pin": {
+        "component_tree_revision": "bf054cc1eabc338fb23b5c23cf8373c2916d2d6e",
+        "package": "@rsgcsg/sts2-host-runtime",
+        "package_content_sha256": "35fd1c648ddd817334441f29fe98a7c2e139d174bcf7143221a18566eb0e9b82",
+        "release_asset_sha256": "6439b5d15a3b233ed1f50b84b3303bf70a92c3c20f4070dbae644120d62b7653",
+        "schema": "stpd/platform-host-runtime-pin-v1",
+        "source_revision": "8f05cc0de23b7164eac705ab28242ecbcc231ecc",
+        "version": "1.1.0-rc.45"
+      },
+      "runtime_pin": {
+        "component_tree_revision": "43cc2aaa84fa917b36042b7f4f383c70892bb53d",
+        "package": "@rsgcsg/sts2-policy-runtime",
+        "package_content_sha256": "c6f6757b24cf8738e14cb979973d17590687c8698995bdf53d2d0552a6e18924",
+        "release_asset_sha256": "49c470242bcded721f4c75673ff032f14c3c5332e8d61b499a78aafc21034d5c",
+        "schema": "stpd/platform-policy-runtime-pin-v1",
+        "source_revision": "a09de1f00fff0b2190816259d9832d90f4383967",
+        "version": "0.1.0-rc.51"
+      },
+      "input_adapter": {
+        "code_sha256": "ef06a03d0771b779f8abce8dca6d46437c91fd4ef35e44747d9a266d8130a8a1",
+        "id": "stpd-p1-mstd-agent",
+        "protocol": "sts2.policy-runtime/agent-session-ndjson-1",
+        "version": "1"
+      },
+      "initial_progress_sha256": "b523759ab21f1a75bff2285c1fc7f7a2ce90514fda2d68217f5d6552653b12ce",
+      "store_kind": "direct_r2",
+      "inference": {
+        "mode": "per_actor"
+      },
+      "event_counts": {
+        "global_agent_frame": 866,
+        "global_initialized": 1,
+        "mode_changed": 1,
+        "global_capture_requested": 182,
+        "global_transport_response": 363,
+        "global_source": 182,
+        "global_episode_bound": 1,
+        "global_observation": 173,
+        "global_input": 173,
+        "global_consumed": 173,
+        "agent_directive": 173,
+        "global_choice": 172,
+        "controller_acquired": 181,
+        "global_dispatch": 181,
+        "global_receipt": 181,
+        "global_source_retained": 181,
+        "global_result": 172,
+        "controller_released": 1,
+        "stopped": 1
+      },
+      "recorded_failures": [],
+      "host_stages": [],
+      "native_cpu_ms": null,
+      "raw_files": 1590,
+      "raw_bytes": 37642592,
+      "formal_readback": {
+        "archive_bytes": 10773615,
+        "artifact_id": "70ee723d560a61fba1f7ff737e29f98fdae36f6fbaec694a7d195ffa5753af63",
+        "content_id": "5254517eea0ffd99ba4a6810bb8eed8566d312b3483dc4dbf935e39d0d86b2b7",
+        "event_count": 3358,
+        "full_readback": true,
+        "human_origin_verified": false,
+        "research_admission": "not_evaluated",
+        "run_id": "run-89e38167-fab4-4adc-ab52-7666c826852d",
+        "typed_verification": "pass"
+      }
+    },
+    {
+      "family": "baseline",
+      "group": "serial-ledger",
+      "seed": "STPD5E5D508847538C5B9DAEFA22DB1A",
+      "seed_ordinal": 2,
+      "status": "finished",
+      "reason": "natural_terminal",
+      "run_id": "run-1908bfa7-5463-4eff-adc1-9a699ffb5363",
+      "elapsed_seconds": 164.7447561250301,
+      "phase_seconds": {
+        "close": 0.0709167089080438,
+        "execute": 58.815315083018504,
+        "finish": 5.177308415994048,
+        "prepare": 6.191546791931614,
+        "preserve": 94.47483220801223
+      },
+      "detail_seconds": {
+        "copy_peer": 4.850314375013113,
+        "host_launch": 5.032487874967046,
+        "host_reset": 0.9527775419410318,
+        "peer_readback": 18.618640209082514,
+        "publish_evidence": 24.450537416967563,
+        "publish_runtime": 46.55381045897957,
+        "runtime_startup": 0.8234836249612272
+      },
+      "stored_evidence_id": "d760c3ced30d1b9bb04cd2d804a4dd6aba43bd851886b4d6481db0ccd6f61197",
+      "cleanup_accepted": true,
+      "report_sha256": "d3fd8986555875697c665ca3f6e1e17cce4e9f94dca2f189b9055fd442e44522",
+      "report_producer": {
+        "repository": "rsgcsg/STS2-The-Perfect-Defect-Project",
+        "source_revision": "28a26a724bd2a832bcf2c90225ed35bedced544c",
+        "uv_lock_sha256": "23fed3426d340c85b32769ef2b7347a6cb9bf33b151cb48aad80a41d6fcc9e68"
+      },
+      "host_pin": {
+        "component_tree_revision": "bf054cc1eabc338fb23b5c23cf8373c2916d2d6e",
+        "package": "@rsgcsg/sts2-host-runtime",
+        "package_content_sha256": "35fd1c648ddd817334441f29fe98a7c2e139d174bcf7143221a18566eb0e9b82",
+        "release_asset_sha256": "6439b5d15a3b233ed1f50b84b3303bf70a92c3c20f4070dbae644120d62b7653",
+        "schema": "stpd/platform-host-runtime-pin-v1",
+        "source_revision": "8f05cc0de23b7164eac705ab28242ecbcc231ecc",
+        "version": "1.1.0-rc.45"
+      },
+      "runtime_pin": {
+        "component_tree_revision": "43cc2aaa84fa917b36042b7f4f383c70892bb53d",
+        "package": "@rsgcsg/sts2-policy-runtime",
+        "package_content_sha256": "c6f6757b24cf8738e14cb979973d17590687c8698995bdf53d2d0552a6e18924",
+        "release_asset_sha256": "49c470242bcded721f4c75673ff032f14c3c5332e8d61b499a78aafc21034d5c",
+        "schema": "stpd/platform-policy-runtime-pin-v1",
+        "source_revision": "a09de1f00fff0b2190816259d9832d90f4383967",
+        "version": "0.1.0-rc.51"
+      },
+      "input_adapter": {
+        "code_sha256": "ef06a03d0771b779f8abce8dca6d46437c91fd4ef35e44747d9a266d8130a8a1",
+        "id": "stpd-p1-mstd-agent",
+        "protocol": "sts2.policy-runtime/agent-session-ndjson-1",
+        "version": "1"
+      },
+      "initial_progress_sha256": "b523759ab21f1a75bff2285c1fc7f7a2ce90514fda2d68217f5d6552653b12ce",
+      "store_kind": "direct_r2",
+      "inference": {
+        "mode": "per_actor"
+      },
+      "event_counts": {
+        "global_agent_frame": 1076,
+        "global_initialized": 1,
+        "mode_changed": 1,
+        "global_capture_requested": 229,
+        "global_transport_response": 457,
+        "global_source": 229,
+        "global_episode_bound": 1,
+        "global_observation": 215,
+        "global_input": 215,
+        "global_consumed": 215,
+        "agent_directive": 215,
+        "global_choice": 214,
+        "controller_acquired": 228,
+        "global_dispatch": 228,
+        "global_receipt": 228,
+        "global_source_retained": 228,
+        "global_result": 214,
+        "controller_released": 1,
+        "stopped": 1
+      },
+      "recorded_failures": [],
+      "host_stages": [],
+      "native_cpu_ms": null,
+      "raw_files": 1983,
+      "raw_bytes": 50393886,
+      "formal_readback": {
+        "archive_bytes": 14820160,
+        "artifact_id": "d760c3ced30d1b9bb04cd2d804a4dd6aba43bd851886b4d6481db0ccd6f61197",
+        "content_id": "179fa4ae67668771300cfc58f85832c697105deb2eeda1fd86a5d41b4a8426bd",
+        "event_count": 4196,
+        "full_readback": true,
+        "human_origin_verified": false,
+        "research_admission": "not_evaluated",
+        "run_id": "run-1908bfa7-5463-4eff-adc1-9a699ffb5363",
+        "typed_verification": "pass"
+      }
+    },
+    {
+      "family": "baseline",
+      "group": "serial-ledger",
+      "seed": "STPD690FDD9084946FF082A205BFC851",
+      "seed_ordinal": 6,
+      "status": "unknown",
+      "reason": "runtime_command_unknown",
+      "run_id": "run-1550c0ee-3bcb-4a7f-ac58-e72f9b0278f1",
+      "elapsed_seconds": 1392.1602164589567,
+      "phase_seconds": {
+        "close": 0.17333120806142688,
+        "execute": 1382.8091305829585,
+        "prepare": 9.17176958406344
+      },
+      "detail_seconds": {
+        "host_launch": 5.891261500073597,
+        "host_reset": 2.9735759999603033,
+        "runtime_startup": 1.474455791991204
+      },
+      "stored_evidence_id": null,
+      "cleanup_accepted": true,
+      "report_sha256": "a9092314e287b9dbe432ef13729e36cb3023efd285e8cc4e38301f6411c100ca",
+      "report_producer": {
+        "repository": "rsgcsg/STS2-The-Perfect-Defect-Project",
+        "source_revision": "28a26a724bd2a832bcf2c90225ed35bedced544c",
+        "uv_lock_sha256": "23fed3426d340c85b32769ef2b7347a6cb9bf33b151cb48aad80a41d6fcc9e68"
+      },
+      "host_pin": {
+        "component_tree_revision": "bf054cc1eabc338fb23b5c23cf8373c2916d2d6e",
+        "package": "@rsgcsg/sts2-host-runtime",
+        "package_content_sha256": "35fd1c648ddd817334441f29fe98a7c2e139d174bcf7143221a18566eb0e9b82",
+        "release_asset_sha256": "6439b5d15a3b233ed1f50b84b3303bf70a92c3c20f4070dbae644120d62b7653",
+        "schema": "stpd/platform-host-runtime-pin-v1",
+        "source_revision": "8f05cc0de23b7164eac705ab28242ecbcc231ecc",
+        "version": "1.1.0-rc.45"
+      },
+      "runtime_pin": {
+        "component_tree_revision": "43cc2aaa84fa917b36042b7f4f383c70892bb53d",
+        "package": "@rsgcsg/sts2-policy-runtime",
+        "package_content_sha256": "c6f6757b24cf8738e14cb979973d17590687c8698995bdf53d2d0552a6e18924",
+        "release_asset_sha256": "49c470242bcded721f4c75673ff032f14c3c5332e8d61b499a78aafc21034d5c",
+        "schema": "stpd/platform-policy-runtime-pin-v1",
+        "source_revision": "a09de1f00fff0b2190816259d9832d90f4383967",
+        "version": "0.1.0-rc.51"
+      },
+      "input_adapter": {
+        "code_sha256": "ef06a03d0771b779f8abce8dca6d46437c91fd4ef35e44747d9a266d8130a8a1",
+        "id": "stpd-p1-mstd-agent",
+        "protocol": "sts2.policy-runtime/agent-session-ndjson-1",
+        "version": "1"
+      },
+      "initial_progress_sha256": "b523759ab21f1a75bff2285c1fc7f7a2ce90514fda2d68217f5d6552653b12ce",
+      "store_kind": "direct_r2",
+      "inference": {
+        "mode": "per_actor"
+      },
+      "event_counts": {
+        "global_agent_frame": 1091,
+        "global_initialized": 1,
+        "mode_changed": 1,
+        "global_capture_requested": 10477,
+        "global_transport_response": 10704,
+        "global_source": 10476,
+        "global_episode_bound": 1,
+        "global_observation": 218,
+        "global_input": 218,
+        "global_consumed": 218,
+        "agent_directive": 218,
+        "global_choice": 218,
+        "controller_acquired": 228,
+        "global_dispatch": 228,
+        "global_receipt": 228,
+        "global_source_retained": 10475,
+        "global_result": 218,
+        "global_capture_error": 1,
+        "controller_released": 1,
+        "runtime_tainted": 1,
+        "stopped": 1
+      },
+      "recorded_failures": [
+        {
+          "event_sequence": 45218,
+          "kind": "global_capture_error",
+          "reason": "global_storage_capacity"
+        },
+        {
+          "event_sequence": 45220,
+          "kind": "runtime_tainted",
+          "reason": "global_post_delivery_capture:global_storage_capacity"
+        }
+      ],
+      "host_stages": [],
+      "native_cpu_ms": null,
+      "raw_files": 22496,
+      "raw_bytes": 568484410,
+      "formal_readback": null,
+      "diagnostic_readback": {
+        "artifact_id": "8c11369cb767be1acc37e23a50a732c560a52309fb16168f2f90b89ee2c1b4b5",
+        "full_readback": true,
+        "typed_recording_qualified": false,
+        "scope": "unsealed_diagnostic_only",
+        "game_outcome": "unknown"
+      },
+      "unknown_category": "storage_capacity_unsealed"
+    },
+    {
+      "family": "baseline",
+      "group": "serial-ledger",
+      "seed": "STPDB00F8B497F76CDE09272D6CE8D52",
+      "seed_ordinal": 1,
+      "status": "finished",
+      "reason": "natural_terminal",
+      "run_id": "run-dc83dc29-776e-425f-aeb6-6aad523db6d9",
+      "elapsed_seconds": 196.51299366704188,
+      "phase_seconds": {
+        "close": 0.05430204200092703,
+        "execute": 67.5093147919979,
+        "finish": 9.38321174995508,
+        "prepare": 10.873047334025614,
+        "preserve": 108.68892237509135
+      },
+      "detail_seconds": {
+        "copy_peer": 2.159533833968453,
+        "host_launch": 6.667677125078626,
+        "host_reset": 3.4638442079303786,
+        "peer_readback": 20.333676833077334,
+        "publish_evidence": 31.206894250004552,
+        "publish_runtime": 54.98804583295714,
+        "runtime_startup": 2.914148167008534
+      },
+      "stored_evidence_id": "a7c1034b43e327a88ceee4ccd08ee4e049d9a7859f3a3cef6bb01991f037c129",
+      "cleanup_accepted": true,
+      "report_sha256": "1fff096f99ba6549f2b742352cc12e97dfdc3c69c19ca485ae870121b5d0e735",
+      "report_producer": {
+        "repository": "rsgcsg/STS2-The-Perfect-Defect-Project",
+        "source_revision": "28a26a724bd2a832bcf2c90225ed35bedced544c",
+        "uv_lock_sha256": "23fed3426d340c85b32769ef2b7347a6cb9bf33b151cb48aad80a41d6fcc9e68"
+      },
+      "host_pin": {
+        "component_tree_revision": "bf054cc1eabc338fb23b5c23cf8373c2916d2d6e",
+        "package": "@rsgcsg/sts2-host-runtime",
+        "package_content_sha256": "35fd1c648ddd817334441f29fe98a7c2e139d174bcf7143221a18566eb0e9b82",
+        "release_asset_sha256": "6439b5d15a3b233ed1f50b84b3303bf70a92c3c20f4070dbae644120d62b7653",
+        "schema": "stpd/platform-host-runtime-pin-v1",
+        "source_revision": "8f05cc0de23b7164eac705ab28242ecbcc231ecc",
+        "version": "1.1.0-rc.45"
+      },
+      "runtime_pin": {
+        "component_tree_revision": "43cc2aaa84fa917b36042b7f4f383c70892bb53d",
+        "package": "@rsgcsg/sts2-policy-runtime",
+        "package_content_sha256": "c6f6757b24cf8738e14cb979973d17590687c8698995bdf53d2d0552a6e18924",
+        "release_asset_sha256": "49c470242bcded721f4c75673ff032f14c3c5332e8d61b499a78aafc21034d5c",
+        "schema": "stpd/platform-policy-runtime-pin-v1",
+        "source_revision": "a09de1f00fff0b2190816259d9832d90f4383967",
+        "version": "0.1.0-rc.51"
+      },
+      "input_adapter": {
+        "code_sha256": "ef06a03d0771b779f8abce8dca6d46437c91fd4ef35e44747d9a266d8130a8a1",
+        "id": "stpd-p1-mstd-agent",
+        "protocol": "sts2.policy-runtime/agent-session-ndjson-1",
+        "version": "1"
+      },
+      "initial_progress_sha256": "b523759ab21f1a75bff2285c1fc7f7a2ce90514fda2d68217f5d6552653b12ce",
+      "store_kind": "direct_r2",
+      "inference": {
+        "mode": "per_actor"
+      },
+      "event_counts": {
+        "global_agent_frame": 516,
+        "global_initialized": 1,
+        "mode_changed": 1,
+        "global_capture_requested": 108,
+        "global_transport_response": 215,
+        "global_source": 108,
+        "global_episode_bound": 1,
+        "global_observation": 103,
+        "global_input": 103,
+        "global_consumed": 103,
+        "agent_directive": 103,
+        "global_choice": 102,
+        "controller_acquired": 107,
+        "global_dispatch": 107,
+        "global_receipt": 107,
+        "global_source_retained": 107,
+        "global_result": 102,
+        "controller_released": 1,
+        "stopped": 1
+      },
+      "recorded_failures": [],
+      "host_stages": [],
+      "native_cpu_ms": null,
+      "raw_files": 948,
+      "raw_bytes": 21191930,
+      "formal_readback": {
+        "archive_bytes": 6031974,
+        "artifact_id": "a7c1034b43e327a88ceee4ccd08ee4e049d9a7859f3a3cef6bb01991f037c129",
+        "content_id": "70374f3d30b60e0bb4170d0346525143e6d7228bfc39da5fc166edc7911a3456",
+        "event_count": 1996,
+        "full_readback": true,
+        "human_origin_verified": false,
+        "research_admission": "not_evaluated",
+        "run_id": "run-dc83dc29-776e-425f-aeb6-6aad523db6d9",
+        "typed_verification": "pass"
+      }
+    },
+    {
+      "family": "baseline",
+      "group": "serial-ledger",
+      "seed": "STPDE69DD9E1181FB5D3CD48E8EE99CF",
+      "seed_ordinal": 4,
+      "status": "unknown",
+      "reason": "runtime_execution_or_release_unknown",
+      "run_id": "run-34318a4f-3a52-418d-ac2c-bc9e56cc4ef1",
+      "elapsed_seconds": 113.56815850001294,
+      "phase_seconds": {
+        "close": 0.09000333305448294,
+        "execute": 8.864376249955967,
+        "finish": 1.493366583948955,
+        "prepare": 11.58958470809739,
+        "preserve": 91.52511291694827
+      },
+      "detail_seconds": {
+        "copy_peer": 1.2392433339264244,
+        "host_launch": 6.761913665919565,
+        "host_reset": 3.9205793329747394,
+        "peer_readback": 17.950835583964363,
+        "publish_evidence": 20.803957666968927,
+        "publish_runtime": 51.529655083082616,
+        "runtime_startup": 3.6560163750546053
+      },
+      "stored_evidence_id": "9e71922be524fd35a214c8d1c2506074312ff6dd4d30ac55f6d1a11fac947feb",
+      "cleanup_accepted": true,
+      "report_sha256": "4de0f87c0be60b631d30cf8d0ab93ba607b5e76c634e5e97dbb03c8e533aff1f",
+      "report_producer": {
+        "repository": "rsgcsg/STS2-The-Perfect-Defect-Project",
+        "source_revision": "28a26a724bd2a832bcf2c90225ed35bedced544c",
+        "uv_lock_sha256": "23fed3426d340c85b32769ef2b7347a6cb9bf33b151cb48aad80a41d6fcc9e68"
+      },
+      "host_pin": {
+        "component_tree_revision": "bf054cc1eabc338fb23b5c23cf8373c2916d2d6e",
+        "package": "@rsgcsg/sts2-host-runtime",
+        "package_content_sha256": "35fd1c648ddd817334441f29fe98a7c2e139d174bcf7143221a18566eb0e9b82",
+        "release_asset_sha256": "6439b5d15a3b233ed1f50b84b3303bf70a92c3c20f4070dbae644120d62b7653",
+        "schema": "stpd/platform-host-runtime-pin-v1",
+        "source_revision": "8f05cc0de23b7164eac705ab28242ecbcc231ecc",
+        "version": "1.1.0-rc.45"
+      },
+      "runtime_pin": {
+        "component_tree_revision": "43cc2aaa84fa917b36042b7f4f383c70892bb53d",
+        "package": "@rsgcsg/sts2-policy-runtime",
+        "package_content_sha256": "c6f6757b24cf8738e14cb979973d17590687c8698995bdf53d2d0552a6e18924",
+        "release_asset_sha256": "49c470242bcded721f4c75673ff032f14c3c5332e8d61b499a78aafc21034d5c",
+        "schema": "stpd/platform-policy-runtime-pin-v1",
+        "source_revision": "a09de1f00fff0b2190816259d9832d90f4383967",
+        "version": "0.1.0-rc.51"
+      },
+      "input_adapter": {
+        "code_sha256": "ef06a03d0771b779f8abce8dca6d46437c91fd4ef35e44747d9a266d8130a8a1",
+        "id": "stpd-p1-mstd-agent",
+        "protocol": "sts2.policy-runtime/agent-session-ndjson-1",
+        "version": "1"
+      },
+      "initial_progress_sha256": "b523759ab21f1a75bff2285c1fc7f7a2ce90514fda2d68217f5d6552653b12ce",
+      "store_kind": "direct_r2",
+      "inference": {
+        "mode": "per_actor"
+      },
+      "event_counts": {
+        "global_agent_frame": 41,
+        "global_initialized": 1,
+        "mode_changed": 1,
+        "global_capture_requested": 9,
+        "global_transport_response": 17,
+        "global_source": 9,
+        "global_episode_bound": 1,
+        "global_observation": 8,
+        "global_input": 8,
+        "global_consumed": 8,
+        "agent_directive": 8,
+        "global_choice": 8,
+        "controller_acquired": 8,
+        "global_dispatch": 8,
+        "global_receipt": 8,
+        "global_source_retained": 8,
+        "global_result": 8,
+        "controller_released": 1,
+        "runtime_tainted": 1,
+        "stopped": 1
+      },
+      "recorded_failures": [
+        {
+          "event_sequence": 160,
+          "kind": "runtime_tainted",
+          "reason": "global_post_delivery_capture:global_post_delivery_capture_incomplete"
+        }
+      ],
+      "host_stages": [],
+      "native_cpu_ms": null,
+      "raw_files": 81,
+      "raw_bytes": 1393706,
+      "formal_readback": {
+        "archive_bytes": 379916,
+        "artifact_id": "9e71922be524fd35a214c8d1c2506074312ff6dd4d30ac55f6d1a11fac947feb",
+        "content_id": "d2ab12841ddc39914d21ec1bedb0b23213c79cb87618652f2659e3e58d21c4ec",
+        "event_count": 162,
+        "full_readback": true,
+        "human_origin_verified": false,
+        "research_admission": "not_evaluated",
+        "run_id": "run-34318a4f-3a52-418d-ac2c-bc9e56cc4ef1",
+        "typed_verification": "pass"
+      },
+      "unknown_category": "capture_incomplete"
+    },
+    {
+      "family": "baseline",
+      "group": "serial-ledger",
+      "seed": "STPDA33DD072DB5E407FCBDAD3A81A8B",
+      "seed_ordinal": 5,
+      "status": "finished",
+      "reason": "natural_terminal",
+      "run_id": "run-d3241935-483a-4e18-8536-e81473f77447",
+      "elapsed_seconds": 174.21333233301993,
+      "phase_seconds": {
+        "close": 0.11475183395668864,
+        "execute": 39.951264624949545,
+        "finish": 6.030422666110098,
+        "prepare": 13.345277749933302,
+        "preserve": 114.76213158294559
+      },
+      "detail_seconds": {
+        "copy_peer": 1.8350585830630735,
+        "host_launch": 7.94536849996075,
+        "host_reset": 4.504019999993034,
+        "peer_readback": 22.727038834011182,
+        "publish_evidence": 25.602979958988726,
+        "publish_runtime": 64.59547958301846,
+        "runtime_startup": 3.722313291975297
+      },
+      "stored_evidence_id": "6240ec765ed9b8ac396d56a87914b988ecb12bdfc3c801f79504110742a1ecf5",
+      "cleanup_accepted": true,
+      "report_sha256": "f1e1f911ae235c2ea39f4ab8362418135596cd090ebf2bde2759645ec69d762c",
+      "report_producer": {
+        "repository": "rsgcsg/STS2-The-Perfect-Defect-Project",
+        "source_revision": "28a26a724bd2a832bcf2c90225ed35bedced544c",
+        "uv_lock_sha256": "23fed3426d340c85b32769ef2b7347a6cb9bf33b151cb48aad80a41d6fcc9e68"
+      },
+      "host_pin": {
+        "component_tree_revision": "bf054cc1eabc338fb23b5c23cf8373c2916d2d6e",
+        "package": "@rsgcsg/sts2-host-runtime",
+        "package_content_sha256": "35fd1c648ddd817334441f29fe98a7c2e139d174bcf7143221a18566eb0e9b82",
+        "release_asset_sha256": "6439b5d15a3b233ed1f50b84b3303bf70a92c3c20f4070dbae644120d62b7653",
+        "schema": "stpd/platform-host-runtime-pin-v1",
+        "source_revision": "8f05cc0de23b7164eac705ab28242ecbcc231ecc",
+        "version": "1.1.0-rc.45"
+      },
+      "runtime_pin": {
+        "component_tree_revision": "43cc2aaa84fa917b36042b7f4f383c70892bb53d",
+        "package": "@rsgcsg/sts2-policy-runtime",
+        "package_content_sha256": "c6f6757b24cf8738e14cb979973d17590687c8698995bdf53d2d0552a6e18924",
+        "release_asset_sha256": "49c470242bcded721f4c75673ff032f14c3c5332e8d61b499a78aafc21034d5c",
+        "schema": "stpd/platform-policy-runtime-pin-v1",
+        "source_revision": "a09de1f00fff0b2190816259d9832d90f4383967",
+        "version": "0.1.0-rc.51"
+      },
+      "input_adapter": {
+        "code_sha256": "ef06a03d0771b779f8abce8dca6d46437c91fd4ef35e44747d9a266d8130a8a1",
+        "id": "stpd-p1-mstd-agent",
+        "protocol": "sts2.policy-runtime/agent-session-ndjson-1",
+        "version": "1"
+      },
+      "initial_progress_sha256": "b523759ab21f1a75bff2285c1fc7f7a2ce90514fda2d68217f5d6552653b12ce",
+      "store_kind": "direct_r2",
+      "inference": {
+        "mode": "per_actor"
+      },
+      "event_counts": {
+        "global_agent_frame": 346,
+        "global_initialized": 1,
+        "mode_changed": 1,
+        "global_capture_requested": 75,
+        "global_transport_response": 149,
+        "global_source": 75,
+        "global_episode_bound": 1,
+        "global_observation": 69,
+        "global_input": 69,
+        "global_consumed": 69,
+        "agent_directive": 69,
+        "global_choice": 68,
+        "controller_acquired": 74,
+        "global_dispatch": 74,
+        "global_receipt": 74,
+        "global_source_retained": 74,
+        "global_result": 68,
+        "controller_released": 1,
+        "stopped": 1
+      },
+      "recorded_failures": [],
+      "host_stages": [],
+      "native_cpu_ms": null,
+      "raw_files": 645,
+      "raw_bytes": 12862990,
+      "formal_readback": {
+        "archive_bytes": 3632215,
+        "artifact_id": "6240ec765ed9b8ac396d56a87914b988ecb12bdfc3c801f79504110742a1ecf5",
+        "content_id": "3f01d8ec41959171ae68bcfb704c4efa76c1846ef67bb8ebc704dbbf646b0654",
+        "event_count": 1358,
+        "full_readback": true,
+        "human_origin_verified": false,
+        "research_admission": "not_evaluated",
+        "run_id": "run-d3241935-483a-4e18-8536-e81473f77447",
+        "typed_verification": "pass"
+      }
+    },
+    {
+      "family": "baseline",
+      "group": "serial-ledger",
+      "seed": "STPD178C9E6CB1EAE0538BC252EC732D",
+      "seed_ordinal": 7,
+      "status": "finished",
+      "reason": "natural_terminal",
+      "run_id": "run-7fc69010-f595-4ca3-b4e1-2615e3b63fe3",
+      "elapsed_seconds": 268.03823187504895,
+      "phase_seconds": {
+        "close": 0.12219458306208253,
+        "execute": 116.26469162502326,
+        "finish": 18.722552291001193,
+        "prepare": 17.165153458947316,
+        "preserve": 115.74456416605972
+      },
+      "detail_seconds": {
+        "copy_peer": 3.774136207997799,
+        "host_launch": 10.649698332999833,
+        "host_reset": 5.446461457991973,
+        "peer_readback": 23.614559415960684,
+        "publish_evidence": 33.21045320900157,
+        "publish_runtime": 55.14404841698706,
+        "runtime_startup": 4.629376417025924
+      },
+      "stored_evidence_id": "1231df51499c89155383fe4d3559bffe865aba9a06ea99a9bd089bdebf6ccafd",
+      "cleanup_accepted": true,
+      "report_sha256": "c80586a6ff1d62d2b59596563b3aa7c0b7e82046e60032e52c0dfdeab98d8e24",
+      "report_producer": {
+        "repository": "rsgcsg/STS2-The-Perfect-Defect-Project",
+        "source_revision": "28a26a724bd2a832bcf2c90225ed35bedced544c",
+        "uv_lock_sha256": "23fed3426d340c85b32769ef2b7347a6cb9bf33b151cb48aad80a41d6fcc9e68"
+      },
+      "host_pin": {
+        "component_tree_revision": "bf054cc1eabc338fb23b5c23cf8373c2916d2d6e",
+        "package": "@rsgcsg/sts2-host-runtime",
+        "package_content_sha256": "35fd1c648ddd817334441f29fe98a7c2e139d174bcf7143221a18566eb0e9b82",
+        "release_asset_sha256": "6439b5d15a3b233ed1f50b84b3303bf70a92c3c20f4070dbae644120d62b7653",
+        "schema": "stpd/platform-host-runtime-pin-v1",
+        "source_revision": "8f05cc0de23b7164eac705ab28242ecbcc231ecc",
+        "version": "1.1.0-rc.45"
+      },
+      "runtime_pin": {
+        "component_tree_revision": "43cc2aaa84fa917b36042b7f4f383c70892bb53d",
+        "package": "@rsgcsg/sts2-policy-runtime",
+        "package_content_sha256": "c6f6757b24cf8738e14cb979973d17590687c8698995bdf53d2d0552a6e18924",
+        "release_asset_sha256": "49c470242bcded721f4c75673ff032f14c3c5332e8d61b499a78aafc21034d5c",
+        "schema": "stpd/platform-policy-runtime-pin-v1",
+        "source_revision": "a09de1f00fff0b2190816259d9832d90f4383967",
+        "version": "0.1.0-rc.51"
+      },
+      "input_adapter": {
+        "code_sha256": "ef06a03d0771b779f8abce8dca6d46437c91fd4ef35e44747d9a266d8130a8a1",
+        "id": "stpd-p1-mstd-agent",
+        "protocol": "sts2.policy-runtime/agent-session-ndjson-1",
+        "version": "1"
+      },
+      "initial_progress_sha256": "b523759ab21f1a75bff2285c1fc7f7a2ce90514fda2d68217f5d6552653b12ce",
+      "store_kind": "direct_r2",
+      "inference": {
+        "mode": "per_actor"
+      },
+      "event_counts": {
+        "global_agent_frame": 971,
+        "global_initialized": 1,
+        "mode_changed": 1,
+        "global_capture_requested": 205,
+        "global_transport_response": 409,
+        "global_source": 205,
+        "global_episode_bound": 1,
+        "global_observation": 194,
+        "global_input": 194,
+        "global_consumed": 194,
+        "agent_directive": 194,
+        "global_choice": 193,
+        "controller_acquired": 204,
+        "global_dispatch": 204,
+        "global_receipt": 204,
+        "global_source_retained": 204,
+        "global_result": 193,
+        "controller_released": 1,
+        "stopped": 1
+      },
+      "recorded_failures": [],
+      "host_stages": [],
+      "native_cpu_ms": null,
+      "raw_files": 1785,
+      "raw_bytes": 40864092,
+      "formal_readback": {
+        "archive_bytes": 12113417,
+        "artifact_id": "1231df51499c89155383fe4d3559bffe865aba9a06ea99a9bd089bdebf6ccafd",
+        "content_id": "6a53e59da14cffff32302a702ad7f3e7f49dd6da881fb42c5e1cd25e04fd05c8",
+        "event_count": 3773,
+        "full_readback": true,
+        "human_origin_verified": false,
+        "research_admission": "not_evaluated",
+        "run_id": "run-7fc69010-f595-4ca3-b4e1-2615e3b63fe3",
+        "typed_verification": "pass"
+      }
+    },
+    {
+      "family": "baseline",
+      "group": "serial-ledger",
+      "seed": "STPDE283275AFFB48FE8C456DF4ED7C0",
+      "seed_ordinal": 8,
+      "status": "finished",
+      "reason": "natural_terminal",
+      "run_id": "run-47e25481-7c5c-4f61-8ad6-10852f91bd5b",
+      "elapsed_seconds": 282.7385816669557,
+      "phase_seconds": {
+        "close": 0.05150229099672288,
+        "execute": 125.53064795804676,
+        "finish": 22.40459112508688,
+        "prepare": 13.454365500016138,
+        "preserve": 121.28336666699033
+      },
+      "detail_seconds": {
+        "copy_peer": 4.671889416058548,
+        "host_launch": 8.38824666698929,
+        "host_reset": 4.1635181669844314,
+        "peer_readback": 24.42786616703961,
+        "publish_evidence": 36.42888958402909,
+        "publish_runtime": 55.7537195419427,
+        "runtime_startup": 3.935614416957833
+      },
+      "stored_evidence_id": "dbd0fa66f3066964fd5adebedd2ae04a2fb2ecb41177d7b51727972461eab0ff",
+      "cleanup_accepted": true,
+      "report_sha256": "ca8c8c0fb77c284f02b5d9cd34f78614aed58c9bd12a11bd0ede30c76fe641a0",
+      "report_producer": {
+        "repository": "rsgcsg/STS2-The-Perfect-Defect-Project",
+        "source_revision": "28a26a724bd2a832bcf2c90225ed35bedced544c",
+        "uv_lock_sha256": "23fed3426d340c85b32769ef2b7347a6cb9bf33b151cb48aad80a41d6fcc9e68"
+      },
+      "host_pin": {
+        "component_tree_revision": "bf054cc1eabc338fb23b5c23cf8373c2916d2d6e",
+        "package": "@rsgcsg/sts2-host-runtime",
+        "package_content_sha256": "35fd1c648ddd817334441f29fe98a7c2e139d174bcf7143221a18566eb0e9b82",
+        "release_asset_sha256": "6439b5d15a3b233ed1f50b84b3303bf70a92c3c20f4070dbae644120d62b7653",
+        "schema": "stpd/platform-host-runtime-pin-v1",
+        "source_revision": "8f05cc0de23b7164eac705ab28242ecbcc231ecc",
+        "version": "1.1.0-rc.45"
+      },
+      "runtime_pin": {
+        "component_tree_revision": "43cc2aaa84fa917b36042b7f4f383c70892bb53d",
+        "package": "@rsgcsg/sts2-policy-runtime",
+        "package_content_sha256": "c6f6757b24cf8738e14cb979973d17590687c8698995bdf53d2d0552a6e18924",
+        "release_asset_sha256": "49c470242bcded721f4c75673ff032f14c3c5332e8d61b499a78aafc21034d5c",
+        "schema": "stpd/platform-policy-runtime-pin-v1",
+        "source_revision": "a09de1f00fff0b2190816259d9832d90f4383967",
+        "version": "0.1.0-rc.51"
+      },
+      "input_adapter": {
+        "code_sha256": "ef06a03d0771b779f8abce8dca6d46437c91fd4ef35e44747d9a266d8130a8a1",
+        "id": "stpd-p1-mstd-agent",
+        "protocol": "sts2.policy-runtime/agent-session-ndjson-1",
+        "version": "1"
+      },
+      "initial_progress_sha256": "b523759ab21f1a75bff2285c1fc7f7a2ce90514fda2d68217f5d6552653b12ce",
+      "store_kind": "direct_r2",
+      "inference": {
+        "mode": "per_actor"
+      },
+      "event_counts": {
+        "global_agent_frame": 1061,
+        "global_initialized": 1,
+        "mode_changed": 1,
+        "global_capture_requested": 221,
+        "global_transport_response": 441,
+        "global_source": 221,
+        "global_episode_bound": 1,
+        "global_observation": 212,
+        "global_input": 212,
+        "global_consumed": 212,
+        "agent_directive": 212,
+        "global_choice": 211,
+        "controller_acquired": 220,
+        "global_dispatch": 220,
+        "global_receipt": 220,
+        "global_source_retained": 220,
+        "global_result": 211,
+        "controller_released": 1,
+        "stopped": 1
+      },
+      "recorded_failures": [],
+      "host_stages": [],
+      "native_cpu_ms": null,
+      "raw_files": 1941,
+      "raw_bytes": 48223362,
+      "formal_readback": {
+        "archive_bytes": 13979599,
+        "artifact_id": "dbd0fa66f3066964fd5adebedd2ae04a2fb2ecb41177d7b51727972461eab0ff",
+        "content_id": "9b23c3ff4573be6104822f58690845517175e47c0513e268e13dadd3b6045999",
+        "event_count": 4099,
+        "full_readback": true,
+        "human_origin_verified": false,
+        "research_admission": "not_evaluated",
+        "run_id": "run-47e25481-7c5c-4f61-8ad6-10852f91bd5b",
+        "typed_verification": "pass"
+      }
+    },
+    {
+      "family": "baseline",
+      "group": "parallel-ledger",
+      "seed": "STPDF02AAA9AB81E8F8DC2639B57EB55",
+      "seed_ordinal": 2,
+      "status": "unknown",
+      "reason": "runtime_command_unknown",
+      "run_id": "run-39a5de3b-db6d-4c4d-9268-532d24f1bb52",
+      "elapsed_seconds": 1560.0785465840017,
+      "phase_seconds": {
+        "close": 0.07187833299394697,
+        "execute": 1546.726691415999,
+        "prepare": 13.272639040951617
+      },
+      "detail_seconds": {
+        "host_launch": 8.977752499980852,
+        "host_reset": 3.724385916022584,
+        "runtime_startup": 3.048931041965261
+      },
+      "stored_evidence_id": null,
+      "cleanup_accepted": true,
+      "report_sha256": "694b0a46dc953b2816b9f639309274e192a43e1dd5d1bf1368134c374792ff35",
+      "report_producer": {
+        "repository": "rsgcsg/STS2-The-Perfect-Defect-Project",
+        "source_revision": "28a26a724bd2a832bcf2c90225ed35bedced544c",
+        "uv_lock_sha256": "23fed3426d340c85b32769ef2b7347a6cb9bf33b151cb48aad80a41d6fcc9e68"
+      },
+      "host_pin": {
+        "component_tree_revision": "bf054cc1eabc338fb23b5c23cf8373c2916d2d6e",
+        "package": "@rsgcsg/sts2-host-runtime",
+        "package_content_sha256": "35fd1c648ddd817334441f29fe98a7c2e139d174bcf7143221a18566eb0e9b82",
+        "release_asset_sha256": "6439b5d15a3b233ed1f50b84b3303bf70a92c3c20f4070dbae644120d62b7653",
+        "schema": "stpd/platform-host-runtime-pin-v1",
+        "source_revision": "8f05cc0de23b7164eac705ab28242ecbcc231ecc",
+        "version": "1.1.0-rc.45"
+      },
+      "runtime_pin": {
+        "component_tree_revision": "43cc2aaa84fa917b36042b7f4f383c70892bb53d",
+        "package": "@rsgcsg/sts2-policy-runtime",
+        "package_content_sha256": "c6f6757b24cf8738e14cb979973d17590687c8698995bdf53d2d0552a6e18924",
+        "release_asset_sha256": "49c470242bcded721f4c75673ff032f14c3c5332e8d61b499a78aafc21034d5c",
+        "schema": "stpd/platform-policy-runtime-pin-v1",
+        "source_revision": "a09de1f00fff0b2190816259d9832d90f4383967",
+        "version": "0.1.0-rc.51"
+      },
+      "input_adapter": {
+        "code_sha256": "ef06a03d0771b779f8abce8dca6d46437c91fd4ef35e44747d9a266d8130a8a1",
+        "id": "stpd-p1-mstd-agent",
+        "protocol": "sts2.policy-runtime/agent-session-ndjson-1",
+        "version": "1"
+      },
+      "initial_progress_sha256": "b523759ab21f1a75bff2285c1fc7f7a2ce90514fda2d68217f5d6552653b12ce",
+      "store_kind": "direct_r2",
+      "inference": {
+        "mode": "per_actor"
+      },
+      "event_counts": {
+        "global_agent_frame": 601,
+        "global_initialized": 1,
+        "mode_changed": 1,
+        "global_capture_requested": 13743,
+        "global_transport_response": 13866,
+        "global_source": 13742,
+        "global_episode_bound": 1,
+        "global_observation": 120,
+        "global_input": 120,
+        "global_consumed": 120,
+        "agent_directive": 120,
+        "global_choice": 120,
+        "controller_acquired": 124,
+        "global_dispatch": 124,
+        "global_receipt": 124,
+        "global_source_retained": 13741,
+        "global_result": 120,
+        "global_capture_error": 1,
+        "controller_released": 1,
+        "runtime_tainted": 1,
+        "stopped": 1
+      },
+      "recorded_failures": [
+        {
+          "event_sequence": 56788,
+          "kind": "global_capture_error",
+          "reason": "global_storage_capacity"
+        },
+        {
+          "event_sequence": 56790,
+          "kind": "runtime_tainted",
+          "reason": "global_post_delivery_capture:global_storage_capacity"
+        }
+      ],
+      "host_stages": [],
+      "native_cpu_ms": null,
+      "raw_files": 28336,
+      "raw_bytes": 569763191,
+      "formal_readback": null,
+      "diagnostic_readback": {
+        "artifact_id": "c5e9dc4e888a468ea6b4b65bc561134ff6545b338254622ee01b1f31532732e3",
+        "full_readback": true,
+        "typed_recording_qualified": false,
+        "scope": "unsealed_diagnostic_only",
+        "game_outcome": "unknown"
+      },
+      "unknown_category": "storage_capacity_unsealed"
+    },
+    {
+      "family": "baseline",
+      "group": "parallel-ledger",
+      "seed": "STPD4F18E61D2253B4DCB77C144EBFDD",
+      "seed_ordinal": 3,
+      "status": "unknown",
+      "reason": "runtime_execution_or_release_unknown",
+      "run_id": "run-fdac3944-2d07-4ebe-9cf5-b4153ede8da2",
+      "elapsed_seconds": 241.2024296669988,
+      "phase_seconds": {
+        "close": 0.08686608297284693,
+        "execute": 86.60242241690867,
+        "finish": 10.891861665993929,
+        "prepare": 13.667223165975884,
+        "preserve": 129.93211012508254
+      },
+      "detail_seconds": {
+        "copy_peer": 3.29989912500605,
+        "host_launch": 9.100782083929516,
+        "host_reset": 3.7700952920131385,
+        "peer_readback": 31.270390458055772,
+        "publish_evidence": 30.91937975003384,
+        "publish_runtime": 64.44108924991451,
+        "runtime_startup": 2.604249583091587
+      },
+      "stored_evidence_id": "6f8e739f200e78889ab2f6a85b4e5028a7383cd7cec97b0e63ada5520a6a09b7",
+      "cleanup_accepted": true,
+      "report_sha256": "27ab1aae6a477d4da2cfd051c8bce8aad3389aad1596b7a0301f9f4d44ebdd85",
+      "report_producer": {
+        "repository": "rsgcsg/STS2-The-Perfect-Defect-Project",
+        "source_revision": "28a26a724bd2a832bcf2c90225ed35bedced544c",
+        "uv_lock_sha256": "23fed3426d340c85b32769ef2b7347a6cb9bf33b151cb48aad80a41d6fcc9e68"
+      },
+      "host_pin": {
+        "component_tree_revision": "bf054cc1eabc338fb23b5c23cf8373c2916d2d6e",
+        "package": "@rsgcsg/sts2-host-runtime",
+        "package_content_sha256": "35fd1c648ddd817334441f29fe98a7c2e139d174bcf7143221a18566eb0e9b82",
+        "release_asset_sha256": "6439b5d15a3b233ed1f50b84b3303bf70a92c3c20f4070dbae644120d62b7653",
+        "schema": "stpd/platform-host-runtime-pin-v1",
+        "source_revision": "8f05cc0de23b7164eac705ab28242ecbcc231ecc",
+        "version": "1.1.0-rc.45"
+      },
+      "runtime_pin": {
+        "component_tree_revision": "43cc2aaa84fa917b36042b7f4f383c70892bb53d",
+        "package": "@rsgcsg/sts2-policy-runtime",
+        "package_content_sha256": "c6f6757b24cf8738e14cb979973d17590687c8698995bdf53d2d0552a6e18924",
+        "release_asset_sha256": "49c470242bcded721f4c75673ff032f14c3c5332e8d61b499a78aafc21034d5c",
+        "schema": "stpd/platform-policy-runtime-pin-v1",
+        "source_revision": "a09de1f00fff0b2190816259d9832d90f4383967",
+        "version": "0.1.0-rc.51"
+      },
+      "input_adapter": {
+        "code_sha256": "ef06a03d0771b779f8abce8dca6d46437c91fd4ef35e44747d9a266d8130a8a1",
+        "id": "stpd-p1-mstd-agent",
+        "protocol": "sts2.policy-runtime/agent-session-ndjson-1",
+        "version": "1"
+      },
+      "initial_progress_sha256": "b523759ab21f1a75bff2285c1fc7f7a2ce90514fda2d68217f5d6552653b12ce",
+      "store_kind": "direct_r2",
+      "inference": {
+        "mode": "per_actor"
+      },
+      "event_counts": {
+        "global_agent_frame": 546,
+        "global_initialized": 1,
+        "mode_changed": 1,
+        "global_capture_requested": 115,
+        "global_transport_response": 230,
+        "global_source": 115,
+        "global_episode_bound": 1,
+        "global_observation": 109,
+        "global_input": 109,
+        "global_consumed": 109,
+        "agent_directive": 109,
+        "global_choice": 109,
+        "controller_acquired": 115,
+        "global_dispatch": 115,
+        "global_receipt": 115,
+        "global_source_retained": 114,
+        "global_result": 109,
+        "controller_released": 1,
+        "runtime_tainted": 1,
+        "stopped": 1
+      },
+      "recorded_failures": [
+        {
+          "event_sequence": 2124,
+          "kind": "runtime_tainted",
+          "reason": "global_delivery_unknown"
+        }
+      ],
+      "host_stages": [],
+      "native_cpu_ms": null,
+      "raw_files": 1006,
+      "raw_bytes": 20983442,
+      "formal_readback": {
+        "archive_bytes": 6114399,
+        "artifact_id": "6f8e739f200e78889ab2f6a85b4e5028a7383cd7cec97b0e63ada5520a6a09b7",
+        "content_id": "f8601f8224f16799ecf8d1711ed84b6cf976dc4b3e118cc6f2ae1b24a079bf91",
+        "event_count": 2125,
+        "full_readback": true,
+        "human_origin_verified": false,
+        "research_admission": "not_evaluated",
+        "run_id": "run-fdac3944-2d07-4ebe-9cf5-b4153ede8da2",
+        "typed_verification": "pass"
+      },
+      "unknown_category": "global_delivery_unknown"
+    },
+    {
+      "family": "baseline",
+      "group": "parallel-ledger",
+      "seed": "STPDA92596C911F8347C6E712730BAFB",
+      "seed_ordinal": 4,
+      "status": "finished",
+      "reason": "natural_terminal",
+      "run_id": "run-bd96aa00-4cfd-4774-a829-6747f7418cb3",
+      "elapsed_seconds": 365.1914860829711,
+      "phase_seconds": {
+        "close": 0.12595625000540167,
+        "execute": 190.18233904102817,
+        "finish": 29.073877250077203,
+        "prepare": 13.057499165995978,
+        "preserve": 132.72115895792376
+      },
+      "detail_seconds": {
+        "copy_peer": 5.542441125027835,
+        "host_launch": 8.782737332978286,
+        "host_reset": 3.709542875061743,
+        "peer_readback": 26.81474254198838,
+        "publish_evidence": 40.116969541995786,
+        "publish_runtime": 60.243680124985985,
+        "runtime_startup": 3.19141679094173
+      },
+      "stored_evidence_id": "07c16359d13a0ba58e5faf4de674143f66b6fc888c9f9c027542ce91ab43c649",
+      "cleanup_accepted": true,
+      "report_sha256": "e0914cc45b6ff8cc6fa990071be93c918bb018386e86c744d4e924539e6b660e",
+      "report_producer": {
+        "repository": "rsgcsg/STS2-The-Perfect-Defect-Project",
+        "source_revision": "28a26a724bd2a832bcf2c90225ed35bedced544c",
+        "uv_lock_sha256": "23fed3426d340c85b32769ef2b7347a6cb9bf33b151cb48aad80a41d6fcc9e68"
+      },
+      "host_pin": {
+        "component_tree_revision": "bf054cc1eabc338fb23b5c23cf8373c2916d2d6e",
+        "package": "@rsgcsg/sts2-host-runtime",
+        "package_content_sha256": "35fd1c648ddd817334441f29fe98a7c2e139d174bcf7143221a18566eb0e9b82",
+        "release_asset_sha256": "6439b5d15a3b233ed1f50b84b3303bf70a92c3c20f4070dbae644120d62b7653",
+        "schema": "stpd/platform-host-runtime-pin-v1",
+        "source_revision": "8f05cc0de23b7164eac705ab28242ecbcc231ecc",
+        "version": "1.1.0-rc.45"
+      },
+      "runtime_pin": {
+        "component_tree_revision": "43cc2aaa84fa917b36042b7f4f383c70892bb53d",
+        "package": "@rsgcsg/sts2-policy-runtime",
+        "package_content_sha256": "c6f6757b24cf8738e14cb979973d17590687c8698995bdf53d2d0552a6e18924",
+        "release_asset_sha256": "49c470242bcded721f4c75673ff032f14c3c5332e8d61b499a78aafc21034d5c",
+        "schema": "stpd/platform-policy-runtime-pin-v1",
+        "source_revision": "a09de1f00fff0b2190816259d9832d90f4383967",
+        "version": "0.1.0-rc.51"
+      },
+      "input_adapter": {
+        "code_sha256": "ef06a03d0771b779f8abce8dca6d46437c91fd4ef35e44747d9a266d8130a8a1",
+        "id": "stpd-p1-mstd-agent",
+        "protocol": "sts2.policy-runtime/agent-session-ndjson-1",
+        "version": "1"
+      },
+      "initial_progress_sha256": "b523759ab21f1a75bff2285c1fc7f7a2ce90514fda2d68217f5d6552653b12ce",
+      "store_kind": "direct_r2",
+      "inference": {
+        "mode": "per_actor"
+      },
+      "event_counts": {
+        "global_agent_frame": 1181,
+        "global_initialized": 1,
+        "mode_changed": 1,
+        "global_capture_requested": 249,
+        "global_transport_response": 497,
+        "global_source": 249,
+        "global_episode_bound": 1,
+        "global_observation": 236,
+        "global_input": 236,
+        "global_consumed": 236,
+        "agent_directive": 236,
+        "global_choice": 235,
+        "controller_acquired": 248,
+        "global_dispatch": 248,
+        "global_receipt": 248,
+        "global_source_retained": 248,
+        "global_result": 235,
+        "controller_released": 1,
+        "stopped": 1
+      },
+      "recorded_failures": [],
+      "host_stages": [],
+      "native_cpu_ms": null,
+      "raw_files": 2169,
+      "raw_bytes": 50394670,
+      "formal_readback": {
+        "archive_bytes": 17891936,
+        "artifact_id": "07c16359d13a0ba58e5faf4de674143f66b6fc888c9f9c027542ce91ab43c649",
+        "content_id": "f958d783bda9d05a93076fadd2255ff9d968bc104c16b779e070e22e9008c758",
+        "event_count": 4587,
+        "full_readback": true,
+        "human_origin_verified": false,
+        "research_admission": "not_evaluated",
+        "run_id": "run-bd96aa00-4cfd-4774-a829-6747f7418cb3",
+        "typed_verification": "pass"
+      }
+    },
+    {
+      "family": "baseline",
+      "group": "parallel-ledger",
+      "seed": "STPD7E347627988FEC666F14F3AFFE03",
+      "seed_ordinal": 7,
+      "status": "finished",
+      "reason": "natural_terminal",
+      "run_id": "run-80baa338-1ec2-44b5-b0b4-7b3a69ae2f75",
+      "elapsed_seconds": 230.8201185000362,
+      "phase_seconds": {
+        "close": 0.07506020797882229,
+        "execute": 92.30558399995789,
+        "finish": 17.330375874997117,
+        "prepare": 13.25211850006599,
+        "preserve": 107.8454010830028
+      },
+      "detail_seconds": {
+        "copy_peer": 3.315550500061363,
+        "host_launch": 8.115220417035744,
+        "host_reset": 4.292231500032358,
+        "peer_readback": 21.11576320801396,
+        "publish_evidence": 23.912426583003253,
+        "publish_runtime": 59.50115870893933,
+        "runtime_startup": 3.7332111669238657
+      },
+      "stored_evidence_id": "091b76957edec90b8a15abb8f94df2cee420fee8f2356bcb3672d7a2192e4204",
+      "cleanup_accepted": true,
+      "report_sha256": "761eb1c8cc3e5af270a4f99be28ab862ae73d42ec9b4042331a849e971c17a53",
+      "report_producer": {
+        "repository": "rsgcsg/STS2-The-Perfect-Defect-Project",
+        "source_revision": "28a26a724bd2a832bcf2c90225ed35bedced544c",
+        "uv_lock_sha256": "23fed3426d340c85b32769ef2b7347a6cb9bf33b151cb48aad80a41d6fcc9e68"
+      },
+      "host_pin": {
+        "component_tree_revision": "bf054cc1eabc338fb23b5c23cf8373c2916d2d6e",
+        "package": "@rsgcsg/sts2-host-runtime",
+        "package_content_sha256": "35fd1c648ddd817334441f29fe98a7c2e139d174bcf7143221a18566eb0e9b82",
+        "release_asset_sha256": "6439b5d15a3b233ed1f50b84b3303bf70a92c3c20f4070dbae644120d62b7653",
+        "schema": "stpd/platform-host-runtime-pin-v1",
+        "source_revision": "8f05cc0de23b7164eac705ab28242ecbcc231ecc",
+        "version": "1.1.0-rc.45"
+      },
+      "runtime_pin": {
+        "component_tree_revision": "43cc2aaa84fa917b36042b7f4f383c70892bb53d",
+        "package": "@rsgcsg/sts2-policy-runtime",
+        "package_content_sha256": "c6f6757b24cf8738e14cb979973d17590687c8698995bdf53d2d0552a6e18924",
+        "release_asset_sha256": "49c470242bcded721f4c75673ff032f14c3c5332e8d61b499a78aafc21034d5c",
+        "schema": "stpd/platform-policy-runtime-pin-v1",
+        "source_revision": "a09de1f00fff0b2190816259d9832d90f4383967",
+        "version": "0.1.0-rc.51"
+      },
+      "input_adapter": {
+        "code_sha256": "ef06a03d0771b779f8abce8dca6d46437c91fd4ef35e44747d9a266d8130a8a1",
+        "id": "stpd-p1-mstd-agent",
+        "protocol": "sts2.policy-runtime/agent-session-ndjson-1",
+        "version": "1"
+      },
+      "initial_progress_sha256": "b523759ab21f1a75bff2285c1fc7f7a2ce90514fda2d68217f5d6552653b12ce",
+      "store_kind": "direct_r2",
+      "inference": {
+        "mode": "per_actor"
+      },
+      "event_counts": {
+        "global_agent_frame": 746,
+        "global_initialized": 1,
+        "mode_changed": 1,
+        "global_capture_requested": 161,
+        "global_transport_response": 321,
+        "global_source": 161,
+        "global_episode_bound": 1,
+        "global_observation": 149,
+        "global_input": 149,
+        "global_consumed": 149,
+        "agent_directive": 149,
+        "global_choice": 148,
+        "controller_acquired": 160,
+        "global_dispatch": 160,
+        "global_receipt": 160,
+        "global_source_retained": 160,
+        "global_result": 148,
+        "controller_released": 1,
+        "stopped": 1
+      },
+      "recorded_failures": [],
+      "host_stages": [],
+      "native_cpu_ms": null,
+      "raw_files": 1383,
+      "raw_bytes": 30631720,
+      "formal_readback": {
+        "archive_bytes": 9011859,
+        "artifact_id": "091b76957edec90b8a15abb8f94df2cee420fee8f2356bcb3672d7a2192e4204",
+        "content_id": "5699a2495e43d99541f385c3b9ada30e381fd0776dd40155f222c605c91cc5ed",
+        "event_count": 2926,
+        "full_readback": true,
+        "human_origin_verified": false,
+        "research_admission": "not_evaluated",
+        "run_id": "run-80baa338-1ec2-44b5-b0b4-7b3a69ae2f75",
+        "typed_verification": "pass"
+      }
+    },
+    {
+      "family": "baseline",
+      "group": "parallel-ledger",
+      "seed": "STPD78CF18823EA6E5CD214199FB8E8B",
+      "seed_ordinal": 6,
+      "status": "unknown",
+      "reason": "runtime_execution_or_release_unknown",
+      "run_id": "run-ed1e3225-5947-4d89-9cd2-4760262da321",
+      "elapsed_seconds": 151.4364582078997,
+      "phase_seconds": {
+        "close": 0.2304299579700455,
+        "execute": 27.05172337498516,
+        "finish": 3.424341083969921,
+        "prepare": 17.65940008405596,
+        "preserve": 103.04767645802349
+      },
+      "detail_seconds": {
+        "copy_peer": 2.5048676669830456,
+        "host_launch": 11.860785082913935,
+        "host_reset": 4.577810083050281,
+        "peer_readback": 22.19459804194048,
+        "publish_evidence": 23.586315333959647,
+        "publish_runtime": 54.76007479103282,
+        "runtime_startup": 4.193646666011773
+      },
+      "stored_evidence_id": "cb0d3916add4b025043d8cd9eb96410b599e2ca163856509fa9091cb114c9b52",
+      "cleanup_accepted": true,
+      "report_sha256": "7e51edfd82fd298c6415f2182c56f47a69afc3cc390734ec741db485bd1e20a3",
+      "report_producer": {
+        "repository": "rsgcsg/STS2-The-Perfect-Defect-Project",
+        "source_revision": "28a26a724bd2a832bcf2c90225ed35bedced544c",
+        "uv_lock_sha256": "23fed3426d340c85b32769ef2b7347a6cb9bf33b151cb48aad80a41d6fcc9e68"
+      },
+      "host_pin": {
+        "component_tree_revision": "bf054cc1eabc338fb23b5c23cf8373c2916d2d6e",
+        "package": "@rsgcsg/sts2-host-runtime",
+        "package_content_sha256": "35fd1c648ddd817334441f29fe98a7c2e139d174bcf7143221a18566eb0e9b82",
+        "release_asset_sha256": "6439b5d15a3b233ed1f50b84b3303bf70a92c3c20f4070dbae644120d62b7653",
+        "schema": "stpd/platform-host-runtime-pin-v1",
+        "source_revision": "8f05cc0de23b7164eac705ab28242ecbcc231ecc",
+        "version": "1.1.0-rc.45"
+      },
+      "runtime_pin": {
+        "component_tree_revision": "43cc2aaa84fa917b36042b7f4f383c70892bb53d",
+        "package": "@rsgcsg/sts2-policy-runtime",
+        "package_content_sha256": "c6f6757b24cf8738e14cb979973d17590687c8698995bdf53d2d0552a6e18924",
+        "release_asset_sha256": "49c470242bcded721f4c75673ff032f14c3c5332e8d61b499a78aafc21034d5c",
+        "schema": "stpd/platform-policy-runtime-pin-v1",
+        "source_revision": "a09de1f00fff0b2190816259d9832d90f4383967",
+        "version": "0.1.0-rc.51"
+      },
+      "input_adapter": {
+        "code_sha256": "ef06a03d0771b779f8abce8dca6d46437c91fd4ef35e44747d9a266d8130a8a1",
+        "id": "stpd-p1-mstd-agent",
+        "protocol": "sts2.policy-runtime/agent-session-ndjson-1",
+        "version": "1"
+      },
+      "initial_progress_sha256": "b523759ab21f1a75bff2285c1fc7f7a2ce90514fda2d68217f5d6552653b12ce",
+      "store_kind": "direct_r2",
+      "inference": {
+        "mode": "per_actor"
+      },
+      "event_counts": {
+        "global_agent_frame": 176,
+        "global_initialized": 1,
+        "mode_changed": 1,
+        "global_capture_requested": 39,
+        "global_transport_response": 77,
+        "global_source": 39,
+        "global_episode_bound": 1,
+        "global_observation": 35,
+        "global_input": 35,
+        "global_consumed": 35,
+        "agent_directive": 35,
+        "global_choice": 35,
+        "controller_acquired": 38,
+        "global_dispatch": 38,
+        "global_receipt": 38,
+        "global_source_retained": 38,
+        "global_result": 35,
+        "controller_released": 1,
+        "runtime_tainted": 1,
+        "stopped": 1
+      },
+      "recorded_failures": [
+        {
+          "event_sequence": 697,
+          "kind": "runtime_tainted",
+          "reason": "global_post_delivery_capture:global_post_delivery_capture_incomplete"
+        }
+      ],
+      "host_stages": [],
+      "native_cpu_ms": null,
+      "raw_files": 333,
+      "raw_bytes": 6690439,
+      "formal_readback": {
+        "archive_bytes": 1903628,
+        "artifact_id": "cb0d3916add4b025043d8cd9eb96410b599e2ca163856509fa9091cb114c9b52",
+        "content_id": "cdc827acd6f9d71ec32e7f8c5e7a5191185c2f01eb65a9f5f40d343ba7f8bfc8",
+        "event_count": 699,
+        "full_readback": true,
+        "human_origin_verified": false,
+        "research_admission": "not_evaluated",
+        "run_id": "run-ed1e3225-5947-4d89-9cd2-4760262da321",
+        "typed_verification": "pass"
+      },
+      "unknown_category": "capture_incomplete"
+    },
+    {
+      "family": "baseline",
+      "group": "parallel-ledger",
+      "seed": "STPD2DE9B59AAF283A766D006E033F7C",
+      "seed_ordinal": 1,
+      "status": "finished",
+      "reason": "natural_terminal",
+      "run_id": "run-621c1466-f35e-4400-b330-320054d17d71",
+      "elapsed_seconds": 292.6061444579391,
+      "phase_seconds": {
+        "close": 0.08909529191441834,
+        "execute": 126.1894472920103,
+        "finish": 18.19339037500322,
+        "prepare": 13.073460665997118,
+        "preserve": 135.02731483301613
+      },
+      "detail_seconds": {
+        "copy_peer": 3.8846082080854103,
+        "host_launch": 8.8253674589796,
+        "host_reset": 3.5172730420017615,
+        "peer_readback": 25.58443691697903,
+        "publish_evidence": 36.540884874993935,
+        "publish_runtime": 69.01212379196659,
+        "runtime_startup": 3.252337208017707
+      },
+      "stored_evidence_id": "0a81db2cccbe15a66104efb8e30f5f158b969cbc97e3a27e617bbc1a3f070035",
+      "cleanup_accepted": true,
+      "report_sha256": "893f9928d4f8def2ecf1221271a3146b05cf868e17bfaefc285826a4091017e7",
+      "report_producer": {
+        "repository": "rsgcsg/STS2-The-Perfect-Defect-Project",
+        "source_revision": "28a26a724bd2a832bcf2c90225ed35bedced544c",
+        "uv_lock_sha256": "23fed3426d340c85b32769ef2b7347a6cb9bf33b151cb48aad80a41d6fcc9e68"
+      },
+      "host_pin": {
+        "component_tree_revision": "bf054cc1eabc338fb23b5c23cf8373c2916d2d6e",
+        "package": "@rsgcsg/sts2-host-runtime",
+        "package_content_sha256": "35fd1c648ddd817334441f29fe98a7c2e139d174bcf7143221a18566eb0e9b82",
+        "release_asset_sha256": "6439b5d15a3b233ed1f50b84b3303bf70a92c3c20f4070dbae644120d62b7653",
+        "schema": "stpd/platform-host-runtime-pin-v1",
+        "source_revision": "8f05cc0de23b7164eac705ab28242ecbcc231ecc",
+        "version": "1.1.0-rc.45"
+      },
+      "runtime_pin": {
+        "component_tree_revision": "43cc2aaa84fa917b36042b7f4f383c70892bb53d",
+        "package": "@rsgcsg/sts2-policy-runtime",
+        "package_content_sha256": "c6f6757b24cf8738e14cb979973d17590687c8698995bdf53d2d0552a6e18924",
+        "release_asset_sha256": "49c470242bcded721f4c75673ff032f14c3c5332e8d61b499a78aafc21034d5c",
+        "schema": "stpd/platform-policy-runtime-pin-v1",
+        "source_revision": "a09de1f00fff0b2190816259d9832d90f4383967",
+        "version": "0.1.0-rc.51"
+      },
+      "input_adapter": {
+        "code_sha256": "ef06a03d0771b779f8abce8dca6d46437c91fd4ef35e44747d9a266d8130a8a1",
+        "id": "stpd-p1-mstd-agent",
+        "protocol": "sts2.policy-runtime/agent-session-ndjson-1",
+        "version": "1"
+      },
+      "initial_progress_sha256": "b523759ab21f1a75bff2285c1fc7f7a2ce90514fda2d68217f5d6552653b12ce",
+      "store_kind": "direct_r2",
+      "inference": {
+        "mode": "per_actor"
+      },
+      "event_counts": {
+        "global_agent_frame": 811,
+        "global_initialized": 1,
+        "mode_changed": 1,
+        "global_capture_requested": 171,
+        "global_transport_response": 341,
+        "global_source": 171,
+        "global_episode_bound": 1,
+        "global_observation": 162,
+        "global_input": 162,
+        "global_consumed": 162,
+        "agent_directive": 162,
+        "global_choice": 161,
+        "controller_acquired": 170,
+        "global_dispatch": 170,
+        "global_receipt": 170,
+        "global_source_retained": 170,
+        "global_result": 161,
+        "controller_released": 1,
+        "stopped": 1
+      },
+      "recorded_failures": [],
+      "host_stages": [],
+      "native_cpu_ms": null,
+      "raw_files": 1491,
+      "raw_bytes": 33088754,
+      "formal_readback": {
+        "archive_bytes": 9614841,
+        "artifact_id": "0a81db2cccbe15a66104efb8e30f5f158b969cbc97e3a27e617bbc1a3f070035",
+        "content_id": "aba3696f8eb06d6391b04edffd5801e2818a2c18b29f8e8491f891a2d206eaa3",
+        "event_count": 3149,
+        "full_readback": true,
+        "human_origin_verified": false,
+        "research_admission": "not_evaluated",
+        "run_id": "run-621c1466-f35e-4400-b330-320054d17d71",
+        "typed_verification": "pass"
+      }
+    },
+    {
+      "family": "baseline",
+      "group": "parallel-ledger",
+      "seed": "STPDE1FAF90C34D616C73683A3FEF55E",
+      "seed_ordinal": 5,
+      "status": "finished",
+      "reason": "natural_terminal",
+      "run_id": "run-f3268b7f-4054-4697-8dd6-b5baf5bca9fb",
+      "elapsed_seconds": 279.40768737497274,
+      "phase_seconds": {
+        "close": 0.09776358294766396,
+        "execute": 117.83797766710632,
+        "finish": 21.233174958033487,
+        "prepare": 11.989082500105724,
+        "preserve": 128.22050470800605
+      },
+      "detail_seconds": {
+        "copy_peer": 4.8290841249981895,
+        "host_launch": 6.532322500017472,
+        "host_reset": 4.524587124935351,
+        "peer_readback": 30.636909167049453,
+        "publish_evidence": 38.82675616699271,
+        "publish_runtime": 53.91980375000276,
+        "runtime_startup": 3.7281271669780836
+      },
+      "stored_evidence_id": "2f9e5f8f4424605ee18653e4ad2eb7e3d06d339ecfa33d8f12fed71dd1510a63",
+      "cleanup_accepted": true,
+      "report_sha256": "e4e1fcca93bd60b46bdf8577d09c7592905367143146db0042008d60640a3310",
+      "report_producer": {
+        "repository": "rsgcsg/STS2-The-Perfect-Defect-Project",
+        "source_revision": "28a26a724bd2a832bcf2c90225ed35bedced544c",
+        "uv_lock_sha256": "23fed3426d340c85b32769ef2b7347a6cb9bf33b151cb48aad80a41d6fcc9e68"
+      },
+      "host_pin": {
+        "component_tree_revision": "bf054cc1eabc338fb23b5c23cf8373c2916d2d6e",
+        "package": "@rsgcsg/sts2-host-runtime",
+        "package_content_sha256": "35fd1c648ddd817334441f29fe98a7c2e139d174bcf7143221a18566eb0e9b82",
+        "release_asset_sha256": "6439b5d15a3b233ed1f50b84b3303bf70a92c3c20f4070dbae644120d62b7653",
+        "schema": "stpd/platform-host-runtime-pin-v1",
+        "source_revision": "8f05cc0de23b7164eac705ab28242ecbcc231ecc",
+        "version": "1.1.0-rc.45"
+      },
+      "runtime_pin": {
+        "component_tree_revision": "43cc2aaa84fa917b36042b7f4f383c70892bb53d",
+        "package": "@rsgcsg/sts2-policy-runtime",
+        "package_content_sha256": "c6f6757b24cf8738e14cb979973d17590687c8698995bdf53d2d0552a6e18924",
+        "release_asset_sha256": "49c470242bcded721f4c75673ff032f14c3c5332e8d61b499a78aafc21034d5c",
+        "schema": "stpd/platform-policy-runtime-pin-v1",
+        "source_revision": "a09de1f00fff0b2190816259d9832d90f4383967",
+        "version": "0.1.0-rc.51"
+      },
+      "input_adapter": {
+        "code_sha256": "ef06a03d0771b779f8abce8dca6d46437c91fd4ef35e44747d9a266d8130a8a1",
+        "id": "stpd-p1-mstd-agent",
+        "protocol": "sts2.policy-runtime/agent-session-ndjson-1",
+        "version": "1"
+      },
+      "initial_progress_sha256": "b523759ab21f1a75bff2285c1fc7f7a2ce90514fda2d68217f5d6552653b12ce",
+      "store_kind": "direct_r2",
+      "inference": {
+        "mode": "per_actor"
+      },
+      "event_counts": {
+        "global_agent_frame": 1036,
+        "global_initialized": 1,
+        "mode_changed": 1,
+        "global_capture_requested": 221,
+        "global_transport_response": 441,
+        "global_source": 221,
+        "global_episode_bound": 1,
+        "global_observation": 207,
+        "global_input": 207,
+        "global_consumed": 207,
+        "agent_directive": 207,
+        "global_choice": 206,
+        "controller_acquired": 220,
+        "global_dispatch": 220,
+        "global_receipt": 220,
+        "global_source_retained": 220,
+        "global_result": 206,
+        "controller_released": 1,
+        "stopped": 1
+      },
+      "recorded_failures": [],
+      "host_stages": [],
+      "native_cpu_ms": null,
+      "raw_files": 1911,
+      "raw_bytes": 43201220,
+      "formal_readback": {
+        "archive_bytes": 12189509,
+        "artifact_id": "2f9e5f8f4424605ee18653e4ad2eb7e3d06d339ecfa33d8f12fed71dd1510a63",
+        "content_id": "3a8968ba43c59b5ec114efa558859cea23f7536cb4da013c4c5461d2122f7196",
+        "event_count": 4044,
+        "full_readback": true,
+        "human_origin_verified": false,
+        "research_admission": "not_evaluated",
+        "run_id": "run-f3268b7f-4054-4697-8dd6-b5baf5bca9fb",
+        "typed_verification": "pass"
+      }
+    },
+    {
+      "family": "baseline",
+      "group": "parallel-ledger",
+      "seed": "STPD7A2596B10BD3D7AFE86864EBA658",
+      "seed_ordinal": 8,
+      "status": "finished",
+      "reason": "natural_terminal",
+      "run_id": "run-feee6767-f6ad-4c65-bf50-797c216df52d",
+      "elapsed_seconds": 205.94446270808112,
+      "phase_seconds": {
+        "close": 0.03995275008492172,
+        "execute": 77.98059150006156,
+        "finish": 3.0960759579902515,
+        "prepare": 16.59956320899073,
+        "preserve": 108.20589262503199
+      },
+      "detail_seconds": {
+        "copy_peer": 5.355239582946524,
+        "host_launch": 9.416444833972491,
+        "host_reset": 5.85380379203707,
+        "peer_readback": 24.742935292073525,
+        "publish_evidence": 23.228133834083565,
+        "publish_runtime": 54.87909733399283,
+        "runtime_startup": 4.105617249966599
+      },
+      "stored_evidence_id": "c002650efa8241c30c0b5e5f86e13d689366ae9fdeb5975d20742d07b8e58f3c",
+      "cleanup_accepted": true,
+      "report_sha256": "e099bc6d01c676d00e52c19bc2679519c126fc66bec7a9d61c1cb3138bd0c0e8",
+      "report_producer": {
+        "repository": "rsgcsg/STS2-The-Perfect-Defect-Project",
+        "source_revision": "28a26a724bd2a832bcf2c90225ed35bedced544c",
+        "uv_lock_sha256": "23fed3426d340c85b32769ef2b7347a6cb9bf33b151cb48aad80a41d6fcc9e68"
+      },
+      "host_pin": {
+        "component_tree_revision": "bf054cc1eabc338fb23b5c23cf8373c2916d2d6e",
+        "package": "@rsgcsg/sts2-host-runtime",
+        "package_content_sha256": "35fd1c648ddd817334441f29fe98a7c2e139d174bcf7143221a18566eb0e9b82",
+        "release_asset_sha256": "6439b5d15a3b233ed1f50b84b3303bf70a92c3c20f4070dbae644120d62b7653",
+        "schema": "stpd/platform-host-runtime-pin-v1",
+        "source_revision": "8f05cc0de23b7164eac705ab28242ecbcc231ecc",
+        "version": "1.1.0-rc.45"
+      },
+      "runtime_pin": {
+        "component_tree_revision": "43cc2aaa84fa917b36042b7f4f383c70892bb53d",
+        "package": "@rsgcsg/sts2-policy-runtime",
+        "package_content_sha256": "c6f6757b24cf8738e14cb979973d17590687c8698995bdf53d2d0552a6e18924",
+        "release_asset_sha256": "49c470242bcded721f4c75673ff032f14c3c5332e8d61b499a78aafc21034d5c",
+        "schema": "stpd/platform-policy-runtime-pin-v1",
+        "source_revision": "a09de1f00fff0b2190816259d9832d90f4383967",
+        "version": "0.1.0-rc.51"
+      },
+      "input_adapter": {
+        "code_sha256": "ef06a03d0771b779f8abce8dca6d46437c91fd4ef35e44747d9a266d8130a8a1",
+        "id": "stpd-p1-mstd-agent",
+        "protocol": "sts2.policy-runtime/agent-session-ndjson-1",
+        "version": "1"
+      },
+      "initial_progress_sha256": "b523759ab21f1a75bff2285c1fc7f7a2ce90514fda2d68217f5d6552653b12ce",
+      "store_kind": "direct_r2",
+      "inference": {
+        "mode": "per_actor"
+      },
+      "event_counts": {
+        "global_agent_frame": 661,
+        "global_initialized": 1,
+        "mode_changed": 1,
+        "global_capture_requested": 139,
+        "global_transport_response": 277,
+        "global_source": 139,
+        "global_episode_bound": 1,
+        "global_observation": 132,
+        "global_input": 132,
+        "global_consumed": 132,
+        "agent_directive": 132,
+        "global_choice": 131,
+        "controller_acquired": 138,
+        "global_dispatch": 138,
+        "global_receipt": 138,
+        "global_source_retained": 138,
+        "global_result": 131,
+        "controller_released": 1,
+        "stopped": 1
+      },
+      "recorded_failures": [],
+      "host_stages": [],
+      "native_cpu_ms": null,
+      "raw_files": 1215,
+      "raw_bytes": 26128424,
+      "formal_readback": {
+        "archive_bytes": 7445186,
+        "artifact_id": "c002650efa8241c30c0b5e5f86e13d689366ae9fdeb5975d20742d07b8e58f3c",
+        "content_id": "0a3526ebe0bb7e913492c1f35b6c9f991363b27bf6787b073c055210962a00d4",
+        "event_count": 2563,
+        "full_readback": true,
+        "human_origin_verified": false,
+        "research_admission": "not_evaluated",
+        "run_id": "run-feee6767-f6ad-4c65-bf50-797c216df52d",
+        "typed_verification": "pass"
+      }
+    },
+    {
+      "family": "candidate-measurement",
+      "group": "central4-ledger",
+      "seed": "STPD1062B53A970AB57757001D65FD39",
+      "seed_ordinal": 2,
+      "status": "finished",
+      "reason": "natural_terminal",
+      "run_id": "run-c441837b-40ff-498b-99d4-b035b545e98a",
+      "elapsed_seconds": 98.24579837499186,
+      "phase_seconds": {
+        "close": 0.04453108401503414,
+        "execute": 30.617681333096698,
+        "finish": 2.771726458100602,
+        "prepare": 18.169845458003692,
+        "preserve": 46.63260404195171
+      },
+      "detail_seconds": {
+        "copy_peer": 3.548006625031121,
+        "host_launch": 10.646836249972694,
+        "host_performance": 0.03448250098153949,
+        "host_reset": 5.979701790958643,
+        "peer_readback": 41.53086775005795,
+        "publish_evidence": 1.2461709590861574,
+        "publish_runtime": 0.30517441709525883,
+        "runtime_startup": 3.097199416020885
+      },
+      "stored_evidence_id": "d4afd864a6d7b5cd0772945aaf131f4c4818a7bc10f0f56b9adac4034796ab8e",
+      "cleanup_accepted": true,
+      "report_sha256": "c0cbea90a630d64b130896d144ef4ec56590b99e39346223240f161f6f68bb59",
+      "report_producer": {
+        "repository": "rsgcsg/STS2-The-Perfect-Defect-Project",
+        "source_revision": "cabbb50e0acc7b49daed619155fdef0eccb4c910",
+        "uv_lock_sha256": "23fed3426d340c85b32769ef2b7347a6cb9bf33b151cb48aad80a41d6fcc9e68"
+      },
+      "host_pin": {
+        "component_tree_revision": "248a0bc8944d201db3826dcfc0bd0b85b06465e3",
+        "package": "@rsgcsg/sts2-host-runtime",
+        "package_content_sha256": "a57b406fc5818cfe157ec077dd9051d3e446f99acb01e749fbbf9907f4f50fd9",
+        "release_asset_sha256": "0a871d2dcb94eeddaf3eff1df8ed2b7f3b1551c92976327dda8cf62ecaf78c74",
+        "schema": "stpd/platform-host-runtime-pin-v1",
+        "source_revision": "72751e2da00ce301090df8d17ec487b4bab47312",
+        "version": "1.1.0-rc.46"
+      },
+      "runtime_pin": {
+        "component_tree_revision": "389cab9840551debcbb4132428090bd6fbf31e7c",
+        "package": "@rsgcsg/sts2-policy-runtime",
+        "package_content_sha256": "d976935db58c7e79ad859a263ef47428140ff4e99d90c1f88e7b839a69844bf6",
+        "release_asset_sha256": "c85cd244f1e423d81e4b0c9ec7bd8c186870d2f2336479cd33348e1b1df1ac1c",
+        "schema": "stpd/platform-policy-runtime-pin-v1",
+        "source_revision": "72751e2da00ce301090df8d17ec487b4bab47312",
+        "version": "0.1.0-rc.52"
+      },
+      "input_adapter": {
+        "code_sha256": "ef06a03d0771b779f8abce8dca6d46437c91fd4ef35e44747d9a266d8130a8a1",
+        "id": "stpd-p1-mstd-agent",
+        "protocol": "sts2.policy-runtime/agent-session-ndjson-1",
+        "version": "1"
+      },
+      "initial_progress_sha256": "b523759ab21f1a75bff2285c1fc7f7a2ce90514fda2d68217f5d6552653b12ce",
+      "store_kind": "local_stage",
+      "inference": {
+        "max_batch": 4,
+        "mode": "central_batch",
+        "window_ms": 2
+      },
+      "event_counts": {
+        "global_agent_frame": 216,
+        "global_initialized": 1,
+        "mode_changed": 1,
+        "global_capture_requested": 46,
+        "global_transport_response": 91,
+        "global_source": 46,
+        "global_episode_bound": 1,
+        "global_observation": 43,
+        "global_input": 43,
+        "global_consumed": 43,
+        "agent_directive": 43,
+        "global_choice": 42,
+        "controller_acquired": 45,
+        "global_dispatch": 45,
+        "global_receipt": 45,
+        "global_source_retained": 45,
+        "global_result": 42,
+        "controller_released": 1,
+        "stopped": 1
+      },
+      "recorded_failures": [],
+      "host_stages": [
+        {
+          "stage": "action_transport_native_and_raw_extraction",
+          "count": 45,
+          "total_ms": 2353.988998999983
+        },
+        {
+          "stage": "mount_transport_and_native",
+          "count": 0,
+          "total_ms": 0.0
+        },
+        {
+          "stage": "projection_assembly",
+          "count": 45,
+          "total_ms": 3.472038999963843
+        },
+        {
+          "stage": "projection_context",
+          "count": 45,
+          "total_ms": 42.81070399999953
+        },
+        {
+          "stage": "projection_persistent",
+          "count": 45,
+          "total_ms": 2.2442469999950845
+        },
+        {
+          "stage": "projection_reads",
+          "count": 45,
+          "total_ms": 48.68175499996869
+        },
+        {
+          "stage": "projection_surface",
+          "count": 45,
+          "total_ms": 31.441539000003104
+        },
+        {
+          "stage": "projection_total",
+          "count": 45,
+          "total_ms": 161.85904500000106
+        },
+        {
+          "stage": "projection_validation",
+          "count": 45,
+          "total_ms": 31.5308320000222
+        },
+        {
+          "stage": "read_validation",
+          "count": 881,
+          "total_ms": 18.166576000054192
+        },
+        {
+          "stage": "receipt",
+          "count": 45,
+          "total_ms": 19.726500999968266
+        }
+      ],
+      "native_cpu_ms": 3445.683,
+      "raw_files": 402,
+      "raw_bytes": 7530544,
+      "formal_readback": {
+        "archive_bytes": 1981513,
+        "artifact_id": "d4afd864a6d7b5cd0772945aaf131f4c4818a7bc10f0f56b9adac4034796ab8e",
+        "content_id": "09af25c9043a99db8c66b2f6cd010f23e73ea439a3102c9aeefe55eee8e52966",
+        "event_count": 840,
+        "full_readback": true,
+        "human_origin_verified": false,
+        "research_admission": "not_evaluated",
+        "run_id": "run-c441837b-40ff-498b-99d4-b035b545e98a",
+        "typed_verification": "pass"
+      }
+    },
+    {
+      "family": "candidate-measurement",
+      "group": "central4-ledger",
+      "seed": "STPD36136315818CDD91ED59021D5579",
+      "seed_ordinal": 3,
+      "status": "finished",
+      "reason": "natural_terminal",
+      "run_id": "run-3c34faac-821f-41ec-b6ee-fcf8ac6b8d09",
+      "elapsed_seconds": 112.53269000002183,
+      "phase_seconds": {
+        "close": 0.05016995803453028,
+        "execute": 36.83928233303595,
+        "finish": 3.003877375042066,
+        "prepare": 16.462864834000356,
+        "preserve": 56.16486579203047
+      },
+      "detail_seconds": {
+        "copy_peer": 7.373759791953489,
+        "host_launch": 11.25644987495616,
+        "host_performance": 0.04293366696219891,
+        "host_reset": 4.244353499962017,
+        "peer_readback": 47.14939208305441,
+        "publish_evidence": 1.399757333099842,
+        "publish_runtime": 0.24139270896557719,
+        "runtime_startup": 3.3888503750786185
+      },
+      "stored_evidence_id": "0b197349ba08ed714bd681c482919d14116ef9c6c973ec902b0fb351d96ae3d0",
+      "cleanup_accepted": true,
+      "report_sha256": "6bd36780d0b9a984e77f97124c090617f7a8527eb26a75fdbc3d15e8b15018f4",
+      "report_producer": {
+        "repository": "rsgcsg/STS2-The-Perfect-Defect-Project",
+        "source_revision": "cabbb50e0acc7b49daed619155fdef0eccb4c910",
+        "uv_lock_sha256": "23fed3426d340c85b32769ef2b7347a6cb9bf33b151cb48aad80a41d6fcc9e68"
+      },
+      "host_pin": {
+        "component_tree_revision": "248a0bc8944d201db3826dcfc0bd0b85b06465e3",
+        "package": "@rsgcsg/sts2-host-runtime",
+        "package_content_sha256": "a57b406fc5818cfe157ec077dd9051d3e446f99acb01e749fbbf9907f4f50fd9",
+        "release_asset_sha256": "0a871d2dcb94eeddaf3eff1df8ed2b7f3b1551c92976327dda8cf62ecaf78c74",
+        "schema": "stpd/platform-host-runtime-pin-v1",
+        "source_revision": "72751e2da00ce301090df8d17ec487b4bab47312",
+        "version": "1.1.0-rc.46"
+      },
+      "runtime_pin": {
+        "component_tree_revision": "389cab9840551debcbb4132428090bd6fbf31e7c",
+        "package": "@rsgcsg/sts2-policy-runtime",
+        "package_content_sha256": "d976935db58c7e79ad859a263ef47428140ff4e99d90c1f88e7b839a69844bf6",
+        "release_asset_sha256": "c85cd244f1e423d81e4b0c9ec7bd8c186870d2f2336479cd33348e1b1df1ac1c",
+        "schema": "stpd/platform-policy-runtime-pin-v1",
+        "source_revision": "72751e2da00ce301090df8d17ec487b4bab47312",
+        "version": "0.1.0-rc.52"
+      },
+      "input_adapter": {
+        "code_sha256": "ef06a03d0771b779f8abce8dca6d46437c91fd4ef35e44747d9a266d8130a8a1",
+        "id": "stpd-p1-mstd-agent",
+        "protocol": "sts2.policy-runtime/agent-session-ndjson-1",
+        "version": "1"
+      },
+      "initial_progress_sha256": "b523759ab21f1a75bff2285c1fc7f7a2ce90514fda2d68217f5d6552653b12ce",
+      "store_kind": "local_stage",
+      "inference": {
+        "max_batch": 4,
+        "mode": "central_batch",
+        "window_ms": 2
+      },
+      "event_counts": {
+        "global_agent_frame": 256,
+        "global_initialized": 1,
+        "mode_changed": 1,
+        "global_capture_requested": 53,
+        "global_transport_response": 105,
+        "global_source": 53,
+        "global_episode_bound": 1,
+        "global_observation": 51,
+        "global_input": 51,
+        "global_consumed": 51,
+        "agent_directive": 51,
+        "global_choice": 50,
+        "controller_acquired": 52,
+        "global_dispatch": 52,
+        "global_receipt": 52,
+        "global_source_retained": 52,
+        "global_result": 50,
+        "controller_released": 1,
+        "stopped": 1
+      },
+      "recorded_failures": [],
+      "host_stages": [
+        {
+          "stage": "action_transport_native_and_raw_extraction",
+          "count": 52,
+          "total_ms": 2418.895962999999
+        },
+        {
+          "stage": "mount_transport_and_native",
+          "count": 0,
+          "total_ms": 0.0
+        },
+        {
+          "stage": "projection_assembly",
+          "count": 52,
+          "total_ms": 3.9823750000214204
+        },
+        {
+          "stage": "projection_context",
+          "count": 52,
+          "total_ms": 52.94674700001269
+        },
+        {
+          "stage": "projection_persistent",
+          "count": 52,
+          "total_ms": 3.0689129999882425
+        },
+        {
+          "stage": "projection_reads",
+          "count": 52,
+          "total_ms": 79.72220999998535
+        },
+        {
+          "stage": "projection_surface",
+          "count": 52,
+          "total_ms": 33.9873730000254
+        },
+        {
+          "stage": "projection_total",
+          "count": 52,
+          "total_ms": 210.0329139999776
+        },
+        {
+          "stage": "projection_validation",
+          "count": 52,
+          "total_ms": 32.014580000017304
+        },
+        {
+          "stage": "read_validation",
+          "count": 1008,
+          "total_ms": 24.91887100004169
+        },
+        {
+          "stage": "receipt",
+          "count": 52,
+          "total_ms": 24.630328000010195
+        }
+      ],
+      "native_cpu_ms": 4274.969,
+      "raw_files": 471,
+      "raw_bytes": 8752111,
+      "formal_readback": {
+        "archive_bytes": 2236844,
+        "artifact_id": "0b197349ba08ed714bd681c482919d14116ef9c6c973ec902b0fb351d96ae3d0",
+        "content_id": "72ad868d35283d444d50242753482ea1180952e3d9b7bba078f8dbcf280a34cb",
+        "event_count": 984,
+        "full_readback": true,
+        "human_origin_verified": false,
+        "research_admission": "not_evaluated",
+        "run_id": "run-3c34faac-821f-41ec-b6ee-fcf8ac6b8d09",
+        "typed_verification": "pass"
+      }
+    },
+    {
+      "family": "candidate-measurement",
+      "group": "central4-ledger",
+      "seed": "STPD1561BE6614A95752274CA19BBDB7",
+      "seed_ordinal": 4,
+      "status": "finished",
+      "reason": "natural_terminal",
+      "run_id": "run-1786bbaf-727a-486f-8ae8-095f82820e4d",
+      "elapsed_seconds": 196.65049233299214,
+      "phase_seconds": {
+        "close": 0.08365179190877825,
+        "execute": 97.86015145794954,
+        "finish": 10.251709125004709,
+        "prepare": 16.38006116694305,
+        "preserve": 72.0384552909527
+      },
+      "detail_seconds": {
+        "copy_peer": 23.22077349992469,
+        "host_launch": 11.361686834017746,
+        "host_performance": 0.035745165892876685,
+        "host_reset": 4.092713417019695,
+        "peer_readback": 46.202172499964945,
+        "publish_evidence": 2.4878741250140592,
+        "publish_runtime": 0.12023966596461833,
+        "runtime_startup": 3.448176250094548
+      },
+      "stored_evidence_id": "c0dcdef8b09f8609865475b2789325f4d0a130ca6d9597dfea2218722a0582dc",
+      "cleanup_accepted": true,
+      "report_sha256": "7757a8d6d265bae3b7f8931b9c4704c4bab8f3e2190603869f29beb37a273dc9",
+      "report_producer": {
+        "repository": "rsgcsg/STS2-The-Perfect-Defect-Project",
+        "source_revision": "cabbb50e0acc7b49daed619155fdef0eccb4c910",
+        "uv_lock_sha256": "23fed3426d340c85b32769ef2b7347a6cb9bf33b151cb48aad80a41d6fcc9e68"
+      },
+      "host_pin": {
+        "component_tree_revision": "248a0bc8944d201db3826dcfc0bd0b85b06465e3",
+        "package": "@rsgcsg/sts2-host-runtime",
+        "package_content_sha256": "a57b406fc5818cfe157ec077dd9051d3e446f99acb01e749fbbf9907f4f50fd9",
+        "release_asset_sha256": "0a871d2dcb94eeddaf3eff1df8ed2b7f3b1551c92976327dda8cf62ecaf78c74",
+        "schema": "stpd/platform-host-runtime-pin-v1",
+        "source_revision": "72751e2da00ce301090df8d17ec487b4bab47312",
+        "version": "1.1.0-rc.46"
+      },
+      "runtime_pin": {
+        "component_tree_revision": "389cab9840551debcbb4132428090bd6fbf31e7c",
+        "package": "@rsgcsg/sts2-policy-runtime",
+        "package_content_sha256": "d976935db58c7e79ad859a263ef47428140ff4e99d90c1f88e7b839a69844bf6",
+        "release_asset_sha256": "c85cd244f1e423d81e4b0c9ec7bd8c186870d2f2336479cd33348e1b1df1ac1c",
+        "schema": "stpd/platform-policy-runtime-pin-v1",
+        "source_revision": "72751e2da00ce301090df8d17ec487b4bab47312",
+        "version": "0.1.0-rc.52"
+      },
+      "input_adapter": {
+        "code_sha256": "ef06a03d0771b779f8abce8dca6d46437c91fd4ef35e44747d9a266d8130a8a1",
+        "id": "stpd-p1-mstd-agent",
+        "protocol": "sts2.policy-runtime/agent-session-ndjson-1",
+        "version": "1"
+      },
+      "initial_progress_sha256": "b523759ab21f1a75bff2285c1fc7f7a2ce90514fda2d68217f5d6552653b12ce",
+      "store_kind": "local_stage",
+      "inference": {
+        "max_batch": 4,
+        "mode": "central_batch",
+        "window_ms": 2
+      },
+      "event_counts": {
+        "global_agent_frame": 1031,
+        "global_initialized": 1,
+        "mode_changed": 1,
+        "global_capture_requested": 220,
+        "global_transport_response": 439,
+        "global_source": 220,
+        "global_episode_bound": 1,
+        "global_observation": 206,
+        "global_input": 206,
+        "global_consumed": 206,
+        "agent_directive": 206,
+        "global_choice": 205,
+        "controller_acquired": 219,
+        "global_dispatch": 219,
+        "global_receipt": 219,
+        "global_source_retained": 219,
+        "global_result": 205,
+        "controller_released": 1,
+        "stopped": 1
+      },
+      "recorded_failures": [],
+      "host_stages": [
+        {
+          "stage": "action_transport_native_and_raw_extraction",
+          "count": 219,
+          "total_ms": 6292.703004000003
+        },
+        {
+          "stage": "mount_transport_and_native",
+          "count": 0,
+          "total_ms": 0.0
+        },
+        {
+          "stage": "projection_assembly",
+          "count": 219,
+          "total_ms": 19.033168999980262
+        },
+        {
+          "stage": "projection_context",
+          "count": 219,
+          "total_ms": 191.66971799991734
+        },
+        {
+          "stage": "projection_persistent",
+          "count": 219,
+          "total_ms": 10.110745999958453
+        },
+        {
+          "stage": "projection_reads",
+          "count": 219,
+          "total_ms": 242.90983300004154
+        },
+        {
+          "stage": "projection_surface",
+          "count": 219,
+          "total_ms": 95.74612899987915
+        },
+        {
+          "stage": "projection_total",
+          "count": 219,
+          "total_ms": 642.862368000031
+        },
+        {
+          "stage": "projection_validation",
+          "count": 219,
+          "total_ms": 76.5067510000481
+        },
+        {
+          "stage": "read_validation",
+          "count": 5668,
+          "total_ms": 53.765804999755346
+        },
+        {
+          "stage": "receipt",
+          "count": 219,
+          "total_ms": 61.51141099996312
+        }
+      ],
+      "native_cpu_ms": 7437.589000000001,
+      "raw_files": 1902,
+      "raw_bytes": 41940050,
+      "formal_readback": {
+        "archive_bytes": 12329117,
+        "artifact_id": "c0dcdef8b09f8609865475b2789325f4d0a130ca6d9597dfea2218722a0582dc",
+        "content_id": "6789f64fbf359b8f07b85bc4fa95a9190ff7081908ce270557352afb1d906308",
+        "event_count": 4025,
+        "full_readback": true,
+        "human_origin_verified": false,
+        "research_admission": "not_evaluated",
+        "run_id": "run-1786bbaf-727a-486f-8ae8-095f82820e4d",
+        "typed_verification": "pass"
+      }
+    },
+    {
+      "family": "candidate-measurement",
+      "group": "central4-ledger",
+      "seed": "STPD67ECCE349E7EC65854C1D4D98EAF",
+      "seed_ordinal": 1,
+      "status": "unknown",
+      "reason": "runtime_execution_or_release_unknown",
+      "run_id": "run-7b3576ca-b387-4dd3-9737-85214ffa31bf",
+      "elapsed_seconds": 67.76328541699331,
+      "phase_seconds": {
+        "close": 0.09030425001401454,
+        "execute": 12.74089354206808,
+        "finish": 2.2956683330703527,
+        "prepare": 15.414224041975103,
+        "preserve": 37.21269000007305
+      },
+      "detail_seconds": {
+        "copy_peer": 3.5123272080672905,
+        "host_launch": 10.686360124964267,
+        "host_performance": 0.035450999974273145,
+        "host_reset": 3.9638064589817077,
+        "peer_readback": 32.16812100005336,
+        "publish_evidence": 0.9605017090216279,
+        "publish_runtime": 0.5711966250091791,
+        "runtime_startup": 3.860699165961705
+      },
+      "stored_evidence_id": "79d52ed79b870d117cc4eaddf00c12058a672bc4b33edc6bd8fa14d733dd2465",
+      "cleanup_accepted": true,
+      "report_sha256": "34da829a0034b96149930c81c8a9e4264008a5d5b84eb9f1b4b4b54a15a41460",
+      "report_producer": {
+        "repository": "rsgcsg/STS2-The-Perfect-Defect-Project",
+        "source_revision": "cabbb50e0acc7b49daed619155fdef0eccb4c910",
+        "uv_lock_sha256": "23fed3426d340c85b32769ef2b7347a6cb9bf33b151cb48aad80a41d6fcc9e68"
+      },
+      "host_pin": {
+        "component_tree_revision": "248a0bc8944d201db3826dcfc0bd0b85b06465e3",
+        "package": "@rsgcsg/sts2-host-runtime",
+        "package_content_sha256": "a57b406fc5818cfe157ec077dd9051d3e446f99acb01e749fbbf9907f4f50fd9",
+        "release_asset_sha256": "0a871d2dcb94eeddaf3eff1df8ed2b7f3b1551c92976327dda8cf62ecaf78c74",
+        "schema": "stpd/platform-host-runtime-pin-v1",
+        "source_revision": "72751e2da00ce301090df8d17ec487b4bab47312",
+        "version": "1.1.0-rc.46"
+      },
+      "runtime_pin": {
+        "component_tree_revision": "389cab9840551debcbb4132428090bd6fbf31e7c",
+        "package": "@rsgcsg/sts2-policy-runtime",
+        "package_content_sha256": "d976935db58c7e79ad859a263ef47428140ff4e99d90c1f88e7b839a69844bf6",
+        "release_asset_sha256": "c85cd244f1e423d81e4b0c9ec7bd8c186870d2f2336479cd33348e1b1df1ac1c",
+        "schema": "stpd/platform-policy-runtime-pin-v1",
+        "source_revision": "72751e2da00ce301090df8d17ec487b4bab47312",
+        "version": "0.1.0-rc.52"
+      },
+      "input_adapter": {
+        "code_sha256": "ef06a03d0771b779f8abce8dca6d46437c91fd4ef35e44747d9a266d8130a8a1",
+        "id": "stpd-p1-mstd-agent",
+        "protocol": "sts2.policy-runtime/agent-session-ndjson-1",
+        "version": "1"
+      },
+      "initial_progress_sha256": "b523759ab21f1a75bff2285c1fc7f7a2ce90514fda2d68217f5d6552653b12ce",
+      "store_kind": "local_stage",
+      "inference": {
+        "max_batch": 4,
+        "mode": "central_batch",
+        "window_ms": 2
+      },
+      "event_counts": {
+        "global_agent_frame": 41,
+        "global_initialized": 1,
+        "mode_changed": 1,
+        "global_capture_requested": 9,
+        "global_transport_response": 17,
+        "global_source": 9,
+        "global_episode_bound": 1,
+        "global_observation": 8,
+        "global_input": 8,
+        "global_consumed": 8,
+        "agent_directive": 8,
+        "global_choice": 8,
+        "controller_acquired": 8,
+        "global_dispatch": 8,
+        "global_receipt": 8,
+        "global_source_retained": 8,
+        "global_result": 8,
+        "controller_released": 1,
+        "runtime_tainted": 1,
+        "stopped": 1
+      },
+      "recorded_failures": [
+        {
+          "event_sequence": 160,
+          "kind": "runtime_tainted",
+          "reason": "global_post_delivery_capture:global_post_delivery_capture_incomplete"
+        }
+      ],
+      "host_stages": [
+        {
+          "stage": "action_transport_native_and_raw_extraction",
+          "count": 8,
+          "total_ms": 1021.0509199999942
+        },
+        {
+          "stage": "mount_transport_and_native",
+          "count": 0,
+          "total_ms": 0.0
+        },
+        {
+          "stage": "projection_assembly",
+          "count": 8,
+          "total_ms": 2.79074899999614
+        },
+        {
+          "stage": "projection_context",
+          "count": 8,
+          "total_ms": 14.203416000007564
+        },
+        {
+          "stage": "projection_persistent",
+          "count": 8,
+          "total_ms": 1.3132089999962773
+        },
+        {
+          "stage": "projection_reads",
+          "count": 8,
+          "total_ms": 18.183584000005794
+        },
+        {
+          "stage": "projection_surface",
+          "count": 8,
+          "total_ms": 17.26433299999553
+        },
+        {
+          "stage": "projection_total",
+          "count": 8,
+          "total_ms": 64.54529099999854
+        },
+        {
+          "stage": "projection_validation",
+          "count": 8,
+          "total_ms": 9.92462599999999
+        },
+        {
+          "stage": "read_validation",
+          "count": 183,
+          "total_ms": 6.73396599998523
+        },
+        {
+          "stage": "receipt",
+          "count": 8,
+          "total_ms": 8.981916999997338
+        }
+      ],
+      "native_cpu_ms": 2647.4260000000004,
+      "raw_files": 81,
+      "raw_bytes": 1485037,
+      "formal_readback": {
+        "archive_bytes": 404917,
+        "artifact_id": "79d52ed79b870d117cc4eaddf00c12058a672bc4b33edc6bd8fa14d733dd2465",
+        "content_id": "18f445f99fd8b37b009891ba523fb0bf28d705d044dc29e846821d97be9f037a",
+        "event_count": 162,
+        "full_readback": true,
+        "human_origin_verified": false,
+        "research_admission": "not_evaluated",
+        "run_id": "run-7b3576ca-b387-4dd3-9737-85214ffa31bf",
+        "typed_verification": "pass"
+      },
+      "unknown_category": "capture_incomplete"
+    },
+    {
+      "family": "candidate-measurement",
+      "group": "per_actor4-ledger",
+      "seed": "STPD385899F2208CF603B26C8006C27B",
+      "seed_ordinal": 2,
+      "status": "unknown",
+      "reason": "managed_settling_stalled",
+      "run_id": "run-2538df29-0690-40d0-9d2e-08c3b074dea5",
+      "elapsed_seconds": 360.3541627499508,
+      "phase_seconds": {
+        "close": 0.07150862505659461,
+        "execute": 172.07661758398172,
+        "finish": 15.02062595798634,
+        "prepare": 6.526634000008926,
+        "preserve": 166.63276574993506
+      },
+      "detail_seconds": {
+        "copy_peer": 105.46048070897814,
+        "host_launch": 3.7682004999369383,
+        "host_performance": 0.022167208953760564,
+        "host_reset": 2.248017166974023,
+        "peer_readback": 54.49016299995128,
+        "publish_evidence": 6.53262962505687,
+        "publish_runtime": 0.1486117079621181,
+        "runtime_startup": 1.7285422080894932
+      },
+      "stored_evidence_id": "1ccf62e0568e5ffc6dca0d1f23c5b591c7898bf27543436f7ea2e63b96115fe2",
+      "cleanup_accepted": true,
+      "report_sha256": "99e51817aae4e828bc65ae91899bc65c1c419e8be5a74ebb3e391fdafc41b5ef",
+      "report_producer": {
+        "repository": "rsgcsg/STS2-The-Perfect-Defect-Project",
+        "source_revision": "cabbb50e0acc7b49daed619155fdef0eccb4c910",
+        "uv_lock_sha256": "23fed3426d340c85b32769ef2b7347a6cb9bf33b151cb48aad80a41d6fcc9e68"
+      },
+      "host_pin": {
+        "component_tree_revision": "248a0bc8944d201db3826dcfc0bd0b85b06465e3",
+        "package": "@rsgcsg/sts2-host-runtime",
+        "package_content_sha256": "a57b406fc5818cfe157ec077dd9051d3e446f99acb01e749fbbf9907f4f50fd9",
+        "release_asset_sha256": "0a871d2dcb94eeddaf3eff1df8ed2b7f3b1551c92976327dda8cf62ecaf78c74",
+        "schema": "stpd/platform-host-runtime-pin-v1",
+        "source_revision": "72751e2da00ce301090df8d17ec487b4bab47312",
+        "version": "1.1.0-rc.46"
+      },
+      "runtime_pin": {
+        "component_tree_revision": "389cab9840551debcbb4132428090bd6fbf31e7c",
+        "package": "@rsgcsg/sts2-policy-runtime",
+        "package_content_sha256": "d976935db58c7e79ad859a263ef47428140ff4e99d90c1f88e7b839a69844bf6",
+        "release_asset_sha256": "c85cd244f1e423d81e4b0c9ec7bd8c186870d2f2336479cd33348e1b1df1ac1c",
+        "schema": "stpd/platform-policy-runtime-pin-v1",
+        "source_revision": "72751e2da00ce301090df8d17ec487b4bab47312",
+        "version": "0.1.0-rc.52"
+      },
+      "input_adapter": {
+        "code_sha256": "ef06a03d0771b779f8abce8dca6d46437c91fd4ef35e44747d9a266d8130a8a1",
+        "id": "stpd-p1-mstd-agent",
+        "protocol": "sts2.policy-runtime/agent-session-ndjson-1",
+        "version": "1"
+      },
+      "initial_progress_sha256": "b523759ab21f1a75bff2285c1fc7f7a2ce90514fda2d68217f5d6552653b12ce",
+      "store_kind": "local_stage",
+      "inference": {
+        "mode": "per_actor"
+      },
+      "event_counts": {
+        "global_agent_frame": 496,
+        "global_initialized": 1,
+        "mode_changed": 1,
+        "global_capture_requested": 959,
+        "global_transport_response": 1064,
+        "global_source": 959,
+        "global_episode_bound": 1,
+        "global_observation": 99,
+        "global_input": 99,
+        "global_consumed": 99,
+        "agent_directive": 99,
+        "global_choice": 99,
+        "controller_acquired": 105,
+        "global_dispatch": 105,
+        "global_receipt": 105,
+        "global_source_retained": 958,
+        "global_result": 99,
+        "controller_released": 1,
+        "runtime_tainted": 1,
+        "stopped": 1
+      },
+      "recorded_failures": [
+        {
+          "event_sequence": 5349,
+          "kind": "runtime_tainted",
+          "reason": "global_post_delivery_capture:managed_settling_stalled"
+        }
+      ],
+      "host_stages": [
+        {
+          "stage": "action_transport_native_and_raw_extraction",
+          "count": 105,
+          "total_ms": 2400.3102489999783
+        },
+        {
+          "stage": "mount_transport_and_native",
+          "count": 0,
+          "total_ms": 0.0
+        },
+        {
+          "stage": "projection_assembly",
+          "count": 105,
+          "total_ms": 5.08033400002023
+        },
+        {
+          "stage": "projection_context",
+          "count": 105,
+          "total_ms": 88.23550800000703
+        },
+        {
+          "stage": "projection_persistent",
+          "count": 105,
+          "total_ms": 3.4277839999867865
+        },
+        {
+          "stage": "projection_reads",
+          "count": 105,
+          "total_ms": 104.94924700001502
+        },
+        {
+          "stage": "projection_surface",
+          "count": 105,
+          "total_ms": 56.459376000011616
+        },
+        {
+          "stage": "projection_total",
+          "count": 105,
+          "total_ms": 301.9804999999833
+        },
+        {
+          "stage": "projection_validation",
+          "count": 105,
+          "total_ms": 40.984713000041666
+        },
+        {
+          "stage": "read_validation",
+          "count": 27122,
+          "total_ms": 241.41947900068953
+        },
+        {
+          "stage": "receipt",
+          "count": 105,
+          "total_ms": 38.8418290000227
+        }
+      ],
+      "native_cpu_ms": 4620.826000000001,
+      "raw_files": 2624,
+      "raw_bytes": 53072349,
+      "settling_watchdog": {
+        "reason": "global_post_delivery_capture:managed_settling_stalled",
+        "first_source_to_detection_seconds": 120.058,
+        "detection_to_sealed_stop_seconds": 0.094,
+        "stalled_native_snapshot_id": "managed_4273f4b5617f4401bf9b078f3f23fa06_s106",
+        "captures_after_last_receipt": 854,
+        "applied_limit_ms": 120000
+      },
+      "formal_readback": {
+        "archive_bytes": 36959898,
+        "artifact_id": "1ccf62e0568e5ffc6dca0d1f23c5b591c7898bf27543436f7ea2e63b96115fe2",
+        "content_id": "44d8c6ed88c620398dcf06596da2ad3c5a7fe514354f18b13b452216869fe0f2",
+        "event_count": 5351,
+        "full_readback": true,
+        "human_origin_verified": false,
+        "research_admission": "not_evaluated",
+        "run_id": "run-2538df29-0690-40d0-9d2e-08c3b074dea5",
+        "typed_verification": "pass"
+      },
+      "unknown_category": "managed_settling_stalled"
+    },
+    {
+      "family": "candidate-measurement",
+      "group": "per_actor4-ledger",
+      "seed": "STPD5A13FD1BAE4ADFE3F8E27099FC45",
+      "seed_ordinal": 3,
+      "status": "unknown",
+      "reason": "managed_settling_stalled",
+      "run_id": "run-e2a80ab2-7c0b-4571-96ca-6428ec38e6d8",
+      "elapsed_seconds": 366.6605930000078,
+      "phase_seconds": {
+        "close": 0.0994674579706043,
+        "execute": 175.45797724998556,
+        "finish": 16.32840350002516,
+        "prepare": 6.564776625018567,
+        "preserve": 168.1812186250463
+      },
+      "detail_seconds": {
+        "copy_peer": 111.11275970900897,
+        "host_launch": 3.9289609170518816,
+        "host_performance": 0.02537858404684812,
+        "host_reset": 2.097207084065303,
+        "peer_readback": 51.18171466700733,
+        "publish_evidence": 5.705017915926874,
+        "publish_runtime": 0.1810489579802379,
+        "runtime_startup": 1.7342332920525223
+      },
+      "stored_evidence_id": "a38f5b98ca37440c1129c88817651cf792d25357a8d15b4c5400204599a0182a",
+      "cleanup_accepted": true,
+      "report_sha256": "0f345d7eda85ea8c518471bd63fe5cb97899d8c83e428311f78e76a266cbd79b",
+      "report_producer": {
+        "repository": "rsgcsg/STS2-The-Perfect-Defect-Project",
+        "source_revision": "cabbb50e0acc7b49daed619155fdef0eccb4c910",
+        "uv_lock_sha256": "23fed3426d340c85b32769ef2b7347a6cb9bf33b151cb48aad80a41d6fcc9e68"
+      },
+      "host_pin": {
+        "component_tree_revision": "248a0bc8944d201db3826dcfc0bd0b85b06465e3",
+        "package": "@rsgcsg/sts2-host-runtime",
+        "package_content_sha256": "a57b406fc5818cfe157ec077dd9051d3e446f99acb01e749fbbf9907f4f50fd9",
+        "release_asset_sha256": "0a871d2dcb94eeddaf3eff1df8ed2b7f3b1551c92976327dda8cf62ecaf78c74",
+        "schema": "stpd/platform-host-runtime-pin-v1",
+        "source_revision": "72751e2da00ce301090df8d17ec487b4bab47312",
+        "version": "1.1.0-rc.46"
+      },
+      "runtime_pin": {
+        "component_tree_revision": "389cab9840551debcbb4132428090bd6fbf31e7c",
+        "package": "@rsgcsg/sts2-policy-runtime",
+        "package_content_sha256": "d976935db58c7e79ad859a263ef47428140ff4e99d90c1f88e7b839a69844bf6",
+        "release_asset_sha256": "c85cd244f1e423d81e4b0c9ec7bd8c186870d2f2336479cd33348e1b1df1ac1c",
+        "schema": "stpd/platform-policy-runtime-pin-v1",
+        "source_revision": "72751e2da00ce301090df8d17ec487b4bab47312",
+        "version": "0.1.0-rc.52"
+      },
+      "input_adapter": {
+        "code_sha256": "ef06a03d0771b779f8abce8dca6d46437c91fd4ef35e44747d9a266d8130a8a1",
+        "id": "stpd-p1-mstd-agent",
+        "protocol": "sts2.policy-runtime/agent-session-ndjson-1",
+        "version": "1"
+      },
+      "initial_progress_sha256": "b523759ab21f1a75bff2285c1fc7f7a2ce90514fda2d68217f5d6552653b12ce",
+      "store_kind": "local_stage",
+      "inference": {
+        "mode": "per_actor"
+      },
+      "event_counts": {
+        "global_agent_frame": 526,
+        "global_initialized": 1,
+        "mode_changed": 1,
+        "global_capture_requested": 968,
+        "global_transport_response": 1080,
+        "global_source": 968,
+        "global_episode_bound": 1,
+        "global_observation": 105,
+        "global_input": 105,
+        "global_consumed": 105,
+        "agent_directive": 105,
+        "global_choice": 105,
+        "controller_acquired": 112,
+        "global_dispatch": 112,
+        "global_receipt": 112,
+        "global_source_retained": 967,
+        "global_result": 105,
+        "controller_released": 1,
+        "runtime_tainted": 1,
+        "stopped": 1
+      },
+      "recorded_failures": [
+        {
+          "event_sequence": 5479,
+          "kind": "runtime_tainted",
+          "reason": "global_post_delivery_capture:managed_settling_stalled"
+        }
+      ],
+      "host_stages": [
+        {
+          "stage": "action_transport_native_and_raw_extraction",
+          "count": 112,
+          "total_ms": 2351.8953369999654
+        },
+        {
+          "stage": "mount_transport_and_native",
+          "count": 0,
+          "total_ms": 0.0
+        },
+        {
+          "stage": "projection_assembly",
+          "count": 112,
+          "total_ms": 4.81653800001186
+        },
+        {
+          "stage": "projection_context",
+          "count": 112,
+          "total_ms": 92.80749499999729
+        },
+        {
+          "stage": "projection_persistent",
+          "count": 112,
+          "total_ms": 3.404871000066123
+        },
+        {
+          "stage": "projection_reads",
+          "count": 112,
+          "total_ms": 97.54062799994608
+        },
+        {
+          "stage": "projection_surface",
+          "count": 112,
+          "total_ms": 59.12183199999163
+        },
+        {
+          "stage": "projection_total",
+          "count": 112,
+          "total_ms": 298.08366800002113
+        },
+        {
+          "stage": "projection_validation",
+          "count": 112,
+          "total_ms": 37.777116000019305
+        },
+        {
+          "stage": "read_validation",
+          "count": 28284,
+          "total_ms": 239.82288999865705
+        },
+        {
+          "stage": "receipt",
+          "count": 112,
+          "total_ms": 30.958246999995026
+        }
+      ],
+      "native_cpu_ms": 4626.754,
+      "raw_files": 2685,
+      "raw_bytes": 54598012,
+      "settling_watchdog": {
+        "reason": "global_post_delivery_capture:managed_settling_stalled",
+        "first_source_to_detection_seconds": 120.029,
+        "detection_to_sealed_stop_seconds": 0.168,
+        "stalled_native_snapshot_id": "managed_f9afe9ca6a21408cb452a2301602a100_s113",
+        "captures_after_last_receipt": 856,
+        "applied_limit_ms": 120000
+      },
+      "formal_readback": {
+        "archive_bytes": 37689341,
+        "artifact_id": "a38f5b98ca37440c1129c88817651cf792d25357a8d15b4c5400204599a0182a",
+        "content_id": "71c6f0f757456bc79a92df0c6ccb73eeaeaa3f870cf1f902453187df07f56116",
+        "event_count": 5481,
+        "full_readback": true,
+        "human_origin_verified": false,
+        "research_admission": "not_evaluated",
+        "run_id": "run-e2a80ab2-7c0b-4571-96ca-6428ec38e6d8",
+        "typed_verification": "pass"
+      },
+      "unknown_category": "managed_settling_stalled"
+    },
+    {
+      "family": "candidate-measurement",
+      "group": "per_actor4-ledger",
+      "seed": "STPD7944A4755303642B9C0F2ED7BA7F",
+      "seed_ordinal": 4,
+      "status": "finished",
+      "reason": "natural_terminal",
+      "run_id": "run-bee89ab5-1db8-46b1-909f-985ad84ecaa8",
+      "elapsed_seconds": 132.19899862492457,
+      "phase_seconds": {
+        "close": 0.07184391596820205,
+        "execute": 58.97354816610459,
+        "finish": 5.511139667010866,
+        "prepare": 6.699699959019199,
+        "preserve": 60.894732500077225
+      },
+      "detail_seconds": {
+        "copy_peer": 10.854131124913692,
+        "host_launch": 4.126034583081491,
+        "host_performance": 0.02381895889993757,
+        "host_reset": 2.0280506670242175,
+        "peer_readback": 48.07600991695654,
+        "publish_evidence": 1.8067900839960203,
+        "publish_runtime": 0.1566954159643501,
+        "runtime_startup": 1.8856997089460492
+      },
+      "stored_evidence_id": "a440627dc636b61d7de920be243a27b689db676043b4f37865cdf951dba71db5",
+      "cleanup_accepted": true,
+      "report_sha256": "8371db6034d299d4a45c23ea0061fe0b8ee8dd26253d7580437b59c3339b9b80",
+      "report_producer": {
+        "repository": "rsgcsg/STS2-The-Perfect-Defect-Project",
+        "source_revision": "cabbb50e0acc7b49daed619155fdef0eccb4c910",
+        "uv_lock_sha256": "23fed3426d340c85b32769ef2b7347a6cb9bf33b151cb48aad80a41d6fcc9e68"
+      },
+      "host_pin": {
+        "component_tree_revision": "248a0bc8944d201db3826dcfc0bd0b85b06465e3",
+        "package": "@rsgcsg/sts2-host-runtime",
+        "package_content_sha256": "a57b406fc5818cfe157ec077dd9051d3e446f99acb01e749fbbf9907f4f50fd9",
+        "release_asset_sha256": "0a871d2dcb94eeddaf3eff1df8ed2b7f3b1551c92976327dda8cf62ecaf78c74",
+        "schema": "stpd/platform-host-runtime-pin-v1",
+        "source_revision": "72751e2da00ce301090df8d17ec487b4bab47312",
+        "version": "1.1.0-rc.46"
+      },
+      "runtime_pin": {
+        "component_tree_revision": "389cab9840551debcbb4132428090bd6fbf31e7c",
+        "package": "@rsgcsg/sts2-policy-runtime",
+        "package_content_sha256": "d976935db58c7e79ad859a263ef47428140ff4e99d90c1f88e7b839a69844bf6",
+        "release_asset_sha256": "c85cd244f1e423d81e4b0c9ec7bd8c186870d2f2336479cd33348e1b1df1ac1c",
+        "schema": "stpd/platform-policy-runtime-pin-v1",
+        "source_revision": "72751e2da00ce301090df8d17ec487b4bab47312",
+        "version": "0.1.0-rc.52"
+      },
+      "input_adapter": {
+        "code_sha256": "ef06a03d0771b779f8abce8dca6d46437c91fd4ef35e44747d9a266d8130a8a1",
+        "id": "stpd-p1-mstd-agent",
+        "protocol": "sts2.policy-runtime/agent-session-ndjson-1",
+        "version": "1"
+      },
+      "initial_progress_sha256": "b523759ab21f1a75bff2285c1fc7f7a2ce90514fda2d68217f5d6552653b12ce",
+      "store_kind": "local_stage",
+      "inference": {
+        "mode": "per_actor"
+      },
+      "event_counts": {
+        "global_agent_frame": 561,
+        "global_initialized": 1,
+        "mode_changed": 1,
+        "global_capture_requested": 117,
+        "global_transport_response": 233,
+        "global_source": 117,
+        "global_episode_bound": 1,
+        "global_observation": 112,
+        "global_input": 112,
+        "global_consumed": 112,
+        "agent_directive": 112,
+        "global_choice": 111,
+        "controller_acquired": 116,
+        "global_dispatch": 116,
+        "global_receipt": 116,
+        "global_source_retained": 116,
+        "global_result": 111,
+        "controller_released": 1,
+        "stopped": 1
+      },
+      "recorded_failures": [],
+      "host_stages": [
+        {
+          "stage": "action_transport_native_and_raw_extraction",
+          "count": 116,
+          "total_ms": 2875.5275010000023
+        },
+        {
+          "stage": "mount_transport_and_native",
+          "count": 0,
+          "total_ms": 0.0
+        },
+        {
+          "stage": "projection_assembly",
+          "count": 116,
+          "total_ms": 5.566457999957493
+        },
+        {
+          "stage": "projection_context",
+          "count": 116,
+          "total_ms": 115.13328700000238
+        },
+        {
+          "stage": "projection_persistent",
+          "count": 116,
+          "total_ms": 4.7204989999936515
+        },
+        {
+          "stage": "projection_reads",
+          "count": 116,
+          "total_ms": 130.19975400003204
+        },
+        {
+          "stage": "projection_surface",
+          "count": 116,
+          "total_ms": 63.213122999994084
+        },
+        {
+          "stage": "projection_total",
+          "count": 116,
+          "total_ms": 368.32379299998865
+        },
+        {
+          "stage": "projection_validation",
+          "count": 116,
+          "total_ms": 46.63853600003313
+        },
+        {
+          "stage": "read_validation",
+          "count": 2960,
+          "total_ms": 29.96276500007116
+        },
+        {
+          "stage": "receipt",
+          "count": 116,
+          "total_ms": 39.36404400003812
+        }
+      ],
+      "native_cpu_ms": 5277.984,
+      "raw_files": 1029,
+      "raw_bytes": 23190712,
+      "formal_readback": {
+        "archive_bytes": 6568017,
+        "artifact_id": "a440627dc636b61d7de920be243a27b689db676043b4f37865cdf951dba71db5",
+        "content_id": "7323bcd6e25291c8a86f7795afda52d3a537028b259acef306d3988922dce647",
+        "event_count": 2167,
+        "full_readback": true,
+        "human_origin_verified": false,
+        "research_admission": "not_evaluated",
+        "run_id": "run-bee89ab5-1db8-46b1-909f-985ad84ecaa8",
+        "typed_verification": "pass"
+      }
+    },
+    {
+      "family": "candidate-measurement",
+      "group": "per_actor4-ledger",
+      "seed": "STPD6638B5577C1E0D0B043209619FB6",
+      "seed_ordinal": 1,
+      "status": "finished",
+      "reason": "natural_terminal",
+      "run_id": "run-63166195-feba-456e-9095-a46313fb7b51",
+      "elapsed_seconds": 132.58622125000693,
+      "phase_seconds": {
+        "close": 0.07001833291724324,
+        "execute": 62.161355957970954,
+        "finish": 5.738058834103867,
+        "prepare": 6.11377325002104,
+        "preserve": 58.45968033291865
+      },
+      "detail_seconds": {
+        "copy_peer": 7.963363083079457,
+        "host_launch": 3.494285292108543,
+        "host_performance": 0.02284354204311967,
+        "host_reset": 2.145174916018732,
+        "peer_readback": 48.73857370798942,
+        "publish_evidence": 1.6684664580971003,
+        "publish_runtime": 0.08885625004768372,
+        "runtime_startup": 1.8844066249439493
+      },
+      "stored_evidence_id": "ee7cc28620288e0a819afa40882840fa242b5d765b799153b4913ac91a72a853",
+      "cleanup_accepted": true,
+      "report_sha256": "8a0c3d4826c32733ae9130fe0f8ebd00c78f6a6738c85a7ad7eb223fc1df18d7",
+      "report_producer": {
+        "repository": "rsgcsg/STS2-The-Perfect-Defect-Project",
+        "source_revision": "cabbb50e0acc7b49daed619155fdef0eccb4c910",
+        "uv_lock_sha256": "23fed3426d340c85b32769ef2b7347a6cb9bf33b151cb48aad80a41d6fcc9e68"
+      },
+      "host_pin": {
+        "component_tree_revision": "248a0bc8944d201db3826dcfc0bd0b85b06465e3",
+        "package": "@rsgcsg/sts2-host-runtime",
+        "package_content_sha256": "a57b406fc5818cfe157ec077dd9051d3e446f99acb01e749fbbf9907f4f50fd9",
+        "release_asset_sha256": "0a871d2dcb94eeddaf3eff1df8ed2b7f3b1551c92976327dda8cf62ecaf78c74",
+        "schema": "stpd/platform-host-runtime-pin-v1",
+        "source_revision": "72751e2da00ce301090df8d17ec487b4bab47312",
+        "version": "1.1.0-rc.46"
+      },
+      "runtime_pin": {
+        "component_tree_revision": "389cab9840551debcbb4132428090bd6fbf31e7c",
+        "package": "@rsgcsg/sts2-policy-runtime",
+        "package_content_sha256": "d976935db58c7e79ad859a263ef47428140ff4e99d90c1f88e7b839a69844bf6",
+        "release_asset_sha256": "c85cd244f1e423d81e4b0c9ec7bd8c186870d2f2336479cd33348e1b1df1ac1c",
+        "schema": "stpd/platform-policy-runtime-pin-v1",
+        "source_revision": "72751e2da00ce301090df8d17ec487b4bab47312",
+        "version": "0.1.0-rc.52"
+      },
+      "input_adapter": {
+        "code_sha256": "ef06a03d0771b779f8abce8dca6d46437c91fd4ef35e44747d9a266d8130a8a1",
+        "id": "stpd-p1-mstd-agent",
+        "protocol": "sts2.policy-runtime/agent-session-ndjson-1",
+        "version": "1"
+      },
+      "initial_progress_sha256": "b523759ab21f1a75bff2285c1fc7f7a2ce90514fda2d68217f5d6552653b12ce",
+      "store_kind": "local_stage",
+      "inference": {
+        "mode": "per_actor"
+      },
+      "event_counts": {
+        "global_agent_frame": 586,
+        "global_initialized": 1,
+        "mode_changed": 1,
+        "global_capture_requested": 122,
+        "global_transport_response": 243,
+        "global_source": 122,
+        "global_episode_bound": 1,
+        "global_observation": 117,
+        "global_input": 117,
+        "global_consumed": 117,
+        "agent_directive": 117,
+        "global_choice": 116,
+        "controller_acquired": 121,
+        "global_dispatch": 121,
+        "global_receipt": 121,
+        "global_source_retained": 121,
+        "global_result": 116,
+        "controller_released": 1,
+        "stopped": 1
+      },
+      "recorded_failures": [],
+      "host_stages": [
+        {
+          "stage": "action_transport_native_and_raw_extraction",
+          "count": 121,
+          "total_ms": 3041.118961999964
+        },
+        {
+          "stage": "mount_transport_and_native",
+          "count": 0,
+          "total_ms": 0.0
+        },
+        {
+          "stage": "projection_assembly",
+          "count": 121,
+          "total_ms": 5.914374999943902
+        },
+        {
+          "stage": "projection_context",
+          "count": 121,
+          "total_ms": 116.61854200000198
+        },
+        {
+          "stage": "projection_persistent",
+          "count": 121,
+          "total_ms": 4.276214000004984
+        },
+        {
+          "stage": "projection_reads",
+          "count": 121,
+          "total_ms": 153.50833600001897
+        },
+        {
+          "stage": "projection_surface",
+          "count": 121,
+          "total_ms": 64.27829300003577
+        },
+        {
+          "stage": "projection_total",
+          "count": 121,
+          "total_ms": 396.1007060000102
+        },
+        {
+          "stage": "projection_validation",
+          "count": 121,
+          "total_ms": 48.50762800005759
+        },
+        {
+          "stage": "read_validation",
+          "count": 3296,
+          "total_ms": 32.994593999861536
+        },
+        {
+          "stage": "receipt",
+          "count": 121,
+          "total_ms": 38.23433100001057
+        }
+      ],
+      "native_cpu_ms": 5397.335000000001,
+      "raw_files": 1074,
+      "raw_bytes": 25485415,
+      "formal_readback": {
+        "archive_bytes": 7217847,
+        "artifact_id": "ee7cc28620288e0a819afa40882840fa242b5d765b799153b4913ac91a72a853",
+        "content_id": "1a5f8889fe3199b56fde39e7c14ecdef7d10cfeb641863e054ac1e772ad3d7fc",
+        "event_count": 2262,
+        "full_readback": true,
+        "human_origin_verified": false,
+        "research_admission": "not_evaluated",
+        "run_id": "run-63166195-feba-456e-9095-a46313fb7b51",
+        "typed_verification": "pass"
+      }
+    },
+    {
+      "family": "candidate-measurement",
+      "group": "profiled-ledger",
+      "seed": "STPD5C0BDFDB36F14A918A693EACC517",
+      "seed_ordinal": 2,
+      "status": "unknown",
+      "reason": "runtime_execution_or_release_unknown",
+      "run_id": "run-95378b29-83f7-4b30-8a6f-6e1547112cf3",
+      "elapsed_seconds": 178.90994375001173,
+      "phase_seconds": {
+        "close": 0.13392562500666827,
+        "execute": 54.431374458014034,
+        "finish": 5.73659200000111,
+        "prepare": 13.272450583055615,
+        "preserve": 105.31889604101889
+      },
+      "detail_seconds": {
+        "copy_peer": 4.763438250054605,
+        "host_launch": 8.076992208021693,
+        "host_performance": 0.044610874960199,
+        "host_reset": 4.28520283405669,
+        "peer_readback": 20.83217533293646,
+        "publish_evidence": 27.16509108291939,
+        "publish_runtime": 52.55557866592426,
+        "runtime_startup": 3.867325500003062
+      },
+      "stored_evidence_id": "20655f509bc06a92a0ae9d1d0e06a6ea2c6967e6f132a741801fe942be969bbd",
+      "cleanup_accepted": true,
+      "report_sha256": "3dd34a226ea10e64ee9b3bd4fcf8de45e0a9ae14f3093999f9b1154a7501b4fa",
+      "report_producer": {
+        "repository": "rsgcsg/STS2-The-Perfect-Defect-Project",
+        "source_revision": "cabbb50e0acc7b49daed619155fdef0eccb4c910",
+        "uv_lock_sha256": "23fed3426d340c85b32769ef2b7347a6cb9bf33b151cb48aad80a41d6fcc9e68"
+      },
+      "host_pin": {
+        "component_tree_revision": "248a0bc8944d201db3826dcfc0bd0b85b06465e3",
+        "package": "@rsgcsg/sts2-host-runtime",
+        "package_content_sha256": "a57b406fc5818cfe157ec077dd9051d3e446f99acb01e749fbbf9907f4f50fd9",
+        "release_asset_sha256": "0a871d2dcb94eeddaf3eff1df8ed2b7f3b1551c92976327dda8cf62ecaf78c74",
+        "schema": "stpd/platform-host-runtime-pin-v1",
+        "source_revision": "72751e2da00ce301090df8d17ec487b4bab47312",
+        "version": "1.1.0-rc.46"
+      },
+      "runtime_pin": {
+        "component_tree_revision": "389cab9840551debcbb4132428090bd6fbf31e7c",
+        "package": "@rsgcsg/sts2-policy-runtime",
+        "package_content_sha256": "d976935db58c7e79ad859a263ef47428140ff4e99d90c1f88e7b839a69844bf6",
+        "release_asset_sha256": "c85cd244f1e423d81e4b0c9ec7bd8c186870d2f2336479cd33348e1b1df1ac1c",
+        "schema": "stpd/platform-policy-runtime-pin-v1",
+        "source_revision": "72751e2da00ce301090df8d17ec487b4bab47312",
+        "version": "0.1.0-rc.52"
+      },
+      "input_adapter": {
+        "code_sha256": "ef06a03d0771b779f8abce8dca6d46437c91fd4ef35e44747d9a266d8130a8a1",
+        "id": "stpd-p1-mstd-agent",
+        "protocol": "sts2.policy-runtime/agent-session-ndjson-1",
+        "version": "1"
+      },
+      "initial_progress_sha256": "b523759ab21f1a75bff2285c1fc7f7a2ce90514fda2d68217f5d6552653b12ce",
+      "store_kind": "direct_r2",
+      "inference": {
+        "mode": "per_actor"
+      },
+      "event_counts": {
+        "global_agent_frame": 321,
+        "global_initialized": 1,
+        "mode_changed": 1,
+        "global_capture_requested": 69,
+        "global_transport_response": 137,
+        "global_source": 69,
+        "global_episode_bound": 1,
+        "global_observation": 64,
+        "global_input": 64,
+        "global_consumed": 64,
+        "agent_directive": 64,
+        "global_choice": 64,
+        "controller_acquired": 68,
+        "global_dispatch": 68,
+        "global_receipt": 68,
+        "global_source_retained": 68,
+        "global_result": 64,
+        "controller_released": 1,
+        "runtime_tainted": 1,
+        "stopped": 1
+      },
+      "recorded_failures": [
+        {
+          "event_sequence": 1256,
+          "kind": "runtime_tainted",
+          "reason": "global_post_delivery_capture:global_post_delivery_capture_incomplete"
+        }
+      ],
+      "host_stages": [
+        {
+          "stage": "action_transport_native_and_raw_extraction",
+          "count": 68,
+          "total_ms": 12708.671701000021
+        },
+        {
+          "stage": "mount_transport_and_native",
+          "count": 0,
+          "total_ms": 0.0
+        },
+        {
+          "stage": "projection_assembly",
+          "count": 68,
+          "total_ms": 8.182740999993257
+        },
+        {
+          "stage": "projection_context",
+          "count": 68,
+          "total_ms": 115.0622530000037
+        },
+        {
+          "stage": "projection_persistent",
+          "count": 68,
+          "total_ms": 6.109457000005932
+        },
+        {
+          "stage": "projection_reads",
+          "count": 68,
+          "total_ms": 127.8823000000666
+        },
+        {
+          "stage": "projection_surface",
+          "count": 68,
+          "total_ms": 74.25591199999326
+        },
+        {
+          "stage": "projection_total",
+          "count": 68,
+          "total_ms": 386.96799599998485
+        },
+        {
+          "stage": "projection_validation",
+          "count": 68,
+          "total_ms": 51.21354099997188
+        },
+        {
+          "stage": "read_validation",
+          "count": 1594,
+          "total_ms": 43.30357400001594
+        },
+        {
+          "stage": "receipt",
+          "count": 68,
+          "total_ms": 44.251871999993455
+        }
+      ],
+      "native_cpu_ms": 7698.325,
+      "raw_files": 597,
+      "raw_bytes": 12207100,
+      "formal_readback": {
+        "archive_bytes": 3502499,
+        "artifact_id": "20655f509bc06a92a0ae9d1d0e06a6ea2c6967e6f132a741801fe942be969bbd",
+        "content_id": "fe3c4b4f1df4f73afdfe268669cb7d114f6295d72ceee2a9aa735d780b973286",
+        "event_count": 1258,
+        "full_readback": true,
+        "human_origin_verified": false,
+        "research_admission": "not_evaluated",
+        "run_id": "run-95378b29-83f7-4b30-8a6f-6e1547112cf3",
+        "typed_verification": "pass"
+      },
+      "unknown_category": "capture_incomplete"
+    },
+    {
+      "family": "candidate-measurement",
+      "group": "profiled-ledger",
+      "seed": "STPDC288CC2CB274B1830BF4C8A0243B",
+      "seed_ordinal": 1,
+      "status": "finished",
+      "reason": "natural_terminal",
+      "run_id": "run-e1e5ca15-7a1b-4138-9054-66d6b11d8c26",
+      "elapsed_seconds": 229.0258436659351,
+      "phase_seconds": {
+        "close": 0.15739058295730501,
+        "execute": 95.13726608303841,
+        "finish": 12.109377207932994,
+        "prepare": 12.963379458058625,
+        "preserve": 108.63684399996419
+      },
+      "detail_seconds": {
+        "copy_peer": 2.7839008329901844,
+        "host_launch": 7.547320582903922,
+        "host_performance": 0.040932541829533875,
+        "host_reset": 4.517712625092827,
+        "peer_readback": 21.74827466707211,
+        "publish_evidence": 30.666969332960434,
+        "publish_runtime": 53.4349925420247,
+        "runtime_startup": 4.175963749992661
+      },
+      "stored_evidence_id": "d1202204dbe44716cd50b1975e68e1231adafbe67aae91400cbd4d95778a6149",
+      "cleanup_accepted": true,
+      "report_sha256": "c868f4a8e4f438ba456a8bdf61fc383677258a3b7d68e798302a43cb3baba218",
+      "report_producer": {
+        "repository": "rsgcsg/STS2-The-Perfect-Defect-Project",
+        "source_revision": "cabbb50e0acc7b49daed619155fdef0eccb4c910",
+        "uv_lock_sha256": "23fed3426d340c85b32769ef2b7347a6cb9bf33b151cb48aad80a41d6fcc9e68"
+      },
+      "host_pin": {
+        "component_tree_revision": "248a0bc8944d201db3826dcfc0bd0b85b06465e3",
+        "package": "@rsgcsg/sts2-host-runtime",
+        "package_content_sha256": "a57b406fc5818cfe157ec077dd9051d3e446f99acb01e749fbbf9907f4f50fd9",
+        "release_asset_sha256": "0a871d2dcb94eeddaf3eff1df8ed2b7f3b1551c92976327dda8cf62ecaf78c74",
+        "schema": "stpd/platform-host-runtime-pin-v1",
+        "source_revision": "72751e2da00ce301090df8d17ec487b4bab47312",
+        "version": "1.1.0-rc.46"
+      },
+      "runtime_pin": {
+        "component_tree_revision": "389cab9840551debcbb4132428090bd6fbf31e7c",
+        "package": "@rsgcsg/sts2-policy-runtime",
+        "package_content_sha256": "d976935db58c7e79ad859a263ef47428140ff4e99d90c1f88e7b839a69844bf6",
+        "release_asset_sha256": "c85cd244f1e423d81e4b0c9ec7bd8c186870d2f2336479cd33348e1b1df1ac1c",
+        "schema": "stpd/platform-policy-runtime-pin-v1",
+        "source_revision": "72751e2da00ce301090df8d17ec487b4bab47312",
+        "version": "0.1.0-rc.52"
+      },
+      "input_adapter": {
+        "code_sha256": "ef06a03d0771b779f8abce8dca6d46437c91fd4ef35e44747d9a266d8130a8a1",
+        "id": "stpd-p1-mstd-agent",
+        "protocol": "sts2.policy-runtime/agent-session-ndjson-1",
+        "version": "1"
+      },
+      "initial_progress_sha256": "b523759ab21f1a75bff2285c1fc7f7a2ce90514fda2d68217f5d6552653b12ce",
+      "store_kind": "direct_r2",
+      "inference": {
+        "mode": "per_actor"
+      },
+      "event_counts": {
+        "global_agent_frame": 626,
+        "global_initialized": 1,
+        "mode_changed": 1,
+        "global_capture_requested": 130,
+        "global_transport_response": 259,
+        "global_source": 130,
+        "global_episode_bound": 1,
+        "global_observation": 125,
+        "global_input": 125,
+        "global_consumed": 125,
+        "agent_directive": 125,
+        "global_choice": 124,
+        "controller_acquired": 129,
+        "global_dispatch": 129,
+        "global_receipt": 129,
+        "global_source_retained": 129,
+        "global_result": 124,
+        "controller_released": 1,
+        "stopped": 1
+      },
+      "recorded_failures": [],
+      "host_stages": [
+        {
+          "stage": "action_transport_native_and_raw_extraction",
+          "count": 129,
+          "total_ms": 7462.17462899999
+        },
+        {
+          "stage": "mount_transport_and_native",
+          "count": 0,
+          "total_ms": 0.0
+        },
+        {
+          "stage": "projection_assembly",
+          "count": 129,
+          "total_ms": 16.181041000068944
+        },
+        {
+          "stage": "projection_context",
+          "count": 129,
+          "total_ms": 223.87603599996874
+        },
+        {
+          "stage": "projection_persistent",
+          "count": 129,
+          "total_ms": 10.07162900003459
+        },
+        {
+          "stage": "projection_reads",
+          "count": 129,
+          "total_ms": 286.79604500001005
+        },
+        {
+          "stage": "projection_surface",
+          "count": 129,
+          "total_ms": 116.11745599999995
+        },
+        {
+          "stage": "projection_total",
+          "count": 129,
+          "total_ms": 769.5357129999938
+        },
+        {
+          "stage": "projection_validation",
+          "count": 129,
+          "total_ms": 109.24500100006844
+        },
+        {
+          "stage": "read_validation",
+          "count": 3514,
+          "total_ms": 67.10681100008878
+        },
+        {
+          "stage": "receipt",
+          "count": 129,
+          "total_ms": 82.6239989999849
+        }
+      ],
+      "native_cpu_ms": 10899.915,
+      "raw_files": 1146,
+      "raw_bytes": 25796558,
+      "formal_readback": {
+        "archive_bytes": 7426571,
+        "artifact_id": "d1202204dbe44716cd50b1975e68e1231adafbe67aae91400cbd4d95778a6149",
+        "content_id": "7e4b39fc421d88fa0150c65c456be0ab2968388b01df829fb8aabefcece66c95",
+        "event_count": 2414,
+        "full_readback": true,
+        "human_origin_verified": false,
+        "research_admission": "not_evaluated",
+        "run_id": "run-e1e5ca15-7a1b-4138-9054-66d6b11d8c26",
+        "typed_verification": "pass"
+      }
+    },
+    {
+      "family": "runtime-observer-run",
+      "group": "ledger",
+      "seed": "STPD50F787840E975B7D1EFEA8213830",
+      "seed_ordinal": 1,
+      "status": "unknown",
+      "reason": "runtime_execution_or_release_unknown",
+      "run_id": "run-10169912-bdcc-4413-b70e-78eef029b507",
+      "elapsed_seconds": 102.72776925005019,
+      "phase_seconds": {
+        "close": 0.03861862502526492,
+        "execute": 52.66405379201751,
+        "finish": 4.713384041911922,
+        "prepare": 3.1718457919778302,
+        "preserve": 42.134404625045136
+      },
+      "detail_seconds": {
+        "copy_peer": 4.518554416950792,
+        "host_launch": 1.831089042010717,
+        "host_performance": 0.010214583133347332,
+        "host_reset": 1.0712762080365792,
+        "peer_readback": 36.25550379208289,
+        "publish_evidence": 1.2568047079257667,
+        "publish_runtime": 0.10325775004457682,
+        "runtime_startup": 0.9308143749367446
+      },
+      "stored_evidence_id": "de312c405711c137d1848ed25a56b394359dc7626eee3d455b71ae8c546c3809",
+      "cleanup_accepted": true,
+      "report_sha256": "e8e46963b5e7100efc0abe9912e0173719de540782eb64a6fa08217c5bde2060",
+      "report_producer": {
+        "repository": "rsgcsg/STS2-The-Perfect-Defect-Project",
+        "source_revision": "cabbb50e0acc7b49daed619155fdef0eccb4c910",
+        "uv_lock_sha256": "23fed3426d340c85b32769ef2b7347a6cb9bf33b151cb48aad80a41d6fcc9e68"
+      },
+      "host_pin": {
+        "component_tree_revision": "248a0bc8944d201db3826dcfc0bd0b85b06465e3",
+        "package": "@rsgcsg/sts2-host-runtime",
+        "package_content_sha256": "a57b406fc5818cfe157ec077dd9051d3e446f99acb01e749fbbf9907f4f50fd9",
+        "release_asset_sha256": "0a871d2dcb94eeddaf3eff1df8ed2b7f3b1551c92976327dda8cf62ecaf78c74",
+        "schema": "stpd/platform-host-runtime-pin-v1",
+        "source_revision": "72751e2da00ce301090df8d17ec487b4bab47312",
+        "version": "1.1.0-rc.46"
+      },
+      "runtime_pin": {
+        "component_tree_revision": "389cab9840551debcbb4132428090bd6fbf31e7c",
+        "package": "@rsgcsg/sts2-policy-runtime",
+        "package_content_sha256": "d976935db58c7e79ad859a263ef47428140ff4e99d90c1f88e7b839a69844bf6",
+        "release_asset_sha256": "c85cd244f1e423d81e4b0c9ec7bd8c186870d2f2336479cd33348e1b1df1ac1c",
+        "schema": "stpd/platform-policy-runtime-pin-v1",
+        "source_revision": "72751e2da00ce301090df8d17ec487b4bab47312",
+        "version": "0.1.0-rc.52"
+      },
+      "input_adapter": {
+        "code_sha256": "ef06a03d0771b779f8abce8dca6d46437c91fd4ef35e44747d9a266d8130a8a1",
+        "id": "stpd-p1-mstd-agent",
+        "protocol": "sts2.policy-runtime/agent-session-ndjson-1",
+        "version": "1"
+      },
+      "initial_progress_sha256": "b523759ab21f1a75bff2285c1fc7f7a2ce90514fda2d68217f5d6552653b12ce",
+      "store_kind": "local_stage",
+      "inference": {
+        "mode": "per_actor"
+      },
+      "event_counts": {
+        "global_agent_frame": 871,
+        "global_initialized": 1,
+        "mode_changed": 1,
+        "global_capture_requested": 188,
+        "global_transport_response": 375,
+        "global_source": 188,
+        "global_episode_bound": 1,
+        "global_observation": 174,
+        "global_input": 174,
+        "global_consumed": 174,
+        "agent_directive": 174,
+        "global_choice": 174,
+        "controller_acquired": 187,
+        "global_dispatch": 187,
+        "global_receipt": 187,
+        "global_source_retained": 187,
+        "global_result": 174,
+        "controller_released": 1,
+        "runtime_tainted": 1,
+        "stopped": 1
+      },
+      "recorded_failures": [
+        {
+          "event_sequence": 3418,
+          "kind": "runtime_tainted",
+          "reason": "global_post_delivery_capture:global_post_delivery_capture_incomplete"
+        }
+      ],
+      "host_stages": [
+        {
+          "stage": "action_transport_native_and_raw_extraction",
+          "count": 187,
+          "total_ms": 2108.177587999987
+        },
+        {
+          "stage": "mount_transport_and_native",
+          "count": 0,
+          "total_ms": 0.0
+        },
+        {
+          "stage": "projection_assembly",
+          "count": 187,
+          "total_ms": 4.654334000012568
+        },
+        {
+          "stage": "projection_context",
+          "count": 187,
+          "total_ms": 78.81896600002437
+        },
+        {
+          "stage": "projection_persistent",
+          "count": 187,
+          "total_ms": 3.3045399999655274
+        },
+        {
+          "stage": "projection_reads",
+          "count": 187,
+          "total_ms": 94.10858800000096
+        },
+        {
+          "stage": "projection_surface",
+          "count": 187,
+          "total_ms": 47.09553699997741
+        },
+        {
+          "stage": "projection_total",
+          "count": 187,
+          "total_ms": 264.78599299996495
+        },
+        {
+          "stage": "projection_validation",
+          "count": 187,
+          "total_ms": 34.56324499998391
+        },
+        {
+          "stage": "read_validation",
+          "count": 4982,
+          "total_ms": 23.15659899973525
+        },
+        {
+          "stage": "receipt",
+          "count": 187,
+          "total_ms": 22.967169999982616
+        }
+      ],
+      "native_cpu_ms": 3276.5650000000005,
+      "raw_files": 1614,
+      "raw_bytes": 36340440,
+      "formal_readback": {
+        "archive_bytes": 10584321,
+        "artifact_id": "de312c405711c137d1848ed25a56b394359dc7626eee3d455b71ae8c546c3809",
+        "content_id": "adcf2207ecd30ff105683e5b7de526e97065747c31210193cbaed7e4b08d4e83",
+        "event_count": 3420,
+        "full_readback": true,
+        "human_origin_verified": false,
+        "research_admission": "not_evaluated",
+        "run_id": "run-10169912-bdcc-4413-b70e-78eef029b507",
+        "typed_verification": "pass"
+      },
+      "unknown_category": "capture_incomplete"
+    }
+  ],
+  "claims": {
+    "human_origin": false,
+    "research_admission": false,
+    "full_game_equivalence": false,
+    "steady_machine_capacity": false,
+    "between_group_causal_speedup": false
+  },
+  "unknown_breakdown": {
+    "storage_capacity_unsealed": 2,
+    "capture_incomplete": 5,
+    "global_delivery_unknown": 1,
+    "managed_settling_stalled": 2
+  }
+}

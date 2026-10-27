@@ -99,3 +99,23 @@ identity/binding records; they do not by themselves define different model
 semantics or prove Host equality. Both normal Host paths use P1 r1.5 here. The
 explicit r1.6 comparison contract is a separate, staged revision; compatibility
 and a future unordered model representation still need their own evidence.
+
+
+The detailed timing schema `spireagent/managed-detail-seconds-v1` adds nested
+launch/reset, Runtime startup, runtime publication, evidence publication, peer
+copy and full peer readback costs. Do not add nested details to lifecycle totals.
+Host rc46 also accepts an exact-episode, **manager-only** `performance` command
+with `expected_runtime_instance_id` and `expected_game_continuity_id`. It reads
+existing `ManagedPlayerEnvironmentSession.performance()` counters and native
+`process_metrics`; it neither advances the game nor changes the Agent surface.
+The evaluation configuration `measure_host_performance: true` records before and
+after snapshots in private attempt artifacts. Counter differences attribute Host
+projection/native transport work; native process CPU is not pure simulation wall
+time, and nested stage counters must not be summed as disjoint costs. Older
+frozen packages do not advertise this diagnostic and are not silently upgraded.
+
+Runtime rc52's Managed settling watchdog bounds a repeated snapshot wait. The
+application defaults to 120,000 ms and retains the episode as unknown with reason
+`managed_settling_stalled`; exact original evidence and accepted Host shutdown
+remain separate facts. M051's original offer is never reissued, and its underlying
+native asynchronous wait remains an M2 obligation.
