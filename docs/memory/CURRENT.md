@@ -2,16 +2,18 @@
 先前固定的 Managed 独立 20 局：19 自然负 / 1 结果未知；与真游戏分开，未证明整局等价。准确版本和全部原件/失败保留在事实收据。
 下一档方向目标：L1 为 A0 胜率 5%；后续 A0 20%/80%/100%、A10 5%/50%/95% 见[已定方向与口径边界](../evidence/CONVERGENCE_BASELINE_20261027.md#模型强度与评估)。未达到正式评级，也不由有限样本证明总体 100%。
 
-# 当前：W1 实验草稿与独立后续卡，X3 安装另等用户窗口
+# 当前：收敛基线与独立后续卡，X3 已安装并收口
 
 本轮固定版本看[收敛基线](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/tree/convergence-2026-10-27)；文档主包为PR256普通合并`ec03de11`，资产处置见[执行收据](../evidence/CONVERGENCE_DISPOSITION_EXECUTED_20261027.md)。基线不升级在用程序。
 <!-- Resolve live GitHub refs before action; latest user instructions and live evidence override this file. -->
 
 ## 当前三件事
 
-1. 采集优先：日常录制和Q维持用户正在用的组合；W1等原维护器处理完队列并通过正常入口盘点，未启动/停止/重装。实际游戏占用仍由用户与现场决定。
+1. 采集优先：日常录制与Q按现装组合继续；X3已在用户明确批准且游戏退出的窗口完成Workbench升级及隔离短验，未重数；实际游戏占用由用户与现场决定，旧“空闲”不能覆盖用户声明。
 2. 收敛收口：A/B/C已批准，文档已集成；6个旧PR已关闭、34条指定分支均先核归档tag再删除。原件、模型、本机目录、安装/回滚和R2保留；审批闹钟已按用户要求删除。
-3. W1源码与T2草稿由PR258交付，集成状态看PR；录后入池、每次实验选局/权重并按血统隔离考试，只合代码不冻结。M1调查/早停实跑与[下一版方案](../plans/MANAGED_SPEED_NEXT_20261027.zh-CN.md)已交，准确[事实](../evidence/MANAGED_SPEED_M1_20261027.md)归原件；后台保存未做，不自动接M2。[X3](../evidence/Q_POLISH_X3_20261027.md)源码已合，安装仍等用户批准且确认游戏退出。M3/T1/T2沿原依赖及各自实时授权处理，正式T2仍等明确“开训”，不从本页自动启动。
+3. M1调查/早停实跑与[下一版方案](../plans/MANAGED_SPEED_NEXT_20261027.zh-CN.md)已交，准确[事实](../evidence/MANAGED_SPEED_M1_20261027.md)归本轮；后台保存未做，不自动接M2。[X3](../evidence/Q_POLISH_X3_20261027.md)只修Q状态与重活调度，源码PR260已普通合入develop并按用户批准安装；隔离两操作起录/封存通过，Q已恢复。M3对Q文件的依赖已解除；T1/W1/M3/T2沿[原依赖](../plans/CONVERGENCE_BASELINE_20261027.zh-CN.md#收敛后待派发不是执行许可)及各自实时授权处理，正式T2仍等明确“开训”，不从本页自动启动。
+
+W1源码与T2草稿由PR258交付，集成状态看PR；录后入池、每次实验选局/权重并按血统隔离考试，只合代码不冻结。 W1下一步：用户审T2分配/权重草稿，新规则确认后另行冻结，正式训练仍等明确“开训”；本卡收口。
 
 ## 每轮成本：实测样本与下一步
 
@@ -25,7 +27,7 @@
 
 ## Remaining Platform non-claims
 
-源码、安装、真实使用、Human 来源、数据用途和模型效果分别查[事实收据](../evidence/CONVERGENCE_BASELINE_20261027.md)及其原证据。日常录制采用 Annotator30、Tool5afc7d76、release7c64126c；这不代表日常模型/评估 Runtime 已升为51。旧未知不补造。
+源码、安装、真实使用、Human 来源、数据用途和模型效果分别查[事实收据](../evidence/CONVERGENCE_BASELINE_20261027.md)及其原证据。日常Workbench为X3的releasefeba7ddb（源码19c3e6e3），Recorder仍为原Annotator30/Tool5afc7d76；不随随后develop变化升级Managed或模型/评估Runtime。旧未知不补造。
 当前未完成原 100 槽、Managed 整局等价、个人进度重演、输入 v2、下一轮正式训练或 RL；工程短验和 CI 都不替它们授资格。[地图](../DOCUMENT_MAP.md)给原操作入口，[待修](../plans/CONVERGENCE_BASELINE_20261027.zh-CN.md#待修与重构去向)保留未完义务。
 
-W1下一步：用户审T2分配/权重草稿，新规则确认后另行冻结，正式训练仍等明确“开训”；本卡收口。M1下一版由用户另选范围派发，X3安装仍等用户回复并重核游戏已退出；未安装不拿新源码描述在用行为。其它卡以原件/实时PR为准，不自动续跑旧100、M2、训练或RL。
+本卡下一步：用户选择M1下一版范围后另行派发；不自动续跑旧100、M2、训练或RL。X3已安装、确认可录并释放游戏位；日常Q启用/up_to_date/待处理0，本卡收口不接新任务。其它卡的负责人和当前进展以各自原件/实时PR为准，不从本页复活旧任务。
