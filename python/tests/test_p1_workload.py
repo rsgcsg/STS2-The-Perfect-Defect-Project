@@ -195,7 +195,7 @@ def test_existing_scheduler_and_modal_contract_carry_P1_request_and_result(tmp_p
     operations = Operations(tmp_path / "operations.sqlite")
     # The existing Hub uses its durable ledger. Publication alone is no admission.
     ledger = CurationLedger(operations)
-    from spireagent.p1_curation import reserve_p1_snapshot
+    from legacy_p1_fixture import reserve_p1_snapshot
 
     reserve_p1_snapshot(ledger, store, snapshot.artifact_id)
     job = operations.enqueue(

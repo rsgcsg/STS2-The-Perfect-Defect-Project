@@ -30,8 +30,8 @@ from stpd.workers.p1_run import verify_p1_result
 
 
 @contextmanager
-def client(tmp_path, *, reserve=True, peer_binding=None):
-    config, store, owner, snapshot = workspace(tmp_path)
+def client(tmp_path, *, reserve=True, peer_binding=None, human_cohort=False):
+    config, store, owner, snapshot = workspace(tmp_path, human_cohort=human_cohort)
     if reserve:
         reserve_p1_snapshot(owner, store, snapshot.artifact_id)
     binding = peer_binding or {"kind": "local", "directory": str(tmp_path / "peer")}

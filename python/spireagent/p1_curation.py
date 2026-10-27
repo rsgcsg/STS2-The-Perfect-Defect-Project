@@ -185,9 +185,9 @@ def record_p1_training_use(
     ledger: CurationLedger, store: Any, snapshot_id: str, operation_id: str, *,
     loss_weighting: dict[str, Any] | None = None, initial_checkpoint: str | None = None,
 ) -> None:
-    require_p1_experiment_input(ledger, store, snapshot_id, loss_weighting, initial_checkpoint)
     checked_digest(operation_id, "p1_training_data.operation_id", length=32)
     _, scopes = require_p1_snapshot(ledger, store, snapshot_id)
+    require_p1_experiment_input(ledger, store, snapshot_id, loss_weighting, initial_checkpoint)
     train = scopes["train"]
     with ledger.operations.transaction() as db:
         model = db.execute("SELECT model,parent FROM curation_p1_experiments WHERE snapshot=?",

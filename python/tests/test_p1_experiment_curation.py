@@ -388,3 +388,36 @@ def test_deferred_ancestor_cannot_contaminate_an_already_used_descendant(tmp_pat
             assert not db.execute(
                 "SELECT 1 FROM curation_uses WHERE run=? AND reference=?", (root, "4" * 32)
             ).fetchone()
+
+
+def test_upgrade_grandfathers_existing_snapshots_once_only(tmp_path):
+    from spireagent.research_curation import P1_EXPERIMENT_TABLES, CurationLedger
+
+    owner, store, _, pool, _ = pool_fixture(tmp_path)
+    plan = draft(owner, pool)
+    snapshot = legacy_freeze(
+        owner,
+        store,
+        PRODUCER,
+        projection_ids=[s["projection_id"] for s in plan["sources"]],
+        selected_decisions=plan["selection"],
+        split_by_group=plan["splits"],
+        split_salt="pre-upgrade",
+        reserve=True,
+    )["snapshot_id"]
+    # Reproduce the pre-upgrade database, retaining its original purpose claims.
+    with owner.ledger.operations.transaction() as db:
+        for table in sorted(P1_EXPERIMENT_TABLES):
+            db.execute("DROP TABLE " + table)
+    migrated = CurationLedger(owner)
+    with migrated.operations.transaction() as db:
+        assert db.execute("SELECT snapshot FROM curation_p1_legacy_snapshots").fetchall() == [
+            (snapshot,)
+        ]
+    migrated.claim("later-claim", "training", {"new-root"})
+    migrated.bind("later-claim", "f" * 64)
+    CurationLedger(owner)
+    with migrated.operations.transaction() as db:
+        assert db.execute("SELECT snapshot FROM curation_p1_legacy_snapshots").fetchall() == [
+            (snapshot,)
+        ]
