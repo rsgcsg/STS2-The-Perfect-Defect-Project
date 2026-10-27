@@ -10,15 +10,15 @@
     },
     "connector": {
       "version": "1.3.0-rc.35",
-      "source_revision": "5994a04ccb118babb54b7d265ea7d6ce4d6c3c7f",
-      "component_tree_revision": "28b1fd048ae120a49782b811b66242abe3044e39",
-      "component_source_digest_sha256": "3cd844dc50dcfb9bdd7ab62c1e6aaac955662d77145e9b6f3e682f6a0ff0e641"
+      "source_revision": "8667465eb6d6627a29ecc244058913062568b455",
+      "component_tree_revision": "b8be5b2502556625a553111bebf0d18c4eef0dfa",
+      "component_source_digest_sha256": "859a36b4caefab6d1435f6b05249ba3fb35cdaecac7dea0b112860002f52fcc8"
     },
     "host_runtime": {
-      "version": "1.1.0-rc.51",
-      "source_revision": "3304b394c431f8f6eddd65bac6c167a2c936705a",
-      "component_tree_revision": "9d72bfd16011ce457de2a77301125990b43a2472",
-      "component_source_digest_sha256": "7f1a953d861a9e46fad6839fa53415b0240405574c9126a8a228b2e498cb999e"
+      "version": "1.1.0-rc.52",
+      "source_revision": "8667465eb6d6627a29ecc244058913062568b455",
+      "component_tree_revision": "52215d21b1d3cb0b4b0b09f4d623872fec0a3064",
+      "component_source_digest_sha256": "ca9c2e7d7e0e712d845fc6fbe91c676ab3a687cc308bd9a1c2dc0a99953e0193"
     },
     "annotator": {
       "version": "0.3.0-rc.31",
@@ -157,8 +157,8 @@
     },
     "connector": {
       "source_revision": "09e5c2363fff64b2e8cfa07d16ec7cf22d8ad3b5",
-      "current_component_source_revision": "5994a04ccb118babb54b7d265ea7d6ce4d6c3c7f",
-      "current_component_source_digest_sha256": "3cd844dc50dcfb9bdd7ab62c1e6aaac955662d77145e9b6f3e682f6a0ff0e641",
+      "current_component_source_revision": "8667465eb6d6627a29ecc244058913062568b455",
+      "current_component_source_digest_sha256": "859a36b4caefab6d1435f6b05249ba3fb35cdaecac7dea0b112860002f52fcc8",
       "source_relation": "loaded_human_v2_artifact_precedes_unified_platform_source",
       "artifact_sha256": "6c66cbf06757dca3e7d910467fb56b89376f109c6d7d0ba47d2bc0260ab4a3d2",
       "artifact_mvid": "11f1da35-558f-4346-8ec9-a493fea95cb8",
@@ -258,8 +258,8 @@
     "connector": {
       "source_revision": "4de52cfd72c6bf5b0d2312538152e81c616dabfb",
       "source_digest_sha256": "8651b47e2fec8e0c77689a8e8774377795d79c188f2d69910a116e72db8f78c1",
-      "current_component_source_revision": "5994a04ccb118babb54b7d265ea7d6ce4d6c3c7f",
-      "current_component_source_digest_sha256": "3cd844dc50dcfb9bdd7ab62c1e6aaac955662d77145e9b6f3e682f6a0ff0e641",
+      "current_component_source_revision": "8667465eb6d6627a29ecc244058913062568b455",
+      "current_component_source_digest_sha256": "859a36b4caefab6d1435f6b05249ba3fb35cdaecac7dea0b112860002f52fcc8",
       "source_relation": "loaded_native_source_precedes_current_discriminator_source",
       "artifact_sha256": "04104ca5cd47c82329be185a8aa7017f7982b2062048fbf825488bead231d1c1",
       "artifact_mvid": "7408a183-f5a8-4f95-a997-dbf588b1536b",
