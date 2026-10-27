@@ -1025,7 +1025,7 @@ def test_initialize_defer_launcher_completes_environment_without_global_write(
 @pytest.mark.parametrize(("probe_output", "code"), [
     ("recording_intake_missing=tokenizers\n", "recording_intake_imports_failed_tokenizers"),
     ("recording_intake_missing=spireagent.workbench.x,torch\n",
-     "recording_intake_imports_failed_spireagent"),
+     "recording_intake_imports_failed_spireagent_workbench_x"),
     ("", "recording_intake_imports_unverified"),
     ("Traceback (most recent call last)\n", "recording_intake_imports_unverified"),
 ])
@@ -1047,7 +1047,9 @@ def test_recording_intake_probe_finds_tokenizers_gap_in_a_real_interpreter(tmp_p
     blocker.mkdir()
     (blocker / "tokenizers.py").write_text("raise ModuleNotFoundError(name='tokenizers')\n")
     (blocker / "q_module.py").write_text("import tokenizers\n")
+    (blocker / "broken_module.py").write_text("raise ImportError('broken wheel')\n")
     result = subprocess.run(
-        [install.sys.executable, "-c", install.RECORDING_INTAKE_PROBE, "q_module", "json"],
+        [install.sys.executable, "-c", install.RECORDING_INTAKE_PROBE, "q_module", "json",
+         "broken_module"],
         cwd=blocker, capture_output=True, text=True, check=True)
-    assert result.stdout.strip() == "recording_intake_missing=tokenizers"
+    assert result.stdout.strip() == "recording_intake_missing=tokenizers,broken_module"

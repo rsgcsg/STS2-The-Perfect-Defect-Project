@@ -1731,14 +1731,16 @@ RECORDING_INTAKE_MODULES = (
     "spireagent.workbench.p1_recording_maintenance",
     "spireagent.workbench.local_recording_import",
 )
-# The probe always exits 0 and names each missing module, so a failed check rejects
-# with the missing package instead of an opaque uv step failure.
+# The probe exits 0 and names each module that fails to import (the missing package,
+# or the listed module itself when it is present but broken), so a failed check
+# rejects with that name instead of an opaque uv step failure.
 RECORDING_INTAKE_PROBE = "\n".join((
     "import importlib, sys",
     "missing = []",
     "for name in sys.argv[1:]:",
     "    try: importlib.import_module(name)",
     "    except ModuleNotFoundError as error: missing.append(error.name or name)",
+    "    except Exception: missing.append(name)",
     "print('recording_intake_missing=' + ','.join(missing))",
 ))
 
@@ -1760,7 +1762,7 @@ def _check_recording_intake_imports(source: Path, extras: list[str]) -> None:
     if not last.startswith("recording_intake_missing="):
         reject("recording_intake_imports_unverified")
     if missing := last.removeprefix("recording_intake_missing="):
-        first = missing.split(",")[0].split(".")[0]
+        first = missing.split(",")[0]
         reject("recording_intake_imports_failed_" + "".join(
             char if char.isalnum() or char == "_" else "_" for char in first))
 

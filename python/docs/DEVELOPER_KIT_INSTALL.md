@@ -214,8 +214,8 @@ The verified kit inventory selects the locked environment: every kit installs th
 intake imports); a kit containing any fixed text Runtime pair also installs
 `local-models` (Torch, Tokenizers and Safetensors). Right after the locked sync,
 `initialize` imports the recording-intake modules in that environment and rejects
-with `recording_intake_imports_failed_<package>` before any owner setup when one
-is missing. Releases installed before this check keep their environment until
+with `recording_intake_imports_failed_<module>` before staging any Runtime or
+private Host when one does not import. Releases installed before this check keep their environment until
 they are reinitialized. It does not install
 Qwen/Transformers or download model weights. Opening the local Workbench later
 retains these installed optional dependencies. The local home, model setup and
