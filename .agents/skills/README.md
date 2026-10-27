@@ -27,3 +27,7 @@ for behavior, CI for machine invariants, canonical docs or ADRs for engineering
 rules, Status/evidence for mutable claims, and a task or PR for one-off work.
 Use the admission and update rules in [Project System](../../docs/PROJECT_SYSTEM.md)
 and [Engineering Governance](../../docs/ENGINEERING_GOVERNANCE.md).
+
+## Retained workflow history
+
+The [archived runtime-qualification workflow candidate](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/tree/archive/convergence-20261027/pr-172-c358d2b44260/.agents/skills/platform-runtime-qualification/SKILL.md) remains available for selective reuse. It is not the active Skill and grants no current qualification or permission. Its disposition is in the [executed asset receipt](../../docs/evidence/CONVERGENCE_DISPOSITION_EXECUTED_20261027.md); use the current Skills above for work.

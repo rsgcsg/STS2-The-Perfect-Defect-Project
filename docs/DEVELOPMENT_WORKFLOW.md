@@ -131,6 +131,7 @@ remain in TESTING; task-specific real-attempt budgets remain in the active packe
    Use a normal merge commit for any component source change; docs-only squash remains
    permitted by root policy. Preserve path-scoped component provenance.
 3. Merge the reviewed PR to develop and verify the actual merge-head CI (fresh checks or a verified execution receipt plus current identity checks).
+   Confirm the actual head-ref outcome too: repository auto-delete-on-merge may remove the topic. If the approved disposition requires preserving it, retain/archive or restore the exact ref; do not silently change repository-wide settings.
    This completes an ordinary task unless publication/deployment is explicitly in scope. No service is
    deployed merely because that merge happened. Several compatible improvements may be
    grouped into one intentional release; do not make every commit a user update.

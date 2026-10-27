@@ -7,6 +7,8 @@ Historical execution matrices retain their original observations and obligations
 
 ## 最新可恢复入口（2026-10-27）
 
+收敛文档PR256已普通合入develop；获批6个旧PR/34条分支的归档处置完成，固定版本见[收敛基线](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/tree/convergence-2026-10-27)，[执行收据](evidence/CONVERGENCE_DISPOSITION_EXECUTED_20261027.md)保每项SHA与归档位置。这里只宣布文档/资产收口，不改变下面游戏、数据或模型证据层。
+
 [本轮事实收据](evidence/CONVERGENCE_BASELINE_20261027.md)汇合D/F/Q2/Q3/X1/X2：第35槽已封存，旧100仍未完成；Managed20局与Reference分开；Q3/X2已在正常真人局验收，新局有种子/原样进度，个人profile的Managed整局重演未通过。日常安装与源码版本分别列出，不从Mod包65推所有组件相同。
 
 当前能力入口见[地图](DOCUMENT_MAP.md)，当前派工见[CURRENT](memory/CURRENT.md)。下面各节都是其原日期、原候选的历史观察，不是今日待办，也不把旧“current”一词当作新指令。

@@ -1,5 +1,7 @@
 # 旧资产去向：K后增量与原账本入口（审批快照）
 
+> 已执行，2026-10-27：用户批准A/B/C并明确Workshop范围；主仓6个旧PR已关闭、34条指定分支已在逐项归档读回后删除。10个新tag与24个旧tag均保留，其他原有分支最终未变，main未动；本轮topic被GitHub合并设置自动删除后已恢复。完整结果见[逐项执行收据](../evidence/CONVERGENCE_DISPOSITION_EXECUTED_20261027.md)。以下为原审批快照及当时建议，不再派发同一处置；所有本机目录、模型、原件、安装/回滚、R2继续保留。
+
 开工比较：K1 `60dc0a89ad6ae19b26e0e1bbf71517471f409069` → `f71507217d895fa484cb0cfe589a38e154579cb7`，快照2026-10-27约01:05 AEST。此页只索引已核去向，不是删除脚本、授权或当前任务队列。另加本轮分支/PR后应单独保护，不计为旧资产。
 
 复用[K原资产账本](p1-prefreeze-2026-10-18/ASSETS.md)、[原远端表](p1-prefreeze-2026-10-18/ASSET_REMOTE_REPORT.md)、[本地表](p1-prefreeze-2026-10-18/ASSET_LOCAL_REPORT.md)及[K3执行收据](p1-prefreeze-2026-10-18/K3_EXECUTION.json)。K3已有24项精确tag并关闭，24/24当前仍关闭且head相同，抽核#26/#155远端tag准确；不能把原表“未执行”再当今日待批。
