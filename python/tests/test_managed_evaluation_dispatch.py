@@ -493,3 +493,19 @@ def test_host_diagnostics_setting_is_boolean_before_a_world_is_offered(setting):
     with pytest.raises(BoundaryError, match="invalid_host_performance_setting"):
         ManagedEpisodeExecutor({"measure_host_performance": setting},
                                episode_seconds=10, cleanup_seconds=10)
+
+
+@pytest.mark.parametrize("failure", [TimeoutError("synthetic"),
+    BoundaryError("managed", "performance_unavailable")])
+def test_optional_host_measurement_failure_does_not_abort_preservation(failure):
+    from spireagent.workbench.managed_evaluation import _host_performance
+
+    class Manager:
+        def request(self, command):
+            assert command["command"] == "performance"
+            raise failure
+
+    result = _host_performance(Manager(), {"runtime_instance_id": "owned-runtime",
+                                          "game_continuity_id": "owned-episode"})
+    assert result == {"type": "performance_unavailable", "status": "unavailable", "error":
+                      failure.code if isinstance(failure, BoundaryError) else "TimeoutError"}

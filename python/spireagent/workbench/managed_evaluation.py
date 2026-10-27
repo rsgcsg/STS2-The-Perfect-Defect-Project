@@ -137,10 +137,15 @@ def _finish_runtime(process: subprocess.Popen, stdout: Path, row: dict[str, Any]
 
 
 def _host_performance(manager: Any, target: dict[str, Any]) -> dict[str, Any]:
-    result: dict[str, Any] = manager.request({"command": "performance",
-        "expected_runtime_instance_id": target["runtime_instance_id"],
-        "expected_game_continuity_id": target["game_continuity_id"]})["result"]
-    return result
+    # Optional observation must not fence an otherwise preservable original.
+    try:
+        result: dict[str, Any] = manager.request({"command": "performance",
+            "expected_runtime_instance_id": target["runtime_instance_id"],
+            "expected_game_continuity_id": target["game_continuity_id"]})["result"]
+        return result
+    except Exception as error:
+        return {"type": "performance_unavailable", "status": "unavailable",
+                "error": error.code if isinstance(error, BoundaryError) else type(error).__name__}
 
 
 def _outcome_status(outcome: dict[str, Any], *, settling_stalled: bool) -> dict[str, str]:
