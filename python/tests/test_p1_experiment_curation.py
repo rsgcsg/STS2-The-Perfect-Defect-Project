@@ -155,7 +155,7 @@ def test_rule_approval_is_cached_by_definition_not_membership(tmp_path, monkeypa
     )
     path.write_text(json.dumps(changed))
     cli.main(args)
-    assert len(answers) == 2
+    assert len(answers) == 1  # The original 414 formula was already user-approved.
 
 
 def test_selecting_a_subset_preserves_full_runs_and_freezes_exact_members(tmp_path):

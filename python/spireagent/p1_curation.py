@@ -559,11 +559,21 @@ def adopt_p1_model_history(ledger: CurationLedger, store: Any, snapshot_id: str,
 
 
 
-def _require_weight_approval(db: Any, definition: dict[str, Any]) -> None:
+def weight_rule_approved(db: Any, definition: dict[str, Any]) -> bool:
+    from stpd.p1.cohort import weight_definition
+
+    # The user already fixed the original 414 formula. Reusing its unchanged
+    # definition in a new experiment does not ask for the same rule again.
+    if definition == weight_definition():
+        return True
     raw = json_bytes(definition)
     row = db.execute("SELECT definition FROM curation_p1_weight_approvals WHERE id=?",
                      (digest(raw),)).fetchone()
-    if row is None or row[0] != raw.decode():
+    return row is not None and row[0] == raw.decode()
+
+
+def _require_weight_approval(db: Any, definition: dict[str, Any]) -> None:
+    if not weight_rule_approved(db, definition):
         raise BoundaryError("p1_training_data", "weight_rule_approval_required")
 
 

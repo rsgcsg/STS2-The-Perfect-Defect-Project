@@ -62,7 +62,9 @@ uv run --locked --extra cloud python -m spireagent.workbench recordings cohort p
 uv run --locked --extra cloud python -m spireagent.workbench recordings cohort freeze --config /ABS/project.json --plan-file /ABS/t2-draft.json
 ```
 
-第一条只产草稿并展示整局表；第二条才请求冻结。权重定义从未批准或改变时显示表并问
+第一条只产草稿并展示整局表；第二条才请求冻结。Application须运行含新版experiment接线的
+版本；仅换CLI而服务仍旧时会明确拒绝，按原升级SOP处理，不重试未知请求。旧414已批
+原公式的完整定义可直接复用。新权重定义从未批准或改变时显示表并问
 `yes`，批准 ID 存在原 Curation SQLite 内；成员、分配、模型阶段变了而规则定义不变，
 明确运行 freeze 即沿用批准，不反复问 yes。preview 永远不记批准，也不冻结。
 可给 freeze 传 `--confirm 草稿完整ID` 额外防止拿错表；它不能替代新规则首次 yes。

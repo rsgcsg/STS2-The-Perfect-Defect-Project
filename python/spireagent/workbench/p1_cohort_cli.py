@@ -47,11 +47,10 @@ def _freeze_preview(config: ProjectConfig, plan: dict[str, Any]) -> dict[str, An
         owner = _selected_curation_owner(config)
         if owner is None:
             raise BoundaryError("p1_cohort", "curation_owner_required")
-        rule_id, definition = weight_rule_identity(plan)
+        from spireagent.p1_curation import weight_rule_approved
+
         with owner.ledger.operations.transaction() as db:
-            approved = db.execute("SELECT definition FROM curation_p1_weight_approvals WHERE id=?",
-                                  (rule_id,)).fetchone()
-            if approved is None or approved[0] != definition:
+            if not weight_rule_approved(db, plan["definition"]):
                 raise BoundaryError("p1_cohort", "weight_rule_approval_required")
     directory = config.state_dir / "cohorts" / plan["configuration_id"]
     target = directory / "weight-candidates.json"
@@ -220,11 +219,12 @@ def main(argv: list[str]) -> int:
         owner = _selected_curation_owner(config)
         if owner is None:
             raise BoundaryError("p1_cohort", "curation_owner_required")
+        from spireagent.p1_curation import weight_rule_approved
+
         rule_id, definition = weight_rule_identity(plan)
         with owner.ledger.operations.transaction() as db:
-            approved = db.execute("SELECT definition FROM curation_p1_weight_approvals WHERE id=?",
-                                  (rule_id,)).fetchone()
-        if approved is None:
+            approved = weight_rule_approved(db, plan["definition"])
+        if not approved:
             if input("权重规则尚未批准。确认上表规则？输入 yes：").strip() != "yes":
                 print("未冻结。")
                 return 0
