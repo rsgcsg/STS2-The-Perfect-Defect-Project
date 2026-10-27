@@ -185,3 +185,13 @@ opt-in commands. Raw display counters and default PB1/PB2/P1 r1.5 remain unchang
 The pure JungleMazeAdventure debug audio call is separately remapped only when
 Managed TestMode has no audio singleton; native GainGold hooks and finish remain.
 All replaced seams and their exact native regressions are in the existing manifest.
+
+
+M2a's frozen Host49 new40 retained one delivery unknown at Glasswork+ / lethal
+GlassOrb / Decimillipede last-segment death. A separate component counterexample
+proved `ReattachPower.DoFadeOutOnAllSegments` faults during JIT because the stub
+lacks shipped `Node.GetIndex(bool)`, even though its original no-scene path would
+return. Host51 adds that dependency binding over the existing ordinary child
+list (orphan index -1), preserving native death/revival/reward and strict delivery.
+The original Host49 slot remains unknown; the new native regression is separate.
+Internal-child SceneTree support is not inferred from this stub repair.

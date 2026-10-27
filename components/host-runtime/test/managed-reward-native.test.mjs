@@ -31,6 +31,7 @@ test("native return-to-hand delivery, multi-pile choice, Plasma HUD and gardener
   assert.match(stdout, /51 exact native M2a checks passed/u);
   assert.match(stdout, /exact native gardener turns reached round 4/u);
   assert.match(stdout, /exact native jungle option retained gold hooks and completion/u);
+  assert.match(stdout, /exact native decimillipede last-segment death reached rewards/u);
   const counterState = JSON.parse(stdout.split(/\r?\n/u).find(line => line.startsWith("native-m2a-counter-state=")).slice("native-m2a-counter-state=".length));
   const session = new ManagedPlayerEnvironmentSession({ process: { request: async () => counterState },
     runtimeInstanceId: "same-native-counter", environmentFingerprint: "same-native-counter" });

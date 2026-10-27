@@ -109,10 +109,10 @@ index 0000000..172d413
 +</Project>
 diff --git a/m2a-native-tests/Program.cs b/m2a-native-tests/Program.cs
 new file mode 100644
-index 0000000..58fcd18
+index 0000000..768810f
 --- /dev/null
 +++ b/m2a-native-tests/Program.cs
-@@ -0,0 +1,240 @@
+@@ -0,0 +1,279 @@
 +using System.Reflection;
 +using System.Runtime.Loader;
 +using System.Text.Json;
@@ -141,8 +141,47 @@ index 0000000..58fcd18
 +        string root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
 +        AssemblyLoadContext.Default.Resolving += (_, name) => File.Exists(Path.Combine(root, "lib", name.Name + ".dll"))
 +            ? AssemblyLoadContext.Default.LoadFromAssemblyPath(Path.Combine(root, "lib", name.Name + ".dll")) : null;
-+        if (args.Contains("gardener")) Gardener(); else { Test(); Gardener(); EventAudio(); }
++        if (args.Contains("gardener")) Gardener(); else { Test(); Gardener(); EventAudio(); Decimillipede(); }
 +    }
++    private static void Decimillipede()
++    {
++        var parent = new Godot.Node(); var first = new Godot.Node(); var second = new Godot.Node();
++        Check(first.GetIndex() == -1, "shipped Godot orphan index is -1");
++        parent.AddChild(first); parent.AddChild(second);
++        Check(first.GetIndex(false) == 0 && second.GetIndex(true) == 1, "existing ordinary stub child indices stay ordered");
++        parent.RemoveChild(first);
++        Check(first.GetIndex() == -1 && second.GetIndex() == 0, "remove retains orphan and current sibling index");
++        var assembly = typeof(NativeCardRewardAlternativePreview).Assembly;
++        var simulator = assembly.GetType("Sts2Headless.RunSimulator")!;
++        object sim = Activator.CreateInstance(simulator)!;
++        try
++        {
++            simulator.GetMethod("StartRun")!.Invoke(sim, new object?[] { "Defect", 0, "M2A_DECIMILLIPEDE_COMPONENT_REGRESSION_V1", "zh", null });
++            simulator.GetMethod("EnterRoom")!.Invoke(sim, new object?[] { "elite",
++                ModelDb.Encounter<MegaCrit.Sts2.Core.Models.Encounters.DecimillipedeElite>().Id.Entry, null });
++            var run = (RunState)simulator.GetField("_runState", Flags)!.GetValue(sim)!;
++            var player = run.Players[0]; var combat = player.Creature.CombatState!;
++            var ctx = new ThrowingPlayerChoiceContext();
++            OrbCmd.EvokeNext(ctx, player).GetAwaiter().GetResult();
++            OrbCmd.Channel<GlassOrb>(ctx, player).GetAwaiter().GetResult();
++            OrbCmd.Channel<LightningOrb>(ctx, player).GetAwaiter().GetResult();
++            OrbCmd.Channel<LightningOrb>(ctx, player).GetAwaiter().GetResult();
++            foreach (var enemy in combat.Enemies.ToArray())
++                CreatureCmd.SetCurrentHp(enemy, 1m).GetAwaiter().GetResult();
++            var card = combat.CreateCard<Glasswork>(player); card.UpgradeInternal(); card.FinalizeUpgradeInternal();
++            CardPileCmd.AddGeneratedCardToCombat(card, PileType.Hand, player).GetAwaiter().GetResult();
++            string id = (string)assembly.GetType("Sts2Headless.NativeObjectIdentity")!.GetMethod("Get")!.Invoke(null, new object[] { card })!;
++            var result = (Dictionary<string, object?>)simulator.GetMethod("ExecuteAction")!.Invoke(sim,
++                new object?[] { "play_card", new Dictionary<string, object?> { ["card_ref"] = id } })!;
++            Check(result.GetValueOrDefault("type") as string == "decision" && result.GetValueOrDefault("decision") as string == "reward_set",
++                "original upgraded Glasswork and lethal orb finish exact native Decimillipede without a scene: " + JsonSerializer.Serialize(result));
++            Check(combat.Enemies.All(enemy => enemy.IsDead) && !CombatManager.Instance.IsInProgress,
++                "native Reattach last-segment death and combat finish retain their original outcome");
++            Console.WriteLine("exact native decimillipede last-segment death reached rewards");
++        }
++        finally { simulator.GetMethod("CleanUp")!.Invoke(sim, null); }
++    }
++
 +    private static void EventAudio()
 +    {
 +        var assembly = typeof(NativeCardRewardAlternativePreview).Assembly;
@@ -1057,7 +1096,7 @@ index ef00d6f..c00c031 100755
  # ── Build ──
  
 diff --git a/src/GodotStubs/Core.cs b/src/GodotStubs/Core.cs
-index b80bedc..9d39e43 100644
+index b80bedc..774b745 100644
 --- a/src/GodotStubs/Core.cs
 +++ b/src/GodotStubs/Core.cs
 @@ -2,6 +2,30 @@ using System.Runtime.CompilerServices;
@@ -1091,6 +1130,18 @@ index b80bedc..9d39e43 100644
  public class GodotObject
  {
      public class SignalName { }
+@@ -51,6 +75,11 @@ public class Node : GodotObject
+ 
+     public Node? GetParent() => _parent;
+ 
++    // The headless stub stores ordinary children only (as GetChildren/Count do).
++    // Keep the shipped GetIndex(bool=false) binding, including orphan index -1.
++    // This also lets native no-scene early returns JIT without missing methods.
++    public int GetIndex(bool includeInternal = false) => _parent?._children.IndexOf(this) ?? -1;
++
+     public Godot.Collections.Array<Node> GetChildren(bool includeInternal = false)
+     {
+         return new Godot.Collections.Array<Node>(_children);
 diff --git a/src/GodotStubs/GodotStubs.csproj b/src/GodotStubs/GodotStubs.csproj
 index 35b1ba0..91c5d63 100644
 --- a/src/GodotStubs/GodotStubs.csproj

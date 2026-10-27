@@ -36,9 +36,9 @@
     "managed_artifact": "src/Sts2Headless/bin/Release/net9.0/Sts2Headless.dll"
   },
   "expected_build": {
-    "source_patch_sha256": "1f1a1c05422bf8dce78c9ad8e4881a898f41bc6b5b3d12749c103e0d485f9b33",
-    "artifact_sha256": "06d0344fd88bf0a36b2d8e4c03402c4bce601758301a0757526cc688b67d540a",
-    "artifact_mvid": "4c9e5f56-654e-4aa7-a144-27ee7dc28d6d",
+    "source_patch_sha256": "22e785ba2ebf7a3435329dcbebfcf0ac2a8a70dca1abb1e565963a7ee50cb356",
+    "artifact_sha256": "7fb320a7330d868a428224627c99f52ed884cb5cdd4aea508e354de38158ec8f",
+    "artifact_mvid": "0a70e42d-84b6-40cb-b5e8-29651b537e12",
     "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0"
   },
   "previous_candidate_build": {
@@ -267,6 +267,13 @@
       "risk": "medium",
       "effect": "Explicit PB3/r1.7 witness for the two approved KUSARIGAMA/LASTING_CANDY public remainder mechanisms; default public projections retain raw displays and never expose cumulative private totals.",
       "regression": "m2a-native-tests and managed-reward-native.test.mjs real producer/serializer/PB3/r1.7 seam"
+    },
+    {
+      "id": "godot_node_get_index_binding",
+      "kind": "exact_godot_api_stub",
+      "risk": "medium",
+      "effect": "Supplies shipped Node.GetIndex(bool=false) over the existing ordinary stub parent/child list, with orphan=-1. Native ReattachPower.DoFadeOutOnAllSegments can JIT and take its original no-scene early return; native death, resurrection, damage, reward and delivery conditions remain unchanged. No internal-child SceneTree qualification.",
+      "regression": "m2a-native-tests: ordinary Node orphan/sibling/removal indices and real upgraded Glasswork/orb lethal Decimillipede last-segment death reaches native reward_set; no original unknown retried"
     }
   ],
   "admission": {
@@ -366,6 +373,12 @@
     "source_patch_sha256": "70b32c6da0e638788a6b541f74135ce35bd0c2e29687aa2e233034c08078da50",
     "artifact_sha256": "d48bb00238d04f2dcaeb95d386ad306c4766b358969521203fc35f0c90c7a2b4",
     "artifact_mvid": "776eda00-665a-43bd-9b1f-1535d7a0a806",
+    "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0"
+  },
+  "pre_m2a_getindex_build": {
+    "source_patch_sha256": "1f1a1c05422bf8dce78c9ad8e4881a898f41bc6b5b3d12749c103e0d485f9b33",
+    "artifact_sha256": "06d0344fd88bf0a36b2d8e4c03402c4bce601758301a0757526cc688b67d540a",
+    "artifact_mvid": "4c9e5f56-654e-4aa7-a144-27ee7dc28d6d",
     "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0"
   }
 }
