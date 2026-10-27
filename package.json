@@ -82,6 +82,6 @@
     "check:python-scope": "node tools/check-workspace.mjs python",
     "precheck:s0": "npm --prefix components/connector/sdk/typescript run build && npm --prefix components/policy-runtime run build",
     "check:s0": "npm run check:s0-tests",
-    "check:s0-tests": "node --test tools/test/p1-capture-comparison.test.mjs tools/test/baseline-s0-runner.test.mjs tools/test/native-source3-collector.test.mjs tools/test/native-source3-collector-sdk.test.mjs tools/test/source4-run-scope.test.mjs && uv run --project python --locked --all-extras python -m pytest tools/test/test_baseline_s0_dataset.py -q"
+    "check:s0-tests": "node --test tools/test/p1-capture-comparison.test.mjs tools/test/baseline-s0-runner.test.mjs tools/test/native-source3-collector.test.mjs tools/test/native-source3-collector-sdk.test.mjs tools/test/source4-run-scope.test.mjs tools/test/p1-native-replay.test.mjs tools/test/p1-managed-recording-replay.test.mjs tools/test/p1-cross-host-coverage.test.mjs && uv run --project python --locked --all-extras python -m pytest tools/test/test_baseline_s0_dataset.py -q"
   }
 }

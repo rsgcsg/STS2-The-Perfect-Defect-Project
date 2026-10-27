@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { nativeSpeedLaunchEnvironment, requireNativeSpeedProvenance } from "./native-speed.mjs";
 
 export const NORMAL_BASELINE_RECIPE = "normal-sp-all-unlocked-v1";
+export const CAPTURED_PROGRESS_RECIPE = "captured-native-progress-v1";
 export const NATIVE_BASELINE_ENVIRONMENT_VARIABLE = "STS2_CONNECTOR_BASELINE";
 export function validateNativeBaseline(recipe) {
   if (recipe == null) return null;
@@ -56,7 +57,7 @@ export function validateInitialProgress(value) {
   if (value == null) return null;
   if (typeof value !== "object" || Array.isArray(value)
       || Object.keys(value).sort().join(",") !== "progress_json,progress_sha256,recipe"
-      || value.recipe !== NORMAL_BASELINE_RECIPE || typeof value.progress_json !== "string"
+      || ![NORMAL_BASELINE_RECIPE, CAPTURED_PROGRESS_RECIPE].includes(value.recipe) || typeof value.progress_json !== "string"
       || createHash("sha256").update(value.progress_json).digest("hex") !== value.progress_sha256)
     throw new Error("managed_initial_progress_invalid");
   return { recipe: value.recipe, progress_json: value.progress_json, progress_sha256: value.progress_sha256 };

@@ -276,6 +276,10 @@ class P1RecordingMaintenance:
                                         datetime.fromisoformat(summary["updated_at"]) -
                                         datetime.fromisoformat(last["closed_at"])).total_seconds())
                     self.importer._save()
+        # Optional diagnostics consume already admitted originals, serially after Q.
+        from .recorded_managed_replay import tick as replay_tick
+
+        replay_tick(self)
         return dict(self.importer._maintenance)
 
     def _admit_step(self) -> bool:

@@ -5,7 +5,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { NORMAL_BASELINE_RECIPE, nativeBaselineLaunchEnvironment, requireNativeBaselineProvenance,
-  prepareNativeHostBeforeBootstrap } from "../src/native-baseline.mjs";
+  prepareNativeHostBeforeBootstrap, validateInitialProgress, CAPTURED_PROGRESS_RECIPE, validateNativeBaseline } from "../src/native-baseline.mjs";
 import { shippedRuntimeLaunch } from "../src/runtime-probe.mjs";
 import { resolveLaunchProfile } from "../src/profile-isolation.mjs";
 
@@ -66,4 +66,15 @@ test("real low-level launcher only opts in explicitly and clears ambient baselin
   }
   assert.throws(() => shippedRuntimeLaunch({}, { launchProfile, baselineRecipe: NORMAL_BASELINE_RECIPE,
     connectorEndpoint: "http://127.0.0.1:15526", extraEnvironment: { STS2_CONNECTOR_BASELINE: "other" } }), /override/u);
+});
+
+// Manager-private exact originals use a distinct recipe; Reference preparation stays strict.
+test("captured personal progress validates exact bytes without claiming the standard baseline", () => {
+  const progress_json = '{"本人的原样进度":true}';
+  const input = { recipe: CAPTURED_PROGRESS_RECIPE, progress_json,
+    progress_sha256: createHash("sha256").update(progress_json).digest("hex") };
+  assert.deepEqual(validateInitialProgress(input), input);
+  assert.throws(() => validateNativeBaseline(CAPTURED_PROGRESS_RECIPE), /unsupported_native_baseline/u);
+  for (const bad of [{ ...input, progress_json: "changed" }, { ...input, recipe: "arbitrary" },
+    { ...input, extra: true }]) assert.throws(() => validateInitialProgress(bad), /managed_initial_progress_invalid/u);
 });
