@@ -15,7 +15,7 @@
 | 功能 / 当前支持范围 | 链路位置、负责目录 | 操作入口和说明 | 剩余 / 去向 |
 |---|---|---|---|
 | 日常本人录制：能用，正常局已实证 | 采集；`components/annotator`，`apps/ingame-ui`，应用 `python/spireagent/workbench` | [游戏内 Platform](../apps/ingame-ui/README.md) → [开始本人录制 / Pause / Close](ANNOTATOR_COLLECTION.md#current-p1-daily-collection) | 跨局沿同一应用；中途接管/任意 Continue 的支持边界看原指南，不用关页面代替 Close |
-| 录后自动入库、派生、R2、小结：能用 | 原件→派生→用途；`python/spireagent/workbench` | [Q 的小结与冻结 SOP](../python/docs/RECOUNT-SOP.zh-CN.md)；正常局封存后自动处理，权重确认后才冻结 | Q2/Q3 停用可见性沿用；[X3](evidence/Q_POLISH_X3_20261027.md)补短等待状态及逐步开局门，安装另等用户窗口；已开始单步可重叠，不承诺零卡顿 |
+| 录后自动入库、派生、R2、小结：能用 | 原件→派生→用途；`python/spireagent/workbench` | [Q 的小结与冻结 SOP](../python/docs/RECOUNT-SOP.zh-CN.md)；正常局封存后自动处理，权重确认后才冻结 | Q2/Q3 停用可见性沿用；[X3](evidence/Q_POLISH_X3_20261027.md)补短等待状态及逐步开局门，已获批安装并隔离短验；已开始单步可重叠，不承诺零卡顿 |
 | 种子和原样开局进度：新局能存 | 采集见证；`components/annotator` | [采集指南](ANNOTATOR_COLLECTION.md)、[X2 收据](evidence/CONVERGENCE_BASELINE_20261027.md#录制和自动入库) | 私有附件只在原件；不进 P1/模型，旧未知不补。个人存档的 Managed 重演仍待 M3 |
 | R2 保存、按 ID 恢复、本地热集：能用 | 保存与传输；`python/spireagent/storage`、Workbench Store | [存储与容量 SOP](../python/docs/DATA_LIFECYCLE.md#项目存储真身工位与本机删除条件) | 有完整读回和实际 reader 才谈冷却；R2 是已保全内容的长期家，未保全本机原件仍须保护 |
 | 选数据、用途、整局切分和权重：能用 | 派生→训练；Curation 与 `python/stpd/p1` | [数据管理](../python/docs/research/DATA_MANAGEMENT.zh-CN.md)、[预览/确认冻结](../python/docs/RECOUNT-SOP.zh-CN.md) | 旧冻结 414 不变；新 A10 权重预览归 W1，DEV/TEST 不加权 |
