@@ -59,13 +59,13 @@ def _load_host_api(path: Path) -> Any:
 
 
 @contextmanager
-def _phase(row: dict[str, Any], name: str) -> Iterator[None]:
+def _phase(row: dict[str, Any], name: str, *, detail: bool = False) -> Iterator[None]:
     """Monotonic, disjoint phase cost; partial failures retain elapsed time."""
     began = time.monotonic()
     try:
         yield
     finally:
-        phases = row.setdefault("phase_seconds", {})
+        phases = row.setdefault("detail_seconds" if detail else "phase_seconds", {})
         phases[name] = phases.get(name, 0.0) + time.monotonic() - began
 
 
@@ -92,6 +92,9 @@ def _finish_runtime(process: subprocess.Popen, stdout: Path, row: dict[str, Any]
         "sts2.policy-runtime/agent-session-startup-2"
     ):
         reject("runtime_startup_missing")
+    if "runtime_process_started_monotonic" in row:
+        row.setdefault("detail_seconds", {})["runtime_startup"] = (
+            time.monotonic() - row.pop("runtime_process_started_monotonic"))
     client = RuntimeClient(startup["address"], startup)
     row["run_id"] = startup["run_id"]
     row["startup"] = artifacts.put("runtime-startup.json", json_bytes(startup))
@@ -212,18 +215,19 @@ class ManagedEpisodeExecutor:
         checkpoint()
         try:
             with _phase(row, "prepare"):
-                launch = self.api.launch_managed_host_service(
-                    host_package_dir=self.host,
-                    candidate_dir=self.candidate,
-                    client_attachment=client_path,
-                    manager_attachment=manager_path,
-                    log_file=private / "host.log",
-                    diagnostics_file=private / "native-diagnostics.json",
-                    character=manifest["character"],
-                    language=self.configuration.get("language", "en"),
-                    timeout_ms=60000,
-                    startup_timeout=min(120, self.episode_seconds),
-                )
+                with _phase(row, "host_launch", detail=True):
+                    launch = self.api.launch_managed_host_service(
+                        host_package_dir=self.host,
+                        candidate_dir=self.candidate,
+                        client_attachment=client_path,
+                        manager_attachment=manager_path,
+                        log_file=private / "host.log",
+                        diagnostics_file=private / "native-diagnostics.json",
+                        character=manifest["character"],
+                        language=self.configuration.get("language", "en"),
+                        timeout_ms=60000,
+                        startup_timeout=min(120, self.episode_seconds),
+                    )
                 client = self.api.ManagedHostServiceClient.from_attachment(client_path)
                 manager = self.api.ManagedHostServiceManager.from_attachment(manager_path)
                 ready = client.ready()
@@ -231,12 +235,13 @@ class ManagedEpisodeExecutor:
                 row["host_service_pid"] = launch.pid
                 row["world_mutation_offered"] = True
                 checkpoint()  # Durable offer BEFORE reset, never reoffer on a lost reply.
-                reset = manager.reset(
-                    row["seed"],
-                    expected_runtime_instance_id=ready["adapter_runtime_instance_id"],
-                    expected_game_continuity_id=ready["episode"].get("game_continuity_id"),
-                    initial_progress=self.configuration["initial_progress"],
-                )
+                with _phase(row, "host_reset", detail=True):
+                    reset = manager.reset(
+                        row["seed"],
+                        expected_runtime_instance_id=ready["adapter_runtime_instance_id"],
+                        expected_game_continuity_id=ready["episode"].get("game_continuity_id"),
+                        initial_progress=self.configuration["initial_progress"],
+                    )
                 row["reset"] = artifacts.put("managed-reset.json", json_bytes(reset))
                 ready = client.ready()
                 identity = manager.request({"command": "episode_identity"})["result"]["identity"]
@@ -345,6 +350,7 @@ class ManagedEpisodeExecutor:
                     stderr=stderr,
                     env=environment,
                 )
+                row["runtime_process_started_monotonic"] = runtime_started
                 startup = _finish_runtime(
                     runtime_process, private / "runtime.stdout", row, artifacts,
                     started + self.episode_seconds, self.cleanup_seconds)
@@ -400,21 +406,25 @@ class ManagedEpisodeExecutor:
                 )
                 row["game_metrics"] = metrics
             with _phase(row, "preserve"):
-                runtime = publish_global_runtime(self.store, self.producer, expected)
-                stored = publish_global_evidence(
-                    self.store,
-                    run,
-                    self.producer,
-                    expected=expected,
-                    model_artifact_id=model["artifact_id"],
-                    runtime_artifact_id=runtime.artifact_id,
-                    scratch=private,
-                )
-                copy_artifact(self.store, self.peer, stored.artifact_id,
-                    reuse_published_parents=True)
-                readback = verify_global_artifact(
-                    self.peer, stored.artifact_id, expected=expected, scratch=private
-                )
+                with _phase(row, "publish_runtime", detail=True):
+                    runtime = publish_global_runtime(self.store, self.producer, expected)
+                with _phase(row, "publish_evidence", detail=True):
+                    stored = publish_global_evidence(
+                        self.store,
+                        run,
+                        self.producer,
+                        expected=expected,
+                        model_artifact_id=model["artifact_id"],
+                        runtime_artifact_id=runtime.artifact_id,
+                        scratch=private,
+                    )
+                with _phase(row, "copy_peer", detail=True):
+                    copy_artifact(self.store, self.peer, stored.artifact_id,
+                        reuse_published_parents=True)
+                with _phase(row, "peer_readback", detail=True):
+                    readback = verify_global_artifact(
+                        self.peer, stored.artifact_id, expected=expected, scratch=private
+                    )
                 row["stored_evidence_id"] = stored.artifact_id
                 row["preservation"] = artifacts.put(
                     "preservation.json",
@@ -488,4 +498,5 @@ class ManagedEpisodeExecutor:
             row.setdefault("phase_seconds", {})["close"] = time.monotonic() - close_started
             row["elapsed_seconds"] = time.monotonic() - started
             row["phase_timing_schema"] = "spireagent/managed-phase-seconds-v1"
+            row["detail_timing_schema"] = "spireagent/managed-detail-seconds-v1"
             checkpoint()
