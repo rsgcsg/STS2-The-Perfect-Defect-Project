@@ -103,6 +103,9 @@ def _finish_runtime(process: subprocess.Popen, stdout: Path, row: dict[str, Any]
         while process.poll() is None:
             state = client.request("/status")["status"]
             expired = time.monotonic() >= deadline
+            if any("managed_settling_stalled" in reason for reason in (
+                    state.get("taint_reason") or "", *state.get("errors", []))):
+                row["settling_stalled"] = True
             if (state["lifecycle"] == "stopped" or state["mode"] == "human"
                     or state["tainted"] or state["autonomy_budget"]["state"] == "exhausted"
                     or expired):
@@ -133,6 +136,28 @@ def _finish_runtime(process: subprocess.Popen, stdout: Path, row: dict[str, Any]
     return startup
 
 
+def _host_performance(manager: Any, target: dict[str, Any]) -> dict[str, Any]:
+    result: dict[str, Any] = manager.request({"command": "performance",
+        "expected_runtime_instance_id": target["runtime_instance_id"],
+        "expected_game_continuity_id": target["game_continuity_id"]})["result"]
+    return result
+
+
+def _outcome_status(outcome: dict[str, Any], *, settling_stalled: bool) -> dict[str, str]:
+    if settling_stalled:
+        return {"status": "unknown", "reason": "managed_settling_stalled"}
+    terminal, end = outcome["terminal_observation"], outcome["operation_end"]
+    clean = (end.get("status") in {"task_ended", "censored"}
+             and end.get("controller") == "released" and end.get("tainted") is False)
+    return {
+        "status": "finished" if clean and terminal.get("status") == "observed"
+        and terminal.get("result") in {"win", "loss"}
+        else "censored" if clean else "unknown",
+        "reason": "natural_terminal" if clean and terminal.get("status") == "observed"
+        else "runtime_censored" if clean else "runtime_execution_or_release_unknown",
+    }
+
+
 class ManagedEpisodeExecutor:
     """One independent Host/Runtime/Agent per call; safe for separate worker threads."""
 
@@ -143,6 +168,14 @@ class ManagedEpisodeExecutor:
         mode = configuration.get("inference", {"mode": "per_actor"})
         if not isinstance(mode, dict) or mode.get("mode") not in {"per_actor", "central_batch"}:
             reject("unsupported_inference_implementation")
+        self.settling_timeout_ms = configuration.get("settling_timeout_ms", 120000)
+        if self.settling_timeout_ms is not None and (
+                type(self.settling_timeout_ms) is not int
+                or not 1 <= self.settling_timeout_ms <= 2**53 - 1):
+            reject("invalid_settling_timeout")
+        self.measure_host_performance = configuration.get("measure_host_performance", False)
+        if type(self.measure_host_performance) is not bool:
+            reject("invalid_host_performance_setting")
         self.max_auto_submissions = configuration.get("max_auto_submissions", 10000)
         if (type(self.max_auto_submissions) is not int
                 or not 1 <= self.max_auto_submissions <= 10000):
@@ -160,12 +193,18 @@ class ManagedEpisodeExecutor:
         _verify_host(self.host, configuration["host_pin"])
         validate_installed_package(self.runtime.parent, configuration["runtime_pin"],
             required_paths=("dist/cli.js", "dist/global-replay.js", "dist/managed.js"))
+        runtime_version = json.loads(
+            (self.runtime.parent / "package.json").read_bytes()).get("version")
         if (mode["mode"] == "central_batch"
-                and json.loads((self.runtime.parent / "package.json").read_bytes()).get("version")
-                not in {"0.1.0-rc.50", "0.1.0-rc.51"}):
+                and runtime_version not in {"0.1.0-rc.50", "0.1.0-rc.51", "0.1.0-rc.52"}):
             reject("runtime_explicit_adapter_environment_required")
+        if self.settling_timeout_ms is not None and runtime_version != "0.1.0-rc.52":
+            reject("runtime_settling_watchdog_required")
         if configuration["agent_adapter"] != export.adapter_identity():
             reject("frozen_agent_implementation_changed")
+        if self.measure_host_performance and json.loads(
+                (self.host / "package.json").read_bytes()).get("version") != "1.1.0-rc.46":
+            reject("host_performance_diagnostics_required")
         self.build = _candidate_audit(_audit(self.host, self.candidate))
         self.api = _load_host_api(self.host / "consumers/python/sts2_headless/managed_service.py")
         self.peer = open_peer(configuration["peer"])
@@ -211,7 +250,8 @@ class ManagedEpisodeExecutor:
         client_path, manager_path = private / "client.json", private / "manager.json"
         launch = manager = runtime_process = None
         started = time.monotonic()
-        row.update(host_kind="managed", status="preparing", reason=None)
+        row.update(host_kind="managed", status="preparing", reason=None,
+                   settling_timeout_ms=self.settling_timeout_ms)
         checkpoint()
         try:
             with _phase(row, "prepare"):
@@ -274,6 +314,11 @@ class ManagedEpisodeExecutor:
                     "runtime_instance_id": ready["adapter_runtime_instance_id"],
                     "game_continuity_id": ready["episode"]["game_continuity_id"],
                 }
+                if self.measure_host_performance:
+                    with _phase(row, "host_performance", detail=True):
+                        row["host_performance_before"] = artifacts.put(
+                            "host-performance-before.json",
+                            json_bytes(_host_performance(manager, target)))
                 host_args = runtime_arguments(target, private)
                 options = {
                     host_args[i].removeprefix("--"): host_args[i + 1]
@@ -322,6 +367,8 @@ class ManagedEpisodeExecutor:
                     str(int(remaining * 1000)),
                     *host_args,
                 ]
+                if self.settling_timeout_ms is not None:
+                    args.extend(["--managed-settling-timeout-ms", str(self.settling_timeout_ms)])
                 environment = os.environ.copy()
                 row["inference_mode"] = "central_batch" if self.inference_pool else "per_actor"
                 if self.inference_pool is not None:
@@ -355,6 +402,10 @@ class ManagedEpisodeExecutor:
                     runtime_process, private / "runtime.stdout", row, artifacts,
                     started + self.episode_seconds, self.cleanup_seconds)
                 row["runtime_window_seconds"] = time.monotonic() - runtime_started
+            if self.measure_host_performance:
+                with _phase(row, "host_performance", detail=True):
+                    row["host_performance"] = artifacts.put(
+                        "host-performance.json", json_bytes(_host_performance(manager, target)))
             with _phase(row, "finish"):
                 if runtime_process.returncode != 0:
                     reject("runtime_process_failed")
@@ -438,19 +489,8 @@ class ManagedEpisodeExecutor:
                         }
                     ),
                 )
-            terminal = outcome["terminal_observation"]
-            end = outcome["operation_end"]
-            clean = (end.get("status") in {"task_ended", "censored"}
-                     and end.get("controller") == "released" and end.get("tainted") is False)
-            row.update(
-                status="finished"
-                if clean and terminal.get("status") == "observed"
-                and terminal.get("result") in {"win", "loss"}
-                else "censored" if clean else "unknown",
-                reason="natural_terminal"
-                if clean and terminal.get("status") == "observed"
-                else "runtime_censored" if clean else "runtime_execution_or_release_unknown",
-            )
+            row.update(_outcome_status(
+                outcome, settling_stalled=row.get("settling_stalled") is True))
         except Exception as error:
             row.update(
                 status="unknown" if row["world_mutation_offered"] else "not_started",

@@ -20,9 +20,12 @@ import { globalRuntimeFixture } from "./global-runtime-fixtures.js";
 import { replayGlobalAgentRun } from "../src/global-replay.js";
 import { canonicalJson } from "../src/evidence.js";
 import { POLICY_RUNTIME_VERSION } from "../src/contracts.js";
-async function managedSource() {
+// @ts-expect-error Original Host synthetic native DTO, no game mutation.
+import { combatState } from "../../host-runtime/test/fixtures/managed-fair-combat.mjs";
+async function managedSource(stall = false) {
  let terminal=false, actions=0;
- const decision=()=>terminal?gameOver({type:"decision",context:{act:1,act_index:0,act_definition_id:"OVERGROWTH",act_name:"Overgrowth",floor:1,total_floor:1,ascension:0,bosses:[],modifiers:[]},player:{name:"The Ironclad",character_id:"IRONCLAD",hp:0,max_hp:80,gold:99,native_ref:"player",max_potion_slots:3,relics:[],potions:[],deck:[]}}):{
+ const enemy = combatState(); enemy.turn_owner = "enemy"; enemy.is_play_phase = false;
+ const decision=()=>terminal && stall ? enemy : terminal?gameOver({type:"decision",context:{act:1,act_index:0,act_definition_id:"OVERGROWTH",act_name:"Overgrowth",floor:1,total_floor:1,ascension:0,bosses:[],modifiers:[]},player:{name:"The Ironclad",character_id:"IRONCLAD",hp:0,max_hp:80,gold:99,native_ref:"player",max_potion_slots:3,relics:[],potions:[],deck:[]}}):{
   type:"decision",decision:"map_select",context:{act:1,act_index:0,act_definition_id:"OVERGROWTH",act_name:"Overgrowth",floor:0,total_floor:0,ascension:0,bosses:[],modifiers:[]},
   choices:[{col:3,row:1,type:"Monster",native_ref:"point",children:[]}],visible_map:{type:"map",rows:[[{col:3,row:0,type:"Monster",visited:true,children:[{col:3,row:1}]}]],boss:{col:3,row:16,type:"Boss"},current_coord:{col:3,row:0}},
   player:{name:"The Ironclad",character_id:"IRONCLAD",hp:80,max_hp:80,gold:99,native_ref:"player",max_potion_slots:3,relics:[],potions:[],deck:[]}};
@@ -53,6 +56,26 @@ it("runs real Managed service HTTP → original same-actor capture → NDJSON �
   expect((await replayGlobalAgentRun(f.evidence.directory)).verdict).toBe("verified");
  }finally{await f?.close();await source.service.close();}
 },15000);
+
+
+it("bounds a stuck enemy turn through the real Managed service and releases its actor on Stop", async () => {
+ const source = await managedSource(true);
+ let f: Awaited<ReturnType<typeof globalRuntimeFixture>> | undefined;
+ try {
+  const transport = await ManagedServicePolicyClient.attachGlobal(source.bindingPath, source.attachmentPath, source.target,
+    "run-00000000-0000-4000-8000-000000000002");
+  f = await globalRuntimeFixture({ transport, managedSettlingTimeoutMs: 100 });
+  await f.runtime.tick();
+  expect(f.runtime.status()).toMatchObject({ controller: "released", mode: "human", tainted: true,
+    taint_reason: expect.stringContaining("managed_settling_stalled") });
+  expect(source.actions).toBe(1);
+  await f.runtime.stop();
+  expect((await replayGlobalAgentRun(f.evidence.directory)).verdict).toBe("verified");
+  expect(source.service.driver.status().control_held).toBe(false);
+  await source.service.close();
+  expect(source.service.driver.closed).toBe(true);
+ } finally { await f?.close(); await source.service.close(); }
+}, 15000);
 
 describe("original GLOBAL CLI startup and control",()=>{
  let compiled:string;
@@ -88,7 +111,7 @@ describe("original GLOBAL CLI startup and control",()=>{
     "--adapter-env-key","STPD_TEST_SELECTED"];
    if(source)args.push("--managed-binding",source.bindingPath,"--managed-attachment",source.attachmentPath,
     "--managed-expected-service-instance-id",source.target.serviceInstanceId,"--managed-expected-runtime-instance-id",source.target.runtimeInstanceId,
-    "--managed-expected-game-continuity-id",source.target.gameContinuityId);
+    "--managed-expected-game-continuity-id",source.target.gameContinuityId,"--managed-settling-timeout-ms","120000");
    else {
     args.push("--connector-endpoint",f.source.address);
     const raw=Buffer.from([255,0,13,10,123,125,10]);

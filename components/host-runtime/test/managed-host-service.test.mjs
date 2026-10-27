@@ -46,6 +46,7 @@ function fixture(runtimeInstanceId = "runtime-one") {
         floor = 0; initialProgress = request.initial_progress ?? null; return decision();
       }
       if (request.cmd === "get_map") return decision(floor).visible_map;
+      if (request.cmd === "process_metrics") return { type: "process_metrics", cpu_total_ms: 12, working_set_bytes: 1024 };
       if (request.cmd === "run_identity") return { type: "run_identity", active: true, seed: "SEED",
         initial_progress: initialProgress == null ? null : { recipe: initialProgress.recipe,
           progress_sha256: initialProgress.progress_sha256, run_unlock_state_matches: true } };
@@ -656,4 +657,29 @@ test("manager reset accepts native progress above client body limit and keeps pr
     const client = await command(service, service.clientToken, { command: "episode_identity" });
     assert.equal(Object.hasOwn(client.body.result.identity, "initial_progress"), false);
   } finally { await service.close({ force: true }); }
+});
+
+
+test("performance is exact-episode manager diagnostics and never an Agent capability", async () => {
+  const native = fixture();
+  const service = await startManagedHostService(native.started, { hostIdentity });
+  try {
+    await reset(service);
+    const ready = await call(service, service.clientToken, "/v1/ready");
+    const body = { command: "performance", request_id: "measurement",
+      expected_runtime_instance_id: "runtime-one",
+      expected_game_continuity_id: ready.body.episode.game_continuity_id };
+    const before = native.calls.filter(r => r.cmd === "action").length;
+    assert.equal((await call(service, service.clientToken, "/v1/command", body)).status, 403);
+    assert.equal((await call(service, service.managerToken, "/v1/command",
+      { ...body, expected_runtime_instance_id: "foreign" })).status, 409);
+    assert.equal((await call(service, service.managerToken, "/v1/command",
+      { ...body, invented: true })).status, 409);
+    const result = await call(service, service.managerToken, "/v1/command", body);
+    assert.equal(result.status, 200);
+    assert.equal(result.body.result.type, "performance_result");
+    assert.equal(result.body.result.native_process.cpu_total_ms, 12);
+    assert.ok(result.body.result.stages.projection_total.count > 0);
+    assert.equal(native.calls.filter(r => r.cmd === "action").length, before);
+  } finally { await service.close(); }
 });

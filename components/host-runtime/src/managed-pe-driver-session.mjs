@@ -196,6 +196,16 @@ export class ManagedPeDriverSession {
     if (this.#closed) throw new Error("driver_closed");
     const requestId = request?.request_id ?? null;
     switch (request?.command) {
+      case "performance": {
+        if (intent.sharedService && intent.principal !== "manager")
+          throw new Error("managed_performance_manager_required");
+        this.#requireEpisode(); this.#requireExpectedEpisode(request);
+        if (Object.keys(request).some(key => !["command", "request_id", "expected_runtime_instance_id", "expected_game_continuity_id"].includes(key)))
+          throw new Error("managed_performance_fields_invalid");
+        return { type: "performance_result", request_id: requestId,
+          stages: this.#started.session.performance(),
+          native_process: await this.#started.session.processMetrics(this.#timeoutMs) };
+      }
       case "reset": {
         if (this.#mapContinueFailure) throw new Error(this.#mapContinueFailure);
         this.#requireControlIntent(intent);
