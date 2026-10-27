@@ -439,6 +439,14 @@ and verifies actual run identity. This setup is unavailable to attached clients;
 manager `episode_identity` includes its private proof. Client commands retain the
 64 KiB body limit; manager reset allows 1 MiB for the native progress snapshot.
 
+Host rc.47 also accepts the manager-only `captured-native-progress-v1` recipe
+for a sealed recording's exact native progress bytes. It verifies UTF-8/SHA,
+native save/reload and actual UnlockState without imposing the all-unlocked
+recipe on a personal profile. Standard baseline checks remain unchanged; the
+captured recipe does not modify personal disk saves. See the root
+[recorded replay SOP](../../python/docs/MANAGED_RECORDING_REPLAY.zh-CN.md) for
+binding, privacy, diagnostic storage and the actual partial-replay limits.
+
 Python `ManagedPlayerEnvironment.reset(seed, initial_progress=...)` and
 `ManagedHostServiceManager.reset(..., initial_progress=...)` forward this explicit
 setup unchanged; omitting it retains ordinary reset semantics. Trusted Workbench

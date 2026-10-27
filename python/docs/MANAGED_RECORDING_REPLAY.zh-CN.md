@@ -55,6 +55,11 @@ node tools/p1-cross-host-coverage.mjs --config /ABS/coverage-config.json
 
 配置包含 `seeds`、`strategies:[{id,command:[...argv]}]`、`candidate`、`localRoot`、`out`，可选 `budgetMs`、`template`、准确 `expectedInstalledTuple` 与 `gameDir`。种子复用 Host 规范化并拒绝规范化后的重复；策略可用既有 uniform agent，或 `tools/p1-policy-sampling-agent.py` 消费已验证的 438 installation，按 softmax 采样，权重和 InputSpec 不改。
 
-获批且无用户录制时，登记 GAME-SLOT 后才加 `--execute`。当前短链范围是 Defect/A0、配置好的英文工程 profile，每次只跑一个 Reference。它先让正常 Runtime 记录策略实际动作和完整结果，再把准确 Reference prepared progress、种子和原动作交给 Managed 严格重演。原 source unknown 不重投；已录点仍进计划分母。Reference 关闭错误原样记录，仅作诊断；关闭未确认时不启动下一份 Reference。
+获批且无用户录制时，登记 GAME-SLOT 后才加 `--execute`。当前短链范围是 Defect/A0、显式配置 en/zh 的工程 profile，每次只跑一个 Reference。它先让正常 Runtime 记录策略实际动作和完整结果，再把准确 Reference prepared progress、种子和原动作交给 Managed 严格重演。原 source unknown 不重投；已录点仍进计划分母。Reference 关闭错误原样记录，仅作诊断；关闭未确认时不启动下一份 Reference。
 
 `coverage.json`/`index.html` 包含计划 job 总数、已尝试/未执行、每界面计划/已比/一致/未到达及差异编号。没有见到的界面不能算通过；这不是分数板，也不把两边成绩合并。
+
+
+`--sources /ABS/prior-output` 可在修正语言等诊断工具错误后复用已验证的准确 Reference Source，不再开游戏；先核 jobs 与 source identity 一致。旧尝试必须保留，不能把来源 unknown 换成新一局。配置 `language` 必须和工程 profile 一致。
+
+当前实测边界（2026-10-27）：真人 A10 原件 131 点，只比到 13 点、12 一致，锁镰展示计数器 3/0 严格停下。显式原生正常速度的隔离 Reference 对同原件 73/73 一致后预算停；Managed 仍即时等待。原件未记录原游戏速度/完整展示时机，当前工具明确报告 `startup_scope`，不能把启动验证称为整局重建。另一个六局 Reference 工程批有两条全程观察和 Runtime Result 一致，四条保留严格停止；完整表归 M3 原报告。本版不安装试验性的正常时钟补丁。

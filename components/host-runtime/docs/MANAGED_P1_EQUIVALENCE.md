@@ -47,12 +47,31 @@ complete graph's bijection; never guess a mapping from kind/label alone.
 
 The bounded 2026-10-26 work read all 33 natural Reference originals (5,036 offered
 P1 points with original Results) and the 25 prior plus four new Human projections
-(12,811 P1 points / 12,784 N). Human source manifests/journals lack replayable seed
+(12,811 P1 points / 12,784 N). Those historical Human source manifests/journals lack replayable seed
 and initial-progress witnesses; a verified full-source sample's initial public
 basis also lacks them. Their coverage is not a cross-Host comparison. Old
 Reference initial-progress bytes are unknown, so a matching replay point cannot
 establish identical initial conditions for a whole run. Do not read current
 personal saves to fill that historical gap.
+
+X2 subsequently added private seed and exact initial-progress originals. M3's
+2026-10-27 first personal-profile sample (Defect/A10/zh) verifies the captured
+startup and strictly matches 12 of 13 compared observations from a 131-point
+trajectory. It stops on Kusarigama counter 3 versus 0 (M055); 118 points remain
+unreached. An isolated Reference replay at explicitly normal native speed matches
+73/73 points before its 150-second budget, including that counter. Managed's
+instant-wait adaptation and the unrecorded original speed/presentation witness
+remain open: seed, progress and choices do not yet prove full reconstruction.
+The timing experiment was withdrawn without shipping its changes.
+
+M3's separate Reference batch has 6 natural sources (3 seeds, uniform and frozen
+438 softmax), 515 planned observations, 391 compared and 388 matching. Two paths
+fully match including Runtime Results; four stop at strict differences/errors.
+The initial wrong-language Managed attempts remain recorded separately and were
+replayed from existing Source bytes after fixing the tool, with no new Reference
+world. This is diagnostic coverage, not a formal score or Human qualification.
+See [M3's task](../../../docs/plans/MANAGED_COVERAGE_20261027.zh-CN.md) and its
+linked original report for per-surface counts and preserved failed attempts.
 
 A current Managed engineering batch freezes its own new seeds and accurate
 Host/candidate/Runtime/model/package pins. It keeps natural, unknown, censored,

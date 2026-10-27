@@ -179,6 +179,8 @@ def _run(
     budget_ms: int,
     on_started: Callable[[int], None] = lambda _pid: None,
 ) -> str:
+    if maintenance.stop.is_set():
+        return "not_started"
     with (
         (output / "worker.stdout").open("wb") as stdout,
         (output / "worker.stderr").open("wb") as stderr,
@@ -366,6 +368,8 @@ def _tick(maintenance: P1RecordingMaintenance) -> None:
     importer = maintenance.importer
     config = importer.config
     try:
+        if maintenance.stop.is_set():
+            return
         execution = _load(config)
         if execution is None:
             return
@@ -476,6 +480,8 @@ def _tick(maintenance: P1RecordingMaintenance) -> None:
                     jobs[source] = {"status": "skipped", "error": "original_launch_witness_missing"}
                     importer._save()
                 continue
+            if maintenance.stop.is_set():
+                return
             output = config.state_dir / "managed-replays" / source
             output.mkdir(parents=True, exist_ok=source in jobs)
             job = {
@@ -491,7 +497,7 @@ def _tick(maintenance: P1RecordingMaintenance) -> None:
                 importer._save()  # Attempt is durable before any Host/world offer.
             try:
                 with materialize_p1_original(store, source, scratch=config.state_dir) as bundle:
-                    if not _game_idle(root):
+                    if maintenance.stop.is_set() or not _game_idle(root):
                         job.update(status="not_started", error="recording_started_before_dispatch")
                     else:
                         command = [
@@ -527,7 +533,9 @@ def _tick(maintenance: P1RecordingMaintenance) -> None:
                             json.loads(report_path.read_bytes()) if report_path.exists() else {}
                         )
                         job.update(
-                            status="completed"
+                            status="not_started"
+                            if disposition == "not_started"
+                            else "completed"
                             if disposition == "finished" and report.get("completed")
                             else "failed",
                             disposition=disposition,
@@ -537,8 +545,9 @@ def _tick(maintenance: P1RecordingMaintenance) -> None:
                         )
             except Exception as error:
                 job.update(
-                    status="failed",
+                    status="interrupted_unknown" if "worker_pid" in job else "failed",
                     error=getattr(error, "code", type(error).__name__),
+                    failure_error=getattr(error, "code", type(error).__name__),
                     unknown_delivery=None if "worker_pid" in job else False,
                     attempt_unconfirmed="worker_pid" in job,
                 )

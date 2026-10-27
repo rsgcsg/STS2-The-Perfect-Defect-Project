@@ -1,15 +1,15 @@
 # M3：个人原件重建与诊断覆盖
 
-本轮唯一负责人是执行 M3 的 Codex 主对话。目标是让新真人封存给 Managed 提供可核启动条件，复用原严格重演器、在原 Q 空闲点运行诊断，并准备 Reference headless 覆盖工具。用户当前委托/`replies/MANAGED-COVERAGE-CARD-20261026.md` 是任务依据；用户录制优先，不开真游戏、不安装，直至用户给准确窗口；自动批只覆盖原含义内的实现/工程修复及不改结果的提速。5 小时开发预算从 2026-10-27 15:39 AEST 起计，20:39 硬限，保留 30 分钟收尾；CI/窗口等待不计，不因派工或上下文更换重置。
+本轮唯一负责人是执行 M3 的 Codex 主对话。目标是个人原件同条件 Managed 重演、Q 录后自动诊断、Reference/Managed 多种子严格对照及可见覆盖页。用户委托与 `replies/MANAGED-COVERAGE-CARD-20261026.md` 是依据；录制优先。用户后来明确批准 headless 诊断，核无人占用后可直接使用；M3 的生产安装仍未批准。5 小时开发预算从 2026-10-27 15:39 AEST 起，20:39 为不扣等待的保守硬限，留30分钟收尾；CI/窗口等待不计，不因派工重置。
 
-基线 `origin/develop=4a3af053d7f44eb81674efcf832fe3ee35233502`；独立分支 `codex/managed-coverage-m3-20261027`。写入范围是 Host manager 初始化、独立根诊断工具、Python 录后诊断模块及维护器一个空闲 hook、对应回归/SOP。M1 的 driver-session/service、Runtime、评估执行/保存/早停未改；W1/T1 的 cohort、输入、训练、小结及 HTTP 服务未改。合并前普通合并最新 develop，版本/BOM 等共享文件等 M1 集成后再写。
+开工基线 `4a3af053`，分支 `codex/managed-coverage-m3-20261027`；已普通合入 M1/X3 后的 develop `df6311da`。本轮只写 Host 私有初始化、根诊断工具、Python 录后诊断 owner、原 Q 完成/空闲后的一个 hook、对应回归与 SOP。M1 评估执行/保存/早停和 W1/T1 页面、cohort、输入、训练、HTTP 服务未改。Host 升 rc.47，原 Mod/Annotator/Tool 未安装替换。没有新任务、训练、RL、费用或 main 发布授权。
 
-X2 的存种子/原进度已完成，本轮只核其原件与隐私链，未重做 Annotator。原来 Host 只接受全解锁档，外层驱动固定 A0；本轮新增 `captured-native-progress-v1`，保留标准档限制，使用游戏原生内存读档、SHA/reload/UnlockState 证明，并传 A10。属于原 Host 能力的实现补齐，未改变 P1、公平玩家、比较器或用户个人存档。
+X2 存种子/原样进度已完成，本轮复查并复用。新 `captured-native-progress-v1` 保留标准全解锁校验，以原 UTF-8/SHA、游戏原生内存读档/reload/UnlockState 证明个人档启动；外层原生入口传 A0–A10。种子/进度不进 P1、模型或玩家快照；诊断 transport 遮蔽启动私有值。
 
-首个真实输入是 X2 真人 session `session-20261026T134755Z-e66c755bee1d41119b88549093e3a544`。封存来自既有完整 R2 读回 archive，本轮只读解出自己的工作集。131 点完整轨迹已由原读取器验证；准确个人进度/A10 启动证明通过，12 点/12 选择一致，13 个点已比，第 13 点锁镰 counter 真人 3、Managed 0，严格停在该差异，0 unknown，Host 和实际进程 exit=0。已到 event_option/reward_claim/map_navigation/combat_turn；剩余 118 点未到达，不能声称整局成功。原 DLL 显示该 counter 在 IsActivating 时为 3、平时为攻击数模 3，激活展示有 Cmd.Wait(1f)；与既有 M038 同属展示时机问题的推断，当前没有同版本 UI 见证，未伪造显示值或接受例外。
+X2 真人 session `session-20261026T134755Z-e66c755bee1d41119b88549093e3a544` 的131点完整原轨迹由原件读取器验证。个人 A10/zh 启动证明通过；13点已比、12点/12选择一致，首差异index12锁镰counter3/0，118点未到达，unknown0，实际进程正常关闭。显式normal原生速度的隔离Reference对同原件73/73点、72选择一致，重现counter3后到150秒预算停止，unknown0/正常关闭。种子+进度+选择尚不足以宣称整局重建：原件未记录原速度/完整展示时机，Managed仍即时等待。正常时钟POC非作者复核发现异步/原生线程风险，在任何世界投递前全部撤回，未进最终实现；M055留原例外表，不接受展示豁免。
 
-建议调整及理由：复用已有 `replayNativeTrajectory`，不再维护 X2 私有短脚本；另加不可当正式原件的隐私诊断日志 schema，原 P1 response 格式不放宽。开工未发现 X3 活动分支/PR，因此 Q 接线放在独立模块、独立模块已完成，但随后核到 X3 活动候选，已撤回原维护器 hook；等 X3 合入后先普通合并 develop 再接线，不改 W1 正写的页面。页面以独立静态诊断页交付，避免同时写小结和服务；仍由原 maintenance ledger 提供唯一状态。
+多种子工具沿正常Source Runtime先记录实际策略动作/完整Result，再严格Managed重演。3seeds×uniform/冻结438softmax共6份自然Source、515计划点；391已比/388一致，2条全程观察及Result一致；4条在M052/M023关联差异及原生pile-selection partial处停止，全部unknown0。首轮工具写错en而profile为zh的6份Managed停止记录保留；修正语言后只复用准确Source，没有另开游戏。逐界面表及全部尝试见指定报告。
 
-实际验证与完整报告、准确候选/CI/合并收据在用户指定 `replies/M3-REPORT-20261026.md`，详细日志保留任务工作目录。组件源码必须普通合并，未通过规定门禁、非作者复核和准确 CI 前不能称已集成；安装、Reference 实跑、自动自然录制验收均另报，不借测试代替。未知不再投，任何真实待决/游戏/安装点停下问用户并等其回复，不把问句当收口。
+Q接线在X3合入后完成，复用原maintenance ledger、importer guard、ManifestArtifactStore与peer。无显式配置不启动；空闲每次最多1局，先持久化attempt。用户恢复游戏、observer失败或owner关闭只清理自己的进程组；清理未确认保持interrupted_unknown并阻塞下一局，确认退出后只归档、不重演。失败完整前缀升analysis并全包/逐文件peer读回；录制中延后发布和保存，随后只续存储。成功诊断留运行节点，不删原件。页面从同一账本派生，展示missing、未确认、失败及未到达分母；不并行改W1/X3页面。
 
-操作指南：[`MANAGED_RECORDING_REPLAY.zh-CN.md`](../../python/docs/MANAGED_RECORDING_REPLAY.zh-CN.md)。后续只完成本卡，无新任务、训练、RL、付费、main 发布或原件清理授权。
+建议调整理由：复用原严格重演器及正常Runtime，不另造动作/比较链；独立静态页避免与活跃页面作者双写；真游戏只串行，优先走最短多种子诊断；normal时钟大修按卡允许留后续，不以忽略counter换通过。最终报告 `replies/M3-REPORT-20261026.md` 记录准确CI/合并/安装状态；源码、测试、安装、运行、Human/训练资格分别报告。操作入口见[原SOP](../../python/docs/MANAGED_RECORDING_REPLAY.zh-CN.md)。剩余是规定门禁、最终非作者复核、普通PR/merge及用户批准后的生产安装和自动hook真实验收；不自动接后续差异任务。

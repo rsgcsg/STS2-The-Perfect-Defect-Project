@@ -289,3 +289,74 @@ def test_renderer_keeps_unknown_owner_row_when_worker_report_is_half_written(tmp
     assert identity in content and "unknown true" in content
     assert "incomplete_or_invalid_report_json" in content
     assert (output / "report.json").read_bytes() == partial
+
+
+def test_resumed_recording_defers_publication_then_saves_without_replay(setup, monkeypatch):
+    maintenance, raw, store, _remote, _original, _snapshots = setup
+    idle = True
+    calls = []
+
+    def run(command, output, root, owner, budget_ms, on_started):
+        nonlocal idle
+        calls.append(command)
+        on_started(999999999)
+        result = output / "replay"
+        result.mkdir()
+        (result / "report.json").write_text(
+            json.dumps({"completed": False, "unknown_delivery": True})
+        )
+        idle = False
+        return "recording_priority_interrupted_unknown"
+
+    monkeypatch.setattr(replay, "_game_idle", lambda root: idle)
+    monkeypatch.setattr(replay, "_run", run)
+    replay.tick(maintenance)
+    job = maintenance.importer._maintenance["managed_replays"][raw.artifact_id]
+    assert job["storage_status"] == "pending_diagnostic_publication_game_exit"
+    assert store.manifest_ids() == (raw.artifact_id,)
+    replay.tick(maintenance)
+    assert len(calls) == 1
+    idle = True
+    replay.tick(maintenance)
+    assert job["storage_status"] == "preserved"
+    assert job["storage_receipt"]["full_readback"] is True
+    assert len(calls) == 1 and job["unknown_delivery"] is True
+
+
+def test_cleanup_unconfirmed_blocks_next_source_until_owned_group_exits(setup, monkeypatch):
+    maintenance, raw, store, _remote, _original, _snapshots = setup
+    calls = []
+
+    def run(command, output, root, owner, budget_ms, on_started):
+        calls.append(command)
+        on_started(999999999)
+        raise replay.BoundaryError("recorded_replay", "owned_group_cleanup_unconfirmed")
+
+    monkeypatch.setattr(replay, "_run", run)
+    monkeypatch.setattr(replay, "_group_alive", lambda pid: True)
+    replay.tick(maintenance)
+    job = maintenance.importer._maintenance["managed_replays"][raw.artifact_id]
+    assert job["status"] == "interrupted_unknown" and job["unknown_delivery"] is None
+    assert "diagnostic_artifact_id" not in job
+    replay.tick(maintenance)
+    assert job["status"] == "interrupted_unknown" and len(calls) == 1
+    assert store.manifest_ids() == (raw.artifact_id,)
+    monkeypatch.setattr(replay, "_group_alive", lambda pid: False)
+    replay.tick(maintenance)
+    assert job["status"] == "failed" and job["storage_receipt"]["full_readback"] is True
+    assert job["failure_error"] == "owned_group_cleanup_unconfirmed" and len(calls) == 1
+
+
+def test_stopped_owner_does_not_create_attempt_or_process(setup, monkeypatch):
+    maintenance, _raw, _store, _remote, _original, _snapshots = setup
+    maintenance.stop.set()
+    monkeypatch.setattr(replay, "_run", lambda *a, **k: pytest.fail("owner is closing"))
+    replay.tick(maintenance)
+    assert maintenance.importer._maintenance.get("managed_replays", {}) == {}
+
+
+def test_stopped_owner_at_process_boundary_is_not_an_attempt(tmp_path, monkeypatch):
+    maintenance = SimpleNamespace(stop=threading.Event())
+    maintenance.stop.set()
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: pytest.fail("owner is closing"))
+    assert replay._run(["unused"], tmp_path, tmp_path, maintenance, 1) == "not_started"
