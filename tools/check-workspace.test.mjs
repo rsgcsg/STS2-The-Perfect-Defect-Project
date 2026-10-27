@@ -13,9 +13,10 @@ test("partition union retains every gate once and fresh builds on both leaves", 
     const first = workspaceStages(scope, {pytestShard: "1/2"});
     const second = workspaceStages(scope, {pytestShard: "2/2"});
     assert.deepEqual(first.map(stage => stage.id), original.map(stage => stage.id));
-    assert.deepEqual(second.map(stage => stage.id), ["shared-client-build", "python"]);
+    assert.deepEqual(second.map(stage => stage.id), ["preflight", "shared-client-build", "python"]);
     assert.deepEqual(second[0].requires, []);
-    assert.deepEqual(second[1].requires, ["shared-client-build"]);
+    assert.deepEqual(second[1].requires, ["preflight"]);
+    assert.deepEqual(second[2].requires, ["shared-client-build"]);
     for (const [index, stages] of [[1, first], [2, second]]) {
       assert.deepEqual(stages.find(stage => stage.id === "python").args,
         ["run", "check:python", "--", "--pytest-shard", `${index}/2`]);
@@ -29,9 +30,15 @@ test("partition union retains every gate once and fresh builds on both leaves", 
 
 test("full and Python gates keep their required inventory; short real-consumer checks precede broad tests", () => {
   const full = workspaceStages("full"), python = workspaceStages("python");
-  assert.deepEqual(full.map(stage => stage.id), ["repository", "shared-client-build", "s0-consumers",
+  assert.deepEqual(full.map(stage => stage.id), ["preflight", "repository", "shared-client-build", "s0-consumers",
     "python", "connector", "host-runtime", "annotator", "evidence", "policy-runtime", "workbench", "ingame-ui", "game-mod"]);
-  assert.deepEqual(python.map(stage => stage.id), ["repository", "shared-client-build", "s0-consumers", "python"]);
+  assert.deepEqual(python.map(stage => stage.id), ["preflight", "repository", "shared-client-build", "s0-consumers", "python"]);
+  for (const scope of ["full", "python", "components"]) {
+    const [first, ...later] = workspaceStages(scope);
+    assert.deepEqual(first, { id: "preflight", args: ["run", "check:preflight", "--", scope], requires: [] });
+    for (const stage of later.filter(stage => !stage.requires.includes("shared-client-build")))
+      assert.ok(stage.requires.includes("preflight"), `${scope}/${stage.id} must wait for the environment preflight`);
+  }
   for (const scope of ["full", "python", "components"]) {
     const visited = new Set();
     for (const stage of workspaceStages(scope)) {
@@ -56,7 +63,7 @@ test("an Annotator failure does not hide independent Evidence, Runtime or Python
   assert.equal(result.results.find(stage => stage.id === "annotator").status, "failed");
   assert.equal(result.results.find(stage => stage.id === "python").status, "failed");
   assert.ok(calls.includes("evidence") && calls.includes("policy-runtime"));
-  assert.equal(calls.length, 12);
+  assert.equal(calls.length, 13);
 });
 
 test("failed generated-client build blocks dependent consumers but preserves unrelated owner checks", async () => {
@@ -76,11 +83,13 @@ test("failed generated-client build blocks dependent consumers but preserves unr
 test("repository failure, cancelled process and spawn errors never become pass or execute dependent work", async () => {
   const guard = await runStages(workspaceStages("full"), async () => ({ code: 1 }));
   assert.equal(guard.results.filter(stage => stage.status === "failed").length, 1);
-  assert.equal(guard.results.filter(stage => stage.status === "blocked").length, 11);
+  assert.equal(guard.results.filter(stage => stage.status === "blocked").length, 12);
+  const repository = await runStages(workspaceStages("full"), async stage => ({ code: stage.id === "repository" ? 1 : 0 }));
+  assert.deepEqual(repository.results.filter(stage => stage.status !== "blocked").map(stage => stage.id), ["preflight", "repository"]);
   const cancelled = await runStages(workspaceStages("full"), async () => ({ code: null, signal: "SIGTERM" }));
   assert.equal(cancelled.passed, false);
   assert.equal(cancelled.results[0].status, "cancelled");
-  assert.equal(cancelled.results.filter(stage => stage.status === "blocked").length, 11);
+  assert.equal(cancelled.results.filter(stage => stage.status === "blocked").length, 12);
   const spawned = await runStages(workspaceStages("python"), async () => { throw new Error("ENOENT"); });
   assert.equal(spawned.passed, false);
   assert.match(spawned.results[0].error, /ENOENT/);

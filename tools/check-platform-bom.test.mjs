@@ -4,6 +4,7 @@ import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { readBomAuthorities, validatePlatformBom } from "./check-platform-bom.mjs";
+import { BOM_COMPONENTS, BOM_REFRESH_HINT, identityDrift, refreshBomIdentity } from "./refresh-bom-identity.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 // This file mutates copies; the checkout is immutable for this test process.
@@ -12,7 +13,37 @@ const authoritySnapshot = await readBomAuthorities(root);
 test("current Platform BOM agrees with component and package authorities", async () => {
   const bom = JSON.parse(fs.readFileSync(path.join(root, "platform-bom.json"), "utf8"));
   const errors = validatePlatformBom(bom, structuredClone(authoritySnapshot));
-  assert.deepEqual(errors, []);
+  assert.deepEqual(errors, [], identityDrift(errors) ? `${errors.join("\n")}\n${BOM_REFRESH_HINT}` : undefined);
+});
+
+test("one refresh command rebinds only current source pointers, and a stale BOM names it", () => {
+  const bom = JSON.parse(fs.readFileSync(path.join(root, "platform-bom.json"), "utf8"));
+  // Identities equal to the committed BOM, so this test is independent of local edits.
+  const authorities = structuredClone(authoritySnapshot);
+  const identities = Object.fromEntries(Object.entries(BOM_COMPONENTS).map(([key, id]) => [id, {
+    ...authorities.identities.components[id], component_version: bom.components[key].version,
+    source_revision: bom.components[key].source_revision, component_tree_revision: bom.components[key].component_tree_revision,
+    component_source_digest_sha256: bom.components[key].component_source_digest_sha256, source_worktree_status: "clean" }]));
+  authorities.identities.components = structuredClone(identities);
+  const baseline = validatePlatformBom(structuredClone(bom), authorities);
+  const stale = structuredClone(bom);
+  stale.components.policy_runtime.source_revision = "0".repeat(40);
+  stale.components.connector.component_source_digest_sha256 = "1".repeat(64);
+  stale.unified_platform_runtime_candidate.connector.current_component_source_digest_sha256 = "1".repeat(64);
+  const historical = structuredClone(stale.unified_platform_runtime_candidate.connector);
+  const errors = validatePlatformBom(stale, authorities);
+  assert.ok(identityDrift(errors), errors.join("\n"));
+  assert.match(BOM_REFRESH_HINT, /npm run bom:refresh/u);
+  const changes = refreshBomIdentity(stale, identities);
+  assert.deepEqual(changes.sort(), ["components.connector.component_source_digest_sha256",
+    "components.policy_runtime.source_revision", "unified_platform_runtime_candidate.connector.current_component_source_digest_sha256"]);
+  assert.deepEqual(validatePlatformBom(stale, authorities), baseline);
+  for (const field of Object.keys(historical).filter(field => !field.startsWith("current_component_")))
+    assert.deepEqual(stale.unified_platform_runtime_candidate.connector[field], historical[field], field);
+  assert.deepEqual(refreshBomIdentity(stale, identities), []);
+  assert.equal(identityDrift(["public Connector archive SHA: expected a, got b"]), false);
+  identities["policy-runtime"].source_worktree_status = "dirty";
+  assert.throws(() => refreshBomIdentity(structuredClone(bom), identities), /uncommitted source/u);
 });
 
 test("BOM check rejects component and public Connector pin drift", async () => {

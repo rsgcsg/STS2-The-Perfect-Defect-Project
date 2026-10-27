@@ -8,7 +8,6 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { PassThrough } from "node:stream";
 import test from "node:test";
-import { existsSync } from "node:fs";
 import * as sdk from "../../components/connector/sdk/typescript/dist/index.js";
 import * as runtimeApi from "../../components/policy-runtime/dist/index.js";
 import { createCollectionLifetime, createPipePeer, OWNED_EXECUTION_POLICY, OWNED_PIPE_SCHEMA,
@@ -19,9 +18,7 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..")
 const source = JSON.parse(await readFile(new URL("../../components/connector/contracts/fixtures/native-logical-v1.json", import.meta.url)));
 const wire = source.wire_samples;
 const operation = "a".repeat(32), endpoint = "http://127.0.0.1:15526";
-const projectPython = path.join(ROOT, "python", ".venv", process.platform === "win32" ? "Scripts/python.exe" : "bin/python");
-const python = process.env.SOURCE3_TEST_PYTHON ?? (existsSync(projectPython) ? projectPython
-  : process.platform === "win32" ? "python" : "python3");
+const python = projectPython(["SOURCE3_TEST_PYTHON"]);
 const clone = value => structuredClone(value);
 const response = value => new Response(JSON.stringify(value), { status: 200,
   headers: { "Content-Type": "application/json" } });
@@ -707,6 +704,7 @@ agent.time.sleep=paced
 sys.argv=[sys.argv[0],"--manifest",sys.argv[1]]
 agent.main()
 `;
+import { projectPython } from "../project-python.mjs";
   // Windows venv python.exe can be a redirector. Bind the public port to the
   // actual interpreter, retaining the selected environment's exact import paths.
   assert.ok(path.isAbsolute(prepared.interpreter));

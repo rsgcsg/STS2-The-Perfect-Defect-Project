@@ -22,6 +22,7 @@ import {
 } from "./connector-provenance.mjs";
 import { resolveGameDir, resolveModsDir } from "./steam-paths.mjs";
 import { componentGitState } from "../../../tools/component-git.mjs";
+import { resolveProjectPython } from "../../../tools/project-python.mjs";
 
 export { evaluateBuildProvenance } from "./connector-provenance.mjs";
 export { resolveGameDir, resolveModsDir } from "./steam-paths.mjs";
@@ -651,7 +652,7 @@ function test(options) {
     `-p:STS2GameDir=${resolved.gameDir}`,
     "-p:UseSharedCompilation=false"
   ]);
-  run(process.platform === "win32" ? "python" : "python3", [
+  run(resolveProjectPython().executable, [
     "-m", "py_compile", "transports/mcp/server.py"
   ]);
   artifactIdentity(resolved.builtDll);
@@ -1020,7 +1021,9 @@ export function recommendDoctorSteps({
 }
 
 async function doctor(options) {
-  const python = process.platform === "win32" ? "python" : "python3";
+  let python;
+  try { python = probeCommand(resolveProjectPython().executable, ["--version"]); }
+  catch (error) { python = { available: false, version: null, error: error.message }; }
   const prerequisites = {
     node: {
       required: true,
@@ -1031,7 +1034,7 @@ async function doctor(options) {
     npm: { required: true, ...probeCommand("npm") },
     dotnet: { required: true, ...probeCommand("dotnet", ["--version"]) },
     git: { required: true, ...probeCommand("git", ["--version"]) },
-    python: { required: false, ...probeCommand(python, ["--version"]) },
+    python: { required: false, ...python },
     uv: { required: false, ...probeCommand("uv", ["--version"]) }
   };
   let gameDir = null;

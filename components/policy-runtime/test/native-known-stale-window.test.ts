@@ -14,6 +14,7 @@ import { validateAgentExecutionPolicy, validateAgentManifest, type AgentManifest
 import type { NativeAgentRuntimeOwner } from "../src/agent-native-runtime.js";
 import { SyntheticNativeHttp } from "./native-runtime-fixtures.js";
 import { fixturePortCloser } from "./fixture-process.js";
+import { projectPython } from "../../../tools/project-python.mjs";
 
 const shared = JSON.parse(readFileSync(new URL("../contracts/fixtures/sampled-current-carry-v1.json", import.meta.url), "utf8"));
 const policy = JSON.parse(readFileSync(new URL("../contracts/fixtures/owned-current-known-stale-v1.json", import.meta.url), "utf8")).execution_policy;
@@ -60,12 +61,7 @@ async function fixture(options: { autonomyMode?: "bounded" | "continuous"; legac
   if (!options.legacy) { manifest.execution_policy = structuredClone(selectedPolicy); manifest.requirements.required_methods.push("current_owned"); }
   let teacherPython: string | undefined;
   if (options.teacher) {
-    const candidates = process.env.E6_OWNED_STALE_TEACHER_PYTHON ? [process.env.E6_OWNED_STALE_TEACHER_PYTHON]
-      : process.env.PYTHON ? [process.env.PYTHON] : ["python", "python3"];
-    for (const candidate of candidates) {
-      try { execFileSync(candidate, ["-c", "import sys;assert sys.version_info >= (3,11)"], { stdio: "pipe", timeout: 5000 }); teacherPython = candidate; break; } catch { /* Next existing interpreter only; never install. */ }
-    }
-    if (!teacherPython) throw new Error("existing Python3.11 source-test interpreter required");
+    teacherPython = projectPython(["E6_OWNED_STALE_TEACHER_PYTHON"]); // Existing interpreter only; never installs.
     const code = "import json,sys\nfrom pathlib import Path\nfrom stpd.policy.native_teacher_agent import descriptor,write_artifact\np=json.loads(sys.argv[2]);d=descriptor(execution_policy=p);a=write_artifact(Path(sys.argv[1]),execution_policy=p)\nassert 'torch' not in sys.modules\nprint(json.dumps(dict(artifact=a,adapter=d['adapter'],version=d['agent_spec']['version'],input_spec=d['input_spec'])))";
     const descriptor = JSON.parse(execFileSync(teacherPython, ["-c", code, join(root, "private-teacher-code.json"), JSON.stringify(selectedPolicy)],
       { encoding: "utf8", timeout: 10000, env: { ...process.env, PYTHONPATH: fileURLToPath(new URL("../../../python", import.meta.url)) } }));

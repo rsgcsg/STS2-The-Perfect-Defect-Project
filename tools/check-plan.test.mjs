@@ -66,6 +66,7 @@ test("hosted planning rejects committed EOF whitespace before publishing a lane 
       "import fs from 'node:fs'; fs.writeFileSync(process.env.TEST_EXPENSIVE_MARKER, 'started');\n");
     fs.writeFileSync(path.join(cwd, "package.json"), JSON.stringify({ scripts: {
       "check:docs": "node runner.mjs", "check:repository": "node runner.mjs", "check:python-scope": "node runner.mjs",
+      "check:preflight": "node -e 0",
       "precheck:s0": "node runner.mjs", "check:s0-tests": "node runner.mjs", "check:python": "node runner.mjs",
       check: "node runner.mjs",
     } }));
@@ -329,15 +330,20 @@ function cancellationProcessExecuting(pid) {
 
 test("Linux cancellation witness distinguishes a terminated zombie from an executing owner",
   {skip: process.platform !== "linux", timeout: 10000}, async t => {
-    const owner = spawn("python3", ["-c", `
-import os, sys
-pid = os.fork()
-if pid == 0:
-    os._exit(0)
-os.waitid(os.P_PID, pid, os.WEXITED | os.WNOWAIT)
-print(pid, flush=True)
-sys.stdin.readline()
-os.waitpid(pid, 0)
+    // Any fork-capable helper works; Perl ships with Git on Linux, so this
+    // repository-lane test needs no project Python. The child is observed as a
+    // zombie (state Z) before its pid is published; nothing reaps it until "reap".
+    const owner = spawn("perl", ["-e", `
+my $pid = fork; die "fork: $!" unless defined $pid;
+if ($pid == 0) { require POSIX; POSIX::_exit(0); }
+while (1) {
+  open(my $stat, "<", "/proc/$pid/stat") or die "stat: $!";
+  my $line = <$stat>; close $stat;
+  last if (split / /, substr($line, rindex($line, ")") + 2))[0] eq "Z";
+}
+$| = 1; print "$pid\n";
+my $reap = <STDIN>;
+waitpid($pid, 0);
 `], {stdio: ["pipe", "pipe", "inherit"]});
     const ended = new Promise(resolve => owner.on("close", resolve));
     const lines = createInterface({input: owner.stdout});
@@ -364,7 +370,7 @@ test("top-level full and Python routers cancel their owned descendants and block
       fs.cpSync(import.meta.dirname, path.join(cwd, "tools"), {recursive: true});
       fs.writeFileSync(path.join(cwd, ".gitignore"), ".local/\n");
       fs.writeFileSync(path.join(cwd, "package.json"), JSON.stringify({scripts: {
-        "check:repository": "node runner.mjs", "precheck:s0": "node later.mjs",
+        "check:preflight": "node -e 0", "check:repository": "node runner.mjs", "precheck:s0": "node later.mjs",
       }}));
       fs.writeFileSync(path.join(cwd, "later.mjs"), "import fs from 'node:fs';fs.writeFileSync(process.env.TEST_LATER,'unexpected');");
       fs.writeFileSync(path.join(cwd, "descendant.mjs"), `
@@ -408,8 +414,9 @@ test("top-level full and Python routers cancel their owned descendants and block
           assert.equal(fs.existsSync(later), false);
           const report = JSON.parse(fs.readFileSync(path.join(cwd, `.local/checks/workspace-${scope}-${process.platform}.json`)));
           assert.equal(report.verdict, "failed"); assert.equal(report.interrupted_signal, "SIGINT");
-          assert.equal(report.results[0].status, "cancelled");
-          assert.ok(report.results.slice(1).every(row => row.status === "blocked"));
+          assert.deepEqual(report.results.slice(0, 2).map(row => [row.id, row.status]),
+            [["preflight", "passed"], ["repository", "cancelled"]]);
+          assert.ok(report.results.slice(2).every(row => row.status === "blocked"));
         } finally {
           if (child.exitCode === null && child.signalCode === null) {child.kill("SIGTERM"); await ended;}
           if (descendant && alive(descendant)) process.kill(descendant, "SIGTERM");
