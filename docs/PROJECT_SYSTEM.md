@@ -22,7 +22,7 @@ If facts and requirements disagree, label the conflict and decide at the owning
 boundary. Ask the user when a genuine goal/authority/tradeoff remains unresolved;
 otherwise correct the stale owner. Do not create a second status/identity registry.
 
-Initial orientation is AGENTS → README → CURRENT → WORKING_RULES, then the active
+Initial orientation is AGENTS → README → DOCUMENT_MAP → WORKING_RULES → CURRENT, then the active
 task and only relevant owner sections/code. The task names the purpose, output,
 acceptance, costs and stop boundary; no active assignment means no automatic
 resumption of a historical backlog item. Fresh refs are verified before action.
@@ -41,7 +41,7 @@ resumption of a historical backlog item. Fresh refs are verified before action.
 | active plan/task/PR; baseline task index | Stable task IDs, dependencies, one writer, acceptance, allowed operations, resources and progress | Dispatch, design selection, review or integration changes; link evidence, do not become a second contract |
 | `TESTING.md`, `VERSIONING.md`, workflow, `AI_COLLABORATION.md` | Check selection, identity, Git/release and collaborator lifecycle respectively | Their governed process changes; other guides link instead of creating a second timing or check policy |
 | `STATUS.md` | Small cross-project claim/evidence index, with date and exact scope | A capability/build/install/deployment claim changes; old operating combinations are labelled historical, never implied current |
-| `memory/CURRENT.md` | Bounded active checkout/task route, blocker and next gate | Active work changes; remove completed detail into its evidence report, aiming below 4 KiB / 80 lines |
+| `memory/CURRENT.md` | Scoreboard, recurring costs, active task route and next gate | Active work changes; replace stale dispatch, keep at most 40 lines and no history section; retain the existing 8 KiB byte guard |
 | `docs/design/` | Alternatives, exploratory reasoning and superseded designs | A useful hypothesis or tradeoff needs retention; proposals do not become requirements by proximity |
 | `RESOLVED_ISSUES.zh-CN.md` | 重复问题的原解法、代码/消费者、证据和适用边界 | 新的重复问题或复用边界改变；不抄全部历史，也不成为当前队列 |
 | dated evidence and review receipts | Exact source, method, result, failures and limits for one completed observation | Preserve original results; add a separately scoped correction/follow-up, never rewrite a failed run as a pass |
@@ -285,6 +285,9 @@ Skill-candidate impacts; it never rewrites semantic truth.
 Before producing that report, closeout reuses governance's CURRENT rule to reject
 an unsafe or oversized assembled handoff. Capacity uses the final physical UTF-8
 file bytes, including CRLF, and the output shows its size and existing 8 KiB limit.
+Closeout additionally rejects more than 40 physical lines or a Markdown history
+heading in CURRENT. These two presentation checks do not certify semantic freshness;
+they neither change contract/identity checks nor add another task registry.
 The mandatory `project:check` also includes that same rule, before later component
 and research gates in the root command. Run closeout after assembling the candidate documentation and before expensive gates;
 reviewing a small added paragraph does not validate the resulting whole file.

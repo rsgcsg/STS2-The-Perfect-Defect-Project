@@ -1,5 +1,7 @@
 # 首轮训练链路：每个组件、合同和格式为什么保留
 
+> 2026-10-27参考定位：本目录保原任务/合同/盘点快照，当前能力和运行节点从[根地图](../../DOCUMENT_MAP.md)进入，派工只看[CURRENT](../../memory/CURRENT.md)。[本轮去向增量](../CONVERGENCE_DISPOSITION_20261027.md)补K后的变化；K3已有执行收据优先于旧“未执行”摘要。本轮未移动原目录或改写下面历史正文。
+
 第19轮文档收敛；沿用[Architecture](../../ARCHITECTURE.md)、[Components](../../COMPONENTS.md)和[ADR0016](../../adr/0016-agent-composition-and-execution-request.md)。本表解释现有owner如何服务第一轮训练，不新增服务、schema或注册表。冻结定义仍待用户批准；当前事实由[范围/状态](SCOPE_v0.3.zh-CN.md)路由。
 
 历史查过：以前遇到过queued输入时H目录为空或不同于执行态，见[09-11 rapid audit](../../evidence/PR25_RAPID_INPUT_EXECUTION_AUDIT_2026-09-11.md)。当时分存H/native input与执行S/A(S)，精确匹配后在[rc4限定两局](../../evidence/PR25_RC4_FULL_RUN_HUMAN_PASS_2026-09-12.md)取得524/524及47rapid handoffs。此次复用该执行接缝/身份约束用于⑤⑥，并补当前P1的完整PB1/Reads与共享核；不能把原rc4资格当新P1通过。其它组件继续复用旧K2地图、现行owner与K0/K5/K6成果。

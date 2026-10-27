@@ -555,8 +555,9 @@ export function formatContext(workspaceRoot = root, options = {}) {
     "",
     ...agents.map((file) => `- ${file}`),
     "- README.md",
-    "- docs/memory/CURRENT.md",
+    "- docs/DOCUMENT_MAP.md",
     "- docs/WORKING_RULES.zh-CN.md",
+    "- docs/memory/CURRENT.md",
     "",
     "Resolve the active task first: purpose, deliverable, scope, acceptance, cost and stop condition.",
     "No active assignment means no automatic backlog execution. Read only relevant owner sections next.",
@@ -621,6 +622,17 @@ export function formatCloseout(workspaceRoot = root) {
       `- [${item.code}] ${item.file}: ${item.message}`).join("\n")}`);
   }
   const currentPath = path.join(workspaceRoot, "docs/memory/CURRENT.md");
+  if (fs.existsSync(currentPath)) {
+    const source = fs.readFileSync(currentPath, "utf8").replace(/\r\n?/gu, "\n");
+    const lineCount = source.length === 0 ? 0 : source.replace(/\n$/u, "").split("\n").length;
+    if (lineCount > 40) {
+      throw new Error(`Current handoff preflight failed: CURRENT has ${lineCount} lines; maximum is 40.`);
+    }
+    if (/^ {0,3}#{1,6}[\t ]+.*(?:历史|\bhistor(?:y|ical)\b)/imu.test(source)
+        || /^ {0,3}[^\n]*(?:历史|\bhistor(?:y|ical)\b)[^\n]*\n {0,3}(?:=+|-+)[\t ]*$/imu.test(source)) {
+      throw new Error("Current handoff preflight failed: move CURRENT history sections to their owning report.");
+    }
+  }
   const currentBudget = fs.existsSync(currentPath)
     ? `${fs.statSync(currentPath).size} / ${CURRENT_CONTEXT_BUDGET_BYTES} bytes`
     : "not present; repository checks still own required surfaces";

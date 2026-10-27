@@ -6,8 +6,8 @@ Deliver useful STS2 Agents through a faithful environment, usable recording/data
 and a maintainable product path. One repository does not merge gameplay,
 execution, evidence, application and research authority.
 
-Initial route: this file → `README.md` → `docs/memory/CURRENT.md` →
-`docs/WORKING_RULES.zh-CN.md`. Then read the linked current task and only the owning
+Initial route: this file → `README.md` → `docs/DOCUMENT_MAP.md` →
+`docs/WORKING_RULES.zh-CN.md` → `docs/memory/CURRENT.md`. Then read the linked current task and only the owning
 specification/component guide and exact code/evidence needed for it. A four-file
 orientation is not a ban on relevant investigation; it is not a requirement to
 read all historical plans before doing useful work.
@@ -57,7 +57,9 @@ do not build speculative defense machinery unrelated to the task.
 Use current `origin/develop` for normal short topics; explicitly identify any
 required unmerged dependency. Reuse a suitable clean checkout, one writable branch
 per writer. No direct push to main/develop, force push or overwrite of another
-writer. PR merge/close needs the user's per-PR approval. Existing scoped runtime
+writer. PR merge/close follows the user's current scoped authorization; without
+an explicit grant, use per-PR approval. The working-rules permission table owns
+the standing grant and task-specific restrictions. Existing scoped runtime
 permissions persist; new spending, research configuration, production publication
 or destructive operations need their own authorization.
 

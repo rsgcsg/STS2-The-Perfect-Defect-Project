@@ -50,7 +50,9 @@ Use the shared task boundary in [WORKING_RULES](WORKING_RULES.zh-CN.md). One use
 increment may be a draft PR before the whole feature is done. When merge is awaiting
 user approval or a concrete gate, report ready-for-review/blocked with the exact
 remaining condition; do not add unrelated work to keep the task running. Approval
-for one PR does not cover another. No branch/worktree is deleted solely because an
+for one PR does not cover another. An explicit current-task or standing grant is
+handled by the [working-rules permission table](WORKING_RULES.zh-CN.md#6-权限当前任务可收紧);
+a narrower current task still wins. No branch/worktree is deleted solely because an
 assistant says a packet is complete.
 
 A dependent unmerged base is named in the PR and task. For a management-only packet,

@@ -152,9 +152,20 @@ ACK, a renewed connection or another task's completion does not. If no admitted
 Actor or clean original seal can be proven, keep the uncertainty and use the
 existing diagnostics/recovery path instead of repeatedly clicking Start.
 
-Checkpoint publication is CPU/Store work, independent of a running game. Use
+### 游戏内“模型实战”：同一当前局的控制
+
+在正常 Game Mod 游戏里打开“模型实战”，选择已注册模型，点“开始展示”。它沿同一 Application 的当前局准备、Agent 请求和 Runtime 启动；不另开种子局、不重置当前游戏。界面动作是 `models.takeover`（开始）、`models.human`（暂停）、`models.auto`（继续）、`models.stop`（结束）；非 GUI 调用仍走同一 Model / native-episode owner。
+
+暂停后等原 Actor 确认释放控制，再手动处理画面；只有原 Actor 可继续、准确控制上下文仍有效、无 pending/taint/模型状态不确定时才点“继续”。Continue 留在同一 Actor 的已提交状态中，不等于重发未知动作。结束后先等原任务 stopped/sealed，再换模型或开始新段；响应丢失按上文原任务恢复，不能反复点击开始。手动解 selector 后继续的旧工程原件不算 Human。
+
+这段从[旧PR233的适用操作](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/233)定点接回，并按当前 `native_workbench_api.py` / Runtime 控制栅栏核对；只补使用说明，不宣称当前安装上所有模型与暂停流程已实测。旧未完现场验收保留在[原任务历史收口](../../docs/plans/p1-prefreeze-2026-10-18/NATIVE_CURRENT_DISPLAY_20261023.zh-CN.md#2026-10-23-历史收口本轮定点接回)。
+
+Checkpoint publication is CPU/Store work, independent of a running game. Run from
+the locked `python/` environment against the already opened Application with the
+same project configuration. Use
 `python -m spireagent.workbench project model --config <project.json>
---action export-checkpoint --artifact <checkpoint-id> --checkpoint-selection best|current`; inspect that
+--action export-checkpoint --artifact <checkpoint-id> --checkpoint-selection best`
+(or explicitly choose `current`); inspect that
 same Model operation's completed `last_checkpoint_export`, then use the normal
 Model download and registration commands. The recipe adapter owns publication;
 GUI/CLI/API only map to it. Download does not establish training ancestry or

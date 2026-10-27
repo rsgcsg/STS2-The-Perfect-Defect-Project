@@ -6,6 +6,8 @@ They are not additional reading to repeat on every turn. Existing user decisions
 component authorities and exact evidence remain binding. Earlier collaboration
 arrangements remain in Git history, not competing active assignments.
 
+初次接手先读README→项目地图→工作规则→CURRENT；[工作规则的Agent一屏](WORKING_RULES.zh-CN.md#3-agent-怎样干活)给有界委派和主对话职责，本页是按需的恢复/审查细则。默认并发限制不代替每张任务的单写入分工或真实资源窗口。
+
 ## Roles and actual access
 
 One lead owns the outcome, queue, integration and acceptance. Delegate only when a

@@ -109,6 +109,30 @@ test("context and closeout use the actual committed planner rather than uncondit
   }
 });
 
+test("closeout keeps CURRENT within forty lines without history sections", () => {
+  const root = fixture();
+  try {
+    initializeGit(root);
+    const required = "Resolve live GitHub refs; latest instructions override this file. Remaining Platform non-claims";
+    const fortyLines = [required, ...Array(39).fill("Current work only.")].join("\r\n") + "\r\n";
+    write(root, "docs/memory/CURRENT.md", fortyLines);
+    assert.doesNotThrow(() => formatCloseout(root));
+    const fortyOneLines = fortyLines + "Another line.\r\n";
+    write(root, "docs/memory/CURRENT.md", fortyOneLines);
+    assert.throws(() => formatCloseout(root), /41 lines; maximum is 40/u);
+    assert.equal(fs.readFileSync(path.join(root, "docs/memory/CURRENT.md"), "utf8"), fortyOneLines);
+    for (const heading of ["## 历史记录", "### History", "# Historical results",
+      "历史记录\n===", "History\n---"]) {
+      write(root, "docs/memory/CURRENT.md", `${required}\n${heading}\n`);
+      assert.throws(() => formatCloseout(root), /move CURRENT history sections/u);
+    }
+    write(root, "docs/memory/CURRENT.md", `${required}\n历史证据请看原报告。\n`);
+    assert.doesNotThrow(() => formatCloseout(root));
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("dirty edits retain the planner's conservative full selection", () => {
   const root = fixture();
   try {

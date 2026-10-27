@@ -9,7 +9,7 @@ body:
     id: outcome
     attributes:
       label: Task identity and observable outcome
-      description: Stable task ID, real user need, next consumer, concrete deliverable and completion/stop boundary. One outcome per assignee; state non-goals and engineering class separately.
+      description: Stable task ID, real user need, score or blocker advanced, next consumer, concrete deliverable and completion/stop boundary. One outcome per assignee; state non-goals and engineering class separately.
     validations:
       required: true
   - type: textarea
@@ -23,7 +23,7 @@ body:
     id: scope
     attributes:
       label: Owner, baseline and scope
-      description: Repository, exact base, responsible component/writer, affected paths, producer/consumer dependencies and non-goals. Resolve the actual worktree at dispatch.
+      description: Repository, exact base, chain position and change kind, responsible component/writer, affected paths, producer/consumer dependencies, start condition and non-goals. Resolve the actual worktree at dispatch.
     validations:
       required: true
   - type: textarea
