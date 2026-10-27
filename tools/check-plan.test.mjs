@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import { once } from "node:events";
+import { createInterface } from "node:readline";
 import os from "node:os";
 import path from "node:path";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
@@ -313,13 +315,51 @@ test("Windows outcomes never hold the required PR aggregate", () => {
   }
 });
 
+// kill(pid, 0) also succeeds for a terminated Linux zombie. This witness
+// checks whether owned descendants can still execute, not whether init reaped a PID.
+function cancellationProcessExecuting(pid) {
+  try { process.kill(pid, 0); }
+  catch (error) { if (error.code === "ESRCH") return false; throw error; }
+  if (process.platform !== "linux") return true;
+  try {
+    const stat = fs.readFileSync(`/proc/${pid}/stat`, "utf8");
+    return stat.slice(stat.lastIndexOf(")") + 2).split(" ")[0] !== "Z";
+  } catch (error) { if (error.code === "ENOENT") return false; throw error; }
+}
+
+test("Linux cancellation witness distinguishes a terminated zombie from an executing owner",
+  {skip: process.platform !== "linux", timeout: 10000}, async t => {
+    const owner = spawn("python3", ["-c", `
+import os, sys
+pid = os.fork()
+if pid == 0:
+    os._exit(0)
+os.waitid(os.P_PID, pid, os.WEXITED | os.WNOWAIT)
+print(pid, flush=True)
+sys.stdin.readline()
+os.waitpid(pid, 0)
+`], {stdio: ["pipe", "pipe", "inherit"]});
+    const ended = new Promise(resolve => owner.on("close", resolve));
+    const lines = createInterface({input: owner.stdout});
+    try {
+      const [line] = await once(lines, "line", {signal: t.signal});
+      const zombie = Number(line);
+      assert.ok(Number.isSafeInteger(zombie) && zombie > 0);
+      assert.equal(cancellationProcessExecuting(owner.pid), true);
+      assert.doesNotThrow(() => process.kill(zombie, 0));
+      assert.equal(cancellationProcessExecuting(zombie), false);
+    } finally {
+      lines.close(); owner.stdin.end("reap\n"); await ended;
+    }
+  });
+
 test("top-level full and Python routers cancel their owned descendants and block later gates",
   {skip: process.platform === "win32", timeout: 30000}, async () => {
     const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "check-plan-cancel-"));
     const cwd = path.join(temporary, "repo");
     fs.mkdirSync(cwd);
     const git = (...args) => execFileSync("git", args, {cwd, stdio: "pipe"});
-    const alive = pid => { try { process.kill(pid, 0); return true; } catch { return false; } };
+    const alive = cancellationProcessExecuting;
     try {
       fs.cpSync(import.meta.dirname, path.join(cwd, "tools"), {recursive: true});
       fs.writeFileSync(path.join(cwd, ".gitignore"), ".local/\n");
@@ -358,7 +398,13 @@ test("top-level full and Python routers cancel their owned descendants and block
           const exit = await ended;
           assert.equal(exit.code, 1, output);
           assert.equal(fs.readFileSync(ack, "utf8"), "INT");
-          assert.equal(alive(descendant), false);
+          const executing = alive(descendant);
+          let processState = "unavailable";
+          if (executing && process.platform === "linux") {
+            try { processState = fs.readFileSync(`/proc/${descendant}/stat`, "utf8"); }
+            catch (error) { processState = error.code; }
+          }
+          assert.equal(executing, false, `owned descendant still executing: ${descendant}; ${processState}`);
           assert.equal(fs.existsSync(later), false);
           const report = JSON.parse(fs.readFileSync(path.join(cwd, `.local/checks/workspace-${scope}-${process.platform}.json`)));
           assert.equal(report.verdict, "failed"); assert.equal(report.interrupted_signal, "SIGINT");

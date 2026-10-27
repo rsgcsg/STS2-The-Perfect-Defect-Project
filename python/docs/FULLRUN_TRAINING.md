@@ -239,6 +239,66 @@ worker 把周期、DEV最佳、早期、暂停和最终检查点直接发布到�
 
 ### 权重、配方与检查点
 
+#### 下一轮 T2 的输入 v2
+
+输入定义、集合/序列清单、固定公开词表和追加参数的办法归
+[P1 M-std 输入 owner](P1_T0.md#model-input-v2-and-the-separate-content-sorted-438-projection)。
+T2 从头初始化新血统；保留 FP32、batch64、AdamW 和 `mstd-training-v1`。
+先生成普通 prepare 请求（只写文件，不创建 Run，不提交计算）：
+
+```sh
+python -m stpd.p1.input_cli request --max-epochs 15 --max-seconds 18000 \
+  --output /ABS/new-t2-v2-request.json
+```
+
+请求内绑定完整 v2 InputSpec、全新 intent 和早期检查点策略，不带数据源或权重默认值。
+要做学校短测，另生成 `--stop-after 8` 的请求并核实际目标时限；本轮未占用学校。
+8 步从零小验与 438 步旧模型的 DEV Top1 只作描述比较，不能当成同预算质量证明。
+小验须损失/梯度有限、固定 TRAIN 探针下降、打乱不变及 packed/reference 检查通过；
+新血统是否更强不能用小验代替。当前 8 步 DEV 为 240/446（53.81%），
+旧 438 为 300/446（67.26%）；因此没有取得“准确率不明显更差”的证据，
+不据此放行 T2。正式训练前仍须按新冻结数据和已批预算明确质量比较方案。
+
+**上游先完成**：W1 的新 A10 权重和每次训练/考试局选择、曝光台账，由原 Curation
+负责；使用其最终、用户已确认冻结的配置和 Snapshot。录制/Q 新入库的合格局在冻结时
+统一进入池子，由 W1 的结果选择，不能拿旧 25 局当全量。W1 代码已合入；真实分配/新权重未确认冻结就等它；
+只有用户明确选择旧 414 才可使用旧权重，不会自动回退。DEV/TEST 不加权，考试局必须
+是该模型没有训练过的；继承参数还须继承原模型的曝光记录，本卡不另建选局账。
+
+训练 Application/worker 必须运行本次合入的准确源码和锁；合并不会升级正在用的服务。
+学校须有真实分配、有效认证、严格主机身份和 R2 reader。原“约剩 6.8 小时”只是旧估计，
+T2 启动前核当时额度。请求的 18000 秒是建议的 5 小时训练上限，不是已消费/新批准费用；
+另外预留两段准备时间和至少 300 秒存档余量，整个分配/闲置/失败仍计总额度。
+15 轮不是必须跑满；保留 patience5 和 DEV 选点，预算不足先收紧新 Run，不能热改旧包。
+
+条件满足后沿原一条命令准备（不会提交 provider）：
+
+```sh
+python -m spireagent.workbench training package --execution remote \
+  --config /ABS/training-project.json --input /ABS/new-t2-v2-request.json \
+  --cohort-plan /ABS/confirmed-weight-candidates.json --configuration-id CONFIRMED_ID \
+  --output /ABS/new-t2-v2-package.json --wait-seconds 7200
+```
+
+用户明确“开训”后用上文同一 `training start --input /ABS/new-t2-v2-package.json`
+启动原 prepared Run。未准备/未确认的文件不是可执行训练许可。未知响应查原 intent/job，
+不重投。当前没有替用户冻结 W1 或创建正式 T2 Run。
+
+#### T2 新候选的评估账本
+
+保留下面的 shortlist、逐检查点 `current` 导出、正常模型注册顺序；候选实际产生之前
+不伪造 selection ID。先用 Managed 快筛，再以真游戏 Reference 判定，分账报告。
+同样的 10 个 A0 + 2 个 A10 保留种子可复用，不能混入训练/录制选择。
+
+原 `evaluation plan` 的全未开矩阵现已支持在冻结 matrix JSON 中给出明确 `conditions`：
+`run_profile`、`display_mode`、`speed`、`evidence_peer` 四项全部具名。
+例如 Reference 可用 extended / native-ui / fast 和实际 R2 peer；具体条件必须按该轮
+已合格环境冻结。配套 CSV 每个槽为 not_started、run_id/原报告/原件 ID 为空。
+矩阵仍须绑定实际 manifest SHA、真实已注册候选和完整分母；普通 plan 命令即可导入，
+不需要先运行一局。不提供 conditions 且没有原运行条件仍拒绝；含历史结果时，声明条件
+必须与原报告一致，不能借新配置改写旧成绩。Managed 继续使用原 `evaluation create`
+和独立的精确 execution/manifest，不在此合并两种 Host 的结果。
+
 每个训练决策乘所属原局权重；以**全 TRAIN 决策的权重均值**归一化到1，再对原 optimizer batch
 取均值。微批不单独归一化；原顺序、随机过程和 batch64 保留。长局仍贡献更多决策，
 这不是“每局总损失相同”。全1使用原计算表达式；DEV/TEST不加权。规则、完整原局权重表、
@@ -280,8 +340,8 @@ python -m spireagent.workbench project model --action register \
 同10个Defect A0及2个A10种子。训练/采集排除这些种子。固定同版本、Host、速度、画面、
 协议与预算；按自然胜负、unknown/失败、未开及配对局报告，不用HP或进程退出推导胜负。
 本轮只交计划。训练后登记得到真实selection，再冻结矩阵/CSV，调用已有 `evaluation plan`；
-运行必须再获用户同意。当前该 `plan` 只支持导入带原运行条件的历史矩阵，全新未开矩阵会拒绝
-`original_conditions_required`；此缺口归评估链owner，本卡不改其代码，不伪造一次原局来绕过。
+运行必须再获用户同意。全新未开矩阵在显式冻结 `conditions` 后可导入，见上方 T2 账本说明；
+不声明条件仍拒绝 `original_conditions_required`，不能伪造一次原局来绕过。
 未来候选尚不存在时只给显式待绑定草案，不伪造Model/selection或宣称可执行账本已完成。
 
 卡 A 的已确认 `weight-candidates.json` 可直接作为上游输入。将完整配方、全新 intent、

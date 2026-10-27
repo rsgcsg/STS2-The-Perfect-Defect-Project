@@ -209,3 +209,57 @@ def test_status_is_readable_while_the_long_running_writer_holds_its_lock(importe
         assert owner.main(["report", "--ledger", str(ledger.directory)]) == 0
     assert ledger.store.keys("events/") == before
     assert '"planned": 10' in capsys.readouterr().out
+
+
+def test_fresh_unstarted_matrix_uses_explicit_conditions_without_a_fake_run(tmp_path):
+    manifest = checkpoint_reference_manifest("v0.111.0", "Defect", 10)
+    path = tmp_path / "manifest.json"
+    path.write_bytes(json_bytes(manifest))
+    matrix = tmp_path / "matrix.json"
+    conditions = {"run_profile": "extended", "display_mode": "native-ui",
+                  "speed": "fast", "evidence_peer": PEER}
+    frozen = {"planned": 2, "conditions": conditions, "groups": [{
+        "character": "Defect", "ascension": 10, "manifest_path": str(path),
+        "manifest_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        "selections": {"new-checkpoint": "registered-candidate"}}]}
+    matrix.write_bytes(json_bytes(frozen))
+    stream = io.StringIO()
+    writer = csv.DictWriter(stream, fieldnames=["character", "ascension", "seed", "step",
+        "seed_ordinal", "selection_id", "status", "run_id", "stored_evidence_id",
+        "original_report"])
+    writer.writeheader()
+    for ordinal, seed in enumerate(manifest["seeds"], 1):
+        writer.writerow({"character": "Defect", "ascension": 10, "seed": seed,
+            "step": "new-checkpoint", "seed_ordinal": ordinal,
+            "selection_id": "registered-candidate", "status": "not_started"})
+    episodes = tmp_path / "episodes.csv"
+    episodes.write_text(stream.getvalue())
+    config = SimpleNamespace(state_dir=tmp_path / "normal-state")
+    before = matrix.read_bytes(), episodes.read_bytes()
+    ledger = owner.EvaluationLedger.import_matrix(tmp_path / "ledger", matrix, episodes, config)
+    assert ledger.plan["conditions"] == conditions
+    assert ledger.report()["not_started"] == 2
+    assert all(not row.get("run_id") for row in ledger.slots())
+    assert (matrix.read_bytes(), episodes.read_bytes()) == before
+    assert owner.EvaluationLedger(ledger.directory).report()["not_started"] == 2
+    # No invented previous run, no missing-condition fallback and no invalid
+    # operating mode is admitted by the new preparation path.
+    frozen.pop("conditions")
+    matrix.write_bytes(json_bytes(frozen))
+    with pytest.raises(BoundaryError, match="original_conditions_required"):
+        owner.EvaluationLedger.import_matrix(tmp_path / "no-conditions", matrix, episodes, config)
+    frozen["conditions"] = {**conditions, "display_mode": "guessed-display"}
+    matrix.write_bytes(json_bytes(frozen))
+    with pytest.raises(BoundaryError, match="invalid_declared_conditions"):
+        owner.EvaluationLedger.import_matrix(tmp_path / "bad-conditions", matrix, episodes, config)
+
+
+def test_new_conditions_cannot_override_historical_runs(imported):
+    _, config, _, matrix, episodes = imported
+    frozen = json.loads(matrix.read_bytes())
+    frozen["conditions"] = {"run_profile": "extended", "display_mode": "native-ui",
+                            "speed": "fast", "evidence_peer": PEER}
+    matrix.write_bytes(json_bytes(frozen))
+    with pytest.raises(BoundaryError, match="declared_conditions_differ_from_originals"):
+        owner.EvaluationLedger.import_matrix(matrix.parent / "changed-conditions",
+                                            matrix, episodes, config)

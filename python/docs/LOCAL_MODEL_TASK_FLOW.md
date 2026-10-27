@@ -759,11 +759,18 @@ Suite reports have a separate bounded 64MiB reader for completed-report reuse; m
 
 现有 `EvaluationLedger` 的同一 `create/run/status/report` 命令以 `--host managed` 选择 Managed 执行者。每局仍通过原 `run_suite`、正常 `export.register`、P1 Runtime CLI、`stpd.p1.agent`、typed Evidence 与 Store/R2；新接口不执行另一套动作循环。Reference 的原 `plan/run --config` 行为保持。旧 `stpd.evaluation.managed_suite` 是直接选择完整 BoundAction ID 的 catalog-only 工程可靠性资产，没有完整 P1 模型输入、Model 任务绑定和 Runtime 证据链；其循环不能并作 P1 模型评估。原资产与用途保留。
 
-冻结执行 JSON（`spireagent/managed-evaluation-execution-v1`）需要正常打包的 Host/Runtime 目录和完整 package pin、准确候选目录、已核对的 `initial_progress`、Python 路径、`export.adapter_identity()`、原 Model artifact ID 与包目录、实际源码 `Producer`、Store/peer 与空间下限。`producer` 是预期版本，执行前必须与干净源码和原 uv.lock 相符；不能用旧配置给新代码冒标来源。`store="s3"` 使用冻结的 peer 位置，环境只提供凭据；本地 Store 则指定自己的绝对目录。配置和附件保持私有，不复制凭据到报告。复制既有规范 manifest 后只改 Host，保留规范种子，不编辑旧计划。
+冻结执行 JSON（`spireagent/managed-evaluation-execution-v1`）需要正常打包的 Host/Runtime 目录和完整 package pin、准确候选目录、已核对的 `initial_progress`、Python 路径、`export.adapter_identity()`、原 Model artifact ID 与包目录、实际源码 `Producer`、Store/peer 与空间下限。`producer` 是预期版本，执行前必须与干净源码和原 uv.lock 相符；不能用旧配置给新代码冒标来源。新账本省略 `store` 时，默认复用运行节点的 `~/.local/share/spireagent/managed-evaluation/store`；`create` 把解析后的绝对路径与 `read_concurrency` 写入同一不可变 plan，恢复不会随 HOME 改向。也可用 `store="/ABS/node-working-store"` 指定隔离的节点工作集，跨批复用；不要指向录制/Q 的 Store。显式 `store="s3"` 保留原直传方式，使用冻结的 peer 位置，环境只提供凭据。旧账本和已显式冻结的本地/远端位置保持。配置和附件保持私有，不复制凭据到报告。复制既有规范 manifest 后只改 Host，保留规范种子，不编辑旧计划。
 
 Managed 早停默认 `settling_timeout_ms=120000`，要求 Runtime rc52；新执行配置必须正常绑定该准确新包，不能冒用旧 pin。只要同一个原生 snapshot 连续处于 settling 两分钟就停止，保全原件并记 `unknown / managed_settling_stalled`，不重投动作或槽位。普通变化的 snapshot 和正常终局沿原逻辑处理。显式 `null` 仅保留旧冻结 Runtime 的工程执行方式，须在该次配置/报告中声明没有启用此预算，不能声称已获得早停能力；它不替代单局总墙钟上限。
 
-可选 `measure_host_performance: true` 要求 Host rc46，记录执行前后的 manager-only 计数；默认不采这组额外诊断。`phase_seconds` 仍是 prepare/execute/finish/preserve/close 的互不重叠时长；`detail_seconds` 是其中的启动与保存细分，`host_performance` 两个快照的查询另计诊断开销，不能重复相加。保存依然等待完整 typed Store/peer 读回后才收成绩和关闭 Host；本次没有实施后台保存、复用进程或改变正式证据内容。
+可选 `measure_host_performance: true` 要求 Host rc46，记录执行前后的 manager-only 计数；默认不采这组额外诊断。`phase_seconds` 仍是 prepare/execute/finish/preserve/close 的互不重叠时长；`detail_seconds` 是其中的启动与保存细分，`host_performance` 两个快照的查询另计诊断开销，不能重复相加。保存依然等待完整 typed Store/peer 读回后才收成绩和关闭 Host。本地暂存默认在本机发布完整 Runtime 与原件，再由现有 `copy_artifact` 送到准确 peer；没有后台队列。`read_concurrency` 默认为 8，可显式指定 1–8；正式读回中的 model/runtime 父 payload 用现有 `VerifiedReadSession.prefetch` 有界读取，每局新建、退出销毁，archive/transfer 仍直接从本次 peer 全量读取；所有 payload 的原哈希和 typed 检查均保留。四路 Actor 最多同时 32 个预取请求；遇 SDK 有界传输重试后仍失败即失败，不降档、不改成缓存成功。
+
+
+本地工作集准备/恢复（M1R2）：首次 `run` 在开局前核完整模型祖先 DAG 的缺失字节和实际 Store 卷空间，再用原 transfer owner 准备；不要每批重建 Store。每次准备的 `elapsed_seconds`、`model_seconds`、前后对象字节和余量写入账本 `managed-preparations/000001.json` 等不可变收据；冷准备单独计成本，也计入整批墙钟。Store 对象大小是工作集占用，解包和原件另按运行目录实测；空间按[容量 SOP](DATA_LIFECYCLE.md#workstation-capacity-before-long-tasks)和本卡磁盘停止线准入，不另建清理系统。工作集无自动删除；满七天的可重建副本仍按原收口/占用/R2读回规则由原 owner 判断，不可删未保全原件，也不触碰其它 Store。
+
+断网/复制/读回失败时，原 run、本地 manifest/payload 保留，槽位仍按原账本记 unknown；本地发布后立刻持久化 `preservation_artifact_id` 与 `preservation-pending.json`（准确 Store、peer、expected），只有本次 peer 完整 typed 读回通过才有 `stored_evidence_id` 与 completed preservation。恢复只搬验该 artifact：用原 `copy_artifact(local, peer, artifact_id, reuse_published_parents=True)`，随后 `verify_global_artifact(peer, artifact_id, expected=原expected, scratch=私有目录, read_concurrency=8)`。沿原可信 Runtime 包提供 expected，不执行归档代码；补存收据不能改写旧 unknown 或再开同局。失败发生在本地发布前时沿原封存 run 和 typed-verification 中的 expected 恢复原保存操作，不重新 offer 游戏。
+
+留给 M2b 的接点是同一 `ManagedEpisodeExecutor._preserve` 同步保存方法、既有 phase/detail_seconds 与 pending/full-readback 身份；本轮没有档位、等待保存队列或执行/保存重叠，正式证据内容保持原样。M2b 如改调度，仍须让同一账本拥有槽位/分母，成功条件仍在完整 peer 读回之后。
 
 
 ```sh
@@ -776,6 +783,8 @@ python -m spireagent.workbench.evaluation_ledger run --host managed \
 python -m spireagent.workbench.evaluation_ledger report \
   --ledger /ABS/new-ledger --output /ABS/report.json
 ```
+
+同种子存储对照可在 `run --host managed` 重复传 `--slot-id SHA`，只从该账本冻结顺序中准入选中的 `not_started` 槽，再应用 `max-episodes`；默认仍为全部未开槽。选择不改 plan、分母或状态，finished/unknown 永不重投；集合外的未确认清理仍阻止准入。空、重复或外来 ID 拒绝；其它 action/Reference 不接受此参数。前后账本的 slot ID 各自包含 manifest 引用，应按冻结 seed＋selection/step 映射到候选自己的 ID，保留完整配对表：原 unknown 在候选对应行是未 offer，不宣称全批一致，也不拿筛选后的吞吐与完整分母作因果比较。
 
 先确认这一槽自然终局、完整 typed 读回、controller release 和 Host/service 正常关闭，才继续其余槽位。调度命令结束不等于每槽通过；报告保留全部 unknown/censored/unstarted。增加 `--workers N` 只改变同一账本的并发容量，协调者持有 OS lock，worker 不写槽位事件。恢复只派发 `not_started`，崩溃后的 reservation 先读原报告，未知状态不会回队列。STOP 文件、总时限或未确认清理均停止新派发。协调者在写 reservation 前按 `max(冻结 minimum_free_bytes, 现有工作站保留空间) + 2 GiB × (在途局数 + 1)` 准入，沿用每局既有峰值；额度直到该局执行、封存/读回和清理返回才释放。容量暂满且仍有在途局时先等其完成，再重新检查；没有在途局也容不下下一局时才以 `workspace_capacity_insufficient` 收口。尚未准入的槽仍为 `not_started`，恢复命令只会继续这些槽。该预算是本协调者的保守估算，不是跨进程磁盘配额；外部任务可能改变余量，每局原有生产检查仍保留。每个并行比较使用预先冻结的独立试验账本；原失败和 unknown 分母不被另一次试验覆盖。
 

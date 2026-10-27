@@ -19,7 +19,7 @@ from .derivation import DERIVATION
 from .execution import MStdExecution
 from .export import input_spec
 from .formal_training import Population
-from .input import INPUT_SPEC, fit_vocabulary, project
+from .input import INPUT_SPEC, V2_INPUT_SPEC, fit_vocabulary, project, training_projection
 from .model import ARCHITECTURE
 from .spec import (
     DERIVED_RUN_SCHEMA,
@@ -40,6 +40,7 @@ def populations_from_snapshot(store: ArtifactStore, snapshot_id: str) -> dict[st
 
 def populations_from_reader(
     reader: SnapshotReader, loss_weighting: dict[str, Any] | None = None,
+    input_projection: dict[str, Any] | None = None,
 ) -> dict[str, Population]:
     """Project one already verified immutable read session, without reloading it."""
     selection = reader.selection
@@ -51,7 +52,7 @@ def populations_from_reader(
     weights = point_weights(loss_weighting, selection) if loss_weighting is not None else {}
     rows: dict[str, list[tuple[str, Any, int]]] = {s: [] for s in ("train", "dev", "test")}
     for reference, observation in reader.iter_points():
-        frame = project(observation)
+        frame = project(observation, input_projection=input_projection)
         target = [c["choice_id"] for c in frame.choices].index(reference["chosen"])
         rows[reference["split"]].append((reference["point_id"], frame, target))
     return {
@@ -74,6 +75,7 @@ def prepare_p1_run(
     operation_id: str,
     *, execution_policy: dict[str, Any] | None = None, initial_checkpoint: str | None = None,
     loss_weighting: dict[str, Any] | None = None, checkpoint_policy: str | None = None,
+    input_projection: dict[str, Any] | None = None,
 ) -> Manifest:
     """Caller reserves the existing application/Hub use before fitting vocabulary.
 
@@ -82,7 +84,9 @@ def prepare_p1_run(
     """
     if checkpoint_policy not in {None, CHECKPOINT_POLICY}:
         raise BoundaryError("p1_workload", "unsupported_checkpoint_policy")
-    if initial_checkpoint is not None and (loss_weighting is not None or checkpoint_policy):
+    projection = training_projection(INPUT_SPEC if input_projection is None else input_projection)
+    if initial_checkpoint is not None and (loss_weighting is not None or checkpoint_policy
+                                           or projection != INPUT_SPEC):
         raise BoundaryError("p1_workload", "new_protocol_cannot_derive_old_run")
     checked_digest(operation_id, "p1_workload.operation_id", length=32)
     execution = (MStdExecution.for_plan("mstd-training-v1") if execution_policy is None
@@ -107,8 +111,13 @@ def prepare_p1_run(
         raise BoundaryError("p1_workload", "engineering_snapshot_required_no_auto_admission")
     weighting = (checked_weights(loss_weighting, reader.selection)
                  if loss_weighting is not None else None)
-    populations = populations_from_reader(reader, weighting)
-    vocabulary = fit_vocabulary(list(populations["train"].frames))
+    populations = populations_from_reader(reader, weighting, projection)
+    if projection == V2_INPUT_SPEC:
+        from .vocabulary import public_vocabulary
+
+        vocabulary = public_vocabulary()
+    else:
+        vocabulary = fit_vocabulary(list(populations["train"].frames))
     vocabulary_raw = json_bytes(vocabulary)
     payload = store.put_payload("vocabulary", io.BytesIO(vocabulary_raw), "application/json")
     training = Manifest(
@@ -127,7 +136,7 @@ def prepare_p1_run(
                 "research_admission": "not_evaluated",
                 "snapshot_selection_sha256": snapshot.payload("selection").sha256,
                 "input_spec": input_spec(vocabulary),
-                "input_projection": INPUT_SPEC,
+                "input_projection": projection,
                 "target_spec": TARGET_SPEC,
                 "architecture": ARCHITECTURE,
                 "partition_N": {s: len(p.frames) for s, p in populations.items()},
@@ -210,7 +219,7 @@ def verify_p1_run(store: ArtifactStore, run_id: str, producer: Producer) -> P1Wo
         or info.get("entrypoint") != ENTRYPOINT
         or {p.role for p in training.parents} != {"source"}
         or {p.role for p in training.payloads} != {"vocabulary"}
-        or info.get("input_projection") != INPUT_SPEC
+        or info.get("input_projection") not in (INPUT_SPEC, V2_INPUT_SPEC)
         or info.get("target_spec") != TARGET_SPEC
         or info.get("architecture") != ARCHITECTURE
         or info.get("purpose") != "engineering"
@@ -233,7 +242,7 @@ def verify_p1_run(store: ArtifactStore, run_id: str, producer: Producer) -> P1Wo
     if (
         digest(vocabulary_raw) != info.get("vocabulary_sha256")
         or input_spec(vocabulary) != info.get("input_spec")
-        or vocabulary.get("input_spec") != INPUT_SPEC
+        or vocabulary.get("input_spec") != info["input_projection"]
         or training.payload("vocabulary").sha256 != info.get("vocabulary_sha256")
         or info.get("snapshot_selection_sha256") != snapshot.payload("selection").sha256
         or info.get("partition_N")

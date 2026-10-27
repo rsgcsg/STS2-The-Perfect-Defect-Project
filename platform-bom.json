@@ -5,22 +5,26 @@
     "native_foundation": {
       "source_revision": "e32a30b32d72720a51cd894b9607157016a3b6ba",
       "component_tree_revision": "5279e881a0146846887bdeb5284a9d22b61f18ca",
-      "component_source_digest_sha256": "64dd8a93ba8c1b2fb52965278da7885bcc0efcf5c442c64e6fb88442cb504097"
+      "component_source_digest_sha256": "64dd8a93ba8c1b2fb52965278da7885bcc0efcf5c442c64e6fb88442cb504097",
+      "version": "0.1.0-rc.11"
     },
     "connector": {
       "source_revision": "e45e9239362c4ad9b325e04a0161e2f82af8150c",
       "component_tree_revision": "fd818470ab34fc6bfa93ba92efd72c05b09b1eaa",
-      "component_source_digest_sha256": "1cdd691e8dde42c02a9a760488f676514fcfd06b1be2074312d1cfc301a6b633"
+      "component_source_digest_sha256": "1cdd691e8dde42c02a9a760488f676514fcfd06b1be2074312d1cfc301a6b633",
+      "version": "1.3.0-rc.35"
     },
     "host_runtime": {
       "source_revision": "e45e9239362c4ad9b325e04a0161e2f82af8150c",
       "component_tree_revision": "117b0ccd2c355565954dec97176fbb735afb707f",
-      "component_source_digest_sha256": "6e4f1e5c0434f904b5a4574bc335d6caab4369d1be440dd394121232a01adfbd"
+      "component_source_digest_sha256": "6e4f1e5c0434f904b5a4574bc335d6caab4369d1be440dd394121232a01adfbd",
+      "version": "1.1.0-rc.50"
     },
     "annotator": {
       "source_revision": "e45e9239362c4ad9b325e04a0161e2f82af8150c",
       "component_tree_revision": "49094d2aad6dc93711615cf4f2927e9a056dd893",
-      "component_source_digest_sha256": "40efb1b355612caafb371d08b132e340979a45e383e16162d34c2650007d2314"
+      "component_source_digest_sha256": "40efb1b355612caafb371d08b132e340979a45e383e16162d34c2650007d2314",
+      "version": "0.3.0-rc.31"
     },
     "evidence": {
       "version": "0.1.0-rc.36",
@@ -49,10 +53,11 @@
     "game_mod": {
       "source_revision": "e45e9239362c4ad9b325e04a0161e2f82af8150c",
       "component_tree_revision": "35ad9d04fd6d51c75be47cb126f491cf62d639ea",
-      "component_source_digest_sha256": "63b43cb3f1abd09bd908cdbbda278e23cafa9ddc9be17feb5e99d37c1f683366"
+      "component_source_digest_sha256": "63b43cb3f1abd09bd908cdbbda278e23cafa9ddc9be17feb5e99d37c1f683366",
+      "version": "0.2.0-rc.67"
     },
     "player_environment_protocol": "1.0.0",
-    "typescript_sdk": "1.3.0-rc.15"
+    "typescript_sdk": "1.3.0-rc.17"
   },
   "public_packages": {
     "connector_host": {

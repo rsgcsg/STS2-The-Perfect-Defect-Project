@@ -10,7 +10,7 @@ from typing import Any, TextIO
 import torch
 
 from .data import digest
-from .export import adapter_identity, input_spec, load_model
+from .export import adapter_identity, bound_projection, input_spec, load_model
 from .input import INPUT_SPEC, project
 from .model import MStd
 
@@ -26,6 +26,10 @@ def installation(
     manifest = _object_file(bound_path(owner, manifest_path, stage="native_agent_support"))
     path = bound_path(owner, Path(config["package_path"]), stage="native_agent_support")
     model, payload = load_model(path, config["package_sha256"])
+    try:
+        projection = bound_projection(model.vocabulary, config.get("input_projection"))
+    except ValueError as error:
+        raise ValueError("P1 model installation binding differs") from error
     expected_artifact = {
         "id": config["package_sha256"],
         "path": str(path),
@@ -35,7 +39,7 @@ def installation(
         config["schema"] != "stpd/p1-mstd-installation-1"
         or manifest.get("adapter") != adapter_identity()
         or manifest.get("artifact") != expected_artifact
-        or manifest.get("input", {}).get("input_spec") != input_spec(model.vocabulary, INPUT_SPEC)
+        or manifest.get("input", {}).get("input_spec") != input_spec(model.vocabulary, projection)
         or manifest["input"].get("profile") != "p1-global-r1"
         or not isinstance(manifest["input"].get("global"), dict)
         or manifest["input"]["global"].get("revision") != INPUT_SPEC["revision"]
@@ -45,7 +49,6 @@ def installation(
         or config["weights_sha256"] != digest(encode_weights(payload["weights"]))
         or config["package_model_id"] != config["package_sha256"]
         or config.get("package_input_spec") != input_spec(model.vocabulary)
-        or config.get("input_projection") != INPUT_SPEC
         or config["input_spec"] != manifest["input"]["input_spec"]
     ):
         raise ValueError("P1 model installation binding differs")

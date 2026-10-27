@@ -22,7 +22,8 @@ from spireagent.encoding import semantic_hash
 from spireagent.json_boundary import BoundaryError, FrozenObject, json_bytes
 from spireagent.storage.archives import _extract_tar
 from spireagent.storage.local import LocalBlobStore
-from spireagent.storage.store import CHUNK_BYTES, ManifestArtifactStore
+from spireagent.storage.read_session import VerifiedReadSession
+from spireagent.storage.store import CHUNK_BYTES, ArtifactStore, ManifestArtifactStore
 from stpd.p1.spec import MSTD_PACKAGE_SCHEMAS
 
 from .p1_recording_storage import require_workspace_space
@@ -198,11 +199,13 @@ def _verified(directory: Path, expected: Mapping[str, object]) -> AgentSessionRu
 
 
 def _parents(
-    store: ManifestArtifactStore,
+    store: ArtifactStore,
     model_id: str,
     runtime_id: str,
     verified: AgentSessionRunEvidence,
     expected: Mapping[str, object],
+    *,
+    read_concurrency: int = 1,
 ) -> tuple[Parent, ...]:
     run = verified.manifest
     model, runtime = store.get_manifest(model_id), store.get_manifest(runtime_id)
@@ -258,6 +261,9 @@ def _parents(
             original = hashlib.file_digest(source, "sha256").hexdigest()
         if original != payload.sha256:
             raise BoundaryError("global_store", "original_runtime_parent_bytes")
+    if isinstance(store, VerifiedReadSession):
+        store.prefetch(tuple(p for m in (model, runtime) for p in m.payloads),
+                       concurrency=read_concurrency)
     for manifest in (model, runtime):
         for payload in manifest.payloads:
             for _ in store.read_payload(payload):
@@ -463,8 +469,11 @@ def materialize_global_evidence(
     *,
     expected: Mapping[str, object],
     scratch: Path,
+    read_concurrency: int = 1,
 ) -> Iterator[AgentSessionRunEvidence]:
     """By-ID full readback through the original typed verifier, never archive code."""
+    if type(read_concurrency) is not int or not 1 <= read_concurrency <= 8:
+        raise BoundaryError("global_store", "invalid_read_concurrency")
     scratch.mkdir(parents=True, exist_ok=True)
     manifest = store.get_manifest(artifact_id)
     transfer = _transfer(store, manifest, scratch)
@@ -489,7 +498,17 @@ def materialize_global_evidence(
         info = manifest.parameters.value()
         if verified.content_id != transfer.content_id or _facts(verified) != info:
             raise BoundaryError("global_store", "typed_original_binding_mismatch")
-        _parents(store, manifest.parent("model"), manifest.parent("runtime"), verified, expected)
+        # The archive and transfer were read directly above; only this operation
+        # may reuse the freshly verified parent bytes. No cross-run cache.
+        parents = (manifest.parent("model"), manifest.parent("runtime"))
+        if read_concurrency == 1:
+            _parents(store, *parents, verified, expected)
+        else:
+            model, runtime = (store.get_manifest(identity) for identity in parents)
+            require_workspace_space(scratch, sum(
+                p.size for m in (model, runtime) for p in m.payloads))
+            with VerifiedReadSession(store, scratch=scratch) as session:
+                _parents(session, *parents, verified, expected, read_concurrency=read_concurrency)
         yield verified
 
 
@@ -499,9 +518,11 @@ def verify_global_artifact(
     *,
     expected: Mapping[str, object],
     scratch: Path,
+    read_concurrency: int = 1,
 ) -> dict[str, Any]:
     with materialize_global_evidence(
-        store, artifact_id, expected=expected, scratch=scratch
+        store, artifact_id, expected=expected, scratch=scratch,
+        read_concurrency=read_concurrency,
     ) as value:
         manifest = store.get_manifest(artifact_id)
         return {
