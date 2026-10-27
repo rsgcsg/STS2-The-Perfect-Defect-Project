@@ -359,7 +359,8 @@ def _execute_p1_run(
         raise BoundaryError("p1_worker", "no_selected_result_reconcile_only")
     preparation_started = time.perf_counter()
     populations = populations_from_reader(
-        workload.reader, workload.training.parameters.value().get("loss_weighting"))
+        workload.reader, workload.training.parameters.value().get("loss_weighting"),
+        workload.vocabulary["input_spec"])
     population_seconds = time.perf_counter() - preparation_started
     construction_started = time.perf_counter()
     trainer = MStdTrainer(

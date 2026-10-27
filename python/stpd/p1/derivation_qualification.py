@@ -171,11 +171,14 @@ def fixed_dev_comparison(store: ArtifactStore, run_id: str, checkpoint_id: str) 
     if checkpoint.state["phase"] != "training" or checkpoint.state["test_result"] is not None:
         raise BoundaryError("p1_derivation_QA", "unfinished_TRAIN_checkpoint_required")
     trainer = MStdTrainer(
-        populations_from_reader(workload.reader),
+        populations_from_reader(
+            workload.reader, workload.training.parameters.value().get("loss_weighting"),
+            workload.vocabulary["input_spec"]),
         workload.vocabulary,
         workload.snapshot.artifact_id,
         workload.config,
         workload.execution,
+        checkpoint_policy=workload.training.parameters.value().get("checkpoint_policy"),
     )
     trainer.restore(checkpoint.raw)
     devices = [trainer.device.index or 0] if trainer.device.type == "cuda" else []

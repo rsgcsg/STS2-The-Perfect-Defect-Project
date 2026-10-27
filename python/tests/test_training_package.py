@@ -13,7 +13,8 @@ from stpd.p1.weighting import CHECKPOINT_POLICY, SCHEMA
 from stpd.p1.workload import verify_p1_run
 
 
-def test_normal_package_then_start_original_prepared_run(tmp_path, capsys, monkeypatch):
+@pytest.mark.parametrize("input_v2", [False, True])
+def test_normal_package_then_start_original_prepared_run(tmp_path, capsys, monkeypatch, input_v2):
     with client(tmp_path) as (app, call, provider, store, owner, snapshot, config_path):
         from stpd.p1.dataset import SnapshotReader
 
@@ -32,6 +33,10 @@ def test_normal_package_then_start_original_prepared_run(tmp_path, capsys, monke
                 "weights_by_root": dict.fromkeys(roots, 1),
             },
         }
+        if input_v2:
+            from stpd.p1.input import V2_INPUT_SPEC
+
+            body["input_projection"] = V2_INPUT_SPEC
         request = tmp_path / "request.json"
         package = tmp_path / "package.json"
         request.write_text(json.dumps(body))
@@ -63,6 +68,11 @@ def test_normal_package_then_start_original_prepared_run(tmp_path, capsys, monke
             ]
             == body["loss_weighting"]
         )
+        if input_v2:
+            assert (
+                verify_p1_run(store, run_id, provider.target.producer).vocabulary["input_spec"]
+                == body["input_projection"]
+            )
         # Poison prepare: a start of this package must not fit/transfer again.
         monkeypatch.setattr(
             app.remote_training, "prepare", lambda *a: pytest.fail("prepared run was rebuilt")
@@ -350,6 +360,11 @@ def test_invalid_weight_or_checkpoint_policy_does_not_record_training_use(tmp_pa
             call("prepare", body={**body, "loss_weighting": None})
         with pytest.raises(BoundaryError, match="unsupported_checkpoint_policy"):
             call("prepare", body={**body, "checkpoint_policy": []})
+        from stpd.p1.input import SORTED_INPUT_SPEC
+
+        for projection in (None, [], {}, SORTED_INPUT_SPEC):
+            with pytest.raises(BoundaryError, match="unsupported_input_projection"):
+                call("prepare", body={**body, "input_projection": projection})
 
 
 @pytest.mark.parametrize("wait_seconds,expected", [(None, 600), (7200, 7200)])
@@ -392,7 +407,10 @@ def test_invalid_freeze_wait_fails_before_opening_or_offering(monkeypatch, wait_
         p1_data_cli.p1_data_command(None, "freeze", {}, wait_seconds=wait_seconds)
 
 
-def test_one_command_from_Q_frozen_file_saves_same_package_and_submits_once(tmp_path, capsys):
+@pytest.mark.parametrize("input_v2", [False, True])
+def test_one_command_from_Q_frozen_file_saves_same_package_and_submits_once(
+    tmp_path, capsys, input_v2
+):
     from collections import Counter
 
     from stpd.p1.data import digest, json_bytes
@@ -443,16 +461,17 @@ def test_one_command_from_Q_frozen_file_saves_same_package_and_submits_once(tmp_
             )
         )
         request = tmp_path / "recipe.json"
-        request.write_text(
-            json.dumps(
-                {
-                    "intent_id": "f" * 32,
-                    "config": MStdConfig(max_epochs=2).to_dict(),
-                    "max_seconds": 300,
-                    "stop_after": 1,
-                }
-            )
-        )
+        recipe = {
+            "intent_id": "f" * 32,
+            "config": MStdConfig(max_epochs=2).to_dict(),
+            "max_seconds": 300,
+            "stop_after": 1,
+        }
+        if input_v2:
+            from stpd.p1.input import V2_INPUT_SPEC
+
+            recipe["input_projection"] = V2_INPUT_SPEC
+        request.write_text(json.dumps(recipe))
         output = tmp_path / "package.json"
         provider.ready = True
         args = [
@@ -475,7 +494,15 @@ def test_one_command_from_Q_frozen_file_saves_same_package_and_submits_once(tmp_
         saved = json.loads(output.read_bytes())
         assert saved["start"]["run_id"] == job["input_id"]
         assert saved["prepared"]["input"]["snapshot_id"] == snapshot.artifact_id
-        assert settled(call, job["id"], "paused")["result"]["checkpoint_id"]
+        checkpoint = settled(call, job["id"], "paused")["result"]["checkpoint_id"]
+        assert checkpoint
+        if input_v2:
+            from stpd.workers.p1_run import verify_p1_checkpoint
+
+            workload = verify_p1_run(store, job["input_id"], provider.target.producer)
+            assert workload.vocabulary["input_spec"] == recipe["input_projection"]
+            # The worker publishes this checkpoint to the original compute peer.
+            verify_p1_checkpoint(provider.store, checkpoint, workload)
         assert len(provider.calls) == 1
         # This is an original offer. Repeating a command with its existing
         # output cannot repeat preparation or submit another attempt.

@@ -535,7 +535,7 @@ class RemoteTrainingService:
             recipe = body.get("recipe_id", "p1-mstd-N-v1") if isinstance(body, dict) else None
             fields = {"intent_id", "source_id", "config", "max_seconds", "stop_after"}
             optional = {key for key in ("recipe_id", "execution_policy", "initial_checkpoint",
-                                       "loss_weighting", "checkpoint_policy")
+                                       "loss_weighting", "checkpoint_policy", "input_projection")
                         if isinstance(body, dict) and key in body}
             obj = object_fields(body, fields | optional,
                                 "remote_training.start")
@@ -575,6 +575,19 @@ class RemoteTrainingService:
                     if recipe != P1_MSTD_RECIPE:
                         raise BoundaryError("remote_training", "weighting_requires_M_std_recipe")
                     execution_options[key] = obj[key]
+            if "input_projection" in obj:
+                from stpd.p1.input import INPUT_SPEC, training_projection
+
+                if recipe != P1_MSTD_RECIPE:
+                    raise BoundaryError("remote_training", "input_projection_requires_M_std_recipe")
+                try:
+                    projection = training_projection(obj["input_projection"])
+                except ValueError as error:
+                    raise BoundaryError("remote_training",
+                                        "unsupported_input_projection") from error
+                if "initial_checkpoint" in obj and projection != INPUT_SPEC:
+                    raise BoundaryError("remote_training", "new_input_cannot_derive_legacy_run")
+                execution_options["input_projection"] = projection
             if "checkpoint_policy" in execution_options:
                 from stpd.p1.weighting import CHECKPOINT_POLICY
 

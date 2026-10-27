@@ -94,6 +94,17 @@ class EvaluationLedger:
         if directory.exists() or directory.is_symlink():
             reject("ledger_already_exists")
         frozen = json.loads(_read(matrix))
+        declared_conditions = frozen.get("conditions")
+        if declared_conditions is not None and (
+            not isinstance(declared_conditions, dict)
+            or set(declared_conditions) != {"run_profile", "display_mode", "speed", "evidence_peer"}
+            or declared_conditions["run_profile"] not in {"short", "extended", "continuous"}
+            or declared_conditions["display_mode"] not in {"headless", "native-ui"}
+            or declared_conditions["speed"] not in {"normal", "fast", "instant"}
+            or not isinstance(declared_conditions["evidence_peer"], dict)
+            or not declared_conditions["evidence_peer"]
+        ):
+            reject("invalid_declared_conditions")
         rows = list(csv.DictReader(io.StringIO(_read(episodes).decode("utf-8"))))
         expected = {}
         for group in frozen["groups"]:
@@ -170,7 +181,11 @@ class EvaluationLedger:
                     reject("unresolved_import_requires_explicit_unknown")
             slots.append(slot)
         if conditions is None:
-            reject("original_conditions_required")
+            if declared_conditions is None:
+                reject("original_conditions_required")
+            conditions = declared_conditions
+        elif declared_conditions is not None and conditions != declared_conditions:
+            reject("declared_conditions_differ_from_originals")
         plan = {"schema": SCHEMA, "created_at": datetime.now(UTC).isoformat(),
                 "state_dir": str(config.state_dir),
                 "originals": [reference(matrix), reference(episodes)],

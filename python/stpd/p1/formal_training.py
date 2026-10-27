@@ -51,7 +51,8 @@ class Population:
 
 
 FORMAL_CODE_FILES = ("formal_training.py", "spec.py", "input.py", "model.py", "numerics.py",
-                     "execution.py", "optimization.py", "weighting.py")
+                     "execution.py", "optimization.py", "weighting.py", "input_order.py",
+                     "vocabulary.py", "public_vocabulary_v1.json", "input_identity.py")
 
 
 class MStdTrainer:

@@ -48,6 +48,7 @@ dev = [
 [tool.setuptools.package-data]
 "spireagent.console" = ["*.css", "*.js"]
 "stpd.evaluation" = ["suites/*.json"]
+"stpd.p1" = ["public_vocabulary_v1.json"]
 
 [tool.setuptools.packages.find]
 where = ["."]
