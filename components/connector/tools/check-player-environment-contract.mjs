@@ -123,7 +123,7 @@ requireIn(sealedService, "FreezePublicTextMenuV2(ObserveTextMenuV2Context(), Con
 requireIn(sealedTransport, `RunOnMainThread(() => format switch
                     {
                         SealedPublicFormat.LegacyP1C1 => PlayerEnvironmentService.ReadCurrentP1Capture(expected),
-                        SealedPublicFormat.PublicBasis => PlayerEnvironmentService.ReadCurrentPublicBasis(expected),
+                        SealedPublicFormat.PublicBasis => PlayerEnvironmentService.ReadCurrentPublicBasis(expected, settledRequest == "1"),
                         _ => PlayerEnvironmentService.ReadCurrentSealedObservation(expected)
                     })`, "all sealed capture formats stay inside game-thread dispatch");
 requireIn(sealedService, "JsonSerializer.Serialize(stream, context.Snapshot, options)", "sealed public Snapshot only");

@@ -29,7 +29,7 @@ W1源码与T2草稿由PR258交付，集成状态看PR；录后入池、每次实
 
 [M3任务与入口](../plans/MANAGED_COVERAGE_20261027.zh-CN.md)已交：PR262普通合入develop，Host47按原件个人进度启动；用户批准后Workbench固定releasec75ecd42/源码e9452e11已安装，原Mod/Tool不变。Q原策略已恢复，已有真人原件自动重演、严格停止、analysis保全和完整R2读回已验，独立页面从原maintenance ledger派生。原X2 A10为13比12一致；首份自动样本830计划/73已比/72一致，不能称个人档整局重建。M055时钟/锁镰与M056事件可用性仍保留，normal时钟试验未安装。录制优先，未知不重演，后续诊断服务不等于有人后台人工监测。
 
-[M2a工程收据](../evidence/MANAGED_M2A_20261027.md)与[PR266](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/266)交付本轮执行修复和用户已批首两字段r1.7：固定Host49新40为39负/1未知（2.5%）、40份完整R2读回；新未知的原生GetIndex依赖另版Host51修，旧槽不改。最终Host51与私有Mod67的新同启动r1.7工程前缀48/48观察/选择一致，旧Human r1.5仍13比12；38源有2源/14 N不能完整恢复新语义。日常Mod/Tool/Workbench、默认438不切，19种其它计数不改义，未授整局/Human/训练资格；集成与准确门禁看PR，安装另批。
+[M2a工程收据](../evidence/MANAGED_M2A_20261027.md)与[PR266](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/266)交付本轮执行修复和用户已批首两字段r1.7：固定Host49新40为39负/1未知（2.5%）、40份完整R2读回；新未知的原生GetIndex依赖另版Host51修，旧槽不改。M056两种按钮事实另版52修后，原830点源新验证前80点80/80，旧73/72不改。最终Host52与私有Mod67的新同启动r1.7工程前缀48/48观察/选择一致，旧Human r1.5仍13比12；38源有2源/14 N不能完整恢复新语义。日常Mod/Tool/Workbench、默认438不切，19种其它计数不改义，未授整局/Human/训练资格；集成与准确门禁看PR，安装另批。
 
 ## Remaining Platform non-claims
 
