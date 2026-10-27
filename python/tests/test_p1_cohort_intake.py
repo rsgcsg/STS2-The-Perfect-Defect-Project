@@ -446,3 +446,34 @@ def test_new_weight_cli_requires_interactive_yes(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr("builtins.input", lambda _: "no")
     assert p1_cohort_cli.main(args) == 0
     assert calls == [] and "未冻结" in capsys.readouterr().out
+
+
+def test_new_rule_frozen_receipt_reads_through_snapshot_consumer(tmp_path, monkeypatch):
+    from spireagent.workbench import p1_data_cli
+    from spireagent.workbench.local_recordings import LocalRecordingCatalog
+    from spireagent.workbench.training_cohort import checked_cohort_plan, cohort_weighting
+    from stpd.p1.cohort import with_a10_progress
+
+    owner, store, config, policy = fixture(tmp_path)
+    for name in ("d", "e", "f"):
+        projection(store, name, level=10, result="loss")
+    refresh_cohort(config, policy)
+    old = json.loads((config.state_dir / PREVIEW).read_bytes())
+    plan = with_a10_progress(old)
+    monkeypatch.setattr(LocalRecordingCatalog, "read", lambda _: {
+        "status": "ready", "game_running": False})
+
+    def freeze(_config, action, body, **kwargs):
+        assert action == "freeze"
+        return freeze_p1_data(owner, store, PRODUCER, **body["selection"], reserve=True)
+
+    monkeypatch.setattr(p1_data_cli, "p1_data_command", freeze)
+    receipt = freeze_preview(config, plan)
+    frozen = json.loads((config.state_dir / "cohorts" / plan["configuration_id"] /
+                         "weight-candidates.json").read_bytes())
+    selected = checked_cohort_plan(frozen, plan["configuration_id"])
+    weights = cohort_weighting(config, selected, plan["configuration_id"], receipt["snapshot_id"])
+    assert weights["definition"]["rule"] == "progress-boss-a10-progress-v1"
+    for row in plan["runs"]:
+        if row["split"] == "train":
+            assert weights["weights_by_root"][row["root_run_id"]] == row["train_weight"]
