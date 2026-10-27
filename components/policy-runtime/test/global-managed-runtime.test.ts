@@ -93,8 +93,9 @@ describe("original GLOBAL CLI startup and control",()=>{
   expect(result.status).toBe(1);expect(result.stderr).toContain("Agent environment key");
   expect(result.stderr).not.toContain("ENOENT");expect(result.stdout).toBe("");
  });
- it.each(["managed","reference"] as const)("attests %s startup and performs one original step/Stop",async(kind)=>{
-  const source=kind==="managed"?await managedSource():undefined;
+ it.each(["managed","reference","managed-stalled"] as const)("attests %s startup and performs one original step/Stop",async(kind)=>{
+  const stalled=kind==="managed-stalled";
+  const source=kind!=="reference"?await managedSource(stalled):undefined;
   const transport=source?await ManagedServicePolicyClient.attachGlobal(source.bindingPath,source.attachmentPath,source.target,"run-00000000-0000-4000-8000-000000000001"):undefined;
   const f=await globalRuntimeFixture({transport});await f.runtime.stop();
   let child:ChildProcess|undefined,closed:Promise<unknown[]>|undefined;
@@ -106,12 +107,12 @@ describe("original GLOBAL CLI startup and control",()=>{
    const agent=join(f.root,"explicit-environment-agent.mjs");
    await writeFile(agent,`if(process.env.STPD_TEST_SELECTED!=="local-test-capability"||process.env.STPD_TEST_UNSELECTED!==undefined)throw Error("Agent environment selection differs");\nawait import(${JSON.stringify(new URL("./fixtures/global-agent-child.mjs",import.meta.url).href)});\n`);
    const args=[join(compiled,"cli.js"),"--manifest",manifestPath,"--adapter-command",process.execPath,
-    "--adapter-arg",agent,"--adapter-arg",manifestPath,"--listen-port",String(kind==="managed"?0:port),"--evidence-root",f.root,
-    "--mode","human","--max-auto-submissions","1","--max-policy-calls","8","--auto-deadline-ms","10000",
+    "--adapter-arg",agent,"--adapter-arg",manifestPath,"--listen-port",String(kind!=="reference"?0:port),"--evidence-root",f.root,
+    "--mode","human","--max-auto-submissions",stalled?"4":"1","--max-policy-calls","8","--auto-deadline-ms","10000",
     "--adapter-env-key","STPD_TEST_SELECTED"];
    if(source)args.push("--managed-binding",source.bindingPath,"--managed-attachment",source.attachmentPath,
     "--managed-expected-service-instance-id",source.target.serviceInstanceId,"--managed-expected-runtime-instance-id",source.target.runtimeInstanceId,
-    "--managed-expected-game-continuity-id",source.target.gameContinuityId,"--managed-settling-timeout-ms","120000");
+    "--managed-expected-game-continuity-id",source.target.gameContinuityId,"--managed-settling-timeout-ms",stalled?"100":"120000");
    else {
     args.push("--connector-endpoint",f.source.address);
     const raw=Buffer.from([255,0,13,10,123,125,10]);
@@ -140,7 +141,10 @@ describe("original GLOBAL CLI startup and control",()=>{
    const headers={"content-type":"application/json","x-sts2-policy-run-id":startup.run_id,"x-sts2-game-instance-id":environment.runtime_instance_id,"x-sts2-recovery-epoch":String(environment.recovery_epoch)};
    const mode=await fetch(startup.address+"/v2/mode",{method:"POST",headers,body:JSON.stringify({mode:"one_step"})});expect(mode.status).toBe(200);
    const tick=await fetch(startup.address+"/v2/tick",{method:"POST",headers,body:JSON.stringify({max_ticks:1})});expect(tick.status).toBe(200);
-   expect(await tick.json()).toMatchObject({results:[{type:"delivered"}],status:{mode:"human",autonomy_budget:{submissions_used:1}}});
+   const tickResult=await tick.json();
+   if(stalled)expect(tickResult).toMatchObject({results:[{type:"not_delivered"}],status:{mode:"human",tainted:true,
+    taint_reason:"global_post_delivery_capture:managed_settling_stalled",controller:"released"}});
+   else expect(tickResult).toMatchObject({results:[{type:"delivered"}],status:{mode:"human",autonomy_budget:{submissions_used:1}}});
    const stop=await fetch(startup.address+"/v2/stop",{method:"POST",headers:{"content-type":"application/json","x-sts2-policy-run-id":startup.run_id},body:"{}"});expect(stop.status).toBe(200);
    expect((await stop.json()).status).toMatchObject({lifecycle:"stopped",controller:"released",pending_request:null});
    const [code]=await closed;expect(code,diagnostics).toBe(0);
@@ -149,6 +153,8 @@ describe("original GLOBAL CLI startup and control",()=>{
    expect(replay.initial_progress_original?.status??null).toBe(kind==="reference"?"captured":null);
    expect(await readFile(join(f.root,startup.run_id,"events.jsonl"),"utf8")).not.toContain("local-test-capability");
    expect(source?source.actions:f.source.steps).toBe(1);
+   if(stalled&&source){await source.service.close();expect(source.service.driver.closed).toBe(true);
+    await expect(fetch(startup.address+"/status")).rejects.toThrow();}
   }finally{
    if(child&&child.exitCode===null&&child.signalCode===null&&!child.killed)child.kill("SIGKILL");
    if(closed)await closed;await f.close();await source?.service.close();
