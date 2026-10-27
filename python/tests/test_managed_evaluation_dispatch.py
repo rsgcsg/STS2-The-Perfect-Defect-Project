@@ -542,7 +542,9 @@ def test_new_ledger_freezes_node_store_and_read_concurrency(ledger, monkeypatch,
         def close(self):
             return None
 
-    monkeypatch.setattr(backend, "ManagedEpisodeExecutor", Executor)
+    from spireagent.workbench import managed_pipeline
+
+    monkeypatch.setattr(managed_pipeline, "PipelinedManagedExecutor", Executor)
     # The frozen node path survives a changed home/environment at dispatch.
     monkeypatch.setattr(Path, "home", lambda: tmp_path / "other-home")
     ledger.run_managed(max_episodes=1)
@@ -636,3 +638,122 @@ def test_cli_forwards_slot_ids_and_rejects_non_managed_actions(ledger, monkeypat
     assert module.main(["status", "--host", "managed", "--ledger", str(ledger.directory),
                         "--slot-id", selected]) == 1
     assert len(calls) == 1
+
+
+class QueuedSaveExecutor:
+    """Replace Host/Runtime IO only; real suite/report/ledger coordination stays live."""
+    def __init__(self, *, fail_once=False):
+        self.offers = 0
+        self.saves = 0
+        self.fail_once = fail_once
+
+    def __call__(self, row, manifest, artifacts, checkpoint):
+        self.offers += 1
+        complete(row, artifacts, checkpoint)
+        row.update(execution_status="finished", execution_reason="natural_terminal")
+        row["save_job"] = artifacts.put("save-job.json", json_bytes({
+            "schema": "spireagent/managed-save-job-1", "selection_id": row["selection_id"],
+            "retention": row["retention"]}))
+        row.update(status="save_pending", reason="waiting_for_save")
+        checkpoint()
+
+    def preserve_report(self, path):
+        from spireagent.workbench.reference_suite import _Artifacts
+
+        report = json.loads(path.read_bytes())
+        row = report["episodes"][0]
+        assert row["cleanup_accepted"] is True
+        self.saves += 1
+        if self.fail_once:
+            self.fail_once = False
+            row.update(status="save_failed", reason="injected_save_failure")
+        else:
+            row.update(status="finished", reason="natural_terminal")
+        report["status"] = "completed"
+        _Artifacts.reopen(path.parent).save(report)
+        return report
+
+
+def test_closed_execution_releases_worker_but_queue_is_bounded_until_save(ledger, monkeypatch):
+    from spireagent.workbench import evaluation_ledger as module
+
+    # Capacity is an independent admission dimension, mocked generously here.
+    real_usage = shutil.disk_usage(ledger.directory)
+    monkeypatch.setattr(module.shutil, "disk_usage",
+                        lambda _: real_usage._replace(free=100*1024**3))
+    admitted = threading.Event()
+    release = threading.Event()
+    mutex = threading.Lock()
+    executor = QueuedSaveExecutor()
+    base_call = executor.__class__.__call__
+
+    class Blocked(QueuedSaveExecutor):
+        def __call__(self, row, manifest, artifacts, checkpoint):
+            with mutex:
+                if self.offers >= 8:
+                    assert release.is_set()  # The ninth offer requires drained capacity.
+                base_call(self, row, manifest, artifacts, checkpoint)
+                if self.offers == 8:
+                    admitted.set()
+
+        def preserve_report(self, path):
+            assert release.wait(20)
+            return super().preserve_report(path)
+
+    executor = Blocked()
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        task = pool.submit(ledger.run_managed, workers=1, max_episodes=10, executor=executor)
+        assert admitted.wait(20)
+        snapshot = EvaluationLedger(ledger.directory).report()
+        assert snapshot["loss"] == 0 and snapshot["save_pending"] in {7, 8}
+        assert not task.done()  # Save tail belongs to the same batch.
+        release.set()
+        result = task.result(timeout=30)
+    assert result["new_finished"] == 10
+    assert executor.offers == executor.saves == 10
+
+
+def test_restart_after_mutable_save_checkpoint_recovers_save_without_an_offer(ledger):
+    from spireagent.workbench.reference_suite import _Artifacts
+
+    executor = QueuedSaveExecutor(fail_once=True)
+    first = ledger.run_managed(workers=1, max_episodes=1, executor=executor)
+    assert first["stop_reason"] == "save_failed_resume_save_only"
+    slot = next(s for s in ledger.slots() if s["status"] == "save_failed")
+    path = Path(slot["attempt_report"])
+    report = json.loads(path.read_bytes())
+    report["checkpoint_after_ledger_event"] = True
+    report["episodes"][0]["status"] = "save_pending"
+    _Artifacts.reopen(path.parent).save(report)
+    # This deliberately invalidates the old mutable report SHA.
+    assert reference_digest(path) != slot["report"]["sha256"]
+    second = EvaluationLedger(ledger.directory).run_managed(
+        workers=1, max_episodes=5, executor=executor)
+    assert second["dispatched"] == 0
+    assert executor.offers == 1 and executor.saves == 2
+    assert EvaluationLedger(ledger.directory).report()["loss"] == 1
+
+
+def reference_digest(path):
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def test_restart_between_base_close_and_wrapper_checkpoint_keeps_save_job(ledger):
+    from spireagent.workbench.reference_suite import _Artifacts
+
+    executor = QueuedSaveExecutor(fail_once=True)
+    ledger.run_managed(workers=1, max_episodes=1, executor=executor)
+    slot = next(s for s in ledger.slots() if s["status"] == "save_failed")
+    path = Path(slot["attempt_report"])
+    report = json.loads(path.read_bytes())
+    row = report["episodes"][0]
+    report["status"] = "running"
+    row.update(status="finished", reason="natural_terminal")
+    row.pop("execution_status")
+    row.pop("execution_reason")
+    _Artifacts.reopen(path.parent).save(report)
+    result = EvaluationLedger(ledger.directory).run_managed(
+        workers=1, max_episodes=1, executor=executor)
+    assert result["dispatched"] == 0
+    assert executor.offers == 1 and executor.saves == 2
+    assert EvaluationLedger(ledger.directory).report()["loss"] == 1

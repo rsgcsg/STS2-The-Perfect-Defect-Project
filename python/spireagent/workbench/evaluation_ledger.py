@@ -24,6 +24,7 @@ from spireagent.storage.local import LocalBlobStore
 
 from .developer import ProjectConfig
 from .local_model_cli import native_episode_command
+from .managed_retention import pipeline_configuration, retention_configuration
 from .p1_recording_storage import NEXT_EPISODE_PEAK_BYTES, workspace_reserve_bytes
 from .reference_suite import (
     MAX_REPORT_BYTES,
@@ -219,6 +220,10 @@ class EvaluationLedger:
         from .managed_evaluation import storage_configuration
 
         storage = storage_configuration(configuration)
+        retention = retention_configuration(configuration)
+        pipeline = pipeline_configuration(configuration)
+        if retention["tier"] == "diagnostic" and storage["store"] == "s3":
+            reject("diagnostic_requires_node_store")
         slots = []
         for ordinal, seed in enumerate(manifest["seeds"], 1):
             for step, selection in selections.items():
@@ -231,6 +236,7 @@ class EvaluationLedger:
                     "selection_id": selection,
                     "manifest": reference(manifest_path),
                     "host_kind": "managed",
+                    "retention": retention,
                     "status": "not_started",
                 }
                 slot["slot_id"] = digest(json_bytes(slot))
@@ -241,6 +247,8 @@ class EvaluationLedger:
             "host_kind": "managed",
             "execution": reference(execution),
             "storage": storage,
+            "retention": retention,
+            "pipeline": pipeline,
             "originals": [reference(manifest_path), reference(execution)],
             "conditions": {
                 "run_profile": "extended",
@@ -256,9 +264,16 @@ class EvaluationLedger:
         LocalBlobStore(directory).put_if_absent("plan.json", json_bytes(plan))
         return cls(directory)
 
-    @staticmethod
-    def _managed_result(row: dict[str, Any], path: Path) -> dict[str, Any]:
-        if row.get("status") == "finished":
+    def _managed_result(self, row: dict[str, Any], path: Path) -> dict[str, Any]:
+        declared = self.plan.get("retention")
+        if declared is not None and row.get("retention") != declared:
+            reject("attempt_retention_differs_from_plan")
+        eligible = (declared or {}).get("score_eligible", True)
+        if row.get("status") == "saved":
+            from .managed_pipeline import verify_unscored_save
+
+            verify_unscored_save(row, path)
+        if row.get("status") == "finished" and eligible:
             value = result_row(row, path)
         else:
             value = {
@@ -267,13 +282,20 @@ class EvaluationLedger:
                 "run_id": row.get("run_id"),
                 "report": reference(path),
                 "stored_evidence_id": row.get("stored_evidence_id"),
+                "stored_failure_id": row.get("stored_failure_id"),
                 "world_mutation_offered": row.get("world_mutation_offered") is True,
+                "observed_result": ((row.get("agent_task_outcome") or {})
+                                    .get("terminal_observation") or {}).get("result"),
+                "trajectory_shard_id": row.get("trajectory_shard_id"),
+                "preservation_route": row.get("preservation_route"),
             }
         return {
             **value,
             "host_kind": "managed",
             "elapsed_seconds": row.get("elapsed_seconds"),
             "cleanup_accepted": row.get("cleanup_accepted") is True,
+            "score_eligible": eligible,
+            "retention": row.get("retention"),
         }
 
     def run_managed(
@@ -322,9 +344,9 @@ class EvaluationLedger:
         limits = limits or SuiteLimits(150, 1800, 60, 86400, 1, 30)
         owns_executor = executor is None
         if executor is None:
-            from .managed_evaluation import ManagedEpisodeExecutor
+            from .managed_pipeline import PipelinedManagedExecutor
 
-            executor = ManagedEpisodeExecutor(
+            executor = PipelinedManagedExecutor(
                 configuration,
                 episode_seconds=limits.episode_seconds,
                 cleanup_seconds=limits.cleanup_seconds,
@@ -333,12 +355,16 @@ class EvaluationLedger:
             number = len(self.store.keys("managed-preparations/")) + 1
             self.store.put_if_absent(f"managed-preparations/{number:06d}.json",
                                      json_bytes(executor.preparation))
+        recoveries = [r for r in self.slots() if r["status"] in {
+            "save_pending", "save_failed", "trajectory_pending"}]
         pending_slots = [
             row for row in self.slots() if row["status"] == "not_started"
             and (selected is None or row["slot_id"] in selected)
-        ][:max_episodes]
+        ][:max_episodes] if not recoveries else []
         pending = iter(pending_slots)
-        active: dict[Any, tuple[dict[str, Any], Path]] = {}
+        active: dict[Any, tuple[dict[str, Any], Path, str]] = {}
+        pipeline = pipeline_configuration(configuration)
+        trajectory_wait: list[tuple[dict[str, Any], Path]] = []
         stop_reason = None
         began = time.monotonic()
         dispatched = 0
@@ -346,12 +372,18 @@ class EvaluationLedger:
         conditions = self.plan["conditions"]
 
         def episode(slot: dict[str, Any], attempt: Path) -> dict[str, Any]:
+            def execute(row, manifest, artifacts, checkpoint):
+                row["manifest_sha256"] = slot["manifest"]["sha256"]
+                row["retention"] = self.plan.get(
+                    "retention", retention_configuration(configuration))
+                executor(row, manifest, artifacts, checkpoint)
+
             return run_suite(
                 Path(slot["manifest"]["path"]),
                 slot["manifest"]["sha256"],
                 client=None,
                 host_kind="managed",
-                episode_executor=executor,
+                episode_executor=execute,
                 run_dir=attempt,
                 selection=slot["selection_id"],
                 episode_keys=((slot["seed"], slot["selection_id"]),),
@@ -369,79 +401,105 @@ class EvaluationLedger:
             if summary is not None:
                 (self.directory / "inference-pool-summary.json").write_bytes(json_bytes(summary))
 
-        with ExitStack() as lifecycle, ThreadPoolExecutor(max_workers=workers) as pool:
+        with (ExitStack() as lifecycle, ThreadPoolExecutor(max_workers=workers) as pool,
+              ThreadPoolExecutor(max_workers=pipeline["save_workers"]) as saves):
             if owns_executor:
                 lifecycle.callback(close_executor)
+            # The same durable slot remains offered while only its save is resumed.
+            for slot in recoveries:
+                if not slot.get("cleanup_accepted"):
+                    reject("save_recovery_requires_closed_host")
+                path = Path(slot["attempt_report"])
+                if slot["status"] == "trajectory_pending":
+                    trajectory_wait.append((slot, path))
+                else:
+                    active[saves.submit(executor.preserve_report, path)] = (slot, path, "save")
             exhausted = False
-            while active or not exhausted and stop_reason is None:
-                while len(active) < workers and not exhausted and stop_reason is None:
+            while active or trajectory_wait or not exhausted and stop_reason is None:
+                if trajectory_wait and (len(trajectory_wait) >= 8
+                        or not active):
+                    group, trajectory_wait = trajectory_wait[:8], trajectory_wait[8:]
+                    active[saves.submit(executor.finalize_trajectories,
+                        [path for _, path in group])] = (
+                            {"shard_slots": group}, group[0][1], "shard")
+                executing = sum(stage == "execute" for _, _, stage in active.values())
+                def unsettled(waiting=trajectory_wait):
+                    return len(waiting) + sum(len(s.get("shard_slots", [s]))
+                                                     for s, _, _ in active.values())
+
+                while (executing < workers and unsettled() < pipeline["pending_limit"]
+                       and not exhausted and stop_reason is None):
                     if dispatched == len(pending_slots):
                         exhausted = True
                         break
-                    if (
-                        self.directory / "STOP"
-                    ).exists() or time.monotonic() - began >= limits.suite_seconds:
+                    if ((self.directory / "STOP").exists()
+                            or time.monotonic() - began >= limits.suite_seconds):
                         stop_reason = "stop_requested_or_suite_wall_limit"
                         break
-                    # Only this coordinator admits workers. Charge each active
-                    # slot its full existing peak until cleanup/Store readback
-                    # returns; concurrent workers must not spend the same free
-                    # blocks. This is conservative accounting, not a disk quota.
-                    required = reserve + NEXT_EPISODE_PEAK_BYTES * (len(active) + 1)
+                    # Each unsettled original owns its complete peak allowance,
+                    # including queued saves. It cannot be promised twice.
+                    required = reserve + NEXT_EPISODE_PEAK_BYTES * (unsettled() + 1)
                     if shutil.disk_usage(self.directory).free < required:
-                        # In-flight work can finish and release its allowance.
-                        # Leave the next slot untouched, drain, then reconsider.
                         if not active:
                             stop_reason = "workspace_capacity_insufficient"
                         break
-                    slot = next(pending, None)
-                    if slot is None:
+                    next_slot = next(pending, None)
+                    if next_slot is None:
                         exhausted = True
                         break
+                    slot = next_slot
                     number = len(self.store.keys("events/")) + 1
                     attempt = self.directory / "attempts" / f"{number:06d}"
-                    self.event(
-                        slot["slot_id"], "reserved", report_path=str(attempt / "report.json")
-                    )
-                    active[pool.submit(episode, slot, attempt)] = (slot, attempt / "report.json")
+                    self.event(slot["slot_id"], "reserved",
+                               report_path=str(attempt / "report.json"))
+                    active[pool.submit(episode, slot, attempt)] = (
+                        slot, attempt / "report.json", "execute")
                     dispatched += 1
+                    executing += 1
                 if not active:
                     break
                 done, _ = wait(active, return_when=FIRST_COMPLETED)
                 for future in done:
-                    slot, path = active.pop(future)
+                    slot, path, stage = active.pop(future)
+                    if stage == "shard":
+                        try:
+                            future.result()
+                        except Exception as error:
+                            stop_reason = ("trajectory_shard_save_failed:" + (
+                                error.code if isinstance(error, BoundaryError)
+                                else type(error).__name__))
+                        # Read each durable report even after partial shard failure.
+                        for member, member_path in slot["shard_slots"]:
+                            report = json.loads(_read(member_path, max_bytes=MAX_REPORT_BYTES))
+                            value = self._managed_result(report["episodes"][0], member_path)
+                            self.event(member["slot_id"], "result", result=value)
+                        continue
                     try:
                         result = future.result()
                         value = self._managed_result(result["episodes"][0], path)
                     except Exception as error:
-                        value = {
-                            "status": "unknown",
-                            "reason": (
-                                error.code
-                                if isinstance(error, BoundaryError)
-                                else type(error).__name__
-                            ),
-                            "cleanup_accepted": False,
-                        }
+                        value = {"status": "save_failed" if stage == "save" else "unknown",
+                            "reason": error.code if isinstance(error, BoundaryError)
+                            else type(error).__name__, "report": reference(path) if path.exists()
+                            else None, "cleanup_accepted": stage == "save"}
                     self.event(slot["slot_id"], "result", result=value)
+                    if value["status"] == "save_pending" and value.get("cleanup_accepted"):
+                        active[saves.submit(executor.preserve_report, path)] = (slot, path, "save")
+                    if value["status"] == "trajectory_pending":
+                        trajectory_wait.append((slot, path))
                     finished += value["status"] == "finished"
-                    print(
-                        json.dumps(
-                            {
-                                "slot_id": slot["slot_id"],
-                                "seed_ordinal": slot["seed_ordinal"],
-                                **value,
-                            }
-                        ),
-                        flush=True,
-                    )
+                    print(json.dumps({"slot_id": slot["slot_id"],
+                                      "seed_ordinal": slot["seed_ordinal"], **value}), flush=True)
                     if not value.get("cleanup_accepted"):
                         stop_reason = "unknown_cleanup_requires_owner_read"
+                    elif value["status"] == "save_failed":
+                        stop_reason = "save_failed_resume_save_only"
         return {
             "status": "stopped" if stop_reason else "completed",
             "stop_reason": stop_reason,
             "host_kind": "managed",
             "workers": workers,
+            "pipeline": pipeline,
             "dispatched": dispatched,
             "new_finished": finished,
             "elapsed_seconds": time.monotonic() - began,
@@ -467,7 +525,8 @@ class EvaluationLedger:
                     reject("slot_already_offered")
                 row.update(status="reserved", attempt_report=event["report_path"])
             elif kind == "result":
-                if row["status"] != "reserved":
+                if row["status"] not in {"reserved", "save_pending", "save_failed",
+                                        "trajectory_pending"}:
                     reject("slot_result_without_reservation")
                 row.update(event["result"])
             elif kind == "release":
@@ -497,7 +556,8 @@ class EvaluationLedger:
     def reconcile_reports(self) -> None:
         """Read an abandoned original attempt, never reoffer or recover a command."""
         for slot in self.slots():
-            if slot["status"] == "reserved":
+            if slot["status"] in {"reserved", "save_pending", "save_failed",
+                                  "trajectory_pending"}:
                 path = Path(slot["attempt_report"])
                 if path.exists():
                     report = json.loads(_read(path, max_bytes=MAX_REPORT_BYTES))
@@ -508,7 +568,24 @@ class EvaluationLedger:
                               "environment_ref": row.get("environment_ref"),
                               "world_mutation_offered": row.get("world_mutation_offered") is True,
                               "report": reference(path)}
-                    if (self.plan.get("host_kind") == "managed"
+                    if (self.plan.get("host_kind") == "managed" and row.get("save_job")
+                            and row.get("cleanup_accepted")):
+                        from .managed_pipeline import verify_closed_save
+
+                        verify_closed_save(row, path)
+                        if (row.get("seed") != slot["seed"]
+                                or row.get("selection_id") != slot["selection_id"]
+                                or report["manifest"]["sha256"] != slot["manifest"]["sha256"]):
+                            reject("pending_attempt_identity_changed")
+                        if row.get("execution_status") is None:
+                            row["execution_status"] = row["status"]
+                            row["execution_reason"] = row.get("reason")
+                            row["status"] = "save_pending"
+                            from .reference_suite import atomic_json
+
+                            atomic_json(path, report)
+                        result = self._managed_result(row, path)
+                    elif (self.plan.get("host_kind") == "managed"
                             and report.get("status") != "running"):
                         result = self._managed_result(row, path)
                     elif row.get("status") == "finished" and not row.get("preservation_error"):
@@ -680,8 +757,16 @@ class EvaluationLedger:
             "unknown_sealed": sum(bool(r.get("unknown_release")) for r in rows),
             "not_started": sum(r["status"] == "not_started" for r in rows),
             "reserved": sum(r["status"] == "reserved" for r in rows),
+            "save_pending": sum(r["status"] == "save_pending" for r in rows),
+            "save_failed": sum(r["status"] == "save_failed" for r in rows),
+            "saved_unscored": sum(r["status"] == "saved" for r in rows),
+            "trajectory_pending": sum(r["status"] == "trajectory_pending" for r in rows),
+            "retention": self.plan.get("retention"),
             "replaced": 0,
             "R2_original_receipts": sum(bool(r.get("stored_evidence_id")) for r in rows),
+            "R2_failure_receipts": sum(bool(r.get("stored_failure_id")) for r in rows),
+            "trajectory_shards": len({r["trajectory_shard_id"] for r in rows
+                                      if r.get("trajectory_shard_id")}),
             "groups": groups,
             "slots": rows,
         }
