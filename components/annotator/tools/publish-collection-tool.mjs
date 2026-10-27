@@ -35,7 +35,7 @@ export const p1NativeSupport = Object.freeze({
   target_schema: "sts2.p1/native-targets-1"
 });
 
-export const p1NativeToolFiles = ["p1-native-to-p1.mjs", "p1-native-bundle.mjs",
+export const p1NativeToolFiles = ["p1-native-to-p1.mjs", "p1-native-bundle.mjs", "p1-native-reprojection.mjs",
   "p1-native-cancellation.mjs", "p1-native-presentation.mjs", "p1-native-segments.mjs",
   "p1-native-selector-transactions.mjs", "p1-native-targets.mjs", "p1-native-issue-spans.mjs"];
 

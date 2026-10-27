@@ -335,9 +335,12 @@ export function reduceNativeExecution(state: P1SessionState, basis: P1Basis,
 }
 
 function reduceCatalog(state: P1SessionState, basis: P1Basis, execution?: readonly NativeExecutionAction[], executionScope?: string): Reduction {
+  // Validate the original navigation capsule before counter projection. Its
+  // unfurled PB remains literal capture provenance, not another model carrier.
+  const originalSnapshot = decodePlayerSnapshot(basis.snapshot).raw as Record<string, any>;
   const settled = state.revision === "r1.7" ? reprojectSettledRelicCounters(basis) : null;
   if (settled) basis = settled.basis;
-  const snapshot = decodePlayerSnapshot(basis.snapshot).raw as Record<string, any>;
+  const snapshot = settled ? basis.snapshot as Record<string, any> : originalSnapshot;
   let interaction = snapshot.interaction as Record<string, any>;
   const sourcePlayer = snapshot.interaction.content.context?.player;
   const nonCombatPotionExecution = executionScope === "potion_belt_non_combat_use"
@@ -935,6 +938,10 @@ export function resolveFollowBasis(rule: FollowRule, lowering: Lowering, basis: 
   const next = reduce(createSession("continuation-check", "reference", lowering.p1_revision ?? P1G_REVISION), basis);
   if (lowering.p1_revision === "r1.7") basis = reprojectSettledRelicCounters(basis).basis;
   if (!next.complete || next.observation.status !== "decision") return null;
+  // reduce above validated the original source; do not revalidate a derived
+  // persistent counter against the untouched raw navigation provenance.
+  const currentSnapshot = () => lowering.p1_revision === "r1.7"
+    ? basis.snapshot as Record<string, any> : decodePlayerSnapshot(basis.snapshot).raw as Record<string, any>;
   if (rule.rule_id === "shop_leave" && lowering.shop_leave && !rule.optional
       && rule.expect_native_kind === "shop_room" && rule.expect_verb === "activate") {
     const snapshot = basis.snapshot as Record<string, any>;
@@ -949,7 +956,7 @@ export function resolveFollowBasis(rule: FollowRule, lowering: Lowering, basis: 
   if (rule.rule_id === "selector_intention" && lowering.selector_intention && !rule.optional
       && rule.expect_native_kind === lowering.selector_intention.native_kind
       && rule.expect_verb === "confirm" && matchesSelectorIntention(lowering.selector_intention, basis)) {
-    const snapshot = decodePlayerSnapshot(basis.snapshot).raw as Record<string, any>;
+    const snapshot = currentSnapshot();
     const surface = snapshot.interaction.content.surface;
     const controls = surface.current_controls.filter((c: Record<string, any>) => (c.operation === "confirm" || c.operation === "confirm_selection"));
     if (controls.length !== 1) return null;
@@ -963,7 +970,7 @@ export function resolveFollowBasis(rule: FollowRule, lowering: Lowering, basis: 
       || rule.expect_native_kind !== "card_reward_selection" || rule.optional) return null;
   const plan = lowering.reward_intention;
   if (!matchesRewardIntention(plan, basis)) return null;
-  const snapshot = decodePlayerSnapshot(basis.snapshot).raw as Record<string, any>;
+  const snapshot = currentSnapshot();
   const surface = snapshot.interaction.content.surface;
   const actions = snapshot.bound_actions.actions as NativeAction[];
   let matches: NativeAction[];
