@@ -15,7 +15,7 @@ from stpd.workers.checkpoint_codec import decode_checkpoint, encode_checkpoint
 from .data import digest, json_bytes
 from .execution import MStdExecution
 from .input import INPUT_SPEC, LEGACY_INPUT_SPEC, SORTED_INPUT_SPEC, validate_input_spec
-from .model import ARCHITECTURE, MStd
+from .model import ARCHITECTURE, MStd, architecture
 from .spec import EXECUTION_PACKAGE_SCHEMA, PACKAGE_SCHEMA
 
 ADAPTER = "stpd-p1-mstd-agent"
@@ -72,21 +72,32 @@ def bound_projection(vocabulary: dict[str, Any], projection: object) -> dict[str
     return spec
 
 
+def action_weights(state: dict[str, torch.Tensor], *, value_heads: bool = False
+                   ) -> dict[str, torch.Tensor]:
+    """Remove exactly the declared auxiliary tensors, preserving all action tensors."""
+    removed = {"win_head.weight", "win_head.bias", "progress_head.weight", "progress_head.bias"}
+    if value_heads and not removed <= state.keys():
+        raise ValueError("declared auxiliary parameter inventory is incomplete")
+    return {key: value for key, value in state.items() if not value_heads or key not in removed}
+
+
 def export_model(
     model: MStd, checkpoint: Path, destination: Path, training_identity: dict[str, Any]
 ) -> dict[str, Any]:
     destination.mkdir(parents=True, exist_ok=False)
-    state = dict(model.state_dict())
+    state = action_weights(dict(model.state_dict()), value_heads=model.value_heads)
     if not all(bool(torch.isfinite(value).all()) for value in state.values()):
         raise ValueError("cannot export non-finite weights")
     execution_fields = ({"inference_execution": model.execution.to_dict()}
                         if model.execution != MStdExecution() else {})
     schema = EXECUTION_PACKAGE_SCHEMA if execution_fields else PACKAGE_SCHEMA
+    inference_architecture = ({**model.architecture, "auxiliary_heads": []}
+                              if model.model_size == "large" else ARCHITECTURE)
     raw = encode_checkpoint(
         {
             "schema": schema,
             **execution_fields,
-            "architecture": ARCHITECTURE,
+            "architecture": inference_architecture,
             "vocabulary": model.vocabulary,
             "input_spec": input_spec(model.vocabulary),
             "training_identity": training_identity,
@@ -102,8 +113,11 @@ def export_model(
         "package_sha256": digest(raw),
         "checkpoint_sha256": digest(checkpoint.read_bytes()),
         "input_spec": input_spec(model.vocabulary),
-        "architecture": ARCHITECTURE,
-        "parameters": sum(x.numel() for x in model.parameters()),
+        "architecture": inference_architecture,
+        "parameters": sum(x.numel() for x in state.values()),
+        **({"training_architecture": model.architecture,
+            "auxiliary_heads": "stripped; never used for action selection"}
+           if model.value_heads else {}),
         "training_identity": training_identity,
         "agent_spec": {
             "id": "p1-mstd",
@@ -123,7 +137,8 @@ def load_model(path: Path, expected_sha256: str) -> tuple[MStd, dict[str, Any]]:
     value = decode_checkpoint(raw)
     if (
         value.get("schema") not in {PACKAGE_SCHEMA, EXECUTION_PACKAGE_SCHEMA}
-        or value.get("architecture") != ARCHITECTURE
+        or value.get("architecture") not in (ARCHITECTURE,
+            {**architecture(True, "large"), "auxiliary_heads": []})
         or value.get("input_spec") != input_spec(value["vocabulary"])
     ):
         raise ValueError("model package architecture/InputSpec mismatch")
@@ -133,7 +148,8 @@ def load_model(path: Path, expected_sha256: str) -> tuple[MStd, dict[str, Any]]:
                  if value["schema"] == EXECUTION_PACKAGE_SCHEMA else MStdExecution())
     # Inference construction must not alter process random state.
     with torch.random.fork_rng(devices=[]):
-        model = MStd(value["vocabulary"], execution)
+        model = MStd(value["vocabulary"], execution, model_size=(
+            "large" if value["architecture"] != ARCHITECTURE else "standard"))
     expected = model.state_dict()
     weights = value["weights"]
     if set(expected) != set(weights) or any(
@@ -172,6 +188,7 @@ def register(
     if (
         descriptor.get("schema") != payload["schema"]
         or descriptor.get("inference_execution") != payload.get("inference_execution")
+        or descriptor.get("architecture") != payload["architecture"]
         or descriptor["input_spec"] != input_spec(model.vocabulary)
         or descriptor["checkpoint_sha256"] != payload["checkpoint_sha256"]
     ):
@@ -190,7 +207,7 @@ def register(
             "id": "p1-mstd",
             "version": "1",
             "provider": "stpd",
-            "architecture": ARCHITECTURE["id"],
+            "architecture": payload["architecture"]["id"],
         },
         adapter=adapter_identity(),
         artifact={

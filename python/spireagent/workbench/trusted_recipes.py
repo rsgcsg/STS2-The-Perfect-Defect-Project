@@ -393,6 +393,8 @@ def validate_recipe_config(recipe_id: str, config: object) -> dict[str, Any]:
             p1_selected = MStdConfig(**config)
         except TypeError as error:
             raise BoundaryError("local_training", "invalid_recipe_config") from error
+        if p1_selected.value_heads:
+            raise BoundaryError("local_training", "value_heads_require_remote_training")
         if p1_selected.device != "cpu":
             raise BoundaryError("local_training", "local_P1_recipe_requires_cpu")
         return p1_selected.to_dict()
