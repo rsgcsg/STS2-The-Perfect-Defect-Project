@@ -10,6 +10,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import shutil
 import subprocess
 import time
 from collections.abc import Iterator, Mapping
@@ -23,7 +24,9 @@ from spireagent.artifact_contracts import Producer
 from spireagent.json_boundary import BoundaryError, json_bytes
 from spireagent.package_identity import validate_installed_package
 from spireagent.source import source_identity
+from spireagent.storage.cache import cache_usage
 from spireagent.storage.config import open_peer, open_store
+from spireagent.storage.local import LocalBlobStore
 from spireagent.storage.store import copy_artifact
 from stpd.evaluation.reference_metrics import read_reference_metrics
 from stpd.p1 import export
@@ -39,6 +42,20 @@ from .local_environment import _audit, _candidate_audit, _verify_host
 from .local_model_registration import global_environment_manifest
 from .local_models import JSON_LIMIT, RuntimeClient
 from .managed_model_target import runtime_arguments
+from .p1_recording_storage import storage_budget, workspace_reserve_bytes
+
+
+def storage_configuration(configuration: dict[str, Any]) -> dict[str, Any]:
+    """Resolve once at ledger creation; explicit historical choices remain exact."""
+    concurrency = configuration.get("read_concurrency", 8)
+    if type(concurrency) is not int or not 1 <= concurrency <= 8:
+        reject("invalid_read_concurrency")
+    location = configuration.get("store", str(
+        Path.home() / ".local/share/spireagent/managed-evaluation/store"))
+    if location != "s3" and (not isinstance(location, str)
+            or not Path(location).is_absolute() or Path(location).resolve() != Path(location)):
+        reject("absolute_working_store_required")
+    return {"store": location, "read_concurrency": concurrency}
 
 
 def reject(code: str) -> NoReturn:
@@ -171,6 +188,9 @@ class ManagedEpisodeExecutor:
         self, configuration: dict[str, Any], *, episode_seconds: float, cleanup_seconds: float
     ) -> None:
         self.configuration = configuration
+        preparation_started = time.monotonic()
+        storage = storage_configuration(configuration)
+        self.read_concurrency = storage["read_concurrency"]
         mode = configuration.get("inference", {"mode": "per_actor"})
         if not isinstance(mode, dict) or mode.get("mode") not in {"per_actor", "central_batch"}:
             reject("unsupported_inference_implementation")
@@ -216,10 +236,21 @@ class ManagedEpisodeExecutor:
         self.peer = open_peer(configuration["peer"])
         # Remote execution writes to this already-frozen peer binding. Credentials
         # remain environment-only; bucket/endpoint/prefix cannot follow env drift.
-        self.store = (self.peer if configuration["store"] == "s3"
-                      else open_store(configuration["store"]))
+        location = storage["store"]
+        self.store = self.peer if location == "s3" else open_store(location)
+        local_root = (self.store.blobs.root
+                      if isinstance(self.store.blobs, LocalBlobStore) else None)
+        self.preparation = {"store": location, "read_concurrency": self.read_concurrency,
+                            "store_bytes_before": cache_usage(self.store) if local_root else None}
+        model_started = time.monotonic()
         for model in configuration["models"].values():
-            copy_artifact(self.peer, self.store, model["artifact_id"], reuse_published_parents=True)
+            if local_root is not None:
+                storage_budget(self.peer, model["artifact_id"], scratch=local_root,
+                    destination=local_root, destination_store=self.store,
+                    reserve_bytes=max(configuration.get("minimum_free_bytes", 0),
+                                      workspace_reserve_bytes()))
+            copy_artifact(self.peer, self.store, model["artifact_id"],
+                          scratch=local_root, reuse_published_parents=True)
             original = self.store.get_manifest(model["artifact_id"])
             descriptor = json.loads((Path(model["package_directory"]) / "model.json").read_bytes())
             if (
@@ -230,6 +261,12 @@ class ManagedEpisodeExecutor:
             ):
                 reject("original_model_binding_changed")
 
+        self.preparation.update(
+            model_seconds=time.monotonic() - model_started,
+            store_bytes_after=cache_usage(self.store) if local_root else None,
+            free_bytes_after=shutil.disk_usage(local_root).free if local_root else None,
+            elapsed_seconds=time.monotonic() - preparation_started,
+        )
         self.inference_pool = None
         if mode["mode"] == "central_batch":
             from stpd.p1.local_inference import LocalInferencePool
@@ -257,6 +294,8 @@ class ManagedEpisodeExecutor:
         launch = manager = runtime_process = None
         started = time.monotonic()
         row.update(host_kind="managed", status="preparing", reason=None,
+                   preservation_store=self.preparation["store"],
+                   read_concurrency=self.read_concurrency,
                    settling_timeout_ms=self.settling_timeout_ms)
         checkpoint()
         try:
@@ -462,45 +501,14 @@ class ManagedEpisodeExecutor:
                     {"binding": {"runtime_instance_id": target["runtime_instance_id"]}},
                 )
                 row["game_metrics"] = metrics
-            with _phase(row, "preserve"):
-                with _phase(row, "publish_runtime", detail=True):
-                    runtime = publish_global_runtime(self.store, self.producer, expected)
-                with _phase(row, "publish_evidence", detail=True):
-                    stored = publish_global_evidence(
-                        self.store,
-                        run,
-                        self.producer,
-                        expected=expected,
-                        model_artifact_id=model["artifact_id"],
-                        runtime_artifact_id=runtime.artifact_id,
-                        scratch=private,
-                    )
-                with _phase(row, "copy_peer", detail=True):
-                    copy_artifact(self.store, self.peer, stored.artifact_id,
-                        reuse_published_parents=True)
-                with _phase(row, "peer_readback", detail=True):
-                    readback = verify_global_artifact(
-                        self.peer, stored.artifact_id, expected=expected, scratch=private
-                    )
-                row["stored_evidence_id"] = stored.artifact_id
-                row["preservation"] = artifacts.put(
-                    "preservation.json",
-                    json_bytes(
-                        {
-                            "status": "completed",
-                            "run_id": startup["run_id"],
-                            "artifact_id": stored.artifact_id,
-                            "peer": self.configuration["peer"],
-                            "peer_readback": readback,
-                        }
-                    ),
-                )
+            self._preserve(row, artifacts, checkpoint, run, expected, model, private)
             row.update(_outcome_status(
                 outcome, settling_stalled=row.get("settling_stalled") is True))
         except Exception as error:
             row.update(
                 status="unknown" if row["world_mutation_offered"] else "not_started",
-                reason=error.code if isinstance(error, BoundaryError) else type(error).__name__,
+                reason=(error.code if isinstance(error, BoundaryError)
+                        else type(error).__name__),
             )
         finally:
             close_started = time.monotonic()
@@ -546,3 +554,50 @@ class ManagedEpisodeExecutor:
             row["phase_timing_schema"] = "spireagent/managed-phase-seconds-v1"
             row["detail_timing_schema"] = "spireagent/managed-detail-seconds-v1"
             checkpoint()
+
+    def _preserve(self, row: dict[str, Any], artifacts: Any, checkpoint: Any,
+                  run: Path, expected: dict[str, Any], model: dict[str, Any],
+                  private: Path) -> None:
+        """Seal -> local publish -> exact peer copy/readback; no queued work."""
+        with _phase(row, "preserve"):
+            with _phase(row, "publish_runtime", detail=True):
+                runtime = publish_global_runtime(self.store, self.producer, expected)
+            with _phase(row, "publish_evidence", detail=True):
+                stored = publish_global_evidence(
+                    self.store,
+                    run,
+                    self.producer,
+                    expected=expected,
+                    model_artifact_id=model["artifact_id"],
+                    runtime_artifact_id=runtime.artifact_id,
+                    scratch=private,
+                )
+            row["preservation_artifact_id"] = stored.artifact_id
+            row["preservation_pending"] = artifacts.put(
+                "preservation-pending.json", json_bytes({
+                    "artifact_id": stored.artifact_id, "store": self.preparation["store"],
+                    "peer": self.configuration["peer"], "expected": expected,
+                    "status": "pending_peer_readback",
+                }))
+            checkpoint()
+            with _phase(row, "copy_peer", detail=True):
+                copy_artifact(self.store, self.peer, stored.artifact_id,
+                    reuse_published_parents=True)
+            with _phase(row, "peer_readback", detail=True):
+                readback = verify_global_artifact(
+                    self.peer, stored.artifact_id, expected=expected, scratch=private,
+                    read_concurrency=self.read_concurrency,
+                )
+            row["stored_evidence_id"] = stored.artifact_id
+            row["preservation"] = artifacts.put(
+                "preservation.json",
+                json_bytes(
+                    {
+                        "status": "completed",
+                        "run_id": expected["run_id"],
+                        "artifact_id": stored.artifact_id,
+                        "peer": self.configuration["peer"],
+                        "peer_readback": readback,
+                    }
+                ),
+            )

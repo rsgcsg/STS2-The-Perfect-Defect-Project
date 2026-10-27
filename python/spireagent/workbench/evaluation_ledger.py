@@ -201,6 +201,9 @@ class EvaluationLedger:
             configuration["models"]
         ) != set(selections.values()):
             reject("execution_selection_mismatch")
+        from .managed_evaluation import storage_configuration
+
+        storage = storage_configuration(configuration)
         slots = []
         for ordinal, seed in enumerate(manifest["seeds"], 1):
             for step, selection in selections.items():
@@ -222,6 +225,7 @@ class EvaluationLedger:
             "created_at": datetime.now(UTC).isoformat(),
             "host_kind": "managed",
             "execution": reference(execution),
+            "storage": storage,
             "originals": [reference(manifest_path), reference(execution)],
             "conditions": {
                 "run_profile": "extended",
@@ -287,6 +291,7 @@ class EvaluationLedger:
         ):
             return {"status": "stopped", "stop_reason": "unknown_cleanup_requires_owner_read"}
         configuration = json.loads(read_reference(self.plan["execution"]))
+        configuration.update(self.plan.get("storage", {}))
         reserve = max(configuration.get("minimum_free_bytes", 0), workspace_reserve_bytes())
         if shutil.disk_usage(self.directory).free < reserve + NEXT_EPISODE_PEAK_BYTES:
             return {"status": "stopped", "stop_reason": "workspace_capacity_insufficient"}
@@ -300,6 +305,10 @@ class EvaluationLedger:
                 episode_seconds=limits.episode_seconds,
                 cleanup_seconds=limits.cleanup_seconds,
             )
+        if owns_executor:
+            number = len(self.store.keys("managed-preparations/")) + 1
+            self.store.put_if_absent(f"managed-preparations/{number:06d}.json",
+                                     json_bytes(executor.preparation))
         pending_slots = [
             row for row in self.slots() if row["status"] == "not_started"
         ][:max_episodes]

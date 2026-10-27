@@ -519,3 +519,42 @@ def test_original_settling_reason_survives_a_missing_final_http_status():
                    "recorded_reason": "global_post_delivery_capture:managed_settling_stalled"}}
     assert _outcome_status(outcome, settling_stalled=False) == {
         "status": "unknown", "reason": "managed_settling_stalled"}
+
+
+def test_new_ledger_freezes_node_store_and_read_concurrency(ledger, monkeypatch, tmp_path):
+    from spireagent.workbench import managed_evaluation as backend
+
+    assert Path(ledger.plan["storage"]["store"]).is_absolute()
+    assert ledger.plan["storage"]["read_concurrency"] == 8
+    assert backend.storage_configuration({"store": "s3", "read_concurrency": 1}) == {
+        "store": "s3", "read_concurrency": 1}
+    observed = []
+
+    class Executor:
+        preparation = {"elapsed_seconds": 2, "model_seconds": 1}
+
+        def __init__(self, configuration, **kwargs):
+            observed.append(configuration)
+
+        def __call__(self, row, manifest, artifacts, checkpoint):
+            complete(row, artifacts, checkpoint)
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(backend, "ManagedEpisodeExecutor", Executor)
+    # The frozen node path survives a changed home/environment at dispatch.
+    monkeypatch.setattr(Path, "home", lambda: tmp_path / "other-home")
+    ledger.run_managed(max_episodes=1)
+    assert observed[0]["store"] == ledger.plan["storage"]["store"]
+    assert json.loads((ledger.directory / "managed-preparations/000001.json").read_bytes()) == (
+        Executor.preparation)
+
+
+@pytest.mark.parametrize("concurrency", [True, 0, -1, 9, 1.5, None])
+def test_bad_managed_read_concurrency_fails_before_packages_or_world(concurrency):
+    from spireagent.workbench.managed_evaluation import ManagedEpisodeExecutor
+
+    with pytest.raises(BoundaryError, match="invalid_read_concurrency"):
+        ManagedEpisodeExecutor({"read_concurrency": concurrency},
+                               episode_seconds=10, cleanup_seconds=10)
