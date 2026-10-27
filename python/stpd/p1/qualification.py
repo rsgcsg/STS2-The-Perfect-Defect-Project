@@ -128,6 +128,8 @@ def parity(population: Population, indices: list[int], vocabulary: dict, state: 
                 with numerics.scope():
                     score = model.forward_batch([frame])[0]
                     loss = F.cross_entropy(score[None], torch.tensor([target], device=device))
+                    if population.weights:
+                        loss = loss * population.weights[index]
                     loss.backward()
                 outputs.append(score.detach().cpu())
                 losses.append(loss.detach().cpu())
@@ -180,7 +182,8 @@ def parity(population: Population, indices: list[int], vocabulary: dict, state: 
 def _cache_populations(path: Path, populations: dict[str, Population], vocabulary: dict) -> str:
     value = {"vocabulary": vocabulary, "populations": {
         split: {"frames": [asdict(frame) for frame in population.frames],
-                "targets": population.targets, "point_ids": population.point_ids}
+                "targets": population.targets, "point_ids": population.point_ids,
+                "weights": population.weights}
         for split, population in populations.items()}}
     path.write_bytes(json_bytes(value))
     return digest(path.read_bytes())
@@ -199,8 +202,10 @@ def _read_cache(path: Path, expected: str) -> tuple[dict[str, Population], dict]
                    [tuple(term) for term in entity["text"]],
                    [tuple(term) for term in entity["numeric"]], entity["refs"])
             for entity in frame["entities"]], frame["choices"],
-            [tuple(role) for role in frame["roles"]]) for frame in row["frames"])
-        populations[split] = Population(frames, tuple(row["targets"]), tuple(row["point_ids"]))
+            [(tuple(s) if isinstance(s, list) else s, tuple(t) if isinstance(t, list) else t)
+             for s, t in frame["roles"]]) for frame in row["frames"])
+        populations[split] = Population(frames, tuple(row["targets"]), tuple(row["point_ids"]),
+                                       tuple(row.get("weights", ())))
     return populations, value["vocabulary"]
 
 
@@ -322,7 +327,9 @@ def qualify(store: ArtifactStore, input_id: str, producer: Producer, plan: dict,
         workload = verify_p1_run(store, capsule.parent("run"),
                                   store.get_manifest(capsule.parent("run")).producer)
         phase("project_full_populations")
-        populations = populations_from_reader(workload.reader)
+        populations = populations_from_reader(
+            workload.reader, workload.training.parameters.value().get("loss_weighting"),
+            workload.vocabulary["input_spec"])
         report["partition_N"] = {key: len(value.frames) for key, value in populations.items()}
         del workload
         phase("source_checkpoint")

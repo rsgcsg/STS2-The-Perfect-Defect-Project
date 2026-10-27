@@ -2,7 +2,7 @@
 模拟环境 Managed 的独立 20 局：19 自然负 / 1 结果未知；与真游戏分开，未证明整局等价。准确版本和全部原件/失败保留在事实收据。
 下一档方向目标：L1 为 A0 胜率 5%；后续 A0 20%/80%/100%、A10 5%/50%/95% 见[已定方向与口径边界](../evidence/CONVERGENCE_BASELINE_20261027.md#模型强度与评估)。未达到正式评级，也不由有限样本证明总体 100%。
 
-# 当前：收敛已收口，后续卡等待派发
+# 当前：T1 输入第 2 版候选正在验收
 
 本轮固定版本看[收敛基线](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/tree/convergence-2026-10-27)；文档主包为PR256普通合并`ec03de11`，资产处置见[执行收据](../evidence/CONVERGENCE_DISPOSITION_EXECUTED_20261027.md)。基线不升级在用程序。
 <!-- Resolve live GitHub refs before action; latest user instructions and live evidence override this file. -->
@@ -11,7 +11,7 @@
 
 1. 采集优先：日常录制和Q维持用户正在用的组合，本轮没有启动/停止/重装或重数；实际游戏占用由用户与现场决定，旧“空闲”不能覆盖用户声明。
 2. 收敛收口：A/B/C已批准，文档已集成；6个旧PR已关闭、34条指定分支均先核归档tag再删除。原件、模型、本机目录、安装/回滚和R2保留；审批闹钟已按用户要求删除。
-3. 当前没有已派发工程卡。下一步由用户发出[已核位置/依赖的卡](../plans/CONVERGENCE_BASELINE_20261027.zh-CN.md#收敛后待派发不是执行许可)：T1/W1、M1/M3先按共享文件划界，M2等M1；X3可选且另取安装窗口，正式T2仍等数据/权重与明确“开训”。
+3. 用户已派发T1：研究输入/训练读取归本卡，模型输入v2和438独立排序投影候选正在验收，定义与入口见[P1输入owner](../../python/docs/P1_T0.md#model-input-v2-and-the-separate-content-sorted-438-projection)。W1权重/每模型选局与M1执行侧独立；不触其文件/分支，正式T2仍等W1、数据和明确“开训”。
 
 ## 每轮成本：实测样本与下一步
 
@@ -28,4 +28,4 @@
 源码、安装、真实使用、Human 来源、数据用途和模型效果分别查[事实收据](../evidence/CONVERGENCE_BASELINE_20261027.md)及其原证据。日常录制采用 Annotator30、Tool5afc7d76、release7c64126c；这不代表日常模型/评估 Runtime 已升为51。旧未知不补造。
 当前未完成原 100 槽、Managed 整局等价、个人进度重演、输入 v2、下一轮正式训练或 RL；工程短验和 CI 都不替它们授资格。[地图](../DOCUMENT_MAP.md)给原操作入口，[待修](../plans/CONVERGENCE_BASELINE_20261027.zh-CN.md#待修与重构去向)保留未完义务。
 
-唯一下一步：等待用户派发后续卡，不自动续跑旧100、训练或RL；后续更新原指南/地图和CURRENT，不重复开启全量收敛。
+唯一下一步：完成T1当前候选的规定检查和收口；不自动续跑旧100、正式训练、RL或其他卡，不重复开启全量收敛。

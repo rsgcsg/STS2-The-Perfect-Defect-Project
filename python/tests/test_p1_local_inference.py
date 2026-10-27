@@ -10,17 +10,24 @@ import torch
 from test_p1_t0 import observation
 
 from stpd.p1.export import export_model, load_model
-from stpd.p1.input import INPUT_SPEC, fit_vocabulary, project
+from stpd.p1.input import INPUT_SPEC, SORTED_INPUT_SPEC, V2_INPUT_SPEC, fit_vocabulary, project
 from stpd.p1.local_inference import LocalInferenceClient, LocalInferencePool
 from stpd.p1.model import MStd
 
 
-def test_batched_model_preserves_actor_scores_and_bad_input_is_local(tmp_path, monkeypatch):
+@pytest.mark.parametrize("projection", [INPUT_SPEC, SORTED_INPUT_SPEC, V2_INPUT_SPEC])
+def test_batched_model_preserves_actor_scores_and_bad_input_is_local(
+    tmp_path, monkeypatch, projection,
+):
     value = observation()
     checkpoint = tmp_path / "checkpoint"
     checkpoint.write_bytes(b"local queue engineering fixture; no training")
     package = tmp_path / "package"
-    model = MStd(fit_vocabulary([project(value)])).eval()
+    from stpd.p1.vocabulary import public_vocabulary
+
+    vocabulary = (public_vocabulary() if projection == V2_INPUT_SPEC
+                  else fit_vocabulary([project(value)]))
+    model = MStd(vocabulary).eval()
     descriptor = export_model(model, checkpoint, package, {"scope": "synthetic"})
     sha = descriptor["package_sha256"]
     pool = LocalInferencePool({sha: package / "model.tensor-tree"}, max_batch=4, window_ms=20)
@@ -32,7 +39,7 @@ def test_batched_model_preserves_actor_scores_and_bad_input_is_local(tmp_path, m
     def actor(index):
         current = copy.deepcopy(value)
         current["catalog"][0]["label"] += str(index)
-        client = LocalInferenceClient(pool.attachment(), sha, INPUT_SPEC)
+        client = LocalInferenceClient(pool.attachment(), sha, projection)
         try:
             barrier.wait(timeout=10)
             return current, client(current)
@@ -45,11 +52,11 @@ def test_batched_model_preserves_actor_scores_and_bad_input_is_local(tmp_path, m
         original, _ = load_model(package / "model.tensor-tree", sha)
         with torch.inference_mode():
             for current, scores in actual:
-                expected = original(project(current))
+                expected = original(project(current, input_projection=projection))
                 torch.testing.assert_close(torch.tensor(scores), expected, atol=1e-5, rtol=1e-5)
                 assert max(range(len(scores)), key=scores.__getitem__) == int(expected.argmax())
-        bad = LocalInferenceClient(pool.attachment(), sha, INPUT_SPEC)
-        good = LocalInferenceClient(pool.attachment(), sha, INPUT_SPEC)
+        bad = LocalInferenceClient(pool.attachment(), sha, projection)
+        good = LocalInferenceClient(pool.attachment(), sha, projection)
         invalid = {**value, "revision": "foreign"}
         with ThreadPoolExecutor(max_workers=2) as workers:
             failed = workers.submit(bad, invalid)
@@ -94,7 +101,10 @@ def test_foreign_model_or_pool_never_receives_a_score(tmp_path, monkeypatch):
     assert summary["requests"] == 0
 
 
-def test_existing_agent_consume_ack_next_is_identical_with_local_scoring(tmp_path, monkeypatch):
+@pytest.mark.parametrize("projection", [INPUT_SPEC, SORTED_INPUT_SPEC, V2_INPUT_SPEC])
+def test_existing_agent_consume_ack_next_is_identical_with_local_scoring(
+    tmp_path, monkeypatch, projection,
+):
     import io
     import json
 
@@ -106,10 +116,15 @@ def test_existing_agent_consume_ack_next_is_identical_with_local_scoring(tmp_pat
     checkpoint = tmp_path / "checkpoint"
     checkpoint.write_bytes(b"unchanged Agent protocol fixture")
     package = tmp_path / "package"
-    descriptor = export_model(MStd(fit_vocabulary([project(value)])), checkpoint, package, {})
+    from stpd.p1.vocabulary import public_vocabulary
+
+    vocabulary = (public_vocabulary() if projection == V2_INPUT_SPEC
+                  else fit_vocabulary([project(value)]))
+    descriptor = export_model(MStd(vocabulary), checkpoint, package, {})
     root = tmp_path / "private"
     register(package, root, {"schema": "sts2.policy-runtime/agent-manifest-1",
-        "input": {"profile": "p1-global-r1", "global": {"revision": "r1.5"}}})
+        "input": {"profile": "p1-global-r1", "global": {"revision": "r1.5"}}},
+        input_projection=projection)
     manifest = json.loads((root / "manifest.json").read_bytes())
     sha = descriptor["package_sha256"]
     pool = LocalInferencePool({sha: package / "model.tensor-tree"}, max_batch=4, window_ms=2)

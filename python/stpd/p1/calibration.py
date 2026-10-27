@@ -61,11 +61,15 @@ def prepare(
     if len(selected) != updates * 64:
         raise BoundaryError("p1_calibration", "complete_upcoming_optimizer_batches_required")
     ordered_ids = [train_ids[index] for index in selected]
+    from .weighting import point_weights
+
+    policy = workload.training.parameters.value().get("loss_weighting")
+    weights = point_weights(policy, workload.reader.selection) if policy is not None else None
     wanted = set(ordered_ids)
     rows = {}
     for reference, observation in workload.reader.iter_points():
         if reference["split"] == "train" and reference["point_id"] in wanted:
-            frame = project(observation)
+            frame = project(observation, input_projection=workload.vocabulary["input_spec"])
             target = [c["choice_id"] for c in frame.choices].index(reference["chosen"])
             rows[reference["point_id"]] = {"point_id": reference["point_id"],
                                             "frame": asdict(frame), "target": target,
@@ -91,6 +95,8 @@ def prepare(
                          "updates": updates, "batch_size": 64, "sample_count": len(rows),
                          "point_ids": ordered_ids, "split": "train",
                          "input_spec": state["identity"]["input_spec"],
+                         **({"sample_weights": [weights[point] for point in ordered_ids]}
+                            if weights is not None else {}),
                          "purpose": "engineering_performance_calibration",
                          "formal_resume": False, "publishes_model": False,
                          "DEV_consumed": False, "TEST_consumed": False,
@@ -144,6 +150,14 @@ def read_input(store: ArtifactStore, identity: str) -> tuple[Manifest, list[Fram
     selection = json.loads(b"".join(store.read_payload(snapshot.payload("selection"))))
     train_ids = sorted(point["point_id"] for point in selection["points"]
                        if point["split"] == "train")
+    from .weighting import point_weights
+
+    policy = source_training.parameters.value().get("loss_weighting")
+    weights = point_weights(policy, selection) if policy is not None else None
+    expected_weights = ([weights[point] for point in info["point_ids"]]
+                        if weights is not None else None)
+    if info.get("sample_weights") != expected_weights:
+        raise BoundaryError("p1_calibration", "source_TRAIN_weights_mismatch")
     cursor = state["sampler"]["cursor"]
     indices = state["sampler"]["order"][cursor:cursor + len(rows)]
     if [train_ids[index] for index in indices] != info["point_ids"]:
@@ -152,7 +166,9 @@ def read_input(store: ArtifactStore, identity: str) -> tuple[Manifest, list[Fram
     for row in rows:
         value = row["frame"]
         frame = Frame([Entity(**entity) for entity in value["entities"]],
-                      value["choices"], value["roles"])
+                      value["choices"], [(tuple(s) if isinstance(s, list) else s,
+                                          tuple(t) if isinstance(t, list) else t)
+                                         for s, t in value["roles"]])
         target = row["target"]
         if type(target) is not int or not 0 <= target < len(frame.choices):
             raise BoundaryError("p1_calibration", "target_outside_complete_catalog")
@@ -191,6 +207,7 @@ def measure(
     manifest, frames, targets, vocabulary, state = read_input(store, input_id)
     read_seconds = time.perf_counter() - started
     config = MStdConfig.decode(manifest.parameters.value()["source_config"])
+    sample_weights = manifest.parameters.value().get("sample_weights")
     selected_device = torch.device(device)
     if selected_device.type not in {"cpu", "cuda"} or (
             selected_device.type == "cuda" and not torch.cuda.is_available()):
@@ -235,7 +252,9 @@ def measure(
                 row = optimizer_update(model, optimizer, frames[offset:offset + 64],
                                        targets[offset:offset + 64],
                                        _lr(config, manifest.parameters.value()["planned_steps"],
-                                           state["step"] + offset // 64))
+                                           state["step"] + offset // 64),
+                                       **({"weights": sample_weights[offset:offset + 64]}
+                                          if sample_weights is not None else {}))
                 if selected_device.type == "cuda":
                     torch.cuda.synchronize(selected_device)
                 row.update(optimizer_update=state["step"] + offset // 64 + 1,

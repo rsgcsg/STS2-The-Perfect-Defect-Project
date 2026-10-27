@@ -12,7 +12,8 @@ from stpd.p1.weighting import CHECKPOINT_POLICY, SCHEMA
 from stpd.p1.workload import verify_p1_run
 
 
-def test_normal_package_then_start_original_prepared_run(tmp_path, capsys, monkeypatch):
+@pytest.mark.parametrize("input_v2", [False, True])
+def test_normal_package_then_start_original_prepared_run(tmp_path, capsys, monkeypatch, input_v2):
     with client(tmp_path) as (app, call, provider, store, owner, snapshot, config_path):
         from stpd.p1.dataset import SnapshotReader
 
@@ -23,6 +24,10 @@ def test_normal_package_then_start_original_prepared_run(tmp_path, capsys, monke
                 "stop_after": 1, "checkpoint_policy": CHECKPOINT_POLICY,
                 "loss_weighting": {"schema": SCHEMA, "rule_id": "unit-control",
                                    "weights_by_root": dict.fromkeys(roots, 1)}}
+        if input_v2:
+            from stpd.p1.input import V2_INPUT_SPEC
+
+            body["input_projection"] = V2_INPUT_SPEC
         request = tmp_path / "request.json"
         package = tmp_path / "package.json"
         request.write_text(json.dumps(body))
@@ -36,6 +41,9 @@ def test_normal_package_then_start_original_prepared_run(tmp_path, capsys, monke
         read_session = app.remote_training._prepared_sessions[run_id]
         assert verify_p1_run(store, run_id, provider.target.producer).training.parameters.value()[
             "loss_weighting"] == body["loss_weighting"]
+        if input_v2:
+            assert verify_p1_run(store, run_id, provider.target.producer).vocabulary[
+                "input_spec"] == body["input_projection"]
         # Poison prepare: a start of this package must not fit/transfer again.
         monkeypatch.setattr(app.remote_training, "prepare",
                             lambda *a: pytest.fail("prepared run was rebuilt"))
@@ -202,6 +210,11 @@ def test_invalid_weight_or_checkpoint_policy_does_not_record_training_use(tmp_pa
             call("prepare", body={**body, "loss_weighting": None})
         with pytest.raises(BoundaryError, match="unsupported_checkpoint_policy"):
             call("prepare", body={**body, "checkpoint_policy": []})
+        from stpd.p1.input import SORTED_INPUT_SPEC
+
+        for projection in (None, [], {}, SORTED_INPUT_SPEC):
+            with pytest.raises(BoundaryError, match="unsupported_input_projection"):
+                call("prepare", body={**body, "input_projection": projection})
 
 
 @pytest.mark.parametrize("wait_seconds,expected", [(None, 600), (7200, 7200)])
