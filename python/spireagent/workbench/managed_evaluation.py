@@ -12,7 +12,7 @@ import json
 import os
 import subprocess
 import time
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, NoReturn
@@ -148,7 +148,7 @@ def _host_performance(manager: Any, target: dict[str, Any]) -> dict[str, Any]:
                 "error": error.code if isinstance(error, BoundaryError) else type(error).__name__}
 
 
-def _outcome_status(outcome: dict[str, Any], *, settling_stalled: bool) -> dict[str, str]:
+def _outcome_status(outcome: Mapping[str, Any], *, settling_stalled: bool) -> dict[str, str]:
     recorded_reason = outcome["operation_end"].get("recorded_reason") or ""
     if settling_stalled or "managed_settling_stalled" in recorded_reason:
         return {"status": "unknown", "reason": "managed_settling_stalled"}
