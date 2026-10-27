@@ -33,6 +33,7 @@ from stpd.evaluation.suites import (
     checkpoint_reference_manifest,
     diagnostic_reference_manifest,
     four_agent_reference_manifest,
+    t2_managed_manifest,
 )
 from stpd.game_seed import derive_game_seed, require_canonical_game_seed
 
@@ -54,6 +55,14 @@ def load_manifest(path: Path, sha256: str) -> tuple[bytes, dict[str, Any]]:
     if not isinstance(value, dict) or value.get("host") not in {"Reference", "Managed"}:
         _reject("manifest_host_required")
     host = value["host"]
+    if value.get("purpose") == "fixed_evaluation_only":
+        version, ascension = value.get("game_version"), value.get("ascension")
+        if not isinstance(version, str) or type(ascension) is not int:
+            _reject("manifest_configuration_changed")
+        expected_t2 = t2_managed_manifest(version, ascension)
+        if json_bytes(value) != json_bytes(expected_t2):
+            _reject("manifest_configuration_changed")
+        return raw, value
     if isinstance(value, dict) and value.get("purpose") == "checkpoint_reference":
         version, character, ascension = (value.get("game_version"), value.get("character"),
                                          value.get("ascension"))

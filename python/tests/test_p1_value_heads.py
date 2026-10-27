@@ -239,3 +239,24 @@ def test_model_size_type_boundary_is_explicit(model_size):
 
     with pytest.raises(BoundaryError, match="unsupported_model_size"):
         MStdConfig(model_size=model_size)
+
+
+@pytest.mark.parametrize("ascension", [0, 10])
+def test_fixed_t2_manifest_uses_normal_suite_loader_and_rejects_changed_seeds(tmp_path, ascension):
+    import hashlib
+    import json
+
+    from spireagent.json_boundary import BoundaryError
+    from spireagent.workbench.reference_suite import load_manifest
+    from stpd.evaluation.suites import t2_managed_manifest
+
+    manifest = t2_managed_manifest("v0.111.0", ascension)
+    path = tmp_path / "t2-manifest.json"
+    raw = json.dumps(manifest).encode()
+    path.write_bytes(raw)
+    assert load_manifest(path, hashlib.sha256(raw).hexdigest())[1] == manifest
+    manifest["seeds"][-1] = manifest["seeds"][0]
+    changed = json.dumps(manifest).encode()
+    path.write_bytes(changed)
+    with pytest.raises(BoundaryError, match="manifest_configuration_changed"):
+        load_manifest(path, hashlib.sha256(changed).hexdigest())
