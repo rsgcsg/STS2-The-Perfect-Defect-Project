@@ -149,6 +149,7 @@ def test_cached_reference_gives_the_same_update_as_recomputing():
         model = MStd(reference.vocabulary)
         model.load_state_dict(reference.state_dict())
         optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
+        torch.manual_seed(7)  # same dropout draws for both runs
         results.append(rl_update(model, reference, optimizer, samples, [], 0.1, LossConfig(),
                                  cache))
         if cache is not None:
