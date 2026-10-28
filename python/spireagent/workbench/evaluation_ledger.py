@@ -452,17 +452,21 @@ class EvaluationLedger:
                 else:
                     active[saves.submit(executor.preserve_report, path)] = (slot, path, "save")
             exhausted = False
+
+            def unsettled():
+                return len(trajectory_wait) + sum(len(slot.get("shard_slots", [slot]))
+                                                for slot, _, _ in active.values())
+
             while active or trajectory_wait or not exhausted and stop_reason is None:
-                if trajectory_wait and (len(trajectory_wait) >= 8
-                        or not active):
+                executing = sum(stage == "execute" for _, _, stage in active.values())
+                # Free bounded save credits under pressure rather than waiting
+                # for an unrelated slow game to fill the eight-episode shard.
+                if trajectory_wait and (len(trajectory_wait) >= 8 or not active
+                        or executing < workers and unsettled() >= pipeline["pending_limit"]):
                     group, trajectory_wait = trajectory_wait[:8], trajectory_wait[8:]
                     active[saves.submit(executor.finalize_trajectories,
                         [path for _, path in group])] = (
                             {"shard_slots": group}, group[0][1], "shard")
-                executing = sum(stage == "execute" for _, _, stage in active.values())
-                def unsettled(waiting=trajectory_wait):
-                    return len(waiting) + sum(len(s.get("shard_slots", [s]))
-                                                     for s, _, _ in active.values())
 
                 while (executing < workers and unsettled() < pipeline["pending_limit"]
                        and not exhausted and stop_reason is None):

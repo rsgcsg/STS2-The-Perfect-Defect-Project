@@ -848,3 +848,70 @@ def test_evaluation_plan_schedules_frozen_minimum_audit_first_and_gates_scores(l
     assert missing["score_admitted"] is False
     assert missing["unknown"] == 1 and missing["loss"] == missing["win"] == 0
     assert all(group["scored"] == 0 for group in missing["groups"])
+
+
+def test_partial_shard_frees_credit_before_an_unrelated_slow_game_finishes(ledger, monkeypatch):
+    """Real ledger/suite, fake Host/save IO; no game or model-speed claim."""
+    from spireagent.workbench import evaluation_ledger as module
+    from spireagent.workbench.reference_suite import _Artifacts
+
+    usage = shutil.disk_usage(ledger.directory)
+    monkeypatch.setattr(module.shutil, "disk_usage",
+                        lambda _: usage._replace(free=100 * 1024**3))
+    configuration = json.loads(Path(ledger.plan["execution"]["path"]).read_bytes())
+    configuration.update(retention={"tier": "trajectory", "audit_every": 100},
+                         pipeline={"save_workers": 1, "pending_limit": 2})
+    execution = ledger.directory.parent / "partial-shard-execution.json"
+    execution.write_bytes(json_bytes(configuration))
+    manifest = ledger.plan["slots"][0]["manifest"]
+    current = EvaluationLedger.create(ledger.directory.parent / "partial-shard-ledger",
+        Path(manifest["path"]), manifest["sha256"], selections={"438": "same-weight"},
+        execution=execution)
+    slow = threading.Event()
+    third = threading.Event()
+    release = threading.Event()
+    groups = []
+
+    class Shards(QueuedSaveExecutor):
+        def __call__(self, row, manifest, artifacts, checkpoint):
+            if row["seed_ordinal"] == 1:
+                slow.set()
+                assert release.wait(20)
+            super().__call__(row, manifest, artifacts, checkpoint)
+            if row["seed_ordinal"] == 3:
+                third.set()
+
+        def preserve_report(self, path):
+            report = super().preserve_report(path)
+            report["episodes"][0]["status"] = "trajectory_pending"
+            _Artifacts.reopen(path.parent).save(report)
+            return report
+
+        def finalize_trajectories(self, paths):
+            groups.append(len(paths))
+            results = []
+            for path in paths:
+                report = json.loads(path.read_bytes())
+                row = report["episodes"][0]
+                artifacts = _Artifacts.reopen(path.parent)
+                row["trajectory_shard_id"] = "e" * 64
+                row["trajectory_preservation"] = artifacts.put("trajectory-preservation.json",
+                    json_bytes({"status": "completed", "artifact_id": "e" * 64,
+                        "run_id": row["run_id"], "full_readback": True,
+                        "trajectory_verification": "pass"}))
+                row["status"] = "saved"
+                artifacts.save(report)
+                results.append((path, report))
+            return results
+
+    with ThreadPoolExecutor(1) as pool:
+        future = pool.submit(current.run_managed, workers=2, max_episodes=3, executor=Shards())
+        try:
+            assert slow.wait(20)
+            assert third.wait(20)
+            assert not release.is_set() and not future.done()
+            assert groups[0] == 1
+        finally:
+            release.set()
+        result = future.result(timeout=30)
+    assert result["dispatched"] == 3 and current.report()["saved_unscored"] == 3
