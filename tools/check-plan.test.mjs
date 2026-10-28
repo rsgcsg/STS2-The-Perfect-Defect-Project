@@ -415,3 +415,25 @@ test("top-level full and Python routers cancel their owned descendants and block
       }
     } finally {fs.rmSync(temporary, {recursive: true, force: true});}
   });
+
+
+test("queue diff includes earlier queued source changes, not only the last PR", () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "queue-plan-"));
+  const git = (...args) => execFileSync("git", args, {cwd, encoding:"utf8", stdio:"pipe"}).trim();
+  try {
+    git("init", "-b", "develop"); git("config", "user.email", "fixture@example.invalid"); git("config", "user.name", "Fixture");
+    fs.writeFileSync(path.join(cwd, "README.md"), "base\n"); git("add", "."); git("commit", "-m", "base");
+    const base = git("rev-parse", "HEAD");
+    git("checkout", "-b", "source");
+    fs.writeFileSync(path.join(cwd, "source.js"), "source\n"); git("add", "."); git("commit", "-m", "source");
+    git("checkout", "-b", "editorial", base);
+    fs.writeFileSync(path.join(cwd, "README.md"), "editorial\n"); git("commit", "-am", "editorial");
+    git("checkout", "-b", "gh-readonly-queue/develop/pr-1", base);
+    git("merge", "--no-ff", "source", "-m", "queue source");
+    git("merge", "--no-ff", "editorial", "-m", "queue editorial");
+    assert.equal(makePlan({base:"HEAD^", cwd}).scope, "docs");
+    const group = makePlan({base, cwd});
+    assert.equal(group.scope, "full");
+    assert.deepEqual(group.files.map(e=>e.file).sort(), ["README.md", "source.js"]);
+  } finally { fs.rmSync(cwd, {recursive:true, force:true}); }
+});

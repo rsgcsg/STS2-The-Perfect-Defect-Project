@@ -126,15 +126,19 @@ remain in TESTING; task-specific real-attempt budgets remain in the active packe
 1. Create a topic branch from current origin/develop; record exact base/head and owner.
    Implement the first owning correction, add the cheapest faithful regression, run the
    relevant component/root gates, closeout and diff review. Open a PR to develop.
-2. Review the latest head and its selected CI scope/portable result. If integration requires a
-   newer base, merge that base into the topic branch, review conflicts and revalidate.
-   Use a normal merge commit for any component source change; docs-only squash remains
-   permitted by root policy. Preserve path-scoped component provenance.
-3. Merge the reviewed PR to develop and verify the actual merge-head CI (fresh checks or a verified execution receipt plus current identity checks).
-   Confirm the actual head-ref outcome too: repository auto-delete-on-merge may remove the topic. If the approved disposition requires preserving it, retain/archive or restore the exact ref; do not silently change repository-wide settings.
-   This completes an ordinary task unless publication/deployment is explicitly in scope. No service is
-   deployed merely because that merge happened. Several compatible improvements may be
-   grouped into one intentional release; do not make every commit a user update.
+2. Review the latest head and its selected CI scope/portable result. Once develop's
+   merge queue is enabled, enqueue the reviewed PR with `gh pr merge <PR> --auto
+   --match-head-commit <reviewed-head>`; the queue's configured **Merge commit**
+   method applies to every PR, including docs. Do not manually update an otherwise
+   conflict-free topic merely because develop advanced. GitHub checks the combined
+   queue head against its base. Resolve real conflicts in the topic and revalidate.
+   Until queue activation, retain the existing strict-base synchronization and
+   ordinary `gh pr merge <PR> --merge --match-head-commit <reviewed-head>` flow.
+3. Verify that the PR actually merged, record its merge SHA and original topic
+   ancestry, then inspect the CI **push** run for that exact develop commit (fresh
+   checks or a verified execution receipt plus current identity/BOM/history checks).
+   A green PR or queue run is not by itself post-merge verification. This completes
+   an ordinary task unless publication/deployment is explicitly in scope.
 4. When promotion is intended, create a temporary release branch from the exact selected
    develop commit and open a PR to main. Merge current main into that release branch if
    needed for strict up-to-date rules. Review the final diff and latest checks. If main
@@ -331,3 +335,20 @@ CPU 锁并通过游戏空闲检查；缺少空档就明确等待，不会偷跑�
 `requireSlot()`；单元测试用隔离的锁根目录，不占生产资源位。
 
 依赖文件使用同一文件系统内的硬链接，目录和项目元数据属于本卡；安装闭包复制可正常清理，Python 安装来源仍位于本卡标准 site-packages。跨文件系统或无法建立硬链接时，按旧流程自建。校验、构建和对照只占 CPU 锁，Managed 位供其他批次使用；真人游戏出现仍停止本卡 CPU 任务。
+
+
+## develop 合并队列
+
+启用条件与逐项设置见 [合并队列设置](MERGE_QUEUE_SETUP.zh-CN.md)。当前仓库属于个人账号，
+GitHub 原生队列不适用；CI 接入属于准备工作，不能称队列已经启用。迁移组织需要用户另行决定。
+启用后仍先审查、满足必需检查，再申请自动入队；队列不会自动发现并合并所有绿色 PR。
+`gh pr merge <PR> --auto --match-head-commit <reviewed-head>` 在检查未过时申请自动合并，
+检查已过时入队；不可用 `--admin` 绕过。队列仍会运行组合代码的检查，并非承诺零次新 CI。
+已有 PR 不因接入事件而需要代码迁移；仅当其更改了 CI/router 或有真实冲突时需处理受影响部分。
+
+队列检查基于 `merge_group.base_sha` 到默认 checkout 的 group HEAD，包含前面排队 PR 的改动。
+当前完整 queue ref 独立于 PR/ref 的并发组，不会相互取消。只对 develop 队列开放原有回执复用：
+整树、工作流、执行范围、原 run/attempt、七天新鲜度及 artifact 校验全部保持，命不中就执行。
+队列新执行的回执可供相同树的合并后 push 复用；复用本身不发新执行回执，不延长七天期限。
+身份检查仍读取当前 Git 历史。队列 Merge commit 保留 topic 祖先；最终验收须同时查真实历史和 BOM，
+不能用树相同推断来源提交相同。main 晋级和 Windows 检查规则保持原入口。

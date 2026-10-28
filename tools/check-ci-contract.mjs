@@ -27,6 +27,8 @@ export function ciWorkflowErrors(rawSource) {
   const source = normalizeNewlines(rawSource);
   const errors = [];
   requireMatch(errors, "CI must trigger for pull requests", source, /^  pull_request:\s*$/mu);
+  requireMatch(errors, "CI must trigger for merge queue checks", source,
+    /^  merge_group:\s*\n    types: \[checks_requested\]/mu);
   requireMatch(errors, "CI push trigger must be branch-scoped", source,
     /^  push:\s*\n    branches:\s*$/mu);
   for (const branch of ["develop", "main"]) {
@@ -55,7 +57,7 @@ export function ciWorkflowErrors(rawSource) {
   const route = plan?.match(/      - id: route\n[\s\S]*?(?=\n      - |$)/u)?.[0] ?? "";
   if (!/run: node tools\/check-plan\.mjs --check-patch\s*$/mu.test(route) ||
       /^        if:/mu.test(route)) errors.push("CI plan must check the committed patch unconditionally before routing");
-  if (!route.includes("CHECK_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}"))
+  if (!route.includes("CHECK_BASE: ${{ github.event.merge_group.base_sha || github.event.pull_request.base.sha || github.event.before }}"))
     errors.push("CI plan must retain the exact event comparison base");
   if (!docs || !docs.includes("run: node tools/check-plan.mjs execute")) errors.push("CI must check editorial changes");
   if (!/^  schedule:/mu.test(source)) errors.push("CI must retain periodic full checks");
