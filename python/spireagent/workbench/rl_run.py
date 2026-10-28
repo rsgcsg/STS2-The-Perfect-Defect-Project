@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from spireagent.json_boundary import BoundaryError, json_bytes
-from spireagent.workbench.rl_exchange import Exchange
+from spireagent.rl_exchange import Exchange
 
 CONFIG_SCHEMA = "stpd/rl-run-1"
 
@@ -31,7 +31,7 @@ def launch(config: dict[str, Any], work: Path) -> dict[str, Any]:
     if config.get("schema") != CONFIG_SCHEMA:
         raise BoundaryError("rl_run", "unsupported_run_config")
     python = config.get("python", sys.executable)
-    from spireagent.workbench.service_process import cloud_environment
+    from .service_process import cloud_environment
 
     # R2 credentials reach child processes only, from an explicit private file.
     secret = config.get("cloud_environment")
@@ -45,7 +45,7 @@ def launch(config: dict[str, Any], work: Path) -> dict[str, Any]:
     logs.mkdir(parents=True, exist_ok=True)
     began = time.monotonic()
     learner = subprocess.Popen(
-        [python, "-m", "stpd.rl.learner", "--config", str(learner_config),
+        [python, "-m", "spireagent.workbench.rl_learner", "--config", str(learner_config),
          "--work", str(learner_work)],
         stdout=(logs / "learner.out").open("wb"), stderr=subprocess.STDOUT, env=environment)
     os.environ.update({k: v for k, v in environment.items() if k not in os.environ})

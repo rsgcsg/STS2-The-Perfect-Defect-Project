@@ -9,17 +9,15 @@ measured and reported rather than filled with repeated epochs.
 """
 from __future__ import annotations
 
-import argparse
 import collections
 import copy
 import hashlib
 import json
 import math
-import os
 import random
 import tempfile
-import threading
 import time
+from collections.abc import Callable, Iterable
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -28,10 +26,8 @@ from typing import Any
 import torch
 
 from spireagent.json_boundary import BoundaryError, json_bytes
+from spireagent.rl_exchange import Exchange
 from spireagent.source import source_identity
-from spireagent.workbench.global_evidence_store import publish_detached_p1_model
-from spireagent.workbench.managed_trajectory_store import read_shard
-from spireagent.workbench.rl_exchange import Exchange
 from stpd.p1.export import export_model, input_spec, load_model, runtime_projection
 from stpd.p1.input import project
 from stpd.workers.checkpoint_codec import decode_checkpoint, encode_checkpoint
@@ -84,6 +80,19 @@ class LearnerConfig:
         return cls(**value, loss=loss)
 
 
+@dataclass(frozen=True)
+class LearnerIO:
+    """Application-owned readers/writers the research learner is composed with.
+
+    ``read_shard(store, shard_artifact_id, scratch)`` yields read-back trajectory
+    episodes; ``publish_model(store, package_directory, producer)`` returns the
+    published ``model`` manifest. ``spireagent.workbench.rl_learner`` wires the
+    Managed trajectory store and the detached P1 model import.
+    """
+    read_shard: Callable[..., Iterable[dict[str, Any]]]
+    publish_model: Callable[..., Any]
+
+
 @dataclass
 class Buffered:
     sample: RlSample
@@ -116,8 +125,8 @@ class Timer:
 
 
 class Learner:
-    def __init__(self, config: LearnerConfig, work: Path) -> None:
-        self.config, self.work = config, work
+    def __init__(self, config: LearnerConfig, work: Path, io: LearnerIO) -> None:
+        self.config, self.work, self.io = config, work, io
         work.mkdir(parents=True, exist_ok=True)
         torch.manual_seed(config.seed)
         torch.set_num_threads(config.threads)
@@ -232,7 +241,7 @@ class Learner:
             return self._resume(self.config.resume_checkpoint, latest["version"])
         if latest is not None:
             raise BoundaryError("rl_learner", "run_already_has_versions_use_resume_checkpoint")
-        manifest = publish_detached_p1_model(self.exchange.store, self.start_package,
+        manifest = self.io.publish_model(self.exchange.store, self.start_package,
                                              self.producer)
         record = self.exchange.publish_model({
             "run": self.config.run, "version": 0, "parent_version": None,
@@ -316,7 +325,7 @@ class Learner:
         if record.get("shard_artifact_id") is None:
             return [{"record": record, "episode": None, "key": key}]
         with tempfile.TemporaryDirectory(prefix="rl-shard-", dir=self.work) as tmp:
-            for episode in read_shard(self.exchange.store, record["shard_artifact_id"],
+            for episode in self.io.read_shard(self.exchange.store, record["shard_artifact_id"],
                                       scratch=Path(tmp)):
                 # Staleness trusts the record's version only when it names the
                 # model this episode was actually played with.
@@ -448,7 +457,7 @@ class Learner:
     def _publish(self, version: int, parent: int, destination: Path,
                  shards: list[str]) -> dict[str, Any]:
         began = time.monotonic()
-        manifest = publish_detached_p1_model(self.exchange.store, destination, self.producer)
+        manifest = self.io.publish_model(self.exchange.store, destination, self.producer)
         record = self.exchange.publish_model({
             "run": self.config.run, "version": version, "parent_version": parent,
             "model_artifact_id": manifest.artifact_id,
@@ -562,17 +571,3 @@ def _quantiles(values: list[float]) -> dict[str, float] | None:
     return {"count": len(ordered), "median": ordered[len(ordered) // 2],
             "max": ordered[-1], "min": ordered[0]}
 
-
-def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--config", type=Path, required=True)
-    parser.add_argument("--work", type=Path, required=True)
-    args = parser.parse_args()
-    os.umask(0o077)
-    threading.current_thread().name = "rl-learner"
-    summary = Learner(LearnerConfig.read(args.config), args.work.resolve()).run()
-    print(json.dumps({k: summary[k] for k in ("updates", "versions", "counts")}))
-
-
-if __name__ == "__main__":
-    main()

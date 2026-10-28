@@ -25,8 +25,7 @@ from pathlib import Path
 from typing import Any
 
 from spireagent.json_boundary import BoundaryError, json_bytes
-
-from .rl_exchange import Exchange
+from spireagent.rl_exchange import Exchange
 
 CONFIG_SCHEMA = "spireagent/rl-actor-config-1"
 SEED_GAME_VERSION = "v0.111.0"

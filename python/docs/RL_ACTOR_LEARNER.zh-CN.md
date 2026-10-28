@@ -6,7 +6,7 @@
 ## 链上位置
 
 ```
-学习者(stpd.rl.learner) ──模型版本──▶ peer ◀──轨迹分片记录── 打局者(spireagent.workbench.rl_actor)
+学习者(stpd.rl.learner，入口 spireagent.workbench.rl_learner) ──模型版本──▶ peer ◀──轨迹分片记录── 打局者(spireagent.workbench.rl_actor)
         ▲   读分片/人类锚点                     原 run_managed + PipelinedManagedExecutor + trajectory 档
 ```
 
@@ -16,7 +16,7 @@
   版以上的局丢弃并计数；读分片、发布版本、检查点（D1 `CheckpointPublisher`）都在后台。
 - unknown/截断局照样发记录、计数，不重试、不删证据；打局者连续 3 个或超过 25% unknown 自停。
 
-## 两个交换物（都在同一 peer，路径 `exchange/rl/<run>/`）
+## 两个交换物（`spireagent/rl_exchange.py`，都在同一 peer，路径 `exchange/rl/<run>/`）
 
 | 交换物 | 键 | 内容 | 校验 |
 |---|---|---|---|
@@ -38,7 +38,7 @@
 
 ```bash
 npm run slot -- run --resources managed --card <卡> --until <ISO> --lanes <N> -- \
-  <python> -m stpd.rl.run --config run.json --work <工作目录>
+  <python> -m spireagent.workbench.rl_run --config run.json --work <工作目录>
 ```
 
 `run.json`（`stpd/rl-run-1`）：`run`、`peer`、`seed_namespace`、`wall_seconds`、

@@ -12,8 +12,8 @@ from test_p1_t0 import observation
 
 from spireagent.artifact_contracts import Manifest, Producer
 from spireagent.json_boundary import BoundaryError
+from spireagent.rl_exchange import Exchange
 from spireagent.workbench.managed_evaluation import behavior_policy
-from spireagent.workbench.rl_exchange import Exchange
 from stpd.p1.input import fit_vocabulary, project
 from stpd.p1.model import MStd
 from stpd.p1.sampling import distribution, draw, validate_policy
@@ -161,6 +161,7 @@ def test_cached_reference_gives_the_same_update_as_recomputing():
 
 
 def test_learner_resumes_a_run_from_its_published_full_checkpoint(tmp_path, monkeypatch):
+    from spireagent.workbench.rl_learner import IO
     from stpd.p1.export import export_model
     from stpd.rl import learner as module
     from stpd.rl.learner import Learner, LearnerConfig
@@ -175,9 +176,9 @@ def test_learner_resumes_a_run_from_its_published_full_checkpoint(tmp_path, monk
                  {"scope": "synthetic"})
     peer = {"kind": "local", "directory": str(tmp_path / "peer")}
     config = LearnerConfig(run="resume", peer=peer, start_package=str(package))
-    first = Learner(config, tmp_path / "a")
+    first = Learner(config, tmp_path / "a", IO)
     with pytest.raises(BoundaryError, match="run_already_has_versions_use_resume_checkpoint"):
-        Learner(config, tmp_path / "b")
+        Learner(config, tmp_path / "b", IO)
     sum(p.sum() for p in first.model.parameters()).backward()
     first.optimizer.step()  # optimizer state that a successor must keep
     first.updates, first.counts["episodes_loss"] = 3, 5
@@ -189,7 +190,7 @@ def test_learner_resumes_a_run_from_its_published_full_checkpoint(tmp_path, monk
     assert record["version"] == 1 and first.exchange.latest_model()["version"] == 1
     second = Learner(LearnerConfig(**{**config.__dict__,
                                       "resume_checkpoint": record["checkpoint_artifact_id"]}),
-                     tmp_path / "b")
+                     tmp_path / "b", IO)
     assert (second.version, second.lineage_version, second.updates) == (1, 1, 3)
     assert list(second.returns) == [0.25, 0.5] and second.counts["episodes_loss"] == 5
     for name, value in first.model.state_dict().items():
