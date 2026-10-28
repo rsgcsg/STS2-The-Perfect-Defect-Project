@@ -33,29 +33,36 @@ Host/Runtime pin、adapter、initial_progress、候选、模型与 peer。Friday
 并声明 `adapter_environment_keys=["LD_LIBRARY_PATH","FRIDAY_INFERENCE_THREADS"]`；
 只转变量名，不能转AWS/R2凭据。实际身份仍由原Host完整审计。
 
-## RL：先8核，按学习者吞吐加减
+## RL：本轮只准备配置，不提交
 
-需要已经合入并位于本 release 的原 `rl_actor` / `rl_exchange` 模块、学校学习者的
-原 run/peer 配置，以及同一R2 peer的 `store="s3"` 执行配置。保存用途为
-`{"tier":"trajectory","purpose":"training","audit_every":50}`，这不自动授训练资格。
+本轮只完成PR283普通合并后的准确 develop 部署、RL配置准备和本手册收口。
+不启动学习者、不运行真实RL闭环、不提交RL打局作业。以RL1交接段落“转给F2的
+一段话”和本轮用户明确参数为准：run=`rl1-real-1`，每小账本2局、单局900秒、
+actor墙钟3300秒、最多1000局，behavior=`temperature_uniform`、T=1.0、uniform_mix=0.03。
+需要已合入本 release 的原 `rl_actor` / `rl_exchange` 模块，以及同一R2 peer 的
+`store="s3"`、`trajectory/training/audit_every=50` 执行配置。
 
 ```bash
 export PYTHONPATH="$R/source/python"
 "$R/env/bin/python" "$R/source/tools/friday/rl.py" prepare \
-  --execution /ABS/Friday-execution.json --learner-config /ABS/RL1-run.json \
-  --output /ABS/Friday-RL-plan --actors 8
-"$R/env/bin/python" "$R/source/tools/friday/rl.py" submit \
-  --plan /ABS/Friday-RL-plan/plan.json --dry-run
-"$R/env/bin/python" "$R/source/tools/friday/rl.py" submit \
-  --plan /ABS/Friday-RL-plan/plan.json
+  --execution /ABS/Friday-execution.json --learner-config /ABS/learner-school.json \
+  --output /ABS/Friday-RL-plan --actors 8 --seed-namespace rl1-real-1 \
+  --games-per-ledger 2 --episode-seconds 900 --wall-seconds 3300 --max-games 1000
+# 只准备；本轮不调用 submit，也不启动任何Actor/学习者。
 ```
 
-若输入是单独 learner 配置，另传 `--behavior /ABS/behavior.json --seed-namespace NAME`；
-这些取自原RL1计划，不另定策略。每项单核、唯一actor、fc430、默认1推理线程，
-调用原 `python -m spireagent.workbench.rl_actor`；一局一个原账本，局内不换模型。
-先按学习者约3秒/步用6–8核；提速后显式调25–40。提交仍受空闲核1/4、绝对200核、
-拥堵时32核和本人已有F2作业互斥约束；这些是提交时快照，不承诺持续动态调核。
-没有常驻补队服务。本轮独立32核一小时试跑取消，真实供学习者这一轮就是试跑。
+run和peer跟原学习者配置，不另建交换链；行为显式配置保留原值，缺省为T=1/0.03。
+`games_per_ledger` 允许原接口的1–10，max_games最多1000；不额外注入F2的首unknown
+停止策略。unknown连续3个或至少8局后比例超过25%的默认处理、以及任何ledger stop，
+均沿原Actor。owner不重投与失败结束后共享STOP的既有保全仍保留。
+
+未来另获启动授权后，每项单核、唯一actor、fc430、默认1推理线程，调用原
+`python -m spireagent.workbench.rl_actor`；由原Actor在小账本之间更新模型。
+Slurm提前USR1预留 `games_per_ledger × episode_seconds + 180` 秒（本配置1980秒）。
+**原owner边界缺口：** 当前 `_signal` 只标记signalled，`run` 在整个小账本结束后
+才检查，所以2局配置可能在收到信号后仍完成该账本的第二局；不能承诺“仅当前局”。
+适配层同时保留STOP并把USR1直接传给持有句柄的原Actor，不私改RL1账本中途停止语义。
+真正TERM/INT仍走原E2取消路径，不称正常排空。
 
 ## D1：三模型 × T2原清单前20种子
 
@@ -73,13 +80,13 @@ D1传完整 `T2-MANAGED-A0-SEEDS.json`，用原账本 `seed_prefix=20` 冻结新
 ```
 
 三模型在一个节点的同一原账本内运行，原规则事先抽2槽完整审计并先调度，其余留轨迹。
-`--limit` 只限本次开槽数，不裁计划分母。模型ID未齐就不启动；完整审计不满足时
+`--limit` 只限本次开槽数，不裁计划分母。模型ID未齐就不启动；D1自己提交并收齐60槽，F2只交准确部署版本入口；完整审计不满足时
 仍是 `score_admitted=false`。不传manifest时保留原完整 `ref-20` 入口。
 
 ## 停、查、恢复
 
 ```bash
-scancel --signal=USR1 --batch JOB_OR_ARRAY_ID  # 原Python停新准入，当前局排空
+scancel --signal=USR1 --batch JOB_OR_ARRAY_ID  # 原Python停新准入；RL排空当前小账本（默认2局）
 squeue -u "$USER"
 sacct -j JOB_ID -o JobID,NodeList,State,Elapsed,ExitCode
 ```
@@ -95,7 +102,7 @@ sacct -j JOB_ID -o JobID,NodeList,State,Elapsed,ExitCode
 学习者是否实际使用分片看学校学习者收据，不能从上传成功推断训练完成。
 
 owner/租约取得后不可重投；unknown、save_failed及异常保留原状态和分母，不重打。
-RL通过原配置在本actor首unknown自停，结束摘要发现失败会先写共享STOP挡未启动项；
+RL的未知阈值与任意账本停止沿原Actor；结束摘要发现失败会先写共享STOP挡未启动项；
 原接口没有跨actor即时STOP，已运行的其他actor不会因此立刻停下一局，计划明确记录
 `cross_actor_immediate_unknown_stop=false`。全批排空用上面的USR1命令。
 节点丢失前尚未同步的临时前缀可能无法恢复；核原Slurm、租约、scratch与R2回执，

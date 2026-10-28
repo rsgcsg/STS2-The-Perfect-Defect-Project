@@ -33,7 +33,8 @@ def canonical_path(path: Path, *, existing: bool = True) -> Path:
 
 
 def prepare(execution: Path, learner: Path, output: Path, *, actors: int = 8,
-            wall_seconds: int = 3600, episode_seconds: int = 900, max_games: int = 20,
+            wall_seconds: int = 3300, episode_seconds: int = 900, max_games: int = 1000,
+            games_per_ledger: int = 2,
             behavior: dict[str, Any] | None = None, seed_namespace: str | None = None
             ) -> dict[str, Any]:
     execution, learner = canonical_path(execution), canonical_path(learner)
@@ -56,11 +57,13 @@ def prepare(execution: Path, learner: Path, output: Path, *, actors: int = 8,
     if (type(actors) is not int or not 1 <= actors <= 200
             or type(wall_seconds) is not int or not 300 <= wall_seconds <= 21600
             or type(episode_seconds) is not int or not 10 <= episode_seconds <= 1800
-            or wall_seconds <= episode_seconds + 180
-            or type(max_games) is not int or not 1 <= max_games <= 200):
+            or type(games_per_ledger) is not int or not 1 <= games_per_ledger <= 10
+            or wall_seconds <= games_per_ledger * episode_seconds + 180
+            or type(max_games) is not int or not 1 <= max_games <= 1000):
         raise ValueError('bounded_one_to_two_hundred_CPU_actor_budget_required')
     defaults = learning.get('actor_defaults', {})
-    behavior = behavior if behavior is not None else defaults.get('behavior')
+    behavior = behavior if behavior is not None else defaults.get('behavior', {
+        'mode': 'temperature_uniform', 'temperature': 1.0, 'uniform_mix': 0.03})
     seed_namespace = seed_namespace or learning.get('seed_namespace')
     if (not isinstance(behavior, dict)
             or set(behavior) != {'mode', 'temperature', 'uniform_mix'}
@@ -78,8 +81,7 @@ def prepare(execution: Path, learner: Path, output: Path, *, actors: int = 8,
             'execution': str(frozen), 'run': learning['run'], 'peer': peer,
             'seed_namespace': seed_namespace, 'wall_seconds': wall_seconds,
             'episode_seconds': episode_seconds, 'max_games': max_games,
-            'games_per_ledger': 1, 'behavior': behavior,
-            'unknown_stop': {'consecutive': 1, 'fraction': 0, 'after': 1},
+            'games_per_ledger': games_per_ledger, 'behavior': behavior,
             'pipeline': defaults.get('pipeline', {'save_workers': 1, 'pending_limit': 2})}
         path = output / f'{name}.json'
         save(path, actor)
@@ -89,6 +91,7 @@ def prepare(execution: Path, learner: Path, output: Path, *, actors: int = 8,
         'execution': {'path': str(frozen), 'sha256': hashed(frozen)},
         'learner_origin': {'path': str(learner), 'sha256': hashed(learner)},
         'wall_seconds': wall_seconds, 'episode_seconds': episode_seconds,
+        'games_per_ledger': games_per_ledger,
         'constraint': 'fc430', 'retry_unknown': False, 'automatic_mac_fallback': False,
         'cross_actor_immediate_unknown_stop': False}
     save(output / 'plan.json', plan)
@@ -158,9 +161,10 @@ def submit(path: Path, *, dry_run: bool = False) -> dict[str, Any]:
         script.chmod(0o700)
         logs = private_root(root / 'slurm')
         minutes = (plan['wall_seconds'] + 300 + 59) // 60
+        advance = plan.get('games_per_ledger', 1) * plan['episode_seconds'] + 180
         command = ['sbatch', '--parsable', '--partition=smp', '--nodes=1', '--ntasks=1',
             '--cpus-per-task=1', '--mem=4G', f'--time={minutes}', '--no-requeue',
-            f"--signal=B:USR1@{plan['episode_seconds'] + 180}", '--job-name=spireagent-f2',
+            f'--signal=B:USR1@{advance}', '--job-name=spireagent-f2',
             f'--array=0-{count - 1}%{count}', '--constraint=fc430',
             f'--output={logs}/%A_%a.out', f'--error={logs}/%A_%a.err', str(script)]
         result = {'schema': 'spireagent/friday-RL-submit-v1', 'command': command,
@@ -198,9 +202,19 @@ def run(path: Path) -> dict[str, Any]:
     work = scratch / 'actor'
     work.mkdir(mode=0o700)
 
-    def stop(_number, _frame):
-        # Original RL1 STOP is checked between one-game ledgers; no native command is retried.
+    actor_process = None
+    forwarded_actor_signals = []
+
+    def stop(number, _frame):
+        # RL1 checks STOP/signalled between complete small ledgers, not within a ledger.
         (work / 'STOP').touch()
+        if (number == signal.SIGUSR1 and actor_process is not None
+                and actor_process.poll() is None):
+            try:
+                actor_process.send_signal(number)
+                forwarded_actor_signals.append(number)
+            except ProcessLookupError:
+                pass
 
     previous = {number: signal.signal(number, stop)
                 for number in (signal.SIGTERM, signal.SIGINT, signal.SIGUSR1)}
@@ -211,9 +225,10 @@ def run(path: Path) -> dict[str, Any]:
     try:
         with ((scratch / 'actor.out').open('wb') as stdout,
               (scratch / 'actor.err').open('wb') as stderr):
-            code = subprocess.run([sys.executable, '-m', 'spireagent.workbench.rl_actor',
-                '--config', ref['path'], '--work', str(work)], stdout=stdout, stderr=stderr,
-                check=False).returncode
+            actor_process = subprocess.Popen(
+                [sys.executable, '-m', 'spireagent.workbench.rl_actor',
+                 '--config', ref['path'], '--work', str(work)], stdout=stdout, stderr=stderr)
+            code = actor_process.wait()
         if (work / 'actor-summary.json').is_file():
             summary = json.loads((work / 'actor-summary.json').read_bytes())
         uncertain = any(game.get('status') in {'unknown', 'save_failed'}
@@ -235,7 +250,8 @@ def run(path: Path) -> dict[str, Any]:
             'error_code': error_code, 'wall_seconds': time.monotonic() - began,
             'original_summary': summary, 'scratch_retained': str(scratch),
             'actor_config_sha256': ref['sha256'], 'retry_unknown': False,
-            'cross_actor_immediate_unknown_stop': False}
+            'cross_actor_immediate_unknown_stop': False,
+            'forwarded_actor_signals': forwarded_actor_signals}
         save(scratch / 'result.json', result)
         receipt = snapshot(scratch, persistent / 'evidence')
         save(persistent / 'snapshot.json', receipt)
@@ -251,9 +267,10 @@ def main():
     prepare_parser.add_argument('--learner-config', type=Path, required=True)
     prepare_parser.add_argument('--output', type=Path, required=True)
     prepare_parser.add_argument('--actors', type=int, default=8)
-    prepare_parser.add_argument('--wall-seconds', type=int, default=3600)
+    prepare_parser.add_argument('--wall-seconds', type=int, default=3300)
     prepare_parser.add_argument('--episode-seconds', type=int, default=900)
-    prepare_parser.add_argument('--max-games', type=int, default=20)
+    prepare_parser.add_argument('--max-games', type=int, default=1000)
+    prepare_parser.add_argument('--games-per-ledger', type=int, default=2)
     prepare_parser.add_argument('--seed-namespace')
     prepare_parser.add_argument('--behavior', type=Path)
     for name in ('submit', 'run'):
@@ -267,6 +284,7 @@ def main():
         result = prepare(args.execution, args.learner_config, args.output,
             actors=args.actors, wall_seconds=args.wall_seconds,
             episode_seconds=args.episode_seconds, max_games=args.max_games,
+            games_per_ledger=args.games_per_ledger,
             behavior=json.loads(args.behavior.read_bytes()) if args.behavior else None,
             seed_namespace=args.seed_namespace)
     elif args.command == 'submit':

@@ -1,5 +1,5 @@
 # Locked cloud/local-models + development imports used by the current application closure; CPU torch2.13.0.
-# Source lock SHA256: 100879a758f157bb1466ed128ed81b9759c581f8b7ec64dacb08e58b96e74774
+# Source lock SHA256: b0196610f59a67a23653da4ad415aab7d6274b80a5cdfbeb43681bb985dc03fa
 aiohappyeyeballs==2.7.1
 aiohttp==3.14.5
 aiosignal==1.4.0
@@ -74,7 +74,7 @@ types-certifi==2021.10.8.3
 types-jsonschema==4.26.0.20260518
 types-toml==0.10.8.20260518
 typing-extensions==4.16.0
-urllib3==2.7.0
+urllib3==2.8.0
 waitress==3.0.2
 watchfiles==1.2.0
 yarl==1.25.1
