@@ -476,11 +476,13 @@ class MixedRunApplication:
             }
             try:
                 owner = self._owner()
+                if owner["recording_lifecycle"] in {"recording", "paused"}:
+                    facts["cut"] = self.checkpoint()
             except (BoundaryError, OSError, ValueError):
+                if action not in {"human", "stop"}:
+                    raise
                 owner = None
                 facts["native_cut_status"] = "game_unavailable_no_cut_claim"
-            if owner is not None and owner["recording_lifecycle"] in {"recording", "paused"}:
-                facts["cut"] = self.checkpoint()
             self._event("control_completed", **facts)
             if action == "human" and self.current.get("review_unknown"):
                 self.current.setdefault("unknown_reviews", []).append(
@@ -492,7 +494,13 @@ class MixedRunApplication:
                 and runtime["lifecycle"] == "stopped"
                 and owner is not None
             ):
-                self._close_native()
+                try:
+                    self._close_native()
+                except (BoundaryError, OSError, ValueError):
+                    # Runtime Stop is already confirmed. Preserve any native
+                    # Close uncertainty, but do not prevent its own finalization.
+                    self.current["native_close_status"] = "unconfirmed_check_original"
+                    self._event("native_close_unconfirmed_after_runtime_stop")
             self._save()
 
     def _close_native(self) -> None:

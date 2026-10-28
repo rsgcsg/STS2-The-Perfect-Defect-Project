@@ -282,6 +282,27 @@ def test_q_stops_the_original_once_when_game_exited_before_model_observer(applic
     assert mixed.status()["status"] == "finishing"
 
 
+@pytest.mark.parametrize("failure_at", [2, 3])
+def test_confirmed_stop_survives_game_exit_during_cut_or_close(application, failure_at):
+    mixed, models, native, runtime = application
+    mixed.start()
+    mixed.current["status"] = "finishing"
+    original = native.recording_status
+    reads = 0
+
+    def racing_owner(endpoint):
+        nonlocal reads
+        reads += 1
+        if reads >= failure_at:
+            raise BoundaryError("recording", "game_exited")
+        return original(endpoint)
+
+    native.recording_status = racing_owner
+    mixed.after_control("stop", runtime | {"lifecycle": "stopped"})
+    assert mixed.status()["status"] == "finishing"
+    assert [kind for kind, _ in native.calls].count("close") == 0
+
+
 def test_unknown_approval_is_offered_once_then_human_recovery_without_reposting(application):
     mixed, models, native, runtime = application
     mixed.start()
