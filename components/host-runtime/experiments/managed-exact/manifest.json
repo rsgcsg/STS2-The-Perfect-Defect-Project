@@ -313,6 +313,13 @@
       "risk": "low",
       "effect": "Reads an enchanted deck card description inside the existing NativeCardRenderTransaction, so native UpdateDynamicVarPreview applies the enchantment (e.g. Nimble +2 block) as the Reference deck shows it, then restores every owned preview value. Unenchanted and hover-preview cards keep the previous path. No P1 field meaning or legality change.",
       "regression": "m2a-native-tests: real Defect starter deck, Nimble 2 on one Defend shows 7 while the identical plain Defend shows 5 (failed with 5 before), owned PreviewValue restored; recorded human replays 510d6b09/700f679a pass their enchanted-deck first difference"
+    },
+    {
+      "id": "souls_power_detached_null_ui_preview",
+      "kind": "native_public_presentation_projection",
+      "risk": "low",
+      "effect": "Compiles the same shared Native Foundation SoulsPower preview qualification as Reference. Calls the original native enchantment sequence only on FindOnTable early-null branches (TestMode or no combat), checking all reached methods/getters for patches. Live combat stays unavailable; no P1, original recording or training projection changes.",
+      "regression": "NativeDetachedPreviewTests SoulsPower cases; exact shared-source parity regression; recorded missing previews remain missing in old originals."
     }
   ],
   "admission": {
