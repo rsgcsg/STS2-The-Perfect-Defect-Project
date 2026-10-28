@@ -6,6 +6,8 @@ on:
       - develop
       - main
   pull_request:
+  merge_group:
+    types: [checks_requested]
   workflow_dispatch:
     inputs:
       windows:
@@ -42,7 +44,7 @@ jobs:
         name: Select checks from actual Git changes
         env:
           GH_TOKEN: ${{ github.token }}
-          CHECK_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          CHECK_BASE: ${{ github.event.merge_group.base_sha || github.event.pull_request.base.sha || github.event.before }}
           CHECK_FULL: ${{ github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' }}
         run: node tools/check-plan.mjs --check-patch
 

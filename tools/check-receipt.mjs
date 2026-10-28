@@ -7,14 +7,15 @@ import {execFileSync} from 'node:child_process';
 
 export const receiptName = 'portable-execution-receipt';
 export function eligibleEvent(event, ref, base, branch) {
-  return (event === 'push' && ['refs/heads/develop', 'refs/heads/main'].includes(ref)) ||
+  return (event === 'merge_group' && ref?.startsWith('refs/heads/gh-readonly-queue/develop/')) ||
+    (event === 'push' && ['refs/heads/develop', 'refs/heads/main'].includes(ref)) ||
     (event === 'pull_request' && base === 'main' && branch?.startsWith('release/'));
 }
 export function validReceipt(receipt, run, current, now = Date.now()) {
   const age = now - Date.parse(run.created_at);
   return Boolean(["full", "python"].includes(current.scope) && receipt && run.status === 'completed' && run.conclusion === 'success' &&
     run.head_repository?.full_name === current.repository &&
-    ['push', 'pull_request', 'workflow_dispatch', 'schedule'].includes(run.event) &&
+    ['push', 'pull_request', 'workflow_dispatch', 'schedule', 'merge_group'].includes(run.event) &&
     Number.isFinite(age) && age >= 0 && age <= 7 * 86400_000 &&
     receipt.schema === 'spireagent/ci-execution-1' && receipt.repository === current.repository &&
     receipt.run_id === String(run.id) && receipt.run_attempt === String(run.run_attempt) &&
