@@ -47,3 +47,30 @@ def test_invalid_intent_rejected(value):
 def test_invalid_pipeline_rejected(value):
     with pytest.raises(BoundaryError, match="invalid_pipeline"):
         pipeline_configuration({"pipeline": value})
+
+
+@pytest.mark.parametrize("count, expected", [(1, 1), (8, 1), (50, 1), (51, 2), (1000, 20)])
+def test_evaluation_audits_freeze_exact_minimum_before_outcomes(count, expected):
+    from spireagent.workbench.managed_retention import select_formal_audits
+
+    slots = [{"slot_id": str(i), "status": "not_started"} for i in range(count)]
+    plan = select_formal_audits(slots, salt="frozen-config-and-progress", audit_every=50)
+    assert plan["count"] == expected and len(set(plan["selected_slot_ids"])) == expected
+    for slot in slots:
+        slot["status"] = "unknown"
+    assert select_formal_audits(list(reversed(slots)), salt=plan["salt"], audit_every=50) == plan
+
+
+def test_trajectory_evaluation_intent_is_explicit_and_legacy_stays_unscored():
+    legacy = retention_configuration({"retention": {"tier": "trajectory", "audit_every": 50}})
+    assert legacy["score_eligible"] is False
+    current = retention_configuration({"retention": {
+        "tier": "trajectory", "audit_every": 50, "purpose": "evaluation"}})
+    assert current["score_eligible"] is True and current["schema"].endswith("v2")
+    value = row()
+    value["formal_audit_selected"] = True
+    assert preservation_route(current, value) == "trajectory_and_full_peer"
+    value["formal_audit_selected"] = False
+    assert preservation_route(current, value) == "trajectory"
+    value["execution_status"] = "unknown"
+    assert preservation_route(current, value) == "trajectory_and_full_peer"
