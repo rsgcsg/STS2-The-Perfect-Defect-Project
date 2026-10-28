@@ -219,3 +219,16 @@ sweep of the exact `sts2.dll` reduces logic-namespace JIT failures from 68
 locale, input gestures, resource loader, engine bridge). Old unknowns stay
 unknown; the stub coverage gate in `prepare` keeps any new gap from reaching a
 batch silently. Display gaps remain unbound and are not proven per call site.
+
+
+M2d replayed every launch-witnessed human recording against Managed and fixed
+the two largest Managed-side first differences. The open shop surface now
+projects offers without `slot_entity_id` and labels card removal `Choose a card
+to remove for N gold`, as the Reference `VisibleInteractionProjection` and
+native-UI descriptors do; the inspectable `shop_catalog` Read keeps its slot
+relations. Host54 reads an enchanted deck card's description inside the existing
+`NativeCardRenderTransaction`, so native `UpdateDynamicVarPreview` applies the
+enchantment (Nimble +2 block) the way the Reference deck shows it, and restores
+every owned preview value; unenchanted and hover-preview cards keep the previous
+path. Remaining first differences (persisted upgrade-preview toggle, treasure
+catalog multiplicity, selector aliases, converter refusals) are not changed here.
