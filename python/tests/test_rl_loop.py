@@ -137,3 +137,21 @@ def test_rl_update_moves_toward_positive_advantage_and_respects_anchor():
     assert after[action] > before[action]
     with pytest.raises(BoundaryError, match="empty_rl_batch"):
         rl_update(model, reference, optimizer, [], [], 1e-2, LossConfig())
+
+
+def test_cached_reference_gives_the_same_update_as_recomputing():
+    frame = project(observation())
+    torch.manual_seed(5)
+    reference = MStd(fit_vocabulary([frame])).eval()
+    samples = [RlSample(frame, 0, 0.4, 1.0, 0, "a"), RlSample(frame, 1, 0.3, -1.0, 0, "b")]
+    results = []
+    for cache in (None, {}):
+        model = MStd(reference.vocabulary)
+        model.load_state_dict(reference.state_dict())
+        optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
+        results.append(rl_update(model, reference, optimizer, samples, [], 0.1, LossConfig(),
+                                 cache))
+        if cache is not None:
+            assert set(cache) == {"a", "b"}
+    for name in ("policy_loss", "kl", "gradient_norm"):
+        assert results[0][name] == pytest.approx(results[1][name])

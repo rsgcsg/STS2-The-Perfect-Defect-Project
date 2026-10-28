@@ -44,9 +44,30 @@ def _scores(model: MStd, frames: list[Frame]) -> torch.Tensor:
     return torch.nn.utils.rnn.pad_sequence(scores, batch_first=True, padding_value=-torch.inf)
 
 
+def _reference(reference: MStd, batch: list[RlSample],
+               cache: dict[str, torch.Tensor] | None, width: int,
+               device: torch.device) -> torch.Tensor:
+    missing = [s for s in batch if cache is None or s.key not in cache]
+    computed: dict[str, torch.Tensor] = {}
+    if missing:
+        with torch.no_grad():
+            scores = reference.forward_batch([s.frame for s in missing])
+        for sample, value in zip(missing, scores, strict=True):
+            computed[sample.key] = F.log_softmax(value.detach(), dim=-1).cpu()
+        if cache is not None:
+            cache.update(computed)
+    rows = [(computed if cache is None else cache)[s.key] for s in batch]
+    padded = torch.full((len(batch), width), -torch.inf)
+    for index, row in enumerate(rows):
+        padded[index, :row.shape[0]] = row
+    return padded.to(device)
+
+
 def rl_update(model: MStd, reference: MStd, optimizer: torch.optim.Optimizer,
               samples: list[RlSample], anchor: list[tuple[Frame, int]], learning_rate: float,
-              config: LossConfig) -> dict[str, Any]:
+              config: LossConfig, reference_cache: dict[str, torch.Tensor] | None = None
+              ) -> dict[str, Any]:
+    """``reference_cache`` keeps each sample's start-model log-probabilities across reuses."""
     if not samples:
         raise BoundaryError("rl_loss", "empty_rl_batch")
     began = time.perf_counter()
@@ -60,8 +81,7 @@ def rl_update(model: MStd, reference: MStd, optimizer: torch.optim.Optimizer,
     for group in microbatches(frames, list(range(len(frames))), model):
         batch = [samples[i] for i in group]
         packed = _scores(model, [s.frame for s in batch])
-        with torch.no_grad():
-            reference_log = F.log_softmax(_scores(reference, [s.frame for s in batch]), dim=-1)
+        reference_log = _reference(reference, batch, reference_cache, packed.shape[1], device)
         log_probabilities = F.log_softmax(packed, dim=-1)
         actions = torch.tensor([s.action for s in batch], device=device)
         chosen = log_probabilities.gather(1, actions[:, None]).squeeze(1)

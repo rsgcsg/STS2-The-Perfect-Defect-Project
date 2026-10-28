@@ -131,6 +131,7 @@ class Learner:
         self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=config.lr,
                                            weight_decay=config.weight_decay)
         self.buffer: list[Buffered] = []
+        self.reference_cache: dict[str, torch.Tensor] = {}
         self.returns: collections.deque[float] = collections.deque(maxlen=config.baseline_window)
         self.seen: set[str] = set()
         self.counts: collections.Counter[str] = collections.Counter()
@@ -270,6 +271,9 @@ class Learner:
             else:
                 kept.append(item)
         self.buffer = kept
+        live = {item.sample.key for item in kept}
+        for key in [k for k in self.reference_cache if k not in live]:
+            del self.reference_cache[key]
         return kept
 
     # Training ---------------------------------------------------------
@@ -294,7 +298,7 @@ class Learner:
                   if self.anchor else [])
         result = rl_update(self.model, self.reference, self.optimizer,
                            [item.sample for item in batch], anchor, self.config.lr,
-                           self.config.loss)
+                           self.config.loss, self.reference_cache)
         self.updates += 1
         result.update(update=self.updates, version=self.version,
                       sample_versions=dict(collections.Counter(
