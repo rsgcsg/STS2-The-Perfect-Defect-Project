@@ -44,7 +44,10 @@ def main() -> int:
     parser.add_argument("--max-submissions", type=int, default=1)
     parser.add_argument("--max-observations", type=int, default=8)
     parser.add_argument("--max-seconds", type=float, default=30.0)
+    from spireagent.resource_slot import require_managed_slot
+
     args = parser.parse_args()
+    require_managed_slot()
     try:
         limits = SmokeLimits(args.max_policy_calls, args.max_submissions,
                              args.max_observations, args.max_seconds)

@@ -287,6 +287,9 @@ class ManagedEpisodeExecutor:
     def __call__(
         self, row: dict[str, Any], manifest: dict[str, Any], artifacts: Any, checkpoint: Any
     ) -> None:
+        from spireagent.resource_slot import require_managed_slot
+
+        require_managed_slot()
         if manifest["ascension"] != 0 or manifest["host"] != "Managed":
             reject("unsupported_scenario")
         model = self.configuration["models"][row["selection_id"]]

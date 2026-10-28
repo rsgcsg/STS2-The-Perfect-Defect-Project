@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import {requireSlot} from './resource-slot.mjs';
 /** Diagnostic replay of one sealed native recording. Launch facts stay private;
  * the existing strict P1 replay owns comparison, delivery and stopping. */
 import { createHash } from 'node:crypto';
@@ -133,6 +134,7 @@ export async function replayRecording({ bundle, candidate, out, language, budget
 }
 
 async function main() {
+  requireSlot();
   const options = {}, names = { '--bundle': 'bundle', '--candidate': 'candidate', '--out': 'out', '--language': 'language', '--budget-ms': 'budget' };
   const args = process.argv.slice(2);
   for (let i = 0; i < args.length; i += 2) {

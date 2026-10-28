@@ -122,6 +122,9 @@ def main() -> int:
         activate_host_runtime_client(
             host, load_host_runtime_pin(args.host_runtime_pin) if args.host_runtime_pin else None
         )
+    from spireagent.resource_slot import require_managed_slot
+
+    require_managed_slot()
     from sts2_headless import FiniteActionView, ManagedPlayerEnvironment
 
     identity = {

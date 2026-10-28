@@ -23,7 +23,7 @@
     "check:governance": "node --test tools/check-governance.test.mjs && node tools/check-governance.mjs",
     "check:ci": "node --test tools/check-ci-contract.test.mjs tools/check-plan.test.mjs tools/check-receipt.test.mjs tools/verify-pytest-shards.test.mjs tools/ci-failures.test.mjs tools/refresh-pytest-costs.test.mjs && node tools/check-ci-contract.mjs",
     "check:identity": "node --test tools/component-identity.test.mjs tools/repository-eol.test.mjs && node tools/component-identity.mjs --quiet",
-    "check:entrypoints": "node --test tools/root-entrypoints.test.mjs tools/check-workspace.test.mjs tools/project-python.test.mjs",
+    "check:entrypoints": "node --test tools/root-entrypoints.test.mjs tools/check-workspace.test.mjs tools/project-python.test.mjs && npm run check:dev-tools",
     "check:bom": "node --test tools/check-platform-bom.test.mjs && node tools/check-platform-bom.mjs",
     "bom:refresh": "node tools/refresh-bom-identity.mjs",
     "check:boundaries": "node --test tools/check-boundaries.test.mjs && node tools/check-boundaries.mjs",
@@ -88,6 +88,12 @@
     "check:python-scope": "node tools/check-workspace.mjs python",
     "precheck:s0": "npm --prefix components/connector/sdk/typescript run build && npm --prefix components/policy-runtime run build",
     "check:s0": "npm run check:s0-tests",
-    "check:s0-tests": "node --test tools/test/p1-capture-comparison.test.mjs tools/test/baseline-s0-runner.test.mjs tools/test/native-source3-collector.test.mjs tools/test/native-source3-collector-sdk.test.mjs tools/test/source4-run-scope.test.mjs tools/test/p1-native-replay.test.mjs tools/test/p1-managed-recording-replay.test.mjs tools/test/p1-cross-host-coverage.test.mjs && uv run --project python --locked --all-extras python -m pytest tools/test/test_baseline_s0_dataset.py -q"
+    "check:s0-tests": "node --test tools/test/p1-capture-comparison.test.mjs tools/test/baseline-s0-runner.test.mjs tools/test/native-source3-collector.test.mjs tools/test/native-source3-collector-sdk.test.mjs tools/test/source4-run-scope.test.mjs tools/test/p1-native-replay.test.mjs tools/test/p1-managed-recording-replay.test.mjs tools/test/p1-cross-host-coverage.test.mjs && uv run --project python --locked --all-extras python -m pytest tools/test/test_baseline_s0_dataset.py -q",
+    "env:attach": "node tools/shared-env.mjs attach",
+    "env:run": "node tools/shared-env.mjs run",
+    "env:detach": "node tools/shared-env.mjs detach",
+    "env:prune": "node tools/shared-env.mjs prune",
+    "slot": "node tools/resource-slot.mjs",
+    "check:dev-tools": "node --test tools/shared-env.test.mjs tools/resource-slot.test.mjs"
   }
 }

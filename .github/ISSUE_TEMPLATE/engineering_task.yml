@@ -4,7 +4,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Follow docs/WORKING_RULES.zh-CN.md; AI-specific details live in docs/AI_COLLABORATION.md. Keep small tasks short. An issue is a packet, not proof of dispatch or permission to run external operations. Do not include secrets, raw recordings, saves or private workstation paths.
+        Follow docs/WORKING_RULES.zh-CN.md; AI-specific details live in docs/AI_COLLABORATION.md. Card startup and shared dependency/reservation commands: docs/DEVELOPMENT_WORKFLOW.md#卡开工共享依赖和节点占位. Keep small tasks short. An issue is a packet, not proof of dispatch or permission to run external operations. Do not include secrets, raw recordings, saves or private workstation paths.
   - type: textarea
     id: outcome
     attributes:

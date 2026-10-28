@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import {requireSlot} from './resource-slot.mjs';
 /** Offline strict native-recording replay. Uses existing public Host driver and
  * P1 core; native presentation inputs are replay evidence, never Agent choices. */
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
@@ -267,6 +268,7 @@ export async function replayNativeTrajectory({ trajectory, driver, core: kernel 
 }
 
 async function main() {
+  requireSlot();
   const args = process.argv.slice(2), options = {};
   for (let i = 0; i < args.length; i += 2) {
     const names = { '--bundle': 'bundle', '--trajectory': 'trajectory', '--candidate': 'candidate',

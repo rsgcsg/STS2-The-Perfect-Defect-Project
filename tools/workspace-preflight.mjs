@@ -7,7 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { workspaceCapacity } from "./check-workspace.mjs";
-import { PROJECT_ROOT, projectVenvPython, resolveProjectPython } from "./project-python.mjs";
+import { PROJECT_ROOT, resolveProjectPython } from "./project-python.mjs";
 
 const SCOPES = {
   full: { imports: true, dotnet: true, uv: true, clean: true, pythonNode: true },
@@ -61,15 +61,15 @@ export function preflight(scope, { root = PROJECT_ROOT, environment = process.en
     add("python", true, `${python.version} ${python.executable} (${python.source})`);
   } catch (error) { add("python", false, error.message, SETUP); }
 
-  const venv = projectVenvPython(root);
+  const venv = python?.executable;
   if (policy.imports) {
     const code = `import importlib, importlib.util, sys\nmissing=[]\nfor name in ${JSON.stringify(IMPORTED)}:\n` +
       `  try: importlib.import_module(name)\n  except Exception as error: missing.append(f"{name} ({type(error).__name__})")\n` +
       `missing += [name for name in ${JSON.stringify(LOCATED)} if importlib.util.find_spec(name) is None]\n` +
       `print(", ".join(missing)); sys.exit(1 if missing else 0)`;
-    const result = fs.existsSync(venv) ? run(venv, ["-c", code]) : { ok: false, output: `${venv} missing` };
-    add("python_packages", result.ok, result.ok ? `python/.venv imports ${IMPORTED.join(", ")} and locates locked extras`
-      : `python/.venv lacks: ${result.output || result.error}`, "uv sync --project python --locked --all-extras");
+    const result = venv ? run(venv, ["-c", code]) : { ok: false, output: `${venv} missing` };
+    add("python_packages", result.ok, result.ok ? `project Python imports ${IMPORTED.join(", ")} and locates locked extras`
+      : `project Python lacks: ${result.output || result.error}`, "uv sync --project python --locked --all-extras");
   }
 
   for (const [id, directory, fix, required] of [["node_modules", root, "npm ci", true],

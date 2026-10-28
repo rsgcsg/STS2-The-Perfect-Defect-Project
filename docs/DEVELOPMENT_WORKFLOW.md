@@ -267,3 +267,56 @@ outside Git. New work and incident reports belong in this repository only.
 
 本机一次性任务必须明确禁用退出后自动重启；macOS 使用显式 RunAtLoad/KeepAlive 配置，
 不要把 launchctl submit 当作一次性任务保证。原结果防覆盖不能代替进程生命周期管理。
+
+## 卡开工：共享依赖和节点占位
+
+在源码根目录运行 `npm run env:attach`；以后把检查包在
+`npm run env:run -- npm run check`（或其他原有命令）里。首次没有对应环境时，
+必须在 Managed、CPU 都空闲且用户没有玩游戏/录制时，按下面的双资源占位运行。
+已有共享依赖的挂接只读校验，不需要重建。已有自建环境会保留并沿用。
+
+```sh
+# 每台节点一次：把流水账接到卡共用的 GAME-SLOT.md（绝对路径）
+npm run slot -- configure --journal /ABS/replies/GAME-SLOT.md
+npm run slot -- status
+# 日期、时区及预计结束按实际填写；前台命令结束自动释放。
+npm run slot -- run --resources managed,cpu --card E2 --until 2026-10-28T20:00:00+10:00 -- npm run env:attach
+npm run env:run -- npm run check
+# Managed 评估/重放/采样：整个前台批次放在占位命令内；内部每局检查同一 token。
+npm run slot -- run --card CARD --lanes 4 --until 2026-10-28T20:00:00+10:00 -- npm run env:run -- python python/tools/evaluate_managed_suite.py --help
+# 收口先解除本卡引用，再删自己的可重建产物/源码；共享库保留最近三份。
+npm run env:detach
+npm run env:prune -- 3
+```
+
+占位命令不取代任务表的排队顺序或 CPU 空闲检查。新锁上线时须先核对旧流水账和
+实际进程；旧代码/旧批次不会自动服从新锁。用户正常开游戏无需敲命令，准入检查
+复用 Host 的游戏进程探测；游戏出现后不再开新局，已开的局仍走原本收尾。
+共享建环境的每个主要阶段也会复查用户游戏。训练可选 `--resources training`，
+学校节点使用它自己的节点锁；本卡不改变训练调度。
+
+锁在 `~/Documents/Codex/resource-slots/`，可用 `SPIREAGENT_SLOT_ROOT` 指定节点位置。
+手动占位用 `slot acquire --card CARD --pid <仍存活的批次负责人PID> --until <含时区的ISO时间>`，
+输出的 token 设为 `SPIREAGENT_SLOT_TOKEN` 后启动批次；用
+`slot release --token <token>` 释放。CLI 经 npm 启动时不要把 npm 的短命 PID 当负责人。
+只有 PID 已退出且预计时间已过的锁才能接管，接管也记流水账。
+原子更新被意外中断时 `.guard` 保守保留；先核其 PID 确已退出，再由操作者移除，
+不能根据时间或文字中的“结束”强行解锁。
+
+共享库默认 `~/Documents/Codex/shared-env/<sha256>/`（可用 `SPIREAGENT_ENV_ROOT` 设置）。
+键涵盖全部 Git 跟踪的 npm 清单/锁、Python 清单/锁、解释器完整版本、Node 完整版本、
+平台与架构。环境构建加锁，完整文件哈希验收后只读；每次挂接和执行都重验。
+第三方 npm 依赖只读链接到本卡，工作区链接和构建输出留在本卡；Python 共享环境
+不安装本项目，以本卡 PYTHONPATH 加载源码，`env:run` 禁止 uv 同步修改共享环境。
+因此仍需在每张卡运行原有构建/检查；不要对共享目录运行安装、同步或构建。
+
+损坏、身份不符或已有私有环境时沿用旧的三步自建流程。自动自建也必须持有
+Managed、CPU 两把锁并通过游戏空闲检查；缺少空档就明确等待，不会偷跑。
+引用登记在每个环境的 `users/`，即使源码目录暂时消失也不自动判为无人使用。
+`env:prune` 与挂接共用原子修改锁，跳过仍有引用的环境；只有确认本卡不再运行后才
+`env:detach`。崩溃遗留的 `.mutation/pid` 或 `<hash>.building` 先查原进程再处理，
+不清理别人的环境。依赖源码、日常安装自带的环境及组件产物都不参与共享清理。
+
+以后新增的卡批次入口（包括 RL 采样）在真正开局前调用
+`spireagent.resource_slot.require_managed_slot()` 或 `tools/resource-slot.mjs` 的
+`requireSlot()`；单元测试用隔离的锁根目录，不占生产资源位。

@@ -230,6 +230,7 @@ def test_owned_group_cleanup_even_after_leader_exit(tmp_path, monkeypatch, obser
         return True
 
     monkeypatch.setattr(replay, "_game_idle", idle)
+    monkeypatch.setattr("spireagent.resource_slot.require_managed_slot", lambda: None)
     disposition = replay._run(
         [sys.executable, "-c", program], tmp_path, tmp_path, maintenance, 1000
     )

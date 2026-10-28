@@ -69,6 +69,9 @@ def main() -> int:
     activate_host_runtime_client(host_runtime)
     from sts2_headless import ManagedPlayerEnvironment
 
+    from spireagent.resource_slot import require_managed_slot
+
+    require_managed_slot()
     with ManagedPlayerEnvironment(driver_command(host_runtime, candidate)) as environment:
         collection = collect_managed_runtime(
             environment,
