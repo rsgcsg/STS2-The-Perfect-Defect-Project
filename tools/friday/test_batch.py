@@ -1,6 +1,7 @@
 """Cheap resource-adapter regressions; no invented gameplay/typed evidence."""
 from __future__ import annotations
 
+import fcntl
 import importlib.util
 import multiprocessing
 import tempfile
@@ -116,7 +117,9 @@ class FridayBatchTests(unittest.TestCase):
             root = Path(temporary).resolve()
             configuration = root / 'batch.json'
             batch.save(configuration, {'persistent_root': str(root / 'persistent')})
-            with patch.object(module, 'output', side_effect=['297/100/0/397', '1\n2']):
+            with (patch.object(module, 'submission_lock_path',
+                               return_value=root / 'config/friday-submit.lock'),
+                  patch.object(module, 'output', side_effect=['', '297/100/0/397', '1\n2'])):
                 result = module.submit(configuration, 'trial', 32, 'fc430', dry_run=True)
             self.assertEqual(result['concurrency'], 25)
             self.assertIn('--array=0-31%25', result['command'])
@@ -124,6 +127,59 @@ class FridayBatchTests(unittest.TestCase):
             self.assertIn('--no-requeue', result['command'])
             self.assertIn('--time=01:05:00', result['command'])
             self.assertIn('--constraint=fc430', result['command'])
+
+    def test_existing_pending_running_or_completing_array_blocks_new_submit(self):
+        spec = importlib.util.spec_from_file_location(
+            'friday_submit_existing', Path(__file__).with_name('submit.py'))
+        assert spec and spec.loader
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            with (patch.object(module, 'submission_lock_path',
+                               return_value=root / 'config/friday-submit.lock'),
+                  patch.object(module, 'username', return_value='s4961270'),
+                  patch.object(module, 'output', return_value='1394000_[0-31]') as observed,
+                  self.assertRaisesRegex(ValueError, 'must_drain')):
+                module.submit(root / 'unread-config.json', 'trial', 200, None, dry_run=False)
+            observed.assert_called_once_with(
+                ['squeue', '-h', '-u', 's4961270', '-n', 'spireagent-f2', '-o', '%i'])
+
+    def test_one_user_lock_covers_scheduler_query_through_sbatch(self):
+        spec = importlib.util.spec_from_file_location(
+            'friday_submit_locked', Path(__file__).with_name('submit.py'))
+        assert spec and spec.loader
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            configuration = root / 'batch.json'
+            lock = root / 'config/friday-submit.lock'
+            batch.save(configuration, {'persistent_root': str(root / 'persistent')})
+            commands = []
+
+            def scheduler(command):
+                commands.append(command)
+                # A second submission cannot acquire this user's lock during ANY query,
+                # including the accepted sbatch call. This tests the real OS-held lease.
+                with lock.open('a+b') as contender, self.assertRaises(BlockingIOError):
+                    fcntl.flock(contender, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                if command[0] == 'sinfo':
+                    return '0/1000/0/1000'
+                if command[0] == 'sbatch':
+                    return '1394001'
+                return ''
+
+            with (patch.object(module, 'submission_lock_path', return_value=lock),
+                  patch.object(module, 'output', side_effect=scheduler)):
+                result = module.submit(configuration, 'trial', 200, None, dry_run=False)
+            self.assertEqual(result['job_id'], '1394001')
+            self.assertEqual(result['concurrency'], 200)
+            self.assertEqual(commands[0][0], 'squeue')
+            self.assertEqual(commands[-1][0], 'sbatch')
+            with lock.open('a+b') as available:
+                fcntl.flock(available, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                fcntl.flock(available, fcntl.LOCK_UN)
 
     def test_pinned_configuration_and_private_directory(self):
         with tempfile.TemporaryDirectory() as temporary:
