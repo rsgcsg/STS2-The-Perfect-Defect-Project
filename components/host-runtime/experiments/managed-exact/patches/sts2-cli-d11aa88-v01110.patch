@@ -733,10 +733,10 @@ index 0000000..b080f21
 +</Project>
 diff --git a/m2e-r3-native-tests/Program.cs b/m2e-r3-native-tests/Program.cs
 new file mode 100644
-index 0000000..8256bba
+index 0000000..57afc1b
 --- /dev/null
 +++ b/m2e-r3-native-tests/Program.cs
-@@ -0,0 +1,140 @@
+@@ -0,0 +1,150 @@
 +using System.Reflection;
 +using System.Runtime.Loader;
 +using System.Text.Json;
@@ -814,6 +814,16 @@ index 0000000..8256bba
 +        Check(!abandon.WasChosen,"original abandon option is not invoked while inspecting its capability");
 +        var refused=Choose(reject,1);
 +        Check(refused.GetValueOrDefault("type") as string=="error"&&!abandon.WasChosen,"unrepresented modal refuses before original Chosen and history effects");
++        var crystal=Enter("CRYSTAL_SPHERE");
++        Check(crystal.GetValueOrDefault("event_public_complete") is false,"native Crystal Sphere minigame is explicitly unrepresented");
++        Check(((List<Dictionary<string,object?>>)crystal["options"]!).Count==2,"both original Crystal Sphere options remain visible");
++        decimal beforeGold=player.Gold;int beforeCards=player.Deck.Cards.Count;
++        var noGoldSpend=Choose(crystal,0);
++        Check(noGoldSpend.GetValueOrDefault("type") as string=="error"&&player.Gold==beforeGold,"unrepresented minigame refuses before original gold spending");
++        var noCurse=Choose(crystal,1);
++        Check(noCurse.GetValueOrDefault("type") as string=="error"&&player.Deck.Cards.Count==beforeCards,"unrepresented minigame refuses before original curse addition");
++        Check(((MegaCrit.Sts2.Core.Rooms.EventRoom)run.CurrentRoom).LocalMutableEvent!.CurrentOptions.All(option=>!option.WasChosen),"minigame refusal never marks original options chosen");
++        Console.WriteLine("native-m2e-r3-crystal-state="+JsonSerializer.Serialize(crystal));
 +        Check(MegaCrit.Sts2.Core.Nodes.Vfx.NCardEnchantVfx.Create(strike)==null,"all nine enchant event sites use the original TestMode-null VFX producer");
 +        var capture=assembly.GetType("Sts2Headless.ManagedSelectorPublicCapture")!;
 +        foreach(var family in new[]{"simple","combat_pile","deck_card","deck_transform","deck_enchant","deck_upgrade"})
@@ -5071,6 +5081,36 @@ index 0000000..14badcc
 +        return chosen(selectedOption);
 +    }
 +}
+diff --git a/src/Sts2Headless/NativeEventPresentationSupport.cs b/src/Sts2Headless/NativeEventPresentationSupport.cs
+new file mode 100644
+index 0000000..b01ae4a
+--- /dev/null
++++ b/src/Sts2Headless/NativeEventPresentationSupport.cs
+@@ -0,0 +1,24 @@
++using MegaCrit.Sts2.Core.Events;
++using MegaCrit.Sts2.Core.Models;
++using MegaCrit.Sts2.Core.Models.Events;
++using MegaCrit.Sts2.Core.TestSupport;
++
++namespace Sts2Headless;
++
++// These native options require real follow-up inputs, not cosmetic scenes.
++// Report the unrepresented capability before Chosen, history, gold or curses.
++// Never fabricate modal answers, minigame choices or default rewards.
++internal static class NativeEventPresentationSupport
++{
++    internal static string? MissingCapability(EventModel model, EventOption option)
++    {
++        if (!TestMode.IsOn) return null;
++        if (model is Trial && option.TextKey == "TRIAL.pages.REJECT.options.DOUBLE_DOWN")
++            return "native_trial_abandon_confirmation_modal_unavailable";
++        if (model is CrystalSphere && option.TextKey is
++            "CRYSTAL_SPHERE.pages.INITIAL.options.UNCOVER_FUTURE" or
++            "CRYSTAL_SPHERE.pages.INITIAL.options.PAYMENT_PLAN")
++            return "native_crystal_sphere_minigame_unavailable";
++        return null;
++    }
++}
 diff --git a/src/Sts2Headless/NativeHandSelection.cs b/src/Sts2Headless/NativeHandSelection.cs
 new file mode 100644
 index 0000000..fe6792d
@@ -6674,16 +6714,14 @@ index 0000000..c06fe31
 +}
 diff --git a/src/Sts2Headless/NativeTrialScenePresentation.cs b/src/Sts2Headless/NativeTrialScenePresentation.cs
 new file mode 100644
-index 0000000..9dd8d8e
+index 0000000..1bd4163
 --- /dev/null
 +++ b/src/Sts2Headless/NativeTrialScenePresentation.cs
-@@ -0,0 +1,51 @@
+@@ -0,0 +1,45 @@
 +using System.Reflection;
 +using System.Reflection.Emit;
 +using HarmonyLib;
 +using MegaCrit.Sts2.Core.Context;
-+using MegaCrit.Sts2.Core.Events;
-+using MegaCrit.Sts2.Core.Models;
 +using MegaCrit.Sts2.Core.Entities.Players;
 +using MegaCrit.Sts2.Core.Models.Events;
 +using MegaCrit.Sts2.Core.Nodes.Rooms;
@@ -6722,10 +6760,6 @@ index 0000000..9dd8d8e
 +            yield return instruction;
 +        }
 +    }
-+    internal static bool RequiresUnavailableModal(EventModel model, EventOption option) =>
-+        model is Trial && option.TextKey == "TRIAL.pages.REJECT.options.DOUBLE_DOWN"
-+        && TestMode.IsOn && NEventRoom.Instance == null;
-+
 +    private static bool HasLocalScene(Player player) =>
 +        LocalContext.IsMe(player) && (!TestMode.IsOn || NEventRoom.Instance != null);
 +}
@@ -7838,7 +7872,7 @@ index 800f139..0da0544 100644
  
              case "action":
 diff --git a/src/Sts2Headless/RunSimulator.cs b/src/Sts2Headless/RunSimulator.cs
-index 6b9de4a..defd888 100644
+index 6b9de4a..466eda8 100644
 --- a/src/Sts2Headless/RunSimulator.cs
 +++ b/src/Sts2Headless/RunSimulator.cs
 @@ -1,4 +1,7 @@
@@ -9879,8 +9913,8 @@ index 6b9de4a..defd888 100644
 +                    return Error("The observed event option is no longer current or is locked");
 +                if (options != null)
                  {
-+                    if (NativeTrialScenePresentation.RequiresUnavailableModal(localEvent, options[optionIndex]))
-+                        return Error("The native Trial abandon confirmation modal is unavailable; no event option was invoked");
++                    if (NativeEventPresentationSupport.MissingCapability(localEvent, options[optionIndex]) is string missingCapability)
++                        return Error($"Native event capability unavailable: {missingCapability}; no event option was invoked");
                      try
                      {
                          _eventOptionChosen = true;
@@ -11192,7 +11226,7 @@ index 6b9de4a..defd888 100644
      private Dictionary<string, object?> EventChoiceState(EventRoom eventRoom)
      {
          var localEvent = RunManager.Instance.EventSynchronizer?.GetLocalEvent();
-@@ -2492,166 +3210,80 @@ public class RunSimulator
+@@ -2492,166 +3210,81 @@ public class RunSimulator
          // instead and let DetectDecisionPoint show the current options for the next choice.
          if (_eventOptionChosen) _eventOptionChosen = false;
  
@@ -11395,6 +11429,8 @@ index 6b9de4a..defd888 100644
 +            };
 +        }).ToList();
 +        var eventContext = EventPublicContext(eventRoom);
++        var presentationMissing = currentOptions.Select(option => NativeEventPresentationSupport.MissingCapability(localEvent, option))
++            .Where(reason => reason != null).Distinct(StringComparer.Ordinal).ToArray();
  
          return new Dictionary<string, object?>
          {
@@ -11410,16 +11446,15 @@ index 6b9de4a..defd888 100644
 +            ["ancient"] = eventContext["ancient"],
 +            ["in_dialogue"] = eventContext["in_dialogue"],
 +            // Do not advertise a complete page that includes an unrepresented
-+            // native Yes/No modal. Keep the original option visible and report
-+            // the missing capability; never auto-abandon or silently no-op it.
-+            ["event_public_complete"] = !currentOptions.Any(option => NativeTrialScenePresentation.RequiresUnavailableModal(localEvent, option)),
-+            ["event_public_missing"] = currentOptions.Any(option => NativeTrialScenePresentation.RequiresUnavailableModal(localEvent, option))
-+                ? new[] { "native_trial_abandon_confirmation_modal_unavailable" } : Array.Empty<string>(),
++            // native modal/minigame. Keep the original options visible and
++            // report the missing capability; never fabricate follow-up inputs.
++            ["event_public_complete"] = presentationMissing.Length == 0,
++            ["event_public_missing"] = presentationMissing,
 +            ["description"] = eventContext["body"],
              ["options"] = options,
              ["player"] = PlayerSummary(_runState!.Players[0]),
          };
-@@ -2661,20 +3293,13 @@ public class RunSimulator
+@@ -2661,20 +3294,13 @@ public class RunSimulator
      {
          var options = restRoom.Options;
          var player = _runState!.Players[0];
@@ -11443,7 +11478,7 @@ index 6b9de4a..defd888 100644
              ["is_enabled"] = opt.IsEnabled,
          }).ToList();
  
-@@ -2684,194 +3309,179 @@ public class RunSimulator
+@@ -2684,194 +3310,179 @@ public class RunSimulator
              ["decision"] = "rest_site",
              ["context"] = RunContext(),
              ["options"] = optionList,
@@ -11770,7 +11805,7 @@ index 6b9de4a..defd888 100644
          };
      }
  
-@@ -2879,6 +3489,44 @@ public class RunSimulator
+@@ -2879,6 +3490,44 @@ public class RunSimulator
  
      #region Helpers
  
@@ -11815,7 +11850,7 @@ index 6b9de4a..defd888 100644
      private void WaitForActionExecutor()
      {
          try
-@@ -2891,7 +3539,7 @@ public class RunSimulator
+@@ -2891,7 +3540,7 @@ public class RunSimulator
  
              // Executor may stay "running" while the game awaits headless card selection / reward (e.g. Attack Potion).
              // Spinning here would time out and downstream code could mis-handle an in-flight potion use (BUG-026).
@@ -11824,7 +11859,7 @@ index 6b9de4a..defd888 100644
                  return;
  
              var executor = RunManager.Instance.ActionExecutor;
-@@ -2902,7 +3550,7 @@ public class RunSimulator
+@@ -2902,7 +3551,7 @@ public class RunSimulator
                  for (int i = 0; i < maxPumps; i++)
                  {
                      _syncCtx.Pump();
@@ -11833,7 +11868,7 @@ index 6b9de4a..defd888 100644
                      Thread.Sleep(1);
                  }
              }
-@@ -2913,6 +3561,60 @@ public class RunSimulator
+@@ -2913,6 +3562,60 @@ public class RunSimulator
          }
      }
  
@@ -11894,7 +11929,7 @@ index 6b9de4a..defd888 100644
      private void SpinWaitForCombatStable()
      {
          int maxIterations = 200;
-@@ -2920,14 +3622,32 @@ public class RunSimulator
+@@ -2920,14 +3623,32 @@ public class RunSimulator
          {
              _syncCtx.Pump();
              if (!CombatManager.Instance.IsInProgress) return;
@@ -11929,7 +11964,7 @@ index 6b9de4a..defd888 100644
      private Dictionary<string, object?>? GetUpgradedInfo(CardModel card)
      {
          if (!card.IsUpgradable) return null;
-@@ -2965,38 +3685,90 @@ public class RunSimulator
+@@ -2965,38 +3686,90 @@ public class RunSimulator
          catch { return null; }
      }
  
@@ -12029,7 +12064,7 @@ index 6b9de4a..defd888 100644
                  };
              }).Where(x => x != null).ToList(),
              ["deck_size"] = player.Deck?.Cards?.Count(c => c != null) ?? 0,
-@@ -3005,25 +3777,20 @@ public class RunSimulator
+@@ -3005,25 +3778,20 @@ public class RunSimulator
                  var dstats = new Dictionary<string, object?>();
                  try { foreach (var dv in c.DynamicVars.Values) dstats[dv.Name.ToLowerInvariant()] = (int)dv.BaseValue; } catch { }
                  var dkws = c.Keywords?.Where(k => k != CardKeyword.None).Select(k => k.ToString()).ToList();
@@ -12069,7 +12104,7 @@ index 6b9de4a..defd888 100644
                  if (c.Affliction != null)
                  {
                      dcard["affliction"] = _loc.Bilingual("afflictions", c.Affliction.Id.Entry + ".title");
-@@ -3034,36 +3801,190 @@ public class RunSimulator
+@@ -3034,36 +3802,190 @@ public class RunSimulator
          };
      }
  
@@ -12266,7 +12301,7 @@ index 6b9de4a..defd888 100644
          return ctx;
      }
  
-@@ -3074,6 +3995,11 @@ public class RunSimulator
+@@ -3074,6 +3996,11 @@ public class RunSimulator
  
          TestMode.IsOn = true;
  
@@ -12278,7 +12313,7 @@ index 6b9de4a..defd888 100644
          // Install inline sync context on main thread
          SynchronizationContext.SetSynchronizationContext(_syncCtx);
  
-@@ -3099,14 +4025,6 @@ public class RunSimulator
+@@ -3099,14 +4026,6 @@ public class RunSimulator
          try { SaveManager.Instance.InitPrefsDataForTest(); }
          catch (Exception ex) { Console.Error.WriteLine($"[WARN] SaveManager.InitPrefsDataForTest: {ex.Message}"); }
  
@@ -12293,7 +12328,7 @@ index 6b9de4a..defd888 100644
          // Patch Cmd.Wait to be a no-op in headless mode.
          // Cmd.Wait(duration) is used for UI animations (e.g., PreviewCardPileAdd during
          // Vantom's Dismember move adding Wounds). In headless mode, these never complete
-@@ -3139,9 +4057,15 @@ public class RunSimulator
+@@ -3139,9 +4058,15 @@ public class RunSimulator
          }
          Console.Error.WriteLine($"[INFO] ModelDb: {registered} registered, {failed} failed out of {subtypes.Count}");
  
@@ -12309,7 +12344,7 @@ index 6b9de4a..defd888 100644
              ModelIdSerializationCache.Init();
              Console.Error.WriteLine("[INFO] ModelIdSerializationCache initialized");
          }
-@@ -3151,15 +4075,15 @@ public class RunSimulator
+@@ -3151,15 +4076,15 @@ public class RunSimulator
          }
      }
  
@@ -12331,7 +12366,7 @@ index 6b9de4a..defd888 100644
              _ => null
          };
      }
-@@ -3263,499 +4187,834 @@ public class RunSimulator
+@@ -3263,499 +4188,834 @@ public class RunSimulator
          }
      }
  
@@ -13546,7 +13581,7 @@ index 6b9de4a..defd888 100644
          /// <summary>
          /// Intercept bundle selection — store bundles and wait for player to pick a pack index.
          /// </summary>
-@@ -3774,11 +5033,12 @@ public class RunSimulator
+@@ -3774,11 +5034,12 @@ public class RunSimulator
              var sim = _bundleSimRef;
              if (sim != null)
              {
@@ -13562,7 +13597,7 @@ index 6b9de4a..defd888 100644
                  return false;
              }
  
-@@ -3789,16 +5049,12 @@ public class RunSimulator
+@@ -3789,16 +5050,12 @@ public class RunSimulator
          // Static reference so Harmony patch can access the simulator instance
          internal static RunSimulator? _bundleSimRef;
  
@@ -13581,7 +13616,7 @@ index 6b9de4a..defd888 100644
      }
  
      private static Dictionary<string, object?> Error(string message) =>
-@@ -3826,36 +5082,54 @@ public class RunSimulator
+@@ -3826,36 +5083,54 @@ public class RunSimulator
          var currentCoord = _runState.CurrentMapCoord;
          var visited = _runState.VisitedMapCoords;
  
@@ -13655,7 +13690,7 @@ index 6b9de4a..defd888 100644
          // Boss node
          var bossNode = new Dictionary<string, object?>
          {
-@@ -3867,13 +5141,12 @@ public class RunSimulator
+@@ -3867,13 +5142,12 @@ public class RunSimulator
          // Add boss name/id — use BossEncounter?.Id?.Entry
          try
          {
@@ -13672,7 +13707,7 @@ index 6b9de4a..defd888 100644
              }
          }
          catch { }
-@@ -3896,15 +5169,122 @@ public class RunSimulator
+@@ -3896,15 +5170,122 @@ public class RunSimulator
      {
          try
          {

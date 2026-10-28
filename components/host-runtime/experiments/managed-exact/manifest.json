@@ -47,9 +47,9 @@
     "effect": "Every Managed prepare compares the exact game Godot references with the built stub; a gap outside the reviewed baseline fails the build and names the member. Hosted CI has no game files and does not run it."
   },
   "expected_build": {
-    "source_patch_sha256": "f7b6213c1b913f9aca501d317449e36793ae1efa255a5f53d61ed5ff11448f27",
-    "artifact_sha256": "086eeda2f411fc7fe3f8b0de9530fb3d38774e22bb02e865cecec137db2a59f2",
-    "artifact_mvid": "7ac2dfe3-d098-4dac-bef2-3f090635f791",
+    "source_patch_sha256": "de011e71826d20dd9e9db02c825e94877162d0646c0df70b19f84e5ca0b20a2b",
+    "artifact_sha256": "0e5feebdf33de9bc48a1fbd543735e006bed1766b1f07e90148801802e3cb1aa",
+    "artifact_mvid": "bb516baa-5308-4b47-a98e-ace6eda93028",
     "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0"
   },
   "previous_candidate_build": {
@@ -362,6 +362,13 @@
       "risk": "low",
       "effect": "Only three local-player portrait branches in Trial.Accept and its VFX helper require an existing event scene in TestMode. RNG, original verdict choices and all gameplay stay native. The real abandon Yes/No modal is explicitly unavailable before Chosen; never auto-abandon/no-op or call the page complete.",
       "regression": "m2e-r3-native-tests: native Trial Accept with absent scene; original verdicts and serialization; reject modal explicit incomplete and refusal before WasChosen. Baseline develop Runtime56 native source independently reproduces old null reference."
+    },
+    {
+      "id": "native_event_unrepresented_followups",
+      "kind": "explicit_missing_native_presentation_capability",
+      "risk": "medium",
+      "effect": "Trial abandon confirmation and both CrystalSphere minigame entries require real native follow-up inputs. Retain original visible options, mark the whole page explicitly incomplete, and refuse raw invocation before Chosen/history/gold/curse effects. No synthetic answers, timeout completion, no-op scenes or default rewards.",
+      "regression": "m2e-r3-native-tests: original option visibility, missing capture/serialization, no bound actions, refusal before WasChosen, unchanged gold/deck for both minigame entries. Full modal/minigame operations remain unqualified."
     }
   ],
   "admission": {
@@ -503,6 +510,12 @@
     "source_patch_sha256": "8348491a9cda97852001cf9c7b50e62f6621d9b57ba3a513b570f53155289423",
     "artifact_sha256": "f18c39f785b073b6a9f6c26a3783e69552edd41d24f59ac1e3f0354cf777687d",
     "artifact_mvid": "fcb88905-1d79-4b35-ab24-b3b62e315249",
+    "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0"
+  },
+  "pre_crystal_capability_build": {
+    "source_patch_sha256": "f7b6213c1b913f9aca501d317449e36793ae1efa255a5f53d61ed5ff11448f27",
+    "artifact_sha256": "086eeda2f411fc7fe3f8b0de9530fb3d38774e22bb02e865cecec137db2a59f2",
+    "artifact_mvid": "7ac2dfe3-d098-4dac-bef2-3f090635f791",
     "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0"
   }
 }

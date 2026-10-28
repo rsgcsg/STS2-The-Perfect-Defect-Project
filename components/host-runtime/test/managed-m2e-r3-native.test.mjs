@@ -20,7 +20,7 @@ test("native visible grid, bundle publication, event rest and death stay bound a
       "-p:Deterministic=true", `-p:PathMap=${path.resolve(candidate)}=/_/candidate/`],
     { cwd: candidate, timeout: 180000, maxBuffer: 4 * 1024 * 1024 });
   assert.deepEqual(hashes(), before, "component regression retains the frozen candidate artifacts");
-  assert.match(stdout, /46 exact native M2e R3 checks passed/u);
+  assert.match(stdout, /51 exact native M2e R3 checks passed/u);
   const prefix = "native-m2e-r3-dense-state=";
   const state = JSON.parse(stdout.split(/\r?\n/u).find(line => line.startsWith(prefix)).slice(prefix.length));
   const projection = projectManagedCandidateDecision({ state, sequence: 1,
@@ -40,5 +40,12 @@ test("native visible grid, bundle publication, event rest and death stay bound a
   assert.notEqual(modalProjection.snapshot.completeness.status, "complete");
   assert.equal(modalProjection.snapshot.bound_actions.actions.length, 0);
   assert.match(JSON.stringify(modalProjection.snapshot.completeness), /native_trial_abandon_confirmation_modal_unavailable/u);
+  const crystal = JSON.parse(stdout.split(/\r?\n/u).find(line => line.startsWith("native-m2e-r3-crystal-state=")).slice("native-m2e-r3-crystal-state=".length));
+  const crystalProjection = projectManagedCandidateDecision({ state: crystal, sequence: 4,
+    runtimeInstanceId: "m2e-r3-crystal", environmentFingerprint: "m2e-r3-crystal" });
+  assert.notEqual(crystalProjection.snapshot.completeness.status, "complete");
+  assert.equal(crystalProjection.snapshot.bound_actions.actions.length, 0);
+  assert.match(JSON.stringify(crystalProjection.snapshot.completeness), /native_crystal_sphere_minigame_unavailable/u);
+
 
 });
