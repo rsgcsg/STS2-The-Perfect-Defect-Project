@@ -63,3 +63,24 @@ node tools/p1-cross-host-coverage.mjs --config /ABS/coverage-config.json
 `--sources /ABS/prior-output` 可在修正语言等诊断工具错误后复用已验证的准确 Reference Source，不再开游戏；先核 jobs 与 source identity 一致。旧尝试必须保留，不能把来源 unknown 换成新一局。配置 `language` 必须和工程 profile 一致。
 
 当前实测边界（2026-10-27）：真人 A10 原件 131 点，只比到 13 点、12 一致，锁镰展示计数器 3/0 严格停下。显式原生正常速度的隔离 Reference 对同原件 73/73 一致后预算停；Managed 仍即时等待。原件未记录原游戏速度/完整展示时机，当前工具明确报告 `startup_scope`，不能把启动验证称为整局重建。另一个六局 Reference 工程批有两条全程观察和 Runtime Result 一致，四条保留严格停止；完整表归 M3 原报告。本版不安装试验性的正常时钟补丁。
+
+### M060：显示升级开关（用户 2026-10-28 已批）
+
+仅录后 Managed 对照忽略 `deck_upgrade_selection` 的布尔字段
+`scene.content.surface.showing_upgrade_previews`；字段缺失、类型错误、升级后的牌和描述、
+动作目录及其它字段仍严格比较。原件、P1 转换、模型输入不改。
+报告 `comparison_exceptions` 留下原始差异和两边开关值；`matching_points` 按已批口径计，
+`matching_points_without_exceptions` 另列完全未用例外的一致点。不能据此宣称无例外的 P1 全等。
+
+### 不完整原件的诊断接续
+
+重放工具可从未改动的转换报告另建诊断计划，不改变任何 P1 转换结果或训练投影。
+有完整公开前态、原生已接纳动作、`finished` 和完整后继的 UI 输入，可通过原 SDK
+完整公开图和操作数锚点定位到当前目录中唯一动作；只执行当前目录里的绑定。
+这些输入记录为 `unlabelled_native_input` / `p1_compared=false`，不进 P1 一致点分子。
+重复等价候选、无公开别名、公开状态差异都拒绝定位。
+
+原件的 unknown、缺前态/后继/操作数及 failed_closed 在缺口前停止，不重试、不补造；
+暂停、恢复、放弃或中断也形成边界。`bounded_prefix_completed` 仅表示已知前缀比完，
+`completed` 仍为 false。`replay_scope` 保存原转换完整标志、原 unknown 数、停止序号和原因。
+这种诊断不能称整局 P1 等价，更不能当作训练数据资格。

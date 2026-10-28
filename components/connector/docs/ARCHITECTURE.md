@@ -182,3 +182,14 @@ unknown semantics may still be observed, but it receives no guessed action.
 No extension may introduce index/coordinate mutation, arbitrary method calls,
 consumer operands, silent fallback, a second controller, hidden information, or
 automatic retry after `unknown`.
+
+### SoulsPower preview read boundary
+
+The shared Native Foundation qualifies the exact native single-enchantment
+sequence only when `NCard.FindOnTable` takes its native early-null branch
+(TestMode or no combat). The original command removes Exhaust on a detached
+copy; the original card and canonical enchantment remain unchanged. Live combat
+and patched/unqualified closures still produce a missing preview. The ordinary
+`NativeSelectorPublicProjection` continues to require the complete native after
+presentation; it never upgrades a partial source to complete. This changes no
+P1 conversion or recorded projection and does not repair missing old originals.
