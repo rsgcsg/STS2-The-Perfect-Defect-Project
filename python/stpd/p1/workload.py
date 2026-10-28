@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, cast
 
@@ -28,6 +29,7 @@ from .spec import (
     TRAINING_SCHEMA,
     MStdConfig,
 )
+from .tensor_input import ModelFrame, TensorFrame
 from .value_targets import from_run_facts, target_spec
 from .weighting import CHECKPOINT_POLICY, checked_weights, point_weights
 
@@ -125,6 +127,7 @@ def prepare_p1_run(
     weighting = (checked_weights(loss_weighting, reader.selection)
                  if loss_weighting is not None else None)
     tensor_pack = None
+    populations: Mapping[str, Population[ModelFrame]]
     if projection == V2_INPUT_SPEC:
         from .vocabulary import public_vocabulary
 
@@ -220,7 +223,7 @@ class P1Workload:
     vocabulary: dict[str, Any]
     reader: SnapshotReader
     execution: MStdExecution
-    prepared_populations: dict[str, Population] | None = None
+    prepared_populations: dict[str, Population[TensorFrame]] | None = None
 
 
 def verify_p1_run(store: ArtifactStore, run_id: str, producer: Producer) -> P1Workload:

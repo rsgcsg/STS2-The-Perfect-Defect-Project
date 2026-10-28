@@ -139,7 +139,8 @@ def test_pack_real_store_worker_pause_resume_and_exact_population(tmp_path):
         assert torch.equal(tensor, saved.state['model'][key])
 
 
-@pytest.mark.parametrize('mutation', ['target', 'weight', 'value', 'compiler', 'source', 'producer'])
+@pytest.mark.parametrize('mutation',
+                         ['target', 'weight', 'value', 'compiler', 'source', 'producer'])
 def test_pack_rejects_self_consistent_tampered_labels_weights_and_identity(tmp_path, mutation):
     import io
     import json

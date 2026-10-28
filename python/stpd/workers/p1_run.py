@@ -11,6 +11,7 @@ import io
 import json
 import tempfile
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -23,13 +24,14 @@ from spireagent.storage.store import ArtifactStore
 
 from ..p1.data import digest
 from ..p1.export import action_weights, export_model, load_model
-from ..p1.formal_training import MStdTrainer, checkpoint_schema
+from ..p1.formal_training import MStdTrainer, Population, checkpoint_schema
 from ..p1.spec import (
     CHECKPOINT_FRACTIONS,
     DERIVED_CHECKPOINT_SCHEMA,
     DERIVED_RUN_SCHEMA,
     MODEL_SCHEMA,
 )
+from ..p1.tensor_input import ModelFrame
 from ..p1.value_targets import target_spec
 from ..p1.workload import P1Workload, populations_from_reader, verify_p1_run
 from .checkpoint_codec import decode_checkpoint
@@ -368,7 +370,7 @@ def _execute_p1_run(
     if mode == "reconcile":
         raise BoundaryError("p1_worker", "no_selected_result_reconcile_only")
     preparation_started = time.perf_counter()
-    populations = workload.prepared_populations
+    populations: Mapping[str, Population[ModelFrame]] | None = workload.prepared_populations
     if populations is None:
         populations = populations_from_reader(
             workload.reader, workload.training.parameters.value().get("loss_weighting"),

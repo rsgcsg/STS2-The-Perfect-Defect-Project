@@ -92,3 +92,25 @@ def test_request_cache_eviction_with_actual_parallel_history_readers(tmp_path):
                                [m.artifact_id for m in manifests] * 2))
     assert actual == manifests * 2
     assert len(cached._manifest_cache) <= 512
+
+
+def test_cloud_cli_forwards_an_explicit_input_cache(tmp_path, monkeypatch, capsys):
+    import json
+
+    from stpd.cloud_jobs.__main__ import main
+
+    request = {'original': True}
+    path = tmp_path / 'request.json'
+    path.write_text(json.dumps(request))
+    cache = tmp_path / 'persistent-cache'
+    received = []
+
+    def execute(value, *, store_location, wall_seconds, input_cache):
+        received.append((value, store_location, wall_seconds, input_cache))
+        return {'paused': True}
+
+    monkeypatch.setattr('stpd.cloud_jobs.__main__.execute_request', execute)
+    assert main(['--request', str(path), '--store', 'fixture', '--wall-seconds', '14400',
+                 '--input-cache', str(cache)]) == 0
+    assert received == [(request, 'fixture', 14400, cache)]
+    assert json.loads(capsys.readouterr().out) == {'paused': True}

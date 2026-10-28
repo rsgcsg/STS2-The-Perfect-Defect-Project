@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import io
 import json
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -23,7 +24,7 @@ from .dataset import SnapshotReader, projection_payload_role
 from .formal_training import Population
 from .input import V2_INPUT_SPEC, project
 from .model import MStd
-from .tensor_input import TensorFrame, compile_frame
+from .tensor_input import ModelFrame, TensorFrame, compile_frame
 from .value_targets import from_run_facts
 from .weighting import point_weights
 
@@ -53,7 +54,7 @@ def pack_binding(reader: SnapshotReader, vocabulary: dict[str, Any],
 
 
 def _populations(rows: dict[str, list[tuple[Any, ...]]], weighted: bool,
-                 value_heads: bool) -> dict[str, Population]:
+                 value_heads: bool) -> dict[str, Population[TensorFrame]]:
     return {split: Population(tuple(r[1] for r in sorted(samples)),
                              tuple(r[2] for r in sorted(samples)),
                              tuple(r[0] for r in sorted(samples)),
@@ -62,7 +63,7 @@ def _populations(rows: dict[str, list[tuple[Any, ...]]], weighted: bool,
             for split, samples in rows.items()}
 
 
-def population_identity(populations: dict[str, Population]) -> dict[str, Any]:
+def population_identity(populations: Mapping[str, Population[ModelFrame]]) -> dict[str, Any]:
     return {split: {"N": len(p.frames), "points_sha256": digest(json_bytes(p.point_ids)),
                     "targets_sha256": digest(json_bytes(p.targets)),
                     "weights_sha256": digest(json_bytes(p.weights)),
@@ -72,7 +73,8 @@ def population_identity(populations: dict[str, Population]) -> dict[str, Any]:
 
 def publish_tensor_pack(store: ArtifactStore, reader: SnapshotReader, vocabulary: dict[str, Any],
                         producer: Producer, *, loss_weighting: dict[str, Any] | None = None,
-                        value_heads: bool = False) -> tuple[Manifest, dict[str, Population]]:
+                        value_heads: bool = False,
+                        ) -> tuple[Manifest, dict[str, Population[TensorFrame]]]:
     if vocabulary.get("input_spec") != V2_INPUT_SPEC:
         raise BoundaryError("p1_tensor_pack", "v2_input_required")
     from .execution import MStdExecution
@@ -131,7 +133,7 @@ def publish_tensor_pack(store: ArtifactStore, reader: SnapshotReader, vocabulary
 
 def load_tensor_pack(store: ArtifactStore, pack_id: str, reader: SnapshotReader,
                      vocabulary: dict[str, Any], *, loss_weighting: dict[str, Any] | None = None,
-                     value_heads: bool = False) -> dict[str, Population]:
+                     value_heads: bool = False) -> dict[str, Population[TensorFrame]]:
     manifest = store.get_manifest(pack_id)
     params = manifest.parameters.value()
     expected = pack_binding(reader, vocabulary, loss_weighting, value_heads)

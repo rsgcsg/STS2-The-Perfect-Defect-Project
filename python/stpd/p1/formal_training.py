@@ -10,13 +10,14 @@ import math
 import os
 import platform
 import time
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Generic
 
 import torch
 from torch.nn import functional as F
+from typing_extensions import TypeVar
 
 from spireagent.json_boundary import BoundaryError
 from stpd.workers.checkpoint_codec import decode_checkpoint, encode_checkpoint
@@ -24,6 +25,7 @@ from stpd.workers.checkpoint_codec import decode_checkpoint, encode_checkpoint
 from .data import digest, json_bytes
 from .execution import MStdExecution, microbatches
 from .export import input_spec
+from .input import Frame
 from .model import MStd
 from .numerics import TrainingNumerics, training_scope
 from .optimization import optimizer_update
@@ -36,9 +38,12 @@ def checkpoint_schema(value_heads: bool = False) -> str:
             else "stpd/p1-mstd-formal-checkpoint-1")
 
 
+FrameT = TypeVar("FrameT", bound=ModelFrame, default=Frame, covariant=True)
+
+
 @dataclass(frozen=True)
-class Population:
-    frames: tuple[ModelFrame, ...]
+class Population(Generic[FrameT]):
+    frames: tuple[FrameT, ...]
     targets: tuple[int, ...]
     point_ids: tuple[str, ...]
     weights: tuple[float, ...] = ()
@@ -72,7 +77,7 @@ class MStdTrainer:
 
     def __init__(
         self,
-        populations: dict[str, Population],
+        populations: Mapping[str, Population[ModelFrame]],
         vocabulary: dict[str, Any],
         snapshot_id: str,
         config: MStdConfig,
@@ -204,7 +209,7 @@ class MStdTrainer:
         yield from microbatches(frames, indices, model)
 
     @staticmethod
-    def evaluate(model: MStd, population: Population) -> dict[str, Any]:
+    def evaluate(model: MStd, population: Population[ModelFrame]) -> dict[str, Any]:
         model.eval()
         device = model.ids.weight.device
         rows = []
