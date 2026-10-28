@@ -338,7 +338,11 @@ def _execute_p1_run(
     prefetch_count: int,
 ) -> StructuredExecutionResult:
     verification_started = time.perf_counter()
-    workload = verify_p1_run(store, run_id, runtime)
+    # An already selected result or reconcile needs integrity, not training frames.
+    # Keep the original fresh completion check after the authority guard below.
+    needs_training_frames = mode != "reconcile" and reporter.completed(run_id) is None
+    workload = verify_p1_run(store, run_id, runtime,
+                             prepare_populations=needs_training_frames)
     verified_seconds = time.perf_counter() - verification_started
     operation_id = workload.run.parameters.value()["operation_id"]
     if mode not in {"start", "resume", "reconcile"} or (mode == "resume") != (resume is not None):
@@ -372,9 +376,18 @@ def _execute_p1_run(
     preparation_started = time.perf_counter()
     populations: Mapping[str, Population[ModelFrame]] | None = workload.prepared_populations
     if populations is None:
-        populations = populations_from_reader(
-            workload.reader, workload.training.parameters.value().get("loss_weighting"),
-            workload.vocabulary["input_spec"], value_heads=workload.config.value_heads)
+        training_info = workload.training.parameters.value()
+        if "tensor_pack_id" in training_info:
+            from ..p1.tensor_pack import load_tensor_pack
+
+            populations = load_tensor_pack(
+                store, training_info["tensor_pack_id"], workload.reader, workload.vocabulary,
+                loss_weighting=training_info.get("loss_weighting"),
+                value_heads=workload.config.value_heads)
+        else:
+            populations = populations_from_reader(
+                workload.reader, training_info.get("loss_weighting"),
+                workload.vocabulary["input_spec"], value_heads=workload.config.value_heads)
     population_seconds = time.perf_counter() - preparation_started
     construction_started = time.perf_counter()
     trainer = MStdTrainer(

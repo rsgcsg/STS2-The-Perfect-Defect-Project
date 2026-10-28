@@ -269,6 +269,9 @@ T2b原记录：从04:03:41准备到05:00:58 ready约57.3分钟；worker内部准
 正常暂停，保留原始DEV曲线和检查点；不能用TEST或实战结果反向挑训练停止点。
 
 预编译是新的 `feature_set` 表示 `stpd/p1-mstd-tensor-pack-1`，沿原ArtifactStore保存；
+通用Run验证逐分片核完整身份、原监督和内容哈希，不保留所有训练帧；导出/核对已完成
+结果仍走这一验证。真正训练的worker显式保留预编译Population，避免元数据消费者占用
+整包张量内存。两条路径共用同一读取与监督核验，不以“只看元数据”跳过包的完整性。
 不改变P1投影、Input-v2、词表、标签、W1或训练/选模型配方。包的Manifest Producer记录
 实际编译source/lock，索引绑定Snapshot/selection、逐源投影payload、InputSpec、词表、
 编译器代码、分片和各分区点/目标/权重/价值标签哈希。128点分片使用原tensor-tree/safetensors

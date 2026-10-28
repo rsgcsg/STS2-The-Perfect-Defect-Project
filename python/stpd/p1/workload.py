@@ -226,7 +226,8 @@ class P1Workload:
     prepared_populations: dict[str, Population[TensorFrame]] | None = None
 
 
-def verify_p1_run(store: ArtifactStore, run_id: str, producer: Producer) -> P1Workload:
+def verify_p1_run(store: ArtifactStore, run_id: str, producer: Producer, *,
+                  prepare_populations: bool = False) -> P1Workload:
     training_sources(store, run_id)
     run = store.get_manifest(run_id)
     if (
@@ -320,14 +321,19 @@ def verify_p1_run(store: ArtifactStore, run_id: str, producer: Producer) -> P1Wo
         raise BoundaryError("p1_derivation", "explicit_derived_run_schema_required")
     prepared = None
     if "tensor_pack_id" in info:
-        from .tensor_pack import load_tensor_pack
+        from .tensor_pack import load_tensor_pack, verify_tensor_pack
 
         if (training.parent("tensor_pack") != info["tensor_pack_id"]
                 or execution.implementation != "experimental-packed-v1"):
             raise BoundaryError("p1_workload", "tensor_pack_binding_mismatch")
-        prepared = load_tensor_pack(store, info["tensor_pack_id"], reader, vocabulary,
-                                   loss_weighting=info.get("loss_weighting"),
-                                   value_heads=config.value_heads)
+        if prepare_populations:
+            prepared = load_tensor_pack(store, info["tensor_pack_id"], reader, vocabulary,
+                                       loss_weighting=info.get("loss_weighting"),
+                                       value_heads=config.value_heads)
+        else:
+            verify_tensor_pack(store, info["tensor_pack_id"], reader, vocabulary,
+                               loss_weighting=info.get("loss_weighting"),
+                               value_heads=config.value_heads)
     return P1Workload(run, training, snapshot, config, vocabulary, reader, execution, prepared)
 
 

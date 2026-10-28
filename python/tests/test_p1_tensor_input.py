@@ -79,7 +79,7 @@ def test_two_updates_same_parameters_rng_and_weighted_masked_targets():
                 assert torch.equal(value, packed.state_dict()[name]), name
 
 
-def test_pack_real_store_worker_pause_resume_and_exact_population(tmp_path):
+def test_pack_real_store_worker_pause_resume_and_exact_population(tmp_path, monkeypatch):
     from test_artifact_store_v1 import PRODUCER
     from test_p1_snapshot import explicit_snapshot, projection_fixture, store_at
 
@@ -114,7 +114,9 @@ def test_pack_real_store_worker_pause_resume_and_exact_population(tmp_path):
         assert torch.equal(tensor, b.model.state_dict()[key])
     run = prepare_p1_run(store, snapshot.artifact_id, PRODUCER, config, 'b'*32,
                          input_projection=V2_INPUT_SPEC, tensor_pack_id=pack.artifact_id)
-    workload = verify_p1_run(store, run.artifact_id, PRODUCER)
+    metadata = verify_p1_run(store, run.artifact_id, PRODUCER)
+    assert metadata.prepared_populations is None
+    workload = verify_p1_run(store, run.artifact_id, PRODUCER, prepare_populations=True)
     assert workload.prepared_populations is not None
     from stpd.p1.preparation import input_transfer_inventory
     from stpd.p1.workload import read_payloads
@@ -137,11 +139,34 @@ def test_pack_real_store_worker_pause_resume_and_exact_population(tmp_path):
     assert saved.state['step'] == 2
     for key, tensor in a.model.state_dict().items():
         assert torch.equal(tensor, saved.state['model'][key])
+    from stpd.p1 import tensor_pack
+    from stpd.p1.checkpoint_export import publish_checkpoint_model
+
+    def no_training_populations(*_args, **_kwargs):
+        pytest.fail('checkpoint export must verify shards without retaining training populations')
+
+    monkeypatch.setattr(tensor_pack, '_populations', no_training_populations)
+    exported = publish_checkpoint_model(store, saved.manifest.artifact_id, PRODUCER,
+                                        selection='current')
+    assert exported['selected_step'] == 2
+    from spireagent.storage.run_reporter import ObjectStoreRunReporter
+    from stpd.workers.p1_run import execute_p1_run
+
+    reporter = ObjectStoreRunReporter(store, store.blobs)
+    reporter.complete(store.get_manifest(result.output_id))
+    for mode in ['start', 'reconcile']:
+        complete_result = execute_p1_run(store, reporter, run.artifact_id, PRODUCER,
+                                         attempt_id='completed-read-' + mode, mode=mode)
+        assert complete_result.result_id == result.output_id
 
 
 @pytest.mark.parametrize('mutation',
-                         ['target', 'weight', 'value', 'compiler', 'source', 'producer'])
-def test_pack_rejects_self_consistent_tampered_labels_weights_and_identity(tmp_path, mutation):
+                         ['target', 'weight', 'weight_boolean', 'value', 'value_boolean',
+                          'compiler', 'source', 'producer', 'duplicate'])
+@pytest.mark.parametrize('consumer', ['load', 'verify'])
+def test_pack_rejects_self_consistent_tampered_labels_weights_and_identity(
+    tmp_path, mutation, consumer,
+):
     import io
     import json
     from dataclasses import replace
@@ -152,10 +177,21 @@ def test_pack_rejects_self_consistent_tampered_labels_weights_and_identity(tmp_p
     from spireagent.json_boundary import BoundaryError, FrozenObject
     from stpd.p1.data import json_bytes
     from stpd.p1.dataset import SnapshotReader
-    from stpd.p1.tensor_pack import load_tensor_pack, publish_tensor_pack
+    from stpd.p1.tensor_pack import load_tensor_pack, publish_tensor_pack, verify_tensor_pack
 
     store = store_at(tmp_path / 'store')
-    projections = [projection_fixture(store, f'bad-tensor-{i}')[0] for i in range(3)]
+    projections = []
+    for i in range(3):
+        name = f'bad-tensor-{i}'
+        projection, original, value = projection_fixture(store, name)
+        if mutation == 'value_boolean':
+            original = replace(original, parameters=FrozenObject.of({
+                **original.parameters.value(), 'run_journal': [
+                    {'run_id': 'run-0001', 'kind': 'run_ended_native',
+                     'detail': 'RunManager.OnEnded(isVictory=false)'}]}))
+            store.publish(original)
+            projection = projection_fixture(store, name, value=value, original=original)[0]
+        projections.append(projection)
     snapshot = explicit_snapshot(store, projections)
     reader = SnapshotReader(store, snapshot.artifact_id)
     vocab = public_vocabulary()
@@ -179,8 +215,16 @@ def test_pack_rejects_self_consistent_tampered_labels_weights_and_identity(tmp_p
             row['target'] = (row['target'] + 1) % len(row['frame']['choices'])
         elif mutation == 'weight':
             row['weight'] = 7.
-        else:
+        elif mutation == 'weight_boolean':
+            row['weight'] = True
+        elif mutation == 'value':
             row['values'] = (1., 1.)
+        elif mutation == 'value_boolean':
+            assert row['values'][0] == 0.0
+            row['values'] = (False, row['values'][1])
+        else:
+            state['rows'].append(copy.deepcopy(row))
+            shard['N'] += 1
         new = store.put_payload(old.role, io.BytesIO(encode_checkpoint(state)))
         payloads[payloads.index(old)] = new
         shard['sha256'] = new.sha256
@@ -188,20 +232,26 @@ def test_pack_rejects_self_consistent_tampered_labels_weights_and_identity(tmp_p
         split = row['split']
         if mutation == 'target':
             index['partitions'][split]['targets_sha256'] = '1'*64
-        elif mutation == 'weight':
+        elif mutation in {'weight', 'weight_boolean'}:
             index['partitions'][split]['weights_sha256'] = '2'*64
-        else:
+        elif mutation in {'value', 'value_boolean'}:
             index['partitions'][split]['values_sha256'] = '3'*64
+        else:
+            index['partitions'][split]['N'] += 1
         params['partitions'] = index['partitions']
     old_index = pack.payload('index')
     payloads[payloads.index(old_index)] = store.put_payload('index', io.BytesIO(json_bytes(index)),
                                                         'application/json')
     forged = replace(pack, payloads=tuple(payloads), parameters=FrozenObject.of(params))
     store.publish(forged)
-    rejected = ('pack_identity_mismatch|point_supervision_mismatch|'
-                'source_payload_binding_mismatch')
+    rejected = ('point_supervision_mismatch'
+                if mutation in {'target', 'weight', 'weight_boolean', 'value', 'value_boolean'}
+                else 'source_payload_binding_mismatch' if mutation == 'source'
+                else 'pack_population_mismatch' if mutation == 'duplicate'
+                else 'pack_identity_mismatch')
     with pytest.raises(BoundaryError, match=rejected):
-        load_tensor_pack(store, forged.artifact_id, reader, vocab, value_heads=True)
+        read = load_tensor_pack if consumer == 'load' else verify_tensor_pack
+        read(store, forged.artifact_id, reader, vocab, value_heads=True)
 
 
 @pytest.mark.parametrize('training', [False, True])

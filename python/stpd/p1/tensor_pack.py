@@ -55,19 +55,24 @@ def pack_binding(reader: SnapshotReader, vocabulary: dict[str, Any],
 
 def _populations(rows: dict[str, list[tuple[Any, ...]]], weighted: bool,
                  value_heads: bool) -> dict[str, Population[TensorFrame]]:
-    return {split: Population(tuple(r[1] for r in sorted(samples)),
-                             tuple(r[2] for r in sorted(samples)),
-                             tuple(r[0] for r in sorted(samples)),
-                             tuple(r[3] for r in sorted(samples)) if split == 'train' and weighted
-                             else (), tuple(r[4] for r in sorted(samples)) if value_heads else ())
-            for split, samples in rows.items()}
+    ordered = {split: sorted(samples, key=lambda row: row[0])
+               for split, samples in rows.items()}
+    return {split: Population(tuple(r[1] for r in samples), tuple(r[2] for r in samples),
+                             tuple(r[0] for r in samples),
+                             tuple(r[3] for r in samples) if split == 'train' and weighted
+                             else (), tuple(r[4] for r in samples) if value_heads else ())
+            for split, samples in ordered.items()}
+
+
+def _label_identity(points: tuple, targets: tuple, weights: tuple, values: tuple) -> dict[str, Any]:
+    return {"N": len(points), "points_sha256": digest(json_bytes(points)),
+            "targets_sha256": digest(json_bytes(targets)),
+            "weights_sha256": digest(json_bytes(weights)),
+            "values_sha256": digest(json_bytes(values))}
 
 
 def population_identity(populations: Mapping[str, Population[ModelFrame]]) -> dict[str, Any]:
-    return {split: {"N": len(p.frames), "points_sha256": digest(json_bytes(p.point_ids)),
-                    "targets_sha256": digest(json_bytes(p.targets)),
-                    "weights_sha256": digest(json_bytes(p.weights)),
-                    "values_sha256": digest(json_bytes(p.values))}
+    return {split: _label_identity(p.point_ids, p.targets, p.weights, p.values)
             for split, p in populations.items()}
 
 
@@ -134,6 +139,23 @@ def publish_tensor_pack(store: ArtifactStore, reader: SnapshotReader, vocabulary
 def load_tensor_pack(store: ArtifactStore, pack_id: str, reader: SnapshotReader,
                      vocabulary: dict[str, Any], *, loss_weighting: dict[str, Any] | None = None,
                      value_heads: bool = False) -> dict[str, Population[TensorFrame]]:
+    return _read_tensor_pack(store, pack_id, reader, vocabulary,
+                             loss_weighting=loss_weighting, value_heads=value_heads,
+                             materialize=True)
+
+
+def verify_tensor_pack(store: ArtifactStore, pack_id: str, reader: SnapshotReader,
+                       vocabulary: dict[str, Any], *, loss_weighting: dict[str, Any] | None = None,
+                       value_heads: bool = False) -> None:
+    """Verify every original binding and shard without retaining training frames."""
+    _read_tensor_pack(store, pack_id, reader, vocabulary,
+                      loss_weighting=loss_weighting, value_heads=value_heads,
+                      materialize=False)
+
+
+def _read_tensor_pack(store: ArtifactStore, pack_id: str, reader: SnapshotReader,
+                      vocabulary: dict[str, Any], *, loss_weighting: dict[str, Any] | None,
+                      value_heads: bool, materialize: bool) -> dict[str, Population[TensorFrame]]:
     manifest = store.get_manifest(pack_id)
     params = manifest.parameters.value()
     expected = pack_binding(reader, vocabulary, loss_weighting, value_heads)
@@ -178,20 +200,27 @@ def load_tensor_pack(store: ArtifactStore, pack_id: str, reader: SnapshotReader,
             if (reference is None or row["split"] != reference["split"]
                     or type(target) is not int or not 0 <= target < len(frame.choices)
                     or frame.choices[target] != reference["chosen"]
-                    or row["weight"] != expected_weights.get(row["point_id"], 1.)
-                    or row["values"] != (expected_values[reference["projection_id"]]
-                                         if value_heads else None)):
+                    or json_bytes(row["weight"]) != json_bytes(
+                        expected_weights.get(row["point_id"], 1.))
+                    or json_bytes(row["values"]) != json_bytes(
+                        expected_values[reference["projection_id"]] if value_heads else None)):
                 raise BoundaryError("p1_tensor_pack", "point_supervision_mismatch")
-            rows[row["split"]].append((row["point_id"], frame, row["target"],
-                                       row["weight"], row["values"]))
-    populations = _populations(rows, loss_weighting is not None, value_heads)
+            rows[row["split"]].append((row["point_id"], frame if materialize else None,
+                                       row["target"], row["weight"], row["values"]))
+    ordered = {split: sorted(samples, key=lambda row: row[0])
+               for split, samples in rows.items()}
+    identities = {split: _label_identity(
+        tuple(r[0] for r in samples), tuple(r[2] for r in samples),
+        tuple(r[3] for r in samples) if split == 'train' and loss_weighting is not None else (),
+        tuple(r[4] for r in samples) if value_heads else ())
+        for split, samples in ordered.items()}
     selection = reader.selection
     expected_points = {s: sorted(p["point_id"] for p in selection["points"] if p["split"] == s)
                        for s in rows}
-    if (population_identity(populations) != index["partitions"] or any(
-            list(populations[s].point_ids) != expected_points[s] for s in rows)):
+    if (identities != index["partitions"] or any(
+            [row[0] for row in ordered[s]] != expected_points[s] for s in rows)):
         raise BoundaryError("p1_tensor_pack", "pack_population_mismatch")
-    return populations
+    return _populations(rows, loss_weighting is not None, value_heads) if materialize else {}
 
 
 def main(argv: list[str] | None = None) -> int:
