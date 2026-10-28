@@ -263,7 +263,8 @@ def test_parent_forwards_real_USR1_to_actor_process_and_retains_STOP(rl, inputs,
         config = json.loads(args.config.read_bytes())
         received = threading.Event()
         signal.signal(signal.SIGUSR1, lambda *_: received.set())
-        Path(os.environ['TEST_READY']).write_text(str(os.getpid()))
+        Path(os.environ['TEST_READY']).write_text(json.dumps({
+            'pid': os.getpid(), 'module': __file__}))
         assert received.wait(15), 'USR1 was not forwarded by the parent Popen owner'
         assert (args.work / 'STOP').is_file()
         (args.work / 'actor-summary.json').write_text(json.dumps({
@@ -284,14 +285,17 @@ def test_parent_forwards_real_USR1_to_actor_process_and_retains_STOP(rl, inputs,
     environment = {'PATH': os.defpath, 'PYTHONPATH': str(stubs), 'TMPDIR': str(tmp_path),
                    'SLURM_JOB_ID': 'signal-stub', 'SLURM_CPUS_PER_TASK': '1',
                    'SLURM_ARRAY_TASK_ID': '0', 'TEST_READY': str(ready)}
-    with subprocess.Popen(command, env=environment, stdout=subprocess.PIPE,
+    with subprocess.Popen(command, env=environment, cwd=tmp_path, stdout=subprocess.PIPE,
                           stderr=subprocess.PIPE, text=True) as process:
         try:
             deadline = time.monotonic() + 15
             while not ready.exists() and process.poll() is None and time.monotonic() < deadline:
                 time.sleep(0.02)
-            assert ready.is_file(), 'no-game Actor did not install its signal handler'
-            assert int(ready.read_text()) != process.pid
+            assert ready.is_file(), (
+                f'no-game Actor did not install its signal handler; driver_exit={process.poll()}')
+            origin = json.loads(ready.read_bytes())
+            assert origin['pid'] != process.pid
+            assert Path(origin['module']).resolve() == (package / 'rl_actor.py').resolve()
             process.send_signal(signal.SIGUSR1)
             stdout, stderr = process.communicate(timeout=15)
             assert process.returncode == 0 and stderr == ''
