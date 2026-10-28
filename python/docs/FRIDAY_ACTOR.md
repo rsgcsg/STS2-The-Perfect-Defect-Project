@@ -108,7 +108,7 @@ Slurm 日志在 `persistent_root/slurm/`。`result.json` 记录源码配置、�
 它检查真实文件复制读回、并发租约、种子池排他和 Slurm 参数，不启动游戏。
 
 测速配置可将 `python_executable` 指向 `tools/friday/profile-python`，它调用原
-`agent.serve`、原投影和原模型，只记录投影/前向累计秒数，退出时写一次
+`agent.serve`、原投影和原模型，只记录投影/前向累计秒数，每次完成调用后原子保存小型可选指标（不做 fsync），并在退出时尝试保存
 `agent-performance.json`。正常退出或 Runtime 的 SIGTERM/SIGINT 均尝试一次写入，
 保留原信号退出状态；记录实际 Torch 线程、版本、Linux CPU 亲和性和测速脚本 SHA。
 写入失败只向 stderr 给一行有界类型/错误码，不改变游戏结果或退出状态；

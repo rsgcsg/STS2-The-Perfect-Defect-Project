@@ -258,8 +258,8 @@ def profiler_stub(tmp_path):
     return command, environment, config, binding / "agent-performance.json"
 
 
-@pytest.mark.parametrize("number", [signal.SIGTERM, signal.SIGINT])
-def test_profiler_writes_on_real_signal_and_preserves_signal_exit(profiler_stub, number):
+@pytest.mark.parametrize("number", [signal.SIGTERM, signal.SIGINT, signal.SIGKILL])
+def test_profiler_completed_checkpoints_survive_signals_with_original_exit(profiler_stub, number):
     import hashlib
     import json
 
@@ -270,7 +270,11 @@ def test_profiler_writes_on_real_signal_and_preserves_signal_exit(profiler_stub,
             readable, _, _ = select.select([process.stdout], [], [], 15)
             assert readable, "stub Agent did not enter its blocking serve"
             assert process.stdout.readline() == "stub-agent-serving\n"
-            assert not output.exists(), "profiling must not write per decision"
+            completed = json.loads(output.read_bytes())
+            assert completed["project_calls"] == completed["forward_calls"] == 1
+            assert completed["checkpoint_scope"] == "completed_calls_only"
+            assert completed["observer_prior_checkpoint_writes"] == 1
+            assert completed["observer_prior_checkpoint_seconds"] >= 0
             process.send_signal(number)
             stdout, stderr = process.communicate(timeout=15)
             assert process.returncode == -number
@@ -280,7 +284,10 @@ def test_profiler_writes_on_real_signal_and_preserves_signal_exit(profiler_stub,
                 process.kill()
                 process.communicate(timeout=10)
     metrics = json.loads(output.read_bytes())
-    assert metrics["termination_signal"] == number
+    if number == signal.SIGKILL:
+        assert "termination_signal" not in metrics
+    else:
+        assert metrics["termination_signal"] == number
     assert metrics["project_calls"] == metrics["forward_calls"] == 1
     assert metrics["project_seconds"] >= 0 and metrics["forward_seconds"] >= 0
     assert metrics["threads"] == metrics["actual_threads"] == metrics["interop_threads"] == 1
@@ -303,5 +310,6 @@ def test_profiler_optional_metrics_io_failure_preserves_original_success(profile
     assert result.returncode == 0
     assert result.stdout == ""
     assert result.stderr.startswith("friday profiler: optional metrics unavailable ")
+    assert result.stderr.count("friday profiler:") == 1
     assert len(result.stderr) < 160
     assert str(output) not in result.stderr

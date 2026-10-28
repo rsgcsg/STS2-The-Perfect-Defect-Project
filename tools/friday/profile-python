@@ -9,7 +9,9 @@ import json
 import os
 import signal
 import sys
+import tempfile
 import time
+from contextlib import suppress
 from pathlib import Path
 
 if sys.argv[1:3] != ["-m", "stpd.p1.agent"]:
@@ -30,8 +32,78 @@ if threads < 1:
 torch.set_num_threads(threads)
 metrics = {"schema": "spireagent/friday-agent-performance-v1", "threads": threads,
            "project_calls": 0, "project_seconds": 0.0,
-           "forward_calls": 0, "forward_seconds": 0.0}
-flushed = False
+           "forward_calls": 0, "forward_seconds": 0.0,
+           "checkpoint_scope": "completed_calls_only"}
+output = args.config.resolve().parent.parent / "agent-performance.json"
+write_disabled = False
+checkpoint_writes = 0
+checkpoint_seconds = 0.0
+
+
+def unavailable(error):
+    """Disable optional IO after one bounded diagnostic, preserving every Agent result."""
+    global write_disabled
+    if write_disabled:
+        return
+    write_disabled = True
+    try:
+        sys.stderr.write("friday profiler: optional metrics unavailable "
+                         f"({type(error).__name__}, errno={getattr(error, 'errno', None)})\n")
+        sys.stderr.flush()
+    except OSError:
+        pass
+
+
+# Compute metadata once, outside the original projection/forward timing and write path.
+metadata_started = time.perf_counter()
+try:
+    try:
+        tokenizers_version = importlib.metadata.version("tokenizers")
+    except importlib.metadata.PackageNotFoundError:
+        tokenizers_version = None
+    metrics.update({
+        "actual_threads": torch.get_num_threads(),
+        "interop_threads": torch.get_num_interop_threads(),
+        "torch_version": str(torch.__version__),
+        "python_version": sys.version.split()[0],
+        "tokenizers_version": tokenizers_version,
+        "linux_cpu_affinity": (sorted(os.sched_getaffinity(0))
+                               if sys.platform == "linux" else None),
+        "profiler_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+    })
+except (OSError, ValueError, TypeError) as error:
+    unavailable(error)
+metrics["observer_metadata_seconds"] = time.perf_counter() - metadata_started
+
+
+def checkpoint_metrics():
+    """Atomic small optional checkpoint survives Runtime SIGKILL after completed calls.
+
+    No fsync and no write inside the original evidence tree. The cost fields
+    explicitly cover PREVIOUS checkpoints, since a write cannot contain its own
+    final elapsed cost. A kill during a call leaves only the last completed call.
+    """
+    global checkpoint_writes, checkpoint_seconds
+    if write_disabled:
+        return
+    started = time.perf_counter()
+    temporary = None
+    try:
+        value = {**metrics, "observer_prior_checkpoint_writes": checkpoint_writes,
+                 "observer_prior_checkpoint_seconds": checkpoint_seconds}
+        descriptor, name = tempfile.mkstemp(prefix=".agent-performance-", dir=output.parent)
+        temporary = Path(name)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            stream.write(json.dumps(value, sort_keys=True) + "\n")
+        os.replace(temporary, output)
+    except (OSError, ValueError, TypeError) as error:
+        unavailable(error)
+    finally:
+        if temporary is not None:
+            with suppress(OSError):
+                temporary.unlink(missing_ok=True)
+        checkpoint_writes += 1
+        checkpoint_seconds += time.perf_counter() - started
 
 
 def observe(owner, name, prefix):
@@ -39,54 +111,22 @@ def observe(owner, name, prefix):
 
     def measured(*arguments, **keywords):
         began = time.perf_counter()
-        try:
-            return original(*arguments, **keywords)
-        finally:
-            metrics[prefix + "_calls"] += 1
-            metrics[prefix + "_seconds"] += time.perf_counter() - began
+        value = original(*arguments, **keywords)
+        elapsed = time.perf_counter() - began
+        metrics[prefix + "_calls"] += 1
+        metrics[prefix + "_seconds"] += elapsed
+        checkpoint_metrics()
+        return value
 
     setattr(owner, name, measured)
 
 
-def flush_metrics():
-    """One optional shutdown write; failure never replaces the Agent's exit."""
-    global flushed
-    if flushed:
-        return
-    flushed = True
-    try:
-        try:
-            tokenizers_version = importlib.metadata.version("tokenizers")
-        except importlib.metadata.PackageNotFoundError:
-            tokenizers_version = None
-        metrics.update({
-            "actual_threads": torch.get_num_threads(),
-            "interop_threads": torch.get_num_interop_threads(),
-            "torch_version": str(torch.__version__),
-            "python_version": sys.version.split()[0],
-            "tokenizers_version": tokenizers_version,
-            "linux_cpu_affinity": (sorted(os.sched_getaffinity(0))
-                                   if sys.platform == "linux" else None),
-            "profiler_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
-        })
-        output = args.config.resolve().parent.parent / "agent-performance.json"
-        output.write_text(json.dumps(metrics, sort_keys=True) + "\n", encoding="utf-8")
-    except (OSError, ValueError, TypeError) as error:
-        # Only a bounded type/errno diagnostic; never paths, environment or protocol stdout.
-        try:
-            sys.stderr.write("friday profiler: optional metrics unavailable "
-                             f"({type(error).__name__}, errno={getattr(error, 'errno', None)})\n")
-            sys.stderr.flush()
-        except OSError:
-            pass
-
-
 def terminate(number, _frame):
-    # Runtime's signal exit must remain independently observable as -SIGTERM/-SIGINT.
+    # Runtime's signal exit remains independently observable as -SIGTERM/-SIGINT.
     for observed in (signal.SIGTERM, signal.SIGINT):
         signal.signal(observed, signal.SIG_IGN)
     metrics["termination_signal"] = number
-    flush_metrics()
+    checkpoint_metrics()
     signal.signal(number, signal.SIG_DFL)
     os.kill(os.getpid(), number)
 
@@ -99,5 +139,4 @@ try:
     agent.serve(args.config.resolve(), args.manifest.resolve(), args.binding_root.resolve(),
                 local_inference=args.local_inference.resolve() if args.local_inference else None)
 finally:
-    # One write at shutdown, outside the Runtime original evidence directory.
-    flush_metrics()
+    checkpoint_metrics()
