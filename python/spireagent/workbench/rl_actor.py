@@ -119,6 +119,9 @@ class Actor:
         self.executor_version: int | None = None
         self.sequence = len(self.exchange.blobs.keys(
             f"{self.exchange.prefix}shards/{self.name}/"))
+        # A restarted actor of the same name continues past its announced shards,
+        # so it never replays (and the learner never double-counts) earlier seeds.
+        self.epoch = self.sequence
         self.chunk = 0
         self.counts: collections.Counter[str] = collections.Counter()
         self.timing: collections.defaultdict[str, float] = collections.defaultdict(float)
@@ -164,7 +167,7 @@ class Actor:
         root = self.work / "ledgers" / f"{self.chunk:06d}"
         root.mkdir(parents=True)
         group = hashlib.sha256(f"rl\0{self.config['run']}\0{self.config['seed_namespace']}\0"
-                               f"{self.name}\0{self.chunk}".encode()).hexdigest()[:32]
+                               f"{self.name}\0{self.epoch}\0{self.chunk}".encode()).hexdigest()[:32]
         manifest = diagnostic_reference_manifest(SEED_GAME_VERSION, group,
                                                  self.config["games_per_ledger"])
         manifest["host"] = "Managed"
