@@ -20,6 +20,7 @@ from spireagent.artifact_contracts import Producer
 from spireagent.json_boundary import BoundaryError, json_bytes
 from spireagent.workbench.evaluation_ledger import EvaluationLedger
 from spireagent.workbench.reference_suite import SuiteLimits, load_manifest
+from stpd.evaluation.suites import t2_managed_manifest
 
 
 @pytest.fixture
@@ -46,6 +47,95 @@ def ledger(tmp_path, request):
         selections={"438": "same-weight"},
         execution=execution,
     )
+
+
+@pytest.fixture
+def t2_create_inputs(tmp_path):
+    manifest = tmp_path / "t2-manifest.json"
+    manifest.write_bytes(json_bytes(t2_managed_manifest("v0.111.0")))
+    selections = {"DEVmin": "dev-model", "last": "last-model", "step2016": "2016-model"}
+    execution = tmp_path / "execution.json"
+    execution.write_bytes(json_bytes({
+        "schema": "spireagent/managed-evaluation-execution-v1",
+        "models": {selection: {} for selection in selections.values()},
+        "peer": {"kind": "local", "directory": str(tmp_path)},
+        "store": str(tmp_path / "store"),
+        "retention": {"tier": "trajectory", "purpose": "evaluation", "audit_every": 50},
+    }))
+    return manifest, hashlib.sha256(manifest.read_bytes()).hexdigest(), selections, execution
+
+
+@pytest.mark.parametrize("prefix,planned,audits", [(None, 120, 3), (40, 120, 3), (20, 60, 2)])
+def test_create_freezes_seed_prefix_without_changing_canonical_manifest(
+    tmp_path, t2_create_inputs, prefix, planned, audits,
+):
+    manifest, sha, selections, execution = t2_create_inputs
+    original = manifest.read_bytes()
+    current = EvaluationLedger.create(tmp_path / "ledger", manifest, sha,
+        selections=selections, execution=execution, seed_prefix=prefix)
+    assert current.plan.get("seed_prefix") == prefix
+    assert current.plan["planned"] == planned
+    assert current.plan["audit_selection"]["planned"] == planned
+    assert current.plan["audit_selection"]["count"] == audits
+    assert [slot["formal_audit_selected"] for slot in current.slots()[:audits]] == [True] * audits
+    assert sum(slot["formal_audit_selected"] for slot in current.slots()) == audits
+    expected_seeds = json.loads(original)["seeds"][:prefix]
+    assert {slot["seed"] for slot in current.slots()} == set(expected_seeds)
+    assert all(sum(slot["seed"] == seed for slot in current.slots()) == 3
+               for seed in expected_seeds)
+    assert all(slot["manifest"]["sha256"] == sha for slot in current.slots())
+    assert len(load_manifest(manifest, sha)[1]["seeds"]) == 40
+    frozen_plan = current.store.get("plan.json")
+    reopened = EvaluationLedger(current.directory)
+    assert reopened.report()["planned"] == planned
+    assert reopened.report()["score_admitted"] is False
+    with pytest.raises(BoundaryError, match="new_directory_and_distinct_selections_required"):
+        EvaluationLedger.create(current.directory, manifest, sha,
+            selections=selections, execution=execution, seed_prefix=1)
+    assert current.store.get("plan.json") == frozen_plan
+    assert manifest.read_bytes() == original
+
+
+@pytest.mark.parametrize("prefix", [True, 0, -1, 41, 20.0, "20"])
+def test_create_rejects_invalid_seed_prefix_before_writing_ledger(
+    tmp_path, t2_create_inputs, prefix,
+):
+    manifest, sha, selections, execution = t2_create_inputs
+    directory = tmp_path / "ledger"
+    with pytest.raises(BoundaryError, match="invalid_seed_prefix"):
+        EvaluationLedger.create(directory, manifest, sha,
+            selections=selections, execution=execution, seed_prefix=prefix)
+    assert not directory.exists()
+
+
+def test_seed_prefix_does_not_relax_canonical_manifest_validation(tmp_path, t2_create_inputs):
+    manifest, _, selections, execution = t2_create_inputs
+    truncated = json.loads(manifest.read_bytes())
+    truncated["seeds"] = truncated["seeds"][:20]
+    truncated["episode_count"] = 20
+    manifest.write_bytes(json_bytes(truncated))
+    with pytest.raises(BoundaryError, match="manifest_configuration_changed"):
+        EvaluationLedger.create(tmp_path / "ledger", manifest,
+            hashlib.sha256(manifest.read_bytes()).hexdigest(),
+            selections=selections, execution=execution, seed_prefix=20)
+
+
+def test_cli_seed_prefix_is_create_only(tmp_path, t2_create_inputs, capsys):
+    from spireagent.workbench.evaluation_ledger import main
+
+    manifest, sha, selections, execution = t2_create_inputs
+    selection_path = tmp_path / "selections.json"
+    selection_path.write_bytes(json_bytes(selections))
+    directory = tmp_path / "ledger"
+    assert main(["create", "--host", "managed", "--ledger", str(directory),
+        "--manifest", str(manifest), "--manifest-sha256", sha,
+        "--selections", str(selection_path), "--execution", str(execution),
+        "--seed-prefix", "20"]) == 0
+    assert json.loads(capsys.readouterr().out)["planned"] == 60
+    frozen_plan = (directory / "plan.json").read_bytes()
+    assert main(["status", "--ledger", str(directory), "--seed-prefix", "10"]) == 1
+    assert json.loads(capsys.readouterr().out)["error"] == "seed_prefix_requires_create"
+    assert (directory / "plan.json").read_bytes() == frozen_plan
 
 
 def complete(row, artifacts, checkpoint):
