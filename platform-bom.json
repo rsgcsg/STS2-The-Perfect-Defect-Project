@@ -271,7 +271,7 @@
       "version": "0.1.0-rc.1",
       "current_component_source_revision": "7c7c344a04e12fed874fd9eddc69a2a16ed40f73",
       "current_component_source_digest_sha256": "e9b662ea7cb085e251fdf22b300b6d4efe884a7907f55c32ccc6711987086664",
-      "current_component_version": "0.1.0-rc.56",
+      "current_component_version": "0.1.0-rc.57",
       "source_relation": "historical_runtime_source_precedes_standalone_consumer_package"
     },
     "annotator": {
