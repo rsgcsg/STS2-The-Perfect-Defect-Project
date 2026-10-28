@@ -784,6 +784,8 @@ python -m spireagent.workbench.evaluation_ledger report \
   --ledger /ABS/new-ledger --output /ABS/report.json
 ```
 
+新建 Managed 账本可显式加 `--seed-prefix N`，从已验证的完整规范 manifest 顺序取前 N 个种子，并在不可变 plan 冻结 N 和实际槽位分母；例如完整 T2 A0 的 40 种子 manifest 配三个不同模型，`create ... --seed-prefix 20` 得到 60 槽。原 manifest 与 SHA 保留，不能自行截短 manifest；省略参数仍使用全部种子，已有账本不变。该参数只用于 `create`，拒绝零、负数及超出完整种子数的值。轨迹评估按实际槽位数选正式审计，60 槽与 `audit_every=50` 冻结两槽并先运行，原有出分资格不变。
+
 同种子存储对照可在 `run --host managed` 重复传 `--slot-id SHA`，只从该账本冻结顺序中准入选中的 `not_started` 槽，再应用 `max-episodes`；默认仍为全部未开槽。选择不改 plan、分母或状态，finished/unknown 永不重投；集合外的未确认清理仍阻止准入。空、重复或外来 ID 拒绝；其它 action/Reference 不接受此参数。前后账本的 slot ID 各自包含 manifest 引用，应按冻结 seed＋selection/step 映射到候选自己的 ID，保留完整配对表：原 unknown 在候选对应行是未 offer，不宣称全批一致，也不拿筛选后的吞吐与完整分母作因果比较。
 
 先确认这一槽自然终局、完整 typed 读回、controller release 和 Host/service 正常关闭，才继续其余槽位。调度命令结束不等于每槽通过；报告保留全部 unknown/censored/unstarted。增加 `--workers N` 只改变同一账本的并发容量，协调者持有 OS lock，worker 不写槽位事件。恢复只派发 `not_started`，崩溃后的 reservation 先读原报告，未知状态不会回队列。STOP 文件、总时限或未确认清理均停止新派发。协调者在写 reservation 前按 `max(冻结 minimum_free_bytes, 现有工作站保留空间) + 2 GiB × (在途局数 + 1)` 准入，沿用每局既有峰值；额度直到该局执行、封存/读回和清理返回才释放。容量暂满且仍有在途局时先等其完成，再重新检查；没有在途局也容不下下一局时才以 `workspace_capacity_insufficient` 收口。尚未准入的槽仍为 `not_started`，恢复命令只会继续这些槽。该预算是本协调者的保守估算，不是跨进程磁盘配额；外部任务可能改变余量，每局原有生产检查仍保留。每个并行比较使用预先冻结的独立试验账本；原失败和 unknown 分母不被另一次试验覆盖。

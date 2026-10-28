@@ -181,6 +181,18 @@ def _outcome_status(outcome: Mapping[str, Any], *, settling_stalled: bool) -> di
     }
 
 
+def behavior_policy(model: Mapping[str, Any], row: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Training-only sampling declared on the frozen model entry, seeded per slot intent."""
+    declared = model.get("behavior_policy")
+    if declared is None:
+        return None
+    retention = row.get("retention") or {}
+    if (not isinstance(declared, dict) or "seed" in declared
+            or retention.get("tier") != "trajectory" or retention.get("purpose") != "training"):
+        reject("sampling_requires_unscored_training_trajectory")
+    return {**declared, "seed": row["intent_id"]}
+
+
 class ManagedEpisodeExecutor:
     """One independent Host/Runtime/Agent per call; safe for separate worker threads."""
 
@@ -418,7 +430,10 @@ class ManagedEpisodeExecutor:
                     started + self.episode_seconds,
                 )
                 registration = private / "registration"
-                export.register(package, registration, envelope, entry_id=row["selection_id"])
+                sampling = behavior_policy(model, row)
+                row["behavior_policy"] = sampling
+                export.register(package, registration, envelope, entry_id=row["selection_id"],
+                                behavior_policy=sampling)
                 remaining = self.episode_seconds - (time.monotonic() - started)
                 if remaining <= 0:
                     reject("preparation_wall_limit")

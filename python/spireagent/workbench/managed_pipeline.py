@@ -23,7 +23,7 @@ from .global_evidence_store import (
     publish_global_runtime,
     verify_global_artifact,
 )
-from .managed_evaluation import ManagedEpisodeExecutor, _phase
+from .managed_evaluation import ManagedEpisodeExecutor, _phase, behavior_policy
 from .managed_failure_store import publish_failure, verify_failure
 from .managed_retention import preservation_route, retention_configuration
 from .managed_trajectory_store import MAX_EPISODES, MAX_SHARD_BYTES, publish_shard, read_shard
@@ -291,6 +291,10 @@ class PipelinedManagedExecutor(ManagedEpisodeExecutor):
                         "readback": readback, "retention": "existing_7_day_closeout_rule"}))
             if route in {"trajectory", "trajectory_and_full_peer"}:
                 with _phase(row, "trajectory_extract"):
+                    # The chooser actually installed for this slot, rechecked against the plan.
+                    sampling = row.get("behavior_policy")
+                    if sampling != behavior_policy(model, row):
+                        raise BoundaryError("managed_pipeline", "behavior_policy_changed")
                     identity = {"producer": self.producer.to_dict(),
                         "host_pin": self.configuration["host_pin"],
                         "runtime_pin": self.configuration["runtime_pin"],
@@ -299,8 +303,8 @@ class PipelinedManagedExecutor(ManagedEpisodeExecutor):
                         "input_spec": verified.value.agent_manifest["input"]["input_spec"],
                         "seed": row["seed"], "character": row["scenario"]["character"],
                         "ascension": row["scenario"]["ascension"], "retention": row["retention"],
-                        "behavior_policy": {"mode": "argmax", "temperature": None,
-                                            "uniform_mix": 0},
+                        "behavior_policy": sampling or {
+                            "mode": "argmax", "temperature": None, "uniform_mix": 0},
                         "initial_progress_sha256": self.configuration["initial_progress"][
                             "progress_sha256"]}
                     trajectory = extract_trajectory(verified.value, identity=identity,
