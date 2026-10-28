@@ -214,7 +214,8 @@ python tools/friday/rl.py submit --plan /ABS/Friday-RL-plan/plan.json
 配置取得 behavior 和 seed_namespace；若给单独的 learner 配置，须另传
 `--behavior /ABS/behavior.json --seed-namespace 原命名空间`。不改行为策略参数。
 
-每个数组项单核、唯一 actor 名、fc430、最多8路；复用原用户提交锁与 F2 总量门槛。
+每个数组项单核、唯一 actor 名、fc430，默认8路；学习者提速后可显式调到25–40路，
+仍受空闲核1/4、绝对200核和拥堵时32核的原门槛约束。复用原用户提交锁，不能叠加数组。
 每个 actor 一局一个原账本，并通过原 `unknown_stop` 配置在首个 unknown 后自停。
 工作目录在节点私有 `/tmp`；原 Actor 上传与读回轨迹后，退出时将原摘要、日志及工作
 目录完整复制到计划目录的 `actors/<actor>/evidence/` 并逐字节读回，owner 租约不重投。

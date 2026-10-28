@@ -90,6 +90,11 @@ def test_peer_drift_and_candidate_symlink_are_rejected(rl, inputs, tmp_path):
         rl.prepare(execution, learner, output)
 
 
+def test_explicit_learner_driven_scale_can_prepare_forty_actors(rl, inputs):
+    plan, _ = prepared(rl, inputs, actors=40)
+    assert len({ref['actor'] for ref in plan['actors']}) == 40
+
+
 def test_missing_or_foreign_RL1_modules_are_explicitly_refused_before_allocation(rl, inputs):
     _plan, file = prepared(rl, inputs)
     with (patch.object(rl.importlib.util, 'find_spec', return_value=None),

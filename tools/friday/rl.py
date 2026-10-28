@@ -53,12 +53,12 @@ def prepare(execution: Path, learner: Path, output: Path, *, actors: int = 8,
             or base.get('schema') != 'spireagent/managed-evaluation-execution-v1'):
         raise ValueError('same_frozen_R2_execution_and_learner_peer_required')
     canonical_path(Path(base['candidate_directory']))
-    if (type(actors) is not int or not 1 <= actors <= 8
+    if (type(actors) is not int or not 1 <= actors <= 200
             or type(wall_seconds) is not int or not 300 <= wall_seconds <= 21600
             or type(episode_seconds) is not int or not 10 <= episode_seconds <= 1800
             or wall_seconds <= episode_seconds + 180
             or type(max_games) is not int or not 1 <= max_games <= 200):
-        raise ValueError('bounded_one_to_eight_CPU_actor_budget_required')
+        raise ValueError('bounded_one_to_two_hundred_CPU_actor_budget_required')
     defaults = learning.get('actor_defaults', {})
     behavior = behavior if behavior is not None else defaults.get('behavior')
     seed_namespace = seed_namespace or learning.get('seed_namespace')
