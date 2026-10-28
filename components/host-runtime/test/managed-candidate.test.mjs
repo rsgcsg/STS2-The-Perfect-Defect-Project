@@ -46,13 +46,15 @@ test("built native act-selection source and retained measured builds remain expl
   );
   assert.equal(manifest.pre_hand_selection_build.artifact_sha256, "b8386bf8bd54086b1921ddade3cd4fb4a5156072ad45456bc3310e2b62275c8f");
   assert.equal(manifest.pre_m2a_recording_launch_build.artifact_sha256, "0d51a9cc9f9af64ead27ec978a7eb35573353e4b61c3e7d3bd1b5bebc7c7d5a2");
-  assert.equal(manifest.expected_build.artifact_sha256, "ea9b7ca4570bb79dee061e701c82cd61f4bc2378e2d6ce0b9f44cb9fbd1c02b0");
+  assert.equal(manifest.expected_build.artifact_sha256, "f18c39f785b073b6a9f6c26a3783e69552edd41d24f59ac1e3f0354cf777687d");
+  assert.equal(manifest.pre_m2e_round3_build.artifact_sha256, "ea9b7ca4570bb79dee061e701c82cd61f4bc2378e2d6ce0b9f44cb9fbd1c02b0");
   assert.equal(manifest.host54_previous_candidate_build.artifact_sha256, "029a414ba038d0193cfb9dbf2992ebdfc4f037abff7157a0268bb4af6add6bc3");
   assert.equal(manifest.pre_m2d_enchanted_deck_build.artifact_sha256, "1c96e1609a4ed2503beecd04cf06ce66621c70a667d604679d990ff2cabd4e8c");
   assert.equal(manifest.pre_m2c_godot_stub_build.artifact_sha256, "e0eda87653fe08a749a27bdcb4aa2c3041a3ed4d9f89617cd6e16036a73fff39");
   assert.equal(manifest.historical_candidate_builds.some(build => build.artifact_sha256 === "c3eed8fa9930d7428af0d9028a4ca0a0e5234853d8040bc99dd478f99fdd4df4"), true);
   assert.equal(manifest.pre_m2a_recording_launch_build.artifact_mvid, "30cbfc58-f916-44ff-a60e-788194dbf4d4");
-  assert.equal(manifest.expected_build.artifact_mvid, "37af0f99-fa1d-42aa-8eb3-0d1b3efa24d8");
+  assert.equal(manifest.expected_build.artifact_mvid, "fcb88905-1d79-4b35-ab24-b3b62e315249");
+  assert.equal(manifest.pre_m2e_round3_build.artifact_mvid, "37af0f99-fa1d-42aa-8eb3-0d1b3efa24d8");
   assert.equal(manifest.host54_previous_candidate_build.artifact_mvid, "76bdb43e-d8ff-48b2-bea8-f7fc7925faf1");
   assert.equal(manifest.pre_m2d_enchanted_deck_build.artifact_mvid, "2d7dafda-95de-4631-9f13-63cf8610bfe9");
   assert.equal(manifest.pre_m2c_godot_stub_build.artifact_mvid, "77fb5aa2-6c03-4e9b-9cdf-ba46668497c1");
@@ -131,6 +133,8 @@ test("fresh candidate preparation admits added source files into the audited dif
     "m2a-native-tests/Program.cs",
     "m2c-godot-stub-tests/M2cGodotStub.csproj",
     "m2c-godot-stub-tests/Program.cs",
+    "m2e-r3-native-tests/M2eR3Native.csproj",
+    "m2e-r3-native-tests/Program.cs",
     "native-hand-tests/NativeHand.csproj",
     "native-hand-tests/Program.cs",
     "native-run-choice-tests/NativeRunChoice.csproj",
@@ -151,6 +155,7 @@ test("fresh candidate preparation admits added source files into the audited dif
     "src/Sts2Headless/ManagedMerchantPresentation.cs",
     "src/Sts2Headless/ManagedSelectorPublicCapture.cs",
     "src/Sts2Headless/NativeCalculatedVariableInventory.cs",
+    "src/Sts2Headless/NativeCallingBellRewards.cs",
     "src/Sts2Headless/NativeCardDeliveryObservation.cs",
     "src/Sts2Headless/NativeCardPreviewReadQualification.Rendering.cs",
     "src/Sts2Headless/NativeCardPreviewReadQualification.cs",
@@ -159,6 +164,7 @@ test("fresh candidate preparation admits added source files into the audited dif
     "src/Sts2Headless/NativeCardRewardParentPresentation.cs",
     "src/Sts2Headless/NativeCardRewardSelectionObservation.cs",
     "src/Sts2Headless/NativeDebugAudioPresentation.cs",
+    "src/Sts2Headless/NativeDenseVegetationPresentation.cs",
     "src/Sts2Headless/NativeDetachedCardCopy.cs",
     "src/Sts2Headless/NativeDetachedCardPreview.cs",
     "src/Sts2Headless/NativeEnchantmentMethodInventory.cs",
@@ -178,6 +184,7 @@ test("fresh candidate preparation admits added source files into the audited dif
     "src/Sts2Headless/NativeSelectorCardDisplay.cs",
     "src/Sts2Headless/NativeSelectorHud.cs",
     "src/Sts2Headless/NativeSelectorSelection.cs",
+    "src/Sts2Headless/NativeSelectorVisibleOrder.cs",
     "src/Sts2Headless/NativeSettledRelicCounter.cs",
     "src/Sts2Headless/NativeTreasureChestAdmission.cs",
     "src/Sts2Headless/NativeUpgradeMethodInventory.cs",

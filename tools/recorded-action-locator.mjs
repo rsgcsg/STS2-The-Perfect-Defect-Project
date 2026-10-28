@@ -29,6 +29,19 @@ function publicObjects(basis) {
     add(ref.referent_id, ref.properties ?? {}, '$.referents');
     result.get(ref.referent_id)?.roles.add(ref.role);
   }
+  const surface = snap.interaction?.content?.surface;
+  // This is the native grid's explicitly declared visible logical list, not a
+  // deck/read/referent transport index. Require the same whole public roster
+  // before treating its displayed occurrence as an operand witness.
+  if (surface?.ordering_basis === 'exact_current_native_grid_logical_list' && Array.isArray(surface.cards)) {
+    const roster = surface.cards.map(card => Object.fromEntries(
+      ['definition_id', 'name', 'type', 'rarity', 'is_upgraded', 'cost', 'description', 'is_selected']
+        .filter(key => card[key] !== undefined).map(key => [key, card[key]])));
+    surface.cards.forEach((card, index) => {
+      const entry = result.get(card.entity_id);
+      if (entry) entry.visibleGrid = { index, roster };
+    });
+  }
   return result;
 }
 function facts(entry) {
@@ -74,11 +87,25 @@ export class RecordedActionLocator {
         && literalFingerprint(candidate).some(value => originals.some(original => isDeepStrictEqual(original, value))));
     }
     if (matches.length > 1) {
+      const originalCards = source.objects.find(value => Array.isArray(value.card_options))?.card_options;
+      if (originalCards) {
+        const options = values => values.map(card => ({ definition_id: card.definition_id, is_upgraded: card.is_upgraded }));
+        const qualified = matches.filter(candidate => candidate.objects.some(value => Array.isArray(value.card_options)
+          && isDeepStrictEqual(options(originalCards), options(value.card_options))));
+        if (qualified.length > 0) matches = qualified;
+      }
+    }
+    if (matches.length > 1) {
       // A declared visible hand order is an operand witness; deck transport order
       // and referent enumeration are not. No arbitrary array-index fallback.
       const hand = source.paths.find(path => /\.context\.player\.hand\[\d+\]$/u.test(path));
       if (hand) {
         const positioned = matches.filter(candidate => candidate.paths.includes(hand));
+        if (positioned.length === 1) matches = positioned;
+      }
+      if (matches.length > 1 && source.visibleGrid) {
+        const positioned = matches.filter(candidate => candidate.visibleGrid?.index === source.visibleGrid.index
+          && isDeepStrictEqual(candidate.visibleGrid.roster, source.visibleGrid.roster));
         if (positioned.length === 1) matches = positioned;
       }
     }
@@ -142,8 +169,11 @@ export class RecordedActionLocator {
           && a.lowering[choice.choice_id]?.first?.bound_action_id === source.bound_action_id).map(choice => choice.kind));
         const ids = new Set(b.observation.catalog.filter(choice => choice.mapped && choice.subject === null && choice.target === null
           && kinds.has(choice.kind)).map(choice => b.lowering[choice.choice_id]?.first?.bound_action_id));
+        // The existing SDK maps Reference cancel and Managed close to the same
+        // shop.leave control. The declared unique lowering is the authority;
+        // transport verb spelling need not be identical in this branch.
         matches = actualBasis.snapshot.bound_actions.actions.filter(input => ids.has(input.bound_action_id)
-          && input.verb === source.verb && input.arguments.length === 0);
+          && input.arguments.length === 0);
         semanticSubjectless = matches.length === 1;
       }
     }
