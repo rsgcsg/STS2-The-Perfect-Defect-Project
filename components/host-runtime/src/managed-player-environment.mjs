@@ -811,7 +811,9 @@ function canonicalShopSurface(state, ctx, inventoryOpen = true, surfaceActive = 
     const item = ctx.referent({ role: "shop_entry", id: typeof entry.native_ref === "string" && refs.filter(ref => ref === entry.native_ref).length === 1
       ? ctx.entityId("shop_entry", entry.native_ref) : ctx.id("unbound_shop_entry", kind, entry.inventory_index, ctx.referents.length), label,
       enabled: exact && entry.can_purchase, properties });
-    if (surfaceActive && inventoryOpen && exact && entry.can_purchase) ctx.action({ verb: action === "remove_card" ? "open" : "activate", subject: action === "remove_card" ? null : item, label: `Buy ${label} for ${entry.cost} gold`,
+    // Labels follow the Reference native-UI descriptors, including the removal selector opener.
+    if (surfaceActive && inventoryOpen && exact && entry.can_purchase) ctx.action({ verb: action === "remove_card" ? "open" : "activate", subject: action === "remove_card" ? null : item,
+      label: action === "remove_card" ? `Choose a card to remove for ${entry.cost} gold` : `Buy ${label} for ${entry.cost} gold`,
       raw: { cmd: "action", action, args: { entry_ref: entry.native_ref,
         ...(action === "remove_card" ? { room_ref: state.room_ref } : {}) } } });
     return item.properties;
@@ -865,9 +867,11 @@ function canonicalShopSurface(state, ctx, inventoryOpen = true, surfaceActive = 
       Array.isArray(raw.public_details_missing) ? raw.public_details_missing : ["native_shop_card_details"],
       "shop_offer", ctx.entityId("shop_entry", entry.native_ref), catalogReadId));
   }
+  // Reference projects visible offers without slot relations; only its catalog Read carries them.
+  const offer = value => { if (value == null) return value; const { slot_entity_id: _slot, ...visible } = value; return visible; };
   return { kind: "shop_inventory", stage: "ready", prompt: null,
     surface: { kind: "shop_inventory", shop_session_entity_id: ctx.entityId("shop_session", state.shop_ref),
-      cards, relics, potions, card_removal: removal, can_close: exact },
+      cards: cards.map(offer), relics: relics.map(offer), potions: potions.map(offer), card_removal: offer(removal), can_close: exact },
     context: { kind: "shop" }, complete: exact && missing.length === 0, actionComplete: exact,
     visibleInformation: "current_original_native_merchant_inventory_and_formatted_product_displays",
     interactionDiscovery: "same_original_native_inventory_entries_and_pending_presentation_owner", missing };
