@@ -1029,6 +1029,8 @@ class LocalRecordingImporter:
             if self.operation["status"] == "unavailable":
                 raise BoundaryError("local_import", "operation_file_invalid")
             candidate = self._fresh_candidate(identity)
+            if candidate.get("recording_kind") == "mixed_run":
+                raise BoundaryError("local_import", "mixed_run_requires_isolated_intake")
             if candidate.get("recording_type") == "source3":
                 if human_origin_attested is not None and human_origin_attested is not False:
                     raise BoundaryError("local_import", "source3_attestation_not_supported")

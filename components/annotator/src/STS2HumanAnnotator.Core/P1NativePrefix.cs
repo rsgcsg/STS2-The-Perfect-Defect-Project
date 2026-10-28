@@ -6,11 +6,36 @@ public sealed record P1NativePrefixWatermark(long EventCount, long EventsByteCou
     long JournalByteCount, string JournalSha256, long AcceptedCount, long TerminalCount, long PendingCount, long IssueCount);
 public sealed record P1NativePrefixResult(string PrefixId, string PrefixDirectory, string ManifestPath,
     string ManifestSha256, P1NativePrefixWatermark Watermark);
+public sealed record P1NativeCheckpoint(string Schema, string SessionId, string TimelineId,
+    P1NativePrefixWatermark Watermark);
 
 public sealed partial class RecordingSessionStore
 {
     public const string P1NativePrefixSchema = "sts2.human-annotator/p1-native-prefix-1";
     public const string P1NativePrefixManifestFile = "p1-native-prefix-manifest.json";
+
+    /// <summary>A durable cut of this same stream; no copies, settlement or actor claim.</summary>
+    public P1NativeCheckpoint CheckpointP1Native()
+    {
+        lock (_gate)
+        {
+            EnsureOpen();
+            if (!IsP1NativeSession || _p1NativeEvents == null) throw new InvalidOperationException("p1_native_profile_required");
+            if (_p1NativeWriteFailed) throw new InvalidDataException("p1_native_persistence_failed");
+            try
+            {
+                SealP1NativeBases();
+                _p1NativeEvents.Flush(flushToDisk: true);
+                _journal.Flush(flushToDisk: true);
+                return new("sts2.human-annotator/p1-native-checkpoint-1", Manifest.SessionId, Manifest.TimelineId,
+                    new(_p1NativeSequence, _p1NativeEvents.Length,
+                        EvidenceIdentity.Sha256File(Path.Combine(DirectoryPath, P1NativeRecordingContract.EventFile)),
+                        _journal.Length, EvidenceIdentity.Sha256File(Path.Combine(DirectoryPath, "run-journal.jsonl")),
+                        _p1NativeAccepted, _p1NativeTerminal, _p1NativePending.Count, _p1NativeIssues));
+            }
+            catch (Exception error) { MarkWriteFailureUnsafe(error); throw; }
+        }
+    }
 
     /// <summary>Freeze original bytes at the committed Store watermark without closing or settling pending decisions.</summary>
     public P1NativePrefixResult ExportP1NativePrefix()

@@ -68,6 +68,8 @@ AGENT_STATUS = "sts2.policy-runtime/agent-session-status-1"
 AGENT_STARTUPS = frozenset({AGENT_STARTUP, "sts2.policy-runtime/agent-session-startup-2"})
 AGENT_STATUSES = frozenset({AGENT_STATUS, "sts2.policy-runtime/agent-session-status-2"})
 JSON_LIMIT = 1024 * 1024
+# One <=8MiB P1 catalog plus its complete score vector and envelope.
+REVIEW_JSON_LIMIT = 16 * 1024 * 1024
 RUN_PROFILES: dict[str, dict[str, Any]] = {
     "continuous": {"mode": "continuous"},
     "short": {"max_submissions": 16, "max_policy_calls": 32, "deadline_ms": 60_000},
@@ -356,11 +358,12 @@ class RuntimeClient:
         *, binding: RuntimeControlBinding | None = None,
     ) -> dict[str, Any]:
         if (
-            route not in {"/status", "/environment", "/mode", "/tick", "/stop", "/reconcile"}
+            route not in {"/status", "/environment", "/mode", "/tick", "/stop",
+                          "/reconcile", "/review"}
             or (route == "/environment" and body is not None)
             or (
                 binding is not None
-                and (body is None or route not in {"/mode", "/tick", "/reconcile"})
+                and (body is None or route not in {"/mode", "/tick", "/reconcile", "/review"})
             )
             or (
                 route == "/reconcile"
@@ -393,9 +396,10 @@ class RuntimeClient:
             "runtime_status_unavailable_or_identity_drift"
         )
         try:
+            limit = REVIEW_JSON_LIMIT if route == "/review" else JSON_LIMIT
             with self.opener.open(request, timeout=45 if body is not None else 2) as response:
-                raw = response.read(JSON_LIMIT + 1)
-            if len(raw) > JSON_LIMIT:
+                raw = response.read(limit + 1)
+            if len(raw) > limit:
                 raise ValueError
             value = decode_json(raw)
             if route == "/environment":
@@ -404,6 +408,11 @@ class RuntimeClient:
             expected = "sts2.policy-runtime/http-2" + ("/tick-1" if route == "/tick" else "")
             if not isinstance(value, dict) or value.get("schema") != expected:
                 raise ValueError
+            if route == "/review":
+                if (value.get("run_id") != self.startup["run_id"]
+                        or not isinstance(value.get("review"), dict)):
+                    raise ValueError
+                return value
             if route == "/reconcile" and (
                 set(value) != {"schema", "request_id", "resolution", "status"}
                 or value["request_id"] != body["request_id"]  # type: ignore[index]
@@ -627,6 +636,7 @@ class LocalModelService:
         self._recording_source_reservation: object | None = None
         self.execution_admission_guard: Callable[[str], None] | None = None
         self._recording_admission_guard: Callable[[], bool] | None = None
+        self.mixed_runs: Any | None = None
         self._native_authorizer: Callable[[], None] | None = None
         self.process: subprocess.Popen[bytes] | None = None
         self.client: RuntimeClient | None = None
@@ -2297,7 +2307,10 @@ class LocalModelService:
                     if current_observation():
                         self.state["observation_error"] = error.code
         with self.lock:
-            return cast(dict[str, Any], json.loads(json.dumps(self.state)))
+            result = cast(dict[str, Any], json.loads(json.dumps(self.state)))
+        if self.mixed_runs is not None:
+            result["mixed_run"] = self.mixed_runs.status()
+        return result
 
     @staticmethod
     def read_control_context(value: object) -> tuple[str, RuntimeControlBinding]:
@@ -2345,6 +2358,10 @@ class LocalModelService:
         native_context: dict[str, Any] | None = None,
         native_authorizer: Callable[[], None] | None = None,
     ) -> dict[str, Any]:
+        if (action == "auto" and self.mixed_runs is not None
+                and self.mixed_runs.status().get("status") == "recording"
+                and self.mixed_runs.status().get("settings", {}).get("single_step")):
+            action = "one_step"
         if action not in MODES | {"stop", "reconcile", "tick"} or (
             (action == "reconcile") != (request_id is not None)
         ):
@@ -2542,11 +2559,14 @@ class LocalModelService:
                 context = NativeTasks.model_context(
                     observation, observation["run_id"], binding.recovery_epoch
                 )
-                native = self.native_tasks.prepare_model(
-                    observation, bound_endpoint, model_context=context
-                )
-                if native["runtime_instance_id"] != binding.runtime_instance_id:
-                    raise BoundaryError("local_model", "runtime_game_mismatch")
+                preserved_mixed = (self.mixed_runs is not None
+                    and self.mixed_runs.before_control(action, client, binding))
+                if not preserved_mixed:
+                    native = self.native_tasks.prepare_model(
+                        observation, bound_endpoint, model_context=context
+                    )
+                    if native["runtime_instance_id"] != binding.runtime_instance_id:
+                        raise BoundaryError("local_model", "runtime_game_mismatch")
                 # Native Close cannot authorize a replacement Runtime or game.
                 latest = client.request("/status")["status"]
                 NativeTasks.confirm_runtime(latest, binding.runtime_instance_id)
@@ -2564,6 +2584,8 @@ class LocalModelService:
                 runtime = self._send_control(
                     client, "/tick", {"max_ticks": 1}, intent, binding
                 )["status"]
+        if self.mixed_runs is not None:
+            self.mixed_runs.after_control(action, runtime)
         with self.lock:
             self._require_intent(intent)
             if not self.closed and self.state["status"] != "stopped":
@@ -2755,11 +2777,15 @@ class LocalModelService:
             client = self.client
             if self.closed or client is None or (
                 self.thread is not None and self.thread.is_alive()
+                and not (self.mixed_runs is not None
+                         and self.mixed_runs.status().get("status") in {"recording", "finishing"})
             ):
                 return
             owned_exited = self.process is not None and self.process.poll() is not None
         try:
             observed = None if owned_exited else client.request("/status")["status"]
+            if self.mixed_runs is not None:
+                self.mixed_runs.observe(client, observed)
             if observed is not None and observed["lifecycle"] != "stopped":
                 return
             with self.lock:
@@ -3234,11 +3260,19 @@ class LocalModelService:
                 else None,
                 controller_at_stop=stop["controller"] if stop is not None else None,
             )
+        mixed = self.mixed_runs.status() if self.mixed_runs is not None else {}
+        is_mixed = startup["run_id"] in mixed.get("model_runs", [])
+        if is_mixed:
+            report.update(scope="mixed_run_operation", score_eligible=False,
+                          training_admission="blocked_pending_user_policy",
+                          mixed_run_id=mixed["mixed_run_id"],
+                          agent_task_outcome={"status": "ineligible", "reason": "mixed_run"})
         identity = hashlib.sha256(canonical_json(report).encode()).hexdigest()
         report["evaluation_id"] = (
             identity  # Existing operational journal ID; schema remains native.
         )
-        target = self.directory / "evaluations" / (identity + ".json")
+        target = (self.directory / ("mixed-operations" if is_mixed else "evaluations")
+                  / (identity + ".json"))
         target.parent.mkdir(parents=True, exist_ok=True)
         raw = canonical_json(report).encode()
         try:

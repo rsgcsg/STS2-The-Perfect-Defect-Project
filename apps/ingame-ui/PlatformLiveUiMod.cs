@@ -215,6 +215,7 @@ internal sealed class PlatformLivePanel : IDisposable
     private PlatformNativeWorkbenchPanel _nativeWorkbench = null!;
     private bool _policyCommandPending;
     private readonly PlatformPolicyCommands _policyCommands = new();
+    private bool _mixedPauseKeyDown, _mixedResumeKeyDown;
     private readonly HttpClient _workbenchHttpClient = PlatformWorkbenchOpenClient.CreateHttpClient();
     private Task<PlatformWorkbenchOpenResult>? _workbenchOpenCheck;
     private bool _workbenchOpenExternal;
@@ -1666,6 +1667,10 @@ internal sealed class PlatformLivePanel : IDisposable
 
     private void OnProcessFrame()
     {
+        bool pause = Input.IsPhysicalKeyPressed(Key.F8), resume = Input.IsPhysicalKeyPressed(Key.F9);
+        if (pause && !_mixedPauseKeyDown) _ = RunPolicyCommandAsync(PlatformPolicyCommand.Human);
+        if (resume && !_mixedResumeKeyDown) _nativeWorkbench.ModelHotkey(true);
+        _mixedPauseKeyDown = pause; _mixedResumeKeyDown = resume;
         CompleteWorkbenchOpenCheck();
         _nativeWorkbench.OnFrame(_workspace.Visible && _layout.ActiveSurface == "workbench" && !_layout.Compact);
         ApplyPendingStatus();

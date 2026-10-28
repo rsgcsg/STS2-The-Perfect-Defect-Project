@@ -111,10 +111,24 @@ public sealed class PlatformRecordingCommandsTests
     [InlineData("resume")]
     [InlineData("close")]
     [InlineData("export_p1_native_prefix")]
+    [InlineData("checkpoint_p1_native")]
     public void P1NativeLifecycleDoesNotAcceptAReplacementOrigin(string kind)
     {
         Assert.Null(Read(P1Request(kind, null)).Command.P1NativeOrigin);
         Assert.Throws<ArgumentException>(() => Read(P1Request(kind)));
+    }
+
+    [Fact]
+    public void MixedIdentityIsImmutableStartMetadataAndCannotDeclareHuman()
+    {
+        var body = P1Request(origin: "unknown");
+        body["command"]!["mixed_run_id"] = new string('a', 32);
+        Assert.Equal(new string('a', 32), Read(body).Command.MixedRunId);
+        body["command"]!["p1_native_origin"] = "declared_human";
+        Assert.Throws<ArgumentException>(() => Read(body));
+        body = P1Request("resume", null);
+        body["command"]!["mixed_run_id"] = new string('a', 32);
+        Assert.Throws<ArgumentException>(() => Read(body));
     }
 
     [Fact]
