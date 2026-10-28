@@ -164,6 +164,36 @@ def test_packed_original_package_is_accepted_as_global_evidence_parent(tmp_path,
         _parents(store, wrong.artifact_id, runtime.artifact_id, value, expected)
 
 
+@pytest.mark.parametrize("invalid_projection", [None, "v1", "tampered_v2"])
+def test_v2_evidence_binding_uses_original_model_projection(
+    tmp_path, monkeypatch, invalid_projection,
+):
+    from stpd.p1.input import INPUT_SPEC, V2_INPUT_SPEC
+
+    store, _, directory, expected, model, runtime, _ = _setup(tmp_path, monkeypatch)
+    descriptor = json.loads(b"".join(store.read_payload(model.payload("package_manifest"))))
+    compact = {"id": V2_INPUT_SPEC["id"], "version": V2_INPUT_SPEC["version"],
+               "sha256": "c" * 64}
+    descriptor["input_spec"] = compact
+    parameters = model.parameters.value()
+    parameters["input_spec"] = compact
+    original = replace(model, parameters=FrozenObject.of(parameters), payloads=(
+        model.payload("weights"), store.put_bytes(
+            "package_manifest", json_bytes(descriptor), "application/json")))
+    store.publish(original)
+    value = SimpleNamespace(manifest=json.loads((directory / "manifest.json").read_bytes()),
+                            agent_manifest={"adapter": {"id": "stpd-p1-mstd-agent"},
+                                            "input": {"input_spec": compact}})
+    expected["model_binding"] = {"package_input_spec": compact, "input_spec": compact,
+                                 "input_projection": V2_INPUT_SPEC}
+    assert _parents(store, original.artifact_id, runtime.artifact_id, value, expected)[0] == (
+        Parent("model", original.artifact_id))
+    wrong = {"v1": INPUT_SPEC, "tampered_v2": {**V2_INPUT_SPEC, "truncate": True}}
+    expected["model_binding"]["input_projection"] = wrong.get(invalid_projection)
+    with pytest.raises(BoundaryError, match="trusted_model_binding_mismatch"):
+        _parents(store, original.artifact_id, runtime.artifact_id, value, expected)
+
+
 def test_new_reference_manifest_has_new_reserved_seeds_and_explicit_version(tmp_path):
     from spireagent.workbench.reference_suite import load_manifest
 
