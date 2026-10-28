@@ -286,7 +286,7 @@ npm run slot -- run --resources cpu --card CARD --until 2026-10-28T22:00:00+10:0
 npm run slot -- run --resources cpu --card E2 --until 2026-10-28T20:00:00+10:00 -- npm run env:attach
 npm run env:run -- npm run check
 # Managed 评估/重放/采样：整个前台批次放在占位命令内；内部每局检查同一 token。
-npm run slot -- run --card CARD --lanes 4 --games 20 --until 2026-10-28T20:00:00+10:00 -- python python/tools/evaluate_managed_suite.py --help
+npm run slot -- run --card CARD --lanes 4 --games 20 --until 2026-10-28T20:00:00+10:00 -- uv run --project python --locked --no-sync python python/tools/evaluate_managed_suite.py --help
 # 收口先解除本卡引用，再删自己的可重建产物/源码；共享库保留最近三份。
 npm run env:detach
 npm run env:prune -- 3
