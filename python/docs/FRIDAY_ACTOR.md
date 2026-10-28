@@ -17,7 +17,7 @@ Host/Runtime 固定包身份，候选固定 SHA/MVID，模型固定原 Store 身
 
 运行者使用 `spireagent/managed-evaluation-execution-v1` 原配置：准确 `producer`、
 `host_pin`、`runtime_pin`、`agent_adapter`、`initial_progress`、`candidate_directory`、
-`models`、`peer`、`python_executable`。模型只填一份。Friday 另外固定
+`models`、`peer`、`python_executable`。工程吞吐批次模型只填一份；固定种子评估可列多份，见下节。Friday 另外固定
 `game_assembly_sha256=71eec3ba5e0c640fc0cf0758517faf5f2ff039bea21966b22b23f2c427c7a09f`，
 仅约束原 Host 审计响应，不能绕过 Host 的精确元组准入；省略仍用原 Mac 身份。另声明：
 
@@ -47,7 +47,8 @@ Host/Runtime 固定包身份，候选固定 SHA/MVID，模型固定原 Store 身
 在同一共享租约根中互斥取组。租约写入后不自动过期、不回收、不重投未知。
 
 ```bash
-export PYTHONPATH=/data/<user>/friday-actor/source/python
+export FRIDAY_ACTOR_ROOT="/data/$(id -un)/friday-actor"
+export PYTHONPATH="$FRIDAY_ACTOR_ROOT/source/python"
 python tools/friday/prepare.py --execution /ABS/execution.json --output /ABS/plan \
   --namespace F2-paired-20261028 --groups 1 --per-group 8 \
   --cell c6220 --cell fc430 --cell mac --persistent /ABS/paired-results
@@ -126,3 +127,44 @@ Friday 的执行配置须显式列出
 让原 Runtime 转交学校 Python 模块的动态库路径和指定线程数；只记录变量名。
 Mac 测速只需 `FRIDAY_INFERENCE_THREADS`。缺变量会在开局前拒绝，
 AWS/R2 凭据不能通过此项传给 Agent。默认空列表保持原 Mac 路径。
+
+## 固定种子评估也默认 Friday
+
+Managed 打局和固定种子评估都默认 Friday；Mac 只做必要的 Mac 对照。
+`tools/friday/evaluate.py` 把评估放在**一个 Slurm 节点、一个原账本**里，默认申请
+4核并调用原 `EvaluationLedger.run_managed(workers=4)` 和原保存池；不把多个作业
+的可变账本拼在一起。原32路数组仍只用于独立工程吞吐试跑。
+
+评估执行配置可有多个原模型，必须显式 `store="s3"` 和
+`retention={"tier":"trajectory","purpose":"evaluation","audit_every":50}`。
+默认使用原 `ref-20` 的完整20颗固定种子；3模型得到原账本的60槽，按原规则
+事先选2槽完整审计，其余留轨迹。也可传已被原 `load_manifest` 支持的完整固定
+T2或检查点清单；不裁剪或更改种子原件，不把工程诊断种子改称评估种子。
+
+```bash
+python tools/friday/evaluate.py prepare --execution /ABS/evaluation-execution.json \
+  --output /ABS/evaluation-plan --workers 4 --wall-seconds 7200 \
+  --selection early=MODEL_SELECTION_1 --selection middle=MODEL_SELECTION_2 \
+  --selection late=MODEL_SELECTION_3
+python tools/friday/evaluate.py submit --plan /ABS/evaluation-plan/plan.json --dry-run
+python tools/friday/evaluate.py submit --plan /ABS/evaluation-plan/plan.json
+# run 由该作业的 launch.sh 在 Friday 内调用；不需再次 SSH 登录。
+touch /ABS/evaluation-plan/STOP
+```
+
+所有模型、源码 producer、Host/Runtime pin、清单、保存用途均在 plan 输入中冻结；
+实际分配后由原账本生成准确槽和审计身份，开第一局前把全计划和本次选择写到
+`admission.json`。`prepare --limit N` 只冻结本次最多开N槽，先开原规则选定的审计槽；
+完整20种子×模型分母不变，未开的槽仍明确保留，不能把冒烟写成整批通过。
+
+评估使用同一个 `spireagent-f2` 作业名和用户提交锁，所以有工程数组或评估未排空时
+不能叠加提交。核数必须满足提交当时空闲1/4等门槛，不能满足就拒绝；不偷偷降核或
+改回 Mac。默认单局上限900秒、总预算2小时，预留单局与保存退出时间，作业不 requeue。
+未知或保存失败时只停止新准入，让已经开始的局由原 Runtime 排空，未知不再开。
+
+进度及原模型、轨迹上传与冷读回仍由原执行链负责；最终原账本报告、所有失败分母、
+保存回执在 `result.json` 和 `evidence/`，完整审计没满足时仍是 `score_admitted=false`。
+同一个 plan 一旦取得 `owner.json` 不可重新开局；节点或作业失败先核原 scratch、
+Slurm 与 R2 回执，只由原保存恢复入口处理，不能删 owner 重投。
+此入口的便宜回归在 `python/` 下运行
+`python -m pytest tests/test_friday_evaluation.py -q`，不启动游戏。

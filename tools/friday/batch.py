@@ -194,7 +194,7 @@ def run(configuration_path: Path, cell: str, *, wall_seconds: float,
     except FileExistsError:
         raise ValueError("worker_already_offered_recover_original_save_only") from None
     ownership = worker / "owner.json"
-    scratch = Path(tempfile.mkdtemp(prefix="spireagent-friday-"))
+    scratch = Path(tempfile.mkdtemp(prefix="spireagent-friday-")).resolve()
     scratch.chmod(0o700)
     owner = {"worker_id": worker_id, "host": socket.gethostname(), "job_id": job_id,
              "task_id": task_id, "scratch": str(scratch), "configuration_sha256": identity}
