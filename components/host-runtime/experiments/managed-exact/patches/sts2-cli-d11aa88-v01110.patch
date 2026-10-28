@@ -109,10 +109,10 @@ index 0000000..172d413
 +</Project>
 diff --git a/m2a-native-tests/Program.cs b/m2a-native-tests/Program.cs
 new file mode 100644
-index 0000000..12b56f4
+index 0000000..ac53fd8
 --- /dev/null
 +++ b/m2a-native-tests/Program.cs
-@@ -0,0 +1,314 @@
+@@ -0,0 +1,342 @@
 +using System.Reflection;
 +using System.Runtime.Loader;
 +using System.Text.Json;
@@ -141,8 +141,36 @@ index 0000000..12b56f4
 +        string root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
 +        AssemblyLoadContext.Default.Resolving += (_, name) => File.Exists(Path.Combine(root, "lib", name.Name + ".dll"))
 +            ? AssemblyLoadContext.Default.LoadFromAssemblyPath(Path.Combine(root, "lib", name.Name + ".dll")) : null;
-+        if (args.Contains("gardener")) Gardener(); else { Test(); Gardener(); EventAudio(); Decimillipede(); LockedEvent(); }
++        if (args.Contains("gardener")) Gardener(); else { Test(); Gardener(); EventAudio(); Decimillipede(); LockedEvent(); EnchantedDeck(); }
 +    }
++    private static void EnchantedDeck()
++    {
++        var assembly = typeof(NativeCardRewardAlternativePreview).Assembly;
++        var simulator = assembly.GetType("Sts2Headless.RunSimulator")!;
++        object sim = Activator.CreateInstance(simulator)!;
++        try
++        {
++            simulator.GetMethod("StartRun")!.Invoke(sim, new object?[] { "Defect", 0, "M2D_ENCHANTED_DECK_COMPONENT_REGRESSION_V1", "zh", null });
++            var run = (RunState)simulator.GetField("_runState", Flags)!.GetValue(sim)!;
++            var player = run.Players[0];
++            var defends = player.Deck.Cards.Where(card => card is DefendDefect).ToArray();
++            Check(defends.Length >= 2, "native starter deck has two identical Defends");
++            CardCmd.Enchant<MegaCrit.Sts2.Core.Models.Enchantments.Nimble>(defends[0], 2m);
++            var block = defends[0].DynamicVars.Values.Single(value => value.Name == "Block");
++            decimal preview = block.PreviewValue;
++            string Ref(object original) => (string)assembly.GetType("Sts2Headless.NativeObjectIdentity")!.GetMethod("Get")!.Invoke(null, new[] { original })!;
++            var summary = (Dictionary<string, object?>)simulator.GetMethod("PlayerSummary", Flags)!.Invoke(sim, new object[] { player })!;
++            var deck = ((IEnumerable<Dictionary<string, object?>>)summary["deck"]!).ToArray();
++            string Description(CardModel card) => (string)deck.Single(entry => entry["native_ref"] as string == Ref(card))["description"]!;
++            Check(Description(defends[0]).Contains("7") && !Description(defends[0]).Contains("5"),
++                "enchanted deck card shows native Nimble preview block: " + Description(defends[0]));
++            Check(Description(defends[1]).Contains("5"), "plain identical Defend keeps base block: " + Description(defends[1]));
++            Check(block.PreviewValue == preview, "deck read restores the owned native preview value");
++            Console.WriteLine("exact native enchanted deck description used settled Nimble preview");
++        }
++        finally { simulator.GetMethod("CleanUp")!.Invoke(sim, null); }
++    }
++
 +    private static void LockedEvent()
 +    {
 +        var assembly = typeof(NativeCardRewardAlternativePreview).Assembly;
@@ -7417,7 +7445,7 @@ index 800f139..0da0544 100644
  
              case "action":
 diff --git a/src/Sts2Headless/RunSimulator.cs b/src/Sts2Headless/RunSimulator.cs
-index 6b9de4a..b9496d6 100644
+index 6b9de4a..2598608 100644
 --- a/src/Sts2Headless/RunSimulator.cs
 +++ b/src/Sts2Headless/RunSimulator.cs
 @@ -1,4 +1,7 @@
@@ -11591,7 +11619,7 @@ index 6b9de4a..b9496d6 100644
 +                // Use the same game-owned card rendering path as a normal pile hover. The
 +                // managed Host exports facts and exact identity; it does not reimplement
 +                // DynamicVar formatting or card rules.
-+                var dcard = VisibleHoverCard(c);
++                var dcard = VisibleHoverCard(c, PileType.Deck);
 +                dcard["native_ref"] = NativeObjectIdentity.Get(c);
 +                dcard["stats"] = dstats.Count > 0 ? dstats : null;
 +                dcard["keywords"] = dkws?.Count > 0 ? dkws : null;
@@ -11605,7 +11633,7 @@ index 6b9de4a..b9496d6 100644
                  if (c.Affliction != null)
                  {
                      dcard["affliction"] = _loc.Bilingual("afflictions", c.Affliction.Id.Entry + ".title");
-@@ -3034,36 +3770,184 @@ public class RunSimulator
+@@ -3034,36 +3770,190 @@ public class RunSimulator
          };
      }
  
@@ -11652,11 +11680,17 @@ index 6b9de4a..b9496d6 100644
 +        return new VisibleHoverFactsResult(keywords, cardPreviews, complete);
 +    }
 +
-+    private Dictionary<string, object?> VisibleHoverCard(CardModel card)
++    private Dictionary<string, object?> VisibleHoverCard(CardModel card, PileType? settledPreviewPile = null)
 +    {
 +        string? description;
-+        try { description = StripVisibleText(card.GetDescriptionForPile(PileType.None)); }
-+        catch { description = StripVisibleText(card.Description.GetFormattedText()); }
++        // The Reference reads an enchanted deck card after native rendering has
++        // settled its enchanted preview values; run that preview transactionally.
++        if (settledPreviewPile is { } pile && card.Enchantment != null)
++            description = StripVisibleText(NativeCardRenderTransaction.Run(card, pile,
++                () => card.GetDescriptionForPile(PileType.None)));
++        else
++            try { description = StripVisibleText(card.GetDescriptionForPile(PileType.None)); }
++            catch { description = StripVisibleText(card.Description.GetFormattedText()); }
 +        var result = new Dictionary<string, object?>
 +        {
 +            ["id"] = card.Id.Entry,
@@ -11796,7 +11830,7 @@ index 6b9de4a..b9496d6 100644
          return ctx;
      }
  
-@@ -3074,6 +3958,11 @@ public class RunSimulator
+@@ -3074,6 +3964,11 @@ public class RunSimulator
  
          TestMode.IsOn = true;
  
@@ -11808,7 +11842,7 @@ index 6b9de4a..b9496d6 100644
          // Install inline sync context on main thread
          SynchronizationContext.SetSynchronizationContext(_syncCtx);
  
-@@ -3099,14 +3988,6 @@ public class RunSimulator
+@@ -3099,14 +3994,6 @@ public class RunSimulator
          try { SaveManager.Instance.InitPrefsDataForTest(); }
          catch (Exception ex) { Console.Error.WriteLine($"[WARN] SaveManager.InitPrefsDataForTest: {ex.Message}"); }
  
@@ -11823,7 +11857,7 @@ index 6b9de4a..b9496d6 100644
          // Patch Cmd.Wait to be a no-op in headless mode.
          // Cmd.Wait(duration) is used for UI animations (e.g., PreviewCardPileAdd during
          // Vantom's Dismember move adding Wounds). In headless mode, these never complete
-@@ -3139,9 +4020,15 @@ public class RunSimulator
+@@ -3139,9 +4026,15 @@ public class RunSimulator
          }
          Console.Error.WriteLine($"[INFO] ModelDb: {registered} registered, {failed} failed out of {subtypes.Count}");
  
@@ -11839,7 +11873,7 @@ index 6b9de4a..b9496d6 100644
              ModelIdSerializationCache.Init();
              Console.Error.WriteLine("[INFO] ModelIdSerializationCache initialized");
          }
-@@ -3151,15 +4038,15 @@ public class RunSimulator
+@@ -3151,15 +4044,15 @@ public class RunSimulator
          }
      }
  
@@ -11861,7 +11895,7 @@ index 6b9de4a..b9496d6 100644
              _ => null
          };
      }
-@@ -3263,499 +4150,831 @@ public class RunSimulator
+@@ -3263,499 +4156,831 @@ public class RunSimulator
          }
      }
  
@@ -11951,16 +11985,22 @@ index 6b9de4a..b9496d6 100644
          }
  
 -        public void ResolvePending(IEnumerable<CardModel> selected)
--        {
++        private readonly object _gate = new();
++        private readonly List<SelectionContext> _stack = new();
++
++        public RewardsSet? PendingSet
+         {
 -            _pendingTcs?.TrySetResult(selected);
 -            PendingOptions = null;
 -            _pendingTcs = null;
--        }
-+        private readonly object _gate = new();
-+        private readonly List<SelectionContext> _stack = new();
++            get
++            {
++                lock (_gate) return _stack.Count == 0 ? null : _stack[^1].Set;
++            }
+         }
  
 -        public void ResolvePendingByIndices(int[] indices)
-+        public RewardsSet? PendingSet
++        public bool IsAwaitingAction
          {
 -            if (PendingOptions == null) return;
 -            var selected = indices
@@ -11970,32 +12010,26 @@ index 6b9de4a..b9496d6 100644
 -            ResolvePending(selected);
 +            get
 +            {
-+                lock (_gate) return _stack.Count == 0 ? null : _stack[^1].Set;
++                lock (_gate) return _stack.Count > 0 && _stack[^1].Request != null;
 +            }
          }
  
 -        public void CancelPending()
-+        public bool IsAwaitingAction
++        public async Task SelectAsync(RewardsSet set)
          {
 -            _pendingTcs?.TrySetResult(Array.Empty<CardModel>());
 -            PendingOptions = null;
 -            _pendingTcs = null;
-+            get
-+            {
-+                lock (_gate) return _stack.Count > 0 && _stack[^1].Request != null;
-+            }
-         }
+-        }
++            NativeRewardSetObservation.Register(set);
++            var synchronizer = RunManager.Instance.RewardsSetSynchronizer;
++            if (synchronizer.IsRewardsSetCompleted(set)) return;
  
 -        // Pending card reward from events (GetSelectedCardReward blocks until resolved)
 -        public List<MegaCrit.Sts2.Core.Entities.Cards.CardCreationResult>? PendingRewardCards { get; private set; }
 -        private ManualResetEventSlim? _rewardWait;
 -        private int _rewardChoice = -1;
-+        public async Task SelectAsync(RewardsSet set)
-+        {
-+            NativeRewardSetObservation.Register(set);
-+            var synchronizer = RunManager.Instance.RewardsSetSynchronizer;
-+            if (synchronizer.IsRewardsSetCompleted(set)) return;
- 
+-
 -        // NOTE: STS2 build 23372702 changed ICardSelector.GetSelectedCardReward to return
 -        // a CardRewardSelection struct { CardModel card; CardRewardAlternative alternative }.
 -        // CardReward.OnSelect interprets: alternative != null → pick that alternative
@@ -12121,12 +12155,12 @@ index 6b9de4a..b9496d6 100644
 +            }
          }
 -    }
- 
+-
 -    internal static class YieldPatches
 -    {
 -        // Only suppress Task.Yield() when this flag is set (during end_turn processing)
 -        public static volatile bool SuppressYield;
--
+ 
 -        public static bool IsCompletedPrefix(ref bool __result)
 +        public void NotifyStateChanged()
          {
@@ -12624,19 +12658,19 @@ index 6b9de4a..b9496d6 100644
 +        {
 +            TaskCompletionSource<IEnumerable<CardModel>>? aborted=null;
 +            lock(_selectionGate)
-             {
--                try { harmony.Patch(getLocString, new HarmonyMethod(glsPrefix)); }
--                catch (Exception ex4) { Console.Error.WriteLine($"[WARN] Failed to patch GetLocString: {ex4.Message}"); }
++            {
 +                if(_nativeSelector!=null || _simpleGrid!=null || _handSelection!=null)
 +                {aborted=_pendingTcs;_pendingTcs=null;PendingOptions=null;_nativeSelector=null;_simpleGrid=null;_handSelection=null;}
-             }
++            }
 +            if(aborted!=null)aborted.TrySetCanceled();
 +            else CancelPending();
 +            lock (_selectionGate)
-+            {
+             {
+-                try { harmony.Patch(getLocString, new HarmonyMethod(glsPrefix)); }
+-                catch (Exception ex4) { Console.Error.WriteLine($"[WARN] Failed to patch GetLocString: {ex4.Message}"); }
 +                _rewardCanceled = true;
 +                _rewardWait?.Set();
-+            }
+             }
 +        }
  
 -            // Patch FromChooseABundleScreen to use our card selector
@@ -12858,6 +12892,7 @@ index 6b9de4a..b9496d6 100644
 -            __result = __instance?.LocEntryKey ?? "";
 -            return false;
 -        }
+-
 +            var instanceProp = typeof(LocManager).GetProperty("Instance",
 +                System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Public);
 +            var instance = System.Runtime.CompilerServices.RuntimeHelpers.GetUninitializedObject(typeof(LocManager));
@@ -12948,7 +12983,6 @@ index 6b9de4a..b9496d6 100644
 +            }
 +            NativeSelectorCallScope.SimpleHookReady = true;
  
- 
 -        /// <summary>Harmony prefix: replace Neutralize.OnPlay with safe damage+weak.</summary>
 -        public static bool NeutralizePrefix(CardModel __instance, ref Task __result,
 -            PlayerChoiceContext choiceContext, CardPlay cardPlay)
@@ -12957,7 +12991,7 @@ index 6b9de4a..b9496d6 100644
 -            __result = NeutralizeSafe(__instance, choiceContext, cardPlay);
 -            return false;
 -        }
--
+ 
 -        private static async Task NeutralizeSafe(CardModel card, PlayerChoiceContext ctx, CardPlay play)
 -        {
 +            // Patch FromChooseABundleScreen to use our card selector
@@ -13029,7 +13063,7 @@ index 6b9de4a..b9496d6 100644
 +            Array.Empty<MegaCrit.Sts2.Core.Localization.LocValidationError>());
 +        Console.Error.WriteLine($"[INFO] Native localization language={language} tables={selectedTables.Count}");
 +    }
- 
++
 +    private static Dictionary<string, LocTable> LoadNativeLocalizationTables(
 +        string directory,
 +        Dictionary<string, LocTable>? fallbackTables = null)
@@ -13059,7 +13093,7 @@ index 6b9de4a..b9496d6 100644
 +            ?? throw new MissingFieldException(typeof(LocManager).FullName, name);
 +        field.SetValue(manager, value);
 +    }
-+
+ 
 +    private static void SetLocManagerProperty(LocManager manager, string name, object value)
 +    {
 +        var property = typeof(LocManager).GetProperty(name,
@@ -13073,7 +13107,7 @@ index 6b9de4a..b9496d6 100644
          /// <summary>
          /// Intercept bundle selection — store bundles and wait for player to pick a pack index.
          /// </summary>
-@@ -3776,6 +4995,7 @@ public class RunSimulator
+@@ -3776,6 +5001,7 @@ public class RunSimulator
              {
                  sim._pendingBundles = bundles;
                  sim._pendingBundleTcs = new TaskCompletionSource<IEnumerable<CardModel>>();
@@ -13081,7 +13115,7 @@ index 6b9de4a..b9496d6 100644
                  Console.Error.WriteLine($"[SIM] Bundle selection pending: {bundles.Count} packs");
  
                  __result = sim._pendingBundleTcs.Task;
-@@ -3789,16 +5009,12 @@ public class RunSimulator
+@@ -3789,16 +5015,12 @@ public class RunSimulator
          // Static reference so Harmony patch can access the simulator instance
          internal static RunSimulator? _bundleSimRef;
  
@@ -13100,7 +13134,7 @@ index 6b9de4a..b9496d6 100644
      }
  
      private static Dictionary<string, object?> Error(string message) =>
-@@ -3826,36 +5042,54 @@ public class RunSimulator
+@@ -3826,36 +5048,54 @@ public class RunSimulator
          var currentCoord = _runState.CurrentMapCoord;
          var visited = _runState.VisitedMapCoords;
  
@@ -13174,7 +13208,7 @@ index 6b9de4a..b9496d6 100644
          // Boss node
          var bossNode = new Dictionary<string, object?>
          {
-@@ -3867,13 +5101,12 @@ public class RunSimulator
+@@ -3867,13 +5107,12 @@ public class RunSimulator
          // Add boss name/id — use BossEncounter?.Id?.Entry
          try
          {
@@ -13191,7 +13225,7 @@ index 6b9de4a..b9496d6 100644
              }
          }
          catch { }
-@@ -3896,15 +5129,124 @@ public class RunSimulator
+@@ -3896,15 +5135,124 @@ public class RunSimulator
      {
          try
          {

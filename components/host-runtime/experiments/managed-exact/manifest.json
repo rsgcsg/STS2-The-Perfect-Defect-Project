@@ -47,9 +47,9 @@
     "effect": "Every Managed prepare compares the exact game Godot references with the built stub; a gap outside the reviewed baseline fails the build and names the member. Hosted CI has no game files and does not run it."
   },
   "expected_build": {
-    "source_patch_sha256": "aac17166c0369fc25e0671b5219ad675048cbe058bccca070eea817a0dd74708",
-    "artifact_sha256": "1c96e1609a4ed2503beecd04cf06ce66621c70a667d604679d990ff2cabd4e8c",
-    "artifact_mvid": "2d7dafda-95de-4631-9f13-63cf8610bfe9",
+    "source_patch_sha256": "c2b2cbb12aaf826945174399f7db93bb54af3c8c23395951786cfe27d691e405",
+    "artifact_sha256": "029a414ba038d0193cfb9dbf2992ebdfc4f037abff7157a0268bb4af6add6bc3",
+    "artifact_mvid": "76bdb43e-d8ff-48b2-bea8-f7fc7925faf1",
     "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0"
   },
   "previous_candidate_build": {
@@ -306,6 +306,13 @@
       "risk": "low",
       "effect": "Lets logic methods that touch presentation JIT: CanvasItem SetVisible/SetSelfModulate store the value, MoveToFront reorders, Material, Control SetFocusMode/FocusNeighbor*/SetAnchorsPreset/AddThemeFontOverride, TextureRect ExpandMode, Resource.Duplicate as a new instance without resource_path (a field copy, not Godot's stored-property copy; callers are combat/VFX/reward-icon presentation), GpuParticles2D.Restart, InputEventMouseButton.ButtonIndex, GodotObject Connect(returns OK)/Disconnect/CallDeferred(StringName) no-ops, SceneTreeTimer.SignalName.Timeout. No waits added.",
       "regression": "m2c-godot-stub-tests JIT sweep: logic-namespace sts2 methods failing JIT 68 (Host52) to 37, every remaining one in a listed baseline category; Connect returns OK; timer signal name; Duplicate clears resource_path"
+    },
+    {
+      "id": "enchanted_deck_settled_preview",
+      "kind": "native_public_presentation_projection",
+      "risk": "low",
+      "effect": "Reads an enchanted deck card description inside the existing NativeCardRenderTransaction, so native UpdateDynamicVarPreview applies the enchantment (e.g. Nimble +2 block) as the Reference deck shows it, then restores every owned preview value. Unenchanted and hover-preview cards keep the previous path. No P1 field meaning or legality change.",
+      "regression": "m2a-native-tests: real Defect starter deck, Nimble 2 on one Defend shows 7 while the identical plain Defend shows 5 (failed with 5 before), owned PreviewValue restored; recorded human replays 510d6b09/700f679a pass their enchanted-deck first difference"
     }
   ],
   "admission": {
@@ -423,6 +430,12 @@
     "source_patch_sha256": "64f890ab62e09ad956bb25eeae78cb867ae629faf8bb44582e46845ff9f93a78",
     "artifact_sha256": "e0eda87653fe08a749a27bdcb4aa2c3041a3ed4d9f89617cd6e16036a73fff39",
     "artifact_mvid": "77fb5aa2-6c03-4e9b-9cdf-ba46668497c1",
+    "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0"
+  },
+  "pre_m2d_enchanted_deck_build": {
+    "source_patch_sha256": "aac17166c0369fc25e0671b5219ad675048cbe058bccca070eea817a0dd74708",
+    "artifact_sha256": "1c96e1609a4ed2503beecd04cf06ce66621c70a667d604679d990ff2cabd4e8c",
+    "artifact_mvid": "2d7dafda-95de-4631-9f13-63cf8610bfe9",
     "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0"
   }
 }
