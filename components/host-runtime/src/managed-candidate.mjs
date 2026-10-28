@@ -15,6 +15,7 @@ import { performance } from "node:perf_hooks";
 import { promisify } from "node:util";
 import { startJsonLineProcess } from "./json-line-process.mjs";
 import { stageAssemblyFingerprintProject } from "./assembly-fingerprint-project.mjs";
+import { checkGodotStubCoverage } from "./godot-stub-coverage.mjs";
 import { ProcessResourceSampler } from "./process-resource-sampler.mjs";
 import { readProjectIdentity } from "./project-identity.mjs";
 import { readSystemIdentity } from "./system-identity.mjs";
@@ -408,6 +409,16 @@ export async function prepareManagedCandidate({
   const build = await inspectManagedCandidateBuild({ root, candidateDirectory: destination, manifest });
   const evidenceDirectory = path.join(localRoot, "evidence", `managed-prepare-${safeTimestamp()}`);
   mkdirSync(evidenceDirectory, { recursive: true });
+  // Every Managed build must bind every Godot API the exact game references,
+  // except the reviewed, listed baseline gaps (M2c). Local-only: needs game files.
+  const godotStubCoverage = await checkGodotStubCoverage({
+    root,
+    candidateDirectory: destination,
+    manifest,
+    referenceAssembly: diskIdentity.godotsharp_assembly.path,
+    outputFile: path.join(evidenceDirectory, "godot-stub-coverage.json"),
+    dotnet
+  });
   const reportFile = path.join(evidenceDirectory, "report.json");
   const report = {
     schema: "sts2.headless/managed-candidate-prepare-1",
@@ -423,6 +434,7 @@ export async function prepareManagedCandidate({
     canonical_candidate_directory: destination,
     game_assembly_unmodified: build.runtime_sts2_sha256 === build.original_sts2_sha256,
     build,
+    godot_stub_coverage: godotStubCoverage,
     non_claims: manifest.admission.forbidden_claims
   };
   writeFileSync(reportFile, `${JSON.stringify(report, null, 2)}\n`);

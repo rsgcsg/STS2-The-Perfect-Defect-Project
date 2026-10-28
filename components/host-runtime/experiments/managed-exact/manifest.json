@@ -35,10 +35,21 @@
     "managed_project": "src/Sts2Headless/Sts2Headless.csproj",
     "managed_artifact": "src/Sts2Headless/bin/Release/net9.0/Sts2Headless.dll"
   },
+  "godot_stub_coverage": {
+    "baseline": "godot-stub-coverage-baseline.json",
+    "scanned_game_files": [
+      "sts2.dll",
+      "Steamworks.NET.dll",
+      "Sentry.Godot.dll"
+    ],
+    "stub_artifact": "src/Sts2Headless/bin/Release/net9.0/GodotSharp.dll",
+    "gate": "local_only_prepare",
+    "effect": "Every Managed prepare compares the exact game Godot references with the built stub; a gap outside the reviewed baseline fails the build and names the member. Hosted CI has no game files and does not run it."
+  },
   "expected_build": {
-    "source_patch_sha256": "64f890ab62e09ad956bb25eeae78cb867ae629faf8bb44582e46845ff9f93a78",
-    "artifact_sha256": "e0eda87653fe08a749a27bdcb4aa2c3041a3ed4d9f89617cd6e16036a73fff39",
-    "artifact_mvid": "77fb5aa2-6c03-4e9b-9cdf-ba46668497c1",
+    "source_patch_sha256": "aac17166c0369fc25e0671b5219ad675048cbe058bccca070eea817a0dd74708",
+    "artifact_sha256": "1c96e1609a4ed2503beecd04cf06ce66621c70a667d604679d990ff2cabd4e8c",
+    "artifact_mvid": "2d7dafda-95de-4631-9f13-63cf8610bfe9",
     "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0"
   },
   "previous_candidate_build": {
@@ -281,6 +292,20 @@
       "risk": "medium",
       "effect": "At the current presented event input boundary, represents native AnimateIn/EnableButton independently of EventOption.IsLocked. Foreign/unpresented options have no enabled presentation; native and public action admission still reject locked options. No P1 field meaning or legality change.",
       "regression": "m2a-native-tests: real EndlessConveyor gold17 locked bankrupt option enabled=true/locked=true; foreign false, locked native choose no effect; actual serialized producer through strict JS catalog"
+    },
+    {
+      "id": "godot_stub_logic_api_bindings",
+      "kind": "godot_stub_binding",
+      "risk": "medium",
+      "effect": "Binds shipped GodotSharp 4.5.1 members referenced from game logic namespaces with Godot semantics: Mathf Atan2/Abs/Sign(int return)/Sin(double)/Max(double)/Lerp(double)/DegToRad(double)/InverseLerp/LerpAngle/AngleDifference/LinearToDb/Wrap/IsZeroApprox; exact RadToDeg constant, Snapped round-half-up and IsEqualApprox exact-then-relative tolerance; Vector2I One/Length/DistanceTo/operators; exact Colors table values; String Capitalize/ToSnakeCase ported from ustring.cpp; Array<T>.GetEnumerator as IEnumerator<T>; Node MoveChild (one past the end means last)/AddSibling/GetParent<T>/Reparent(Node,bool) (no-op without a parent or to the same parent) over ordinary children, out-of-tree GetPath empty and IsNodeReady false; Callable.From(Func<T>) and 3/4-argument actions, Call runs any zero-argument delegate (GameAction cancel now completes), CallDeferred keeps the existing inline stub timing instead of native end-of-frame deferral, and argument-taking callables keep the existing no-op. No P1 field meaning or legality change; the deferred-to-inline timing and argument no-op are known non-equivalences that the next fresh Managed batch must observe.",
+      "regression": "m2c-godot-stub-tests: shipped GodotSharp.dll loaded in an isolated context, Mathf primitive overloads and Colors compared bit-for-bit including NaN/infinity/MaxValue inputs (43431 cases); Godot 4.5.1 test_string.h capitalize/to_snake_case table; move_child negative/one-past-end/out-of-range/non-child, add_sibling, reparent same-parent/no-parent, orphan index -1 counterexamples; Callable Func cancel completes"
+    },
+    {
+      "id": "godot_stub_presentation_no_ops",
+      "kind": "godot_stub_binding",
+      "risk": "low",
+      "effect": "Lets logic methods that touch presentation JIT: CanvasItem SetVisible/SetSelfModulate store the value, MoveToFront reorders, Material, Control SetFocusMode/FocusNeighbor*/SetAnchorsPreset/AddThemeFontOverride, TextureRect ExpandMode, Resource.Duplicate as a new instance without resource_path (a field copy, not Godot's stored-property copy; callers are combat/VFX/reward-icon presentation), GpuParticles2D.Restart, InputEventMouseButton.ButtonIndex, GodotObject Connect(returns OK)/Disconnect/CallDeferred(StringName) no-ops, SceneTreeTimer.SignalName.Timeout. No waits added.",
+      "regression": "m2c-godot-stub-tests JIT sweep: logic-namespace sts2 methods failing JIT 68 (Host52) to 37, every remaining one in a listed baseline category; Connect returns OK; timer signal name; Duplicate clears resource_path"
     }
   ],
   "admission": {
@@ -392,6 +417,12 @@
     "source_patch_sha256": "22e785ba2ebf7a3435329dcbebfcf0ac2a8a70dca1abb1e565963a7ee50cb356",
     "artifact_sha256": "7fb320a7330d868a428224627c99f52ed884cb5cdd4aea508e354de38158ec8f",
     "artifact_mvid": "0a70e42d-84b6-40cb-b5e8-29651b537e12",
+    "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0"
+  },
+  "pre_m2c_godot_stub_build": {
+    "source_patch_sha256": "64f890ab62e09ad956bb25eeae78cb867ae629faf8bb44582e46845ff9f93a78",
+    "artifact_sha256": "e0eda87653fe08a749a27bdcb4aa2c3041a3ed4d9f89617cd6e16036a73fff39",
+    "artifact_mvid": "77fb5aa2-6c03-4e9b-9cdf-ba46668497c1",
     "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0"
   }
 }

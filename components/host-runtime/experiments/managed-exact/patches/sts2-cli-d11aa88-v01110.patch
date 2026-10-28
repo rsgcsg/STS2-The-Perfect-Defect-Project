@@ -427,6 +427,272 @@ index 0000000..12b56f4
 +        Console.WriteLine("native-m2a-hand-state=" + JsonSerializer.Serialize(handWire));
 +    }
 +}
+diff --git a/m2c-godot-stub-tests/M2cGodotStub.csproj b/m2c-godot-stub-tests/M2cGodotStub.csproj
+new file mode 100644
+index 0000000..2f0521f
+--- /dev/null
++++ b/m2c-godot-stub-tests/M2cGodotStub.csproj
+@@ -0,0 +1,11 @@
++<Project Sdk="Microsoft.NET.Sdk">
++  <PropertyGroup>
++    <OutputType>Exe</OutputType><TargetFramework>net9.0</TargetFramework>
++    <ImplicitUsings>enable</ImplicitUsings><Nullable>enable</Nullable>
++    <OutputPath>../src/Sts2Headless/bin/M2cTests/</OutputPath>
++  </PropertyGroup>
++  <ItemGroup>
++    <ProjectReference Include="../src/Sts2Headless/Sts2Headless.csproj" />
++    <Reference Include="sts2"><HintPath>../lib/sts2.dll</HintPath><Private>true</Private></Reference>
++  </ItemGroup>
++</Project>
+diff --git a/m2c-godot-stub-tests/Program.cs b/m2c-godot-stub-tests/Program.cs
+new file mode 100644
+index 0000000..c27f470
+--- /dev/null
++++ b/m2c-godot-stub-tests/Program.cs
+@@ -0,0 +1,243 @@
++using System.Reflection;
++using System.Runtime.CompilerServices;
++using System.Runtime.Loader;
++using System.Text.Json;
++using Godot;
++
++// M2c: the headless GodotSharp stub must bind the Godot API the exact game references.
++// Pure-managed math is compared bit-for-bit against the shipped GodotSharp.dll; engine
++// (C++) string helpers against Godot 4.5.1's own unit-test table; node-tree helpers
++// against documented Godot semantics; and every non-generic sts2 method is JIT-prepared
++// so a still-missing member is counted where CoreCLR would actually fail.
++internal static class Program
++{
++    private const BindingFlags Flags = BindingFlags.Instance | BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly;
++    private static int checks;
++    private static void Check(bool condition, string reason)
++    { if (!condition) throw new InvalidOperationException(reason); checks++; }
++
++    private static void Main(string[] args)
++    {
++        string root = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
++        AssemblyLoadContext.Default.Resolving += (_, name) => File.Exists(Path.Combine(root, "lib", name.Name + ".dll"))
++            ? AssemblyLoadContext.Default.LoadFromAssemblyPath(Path.Combine(root, "lib", name.Name + ".dll")) : null;
++        int reference = Array.IndexOf(args, "--reference");
++        if (reference < 0 || reference + 1 >= args.Length) throw new ArgumentException("--reference <shipped GodotSharp.dll> is required");
++        if (!args.Contains("--jit-only")) { Semantics(); NativeOracle(args[reference + 1]); }
++        JitSweep();
++        Console.WriteLine($"{checks} exact native M2c checks passed");
++    }
++
++    private static void Semantics()
++    {
++        // Godot 4.5.1 tests/core/string/test_string.h "Capitalize against many strings".
++        foreach (var (input, output) in new[] {
++            ("2d", "2d"), ("2db", "2 Db"), ("HTML5 Html5 html5 html_5", "Html 5 Html 5 Html 5 Html 5"),
++            ("Node2D Node2d NODE2D NODE_2D node_2d", "Node 2d Node 2d Node 2d Node 2d Node 2d"),
++            ("Node2DPosition", "Node 2d Position"), ("Number2Digits", "Number 2 Digits"), ("bytes2var", "Bytes 2 Var"),
++            ("linear2db", "Linear 2 Db"), ("vector3", "Vector 3"), ("sha256", "Sha 256"), ("PascalCase", "Pascal Case"),
++            ("PascalPascalCase", "Pascal Pascal Case"), ("snake_case", "Snake Case"), ("snake_snake_case", "Snake Snake Case"),
++            ("kebab-case", "Kebab Case"), ("kebab-kebab-case", "Kebab Kebab Case"), ("sha256sum", "Sha 256 Sum"),
++            ("cat2dog", "Cat 2 Dog"), ("function(name)", "Function(name)"),
++            ("snake_case_function(snake_case_arg)", "Snake Case Function(snake Case Arg)"),
++            ("snake_case_function( snake_case_arg )", "Snake Case Function( Snake Case Arg )"),
++            ("kebab-case-function( kebab-case-arg )", "Kebab Case Function( Kebab Case Arg )"),
++            ("kebab_case_function( kebab_case_arg )", "Kebab Case Function( Kebab Case Arg )"),
++            // Game ids reach Capitalize as SCREAMING_SNAKE entries.
++            ("OVERGROWTH", "Overgrowth"), ("THE_SILENT", "The Silent"), ("", "") })
++            Check(input.Capitalize() == output, $"capitalize {input}");
++        // Same file, to_snake_case column of the camel/pascal/snake/kebab table.
++        foreach (var (input, output) in new[] {
++            ("Vector3", "vector_3"), ("sha256", "sha_256"), ("Node2D", "node_2d"), ("RichTextLabel", "rich_text_label"),
++            ("HTML5", "html_5"), ("Node2DPosition", "node_2d_position"), ("Number2Digits", "number_2_digits"),
++            ("get_property_list", "get_property_list"), ("get_camera_2d", "get_camera_2d"), ("_physics_process", "_physics_process"),
++            ("bytes2var", "bytes_2_var"), ("linear2db", "linear_2_db"), ("sha256sum", "sha_256_sum"), ("camelCase", "camel_case"),
++            ("PascalCase", "pascal_case"), ("snake_case", "snake_case"), ("kebab-case", "kebab_case"), ("Test TEST test", "test_test_test"),
++            ("словоСлово_слово слово", "слово_слово_слово_слово"), ("λέξηΛέξη_λέξη λέξη", "λέξη_λέξη_λέξη_λέξη"), ("", "") })
++            Check(input.ToSnakeCase() == output, $"to_snake_case {input}");
++
++        // Node tree: Godot move_child/add_sibling/get_index over ordinary children.
++        Node parent = new(), a = new(), b = new(), c = new(), sibling = new(), orphan = new();
++        parent.AddChild(a); parent.AddChild(b); parent.AddChild(c);
++        string Order() => string.Join(",", parent.GetChildren().Select(n => n == a ? "a" : n == b ? "b" : n == c ? "c" : n == sibling ? "s" : "?"));
++        parent.MoveChild(c, 0); Check(Order() == "c,a,b", "move_child to front");
++        parent.MoveChild(c, -1); Check(Order() == "a,b,c", "move_child negative index counts from end");
++        parent.MoveChild(a, 3); Check(Order() == "b,c,a", "move_child one past the end moves to last");
++        parent.MoveChild(a, 0); parent.MoveChild(a, 4); parent.MoveChild(a, -4); Check(Order() == "a,b,c", "move_child beyond count+1 or -count is ignored");
++        parent.MoveChild(orphan, 0); Check(Order() == "a,b,c" && orphan.GetIndex() == -1, "move_child of a non-child is ignored; orphan index -1");
++        a.AddSibling(sibling); Check(Order() == "a,s,b,c" && sibling.GetParent() == parent && sibling.GetIndex() == 1, "add_sibling inserts after self");
++        orphan.AddSibling(new Node()); Check(orphan.GetParent() == null, "add_sibling without parent is a no-op");
++        Check(b.GetParent<Node>() == parent && orphan.GetParent<Node>() == null, "typed get_parent");
++        var item = new CanvasItem(); parent.AddChild(item); parent.MoveChild(item, 0); item.MoveToFront();
++        Check(parent.GetChildren()[^1] == item, "move_to_front moves to last child");
++        b.Reparent(parent); Check(Order() == "a,s,b,c,?", "reparent to the current parent is a no-op");
++        var other = new Node(); orphan.Reparent(other); Check(orphan.GetParent() == null, "reparent without a parent is a no-op");
++        c.Reparent(other, false); Check(c.GetParent() == other && Order() == "a,s,b,?", "reparent(keepGlobalTransform)");
++        Check(!a.IsNodeReady() && ((string)a.GetPath()).Length == 0 && a.GetNodeOrNull(new NodePath("x")) == null, "out-of-tree node is not ready and has an empty path");
++
++        // Display setters keep their logical value; signals/deferred names stay no-ops.
++        item.SetVisible(false); Check(!item.Visible, "set_visible");
++        item.SetSelfModulate(new Color(0.5f, 0.25f, 0.125f)); Check(item.SelfModulate.G == 0.25f, "set_self_modulate");
++        var control = new Control(); control.SetFocusMode(Control.FocusModeEnum.All); Check(control.FocusMode == Control.FocusModeEnum.All, "set_focus_mode");
++        Check(control.Connect("pressed", Callable.From(() => { })) == Error.Ok, "connect returns OK");
++        Check(SceneTreeTimer.SignalName.Timeout.ToString() == "timeout", "SceneTreeTimer timeout signal name");
++        var resource = new Resource { ResourcePath = "res://m2c" }; var copy = resource.Duplicate();
++        Check(!ReferenceEquals(copy, resource) && copy.ResourcePath == "" && resource.ResourcePath == "res://m2c", "resource duplicate is a new instance without resource_path");
++        var particles = new GpuParticles2D(); particles.Restart(); Check(particles.Emitting, "particles restart emits");
++
++        // Callable: zero-argument Func (GameAction cancel uses TrySetCanceled) now runs.
++        var cancelled = new TaskCompletionSource();
++        Callable.From(() => cancelled.TrySetCanceled()).Call();
++        Check(cancelled.Task.IsCanceled, "Callable.From(Func<T>).Call invokes the function");
++        int deferred = 0; Callable.From(() => { deferred++; }).CallDeferred(); Check(deferred == 1, "CallDeferred keeps inline stub timing");
++        var array = new Godot.Collections.Array<int>(new[] { 3, 1, 2 }); int sum = 0;
++        using (IEnumerator<int> e = array.GetEnumerator()) while (e.MoveNext()) sum += e.Current;
++        Check(sum == 6, "Array<T>.GetEnumerator as IEnumerator<T>");
++        int sign = Mathf.Sign(-2.5f); Check(sign == -1 && Mathf.Sign(0) == 0, "Sign(float) returns int");
++        Check(Mathf.IsEqualApprox(float.PositiveInfinity, float.PositiveInfinity) && Mathf.IsEqualApprox(1000f, 1000.0005f) && !Mathf.IsEqualApprox(1f, 1.00001f), "IsEqualApprox: exact infinities and relative tolerance");
++    }
++
++    private static void NativeOracle(string shippedPath)
++    {
++        var context = new AssemblyLoadContext("m2c-shipped-godot", isCollectible: true);
++        var shipped = context.LoadFromAssemblyPath(Path.GetFullPath(shippedPath));
++        Check(shipped.GetName().Version == typeof(Node).Assembly.GetName().Version, "stub and shipped GodotSharp versions match");
++        var floats = new[] { 0f, -0f, 1f, -1f, 0.5f, -0.75f, 2.25f, 3.14159274f, -6.5f, 10f, 1e-7f, 359f, -720.5f, 0.0001f,
++            float.NaN, float.PositiveInfinity, float.NegativeInfinity, float.MaxValue };
++        var doubles = floats.Select(f => (double)f).Concat(new[] { 1.0 / 3.0, -123.456, 90.0, 1e-12 }).ToArray();
++        var ints = new[] { 0, 1, -1, 7, -13, int.MaxValue, int.MinValue + 1 };
++        object[] Values(Type type) => type == typeof(float) ? floats.Cast<object>().ToArray()
++            : type == typeof(double) ? doubles.Cast<object>().ToArray() : ints.Cast<object>().ToArray();
++        bool Same(object? x, object? y) => (x, y) switch
++        {
++            (float p, float q) => BitConverter.SingleToInt32Bits(p) == BitConverter.SingleToInt32Bits(q) || (float.IsNaN(p) && float.IsNaN(q)),
++            (double p, double q) => BitConverter.DoubleToInt64Bits(p) == BitConverter.DoubleToInt64Bits(q) || (double.IsNaN(p) && double.IsNaN(q)),
++            _ => Equals(x, y)
++        };
++        var shippedMathf = shipped.GetType("Godot.Mathf", true)!;
++        var primitives = new[] { typeof(float), typeof(double), typeof(int) };
++        int compared = 0; var mismatched = new List<string>();
++        foreach (var method in typeof(Mathf).GetMethods(BindingFlags.Public | BindingFlags.Static))
++        {
++            var types = method.GetParameters().Select(p => p.ParameterType).ToArray();
++            if (types.Length is 0 or > 3 || types.Any(t => !primitives.Contains(t))) continue;
++            var native = shippedMathf.GetMethod(method.Name, types);
++            Check(native != null && native.ReturnType.FullName == method.ReturnType.FullName, $"shipped Mathf binds {method.Name}({string.Join(",", types.Select(t => t.Name))})");
++            IEnumerable<object[]> Grid(int i) => i == types.Length ? new[] { Array.Empty<object>() }
++                : Values(types[i]).SelectMany(v => Grid(i + 1).Select(rest => rest.Prepend(v).ToArray()));
++            foreach (var arguments in Grid(0))
++            {
++                object? expected, actual;
++                try { expected = native!.Invoke(null, arguments); } catch (TargetInvocationException ex) { expected = ex.InnerException!.GetType(); }
++                try { actual = method.Invoke(null, arguments); } catch (TargetInvocationException ex) { actual = ex.InnerException!.GetType(); }
++                compared++;
++                if (!Same(expected, actual)) { mismatched.Add($"{method.Name}({string.Join(",", arguments)}) shipped={expected} stub={actual}"); break; }
++            }
++        }
++        Console.WriteLine("native-m2c-mathf-mismatches=" + JsonSerializer.Serialize(mismatched));
++        Check(mismatched.Count == 0, "Mathf matches shipped GodotSharp bit-for-bit: " + string.Join("; ", mismatched));
++
++        var shippedV2I = shipped.GetType("Godot.Vector2I", true)!;
++        object NativeV(int x, int y) => Activator.CreateInstance(shippedV2I, x, y)!;
++        (int, int) Read(object v) => ((int)shippedV2I.GetField("X")!.GetValue(v)!, (int)shippedV2I.GetField("Y")!.GetValue(v)!);
++        object Op(string name, params object[] values) => shippedV2I.GetMethod(name, values.Select(v => v.GetType()).ToArray())!.Invoke(null, values)!;
++        var vectors = new[] { (0, 0), (1, 2), (-3, 4), (5, -7), (-2, -2), (100, 1) };
++        foreach (var (x1, y1) in vectors)
++        {
++            var s1 = new Vector2I(x1, y1); var n1 = NativeV(x1, y1);
++            Check(Same(shippedV2I.GetMethod("Length")!.Invoke(n1, null), s1.Length()), $"Vector2I.Length {x1},{y1}");
++            Check(Read(Op("op_Multiply", n1, 3)) == ((s1 * 3).X, (s1 * 3).Y), "Vector2I * int");
++            Check(Read(Op("op_Division", n1, 2)) == ((s1 / 2).X, (s1 / 2).Y), "Vector2I / int");
++            foreach (var (x2, y2) in vectors)
++            {
++                var s2 = new Vector2I(x2, y2); var n2 = NativeV(x2, y2);
++                Check(Same(shippedV2I.GetMethod("DistanceTo")!.Invoke(n1, new[] { n2 }), s1.DistanceTo(s2)), "Vector2I.DistanceTo");
++                Check(Read(Op("op_Addition", n1, n2)) == ((s1 + s2).X, (s1 + s2).Y) && Read(Op("op_Subtraction", n1, n2)) == ((s1 - s2).X, (s1 - s2).Y), "Vector2I +/-");
++                Check((bool)Op("op_Equality", n1, n2) == (s1 == s2) && (bool)Op("op_GreaterThanOrEqual", n1, n2) == (s1 >= s2)
++                    && (bool)Op("op_LessThanOrEqual", n1, n2) == (s1 <= s2), "Vector2I comparisons");
++            }
++        }
++        Check(Read(shippedV2I.GetProperty("One")!.GetValue(null)!) == (Vector2I.One.X, Vector2I.One.Y), "Vector2I.One");
++        var shippedVector2 = shipped.GetType("Godot.Vector2", true)!;
++        var nv = Activator.CreateInstance(shippedVector2, -2.75f, 3.5f)!;
++        Check(Read(shippedV2I.GetMethod("op_Explicit", new[] { shippedVector2 })!.Invoke(null, new[] { nv })!) is var e && e == (((Vector2I)new Vector2(-2.75f, 3.5f)).X, ((Vector2I)new Vector2(-2.75f, 3.5f)).Y), "Vector2I explicit from Vector2 truncates");
++
++        var shippedColors = shipped.GetType("Godot.Colors", true)!;
++        var shippedColor = shipped.GetType("Godot.Color", true)!;
++        var colorMismatches = new List<string>();
++        foreach (var property in typeof(Colors).GetProperties(BindingFlags.Public | BindingFlags.Static))
++        {
++            var stub = (Color)property.GetValue(null)!;
++            var native = shippedColors.GetProperty(property.Name)!.GetValue(null)!;
++            float Channel(string name) => (float)shippedColor.GetField(name)!.GetValue(native)!;
++            if (!(Same(Channel("R"), stub.R) && Same(Channel("G"), stub.G) && Same(Channel("B"), stub.B) && Same(Channel("A"), stub.A)))
++                colorMismatches.Add($"{property.Name} shipped=({Channel("R")},{Channel("G")},{Channel("B")},{Channel("A")}) stub=({stub.R},{stub.G},{stub.B},{stub.A})");
++            checks++;
++        }
++        Console.WriteLine("native-m2c-color-mismatches=" + JsonSerializer.Serialize(colorMismatches));
++        Check(colorMismatches.Count == 0, "Colors match shipped GodotSharp: " + string.Join("; ", colorMismatches));
++        Console.WriteLine($"native-m2c-oracle-compared={compared}");
++        context.Unload();
++    }
++
++    private static string Group(string? ns)
++    {
++        ns ??= "<global>";
++        string[] tooling = { "MegaCrit.Sts2.Core.Debug", "MegaCrit.Sts2.Core.DevConsole", "MegaCrit.Sts2.Core.AutoSlay", "MegaCrit.Sts2.Core.Modding", "MegaCrit.Sts2.Core.Audio.Debug", "GodotPlugins" };
++        string[] display = { "MegaCrit.Sts2.Core.Nodes", "MegaCrit.sts2.Core.Nodes", "MegaCrit.Sts2.Core.RichTextTags", "MegaCrit.Sts2.addons", "MegaCrit.Sts2.Core.Bindings", "MegaCrit.Sts2.Core.Animation", "MegaCrit.Sts2.Core.Audio", "MegaCrit.Sts2.Core.Assets" };
++        string[] platform = { "MegaCrit.Sts2.Core.Multiplayer", "MegaCrit.Sts2.Core.ControllerInput", "MegaCrit.Sts2.Core.Platform" };
++        return tooling.Any(ns.StartsWith) ? "tooling" : display.Any(ns.StartsWith) ? "display" : platform.Any(ns.StartsWith) ? "platform" : "logic";
++    }
++
++    private static void JitSweep()
++    {
++        var assembly = typeof(MegaCrit.Sts2.Core.Runs.RunState).Assembly;
++        Type?[] types;
++        var loadFailures = new Dictionary<string, int>();
++        try { types = assembly.GetTypes(); }
++        catch (ReflectionTypeLoadException ex) { types = ex.Types; }
++        var prepared = new Dictionary<string, int>(); var failed = new Dictionary<string, int>();
++        var logicFailures = new SortedDictionary<string, string>(StringComparer.Ordinal);
++        foreach (var type in types)
++        {
++            if (type == null || type.ContainsGenericParameters) continue;
++            var outer = type; while (outer.DeclaringType != null) outer = outer.DeclaringType;
++            string group = Group(outer.Namespace);
++            MethodBase[] methods;
++            try { methods = type.GetMethods(Flags).Cast<MethodBase>().Concat(type.GetConstructors(Flags)).ToArray(); }
++            catch (Exception ex) { loadFailures[group] = loadFailures.GetValueOrDefault(group) + 1; _ = ex; continue; }
++            foreach (var method in methods)
++            {
++                if (method.IsAbstract || method.ContainsGenericParameters
++                    || (method.MethodImplementationFlags & MethodImplAttributes.CodeTypeMask) != MethodImplAttributes.IL
++                    || (method.Attributes & MethodAttributes.PinvokeImpl) != 0) continue;
++                try
++                {
++                    // Reading the body resolves its locals, as the JIT does.
++                    if (method.GetMethodBody() == null) continue;
++                    RuntimeHelpers.PrepareMethod(method.MethodHandle);
++                    prepared[group] = prepared.GetValueOrDefault(group) + 1;
++                }
++                catch (Exception ex)
++                {
++                    failed[group] = failed.GetValueOrDefault(group) + 1;
++                    if (group == "logic") logicFailures[$"{type.FullName}::{method.Name}"] = $"{ex.GetType().Name}: {ex.Message}";
++                }
++            }
++        }
++        Console.WriteLine("native-m2c-jit=" + JsonSerializer.Serialize(new { prepared, failed, type_load_failures = loadFailures, logic_failures = logicFailures }));
++        // Remaining logic-namespace JIT failures are confined to the listed, not-filled
++        // categories (file IO, telemetry, text server, locale, input gestures).
++        string[] accepted = { "Godot.DirAccess", "Godot.FileAccess", "Godot.DisplayServer", "Godot.OS", "Godot.TextServer", "Godot.TranslationServer",
++            "Godot.InputEventPanGesture", "Godot.ResourceLoader", "Godot.ResourceFormatLoader", "Godot.Collections.Dictionary", "Godot.CharFXTransform",
++            "Godot.Variant", "Godot.Rid" };
++        // Godot source-generator bridge members are invoked only by the native engine.
++        string[] bridge = { "InvokeGodotClassMethod", "InvokeGodotClassStaticMethod", "HasGodotClassMethod", "SetGodotClassPropertyValue",
++            "GetGodotClassPropertyValue", "RaiseGodotClassSignalCallbacks", "HasGodotClassSignal", "SaveGodotObjectData",
++            "RestoreGodotObjectData", "GetGodotMethodList", "GetGodotPropertyList", "GetGodotSignalList", "GetGodotPropertyDefaultValues" };
++        var unexplained = logicFailures.Where(kv => !bridge.Contains(kv.Key[(kv.Key.LastIndexOf("::", StringComparison.Ordinal) + 2)..])
++            && !accepted.Any(name => kv.Value.Contains(name, StringComparison.Ordinal))).ToList();
++        Console.WriteLine($"native-m2c-jit-logic-failures={logicFailures.Count} unexplained={unexplained.Count}");
++        Check(unexplained.Count == 0, "logic JIT failures outside accepted categories: " + string.Join("; ", unexplained.Take(20).Select(kv => $"{kv.Key} -> {kv.Value}")));
++    }
++}
 diff --git a/native-hand-tests/NativeHand.csproj b/native-hand-tests/NativeHand.csproj
 new file mode 100644
 index 0000000..19c7305
@@ -1130,11 +1396,24 @@ index ef00d6f..c00c031 100755
  
  # ── Build ──
  
+diff --git a/src/GodotStubs/Collections.cs b/src/GodotStubs/Collections.cs
+index ba3e9f4..755b4ef 100644
+--- a/src/GodotStubs/Collections.cs
++++ b/src/GodotStubs/Collections.cs
+@@ -5,6 +5,8 @@ public class Array<T> : List<T>
+ {
+     public Array() { }
+     public Array(IEnumerable<T> items) : base(items) { }
++    // M2c: shipped Array<T>.GetEnumerator returns IEnumerator<T>, not List<T>.Enumerator.
++    public new IEnumerator<T> GetEnumerator() => base.GetEnumerator();
+ }
+ 
+ // Godot Dictionary
 diff --git a/src/GodotStubs/Core.cs b/src/GodotStubs/Core.cs
-index b80bedc..774b745 100644
+index b80bedc..e16e588 100644
 --- a/src/GodotStubs/Core.cs
 +++ b/src/GodotStubs/Core.cs
-@@ -2,6 +2,30 @@ using System.Runtime.CompilerServices;
+@@ -2,6 +2,81 @@ using System.Runtime.CompilerServices;
  
  namespace Godot;
  
@@ -1160,23 +1439,211 @@ index b80bedc..774b745 100644
 +        var index = path.LastIndexOf('/');
 +        return index < 0 ? path : path[(index + 1)..];
 +    }
++
++    // M2c: Godot 4.5.1 String::capitalize / to_snake_case (core/string/ustring.cpp).
++    public static string Capitalize(this string instance)
++    {
++        var words = SeparateCompoundWords(instance).Trim(StripEdgeChars);
++        if (words.Length == 0) return string.Empty;
++        var result = new System.Text.StringBuilder(words.Length);
++        var slices = words.Split(' ');
++        for (var i = 0; i < slices.Length; i++)
++        {
++            var slice = slices[i];
++            if (slice.Length == 0) continue;
++            if (i > 0) result.Append(' ');
++            result.Append(char.ToUpperInvariant(slice[0])).Append(slice, 1, slice.Length - 1);
++        }
++        return result.ToString();
++    }
++
++    public static string ToSnakeCase(this string instance) => SeparateCompoundWords(instance).Replace(' ', '_');
++
++    private static readonly char[] StripEdgeChars = Enumerable.Range(0, 33).Select(c => (char)c).ToArray();
++
++    private static string SeparateCompoundWords(string value)
++    {
++        if (value.Length == 0) return value;
++        var parts = new List<string>();
++        var start = 0;
++        bool prevUpper = char.IsUpper(value[0]), prevLower = char.IsLower(value[0]), prevDigit = char.IsAsciiDigit(value[0]);
++        for (var i = 1; i < value.Length; i++)
++        {
++            bool currUpper = char.IsUpper(value[i]), currLower = char.IsLower(value[i]), currDigit = char.IsAsciiDigit(value[i]);
++            var nextLower = i + 1 < value.Length && char.IsLower(value[i + 1]);
++            var condA = prevLower && currUpper;
++            var condB = (prevUpper || prevDigit) && currUpper && nextLower;
++            var condC = prevDigit && currLower && nextLower;
++            var condD = (prevUpper || prevLower) && currDigit;
++            if (condA || condB || condC || condD)
++            {
++                parts.Add(value[start..i]);
++                start = i;
++            }
++            prevUpper = currUpper;
++            prevLower = currLower;
++            prevDigit = currDigit;
++        }
++        parts.Add(value[start..]);
++        var joined = string.Join(" ", parts);
++        var builder = new System.Text.StringBuilder(joined.Length);
++        foreach (var c in joined) builder.Append(char.IsWhiteSpace(c) || c == '_' || c == '-' ? ' ' : c);
++        return builder.ToString().ToLowerInvariant();
++    }
 +}
 +
  public class GodotObject
  {
      public class SignalName { }
-@@ -51,6 +75,11 @@ public class Node : GodotObject
+@@ -15,6 +90,12 @@ public class GodotObject
+         return new SignalAwaiter();
+     }
+ 
++    // M2c: shipped GodotObject signal/deferred bindings. No native engine dispatches
++    // signals or deferred string-named calls in Managed, so these stay no-ops.
++    public Error Connect(StringName signal, Callable callable, uint flags = 0) => Error.Ok;
++    public void Disconnect(StringName signal, Callable callable) { }
++    public Variant CallDeferred(StringName method, params Variant[] args) => default;
++
+     // Bridge methods overridden in generated code
+     protected virtual void SaveGodotObjectData(GodotSerializationInfo info) { }
+     protected virtual void RestoreGodotObjectData(GodotSerializationInfo info) { }
+@@ -39,6 +120,8 @@ public class Node : GodotObject
+         public static readonly StringName RemoveChild = "RemoveChild";
+         public static readonly StringName QueueFree = "QueueFree";
+         public static readonly StringName _Ready = "_Ready";
++        public static readonly StringName AddSibling = "add_sibling";
++        public static readonly StringName MoveChild = "move_child";
+     }
+ 
+     public class PropertyName { }
+@@ -50,6 +133,12 @@ public class Node : GodotObject
+     public virtual StringName Name { get; set; } = "";
  
      public Node? GetParent() => _parent;
- 
++    public T GetParent<T>() where T : class => (_parent as T)!;
++
 +    // The headless stub stores ordinary children only (as GetChildren/Count do).
 +    // Keep the shipped GetIndex(bool=false) binding, including orphan index -1.
 +    // This also lets native no-scene early returns JIT without missing methods.
 +    public int GetIndex(bool includeInternal = false) => _parent?._children.IndexOf(this) ?? -1;
-+
+ 
      public Godot.Collections.Array<Node> GetChildren(bool includeInternal = false)
      {
-         return new Godot.Collections.Array<Node>(_children);
+@@ -60,6 +149,11 @@ public class Node : GodotObject
+     public T? GetNodeOrNull<T>(NodePath path) where T : class => null;
+     public T GetNode<T>(string path) where T : class => default!;
+     public T GetNode<T>(NodePath path) where T : class => default!;
++    public Node? GetNodeOrNull(NodePath path) => null;
++    // Stub nodes never enter a scene tree: shipped Godot returns an empty path and
++    // reports not-ready for such nodes.
++    public NodePath GetPath() => new NodePath();
++    public bool IsNodeReady() => false;
+ 
+     public virtual void AddChild(Node child, bool forceReadableName = false, InternalMode mode = InternalMode.Disabled)
+     {
+@@ -73,12 +167,34 @@ public class Node : GodotObject
+         _children.Remove(child);
+     }
+ 
+-    public void Reparent(Node newParent)
++    // Godot reparent: needs a current parent; same parent or self is a no-op.
++    public void Reparent(Node newParent, bool keepGlobalTransform = true)
+     {
+-        _parent?.RemoveChild(this);
++        if (newParent == null || _parent == null || newParent == this || newParent == _parent) return;
++        _parent.RemoveChild(this);
+         newParent.AddChild(this);
+     }
+ 
++    public void AddSibling(Node sibling, bool forceReadableName = false)
++    {
++        if (_parent == null) return;
++        _parent.AddChild(sibling, forceReadableName);
++        _parent.MoveChild(sibling, GetIndex() + 1);
++    }
++
++    // Godot move_child: negative index counts from the end, one past the end means
++    // last, anything else out of range is ignored.
++    public void MoveChild(Node childNode, int toIndex)
++    {
++        var from = _children.IndexOf(childNode);
++        if (from < 0) return;
++        if (toIndex < 0) toIndex += _children.Count;
++        if (toIndex < 0 || toIndex > _children.Count) return;
++        if (toIndex == _children.Count) toIndex--;
++        _children.RemoveAt(from);
++        _children.Insert(toIndex, childNode);
++    }
++
+     public virtual void QueueFree() { }
+ 
+     public SceneTree GetTree() => Engine.GetMainLoop() as SceneTree ?? new SceneTree();
+@@ -90,8 +206,6 @@ public class Node : GodotObject
+     public bool IsInsideTree() => false;
+     public int GetChildCount(bool includeInternal = false) => _children.Count;
+ 
+-    public void CallDeferred(StringName method, params Variant[] args) { }
+-
+     public virtual void _Ready() { }
+     public virtual void _EnterTree() { }
+     public virtual void _ExitTree() { }
+@@ -122,6 +236,11 @@ public class SceneTree : MainLoop
+ 
+ public class SceneTreeTimer : GodotObject
+ {
++    public new class SignalName : GodotObject.SignalName
++    {
++        public static readonly StringName Timeout = "timeout";
++    }
++
+     public event Action? Timeout;
+ 
+     internal void FireTimeout()
+diff --git a/src/GodotStubs/ExtraGodotTypes.cs b/src/GodotStubs/ExtraGodotTypes.cs
+index cdd1613..8b5fba4 100644
+--- a/src/GodotStubs/ExtraGodotTypes.cs
++++ b/src/GodotStubs/ExtraGodotTypes.cs
+@@ -119,20 +119,25 @@ public class AssemblyHasScriptsAttribute : Attribute
+ // Colors - static color constants
+ public static class Colors
+ {
+-    public static Color White { get; } = Color.White;
+-    public static Color Black { get; } = Color.Black;
+-    public static Color Red { get; } = new(1, 0, 0);
+-    public static Color Green { get; } = new(0, 1, 0);
+-    public static Color Blue { get; } = new(0, 0, 1);
+-    public static Color Yellow { get; } = new(1, 1, 0);
+-    public static Color Transparent { get; } = Color.Transparent;
+-    public static Color Orange { get; } = new(1, 0.65f, 0);
+-    public static Color Purple { get; } = new(0.63f, 0.13f, 0.94f);
+-    public static Color Cyan { get; } = new(0, 1, 1);
+-    public static Color Magenta { get; } = new(1, 0, 1);
+-    public static Color Gray { get; } = new(0.5f, 0.5f, 0.5f);
+-    public static Color DarkGray { get; } = new(0.25f, 0.25f, 0.25f);
+-    public static Color LightGray { get; } = new(0.75f, 0.75f, 0.75f);
++    // M2c: exact shipped Colors values (Godot Color(uint rgba): each byte / 255.0f).
++    public static Color White { get; } = Rgba(0xFFFFFFFF);
++    public static Color Black { get; } = Rgba(0x000000FF);
++    public static Color Red { get; } = Rgba(0xFF0000FF);
++    public static Color Green { get; } = Rgba(0x00FF00FF);
++    public static Color Blue { get; } = Rgba(0x0000FFFF);
++    public static Color Yellow { get; } = Rgba(0xFFFF00FF);
++    public static Color Transparent { get; } = Rgba(0xFFFFFF00);
++    public static Color Orange { get; } = Rgba(0xFFA500FF);
++    public static Color Purple { get; } = Rgba(0xA020F0FF);
++    public static Color Cyan { get; } = Rgba(0x00FFFFFF);
++    public static Color Magenta { get; } = Rgba(0xFF00FFFF);
++    public static Color Gray { get; } = Rgba(0xBEBEBEFF);
++    public static Color DarkGray { get; } = Rgba(0xA9A9A9FF);
++    public static Color LightGray { get; } = Rgba(0xD3D3D3FF);
++    public static Color DarkRed { get; } = Rgba(0x8B0000FF);
++    public static Color DimGray { get; } = Rgba(0x696969FF);
++    public static Color Gold { get; } = Rgba(0xFFD700FF);
++    private static Color Rgba(uint rgba) => new((rgba >> 24) / 255.0f, ((rgba >> 16) & 0xFF) / 255.0f, ((rgba >> 8) & 0xFF) / 255.0f, (rgba & 0xFF) / 255.0f);
+ }
+ 
+ // Range control
 diff --git a/src/GodotStubs/GodotStubs.csproj b/src/GodotStubs/GodotStubs.csproj
 index 35b1ba0..91c5d63 100644
 --- a/src/GodotStubs/GodotStubs.csproj
@@ -1191,10 +1658,39 @@ index 35b1ba0..91c5d63 100644
    </PropertyGroup>
  </Project>
 diff --git a/src/GodotStubs/Math.cs b/src/GodotStubs/Math.cs
-index e1be94d..74b7125 100644
+index e1be94d..60710f2 100644
 --- a/src/GodotStubs/Math.cs
 +++ b/src/GodotStubs/Math.cs
-@@ -121,6 +121,7 @@ public static class Mathf
+@@ -50,6 +50,28 @@ public struct Vector2I
+     public Vector2I(int x, int y) { X = x; Y = y; }
+     public static Vector2I Zero { get; } = new(0, 0);
+     public static implicit operator Vector2(Vector2I v) => new(v.X, v.Y);
++
++    // M2c: shipped GodotSharp 4.5.1 Vector2I members referenced by the exact game.
++    public static Vector2I One { get; } = new(1, 1);
++    public readonly float Length()
++    {
++        int x2 = X * X;
++        int y2 = Y * Y;
++        return Mathf.Sqrt(x2 + y2);
++    }
++    public readonly float DistanceTo(Vector2I to) => (to - this).Length();
++    public static Vector2I operator +(Vector2I left, Vector2I right) { left.X += right.X; left.Y += right.Y; return left; }
++    public static Vector2I operator -(Vector2I left, Vector2I right) { left.X -= right.X; left.Y -= right.Y; return left; }
++    public static Vector2I operator *(Vector2I vec, int scale) { vec.X *= scale; vec.Y *= scale; return vec; }
++    public static Vector2I operator /(Vector2I vec, int divisor) { vec.X /= divisor; vec.Y /= divisor; return vec; }
++    public static bool operator ==(Vector2I left, Vector2I right) => left.Equals(right);
++    public static bool operator !=(Vector2I left, Vector2I right) => !left.Equals(right);
++    public static bool operator >=(Vector2I left, Vector2I right) => left.X == right.X ? left.Y >= right.Y : left.X > right.X;
++    public static bool operator <=(Vector2I left, Vector2I right) => left.X == right.X ? left.Y <= right.Y : left.X < right.X;
++    public static explicit operator Vector2I(Vector2 value) => new((int)value.X, (int)value.Y);
++    public readonly bool Equals(Vector2I other) => X == other.X && Y == other.Y;
++    public override readonly bool Equals(object? obj) => obj is Vector2I other && Equals(other);
++    public override readonly int GetHashCode() => HashCode.Combine(X, Y);
+ }
+ 
+ public struct Vector3
+@@ -121,6 +143,7 @@ public static class Mathf
      public static float Cos(float s) => MathF.Cos(s);
      public static float Tan(float s) => MathF.Tan(s);
      public static float Sqrt(float s) => MathF.Sqrt(s);
@@ -1202,6 +1698,157 @@ index e1be94d..74b7125 100644
      public static float Pow(float @base, float exp) => MathF.Pow(@base, exp);
      public static float Abs(float s) => MathF.Abs(s);
      public static float Floor(float s) => MathF.Floor(s);
+@@ -140,12 +163,46 @@ public static class Mathf
+     public static int Clamp(int value, int min, int max) => Math.Clamp(value, min, max);
+     public static float Lerp(float from, float to, float weight) => from + (to - from) * weight;
+     public static float DegToRad(float deg) => deg * (Pi / 180f);
+-    public static float RadToDeg(float rad) => rad * (180f / Pi);
+-    public static float Sign(float s) => MathF.Sign(s);
++    // M2c: shipped constant (decimal-derived) is 1 ulp from 180f / Pi.
++    public static float RadToDeg(float rad) => rad * (float)57.295779513082320876798154814M;
++    // M2c: shipped Godot returns int for Sign(float); the stub float return could never bind.
++    public static int Sign(float s) => Math.Sign(s);
++    public static int Sign(int s) => Math.Sign(s);
++    public static int Abs(int s) => Math.Abs(s);
++    public static double Sin(double s) => Math.Sin(s);
++    public static double Max(double a, double b) => Math.Max(a, b);
++    public static double Lerp(double from, double to, double weight) => from + ((to - from) * weight);
++    public static double DegToRad(double deg) => deg * DegToRadConstD;
++    public static float Atan2(float y, float x) => MathF.Atan2(y, x);
++    public static float InverseLerp(float from, float to, float weight) => (weight - from) / (to - from);
++    public static float LerpAngle(float from, float to, float weight) => from + AngleDifference(from, to) * weight;
++    public static float AngleDifference(float from, float to)
++    {
++        float difference = (to - from) % MathF.Tau;
++        return ((2.0f * difference) % MathF.Tau) - difference;
++    }
++    public static float LinearToDb(float linear) => MathF.Log(linear) * 8.6858896380650365530225783783321f;
++    public static float Wrap(float value, float min, float max)
++    {
++        float range = max - min;
++        if (IsZeroApprox(range)) return min;
++        return min + ((((value - min) % range) + range) % range);
++    }
++    public static bool IsZeroApprox(float s) => Math.Abs(s) < EpsilonF;
++    private const float EpsilonF = 1e-06f;
++    private const double DegToRadConstD = (double)0.0174532925199432957692369077M;
+     public static float Remap(float value, float istart, float istop, float ostart, float ostop)
+     {
+         return ostart + (ostop - ostart) * ((value - istart) / (istop - istart));
+     }
+-    public static bool IsEqualApprox(float a, float b) => MathF.Abs(a - b) < Epsilon;
+-    public static float Snapped(float value, float step) => step != 0 ? MathF.Round(value / step) * step : value;
++    // M2c: shipped Godot checks exact equality first (infinities), then a relative tolerance.
++    public static bool IsEqualApprox(float a, float b)
++    {
++        if (a == b) return true;
++        float tolerance = EpsilonF * Math.Abs(a);
++        if (tolerance < EpsilonF) tolerance = EpsilonF;
++        return Math.Abs(a - b) < tolerance;
++    }
++    // M2c: shipped Godot rounds half up via Floor(x + 0.5), not banker's MathF.Round.
++    public static float Snapped(float s, float step) => step != 0f ? MathF.Floor((s / step) + 0.5f) * step : s;
+ }
+diff --git a/src/GodotStubs/Types.cs b/src/GodotStubs/Types.cs
+index fb9b33f..abecdd1 100644
+--- a/src/GodotStubs/Types.cs
++++ b/src/GodotStubs/Types.cs
+@@ -81,8 +81,18 @@ public struct Callable
+     public static Callable From(Action action) => new(action);
+     public static Callable From<T>(Action<T> action) => new(action);
+     public static Callable From<T1, T2>(Action<T1, T2> action) => new(action);
+-
+-    public void Call(params Variant[] args) => (_delegate as Action)?.Invoke();
++    // M2c: shipped Callable.From overloads referenced by the exact game.
++    public static Callable From<TResult>(Func<TResult> func) => new(func);
++    public static Callable From<T1, T2, T3>(Action<T1, T2, T3> action) => new(action);
++    public static Callable From<T1, T2, T3, T4>(Action<T1, T2, T3, T4> action) => new(action);
++
++    // Any zero-argument delegate runs (Action or Func<T>, e.g. GameAction cancel's
++    // TrySetCanceled); argument-taking delegates keep the previous no-op.
++    public void Call(params Variant[] args)
++    {
++        if (_delegate is Action action) action();
++        else if (_delegate != null && _delegate.Method.GetParameters().Length == 0) _delegate.DynamicInvoke();
++    }
+     public void CallDeferred(params Variant[] args) => Call(args);
+ }
+ 
+diff --git a/src/GodotStubs/UI.cs b/src/GodotStubs/UI.cs
+index 7017644..bcf31f3 100644
+--- a/src/GodotStubs/UI.cs
++++ b/src/GodotStubs/UI.cs
+@@ -9,6 +9,15 @@ public class CanvasItem : Node
+     public virtual void Show() => Visible = true;
+     public virtual void Hide() => Visible = false;
+     public bool IsVisibleInTree() => Visible;
++    // M2c: shipped setter/ordering bindings referenced from game logic namespaces.
++    public void SetVisible(bool visible) => Visible = visible;
++    public void SetSelfModulate(Color selfModulate) => SelfModulate = selfModulate;
++    public Material? Material { get; set; }
++    public void MoveToFront()
++    {
++        var parent = GetParent();
++        parent?.MoveChild(this, parent.GetChildCount() - 1);
++    }
+     public Tween CreateTween() => new Tween();
+     public Rect2 GetViewportRect() => new Rect2(Vector2.Zero, new Vector2(1920, 1080));
+ }
+@@ -50,8 +59,13 @@ public class Control : CanvasItem
+ 
+     public virtual void _GuiInput(InputEvent @event) { }
+ 
+-    public void Connect(StringName signal, Callable callable) { }
+-    public void Disconnect(StringName signal, Callable callable) { }
++    public void SetFocusMode(FocusModeEnum mode) => FocusMode = mode;
++    public NodePath FocusNeighborTop { get; set; } = new NodePath();
++    public NodePath FocusNeighborBottom { get; set; } = new NodePath();
++    public NodePath FocusNeighborLeft { get; set; } = new NodePath();
++    public NodePath FocusNeighborRight { get; set; } = new NodePath();
++    public void SetAnchorsPreset(LayoutPreset preset, bool keepOffsets = false) { }
++    public void AddThemeFontOverride(StringName name, Font font) { }
+     public void EmitSignal(StringName signal, params Variant[] args) { }
+ }
+ 
+@@ -75,6 +89,13 @@ public class Node2D : CanvasItem
+ public class Resource : GodotObject
+ {
+     public string ResourcePath { get; set; } = "";
++    // Godot copies stored properties into a new instance; resource_path is not stored.
++    public Resource Duplicate(bool subresources = false)
++    {
++        var copy = (Resource)MemberwiseClone();
++        copy.ResourcePath = "";
++        return copy;
++    }
+     public class MethodName { }
+     public class PropertyName { }
+     public class SignalName { }
+@@ -179,6 +200,8 @@ public class TextureRect : Control
+     public new class PropertyName : Control.PropertyName { }
+     public new class SignalName : Control.SignalName { }
+     public Texture2D? Texture { get; set; }
++    public enum ExpandModeEnum { KeepSize, IgnoreSize, FitWidth, FitWidthProportional, FitHeight, FitHeightProportional }
++    public ExpandModeEnum ExpandMode { get; set; }
+ }
+ 
+ public class ColorRect : Control
+@@ -323,6 +346,7 @@ public class InputEvent : Resource
+ public class InputEventKey : InputEvent { }
+ public class InputEventMouseButton : InputEvent
+ {
++    public MouseButton ButtonIndex { get; set; }
+     public Vector2 Position { get; set; }
+     public Vector2 GlobalPosition { get; set; }
+ }
+@@ -384,6 +408,7 @@ public class GpuParticles2D : Node2D
+     public bool OneShot { get; set; }
+     public float Explosiveness { get; set; }
+     public Texture2D? Texture { get; set; }
++    public void Restart() => Emitting = true;
+ }
+ 
+ // Sprite
 diff --git a/src/Sts2Headless/DeckEnchantCallScope.cs b/src/Sts2Headless/DeckEnchantCallScope.cs
 new file mode 100644
 index 0000000..507803f
