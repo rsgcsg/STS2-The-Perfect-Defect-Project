@@ -138,6 +138,9 @@ class FridayBatchTests(unittest.TestCase):
             self.assertIn('--no-requeue', result['command'])
             self.assertIn('--time=01:05:00', result['command'])
             self.assertIn('--constraint=fc430', result['command'])
+            self.assertEqual(result['command'][-4:],
+                             [str(FRIDAY / 'worker.sh'), str(configuration), 'trial',
+                              str(FRIDAY.parents[1])])
 
     def test_existing_pending_running_or_completing_array_blocks_new_submit(self):
         spec = importlib.util.spec_from_file_location(
@@ -313,3 +316,109 @@ def test_profiler_optional_metrics_io_failure_preserves_original_success(profile
     assert result.stderr.count("friday profiler:") == 1
     assert len(result.stderr) < 160
     assert str(output) not in result.stderr
+
+
+def test_uncertain_slot_publishes_shared_stop_before_snapshot(tmp_path, monkeypatch):
+    """Use the real ledger; replace Host IO and inspect the slow-preservation seam."""
+    import json
+    import shutil
+
+    from spireagent.workbench import evaluation_ledger as owner
+    from spireagent.workbench import managed_pipeline
+
+    root = tmp_path.resolve()
+    persistent = root / "results"
+    execution = root / "execution.json"
+    batch.save(execution, {
+        "schema": "spireagent/managed-evaluation-execution-v1",
+        "retention": {"tier": "trajectory", "purpose": "training", "audit_every": 50},
+        "models": {"model": {"artifact_id": "a" * 64}},
+        "peer": {"kind": "local", "directory": str(root / "peer")}})
+    pool_path = root / "pool.json"
+    batch.save(pool_path, pool(2))
+    configuration = root / "batch.json"
+    batch.save(configuration, {"schema": batch.SCHEMA,
+        "execution": {"path": str(execution), "sha256": batch.hashed(execution)},
+        "pool": {"path": str(pool_path), "sha256": batch.hashed(pool_path)},
+        "persistent_root": str(persistent)})
+    usage = shutil.disk_usage(root)
+    monkeypatch.setattr(owner.shutil, "disk_usage", lambda _: usage._replace(free=100 * 1024**3))
+    real_mkdtemp = tempfile.mkdtemp
+    monkeypatch.setattr(batch.tempfile, "mkdtemp",
+                        lambda **keywords: real_mkdtemp(dir=root, **keywords))
+    offered = []
+
+    class HostReplaced:
+        preparation = {"test_boundary": "Host replaced; no gameplay or R2 claim"}
+
+        def __init__(self, *_arguments, **_keywords):
+            pass
+
+        def __call__(self, row, manifest, artifacts, checkpoint):
+            offered.append(row["ledger_slot_id"])
+            row.update(status="unknown", reason="injected_uncertainty",
+                       execution_status="unknown", cleanup_accepted=True,
+                       world_mutation_offered=True)
+            checkpoint()
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(managed_pipeline, "PipelinedManagedExecutor", HostReplaced)
+    real_snapshot = batch.snapshot
+    snapshots = []
+
+    def checked_snapshot(source, destination):
+        # The shared fence must ALREADY exist when NFS copy/readback begins, not after it.
+        fence = json.loads((persistent / "STOP").read_bytes())
+        assert fence["reason"] == "nonterminal_or_unknown"
+        assert fence["slot"]["status"] == "unknown"
+        if not snapshots:
+            # A second worker sees the fence even while this worker has not finished copying.
+            stopped = batch.run(configuration, "trial", wall_seconds=3600,
+                                episode_seconds=10, max_groups=2)
+            assert stopped["status"] == "stopped" and stopped["new_games"] == 0
+        snapshots.append(str(source))
+        return real_snapshot(source, destination)
+
+    monkeypatch.setattr(batch, "snapshot", checked_snapshot)
+    result = batch.run(configuration, "trial", wall_seconds=3600,
+                       episode_seconds=10, max_groups=2)
+    assert result["status"] == "stopped" and result["episodes"] == len(offered) == 1
+    assert result["results"][0]["slot"]["status"] == "unknown"
+    assert len(snapshots) == 2  # Per-episode and final full snapshots are both preserved.
+
+
+def test_worker_copied_to_slurm_spool_uses_explicit_release_source(tmp_path):
+    """Real shell consumer from a copied script, with only module/Python execution replaced."""
+    import shutil
+
+    root = tmp_path.resolve()
+    actor = root / "releases" / ("a" * 40)
+    source = actor / "source"
+    source.mkdir(parents=True)
+    environment = actor / "env/bin"
+    environment.mkdir(parents=True)
+    python = environment / "python"
+    python.write_text('#!/bin/sh\nprintf "%s\\n" "$PYTHONPATH" "$STS2_GAME_DIR" '
+                      '"$FRIDAY_INFERENCE_THREADS" "$@"\n', encoding="utf-8")
+    python.chmod(0o700)
+    commands = root / "commands"
+    commands.mkdir()
+    module = commands / "module"
+    module.write_text('#!/bin/sh\nexit 0\n', encoding="utf-8")
+    module.chmod(0o700)
+    spool = root / "var/spool/slurm/job1/slurm_script"
+    spool.parent.mkdir(parents=True)
+    shutil.copyfile(FRIDAY / "worker.sh", spool)
+    configuration = root / "batch.json"
+    result = subprocess.run(['bash', str(spool), str(configuration), 'trial', str(source)],
+        env={"PATH": str(commands) + ":/usr/bin:/bin",
+             "FRIDAY_R2_ENV": str(root / "absent-private-environment"),
+             "FRIDAY_ACTOR_ROOT": "/old/mutable-root", "FRIDAY_SOURCE_ROOT": "/old/source"},
+        capture_output=True, text=True, check=True, timeout=15)
+    lines = result.stdout.splitlines()
+    assert lines[:4] == [str(source / "python"), str(actor / "game"), "1",
+                         str(source / "tools/friday/batch.py")]
+    assert lines[4:7] == [str(configuration), "--cell", "trial"]
+    assert result.stderr == ""

@@ -5,9 +5,14 @@ set -euo pipefail
 umask 077
 configuration=${1:?configuration JSON path required}
 cell=${2:?declared comparison cell required}
-script_release=$(cd -- "$(dirname -- "$0")/../../.." && pwd -P)
-actor_root=${FRIDAY_ACTOR_ROOT:-$script_release}
-source_root=${FRIDAY_SOURCE_ROOT:-$actor_root/source}
+# Slurm runs a copied script under /var/spool; $0 does not identify the release.
+if [[ -n "${3:-}" ]]; then
+  source_root=$3
+  actor_root=$(dirname -- "$source_root")
+else
+  actor_root=${FRIDAY_ACTOR_ROOT:-/data/$(id -un)/friday-actor}
+  source_root=${FRIDAY_SOURCE_ROOT:-$actor_root/source}
+fi
 credentials=${FRIDAY_R2_ENV:-/data/$(id -un)/.config/spireagent/friday-r2.env}
 if [[ -e "$credentials" ]]; then
   [[ ! -L "$credentials" && $(stat -c '%a' "$credentials") = 600 && $(stat -c '%u' "$credentials") = $(id -u) ]] || {

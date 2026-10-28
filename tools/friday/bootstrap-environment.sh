@@ -4,7 +4,9 @@ set -euo pipefail
 umask 077
 : "${SLURM_JOB_ID:?Submit bootstrap with sbatch --cpus-per-task=1}"
 F2_ROOT=${F2_ROOT:-/data/$(id -un)/friday-actor}
-SCRIPT_DIR=$(cd -- "$(dirname -- "$0")" && pwd)
+# Slurm executes a spooled copy; $0 does not identify the deployed source.
+SCRIPT_DIR="${FRIDAY_SOURCE_ROOT:-$F2_ROOT/source}/tools/friday"
+test -f "$SCRIPT_DIR/requirements-cpu.txt"
 module load python/3.11.5-gcccore-13.2.0 nodejs/20.9.0-gcccore-13.2.0
 mkdir -p "$F2_ROOT/bootstrap" "$F2_ROOT/evidence"
 F2_SDK="$F2_ROOT/dotnet-sdk9.0.117"

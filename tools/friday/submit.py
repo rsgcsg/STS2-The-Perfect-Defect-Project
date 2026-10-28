@@ -73,7 +73,8 @@ def submit(configuration: Path, cell: str, requested: int, constraint: str | Non
                    f'--output={logs}/%A_%a.out', f'--error={logs}/%A_%a.err']
         if constraint:
             command.append('--constraint=' + constraint)
-        command.extend([str(root / 'worker.sh'), str(configuration), cell])
+        command.extend([str(root / 'worker.sh'), str(configuration), cell,
+                        str(Path(__file__).resolve().parents[2])])
         result = {'schema': 'spireagent/friday-submit-v1', 'requested': requested,
                   'idle_smp_cores': idle, 'queued_smp_jobs': queued, 'concurrency': count,
                   'command': command, 'dry_run': dry_run}

@@ -252,6 +252,11 @@ def run(configuration_path: Path, cell: str, *, wall_seconds: float,
                     executor=executor, slot_ids=(slot["slot_id"],))
                 current = next(item for item in ledger.slots()
                                if item["slot_id"] == slot["slot_id"])
+                if current["status"] not in {"saved", "finished"}:
+                    # Publish the admission fence before potentially slow NFS preservation.
+                    save(persistent / "STOP", {"reason": "nonterminal_or_unknown",
+                                               "worker_id": worker_id, "slot": current})
+                    stopping = True
                 results.append({"group_id": group["group_id"], "seed": slot["seed"],
                                 "ledger_result": result, "slot": current})
                 save(scratch / "results.json", results)
@@ -261,17 +266,14 @@ def run(configuration_path: Path, cell: str, *, wall_seconds: float,
                                        "seconds": time.monotonic() - snapshot_started})
                 save(worker / "snapshot.json", receipt)
                 save(worker / "snapshot-costs.json", snapshot_costs)
-                if current["status"] not in {"saved", "finished"}:
-                    # Close/preserve remains in the original owner; no next seed/array admission.
-                    save(persistent / "STOP", {"reason": "nonterminal_or_unknown",
-                                               "worker_id": worker_id, "slot": current})
-                    stopping = True
+                if stopping:
                     break
             active_ledger = None
             if stopping:
                 break
     except Exception as error:  # noqa: BLE001 -- top-level owner retains every failed attempt.
-        failure = type(error).__name__  # Never serialize exception text that may contain env values.
+        # Never serialize exception text that may contain environment values.
+        failure = type(error).__name__
         error_code = getattr(error, "code", None)
         save(persistent / "STOP", {"reason": "worker_failed", "worker_id": worker_id,
                                    "error_type": failure, "error_code": error_code})
