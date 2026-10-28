@@ -142,7 +142,11 @@ class Learner:
         self.pending_version: Future[dict[str, Any]] | None = None
         self.versions: list[dict[str, Any]] = []
         self.latencies: list[float] = []
-        self.anchor = self._anchor()
+        # The Human anchor streams from the Store while version 0 is published and
+        # actors play their first games; only the first update ever waits for it.
+        self.anchor: list[tuple[Any, int]] = []
+        self.anchor_future: Future[list[tuple[Any, int]]] | None = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="rl-anchor").submit(self._anchor)
         self.log = (work / "learner-events.jsonl").open("a", encoding="utf-8")
         self.cadence = ProgressCadence(0, steps=10, seconds=30)
         self.checkpoints = CheckpointPublisher(self.exchange.store, self.producer,
@@ -275,6 +279,11 @@ class Learner:
                 or self.counts["episodes_win"] + self.counts["episodes_loss"]
                 < self.config.min_episodes_before_training):
             return None
+        if self.anchor_future is not None:
+            began = time.monotonic()
+            self.anchor = self.anchor_future.result()
+            self.anchor_future = None
+            self.timer.add("wait_anchor", began)
         # Least-used first, then random: each sample sees <= max_reuse updates.
         self.random.shuffle(usable)
         usable.sort(key=lambda item: item.uses)
