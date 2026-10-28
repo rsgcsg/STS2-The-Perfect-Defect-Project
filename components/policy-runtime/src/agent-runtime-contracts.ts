@@ -82,4 +82,6 @@ export interface RuntimeServiceOwner {
   stop(): Promise<RuntimeStatus | AgentRuntimeStatus>;
   tick(expected?: { gameInstanceId?: string; recoveryEpoch?: number }): Promise<import("./contracts.js").TickResult | AgentRuntimeTickResult>;
   reconcileOriginalRequest?(requestId: string, expected?: { gameInstanceId?: string; recoveryEpoch?: number }): Promise<AgentReconcileResult>;
+  actionReviewStatus?(): ReturnType<import("./action-review.js").ActionReview["status"]>;
+  controlActionReview?(value: { enabled?: boolean; approve?: string }, expected: { gameInstanceId?: string; recoveryEpoch?: number }): Promise<void>;
 }

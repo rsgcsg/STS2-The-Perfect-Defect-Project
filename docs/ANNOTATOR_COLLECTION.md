@@ -1,5 +1,7 @@
 # Annotator collection and incident response
 
+[混合局：人和模型来回切换](#混合局同一局里模型与人来回切换)复用本页的录制与封存入口，数据先隔离。
+
 Distribute one versioned Platform package with its BOM, supported exact game
 identity, component source/contract digests and assembly SHA/MVID. The collector
 starts only after the installed and loaded identities agree. Record each
@@ -238,3 +240,54 @@ After merge, verify the normal merge preserves path-scoped component identity
 and the tested tree. Record exact merge/CI/package/load receipts before claiming
 release readiness. Future defects use the same route; merge is not a claim of
 exhaustive native surface coverage, crash recovery or scientific validity.
+
+## 混合局：同一局里模型与人来回切换
+
+H1 是显式的新用法。普通“本人录制”和纯模型实战入口保持原行为。
+源码支持不等于已安装；日常升级要等 I1 收口，并由用户给不录制窗口。
+第一次实测约在用户本来要录制的时候，至少做两轮“模型→人→模型→人”。
+
+1. 在工作台实战页选定已注册的 Reference P1 模型，使用“加载模型（Human 模式）”。
+   混合局推荐“连续，直到暂停或结束”；必须是尚未运行过决策的新 Runtime。
+   在新局开始前点击“开始混合局录制”，再按正常游戏入口开局。已经开始的普通录制不能改标。
+   中途起录会如实保留，不能据此声称整局完整。
+2. 点击“继续/开始测试”或游戏内 **F9** 交还模型；**F8** 立即暂停并接管，按钮也保留。
+   F8 直接走同一个 Runtime 恢复入口；F9 经已认证的工作台 Application，
+   重新核游戏、Runtime 和恢复代次。连接失效时先恢复工作台配对，不重复原命令。
+3. 混合局设置可选每步停顿 0–3000 毫秒、单步，以及商店/卡牌奖励/遗物/Boss 前/低把握自动停。
+   单步模式下每次“继续”执行一个语义决策，再回人工。模型尚未执行时显示下一步及完整候选
+   分数的 softmax；它是模型分数归一化，**不是胜率，也不是采样概率**。
+   0 毫秒由用户选择取消可见停顿。折叠的原生后续步骤仍逐步受 Pause 围栏约束。
+4. 接管可以来回多次，录制不随控制权切换暂停、重开或换人工来源声明。
+   已发出的动作等待原回执；结果未知照实保留，绝不重发。
+   自动放行命令结果未知也只转人工恢复，不能用后续状态查询当作重新提交的许可。
+5. 正常终局或保存退出由原 Annotator 关闭；也可点“结束混合局并封存”。
+   这会停止原模型、关闭同一原生录制。退出游戏后 Q 才做重的封存/入库工作；
+   双侧原件都通过各自校验后，Store 收到一个 `spireagent/mixed-run-1` evidence 对象。
+   Q 的“mixed_sessions”列出它。失败保留原件及原因，不自动重开或重试未知操作。
+
+一个混合会话包含一条连续的原生录制和原 Runtime 已有的模型旁路，
+按不可变 `mixed_run_id`、原件水位、Runtime 恢复代次与 Connector request/receipt 对齐。
+索引保留两个原始有序通道与切换区间；不靠两个进程的时间戳猜一个精确原子切点。
+本地原生见证记为 `native_operator`，模型回执记为 `model`，缺证据仍为 `unknown`；
+这些工程来源不授予 Human 示范资格。
+
+混合标记在新录制 manifest 中，原件来源保持 `unknown`，不能声明成人类。
+混合对象默认 `training_admission=blocked_pending_user_policy`、`score_eligible=false`，
+不派生普通训练原件、不进 cohort、不写模型评估目录。数据用途、人的片段算不算示范及权重以后另批。
+封存完整指原件完整归档，不自动证明整局 P1 转换、Managed 等价或每步已知成功。
+
+GUI、API 和 CLI 调用同一个工作台 Application（需已有运行中的配置）：
+
+```bash
+python -m spireagent.workbench project model --config /绝对路径/config.json --action mixed-start
+python -m spireagent.workbench project model --config /绝对路径/config.json --action auto
+python -m spireagent.workbench project model --config /绝对路径/config.json --action human
+python -m spireagent.workbench project model --config /绝对路径/config.json --action mixed-settings --mixed-settings '{"delay_ms":1000,"single_step":false,"shop":true,"card_reward":true,"relic_reward":true,"boss":true,"confidence_below":null}'
+python -m spireagent.workbench project model --config /绝对路径/config.json --action mixed-finish
+```
+
+Application 重启、原游戏/录制/Runtime 被替换、任一原件未封存时，保留恢复所需状态与原件，
+不默默接管另一进程。请先核原操作与准确身份；`start_unknown`/`close_unknown` 不重投。
+一局 P1 转换和 Managed 整局重放只在用户实测原件产生后各试一次，如实报告拒收/差异/unknown，
+不把它们升级成训练资格。

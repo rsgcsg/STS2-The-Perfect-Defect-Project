@@ -20,6 +20,7 @@ const sha = (v: string | Buffer) => createHash("sha256").update(v).digest("hex")
 export class GlobalHttpFixture {
   nextBases: any[] = [];
   captureObserver: (() => void) | null = null;
+  actionReplyGate: Promise<void> | null = null; actionEntered: (() => void) | null = null;
   basis = fixture("synthetic-complete-combat"); server?: Server; address = ""; requests: { path: string; body: any }[] = [];
   private held = false; releases = 0; steps = 0; terminalAfterStep = true; captureGate: Promise<void> | null = null;
   delivery: string = "delivered"; wrongRequest = false; wrongAction = false; releaseFailure = false; releaseObserved: (() => void) | null = null;
@@ -80,6 +81,7 @@ export class GlobalHttpFixture {
         if (url.pathname === "/api/player-environment/actions") {
           if (body.input_profile !== "public-basis-1") throw new Error("public_basis_profile_required");
           this.steps++; const bound = this.basis.snapshot.bound_actions.actions.find((a: any) => a.bound_action_id === body.bound_action_id)!;
+          this.actionEntered?.(); if (this.actionReplyGate) await this.actionReplyGate;
           const { interaction_id: _i, label: _l, ...action } = bound;
           if (this.wrongAction) action.bound_action_id = "foreign-action";
           if (this.nextBases.length) this.basis = this.nextBases.shift();

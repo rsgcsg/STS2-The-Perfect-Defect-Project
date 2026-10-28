@@ -765,3 +765,23 @@ handoff/taint and owned Stop paths, retains and classifies the captured source,
 releases control, closes the Agent and seals the original. The application keeps
 the episode **unknown**, including when technical cleanup and full typed readback
 succeed. This bounds wasted waiting; it does not fix the underlying native wait.
+
+### Optional mixed-run review barrier
+
+The existing global Runtime can expose an operational review point after a bound
+Agent directive and before its first native step. Default execution is unchanged.
+The Application's authenticated control binding uses `POST /v2/review` with exactly
+`{"enabled":true}` (Human mode only) or `{"approve":"review-..."}`.
+`GET /review` returns the immutable current review ID/epoch and a bounded view of
+the complete catalog, original score vector and required public scene facts.
+This projection is an operational display, never additional Agent information,
+an alternative legality engine or Runtime inference. A stale ID/epoch cannot
+release a later choice. Pause aborts unsent review work immediately; once a
+reviewed native request is sent, its original bounded response is awaited.
+Unknown delivery is fenced, never resent. Human/Stop records `global_control_fence`
+with the original fence epoch/generation; semantic replay rejects dispatch after
+that fence until a new explicit non-Human mode authorization.
+
+The Application owns speed, optional scene/confidence pauses and display;
+the Runtime owns the dispatch barrier and its cancellation. Both UIs and the CLI
+map the same Application capability. See [mixed-run collection](../../docs/ANNOTATOR_COLLECTION.md#混合局同一局里模型与人来回切换).

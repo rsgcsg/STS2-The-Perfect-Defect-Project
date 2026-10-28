@@ -40,6 +40,8 @@ public sealed record PlatformRecordingResult(string Schema, string CommandId, bo
     string Code, PlatformRecordingStatus Status)
 {
     public P1NativePrefixResult? P1NativePrefix { get; init; }
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public P1NativeCheckpoint? P1NativeCheckpoint { get; init; }
 }
 public sealed class PlatformRecordingNotDispatchedException : Exception { }
 public sealed class PlatformRecordingPreconditionException(string code) : InvalidOperationException(code) { }
@@ -188,13 +190,16 @@ public static class PlatformRecordingCommands
 
     private static PlatformRecordingRequest ReadP1Native(string runtime, string? session, JsonElement value)
     {
-        Exact(value, "schema", "command_id", "kind", "capture_profile_id", "p1_native_origin");
+        bool mixed = value.TryGetProperty("mixed_run_id", out var mixedValue);
+        if (mixed) Exact(value, "schema", "command_id", "kind", "capture_profile_id", "p1_native_origin", "mixed_run_id");
+        else Exact(value, "schema", "command_id", "kind", "capture_profile_id", "p1_native_origin");
         string id = OptionalIdentifier(value.GetProperty("command_id")) ?? "";
         if (!Guid.TryParseExact(id, "D", out _)) throw new ArgumentException("invalid_recording_command_id");
         RecordingCommandKind kind = value.GetProperty("kind").GetString() switch {
             "start_new_session" => RecordingCommandKind.StartNewSession, "pause" => RecordingCommandKind.Pause,
             "resume" => RecordingCommandKind.Resume, "close" => RecordingCommandKind.Close,
             "export_p1_native_prefix" => RecordingCommandKind.ExportP1NativePrefix,
+            "checkpoint_p1_native" => RecordingCommandKind.CheckpointP1Native,
             _ => throw new ArgumentException("invalid_recording_kind") };
         string? profile = OptionalIdentifier(value.GetProperty("capture_profile_id"));
         string? origin = OptionalIdentifier(value.GetProperty("p1_native_origin"));
@@ -204,7 +209,11 @@ public static class PlatformRecordingCommands
                 throw new ArgumentException("p1_native_profile_and_origin_required");
         }
         else if (profile != null || origin != null) throw new ArgumentException("p1_native_command_fields_not_applicable");
-        return new(runtime, session, new(id, kind, profile) { P1NativeOrigin = origin });
+        string? mixedId = mixed ? mixedValue.GetString() : null;
+        if (mixed && (kind != RecordingCommandKind.StartNewSession || origin != "unknown"
+            || mixedId is not { Length: 32 } || !mixedId.All(c => c is >= '0' and <= '9' or >= 'a' and <= 'f')))
+            throw new ArgumentException("invalid_mixed_run_identity");
+        return new(runtime, session, new(id, kind, profile) { P1NativeOrigin = origin, MixedRunId = mixedId });
     }
 
     public static string SchemaForProfile(string? profile) => profile switch
@@ -235,7 +244,7 @@ public static class PlatformRecordingCommands
         }
         else if (startOrigin != null || status.Session?.CaptureProfileId != P1NativeRecordingContract.ProfileId
             || kind is not (RecordingCommandKind.Pause or RecordingCommandKind.Resume
-                or RecordingCommandKind.Close or RecordingCommandKind.ExportP1NativePrefix))
+                or RecordingCommandKind.Close or RecordingCommandKind.ExportP1NativePrefix or RecordingCommandKind.CheckpointP1Native))
             throw new ArgumentException("p1_native_command_fields_not_applicable");
         return ForStatus(status, kind, commandId, P1NativeRecordingContract.ProfileId)
             with { P1NativeOrigin = startOrigin };
@@ -261,6 +270,7 @@ public static class PlatformRecordingCommands
         if (request.RuntimeInstanceId != current) throw new PlatformRecordingPreconditionException("recording_game_instance_changed");
         RecordingCommandResult result = execute(request.Command, request.RecordingSessionId);
         return new(ResultSchema, request.Command.CommandId, result.Accepted, result.Pending,
-            PublicCode(result.Code), Project(current, query())) { P1NativePrefix = result.P1NativePrefix };
+            PublicCode(result.Code), Project(current, query())) { P1NativePrefix = result.P1NativePrefix,
+                P1NativeCheckpoint = result.P1NativeCheckpoint };
     }
 }
