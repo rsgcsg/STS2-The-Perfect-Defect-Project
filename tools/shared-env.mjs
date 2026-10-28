@@ -70,6 +70,13 @@ function build(id, directory) {
       const target = path.join(deps, relative);
       fs.mkdirSync(path.dirname(target), {recursive: true});
       fs.copyFileSync(path.join(root, relative), target);
+      if (path.basename(relative) === 'package.json') {
+        // npm may prepare file/workspace links even with ignore-scripts. The
+        // dependency skeleton has no component source, so it must have no hooks.
+        const manifest = JSON.parse(fs.readFileSync(target, 'utf8'));
+        delete manifest.scripts;
+        fs.writeFileSync(target, JSON.stringify(manifest));
+      }
     }
     run('npm', ['ci', '--ignore-scripts'], deps);
     idle();
