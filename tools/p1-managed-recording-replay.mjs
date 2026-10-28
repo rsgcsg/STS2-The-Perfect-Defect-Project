@@ -8,6 +8,8 @@ import { fileURLToPath } from 'node:url';
 import { readVerifiedP1NativeBundle } from './p1-native-bundle.mjs';
 import { convertP1NativeBundle } from './p1-native-to-p1.mjs';
 import { replayNativeTrajectory } from './p1-native-replay.mjs';
+import { buildRecordedReplayPlan } from './recorded-replay-plan.mjs';
+import { matchRecordedChoice } from './recorded-replay-preferences.mjs';
 import { HostDriver } from '../components/policy-runtime/dist/p1-global/host-driver.js';
 import { EpisodeRecorder } from '../components/policy-runtime/dist/p1-global/recorder.js';
 
@@ -81,14 +83,14 @@ export async function replayRecording({ bundle, candidate, out, language, budget
   if (existsSync(out)) throw new Error('recording_replay_output_exists_no_retry');
   const original = readVerifiedP1NativeBundle(bundle);
   const source = await convertP1NativeBundle({ bundle, includeNativeReplayWitnesses: true });
-  if (!source.complete || !source.whole_run_recording_complete || !source.trajectory || source.raw_unknown_count > 0)
-    throw new Error('recording_replay_complete_known_original_required');
-  const launch = readRecordedLaunch(original, source.trajectory);
+  const trajectory = source.complete && source.whole_run_recording_complete && source.trajectory && source.raw_unknown_count === 0
+    ? source.trajectory : buildRecordedReplayPlan(original, source);
+  const launch = readRecordedLaunch(original, trajectory);
   mkdirSync(out, { recursive: true, mode: 0o700 });
   const recorder = new EpisodeRecorder(resolve(out, 'replay.jsonl'), { schema: 'spireagent/managed-diagnostic-log-1', scope: 'recorded_launch_managed_diagnostic',
     source_content_id: source.source_content_id, source_session_id: source.source_session_id,
     launch_witness: launch.witness, language, character: launch.character, ascension: launch.ascension,
-    comparator_changed: false, formal_evaluation: false });
+    comparator_changed: true, comparison_exception_ids: ["M060"], formal_evaluation: false });
   const sink = privateRecordingSink(recorder, launch);
   const driver = driverFactory(launch, sink);
   // Verify manager-only launch identity before any action is offered.
@@ -106,17 +108,23 @@ export async function replayRecording({ bundle, candidate, out, language, budget
     }
     return response;
   };
-  const result = publicRecordingReport(await replayNativeTrajectory({ trajectory: source.trajectory,
-    driver, record: sink, seed: launch.seed, initialProgress: launch.initialProgress, budgetMs }), launch);
+  const result = publicRecordingReport(await replayNativeTrajectory({ trajectory,
+    driver, record: sink, seed: launch.seed, initialProgress: launch.initialProgress, budgetMs,
+    pointMatcher: matchRecordedChoice }), launch);
   Object.assign(result, { schema: 'spireagent/recorded-managed-diagnostic-1', source_content_id: source.source_content_id,
     source_session_id: source.source_session_id, launch_witness: launch.witness, character: launch.character,
     ascension: launch.ascension, language,
     startup_scope: { seed_and_progress: "verified_original", character_and_ascension: "recorded_p1",
       language: "manager_configuration", managed_wait_timing: "instant",
       original_speed_witness: "not_recorded", full_presentation_reconstruction: "not_established" },
-    launch_verified: launchVerified, formal_evaluation: false, comparator_changed: false,
-    stopped_surface: source.trajectory.points[result.stopped_index]?.observation.scene.native_kind,
-    planned_surfaces: source.trajectory.points.reduce((rows, point) => {
+    launch_verified: launchVerified, formal_evaluation: false, comparator_changed: true,
+    comparison_policy: 'strict_public_with_user_approved_M060_toggle_preference',
+    replay_scope: trajectory.replay_scope ?? { kind: 'original_complete_p1_trajectory' },
+    stopped_surface: trajectory.points[result.stopped_index]?.observation.scene.native_kind,
+    planned_uncompared_native_inputs: trajectory.points.filter(point => point.native_bridge).length,
+    source_p1_points: source.trajectory?.points.length ?? source.actions.filter(action =>
+      action.match_status === 'matched' && action.result?.status === 'completed').length,
+    planned_surfaces: trajectory.points.filter(point => !point.native_bridge && !point.replay_checkpoint && !point.bounded_end).reduce((rows, point) => {
       const kind = point.observation.scene.native_kind; rows[kind] = (rows[kind] ?? 0) + 1; return rows;
     }, {}) });
   result.record = recorder.close({ completed: result.completed, matching_points: result.matching_points });
