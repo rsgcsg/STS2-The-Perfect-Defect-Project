@@ -11,7 +11,8 @@ import json
 import tempfile
 import time
 from collections.abc import Mapping
-from dataclasses import dataclass
+from contextlib import nullcontext
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
@@ -21,7 +22,7 @@ from spireagent.artifact_contracts import Manifest, Parent, Producer
 from spireagent.json_boundary import BoundaryError, FrozenObject
 from spireagent.storage.store import ArtifactStore
 
-from ..p1.data import digest
+from ..p1.data import digest, json_bytes
 from ..p1.export import action_weights, export_model, load_model
 from ..p1.formal_training import MStdTrainer, Population, checkpoint_schema
 from ..p1.spec import (
@@ -322,12 +323,15 @@ def execute_p1_run(
     # have no such channel; their immutable checkpoints may publish in one
     # bounded background task. Hub acceptance remains separately fenced.
     uploads = CheckpointPublisher(store, runtime, background=authority is None)
-    with (
-        VerifiedReadSession(store, cache_payloads=input_cache is None) as session,
-        uploads as publisher,
-    ):
+    session_scope = (nullcontext(store) if isinstance(store, VerifiedReadSession)
+                     else VerifiedReadSession(store, cache_payloads=input_cache is None))
+    with session_scope as session, uploads as publisher:
         payloads = read_payloads(session, training.parent("source"), run_id=run_id)
-        session.prefetch(payloads)
+        # A batch can retain one explicitly scoped input session. Identical
+        # inventories reuse the first complete verification; different payloads
+        # (including a resume CP) are fully prefetched under their own binding.
+        prefetch_key = digest(json_bytes([asdict(payload) for payload in payloads]))
+        session.memoize("p1.prefetch", prefetch_key, lambda: session.prefetch(payloads))
         prefetch_seconds = time.perf_counter() - started
         return _execute_p1_run(
             session, reporter, run_id, runtime, attempt_id=attempt_id, resume=resume,

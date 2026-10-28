@@ -10,6 +10,7 @@ from pathlib import Path
 from spireagent.json_boundary import BoundaryError, decode_json, json_bytes
 from spireagent.source import source_identity
 from spireagent.storage.config import open_store
+from spireagent.storage.read_session import VerifiedReadSession
 
 from .contracts import ComputeRequest, load_feature_job
 from .execution import FeatureBackend, dispatch
@@ -17,12 +18,17 @@ from .execution import FeatureBackend, dispatch
 
 def execute_request(value: object, *, store_location: str = "s3",
                     wall_seconds: int | None = None, ready_file: Path | None = None,
-                    input_cache: Path | None = None) -> dict:
+                    input_cache: Path | None = None,
+                    input_session: VerifiedReadSession | None = None) -> dict:
     request = ComputeRequest.decode(value)
     runtime = source_identity(Path(__file__).resolve().parents[2])
     if runtime != request.producer:
         raise BoundaryError("compute", "runtime_source_lock_mismatch")
-    store = open_store(store_location)
+    if input_session is not None and (
+            not isinstance(input_session, VerifiedReadSession) or input_cache is not None
+            or request.kind != "training"):
+        raise BoundaryError("compute", "explicit_training_input_session_required")
+    store = input_session if input_session is not None else open_store(store_location)
     backend: FeatureBackend | None = None
     if request.kind == "features":
         _, spec = load_feature_job(store, request.input_id, runtime)

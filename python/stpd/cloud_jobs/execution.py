@@ -11,6 +11,7 @@ from typing import Literal, Protocol
 from spireagent.artifact_contracts import Manifest, Producer
 from spireagent.json_boundary import BoundaryError, FrozenObject, unsigned
 from spireagent.storage.run_reporter import ObjectStoreRunReporter
+from spireagent.storage.read_session import VerifiedReadSession
 from spireagent.storage.store import ArtifactStore, ManifestArtifactStore
 
 from ..contracts import QwenBackend
@@ -69,7 +70,7 @@ class CandidateReporter:
     """
 
     def __init__(
-        self, store: ManifestArtifactStore, run_id: str, runtime: Producer,
+        self, store: ManifestArtifactStore | VerifiedReadSession, run_id: str, runtime: Producer,
         *, request: ComputeRequest | None = None,
     ) -> None:
         self.store, self.run_id, self.runtime = store, run_id, runtime
@@ -171,7 +172,7 @@ def prepare_feature_run(
 
 
 def dispatch(
-    store: ManifestArtifactStore, request: ComputeRequest, runtime: Producer,
+    store: ManifestArtifactStore | VerifiedReadSession, request: ComputeRequest, runtime: Producer,
     *, backend: FeatureBackend | None = None, wall_seconds: int | None = None,
     training_ready: Callable[[], None] | None = None,
     input_cache: Path | None = None,
@@ -218,7 +219,8 @@ def dispatch(
 
         # One P1 request shares immutable parent bytes between verification and
         # the synchronous reporter. Fresh observers/auditors keep default reads.
-        store = ManifestArtifactStore(store.blobs, cache_manifests=True)
+        if not isinstance(store, VerifiedReadSession):
+            store = ManifestArtifactStore(store.blobs, cache_manifests=True)
         p1_result = execute_p1_run(
             store, CandidateReporter(store, request.input_id, runtime, request=request),
             request.input_id, runtime, attempt_id=request.attempt_id,
