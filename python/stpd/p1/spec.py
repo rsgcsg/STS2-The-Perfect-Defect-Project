@@ -56,7 +56,8 @@ class MStdConfig:
             raise BoundaryError("p1_training", "boolean_value_heads_required")
         if type(self.seed) is not int or not 0 <= self.seed < 2**63:
             raise BoundaryError("p1_training", "invalid_seed")
-        if self.stopping_policy not in {"dev-patience-v1", "epoch-budget-v1"}:
+        if (type(self.stopping_policy) is not str
+                or self.stopping_policy not in {"dev-patience-v1", "epoch-budget-v1"}):
             raise BoundaryError("p1_training", "unsupported_stopping_policy")
         if type(self.max_epochs) is not int or not 1 <= self.max_epochs <= 40:
             raise BoundaryError("p1_training", "invalid_epoch_budget")
