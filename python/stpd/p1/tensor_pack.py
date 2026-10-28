@@ -30,7 +30,7 @@ from .weighting import point_weights
 SCHEMA = "stpd/p1-mstd-tensor-pack-1"
 CODE_FILES = ("tensor_pack.py", "tensor_input.py", "model.py", "input.py", "input_order.py",
               "input_identity.py", "vocabulary.py", "public_vocabulary_v1.json", "dataset.py",
-              "data.py", "value_targets.py", "weighting.py")
+              "data.py", "value_targets.py", "weighting.py", "cohort.py", "spec.py", "execution.py")
 SHARD_POINTS = 128
 
 
@@ -211,6 +211,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--scratch", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True, help="new receipt JSON file")
     args = parser.parse_args(argv)
+    if args.output.exists():
+        parser.error("output receipt already exists; inspect the original result before rebuilding")
     producer = source_identity(Path(__file__).resolve().parents[2])
     source = open_store(args.store)
     destination = open_store(args.destination) if args.destination else source

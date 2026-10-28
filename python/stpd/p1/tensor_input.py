@@ -19,7 +19,7 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True)
 class Reduction:
-    buckets: tuple[tuple[int, Tensor, Tensor], ...]
+    buckets: tuple[tuple[int, int, Tensor], ...]
     inverse: Tensor
 
     def state(self) -> dict[str, Any]:
@@ -38,7 +38,7 @@ def reduction(rows: list[list[int]]) -> Reduction:
     inverse = [0] * len(order)
     for index, row in enumerate(order):
         inverse[row] = index
-    return Reduction(tuple((width, torch.tensor(owners, dtype=torch.long), torch.tensor(
+    return Reduction(tuple((width, len(owners), torch.tensor(
         [index for row in owners for index in rows[row]], dtype=torch.long))
         for width, owners in buckets.items()), torch.tensor(inverse, dtype=torch.long))
 

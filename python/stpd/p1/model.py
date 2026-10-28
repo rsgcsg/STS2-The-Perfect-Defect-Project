@@ -56,10 +56,10 @@ def _mean_terms(values: Tensor, rows: list[list[int]] | Reduction, empty: Tensor
     """
     if isinstance(rows, Reduction):
         parts = []
-        for width, tensor_owners, tensor_indices in rows.buckets:
+        for width, owner_count, tensor_indices in rows.buckets:
             parts.append(values.index_select(0, tensor_indices.to(values.device)).reshape(
-                len(tensor_owners), width, -1).mean(1) if width
-                         else empty.expand(len(tensor_owners), -1))
+                owner_count, width, -1).mean(1) if width
+                         else empty.expand(owner_count, -1))
         return torch.cat(parts).index_select(0, rows.inverse.to(values.device))
     buckets: dict[int, list[int]] = {}
     for row, terms in enumerate(rows):
@@ -222,8 +222,9 @@ class MStd(nn.Module):
 
     def tensor_nodes(self, frame: TensorFrame, vectors: Tensor) -> Tensor:
         device = self.ids.weight.device
-        t = {key: value.to(device) for key, value in frame.tensors.items()
-             if not key.startswith("text_") or key in {"text_fields", "text_indices"}}
+        t = {key: frame.tensors[key].to(device) for key in (
+            "identities", "identity_fields", "kinds", "positions", "number_fields",
+            "numbers", "missing_fields", "text_fields", "text_indices")}
         identities = t["identities"]
         if self.training:
             identities = identities.masked_fill(torch.rand(len(identities), device=device) < 0.1, 0)

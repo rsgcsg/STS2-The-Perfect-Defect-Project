@@ -237,6 +237,58 @@ worker 把周期、DEV最佳、早期、暂停和最终检查点直接发布到�
 不能对引用式计算Store使用完整 `copy_artifact` 并把缺少raw解释成检查点损坏。
 普通完整保全/恢复的接口及哈希要求保持不变。详见[计算输入约定](DATA_LIFECYCLE.md#p1-compute-input-availability)。
 
+### D1：学校 GPU 一页流程与预编译输入
+
+默认训练节点仍是学校 GPU；本机 CPU/MPS 只作验证。每次学校分配前必须得到本人的
+本次批准，确认上次资源已结束、T2c不再占用；登录/MFA由本人完成，既有批准不跨次复用。
+运行节点先看 `GAME-SLOT`：T2粗筛及之后细跑均最优先，粗筛行未写“完成”之前只读/写代码。
+粗筛完成与细跑开始之间，须同时无Managed批次、无用户游戏，才以 `nice -n 15` 跑单元测试、
+小规模真数据打包和无损对照；细跑或任何Managed/用户游戏一开始就暂停自己的进程。
+200步复现及全量验证仍等T2完整窗口结束，并确认M2e/S23未在运行。
+
+| 步骤 | 谁做、输入 | 完成与失败含义 |
+| --- | --- | --- |
+| 分配前准备 | Codex在允许的CPU窗口，从已冻结Snapshot/Run生成张量包并保全R2；固定源码SHA、lock、包ID及全套回执 | 不启动provider、不改原Run。随机输入字节/同参loss、完整分母和原权重/遮罩须核对；失败保留，不先占GPU等待 |
+| 批准与登录 | 本人批准本次GPU用途/总时限；本人登录/MFA；Codex可操作已认证门户的分配/停止 | 分配后记录实际allocation、GPU/驱动/主机身份及绝对截止；登录过期或主机身份不符时等待本人，不重发不确定请求 |
+| 复用节点输入 | Codex在自己的持久home目录按hash复用源码包、锁和输入；SSH目标的 `state_directory/p1-input-cache` 为现Store的校验缓存 | 每次仍核manifest、chunk/whole SHA和原Snapshot。写入/进度/完成槽仍在原远端Store；本缓存不自动删除，也不是新的数据或完成权威 |
+| 环境与启动 | 使用自己准确源码/锁的环境，优先复用已有依赖缓存；`python -I`核实际导入路径和版本；原prepare→start-prepared入口启动 | 不修改T2c环境或输出。环境、身份、磁盘不合格则不启动；准备与训练分别计时，总预算不重置 |
+| 运行与结束 | Codex核真实训练/评估进程、原日志及截止；原owner正常保存、回收结果、在门户停止本次allocation并核结束 | 不用空转GPU、保活脚本或伪造活跃绕过Idle timeout。平台闲置判据尚未独立核明，不能声称已修；将CPU准备前移以减少空等 |
+
+T2b原记录：从04:03:41准备到05:00:58 ready约57.3分钟；worker内部准备888.84秒，
+其中预取92.60、验证334.21、投影457.65秒。D1改后准备耗时尚未实测，不能把预计值写成达成。
+原1919在计算结束后因Idle timeout结束，只证明那一次平台的结束原因，不证明平台固定时限。
+
+预编译是新的 `feature_set` 表示 `stpd/p1-mstd-tensor-pack-1`，沿原ArtifactStore保存；
+不改变P1投影、Input-v2、词表、标签、W1或训练/选模型配方。包的Manifest Producer记录
+实际编译source/lock，索引绑定Snapshot/selection、逐源投影payload、InputSpec、词表、
+编译器代码、分片和各分区点/目标/权重/价值标签哈希。128点分片使用原tensor-tree/safetensors
+codec，不反序列化pickle。固定字段/编号/分词/CPU张量一次生成；每步仍按原点顺序和
+容量规则分microbatch，动态padding、dropout、ID masking及梯度归约不预先冻结。
+
+先在CPU准备（示意参数须换成本次准确值；不会启动训练）：
+
+```bash
+nice -n 15 uv run --locked python -m stpd.p1.tensor_pack \
+  --store /absolute/input-store --run FROZEN_RUN_ID \
+  --destination s3 --scratch /absolute/d1-scratch \
+  --output /absolute/new-pack-receipt.json
+```
+
+R2只新增本包，不改原件；完整关键验收使用fresh远端Store/reader冷读回原包与原源，
+不以本机缓存命中代替冷读。实际生产者→序列化→consumer、数据/身份非作者复核与回执
+齐全后才说包可供训练。正常新Input-v2 + `experimental-packed-v1`的prepare会生成包；
+后续同集合/同编码器的新请求可显式携带已验 `tensor_pack_id` 直接复用；原T2请求文件
+与旧Run保持原样。编码器、输入规格或词表不匹配直接拒绝，不静默退回重编译。
+
+worker保留原SnapshotReader完整验证，并从原selection chosen、规范W1、原projection自然终局
+事实核标签；unknown仍遮罩。缓存只减少重复读取/整理，不提升Human/研究/训练用途资格。
+每步远端进度仍同步、原索引先于最终manifest，两次PUT全部完成才返回；只在本次P1 worker
+内复用已验不可变manifest，命中仍解码验SHA，不缓存completion/control/fence槽。
+
+M2b轨迹将来可在明确用途/切分后通过同一非学习输入编码器生成分片；本格式保留完整
+点身份/目录索引且不预固定optimizer batch。本卡不实现RL摄取、采样、奖励、return或GAE，
+也不把轨迹文件存在当成RL就绪。
+
 ### 权重、配方与检查点
 
 #### 下一轮 T2 的输入 v2

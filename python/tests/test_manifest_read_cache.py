@@ -75,3 +75,20 @@ def test_persistent_inputs_are_hashed_and_writes_slots_remain_original(tmp_path)
     assert remote_blobs.reads == calls + Counter({
         f'payload-indexes/v1/{new.sha256}.json': 1,
         f'objects/sha256/{new.sha256}': 1})
+
+
+def test_request_cache_eviction_with_actual_parallel_history_readers(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+
+    blobs = LocalBlobStore(tmp_path)
+    original = ManifestArtifactStore(blobs)
+    manifests = [Manifest('analysis', PRODUCER, parameters=FrozenObject.of({'row': i}))
+                 for i in range(600)]
+    for manifest in manifests:
+        original.publish(manifest)
+    cached = ManifestArtifactStore(blobs, cache_manifests=True)
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        actual = list(pool.map(cached.get_manifest,
+                               [m.artifact_id for m in manifests] * 2))
+    assert actual == manifests * 2
+    assert len(cached._manifest_cache) <= 512

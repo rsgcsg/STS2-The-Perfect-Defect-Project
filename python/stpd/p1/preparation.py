@@ -62,11 +62,16 @@ def input_transfer_inventory(store: ArtifactStore, identity: str) -> dict[str, A
     item = store.get_manifest(identity)
     schema = item.parameters.value().get("schema")
     compute = []
+    has_tensor_pack = False
     if schema in RUN_SCHEMAS:
         workload = verify_p1_run(store, identity, item.producer)
         snapshot = workload.snapshot
         reader = workload.reader
         compute.append((workload.training, "vocabulary"))
+        if "tensor_pack_id" in workload.training.parameters.value():
+            pack = store.get_manifest(workload.training.parent("tensor_pack"))
+            compute.extend((pack, payload.role) for payload in pack.payloads)
+            has_tensor_pack = True
         if schema == DERIVED_RUN_SCHEMA:
             from .derivation import source_checkpoint_dag
 
@@ -124,7 +129,8 @@ def input_transfer_inventory(store: ArtifactStore, identity: str) -> dict[str, A
         "worker_reads": (
             "named_projection_payloads_selection_vocabulary_original_full_checkpoint_DAG"
             "_and_ancestor_manifests" if schema == DERIVED_RUN_SCHEMA else
-            "named_projection_payloads_selection_vocabulary_and_ancestor_manifests"),
+            "named_projection_payloads_selection_vocabulary_and_ancestor_manifests")
+            + ("_tensor_pack_index_and_shards" if has_tensor_pack else ""),
         "worker_archive_payload_reads": False,
         "placement": "existing_ArtifactStore_binding_not_embedded_local_paths",
         "upload_performed": False,

@@ -116,6 +116,13 @@ def test_pack_real_store_worker_pause_resume_and_exact_population(tmp_path):
                          input_projection=V2_INPUT_SPEC, tensor_pack_id=pack.artifact_id)
     workload = verify_p1_run(store, run.artifact_id, PRODUCER)
     assert workload.prepared_populations is not None
+    from stpd.p1.preparation import input_transfer_inventory
+    from stpd.p1.workload import read_payloads
+
+    inventory = input_transfer_inventory(store, run.artifact_id)
+    required = read_payloads(store, snapshot.artifact_id, run_id=run.artifact_id)
+    assert inventory['compute_unique_payload_bytes'] == sum(p.size for p in required)
+    assert 'tensor_pack_index_and_shards' in inventory['worker_reads']
     assert workload.prepared_populations['train'].point_ids == packed['train'].point_ids
     first = ComputeRequest('training', run.artifact_id, PRODUCER, 'tensor-pause', stop_after=1)
     paused = dispatch(store, first, PRODUCER)
@@ -132,7 +139,7 @@ def test_pack_real_store_worker_pause_resume_and_exact_population(tmp_path):
         assert torch.equal(tensor, saved.state['model'][key])
 
 
-@pytest.mark.parametrize('mutation', ['target', 'weight', 'value', 'compiler', 'source'])
+@pytest.mark.parametrize('mutation', ['target', 'weight', 'value', 'compiler', 'source', 'producer'])
 def test_pack_rejects_self_consistent_tampered_labels_weights_and_identity(tmp_path, mutation):
     import io
     import json
@@ -155,7 +162,11 @@ def test_pack_rejects_self_consistent_tampered_labels_weights_and_identity(tmp_p
     index = json.loads(b''.join(store.read_payload(pack.payload('index'))))
     params = pack.parameters.value()
     payloads = list(pack.payloads)
-    if mutation in {'compiler', 'source'}:
+    if mutation == 'source':
+        index['sources'][0]['payload_sha256'] = '0'*64
+    elif mutation == 'producer':
+        pack = replace(pack, producer=replace(pack.producer, source_revision='f'*40))
+    elif mutation == 'compiler':
         index['binding']['compiler']['model.py'] = '0'*64
         params['binding'] = index['binding']
     else:
@@ -186,5 +197,29 @@ def test_pack_rejects_self_consistent_tampered_labels_weights_and_identity(tmp_p
                                                         'application/json')
     forged = replace(pack, payloads=tuple(payloads), parameters=FrozenObject.of(params))
     store.publish(forged)
-    with pytest.raises(BoundaryError, match='pack_identity_mismatch|point_supervision_mismatch'):
+    rejected = ('pack_identity_mismatch|point_supervision_mismatch|'
+                'source_payload_binding_mismatch')
+    with pytest.raises(BoundaryError, match=rejected):
         load_tensor_pack(store, forged.artifact_id, reader, vocab, value_heads=True)
+
+
+@pytest.mark.parametrize('training', [False, True])
+@pytest.mark.parametrize('choices', [False, True])
+def test_empty_text_numbers_identities_and_absent_roles_are_lossless(training, choices):
+    from stpd.p1.input import Entity, Frame
+
+    frame = Frame([Entity('empty', 0), Entity('empty', 1)],
+                  [{'choice_id': 'only', 'kind': 'event.choose'}] if choices else [],
+                  [(-1, -1)] if choices else [])
+    with TrainingNumerics(3, 2, torch.device('cpu')).scope():
+        model = MStd(public_vocabulary(), MStdExecution.for_plan('mstd-training-v1'),
+                     value_heads=True).train(training)
+        packed = compile_frame(frame, model)
+        before = torch.get_rng_state()
+        scores, values = model.forward_with_values([frame])
+        after = torch.get_rng_state()
+        torch.set_rng_state(before)
+        other, other_values = model.forward_with_values([packed])
+        assert torch.equal(after, torch.get_rng_state())
+        assert torch.equal(scores[0], other[0])
+        assert torch.equal(values, other_values)
