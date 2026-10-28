@@ -105,7 +105,11 @@ test("Live UI uses a visible launcher and SceneTree status signals", () => {
   assert.match(source, /adding layer to SceneTree root/u);
   assert.match(source, /panel mount failed/u);
   assert.match(source, /panel ready; input=launcher/u);
-  assert.doesNotMatch(source, /Key\.F\d+/u);
+  // H1 explicitly adds visible handoff shortcuts. The launcher remains the
+  // UI entry; no hidden open-panel shortcut or arbitrary function key is added.
+  assert.deepEqual([...source.matchAll(/Key\.(F\d+)/gu)].map(match => match[1]), ["F8", "F9"]);
+  assert.match(source, /BuildHeaderButton\("F8 接管"/u);
+  assert.match(source, /BuildHeaderButton\("F9 模型"/u);
 });
 
 test("single-Mod deploy retires every legacy production manifest and DLL", () => {
