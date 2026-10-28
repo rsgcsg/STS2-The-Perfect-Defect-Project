@@ -309,7 +309,7 @@ def execute_p1_run(
     # payloads are prefetched; original recordings remain exact references.
     run = store.get_manifest(run_id)
     training = store.get_manifest(run.parent("training_input"))
-    with VerifiedReadSession(store) as session:
+    with VerifiedReadSession(store, cache_payloads=input_cache is None) as session:
         payloads = read_payloads(session, training.parent("source"), run_id=run_id)
         session.prefetch(payloads)
         prefetch_seconds = time.perf_counter() - started

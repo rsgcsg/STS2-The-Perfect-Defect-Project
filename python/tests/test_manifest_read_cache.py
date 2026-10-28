@@ -94,6 +94,31 @@ def test_request_cache_eviction_with_actual_parallel_history_readers(tmp_path):
     assert len(cached._manifest_cache) <= 512
 
 
+def test_persistent_chunk_cache_needs_no_second_payload_copy_and_still_rehashes(tmp_path):
+    import io
+
+    from spireagent.storage.input_cache import InputCacheStore
+    from spireagent.storage.read_session import VerifiedReadSession
+
+    remote_blobs = CountReads(tmp_path / 'remote')
+    remote = ManifestArtifactStore(remote_blobs)
+    payload = remote.put_payload('data', io.BytesIO(b'original input'))
+    cache_path = tmp_path / 'persistent'
+    cache = InputCacheStore(remote, cache_path)
+    scratch = tmp_path / 'session'
+    with VerifiedReadSession(cache, scratch=scratch, cache_payloads=False) as session:
+        session.prefetch((payload,))
+        calls = remote_blobs.reads.copy()
+        assert b''.join(session.read_payload(payload)) == b'original input'
+        assert remote_blobs.reads == calls
+        assert not [p for p in scratch.rglob('*') if p.is_file()]
+        chunk = next((cache_path / 'objects/sha256').glob('*'))
+        chunk.write_bytes(b'changed after the first verified read')
+        with pytest.raises(StoreError, match='payload_chunk_integrity_failure'):
+            b''.join(session.read_payload(payload))
+        assert remote_blobs.reads == calls
+
+
 def test_cloud_cli_forwards_an_explicit_input_cache(tmp_path, monkeypatch, capsys):
     import json
 
