@@ -263,6 +263,25 @@ def test_q_scope_never_makes_a_mixed_source_an_ordinary_training_original(tmp_pa
         publish_p1_original(None, tmp_path, tool, None, scratch=tmp_path)
 
 
+def test_q_stops_the_original_once_when_game_exited_before_model_observer(application):
+    mixed, models, native, runtime = application
+    mixed.start()
+    offered = []
+    models.process = SimpleNamespace(poll=lambda: None)
+    models.command = offered.append
+    native.recording_status = lambda _: (_ for _ in ()).throw(
+        BoundaryError("recording", "game_exited")
+    )
+    candidate = {"session_id": "s"}
+    assert mixed.prepare_for_intake(candidate) is False
+    assert mixed.prepare_for_intake(candidate) is False
+    assert offered == ["stop"]
+    mixed.after_control("stop", runtime | {"lifecycle": "stopped"})
+    models.process = None
+    assert mixed.prepare_for_intake(candidate) is True
+    assert mixed.status()["status"] == "finishing"
+
+
 def test_unknown_approval_is_offered_once_then_human_recovery_without_reposting(application):
     mixed, models, native, runtime = application
     mixed.start()

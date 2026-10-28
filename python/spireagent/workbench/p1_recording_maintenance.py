@@ -402,9 +402,15 @@ class P1RecordingMaintenance:
                 if self.mixed_runs is None or not self._admit_step():
                     continue
                 try:
+                    candidate = importer.catalog.candidate(mixed["candidate_id"])
+                    if candidate is None:
+                        raise BoundaryError("mixed_run", "candidate_unavailable")
+                    if (not mixed.get("mixed_sealed")
+                            and not self.mixed_runs.prepare_for_intake(candidate)):
+                        continue
                     result = ({"artifact_id": mixed["mixed_artifact_id"], "status": "sealed"}
                               if mixed.get("mixed_sealed") else self.mixed_runs.seal(
-                                  importer.catalog.candidate(mixed["candidate_id"])))
+                                  candidate))
                     if result.get("status") != "sealed":
                         continue
                     state.setdefault("mixed_sessions", {})[mixed["mixed_run_id"]] = {

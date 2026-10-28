@@ -474,7 +474,12 @@ class MixedRunApplication:
                 "controller": runtime["controller"],
                 "pending_request": runtime.get("pending_request"),
             }
-            if self._owner()["recording_lifecycle"] in {"recording", "paused"}:
+            try:
+                owner = self._owner()
+            except (BoundaryError, OSError, ValueError):
+                owner = None
+                facts["native_cut_status"] = "game_unavailable_no_cut_claim"
+            if owner is not None and owner["recording_lifecycle"] in {"recording", "paused"}:
                 facts["cut"] = self.checkpoint()
             self._event("control_completed", **facts)
             if action == "human" and self.current.get("review_unknown"):
@@ -485,6 +490,7 @@ class MixedRunApplication:
                 action == "stop"
                 and self.current["status"] == "finishing"
                 and runtime["lifecycle"] == "stopped"
+                and owner is not None
             ):
                 self._close_native()
             self._save()
@@ -630,6 +636,31 @@ class MixedRunApplication:
                 raise
             self._save()
         return None
+
+    def prepare_for_intake(self, candidate: dict[str, Any]) -> bool:
+        """Q has positively observed game exit and a closed native candidate.
+
+        A Human-mode child may still be alive after the game has exited. Offer
+        Stop to that exact original once; never depend on another game poll to
+        finish it, and never adopt/stop a replacement child.
+        """
+        with self.models.lock:
+            with self.lock:
+                state = self.current
+                if not state or candidate["session_id"] != state.get("session_id"):
+                    reject("mixed_session_not_current")
+                if self.models.process is None or self.models.process.poll() is not None:
+                    return True
+                client = self.models.client
+                if client is None or client.startup["run_id"] not in state["model_runs"]:
+                    reject("original_runtime_association_required")
+                if state.get("intake_stop_offered"):
+                    return False
+                state.update(status="finishing", intake_stop_offered=True)
+                self._event("closed_original_runtime_stop_offered", run_id=client.startup["run_id"])
+                self._save()
+            self.models.command("stop")
+            return False
 
     def seal(self, candidate: dict[str, Any]) -> dict[str, Any]:
         """Called by Q after its ordinary game-exit, operation and space admission."""
