@@ -62,3 +62,23 @@ test('shared and private commands both resolve the checkout interpreter before a
     assert.equal(env.PYTHONPATH.split(path.delimiter)[0],path.join(checkout,'python'));
   }
 });
+
+test('source command edits reuse dependencies, while package declarations and locks invalidate the key', async t => {
+  const {identity}=await import('./shared-env.mjs');
+  const {spawnSync}=await import('node:child_process');
+  const directory=fs.mkdtempSync(path.join(os.tmpdir(),'spire-env-key-'));
+  t.after(()=>fs.rmSync(directory,{recursive:true,force:true}));
+  fs.writeFileSync(path.join(directory,'package.json'),JSON.stringify({name:'fixture',scripts:{check:'old'},dependencies:{example:'1'}}));
+  fs.writeFileSync(path.join(directory,'package-lock.json'),'{}');
+  for (const args of [['init','-q'],['add','package.json','package-lock.json']]) {
+    const result=spawnSync('git',args,{cwd:directory,encoding:'utf8'}); assert.equal(result.status,0,result.stderr);
+  }
+  const original=identity(directory,{python:'fixture',version:'3.11.fixture'}).key;
+  fs.writeFileSync(path.join(directory,'package.json'),JSON.stringify({name:'fixture',scripts:{check:'new'},dependencies:{example:'1'}}));
+  assert.equal(identity(directory,{python:'fixture',version:'3.11.fixture'}).key,original);
+  fs.writeFileSync(path.join(directory,'package.json'),JSON.stringify({name:'fixture',scripts:{check:'new'},dependencies:{example:'2'}}));
+  assert.notEqual(identity(directory,{python:'fixture',version:'3.11.fixture'}).key,original);
+  fs.writeFileSync(path.join(directory,'package.json'),JSON.stringify({name:'fixture',scripts:{check:'old'},dependencies:{example:'1'}}));
+  fs.writeFileSync(path.join(directory,'package-lock.json'),'{"changed":true}');
+  assert.notEqual(identity(directory,{python:'fixture',version:'3.11.fixture'}).key,original);
+});

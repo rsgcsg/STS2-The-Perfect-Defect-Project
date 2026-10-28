@@ -16,14 +16,20 @@ function run(cmd, args, cwd = root, env = process.env, capture = false) {
   return result.stdout?.trim();
 }
 const digest = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
-export function identity(directory = root) {
+export function identity(directory = root, runtime = null) {
   const tracked = run('git', ['ls-files', '-z'], directory, process.env, true).split('\0');
   const files = tracked.filter(p => /(^|\/)(package-lock\.json|package\.json)$/u.test(p)
     || ['python/uv.lock', 'python/pyproject.toml', 'python/.python-version'].includes(p)).sort();
-  const python = run('uv', ['python', 'find', '3.11'], directory, process.env, true);
-  const version = run(python, ['-c', 'import sys;print(sys.version)'], directory, process.env, true);
-  const inputs = {schema: 1, node: process.version, python: version, platform: process.platform, arch: process.arch,
-    files: Object.fromEntries(files.map(p => [p, digest(fs.readFileSync(path.join(directory, p)))]))};
+  const python = runtime ? runtime.python : run('uv', ['python', 'find', '3.11'], directory, process.env, true);
+  const version = runtime ? runtime.version : run(python, ['-c', 'import sys;print(sys.version)'], directory, process.env, true);
+  const inputs = {schema: 2, package_manifest_policy: 'without-scripts', node: process.version, python: version, platform: process.platform, arch: process.arch,
+    files: Object.fromEntries(files.map(p => {
+      const bytes = fs.readFileSync(path.join(directory, p));
+      if (path.basename(p) !== 'package.json') return [p, digest(bytes)];
+      const manifest = JSON.parse(bytes);
+      delete manifest.scripts; // Source/test command edits do not change dependencies.
+      return [p, digest(JSON.stringify(manifest))];
+    }))};
   return {key: digest(JSON.stringify(inputs)), inputs, python};
 }
 export function inventory(directory, relative = '', requireReadOnly = false) {

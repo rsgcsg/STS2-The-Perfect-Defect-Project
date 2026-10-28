@@ -308,7 +308,8 @@ npm run env:prune -- 3
 不能根据时间或文字中的“结束”强行解锁。
 
 共享库默认 `~/Documents/Codex/shared-env/<sha256>/`（可用 `SPIREAGENT_ENV_ROOT` 设置）。
-键涵盖全部 Git 跟踪的 npm 清单/锁、Python 清单/锁、解释器完整版本、Node 完整版本、
+键涵盖全部 Git 跟踪的 npm 依赖清单/锁（清单不计 scripts，因为组件脚本不进入共享库）、
+Python 清单/锁、解释器完整版本、Node 完整版本、
 平台与架构。环境构建加锁，完整文件哈希验收后只读；每次挂接和执行都重验。
 第三方 npm 依赖只读链接到本卡，工作区链接和构建输出留在本卡；Python 共享环境
 只装第三方依赖，每卡的小 `.venv` 通过标准 site 路径引用它，并单独安装本卡项目的
