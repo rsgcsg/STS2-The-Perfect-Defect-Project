@@ -15,10 +15,10 @@
       "component_source_digest_sha256": "61914eb619feb8d129f1cdc53ad2fcfc46ed1fac845ec005dd7c96a8b6c4c852"
     },
     "host_runtime": {
-      "version": "1.1.0-rc.54",
-      "source_revision": "e5e7d527344c899a2d5c7c4f9c5623163d449c31",
-      "component_tree_revision": "a59e655d0ae127d1a768e56236a7a942a9d3c45f",
-      "component_source_digest_sha256": "157bdc1fe6b82bc1f03244c47788b2b3fc0da7c9ffe32a6ea5ea15190b526d7c"
+      "version": "1.1.0-rc.55",
+      "source_revision": "d1576b1ecad369f939f7b5589d913aee65aeb45c",
+      "component_tree_revision": "18c61885697b90b69488ec34f09921c19d204c30",
+      "component_source_digest_sha256": "54c83d5391d4d3e34024ba5e7ccaab5ef436b846739431d63ec658ab500e924f"
     },
     "annotator": {
       "version": "0.3.0-rc.33",
