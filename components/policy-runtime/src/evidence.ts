@@ -21,6 +21,7 @@ export interface EvidenceOptions {
 }
 export interface AgentSessionEvidenceOptions extends Omit<EvidenceOptions, "policyManifest" | "managedEnvironmentBinding"> {
   agentManifest: AgentManifest;
+  durability?: "event" | "decision";
 }
 interface AgentSessionRunManifest extends Omit<AgentRunManifest, "schema" | "policy_manifest_sha256" | "policy_id" | "policy_version" | "policy_artifact_sha256"> {
   schema: "sts2.policy-runtime/agent-session-run-1";
@@ -69,6 +70,48 @@ export class AgentRunEvidence {
   private sampleStorageFailed = false;
   private readonly globalStaged = new Map<string, number>();
   private globalStagedBytes = 0;
+  private decisionDurability = false;
+  private readonly pendingSync = new Set<string>();
+  private readonly pendingStageReleases = new Set<string>();
+  private journalDirty = false;
+  private durabilityFailure: unknown;
+
+  get durability(): "event" | "decision" { return this.decisionDurability ? "decision" : "event"; }
+
+  /** Serialized durability barrier. Payloads precede their journal references. */
+  async flush(): Promise<void> {
+    return this.serialize(() => this.flushPending());
+  }
+
+  private async flushPending(): Promise<void> {
+    if (!this.decisionDurability) return;
+    if (this.durabilityFailure) throw this.durabilityFailure;
+    try {
+      const paths = [...this.pendingSync];
+      // Bound concurrent fsyncs; wait for every opened handle even on failure.
+      for (let offset = 0; offset < paths.length; offset += 8) {
+        const results = await Promise.allSettled(paths.slice(offset, offset + 8).map(async path => {
+          const handle = await open(join(this.directory, path), "r+");
+          try { await handle.sync(); } finally { await handle.close(); }
+        }));
+        const failed = results.find(result => result.status === "rejected");
+        if (failed?.status === "rejected") throw failed.reason;
+      }
+      if (this.journalDirty) {
+        const handle = await open(this.eventsPath, "r+");
+        try { await handle.sync(); } finally { await handle.close(); }
+      }
+      // Original response staging is removed only after its replacements and
+      // event references have crossed the same durability barrier.
+      for (const path of this.pendingStageReleases) {
+        await unlink(join(this.directory, path));
+        this.globalStagedBytes -= this.globalStaged.get(path)!;
+        this.globalStaged.delete(path);
+        this.pendingStageReleases.delete(path);
+      }
+      this.pendingSync.clear(); this.journalDirty = false;
+    } catch (error) { this.durabilityFailure = error; throw error; }
+  }
 
   private constructor(
     directory: string,
@@ -134,6 +177,10 @@ export class AgentRunEvidence {
 
   static async createSession(options: AgentSessionEvidenceOptions): Promise<AgentRunEvidence> {
     const agent = validateAgentManifest(options.agentManifest);
+    if (options.durability === "decision" && (agent.input.profile !== "p1-global-r1"
+      || agent.input.state_recovery.mode !== "none" || !("kind" in agent.requirements.environment)
+      || agent.requirements.environment.host_kind !== "managed"))
+      throw new Error("decision durability requires a stateless Managed GLOBAL Agent");
     if (!options.runtimeVersion || !/^[a-f0-9]{64}$/u.test(options.runtimeCodeSha256)) throw new Error("exact Runtime identity required");
     const runId = options.runId ?? `run-${randomUUID()}`;
     const directory = join(options.root, runId);
@@ -149,6 +196,7 @@ export class AgentRunEvidence {
       status: "running", mode: options.mode, tainted: false, append_only: true
     };
     const evidence = new AgentRunEvidence(directory, manifest, agent, manifestSha);
+    evidence.decisionDurability = options.durability === "decision";
     await writeFile(evidence.manifestPath, `${canonicalJson(manifest)}\n`, { flag: "wx" });
     await writeFile(evidence.eventsPath, "", { flag: "wx" });
     await writeFile(evidence.policyManifestPath, `${canonicalJson(agent)}\n`, { flag: "wx" });
@@ -184,7 +232,8 @@ export class AgentRunEvidence {
       const handle = await open(this.eventsPath, "a");
       try {
         await handle.write(`${canonicalJson(event)}\n`);
-        await handle.sync();
+        if (this.decisionDurability) this.journalDirty = true;
+        else await handle.sync();
       } finally {
         await handle.close();
       }
@@ -313,11 +362,15 @@ export class AgentRunEvidence {
     });
   }
   /** Call only after the final source/reference or inline response and its event
-   * are durable. A failed unlink retains the original prefix and blocks sealing. */
+   * are durable. Decision mode defers unlink until its next barrier. A failed
+   * unlink retains the original prefix and blocks sealing. */
   async releaseGlobalCaptureResponse(ref: GlobalCaptureStagingRef): Promise<void> {
     return this.serialize(async () => {
       const bytes = this.globalStaged.get(ref.path);
       if (bytes === undefined || bytes !== ref.bytes) throw new Error("global_staging_not_owned");
+      if (this.decisionDurability) {
+        this.pendingStageReleases.add(ref.path); return;
+      }
       await unlink(join(this.directory, ref.path));
       this.globalStaged.delete(ref.path); this.globalStagedBytes -= bytes;
     });
@@ -340,7 +393,11 @@ export class AgentRunEvidence {
       try {
         if (!this.sampleFiles.has(path)) {
           const handle = await open(join(this.directory, path), "wx", 0o600);
-          try { await handle.writeFile(encoded.stored); await handle.sync(); } finally { await handle.close(); }
+          try {
+            await handle.writeFile(encoded.stored);
+            if (this.decisionDurability) this.pendingSync.add(path);
+            else await handle.sync();
+          } finally { await handle.close(); }
           this.sampleFiles.add(path); this.sampleBytes += encoded.stored.length;
         }
         return { role, path, bytes: bytes.length, sha256 };
@@ -351,6 +408,7 @@ export class AgentRunEvidence {
   async finalize(input: { status: "completed" | "stopped" | "tainted"; tainted: boolean; mode: RuntimeMode; now?: string }): Promise<ImmutableEvidenceManifest> {
     return this.serialize(async () => {
       if (this.sealed) throw new Error("agent run evidence is already sealed");
+      await this.flushPending();
       if (this.globalStaged.size) throw new Error("global capture staging is not finalized; evidence cannot be sealed");
       if (this.sampleStorageFailed) throw new Error("sample storage incomplete; evidence cannot be sealed");
       if (this.stateStorageFailed) throw new Error("opaque state storage incomplete; evidence cannot be sealed");
@@ -393,6 +451,7 @@ export class AgentRunEvidence {
     try { return await this.finalize(input); }
     catch (error) {
       await this.serialize(async () => {
+        try { await this.flushPending(); } catch { /* Original durability error remains the sealing failure. */ }
         const names = (await readdir(this.directory)).filter(n => n !== "diagnostic-manifest.json");
         const files = await fileEntries(names, this.directory);
         const diagnostic = { schema: "sts2.policy-runtime/unsealed-diagnostic-1", run_id: this.runId,

@@ -985,7 +985,8 @@ def test_p1_protocol_origin_and_missing_origin_reject_before_post(bridge):
     assert all(body is None for _, body in calls)
 
 
-@pytest.mark.parametrize("kind", ["pause", "resume", "close", "export_p1_native_prefix"])
+@pytest.mark.parametrize("kind", ["pause", "resume", "close", "export_p1_native_prefix",
+                                  "checkpoint_p1_native"])
 def test_p1_lifecycle_does_not_send_source3_declaration(bridge, kind):
     client, _, calls, behavior = bridge
     behavior["recording"].update(capture_profile_id="human-p1-native-decisions-1",

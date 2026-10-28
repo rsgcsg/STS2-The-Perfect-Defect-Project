@@ -289,6 +289,7 @@ def derive_checkpoints(
                 }
             ),
         )
+        guard()
         store.publish(manifest)
         mapped[identity] = manifest.artifact_id
         publish_event(

@@ -173,3 +173,37 @@ def test_progress_cadence_uses_step_or_time_and_retains_only_latest():
     assert cadence.pending is None
     clock[0] = 30.0
     assert cadence.offer(51, {"loss": .9})
+
+
+def test_derived_checkpoint_rechecks_authority_after_payload_before_manifest(tmp_path, monkeypatch):
+    from test_p1_state_derivation import derive, legacy_fixture
+
+    store, snapshot, original, checkpoint = legacy_fixture(tmp_path)
+    run = derive(store, snapshot, original, checkpoint)
+    original_put = store.put_payload
+    revoked = False
+
+    class Authority:
+        def assert_current(self, *args):
+            if revoked:
+                raise BoundaryError("p1_test", "derived_writer_revoked")
+
+        def authorize_resume(self, *args):
+            raise AssertionError("fresh derived Run")
+
+    def revoke(role, source, media_type="application/octet-stream"):
+        nonlocal revoked
+        payload = original_put(role, source, media_type)
+        if role == "checkpoint":
+            revoked = True
+        return payload
+
+    monkeypatch.setattr(store, "put_payload", revoke)
+    with pytest.raises(BoundaryError, match="derived_writer_revoked"):
+        execute_p1_run(store, CandidateReporter(store, run.artifact_id, PRODUCER),
+                       run.artifact_id, PRODUCER, attempt_id="derived-fenced",
+                       authority=Authority())
+    assert revoked
+    assert not [store.get_manifest(i) for i in store.manifest_ids()
+                if store.get_manifest(i).kind == "checkpoint"
+                and store.get_manifest(i).parent("run") == run.artifact_id]

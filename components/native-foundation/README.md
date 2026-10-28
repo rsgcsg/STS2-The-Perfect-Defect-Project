@@ -82,3 +82,14 @@ Method-closure qualification reuses only the immutable method table of each load
 CLR Type. Every requested overload still reads its current patch state on each
 invocation, including after later patch/unpatch. No prior unpatched verdict,
 card/run fact or rendering result is reused.
+
+`SoulsPower` single-enchantment preview uses the original
+`SoulsPower.OnEnchant -> CardCmd.RemoveKeyword` on the detached copy. For the
+exact audited game, `NCard.FindOnTable` returns null immediately in TestMode or
+outside combat, so the command never reads a pile, looks up a card node or
+refreshes live UI. Qualification checks every method/getter on that branch,
+including `CombatTurnState.IsInProgress`, for Harmony changes before invocation.
+It never sets TestMode or changes combat state. Live combat, patched closures,
+unknown builds and any other missing preview facts remain unavailable; this is
+not a general qualification of command/UI callbacks. Clone integrity, original
+model stamps and the Connector's complete-preview requirement still apply.

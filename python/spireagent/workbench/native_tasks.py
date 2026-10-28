@@ -216,13 +216,14 @@ class NativeTasks:
                           source_declaration: dict[str, Any] | None = None,
                           command_id: str | None = None,
                           capture_profile_id: str | None = None,
-                          p1_native_origin: str | None = None) -> dict[str, Any]:
+                          p1_native_origin: str | None = None,
+                          mixed_run_id: str | None = None) -> dict[str, Any]:
         p1 = (capture_profile_id == P1_PROFILE if kind == "start_new_session"
               else observed.get("capture_profile_id") == P1_PROFILE)
         if p1:
             if (not self._recording_status_valid(observed)
                     or kind not in {"start_new_session", "pause", "resume", "close",
-                                    "export_p1_native_prefix"}
+                                    "export_p1_native_prefix", "checkpoint_p1_native"}
                     or source_declaration is not None
                     or (kind == "start_new_session" and p1_native_origin not in P1_ORIGINS)
                     or (kind != "start_new_session"
@@ -257,6 +258,11 @@ class NativeTasks:
         ):
             raise BoundaryError("recording", "invalid_native_recording_command")
         command_id = command_id if command_id is not None else str(uuid4())
+        if mixed_run_id is not None and (
+                not p1 or kind != "start_new_session" or p1_native_origin != "unknown"
+                or not isinstance(mixed_run_id, str)
+                or not re.fullmatch(r"[0-9a-f]{32}", mixed_run_id)):
+            raise BoundaryError("recording", "invalid_mixed_run_identity")
         if not isinstance(command_id, str) or not re.fullmatch(
                 r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", command_id):
             raise BoundaryError("recording", "invalid_native_recording_command")
@@ -286,11 +292,15 @@ class NativeTasks:
             "recording_session_id": observed["recording_session_id"],
             "command": command,
         }
+        if mixed_run_id is not None:
+            command["mixed_run_id"] = mixed_run_id
         value = self._recording_request("/v1/tasks/recording/command", body)
         if (
             set(value) not in ({"schema", "command_id", "accepted", "pending", "code", "status"},
                                {"schema", "command_id", "accepted", "pending", "code", "status",
-                                "p1_native_prefix"})
+                                "p1_native_prefix"},
+                               {"schema", "command_id", "accepted", "pending", "code", "status",
+                                "p1_native_prefix", "p1_native_checkpoint"})
             or value["schema"] != "sts2.platform/recording-result-1"
             or value["command_id"] != command_id
             or type(value["accepted"]) is not bool

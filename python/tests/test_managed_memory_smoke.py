@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import importlib.util
 import json
+import os
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -17,6 +18,17 @@ from stpd.fullrun.memory_token_inputs import (
     project_memory_snapshot,
 )
 from stpd.managed_memory_smoke import SmokeLimits, run_managed_memory_smoke
+
+
+@pytest.fixture
+def _managed_slot(tmp_path, monkeypatch):
+    """Real admission check, isolated from the workstation's resource reservation."""
+    monkeypatch.setenv("SPIREAGENT_SLOT_ROOT", str(tmp_path))
+    monkeypatch.setenv("SPIREAGENT_SLOT_TOKEN", "synthetic-cli-owner")
+    (tmp_path / "managed.json").write_text(json.dumps({
+        "resource": "managed", "card": "synthetic-cli", "pid": os.getpid(),
+        "token": "synthetic-cli-owner", "until": "2099-01-01T00:00:00Z",
+    }))
 
 
 def page(name: str) -> dict:
@@ -388,7 +400,7 @@ def test_invalid_seed_closes_owned_child_and_cli_never_constructs_it(
     ("Defect", ()), ("Ironclad", ("--character", "Ironclad")),
 ])
 def test_cli_passes_character_and_reports_observed_selection(
-    monkeypatch, capsys, character: str, extra: tuple[str, ...],
+    monkeypatch, capsys, _managed_slot, character: str, extra: tuple[str, ...],
 ) -> None:
     script = Path(__file__).resolve().parents[1] / "tools" / "managed_memory_smoke.py"
     spec = importlib.util.spec_from_file_location("managed_memory_smoke_cli_launch_test", script)
@@ -647,7 +659,7 @@ def test_v2_terminal_is_only_observed_and_malformed_selection_is_rejected() -> N
 
 
 def test_cli_explicit_v2_profile_reaches_package_scorer_public_host_and_budget(
-    monkeypatch, capsys,
+    monkeypatch, capsys, _managed_slot,
 ) -> None:
     script = Path(__file__).resolve().parents[1] / "tools" / "managed_memory_smoke.py"
     spec = importlib.util.spec_from_file_location("managed_memory_smoke_v2_cli_test", script)

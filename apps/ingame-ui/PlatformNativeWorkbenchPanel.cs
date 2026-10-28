@@ -361,6 +361,17 @@ internal sealed class PlatformNativeWorkbenchPanel : IDisposable
             JsonElement data = card.GetProperty("data");
             if (_section == "play")
             {
+                if (owner == "mixed_run")
+                {
+                    target.AddChild(Label("混合局：" + String(data, "status") + " · F8 暂停接管 / F9 交还模型"));
+                    target.AddChild(Label("混合数据隔离保存，暂不训练，不算模型实战成绩。"));
+                    if (Object(data, "preview") is JsonElement preview && Object(preview, "choice") is JsonElement choice)
+                    {
+                        string confidence = preview.TryGetProperty("confidence", out var probability) && probability.ValueKind == JsonValueKind.Number
+                            ? (probability.GetDouble() * 100).ToString("F1") + "%" : "未提供";
+                        target.AddChild(Label("下一步：" + String(choice, "label") + " · 把握 " + confidence + "（分数归一化，不是胜率）"));
+                    }
+                }
                 if (owner == "models" && Object(data, "session") is JsonElement play)
                 {
                     target.AddChild(Label(Boolean(play, "loaded") ? "模型已加载" : "选择模型，开始连续展示；暂停和结束随时可用。"));
@@ -738,6 +749,15 @@ internal sealed class PlatformNativeWorkbenchPanel : IDisposable
         { _notice.Text = "没有本面板提交的可恢复模型意图，或恢复证明已过期。当前 Runtime 的直接 Human/Stop 仍可使用。"; return; }
         Submit(admitted.Connection, action, new Dictionary<string, object?> {
             ["native_request_id"] = admitted.RequestId }, originalRecovery: true);
+    }
+
+    internal void ModelHotkey(bool resume)
+    {
+        if (!resume) { ModelRecovery("models.human"); return; }
+        var connection = PlatformNativeWorkbenchConnection.Current;
+        if (connection is null)
+        { _notice.Text = "先打开实战页加载模型并读取控制状态。"; return; }
+        Submit(connection, "mixed.resume", new Dictionary<string, object?>());
     }
 
     private void Submit(PlatformNativeWorkbenchConnection connection, string action, object payload, bool originalRecovery = false)

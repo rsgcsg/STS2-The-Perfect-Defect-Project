@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, it, expect } from "vitest";
+import { afterAll, beforeAll, describe, it, expect, vi } from "vitest";
 import { mkdtemp, writeFile, readFile, realpath, rm, symlink } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { once } from "node:events";
@@ -45,12 +45,12 @@ async function managedSource(stall = false) {
   return {service,bindingPath,attachmentPath,target,get actions(){return actions;}};
  }catch(error){await service.close();throw error;}
 }
-it("runs real Managed service HTTP → original same-actor capture → NDJSON → token/epoch action → release",async()=>{
+it.each(["event", "decision"] as const)("runs %s durability through real Managed HTTP → NDJSON → native action → release",async durability=>{
  const source=await managedSource();let f:Awaited<ReturnType<typeof globalRuntimeFixture>>|undefined;
  try{
   const transport=await ManagedServicePolicyClient.attachGlobal(source.bindingPath,source.attachmentPath,source.target,"run-00000000-0000-4000-8000-000000000001");
   expect(()=>transport.startupEnvironment).toThrow("global_source_not_admitted");
-  f=await globalRuntimeFixture({transport});
+  f=await globalRuntimeFixture({transport, evidenceDurability: durability});
   const first=await f.runtime.tick();expect(first.type).toBe("delivered");expect(source.actions).toBe(1);
   expect((await f.runtime.tick()).type).toBe("closed");expect(source.actions).toBe(1);expect(source.service.driver.status().control_held).toBe(false);expect(source.service.driver.closed).toBe(false);
   expect((await replayGlobalAgentRun(f.evidence.directory)).verdict).toBe("verified");
@@ -58,13 +58,13 @@ it("runs real Managed service HTTP → original same-actor capture → NDJSON �
 },15000);
 
 
-it("bounds a stuck enemy turn through the real Managed service and releases its actor on Stop", async () => {
+it.each(["event", "decision"] as const)("bounds a stuck enemy turn with %s durability and releases its actor on Stop", async durability => {
  const source = await managedSource(true);
  let f: Awaited<ReturnType<typeof globalRuntimeFixture>> | undefined;
  try {
   const transport = await ManagedServicePolicyClient.attachGlobal(source.bindingPath, source.attachmentPath, source.target,
     "run-00000000-0000-4000-8000-000000000002");
-  f = await globalRuntimeFixture({ transport, managedSettlingTimeoutMs: 100 });
+  f = await globalRuntimeFixture({ transport, managedSettlingTimeoutMs: 100, evidenceDurability: durability });
   await f.runtime.tick();
   expect(f.runtime.status()).toMatchObject({ controller: "released", mode: "human", tainted: true,
     taint_reason: expect.stringContaining("managed_settling_stalled") });
@@ -75,6 +75,93 @@ it("bounds a stuck enemy turn through the real Managed service and releases its 
   await source.service.close();
   expect(source.service.driver.closed).toBe(true);
  } finally { await f?.close(); await source.service.close(); }
+}, 15000);
+
+it("fences a failed decision barrier and joins its in-flight cleanup before the tick exits", async () => {
+ const source = await managedSource(); let f: Awaited<ReturnType<typeof globalRuntimeFixture>> | undefined;
+ let release!: () => void; let restoreFetch: (() => void) | undefined;
+ try {
+  const transport = await ManagedServicePolicyClient.attachGlobal(source.bindingPath, source.attachmentPath, source.target,
+    "run-00000000-0000-4000-8000-000000000003");
+  f = await globalRuntimeFixture({ transport, evidenceDurability: "decision" });
+  const originalFetch = globalThis.fetch;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  let offers = 0;
+  const wire = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+   if (typeof init?.body === "string" && JSON.parse(init.body).command === "release_control") {
+    offers++; await gate;
+   }
+   return originalFetch(input, init);
+  });
+  restoreFetch = () => wire.mockRestore();
+  let second!: () => void; const repeatedFailure = new Promise<void>(resolve => { second = resolve; });
+  let barriers = 0;
+  const flush = vi.spyOn(f.evidence, "flush").mockImplementation(async () => {
+   if (++barriers === 2) second(); throw new Error("injected sync failure");
+  });
+  const ticking = f.runtime.tick(); await repeatedFailure;
+  expect(source.actions).toBe(0); expect(offers).toBe(1);
+  const stopping = f.runtime.stop();
+  release(); await expect(ticking).rejects.toThrow("injected sync failure");
+  await stopping;
+  expect(offers).toBe(1);
+  expect(f.runtime.status()).toMatchObject({ mode: "human", tainted: true, controller: "released",
+    autonomy_budget: { submissions_used: 0 } });
+  expect(source.service.driver.status().control_held).toBe(false);
+  expect((await f.runtime.tick()).type).toBe("human"); expect(source.actions).toBe(0);
+  flush.mockRestore();
+ } finally { release?.(); restoreFetch?.(); await f?.close(); await source.service.close(); }
+}, 15000);
+
+it("waits for receipt durability before successor capture and flushes the terminal decision tail", async () => {
+ const source = await managedSource(); let f: Awaited<ReturnType<typeof globalRuntimeFixture>> | undefined;
+ let release!: () => void;
+ try {
+  const transport = await ManagedServicePolicyClient.attachGlobal(source.bindingPath, source.attachmentPath, source.target,
+    "run-00000000-0000-4000-8000-000000000004");
+  f = await globalRuntimeFixture({ transport, evidenceDurability: "decision" });
+  let entered!: () => void; const reached = new Promise<void>(resolve => { entered = resolve; });
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const flush = f.evidence.flush.bind(f.evidence); let barriers = 0, captures = 0;
+  vi.spyOn(f.evidence, "flush").mockImplementation(async () => {
+   barriers++; if (barriers === 2) { entered(); await gate; } await flush();
+  });
+  const capture = transport.capture.bind(transport);
+  transport.capture = async options => { captures++; return capture(options); };
+  const tick = f.runtime.tick(); await reached;
+  expect(source.actions).toBe(1); expect(captures).toBe(1);
+  release(); expect((await tick).type).toBe("delivered");
+  expect(barriers).toBe(3); expect(captures).toBe(2);
+  expect((await f.runtime.tick()).type).toBe("closed");
+  expect((await replayGlobalAgentRun(f.evidence.directory)).verdict).toBe("verified");
+ } finally { release?.(); await f?.close(); await source.service.close(); }
+}, 15000);
+
+it.each(["event", "decision"] as const)("joins Stop during %s natural-close sealing without writing after the seal", async durability => {
+ const source = await managedSource(); let f: Awaited<ReturnType<typeof globalRuntimeFixture>> | undefined;
+ let release!: () => void;
+ try {
+  const transport = await ManagedServicePolicyClient.attachGlobal(source.bindingPath, source.attachmentPath,
+    source.target, "run-00000000-0000-4000-8000-000000000005");
+  f = await globalRuntimeFixture({ transport, evidenceDurability: durability });
+  expect((await f.runtime.tick()).type).toBe("delivered");
+  const finalize = f.evidence.finalizeForStop.bind(f.evidence);
+  let entered!: () => void; const reached = new Promise<void>(resolve => { entered = resolve; });
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  vi.spyOn(f.evidence, "finalizeForStop").mockImplementation(async input => {
+   const result = await finalize(input); entered(); await gate; return result;
+  });
+  const closing = f.runtime.tick(); await reached;
+  const original = await readFile(join(f.evidence.directory, "events.jsonl"));
+  const stopping = f.runtime.stop();
+  await expect(f.runtime.setMode("human")).rejects.toThrow("runtime_stopped");
+  release(); expect((await closing).type).toBe("closed");
+  expect((await stopping).lifecycle).toBe("stopped");
+  expect((await f.runtime.stop()).lifecycle).toBe("stopped");
+  expect(await readFile(join(f.evidence.directory, "events.jsonl"))).toEqual(original);
+  expect((await replayGlobalAgentRun(f.evidence.directory)).verdict).toBe("verified");
+  expect(source.actions).toBe(1);
+ } finally { release?.(); await f?.close(); await source.service.close(); }
 }, 15000);
 
 describe("original GLOBAL CLI startup and control",()=>{

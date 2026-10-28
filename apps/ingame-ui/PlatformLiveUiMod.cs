@@ -310,6 +310,17 @@ internal sealed class PlatformLivePanel : IDisposable
         _quickRecording.Name = "P1RecordingLauncher";
         _quickRecording.Position = new Vector2(122, 12);
         Root.AddChild(_quickRecording);
+        var handoff = new HBoxContainer { Position = new Vector2(300, 12) };
+        var pause = BuildHeaderButton("F8 接管", () => _ = RunPolicyCommandAsync(PlatformPolicyCommand.Human),
+            "暂停并接管：立即向原 Runtime 提交恢复，不等待工作台页面。");
+        pause.Shortcut = WorkspaceShortcut(Key.F8);
+        pause.ActionMode = BaseButton.ActionModeEnum.Press;
+        var resume = BuildHeaderButton("F9 模型", () => _nativeWorkbench.ModelHotkey(true),
+            "将本混合局交还模型；由已认证工作台重新核对原游戏和 Runtime。");
+        resume.Shortcut = WorkspaceShortcut(Key.F9);
+        resume.ActionMode = BaseButton.ActionModeEnum.Press;
+        handoff.AddChild(pause); handoff.AddChild(resume);
+        Root.AddChild(handoff);
         _workspace = new PanelContainer
         {
             Position = _layout.WorkspacePosition,

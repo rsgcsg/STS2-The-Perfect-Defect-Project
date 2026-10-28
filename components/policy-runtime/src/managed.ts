@@ -100,6 +100,7 @@ async function boundedJson(response: Response): Promise<Json> {
 
 export class ManagedServicePolicyClient implements PolicyConnector {
   private control: PrivateControl | null = null;
+  private controllerReleaseFlight: Promise<ManagedControlConfirmation> | null = null;
   private cachedContext: Awaited<ReturnType<ManagedServicePolicyClient["observeTextMenuContext"]>> | null = null;
   private admission: ManagedEnvironmentStatus | null = null;
   private blockedMutations = false;
@@ -313,6 +314,14 @@ export class ManagedServicePolicyClient implements PolicyConnector {
   }
 
   async releaseController(): Promise<ManagedControlConfirmation> {
+    if (this.controllerReleaseFlight) return this.controllerReleaseFlight;
+    const flight = this.releaseControllerOnce();
+    this.controllerReleaseFlight = flight;
+    try { return await flight; }
+    finally { if (this.controllerReleaseFlight === flight) this.controllerReleaseFlight = null; }
+  }
+
+  private async releaseControllerOnce(): Promise<ManagedControlConfirmation> {
     const control = this.control;
     if (!control) throw new Error("Managed controller is not held");
     try {
