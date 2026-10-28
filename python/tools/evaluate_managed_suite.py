@@ -111,6 +111,9 @@ def main() -> int:
     )
     if args.max_episodes is not None and not 1 <= args.max_episodes <= len(manifest["seeds"]):
         parser.error("invalid --max-episodes")
+    from spireagent.resource_slot import require_managed_slot
+
+    require_managed_slot()
     run_dir = args.run_dir.resolve()
     run_dir.mkdir(parents=True, exist_ok=False)  # immutable previous attempts
     host = (args.source_host_runtime or args.host_runtime).resolve()
@@ -155,6 +158,7 @@ def main() -> int:
     write_json(run_dir / "meta.json", {**identity, "started_at_unix": began, "status": "running"})
 
     def factory(**kwargs):
+        require_managed_slot()
         return ManagedPlayerEnvironment(
             [
                 "node",

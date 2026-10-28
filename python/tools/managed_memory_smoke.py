@@ -44,6 +44,8 @@ def main() -> int:
     parser.add_argument("--max-submissions", type=int, default=1)
     parser.add_argument("--max-observations", type=int, default=8)
     parser.add_argument("--max-seconds", type=float, default=30.0)
+    from spireagent.resource_slot import require_managed_slot
+
     args = parser.parse_args()
     try:
         limits = SmokeLimits(args.max_policy_calls, args.max_submissions,
@@ -74,6 +76,7 @@ def main() -> int:
             OnlineM2Scorer.from_export(weights, config, tokenizer))
         command = [*driver_command(host_runtime, args.candidate.resolve()),
                    "--character", args.character, "--timeout-ms", "5000"]
+        require_managed_slot()
         environment = ManagedPlayerEnvironment(
             command, response_timeout_seconds=min(limits.max_seconds, 10.0))
         options = ({"input_profile": args.input_profile}

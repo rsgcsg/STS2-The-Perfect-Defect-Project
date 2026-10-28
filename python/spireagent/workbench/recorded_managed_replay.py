@@ -181,6 +181,12 @@ def _run(
 ) -> str:
     if maintenance.stop.is_set():
         return "not_started"
+    from spireagent.resource_slot import require_managed_slot
+
+    try:
+        require_managed_slot()
+    except subprocess.CalledProcessError:
+        return "not_started"
     with (
         (output / "worker.stdout").open("wb") as stdout,
         (output / "worker.stderr").open("wb") as stderr,
