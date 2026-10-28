@@ -938,7 +938,7 @@ test("projects shop entries from native actionability and keeps purchase identit
   assert.deepEqual(projection.snapshot.bound_actions.actions.map((action) => action.label).sort(), [
     "Buy Fire Potion for 50 gold",
     "Buy Pommel Strike for 50 gold",
-    "Buy card removal for 75 gold",
+    "Choose a card to remove for 75 gold",
     "Close shop inventory"
   ]);
   assert.equal(projection.snapshot.interaction.content.surface.cards[0].card.cost, "1");

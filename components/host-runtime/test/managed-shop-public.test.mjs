@@ -41,6 +41,19 @@ test("shop keeps original product instances and exact entry prices while publish
   assert.equal(JSON.stringify(projected.snapshot).includes("private-"),false);
   assert.equal([...projected.reads.values()].filter(read=>read.descriptor.kind==="surface_card"&&read.content.display_context==="shop_offer").length,2);
 });
+test("open shop surface omits slot relations like the Reference projection while its catalog keeps them",()=>{
+  const projected=projectManagedCandidateDecision({state:inventory(),...identity});
+  const surface=projected.snapshot.interaction.content.surface;
+  for(const offer of [surface.cards[0],surface.relics[0],surface.potions[0],surface.card_removal])
+    assert.equal(Object.hasOwn(offer,"slot_entity_id"),false);
+  const catalog=[...projected.reads.values()].find(read=>read.descriptor.kind==="shop_catalog").content;
+  for(const offer of [catalog.cards[0],catalog.relics[0],catalog.potions[0],catalog.card_removal])
+    assert.equal(typeof offer.slot_entity_id,"string");
+  assert.equal(surface.card_removal.entity_id,catalog.card_removal.entity_id);
+  const labels=projected.snapshot.bound_actions.actions.map(action=>action.label);
+  assert.ok(labels.includes("Choose a card to remove for 55 gold"));
+  assert.ok(labels.includes("Buy Reboot for 52 gold"));
+});
 test("a changed merchant owner or incomplete native product render does not admit a complete shop basis",()=>{
   const owner=inventory();owner.presentation_owner.inventory_ref="foreign";
   const projected=projectManagedCandidateDecision({state:owner,...identity});
