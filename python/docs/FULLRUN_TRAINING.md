@@ -261,6 +261,16 @@ T2b原记录：从04:03:41准备到05:00:58 ready约57.3分钟；worker内部准
 其中预取92.60、验证334.21、投影457.65秒。D1改后准备耗时尚未实测，不能把预计值写成达成。
 原1919在计算结束后因Idle timeout结束，只证明那一次平台的结束原因，不证明平台固定时限。
 
+本轮D1按10月29日授权收敛为一次学校分配：144步严格原执行对照、packed-v2微批2/4/8筛选，
+随后在同一输入会话用通过预定质量门的最快方案短训。保持T2b原配置（包括15轮学习率
+时间尺度、patience5、W1和种子），到T2b实际结束的3744步／13完整轮，每轮留检查点；
+低于该位置的自然提前停止记未完成，不静默改配方续跑。保留全部DEV曲线，以冻结的T2b
+最佳DEV作质量对照，不用TEST选跑法。取得一致质量里最快的结果便收口，取消本轮40轮
+和逐项收益低于10%的优化循环；以后学习者成为RL实际瓶颈再改。一个学校账号同时只占
+一个分配，本轮结束释放后交给RL1学习者。评估为原T2的2016、2304与新短训最优模型，
+各用冻结T2 A0前20种子，在Friday和实际合并PR282后的Host58／Runtime59组合执行；
+沿正常账本保留60槽、2正式审计及所有未知，用结果选择RL起点，不将本轮改成早停规则研究。
+
 长训练诊断可显式给配置 `max_epochs: 40`、`stopping_policy: "epoch-budget-v1"`。
 该模式继续记录全部DEV、选择最低DEV损失、保存原检查点策略要求的每轮模型，只跳过
 默认的五轮DEV耐心停止；默认配置及其序列化保持不变。学习率仍使用原warmup/cosine公式，
@@ -330,6 +340,24 @@ RL1沿用公共 `stpd.workers.training_io` 的 `ProgressCadence`、`FrozenCheckp
 事件 `worker_io_seconds`给出累计authority、control、event_publish、checkpoint_capture、
 checkpoint_publish和checkpoint_wait时间。后台publish可与训练重叠，不能与训练时间相加
 当独占成本；capture/wait和事件写入才是主线程热路径。该事件自身的写入计入下一次累计。
+
+#### 新Run的宽微批计划与一次分配的连续实验
+
+`stpd.p1.execution_plans.training_execution("mstd-training-v2", microbatch_size=8)`给出
+独立新计划：batch仍64，微批上限8，scene/text面积各为`2**26`，FP32/CPU2不变。
+冻结其`to_dict()`到原 `prepare_p1_run(..., execution_policy=...)`；2/4/8可作新Run的有界
+实测候选。它复用现有 `experimental-packed-v1` 内核，不改旧 `mstd-training-v1`、旧Run或
+编码器，原已验证张量包可复用。宽分组会改变dropout/浮点累加轨迹，不能从旧CP中途换；
+先验短训质量，再用新Run长训比较DEV，未取得质量证据前不改变默认计划。
+
+连续短测/长训可复用一个显式 `VerifiedReadSession`：外层用启用manifest缓存的原Store、
+`InputCacheStore`和`VerifiedReadSession(cache_payloads=False)`，逐个调用正常
+`execute_request(..., input_session=session)`，不要同时传`input_cache`。
+同一会话首次完整读回并验证相同payload清单、Snapshot和张量包，按完整pack、Snapshot、
+词表、W1、value及compiler绑定在内存复用只读Population；每个Run仍验证自己的来源、
+执行配置和训练输入绑定。会话关闭或新节点必须重新验证，不能导入外部“已验证”tuple；
+数据驻留只限本会话，不是持久资格凭证。该会话供串行请求复用，不承诺并发训练线程安全。
+RL1同样可保持模型及已验输入常驻，复用这些公共执行/缓存入口和上述I/O组件。
 
 ### 权重、配方与检查点
 
