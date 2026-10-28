@@ -286,7 +286,8 @@ class MStdTrainer:
                 self.bad_epochs += 1
             self.dev_history.append({"epoch": self.epoch, "step": self.step, **dev})
             progress["dev"] = dev
-            if self.bad_epochs >= self.config.patience:
+            if (self.config.stopping_policy == "dev-patience-v1"
+                    and self.bad_epochs >= self.config.patience):
                 self.stop_reason = "dev_patience_exhausted"
             elif self.epoch == self.config.max_epochs:
                 self.stop_reason = "epoch_budget_exhausted"

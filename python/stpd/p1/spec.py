@@ -45,6 +45,7 @@ class MStdConfig:
     cpu_threads: int = 2
     value_heads: bool = False
     model_size: str = "standard"
+    stopping_policy: str = "dev-patience-v1"
 
     def __post_init__(self) -> None:
         if type(self.model_size) is not str or self.model_size not in {"standard", "large"}:
@@ -55,7 +56,9 @@ class MStdConfig:
             raise BoundaryError("p1_training", "boolean_value_heads_required")
         if type(self.seed) is not int or not 0 <= self.seed < 2**63:
             raise BoundaryError("p1_training", "invalid_seed")
-        if type(self.max_epochs) is not int or not 1 <= self.max_epochs <= 30:
+        if self.stopping_policy not in {"dev-patience-v1", "epoch-budget-v1"}:
+            raise BoundaryError("p1_training", "unsupported_stopping_policy")
+        if type(self.max_epochs) is not int or not 1 <= self.max_epochs <= 40:
             raise BoundaryError("p1_training", "invalid_epoch_budget")
         if (
             type(self.batch_size) is not int
@@ -82,6 +85,8 @@ class MStdConfig:
             value.pop("value_heads")
         if self.model_size == "standard":
             value.pop("model_size")
+        if self.stopping_policy == "dev-patience-v1":
+            value.pop("stopping_policy")
         return value
 
     @classmethod
@@ -91,6 +96,8 @@ class MStdConfig:
             fields.remove("value_heads")
         if isinstance(value, dict) and "model_size" not in value:
             fields.remove("model_size")
+        if isinstance(value, dict) and "stopping_policy" not in value:
+            fields.remove("stopping_policy")
         return cls(**object_fields(value, fields, "p1_training.config"))
 
     def steps(self, train_points: int) -> int:
