@@ -30,6 +30,13 @@ internal static partial class RecorderRuntime
         {
             try
             {
+                if (command.Kind == RecordingCommandKind.CheckpointP1Native)
+                {
+                    result = new(true, false, "p1_native_checkpoint", "Original streams durably checkpointed; no actor or settlement claim.", _lifecycle)
+                        { P1NativeCheckpoint = _store.CheckpointP1Native() };
+                    CommandLedger.Remember(command.CommandId, result);
+                    return result;
+                }
                 var prefix = _store.ExportP1NativePrefix();
                 result = new(true, false, "p1_native_prefix_exported", "Original durable recording prefix exported; recording remains open.", _lifecycle)
                     { P1NativePrefix = prefix };
@@ -126,6 +133,9 @@ internal static partial class RecorderRuntime
     private static bool ObserveP1AcceptedUi(string nativeType, ProcessLocalObservedAction observed,
         NativeWitnessEvidence witness, bool immediateCompletion, string? originalRoot)
     {
+        if (_store?.Manifest.MixedRunId != null
+            && STS2Connector.PlayerEnvironment.Witness.PlayerEnvironmentTextMenuWitness.IsExternalControllerActive)
+            return false;
         HumanActionContext? context = HumanActionScope.Current;
         if (context != null && !context.TryClaimRootAction(nativeType)) return false;
         DeferredHumanActionFailure? deferred = HumanActionScope.CurrentDeferredFailure;

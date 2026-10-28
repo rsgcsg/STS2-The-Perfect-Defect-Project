@@ -1,4 +1,5 @@
 import { assertInitialProgressOriginalBytes, type InitialProgressOriginal } from "./initial-progress-original.js";
+import { ActionReview } from "./action-review.js";
 import { GlobalNoProgressWindow, type GlobalNoProgressConfig } from "./global-no-progress.js";
 import { normalizeGlobalCaptureResponse } from "./global-capture-storage.js";
 import { type FullPublicBasis, serializePublicBasisRecord, decodePublicSourceReceipt } from "@rsgcsg/sts2-connector-client";
@@ -68,6 +69,8 @@ export interface NativeAgentRuntimeOwner extends RuntimeServiceOwner {
 class NativeAgentRuntime implements NativeAgentRuntimeOwner {
   private readonly manifest: AgentManifest;
   private readonly owner: RuntimeLifecycleOwner;
+  private readonly actionReview = new ActionReview();
+  private fenceWrites: Promise<void> = Promise.resolve();
   private readonly controller: EnvironmentControllerSession | null;
   private readonly native: NativeLogicalSession | null;
   private globalIdentity?: GlobalIdentity;
@@ -234,10 +237,22 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
       runtime_instance_id: runtime, recovery_epoch: epoch };
   }
 
+  actionReviewStatus(): ReturnType<ActionReview["status"]> { return this.actionReview.status(); }
+  async controlActionReview(value: { enabled?: boolean; approve?: string }, expected: RuntimeControlPreconditions): Promise<void> {
+    await this.checkPreconditions(expected);
+    if (!this.options.globalTransport) throw new RuntimeControlPreconditionError("action_review_profile_unsupported", 409);
+    if (value.enabled !== undefined) {
+      if (this.mode !== "human") throw new RuntimeControlPreconditionError("action_review_requires_human", 409);
+      this.actionReview.configure(value.enabled);
+    } else if (value.approve) this.actionReview.approve(value.approve, this.owner.epoch);
+    else throw new RuntimeControlPreconditionError("invalid_action_review", 400);
+  }
+
   async setMode(mode: RuntimeMode, expected?: RuntimeControlPreconditions): Promise<AgentRuntimeStatus> {
     if (mode === "human") this.revoke("human_recovery");
     const earlyRelease = mode === "human" ? this.release().catch(() => undefined) : Promise.resolve();
     return this.owner.serialize(async () => {
+      await this.fenceWrites;
       if (mode !== "human") { await this.checkPreconditions(expected); this.admitMutation(); }
       if (this.stopped || this.stopping) throw new RuntimeControlPreconditionError("runtime_stopped", 409);
       await earlyRelease;
@@ -398,7 +413,7 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
     if (!this.stopped) { this.stopping = true; this.revoke("stopped"); }
     const quiet = this.quiesceRenewal();
     const release = this.release().catch(() => undefined);
-    return this.owner.serialize(async () => { await release; await quiet; await this.finishStop(); return this.status(); });
+    return this.owner.serialize(async () => { await this.fenceWrites; await release; await quiet; await this.finishStop(); return this.status(); });
   }
 
   async exportAgentState() {
@@ -474,6 +489,14 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
     this.terminationReason ??= reason;
     this.knownStaleWindow = null;
     this.owner.advanceEpoch(); this.owner.cancelActive(new NativeRuntimeRevocation(reason)); this.mode = "human"; this.owner.end(reason);
+    if (this.options.globalTransport) {
+      const fenceEpoch = this.owner.epoch, generation = this.owner.generation;
+      // The epoch changes synchronously on request entry, before queueing behind
+      // an in-flight Tick. This evidence write cannot postpone that fence.
+      this.fenceWrites = this.fenceWrites.then(() => this.emitGlobal("global_control_fence", {
+        fence_epoch: fenceEpoch, reason, generation, new_dispatches_authorized: false }));
+      void this.fenceWrites.catch(() => undefined);
+    }
   }
   private async freshRuntime(): Promise<string> {
     try {
@@ -1462,6 +1485,14 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
       || directive.scores.values.length !== prepared.acquisition.catalog!.length)) throw new AgentSessionError("global_scores_binding");
     this.checkActive(epoch, signal);
     if (this.mode === "shadow") return { type: "shadow", status: this.status() };
+    const scene = prepared.reduction.observation.scene;
+    const content = scene.content as { surface?: { next_options?: unknown[] } };
+    await this.actionReview.wait(epoch, { acquisition_id: this.basisId, choice_id: choiceId,
+      observation: { catalog: prepared.acquisition.catalog, scene: {
+        family: scene.family, native_kind: scene.native_kind,
+        content: { surface: { next_options: content?.surface?.next_options ?? [] } }
+      } }, directive }, signal);
+    this.checkActive(epoch, signal);
     if (this.globalNoProgress) {
       const check = this.globalNoProgress.check(prepared.reduction.observation, choice);
       if (check.exhausted) {
@@ -1489,7 +1520,11 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
       let sent = false, classified = false;
       try {
         const receipt = await this.options.globalTransport!.step({ requestId, expectedSnapshotId: String(source.full.basis.snapshot.snapshot_id), boundActionId: step.bound_action_id }, {
-          signal, maxResponseBytes: Math.min(this.manifest.limits.max_message_bytes, 8 * 1024 * 1024),
+          // In review mode Pause still fences beforeSend immediately. Once sent,
+          // wait for that original bounded transport response; do not abort its
+          // read and turn an available Receipt into a guessed classification.
+          signal: this.actionReview.enabled ? undefined : signal,
+          maxResponseBytes: Math.min(this.manifest.limits.max_message_bytes, 8 * 1024 * 1024),
           beforeSend: async () => {
             this.checkActive(epoch, signal);
             if (!this.owner.available() || this.controllerStatus() !== "held" || this.mode === "human" || this.tainted) throw new AgentSessionError("global_dispatch_not_authorized");

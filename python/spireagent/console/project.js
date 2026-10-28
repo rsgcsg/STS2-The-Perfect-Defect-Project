@@ -475,7 +475,8 @@ window.SpireProject = (() => {
       error_code:state.error_code, observation_error:state.observation_error,
       runtime_error:runtime.errors?.at(-1), budget_state:budget.state,
       budget_exhausted:budget.exhausted_reason, budget_ended:budget.ended_reason,
-      evaluation_id:state.evaluation?.evaluation_id});
+      evaluation_id:state.evaluation?.evaluation_id, mixed_status:state.mixed_run?.status,
+      mixed_preview:state.mixed_run?.preview?.review_id});
   }
   const modelWatchNeeded = (state) => state?.operation?.status === "pending" ||
     (state?.loaded === true && state.runtime?.lifecycle === "running");
@@ -2461,7 +2462,34 @@ window.SpireProject = (() => {
         ),
       );
     }
-    box.append(el("p", "开始测试会先结束真人录制，再由模型操作游戏。随时点“暂停并接管”；结束后生成独立实战记录。", "small muted"), actions, advanced);
+    const mixed = data.mixed_run || {status:"idle"};
+    const mixing = mixed.status === "recording";
+    const mixedBox = el("section", null, "project-card");
+    mixedBox.append(el("h3", "混合局录制"), el("p", "先加载模型为 Human，再开始混合局。整局同一录制，人和模型可来回切换；数据隔离，暂不训练、不计模型成绩。F8 暂停接管，F9 交还模型（游戏内）。"));
+    mixedBox.append(command(ctx, "mixed-start", "开始混合局录制", async () => {
+      await request(ctx, "/api/local-models/mixed", {action:"start"}); await reload(ctx);
+    }, {disabled: !safe || !["idle","sealed"].includes(mixed.status)}));
+    mixedBox.append(command(ctx, "mixed-finish", "结束混合局并封存", async () => {
+      await request(ctx, "/api/local-models/mixed", {action:"finish"}); await reload(ctx);
+    }, {disabled:!mixing}));
+    mixedBox.append(el("p", `混合局状态：${mixed.status}`));
+    if (mixed.preview) mixedBox.append(el("p", `下一步：${mixed.preview.choice.label} · 模型分数归一化后 ${mixed.preview.confidence === null ? "无概率" : (100*mixed.preview.confidence).toFixed(1)+"%"}（不是胜率）`));
+    if (mixing) {
+      const opts = {...mixed.settings};
+      const delay = el("input"); delay.type="number"; delay.min="0"; delay.max="3000"; delay.step="100"; delay.value=opts.delay_ms;
+      const delayLabel=el("label", "每步停顿（毫秒） "); delayLabel.append(delay); mixedBox.append(delayLabel);
+      for (const [key,label] of [["single_step","单步执行"],["shop","商店时停"],["card_reward","选卡奖励时停"],["relic_reward","选遗物时停"],["boss","Boss 前停"]]) {
+        const input=el("input"); input.type="checkbox"; input.checked=opts[key]; input.onchange=()=>{opts[key]=input.checked;};
+        const row=el("label", label); row.prepend(input); mixedBox.append(row);
+      }
+      const confidence=el("input"); confidence.type="number"; confidence.min="0"; confidence.max="1"; confidence.step="0.05"; confidence.value=opts.confidence_below ?? "";
+      const confidenceLabel=el("label", "低把握暂停阈值（留空关闭） "); confidenceLabel.append(confidence); mixedBox.append(confidenceLabel);
+      mixedBox.append(command(ctx,"mixed-settings","保存混合局设置",async()=>{
+        opts.delay_ms=Number(delay.value); opts.confidence_below=confidence.value===""?null:Number(confidence.value);
+        await request(ctx,"/api/local-models/mixed",{settings:opts}); await reload(ctx);
+      }));
+    }
+    box.append(mixedBox, el("p", mixing ? "混合局录制保持开启。点击“开始测试”或 F9 交还模型，暂停随时接管。" : "开始测试会先结束真人录制，再由模型操作游戏。随时点“暂停并接管”；结束后生成独立实战记录。", "small muted"), actions, advanced);
     if (groupOwnsExecution) box.append(el("p", "种子组持有本次运行，请使用上方种子组的暂停或停止。", "small muted"));
     if (runtime)
       box.append(
