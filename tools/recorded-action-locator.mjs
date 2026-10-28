@@ -2,6 +2,7 @@
  * equality is measured separately. Return one CURRENT bound action; never build
  * operands or choose between indistinguishable candidates. */
 import { isDeepStrictEqual } from 'node:util';
+import * as core from '../components/connector/sdk/typescript/dist/p1Global/index.js';
 const object = x => x !== null && typeof x === 'object' && !Array.isArray(x);
 const stableKeys = ['definition_id', 'character_definition_id', 'option_id', 'combat_id',
   'col', 'row', 'inventory_index', 'slot', 'index', 'kind', 'point_type'];
@@ -128,12 +129,30 @@ export class RecordedActionLocator {
       && subject.includes(input.subject_referent_id ?? null) && input.arguments.length === args.length
       && args.every(arg => input.arguments.some(actual => actual.role === arg.role && arg.ids.includes(actual.referent_id))));
     if (matches.length > 1 && typeof source.label === 'string') matches = matches.filter(input => input.label === source.label);
+    let semanticSubjectless = false;
+    if (matches.length === 0 && witness.bound_action && source.arguments.length === 0) {
+      // SDK explicitly declares some control operands subjectless (shop.open,
+      // for example). Reference may bind the visible entry while Managed binds
+      // its unique control without a subject. Reuse that existing declaration;
+      // do not erase a card/target operand just because a label happens to match.
+      const a = core.reduce(core.createSession('recorded-input-control-left', 'reference'), original);
+      const b = core.reduce(core.createSession('recorded-input-control-right', 'managed'), actualBasis);
+      if (a.complete && b.complete) {
+        const kinds = new Set(a.observation.catalog.filter(choice => choice.mapped && choice.subject === null && choice.target === null
+          && a.lowering[choice.choice_id]?.first?.bound_action_id === source.bound_action_id).map(choice => choice.kind));
+        const ids = new Set(b.observation.catalog.filter(choice => choice.mapped && choice.subject === null && choice.target === null
+          && kinds.has(choice.kind)).map(choice => b.lowering[choice.choice_id]?.first?.bound_action_id));
+        matches = actualBasis.snapshot.bound_actions.actions.filter(input => ids.has(input.bound_action_id)
+          && input.verb === source.verb && input.arguments.length === 0);
+        semanticSubjectless = matches.length === 1;
+      }
+    }
     if (matches.length !== 1) throw new Error(matches.length ? 'recorded_action_current_catalog_ambiguous' : 'recorded_action_not_executable');
     const input = matches[0];
-    if (source.subject_referent_id != null) this.bind(source.subject_referent_id, input.subject_referent_id);
+    if (!semanticSubjectless && source.subject_referent_id != null) this.bind(source.subject_referent_id, input.subject_referent_id);
     for (const arg of source.arguments) this.bind(arg.referent_id, input.arguments.find(item => item.role === arg.role).referent_id);
     return { input, evidence: { kind: 'recorded_public_operands_to_unique_current_binding',
       original_action_id: source.bound_action_id ?? null, original_native_input_key: native?.action_key ?? null, current_action_id: input.bound_action_id,
-      whole_observation_equivalence_claim: false } };
+      sdk_subjectless_first_step: semanticSubjectless, whole_observation_equivalence_claim: false } };
   }
 }

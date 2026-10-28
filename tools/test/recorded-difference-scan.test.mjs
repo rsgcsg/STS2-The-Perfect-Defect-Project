@@ -195,3 +195,18 @@ test('filtered continuation children still commit the uniquely selected parent i
   assert.equal(result.error,undefined);assert.equal(result.executed_original_inputs,3);
   assert.equal(result.source_gaps.filter(gap=>gap.reason==='diagnostic_protocol_commitment_not_uniquely_mapped').length,0);
 });
+
+test('the SDK subjectless shop control can bind a Reference entry and a Managed targetless control',()=>{
+  const basis=complete(selectorForwardPair().outer),s=basis.snapshot;
+  Object.assign(s.interaction,{kind:'shop_room',stage:'ready',content_schema:'sts2.player-environment/surface/shop_room-1',
+    content:{surface:{kind:'shop_room',shop_session_entity_id:'merchant',can_open_inventory:true,can_proceed:false},context:{kind:'shop'}}});
+  const input={...s.bound_actions.actions[0],bound_action_id:'open-source',verb:'open',subject_referent_id:'shop-control',arguments:[],label:'Open inventory'};
+  s.bound_actions.actions=[input];s.bound_actions.total_count=s.bound_actions.materialized_count=1;
+  s.referents.push({referent_id:'shop-control',role:'shop_entry',kind:'entity',state:{visible:true,observation_basis:'native_visible_fact'}});
+  const actual=structuredClone(basis);actual.snapshot.bound_actions.actions[0]={...input,bound_action_id:'open-managed',subject_referent_id:null};
+  const found=new RecordedActionLocator().locate({basis,bound_action:input,original_terminal_phase:'finished'},actual);
+  assert.equal(found.input.bound_action_id,'open-managed');assert.equal(found.evidence.sdk_subjectless_first_step,true);
+  // The control declaration cannot erase a genuine recorded argument.
+  basis.snapshot.bound_actions.actions[0].arguments=[{role:'target',referent_id:'shop-control'}];
+  assert.throws(()=>new RecordedActionLocator().locate({basis,bound_action:basis.snapshot.bound_actions.actions[0],original_terminal_phase:'finished'},actual),/not_executable/);
+});
