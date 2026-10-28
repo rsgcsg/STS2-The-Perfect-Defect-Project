@@ -81,7 +81,7 @@ test("exact deck selector is one sequential card choice, preview return, and con
   });
   let page = adapter.observe();
   assert.equal(page.interaction.kind, "shop_inventory");
-  assert.deepEqual(page.menu_actions.actions.map(x => x.label), ["Buy card removal for 75 gold", "Close shop inventory"]);
+  assert.deepEqual(page.menu_actions.actions.map(x => x.label), ["Choose a card to remove for 75 gold", "Close shop inventory"]);
   page = (await submit(page, 0, "buy-removal")).successor;
   assert.equal(page.interaction.kind, "deck_card_selection");
   assert.deepEqual(page.menu_actions.actions.map(x => x.verb), ["select", "select", "cancel"]);
