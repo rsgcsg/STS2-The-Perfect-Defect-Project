@@ -22,6 +22,7 @@ export PATH="$actor_root/env/bin:/data/s4961270/dotnet9:$PATH"
 export PYTHONPATH="$source_root/python"
 export DOTNET_PROCESSOR_COUNT=1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
 export TOKENIZERS_PARALLELISM=false PYTHONUNBUFFERED=1
+export FRIDAY_INFERENCE_THREADS=${FRIDAY_INFERENCE_THREADS:-2}
 exec "$actor_root/env/bin/python" "$source_root/tools/friday/batch.py" "$configuration" --cell "$cell" \
   --wall-seconds "${FRIDAY_WALL_SECONDS:-3600}" --episode-seconds "${FRIDAY_EPISODE_SECONDS:-900}" \
   --max-groups "${FRIDAY_MAX_GROUPS:-100}"

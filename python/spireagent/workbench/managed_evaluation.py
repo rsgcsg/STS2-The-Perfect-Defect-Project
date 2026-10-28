@@ -240,7 +240,8 @@ class ManagedEpisodeExecutor:
         if configuration["agent_adapter"] != export.adapter_identity():
             reject("frozen_agent_implementation_changed")
         if self.measure_host_performance and json.loads(
-                (self.host / "package.json").read_bytes()).get("version") != "1.1.0-rc.46":
+                (self.host / "package.json").read_bytes()).get("version") not in {
+                    "1.1.0-rc.46", "1.1.0-rc.57"}:
             reject("host_performance_diagnostics_required")
         self.build = _candidate_audit(_audit(self.host, self.candidate))
         self.api = _load_host_api(self.host / "consumers/python/sts2_headless/managed_service.py")

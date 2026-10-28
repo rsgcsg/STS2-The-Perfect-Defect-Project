@@ -10,7 +10,8 @@ Friday 是新打局批次的默认 CPU 目标。Mac 只在明确指定的对照�
 
 只在自己的 `/data/s4961270/friday-actor` 部署，目录700；游戏文件600、目录700，
 不放镜像或共享 scratch。节点本地 `/tmp` 只写证据和运行日志，不复制游戏。
-环境重建入口为 `tools/friday/bootstrap-environment.sh`；执行源码固定 Git 提交，
+环境重建入口为 `tools/friday/bootstrap-environment.sh`（Slurm 单核作业内一条命令，
+固定 Python3.11.5、.NET SDK9.0.117、CPU torch2.13.0+cpu、tokenizers0.22.2）；执行源码固定 Git 提交，
 Host/Runtime 固定包身份，候选固定 SHA/MVID，模型固定原 Store 身份和包 SHA。
 每次传输后在远端实查权限，不能只信 rsync 参数。
 
@@ -95,3 +96,10 @@ Slurm 日志在 `persistent_root/slurm/`。`result.json` 记录源码配置、�
 资源适配层的便宜回归：在准确开发环境中运行
 `PYTHONPATH=python python -m unittest discover -s tools/friday -p test_batch.py -v`。
 它检查真实文件复制读回、并发租约、种子池排他和 Slurm 参数，不启动游戏。
+
+测速配置可将 `python_executable` 指向 `tools/friday/profile-python`，它调用原
+`agent.serve`、原投影和原模型，只记录投影/前向累计秒数，退出时写一次
+`agent-performance.json`。`FRIDAY_INFERENCE_THREADS` 显式选择正整数，默认2与
+原 Agent CLI 一样；单核1线程配置须经相同种子和结果对照后选用。
+`measure_host_performance=true` 在本卡 Host57 读取已有 Host 计数器，
+原始记录与计数器观测分开；不把嵌套时间加成互斥总耗时。

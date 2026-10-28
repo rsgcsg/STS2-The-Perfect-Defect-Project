@@ -1,0 +1,55 @@
+#!/usr/bin/env python3
+"""Measure the unchanged P1 Agent score path in its dedicated actor process."""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+import time
+from pathlib import Path
+
+if sys.argv[1:3] != ["-m", "stpd.p1.agent"]:
+    raise SystemExit("only the original stateless P1 Agent is supported")
+parser = argparse.ArgumentParser()
+parser.add_argument("--config", type=Path, required=True)
+parser.add_argument("--manifest", type=Path, required=True)
+parser.add_argument("--binding-root", type=Path, required=True)
+parser.add_argument("--local-inference", type=Path)
+args = parser.parse_args(sys.argv[3:])
+
+import torch  # noqa: E402
+from stpd.p1 import agent  # noqa: E402
+
+threads = int(os.environ.get("FRIDAY_INFERENCE_THREADS", "2"))
+if threads < 1:
+    raise SystemExit("positive inference thread count required")
+torch.set_num_threads(threads)
+metrics = {"schema": "spireagent/friday-agent-performance-v1", "threads": threads,
+           "project_calls": 0, "project_seconds": 0.0,
+           "forward_calls": 0, "forward_seconds": 0.0}
+
+
+def observe(owner, name, prefix):
+    original = getattr(owner, name)
+
+    def measured(*arguments, **keywords):
+        began = time.perf_counter()
+        try:
+            return original(*arguments, **keywords)
+        finally:
+            metrics[prefix + "_calls"] += 1
+            metrics[prefix + "_seconds"] += time.perf_counter() - began
+
+    setattr(owner, name, measured)
+
+
+observe(agent, "project", "project")
+observe(agent.MStd, "forward", "forward")
+try:
+    agent.serve(args.config.resolve(), args.manifest.resolve(), args.binding_root.resolve(),
+                local_inference=args.local_inference.resolve() if args.local_inference else None)
+finally:
+    # One write at shutdown, outside the Runtime original evidence directory.
+    output = args.config.resolve().parent.parent / "agent-performance.json"
+    output.write_text(json.dumps(metrics, sort_keys=True) + "\n", encoding="utf-8")
