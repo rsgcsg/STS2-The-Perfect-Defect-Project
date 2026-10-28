@@ -331,7 +331,7 @@ Arguments are passed literally. If a child argument begins with `--`, use the
 `--adapter-arg=value` form. The service defaults to Connector
 `http://127.0.0.1:15526` and Policy Runtime `http://127.0.0.1:15527`.
 Managed GLOBAL stateless sessions may use `--managed-evidence-durability decision`
-(rc55). This preserves the original serialized evidence bytes while syncing
+(rc56). This preserves the original serialized evidence bytes while syncing
 payloads before their journal references at each native submission, classified
 receipt, decision exit and Stop/seal. Received capture-response staging remains
 immediately synced and is removed only after its replacement crosses a barrier.

@@ -74,7 +74,7 @@ shard_wait 与 shard_preserve_shared；末项为该分片共同耗时，不能�
 
 ## 决策持久化
 
-Runtime rc55 的 Managed GLOBAL 无状态通道默认使用决策持久化，可在执行配置中显式设
+Runtime rc56 的 Managed GLOBAL 无状态通道默认使用决策持久化，可在执行配置中显式设
 `evidence_durability=event` 对照。CLI 为 `--managed-evidence-durability decision`；
 Reference、Human、旧 Runtime 默认仍逐事件同步。
 原始捕获响应仍立即同步，最终 payload 及日志按顺序在每次 native 提交前（含 fold）、

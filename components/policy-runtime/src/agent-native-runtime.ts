@@ -249,6 +249,7 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
   }
 
   async setMode(mode: RuntimeMode, expected?: RuntimeControlPreconditions): Promise<AgentRuntimeStatus> {
+    if (this.stopped || this.stopping) throw new RuntimeControlPreconditionError("runtime_stopped", 409);
     if (mode === "human") this.revoke("human_recovery");
     const earlyRelease = mode === "human" ? this.release().catch(() => undefined) : Promise.resolve();
     return this.owner.serialize(async () => {
@@ -413,7 +414,7 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
   }
 
   async stop(): Promise<AgentRuntimeStatus> {
-    if (!this.stopped) { this.stopping = true; this.revoke("stopped"); }
+    if (!this.stopped && !this.stopping) { this.stopping = true; this.revoke("stopped"); }
     const quiet = this.quiesceRenewal();
     const release = this.release().catch(() => undefined);
     return this.owner.serialize(async () => { await this.fenceWrites; await release; await quiet; await this.finishStop(); return this.status(); });
@@ -1242,6 +1243,9 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
       }
     };
     try {
+      // stopping fences new control requests; drain every previously accepted
+      // fence before the final immutable seal, including natural Agent Close.
+      await attempt(async () => { await this.fenceWrites; });
       await attempt(() => this.endSampleSegment(this.terminationReason!));
       await attempt(async () => { await this.sampleOfferEvidence; });
       await attempt(() => this.cleanupSampleQueries(this.agentUncertain));
