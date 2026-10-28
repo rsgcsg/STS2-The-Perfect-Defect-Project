@@ -32,7 +32,7 @@ test("CI contract requires an unconditional committed-patch barrier before routi
   assert.ok(ciWorkflowErrors(currentSource().replace("      - id: route\n",
     "      - id: route\n        if: github.event_name == 'pull_request'\n")).includes(error));
   assert.ok(ciWorkflowErrors(currentSource().replace(
-    "CHECK_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}",
+    "CHECK_BASE: ${{ github.event.merge_group.base_sha || github.event.pull_request.base.sha || github.event.before }}",
     "CHECK_BASE: HEAD")).includes("CI plan must retain the exact event comparison base"));
 });
 
@@ -168,4 +168,13 @@ test("Linux scratch placement stays outside checkout and avoids system tmp defau
   }
   assert.ok(ciWorkflowErrors(currentSource().replace(
     'mkdir -p "$RUNNER_TEMP/spireagent-portable"', "mkdir -p /tmp/unused")).includes(error));
+});
+
+
+test("queue trigger and exact group comparison base cannot disappear", () => {
+  const source = currentSource();
+  assert.ok(ciWorkflowErrors(source.replace("  merge_group:\n    types: [checks_requested]\n", ""))
+    .includes("CI must trigger for merge queue checks"));
+  assert.ok(ciWorkflowErrors(source.replace("github.event.merge_group.base_sha || ", ""))
+    .includes("CI plan must retain the exact event comparison base"));
 });
