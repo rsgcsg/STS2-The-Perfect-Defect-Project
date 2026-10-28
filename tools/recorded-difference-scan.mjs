@@ -5,6 +5,17 @@ import { randomUUID } from 'node:crypto';
 import * as core from '../components/connector/sdk/typescript/dist/p1Global/index.js';
 import { RecordedActionLocator } from './recorded-action-locator.mjs';
 import { collectObservationDifferences, collectNativeDisplayDifferences } from './recorded-difference-collector.mjs';
+function acceptedForIssue(event, accepted) {
+  const decisions=[event.decision_id,event.native_witness?.decision_id].filter(id=>id!=null);
+  const witnesses=[event.action_witness_id,event.native_witness?.action_witness_id].filter(id=>id!=null);
+  if (![...decisions,...witnesses].length || [...decisions,...witnesses].some(id=>typeof id!=='string'||!id)
+      || new Set(decisions).size>1 || new Set(witnesses).size>1) return null;
+  const decision=decisions[0], witness=witnesses[0];
+  const matches=witness==null?null:[...accepted.values()].filter(row=>row.action_witness_id===witness);
+  if(matches!==null&&matches.length!==1)return null;
+  const known=(decision==null?null:accepted.get(decision))??matches?.[0];
+  return known&&(decision==null||known.decision_id===decision)&&(witness==null||known.action_witness_id===witness)?known:null;
+}
 export function buildRecordedInputTimeline(original, conversion) {
   const runId = conversion.scope.run_id;
   const events = original.events.filter(row => row.run_id == null || row.run_id === runId);
@@ -51,7 +62,7 @@ export function buildRecordedInputTimeline(original, conversion) {
   for (const event of events) {
     if (event.sequence >= barrier) break;
     if (event.kind === 'issue') {
-      const known = accepted.get(event.decision_id) ?? (event.action_witness_id ? [...accepted.values()].find(row => row.action_witness_id === event.action_witness_id) : null);
+      const known = acceptedForIssue(event, accepted);
       if (!known && (event.native_action_type || event.native_witness || /action|input|selector|choice/u.test(event.reason ?? ''))) {
         timeline.push({ event, stop: 'original_unrecorded_input_gap', source_issue: event }); break;
       }
@@ -188,7 +199,7 @@ export async function scanRecordedDifferences({ original, conversion, driver, re
     for (; index < timeline.items.length; index++) {
       const item = timeline.items[index], event = item.event;
       report.last_original_sequence = event.sequence; report.last_original_event_id = event.event_id;
-      report.last_original_surface = item.captures.at(-1)?.observation?.scene.native_kind ?? item.input?.basis.snapshot.interaction.kind;
+      report.last_original_surface = item.captures?.at(-1)?.observation?.scene.native_kind ?? item.input?.basis.snapshot.interaction.kind ?? null;
       if (item.source_gap) { report.source_gaps.push(item.source_gap); report.differences_complete = false; }
       if (item.stop) { report.source_issue = item.source_issue ?? null; report.stop_reason = item.stop; report.stopped_before_sequence = event.sequence; break; }
       // Commitments are the same P1 bookkeeping as the unchanged converter;

@@ -11,6 +11,7 @@ import io
 import json
 import tempfile
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -23,13 +24,14 @@ from spireagent.storage.store import ArtifactStore
 
 from ..p1.data import digest
 from ..p1.export import action_weights, export_model, load_model
-from ..p1.formal_training import MStdTrainer, checkpoint_schema
+from ..p1.formal_training import MStdTrainer, Population, checkpoint_schema
 from ..p1.spec import (
     CHECKPOINT_FRACTIONS,
     DERIVED_CHECKPOINT_SCHEMA,
     DERIVED_RUN_SCHEMA,
     MODEL_SCHEMA,
 )
+from ..p1.tensor_input import ModelFrame
 from ..p1.value_targets import target_spec
 from ..p1.workload import P1Workload, populations_from_reader, verify_p1_run
 from .checkpoint_codec import decode_checkpoint
@@ -289,17 +291,25 @@ def execute_p1_run(
     authority: AttemptAuthority | None = None,
     control: ExecutionControl | None = None,
     mode: str = "start",
+    input_cache: Path | None = None,
 ) -> StructuredExecutionResult:
     from spireagent.storage.read_session import VerifiedReadSession
 
     from ..p1.workload import read_payloads
 
     started = time.perf_counter()
+    if input_cache is not None:
+        from spireagent.storage.input_cache import InputCacheStore
+        from spireagent.storage.store import ManifestArtifactStore
+
+        if not isinstance(store, ManifestArtifactStore):
+            raise BoundaryError("p1_worker", "manifest_store_required_for_input_cache")
+        store = InputCacheStore(store, input_cache)
     # Each worker independently verifies its inputs. Only the named required
     # payloads are prefetched; original recordings remain exact references.
     run = store.get_manifest(run_id)
     training = store.get_manifest(run.parent("training_input"))
-    with VerifiedReadSession(store) as session:
+    with VerifiedReadSession(store, cache_payloads=input_cache is None) as session:
         payloads = read_payloads(session, training.parent("source"), run_id=run_id)
         session.prefetch(payloads)
         prefetch_seconds = time.perf_counter() - started
@@ -328,7 +338,11 @@ def _execute_p1_run(
     prefetch_count: int,
 ) -> StructuredExecutionResult:
     verification_started = time.perf_counter()
-    workload = verify_p1_run(store, run_id, runtime)
+    # An already selected result or reconcile needs integrity, not training frames.
+    # Keep the original fresh completion check after the authority guard below.
+    needs_training_frames = mode != "reconcile" and reporter.completed(run_id) is None
+    workload = verify_p1_run(store, run_id, runtime,
+                             prepare_populations=needs_training_frames)
     verified_seconds = time.perf_counter() - verification_started
     operation_id = workload.run.parameters.value()["operation_id"]
     if mode not in {"start", "resume", "reconcile"} or (mode == "resume") != (resume is not None):
@@ -360,9 +374,20 @@ def _execute_p1_run(
     if mode == "reconcile":
         raise BoundaryError("p1_worker", "no_selected_result_reconcile_only")
     preparation_started = time.perf_counter()
-    populations = populations_from_reader(
-        workload.reader, workload.training.parameters.value().get("loss_weighting"),
-        workload.vocabulary["input_spec"], value_heads=workload.config.value_heads)
+    populations: Mapping[str, Population[ModelFrame]] | None = workload.prepared_populations
+    if populations is None:
+        training_info = workload.training.parameters.value()
+        if "tensor_pack_id" in training_info:
+            from ..p1.tensor_pack import load_tensor_pack
+
+            populations = load_tensor_pack(
+                store, training_info["tensor_pack_id"], workload.reader, workload.vocabulary,
+                loss_weighting=training_info.get("loss_weighting"),
+                value_heads=workload.config.value_heads)
+        else:
+            populations = populations_from_reader(
+                workload.reader, training_info.get("loss_weighting"),
+                workload.vocabulary["input_spec"], value_heads=workload.config.value_heads)
     population_seconds = time.perf_counter() - preparation_started
     construction_started = time.perf_counter()
     trainer = MStdTrainer(

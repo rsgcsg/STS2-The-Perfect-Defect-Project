@@ -7,6 +7,7 @@ import hashlib
 import io
 import os
 import tempfile
+import threading
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any, Protocol
@@ -42,8 +43,12 @@ class ArtifactStore(Protocol):
 
 
 class ManifestArtifactStore:
-    def __init__(self, blobs: BlobStore) -> None:
+    def __init__(self, blobs: BlobStore, *, cache_manifests: bool = False) -> None:
         self.blobs = blobs
+        # Explicit operation-local reuse of immutable, already verified bytes.
+        # Mutable control/completion/index slots never enter this cache.
+        self._manifest_cache: dict[str, bytes] | None = {} if cache_manifests else None
+        self._manifest_guard = threading.Lock()
         self._peers: tuple[ManifestArtifactStore, ...] | None = None
         self._cache_policy: dict[str, Any] | None = None
         if isinstance(blobs, LocalBlobStore):
@@ -199,10 +204,22 @@ class ManifestArtifactStore:
     def get_manifest(self, artifact_id: str) -> Manifest:
         digest(artifact_id, "artifact_id")
         key = f"manifests/{artifact_id}.json"
+        cached = self._manifest_cache
+        if cached is not None:
+            with self._manifest_guard:
+                cached_raw = cached.get(artifact_id)
+            if cached_raw is not None:
+                # Recheck the exact bytes and identity even on a cache hit.
+                return Manifest.from_bytes(cached_raw, artifact_id)
         raw, recovered = self._get(key)
         manifest = Manifest.from_bytes(raw, artifact_id)
         if recovered:
             self._cache(key, raw)
+        if cached is not None:
+            with self._manifest_guard:
+                if artifact_id not in cached and len(cached) >= 512:
+                    cached.pop(next(iter(cached)))
+                cached[artifact_id] = raw
         return manifest
 
     def manifest_ids(self) -> tuple[str, ...]:

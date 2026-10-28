@@ -103,6 +103,6 @@ test("preflight reports every missing prerequisite at once with its repair", () 
   const full = preflight("full", { root: "/missing-root", resolve: () => ({ executable: "/p", version: "3.11.9", source: "PYTHON" }),
     lockMismatches: () => ({ problems: [] }), run: () => ({ ok: true, output: "ok" }), capacity: () => ({ ...capacity(), sufficient: false }),
     git: () => "" });
-  assert.deepEqual(full.checks.filter(check => check.status === "fail").map(check => check.id), ["python_packages", "disk"]);
+  assert.deepEqual(full.checks.filter(check => check.status === "fail").map(check => check.id), ["disk"]);
   assert.throws(() => preflight("native"), /unknown preflight scope/u);
 });

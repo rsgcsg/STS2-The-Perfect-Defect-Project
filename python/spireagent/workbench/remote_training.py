@@ -535,7 +535,8 @@ class RemoteTrainingService:
             recipe = body.get("recipe_id", "p1-mstd-N-v1") if isinstance(body, dict) else None
             fields = {"intent_id", "source_id", "config", "max_seconds", "stop_after"}
             optional = {key for key in ("recipe_id", "execution_policy", "initial_checkpoint",
-                                       "loss_weighting", "checkpoint_policy", "input_projection")
+                                       "loss_weighting", "checkpoint_policy", "input_projection",
+                                       "tensor_pack_id")
                         if isinstance(body, dict) and key in body}
             obj = object_fields(body, fields | optional,
                                 "remote_training.start")
@@ -588,6 +589,11 @@ class RemoteTrainingService:
                 if "initial_checkpoint" in obj and projection != INPUT_SPEC:
                     raise BoundaryError("remote_training", "new_input_cannot_derive_legacy_run")
                 execution_options["input_projection"] = projection
+            if "tensor_pack_id" in obj:
+                if recipe != P1_MSTD_RECIPE:
+                    raise BoundaryError("remote_training", "tensor_pack_requires_M_std_recipe")
+                execution_options["tensor_pack_id"] = digest(
+                    obj["tensor_pack_id"], "remote_training.tensor_pack_id")
             if "checkpoint_policy" in execution_options:
                 from stpd.p1.weighting import CHECKPOINT_POLICY
 

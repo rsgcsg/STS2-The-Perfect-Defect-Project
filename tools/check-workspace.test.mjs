@@ -210,3 +210,29 @@ test("capacity checks the actual path and rejects low space before a full gate c
   assert.equal(JSON.parse(refused.stdout).stage, "workspace_capacity");
   assert.ok(!refused.stdout.includes('"stage":"workspace_gate"'));
 });
+
+test("transient probe EPERM waits for exact group disappearance without repeating cancellation",
+  {skip: process.platform === "win32"}, async t => {
+    const owned=ownedCommand(process.execPath,["-e","process.stdout.write('ready\\n');setInterval(()=>{},1000)"],
+      {stdio:["ignore","pipe","ignore"]});
+    await new Promise(resolve=>owned.child.stdout.once("data",resolve));
+    const original=process.kill.bind(process), calls=[];
+    let injected=false;
+    t.mock.method(process,"kill",(pid,signal)=>{
+      if (pid===-owned.child.pid) {
+        calls.push(signal);
+        if (signal===0 && !injected) {
+          injected=true;
+          throw Object.assign(new Error("transient probe EPERM"),{code:"EPERM"});
+        }
+      }
+      return original(pid,signal);
+    });
+    await owned.cancel("SIGTERM");
+    const result=await owned.completion;
+    assert.equal(injected,true);
+    assert.equal(result.error,undefined,JSON.stringify(result));
+    assert.equal(result.signal,"SIGTERM");
+    assert.equal(calls.filter(signal=>signal==="SIGTERM").length,1);
+    assert.ok(calls.filter(signal=>signal===0).length>=2);
+});

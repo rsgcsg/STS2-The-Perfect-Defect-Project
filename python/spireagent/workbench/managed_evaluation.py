@@ -237,24 +237,30 @@ class ManagedEpisodeExecutor:
         if (mode["mode"] == "central_batch"
                 and runtime_version not in {
                     "0.1.0-rc.50", "0.1.0-rc.51", "0.1.0-rc.52", "0.1.0-rc.53",
-                    "0.1.0-rc.54", "0.1.0-rc.55", "0.1.0-rc.56"}):
+                    "0.1.0-rc.54", "0.1.0-rc.55", "0.1.0-rc.56", "0.1.0-rc.57",
+                    "0.1.0-rc.58", "0.1.0-rc.59"}):
             reject("runtime_explicit_adapter_environment_required")
         if (self.settling_timeout_ms is not None
                 and runtime_version not in {"0.1.0-rc.52", "0.1.0-rc.53",
-                                            "0.1.0-rc.54", "0.1.0-rc.55", "0.1.0-rc.56"}):
+                                            "0.1.0-rc.54", "0.1.0-rc.55", "0.1.0-rc.56",
+                                            "0.1.0-rc.57", "0.1.0-rc.58", "0.1.0-rc.59"}):
             reject("runtime_settling_watchdog_required")
-        self.evidence_durability = configuration.get("evidence_durability",
-            "decision" if runtime_version in {"0.1.0-rc.55", "0.1.0-rc.56"} else "event")
+        self.evidence_durability = configuration.get(
+            "evidence_durability",
+            "decision" if runtime_version in {
+                "0.1.0-rc.55", "0.1.0-rc.56", "0.1.0-rc.57", "0.1.0-rc.58", "0.1.0-rc.59"
+            } else "event",
+        )
         if self.evidence_durability not in {"event", "decision"}:
             reject("invalid_evidence_durability")
         if self.evidence_durability == "decision" and runtime_version not in {
-                "0.1.0-rc.55", "0.1.0-rc.56"}:
+                "0.1.0-rc.55", "0.1.0-rc.56", "0.1.0-rc.57", "0.1.0-rc.58", "0.1.0-rc.59"}:
             reject("runtime_decision_durability_required")
         if configuration["agent_adapter"] != export.adapter_identity():
             reject("frozen_agent_implementation_changed")
         if self.measure_host_performance and json.loads(
                 (self.host / "package.json").read_bytes()).get("version") not in {
-                    "1.1.0-rc.46", "1.1.0-rc.57"}:
+                    "1.1.0-rc.46", "1.1.0-rc.57", "1.1.0-rc.58"}:
             reject("host_performance_diagnostics_required")
         self.build = _candidate_audit(
             _audit(self.host, self.candidate, game_assembly_sha256=self.game_assembly_sha256),
@@ -313,6 +319,9 @@ class ManagedEpisodeExecutor:
     def __call__(
         self, row: dict[str, Any], manifest: dict[str, Any], artifacts: Any, checkpoint: Any
     ) -> None:
+        from spireagent.resource_slot import require_managed_slot
+
+        require_managed_slot()
         if manifest["ascension"] != 0 or manifest["host"] != "Managed":
             reject("unsupported_scenario")
         if any(key not in os.environ for key in self.adapter_environment_keys):

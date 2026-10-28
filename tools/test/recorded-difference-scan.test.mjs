@@ -93,6 +93,54 @@ test('original unknown forms an evidence boundary without an attempt or fabricat
   const {original,conversion}=scanFixture();original.events[3].phase='unknown';conversion.raw_unknown_count=1;
   const plan=buildRecordedInputTimeline(original,conversion);assert.equal(plan.known_inputs,1);assert.equal(plan.items.at(-1).stop,'original_unknown_no_reoffer');
 });
+for (const boundary of ['original_unknown_no_reoffer','original_unrecorded_input_gap']) {
+  test(`source stop without captures reports ${boundary} before offering another input`,async()=>{
+    const {bases,original,conversion}=scanFixture();let steps=0;
+    if(boundary==='original_unknown_no_reoffer') {
+      original.events[3].phase='unknown';conversion.raw_unknown_count=1;
+    } else {
+      for(const event of original.events)if(event.sequence>=3)event.sequence++;
+      for(const capture of conversion.captures)if(capture.sequence>=3)capture.sequence++;
+      original.events.splice(2,0,{kind:'issue',event_id:'unrecorded-source-input',run_id:'r',sequence:3,
+        reason:'native_input_missing',native_action_type:'UnrecordedNativeInput'});
+    }
+    const driver={async start(){},newMutationId(){return'm';},async close(){return{};},async request({command}){
+      if(command==='reset')return{};if(command==='episode_identity')return{identity:{}};
+      if(command==='capture')return{full:{basis:bases[Math.min(steps,2)]}};
+      if(command==='step'){steps++;return{receipt:{delivery:'delivered'}};}
+    }};
+    const result=await scanRecordedDifferences({original,conversion,driver,record:{append(){}},seed:'private',initialProgress:{}});
+    assert.equal(result.error,undefined);assert.equal(result.stop_reason,boundary);
+    assert.equal(result.stopped_before_sequence,3);assert.equal(result.last_original_surface,null);
+    assert.equal(result.executed_original_inputs,1);assert.equal(steps,1);assert.equal(result.unknown_delivery,false);
+  });
+}
+for(const identity of ['nested-known','conflicting-declarations','duplicate-witness','unbound-nested']) {
+  test(`original issue identity ${identity} preserves exact accepted ownership and source evidence`,async()=>{
+    const {bases,original,conversion}=scanFixture();let steps=0;
+    original.events.filter(e=>e.kind==='decision_accepted').forEach((e,i)=>{e.action_witness_id=`aw${i}`;});
+    for(const event of original.events)if(event.sequence>=3)event.sequence++;
+    for(const capture of conversion.captures)if(capture.sequence>=3)capture.sequence++;
+    const issue={kind:'issue',event_id:'known-native-issue',run_id:'r',sequence:3,
+      reason:'execution_semantic_action_space_missing',native_action_type:'PlayCardAction',
+      native_witness:{decision_id:'d0',action_witness_id:'aw0'}};
+    if(identity==='conflicting-declarations')issue.decision_id='d1';
+    if(identity==='duplicate-witness')original.events.find(e=>e.decision_id==='d1'&&e.kind==='decision_accepted').action_witness_id='aw0';
+    if(identity==='unbound-nested')issue.native_witness={decision_id:'absent',action_witness_id:'absent'};
+    original.events.splice(2,0,issue);
+    const driver={async start(){},newMutationId(){return`m${steps}`;},async close(){return{};},async request({command}){
+      if(command==='reset')return{};if(command==='episode_identity')return{identity:{}};
+      if(command==='capture')return{full:{basis:bases[Math.min(steps,2)]}};
+      if(command==='step'){steps++;return{receipt:{delivery:'delivered'}};}
+    }};
+    const result=await scanRecordedDifferences({original,conversion,driver,record:{append(){}},seed:'private',initialProgress:{}});
+    assert.equal(result.error,undefined);assert.equal(result.unknown_delivery,false);
+    if(identity==='nested-known') {
+      assert.equal(steps,3);assert.equal(result.reached_original_timeline_end,true);
+      assert.ok(result.source_gaps.some(gap=>gap.event_id===issue.event_id));assert.equal(result.differences_complete,false);
+    } else {assert.equal(steps,1);assert.equal(result.stop_reason,'original_unrecorded_input_gap');}
+  });
+}
 test('actual unknown stops immediately, no later original input is retried',async()=>{
   const {bases,original,conversion}=scanFixture();let steps=0;
   const driver={async start(){},newMutationId(){return 'm';},async close(){return{};},async request({command}){
@@ -209,4 +257,52 @@ test('the SDK subjectless shop control can bind a Reference entry and a Managed 
   // The control declaration cannot erase a genuine recorded argument.
   basis.snapshot.bound_actions.actions[0].arguments=[{role:'target',referent_id:'shop-control'}];
   assert.throws(()=>new RecordedActionLocator().locate({basis,bound_action:basis.snapshot.bound_actions.actions[0],original_terminal_phase:'finished'},actual),/not_executable/);
+});
+
+test('Reference cancel maps to the SDK-declared Managed close control without changing either catalog',()=>{
+  const basis=complete(selectorForwardPair().outer),s=basis.snapshot;
+  Object.assign(s.interaction,{kind:'shop_inventory',stage:'choosing',content_schema:'sts2.player-environment/surface/shop_inventory-1',
+    content:{surface:{kind:'shop_inventory',shop_session_entity_id:'merchant-session',cards:[],relics:[],potions:[],card_removal:null,can_close:true},context:{kind:'shop'}}});
+  const input={...s.bound_actions.actions[0],bound_action_id:'reference-close',verb:'cancel',subject_referent_id:null,arguments:[],label:'Close shop inventory'};
+  s.bound_actions.actions=[input];s.bound_actions.total_count=s.bound_actions.materialized_count=1;
+  const actual=structuredClone(basis);actual.snapshot.bound_actions.actions[0]={...input,bound_action_id:'managed-close',verb:'close'};
+  const before=JSON.stringify([basis,actual]);
+  const found=new RecordedActionLocator().locate({basis,bound_action:input,original_terminal_phase:'finished'},actual);
+  assert.equal(found.input.bound_action_id,'managed-close');assert.equal(found.evidence.sdk_subjectless_first_step,true);
+  assert.equal(JSON.stringify([basis,actual]),before);
+});
+
+test('duplicate cards use an explicitly ordered whole visible grid, never an unordered transport list',()=>{
+  const basis=complete(selectorForwardPair().outer),s=basis.snapshot,surface=s.interaction.content.surface;
+  const card=surface.cards[0];surface.ordering_basis='exact_current_native_grid_logical_list';
+  surface.cards=[{...card,entity_id:'left-1'},{...card,entity_id:'left-2'}];
+  s.referents=[];s.bound_actions.actions=surface.cards.map((c,i)=>({bound_action_id:`left-action-${i}`,verb:'select',subject_referent_id:c.entity_id,arguments:[],label:c.name}));
+  s.bound_actions.total_count=s.bound_actions.materialized_count=2;
+  const actual=structuredClone(basis),a=actual.snapshot;
+  a.interaction.content.surface.cards.forEach((c,i)=>{c.entity_id=`right-${i+1}`;});
+  a.bound_actions.actions=a.interaction.content.surface.cards.map((c,i)=>({bound_action_id:`right-action-${i}`,verb:'select',subject_referent_id:c.entity_id,arguments:[],label:c.name}));
+  const witness={basis,bound_action:s.bound_actions.actions[1],original_terminal_phase:'finished'};
+  assert.equal(new RecordedActionLocator().locate(witness,actual).input.subject_referent_id,'right-2');
+  a.interaction.content.surface.ordering_basis='unordered_multiset';
+  assert.throws(()=>new RecordedActionLocator().locate(witness,actual),/ambiguous/);
+  a.interaction.content.surface.ordering_basis=surface.ordering_basis;
+  a.interaction.content.surface.cards[0].is_upgraded=!card.is_upgraded;
+  assert.throws(()=>new RecordedActionLocator().locate(witness,actual),/ambiguous/);
+});
+
+test('same-label card reward groups bind by their public generated candidates and retain ambiguity for identical groups',()=>{
+  const basis=complete(rewardForwardPair().outer),s=basis.snapshot,surface=s.interaction.content.surface;
+  const reward=surface.rewards[0];
+  surface.rewards=[{...reward,entity_id:'left-a',card_options:[{definition_id:'STRIKE_DEFECT',is_upgraded:false}]},
+    {...reward,entity_id:'left-b',card_options:[{definition_id:'DEFEND_DEFECT',is_upgraded:false}]}];
+  s.referents=[];s.bound_actions.actions=surface.rewards.map((r,i)=>({bound_action_id:`left-reward-${i}`,verb:'activate',subject_referent_id:r.entity_id,arguments:[],label:'Claim card'}));
+  s.bound_actions.total_count=s.bound_actions.materialized_count=2;
+  const actual=structuredClone(basis),a=actual.snapshot;
+  a.interaction.content.surface.rewards.forEach((r,i)=>{r.entity_id=`right-${i}`;});
+  a.bound_actions.actions=a.interaction.content.surface.rewards.map((r,i)=>({bound_action_id:`right-reward-${i}`,verb:'activate',subject_referent_id:r.entity_id,arguments:[],label:'Claim card'}));
+  const witness={basis,bound_action:s.bound_actions.actions[1],original_terminal_phase:'finished'};
+  assert.equal(new RecordedActionLocator().locate(witness,actual).input.bound_action_id,'right-reward-1');
+  surface.rewards[0].card_options=structuredClone(surface.rewards[1].card_options);
+  a.interaction.content.surface.rewards[0].card_options=structuredClone(surface.rewards[1].card_options);
+  assert.throws(()=>new RecordedActionLocator().locate(witness,actual),/ambiguous/);
 });

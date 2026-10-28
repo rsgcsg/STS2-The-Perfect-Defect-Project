@@ -267,3 +267,67 @@ outside Git. New work and incident reports belong in this repository only.
 
 本机一次性任务必须明确禁用退出后自动重启；macOS 使用显式 RunAtLoad/KeepAlive 配置，
 不要把 launchctl submit 当作一次性任务保证。原结果防覆盖不能代替进程生命周期管理。
+
+## 卡开工：共享依赖和节点占位
+
+默认继续在源码根目录使用 `npm run setup:worktree` 和原有检查命令。共享依赖当前仅供明确选择后的手动试用，不能作为已合格环境：本机完整对照仍有五项实装字节身份拒绝，另有一项策略运行测试超时；原有身份断言未放宽。占位工具正常使用，与共享依赖是否启用无关。
+
+需要调查共享试用时才运行 `npm run env:attach`，随后用
+`npm run env:run -- npm run check` 包住原有命令。每卡首次挂接须持有 CPU 锁并确认用户未玩游戏/录制。已有自建环境保留并沿用；恢复默认自建先 `npm run env:detach`，再在 CPU 空档运行 `npm run setup:worktree`。
+实测新挂接约十六秒、重挂约五秒，热缓存自建也约五秒，因此不建议为提速默认启用共享。文件硬链接复用不等同于同等净物理磁盘节省。
+
+```sh
+# 每台节点一次：把流水账接到卡共用的 GAME-SLOT.md（绝对路径）
+npm run slot -- configure --journal /ABS/replies/GAME-SLOT.md
+npm run slot -- status
+# 默认自建；日期、时区及预计结束按实际填写，前台命令结束自动释放。
+npm run slot -- run --resources cpu --card CARD --until 2026-10-28T22:00:00+10:00 -- npm run setup:worktree
+# 以下两行仅用于明确选择共享试用的卡：
+npm run slot -- run --resources cpu --card E2 --until 2026-10-28T20:00:00+10:00 -- npm run env:attach
+npm run env:run -- npm run check
+# Managed 评估/重放/采样：整个前台批次放在占位命令内；内部每局检查同一 token。
+npm run slot -- run --card CARD --lanes 4 --games 20 --until 2026-10-28T20:00:00+10:00 -- uv run --project python --locked --no-sync python python/tools/evaluate_managed_suite.py --help
+# 收口先解除本卡引用，再删自己的可重建产物/源码；共享库保留最近三份。
+npm run env:detach
+npm run env:prune -- 3
+```
+
+占位命令不取代任务表的排队顺序或 CPU 空闲检查。新锁上线时须先核对旧流水账和
+实际进程；旧代码/旧批次不会自动服从新锁。用户正常开游戏无需敲命令，准入检查
+复用 Host 的游戏进程探测；游戏出现后不再开新局，已开的局仍走原本收尾。
+共享建环境的每个主要阶段也会复查用户游戏；CPU 占位中的建环境/对照每三秒观察一次，
+游戏出现就终止自己的进程树，留下未完成记录，不将中断算通过。训练可选 `--resources training`，
+学校节点使用它自己的节点锁；本卡不改变训练调度。
+
+锁在 `~/Documents/Codex/resource-slots/`，可用 `SPIREAGENT_SLOT_ROOT` 指定节点位置。
+手动占位用 `slot acquire --card CARD --pid <仍存活的批次负责人PID> --until <含时区的ISO时间>`，
+输出的 token 设为 `SPIREAGENT_SLOT_TOKEN` 后启动批次；用
+`slot release --token <token>` 释放。CLI 经 npm 启动时不要把 npm 的短命 PID 当负责人。
+只有 PID 已退出且预计时间已过的锁才能接管，接管也记流水账。
+取消时如果原有进程树清理器不能确认退出，保留锁并记未确认，不能按过期自动接管；
+核实本卡子进程均退出后，使用原 token 手动释放。
+原子更新被意外中断时 `.guard` 保守保留；先核其 PID 确已退出，再由操作者移除，
+不能根据时间或文字中的“结束”强行解锁。
+
+共享库默认 `~/Documents/Codex/shared-env/<sha256>/`（可用 `SPIREAGENT_ENV_ROOT` 设置）。
+键涵盖全部 Git 跟踪的 npm 依赖清单/锁（清单不计 scripts，因为组件脚本不进入共享库）、
+Python 清单/锁、解释器完整版本、Node 完整版本、
+平台与架构。环境构建加锁，完整文件哈希验收后只读；每次挂接和执行都重验。
+第三方 npm 依赖以只读文件硬链接放在本卡可写目录中，工作区链接和构建输出留在本卡；Python 共享环境
+只装第三方依赖，每卡的小 `.venv` 通过本地目录中的只读文件硬链接引用它，并单独安装本卡项目的
+editable 元数据；清除 PYTHONPATH 的子进程仍能导入本卡源码。`env:run` 使用本卡
+解释器并禁止 uv 同步修改共享依赖。
+因此仍需在每张卡运行原有构建/检查；不要对共享目录运行安装、同步或构建。
+
+损坏、身份不符或已有私有环境时沿用旧的三步自建流程。自动自建也必须持有
+CPU 锁并通过游戏空闲检查；缺少空档就明确等待，不会偷跑。
+引用登记在每个环境的 `users/`，即使源码目录暂时消失也不自动判为无人使用。
+`env:prune` 与挂接共用原子修改锁，跳过仍有引用的环境；只有确认本卡不再运行后才
+`env:detach`。崩溃遗留的 `.mutation/pid` 或 `<hash>.building` 先查原进程再处理，
+不清理别人的环境。依赖源码、日常安装自带的环境及组件产物都不参与共享清理。
+
+以后新增的卡批次入口（包括 RL 采样）在真正开局前调用
+`spireagent.resource_slot.require_managed_slot()` 或 `tools/resource-slot.mjs` 的
+`requireSlot()`；单元测试用隔离的锁根目录，不占生产资源位。
+
+依赖文件使用同一文件系统内的硬链接，目录和项目元数据属于本卡；安装闭包复制可正常清理，Python 安装来源仍位于本卡标准 site-packages。跨文件系统或无法建立硬链接时，按旧流程自建。校验、构建和对照只占 CPU 锁，Managed 位供其他批次使用；真人游戏出现仍停止本卡 CPU 任务。

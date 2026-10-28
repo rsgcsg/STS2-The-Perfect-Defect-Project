@@ -23,10 +23,12 @@ T = TypeVar("T")
 
 
 class VerifiedReadSession:
-    def __init__(self, store: ArtifactStore, *, scratch: Path | None = None) -> None:
+    def __init__(self, store: ArtifactStore, *, scratch: Path | None = None,
+                 cache_payloads: bool = True) -> None:
         if scratch is not None:
             scratch.mkdir(parents=True, exist_ok=True)
         self.store = store
+        self.cache_payloads = cache_payloads
         self._directory = tempfile.TemporaryDirectory(prefix="verified-read-", dir=scratch)
         self._manifests: dict[str, Manifest] = {}
         self._locks: dict[str, threading.Lock] = {}
@@ -56,6 +58,11 @@ class VerifiedReadSession:
     def read_payload(self, payload: Payload) -> Iterator[bytes]:
         if self.closed:
             raise StoreError("read_session_closed")
+        if not self.cache_payloads:
+            # Existing persistent chunk caches already retain these bytes. The
+            # underlying Store still verifies every chunk, whole hash and size.
+            yield from self.store.read_payload(payload)
+            return
         with self._guard:
             lock = self._locks.setdefault(payload.sha256, threading.Lock())
         path = Path(self._directory.name) / payload.sha256
