@@ -271,7 +271,7 @@
       "version": "0.1.0-rc.1",
       "current_component_source_revision": "36c496deddf314c3348cb74418105316b6cfbc1d",
       "current_component_source_digest_sha256": "51c2edf1b02e9cba865672b4d7feca454ecc36ff07c6910ab3f928bbcf479a31",
-      "current_component_version": "0.1.0-rc.53",
+      "current_component_version": "0.1.0-rc.54",
       "source_relation": "historical_runtime_source_precedes_standalone_consumer_package"
     },
     "annotator": {
@@ -918,7 +918,7 @@
       "loaded": "pass",
       "rollback_available": true,
       "rollback": "apps/game-mod/.local/deployments/2026-08-26T14-37-45.145Z",
-      "current_component_version": "0.2.0-rc.67"
+      "current_component_version": "0.2.0-rc.68"
     },
     "runtime": {
       "runtime_instance_id": "2388aba057ab4ff5a37588d235a28fab",

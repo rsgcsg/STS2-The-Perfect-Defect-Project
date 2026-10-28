@@ -395,7 +395,8 @@ class LocalRecordingCatalog:
                     "candidate_id": candidate_id,
                     "session_id": metadata["session_id"],
                     "timeline_id": metadata["timeline_id"],
-                    **({key: metadata[key] for key in ("recording_kind", "mixed_run_id", "mixed_sealed",
+                    **({key: metadata[key] for key in (
+                         "recording_kind", "mixed_run_id", "mixed_sealed",
                          "mixed_artifact_id", "training_admission", "score_eligible")}
                        if metadata.get("recording_kind") == "mixed_run" else {}),
                     **{key: metadata[key] for key in (
