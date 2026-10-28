@@ -272,7 +272,7 @@ outside Git. New work and incident reports belong in this repository only.
 
 在源码根目录运行 `npm run env:attach`；以后把检查包在
 `npm run env:run -- npm run check`（或其他原有命令）里。首次没有对应环境时，
-必须在 CPU 空闲且用户没有玩游戏/录制时，按下面的双资源占位运行。
+必须在 CPU 空闲且用户没有玩游戏/录制时，按下面的 CPU 占位运行。
 每份源码首次挂接还会建立只含本卡项目元数据的小 Python 环境，也须在 CPU 空档内；
 此后挂接只读校验。已有自建环境会保留并沿用。
 
