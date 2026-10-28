@@ -270,21 +270,23 @@ outside Git. New work and incident reports belong in this repository only.
 
 ## 卡开工：共享依赖和节点占位
 
-在源码根目录运行 `npm run env:attach`；以后把检查包在
-`npm run env:run -- npm run check`（或其他原有命令）里。首次没有对应环境时，
-必须在 CPU 空闲且用户没有玩游戏/录制时，按下面的 CPU 占位运行。
-每份源码首次挂接还会建立只含本卡项目元数据的小 Python 环境，也须在 CPU 空档内；
-此后挂接只读校验。已有自建环境会保留并沿用。
+默认继续在源码根目录使用 `npm run setup:worktree` 和原有检查命令。共享依赖当前仅供明确选择后的手动试用，不能作为已合格环境：本机完整对照仍有五项实装字节身份拒绝，另有一项策略运行测试超时；原有身份断言未放宽。占位工具正常使用，与共享依赖是否启用无关。
+
+需要调查共享试用时才运行 `npm run env:attach`，随后用
+`npm run env:run -- npm run check` 包住原有命令。每卡首次挂接须持有 CPU 锁并确认用户未玩游戏/录制。已有自建环境保留并沿用；恢复默认自建先 `npm run env:detach`，再在 CPU 空档运行 `npm run setup:worktree`。
+实测新挂接约十六秒、重挂约五秒，热缓存自建也约五秒，因此不建议为提速默认启用共享。文件硬链接复用不等同于同等净物理磁盘节省。
 
 ```sh
 # 每台节点一次：把流水账接到卡共用的 GAME-SLOT.md（绝对路径）
 npm run slot -- configure --journal /ABS/replies/GAME-SLOT.md
 npm run slot -- status
-# 日期、时区及预计结束按实际填写；前台命令结束自动释放。
+# 默认自建；日期、时区及预计结束按实际填写，前台命令结束自动释放。
+npm run slot -- run --resources cpu --card CARD --until 2026-10-28T22:00:00+10:00 -- npm run setup:worktree
+# 以下两行仅用于明确选择共享试用的卡：
 npm run slot -- run --resources cpu --card E2 --until 2026-10-28T20:00:00+10:00 -- npm run env:attach
 npm run env:run -- npm run check
 # Managed 评估/重放/采样：整个前台批次放在占位命令内；内部每局检查同一 token。
-npm run slot -- run --card CARD --lanes 4 --games 20 --until 2026-10-28T20:00:00+10:00 -- npm run env:run -- python python/tools/evaluate_managed_suite.py --help
+npm run slot -- run --card CARD --lanes 4 --games 20 --until 2026-10-28T20:00:00+10:00 -- python python/tools/evaluate_managed_suite.py --help
 # 收口先解除本卡引用，再删自己的可重建产物/源码；共享库保留最近三份。
 npm run env:detach
 npm run env:prune -- 3
