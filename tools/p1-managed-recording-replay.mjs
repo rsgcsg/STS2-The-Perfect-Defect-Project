@@ -11,6 +11,8 @@ import { replayNativeTrajectory } from './p1-native-replay.mjs';
 import { buildRecordedReplayPlan } from './recorded-replay-plan.mjs';
 import { matchRecordedChoice } from './recorded-replay-preferences.mjs';
 import { HostDriver } from '../components/policy-runtime/dist/p1-global/host-driver.js';
+import { scanRecordedDifferences } from './recorded-difference-scan.mjs';
+import { CompressedDiagnosticRecorder } from './compressed-diagnostic-recorder.mjs';
 import { EpisodeRecorder } from '../components/policy-runtime/dist/p1-global/recorder.js';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -75,22 +77,24 @@ export function publicRecordingReport(report, launch) {
 }
 
 export async function replayRecording({ bundle, candidate, out, language, budgetMs = 180000,
-  driverFactory = (launch, sink) => new HostDriver({ kind: 'managed', hostRuntimeRoot: resolve(root, 'components/host-runtime'),
+  mode = 'strict', driverFactory = (launch, sink) => new HostDriver({ kind: 'managed', hostRuntimeRoot: resolve(root, 'components/host-runtime'),
     location: resolve(candidate), character: launch.character, extraArgs: ['--language', language, '--ascension', String(launch.ascension)],
     requestTimeoutMs: 30000, stepTimeoutMs: 30000 }, sink) }) {
+  if (!['strict', 'collect_all_differences'].includes(mode)) throw new Error('recording_replay_mode_invalid');
   if (!['en', 'zh'].includes(language)) throw new Error('recording_replay_language_required');
   if (!Number.isSafeInteger(budgetMs) || budgetMs < 1 || budgetMs > 1200000) throw new Error('recording_replay_budget_invalid');
   if (existsSync(out)) throw new Error('recording_replay_output_exists_no_retry');
   const original = readVerifiedP1NativeBundle(bundle);
   const source = await convertP1NativeBundle({ bundle, includeNativeReplayWitnesses: true });
-  const trajectory = source.complete && source.whole_run_recording_complete && source.trajectory && source.raw_unknown_count === 0
+  const trajectory = mode === 'collect_all_differences' ? { points: source.captures.filter(capture => capture.complete && capture.observation?.player.content?.character_definition_id).slice(0, 1).map(capture => ({ observation: capture.observation })) } : source.complete && source.whole_run_recording_complete && source.trajectory && source.raw_unknown_count === 0
     ? source.trajectory : buildRecordedReplayPlan(original, source);
   const launch = readRecordedLaunch(original, trajectory);
   mkdirSync(out, { recursive: true, mode: 0o700 });
-  const recorder = new EpisodeRecorder(resolve(out, 'replay.jsonl'), { schema: 'spireagent/managed-diagnostic-log-1', scope: 'recorded_launch_managed_diagnostic',
+  const Recorder = mode === 'collect_all_differences' ? CompressedDiagnosticRecorder : EpisodeRecorder;
+  const recorder = new Recorder(resolve(out, mode === 'collect_all_differences' ? 'replay.jsonl.gz' : 'replay.jsonl'), { schema: 'spireagent/managed-diagnostic-log-1', scope: 'recorded_launch_managed_diagnostic',
     source_content_id: source.source_content_id, source_session_id: source.source_session_id,
-    launch_witness: launch.witness, language, character: launch.character, ascension: launch.ascension,
-    comparator_changed: true, comparison_exception_ids: ["M060"], formal_evaluation: false });
+    launch_witness: launch.witness, language, mode, character: launch.character, ascension: launch.ascension,
+    comparator_changed: true, comparison_exception_ids: mode === 'strict' ? ["M060"] : [], registered_legacy_exception_ids: ["M060"], formal_evaluation: false });
   const sink = privateRecordingSink(recorder, launch);
   const driver = driverFactory(launch, sink);
   // Verify manager-only launch identity before any action is offered.
@@ -108,23 +112,24 @@ export async function replayRecording({ bundle, candidate, out, language, budget
     }
     return response;
   };
-  const result = publicRecordingReport(await replayNativeTrajectory({ trajectory,
+  const engine = mode === 'collect_all_differences' ? scanRecordedDifferences : replayNativeTrajectory;
+  const result = publicRecordingReport(await engine({ original, conversion: source, trajectory,
     driver, record: sink, seed: launch.seed, initialProgress: launch.initialProgress, budgetMs,
     pointMatcher: matchRecordedChoice }), launch);
-  Object.assign(result, { schema: 'spireagent/recorded-managed-diagnostic-1', source_content_id: source.source_content_id,
+  Object.assign(result, { schema: mode === 'collect_all_differences' ? 'spireagent/recorded-managed-diagnostic-2' : 'spireagent/recorded-managed-diagnostic-1', source_content_id: source.source_content_id,
     source_session_id: source.source_session_id, launch_witness: launch.witness, character: launch.character,
     ascension: launch.ascension, language,
     startup_scope: { seed_and_progress: "verified_original", character_and_ascension: "recorded_p1",
       language: "manager_configuration", managed_wait_timing: "instant",
       original_speed_witness: "not_recorded", full_presentation_reconstruction: "not_established" },
     launch_verified: launchVerified, formal_evaluation: false, comparator_changed: true,
-    comparison_policy: 'strict_public_with_user_approved_M060_toggle_preference',
-    replay_scope: trajectory.replay_scope ?? { kind: 'original_complete_p1_trajectory' },
-    stopped_surface: trajectory.points[result.stopped_index]?.observation.scene.native_kind,
-    planned_uncompared_native_inputs: trajectory.points.filter(point => point.native_bridge).length,
+    comparison_policy: mode === 'collect_all_differences' ? 'collect_raw_model_input_differences_and_drive_known_original_native_inputs' : 'strict_public_with_user_approved_M060_toggle_preference',
+    replay_scope: mode === 'collect_all_differences' ? { kind: 'original_native_input_difference_scan', p1_conversion_changed: false, original_complete: source.complete, original_whole_run_complete: source.whole_run_recording_complete, original_unknown_count: source.raw_unknown_count } : trajectory.replay_scope ?? { kind: 'original_complete_p1_trajectory' },
+    stopped_surface: mode === 'collect_all_differences' ? result.last_original_surface : trajectory.points[result.stopped_index]?.observation.scene.native_kind,
+    planned_uncompared_native_inputs: mode === 'collect_all_differences' ? result.planned_original_inputs : trajectory.points.filter(point => point.native_bridge).length,
     source_p1_points: source.trajectory?.points.length ?? source.actions.filter(action =>
       action.match_status === 'matched' && action.result?.status === 'completed').length,
-    planned_surfaces: trajectory.points.filter(point => !point.native_bridge && !point.replay_checkpoint && !point.bounded_end).reduce((rows, point) => {
+    planned_surfaces: (mode === 'collect_all_differences' ? source.captures.filter(capture => capture.observation).map(capture => ({ observation: capture.observation })) : trajectory.points).filter(point => !point.native_bridge && !point.replay_checkpoint && !point.bounded_end).reduce((rows, point) => {
       const kind = point.observation.scene.native_kind; rows[kind] = (rows[kind] ?? 0) + 1; return rows;
     }, {}) });
   result.record = recorder.close({ completed: result.completed, matching_points: result.matching_points });
@@ -133,7 +138,7 @@ export async function replayRecording({ bundle, candidate, out, language, budget
 }
 
 async function main() {
-  const options = {}, names = { '--bundle': 'bundle', '--candidate': 'candidate', '--out': 'out', '--language': 'language', '--budget-ms': 'budget' };
+  const options = {}, names = { '--bundle': 'bundle', '--candidate': 'candidate', '--out': 'out', '--language': 'language', '--budget-ms': 'budget', '--mode': 'mode' };
   const args = process.argv.slice(2);
   for (let i = 0; i < args.length; i += 2) {
     if (!names[args[i]] || !args[i + 1]) throw new Error('recording_replay_named_arguments_required');

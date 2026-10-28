@@ -84,3 +84,30 @@ node tools/p1-cross-host-coverage.mjs --config /ABS/coverage-config.json
 暂停、恢复、放弃或中断也形成边界。`bounded_prefix_completed` 仅表示已知前缀比完，
 `completed` 仍为 false。`replay_scope` 保存原转换完整标志、原 unknown 数、停止序号和原因。
 这种诊断不能称整局 P1 等价，更不能当作训练数据资格。
+
+### 一次收齐差异的原动作诊断（2026-10-28 用户已批）
+
+在录后重放入口显式加 `--mode collect_all_differences`；默认 strict 不变。
+诊断模式沿已验证原件的原生输入时间线执行，GameAction 使用实际执行前态，
+UI 输入使用已接纳前态。以原公开对象、坐标/定义/槽位和操作数定位当前目录中
+唯一绑定；整帧不一致只记录，不再拦住另一条仍能定位和执行的原动作。
+没有唯一原动作、Managed 拒绝执行、unknown、原件缺动作/中断或 owner Stop/预算才停止。
+取消前未执行的原动作不投递；旧 unknown 不重试；原件 partial 不会被改成 complete。
+
+每个可比检查点遍历全部原始 P1 模型字段，实体和 unordered 域复用 SDK 的声明；
+不能唯一对齐的组保留完整双方并单列 `unresolved_alignment_groups`，不把猜测计入差异。
+模型输入、合法动作、奖励/结果的差异记 `blocking`；确实从两边模型视图省略的
+原生显示偏好记 `display`，只登记。M060 布尔值仍在实际模型输入中，必须另记输入
+差异和已批比较例外标签，不能因为旧例外就声称不影响模型。
+
+输出 `report.json` 汇总执行进度、停止原因、两类差异次数和类别；逐检查点的
+`diagnostic_difference`、未对齐组、实际输入、回执及原始 Host 字节保存在
+`replay.jsonl.gz`。文件是逐行持久化的 gzip members，`gzip -dc` 可恢复 JSONL。
+同一路径跨检查点重复计为多次；未对齐组/源投影缺口另列，不能填成零或通过。
+这是诊断档，不是模型成绩、完整等价或新的训练投影。
+
+当公开图相等但原始模型视图变序/改名时，另记 `model_frames_pending`，
+不把图相等说成模型输入字节相同。批后用 `tools/p1-diagnostic-frame-effects.py`
+按真实旧 InputSpec 与 V2 的 `project` 量 Frame 特征布局；绑定ID不当学习特征。
+V2 对声明的 unordered 域使用共享位置、对称引用及角色池，无 scene 全局行位置；
+布局置换与学习语义改变分列。实际策略输出/训练轨迹没有在此诊断中测试。
