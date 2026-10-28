@@ -353,9 +353,12 @@ def _verify_host(host_root: Path, pin: dict[str, Any]) -> None:
         raise BoundaryError("local_environment", "host_package_unavailable") from error
 
 
-def _candidate_audit(value: object) -> dict[str, str]:
-    """The selected profile pins one audited build; the scenario pins its game."""
+def _candidate_audit(
+    value: object, *, game_assembly_sha256: str = SCENARIO["exact_game_assembly_sha256"],
+) -> dict[str, str]:
+    """Bind the exact Host audit to this caller's frozen game selection."""
     try:
+        digest(game_assembly_sha256, "local_environment.game_assembly_sha256")
         result = object_fields(value, set(AUDIT_FIELDS), "local_environment.candidate_audit")
         digest(result["upstream_revision"], "local_environment.candidate_source", length=40)
         for field in ("source_patch_sha256", "artifact_sha256"):
@@ -365,7 +368,7 @@ def _candidate_audit(value: object) -> dict[str, str]:
                 r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", mvid
         ) is None):
             raise ValueError
-        if any(result[field] != SCENARIO["exact_game_assembly_sha256"] for field in
+        if any(result[field] != game_assembly_sha256 for field in
                ("original_sts2_sha256", "runtime_sts2_sha256")):
             raise ValueError
         return cast(dict[str, str], result)
@@ -373,7 +376,13 @@ def _candidate_audit(value: object) -> dict[str, str]:
         raise BoundaryError("local_environment", "managed_candidate_identity_mismatch") from error
 
 
-def _audit(host_root: Path, candidate: Path) -> dict[str, str]:
+def _audit(
+    host_root: Path, candidate: Path, *,
+    game_assembly_sha256: str = SCENARIO["exact_game_assembly_sha256"],
+) -> dict[str, str]:
+    # This expectation narrows the result, never replaces the pinned Host's exact
+    # platform/game/source/artifact admission in the subprocess below.
+    digest(game_assembly_sha256, "local_environment.game_assembly_sha256")
     completed = subprocess.run(
         ["node", str(host_root / "tools/managed-exact.mjs"), "audit", "--candidate",
          str(candidate)],
@@ -387,7 +396,8 @@ def _audit(host_root: Path, candidate: Path) -> dict[str, str]:
             raise ValueError
         if value.get("candidate_directory") != str(candidate):
             raise ValueError
-        return _candidate_audit({key: value[key] for key in AUDIT_FIELDS})
+        return _candidate_audit({key: value[key] for key in AUDIT_FIELDS},
+                                game_assembly_sha256=game_assembly_sha256)
     except (BoundaryError, KeyError, TypeError, ValueError) as error:
         raise BoundaryError("local_environment", "managed_candidate_identity_mismatch") from error
 

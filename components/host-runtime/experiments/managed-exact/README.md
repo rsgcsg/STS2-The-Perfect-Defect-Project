@@ -15,6 +15,21 @@ The committed authority is:
 - repository tests and `tools/managed-exact.mjs`: preparation, identity,
   runtime, Player Environment, binding, reset, and capacity gates.
 
+The Linux x64 baseline executes the exact x86_64 `sts2.dll` shipped in the
+macOS `v0.111.0/41cef1ea` package. It has its own DLL hash, runtime assembly hash,
+and candidate artifact SHA/MVID; it is not an official Linux game installation.
+`source_patch_mvid` materializes the seven quoted native-MVID literals from the
+primary patch for that baseline only. Preparation and source audit both require
+the exact occurrence count and the frozen resulting patch SHA before using it.
+Refreshing the Linux tuple does not change the current primary Mac patch, native
+qualification constants, or expected build. Linux `historical_builds` retain
+previous exact tuples for their original receipts; they are not selected as
+current-patch admission.
+A later source patch requires a newly built and reviewed x64 tuple; no identity or
+behavioral qualification transfers from the Mac or an earlier Linux candidate.
+The Godot coverage baseline names each exact DLL pair separately and runs the
+same full reference-resolution and zero-new-gap gate on either pair.
+
 No game DLL, asset, localization payload, save, or generated candidate is
 committed. `prepare` discovers the user's exact installation, copies required
 files only into ignored `.local/`, refuses a modified runtime `sts2.dll`,

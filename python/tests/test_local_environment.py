@@ -2224,3 +2224,44 @@ def test_personal_initial_progress_needs_its_actual_host_capability():
         _checked_initial_progress(INITIAL_PROGRESS, {"version": "1.1.0-rc.32"})
         == INITIAL_PROGRESS
     )
+
+
+def test_x64_candidate_audit_requires_explicit_game_and_preserves_host_refusal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Exercise the actual Python reader; subprocess is a declared Host-output seam."""
+    from subprocess import CompletedProcess
+
+    from spireagent.workbench.local_environment import _candidate_audit
+
+    host = tmp_path / "host"
+    candidate = tmp_path / "candidate"
+    x64 = "71eec3ba5e0c640fc0cf0758517faf5f2ff039bea21966b22b23f2c427c7a09f"
+    audit = {**CANDIDATE_AUDIT, "original_sts2_sha256": x64, "runtime_sts2_sha256": x64}
+    output = {**audit, "candidate_directory": str(candidate)}
+    host_status = 0
+    commands = []
+
+    def inspect(command, **_kwargs):
+        commands.append(command)
+        return CompletedProcess(command, host_status, json.dumps(output), "")
+
+    monkeypatch.setattr("spireagent.workbench.local_environment.subprocess.run", inspect)
+    assert _audit(host, candidate, game_assembly_sha256=x64) == audit
+    assert commands[-1] == ["node", str(host / "tools/managed-exact.mjs"), "audit",
+                            "--candidate", str(candidate)]
+    with pytest.raises(BoundaryError, match="managed_candidate_identity_mismatch"):
+        _audit(host, candidate)  # Existing callers still require the Mac scenario.
+    with pytest.raises(BoundaryError, match="managed_candidate_identity_mismatch"):
+        _candidate_audit(audit)
+    output["runtime_sts2_sha256"] = CANDIDATE_AUDIT["runtime_sts2_sha256"]
+    with pytest.raises(BoundaryError, match="managed_candidate_identity_mismatch"):
+        _audit(host, candidate, game_assembly_sha256=x64)
+    output["runtime_sts2_sha256"] = x64
+    host_status = 1  # Even the selected expected SHA cannot override a Host refusal.
+    with pytest.raises(BoundaryError, match="managed_candidate_audit_failed"):
+        _audit(host, candidate, game_assembly_sha256=x64)
+    count = len(commands)
+    with pytest.raises(BoundaryError, match="invalid_digest"):
+        _audit(host, candidate, game_assembly_sha256="invalid")
+    assert len(commands) == count

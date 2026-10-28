@@ -25,6 +25,7 @@ import {
   assertManagedCandidateGame,
   chooseManagedCandidateAction,
   loadManagedCandidateManifest,
+  managedCandidateSourcePatch,
   runManagedCandidateCapacity,
   runManagedCandidateProbe,
   selectManagedCandidateManifest,
@@ -77,7 +78,7 @@ test("built native act-selection source and retained measured builds remain expl
   assert.equal(manifest.last_measured_build.artifact_mvid, "61b5b737-724e-4887-a0a4-6664a3c9daea");
   assert.equal(manifest.admission.forbidden_claims.includes("formal H1.0 qualification"), true);
   assert.ok(manifest.semantic_shims.some((entry) => entry.risk === "critical"));
-  assert.equal(manifest.platform_baselines.length, 1);
+  assert.equal(manifest.platform_baselines.length, 2);
   assert.throws(() => assertManagedCandidateGame(manifest, {
     platform: "darwin",
     architecture: "arm64",
@@ -199,7 +200,7 @@ test("fresh candidate preparation admits added source files into the audited dif
     "tests/Program.cs"
   ]);  assert.equal(source.includes('["add", "--intent-to-add"'), true);
   assert.equal(source.includes("stpd-managed-candidate.patch"), true);
-  assert.equal(source.includes("normalizeText(readFileSync(patchFile"), true);
+  assert.equal(source.includes("managedCandidateSourcePatch(root, manifest)"), true);
   assert.equal(source.includes('"core.autocrlf=false"'), true);
   assert.equal(source.includes('"--no-checkout"'), false);
 });
@@ -225,6 +226,57 @@ test("managed candidate selects Windows as separate provenance without changing 
   );
   assert.equal(manifest.exact_game.platform, "darwin");
   assert.equal(manifest.last_measured_build.artifact_mvid, "61b5b737-724e-4887-a0a4-6664a3c9daea");
+});
+
+test("Linux x64 selects only its exact native and independently pinned candidate identity", () => {
+  const { manifest } = loadManagedCandidateManifest(ROOT);
+  const baseline = manifest.platform_baselines.find(item => item.exact_game.platform === "linux");
+  const disk = {
+    platform: "linux", architecture: "x64", release: { version: "v0.111.0", commit: "41cef1ea" },
+    runtime_main_assembly_hash: 2127057828,
+    sts2_assembly: { sha256: "71eec3ba5e0c640fc0cf0758517faf5f2ff039bea21966b22b23f2c427c7a09f" },
+    godotsharp_assembly: { sha256: manifest.exact_game.godotsharp_dll_sha256 }
+  };
+  const selected = selectManagedCandidateManifest(manifest, disk);
+  assert.equal(selected.selected_baseline.baseline_id, baseline.baseline_id);
+  assert.deepEqual(selected.source_patch_mvid, baseline.source_patch_mvid);
+  assert.deepEqual(selectManagedCandidateManifest(selected, disk), selected);
+  const original = managedCandidateSourcePatch(ROOT, manifest);
+  const x86 = managedCandidateSourcePatch(ROOT, selected);
+  const { from, to, occurrences } = baseline.source_patch_mvid;
+  assert.equal(occurrences, 7);
+  assert.equal(original.split(`"${from}"`).length - 1, occurrences);
+  assert.equal(x86.split(`"${to}"`).length - 1, occurrences);
+  assert.equal(x86.replaceAll(`"${to}"`, `"${from}"`), original,
+    "the only platform source delta is the seven exact native MVID literals");
+  assert.equal(manifest.exact_game.platform, "darwin");
+  assert.equal(manifest.expected_build.artifact_sha256, "0e5feebdf33de9bc48a1fbd543735e006bed1766b1f07e90148801802e3cb1aa");
+  assert.equal(manifest.expected_build.artifact_mvid, "bb516baa-5308-4b47-a98e-ace6eda93028");
+  assert.equal(baseline.status, "candidate_built_unqualified");
+  assert.equal(selected.expected_build.source_patch_sha256,
+    "61c2fce855b4f0983b0c17e548e970ad55647f4f7993574e8f58cf597e553fac");
+  assert.equal(selected.expected_build.artifact_sha256,
+    "239be1e737428a3ddfcfca2b4b06d8b021559f4bd8ca35af97b538f66795b02d");
+  assert.equal(selected.expected_build.artifact_mvid, "8091f740-a0d0-4cc8-a425-4dd44ede3b4e");
+  assert.equal(baseline.historical_builds[0].artifact_sha256,
+    "fecc403ceb5e1c493168beb301498d6c8e7e2367ef0e34e40ccb75e921988ce5");
+  assert.equal(baseline.historical_builds[0].source_patch_sha256,
+    "0b8e89b94160cc4c66d4f61123c9e6de525894b1e4fae43d99583661642d3a99");
+  assert.equal(baseline.historical_builds[1].artifact_sha256,
+    "9b8d4213a6caa5cd5c344fa7464947777b8308612cb4339a07709287af1f6c7b");
+  assert.notEqual(selected.expected_build.artifact_sha256, baseline.historical_builds[0].artifact_sha256);
+  assert.notEqual(selected.expected_build.artifact_sha256, baseline.historical_builds[1].artifact_sha256);
+  for (const change of [{ architecture: "arm64" }, { platform: "darwin" },
+    { runtime_main_assembly_hash: disk.runtime_main_assembly_hash + 1 },
+    { sts2_assembly: { sha256: manifest.exact_game.sts2_dll_sha256 } },
+    { godotsharp_assembly: { sha256: "0".repeat(64) } },
+    { release: { ...disk.release, commit: "foreign" } }]) {
+    assert.throws(() => selectManagedCandidateManifest(manifest, { ...disk, ...change }), /refuses this game identity/u);
+  }
+  assert.throws(() => managedCandidateSourcePatch(ROOT, { ...selected,
+    source_patch_mvid: { ...selected.source_patch_mvid, occurrences: 6 } }), /MVID count/u);
+  assert.throws(() => managedCandidateSourcePatch(ROOT, { ...selected,
+    source_patch_mvid: { ...selected.source_patch_mvid, to: "00000000-0000-0000-0000-000000000000" } }), /patch SHA/u);
 });
 
 test("managed setup converts drive-qualified Windows paths for Git Bash", () => {

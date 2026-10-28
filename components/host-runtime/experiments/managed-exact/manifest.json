@@ -86,6 +86,50 @@
         "This Windows build has separate provenance and does not inherit macOS qualification.",
         "Admission is candidate-local and does not establish formal H1.0 support."
       ]
+    },
+    {
+      "baseline_id": "linux-x64-macos-v0.111.0-41cef1ea-managed-candidate",
+      "status": "candidate_built_unqualified",
+      "exact_game": {
+        "platform": "linux",
+        "architecture": "x64",
+        "version": "v0.111.0",
+        "commit": "41cef1ea",
+        "runtime_main_assembly_hash": 2127057828,
+        "sts2_dll_sha256": "71eec3ba5e0c640fc0cf0758517faf5f2ff039bea21966b22b23f2c427c7a09f",
+        "godotsharp_dll_sha256": "0e4897ecdfb31456a97c7d8028dfb8d7dbdc632e2f73fc9b438d7b266a139289"
+      },
+      "source_patch_mvid": {
+        "from": "57785517-0b16-42b9-8b36-bad6fb28384b",
+        "to": "58d08aa0-fa59-4264-b2a5-0a6a2c396c99",
+        "occurrences": 7
+      },
+      "expected_build": {
+        "source_patch_sha256": "61c2fce855b4f0983b0c17e548e970ad55647f4f7993574e8f58cf597e553fac",
+        "artifact_sha256": "239be1e737428a3ddfcfca2b4b06d8b021559f4bd8ca35af97b538f66795b02d",
+        "artifact_mvid": "8091f740-a0d0-4cc8-a425-4dd44ede3b4e",
+        "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0"
+      },
+      "non_claims": [
+        "Executes the exact x86_64 assembly shipped in the macOS game package on Linux .NET; this is not an official Linux game installation.",
+        "Separate native MVID and candidate build; no Mac qualification or general cross-platform equivalence is inherited."
+      ],
+      "historical_builds": [
+        {
+          "source_patch_sha256": "0b8e89b94160cc4c66d4f61123c9e6de525894b1e4fae43d99583661642d3a99",
+          "artifact_sha256": "fecc403ceb5e1c493168beb301498d6c8e7e2367ef0e34e40ccb75e921988ce5",
+          "artifact_mvid": "516cffd1-5fdd-44af-a2f2-e179a35dde02",
+          "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0",
+          "scope": "F2 pre-M2e candidate measured with frozen old-source receipts; not current-patch admission."
+        },
+        {
+          "source_patch_sha256": "3b6155256e77e8b956e9632cdec044f1959b212bfffae24c566200c32416fe5d",
+          "artifact_sha256": "9b8d4213a6caa5cd5c344fa7464947777b8308612cb4339a07709287af1f6c7b",
+          "artifact_mvid": "fda8967a-4b90-42bb-a85a-fb75113e0cfe",
+          "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0",
+          "scope": "F2 intermediate build of PR282 b471dc; superseded before final source registration."
+        }
+      ]
     }
   ],
   "privileged_commands": [

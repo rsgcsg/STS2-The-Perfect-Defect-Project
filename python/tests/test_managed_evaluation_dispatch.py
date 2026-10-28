@@ -533,7 +533,7 @@ def test_central_inference_requires_cli_environment_before_world_audit(
     monkeypatch.setattr(backend, "source_identity", lambda _: actual)
     monkeypatch.setattr(backend, "_verify_host", lambda *_: None)
     monkeypatch.setattr(backend, "validate_installed_package", lambda *_, **__: None)
-    def audit(*_):
+    def audit(*_, **_kwargs):
         if not admitted:
             pytest.fail("must reject before world audit")
         raise RuntimeError("admitted_runtime_before_world_audit")
@@ -1020,3 +1020,178 @@ def test_partial_shard_frees_credit_before_an_unrelated_slow_game_finishes(ledge
             release.set()
         result = future.result(timeout=30)
     assert result["dispatched"] == 3 and current.report()["saved_unscored"] == 3
+
+
+@pytest.mark.parametrize("selector", [None, "invalid", "A" * 64, 1, True])
+def test_execution_game_selector_is_validated_before_package_or_world_access(selector):
+    from spireagent.workbench.managed_evaluation import ManagedEpisodeExecutor
+
+    with pytest.raises(BoundaryError, match="invalid_digest"):
+        ManagedEpisodeExecutor({"game_assembly_sha256": selector},
+                               episode_seconds=10, cleanup_seconds=10)
+
+
+@pytest.mark.parametrize("explicit", [False, True])
+def test_executor_threads_frozen_game_selection_into_the_real_host_audit_reader(
+    tmp_path, monkeypatch, explicit,
+):
+    """Actual audit-reader/executor connection; package and Host subprocess mocked."""
+    from subprocess import CompletedProcess
+
+    from spireagent.workbench import local_environment
+    from spireagent.workbench import managed_evaluation as backend
+
+    actual = Producer("rsgcsg/STS2-The-Perfect-Defect-Project", "b" * 40, "c" * 64)
+    monkeypatch.setattr(backend, "source_identity", lambda _: actual)
+    monkeypatch.setattr(backend, "_verify_host", lambda *_: None)
+    monkeypatch.setattr(backend, "validate_installed_package", lambda *_, **__: None)
+    selected = ("71eec3ba5e0c640fc0cf0758517faf5f2ff039bea21966b22b23f2c427c7a09f"
+                if explicit else local_environment.SCENARIO["exact_game_assembly_sha256"])
+    output = {"upstream_revision": "d" * 40, "source_patch_sha256": "1" * 64,
+        "artifact_sha256": "2" * 64, "artifact_mvid": "516cffd1-5fdd-44af-a2f2-e179a35dde02",
+        "original_sts2_sha256": selected, "runtime_sts2_sha256": selected,
+        "candidate_directory": str(tmp_path)}
+    commands = []
+
+    def inspect(command, **_kwargs):
+        commands.append(command)
+        return CompletedProcess(command, 0, json.dumps(output), "")
+
+    def passed_candidate(_):
+        raise RuntimeError("exact_candidate_accepted_before_api_or_store_access")
+
+    monkeypatch.setattr(local_environment.subprocess, "run", inspect)
+    monkeypatch.setattr(backend, "_load_host_api", passed_candidate)
+    (tmp_path / "package.json").write_bytes(json_bytes({"version": "0.1.0-rc.56"}))
+    configuration = {"producer": actual.to_dict(),
+        "host_directory": str(tmp_path), "candidate_directory": str(tmp_path),
+        "runtime_directory": str(tmp_path / "dist"), "host_pin": {}, "runtime_pin": {},
+        "agent_adapter": backend.export.adapter_identity(),
+        **({"game_assembly_sha256": selected} if explicit else {})}
+    with pytest.raises(RuntimeError, match="exact_candidate_accepted_before_api_or_store_access"):
+        backend.ManagedEpisodeExecutor(configuration, episode_seconds=10, cleanup_seconds=10)
+    assert commands == [["node", str(tmp_path / "tools/managed-exact.mjs"), "audit",
+                         "--candidate", str(tmp_path)]]
+    output["runtime_sts2_sha256"] = "0" * 64
+    with pytest.raises(BoundaryError, match="managed_candidate_identity_mismatch"):
+        backend.ManagedEpisodeExecutor(configuration, episode_seconds=10, cleanup_seconds=10)
+
+
+@pytest.mark.parametrize("keys", [None, "LD_LIBRARY_PATH", {}, [1],
+    ["LD_LIBRARY_PATH", "LD_LIBRARY_PATH"], ["AWS_SECRET_ACCESS_KEY"],
+    ["AWS_ACCESS_KEY_ID"], ["R2_TOKEN"], ["PATH"]])
+def test_adapter_environment_keys_reject_invalid_and_credential_requests_before_host(keys):
+    from spireagent.workbench.managed_evaluation import ManagedEpisodeExecutor
+
+    with pytest.raises(BoundaryError, match="invalid_adapter_environment_keys"):
+        ManagedEpisodeExecutor({"adapter_environment_keys": keys},
+                               episode_seconds=10, cleanup_seconds=10)
+
+
+@pytest.fixture
+def synthetic_managed_admission(monkeypatch):
+    """Host/process tests isolate node reservation; test_resource_slot owns its real guard."""
+    checks = []
+    monkeypatch.setattr("spireagent.resource_slot.require_managed_slot",
+                        lambda: checks.append("checked"))
+    return checks
+
+
+def test_adapter_environment_requires_available_keys_before_host_and_each_offer(
+    monkeypatch, synthetic_managed_admission,
+):
+    from spireagent.workbench.managed_evaluation import ManagedEpisodeExecutor
+
+    monkeypatch.delenv("LD_LIBRARY_PATH", raising=False)
+    with pytest.raises(BoundaryError, match="adapter_environment_key_unavailable"):
+        ManagedEpisodeExecutor({"adapter_environment_keys": ["LD_LIBRARY_PATH"]},
+                               episode_seconds=10, cleanup_seconds=10)
+    executor = object.__new__(ManagedEpisodeExecutor)
+    executor.adapter_environment_keys = ("LD_LIBRARY_PATH",)
+    # No model, API, Host or artifacts exist: a vanished key fails before any access.
+    with pytest.raises(BoundaryError, match="adapter_environment_key_unavailable"):
+        executor({}, {"ascension": 0, "host": "Managed"}, None, lambda: None)
+    assert synthetic_managed_admission == ["checked"]
+
+
+@pytest.mark.parametrize("keys,central", [([], False),
+    (["FRIDAY_INFERENCE_THREADS"], False),
+    (["LD_LIBRARY_PATH", "FRIDAY_INFERENCE_THREADS"], False),
+    (["LD_LIBRARY_PATH", "FRIDAY_INFERENCE_THREADS"], True)])
+def test_actual_runtime_process_command_forwards_only_requested_adapter_key_names(
+    tmp_path, monkeypatch, keys, central, synthetic_managed_admission,
+):
+    """Real command assembly; node admission, Host, registration and Popen are faked."""
+    from types import SimpleNamespace
+
+    from spireagent.workbench import managed_evaluation as backend
+
+    loader_value = "/synthetic/module/python/lib"
+    monkeypatch.setenv("LD_LIBRARY_PATH", loader_value)
+    monkeypatch.setenv("FRIDAY_INFERENCE_THREADS", "1")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "synthetic-parent-credential")
+    executor = object.__new__(backend.ManagedEpisodeExecutor)
+    executor.adapter_environment_keys = tuple(keys)
+    executor.configuration = {"models": {"model": {"package_directory": str(tmp_path)}},
+        "python_executable": "/synthetic/python", "host_pin": {},
+        "initial_progress": {"progress_sha256": "progress"}}
+    executor.preparation = {"store": "fixture"}
+    executor.read_concurrency = 1
+    executor.settling_timeout_ms = None
+    executor.measure_host_performance = False
+    executor.host = executor.candidate = executor.runtime = tmp_path
+    executor.episode_seconds = executor.cleanup_seconds = 10
+    executor.build = {"artifact_sha256": "candidate"}
+    executor.evidence_durability = "event"
+    executor.max_auto_submissions = 1
+    executor.inference_pool = (SimpleNamespace(
+        attachment=lambda: {"schema": "synthetic-binding"},
+        environment=lambda: {"STPD_LOCAL_INFERENCE_TOKEN": "synthetic-inference-secret"},
+    ) if central else None)
+    ready = {"service_instance_id": "service", "adapter_runtime_instance_id": "runtime",
+             "episode": {"game_continuity_id": "game"}}
+    identity = {"episode_provenance": {"verdict": "provenance_pass", "actual_seed": "seed"},
+                "initial_progress": {"run_unlock_state_matches": True,
+                                     "progress_sha256": "progress"}}
+    manager = SimpleNamespace(
+        reset=lambda *_args, **_kwargs: {}, request=lambda _: {"result": {"identity": identity}},
+        close_host=lambda: {"result": {"exit": {"code": 0}}},
+    )
+    launch = SimpleNamespace(pid=1, process=SimpleNamespace(wait=lambda **_: 0))
+    executor.api = SimpleNamespace(
+        launch_managed_host_service=lambda **_: launch,
+        ManagedHostServiceClient=SimpleNamespace(from_attachment=lambda _: SimpleNamespace(
+            ready=lambda: ready)),
+        ManagedHostServiceManager=SimpleNamespace(from_attachment=lambda _: manager),
+    )
+    monkeypatch.setattr(backend, "runtime_arguments", lambda *_: [])
+    monkeypatch.setattr(backend, "global_environment_manifest", lambda *_: {})
+    monkeypatch.setattr(backend.export, "register",
+                        lambda _package, target, *_args, **_kwargs: target.mkdir())
+    captured = []
+
+    def start(command, **kwargs):
+        captured.append((command, kwargs["env"]))
+        raise RuntimeError("synthetic_process_boundary_stop")
+
+    monkeypatch.setattr(backend.subprocess, "Popen", start)
+    artifacts = SimpleNamespace(root=tmp_path, put=lambda name, _bytes: name)
+    row = {"selection_id": "model", "seed": "seed", "intent_id": "intent",
+           "world_mutation_offered": False}
+    executor(row, {"ascension": 0, "host": "Managed", "character": "Defect"},
+             artifacts, lambda: None)
+    assert synthetic_managed_admission == ["checked"]
+    assert len(captured) == 1
+    command, environment = captured[0]
+    assert command[:2] == ["node", str(tmp_path / "cli.js")]
+    forwarded = [command[index + 1] for index, arg in enumerate(command)
+                 if arg == "--adapter-env-key"]
+    assert forwarded == [*keys, *(["STPD_LOCAL_INFERENCE_TOKEN"] if central else [])]
+    assert "AWS_SECRET_ACCESS_KEY" not in forwarded
+    assert loader_value not in command
+    assert "synthetic-parent-credential" not in command
+    assert "synthetic-inference-secret" not in command
+    assert environment["FRIDAY_INFERENCE_THREADS"] == "1"
+    assert environment["LD_LIBRARY_PATH"] == loader_value
+    assert "synthetic-parent-credential" not in json.dumps(row)
+    assert loader_value not in json.dumps(row)

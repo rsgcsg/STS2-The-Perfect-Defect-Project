@@ -25,6 +25,8 @@
 
 ## Managed 状态
 
+新打局、RL actor和固定种子评估默认Friday，Mac只做必要对照；入口见[Friday运行手册](../../python/docs/FRIDAY_ACTOR.md)。RL先按学习者吞吐用6–8个fc430核，D1三模型用原T2清单前20种子、同一账本60槽。准确部署、数据资格和学习者实际消费仍以各次原收据为准，不从默认目标推断完成。
+
 [M2a工程收据](../evidence/MANAGED_M2A_20261027.md)与PR266：Host49新40为39负/1未知（2.5%），该未知根因`Node.GetIndex`在Host51另版修，旧槽不改；M051/M052/M053/M056已修；r1.7两字段在Host52/私有Mod67工程前缀48/48一致。[M3](../plans/MANAGED_COVERAGE_20261027.zh-CN.md)录后自动对照已装，个人档整局重演未通过（M055等）。设计原则M-1～M-8见[Host指南](../../components/host-runtime/docs/MANAGED_P1_EQUIVALENCE.md#settled-logic-native-rules-and-replaceable-host-implementation)，差异分诊见[工作规则§5](../WORKING_RULES.zh-CN.md#5-缺陷重构资源)。
 
 ## Remaining Platform non-claims

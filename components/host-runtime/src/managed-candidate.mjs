@@ -81,6 +81,31 @@ export function toBashPath(value, platform = process.platform) {
   return `/${drive.toLowerCase()}${resolved.slice(2).replaceAll("\\", "/")}`;
 }
 
+/** Materialize one pinned platform patch without changing the primary Mac source. */
+export function managedCandidateSourcePatch(root, manifest) {
+  const patchFile = path.join(root, "experiments", "managed-exact", manifest.source_patch);
+  let patch = normalizeText(readFileSync(patchFile, "utf8"));
+  const replacement = manifest.source_patch_mvid;
+  if (replacement != null) {
+    if (!/^[0-9a-f-]{36}$/u.test(replacement.from ?? "")
+        || !/^[0-9a-f-]{36}$/u.test(replacement.to ?? "")
+        || replacement.from === replacement.to || !Number.isSafeInteger(replacement.occurrences)
+        || replacement.occurrences < 1) {
+      throw new Error("Managed candidate platform MVID replacement is invalid.");
+    }
+    const from = `"${replacement.from}"`;
+    const count = patch.split(from).length - 1;
+    if (count !== replacement.occurrences) {
+      throw new Error(`Managed candidate platform MVID count ${count} differs from the pinned replacement.`);
+    }
+    patch = patch.replaceAll(from, `"${replacement.to}"`);
+  }
+  if (sha256Buffer(patch) !== manifest.expected_build?.source_patch_sha256) {
+    throw new Error("Managed candidate materialized patch SHA differs from the frozen baseline.");
+  }
+  return patch;
+}
+
 /** Resolve candidate aliases physically before clone/setup/MSBuild consume the path. */
 export function canonicalizeManagedCandidateDirectory(candidateDirectory) {
   const requested = path.resolve(candidateDirectory);
@@ -175,7 +200,8 @@ export function selectManagedCandidateManifest(manifest, diskIdentity) {
         },
         ...(manifest.platform_baselines ?? [])
       ]
-    : [{ ...manifest.selected_baseline, exact_game: manifest.exact_game, expected_build: manifest.expected_build }];
+    : [{ ...manifest.selected_baseline, exact_game: manifest.exact_game, expected_build: manifest.expected_build,
+        source_patch_mvid: manifest.source_patch_mvid }];
   const matches = baselines.filter((baseline) =>
     identityMismatches(baseline.exact_game, actual).length === 0);
   if (matches.length !== 1) {
@@ -196,7 +222,8 @@ export function selectManagedCandidateManifest(manifest, diskIdentity) {
       non_claims: selected.non_claims ?? []
     },
     exact_game: selected.exact_game,
-    expected_build: selected.expected_build
+    expected_build: selected.expected_build,
+    source_patch_mvid: selected.source_patch_mvid ?? null
   };
 }
 
@@ -247,8 +274,7 @@ export async function auditManagedCandidateSource({ root, candidateDirectory, ma
   if (revision !== manifest.upstream.revision) {
     throw new Error(`Managed candidate revision ${revision} does not match ${manifest.upstream.revision}.`);
   }
-  const patchFile = path.join(root, "experiments", "managed-exact", manifest.source_patch);
-  const expectedPatch = normalizeText(readFileSync(patchFile, "utf8"));
+  const expectedPatch = managedCandidateSourcePatch(root, manifest);
   const actualPatch = normalizeText(await git(
     ["diff", "--binary", "--no-ext-diff"],
     resolvedCandidateDirectory
@@ -351,9 +377,8 @@ export async function prepareManagedCandidate({
     destination
   ]);
   await run("git", ["checkout", "--detach", manifest.upstream.revision], { cwd: destination });
-  const patchFile = path.join(root, "experiments", "managed-exact", manifest.source_patch);
   const normalizedPatchFile = path.join(destination, ".git", "stpd-managed-candidate.patch");
-  const normalizedPatch = normalizeText(readFileSync(patchFile, "utf8"));
+  const normalizedPatch = managedCandidateSourcePatch(root, manifest);
   writeFileSync(normalizedPatchFile, normalizedPatch);
   // Preserve newly added files in the same `git diff` view used by source
   // admission. Applying with git's broad --intent-to-add mode can rewrite the

@@ -21,7 +21,7 @@ from typing import Any, NoReturn
 from sts2_platform_evidence import verify_agent_session_run_evidence
 
 from spireagent.artifact_contracts import Producer
-from spireagent.json_boundary import BoundaryError, json_bytes
+from spireagent.json_boundary import BoundaryError, digest, json_bytes
 from spireagent.package_identity import validate_installed_package
 from spireagent.source import source_identity
 from spireagent.storage.cache import cache_usage
@@ -38,7 +38,7 @@ from .global_evidence_store import (
     publish_global_runtime,
     verify_global_artifact,
 )
-from .local_environment import _audit, _candidate_audit, _verify_host
+from .local_environment import SCENARIO, _audit, _candidate_audit, _verify_host
 from .local_model_registration import global_environment_manifest
 from .local_models import JSON_LIMIT, RuntimeClient
 from .managed_model_target import runtime_arguments
@@ -218,6 +218,19 @@ class ManagedEpisodeExecutor:
         if (type(self.max_auto_submissions) is not int
                 or not 1 <= self.max_auto_submissions <= 10000):
             reject("invalid_runtime_submission_budget")
+        adapter_keys = configuration.get("adapter_environment_keys", [])
+        if (not isinstance(adapter_keys, list)
+                or any(not isinstance(key, str) or key not in {
+                    "LD_LIBRARY_PATH", "FRIDAY_INFERENCE_THREADS"} for key in adapter_keys)
+                or len(set(adapter_keys)) != len(adapter_keys)):
+            reject("invalid_adapter_environment_keys")
+        self.adapter_environment_keys = tuple(adapter_keys)
+        if any(key not in os.environ for key in self.adapter_environment_keys):
+            reject("adapter_environment_key_unavailable")
+        self.game_assembly_sha256 = digest(
+            configuration.get("game_assembly_sha256", SCENARIO["exact_game_assembly_sha256"]),
+            "managed_evaluation.game_assembly_sha256",
+        )
         # The frozen producer is an expected pin, never a caller-supplied claim
         # about whatever code happens to execute this invocation.
         self.producer = source_identity(ROOT)
@@ -258,9 +271,13 @@ class ManagedEpisodeExecutor:
         if configuration["agent_adapter"] != export.adapter_identity():
             reject("frozen_agent_implementation_changed")
         if self.measure_host_performance and json.loads(
-                (self.host / "package.json").read_bytes()).get("version") != "1.1.0-rc.46":
+                (self.host / "package.json").read_bytes()).get("version") not in {
+                    "1.1.0-rc.46", "1.1.0-rc.57", "1.1.0-rc.58"}:
             reject("host_performance_diagnostics_required")
-        self.build = _candidate_audit(_audit(self.host, self.candidate))
+        self.build = _candidate_audit(
+            _audit(self.host, self.candidate, game_assembly_sha256=self.game_assembly_sha256),
+            game_assembly_sha256=self.game_assembly_sha256,
+        )
         self.api = _load_host_api(self.host / "consumers/python/sts2_headless/managed_service.py")
         self.peer = open_peer(configuration["peer"])
         # Remote execution writes to this already-frozen peer binding. Credentials
@@ -319,6 +336,8 @@ class ManagedEpisodeExecutor:
         require_managed_slot()
         if manifest["ascension"] != 0 or manifest["host"] != "Managed":
             reject("unsupported_scenario")
+        if any(key not in os.environ for key in self.adapter_environment_keys):
+            reject("adapter_environment_key_unavailable")
         model = self.configuration["models"][row["selection_id"]]
         private = artifacts.root / "private"
         private.mkdir(mode=0o700)
@@ -452,6 +471,8 @@ class ManagedEpisodeExecutor:
                 row["evidence_durability"] = self.evidence_durability
                 if self.settling_timeout_ms is not None:
                     args.extend(["--managed-settling-timeout-ms", str(self.settling_timeout_ms)])
+                for name in self.adapter_environment_keys:
+                    args.extend(["--adapter-env-key", name])
                 environment = os.environ.copy()
                 row["inference_mode"] = "central_batch" if self.inference_pool else "per_actor"
                 if self.inference_pool is not None:
