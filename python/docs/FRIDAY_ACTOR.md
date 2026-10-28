@@ -102,12 +102,16 @@ Slurm 日志在 `persistent_root/slurm/`。`result.json` 记录源码配置、�
 未同步的临时证据可能无法恢复。清理由本卡按原 R2 读回与未知保留规则单独收口。
 
 资源适配层的便宜回归：在准确开发环境中运行
-`PYTHONPATH=python python -m unittest discover -s tools/friday -p test_batch.py -v`。
+在 `python/` 下运行 `python -m pytest tests/test_friday_actor.py -q`；
+该文件由正常 pytest/CI 收集，无第二份工具目录测试。
 它检查真实文件复制读回、并发租约、种子池排他和 Slurm 参数，不启动游戏。
 
 测速配置可将 `python_executable` 指向 `tools/friday/profile-python`，它调用原
 `agent.serve`、原投影和原模型，只记录投影/前向累计秒数，退出时写一次
-`agent-performance.json`。`FRIDAY_INFERENCE_THREADS` 显式选择正整数，默认2与
+`agent-performance.json`。正常退出或 Runtime 的 SIGTERM/SIGINT 均尝试一次写入，
+保留原信号退出状态；记录实际 Torch 线程、版本、Linux CPU 亲和性和测速脚本 SHA。
+写入失败只向 stderr 给一行有界类型/错误码，不改变游戏结果或退出状态；
+SIGKILL 或节点丢失仍可能没有测速产物。`FRIDAY_INFERENCE_THREADS` 显式选择正整数，默认2与
 原 Agent CLI 一样；单核1线程配置须经相同种子和结果对照后选用。
 `measure_host_performance=true` 在本卡 Host57 读取已有 Host 计数器，
 原始记录与计数器观测分开；不把嵌套时间加成互斥总耗时。

@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
+import importlib.metadata
 import json
 import os
+import signal
 import sys
 import time
 from pathlib import Path
@@ -18,8 +21,8 @@ parser.add_argument("--binding-root", type=Path, required=True)
 parser.add_argument("--local-inference", type=Path)
 args = parser.parse_args(sys.argv[3:])
 
-import torch  # noqa: E402
-from stpd.p1 import agent  # noqa: E402
+torch = importlib.import_module("torch")
+agent = importlib.import_module("stpd.p1.agent")
 
 threads = int(os.environ.get("FRIDAY_INFERENCE_THREADS", "2"))
 if threads < 1:
@@ -28,6 +31,7 @@ torch.set_num_threads(threads)
 metrics = {"schema": "spireagent/friday-agent-performance-v1", "threads": threads,
            "project_calls": 0, "project_seconds": 0.0,
            "forward_calls": 0, "forward_seconds": 0.0}
+flushed = False
 
 
 def observe(owner, name, prefix):
@@ -44,12 +48,56 @@ def observe(owner, name, prefix):
     setattr(owner, name, measured)
 
 
+def flush_metrics():
+    """One optional shutdown write; failure never replaces the Agent's exit."""
+    global flushed
+    if flushed:
+        return
+    flushed = True
+    try:
+        try:
+            tokenizers_version = importlib.metadata.version("tokenizers")
+        except importlib.metadata.PackageNotFoundError:
+            tokenizers_version = None
+        metrics.update({
+            "actual_threads": torch.get_num_threads(),
+            "interop_threads": torch.get_num_interop_threads(),
+            "torch_version": str(torch.__version__),
+            "python_version": sys.version.split()[0],
+            "tokenizers_version": tokenizers_version,
+            "linux_cpu_affinity": (sorted(os.sched_getaffinity(0))
+                                   if sys.platform == "linux" else None),
+            "profiler_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+        })
+        output = args.config.resolve().parent.parent / "agent-performance.json"
+        output.write_text(json.dumps(metrics, sort_keys=True) + "\n", encoding="utf-8")
+    except (OSError, ValueError, TypeError) as error:
+        # Only a bounded type/errno diagnostic; never paths, environment or protocol stdout.
+        try:
+            sys.stderr.write("friday profiler: optional metrics unavailable "
+                             f"({type(error).__name__}, errno={getattr(error, 'errno', None)})\n")
+            sys.stderr.flush()
+        except OSError:
+            pass
+
+
+def terminate(number, _frame):
+    # Runtime's signal exit must remain independently observable as -SIGTERM/-SIGINT.
+    for observed in (signal.SIGTERM, signal.SIGINT):
+        signal.signal(observed, signal.SIG_IGN)
+    metrics["termination_signal"] = number
+    flush_metrics()
+    signal.signal(number, signal.SIG_DFL)
+    os.kill(os.getpid(), number)
+
+
 observe(agent, "project", "project")
 observe(agent.MStd, "forward", "forward")
+for observed in (signal.SIGTERM, signal.SIGINT):
+    signal.signal(observed, terminate)
 try:
     agent.serve(args.config.resolve(), args.manifest.resolve(), args.binding_root.resolve(),
                 local_inference=args.local_inference.resolve() if args.local_inference else None)
 finally:
     # One write at shutdown, outside the Runtime original evidence directory.
-    output = args.config.resolve().parent.parent / "agent-performance.json"
-    output.write_text(json.dumps(metrics, sort_keys=True) + "\n", encoding="utf-8")
+    flush_metrics()

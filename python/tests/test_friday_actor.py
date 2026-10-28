@@ -1,15 +1,25 @@
 """Cheap resource-adapter regressions; no invented gameplay/typed evidence."""
 from __future__ import annotations
 
-import fcntl
 import importlib.util
 import multiprocessing
+import os
+import select
+import signal
+import subprocess
+import sys
 import tempfile
+import textwrap
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-SPEC = importlib.util.spec_from_file_location('friday_batch', Path(__file__).with_name('batch.py'))
+import pytest
+
+fcntl = pytest.importorskip("fcntl", reason="Friday is a POSIX Slurm resource adapter")
+FRIDAY = Path(__file__).resolve().parents[2] / "tools/friday"
+
+SPEC = importlib.util.spec_from_file_location('friday_batch', FRIDAY / 'batch.py')
 assert SPEC and SPEC.loader
 batch = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(batch)
@@ -109,10 +119,11 @@ class FridayBatchTests(unittest.TestCase):
 
     def test_submission_is_finite_one_core_and_never_requeues(self):
         spec = importlib.util.spec_from_file_location(
-            'friday_submit', Path(__file__).with_name('submit.py'))
+            'friday_submit', FRIDAY / 'submit.py')
         assert spec and spec.loader
         module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
+        with patch.dict(sys.modules, {'batch': batch}):
+            spec.loader.exec_module(module)
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
             configuration = root / 'batch.json'
@@ -130,10 +141,11 @@ class FridayBatchTests(unittest.TestCase):
 
     def test_existing_pending_running_or_completing_array_blocks_new_submit(self):
         spec = importlib.util.spec_from_file_location(
-            'friday_submit_existing', Path(__file__).with_name('submit.py'))
+            'friday_submit_existing', FRIDAY / 'submit.py')
         assert spec and spec.loader
         module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
+        with patch.dict(sys.modules, {'batch': batch}):
+            spec.loader.exec_module(module)
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
             with (patch.object(module, 'submission_lock_path',
@@ -147,10 +159,11 @@ class FridayBatchTests(unittest.TestCase):
 
     def test_one_user_lock_covers_scheduler_query_through_sbatch(self):
         spec = importlib.util.spec_from_file_location(
-            'friday_submit_locked', Path(__file__).with_name('submit.py'))
+            'friday_submit_locked', FRIDAY / 'submit.py')
         assert spec and spec.loader
         module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
+        with patch.dict(sys.modules, {'batch': batch}):
+            spec.loader.exec_module(module)
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary).resolve()
             configuration = root / 'batch.json'
@@ -198,5 +211,97 @@ class FridayBatchTests(unittest.TestCase):
             self.assertEqual(batch.private_root(root), root)
 
 
-if __name__ == '__main__':
-    unittest.main()
+@pytest.fixture
+def profiler_stub(tmp_path):
+    """Stub only Agent serving/model calls; prove process/signal metrics, never gameplay."""
+    stubs = tmp_path / "stub-modules"
+    package = stubs / "stpd/p1"
+    package.mkdir(parents=True)
+    (stubs / "stpd/__init__.py").write_text("", encoding="utf-8")
+    (package / "__init__.py").write_text("", encoding="utf-8")
+    (stubs / "torch.py").write_text(textwrap.dedent("""\
+        __version__ = 'stub-not-game-proof'
+        threads = 0
+        def set_num_threads(value):
+            global threads
+            threads = value
+        def get_num_threads(): return threads
+        def get_num_interop_threads(): return 1
+        """), encoding="utf-8")
+    (package / "agent.py").write_text(textwrap.dedent("""\
+        import json
+        import sys
+        def project(value): return value + 1
+        class MStd:
+            def forward(self, value): return value * 2
+        def serve(config, manifest, owner, *, local_inference=None):
+            assert project(20) == 21
+            assert MStd().forward(21) == 42
+            if json.loads(config.read_bytes()).get('return_normally'):
+                return
+            print('stub-agent-serving', flush=True)
+            sys.stdin.read()
+        """), encoding="utf-8")
+    binding = tmp_path / "binding"
+    install = binding / "installation"
+    install.mkdir(parents=True)
+    config = install / "config.json"
+    config.write_text("{}", encoding="utf-8")
+    manifest = install / "manifest.json"
+    manifest.write_text("{}", encoding="utf-8")
+    command = [sys.executable, str(FRIDAY / "profile-python"), "-m", "stpd.p1.agent",
+               "--config", str(config), "--manifest", str(manifest),
+               "--binding-root", str(binding)]
+    # The test process receives only these nonsensitive settings, not a copied account env.
+    environment = {"PATH": os.defpath, "PYTHONPATH": str(stubs),
+                   "FRIDAY_INFERENCE_THREADS": "1"}
+    return command, environment, config, binding / "agent-performance.json"
+
+
+@pytest.mark.parametrize("number", [signal.SIGTERM, signal.SIGINT])
+def test_profiler_writes_on_real_signal_and_preserves_signal_exit(profiler_stub, number):
+    import hashlib
+    import json
+
+    command, environment, _config, output = profiler_stub
+    with subprocess.Popen(command, env=environment, stdin=subprocess.PIPE,
+                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) as process:
+        try:
+            readable, _, _ = select.select([process.stdout], [], [], 15)
+            assert readable, "stub Agent did not enter its blocking serve"
+            assert process.stdout.readline() == "stub-agent-serving\n"
+            assert not output.exists(), "profiling must not write per decision"
+            process.send_signal(number)
+            stdout, stderr = process.communicate(timeout=15)
+            assert process.returncode == -number
+            assert stdout == "" and stderr == ""
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.communicate(timeout=10)
+    metrics = json.loads(output.read_bytes())
+    assert metrics["termination_signal"] == number
+    assert metrics["project_calls"] == metrics["forward_calls"] == 1
+    assert metrics["project_seconds"] >= 0 and metrics["forward_seconds"] >= 0
+    assert metrics["threads"] == metrics["actual_threads"] == metrics["interop_threads"] == 1
+    assert metrics["torch_version"] == "stub-not-game-proof"
+    assert metrics["python_version"] == sys.version.split()[0]
+    assert metrics["profiler_sha256"] == hashlib.sha256((FRIDAY / "profile-python").read_bytes()
+                                                       ).hexdigest()
+    if sys.platform == "linux":
+        assert metrics["linux_cpu_affinity"] == sorted(os.sched_getaffinity(0))
+    else:
+        assert metrics["linux_cpu_affinity"] is None
+
+
+def test_profiler_optional_metrics_io_failure_preserves_original_success(profiler_stub):
+    command, environment, config, output = profiler_stub
+    config.write_text('{"return_normally":true}', encoding="utf-8")
+    output.mkdir()  # A real filesystem failure at the optional output boundary.
+    result = subprocess.run(command, env=environment, capture_output=True, text=True,
+                            timeout=15, check=False)
+    assert result.returncode == 0
+    assert result.stdout == ""
+    assert result.stderr.startswith("friday profiler: optional metrics unavailable ")
+    assert len(result.stderr) < 160
+    assert str(output) not in result.stderr
