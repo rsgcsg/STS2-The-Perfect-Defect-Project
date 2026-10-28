@@ -16,7 +16,9 @@ import copy
 import hashlib
 import json
 import os
+import re
 import resource
+import signal
 import threading
 import time
 from pathlib import Path
@@ -109,6 +111,8 @@ class Actor:
             reject("unscored_trajectory_training_intent_required")
         self.exchange = Exchange(configuration["peer"], configuration["run"])
         self.name = configuration["actor"]
+        if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,62}", self.name):
+            reject("invalid_actor_name")
         self.prefetch = ModelPrefetch(self.exchange, work / "models",
                                       configuration.get("model_poll_seconds", 5))
         self.executor: Any = None
@@ -119,6 +123,11 @@ class Actor:
         self.counts: collections.Counter[str] = collections.Counter()
         self.timing: collections.defaultdict[str, float] = collections.defaultdict(float)
         self.games: list[dict[str, Any]] = []
+        self.signalled: int | None = None
+
+    def _signal(self, number: int, _frame: Any) -> None:
+        """Batch schedulers warn before the limit; finish the current game, start no more."""
+        self.signalled = number
 
     def _executor(self, record: dict[str, Any], package: Path) -> str:
         from .managed_pipeline import PipelinedManagedExecutor
@@ -200,10 +209,12 @@ class Actor:
         episode_seconds = self.config["episode_seconds"]
         self.prefetch.start()
         status = "completed"
+        previous = {number: signal.signal(number, self._signal)
+                    for number in (signal.SIGTERM, signal.SIGINT, signal.SIGUSR1)}
         try:
             while (len(self.games) < self.config["max_games"]
                    and time.monotonic() + episode_seconds + 180 < deadline
-                   and not (self.work / "STOP").exists()):
+                   and not (self.work / "STOP").exists() and self.signalled is None):
                 newest = self.prefetch.newest()
                 if newest is None:
                     wait = time.monotonic()
@@ -232,11 +243,15 @@ class Actor:
                     status = "stopped_unknown_limit"
                     break
         finally:
+            for number, handler in previous.items():
+                signal.signal(number, handler)
             self.prefetch.stop()
             if self.executor is not None:
                 self.executor.close()
         summary = {"schema": "spireagent/rl-actor-summary-1", "actor": self.name,
-                   "run": self.config["run"], "status": status,
+                   "run": self.config["run"],
+                   "status": "stopped_signal" if self.signalled and status == "completed"
+                   else status, "signal": self.signalled,
                    "wall_seconds": time.monotonic() - began, "counts": dict(self.counts),
                    "cpu_seconds": _cpu_seconds() - cpu_began,
                    "timing": dict(self.timing),
@@ -260,9 +275,13 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--work", type=Path, required=True)
+    parser.add_argument("--actor", help="override the actor name, e.g. one per batch task")
     args = parser.parse_args()
     os.umask(0o077)
-    summary = Actor(json.loads(args.config.read_bytes()), args.work.resolve()).run()
+    configuration = json.loads(args.config.read_bytes())
+    if args.actor:
+        configuration["actor"] = args.actor
+    summary = Actor(configuration, args.work.resolve()).run()
     print(json.dumps({k: summary[k] for k in ("actor", "status", "counts")}))
 
 

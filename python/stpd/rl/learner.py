@@ -49,8 +49,11 @@ ROOT = Path(__file__).resolve().parents[2]
 class LearnerConfig:
     run: str
     peer: dict[str, Any]
-    start_package: str
+    # Either a local package directory, or the start ``model`` artifact in the
+    # peer plus its pinned weights hash (a fresh GPU host fetches and checks it).
+    start_package: str | None = None
     start_artifact_id: str | None = None
+    start_model_sha256: str | None = None
     device: str = "cpu"
     threads: int = 4
     lr: float = 1e-5
@@ -122,7 +125,15 @@ class Learner:
         self.exchange = Exchange(config.peer, config.run)
         self.producer = source_identity(ROOT)
         self.device = _device(config.device)
-        package = Path(config.start_package)
+        if config.start_package:
+            package = Path(config.start_package)
+        elif config.start_artifact_id and config.start_model_sha256:
+            package = self.exchange.materialize_model(
+                {"model_artifact_id": config.start_artifact_id,
+                 "model_sha256": config.start_model_sha256}, work / "start")
+        else:
+            raise BoundaryError("rl_learner", "start_package_or_pinned_start_artifact_required")
+        self.start_package = package
         descriptor = json.loads((package / "model.json").read_bytes())
         self.start_sha256 = descriptor["package_sha256"]
         model, _ = load_model(package / "model.tensor-tree", self.start_sha256)
@@ -221,7 +232,7 @@ class Learner:
             return self._resume(self.config.resume_checkpoint, latest["version"])
         if latest is not None:
             raise BoundaryError("rl_learner", "run_already_has_versions_use_resume_checkpoint")
-        manifest = publish_detached_p1_model(self.exchange.store, Path(self.config.start_package),
+        manifest = publish_detached_p1_model(self.exchange.store, self.start_package,
                                              self.producer)
         record = self.exchange.publish_model({
             "run": self.config.run, "version": 0, "parent_version": None,
