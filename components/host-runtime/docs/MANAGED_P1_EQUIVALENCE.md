@@ -1,5 +1,10 @@
 # Managed P1 equivalence and use boundary
 
+The [M2e third-round repair note](../../../docs/evidence/MANAGED_M2E_R3_20261028.md)
+records Host56/Runtime57's native ordering, bundle/death boundaries, event scene
+calls and Calling Bell production branch, plus the missing recorded map-return
+navigation. Earlier T2 scores retain their earlier execution identities.
+
 Managed is an engineering Host with exact game/candidate/package identities. It
 can stand in for Reference only within the actual paired states and fields that
 passed the complete P1 comparison. A scene name, shared game DLL, successful
