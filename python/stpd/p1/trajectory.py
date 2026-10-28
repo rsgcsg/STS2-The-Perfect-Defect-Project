@@ -13,7 +13,8 @@ from sts2_platform_evidence import AgentSessionRunEvidence, read_global_artifact
 
 from spireagent.json_boundary import BoundaryError, json_bytes
 
-SCHEMA = "stpd/p1-trajectory-1"
+LEGACY_SCHEMA = "stpd/p1-trajectory-1"
+SCHEMA = "stpd/p1-trajectory-2"
 MAX_EPISODE_BYTES = 256 * 1024**2
 IDENTITY_FIELDS = {"producer", "host_pin", "runtime_pin", "model_artifact_id", "model_sha256",
                    "input_spec", "seed", "ascension", "character", "initial_progress_sha256",
@@ -80,6 +81,53 @@ def validate_behavior(behavior: dict[str, Any], count: int, selected: int) -> No
                                 rel_tol=1e-7, abs_tol=1e-9)
             or probabilities[selected] <= 0):
         reject("behavior_probability_mismatch")
+
+
+def _optional_public_object(value: Any) -> dict[str, Any]:
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        reject("invalid_boss_witness_source")
+    return value
+
+
+def boss_clearance(observations: list[dict[str, Any]]) -> dict[str, Any]:
+    """Count only public consecutive-act advances or completed Boss rewards."""
+    witnesses = []
+    cleared: set[int] = set()
+    previous = None
+    for item in observations:
+        if not isinstance(item, dict) or type(item.get("index")) is not int:
+            reject("invalid_boss_witness_source")
+        observation = _optional_public_object(item.get("observation"))
+        run_part = _optional_public_object(observation.get("run"))
+        run = _optional_public_object(run_part.get("content"))
+        act = run.get("act")
+        if type(act) is not int or act < 1:
+            continue
+        if previous is not None and act == previous + 1 and previous not in cleared:
+            cleared.add(previous)
+            witnesses.append({"kind": "public_act_advance", "act": previous,
+                              "observation_index": item["index"], "next_act": act})
+        scene = _optional_public_object(observation.get("scene"))
+        content = _optional_public_object(scene.get("content"))
+        surface = _optional_public_object(content.get("surface"))
+        if (scene.get("native_kind") == "reward_completion" and surface.get("is_boss") is True
+                and act not in cleared):
+            cleared.add(act)
+            witnesses.append({"kind": "completed_boss_reward", "act": act,
+                              "observation_index": item["index"]})
+        previous = act
+    return {"count": len(cleared) if cleared else None,
+            "cleared_acts": sorted(cleared), "witnesses": witnesses}
+
+
+def trajectory_score_eligible(identity: dict[str, Any]) -> bool:
+    retention = identity.get("retention") or {}
+    return (retention.get("schema") == "spireagent/managed-retention-v2"
+            and retention.get("tier") == "trajectory"
+            and retention.get("purpose") == "evaluation"
+            and retention.get("score_eligible") is True)
 
 
 def extract_trajectory(verified: AgentSessionRunEvidence, *, identity: dict[str, Any],
@@ -157,22 +205,31 @@ def extract_trajectory(verified: AgentSessionRunEvidence, *, identity: dict[str,
         "observations": observations, "steps": steps, "combat_spans": spans,
         "outcome": {"status": status, "reason": reason, "unknown": status == "unknown",
                     "terminal": outcome.get("terminal_observation"),
-                    "max_observed_floor": max_floor},
+                    "max_observed_floor": max_floor,
+                    "boss_clearance": boss_clearance(observations)},
         "rl_ready": False, "rl_unavailable_reason": "argmax_and_no_value_head",
-        "score_eligible": False}
+        "score_eligible": trajectory_score_eligible(identity)}
     validate_trajectory(value)
     return value
 
 
 def validate_trajectory(value: dict[str, Any]) -> None:
-    if (value.get("schema") != SCHEMA or value.get("score_eligible") is not False
+    if (value.get("schema") not in {LEGACY_SCHEMA, SCHEMA}
             or not isinstance(value.get("identity"), dict)
             or not set(value["identity"]) >= IDENTITY_FIELDS
             or not isinstance(value.get("observations"), list)
             or not isinstance(value.get("steps"), list)
             or len(json_bytes(value)) > MAX_EPISODE_BYTES):
         reject("invalid_trajectory")
+    expected_eligible = (value.get("schema") == SCHEMA
+                         and trajectory_score_eligible(value["identity"]))
+    if value.get("score_eligible") is not expected_eligible:
+        reject("invalid_score_intent")
     observations, steps = value["observations"], value["steps"]
+    if (value["schema"] == SCHEMA
+            and json_bytes(value.get("outcome", {}).get("boss_clearance"))
+            != json_bytes(boss_clearance(observations))):
+        reject("boss_clearance_witness_mismatch")
     for i, item in enumerate(observations):
         if (item.get("index") != i
                 or item.get("input_spec") != value["identity"]["input_spec"]

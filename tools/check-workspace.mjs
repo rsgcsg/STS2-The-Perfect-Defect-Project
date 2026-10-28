@@ -143,10 +143,18 @@ export function ownedCommand(command, args, options = {}) {
         return;
       }
       let phase, attemptedSignal;
-      const alive = () => {
+      const alive = async () => {
         phase = "probe"; attemptedSignal = 0;
-        try { process.kill(-child.pid, 0); return true; }
-        catch (exception) { if (exception.code === "ESRCH") return false; throw exception; }
+        for (let attempt = 0; ; attempt++) {
+          try { process.kill(-child.pid, 0); return true; }
+          catch (exception) {
+            if (exception.code === "ESRCH") return false;
+            // An exiting macOS process group can briefly deny even signal 0.
+            // Only re-observe this exact group: ESRCH still owns confirmation.
+            if (exception.code !== "EPERM" || attempt >= 25) throw exception;
+            await delay(20);
+          }
+        }
       };
       const send = value => {
         phase = "send"; attemptedSignal = value;
@@ -155,10 +163,10 @@ export function ownedCommand(command, args, options = {}) {
       };
       try {
         send(signal);
-        for (let count = 0; count < 50 && alive(); count++) await delay(20);
-        if (alive()) send("SIGKILL");
-        for (let count = 0; count < 100 && alive(); count++) await delay(20);
-        if (alive()) error = "owned process group termination unresolved";
+        for (let count = 0; count < 50 && await alive(); count++) await delay(20);
+        if (await alive()) send("SIGKILL");
+        for (let count = 0; count < 100 && await alive(); count++) await delay(20);
+        if (await alive()) error = "owned process group termination unresolved";
       } catch (exception) {
         error = String(exception);
         try { cleanupDiagnostic = cancellationFailure(child, phase, attemptedSignal, exception); }

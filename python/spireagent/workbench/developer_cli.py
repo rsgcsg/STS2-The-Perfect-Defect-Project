@@ -116,6 +116,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--new-runtime-profile", type=Path)
     parser.add_argument("--expected-new-profile-sha256")
     parser.add_argument("--archived-profile-sha256")
+    parser.add_argument("--mixed-settings", help="mixed-settings action: complete settings JSON")
     parser.add_argument(
         "--action",
         default="catalog",
@@ -138,6 +139,9 @@ def main(argv: list[str] | None = None) -> int:
             "auto",
             "stop",
             "reconcile",
+            "mixed-start",
+            "mixed-finish",
+            "mixed-settings",
             "prepare-owned",
             "attach",
             "native-status",
@@ -347,6 +351,7 @@ def main(argv: list[str] | None = None) -> int:
                     new_runtime_profile=args.new_runtime_profile,
                     expected_new_profile_sha256=args.expected_new_profile_sha256,
                     archived_profile_sha256=args.archived_profile_sha256,
+                    mixed_settings=args.mixed_settings,
                 )
             elif args.command == "environment-profile":
                 from spireagent.workbench.local_environment import configure_managed_host

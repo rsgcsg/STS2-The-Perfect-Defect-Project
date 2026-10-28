@@ -118,6 +118,7 @@ export async function replayGlobalAgentRun(directory: string) {
     reduction?: ReturnType<typeof reduce>; classified: boolean; valid: boolean; before?: P1SessionState }>();
   let noProgress: GlobalNoProgressWindow | undefined, noProgressStopped = false;
   let mode: string | null = null, control = "released", permanentlyFenced = false;
+  let controlFenced = false;
   let authorizationMode: "bounded" | "continuous" | undefined;
   let ledger: AgentConsumptionLedger | undefined;
   let consumedAcquisition: string | null = null;
@@ -128,6 +129,7 @@ export async function replayGlobalAgentRun(directory: string) {
   const classifiedReceipts = new Set<string>();
   const directives: any[] = [], responses = new Map<string, Buffer[]>(), dispatches = new Map<string, any>();
   const fields: Record<string, string[]> = {
+    global_control_fence: ["reason", "generation", "fence_epoch", "new_dispatches_authorized"],
     global_episode_bound: ["game_continuity_id", "source_ordinal"], global_source_rejected: ["source_ordinal", "reason"], global_source_retained: ["source_ordinal", "disposition"],
     global_capture_requested: ["request_id"], global_capture_error: ["request_id", "reason"],
     global_no_progress_config: ["windowDecisions", "maxRepeats"],
@@ -157,7 +159,12 @@ export async function replayGlobalAgentRun(directory: string) {
       authorizationMode = budget.mode;
       if (event.kind === "autonomy_budget_exhausted") require(budget.state === "exhausted" && budget.exhausted_reason === p.reason, "global_budget_exhaustion");
     }
-    if (event.kind === "global_initialized") {
+    if (event.kind === "global_control_fence") {
+      require(["human_recovery", "stopped"].includes(p.reason) && Number.isSafeInteger(p.generation)
+        && p.generation >= 0 && Number.isSafeInteger(p.fence_epoch) && p.fence_epoch <= p.recovery_epoch
+        && p.fence_epoch >= 0 && p.new_dispatches_authorized === false, "global_control_fence_binding");
+      controlFenced = true;
+    } else if (event.kind === "global_initialized") {
       require(!identity && same(p.core, p1CoreIdentity()), "global_initial_identity"); identity = p.identity;
       const expected = manifest.requirements.environment; require("kind" in expected && identity, "global_environment_contract");
       assertGlobalIdentity(identity, expected); assertGlobalProgramSupport(identity, manifest); state = createSession(run.run_id, identity.kind);
@@ -279,6 +286,7 @@ export async function replayGlobalAgentRun(directory: string) {
       active = { acquisition: p.acquisition_id, choice: p.choice_id, lowering: reduction.lowering[p.choice_id]!, occurrence: input.occurrence, epoch: p.recovery_epoch,
         deliveries: [], dispatches: [], postSources: new Map(), errors: new Set() };
     } else if (event.kind === "global_dispatch") {
+      require(!controlFenced, "global_dispatch_after_control_fence");
       require(active && mode !== null && mode !== "human" && mode !== "shadow" && control === "held" && !permanentlyFenced && !unknown && p.acquisition_id === active.acquisition && p.choice_id === active.choice && p.step_index === active.dispatches.length && !dispatches.has(p.request_id), "global_dispatch_sequence");
       const source = sources.get(p.source_ordinal); require(source?.valid, "global_dispatch_source"); source.classified = true;
       const full = await sourceRecord(source.artifact);
@@ -387,6 +395,7 @@ export async function replayGlobalAgentRun(directory: string) {
         require(budget.state === "active" && (budget.mode === "continuous" || budget.remaining_ms > 0), "global_mode_without_active_budget");
       }
       mode = p.mode;
+      if (p.mode !== "human") controlFenced = false;
     } else if (event.kind === "controller_acquired") {
       require(mode !== null && mode !== "human" && mode !== "shadow" && !permanentlyFenced
         && p.controller === "held", "global_control_without_authorization"); control = "held";

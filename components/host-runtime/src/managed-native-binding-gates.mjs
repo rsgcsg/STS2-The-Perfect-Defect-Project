@@ -189,7 +189,7 @@ export async function runManagedNativeBindingGates({
     const wrongTreasureRelic = await process.request({
       cmd: "action",
       action: "select_treasure_relic",
-      args: { relic_ref: "wrong-native-ref" }
+      args: { room_ref: treasureRoomRef, relic_ref: "wrong-native-ref" }
     }, requestTimeoutMs);
     gates.wrong_treasure_relic_identity_refused = refused(wrongTreasureRelic, /no longer selectable/u);
 
