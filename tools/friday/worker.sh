@@ -20,6 +20,7 @@ if ! type module >/dev/null 2>&1; then source /etc/profile; fi
 module load python/3.11.5-gcccore-13.2.0 nodejs/20.9.0-gcccore-13.2.0
 export PATH="$actor_root/env/bin:$actor_root/dotnet-sdk9.0.117:/data/s4961270/dotnet9:$PATH"
 export PYTHONPATH="$source_root/python"
+export STS2_GAME_DIR="$actor_root/game"
 export DOTNET_PROCESSOR_COUNT=1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
 export TOKENIZERS_PARALLELISM=false PYTHONUNBUFFERED=1
 export FRIDAY_INFERENCE_THREADS=${FRIDAY_INFERENCE_THREADS:-2}
