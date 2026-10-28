@@ -1725,13 +1725,46 @@ def register(directory: Path, config: Path) -> dict[str, Any]:
     return dict(json.loads(run(args, source)))
 
 
+# Every kit's Workbench runs recording intake (Q); these are the modules it imports.
+RECORDING_INTAKE_MODULES = (
+    "spireagent.workbench.p1_cohort_intake",
+    "spireagent.workbench.p1_recording_maintenance",
+    "spireagent.workbench.local_recording_import",
+)
+# The probe exits 0 and names each module that fails to import (the missing package,
+# or the listed module itself when it is present but broken), so a failed check
+# rejects with that name instead of an opaque uv step failure.
+RECORDING_INTAKE_PROBE = "\n".join((
+    "import importlib, sys",
+    "missing = []",
+    "for name in sys.argv[1:]:",
+    "    try: importlib.import_module(name)",
+    "    except ModuleNotFoundError as error: missing.append(error.name or name)",
+    "    except Exception: missing.append(name)",
+    "print('recording_intake_missing=' + ','.join(missing))",
+))
+
+
 def _environment_extras(prepared: dict[str, Any]) -> list[str]:
     """Use only the verified kit inventory to select the locked local model backend."""
-    extras = ["--extra", "cloud"]
+    extras = ["--extra", "cloud", "--extra", "recording-intake"]
     if any(prepared.get(pair[4]) == "bundled_installation_not_checked"
            for pair in KIT_RUNTIME_PAIRS.values()):
         extras.extend(("--extra", "local-models"))
     return extras
+
+
+def _check_recording_intake_imports(source: Path, extras: list[str]) -> None:
+    """Fail the install, not the first Q enable, when the locked environment lacks Q imports."""
+    output = run(["uv", "run", "--project", "python", "--locked", *extras, "python", "-I", "-c",
+                  RECORDING_INTAKE_PROBE, *RECORDING_INTAKE_MODULES], source)
+    last = (output.strip().splitlines() or [""])[-1]
+    if not last.startswith("recording_intake_missing="):
+        reject("recording_intake_imports_unverified")
+    if missing := last.removeprefix("recording_intake_missing="):
+        first = missing.split(",")[0]
+        reject("recording_intake_imports_failed_" + "".join(
+            char if char.isalnum() or char == "_" else "_" for char in first))
 
 
 def initialize(
@@ -1773,6 +1806,7 @@ def initialize(
             # Workbench's transport SDKs are a separate locked consumer environment.
             run(["npm", "ci", "--prefix", "python"], source)
             run(["uv", "sync", "--project", "python", "--locked", *extras], source)
+            _check_recording_intake_imports(source, extras)
             result = status(directory)
         if result.get("private_host_runtime") == "bundled_installation_not_checked":
             staged_profile = _read_tree_file(

@@ -16,6 +16,11 @@ from spireagent.workbench.kit_runtime import private_host_runtime_pin
 from tools import install_developer_kit as install
 
 
+def quiet_run(args) -> str:
+    """Silent command output; the post-sync recording-intake probe reports nothing missing."""
+    return "recording_intake_missing=\n" if "-c" in args else ""
+
+
 def archive(tmp_path: Path, *, extra: str | None = None) -> tuple[Path, str]:
     files = {name: b"synthetic" for name in install.STAGING}
     for name in ("platform-bom.json", "developer-combination.json", "mod/STS2_PLATFORM.json"):
@@ -127,7 +132,8 @@ def prepared_status_fixture(tmp_path: Path, monkeypatch, *, include_text_runtime
     monkeypatch.setattr(install, "verified_archive", lambda *_: (manifest, files))
     monkeypatch.setattr(
         install, "run",
-        lambda args, cwd, **kwargs: "a" * 40 if args == ["git", "rev-parse", "HEAD"] else "",
+        lambda args, cwd, **kwargs: (
+            "a" * 40 if args == ["git", "rev-parse", "HEAD"] else quiet_run(args)),
     )
     monkeypatch.setattr(install, "CollectionTool", lambda *_args, **_kwargs: None)
     if include_text_runtime:
@@ -353,7 +359,11 @@ def test_initialize_stages_private_host_for_existing_environment_profile_only(
     assert result["private_host_runtime_selection"] == "not_observed"
     assert [args for args in commands if args and args[0] in {"npm", "uv"}] == [
         ["npm", "ci"], ["npm", "ci", "--prefix", "python"],
-        ["uv", "sync", "--project", "python", "--locked", "--extra", "cloud"],
+        ["uv", "sync", "--project", "python", "--locked", "--extra", "cloud",
+         "--extra", "recording-intake"],
+        ["uv", "run", "--project", "python", "--locked", "--extra", "cloud",
+         "--extra", "recording-intake", "python", "-I", "-c", install.RECORDING_INTAKE_PROBE,
+         *install.RECORDING_INTAKE_MODULES],
     ]
     assert all("environment-profile" not in args for args in commands)
     assert (source / install.PRIVATE_HOST_PACKAGE_DESTINATION).is_dir()
@@ -738,7 +748,7 @@ def test_initialize_refuses_a_running_profile_before_changing_dependencies(tmp_p
     calls = []
     monkeypatch.setattr(install, "status", lambda _: {"status": "prepared",
                                                      "text_runtime": "not_bundled"})
-    monkeypatch.setattr(install, "run", lambda args, cwd: calls.append(args) or "")
+    monkeypatch.setattr(install, "run", lambda args, cwd: calls.append(args) or quiet_run(args))
     with instance_lock(selected.state_dir / "instance.lock"), pytest.raises(BoundaryError):
         install.initialize(directory, profile)
     assert calls == []
@@ -770,12 +780,12 @@ def test_initialize_text_runtime_releases_instance_lock_before_owner_cli(tmp_pat
                 pass
             assert "--runtime-profile" in args and "text-menu-v1" in args
             return '{"status":"runtime_installed"}'
-        return ""
+        return quiet_run(args)
     monkeypatch.setattr(install, "run", run)
     result = install.initialize(directory, profile)
     assert result["environment"] == "initialized"
     assert result["text_runtime"] == "installed_verified_by_runtime_owner"
-    assert [args[0] for args in commands] == ["npm", "npm", "uv", "uv"]
+    assert [args[0] for args in commands] == ["npm", "npm", "uv", "uv", "uv"]
 
 
 def test_initialize_m2_runtime_uses_real_cli_parser_and_owner_install_boundary(
@@ -809,7 +819,7 @@ def test_initialize_m2_runtime_uses_real_cli_parser_and_owner_install_boundary(
         if "model" in args:
             assert developer_cli.main(args[args.index("model"):]) == 0
             return capsys.readouterr().out
-        return ""
+        return quiet_run(args)
     monkeypatch.setattr(install, "run", run)
     receipt = install.initialize(directory, profile)
     assert receipt["m2_runtime"] == "installed_verified_by_runtime_owner"
@@ -846,7 +856,7 @@ def test_initialize_new_profile_runs_real_owner_setup_without_selection(tmp_path
             assert "--selection" not in args
             assert (registry.read_bytes() if registry.exists() else None) == original_registry
             return '{"status":"runtime_installed"}'
-        return ""
+        return quiet_run(args)
     monkeypatch.setattr(install, "run", run)
     assert install.initialize(directory, profile)["environment"] == "initialized"
     loaded = ProjectConfig.load(profile, require_current_combination=False)
@@ -999,7 +1009,7 @@ def test_initialize_defer_launcher_completes_environment_without_global_write(
                         lambda *_a, **_k: SimpleNamespace(state_dir=tmp_path / "state"))
     monkeypatch.setattr(developer_server, "instance_lock", lambda *_a, **_k: nullcontext())
     commands = []
-    monkeypatch.setattr(install, "run", lambda args, _: commands.append(args) or "")
+    monkeypatch.setattr(install, "run", lambda args, _: commands.append(args) or quiet_run(args))
     monkeypatch.setattr(install.sys, "platform", "darwin")
     monkeypatch.setattr(install.subprocess, "run", lambda *_a, **_k: pytest.fail(
         "deferred initialization must not invoke the global launcher owner"))
@@ -1008,4 +1018,38 @@ def test_initialize_defer_launcher_completes_environment_without_global_write(
 
     assert result["environment"] == "initialized"
     assert result["workbench_launcher"] == "deferred"
-    assert [command[:2] for command in commands] == [["npm", "ci"], ["npm", "ci"], ["uv", "sync"]]
+    assert [command[:2] for command in commands] == [["npm", "ci"], ["npm", "ci"], ["uv", "sync"],
+                                                       ["uv", "run"]]
+
+
+@pytest.mark.parametrize(("probe_output", "code"), [
+    ("recording_intake_missing=tokenizers\n", "recording_intake_imports_failed_tokenizers"),
+    ("recording_intake_missing=spireagent.workbench.x,torch\n",
+     "recording_intake_imports_failed_spireagent_workbench_x"),
+    ("", "recording_intake_imports_unverified"),
+    ("Traceback (most recent call last)\n", "recording_intake_imports_unverified"),
+])
+def test_recording_intake_probe_rejects_missing_or_unreported_imports(
+        tmp_path, monkeypatch, probe_output, code):
+    calls = []
+    monkeypatch.setattr(install, "run", lambda args, _cwd: calls.append(args) or probe_output)
+    with pytest.raises(BoundaryError, match=code):
+        install._check_recording_intake_imports(tmp_path, ["--extra", "recording-intake"])
+    # Isolated mode keeps the release checkout's cwd off sys.path; only the locked env counts.
+    assert calls == [["uv", "run", "--project", "python", "--locked", "--extra", "recording-intake",
+                      "python", "-I", "-c", install.RECORDING_INTAKE_PROBE,
+                      *install.RECORDING_INTAKE_MODULES]]
+
+
+def test_recording_intake_probe_finds_tokenizers_gap_in_a_real_interpreter(tmp_path):
+    # The real probe text, run without tokenizers importable, names the missing package.
+    blocker = tmp_path / "q_env"
+    blocker.mkdir()
+    (blocker / "tokenizers.py").write_text("raise ModuleNotFoundError(name='tokenizers')\n")
+    (blocker / "q_module.py").write_text("import tokenizers\n")
+    (blocker / "broken_module.py").write_text("raise ImportError('broken wheel')\n")
+    result = subprocess.run(
+        [install.sys.executable, "-c", install.RECORDING_INTAKE_PROBE, "q_module", "json",
+         "broken_module"],
+        cwd=blocker, capture_output=True, text=True, check=True)
+    assert result.stdout.strip() == "recording_intake_missing=tokenizers,broken_module"

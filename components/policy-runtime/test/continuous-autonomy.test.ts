@@ -3,7 +3,7 @@ import { readFile, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { decodePlayerSnapshot, decodePlayerReceipt } from "@rsgcsg/sts2-connector-client";
 import type { PolicyConnector, PolicyManifest } from "../src/contracts.js";
 import { PolicyRuntime } from "../src/runtime.js";
@@ -13,10 +13,10 @@ import { globalRuntimeFixture, GlobalHttpFixture } from "./global-runtime-fixtur
 import { nativeRuntimeFixture } from "./native-runtime-fixtures.js";
 // @ts-expect-error Shared production-protocol fixture, not a second legality implementation.
 import { publicManifest, publicSnapshot, publicCapabilities } from "./fixtures/public-observation-fixture.mjs";
+import { projectPython } from "../../../tools/project-python.mjs";
 
 function typedVerify(directory: string, native = false) {
-  const python = [process.env.STS2_EVIDENCE_PYTHON, process.env.PYTHON, "python", "python3"].find(candidate => candidate && spawnSync(candidate, ["-c", "import sys; assert sys.version_info >= (3,11)"], { stdio: "ignore" }).status === 0);
-  if (!python) throw new Error("Python >=3.11 required for the real Evidence consumer");
+  const python = projectPython(["STS2_EVIDENCE_PYTHON"]);
   const code = `import json,sys
 from sts2_platform_evidence import verify_agent_run_evidence,verify_agent_session_run_evidence
 r=verify_agent_session_run_evidence(sys.argv[1], {'schema':'sts2.policy-runtime/agent-session-startup-2','autonomy_budget':{'mode':'continuous'}}) if sys.argv[2]=='native' else verify_agent_run_evidence(sys.argv[1])

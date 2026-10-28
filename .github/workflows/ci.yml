@@ -96,7 +96,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2]
+        shard: [1, 2, 3]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -137,7 +137,7 @@ jobs:
       - name: Run selected portable source/test gate
         env:
           CHECK_SCOPE: ${{ needs.plan.outputs.scope }}
-        run: node tools/check-plan.mjs execute --pytest-shard ${{ matrix.shard }}/2
+        run: node tools/check-plan.mjs execute --pytest-shard ${{ matrix.shard }}/3
       - name: Retain Python test timings and failures
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -162,7 +162,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2]
+        shard: [1, 2, 3]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -191,7 +191,7 @@ jobs:
       - name: Run selected portable source/test gate
         env:
           CHECK_SCOPE: full
-        run: node tools/check-plan.mjs execute --pytest-shard ${{ matrix.shard }}/2
+        run: node tools/check-plan.mjs execute --pytest-shard ${{ matrix.shard }}/3
       - name: Retain Python test timings and failures
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

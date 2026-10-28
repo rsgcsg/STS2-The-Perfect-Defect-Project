@@ -15,6 +15,7 @@ import type { NativeAgentRuntimeOwner } from "../src/agent-native-runtime.js";
 import { SyntheticNativeHttp } from "./native-runtime-fixtures.js";
 import { fixturePortCloser } from "./fixture-process.js";
 import { fixtureProgress } from "./fixture-progress.js";
+import { projectPython } from "../../../tools/project-python.mjs";
 
 const shared = JSON.parse(readFileSync(new URL("../contracts/fixtures/sampled-current-carry-v1.json", import.meta.url), "utf8"));
 const policy = JSON.parse(readFileSync(new URL("../contracts/fixtures/owned-current-known-stale-v1.json", import.meta.url), "utf8")).execution_policy;
@@ -33,12 +34,7 @@ async function fixture(options: { legacy?: boolean; continuous?: boolean; maxSub
   if (!options.legacy) { manifest.execution_policy = structuredClone(selectedPolicy); manifest.requirements.required_methods.push("current_owned"); }
   let teacherPython: string | undefined;
   if (options.teacher) {
-    const candidates = process.env.E6_OWNED_STALE_TEACHER_PYTHON ? [process.env.E6_OWNED_STALE_TEACHER_PYTHON]
-      : process.env.PYTHON ? [process.env.PYTHON] : ["python", "python3"];
-    for (const candidate of candidates) {
-      try { execFileSync(candidate, ["-c", "import sys;assert sys.version_info >= (3,11)"], { stdio: "pipe", timeout: 5000 }); teacherPython = candidate; break; } catch { /* Next existing interpreter only; never install. */ }
-    }
-    if (!teacherPython) throw new Error("existing Python3.11 source-test interpreter required");
+    teacherPython = projectPython(["E6_OWNED_STALE_TEACHER_PYTHON"]); // Existing interpreter only; never installs.
     const code = "import json,sys\nfrom pathlib import Path\nfrom stpd.policy.native_teacher_agent import descriptor,write_artifact\np=json.loads(sys.argv[2]);d=descriptor(execution_policy=p);a=write_artifact(Path(sys.argv[1]),execution_policy=p)\nassert 'torch' not in sys.modules\nprint(json.dumps(dict(artifact=a,adapter=d['adapter'],version=d['agent_spec']['version'],input_spec=d['input_spec'])))";
     const descriptor = JSON.parse(execFileSync(teacherPython, ["-c", code, join(root, "private-teacher-code.json"), JSON.stringify(selectedPolicy)],
       { encoding: "utf8", timeout: 10000, env: { ...process.env, PYTHONPATH: fileURLToPath(new URL("../../../python", import.meta.url)) } }));
@@ -330,7 +326,7 @@ describe("continuous strict policy2 uses the original owner and fresh-decision f
     expect((await f.runtime.tick()).type).toBe("awaited");
     f.applyFrame("inspect_b"); f.behavior("delivered"); expect((await f.runtime.tick()).type).toBe("delivered");
     await f.runtime.stop();
-    const python = process.env.E6_OWNED_STALE_TEACHER_PYTHON ?? "python3";
+    const python = projectPython(["E6_OWNED_STALE_TEACHER_PYTHON"]);
     const check = "import json,sys\nfrom pathlib import Path\nfrom sts2_platform_evidence import verify_agent_session_run_evidence\nv=verify_agent_session_run_evidence(Path(sys.argv[1]));assert v.passed,v.findings\nprint(json.dumps(v.require_value().terminal_summary))";
     const summary = JSON.parse(execFileSync(python, ["-c", check, f.evidence.directory], { encoding: "utf8", timeout: 10000,
       env: { ...process.env, PYTHONPATH: fileURLToPath(new URL("../../evidence", import.meta.url)) } }));

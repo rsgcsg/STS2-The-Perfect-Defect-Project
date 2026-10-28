@@ -109,6 +109,14 @@ fixture families or hosted performance.
 | Journey/E2E | a few critical workflows; presentation does not become semantic authority |
 | Performance/load/resilience/security | a risk owned by the change, with claim-adjacent baselines and metrics |
 
+A test of an unknown or unadmitted version uses a sentinel that will never be
+released, such as `0.1.0-rc.999999`, not the next real version, which a later
+release turns green-by-accident. A bounded or non-blocking path asserts a
+deterministic witness (the lock holder still holds the lock, a terminated child's
+non-zero return code, a process that is gone or a zombie) rather than a wall-clock
+limit; a remaining wall-clock bound needs a margin far above expected runtime and
+a reason in the test.
+
 ## Local feedback and candidate checks
 
 ### Fast feedback without repeated assurance work
@@ -130,6 +138,29 @@ Before freezing a candidate or launching expensive gates, run `npm run project:c
 against the final assembled documentation. It reuses the existing CURRENT safety and
 physical UTF-8 capacity rule, prints the actual size/limit, and rejects violations.
 An individually small added paragraph is not evidence that the whole handoff fits.
+
+### Worktree setup, quick check and CI failures
+
+A new worktree runs `npm run setup:worktree` once: the locked uv sync with every
+extra, both `npm ci` installs and the preflight. Tests and checks resolve Python
+through `tools/project-python.mjs`: an explicit alias variable, then `PYTHON`,
+then this worktree's `python/.venv`, requiring 3.11 or newer; an unusable explicit
+interpreter fails instead of falling through, and nothing falls back to system
+Python. A full check exports the resolved `PYTHON` to its children.
+
+| Command | Use |
+| --- | --- |
+| `npm run check:preflight` | lists every missing Python package, lock install, uv/dotnet, disk or dirty-tree prerequisite with its fix; the full check runs it first |
+| `npm run check:quick` | ruff, TypeScript typecheck, repository and BOM identity, active links, version admission and scope preview (about 16 s); `--mypy` adds mypy run from `python/` so `python/pyproject.toml` configures it (about 100 s); never run mypy from the repository root |
+| `npm run bom:refresh` | after a component edit, moves only the BOM current pointers; then `npm run check:bom` validates them unchanged |
+| `npm run ci:failures -- <PR, run id or URL>` | one screen of failed tests and stages with their first error line |
+| `npm run ci:pytest-costs -- <run id>` | rebuilds the pytest cost profile from one completed passing full-scope run; commit it after `npm run check:ci` |
+
+Locally run the quick check and the focused tests of the owning change. Hosted CI
+owns the complete cross-platform gate; do not rerun it locally for the same tree,
+and run one complete local check per candidate only when a gate below requires it.
+When CI fails, read the cause with `npm run ci:failures` before pushing another
+commit.
 
 ### Small producer-to-reader checks before final dispatch
 
@@ -440,11 +471,11 @@ research/training and new platform targets are not added by this CI change.
 
 ### Hosted pytest partition and complete execution proof
 
-Full and Python scopes use two isolated runner leaves, with matrix
+Full and Python scopes use three isolated runner leaves, with matrix
 `fail-fast: false` and finite per-leaf job limits: Linux55 minutes, Windows75.
 Shard1 runs repository guards, S0 consumers, nonpytest Python checks and the selected
-component-owner inventory once per OS. Shard2 runs only its complementary pytest
-selection. Each isolated runner builds its own SDK/Runtime output for real Python
+component-owner inventory once per OS. Shards 2 and 3 run only their
+complementary pytest selections. Each isolated runner builds its own SDK/Runtime output for real Python
 consumers; generated output is not shared between runners. Local `npm run check`
 and Python `check` defaults remain complete and unpartitioned.
 
@@ -453,12 +484,13 @@ index/count and a manifest path. It collects the unchanged default testpaths,
 normalizes relative POSIX node IDs/files and assigns whole files using the static
 `python/tools/pytest-file-costs.json` profile and `lpt-whole-file-gates-1`: descending
 integer cost, UTF-8 file tie order, then the lower-load shard (ties shard1).
-Shard1 starts with its measured non-pytest gate overhead; shard2 starts at zero.
+Shard1 starts with its measured non-pytest gate overhead; other shards start at zero.
 Parameters, classes and module fixtures stay together. New files join automatically
 with a nonzero 30,000 ms scheduling weight; retired profile entries do not select tests.
 The reviewed profile uses whole-file testcase milliseconds from retained Linux
 JUnit reports (median if multiple runs), plus shard1 non-pytest overhead from the
-same run logs. These are scheduling observations, never successful receipts.
+same run logs (`npm run ci:pytest-costs`). These are scheduling observations,
+never successful receipts.
 Invalid/missing profiles fail closed; weights are not deadlines or performance promises. No manually curated test list, `PYTEST_ADDOPTS`,
 automatic inherited environment plugin or conftest filters nested pytest.
 The Modal fresh child and other nested invocations keep their full case sets.
@@ -466,7 +498,7 @@ The Modal fresh child and other nested invocations keep their full case sets.
 Unique OS/shard/attempt artifacts retain the original complete collection,
 selection, actual setup/call/teardown and subtest outcomes, terminal execution,
 source identities and workspace results. Before sealing a fresh receipt,
-`portable` downloads the two Linux current-run artifact directories separately and
+`portable` downloads every Linux current-run artifact directory separately and
 verifies clean exact head/tree/workflow/selector and cost-profile Git blob/raw SHA256
 plus routing algorithm, run/attempt/scope/OS, identical
 same-OS collection, disjoint/exhaustive deterministic selections, and terminal
