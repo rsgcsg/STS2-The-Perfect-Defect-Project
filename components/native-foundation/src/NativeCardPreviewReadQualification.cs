@@ -4,6 +4,8 @@ using System.Linq;
 using System.Reflection;
 using System.Runtime.CompilerServices;
 using HarmonyLib;
+using MegaCrit.Sts2.Core.Combat;
+using MegaCrit.Sts2.Core.Commands;
 using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Localization.DynamicVars;
 using MegaCrit.Sts2.Core.Models;
@@ -11,6 +13,7 @@ using MegaCrit.Sts2.Core.Models.Enchantments;
 using MegaCrit.Sts2.Core.Models.Cards;
 using MegaCrit.Sts2.Core.Models.Powers;
 using MegaCrit.Sts2.Core.Nodes.Cards;
+using MegaCrit.Sts2.Core.TestSupport;
 
 namespace STS2Platform.NativeFoundation;
 
@@ -58,6 +61,7 @@ public static partial class NativeCardPreviewReadQualification
         current.GetMethod(method, NativeMembers) is { } effective
         && effective.DeclaringType == owner && IsUnpatched(effective);
 
+    private static readonly Type? CombatTurnStateType = typeof(CombatManager).Assembly.GetType("MegaCrit.Sts2.Core.Combat.CombatTurnState");
     private static readonly FieldInfo? Mutable = typeof(AbstractModel).GetField("<IsMutable>k__BackingField", NativeMembers);
     private static readonly FieldInfo? CardVars = typeof(CardModel).GetField("_dynamicVars", NativeMembers);
     private static readonly FieldInfo? Vars = typeof(DynamicVarSet).GetField("_vars", NativeMembers);
@@ -324,11 +328,15 @@ public static partial class NativeCardPreviewReadQualification
             if (!IsUnpatched(onEnchant)) return false;
             if (onEnchant!.DeclaringType != typeof(EnchantmentModel)
                 && !NativeEnchantmentMethodInventory.KeywordUpdates.Contains(type.Name)
-                && type != typeof(TezcatarasEmber))
+                && type != typeof(TezcatarasEmber) && type != typeof(SoulsPower))
             {
-                // SoulsPower invokes CardCmd.RemoveKeyword -> FindOnTable,
-                // rather than the model-only primitive. Its native UI lookup
-                // closure is an explicit remaining row, never executed here.
+                // Other command/UI closures remain unqualified. SoulsPower alone
+                // has the exact native null-UI branch checked below.
+                gap = "native_preview_enchantment_command_ui_lookup_unqualified";
+                return false;
+            }
+            if (type == typeof(SoulsPower) && !SoulsPowerCommandReadQualified())
+            {
                 gap = "native_preview_enchantment_command_ui_lookup_unqualified";
                 return false;
             }
@@ -352,6 +360,20 @@ public static partial class NativeCardPreviewReadQualification
         }
         catch { return false; }
     }
+
+    // Exact v0.111.0 SoulsPower.OnEnchant calls the original CardCmd.RemoveKeyword.
+    // That command removes Exhaust on the detached copy, then calls FindOnTable.
+    // Qualify only the native early-null branches: TestMode, or no combat. Thus
+    // neither a Godot table lookup, card.Pile read nor UpdateVisuals is reached.
+    // The factory is synchronous on the owning read thread; it never enables
+    // TestMode or changes combat state to obtain this qualification.
+    private static bool SoulsPowerCommandReadQualified() =>
+        MethodsUnpatched(typeof(CardCmd), "RemoveKeyword")
+        && MethodsUnpatched(typeof(NCard), "FindOnTable")
+        && MethodsUnpatched(typeof(TestMode), "get_IsOn")
+        && MethodsUnpatched(typeof(CombatManager), "get_Instance", "get_IsInProgress")
+        && CombatTurnStateType != null && MethodsUnpatched(CombatTurnStateType, "get_IsInProgress")
+        && (TestMode.IsOn || !CombatManager.Instance.IsInProgress);
 
     private static bool SingletonVariableListUnpatched() => SingletonListUnpatched(typeof(DynamicVar));
 
