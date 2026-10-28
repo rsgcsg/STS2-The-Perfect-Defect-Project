@@ -720,3 +720,28 @@ Seed/progress stay in sealed raw evidence and its ordinary integrity inventory,
 never in public bases, Connector snapshots, P1 observations or model input.
 These witnesses enable a separately checked replay attempt; seed equality alone
 does not establish Managed or whole-game equivalence.
+
+## Explicit mixed recording metadata and durable cuts
+
+A new P1 recording may carry `mixed_run_id` (32 lowercase hex characters) only
+with `p1_native_origin=unknown`. It is immutable session metadata, not an actor
+declaration or training policy. No existing recording can be relabelled. A mixed
+session does not arm automatic recording of a subsequent run. Its native stream
+keeps the same profile and facts; controller-origin callbacks are not admitted as
+native-human roots in this explicit mode. Ordinary recording is unchanged.
+
+`checkpoint_p1_native` uses the same recording command/session preconditions and
+returns `p1_native_checkpoint` with schema
+`sts2.human-annotator/p1-native-checkpoint-1`, session/timeline IDs and the existing
+P1 prefix watermark. It seals bases and durably flushes the streams under the
+Store lock, without copying, settling, pausing or closing them. Closed original
+prefix byte lengths and hashes verify a cut; the cut alone proves neither actor
+nor an atomic control switch. The original prefix export remains unchanged.
+
+Application composes the same native session with already recorded Runtime
+environment sources, directives and Connector receipts. Each original keeps its
+owner and order. Its mixed Close binds both sealed inventories and causal cuts;
+missing witnesses/outcomes remain unknown. Application/Q isolates this evidence
+from ordinary Human originals, cohorts, training pools and model scores pending
+the user's separate data-policy decision. See the owning
+[collection guide](../../../docs/ANNOTATOR_COLLECTION.md#混合局同一局里模型与人来回切换).

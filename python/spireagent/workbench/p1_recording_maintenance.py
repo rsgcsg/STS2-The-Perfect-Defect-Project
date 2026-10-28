@@ -76,6 +76,7 @@ def _ledger_stamp(path: Path) -> list[tuple[int, int]]:
 class P1RecordingMaintenance:
     def __init__(self, importer: LocalRecordingImporter) -> None:
         self.importer = importer
+        self.mixed_runs: Any | None = None
         self.stop = threading.Event()
         self.thread: threading.Thread | None = None
 
@@ -395,6 +396,34 @@ class P1RecordingMaintenance:
                     importer._save()
                     return dict(state)
             store, _ = _selected_store(importer.config, require_curation=False)
+            for mixed in catalog.get("candidates", []):
+                if mixed.get("recording_kind") != "mixed_run" or mixed["candidate_id"] in completed:
+                    continue
+                if self.mixed_runs is None or not self._admit_step():
+                    continue
+                try:
+                    candidate = importer.catalog.candidate(mixed["candidate_id"])
+                    if candidate is None:
+                        raise BoundaryError("mixed_run", "candidate_unavailable")
+                    if (not mixed.get("mixed_sealed")
+                            and not self.mixed_runs.prepare_for_intake(candidate)):
+                        continue
+                    result = ({"artifact_id": mixed["mixed_artifact_id"], "status": "sealed"}
+                              if mixed.get("mixed_sealed") else self.mixed_runs.seal(
+                                  candidate))
+                    if result.get("status") != "sealed":
+                        continue
+                    state.setdefault("mixed_sessions", {})[mixed["mixed_run_id"]] = {
+                        "source_artifact_id": result["artifact_id"],
+                        "session_id": mixed["session_id"], "recording_kind": "mixed_run",
+                        "training_admission": "blocked_pending_user_policy",
+                        "score_eligible": False}
+                    completed.append(mixed["candidate_id"])
+                    importer._save()
+                except (BoundaryError, OSError, ValueError) as error:
+                    state.setdefault("mixed_failures", {})[mixed["mixed_run_id"]] = getattr(
+                        error, "code", type(error).__name__)
+                    importer._save()
             if policy.get("cohort_policy"):
                 if not self._admit_step():
                     return dict(state)
@@ -412,6 +441,7 @@ class P1RecordingMaintenance:
                     for c in catalog["candidates"]
                     if c.get("recording_type") == "p1_native"
                     and c["candidate_id"] not in completed
+                    and c.get("recording_kind") != "mixed_run"
                     and _in_scope(c, policy.get("scope"))
                 ]
                 if not candidates:
@@ -590,5 +620,6 @@ class P1RecordingMaintenance:
             {k: c[k] for k in ("candidate_id", "session_id", "closed_at") if k in c}
             for c in catalog.get("candidates", [])
             if c.get("recording_type") == "p1_native"
+            and c.get("recording_kind") != "mixed_run"
             and c["candidate_id"] not in completed and _in_scope(c, state["policy"].get("scope"))
         ]

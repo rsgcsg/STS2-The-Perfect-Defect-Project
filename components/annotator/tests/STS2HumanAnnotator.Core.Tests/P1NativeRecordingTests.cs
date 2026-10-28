@@ -9,6 +9,29 @@ namespace STS2HumanAnnotator.Tests;
 public sealed class P1NativeRecordingTests
 {
     [Fact]
+    public void CheckpointRetainsTheSameMixedStreamWithoutCopyOrClose()
+    {
+        string? exported = Environment.GetEnvironmentVariable("STS2_H1_NATIVE_FIXTURE_OUT");
+        string root = exported ?? Path.Combine(Path.GetTempPath(), "mixed-native-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            using var store = RecordingSessionStore.Create(root,
+                Manifest() with { P1NativeOrigin = "unknown", MixedRunId = new string('a', 32) }, P1NativeRecordingContract.Profile);
+            var first = store.CheckpointP1Native();
+            store.AppendP1NativeEvent(new JsonObject { ["kind"] = "observation", ["run_id"] = "run-synthetic" });
+            var second = store.CheckpointP1Native();
+            Assert.Equal(first.SessionId, second.SessionId);
+            Assert.Equal(first.TimelineId, second.TimelineId);
+            Assert.Equal(first.Watermark.EventCount + 1, second.Watermark.EventCount);
+            Assert.True(second.Watermark.EventsByteCount > first.Watermark.EventsByteCount);
+            Assert.False(store.GetSnapshot().Closed);
+            Assert.False(Directory.Exists(Path.Combine(root, "p1-native-prefixes")));
+            Assert.Equal(new string('a', 32), store.Manifest.MixedRunId);
+            if (exported != null) File.WriteAllText(Path.Combine(root, "fixture-directory.txt"), store.DirectoryPath);
+        }
+        finally { if (exported == null && Directory.Exists(root)) Directory.Delete(root, true); }
+    }
+    [Fact]
     public void InitialProgressOriginalRetainsRawBytesOnceAndAuditsTampering()
     {
         string root = Path.Combine(Path.GetTempPath(), "initial-progress-original-" + Guid.NewGuid().ToString("N"));

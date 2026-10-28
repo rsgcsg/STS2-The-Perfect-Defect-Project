@@ -9,7 +9,7 @@ namespace STS2HumanAnnotator.Core;
 /// </summary>
 public static class CurrentRecordingContract
 {
-    public const string ProductVersion = "0.3.0-rc.31";
+    public const string ProductVersion = "0.3.0-rc.33";
     public const int SchemaVersion = 2;
     public const string RecordSchema = "sts2.human-annotator/decision-record-2";
     public const string ManifestSchema = "sts2.human-annotator/recording-manifest-2";
@@ -498,6 +498,7 @@ public sealed record CurrentRecordingManifest(
     public int? P1NativeSchemaVersion { get; init; }
     public int? P1NativeExecutionSchemaVersion { get; init; }
     public string? P1NativeOrigin { get; init; }
+    public string? MixedRunId { get; init; }
     public RecorderEnvironmentIdentity? SourceEnvironment { get; init; }
 }
 

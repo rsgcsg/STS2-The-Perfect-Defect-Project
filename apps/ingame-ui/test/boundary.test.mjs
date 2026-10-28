@@ -201,6 +201,10 @@ test("Minimized Recorder has a separate bounded view and retains restore control
   assert.match(mod, /FormatCompactRecent\(_actionFeed\.RecentDecisions\(3\)\)/u);
   assert.match(mod, /_compactHumanButton\.Visible = _layout\.ActiveSurface == "agent_run"/u);
   assert.doesNotMatch(mod, /Input\.Is(KeyPressed|PhysicalKeyPressed)|_kWasPressed|_escapeWasPressed/u);
+  assert.match(mod, /pause\.Shortcut = WorkspaceShortcut\(Key\.F8\)/u);
+  assert.match(mod, /resume\.Shortcut = WorkspaceShortcut\(Key\.F9\)/u);
+  assert.match(mod, /pause\.ActionMode = BaseButton\.ActionModeEnum\.Press/u);
+  assert.match(mod, /resume\.ActionMode = BaseButton\.ActionModeEnum\.Press/u);
 });
 
 test("Failure styling consumes owner disposition rather than invalidation kind", () => {
