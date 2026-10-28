@@ -34,9 +34,10 @@ export async function checkGodotStubCoverage({
 }) {
   const contract = godotStubCoverageContract(manifest);
   const baseline = path.resolve(root, "experiments", "managed-exact", contract.baseline);
-  const reviewed = JSON.parse(readFileSync(baseline, "utf8")).exact_game ?? {};
-  if (reviewed.sts2_dll_sha256 !== manifest.exact_game?.sts2_dll_sha256
-      || reviewed.godotsharp_dll_sha256 !== manifest.exact_game?.godotsharp_dll_sha256) {
+  const reviewed = JSON.parse(readFileSync(baseline, "utf8"));
+  const games = [reviewed.exact_game, ...(reviewed.platform_exact_games ?? [])];
+  if (!games.some(game => game?.sts2_dll_sha256 === manifest.exact_game?.sts2_dll_sha256
+      && game?.godotsharp_dll_sha256 === manifest.exact_game?.godotsharp_dll_sha256)) {
     throw new Error("Godot stub coverage baseline was reviewed for a different exact game.");
   }
   const args = ["run", "--project", null, "-c", "Release", "--"];

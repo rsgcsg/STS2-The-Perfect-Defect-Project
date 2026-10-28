@@ -32,6 +32,11 @@ test("reviewed Godot stub baseline lists only categorized Godot API gaps for the
     sts2_dll_sha256: manifest.exact_game.sts2_dll_sha256,
     godotsharp_dll_sha256: manifest.exact_game.godotsharp_dll_sha256
   });
+  const linux = manifest.platform_baselines.find(item => item.exact_game.platform === "linux");
+  assert.deepEqual(baseline.platform_exact_games, [{
+    sts2_dll_sha256: linux.exact_game.sts2_dll_sha256,
+    godotsharp_dll_sha256: linux.exact_game.godotsharp_dll_sha256
+  }]);
   const keys = baseline.accepted_gaps.map(gap => gap.key);
   assert.equal(new Set(keys).size, keys.length);
   const counts = {};

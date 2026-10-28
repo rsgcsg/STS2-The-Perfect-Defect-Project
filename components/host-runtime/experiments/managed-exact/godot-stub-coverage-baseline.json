@@ -5,6 +5,12 @@
     "sts2_dll_sha256": "9cb4f1ad8c9f284aa8fec3122ffd6d780bbf543d875c817abdd12ff63fbf12b4",
     "godotsharp_dll_sha256": "0e4897ecdfb31456a97c7d8028dfb8d7dbdc632e2f73fc9b438d7b266a139289"
   },
+  "platform_exact_games": [
+    {
+      "sts2_dll_sha256": "71eec3ba5e0c640fc0cf0758517faf5f2ff039bea21966b22b23f2c427c7a09f",
+      "godotsharp_dll_sha256": "0e4897ecdfb31456a97c7d8028dfb8d7dbdc632e2f73fc9b438d7b266a139289"
+    }
+  ],
   "category_counts": {
     "display": 321,
     "display+platform": 6,
