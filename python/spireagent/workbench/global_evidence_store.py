@@ -220,6 +220,7 @@ def _parents(
     if (
         not isinstance(descriptor, dict)
         or descriptor.get("schema") not in package_schemas
+        or not isinstance(descriptor.get("input_spec"), dict)
         or descriptor.get("package_sha256") != model.payload("weights").sha256
         or model.parameters.value().get("input_spec") != descriptor.get("input_spec")
     ):
@@ -235,9 +236,11 @@ def _parents(
 
             projection = INPUT_PROJECTION
         else:
-            from stpd.p1.input import INPUT_SPEC
+            from stpd.p1.input import INPUT_SPEC, V2_INPUT_SPEC
 
-            projection = INPUT_SPEC
+            projection = (V2_INPUT_SPEC
+                          if descriptor["input_spec"].get("id") == V2_INPUT_SPEC["id"]
+                          else INPUT_SPEC)
         if (
             not isinstance(binding, dict)
             or binding.get("package_input_spec") != descriptor["input_spec"]
