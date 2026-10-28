@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import math
 import time
+from collections.abc import Sequence
 from typing import Any
 
 import torch
@@ -16,12 +17,12 @@ from torch.nn import functional as F
 from spireagent.json_boundary import BoundaryError
 
 from .execution import microbatches
-from .input import Frame
 from .model import MStd
+from .tensor_input import ModelFrame
 
 
 def optimizer_update(
-    model: MStd, optimizer: torch.optim.Optimizer, frames: list[Frame],
+    model: MStd, optimizer: torch.optim.Optimizer, frames: Sequence[ModelFrame],
     targets: list[int], learning_rate: float, *, weights: list[float] | None = None,
     value_targets: list[tuple[float | None, float | None]] | None = None,
 ) -> dict[str, Any]:

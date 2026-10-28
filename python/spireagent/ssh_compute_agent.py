@@ -200,6 +200,8 @@ def supervise(directory: Path) -> None:
                                           "--request", str(directory / "request.json"),
                                           *(["--ready-file", str(directory / "training-ready.json")]
                                             if target.preparation_seconds else []),
+                                          "--input-cache", str(Path(target.state_directory)
+                                                               / "p1-input-cache"),
                                           "--store", "s3", "--wall-seconds",
                                           str(target.timeout_seconds)], env=environment,
                                          cwd=Path(target.checkout) / "python",

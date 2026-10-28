@@ -585,6 +585,13 @@ class SnapshotReader:
     def iter_supervised_points(self) -> Iterator[tuple[dict[str, Any], dict[str, Any]]]:
         return _iter_selected_points(self._store, self._selection, run_facts=True)
 
+    def supervision_by_projection(self) -> dict[str, dict[str, Any]]:
+        """Recheck auxiliary labels once per source without model feature projection."""
+        from .value_targets import supervision_facts
+
+        return {s["projection_id"]: supervision_facts(load_projection(
+            self._store, s["projection_id"])) for s in self._selection["sources"]}
+
 
 def iter_snapshot_points(
     store: ArtifactStore, snapshot_id: str
