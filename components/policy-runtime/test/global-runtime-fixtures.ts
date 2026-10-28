@@ -101,7 +101,7 @@ export class GlobalHttpFixture {
   private capabilitiesSession() { return { runtime_instance_id: this.capabilities.host.runtime_instance_id, environment_fingerprint: this.capabilities.environment_fingerprint }; }
   async close() { this.server?.closeAllConnections(); await new Promise<void>(done => this.server!.close(() => done())); }
 }
-export async function globalRuntimeFixture(options: { managedSettlingTimeoutMs?: number; initialProgressOriginal?: import("../src/initial-progress-original.js").InitialProgressOriginal; autoBudget?: import("../src/contracts.js").AutonomyBudgetInput; monotonicNow?: () => number; editManifest?: (manifest: any) => void; behavior?: string; budgetMs?: number; globalNoProgress?: import("../src/global-no-progress.js").GlobalNoProgressConfig; source?: GlobalHttpFixture; transport?: GlobalTransport; program?: {command:string;args:string[];adapter:AgentAdapterIdentity;artifact:Buffer;env?:NodeJS.ProcessEnv} } = {}) {
+export async function globalRuntimeFixture(options: { evidenceDurability?: "event" | "decision"; managedSettlingTimeoutMs?: number; initialProgressOriginal?: import("../src/initial-progress-original.js").InitialProgressOriginal; autoBudget?: import("../src/contracts.js").AutonomyBudgetInput; monotonicNow?: () => number; editManifest?: (manifest: any) => void; behavior?: string; budgetMs?: number; globalNoProgress?: import("../src/global-no-progress.js").GlobalNoProgressConfig; source?: GlobalHttpFixture; transport?: GlobalTransport; program?: {command:string;args:string[];adapter:AgentAdapterIdentity;artifact:Buffer;env?:NodeJS.ProcessEnv} } = {}) {
   const source = options.source ?? new GlobalHttpFixture(); await source.start();
   const root = await mkdtemp(join(tmpdir(), "global-product-")), transport = options.transport ?? new ReferenceGlobalTransport(new PlayerEnvironmentRestClient(source.address, 2000), { productVersion: "fixture", clientInstanceId: "fixture-client" });
   const identity = await transport.negotiate(new AbortController().signal), artifact = options.program?.artifact ?? Buffer.from('{"program":"synthetic conformance"}'), artifactPath = join(root, "program.json"); await writeFile(artifactPath, artifact);
@@ -111,7 +111,7 @@ export async function globalRuntimeFixture(options: { managedSettlingTimeoutMs?:
   manifest.limits.agent_timeout_ms = 5000; options.editManifest?.(manifest);
   const manifestPath = join(root, "agent.json"); await writeFile(manifestPath, JSON.stringify(manifest));
   const runtimeCode = await globalRuntimeCodeDigest(fileURLToPath(new URL("../dist/", import.meta.url)));
-  const evidence = await AgentRunEvidence.createSession({ root, agentManifest: manifest, runtimeVersion: "fixture", runtimeCodeSha256: runtimeCode, mode: "auto" });
+  const evidence = await AgentRunEvidence.createSession({ root, agentManifest: manifest, runtimeVersion: "fixture", runtimeCodeSha256: runtimeCode, mode: "auto", durability: options.evidenceDurability });
   const port = NdjsonAgentSessionPort.spawn(options.program?.command ?? process.execPath, options.program?.args.map(a=>a==="{manifest}"?manifestPath:a) ?? [child, manifestPath, options.behavior ?? "act"], manifest.adapter, manifest.limits, {env:options.program?.env});
   const runtime: NativeAgentRuntimeOwner = await PolicyRuntime.forAgent({ manifest, globalTransport: transport, port, evidence,
     initialProgressOriginal: options.initialProgressOriginal,

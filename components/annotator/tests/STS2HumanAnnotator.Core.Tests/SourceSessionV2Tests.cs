@@ -218,12 +218,19 @@ public sealed class SourceSessionV2Tests
         SourceInputTokenV2? token = null;
         var held = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         using var release = new ManualResetEventSlim(false);
-        var writer = Task.Run(() => { lock (diskGate) { held.SetResult(true); release.Wait(TimeSpan.FromSeconds(5)); } });
-        await held.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        // A blocked thread-pool writer can miss readiness before admission is
+        // even exercised. Isolate both participants, retaining the original
+        // admission deadline and a live witness that the disk gate stays held.
+        var writer = Task.Factory.StartNew(() => { lock (diskGate) { held.SetResult(true); release.Wait(); } },
+            CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
         try
         {
-            token = await Task.Run(() => f.Store.ReserveSourceInputV2("prefix-input", Position("title", 1)))
+            await held.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            token = await Task.Factory.StartNew(
+                () => f.Store.ReserveSourceInputV2("prefix-input", Position("title", 1)),
+                CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default)
                 .WaitAsync(TimeSpan.FromSeconds(2));
+            Assert.False(writer.IsCompleted);
         }
         finally { release.Set(); await writer.WaitAsync(TimeSpan.FromSeconds(2)); }
         Assert.NotNull(token); Assert.Equal(1, f.Store.GetSourceStatusV2()!.PendingInputs);

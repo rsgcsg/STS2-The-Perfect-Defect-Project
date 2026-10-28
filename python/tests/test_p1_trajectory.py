@@ -33,7 +33,8 @@ def episode(model_id, run_id="one"):
             "behavior": {"mode": "argmax", "probabilities": [1.0, 0.0],
                 "model_probabilities": [0.75, 0.25], "selected_probability": 1.0,
                 "temperature": None, "uniform_mix": 0}}],
-        "outcome": {"status": "finished", "unknown": False, "terminal": {"result": "loss"}},
+        "outcome": {"status": "finished", "unknown": False, "terminal": {"result": "loss"},
+                    "boss_clearance": {"count": None, "cleared_acts": [], "witnesses": []}},
         "score_eligible": False, "rl_ready": False}
 
 
@@ -110,3 +111,45 @@ def test_shard_model_weights_identity_is_not_just_a_label(tmp_path):
     value = episode(model.artifact_id)
     with pytest.raises(BoundaryError, match="shard_model_weights_mismatch"):
         publish_shard(store, [value], PRODUCER, scratch=tmp_path)
+
+
+def test_boss_clearance_requires_public_completion_witness_and_deduplicates():
+    from stpd.p1.trajectory import boss_clearance
+
+    def observation(index, act, kind="map_select", boss=False):
+        return {"index": index, "observation": {"run": {"content": {"act": act, "floor": 999}},
+            "scene": {"native_kind": kind, "content": {"surface": {"is_boss": boss}}}}}
+
+    assert boss_clearance([observation(0, 1, "combat", True)])["count"] is None
+    assert boss_clearance([observation(0, 2)])["count"] is None
+    reward = observation(1, 1, "reward_completion", True)
+    summary = boss_clearance([observation(0, 1), reward, reward, observation(3, 2)])
+    assert summary["count"] == 1 and summary["cleared_acts"] == [1]
+    assert len(summary["witnesses"]) == 1
+    advance = boss_clearance([observation(0, 1), observation(1, 2)])
+    assert advance["count"] == 1
+    assert advance["witnesses"][0]["kind"] == "public_act_advance"
+    assert boss_clearance([observation(0, 1), observation(1, 3)])["count"] is None
+
+
+def test_historical_v1_remains_readable_without_rewriting_missing_boss_fields():
+    from stpd.p1.trajectory import LEGACY_SCHEMA
+
+    value = episode("a" * 64)
+    value["schema"] = LEGACY_SCHEMA
+    value["outcome"].pop("boss_clearance")
+    validate_trajectory(value)
+
+
+@pytest.mark.parametrize("count", [True, 1.0])
+def test_boss_count_keeps_json_integer_type(count):
+    from stpd.p1.trajectory import boss_clearance
+
+    value = episode("a" * 64)
+    for index, item in enumerate(value["observations"]):
+        item["observation"]["run"] = {"content": {"act": index + 1}}
+    value["outcome"]["boss_clearance"] = boss_clearance(value["observations"])
+    validate_trajectory(value)
+    value["outcome"]["boss_clearance"]["count"] = count
+    with pytest.raises(BoundaryError, match="boss_clearance_witness_mismatch"):
+        validate_trajectory(value)

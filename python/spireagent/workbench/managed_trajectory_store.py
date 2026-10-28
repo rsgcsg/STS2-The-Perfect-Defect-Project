@@ -51,6 +51,8 @@ def publish_shard(store: ManifestArtifactStore, episodes: Sequence[dict[str, Any
                 filename="", fileobj=destination, mode="wb", compresslevel=1, mtime=0) as stream:
             for episode in episodes:
                 validate_trajectory(episode)
+                if episode["score_eligible"] is not episodes[0]["score_eligible"]:
+                    raise BoundaryError("trajectory_store", "shard_score_intent_mismatch")
                 raw = json_bytes(episode)
                 total += len(raw)
                 if total > MAX_SHARD_BYTES:
@@ -67,7 +69,8 @@ def publish_shard(store: ManifestArtifactStore, episodes: Sequence[dict[str, Any
     manifest = Manifest("analysis", producer,
         parents=tuple(Parent(f"model_{i}", model) for i, model in enumerate(models)),
         payloads=(payload,), parameters=FrozenObject.of({"schema": SCHEMA,
-            "episodes": index, "decoded_bytes": total, "score_eligible": False,
+            "episodes": index, "decoded_bytes": total,
+            "score_eligible": episodes[0]["score_eligible"],
             "research_admission": "not_evaluated"}))
     store.publish(manifest)
     return manifest
@@ -79,7 +82,7 @@ def read_shard(store: ManifestArtifactStore, artifact_id: str, *,
     manifest = store.get_manifest(artifact_id)
     info = manifest.parameters.value()
     if (manifest.kind != "analysis" or info.get("schema") != SCHEMA
-            or info.get("score_eligible") is not False
+            or type(info.get("score_eligible")) is not bool
             or len(manifest.payloads) != 1
             or not 1 <= len(info.get("episodes", [])) <= MAX_EPISODES
             or type(info.get("decoded_bytes")) is not int
@@ -106,7 +109,8 @@ def read_shard(store: ManifestArtifactStore, artifact_id: str, *,
                     raise BoundaryError("trajectory_store", "episode_integrity_failure")
                 value = json.loads(raw)
                 validate_trajectory(value)
-                if (value["run_id"] != entry["run_id"] or value["run_id"] in seen
+                if (value["score_eligible"] is not info["score_eligible"]
+                        or value["run_id"] != entry["run_id"] or value["run_id"] in seen
                         or value["identity"] != entry["identity"]
                         or len(value["steps"]) != entry["steps"]):
                     raise BoundaryError("trajectory_store", "episode_identity_failure")

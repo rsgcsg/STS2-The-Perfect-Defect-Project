@@ -223,11 +223,20 @@ class ManagedEpisodeExecutor:
             (self.runtime.parent / "package.json").read_bytes()).get("version")
         if (mode["mode"] == "central_batch"
                 and runtime_version not in {
-                    "0.1.0-rc.50", "0.1.0-rc.51", "0.1.0-rc.52", "0.1.0-rc.53"}):
+                    "0.1.0-rc.50", "0.1.0-rc.51", "0.1.0-rc.52", "0.1.0-rc.53",
+                    "0.1.0-rc.54", "0.1.0-rc.55", "0.1.0-rc.56"}):
             reject("runtime_explicit_adapter_environment_required")
         if (self.settling_timeout_ms is not None
-                and runtime_version not in {"0.1.0-rc.52", "0.1.0-rc.53"}):
+                and runtime_version not in {"0.1.0-rc.52", "0.1.0-rc.53",
+                                            "0.1.0-rc.54", "0.1.0-rc.55", "0.1.0-rc.56"}):
             reject("runtime_settling_watchdog_required")
+        self.evidence_durability = configuration.get("evidence_durability",
+            "decision" if runtime_version in {"0.1.0-rc.55", "0.1.0-rc.56"} else "event")
+        if self.evidence_durability not in {"event", "decision"}:
+            reject("invalid_evidence_durability")
+        if self.evidence_durability == "decision" and runtime_version not in {
+                "0.1.0-rc.55", "0.1.0-rc.56"}:
+            reject("runtime_decision_durability_required")
         if configuration["agent_adapter"] != export.adapter_identity():
             reject("frozen_agent_implementation_changed")
         if self.measure_host_performance and json.loads(
@@ -417,6 +426,9 @@ class ManagedEpisodeExecutor:
                     str(int(remaining * 1000)),
                     *host_args,
                 ]
+                if self.evidence_durability == "decision":
+                    args.extend(["--managed-evidence-durability", "decision"])
+                row["evidence_durability"] = self.evidence_durability
                 if self.settling_timeout_ms is not None:
                     args.extend(["--managed-settling-timeout-ms", str(self.settling_timeout_ms)])
                 environment = os.environ.copy()
@@ -478,37 +490,9 @@ class ManagedEpisodeExecutor:
                         for key in ("package_input_spec", "input_spec", "input_projection")
                     },
                 )
-                result = verify_agent_session_run_evidence(run, expected)
-                if not result.passed or result.value is None:
-                    reject("typed_original_verification_failed")
-                outcome = project(
-                    result, native=True, native_package=(package / "model.json").read_bytes()
-                )
-                row["agent_task_outcome"] = outcome
-                row["typed_verification"] = artifacts.put(
-                    "typed-verification.json",
-                    json_bytes(
-                        {
-                            "status": result.status,
-                            "content_id": result.value.content_id,
-                            "expected": expected,
-                        }
-                    ),
-                )
-                metrics = read_reference_metrics(
-                    run,
-                    {
-                        "evidence_verification": "pass",
-                        "agent_task_outcome": outcome,
-                        "run_id": startup["run_id"],
-                        "evidence_content_id": result.value.content_id,
-                    },
-                    {"binding": {"runtime_instance_id": target["runtime_instance_id"]}},
-                )
-                row["game_metrics"] = metrics
+                self._finish_original(row, artifacts, run, expected, package,
+                                      target["runtime_instance_id"])
             self._preserve(row, artifacts, checkpoint, run, expected, model, private)
-            row.update(_outcome_status(
-                outcome, settling_stalled=row.get("settling_stalled") is True))
         except Exception as error:
             row.update(
                 status="unknown" if row["world_mutation_offered"] else "not_started",
@@ -559,6 +543,31 @@ class ManagedEpisodeExecutor:
             row["phase_timing_schema"] = "spireagent/managed-phase-seconds-v1"
             row["detail_timing_schema"] = "spireagent/managed-detail-seconds-v1"
             checkpoint()
+
+    def _finish_original(self, row: dict[str, Any], artifacts: Any, run: Path,
+                         expected: dict[str, Any], package: Path,
+                         runtime_instance_id: str) -> None:
+        result = verify_agent_session_run_evidence(run, expected)
+        if not result.passed or result.value is None:
+            reject("typed_original_verification_failed")
+        self._record_verified_original(row, artifacts, run, expected, package,
+                                       runtime_instance_id, result)
+
+    def _record_verified_original(self, row: dict[str, Any], artifacts: Any, run: Path,
+                                  expected: dict[str, Any], package: Path,
+                                  runtime_instance_id: str, result: Any) -> None:
+        outcome = project(result, native=True,
+                          native_package=(package / "model.json").read_bytes())
+        row["agent_task_outcome"] = outcome
+        row["typed_verification"] = artifacts.put("typed-verification.json", json_bytes({
+            "status": result.status, "content_id": result.value.content_id,
+            "expected": expected}))
+        row["game_metrics"] = read_reference_metrics(run, {
+            "evidence_verification": "pass", "agent_task_outcome": outcome,
+            "run_id": expected["run_id"], "evidence_content_id": result.value.content_id},
+            {"binding": {"runtime_instance_id": runtime_instance_id}})
+        row.update(_outcome_status(outcome,
+            settling_stalled=row.get("settling_stalled") is True))
 
     def _preserve(self, row: dict[str, Any], artifacts: Any, checkpoint: Any,
                   run: Path, expected: dict[str, Any], model: dict[str, Any],

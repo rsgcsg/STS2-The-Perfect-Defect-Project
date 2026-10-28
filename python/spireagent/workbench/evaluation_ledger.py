@@ -24,7 +24,11 @@ from spireagent.storage.local import LocalBlobStore
 
 from .developer import ProjectConfig
 from .local_model_cli import native_episode_command
-from .managed_retention import pipeline_configuration, retention_configuration
+from .managed_retention import (
+    pipeline_configuration,
+    retention_configuration,
+    select_formal_audits,
+)
 from .p1_recording_storage import NEXT_EPISODE_PEAK_BYTES, workspace_reserve_bytes
 from .reference_suite import (
     MAX_REPORT_BYTES,
@@ -60,19 +64,25 @@ def read_reference(ref: dict[str, Any]) -> bytes:
 
 
 def result_row(row: dict[str, Any], report_path: Path) -> dict[str, Any]:
-    verify_completed_row(report_path, row)
-    preservation = json.loads(_read(report_path.parent / row["preservation"]["path"]))
-    readback = preservation.get("peer_readback") or {}
-    if (readback.get("full_readback") is not True
-            or readback.get("typed_verification") != "pass"):
-        reject("full_typed_R2_receipt_required")
+    if row.get("trajectory_shard_id"):
+        from .managed_pipeline import verify_evaluation_trajectory
+
+        verify_evaluation_trajectory(row, report_path)
+    else:
+        verify_completed_row(report_path, row)
+        preservation = json.loads(_read(report_path.parent / row["preservation"]["path"]))
+        readback = preservation.get("peer_readback") or {}
+        if (readback.get("full_readback") is not True
+                or readback.get("typed_verification") != "pass"):
+            reject("full_typed_R2_receipt_required")
     observation = (row.get("agent_task_outcome") or {}).get("terminal_observation") or {}
     if observation.get("status") != "observed" or observation.get("result") not in {"win", "loss"}:
         reject("natural_terminal_required")
     return {"status": "finished", "run_id": row["run_id"],
             "natural_result": observation["result"],
             "max_observed_floor": (row.get("game_metrics") or {}).get("max_observed_floor"),
-            "stored_evidence_id": row["stored_evidence_id"],
+            "stored_evidence_id": row.get("stored_evidence_id"),
+            "trajectory_shard_id": row.get("trajectory_shard_id"),
             "report": reference(report_path),
             "world_mutation_offered": row.get("world_mutation_offered") is True}
 
@@ -241,10 +251,22 @@ class EvaluationLedger:
                 }
                 slot["slot_id"] = digest(json_bytes(slot))
                 slots.append(slot)
+        audit_selection = None
+        if retention["tier"] == "trajectory" and retention.get("purpose") == "evaluation":
+            audit_selection = select_formal_audits(slots,
+                salt=digest(json_bytes({"execution": reference(execution),
+                                        "manifest": reference(manifest_path)})),
+                audit_every=retention["audit_every"])
+            selected_ids = set(audit_selection["selected_slot_ids"])
+            for slot in slots:
+                slot["formal_audit_selected"] = slot["slot_id"] in selected_ids
+            slots.sort(key=lambda slot: (not slot["formal_audit_selected"],
+                                        slot["seed_ordinal"], slot["step"]))
         plan = {
             "schema": SCHEMA,
             "created_at": datetime.now(UTC).isoformat(),
             "host_kind": "managed",
+            **({"audit_selection": audit_selection} if audit_selection else {}),
             "execution": reference(execution),
             "storage": storage,
             "retention": retention,
@@ -269,6 +291,14 @@ class EvaluationLedger:
         if declared is not None and row.get("retention") != declared:
             reject("attempt_retention_differs_from_plan")
         eligible = (declared or {}).get("score_eligible", True)
+        if (declared or {}).get("purpose") == "evaluation" and declared["tier"] == "trajectory":
+            slot = next((item for item in self.plan["slots"]
+                         if item["slot_id"] == row.get("ledger_slot_id")), None)
+            if (slot is None or row.get("formal_audit_selected")
+                    is not slot.get("formal_audit_selected")
+                    or row.get("seed") != slot["seed"]
+                    or row.get("selection_id") != slot["selection_id"]):
+                reject("evaluation_audit_selection_changed")
         if row.get("status") == "saved":
             from .managed_pipeline import verify_unscored_save
 
@@ -378,6 +408,9 @@ class EvaluationLedger:
         def episode(slot: dict[str, Any], attempt: Path) -> dict[str, Any]:
             def execute(row, manifest, artifacts, checkpoint):
                 row["manifest_sha256"] = slot["manifest"]["sha256"]
+                row["ledger_slot_id"] = slot["slot_id"]
+                if "formal_audit_selected" in slot:
+                    row["formal_audit_selected"] = slot["formal_audit_selected"]
                 row["retention"] = self.plan.get(
                     "retention", retention_configuration(configuration))
                 executor(row, manifest, artifacts, checkpoint)
@@ -419,17 +452,21 @@ class EvaluationLedger:
                 else:
                     active[saves.submit(executor.preserve_report, path)] = (slot, path, "save")
             exhausted = False
+
+            def unsettled():
+                return len(trajectory_wait) + sum(len(slot.get("shard_slots", [slot]))
+                                                for slot, _, _ in active.values())
+
             while active or trajectory_wait or not exhausted and stop_reason is None:
-                if trajectory_wait and (len(trajectory_wait) >= 8
-                        or not active):
+                executing = sum(stage == "execute" for _, _, stage in active.values())
+                # Free bounded save credits under pressure rather than waiting
+                # for an unrelated slow game to fill the eight-episode shard.
+                if trajectory_wait and (len(trajectory_wait) >= 8 or not active
+                        or executing < workers and unsettled() >= pipeline["pending_limit"]):
                     group, trajectory_wait = trajectory_wait[:8], trajectory_wait[8:]
                     active[saves.submit(executor.finalize_trajectories,
                         [path for _, path in group])] = (
                             {"shard_slots": group}, group[0][1], "shard")
-                executing = sum(stage == "execute" for _, _, stage in active.values())
-                def unsettled(waiting=trajectory_wait):
-                    return len(waiting) + sum(len(s.get("shard_slots", [s]))
-                                                     for s, _, _ in active.values())
 
                 while (executing < workers and unsettled() < pipeline["pending_limit"]
                        and not exhausted and stop_reason is None):
@@ -724,6 +761,15 @@ class EvaluationLedger:
     def report(self) -> dict[str, Any]:
         rows = self.slots()
         eligible = (self.plan.get("retention") or {}).get("score_eligible", True)
+        audit = self.plan.get("audit_selection")
+        audit_receipt = None
+        if audit:
+            qualified = [row["slot_id"] for row in rows if row.get("formal_audit_selected")
+                         and row.get("status") == "finished" and row.get("stored_evidence_id")]
+            audit_receipt = {"planned": audit["count"], "qualified": len(qualified),
+                             "qualified_slot_ids": qualified,
+                             "satisfied": len(qualified) == audit["count"]}
+            eligible = eligible and audit_receipt["satisfied"]
         groups = []
         for character, ascension, step in sorted(
             {(r["character"], r["ascension"], r["step"]) for r in rows}
@@ -767,6 +813,8 @@ class EvaluationLedger:
             "saved_unscored": sum(r["status"] == "saved" for r in rows),
             "trajectory_pending": sum(r["status"] == "trajectory_pending" for r in rows),
             "retention": self.plan.get("retention"),
+            "score_admitted": eligible,
+            "formal_audit": audit_receipt,
             "replaced": 0,
             "R2_original_receipts": sum(bool(r.get("stored_evidence_id")) for r in rows),
             "R2_failure_receipts": sum(bool(r.get("stored_failure_id")) for r in rows),
