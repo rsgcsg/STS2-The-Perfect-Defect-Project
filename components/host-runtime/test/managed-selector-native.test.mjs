@@ -24,6 +24,11 @@ test("exact candidate merchant removal uses staged native deck choice and commit
   try {
     await started.session.mount({ seed: "SELECTOR-SHOP-GATE" });
     let state = await request({ cmd: "enter_room", type: "shop" });
+    assert.equal(state.decision, "shop_room");
+    // Raw inventory decisions retain "shop"; the public surface is shop_inventory.
+    state = await action("open_shop_inventory", {
+      room_ref: state.room_ref, inventory_ref: state.inventory_ref
+    });
     assert.equal(state.decision, "shop");
     assert.equal(state.card_removal.can_purchase, true);
     const before = { gold: state.player.gold, deck: state.player.deck_size,
@@ -64,6 +69,11 @@ test("exact candidate merchant removal uses staged native deck choice and commit
       state.card_removal.is_stocked], [before.gold - before.cost, before.deck - 1, false]);
     assert.equal((await action("remove_card", { room_ref: state.room_ref,
       entry_ref: state.card_removal.native_ref })).type, "error");
+    assert.equal((await action("leave_shop", { room_ref: state.room_ref })).type, "error");
+    state = await action("close_shop_inventory", {
+      room_ref: state.room_ref, inventory_ref: state.inventory_ref
+    });
+    assert.equal(state.decision, "shop_room");
     assert.equal((await action("leave_shop", { room_ref: state.room_ref })).decision, "map_select");
   } finally {
     await started.session.close();
