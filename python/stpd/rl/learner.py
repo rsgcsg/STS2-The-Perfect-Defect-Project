@@ -396,7 +396,7 @@ class Learner:
             self.publisher.shutdown(wait=True)
         summary = {"schema": "stpd/rl-learner-summary-1", "run": self.config.run,
                    "updates": self.updates, "versions": [v["version"] for v in self.versions],
-                   "version_artifacts": {v["version"]: v["model_artifact_id"]
+                   "version_artifacts": {str(v["version"]): v["model_artifact_id"]
                                          for v in self.versions},
                    "counts": dict(self.counts), "timing": self.timer.report(),
                    "trajectory_to_training_seconds": _quantiles(self.latencies),
