@@ -273,7 +273,8 @@ outside Git. New work and incident reports belong in this repository only.
 在源码根目录运行 `npm run env:attach`；以后把检查包在
 `npm run env:run -- npm run check`（或其他原有命令）里。首次没有对应环境时，
 必须在 Managed、CPU 都空闲且用户没有玩游戏/录制时，按下面的双资源占位运行。
-已有共享依赖的挂接只读校验，不需要重建。已有自建环境会保留并沿用。
+每份源码首次挂接还会建立只含本卡项目元数据的小 Python 环境，也须在双资源空档内；
+此后挂接只读校验。已有自建环境会保留并沿用。
 
 ```sh
 # 每台节点一次：把流水账接到卡共用的 GAME-SLOT.md（绝对路径）
@@ -283,7 +284,7 @@ npm run slot -- status
 npm run slot -- run --resources managed,cpu --card E2 --until 2026-10-28T20:00:00+10:00 -- npm run env:attach
 npm run env:run -- npm run check
 # Managed 评估/重放/采样：整个前台批次放在占位命令内；内部每局检查同一 token。
-npm run slot -- run --card CARD --lanes 4 --until 2026-10-28T20:00:00+10:00 -- npm run env:run -- python python/tools/evaluate_managed_suite.py --help
+npm run slot -- run --card CARD --lanes 4 --games 20 --until 2026-10-28T20:00:00+10:00 -- npm run env:run -- python python/tools/evaluate_managed_suite.py --help
 # 收口先解除本卡引用，再删自己的可重建产物/源码；共享库保留最近三份。
 npm run env:detach
 npm run env:prune -- 3
@@ -310,7 +311,9 @@ npm run env:prune -- 3
 键涵盖全部 Git 跟踪的 npm 清单/锁、Python 清单/锁、解释器完整版本、Node 完整版本、
 平台与架构。环境构建加锁，完整文件哈希验收后只读；每次挂接和执行都重验。
 第三方 npm 依赖只读链接到本卡，工作区链接和构建输出留在本卡；Python 共享环境
-不安装本项目，以本卡 PYTHONPATH 加载源码，`env:run` 禁止 uv 同步修改共享环境。
+只装第三方依赖，每卡的小 `.venv` 通过标准 site 路径引用它，并单独安装本卡项目的
+editable 元数据；清除 PYTHONPATH 的子进程仍能导入本卡源码。`env:run` 使用本卡
+解释器并禁止 uv 同步修改共享依赖。
 因此仍需在每张卡运行原有构建/检查；不要对共享目录运行安装、同步或构建。
 
 损坏、身份不符或已有私有环境时沿用旧的三步自建流程。自动自建也必须持有

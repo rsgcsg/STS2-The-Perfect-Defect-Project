@@ -22,7 +22,7 @@ function read(root, name) {
 function journal(root, record, action, note = '') {
   const config = path.join(root, 'config.json');
   const target = fs.existsSync(config) ? JSON.parse(fs.readFileSync(config)).journal : path.join(root, 'GAME-SLOT.md');
-  fs.appendFileSync(target, `${new Date().toISOString()}｜${record.card}｜${action}｜${record.lanes}路 ${record.resource}｜预计${record.until}｜${note || `pid=${record.pid}`}\n`);
+  fs.appendFileSync(target, `${new Date().toISOString()}｜${record.card}｜${action}｜${record.lanes}路${record.games ?? 0}局 ${record.resource}｜预计${record.until}｜${note || `pid=${record.pid}`}\n`);
 }
 function transaction(root, action) {
   fs.mkdirSync(root, {recursive: true});
@@ -35,9 +35,9 @@ function transaction(root, action) {
   fs.writeFileSync(fd, String(process.pid));
   try { return action(); } finally { fs.closeSync(fd); fs.unlinkSync(guard); }
 }
-export function acquire({resources = ['managed'], card, until, pid, lanes = 1}, root = slotRoot()) {
+export function acquire({resources = ['managed'], card, until, pid, lanes = 1, games = 0}, root = slotRoot()) {
   if (!card || /[\r\n｜]/u.test(card) || !Number.isSafeInteger(pid) || pid < 1 || !alive(pid)
-      || !Number.isInteger(lanes) || lanes < 1 || !Number.isFinite(Date.parse(until)) || /[\r\n｜]/u.test(until) || Date.parse(until) <= Date.now())
+      || !Number.isInteger(lanes) || lanes < 1 || !Number.isInteger(games) || games < 0 || !Number.isFinite(Date.parse(until)) || /[\r\n｜]/u.test(until) || Date.parse(until) <= Date.now())
     throw Error('card, live --pid, positive lanes and future ISO --until required');
   resources = [...new Set(resources.map(valid))];
   return transaction(root, () => {
@@ -47,7 +47,7 @@ export function acquire({resources = ['managed'], card, until, pid, lanes = 1}, 
         throw Error(`${resource} occupied by ${current.card}, pid=${current.pid}, until=${current.until}`);
     }
     const token = crypto.randomUUID();
-    const records = resources.map(resource => ({resource, card, pid, lanes, until, token, started: new Date().toISOString()}));
+    const records = resources.map(resource => ({resource, card, pid, lanes, games, until, token, started: new Date().toISOString()}));
     // Journal first: failed journal writes must never grant an unlogged lock.
     for (const record of records) {
       const old = read(root, record.resource);
@@ -128,7 +128,11 @@ async function main() {
   }
   const resources = (options.resources || 'managed').split(',');
   if (command === 'status') {
-    console.log(JSON.stringify(['managed', 'cpu', 'training'].map(name => read(slotRoot(), name)), null, 2));
+    console.log(JSON.stringify(['managed', 'cpu', 'training'].map(name => {
+      const record = read(slotRoot(), name);
+      if (record) delete record.token;
+      return record;
+    }), null, 2));
   } else if (command === 'configure') {
     if (!options.journal || !path.isAbsolute(options.journal) || !fs.existsSync(options.journal)) throw Error('existing absolute --journal required');
     transaction(slotRoot(), () => fs.writeFileSync(path.join(slotRoot(), 'config.json'), JSON.stringify({journal: options.journal})));
@@ -139,7 +143,7 @@ async function main() {
       throw Error('user game is running; no admission');
     if (command === 'run' && !childArgs.length) throw Error('run requires -- COMMAND');
     const records = acquire({resources, card: options.card, until: options.until,
-      lanes: Number(options.lanes || 1), pid: command === 'run' ? process.pid : Number(options.pid)});
+      lanes: Number(options.lanes || 1), games: Number(options.games || 0), pid: command === 'run' ? process.pid : Number(options.pid)});
     if (command === 'acquire') console.log(JSON.stringify(records, null, 2));
     else {
       let outcome;

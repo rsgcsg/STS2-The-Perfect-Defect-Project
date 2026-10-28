@@ -49,3 +49,16 @@ test('workspace and bin links are rebound to this checkout; dependency directori
   assert.equal(fs.readFileSync(path.join(local,'node_modules/.bin/command.cmd'),'utf8'),'@echo fixture');
   assert.equal(fs.readlinkSync(path.join(local,'node_modules/.bin/command')),path.join(local,'node_modules/@scope/workspace/cli.mjs'));
 });
+
+test('shared and private commands both resolve the checkout interpreter before ambient PATH', async () => {
+  const {executionEnvironment} = await import('./shared-env.mjs');
+  const checkout = path.resolve('fixture-source');
+  for (const shared of [true,false]) {
+    const env=executionEnvironment({checkout,shared,environment:{PATH:'ambient',PYTHONPATH:'hostile',UV_PROJECT_ENVIRONMENT:'elsewhere',UV_NO_SYNC:'1'}});
+    assert.equal(env.PYTHON,path.join(checkout,'python/.venv',process.platform==='win32'?'Scripts/python.exe':'bin/python'));
+    assert.equal(env.PATH.split(path.delimiter)[0],path.dirname(env.PYTHON));
+    assert.equal(env.UV_PROJECT_ENVIRONMENT,path.join(checkout,'python/.venv'));
+    assert.equal(env.UV_NO_SYNC,shared?'1':'0');
+    assert.equal(env.PYTHONPATH.split(path.delimiter)[0],path.join(checkout,'python'));
+  }
+});

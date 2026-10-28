@@ -125,6 +125,74 @@ export function attachModules(source, target, shared, local) {
     fs.symlinkSync(destination, to, process.platform === 'win32' && stat.isDirectory() ? 'junction' : undefined);
   }
 }
+const localVenv = () => path.join(root, 'python/.venv');
+const pythonIn = directory => path.join(directory, process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python');
+export function executionEnvironment({checkout = root, shared = false, environment = process.env} = {}) {
+  const venv = path.join(checkout, 'python/.venv'), executable = pythonIn(venv);
+  return {...environment, PYTHON: executable, UV_PROJECT_ENVIRONMENT: venv, UV_NO_SYNC: shared ? '1' : '0',
+    PYTHONDONTWRITEBYTECODE: '1',
+    PYTHONPATH: [path.join(checkout, 'python'), environment.PYTHONPATH].filter(Boolean).join(path.delimiter),
+    PATH: `${path.dirname(executable)}${path.delimiter}${environment.PATH || ''}`};
+}
+function pythonCommands(directory) {
+  const venv = localVenv(), localBin = path.dirname(pythonIn(venv));
+  const sharedVenv = path.join(directory, 'deps/python/.venv'), sharedBin = path.dirname(pythonIn(sharedVenv));
+  const names = JSON.parse(run(pythonIn(venv), ['-I', '-B', '-c',
+    'import importlib.metadata,json;print(json.dumps([e.name for e in importlib.metadata.entry_points(group="console_scripts")]))'], root, process.env, true));
+  const quote = value => "'" + value.replaceAll("'", "'\"'\"'") + "'";
+  for (const name of new Set(names)) {
+    if (path.basename(name) !== name) throw Error('invalid installed console script name');
+    const script = path.join(localBin, `${name}-script.py`);
+    fs.writeFileSync(script, 'import sys\nfrom importlib.metadata import entry_points\n' +
+      `sys.argv[0] = sys.argv[0].removesuffix("-script.py")\nsys.exit(next(e for e in entry_points(group="console_scripts") if e.name == ${JSON.stringify(name)}).load()())\n`);
+    if (process.platform === 'win32') fs.writeFileSync(path.join(localBin, `${name}.cmd`),
+      `@echo off\r\n"${pythonIn(venv)}" "${script}" %*\r\n`);
+    else {
+      const target = path.join(localBin, name);
+      fs.writeFileSync(target, `#!/bin/sh\nexec ${quote(pythonIn(venv))} ${quote(script)} "$@"\n`); fs.chmodSync(target, 0o755);
+    }
+  }
+  for (const name of fs.readdirSync(sharedBin)) {
+    if (/^(?:python|activate|deactivate)/iu.test(name) || names.includes(name.replace(/\.(?:exe|cmd|bat)$/iu, ''))) continue;
+    const source = path.join(sharedBin, name), target = path.join(localBin, name);
+    if (fs.statSync(source).isDirectory()) continue;
+    if (fs.existsSync(target)) continue;
+    const header = fs.readFileSync(source).subarray(0, 512).toString('utf8');
+    if (process.platform !== 'win32' && header.startsWith('#!') && header.includes('python')) {
+      fs.writeFileSync(target, `#!/bin/sh\nexec ${quote(pythonIn(venv))} ${quote(source)} "$@"\n`); fs.chmodSync(target, 0o755);
+    } else fs.symlinkSync(source, target);
+  }
+}
+function validatePython(directory) {
+  const venv = localVenv(), marker = path.join(venv, '.spireagent-shared-env');
+  if (!fs.existsSync(pythonIn(venv)) || fs.lstatSync(venv).isSymbolicLink()
+      || !fs.existsSync(marker) || fs.readFileSync(marker, 'utf8') !== directory)
+    throw Error('checkout Python environment missing or changed');
+  run(pythonIn(venv), ['-I', '-B', '-c',
+    `import pathlib,stpd,spireagent,numpy; root=pathlib.Path(${JSON.stringify(path.join(root, 'python'))}); assert pathlib.Path(stpd.__file__).is_relative_to(root); assert pathlib.Path(spireagent.__file__).is_relative_to(root); assert pathlib.Path(numpy.__file__).is_relative_to(pathlib.Path(${JSON.stringify(path.join(directory, 'deps/python/.venv'))}))`],
+    root, process.env, true);
+}
+function attachPython(directory, id) {
+  const venv = localVenv(), marker = path.join(venv, '.spireagent-shared-env');
+  if (fs.existsSync(venv)) {
+    if (fs.lstatSync(venv).isSymbolicLink() || !fs.existsSync(marker) || fs.readFileSync(marker, 'utf8') !== directory)
+      throw Error('existing Python environment is private; preserving it');
+  } else {
+    idle();
+    run('uv', ['venv', '--python', id.python, venv]);
+    fs.writeFileSync(marker, directory);
+    const sharedSite = run(pythonIn(path.join(directory, 'deps/python/.venv')),
+      ['-I', '-B', '-c', 'import sysconfig;print(sysconfig.get_path("purelib"))'], root, process.env, true);
+    const localSite = run(pythonIn(venv), ['-I', '-B', '-c', 'import sysconfig;print(sysconfig.get_path("purelib"))'], root, process.env, true);
+    fs.writeFileSync(path.join(localSite, 'shared-dependencies.pth'), `import site; site.addsitedir(${JSON.stringify(sharedSite)})\n`);
+    // Install only this checkout's editable project metadata. Children which
+    // deliberately clear PYTHONPATH still resolve the same source as private uv.
+    run('uv', ['pip', 'install', '--no-deps', '--python', pythonIn(venv), '--editable', 'python'], root,
+      {...process.env, UV_LINK_MODE: 'copy'});
+  }
+  pythonCommands(directory);
+  validatePython(directory);
+}
 function register(directory) {
   const users = path.join(directory, 'users');
   fs.writeFileSync(path.join(users, `${digest(root)}.json`), JSON.stringify({root, attached: new Date().toISOString()}));
@@ -152,11 +220,15 @@ function detach() {
     if (!fs.readdirSync(folder).length) fs.rmdirSync(folder);
   }
   unlinkLinks(path.join(root, 'node_modules')); unlinkLinks(path.join(root, 'python/node_modules'));
+  const venv = localVenv(), marker = path.join(venv, '.spireagent-shared-env');
+  if (fs.existsSync(venv) && !fs.lstatSync(venv).isSymbolicLink() && fs.existsSync(marker)
+      && fs.readFileSync(marker, 'utf8') === directory) fs.rmSync(venv, {recursive: true});
   fs.rmSync(path.join(directory, 'users', `${digest(root)}.json`), {force: true});
   fs.unlinkSync(path.join(root, '.local/shared-env.json'));
 }
 function privateSetup() {
   idle();
+  if (fs.existsSync(localVenv()) && fs.lstatSync(localVenv()).isSymbolicLink()) throw Error('foreign Python environment link preserved; detach it before private setup');
   if (fs.existsSync(path.join(root, '.local/shared-env.json'))) detach();
   run('npm', ['ci']); run('npm', ['ci', '--prefix', 'python']); run('npm', ['run', 'setup:python']);
   fs.mkdirSync(path.join(root, '.local'), {recursive: true});
@@ -189,12 +261,13 @@ async function main() {
       if (!fs.existsSync(directory)) build(id, directory);
       verify(directory, id);
       const reattach = fs.existsSync(path.join(root, '.local/shared-env.json')) && attachment().directory === directory;
-      for (const rel of ['node_modules', 'python/node_modules']) if (!reattach && fs.existsSync(path.join(root, rel)))
+      for (const rel of ['node_modules', 'python/node_modules', 'python/.venv']) if (!reattach && fs.existsSync(path.join(root, rel)))
         throw Error(`existing ${rel}; preserving private environment`);
       // Register before links: concurrent prune must see this checkout as in use.
       register(directory);
       attachModules(path.join(directory, 'deps/node_modules'), path.join(root, 'node_modules'), path.join(directory, 'deps'), root);
       attachModules(path.join(directory, 'deps/python/node_modules'), path.join(root, 'python/node_modules'), path.join(directory, 'deps'), root);
+      attachPython(directory, id);
       console.log(JSON.stringify({key: id.key, seconds: (performance.now()-start)/1000, directory}));
     } catch (error) {
       console.error(`Shared environment unavailable: ${error.message}. Using private setup.`);
@@ -203,14 +276,14 @@ async function main() {
     }
   } else if (command === 'run') {
     const privateReceipt = path.join(root, '.local/shared-env-private.json');
-    if (!fs.existsSync(path.join(root, '.local/shared-env.json')) && fs.existsSync(privateReceipt)
+    if (!fs.existsSync(path.join(root, '.local/shared-env.json')) && fs.existsSync(pythonIn(localVenv())) && fs.existsSync(privateReceipt)
         && JSON.parse(fs.readFileSync(privateReceipt)).key === id.key) {
       const child = args[0] === '--' ? args.slice(1) : args;
       if (!child.length) throw Error('env:run requires -- COMMAND');
-      run(child[0], child.slice(1), root, {...process.env, PYTHON: path.join(root, 'python/.venv', process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python')}); return;
+      run(child[0], child.slice(1), root, executionEnvironment()); return;
     }
     let shared;
-    try { shared = attachment().directory; verify(shared, id); }
+    try { shared = attachment().directory; verify(shared, id); validatePython(shared); }
     catch (error) {
       console.error(`Shared environment unavailable: ${error.message}; using private setup in the reserved idle slot.`);
       const mutation = path.join(cache(), '.mutation');
@@ -218,13 +291,9 @@ async function main() {
       try { privateSetup(); } finally { fs.rmSync(mutation, {recursive: true}); }
       const child = args[0] === '--' ? args.slice(1) : args;
       if (!child.length) throw Error('env:run requires -- COMMAND');
-      run(child[0], child.slice(1)); return;
+      run(child[0], child.slice(1), root, executionEnvironment()); return;
     }
-    const executable = path.join(shared, 'deps/python/.venv', process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python');
-    const env = {...process.env, PYTHON: executable, UV_PROJECT_ENVIRONMENT: path.dirname(path.dirname(executable)),
-      UV_NO_SYNC: '1', PYTHONDONTWRITEBYTECODE: '1',
-      PYTHONPATH: [path.join(root, 'python'), process.env.PYTHONPATH].filter(Boolean).join(path.delimiter),
-      PATH: `${path.dirname(executable)}${path.delimiter}${process.env.PATH}`};
+    const env = executionEnvironment({shared: true});
     const child = args[0] === '--' ? args.slice(1) : args;
     if (!child.length) throw Error('env:run requires -- COMMAND');
     run(child[0], child.slice(1), root, env);
