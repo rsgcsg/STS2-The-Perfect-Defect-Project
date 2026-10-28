@@ -802,3 +802,49 @@ def test_immutable_nonformal_plan_controls_score_even_for_a_legacy_executor(ledg
     assert result["new_finished"] == 0
     assert report["win"] == report["loss"] == 0
     assert all(group["scored"] == 0 for group in report["groups"])
+
+
+def test_evaluation_plan_schedules_frozen_minimum_audit_first_and_gates_scores(ledger):
+    original = json.loads(Path(ledger.plan["execution"]["path"]).read_bytes())
+    original["retention"] = {"tier": "trajectory", "purpose": "evaluation", "audit_every": 50}
+    execution = ledger.directory.parent / "evaluation-execution.json"
+    execution.write_bytes(json_bytes(original))
+    manifest_ref = ledger.plan["slots"][0]["manifest"]
+    current = EvaluationLedger.create(ledger.directory.parent / "evaluation-ledger",
+        Path(manifest_ref["path"]), manifest_ref["sha256"], selections={"438": "same-weight"},
+        execution=execution)
+    audits = current.plan["audit_selection"]
+    assert audits["count"] == 1
+    assert current.slots()[0]["formal_audit_selected"] is True
+    assert sum(slot["formal_audit_selected"] for slot in current.slots()) == 1
+    assert current.report()["score_admitted"] is False
+    seen = []
+
+    def executor(row, manifest, artifacts, checkpoint):
+        seen.append(row["formal_audit_selected"])
+        complete(row, artifacts, checkpoint)
+
+    current.run_managed(workers=1, max_episodes=2, executor=executor)
+    assert seen == [True, False]
+    result = current.report()
+    assert result["score_admitted"] is True
+    assert result["formal_audit"]["satisfied"] is True
+    assert result["loss"] == 2
+    assert EvaluationLedger(current.directory).plan["audit_selection"] == audits
+
+    unknown_ledger = EvaluationLedger.create(ledger.directory.parent / "unknown-evaluation-ledger",
+        Path(manifest_ref["path"]), manifest_ref["sha256"], selections={"438": "same-weight"},
+        execution=execution)
+
+    def unknown_audit(row, manifest, artifacts, checkpoint):
+        complete(row, artifacts, checkpoint)
+        if row["formal_audit_selected"]:
+            row.update(status="unknown", reason="lost_original_reply")
+            checkpoint()
+
+    unknown_ledger.run_managed(workers=1, max_episodes=2, executor=unknown_audit)
+    missing = unknown_ledger.report()
+    assert missing["formal_audit"]["qualified"] == 0
+    assert missing["score_admitted"] is False
+    assert missing["unknown"] == 1 and missing["loss"] == missing["win"] == 0
+    assert all(group["scored"] == 0 for group in missing["groups"])

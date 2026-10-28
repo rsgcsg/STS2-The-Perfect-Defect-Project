@@ -12,7 +12,7 @@
 
 ```json
 {
-  "retention": {"tier": "trajectory", "audit_every": 100},
+  "retention": {"tier": "trajectory", "purpose": "evaluation", "audit_every": 50},
   "pipeline": {"save_workers": 2, "pending_limit": 8},
   "store": "/ABS/node-managed-store",
   "read_concurrency": 8
@@ -23,11 +23,17 @@
 |---|---|---|
 | `formal` 正式 | 原完整 Runtime/模型父与原件，复制到冻结 peer，每次完整 typed 读回 | 只有自然终局、关闭与读回全部确认后进分数板 |
 | `diagnostic` 诊断 | 正常胜局留本机完整 Store 并 typed 读回；自然负、censored、unknown、异常升完整 R2 | 永不进分数板；升档只改变保存量 |
-| `trajectory` 轨迹 | 正常局只把公开轨迹分片送 R2；约 1% 完整审计；unknown/异常完整 R2，typed 可读的 unknown 同时留轨迹 | 永不进分数板 |
+| `trajectory` 轨迹 | 正常局把公开轨迹分片送 R2；unknown/异常完整 R2，typed 可读的 unknown 同时留轨迹 | 仅显式声明 `purpose=evaluation` 的新账本可经下述校验入账；训练和旧账本不入账 |
 
 诊断档拒绝 `store=s3`，避免把“本机保存”实际写成远端。轨迹分片父引用已有模型，
-不复制一份新模型。完整审计按 `sha256(seed, selection, manifest_sha256) % audit_every == 0`
-选择，规则和分母在开局前冻结，不按输赢挑局。默认 100 为约 1%，小批不保证恰有一局。
+不复制一份新模型。新评估声明 `purpose=evaluation`、`audit_every=50`，使用
+`managed-retention-v2`：以完整冻结配置和槽身份哈希排序，预选
+`max(1, ceil(N/50))` 个完整审计槽，优先调度，plan 保存 salt、全分母和选中身份。
+未完成及未知不改选、不重投；异常额外保存不抵审计配额。完整审计未取得自然终局和
+完整 typed peer 读回时，报告 `formal_audit.satisfied=false`、`score_admitted=false`，
+保留所有分母。普通评估局须先通过原 typed 校验，再经轨迹分片完整读回及内容身份核验。
+训练可声明 `purpose=training`。旧配置、旧 plan 和旧轨迹维持原用途；旧 modulo 审计规则
+只供旧账本及非评估用途读取，不改写历史。
 原完整证据不减字段，不放宽 producer、整包、父对象或 payload 哈希检查。
 
 诊断与运行节点暂存沿用 [原七天保留及容量规则](DATA_LIFECYCLE.md#workstation-capacity-before-long-tasks)。
@@ -36,9 +42,10 @@
 
 ## 执行、关闭、保存与恢复
 
-同一账本在 offer 前持久化 reservation。原执行器完成 Runtime 封存及 outcome，再由原
-Host owner 关闭。扩展只在原 `_preserve` 接缝写不可变 save-job；关闭确认后释放执行工人，
-由同一账本交给有限保存池：
+同一账本在 offer 前持久化 reservation。原执行器取得 Runtime 封存输出，写下
+待校验输入，再由原 Host owner 关闭；关闭确认后释放执行工人，由同一账本的有限保存池
+执行原 typed 校验、outcome、层数统计和保存。`verification_pending` 不是自然终局或成绩。
+typed 失败完整保留失败原件，记录 unknown；只恢复保存，不重投游戏：
 
 `reserved → executing → sealed → close confirmed → save_pending → readback → finished/saved/unknown`
 
@@ -65,9 +72,20 @@ shard_wait 与 shard_preserve_shared；末项为该分片共同耗时，不能�
 `detail_seconds` 为嵌套观察，不与 phase 相加。每局 elapsed 包括自身排队/封片等待；批时间
 取命令外墙钟，含 preparation，不用单局中位数乘局数冒充吞吐。
 
-## 轨迹格式 v1
+## 决策持久化
 
-`stpd/p1-trajectory-1` 每局一个 JSON 对象；分片为 `p1-trajectory-shard-1` 的 gzip NDJSON，
+Runtime rc55 的 Managed GLOBAL 无状态通道默认使用决策持久化，可在执行配置中显式设
+`evidence_durability=event` 对照。CLI 为 `--managed-evidence-durability decision`；
+Reference、Human、旧 Runtime 默认仍逐事件同步。
+原始捕获响应仍立即同步，最终 payload 及日志按顺序在每次 native 提交前（含 fold）、
+回执分类后、决策退出、等待继续和 Stop/seal 时同步。替代原件和日志均同步成功后才删
+响应 staging。同步失败阻止新提交、标记 taint 并释放控制；保留未封存诊断。
+序列化字节、路径、哈希及原 unknown 规则不变。
+
+## 轨迹格式 v2
+
+新产物为 `stpd/p1-trajectory-2`；仍可读取历史 v1，不补写历史字段。
+每局一个 JSON 对象；分片为 `p1-trajectory-shard-1` 的 gzip NDJSON，
 每片最多 8 局、解压后 256 MiB（单局最多 256 MiB），最后不足 8 局照样封片。
 采用 gzip level 1、固定 mtime=0，复用 Store 分块、manifest-last 发布及复制，不另建传输。
 先用八局上限平衡封片尾巴、内存和失败恢复；暂不为填满分片等待下一批。
@@ -82,6 +100,8 @@ shard_wait 与 shard_preserve_shared；末项为该分片共同耗时，不能�
 | `state_value/action_values` | 价值头输出；A′ 存完整动作目录同序向量，没该头则 null 并写 value_status，绝不把 logit 当价值 |
 | `combat_spans[]` | 公开观察中 combat 从 available 到离开的索引；不见结束则 end 为 null，不补推隐藏战斗结局 |
 | `outcome` | 原终局结果、最高公开层数、原 finished/censored/unknown、unknown 原因 |
+| `outcome.boss_clearance` | `count/cleared_acts/witnesses`；只认公开相邻幕推进或 `reward_completion.surface.is_boss=true`，按幕去重；无见证时 count 为 null，进入首领战和层数不能代证 |
+| `score_eligible` | 仅 v2 显式评估用途为 true；仍须自然终局、关闭、typed 原件、匹配分片读回和审计配额才能进入账本成绩。unknown 始终不计分 |
 | `rl_ready` | 当前 argmax/无价值头为 false；不因保存成功授训练资格 |
 
 实际采样模式的格式要求：若原模型概率为 p，温度 T、uniform_mix=ε，则

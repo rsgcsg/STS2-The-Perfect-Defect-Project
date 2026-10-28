@@ -330,6 +330,15 @@ node components/policy-runtime/dist/cli.js \
 Arguments are passed literally. If a child argument begins with `--`, use the
 `--adapter-arg=value` form. The service defaults to Connector
 `http://127.0.0.1:15526` and Policy Runtime `http://127.0.0.1:15527`.
+Managed GLOBAL stateless sessions may use `--managed-evidence-durability decision`
+(rc55). This preserves the original serialized evidence bytes while syncing
+payloads before their journal references at each native submission, classified
+receipt, decision exit and Stop/seal. Received capture-response staging remains
+immediately synced and is removed only after its replacement crosses a barrier.
+Settling loops also flush before continuing, bounding retained staging. A failed
+barrier fences submission and releases control. The default CLI mode remains
+`event`; Reference and opaque-state sessions cannot opt into decision durability.
+
 For a Managed Manifest, the caller must supply `--managed-binding`,
 `--managed-attachment`, `--managed-expected-service-instance-id`,
 `--managed-expected-runtime-instance-id`, and

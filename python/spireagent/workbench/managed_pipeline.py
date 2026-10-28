@@ -1,7 +1,7 @@
 """Preservation extension at the existing executor's sealed-original seam.
 
-The Host/Runtime execution, typed seal, outcome and close stay in their owner.
-This hook persists the save inputs; the ledger starts saving only after close.
+The Host/Runtime execution and close stay in their owner. The existing save
+queue verifies/classifies the sealed original after close, before admission.
 """
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ from sts2_platform_evidence import verify_agent_session_run_evidence
 from spireagent.json_boundary import BoundaryError, json_bytes
 from spireagent.package_identity import validate_installed_package
 from spireagent.storage.store import copy_artifact
-from stpd.p1.trajectory import MAX_EPISODE_BYTES, extract_trajectory
+from stpd.p1.trajectory import MAX_EPISODE_BYTES, extract_trajectory, validate_trajectory
 
 from .global_evidence_store import (
     publish_global_evidence,
@@ -79,6 +79,65 @@ def verify_unscored_save(row: dict[str, Any], path: Path) -> None:
         raise BoundaryError("managed_pipeline", "unscored_save_receipt_required")
 
 
+def verify_evaluation_trajectory(row: dict[str, Any], path: Path) -> None:
+    """Explicit v2 evaluation admission, after typed original and full shard readback."""
+    verify_closed_save(row, path)
+    retention = row.get("retention") or {}
+    if (retention.get("schema") != "spireagent/managed-retention-v2"
+            or retention.get("purpose") != "evaluation" or retention.get("tier") != "trajectory"
+            or retention.get("score_eligible") is not True
+            or row.get("execution_status") != "finished"):
+        raise BoundaryError("managed_pipeline", "evaluation_trajectory_intent_required")
+    if row.get("formal_audit_selected"):
+        verify_completed_row(path, row)
+        full = json.loads(_referenced(path.parent, row["preservation"]))
+        if (full.get("peer_readback", {}).get("full_readback") is not True
+                or full.get("peer_readback", {}).get("typed_verification") != "pass"):
+            raise BoundaryError("managed_pipeline", "formal_audit_readback_required")
+    job = json.loads(_referenced(path.parent, row["save_job"]))
+    expected = job["expected"]
+    scenario = row["scenario"]
+    if (job.get("episode") != {"seed": row["seed"],
+            "manifest_sha256": row["manifest_sha256"], "scenario": scenario}
+            or expected.get("run_id") != row["run_id"]):
+        raise BoundaryError("managed_pipeline", "evaluation_trajectory_identity_changed")
+    raw = _referenced(path.parent, row["trajectory"], max_bytes=MAX_EPISODE_BYTES)
+    episode = json.loads(raw)
+    validate_trajectory(episode)
+    typed = json.loads(_referenced(path.parent, row["typed_verification"]))
+    receipt = json.loads(_referenced(path.parent, row["trajectory_preservation"]))
+    identity = episode["identity"]
+    required_identity = {"producer": job["producer"], "host_pin": job.get("host_pin"),
+        "runtime_pin": job.get("runtime_pin"), "model_artifact_id": job["model_artifact_id"],
+        "model_sha256": expected.get("agent_artifact_sha256"),
+        "input_spec": (expected.get("model_binding") or {}).get("input_spec"),
+        "seed": job["episode"]["seed"], "character": scenario["character"],
+        "ascension": scenario["ascension"],
+        "initial_progress_sha256": job.get("initial_progress_sha256")}
+    if (any(value is None for value in required_identity.values())
+            or json_bytes({key: identity.get(key) for key in required_identity})
+            != json_bytes(required_identity)
+            or json_bytes(typed.get("expected")) != json_bytes(expected)):
+        raise BoundaryError("managed_pipeline", "evaluation_trajectory_identity_changed")
+    if (episode["run_id"] != row["run_id"] or episode["score_eligible"] is not True
+            or episode["identity"]["retention"] != retention
+            or episode["outcome"]["status"] != "finished"
+            or json_bytes(episode["outcome"]["terminal"])
+            != json_bytes(row["agent_task_outcome"]["terminal_observation"])
+            or json_bytes(episode["outcome"]["max_observed_floor"])
+            != json_bytes((row.get("game_metrics") or {}).get("max_observed_floor"))
+            or typed.get("status") != "pass"
+            or episode["original_content_id"] != typed["content_id"]
+            or receipt.get("status") != "completed" or receipt.get("full_readback") is not True
+            or receipt.get("trajectory_verification") != "pass"
+            or receipt.get("artifact_id") != row.get("trajectory_shard_id")
+            or receipt.get("run_id") != row["run_id"]
+            or receipt.get("episode_sha256") != hashlib.sha256(raw).hexdigest()
+            or receipt.get("original_content_id") != typed["content_id"]
+            or receipt.get("score_eligible") is not True):
+        raise BoundaryError("managed_pipeline", "evaluation_trajectory_readback_required")
+
+
 class PipelinedManagedExecutor(ManagedEpisodeExecutor):
     def __init__(self, configuration: dict[str, Any], *, episode_seconds: float,
                  cleanup_seconds: float) -> None:
@@ -105,10 +164,17 @@ class PipelinedManagedExecutor(ManagedEpisodeExecutor):
             row.update(status="save_pending", reason="closed_host_waiting_for_preservation")
         checkpoint()
 
+    def _finish_original(self, row: dict[str, Any], artifacts: Any, run: Path,
+                         expected: dict[str, Any], package: Path,
+                         runtime_instance_id: str) -> None:
+        # The execution slot can be released after Host close. This is pending
+        # verification, never a qualified terminal result or scoring admission.
+        row["verification_runtime_instance_id"] = runtime_instance_id
+        row.update(status="verification_pending", reason="waiting_for_typed_verification")
+
     def _preserve(self, row: dict[str, Any], artifacts: Any, checkpoint: Any, run: Path,
                   expected: dict[str, Any], model: dict[str, Any], private: Path) -> None:
-        # No new execution/close implementation: the base calls this only after
-        # its typed seal. It then classifies the original and closes the Host.
+        # Persist the same sealed-original inputs; the base still owns Host close.
         self._write_job(row, artifacts, checkpoint, expected, mode="sealed")
 
     def _write_job(self, row: dict[str, Any], artifacts: Any, checkpoint: Any,
@@ -118,9 +184,16 @@ class PipelinedManagedExecutor(ManagedEpisodeExecutor):
             "schema": "spireagent/managed-save-job-1", "expected": expected,
             "run": f"runs/{row['run_id']}" if row.get("run_id") else None,
             "mode": mode, "selection_id": row["selection_id"],
+            "verification_runtime_instance_id": row.get("verification_runtime_instance_id"),
+            "formal_audit_selected": row.get("formal_audit_selected"),
+            "ledger_slot_id": row.get("ledger_slot_id"),
             "episode": {"seed": row["seed"], "manifest_sha256": row["manifest_sha256"],
                         "scenario": row["scenario"]},
             "model_artifact_id": model["artifact_id"], "producer": self.producer.to_dict(),
+            "host_pin": self.configuration.get("host_pin"),
+            "runtime_pin": self.configuration.get("runtime_pin"),
+            "initial_progress_sha256": self.configuration.get("initial_progress", {}).get(
+                "progress_sha256"),
             "retention": row["retention"], "peer": self.configuration["peer"],
             "store": self.preparation["store"]}))
         checkpoint()
@@ -150,7 +223,15 @@ class PipelinedManagedExecutor(ManagedEpisodeExecutor):
                     or job["retention"] != row["retention"]
                     or row["retention"] != retention_configuration(self.configuration)
                     or job["model_artifact_id"] != model["artifact_id"]
+                    or "host_pin" in job and (job["host_pin"] != self.configuration.get("host_pin")
+                        or job["runtime_pin"] != self.configuration.get("runtime_pin")
+                        or job["initial_progress_sha256"]
+                        != self.configuration.get("initial_progress", {}).get("progress_sha256"))
                     or job["selection_id"] != row["selection_id"]
+                    or job.get("formal_audit_selected") != row.get("formal_audit_selected")
+                    or job.get("ledger_slot_id") != row.get("ledger_slot_id")
+                    or job.get("verification_runtime_instance_id")
+                    != row.get("verification_runtime_instance_id")
                     or job["episode"] != {"seed": row["seed"],
                         "manifest_sha256": row["manifest_sha256"], "scenario": row["scenario"]}
                     or expected["run_id"] != row.get("run_id")
@@ -172,7 +253,25 @@ class PipelinedManagedExecutor(ManagedEpisodeExecutor):
             with _phase(row, "save_verify"):
                 verified = verify_agent_session_run_evidence(run, expected)
             if not verified.passed or verified.value is None:
-                raise BoundaryError("managed_pipeline", "typed_original_verification_failed")
+                # A failed typed original is still an owned full failed prefix;
+                # persist it without retrying the native episode.
+                row.update(execution_status="unknown",
+                           execution_reason="typed_original_verification_failed")
+                checkpoint()
+                self._preserve_failure(row, artifacts, job, private)
+                row["elapsed_seconds"] = time.time() - row.get("pipeline_started_at", time.time())
+                row.setdefault("detail_seconds", {})["save_worker"] = time.monotonic() - started
+                report.update(status="stopped", stop_reason=row["execution_reason"])
+                checkpoint()
+                return report
+            if row.get("execution_status") == "verification_pending":
+                with _phase(row, "finish"):
+                    self._record_verified_original(row, artifacts, run, expected,
+                        Path(model["package_directory"]),
+                        job["verification_runtime_instance_id"], verified)
+                row["execution_status"], row["execution_reason"] = row["status"], row["reason"]
+                row.update(status="save_pending", reason="waiting_for_preservation")
+                checkpoint()
             route = preservation_route(row["retention"], row)
             row["preservation_route"] = route
             if route in {"full_peer", "trajectory_and_full_peer"}:
@@ -281,7 +380,7 @@ class PipelinedManagedExecutor(ManagedEpisodeExecutor):
                                       scratch=group[0][0].parent / "private"))
             if readback != [v for _, _, v in group]:
                 raise BoundaryError("managed_pipeline", "shard_readback_changed")
-            for path, report, _ in group:
+            for path, report, episode in group:
                 row = report["episodes"][0]
                 row.setdefault("phase_seconds", {})["shard_wait"] = max(
                     0, began - row.get("trajectory_enqueued_at", began))
@@ -293,11 +392,17 @@ class PipelinedManagedExecutor(ManagedEpisodeExecutor):
                     json_bytes({"status": "completed", "artifact_id": manifest.artifact_id,
                         "run_id": row["run_id"], "peer": self.configuration["peer"],
                         "full_readback": True, "trajectory_verification": "pass",
-                        "compressed_bytes": manifest.payload("trajectory").size}))
-                row.update(status="saved" if row["execution_status"] == "finished"
-                           else row["execution_status"], reason=row["execution_reason"])
-                report.update(status="completed" if row["status"] == "saved" else "stopped",
-                              stop_reason=None if row["status"] == "saved" else row["reason"])
+                        "compressed_bytes": manifest.payload("trajectory").size,
+                        "episode_sha256": hashlib.sha256(json_bytes(episode)).hexdigest(),
+                        "original_content_id": episode["original_content_id"],
+                        "score_eligible": episode["score_eligible"]}))
+                row.update(status=("finished" if row["retention"]["score_eligible"] else "saved")
+                           if row["execution_status"] == "finished" else row["execution_status"],
+                           reason=row["execution_reason"])
+                report.update(status=("completed" if row["status"] in {"saved", "finished"}
+                                      else "stopped"),
+                              stop_reason=None if row["status"] in {"saved", "finished"}
+                              else row["reason"])
                 artifacts.save(report)
                 completed.append((path, report))
             group.clear()

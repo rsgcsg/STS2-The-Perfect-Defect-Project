@@ -355,7 +355,10 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
         await this.failClosed(reason);
         return { type: this.tainted ? "unknown" : "not_admitted", ...(this.tainted ? { error: reason } : { reason }), status: this.status() } as AgentRuntimeTickResult;
       } finally {
-        try { await this.cleanupSampleQueries(offer.pending || this.agentUncertain); }
+        try {
+          await this.flushEvidence();
+          await this.cleanupSampleQueries(offer.pending || this.agentUncertain);
+        }
         catch (error) {
           if (!this.manifest.execution_policy) throw error;
           // Cleanup owns this failure even after a known result/normal Await.
@@ -1305,6 +1308,8 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
       || this.manifest.input.global.core_sha256 !== p1CoreIdentity().module_digest) throw new AgentSessionError("global_core_or_environment_contract");
     const identity = await transport.negotiate(signal); this.checkActive(this.owner.epoch, signal);
     assertGlobalIdentity(identity, expected); assertGlobalProgramSupport(identity, this.manifest);
+    if (this.options.evidence.durability === "decision" && identity.kind !== "managed")
+      throw new AgentSessionError("decision_durability_managed_required");
     if (this.options.managedSettlingTimeoutMs !== undefined && identity.kind !== "managed")
       throw new AgentSessionError("managed_settling_profile_required");
     this.globalIdentity = identity;
@@ -1428,6 +1433,7 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
       this.checkManagedSettling(source);
       const snapshot = source.full.basis.snapshot;
       if (snapshot.status === "settling" || snapshot.status === "observed" && reduction.observation.status !== "terminal") {
+        await this.flushEvidence();
         await globalDelay(50, signal); continue;
       }
       if (source.full.basis.capture_status !== "complete" || !reduction.complete || reduction.observation.status === "unsupported"
@@ -1530,6 +1536,7 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
             if (!this.owner.available() || this.controllerStatus() !== "held" || this.mode === "human" || this.tainted) throw new AgentSessionError("global_dispatch_not_authorized");
             await this.emitGlobal("global_dispatch", { request_id: requestId, acquisition_id: this.basisId, source_ordinal: source.ordinal,
               choice_id: choiceId, step_index: steps.length, bound_action: bound, expected_snapshot_id: source.full.basis.snapshot.snapshot_id });
+            await this.flushEvidence();
             this.checkActive(epoch, signal);
             if (!this.owner.consumeSubmission()) { this.expireBudget(); throw new AgentSessionError("autonomy_budget_exhausted"); }
             sent = true;
@@ -1547,6 +1554,7 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
           : canonicalJson(expected) === canonicalJson(actual);
         if (decoded.request_id !== requestId || !bindingMatches) throw new AgentSessionError("global_original_receipt_binding");
         await this.emitGlobal("global_receipt", { request_id: requestId, source_ordinal: source.ordinal, receipt: decoded });
+        await this.flushEvidence();
         steps.push({ index: steps.length, origin: steps.length ? "fold" : "agent_choice", native_verb: step.verb, label: step.label,
           delivery: decoded.delivery, reason_code: decoded.reason_code ?? null });
         classified = true;
@@ -1581,6 +1589,7 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
         // The delay only paces this pull-only transport; it never proves readiness.
         // The existing operation budget and Stop abort the wait and release control.
         while (source.full.basis.snapshot.status === "settling") {
+          await this.flushEvidence();
           await globalDelay(50, signal); this.checkActive(epoch, signal);
           source = await this.captureGlobal(signal, epoch, true); this.globalPendingSource = source;
           this.checkManagedSettling(source);
@@ -1613,16 +1622,21 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
 
   private async emit<K extends AgentRuntimeEventKind>(kind: K, payload: AgentRuntimeEventPayloads[K]): Promise<void> {
     try { await this.options.evidence.append(kind, payload as unknown as Record<string, unknown>, this.now()); }
-    catch (error) {
-      this.tainted = true; this.taintReason = `agent_evidence_write_failed:${errorMessage(error)}`;
-      if (this.manifest.execution_policy?.schema === AGENT_KNOWN_STALE_WINDOW_POLICY_SCHEMA) this.terminationReason ??= this.taintReason;
-      this.knownStaleWindow = null;
-      this.mode = "human"; this.owner.end("mode_changed"); this.owner.cancelActive(error);
-      // Evidence failure must not leave a held lease with its deadline cleared.
-      // Direct SDK cleanup avoids recursive attempts to write failed evidence.
-      await (this.options.globalTransport ? this.options.globalTransport.release() : this.controller!.releaseControl()).catch(() => undefined);
-      throw error;
-    }
+    catch (error) { await this.evidenceFailed(error); }
+  }
+  private async flushEvidence(): Promise<void> {
+    try { await this.options.evidence.flush(); }
+    catch (error) { await this.evidenceFailed(error); }
+  }
+  private async evidenceFailed(error: unknown): Promise<never> {
+    this.tainted = true; this.taintReason = `agent_evidence_write_failed:${errorMessage(error)}`;
+    if (this.manifest.execution_policy?.schema === AGENT_KNOWN_STALE_WINDOW_POLICY_SCHEMA) this.terminationReason ??= this.taintReason;
+    this.knownStaleWindow = null;
+    this.mode = "human"; this.owner.end("mode_changed"); this.owner.cancelActive(error);
+    // Evidence failure must not leave a held lease with its deadline cleared.
+    // Direct SDK cleanup avoids recursive attempts to write failed evidence.
+    await (this.options.globalTransport ? this.options.globalTransport.release() : this.controller!.releaseControl()).catch(() => undefined);
+    throw error;
   }
 }
 
