@@ -116,9 +116,11 @@ def load_plan(path: Path) -> dict[str, Any]:
 
 def require_modules(source: Path) -> None:
     """Never import/pull RL1's private checkout; only the executing frozen release."""
-    for short in ('rl_actor', 'rl_exchange'):
-        expected = source / 'python/spireagent/workbench' / f'{short}.py'
-        spec = importlib.util.find_spec(f'spireagent.workbench.{short}')
+    for module, relative in (
+            ('spireagent.workbench.rl_actor', 'workbench/rl_actor.py'),
+            ('spireagent.rl_exchange', 'rl_exchange.py')):
+        expected = source / 'python/spireagent' / relative
+        spec = importlib.util.find_spec(module)
         if (spec is None or spec.origin is None or not expected.is_file()
                 or expected.is_symlink() or Path(spec.origin).resolve() != expected):
             raise ValueError('RL1_modules_not_merged_or_not_in_frozen_release')

@@ -109,6 +109,19 @@ def test_missing_or_foreign_RL1_modules_are_explicitly_refused_before_allocation
     assert not (file.parent / 'actors').exists()
 
 
+def test_module_binding_uses_the_current_project_exchange_owner(rl, tmp_path):
+    source = tmp_path.resolve() / 'release/source'
+    modules = {'spireagent.workbench.rl_actor': 'workbench/rl_actor.py',
+               'spireagent.rl_exchange': 'rl_exchange.py'}
+    paths = {name: source / 'python/spireagent' / path for name, path in modules.items()}
+    for path in paths.values():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('# module location boundary; no RL implementation\n')
+    with patch.object(rl.importlib.util, 'find_spec',
+                      side_effect=lambda name: SimpleNamespace(origin=str(paths[name]))):
+        rl.require_modules(source)
+
+
 def test_submit_reuses_F2_gate_and_fc430_single_core_array(rl, inputs, tmp_path):
     _plan, file = prepared(rl, inputs)
     lock = tmp_path.resolve() / 'settings/submit.lock'
