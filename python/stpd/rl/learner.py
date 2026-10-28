@@ -156,26 +156,53 @@ class Learner:
 
     # Setup ------------------------------------------------------------
     def _anchor(self) -> list[tuple[Any, int]]:
-        """Human anchor points: a bounded, frozen prefix of the declared TRAIN snapshot."""
+        """Human anchor points: a bounded, frozen prefix of the declared TRAIN snapshot.
+
+        The verified (observation, chosen) prefix is kept in an optional private
+        node-local cache, bound to the snapshot ID, point count and its own
+        SHA-256, so later runs skip the full Store read; projection still runs here.
+        """
         spec = self.config.anchor
         if not spec:
             return []
-        from spireagent.storage.config import open_peer
-        from stpd.p1.dataset import SnapshotReader
+        import gzip
 
         began = time.monotonic()
-        reader = SnapshotReader(open_peer(spec["peer"]), spec["snapshot_id"])
+        name = hashlib.sha256(json_bytes({"snapshot_id": spec["snapshot_id"],
+                                          "points": spec["points"],
+                                          "split": "train"})).hexdigest()
+        cache = (Path(spec["cache_directory"]) / f"{name}.json.gz"
+                 if spec.get("cache_directory") else None)
+        source = "store"
+        if cache is not None and cache.exists():
+            raw = cache.read_bytes()
+            if hashlib.sha256(raw).hexdigest() != cache.with_suffix(".sha256").read_text().strip():
+                raise BoundaryError("rl_learner", "anchor_cache_integrity_failure")
+            rows = json.loads(gzip.decompress(raw))
+            source = "node_cache"
+        else:
+            from spireagent.storage.config import open_peer
+            from stpd.p1.dataset import SnapshotReader
+
+            reader = SnapshotReader(open_peer(spec["peer"]), spec["snapshot_id"])
+            rows = []
+            for reference, observation in reader.iter_points():
+                if reference["split"] == "train":
+                    rows.append({"chosen": reference["chosen"], "observation": observation})
+                if len(rows) >= spec["points"]:
+                    break
+            if cache is not None:
+                cache.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+                raw = gzip.compress(json_bytes(rows), mtime=0)
+                cache.with_suffix(".sha256").write_text(hashlib.sha256(raw).hexdigest() + "\n")
+                cache.write_bytes(raw)
         points = []
-        for reference, observation in reader.iter_points():
-            if reference["split"] != "train":
-                continue
-            frame = project(observation, input_projection=self.projection)
-            points.append((frame, [c["choice_id"] for c in frame.choices].index(
-                reference["chosen"])))
-            if len(points) >= spec["points"]:
-                break
+        for row in rows:
+            frame = project(row["observation"], input_projection=self.projection)
+            points.append((frame, [c["choice_id"] for c in frame.choices].index(row["chosen"])))
         self.anchor_identity = {"snapshot_id": spec["snapshot_id"], "points": len(points),
-                                "split": "train", "load_seconds": time.monotonic() - began}
+                                "split": "train", "source": source,
+                                "load_seconds": time.monotonic() - began}
         return points
 
     def _initial_version(self) -> int:
