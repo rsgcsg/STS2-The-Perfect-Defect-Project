@@ -122,7 +122,8 @@ class Actor:
         # A restarted actor of the same name continues past its announced shards,
         # so it never replays (and the learner never double-counts) earlier seeds.
         self.epoch = self.sequence
-        self.chunk = 0
+        ledgers = work / "ledgers"
+        self.chunk = len(list(ledgers.iterdir())) if ledgers.exists() else 0
         self.counts: collections.Counter[str] = collections.Counter()
         self.timing: collections.defaultdict[str, float] = collections.defaultdict(float)
         self.games: list[dict[str, Any]] = []
@@ -238,9 +239,10 @@ class Actor:
                 step = time.monotonic()
                 self._announce(record, [s for s in ledger.slots() if s["status"] != "not_started"])
                 self.timing["announce"] += time.monotonic() - step
-                if result.get("status") == "stopped" and result.get("stop_reason") in {
-                        "workspace_capacity_insufficient"}:
-                    status = "stopped_capacity"
+                if result.get("status") == "stopped":
+                    # Every ledger stop is the owner's to read (unknown cleanup not
+                    # accepted, save failed, capacity, wall limit); never play on past it.
+                    status = f"stopped_ledger:{result.get('stop_reason')}"
                     break
                 if self._unknown_limit():
                     status = "stopped_unknown_limit"

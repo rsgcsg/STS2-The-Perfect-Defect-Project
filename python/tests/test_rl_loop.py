@@ -126,7 +126,8 @@ def test_rl_update_moves_toward_positive_advantage_and_respects_anchor():
     with torch.no_grad():
         before = torch.log_softmax(model.forward_batch([first])[0], -1)
     action = int(before.argmin())
-    samples = [RlSample(first, action, float(before[action].exp()), 1.0, 0, f"k{i}")
+    probability = float(before[action].exp())
+    samples = [RlSample(first, action, probability, probability, 1.0, 0, f"k{i}")
                for i in range(4)]
     for _ in range(5):
         result = rl_update(model, reference, optimizer, samples, [(first, action)], 1e-2,
@@ -143,7 +144,8 @@ def test_cached_reference_gives_the_same_update_as_recomputing():
     frame = project(observation())
     torch.manual_seed(5)
     reference = MStd(fit_vocabulary([frame])).eval()
-    samples = [RlSample(frame, 0, 0.4, 1.0, 0, "a"), RlSample(frame, 1, 0.3, -1.0, 0, "b")]
+    samples = [RlSample(frame, 0, 0.4, 0.5, 1.0, 0, "a"),
+               RlSample(frame, 1, 0.3, 0.2, -1.0, 0, "b")]
     results = []
     for cache in (None, {}):
         model = MStd(reference.vocabulary)
@@ -259,3 +261,11 @@ def test_actor_switches_to_the_newest_fetched_version_between_ledgers(tmp_path, 
     assert [(r["model_version"], r["disposition"]) for r in records] == [
         (0, "without_shard"), (1, "without_shard")]
     assert summary["counts"]["executor_builds"] == 2
+
+    # Any ledger stop (here: unknown cleanup not accepted) ends the actor; no fresh seeds.
+    Ledger.run_managed = lambda self, **_: {"status": "stopped",
+                                            "stop_reason": "unknown_cleanup_requires_owner_read"}
+    again = Actor({**actor.config, "actor": "b"}, tmp_path / "actor-b")
+    stopped = again.run()
+    assert stopped["status"] == "stopped_ledger:unknown_cleanup_requires_owner_read"
+    assert len(stopped["games"]) == 1

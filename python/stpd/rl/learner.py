@@ -296,11 +296,11 @@ class Learner:
         shards = sorted({entry[0] for entry in learner["buffer"]})
         for rows in self.reader.map(self._read, shards):
             for row in rows:
-                for frame, action, probability, key in row.get("samples", ()):
+                for frame, action, probability, old, key in row.get("samples", ()):
                     if key in saved:
                         uses, advantage, version = saved.pop(key)
                         self.buffer.append(Buffered(RlSample(
-                            frame, action, probability, advantage, version, key), uses,
+                            frame, action, probability, old, advantage, version, key), uses,
                             row["key"]))
         if saved:
             raise BoundaryError("rl_learner", "resume_buffer_samples_missing")
@@ -318,11 +318,15 @@ class Learner:
         with tempfile.TemporaryDirectory(prefix="rl-shard-", dir=self.work) as tmp:
             for episode in read_shard(self.exchange.store, record["shard_artifact_id"],
                                       scratch=Path(tmp)):
+                # Staleness trusts the record's version only when it names the
+                # model this episode was actually played with.
+                if episode["identity"]["model_artifact_id"] != record["model_artifact_id"]:
+                    raise BoundaryError("rl_learner", "shard_record_model_mismatch")
                 rows.append({"record": record, "episode": episode, "key": key,
                              "samples": self._project(episode)})
         return rows
 
-    def _project(self, episode: dict[str, Any]) -> list[tuple[Any, int, float, str]]:
+    def _project(self, episode: dict[str, Any]) -> list[tuple[Any, int, float, float, str]]:
         if episode["identity"]["input_spec"] != self.input_spec:
             raise BoundaryError("rl_learner", "trajectory_input_spec_differs")
         frames = []
@@ -330,7 +334,9 @@ class Learner:
             observation = episode["observations"][step["observation_index"]]["observation"]
             frame = project(observation, input_projection=self.projection)
             action = [c["choice_id"] for c in frame.choices].index(step["action_id"])
-            frames.append((frame, action, step["behavior"]["selected_probability"],
+            behavior = step["behavior"]
+            frames.append((frame, action, behavior["selected_probability"],
+                           behavior["model_probabilities"][step["action_index"]],
                            f"{episode['run_id']}:{step['index']}"))
         return frames
 
@@ -367,8 +373,8 @@ class Learner:
                       if len(self.returns) > 1 else 1.0)
             self.returns.append(reward)
             advantage = (reward - baseline) / max(spread, 0.05)
-            for frame, action, probability, key in row["samples"]:
-                self.buffer.append(Buffered(RlSample(frame, action, probability, advantage,
+            for frame, action, probability, old, key in row["samples"]:
+                self.buffer.append(Buffered(RlSample(frame, action, probability, old, advantage,
                                                      version, key), shard=row["key"]))
             self.counts["rl_samples"] += len(row["samples"])
             if record.get("finished_at"):
@@ -523,7 +529,7 @@ class Learner:
                     self._event("progress", **result, counts=dict(self.counts))
                     self.cadence.published()
                 self.maybe_version()
-                if len(self.versions) > self.config.max_versions:
+                if self.version >= self.config.max_versions:  # run-wide, survives resume
                     break
             clean = True
         finally:

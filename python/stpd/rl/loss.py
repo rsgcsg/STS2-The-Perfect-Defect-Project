@@ -1,9 +1,11 @@
 """One RL optimizer update: clipped policy gradient + KL to the start model + Human anchor.
 
-Off-policy correction uses the recorded behavior probability of the chosen
-action (ratio = pi_theta / mu, PPO-clipped, as in V-trace/DouZero-style actors
-that play with a slightly older model). Advantages are Monte-Carlo episode
-returns minus a baseline supplied by the caller; no value head is used.
+Off-policy correction has two parts: PPO clips pi_theta / pi_old, where pi_old
+is the acting model's own (untempered) probability recorded in the trajectory,
+and a separate truncated importance weight min(pi_old / mu, rho_max) corrects
+for the exploration policy mu (temperature + uniform mix) actually sampled.
+Advantages are Monte-Carlo episode returns minus a baseline supplied by the
+caller; no value head is used.
 """
 from __future__ import annotations
 
@@ -26,6 +28,7 @@ class RlSample:
     frame: Frame
     action: int
     behavior_probability: float
+    old_probability: float
     advantage: float
     model_version: int
     key: str
@@ -37,6 +40,7 @@ class LossConfig:
     kl_coef: float = 0.02
     anchor_coef: float = 0.5
     max_grad_norm: float = 1.0
+    rho_max: float = 1.0
 
 
 def _scores(model: MStd, frames: list[Frame]) -> torch.Tensor:
@@ -85,12 +89,14 @@ def rl_update(model: MStd, reference: MStd, optimizer: torch.optim.Optimizer,
         log_probabilities = F.log_softmax(packed, dim=-1)
         actions = torch.tensor([s.action for s in batch], device=device)
         chosen = log_probabilities.gather(1, actions[:, None]).squeeze(1)
-        behavior = torch.tensor([math.log(s.behavior_probability) for s in batch],
-                                device=device, dtype=chosen.dtype)
+        old = torch.tensor([math.log(s.old_probability) for s in batch],
+                           device=device, dtype=chosen.dtype)
+        weight = torch.tensor([min(s.old_probability / s.behavior_probability, config.rho_max)
+                               for s in batch], device=device, dtype=chosen.dtype)
         advantage = torch.tensor([s.advantage for s in batch], device=device, dtype=chosen.dtype)
-        ratio = torch.exp(chosen - behavior)
+        ratio = torch.exp(chosen - old)
         clipped = torch.clamp(ratio, 1 - config.clip, 1 + config.clip)
-        policy = -torch.minimum(ratio * advantage, clipped * advantage)
+        policy = -weight * torch.minimum(ratio * advantage, clipped * advantage)
         probabilities = log_probabilities.exp()
         # Padded positions have probability 0; zero them before subtracting so
         # neither the value nor its gradient ever sees (-inf) - (-inf).
