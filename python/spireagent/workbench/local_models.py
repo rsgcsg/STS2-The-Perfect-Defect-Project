@@ -239,7 +239,7 @@ def _runtime_wire_version(package: dict[str, Any]) -> int:
     if version in {"0.1.0-rc.40", "0.1.0-rc.41", "0.1.0-rc.42", "0.1.0-rc.43", "0.1.0-rc.44",
                    "0.1.0-rc.45", "0.1.0-rc.46", "0.1.0-rc.47", "0.1.0-rc.48", "0.1.0-rc.49",
                    "0.1.0-rc.50", "0.1.0-rc.51", "0.1.0-rc.52", "0.1.0-rc.53",
-                   "0.1.0-rc.54", "0.1.0-rc.55", "0.1.0-rc.56", "0.1.0-rc.57"}:
+                   "0.1.0-rc.54", "0.1.0-rc.55", "0.1.0-rc.56", "0.1.0-rc.57", "0.1.0-rc.58"}:
         return 2
     if version in {f"0.1.0-rc.{revision}" for revision in range(1, 40)}:
         return 1
@@ -2128,7 +2128,8 @@ class LocalModelService:
                 and entry["adapter"] in GLOBAL_ADAPTERS
                 and package.get("version") in {
                     "0.1.0-rc.49", "0.1.0-rc.50", "0.1.0-rc.51", "0.1.0-rc.52",
-                    "0.1.0-rc.53", "0.1.0-rc.54", "0.1.0-rc.55", "0.1.0-rc.56", "0.1.0-rc.57"}):
+                    "0.1.0-rc.53", "0.1.0-rc.54", "0.1.0-rc.55", "0.1.0-rc.56",
+                    "0.1.0-rc.57", "0.1.0-rc.58"}):
             command.extend((
                 "--initial-progress-original", initial_progress_original["path"],
                 "--initial-progress-original-sha256", initial_progress_original["sha256"],

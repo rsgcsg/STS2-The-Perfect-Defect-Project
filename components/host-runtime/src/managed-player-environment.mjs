@@ -731,7 +731,8 @@ function canonicalSelectorSurface(state, ctx, commonContext) {
     const label = ({
       open_preview: "Preview the selected cards",
       toggle_upgrade_view: state.showing_upgrade_previews ? "Show current card versions" : "Show upgraded card previews",
-      confirm: "Confirm card upgrade",
+      confirm: request.family === "deck_upgrade" ? "Confirm card upgrade"
+        : ["simple", "combat_pile"].includes(request.family) ? "Confirm selected cards" : "Confirm the selected cards",
       confirm_selection: ["simple", "combat_pile"].includes(request.family) ? "Confirm selected cards" : "Confirm the selected cards",
       cancel_preview: "Return to card selection",
       cancel_selection: request.family === "deck_upgrade" ? "Cancel card upgrade selection" : "Cancel card selection"
@@ -1089,7 +1090,8 @@ function currentSurface(state, ctx) {
           ancient: state.ancient ?? null, in_dialogue: state.in_dialogue ?? null,
           ...(state.description == null ? {} : { body: visibleText(state.description) }) },
         ...supported, complete,
-        missing: complete ? [] : ["exact_current_event_public_facts"]
+        missing: complete ? [] : ["exact_current_event_public_facts",
+          ...(Array.isArray(state.event_public_missing) ? state.event_public_missing.filter(value => typeof value === "string") : [])]
       };
     }
     case "rest_site": {

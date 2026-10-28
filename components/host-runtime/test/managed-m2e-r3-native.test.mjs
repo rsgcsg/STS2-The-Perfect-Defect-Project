@@ -20,7 +20,7 @@ test("native visible grid, bundle publication, event rest and death stay bound a
       "-p:Deterministic=true", `-p:PathMap=${path.resolve(candidate)}=/_/candidate/`],
     { cwd: candidate, timeout: 180000, maxBuffer: 4 * 1024 * 1024 });
   assert.deepEqual(hashes(), before, "component regression retains the frozen candidate artifacts");
-  assert.match(stdout, /26 exact native M2e R3 checks passed/u);
+  assert.match(stdout, /46 exact native M2e R3 checks passed/u);
   const prefix = "native-m2e-r3-dense-state=";
   const state = JSON.parse(stdout.split(/\r?\n/u).find(line => line.startsWith(prefix)).slice(prefix.length));
   const projection = projectManagedCandidateDecision({ state, sequence: 1,
@@ -29,4 +29,16 @@ test("native visible grid, bundle publication, event rest and death stay bound a
   assert.equal(projection.snapshot.interaction.kind, "event_option");
   assert.equal(projection.snapshot.interaction.content.surface.options.length, 1);
   assert.equal(projection.snapshot.bound_actions.actions.length, 1);
+  const trial = JSON.parse(stdout.split(/\r?\n/u).find(line => line.startsWith("native-m2e-r3-trial-state=")).slice("native-m2e-r3-trial-state=".length));
+  const trialProjection = projectManagedCandidateDecision({ state: trial, sequence: 2,
+    runtimeInstanceId: "m2e-r3-trial", environmentFingerprint: "m2e-r3-trial" });
+  assert.equal(trialProjection.snapshot.completeness.status, "complete");
+  assert.equal(trialProjection.snapshot.bound_actions.actions.length, 2);
+  const modal = JSON.parse(stdout.split(/\r?\n/u).find(line => line.startsWith("native-m2e-r3-modal-state=")).slice("native-m2e-r3-modal-state=".length));
+  const modalProjection = projectManagedCandidateDecision({ state: modal, sequence: 3,
+    runtimeInstanceId: "m2e-r3-modal", environmentFingerprint: "m2e-r3-modal" });
+  assert.notEqual(modalProjection.snapshot.completeness.status, "complete");
+  assert.equal(modalProjection.snapshot.bound_actions.actions.length, 0);
+  assert.match(JSON.stringify(modalProjection.snapshot.completeness), /native_trial_abandon_confirmation_modal_unavailable/u);
+
 });
