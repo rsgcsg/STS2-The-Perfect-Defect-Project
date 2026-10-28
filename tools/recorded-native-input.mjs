@@ -33,7 +33,7 @@ export function locateRecordedNativeInput(witness, actualBasis) {
       if (typeof result !== 'string') throw new Error('recorded_native_input_operand_unbound_or_ambiguous');
       return result;
     }
-    return { verb: action.verb, label: action.label, subject: alias(action.subject_referent_id),
+    return { verb: action.verb, label: action.label, subject: alias(action.subject_referent_id ?? null),
       arguments: action.arguments.map(argument => ({ ...argument, referent_id: alias(argument.referent_id) })) };
   }
   const source = original[0], anchoredLeft = { observation: core.modelView(projected.left), input: input(source, left) };

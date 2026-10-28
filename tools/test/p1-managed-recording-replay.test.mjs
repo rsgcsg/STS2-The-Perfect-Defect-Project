@@ -245,3 +245,22 @@ test('native locator shares exactly M060 and still rejects changed upgrade conte
   actual.snapshot.interaction.content.surface.preview_options[0].after.description += ' changed';
   assert.throws(() => locateRecordedNativeInput(witness, actual), /public_graph_difference|locator_incomplete/);
 });
+
+import { rewardForwardPair } from '../../components/connector/sdk/typescript/test/fixtures/reward-forward.mjs';
+test('native locator accepts the schema-optional absent subject on a targetless recorded control', () => {
+  const { outer } = rewardForwardPair();
+  Object.assign(outer, { capture_status: 'complete', missing: [] });
+  const actual = structuredClone(outer);
+  const bound_action = outer.snapshot.bound_actions.actions.find(action => action.bound_action_id === 'leave');
+  delete bound_action.subject_referent_id;
+  const before = JSON.stringify(outer);
+  const input = locateRecordedNativeInput({ basis: outer, bound_action, original_terminal_phase: 'finished' }, actual);
+  assert.equal(input.bound_action_id, 'leave');
+  assert.equal(input.subject_referent_id, null);
+  assert.equal(JSON.stringify(outer), before);
+});
+test('native locator still rejects a missing required argument referent', () => {
+  const witness = nativeToggle(), actual = structuredClone(witness.basis);
+  witness.bound_action.arguments = [{ role: 'target' }];
+  assert.throws(() => locateRecordedNativeInput(witness, actual));
+});
