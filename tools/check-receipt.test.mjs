@@ -82,3 +82,22 @@ test('a profile-only Git tree change invalidates an otherwise matching executed 
     assert.equal(validReceipt(original, run, {...current, tree: next}, now), false);
   } finally { fs.rmSync(root, {recursive: true, force: true}); }
 });
+
+
+test('develop queue may reuse fresh executed receipts without refreshing their age', async () => {
+  assert.ok(eligibleEvent('merge_group', 'refs/heads/gh-readonly-queue/develop/pr-123-abc'));
+  for (const ref of ['refs/heads/develop', 'refs/heads/gh-readonly-queue/main/pr-1-abc',
+    'refs/heads/gh-readonly-queue/develop-other/pr-1-abc', undefined])
+    assert.equal(eligibleEvent('merge_group', ref), false);
+  const groupRun = {...run, event:'merge_group'};
+  assert.ok(validReceipt(receipt, groupRun, current, now));
+  assert.equal(validReceipt(receipt, {...groupRun,
+    created_at:new Date(now - 8*86400_000).toISOString()}, current, now), false);
+  assert.equal(validReceipt({...receipt, scope:'reuse'}, groupRun, current, now), false);
+  assert.equal(validReceipt(receipt, groupRun, {...current, tree:'e'.repeat(40)}, now), false);
+  const liveRun = {...groupRun, head_sha:'d'.repeat(40), created_at:new Date().toISOString()};
+  const artifact = {name:'portable-execution-receipt-2',expired:false,workflow_run:{head_sha:liveRun.head_sha}};
+  assert.equal((await findReceipt(current, {token:'fixture',runId:'9',git:()=>current.tree,
+    request:async (_repo,suffix)=>suffix.includes('/artifacts')?{artifacts:[artifact]}:{workflow_runs:[liveRun]},
+    read:async()=>receipt})).run_id, '1');
+});

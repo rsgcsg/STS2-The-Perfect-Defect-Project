@@ -519,8 +519,9 @@ claiming a speedup or that the candidate fits its budget.
 
 ### Integration receipts instead of repeated identical execution
 
-Normal topic PRs always execute. Pushes to protected main/develop and `release/` PRs
-to main may reference a fresh executed result from this repository's CI workflow.
+Normal topic PRs always execute. Pushes to protected main/develop, develop merge
+queue groups and `release/` PRs to main may reference a fresh executed result from
+this repository's CI workflow.
 Executable main promotion requires full scope, so a Python-only receipt cannot satisfy it.
 Manual dispatch always executes full Linux. The daily21:17 UTC schedule executes full Windows; use dispatch
 when a runner/environment change or independent requalification requires fresh evidence.
@@ -692,3 +693,21 @@ and CPU reservation. `npm run check:dev-tools` covers reservation ownership,
 expiry, multi-resource admission and immutable dependency verification; it runs
 with repository entrypoint checks. Sharing dependencies never shares component
 build output or proves installation/runtime qualification.
+
+
+## Merge queue checks
+
+The `merge_group.checks_requested` trigger retains the required `portable` name
+and existing selected Linux shard/aggregate gates. The event's `base_sha` is the
+comparison base; checkout's event SHA is the entire tested group, including prior
+queued PRs. Missing base/provenance retains the planner's full-execution fallback.
+Queue runs use separate full-ref concurrency groups; ordinary PRs still execute.
+Only develop queue groups additionally qualify for verified receipt reuse. Fresh
+executed queue receipts are eligible original evidence for a matching protected
+push. Same tree/workflow, scope, repository, original run attempt, artifact digest
+and seven days from run creation remain mandatory; reuse never refreshes age or
+publishes an execution receipt. Current identity/BOM/history guards still run.
+This adds no Windows exception or change to the existing Windows schedule/promotion
+policy. Configuration and the current account eligibility limit are in
+[merge queue setup](MERGE_QUEUE_SETUP.zh-CN.md). A local queue-shaped Git fixture
+proves group diff routing, not availability or successful real queue operation.
