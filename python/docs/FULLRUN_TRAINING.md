@@ -261,6 +261,13 @@ T2b原记录：从04:03:41准备到05:00:58 ready约57.3分钟；worker内部准
 其中预取92.60、验证334.21、投影457.65秒。D1改后准备耗时尚未实测，不能把预计值写成达成。
 原1919在计算结束后因Idle timeout结束，只证明那一次平台的结束原因，不证明平台固定时限。
 
+长训练诊断可显式给配置 `max_epochs: 40`、`stopping_policy: "epoch-budget-v1"`。
+该模式继续记录全部DEV、选择最低DEV损失、保存原检查点策略要求的每轮模型，只跳过
+默认的五轮DEV耐心停止；默认配置及其序列化保持不变。学习率仍使用原warmup/cosine公式，
+总轮数变更会改变学习率的时间尺度，不能将新运行的同一步号称作旧检查点的同一模型。
+若实验要求在明确过拟合时停止，由持有本次实验授权的控制端按预先记录的DEV判据请求
+正常暂停，保留原始DEV曲线和检查点；不能用TEST或实战结果反向挑训练停止点。
+
 预编译是新的 `feature_set` 表示 `stpd/p1-mstd-tensor-pack-1`，沿原ArtifactStore保存；
 不改变P1投影、Input-v2、词表、标签、W1或训练/选模型配方。包的Manifest Producer记录
 实际编译source/lock，索引绑定Snapshot/selection、逐源投影payload、InputSpec、词表、
