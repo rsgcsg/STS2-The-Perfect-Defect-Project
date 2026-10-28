@@ -215,7 +215,6 @@ internal sealed class PlatformLivePanel : IDisposable
     private PlatformNativeWorkbenchPanel _nativeWorkbench = null!;
     private bool _policyCommandPending;
     private readonly PlatformPolicyCommands _policyCommands = new();
-    private bool _mixedPauseKeyDown, _mixedResumeKeyDown;
     private readonly HttpClient _workbenchHttpClient = PlatformWorkbenchOpenClient.CreateHttpClient();
     private Task<PlatformWorkbenchOpenResult>? _workbenchOpenCheck;
     private bool _workbenchOpenExternal;
@@ -311,6 +310,17 @@ internal sealed class PlatformLivePanel : IDisposable
         _quickRecording.Name = "P1RecordingLauncher";
         _quickRecording.Position = new Vector2(122, 12);
         Root.AddChild(_quickRecording);
+        var handoff = new HBoxContainer { Position = new Vector2(300, 12) };
+        var pause = BuildHeaderButton("F8 接管", () => _ = RunPolicyCommandAsync(PlatformPolicyCommand.Human),
+            "暂停并接管：立即向原 Runtime 提交恢复，不等待工作台页面。");
+        pause.Shortcut = WorkspaceShortcut(Key.F8);
+        pause.ActionMode = BaseButton.ActionModeEnum.Press;
+        var resume = BuildHeaderButton("F9 模型", () => _nativeWorkbench.ModelHotkey(true),
+            "将本混合局交还模型；由已认证工作台重新核对原游戏和 Runtime。");
+        resume.Shortcut = WorkspaceShortcut(Key.F9);
+        resume.ActionMode = BaseButton.ActionModeEnum.Press;
+        handoff.AddChild(pause); handoff.AddChild(resume);
+        Root.AddChild(handoff);
         _workspace = new PanelContainer
         {
             Position = _layout.WorkspacePosition,
@@ -1667,10 +1677,6 @@ internal sealed class PlatformLivePanel : IDisposable
 
     private void OnProcessFrame()
     {
-        bool pause = Input.IsPhysicalKeyPressed(Key.F8), resume = Input.IsPhysicalKeyPressed(Key.F9);
-        if (pause && !_mixedPauseKeyDown) _ = RunPolicyCommandAsync(PlatformPolicyCommand.Human);
-        if (resume && !_mixedResumeKeyDown) _nativeWorkbench.ModelHotkey(true);
-        _mixedPauseKeyDown = pause; _mixedResumeKeyDown = resume;
         CompleteWorkbenchOpenCheck();
         _nativeWorkbench.OnFrame(_workspace.Visible && _layout.ActiveSurface == "workbench" && !_layout.Compact);
         ApplyPendingStatus();
