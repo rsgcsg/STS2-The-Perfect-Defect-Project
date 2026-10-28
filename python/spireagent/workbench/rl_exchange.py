@@ -22,6 +22,7 @@ from spireagent.storage.store import ManifestArtifactStore
 
 MODEL_SCHEMA = "spireagent/rl-model-version-1"
 SHARD_SCHEMA = "spireagent/rl-trajectory-shard-record-1"
+CHECKPOINT_SCHEMA = "spireagent/rl-learner-checkpoint-record-1"
 _NAME = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 
 
@@ -50,6 +51,30 @@ class Exchange:
         self.store: ManifestArtifactStore = open_peer(peer)
         self.blobs = self.store.blobs
         self.prefix = f"exchange/rl/{run}/"
+
+    # Learner checkpoints (resume across machines/allocations) ----------
+    def publish_checkpoint(self, version: int, artifact_id: str) -> dict[str, Any]:
+        """Name the full learner checkpoint taken at ``version``; the artifact is verified."""
+        if type(version) is not int or not 0 < version < 10**6:
+            reject("invalid_checkpoint_record")
+        if self.store.get_manifest(artifact_id).kind != "checkpoint":
+            reject("checkpoint_record_binding_mismatch")
+        raw = _sealed({"schema": CHECKPOINT_SCHEMA, "run": self.run, "version": version,
+                       "checkpoint_artifact_id": artifact_id, "published_at": time.time()})
+        if not self.blobs.put_if_absent(f"{self.prefix}checkpoints/{version:06d}.json", raw):
+            reject("checkpoint_record_already_published")
+        value: dict[str, Any] = json.loads(raw)
+        return value
+
+    def latest_checkpoint(self) -> dict[str, Any] | None:
+        keys = sorted(k for k in self.blobs.keys(f"{self.prefix}checkpoints/")
+                      if k.endswith(".json"))
+        if not keys:
+            return None
+        value = _open(self.blobs.get(keys[-1]), CHECKPOINT_SCHEMA)
+        if value["run"] != self.run:
+            reject("checkpoint_record_identity_mismatch")
+        return value
 
     # Model versions -----------------------------------------------------
     def publish_model(self, record: dict[str, Any]) -> dict[str, Any]:

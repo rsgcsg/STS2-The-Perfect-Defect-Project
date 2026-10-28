@@ -34,13 +34,14 @@ from spireagent.workbench.managed_trajectory_store import read_shard
 from spireagent.workbench.rl_exchange import Exchange
 from stpd.p1.export import export_model, input_spec, load_model, runtime_projection
 from stpd.p1.input import project
-from stpd.workers.checkpoint_codec import encode_checkpoint
+from stpd.workers.checkpoint_codec import decode_checkpoint, encode_checkpoint
 from stpd.workers.training_io import CheckpointPublisher, FrozenCheckpoint, ProgressCadence
 
 from .loss import LossConfig, RlSample, rl_update
 from .reward import REWARD_SPEC, episode_reward
 
 CONFIG_SCHEMA = "stpd/rl-learner-config-1"
+CHECKPOINT_SCHEMA = "stpd/rl-learner-checkpoint-2"
 ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -66,6 +67,9 @@ class LearnerConfig:
     wall_seconds: float = 3600
     seed: int = 1
     anchor: dict[str, Any] | None = None
+    # Explicit full learner checkpoint artifact id to continue this run from
+    # (a new machine or a new 5 h allocation); never picked implicitly.
+    resume_checkpoint: str | None = None
     loss: LossConfig = field(default_factory=LossConfig)
 
     @classmethod
@@ -81,6 +85,7 @@ class LearnerConfig:
 class Buffered:
     sample: RlSample
     uses: int = 0
+    shard: str = ""
 
 
 def _device(name: str) -> torch.device:
@@ -119,7 +124,8 @@ class Learner:
         self.device = _device(config.device)
         package = Path(config.start_package)
         descriptor = json.loads((package / "model.json").read_bytes())
-        model, _ = load_model(package / "model.tensor-tree", descriptor["package_sha256"])
+        self.start_sha256 = descriptor["package_sha256"]
+        model, _ = load_model(package / "model.tensor-tree", self.start_sha256)
         self.projection = runtime_projection(model.vocabulary)
         self.input_spec = input_spec(model.vocabulary, self.projection)
         self.reference = model.to(self.device).eval()
@@ -136,6 +142,8 @@ class Learner:
         self.seen: set[str] = set()
         self.counts: collections.Counter[str] = collections.Counter()
         self.updates = 0
+        self.version_updates = 0
+        self.lineage_version = 0
         self.timer = Timer()
         self.reader = ThreadPoolExecutor(max_workers=1, thread_name_prefix="rl-shard-read")
         self.publisher = ThreadPoolExecutor(max_workers=1, thread_name_prefix="rl-version")
@@ -207,8 +215,12 @@ class Learner:
 
     def _initial_version(self) -> int:
         latest = self.exchange.latest_model()
+        if self.config.resume_checkpoint is not None:
+            if latest is None:
+                raise BoundaryError("rl_learner", "resume_requires_published_versions")
+            return self._resume(self.config.resume_checkpoint, latest["version"])
         if latest is not None:
-            raise BoundaryError("rl_learner", "run_already_has_versions_resume_not_implemented")
+            raise BoundaryError("rl_learner", "run_already_has_versions_use_resume_checkpoint")
         manifest = publish_detached_p1_model(self.exchange.store, Path(self.config.start_package),
                                              self.producer)
         record = self.exchange.publish_model({
@@ -223,15 +235,79 @@ class Learner:
         return 0
 
     # Data -------------------------------------------------------------
+    def _state(self) -> bytes:
+        """Owner thread: everything a successor needs to keep training this run."""
+        buffer = [[i.shard, i.sample.key, i.uses, i.sample.advantage, i.sample.model_version]
+                  for i in self.buffer]
+        state = self.random.getstate()
+        learner = {"run": self.config.run, "version": self.lineage_version,
+                   "updates": self.updates, "counts": dict(self.counts),
+                   "returns": list(self.returns), "seen": sorted(self.seen),
+                   "buffer": buffer, "random": [state[0], list(state[1]), state[2]]}
+        return encode_checkpoint({
+            "schema": CHECKPOINT_SCHEMA,
+            "weights": {k: v.detach().cpu().clone() for k, v in self.model.state_dict().items()},
+            "optimizer": self.optimizer.state_dict(), "torch_rng": torch.get_rng_state(),
+            # One scalar keeps thousands of keys inside the codec's node limit.
+            "learner": json.dumps(learner, sort_keys=True)})
+
+    def _resume(self, artifact_id: str, latest: int) -> int:
+        began = time.monotonic()
+        manifest = self.exchange.store.get_manifest(artifact_id)
+        info = manifest.parameters.value()
+        if (manifest.kind != "checkpoint" or info.get("schema") != CHECKPOINT_SCHEMA
+                or info.get("run") != self.config.run
+                or info.get("start_package_sha256") != self.start_sha256
+                or manifest.producer != self.producer):
+            raise BoundaryError("rl_learner", "resume_checkpoint_binding_mismatch")
+        state = decode_checkpoint(b"".join(self.exchange.store.read_payload(
+            manifest.payload("checkpoint"))))
+        learner = json.loads(state["learner"])
+        if (state.get("schema") != CHECKPOINT_SCHEMA or learner["run"] != self.config.run
+                or learner["version"] != info["version"] or learner["version"] > latest):
+            raise BoundaryError("rl_learner", "resume_checkpoint_state_mismatch")
+        self.model.load_state_dict(state["weights"])
+        self.optimizer.load_state_dict(state["optimizer"])
+        torch.set_rng_state(state["torch_rng"])
+        self.random.setstate((learner["random"][0], tuple(learner["random"][1]),
+                              learner["random"][2]))
+        self.updates = self.version_updates = learner["updates"]
+        self.counts.update(learner["counts"])
+        self.returns.extend(learner["returns"])
+        self.lineage_version = learner["version"]
+        # Staleness is measured against what actors play now: the newest version,
+        # which may be newer than the checkpoint if its checkpoint never landed.
+        self.version = latest
+        # The buffer is rebuilt from its own read-back shards, with the saved
+        # advantage and reuse count; frames are never stored twice.
+        saved = {key: (uses, advantage, version)
+                 for _, key, uses, advantage, version in learner["buffer"]}
+        shards = sorted({entry[0] for entry in learner["buffer"]})
+        for rows in self.reader.map(self._read, shards):
+            for row in rows:
+                for frame, action, probability, key in row.get("samples", ()):
+                    if key in saved:
+                        uses, advantage, version = saved.pop(key)
+                        self.buffer.append(Buffered(RlSample(
+                            frame, action, probability, advantage, version, key), uses,
+                            row["key"]))
+        if saved:
+            raise BoundaryError("rl_learner", "resume_buffer_samples_missing")
+        self.seen = set(learner["seen"])
+        self.timer.add("resume", began)
+        self._event("resumed", checkpoint=artifact_id, checkpoint_version=learner["version"],
+                    latest_version=latest, updates=self.updates, buffer=len(self.buffer))
+        return latest
+
     def _read(self, key: str) -> list[dict[str, Any]]:
         record = self.exchange.shard_record(key)
         rows: list[dict[str, Any]] = []
         if record.get("shard_artifact_id") is None:
-            return [{"record": record, "episode": None}]
+            return [{"record": record, "episode": None, "key": key}]
         with tempfile.TemporaryDirectory(prefix="rl-shard-", dir=self.work) as tmp:
             for episode in read_shard(self.exchange.store, record["shard_artifact_id"],
                                       scratch=Path(tmp)):
-                rows.append({"record": record, "episode": episode,
+                rows.append({"record": record, "episode": episode, "key": key,
                              "samples": self._project(episode)})
         return rows
 
@@ -282,7 +358,7 @@ class Learner:
             advantage = (reward - baseline) / max(spread, 0.05)
             for frame, action, probability, key in row["samples"]:
                 self.buffer.append(Buffered(RlSample(frame, action, probability, advantage,
-                                                     version, key)))
+                                                     version, key), shard=row["key"]))
             self.counts["rl_samples"] += len(row["samples"])
             if record.get("finished_at"):
                 self.latencies.append(time.time() - record["finished_at"])
@@ -343,7 +419,8 @@ class Learner:
         cpu = copy.deepcopy(self.model).cpu().eval()
         export_model(cpu, checkpoint, destination, {
             "schema": "stpd/rl-training-identity-1", "run": self.config.run,
-            "version": version, "parent_version": self.version, "updates": self.updates,
+            "version": version, "parent_version": self.lineage_version,
+            "updates": self.updates,
             "reward": REWARD_SPEC, "loss": asdict(self.config.loss),
             "learner_config_sha256": hashlib.sha256(json_bytes(
                 {**asdict(self.config), "peer": self.config.peer})).hexdigest(),
@@ -351,11 +428,12 @@ class Learner:
             "producer": self.producer.to_dict()})
         return destination, raw
 
-    def _publish(self, version: int, destination: Path, shards: list[str]) -> dict[str, Any]:
+    def _publish(self, version: int, parent: int, destination: Path,
+                 shards: list[str]) -> dict[str, Any]:
         began = time.monotonic()
         manifest = publish_detached_p1_model(self.exchange.store, destination, self.producer)
         record = self.exchange.publish_model({
-            "run": self.config.run, "version": version, "parent_version": version - 1,
+            "run": self.config.run, "version": version, "parent_version": parent,
             "model_artifact_id": manifest.artifact_id,
             "model_sha256": manifest.payload("weights").sha256,
             "origin_artifact_id": self.config.start_artifact_id,
@@ -377,26 +455,35 @@ class Learner:
         self._event("version_published", version=record["version"],
                     artifact=record["model_artifact_id"],
                     publish_seconds=record["publish_seconds"])
-        taken = self.checkpoints.take(wait=False)
-        if taken:
-            self._event("checkpoint_published", artifact=taken[0].artifact_id, **taken[1])
+        self._take_checkpoint(wait=False)
 
-    def maybe_version(self) -> None:
-        if self.updates == 0 or self.updates % self.config.updates_per_version:
+    def _take_checkpoint(self, wait: bool) -> None:
+        taken = self.checkpoints.take(wait=wait)
+        if taken:
+            version = taken[0].parameters.value()["version"]
+            self.exchange.publish_checkpoint(version, taken[0].artifact_id)
+            self._event("checkpoint_published", artifact=taken[0].artifact_id,
+                        version=version, **taken[1])
+
+    def maybe_version(self, force: bool = False) -> None:
+        due = self.updates - self.version_updates
+        if due == 0 or not force and due < self.config.updates_per_version:
             return
+        from spireagent.json_boundary import FrozenObject
+
         began = time.monotonic()
         self._collect_version(wait=True)
-        version = self.version + 1
-        destination, raw = self._package(version)
+        version, parent = self.version + 1, self.lineage_version
+        destination, _ = self._package(version)
+        self.lineage_version, self.version_updates = version, self.updates
+        state = self._state() if not self.checkpoints.pending else None
         self.timer.add("version_capture", began)
-        self.pending_version = self.publisher.submit(self._publish, version, destination,
-                                                     sorted(self.seen))
-        if not self.checkpoints.pending:
-            from spireagent.json_boundary import FrozenObject
-
-            self.checkpoints.submit(FrozenCheckpoint(raw, (), FrozenObject.of(
-                {"schema": "stpd/rl-learner-checkpoint-1", "run": self.config.run,
-                 "version": version, "updates": self.updates}), 0.0))
+        self.pending_version = self.publisher.submit(self._publish, version, parent,
+                                                     destination, sorted(self.seen))
+        if state is not None:
+            self.checkpoints.submit(FrozenCheckpoint(state, (), FrozenObject.of(
+                {"schema": CHECKPOINT_SCHEMA, "run": self.config.run, "version": version,
+                 "updates": self.updates, "start_package_sha256": self.start_sha256}), 0.0))
 
     def _event(self, kind: str, **fields: Any) -> None:
         self.log.write(json.dumps({"at": time.time(), "kind": kind, **fields},
@@ -405,6 +492,7 @@ class Learner:
 
     def run(self) -> dict[str, Any]:
         deadline = time.monotonic() + self.config.wall_seconds
+        clean = False
         try:
             while time.monotonic() < deadline and not (self.work / "STOP").exists():
                 began = time.monotonic()
@@ -426,11 +514,15 @@ class Learner:
                 self.maybe_version()
                 if len(self.versions) > self.config.max_versions:
                     break
+            clean = True
         finally:
+            # A stop or deadline (end of an allocation) keeps every finished update:
+            # one last version plus a full checkpoint a successor can resume from.
+            self._take_checkpoint(wait=clean)
+            if clean:
+                self.maybe_version(force=True)
             self._collect_version(wait=True)
-            taken = self.checkpoints.take(wait=True)
-            if taken:
-                self._event("checkpoint_published", artifact=taken[0].artifact_id, **taken[1])
+            self._take_checkpoint(wait=clean)
             self.checkpoints.__exit__(None)
             self.reader.shutdown(wait=False, cancel_futures=True)
             self.publisher.shutdown(wait=True)

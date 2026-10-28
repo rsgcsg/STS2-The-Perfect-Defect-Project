@@ -156,3 +156,106 @@ def test_cached_reference_gives_the_same_update_as_recomputing():
             assert set(cache) == {"a", "b"}
     for name in ("policy_loss", "kl", "gradient_norm"):
         assert results[0][name] == pytest.approx(results[1][name])
+
+
+def test_learner_resumes_a_run_from_its_published_full_checkpoint(tmp_path, monkeypatch):
+    from stpd.p1.export import export_model
+    from stpd.rl import learner as module
+    from stpd.rl.learner import Learner, LearnerConfig
+
+    monkeypatch.setattr(module, "source_identity", lambda _root: PRODUCER)
+
+    torch.manual_seed(11)
+    package = tmp_path / "start"
+    checkpoint = tmp_path / "start.tensor-tree"
+    checkpoint.write_bytes(b"synthetic start checkpoint")
+    export_model(MStd(fit_vocabulary([project(observation())])), checkpoint, package,
+                 {"scope": "synthetic"})
+    peer = {"kind": "local", "directory": str(tmp_path / "peer")}
+    config = LearnerConfig(run="resume", peer=peer, start_package=str(package))
+    first = Learner(config, tmp_path / "a")
+    with pytest.raises(BoundaryError, match="run_already_has_versions_use_resume_checkpoint"):
+        Learner(config, tmp_path / "b")
+    sum(p.sum() for p in first.model.parameters()).backward()
+    first.optimizer.step()  # optimizer state that a successor must keep
+    first.updates, first.counts["episodes_loss"] = 3, 5
+    first.returns.extend([0.25, 0.5])
+    first.maybe_version(force=True)
+    first._collect_version(wait=True)
+    first._take_checkpoint(wait=True)
+    record = first.exchange.latest_checkpoint()
+    assert record["version"] == 1 and first.exchange.latest_model()["version"] == 1
+    second = Learner(LearnerConfig(**{**config.__dict__,
+                                      "resume_checkpoint": record["checkpoint_artifact_id"]}),
+                     tmp_path / "b")
+    assert (second.version, second.lineage_version, second.updates) == (1, 1, 3)
+    assert list(second.returns) == [0.25, 0.5] and second.counts["episodes_loss"] == 5
+    for name, value in first.model.state_dict().items():
+        assert torch.equal(value, second.model.state_dict()[name])
+    assert second.optimizer.state_dict()["state"].keys() == first.optimizer.state_dict()[
+        "state"].keys()
+    second.updates += 1
+    second.maybe_version(force=True)
+    second._collect_version(wait=True)
+    assert second.exchange.latest_model()["parent_version"] == 1
+    for learner in (first, second):
+        learner._take_checkpoint(wait=True)
+        learner.checkpoints.__exit__(None)
+
+
+def test_actor_switches_to_the_newest_fetched_version_between_ledgers(tmp_path, monkeypatch):
+    from spireagent.workbench import evaluation_ledger, managed_pipeline
+    from spireagent.workbench.rl_actor import Actor
+
+    peer = {"kind": "local", "directory": str(tmp_path / "peer")}
+    exchange = Exchange(peer, "swap")
+    for version, weights in enumerate((b"weights-v0", b"weights-v1")):
+        manifest, sha = _model_artifact(exchange.store, weights)
+        if version == 0:
+            exchange.publish_model({"run": "swap", "version": 0, "parent_version": None,
+                                    "model_artifact_id": manifest.artifact_id,
+                                    "model_sha256": sha})
+        else:
+            newer = {"run": "swap", "version": 1, "parent_version": 0,
+                     "model_artifact_id": manifest.artifact_id, "model_sha256": sha}
+    execution = tmp_path / "execution.json"
+    execution.write_text(json.dumps({"peer": peer, "retention": {
+        "tier": "trajectory", "purpose": "training", "audit_every": 50}}))
+    built = []
+
+    class Executor:
+        def __init__(self, value, **_):
+            built.append(value["models"])
+
+        def close(self):
+            pass
+
+    class Ledger:
+        def __init__(self, selection):
+            self.selection = selection
+
+        def run_managed(self, **_):
+            if len(built) == 1:  # the learner publishes v1 while v0 is being played
+                exchange.publish_model(newer)
+                actor.prefetch.refresh()
+            return {"status": "completed"}
+
+        def slots(self):
+            return [{"seed": self.selection, "status": "saved", "run_id": None}]
+
+    monkeypatch.setattr(managed_pipeline, "PipelinedManagedExecutor", Executor)
+    monkeypatch.setattr(evaluation_ledger.EvaluationLedger, "create", classmethod(
+        lambda cls, *_, selections, **__: Ledger(selections["model"])))
+    actor = Actor({"schema": "spireagent/rl-actor-config-1", "run": "swap", "peer": peer,
+                   "actor": "a", "execution": str(execution), "seed_namespace": "test",
+                   "behavior": {"mode": "temperature_uniform", "temperature": 1.0,
+                                "uniform_mix": 0.03},
+                   "games_per_ledger": 1, "episode_seconds": 1, "wall_seconds": 600,
+                   "max_games": 2, "model_poll_seconds": 3600}, tmp_path / "actor")
+    summary = actor.run()
+    assert [g["model_version"] for g in summary["games"]] == [0, 1]
+    assert [list(models) for models in built] == [["rl-v000000"], ["rl-v000001"]]
+    records = [exchange.shard_record(k) for k in exchange.shard_keys()]
+    assert [(r["model_version"], r["disposition"]) for r in records] == [
+        (0, "without_shard"), (1, "without_shard")]
+    assert summary["counts"]["executor_builds"] == 2
