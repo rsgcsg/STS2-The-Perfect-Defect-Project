@@ -570,4 +570,3 @@ def _quantiles(values: list[float]) -> dict[str, float] | None:
     ordered = sorted(values)
     return {"count": len(ordered), "median": ordered[len(ordered) // 2],
             "max": ordered[-1], "min": ordered[0]}
-
