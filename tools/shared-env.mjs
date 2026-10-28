@@ -26,13 +26,15 @@ export function identity(directory = root) {
     files: Object.fromEntries(files.map(p => [p, digest(fs.readFileSync(path.join(directory, p)))]))};
   return {key: digest(JSON.stringify(inputs)), inputs, python};
 }
-export function inventory(directory, relative = '') {
+export function inventory(directory, relative = '', requireReadOnly = false) {
   const result = {};
   for (const name of fs.readdirSync(path.join(directory, relative)).sort()) {
     const p = path.join(relative, name), full = path.join(directory, p), stat = fs.lstatSync(full);
+    if (requireReadOnly && process.platform !== 'win32' && !stat.isSymbolicLink() && (stat.mode & 0o222))
+      throw Error(`shared dependency is no longer read-only: ${p}`);
     if (stat.isSymbolicLink()) result[p] = {link: fs.readlinkSync(full)};
-    else if (stat.isDirectory()) Object.assign(result, inventory(directory, p));
-    else result[p] = {sha256: digest(fs.readFileSync(full)), size: stat.size};
+    else if (stat.isDirectory()) { result[p] = {directory: true}; Object.assign(result, inventory(directory, p, requireReadOnly)); }
+    else result[p] = {sha256: digest(fs.readFileSync(full)), size: stat.size, executable: stat.mode & 0o111};
   }
   return result;
 }
@@ -48,7 +50,7 @@ function readOnly(directory, writable = false) {
 export function verify(directory, expected) {
   const receipt = JSON.parse(fs.readFileSync(path.join(directory, 'receipt.json')));
   if (receipt.key !== expected.key || JSON.stringify(receipt.inputs) !== JSON.stringify(expected.inputs)) throw Error('shared dependency identity mismatch');
-  if (JSON.stringify(inventory(path.join(directory, 'deps'))) !== JSON.stringify(receipt.inventory)) throw Error('shared dependency bytes changed');
+  if (JSON.stringify(inventory(path.join(directory, 'deps'), '', true)) !== JSON.stringify(receipt.inventory)) throw Error('shared dependency bytes changed');
   return receipt;
 }
 function idle() {

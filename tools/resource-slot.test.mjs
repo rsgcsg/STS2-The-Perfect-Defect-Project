@@ -66,3 +66,31 @@ test('user game appearing during CPU setup stops only the owned process group', 
   assert.equal(outcome.signal,'SIGTERM');
   assert.ok(Date.now()-started < 5000);
 });
+
+test('concurrent CLI processes can grant only one reservation', async t => {
+  const {spawn} = await import('node:child_process');
+  const root = fixture(t);
+  const code = `import {acquire} from './tools/resource-slot.mjs';
+    try { acquire({card:'racer',pid:process.pid,until:new Date(Date.now()+60000).toISOString()}); }
+    catch { process.exitCode=1; }`;
+  const results = await Promise.all(Array.from({length:8}, () => new Promise(resolve => {
+    const child = spawn(process.execPath,['--input-type=module','-e',code],
+      {stdio:'ignore',env:{...process.env,SPIREAGENT_SLOT_ROOT:root}});
+    child.on('exit',resolve);
+  })));
+  assert.equal(results.filter(code => code===0).length,1);
+  assert.equal(fs.readFileSync(path.join(root,'GAME-SLOT.md'),'utf8').trim().split('\n').length,1);
+});
+
+test('unconfirmed process cleanup retains the lock rather than logging completion', async t => {
+  const {finishReservation} = await import('./resource-slot.mjs');
+  const root=fixture(t), [record]=acquire(request(),root);
+  assert.throws(()=>finishReservation(['managed'],record.token,{error:'group still alive'},root),/retained/);
+  const file=path.join(root,'managed.json');
+  const retained=JSON.parse(fs.readFileSync(file));
+  assert.equal(retained.pending_cleanup,true);
+  fs.writeFileSync(file,JSON.stringify({...retained,pid:2147483647,until:'2000-01-01T00:00:00Z'}));
+  assert.throws(()=>acquire(request(),root),/occupied/);
+  assert.doesNotMatch(fs.readFileSync(path.join(root,'GAME-SLOT.md'),'utf8'),/｜结束｜/u);
+  release(['managed'],record.token,root);
+});

@@ -43,7 +43,7 @@ export function acquire({resources = ['managed'], card, until, pid, lanes = 1}, 
   return transaction(root, () => {
     for (const resource of resources) {
       const current = read(root, resource);
-      if (current && (alive(current.pid) || Date.parse(current.until) >= Date.now()))
+      if (current && (current.pending_cleanup || alive(current.pid) || Date.parse(current.until) >= Date.now()))
         throw Error(`${resource} occupied by ${current.card}, pid=${current.pid}, until=${current.until}`);
     }
     const token = crypto.randomUUID();
@@ -78,6 +78,21 @@ export function release(resources, token, root = slotRoot()) {
     }
   });
 }
+export function finishReservation(resources, token, outcome, root = slotRoot()) {
+  if (outcome.error) {
+    transaction(root, () => {
+      for (const resource of resources) {
+        const record = read(root, resource);
+        if (!record || record.token !== token) throw Error('reservation owner changed during cleanup');
+        fs.writeFileSync(path.join(root, `${resource}.json`), JSON.stringify({...record,
+          pending_cleanup: true, child_pid: outcome.child_pid ?? null, cleanup_error: outcome.error}));
+        journal(root, record, '排队', '本卡进程树退出未确认，保留占位；核实后凭原token释放');
+      }
+    });
+    throw Error(`resource reservation retained: ${outcome.error}`);
+  }
+  release(resources, token, root);
+}
 export async function runReservedCommand(args, {resources, token,
   gamePresent = () => listGameProcesses(process.platform, {failClosed: true}).length > 0,
   intervalMs = 3000}) {
@@ -97,7 +112,7 @@ export async function runReservedCommand(args, {resources, token,
       void owned.cancel('SIGTERM');
     }
   }, intervalMs) : null;
-  try { return {...await owned.completion, interruptedForGame}; }
+  try { return {...await owned.completion, interruptedForGame, child_pid: owned.child.pid}; }
   finally {
     if (monitor) clearInterval(monitor);
     process.off('SIGINT', onInt); process.off('SIGTERM', onTerm);
@@ -127,11 +142,11 @@ async function main() {
       lanes: Number(options.lanes || 1), pid: command === 'run' ? process.pid : Number(options.pid)});
     if (command === 'acquire') console.log(JSON.stringify(records, null, 2));
     else {
-      try {
-        const outcome = await runReservedCommand(childArgs, {resources, token: records[0].token});
-        process.exitCode = outcome.code ?? 1;
-        if (outcome.error) throw Error(outcome.error);
-      } finally { release(resources, records[0].token); }
+      let outcome;
+      try { outcome = await runReservedCommand(childArgs, {resources, token: records[0].token}); }
+      catch (error) { outcome = {error: error.message}; }
+      finishReservation(resources, records[0].token, outcome);
+      process.exitCode = outcome.code ?? 1;
     }
   } else throw Error('usage: slot status|configure|acquire|release|check|run');
 }

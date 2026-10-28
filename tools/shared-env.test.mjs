@@ -13,12 +13,19 @@ test('immutable dependency verification catches edits, extra files and changed i
   fs.writeFileSync(file,'locked bytes');
   const id = {key:'fixture',inputs:{platform:process.platform}};
   fs.writeFileSync(path.join(directory,'receipt.json'),JSON.stringify({...id,inventory:inventory(path.join(directory,'deps'))}));
+  fs.chmodSync(file,0o444);
   verify(directory,id);
   assert.throws(() => verify(directory,{...id,key:'another'}), /identity/);
+  fs.chmodSync(file,0o644);
+  assert.throws(() => verify(directory,id), /read-only|bytes changed/);
   fs.writeFileSync(file,'tampered');
+  fs.chmodSync(file,0o444);
   assert.throws(() => verify(directory,id), /bytes changed/);
+  fs.chmodSync(file,0o644);
   fs.writeFileSync(file,'locked bytes');
+  fs.chmodSync(file,0o444);
   fs.writeFileSync(path.join(directory,'deps','extra'),'unlisted');
+  fs.chmodSync(path.join(directory,'deps','extra'),0o444);
   assert.throws(() => verify(directory,id), /bytes changed/);
 });
 
