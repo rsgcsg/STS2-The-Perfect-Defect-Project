@@ -24,6 +24,11 @@ test("raw merchant exit uses exact shop owner through pending selector and compl
   try {
     await started.session.mount({ seed: "MERCHANT-EXIT-GATE" });
     let state = await request({ cmd: "enter_room", type: "shop" });
+    assert.equal(state.decision, "shop_room");
+    // Raw inventory decisions retain "shop"; the public surface is shop_inventory.
+    state = await action("open_shop_inventory", {
+      room_ref: state.room_ref, inventory_ref: state.inventory_ref
+    });
     assert.equal(state.decision, "shop");
     const roomRef = state.room_ref;
     const entryRef = state.card_removal.native_ref;
@@ -49,6 +54,11 @@ test("raw merchant exit uses exact shop owner through pending selector and compl
     assert.equal(state.decision, "shop");
     assert.deepEqual([state.player.gold, state.player.deck_size],
       [before[0] - state.card_removal.cost, before[1] - 1]);
+    assert.equal((await action("leave_room", { room_ref: roomRef })).type, "error");
+    state = await action("close_shop_inventory", {
+      room_ref: roomRef, inventory_ref: state.inventory_ref
+    });
+    assert.equal(state.decision, "shop_room");
     assert.equal((await action("leave_room")).type, "error");
     assert.equal((await action("leave_room", { room_ref: "stale-room" })).type, "error");
     assert.equal((await action("leave_room", { room_ref: roomRef })).decision, "map_select");
