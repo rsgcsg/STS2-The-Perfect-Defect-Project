@@ -16,6 +16,7 @@ import copy
 import hashlib
 import json
 import os
+import resource
 import threading
 import time
 from pathlib import Path
@@ -36,6 +37,15 @@ def reject(reason: str) -> None:
 def _hashed(path: Path) -> str:
     with path.open("rb") as stream:
         return hashlib.file_digest(stream, "sha256").hexdigest()
+
+
+def _cpu_seconds() -> float:
+    """This actor plus every reaped child (Host, Runtime, Agent) in user+system seconds."""
+    total = 0.0
+    for who in (resource.RUSAGE_SELF, resource.RUSAGE_CHILDREN):
+        usage = resource.getrusage(who)
+        total += usage.ru_utime + usage.ru_stime
+    return total
 
 
 class ModelPrefetch:
@@ -161,6 +171,7 @@ class Actor:
                       if slot.get("attempt_report") else {"episodes": [{}]})
             row = report["episodes"][0] if report.get("episodes") else {}
             game = {"seed": slot["seed"], "status": slot["status"],
+                    "model_version": record["version"],
                     "reason": slot.get("reason") or row.get("reason"),
                     "run_id": slot.get("run_id") or row.get("run_id"),
                     "shard": slot.get("trajectory_shard_id") or row.get("trajectory_shard_id"),
@@ -184,6 +195,7 @@ class Actor:
         from .reference_suite import SuiteLimits
 
         began = time.monotonic()
+        cpu_began = _cpu_seconds()
         deadline = began + self.config["wall_seconds"]
         episode_seconds = self.config["episode_seconds"]
         self.prefetch.start()
@@ -226,6 +238,7 @@ class Actor:
         summary = {"schema": "spireagent/rl-actor-summary-1", "actor": self.name,
                    "run": self.config["run"], "status": status,
                    "wall_seconds": time.monotonic() - began, "counts": dict(self.counts),
+                   "cpu_seconds": _cpu_seconds() - cpu_began,
                    "timing": dict(self.timing),
                    "model_fetch_seconds": self.prefetch.fetch_seconds, "games": self.games}
         (self.work / "actor-summary.json").write_bytes(json_bytes(summary))
