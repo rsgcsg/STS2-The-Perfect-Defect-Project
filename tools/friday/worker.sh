@@ -24,12 +24,16 @@ if [[ -e "$credentials" ]]; then
 fi
 if ! type module >/dev/null 2>&1; then source /etc/profile; fi
 module load python/3.11.5-gcccore-13.2.0 nodejs/20.9.0-gcccore-13.2.0
+test -x "$actor_root/node22.23.4/bin/node" || { echo 'pinned Node22.23.4 required' >&2; exit 2; }
 export PATH="$actor_root/env/bin:$actor_root/dotnet-sdk9.0.117:/data/$(id -un)/dotnet9:$PATH"
+export PATH="$actor_root/node22.23.4/bin:$PATH"
 export PYTHONPATH="$source_root/python"
 export STS2_GAME_DIR="$actor_root/game"
 export DOTNET_PROCESSOR_COUNT=1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
 export TOKENIZERS_PARALLELISM=false PYTHONUNBUFFERED=1
 export FRIDAY_INFERENCE_THREADS=${FRIDAY_INFERENCE_THREADS:-1}
-exec "$actor_root/env/bin/python" "$source_root/tools/friday/batch.py" "$configuration" --cell "$cell" \
+exec "$actor_root/env/bin/python" "$source_root/tools/friday/allocation.py" \
+  --mode batch --configuration "$configuration" --source-root "$source_root" -- \
+  "$actor_root/env/bin/python" "$source_root/tools/friday/batch.py" "$configuration" --cell "$cell" \
   --wall-seconds "${FRIDAY_WALL_SECONDS:-3600}" --episode-seconds "${FRIDAY_EPISODE_SECONDS:-900}" \
   --max-groups "${FRIDAY_MAX_GROUPS:-100}"

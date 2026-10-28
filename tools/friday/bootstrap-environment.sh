@@ -17,6 +17,15 @@ if [ ! -x "$F2_SDK/dotnet" ]; then
     tar -xzf "$F2_ROOT/dotnet-sdk.tar.gz" -C "$F2_SDK"
 fi
 "$F2_SDK/dotnet" --info > "$F2_ROOT/evidence/dotnet-info.txt"
+F2_NODE="$F2_ROOT/node22.23.4"
+if [ ! -x "$F2_NODE/bin/node" ]; then
+    mkdir -p "$F2_NODE"
+    curl -fsSL https://nodejs.org/dist/v22.23.4/node-v22.23.4-linux-x64.tar.xz -o "$F2_ROOT/node-v22.23.4-linux-x64.tar.xz"
+    printf '%s  %s\n' 1805bcd35e6815559bd2eb97db438d3fdb0eb3a5e6a977b7c1badca76337e9ce "$F2_ROOT/node-v22.23.4-linux-x64.tar.xz" | sha256sum -c -
+    tar -xJf "$F2_ROOT/node-v22.23.4-linux-x64.tar.xz" -C "$F2_NODE" --strip-components=1
+fi
+test "$("$F2_NODE/bin/node" --version)" = v22.23.4
+"$F2_NODE/bin/node" -p 'JSON.stringify(process.versions)' > "$F2_ROOT/evidence/node-versions.json"
 python -m pip install --disable-pip-version-check --no-warn-script-location --target "$F2_ROOT/bootstrap" 'uv==0.11.25'
 F2_UV="$F2_ROOT/bootstrap/bin/uv"
 "$F2_UV" venv --clear --python "$(command -v python)" "$F2_ROOT/env"

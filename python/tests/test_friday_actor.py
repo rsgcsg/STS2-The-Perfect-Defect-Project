@@ -403,6 +403,10 @@ def test_worker_copied_to_slurm_spool_uses_explicit_release_source(tmp_path):
     python.write_text('#!/bin/sh\nprintf "%s\\n" "$PYTHONPATH" "$STS2_GAME_DIR" '
                       '"$FRIDAY_INFERENCE_THREADS" "$@"\n', encoding="utf-8")
     python.chmod(0o700)
+    node = actor / "node22.23.4/bin/node"
+    node.parent.mkdir(parents=True)
+    node.write_text('#!/bin/sh\nexit 0\n', encoding="utf-8")
+    node.chmod(0o700)
     commands = root / "commands"
     commands.mkdir()
     module = commands / "module"
@@ -419,6 +423,16 @@ def test_worker_copied_to_slurm_spool_uses_explicit_release_source(tmp_path):
         capture_output=True, text=True, check=True, timeout=15)
     lines = result.stdout.splitlines()
     assert lines[:4] == [str(source / "python"), str(actor / "game"), "1",
-                         str(source / "tools/friday/batch.py")]
-    assert lines[4:7] == [str(configuration), "--cell", "trial"]
+                         str(source / "tools/friday/allocation.py")]
+    assert lines[4:11] == ["--mode", "batch", "--configuration", str(configuration),
+                           "--source-root", str(source), "--"]
+    assert lines[11:16] == [str(python), str(source / "tools/friday/batch.py"),
+                            str(configuration), "--cell", "trial"]
     assert result.stderr == ""
+    node.unlink()
+    missing = subprocess.run(['bash', str(spool), str(configuration), 'trial', str(source)],
+        env={"PATH": str(commands) + ":/usr/bin:/bin",
+             "FRIDAY_R2_ENV": str(root / "absent-private-environment")},
+        capture_output=True, text=True, check=False, timeout=15)
+    assert missing.returncode == 2 and missing.stdout == ""
+    assert "pinned Node22.23.4 required" in missing.stderr

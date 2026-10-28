@@ -17,7 +17,11 @@ Friday 是新打局批次和 Managed 固定种子评估的默认 CPU 目标。Ma
 环境重建入口为 `tools/friday/bootstrap-environment.sh`，在单核 Slurm 作业中设置
 `F2_ROOT=/data/<user>/friday-actor/releases/<新提交SHA>` 后调用；它会清空该目标
 下的 `env/`，因此只用于尚未投产的新目录，不对在用或保留的 release 重跑。
-固定 Python3.11.5、.NET SDK9.0.117、CPU torch2.13.0+cpu、tokenizers0.22.2。
+固定 Node22.23.4、Python3.11.5、.NET SDK9.0.117、CPU torch2.13.0+cpu、tokenizers0.22.2。
+Node 使用该 release 的 `node22.23.4/bin/node`；launcher 必须先确认它可执行，再将其
+放到 PATH 首位，不能回退学校 module 的20.9。旧 prototype 作业1393924 在开局前
+被 E2 guard 的 `import.meta.dirname` 阻断，原报告 actor_started=0/world_offers=0；
+账本仍记 unknown，原样保留且不重投，不把这次前置环境失败当成有效性能样本。
 当前组件为 Host `1.1.0-rc.58`、Runtime `0.1.0-rc.59`；执行源码、组件包身份、
 候选 SHA/MVID 和模型原 Store 身份/包 SHA 仍分别精确绑定，不凭版本号推断可混用。
 
@@ -182,3 +186,73 @@ touch /ABS/evaluation-plan/STOP
 Slurm 与 R2 回执，只由原保存恢复入口处理，不能删 owner 重投。
 此入口的便宜回归在 `python/` 下运行
 `python -m pytest tests/test_friday_evaluation.py -q`，不启动游戏。
+
+## 本轮直接接 RL1，不另跑32核一小时
+
+本轮独立32核一小时试跑已取消，吞吐与传输验收并入 RL1 冒烟：Friday 先用
+fc430 的6–8核为学校 L40S 学习者供轨迹；D1三模型×20种子评估仍用上节入口。
+`submit.py` 的32路工程工具保留，但不作为本轮生产默认。
+D1 使用 `T2-MANAGED-A0-SEEDS` 完整40种子清单的前20，**不是默认 ref-20**。
+其 PR287 的原账本 `seed_prefix=20` 尚未合入时不得启用；合入后传
+`--manifest /ABS/T2-MANAGED-A0-SEEDS.json --seed-prefix 20`，保留完整清单原哈希，
+另冻本轮3模型×20种子60槽。模型 ID 尚未产出，因此这里没有宣称比较已运行。
+
+`tools/friday/rl.py` 只启动原 `python -m spireagent.workbench.rl_actor`，不实现游戏循环。
+它沿原 Exchange 的同一 R2 `run/peer` 交换模型版本和轨迹记录；不会复制或导入 RL1
+未合并的私有源码。`prepare` 可在模块尚未合入时冻结计划；`submit/run` 要求原
+`rl_actor.py`、`rl_exchange.py` 已存在于本 release 的真实模块路径，否则开局前拒绝。
+
+```bash
+python tools/friday/rl.py prepare --execution /ABS/Friday-execution.json \
+  --learner-config /ABS/RL1-run.json --output /ABS/Friday-RL-plan --actors 8
+python tools/friday/rl.py submit --plan /ABS/Friday-RL-plan/plan.json --dry-run
+python tools/friday/rl.py submit --plan /ABS/Friday-RL-plan/plan.json
+```
+
+输入必须是物理绝对路径，candidate 不可为符号链接；执行配置必须 `store="s3"`、
+`trajectory/training/audit_every=50`，peer 必须与学习者完全相同。默认从原 RL1 run
+配置取得 behavior 和 seed_namespace；若给单独的 learner 配置，须另传
+`--behavior /ABS/behavior.json --seed-namespace 原命名空间`。不改行为策略参数。
+
+每个数组项单核、唯一 actor 名、fc430、最多8路；复用原用户提交锁与 F2 总量门槛。
+每个 actor 一局一个原账本，并通过原 `unknown_stop` 配置在首个 unknown 后自停。
+工作目录在节点私有 `/tmp`；原 Actor 上传与读回轨迹后，退出时将原摘要、日志及工作
+目录完整复制到计划目录的 `actors/<actor>/evidence/` 并逐字节读回，owner 租约不重投。
+这证明资源适配和原交换物，不自动证明 learner 已实际训练，后者看学校学习者收据。
+
+**现有接口缺口：** RL1 没有跨 actor 的即时 unknown 停新准入接口。本适配不补游戏
+控制或新监控；只在某 actor 退出后发现 unknown 时写共享 STOP，阻止尚未启动的
+数组项。其他已运行 actor 不会因此立刻停止下一局。计划和报告明确保留
+`cross_actor_immediate_unknown_stop=false`；需要更强保证须由 RL1 原 owner 提供接口。
+Slurm 停止信号仅通过原 actor 工作目录 STOP 让本 actor 在一局账本后排空，不重试未知。
+
+便宜回归在 `python/` 下运行 `python -m pytest tests/test_friday_rl.py -q`；
+替代的只有 Slurm/Actor 进程边界，不用私有 RL1 源码、不启动游戏或学习者。
+
+## Slurm 分配进入原 E2 占位入口
+
+每个单核 Slurm 作业是独立资源域；单节点多核评估在同一域中登记 `workers` 路。
+三个 launcher 都经过 `tools/friday/allocation.py`，在 `/tmp` 建700的私有占位目录，
+设置 `SPIREAGENT_SLOT_ROOT`，再正常调用原
+`node tools/resource-slot.mjs run --resources managed --card F2-Friday --lanes N
+--games M --until ISO -- 原Python命令`。批次/RL 数组每项登记1路，评估登记实际
+workers 路；局数为冻结计划或本作业预算上界，截止取现有墙钟预算加300秒收尾。
+这只映射资源分配，不替代原 Managed admission，也不改 Mac 的全局占位目录。
+原 E2 生成、传递和释放 token，封套不读、不造、不写 token。
+
+结束后仅把原 `GAME-SLOT.md` 复制到 `/data` 的该批 `slurm/` 日志目录，逐字节读回；
+同目录的 `*-allocation.json` 记录资源路数、局数上界、截止、原占位目录、信号和
+E2 命令真实退出码。含 token 的原占位文件不复制；若原 E2 收尾不明，它仍在该
+私有目录保留原状态，不能伪称释放或手工清锁。
+
+Slurm 提前 USR1 由封套按私有 PID 元数据传给原 Python 命令，继续用已有停止准入/
+当前局排空逻辑；不把 USR1 发给 Node，避免误开 inspector。原 E2 Node 在这段
+排空期间仍持槽，待原 Python 正常退出后由原 E2 收齐进程树并释放。
+真正 TERM/INT 仍转交原 E2，它约等1秒后可能强杀未退出子树；这是取消路径，
+不能称为正常排空，未知与异常原件仍按原规则保留，不自动重试。
+RL 某 actor 最终摘要出现 unknown、save_failed 或失败无分片时，在慢速快照前
+写共享 STOP 挡未启动项；即时跨 actor 停止的接口缺口仍按上节如实保留。
+
+`python -m pytest tests/test_friday_allocation.py -q` 使用原 E2 CLI 和原 Python
+`require_managed_slot` 进行无游戏检查，核 USR1 到原 Python、排空期间 Node 存活、
+最终真实退出码及原占位释放。它不证明游戏结果或 RL 学习效果。

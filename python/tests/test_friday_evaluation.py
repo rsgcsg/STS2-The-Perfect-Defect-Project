@@ -83,6 +83,35 @@ def test_bounded_selection_keeps_full_ledger_denominator_and_owner_audits(
     assert ledger.report()['not_started'] == 60
 
 
+def test_d1_prefix_preserves_full_t2_manifest_and_passes_owner_selection(
+        evaluate, execution, tmp_path, monkeypatch):
+    from spireagent.workbench.evaluation_ledger import EvaluationLedger
+    from stpd.evaluation.suites import t2_managed_manifest
+
+    manifest = tmp_path / 't2-original.json'
+    manifest.write_text(json.dumps(t2_managed_manifest('v0.111.0')))
+    original = manifest.read_bytes()
+    plan, _ = prepared(evaluate, execution, tmp_path,
+                       manifest_path=manifest, seed_prefix=20)
+    assert plan['planned'] == 60
+    assert Path(plan['manifest']['path']).read_bytes() == original
+    received = []
+
+    def owner_create(*args, **kwargs):
+        received.append(kwargs)
+        return 'owner-ledger'
+
+    monkeypatch.setattr(EvaluationLedger, 'create', owner_create)
+    assert evaluate.create_ledger(plan, (tmp_path / 'ledger').resolve()) == 'owner-ledger'
+    assert received[0]['seed_prefix'] == 20
+
+
+@pytest.mark.parametrize('prefix', [0, 41, True])
+def test_invalid_canonical_prefix_is_rejected(evaluate, execution, tmp_path, prefix):
+    with pytest.raises(ValueError, match='bounded_canonical_seed_prefix'):
+        prepared(evaluate, execution, tmp_path, seed_prefix=prefix)
+
+
 @pytest.mark.parametrize('changed', [
     {'store': '/tmp/local'},
     {'retention': {'tier': 'trajectory', 'purpose': 'training', 'audit_every': 50}},

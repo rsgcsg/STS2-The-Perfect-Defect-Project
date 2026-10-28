@@ -42,7 +42,8 @@ def validate_execution(execution: dict[str, Any], selections: dict[str, str]) ->
 
 def prepare(execution_path: Path, output: Path, *, selections: dict[str, str],
             workers: int = 4, wall_seconds: int = 7200, episode_seconds: int = 900,
-            manifest_path: Path | None = None, limit: int | None = None) -> dict[str, Any]:
+            manifest_path: Path | None = None, limit: int | None = None,
+            seed_prefix: int | None = None) -> dict[str, Any]:
     from spireagent.json_boundary import json_bytes
     from spireagent.workbench.reference_suite import load_manifest
     from stpd.evaluation.suites import FOUR_AGENT_SUITE_ID, load_suite
@@ -69,7 +70,10 @@ def prepare(execution_path: Path, output: Path, *, selections: dict[str, str],
     if (value["host"] != "Managed" or value["purpose"] == "diagnostic_reference"
             or value["suite_id"] == FOUR_AGENT_SUITE_ID):
         raise ValueError("canonical_fixed_managed_evaluation_manifest_required")
-    planned = len(value["seeds"]) * len(selections)
+    if seed_prefix is not None and (
+            type(seed_prefix) is not int or not 1 <= seed_prefix <= len(value["seeds"])):
+        raise ValueError("bounded_canonical_seed_prefix_required")
+    planned = (seed_prefix or len(value["seeds"])) * len(selections)
     selected_count = min(limit or planned, planned)
     if selected_count > 200:
         raise ValueError("single_dispatch_maximum200_selected_slots")
@@ -81,6 +85,7 @@ def prepare(execution_path: Path, output: Path, *, selections: dict[str, str],
             "selections": selections, "workers": workers, "wall_seconds": wall_seconds,
             "episode_seconds": episode_seconds, "selected_limit": selected_count,
             "planned": planned, "source_root": str(Path(__file__).resolve().parents[2]),
+            **({"seed_prefix": seed_prefix} if seed_prefix is not None else {}),
             "target": "friday", "automatic_mac_fallback": False, "retry_unknown": False}
     save(output / "plan.json", plan)
     return plan
@@ -92,9 +97,10 @@ def create_ledger(plan: dict[str, Any], directory: Path):
     execution = read_pinned(plan["execution"])
     read_pinned(plan["manifest"])
     validate_execution(execution, plan["selections"])
+    options = {"seed_prefix": plan["seed_prefix"]} if "seed_prefix" in plan else {}
     return EvaluationLedger.create(directory, Path(plan["manifest"]["path"]),
         plan["manifest"]["sha256"], selections=plan["selections"],
-        execution=Path(plan["execution"]["path"]))
+        execution=Path(plan["execution"]["path"]), **options)
 
 
 def load_plan(path: Path) -> dict[str, Any]:
@@ -114,7 +120,7 @@ def launcher(plan_path: Path, plan: dict[str, Any]) -> str:
     actor = source.parent
     replacements = {"__ACTOR__": shlex.quote(str(actor)),
                     "__SOURCE__": shlex.quote(str(source)),
-                    "__PLAN__": shlex.quote(str(plan_path))}
+                    "__PLAN__": shlex.quote(str(plan_path)), "__SLOT_MODE__": "evaluation"}
     script = r'''#!/bin/bash
 set +x
 set -euo pipefail
@@ -132,13 +138,17 @@ source "$credentials"
 set +a
 if ! type module >/dev/null 2>&1; then source /etc/profile; fi
 module load python/3.11.5-gcccore-13.2.0 nodejs/20.9.0-gcccore-13.2.0
+test -x "$actor_root/node22.23.4/bin/node" || { echo 'pinned Node22.23.4 required' >&2; exit 2; }
 export PATH="$actor_root/env/bin:$actor_root/dotnet-sdk9.0.117:/data/$(id -un)/dotnet9:$PATH"
+export PATH="$actor_root/node22.23.4/bin:$PATH"
 export PYTHONPATH="$source_root/python"
 export STS2_GAME_DIR="$actor_root/game"
 export DOTNET_PROCESSOR_COUNT=1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
 export TOKENIZERS_PARALLELISM=false PYTHONUNBUFFERED=1
 export FRIDAY_INFERENCE_THREADS=${FRIDAY_INFERENCE_THREADS:-1}
-exec "$actor_root/env/bin/python" "$source_root/tools/friday/evaluate.py" run --plan __PLAN__
+exec "$actor_root/env/bin/python" "$source_root/tools/friday/allocation.py" \
+  --mode __SLOT_MODE__ --configuration __PLAN__ --source-root "$source_root" -- \
+  "$actor_root/env/bin/python" "$source_root/tools/friday/evaluate.py" run --plan __PLAN__
 '''
     for token, value in replacements.items():
         script = script.replace(token, value)
@@ -313,6 +323,8 @@ def main():
     prepare_parser.add_argument('--wall-seconds', type=int, default=7200)
     prepare_parser.add_argument('--episode-seconds', type=int, default=900)
     prepare_parser.add_argument('--limit', type=int)
+    prepare_parser.add_argument('--seed-prefix', type=int,
+                                help='freeze this original canonical seed prefix in a NEW ledger')
     for name in ('submit', 'run'):
         command = commands.add_parser(name)
         command.add_argument('--plan', type=Path, required=True)
@@ -331,7 +343,8 @@ def main():
         result = prepare(args.execution.resolve(), args.output.resolve(), selections=selections,
             workers=args.workers, wall_seconds=args.wall_seconds,
             episode_seconds=args.episode_seconds,
-            manifest_path=args.manifest.resolve() if args.manifest else None, limit=args.limit)
+            manifest_path=args.manifest.resolve() if args.manifest else None, limit=args.limit,
+            seed_prefix=args.seed_prefix)
     elif args.command == 'submit':
         result = submit(args.plan.resolve(), constraint=args.constraint, dry_run=args.dry_run)
     else:
