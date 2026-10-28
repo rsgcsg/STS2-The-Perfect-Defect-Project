@@ -8,7 +8,7 @@ Friday 是新打局批次的默认 CPU 目标。Mac 只在明确指定的对照�
 
 ## 固定环境和输入
 
-只在自己的 `/data/s4961270/friday-actor` 部署，目录700；游戏文件600、目录700，
+只在自己的 `/data/<user>/friday-actor` 部署，目录700；游戏文件600、目录700，
 不放镜像或共享 scratch。节点本地 `/tmp` 只写证据和运行日志，不复制游戏。
 环境重建入口为 `tools/friday/bootstrap-environment.sh`（Slurm 单核作业内一条命令，
 固定 Python3.11.5、.NET SDK9.0.117、CPU torch2.13.0+cpu、tokenizers0.22.2）；执行源码固定 Git 提交，
@@ -34,7 +34,7 @@ Host/Runtime 固定包身份，候选固定 SHA/MVID，模型固定原 Store 身
 原校验器核验；其他身份和语义不改。
 
 由用户在 Cloudflare 创建只限 `spireagent-artifacts` 桶的对象读写令牌，用户本人
-放入 `/data/s4961270/.config/spireagent/friday-r2.env`，文件600，父目录700。
+放入 `/data/<user>/.config/spireagent/friday-r2.env`，文件600，父目录700。
 文件设置 `AWS_ACCESS_KEY_ID`、`AWS_SECRET_ACCESS_KEY`；非秘密桶、endpoint、prefix
 从固定 `peer` 读取。`worker.sh` 在执行时加载用户文件，Agent 不查看或复制该文件。
 登录只让用户输密码和手机确认；共享 SSH 连接有效期间不重复登录。
@@ -47,7 +47,7 @@ Host/Runtime 固定包身份，候选固定 SHA/MVID，模型固定原 Store 身
 在同一共享租约根中互斥取组。租约写入后不自动过期、不回收、不重投未知。
 
 ```bash
-export PYTHONPATH=/data/s4961270/friday-actor/source/python
+export PYTHONPATH=/data/<user>/friday-actor/source/python
 python tools/friday/prepare.py --execution /ABS/execution.json --output /ABS/plan \
   --namespace F2-paired-20261028 --groups 1 --per-group 8 \
   --cell c6220 --cell fc430 --cell mac --persistent /ABS/paired-results
@@ -116,3 +116,9 @@ Slurm 日志在 `persistent_root/slurm/`。`result.json` 记录源码配置、�
 只把仓库原锁中的 certifi 更新为2026.10.23，再导出同锁 CPU 环境；
 torch、tokenizers 和其余包版本不变，不改旧训练/模型的原 producer 或锁。
 重建环境前先排空本人的旧打局作业；bootstrap 会重建本目录下的专用环境。
+
+Friday 的执行配置须显式列出
+`adapter_environment_keys=["LD_LIBRARY_PATH","FRIDAY_INFERENCE_THREADS"]`，
+让原 Runtime 转交学校 Python 模块的动态库路径和指定线程数；只记录变量名。
+Mac 测速只需 `FRIDAY_INFERENCE_THREADS`。缺变量会在开局前拒绝，
+AWS/R2 凭据不能通过此项传给 Agent。默认空列表保持原 Mac 路径。

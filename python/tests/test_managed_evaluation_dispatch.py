@@ -970,3 +970,110 @@ def test_executor_threads_frozen_game_selection_into_the_real_host_audit_reader(
     output["runtime_sts2_sha256"] = "0" * 64
     with pytest.raises(BoundaryError, match="managed_candidate_identity_mismatch"):
         backend.ManagedEpisodeExecutor(configuration, episode_seconds=10, cleanup_seconds=10)
+
+
+@pytest.mark.parametrize("keys", [None, "LD_LIBRARY_PATH", {}, [1],
+    ["LD_LIBRARY_PATH", "LD_LIBRARY_PATH"], ["AWS_SECRET_ACCESS_KEY"],
+    ["AWS_ACCESS_KEY_ID"], ["R2_TOKEN"], ["PATH"]])
+def test_adapter_environment_keys_reject_invalid_and_credential_requests_before_host(keys):
+    from spireagent.workbench.managed_evaluation import ManagedEpisodeExecutor
+
+    with pytest.raises(BoundaryError, match="invalid_adapter_environment_keys"):
+        ManagedEpisodeExecutor({"adapter_environment_keys": keys},
+                               episode_seconds=10, cleanup_seconds=10)
+
+
+def test_adapter_environment_requires_available_keys_before_host_and_each_offer(monkeypatch):
+    from spireagent.workbench.managed_evaluation import ManagedEpisodeExecutor
+
+    monkeypatch.delenv("LD_LIBRARY_PATH", raising=False)
+    with pytest.raises(BoundaryError, match="adapter_environment_key_unavailable"):
+        ManagedEpisodeExecutor({"adapter_environment_keys": ["LD_LIBRARY_PATH"]},
+                               episode_seconds=10, cleanup_seconds=10)
+    executor = object.__new__(ManagedEpisodeExecutor)
+    executor.adapter_environment_keys = ("LD_LIBRARY_PATH",)
+    # No model, API, Host or artifacts exist: a vanished key fails before any access.
+    with pytest.raises(BoundaryError, match="adapter_environment_key_unavailable"):
+        executor({}, {"ascension": 0, "host": "Managed"}, None, lambda: None)
+
+
+@pytest.mark.parametrize("keys,central", [([], False),
+    (["FRIDAY_INFERENCE_THREADS"], False),
+    (["LD_LIBRARY_PATH", "FRIDAY_INFERENCE_THREADS"], False),
+    (["LD_LIBRARY_PATH", "FRIDAY_INFERENCE_THREADS"], True)])
+def test_actual_runtime_process_command_forwards_only_requested_adapter_key_names(
+    tmp_path, monkeypatch, keys, central,
+):
+    """Real executor command assembly; Host, registration and Popen are declared seams."""
+    from types import SimpleNamespace
+
+    from spireagent.workbench import managed_evaluation as backend
+
+    loader_value = "/synthetic/module/python/lib"
+    monkeypatch.setenv("LD_LIBRARY_PATH", loader_value)
+    monkeypatch.setenv("FRIDAY_INFERENCE_THREADS", "1")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "synthetic-parent-credential")
+    executor = object.__new__(backend.ManagedEpisodeExecutor)
+    executor.adapter_environment_keys = tuple(keys)
+    executor.configuration = {"models": {"model": {"package_directory": str(tmp_path)}},
+        "python_executable": "/synthetic/python", "host_pin": {},
+        "initial_progress": {"progress_sha256": "progress"}}
+    executor.preparation = {"store": "fixture"}
+    executor.read_concurrency = 1
+    executor.settling_timeout_ms = None
+    executor.measure_host_performance = False
+    executor.host = executor.candidate = executor.runtime = tmp_path
+    executor.episode_seconds = executor.cleanup_seconds = 10
+    executor.build = {"artifact_sha256": "candidate"}
+    executor.evidence_durability = "event"
+    executor.max_auto_submissions = 1
+    executor.inference_pool = (SimpleNamespace(
+        attachment=lambda: {"schema": "synthetic-binding"},
+        environment=lambda: {"STPD_LOCAL_INFERENCE_TOKEN": "synthetic-inference-secret"},
+    ) if central else None)
+    ready = {"service_instance_id": "service", "adapter_runtime_instance_id": "runtime",
+             "episode": {"game_continuity_id": "game"}}
+    identity = {"episode_provenance": {"verdict": "provenance_pass", "actual_seed": "seed"},
+                "initial_progress": {"run_unlock_state_matches": True,
+                                     "progress_sha256": "progress"}}
+    manager = SimpleNamespace(
+        reset=lambda *_args, **_kwargs: {}, request=lambda _: {"result": {"identity": identity}},
+        close_host=lambda: {"result": {"exit": {"code": 0}}},
+    )
+    launch = SimpleNamespace(pid=1, process=SimpleNamespace(wait=lambda **_: 0))
+    executor.api = SimpleNamespace(
+        launch_managed_host_service=lambda **_: launch,
+        ManagedHostServiceClient=SimpleNamespace(from_attachment=lambda _: SimpleNamespace(
+            ready=lambda: ready)),
+        ManagedHostServiceManager=SimpleNamespace(from_attachment=lambda _: manager),
+    )
+    monkeypatch.setattr(backend, "runtime_arguments", lambda *_: [])
+    monkeypatch.setattr(backend, "global_environment_manifest", lambda *_: {})
+    monkeypatch.setattr(backend.export, "register",
+                        lambda _package, target, *_args, **_kwargs: target.mkdir())
+    captured = []
+
+    def start(command, **kwargs):
+        captured.append((command, kwargs["env"]))
+        raise RuntimeError("synthetic_process_boundary_stop")
+
+    monkeypatch.setattr(backend.subprocess, "Popen", start)
+    artifacts = SimpleNamespace(root=tmp_path, put=lambda name, _bytes: name)
+    row = {"selection_id": "model", "seed": "seed", "intent_id": "intent",
+           "world_mutation_offered": False}
+    executor(row, {"ascension": 0, "host": "Managed", "character": "Defect"},
+             artifacts, lambda: None)
+    assert len(captured) == 1
+    command, environment = captured[0]
+    assert command[:2] == ["node", str(tmp_path / "cli.js")]
+    forwarded = [command[index + 1] for index, arg in enumerate(command)
+                 if arg == "--adapter-env-key"]
+    assert forwarded == [*keys, *(["STPD_LOCAL_INFERENCE_TOKEN"] if central else [])]
+    assert "AWS_SECRET_ACCESS_KEY" not in forwarded
+    assert loader_value not in command
+    assert "synthetic-parent-credential" not in command
+    assert "synthetic-inference-secret" not in command
+    assert environment["FRIDAY_INFERENCE_THREADS"] == "1"
+    assert environment["LD_LIBRARY_PATH"] == loader_value
+    assert "synthetic-parent-credential" not in json.dumps(row)
+    assert loader_value not in json.dumps(row)

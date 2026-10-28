@@ -5,9 +5,9 @@ set -euo pipefail
 umask 077
 configuration=${1:?configuration JSON path required}
 cell=${2:?declared comparison cell required}
-actor_root=${FRIDAY_ACTOR_ROOT:-/data/s4961270/friday-actor}
+actor_root=${FRIDAY_ACTOR_ROOT:-/data/$(id -un)/friday-actor}
 source_root=${FRIDAY_SOURCE_ROOT:-$actor_root/source}
-credentials=${FRIDAY_R2_ENV:-/data/s4961270/.config/spireagent/friday-r2.env}
+credentials=${FRIDAY_R2_ENV:-/data/$(id -un)/.config/spireagent/friday-r2.env}
 if [[ -e "$credentials" ]]; then
   [[ ! -L "$credentials" && $(stat -c '%a' "$credentials") = 600 && $(stat -c '%u' "$credentials") = $(id -u) ]] || {
     echo 'R2 environment must be a user-owned regular600 file' >&2; exit 2;
@@ -18,7 +18,7 @@ if [[ -e "$credentials" ]]; then
 fi
 if ! type module >/dev/null 2>&1; then source /etc/profile; fi
 module load python/3.11.5-gcccore-13.2.0 nodejs/20.9.0-gcccore-13.2.0
-export PATH="$actor_root/env/bin:$actor_root/dotnet-sdk9.0.117:/data/s4961270/dotnet9:$PATH"
+export PATH="$actor_root/env/bin:$actor_root/dotnet-sdk9.0.117:/data/$(id -un)/dotnet9:$PATH"
 export PYTHONPATH="$source_root/python"
 export STS2_GAME_DIR="$actor_root/game"
 export DOTNET_PROCESSOR_COUNT=1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1

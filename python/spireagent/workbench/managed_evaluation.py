@@ -206,6 +206,15 @@ class ManagedEpisodeExecutor:
         if (type(self.max_auto_submissions) is not int
                 or not 1 <= self.max_auto_submissions <= 10000):
             reject("invalid_runtime_submission_budget")
+        adapter_keys = configuration.get("adapter_environment_keys", [])
+        if (not isinstance(adapter_keys, list)
+                or any(not isinstance(key, str) or key not in {
+                    "LD_LIBRARY_PATH", "FRIDAY_INFERENCE_THREADS"} for key in adapter_keys)
+                or len(set(adapter_keys)) != len(adapter_keys)):
+            reject("invalid_adapter_environment_keys")
+        self.adapter_environment_keys = tuple(adapter_keys)
+        if any(key not in os.environ for key in self.adapter_environment_keys):
+            reject("adapter_environment_key_unavailable")
         self.game_assembly_sha256 = digest(
             configuration.get("game_assembly_sha256", SCENARIO["exact_game_assembly_sha256"]),
             "managed_evaluation.game_assembly_sha256",
@@ -306,6 +315,8 @@ class ManagedEpisodeExecutor:
     ) -> None:
         if manifest["ascension"] != 0 or manifest["host"] != "Managed":
             reject("unsupported_scenario")
+        if any(key not in os.environ for key in self.adapter_environment_keys):
+            reject("adapter_environment_key_unavailable")
         model = self.configuration["models"][row["selection_id"]]
         private = artifacts.root / "private"
         private.mkdir(mode=0o700)
@@ -436,6 +447,8 @@ class ManagedEpisodeExecutor:
                 row["evidence_durability"] = self.evidence_durability
                 if self.settling_timeout_ms is not None:
                     args.extend(["--managed-settling-timeout-ms", str(self.settling_timeout_ms)])
+                for name in self.adapter_environment_keys:
+                    args.extend(["--adapter-env-key", name])
                 environment = os.environ.copy()
                 row["inference_mode"] = "central_batch" if self.inference_pool else "per_actor"
                 if self.inference_pool is not None:
