@@ -19,13 +19,17 @@ SCHEMA = "sts2.policy-runtime/agent-session-1"
 def serve_session(
     manifest: dict[str, Any],
     score: Callable[[dict[str, Any]], list[float]],
-    select: Callable[[list[float]], int],
+    select: Callable[..., int],
     source: TextIO,
     destination: TextIO,
     *,
     consumption_prefix: str = "mstd-",
     reuse_selection: bool = False,
+    keyed_selection: bool = False,
 ) -> None:
+    """``keyed_selection`` passes the acknowledged consumption id as a draw key."""
+    if keyed_selection and not reuse_selection:
+        raise ValueError("a keyed chooser must commit its draw on ACK")
     unit = consumption = committed = pending = None
     version = 0
 
@@ -125,7 +129,8 @@ def serve_session(
             else:
                 if not scores:
                     raise ValueError("nonterminal P1 observation has no legal choices")
-                selected = select(scores)
+                selected = (select(scores, consumption)
+                            if keyed_selection else select(scores))
                 if type(selected) is not int or not 0 <= selected < len(scores):
                     raise ValueError("P1 chooser selected outside full catalog")
             committed = value, scores, selected

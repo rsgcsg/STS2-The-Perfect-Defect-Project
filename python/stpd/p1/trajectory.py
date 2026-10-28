@@ -13,6 +13,8 @@ from sts2_platform_evidence import AgentSessionRunEvidence, read_global_artifact
 
 from spireagent.json_boundary import BoundaryError, json_bytes
 
+from .sampling import distribution
+
 LEGACY_SCHEMA = "stpd/p1-trajectory-1"
 SCHEMA = "stpd/p1-trajectory-2"
 MAX_EPISODE_BYTES = 256 * 1024**2
@@ -170,12 +172,24 @@ def extract_trajectory(verified: AgentSessionRunEvidence, *, identity: dict[str,
             scores = directive.get("scores", {}).get("values")
             if len(selected) != 1 or not isinstance(scores, list) or len(scores) != len(catalog):
                 reject("complete_original_scores_required")
-            probabilities = softmax(scores)
-            behavior = {"mode": "argmax", "temperature": None, "uniform_mix": 0,
-                "probabilities": [float(i == selected[0]) for i in range(len(catalog))],
-                "selected_probability": 1.0, "model_probabilities": probabilities,
-                "model_probability_source": "softmax_of_recorded_logits",
-                "model_logits": scores}
+            policy = identity["behavior_policy"]
+            if policy.get("mode") == "temperature_uniform":
+                # The sampler drew from exactly this function of the recorded logits.
+                probabilities, sampled = distribution(scores, policy["temperature"],
+                                                      policy["uniform_mix"])
+                behavior = {"mode": policy["mode"], "temperature": policy["temperature"],
+                    "uniform_mix": policy["uniform_mix"], "probabilities": sampled,
+                    "selected_probability": sampled[selected[0]],
+                    "model_probabilities": probabilities,
+                    "model_probability_source": "softmax_of_recorded_logits",
+                    "model_logits": scores}
+            else:
+                probabilities = softmax(scores)
+                behavior = {"mode": "argmax", "temperature": None, "uniform_mix": 0,
+                    "probabilities": [float(i == selected[0]) for i in range(len(catalog))],
+                    "selected_probability": 1.0, "model_probabilities": probabilities,
+                    "model_probability_source": "softmax_of_recorded_logits",
+                    "model_logits": scores}
             validate_behavior(behavior, len(catalog), selected[0])
             steps.append({"index": len(steps), "observation_index": index,
                 "acquisition_id": payload["acquisition_id"], "event_sequence": event["sequence"],
@@ -207,7 +221,9 @@ def extract_trajectory(verified: AgentSessionRunEvidence, *, identity: dict[str,
                     "terminal": outcome.get("terminal_observation"),
                     "max_observed_floor": max_floor,
                     "boss_clearance": boss_clearance(observations)},
-        "rl_ready": False, "rl_unavailable_reason": "argmax_and_no_value_head",
+        "rl_ready": False, "rl_unavailable_reason": (
+            "no_value_head" if identity["behavior_policy"].get("mode") == "temperature_uniform"
+            else "argmax_and_no_value_head"),
         "score_eligible": trajectory_score_eligible(identity)}
     validate_trajectory(value)
     return value

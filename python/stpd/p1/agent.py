@@ -93,13 +93,28 @@ def serve(
         # Installation still verifies the normal model binding; only scoring is
         # shared. Each actor retains its own original protocol state.
         del model
+    behavior = config.get("behavior_policy")
+    if behavior is None:
+        chooser: Any = lambda scores: max(range(len(scores)), key=scores.__getitem__)  # noqa: E731
+    else:
+        from .sampling import distribution, draw, validate_policy
+
+        policy = validate_policy(behavior)
+
+        def chooser(scores: list[float], consumption_id: str) -> int:
+            _, probabilities = distribution(scores, policy["temperature"], policy["uniform_mix"])
+            return draw(probabilities, policy["seed"], consumption_id)
+
     try:
         serve_session(
             manifest,
             score if client is None else client,
-            lambda scores: max(range(len(scores)), key=scores.__getitem__),
+            chooser,
             source,
             destination,
+            # Training sampling commits each draw on ACK; argmax keeps its original path.
+            reuse_selection=behavior is not None,
+            keyed_selection=behavior is not None,
         )
     finally:
         if client is not None:
