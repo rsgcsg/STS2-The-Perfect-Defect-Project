@@ -35,7 +35,7 @@ def test_sparse_progress_keeps_complete_checkpoint_history_and_every_dev(tmp_pat
     store, run = longer_run(tmp_path)
     # Deterministic step cadence rather than a host-speed-dependent timer.
     monkeypatch.setattr(worker, "PROGRESS_STEPS", 50)
-    monkeypatch.setattr(worker, "PROGRESS_SECONDS", float("inf"))
+    monkeypatch.setattr(worker, "PROGRESS_SECONDS", 1_000_000_000)
     request = ComputeRequest("training", run.artifact_id, PRODUCER, "sparse")
     result = dispatch(store, request, PRODUCER)
     workload = verify_p1_run(store, run.artifact_id, PRODUCER)
