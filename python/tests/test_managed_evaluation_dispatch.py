@@ -134,8 +134,23 @@ def test_cli_seed_prefix_is_create_only(tmp_path, t2_create_inputs, capsys):
     assert json.loads(capsys.readouterr().out)["planned"] == 60
     frozen_plan = (directory / "plan.json").read_bytes()
     assert main(["status", "--ledger", str(directory), "--seed-prefix", "10"]) == 1
-    assert json.loads(capsys.readouterr().out)["error"] == "seed_prefix_requires_create"
+    assert json.loads(capsys.readouterr().out)["error"] == "seed_prefix_requires_managed_create"
     assert (directory / "plan.json").read_bytes() == frozen_plan
+
+
+@pytest.mark.parametrize("prefix,error", [
+    (["--seed-prefix", "20"], "seed_prefix_requires_managed_create"),
+    ([], "managed_manifest_execution_and_selections_required"),
+])
+def test_reference_create_seed_prefix_rejects_explicitly_and_keeps_legacy_error(
+    tmp_path, capsys, prefix, error,
+):
+    from spireagent.workbench.evaluation_ledger import main
+
+    directory = tmp_path / "reference-ledger"
+    assert main(["create", "--host", "reference", "--ledger", str(directory), *prefix]) == 1
+    assert json.loads(capsys.readouterr().out)["error"] == error
+    assert not directory.exists()
 
 
 def complete(row, artifacts, checkpoint):

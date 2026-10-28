@@ -857,8 +857,10 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.slot_id and (args.action != "run" or args.host != "managed"):
             reject("slot_selection_requires_managed_run")
-        if args.seed_prefix is not None and args.action != "create":
-            reject("seed_prefix_requires_create")
+        if args.seed_prefix is not None and (
+            args.action != "create" or args.host != "managed"
+        ):
+            reject("seed_prefix_requires_managed_create")
         if args.cloud_environment:
             import os
 
