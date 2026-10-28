@@ -28,7 +28,7 @@ def adapter_identity() -> dict[str, str]:
         name: digest((root / name).read_bytes())
         for name in ("agent.py", "agent_driver.py", "local_inference.py", "export.py", "input.py",
                      "model.py", "tensor_input.py", "data.py", "execution.py", "spec.py",
-                     "input_order.py",
+                     "input_order.py", "sampling.py",
                      "vocabulary.py", "public_vocabulary_v1.json", "input_identity.py")
     }
     closure["checkpoint_codec.py"] = digest(
@@ -170,8 +170,12 @@ def register(
     entry_id: str = "t0-p1-mstd",
     label: str = "T0 P1 M-std (CPU engineering)",
     input_projection: dict[str, Any] | None = None,
+    behavior_policy: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Environment owner supplies the existing exact P1 environment envelope.
+
+    ``behavior_policy`` selects training-only sampling (see ``sampling``);
+    omitted, the installation keeps the original argmax chooser and config bytes.
 
     This function selects no Host, starts no process and changes no shared registry.
     Recovery model_bindings are empty because M-std has no recurrent state; the
@@ -234,6 +238,10 @@ def register(
         "input_projection": projection,
         "package_input_spec": input_spec(model.vocabulary),
     }
+    if behavior_policy is not None:
+        from .sampling import validate_policy
+
+        config["behavior_policy"] = validate_policy(dict(behavior_policy))
     (root / "manifest.json").write_bytes(json_bytes(manifest))
     (root / "config.json").write_bytes(json_bytes(config))
     entry = {
