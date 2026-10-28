@@ -23,6 +23,8 @@
 | 模型下载、注册、完整 Agent 接入：能用 | 模型→运行；`python/stpd/p1`、Workbench | [模型/Agent 操作](../python/docs/PROJECT_CONSOLE.md#p1-model正常下载注册与使用)、[运行入口](../python/docs/LOCAL_MODEL_TASK_FLOW.md#prepare-and-load) | 注册不等于激活；旧 438 输入仍受排列影响，权重和旧包保留 |
 | 真游戏 Reference 评估：能续接，原 100 槽未完成 | 运行→评估；Workbench `evaluation_ledger` / `reference_suite` | [可续跑评估链路](../python/docs/LOCAL_MODEL_TASK_FLOW.md#可续跑的评估链路) | 35 槽已开/2 unknown 均保留；第 35 槽已封存，未重投，65 未开；不自动续跑 |
 | Managed 模拟评估和对照：部分可用 | Host 实现与同一评估账本；`components/host-runtime`、Workbench | [Host 对照指南](../components/host-runtime/docs/MANAGED_P1_EQUIVALENCE.md)、同上评估入口 | 与 Reference 是同一 Host 角色的两种实现；只在已验证范围作工程替身，成绩分开。修复与 r1.7 见 [M2a](evidence/MANAGED_M2A_20261027.md)，保存分档/流水线见 [M2b](evidence/MANAGED_TIERS_M2B_20261027.md)；r1.7 未装日常，整局等价与 RL 资格未授 |
+| Friday 打局和 Managed 评估：能用，部署已冻结 | 运行→评估；根 `tools/friday`、Workbench `evaluation_ledger` | [Friday 手册](../python/docs/FRIDAY_ACTOR.md) | 10-29 起评估默认在这里跑；fc430 每核每小时 22.4 局；D1 的 60 槽已跑通 |
+| RL 打局者 / 学习者 / 长跑：代码能用，长跑未开 | 模型⇄Managed；`spireagent.workbench.rl_*`、`spireagent.rl_exchange`、`stpd.rl` | [运行图](../python/docs/RL_LONG_RUN.zh-CN.md)、[接口](../python/docs/RL_ACTOR_LEARNER.zh-CN.md) | 跨节点闭环和学校续训在长跑第一小时验证；开长跑需用户明确授权 |
 | 开发、修缺陷、测试、集成：现有流程 | 各功能 owner；根 `tools` 负责工程工具 | [工程入门](NEW_ENGINEER_GUIDE.md) → [工作流程](DEVELOPMENT_WORKFLOW.md) / [测试](TESTING.md#local-feedback-and-candidate-checks) | 缺陷归最先出错的层；[待修和重构](plans/CONVERGENCE_BASELINE_20261027.zh-CN.md#待修与重构去向) |
 | 安装、升级、核加载、回滚：现有入口 | `apps/game-mod` 与原安装 owner | [开发工具安装](../python/docs/DEVELOPER_KIT_INSTALL.md)、[Mod 生命周期](../apps/game-mod/README.md#lifecycle) | 用户录制优先；先核占用/登记和匹配 Tool；安装不随文档合并发生 |
 | Hub、队列、团队账号、云页面：保留冻结 | `python/spireagent/hub`、`python/deploy/hub`、`python/docs` | [现有 Hub 运维](../python/deploy/hub/RUNBOOK.md)、[账号恢复](../python/docs/IDENTITY_PROTOCOL.md) | 当前单人本机/R2/学校链不依赖整个团队产品；有旧 caller，不等于废除或当前已部署 |
@@ -32,8 +34,8 @@
 | 节点角色 | 现在怎么分 | 数据如何连接 |
 |---|---|---|
 | 采集 | 本机真人游戏、封存、录后后台处理、冻结和打包 | 原件/派生经现 Store 保全到 R2，保留来源和用途 |
-| 训练 | 学校 GPU；Modal adapter 保留为已存在的可选实现 | 从 R2 读取具名输入，检查点和结果回 R2；分配、预算、开训另有明确授权 |
-| 运行 | 本机真游戏 Reference；Managed 同机可并行，具体并发由任务按资源限制 | 正式成绩须有完整证据读回；不能挤占用户录制 |
+| 训练 | 学校 L40S（10-29 用户定的默认）；Modal adapter 代码保留，不再是默认 | 从 R2 读取具名输入，检查点和结果回 R2；分配、预算、开训另有明确授权 |
+| 运行 | 本机真游戏 Reference 和用户录制；RL 打局和 Managed 评估默认在 Friday CPU | 正式成绩须有完整证据读回；不能挤占用户录制 |
 | 存储 | R2 长期存储；本机为有界缓存和未保全工作集 | 冷取回仍走原 reader，不用散落 tar 代替 Store 身份 |
 | 控制 / 开发 | 本机代码、配置、调度、检查 | 一台机器可兼多个角色；云 CPU 按需，当前不建持久服务器 |
 
