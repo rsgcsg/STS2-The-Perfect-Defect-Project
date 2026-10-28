@@ -13,7 +13,8 @@ from .execution import MStdExecution
 def training_execution(name: str, *, microbatch_size: int | None = None) -> MStdExecution:
     if name != "mstd-training-v2":
         if microbatch_size is not None:
-            raise BoundaryError("p1_execution", "explicit_new_plan_required_for_microbatch_override")
+            raise BoundaryError(
+                "p1_execution", "explicit_new_plan_required_for_microbatch_override")
         return MStdExecution.for_plan(name)
     size = 8 if microbatch_size is None else microbatch_size
     if type(size) is not int or size not in {1, 2, 4, 8}:

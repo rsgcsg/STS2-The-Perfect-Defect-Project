@@ -2,12 +2,13 @@
 from __future__ import annotations
 
 import pytest
-from test_p1_model import synthetic_frame
 
 from spireagent.json_boundary import BoundaryError
 from stpd.p1.execution import MStdExecution, microbatches
 from stpd.p1.execution_plans import training_execution
-from stpd.p1.model import MStd, fit_vocabulary
+from stpd.p1.input import fit_vocabulary
+from stpd.p1.model import MStd
+from stpd.p1.profiling import synthetic_frame
 
 
 def test_wide_new_run_fills_microbatches_without_altering_old_plan_or_true_tail():

@@ -51,7 +51,8 @@ def _packed_populations(store: ArtifactStore, pack_id: str, reader: SnapshotRead
         # The same explicit session owns these already verified, read-only CPU
         # inputs. Every distinct data/vocabulary/weight/encoder binding misses;
         # no external receipt or persisted "trusted" population is accepted.
-        key = digest(json_bytes([pack_id, pack_binding(reader, vocabulary, weighting, value_heads)]))
+        binding = pack_binding(reader, vocabulary, weighting, value_heads)
+        key = digest(json_bytes([pack_id, binding]))
         return store.memoize("p1.tensor-populations", key, load)
     return load()
 

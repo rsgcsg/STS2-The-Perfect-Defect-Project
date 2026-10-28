@@ -10,8 +10,8 @@ from typing import Literal, Protocol
 
 from spireagent.artifact_contracts import Manifest, Producer
 from spireagent.json_boundary import BoundaryError, FrozenObject, unsigned
-from spireagent.storage.run_reporter import ObjectStoreRunReporter
 from spireagent.storage.read_session import VerifiedReadSession
+from spireagent.storage.run_reporter import ObjectStoreRunReporter
 from spireagent.storage.store import ArtifactStore, ManifestArtifactStore
 
 from ..contracts import QwenBackend

@@ -331,6 +331,24 @@ RL1沿用公共 `stpd.workers.training_io` 的 `ProgressCadence`、`FrozenCheckp
 checkpoint_publish和checkpoint_wait时间。后台publish可与训练重叠，不能与训练时间相加
 当独占成本；capture/wait和事件写入才是主线程热路径。该事件自身的写入计入下一次累计。
 
+#### 新Run的宽微批计划与一次分配的连续实验
+
+`stpd.p1.execution_plans.training_execution("mstd-training-v2", microbatch_size=8)`给出
+独立新计划：batch仍64，微批上限8，scene/text面积各为`2**26`，FP32/CPU2不变。
+冻结其`to_dict()`到原 `prepare_p1_run(..., execution_policy=...)`；2/4/8可作新Run的有界
+实测候选。它复用现有 `experimental-packed-v1` 内核，不改旧 `mstd-training-v1`、旧Run或
+编码器，原已验证张量包可复用。宽分组会改变dropout/浮点累加轨迹，不能从旧CP中途换；
+先验短训质量，再用新Run长训比较DEV，未取得质量证据前不改变默认计划。
+
+连续短测/长训可复用一个显式 `VerifiedReadSession`：外层用启用manifest缓存的原Store、
+`InputCacheStore`和`VerifiedReadSession(cache_payloads=False)`，逐个调用正常
+`execute_request(..., input_session=session)`，不要同时传`input_cache`。
+同一会话首次完整读回并验证相同payload清单、Snapshot和张量包，按完整pack、Snapshot、
+词表、W1、value及compiler绑定在内存复用只读Population；每个Run仍验证自己的来源、
+执行配置和训练输入绑定。会话关闭或新节点必须重新验证，不能导入外部“已验证”tuple；
+数据驻留只限本会话，不是持久资格凭证。该会话供串行请求复用，不承诺并发训练线程安全。
+RL1同样可保持模型及已验输入常驻，复用这些公共执行/缓存入口和上述I/O组件。
+
 ### 权重、配方与检查点
 
 #### 下一轮 T2 的输入 v2
