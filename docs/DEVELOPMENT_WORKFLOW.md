@@ -137,6 +137,9 @@ remain in TESTING; task-specific real-attempt budgets remain in the active packe
 3. Verify that the PR actually merged, record its merge SHA and original topic
    ancestry, then inspect the CI **push** run for that exact develop commit (fresh
    checks or a verified execution receipt plus current identity/BOM/history checks).
+   Confirm the actual head-ref outcome too: repository auto-delete-on-merge may
+   remove the topic. If the approved disposition requires preserving it, retain/archive
+   or restore the exact ref; do not silently change repository-wide settings.
    A green PR or queue run is not by itself post-merge verification. This completes
    an ordinary task unless publication/deployment is explicitly in scope.
 4. When promotion is intended, create a temporary release branch from the exact selected
