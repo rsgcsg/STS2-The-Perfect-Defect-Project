@@ -3,8 +3,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import {spawn} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
+import {ownedCommand} from './check-workspace.mjs';
 import {listGameProcesses} from '../components/host-runtime/src/game-processes.mjs';
 
 export const slotRoot = () => process.env.SPIREAGENT_SLOT_ROOT || path.join(os.homedir(), 'Documents/Codex/resource-slots');
@@ -78,6 +78,31 @@ export function release(resources, token, root = slotRoot()) {
     }
   });
 }
+export async function runReservedCommand(args, {resources, token,
+  gamePresent = () => listGameProcesses(process.platform, {failClosed: true}).length > 0,
+  intervalMs = 3000}) {
+  const owned = ownedCommand(args[0], args.slice(1), {stdio: 'inherit', shell: process.platform === 'win32',
+    env: {...process.env, SPIREAGENT_SLOT_TOKEN: token}});
+  const onInt = () => { void owned.cancel('SIGINT'); }, onTerm = () => { void owned.cancel('SIGTERM'); };
+  process.on('SIGINT', onInt); process.on('SIGTERM', onTerm);
+  let interruptedForGame = false;
+  // CPU-only setup/comparison can be cancelled as a process tree. Managed gameplay
+  // keeps its existing cleanup semantics and rejects the next episode at check().
+  const monitor = resources.includes('managed') && resources.includes('cpu') ? setInterval(() => {
+    let busy = true;
+    try { busy = gamePresent(); } catch { /* Unavailable observation cannot grant CPU work. */ }
+    if (busy && !interruptedForGame) {
+      interruptedForGame = true;
+      console.error('User game appeared: stopping owned setup/comparison process tree.');
+      void owned.cancel('SIGTERM');
+    }
+  }, intervalMs) : null;
+  try { return {...await owned.completion, interruptedForGame}; }
+  finally {
+    if (monitor) clearInterval(monitor);
+    process.off('SIGINT', onInt); process.off('SIGTERM', onTerm);
+  }
+}
 async function main() {
   const [command, ...args] = process.argv.slice(2), options = {};
   const split = args.indexOf('--'), childArgs = split < 0 ? [] : args.splice(split + 1);
@@ -102,13 +127,10 @@ async function main() {
       lanes: Number(options.lanes || 1), pid: command === 'run' ? process.pid : Number(options.pid)});
     if (command === 'acquire') console.log(JSON.stringify(records, null, 2));
     else {
-      let child;
       try {
-        child = spawn(childArgs[0], childArgs.slice(1), {stdio: 'inherit', shell: process.platform === 'win32',
-          env: {...process.env, SPIREAGENT_SLOT_TOKEN: records[0].token}});
-        process.on('SIGINT', () => child.kill('SIGINT'));
-        process.on('SIGTERM', () => child.kill('SIGTERM'));
-        process.exitCode = await new Promise((resolve, reject) => { child.on('error', reject); child.on('exit', code => resolve(code ?? 1)); });
+        const outcome = await runReservedCommand(childArgs, {resources, token: records[0].token});
+        process.exitCode = outcome.code ?? 1;
+        if (outcome.error) throw Error(outcome.error);
       } finally { release(resources, records[0].token); }
     }
   } else throw Error('usage: slot status|configure|acquire|release|check|run');

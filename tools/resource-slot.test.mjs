@@ -56,3 +56,13 @@ test('CLI wrapper holds a live reservation for its child and releases after fail
   assert.equal(fs.existsSync(path.join(root,'managed.json')),false);
   assert.match(fs.readFileSync(path.join(root,'GAME-SLOT.md'),'utf8'), /开始.*\n.*结束/u);
 });
+
+test('user game appearing during CPU setup stops only the owned process group', async t => {
+  const {runReservedCommand} = await import('./resource-slot.mjs');
+  const started = Date.now();
+  const outcome = await runReservedCommand([process.execPath,'-e','setInterval(()=>{},1000)'],
+    {resources:['managed','cpu'],token:'fixture',gamePresent:()=>true,intervalMs:20});
+  assert.equal(outcome.interruptedForGame,true);
+  assert.equal(outcome.signal,'SIGTERM');
+  assert.ok(Date.now()-started < 5000);
+});

@@ -234,4 +234,3 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   } catch (error) { console.error(error.message); process.exitCode = 1; }
   finally { if (locked) fs.rmSync(lock, {recursive: true}); }
 }
-
