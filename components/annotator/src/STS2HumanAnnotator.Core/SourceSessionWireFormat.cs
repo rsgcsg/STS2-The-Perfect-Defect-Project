@@ -29,6 +29,9 @@ internal sealed record SourceSessionWireFormat(int Version)
         || name == "captured_parts" && (type == typeof(SourcePublicObservationV2) || type == typeof(SourceNativeInputWitnessV2))
         || name == "native_facts" && type == typeof(SourceInputOutcomeV2);
     internal bool Includes(Type type, string name) =>
+        // Mixed-run identity belongs only to the P1-native manifest extension.
+        // It must neither become required nor be admitted in historical Source2/3/4.
+        !(type == typeof(CurrentRecordingManifest) && name == "mixed_run_id") &&
         (Ordered || !IsOrderMember(type, name)) && (PublicBasis || !IsPublicBasisMember(type, name));
     internal HashSet<string> Fields(Type type) => type.GetProperties(System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public)
         .Select(x => JsonNamingPolicy.SnakeCaseLower.ConvertName(x.Name))

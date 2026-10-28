@@ -387,6 +387,10 @@ class Application:
         from .p1_recording_maintenance import P1RecordingMaintenance
 
         self.p1_maintenance = P1RecordingMaintenance(self.local_recording_import)
+        from .mixed_runs import MixedRunApplication
+        self.mixed_runs = MixedRunApplication(self)
+        self.models.mixed_runs = self.mixed_runs
+        self.p1_maintenance.mixed_runs = self.mixed_runs
         self.local_recording_preview = LocalRecordingPreview(self.local_research_workspace)
         self.local_datasets = LocalDatasetService(config)
         self.local_training = LocalTrainingService(config)
@@ -997,7 +1001,8 @@ class Application:
         }
         if (
             not isinstance(body, dict)
-            or set(body) not in (fields, fields | {"capture_profile_id"})
+            or set(body) not in (fields, fields | {"capture_profile_id"},
+                                 fields | {"capture_profile_id", "mixed_run_id"})
             or (
                 "capture_profile_id" in body
                 and (
@@ -1092,6 +1097,7 @@ class Application:
                     **({"capture_profile_id": body["capture_profile_id"]}
                        if "capture_profile_id" in body else {}),
                     **({"p1_native_origin": body["source_kind"]} if p1_start else {}),
+                    **({"mixed_run_id": body["mixed_run_id"]} if "mixed_run_id" in body else {}),
                 )
                 if not value["accepted"]:
                     raise BoundaryError("recording", "native_recording_rejected")
@@ -1526,6 +1532,13 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                 {"artifact_id"}, {"artifact_id", "source"}
             ):
                 return app.models.prepare(body["artifact_id"], body.get("source", "configured"))
+            if path == "/api/local-models/mixed" and set(body) == {"action"}:
+                if body["action"] == "start":
+                    return app.mixed_runs.start()
+                if body["action"] == "finish":
+                    return app.mixed_runs.finish()
+            if path == "/api/local-models/mixed" and set(body) == {"settings"}:
+                return app.mixed_runs.configure(body["settings"])
             if path == "/api/local-models/command" and set(body) == {"action"}:
                 return app.models.command(body["action"])
             if (path == "/api/local-models/command" and set(body) == {"action", "request_id"}

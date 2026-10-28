@@ -171,6 +171,10 @@ def _closed_session(directory: Path) -> dict[str, Any] | None:
             "declared_origin": manifest["p1_native_origin"],
             "recorder_source_revision": manifest["recorder_source_revision"],
             "p1_close_sha256": _sha256(p1_close_bytes or b"")} if p1 else {}),
+        **({"recording_kind": "mixed_run", "mixed_run_id": manifest["mixed_run_id"],
+             "mixed_sealed": False, "mixed_artifact_id": None,
+             "training_admission": "blocked_pending_user_policy", "score_eligible": False}
+            if p1 and manifest.get("mixed_run_id") is not None else {}),
         "manifest_sha256": _sha256(manifest_bytes or b""),
         "close_sha256": _sha256(close_bytes or b""),
     }
@@ -363,6 +367,10 @@ class LocalRecordingCatalog:
                             and not (directory / "source-close-receipt.json").exists()):
                         unsealed += 1
                     continue
+                from .mixed_runs import mixed_binding
+                mixed = mixed_binding(self.config.state_dir, metadata["session_id"])
+                if mixed is not None:
+                    metadata.update(mixed)
                 # The path stays in this process. Only the opaque candidate ID
                 # and matching seal metadata cross the browser boundary.
                 material = "\0".join((str(root), entry.name,
@@ -387,6 +395,10 @@ class LocalRecordingCatalog:
                     "candidate_id": candidate_id,
                     "session_id": metadata["session_id"],
                     "timeline_id": metadata["timeline_id"],
+                    **({key: metadata[key] for key in (
+                         "recording_kind", "mixed_run_id", "mixed_sealed",
+                         "mixed_artifact_id", "training_admission", "score_eligible")}
+                       if metadata.get("recording_kind") == "mixed_run" else {}),
                     **{key: metadata[key] for key in (
                         "closed_at", "created_at", "recording_type", "source_profile")
                        if key in metadata},

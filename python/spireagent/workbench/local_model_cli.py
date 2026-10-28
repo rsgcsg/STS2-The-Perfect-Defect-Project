@@ -194,6 +194,7 @@ def model_command(
     new_runtime_profile: Path | None = None,
     expected_new_profile_sha256: str | None = None,
     archived_profile_sha256: str | None = None,
+    mixed_settings: str | None = None,
     expected_instance_id: str | None = None,
     timeout_seconds: float | None = None,
     _execution_scope: str | None = None,
@@ -341,7 +342,7 @@ def model_command(
     if expected_instance_id is not None and current.get("instance_id") != expected_instance_id:
         raise BoundaryError("local_model", "application_instance_mismatch")
     route = "/api/local-models"
-    body = None
+    body: dict[str, Any] | None = None
     if action in {"register", "registration-status"}:
         model_id = digest(artifact, "local_model.artifact")
         route = "/api/local-model-registrations/" + (
@@ -350,6 +351,15 @@ def model_command(
             body = {"model_id": model_id}
     elif action == "status":
         route += "/status"
+    elif action in {"mixed-start", "mixed-finish"}:
+        route += "/mixed"
+        body = {"action": action.removeprefix("mixed-")}
+    elif action == "mixed-settings":
+        if not isinstance(mixed_settings, str):
+            raise BoundaryError("mixed_run", "settings_json_required")
+        from .mixed_runs import settings
+        route += "/mixed"
+        body = {"settings": settings(decode_json(mixed_settings.encode()))}
     elif action == "readiness":
         if not selection:
             raise BoundaryError("local_model", "selection_required")

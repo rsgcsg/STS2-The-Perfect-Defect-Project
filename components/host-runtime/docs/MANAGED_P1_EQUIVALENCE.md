@@ -232,3 +232,17 @@ enchantment (Nimble +2 block) the way the Reference deck shows it, and restores
 every owned preview value; unenchanted and hover-preview cards keep the previous
 path. Remaining first differences (persisted upgrade-preview toggle, treasure
 catalog multiplicity, selector aliases, converter refusals) are not changed here.
+
+## M060: recorded replay upgrade-view preference (user approved 2026-10-28)
+
+Recorded Managed replay ignores only the Boolean
+`scene.content.surface.showing_upgrade_previews` on `deck_upgrade_selection`.
+Both values must be present Booleans. The original observations, P1 conversion,
+model input and general P1 comparator are unchanged. Upgrade preview cards,
+descriptions, catalog, selected order and every other public fact still compare.
+`tools/recorded-replay-preferences.mjs` owns this replay-only policy.
+
+Every application retains the raw comparison and both toggle values under
+`comparison_exceptions` with ID M060. `matching_points` uses this approved
+policy; `matching_points_without_exceptions` separately excludes affected
+points. A match under M060 does not establish full unqualified P1 equivalence.

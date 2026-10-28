@@ -116,6 +116,8 @@ def publish_p1_original(
     """Verify once, stream one archive, and retain the original producer separately."""
     verified = tool.verify_p1_native(bundle)
     identity = verified["manifest"]["content_identity"]
+    if verified["recording"].get("mixed_run_id") is not None:
+        raise BoundaryError("p1_store", "mixed_run_requires_isolated_intake")
     content_id = verified["manifest"]["bundle_content_id"]
     existing = _matching(store, BUNDLE_SCHEMA, content_id=content_id)
     if existing is not None:

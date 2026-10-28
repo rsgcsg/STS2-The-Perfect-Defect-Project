@@ -63,3 +63,51 @@ node tools/p1-cross-host-coverage.mjs --config /ABS/coverage-config.json
 `--sources /ABS/prior-output` 可在修正语言等诊断工具错误后复用已验证的准确 Reference Source，不再开游戏；先核 jobs 与 source identity 一致。旧尝试必须保留，不能把来源 unknown 换成新一局。配置 `language` 必须和工程 profile 一致。
 
 当前实测边界（2026-10-27）：真人 A10 原件 131 点，只比到 13 点、12 一致，锁镰展示计数器 3/0 严格停下。显式原生正常速度的隔离 Reference 对同原件 73/73 一致后预算停；Managed 仍即时等待。原件未记录原游戏速度/完整展示时机，当前工具明确报告 `startup_scope`，不能把启动验证称为整局重建。另一个六局 Reference 工程批有两条全程观察和 Runtime Result 一致，四条保留严格停止；完整表归 M3 原报告。本版不安装试验性的正常时钟补丁。
+
+### M060：显示升级开关（用户 2026-10-28 已批）
+
+仅录后 Managed 对照忽略 `deck_upgrade_selection` 的布尔字段
+`scene.content.surface.showing_upgrade_previews`；字段缺失、类型错误、升级后的牌和描述、
+动作目录及其它字段仍严格比较。原件、P1 转换、模型输入不改。
+报告 `comparison_exceptions` 留下原始差异和两边开关值；`matching_points` 按已批口径计，
+`matching_points_without_exceptions` 另列完全未用例外的一致点。不能据此宣称无例外的 P1 全等。
+
+### 不完整原件的诊断接续
+
+重放工具可从未改动的转换报告另建诊断计划，不改变任何 P1 转换结果或训练投影。
+有完整公开前态、原生已接纳动作、`finished` 和完整后继的 UI 输入，可通过原 SDK
+完整公开图和操作数锚点定位到当前目录中唯一动作；只执行当前目录里的绑定。
+这些输入记录为 `unlabelled_native_input` / `p1_compared=false`，不进 P1 一致点分子。
+重复等价候选、无公开别名、公开状态差异都拒绝定位。
+
+原件的 unknown、缺前态/后继/操作数及 failed_closed 在缺口前停止，不重试、不补造；
+暂停、恢复、放弃或中断也形成边界。`bounded_prefix_completed` 仅表示已知前缀比完，
+`completed` 仍为 false。`replay_scope` 保存原转换完整标志、原 unknown 数、停止序号和原因。
+这种诊断不能称整局 P1 等价，更不能当作训练数据资格。
+
+### 一次收齐差异的原动作诊断（2026-10-28 用户已批）
+
+在录后重放入口显式加 `--mode collect_all_differences`；默认 strict 不变。
+诊断模式沿已验证原件的原生输入时间线执行，GameAction 使用实际执行前态，
+UI 输入使用已接纳前态。以原公开对象、坐标/定义/槽位和操作数定位当前目录中
+唯一绑定；整帧不一致只记录，不再拦住另一条仍能定位和执行的原动作。
+没有唯一原动作、Managed 拒绝执行、unknown、原件缺动作/中断或 owner Stop/预算才停止。
+取消前未执行的原动作不投递；旧 unknown 不重试；原件 partial 不会被改成 complete。
+
+每个可比检查点遍历全部原始 P1 模型字段，实体和 unordered 域复用 SDK 的声明；
+不能唯一对齐的组保留完整双方并单列 `unresolved_alignment_groups`，不把猜测计入差异。
+模型输入、合法动作、奖励/结果的差异记 `blocking`；确实从两边模型视图省略的
+原生显示偏好记 `display`，只登记。M060 布尔值仍在实际模型输入中，必须另记输入
+差异和已批比较例外标签，不能因为旧例外就声称不影响模型。
+
+输出 `report.json` 汇总执行进度、停止原因、两类差异次数和类别；逐检查点的
+`diagnostic_difference`、未对齐组、实际输入、回执及原始 Host 字节保存在
+`replay.jsonl.gz`。文件是逐行持久化的 gzip members，`gzip -dc` 可恢复 JSONL。
+同一路径跨检查点重复计为多次；未对齐组/源投影缺口另列，不能填成零或通过。
+这是诊断档，不是模型成绩、完整等价或新的训练投影。
+
+当公开图相等但原始模型视图变序/改名时，另记 `model_frames_pending`，
+不把图相等说成模型输入字节相同。批后用 `tools/p1-diagnostic-frame-effects.py`
+按真实旧 InputSpec 与 V2 的 `project` 量 Frame 特征布局；绑定ID不当学习特征。
+V2 对声明的 unordered 域使用共享位置、对称引用及角色池，无 scene 全局行位置；
+布局置换与学习语义改变分列。实际策略输出/训练轨迹没有在此诊断中测试。

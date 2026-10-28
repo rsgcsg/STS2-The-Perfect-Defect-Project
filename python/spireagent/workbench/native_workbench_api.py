@@ -56,6 +56,10 @@ ACTIONS = frozenset(
         "models.human",
         "models.stop",
         "models.reconcile",
+        "mixed.start",
+        "mixed.finish",
+        "mixed.settings",
+        "mixed.resume",
         "identity.login",
         "identity.poll",
         "identity.logout",
@@ -342,6 +346,26 @@ class NativeWorkbenchApi:
             items = catalog["data"].get("policies", [])
             total, items = len(items), items[offset : offset + limit]
             session = catalog["data"].get("session", {})
+            mixed_owner = getattr(app, "mixed_runs", None)
+            mixed: dict[str, Any] = (mixed_owner.status() if mixed_owner is not None
+                                     else {"status": "idle"})
+            cards.append({"owner": "mixed_run", "schema": "spireagent/mixed-run-1", "data": mixed})
+            controls.extend([
+                action("mixed.start", "开始混合局录制（先加载模型为 Human）",
+                       enabled=mixed["status"] in {"idle", "sealed"}),
+                action("mixed.finish", "结束混合局并封存", enabled=mixed["status"] == "recording"),
+                action("mixed.settings", "保存混合局控制设置", [
+                    field("delay_ms", "每步停顿（毫秒，0–3000）", "text",
+                          str(mixed.get("settings", {}).get("delay_ms", 1000))),
+                    field("single_step", "单步：继续只执行一个决策", "boolean",
+                          mixed.get("settings", {}).get("single_step", False)),
+                    *[field(key, label, "boolean", mixed.get("settings", {}).get(key, False))
+                      for key, label in (
+                        ("shop", "进入商店时停"), ("card_reward", "选卡奖励时停"),
+                        ("relic_reward", "选遗物时停"), ("boss", "Boss 前停"))],
+                    field("confidence_below", "低把握暂停阈值（0–1，空白为关闭）", "text", ""),
+                ], enabled=mixed["status"] == "recording"),
+            ])
             loading = (session.get("operation") or {}).get("status") == "pending"
             can_load = (
                 catalog.get("schema") is not None
@@ -413,6 +437,8 @@ class NativeWorkbenchApi:
                                 "enum",
                                 "short",
                                 [
+                                    {"value": "continuous",
+                                     "label": "连续，直到暂停或结束（混合局推荐）"},
                                     {"value": "short", "label": "短时检查"},
                                     {"value": "extended", "label": "较长有界尝试"},
                                 ],
@@ -1027,6 +1053,27 @@ class NativeWorkbenchApi:
                 native_context=context,
                 native_authorizer=app.native_access.intent_authorizer(context, pair),
             )
+        if action_id == "mixed.resume":
+            exact(body, set())
+            if app.mixed_runs.status().get("status") != "recording":
+                raise fail("mixed_recording_required")
+            context = {"request_id": request_id, "binding": pair.to_dict()}
+            return app.models.command("auto", native_context=context,
+                native_authorizer=app.native_access.intent_authorizer(context, pair))
+        if action_id in {"mixed.start", "mixed.finish"}:
+            exact(body, set())
+            return app.mixed_runs.start() if action_id == "mixed.start" else app.mixed_runs.finish()
+        if action_id == "mixed.settings":
+            from .mixed_runs import DEFAULT_SETTINGS
+            exact(body, set(DEFAULT_SETTINGS))
+            value = dict(body)
+            try:
+                value["delay_ms"] = int(value["delay_ms"])
+                value["confidence_below"] = (float(value["confidence_below"])
+                                             if value["confidence_below"] != "" else None)
+            except (ValueError, TypeError):
+                raise fail("invalid_settings") from None
+            return app.mixed_runs.configure(value)
         if action_id in {"models.human", "models.stop"}:
             mode = "human" if action_id == "models.human" else "stop"
             if set(body) == {"native_request_id"}:

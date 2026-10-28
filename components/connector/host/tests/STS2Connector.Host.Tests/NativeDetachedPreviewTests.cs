@@ -4,12 +4,15 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using HarmonyLib;
+using MegaCrit.Sts2.Core.Combat;
+using MegaCrit.Sts2.Core.Commands;
 using MegaCrit.Sts2.Core.Entities.Cards;
 using MegaCrit.Sts2.Core.Localization.DynamicVars;
 using MegaCrit.Sts2.Core.Models;
 using MegaCrit.Sts2.Core.Models.Cards;
 using MegaCrit.Sts2.Core.Models.Enchantments;
 using MegaCrit.Sts2.Core.Nodes.Cards;
+using MegaCrit.Sts2.Core.TestSupport;
 using STS2Platform.NativeFoundation;
 
 namespace STS2Connector;
@@ -19,6 +22,7 @@ public sealed class NativeDetachedPreviewTests
 {
     private const BindingFlags Flags = BindingFlags.Instance | BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic;
     private static FieldInfo Field(Type type, string name) => type.GetField(name, Flags)!;
+    private static Type TurnStateType => typeof(CombatManager).Assembly.GetType("MegaCrit.Sts2.Core.Combat.CombatTurnState", throwOnError: true)!;
     private static CardModel Mutable(Type type)
     {
         // Actual exact-game constructor/copy methods. This local canonical
@@ -213,6 +217,103 @@ public sealed class NativeDetachedPreviewTests
         Assert.Equal(Values(expected), Values(result!.Display)); Assert.Equal(before, Values(original));
         Assert.True(result.Display.IsEnchantmentPreview); Assert.Same(original, result.Original);
         Assert.Null(original.Enchantment); Assert.Null(result.Display.Pile);
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public void SoulsPowerMatchesOriginalNativeSequenceOnItsQualifiedNullUiBranch(bool testMode, bool combat)
+    {
+        bool oldMode = TestMode.IsOn;
+        CombatManager manager = CombatManager.Instance;
+        FieldInfo turn = Field(typeof(CombatManager), "_turnState");
+        object? oldTurn = turn.GetValue(manager);
+        try
+        {
+            object state = RuntimeHelpers.GetUninitializedObject(TurnStateType);
+            Field(TurnStateType, "<IsInProgress>k__BackingField").SetValue(state, combat);
+            turn.SetValue(manager, state);
+            TestMode.IsOn = testMode;
+            CardModel original = Mutable<StrikeDefect>();
+            original.AddKeyword(CardKeyword.Exhaust);
+            CardModel neighbour = Mutable<StrikeDefect>();
+            neighbour.AddKeyword(CardKeyword.Exhaust);
+            string before = Values(original), neighbourBefore = Values(neighbour);
+            EnchantmentModel canonical = CanonicalEnchantment(typeof(SoulsPower));
+            calls = 0;
+            original.KeywordsChanged += () => calls++;
+            object? observers = Field(typeof(CardModel), "KeywordsChanged").GetValue(original);
+            CardModel expected = (CardModel)original.MutableClone();
+            EnchantmentModel expectedEnchantment = canonical.ToMutable();
+            expected.EnchantInternal(expectedEnchantment, 1);
+            expected.IsEnchantmentPreview = true;
+            expectedEnchantment.ModifyCard();
+
+            Assert.True(NativeDetachedCardPreviewFactory.TrySingleEnchant(original, canonical, 1, out var result, out var gap), gap);
+            Assert.Equal(Values(expected), Values(result!.Display));
+            Assert.DoesNotContain(CardKeyword.Exhaust, result.Display.GetKeywordsWithSources(KeywordSources.Local));
+            Assert.Equal(before, Values(original));
+            Assert.Equal(neighbourBefore, Values(neighbour));
+            Assert.Same(observers, Field(typeof(CardModel), "KeywordsChanged").GetValue(original));
+            Assert.Equal(0, calls);
+            Assert.Null(original.Enchantment);
+            Assert.False(canonical.IsMutable);
+            Assert.Null(Field(typeof(EnchantmentModel), "_card").GetValue(canonical));
+        }
+        finally { TestMode.IsOn = oldMode; turn.SetValue(manager, oldTurn); }
+    }
+
+    [Fact]
+    public void SoulsPowerLiveCombatRemainsUnavailableBeforeAnyUiCommand()
+    {
+        bool oldMode = TestMode.IsOn;
+        CombatManager manager = CombatManager.Instance;
+        FieldInfo turn = Field(typeof(CombatManager), "_turnState");
+        object? oldTurn = turn.GetValue(manager);
+        try
+        {
+            object state = RuntimeHelpers.GetUninitializedObject(TurnStateType);
+            Field(TurnStateType, "<IsInProgress>k__BackingField").SetValue(state, true);
+            turn.SetValue(manager, state);
+            TestMode.IsOn = false;
+            CardModel original = Mutable<StrikeDefect>();
+            original.AddKeyword(CardKeyword.Exhaust);
+            string before = Values(original);
+            Assert.False(NativeDetachedCardPreviewFactory.TrySingleEnchant(original,
+                CanonicalEnchantment(typeof(SoulsPower)), 1, out var result, out var gap));
+            Assert.Null(result);
+            Assert.Equal("native_preview_enchantment_command_ui_lookup_unqualified", gap);
+            Assert.Equal(before, Values(original));
+        }
+        finally { TestMode.IsOn = oldMode; turn.SetValue(manager, oldTurn); }
+    }
+
+    [Theory]
+    [InlineData(typeof(SoulsPower), "OnEnchant")]
+    [InlineData(typeof(CardCmd), "RemoveKeyword")]
+    [InlineData(typeof(NCard), "FindOnTable")]
+    [InlineData(typeof(TestMode), "get_IsOn")]
+    [InlineData(typeof(CombatManager), "get_Instance")]
+    [InlineData(typeof(CombatManager), "get_IsInProgress")]
+    public void SoulsPowerPatchedCommandClosureIsRejectedBeforeInvocation(Type type, string method)
+        => AssertSoulsPowerPatchRejected(type, method);
+
+    [Fact]
+    public void SoulsPowerPatchedInternalTurnStateIsRejectedBeforeInvocation()
+        => AssertSoulsPowerPatchRejected(TurnStateType, "get_IsInProgress");
+
+    private static void AssertSoulsPowerPatchRejected(Type type, string method)
+    {
+        CardModel original = Mutable<StrikeDefect>();
+        original.AddKeyword(CardKeyword.Exhaust);
+        string before = Values(original);
+        EnchantmentModel canonical = CanonicalEnchantment(typeof(SoulsPower));
+        using var patch = new Patched(type.GetMethod(method, Flags)!);
+        Assert.False(NativeDetachedCardPreviewFactory.TrySingleEnchant(original, canonical, 1, out var result, out var gap));
+        Assert.Null(result); Assert.NotNull(gap);
+        Assert.Equal(0, calls);
+        Assert.Equal(before, Values(original));
     }
 
     private static (CardModel Original, NCard Node, Action Observer) EnchantedUiFixture()

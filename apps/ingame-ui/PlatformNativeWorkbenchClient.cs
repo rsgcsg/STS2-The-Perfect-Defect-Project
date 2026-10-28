@@ -23,6 +23,7 @@ internal sealed class PlatformNativeWorkbenchClient : IDisposable
         "models.export", "models.register", "models.download", "models.load", "models.takeover",
         "models.auto", "models.shadow", "models.one_step", "models.tick",
         "models.human", "models.stop", "models.reconcile", "identity.login", "identity.poll", "identity.logout",
+        "mixed.start", "mixed.finish", "mixed.settings", "mixed.resume",
         "collection.consent", "collection.prepare", "collection.upload", "downloads.start"
     };
     private static readonly HashSet<string> Pages = new(StringComparer.Ordinal) { "play", "data", "training", "models", "settings" };

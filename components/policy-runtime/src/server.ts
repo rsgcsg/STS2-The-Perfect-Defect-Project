@@ -72,12 +72,18 @@ export async function startPolicyRuntimeHttpServer(runtime: RuntimeServiceOwner,
 async function dispatch(runtime: RuntimeServiceOwner, request: IncomingMessage, response: ServerResponse, maxBodyBytes: number, maxAutoTicks: number, ensureAutoWorker: () => void, onStopped?: () => void): Promise<void> {
   try {
     if (request.method === "GET" && request.url === "/status") { json(response, 200, { schema: HTTP_SCHEMA, status: runtime.status() }); return; }
+    if (request.method === "GET" && request.url === "/review") {
+      const denied = localRequestError(request);
+      if (denied) { json(response, denied.status, { schema: HTTP_SCHEMA, error: denied.error }); return; }
+      if (!runtime.actionReviewStatus) throw new RuntimeControlPreconditionError("action_review_unsupported", 409);
+      json(response, 200, { schema: HTTP_SCHEMA, run_id: runtime.status().run_id, review: runtime.actionReviewStatus() }); return;
+    }
     if (request.method === "GET" && request.url === "/v2/environment") {
       const denied = localRequestError(request);
       if (denied) { json(response, denied.status, { schema: HTTP_SCHEMA, error: denied.error }); return; }
       json(response, 200, await runtime.readEnvironment()); return;
     }
-    if (request.method !== "POST" || !["/v2/mode", "/v2/tick", "/v2/stop", "/v2/reconcile"].includes(request.url ?? "")) { json(response, 404, { schema: HTTP_SCHEMA, error: "not_found" }); return; }
+    if (request.method !== "POST" || !["/v2/mode", "/v2/tick", "/v2/stop", "/v2/reconcile", "/v2/review"].includes(request.url ?? "")) { json(response, 404, { schema: HTTP_SCHEMA, error: "not_found" }); return; }
     const denied = mutationRequestError(request);
     if (denied) { request.resume(); json(response, denied.status, { schema: HTTP_SCHEMA, error: denied.error }); return; }
     const runHeader = "x-sts2-policy-run-id";
@@ -92,6 +98,17 @@ async function dispatch(runtime: RuntimeServiceOwner, request: IncomingMessage, 
       request.resume(); json(response, 409, { schema: HTTP_SCHEMA, error: "runtime_run_mismatch" }); return;
     }
     const body = await readBody(request, maxBodyBytes);
+    if (request.url === "/v2/review") {
+      if (!runtime.controlActionReview) throw new RuntimeControlPreconditionError("action_review_unsupported", 409);
+      const value = body as Record<string, unknown>;
+      if (value && typeof value.enabled === "boolean") strictObject(body, ["enabled"]);
+      else if (value && typeof value.approve === "string" && value.approve.length <= 128) strictObject(body, ["approve"]);
+      else throw new Error("invalid action review");
+      const expected = controlPreconditions(request);
+      if (!expected) throw new RuntimeControlPreconditionError("runtime_recovery_precondition_required", 428);
+      await runtime.controlActionReview(value as { enabled?: boolean; approve?: string }, expected);
+      json(response, 200, { schema: HTTP_SCHEMA, run_id: runtime.status().run_id, review: runtime.actionReviewStatus!() }); return;
+    }
     if (request.url === "/v2/reconcile") {
       const value = strictObject(body, ["request_id"]);
       if (typeof value.request_id !== "string" || value.request_id.trim() === "") throw new Error("request_id is invalid");

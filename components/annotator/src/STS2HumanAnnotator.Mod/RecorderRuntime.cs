@@ -247,7 +247,7 @@ internal static partial class RecorderRuntime
                     "The recording changed before this command could be applied.", _lifecycle);
             if (CommandLedger.TryGet(command.CommandId, out RecordingCommandResult? existing))
                 return existing!;
-            if (command.Kind == RecordingCommandKind.ExportP1NativePrefix)
+            if (command.Kind is RecordingCommandKind.ExportP1NativePrefix or RecordingCommandKind.CheckpointP1Native)
                 return ExecuteP1NativePrefixCommand(command);
             if (!initialized)
             {
@@ -294,7 +294,7 @@ internal static partial class RecorderRuntime
                     {
                         try
                         {
-                            StartSession(result.Lifecycle, command.CaptureProfileId, command.P1NativeOrigin);
+                            StartSession(result.Lifecycle, command.CaptureProfileId, command.P1NativeOrigin, command.MixedRunId);
                         }
                         catch (Exception exception)
                         {
@@ -339,7 +339,9 @@ internal static partial class RecorderRuntime
             }
             if (result.Accepted && !automatic)
             {
-                if (command.Kind is RecordingCommandKind.StartNewSession or RecordingCommandKind.Resume)
+                if (_store?.Manifest.MixedRunId != null)
+                    Continuous.Disarm();
+                else if (command.Kind is RecordingCommandKind.StartNewSession or RecordingCommandKind.Resume)
                     Continuous.Arm(_activeCaptureProfileId, _p1NativeOrigin);
                 else if (command.Kind == RecordingCommandKind.Pause)
                     Continuous.Pause();
@@ -384,7 +386,7 @@ internal static partial class RecorderRuntime
 
     private static void StartSession(
         RecordingLifecycleSnapshot lifecycle,
-        string? requestedCaptureProfileId, string? p1Origin = null)
+        string? requestedCaptureProfileId, string? p1Origin = null, string? mixedRunId = null)
     {
         if (_configuration == null || _sourceRevision == null || lifecycle.SessionId == null)
             throw new InvalidOperationException("Recorder runtime initialization is incomplete.");
@@ -392,6 +394,9 @@ internal static partial class RecorderRuntime
             ? P1NativeRecordingContract.Profile : HumanCaptureProfiles.FullRunReadRich;
         if (profile.ProfileId == P1NativeRecordingContract.ProfileId && p1Origin is not ("agent_native_ui" or "declared_human" or "unknown"))
             throw new InvalidDataException("p1_native_declared_origin_required");
+        if (mixedRunId != null && (profile.ProfileId != P1NativeRecordingContract.ProfileId || p1Origin != "unknown"
+            || mixedRunId.Length != 32 || !mixedRunId.All(c => c is >= '0' and <= '9' or >= 'a' and <= 'f')))
+            throw new InvalidDataException("mixed_run_identity_or_origin_invalid");
         if (requestedCaptureProfileId != null
             && !string.Equals(requestedCaptureProfileId, profile.ProfileId, StringComparison.Ordinal))
         {
@@ -418,7 +423,8 @@ internal static partial class RecorderRuntime
             CloseSchemaVersion = 1, RecoverySchemaVersion = 1, ContinuousSchemaVersion = 1,
             TextInputSchemaVersion = profile.ProfileId == P1NativeRecordingContract.ProfileId ? null : HumanTextInputObservationContract.SchemaVersion,
             P1NativeSchemaVersion = profile.ProfileId == P1NativeRecordingContract.ProfileId ? 1 : null,
-            P1NativeExecutionSchemaVersion = profile.ProfileId == P1NativeRecordingContract.ProfileId ? 1 : null, P1NativeOrigin = p1Origin };
+            P1NativeExecutionSchemaVersion = profile.ProfileId == P1NativeRecordingContract.ProfileId ? 1 : null,
+            P1NativeOrigin = p1Origin, MixedRunId = mixedRunId };
         RecordingSessionStore store = RecordingSessionStore.Create(
             _configuration.RecordingRoot,
             manifest,
@@ -1168,6 +1174,8 @@ internal static partial class RecorderRuntime
         object? sourceOwner = null,
         object? sourceControl = null)
     {
+        if (_store?.Manifest.MixedRunId != null && PlayerEnvironmentTextMenuWitness.IsExternalControllerActive)
+            return default; // Protocol originals are recorded by their Runtime, never as native-human roots.
         if (TryEnterSourceInputScope(origin, expectedNativeActionType, sourceOwner ?? stagedOwner,
             expectedAction ?? semanticSelection, out var source, sourceControl: sourceControl)) return source;
         if (IsP1Recording)
