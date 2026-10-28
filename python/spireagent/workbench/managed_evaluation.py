@@ -228,10 +228,15 @@ class ManagedEpisodeExecutor:
             reject("runtime_explicit_adapter_environment_required")
         if (self.settling_timeout_ms is not None
                 and runtime_version not in {"0.1.0-rc.52", "0.1.0-rc.53",
-                                            "0.1.0-rc.54", "0.1.0-rc.55", "0.1.0-rc.56", "0.1.0-rc.57"}):
+                                            "0.1.0-rc.54", "0.1.0-rc.55", "0.1.0-rc.56",
+                                            "0.1.0-rc.57"}):
             reject("runtime_settling_watchdog_required")
-        self.evidence_durability = configuration.get("evidence_durability",
-            "decision" if runtime_version in {"0.1.0-rc.55", "0.1.0-rc.56", "0.1.0-rc.57"} else "event")
+        self.evidence_durability = configuration.get(
+            "evidence_durability",
+            "decision" if runtime_version in {
+                "0.1.0-rc.55", "0.1.0-rc.56", "0.1.0-rc.57"
+            } else "event",
+        )
         if self.evidence_durability not in {"event", "decision"}:
             reject("invalid_evidence_durability")
         if self.evidence_durability == "decision" and runtime_version not in {

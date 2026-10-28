@@ -115,6 +115,32 @@ for (const boundary of ['original_unknown_no_reoffer','original_unrecorded_input
     assert.equal(result.executed_original_inputs,1);assert.equal(steps,1);assert.equal(result.unknown_delivery,false);
   });
 }
+for(const identity of ['nested-known','conflicting-declarations','duplicate-witness','unbound-nested']) {
+  test(`original issue identity ${identity} preserves exact accepted ownership and source evidence`,async()=>{
+    const {bases,original,conversion}=scanFixture();let steps=0;
+    original.events.filter(e=>e.kind==='decision_accepted').forEach((e,i)=>{e.action_witness_id=`aw${i}`;});
+    for(const event of original.events)if(event.sequence>=3)event.sequence++;
+    for(const capture of conversion.captures)if(capture.sequence>=3)capture.sequence++;
+    const issue={kind:'issue',event_id:'known-native-issue',run_id:'r',sequence:3,
+      reason:'execution_semantic_action_space_missing',native_action_type:'PlayCardAction',
+      native_witness:{decision_id:'d0',action_witness_id:'aw0'}};
+    if(identity==='conflicting-declarations')issue.decision_id='d1';
+    if(identity==='duplicate-witness')original.events.find(e=>e.decision_id==='d1'&&e.kind==='decision_accepted').action_witness_id='aw0';
+    if(identity==='unbound-nested')issue.native_witness={decision_id:'absent',action_witness_id:'absent'};
+    original.events.splice(2,0,issue);
+    const driver={async start(){},newMutationId(){return`m${steps}`;},async close(){return{};},async request({command}){
+      if(command==='reset')return{};if(command==='episode_identity')return{identity:{}};
+      if(command==='capture')return{full:{basis:bases[Math.min(steps,2)]}};
+      if(command==='step'){steps++;return{receipt:{delivery:'delivered'}};}
+    }};
+    const result=await scanRecordedDifferences({original,conversion,driver,record:{append(){}},seed:'private',initialProgress:{}});
+    assert.equal(result.error,undefined);assert.equal(result.unknown_delivery,false);
+    if(identity==='nested-known') {
+      assert.equal(steps,3);assert.equal(result.reached_original_timeline_end,true);
+      assert.ok(result.source_gaps.some(gap=>gap.event_id===issue.event_id));assert.equal(result.differences_complete,false);
+    } else {assert.equal(steps,1);assert.equal(result.stop_reason,'original_unrecorded_input_gap');}
+  });
+}
 test('actual unknown stops immediately, no later original input is retried',async()=>{
   const {bases,original,conversion}=scanFixture();let steps=0;
   const driver={async start(){},newMutationId(){return 'm';},async close(){return{};},async request({command}){
