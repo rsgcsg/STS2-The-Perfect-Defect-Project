@@ -983,7 +983,18 @@ def test_adapter_environment_keys_reject_invalid_and_credential_requests_before_
                                episode_seconds=10, cleanup_seconds=10)
 
 
-def test_adapter_environment_requires_available_keys_before_host_and_each_offer(monkeypatch):
+@pytest.fixture
+def synthetic_managed_admission(monkeypatch):
+    """Host/process tests isolate node reservation; test_resource_slot owns its real guard."""
+    checks = []
+    monkeypatch.setattr("spireagent.resource_slot.require_managed_slot",
+                        lambda: checks.append("checked"))
+    return checks
+
+
+def test_adapter_environment_requires_available_keys_before_host_and_each_offer(
+    monkeypatch, synthetic_managed_admission,
+):
     from spireagent.workbench.managed_evaluation import ManagedEpisodeExecutor
 
     monkeypatch.delenv("LD_LIBRARY_PATH", raising=False)
@@ -995,6 +1006,7 @@ def test_adapter_environment_requires_available_keys_before_host_and_each_offer(
     # No model, API, Host or artifacts exist: a vanished key fails before any access.
     with pytest.raises(BoundaryError, match="adapter_environment_key_unavailable"):
         executor({}, {"ascension": 0, "host": "Managed"}, None, lambda: None)
+    assert synthetic_managed_admission == ["checked"]
 
 
 @pytest.mark.parametrize("keys,central", [([], False),
@@ -1002,9 +1014,9 @@ def test_adapter_environment_requires_available_keys_before_host_and_each_offer(
     (["LD_LIBRARY_PATH", "FRIDAY_INFERENCE_THREADS"], False),
     (["LD_LIBRARY_PATH", "FRIDAY_INFERENCE_THREADS"], True)])
 def test_actual_runtime_process_command_forwards_only_requested_adapter_key_names(
-    tmp_path, monkeypatch, keys, central,
+    tmp_path, monkeypatch, keys, central, synthetic_managed_admission,
 ):
-    """Real executor command assembly; Host, registration and Popen are declared seams."""
+    """Real command assembly; node admission, Host, registration and Popen are faked."""
     from types import SimpleNamespace
 
     from spireagent.workbench import managed_evaluation as backend
@@ -1063,6 +1075,7 @@ def test_actual_runtime_process_command_forwards_only_requested_adapter_key_name
            "world_mutation_offered": False}
     executor(row, {"ascension": 0, "host": "Managed", "character": "Defect"},
              artifacts, lambda: None)
+    assert synthetic_managed_admission == ["checked"]
     assert len(captured) == 1
     command, environment = captured[0]
     assert command[:2] == ["node", str(tmp_path / "cli.js")]

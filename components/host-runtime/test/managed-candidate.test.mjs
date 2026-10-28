@@ -250,7 +250,22 @@ test("Linux x64 selects only its exact native and independently pinned candidate
   assert.equal(x86.replaceAll(`"${to}"`, `"${from}"`), original,
     "the only platform source delta is the seven exact native MVID literals");
   assert.equal(manifest.exact_game.platform, "darwin");
-  assert.equal(manifest.expected_build.artifact_sha256, "ea9b7ca4570bb79dee061e701c82cd61f4bc2378e2d6ce0b9f44cb9fbd1c02b0");
+  assert.equal(manifest.expected_build.artifact_sha256, "0e5feebdf33de9bc48a1fbd543735e006bed1766b1f07e90148801802e3cb1aa");
+  assert.equal(manifest.expected_build.artifact_mvid, "bb516baa-5308-4b47-a98e-ace6eda93028");
+  assert.equal(baseline.status, "candidate_built_unqualified");
+  assert.equal(selected.expected_build.source_patch_sha256,
+    "61c2fce855b4f0983b0c17e548e970ad55647f4f7993574e8f58cf597e553fac");
+  assert.equal(selected.expected_build.artifact_sha256,
+    "239be1e737428a3ddfcfca2b4b06d8b021559f4bd8ca35af97b538f66795b02d");
+  assert.equal(selected.expected_build.artifact_mvid, "8091f740-a0d0-4cc8-a425-4dd44ede3b4e");
+  assert.equal(baseline.historical_builds[0].artifact_sha256,
+    "fecc403ceb5e1c493168beb301498d6c8e7e2367ef0e34e40ccb75e921988ce5");
+  assert.equal(baseline.historical_builds[0].source_patch_sha256,
+    "0b8e89b94160cc4c66d4f61123c9e6de525894b1e4fae43d99583661642d3a99");
+  assert.equal(baseline.historical_builds[1].artifact_sha256,
+    "9b8d4213a6caa5cd5c344fa7464947777b8308612cb4339a07709287af1f6c7b");
+  assert.notEqual(selected.expected_build.artifact_sha256, baseline.historical_builds[0].artifact_sha256);
+  assert.notEqual(selected.expected_build.artifact_sha256, baseline.historical_builds[1].artifact_sha256);
   for (const change of [{ architecture: "arm64" }, { platform: "darwin" },
     { runtime_main_assembly_hash: disk.runtime_main_assembly_hash + 1 },
     { sts2_assembly: { sha256: manifest.exact_game.sts2_dll_sha256 } },

@@ -21,7 +21,10 @@ and candidate artifact SHA/MVID; it is not an official Linux game installation.
 `source_patch_mvid` materializes the seven quoted native-MVID literals from the
 primary patch for that baseline only. Preparation and source audit both require
 the exact occurrence count and the frozen resulting patch SHA before using it.
-The Mac patch, native qualification constants, and expected build remain unchanged.
+Refreshing the Linux tuple does not change the current primary Mac patch, native
+qualification constants, or expected build. Linux `historical_builds` retain
+previous exact tuples for their original receipts; they are not selected as
+current-patch admission.
 A later source patch requires a newly built and reviewed x64 tuple; no identity or
 behavioral qualification transfers from the Mac or an earlier Linux candidate.
 The Godot coverage baseline names each exact DLL pair separately and runs the
