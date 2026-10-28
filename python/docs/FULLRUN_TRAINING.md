@@ -305,6 +305,32 @@ M2b轨迹将来可在明确用途/切分后通过同一非学习输入编码器�
 点身份/目录索引且不预固定optimizer batch。本卡不实现RL摄取、采样、奖励、return或GAE，
 也不把轨迹文件存在当成RL就绪。
 
+#### 学习者共用的进度和检查点 I/O
+
+普通 P1 worker 的进度默认每50次更新或30秒发布最新一条；DEV、保存、暂停及完成边界
+强制刷新。`run_event.step`仍是连续发布序号，`optimizer_updates`才是优化器步数，两者不再
+一一对应。Workbench显示最新步数，刷新最多约30秒一次；逐步loss、batch/LR、优化器、
+RNG和采样器完整保留在原检查点，恢复不靠progress事件。DEV与对应CP仍按attempt/步号关联。
+
+普通计算循环的authority检查间隔30秒，每次事件、CP manifest和结果发布前强制新检查；
+pause/cancel控制仍逐步查询。本地private-child的Store含主线程reservation通道，仍同步保存。
+学校ComputeRequest路径无该authority，允许一个后台任务发布不可变CP；最终Hub接收仍做
+原attempt/fence事务检查。主线程先冻结完整raw bytes和全部parents/元数据，后台只操作
+这份快照，并保留Store原有完整payload验证。主线程收齐后才发成功事件、更新best/lineage；
+下一次保存、暂停、取消和完成必须join。上传或校验失败不发成功事件，不选择未确认CP恢复。
+
+RL1沿用公共 `stpd.workers.training_io` 的 `ProgressCadence`、`FrozenCheckpoint` 和
+`CheckpointPublisher`，不用另写一套逐步R2上报或后台读取活动模型的保存器。保持模型常驻，
+以自己的损失/数据/版本管理调用同一模型执行；D1不替RL1定义PPO、回报或数据使用资格。
+调用者在owner线程冻结快照，`submit`最多一个未确认任务，`take(wait=...)`只收回已完成的
+原Store publication；在owner线程完成自己的fence、事件与版本接收，再发更晚的progress。
+带parent/child通道的Store传 `background=False`；只能在owner线程同步发布。正常P1入口
+仍是 `execute_p1_run` / `stpd.cloud_jobs`，不用直接调用其私有实现。
+
+事件 `worker_io_seconds`给出累计authority、control、event_publish、checkpoint_capture、
+checkpoint_publish和checkpoint_wait时间。后台publish可与训练重叠，不能与训练时间相加
+当独占成本；capture/wait和事件写入才是主线程热路径。该事件自身的写入计入下一次累计。
+
 ### 权重、配方与检查点
 
 #### 下一轮 T2 的输入 v2

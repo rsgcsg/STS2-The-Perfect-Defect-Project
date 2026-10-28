@@ -7,7 +7,6 @@ retries a request. Source/data admission belongs to the caller.
 
 from __future__ import annotations
 
-import io
 import json
 import tempfile
 import time
@@ -37,6 +36,15 @@ from ..p1.workload import P1Workload, populations_from_reader, verify_p1_run
 from .checkpoint_codec import decode_checkpoint
 from .reporting import RunReporter
 from .structured_control import AttemptAuthority, ExecutionControl, StructuredExecutionResult
+from .training_io import (
+    AUTHORITY_SECONDS,
+    PROGRESS_SECONDS,
+    PROGRESS_STEPS,
+    CheckpointPublication,
+    CheckpointPublisher,
+    FrozenCheckpoint,
+    ProgressCadence,
+)
 
 PERIODIC_CHECKPOINT_SECONDS = 1800
 
@@ -309,7 +317,15 @@ def execute_p1_run(
     # payloads are prefetched; original recordings remain exact references.
     run = store.get_manifest(run_id)
     training = store.get_manifest(run.parent("training_input"))
-    with VerifiedReadSession(store, cache_payloads=input_cache is None) as session:
+    # The local fenced Store shares a parent/child reservation channel with the
+    # reporter. Keep its publication on that owner thread. Compute candidates
+    # have no such channel; their immutable checkpoints may publish in one
+    # bounded background task. Hub acceptance remains separately fenced.
+    uploads = CheckpointPublisher(store, runtime, background=authority is None)
+    with (
+        VerifiedReadSession(store, cache_payloads=input_cache is None) as session,
+        uploads as publisher,
+    ):
         payloads = read_payloads(session, training.parent("source"), run_id=run_id)
         session.prefetch(payloads)
         prefetch_seconds = time.perf_counter() - started
@@ -317,7 +333,8 @@ def execute_p1_run(
             session, reporter, run_id, runtime, attempt_id=attempt_id, resume=resume,
             stop_after=stop_after, authority=authority, control=control, mode=mode,
             started=started, prefetch_seconds=prefetch_seconds,
-            prefetch_bytes=sum(p.size for p in payloads), prefetch_count=len(payloads))
+            prefetch_bytes=sum(p.size for p in payloads), prefetch_count=len(payloads),
+            checkpoint_publisher=publisher)
 
 
 def _execute_p1_run(
@@ -336,6 +353,7 @@ def _execute_p1_run(
     prefetch_seconds: float,
     prefetch_bytes: int,
     prefetch_count: int,
+    checkpoint_publisher: CheckpointPublisher,
 ) -> StructuredExecutionResult:
     verification_started = time.perf_counter()
     # An already selected result or reconcile needs integrity, not training frames.
@@ -352,11 +370,22 @@ def _execute_p1_run(
     if stop_after is not None and (type(stop_after) is not int or stop_after < 1):
         raise BoundaryError("p1_worker", "invalid_update_pause_budget")
 
-    def guard() -> None:
-        if authority is not None:
-            authority.assert_current(run_id, operation_id, attempt_id)
+    last_authority_check: float | None = None
+    io_seconds = {key: 0.0 for key in (
+        "authority", "control", "event_publish", "checkpoint_capture",
+        "checkpoint_publish", "checkpoint_wait")}
 
-    guard()
+    def guard(*, force: bool = False) -> None:
+        nonlocal last_authority_check
+        now = time.monotonic()
+        if authority is not None and (force or last_authority_check is None
+                                      or now - last_authority_check >= AUTHORITY_SECONDS):
+            checking = time.perf_counter()
+            authority.assert_current(run_id, operation_id, attempt_id)
+            io_seconds["authority"] += time.perf_counter() - checking
+            last_authority_check = time.monotonic()
+
+    guard(force=True)
     existing = reporter.completed(run_id)
     if existing is not None:
         result, model, checkpoint = verify_p1_result(store, existing.artifact_id, workload)
@@ -408,10 +437,11 @@ def _execute_p1_run(
 
     def event(kind: str, **details: Any) -> None:
         nonlocal event_step
-        guard()
+        guard(force=True)
         details.update(worker_elapsed_seconds=time.perf_counter() - started,
-                       worker_observed_unix=time.time())
+                       worker_observed_unix=time.time(), worker_io_seconds=dict(io_seconds))
         event_step += 1
+        publishing = time.perf_counter()
         reporter.emit(
             Manifest(
                 "run_event",
@@ -428,6 +458,7 @@ def _execute_p1_run(
                 ),
             )
         )
+        io_seconds["event_publish"] += time.perf_counter() - publishing
 
     restore_started = time.perf_counter()
     if resume is None and workload.run.parameters.value().get("schema") == DERIVED_RUN_SCHEMA:
@@ -452,63 +483,68 @@ def _execute_p1_run(
         checkpoint_id = resume
     restore_seconds = time.perf_counter() - restore_started
 
-    last_saved_at = time.monotonic()
+    last_checkpoint_started_at = time.monotonic()
+    cadence = ProgressCadence(trainer.step, steps=PROGRESS_STEPS, seconds=PROGRESS_SECONDS,
+                              clock=time.monotonic)
 
-    def save(reason: str, fractions: list[int] | None = None) -> str:
-        nonlocal checkpoint_id, best_checkpoint, last_saved_at
-        guard()
+    def accept_checkpoint(saved: CheckpointPublication) -> str:
+        nonlocal checkpoint_id, best_checkpoint
+        manifest, timing = saved
+        guard(force=True)
+        info = manifest.parameters.value()
+        checkpoint_id = manifest.artifact_id
+        checkpoints.update({str(f): checkpoint_id for f in info["fractions"]})
+        if info["became_best"]:
+            best_checkpoint = checkpoint_id
+        io_seconds["checkpoint_publish"] += timing["publish_seconds"]
+        event("checkpoint", checkpoint_id=checkpoint_id,
+              optimizer_updates=info["optimizer_updates"], reason=info["reason"],
+              checkpoint_fractions=info["fractions"], timing=timing)
+        return checkpoint_id
+
+    def finish_checkpoint(*, wait: bool) -> None:
+        waiting = time.perf_counter()
+        saved = checkpoint_publisher.take(wait=wait)
+        io_seconds["checkpoint_wait"] += time.perf_counter() - waiting
+        if saved is not None:
+            accept_checkpoint(saved)
+
+    def flush_progress() -> None:
+        # Emit an older checkpoint before newer progress, including to the local
+        # UI which reads optimizer_updates from every event.
+        finish_checkpoint(wait=True)
+        if cadence.pending is not None:
+            event("progress", **cadence.pending)
+            cadence.published()
+
+    def save(reason: str, fractions: list[int] | None = None, *,
+             background: bool = False) -> str | None:
+        nonlocal last_checkpoint_started_at
+        flush_progress()
+        guard(force=True)
         checkpoint_started = time.perf_counter()
-        raw = trainer.checkpoint()
+        raw = trainer.checkpoint()  # Freeze model/optimizer/RNG/history before advancing.
         encoded_seconds = time.perf_counter() - checkpoint_started
-        payload = store.put_payload(
-            "checkpoint", io.BytesIO(raw), "application/vnd.stpd.tensor-tree"
-        )
+        io_seconds["checkpoint_capture"] += encoded_seconds
         parents = [Parent("run", run_id), Parent("training_input", workload.training.artifact_id)]
         parents.extend(Parent("checkpoint_" + k, v) for k, v in sorted(checkpoints.items()))
         if best_checkpoint is not None:
             parents.append(Parent("prior_best", best_checkpoint))
-        became_best = trainer.best_step is not None and trainer.best_step == trainer.step
-        manifest = Manifest(
-            "checkpoint",
-            runtime,
-            tuple(parents),
-            (payload,),
-            FrozenObject.of(
-                {
-                    "schema": checkpoint_schema(workload.config.value_heads),
-                    "attempt": attempt_id,
-                    "optimizer_updates": trainer.step,
-                    "phase": trainer.phase,
-                    "reason": reason,
-                    "fractions": fractions or [],
-                    "prior_checkpoints": dict(checkpoints),
-                    "prior_best_checkpoint": best_checkpoint,
-                    "became_best": became_best,
-                }
-            ),
-        )
-        store.publish(manifest)
-        checkpoint_id = manifest.artifact_id
-        checkpoints.update({str(f): checkpoint_id for f in fractions or []})
-        if became_best:
-            best_checkpoint = checkpoint_id
-        event(
-            "checkpoint",
-            checkpoint_id=checkpoint_id,
-            optimizer_updates=trainer.step,
-            reason=reason,
-            checkpoint_fractions=fractions or [],
-            timing={
-                "encode_seconds": encoded_seconds,
-                "publish_seconds": time.perf_counter() - checkpoint_started - encoded_seconds,
-                "checkpoint_seconds": time.perf_counter() - checkpoint_started,
-                "checkpoint_bytes": len(raw),
-            },
-        )
-        # Only a completed immutable publication and its original event reset
-        # the interval; elapsed time never manufactures a successful save.
-        last_saved_at = time.monotonic()
-        return checkpoint_id
+        parameters = FrozenObject.of({
+            "schema": checkpoint_schema(workload.config.value_heads), "attempt": attempt_id,
+            "optimizer_updates": trainer.step, "phase": trainer.phase, "reason": reason,
+            "fractions": fractions or [], "prior_checkpoints": dict(checkpoints),
+            "prior_best_checkpoint": best_checkpoint,
+            "became_best": trainer.best_step is not None and trainer.best_step == trainer.step})
+        snapshot = FrozenCheckpoint(raw, tuple(parents), parameters, encoded_seconds)
+        # An in-flight request suppresses duplicate periodic captures. It does
+        # not acknowledge a save: only accept_checkpoint emits that fact.
+        last_checkpoint_started_at = time.monotonic()
+        if background and checkpoint_publisher.background:
+            checkpoint_publisher.submit(snapshot)
+            return None
+        return accept_checkpoint(checkpoint_publisher.publish(
+            snapshot, before_publish=lambda: guard(force=True)))
 
     initial_step = trainer.step
     event(
@@ -517,6 +553,10 @@ def _execute_p1_run(
         optimizer_updates=trainer.step,
         planned_steps=trainer.planned_steps,
         device=workload.config.device,
+        io_policy={"schema": "p1-worker-io-v1", "progress_steps": PROGRESS_STEPS,
+                   "progress_seconds": PROGRESS_SECONDS, "authority_seconds": AUTHORITY_SECONDS,
+                   "background_checkpoints": checkpoint_publisher.background,
+                   "checkpoint_publish_overlaps_training": checkpoint_publisher.background},
         preparation={
             "input_prefetch_seconds": prefetch_seconds,
             "input_payload_bytes": prefetch_bytes,
@@ -530,14 +570,18 @@ def _execute_p1_run(
         },
     )
     while trainer.phase == "training":
+        finish_checkpoint(wait=False)
         guard()
+        checking = time.perf_counter()
         action = "continue" if control is None else control.requested_action()
+        io_seconds["control"] += time.perf_counter() - checking
         if action not in {"continue", "pause", "cancel"}:
             raise BoundaryError("p1_worker", "invalid_control_action")
         if action != "continue" or (
             stop_after is not None and trainer.step - initial_step >= stop_after
         ):
             checkpoint_id = save("cancelled" if action == "cancel" else "paused")
+            assert checkpoint_id is not None
             event(
                 "cancelled" if action == "cancel" else "paused",
                 checkpoint_id=checkpoint_id,
@@ -555,18 +599,22 @@ def _execute_p1_run(
                 time.perf_counter() - started,
             )
         progress = trainer.advance()
-        event("progress", optimizer_updates=trainer.step, **progress)
+        due = cadence.offer(trainer.step, progress)
+        if "dev" in progress or "dev_checkpoint" in progress or due:
+            flush_progress()
         if (progress["checkpoint_fractions"] or progress["best_improved"]
                 or progress.get("retain_checkpoint")):
-            save("scheduled_or_dev_best", progress["checkpoint_fractions"])
-        elif time.monotonic() - last_saved_at >= PERIODIC_CHECKPOINT_SECONDS:
-            save("periodic")
-    guard()
+            save("scheduled_or_dev_best", progress["checkpoint_fractions"], background=True)
+        elif time.monotonic() - last_checkpoint_started_at >= PERIODIC_CHECKPOINT_SECONDS:
+            save("periodic", background=True)
+    flush_progress()
+    guard(force=True)
     action = "continue" if control is None else control.requested_action()
     if action != "continue":
         if action not in {"pause", "cancel"}:
             raise BoundaryError("p1_worker", "invalid_control_action")
         checkpoint_id = save("cancelled" if action == "cancel" else "paused_before_test")
+        assert checkpoint_id is not None
         event(
             "cancelled" if action == "cancel" else "paused",
             checkpoint_id=checkpoint_id,
@@ -588,6 +636,7 @@ def _execute_p1_run(
     trainer.finish()
     test_seconds = time.perf_counter() - finish_started
     checkpoint_id = save("last")
+    assert checkpoint_id is not None
     if best_checkpoint is None:
         raise BoundaryError("p1_worker", "dev_selected_checkpoint_required")
     last_manifest = store.get_manifest(checkpoint_id)
@@ -631,6 +680,7 @@ def _execute_p1_run(
             }
         ),
     )
+    guard(force=True)
     store.publish(model)
     evaluation = Manifest(
         "offline_evaluation",
@@ -646,6 +696,7 @@ def _execute_p1_run(
             }
         ),
     )
+    guard(force=True)
     store.publish(evaluation)
     event(
         "completed",
@@ -686,7 +737,7 @@ def _execute_p1_run(
             }
         ),
     )
-    guard()
+    guard(force=True)
     result_id = reporter.complete(result)
     return StructuredExecutionResult(
         "completed",
