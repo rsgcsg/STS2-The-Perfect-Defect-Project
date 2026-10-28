@@ -188,7 +188,7 @@ export async function scanRecordedDifferences({ original, conversion, driver, re
     for (; index < timeline.items.length; index++) {
       const item = timeline.items[index], event = item.event;
       report.last_original_sequence = event.sequence; report.last_original_event_id = event.event_id;
-      report.last_original_surface = item.captures.at(-1)?.observation?.scene.native_kind ?? item.input?.basis.snapshot.interaction.kind;
+      report.last_original_surface = item.captures?.at(-1)?.observation?.scene.native_kind ?? item.input?.basis.snapshot.interaction.kind ?? null;
       if (item.source_gap) { report.source_gaps.push(item.source_gap); report.differences_complete = false; }
       if (item.stop) { report.source_issue = item.source_issue ?? null; report.stop_reason = item.stop; report.stopped_before_sequence = event.sequence; break; }
       // Commitments are the same P1 bookkeeping as the unchanged converter;

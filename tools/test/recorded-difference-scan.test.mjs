@@ -93,6 +93,28 @@ test('original unknown forms an evidence boundary without an attempt or fabricat
   const {original,conversion}=scanFixture();original.events[3].phase='unknown';conversion.raw_unknown_count=1;
   const plan=buildRecordedInputTimeline(original,conversion);assert.equal(plan.known_inputs,1);assert.equal(plan.items.at(-1).stop,'original_unknown_no_reoffer');
 });
+for (const boundary of ['original_unknown_no_reoffer','original_unrecorded_input_gap']) {
+  test(`source stop without captures reports ${boundary} before offering another input`,async()=>{
+    const {bases,original,conversion}=scanFixture();let steps=0;
+    if(boundary==='original_unknown_no_reoffer') {
+      original.events[3].phase='unknown';conversion.raw_unknown_count=1;
+    } else {
+      for(const event of original.events)if(event.sequence>=3)event.sequence++;
+      for(const capture of conversion.captures)if(capture.sequence>=3)capture.sequence++;
+      original.events.splice(2,0,{kind:'issue',event_id:'unrecorded-source-input',run_id:'r',sequence:3,
+        reason:'native_input_missing',native_action_type:'UnrecordedNativeInput'});
+    }
+    const driver={async start(){},newMutationId(){return'm';},async close(){return{};},async request({command}){
+      if(command==='reset')return{};if(command==='episode_identity')return{identity:{}};
+      if(command==='capture')return{full:{basis:bases[Math.min(steps,2)]}};
+      if(command==='step'){steps++;return{receipt:{delivery:'delivered'}};}
+    }};
+    const result=await scanRecordedDifferences({original,conversion,driver,record:{append(){}},seed:'private',initialProgress:{}});
+    assert.equal(result.error,undefined);assert.equal(result.stop_reason,boundary);
+    assert.equal(result.stopped_before_sequence,3);assert.equal(result.last_original_surface,null);
+    assert.equal(result.executed_original_inputs,1);assert.equal(steps,1);assert.equal(result.unknown_delivery,false);
+  });
+}
 test('actual unknown stops immediately, no later original input is retried',async()=>{
   const {bases,original,conversion}=scanFixture();let steps=0;
   const driver={async start(){},newMutationId(){return 'm';},async close(){return{};},async request({command}){
