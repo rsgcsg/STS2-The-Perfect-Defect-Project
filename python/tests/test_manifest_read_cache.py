@@ -1,0 +1,141 @@
+"""P1 request-local manifest reuse saves GETs; never caches mutable slots."""
+from collections import Counter
+
+import pytest
+from test_artifact_store_v1 import PRODUCER
+
+from spireagent.artifact_contracts import Manifest, Parent
+from spireagent.json_boundary import FrozenObject
+from spireagent.storage.blobs import StoreError
+from spireagent.storage.local import LocalBlobStore
+from spireagent.storage.run_reporter import ObjectStoreRunReporter
+from spireagent.storage.store import ManifestArtifactStore
+
+
+class CountReads(LocalBlobStore):
+    def __init__(self, root):
+        super().__init__(root)
+        self.reads = Counter()
+
+    def get(self, key):
+        self.reads[key] += 1
+        return super().get(key)
+
+
+def test_cached_reporter_keeps_exact_manifests_and_synchronous_publication(tmp_path):
+    blobs = CountReads(tmp_path)
+    original = ManifestArtifactStore(blobs)
+    run = Manifest('run', PRODUCER, parameters=FrozenObject.of({'event_index': 'run-events-v1'}))
+    original.publish(run)
+    cached = ManifestArtifactStore(blobs, cache_manifests=True)
+    reporter = ObjectStoreRunReporter(cached, blobs)
+    for step in (1, 2):
+        event = Manifest('run_event', PRODUCER, (Parent('run', run.artifact_id),),
+                         parameters=FrozenObject.of({'schema': 'stpd/run-event-v1',
+                                                     'step': step, 'kind': 'progress'}))
+        reporter.emit(event)
+        # emit returns only after both original index and manifest exist.
+        assert original.get_manifest(event.artifact_id) == event
+        indexed = blobs.get(f'run-events/{run.artifact_id}/{event.artifact_id}.json')
+        assert indexed == event.to_bytes()
+    assert blobs.reads[f'manifests/{run.artifact_id}.json'] == 1
+    assert [e.parameters.value()['step'] for e in reporter.events(run.artifact_id)] == [1, 2]
+    assert reporter.completed(run.artifact_id) is None
+    assert reporter.completed(run.artifact_id) is None
+    assert blobs.reads[f'run-completions/{run.artifact_id}.json'] == 2
+    assert cached.get_manifest(run.artifact_id) == run
+    # Deliberate in-memory damage is still caught by Manifest.from_bytes on hit.
+    cached._manifest_cache[run.artifact_id] = b'{}'
+    with pytest.raises((ValueError, StoreError)):
+        cached.get_manifest(run.artifact_id)
+
+
+def test_persistent_inputs_are_hashed_and_writes_slots_remain_original(tmp_path):
+    import io
+
+    from spireagent.storage.input_cache import InputCacheStore
+
+    remote_blobs = CountReads(tmp_path / 'remote')
+    remote = ManifestArtifactStore(remote_blobs)
+    payload = remote.put_payload('data', io.BytesIO(b'input bytes'))
+    cache_path = tmp_path / 'cache'
+    one = InputCacheStore(remote, cache_path)
+    assert b''.join(one.read_payload(payload)) == b'input bytes'
+    calls = remote_blobs.reads.copy()
+    two = InputCacheStore(remote, cache_path)
+    assert b''.join(two.read_payload(payload)) == b'input bytes'
+    assert remote_blobs.reads == calls
+    new = two.put_payload('output', io.BytesIO(b'output bytes'))
+    assert b''.join(remote.read_payload(new)) == b'output bytes'
+    assert two.blobs is remote_blobs
+    chunk = next((cache_path / 'objects/sha256').glob('*'))
+    chunk.write_bytes(b'bad bytes')
+    with pytest.raises(StoreError, match='payload_chunk_integrity_failure'):
+        b''.join(InputCacheStore(remote, cache_path).read_payload(payload))
+    assert remote_blobs.reads == calls + Counter({
+        f'payload-indexes/v1/{new.sha256}.json': 1,
+        f'objects/sha256/{new.sha256}': 1})
+
+
+def test_request_cache_eviction_with_actual_parallel_history_readers(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+
+    blobs = LocalBlobStore(tmp_path)
+    original = ManifestArtifactStore(blobs)
+    manifests = [Manifest('analysis', PRODUCER, parameters=FrozenObject.of({'row': i}))
+                 for i in range(600)]
+    for manifest in manifests:
+        original.publish(manifest)
+    cached = ManifestArtifactStore(blobs, cache_manifests=True)
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        actual = list(pool.map(cached.get_manifest,
+                               [m.artifact_id for m in manifests] * 2))
+    assert actual == manifests * 2
+    assert len(cached._manifest_cache) <= 512
+
+
+def test_persistent_chunk_cache_needs_no_second_payload_copy_and_still_rehashes(tmp_path):
+    import io
+
+    from spireagent.storage.input_cache import InputCacheStore
+    from spireagent.storage.read_session import VerifiedReadSession
+
+    remote_blobs = CountReads(tmp_path / 'remote')
+    remote = ManifestArtifactStore(remote_blobs)
+    payload = remote.put_payload('data', io.BytesIO(b'original input'))
+    cache_path = tmp_path / 'persistent'
+    cache = InputCacheStore(remote, cache_path)
+    scratch = tmp_path / 'session'
+    with VerifiedReadSession(cache, scratch=scratch, cache_payloads=False) as session:
+        session.prefetch((payload,))
+        calls = remote_blobs.reads.copy()
+        assert b''.join(session.read_payload(payload)) == b'original input'
+        assert remote_blobs.reads == calls
+        assert not [p for p in scratch.rglob('*') if p.is_file()]
+        chunk = next((cache_path / 'objects/sha256').glob('*'))
+        chunk.write_bytes(b'changed after the first verified read')
+        with pytest.raises(StoreError, match='payload_chunk_integrity_failure'):
+            b''.join(session.read_payload(payload))
+        assert remote_blobs.reads == calls
+
+
+def test_cloud_cli_forwards_an_explicit_input_cache(tmp_path, monkeypatch, capsys):
+    import json
+
+    from stpd.cloud_jobs.__main__ import main
+
+    request = {'original': True}
+    path = tmp_path / 'request.json'
+    path.write_text(json.dumps(request))
+    cache = tmp_path / 'persistent-cache'
+    received = []
+
+    def execute(value, *, store_location, wall_seconds, input_cache):
+        received.append((value, store_location, wall_seconds, input_cache))
+        return {'paused': True}
+
+    monkeypatch.setattr('stpd.cloud_jobs.__main__.execute_request', execute)
+    assert main(['--request', str(path), '--store', 'fixture', '--wall-seconds', '14400',
+                 '--input-cache', str(cache)]) == 0
+    assert received == [(request, 'fixture', 14400, cache)]
+    assert json.loads(capsys.readouterr().out) == {'paused': True}

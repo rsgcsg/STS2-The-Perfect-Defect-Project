@@ -682,3 +682,13 @@ source -> test -> build -> package -> installed -> loaded
 Predecessor reports and fixtures can test mechanics or migration assumptions,
 but cannot qualify a different Platform artifact. Local `.local/` evidence is
 not documentation and must not be committed.
+
+## Shared developer dependencies
+
+The [card startup workflow](DEVELOPMENT_WORKFLOW.md#卡开工共享依赖和节点占位)
+uses `npm run env:attach` and `npm run env:run -- npm run check` with the same
+existing gates. Dependency creation and comparison runs require an idle Managed
+and CPU reservation. `npm run check:dev-tools` covers reservation ownership,
+expiry, multi-resource admission and immutable dependency verification; it runs
+with repository entrypoint checks. Sharing dependencies never shares component
+build output or proves installation/runtime qualification.

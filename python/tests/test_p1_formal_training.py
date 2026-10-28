@@ -23,14 +23,16 @@ def population(count: int, prefix: str, *, target: int = 0) -> Population:
     )
 
 
-def engine(*, train_count=3, max_epochs=2, test_target=0):
+def engine(*, train_count=3, max_epochs=2, test_target=0,
+           stopping_policy="dev-patience-v1"):
     populations = {
         "train": population(train_count, "train"),
         "dev": population(2, "dev", target=1),
         "test": population(1, "test", target=test_target),
     }
     vocab = fit_vocabulary(list(populations["train"].frames))
-    return MStdTrainer(populations, vocab, "a" * 64, MStdConfig(max_epochs=max_epochs))
+    return MStdTrainer(populations, vocab, "a" * 64,
+                      MStdConfig(max_epochs=max_epochs, stopping_policy=stopping_policy))
 
 
 def complete(trainer):
@@ -168,6 +170,35 @@ def test_test_labels_do_not_choose_the_model_or_change_updates():
     )
     assert all(torch.equal(v, second.model.state_dict()[k]) for k, v in first_last.items())
     assert first.finish()["mean_N_loss"] != second.finish()["mean_N_loss"]
+
+
+def test_epoch_budget_keeps_training_after_dev_patience_and_resumes_exactly():
+    trainer = engine(max_epochs=9, stopping_policy="epoch-budget-v1")
+    for _ in range(4):
+        trainer.advance()
+    checkpoint = trainer.checkpoint()
+    complete(trainer)
+    assert trainer.epoch == 9 and trainer.bad_epochs >= 5
+    assert trainer.stop_reason == "epoch_budget_exhausted"
+    restored = engine(max_epochs=9, stopping_policy="epoch-budget-v1")
+    restored.restore(checkpoint)
+    complete(restored)
+    assert maximum_difference(decode_checkpoint(trainer.checkpoint()),
+                              decode_checkpoint(restored.checkpoint())) == 0.0
+    assert trainer.best_step == min(trainer.dev_history, key=lambda r: r["mean_N_loss"])["step"]
+
+
+def test_long_run_config_is_explicit_and_legacy_config_bytes_stay_unchanged():
+    legacy = MStdConfig().to_dict()
+    assert "stopping_policy" not in legacy
+    assert MStdConfig.decode(legacy).to_dict() == legacy
+    long_run = MStdConfig(max_epochs=40, stopping_policy="epoch-budget-v1")
+    assert MStdConfig.decode(long_run.to_dict()) == long_run
+    for invalid in [None, [], 1, "none"]:
+        with pytest.raises(BoundaryError, match="unsupported_stopping_policy"):
+            replace(long_run, stopping_policy=invalid)
+    with pytest.raises(BoundaryError, match="invalid_epoch_budget"):
+        replace(long_run, max_epochs=41)
 
 
 def test_invalid_partitions_target_and_unavailable_device_fail_explicitly():

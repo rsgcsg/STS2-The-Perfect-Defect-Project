@@ -10,13 +10,14 @@ import math
 import os
 import platform
 import time
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Generic
 
 import torch
 from torch.nn import functional as F
+from typing_extensions import TypeVar
 
 from spireagent.json_boundary import BoundaryError
 from stpd.workers.checkpoint_codec import decode_checkpoint, encode_checkpoint
@@ -29,6 +30,7 @@ from .model import MStd
 from .numerics import TrainingNumerics, training_scope
 from .optimization import optimizer_update
 from .spec import CHECKPOINT_FRACTIONS, MStdConfig
+from .tensor_input import ModelFrame
 
 
 def checkpoint_schema(value_heads: bool = False) -> str:
@@ -36,9 +38,12 @@ def checkpoint_schema(value_heads: bool = False) -> str:
             else "stpd/p1-mstd-formal-checkpoint-1")
 
 
+FrameT = TypeVar("FrameT", bound=ModelFrame, default=Frame, covariant=True)
+
+
 @dataclass(frozen=True)
-class Population:
-    frames: tuple[Frame, ...]
+class Population(Generic[FrameT]):
+    frames: tuple[FrameT, ...]
     targets: tuple[int, ...]
     point_ids: tuple[str, ...]
     weights: tuple[float, ...] = ()
@@ -64,7 +69,7 @@ class Population:
 FORMAL_CODE_FILES = ("formal_training.py", "spec.py", "input.py", "model.py", "numerics.py",
                      "execution.py", "optimization.py", "weighting.py", "input_order.py",
                      "vocabulary.py", "public_vocabulary_v1.json", "input_identity.py",
-                     "value_targets.py")
+                     "value_targets.py", "tensor_input.py", "tensor_pack.py")
 
 
 class MStdTrainer:
@@ -72,7 +77,7 @@ class MStdTrainer:
 
     def __init__(
         self,
-        populations: dict[str, Population],
+        populations: Mapping[str, Population[ModelFrame]],
         vocabulary: dict[str, Any],
         snapshot_id: str,
         config: MStdConfig,
@@ -194,7 +199,7 @@ class MStdTrainer:
 
     @staticmethod
     def batches(
-        frames: tuple[Frame, ...], indices: list[int], model: MStd | None = None
+        frames: tuple[ModelFrame, ...], indices: list[int], model: MStd | None = None
     ) -> Iterator[list[int]]:
         """Bound temporary padded attention, without changing the optimizer batch.
 
@@ -204,7 +209,7 @@ class MStdTrainer:
         yield from microbatches(frames, indices, model)
 
     @staticmethod
-    def evaluate(model: MStd, population: Population) -> dict[str, Any]:
+    def evaluate(model: MStd, population: Population[ModelFrame]) -> dict[str, Any]:
         model.eval()
         device = model.ids.weight.device
         rows = []
@@ -281,7 +286,8 @@ class MStdTrainer:
                 self.bad_epochs += 1
             self.dev_history.append({"epoch": self.epoch, "step": self.step, **dev})
             progress["dev"] = dev
-            if self.bad_epochs >= self.config.patience:
+            if (self.config.stopping_policy == "dev-patience-v1"
+                    and self.bad_epochs >= self.config.patience):
                 self.stop_reason = "dev_patience_exhausted"
             elif self.epoch == self.config.max_epochs:
                 self.stop_reason = "epoch_budget_exhausted"
