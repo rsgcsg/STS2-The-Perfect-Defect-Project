@@ -137,7 +137,7 @@ export PYTHONPATH="$source_root/python"
 export STS2_GAME_DIR="$actor_root/game"
 export DOTNET_PROCESSOR_COUNT=1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
 export TOKENIZERS_PARALLELISM=false PYTHONUNBUFFERED=1
-export FRIDAY_INFERENCE_THREADS=${FRIDAY_INFERENCE_THREADS:-2}
+export FRIDAY_INFERENCE_THREADS=${FRIDAY_INFERENCE_THREADS:-1}
 exec "$actor_root/env/bin/python" "$source_root/tools/friday/evaluate.py" run --plan __PLAN__
 '''
     for token, value in replacements.items():

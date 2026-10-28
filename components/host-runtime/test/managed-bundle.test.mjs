@@ -4,6 +4,7 @@ import { completeSelector, createSession, reduce } from "@rsgcsg/sts2-connector-
 import { captureManagedPublicBasis } from "../src/managed-public-basis.mjs";
 import { ManagedPlayerEnvironmentSession, projectManagedCandidateDecision } from "../src/managed-player-environment.mjs";
 import { combatState } from "./fixtures/managed-fair-combat.mjs";
+import { comparePublicPoint } from "../../policy-runtime/dist/p1-global/compare.js";
 
 function bundle(preview = false) {
   const state = combatState(); delete state.hand; delete state.combat_piles;
@@ -60,4 +61,38 @@ test("missing exact bundle or rendering evidence remains unsupported", () => {
     const state = bundle(); damage(state);
     assert.equal(projectManagedCandidateDecision({ state, ...identity }).snapshot.completeness.status, "partial");
   }
+});
+
+
+test("two-bundle roster order survives instance aliases and the unchanged r1.5 comparator", async () => {
+  const state = bundle();
+  const original = state.bundles[0];
+  state.bundles.push({ index: 1, native_ref: "private-second-bundle", cards: [
+    { ...original.cards[0], native_ref: "private-second-bundle-card", id: "CARD.DEFEND",
+      name: "Defend", type: "Skill", description: "Gain 5 Block." }
+  ] });
+  const observations = [];
+  const instanceAliases = [];
+  for (const runtimeInstanceId of ["bundle-left", "bundle-right"]) {
+    const session = new ManagedPlayerEnvironmentSession({ ...identity, runtimeInstanceId,
+      process: { async request() { return structuredClone(state); } } });
+    const snapshot = await session.mount({ seed: "bundle-roster-order" });
+    const surface = snapshot.interaction.content.surface;
+    instanceAliases.push(surface.selectable_bundle_entity_ids);
+    assert.deepEqual(surface.selectable_bundle_entity_ids,
+      surface.bundles.map(value => value.entity_id), "member sequence is the visible roster order");
+    const full = captureManagedPublicBasis(session, {
+      generationId: "bundle-generation", gameContinuityId: "bundle-game", ordinal: 1 });
+    const result = reduce(createSession("bundle-order-conformance", "managed"), full.basis);
+    assert.equal(result.complete, true, JSON.stringify(result.missing));
+    assert.equal(result.observation.revision, "r1.5");
+    observations.push(result.observation);
+  }
+  const [left, right] = observations;
+  assert.notDeepEqual(instanceAliases[0], instanceAliases[1], "instances really use different aliases");
+  assert.equal(comparePublicPoint(left, right, null, null).verdict, "equal");
+  const reordered = structuredClone(right);
+  reordered.scene.content.surface.selectable_bundle_entity_ids.reverse();
+  assert.equal(comparePublicPoint(left, reordered, null, null).verdict, "different",
+    "the original comparator still detects an ordered member-sequence change");
 });

@@ -1525,7 +1525,7 @@ function currentSurface(state, ctx) {
         kind: "card_bundle_selection", stage: state.stage, prompt: state.prompt,
         surface: { kind: "card_bundle_selection", stage: state.stage, prompt: state.prompt, bundles,
           ...(preview ? { selected_bundle_entity_id: bundles[0]?.entity_id } : {}),
-          selectable_bundle_entity_ids: preview ? [] : bundles.map(bundle => bundle.entity_id).sort(),
+          selectable_bundle_entity_ids: preview ? [] : bundles.map(bundle => bundle.entity_id),
           can_confirm: exact && preview, can_cancel_preview: exact && preview },
         context: selectorParentContext(context, commonContext),
         complete: exact && missing.length === 0, actionComplete: exact,

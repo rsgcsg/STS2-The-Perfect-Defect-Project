@@ -1,6 +1,6 @@
 # Friday CPU 打局
 
-Friday 是新打局批次的默认 CPU 目标。Mac 只在明确指定的对照或诊断中运行；
+Friday 是新打局批次和 Managed 固定种子评估的默认 CPU 目标。Mac 只做必要的 Mac 对照；
 连接或队列失败不自动退回 Mac。这里复用 Managed 的账本、Runtime、保存池与
 [轨迹格式](MANAGED_PRESERVATION.md)，不新增游戏执行器。A 段提供固定模型的
 有限批次；RL 的最新模型指针和学习者收片接缝，待 RL1 的接口合并后接入，不能
@@ -8,12 +8,18 @@ Friday 是新打局批次的默认 CPU 目标。Mac 只在明确指定的对照�
 
 ## 固定环境和输入
 
-只在自己的 `/data/<user>/friday-actor` 部署，目录700；游戏文件600、目录700，
-不放镜像或共享 scratch。节点本地 `/tmp` 只写证据和运行日志，不复制游戏。
-环境重建入口为 `tools/friday/bootstrap-environment.sh`（Slurm 单核作业内一条命令，
-固定 Python3.11.5、.NET SDK9.0.117、CPU torch2.13.0+cpu、tokenizers0.22.2）；执行源码固定 Git 提交，
-Host/Runtime 固定包身份，候选固定 SHA/MVID，模型固定原 Store 身份和包 SHA。
-每次传输后在远端实查权限，不能只信 rsync 参数。
+生产部署使用 `/data/<user>/friday-actor/releases/<完整提交SHA>/` 的不可变组合，
+其中 `source/`、`env/`、`packages/`、`candidate/`、`models/`、`game/` 绑定同一份
+已验证部署清单。新版本建新目录；保留旧环境、包和候选供在途任务及回滚使用，
+不在旧 release 上 git pull、重建包或清空环境。目录700，游戏文件600、目录700；
+每次传输后实查权限。节点 `/tmp` 只写证据和运行日志，不复制游戏。
+
+环境重建入口为 `tools/friday/bootstrap-environment.sh`，在单核 Slurm 作业中设置
+`F2_ROOT=/data/<user>/friday-actor/releases/<新提交SHA>` 后调用；它会清空该目标
+下的 `env/`，因此只用于尚未投产的新目录，不对在用或保留的 release 重跑。
+固定 Python3.11.5、.NET SDK9.0.117、CPU torch2.13.0+cpu、tokenizers0.22.2。
+当前组件为 Host `1.1.0-rc.58`、Runtime `0.1.0-rc.59`；执行源码、组件包身份、
+候选 SHA/MVID 和模型原 Store 身份/包 SHA 仍分别精确绑定，不凭版本号推断可混用。
 
 运行者使用 `spireagent/managed-evaluation-execution-v1` 原配置：准确 `producer`、
 `host_pin`、`runtime_pin`、`agent_adapter`、`initial_progress`、`candidate_directory`、
@@ -47,7 +53,10 @@ Host/Runtime 固定包身份，候选固定 SHA/MVID，模型固定原 Store 身
 在同一共享租约根中互斥取组。租约写入后不自动过期、不回收、不重投未知。
 
 ```bash
-export FRIDAY_ACTOR_ROOT="/data/$(id -un)/friday-actor"
+# 在已验证的准确 source checkout 中取得提交，选择其已部署的不可变目录。
+release_sha=$(git rev-parse HEAD)
+export FRIDAY_ACTOR_ROOT="/data/$(id -un)/friday-actor/releases/$release_sha"
+cd "$FRIDAY_ACTOR_ROOT/source"
 export PYTHONPATH="$FRIDAY_ACTOR_ROOT/source/python"
 python tools/friday/prepare.py --execution /ABS/execution.json --output /ABS/plan \
   --namespace F2-paired-20261028 --groups 1 --per-group 8 \
@@ -102,25 +111,30 @@ Slurm 日志在 `persistent_root/slurm/`。`result.json` 记录源码配置、�
 保留给原作业，记 unknown 并核原 Slurm/保存回执，不推断它从未开局；节点丢失前
 未同步的临时证据可能无法恢复。清理由本卡按原 R2 读回与未知保留规则单独收口。
 
-资源适配层的便宜回归：在准确开发环境中运行
-在 `python/` 下运行 `python -m pytest tests/test_friday_actor.py -q`；
+资源适配层的便宜回归：在准确开发环境的 `python/` 下运行 `python -m pytest tests/test_friday_actor.py -q`；
 该文件由正常 pytest/CI 收集，无第二份工具目录测试。
 它检查真实文件复制读回、并发租约、种子池排他和 Slurm 参数，不启动游戏。
 
-测速配置可将 `python_executable` 指向 `tools/friday/profile-python`，它调用原
-`agent.serve`、原投影和原模型，只记录投影/前向累计秒数，每次完成调用后原子保存小型可选指标（不做 fsync），并在退出时尝试保存
-`agent-performance.json`。正常退出或 Runtime 的 SIGTERM/SIGINT 均尝试一次写入，
-保留原信号退出状态；记录实际 Torch 线程、版本、Linux CPU 亲和性和测速脚本 SHA。
-写入失败只向 stderr 给一行有界类型/错误码，不改变游戏结果或退出状态；
-SIGKILL 或节点丢失仍可能没有测速产物。`FRIDAY_INFERENCE_THREADS` 显式选择正整数，默认2与
-原 Agent CLI 一样；单核1线程配置须经相同种子和结果对照后选用。
-`measure_host_performance=true` 在本卡 Host57 读取已有 Host 计数器，
-原始记录与计数器观测分开；不把嵌套时间加成互斥总耗时。
+测速配置可将 `python_executable` 指向该 release 的 `tools/friday/profile-python`。
+它仍调用原 `agent.serve`、原投影和原模型；每次成功完成投影或前向后，原子替换
+Runtime 原件目录之外的小型 `agent-performance.json`，不做 fsync。版本、CPU
+亲和性和脚本 SHA 每个进程只算一次。原 Runtime 的 SIGKILL 无法执行退出钩子，
+但上一次完成调用的原子检查点仍可读；被杀时尚未完成的调用不计入。首次调用前
+被杀、节点丢失或首次指标写入失败时仍可能没有指标。SIGTERM/SIGINT 保留原信号
+退出状态；可选 IO 失败只报一次有界类型/错误码并关闭后续指标写入，不改变结果。
+`observer_prior_checkpoint_writes/seconds` 只统计此前指标检查点的写入次数/耗时，
+不能把当前写入或尚未完成的调用补算进去。
 
-本轮依赖门禁发现 certifi2026.7.22 对应 GHSA-6q48-6c7w-9gw2，
-只把仓库原锁中的 certifi 更新为2026.10.23，再导出同锁 CPU 环境；
-torch、tokenizers 和其余包版本不变，不改旧训练/模型的原 producer 或锁。
-重建环境前先排空本人的旧打局作业；bootstrap 会重建本目录下的专用环境。
+Friday 的工程和评估 launcher 默认 `FRIDAY_INFERENCE_THREADS=1`：本轮16份真实
+输入的1/2线程对照 argmax 一致，2线程没有实测收益。显式覆盖仍须是正整数。
+通用 `profile-python` 的默认值保持2，与原 Agent CLI 相同；launcher 显式传1，
+不改变其他平台的默认设置。`measure_host_performance=true` 在本卡 Host rc.58
+读取已有 Host 计数器；原始记录与计数器观测分开，嵌套时间不相加成互斥总耗时。
+
+依赖门禁修正在仓库原锁里完成，再导出同锁 CPU 环境：certifi 更新为2026.10.23
+（修复原2026.7.22的 GHSA-6q48-6c7w-9gw2），aiohttp 更新为3.14.5、yarl 为1.25.1。
+torch、tokenizers 版本不变，不改旧训练/模型 producer、锁或在用环境；这些修正随
+新 release 的独立环境交付，旧 `env/` 和 `packages/` 保留。
 
 Friday 的执行配置须显式列出
 `adapter_environment_keys=["LD_LIBRARY_PATH","FRIDAY_INFERENCE_THREADS"]`，
