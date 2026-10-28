@@ -36,6 +36,27 @@ from .weighting import CHECKPOINT_POLICY, checked_weights, point_weights
 ENTRYPOINT = "stpd.workers.p1_run:execute_p1_run"
 
 
+def _packed_populations(store: ArtifactStore, pack_id: str, reader: SnapshotReader,
+                        vocabulary: dict[str, Any], weighting: dict[str, Any] | None,
+                        value_heads: bool) -> dict[str, Population[TensorFrame]]:
+    from spireagent.storage.read_session import VerifiedReadSession
+
+    from .tensor_pack import load_tensor_pack, pack_binding
+
+    def load() -> dict[str, Population[TensorFrame]]:
+        return load_tensor_pack(store, pack_id, reader, vocabulary,
+                                loss_weighting=weighting, value_heads=value_heads)
+
+    if isinstance(store, VerifiedReadSession):
+        # The same explicit session owns these already verified, read-only CPU
+        # inputs. Every distinct data/vocabulary/weight/encoder binding misses;
+        # no external receipt or persisted "trusted" population is accepted.
+        binding = pack_binding(reader, vocabulary, weighting, value_heads)
+        key = digest(json_bytes([pack_id, binding]))
+        return store.memoize("p1.tensor-populations", key, load)
+    return load()
+
+
 def populations_from_snapshot(store: ArtifactStore, snapshot_id: str) -> dict[str, Population]:
     return populations_from_reader(SnapshotReader(store, snapshot_id))
 
@@ -135,15 +156,15 @@ def prepare_p1_run(
     else:
         vocabulary = None
     if vocabulary is not None and execution.implementation == "experimental-packed-v1":
-        from .tensor_pack import load_tensor_pack, publish_tensor_pack
+        from .tensor_pack import publish_tensor_pack
 
         if tensor_pack_id is None:
             tensor_pack, populations = publish_tensor_pack(
                 store, reader, vocabulary, producer, loss_weighting=weighting,
                 value_heads=config.value_heads)
         else:
-            populations = load_tensor_pack(store, tensor_pack_id, reader, vocabulary,
-                                           loss_weighting=weighting, value_heads=config.value_heads)
+            populations = _packed_populations(
+                store, tensor_pack_id, reader, vocabulary, weighting, config.value_heads)
             tensor_pack = store.get_manifest(tensor_pack_id)
     else:
         if tensor_pack_id is not None:
@@ -321,15 +342,14 @@ def verify_p1_run(store: ArtifactStore, run_id: str, producer: Producer, *,
         raise BoundaryError("p1_derivation", "explicit_derived_run_schema_required")
     prepared = None
     if "tensor_pack_id" in info:
-        from .tensor_pack import load_tensor_pack, verify_tensor_pack
+        from .tensor_pack import verify_tensor_pack
 
         if (training.parent("tensor_pack") != info["tensor_pack_id"]
                 or execution.implementation != "experimental-packed-v1"):
             raise BoundaryError("p1_workload", "tensor_pack_binding_mismatch")
         if prepare_populations:
-            prepared = load_tensor_pack(store, info["tensor_pack_id"], reader, vocabulary,
-                                       loss_weighting=info.get("loss_weighting"),
-                                       value_heads=config.value_heads)
+            prepared = _packed_populations(store, info["tensor_pack_id"], reader, vocabulary,
+                                           info.get("loss_weighting"), config.value_heads)
         else:
             verify_tensor_pack(store, info["tensor_pack_id"], reader, vocabulary,
                                loss_weighting=info.get("loss_weighting"),
