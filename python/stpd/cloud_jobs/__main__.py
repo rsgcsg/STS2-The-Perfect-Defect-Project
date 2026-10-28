@@ -16,7 +16,8 @@ from .execution import FeatureBackend, dispatch
 
 
 def execute_request(value: object, *, store_location: str = "s3",
-                    wall_seconds: int | None = None, ready_file: Path | None = None) -> dict:
+                    wall_seconds: int | None = None, ready_file: Path | None = None,
+                    input_cache: Path | None = None) -> dict:
     request = ComputeRequest.decode(value)
     runtime = source_identity(Path(__file__).resolve().parents[2])
     if runtime != request.producer:
@@ -58,7 +59,8 @@ def execute_request(value: object, *, store_location: str = "s3",
         temporary.replace(ready_file)
 
     return dispatch(store, request, runtime, backend=backend, wall_seconds=wall_seconds,
-                    training_ready=ready if ready_file is not None else None).to_dict()
+                    training_ready=ready if ready_file is not None else None,
+                    input_cache=input_cache).to_dict()
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -69,13 +71,15 @@ def main(argv: list[str] | None = None) -> int:
                         help="provider hard timeout; P1 pauses 300 seconds before it")
     parser.add_argument("--ready-file", type=Path,
                         help="fixed supervisor's private training-start observation")
+    parser.add_argument("--input-cache", type=Path,
+                        help="persistent verified P1 inputs; writes and control slots stay remote")
     args = parser.parse_args(argv)
     try:
         raw = Path(args.request).read_bytes()
         if len(raw) > 64 * 1024:
             raise BoundaryError("compute", "request_size_limit")
         receipt = execute_request(decode_json(raw), store_location=args.store,
-                                  wall_seconds=args.wall_seconds,
+                                  wall_seconds=args.wall_seconds, input_cache=args.input_cache,
                                   **({"ready_file": args.ready_file}
                                      if args.ready_file is not None else {}))
         print(json_bytes(receipt).decode(), end="")

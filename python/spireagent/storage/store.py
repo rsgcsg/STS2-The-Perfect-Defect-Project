@@ -42,8 +42,11 @@ class ArtifactStore(Protocol):
 
 
 class ManifestArtifactStore:
-    def __init__(self, blobs: BlobStore) -> None:
+    def __init__(self, blobs: BlobStore, *, cache_manifests: bool = False) -> None:
         self.blobs = blobs
+        # Explicit operation-local reuse of immutable, already verified bytes.
+        # Mutable control/completion/index slots never enter this cache.
+        self._manifest_cache: dict[str, bytes] | None = {} if cache_manifests else None
         self._peers: tuple[ManifestArtifactStore, ...] | None = None
         self._cache_policy: dict[str, Any] | None = None
         if isinstance(blobs, LocalBlobStore):
@@ -199,10 +202,18 @@ class ManifestArtifactStore:
     def get_manifest(self, artifact_id: str) -> Manifest:
         digest(artifact_id, "artifact_id")
         key = f"manifests/{artifact_id}.json"
+        cached = self._manifest_cache
+        if cached is not None and artifact_id in cached:
+            # Recheck the exact bytes and identity even on a cache hit.
+            return Manifest.from_bytes(cached[artifact_id], artifact_id)
         raw, recovered = self._get(key)
         manifest = Manifest.from_bytes(raw, artifact_id)
         if recovered:
             self._cache(key, raw)
+        if cached is not None:
+            if len(cached) >= 512:
+                cached.pop(next(iter(cached)))
+            cached[artifact_id] = raw
         return manifest
 
     def manifest_ids(self) -> tuple[str, ...]:

@@ -5,7 +5,7 @@ from __future__ import annotations
 import io
 import json
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 from spireagent.artifact_contracts import Manifest, Parent, Producer
 from spireagent.json_boundary import BoundaryError, FrozenObject
@@ -19,7 +19,7 @@ from .derivation import DERIVATION
 from .execution import MStdExecution
 from .export import input_spec
 from .formal_training import Population
-from .input import INPUT_SPEC, V2_INPUT_SPEC, fit_vocabulary, project, training_projection
+from .input import INPUT_SPEC, V2_INPUT_SPEC, Frame, fit_vocabulary, project, training_projection
 from .model import architecture
 from .spec import (
     DERIVED_RUN_SCHEMA,
@@ -78,7 +78,7 @@ def prepare_p1_run(
     operation_id: str,
     *, execution_policy: dict[str, Any] | None = None, initial_checkpoint: str | None = None,
     loss_weighting: dict[str, Any] | None = None, checkpoint_policy: str | None = None,
-    input_projection: dict[str, Any] | None = None,
+    input_projection: dict[str, Any] | None = None, tensor_pack_id: str | None = None,
 ) -> Manifest:
     """Caller reserves the existing application/Hub use before fitting vocabulary.
 
@@ -124,24 +124,43 @@ def prepare_p1_run(
         raise BoundaryError("p1_workload", "engineering_snapshot_required_no_auto_admission")
     weighting = (checked_weights(loss_weighting, reader.selection)
                  if loss_weighting is not None else None)
-    populations = populations_from_reader(reader, weighting, projection,
-                                          value_heads=config.value_heads)
+    tensor_pack = None
     if projection == V2_INPUT_SPEC:
         from .vocabulary import public_vocabulary
 
         vocabulary = public_vocabulary()
     else:
-        vocabulary = fit_vocabulary(list(populations["train"].frames))
+        vocabulary = None
+    if vocabulary is not None and execution.implementation == "experimental-packed-v1":
+        from .tensor_pack import load_tensor_pack, publish_tensor_pack
+
+        if tensor_pack_id is None:
+            tensor_pack, populations = publish_tensor_pack(
+                store, reader, vocabulary, producer, loss_weighting=weighting,
+                value_heads=config.value_heads)
+        else:
+            populations = load_tensor_pack(store, tensor_pack_id, reader, vocabulary,
+                                           loss_weighting=weighting, value_heads=config.value_heads)
+            tensor_pack = store.get_manifest(tensor_pack_id)
+    else:
+        if tensor_pack_id is not None:
+            raise BoundaryError("p1_workload", "tensor_pack_requires_v2_packed_execution")
+        populations = populations_from_reader(reader, weighting, projection,
+                                              value_heads=config.value_heads)
+    if vocabulary is None:
+        vocabulary = fit_vocabulary([cast(Frame, f) for f in populations["train"].frames])
     vocabulary_raw = json_bytes(vocabulary)
     payload = store.put_payload("vocabulary", io.BytesIO(vocabulary_raw), "application/json")
     training = Manifest(
         "training_input",
         producer,
-        (Parent("source", snapshot_id),),
+        (Parent("source", snapshot_id),) + ((Parent("tensor_pack", tensor_pack.artifact_id),)
+                                          if tensor_pack is not None else ()),
         (payload,),
         FrozenObject.of(
             {
                 "schema": TRAINING_SCHEMA,
+                **({"tensor_pack_id": tensor_pack.artifact_id} if tensor_pack is not None else {}),
                 **({"loss_weighting": weighting} if weighting is not None else {}),
                 **({"checkpoint_policy": checkpoint_policy} if checkpoint_policy else {}),
                 "entrypoint": ENTRYPOINT,
@@ -201,6 +220,7 @@ class P1Workload:
     vocabulary: dict[str, Any]
     reader: SnapshotReader
     execution: MStdExecution
+    prepared_populations: dict[str, Population] | None = None
 
 
 def verify_p1_run(store: ArtifactStore, run_id: str, producer: Producer) -> P1Workload:
@@ -231,7 +251,8 @@ def verify_p1_run(store: ArtifactStore, run_id: str, producer: Producer) -> P1Wo
         or training.producer != producer
         or info.get("schema") != TRAINING_SCHEMA
         or info.get("entrypoint") != ENTRYPOINT
-        or {p.role for p in training.parents} != {"source"}
+        or {p.role for p in training.parents} != (
+            {"source", "tensor_pack"} if "tensor_pack_id" in info else {"source"})
         or {p.role for p in training.payloads} != {"vocabulary"}
         or info.get("input_projection") not in (INPUT_SPEC, V2_INPUT_SPEC)
         or info.get("target_spec") != target_spec(MStdConfig.decode(info["config"]).value_heads)
@@ -294,7 +315,17 @@ def verify_p1_run(store: ArtifactStore, run_id: str, producer: Producer) -> P1Wo
             raise BoundaryError("p1_derivation", "original_training_lineage_mismatch")
     elif "derivation" in info_run:
         raise BoundaryError("p1_derivation", "explicit_derived_run_schema_required")
-    return P1Workload(run, training, snapshot, config, vocabulary, reader, execution)
+    prepared = None
+    if "tensor_pack_id" in info:
+        from .tensor_pack import load_tensor_pack
+
+        if (training.parent("tensor_pack") != info["tensor_pack_id"]
+                or execution.implementation != "experimental-packed-v1"):
+            raise BoundaryError("p1_workload", "tensor_pack_binding_mismatch")
+        prepared = load_tensor_pack(store, info["tensor_pack_id"], reader, vocabulary,
+                                   loss_weighting=info.get("loss_weighting"),
+                                   value_heads=config.value_heads)
+    return P1Workload(run, training, snapshot, config, vocabulary, reader, execution, prepared)
 
 
 def read_payloads(
@@ -342,6 +373,10 @@ def read_payloads(
         training = store.get_manifest(run.parent("training_input"))
         for payload in training.payloads:
             payloads[payload.sha256] = payload
+        if "tensor_pack_id" in training.parameters.value():
+            pack = store.get_manifest(training.parent("tensor_pack"))
+            for payload in pack.payloads:
+                payloads[payload.sha256] = payload
         snapshots.add(training.parent("source"))
     for identity in snapshots:
         snapshot = store.get_manifest(identity)

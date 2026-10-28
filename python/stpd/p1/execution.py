@@ -56,11 +56,18 @@ def microbatches(frames: Any, indices: list[int], model: Any = None) -> Iterator
     group: list[int] = []
     maximum = text_count = text_width = 0
     for index in indices:
-        size = len(frames[index].entities)
-        texts = {text for node in frames[index].entities for _, text in node.text}
-        width = max((len(model.tokenize(text)[0]) for text in texts), default=0) if model else 0
+        from .tensor_input import TensorFrame
+
+        frame = frames[index]
+        if isinstance(frame, TensorFrame):
+            size, count, width = frame.entity_count, frame.text_count, frame.text_width
+        else:
+            size = len(frame.entities)
+            texts = {text for node in frame.entities for _, text in node.text}
+            count = len(texts)
+            width = max((len(model.tokenize(text)[0]) for text in texts), default=0) if model else 0
         padded = max(maximum, size)
-        text_area = (text_count + len(texts)) * max(text_width, width) ** 2
+        text_area = (text_count + count) * max(text_width, width) ** 2
         if group and (
             len(group) == execution.microbatch_size
             or padded * padded * (len(group) + 1) > execution.scene_attention_area
@@ -70,7 +77,7 @@ def microbatches(frames: Any, indices: list[int], model: Any = None) -> Iterator
             group, maximum, text_count, text_width = [], 0, 0, 0
         group.append(index)
         maximum = max(maximum, size)
-        text_count += len(texts)
+        text_count += count
         text_width = max(text_width, width)
     if group:
         yield group

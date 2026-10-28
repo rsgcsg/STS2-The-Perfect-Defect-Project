@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, replace
+from pathlib import Path
 from typing import Literal, Protocol
 
 from spireagent.artifact_contracts import Manifest, Producer
@@ -173,6 +174,7 @@ def dispatch(
     store: ManifestArtifactStore, request: ComputeRequest, runtime: Producer,
     *, backend: FeatureBackend | None = None, wall_seconds: int | None = None,
     training_ready: Callable[[], None] | None = None,
+    input_cache: Path | None = None,
 ) -> ComputeReceipt:
     if request.producer != runtime:
         raise BoundaryError("compute", "runtime_source_lock_mismatch")
@@ -214,12 +216,15 @@ def dispatch(
             raise BoundaryError("compute", "P1_training_does_not_accept_feature_backend")
         from ..workers.p1_run import execute_p1_run
 
+        # One P1 request shares immutable parent bytes between verification and
+        # the synchronous reporter. Fresh observers/auditors keep default reads.
+        store = ManifestArtifactStore(store.blobs, cache_manifests=True)
         p1_result = execute_p1_run(
             store, CandidateReporter(store, request.input_id, runtime, request=request),
             request.input_id, runtime, attempt_id=request.attempt_id,
             resume=request.resume, stop_after=request.stop_after,
             mode="resume" if request.resume is not None else "start",
-            control=_wall_pause(wall_seconds, training_ready),
+            control=_wall_pause(wall_seconds, training_ready), input_cache=input_cache,
         )
         return ComputeReceipt(
             request.request_id, request.attempt_id, request.kind, request.input_id, runtime,

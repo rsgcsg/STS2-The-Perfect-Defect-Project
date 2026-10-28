@@ -289,12 +289,20 @@ def execute_p1_run(
     authority: AttemptAuthority | None = None,
     control: ExecutionControl | None = None,
     mode: str = "start",
+    input_cache: Path | None = None,
 ) -> StructuredExecutionResult:
     from spireagent.storage.read_session import VerifiedReadSession
 
     from ..p1.workload import read_payloads
 
     started = time.perf_counter()
+    if input_cache is not None:
+        from spireagent.storage.input_cache import InputCacheStore
+        from spireagent.storage.store import ManifestArtifactStore
+
+        if not isinstance(store, ManifestArtifactStore):
+            raise BoundaryError("p1_worker", "manifest_store_required_for_input_cache")
+        store = InputCacheStore(store, input_cache)
     # Each worker independently verifies its inputs. Only the named required
     # payloads are prefetched; original recordings remain exact references.
     run = store.get_manifest(run_id)
@@ -360,9 +368,11 @@ def _execute_p1_run(
     if mode == "reconcile":
         raise BoundaryError("p1_worker", "no_selected_result_reconcile_only")
     preparation_started = time.perf_counter()
-    populations = populations_from_reader(
-        workload.reader, workload.training.parameters.value().get("loss_weighting"),
-        workload.vocabulary["input_spec"], value_heads=workload.config.value_heads)
+    populations = workload.prepared_populations
+    if populations is None:
+        populations = populations_from_reader(
+            workload.reader, workload.training.parameters.value().get("loss_weighting"),
+            workload.vocabulary["input_spec"], value_heads=workload.config.value_heads)
     population_seconds = time.perf_counter() - preparation_started
     construction_started = time.perf_counter()
     trainer = MStdTrainer(

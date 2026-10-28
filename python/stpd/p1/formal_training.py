@@ -24,11 +24,11 @@ from stpd.workers.checkpoint_codec import decode_checkpoint, encode_checkpoint
 from .data import digest, json_bytes
 from .execution import MStdExecution, microbatches
 from .export import input_spec
-from .input import Frame
 from .model import MStd
 from .numerics import TrainingNumerics, training_scope
 from .optimization import optimizer_update
 from .spec import CHECKPOINT_FRACTIONS, MStdConfig
+from .tensor_input import ModelFrame
 
 
 def checkpoint_schema(value_heads: bool = False) -> str:
@@ -38,7 +38,7 @@ def checkpoint_schema(value_heads: bool = False) -> str:
 
 @dataclass(frozen=True)
 class Population:
-    frames: tuple[Frame, ...]
+    frames: tuple[ModelFrame, ...]
     targets: tuple[int, ...]
     point_ids: tuple[str, ...]
     weights: tuple[float, ...] = ()
@@ -64,7 +64,7 @@ class Population:
 FORMAL_CODE_FILES = ("formal_training.py", "spec.py", "input.py", "model.py", "numerics.py",
                      "execution.py", "optimization.py", "weighting.py", "input_order.py",
                      "vocabulary.py", "public_vocabulary_v1.json", "input_identity.py",
-                     "value_targets.py")
+                     "value_targets.py", "tensor_input.py", "tensor_pack.py")
 
 
 class MStdTrainer:
@@ -194,7 +194,7 @@ class MStdTrainer:
 
     @staticmethod
     def batches(
-        frames: tuple[Frame, ...], indices: list[int], model: MStd | None = None
+        frames: tuple[ModelFrame, ...], indices: list[int], model: MStd | None = None
     ) -> Iterator[list[int]]:
         """Bound temporary padded attention, without changing the optimizer batch.
 
