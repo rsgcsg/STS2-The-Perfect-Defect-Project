@@ -374,6 +374,9 @@ def _execute_p1_run(
     io_seconds = {key: 0.0 for key in (
         "authority", "control", "event_publish", "checkpoint_capture",
         "checkpoint_publish", "checkpoint_wait")}
+    training_seconds = {key: 0.0 for key in (
+        "train_seconds", "dev_and_selection_seconds", "advance_seconds")}
+    advanced_updates = 0
 
     def guard(*, force: bool = False) -> None:
         nonlocal last_authority_check
@@ -439,7 +442,9 @@ def _execute_p1_run(
         nonlocal event_step
         guard(force=True)
         details.update(worker_elapsed_seconds=time.perf_counter() - started,
-                       worker_observed_unix=time.time(), worker_io_seconds=dict(io_seconds))
+                       worker_observed_unix=time.time(), worker_io_seconds=dict(io_seconds),
+                       worker_training_seconds=dict(training_seconds),
+                       worker_advanced_updates=advanced_updates)
         event_step += 1
         publishing = time.perf_counter()
         reporter.emit(
@@ -464,7 +469,8 @@ def _execute_p1_run(
     if resume is None and workload.run.parameters.value().get("schema") == DERIVED_RUN_SCHEMA:
         from ..p1.derivation import derive_checkpoints
 
-        saved = derive_checkpoints(store, workload, trainer, attempt_id, event, guard)
+        saved = derive_checkpoints(
+            store, workload, trainer, attempt_id, event, lambda: guard(force=True))
         metadata = saved.manifest.parameters.value()
         checkpoint_id = saved.manifest.artifact_id
         checkpoints = dict(metadata["prior_checkpoints"])
@@ -599,6 +605,9 @@ def _execute_p1_run(
                 time.perf_counter() - started,
             )
         progress = trainer.advance()
+        advanced_updates += 1
+        for key in training_seconds:
+            training_seconds[key] += progress["timing"][key]
         due = cadence.offer(trainer.step, progress)
         if "dev" in progress or "dev_checkpoint" in progress or due:
             flush_progress()
