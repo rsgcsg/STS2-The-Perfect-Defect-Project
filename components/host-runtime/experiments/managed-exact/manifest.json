@@ -47,9 +47,9 @@
     "effect": "Every Managed prepare compares the exact game Godot references with the built stub; a gap outside the reviewed baseline fails the build and names the member. Hosted CI has no game files and does not run it."
   },
   "expected_build": {
-    "source_patch_sha256": "13ed7a2ca5f492e8fd9eed587037de9ddb57764740942761013bd98eb09d70fd",
-    "artifact_sha256": "ea9b7ca4570bb79dee061e701c82cd61f4bc2378e2d6ce0b9f44cb9fbd1c02b0",
-    "artifact_mvid": "37af0f99-fa1d-42aa-8eb3-0d1b3efa24d8",
+    "source_patch_sha256": "de011e71826d20dd9e9db02c825e94877162d0646c0df70b19f84e5ca0b20a2b",
+    "artifact_sha256": "0e5feebdf33de9bc48a1fbd543735e006bed1766b1f07e90148801802e3cb1aa",
+    "artifact_mvid": "bb516baa-5308-4b47-a98e-ace6eda93028",
     "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0"
   },
   "previous_candidate_build": {
@@ -320,6 +320,55 @@
       "risk": "low",
       "effect": "Compiles the same shared Native Foundation SoulsPower preview qualification as Reference. Calls the original native enchantment sequence only on FindOnTable early-null branches (TestMode or no combat), checking all reached methods/getters for patches. Live combat stays unavailable; no P1, original recording or training projection changes.",
       "regression": "NativeDetachedPreviewTests SoulsPower cases; exact shared-source parity regression; recorded missing previews remain missing in old originals."
+    },
+    {
+      "id": "native_selector_visible_grid_order",
+      "kind": "exact_native_presentation_sort",
+      "risk": "medium",
+      "effect": "Use the exact NCardGrid.SetCards sorting used by NCombatPileCardSelectScreen: draw rarity/alphabet priorities under native locale; discard/exhaust retain native pile order. Hold only the reviewed _cardsAnimatingOutForSetCards animation barrier; original offered objects and input operands are unchanged.",
+      "regression": "m2e-r3-native-tests/M2eR3Native.csproj: Chinese/English title order, same-name duplicate objects, upgraded title, unchanged offer/discard/exhaust orders; rollback restores the previous Host candidate."
+    },
+    {
+      "id": "native_dense_vegetation_scene_calls",
+      "kind": "harmony_presentation_callsite",
+      "risk": "low",
+      "effect": "Only remap the two Play, one Stop and one ScreenRumble call in the exact DenseVegetation.Rest continuation when TestMode has no scene. Checked method signatures and call counts fail on drift. Original heal/hooks, waits, event update and fight option remain native.",
+      "regression": "m2e-r3-native-tests/M2eR3Native.csproj: original Rest heals and presents Fight with absent scene singletons; rollback restores the previous Host candidate."
+    },
+    {
+      "id": "atomic_native_bundle_publication",
+      "kind": "host_pending_presentation_publication",
+      "risk": "medium",
+      "effect": "Publish the original bundle roster, pending callback Task and presentation owner together in one volatile object, avoiding a partially published child request exposing its parent event.",
+      "regression": "m2e-r3-native-tests/M2eR3Native.csproj: original bundle callback, preview/confirm and exact selected originals; rollback restores the previous Host candidate."
+    },
+    {
+      "id": "native_death_before_reward_presentation",
+      "kind": "host_decision_boundary",
+      "risk": "medium",
+      "effect": "After native combat pumps/awaits, recheck original IsGameOver/IsDead before exposing rewards. A dead-player RewardsSet.Offer return is never treated as a presented reward page; terminal facts still require original native OnEnded.",
+      "regression": "m2e-r3-native-tests/M2eR3Native.csproj: original Kill/OnEnded produces native terminal and no combat reward page; rollback restores the previous Host candidate."
+    },
+    {
+      "id": "native_calling_bell_production_rewards",
+      "kind": "harmony_exact_production_branch",
+      "risk": "medium",
+      "effect": "Replace the single TestMode getter call inside the exact synchronous CallingBell.GenerateRewards with its production branch condition. No global TestMode toggle; native Common/Uncommon/Rare reward constructors, pool population and RNG remain original instead of fixed Anchor/GremlinHorn/MummifiedHand test prizes. Checked call count refuses drift.",
+      "regression": "m2e-r3-native-tests/M2eR3Native.csproj: three native rarity-based unpopulated rewards with global TestMode retained; same captured Calling Bell original in the diagnostic cohort; rollback restores pre_m2e_round3_build."
+    },
+    {
+      "id": "native_trial_portrait_scene_presence",
+      "kind": "exact_native_presentation_branches",
+      "risk": "low",
+      "effect": "Only three local-player portrait branches in Trial.Accept and its VFX helper require an existing event scene in TestMode. RNG, original verdict choices and all gameplay stay native. The real abandon Yes/No modal is explicitly unavailable before Chosen; never auto-abandon/no-op or call the page complete.",
+      "regression": "m2e-r3-native-tests: native Trial Accept with absent scene; original verdicts and serialization; reject modal explicit incomplete and refusal before WasChosen. Baseline develop Runtime56 native source independently reproduces old null reference."
+    },
+    {
+      "id": "native_event_unrepresented_followups",
+      "kind": "explicit_missing_native_presentation_capability",
+      "risk": "medium",
+      "effect": "Trial abandon confirmation and both CrystalSphere minigame entries require real native follow-up inputs. Retain original visible options, mark the whole page explicitly incomplete, and refuse raw invocation before Chosen/history/gold/curse effects. No synthetic answers, timeout completion, no-op scenes or default rewards.",
+      "regression": "m2e-r3-native-tests: original option visibility, missing capture/serialization, no bound actions, refusal before WasChosen, unchanged gold/deck for both minigame entries. Full modal/minigame operations remain unqualified."
     }
   ],
   "admission": {
@@ -449,6 +498,24 @@
     "source_patch_sha256": "c2b2cbb12aaf826945174399f7db93bb54af3c8c23395951786cfe27d691e405",
     "artifact_sha256": "029a414ba038d0193cfb9dbf2992ebdfc4f037abff7157a0268bb4af6add6bc3",
     "artifact_mvid": "76bdb43e-d8ff-48b2-bea8-f7fc7925faf1",
+    "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0"
+  },
+  "pre_m2e_round3_build": {
+    "source_patch_sha256": "13ed7a2ca5f492e8fd9eed587037de9ddb57764740942761013bd98eb09d70fd",
+    "artifact_sha256": "ea9b7ca4570bb79dee061e701c82cd61f4bc2378e2d6ce0b9f44cb9fbd1c02b0",
+    "artifact_mvid": "37af0f99-fa1d-42aa-8eb3-0d1b3efa24d8",
+    "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0"
+  },
+  "pre_trial_scene_build": {
+    "source_patch_sha256": "8348491a9cda97852001cf9c7b50e62f6621d9b57ba3a513b570f53155289423",
+    "artifact_sha256": "f18c39f785b073b6a9f6c26a3783e69552edd41d24f59ac1e3f0354cf777687d",
+    "artifact_mvid": "fcb88905-1d79-4b35-ab24-b3b62e315249",
+    "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0"
+  },
+  "pre_crystal_capability_build": {
+    "source_patch_sha256": "f7b6213c1b913f9aca501d317449e36793ae1efa255a5f53d61ed5ff11448f27",
+    "artifact_sha256": "086eeda2f411fc7fe3f8b0de9530fb3d38774e22bb02e865cecec137db2a59f2",
+    "artifact_mvid": "7ac2dfe3-d098-4dac-bef2-3f090635f791",
     "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0"
   }
 }
