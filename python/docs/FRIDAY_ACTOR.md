@@ -17,7 +17,9 @@ Host/Runtime 固定包身份，候选固定 SHA/MVID，模型固定原 Store 身
 
 运行者使用 `spireagent/managed-evaluation-execution-v1` 原配置：准确 `producer`、
 `host_pin`、`runtime_pin`、`agent_adapter`、`initial_progress`、`candidate_directory`、
-`models`、`peer`、`python_executable`。模型只填一份。另声明：
+`models`、`peer`、`python_executable`。模型只填一份。Friday 另外固定
+`game_assembly_sha256=71eec3ba5e0c640fc0cf0758517faf5f2ff039bea21966b22b23f2c427c7a09f`，
+仅约束原 Host 审计响应，不能绕过 Host 的精确元组准入；省略仍用原 Mac 身份。另声明：
 
 ```json
 {"retention":{"tier":"trajectory","purpose":"training","audit_every":50},
@@ -109,3 +111,8 @@ Slurm 日志在 `persistent_root/slurm/`。`result.json` 记录源码配置、�
 原 Agent CLI 一样；单核1线程配置须经相同种子和结果对照后选用。
 `measure_host_performance=true` 在本卡 Host57 读取已有 Host 计数器，
 原始记录与计数器观测分开；不把嵌套时间加成互斥总耗时。
+
+本轮依赖门禁发现 certifi2026.7.22 对应 GHSA-6q48-6c7w-9gw2，
+只把仓库原锁中的 certifi 更新为2026.10.23，再导出同锁 CPU 环境；
+torch、tokenizers 和其余包版本不变，不改旧训练/模型的原 producer 或锁。
+重建环境前先排空本人的旧打局作业；bootstrap 会重建本目录下的专用环境。

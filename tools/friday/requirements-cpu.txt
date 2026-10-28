@@ -1,5 +1,5 @@
 # Locked cloud/local-models + development imports used by the current application closure; CPU torch2.13.0.
-# Source lock SHA256: 704bb8621adba089a36c4bd60298f25501330ec9df65619a9860047ea46e13bc
+# Source lock SHA256: 3c813c63f858ba09dda6b00f1aeaff8c19f64152a43dbc997553b65934ea695a
 aiohappyeyeballs==2.7.1
 aiohttp==3.14.3
 aiosignal==1.4.0
@@ -8,7 +8,7 @@ attrs==26.1.0
 boto3==1.43.89
 botocore==1.43.89
 cbor2==6.1.4
-certifi==2026.7.22
+certifi==2026.10.23
 cffi==2.1.1 ; platform_python_implementation != 'PyPy'
 click==8.4.2
 colorama==0.4.6 ; sys_platform == 'win32'

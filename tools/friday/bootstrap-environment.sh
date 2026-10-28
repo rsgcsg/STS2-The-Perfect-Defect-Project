@@ -17,7 +17,7 @@ fi
 "$F2_SDK/dotnet" --info > "$F2_ROOT/evidence/dotnet-info.txt"
 python -m pip install --disable-pip-version-check --no-warn-script-location --target "$F2_ROOT/bootstrap" 'uv==0.11.25'
 F2_UV="$F2_ROOT/bootstrap/bin/uv"
-"$F2_UV" venv --python "$(command -v python)" "$F2_ROOT/env"
+"$F2_UV" venv --clear --python "$(command -v python)" "$F2_ROOT/env"
 "$F2_UV" pip install --python "$F2_ROOT/env/bin/python" -r "$SCRIPT_DIR/requirements-cpu.txt"
 "$F2_UV" pip freeze --python "$F2_ROOT/env/bin/python" > "$F2_ROOT/evidence/environment-freeze.txt"
 "$F2_ROOT/env/bin/python" - <<'PY'

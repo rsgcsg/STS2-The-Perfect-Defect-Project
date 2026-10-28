@@ -428,7 +428,7 @@ def test_central_inference_requires_cli_environment_before_world_audit(
     monkeypatch.setattr(backend, "source_identity", lambda _: actual)
     monkeypatch.setattr(backend, "_verify_host", lambda *_: None)
     monkeypatch.setattr(backend, "validate_installed_package", lambda *_, **__: None)
-    def audit(*_):
+    def audit(*_, **_kwargs):
         if not admitted:
             pytest.fail("must reject before world audit")
         raise RuntimeError("admitted_runtime_before_world_audit")
@@ -915,3 +915,58 @@ def test_partial_shard_frees_credit_before_an_unrelated_slow_game_finishes(ledge
             release.set()
         result = future.result(timeout=30)
     assert result["dispatched"] == 3 and current.report()["saved_unscored"] == 3
+
+
+@pytest.mark.parametrize("selector", [None, "invalid", "A" * 64, 1, True])
+def test_execution_game_selector_is_validated_before_package_or_world_access(selector):
+    from spireagent.workbench.managed_evaluation import ManagedEpisodeExecutor
+
+    with pytest.raises(BoundaryError, match="invalid_digest"):
+        ManagedEpisodeExecutor({"game_assembly_sha256": selector},
+                               episode_seconds=10, cleanup_seconds=10)
+
+
+@pytest.mark.parametrize("explicit", [False, True])
+def test_executor_threads_frozen_game_selection_into_the_real_host_audit_reader(
+    tmp_path, monkeypatch, explicit,
+):
+    """Actual audit-reader/executor connection; package and Host subprocess mocked."""
+    from subprocess import CompletedProcess
+
+    from spireagent.workbench import local_environment
+    from spireagent.workbench import managed_evaluation as backend
+
+    actual = Producer("rsgcsg/STS2-The-Perfect-Defect-Project", "b" * 40, "c" * 64)
+    monkeypatch.setattr(backend, "source_identity", lambda _: actual)
+    monkeypatch.setattr(backend, "_verify_host", lambda *_: None)
+    monkeypatch.setattr(backend, "validate_installed_package", lambda *_, **__: None)
+    selected = ("71eec3ba5e0c640fc0cf0758517faf5f2ff039bea21966b22b23f2c427c7a09f"
+                if explicit else local_environment.SCENARIO["exact_game_assembly_sha256"])
+    output = {"upstream_revision": "d" * 40, "source_patch_sha256": "1" * 64,
+        "artifact_sha256": "2" * 64, "artifact_mvid": "516cffd1-5fdd-44af-a2f2-e179a35dde02",
+        "original_sts2_sha256": selected, "runtime_sts2_sha256": selected,
+        "candidate_directory": str(tmp_path)}
+    commands = []
+
+    def inspect(command, **_kwargs):
+        commands.append(command)
+        return CompletedProcess(command, 0, json.dumps(output), "")
+
+    def passed_candidate(_):
+        raise RuntimeError("exact_candidate_accepted_before_api_or_store_access")
+
+    monkeypatch.setattr(local_environment.subprocess, "run", inspect)
+    monkeypatch.setattr(backend, "_load_host_api", passed_candidate)
+    (tmp_path / "package.json").write_bytes(json_bytes({"version": "0.1.0-rc.56"}))
+    configuration = {"producer": actual.to_dict(),
+        "host_directory": str(tmp_path), "candidate_directory": str(tmp_path),
+        "runtime_directory": str(tmp_path / "dist"), "host_pin": {}, "runtime_pin": {},
+        "agent_adapter": backend.export.adapter_identity(),
+        **({"game_assembly_sha256": selected} if explicit else {})}
+    with pytest.raises(RuntimeError, match="exact_candidate_accepted_before_api_or_store_access"):
+        backend.ManagedEpisodeExecutor(configuration, episode_seconds=10, cleanup_seconds=10)
+    assert commands == [["node", str(tmp_path / "tools/managed-exact.mjs"), "audit",
+                         "--candidate", str(tmp_path)]]
+    output["runtime_sts2_sha256"] = "0" * 64
+    with pytest.raises(BoundaryError, match="managed_candidate_identity_mismatch"):
+        backend.ManagedEpisodeExecutor(configuration, episode_seconds=10, cleanup_seconds=10)
