@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Read-only actual InputSpec projection over closed diagnostic logs; no model.
 
 Raw views, feature row layout, and V2 permutation semantics are distinct.
@@ -6,12 +5,14 @@ P1 graph equality supplies the public bijection; V2 uses symmetric roles and no
 scene row positional encoding. This never claims bitwise policy equality.
 """
 from __future__ import annotations
+
 import argparse
 import dataclasses
 import gzip
 import hashlib
 import json
 from pathlib import Path
+
 from stpd.p1.input import INPUT_SPEC, V2_INPUT_SPEC, project
 
 
