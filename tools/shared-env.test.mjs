@@ -36,16 +36,17 @@ test('workspace and bin links are rebound to this checkout; dependency directori
   const shared=path.join(directory,'shared'), local=path.join(directory,'local');
   fs.mkdirSync(path.join(shared,'node_modules/.bin'),{recursive:true});
   fs.mkdirSync(path.join(shared,'node_modules/dependency'));
+  fs.writeFileSync(path.join(shared,'node_modules/dependency/file'),'immutable');
   fs.mkdirSync(path.join(shared,'node_modules/@scope'));
   // Workspace target intentionally absent from the dependency skeleton.
   fs.symlinkSync('../../components/workspace',path.join(shared,'node_modules/@scope/workspace'),process.platform==='win32'?'junction':undefined);
   fs.symlinkSync('../@scope/workspace/cli.mjs',path.join(shared,'node_modules/.bin/command'));
   fs.writeFileSync(path.join(shared,'node_modules/.bin/command.cmd'),'@echo fixture');
   attachModules(path.join(shared,'node_modules'),path.join(local,'node_modules'),shared,local);
-  fs.unlinkSync(path.join(local,'node_modules/dependency'));
+  fs.unlinkSync(path.join(local,'node_modules/dependency/file'));
   attachModules(path.join(shared,'node_modules'),path.join(local,'node_modules'),shared,local);
   assert.equal(fs.readlinkSync(path.join(local,'node_modules/@scope/workspace')),path.join(local,'components/workspace'));
-  assert.equal(fs.readlinkSync(path.join(local,'node_modules/dependency')),path.join(shared,'node_modules/dependency'));
+  assert.equal(fs.statSync(path.join(local,'node_modules/dependency/file')).ino,fs.statSync(path.join(shared,'node_modules/dependency/file')).ino);
   assert.equal(fs.readFileSync(path.join(local,'node_modules/.bin/command.cmd'),'utf8'),'@echo fixture');
   assert.equal(fs.readlinkSync(path.join(local,'node_modules/.bin/command')),path.join(local,'node_modules/@scope/workspace/cli.mjs'));
 });
@@ -81,4 +82,20 @@ test('source command edits reuse dependencies, while package declarations and lo
   fs.writeFileSync(path.join(directory,'package.json'),JSON.stringify({name:'fixture',scripts:{check:'old'},dependencies:{example:'1'}}));
   fs.writeFileSync(path.join(directory,'package-lock.json'),'{"changed":true}');
   assert.notEqual(identity(directory,{python:'fixture',version:'3.11.fixture'}).key,original);
+});
+
+test('read-only shared bytes get local writable directories and retain closed-copy cleanup', async t => {
+  const {linkDependencyTree}=await import('./shared-env.mjs');
+  const directory=fs.mkdtempSync(path.join(os.tmpdir(),'spire-readonly-view-'));
+  const shared=path.join(directory,'shared'), local=path.join(directory,'local'), installed=path.join(directory,'installed');
+  fs.mkdirSync(shared);fs.writeFileSync(path.join(shared,'LICENSE'),'immutable bytes');
+  fs.chmodSync(path.join(shared,'LICENSE'),0o444);fs.chmodSync(shared,0o555);
+  t.after(()=>{fs.chmodSync(shared,0o755);fs.rmSync(directory,{recursive:true,force:true});});
+  linkDependencyTree(shared,local);
+  assert.ok(fs.statSync(local).mode & 0o200);
+  assert.equal(fs.statSync(path.join(local,'LICENSE')).ino,fs.statSync(path.join(shared,'LICENSE')).ino);
+  fs.cpSync(local,installed,{recursive:true,dereference:true});
+  fs.rmSync(installed,{recursive:true});
+  assert.equal(fs.readFileSync(path.join(shared,'LICENSE'),'utf8'),'immutable bytes');
+  if(process.platform!=='win32')assert.equal(fs.statSync(path.join(shared,'LICENSE')).mode & 0o222,0);
 });

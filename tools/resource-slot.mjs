@@ -103,7 +103,7 @@ export async function runReservedCommand(args, {resources, token,
   let interruptedForGame = false;
   // CPU-only setup/comparison can be cancelled as a process tree. Managed gameplay
   // keeps its existing cleanup semantics and rejects the next episode at check().
-  const monitor = resources.includes('managed') && resources.includes('cpu') ? setInterval(() => {
+  const monitor = resources.includes('cpu') ? setInterval(() => {
     let busy = true;
     try { busy = gamePresent(); } catch { /* Unavailable observation cannot grant CPU work. */ }
     if (busy && !interruptedForGame) {

@@ -60,7 +60,7 @@ export function verify(directory, expected) {
   return receipt;
 }
 function idle() {
-  requireSlot('managed'); requireSlot('cpu');
+  requireSlot('cpu');
   if (listGameProcesses(process.platform, {failClosed: true}).length) throw Error('user game is running');
 }
 function build(id, directory) {
@@ -107,6 +107,35 @@ function mappedLink(target, shared, local) {
   const relative = path.relative(shared, target);
   return relative.startsWith('..') ? target : path.join(local, relative);
 }
+export function linkDependencyTree(source, target, skip = new Set()) {
+  fs.mkdirSync(target, {recursive: true});
+  if (fs.lstatSync(target).isSymbolicLink()) {
+    if (path.resolve(path.dirname(target), fs.readlinkSync(target)) !== source)
+      throw Error('foreign dependency directory preserved');
+    fs.unlinkSync(target); fs.mkdirSync(target);
+  }
+  for (const name of fs.readdirSync(source)) {
+    if (skip.has(name)) continue;
+    const from = path.join(source, name), to = path.join(target, name), stat = fs.lstatSync(from);
+    if (stat.isDirectory()) { linkDependencyTree(from, to); continue; }
+    let existing;
+    try { existing = fs.lstatSync(to); } catch (e) { if (e.code !== 'ENOENT') throw e; }
+    if (stat.isSymbolicLink()) {
+      const link = fs.readlinkSync(from);
+      if (existing) {
+        if (existing.isSymbolicLink() && fs.readlinkSync(to) === link) continue;
+        throw Error('changed dependency link preserved: ' + to);
+      }
+      fs.symlinkSync(link, to); continue;
+    }
+    if (existing) {
+      const a = fs.statSync(from, {bigint:true}), b = fs.statSync(to, {bigint:true});
+      if (a.dev === b.dev && a.ino === b.ino) continue;
+      throw Error('changed dependency file preserved: ' + to);
+    }
+    fs.linkSync(from, to);
+  }
+}
 export function attachModules(source, target, shared, local) {
   fs.mkdirSync(target, {recursive: true});
   if (fs.lstatSync(target).isSymbolicLink()) throw Error(`dependency directory must stay local: ${target}`);
@@ -117,6 +146,7 @@ export function attachModules(source, target, shared, local) {
       attachModules(from, to, shared, local); continue;
     }
     const stat = fs.lstatSync(from);
+    if (stat.isDirectory()) { linkDependencyTree(from, to); continue; }
     const destination = stat.isSymbolicLink() ? mappedLink(path.resolve(path.dirname(from), fs.readlinkSync(from)), shared, local) : from;
     // Existing private environments are never replaced.
     let existing;
@@ -175,11 +205,16 @@ function validatePython(directory) {
       || !fs.existsSync(marker) || fs.readFileSync(marker, 'utf8') !== directory)
     throw Error('checkout Python environment missing or changed');
   run(pythonIn(venv), ['-I', '-B', '-c',
-    `import pathlib,stpd,spireagent,numpy; root=pathlib.Path(${JSON.stringify(path.join(root, 'python'))}); assert pathlib.Path(stpd.__file__).is_relative_to(root); assert pathlib.Path(spireagent.__file__).is_relative_to(root); assert pathlib.Path(numpy.__file__).is_relative_to(pathlib.Path(${JSON.stringify(path.join(directory, 'deps/python/.venv'))}))`],
+    `import pathlib,stpd,spireagent,numpy; root=pathlib.Path(${JSON.stringify(path.join(root, 'python'))}); assert pathlib.Path(stpd.__file__).is_relative_to(root); assert pathlib.Path(spireagent.__file__).is_relative_to(root); expected=next(pathlib.Path(${JSON.stringify(path.join(directory, 'deps/python/.venv'))}).glob("**/site-packages/numpy/__init__.py")); assert pathlib.Path(numpy.__file__).is_relative_to(pathlib.Path(${JSON.stringify(venv)})); assert pathlib.Path(numpy.__file__).samefile(expected)`],
     root, process.env, true);
 }
 function attachPython(directory, id) {
   const venv = localVenv(), marker = path.join(venv, '.spireagent-shared-env');
+  const layout = path.join(venv, '.spireagent-shared-layout');
+  if (fs.existsSync(venv) && !fs.lstatSync(venv).isSymbolicLink() && fs.existsSync(marker)
+      && fs.readFileSync(marker, 'utf8') === directory && !fs.existsSync(layout)) {
+    idle(); fs.rmSync(venv, {recursive:true});
+  }
   if (fs.existsSync(venv)) {
     if (fs.lstatSync(venv).isSymbolicLink() || !fs.existsSync(marker) || fs.readFileSync(marker, 'utf8') !== directory)
       throw Error('existing Python environment is private; preserving it');
@@ -190,7 +225,8 @@ function attachPython(directory, id) {
     const sharedSite = run(pythonIn(path.join(directory, 'deps/python/.venv')),
       ['-I', '-B', '-c', 'import sysconfig;print(sysconfig.get_path("purelib"))'], root, process.env, true);
     const localSite = run(pythonIn(venv), ['-I', '-B', '-c', 'import sysconfig;print(sysconfig.get_path("purelib"))'], root, process.env, true);
-    fs.writeFileSync(path.join(localSite, 'shared-dependencies.pth'), `import site; site.addsitedir(${JSON.stringify(sharedSite)})\n`);
+    linkDependencyTree(sharedSite, localSite, new Set(['_virtualenv.py', '_virtualenv.pth', '__pycache__']));
+    fs.writeFileSync(layout, 'hardlink-view-1');
     // Install only this checkout's editable project metadata. Children which
     // deliberately clear PYTHONPATH still resolve the same source as private uv.
     run('uv', ['pip', 'install', '--no-deps', '--python', pythonIn(venv), '--editable', 'python'], root,
@@ -217,10 +253,16 @@ function detach() {
       if (stat.isSymbolicLink()) {
         const dest = path.resolve(path.dirname(p), fs.readlinkSync(p));
         if (dest.startsWith(`${shared}${path.sep}`) || dest.startsWith(`${root}${path.sep}`)) fs.unlinkSync(p);
-      } else if (stat.isDirectory() && (name.startsWith('@') || name === '.bin')) unlinkLinks(p);
-      else if (path.basename(folder) === '.bin') {
+      } else if (stat.isDirectory()) unlinkLinks(p);
+      else if (stat.isFile()) {
         const original = path.join(shared, path.relative(root, p));
-        if (fs.existsSync(original) && digest(fs.readFileSync(original)) === digest(fs.readFileSync(p))) fs.unlinkSync(p);
+        if (fs.existsSync(original)) {
+          const a = fs.statSync(original, {bigint:true}), b = fs.statSync(p, {bigint:true});
+          if (a.dev === b.dev && a.ino === b.ino) { fs.unlinkSync(p); continue; }
+        }
+        if (path.basename(folder) !== '.bin') continue;
+        const binOriginal = path.join(shared, path.relative(root, p));
+        if (fs.existsSync(binOriginal) && digest(fs.readFileSync(binOriginal)) === digest(fs.readFileSync(p))) fs.unlinkSync(p);
       }
     }
     if (!fs.readdirSync(folder).length) fs.rmdirSync(folder);

@@ -272,8 +272,8 @@ outside Git. New work and incident reports belong in this repository only.
 
 在源码根目录运行 `npm run env:attach`；以后把检查包在
 `npm run env:run -- npm run check`（或其他原有命令）里。首次没有对应环境时，
-必须在 Managed、CPU 都空闲且用户没有玩游戏/录制时，按下面的双资源占位运行。
-每份源码首次挂接还会建立只含本卡项目元数据的小 Python 环境，也须在双资源空档内；
+必须在 CPU 空闲且用户没有玩游戏/录制时，按下面的双资源占位运行。
+每份源码首次挂接还会建立只含本卡项目元数据的小 Python 环境，也须在 CPU 空档内；
 此后挂接只读校验。已有自建环境会保留并沿用。
 
 ```sh
@@ -281,7 +281,7 @@ outside Git. New work and incident reports belong in this repository only.
 npm run slot -- configure --journal /ABS/replies/GAME-SLOT.md
 npm run slot -- status
 # 日期、时区及预计结束按实际填写；前台命令结束自动释放。
-npm run slot -- run --resources managed,cpu --card E2 --until 2026-10-28T20:00:00+10:00 -- npm run env:attach
+npm run slot -- run --resources cpu --card E2 --until 2026-10-28T20:00:00+10:00 -- npm run env:attach
 npm run env:run -- npm run check
 # Managed 评估/重放/采样：整个前台批次放在占位命令内；内部每局检查同一 token。
 npm run slot -- run --card CARD --lanes 4 --games 20 --until 2026-10-28T20:00:00+10:00 -- npm run env:run -- python python/tools/evaluate_managed_suite.py --help
@@ -293,7 +293,7 @@ npm run env:prune -- 3
 占位命令不取代任务表的排队顺序或 CPU 空闲检查。新锁上线时须先核对旧流水账和
 实际进程；旧代码/旧批次不会自动服从新锁。用户正常开游戏无需敲命令，准入检查
 复用 Host 的游戏进程探测；游戏出现后不再开新局，已开的局仍走原本收尾。
-共享建环境的每个主要阶段也会复查用户游戏；双资源占位中的建环境/对照每三秒观察一次，
+共享建环境的每个主要阶段也会复查用户游戏；CPU 占位中的建环境/对照每三秒观察一次，
 游戏出现就终止自己的进程树，留下未完成记录，不将中断算通过。训练可选 `--resources training`，
 学校节点使用它自己的节点锁；本卡不改变训练调度。
 
@@ -311,14 +311,14 @@ npm run env:prune -- 3
 键涵盖全部 Git 跟踪的 npm 依赖清单/锁（清单不计 scripts，因为组件脚本不进入共享库）、
 Python 清单/锁、解释器完整版本、Node 完整版本、
 平台与架构。环境构建加锁，完整文件哈希验收后只读；每次挂接和执行都重验。
-第三方 npm 依赖只读链接到本卡，工作区链接和构建输出留在本卡；Python 共享环境
-只装第三方依赖，每卡的小 `.venv` 通过标准 site 路径引用它，并单独安装本卡项目的
+第三方 npm 依赖以只读文件硬链接放在本卡可写目录中，工作区链接和构建输出留在本卡；Python 共享环境
+只装第三方依赖，每卡的小 `.venv` 通过本地目录中的只读文件硬链接引用它，并单独安装本卡项目的
 editable 元数据；清除 PYTHONPATH 的子进程仍能导入本卡源码。`env:run` 使用本卡
 解释器并禁止 uv 同步修改共享依赖。
 因此仍需在每张卡运行原有构建/检查；不要对共享目录运行安装、同步或构建。
 
 损坏、身份不符或已有私有环境时沿用旧的三步自建流程。自动自建也必须持有
-Managed、CPU 两把锁并通过游戏空闲检查；缺少空档就明确等待，不会偷跑。
+CPU 锁并通过游戏空闲检查；缺少空档就明确等待，不会偷跑。
 引用登记在每个环境的 `users/`，即使源码目录暂时消失也不自动判为无人使用。
 `env:prune` 与挂接共用原子修改锁，跳过仍有引用的环境；只有确认本卡不再运行后才
 `env:detach`。崩溃遗留的 `.mutation/pid` 或 `<hash>.building` 先查原进程再处理，
@@ -327,3 +327,5 @@ Managed、CPU 两把锁并通过游戏空闲检查；缺少空档就明确等待
 以后新增的卡批次入口（包括 RL 采样）在真正开局前调用
 `spireagent.resource_slot.require_managed_slot()` 或 `tools/resource-slot.mjs` 的
 `requireSlot()`；单元测试用隔离的锁根目录，不占生产资源位。
+
+依赖文件使用同一文件系统内的硬链接，目录和项目元数据属于本卡；安装闭包复制可正常清理，Python 安装来源仍位于本卡标准 site-packages。跨文件系统或无法建立硬链接时，按旧流程自建。校验、构建和对照只占 CPU 锁，Managed 位供其他批次使用；真人游戏出现仍停止本卡 CPU 任务。
