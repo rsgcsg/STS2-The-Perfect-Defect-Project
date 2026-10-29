@@ -557,3 +557,18 @@ def test_actor_exit_is_visible_while_scheduler_and_snapshot_are_still_running(wa
                                        "preservation_complete": False}]
     assert not (plan.parent / "actors/b/result.json").exists()
     assert Exchange(peer, "phase").stop_request() is None
+
+
+def test_next_delay_wakes_at_evaluation_without_polling_or_busy_retry(watch):
+    observer = object.__new__(watch.Watcher)
+    observer.config = {'poll_seconds': 900, 'started_at': 0, 'wall_seconds': 72000,
+                       'evaluation_seconds': 14400}
+    observer.state = {'stop': None, 'pending': None, 'last_evaluation_at': 0}
+    observer.maintenance_requested = False
+    assert observer.next_delay(14340) == 60
+    # A failed submission/tick does not become a zero-delay retry loop.
+    assert observer.next_delay(14400) == 900
+    observer.state['pending'] = {'job_id': 'existing'}
+    assert observer.next_delay(14340) == 900
+    observer.state.update(stop='wall', drain_started_at=72000)
+    assert observer.next_delay(74380) == 20

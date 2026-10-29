@@ -269,3 +269,34 @@ def test_prepare_cli_accepts_runtime_source_and_freezes_plan(execution, tmp_path
     plan = json.loads(result.stdout)
     assert plan['source_root'] == str(runtime)
     assert plan['planned'] == 60 and (output / 'plan.json').is_file()
+
+
+def test_scheduled_submit_preserves_allocation_and_uses_slurm_timer(
+        evaluate, execution, tmp_path):
+    _plan, directory = prepared(evaluate, execution, tmp_path, workers=8)
+    lock = tmp_path / 'configuration/friday-submit.lock'
+    with (patch.object(evaluate.scheduler, 'submission_lock_path', return_value=lock.resolve()),
+          patch.object(evaluate.scheduler, 'output', side_effect=['', '0/100/0/100', ''])):
+        result = evaluate.submit(directory / 'plan.json', dry_run=True,
+                                 begin='2099-01-01T12:00:00+10:00')
+    assert '--cpus-per-task=8' in result['command']
+    assert len([arg for arg in result['command'] if arg.startswith('--begin=')]) == 1
+    assert result['scheduler_start_guaranteed'] is False
+    assert not (directory / 'submission.json').exists()
+    assert not (directory / 'owner.json').exists()
+
+
+@pytest.mark.parametrize('begin', ['2020-01-01T12:00:00+00:00', '2099-01-01T12:00:00'])
+def test_scheduled_submit_rejects_ambiguous_or_past_time(evaluate, tmp_path, begin):
+    with pytest.raises(ValueError, match='future_begin'):
+        evaluate.submit(tmp_path / 'not-opened.json', begin=begin)
+
+
+def test_plan_exposes_pending_limit_that_can_serialize_requested_workers(
+        evaluate, execution, tmp_path):
+    value = json.loads(execution.read_bytes())
+    value['pipeline'] = {'save_workers': 1, 'pending_limit': 1}
+    execution.write_text(json.dumps(value))
+    plan, _ = prepared(evaluate, execution, tmp_path, workers=8)
+    assert plan['parallelism'] == {'requested_workers': 8, 'pending_limit': 1,
+                                   'save_workers': 1, 'execution_upper_bound': 1}

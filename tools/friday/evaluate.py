@@ -12,6 +12,7 @@ import sys
 import tempfile
 import threading
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -47,6 +48,7 @@ def prepare(execution_path: Path, output: Path, *, selections: dict[str, str],
             seed_prefix: int | None = None, runtime_source: Path | None = None) -> dict[str, Any]:
     from spireagent.json_boundary import json_bytes
     from spireagent.workbench.reference_suite import load_manifest
+    from spireagent.workbench.managed_retention import pipeline_configuration
     from stpd.evaluation.suites import FOUR_AGENT_SUITE_ID, load_suite
 
     if (type(workers) is not int or not 1 <= workers <= 16
@@ -82,6 +84,7 @@ def prepare(execution_path: Path, output: Path, *, selections: dict[str, str],
     selected_count = min(limit or planned, planned)
     if selected_count > 200:
         raise ValueError("single_dispatch_maximum200_selected_slots")
+    pipeline = pipeline_configuration(execution)
     frozen_execution = output / "execution.json"
     frozen_execution.write_bytes(execution_raw)
     plan = {"schema": SCHEMA,
@@ -89,7 +92,10 @@ def prepare(execution_path: Path, output: Path, *, selections: dict[str, str],
             "manifest": {"path": str(manifest), "sha256": hashed(manifest)},
             "selections": selections, "workers": workers, "wall_seconds": wall_seconds,
             "episode_seconds": episode_seconds, "selected_limit": selected_count,
-            "planned": planned, "source_root": str(runtime_source or Path(__file__).resolve().parents[2]),
+            "planned": planned, "parallelism": {"requested_workers": workers,
+                "pending_limit": pipeline["pending_limit"], "save_workers": pipeline["save_workers"],
+                "execution_upper_bound": min(workers, pipeline["pending_limit"])},
+            "source_root": str(runtime_source or Path(__file__).resolve().parents[2]),
             **({"seed_prefix": seed_prefix} if seed_prefix is not None else {}),
             "target": "friday", "automatic_mac_fallback": False, "retry_unknown": False}
     save(output / "plan.json", plan)
@@ -161,7 +167,13 @@ exec "$actor_root/env/bin/python" "$source_root/tools/friday/allocation.py" \
 
 
 def submit(plan_path: Path, *, constraint: str | None = None,
-           dry_run: bool = False) -> dict[str, Any]:
+           dry_run: bool = False, begin: str | None = None) -> dict[str, Any]:
+    # Slurm owns the timer; this is an earliest start, not a resource reservation.
+    if begin is not None:
+        parsed = datetime.fromisoformat(begin)
+        if parsed.tzinfo is None or parsed.timestamp() <= time.time():
+            raise ValueError("future_begin_with_explicit_timezone_required")
+        begin = parsed.astimezone().strftime("%Y-%m-%dT%H:%M:%S")
     plan = load_plan(plan_path)
     root = private_root(plan_path.parent)
     with scheduler.user_submission_lock():
@@ -190,10 +202,13 @@ def submit(plan_path: Path, *, constraint: str | None = None,
                    f'--error={logs}/%j.err']
         if constraint:
             command.append('--constraint=' + constraint)
+        if begin is not None:
+            command.append('--begin=' + begin)
         command.append(str(script))
         result = {'schema': 'spireagent/friday-evaluation-submit-v1',
                   'idle_smp_cores': idle, 'queued_smp_jobs': queued,
-                  'cores': plan['workers'], 'command': command, 'dry_run': dry_run}
+                  'cores': plan['workers'], 'command': command, 'dry_run': dry_run,
+                  'earliest_begin_local': begin, 'scheduler_start_guaranteed': False}
         if not dry_run:
             result['job_id'] = scheduler.output(command)
             save(root / 'submission.json', result)
@@ -338,6 +353,7 @@ def main():
         if name == 'submit':
             command.add_argument('--constraint')
             command.add_argument('--dry-run', action='store_true')
+            command.add_argument('--begin', help='earliest start ISO8601 with timezone; no reservation')
     args = parser.parse_args()
     os.umask(0o077)
     if args.command == 'prepare':
@@ -353,7 +369,8 @@ def main():
             manifest_path=args.manifest.resolve() if args.manifest else None, limit=args.limit,
             seed_prefix=args.seed_prefix, runtime_source=args.runtime_source)
     elif args.command == 'submit':
-        result = submit(args.plan.resolve(), constraint=args.constraint, dry_run=args.dry_run)
+        result = submit(args.plan.resolve(), constraint=args.constraint,
+                        dry_run=args.dry_run, begin=args.begin)
     else:
         result = run(args.plan.resolve())
     print(json.dumps(result, sort_keys=True))
