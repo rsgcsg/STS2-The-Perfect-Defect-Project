@@ -79,7 +79,15 @@ def _error_code(error: Exception) -> str:
     return "transport_failure"
 
 
-def _read_failure(operation: str, key: str, error: Exception) -> StoreError:
+class S3ReadError(StoreError):
+    """A failed S3 read with safe transport facts, outside the generic blob port."""
+
+    def __init__(self, code: str, diagnostic: dict[str, object]) -> None:
+        super().__init__(code)
+        self.diagnostic = diagnostic
+
+
+def _read_failure(operation: str, key: str, error: Exception) -> S3ReadError:
     """Keep safe SDK facts, never its message, URL, headers or request arguments."""
     from botocore.exceptions import (
         ConnectionClosedError,
@@ -98,11 +106,9 @@ def _read_failure(operation: str, key: str, error: Exception) -> StoreError:
         EndpointConnectionError, IncompleteReadError, ReadTimeoutError, ResponseStreamingError))
         or status in {408, 429, 500, 502, 503, 504}
         or code in {"SlowDown", "RequestTimeout", "InternalError", "ServiceUnavailable"})
-    failure = StoreError(operation)
-    failure.diagnostic = {"operation": operation, "prefix_or_key": key,
+    return S3ReadError(operation, {"operation": operation, "prefix_or_key": key,
         "sdk_error_type": type(error).__name__, "service_code": code,
-        "http_status": status, "retryable": transient}
-    return failure
+        "http_status": status, "retryable": transient})
 
 
 class S3BlobStore:

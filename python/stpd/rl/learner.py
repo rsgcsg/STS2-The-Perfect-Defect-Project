@@ -436,7 +436,7 @@ class Learner:
             try:
                 return call()
             except StoreError as error:
-                diagnostic = error.diagnostic
+                diagnostic = getattr(error, "diagnostic", {})
                 retry = (bool(diagnostic.get("retryable"))
                          and attempt < self.config.read_retry_attempts)
                 # Local diagnostic only; an unavailable exchange must not hide its own failure.
@@ -451,7 +451,7 @@ class Learner:
     def _local_io_event(self, operation: str, error: StoreError, attempt: int, retry: bool) -> None:
         value = {"at": time.time(), "kind": "read_failed", "operation": operation,
             "error_type": type(error).__name__, "error_code": error.code,
-            "attempt": attempt, "retry": retry, **error.diagnostic}
+            "attempt": attempt, "retry": retry, **getattr(error, "diagnostic", {})}
         # Independent append-only diagnostic file: no owner-thread log/RNG/buffer mutation.
         with (self.work / "io-errors.jsonl").open("a", encoding="utf-8") as stream:
             stream.write(json.dumps(value, sort_keys=True) + "\n")
