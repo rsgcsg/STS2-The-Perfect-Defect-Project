@@ -17,7 +17,7 @@ import time
 from contextlib import contextmanager, nullcontext
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import torch
 
@@ -60,6 +60,7 @@ def main() -> None:
     parser.add_argument("--package", type=Path, required=True)
     parser.add_argument("--input", type=Path, required=True)
     parser.add_argument("--rl-input", type=Path)
+    parser.add_argument("--source-revision", default=None)
     parser.add_argument("--plan", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--device", default="cuda")
@@ -124,8 +125,27 @@ def main() -> None:
     with torch.no_grad():
         initial_reference = [base(f).float().cpu() for f in frames[:64]]
     results: list[dict[str, Any]] = []
+    import stpd.p1.execution as execution_module
+    import stpd.p1.model as model_module
+    import stpd.p1.tensor_input as tensor_module
+    import stpd.rl.loss as loss_module
+    import stpd.rl.performance as performance_module
+
     metadata = {
         "schema": "stpd/rl-speed-diagnostic-1",
+        "source_revision": args.source_revision,
+        "benchmark_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+        "plan_sha256": hashlib.sha256(args.plan.read_bytes()).hexdigest(),
+        "module_sha256": {
+            m.__name__: hashlib.sha256(Path(cast(str, m.__file__)).read_bytes()).hexdigest()
+            for m in (
+                execution_module,
+                model_module,
+                tensor_module,
+                loss_module,
+                performance_module,
+            )
+        },
         "torch": str(torch.__version__),
         "cuda": torch.version.cuda,
         "device": str(device),

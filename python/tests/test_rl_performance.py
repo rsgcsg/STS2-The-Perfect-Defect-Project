@@ -214,3 +214,46 @@ def test_precision_has_no_cpu_fallback_and_context_restores_on_failure():
         assert model.execution.microbatch_size == 1
         raise RuntimeError("intentional")
     assert model.execution == reference.execution == initial
+
+
+def test_real_learner_update_exports_original_actor_execution_with_explicit_training_identity(
+        tmp_path, monkeypatch):
+    from dataclasses import asdict
+
+    from spireagent.artifact_contracts import Producer
+    from spireagent.workbench.rl_learner import IO
+    from stpd.p1.export import export_model, load_model
+    from stpd.rl import learner as module
+    from stpd.rl.learner import Buffered, Learner
+
+    model, _, samples, anchor = fixture()
+    original_execution = model.execution
+    checkpoint = tmp_path / "start-checkpoint"
+    checkpoint.write_bytes(b"diagnostic")
+    package = tmp_path / "package"
+    export_model(model, checkpoint, package, {"scope": "diagnostic"})
+    monkeypatch.setattr(module, "source_identity", lambda _: Producer("test", "a"*40, "b"*64))
+    performance = PerformanceConfig(packed=True, tensor_cache=True, joint_nodes=True,
+                                     microbatch_size=16, defer_sync=True)
+    config = LearnerConfig(run="performance", peer={"kind": "local",
+        "directory": str(tmp_path / "peer")}, start_package=str(package),
+        tensorboard_steps=0, batch_size=2, min_episodes_before_training=1,
+        performance=performance)
+    learner = Learner(config, tmp_path / "work", IO)
+    learner.anchor_future = None
+    learner.anchor = anchor
+    learner.buffer = [Buffered(sample) for sample in samples]
+    learner.counts["episodes_loss"] = 1
+    result = learner.train_once()
+    assert result["update"] == 1 and result["rl_samples"] == 2
+    assert all(item.uses == 1 for item in learner.buffer)
+    assert learner.model.execution == learner.reference.execution == original_execution
+    learner.maybe_version(force=True)
+    learner._collect_version(wait=True)
+    destination = learner.work / "versions" / "000001"
+    descriptor = json.loads((destination / "model.json").read_bytes())
+    assert descriptor["training_identity"]["learner_execution"] == asdict(performance)
+    exported, _ = load_model(destination / "model.tensor-tree", descriptor["package_sha256"])
+    assert exported.execution == original_execution
+    learner.exchange.request_stop("diagnostic_complete")
+    assert learner.run()["updates"] == 1

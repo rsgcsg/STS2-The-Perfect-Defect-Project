@@ -476,6 +476,8 @@ class Learner:
             "version": version, "parent_version": self.lineage_version,
             "updates": self.updates,
             "reward": REWARD_SPEC, "loss": asdict(self.config.loss),
+            **({"learner_execution": asdict(self.config.performance)}
+               if self.config.performance is not None else {}),
             "learner_config_sha256": hashlib.sha256(json_bytes(
                 {**asdict(self.config), "peer": self.config.peer})).hexdigest(),
             "anchor": getattr(self, "anchor_identity", None),
