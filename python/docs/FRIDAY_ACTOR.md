@@ -115,8 +115,8 @@ RL的未知阈值与任意账本停止沿原Actor；结束摘要发现失败会�
 ## RL2：冻结运行包上方的长任务调度
 
 RL2 授权后可用更新的 `tools/friday/rl.py prepare --runtime-source <冻结release/source>`
-准备 12–15 路、最长 79200 秒（22 小时）的作业；`--wall-seconds 75600` 给约20小时
-训练及排空留余量。`submit` 仍调用原 Slurm、单核、fc430、容量、永久 owner 与 USR1
+准备 12–15 路、最长 79200 秒（22 小时）的作业；`--wall-seconds 75600 --max-games 10000` 给约20小时
+训练及排空留余量；10k仍是有限局数上限，避免快局在20小时墙钟前撞到旧1000局上限。`submit` 仍调用原 Slurm、单核、fc430、容量、永久 owner 与 USR1
 路径。调度工具与实际 producer 分开：`source_root` 必须指向原干净冻结源码，执行配置
 producer、Host/Runtime、游戏包不变。调用更新工具的 actor prepare/submit 时
 `PYTHONPATH` 指向冻结源码的 `python`，原 `require_modules` 仍拒绝模块来源漂移。

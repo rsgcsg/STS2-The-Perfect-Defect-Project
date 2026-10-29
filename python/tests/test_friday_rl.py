@@ -232,14 +232,14 @@ def test_prepare_CLI_uses_section8_handoff_defaults_without_submitting(inputs):
     learner.write_text(json.dumps(value), encoding='utf-8')
     command = [sys.executable, str(FRIDAY / 'rl.py'), 'prepare', '--execution', str(execution),
                '--learner-config', str(learner), '--output', str(output), '--actors', '6',
-               '--seed-namespace', 'rl1-real-1']
+               '--seed-namespace', 'rl1-real-1', '--max-games', '10000']
     result = subprocess.run(command, capture_output=True, text=True, check=True, timeout=15,
         env={'PATH': os.defpath, 'PYTHONPATH': str(FRIDAY.parents[1] / 'python')})
     plan = json.loads(result.stdout)
     actor = json.loads(Path(plan['actors'][0]['path']).read_bytes())
     assert plan['run'] == 'rl1-real-1' and len(plan['actors']) == 6
     assert actor['games_per_ledger'] == 2 and actor['episode_seconds'] == 900
-    assert actor['wall_seconds'] == 3300 and actor['max_games'] == 1000
+    assert actor['wall_seconds'] == 3300 and actor['max_games'] == 10000
     assert not (output / 'submission.json').exists()
     assert not (output / 'actors').exists()
 

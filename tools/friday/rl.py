@@ -59,7 +59,7 @@ def prepare(execution: Path, learner: Path, output: Path, *, actors: int = 8,
             or type(episode_seconds) is not int or not 10 <= episode_seconds <= 1800
             or type(games_per_ledger) is not int or not 1 <= games_per_ledger <= 10
             or wall_seconds <= games_per_ledger * episode_seconds + 180
-            or type(max_games) is not int or not 1 <= max_games <= 1000):
+            or type(max_games) is not int or not 1 <= max_games <= 10000):
         raise ValueError('bounded_one_to_two_hundred_CPU_actor_budget_required')
     defaults = learning.get('actor_defaults', {})
     behavior = behavior if behavior is not None else defaults.get('behavior', {

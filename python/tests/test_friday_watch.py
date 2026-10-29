@@ -124,10 +124,13 @@ def test_20_hour_actor_prepare_pins_old_runtime_and_single_core(watch, tmp_path)
         actors=12,
         wall_seconds=75600,
         seed_namespace="rl2-train",
+        max_games=10000,
         runtime_source=runtime,
     )
     assert plan["source_root"] == str(runtime)
     assert len(plan["actors"]) == 12
+    assert all(json.loads(Path(ref["path"]).read_bytes())["max_games"] == 10000
+               for ref in plan["actors"])
     assert all(
         json.loads(Path(ref["path"]).read_bytes())["wall_seconds"] == 75600
         for ref in plan["actors"]
