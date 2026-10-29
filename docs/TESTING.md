@@ -471,14 +471,15 @@ research/training and new platform targets are not added by this CI change.
 
 ### Hosted pytest partition and complete execution proof
 
-Full and Python scopes use five isolated runner leaves, with matrix
+Full and Python scopes use six isolated runner leaves, with matrix
 `fail-fast: false` and finite per-leaf job limits: Linux55 minutes, Windows75.
 Shard1 runs repository guards, S0 consumers, nonpytest Python checks and the selected
-component-owner inventory once per OS. Shards 2-5 run only their
-complementary pytest selections. Five is the most leaves that still give shard1 a
-non-empty pytest selection under the current profile (its ~7 minute gate overhead
-exceeds a six-way share); the verifier rejects empty selections, so a higher count
-needs the gates moved off shard1 first, not a weaker proof.
+component-owner inventory once per OS. Shards 2-6 run only their
+complementary pytest selections. The verifier rejects an empty selection, so the
+leaf count is bounded by shard1: its measured gate overhead (about 5.3 minutes in
+the current profile) must stay below an even share of the total. After a profile
+refresh, confirm shard1 still selects files; if not, move gates off shard1 or use
+fewer leaves, never a weaker proof.
 
 Draft pull requests run plan and the cheap docs/repository lanes only; Linux
 product lanes and `portable` are skipped. Marking the PR Ready for review

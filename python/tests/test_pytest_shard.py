@@ -86,6 +86,7 @@ def test_values(value):
     assert value
 ''',
         "python/tests/test_e.py": "def test_e():\n    assert True\n",
+        "python/tests/test_f.py": "def test_f():\n    assert True\n",
         "python/tests/test_c.py": (
             "def test_c(subtests):\n    with subtests.test(value=1):\n        assert True\n"
         ),
@@ -147,7 +148,7 @@ def test_two():
 
 # One file per shard keeps every hosted selection non-empty.
 FIXTURE_FILES = ("deploy/hub/test_a.py", "tests/test_b.py", "tests/test_c.py",
-                 "tests/test_e.py", "tests/test_nested.py")
+                 "tests/test_e.py", "tests/test_f.py", "tests/test_nested.py")
 
 
 def shard_of(file: str) -> int:
@@ -208,7 +209,7 @@ def test_real_collection_module_lifetime_nested_child_and_aggregate(tmp_path: Pa
         assert all(item["finished"] for item in report["executed"])
     assert all(item["collection"] == manifests[0]["collection"] for item in manifests)
     selected = [nodeid for item in manifests for nodeid in item["selected_nodeids"]]
-    assert len(selected) == len(set(selected)) == len(manifests[0]["collection"]) == 6
+    assert len(selected) == len(set(selected)) == len(manifests[0]["collection"]) == 7
     local = "python/.local"
     count = tmp_path / f"clone-{shard_of('tests/test_b.py')}" / local / "fixture-count"
     assert count.read_text() == "once"
@@ -301,8 +302,8 @@ def test_integer_lpt_whole_files_unknown_cost_and_utf8_ties() -> None:
     shards = [selected_ids(collection, index, SHARD_COUNT, profile)
               for index in range(1, SHARD_COUNT + 1)]
     assert [{item.split("::")[0] for item in shard} for shard in shards] == [
-        {"tests/test_a.py"}, {"tests/test_b.py"}, {"tests/test_c.py", "tests/test_g.py"},
-        {"tests/test_d.py", "tests/test_f.py"}, {"tests/new.py", "tests/test_e.py"}]
+        {"tests/test_a.py"}, {"tests/test_b.py"}, {"tests/test_c.py"}, {"tests/test_d.py"},
+        {"tests/test_e.py", "tests/test_g.py"}, {"tests/new.py", "tests/test_f.py"}]
     assert sorted(sum(shards, [])) == sorted(item["nodeid"] for item in collection)
     assert selected_ids(list(reversed(collection)), 1, SHARD_COUNT, profile) == shards[0]
     profile["file_cost_ms"] = {"tests/é.py": 50, "tests/z.py": 50}
@@ -313,14 +314,14 @@ def test_integer_lpt_whole_files_unknown_cost_and_utf8_ties() -> None:
     profile["first_shard_overhead_ms"] = 100000
     profile["file_cost_ms"] = {"tests/a.py": 200000, "tests/b.py": 180000,
                                "tests/c.py": 150000, "tests/d.py": 120000,
-                               "tests/e.py": 50000}
+                               "tests/e.py": 110000, "tests/f.py": 50000}
     weighted = [{"file": file, "nodeid": file + "::test_case"}
                 for file in profile["file_cost_ms"]]
     # Shard1 starts at its measured non-pytest overhead, so it takes the smallest file here.
     assert [selected_ids(weighted, index, SHARD_COUNT, profile)
             for index in range(1, SHARD_COUNT + 1)] == [
-        ["tests/e.py::test_case"], ["tests/a.py::test_case"], ["tests/b.py::test_case"],
-        ["tests/c.py::test_case"], ["tests/d.py::test_case"]]
+        ["tests/f.py::test_case"], ["tests/a.py::test_case"], ["tests/b.py::test_case"],
+        ["tests/c.py::test_case"], ["tests/d.py::test_case"], ["tests/e.py::test_case"]]
 
 
 @pytest.mark.parametrize("mutation", [

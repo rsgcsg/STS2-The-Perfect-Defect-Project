@@ -27,7 +27,7 @@ def normalized_nodeid(nodeid: str) -> str:
 PROFILE_PATH = Path(__file__).with_name("pytest-file-costs.json")
 ALGORITHM = "lpt-whole-file-gates-1"
 # Hosted Linux/Windows run this many isolated shards; shard1 also owns non-pytest gates.
-SHARD_COUNT = 5
+SHARD_COUNT = 6
 MAX_SAFE_INTEGER = 2**53 - 1
 
 

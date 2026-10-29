@@ -141,8 +141,8 @@ test("integer LPT keeps whole files, unknown files and UTF-8 ties deterministic"
   const shards = PYTEST_SHARD_INDEXES.map(index => selectedNodeids(collection, index, profile));
   const files = ids => [...new Set(ids.map(id => id.split("::")[0]))];
   assert.deepEqual(shards.map(files),
-    [["tests/test_a.py"], ["tests/test_b.py"], ["tests/test_c.py", "tests/test_g.py"],
-      ["tests/test_d.py", "tests/test_f.py"], ["tests/new.py", "tests/test_e.py"]]);
+    [["tests/test_a.py"], ["tests/test_b.py"], ["tests/test_c.py"], ["tests/test_d.py"],
+      ["tests/test_e.py", "tests/test_g.py"], ["tests/new.py", "tests/test_f.py"]]);
   assert.deepEqual(shards.flat().sort(), collection.map(item => item.nodeid).sort());
   assert.deepEqual(selectedNodeids([...collection].reverse(), 1, profile), shards[0]);
   profile.file_cost_ms = {"tests/é.py": 50, "tests/z.py": 50};
@@ -150,12 +150,12 @@ test("integer LPT keeps whole files, unknown files and UTF-8 ties deterministic"
     ["tests/z.py::test_case"]);
   profile.first_shard_overhead_ms = 100000;
   profile.file_cost_ms = {"tests/a.py": 200000, "tests/b.py": 180000, "tests/c.py": 150000,
-    "tests/d.py": 120000, "tests/e.py": 50000};
+    "tests/d.py": 120000, "tests/e.py": 110000, "tests/f.py": 50000};
   const weighted = Object.keys(profile.file_cost_ms).map(file => ({file, nodeid: `${file}::test_case`}));
   // Shard1 starts at its measured non-pytest overhead, so it takes the smallest file here.
   assert.deepEqual(PYTEST_SHARD_INDEXES.map(index => selectedNodeids(weighted, index, profile)),
-    [["tests/e.py::test_case"], ["tests/a.py::test_case"], ["tests/b.py::test_case"],
-      ["tests/c.py::test_case"], ["tests/d.py::test_case"]]);
+    [["tests/f.py::test_case"], ["tests/a.py::test_case"], ["tests/b.py::test_case"],
+      ["tests/c.py::test_case"], ["tests/d.py::test_case"], ["tests/e.py::test_case"]]);
   assert.throws(() => selectedNodeids(weighted, PYTEST_SHARD_COUNT + 1, profile), /selection_index/);
   assert.throws(() => pytestPartition("2/2"), /invalid_pytest_shard/);
   assert.throws(() => pytestPartition(`${PYTEST_SHARD_COUNT + 1}/${PYTEST_SHARD_COUNT}`), /invalid_pytest_shard/);
