@@ -14,7 +14,8 @@
   [Friday部署指南](FRIDAY_ACTOR.md)和
   [长跑运行规则](RL_LONG_RUN.zh-CN.md)的正常私有环境加载；准备过程不读凭据，
   不给凭据新增配置项。GPU learner用明确的独立CUDA解释器，`device=cuda`失败就失败，
-  不降到CPU。
+  不降到CPU。GPU learner的OMP/MKL/OPENBLAS线程数显式取learner.threads（默认4），
+  actor/watch保持原单线程，避免前缀把学习者CPU条件暗降到1。
 - 模型、完整CP、交换、actor和评估仍归原 `Exchange`、`rl.prepare/submit`、
   learner CLI、watch CLI。评估两档与报告规则见[观测指南](RL_OBSERVATION.zh-CN.md)。
 
@@ -124,9 +125,11 @@ learner原STOP/signal保存负责最终CP，看守负责原健康规则和排空
 
 ## 失败与恢复
 
-- scheduler结果未知：保留该步intent和`*-outcome-unknown.json`，不补投、不声称失败、
-  不猜job ID。按原job name/提交时间/plan核调度器原请求；同目录再次start会拒绝。
-- 已知失败（含120秒未见v0）：只写本新run的learner/actor STOP和正常Exchange永久STOP；
+- scheduler结果未知：保留该步intent和`*-outcome-unknown.json`，不补投、不把未知job
+  重标失败、不猜job ID。仍对本次已认领的新run标STOP，防止可能启动的learner失去看守。
+  按原job name/提交时间/plan核调度器原请求；同目录再次start会拒绝。
+- 认领后的任何启动异常（含120秒未见v0）：只写本新run的learner/actor STOP和正常
+  Exchange永久STOP（reason=`recipe_start_failed_new_run`）；
   不取消其他job，不删原件。remote STOP失败也保留本地STOP和未知回执。已有旧run在认领前
   就被拒绝，不进入这条清理，尤其不修改RL2。
 - 由owner核原Slurm/Exchange/保存回执并按原长跑SOP收口；没有自动重启、恢复游戏或热调。

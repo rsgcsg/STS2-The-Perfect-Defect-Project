@@ -93,7 +93,11 @@ def test_prepare_freezes_original_actor_plan_and_shared_environment_prefix_witho
     for name in ('start.sh', 'learner.sh', 'watch.sh'):
         subprocess.run(['/bin/bash', '-n', str(root / name)], check=True)
         assert 'source "$credentials"' in (root / name).read_text()
-    assert inputs[1]['cuda_environment'] + '/bin/python' in (root / 'learner.sh').read_text()
+    learner_script = (root / 'learner.sh').read_text()
+    assert inputs[1]['cuda_environment'] + '/bin/python' in learner_script
+    assert 'export OMP_NUM_THREADS=4 MKL_NUM_THREADS=4 OPENBLAS_NUM_THREADS=4' in learner_script
+    assert 'OMP_NUM_THREADS=1' in (root / 'watch.sh').read_text()
+    assert 'OMP_NUM_THREADS=4' not in (root / 'watch.sh').read_text()
     with pytest.raises(ValueError, match='explicit_approved_recipe'):
         recipe.start(root / 'plan.json')
 
@@ -189,7 +193,9 @@ def test_unknown_GPU_submission_preserves_intent_and_does_not_reoffer_or_claim_f
         recipe.start(root / 'plan.json')
     assert (root / 'learner-submit-intent.json').is_file()
     assert (root / 'learner-submit-outcome-unknown.json').is_file()
-    assert not (root / 'learner-submit-receipt.json').exists() and not exchange.stops
+    assert not (root / 'learner-submit-receipt.json').exists()
+    assert exchange.stops == ['recipe_start_failed_new_run']
+    assert (root / 'learner/STOP').is_file() and (root / 'actors/STOP').is_file()
     assert submitted == ['learner'] and len(calls) == 2
     with pytest.raises(ValueError, match='original_owner_reconciliation'):
         recipe.start(root / 'plan.json')
@@ -201,7 +207,7 @@ def test_existing_GPU_job_blocks_submission_without_touching_that_job(recipe, in
     with pytest.raises(ValueError, match='another_Friday_GPU_job'):
         recipe.start(root / 'plan.json')
     assert not submitted and len(calls) == 1 and calls[0][0] == 'squeue'
-    assert exchange.stops == ['recipe_start_known_failure']
+    assert exchange.stops == ['recipe_start_failed_new_run']
     assert (root / 'actors/STOP').exists() and (root / 'learner/STOP').exists()
 
 
@@ -215,7 +221,7 @@ def test_version_zero_wait_is_bounded_to120_seconds_and_does_not_submit_actors(
     with pytest.raises(ValueError, match='not_observed_within120seconds'):
         recipe.start(root / 'plan.json')
     assert now[0] == 120 and submitted == ['learner']
-    assert exchange.stops == ['recipe_start_known_failure']
+    assert exchange.stops == ['recipe_start_failed_new_run']
 
 
 def test_existing_run_is_never_stopped_by_new_recipe_failure(recipe, inputs, monkeypatch):

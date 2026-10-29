@@ -112,7 +112,10 @@ def prepare(configuration: Path, output: Path) -> dict[str, Any]:
     cpu = str(source.parent / 'env/bin/python')
     script(output / 'start.sh', prefix, [cpu, str(source / 'tools/friday/recipe.py'),
                                       'start', '--plan', str(output / 'plan.json')])
-    script(output / 'learner.sh', prefix, [str(Path(config['cuda_environment']) / 'bin/python'),
+    threads = shlex.quote(str(learning.get('threads', 4)))
+    learner_prefix = prefix + (f'export OMP_NUM_THREADS={threads} MKL_NUM_THREADS={threads} '
+                               f'OPENBLAS_NUM_THREADS={threads}\n')
+    script(output / 'learner.sh', learner_prefix, [str(Path(config['cuda_environment']) / 'bin/python'),
         '-m', 'spireagent.workbench.rl_learner', '--config', str(output / 'learner.json'),
         '--work', str(output / 'learner')])
     script(output / 'watch.sh', prefix, [cpu, str(source / 'tools/friday/watch.py'),
@@ -210,11 +213,11 @@ def start(path: Path) -> dict[str, Any]:
                   'started_at': model['published_at'], 'plan_sha256': hashed(path)}
         save(root / 'start-receipt.json', result)
         return result
-    except ValueError:
-        save(root / 'learner/STOP', {'reason': 'recipe_start_known_failure'})
-        save(Path(plan['actors']['path']).parent / 'STOP', {'reason': 'recipe_start_known_failure'})
+    except Exception:
+        save(root / 'learner/STOP', {'reason': 'recipe_start_failed_new_run'})
+        save(Path(plan['actors']['path']).parent / 'STOP', {'reason': 'recipe_start_failed_new_run'})
         try:
-            exchange.request_stop('recipe_start_known_failure')
+            exchange.request_stop('recipe_start_failed_new_run')
         except Exception as error:  # noqa: BLE001 -- local STOP survives a remote control outage
             save(root / 'stop-outcome-unknown.json', {'error_type': type(error).__name__})
         raise
