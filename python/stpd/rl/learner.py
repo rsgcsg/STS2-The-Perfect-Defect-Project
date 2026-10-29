@@ -441,7 +441,7 @@ class Learner:
                                          for item in batch) / len(batch),
                       max_staleness=max(self.version - item.sample.model_version for item in batch),
                       sample_versions=dict(collections.Counter(
-                          item.sample.model_version for item in batch)))
+                          str(item.sample.model_version) for item in batch)))
         return result
 
     def _package(self, version: int) -> tuple[Path, bytes]:
