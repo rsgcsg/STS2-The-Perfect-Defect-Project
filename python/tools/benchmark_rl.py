@@ -266,16 +266,16 @@ def main() -> None:
 
                     with prepare_models(model, reference, config) if config else nullcontext():
                         sample_frames = [prepared_frames[i] for i in indices]
-                    entity_counts = [f.entity_count if hasattr(f, "entity_count")
-                                     else len(f.entities) for f in sample_frames]
+                        entity_counts = [
+                            f.entity_count if hasattr(f, "entity_count") else len(f.entities)
+                            for f in sample_frames
+                        ]
                         ordering = list(range(len(samples)))
                         if config and config.bucket:
                             ordering.sort(key=lambda i: entity_counts[i])
                         groups = list(microbatches(sample_frames, ordering, model))
-                    actual = sum(count ** 2 for count in entity_counts)
-                    padded = sum(
-                        len(g) * max(entity_counts[i] for i in g) ** 2 for g in groups
-                    )
+                    actual = sum(count**2 for count in entity_counts)
+                    padded = sum(len(g) * max(entity_counts[i] for i in g) ** 2 for g in groups)
                     result["scene_padding_fraction"] = 1 - actual / padded
                     result["rl_microbatches"] = len(groups)
                     result["batch_membership_sha256"] = hashlib.sha256(
