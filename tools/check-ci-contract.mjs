@@ -27,6 +27,9 @@ export function ciWorkflowErrors(rawSource) {
   const source = normalizeNewlines(rawSource);
   const errors = [];
   requireMatch(errors, "CI must trigger for pull requests", source, /^  pull_request:\s*$/mu);
+  // Drafts skip full lanes, so Ready must start a fresh full run.
+  requireMatch(errors, "CI must re-run when a draft becomes ready for review", source,
+    /^  pull_request:\s*\n(?:    #.*\n)*    types: \[opened, synchronize, reopened, ready_for_review\]\s*$/mu);
   requireMatch(errors, "CI must trigger for merge queue checks", source,
     /^  merge_group:\s*\n    types: \[checks_requested\]/mu);
   requireMatch(errors, "CI push trigger must be branch-scoped", source,
@@ -75,7 +78,7 @@ export function ciWorkflowErrors(rawSource) {
 
   if (linux) {
     requireMatch(errors, "Linux portability must use ubuntu-latest", linux, /runs-on:\s*ubuntu-latest/u);
-    requireMatch(errors, "Linux portability must run the selected root check", linux, /run:\s*node tools\/check-plan\.mjs execute --pytest-shard \$\{\{ matrix\.shard \}\}\/3\s*$/mu);
+    requireMatch(errors, "Linux portability must run the selected root check", linux, /run:\s*node tools\/check-plan\.mjs execute --pytest-shard \$\{\{ matrix\.shard \}\}\/5\s*$/mu);
     requireMatch(errors, "Linux portability must run git diff --check", linux, /run:\s*git diff --check\s*$/mu);
     if (!linux.includes('mkdir -p "$RUNNER_TEMP/spireagent-portable"') ||
         !["TMPDIR", "TMP", "TEMP"].every(name => linux.includes(
@@ -85,6 +88,8 @@ export function ciWorkflowErrors(rawSource) {
     requireMatch(errors, "Linux checkout must not persist credentials", linux, /persist-credentials:\s*false/u);
     requireMatch(errors, "Dependency review must remain on pull requests", linux,
       /if:\s*github\.event_name == 'pull_request'/u);
+    requireMatch(errors, "Linux portability must skip only draft pull requests", linux,
+      /^    if: github\.event_name != 'schedule' && !github\.event\.pull_request\.draft && \(needs\.plan\.outputs\.scope == 'full' \|\| needs\.plan\.outputs\.scope == 'python'\)\s*$/mu);
   }
   for (const [label, lane, minutes] of [["Linux", linux, 55], ["Windows", windows, 75]]) {
     if (!lane) continue;
@@ -92,8 +97,8 @@ export function ciWorkflowErrors(rawSource) {
       /run:\s*uv sync --project python --locked --all-extras\s*$/mu);
     requireMatch(errors, `${label} must install Python consumer packages`, lane,
       /run:\s*npm ci --prefix python\s*$/mu);
-    requireMatch(errors, `${label} must retain three isolated pytest shards`, lane,
-      /strategy:\s*\n      fail-fast: false\s*\n      matrix:\s*\n        shard: \[1, 2, 3\]/u);
+    requireMatch(errors, `${label} must retain five isolated pytest shards`, lane,
+      /strategy:\s*\n      fail-fast: false\s*\n      matrix:\s*\n        shard: \[1, 2, 3, 4, 5\]/u);
     requireMatch(errors, `${label} must retain its ${minutes}-minute budget`, lane,
       new RegExp(`^    timeout-minutes: ${minutes}[ \\t]*$`, "mu"));
     if (!lane.includes("name: pytest-${{ runner.os }}-shard-${{ matrix.shard }}-${{ github.run_attempt }}") ||
@@ -110,7 +115,7 @@ export function ciWorkflowErrors(rawSource) {
     errors.push("Windows must retain its failure checklist");
   if (windows) {
     requireMatch(errors, "Windows portability must use windows-latest", windows, /runs-on:\s*windows-latest/u);
-    requireMatch(errors, "Windows portability must run the selected root check", windows, /run:\s*node tools\/check-plan\.mjs execute --pytest-shard \$\{\{ matrix\.shard \}\}\/3\s*$/mu);
+    requireMatch(errors, "Windows portability must run the selected root check", windows, /run:\s*node tools\/check-plan\.mjs execute --pytest-shard \$\{\{ matrix\.shard \}\}\/5\s*$/mu);
     requireMatch(errors, "Windows portability must run git diff --check", windows, /run:\s*git diff --check\s*$/mu);
     requireMatch(errors, "Windows checkout must fetch full history", windows, /fetch-depth:\s*0/u);
     requireMatch(errors, "Windows checkout must not persist credentials", windows, /persist-credentials:\s*false/u);
@@ -122,7 +127,7 @@ export function ciWorkflowErrors(rawSource) {
     requireMatch(errors, "portable must aggregate plan and selected lanes", portable,
       /needs:\s*\[plan, docs, repository, linux-portability\]/u);
     requireMatch(errors, "portable must evaluate failed/cancelled dependencies", portable,
-      /if:\s*\$\{\{\s*always\(\) && github\.event_name != 'schedule'\s*\}\}/u);
+      /if:\s*\$\{\{\s*always\(\) && github\.event_name != 'schedule' && !github\.event\.pull_request\.draft\s*\}\}/u);
     requireMatch(errors, "portable must use the tested scope aggregate", portable,
       /run:\s*node tools\/check-plan\.mjs aggregate\s*$/mu);
     for (const name of ["CHECK_SCOPE", "CHECK_PROOF", "PLAN_RESULT", "DOCS_RESULT", "REPOSITORY_RESULT", "LINUX_RESULT"]) {

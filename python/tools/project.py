@@ -63,7 +63,7 @@ def validate_repository(root: Path) -> None:
 
 
 # Must equal tools/pytest_shard.SHARD_COUNT; the plugin rejects any other count.
-PYTEST_SHARD_COUNT = 3
+PYTEST_SHARD_COUNT = 5
 
 
 def parse_pytest_shard(value: str) -> tuple[int, int]:

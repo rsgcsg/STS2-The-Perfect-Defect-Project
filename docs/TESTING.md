@@ -471,11 +471,21 @@ research/training and new platform targets are not added by this CI change.
 
 ### Hosted pytest partition and complete execution proof
 
-Full and Python scopes use three isolated runner leaves, with matrix
+Full and Python scopes use five isolated runner leaves, with matrix
 `fail-fast: false` and finite per-leaf job limits: Linux55 minutes, Windows75.
 Shard1 runs repository guards, S0 consumers, nonpytest Python checks and the selected
-component-owner inventory once per OS. Shards 2 and 3 run only their
-complementary pytest selections. Each isolated runner builds its own SDK/Runtime output for real Python
+component-owner inventory once per OS. Shards 2-5 run only their
+complementary pytest selections. Five is the most leaves that still give shard1 a
+non-empty pytest selection under the current profile (its ~7 minute gate overhead
+exceeds a six-way share); the verifier rejects empty selections, so a higher count
+needs the gates moved off shard1 first, not a weaker proof.
+
+Draft pull requests run plan and the cheap docs/repository lanes only; Linux
+product lanes and `portable` are skipped. Marking the PR Ready for review
+(`ready_for_review`) starts a fresh full run on the same head, and merge-queue,
+push and scheduled runs never look at draft state. A draft shows `portable` as
+skipped, never as an executed pass; GitHub cannot merge a draft, and Ready PRs still
+always execute before merge. Each isolated runner builds its own SDK/Runtime output for real Python
 consumers; generated output is not shared between runners. Local `npm run check`
 and Python `check` defaults remain complete and unpartitioned.
 

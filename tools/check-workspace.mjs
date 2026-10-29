@@ -20,7 +20,7 @@ const owners = [
 ];
 
 // Must equal python/tools/pytest_shard.py SHARD_COUNT and the CI shard matrices.
-export const PYTEST_SHARD_COUNT = 3;
+export const PYTEST_SHARD_COUNT = 5;
 export const PYTEST_SHARD_INDEXES = Object.freeze(Array.from({length: PYTEST_SHARD_COUNT}, (_, index) => index + 1));
 
 export function pytestPartition(value) {
