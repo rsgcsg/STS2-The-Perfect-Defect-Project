@@ -221,3 +221,38 @@ def test_retry_copy_does_not_redownload_existing_verified_payloads(tmp_path: Pat
     previous = source.reads
     copy_artifact(source, target, manifest.artifact_id)
     assert source.reads == previous
+
+
+
+def test_model_prefetch_retries_sdk_stream_failure_and_closes_response(tmp_path, monkeypatch):
+    from botocore.exceptions import ReadTimeoutError
+
+    from spireagent.rl_exchange import Exchange
+    from spireagent.workbench.rl_actor import ModelPrefetch
+
+    class Interrupted(io.BytesIO):
+        def read(self, *_args):
+            raise ReadTimeoutError(endpoint_url="https://private.invalid/secret")
+
+    interrupted = Interrupted(b"record")
+    client = FakeS3()
+    client.get_object = lambda **_kwargs: {"Body": interrupted, "ContentLength": 6}
+    exchange = Exchange({"kind": "local", "directory": str(tmp_path / "peer")}, "stream")
+    remote = S3BlobStore(S3Config("bucket"), client)
+    monkeypatch.setattr(exchange.blobs, "get", remote.get)
+    monkeypatch.setattr(exchange, "model_versions", lambda: [0])
+    prefetch = ModelPrefetch(exchange, tmp_path / "cache", 0.01)
+    prefetch._refresh_once()
+    assert interrupted.closed
+    assert prefetch.error is None  # initial read failure waits, never opens a game
+    assert prefetch.newest() is None
+    assert prefetch.events[0]["error_code"] == "s3_stream_read_failed"
+    assert prefetch.events[0]["retry"] is True
+    assert "secret" not in str(prefetch.events)
+
+
+def test_s3_stream_length_mismatch_remains_integrity_failure():
+    client = FakeS3()
+    client.get_object = lambda **_kwargs: {"Body": io.BytesIO(b"short"), "ContentLength": 10}
+    with pytest.raises(StoreError, match="s3_body_length_mismatch"):
+        S3BlobStore(S3Config("bucket"), client).get("objects/a")

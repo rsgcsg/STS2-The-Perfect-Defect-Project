@@ -136,6 +136,65 @@ def test_exchange_records_are_sealed_append_only_and_hash_checked(tmp_path):
         Exchange(peer, "../escape")
 
 
+
+def test_model_prefetch_recovers_two_read_failures_without_replaying_game(tmp_path, monkeypatch,
+                                                                        capsys):
+    from spireagent.storage.blobs import StoreError
+    from spireagent.workbench.rl_actor import ModelPrefetch
+
+    exchange = Exchange({"kind": "local", "directory": str(tmp_path / "peer")}, "fetch")
+    model, sha = _model_artifact(exchange.store)
+    exchange.publish_model({"run": "fetch", "version": 0, "parent_version": None,
+                            "model_artifact_id": model.artifact_id, "model_sha256": sha})
+    prefetch = ModelPrefetch(exchange, tmp_path / "cache", 0.01)
+    prefetch.refresh()
+    original = exchange.blobs.keys
+    attempts = 0
+
+    def interrupted(prefix):
+        nonlocal attempts
+        attempts += 1
+        if attempts <= 2:
+            raise StoreError("s3_list_failed", "private SDK details must not appear")
+        return original(prefix)
+
+    monkeypatch.setattr(exchange.blobs, "keys", interrupted)
+    for _ in range(2):
+        prefetch._refresh_once()
+        assert prefetch.newest()[0]["version"] == 0
+    prefetch._refresh_once()
+    assert prefetch.error is None and prefetch.failures == 0
+    assert [event["kind"] for event in prefetch.events] == [
+        "read_failed", "read_failed", "read_recovered"]
+    assert "private SDK details" not in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("code,attempts", [("s3_get_failed", 3),
+                                          ("model_package_hash_mismatch", 1)])
+def test_model_prefetch_stops_after_transport_budget_or_immediately_on_integrity(
+        tmp_path, monkeypatch, code, attempts):
+    from spireagent.storage.blobs import StoreError
+    from spireagent.workbench.rl_actor import ModelPrefetch
+
+    exchange = Exchange({"kind": "local", "directory": str(tmp_path / "peer")}, "broken")
+    model, sha = _model_artifact(exchange.store)
+    exchange.publish_model({"run": "broken", "version": 0, "parent_version": None,
+                            "model_artifact_id": model.artifact_id, "model_sha256": sha})
+    prefetch = ModelPrefetch(exchange, tmp_path / "cache", 0.01)
+
+    def interrupted(*_args):
+        raise StoreError(code)
+
+    monkeypatch.setattr(exchange, "materialize_model", interrupted)
+    for _ in range(attempts):
+        prefetch._refresh_once()
+    with pytest.raises(BoundaryError, match=code):
+        prefetch.newest()
+    assert prefetch.error["operation"] == "materialize_model"
+    assert prefetch.error["consecutive_failures"] == attempts
+    assert prefetch.events[-1]["retry"] is False
+
+
 def test_rl_update_moves_toward_positive_advantage_and_respects_anchor():
     first = project(observation())
     torch.manual_seed(3)
