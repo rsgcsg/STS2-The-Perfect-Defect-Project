@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import collections
 import fcntl
 import hashlib
 import json
@@ -16,11 +17,11 @@ from pathlib import Path
 from typing import Any
 
 import evaluate
-import submit as scheduler
 from batch import hashed, private_root, save
 from spireagent.json_boundary import json_bytes
 from spireagent.rl_exchange import Exchange
 
+scheduler = evaluate.scheduler
 SCHEMA = 'spireagent/friday-rl-watch-config-1'
 
 
@@ -42,24 +43,52 @@ def read_config(path: Path) -> dict[str, Any]:
     submission = json.loads((Path(value['actor_plan']).parent / 'submission.json').read_bytes())
     if str(submission['job_id']).split(';')[0] != str(value['actor_job_id']):
         raise ValueError('watch_actor_job_binding_mismatch')
+    if value.get('evaluation_tiers') is not None:
+        tiers(value)
+        if value['evaluation_mode'] != 'submit':
+            raise ValueError('RL3_parallel_evaluation_requires_submit_mode')
+        from spireagent.workbench.reference_suite import load_manifest
+        from stpd.evaluation.suites import RL3_LEARNING_CURVE_SUITE_ID
+
+        manifest = Path(value['evaluation_manifest'])
+        _, frozen = load_manifest(manifest, hashed(manifest))
+        if frozen['suite_id'] != RL3_LEARNING_CURVE_SUITE_ID or len(frozen['seeds']) != 100:
+            raise ValueError('RL3_registered100_evaluation_manifest_required')
     return value
 
 
+def tiers(config: dict[str, Any]) -> list[dict[str, Any]]:
+    values = config.get('evaluation_tiers', [])
+    expected = {'quick': (14400, 20), 'milestone': (28800, 100)}
+    if (not isinstance(values, list) or len(values) != 2
+            or {v.get('name') for v in values if isinstance(v, dict)} != set(expected)):
+        raise ValueError('explicit_quick20_milestone100_tiers_required')
+    for value in values:
+        if ((value.get('seconds'), value.get('seed_prefix')) != expected[value['name']]
+                or type(value.get('seconds')) is not int
+                or type(value.get('seed_prefix')) is not int
+                or type(value.get('wall_seconds', 7200)) is not int
+                or not 1200 <= value.get('wall_seconds', 7200) <= 21600):
+            raise ValueError('bounded_RL3_evaluation_tier_required')
+    return values
+
+
 def evaluate_result(path: Path, version: int, updates: int, *,
-                    confirmation: bool = False) -> dict[str, Any]:
+                    confirmation: bool = False, kind: str | None = None,
+                    expected_planned: int | None = None) -> dict[str, Any]:
     result = json.loads(path.read_bytes())
     report = result['ledger_report']
     groups = report['groups']
     floors = [row['max_observed_floor'] for row in report['slots']
               if row['status'] == 'finished' and row.get('max_observed_floor') is not None]
-    planned = 40 if confirmation else 20
+    planned = expected_planned or (40 if confirmation else 20)
     complete = (report['score_admitted'] is True and report['planned'] == planned
                 and report['not_started'] == report['reserved'] == report['save_pending'] == 0
                 and report['save_failed'] == report['saved_unscored'] == 0
                 and report['trajectory_pending'] == report['censored'] == 0
                 and report['win'] + report['loss'] + report['unknown'] == planned)
     return {'version': version, 'updates': updates, 'wins': report['win'],
-            'evaluation_kind': 'confirmation' if confirmation else 'fixed20',
+            'evaluation_kind': kind or ('confirmation' if confirmation else 'fixed20'),
             'losses': report['loss'], 'unknown': report['unknown'],
             'mean_max_floor': sum(floors) / len(floors) if floors else None,
             'evaluated_at': time.time(), 'complete': complete,
@@ -97,13 +126,15 @@ TERMINAL = {'COMPLETED', 'FAILED', 'CANCELLED', 'TIMEOUT', 'NODE_FAIL',
 
 def job_accounting(job_id: str) -> dict[str, Any]:
     raw = subprocess.check_output(['sacct', '-n', '-P', '-j', job_id,
-                                   '--format=JobIDRaw,State,ExitCode'], text=True)
+                                   '--format=JobIDRaw,State,ExitCode,Submit,Eligible,Start,End,ElapsedRaw'], text=True)
     rows = []
     for line in raw.splitlines():
         fields = line.split('|')
         if len(fields) >= 3 and '.' not in fields[0]:
             rows.append({'job_id': fields[0], 'state': fields[1].split()[0].rstrip('+'),
-                         'exit_code': fields[2]})
+                         'exit_code': fields[2], **({'timing': dict(zip(
+                             ('submit', 'eligible', 'start', 'end', 'elapsed_seconds'), fields[3:8], strict=True))}
+                             if len(fields) >= 8 else {})})
     return {'job_id': job_id, 'rows': rows,
             'terminal': bool(rows) and all(row['state'] in TERMINAL for row in rows),
             'all_completed': bool(rows) and all(row['state'] == 'COMPLETED' for row in rows)}
@@ -137,28 +168,41 @@ class Watcher:
     def telemetry(self, kind: str, **fields: Any):
         try:
             return self.publish(kind, **fields)
-        except Exception as error:
+        except Exception as error:  # noqa: BLE001 -- preserve owner intent on external failure
             print(json.dumps({'kind': 'watcher_telemetry_failed', 'event': kind,
                               'error_type': type(error).__name__}), file=sys.stderr, flush=True)
             return None
 
+    def signal_once(self, job_id: str) -> dict[str, Any]:
+        """Durable at-most-once signal intent; uncertain scheduler effects need reconciliation."""
+        signals = self.state.setdefault('stop_signals', {})
+        if job_id in signals:
+            return signals[job_id]
+        signals[job_id] = {'state': 'intent', 'at': time.time()}
+        self.persist()
+        try:
+            result = subprocess.run(['scancel', '--signal=USR1', '--batch', job_id],
+                                    check=False, capture_output=True)
+        except Exception as error:  # noqa: BLE001 -- preserve owner intent on external failure
+            signals[job_id].update(state='outcome_unknown', error_type=type(error).__name__)
+        else:
+            signals[job_id].update(state='response_received', exit_code=result.returncode)
+        self.persist()
+        return signals[job_id]
+
     def stop(self, reason: str):
-        # Persist intent first. Re-sending USR1 and an identical control request is safe;
-        # no game or allocation is retried after an uncertain scheduler response.
         if self.state['stop'] is None:
             self.state['stop'] = reason
             self.persist()
         save(Path(self.config['actor_plan']).parent / 'STOP',
              {'reason': self.state['stop'], 'run': self.config['run']})
-        actor_signal = subprocess.run(
-            ['scancel', '--signal=USR1', '--batch', str(self.config['actor_job_id'])],
-            check=False, capture_output=True)
+        actor_signal = self.signal_once(str(self.config['actor_job_id']))
         if 'drain_started_at' not in self.state:
             self.state['drain_started_at'] = time.time()
             self.persist()
         try:
             self.exchange.request_stop(self.state['stop'])
-        except Exception as error:
+        except Exception as error:  # noqa: BLE001 -- preserve owner intent on external failure
             self.state['learner_stop_pending'] = True
             self.state['learner_stop_error_type'] = type(error).__name__
         else:
@@ -168,35 +212,42 @@ class Watcher:
             pending = self.state['pending']
             save(Path(pending['plan']).parent / 'STOP', {'reason': self.state['stop']})
             if pending.get('job_id'):
-                subprocess.run(['scancel', '--signal=USR1', '--batch', pending['job_id']],
-                               check=False, capture_output=True)
+                self.signal_once(str(pending['job_id']))
         self.telemetry('stop_requested', reason=self.state['stop'],
-                     actor_signal_exit_code=actor_signal.returncode,
+                     actor_signal_exit_code=actor_signal.get('exit_code'),
                      learner_stop_pending=self.state['learner_stop_pending'])
 
     def prepare_evaluation(self, model: dict[str, Any], now: float, *,
-                           confirmation: bool = False):
-        kind = 'confirmation' if confirmation else 'fixed20'
+                           confirmation: bool = False, tier: dict[str, Any] | None = None,
+                           due_at: float | None = None):
+        kind = tier['name'] if tier else ('confirmation' if confirmation else 'fixed20')
         root = self.work / 'evaluations' / f"{kind}-v{model['version']:06d}-{time.time_ns()}"
         root.mkdir(parents=True, mode=0o700)
         package = self.exchange.materialize_model(model, self.work / 'models')
         execution = json.loads(Path(self.config['evaluation_execution']).read_bytes())
+        if tier is not None:
+            execution['pipeline'] = {'pending_limit': 8, 'save_workers': 2}
         execution['models'] = {'latest': {'artifact_id': model['model_artifact_id'],
                                            'package_directory': str(package)}}
         execution_path = root / 'input-execution.json'
         save(execution_path, execution)
         plan_path = root / 'plan' / 'plan.json'
         evaluate.prepare(execution_path, plan_path.parent, selections={'latest': 'latest'},
-            workers=1 if self.config['evaluation_mode'] == 'direct' else self.config.get('evaluation_workers', 4),
-            wall_seconds=10800 if confirmation else 7200,
+            workers=4 if tier else (1 if self.config['evaluation_mode'] == 'direct'
+                else self.config.get('evaluation_workers', 4)),
+            wall_seconds=tier.get('wall_seconds', 7200) if tier else (10800 if confirmation else 7200),
             manifest_path=Path(self.config['evaluation_manifest']),
-            seed_prefix=40 if confirmation else 20,
+            seed_prefix=tier['seed_prefix'] if tier else (40 if confirmation else 20),
             runtime_source=Path(self.config['runtime_source']))
         pending = {'plan': str(plan_path), 'version': model['version'],
                    'updates': model.get('training', {}).get('updates', 0),
-                   'state': 'submission_intent', 'job_id': None, 'evaluation_kind': kind}
+                   'state': 'submission_intent', 'job_id': None, 'evaluation_kind': kind,
+                   'model_artifact_id': model['model_artifact_id'],
+                   'planned': tier['seed_prefix'] if tier else (40 if confirmation else 20),
+                   'due_at': due_at, 'prepared_at': time.time(),
+                   'plan_sha256': hashed(plan_path)}
         self.state['pending'] = pending
-        if not confirmation:
+        if not confirmation and tier is None:
             self.state['last_evaluation_at'] = now
         self.persist()
         if self.config['evaluation_mode'] == 'submit':
@@ -207,7 +258,7 @@ class Watcher:
                 if str(error) != 'requested_evaluation_workers_exceed_current_fair_share':
                     raise
                 self.state['pending'] = None
-                if not confirmation:
+                if not confirmation and tier is None:
                     self.state['last_evaluation_at'] = (now - self.config.get('evaluation_seconds', 18000)
                                                         + self.config.get('poll_seconds', 900))
                 self.persist()
@@ -232,8 +283,27 @@ class Watcher:
         result_path = Path(pending['plan']).parent / 'result.json'
         if result_path.exists():
             result = evaluate_result(result_path, pending['version'], pending['updates'],
-                confirmation=pending.get('evaluation_kind') == 'confirmation')
-            self.state['evaluations'].append(result)
+                confirmation=pending.get('evaluation_kind') == 'confirmation',
+                kind=pending.get('evaluation_kind'), expected_planned=pending.get('planned'))
+            if pending.get('plan_sha256') is not None:
+                original = json.loads(result_path.read_bytes())
+                if original['plan_sha256'] != pending['plan_sha256']:
+                    raise ValueError('evaluation_result_plan_binding_mismatch')
+            result['model_artifact_id'] = pending.get('model_artifact_id')
+            result['due_at'] = pending.get('due_at')
+            if pending.get('job_id'):
+                result['scheduler_accounting'] = job_accounting(pending['job_id'])
+            if self.config.get('evaluation_tiers') is not None:
+                result.update(self.evaluation_report(result_path, pending))
+            existing = next((r for r in self.state['evaluations']
+                             if r['result_sha256'] == result['result_sha256']), None)
+            if existing is None:
+                self.state['evaluations'].append(result)
+            else:
+                result = existing
+            self.persist()
+            if self.config.get('evaluation_tiers') is not None and result['complete']:
+                self.candidate_reference(result)
             self.state['pending'] = None
             self.persist()
             self.publish('evaluation_finished', evaluation=result)
@@ -257,6 +327,238 @@ class Watcher:
                              pending=pending, accounting=accounting)
         elif self.direct is not None and self.direct.poll() is not None:
             self.publish('attention', reason='evaluation_process_exited_without_result', pending=pending)
+
+    def schedule_tiers(self, model: dict[str, Any] | None, now: float) -> None:
+        schedules = self.state.setdefault('tier_next_due', {})
+        due = []
+        for tier in tiers(self.config):
+            at = schedules.setdefault(tier['name'], self.config['started_at'] + tier['seconds'])
+            while at <= now:
+                due.append((at, tier))
+                at += tier['seconds']
+            schedules[tier['name']] = at
+        if not due:
+            return
+        due.sort(key=lambda item: (item[0], item[1]['seed_prefix']), reverse=True)
+        selected = due[0]
+        records = self.state.setdefault('evaluation_schedule', [])
+        intent = None
+        for at, tier in reversed(due):
+            reason = ('pending_evaluation' if self.state['pending'] is not None else
+                      'maintenance' if self.maintenance_requested else
+                      'model_unavailable' if model is None else
+                      'covered_by_milestone' if at == selected[0] and tier != selected[1] else
+                      'missed_scheduled_slot' if (at, tier) != selected else None)
+            record = {'due_at': at, 'tier': tier['name'],
+                      'version_observed': (model or {}).get('version'),
+                      'model_artifact_id': (model or {}).get('model_artifact_id'),
+                      'state': 'skipped' if reason else 'intent', 'reason': reason}
+            records.append(record)
+            if reason is None:
+                intent = record
+        self.persist()  # consume the wall-clock slot before preparation/submission
+        if intent is not None:
+            previous = self.state.get('last_evaluated_version_observed')
+            if previous is not None and model['version'] > previous + 1:
+                intent['unevaluated_version_range'] = [previous + 1, model['version'] - 1]
+            self.state['last_evaluated_version_observed'] = model['version']
+            self.persist()
+            try:
+                self.prepare_evaluation(model, now, tier=selected[1], due_at=selected[0])
+            except Exception as error:
+                intent.update(state='preparation_or_submission_failed', error_type=type(error).__name__)
+                self.persist()
+                raise
+            intent['state'] = 'pending' if self.state['pending'] else 'skipped_capacity'
+            self.persist()
+
+    def evaluation_report(self, result_path: Path, pending: dict[str, Any]) -> dict[str, Any]:
+        """One saved ledger -> existing validated trajectory/report implementation."""
+        from spireagent.storage.config import open_peer
+        from spireagent.workbench.managed_trajectory_store import read_shard
+        from stpd.evaluation.rl_observation import (
+            load_cohort,
+            trajectory_details,
+            write_report,
+        )
+
+        plan = evaluate.load_plan(Path(pending['plan']))
+        original = json.loads(result_path.read_bytes())
+        slots = original['ledger_report']['slots']
+        execution = json.loads(Path(plan['execution']['path']).read_bytes())
+        store = open_peer(execution['peer'])
+        wanted = {s['run_id']: s for s in slots if s.get('run_id') is not None}
+        episodes = []
+        for shard in sorted({s['trajectory_shard_id'] for s in slots if s.get('trajectory_shard_id')}):
+            for episode in read_shard(store, shard, scratch=result_path.parent / 'report-readback'):
+                if episode['run_id'] not in wanted:
+                    continue
+                if episode['identity']['seed'] != wanted[episode['run_id']]['seed']:
+                    raise ValueError('evaluation_detail_seed_binding_mismatch')
+                episodes.append(trajectory_details(episode))
+        details = result_path.parent / 'report-details.json'
+        save(details, {'episodes': episodes})
+        cohort = load_cohort(result_path, details=details)
+        protocol = {'manifest_sha256': plan['manifest']['sha256'],
+                    'seed_prefix': plan.get('seed_prefix'),
+                    'seeds': [row['seed'] for row in cohort['rows']],
+                    'host': cohort['host_kind'], 'character': cohort['character'],
+                    'ascension': cohort['ascension'], 'observed': cohort['protocol_observed']}
+        key = hashlib.sha256(json_bytes(protocol)).hexdigest()
+        cohorts = {'current': cohort}
+        comparable = [e for e in self.state['evaluations']
+                      if e.get('comparison_key') == key and e.get('cohort') is not None]
+        if comparable:
+            cohorts['baseline'] = comparable[0]['cohort']
+            if len(comparable) > 1:
+                cohorts['previous'] = comparable[-1]['cohort']
+        output = result_path.parent / 'report'
+        if not output.exists():
+            write_report(cohorts, output)
+        return {'cohort': cohort, 'comparison_key': key, 'report': str(output),
+                'details_sha256': hashed(details)}
+
+    def append_reference(self, kind: str, identity: str, fields: dict[str, Any]) -> None:
+        reference = {'schema': 'spireagent/rl-retained-reference-1', 'run': self.config['run'],
+                     'kind': kind, 'identity': identity, **fields}
+        raw = json_bytes(reference)
+        digest = hashlib.sha256(raw).hexdigest()
+        key = f'{self.exchange.prefix}references/{kind}/{identity}-{digest}.json'
+        self.exchange.blobs.put_if_absent(key, raw)
+        save(self.work / 'references' / kind / f'{identity}-{digest}.json', reference)
+
+    def checkpoint_binding(self, checkpoint: dict[str, Any], model: dict[str, Any]) -> dict[str, Any]:
+        import torch
+        from stpd.p1.export import load_model
+        from stpd.workers.checkpoint_codec import decode_checkpoint
+
+        manifest = self.exchange.store.get_manifest(checkpoint['checkpoint_artifact_id'])
+        info = manifest.parameters.value()
+        raw = b''.join(self.exchange.store.read_payload(manifest.payload('checkpoint')))
+        state = decode_checkpoint(raw)
+        learner = json.loads(state['learner'])
+        updates = model['training']['updates']
+        model_manifest = self.exchange.store.get_manifest(model['model_artifact_id'])
+        if (manifest.kind != 'checkpoint' or info['run'] != self.config['run']
+                or info['version'] != model['version'] or checkpoint['version'] != model['version']
+                or info['updates'] != updates or learner['updates'] != updates
+                or learner['version'] != model['version'] or learner['run'] != self.config['run']
+                or not {'weights', 'optimizer', 'torch_rng', 'schema'} <= state.keys()
+                or not {'random', 'buffer', 'counts', 'seen', 'returns'} <= learner.keys()
+                or not isinstance(info.get('config'), dict)
+                or state.get('schema') != info.get('schema')
+                or info.get('producer') != manifest.producer.to_dict()
+                or model_manifest.producer != manifest.producer):
+            raise ValueError('milestone_full_checkpoint_model_binding_mismatch')
+        package = self.exchange.materialize_model(model, self.work / 'models')
+        weights, _ = load_model(package / 'model.tensor-tree', model['model_sha256'])
+        current = weights.state_dict()
+        if (current.keys() != state['weights'].keys()
+                or any(not torch.equal(value, state['weights'][name])
+                       for name, value in current.items())):
+            raise ValueError('milestone_checkpoint_model_weights_mismatch')
+        return {'checkpoint_artifact_id': manifest.artifact_id,
+                'checkpoint_payload_sha256': manifest.payload('checkpoint').sha256,
+                'checkpoint_parameters': info, 'checkpoint_producer': manifest.producer.to_dict(),
+                'version': model['version'], 'updates': updates,
+                'model_artifact_id': model['model_artifact_id'], 'model_sha256': model['model_sha256']}
+
+    def milestone_reference(self, now: float) -> None:
+        next_at = self.state.setdefault('next_milestone_at', self.config['started_at'] + 14400)
+        if now < next_at:
+            return
+        intents = self.state.setdefault('milestone_intents', {})
+        identity = f'wall-{int(next_at):012d}'
+        if identity not in intents:
+            checkpoint = self.exchange.latest_checkpoint()
+            if checkpoint is None:
+                self.state['milestone_pending'] = {'due_at': next_at, 'reason': 'no_complete_checkpoint'}
+                self.persist()
+                return
+            model = self.exchange.model(checkpoint['version'])
+            binding = self.checkpoint_binding(checkpoint, model)
+            intents[identity] = {'due_at': next_at, 'captured_at': checkpoint['published_at'],
+                **binding, 'watch_configuration_sha256': self.state['config_sha256']}
+            self.persist()  # freeze the exact pair before an uncertain external write
+        self.append_reference('milestone', identity, intents[identity])
+        self.state['next_milestone_at'] = next_at + 14400
+        self.state.pop('milestone_pending', None)
+        self.persist()
+
+    @staticmethod
+    def candidate_comparison(before: dict[str, Any], after: dict[str, Any]) -> tuple[bool, str]:
+        """Predeclared priority; missing/conflicting witnesses do not win."""
+        from stpd.evaluation.rl_observation import compare
+
+        if before['comparison_key'] != after['comparison_key']:
+            return False, 'incomparable_protocol'
+        a, b = before['cohort'], after['cohort']
+        if b['wins'] != a['wins']:
+            return b['wins'] > a['wins'], 'wins'
+        if a['boss_count_missing'] or b['boss_count_missing']:
+            return False, 'incomparable_missing_Boss_witness'
+        for field in ('boss1_cleared_witnessed', 'boss2_reached_witnessed', 'boss1_reached_witnessed'):
+            if a[field] != b[field]:
+                return b[field] > a[field], field
+        floors_a = [r['floor'] for r in a['rows'] if r['scored'] and r['floor'] is not None]
+        floors_b = [r['floor'] for r in b['rows'] if r['scored'] and r['floor'] is not None]
+        if len(floors_a) != a['planned'] or len(floors_b) != b['planned']:
+            return False, 'incomparable_incomplete_scored_floors'
+        differences = [sum(f >= t for f in floors_b) - sum(f >= t for f in floors_a)
+                       for t in sorted(set(floors_a + floors_b))]
+        if differences and all(d >= 0 for d in differences) and any(d > 0 for d in differences):
+            return True, 'arrival_distribution_dominance'
+        if any(differences):
+            return False, 'arrival_distribution_conflict_or_decline'
+        delta = compare(a, b)
+        return bool(delta['paired_n'] == a['planned'] and (delta['mean_delta'] or 0) > 0), 'paired_mean_floor'
+
+    def candidate_reference(self, result: dict[str, Any]) -> None:
+        processed = self.state.setdefault('candidate_references', [])
+        if result['result_sha256'] in processed:
+            return
+        candidates = self.state.setdefault('candidate_best', {})
+        key = result['comparison_key']
+        before = next((r for r in self.state['evaluations']
+                       if r['result_sha256'] == candidates.get(key)), None)
+        if result['unknown'] or result['cohort']['floor_n'] != result['planned']:
+            better, reason = False, 'incomplete_scored_denominator'
+        else:
+            better, reason = ((True, 'first_complete_comparable') if before is None else
+                              self.candidate_comparison(before, result))
+        self.append_reference('candidate', result['result_sha256'], {
+            'result_sha256': result['result_sha256'], 'comparison_key': key,
+            'evaluation_kind': result['evaluation_kind'], 'version': result['version'],
+            'updates': result['updates'], 'model_artifact_id': result['model_artifact_id'],
+            'rule': 'wins-Boss-CDF-paired-v1', 'selected': better, 'reason': reason,
+            'previous_result_sha256': candidates.get(key)})
+        if better:
+            candidates[key] = result['result_sha256']
+        processed.append(result['result_sha256'])
+        self.persist()
+
+    def plateau(self) -> bool:
+        groups: dict[str, list[dict[str, Any]]] = collections.defaultdict(list)
+        for result in self.state['evaluations']:
+            if (result['complete'] and result.get('comparison_key') is not None
+                    and result['unknown'] == 0 and result['cohort']['floor_n'] == result['planned']):
+                groups[result['comparison_key']].append(result)
+        for results in groups.values():
+            if len(results) < 4:
+                continue
+            best = results[0]
+            stagnant = 0
+            for result in results[1:]:
+                from stpd.evaluation.rl_observation import compare
+
+                delta = compare(best['cohort'], result['cohort'])
+                improved = delta['mean_delta'] is not None and delta['mean_delta'] > 0
+                stagnant = 0 if improved else stagnant + 1
+                if improved:
+                    best = result
+            if stagnant >= 3:
+                return True
+        return False
 
     def actor_health(self) -> dict[str, Any]:
         """Scheduler facts distinguish a healthy learner from lost actor capacity."""
@@ -312,13 +614,16 @@ class Watcher:
         self.collect_evaluation()
         try:
             actors = self.actor_health()
-        except Exception as error:  # noqa: BLE001 -- telemetry failure must not suppress stop rules
+        except Exception as error:  # noqa: BLE001 -- preserve owner intent on external failure  # noqa: BLE001 -- telemetry failure must not suppress stop rules
             actors = {'observation': 'unavailable', 'error_type': type(error).__name__}
             self.telemetry('attention', reason='actor_accounting_unavailable', **actors)
         reason = ('watcher_signal' if self.signalled else
                   stop_reason(now, self.config, games, event, self.state['evaluations']))
         if self.state['stop'] or reason:
             self.stop(self.state['stop'] or reason)
+        elif self.config.get('evaluation_tiers') is not None:
+            self.schedule_tiers(model, now)
+            self.milestone_reference(now)
         elif (not self.maintenance_requested and self.state['pending'] is None
               and model is not None):
             winner = next((row for row in self.state['evaluations'] if row['complete']
@@ -341,6 +646,8 @@ class Watcher:
                     and row.get('evaluation_kind', 'fixed20') == 'fixed20']
         no_improvement = (len(complete) >= 3 and max(row['mean_max_floor'] or 0 for row in complete[-3:])
                           <= max([13.75] + [row['mean_max_floor'] or 0 for row in complete[:-3]]))
+        if self.config.get('evaluation_tiers') is not None:
+            no_improvement = self.plateau()
         event_age = now - event['at'] if event else None
         if event_age is None or event_age > 900:
             self.publish('attention', reason='learner_event_missing_or_older_than_15_minutes',
@@ -391,16 +698,16 @@ class Watcher:
             learner_finished = bool(event and event['kind'] == 'finished'
                 and event['at'] >= self.config['started_at']
                 and model and checkpoint and checkpoint['version'] == model['version'])
-        except Exception as error:
+        except Exception as error:  # noqa: BLE001 -- preserve owner intent on external failure
             self.telemetry('attention', reason='learner_drain_observation_unavailable',
                            error_type=type(error).__name__)
         try:
             accounting = job_accounting(str(self.config['actor_job_id']))
-        except Exception as error:
+        except Exception as error:  # noqa: BLE001 -- preserve owner intent on external failure
             accounting = {'terminal': False, 'error_type': type(error).__name__}
         try:
             evaluation = self.evaluation_drain()
-        except Exception as error:
+        except Exception as error:  # noqa: BLE001 -- preserve owner intent on external failure
             evaluation = {'terminal': False, 'error_type': type(error).__name__}
         complete = learner_finished and accounting['terminal'] and evaluation['terminal']
         expired = time.time() - self.state['drain_started_at'] >= 2400
@@ -425,6 +732,16 @@ class Watcher:
             return min(interval, max(0, 2400 - (now - self.state['drain_started_at'])))
         interval = min(interval, max(0, self.config['started_at']
             + self.config['wall_seconds'] - now))
+        if self.config.get('evaluation_tiers') is not None and not self.maintenance_requested:
+            schedules = self.state.get('tier_next_due', {})
+            due_at = min(schedules.get(t['name'], self.config['started_at'] + t['seconds'])
+                         for t in tiers(self.config))
+            due_in = due_at - now
+            if due_in > 0:
+                return min(interval, due_in)
+            if tick_started_at is not None and tick_started_at < due_at:
+                return 0
+            return interval
         if self.state['pending'] is None and not self.maintenance_requested:
             due_at = (self.state['last_evaluation_at']
                       + self.config.get('evaluation_seconds', 18000))
@@ -450,7 +767,7 @@ class Watcher:
             tick_started_at = time.time()
             try:
                 self.tick(tick_started_at)
-            except Exception as error:
+            except Exception as error:  # noqa: BLE001 -- preserve owner intent on external failure
                 self.telemetry('attention', reason='watcher_tick_failed',
                     error_type=type(error).__name__, error_code=getattr(error, 'code', None))
                 # The actor signal is local/Slurm and precedes all remote learner control.

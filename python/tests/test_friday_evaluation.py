@@ -241,7 +241,22 @@ def test_allocation_run_uses_original_ledger_and_retains_unknown_without_reoffer
     monkeypatch.setattr(evaluate.sys, 'platform', 'linux')
     monkeypatch.setenv('SLURM_JOB_ID', 'test-owned-allocation')
     monkeypatch.setenv('SLURM_CPUS_PER_TASK', '1')
+    # A late signal must stay handled during the complete snapshot/readback.
+    import signal
+
+    original_snapshot = evaluate.snapshot
+    initial_handler = signal.getsignal(signal.SIGUSR1)
+
+    def signal_during_snapshot(source, destination):
+        assert signal.getsignal(signal.SIGUSR1) != initial_handler
+        signal.raise_signal(signal.SIGUSR1)
+        return original_snapshot(source, destination)
+
+    monkeypatch.setattr(evaluate, 'snapshot', signal_during_snapshot)
     result = evaluate.run(directory / 'plan.json')
+    assert signal.getsignal(signal.SIGUSR1) == initial_handler
+    assert result['timing']['process_wall_seconds'] >= result['timing']['phases']['snapshot']
+    assert result['timing']['process_finished_at'] >= result['timing']['process_started_at']
     assert result['status'] == 'stopped'
     assert result['ledger_report']['unknown'] == 1
     assert result['ledger_report']['not_started'] == 59
@@ -300,3 +315,21 @@ def test_plan_exposes_pending_limit_that_can_serialize_requested_workers(
     plan, _ = prepared(evaluate, execution, tmp_path, workers=8)
     assert plan['parallelism'] == {'requested_workers': 8, 'pending_limit': 1,
                                    'save_workers': 1, 'execution_upper_bound': 1}
+
+
+def test_unknown_submission_outcome_keeps_intent_and_is_never_automatically_resubmitted(
+        evaluate, execution, tmp_path):
+    _plan, directory = prepared(evaluate, execution, tmp_path)
+    lock = tmp_path / 'configuration/friday-submit.lock'
+    with (patch.object(evaluate.scheduler, 'submission_lock_path', return_value=lock.resolve()),
+          patch.object(evaluate.scheduler, 'output', side_effect=[
+              '', '0/100/0/100', '', OSError('lost sbatch response')]),
+          pytest.raises(OSError)):
+        evaluate.submit(directory / 'plan.json')
+    intent = json.loads((directory / 'submission-intent.json').read_bytes())
+    assert 'submission_requested_at' in intent and 'job_id' not in intent
+    with (patch.object(evaluate.scheduler, 'submission_lock_path', return_value=lock.resolve()),
+          patch.object(evaluate.scheduler, 'output', return_value='') as output,
+          pytest.raises(ValueError, match='submission_requires_owner_reconciliation')):
+        evaluate.submit(directory / 'plan.json')
+    assert output.call_count == 1  # read-only original-name reconciliation, no second sbatch

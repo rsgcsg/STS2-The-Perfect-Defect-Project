@@ -25,14 +25,33 @@ class TensorBoardMetrics:
         self.writer: Any = None
         self.published: set[Path] = set()
 
-    def scalars(self, values: dict[str, Any], step: int, walltime: float | None = None) -> None:
+    def _writer(self):
         from torch.utils.tensorboard import SummaryWriter
 
         if self.writer is None:
             self.writer = SummaryWriter(log_dir=str(self.directory))
+            self.writer.add_text('algorithm/value_loss', 'not applicable: no critic', 0)
+            self.writer.add_text('algorithm/state_value', 'not applicable: no critic', 0)
+        return self.writer
+
+    def scalars(self, values: dict[str, Any], step: int, walltime: float | None = None) -> None:
+        writer = self._writer()
         for name, value in values.items():
             if value is not None:
-                self.writer.add_scalar(name, float(value), step, walltime=walltime)
+                writer.add_scalar(name, float(value), step, walltime=walltime)
+
+    def histograms(self, values: dict[str, list[int | float]], step: int) -> None:
+        import numpy as np
+
+        for name, rows in values.items():
+            if not rows:
+                continue
+            if any(type(value) not in (int, float) or not math.isfinite(value) for value in rows):
+                raise BoundaryError('rl_tensorboard', 'nonfinite_histogram_value')
+            self._writer().add_histogram(name, np.asarray(rows, dtype=float), step)
+
+    def text(self, name: str, value: str, step: int) -> None:
+        self._writer().add_text(name, value, step)
 
     def publish(self) -> list[str]:
         """Close before upload: no event object is ever overwritten as it grows."""
@@ -64,12 +83,12 @@ def publish_evaluation(exchange: Exchange, directory: Path,
     if floor is not None and (type(floor) not in (int, float) or not math.isfinite(floor)):
         raise BoundaryError("rl_tensorboard", "invalid_evaluation_metrics")
     kind = result.get("evaluation_kind", "fixed20")
-    if kind not in ("fixed20", "confirmation"):
+    if kind not in ("fixed20", "confirmation", "quick", "milestone"):
         raise BoundaryError("rl_tensorboard", "invalid_evaluation_kind")
     planned = result.get("planned")
     if planned is not None and (type(planned) is not int or planned <= 0):
         raise BoundaryError("rl_tensorboard", "invalid_evaluation_metrics")
-    prefix = "evaluation" if kind == "fixed20" else "confirmation"
+    prefix = "evaluation" if kind == "fixed20" else kind
     metrics = TensorBoardMetrics(exchange, directory)
     metrics.scalars({f"{prefix}/wins": result["wins"],
                      f"{prefix}/mean_max_floor": floor,

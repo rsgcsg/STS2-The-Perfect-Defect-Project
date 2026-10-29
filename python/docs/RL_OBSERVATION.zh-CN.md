@@ -112,3 +112,60 @@ Mac只读同步关闭的对象，按hash去重，面板标明数据时刻和缺�
 它们不是将当前训练改成V-trace的授权。
 调参方案与成本由本轮OBS报告提出，学习率、熵、奖励、课程或PBT一律另行决定，
 本工具不修改训练配置。
+
+## RL3 两档看守（显式开启）
+
+旧看守配置默认保留原行为。新 run 可加入下面字段；`evaluation_manifest`
+必须指向已登记的 `managed-rl3-learning-curve-100-20261030-Defect-a0` 原清单，
+`evaluation_mode` 必须为 `submit`：
+
+```json
+{
+  "evaluation_tiers": [
+    {"name": "quick", "seconds": 14400, "seed_prefix": 20, "wall_seconds": 7200},
+    {"name": "milestone", "seconds": 28800, "seed_prefix": 100, "wall_seconds": 10800}
+  ]
+}
+```
+
+两档都冻结4 worker、pending8、save2。快速档使用新100清单的原前20，里程碑档
+用全部100；不访问原T2预留确认20。该模式禁用旧“首胜自动跑40确认”的规则。
+8小时重合时只提交100，并记录20已被覆盖；正在评估时到点，只记录该次跳过的
+时刻/版本/原因，不补投。重启沿 `watch-state.json` 恢复固定墙钟时刻和原提交意图；
+没有调度器回执的提交需人工核原请求，不重新提交。计划、原件、R2计分/审计门不变。
+
+完整结果经原轨迹reader校验后，调用同一 `rl_observation` 生成 JSON/CSV/SVG，
+保存在本评估plan旁 `report/`。同清单/前缀/角色/难度/Host/输入/动作模式才比较，
+基线是同协议第一次已完成评估，另保留上一轮；没有基线或Boss见证就保留缺失。
+至少已有一轮基线、连续3轮可比完整评估均未提高配对平均层数时，只在状态里提醒，
+不以平台期自动停止、调参或更换训练模型。原有显式安全停止规则仍由该轮运行卡决定。
+
+每次完整评估追加不可变 `references/candidate/` 引用。选候选规则预先固定为
+`wins-Boss-CDF-paired-v1`：胜局数优先，其次有完整见证的Boss指标，再看到达分布
+是否一阶支配，最后看配对层差；Boss缺失、分布冲突、unknown或计分分母不足都不
+自动取代已有候选。两种清单前缀各自排名。记录所有评估的选择/不选择原因和前任引用；
+它是开发种子的候选索引，不是独立确认，也不删除落选模型或自动换训练模型。
+
+每4小时追加 `references/milestone/`，绑定同一版本/更新数的已发布模型和完整CP。
+引用前正常reader全读CP，核权重、optimizer、Torch RNG、learner RNG/buffer/counts、
+配置和producer；CP权重还与原发布模型逐tensor核对。最新完整CP若略落后于最新模型，
+引用它自身对应的准确模型、版本、更新数和发布时间，不把两个版本拼起来；没有完整
+CP就保留pending。引用写入意图先落本地，外部写入结果不明时只对同一内容幂等核取。
+调整前后沿同一 `checkpoint_binding` / `append_reference` 能力显式加引用，调整仍要
+先按原运行规则停止并核完整存档；没有热调API，不能直接编辑在跑配置。
+
+STOP信号先持久记录意图，每个Slurm job最多发一次USR1；即使调度响应丢失也不盲发。
+本地STOP文件仍保留，R2永久STOP继续走已有幂等请求；保存/排空完成前不恢复默认信号
+处理。需要补保存时，从原owner的scratch调用原snapshot接续，不重开原游戏。
+
+计时保留旧 `elapsed_seconds` 含义，另有 `timing.process_wall_seconds`，覆盖ledger准备、
+执行器准备、游戏/保存队列、关闭和最终snapshot。`submission-intent.json` 在提交前保存，
+`submission.json` 记录请求/响应时间；watch收集的 `scheduler_accounting` 保留Slurm
+Submit/Eligible/Start/End/ElapsedRaw，以此分开排队、实际分配和过程时间。调度器时间
+不能当CPU实际忙时；`--begin`仍只表示最早开始。新root result在snapshot回执后才发布。
+
+TensorBoard沿同一关闭后上传链增加 `histograms(values, step)` 和 `text(name,value,step)`；
+可记录advantage/原始回报/复用/过期/实际采样熵分布，模型策略熵与温采分布熵分开。
+当前无critic，`algorithm/value_loss` 和 `algorithm/state_value` 记文字
+`not applicable: no critic`，不写数值0。`quick/`、`milestone/` 各保留评估指标，
+不把不同规模的评估接成一条未标记曲线。
