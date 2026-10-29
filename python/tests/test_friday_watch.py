@@ -157,3 +157,43 @@ def test_split_runtime_submit_cli_keeps_strict_module_origin(watch, tmp_path):
     assert f'source_root={frozen}' in launcher
     assert 'export PYTHONPATH="$source_root/python"' in launcher
     assert not (output / 'submission.json').exists()
+
+
+def test_R2_outage_cannot_bypass_actor_wall_stop_or_40_minute_drain(watch, tmp_path, monkeypatch, capsys):
+    from types import SimpleNamespace
+
+    def unavailable(*_args, **_kwargs):
+        raise OSError('injected R2 outage')
+
+    exchange = SimpleNamespace(prefix='exchange/rl/rl2/',
+        blobs=SimpleNamespace(put_if_absent=unavailable), shard_keys=unavailable,
+        request_stop=unavailable, latest_event=unavailable)
+    monkeypatch.setattr(watch, 'Exchange', lambda *_: exchange)
+    monkeypatch.setattr(watch.sys, 'platform', 'linux')
+    monkeypatch.setenv('SLURM_JOB_ID', 'watch-test')
+    monkeypatch.setattr(watch.signal, 'signal', lambda *_: None)
+    now = [100.0]
+    monkeypatch.setattr(watch.time, 'time', lambda: now[0])
+    monkeypatch.setattr(watch.time, 'sleep', lambda seconds: now.__setitem__(0, now[0] + seconds))
+    actor_signals = []
+
+    def signal_actor(command, **_kwargs):
+        actor_signals.append((now[0], command))
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(watch.subprocess, 'run', signal_actor)
+    monkeypatch.setattr(watch, 'job_accounting', lambda _: {'terminal': True, 'all_completed': True})
+    config = {'peer': {}, 'run': 'rl2', 'started_at': 100, 'wall_seconds': 10,
+              'poll_seconds': 900, 'actor_plan': str(tmp_path / 'actors/plan.json'),
+              'actor_job_id': '123'}
+    instance = watch.Watcher(config, tmp_path / 'watch')
+    instance.run()
+    assert actor_signals[0][0] == 110.0
+    assert actor_signals[0][1] == ['scancel', '--signal=USR1', '--batch', '123']
+    assert (tmp_path / 'actors/STOP').is_file()
+    assert now[0] == 2510.0  # original wall deadline + forty minutes, despite every R2 call failing
+    assert instance.state['learner_stop_pending'] is True
+    final = json.loads((tmp_path / 'watch/drain-status.json').read_bytes())
+    assert final['drain_timeout'] is True and final['drain_complete'] is False
+    assert final['learner_stop_pending'] is True
+    assert 'watcher_telemetry_failed' in capsys.readouterr().err

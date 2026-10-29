@@ -129,6 +129,14 @@ class Watcher:
         self.exchange.blobs.put_if_absent(key, json_bytes(value))
         return value
 
+    def telemetry(self, kind: str, **fields: Any):
+        try:
+            return self.publish(kind, **fields)
+        except Exception as error:
+            print(json.dumps({'kind': 'watcher_telemetry_failed', 'event': kind,
+                              'error_type': type(error).__name__}), file=sys.stderr, flush=True)
+            return None
+
     def stop(self, reason: str):
         # Persist intent first. Re-sending USR1 and an identical control request is safe;
         # no game or allocation is retried after an uncertain scheduler response.
@@ -143,15 +151,23 @@ class Watcher:
         if 'drain_started_at' not in self.state:
             self.state['drain_started_at'] = time.time()
             self.persist()
-        self.exchange.request_stop(self.state['stop'])
+        try:
+            self.exchange.request_stop(self.state['stop'])
+        except Exception as error:
+            self.state['learner_stop_pending'] = True
+            self.state['learner_stop_error_type'] = type(error).__name__
+        else:
+            self.state['learner_stop_pending'] = False
+        self.persist()
         if self.state['pending']:
             pending = self.state['pending']
             save(Path(pending['plan']).parent / 'STOP', {'reason': self.state['stop']})
             if pending.get('job_id'):
                 subprocess.run(['scancel', '--signal=USR1', '--batch', pending['job_id']],
                                check=False, capture_output=True)
-        self.publish('stop_requested', reason=self.state['stop'],
-                     actor_signal_exit_code=actor_signal.returncode)
+        self.telemetry('stop_requested', reason=self.state['stop'],
+                     actor_signal_exit_code=actor_signal.returncode,
+                     learner_stop_pending=self.state['learner_stop_pending'])
 
     def prepare_evaluation(self, model: dict[str, Any], now: float):
         root = self.work / 'evaluations' / f"v{model['version']:06d}-{time.time_ns()}"
@@ -275,38 +291,55 @@ class Watcher:
         self.persist()
         return status
 
+    def drain(self) -> bool:
+        learner_finished = False
+        checkpoint = None
+        try:
+            event = self.exchange.latest_event()
+            model = self.exchange.latest_model()
+            checkpoint = self.exchange.latest_checkpoint()
+            learner_finished = bool(event and event['kind'] == 'finished'
+                and event['at'] >= self.config['started_at']
+                and model and checkpoint and checkpoint['version'] == model['version'])
+        except Exception as error:
+            self.telemetry('attention', reason='learner_drain_observation_unavailable',
+                           error_type=type(error).__name__)
+        try:
+            accounting = job_accounting(str(self.config['actor_job_id']))
+        except Exception as error:
+            accounting = {'terminal': False, 'error_type': type(error).__name__}
+        complete = learner_finished and accounting['terminal']
+        expired = time.time() - self.state['drain_started_at'] >= 2400
+        self.telemetry('drain_status', learner_finished=learner_finished,
+            latest_checkpoint=checkpoint, actors=accounting,
+            drain_complete=complete, drain_timeout=expired,
+            learner_stop_pending=self.state.get('learner_stop_pending', True))
+        save(self.work / 'drain-status.json', {'at': time.time(),
+            'learner_finished': learner_finished, 'latest_checkpoint': checkpoint,
+            'actors': accounting, 'drain_complete': complete, 'drain_timeout': expired,
+            'learner_stop_pending': self.state.get('learner_stop_pending', True)})
+        return complete or expired
+
     def run(self):
         if sys.platform != 'linux' or not os.environ.get('SLURM_JOB_ID'):
             raise ValueError('Friday_Slurm_watcher_required')
         for number in (signal.SIGUSR1, signal.SIGTERM, signal.SIGINT):
             signal.signal(number, lambda *_: setattr(self, 'signalled', True))
-        self.publish('watcher_started', config_sha256=self.state['config_sha256'],
-                     job_id=os.environ['SLURM_JOB_ID'])
+        self.telemetry('watcher_started', config_sha256=self.state['config_sha256'],
+                       job_id=os.environ['SLURM_JOB_ID'])
         while True:
             try:
-                status = self.tick()
+                self.tick()
             except Exception as error:
-                self.publish('attention', reason='watcher_tick_failed', error_type=type(error).__name__,
-                             error_code=getattr(error, 'code', None))
-                # Keep the fixed wall stop even when transient exchange/evaluation IO fails.
-                if time.time() >= self.config['started_at'] + self.config['wall_seconds']:
-                    self.stop('first_round_wall_limit')
-            else:
-                if status['stopped']:
-                    event = self.exchange.latest_event()
-                    model = self.exchange.latest_model()
-                    checkpoint = self.exchange.latest_checkpoint()
-                    accounting = job_accounting(str(self.config['actor_job_id']))
-                    learner_finished = bool(event and event['kind'] == 'finished'
-                        and event['at'] >= self.config['started_at']
-                        and model and checkpoint and checkpoint['version'] == model['version'])
-                    complete = learner_finished and accounting['terminal']
-                    expired = time.time() - self.state['drain_started_at'] >= 2400
-                    self.publish('drain_status', learner_finished=learner_finished,
-                        latest_checkpoint=checkpoint, actors=accounting,
-                        drain_complete=complete, drain_timeout=expired)
-                    if complete or expired:
-                        return
+                self.telemetry('attention', reason='watcher_tick_failed',
+                    error_type=type(error).__name__, error_code=getattr(error, 'code', None))
+                # The actor signal is local/Slurm and precedes all remote learner control.
+                if self.state['stop'] or self.signalled or time.time() >= (
+                        self.config['started_at'] + self.config['wall_seconds']):
+                    self.stop(self.state['stop'] or ('watcher_signal' if self.signalled
+                                                    else 'first_round_wall_limit'))
+            if self.state['stop'] and self.drain():
+                return
             interval = self.config.get('poll_seconds', 900)
             if self.state['stop']:
                 interval = min(interval, max(0, 2400 - (time.time() - self.state['drain_started_at'])))
