@@ -10,10 +10,16 @@ from spireagent.json_boundary import BoundaryError
 from stpd.p1.execution import MStdExecution
 from stpd.p1.model import MStd
 from stpd.p1.profiling import synthetic_frame
+from stpd.p1.tensor_input import compile_frame
 from stpd.p1.vocabulary import public_vocabulary
 from stpd.rl.learner import CONFIG_SCHEMA, LearnerConfig
 from stpd.rl.loss import LossConfig, RlSample, rl_update
-from stpd.rl.performance import PerformanceConfig, prepare_models
+from stpd.rl.performance import (
+    PerformanceConfig,
+    cache_on_device,
+    frame_storage_bytes,
+    prepare_models,
+)
 
 
 def fixture():
@@ -36,12 +42,13 @@ def test_config_omitted_is_legacy_and_explicit_fields_are_validated(tmp_path):
                                                        "tensor_cache": True}}))
     assert LearnerConfig.read(path).performance == PerformanceConfig(packed=True, tensor_cache=True)
     for fields in ({"tensor_cache": True}, {"precision": "fp16"}, {"microbatch_size": 0},
-                   {"packed": 1}, {"scene_attention_area": False}):
+                   {"packed": 1}, {"scene_attention_area": False}, {"device_cache": True}):
         with pytest.raises(BoundaryError):
             PerformanceConfig(**fields)
 
 
-def test_tensor_and_deferred_update_match_same_packed_fp32_update_and_restore_execution():
+@pytest.mark.parametrize("device_cache", [False, True])
+def test_tensor_and_deferred_update_match_same_packed_fp32_update(device_cache):
     model, reference, samples, anchor = fixture()
     other = copy.deepcopy(model)
     initial = model.execution
@@ -50,7 +57,8 @@ def test_tensor_and_deferred_update_match_same_packed_fp32_update_and_restore_ex
     results = []
     for member, performance in (
             (model, None),
-            (other, PerformanceConfig(packed=True, tensor_cache=True, defer_sync=True))):
+            (other, PerformanceConfig(packed=True, tensor_cache=True, defer_sync=True,
+                                      device_cache=device_cache))):
         torch.manual_seed(17)
         results.append(rl_update(member, reference, torch.optim.SGD(member.parameters(), lr=0.01),
                                  samples, anchor, 0.01, LossConfig(), {},
@@ -63,6 +71,26 @@ def test_tensor_and_deferred_update_match_same_packed_fp32_update_and_restore_ex
     for name, value in model.state_dict().items():
         torch.testing.assert_close(value, other.state_dict()[name], rtol=0, atol=1e-7)
     assert len(cache) == 3
+
+
+def test_device_cache_moves_all_metadata_without_changing_shapes_or_source():
+    model, _, samples, _ = fixture()
+    source = compile_frame(samples[0].frame, model)
+    moved = cache_on_device(source, torch.device("meta"))
+    assert moved.choices == source.choices and moved.entity_count == source.entity_count
+    assert frame_storage_bytes(source) == frame_storage_bytes(moved) > 0
+    for key, value in moved.tensors.items():
+        assert value.device.type == "meta"
+        assert value.shape == source.tensors[key].shape
+        assert value.dtype == source.tensors[key].dtype
+        assert source.tensors[key].device.type == "cpu"
+    for key, value in moved.reductions.items():
+        assert value.inverse.device.type == "meta"
+        assert value.inverse.shape == source.reductions[key].inverse.shape
+        for bucket, original in zip(value.buckets, source.reductions[key].buckets, strict=True):
+            assert bucket[:2] == original[:2]
+            assert bucket[2].device.type == "meta"
+            assert bucket[2].shape == original[2].shape
 
 
 def test_bucket_preserves_samples_and_anchor_counts():

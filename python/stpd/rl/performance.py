@@ -18,12 +18,14 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
 
     from stpd.p1.model import MStd
+    from stpd.p1.tensor_input import TensorFrame
 
 
 @dataclass(frozen=True)
 class PerformanceConfig:
     packed: bool = False
     tensor_cache: bool = False
+    device_cache: bool = False
     microbatch_size: int = 8
     scene_attention_area: int = 262144
     text_attention_area: int = 262144
@@ -34,7 +36,8 @@ class PerformanceConfig:
 
     def __post_init__(self) -> None:
         if any(type(value) is not bool for value in (
-                self.packed, self.tensor_cache, self.bucket, self.defer_sync, self.tf32)):
+                self.packed, self.tensor_cache, self.device_cache,
+                self.bucket, self.defer_sync, self.tf32)):
             raise BoundaryError("rl_performance", "invalid_boolean")
         if (type(self.microbatch_size) is not int or not 1 <= self.microbatch_size <= 8
                 or any(type(value) is not int or not 1 <= value <= 2**28 for value in (
@@ -43,6 +46,32 @@ class PerformanceConfig:
             raise BoundaryError("rl_performance", "invalid_execution_configuration")
         if self.tensor_cache and not self.packed:
             raise BoundaryError("rl_performance", "tensor_cache_requires_packed")
+        if self.device_cache and not self.tensor_cache:
+            raise BoundaryError("rl_performance", "device_cache_requires_tensor_cache")
+
+
+def cache_on_device(frame: TensorFrame, device: torch.device) -> TensorFrame:
+    """Move immutable input metadata once; no weights, dropout or padding are cached.
+
+    Cold use pays each metadata transfer. Warm use shares these allocations
+    between learner/reference forwards until the ordinary sample cache expires.
+    """
+    from stpd.p1.tensor_input import Reduction, TensorFrame
+
+    return TensorFrame(
+        {key: value.to(device) for key, value in frame.tensors.items()},
+        {key: Reduction(tuple((width, count, indices.to(device))
+                              for width, count, indices in value.buckets), value.inverse.to(device))
+         for key, value in frame.reductions.items()}, frame.choices, frame.entity_count)
+
+
+def frame_storage_bytes(frame: TensorFrame) -> int:
+    """Logical metadata bytes for benchmark capacity accounting (not CUDA allocator overhead)."""
+    values = list(frame.tensors.values())
+    for reduction in frame.reductions.values():
+        values.extend(indices for _, _, indices in reduction.buckets)
+        values.append(reduction.inverse)
+    return sum(value.numel() * value.element_size() for value in values)
 
 
 @contextmanager

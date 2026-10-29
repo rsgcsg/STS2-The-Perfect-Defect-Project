@@ -158,6 +158,8 @@ def _execution_update(model: MStd, reference: MStd, optimizer: torch.optim.Optim
     """
     from stpd.p1.tensor_input import compile_frame
 
+    from .performance import cache_on_device
+
     if not samples:
         raise BoundaryError("rl_loss", "empty_rl_batch")
     began = time.perf_counter()
@@ -169,6 +171,8 @@ def _execution_update(model: MStd, reference: MStd, optimizer: torch.optim.Optim
             return value
         if key not in cache:
             cache[key] = compile_frame(value, model)
+        if performance.device_cache and cache[key].tensors["actions"].device != device:
+            cache[key] = cache_on_device(cache[key], device)
         return cache[key]
 
     frames = [frame(s.frame, ("rl", s.key)) for s in samples]
