@@ -186,3 +186,15 @@ PYTHONPATH=python python python/tools/benchmark_rl.py \
 原始 Frame 仍走 packed 路径。profiler 的 `joint_nodes_metadata` 单列组合准备开销。
 CUDA 上合并 ID 掩码随机调用及梯度归约会改变随机流，必须视作新的训练轨迹；CPU
 数值对照通过不证明 CUDA 逐位等价，启用仍须用户在受控换代点决定。
+
+`async_transfer=true`（须启用 `tensor_cache`）仅对不可变输入元数据选择非阻塞
+CPU→CUDA 复制，并在同一 CUDA stream 消费；默认关。不改变 D2H 回读，不新增
+pinned 或可变缓冲区。运行态开关退出后恢复，不进入模型 state_dict 或包执行字段，
+所以旧 actor 解码器不会收到新字段。pageable staging 本身仍可能阻塞，须实测收益。
+
+旧面积 262144 在数百实体场景中可能把微批退成单帧；已有监督训练
+`mstd-training-v2` 使用 67108864。D2 可以显式选择同一面积尺度再测 8/16/32/64，
+不能只改微批数量就声称已实际跑大批。更大微批是否更快取决于 padding 和显存，
+最大值不等于最快值。工程实验列表见 [示例](../tools/rl_benchmark_example.json)。
+最终确认应另传 `--source-revision <准确提交>`；脚本同时记录自身、计划和实际导入
+数值模块的 SHA-256，不能仅凭填入的提交号借用别的代码结果。
