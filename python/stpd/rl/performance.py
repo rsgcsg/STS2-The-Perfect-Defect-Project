@@ -40,7 +40,7 @@ class PerformanceConfig:
                 self.packed, self.tensor_cache, self.device_cache,
                 self.reference_device_cache, self.bucket, self.defer_sync, self.tf32)):
             raise BoundaryError("rl_performance", "invalid_boolean")
-        if (type(self.microbatch_size) is not int or not 1 <= self.microbatch_size <= 8
+        if (type(self.microbatch_size) is not int or not 1 <= self.microbatch_size <= 64
                 or any(type(value) is not int or not 1 <= value <= 2**28 for value in (
                     self.scene_attention_area, self.text_attention_area))
                 or self.precision not in {"fp32", "bf16"}):

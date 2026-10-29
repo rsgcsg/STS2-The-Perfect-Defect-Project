@@ -7,7 +7,7 @@ import pytest
 import torch
 
 from spireagent.json_boundary import BoundaryError
-from stpd.p1.execution import MStdExecution
+from stpd.p1.execution import MStdExecution, microbatches
 from stpd.p1.model import MStd
 from stpd.p1.profiling import synthetic_frame
 from stpd.p1.tensor_input import compile_frame
@@ -91,6 +91,50 @@ def test_device_cache_moves_all_metadata_without_changing_shapes_or_source():
             assert bucket[:2] == original[:2]
             assert bucket[2].device.type == "meta"
             assert bucket[2].shape == original[2].shape
+
+
+@pytest.mark.parametrize("size", [16, 32, 64])
+def test_wider_microbatches_preserve_membership_tail_complete_catalog_and_actor_execution(size):
+    model, reference, samples, _ = fixture()
+    frames = [samples[0].frame] * 65
+    initial = model.execution
+    performance = PerformanceConfig(microbatch_size=size, scene_attention_area=2**28,
+                                    text_attention_area=2**28)
+    decoded = MStdExecution.decode(MStdExecution(microbatch_size=size).to_dict())
+    assert decoded.microbatch_size == size
+    model.eval()
+    with prepare_models(model, reference, performance), torch.no_grad():
+        groups = list(microbatches(frames, list(range(len(frames))), model))
+        assert [i for group in groups for i in group] == list(range(65))
+        assert [len(group) for group in groups] == [size] * (65 // size) + [65 % size]
+        for group in groups:
+            scores = model.forward_batch([frames[i] for i in group])
+            assert len(scores) == len(group)
+            assert all(row.shape == (len(frames[i].choices),) and torch.isfinite(row).all()
+                       for i, row in zip(group, scores, strict=True))
+    assert model.execution == reference.execution == initial
+    assert MStdExecution().microbatch_size == PerformanceConfig().microbatch_size == 8
+
+
+@pytest.mark.parametrize("limited_area", ["scene", "text"])
+def test_wider_microbatch_still_obeys_attention_area_and_keeps_oversized_scene(limited_area):
+    model, reference, samples, _ = fixture()
+    small = samples[0].frame
+    large = synthetic_frame(25)
+    compiled = compile_frame(small, model)
+    frames = [small, small, small, large, small, small, small]
+    with prepare_models(model, reference, PerformanceConfig(
+            microbatch_size=64,
+            scene_attention_area=2 * len(small.entities)**2 if limited_area == "scene" else 2**28,
+            text_attention_area=(2 * compiled.text_count * compiled.text_width**2
+                                 if limited_area == "text" else 2**28))):
+        assert list(microbatches(frames, list(range(7)), model)) == [[0, 1], [2], [3], [4, 5], [6]]
+    assert frames[3] is large
+    for invalid in (True, 0, 65):
+        with pytest.raises(BoundaryError):
+            MStdExecution(microbatch_size=invalid)
+        with pytest.raises(BoundaryError):
+            PerformanceConfig(microbatch_size=invalid)
 
 
 def test_bucket_preserves_samples_and_anchor_counts():
