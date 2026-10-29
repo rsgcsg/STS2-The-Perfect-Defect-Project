@@ -73,6 +73,8 @@ class LearnerConfig:
     # (a new machine or a new 5 h allocation); never picked implicitly.
     resume_checkpoint: str | None = None
     tensorboard_steps: int = 10
+    # Zero retains per-update exchange polling; positive values are opt-in cadence.
+    exchange_poll_seconds: float = 0.0
     loss: LossConfig = field(default_factory=LossConfig)
     # Omitted means the exact legacy update path, not an implicit new plan.
     performance: PerformanceConfig | None = None
@@ -138,6 +140,10 @@ class Learner:
         self.config, self.work, self.io = config, work, io
         if type(config.tensorboard_steps) is not int or config.tensorboard_steps < 0:
             raise BoundaryError("rl_learner", "invalid_tensorboard_steps")
+        if (type(config.exchange_poll_seconds) not in (int, float)
+                or not math.isfinite(config.exchange_poll_seconds)
+                or config.exchange_poll_seconds < 0):
+            raise BoundaryError("rl_learner", "invalid_exchange_poll_seconds")
         work.mkdir(parents=True, exist_ok=True)
         torch.manual_seed(config.seed)
         torch.set_num_threads(config.threads)
@@ -565,16 +571,21 @@ class Learner:
     def run(self) -> dict[str, Any]:
         deadline = time.monotonic() + self.config.wall_seconds
         clean = False
+        next_exchange_poll = 0.0
         failure: Exception | None = None
         try:
             while time.monotonic() < deadline and not (self.work / "STOP").exists():
-                stop = self.exchange.stop_request()
-                if stop is not None:
-                    self._event("stop_requested", reason=stop["reason"])
-                    break
-                began = time.monotonic()
-                self.poll()
-                self.timer.add("poll", began)
+                if time.monotonic() >= next_exchange_poll:
+                    began = time.monotonic()
+                    stop = self.exchange.stop_request()
+                    self.timer.add("stop_poll", began)
+                    if stop is not None:
+                        self._event("stop_requested", reason=stop["reason"])
+                        break
+                    began = time.monotonic()
+                    self.poll()
+                    self.timer.add("poll", began)
+                    next_exchange_poll = time.monotonic() + self.config.exchange_poll_seconds
                 self._collect_version(wait=False)
                 began = time.monotonic()
                 result = self.train_once()
