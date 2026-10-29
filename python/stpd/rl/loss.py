@@ -12,7 +12,7 @@ from __future__ import annotations
 import math
 import time
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import torch
 from torch.nn import functional as F
@@ -21,6 +21,11 @@ from spireagent.json_boundary import BoundaryError
 from stpd.p1.execution import microbatches
 from stpd.p1.input import Frame
 from stpd.p1.model import MStd
+
+if TYPE_CHECKING:
+    from stpd.p1.tensor_input import TensorFrame
+
+    from .performance import PerformanceConfig
 
 
 @dataclass(frozen=True)
@@ -69,9 +74,17 @@ def _reference(reference: MStd, batch: list[RlSample],
 
 def rl_update(model: MStd, reference: MStd, optimizer: torch.optim.Optimizer,
               samples: list[RlSample], anchor: list[tuple[Frame, int]], learning_rate: float,
-              config: LossConfig, reference_cache: dict[str, torch.Tensor] | None = None
+              config: LossConfig, reference_cache: dict[str, torch.Tensor] | None = None,
+              *, performance: PerformanceConfig | None = None,
+              frame_cache: dict[object, TensorFrame] | None = None
               ) -> dict[str, Any]:
     """``reference_cache`` keeps each sample's start-model log-probabilities across reuses."""
+    if performance is not None:
+        from .performance import prepare_models
+
+        with prepare_models(model, reference, performance):
+            return _execution_update(model, reference, optimizer, samples, anchor, learning_rate,
+                                     config, reference_cache, performance, frame_cache)
     if not samples:
         raise BoundaryError("rl_loss", "empty_rl_batch")
     began = time.perf_counter()
@@ -129,4 +142,130 @@ def rl_update(model: MStd, reference: MStd, optimizer: torch.optim.Optimizer,
             "anchor_loss": totals["anchor"] / len(anchor) if anchor else None,
             "mean_ratio": totals["ratio"] / count, "clipped_fraction": totals["clipped"] / count,
             "gradient_norm": norm, "rl_samples": count, "anchor_samples": len(anchor),
+            "update_seconds": time.perf_counter() - began}
+
+
+def _execution_update(model: MStd, reference: MStd, optimizer: torch.optim.Optimizer,
+                      samples: list[RlSample], anchor: list[tuple[Frame, int]],
+                      learning_rate: float, config: LossConfig,
+                      reference_cache: dict[str, torch.Tensor] | None,
+                      performance: PerformanceConfig,
+                      frame_cache: dict[object, TensorFrame] | None) -> dict[str, Any]:
+    """Same optimizer membership/objective; opt-in execution may change dropout order.
+
+    All losses use FP32 under autocast. Delayed checks still reject invalid
+    scores, reference distributions, losses or gradients before optimizer.step.
+    """
+    from stpd.p1.tensor_input import compile_frame
+
+    if not samples:
+        raise BoundaryError("rl_loss", "empty_rl_batch")
+    began = time.perf_counter()
+    device = model.ids.weight.device
+    cache = frame_cache if frame_cache is not None else {}
+
+    def frame(value: Frame, key: object) -> Any:
+        if not performance.tensor_cache:
+            return value
+        if key not in cache:
+            cache[key] = compile_frame(value, model)
+        return cache[key]
+
+    frames = [frame(s.frame, ("rl", s.key)) for s in samples]
+    anchor_frames = [frame(f, ("anchor", id(f))) for f, _ in anchor]
+
+    def groups(values: list[Any]) -> Any:
+        indices = list(range(len(values)))
+        if performance.bucket:
+            indices.sort(key=lambda i: (values[i].entity_count if hasattr(
+                values[i], "entity_count") else len(values[i].entities)))
+        return microbatches(values, indices, model)
+
+    valid_scores = torch.ones((), device=device, dtype=torch.bool)
+
+    def scores(member: MStd, values: list[Any]) -> list[torch.Tensor]:
+        nonlocal valid_scores
+        output = member.forward_batch(values, check_finite=not performance.defer_sync)
+        if performance.defer_sync:
+            valid_scores = valid_scores & torch.isfinite(torch.cat(output)).all()
+        return [row.float() for row in output]
+
+    for parameters in optimizer.param_groups:
+        parameters["lr"] = learning_rate
+    optimizer.zero_grad(set_to_none=True)
+    model.train()
+    metric_rows = []
+    zero = torch.zeros((), device=device)
+    for group in groups(frames):
+        batch = [samples[i] for i in group]
+        output = scores(model, [frames[i] for i in group])
+        packed = torch.nn.utils.rnn.pad_sequence(output, batch_first=True,
+                                                 padding_value=-torch.inf)
+        missing = [i for i in group if reference_cache is None
+                   or samples[i].key not in reference_cache]
+        computed: dict[str, torch.Tensor] = {}
+        if missing:
+            with torch.no_grad():
+                reference_rows = scores(reference, [frames[i] for i in missing])
+                # One transfer for the complete microbatch, not one per row.
+                logs = torch.nn.utils.rnn.pad_sequence(
+                    [F.log_softmax(row, -1) for row in reference_rows],
+                    batch_first=True, padding_value=-torch.inf).cpu()
+            computed = {samples[i].key: logs[row, :len(frames[i].choices)]
+                        for row, i in enumerate(missing)}
+            if reference_cache is not None:
+                reference_cache.update(computed)
+        rows = [(computed if reference_cache is None else reference_cache)[s.key]
+                for s in batch]
+        reference_log = torch.nn.utils.rnn.pad_sequence(
+            rows, batch_first=True, padding_value=-torch.inf).to(device)
+        # The current batch can have a wider action catalog than missing rows.
+        if reference_log.shape[1] < packed.shape[1]:
+            reference_log = F.pad(reference_log, (0, packed.shape[1] - reference_log.shape[1]),
+                                  value=-torch.inf)
+        log_probabilities = F.log_softmax(packed, dim=-1)
+        actions = torch.tensor([s.action for s in batch], device=device)
+        chosen = log_probabilities.gather(1, actions[:, None]).squeeze(1)
+        old = torch.tensor([math.log(s.old_probability) for s in batch], device=device)
+        weight = torch.tensor([min(s.old_probability / s.behavior_probability, config.rho_max)
+                               for s in batch], device=device)
+        advantage = torch.tensor([s.advantage for s in batch], device=device)
+        ratio = torch.exp(chosen - old)
+        clipped = torch.clamp(ratio, 1 - config.clip, 1 + config.clip)
+        policy = -weight * torch.minimum(ratio * advantage, clipped * advantage)
+        valid = torch.isfinite(log_probabilities) & torch.isfinite(reference_log)
+        difference = (log_probabilities.masked_fill(~valid, 0)
+                      - reference_log.masked_fill(~valid, 0))
+        kl = (log_probabilities.exp() * difference).sum(-1)
+        ((policy.sum() + config.kl_coef * kl.sum()) / len(samples)).backward()
+        metric_rows.append(torch.stack((policy.detach().sum(), kl.detach().sum(), zero,
+                                        ratio.detach().sum(),
+                                        ((ratio.detach() - 1).abs() > config.clip).sum())))
+    if anchor and config.anchor_coef > 0:
+        for group in groups(anchor_frames):
+            packed = torch.nn.utils.rnn.pad_sequence(
+                scores(model, [anchor_frames[i] for i in group]), batch_first=True,
+                padding_value=-torch.inf)
+            labels = torch.tensor([anchor[i][1] for i in group], device=device)
+            loss = F.cross_entropy(packed, labels, reduction="sum")
+            (config.anchor_coef * loss / len(anchor)).backward()
+            metric_rows.append(torch.stack((zero, zero, loss.detach(), zero, zero)))
+    gradients = [p.grad for p in model.parameters() if p.grad is not None]
+    norm = torch.nn.utils.clip_grad_norm_(model.parameters(), config.max_grad_norm)
+    # Transfer once, then retain the original microbatch-order host accumulation
+    # rather than replacing Python double accumulation with a device FP32 sum.
+    status = torch.cat((torch.stack(metric_rows).flatten(), norm.detach().reshape(1),
+                        valid_scores.float().reshape(1))).cpu().tolist()
+    totals = [sum(status[offset:-2:5]) for offset in range(5)]
+    policy_total, kl_total, anchor_total, ratio_total, clipped_total = totals
+    norm_value, valid_value = status[-2:]
+    if (not gradients or not valid_value or not all(math.isfinite(value) for value in (
+            policy_total, kl_total, anchor_total, norm_value))):
+        raise BoundaryError("rl_loss", "non_finite_update")
+    optimizer.step()
+    count = len(samples)
+    return {"policy_loss": policy_total / count, "kl": kl_total / count,
+            "anchor_loss": anchor_total / len(anchor) if anchor else None,
+            "mean_ratio": ratio_total / count, "clipped_fraction": clipped_total / count,
+            "gradient_norm": norm_value, "rl_samples": count, "anchor_samples": len(anchor),
             "update_seconds": time.perf_counter() - began}

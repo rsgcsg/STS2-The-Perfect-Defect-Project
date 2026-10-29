@@ -110,3 +110,38 @@ python -m spireagent.rl_tensorboard --peer-config peer.json --run <run> \
 学习者每轮 poll 前检查它，沿原 STOP 正常退出路径发末版本和完整检查点。仍需从实际
 `finished` 和检查点记录确认收尾完成；请求写成功不是已经停止。读写或校验失败明确报错。
 数值损失目前检查非有限数值；`kl_coef` 是损失系数，源码没有独立 KL 停止阈值。
+
+## D2 可选学习者执行（默认关闭）
+
+省略学习者配置的 `performance` 或写 `null` 时，仍走原更新实现。实验必须新建 run，
+冻结准确源码与配置，不在运行中的学习者或旧检查点上替换。它不改变 actor 包里的
+执行计划；训练时暂选的实现会在更新结束或异常时恢复，导出沿原包执行身份。
+
+```json
+"performance": {
+  "packed": true,
+  "tensor_cache": true,
+  "microbatch_size": 8,
+  "scene_attention_area": 262144,
+  "text_attention_area": 262144,
+  "bucket": false,
+  "defer_sync": true,
+  "precision": "fp32",
+  "tf32": false
+}
+```
+
+`packed` 复用已有完整 packed 计算；`tensor_cache` 只缓存不含权重、padding 或随机数的
+Input-v2 编译结果，退役样本随缓冲区移除。微批仍限 1–8；面积限制决定何时拆微批，
+不能截断超大样本。`bucket` 只按同一次优化器更新已选中的样本实体数排序，不换成员、
+不增加复用；它会改变 padding 和 dropout 抽样次序，必须另做质量对照。
+
+可选执行路径将损失计算保持 FP32，并集中回读指标；`defer_sync` 还把逐微批分数检查
+延后到优化器更新前，非有限分数、损失或梯度仍拒绝更新。参考模型始终保持 eval，
+缺失参考分布整微批一次回读，后续复用原缓存。
+
+`precision` 只允许 `fp32` / `bf16`；bf16 必须支持它的 CUDA，明确失败而不回退，
+并须核损失、梯度、KL/clip 和正式评估后再决定采用。TF32 只在 `tf32=true` 时临时打开
+矩阵乘法开关，并在退出时恢复；该 Torch 开关是进程全局，因此只能用于独立学习者
+进程，不能与其他需要不同精度的推理/训练共进程。增大 RL 更新批量仍用原
+`batch_size` / `anchor_batch`，属于另一个待验证的算法配置，不是微批提速开关。

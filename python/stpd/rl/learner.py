@@ -31,10 +31,12 @@ from spireagent.rl_tensorboard import TensorBoardMetrics
 from spireagent.source import source_identity
 from stpd.p1.export import export_model, input_spec, load_model, runtime_projection
 from stpd.p1.input import project
+from stpd.p1.tensor_input import TensorFrame
 from stpd.workers.checkpoint_codec import decode_checkpoint, encode_checkpoint
 from stpd.workers.training_io import CheckpointPublisher, FrozenCheckpoint, ProgressCadence
 
 from .loss import LossConfig, RlSample, rl_update
+from .performance import PerformanceConfig
 from .reward import REWARD_SPEC, episode_reward
 
 CONFIG_SCHEMA = "stpd/rl-learner-config-1"
@@ -72,6 +74,8 @@ class LearnerConfig:
     resume_checkpoint: str | None = None
     tensorboard_steps: int = 10
     loss: LossConfig = field(default_factory=LossConfig)
+    # Omitted means the exact legacy update path, not an implicit new plan.
+    performance: PerformanceConfig | None = None
 
     @classmethod
     def read(cls, path: Path) -> LearnerConfig:
@@ -79,7 +83,10 @@ class LearnerConfig:
         if value.pop("schema", None) != CONFIG_SCHEMA:
             raise BoundaryError("rl_learner", "unsupported_config")
         loss = LossConfig(**value.pop("loss", {}))
-        return cls(**value, loss=loss)
+        performance = value.pop("performance", None)
+        return cls(**value, loss=loss,
+                   performance=(PerformanceConfig(**performance)
+                                if performance is not None else None))
 
 
 @dataclass(frozen=True)
@@ -164,6 +171,7 @@ class Learner:
                                            weight_decay=config.weight_decay)
         self.buffer: list[Buffered] = []
         self.reference_cache: dict[str, torch.Tensor] = {}
+        self.frame_cache: dict[object, TensorFrame] = {}
         self.returns: collections.deque[float] = collections.deque(maxlen=config.baseline_window)
         self.seen: set[str] = set()
         self.counts: collections.Counter[str] = collections.Counter()
@@ -409,6 +417,9 @@ class Learner:
         live = {item.sample.key for item in kept}
         for key in [k for k in self.reference_cache if k not in live]:
             del self.reference_cache[key]
+        for frame_key in [k for k in self.frame_cache
+                          if isinstance(k, tuple) and k[0] == "rl" and k[1] not in live]:
+            del self.frame_cache[frame_key]
         return kept
 
     # Training ---------------------------------------------------------
@@ -433,7 +444,8 @@ class Learner:
                   if self.anchor else [])
         result = rl_update(self.model, self.reference, self.optimizer,
                            [item.sample for item in batch], anchor, self.config.lr,
-                           self.config.loss, self.reference_cache)
+                           self.config.loss, self.reference_cache,
+                           performance=self.config.performance, frame_cache=self.frame_cache)
         self.updates += 1
         result.update(update=self.updates, version=self.version,
                       buffer_size=len(self.buffer),
