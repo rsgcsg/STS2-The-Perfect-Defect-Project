@@ -201,9 +201,37 @@ def test_learner_resumes_a_run_from_its_published_full_checkpoint(tmp_path, monk
     second.maybe_version(force=True)
     second._collect_version(wait=True)
     assert second.exchange.latest_model()["parent_version"] == 1
-    for learner in (first, second):
-        learner._take_checkpoint(wait=True)
-        learner.checkpoints.__exit__(None)
+    second.exchange.request_stop("test_wall_limit")
+    summary = second.run()
+    assert summary["updates"] == 4
+    assert second.exchange.latest_checkpoint()["version"] == 2
+    assert second.exchange.latest_event()["kind"] == "finished"
+    first._take_checkpoint(wait=True)
+    first.checkpoints.__exit__(None)
+
+
+def test_learner_failure_is_last_remote_event_after_cleanup(tmp_path, monkeypatch):
+    from spireagent.workbench.rl_learner import IO
+    from stpd.p1.export import export_model
+    from stpd.rl import learner as module
+    from stpd.rl.learner import Learner, LearnerConfig
+
+    monkeypatch.setattr(module, "source_identity", lambda _root: PRODUCER)
+    package, checkpoint = tmp_path / "start", tmp_path / "start.tensor-tree"
+    checkpoint.write_bytes(b"synthetic start checkpoint")
+    export_model(MStd(fit_vocabulary([project(observation())])), checkpoint, package,
+                 {"scope": "synthetic"})
+    learner = Learner(LearnerConfig(run="failure", start_package=str(package),
+        peer={"kind": "local", "directory": str(tmp_path / "peer")}), tmp_path / "work", IO)
+
+    def fail():
+        raise BoundaryError("rl_loss", "non_finite_update")
+
+    monkeypatch.setattr(learner, "poll", fail)
+    with pytest.raises(BoundaryError, match="non_finite_update"):
+        learner.run()
+    event = learner.exchange.latest_event()
+    assert event["kind"] == "failed" and event["error_code"] == "non_finite_update"
 
 
 def test_actor_switches_to_the_newest_fetched_version_between_ledgers(tmp_path, monkeypatch):
