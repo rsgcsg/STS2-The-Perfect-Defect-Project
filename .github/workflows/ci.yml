@@ -6,6 +6,8 @@ on:
       - develop
       - main
   pull_request:
+    # Drafts skip the full test lanes; marking Ready re-runs everything.
+    types: [opened, synchronize, reopened, ready_for_review]
   merge_group:
     types: [checks_requested]
   workflow_dispatch:
@@ -92,13 +94,13 @@ jobs:
 
   linux-portability:
     needs: plan
-    if: github.event_name != 'schedule' && (needs.plan.outputs.scope == 'full' || needs.plan.outputs.scope == 'python')
+    if: github.event_name != 'schedule' && !github.event.pull_request.draft && (needs.plan.outputs.scope == 'full' || needs.plan.outputs.scope == 'python')
     runs-on: ubuntu-latest
     timeout-minutes: 55
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3]
+        shard: [1, 2, 3, 4, 5, 6]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -139,7 +141,7 @@ jobs:
       - name: Run selected portable source/test gate
         env:
           CHECK_SCOPE: ${{ needs.plan.outputs.scope }}
-        run: node tools/check-plan.mjs execute --pytest-shard ${{ matrix.shard }}/3
+        run: node tools/check-plan.mjs execute --pytest-shard ${{ matrix.shard }}/6
       - name: Retain Python test timings and failures
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -164,7 +166,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3]
+        shard: [1, 2, 3, 4, 5, 6]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -193,7 +195,7 @@ jobs:
       - name: Run selected portable source/test gate
         env:
           CHECK_SCOPE: full
-        run: node tools/check-plan.mjs execute --pytest-shard ${{ matrix.shard }}/3
+        run: node tools/check-plan.mjs execute --pytest-shard ${{ matrix.shard }}/6
       - name: Retain Python test timings and failures
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -236,7 +238,7 @@ jobs:
           retention-days: 90
 
   portable:
-    if: ${{ always() && github.event_name != 'schedule' }}
+    if: ${{ always() && github.event_name != 'schedule' && !github.event.pull_request.draft }}
     needs: [plan, docs, repository, linux-portability]
     runs-on: ubuntu-latest
     timeout-minutes: 5
