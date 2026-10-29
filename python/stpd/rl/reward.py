@@ -1,18 +1,20 @@
-"""Episode reward (user-approved 10-28): win 1; loss 0.5*floor/finish + 0.1 per act Boss.
+"""Episode reward v2 (user-approved 10-29): quadratic progress plus public Boss bonus.
 
 Boss clearance counts only the trajectory's public witnesses; a missing witness
-is null and contributes nothing (never guessed from floors). Every loss scores
-strictly below a win.
+is null and contributes nothing (never guessed from floors). A0 has 48 floors
+and 3 Bosses; A10 has 49 floors and 4 Bosses. Clearing the final Boss is a win,
+whose reward is 1, rather than a capped loss. Original terminal facts are retained.
 """
 from __future__ import annotations
 
 from typing import Any
 
-from stpd.p1.value_targets import VALUE_TARGET_SPEC
-
-REWARD_SPEC = {"id": "stpd-rl-episode-reward", "version": "1", "win": 1.0,
+REWARD_SPEC = {"id": "stpd-rl-episode-reward", "version": "2", "win": 1.0,
                "loss_floor_scale": 0.5, "boss_bonus": 0.1,
-               "finish_floors": VALUE_TARGET_SPEC["auxiliary"]["finish_floors"],
+               "loss_progress_exponent": 2,
+               "finish_floors": {"0": 48, "10": 49},
+               "boss_totals": {"0": 3, "10": 4},
+               "win_source": "observed natural terminal win (final Boss defeated)",
                "boss_source": "outcome.boss_clearance (public witnesses only)"}
 
 
@@ -33,6 +35,6 @@ def episode_reward(episode: dict[str, Any]) -> tuple[float | None, str]:
     if not finish or type(floor) is not int or floor < 0:
         return None, "no_floor"
     bosses = (outcome.get("boss_clearance") or {}).get("count") or 0
-    reward = REWARD_SPEC["loss_floor_scale"] * min(floor / finish, 1.0)
+    reward = REWARD_SPEC["loss_floor_scale"] * min(floor / finish, 1.0) ** 2
     reward += REWARD_SPEC["boss_bonus"] * bosses
-    return min(reward, 0.99), "loss"
+    return reward, "loss"

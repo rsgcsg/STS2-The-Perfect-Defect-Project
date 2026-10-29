@@ -68,11 +68,31 @@ def test_reward_win_beats_every_loss_and_unknown_is_excluded():
     best_loss = episode_reward(_episode("loss", floor=48, bosses=3))[0]
     assert best_loss is not None and best_loss < 1.0
     early = episode_reward(_episode("loss", floor=12, bosses=0))[0]
-    assert early == pytest.approx(0.5 * 12 / 48)
+    assert early == pytest.approx(0.5 * (12 / 48) ** 2)
     assert episode_reward(_episode("loss", floor=20, bosses=None))[0] == pytest.approx(
-        0.5 * 20 / 48)
+        0.5 * (20 / 48) ** 2)
     assert episode_reward(_episode(None, status="unknown")) == (None, "unknown")
     assert episode_reward(_episode("loss", floor=None))[0] is None
+
+
+@pytest.mark.parametrize("ascension,finish,bosses", [(0, 48, 3), (10, 49, 4)])
+def test_reward_v2_fixed_progress_quadratic_boss_totals_and_final_win(ascension, finish, bosses):
+    from stpd.rl.reward import REWARD_SPEC
+
+    assert REWARD_SPEC["version"] == "2"
+    assert REWARD_SPEC["finish_floors"][str(ascension)] == finish
+    assert REWARD_SPEC["boss_totals"][str(ascension)] == bosses
+    episode = _episode("loss", floor=finish // 2, bosses=bosses - 1)
+    episode["identity"]["ascension"] = ascension
+    assert episode_reward(episode) == (pytest.approx(
+        0.5 * (finish // 2 / finish) ** 2 + 0.1 * (bosses - 1)), "loss")
+    episode["outcome"]["max_observed_floor"] = finish + 100
+    assert episode_reward(episode) == (pytest.approx(0.5 + 0.1 * (bosses - 1)), "loss")
+    episode["outcome"]["terminal"]["result"] = "win"
+    episode["outcome"]["boss_clearance"]["count"] = bosses
+    assert episode_reward(episode) == (1.0, "win")
+    episode["outcome"]["unknown"] = True
+    assert episode_reward(episode) == (None, "unknown")
 
 
 def _model_artifact(store, weights=b"weights-v0"):
