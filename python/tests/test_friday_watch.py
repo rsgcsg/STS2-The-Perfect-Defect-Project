@@ -108,3 +108,52 @@ def test_terminal_evaluation_without_result_is_attention_and_never_reoffered(wat
     assert instance.state['pending']['state'] == 'terminal_without_result'
     assert events[0]['reason'] == 'evaluation_job_terminal_without_result_no_retry'
     assert instance.state['pending']['job_id'] == '123'
+
+
+def test_split_runtime_submit_cli_keeps_strict_module_origin(watch, tmp_path):
+    import os
+    import subprocess
+    import textwrap
+
+    batch = module('split_batch', FRIDAY / 'batch.py')
+    with patch.dict(sys.modules, {'evaluate': watch.evaluate, 'submit': watch.scheduler, 'batch': batch}):
+        rl = module('split_rl', FRIDAY / 'rl.py')
+    frozen = tmp_path / 'frozen-source'
+    package = frozen / 'python/spireagent'
+    (package / 'workbench').mkdir(parents=True)
+    for file in ('__init__.py', 'rl_exchange.py', 'workbench/__init__.py', 'workbench/rl_actor.py'):
+        (package / file).write_text('# frozen import-origin fixture; no actor executes\n')
+    peer = {'kind': 's3', 'bucket': 'test', 'endpoint': 'https://example.invalid',
+            'prefix': 'test', 'region': 'auto'}
+    execution = tmp_path / 'execution.json'
+    execution.write_text(json.dumps({'schema': 'spireagent/managed-evaluation-execution-v1',
+        'candidate_directory': str(tmp_path), 'peer': peer, 'store': 's3', 'retention': rl.RETENTION}))
+    learner = tmp_path / 'learner.json'
+    learner.write_text(json.dumps({'schema': 'stpd/rl-learner-config-1', 'run': 'rl2', 'peer': peer}))
+    output = tmp_path / 'plan'
+    rl.prepare(execution, learner, output, actors=12, wall_seconds=75600,
+               seed_namespace='rl2-training', runtime_source=frozen)
+    driver = textwrap.dedent('''\
+        import sys
+        from pathlib import Path
+        sys.path.insert(0, sys.argv[1])
+        import rl
+        # Only site-specific scheduler IO/lock path are replaced, as in other Friday tests.
+        lock_path = Path(sys.argv[2])
+        rl.scheduler.submission_lock_path = lambda: lock_path
+        rl.scheduler.output = lambda args: '0/400/0/400' if args[0] == 'sinfo' else ''
+        sys.argv = ['rl.py', 'submit', '--plan', sys.argv[3], '--dry-run']
+        rl.main()
+        ''')
+    result = subprocess.run([sys.executable, '-c', driver, str(FRIDAY),
+          str(tmp_path / 'private/submit.lock'), str(output / 'plan.json')],
+          capture_output=True, text=True, check=True, timeout=15,
+          env={'PATH': os.defpath, 'PYTHONPATH': str(frozen / 'python')})
+    submission = json.loads(result.stdout)
+    assert submission['dry_run'] is True and submission['cores'] == 12
+    assert '--time=1265' in submission['command']
+    assert '--array=0-11%12' in submission['command']
+    launcher = (output / 'launch.sh').read_text()
+    assert f'source_root={frozen}' in launcher
+    assert 'export PYTHONPATH="$source_root/python"' in launcher
+    assert not (output / 'submission.json').exists()
