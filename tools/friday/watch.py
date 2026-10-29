@@ -307,7 +307,13 @@ class Watcher:
                         drain_complete=complete, drain_timeout=expired)
                     if complete or expired:
                         return
-            time.sleep(self.config.get('poll_seconds', 900))
+            interval = self.config.get('poll_seconds', 900)
+            if self.state['stop']:
+                interval = min(interval, max(0, 2400 - (time.time() - self.state['drain_started_at'])))
+            else:
+                interval = min(interval, max(0, self.config['started_at']
+                    + self.config['wall_seconds'] - time.time()))
+            time.sleep(interval)
 
 
 def main():
