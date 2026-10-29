@@ -921,6 +921,9 @@ class Learner:
                         min(self.config.exchange_poll_seconds, self.config.remote_stop_seconds)
                         if self.config.background_io else self.config.exchange_poll_seconds)
                 self._collect_version(wait=False)
+                # A slower full checkpoint can finish after its model. Acknowledge
+                # it while waiting for data too, without waiting for another version.
+                self._take_checkpoint(wait=False)
                 began = time.monotonic()
                 result = self.train_once()
                 if result is None:

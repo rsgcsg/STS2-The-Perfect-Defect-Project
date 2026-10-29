@@ -237,6 +237,41 @@ def test_first_update_eval_gate_checks_complete_original_probabilities(
     learner.run()
 
 
+def test_ready_checkpoint_is_acknowledged_while_waiting_for_data(tmp_path, monkeypatch):
+    import threading
+
+    learner, _ = configured(tmp_path, monkeypatch, poll_seconds=.001, wall_seconds=2)
+    learner._admit([incoming(learner)])
+    learner.train_once()
+    release = threading.Event()
+    publish = learner.checkpoints.publish
+
+    def delayed(snapshot):
+        assert release.wait(30)
+        return publish(snapshot)
+
+    monkeypatch.setattr(learner.checkpoints, 'publish', delayed)
+    try:
+        learner.maybe_version(force=True)
+        learner._collect_version(wait=True)
+        assert learner.exchange.latest_checkpoint() is None
+        release.set()
+        learner.checkpoints._pending.result(timeout=30)
+        observed = []
+
+        def idle():
+            observed.append(learner.exchange.latest_checkpoint())
+            (learner.work / 'STOP').touch()
+            return None
+
+        monkeypatch.setattr(learner, 'train_once', idle)
+        learner.run()
+        assert observed[0] is not None and observed[0]['version'] == 1
+        assert learner.updates == 1
+    finally:
+        release.set()
+
+
 def test_checkpoint_resume_preserves_saved_buffer_order_and_rng(tmp_path, monkeypatch):
     first, _ = configured(tmp_path, monkeypatch)
     rows = {}
