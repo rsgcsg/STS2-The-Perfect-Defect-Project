@@ -27,6 +27,7 @@ import torch
 
 from spireagent.json_boundary import BoundaryError, json_bytes
 from spireagent.rl_exchange import Exchange
+from spireagent.rl_tensorboard import TensorBoardMetrics
 from spireagent.source import source_identity
 from stpd.p1.export import export_model, input_spec, load_model, runtime_projection
 from stpd.p1.input import project
@@ -69,6 +70,7 @@ class LearnerConfig:
     # Explicit full learner checkpoint artifact id to continue this run from
     # (a new machine or a new 5 h allocation); never picked implicitly.
     resume_checkpoint: str | None = None
+    tensorboard_steps: int = 10
     loss: LossConfig = field(default_factory=LossConfig)
 
     @classmethod
@@ -127,11 +129,15 @@ class Timer:
 class Learner:
     def __init__(self, config: LearnerConfig, work: Path, io: LearnerIO) -> None:
         self.config, self.work, self.io = config, work, io
+        if type(config.tensorboard_steps) is not int or config.tensorboard_steps < 0:
+            raise BoundaryError("rl_learner", "invalid_tensorboard_steps")
         work.mkdir(parents=True, exist_ok=True)
         torch.manual_seed(config.seed)
         torch.set_num_threads(config.threads)
         self.random = random.Random(config.seed)
         self.exchange = Exchange(config.peer, config.run)
+        self.metrics = (TensorBoardMetrics(self.exchange, work / "tb")
+                        if config.tensorboard_steps else None)
         self.producer = source_identity(ROOT)
         self.device = _device(config.device)
         if config.start_package:
@@ -430,6 +436,10 @@ class Learner:
                            self.config.loss, self.reference_cache)
         self.updates += 1
         result.update(update=self.updates, version=self.version,
+                      buffer_size=len(self.buffer),
+                      mean_staleness=sum(self.version - item.sample.model_version
+                                         for item in batch) / len(batch),
+                      max_staleness=max(self.version - item.sample.model_version for item in batch),
                       sample_versions=dict(collections.Counter(
                           item.sample.model_version for item in batch)))
         return result
@@ -455,7 +465,7 @@ class Learner:
         return destination, raw
 
     def _publish(self, version: int, parent: int, destination: Path,
-                 shards: list[str]) -> dict[str, Any]:
+                 shards: list[str], updates: int, rl_samples: int) -> dict[str, Any]:
         began = time.monotonic()
         manifest = self.io.publish_model(self.exchange.store, destination, self.producer)
         record = self.exchange.publish_model({
@@ -463,8 +473,8 @@ class Learner:
             "model_artifact_id": manifest.artifact_id,
             "model_sha256": manifest.payload("weights").sha256,
             "origin_artifact_id": self.config.start_artifact_id,
-            "training": {"updates": self.updates, "shard_records": shards,
-                         "rl_samples": self.counts["rl_samples"]},
+            "training": {"updates": updates, "shard_records": shards,
+                         "rl_samples": rl_samples},
             "published_at": time.time()})
         record["publish_seconds"] = time.monotonic() - began
         return record
@@ -490,6 +500,8 @@ class Learner:
             self.exchange.publish_checkpoint(version, taken[0].artifact_id)
             self._event("checkpoint_published", artifact=taken[0].artifact_id,
                         version=version, **taken[1])
+            if self.metrics is not None:
+                self.metrics.publish()
 
     def maybe_version(self, force: bool = False) -> None:
         due = self.updates - self.version_updates
@@ -505,22 +517,49 @@ class Learner:
         state = self._state() if not self.checkpoints.pending else None
         self.timer.add("version_capture", began)
         self.pending_version = self.publisher.submit(self._publish, version, parent,
-                                                     destination, sorted(self.seen))
+            destination, sorted(self.seen), self.updates, self.counts["rl_samples"])
         if state is not None:
             self.checkpoints.submit(FrozenCheckpoint(state, (), FrozenObject.of(
                 {"schema": CHECKPOINT_SCHEMA, "run": self.config.run, "version": version,
                  "updates": self.updates, "start_package_sha256": self.start_sha256}), 0.0))
 
+    def _final_checkpoint(self) -> None:
+        """A busy background publisher may have skipped the last version's capture."""
+        from spireagent.json_boundary import FrozenObject
+
+        latest = self.exchange.latest_checkpoint()
+        if self.lineage_version and (latest is None or latest["version"] < self.lineage_version):
+            self.checkpoints.submit(FrozenCheckpoint(self._state(), (), FrozenObject.of(
+                {"schema": CHECKPOINT_SCHEMA, "run": self.config.run,
+                 "version": self.lineage_version, "updates": self.updates,
+                 "start_package_sha256": self.start_sha256}), 0.0))
+            self._take_checkpoint(wait=True)
+
     def _event(self, kind: str, **fields: Any) -> None:
+        self.last_event_at = time.monotonic()
         self.log.write(json.dumps({"at": time.time(), "kind": kind, **fields},
                                   sort_keys=True) + "\n")
         self.log.flush()
+        staleness = [max(0, getattr(self, "version", 0) - item.sample.model_version)
+                     for item in self.buffer]
+        self.exchange.publish_event(kind, **{
+            "version": getattr(self, "version", 0), "updates": self.updates,
+            "counts": dict(self.counts), "seen_shards": sorted(self.seen),
+            "buffer_size": len(self.buffer),
+            "timing": self.timer.report(),
+            "mean_staleness": sum(staleness) / len(staleness) if staleness else 0,
+            "max_staleness": max(staleness, default=0), **fields})
 
     def run(self) -> dict[str, Any]:
         deadline = time.monotonic() + self.config.wall_seconds
         clean = False
+        failure: Exception | None = None
         try:
             while time.monotonic() < deadline and not (self.work / "STOP").exists():
+                stop = self.exchange.stop_request()
+                if stop is not None:
+                    self._event("stop_requested", reason=stop["reason"])
+                    break
                 began = time.monotonic()
                 self.poll()
                 self.timer.add("poll", began)
@@ -532,8 +571,15 @@ class Learner:
                     began = time.monotonic()
                     time.sleep(self.config.poll_seconds if not self.reads else 0.2)
                     self.timer.add("wait_for_data", began)
+                    if time.monotonic() - self.last_event_at >= 30:
+                        self._event("waiting")
                     continue
                 self.timer.add("train", began)
+                if self.metrics is not None and self.updates % self.config.tensorboard_steps == 0:
+                    self.metrics.scalars({f"train/{name}": result[name] for name in (
+                        "policy_loss", "anchor_loss", "kl", "clipped_fraction", "mean_ratio",
+                        "gradient_norm", "buffer_size", "mean_staleness", "max_staleness")},
+                        self.updates)
                 if self.cadence.offer(self.updates, result):
                     self._event("progress", **result, counts=dict(self.counts))
                     self.cadence.published()
@@ -541,17 +587,32 @@ class Learner:
                 if self.version >= self.config.max_versions:  # run-wide, survives resume
                     break
             clean = True
+        except Exception as error:
+            failure = error
+            raise
         finally:
             # A stop or deadline (end of an allocation) keeps every finished update:
             # one last version plus a full checkpoint a successor can resume from.
-            self._take_checkpoint(wait=clean)
-            if clean:
-                self.maybe_version(force=True)
-            self._collect_version(wait=True)
-            self._take_checkpoint(wait=clean)
-            self.checkpoints.__exit__(None)
-            self.reader.shutdown(wait=False, cancel_futures=True)
-            self.publisher.shutdown(wait=True)
+            try:
+                self._take_checkpoint(wait=clean)
+                if clean:
+                    self.maybe_version(force=True)
+                self._collect_version(wait=True)
+                self._take_checkpoint(wait=clean)
+                if clean:
+                    self._final_checkpoint()
+                self.checkpoints.__exit__(None)
+                if self.metrics is not None:
+                    self.metrics.publish()
+            except Exception as error:
+                failure = failure or error
+                raise
+            finally:
+                self.reader.shutdown(wait=False, cancel_futures=True)
+                self.publisher.shutdown(wait=True)
+                if failure is not None:
+                    self._event("failed", error_type=type(failure).__name__,
+                                error_code=getattr(failure, "code", None))
         summary = {"schema": "stpd/rl-learner-summary-1", "run": self.config.run,
                    "updates": self.updates, "versions": [v["version"] for v in self.versions],
                    "version_artifacts": {str(v["version"]): v["model_artifact_id"]

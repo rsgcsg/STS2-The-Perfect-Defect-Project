@@ -44,8 +44,8 @@ test("CI contract rejects replacing selected gates with a hand-picked subset", (
 
 test("partition scheduling cannot drop siblings, defaults, diagnostics or original artifact isolation", () => {
   for (const [before, after, error] of [
-    ["fail-fast: false", "fail-fast: true", "Linux must retain three isolated pytest shards"],
-    ["shard: [1, 2, 3]", "shard: [1, 2]", "Linux must retain three isolated pytest shards"],
+    ["fail-fast: false", "fail-fast: true", "Linux must retain six isolated pytest shards"],
+    ["shard: [1, 2, 3, 4, 5, 6]", "shard: [1, 2, 3, 4, 5]", "Linux must retain six isolated pytest shards"],
     ["timeout-minutes: 55", "timeout-minutes: 60", "Linux must retain its 55-minute budget"],
     ["python/.local/fixture-diagnostics/**", "omitted.json", "Linux must retain uniquely named original shard diagnostics"],
     ["python/.local/pytest-shard.json", "omitted.json", "Linux must retain uniquely named original shard diagnostics"],
@@ -53,6 +53,17 @@ test("partition scheduling cannot drop siblings, defaults, diagnostics or origin
     ["pattern: pytest-Linux-shard-*-${{ github.run_attempt }}", "pattern: pytest-*", "portable must download separate original current-run shard artifacts"],
   ]) assert.ok(ciWorkflowErrors(currentSource().replaceAll(before, after)).includes(error), error);
   assert.ok(ciWorkflowErrors(currentSource() + "\n# PYTEST_ADDOPTS\n").includes("CI must not inherit pytest shard selection into child tests"));
+});
+
+test("drafts skip only the full lanes and Ready restarts them", () => {
+  for (const [before, after, error] of [
+    ["types: [opened, synchronize, reopened, ready_for_review]", "types: [opened, synchronize, reopened]",
+      "CI must re-run when a draft becomes ready for review"],
+    ["github.event_name != 'schedule' && !github.event.pull_request.draft && (needs", "github.event_name != 'schedule' && !github.event.pull_request && (needs",
+      "Linux portability must skip only draft pull requests"],
+    ["github.event_name != 'schedule' && !github.event.pull_request.draft }}", "github.event_name != 'schedule' && !github.event.pull_request }}",
+      "portable must evaluate failed/cancelled dependencies"],
+  ]) assert.ok(ciWorkflowErrors(currentSource().replace(before, after)).includes(error), error);
 });
 
 test("CI keeps the bounded Windows capacity adjustment separate from Linux's existing budget", () => {

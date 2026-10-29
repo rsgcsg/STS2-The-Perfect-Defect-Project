@@ -77,6 +77,7 @@ Managed 与 Reference 的差异按序判（用户 10-27 批）：规则/效果/�
 2. 变化回原处：功能/操作→地图对应行和原 SOP，含义/理由→规格/DECISIONS/ADR，主线→唯一集成者替换 CURRENT；只改受影响处。重复问题补旧解法，未修项留原待办。
 3. 任务目录 `CLOSEOUT.md` 记结束时间、结果/ref、活动进程及 owner、恢复/R2收据、保留/可重建项。CURRENT ≤40 行、无历史段由原 closeout 检查；语义新鲜度仍靠亲核。
 4. 关闭/删除先归档 tag 并守原批准。收口满 7 天、无占用、非 tracked、有源码/锁可重建的依赖缓存可清并留收据；整目录先批，独有原件先 R2 完整读回。交接文件夹只移动不删，历史正文/失败不改写。
+5. 以后才做的事记成 GitHub Issue 并加 `backlog` 标签，正文写触发条件、要做什么、背景；做完由 PR 写 `Fixes #N` 关闭。仓库公开，Issue 里不写个人用户名、本机路径或邮箱。
 
 新建议先问目标、真实问题和已有解法；采纳就改原处一条、记理由，能并不另加。有用的未采纳取舍留原任务。入口失效、新人走错、重复成本或阶段变化才开限时管理任务；不让规则建设成为产品主线。稳定、反复且非显然的高成本流程才考虑 [Skill](PROJECT_SYSTEM.md#skills)。详细分工/恢复见 [AI_COLLABORATION](AI_COLLABORATION.md)，文件归属见 [PROJECT_SYSTEM](PROJECT_SYSTEM.md)，Git 见[开发流程](DEVELOPMENT_WORKFLOW.md)。
 

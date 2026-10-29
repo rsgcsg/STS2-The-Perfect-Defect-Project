@@ -31,6 +31,7 @@ l1 = [
 ]
 ml = [
   "torch>=2.7,<3",
+  "tensorboard>=2.20,<3",
 ]
 l2 = [
   "safetensors>=0.5,<1",

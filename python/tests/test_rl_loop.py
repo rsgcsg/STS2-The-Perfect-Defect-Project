@@ -201,9 +201,120 @@ def test_learner_resumes_a_run_from_its_published_full_checkpoint(tmp_path, monk
     second.maybe_version(force=True)
     second._collect_version(wait=True)
     assert second.exchange.latest_model()["parent_version"] == 1
-    for learner in (first, second):
-        learner._take_checkpoint(wait=True)
-        learner.checkpoints.__exit__(None)
+    second.exchange.request_stop("test_wall_limit")
+    summary = second.run()
+    assert summary["updates"] == 4
+    assert second.exchange.latest_checkpoint()["version"] == 2
+    assert second.exchange.latest_event()["kind"] == "finished"
+    first._take_checkpoint(wait=True)
+    first.checkpoints.__exit__(None)
+
+
+def test_learner_failure_is_last_remote_event_after_cleanup(tmp_path, monkeypatch):
+    from spireagent.workbench.rl_learner import IO
+    from stpd.p1.export import export_model
+    from stpd.rl import learner as module
+    from stpd.rl.learner import Learner, LearnerConfig
+
+    monkeypatch.setattr(module, "source_identity", lambda _root: PRODUCER)
+    package, checkpoint = tmp_path / "start", tmp_path / "start.tensor-tree"
+    checkpoint.write_bytes(b"synthetic start checkpoint")
+    export_model(MStd(fit_vocabulary([project(observation())])), checkpoint, package,
+                 {"scope": "synthetic"})
+    learner = Learner(LearnerConfig(run="failure", start_package=str(package),
+        peer={"kind": "local", "directory": str(tmp_path / "peer")}), tmp_path / "work", IO)
+
+    def fail():
+        raise BoundaryError("rl_loss", "non_finite_update")
+
+    monkeypatch.setattr(learner, "poll", fail)
+    with pytest.raises(BoundaryError, match="non_finite_update"):
+        learner.run()
+    event = learner.exchange.latest_event()
+    assert event["kind"] == "failed" and event["error_code"] == "non_finite_update"
+
+
+def test_stop_captures_latest_version_skipped_while_checkpoint_publisher_was_busy(
+        tmp_path, monkeypatch):
+    import threading
+
+    from spireagent.workbench.rl_learner import IO
+    from stpd.p1.export import export_model
+    from stpd.rl import learner as module
+    from stpd.rl.learner import Learner, LearnerConfig
+
+    monkeypatch.setattr(module, "source_identity", lambda _root: PRODUCER)
+    package, checkpoint = tmp_path / "start", tmp_path / "start.tensor-tree"
+    checkpoint.write_bytes(b"synthetic start checkpoint")
+    export_model(MStd(fit_vocabulary([project(observation())])), checkpoint, package,
+                 {"scope": "synthetic"})
+    learner = Learner(LearnerConfig(run="busy-checkpoint", start_package=str(package),
+        peer={"kind": "local", "directory": str(tmp_path / "peer")}), tmp_path / "work", IO)
+    gate = threading.Event()
+    publish = learner.checkpoints.publish
+
+    def blocked_publish(snapshot):
+        assert gate.wait(timeout=30)
+        return publish(snapshot)
+
+    monkeypatch.setattr(learner.checkpoints, "publish", blocked_publish)
+    try:
+        learner.updates = 1
+        learner.maybe_version(force=True)
+        learner._collect_version(wait=True)
+        learner.updates = 2
+        learner.maybe_version(force=True)
+        learner._collect_version(wait=True)
+        assert learner.exchange.latest_model()["version"] == 2
+        assert learner.exchange.latest_checkpoint() is None
+    finally:
+        gate.set()
+    learner.exchange.request_stop("test_wall_limit")
+    learner.run()
+    record = learner.exchange.latest_checkpoint()
+    assert record["version"] == learner.exchange.latest_model()["version"] == 2
+    manifest = learner.exchange.store.get_manifest(record["checkpoint_artifact_id"])
+    assert manifest.parameters.value()["updates"] == learner.updates == 2
+    assert learner.exchange.latest_event()["kind"] == "finished"
+
+
+def test_model_publication_uses_counters_frozen_with_its_weights(tmp_path, monkeypatch):
+    import threading
+
+    from spireagent.workbench.rl_learner import IO
+    from stpd.p1.export import export_model
+    from stpd.rl import learner as module
+    from stpd.rl.learner import Learner, LearnerConfig
+
+    monkeypatch.setattr(module, "source_identity", lambda _root: PRODUCER)
+    package, checkpoint = tmp_path / "start", tmp_path / "start.tensor-tree"
+    checkpoint.write_bytes(b"synthetic start checkpoint")
+    export_model(MStd(fit_vocabulary([project(observation())])), checkpoint, package,
+                 {"scope": "synthetic"})
+    learner = Learner(LearnerConfig(run="frozen-counters", start_package=str(package),
+        peer={"kind": "local", "directory": str(tmp_path / "peer")}), tmp_path / "work", IO)
+    gate = threading.Event()
+    publish = learner._publish
+
+    def blocked_publish(*args):
+        assert gate.wait(timeout=30)
+        return publish(*args)
+
+    monkeypatch.setattr(learner, "_publish", blocked_publish)
+    try:
+        learner.updates, learner.counts["rl_samples"] = 1, 10
+        learner.maybe_version(force=True)
+        learner.updates, learner.counts["rl_samples"] = 2, 20
+    finally:
+        gate.set()
+    learner._collect_version(wait=True)
+    record = learner.exchange.latest_model()
+    descriptor = json.loads((learner.work / "versions/000001/model.json").read_bytes())
+    assert record["training"]["updates"] == descriptor["training_identity"]["updates"] == 1
+    assert record["training"]["rl_samples"] == 10
+    assert learner.updates == 2 and learner.counts["rl_samples"] == 20
+    learner.exchange.request_stop("test_wall_limit")
+    learner.run()
 
 
 def test_actor_switches_to_the_newest_fetched_version_between_ledgers(tmp_path, monkeypatch):
