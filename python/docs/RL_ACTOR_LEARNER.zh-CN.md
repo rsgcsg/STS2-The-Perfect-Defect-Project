@@ -206,3 +206,12 @@ pinned 或可变缓冲区。运行态开关退出后恢复，不进入模型 sta
 旧 actor 在本地注册自己的 adapter。因此可先保留 actor 部署，离线用其准确旧源码
 实测 load/register/installation，再在用户批准的换代点做真实短核。若升级 actor
 Python，则必须重建其准确 producer/agent_adapter 配置，不能只覆盖源码。
+
+`precompile_inputs=true`（须启用 `tensor_cache`）在已有分片 reader 线程中完成 RL
+非学习输入编译，更新消费完整 TensorFrame。reader 使用冻结 reference 的词表/token
+缓存，显式在 CPU 创建元数据，不调用 GPU、不推进随机数、不碰 learner 的 token
+缓存；anchor 保持原路径。先从原 Frame 绑定动作再编译，准入、陈旧、复用与检查点
+不变，续训仍沿原 `_read` 重建。它可能为最终过期的轨迹多做 CPU 工作，因此需同时
+检查 reader 吞吐和准入等待。测速脚本把该 CPU 预备时间单列；消费侧提速不等于
+端到端节省了同样时间。做严格计时对照时把 `profile` 放进单独进程／计划，避免
+profiler保留的内存和收集开销影响相邻候选。

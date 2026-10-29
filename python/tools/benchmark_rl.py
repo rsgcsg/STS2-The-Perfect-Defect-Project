@@ -14,6 +14,7 @@ import math
 import random
 import statistics
 import time
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager, nullcontext
 from dataclasses import asdict
 from pathlib import Path
@@ -216,6 +217,21 @@ def main() -> None:
             result["compile_setup_seconds"] = time.monotonic() - compile_began
             cache: dict[str, torch.Tensor] = {}
             frame_cache: dict[Any, Any] = {}
+            prepared_frames = frames
+            if config is not None and config.precompile_inputs:
+                # Same CPU-only producer function as the shard reader. Preparation
+                # is separately charged; this window measures the consuming update.
+                from stpd.p1.tensor_input import compile_frame
+
+                def prepare_inputs(member: Any) -> list[Any]:
+                    with torch.device("cpu"):
+                        return [compile_frame(frame, member) for frame in frames]
+
+                prepare_began = time.perf_counter()
+                with ThreadPoolExecutor(max_workers=1, thread_name_prefix="rl-shard-read") as pool:
+                    prepared_frames = pool.submit(prepare_inputs, reference).result()
+                result["input_prepare_seconds"] = time.perf_counter() - prepare_began
+                result["input_prepare_frames"] = len(prepared_frames)
             batch_size = plan.get("batch_size", 64)
             durations, metrics, misses = [], [], []
             if device.type == "cuda":
@@ -232,7 +248,7 @@ def main() -> None:
                 generation = step // 3
                 samples = [
                     RlSample(
-                        frames[i],
+                        prepared_frames[i],
                         actions[i],
                         rl_rows[i]["behavior_probability"] if rl_rows else max(old[i] * 0.9, 1e-9),
                         max(old[i], 1e-9),
@@ -249,14 +265,16 @@ def main() -> None:
                     from stpd.p1.execution import microbatches
 
                     with prepare_models(model, reference, config) if config else nullcontext():
-                        sample_frames = [s.frame for s in samples]
+                        sample_frames = [prepared_frames[i] for i in indices]
+                    entity_counts = [f.entity_count if hasattr(f, "entity_count")
+                                     else len(f.entities) for f in sample_frames]
                         ordering = list(range(len(samples)))
                         if config and config.bucket:
-                            ordering.sort(key=lambda i: len(sample_frames[i].entities))
+                            ordering.sort(key=lambda i: entity_counts[i])
                         groups = list(microbatches(sample_frames, ordering, model))
-                    actual = sum(len(f.entities) ** 2 for f in sample_frames)
+                    actual = sum(count ** 2 for count in entity_counts)
                     padded = sum(
-                        len(g) * max(len(sample_frames[i].entities) for i in g) ** 2 for g in groups
+                        len(g) * max(entity_counts[i] for i in g) ** 2 for g in groups
                     )
                     result["scene_padding_fraction"] = 1 - actual / padded
                     result["rl_microbatches"] = len(groups)
