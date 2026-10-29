@@ -414,6 +414,24 @@ class Watcher:
             'learner_stop_pending': self.state.get('learner_stop_pending', True)})
         return complete or expired
 
+    def next_delay(self, now: float) -> float:
+        """Next bounded health tick or exact evaluation/deadline boundary.
+
+        An overdue submission that could not obtain capacity waits the ordinary
+        health interval instead of spinning. This changes only future deployments.
+        """
+        interval = self.config.get('poll_seconds', 900)
+        if self.state['stop']:
+            return min(interval, max(0, 2400 - (now - self.state['drain_started_at'])))
+        interval = min(interval, max(0, self.config['started_at']
+            + self.config['wall_seconds'] - now))
+        if self.state['pending'] is None and not self.maintenance_requested:
+            due_in = (self.state['last_evaluation_at']
+                      + self.config.get('evaluation_seconds', 18000) - now)
+            if due_in > 0:
+                interval = min(interval, due_in)
+        return interval
+
     def run(self):
         if sys.platform != 'linux' or not os.environ.get('SLURM_JOB_ID'):
             raise ValueError('Friday_Slurm_watcher_required')
@@ -439,13 +457,7 @@ class Watcher:
                 self.persist()
                 self.telemetry('watcher_maintenance_exit', actors_and_learner_stopped=False)
                 return
-            interval = self.config.get('poll_seconds', 900)
-            if self.state['stop']:
-                interval = min(interval, max(0, 2400 - (time.time() - self.state['drain_started_at'])))
-            else:
-                interval = min(interval, max(0, self.config['started_at']
-                    + self.config['wall_seconds'] - time.time()))
-            time.sleep(interval)
+            time.sleep(self.next_delay(time.time()))
 
 
 def main():

@@ -29,6 +29,7 @@ Research contracts below keep their own original schemas and qualification. Appl
 | Native structured input/Model/Agent | [Native structured model](NATIVE_STRUCTURED_MODEL.md): shared projection, scorer and existing full-reference/synthetic package contracts |
 | Bounded Agent-protocol demonstration collection | [Native Source3 collection](NATIVE_SOURCE3_COLLECTION.md): genuine Application Start/Close, isolated Host/SDK and explicit unlearned teacher; separate import and training |
 | Real Source3 record→training representation | [Ordered Source3 training](research/SOURCE3_ORDERED_NATIVE_TRAINING.md): typed originals, exact-delivered N, declared origins, sampled segments, historical publication-memory/pretraining views and use/split chain |
+| RL observation | [Saved evaluation reports](RL_OBSERVATION.zh-CN.md): paired seeds, missing evidence, distributions and future independent scheduling |
 | Managed evaluation suites | [Managed suite evaluation](MANAGED_SUITE_EVALUATION.md): fixed seed plans, catalog-only random Agent, full denominator, source-bound raw result reader |
 | Common executable Agent and run | [Agent execution](AGENT_EXECUTION_CONTRACT.md): trusted composition/request admission, existing owners, model-less Teacher and exact completion witnesses |
 | Data/Model application entry | [Project console](PROJECT_CONSOLE.md) and [model task flow](LOCAL_MODEL_TASK_FLOW.md): existing services, actual supported UI/API and operational admission |
