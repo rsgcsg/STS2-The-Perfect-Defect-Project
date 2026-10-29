@@ -185,7 +185,7 @@ def test_evaluation_shares_aggregate_gate_and_uses_one_four_core_allocation(
     with (patch.object(evaluate.scheduler, 'submission_lock_path', return_value=lock.resolve()),
           patch.object(evaluate.scheduler, 'output', side_effect=['', '0/100/0/100', ''])):
         result = evaluate.submit(directory / 'plan.json', dry_run=True)
-    assert '--job-name=spireagent-f2' in result['command']
+    assert any(arg.startswith('--job-name=spireagent-eval-') for arg in result['command'])
     assert '--cpus-per-task=4' in result['command']
     assert '--nodes=1' in result['command'] and '--ntasks=1' in result['command']
     assert '--no-requeue' in result['command']

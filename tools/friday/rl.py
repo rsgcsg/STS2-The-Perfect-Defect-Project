@@ -34,7 +34,7 @@ def canonical_path(path: Path, *, existing: bool = True) -> Path:
 
 def prepare(execution: Path, learner: Path, output: Path, *, actors: int = 8,
             wall_seconds: int = 3300, episode_seconds: int = 900, max_games: int = 1000,
-            games_per_ledger: int = 2,
+            games_per_ledger: int = 2, runtime_source: Path | None = None,
             behavior: dict[str, Any] | None = None, seed_namespace: str | None = None
             ) -> dict[str, Any]:
     execution, learner = canonical_path(execution), canonical_path(learner)
@@ -55,7 +55,7 @@ def prepare(execution: Path, learner: Path, output: Path, *, actors: int = 8,
         raise ValueError('same_frozen_R2_execution_and_learner_peer_required')
     canonical_path(Path(base['candidate_directory']))
     if (type(actors) is not int or not 1 <= actors <= 200
-            or type(wall_seconds) is not int or not 300 <= wall_seconds <= 21600
+            or type(wall_seconds) is not int or not 300 <= wall_seconds <= 79200
             or type(episode_seconds) is not int or not 10 <= episode_seconds <= 1800
             or type(games_per_ledger) is not int or not 1 <= games_per_ledger <= 10
             or wall_seconds <= games_per_ledger * episode_seconds + 180
@@ -87,7 +87,8 @@ def prepare(execution: Path, learner: Path, output: Path, *, actors: int = 8,
         save(path, actor)
         actor_refs.append({'actor': name, 'path': str(path), 'sha256': hashed(path)})
     plan = {'schema': SCHEMA, 'target': 'friday', 'run': learning['run'], 'peer': peer,
-        'source_root': str(Path(__file__).resolve().parents[2]), 'actors': actor_refs,
+        'source_root': str(canonical_path(runtime_source) if runtime_source else
+                           Path(__file__).resolve().parents[2]), 'actors': actor_refs,
         'execution': {'path': str(frozen), 'sha256': hashed(frozen)},
         'learner_origin': {'path': str(learner), 'sha256': hashed(learner)},
         'wall_seconds': wall_seconds, 'episode_seconds': episode_seconds,
@@ -267,6 +268,8 @@ def main():
     prepare_parser.add_argument('--learner-config', type=Path, required=True)
     prepare_parser.add_argument('--output', type=Path, required=True)
     prepare_parser.add_argument('--actors', type=int, default=8)
+    prepare_parser.add_argument('--runtime-source', type=Path,
+                                help='canonical frozen release source; tooling may be newer')
     prepare_parser.add_argument('--wall-seconds', type=int, default=3300)
     prepare_parser.add_argument('--episode-seconds', type=int, default=900)
     prepare_parser.add_argument('--max-games', type=int, default=1000)
@@ -284,7 +287,7 @@ def main():
         result = prepare(args.execution, args.learner_config, args.output,
             actors=args.actors, wall_seconds=args.wall_seconds,
             episode_seconds=args.episode_seconds, max_games=args.max_games,
-            games_per_ledger=args.games_per_ledger,
+            games_per_ledger=args.games_per_ledger, runtime_source=args.runtime_source,
             behavior=json.loads(args.behavior.read_bytes()) if args.behavior else None,
             seed_namespace=args.seed_namespace)
     elif args.command == 'submit':

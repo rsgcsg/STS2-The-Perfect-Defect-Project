@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import shlex
@@ -43,7 +44,7 @@ def validate_execution(execution: dict[str, Any], selections: dict[str, str]) ->
 def prepare(execution_path: Path, output: Path, *, selections: dict[str, str],
             workers: int = 4, wall_seconds: int = 7200, episode_seconds: int = 900,
             manifest_path: Path | None = None, limit: int | None = None,
-            seed_prefix: int | None = None) -> dict[str, Any]:
+            seed_prefix: int | None = None, runtime_source: Path | None = None) -> dict[str, Any]:
     from spireagent.json_boundary import json_bytes
     from spireagent.workbench.reference_suite import load_manifest
     from stpd.evaluation.suites import FOUR_AGENT_SUITE_ID, load_suite
@@ -54,6 +55,10 @@ def prepare(execution_path: Path, output: Path, *, selections: dict[str, str],
             or wall_seconds <= episode_seconds + 180
             or limit is not None and (type(limit) is not int or not 1 <= limit <= 200)):
         raise ValueError("bounded_allocation_and_episode_limits_required")
+    if runtime_source is not None and (not runtime_source.is_absolute()
+            or runtime_source.is_symlink() or runtime_source.resolve() != runtime_source
+            or not (runtime_source / 'tools/friday/evaluate.py').is_file()):
+        raise ValueError('canonical_frozen_runtime_source_required')
     execution_raw = execution_path.read_bytes()
     execution = json.loads(execution_raw)
     validate_execution(execution, selections)
@@ -84,7 +89,7 @@ def prepare(execution_path: Path, output: Path, *, selections: dict[str, str],
             "manifest": {"path": str(manifest), "sha256": hashed(manifest)},
             "selections": selections, "workers": workers, "wall_seconds": wall_seconds,
             "episode_seconds": episode_seconds, "selected_limit": selected_count,
-            "planned": planned, "source_root": str(Path(__file__).resolve().parents[2]),
+            "planned": planned, "source_root": str(runtime_source or Path(__file__).resolve().parents[2]),
             **({"seed_prefix": seed_prefix} if seed_prefix is not None else {}),
             "target": "friday", "automatic_mac_fallback": False, "retry_unknown": False}
     save(output / "plan.json", plan)
@@ -160,10 +165,11 @@ def submit(plan_path: Path, *, constraint: str | None = None,
     plan = load_plan(plan_path)
     root = private_root(plan_path.parent)
     with scheduler.user_submission_lock():
+        job_name = 'spireagent-eval-' + hashlib.sha256(str(plan_path).encode()).hexdigest()[:12]
         existing = scheduler.output(['squeue', '-h', '-u', scheduler.username(), '-n',
-                                     'spireagent-f2', '-o', '%i'])
+                                     job_name, '-o', '%i'])
         if existing:
-            raise ValueError('existing_friday_array_must_drain_before_new_submission')
+            raise ValueError('existing_evaluation_plan_must_drain_before_new_submission')
         if (root / 'owner.json').exists() or (root / 'STOP').exists():
             raise ValueError('previous_evaluation_requires_original_owner_reconciliation')
         idle = sum(int(line.split('/')[1]) for line in scheduler.output(
@@ -180,7 +186,7 @@ def submit(plan_path: Path, *, constraint: str | None = None,
         command = ['sbatch', '--parsable', '--partition=smp', '--nodes=1', '--ntasks=1',
                    f"--cpus-per-task={plan['workers']}", f"--mem={4 * plan['workers']}G",
                    f'--time={minutes}', '--no-requeue', '--signal=B:USR1@300',
-                   '--job-name=spireagent-f2', f'--output={logs}/%j.out',
+                   f'--job-name={job_name}', f'--output={logs}/%j.out',
                    f'--error={logs}/%j.err']
         if constraint:
             command.append('--constraint=' + constraint)
@@ -344,7 +350,7 @@ def main():
             workers=args.workers, wall_seconds=args.wall_seconds,
             episode_seconds=args.episode_seconds,
             manifest_path=args.manifest.resolve() if args.manifest else None, limit=args.limit,
-            seed_prefix=args.seed_prefix)
+            seed_prefix=args.seed_prefix, runtime_source=args.runtime_source)
     elif args.command == 'submit':
         result = submit(args.plan.resolve(), constraint=args.constraint, dry_run=args.dry_run)
     else:
