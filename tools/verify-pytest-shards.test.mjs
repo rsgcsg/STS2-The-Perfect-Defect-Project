@@ -22,7 +22,9 @@ function fixture() {
   const expected = {source: {head: "a".repeat(40), tree: "b".repeat(40), workflow: "c".repeat(40),
     selector: "d".repeat(40), cost_profile: "e".repeat(40),
     cost_profile_sha256: readCostProfile(profileRoot).sha256, routing_algorithm: "lpt-whole-file-gates-1", dirty: false}, repository: "owner/repo", run_id: "123", run_attempt: "1", scope: "full"};
-  const collection = ["deploy/hub/test_a.py", "tests/test_b.py", "tests/test_c.py"].flatMap(file =>
+  // One equal-weight file per shard keeps every selection non-empty.
+  const files = ["deploy/hub/test_a.py", ...PYTEST_SHARD_INDEXES.slice(1).map(index => `tests/test_${index}.py`)];
+  const collection = files.flatMap(file =>
     ["one", "two"].map(value => ({file, nodeid: `${file}::test_value[${value}]`})));
   const leaves = [];
   for (const os of ["Linux", "Windows"]) for (const index of PYTEST_SHARD_INDEXES) {
@@ -59,7 +61,7 @@ test("complete deterministic same-OS selections seal a small digest/count proof"
     const result = verifyPytestShards(data.directory, data.expected, {profileRoot: data.profileRoot});
     assert.equal(result.complete, true);
     assert.equal(result.leaves.length, 2 * PYTEST_SHARD_COUNT);
-    assert.equal(result.leaves.reduce((total, leaf) => total + leaf.selected, 0), 12);
+    assert.equal(result.leaves.reduce((total, leaf) => total + leaf.selected, 0), 2 * 2 * PYTEST_SHARD_COUNT);
     // The same 500-byte-per-leaf budget as the original 4-leaf/2000-byte bound.
     assert.ok(JSON.stringify(result).length < 500 * result.leaves.length);
     // Existing per-test skips are retained, not a whole-shard skip.
@@ -130,25 +132,30 @@ test("missing/extra/foreign/unfinished/failed evidence cannot turn green job gro
 test("integer LPT keeps whole files, unknown files and UTF-8 ties deterministic", () => {
   const profile = structuredClone(readCostProfile().profile);
   profile.first_shard_overhead_ms = 0;
-  profile.file_cost_ms = {"tests/test_a.py": 100000, "tests/test_b.py": 80000,
-    "tests/test_c.py": 20000, "tests/test_d.py": 10000, "tests/retired.py": 999999000};
-  const collection = ["tests/test_a.py", "tests/test_b.py", "tests/test_c.py", "tests/test_d.py", "tests/new.py"]
+  profile.file_cost_ms = {"tests/test_a.py": 100000, "tests/test_b.py": 80000, "tests/test_c.py": 70000,
+    "tests/test_d.py": 60000, "tests/test_e.py": 40000, "tests/test_f.py": 20000, "tests/test_g.py": 10000,
+    "tests/retired.py": 999999000};
+  const collection = ["tests/test_a.py", "tests/test_b.py", "tests/test_c.py", "tests/test_d.py", "tests/test_e.py",
+    "tests/test_f.py", "tests/test_g.py", "tests/new.py"]
     .flatMap(file => ["test_one", "OtherClass::test_two[param]"].map(name => ({file, nodeid: `${file}::${name}`})));
-  const [first, second, third] = PYTEST_SHARD_INDEXES.map(index => selectedNodeids(collection, index, profile));
+  const shards = PYTEST_SHARD_INDEXES.map(index => selectedNodeids(collection, index, profile));
   const files = ids => [...new Set(ids.map(id => id.split("::")[0]))];
-  assert.deepEqual([files(first), files(second), files(third)],
-    [["tests/test_a.py"], ["tests/test_b.py"], ["tests/new.py", "tests/test_c.py", "tests/test_d.py"]]);
-  assert.deepEqual([...first, ...second, ...third].sort(), collection.map(item => item.nodeid).sort());
-  assert.deepEqual(selectedNodeids([...collection].reverse(), 1, profile), first);
+  assert.deepEqual(shards.map(files),
+    [["tests/test_a.py"], ["tests/test_b.py"], ["tests/test_c.py"], ["tests/test_d.py"],
+      ["tests/test_e.py", "tests/test_g.py"], ["tests/new.py", "tests/test_f.py"]]);
+  assert.deepEqual(shards.flat().sort(), collection.map(item => item.nodeid).sort());
+  assert.deepEqual(selectedNodeids([...collection].reverse(), 1, profile), shards[0]);
   profile.file_cost_ms = {"tests/é.py": 50, "tests/z.py": 50};
   assert.deepEqual(selectedNodeids(Object.keys(profile.file_cost_ms).map(file => ({file, nodeid: `${file}::test_case`})), 1, profile),
     ["tests/z.py::test_case"]);
   profile.first_shard_overhead_ms = 100000;
-  profile.file_cost_ms = {"tests/a.py": 200000, "tests/b.py": 180000, "tests/c.py": 100000};
+  profile.file_cost_ms = {"tests/a.py": 200000, "tests/b.py": 180000, "tests/c.py": 150000,
+    "tests/d.py": 120000, "tests/e.py": 110000, "tests/f.py": 50000};
   const weighted = Object.keys(profile.file_cost_ms).map(file => ({file, nodeid: `${file}::test_case`}));
   // Shard1 starts at its measured non-pytest overhead, so it takes the smallest file here.
   assert.deepEqual(PYTEST_SHARD_INDEXES.map(index => selectedNodeids(weighted, index, profile)),
-    [["tests/c.py::test_case"], ["tests/a.py::test_case"], ["tests/b.py::test_case"]]);
+    [["tests/f.py::test_case"], ["tests/a.py::test_case"], ["tests/b.py::test_case"],
+      ["tests/c.py::test_case"], ["tests/d.py::test_case"], ["tests/e.py::test_case"]]);
   assert.throws(() => selectedNodeids(weighted, PYTEST_SHARD_COUNT + 1, profile), /selection_index/);
   assert.throws(() => pytestPartition("2/2"), /invalid_pytest_shard/);
   assert.throws(() => pytestPartition(`${PYTEST_SHARD_COUNT + 1}/${PYTEST_SHARD_COUNT}`), /invalid_pytest_shard/);
