@@ -118,6 +118,13 @@ class S3BlobStore:
         raise StoreError("conditional_write_conflict_exhausted")
 
     def get(self, key: str) -> bytes:
+        from botocore.exceptions import (
+            ConnectionClosedError,
+            IncompleteReadError,
+            ReadTimeoutError,
+            ResponseStreamingError,
+        )
+
         try:
             response = self.client.get_object(Bucket=self.config.bucket, Key=self._key(key))
         except Exception as error:
@@ -140,6 +147,11 @@ class S3BlobStore:
                     break
                 buffer.extend(part)
             data = bytes(buffer)
+        except (ConnectionClosedError, IncompleteReadError, ReadTimeoutError,
+                ResponseStreamingError) as error:
+            # StreamingBody failures happen after get_object; keep them classified
+            # without exposing the SDK's endpoint/credential-bearing message.
+            raise StoreError("s3_stream_read_failed", type(error).__name__) from None
         finally:
             close = getattr(body, "close", None)
             if callable(close):
