@@ -83,6 +83,19 @@ D1传完整 `T2-MANAGED-A0-SEEDS.json`，用原账本 `seed_prefix=20` 冻结新
 `--limit` 只限本次开槽数，不裁计划分母。模型ID未齐就不启动；D1自己提交并收齐60槽，F2只交准确部署版本入口；完整审计不满足时
 仍是 `score_admitted=false`。不传manifest时保留原完整 `ref-20` 入口。
 
+## RL3：100 个永久排除训练的学习曲线种子
+
+`stpd.evaluation.suites.rl3_learning_curve_manifest(game_version)` 生成版本化清单
+`managed-rl3-learning-curve-100-20261030-Defect-a0`：Defect、A0、Managed，序号1–100。
+传入实际游戏版本，将正常 JSON 序列化结果交上面的 `evaluate.py prepare --manifest`；
+原 reader 校验完整清单及哈希，不接受改过的种子、角色、难度或 Host。
+`seed_membership` 和 `require_non_evaluation_seed` 永久登记这100个种子，
+actor 的 `diagnostic_reference_manifest` 碰到保留种子直接拒绝。
+
+这套清单用于模型选择和学习曲线；原 T2 40 个种子（含预留确认20个）保持不变。
+结果仍须原账本完整审计、轨迹保全/读回后才能入账；选最好模型还需独立确认。
+注册不会升级已冻结的旧 actor；下一轮训练必须采用包含该登记的研究源码。
+
 ## 停、查、恢复
 
 ```bash
