@@ -88,3 +88,48 @@ def test_joint_config_is_opt_in_scoped_and_raw_frames_keep_packed_fallback():
         assert torch.equal(expected, actual)
     assert model.execution == reference.execution == initial
     assert not PerformanceConfig().joint_nodes
+
+
+@pytest.mark.parametrize("joint", [False, True])
+def test_async_input_transfer_preserves_cpu_logits_and_gradients_and_is_not_serialized(joint):
+    torch.set_num_threads(2)
+    torch.manual_seed(3)
+    baseline = MStd(public_vocabulary(), MStdExecution.for_plan("mstd-training-v1"),
+                    value_heads=True).eval()
+    other = copy.deepcopy(baseline)
+    reference = copy.deepcopy(baseline)
+    frames = [compile_frame(frame, baseline) for frame in inputs(False)]
+    outputs = []
+    for model, enabled in ((baseline, False), (other, True)):
+        with prepare_models(model, reference, PerformanceConfig(
+                packed=True, tensor_cache=True, joint_nodes=joint, async_transfer=enabled)):
+            assert model.nonblocking_inputs == reference.nonblocking_inputs == enabled
+            scores, values = model.forward_with_values(frames)
+            (sum(row.square().sum() for row in scores) + values.square().sum()).backward()
+            outputs.append((scores, values))
+        assert not model.nonblocking_inputs and not reference.nonblocking_inputs
+        assert "nonblocking_inputs" not in model.state_dict()
+        assert "nonblocking_inputs" not in model.execution.to_dict()
+    for first, second in zip(outputs[0][0], outputs[1][0], strict=True):
+        assert torch.equal(first, second)
+    assert torch.equal(outputs[0][1], outputs[1][1])
+    for (name, left), (_, right) in zip(baseline.named_parameters(), other.named_parameters(),
+                                       strict=True):
+        assert (left.grad is None) == (right.grad is None), name
+        if left.grad is not None:
+            assert torch.equal(left.grad, right.grad), name
+
+
+def test_async_transfer_requires_tensor_cache_and_restores_after_exception():
+    with pytest.raises(BoundaryError, match="async_transfer_requires_tensor_cache"):
+        PerformanceConfig(async_transfer=True)
+    model = MStd(public_vocabulary())
+    reference = copy.deepcopy(model)
+    reference.nonblocking_inputs = True
+    with (pytest.raises(RuntimeError, match="intentional"),
+          prepare_models(model, reference, PerformanceConfig(
+              packed=True, tensor_cache=True, async_transfer=True))):
+        assert model.nonblocking_inputs and reference.nonblocking_inputs
+        raise RuntimeError("intentional")
+    assert not model.nonblocking_inputs and reference.nonblocking_inputs
+    assert not PerformanceConfig().async_transfer

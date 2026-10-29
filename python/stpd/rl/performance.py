@@ -28,6 +28,7 @@ class PerformanceConfig:
     device_cache: bool = False
     reference_device_cache: bool = False
     joint_nodes: bool = False
+    async_transfer: bool = False
     microbatch_size: int = 8
     scene_attention_area: int = 262144
     text_attention_area: int = 262144
@@ -40,7 +41,7 @@ class PerformanceConfig:
         if any(type(value) is not bool for value in (
                 self.packed, self.tensor_cache, self.device_cache,
                 self.reference_device_cache, self.joint_nodes,
-                self.bucket, self.defer_sync, self.tf32)):
+                self.async_transfer, self.bucket, self.defer_sync, self.tf32)):
             raise BoundaryError("rl_performance", "invalid_boolean")
         if (type(self.microbatch_size) is not int or not 1 <= self.microbatch_size <= 64
                 or any(type(value) is not int or not 1 <= value <= 2**28 for value in (
@@ -53,6 +54,8 @@ class PerformanceConfig:
             raise BoundaryError("rl_performance", "device_cache_requires_tensor_cache")
         if self.joint_nodes and not self.tensor_cache:
             raise BoundaryError("rl_performance", "joint_nodes_requires_tensor_cache")
+        if self.async_transfer and not self.tensor_cache:
+            raise BoundaryError("rl_performance", "async_transfer_requires_tensor_cache")
 
 
 def cache_on_device(frame: TensorFrame, device: torch.device) -> TensorFrame:
@@ -96,10 +99,16 @@ def prepare_models(model: MStd, reference: MStd,
         raise BoundaryError("rl_performance", "tf32_requires_cuda")
     if config.tensor_cache and model.vocabulary.get("input_spec") != V2_INPUT_SPEC:
         raise BoundaryError("rl_performance", "tensor_cache_requires_v2")
+    if config.async_transfer and device.type not in {"cpu", "cuda"}:
+        raise BoundaryError("rl_performance", "async_transfer_requires_cpu_or_cuda")
     previous = model.execution, reference.execution
+    old_nonblocking = model.nonblocking_inputs, reference.nonblocking_inputs
     old_tf32 = None
     try:
         for member in (model, reference):
+            # Immutable pageable host tensors, H2D only; consumers use the same
+            # CUDA stream. No pinned-memory mutation or D2H async reads occur.
+            member.nonblocking_inputs = config.async_transfer
             member.execution = replace(
                 member.execution,
                 implementation=("experimental-joint-nodes-v1" if config.joint_nodes else
@@ -116,5 +125,6 @@ def prepare_models(model: MStd, reference: MStd,
             yield
     finally:
         model.execution, reference.execution = previous
+        model.nonblocking_inputs, reference.nonblocking_inputs = old_nonblocking
         if old_tf32 is not None:
             torch.backends.cuda.matmul.allow_tf32 = old_tf32

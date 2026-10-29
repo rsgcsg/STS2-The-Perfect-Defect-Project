@@ -46,7 +46,8 @@ def positions(indices: Tensor, width: int) -> Tensor:
     return torch.stack((angles.sin(), angles.cos()), -1).flatten(-2)
 
 
-def _mean_terms(values: Tensor, rows: list[list[int]] | Reduction, empty: Tensor) -> Tensor:
+def _mean_terms(values: Tensor, rows: list[list[int]] | Reduction, empty: Tensor,
+                *, non_blocking: bool = False) -> Tensor:
     """Reduce complete ragged rows at their original, unpadded mean length.
 
     Equal-length buckets avoid N*max-degree storage for a star of references,
@@ -57,10 +58,12 @@ def _mean_terms(values: Tensor, rows: list[list[int]] | Reduction, empty: Tensor
     if isinstance(rows, Reduction):
         parts = []
         for width, owner_count, tensor_indices in rows.buckets:
-            parts.append(values.index_select(0, tensor_indices.to(values.device)).reshape(
+            parts.append(values.index_select(0, tensor_indices.to(
+                values.device, non_blocking=non_blocking)).reshape(
                 owner_count, width, -1).mean(1) if width
                          else empty.expand(owner_count, -1))
-        return torch.cat(parts).index_select(0, rows.inverse.to(values.device))
+        return torch.cat(parts).index_select(0, rows.inverse.to(
+            values.device, non_blocking=non_blocking))
     buckets: dict[int, list[int]] = {}
     for row, terms in enumerate(rows):
         width = len(terms)
@@ -118,6 +121,8 @@ class MStd(nn.Module):
             raise ValueError("unsupported model size")
         super().__init__()
         self.execution = execution or MStdExecution()
+        # Scoped learner runtime only: neither state_dict nor package execution.
+        self.nonblocking_inputs = False
         self.model_size = model_size
         self.architecture = architecture(value_heads, model_size)
         self.vocabulary = vocabulary
@@ -209,9 +214,9 @@ class MStd(nn.Module):
             ).unsqueeze(-1)
             lengths = torch.tensor([len(row) for row, _ in tokens], device=device)
         else:
-            ids = inputs[0].to(device)
-            nums = inputs[1].to(device)
-            lengths = inputs[2].to(device)
+            ids = inputs[0].to(device, non_blocking=self.nonblocking_inputs)
+            nums = inputs[1].to(device, non_blocking=self.nonblocking_inputs)
+            lengths = inputs[2].to(device, non_blocking=self.nonblocking_inputs)
             width = ids.shape[1]
         mask = torch.arange(width, device=device).unsqueeze(0) >= lengths.unsqueeze(1)
         value = self.text_ids(ids) + self.text_numbers(nums)
@@ -222,7 +227,7 @@ class MStd(nn.Module):
 
     def tensor_nodes(self, frame: TensorFrame | JointNodes, vectors: Tensor) -> Tensor:
         device = self.ids.weight.device
-        t = {key: frame.tensors[key].to(device) for key in (
+        t = {key: frame.tensors[key].to(device, non_blocking=self.nonblocking_inputs) for key in (
             "identities", "identity_fields", "kinds", "positions", "number_fields",
             "numbers", "missing_fields", "text_fields", "text_indices")}
         identities = t["identities"]
@@ -231,7 +236,8 @@ class MStd(nn.Module):
         id_vectors = self.ids(identities)
         if len(identities):
             id_vectors = id_vectors + self.fields(t["identity_fields"])
-        nodes = _mean_terms(id_vectors, frame.reductions["ids"], self.ids.weight[0])
+        nodes = _mean_terms(id_vectors, frame.reductions["ids"], self.ids.weight[0],
+                            non_blocking=self.nonblocking_inputs)
         nodes = nodes + self.kinds(t["kinds"])
         nodes = nodes + positions(t["positions"], 192)
         number_parts = []
@@ -241,14 +247,17 @@ class MStd(nn.Module):
         if len(t["missing_fields"]):
             number_parts.append(self.number_missing(t["missing_fields"]))
         number_values = torch.cat(number_parts) if number_parts else nodes.new_zeros((0, 192))
-        number_features = _mean_terms(number_values, frame.reductions["numbers"], self.no_numbers)
+        number_features = _mean_terms(number_values, frame.reductions["numbers"], self.no_numbers,
+                                      non_blocking=self.nonblocking_inputs)
         if len(t["text_fields"]):
             terms = vectors.index_select(0, t["text_indices"]) + self.fields(t["text_fields"])
         else:
             terms = vectors.new_zeros((0, 192))
-        features = _mean_terms(terms, frame.reductions["text"], nodes.new_zeros(192))
+        features = _mean_terms(terms, frame.reductions["text"], nodes.new_zeros(192),
+                               non_blocking=self.nonblocking_inputs)
         nodes = nodes + (features + number_features)
-        linked = _mean_terms(nodes, frame.reductions["refs"], nodes.new_zeros(192))
+        linked = _mean_terms(nodes, frame.reductions["refs"], nodes.new_zeros(192),
+                             non_blocking=self.nonblocking_inputs)
         return cast(Tensor, self.node_norm(nodes + self.relations(linked)))
 
     def node_vectors(self, frame: Frame, vectors: Tensor) -> Tensor:
@@ -424,12 +433,15 @@ class MStd(nn.Module):
         actions = []
         for batch, frame in enumerate(frames):
             if isinstance(frame, TensorFrame):
-                action = self.action_types(frame.tensors["actions"].to(device))
+                action = self.action_types(frame.tensors["actions"].to(
+                    device, non_blocking=self.nonblocking_inputs))
                 if frame.choices:
                     source = _mean_terms(scene[batch], frame.reductions["source"],
-                                         self.absent_roles[0])
+                                         self.absent_roles[0],
+                                         non_blocking=self.nonblocking_inputs)
                     target = _mean_terms(scene[batch], frame.reductions["target"],
-                                         self.absent_roles[1])
+                                         self.absent_roles[1],
+                                         non_blocking=self.nonblocking_inputs)
                     action = action + self.source_role(source) + self.target_role(target)
             else:
                 action = self.action_types(
