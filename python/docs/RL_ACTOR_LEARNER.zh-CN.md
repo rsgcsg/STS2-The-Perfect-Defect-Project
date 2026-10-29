@@ -110,3 +110,108 @@ python -m spireagent.rl_tensorboard --peer-config peer.json --run <run> \
 学习者每轮 poll 前检查它，沿原 STOP 正常退出路径发末版本和完整检查点。仍需从实际
 `finished` 和检查点记录确认收尾完成；请求写成功不是已经停止。读写或校验失败明确报错。
 数值损失目前检查非有限数值；`kl_coef` 是损失系数，源码没有独立 KL 停止阈值。
+
+## D2 可选学习者执行（默认关闭）
+
+省略学习者配置的 `performance` 或写 `null` 时，仍走原更新实现。实验必须新建 run，
+冻结准确源码与配置，不在运行中的学习者或旧检查点上替换。它不改变 actor 包里的
+执行计划；训练时暂选的实现会在更新结束或异常时恢复，导出沿原包执行身份。
+
+```json
+"performance": {
+  "packed": true,
+  "tensor_cache": true,
+  "microbatch_size": 8,
+  "scene_attention_area": 262144,
+  "text_attention_area": 262144,
+  "bucket": false,
+  "defer_sync": true,
+  "precision": "fp32",
+  "tf32": false
+}
+```
+
+`packed` 复用已有完整 packed 计算；`tensor_cache` 只缓存不含权重、padding 或随机数的
+Input-v2 编译结果，退役样本随缓冲区移除。显式实验微批可选 1–64，原默认仍为 8；面积限制决定何时拆微批，
+不能截断超大样本。`bucket` 只按同一次优化器更新已选中的样本实体数排序，不换成员、
+不增加复用；它会改变 padding 和 dropout 抽样次序，必须另做质量对照。
+
+可选执行路径将损失计算保持 FP32，并集中回读指标；`defer_sync` 还把逐微批分数检查
+延后到优化器更新前，非有限分数、损失或梯度仍拒绝更新。参考模型始终保持 eval，
+缺失参考分布整微批一次回读，后续复用原缓存。
+
+`precision` 只允许 `fp32` / `bf16`；bf16 必须支持它的 CUDA，明确失败而不回退，
+并须核损失、梯度、KL/clip 和正式评估后再决定采用。TF32 只在 `tf32=true` 时临时打开
+矩阵乘法开关，并在退出时恢复；该 Torch 开关是进程全局，因此只能用于独立学习者
+进程，不能与其他需要不同精度的推理/训练共进程。增大 RL 更新批量仍用原
+`batch_size` / `anchor_batch`，属于另一个待验证的算法配置，不是微批提速开关。
+
+`device_cache=true`（须同时启用 `tensor_cache`）把完整非学习输入元数据暂存到设备；
+`reference_device_cache=true` 把冻结参考模型的 FP32 对数概率留在设备。两者都默认关，
+随原缓冲区样本退役回收；第一次使用仍支付准备/搬运成本，需同时量冷缓存、复用与
+显存的 allocated/reserved 峰值。显存不足明确失败，不自动回退另一种执行。
+
+可选顶层 `exchange_poll_seconds` 默认 `0`，保持每轮查询交换区。设正数（例如 `5`）
+可降低网络 LIST 次数，`timing.phases.stop_poll` 单列远端停止查询成本。代价是新分片和
+远端停止请求最多额外等待该轮询间隔及当前更新/阻塞操作；本地 `STOP` 仍每轮检查，
+正常退出仍发末版本和完整检查点。停止请求成功不等于资源已释放。启用前须将该延迟
+写入本次运行配置，不能静默改变正在使用的停止节奏。
+
+仅测速、不发布模型的入口（输入必须由任务授权）：
+
+```sh
+PYTHONPATH=python python python/tools/benchmark_rl.py \
+  --package <原模型包目录> --input <TRAIN锚点JSONL> \
+  --rl-input <RL工程样本JSONL> --plan <实验列表JSON> \
+  --output <独立结果目录> --steps 24 --seconds 1800
+```
+
+工程样本每行含 `observation`、`action_id`、`behavior_probability`、`old_probability`、
+`advantage`；原行为概率必须保留，派生 advantage 的算法和 baseline 在任务证据记录。
+锚点沿已有 `observation/reference` 格式，仅接 `reference.split=train`。计划是对象列表，
+每项含 `name`、可选 `performance`、`batch_size`、`threads`、`profile`、`fused`、`compile`。
+脚本从同一模型初始化，用相同样本序列和随机种子跑生产 `rl_update`，CUDA 同步计时，
+记录首次/复用参考缓存分母、完整目录数值误差、峰值显存及 profiler。每三步模拟一批
+新轨迹键，故是带明显冷缓存的工程诊断，不是线上 buffer 稳态或完整闭环吞吐证明。
+`--seconds` 是步骤间截止；编译或单次更新可越过它，远端执行必须另设进程 timeout
+和容器总 timeout。错误按计划项保留，不重命名通过。
+
+性能实验不发布新模型，不动 Store、actor、旧检查点或训练分配；GPU 速度不证明
+真实学习质量，也不能绕过陈旧窗口/换模节奏等链路约束。
+
+`joint_nodes=true`（须同时启用 `packed` 和 `tensor_cache`）选择默认关闭的
+`experimental-joint-nodes-v1`：同一微批的不相交节点在 CPU 组合元数据，一次节点
+计算后按原场景边界切回；不合并场景注意力，不改变任何引用、文本、目录或权重结构。
+驻设备缓存保留一份 CPU 元数据供组合使用，不回读 GPU 索引；组合不作长期成员缓存。
+原始 Frame 仍走 packed 路径。profiler 的 `joint_nodes_metadata` 单列组合准备开销。
+CUDA 上合并 ID 掩码随机调用及梯度归约会改变随机流，必须视作新的训练轨迹；CPU
+数值对照通过不证明 CUDA 逐位等价，启用仍须用户在受控换代点决定。
+
+`async_transfer=true`（须启用 `tensor_cache`）仅对不可变输入元数据选择非阻塞
+CPU→CUDA 复制，并在同一 CUDA stream 消费；默认关。不改变 D2H 回读，不新增
+pinned 或可变缓冲区。运行态开关退出后恢复，不进入模型 state_dict 或包执行字段，
+所以旧 actor 解码器不会收到新字段。pageable staging 本身仍可能阻塞，须实测收益。
+
+旧面积 262144 在数百实体场景中可能把微批退成单帧；已有监督训练
+`mstd-training-v2` 使用 67108864。D2 可以显式选择同一面积尺度再测 8/16/32/64，
+不能只改微批数量就声称已实际跑大批。更大微批是否更快取决于 padding 和显存，
+最大值不等于最快值。工程实验列表见 [示例](../tools/rl_benchmark_example.json)。
+最终确认应另传 `--source-revision <准确提交>`；脚本同时记录自身、计划和实际导入
+数值模块的 SHA-256，不能仅凭填入的提交号借用别的代码结果。
+
+换代边界：新 learner 源码的 producer 与旧完整 checkpoint 不同，当前 `_resume`
+会拒绝跨 producer 续训。D2 不是给正在跑的进程热开开关；须按长跑卡批准的换代／
+新 run 方案冻结输入和配置，如何保留优化器等状态另按原合同决定，不放宽绑定。
+模型包自身不携带 learner 的 adapter 源码哈希；保留原 inference_execution 后，
+旧 actor 在本地注册自己的 adapter。因此可先保留 actor 部署，离线用其准确旧源码
+实测 load/register/installation，再在用户批准的换代点做真实短核。若升级 actor
+Python，则必须重建其准确 producer/agent_adapter 配置，不能只覆盖源码。
+
+`precompile_inputs=true`（须启用 `tensor_cache`）在已有分片 reader 线程中完成 RL
+非学习输入编译，更新消费完整 TensorFrame。reader 使用冻结 reference 的词表/token
+缓存，显式在 CPU 创建元数据，不调用 GPU、不推进随机数、不碰 learner 的 token
+缓存；anchor 保持原路径。先从原 Frame 绑定动作再编译，准入、陈旧、复用与检查点
+不变，续训仍沿原 `_read` 重建。它可能为最终过期的轨迹多做 CPU 工作，因此需同时
+检查 reader 吞吐和准入等待。测速脚本把该 CPU 预备时间单列；消费侧提速不等于
+端到端节省了同样时间。做严格计时对照时把 `profile` 放进单独进程／计划，避免
+profiler保留的内存和收集开销影响相邻候选。

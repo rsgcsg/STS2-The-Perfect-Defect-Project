@@ -5,7 +5,7 @@ and scene padding still follows the original microbatch, preserving dropout.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 import torch
@@ -54,6 +54,8 @@ class TensorFrame:
     reductions: dict[str, Reduction]
     choices: tuple[str, ...]
     entity_count: int
+    # Transient CPU metadata retained by device caches; never serialized.
+    host: TensorFrame | None = field(default=None, repr=False, compare=False)
 
     @property
     def text_count(self) -> int:
@@ -76,6 +78,71 @@ class TensorFrame:
 
 
 ModelFrame = Frame | TensorFrame
+
+
+@dataclass(frozen=True)
+class JointNodes:
+    """One disjoint node graph for a microbatch, not a scene or action catalog."""
+    tensors: dict[str, Tensor]
+    reductions: dict[str, Reduction]
+
+
+def joint_nodes(frames: list[TensorFrame]) -> JointNodes:
+    """Assemble on CPU, retaining each row's mean length and local position.
+
+    Only the current forward owns this metadata; memberships are not cached.
+    Device-cached frames must retain their original host metadata so this never
+    reads CUDA indices back to Python. Text vectors remain independently encoded.
+    """
+    sources = [frame.host or frame for frame in frames]
+    if any(value.device.type != "cpu" for frame in sources for value in frame.tensors.values()):
+        raise ValueError("joint_nodes_requires_host_metadata")
+    names = ("identities", "identity_fields", "kinds", "positions", "number_fields",
+             "numbers", "missing_fields", "text_fields")
+    tensors = {key: torch.cat([frame.tensors[key] for frame in sources]) for key in names}
+    offsets = []
+    cumulative = dict.fromkeys(("ids", "numbers", "missing", "text", "refs", "vectors"), 0)
+    for frame in sources:
+        offsets.append(dict(cumulative))
+        for key, count in {
+            "ids": frame.tensors["identities"].numel(),
+            "numbers": frame.tensors["numbers"].numel(),
+            "missing": frame.tensors["missing_fields"].numel(),
+            "text": frame.tensors["text_fields"].numel(),
+            "refs": frame.entity_count, "vectors": frame.text_count,
+        }.items():
+            cumulative[key] += count
+    tensors["text_indices"] = torch.cat([
+        frame.tensors["text_indices"] + offset["vectors"]
+        for frame, offset in zip(sources, offsets, strict=True)])
+    reductions = {}
+    for key in ("ids", "numbers", "text", "refs"):
+        buckets: dict[int, list[tuple[int, Tensor, Tensor]]] = {}
+        for frame, offset in zip(sources, offsets, strict=True):
+            reduction = frame.reductions[key]
+            packed_owners = reduction.inverse.argsort()
+            cursor = 0
+            for width, count, indices in reduction.buckets:
+                owners = packed_owners[cursor:cursor + count] + offset["refs"]
+                cursor += count
+                if key == "numbers":
+                    present = frame.tensors["numbers"].numel()
+                    indices = torch.where(indices < present, indices + offset["numbers"],
+                                          indices - present + cumulative["numbers"]
+                                          + offset["missing"])
+                else:
+                    indices = indices + offset[key]
+                buckets.setdefault(width, []).append((count, indices, owners))
+        combined = []
+        order: list[Tensor] = []
+        for width, parts in buckets.items():
+            combined.append((width, sum(part[0] for part in parts),
+                             torch.cat([part[1] for part in parts])))
+            order.extend(part[2] for part in parts)
+        inverse = torch.empty(cumulative["refs"], dtype=torch.long)
+        inverse[torch.cat(order)] = torch.arange(cumulative["refs"])
+        reductions[key] = Reduction(tuple(combined), inverse)
+    return JointNodes(tensors, reductions)
 
 
 def compile_frame(frame: Frame, model: MStd) -> TensorFrame:

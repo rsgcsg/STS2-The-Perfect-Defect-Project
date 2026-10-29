@@ -1,0 +1,22 @@
+[
+  {"name": "original"},
+  {
+    "name": "candidate_fp32",
+    "performance": {
+      "packed": true, "tensor_cache": true, "joint_nodes": true,
+      "reference_device_cache": true, "async_transfer": true,
+      "bucket": true, "defer_sync": true, "microbatch_size": 8,
+      "scene_attention_area": 67108864, "text_attention_area": 67108864
+    }
+  },
+  {
+    "name": "candidate_bf16",
+    "performance": {
+      "packed": true, "tensor_cache": true, "joint_nodes": true,
+      "reference_device_cache": true, "async_transfer": true,
+      "bucket": true, "defer_sync": true, "microbatch_size": 8,
+      "scene_attention_area": 67108864, "text_attention_area": 67108864,
+      "precision": "bf16"
+    }
+  }
+]

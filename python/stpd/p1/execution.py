@@ -19,9 +19,10 @@ class MStdExecution:
     defer_score_sync: bool = False
 
     def __post_init__(self) -> None:
-        if self.implementation not in {"reference", "row-fused-v1", "experimental-packed-v1"}:
+        if self.implementation not in {"reference", "row-fused-v1", "experimental-packed-v1",
+                                       "experimental-joint-nodes-v1"}:
             raise BoundaryError("p1_execution", "unsupported_implementation")
-        limits = ((self.microbatch_size, 1, 8),
+        limits = ((self.microbatch_size, 1, 64),
                   (self.scene_attention_area, 1, 2**28),
                   (self.text_attention_area, 1, 2**28),
                   (self.cpu_threads, 1, 16))

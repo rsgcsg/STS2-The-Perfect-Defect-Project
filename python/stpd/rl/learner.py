@@ -31,10 +31,12 @@ from spireagent.rl_tensorboard import TensorBoardMetrics
 from spireagent.source import source_identity
 from stpd.p1.export import export_model, input_spec, load_model, runtime_projection
 from stpd.p1.input import project
+from stpd.p1.tensor_input import ModelFrame, TensorFrame, compile_frame
 from stpd.workers.checkpoint_codec import decode_checkpoint, encode_checkpoint
 from stpd.workers.training_io import CheckpointPublisher, FrozenCheckpoint, ProgressCadence
 
 from .loss import LossConfig, RlSample, rl_update
+from .performance import PerformanceConfig
 from .reward import REWARD_SPEC, episode_reward
 
 CONFIG_SCHEMA = "stpd/rl-learner-config-1"
@@ -71,7 +73,11 @@ class LearnerConfig:
     # (a new machine or a new 5 h allocation); never picked implicitly.
     resume_checkpoint: str | None = None
     tensorboard_steps: int = 10
+    # Zero retains per-update exchange polling; positive values are opt-in cadence.
+    exchange_poll_seconds: float = 0.0
     loss: LossConfig = field(default_factory=LossConfig)
+    # Omitted means the exact legacy update path, not an implicit new plan.
+    performance: PerformanceConfig | None = None
 
     @classmethod
     def read(cls, path: Path) -> LearnerConfig:
@@ -79,7 +85,10 @@ class LearnerConfig:
         if value.pop("schema", None) != CONFIG_SCHEMA:
             raise BoundaryError("rl_learner", "unsupported_config")
         loss = LossConfig(**value.pop("loss", {}))
-        return cls(**value, loss=loss)
+        performance = value.pop("performance", None)
+        return cls(**value, loss=loss,
+                   performance=(PerformanceConfig(**performance)
+                                if performance is not None else None))
 
 
 @dataclass(frozen=True)
@@ -131,6 +140,10 @@ class Learner:
         self.config, self.work, self.io = config, work, io
         if type(config.tensorboard_steps) is not int or config.tensorboard_steps < 0:
             raise BoundaryError("rl_learner", "invalid_tensorboard_steps")
+        if (type(config.exchange_poll_seconds) not in (int, float)
+                or not math.isfinite(config.exchange_poll_seconds)
+                or config.exchange_poll_seconds < 0):
+            raise BoundaryError("rl_learner", "invalid_exchange_poll_seconds")
         work.mkdir(parents=True, exist_ok=True)
         torch.manual_seed(config.seed)
         torch.set_num_threads(config.threads)
@@ -164,6 +177,7 @@ class Learner:
                                            weight_decay=config.weight_decay)
         self.buffer: list[Buffered] = []
         self.reference_cache: dict[str, torch.Tensor] = {}
+        self.frame_cache: dict[object, TensorFrame] = {}
         self.returns: collections.deque[float] = collections.deque(maxlen=config.baseline_window)
         self.seen: set[str] = set()
         self.counts: collections.Counter[str] = collections.Counter()
@@ -349,8 +363,15 @@ class Learner:
             observation = episode["observations"][step["observation_index"]]["observation"]
             frame = project(observation, input_projection=self.projection)
             action = [c["choice_id"] for c in frame.choices].index(step["action_id"])
+            prepared: ModelFrame = frame
+            if self.config.performance is not None and self.config.performance.precompile_inputs:
+                # Existing reader thread only: immutable CPU input metadata.
+                # Its tokenizer cache belongs to the frozen reference, never
+                # the model concurrently copied by the owner for publication.
+                with torch.device("cpu"):
+                    prepared = compile_frame(frame, self.reference)
             behavior = step["behavior"]
-            frames.append((frame, action, behavior["selected_probability"],
+            frames.append((prepared, action, behavior["selected_probability"],
                            behavior["model_probabilities"][step["action_index"]],
                            f"{episode['run_id']}:{step['index']}"))
         return frames
@@ -409,6 +430,9 @@ class Learner:
         live = {item.sample.key for item in kept}
         for key in [k for k in self.reference_cache if k not in live]:
             del self.reference_cache[key]
+        for frame_key in [k for k in self.frame_cache
+                          if isinstance(k, tuple) and k[0] == "rl" and k[1] not in live]:
+            del self.frame_cache[frame_key]
         return kept
 
     # Training ---------------------------------------------------------
@@ -433,7 +457,8 @@ class Learner:
                   if self.anchor else [])
         result = rl_update(self.model, self.reference, self.optimizer,
                            [item.sample for item in batch], anchor, self.config.lr,
-                           self.config.loss, self.reference_cache)
+                           self.config.loss, self.reference_cache,
+                           performance=self.config.performance, frame_cache=self.frame_cache)
         self.updates += 1
         result.update(update=self.updates, version=self.version,
                       buffer_size=len(self.buffer),
@@ -458,6 +483,8 @@ class Learner:
             "version": version, "parent_version": self.lineage_version,
             "updates": self.updates,
             "reward": REWARD_SPEC, "loss": asdict(self.config.loss),
+            **({"learner_execution": asdict(self.config.performance)}
+               if self.config.performance is not None else {}),
             "learner_config_sha256": hashlib.sha256(json_bytes(
                 {**asdict(self.config), "peer": self.config.peer})).hexdigest(),
             "anchor": getattr(self, "anchor_identity", None),
@@ -553,16 +580,21 @@ class Learner:
     def run(self) -> dict[str, Any]:
         deadline = time.monotonic() + self.config.wall_seconds
         clean = False
+        next_exchange_poll = 0.0
         failure: Exception | None = None
         try:
             while time.monotonic() < deadline and not (self.work / "STOP").exists():
-                stop = self.exchange.stop_request()
-                if stop is not None:
-                    self._event("stop_requested", reason=stop["reason"])
-                    break
-                began = time.monotonic()
-                self.poll()
-                self.timer.add("poll", began)
+                if time.monotonic() >= next_exchange_poll:
+                    began = time.monotonic()
+                    stop = self.exchange.stop_request()
+                    self.timer.add("stop_poll", began)
+                    if stop is not None:
+                        self._event("stop_requested", reason=stop["reason"])
+                        break
+                    began = time.monotonic()
+                    self.poll()
+                    self.timer.add("poll", began)
+                    next_exchange_poll = time.monotonic() + self.config.exchange_poll_seconds
                 self._collect_version(wait=False)
                 began = time.monotonic()
                 result = self.train_once()
