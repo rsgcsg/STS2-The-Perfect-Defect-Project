@@ -190,6 +190,7 @@ def test_run_calls_original_module_and_abnormal_results_fence_pending_workers(
 
     def checked_snapshot(source, target):
         assert (file.parent / 'STOP').is_file()
+        assert callable(signal.getsignal(signal.SIGUSR1))
         with patch.object(rl.subprocess, 'Popen', original_popen):
             return original_snapshot(source, target)
 
@@ -311,3 +312,29 @@ def test_parent_forwards_real_USR1_to_actor_process_and_retains_STOP(rl, inputs,
     assert len(result['original_summary']['games']) == 0  # No game or training executed.
     assert (Path(result['scratch_retained']) / 'actor/STOP').is_file()
     assert result['actor'] == plan['actors'][0]['actor']
+
+
+def test_resume_copy_reuses_terminal_owner_without_reopening_games(
+        rl, inputs, monkeypatch, tmp_path):
+    plan, path = prepared(rl, inputs, actors=1)
+    actor = plan['actors'][0]['actor']
+    persistent = path.parent / 'actors' / actor
+    persistent.mkdir(parents=True, mode=0o700)
+    scratch = tmp_path / 'closed-scratch'
+    scratch.mkdir()
+    (scratch / 'result.json').write_text(json.dumps({'actor': actor, 'run': plan['run'],
+                                                    'exit_code': 0}))
+    (scratch / 'payload').write_text('retained original bytes')
+    (persistent / 'owner.json').write_text(json.dumps({'actor': actor, 'job_id': '42',
+        'scratch': str(scratch), 'plan_sha256': rl.hashed(path)}))
+    partial = persistent / 'evidence'
+    partial.mkdir()
+    (partial / 'payload').write_text('interrupted partial copy')
+    monkeypatch.setattr(rl.subprocess, 'check_output', lambda *a, **k: '42|RUNNING|\n')
+    with pytest.raises(ValueError, match='allocation_must_be_terminal'):
+        rl.resume_snapshot(path, actor)
+    monkeypatch.setattr(rl.subprocess, 'check_output', lambda *a, **k: '42|FAILED|\n')
+    result = rl.resume_snapshot(path, actor)
+    assert result['new_games'] == 0 and result['copy_resumed']
+    assert (partial / 'payload').read_text() == 'retained original bytes'
+    assert json.loads((persistent / 'snapshot.json').read_bytes())['full_readback']

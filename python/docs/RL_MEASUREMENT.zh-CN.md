@@ -52,7 +52,7 @@ python -m stpd.rl.measurement --output comparison.json compare runs.json
 当前计数的守恒是 `准入R = stale移除R + 用满退休R + 当前buffer R`。
 过期计数不记原uses，可能已经用过。工具只给R的条件上下界，**不输出有效新D估值**。
 上下界要求batch/reuse自本run起不变、成功更新计数完整、CP状态一起恢复，且
-reuse退休先于stale检查。目前上下界工具要求max_reuse至少2；无复用方案另核逐条记录。
+reuse退休先于stale检查。旧日志的上下界工具要求max_reuse至少2；无复用方案另核逐条记录。
 条件不满足不运行此换算，先取逐条记录。
 `inventory`用原trajectory validator校验，数原catalog；校验成功不改变原训练/计分资格。
 
@@ -94,7 +94,7 @@ FP32重排浮点运算通常只达误差容限一致；同权重argmax全同不�
 固定suite的bootstrap仅是该suite的敏感性，不自动是总体置信保证。
 多次看评估、按评估挑版本须记录选择偏差；固定独立确认suite保留到最后。
 
-## 下一代才接的逐条账本（未接运行中的learner/actor）
+## 旧运行的缺口与新账本边界
 
 沿已有trajectory的 `episode.run_id:step.index` 建派生账本，不改原轨迹或Exchange语义。
 每条保留run/actor/model version/原content hash/catalog大小/候选及实体桶，
@@ -108,4 +108,40 @@ FP32重排浮点运算通常只达误差容限一致；同权重argmax全同不�
 已准入 = 从未用过 + 至少用过。退休按stale/reuse及原uses分层。
 optimizer失败不能把预增uses当成功训练；只有更新成功后才能确认首次使用。
 跨窗统计要保留起终队列，结束仍在途/未训的是右删失，不能立即标丢弃。
-账本按批写入原观测链，成本实测；具体埋点/后台预取上线仍需换代授权。
+新运行的具体实现见下一节；旧运行缺失的字段不能事后补造。账本按批写入原观测链，成本实测；后台预取的采用仍须保住准入/批次顺序，或另获学习变化授权。
+
+
+## 新运行的逐条账本
+
+启用 `decision_ledger` 时沿原 `run_id:step.index` 记录，无第二套游戏ID。
+新轨迹的 `generated_at` 来自原typed journal的global_choice.recorded_at；
+上传站关联原分片记录的finished_at（分片发布前的时刻，不冒称网络ACK）。
+learner只对已读回episode计生成/上传/准入或拒收，日志名为 `decision-ledger.jsonl`，
+按原content/shard关联。只有optimizer.step成功后增加uses、首次训练和有效新D；
+失败尝试不增加，退休按stale/reuse及原uses分组。unknown保留生成/上传与拒收，不准入。
+未发现、在途、未封存actor的选择不在learner cohort中，不能把局部守恒改称全链全局守恒。
+收口要另核actor原轨迹/发布记录、未开/unknown和在途分母；live未训项是右删失。
+
+```bash
+python -m stpd.rl.measurement --output decisions.json ledger decision-ledger.jsonl \
+  --start-at RUN_WINDOW_START_EPOCH --end-at RUN_WINDOW_END_EPOCH
+```
+
+可按顺序传多份完整JSONL段，exact重复内容去重；缺失准入/成功使用连续性会失败。
+输出有效新D/小时、cohort首次使用率、uses/退休分布、生成到首训延迟分位数与时钟未知数。
+默认窗为所给记录首末事件，正式整轮吞吐须显式给含启动/等待/收尾的run窗口。
+跨机延迟附 `clock_offset_bound_seconds`；未知写null，不把原始epoch差称校准延迟。
+有已测偏差界时，每次first use同时记录延迟区间，不把负原始差裁成0。
+完整CP存live账本状态和RNG；按内容SHA冻结JSONL段进原Exchange `decisions/`，
+正常收口等待所有段写完再冷读核hash。原件不重写、段上传不重新授予训练资格。
+
+训练事件新增采样/锚点选择、reference/forward/backward/optimizer的host elapsed；
+GPU工作异步排队，遇到的设备等待计入当时host阶段，不冒称互斥的GPU kernel时间。
+reader/projection/CPU准备另列background耗时，可与owner训练重叠，不与wall机械相加。
+STOP查询、数据等待、capture、version等待、reader积压、账本自身写耗时分别保留。
+TensorBoard将训练态模型熵及按候选数归一的熵，与原实际抽样分布熵分开；
+写advantage、原回报、buffer uses/版本落后直方图和退休计数；无critic的value loss/state value标不适用。
+
+首次概率门用相同acting权重、官方投影/完整动作目录、eval模式核记录概率/logits。
+训练态有dropout与identity mask，ratio不机械要求1、KL不机械要求0；
+起点与KL参考不同的eval KL本来也可非零。诊断门不静默关闭训练随机化。

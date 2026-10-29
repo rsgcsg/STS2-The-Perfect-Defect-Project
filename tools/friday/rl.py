@@ -210,7 +210,7 @@ def run(path: Path) -> dict[str, Any]:
         # RL1 checks STOP/signalled between complete small ledgers, not within a ledger.
         (work / 'STOP').touch()
         if (number == signal.SIGUSR1 and actor_process is not None
-                and actor_process.poll() is None):
+                and actor_process.poll() is None and not forwarded_actor_signals):
             try:
                 actor_process.send_signal(number)
                 forwarded_actor_signals.append(number)
@@ -244,8 +244,6 @@ def run(path: Path) -> dict[str, Any]:
         save(root / 'STOP', {'actor': ref['actor'], 'reason': 'actor_failed',
                             'error_type': error_type, 'error_code': error_code})
     finally:
-        for number, handler in previous.items():
-            signal.signal(number, handler)
         result = {'schema': 'spireagent/friday-RL-result-v1', 'actor': ref['actor'],
             'run': plan['run'], 'exit_code': code, 'error_type': error_type,
             'error_code': error_code, 'wall_seconds': time.monotonic() - began,
@@ -254,10 +252,44 @@ def run(path: Path) -> dict[str, Any]:
             'cross_actor_immediate_unknown_stop': False,
             'forwarded_actor_signals': forwarded_actor_signals}
         save(scratch / 'result.json', result)
-        receipt = snapshot(scratch, persistent / 'evidence')
-        save(persistent / 'snapshot.json', receipt)
-        save(persistent / 'result.json', result)
+        try:
+            receipt = snapshot(scratch, persistent / 'evidence')
+            save(persistent / 'snapshot.json', receipt)
+            save(persistent / 'result.json', result)
+        finally:
+            # Keep stop handlers installed through copy, byte verification and receipt.
+            for number, handler in previous.items():
+                signal.signal(number, handler)
     return result
+
+
+def resume_snapshot(path: Path, actor: str) -> dict[str, Any]:
+    """Resume only evidence copying after the original allocation is terminal."""
+    plan = json.loads(path.read_bytes())
+    reference = next((row for row in plan['actors'] if row['actor'] == actor), None)
+    if reference is None:
+        raise ValueError('actor_not_in_frozen_plan')
+    read_pinned(reference)
+    persistent = private_root(path.parent / 'actors' / actor)
+    owner = json.loads((persistent / 'owner.json').read_bytes())
+    if owner['plan_sha256'] != hashed(path) or owner['actor'] != actor:
+        raise ValueError('saved_actor_owner_binding_changed')
+    status = subprocess.check_output(['sacct', '-n', '-P', '-j', owner['job_id'],
+        '--format=JobIDRaw,State'], text=True)
+    states = [line.split('|')[1].split()[0].rstrip('+')
+              for line in status.splitlines() if len(line.split('|')) >= 2]
+    terminal = {'COMPLETED', 'FAILED', 'CANCELLED', 'TIMEOUT', 'OUT_OF_MEMORY',
+                'NODE_FAIL', 'PREEMPTED', 'BOOT_FAIL', 'DEADLINE', 'REVOKED'}
+    if not states or any(state not in terminal for state in states):
+        raise ValueError('original_actor_allocation_must_be_terminal')
+    scratch = Path(owner['scratch'])
+    result = json.loads((scratch / 'result.json').read_bytes())
+    if result['actor'] != actor or result['run'] != plan['run']:
+        raise ValueError('saved_actor_result_binding_changed')
+    receipt = snapshot(scratch, persistent / 'evidence')
+    save(persistent / 'snapshot.json', receipt)
+    save(persistent / 'result.json', result)
+    return {'actor': actor, 'copy_resumed': True, 'new_games': 0, 'snapshot': receipt}
 
 
 def main():
@@ -281,6 +313,9 @@ def main():
         sub.add_argument('--plan', type=Path, required=True)
         if name == 'submit':
             sub.add_argument('--dry-run', action='store_true')
+    save_parser = commands.add_parser('save')
+    save_parser.add_argument('--plan', type=Path, required=True)
+    save_parser.add_argument('--actor', required=True)
     args = parser.parse_args()
     os.umask(0o077)
     if args.command == 'prepare':
@@ -292,6 +327,8 @@ def main():
             seed_namespace=args.seed_namespace)
     elif args.command == 'submit':
         result = submit(args.plan, dry_run=args.dry_run)
+    elif args.command == 'save':
+        result = resume_snapshot(args.plan, args.actor)
     else:
         result = run(args.plan)
     print(json.dumps(result, sort_keys=True))

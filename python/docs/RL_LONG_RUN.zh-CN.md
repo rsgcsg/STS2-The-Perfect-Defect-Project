@@ -134,3 +134,55 @@ Mac每小时只读检查，异常及时报告，普通结果4–6小时汇报。
 已在真实运行证明：actor采用学习者新模型、Friday→R2→学校更新、完整CP冷读，以及学校同源码CP续训。PR315维修后，新actor的18局saved轨迹已被学习者读到，后续CPv125/update995完整读回；这只界定本次恢复证据，不代表长期无故障。
 
 正式评估、模型变强、后续预算内持续运行和最终保全/释放仍由本轮任务验收；不能用上述恢复成功提前收口整轮训练。
+
+
+## RL3 工程接入与调整边界
+
+RL3 配置冻结、单一配置启动及停止入口见 [RL3运行](RL3_RUN.zh-CN.md)。
+`start_artifact_id/start_model_sha256` 决定新模型的起点；可独立指定
+`reference_artifact_id/reference_model_sha256`（或各自本地 package）决定 KL 参照。
+省略 reference 时沿用起点。新 run 不读取旧完整 CP：Adam、buffer、baseline、计数和 RNG
+按新配置重新初始化；热启动来源和参考哈希分别进入配置、导出身份和完整CP。
+完整CP另存 CUDA RNG，恢复按CP原buffer顺序，不按分片排序改变下一批候选池。
+完整CP可能比模型晚上传完成；owner每轮收取已完成的CP，即使正在等新数据，
+也不等下一次模型发版才挂接存档记录。挂接仍沿原发布/验证路径，可能包含同步I/O。
+跨源码、run、起点或参考身份不同的完整续训仍拒绝，不能改旧记录来绕过。
+
+学习者只读 GET/LIST 的错误保留安全的操作、键/前缀、SDK类型、服务错误码、HTTP状态。
+只对明确的连接/超时/限流/可重试服务错最多三次有界重读；鉴权、配置、完整性错直接失败。
+原SDK重试仍计入总等待，原错误消息/URL/头不进入日志。诊断在本地 `io-errors.jsonl`，
+即使R2不可写也保留原因；游戏、unknown、写入结果未知不在此重读范围。
+
+`background_io` 默认关闭。有界FIFO只证明已发现分片的准入先后，**不证明每次更新前
+候选池相同**：同三份已ready分片、read_ahead=2，原路径首poll收3条，新路径只收2条。
+同一冻结准入cut能复现批次/RNG/末权重，但这个局部门不能代替在线保批次资格；
+当前采用门未通过，默认配置保持关闭。开启该开关的短链路仅验证功能和守恒。
+D2的FP32 `performance` 仍为独立默认关开关，数值是容限内近似，不能称逐位训练相同。
+
+异步STOP查询频率由 `remote_stop_seconds` 限制（默认5秒），响应正常时的发现延迟上界
+为该间隔加一次主循环/更新及请求往返；本地STOP每轮检查。读取超过
+`remote_stop_read_timeout_seconds`（默认30秒）时owner在下个循环明确失败并保存最后
+完整成功状态。SDK的在途读线程及网络保存可能继续至其本身的超时/重试上界；
+这不是30秒完整存档承诺。GPU CLI的TERM/INT/USR1只标本工作区STOP，完整更新后保存。
+
+actor分配的signal handler一直保留到snapshot逐字节核验和两份receipt写完。
+原保存中断后先核allocation终态，再在原scratch仍可访问的节点执行：
+
+```bash
+python tools/friday/rl.py save --plan /ABS/actors/plan.json --actor ORIGINAL_ACTOR
+```
+
+此入口只复用原owner与rsync接续拷贝，重核每文件hash；不重开游戏、不改原summary，
+缺owner/result、身份不符或allocation未终态均拒绝。看守持久化每job的signal intent，
+同一停止最多发一次USR1；调度返回未知需人工核原请求，不盲重发。R2永久STOP保持幂等。
+
+运行中调整没有热调接口。先由唯一owner按正常STOP排空，核同版本模型和完整CP，
+追加调整前不可变引用；冻结新配置和源码后另起run热启动，记录父CP、旧/新配置hash、原因、
+wall/GPU预算、版本/更新数，以及Adam/RNG/buffer/baseline重置方式，再追加调整后引用。
+同源码的原完整续训入口只按既定恢复合同使用；普通配置文件修改不代表热调已生效。
+每8更新发版/存档的默认频率保留：原capture约0.87%，本轮不为这一小收益引入独立调频。
+提速后8版本过期窗口对应的秒数会缩短，不能把同一个窗口值当同一个实际年龄。
+
+采用前200步核loss/KL/clip/ratio/梯度；第一小时先保持12路、按逐条账本再定供数。
+下一次可比评估平均层数比上一代低超过1层时，按已批准运行卡回退到保留模型；
+回退/调整发生在完整存档边界，原失败分母、旧版本及原STOP不改不删。

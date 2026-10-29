@@ -61,3 +61,26 @@ def test_remote_stop_and_learner_events_are_bound_sealed_and_append_only(tmp_pat
     path.write_bytes(path.read_bytes().replace(b"wall_limit", b"wall_other"))
     with pytest.raises(BoundaryError, match="record_integrity_failure"):
         learner.stop_request()
+
+
+def test_histograms_and_not_applicable_text_share_closed_event_publication(tmp_path):
+    exchange = Exchange({'kind': 'local', 'directory': str(tmp_path / 'peer')}, 'histograms')
+    metrics = TensorBoardMetrics(exchange, tmp_path / 'metrics')
+    metrics.histograms({'train/advantage': [-0.2, 0, 0.5], 'train/empty': []}, 10)
+    metrics.text('algorithm/reward', 'whole-episode return', 10)
+    metrics.scalars({'train/policy_entropy': 0.5}, 10)
+    metrics.publish()
+    events = EventAccumulator(str(metrics.directory)).Reload()
+    assert events.Histograms('train/advantage')[0].step == 10
+    assert 'train/empty' not in events.Tags()['histograms']
+    assert events.Tensors('algorithm/value_loss/text_summary')[0].tensor_proto.string_val == [
+        b'not applicable: no critic']
+    assert 'algorithm/value_loss' not in events.Tags()['scalars']
+    with pytest.raises(BoundaryError, match='nonfinite_histogram'):
+        metrics.histograms({'bad': [float('nan')]}, 11)
+    publish_evaluation(exchange, tmp_path / 'quick', {
+        'evaluation_kind': 'quick', 'version': 2, 'updates': 20, 'wins': 0,
+        'mean_max_floor': 14.5, 'unknown': 0, 'planned': 20})
+    publish_evaluation(exchange, tmp_path / 'milestone', {
+        'evaluation_kind': 'milestone', 'version': 2, 'updates': 20, 'wins': 0,
+        'mean_max_floor': 14.5, 'unknown': 0, 'planned': 100})

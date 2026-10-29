@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import math
+from datetime import datetime
 from typing import Any, NoReturn, cast
 
 from sts2_platform_evidence import AgentSessionRunEvidence, read_global_artifact
@@ -194,7 +195,10 @@ def extract_trajectory(verified: AgentSessionRunEvidence, *, identity: dict[str,
             steps.append({"index": len(steps), "observation_index": index,
                 "acquisition_id": payload["acquisition_id"], "event_sequence": event["sequence"],
                 "action_id": payload["choice_id"], "action_index": selected[0],
-                "behavior": behavior, "state_value": None, "action_values": None,
+                "behavior": behavior,
+                "generated_at": datetime.fromisoformat(
+                    event["recorded_at"].replace("Z", "+00:00")).timestamp(),
+                "state_value": None, "action_values": None,
                 "value_status": "model_has_no_value_head"})
         elif kind == "global_result":
             results[payload["acquisition_id"]] = payload

@@ -64,6 +64,7 @@ def test_reader_precompile_is_cpu_only_rng_free_and_matches_real_update(monkeypa
                            [RlSample(frame, action, behavior, old, .2, 0, key)], [],
                            1e-3, LossConfig(), {}, performance=learner.config.performance)
         result.pop("update_seconds")
+        result.pop("phase_seconds", None)
         histories.append(result)
         models.append(learner.model)
     assert histories[0] == histories[1]

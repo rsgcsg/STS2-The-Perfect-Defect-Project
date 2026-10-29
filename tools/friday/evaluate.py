@@ -45,10 +45,11 @@ def validate_execution(execution: dict[str, Any], selections: dict[str, str]) ->
 def prepare(execution_path: Path, output: Path, *, selections: dict[str, str],
             workers: int = 4, wall_seconds: int = 7200, episode_seconds: int = 900,
             manifest_path: Path | None = None, limit: int | None = None,
-            seed_prefix: int | None = None, runtime_source: Path | None = None) -> dict[str, Any]:
+            seed_prefix: int | None = None, runtime_source: Path | None = None,
+            observation_report: bool = False) -> dict[str, Any]:
     from spireagent.json_boundary import json_bytes
-    from spireagent.workbench.reference_suite import load_manifest
     from spireagent.workbench.managed_retention import pipeline_configuration
+    from spireagent.workbench.reference_suite import load_manifest
     from stpd.evaluation.suites import FOUR_AGENT_SUITE_ID, load_suite
 
     if (type(workers) is not int or not 1 <= workers <= 16
@@ -57,6 +58,8 @@ def prepare(execution_path: Path, output: Path, *, selections: dict[str, str],
             or wall_seconds <= episode_seconds + 180
             or limit is not None and (type(limit) is not int or not 1 <= limit <= 200)):
         raise ValueError("bounded_allocation_and_episode_limits_required")
+    if type(observation_report) is not bool or observation_report and len(selections) != 1:
+        raise ValueError('single_model_observation_report_required')
     if runtime_source is not None and (not runtime_source.is_absolute()
             or runtime_source.is_symlink() or runtime_source.resolve() != runtime_source
             or not (runtime_source / 'tools/friday/evaluate.py').is_file()):
@@ -91,6 +94,7 @@ def prepare(execution_path: Path, output: Path, *, selections: dict[str, str],
             "execution": {"path": str(frozen_execution), "sha256": hashed(frozen_execution)},
             "manifest": {"path": str(manifest), "sha256": hashed(manifest)},
             "selections": selections, "workers": workers, "wall_seconds": wall_seconds,
+            "observation_report": observation_report,
             "episode_seconds": episode_seconds, "selected_limit": selected_count,
             "planned": planned, "parallelism": {"requested_workers": workers,
                 "pending_limit": pipeline["pending_limit"], "save_workers": pipeline["save_workers"],
@@ -118,7 +122,8 @@ def load_plan(path: Path) -> dict[str, Any]:
     value = json.loads(path.read_bytes())
     if (value.get("schema") != SCHEMA or value.get("target") != "friday"
             or value.get("automatic_mac_fallback") is not False
-            or value.get("retry_unknown") is not False):
+            or value.get("retry_unknown") is not False
+            or type(value.get("observation_report", False)) is not bool):
         raise ValueError("frozen_friday_evaluation_plan_required")
     validate_execution(read_pinned(value["execution"]), value["selections"])
     read_pinned(value["manifest"])
@@ -184,6 +189,8 @@ def submit(plan_path: Path, *, constraint: str | None = None,
             raise ValueError('existing_evaluation_plan_must_drain_before_new_submission')
         if (root / 'owner.json').exists() or (root / 'STOP').exists():
             raise ValueError('previous_evaluation_requires_original_owner_reconciliation')
+        if (root / 'submission-intent.json').exists():
+            raise ValueError('previous_evaluation_submission_requires_owner_reconciliation')
         idle = sum(int(line.split('/')[1]) for line in scheduler.output(
             ['sinfo', '-h', '-p', 'smp', '-o', '%C']).splitlines())
         queued = len(scheduler.output(
@@ -210,7 +217,10 @@ def submit(plan_path: Path, *, constraint: str | None = None,
                   'cores': plan['workers'], 'command': command, 'dry_run': dry_run,
                   'earliest_begin_local': begin, 'scheduler_start_guaranteed': False}
         if not dry_run:
+            result['submission_requested_at'] = time.time()
+            save(root / 'submission-intent.json', result)
             result['job_id'] = scheduler.output(command)
+            result['submission_confirmed_at'] = time.time()
             save(root / 'submission.json', result)
         return result
 
@@ -248,10 +258,48 @@ class StopOnUncertain:
         return results
 
 
+def prepare_observation_report(plan: dict[str, Any], summary: dict[str, Any],
+                               scratch: Path) -> dict[str, Any]:
+    """Expensive verified trajectory reads stay in the evaluation allocation."""
+    from spireagent.json_boundary import json_bytes
+    from spireagent.storage.config import open_peer
+    from spireagent.workbench.managed_trajectory_store import read_shard
+    from stpd.evaluation.rl_observation import load_cohort, trajectory_details
+
+    slots = summary['ledger_report']['slots']
+    execution = read_pinned(plan['execution'])
+    store = open_peer(execution['peer'])
+    wanted = {slot['run_id']: slot for slot in slots if slot.get('run_id') is not None}
+    episodes = []
+    readback = scratch / 'report-readback'
+    readback.mkdir(mode=0o700, exist_ok=True)
+    for shard in sorted({slot['trajectory_shard_id'] for slot in slots
+                         if slot.get('trajectory_shard_id')}):
+        for episode in read_shard(store, shard, scratch=readback):
+            if episode['run_id'] not in wanted:
+                continue
+            if episode['identity']['seed'] != wanted[episode['run_id']]['seed']:
+                raise ValueError('evaluation_detail_seed_binding_mismatch')
+            episodes.append(trajectory_details(episode))
+    source = scratch / 'report-source.json'
+    details = scratch / 'report-details.json'
+    cohort = scratch / 'report-cohort.json'
+    save(source, summary)
+    save(details, {'episodes': episodes})
+    value = load_cohort(source, details=details)
+    save(cohort, value)
+    return {'schema': 'spireagent/evaluation-observation-files-1',
+            'ledger_report_sha256': hashlib.sha256(json_bytes(summary['ledger_report'])).hexdigest(),
+            'files': {name: {'path': path.name, 'sha256': hashed(path)} for name, path in
+                      (('source', source), ('details', details), ('cohort', cohort))}}
+
+
 def run(plan_path: Path) -> dict[str, Any]:
     from spireagent.workbench.managed_pipeline import PipelinedManagedExecutor
     from spireagent.workbench.reference_suite import SuiteLimits
 
+    process_started_at = time.time()
+    process_began = time.monotonic()
     plan = load_plan(plan_path)
     if (sys.platform != 'linux' or not os.environ.get('SLURM_JOB_ID')
             or int(os.environ.get('SLURM_CPUS_PER_TASK', '0')) < plan['workers']):
@@ -269,6 +317,7 @@ def run(plan_path: Path) -> dict[str, Any]:
         owner.flush()
         os.fsync(owner.fileno())
     ledger = create_ledger(plan, scratch / 'ledger')
+    ledger_prepared_seconds = time.monotonic() - process_began
     selected = tuple(row['slot_id'] for row in ledger.plan['slots'][:plan['selected_limit']])
     save(root / 'admission.json', {'original_ledger_plan': ledger.plan,
         'selected_slot_ids': selected, 'unknown_retry': False})
@@ -293,19 +342,25 @@ def run(plan_path: Path) -> dict[str, Any]:
     began = time.monotonic()
     error_type = error_code = None
     result = None
+    phases: dict[str, float] = {'ledger_preparation': ledger_prepared_seconds}
     try:
         execution = read_pinned(plan['execution'])
+        phase_began = time.monotonic()
         executor = PipelinedManagedExecutor(execution, episode_seconds=plan['episode_seconds'],
                                            cleanup_seconds=120)
         save(scratch / 'preparation.json', executor.preparation)
+        phases['executor_preparation'] = time.monotonic() - phase_began
         limits = SuiteLimits(150, plan['episode_seconds'], 120,
                             plan['wall_seconds'] - plan['episode_seconds'] - 180, 1, 30)
+        phase_began = time.monotonic()
         result = ledger.run_managed(workers=plan['workers'], max_episodes=len(selected),
             limits=limits, executor=StopOnUncertain(executor, ledger_stop), slot_ids=selected)
+        phases['execution_and_pipeline_save'] = time.monotonic() - phase_began
     except Exception as error:  # noqa: BLE001 -- the existing attempt is retained, never retried.
         error_type, error_code = type(error).__name__, getattr(error, 'code', None)
         stop()
     finally:
+        phase_began = time.monotonic()
         if executor is not None:
             try:
                 executor.close()
@@ -314,8 +369,7 @@ def run(plan_path: Path) -> dict[str, Any]:
                     error_type, error_code = type(error).__name__, getattr(error, 'code', None)
         stopping.set()
         watcher.join(timeout=2)
-        for number, handler in previous.items():
-            signal.signal(number, handler)
+        phases['executor_close'] = time.monotonic() - phase_began
         report = ledger.report()
         summary = {'schema': 'spireagent/friday-evaluation-result-v1',
             'status': 'failed' if error_type else (result or {}).get('status', 'failed'),
@@ -324,10 +378,30 @@ def run(plan_path: Path) -> dict[str, Any]:
             'error_type': error_type, 'error_code': error_code, 'ledger_report': report,
             'selected_slot_ids': selected, 'scratch_retained': str(scratch),
             'full_planned_denominator': plan['planned'], 'retry_unknown': False}
+        summary['timing'] = {'process_started_at': process_started_at, 'phases': phases}
         save(scratch / 'result.json', summary)
-        receipt = snapshot(scratch, root / 'evidence')
-        save(root / 'snapshot.json', receipt)
-        save(root / 'result.json', summary)
+        try:
+            if plan.get('observation_report', False):
+                phase_began = time.monotonic()
+                try:
+                    summary['observation_report'] = prepare_observation_report(plan, summary, scratch)
+                except Exception as error:  # noqa: BLE001 -- preserve original results on report failure
+                    summary['observation_report_error'] = {
+                        'error_type': type(error).__name__, 'error_code': getattr(error, 'code', None)}
+                phases['observation_report'] = time.monotonic() - phase_began
+                save(scratch / 'result.json', summary)
+            phase_began = time.monotonic()
+            receipt = snapshot(scratch, root / 'evidence')
+            phases['snapshot'] = time.monotonic() - phase_began
+            save(root / 'snapshot.json', receipt)
+            summary['timing'].update(process_finished_at=time.time(),
+                                     process_wall_seconds=time.monotonic() - process_began)
+            # The original elapsed_seconds remains backward compatible. Full
+            # process time includes ledger/preparation/snapshot; Slurm adds queue.
+            save(root / 'result.json', summary)
+        finally:
+            for number, handler in previous.items():
+                signal.signal(number, handler)
     return summary
 
 
@@ -345,6 +419,8 @@ def main():
     prepare_parser.add_argument('--wall-seconds', type=int, default=7200)
     prepare_parser.add_argument('--episode-seconds', type=int, default=900)
     prepare_parser.add_argument('--limit', type=int)
+    prepare_parser.add_argument('--observation-report', action='store_true',
+                                help='prepare verified trajectory details/cohort in this allocation')
     prepare_parser.add_argument('--seed-prefix', type=int,
                                 help='freeze this original canonical seed prefix in a NEW ledger')
     for name in ('submit', 'run'):
@@ -367,7 +443,8 @@ def main():
             workers=args.workers, wall_seconds=args.wall_seconds,
             episode_seconds=args.episode_seconds,
             manifest_path=args.manifest.resolve() if args.manifest else None, limit=args.limit,
-            seed_prefix=args.seed_prefix, runtime_source=args.runtime_source)
+            seed_prefix=args.seed_prefix, runtime_source=args.runtime_source,
+            observation_report=args.observation_report)
     elif args.command == 'submit':
         result = submit(args.plan.resolve(), constraint=args.constraint,
                         dry_run=args.dry_run, begin=args.begin)

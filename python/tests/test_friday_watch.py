@@ -607,3 +607,251 @@ def test_tick_crossing_due_time_checks_once_without_an_extra_health_interval(wat
     assert sleeps == [0]
     observer.state['stop'] = None
     assert observer.next_delay(14402, tick_started_at=14401) == 900
+
+
+def rl3_tiers():
+    return [{'name': 'quick', 'seconds': 14400, 'seed_prefix': 20},
+            {'name': 'milestone', 'seconds': 28800, 'seed_prefix': 100}]
+
+
+def tier_observer(watch, tmp_path, **configuration):
+    instance = watch.Watcher({'peer': {'kind': 'local', 'directory': str(tmp_path / 'peer')},
+                              'run': 'rl3-watch', 'started_at': 0,
+                              'evaluation_tiers': rl3_tiers(), **configuration}, tmp_path / 'watch')
+    return instance
+
+
+def test_tier_schedule_uses_fixed_boundaries_and_one_pending_without_catchup(watch, tmp_path):
+    instance = tier_observer(watch, tmp_path)
+    offers = []
+
+    def prepare(model, now, **options):
+        offers.append((model['version'], now, options))
+        instance.state['pending'] = {'version': model['version']}
+
+    instance.prepare_evaluation = prepare
+    instance.schedule_tiers({'version': 8, 'model_artifact_id': '8' * 64}, 14400)
+    assert offers[0][2]['tier']['name'] == 'quick'
+    instance.schedule_tiers({'version': 18, 'model_artifact_id': '9' * 64}, 28800)
+    assert len(offers) == 1
+    skipped = instance.state['evaluation_schedule'][-2:]
+    assert {r['tier'] for r in skipped} == {'quick', 'milestone'}
+    assert all(r['state'] == 'skipped' and r['reason'] == 'pending_evaluation' for r in skipped)
+    instance.state['pending'] = None
+    instance.schedule_tiers({'version': 22, 'model_artifact_id': 'a' * 64}, 28801)
+    assert len(offers) == 1  # no reoffer of an old scheduled slot
+    instance.schedule_tiers({'version': 30, 'model_artifact_id': 'b' * 64}, 57600)
+    assert len(offers) == 2 and offers[-1][2]['tier']['name'] == 'milestone'
+    assert offers[-1][2]['due_at'] == 57600
+    assert instance.state['evaluation_schedule'][-1]['unevaluated_version_range'] == [9, 29]
+    resumed = watch.Watcher(instance.config, instance.work)
+    resumed.prepare_evaluation = prepare
+    resumed.schedule_tiers({'version': 31, 'model_artifact_id': 'c' * 64}, 57601)
+    assert len(offers) == 2
+
+
+def test_tier_prepare_overrides_serial_pipeline_and_never_opens_confirmation(watch, tmp_path):
+    from types import SimpleNamespace
+
+    from stpd.evaluation.suites import rl3_learning_curve_manifest
+
+    runtime = tmp_path / 'runtime'
+    (runtime / 'tools/friday').mkdir(parents=True)
+    (runtime / 'tools/friday/evaluate.py').write_text('# frozen runtime fixture\n')
+    execution = tmp_path / 'execution.json'
+    execution.write_text(json.dumps({'schema': 'spireagent/managed-evaluation-execution-v1',
+        'store': 's3', 'peer': {'kind': 's3', 'bucket': 'test', 'prefix': 'test',
+        'endpoint': 'https://example.invalid', 'region': 'auto'},
+        'retention': watch.evaluate.RETENTION, 'pipeline': {'save_workers': 1, 'pending_limit': 1},
+        'models': {}}))
+    manifest = tmp_path / 'new100.json'
+    manifest.write_text(json.dumps(rl3_learning_curve_manifest('v0.111.0')))
+    instance = tier_observer(watch, tmp_path)
+    instance.config.update(evaluation_mode='submit', evaluation_execution=str(execution),
+        evaluation_manifest=str(manifest), runtime_source=str(runtime))
+    instance.exchange = SimpleNamespace(materialize_model=lambda *_: tmp_path / 'model')
+    instance.publish = lambda *_args, **_kwargs: None
+    with patch.object(watch.evaluate, 'submit', return_value={'job_id': 'fixture-123'}):
+        instance.prepare_evaluation({'version': 2, 'model_artifact_id': '1' * 64,
+                                     'training': {'updates': 16}}, 14400,
+                                    tier=rl3_tiers()[0], due_at=14400)
+    plan = json.loads(Path(instance.state['pending']['plan']).read_bytes())
+    assert plan['planned'] == 20 and plan['seed_prefix'] == 20
+    assert plan['observation_report'] is True
+    assert plan['workers'] == plan['parallelism']['execution_upper_bound'] == 4
+    assert plan['parallelism']['pending_limit'] == 8 and plan['parallelism']['save_workers'] == 2
+    assert Path(plan['manifest']['path']).read_bytes() == manifest.read_bytes()
+    assert instance.state['pending']['evaluation_kind'] == 'quick'
+    assert not instance.state.get('confirmation_requested')
+
+
+def test_stop_signals_are_persisted_once_even_if_scheduler_outcome_unknown(watch, tmp_path):
+    instance = tier_observer(watch, tmp_path,
+                             actor_plan=str(tmp_path / 'actors/plan.json'), actor_job_id='123')
+    instance.telemetry = lambda *_args, **_kwargs: None
+    with patch.object(watch.subprocess, 'run',
+                      side_effect=OSError('lost scheduler response')) as send:
+        instance.stop('owner_stop')
+        instance.stop('owner_stop')
+        assert send.call_count == 1
+    resumed = watch.Watcher(instance.config, instance.work)
+    resumed.telemetry = instance.telemetry
+    with patch.object(watch.subprocess, 'run') as send:
+        resumed.stop('owner_stop')
+        send.assert_not_called()
+    assert resumed.state['stop_signals']['123']['state'] == 'outcome_unknown'
+    assert resumed.exchange.stop_request()['reason'] == 'owner_stop'
+
+
+def cohort(floors, *, wins=0, missing_boss=0):
+    return {'wins': wins, 'planned': len(floors), 'floor_n': len(floors),
+            'boss_count_missing': missing_boss, 'boss1_cleared_witnessed': 0,
+            'boss2_reached_witnessed': 0, 'boss1_reached_witnessed': 0,
+            'host_kind': 'Managed', 'character': 'Defect', 'ascension': 0,
+            'protocol_observed': {'behavior_policy': {'mode': 'argmax'}},
+            'rows': [{'seed': str(i), 'scored': True, 'floor': f} for i, f in enumerate(floors)]}
+
+
+def test_candidate_references_keep_originals_and_missing_witnesses(watch, tmp_path):
+    instance = tier_observer(watch, tmp_path)
+    result = {'complete': True, 'comparison_key': 'suite-and-protocol', 'unknown': 0,
+              'planned': 2, 'cohort': cohort([8, 17]), 'result_sha256': '1' * 64,
+              'evaluation_kind': 'quick', 'version': 2, 'updates': 16,
+              'model_artifact_id': 'a' * 64}
+    instance.state['evaluations'].append(result)
+    instance.candidate_reference(result)
+    first = list((instance.work / 'references/candidate').glob('*.json'))
+    original = first[0].read_bytes()
+    better = {**result, 'result_sha256': '2' * 64, 'cohort': cohort([9, 18]), 'version': 3}
+    instance.state['evaluations'].append(better)
+    instance.candidate_reference(better)
+    assert instance.state['candidate_best']['suite-and-protocol'] == better['result_sha256']
+    instance.candidate_reference(better)
+    assert len(list((instance.work / 'references/candidate').glob('*.json'))) == 2
+    assert first[0].read_bytes() == original
+    assert instance.exchange.latest_model() is None  # no training-model replacement
+    missing = {**better, 'cohort': cohort([10, 20], missing_boss=2)}
+    assert instance.candidate_comparison(better, missing) == (
+        True, 'arrival_distribution_dominance')
+
+
+def test_plateau_only_uses_same_complete_seed_protocol_and_never_stops(watch, tmp_path):
+    instance = tier_observer(watch, tmp_path)
+    rows = [{'complete': True, 'comparison_key': 'same', 'unknown': 0, 'planned': 2,
+             'cohort': cohort([8, 17])} for _ in range(4)]
+    instance.state['evaluations'] = rows
+    assert instance.plateau() is True
+    assert instance.state['stop'] is None
+    rows[-1] = {**rows[-1], 'comparison_key': 'different'}
+    assert instance.plateau() is False
+    rows[-1] = {**rows[0], 'unknown': 1}
+    assert instance.plateau() is False
+
+
+def test_milestone_pins_actual_complete_pair_across_uncertain_reference_write(watch, tmp_path):
+    from types import SimpleNamespace
+
+    instance = tier_observer(watch, tmp_path)
+    checkpoint = {'version': 8, 'published_at': 14390, 'checkpoint_artifact_id': 'c' * 64}
+    instance.exchange = SimpleNamespace(latest_checkpoint=lambda: checkpoint,
+                                       model=lambda v: {'version': v})
+    pairs = []
+    instance.checkpoint_binding = lambda cp, model: pairs.append((cp, model)) or {
+        'version': model['version'], 'updates': 64,
+        'checkpoint_artifact_id': cp['checkpoint_artifact_id']}
+    with (patch.object(instance, 'append_reference', side_effect=OSError('uncertain reference')),
+          pytest.raises(OSError)):
+        instance.milestone_reference(14400)
+    checkpoint.update(version=9, published_at=14410)
+    references = []
+    instance.append_reference = lambda kind, identity, fields: references.append(fields)
+    instance.milestone_reference(14420)
+    assert len(pairs) == 1 and references[0]['version'] == 8
+    assert references[0]['captured_at'] == 14390
+    assert instance.state['next_milestone_at'] == 28800
+
+
+def test_full_checkpoint_reference_rejects_wrong_updates_or_different_weights(watch, tmp_path):
+    import hashlib
+    from types import SimpleNamespace
+
+    import torch
+    from test_artifact_store_v1 import PRODUCER
+
+    from spireagent.json_boundary import FrozenObject
+    from stpd.workers.checkpoint_codec import encode_checkpoint
+
+    instance = tier_observer(watch, tmp_path)
+    info = {'schema': 'stpd/rl-learner-checkpoint-2',
+            'run': 'rl3-watch', 'version': 8, 'updates': 64,
+            'config': {'lr': 1e-5}, 'producer': PRODUCER.to_dict()}
+    learner = {'run': 'rl3-watch', 'version': 8, 'updates': 64,
+               'random': [3, [1, 2], None], 'buffer': [], 'counts': {}, 'seen': [], 'returns': []}
+    state = {'schema': 'stpd/rl-learner-checkpoint-2', 'weights': {'weight': torch.tensor([1.0])},
+             'optimizer': {}, 'torch_rng': torch.tensor([1], dtype=torch.uint8),
+             'learner': json.dumps(learner)}
+    raw = encode_checkpoint(state)
+    manifest = SimpleNamespace(kind='checkpoint', artifact_id='c' * 64,
+        parameters=FrozenObject.of(info), producer=PRODUCER,
+        payload=lambda _: SimpleNamespace(sha256=hashlib.sha256(raw).hexdigest()))
+    store = SimpleNamespace(get_manifest=lambda _: manifest, read_payload=lambda _: [raw])
+    instance.exchange = SimpleNamespace(store=store, materialize_model=lambda *_: tmp_path)
+    model = {'version': 8, 'training': {'updates': 64},
+             'model_artifact_id': 'a' * 64, 'model_sha256': 'b' * 64}
+    checkpoint = {'version': 8, 'checkpoint_artifact_id': 'c' * 64}
+    with patch('stpd.p1.export.load_model', return_value=(
+            SimpleNamespace(state_dict=lambda: {'weight': torch.tensor([1.0])}), {})):
+        binding = instance.checkpoint_binding(checkpoint, model)
+    assert binding['version'] == 8 and binding['updates'] == 64
+    with (patch('stpd.p1.export.load_model', return_value=(
+            SimpleNamespace(state_dict=lambda: {'weight': torch.tensor([2.0])}), {})),
+          pytest.raises(ValueError, match='weights_mismatch')):
+        instance.checkpoint_binding(checkpoint, model)
+    with pytest.raises(ValueError, match='binding_mismatch'):
+        instance.checkpoint_binding(checkpoint, {**model, 'training': {'updates': 65}})
+
+
+def test_crossing_CDF_uses_paired95_lower_bound_after_skipping_missing_Boss(watch):
+    before = {'comparison_key': 'same', 'cohort': cohort([10] * 20, missing_boss=20)}
+    after = {'comparison_key': 'same', 'cohort': cohort([9] + [12] * 19, missing_boss=20)}
+    assert watch.Watcher.candidate_comparison(before, after) == (
+        True, 'crossing_CDF_paired95_lower_bound')
+    noisy = {'comparison_key': 'same', 'cohort': cohort([0] + [11] * 19, missing_boss=20)}
+    assert watch.Watcher.candidate_comparison(before, noisy) == (
+        False, 'crossing_CDF_paired95_lower_bound')
+
+
+def test_watcher_observation_report_reads_only_verified_local_files(watch, tmp_path):
+    import hashlib
+
+    from spireagent.json_boundary import json_bytes
+
+    instance = tier_observer(watch, tmp_path)
+    root = tmp_path / 'evaluation'
+    evidence = root / 'evidence'
+    evidence.mkdir(parents=True)
+    ledger = {'slots': []}
+    source = {'plan_sha256': 'a' * 64, 'ledger_report': ledger}
+    watch.save(evidence / 'report-source.json', source)
+    watch.save(evidence / 'report-details.json', {'episodes': []})
+    current = cohort([8, 17])
+    current.update(source_sha256=watch.hashed(evidence / 'report-source.json'),
+                   details_sha256=watch.hashed(evidence / 'report-details.json'))
+    watch.save(evidence / 'report-cohort.json', current)
+    references = {name: {'path': f'report-{name}.json',
+                         'sha256': watch.hashed(evidence / f'report-{name}.json')}
+                  for name in ('source', 'details', 'cohort')}
+    watch.save(root / 'result.json', {**source, 'observation_report': {
+        'schema': 'spireagent/evaluation-observation-files-1', 'files': references,
+        'ledger_report_sha256': hashlib.sha256(json_bytes(ledger)).hexdigest()}})
+    plan = {'manifest': {'sha256': 'b' * 64}, 'seed_prefix': 20}
+    with (patch.object(watch.evaluate, 'load_plan', return_value=plan),
+          patch('spireagent.storage.config.open_peer', side_effect=AssertionError('no watcher R2')),
+          patch('stpd.evaluation.rl_observation.write_report') as render):
+        result = instance.evaluation_report(root / 'result.json', {'plan': str(root / 'plan.json')})
+    assert result['cohort'] == current
+    assert render.call_count == 1
+    (evidence / 'report-cohort.json').write_text('{}')
+    with (patch.object(watch.evaluate, 'load_plan', return_value=plan),
+          pytest.raises(ValueError, match='pinned_input_changed')):
+        instance.evaluation_report(root / 'result.json', {'plan': str(root / 'plan.json')})

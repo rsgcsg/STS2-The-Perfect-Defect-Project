@@ -241,7 +241,22 @@ def test_allocation_run_uses_original_ledger_and_retains_unknown_without_reoffer
     monkeypatch.setattr(evaluate.sys, 'platform', 'linux')
     monkeypatch.setenv('SLURM_JOB_ID', 'test-owned-allocation')
     monkeypatch.setenv('SLURM_CPUS_PER_TASK', '1')
+    # A late signal must stay handled during the complete snapshot/readback.
+    import signal
+
+    original_snapshot = evaluate.snapshot
+    initial_handler = signal.getsignal(signal.SIGUSR1)
+
+    def signal_during_snapshot(source, destination):
+        assert signal.getsignal(signal.SIGUSR1) != initial_handler
+        signal.raise_signal(signal.SIGUSR1)
+        return original_snapshot(source, destination)
+
+    monkeypatch.setattr(evaluate, 'snapshot', signal_during_snapshot)
     result = evaluate.run(directory / 'plan.json')
+    assert signal.getsignal(signal.SIGUSR1) == initial_handler
+    assert result['timing']['process_wall_seconds'] >= result['timing']['phases']['snapshot']
+    assert result['timing']['process_finished_at'] >= result['timing']['process_started_at']
     assert result['status'] == 'stopped'
     assert result['ledger_report']['unknown'] == 1
     assert result['ledger_report']['not_started'] == 59
@@ -300,3 +315,68 @@ def test_plan_exposes_pending_limit_that_can_serialize_requested_workers(
     plan, _ = prepared(evaluate, execution, tmp_path, workers=8)
     assert plan['parallelism'] == {'requested_workers': 8, 'pending_limit': 1,
                                    'save_workers': 1, 'execution_upper_bound': 1}
+
+
+def test_unknown_submission_outcome_keeps_intent_and_is_never_automatically_resubmitted(
+        evaluate, execution, tmp_path):
+    _plan, directory = prepared(evaluate, execution, tmp_path)
+    lock = tmp_path / 'configuration/friday-submit.lock'
+    with (patch.object(evaluate.scheduler, 'submission_lock_path', return_value=lock.resolve()),
+          patch.object(evaluate.scheduler, 'output', side_effect=[
+              '', '0/100/0/100', '', OSError('lost sbatch response')]),
+          pytest.raises(OSError)):
+        evaluate.submit(directory / 'plan.json')
+    intent = json.loads((directory / 'submission-intent.json').read_bytes())
+    assert 'submission_requested_at' in intent and 'job_id' not in intent
+    with (patch.object(evaluate.scheduler, 'submission_lock_path', return_value=lock.resolve()),
+          patch.object(evaluate.scheduler, 'output', return_value='') as output,
+          pytest.raises(ValueError, match='submission_requires_owner_reconciliation')):
+        evaluate.submit(directory / 'plan.json')
+    assert output.call_count == 1  # read-only original-name reconciliation, no second sbatch
+
+
+def test_observation_report_defaults_off_and_rejects_multiple_models(
+        evaluate, execution, tmp_path):
+    plan, _directory = prepared(evaluate, execution, tmp_path)
+    assert plan['observation_report'] is False
+    with pytest.raises(ValueError, match='single_model_observation_report'):
+        evaluate.prepare(execution, tmp_path / 'not-created',
+                         selections={f'checkpoint-{i}': f'model-{i}' for i in range(1, 4)},
+                         observation_report=True)
+
+
+def test_evaluation_allocation_owns_trajectory_detail_preparation(evaluate, tmp_path):
+    execution = tmp_path / 'execution.json'
+    execution.write_text('{}')
+    plan = {'execution': {'path': str(execution), 'sha256': evaluate.hashed(execution)}}
+    summary = {'plan_sha256': 'a' * 64, 'ledger_report': {'slots': [
+        {'run_id': 'one', 'seed': 'seed-one', 'trajectory_shard_id': 'shard-one'}]}}
+    scratch = tmp_path / 'scratch'
+    scratch.mkdir()
+    opened = []
+
+    def open_peer(peer):
+        opened.append(peer)
+        return 'test-store'
+
+    def read_shard(store, shard, *, scratch):
+        assert store == 'test-store' and shard == 'shard-one'
+        assert scratch.is_dir()
+        yield {'run_id': 'one', 'identity': {'seed': 'seed-one'}}
+
+    def load_cohort(path, *, details):
+        assert json.loads(path.read_bytes()) == summary
+        assert json.loads(details.read_bytes()) == {'episodes': [{'run_id': 'one'}]}
+        return {'source_sha256': evaluate.hashed(path), 'details_sha256': evaluate.hashed(details)}
+
+    execution.write_text(json.dumps({'peer': {'kind': 's3'}}))
+    plan['execution']['sha256'] = evaluate.hashed(execution)
+    with (patch('spireagent.storage.config.open_peer', open_peer),
+          patch('spireagent.workbench.managed_trajectory_store.read_shard', read_shard),
+          patch('stpd.evaluation.rl_observation.trajectory_details',
+                side_effect=lambda e: {'run_id': e['run_id']}),
+          patch('stpd.evaluation.rl_observation.load_cohort', load_cohort)):
+        metadata = evaluate.prepare_observation_report(plan, summary, scratch)
+    assert opened == [{'kind': 's3'}]
+    assert metadata['files']['cohort']['sha256'] == evaluate.hashed(scratch / 'report-cohort.json')
+    assert metadata['files']['source']['sha256'] == evaluate.hashed(scratch / 'report-source.json')

@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import signal
 import threading
 from pathlib import Path
 
@@ -26,7 +27,20 @@ def main() -> None:
     args = parser.parse_args()
     os.umask(0o077)
     threading.current_thread().name = "rl-learner"
-    summary = Learner(LearnerConfig.read(args.config), args.work.resolve(), IO).run()
+    work = args.work.resolve()
+    work.mkdir(parents=True, exist_ok=True)
+
+    def stop(_number: int, _frame: object) -> None:
+        # Defer graceful stop to the next update boundary; keep final publication alive.
+        (work / "STOP").touch()
+
+    previous = {number: signal.signal(number, stop)
+                for number in (signal.SIGTERM, signal.SIGINT, signal.SIGUSR1)}
+    try:
+        summary = Learner(LearnerConfig.read(args.config), work, IO).run()
+    finally:
+        for number, handler in previous.items():
+            signal.signal(number, handler)
     print(json.dumps({k: summary[k] for k in ("updates", "versions", "counts")}))
 
 
