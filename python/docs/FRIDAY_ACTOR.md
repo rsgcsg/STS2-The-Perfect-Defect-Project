@@ -111,3 +111,75 @@ RL的未知阈值与任意账本停止沿原Actor；结束摘要发现失败会�
 独立工程批次仍可用 `prepare.py` / `submit.py`，只收原非评估工程种子，不能称RL训练。
 测速 `profile-python` 仍调用原Agent，记录已完成的投影/前向和自身写入成本；指标原子
 保存但不fsync，SIGKILL时在途调用不补算。原始证据和比较规则不改。
+
+## RL2：冻结运行包上方的长任务调度
+
+RL2 授权后可用更新的 `tools/friday/rl.py prepare --runtime-source <冻结release/source>`
+准备 12–15 路、最长 79200 秒（22 小时）的作业；`--wall-seconds 75600 --max-games 10000` 给约20小时
+训练及排空留余量；10k仍是有限局数上限，避免快局在20小时墙钟前撞到旧1000局上限。`submit` 仍调用原 Slurm、单核、fc430、容量、永久 owner 与 USR1
+路径。调度工具与实际 producer 分开：`source_root` 必须指向原干净冻结源码，执行配置
+producer、Host/Runtime、游戏包不变。调用更新工具的 actor prepare/submit 时
+`PYTHONPATH` 指向冻结源码的 `python`，原 `require_modules` 仍拒绝模块来源漂移。
+
+评估 `submit` 的互斥改为准确计划路径对应的 `spireagent-eval-<hash>` 作业名，加上
+原 owner/STOP 检查；因此同一训练的演员和不同评估计划可以并行，相同计划不能重投。
+`prepare --runtime-source` 同样把评估真正执行的源码固定在原 release；不把调度工具
+提交号冒充已部署 Managed producer。
+
+### 一个1核看守作业
+
+先实际核 `scontrol show partition smp` 和容量；在计算节点已有获准分配中用
+`sbatch --test-only --partition=smp --cpus-per-task=1 --time=00:01:00 --wrap=true`
+核是否接受节点内提交（仅调度验证、不启动游戏）。若站点禁止节点内提交，配置
+`evaluation_mode="direct"`：评估作为同一1核分配内子进程运行，主看守仍观察并止损；
+不另开服务，不依赖 Mac。允许时用 `submit`，评估另占默认4核。
+
+配置（所有路径为真实绝对路径；peer 是非秘密 R2 绑定，不含凭据）：
+
+```json
+{
+  "schema": "spireagent/friday-rl-watch-config-1",
+  "run": "rl2-real-1",
+  "peer": {"kind":"s3","bucket":"BUCKET","endpoint":"https://ENDPOINT","prefix":"stpd","region":"auto"},
+  "actor_plan": "/data/USER/rl2/actors/plan.json",
+  "actor_job_id": "ACTUAL_ARRAY_JOB_ID",
+  "runtime_source": "/data/USER/friday-actor/releases/445b9f980364baca7fe1f77dedb09d3211557c6b/source",
+  "evaluation_execution": "/data/USER/rl2/evaluation-execution.json",
+  "evaluation_manifest": "/data/USER/rl2/T2-MANAGED-A0-SEEDS.json",
+  "started_at": 0,
+  "wall_seconds": 72000,
+  "poll_seconds": 900,
+  "evaluation_seconds": 18000,
+  "evaluation_mode": "submit",
+  "evaluation_workers": 4
+}
+```
+
+`started_at` 必须填真正起跑的 Unix 秒。看守校验 run/peer、冻结源码和 actor 提交号；
+相同 work 只有一个进程持锁，恢复只读原状态，不重投结果未知的评估。凭据由用户私有文件
+通过原 launcher 同样的无回显方式加载。单独的看守 shell 最后执行更新源码里的
+`python tools/friday/watch.py --config /ABS/watch.json --work /ABS/watch-work`，
+其 `PYTHONPATH` 指向含 RL2 Exchange STOP/events 和 TensorBoard 的更新 `python`。
+用 `sbatch --partition=smp --cpus-per-task=1 --mem=4G --time=22:00:00 --no-requeue`
+提交该 shell，日志放本任务私有目录。看守源码无需替换 frozen runtime。
+
+约每15分钟将只增状态写到 `exchange/rl/<run>/status/<时间>.json`：最新模型、过去一小时
+公布局数、训练 unknown 分母、分片积压、最新 learner 事件和原评估结果。每5小时取最新
+已发布模型，核模型包后走原 `evaluate.prepare/submit`（固定原40种子前缀20、原审计账本）。
+不完整评估、未过原审计门或 unknown 都保留原状态，不把无分数的结果当退化证据。
+unknown 训练总体严格超过5%、连续两次完整评估平均层严格低于11.75、learner failed/
+非有限数值、或20小时期限，会写原 actor STOP 并 USR1 排空，同时通过 R2 请求 learner
+正常发最后版本和完整检查点。`stop_requested` 是请求证据，实际退出和 checkpoint 还需
+核原收据。原配置没有“现有KL阈值”；不把 KL 系数当阈值。若另获具体阈值可显式填
+`kl_stop_threshold`。连续3次评估无提高只报告，不自停。
+
+固定20颗出现首胜后，看守只触发一次同一获胜版本的独立完整T2原40颗确认账本；
+全部40颗均训练禁用，其中前20重复原评估、后20为新增评估种子，不称40颗全部新种子。
+确认使用1核direct、最长3小时，不延长20小时总时限；截止未完成保留完整分母。
+确认结果另标 `confirmation`，不进入固定20的退化或无提高序列，也不重置5小时评估时钟；
+不能将20颗里的单胜直接宣称达到L1。调度/评估失败立即写 `attention`，不重试 unknown
+或申请结果未知的作业。看守是有限作业，退出不会自动重启。
+
+20小时停止后，看守继续最多40分钟观察actors、learner末检查点和评估子进程退出。
+R2不可达时遥测失败记stderr，原actor本地STOP/USR1仍按20小时执行；learner的同一停止
+请求保留待写并在收尾内重试，超时本地drain-status.json明确未确认，不称已经完成。
