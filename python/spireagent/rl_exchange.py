@@ -13,8 +13,9 @@ import hashlib
 import json
 import re
 import time
+import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 from spireagent.json_boundary import BoundaryError, json_bytes
 from spireagent.storage.config import open_peer
@@ -23,10 +24,12 @@ from spireagent.storage.store import ManifestArtifactStore
 MODEL_SCHEMA = "spireagent/rl-model-version-1"
 SHARD_SCHEMA = "spireagent/rl-trajectory-shard-record-1"
 CHECKPOINT_SCHEMA = "spireagent/rl-learner-checkpoint-record-1"
+STOP_SCHEMA = "spireagent/rl-stop-request-1"
+EVENT_SCHEMA = "spireagent/rl-learner-event-1"
 _NAME = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 
 
-def reject(reason: str) -> None:
+def reject(reason: str) -> NoReturn:
     raise BoundaryError("rl_exchange", reason)
 
 
@@ -51,6 +54,58 @@ class Exchange:
         self.store: ManifestArtifactStore = open_peer(peer)
         self.blobs = self.store.blobs
         self.prefix = f"exchange/rl/{run}/"
+
+    def request_stop(self, reason: str) -> dict[str, Any]:
+        """First request wins; later callers observe that original request."""
+        if not isinstance(reason, str) or not reason:
+            reject("invalid_stop_reason")
+        existing = self.stop_request()
+        if existing is not None:
+            return existing
+        raw = _sealed({"schema": STOP_SCHEMA, "run": self.run, "reason": reason,
+                       "requested_at": time.time()})
+        try:
+            self.blobs.put_if_absent(f"{self.prefix}control/stop.json", raw)
+        except BoundaryError as error:
+            if error.code != "immutable_key_collision":
+                raise
+        result = self.stop_request()
+        if result is None:
+            reject("stop_request_missing_after_publication")
+        return result
+
+    def stop_request(self) -> dict[str, Any] | None:
+        key = f"{self.prefix}control/stop.json"
+        if key not in self.blobs.keys(f"{self.prefix}control/"):
+            return None
+        value = _open(self.blobs.get(key), STOP_SCHEMA)
+        if (value.get("run") != self.run or not isinstance(value.get("reason"), str)
+                or not value["reason"] or type(value.get("requested_at")) not in (int, float)):
+            reject("stop_request_identity_mismatch")
+        return value
+
+    def publish_event(self, kind: str, **fields: Any) -> dict[str, Any]:
+        raw = _sealed({**fields, "schema": EVENT_SCHEMA, "run": self.run,
+                       "at": time.time(), "kind": kind})
+        key = f"{self.prefix}learner-events/{time.time_ns():020d}-{uuid.uuid4().hex}.json"
+        self.blobs.put_if_absent(key, raw)
+        value: dict[str, Any] = json.loads(raw)
+        return value
+
+    def event_records(self) -> list[dict[str, Any]]:
+        return [self.event_record(key) for key in sorted(
+            self.blobs.keys(f"{self.prefix}learner-events/")) if key.endswith(".json")]
+
+    def latest_event(self) -> dict[str, Any] | None:
+        keys = sorted(k for k in self.blobs.keys(f"{self.prefix}learner-events/")
+                      if k.endswith(".json"))
+        return self.event_record(keys[-1]) if keys else None
+
+    def event_record(self, key: str) -> dict[str, Any]:
+        value = _open(self.blobs.get(key), EVENT_SCHEMA)
+        if value.get("run") != self.run:
+            reject("event_identity_mismatch")
+        return value
 
     # Learner checkpoints (resume across machines/allocations) ----------
     def publish_checkpoint(self, version: int, artifact_id: str) -> dict[str, Any]:

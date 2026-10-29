@@ -70,3 +70,39 @@ checkout，建议从单独冻结的 worktree 跑。
   续训校验 run、起点模型哈希、producer（必须同一份源码）都一致；缓冲区从原分片读回重建，
   缺样本就拒绝。同一 run 已有版本但没写 `resume_checkpoint` 会拒绝。
 - 打局者不用停：它们一直取最大版本号；续训后的第一个新版本 parent 指向检查点版本。
+
+## 长跑曲线、远端状态与停止
+
+学习者配置 `tensorboard_steps` 默认 10，每 10 次优化器更新记 policy/anchor loss、KL、
+clip 比例、ratio、梯度范数、缓冲区大小和该批样本的平均/最大版本陈旧度；0 显式关闭。
+训练环境安装 `ml` extra（含 PyTorch 官方 `SummaryWriter` 所用的 TensorBoard）。
+每次检查点完成及退出时关闭当前 event 文件，用原 BlobStore 的 `put_if_absent` 写入
+`exchange/rl/<run>/tb/events.out.tfevents.<内容哈希>`，下一段另开新文件，只增不覆盖。
+训练和评估文件位于同一目录，横轴是累计更新数；分配续训保留原累计更新数。
+本地从 R2 下载该 `tb/` 前缀后运行 `tensorboard --logdir <下载目录>` 查看；只下载新键即可。
+
+Friday 看守完成一次原评估账本后，调用：
+
+```bash
+python -m spireagent.rl_tensorboard --peer-config peer.json --run <run> \
+  --evaluation evaluation-metrics.json --work <节点暂存目录>
+```
+
+`peer.json` 是原 peer 配置（只引用环境变量，不含凭证）；`evaluation-metrics.json` 字段为
+`version`、该版本的累计 `updates`、`wins`、`mean_max_floor`（无有效局时为 null）、
+`unknown`，可选实际完成时间 `evaluated_at`（Unix 秒）。评估计数来自原账本，不重试 unknown。
+可选 `evaluation_kind` 默认 `fixed20`，另可用 `confirmation` 将胜局确认批写入独立
+`confirmation/*` 曲线，避免与固定 20 局的 `evaluation/*` 混用；`planned` 记录该批原计划分母。
+此入口只做曲线，不提交评估、不改训练用途、不替代原评估证据。
+
+学习者每次 progress、版本/检查点发布、结束时把原字段和 `counts`、`seen_shards`、
+`version`、`updates`、`buffer_size`、平均/最大陈旧度、计时写入只追加
+`learner-events/<时间纳秒>-<唯一值>.json`；等数据时约每 30 秒写 `waiting`。
+`Exchange.latest_event()` 只读最新条，`event_records()` 读全部历史。正常退出 `finished`；
+异常最后一条 `failed` 保留 `error_type/error_code`，不把异常伪装成完整检查点。
+
+看守通过 `Exchange.request_stop(reason)` 在同一 peer 创建唯一的 `control/stop.json`
+（`spireagent/rl-stop-request-1`，绑定 run、原因、时间及记录哈希）；第一个请求生效，不能撤销。
+学习者每轮 poll 前检查它，沿原 STOP 正常退出路径发末版本和完整检查点。仍需从实际
+`finished` 和检查点记录确认收尾完成；请求写成功不是已经停止。读写或校验失败明确报错。
+数值损失目前检查非有限数值；`kl_coef` 是损失系数，源码没有独立 KL 停止阈值。
