@@ -31,7 +31,7 @@ from spireagent.rl_tensorboard import TensorBoardMetrics
 from spireagent.source import source_identity
 from stpd.p1.export import export_model, input_spec, load_model, runtime_projection
 from stpd.p1.input import project
-from stpd.p1.tensor_input import TensorFrame
+from stpd.p1.tensor_input import ModelFrame, TensorFrame, compile_frame
 from stpd.workers.checkpoint_codec import decode_checkpoint, encode_checkpoint
 from stpd.workers.training_io import CheckpointPublisher, FrozenCheckpoint, ProgressCadence
 
@@ -363,8 +363,15 @@ class Learner:
             observation = episode["observations"][step["observation_index"]]["observation"]
             frame = project(observation, input_projection=self.projection)
             action = [c["choice_id"] for c in frame.choices].index(step["action_id"])
+            prepared: ModelFrame = frame
+            if self.config.performance is not None and self.config.performance.precompile_inputs:
+                # Existing reader thread only: immutable CPU input metadata.
+                # Its tokenizer cache belongs to the frozen reference, never
+                # the model concurrently copied by the owner for publication.
+                with torch.device("cpu"):
+                    prepared = compile_frame(frame, self.reference)
             behavior = step["behavior"]
-            frames.append((frame, action, behavior["selected_probability"],
+            frames.append((prepared, action, behavior["selected_probability"],
                            behavior["model_probabilities"][step["action_index"]],
                            f"{episode['run_id']}:{step['index']}"))
         return frames

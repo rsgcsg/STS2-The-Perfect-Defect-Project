@@ -29,6 +29,7 @@ class PerformanceConfig:
     reference_device_cache: bool = False
     joint_nodes: bool = False
     async_transfer: bool = False
+    precompile_inputs: bool = False
     microbatch_size: int = 8
     scene_attention_area: int = 262144
     text_attention_area: int = 262144
@@ -41,7 +42,8 @@ class PerformanceConfig:
         if any(type(value) is not bool for value in (
                 self.packed, self.tensor_cache, self.device_cache,
                 self.reference_device_cache, self.joint_nodes,
-                self.async_transfer, self.bucket, self.defer_sync, self.tf32)):
+                self.async_transfer, self.precompile_inputs,
+                self.bucket, self.defer_sync, self.tf32)):
             raise BoundaryError("rl_performance", "invalid_boolean")
         if (type(self.microbatch_size) is not int or not 1 <= self.microbatch_size <= 64
                 or any(type(value) is not int or not 1 <= value <= 2**28 for value in (
@@ -56,6 +58,8 @@ class PerformanceConfig:
             raise BoundaryError("rl_performance", "joint_nodes_requires_tensor_cache")
         if self.async_transfer and not self.tensor_cache:
             raise BoundaryError("rl_performance", "async_transfer_requires_tensor_cache")
+        if self.precompile_inputs and not self.tensor_cache:
+            raise BoundaryError("rl_performance", "precompile_inputs_requires_tensor_cache")
 
 
 def cache_on_device(frame: TensorFrame, device: torch.device) -> TensorFrame:

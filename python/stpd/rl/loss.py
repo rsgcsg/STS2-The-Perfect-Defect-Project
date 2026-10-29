@@ -23,14 +23,14 @@ from stpd.p1.input import Frame
 from stpd.p1.model import MStd
 
 if TYPE_CHECKING:
-    from stpd.p1.tensor_input import TensorFrame
+    from stpd.p1.tensor_input import ModelFrame, TensorFrame
 
     from .performance import PerformanceConfig
 
 
 @dataclass(frozen=True)
 class RlSample:
-    frame: Frame
+    frame: ModelFrame
     action: int
     behavior_probability: float
     old_probability: float
@@ -48,7 +48,7 @@ class LossConfig:
     rho_max: float = 1.0
 
 
-def _scores(model: MStd, frames: list[Frame]) -> torch.Tensor:
+def _scores(model: MStd, frames: list[ModelFrame]) -> torch.Tensor:
     scores = model.forward_batch(frames)
     return torch.nn.utils.rnn.pad_sequence(scores, batch_first=True, padding_value=-torch.inf)
 
@@ -166,7 +166,7 @@ def _execution_update(model: MStd, reference: MStd, optimizer: torch.optim.Optim
     All losses use FP32 under autocast. Delayed checks still reject invalid
     scores, reference distributions, losses or gradients before optimizer.step.
     """
-    from stpd.p1.tensor_input import compile_frame
+    from stpd.p1.tensor_input import TensorFrame, compile_frame
 
     from .performance import cache_on_device
 
@@ -176,11 +176,11 @@ def _execution_update(model: MStd, reference: MStd, optimizer: torch.optim.Optim
     device = model.ids.weight.device
     cache = frame_cache if frame_cache is not None else {}
 
-    def frame(value: Frame, key: object) -> Any:
+    def frame(value: ModelFrame, key: object) -> Any:
         if not performance.tensor_cache:
             return value
         if key not in cache:
-            cache[key] = compile_frame(value, model)
+            cache[key] = value if isinstance(value, TensorFrame) else compile_frame(value, model)
         if performance.device_cache and cache[key].tensors["actions"].device != device:
             cache[key] = cache_on_device(cache[key], device)
         return cache[key]
