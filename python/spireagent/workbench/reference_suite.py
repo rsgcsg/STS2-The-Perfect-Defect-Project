@@ -30,9 +30,11 @@ from spireagent.workbench.p1_recording_storage import (
 )
 from stpd.evaluation.suites import (
     FOUR_AGENT_SUITE_ID,
+    RL3_LEARNING_CURVE_SUITE_ID,
     checkpoint_reference_manifest,
     diagnostic_reference_manifest,
     four_agent_reference_manifest,
+    rl3_learning_curve_manifest,
     t2_managed_manifest,
 )
 from stpd.game_seed import derive_game_seed, require_canonical_game_seed
@@ -59,7 +61,9 @@ def load_manifest(path: Path, sha256: str) -> tuple[bytes, dict[str, Any]]:
         version, ascension = value.get("game_version"), value.get("ascension")
         if not isinstance(version, str) or type(ascension) is not int:
             _reject("manifest_configuration_changed")
-        expected_t2 = t2_managed_manifest(version, ascension)
+        expected_t2 = (rl3_learning_curve_manifest(version)
+                       if value.get("suite_id") == RL3_LEARNING_CURVE_SUITE_ID
+                       else t2_managed_manifest(version, ascension))
         if json_bytes(value) != json_bytes(expected_t2):
             _reject("manifest_configuration_changed")
         return raw, value

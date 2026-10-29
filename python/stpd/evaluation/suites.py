@@ -12,6 +12,7 @@ MANIFEST_ROOT = Path(__file__).resolve().parent / "suites"
 FOUR_AGENT_SUITE_ID = "ref-first-four-10-20261023"
 CHARACTERS = ("Defect", "Ironclad", "Silent", "Regent", "Necrobinder")
 CHECKPOINT_SUITE_ID = "ref-checkpoints-20261024"
+RL3_LEARNING_CURVE_SUITE_ID = "managed-rl3-learning-curve-100-20261030-Defect-a0"
 
 
 def checkpoint_reference_manifest(game_version: str, character: str = "Defect",
@@ -42,6 +43,18 @@ def t2_managed_manifest(game_version: str, ascension: int = 0) -> dict[str, Any]
             "seed_derivation": ("original checkpoint 10/2 prefix; "
                                 "derive_game_seed(T2 suite, ordinal)"),
             "collection_training_RL": "forbidden"}
+
+
+def rl3_learning_curve_manifest(game_version: str) -> dict[str, Any]:
+    """Fresh 100-seed Managed set; never collect or train on these seeds."""
+    four_agent_reference_manifest(game_version)
+    return {"schema": "stpd/evaluation-suite-v1", "suite_id": RL3_LEARNING_CURVE_SUITE_ID,
+            "version": "1.0.0", "game_version": game_version, "character": "Defect",
+            "ascension": 0, "host": "Managed", "purpose": "fixed_evaluation_only",
+            "episode_count": 100,
+            "seed_derivation": "derive_game_seed(suite_id, ordinal_1_based)",
+            "seeds": [derive_game_seed(RL3_LEARNING_CURVE_SUITE_ID, i)
+                      for i in range(1, 101)], "collection_training_RL": "forbidden"}
 
 
 def four_agent_reference_manifest(game_version: str) -> dict[str, Any]:
@@ -144,7 +157,10 @@ def seed_membership(seed: str) -> tuple[str, ...]:
     ) if canonical in m["seeds"])
     t2 = tuple(m["suite_id"] for m in (t2_managed_manifest("v0.111.0", a) for a in (0, 10))
                if canonical in m["seeds"])
-    return legacy + ((FOUR_AGENT_SUITE_ID,) if canonical in reserved else ()) + checkpoint + t2
+    rl3 = rl3_learning_curve_manifest("v0.111.0")
+    learning_curve = (rl3["suite_id"],) if canonical in rl3["seeds"] else ()
+    return (legacy + ((FOUR_AGENT_SUITE_ID,) if canonical in reserved else ())
+            + checkpoint + t2 + learning_curve)
 
 
 def require_non_evaluation_seed(seed: str) -> str:

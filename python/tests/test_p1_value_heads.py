@@ -112,12 +112,15 @@ def test_fixed_t2_seeds_preserve_old_prefix_and_are_reserved():
             require_non_evaluation_seed(current["seeds"][-1])
 
 
-def test_direct_training_refuses_reserved_t2_seed(tmp_path):
+@pytest.mark.parametrize("suite", ["t2", "rl3_learning_curve"])
+def test_direct_training_refuses_reserved_evaluation_seed(tmp_path, suite):
     from spireagent.json_boundary import BoundaryError
-    from stpd.evaluation.suites import t2_managed_manifest
+    from stpd.evaluation.suites import rl3_learning_curve_manifest, t2_managed_manifest
 
     store = store_at(tmp_path / "store")
-    seed = t2_managed_manifest("v0.111.0")["seeds"][-1]
+    manifest = (t2_managed_manifest("v0.111.0") if suite == "t2"
+                else rl3_learning_curve_manifest("v0.111.0"))
+    seed = manifest["seeds"][-1]
     projections = [projection_fixture(store, "source-" + str(i),
                                       seed=seed if i == 0 else None)[0] for i in range(3)]
     snapshot = explicit_snapshot(store, projections)
