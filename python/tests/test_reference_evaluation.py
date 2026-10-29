@@ -137,3 +137,41 @@ def test_group_preserves_selected_model_and_actual_bound_execution(tmp_path, dis
     else:
         assert client.calls.count("submit") == client.calls.count("prepare") == 1
         assert report["episodes"][1]["status"] == "not_started"
+
+
+def test_rl3_learning_curve_roundtrip_and_all_seeds_excluded_from_training(tmp_path, monkeypatch):
+    from stpd.evaluation import suites
+
+    manifest = suites.rl3_learning_curve_manifest("v0.111.0")
+    seeds = manifest["seeds"]
+    assert len(seeds) == len(set(seeds)) == 100
+    existing = {seed for name in suites.suite_names()
+                for seed in suites.load_suite(name)["seeds"]}
+    existing.update(suites.t2_managed_manifest("v0.111.0")["seeds"])
+    assert not set(seeds) & existing
+    path = tmp_path / "manifest.json"
+    path.write_bytes(json_bytes(manifest))
+    assert load_manifest(path, hashlib.sha256(path.read_bytes()).hexdigest())[1] == manifest
+    for seed in seeds:
+        assert suites.seed_membership(seed) == (suites.RL3_LEARNING_CURVE_SUITE_ID,)
+        with pytest.raises(ValueError, match="reserved"):
+            suites.require_non_evaluation_seed(seed)
+    # Exercise the real actor seed-group producer's reserved-seed failure branch.
+    derive = suites.derive_game_seed
+    monkeypatch.setattr(suites, "derive_game_seed", lambda name, i:
+                        seeds[0] if name.startswith("ref-diagnostic-") else derive(name, i))
+    with pytest.raises(ValueError, match="overlaps a reserved"):
+        suites.diagnostic_reference_manifest("v0.111.0", "d" * 32, 1)
+
+
+@pytest.mark.parametrize("field,value", [("seeds", []), ("host", "Reference"),
+                                          ("character", "Silent"), ("ascension", 10)])
+def test_rl3_learning_curve_reader_refuses_changed_plan(tmp_path, field, value):
+    from stpd.evaluation.suites import rl3_learning_curve_manifest
+
+    manifest = rl3_learning_curve_manifest("v0.111.0")
+    manifest[field] = value
+    path = tmp_path / "manifest.json"
+    path.write_bytes(json_bytes(manifest))
+    with pytest.raises(BoundaryError, match="manifest_configuration_changed"):
+        load_manifest(path, hashlib.sha256(path.read_bytes()).hexdigest())
