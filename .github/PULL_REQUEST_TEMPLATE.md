@@ -1,3 +1,10 @@
+<!-- Docs/config-only PR (no component source): keep only the three lines below
+and delete every section after them. Component-source PRs delete these three
+lines and fill every section. -->
+- What changed:
+- Why:
+- How verified:
+
 ## Change identity
 
 - Repository: `rsgcsg/STS2-The-Perfect-Defect-Project`
