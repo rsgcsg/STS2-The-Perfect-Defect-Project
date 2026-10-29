@@ -16,7 +16,7 @@ from torch import Tensor, nn
 
 from .execution import MStdExecution
 from .input import V2_INPUT_SPEC, Frame, Role, normalized, signed_log
-from .tensor_input import ModelFrame, Reduction, TensorFrame, text_batch
+from .tensor_input import JointNodes, ModelFrame, Reduction, TensorFrame, joint_nodes, text_batch
 
 ARCHITECTURE: dict[str, Any] = {
     "id": "q3-m-std-1",
@@ -220,7 +220,7 @@ class MStd(nn.Module):
         encoded = (encoded * (~mask).unsqueeze(-1)).sum(1) / (~mask).sum(1).unsqueeze(-1)
         return cast(Tensor, self.text_projection(encoded))
 
-    def tensor_nodes(self, frame: TensorFrame, vectors: Tensor) -> Tensor:
+    def tensor_nodes(self, frame: TensorFrame | JointNodes, vectors: Tensor) -> Tensor:
         device = self.ids.weight.device
         t = {key: frame.tensors[key].to(device) for key in (
             "identities", "identity_fields", "kinds", "positions", "number_fields",
@@ -304,7 +304,8 @@ class MStd(nn.Module):
                          for row in number_owners]
         number_values = torch.cat(number_parts) if number_parts else nodes.new_zeros((0, 192))
         number_features = _mean_terms(number_values, number_owners, self.no_numbers)
-        if self.execution.implementation == "experimental-packed-v1":
+        if self.execution.implementation in {"experimental-packed-v1",
+                                              "experimental-joint-nodes-v1"}:
             # Same complete terms and per-row reduction lengths; batched gathers
             # change FP32 gradient accumulation. This is a separate trajectory,
             # not the rejected prototype relabeled as an exact-resume success.
@@ -383,7 +384,8 @@ class MStd(nn.Module):
             return [], self.ids.weight.new_empty((0, 192))
         device = self.ids.weight.device
         tensor_frames = [f for f in frames if isinstance(f, TensorFrame)]
-        if tensor_frames and (self.execution.implementation != "experimental-packed-v1"
+        if tensor_frames and (self.execution.implementation not in {
+                "experimental-packed-v1", "experimental-joint-nodes-v1"}
                               or self.vocabulary.get("input_spec") != V2_INPUT_SPEC):
             raise ValueError("tensor_input_requires_v2_packed_execution")
         if tensor_frames and len(tensor_frames) != len(frames):
@@ -400,12 +402,21 @@ class MStd(nn.Module):
             vectors = (self.text_vectors(all_texts) if all_texts
                        else self.ids.weight.new_zeros((0, 192)))
         nodes = []
-        offset = 0
-        for frame, count in zip(frames, counts, strict=True):
-            row_vectors = vectors[offset:offset + count]
-            nodes.append(self.tensor_nodes(frame, row_vectors) if isinstance(frame, TensorFrame)
-                         else self.node_vectors(frame, row_vectors))
-            offset += count
+        if tensor_frames and self.execution.implementation == "experimental-joint-nodes-v1":
+            # CUDA may consume a different RNG stream for one concatenated ID
+            # mask versus per-frame rand calls. This is an explicit new training
+            # trajectory; neither RNG nor gradient accumulation is bitwise pinned.
+            with torch.profiler.record_function("joint_nodes_metadata"):
+                combined = joint_nodes(tensor_frames)
+            nodes = list(self.tensor_nodes(combined, vectors).split(
+                [frame.entity_count for frame in tensor_frames]))
+        else:
+            offset = 0
+            for frame, count in zip(frames, counts, strict=True):
+                row_vectors = vectors[offset:offset + count]
+                nodes.append(self.tensor_nodes(frame, row_vectors) if isinstance(frame, TensorFrame)
+                             else self.node_vectors(frame, row_vectors))
+                offset += count
         lengths = torch.tensor([len(row) for row in nodes], device=device)
         packed = nn.utils.rnn.pad_sequence(nodes, batch_first=True)
         mask = torch.arange(packed.shape[1], device=device)[None, :] >= lengths[:, None]
@@ -438,7 +449,8 @@ class MStd(nn.Module):
                             scene[batch], target_roles, self.absent_roles[1])
                     elif any(not isinstance(role, int) for role in source_roles + target_roles):
                         raise ValueError("single-view InputSpec received multi-view roles")
-                    elif self.execution.implementation == "experimental-packed-v1":
+                    elif self.execution.implementation in {"experimental-packed-v1",
+                                                           "experimental-joint-nodes-v1"}:
                         source = _role_vectors(scene[batch], cast(list[int], source_roles),
                                                self.absent_roles[0])
                         target = _role_vectors(scene[batch], cast(list[int], target_roles),

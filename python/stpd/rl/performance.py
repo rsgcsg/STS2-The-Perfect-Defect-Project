@@ -27,6 +27,7 @@ class PerformanceConfig:
     tensor_cache: bool = False
     device_cache: bool = False
     reference_device_cache: bool = False
+    joint_nodes: bool = False
     microbatch_size: int = 8
     scene_attention_area: int = 262144
     text_attention_area: int = 262144
@@ -38,7 +39,8 @@ class PerformanceConfig:
     def __post_init__(self) -> None:
         if any(type(value) is not bool for value in (
                 self.packed, self.tensor_cache, self.device_cache,
-                self.reference_device_cache, self.bucket, self.defer_sync, self.tf32)):
+                self.reference_device_cache, self.joint_nodes,
+                self.bucket, self.defer_sync, self.tf32)):
             raise BoundaryError("rl_performance", "invalid_boolean")
         if (type(self.microbatch_size) is not int or not 1 <= self.microbatch_size <= 64
                 or any(type(value) is not int or not 1 <= value <= 2**28 for value in (
@@ -49,6 +51,8 @@ class PerformanceConfig:
             raise BoundaryError("rl_performance", "tensor_cache_requires_packed")
         if self.device_cache and not self.tensor_cache:
             raise BoundaryError("rl_performance", "device_cache_requires_tensor_cache")
+        if self.joint_nodes and not self.tensor_cache:
+            raise BoundaryError("rl_performance", "joint_nodes_requires_tensor_cache")
 
 
 def cache_on_device(frame: TensorFrame, device: torch.device) -> TensorFrame:
@@ -63,7 +67,8 @@ def cache_on_device(frame: TensorFrame, device: torch.device) -> TensorFrame:
         {key: value.to(device) for key, value in frame.tensors.items()},
         {key: Reduction(tuple((width, count, indices.to(device))
                               for width, count, indices in value.buckets), value.inverse.to(device))
-         for key, value in frame.reductions.items()}, frame.choices, frame.entity_count)
+         for key, value in frame.reductions.items()}, frame.choices, frame.entity_count,
+        host=frame.host or frame)
 
 
 def frame_storage_bytes(frame: TensorFrame) -> int:
@@ -97,7 +102,8 @@ def prepare_models(model: MStd, reference: MStd,
         for member in (model, reference):
             member.execution = replace(
                 member.execution,
-                implementation=("experimental-packed-v1" if config.packed
+                implementation=("experimental-joint-nodes-v1" if config.joint_nodes else
+                                "experimental-packed-v1" if config.packed
                                 else member.execution.implementation),
                 microbatch_size=config.microbatch_size,
                 scene_attention_area=config.scene_attention_area,
