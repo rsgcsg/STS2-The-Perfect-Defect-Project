@@ -72,6 +72,33 @@ def _reference(reference: MStd, batch: list[RlSample],
     return padded.to(device)
 
 
+def _policy_objective(packed: torch.Tensor, reference_log: torch.Tensor,
+                      batch: list[RlSample], config: LossConfig, sample_count: int
+                      ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """One learning objective shared by execution plans; retain legacy operation order."""
+    device = packed.device
+    log_probabilities = F.log_softmax(packed, dim=-1)
+    actions = torch.tensor([s.action for s in batch], device=device)
+    chosen = log_probabilities.gather(1, actions[:, None]).squeeze(1)
+    old = torch.tensor([math.log(s.old_probability) for s in batch],
+                       device=device, dtype=chosen.dtype)
+    weight = torch.tensor([min(s.old_probability / s.behavior_probability, config.rho_max)
+                           for s in batch], device=device, dtype=chosen.dtype)
+    advantage = torch.tensor([s.advantage for s in batch], device=device, dtype=chosen.dtype)
+    ratio = torch.exp(chosen - old)
+    clipped = torch.clamp(ratio, 1 - config.clip, 1 + config.clip)
+    policy = -weight * torch.minimum(ratio * advantage, clipped * advantage)
+    probabilities = log_probabilities.exp()
+    # Padded positions have probability 0; zero them before subtracting so
+    # neither the value nor its gradient ever sees (-inf) - (-inf).
+    valid = torch.isfinite(log_probabilities) & torch.isfinite(reference_log)
+    difference = (log_probabilities.masked_fill(~valid, 0)
+                  - reference_log.masked_fill(~valid, 0))
+    kl = (probabilities * difference).sum(-1)
+    objective = (policy.sum() + config.kl_coef * kl.sum()) / sample_count
+    return objective, policy, kl, ratio
+
+
 def rl_update(model: MStd, reference: MStd, optimizer: torch.optim.Optimizer,
               samples: list[RlSample], anchor: list[tuple[Frame, int]], learning_rate: float,
               config: LossConfig, reference_cache: dict[str, torch.Tensor] | None = None,
@@ -99,25 +126,8 @@ def rl_update(model: MStd, reference: MStd, optimizer: torch.optim.Optimizer,
         batch = [samples[i] for i in group]
         packed = _scores(model, [s.frame for s in batch])
         reference_log = _reference(reference, batch, reference_cache, packed.shape[1], device)
-        log_probabilities = F.log_softmax(packed, dim=-1)
-        actions = torch.tensor([s.action for s in batch], device=device)
-        chosen = log_probabilities.gather(1, actions[:, None]).squeeze(1)
-        old = torch.tensor([math.log(s.old_probability) for s in batch],
-                           device=device, dtype=chosen.dtype)
-        weight = torch.tensor([min(s.old_probability / s.behavior_probability, config.rho_max)
-                               for s in batch], device=device, dtype=chosen.dtype)
-        advantage = torch.tensor([s.advantage for s in batch], device=device, dtype=chosen.dtype)
-        ratio = torch.exp(chosen - old)
-        clipped = torch.clamp(ratio, 1 - config.clip, 1 + config.clip)
-        policy = -weight * torch.minimum(ratio * advantage, clipped * advantage)
-        probabilities = log_probabilities.exp()
-        # Padded positions have probability 0; zero them before subtracting so
-        # neither the value nor its gradient ever sees (-inf) - (-inf).
-        valid = torch.isfinite(log_probabilities) & torch.isfinite(reference_log)
-        difference = (log_probabilities.masked_fill(~valid, 0)
-                      - reference_log.masked_fill(~valid, 0))
-        kl = (probabilities * difference).sum(-1)
-        objective = (policy.sum() + config.kl_coef * kl.sum()) / len(samples)
+        objective, policy, kl, ratio = _policy_objective(
+            packed, reference_log, batch, config, len(samples))
         objective.backward()
         totals["policy"] += float(policy.detach().sum())
         totals["kl"] += float(kl.detach().sum())
@@ -234,21 +244,9 @@ def _execution_update(model: MStd, reference: MStd, optimizer: torch.optim.Optim
         if reference_log.shape[1] < packed.shape[1]:
             reference_log = F.pad(reference_log, (0, packed.shape[1] - reference_log.shape[1]),
                                   value=-torch.inf)
-        log_probabilities = F.log_softmax(packed, dim=-1)
-        actions = torch.tensor([s.action for s in batch], device=device)
-        chosen = log_probabilities.gather(1, actions[:, None]).squeeze(1)
-        old = torch.tensor([math.log(s.old_probability) for s in batch], device=device)
-        weight = torch.tensor([min(s.old_probability / s.behavior_probability, config.rho_max)
-                               for s in batch], device=device)
-        advantage = torch.tensor([s.advantage for s in batch], device=device)
-        ratio = torch.exp(chosen - old)
-        clipped = torch.clamp(ratio, 1 - config.clip, 1 + config.clip)
-        policy = -weight * torch.minimum(ratio * advantage, clipped * advantage)
-        valid = torch.isfinite(log_probabilities) & torch.isfinite(reference_log)
-        difference = (log_probabilities.masked_fill(~valid, 0)
-                      - reference_log.masked_fill(~valid, 0))
-        kl = (log_probabilities.exp() * difference).sum(-1)
-        ((policy.sum() + config.kl_coef * kl.sum()) / len(samples)).backward()
+        objective, policy, kl, ratio = _policy_objective(
+            packed, reference_log, batch, config, len(samples))
+        objective.backward()
         metric_rows.append(torch.stack((policy.detach().sum(), kl.detach().sum(), zero,
                                         ratio.detach().sum(),
                                         ((ratio.detach() - 1).abs() > config.clip).sum())))
