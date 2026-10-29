@@ -124,7 +124,8 @@ def prepare(configuration: Path, output: Path) -> dict[str, Any]:
     script(output / 'learner.sh', learner_prefix, [str(Path(config['cuda_environment']) / 'bin/python'),
         '-m', 'spireagent.workbench.rl_learner', '--config', str(output / 'learner.json'),
         '--work', str(output / 'learner')])
-    script(output / 'watch.sh', prefix, [cpu, str(source / 'tools/friday/watch.py'),
+    script(output / 'watch.sh', prefix, [str(Path(config['cuda_environment']) / 'bin/python'),
+        str(source / 'tools/friday/watch.py'),
         '--config', str(output / 'watch.json'), '--work', str(output / 'watch')])
     plan['launchers'] = {name: reference(output / name)
                          for name in ('start.sh', 'learner.sh', 'watch.sh')}

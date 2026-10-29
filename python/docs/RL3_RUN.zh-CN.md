@@ -15,7 +15,9 @@
   [长跑运行规则](RL_LONG_RUN.zh-CN.md)的正常私有环境加载；准备过程不读凭据，
   不给凭据新增配置项。GPU learner用明确的独立CUDA解释器，`device=cuda`失败就失败，
   不降到CPU。GPU learner的OMP/MKL/OPENBLAS线程数显式取learner.threads（默认4），
-  actor/watch保持原单线程，避免前缀把学习者CPU条件暗降到1。
+  actor/watch保持原单线程，避免前缀把学习者CPU条件暗降到1。watch也明确使用同一
+  独立CUDA环境的解释器，以复用其TensorBoard依赖；watch仍申请CPU Slurm作业，
+  不申请GPU、不进行CUDA推理，actor/evaluation继续使用原CPU环境。
 - 模型、完整CP、交换、actor和评估仍归原 `Exchange`、`rl.prepare/submit`、
   learner CLI、watch CLI。评估两档与报告规则见[观测指南](RL_OBSERVATION.zh-CN.md)。
 

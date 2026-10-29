@@ -98,6 +98,8 @@ def test_prepare_freezes_original_actor_plan_and_shared_environment_prefix_witho
     assert 'export OMP_NUM_THREADS=4 MKL_NUM_THREADS=4 OPENBLAS_NUM_THREADS=4' in learner_script
     assert 'OMP_NUM_THREADS=1' in (root / 'watch.sh').read_text()
     assert 'OMP_NUM_THREADS=4' not in (root / 'watch.sh').read_text()
+    assert (root / 'watch.sh').read_text().splitlines()[-1].startswith(
+        'exec ' + inputs[1]['cuda_environment'] + '/bin/python ')
     with pytest.raises(ValueError, match='explicit_approved_recipe'):
         recipe.start(root / 'plan.json')
 
