@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
-REWARD_SPEC = {"id": "stpd-rl-episode-reward", "version": "2", "win": 1.0,
+REWARD_SPEC: dict[str, Any] = {"id": "stpd-rl-episode-reward", "version": "2", "win": 1.0,
                "loss_floor_scale": 0.5, "boss_bonus": 0.1,
                "loss_progress_exponent": 2,
                "finish_floors": {"0": 48, "10": 49},
