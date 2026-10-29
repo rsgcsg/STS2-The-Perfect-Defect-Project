@@ -414,7 +414,7 @@ class Watcher:
             'learner_stop_pending': self.state.get('learner_stop_pending', True)})
         return complete or expired
 
-    def next_delay(self, now: float) -> float:
+    def next_delay(self, now: float, *, tick_started_at: float | None = None) -> float:
         """Next bounded health tick or exact evaluation/deadline boundary.
 
         An overdue submission that could not obtain capacity waits the ordinary
@@ -426,10 +426,16 @@ class Watcher:
         interval = min(interval, max(0, self.config['started_at']
             + self.config['wall_seconds'] - now))
         if self.state['pending'] is None and not self.maintenance_requested:
-            due_in = (self.state['last_evaluation_at']
-                      + self.config.get('evaluation_seconds', 18000) - now)
+            due_at = (self.state['last_evaluation_at']
+                      + self.config.get('evaluation_seconds', 18000))
+            due_in = due_at - now
             if due_in > 0:
                 interval = min(interval, due_in)
+            elif tick_started_at is not None and tick_started_at < due_at:
+                # The last tick started before the deadline: it did not yet get
+                # a due evaluation attempt. Check once now; failed overdue ticks
+                # still back off for the ordinary health interval.
+                interval = 0
         return interval
 
     def run(self):
@@ -441,8 +447,9 @@ class Watcher:
         self.telemetry('watcher_started', config_sha256=self.state['config_sha256'],
                        job_id=os.environ['SLURM_JOB_ID'])
         while True:
+            tick_started_at = time.time()
             try:
-                self.tick()
+                self.tick(tick_started_at)
             except Exception as error:
                 self.telemetry('attention', reason='watcher_tick_failed',
                     error_type=type(error).__name__, error_code=getattr(error, 'code', None))
@@ -457,7 +464,7 @@ class Watcher:
                 self.persist()
                 self.telemetry('watcher_maintenance_exit', actors_and_learner_stopped=False)
                 return
-            time.sleep(self.next_delay(time.time()))
+            time.sleep(self.next_delay(time.time(), tick_started_at=tick_started_at))
 
 
 def main():
