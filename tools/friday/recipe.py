@@ -39,6 +39,9 @@ def load_recipe(path: Path) -> dict[str, Any]:
             or value.get('gpu', 'a30') not in ('a30', 'a100')
             or type(value.get('actors', 12)) is not int or not 1 <= value.get('actors', 12) <= 200):
         raise ValueError('explicit_finite_wall_and_bounded_single_GPU_recipe_required')
+    if (type(value.get('watch_poll_seconds', 900)) is not int
+            or not 60 <= value.get('watch_poll_seconds', 900) <= 1800):
+        raise ValueError('bounded_watcher_poll_seconds_required')
     learning = value['learner']
     if (learning.get('device') != 'cuda' or learning.get('resume_checkpoint') is not None
             or learning.get('wall_seconds') not in (None, wall)):
@@ -199,7 +202,8 @@ def start(path: Path) -> dict[str, Any]:
         watcher = {'schema': watch.SCHEMA, 'run': learning['run'], 'peer': learning['peer'],
             'runtime_source': str(source), 'actor_plan': plan['actors']['path'],
             'actor_job_id': str(actors['job_id']).split(';')[0], 'started_at': model['published_at'],
-            'wall_seconds': wall, 'poll_seconds': 900, 'evaluation_mode': 'submit',
+            'wall_seconds': wall, 'poll_seconds': config.get('watch_poll_seconds', 900),
+            'evaluation_mode': 'submit',
             'evaluation_execution': plan['evaluation_execution']['path'],
             'evaluation_manifest': plan['evaluation_manifest']['path'],
             'evaluation_tiers': config['evaluation_tiers']}

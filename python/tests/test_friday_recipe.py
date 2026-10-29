@@ -167,8 +167,11 @@ def start_fixtures(recipe, monkeypatch, *, unknown=False, busy=False, ready=True
     return exchange, submitted, calls
 
 
+@pytest.mark.parametrize('poll_seconds', [60, 900])
 def test_start_submits_one_GPU_then_original_actor_and_watcher_and_never_restarts(
-        recipe, inputs, monkeypatch):
+        recipe, inputs, monkeypatch, poll_seconds):
+    inputs[1]['watch_poll_seconds'] = poll_seconds
+    inputs[0].write_text(json.dumps(inputs[1]))
     _plan, root = freeze(recipe, inputs)
     exchange, submitted, calls = start_fixtures(recipe, monkeypatch)
     result = recipe.start(root / 'plan.json')
@@ -179,6 +182,7 @@ def test_start_submits_one_GPU_then_original_actor_and_watcher_and_never_restart
     watcher = json.loads((root / 'watch.json').read_bytes())
     assert watcher['started_at'] == 12345 and watcher['actor_job_id'] == '202'
     assert watcher['evaluation_tiers'] == inputs[1]['evaluation_tiers']
+    assert watcher['poll_seconds'] == poll_seconds
     assert not exchange.stops and submitted == ['learner', 'actors']
     with pytest.raises(ValueError, match='original_owner_reconciliation'):
         recipe.start(root / 'plan.json')

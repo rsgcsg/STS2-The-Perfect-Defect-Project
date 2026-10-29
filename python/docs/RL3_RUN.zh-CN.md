@@ -35,6 +35,7 @@ anchor系数0.5、每8更新发版、过期8版本、最多复用3次、12actor�
   "cuda_environment": "/ABS/independent-cuda-environment",
   "gpu": "a30",
   "actors": 12,
+  "watch_poll_seconds": 900,
   "execution": "/ABS/training-execution.json",
   "seed_namespace": "CHOOSE_NEW_TRAINING_NAMESPACE",
   "actor_budget": {
@@ -92,7 +93,8 @@ anchor系数0.5、每8更新发版、过期8版本、最多复用3次、12actor�
 时长必须是300–72000秒的显式整数；模板null会明确拒绝准备/启动。
 默认原actor预算要求 `wall_seconds > games_per_ledger × episode_seconds + 180`。
 本卡短链路验证若只900秒，须在获批的smoke配置显式选例如1–2路、episode180、ledger1，
-不暗改长跑模板；smoke的`approved=true`不构成长跑授权。GPU先A30；只有已有实测及
+不暗改长跑模板；短链路可显式设watch_poll_seconds=60（默认900，允许60–1800），
+以便及时核正常排空，smoke的`approved=true`不构成长跑授权。GPU先A30；只有已有实测及
 本轮决定支持时才选A100。工具每次只请求1张，并在共享提交锁内检查本用户整个
 `smp_gpu`分区没有现存作业；不停止任何已有GPU作业来抢位。
 
