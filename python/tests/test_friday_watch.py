@@ -476,7 +476,8 @@ def test_actor_health_reports_lost_capacity_once_and_keeps_original_stops(watch,
     plan.write_text(json.dumps({"actors": [{"actor": "a"}, {"actor": "b"}]}))
     result = plan.parent / "actors/b/result.json"
     result.parent.mkdir(parents=True)
-    result.write_text(json.dumps({"actor": "b", "original_summary": {
+    result.write_text(json.dumps({"actor": "b", "run": "health", "exit_code": 0,
+                                  "original_summary": {
         "status": "stopped_ledger:unknown_cleanup_requires_owner_read"}}))
     peer = {"kind": "local", "directory": str(tmp_path / "peer")}
     instance = watch.Watcher({"peer": peer, "run": "health", "started_at": 100,
@@ -526,3 +527,33 @@ def test_watcher_maintenance_exits_without_stopping_training_or_actors(
             for key in exchange.blobs.keys(exchange.prefix + "status/")]
     assert any(row["kind"] == "watcher_maintenance_exit" for row in rows)
     assert not instance.state["stop"]
+
+
+
+def test_actor_exit_is_visible_while_scheduler_and_snapshot_are_still_running(watch, tmp_path):
+    from spireagent.rl_exchange import Exchange
+
+    plan = tmp_path / "actors/plan.json"
+    plan.parent.mkdir()
+    plan.write_text(json.dumps({"actors": [{"actor": "a"}, {"actor": "b"}]}))
+    for actor, job in (("a", "123_0"), ("b", "123_1")):
+        root = plan.parent / "actors" / actor
+        root.mkdir(parents=True)
+        scratch = tmp_path / (actor + "-scratch")
+        scratch.mkdir()
+        (root / "owner.json").write_text(json.dumps({"job_id": job, "scratch": str(scratch)}))
+    # The real launcher writes this result after wait(), before snapshot/result promotion.
+    (tmp_path / "b-scratch/result.json").write_text(json.dumps({
+        "actor": "b", "run": "phase", "exit_code": 1, "original_summary": None}))
+    peer = {"kind": "local", "directory": str(tmp_path / "peer")}
+    instance = watch.Watcher({"peer": peer, "run": "phase", "started_at": 100,
+                              "actor_plan": str(plan), "actor_job_id": "123"},
+                             tmp_path / "watch")
+    rows = [{"job_id": f"123_{i}", "state": "RUNNING", "exit_code": "0:0"} for i in range(2)]
+    with patch.object(watch, "job_accounting", return_value={"rows": rows, "terminal": False}):
+        health = instance.actor_health()
+    assert health["running"] == 2 and health["active_actors"] == 1
+    assert health["actor_results"] == [{"actor": "b", "exit_code": 1, "status": None,
+                                       "preservation_complete": False}]
+    assert not (plan.parent / "actors/b/result.json").exists()
+    assert Exchange(peer, "phase").stop_request() is None
