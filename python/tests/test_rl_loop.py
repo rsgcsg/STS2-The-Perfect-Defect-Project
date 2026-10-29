@@ -234,6 +234,50 @@ def test_learner_failure_is_last_remote_event_after_cleanup(tmp_path, monkeypatc
     assert event["kind"] == "failed" and event["error_code"] == "non_finite_update"
 
 
+def test_stop_captures_latest_version_skipped_while_checkpoint_publisher_was_busy(
+        tmp_path, monkeypatch):
+    import threading
+
+    from spireagent.workbench.rl_learner import IO
+    from stpd.p1.export import export_model
+    from stpd.rl import learner as module
+    from stpd.rl.learner import Learner, LearnerConfig
+
+    monkeypatch.setattr(module, "source_identity", lambda _root: PRODUCER)
+    package, checkpoint = tmp_path / "start", tmp_path / "start.tensor-tree"
+    checkpoint.write_bytes(b"synthetic start checkpoint")
+    export_model(MStd(fit_vocabulary([project(observation())])), checkpoint, package,
+                 {"scope": "synthetic"})
+    learner = Learner(LearnerConfig(run="busy-checkpoint", start_package=str(package),
+        peer={"kind": "local", "directory": str(tmp_path / "peer")}), tmp_path / "work", IO)
+    gate = threading.Event()
+    publish = learner.checkpoints.publish
+
+    def blocked_publish(snapshot):
+        assert gate.wait(timeout=30)
+        return publish(snapshot)
+
+    monkeypatch.setattr(learner.checkpoints, "publish", blocked_publish)
+    try:
+        learner.updates = 1
+        learner.maybe_version(force=True)
+        learner._collect_version(wait=True)
+        learner.updates = 2
+        learner.maybe_version(force=True)
+        learner._collect_version(wait=True)
+        assert learner.exchange.latest_model()["version"] == 2
+        assert learner.exchange.latest_checkpoint() is None
+    finally:
+        gate.set()
+    learner.exchange.request_stop("test_wall_limit")
+    learner.run()
+    record = learner.exchange.latest_checkpoint()
+    assert record["version"] == learner.exchange.latest_model()["version"] == 2
+    manifest = learner.exchange.store.get_manifest(record["checkpoint_artifact_id"])
+    assert manifest.parameters.value()["updates"] == learner.updates == 2
+    assert learner.exchange.latest_event()["kind"] == "finished"
+
+
 def test_actor_switches_to_the_newest_fetched_version_between_ledgers(tmp_path, monkeypatch):
     from spireagent.workbench import evaluation_ledger, managed_pipeline
     from spireagent.workbench.rl_actor import Actor

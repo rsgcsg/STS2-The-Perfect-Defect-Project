@@ -57,6 +57,8 @@ class Exchange:
 
     def request_stop(self, reason: str) -> dict[str, Any]:
         """First request wins; later callers observe that original request."""
+        if not isinstance(reason, str) or not reason:
+            reject("invalid_stop_reason")
         existing = self.stop_request()
         if existing is not None:
             return existing
@@ -91,15 +93,15 @@ class Exchange:
         return value
 
     def event_records(self) -> list[dict[str, Any]]:
-        return [self._event_record(key) for key in sorted(
+        return [self.event_record(key) for key in sorted(
             self.blobs.keys(f"{self.prefix}learner-events/")) if key.endswith(".json")]
 
     def latest_event(self) -> dict[str, Any] | None:
         keys = sorted(k for k in self.blobs.keys(f"{self.prefix}learner-events/")
                       if k.endswith(".json"))
-        return self._event_record(keys[-1]) if keys else None
+        return self.event_record(keys[-1]) if keys else None
 
-    def _event_record(self, key: str) -> dict[str, Any]:
+    def event_record(self, key: str) -> dict[str, Any]:
         value = _open(self.blobs.get(key), EVENT_SCHEMA)
         if value.get("run") != self.run:
             reject("event_identity_mismatch")

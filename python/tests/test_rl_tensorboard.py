@@ -38,6 +38,9 @@ def test_remote_stop_and_learner_events_are_bound_sealed_and_append_only(tmp_pat
     peer = {"kind": "local", "directory": str(tmp_path / "peer")}
     supervisor, learner = Exchange(peer, "stop"), Exchange(peer, "stop")
     assert learner.stop_request() is None
+    with pytest.raises(BoundaryError, match="invalid_stop_reason"):
+        supervisor.request_stop("")
+    assert learner.stop_request() is None
     request = supervisor.request_stop("wall_limit")
     assert learner.stop_request() == request
     assert supervisor.request_stop("unknown_rate") == request

@@ -523,6 +523,18 @@ class Learner:
                 {"schema": CHECKPOINT_SCHEMA, "run": self.config.run, "version": version,
                  "updates": self.updates, "start_package_sha256": self.start_sha256}), 0.0))
 
+    def _final_checkpoint(self) -> None:
+        """A busy background publisher may have skipped the last version's capture."""
+        from spireagent.json_boundary import FrozenObject
+
+        latest = self.exchange.latest_checkpoint()
+        if self.lineage_version and (latest is None or latest["version"] < self.lineage_version):
+            self.checkpoints.submit(FrozenCheckpoint(self._state(), (), FrozenObject.of(
+                {"schema": CHECKPOINT_SCHEMA, "run": self.config.run,
+                 "version": self.lineage_version, "updates": self.updates,
+                 "start_package_sha256": self.start_sha256}), 0.0))
+            self._take_checkpoint(wait=True)
+
     def _event(self, kind: str, **fields: Any) -> None:
         self.last_event_at = time.monotonic()
         self.log.write(json.dumps({"at": time.time(), "kind": kind, **fields},
@@ -587,6 +599,8 @@ class Learner:
                     self.maybe_version(force=True)
                 self._collect_version(wait=True)
                 self._take_checkpoint(wait=clean)
+                if clean:
+                    self._final_checkpoint()
                 self.checkpoints.__exit__(None)
                 if self.metrics is not None:
                     self.metrics.publish()
