@@ -326,6 +326,7 @@ def main():
     prepare_parser.add_argument('--selection', action='append', required=True,
                                 help='model label=existing execution selection ID')
     prepare_parser.add_argument('--workers', type=int, default=4)
+    prepare_parser.add_argument('--runtime-source', type=Path)
     prepare_parser.add_argument('--wall-seconds', type=int, default=7200)
     prepare_parser.add_argument('--episode-seconds', type=int, default=900)
     prepare_parser.add_argument('--limit', type=int)

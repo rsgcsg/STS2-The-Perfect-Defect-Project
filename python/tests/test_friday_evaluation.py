@@ -251,3 +251,21 @@ def test_allocation_run_uses_original_ledger_and_retains_unknown_without_reoffer
     with pytest.raises(FileExistsError):
         evaluate.run(directory / 'plan.json')
     assert len(offers) == 1
+
+
+def test_prepare_cli_accepts_runtime_source_and_freezes_plan(execution, tmp_path):
+    runtime = tmp_path / 'frozen-source'
+    (runtime / 'tools/friday').mkdir(parents=True)
+    (runtime / 'tools/friday/evaluate.py').write_text('# exact runtime path fixture\n')
+    output = tmp_path / 'cli-plan'
+    command = [sys.executable, str(FRIDAY / 'evaluate.py'), 'prepare',
+        '--execution', str(execution), '--output', str(output),
+        '--runtime-source', str(runtime)]
+    for index in range(1, 4):
+        command.extend(['--selection', f'checkpoint-{index}=model-{index}'])
+    result = subprocess.run(command, check=True, capture_output=True, text=True, timeout=15,
+        env={'PATH': __import__('os').defpath,
+             'PYTHONPATH': str(FRIDAY.parents[1] / 'python')})
+    plan = json.loads(result.stdout)
+    assert plan['source_root'] == str(runtime)
+    assert plan['planned'] == 60 and (output / 'plan.json').is_file()
