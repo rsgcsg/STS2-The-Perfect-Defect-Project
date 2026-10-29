@@ -475,7 +475,8 @@ def test_real_update_progress_roundtrips_through_sealed_exchange(tmp_path, monke
     export_model(MStd(fit_vocabulary([frame])), checkpoint, package, {"scope": "synthetic"})
     learner = Learner(LearnerConfig(run="progress-json", start_package=str(package),
         peer={"kind": "local", "directory": str(tmp_path / "peer")},
-        batch_size=1, anchor_batch=0, min_episodes_before_training=1), tmp_path / "work", IO)
+        batch_size=1, anchor_batch=0, min_episodes_before_training=1,
+        decision_ledger=False), tmp_path / "work", IO)
     learner.counts["episodes_loss"] = 1
     learner.buffer.append(Buffered(RlSample(frame, 0, 0.5, 0.5, 0.2, 0, "one")))
     result = learner.train_once()

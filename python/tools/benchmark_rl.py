@@ -183,7 +183,8 @@ def main() -> None:
             for parameter in reference.parameters():
                 parameter.requires_grad_(False)
             optimizer = torch.optim.AdamW(
-                model.parameters(), lr=1e-5, fused=plan.get("fused", False)
+                model.parameters(), lr=1e-5, fused=plan.get("fused", False),
+                weight_decay=plan.get("weight_decay", 0.01)
             )
             config = None
             if plan.get("performance"):

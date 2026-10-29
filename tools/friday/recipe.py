@@ -37,7 +37,7 @@ def load_recipe(path: Path) -> dict[str, Any]:
     if (value.get('schema') != SCHEMA or type(value.get('approved')) is not bool
             or type(wall) is not int or not 300 <= wall <= 72000
             or value.get('gpu', 'a30') not in ('a30', 'a100')
-            or type(value.get('actors', 12)) is not int or not 1 <= value.get('actors', 12) <= 12):
+            or type(value.get('actors', 12)) is not int or not 1 <= value.get('actors', 12) <= 200):
         raise ValueError('explicit_finite_wall_and_bounded_single_GPU_recipe_required')
     learning = value['learner']
     if (learning.get('device') != 'cuda' or learning.get('resume_checkpoint') is not None
@@ -94,6 +94,9 @@ def prepare(configuration: Path, output: Path) -> dict[str, Any]:
     learning.setdefault('performance', None)
     learning.setdefault('background_io', False)
     save(output / 'learner.json', learning)
+    from stpd.rl.learner import LearnerConfig
+
+    LearnerConfig.read(output / 'learner.json')  # Parse on CPU before requesting any GPU.
     for name in ('evaluation_execution', 'evaluation_manifest'):
         (output / f'{name}.json').write_bytes(Path(config[name]).read_bytes())
     actors = output / 'actors' / 'plan.json'

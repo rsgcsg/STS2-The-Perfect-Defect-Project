@@ -15,6 +15,7 @@ class StoreError(BoundaryError):
         self, code: str, recovery: str = "verify store configuration and exact objects"
     ) -> None:
         super().__init__("artifact_store", code, recovery)
+        self.diagnostic: dict[str, object] = {}
 
 
 class BlobStore(Protocol):

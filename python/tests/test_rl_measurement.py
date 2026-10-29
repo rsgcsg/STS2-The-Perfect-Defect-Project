@@ -182,3 +182,18 @@ def test_inventory_uses_original_catalog_and_retains_unknown_prefix(tmp_path):
     assert report["rows"][1]["unknown"] is True
     with pytest.raises(ValueError, match="duplicate_trajectory_run"):
         trajectory_inventory([paths[0], paths[0]])
+
+
+def test_async_publication_delay_and_overlapping_reader_time_are_not_new_lifetimes():
+    a = event(updates=1)
+    b = event(wall=20, at=1120, updates=2)
+    a['captured_at'], b['captured_at'] = 1010, 1020
+    a['timing']['instance_id'] = b['timing']['instance_id'] = 'one-owner'
+    b['timing']['phases']['background_reader_seconds'] = 100
+    result = counter_window(a, b, batch_size=4, max_reuse=3)
+    assert result['wall_seconds'] == 10
+    assert result['phase_seconds']['background_reader_seconds'] == 100
+    assert 'background_reader_seconds' in result['nested_or_background_phase_names']
+    b['timing']['instance_id'] = 'another-owner'
+    with pytest.raises(ValueError, match='timer_instance_mismatch'):
+        counter_window(a, b, batch_size=4, max_reuse=3)

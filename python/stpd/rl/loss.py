@@ -74,7 +74,8 @@ def _reference(reference: MStd, batch: list[RlSample],
 
 def _policy_objective(packed: torch.Tensor, reference_log: torch.Tensor,
                       batch: list[RlSample], config: LossConfig, sample_count: int
-                      ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+                      ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor,
+                               torch.Tensor, torch.Tensor]:
     """One learning objective shared by execution plans; retain legacy operation order."""
     device = packed.device
     log_probabilities = F.log_softmax(packed, dim=-1)
@@ -96,7 +97,11 @@ def _policy_objective(packed: torch.Tensor, reference_log: torch.Tensor,
                   - reference_log.masked_fill(~valid, 0))
     kl = (probabilities * difference).sum(-1)
     objective = (policy.sum() + config.kl_coef * kl.sum()) / sample_count
-    return objective, policy, kl, ratio
+    entropy = -(probabilities.detach()
+                * log_probabilities.detach().masked_fill(~valid, 0)).sum(-1)
+    choices = valid.sum(-1)
+    normalized = torch.where(choices > 1, entropy / choices.clamp(min=2).float().log(), 0)
+    return objective, policy, kl, ratio, entropy, normalized
 
 
 def rl_update(model: MStd, reference: MStd, optimizer: torch.optim.Optimizer,
@@ -120,19 +125,31 @@ def rl_update(model: MStd, reference: MStd, optimizer: torch.optim.Optimizer,
         parameters["lr"] = learning_rate
     optimizer.zero_grad(set_to_none=True)
     model.train()
-    totals = {"policy": 0.0, "kl": 0.0, "anchor": 0.0, "ratio": 0.0, "clipped": 0}
+    totals = {"policy": 0.0, "kl": 0.0, "anchor": 0.0, "ratio": 0.0, "clipped": 0,
+              "entropy": 0.0, "normalized_entropy": 0.0}
+    phases = {"forward": 0.0, "reference": 0.0, "backward": 0.0,
+              "anchor": 0.0, "optimizer": 0.0}
     frames = [s.frame for s in samples]
     for group in microbatches(frames, list(range(len(frames))), model):
         batch = [samples[i] for i in group]
+        phase_began = time.perf_counter()
         packed = _scores(model, [s.frame for s in batch])
+        phases["forward"] += time.perf_counter() - phase_began
+        phase_began = time.perf_counter()
         reference_log = _reference(reference, batch, reference_cache, packed.shape[1], device)
-        objective, policy, kl, ratio = _policy_objective(
+        objective, policy, kl, ratio, entropy, normalized = _policy_objective(
             packed, reference_log, batch, config, len(samples))
+        phases["reference"] += time.perf_counter() - phase_began
+        phase_began = time.perf_counter()
         objective.backward()
+        phases["backward"] += time.perf_counter() - phase_began
         totals["policy"] += float(policy.detach().sum())
         totals["kl"] += float(kl.detach().sum())
         totals["ratio"] += float(ratio.detach().sum())
+        totals["entropy"] += float(entropy.detach().sum())
+        totals["normalized_entropy"] += float(normalized.detach().sum())
         totals["clipped"] += int(((ratio.detach() - 1).abs() > config.clip).sum())
+    phase_began = time.perf_counter()
     if anchor and config.anchor_coef > 0:
         anchor_frames = [frame for frame, _ in anchor]
         for group in microbatches(anchor_frames, list(range(len(anchor))), model):
@@ -141,14 +158,21 @@ def rl_update(model: MStd, reference: MStd, optimizer: torch.optim.Optimizer,
             loss = F.cross_entropy(packed, labels, reduction="sum")
             (config.anchor_coef * loss / len(anchor)).backward()
             totals["anchor"] += float(loss.detach())
+    phases["anchor"] += time.perf_counter() - phase_began
+    phase_began = time.perf_counter()
     gradients = [p.grad for p in model.parameters() if p.grad is not None]
     norm = float(torch.nn.utils.clip_grad_norm_(model.parameters(), config.max_grad_norm))
     if not gradients or not math.isfinite(norm) or not all(
             math.isfinite(totals[k]) for k in ("policy", "kl", "anchor")):
         raise BoundaryError("rl_loss", "non_finite_update")
     optimizer.step()
+    phases["optimizer"] += time.perf_counter() - phase_began
     count = len(samples)
-    return {"policy_loss": totals["policy"] / count, "kl": totals["kl"] / count,
+    return {"phase_seconds": phases,
+            "timing_semantics": "host elapsed including encountered device waits",
+            "policy_entropy": totals["entropy"] / count,
+            "policy_normalized_entropy": totals["normalized_entropy"] / count,
+            "policy_loss": totals["policy"] / count, "kl": totals["kl"] / count,
             "anchor_loss": totals["anchor"] / len(anchor) if anchor else None,
             "mean_ratio": totals["ratio"] / count, "clipped_fraction": totals["clipped"] / count,
             "gradient_norm": norm, "rl_samples": count, "anchor_samples": len(anchor),
@@ -209,10 +233,15 @@ def _execution_update(model: MStd, reference: MStd, optimizer: torch.optim.Optim
     optimizer.zero_grad(set_to_none=True)
     model.train()
     metric_rows = []
+    phases = {"forward": 0.0, "reference": 0.0, "backward": 0.0,
+              "anchor": 0.0, "optimizer": 0.0}
     zero = torch.zeros((), device=device)
     for group in groups(frames):
         batch = [samples[i] for i in group]
+        phase_began = time.perf_counter()
         output = scores(model, [frames[i] for i in group])
+        phases["forward"] += time.perf_counter() - phase_began
+        phase_began = time.perf_counter()
         packed = torch.nn.utils.rnn.pad_sequence(output, batch_first=True,
                                                  padding_value=-torch.inf)
         missing = [i for i in group if reference_cache is None
@@ -244,12 +273,17 @@ def _execution_update(model: MStd, reference: MStd, optimizer: torch.optim.Optim
         if reference_log.shape[1] < packed.shape[1]:
             reference_log = F.pad(reference_log, (0, packed.shape[1] - reference_log.shape[1]),
                                   value=-torch.inf)
-        objective, policy, kl, ratio = _policy_objective(
+        objective, policy, kl, ratio, entropy, normalized = _policy_objective(
             packed, reference_log, batch, config, len(samples))
+        phases["reference"] += time.perf_counter() - phase_began
+        phase_began = time.perf_counter()
         objective.backward()
+        phases["backward"] += time.perf_counter() - phase_began
         metric_rows.append(torch.stack((policy.detach().sum(), kl.detach().sum(), zero,
                                         ratio.detach().sum(),
-                                        ((ratio.detach() - 1).abs() > config.clip).sum())))
+                                        ((ratio.detach() - 1).abs() > config.clip).sum(),
+                                        entropy.detach().sum(), normalized.detach().sum())))
+    phase_began = time.perf_counter()
     if anchor and config.anchor_coef > 0:
         for group in groups(anchor_frames):
             packed = torch.nn.utils.rnn.pad_sequence(
@@ -258,22 +292,30 @@ def _execution_update(model: MStd, reference: MStd, optimizer: torch.optim.Optim
             labels = torch.tensor([anchor[i][1] for i in group], device=device)
             loss = F.cross_entropy(packed, labels, reduction="sum")
             (config.anchor_coef * loss / len(anchor)).backward()
-            metric_rows.append(torch.stack((zero, zero, loss.detach(), zero, zero)))
+            metric_rows.append(torch.stack((zero, zero, loss.detach(), zero, zero, zero, zero)))
+    phases["anchor"] += time.perf_counter() - phase_began
+    phase_began = time.perf_counter()
     gradients = [p.grad for p in model.parameters() if p.grad is not None]
     norm = torch.nn.utils.clip_grad_norm_(model.parameters(), config.max_grad_norm)
     # Transfer once, then retain the original microbatch-order host accumulation
     # rather than replacing Python double accumulation with a device FP32 sum.
     status = torch.cat((torch.stack(metric_rows).flatten(), norm.detach().reshape(1),
                         valid_scores.float().reshape(1))).cpu().tolist()
-    totals = [sum(status[offset:-2:5]) for offset in range(5)]
-    policy_total, kl_total, anchor_total, ratio_total, clipped_total = totals
+    totals = [sum(status[offset:-2:7]) for offset in range(7)]
+    (policy_total, kl_total, anchor_total, ratio_total, clipped_total,
+     entropy_total, norm_entropy) = totals
     norm_value, valid_value = status[-2:]
     if (not gradients or not valid_value or not all(math.isfinite(value) for value in (
             policy_total, kl_total, anchor_total, norm_value))):
         raise BoundaryError("rl_loss", "non_finite_update")
     optimizer.step()
     count = len(samples)
-    return {"policy_loss": policy_total / count, "kl": kl_total / count,
+    phases["optimizer"] += time.perf_counter() - phase_began
+    return {"phase_seconds": phases,
+            "timing_semantics": "host elapsed including encountered device waits",
+            "policy_entropy": entropy_total / count,
+            "policy_normalized_entropy": norm_entropy / count,
+            "policy_loss": policy_total / count, "kl": kl_total / count,
             "anchor_loss": anchor_total / len(anchor) if anchor else None,
             "mean_ratio": ratio_total / count, "clipped_fraction": clipped_total / count,
             "gradient_norm": norm_value, "rl_samples": count, "anchor_samples": len(anchor),

@@ -79,6 +79,32 @@ def _error_code(error: Exception) -> str:
     return "transport_failure"
 
 
+def _read_failure(operation: str, key: str, error: Exception) -> StoreError:
+    """Keep safe SDK facts, never its message, URL, headers or request arguments."""
+    from botocore.exceptions import (
+        ConnectionClosedError,
+        ConnectTimeoutError,
+        EndpointConnectionError,
+        IncompleteReadError,
+        ReadTimeoutError,
+        ResponseStreamingError,
+    )
+
+    response = getattr(error, "response", {})
+    metadata = response.get("ResponseMetadata", {}) if isinstance(response, dict) else {}
+    status = metadata.get("HTTPStatusCode")
+    code = _error_code(error)
+    transient = (isinstance(error, (ConnectionClosedError, ConnectTimeoutError,
+        EndpointConnectionError, IncompleteReadError, ReadTimeoutError, ResponseStreamingError))
+        or status in {408, 429, 500, 502, 503, 504}
+        or code in {"SlowDown", "RequestTimeout", "InternalError", "ServiceUnavailable"})
+    failure = StoreError(operation)
+    failure.diagnostic = {"operation": operation, "prefix_or_key": key,
+        "sdk_error_type": type(error).__name__, "service_code": code,
+        "http_status": status, "retryable": transient}
+    return failure
+
+
 class S3BlobStore:
     def __init__(self, config: S3Config, client: S3Client | None = None) -> None:
         self.config = config
@@ -130,7 +156,7 @@ class S3BlobStore:
         except Exception as error:
             if _error_code(error) in {"NoSuchKey", "NotFound", "404"}:
                 raise StoreError("object_not_found") from None
-            raise StoreError("s3_get_failed") from None
+            raise _read_failure("s3_get_failed", key, error) from None
         body = response.get("Body")
         if body is None or not callable(getattr(body, "read", None)):
             raise StoreError("invalid_s3_body")
@@ -151,7 +177,7 @@ class S3BlobStore:
                 ResponseStreamingError) as error:
             # StreamingBody failures happen after get_object; keep them classified
             # without exposing the SDK's endpoint/credential-bearing message.
-            raise StoreError("s3_stream_read_failed", type(error).__name__) from None
+            raise _read_failure("s3_stream_read_failed", key, error) from None
         finally:
             close = getattr(body, "close", None)
             if callable(close):
@@ -174,8 +200,8 @@ class S3BlobStore:
                 arguments["ContinuationToken"] = token
             try:
                 page = self.client.list_objects_v2(**arguments)
-            except Exception:
-                raise StoreError("s3_list_failed") from None
+            except Exception as error:
+                raise _read_failure("s3_list_failed", prefix, error) from None
             entries = page.get("Contents", [])
             if not isinstance(entries, list):
                 raise StoreError("invalid_s3_listing")

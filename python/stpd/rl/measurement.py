@@ -109,7 +109,11 @@ def counter_window(
         raise ValueError("nonpositive_window")
     # Epoch-minus-monotonic-elapsed is a diagnostic timer-instance check. Event
     # publication adds small skew. It cannot substitute for a process identity.
-    origins = [_number(x["at"], "event_at") - w for x, w in ((a, wa), (b, wb))]
+    instances = [x["timing"].get("instance_id") for x in (a, b)]
+    if all(instances) and instances[0] != instances[1]:
+        raise ValueError("timer_instance_mismatch")
+    origins = [_number(x.get("captured_at", x["at"]), "event_at") - w
+               for x, w in ((a, wa), (b, wb))]
     if abs(origins[1] - origins[0]) > 2:
         raise ValueError("timer_lifetime_mismatch")
     updates = _integer(b["updates"], "end_updates") - _integer(a["updates"], "start_updates")
@@ -130,7 +134,9 @@ def counter_window(
     if any(v < 0 for v in counts.values()):
         raise ValueError("counter_regressed")
     # wait_anchor nests in train; version_wait can nest in version_capture.
-    primary = sum(v for k, v in phases.items() if k not in {"wait_anchor", "version_wait"})
+    exclusive = {"train", "poll", "stop_poll", "wait_data_check", "wait_for_data",
+                 "version_capture", "resume"}
+    primary = sum(v for k, v in phases.items() if k in exclusive)
     wait = phases.get("version_wait", 0)
     if primary > wall + 0.01:
         raise ValueError("phase_accounting_exceeds_wall")
@@ -153,6 +159,7 @@ def counter_window(
         "admitted_rows_per_second": counts.get("rl_samples", 0) / wall,
         "phase_seconds": phases,
         "phase_fractions": {k: v / wall for k, v in phases.items()},
+        "nested_or_background_phase_names": sorted(set(phases) - exclusive),
         "phase_seconds_per_update": {
             k: v / updates if updates else None for k, v in phases.items()
         },
@@ -276,6 +283,99 @@ def fixed_work_comparison(records: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def decision_ledger(paths: list[Path], *, start_at: float | None = None,
+                    end_at: float | None = None) -> dict[str, Any]:
+    """Read a complete supplied cohort; never infer undiscovered actor decisions."""
+    rows: list[dict[str, Any]] = []
+    seen_records: set[str] = set()
+    for path in paths:
+        for raw in path.read_bytes().splitlines():
+            identity = hashlib.sha256(raw).hexdigest()
+            if identity in seen_records:
+                continue
+            seen_records.add(identity)
+            row = json.loads(raw)
+            if row.get("schema") != "stpd/rl-decision-ledger-1" or row.get("unit") != UNIT:
+                raise ValueError("unsupported_decision_ledger")
+            rows.append(row)
+    if not rows:
+        raise ValueError("empty_decision_ledger")
+    begin = min(row["at"] for row in rows) if start_at is None else start_at
+    end = max(row["at"] for row in rows) if end_at is None else end_at
+    if not math.isfinite(begin) or not math.isfinite(end) or end < begin:
+        raise ValueError("invalid_decision_window")
+    counters: Counter[str] = Counter()
+    decisions: dict[str, bool] = {}
+    uses: Counter[str] = Counter()
+    retired: set[str] = set()
+    admitted_ids: set[str] = set()
+    latency: list[float] = []
+    first_window = 0
+    unknown_clocks = 0
+    for row in rows:
+        kind = row["kind"]
+        if kind == "episode":
+            disposition = row["disposition"]
+            for item in row["rows"]:
+                key = item["id"]
+                if key in decisions:
+                    raise ValueError("duplicate_decision_admission_or_rejection")
+                decisions[key] = item["decision"]
+                if disposition == "admitted":
+                    admitted_ids.add(key)
+                    uses[key] = 0
+                for stage in ("generated", "uploaded", disposition):
+                    counters[stage + "_rows"] += 1
+                    counters[stage + "_decisions"] += int(item["decision"])
+        elif kind == "trained":
+            if len(row["ids"]) != len(row["uses"]):
+                raise ValueError("incomplete_successful_use_record")
+            first_rows = {item["id"]: item for item in row["first"]}
+            for key, total in zip(row["ids"], row["uses"], strict=True):
+                if key not in admitted_ids or key in retired or total != uses[key] + 1:
+                    raise ValueError("decision_ledger_use_continuity_failure")
+                if uses[key] == 0:
+                    if key not in first_rows:
+                        raise ValueError("first_use_missing")
+                    counters["first_used_rows"] += 1
+                    counters["first_used_decisions"] += int(decisions[key])
+                    first_window += int(decisions[key] and begin <= row["at"] <= end)
+                    value = first_rows[key]["generated_to_first_seconds"]
+                    if value is not None and decisions[key]:
+                        latency.append(value)
+                        unknown_clocks += int(first_rows[key]["clock_offset_bound_seconds"] is None)
+                uses[key] = total
+                counters["sample_uses"] += 1
+                counters["decision_uses"] += int(decisions[key])
+        elif kind == "retired":
+            key = row["id"]
+            if key in retired or key not in admitted_ids or uses[key] != row["uses"]:
+                raise ValueError("decision_ledger_retirement_continuity_failure")
+            retired.add(key)
+            label = f"retired_{row['reason']}_uses{row['uses']}"
+            counters[label + "_rows"] += 1
+            counters[label + "_decisions"] += int(decisions[key])
+    ordered = sorted(latency)
+    admitted = counters["admitted_decisions"]
+    first = counters["first_used_decisions"]
+    wall = end - begin
+    return {"schema": "stpd/rl-decision-measurement-1", "unit": UNIT,
+        "scope": ("supplied read-back episode cohort; "
+                  "undiscovered/unsealed/in-flight actors excluded"),
+        "sources": [source(path) for path in paths], "counts": dict(counters),
+        "window": {"start_at": begin, "end_at": end, "wall_seconds": wall,
+            "effective_new_decisions": first_window,
+            "effective_new_decisions_per_hour": first_window * 3600 / wall if wall else None},
+        "cohort_first_use_rate": first / admitted if admitted else None,
+        "generated_to_first_seconds": ({"count": len(ordered), "min": ordered[0],
+            "median": statistics.median(ordered), "p95": ordered[int(.95 * (len(ordered)-1))],
+            "max": ordered[-1], "unknown_clock_bounds": unknown_clocks} if ordered else None),
+        "uses_distribution": dict(Counter(str(uses[key]) for key in uses)),
+        "right_censored_admitted_rows": counters["admitted_rows"] - len(retired),
+        "cohort_upload_conservation": counters["uploaded_decisions"] == (
+            counters["admitted_decisions"] + counters["rejected_decisions"])}
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -286,6 +386,10 @@ def main() -> None:
     window.add_argument("--max-reuse", type=int, required=True)
     inventory = sub.add_parser("inventory")
     inventory.add_argument("trajectories", nargs="+", type=Path)
+    ledger = sub.add_parser("ledger")
+    ledger.add_argument("paths", nargs="+", type=Path)
+    ledger.add_argument("--start-at", type=float)
+    ledger.add_argument("--end-at", type=float)
     compare = sub.add_parser("compare")
     compare.add_argument("runs", type=Path)
     parser.add_argument("--output", type=Path, required=True)
@@ -302,6 +406,8 @@ def main() -> None:
         result["sources"] = [source(args.start), source(args.end)]
     elif args.command == "inventory":
         result = trajectory_inventory(args.trajectories)
+    elif args.command == "ledger":
+        result = decision_ledger(args.paths, start_at=args.start_at, end_at=args.end_at)
     else:
         result = fixed_work_comparison(json.loads(args.runs.read_bytes()))
         result["sources"] = [source(args.runs)]

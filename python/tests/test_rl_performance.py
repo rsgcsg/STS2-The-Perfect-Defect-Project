@@ -238,7 +238,7 @@ def test_real_learner_update_exports_original_actor_execution_with_explicit_trai
     config = LearnerConfig(run="performance", peer={"kind": "local",
         "directory": str(tmp_path / "peer")}, start_package=str(package),
         tensorboard_steps=0, batch_size=2, min_episodes_before_training=1,
-        performance=performance)
+        performance=performance, decision_ledger=False)
     learner = Learner(config, tmp_path / "work", IO)
     learner.anchor_future = None
     learner.anchor = anchor
