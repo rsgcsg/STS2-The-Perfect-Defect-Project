@@ -401,3 +401,29 @@ def test_actor_switches_to_the_newest_fetched_version_between_ledgers(tmp_path, 
     stopped = again.run()
     assert stopped["status"] == "stopped_ledger:unknown_cleanup_requires_owner_read"
     assert len(stopped["games"]) == 1
+
+
+def test_real_update_progress_roundtrips_through_sealed_exchange(tmp_path, monkeypatch):
+    from spireagent.workbench.rl_learner import IO
+    from stpd.p1.export import export_model
+    from stpd.rl import learner as module
+    from stpd.rl.learner import Buffered, Learner, LearnerConfig
+
+    monkeypatch.setattr(module, "source_identity", lambda _root: PRODUCER)
+    frame = project(observation())
+    package, checkpoint = tmp_path / "start", tmp_path / "start.tensor-tree"
+    checkpoint.write_bytes(b"synthetic source")
+    export_model(MStd(fit_vocabulary([frame])), checkpoint, package, {"scope": "synthetic"})
+    learner = Learner(LearnerConfig(run="progress-json", start_package=str(package),
+        peer={"kind": "local", "directory": str(tmp_path / "peer")},
+        batch_size=1, anchor_batch=0, min_episodes_before_training=1), tmp_path / "work", IO)
+    learner.counts["episodes_loss"] = 1
+    learner.buffer.append(Buffered(RlSample(frame, 0, 0.5, 0.5, 0.2, 0, "one")))
+    result = learner.train_once()
+    assert result is not None and result["sample_versions"] == {"0": 1}
+    learner._event("progress", **result)
+    event = learner.exchange.latest_event()
+    assert event["kind"] == "progress" and event["sample_versions"] == {"0": 1}
+    learner.exchange.request_stop("test_completed")
+    learner.run()
+    assert learner.exchange.latest_checkpoint() is not None
