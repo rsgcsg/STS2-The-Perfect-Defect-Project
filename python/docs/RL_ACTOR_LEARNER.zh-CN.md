@@ -198,3 +198,11 @@ pinned 或可变缓冲区。运行态开关退出后恢复，不进入模型 sta
 最大值不等于最快值。工程实验列表见 [示例](../tools/rl_benchmark_example.json)。
 最终确认应另传 `--source-revision <准确提交>`；脚本同时记录自身、计划和实际导入
 数值模块的 SHA-256，不能仅凭填入的提交号借用别的代码结果。
+
+换代边界：新 learner 源码的 producer 与旧完整 checkpoint 不同，当前 `_resume`
+会拒绝跨 producer 续训。D2 不是给正在跑的进程热开开关；须按长跑卡批准的换代／
+新 run 方案冻结输入和配置，如何保留优化器等状态另按原合同决定，不放宽绑定。
+模型包自身不携带 learner 的 adapter 源码哈希；保留原 inference_execution 后，
+旧 actor 在本地注册自己的 adapter。因此可先保留 actor 部署，离线用其准确旧源码
+实测 load/register/installation，再在用户批准的换代点做真实短核。若升级 actor
+Python，则必须重建其准确 producer/agent_adapter 配置，不能只覆盖源码。
