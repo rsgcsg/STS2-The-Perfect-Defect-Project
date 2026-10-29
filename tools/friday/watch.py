@@ -261,23 +261,42 @@ class Watcher:
     def actor_health(self) -> dict[str, Any]:
         """Scheduler facts distinguish a healthy learner from lost actor capacity."""
         accounting = job_accounting(str(self.config['actor_job_id']))
-        expected = len(json.loads(Path(self.config['actor_plan']).read_bytes())['actors'])
+        plan = json.loads(Path(self.config['actor_plan']).read_bytes())
+        expected = len(plan['actors'])
         rows = accounting['rows']
-        running = sum(row['state'] == 'RUNNING' for row in rows)
+        running_jobs = {row['job_id'] for row in rows if row['state'] == 'RUNNING'}
         failed = [row for row in rows if row['state'] in TERMINAL
                   and (row['state'] != 'COMPLETED' or row['exit_code'] != '0:0')]
-        # COMPLETED can also contain a ledger stop; require the owner's result below.
-        stopped = []
-        for result in (Path(self.config['actor_plan']).parent / 'actors').glob('*/result.json'):
-            value = json.loads(result.read_bytes())
+        stopped, results, active = [], [], set()
+        actor_root = Path(self.config['actor_plan']).parent / 'actors'
+        for ref in plan['actors']:
+            root = actor_root / ref['actor']
+            owner_path, result_path = root / 'owner.json', root / 'result.json'
+            owner = json.loads(owner_path.read_bytes()) if owner_path.exists() else None
+            preserved = result_path.exists()
+            if not preserved and owner is not None:
+                # rl.run seals the exit result here BEFORE its potentially long snapshot.
+                result_path = Path(owner['scratch']) / 'result.json'
+            if not result_path.exists():
+                if owner is not None and str(owner['job_id']) in running_jobs:
+                    active.add(str(owner['job_id']))
+                continue
+            value = json.loads(result_path.read_bytes())
+            if value['actor'] != ref['actor'] or value['run'] != self.config['run']:
+                raise ValueError('actor_health_result_binding_changed')
             summary = value.get('original_summary') or {}
+            results.append({'actor': value['actor'], 'exit_code': value['exit_code'],
+                            'status': summary.get('status'),
+                            'preservation_complete': preserved})
             if str(summary.get('status', '')).startswith('stopped_ledger:'):
                 stopped.append({'actor': value['actor'], 'status': summary['status']})
-        health = {**accounting, 'expected': expected, 'running': running,
+        health = {**accounting, 'expected': expected, 'running': len(running_jobs),
+                  'active_actors': len(active), 'actor_results': results,
                   'failed': failed, 'stopped_ledgers': stopped}
-        signature = json.dumps({'failed': failed, 'stopped_ledgers': stopped,
+        # Preserve the historical Slurm-running field; active_actors is the game-loop capacity.
+        signature = json.dumps({'failed': failed, 'actor_results': results,
                                 'missing': not rows}, sort_keys=True)
-        if (failed or stopped or not rows) and self.state.get('actor_attention') != signature:
+        if (failed or results or not rows) and self.state.get('actor_attention') != signature:
             self.publish('attention', reason='actor_capacity_requires_owner_read', actors=health)
             self.state['actor_attention'] = signature
         return health

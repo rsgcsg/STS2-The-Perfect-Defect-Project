@@ -1,6 +1,6 @@
 # 当前：RL2 在学校与 Friday 运行，维修后继续首批评估
 
-RL2 当前 run 为 `rl2-20261029-r2`。学校学习者固定 `cb0423c9`；Friday 打局者与看守已换到修复版 `ebdda3e0`（PR315），Host `1.1.0-rc.58` / Runtime `0.1.0-rc.59` 包保留原身份。它们不要求相同 Git 提交，但各自准确 producer、交换合同和模型适配必须匹配。文档合并不会自动升级运行版本。
+RL2 当前 run 为 `rl2-20261029-r2`。学校学习者固定 `cb0423c9`；Friday 打局者固定修复版 `ebdda3e0`（PR315），看守独立冻结在本轮已登记部署，Host `1.1.0-rc.58` / Runtime `0.1.0-rc.59` 包保留原身份。它们不要求相同 Git 提交，但各自准确 producer、交换合同和模型适配必须匹配。文档合并不会自动升级运行版本。
 
 <!-- Resolve live GitHub refs before action; latest user instructions and live evidence override this file. -->
 
