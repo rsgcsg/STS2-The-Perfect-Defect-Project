@@ -572,3 +572,38 @@ def test_next_delay_wakes_at_evaluation_without_polling_or_busy_retry(watch):
     assert observer.next_delay(14340) == 900
     observer.state.update(stop='wall', drain_started_at=72000)
     assert observer.next_delay(74380) == 20
+
+
+def test_tick_crossing_due_time_checks_once_without_an_extra_health_interval(watch, monkeypatch):
+    observer = object.__new__(watch.Watcher)
+    observer.config = {'poll_seconds': 900, 'started_at': 0, 'wall_seconds': 72000,
+                       'evaluation_seconds': 14400}
+    observer.state = {'stop': None, 'pending': None, 'last_evaluation_at': 0,
+                      'config_sha256': 'test'}
+    observer.maintenance_requested = False
+    observer.telemetry = lambda *_args, **_kwargs: None
+    observer.drain = lambda: True
+    now, ticks, sleeps = [14399.0], [], []
+
+    def tick(start=None):
+        ticks.append(now[0] if start is None else start)
+        if len(ticks) == 1:
+            now[0] = 14401.0  # A real exchange read can cross the due boundary.
+        else:
+            observer.state['stop'] = 'test_finished'
+
+    def sleep(seconds):
+        sleeps.append(seconds)
+        now[0] += seconds
+
+    observer.tick = tick
+    monkeypatch.setattr(watch.sys, 'platform', 'linux')
+    monkeypatch.setenv('SLURM_JOB_ID', 'test-owned-job')
+    monkeypatch.setattr(watch.signal, 'signal', lambda *_: None)
+    monkeypatch.setattr(watch.time, 'time', lambda: now[0])
+    monkeypatch.setattr(watch.time, 'sleep', sleep)
+    observer.run()
+    assert ticks == [14399.0, 14401.0]
+    assert sleeps == [0]
+    observer.state['stop'] = None
+    assert observer.next_delay(14402, tick_started_at=14401) == 900
