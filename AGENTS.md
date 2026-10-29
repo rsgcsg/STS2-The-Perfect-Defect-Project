@@ -6,20 +6,25 @@ Deliver useful STS2 Agents through a faithful environment, usable recording/data
 and a maintainable product path. One repository does not merge gameplay,
 execution, evidence, application and research authority.
 
-Initial route: this file → `README.md` → `docs/DOCUMENT_MAP.md` →
-`docs/WORKING_RULES.zh-CN.md` → `docs/memory/CURRENT.md`. Then read the linked current task and only the owning
-specification/component guide and exact code/evidence needed for it. A four-file
-orientation is not a ban on relevant investigation; it is not a requirement to
-read all historical plans before doing useful work.
+Required reading, about 300 lines with this file: `README.md` →
+`docs/memory/CURRENT.md` → `docs/DOCUMENT_MAP.md`. Everything else is looked up
+per task, through the map:
+
+- merge, delete, spend, runtime windows, card rules or "do I ask the user":
+  `docs/WORKING_RULES.zh-CN.md`;
+- code or test edits: the relevant sections of `docs/DEVELOPMENT_WORKFLOW.md`
+  and `docs/TESTING.md`;
+- authority, public contracts, cross-layer semantics, identity, test policy or
+  governance: `docs/ARCHITECTURE.md`, `docs/COMPONENTS.md` and
+  `docs/ENGINEERING_GOVERNANCE.md`;
+- one component: `npm run project:context -- --component <name>`.
+
+The hard rules in this file apply without further reading. Short required
+reading is not a ban on relevant investigation, nor a duty to read all history.
 
 开工先沿README唯一链路核本次交付的完整上下游需求、已有实现和对应SOP，再选有界改动；调查限本批真实路径与可复用成果，有限阅读不等于只查单组件，也不要求泛读全部历史。
 
-Before ordinary development consult relevant `docs/DEVELOPMENT_WORKFLOW.md` and
-`docs/TESTING.md` sections. For authority, public contracts, cross-layer semantics,
-identity, test policy or governance changes, also consult the relevant
-`docs/ARCHITECTURE.md`, `docs/COMPONENTS.md` and
-`docs/ENGINEERING_GOVERNANCE.md` sections. `npm run project:context -- --component <name>`
-provides a bounded route. Do not infer current work from an old chat title/report.
+Do not infer current work from an old chat title/report.
 
 ## Work boundary
 
@@ -67,6 +72,10 @@ Workspace SHA is provenance, not every component's identity. Keep path-scoped
 source revision/digest, contract version and actual artifact identity distinct.
 Component-source changes use normal merge commits; docs-only changes may squash.
 Never weaken identity/BOM checks for an incompatible merge method.
+Before work that will take a new component version number (Host, Runtime, Mod,
+Tool, contract), add one line to the shared VERSION-SLOT.md file kept beside the
+configured GAME-SLOT journal: `time | card | component | number | branch`. Take
+the next unregistered number; it stays that card's until the card releases it.
 
 Classify G0–G6 under Governance, repair the owning fact, use the cheapest faithful
 checks while editing, then the selected gates for the claim. Full runs belong on
@@ -75,9 +84,14 @@ and `git diff --check`; preserve required CI and exact-game/Human checks when th
 claims are requested. Tests/build/installed/runtime/Human/strategy quality are
 separate; none is inferred from a merge or a worker summary.
 
-A PR records purpose, base/latest head, scope/non-goals, owning change, validation,
-contract/version impact, rollback and known limitations. Hand off a compact result
+A PR that changes component source fills the full PR template: purpose,
+base/latest head, scope/non-goals, owning change, validation, contract/version
+impact, rollback and known limitations. A docs/config-only PR (no component
+source) writes three lines instead: what changed, why, how it was verified. Hand off a compact result
 and stop at the task boundary. Do not start the next backlog item unassigned.
 Never commit game binaries/decompiled source, raw Human data, `.local/`, secrets,
 weights or installed artifacts. Documentation placement and rule maintenance are
 owned by `docs/PROJECT_SYSTEM.md`, not a new status or policy registry.
+Governance checkers are frozen: a new checker or CI gate must first pass working
+rule 13 (look for an existing tool) and state in its PR how much time it saves
+per run.

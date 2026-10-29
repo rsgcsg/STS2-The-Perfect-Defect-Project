@@ -1,36 +1,28 @@
-真游戏原固定 100 槽：35 已开，0 胜 / 33 自然负 / 2 结果未知，65 未开；第 35 槽已封存，未重投。七个检查点分别统计，不合成一个模型成绩。
-先前固定的 Managed 独立 20 局：19 自然负 / 1 结果未知；与真游戏分开，未证明整局等价。准确版本和全部原件/失败保留在事实收据。
-下一档方向目标：L1 为 A0 胜率 5%；后续 A0 20%/80%/100%、A10 5%/50%/95% 见[已定方向与口径边界](../evidence/CONVERGENCE_BASELINE_20261027.md#模型强度与评估)。未达到正式评级，也不由有限样本证明总体 100%。
+分数板（10-29）：起点模型（原 2016 步）在 Managed、A0 Defect、固定 20 种子上 0 胜 / 20 负，平均最高到达 13.75 层；同批另两个模型 12.10 / 11.95 层。下一档目标 L1 = A0 胜率 5%，后续阶梯见[口径](../evidence/CONVERGENCE_BASELINE_20261027.md#模型强度与评估)。
+真游戏原 100 槽已由用户 10-29 正式关掉：停在 35 已开（0 胜 / 33 负 / 2 未知），剩下 65 槽不再开，已有结果保留；评估默认走 Friday 上的 Managed。
 
-# 当前：第一批八卡已收敛，T2 训练线进行中
+# 当前：RL 长跑前收口完成，等学校 GPU 和长跑卡
 
-本轮固定版本看[`convergence-2026-10-28`](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/tree/convergence-2026-10-28)，入口与各卡收据见[STATUS](../STATUS.md#最新可恢复入口2026-10-28)；上一基线`convergence-2026-10-27`保留。基线不升级在用程序。
+本轮代码固定在 develop `445b9f98`；本收口文档合并后打标记 `convergence-2026-10-29`（用户确认后）；上一基线 `convergence-2026-10-28` 保留。准确入口见 [STATUS](../STATUS.md#最新可恢复入口2026-10-29)。
 <!-- Resolve live GitHub refs before action; latest user instructions and live evidence override this file. -->
 
 ## 当前三件事
 
-1. 采集优先：用户日常录制最优先。日常Workbench已由T2a升级到795c5d24（W1+T1），以用户下一局录制为验收；r1.7（M2a）未装日常，换Mod/Annotator/Tool需另批。实际游戏占用由用户、游戏位登记与现场决定，旧“空闲”不能覆盖用户声明。
-2. T2训练线：T2a安装→T2b准备/冻结/训练→T2c评估，按用户当轮派发和明确“开训”执行；本页不启动。W1权重规则与录后入池见PR258，输入v2见[P1输入owner](../../python/docs/P1_T0.md#model-input-v2-and-the-separate-content-sorted-438-projection)。每次训练现挑局/权重，训练过的局不能做同血统考试。
-3. 并行修复：E1a管测试/环境反复问题并写[TESTING](../TESTING.md)做法，M2c管其Managed后续；准确进展以各自PR和报告为准。10-28三条新规矩见[工作规则§4](../WORKING_RULES.zh-CN.md#4-验证忠实成本适当)。
+1. **RL 长跑**：代码都在 develop。学习者在学校 L40S，打局和评估在 Friday CPU，两边只通过 R2 交换；Mac 只做部署和用户录制。按节点怎么起、怎么停、怎么续，看[运行图](../../python/docs/RL_LONG_RUN.zh-CN.md)。用户先核学校 GPU 能不能用，再开长跑卡；长跑第一小时就是真实环境冒烟。
+2. **采集**：用户日常录制照常最优先。日常安装还是 T2a 那套；H1 混合接管、M2e、最新 Host 等用户下次录制前另装一次。
+3. **规矩**：卡的工作规矩见[工作规则](../WORKING_RULES.zh-CN.md)；新开基础设施卡先列现成工具（规矩 13，用户 10-29 批）。
 
-## 每轮成本：实测样本与下一步
+## 现在的默认
 
-| 步骤 | 已测多少 / 主要成本 | 下一目标与负责处 |
+| 什么 | 默认 | 实测 / 出处 |
 |---|---|---|
-| 录制封存→小结 | Q3 170.611 秒，X2 221.553 秒；含等待、处理、R2，单局样本 / 人工、CPU、存储 | 维持正常无补命令；[X3](../evidence/Q_POLISH_X3_20261027.md)已补短等待/逐步开局门；已开始单步仍可能重叠 |
-| 确认冻结→学校提交 / 句柄→首更 | 293.76 / 286.68 秒；一次 8 步短测 / 准备、Agent、GPU、网络 | 已达各 ≤300 秒，180 秒目标未达；`python/stpd` 与原 Scheduler |
-| Managed 执行/保存 | [M1R2](../evidence/MANAGED_SAVE_M1R2_20261027.md)保存142.7→5.9秒；[M2b](../evidence/MANAGED_TIERS_M2B_20261027.md)约118正常局/小时；[保存SOP](../../python/docs/MANAGED_PRESERVATION.md)拥有当前分档与轨迹 | S23已获授权实现决策持久化、后台校验与4/6/8路诊断；新评估用途须显式声明并满足完整审计/轨迹读回，旧账本与训练用途不变；改后吞吐待实测，不授RL训练资格 |
-
-数据小结是滚动的：Q小结10-28 00:15为46局/21,889步（A0 32/A10 14；11胜/32负/3未知），全部是r1.5口径、无r1.7见证；M2a核38源中2源/14 N不能恢复r1.7语义。新用途、权重和考试血统由原Curation每次实验决定，不给录制贴永久标签。
-
-## Managed 状态
-
-新打局、RL actor和固定种子评估默认Friday，Mac只做必要对照；入口见[Friday运行手册](../../python/docs/FRIDAY_ACTOR.md)。RL先按学习者吞吐用6–8个fc430核，D1三模型用原T2清单前20种子、同一账本60槽。准确部署、数据资格和学习者实际消费仍以各次原收据为准，不从默认目标推断完成。
-
-[M2a工程收据](../evidence/MANAGED_M2A_20261027.md)与PR266：Host49新40为39负/1未知（2.5%），该未知根因`Node.GetIndex`在Host51另版修，旧槽不改；M051/M052/M053/M056已修；r1.7两字段在Host52/私有Mod67工程前缀48/48一致。[M3](../plans/MANAGED_COVERAGE_20261027.zh-CN.md)录后自动对照已装，个人档整局重演未通过（M055等）。设计原则M-1～M-8见[Host指南](../../components/host-runtime/docs/MANAGED_P1_EQUIVALENCE.md#settled-logic-native-rules-and-replaceable-host-implementation)，差异分诊见[工作规则§5](../WORKING_RULES.zh-CN.md#5-缺陷重构资源)。
+| 训练 GPU | 学校 L40S（一个账号同时一个分配，每次最长约 5 小时，从 R2 检查点续） | 宽微批 8，13 轮 1.40 秒/步，比 T2b 快约 2.9 倍（PR278/285/286）；不再用 Modal，Modal 代码保留但不是默认 |
+| 打局和评估 | Friday Slurm，冻结部署 `445b9f98` | fc430 每核每小时 22.4 局，c6220 13.5 局（PR283，[手册](../../python/docs/FRIDAY_ACTOR.md)） |
+| Managed | Host `1.1.0-rc.58` / Runtime `0.1.0-rc.59`（PR282；PR282 标题写的 Host56/57 是旧名） | 回放覆盖不再开新轮；RL 中 unknown 超过 5% 再开修卡 |
+| RL 接口 | 打局者 / 学习者 / 交换合同（PR288，[接口](../../python/docs/RL_ACTOR_LEARNER.zh-CN.md)） | Mac 4 路每小时 136 局、0 unknown；跨节点和学校续训还没在真实环境跑过 |
+| 评估账本 | 固定种子前缀（PR287） | D1 60 槽：60 自然负、0 unknown，2 个完整审计通过 |
 
 ## Remaining Platform non-claims
 
-源码、安装、真实使用、Human 来源、数据用途和模型效果分别查各卡收据及[10-27事实收据](../evidence/CONVERGENCE_BASELINE_20261027.md)。develop源码组合（Host52/Runtime53等）不等于日常安装；不随develop变化升级Managed或模型/评估Runtime。旧未知不补造。
-当前未完成原 100 槽、Managed 整局等价、个人进度整局重演、输入v2的GPU/游戏效果、下一轮正式训练或RL；工程短验和 CI 都不替它们授资格。[地图](../DOCUMENT_MAP.md)给原操作入口，[待修](../plans/CONVERGENCE_BASELINE_20261027.zh-CN.md#待修与重构去向)保留未完义务。
-其它卡的负责人和当前进展以各自原件/实时PR为准，不从本页复活旧任务。
+还没证明的：真实跨节点 RL 闭环（Friday 写、学校读）、学校 L40S 上从检查点续训、学校空闲断开规则、任何模型通关。离线 NLL 不等于通关能力；20 颗评估种子不能进 RL 训练。
+源码在 develop 不等于已安装：日常 Workbench、Mod、模型列表都没随本轮升级。CI 绿不授予 Human 来源、训练资格或模型成绩。各卡准确收据以原报告和 PR 为准，不从本页复活旧任务；未完义务在[待修表](../plans/CONVERGENCE_BASELINE_20261027.zh-CN.md#待修与重构去向)。

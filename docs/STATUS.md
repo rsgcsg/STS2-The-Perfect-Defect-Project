@@ -5,7 +5,22 @@ source and scope; refresh its owning status/identity before an operational actio
 CURRENT owns the active task and next step; its linked active plan owns progress.
 Historical execution matrices retain their original observations and obligations.
 
-## 最新可恢复入口（2026-10-28）
+## 最新可恢复入口（2026-10-29）
+
+RL 长跑前的收口（G2）：10-28 到 10-29 这一批卡都已普通合入 develop，代码固定在 `445b9f98`（PR283 合并），本收口文档 PR 合并后打 `convergence-2026-10-29`。
+
+| 卡 / PR | 结果 | 出处 |
+|---|---|---|
+| M2e（PR276/279/282） | Managed 最终版本 Host `1.1.0-rc.58` / Runtime `0.1.0-rc.59`（PR282 标题写的 Host56/57 是旧名，以合并内容为准）；回放覆盖不再开新轮，RL 中 unknown 超过 5% 再开修卡 | PR282 |
+| D1（PR278/285/286/287） | 编译好的训练数据包、合并上报、后台检查点、宽微批 8；L40S 13 轮 1.40 秒/步，比 T2b 快约 2.9 倍，最佳 DEV NLL 0.9036 在容差内；Friday 3 模型 × 20 种子共 60 槽：60 自然负、0 unknown；RL 起点定原 2016 步模型（平均最高 13.75 层） | D1 报告、PR287 |
+| RL1（PR288） | 打局者 / 学习者 / R2 交换合同，学习者能从检查点续训；Mac 4 路每小时 136 局、0 unknown | [接口](../python/docs/RL_ACTOR_LEARNER.zh-CN.md) |
+| F2（PR283） | Friday x86 精确 Host，冻结部署 `445b9f98`，8 路 RL 配置已备未提交；fc430 每核每小时 22.4 局，c6220 13.5 局；Mac↔Friday 两组各 315 点和终局全等 | [手册](../python/docs/FRIDAY_ACTOR.md) |
+| E2 / MQ / S23（PR280/284/281） | 共享依赖和资源预约、合并队列、Managed 批量保存与流水线评估 | 各 PR |
+| H1（PR275） | 混合接管录制（人和模型同一局切换），源码已合并，**未安装**；混合数据只作隔离证据，人的片段算不算训练数据等用户另批 | PR275 |
+
+长跑怎么跑看[运行图](../python/docs/RL_LONG_RUN.zh-CN.md)。还没证明：真实跨节点 RL 闭环、学校 L40S 续训、任何模型通关。日常安装没有随本轮升级。
+
+## 最新可恢复入口（2026-10-28，已被上节替代，保留原文）
 
 第一批八张卡（M1/X3/W1/M3/M1R2/T1/M2a/M2b）都已普通合入develop，固定在[`convergence-2026-10-28`](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/tree/convergence-2026-10-28)。各卡事实只在原收据：[M1](evidence/MANAGED_SPEED_M1_20261027.md)、[X3](evidence/Q_POLISH_X3_20261027.md)、[M1R2](evidence/MANAGED_SAVE_M1R2_20261027.md)、[M2a](evidence/MANAGED_M2A_20261027.md)、[M2b](evidence/MANAGED_TIERS_M2B_20261027.md)、[M3](plans/MANAGED_COVERAGE_20261027.zh-CN.md)、[T1输入v2](../python/docs/P1_T0.md#model-input-v2-and-the-separate-content-sorted-438-projection)；W1/T1见PR258/263。该tag只是源码/文档基线：不含日常安装变化（日常Workbench另由T2a升级，r1.7未装），不含T2冻结/训练、E1a测试修复或任何新游戏/数据/模型证据。
 
