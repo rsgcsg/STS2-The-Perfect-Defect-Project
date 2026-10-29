@@ -16,6 +16,7 @@ versions of those procedures into campaigns or incident notes.
 | 只更新 Hub | 已审查源码、锁和镜像 → runbook 预检/备份/部署/观察 | 不重编 Mod，不重新登记电脑 |
 | 更新本机工作台或 Mod | 选择已验收发布，按受影响的安装/队列升级入口操作 | 不覆盖 pending 数据，不复制账号凭据 |
 | 紧急修复当前正式版 | 从受影响发布/main 开 hotfix；经 PR 修复，必要时回流 develop | 不在服务器直接改源码作为最终修复 |
+| 修某个运行节点上的问题 | 从该节点的部署标记开临时 `hotfix/` → 部署并记新 Deployment → PR 回 develop（见[运行节点的部署跟踪](#运行节点的部署跟踪)） | 不开长期部署分支，不在节点上直接改源码 |
 
 日常三个固定入口：`check:plan -- --base origin/develop --run` 选择检查，
 `project:closeout` 提醒影响，PR 完成审查和集成。命令前均为 `npm run`。
@@ -187,6 +188,22 @@ The current Python producer records an exact whole-checkout SHA plus lock hash; 
 component identities are path-scoped. Do not confuse those provenance schemes or rewrite
 an installed producer because documentation changed. A source edit to docs inside python/
 does not require rebuilding or restarting a healthy deployed executable.
+
+## 运行节点的部署跟踪
+
+用户 10-29 批。“哪个节点在跑哪个版本”只看仓库的 Deployments 页，不看分支。本节只定规矩；
+Environment 和第一条 Deployment 由第一次真部署的卡建。
+
+- **一个运行节点一个 GitHub Environment**，按节点起名，如 `friday-actors`、`school-learner`、`mac-daily`。
+- **核完再记。** 部署者在节点上核完实际装上的版本（提交、产物身份，如包哈希、镜像 digest、
+  Mod/Host/Runtime 版本号）以后，打一个不可变的部署标记（建议 `deploy/<节点>/<UTC 时间>`），
+  再在该 Environment 下记一条 GitHub Deployment：ref 指向这个标记，描述里写提交和产物身份。
+  没核实际安装的不记；标记打了不移动、不复用。
+- **没有长期部署分支。** 节点固定在部署标记上，develop 照常前进，不影响在跑的节点。
+- **修在跑的节点**：从该节点的部署标记开临时 `hotfix/` 分支，修好、部署、按上一条记新标记和
+  Deployment，再开 PR 回 develop；合回后删临时分支。
+- **main 只记正式发布**，触发条件见 [Issue #295](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/issues/295)；
+  部署记录不进 main，也不靠 main 判断节点版本。
 
 ## Compatibility and update policy
 
