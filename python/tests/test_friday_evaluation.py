@@ -333,3 +333,50 @@ def test_unknown_submission_outcome_keeps_intent_and_is_never_automatically_resu
           pytest.raises(ValueError, match='submission_requires_owner_reconciliation')):
         evaluate.submit(directory / 'plan.json')
     assert output.call_count == 1  # read-only original-name reconciliation, no second sbatch
+
+
+def test_observation_report_defaults_off_and_rejects_multiple_models(
+        evaluate, execution, tmp_path):
+    plan, _directory = prepared(evaluate, execution, tmp_path)
+    assert plan['observation_report'] is False
+    with pytest.raises(ValueError, match='single_model_observation_report'):
+        evaluate.prepare(execution, tmp_path / 'not-created',
+                         selections={f'checkpoint-{i}': f'model-{i}' for i in range(1, 4)},
+                         observation_report=True)
+
+
+def test_evaluation_allocation_owns_trajectory_detail_preparation(evaluate, tmp_path):
+    execution = tmp_path / 'execution.json'
+    execution.write_text('{}')
+    plan = {'execution': {'path': str(execution), 'sha256': evaluate.hashed(execution)}}
+    summary = {'plan_sha256': 'a' * 64, 'ledger_report': {'slots': [
+        {'run_id': 'one', 'seed': 'seed-one', 'trajectory_shard_id': 'shard-one'}]}}
+    scratch = tmp_path / 'scratch'
+    scratch.mkdir()
+    opened = []
+
+    def open_peer(peer):
+        opened.append(peer)
+        return 'test-store'
+
+    def read_shard(store, shard, *, scratch):
+        assert store == 'test-store' and shard == 'shard-one'
+        assert scratch.is_dir()
+        yield {'run_id': 'one', 'identity': {'seed': 'seed-one'}}
+
+    def load_cohort(path, *, details):
+        assert json.loads(path.read_bytes()) == summary
+        assert json.loads(details.read_bytes()) == {'episodes': [{'run_id': 'one'}]}
+        return {'source_sha256': evaluate.hashed(path), 'details_sha256': evaluate.hashed(details)}
+
+    execution.write_text(json.dumps({'peer': {'kind': 's3'}}))
+    plan['execution']['sha256'] = evaluate.hashed(execution)
+    with (patch('spireagent.storage.config.open_peer', open_peer),
+          patch('spireagent.workbench.managed_trajectory_store.read_shard', read_shard),
+          patch('stpd.evaluation.rl_observation.trajectory_details',
+                side_effect=lambda e: {'run_id': e['run_id']}),
+          patch('stpd.evaluation.rl_observation.load_cohort', load_cohort)):
+        metadata = evaluate.prepare_observation_report(plan, summary, scratch)
+    assert opened == [{'kind': 's3'}]
+    assert metadata['files']['cohort']['sha256'] == evaluate.hashed(scratch / 'report-cohort.json')
+    assert metadata['files']['source']['sha256'] == evaluate.hashed(scratch / 'report-source.json')

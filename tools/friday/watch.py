@@ -238,7 +238,7 @@ class Watcher:
             wall_seconds=tier.get('wall_seconds', 7200) if tier else (10800 if confirmation else 7200),
             manifest_path=Path(self.config['evaluation_manifest']),
             seed_prefix=tier['seed_prefix'] if tier else (40 if confirmation else 20),
-            runtime_source=Path(self.config['runtime_source']))
+            runtime_source=Path(self.config['runtime_source']), observation_report=tier is not None)
         pending = {'plan': str(plan_path), 'version': model['version'],
                    'updates': model.get('training', {}).get('updates', 0),
                    'state': 'submission_intent', 'job_id': None, 'evaluation_kind': kind,
@@ -374,31 +374,29 @@ class Watcher:
 
     def evaluation_report(self, result_path: Path, pending: dict[str, Any]) -> dict[str, Any]:
         """One saved ledger -> existing validated trajectory/report implementation."""
-        from spireagent.storage.config import open_peer
-        from spireagent.workbench.managed_trajectory_store import read_shard
-        from stpd.evaluation.rl_observation import (
-            load_cohort,
-            trajectory_details,
-            write_report,
-        )
+        from stpd.evaluation.rl_observation import write_report
 
         plan = evaluate.load_plan(Path(pending['plan']))
         original = json.loads(result_path.read_bytes())
-        slots = original['ledger_report']['slots']
-        execution = json.loads(Path(plan['execution']['path']).read_bytes())
-        store = open_peer(execution['peer'])
-        wanted = {s['run_id']: s for s in slots if s.get('run_id') is not None}
-        episodes = []
-        for shard in sorted({s['trajectory_shard_id'] for s in slots if s.get('trajectory_shard_id')}):
-            for episode in read_shard(store, shard, scratch=result_path.parent / 'report-readback'):
-                if episode['run_id'] not in wanted:
-                    continue
-                if episode['identity']['seed'] != wanted[episode['run_id']]['seed']:
-                    raise ValueError('evaluation_detail_seed_binding_mismatch')
-                episodes.append(trajectory_details(episode))
-        details = result_path.parent / 'report-details.json'
-        save(details, {'episodes': episodes})
-        cohort = load_cohort(result_path, details=details)
+        metadata = original.get('observation_report')
+        if (metadata is None or metadata.get('schema') != 'spireagent/evaluation-observation-files-1'
+                or metadata.get('ledger_report_sha256') != hashlib.sha256(
+                    json_bytes(original['ledger_report'])).hexdigest()):
+            raise ValueError('evaluation_job_observation_report_required')
+        files = {}
+        for name in ('source', 'details', 'cohort'):
+            reference = metadata['files'][name]
+            if Path(reference['path']).name != reference['path']:
+                raise ValueError('evaluation_report_file_name_required')
+            files[name] = evaluate.read_pinned({
+                'path': str(result_path.parent / 'evidence' / reference['path']),
+                'sha256': reference['sha256']})
+        if (files['source']['ledger_report'] != original['ledger_report']
+                or files['source']['plan_sha256'] != original['plan_sha256']
+                or files['cohort']['source_sha256'] != metadata['files']['source']['sha256']
+                or files['cohort']['details_sha256'] != metadata['files']['details']['sha256']):
+            raise ValueError('evaluation_report_original_binding_mismatch')
+        cohort = files['cohort']
         protocol = {'manifest_sha256': plan['manifest']['sha256'],
                     'seed_prefix': plan.get('seed_prefix'),
                     'seeds': [row['seed'] for row in cohort['rows']],
@@ -416,7 +414,7 @@ class Watcher:
         if not output.exists():
             write_report(cohorts, output)
         return {'cohort': cohort, 'comparison_key': key, 'report': str(output),
-                'details_sha256': hashed(details)}
+                'details_sha256': metadata['files']['details']['sha256']}
 
     def append_reference(self, kind: str, identity: str, fields: dict[str, Any]) -> None:
         reference = {'schema': 'spireagent/rl-retained-reference-1', 'run': self.config['run'],
@@ -495,11 +493,11 @@ class Watcher:
         a, b = before['cohort'], after['cohort']
         if b['wins'] != a['wins']:
             return b['wins'] > a['wins'], 'wins'
-        if a['boss_count_missing'] or b['boss_count_missing']:
-            return False, 'incomparable_missing_Boss_witness'
-        for field in ('boss1_cleared_witnessed', 'boss2_reached_witnessed', 'boss1_reached_witnessed'):
-            if a[field] != b[field]:
-                return b[field] > a[field], field
+        if not a['boss_count_missing'] and not b['boss_count_missing']:
+            for field in ('boss1_cleared_witnessed', 'boss2_reached_witnessed',
+                          'boss1_reached_witnessed'):
+                if a[field] != b[field]:
+                    return b[field] > a[field], field
         floors_a = [r['floor'] for r in a['rows'] if r['scored'] and r['floor'] is not None]
         floors_b = [r['floor'] for r in b['rows'] if r['scored'] and r['floor'] is not None]
         if len(floors_a) != a['planned'] or len(floors_b) != b['planned']:
@@ -508,10 +506,14 @@ class Watcher:
                        for t in sorted(set(floors_a + floors_b))]
         if differences and all(d >= 0 for d in differences) and any(d > 0 for d in differences):
             return True, 'arrival_distribution_dominance'
-        if any(differences):
-            return False, 'arrival_distribution_conflict_or_decline'
+        if differences and all(d <= 0 for d in differences) and any(d < 0 for d in differences):
+            return False, 'arrival_distribution_decline'
+        if not any(differences):
+            return False, 'arrival_distribution_equal'
         delta = compare(a, b)
-        return bool(delta['paired_n'] == a['planned'] and (delta['mean_delta'] or 0) > 0), 'paired_mean_floor'
+        interval = delta['bootstrap95_fixed_seed_sensitivity']
+        return bool(delta['paired_n'] == a['planned'] and interval is not None
+                    and interval[0] > 0), 'crossing_CDF_paired95_lower_bound'
 
     def candidate_reference(self, result: dict[str, Any]) -> None:
         processed = self.state.setdefault('candidate_references', [])

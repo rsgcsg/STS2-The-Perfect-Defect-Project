@@ -677,6 +677,7 @@ def test_tier_prepare_overrides_serial_pipeline_and_never_opens_confirmation(wat
                                     tier=rl3_tiers()[0], due_at=14400)
     plan = json.loads(Path(instance.state['pending']['plan']).read_bytes())
     assert plan['planned'] == 20 and plan['seed_prefix'] == 20
+    assert plan['observation_report'] is True
     assert plan['workers'] == plan['parallelism']['execution_upper_bound'] == 4
     assert plan['parallelism']['pending_limit'] == 8 and plan['parallelism']['save_workers'] == 2
     assert Path(plan['manifest']['path']).read_bytes() == manifest.read_bytes()
@@ -731,7 +732,7 @@ def test_candidate_references_keep_originals_and_missing_witnesses(watch, tmp_pa
     assert instance.exchange.latest_model() is None  # no training-model replacement
     missing = {**better, 'cohort': cohort([10, 20], missing_boss=2)}
     assert instance.candidate_comparison(better, missing) == (
-        False, 'incomparable_missing_Boss_witness')
+        True, 'arrival_distribution_dominance')
 
 
 def test_plateau_only_uses_same_complete_seed_protocol_and_never_stops(watch, tmp_path):
@@ -808,3 +809,49 @@ def test_full_checkpoint_reference_rejects_wrong_updates_or_different_weights(wa
         instance.checkpoint_binding(checkpoint, model)
     with pytest.raises(ValueError, match='binding_mismatch'):
         instance.checkpoint_binding(checkpoint, {**model, 'training': {'updates': 65}})
+
+
+def test_crossing_CDF_uses_paired95_lower_bound_after_skipping_missing_Boss(watch):
+    before = {'comparison_key': 'same', 'cohort': cohort([10] * 20, missing_boss=20)}
+    after = {'comparison_key': 'same', 'cohort': cohort([9] + [12] * 19, missing_boss=20)}
+    assert watch.Watcher.candidate_comparison(before, after) == (
+        True, 'crossing_CDF_paired95_lower_bound')
+    noisy = {'comparison_key': 'same', 'cohort': cohort([0] + [11] * 19, missing_boss=20)}
+    assert watch.Watcher.candidate_comparison(before, noisy) == (
+        False, 'crossing_CDF_paired95_lower_bound')
+
+
+def test_watcher_observation_report_reads_only_verified_local_files(watch, tmp_path):
+    import hashlib
+
+    from spireagent.json_boundary import json_bytes
+
+    instance = tier_observer(watch, tmp_path)
+    root = tmp_path / 'evaluation'
+    evidence = root / 'evidence'
+    evidence.mkdir(parents=True)
+    ledger = {'slots': []}
+    source = {'plan_sha256': 'a' * 64, 'ledger_report': ledger}
+    watch.save(evidence / 'report-source.json', source)
+    watch.save(evidence / 'report-details.json', {'episodes': []})
+    current = cohort([8, 17])
+    current.update(source_sha256=watch.hashed(evidence / 'report-source.json'),
+                   details_sha256=watch.hashed(evidence / 'report-details.json'))
+    watch.save(evidence / 'report-cohort.json', current)
+    references = {name: {'path': f'report-{name}.json',
+                         'sha256': watch.hashed(evidence / f'report-{name}.json')}
+                  for name in ('source', 'details', 'cohort')}
+    watch.save(root / 'result.json', {**source, 'observation_report': {
+        'schema': 'spireagent/evaluation-observation-files-1', 'files': references,
+        'ledger_report_sha256': hashlib.sha256(json_bytes(ledger)).hexdigest()}})
+    plan = {'manifest': {'sha256': 'b' * 64}, 'seed_prefix': 20}
+    with (patch.object(watch.evaluate, 'load_plan', return_value=plan),
+          patch('spireagent.storage.config.open_peer', side_effect=AssertionError('no watcher R2')),
+          patch('stpd.evaluation.rl_observation.write_report') as render):
+        result = instance.evaluation_report(root / 'result.json', {'plan': str(root / 'plan.json')})
+    assert result['cohort'] == current
+    assert render.call_count == 1
+    (evidence / 'report-cohort.json').write_text('{}')
+    with (patch.object(watch.evaluate, 'load_plan', return_value=plan),
+          pytest.raises(ValueError, match='pinned_input_changed')):
+        instance.evaluation_report(root / 'result.json', {'plan': str(root / 'plan.json')})

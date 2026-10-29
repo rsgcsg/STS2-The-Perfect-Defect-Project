@@ -45,7 +45,8 @@ def validate_execution(execution: dict[str, Any], selections: dict[str, str]) ->
 def prepare(execution_path: Path, output: Path, *, selections: dict[str, str],
             workers: int = 4, wall_seconds: int = 7200, episode_seconds: int = 900,
             manifest_path: Path | None = None, limit: int | None = None,
-            seed_prefix: int | None = None, runtime_source: Path | None = None) -> dict[str, Any]:
+            seed_prefix: int | None = None, runtime_source: Path | None = None,
+            observation_report: bool = False) -> dict[str, Any]:
     from spireagent.json_boundary import json_bytes
     from spireagent.workbench.managed_retention import pipeline_configuration
     from spireagent.workbench.reference_suite import load_manifest
@@ -57,6 +58,8 @@ def prepare(execution_path: Path, output: Path, *, selections: dict[str, str],
             or wall_seconds <= episode_seconds + 180
             or limit is not None and (type(limit) is not int or not 1 <= limit <= 200)):
         raise ValueError("bounded_allocation_and_episode_limits_required")
+    if type(observation_report) is not bool or observation_report and len(selections) != 1:
+        raise ValueError('single_model_observation_report_required')
     if runtime_source is not None and (not runtime_source.is_absolute()
             or runtime_source.is_symlink() or runtime_source.resolve() != runtime_source
             or not (runtime_source / 'tools/friday/evaluate.py').is_file()):
@@ -91,6 +94,7 @@ def prepare(execution_path: Path, output: Path, *, selections: dict[str, str],
             "execution": {"path": str(frozen_execution), "sha256": hashed(frozen_execution)},
             "manifest": {"path": str(manifest), "sha256": hashed(manifest)},
             "selections": selections, "workers": workers, "wall_seconds": wall_seconds,
+            "observation_report": observation_report,
             "episode_seconds": episode_seconds, "selected_limit": selected_count,
             "planned": planned, "parallelism": {"requested_workers": workers,
                 "pending_limit": pipeline["pending_limit"], "save_workers": pipeline["save_workers"],
@@ -118,7 +122,8 @@ def load_plan(path: Path) -> dict[str, Any]:
     value = json.loads(path.read_bytes())
     if (value.get("schema") != SCHEMA or value.get("target") != "friday"
             or value.get("automatic_mac_fallback") is not False
-            or value.get("retry_unknown") is not False):
+            or value.get("retry_unknown") is not False
+            or type(value.get("observation_report", False)) is not bool):
         raise ValueError("frozen_friday_evaluation_plan_required")
     validate_execution(read_pinned(value["execution"]), value["selections"])
     read_pinned(value["manifest"])
@@ -253,6 +258,42 @@ class StopOnUncertain:
         return results
 
 
+def prepare_observation_report(plan: dict[str, Any], summary: dict[str, Any],
+                               scratch: Path) -> dict[str, Any]:
+    """Expensive verified trajectory reads stay in the evaluation allocation."""
+    from spireagent.json_boundary import json_bytes
+    from spireagent.storage.config import open_peer
+    from spireagent.workbench.managed_trajectory_store import read_shard
+    from stpd.evaluation.rl_observation import load_cohort, trajectory_details
+
+    slots = summary['ledger_report']['slots']
+    execution = read_pinned(plan['execution'])
+    store = open_peer(execution['peer'])
+    wanted = {slot['run_id']: slot for slot in slots if slot.get('run_id') is not None}
+    episodes = []
+    readback = scratch / 'report-readback'
+    readback.mkdir(mode=0o700, exist_ok=True)
+    for shard in sorted({slot['trajectory_shard_id'] for slot in slots
+                         if slot.get('trajectory_shard_id')}):
+        for episode in read_shard(store, shard, scratch=readback):
+            if episode['run_id'] not in wanted:
+                continue
+            if episode['identity']['seed'] != wanted[episode['run_id']]['seed']:
+                raise ValueError('evaluation_detail_seed_binding_mismatch')
+            episodes.append(trajectory_details(episode))
+    source = scratch / 'report-source.json'
+    details = scratch / 'report-details.json'
+    cohort = scratch / 'report-cohort.json'
+    save(source, summary)
+    save(details, {'episodes': episodes})
+    value = load_cohort(source, details=details)
+    save(cohort, value)
+    return {'schema': 'spireagent/evaluation-observation-files-1',
+            'ledger_report_sha256': hashlib.sha256(json_bytes(summary['ledger_report'])).hexdigest(),
+            'files': {name: {'path': path.name, 'sha256': hashed(path)} for name, path in
+                      (('source', source), ('details', details), ('cohort', cohort))}}
+
+
 def run(plan_path: Path) -> dict[str, Any]:
     from spireagent.workbench.managed_pipeline import PipelinedManagedExecutor
     from spireagent.workbench.reference_suite import SuiteLimits
@@ -340,6 +381,15 @@ def run(plan_path: Path) -> dict[str, Any]:
         summary['timing'] = {'process_started_at': process_started_at, 'phases': phases}
         save(scratch / 'result.json', summary)
         try:
+            if plan.get('observation_report', False):
+                phase_began = time.monotonic()
+                try:
+                    summary['observation_report'] = prepare_observation_report(plan, summary, scratch)
+                except Exception as error:  # noqa: BLE001 -- preserve original results on report failure
+                    summary['observation_report_error'] = {
+                        'error_type': type(error).__name__, 'error_code': getattr(error, 'code', None)}
+                phases['observation_report'] = time.monotonic() - phase_began
+                save(scratch / 'result.json', summary)
             phase_began = time.monotonic()
             receipt = snapshot(scratch, root / 'evidence')
             phases['snapshot'] = time.monotonic() - phase_began
@@ -369,6 +419,8 @@ def main():
     prepare_parser.add_argument('--wall-seconds', type=int, default=7200)
     prepare_parser.add_argument('--episode-seconds', type=int, default=900)
     prepare_parser.add_argument('--limit', type=int)
+    prepare_parser.add_argument('--observation-report', action='store_true',
+                                help='prepare verified trajectory details/cohort in this allocation')
     prepare_parser.add_argument('--seed-prefix', type=int,
                                 help='freeze this original canonical seed prefix in a NEW ledger')
     for name in ('submit', 'run'):
@@ -391,7 +443,8 @@ def main():
             workers=args.workers, wall_seconds=args.wall_seconds,
             episode_seconds=args.episode_seconds,
             manifest_path=args.manifest.resolve() if args.manifest else None, limit=args.limit,
-            seed_prefix=args.seed_prefix, runtime_source=args.runtime_source)
+            seed_prefix=args.seed_prefix, runtime_source=args.runtime_source,
+            observation_report=args.observation_report)
     elif args.command == 'submit':
         result = submit(args.plan.resolve(), constraint=args.constraint,
                         dry_run=args.dry_run, begin=args.begin)

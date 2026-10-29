@@ -134,7 +134,11 @@ Mac只读同步关闭的对象，按hash去重，面板标明数据时刻和缺�
 时刻/版本/原因，不补投。重启沿 `watch-state.json` 恢复固定墙钟时刻和原提交意图；
 没有调度器回执的提交需人工核原请求，不重新提交。计划、原件、R2计分/审计门不变。
 
-完整结果经原轨迹reader校验后，调用同一 `rl_observation` 生成 JSON/CSV/SVG，
+两档plan显式启用 `observation_report`（普通plan默认关闭）。原评估job在snapshot前
+经原轨迹reader生成细节和cohort，计入 `timing.phases.observation_report`；
+同一job保存轻量source/details/cohort及SHA，最终snapshot保全。看守只读这些本地文件
+核原ledger/plan/source/details绑定，不在健康tick冷读R2轨迹；然后调用同一
+`rl_observation` 生成 JSON/CSV/SVG，
 保存在本评估plan旁 `report/`。同清单/前缀/角色/难度/Host/输入/动作模式才比较，
 基线是同协议第一次已完成评估，另保留上一轮；没有基线或Boss见证就保留缺失。
 至少已有一轮基线、连续3轮可比完整评估均未提高配对平均层数时，只在状态里提醒，
@@ -142,8 +146,9 @@ Mac只读同步关闭的对象，按hash去重，面板标明数据时刻和缺�
 
 每次完整评估追加不可变 `references/candidate/` 引用。选候选规则预先固定为
 `wins-Boss-CDF-paired-v1`：胜局数优先，其次有完整见证的Boss指标，再看到达分布
-是否一阶支配，最后看配对层差；Boss缺失、分布冲突、unknown或计分分母不足都不
-自动取代已有候选。两种清单前缀各自排名。记录所有评估的选择/不选择原因和前任引用；
+是否一阶支配；若CDF交叉，只有完整配对差的95%bootstrap敏感区间下界>0
+才取代候选。Boss见证缺失则明确跳过Boss层转CDF，不把missing当0；分布相同、
+配对区间不支持提升、unknown或计分分母不足都不自动取代已有候选。两种清单前缀各自排名。记录所有评估的选择/不选择原因和前任引用；
 它是开发种子的候选索引，不是独立确认，也不删除落选模型或自动换训练模型。
 
 每4小时追加 `references/milestone/`，绑定同一版本/更新数的已发布模型和完整CP。
