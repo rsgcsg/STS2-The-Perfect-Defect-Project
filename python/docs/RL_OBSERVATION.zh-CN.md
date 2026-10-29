@@ -53,6 +53,9 @@ Boss 到达只数公开 combat.encounter_type 的 Boss 正见证；击败只数�
 最高层17不自动成为“第一幕Boss”；最后一场战斗也不自动成为死亡原因。
 游戏unknown、任务operation_end.censored和证据保存失败不得混为同一个数字。
 
+吞吐与首次使用的计量复用[链路计速](RL_MEASUREMENT.zh-CN.md)；
+`trajectory.step_count` 包含单候选强制行，不能直接叫游戏决策数。
+
 ## 配对比较和解释边界
 
 `comparisons.baseline/previous` 按共同且可计分的seed配对；未启动、unknown、
