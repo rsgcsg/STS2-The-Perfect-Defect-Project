@@ -63,11 +63,19 @@ def publish_evaluation(exchange: Exchange, directory: Path,
     floor = result.get("mean_max_floor")
     if floor is not None and (type(floor) not in (int, float) or not math.isfinite(floor)):
         raise BoundaryError("rl_tensorboard", "invalid_evaluation_metrics")
+    kind = result.get("evaluation_kind", "fixed20")
+    if kind not in ("fixed20", "confirmation"):
+        raise BoundaryError("rl_tensorboard", "invalid_evaluation_kind")
+    planned = result.get("planned")
+    if planned is not None and (type(planned) is not int or planned <= 0):
+        raise BoundaryError("rl_tensorboard", "invalid_evaluation_metrics")
+    prefix = "evaluation" if kind == "fixed20" else "confirmation"
     metrics = TensorBoardMetrics(exchange, directory)
-    metrics.scalars({"evaluation/wins": result["wins"],
-                     "evaluation/mean_max_floor": floor,
-                     "evaluation/unknown": result["unknown"],
-                     "evaluation/version": result["version"]}, result["updates"],
+    metrics.scalars({f"{prefix}/wins": result["wins"],
+                     f"{prefix}/mean_max_floor": floor,
+                     f"{prefix}/unknown": result["unknown"],
+                     f"{prefix}/planned": planned,
+                     f"{prefix}/version": result["version"]}, result["updates"],
                     result.get("evaluated_at", time.time()))
     return metrics.publish()
 

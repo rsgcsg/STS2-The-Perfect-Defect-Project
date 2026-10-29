@@ -91,6 +91,8 @@ python -m spireagent.rl_tensorboard --peer-config peer.json --run <run> \
 `peer.json` 是原 peer 配置（只引用环境变量，不含凭证）；`evaluation-metrics.json` 字段为
 `version`、该版本的累计 `updates`、`wins`、`mean_max_floor`（无有效局时为 null）、
 `unknown`，可选实际完成时间 `evaluated_at`（Unix 秒）。评估计数来自原账本，不重试 unknown。
+可选 `evaluation_kind` 默认 `fixed20`，另可用 `confirmation` 将胜局确认批写入独立
+`confirmation/*` 曲线，避免与固定 20 局的 `evaluation/*` 混用；`planned` 记录该批原计划分母。
 此入口只做曲线，不提交评估、不改训练用途、不替代原评估证据。
 
 学习者每次 progress、版本/检查点发布、结束时把原字段和 `counts`、`seen_shards`、

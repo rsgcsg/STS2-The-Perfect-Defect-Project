@@ -465,7 +465,7 @@ class Learner:
         return destination, raw
 
     def _publish(self, version: int, parent: int, destination: Path,
-                 shards: list[str]) -> dict[str, Any]:
+                 shards: list[str], updates: int, rl_samples: int) -> dict[str, Any]:
         began = time.monotonic()
         manifest = self.io.publish_model(self.exchange.store, destination, self.producer)
         record = self.exchange.publish_model({
@@ -473,8 +473,8 @@ class Learner:
             "model_artifact_id": manifest.artifact_id,
             "model_sha256": manifest.payload("weights").sha256,
             "origin_artifact_id": self.config.start_artifact_id,
-            "training": {"updates": self.updates, "shard_records": shards,
-                         "rl_samples": self.counts["rl_samples"]},
+            "training": {"updates": updates, "shard_records": shards,
+                         "rl_samples": rl_samples},
             "published_at": time.time()})
         record["publish_seconds"] = time.monotonic() - began
         return record
@@ -517,7 +517,7 @@ class Learner:
         state = self._state() if not self.checkpoints.pending else None
         self.timer.add("version_capture", began)
         self.pending_version = self.publisher.submit(self._publish, version, parent,
-                                                     destination, sorted(self.seen))
+            destination, sorted(self.seen), self.updates, self.counts["rl_samples"])
         if state is not None:
             self.checkpoints.submit(FrozenCheckpoint(state, (), FrozenObject.of(
                 {"schema": CHECKPOINT_SCHEMA, "run": self.config.run, "version": version,

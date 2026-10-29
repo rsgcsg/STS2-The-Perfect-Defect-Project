@@ -16,7 +16,11 @@ def test_closed_event_files_roundtrip_and_append_without_changing_old_bytes(tmp_
     metrics.scalars({"train/policy_loss": 0.75}, 20)
     metrics.publish()
     publish_evaluation(exchange, tmp_path / "eval", {
-        "version": 2, "updates": 20, "wins": 1, "mean_max_floor": 14.5, "unknown": 2})
+        "version": 2, "updates": 20, "wins": 1, "mean_max_floor": 14.5, "unknown": 2,
+        "planned": 20})
+    publish_evaluation(exchange, tmp_path / "confirmation", {
+        "evaluation_kind": "confirmation", "version": 2, "updates": 20,
+        "wins": 2, "mean_max_floor": 15.0, "unknown": 1, "planned": 40})
     for key, raw in original.items():
         assert exchange.blobs.get(key) == raw
     downloaded = tmp_path / "downloaded"
@@ -29,6 +33,10 @@ def test_closed_event_files_roundtrip_and_append_without_changing_old_bytes(tmp_
     assert events.Scalars("evaluation/unknown")[0].value == 2
     assert events.Scalars("evaluation/mean_max_floor")[0].value == 14.5
     assert events.Scalars("evaluation/wins")[0].step == 20
+    assert len(events.Scalars("evaluation/wins")) == 1
+    assert events.Scalars("evaluation/planned")[0].value == 20
+    assert events.Scalars("confirmation/wins")[0].value == 2
+    assert events.Scalars("confirmation/planned")[0].value == 40
     with pytest.raises(BoundaryError, match="invalid_evaluation_metrics"):
         publish_evaluation(exchange, tmp_path / "bad", {
             "version": 2, "updates": 20, "wins": 1, "mean_max_floor": float("nan"), "unknown": 2})
