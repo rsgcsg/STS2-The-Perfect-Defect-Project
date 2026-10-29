@@ -116,6 +116,46 @@ def test_deferred_reference_nonfinite_cannot_be_masked_into_valid_update():
     assert model.execution == reference.execution == initial
 
 
+def test_resident_reference_cold_and_warm_match_cpu_cache_without_recomputing():
+    left, reference, samples, anchor = fixture()
+    right = copy.deepcopy(left)
+    reference.forward_batch = Mock(wraps=reference.forward_batch)
+    histories = []
+    for member, resident in ((left, False), (right, True)):
+        cache = {}
+        optimizer = torch.optim.SGD(member.parameters(), lr=0.01)
+        history = []
+        calls_before = reference.forward_batch.call_count
+        for step in range(2):
+            torch.manual_seed(17 + step)
+            history.append(rl_update(member, reference, optimizer, samples, anchor, 0.01,
+                                     LossConfig(), cache, performance=PerformanceConfig(
+                                         defer_sync=True, reference_device_cache=resident)))
+            assert reference.forward_batch.call_count == calls_before + 1
+            assert set(cache) == {sample.key for sample in samples}
+            assert all(row.dtype == torch.float32 and not row.requires_grad
+                       and row.device == member.ids.weight.device for row in cache.values())
+        histories.append(history)
+    for first, second in zip(*histories, strict=True):
+        for name in ("policy_loss", "kl", "anchor_loss", "gradient_norm", "mean_ratio"):
+            assert first[name] == second[name]
+    for name, value in left.state_dict().items():
+        assert torch.equal(value, right.state_dict()[name])
+
+
+@pytest.mark.parametrize("resident", [False, True])
+def test_corrupt_cached_reference_rejects_before_optimizer_step(resident):
+    model, reference, samples, anchor = fixture()
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.01)
+    optimizer.step = Mock()
+    cache = {samples[0].key: torch.full((len(samples[0].frame.choices),), torch.nan)}
+    with pytest.raises(BoundaryError, match="non_finite_update"):
+        rl_update(model, reference, optimizer, samples, anchor, 0.01, LossConfig(), cache,
+                  performance=PerformanceConfig(defer_sync=True,
+                                                reference_device_cache=resident))
+    optimizer.step.assert_not_called()
+
+
 def test_precision_has_no_cpu_fallback_and_context_restores_on_failure():
     model, reference, _, _ = fixture()
     initial = model.execution

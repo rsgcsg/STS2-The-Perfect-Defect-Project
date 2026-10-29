@@ -26,6 +26,7 @@ class PerformanceConfig:
     packed: bool = False
     tensor_cache: bool = False
     device_cache: bool = False
+    reference_device_cache: bool = False
     microbatch_size: int = 8
     scene_attention_area: int = 262144
     text_attention_area: int = 262144
@@ -37,7 +38,7 @@ class PerformanceConfig:
     def __post_init__(self) -> None:
         if any(type(value) is not bool for value in (
                 self.packed, self.tensor_cache, self.device_cache,
-                self.bucket, self.defer_sync, self.tf32)):
+                self.reference_device_cache, self.bucket, self.defer_sync, self.tf32)):
             raise BoundaryError("rl_performance", "invalid_boolean")
         if (type(self.microbatch_size) is not int or not 1 <= self.microbatch_size <= 8
                 or any(type(value) is not int or not 1 <= value <= 2**28 for value in (

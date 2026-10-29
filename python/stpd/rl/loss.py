@@ -211,10 +211,13 @@ def _execution_update(model: MStd, reference: MStd, optimizer: torch.optim.Optim
         if missing:
             with torch.no_grad():
                 reference_rows = scores(reference, [frames[i] for i in missing])
-                # One transfer for the complete microbatch, not one per row.
+                # Optional resident reference cache avoids draining the GPU
+                # queue for each new reference microbatch. Rows remain FP32.
                 logs = torch.nn.utils.rnn.pad_sequence(
                     [F.log_softmax(row, -1) for row in reference_rows],
-                    batch_first=True, padding_value=-torch.inf).cpu()
+                    batch_first=True, padding_value=-torch.inf)
+                if not performance.reference_device_cache:
+                    logs = logs.cpu()
             computed = {samples[i].key: logs[row, :len(frames[i].choices)]
                         for row, i in enumerate(missing)}
             if reference_cache is not None:
@@ -223,6 +226,10 @@ def _execution_update(model: MStd, reference: MStd, optimizer: torch.optim.Optim
                 for s in batch]
         reference_log = torch.nn.utils.rnn.pad_sequence(
             rows, batch_first=True, padding_value=-torch.inf).to(device)
+        # Inspect only actual catalog entries: padding is intentionally -inf.
+        # A corrupt/non-finite cached reference must not disappear in KL masking.
+        valid_scores = valid_scores & (torch.isfinite(reference_log).sum()
+                                       == sum(row.numel() for row in rows))
         # The current batch can have a wider action catalog than missing rows.
         if reference_log.shape[1] < packed.shape[1]:
             reference_log = F.pad(reference_log, (0, packed.shape[1] - reference_log.shape[1]),
