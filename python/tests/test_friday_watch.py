@@ -185,7 +185,7 @@ def test_R2_outage_cannot_bypass_actor_wall_stop_or_40_minute_drain(watch, tmp_p
     monkeypatch.setattr(watch, 'job_accounting', lambda _: {'terminal': True, 'all_completed': True})
     config = {'peer': {}, 'run': 'rl2', 'started_at': 100, 'wall_seconds': 10,
               'poll_seconds': 900, 'actor_plan': str(tmp_path / 'actors/plan.json'),
-              'actor_job_id': '123'}
+              'actor_job_id': '123', 'evaluation_mode': 'direct'}
     instance = watch.Watcher(config, tmp_path / 'watch')
     instance.run()
     assert actor_signals[0][0] == 110.0
@@ -197,3 +197,104 @@ def test_R2_outage_cannot_bypass_actor_wall_stop_or_40_minute_drain(watch, tmp_p
     assert final['drain_timeout'] is True and final['drain_complete'] is False
     assert final['learner_stop_pending'] is True
     assert 'watcher_telemetry_failed' in capsys.readouterr().err
+
+
+def test_direct_evaluation_must_exit_before_drain_can_complete(watch, tmp_path):
+    from types import SimpleNamespace
+
+    instance = object.__new__(watch.Watcher)
+    instance.config = {'started_at': 100, 'actor_job_id': '123', 'evaluation_mode': 'direct'}
+    instance.state = {'pending': None, 'drain_started_at': 110, 'learner_stop_pending': False}
+    instance.work = tmp_path
+    instance.exchange = SimpleNamespace(latest_event=lambda: {'kind': 'finished', 'at': 111},
+       latest_model=lambda: {'version': 3}, latest_checkpoint=lambda: {'version': 3})
+    instance.telemetry = lambda *_args, **_kwargs: None
+    instance.direct = SimpleNamespace(poll=lambda: None)
+    with (patch.object(watch.time, 'time', return_value=112),
+          patch.object(watch, 'job_accounting', return_value={'terminal': True})):
+        assert instance.drain() is False
+        instance.direct = SimpleNamespace(poll=lambda: 0)
+        assert instance.drain() is True
+
+
+def test_confirmation_uses_original_forty_and_never_enters_fixed20_regression(watch, tmp_path):
+    from spireagent.workbench.reference_suite import load_manifest
+    from stpd.evaluation.suites import load_suite, t2_managed_manifest, seed_membership
+    from spireagent.json_boundary import BoundaryError
+
+    # The original consumer accepts complete T2 but rejects a generalization-suite substitution.
+    manifest = tmp_path / 'T2.json'
+    t2 = t2_managed_manifest('v0.111.0')
+    manifest.write_text(json.dumps(t2))
+    assert load_manifest(manifest, watch.hashed(manifest))[1]['seeds'] == t2['seeds']
+    assert all(seed_membership(seed) for seed in t2['seeds'])
+    assert len(set(t2['seeds'][20:]) - set(t2['seeds'][:20])) == 20
+    other = tmp_path / 'gen.json'
+    other.write_text(json.dumps(load_suite('gen-Defect-200')))
+    with pytest.raises(BoundaryError, match='manifest_configuration_changed'):
+        load_manifest(other, watch.hashed(other))
+    config = {'started_at': 100, 'wall_seconds': 72000}
+    rows = [{'complete': True, 'evaluation_kind': 'confirmation', 'mean_max_floor': 3}] * 2
+    assert watch.stop_reason(1000, config, [], None, rows) is None
+
+
+def test_winning_fixed20_schedules_one_forty_seed_confirmation_without_shifting_clock(watch, tmp_path):
+    from types import SimpleNamespace
+
+    instance = object.__new__(watch.Watcher)
+    instance.config = {'started_at': 100, 'wall_seconds': 72000, 'evaluation_mode': 'direct'}
+    instance.state = {'shards': {}, 'pending': None, 'stop': None, 'last_evaluation_at': 100,
+       'evaluations': [{'complete': True, 'evaluation_kind': 'fixed20', 'wins': 1,
+                        'version': 2, 'mean_max_floor': 15}]}
+    model = {'version': 2}
+    instance.exchange = SimpleNamespace(shard_keys=lambda: [],
+        latest_event=lambda: {'kind': 'progress', 'at': 1000}, latest_model=lambda: model,
+        model=lambda version: {'version': version})
+    instance.collect_evaluation = lambda: None
+    instance.persist = lambda: None
+    instance.publish = lambda kind, **fields: {'kind': kind, **fields}
+    instance.signalled = False
+    prepared = []
+    instance.prepare_evaluation = lambda model, now, **kwargs: prepared.append((model, now, kwargs))
+    instance.tick(1000)
+    instance.tick(1001)
+    assert len(prepared) == 1 and prepared[0][2] == {'confirmation': True}
+    assert prepared[0][0]['version'] == 2
+    assert instance.state['last_evaluation_at'] == 100
+    assert instance.state['confirmation_requested'] is True
+
+
+def test_confirmation_real_prepare_freezes_original_prefix40_and_three_hour_direct_budget(watch, tmp_path):
+    from types import SimpleNamespace
+    from stpd.evaluation.suites import t2_managed_manifest
+
+    runtime = tmp_path / 'frozen-source'
+    (runtime / 'tools/friday').mkdir(parents=True)
+    (runtime / 'tools/friday/evaluate.py').write_text('# frozen runtime boundary\n')
+    peer = {'kind': 's3', 'bucket': 'test', 'endpoint': 'https://example.invalid',
+            'prefix': 'test', 'region': 'auto'}
+    base = tmp_path / 'base.json'
+    base.write_text(json.dumps({'schema': 'spireagent/managed-evaluation-execution-v1',
+        'store': 's3', 'peer': peer, 'retention': watch.evaluate.RETENTION,
+        'pipeline': {'save_workers': 1, 'pending_limit': 2}, 'models': {}}))
+    manifest = tmp_path / 'T2.json'
+    manifest.write_text(json.dumps(t2_managed_manifest('v0.111.0')))
+    instance = object.__new__(watch.Watcher)
+    instance.work = tmp_path / 'watch'
+    instance.config = {'evaluation_mode': 'direct', 'evaluation_execution': str(base),
+        'evaluation_manifest': str(manifest), 'runtime_source': str(runtime)}
+    instance.state = {'pending': None, 'last_evaluation_at': 100}
+    instance.persist = lambda: None
+    instance.publish = lambda *_args, **_kwargs: None
+    instance.exchange = SimpleNamespace(materialize_model=lambda *_: tmp_path / 'model')
+    with patch.object(watch.subprocess, 'Popen', return_value=SimpleNamespace(pid=1234)):
+        instance.prepare_evaluation({'version': 2, 'model_artifact_id': '1' * 64,
+                                     'training': {'updates': 16}}, 1000, confirmation=True)
+    pending = instance.state['pending']
+    plan = json.loads(Path(pending['plan']).read_bytes())
+    assert pending['evaluation_kind'] == 'confirmation'
+    assert plan['planned'] == plan['seed_prefix'] == 40
+    assert plan['workers'] == 1 and plan['wall_seconds'] == 10800
+    assert plan['source_root'] == str(runtime)
+    assert instance.state['last_evaluation_at'] == 100
+    assert Path(plan['manifest']['path']).read_bytes() == manifest.read_bytes()

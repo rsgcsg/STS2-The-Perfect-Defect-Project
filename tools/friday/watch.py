@@ -45,18 +45,21 @@ def read_config(path: Path) -> dict[str, Any]:
     return value
 
 
-def evaluate_result(path: Path, version: int, updates: int) -> dict[str, Any]:
+def evaluate_result(path: Path, version: int, updates: int, *,
+                    confirmation: bool = False) -> dict[str, Any]:
     result = json.loads(path.read_bytes())
     report = result['ledger_report']
     groups = report['groups']
     floors = [row['max_observed_floor'] for row in report['slots']
               if row['status'] == 'finished' and row.get('max_observed_floor') is not None]
-    complete = (report['score_admitted'] is True and report['planned'] == 20
+    planned = 40 if confirmation else 20
+    complete = (report['score_admitted'] is True and report['planned'] == planned
                 and report['not_started'] == report['reserved'] == report['save_pending'] == 0
                 and report['save_failed'] == report['saved_unscored'] == 0
                 and report['trajectory_pending'] == report['censored'] == 0
-                and report['win'] + report['loss'] + report['unknown'] == 20)
+                and report['win'] + report['loss'] + report['unknown'] == planned)
     return {'version': version, 'updates': updates, 'wins': report['win'],
+            'evaluation_kind': 'confirmation' if confirmation else 'fixed20',
             'losses': report['loss'], 'unknown': report['unknown'],
             'mean_max_floor': sum(floors) / len(floors) if floors else None,
             'evaluated_at': time.time(), 'complete': complete,
@@ -80,7 +83,8 @@ def stop_reason(now: float, config: dict[str, Any], games: list[dict[str, Any]],
         threshold = config.get('kl_stop_threshold')
         if threshold is not None and event.get('kl', 0) > threshold:
             return 'learner_KL_above_configured_threshold'
-    completed = [row for row in evaluations if row['complete']]
+    completed = [row for row in evaluations if row['complete']
+                 and row.get('evaluation_kind', 'fixed20') == 'fixed20']
     if (len(completed) >= 2 and all(row['mean_max_floor'] is not None
             and row['mean_max_floor'] < 11.75 for row in completed[-2:])):
         return 'two_evaluations_below_baseline_by_more_than_two_floors'
@@ -169,8 +173,10 @@ class Watcher:
                      actor_signal_exit_code=actor_signal.returncode,
                      learner_stop_pending=self.state['learner_stop_pending'])
 
-    def prepare_evaluation(self, model: dict[str, Any], now: float):
-        root = self.work / 'evaluations' / f"v{model['version']:06d}-{time.time_ns()}"
+    def prepare_evaluation(self, model: dict[str, Any], now: float, *,
+                           confirmation: bool = False):
+        kind = 'confirmation' if confirmation else 'fixed20'
+        root = self.work / 'evaluations' / f"{kind}-v{model['version']:06d}-{time.time_ns()}"
         root.mkdir(parents=True, mode=0o700)
         package = self.exchange.materialize_model(model, self.work / 'models')
         execution = json.loads(Path(self.config['evaluation_execution']).read_bytes())
@@ -181,13 +187,16 @@ class Watcher:
         plan_path = root / 'plan' / 'plan.json'
         evaluate.prepare(execution_path, plan_path.parent, selections={'latest': 'latest'},
             workers=1 if self.config['evaluation_mode'] == 'direct' else self.config.get('evaluation_workers', 4),
-            wall_seconds=7200, manifest_path=Path(self.config['evaluation_manifest']),
-            seed_prefix=20, runtime_source=Path(self.config['runtime_source']))
+            wall_seconds=10800 if confirmation else 7200,
+            manifest_path=Path(self.config['evaluation_manifest']),
+            seed_prefix=40 if confirmation else 20,
+            runtime_source=Path(self.config['runtime_source']))
         pending = {'plan': str(plan_path), 'version': model['version'],
                    'updates': model.get('training', {}).get('updates', 0),
-                   'state': 'submission_intent', 'job_id': None}
+                   'state': 'submission_intent', 'job_id': None, 'evaluation_kind': kind}
         self.state['pending'] = pending
-        self.state['last_evaluation_at'] = now
+        if not confirmation:
+            self.state['last_evaluation_at'] = now
         self.persist()
         if self.config['evaluation_mode'] == 'submit':
             try:
@@ -197,8 +206,9 @@ class Watcher:
                 if str(error) != 'requested_evaluation_workers_exceed_current_fair_share':
                     raise
                 self.state['pending'] = None
-                self.state['last_evaluation_at'] = (now - self.config.get('evaluation_seconds', 18000)
-                                                    + self.config.get('poll_seconds', 900))
+                if not confirmation:
+                    self.state['last_evaluation_at'] = (now - self.config.get('evaluation_seconds', 18000)
+                                                        + self.config.get('poll_seconds', 900))
                 self.persist()
                 self.publish('attention', reason='evaluation_capacity_unavailable_no_submission')
                 return
@@ -220,7 +230,8 @@ class Watcher:
             return
         result_path = Path(pending['plan']).parent / 'result.json'
         if result_path.exists():
-            result = evaluate_result(result_path, pending['version'], pending['updates'])
+            result = evaluate_result(result_path, pending['version'], pending['updates'],
+                confirmation=pending.get('evaluation_kind') == 'confirmation')
             self.state['evaluations'].append(result)
             self.state['pending'] = None
             self.persist()
@@ -228,7 +239,7 @@ class Watcher:
             if result['complete']:
                 evaluation_file = result_path.parent / 'tensorboard-evaluation.json'
                 save(evaluation_file, {k: result[k] for k in ('version', 'updates', 'wins',
-                        'mean_max_floor', 'unknown', 'evaluated_at')})
+                        'mean_max_floor', 'unknown', 'evaluated_at', 'evaluation_kind', 'planned')})
                 peer_file = self.work / 'peer.json'
                 save(peer_file, self.config['peer'])
                 subprocess.run([sys.executable, '-m', 'spireagent.rl_tensorboard',
@@ -259,15 +270,25 @@ class Watcher:
                   stop_reason(now, self.config, games, event, self.state['evaluations']))
         if self.state['stop'] or reason:
             self.stop(self.state['stop'] or reason)
-        elif (self.state['pending'] is None and model is not None
-              and now - self.state['last_evaluation_at'] >= self.config.get('evaluation_seconds', 18000)):
-            self.prepare_evaluation(model, now)
+        elif self.state['pending'] is None and model is not None:
+            winner = next((row for row in self.state['evaluations'] if row['complete']
+                           and row.get('evaluation_kind', 'fixed20') == 'fixed20'
+                           and row['wins'] > 0), None)
+            if winner is not None and not self.state.get('confirmation_requested'):
+                # One independent original forty-seed ledger: first twenty repeat, last twenty new.
+                # Persist this one-shot intent before preparation/submission; never reoffer uncertainty.
+                self.state['confirmation_requested'] = True
+                self.persist()
+                self.prepare_evaluation(self.exchange.model(winner['version']), now, confirmation=True)
+            elif now - self.state['last_evaluation_at'] >= self.config.get('evaluation_seconds', 18000):
+                self.prepare_evaluation(model, now)
         hour_games = sum(len(shard['games']) for shard in self.state['shards'].values()
                          if shard['finished_at'] >= now - 3600)
         unknown = sum(g['status'] == 'unknown' for g in games)
         seen = set((event or {}).get('seen_shards', []))
         evaluations = self.state['evaluations']
-        complete = [row for row in evaluations if row['complete']]
+        complete = [row for row in evaluations if row['complete']
+                    and row.get('evaluation_kind', 'fixed20') == 'fixed20']
         no_improvement = (len(complete) >= 3 and max(row['mean_max_floor'] or 0 for row in complete[-3:])
                           <= max([13.75] + [row['mean_max_floor'] or 0 for row in complete[:-3]]))
         event_age = now - event['at'] if event else None
@@ -286,10 +307,29 @@ class Watcher:
             shard_backlog=len(set(self.state['shards']) - seen), learner=event,
             latest_evaluation=evaluations[-1] if evaluations else None,
             three_evaluations_without_improvement=no_improvement,
-            win_confirmation_required=any(row['wins'] > 0 for row in complete),
+            win_confirmation_required=(any(row['wins'] > 0 for row in complete)
+                                       and not any(row.get('evaluation_kind') == 'confirmation'
+                                                   and row['complete'] for row in evaluations)),
+            confirmation_requested=self.state.get('confirmation_requested', False),
+            latest_confirmation=next((row for row in reversed(evaluations)
+                if row.get('evaluation_kind') == 'confirmation'), None),
             stopped=self.state['stop'], pending_evaluation=self.state['pending'])
         self.persist()
         return status
+
+    def evaluation_drain(self) -> dict[str, Any]:
+        pending = self.state['pending']
+        if self.direct is not None:
+            return {'terminal': self.direct.poll() is not None,
+                    'exit_code': self.direct.poll(), 'mode': 'direct',
+                    'result_present': bool(pending and
+                        (Path(pending['plan']).parent / 'result.json').exists())}
+        if pending is None:
+            return {'terminal': True, 'mode': self.config['evaluation_mode']}
+        if pending.get('job_id'):
+            return {'mode': 'submit', **job_accounting(pending['job_id'])}
+        return {'terminal': False, 'mode': self.config['evaluation_mode'],
+                'reason': 'evaluation_owner_requires_reconciliation'}
 
     def drain(self) -> bool:
         learner_finished = False
@@ -308,15 +348,19 @@ class Watcher:
             accounting = job_accounting(str(self.config['actor_job_id']))
         except Exception as error:
             accounting = {'terminal': False, 'error_type': type(error).__name__}
-        complete = learner_finished and accounting['terminal']
+        try:
+            evaluation = self.evaluation_drain()
+        except Exception as error:
+            evaluation = {'terminal': False, 'error_type': type(error).__name__}
+        complete = learner_finished and accounting['terminal'] and evaluation['terminal']
         expired = time.time() - self.state['drain_started_at'] >= 2400
         self.telemetry('drain_status', learner_finished=learner_finished,
-            latest_checkpoint=checkpoint, actors=accounting,
+            latest_checkpoint=checkpoint, actors=accounting, evaluation=evaluation,
             drain_complete=complete, drain_timeout=expired,
             learner_stop_pending=self.state.get('learner_stop_pending', True))
         save(self.work / 'drain-status.json', {'at': time.time(),
             'learner_finished': learner_finished, 'latest_checkpoint': checkpoint,
-            'actors': accounting, 'drain_complete': complete, 'drain_timeout': expired,
+            'actors': accounting, 'evaluation': evaluation, 'drain_complete': complete, 'drain_timeout': expired,
             'learner_stop_pending': self.state.get('learner_stop_pending', True)})
         return complete or expired
 
