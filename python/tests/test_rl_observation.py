@@ -4,6 +4,7 @@ import subprocess
 import sys
 
 import pytest
+
 from stpd.evaluation.rl_observation import compare, load_cohort, write_report
 
 
@@ -175,3 +176,11 @@ def test_terminal_witness_does_not_upgrade_unresolved_ledger(tmp_path):
     assert cohort['planned'] == 1 and cohort['status_counts'] == {'save_failed': 1}
     assert cohort['floor_n'] == cohort['losses'] == 0
     assert cohort['loss_floor_counts'] == {}
+
+
+def test_unbound_detail_cannot_attach_to_unstarted_slot(tmp_path):
+    details = tmp_path / 'details.json'
+    details.write_text(json.dumps({'rows': [{'trajectory': {'outcome': {
+        'boss_clearance': {'count': 1, 'cleared_acts': [1]}}}}]}))
+    with pytest.raises(ValueError, match='detail_run_id_required'):
+        load_cohort(saved(tmp_path, status='not_started'), details=details)

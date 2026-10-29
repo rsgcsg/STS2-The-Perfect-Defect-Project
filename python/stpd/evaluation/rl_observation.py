@@ -74,9 +74,11 @@ def load_cohort(path: Path, selection: str | None = None, *,
                 continue
             if 'steps' in r and 'identity' in r:
                 r = trajectory_details(r)
-            if r.get('run_id') in records:
+            if not isinstance(r.get('run_id'), str) or not r['run_id']:
+                raise ValueError('detail_run_id_required')
+            if r['run_id'] in records:
                 raise ValueError('duplicate_detail_run')
-            records[r.get('run_id')] = r
+            records[r['run_id']] = r
     rows = []
     protocols: dict[str, Any] = {}
     for slot in slots:
