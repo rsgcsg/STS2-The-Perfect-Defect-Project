@@ -122,6 +122,7 @@ class Watcher:
             raise ValueError('watch_resume_configuration_changed')
         self.direct: subprocess.Popen | None = None
         self.signalled = False
+        self.maintenance_requested = False
 
     def persist(self):
         save(self.state_path, self.state)
@@ -257,6 +258,30 @@ class Watcher:
         elif self.direct is not None and self.direct.poll() is not None:
             self.publish('attention', reason='evaluation_process_exited_without_result', pending=pending)
 
+    def actor_health(self) -> dict[str, Any]:
+        """Scheduler facts distinguish a healthy learner from lost actor capacity."""
+        accounting = job_accounting(str(self.config['actor_job_id']))
+        expected = len(json.loads(Path(self.config['actor_plan']).read_bytes())['actors'])
+        rows = accounting['rows']
+        running = sum(row['state'] == 'RUNNING' for row in rows)
+        failed = [row for row in rows if row['state'] in TERMINAL
+                  and (row['state'] != 'COMPLETED' or row['exit_code'] != '0:0')]
+        # COMPLETED can also contain a ledger stop; require the owner's result below.
+        stopped = []
+        for result in (Path(self.config['actor_plan']).parent / 'actors').glob('*/result.json'):
+            value = json.loads(result.read_bytes())
+            summary = value.get('original_summary') or {}
+            if str(summary.get('status', '')).startswith('stopped_ledger:'):
+                stopped.append({'actor': value['actor'], 'status': summary['status']})
+        health = {**accounting, 'expected': expected, 'running': running,
+                  'failed': failed, 'stopped_ledgers': stopped}
+        signature = json.dumps({'failed': failed, 'stopped_ledgers': stopped,
+                                'missing': not rows}, sort_keys=True)
+        if (failed or stopped or not rows) and self.state.get('actor_attention') != signature:
+            self.publish('attention', reason='actor_capacity_requires_owner_read', actors=health)
+            self.state['actor_attention'] = signature
+        return health
+
     def tick(self, now: float | None = None):
         now = time.time() if now is None else now
         for key in self.exchange.shard_keys():
@@ -266,11 +291,17 @@ class Watcher:
         event = self.exchange.latest_event()
         model = self.exchange.latest_model()
         self.collect_evaluation()
+        try:
+            actors = self.actor_health()
+        except Exception as error:  # noqa: BLE001 -- telemetry failure must not suppress stop rules
+            actors = {'observation': 'unavailable', 'error_type': type(error).__name__}
+            self.telemetry('attention', reason='actor_accounting_unavailable', **actors)
         reason = ('watcher_signal' if self.signalled else
                   stop_reason(now, self.config, games, event, self.state['evaluations']))
         if self.state['stop'] or reason:
             self.stop(self.state['stop'] or reason)
-        elif self.state['pending'] is None and model is not None:
+        elif (not self.maintenance_requested and self.state['pending'] is None
+              and model is not None):
             winner = next((row for row in self.state['evaluations'] if row['complete']
                            and row.get('evaluation_kind', 'fixed20') == 'fixed20'
                            and row['wins'] > 0), None)
@@ -298,7 +329,7 @@ class Watcher:
         counts = (event or {}).get('counts', {})
         stale = counts.get('samples_dropped_stale', 0)
         samples = counts.get('rl_samples', 0)
-        status = self.publish('status', version=(model or {}).get('version'),
+        status = self.publish('status', version=(model or {}).get('version'), actors=actors,
             learner_event_age_seconds=event_age,
             learner_wait_data_fraction=(event or {}).get('timing', {}).get('fractions', {}).get('wait_for_data'),
             stale_sample_discard_fraction=stale / samples if samples else None,
@@ -369,6 +400,7 @@ class Watcher:
             raise ValueError('Friday_Slurm_watcher_required')
         for number in (signal.SIGUSR1, signal.SIGTERM, signal.SIGINT):
             signal.signal(number, lambda *_: setattr(self, 'signalled', True))
+        signal.signal(signal.SIGUSR2, lambda *_: setattr(self, 'maintenance_requested', True))
         self.telemetry('watcher_started', config_sha256=self.state['config_sha256'],
                        job_id=os.environ['SLURM_JOB_ID'])
         while True:
@@ -383,6 +415,10 @@ class Watcher:
                     self.stop(self.state['stop'] or ('watcher_signal' if self.signalled
                                                     else 'first_round_wall_limit'))
             if self.state['stop'] and self.drain():
+                return
+            if self.maintenance_requested and not self.state['stop'] and self.state['pending'] is None:
+                self.persist()
+                self.telemetry('watcher_maintenance_exit', actors_and_learner_stopped=False)
                 return
             interval = self.config.get('poll_seconds', 900)
             if self.state['stop']:

@@ -19,6 +19,7 @@ import os
 import re
 import resource
 import signal
+import sys
 import threading
 import time
 from pathlib import Path
@@ -26,6 +27,7 @@ from typing import Any
 
 from spireagent.json_boundary import BoundaryError, json_bytes
 from spireagent.rl_exchange import Exchange
+from spireagent.storage.blobs import StoreError
 
 CONFIG_SCHEMA = "spireagent/rl-actor-config-1"
 SEED_GAME_VERSION = "v0.111.0"
@@ -56,16 +58,21 @@ class ModelPrefetch:
         self.exchange, self.cache, self.poll_seconds = exchange, cache, poll_seconds
         self.ready: dict[int, tuple[dict[str, Any], Path]] = {}
         self.fetch_seconds: list[float] = []
-        self.error: str | None = None
+        self.error: dict[str, Any] | None = None
+        self.failures = 0
+        self.operation = "latest_model"
+        self.events: list[dict[str, Any]] = []
         self.stopping = threading.Event()
         self.lock = threading.Lock()
         self.thread = threading.Thread(target=self._loop, name="rl-model-prefetch", daemon=True)
 
     def start(self) -> None:
-        self.refresh()
-        self.thread.start()
+        self._refresh_once()
+        if self.error is None:
+            self.thread.start()
 
     def refresh(self) -> None:
+        self.operation = "latest_model"
         latest = self.exchange.latest_model()
         if latest is None:
             return
@@ -73,22 +80,49 @@ class ModelPrefetch:
             if latest["version"] in self.ready:
                 return
         began = time.monotonic()
+        self.operation = "materialize_model"
         path = self.exchange.materialize_model(latest, self.cache)
         with self.lock:
             self.ready[latest["version"]] = (latest, path)
             self.fetch_seconds.append(time.monotonic() - began)
 
+    def _event(self, kind: str, **fields: Any) -> None:
+        # Classified codes only: raw SDK exception text can contain credentials/URLs.
+        event = {"kind": kind, "at": time.time(), **fields}
+        self.events.append(event)
+        print(json.dumps({"stage": "rl_model_prefetch", **event}), file=sys.stderr, flush=True)
+
+    def _refresh_once(self) -> None:
+        try:
+            self.refresh()
+        except Exception as error:  # noqa: BLE001 -- every failure is recorded and bounded
+            self.failures += 1
+            transient = (isinstance(error, StoreError)
+                         and error.code in {"s3_get_failed", "s3_list_failed",
+                                            "s3_stream_read_failed"})
+            failure = {"operation": self.operation, "error_type": type(error).__name__,
+                       "error_code": error.code if isinstance(error, BoundaryError) else None,
+                       "errno": error.errno if isinstance(error, OSError) else None,
+                       "consecutive_failures": self.failures}
+            self._event("read_failed", **failure,
+                        retry=transient and self.failures < 3)
+            if not transient or self.failures >= 3:
+                self.error = failure
+        else:
+            if self.failures:
+                self._event("read_recovered", consecutive_failures=self.failures)
+            self.failures = 0
+
     def _loop(self) -> None:
         while not self.stopping.wait(self.poll_seconds):
-            try:
-                self.refresh()
-            except Exception as error:  # noqa: BLE001 -- surfaced to the owner, never retried silently
-                self.error = type(error).__name__
+            self._refresh_once()
+            if self.error is not None:
                 return
 
     def newest(self) -> tuple[dict[str, Any], Path] | None:
         if self.error:
-            reject("model_prefetch_failed")
+            raise BoundaryError("rl_actor", "model_prefetch_failed",
+                                json.dumps(self.error, sort_keys=True)) from None
         with self.lock:
             return self.ready[max(self.ready)] if self.ready else None
 
@@ -259,7 +293,8 @@ class Actor:
                    "wall_seconds": time.monotonic() - began, "counts": dict(self.counts),
                    "cpu_seconds": _cpu_seconds() - cpu_began,
                    "timing": dict(self.timing),
-                   "model_fetch_seconds": self.prefetch.fetch_seconds, "games": self.games}
+                   "model_fetch_seconds": self.prefetch.fetch_seconds,
+                   "model_prefetch_events": self.prefetch.events, "games": self.games}
         (self.work / "actor-summary.json").write_bytes(json_bytes(summary))
         return summary
 

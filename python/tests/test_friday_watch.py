@@ -395,6 +395,8 @@ def test_winning_fixed20_schedules_one_forty_seed_confirmation_without_shifting_
     instance.persist = lambda: None
     instance.publish = lambda kind, **fields: {"kind": kind, **fields}
     instance.signalled = False
+    instance.maintenance_requested = False
+    instance.actor_health = lambda: {'running': 12}
     prepared = []
     instance.prepare_evaluation = lambda model, now, **kwargs: prepared.append((model, now, kwargs))
     instance.tick(1000)
@@ -463,3 +465,64 @@ def test_confirmation_real_prepare_freezes_original_prefix40_and_three_hour_dire
     assert plan["source_root"] == str(runtime)
     assert instance.state["last_evaluation_at"] == 100
     assert Path(plan["manifest"]["path"]).read_bytes() == manifest.read_bytes()
+
+
+
+def test_actor_health_reports_lost_capacity_once_and_keeps_original_stops(watch, tmp_path):
+    from spireagent.rl_exchange import Exchange
+
+    plan = tmp_path / "actors/plan.json"
+    plan.parent.mkdir()
+    plan.write_text(json.dumps({"actors": [{"actor": "a"}, {"actor": "b"}]}))
+    result = plan.parent / "actors/b/result.json"
+    result.parent.mkdir(parents=True)
+    result.write_text(json.dumps({"actor": "b", "original_summary": {
+        "status": "stopped_ledger:unknown_cleanup_requires_owner_read"}}))
+    peer = {"kind": "local", "directory": str(tmp_path / "peer")}
+    instance = watch.Watcher({"peer": peer, "run": "health", "started_at": 100,
+                              "actor_plan": str(plan), "actor_job_id": "123"},
+                             tmp_path / "watch")
+    rows = [{"job_id": "123_0", "state": "RUNNING", "exit_code": "0:0"},
+            {"job_id": "123_1", "state": "FAILED", "exit_code": "1:0"}]
+    with patch.object(watch, "job_accounting", return_value={"rows": rows, "terminal": False}):
+        health = instance.actor_health()
+        instance.actor_health()
+    assert health["running"] == 1 and health["expected"] == 2
+    assert health["failed"] == rows[1:]
+    assert health["stopped_ledgers"][0]["status"].endswith("unknown_cleanup_requires_owner_read")
+    exchange = Exchange(peer, "health")
+    records = exchange.blobs.keys(exchange.prefix + "status/")
+    assert len(records) == 1
+    event = json.loads(exchange.blobs.get(records[0]))
+    assert event["reason"] == "actor_capacity_requires_owner_read"
+    assert result.exists() and exchange.stop_request() is None
+
+
+def test_watcher_maintenance_exits_without_stopping_training_or_actors(
+        watch, tmp_path, monkeypatch):
+    import signal
+    import time
+
+    from spireagent.rl_exchange import Exchange
+
+    peer = {"kind": "local", "directory": str(tmp_path / "peer")}
+    plan = tmp_path / "actors/plan.json"
+    plan.parent.mkdir()
+    plan.write_text(json.dumps({"actors": [{"actor": "a"}]}))
+    config = {"peer": peer, "run": "maintenance", "started_at": time.time(),
+              "wall_seconds": 72000, "actor_plan": str(plan), "actor_job_id": "123",
+              "evaluation_mode": "direct"}
+    instance = watch.Watcher(config, tmp_path / "watch")
+    instance.maintenance_requested = True
+    monkeypatch.setattr(watch.sys, "platform", "linux")
+    monkeypatch.setenv("SLURM_JOB_ID", "456")
+    monkeypatch.setattr(signal, "signal", lambda *_: None)
+    monkeypatch.setattr(watch, "job_accounting", lambda _: {"rows": [
+        {"job_id": "123_0", "state": "RUNNING", "exit_code": "0:0"}], "terminal": False})
+    instance.run()
+    exchange = Exchange(peer, "maintenance")
+    assert exchange.stop_request() is None and not (plan.parent / "STOP").exists()
+    rows = [json.loads(exchange.blobs.get(key))
+            for key in exchange.blobs.keys(exchange.prefix + "status/")]
+    assert any(row["kind"] == "watcher_maintenance_exit" for row in rows)
+    assert not instance.state["stop"]
