@@ -106,12 +106,19 @@ def load_cohort(path: Path, selection: str | None = None, *,
             if key in protocols and protocols[key] != value:
                 raise ValueError('mixed_protocol_details')
             protocols[key] = value
-        if outcome.get('max_observed_floor', slot.get('max_observed_floor')) != (
-                slot.get('max_observed_floor')):
-            raise ValueError('detail_floor_mismatch')
         floor = slot.get('max_observed_floor')
         if floor is not None and (type(floor) is not int or floor < 0):
             raise ValueError('nonnegative_integer_floor_required')
+        lower_bound = floor
+        detail_floor = outcome.get('max_observed_floor', floor)
+        if detail_floor is not None and (type(detail_floor) is not int or detail_floor < 0):
+            raise ValueError('nonnegative_integer_floor_required')
+        if detail_floor != floor:
+            if (slot['status'] not in {'unknown', 'censored', 'save_failed'} or
+                    detail_floor is None or floor is not None and detail_floor < floor):
+                raise ValueError('detail_floor_mismatch')
+            # A verified unresolved prefix adds observations, never a scored endpoint.
+            lower_bound = detail_floor
         scored = (ledger.get('score_admitted') is True and slot['status'] == 'finished'
                   and slot.get('score_eligible', True) is True
                   and slot.get('natural_result') in {'win', 'loss'})
@@ -122,21 +129,22 @@ def load_cohort(path: Path, selection: str | None = None, *,
         # A scene's presence is public evidence; floor17 by itself is not Boss identity.
         reached = {act: any(o.get('act') == act and
                     (o.get('context') or {}).get('encounter_type') == 'boss' for o in combats)
-                   for act in (1, 2)}
+                   for act in (1, 2, 3)}
         final_combat = combats[-1] if combats else {}
         context = final_combat.get('context') or {}
         terminal_public: dict[str, Any] = r.get('terminal_public') or next(
             (o for o in reversed(observations) if o.get('kind') == 'game_over'), {})
         terminal_floor = terminal_public.get('floor')
         if terminal_floor is not None and (type(terminal_floor) is not int or terminal_floor < 0
-                or floor is not None and terminal_floor > floor):
+                or lower_bound is not None and terminal_floor > lower_bound):
             raise ValueError('detail_terminal_floor_mismatch')
         if (terminal_public.get('result') is not None and slot.get('natural_result') is not None
                 and terminal_public['result'] != slot['natural_result']):
             raise ValueError('detail_terminal_result_mismatch')
         rows.append({'seed': slot['seed'], 'run_id': slot.get('run_id'),
             'status': slot['status'], 'result': slot.get('natural_result'), 'scored': scored,
-            'floor': floor, 'elapsed_seconds': slot.get('elapsed_seconds'),
+            'floor': floor, 'observed_floor_lower_bound': lower_bound,
+            'elapsed_seconds': slot.get('elapsed_seconds'),
             'death_floor': terminal_public.get('floor')
                 if scored and slot.get('natural_result') == 'loss' else None,
             'boss_cleared_acts': boss.get('cleared_acts', []), 'boss_count': boss.get('count'),
@@ -166,10 +174,70 @@ def load_cohort(path: Path, selection: str | None = None, *,
         'death_floor_observed_n': sum(losses.values()),
         'boss1_reached_witnessed': sum(1 in r['boss_reached_acts'] for r in rows),
         'boss2_reached_witnessed': sum(2 in r['boss_reached_acts'] for r in rows),
+        'boss3_reached_witnessed': sum(3 in r['boss_reached_acts'] for r in rows),
+        'boss2_cleared_witnessed': sum(2 in r['boss_cleared_acts'] for r in rows),
+        'boss3_cleared_witnessed': sum(3 in r['boss_cleared_acts'] for r in rows),
         'boss1_cleared_witnessed': sum(1 in r['boss_cleared_acts'] for r in rows),
         'boss_count_missing': sum(r['boss_count'] is None for r in rows),
         'boss_reach_unobserved': sum(not r['boss_reached_acts'] for r in rows),
         'rows': rows}
+
+
+def progress_summary(
+    rows: list[dict[str, Any]], *, through_floor: int | None = None,
+) -> dict[str, Any]:
+    """One descriptive ruler for already projected model, Human or mixed records.
+
+    Callers retain source qualification and lineage. ``scored`` is supplied by the
+    owning admission path, never inferred here. Human/mixed overlays may use False
+    for every row; observations still contribute positive lower-bound witnesses.
+    ``endpoint_complete=True`` may describe a verified Human endpoint without
+    admitting it as a model score. No missing Boss witness becomes a negative.
+    """
+    planned = len(rows)
+    lower = [r.get('observed_floor_lower_bound', r.get('floor')) for r in rows]
+    if any(x is not None and (type(x) is not int or x < 0) for x in lower):
+        raise ValueError('nonnegative_integer_floor_required')
+    if through_floor is not None and (type(through_floor) is not int or through_floor < 0):
+        raise ValueError('nonnegative_integer_floor_required')
+    reach = []
+    last_floor = max(max((x for x in lower if x is not None), default=0), through_floor or 0)
+    for floor in range(last_floor + 1):
+        witnessed = sum(x is not None and x >= floor for x in lower)
+        # A verified endpoint is separate from model score admission.
+        unresolved = sum((x is None or x < floor) and not (
+            (r.get('endpoint_complete') is True or r.get('scored') and
+             r.get('status') == 'finished') and x is not None)
+            for r, x in zip(rows, lower, strict=True))
+        reach.append({'floor': floor, 'planned': planned, 'witnessed': witnessed,
+            'unresolved': unresolved, 'possible_upper': witnessed + unresolved,
+            'lower_fraction': witnessed / planned if planned else None,
+            'upper_fraction': (witnessed + unresolved) / planned if planned else None})
+    bosses = []
+    for act in (1, 2, 3):
+        reached = sum(act in r.get('boss_reached_acts', []) for r in rows)
+        cleared = sum(act in r.get('boss_cleared_acts', []) for r in rows)
+        natural_reached = sum(act in r.get('boss_reached_acts', []) and
+                              bool(r.get('scored')) for r in rows)
+        natural_cleared = sum(act in r.get('boss_cleared_acts', []) and
+                              bool(r.get('scored')) for r in rows)
+        bosses.append({'act': act, 'planned': planned, 'reached_witnessed': reached,
+            'cleared_witnessed': cleared, 'scored_reached_witnessed': natural_reached,
+            'scored_cleared_witnessed': natural_cleared,
+            'details_present_n': sum(bool(r.get('details_present')) for r in rows),
+            'clear_without_reach_witness_n': sum(act in r.get('boss_cleared_acts', [])
+                and act not in r.get('boss_reached_acts', []) for r in rows)})
+    # This is an index of terminal-floor combat context, NOT a causal death label.
+    terminal_combats = Counter((r.get('last_combat_type') or 'unobserved')
+        if r.get('last_combat_floor') == r.get('death_floor') and
+           r.get('death_floor') is not None else 'unobserved'
+        for r in rows if r.get('scored') and r.get('result') == 'loss')
+    return {'planned': planned, 'status_counts': dict(Counter(r['status'] for r in rows)),
+        'reach': reach, 'bosses': bosses,
+        'terminal_floor_last_combat_types': dict(terminal_combats),
+        'meaning': 'Observed max-floor progress; bounds are missing-outcome bounds, '
+                   'not confidence intervals. Boss counts are positive witnesses per act/run; '
+                   'absence is not zero. Human/mixed overlays never grant evaluation eligibility.'}
 
 
 def compare(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:
@@ -221,11 +289,16 @@ def compare(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:
         'rows': rows}
 
 
-def write_report(cohorts: dict[str, dict[str, Any]], output: Path) -> dict[str, Any]:
+def write_report(
+    cohorts: dict[str, dict[str, Any]], output: Path, *, through_floor: int | None = None,
+) -> dict[str, Any]:
     comparisons = {name: compare(cohort, cohorts['current'])
                    for name, cohort in cohorts.items() if name != 'current'}
     output.mkdir(parents=True, exist_ok=False)
-    report: dict[str, Any] = {'schema': 'stpd/rl-observation-report-1', 'cohorts': cohorts,
+    progress = {name: progress_summary(c['rows'], through_floor=through_floor)
+                for name, c in cohorts.items()}
+    report: dict[str, Any] = {'progress': progress, 'schema': 'stpd/rl-observation-report-1',
+              'cohorts': cohorts,
               'comparisons': comparisons,
               'non_claims': ['Missing Boss witnesses are not zero clearances.',
                   'A floor threshold is not a Boss encounter.',
@@ -233,7 +306,9 @@ def write_report(cohorts: dict[str, dict[str, Any]], output: Path) -> dict[str, 
     (output / 'report.json').write_text(json.dumps(report, indent=2) + '\n', encoding='utf-8')
     with (output / 'seeds.csv').open('w', newline='', encoding='utf-8') as file:
         columns = ['cohort', 'seed', 'run_id', 'status', 'result', 'scored', 'floor',
-                   'death_floor', 'last_combat_floor', 'last_combat_act', 'last_combat',
+                   'observed_floor_lower_bound', 'death_floor',
+                   'boss_reached_acts', 'boss_cleared_acts',
+                   'last_combat_floor', 'last_combat_act', 'last_combat',
                    'last_combat_type', 'last_combat_enemies', 'boss_count']
         writer = csv.DictWriter(file, fieldnames=columns)
         writer.writeheader()
@@ -246,7 +321,15 @@ def write_report(cohorts: dict[str, dict[str, Any]], output: Path) -> dict[str, 
         writer.writeheader()
         for name, c in comparisons.items():
             writer.writerows({'reference': name, **r} for r in c['rows'])
-    svg = distribution_svg(cohorts)
+    for filename, key in (('reach.csv', 'reach'), ('bosses.csv', 'bosses')):
+        records = [{'cohort': name, **row} for name, summary in progress.items()
+                   for row in summary[key]]
+        if records:
+            with (output / filename).open('w', newline='', encoding='utf-8') as file:
+                writer = csv.DictWriter(file, fieldnames=list(records[0]))
+                writer.writeheader()
+                writer.writerows(records)
+    svg = distribution_svg(cohorts, through_floor=through_floor)
     (output / 'distribution.svg').write_text(svg, encoding='utf-8')
     lines = ['# Saved fixed-seed evaluation', '',
              '| Cohort | Planned | Scored floors | Win / loss | Mean | Median | Max |',
@@ -255,6 +338,9 @@ def write_report(cohorts: dict[str, dict[str, Any]], output: Path) -> dict[str, 
         lines.append(f"| {name} | {c['planned']} | {c['floor_n']} | {c['wins']} / {c['losses']} | "
                      f"{c['mean_floor']} | {c['median_floor']} | {c['max_floor']} |")
     lines += ['', '![Loss histogram and observed reach](distribution.svg)', '',
+        'bosses.csv counts positive witnesses for all three acts and the scored subset.',
+        'reach.csv gives lower/possible upper bounds, retaining every planned slot.',
+        'Terminal-floor last combat is context, not a proven cause of death.',
         'Boss metrics retain missing witnesses; seeds.csv retains missing combat IDs.',
         'Observed reach is the count with max floor >= x, not proof of visiting every floor.',
         'Verify exact producer/game/seed/selection protocol before interpreting changes.', '']
@@ -262,31 +348,36 @@ def write_report(cohorts: dict[str, dict[str, Any]], output: Path) -> dict[str, 
     return report
 
 
-def distribution_svg(cohorts: dict[str, dict[str, Any]]) -> str:
+def distribution_svg(
+    cohorts: dict[str, dict[str, Any]], *, through_floor: int | None = None,
+) -> str:
     colors = ['#386cb0', '#f28e2b', '#59a14f']
-    max_floor = max((r['floor'] or 0 for c in cohorts.values() for r in c['rows']), default=1)
-    max_floor = max(max_floor, 1)
-    max_count = max(c['planned'] for c in cohorts.values())
+    max_floor = max((r.get('observed_floor_lower_bound', r['floor']) or 0
+                     for c in cohorts.values() for r in c['rows']), default=1)
+    max_floor = max(max_floor, through_floor or 0, 1)
+    max_count = 100
     width, height = 1100, 690
     parts = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" '
-             f'viewBox="0 0 {width} {height}">', '<rect width="100%" height="100%" fill="white"/>',
+             f'viewBox="0 0 {width} {height}">',
+             f'<rect width="{width}" height="{height}" fill="white"/>',
              '<g font-family="sans-serif" font-size="14" fill="#222">',
-             '<text x="55" y="28" font-size="21">Saved evaluation: '
+             '<text x="55" y="28" font-size="21">Saved observations: '
              'losses and observed reach</text>']
     for i, (name, c) in enumerate(cohorts.items()):
         color = colors[i % len(colors)]
         parts.append(f'<text x="{55+i*340}" y="57" fill="{color}">'
                      f'{html.escape(name)} / {html.escape(c["selection"])}: '
-                     f'n={c["planned"]}, scored={c["floor_n"]}, '
+                     f'n={c["planned"]}, floor n={c["floor_n"]}, '
                      f'death floor={c["death_floor_observed_n"]}</text>')
-    for panel, title in enumerate(('Natural losses per terminal floor',
-                                  'Observed max floor >= x (incomplete = lower bound)')):
+    titles = ('Natural losses per terminal floor (% of all planned)',
+              'Observed max floor >= x (% of all planned; incomplete = lower bound)')
+    for panel, title in enumerate(titles):
         top, bottom = 100 + panel * 280, 320 + panel * 280
         parts.append(f'<text x="55" y="{top-12}">{title.replace(">", "&gt;")}</text>')
         for count in range(0, max_count+1, max(1, max_count//5)):
             y = bottom - count / max_count * 210
             parts += [f'<path d="M55 {y} H1070" stroke="#ddd"/>',
-                      f'<text x="20" y="{y+5}">{count}</text>']
+                      f'<text x="12" y="{y+5}">{count}%</text>']
         step = 1000 / (max_floor + 1)
         for floor in range(max_floor + 1):
             x = 55 + floor * step
@@ -295,17 +386,26 @@ def distribution_svg(cohorts: dict[str, dict[str, Any]]) -> str:
         for i, (_name, c) in enumerate(cohorts.items()):
             color = colors[i % len(colors)]
             points = []
+            upper_points = []
+            reach_rows = progress_summary(c['rows'], through_floor=max_floor)['reach']
             for floor in range(max_floor + 1):
                 x = 55 + floor * step
                 count = (c['loss_floor_counts'].get(floor, 0) if panel == 0 else
-                         sum(r['floor'] is not None and r['floor'] >= floor for r in c['rows']))
+                         sum(r.get('observed_floor_lower_bound', r['floor']) is not None and
+                             r.get('observed_floor_lower_bound', r['floor']) >= floor
+                             for r in c['rows']))
+                count = count / c['planned'] * 100 if c['planned'] else 0
                 y = bottom - count / max_count * 210
                 if panel == 0 and count:
                     bar = step / (len(cohorts)+1)
                     parts.append(f'<rect x="{x+i*bar}" y="{y}" width="{bar}" '
                                  f'height="{bottom-y}" fill="{color}"/>')
                 points.append(f'{x},{y}')
+                upper = reach_rows[floor]['upper_fraction']
+                upper_points.append(f'{x},{bottom - (upper or 0) * 210}')
             if panel == 1:
+                polygon = ' '.join(points + list(reversed(upper_points)))
+                parts.append(f'<polygon points="{polygon}" fill="{color}" opacity="0.10"/>')
                 parts.append(f'<polyline points="{" ".join(points)}" fill="none" '
                              f'stroke="{color}" stroke-width="3"/>')
     parts += ['<text x="55" y="665">Unknown / censored / unstarted remain in JSON and CSV; '
@@ -321,11 +421,12 @@ def main() -> None:
         parser.add_argument('--' + name + '-details', type=Path)
         parser.add_argument('--' + name + '-detail-cohort')
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--through-floor', type=int, help='Extend observed progress axis, e.g. 49')
     args = vars(parser.parse_args())
     cohorts = {name: load_cohort(args[name], args[name + '_selection'],
         details=args[name + '_details'], detail_cohort=args[name + '_detail_cohort'])
         for name in ('baseline', 'previous', 'current') if args[name] is not None}
-    write_report(cohorts, args['output'])
+    write_report(cohorts, args['output'], through_floor=args['through_floor'])
 
 
 if __name__ == '__main__':

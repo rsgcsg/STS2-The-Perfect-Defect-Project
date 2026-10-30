@@ -184,3 +184,106 @@ def test_unbound_detail_cannot_attach_to_unstarted_slot(tmp_path):
         'boss_clearance': {'count': 1, 'cleared_acts': [1]}}}}]}))
     with pytest.raises(ValueError, match='detail_run_id_required'):
         load_cohort(saved(tmp_path, status='not_started'), details=details)
+
+
+def test_third_act_witness_is_not_a_win_or_an_inferred_reach(tmp_path):
+    details = tmp_path / 'act3.json'
+    details.write_text(json.dumps({'rows': [{'run_id': 'run-a', 'observations': [{
+        'kind': 'combat_turn', 'act': 3, 'floor': 49,
+        'context': {'encounter_type': 'boss', 'enemies': ['BOSS_B']}}],
+        'trajectory': {'outcome': {'boss_clearance': {'cleared_acts': [3], 'count': 1}}}}]}))
+    cohort = load_cohort(saved(tmp_path, floor=49), details=details)
+    assert cohort['boss3_reached_witnessed'] == cohort['boss3_cleared_witnessed'] == 1
+    assert cohort['boss2_cleared_witnessed'] == cohort['wins'] == 0
+    from stpd.evaluation.rl_observation import progress_summary
+
+    summary = progress_summary(cohort['rows'])
+    assert summary['bosses'][2]['reached_witnessed'] == 1
+    assert summary['bosses'][2]['scored_cleared_witnessed'] == 1
+    assert summary['terminal_floor_last_combat_types'] == {'unobserved': 1}
+
+
+def test_progress_bounds_keep_unknown_prefix_and_full_planned_denominator(tmp_path):
+    from stpd.evaluation.rl_observation import progress_summary
+
+    natural = load_cohort(saved(tmp_path, floor=8))['rows'][0]
+    unknown = {**natural, 'scored': False, 'status': 'unknown', 'floor': None,
+               'observed_floor_lower_bound': 23, 'boss_reached_acts': [1],
+               'boss_cleared_acts': [1]}
+    unstarted = {**natural, 'scored': False, 'status': 'not_started', 'floor': None}
+    summary = progress_summary([natural, unknown, unstarted], through_floor=49)
+    assert summary['reach'][9]['witnessed'] == 1
+    assert summary['reach'][9]['possible_upper'] == 2
+    assert summary['reach'][24]['witnessed'] == 0
+    assert summary['reach'][24]['possible_upper'] == 2
+    assert summary['bosses'][0]['cleared_witnessed'] == 1
+    assert summary['bosses'][0]['scored_cleared_witnessed'] == 0
+    # Mixed/Human input can contribute observations without becoming evaluated.
+    unknown['status'] = 'mixed'
+    assert progress_summary([unknown])['bosses'][0]['scored_cleared_witnessed'] == 0
+
+
+def test_report_exports_all_acts_and_reach_bounds_without_overwriting(tmp_path):
+    cohort = load_cohort(saved(tmp_path))
+    output = tmp_path / 'ruler'
+    report = write_report({'current': cohort}, output, through_floor=49)
+    assert len(report['progress']['current']['bosses']) == 3
+    assert len(report['progress']['current']['reach']) == 50
+    assert 'possible_upper' in (output / 'reach.csv').read_text()
+    assert 'clear_without_reach_witness_n' in (output / 'bosses.csv').read_text()
+    assert '% of all planned' in (output / 'distribution.svg').read_text()
+
+
+def test_verified_human_endpoint_bounds_do_not_admit_model_scores():
+    from stpd.evaluation.rl_observation import progress_summary
+
+    row = {'status': 'finished', 'scored': False, 'floor': 8,
+           'endpoint_complete': True, 'result': 'loss', 'boss_reached_acts': [1]}
+    result = progress_summary([row], through_floor=49)
+    assert result['reach'][9]['possible_upper'] == 0
+    assert result['bosses'][0]['reached_witnessed'] == 1
+    assert result['bosses'][0]['scored_reached_witnessed'] == 0
+
+
+@pytest.mark.parametrize('status', ['unknown', 'censored', 'save_failed'])
+def test_verified_unresolved_prefix_extends_lower_bound_not_ledger_endpoint(tmp_path, status):
+    from stpd.evaluation.rl_observation import progress_summary
+
+    source = saved(tmp_path, status=status, floor=None, result=None)
+    details = tmp_path / 'prefix.json'
+    details.write_text(json.dumps({'rows': [{'run_id': 'run-a', 'seed': 'a',
+        'trajectory': {'outcome': {'max_observed_floor': 23,
+            'boss_clearance': {'cleared_acts': [1], 'count': 1}}},
+        'observations': [{'kind': 'combat_turn', 'act': 1,
+                          'context': {'encounter_type': 'boss'}}]}]}))
+    cohort = load_cohort(source, details=details)
+    row = cohort['rows'][0]
+    assert row['floor'] is None and row['observed_floor_lower_bound'] == 23
+    assert row['scored'] is False and row['death_floor'] is None
+    assert cohort['floor_n'] == cohort['wins'] == cohort['losses'] == 0
+    assert progress_summary(cohort['rows'])['reach'][23]['witnessed'] == 1
+    output = tmp_path / 'prefix-report'
+    write_report({'current': cohort}, output, through_floor=49)
+    assert '23' in (output / 'seeds.csv').read_text()
+    # A conflicting natural endpoint, or a prefix below the ledger observation,
+    # remains an error rather than a way to change the original result.
+    with pytest.raises(ValueError, match='detail_floor_mismatch'):
+        load_cohort(saved(tmp_path, floor=17), details=details)
+    with pytest.raises(ValueError, match='detail_floor_mismatch'):
+        load_cohort(saved(tmp_path, status=status, floor=30, result=None), details=details)
+
+
+def test_save_failed_terminal_witness_uses_prefix_bound_without_score_upgrade(tmp_path):
+    details = tmp_path / 'saved-terminal-prefix.json'
+    details.write_text(json.dumps({'rows': [{'run_id': 'run-a',
+        'terminal_public': {'floor': 12, 'result': 'loss'},
+        'trajectory': {'outcome': {'max_observed_floor': 12}}}]}))
+    cohort = load_cohort(saved(tmp_path, status='save_failed', floor=8, result=None),
+                         details=details)
+    row = cohort['rows'][0]
+    assert row['floor'] == 8 and row['observed_floor_lower_bound'] == 12
+    assert row['scored'] is False and row['death_floor'] is None
+    assert cohort['floor_n'] == cohort['losses'] == 0
+    details.write_text(details.read_text().replace('"floor": 12', '"floor": 13'))
+    with pytest.raises(ValueError, match='detail_terminal_floor_mismatch'):
+        load_cohort(saved(tmp_path, status='save_failed', floor=8, result=None), details=details)

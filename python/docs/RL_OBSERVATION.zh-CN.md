@@ -34,8 +34,11 @@ uv run --project python --locked python -m stpd.evaluation.rl_observation \
 
 首次评估没有上一轮就不传 `--previous`，不复制起点冒充上一轮。
 目录必须新建；重做报告写新目录，不覆盖历史。
-产物为 `report.json`、`seeds.csv`、`paired.csv`、`distribution.svg` 与说明页。
-图分自然死亡终局层数和 `max_observed_floor >= x` 的累计观测数量。
+产物为 `report.json`、`seeds.csv`、`paired.csv`、`distribution.svg`、`reach.csv`、
+`bosses.csv` 与说明页。可加 `--through-floor 49` 展开完整楼层横轴。
+图分自然死亡终局层数和 `max_observed_floor >= x` 的累计观测比例，
+都以完整计划槽为分母（图例同时给实际n）。浅色带表示未决结局可能增加的范围，
+不是置信区间；`reach.csv` 保留见证数、未决数及上下界。
 后者不是“确实访问每一层”；未知/截断仍在分母，曲线只是已观测下界。
 图例附 death-floor 的有据数量，没有终局细节时不以最高层冒充死亡层。
 
@@ -46,15 +49,44 @@ uv run --project python --locked python -m stpd.evaluation.rl_observation \
 复用原 validator 后投影。混合分析文件用 `--NAME-detail-cohort baseline|current`筛选。
 按 run_id 联接并核已有seed/floor；不按文件顺序配对。
 细节必须来自相同、已验证原件；摘要的哈希只绑定输入，不代替原件完整性校验。
+未决槽可附原已验证前缀：额外见到的最高层只记入
+`observed_floor_lower_bound`，原账本floor/result/status与计分资格保持不变。
+前缀不得低于账本已有观测，完整自然终点冲突仍拒绝；保存失败即使有终局
+公开见证也不因此获得成绩。
 
 Boss 到达只数公开 combat.encounter_type 的 Boss 正见证；击败只数原 trajectory
 `boss_clearance` 的正见证。无见证不等于证实未到达或击败0次。
+`bosses.csv` 对三幕分别列全槽正见证、可计分子集正见证、细节可用数及
+“有通过但缺到达见证”的数量，不把缺失补成0。每幕每局去重一次；A10
+第三幕通过一个Boss不等于清幕，双Boss遭遇保留原始见证，通关只认可靠win。
 每种子保留最高层、死亡层、最后一场已观测战斗与缺失标记。
 最高层17不自动成为“第一幕Boss”；最后一场战斗也不自动成为死亡原因。
 游戏unknown、任务operation_end.censored和证据保存失败不得混为同一个数字。
+自然死亡终局同层的最后战斗类型只作上下文索引；缺少直接死因证据时，
+不能认定最后战斗就是死亡原因。
 
 吞吐与首次使用的计量复用[链路计速](RL_MEASUREMENT.zh-CN.md)；
 `trajectory.step_count` 包含单候选强制行，不能直接叫游戏决策数。
+
+## 人类、RL轨迹与混合接手使用同一尺子
+
+纯模型评估沿上面CLI；已保存RL轨迹可作details，训练温采与固定argmax
+各自成cohort，不合并为强度成绩。人类/混合数据的既有reader可调用
+`progress_summary(rows, through_floor=49)` 与 `distribution_svg(cohorts)`，
+只适配读出的事实，不再定义第二套统计或新原件格式。
+
+每行保留 `status`、`floor`（公开最高层，缺则None）、可选的
+`observed_floor_lower_bound`、`boss_reached_acts`、`boss_cleared_acts`、
+`details_present` 及原source/root/run/seed身份。自然死亡层只有见证才填
+`death_floor`；最后战斗沿原同名字段。上游负责去重、来源、哈希及观察完整性。
+`scored` 只能沿原评估准入决定；人类/混合行一律False。已验证的完整自然
+人类终点可显式给 `endpoint_complete=True`，只收紧进度未知上界，不授模型成绩。
+结果未知的前缀不给完整终点。Boss缺失不作负证据。
+
+人类、A0/A10和混合来源分别画线、列分母；`distribution_svg` 可直接画描述性
+叠图，不能把它们交给要求同Host/难度/seed的 `compare` 冒充配对效果。
+`write_report` 的模型比较协议门保持不变。接手局始终不算评估；接手片段
+能否训练由用户定，报告函数不改变H1隔离与数据用途。
 
 ## 配对比较和解释边界
 
