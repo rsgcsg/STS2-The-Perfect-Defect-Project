@@ -5,6 +5,12 @@ source and scope; refresh its owning status/identity before an operational actio
 CURRENT owns the active task and next step; its linked active plan owns progress.
 Historical execution matrices retain their original observations and obligations.
 
+## 维护同步（2026-10-30）
+
+RL2已收口且不恢复；RL3准备卡A/B已交（PR325、PR328），卡D及统一尺子PR329已合。当前数据D2在原负责人处训练/评估，卡C暂停。MAINT-1只做用户已批的清理、RL2十二路补拷、历史实验登记和Issue对齐，不改变运行配置、数据资格或模型效果结论。
+
+最新主线以[CURRENT](memory/CURRENT.md)为入口；[维护收据](evidence/MAINT_1_20261030.md)列准确证据和未完成项。下节“长跑前”及其更早状态都是原日期的历史，不是今天重启RL2或卡C的授权。
+
 ## 最新可恢复入口（2026-10-29）
 
 RL 长跑前的收口（G2）：10-28 到 10-29 这一批卡都已普通合入 develop，代码固定在 `445b9f98`（PR283 合并），本收口文档 PR 合并后打 `convergence-2026-10-29`。
