@@ -358,7 +358,8 @@ def distribution_svg(
     max_count = 100
     width, height = 1100, 690
     parts = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" '
-             f'viewBox="0 0 {width} {height}">', '<rect width="100%" height="100%" fill="white"/>',
+             f'viewBox="0 0 {width} {height}">',
+             f'<rect width="{width}" height="{height}" fill="white"/>',
              '<g font-family="sans-serif" font-size="14" fill="#222">',
              '<text x="55" y="28" font-size="21">Saved observations: '
              'losses and observed reach</text>']
