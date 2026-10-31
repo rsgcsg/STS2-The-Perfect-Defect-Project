@@ -45,4 +45,21 @@ public sealed class PlatformDeskSelectionTests
         draft.Toggle("not-in-catalog"); Assert.Equal(["a"], draft.Submission()!);
         draft.Update(null, [], true); Assert.Null(draft.Submission()!);
     }
+    [Theory]
+    [InlineData(false, false, false, false, false, false, false)]
+    [InlineData(true, false, false, false, false, false, true)]
+    [InlineData(true, true, true, false, false, false, false)]
+    [InlineData(false, false, true, false, true, true, true)]
+    [InlineData(false, false, true, true, true, true, false)]
+    [InlineData(false, false, true, false, false, true, false)]
+    [InlineData(false, false, true, false, true, false, false)]
+    [InlineData(false, false, false, false, true, true, false)]
+    [InlineData(true, false, true, true, true, true, true)]
+    public void HiddenOrMinimizedListsDoNotRequestCatalogs(bool popoutOpen, bool popoutMinimized,
+        bool mainOpen, bool mainMinimized, bool controlsExpanded, bool choicesExpanded, bool expected)
+    {
+        Assert.Equal(expected, PlatformDeskSelection.ShouldReadChoices(popoutOpen, popoutMinimized,
+            mainOpen, mainMinimized, controlsExpanded, choicesExpanded));
+    }
+
 }

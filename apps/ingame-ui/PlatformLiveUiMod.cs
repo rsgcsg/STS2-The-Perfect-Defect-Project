@@ -53,7 +53,7 @@ public static class PlatformLiveUiMod
                 () =>
                 {
                     _panel = panel;
-                    GD.Print("[STS2 Platform Live UI] panel ready; input=mouse; visible=true; HUD=game-desk");
+                    GD.Print("[STS2 Platform Live UI] panel ready; input=launcher; visible=true; HUD=game-desk");
                     GD.Print("[STS2 Platform Live UI] layer added; game desk ready. Commands map to the paired application.");
                 },
                 exception => GD.PrintErr($"[STS2 Platform Live UI] deferred mount failed: {exception}"),

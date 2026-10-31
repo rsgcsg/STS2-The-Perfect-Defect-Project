@@ -20,7 +20,10 @@ test("all ordinary controls map to one paired application transport", () => {
 });
 
 test("only the open expanded action list asks the backend for complete choices", () => {
-  assert.match(desk, /_desk\.Refresh\(_actions\.Root\.Visible && !_actions\.Minimized\)/u);
+  assert.match(desk, /_desk\.Refresh\(ChoicesVisible\)/u);
+  assert.match(desk, /PlatformDeskSelection.ShouldReadChoices/u);
+  assert.match(desk, /AddChoiceView\(_mainChoices, _mainChoices\)/u);
+  assert.match(desk, /AddChoiceView\(_actions.Body, _actions.Footer\)/u);
   assert.match(panel, /if \(choicesVisible && ChoicesReadEnabled\) _choicesRead \?\?= Read\(connection, "choices"\)/u);
   assert.match(panel, /_deskRead \?\?= Read\(connection, "desk"\)/u);
   assert.doesNotMatch(desk, /\.TickAsync\(/u);

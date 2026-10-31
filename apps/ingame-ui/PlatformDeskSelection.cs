@@ -22,6 +22,9 @@ internal sealed class PlatformDeskSelection
         if (!Ready || !_choices.Contains(choice)) return;
         if (!_ranking.Remove(choice)) _ranking.Add(choice);
     }
+    internal static bool ShouldReadChoices(bool popoutOpen, bool popoutMinimized, bool mainOpen,
+        bool mainMinimized, bool mainControlsExpanded, bool mainChoicesExpanded) =>
+        popoutOpen && !popoutMinimized || mainOpen && !mainMinimized && mainControlsExpanded && mainChoicesExpanded;
     internal void Clear() => _ranking.Clear();
     internal string[]? Submission() => Ready && CatalogKey is not null && _ranking.Count > 0
         ? _ranking.ToArray() : null;

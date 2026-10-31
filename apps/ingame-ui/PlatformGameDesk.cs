@@ -27,9 +27,11 @@ internal sealed class PlatformLivePanel : IDisposable
     private Button _recoveryButton = null!;
     private string? _recoveryAction;
     private PlatformDeskWindow _main = null!, _recording = null!, _model = null!, _actions = null!, _diagnostics = null!;
-    private VBoxContainer _actionRows = null!;
-    private Label _choiceMessage = null!, _diagnosticText = null!;
-    private Button _execute = null!, _clear = null!, _launcher = null!;
+    private sealed record ChoiceView(Label Message, VBoxContainer Rows, Button Execute, Button Clear);
+    private readonly List<ChoiceView> _choiceViews = [];
+    private VBoxContainer _mainInline = null!, _mainChoices = null!;
+    private Label _diagnosticText = null!;
+    private Button _launcher = null!;
     private SceneTree? _tree;
     private Action? _frame;
     private Task<PlatformWorkbenchOpenResult>? _open;
@@ -47,7 +49,10 @@ internal sealed class PlatformLivePanel : IDisposable
     {
         Root.SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);
         Root.Theme = new Theme { DefaultFontSize = 16 };
-        _launcher = Button("对局台 · 正在连接", () => _main.Open());
+        _launcher = Button("对局台 · 正在连接", () => {
+            _main.Open();
+            GD.Print("[STS2 Platform Live UI] toggle input=launcher visible=true");
+        });
         _launcher.Position = new Vector2(12, 12);
         _launcher.CustomMinimumSize = new Vector2(260, 36);
         Root.AddChild(_launcher);
@@ -94,12 +99,30 @@ internal sealed class PlatformLivePanel : IDisposable
             owned.Root.VisibilityChanged += RenderWindowButtons;
         }
         _main.Body.AddChild(Label("点窗口名打开或收回；收回、最小化都不停录制或模型。"));
-        var inline = new VBoxContainer { Visible = false, SizeFlagsHorizontal = SizeFlags.ExpandFill };
-        _main.Body.AddChild(Button("在主窗口操作", () => { inline.Visible = !inline.Visible; }));
-        _main.Body.AddChild(inline);
-        AddRecordingControls(inline);
-        AddModelControls(inline);
-        AddMarkControls(inline);
+        _mainInline = new VBoxContainer { Visible = false, SizeFlagsHorizontal = SizeFlags.ExpandFill };
+        _main.Body.AddChild(Button("在主窗口操作", () => {
+            _mainInline.Visible = !_mainInline.Visible;
+            UpdateChoiceReadVisibility();
+        }));
+        _main.Body.AddChild(_mainInline);
+        AddRecordingControls(_mainInline);
+        AddModelControls(_mainInline);
+        AddMarkControls(_mainInline);
+        _mainChoices = new VBoxContainer { Visible = false, SizeFlagsHorizontal = SizeFlags.ExpandFill };
+        Button? mainChoicesToggle = null;
+        mainChoicesToggle = Button("展开主窗口动作列表", () => {
+            _mainChoices.Visible = !_mainChoices.Visible;
+            mainChoicesToggle!.Text = _mainChoices.Visible ? "收起主窗口动作列表" : "展开主窗口动作列表";
+            if (_mainChoices.Visible)
+            {
+                _main.Root.Size = new Vector2(Math.Max(_main.Root.Size.X, 520), Math.Max(_main.Root.Size.Y, 650));
+                _main.Clamp(Root.GetViewportRect().Size);
+            }
+            UpdateChoiceReadVisibility();
+        });
+        _mainInline.AddChild(mainChoicesToggle);
+        _mainInline.AddChild(_mainChoices);
+        AddChoiceView(_mainChoices, _mainChoices);
         AddState(_main.Body, _noticeLabels);
         _recoveryRow = Row(_main.Body); _recoveryRow.Visible = false;
         _recoveryButton = Button("需要处理", () => {
@@ -122,21 +145,8 @@ internal sealed class PlatformLivePanel : IDisposable
         AddModelControls(_model.Body, _model.Footer);
         _model.Body.AddChild(Label("换模型前先点“停，我来”。每个模型步都会记录。"));
         AddState(_model.Body, _noticeLabels);
-        _choiceMessage = Label("打开后读取当前全部合法动作。");
-        _actions.Body.AddChild(_choiceMessage);
-        _actionRows = new VBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill };
-        _actionRows.AddThemeConstantOverride("separation", 6);
-        _actions.Body.AddChild(_actionRows);
-        var actionsFooter = Row(_actions.Footer);
-        actionsFooter.AddChild(Command("准备动作列表", "desk.choices_open"));
-        _actions.Root.VisibilityChanged += () => {
-            if (_actions.Root.Visible && !_choicesAttempted)
-            { _choicesAttempted = true; _desk.Submit("desk.choices_open", new { }); }
-        };
-        _execute = Button("执行第 1 个", ExecuteRanking);
-        _clear = Button("清空", () => { _selection.Clear(); RenderChoices(true); });
-        actionsFooter.AddChild(_execute); actionsFooter.AddChild(_clear);
-        _actions.Footer.AddChild(Label("按先后点几个，再执行第 1 个；再点已选项可取消。"));
+        AddChoiceView(_actions.Body, _actions.Footer);
+        _actions.Root.VisibilityChanged += UpdateChoiceReadVisibility;
         _diagnosticText = Label("诊断只读；不会提交游戏动作。");
         _diagnostics.Body.AddChild(_diagnosticText);
         var recovery = Row(_diagnostics.Body);
@@ -144,6 +154,31 @@ internal sealed class PlatformLivePanel : IDisposable
         recovery.AddChild(Button("停 Runtime", () => DirectRecovery(PlatformPolicyCommand.Stop)));
         _diagnostics.Body.AddChild(Button("刷新诊断", PollDiagnostics));
     }
+    private void AddChoiceView(VBoxContainer body, VBoxContainer footer)
+    {
+        var message = Label("打开后读取当前全部合法动作。");
+        body.AddChild(message);
+        var controls = Row(footer);
+        controls.AddChild(Command("准备动作列表", "desk.choices_open"));
+        var execute = Button("执行第 1 个", ExecuteRanking);
+        var clear = Button("清空", () => { _selection.Clear(); RenderChoices(true); });
+        controls.AddChild(execute); controls.AddChild(clear);
+        footer.AddChild(Label("按先后点几个，再执行第 1 个；再点已选项可取消。"));
+        var rows = new VBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill };
+        rows.AddThemeConstantOverride("separation", 6);
+        body.AddChild(rows);
+        _choiceViews.Add(new(message, rows, execute, clear));
+    }
+    private bool ChoicesVisible => PlatformDeskSelection.ShouldReadChoices(
+        _actions.Root.Visible, _actions.Minimized, _main.Root.Visible, _main.Minimized,
+        _mainInline.Visible, _mainChoices.Visible);
+    private void UpdateChoiceReadVisibility()
+    {
+        if (ChoicesVisible && !_choicesAttempted)
+        { _choicesAttempted = true; _desk.Submit("desk.choices_open", new { }); }
+        if (_tree is not null) _desk.Refresh(ChoicesVisible);
+    }
+
     private static HBoxContainer Row(Node parent)
     {
         var row = new HBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill };
@@ -235,7 +270,7 @@ internal sealed class PlatformLivePanel : IDisposable
     {
         if (_disposed) return;
         if (!_autoConnectStarted) { _autoConnectStarted = true; BeginConnect(); }
-        _desk.Refresh(_actions.Root.Visible && !_actions.Minimized);
+        _desk.Refresh(ChoicesVisible);
         _runtimeRead ??= Task.Run(() => _diagnosticClient.ReadRuntimeAsync(_lifetime.Token));
         if (_diagnostics.Root.Visible && !_diagnostics.Minimized) PollDiagnostics();
     }
@@ -261,7 +296,7 @@ internal sealed class PlatformLivePanel : IDisposable
                 }
                 catch (Exception error) when (error is not OutOfMemoryException)
                 { _localNotice = "后台未连接，未提交操作。请点“重新连接”。"; }
-                _open = null; _desk.Refresh(_actions.Root.Visible && !_actions.Minimized); RenderStatus();
+                _open = null; _desk.Refresh(ChoicesVisible); RenderStatus();
             }
             if (_runtimeRead is { IsCompleted: true })
             {
@@ -396,34 +431,40 @@ internal sealed class PlatformLivePanel : IDisposable
             : _desk.ChoicesError ?? Text(desk, "choices_message") ?? "等待当前动作目录…";
         if (!_desk.Connected) notice = "后台未连接；动作不可执行。";
         else if (modelRunning) notice = "模型在走。先点“停，我来”，再自己选择。";
-        _choiceMessage.Text = notice + (discarded ? "\n局面变了，请重排。" : "");
-        _execute.Disabled = _selection.Submission() is null || !_desk.CanSubmit("desk.rank");
-        _clear.Disabled = _selection.Ranking.Count == 0;
+        foreach (ChoiceView view in _choiceViews)
+        {
+            view.Message.Text = notice + (discarded ? "\n局面变了，请重排。" : "");
+            view.Execute.Disabled = _selection.Submission() is null || !_desk.CanSubmit("desk.rank");
+            view.Clear.Disabled = _selection.Ranking.Count == 0;
+        }
         string key = catalogKey + ":" + _choicesReady + ":" + string.Join(",", _selection.Ranking)
             + ":" + string.Join(",", _desk.Choices.Select(c => Value(c, "model_selected")));
         if (!force && key == _choicesKey) return;
         _choicesKey = key;
-        foreach (Node child in _actionRows.GetChildren()) { _actionRows.RemoveChild(child); child.QueueFree(); }
-        foreach (var group in _desk.Choices.GroupBy(choice => GroupLabel(Text(choice, "kind"))))
+        foreach (ChoiceView view in _choiceViews)
         {
-            _actionRows.AddChild(Label(group.Key));
-            foreach (JsonElement choice in group)
+            foreach (Node child in view.Rows.GetChildren()) { view.Rows.RemoveChild(child); child.QueueFree(); }
+            foreach (var group in _desk.Choices.GroupBy(choice => GroupLabel(Text(choice, "kind"))))
             {
-                string? id = Text(choice, "choice_id"); if (id is null) continue;
-                int rank = _selection.Ranking.ToList().IndexOf(id) + 1;
-                string prefix = rank > 0 ? $"{rank}  " : "    ";
-                string label = prefix + (Text(choice, "label") ?? "动作名称未提供");
-                if (Flag(choice, "model_selected")) label += "  · 模型";
-                string cost = Value(choice, "cost", "");
-                if (cost.Length > 0) label += "  · " + cost + " 费";
-                string capturedId = id;
-                var button = Button(label, () => { _selection.Toggle(capturedId); RenderChoices(true); });
-                button.Alignment = HorizontalAlignment.Left;
-                button.TextOverrunBehavior = TextServer.OverrunBehavior.TrimEllipsis;
-                button.TooltipText = label;
-                button.CustomMinimumSize = new Vector2(0, 40);
-                button.Disabled = !_choicesReady;
-                _actionRows.AddChild(button);
+                view.Rows.AddChild(Label(group.Key));
+                foreach (JsonElement choice in group)
+                {
+                    string? id = Text(choice, "choice_id"); if (id is null) continue;
+                    int rank = _selection.Ranking.ToList().IndexOf(id) + 1;
+                    string prefix = rank > 0 ? $"{rank}  " : "    ";
+                    string label = prefix + (Text(choice, "label") ?? "动作名称未提供");
+                    if (Flag(choice, "model_selected")) label += "  · 模型";
+                    string cost = Value(choice, "cost", "");
+                    if (cost.Length > 0) label += "  · " + cost + " 费";
+                    string capturedId = id;
+                    var button = Button(label, () => { _selection.Toggle(capturedId); RenderChoices(true); });
+                    button.Alignment = HorizontalAlignment.Left;
+                    button.TextOverrunBehavior = TextServer.OverrunBehavior.TrimEllipsis;
+                    button.TooltipText = label;
+                    button.CustomMinimumSize = new Vector2(0, 40);
+                    button.Disabled = !_choicesReady;
+                    view.Rows.AddChild(button);
+                }
             }
         }
     }
