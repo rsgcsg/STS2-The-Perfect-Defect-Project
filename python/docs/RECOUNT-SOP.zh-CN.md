@@ -160,7 +160,7 @@ Q3 安装使用 Annotator29 固定 Tool `aa168b7e…`，由统一 Mod 提供未�
 固定版本检查仍有效，旧 Tool 优先级、切分盐、目标与已冻结配置不变。
 已完整完成的同一原件在Tool升级后，只沿原封存哈希/身份与原完成记录识别新候选别名，
 不重复派生旧局、不重写原入库耗时。改peer/范围/投影会清完成记录，不沿旧完成跳过。
-Q小结还依赖锁定的 `local-models` extra（tokenizers）。E1a之后的新kit已在原安装入口包含所需依赖；仅旧的collection-only kit缺包时，维护者在Workbench停止后沿原环境入口补齐：
+Q小结需要tokenizers。E1a之后新kit由原安装入口统一安装 `recording-intake` extra并验证Q模块导入，不要求collection-only kit安装完整 `local-models`。仅旧kit缺包时，维护者在Workbench停止后可沿原环境入口使用下面的旧组合修法：
 `uv sync --project /ABS/release/source/python --locked --extra cloud --extra local-models`。
 此项不下载模型权重、不训练，也不选择Managed/评估Runtime。
 这段保留Q3旧组合的适用范围；后续X2/I1的正常局验收看各自原报告，不再把它们派发成“等下一局”。

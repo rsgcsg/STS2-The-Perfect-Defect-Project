@@ -43,7 +43,7 @@ CURRENT只给当前任务/下一步；STATUS路由有日期的声明；PROJECT_S
 | 10-27重构/待修表仍把保存流水线、输入v2、X3写成待派发 | 易重复开卡；[原表逐行归位](../plans/CONVERGENCE_BASELINE_20261027.zh-CN.md)保已交与未验分开 |
 | 旧Issue正文仍写48h/查GPU/一天后自动第三阶段，当前事实藏评论 | 本轮对少量失效正文补当前触发，保留原描述与评论；不批量销账 |
 | 长训完整history持续进CP，codec有100,000节点上限 | 已发生保存失败；[训练owner](../../python/stpd/p1/formal_training.py)与[codec](../../python/stpd/workers/checkpoint_codec.py)负责修表示和全状态恢复，不能只抬上限再原样开跑 |
-| H1用原分数softmax的最高值决定低把握停线 | [mixed_runs](../../python/spireagent/workbench/mixed_runs.py)的阈值未证明适配长训概率；先量触发率/漏停，不宣称必定失效 |
+| H1用所选动作的原分数softmax决定低把握停线 | [mixed_runs](../../python/spireagent/workbench/mixed_runs.py)的阈值未证明适配长训概率；先量触发率/漏停，不宣称必定失效 |
 | 已选Deployment规则尚无对应登记交付 | E3仅写规则，不能把Deployments页当完整现态；下次真实部署补实际登记，保原收据，不补造历史 |
 
 没有证据支持“缺一套数据用途账”：[Curation](../../python/spireagent/research_curation.py)57–64行已有同SQLite三表；[p1_curation](../../python/spireagent/p1_curation.py)428–443行沿模型与全部父阶段的实际使用检查留出污染。私有索引只能指向原ledger/Snapshot/Run/manifest，不能另立准入权威。本轮未逐局审计近期实验是否都登记，完整性仍须各训练任务交付。
@@ -68,7 +68,7 @@ CURRENT只给当前任务/下一步；STATUS路由有日期的声明；PROJECT_S
 | DEV 2,725点 | 65.101% / NLL0.915823 | 63.817% / NLL2.053911 |
 | TEST 3,226点 | 65.933% / NLL0.882810 | 66.212% / NLL1.896761 |
 
-这是已发生的排名与概率质量分离，不足以证明错误全是动作多解。相同argmax下，把对错误答案的概率压得更低就会增大NLL；也可能只有少量灾难自信点贡献多数损失，须查逐点分布。DEV NLL不能单独当实战停止线，但仍是概率/拟合诊断；不因此把DEV并TRAIN或宣布数据无噪声。
+这是已发生的排名与概率质量分离，不足以证明错误全是动作多解。在模型选错的样本上，进一步压低示范答案的概率，即使argmax不变也会增大NLL；也可能只有少量灾难自信点贡献多数损失，须查逐点分布。DEV NLL不能单独当实战停止线，但仍是概率/拟合诊断；不因此把DEV并TRAIN或宣布数据无噪声。
 
 建议下轮先复用既有预测/权重做CPU诊断：分正确/错误、决策类型、强制/多选统计置信度/熵/间隔、NLL分位与贡献、逐局不确定性；在DEV拟合正温度并冻结后，仅用TEST验证诊断，不用TEST调温或挑CP。温度缩放的概率校准思路见[Guo等原论文](https://proceedings.mlr.press/v70/guo17a.html)；它不是游戏能力证明。H1停线要另测漏停；RL采样温度需按起点模型真实熵/非argmax率试验，不直接继承某个数。排序/集合标签只在真实标注支持时另做对照，不因相似顺序就宣布动作等价。
 
