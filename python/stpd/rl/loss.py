@@ -37,6 +37,9 @@ class RlSample:
     advantage: float
     model_version: int
     key: str
+    value_target: float | None = None
+    action_kind: str = "unknown"
+    acting_kl: float | None = None
 
 
 @dataclass(frozen=True)
@@ -46,6 +49,15 @@ class LossConfig:
     anchor_coef: float = 0.5
     max_grad_norm: float = 1.0
     rho_max: float = 1.0
+    mode: str = "legacy"
+    value_coef: float = 0.0
+    entropy_coef: float = 0.0
+
+    def __post_init__(self) -> None:
+        if (self.mode not in {"legacy", "ppo"}
+                or any(type(v) not in (int, float) or not math.isfinite(v) or v < 0
+                       for v in (self.value_coef, self.entropy_coef))):
+            raise BoundaryError("rl_loss", "invalid_PPO_configuration")
 
 
 def _scores(model: MStd, frames: list[ModelFrame]) -> torch.Tensor:
@@ -111,6 +123,15 @@ def rl_update(model: MStd, reference: MStd, optimizer: torch.optim.Optimizer,
               frame_cache: dict[object, TensorFrame] | None = None
               ) -> dict[str, Any]:
     """``reference_cache`` keeps each sample's start-model log-probabilities across reuses."""
+    if config.mode == "ppo":
+        if performance is not None:
+            from .performance import prepare_models
+
+            with prepare_models(model, reference, performance):
+                return _ppo_update(model, reference, optimizer, samples, learning_rate,
+                                   config, reference_cache)
+        return _ppo_update(model, reference, optimizer, samples, learning_rate,
+                           config, reference_cache)
     if performance is not None:
         from .performance import prepare_models
 
@@ -320,3 +341,185 @@ def _execution_update(model: MStd, reference: MStd, optimizer: torch.optim.Optim
             "mean_ratio": ratio_total / count, "clipped_fraction": clipped_total / count,
             "gradient_norm": norm_value, "rl_samples": count, "anchor_samples": len(anchor),
             "update_seconds": time.perf_counter() - began}
+
+
+def _ppo_update(
+    model: MStd,
+    reference: MStd,
+    optimizer: torch.optim.Optimizer,
+    samples: list[RlSample],
+    learning_rate: float,
+    config: LossConfig,
+    reference_cache: dict[str, torch.Tensor] | None,
+) -> dict[str, Any]:
+    """Clipped PPO + unweighted value MSE - entropy, one shared encoder forward.
+
+    eval() disables dropout/id masking, exactly as the actor; it does not disable
+    autograd. Truncated future trace correction is already in detached targets.
+    There is no additional exploration importance factor in the PPO loss.
+    """
+    if not samples or not model.value_heads or config.value_coef <= 0:
+        raise BoundaryError("rl_loss", "PPO_requires_samples_and_value_head")
+    if any(s.value_target is None or not math.isfinite(s.value_target) for s in samples):
+        raise BoundaryError("rl_loss", "PPO_requires_finite_value_targets")
+    began = time.perf_counter()
+    for group in optimizer.param_groups:
+        group["lr"] = learning_rate
+    optimizer.zero_grad(set_to_none=True)
+    model.eval()
+    device = model.ids.weight.device
+    frames = [s.frame for s in samples]
+    phases = {name: 0.0 for name in ("forward", "reference", "backward", "optimizer")}
+    rows: list[tuple[RlSample, float, float, float, float, float]] = []
+    policy_total = value_total = 0.0
+    catalogs: dict[str, dict[str, float]] = {}
+    for indices in microbatches(frames, list(range(len(frames))), model):
+        batch = [samples[i] for i in indices]
+        phase = time.perf_counter()
+        scores, values = model.forward_with_values([frames[i] for i in indices])
+        packed = torch.nn.utils.rnn.pad_sequence(
+            [v.float() for v in scores], batch_first=True, padding_value=-torch.inf
+        )
+        phases["forward"] += time.perf_counter() - phase
+        phase = time.perf_counter()
+        reference_log = _reference(reference, batch, reference_cache, packed.shape[1], device)
+        logs = F.log_softmax(packed, -1)
+        valid = torch.isfinite(logs)
+        if not bool(torch.isfinite(reference_log[valid]).all()):
+            raise BoundaryError("rl_loss", "non_finite_reference")
+        actions = torch.tensor([s.action for s in batch], device=device)
+        chosen = logs.gather(1, actions[:, None]).squeeze(1)
+        old = chosen.new_tensor([math.log(s.behavior_probability) for s in batch])
+        ratio = (chosen - old).exp()
+        advantage = chosen.new_tensor([s.advantage for s in batch])
+        policy = -torch.minimum(
+            ratio * advantage, ratio.clamp(1 - config.clip, 1 + config.clip) * advantage
+        )
+        probabilities = logs.exp()
+        finite_logs = logs.masked_fill(~valid, 0)
+        kl = (probabilities * (finite_logs - reference_log.masked_fill(~valid, 0))).sum(-1)
+        entropy = -(probabilities * finite_logs).sum(-1)
+        targets = values.new_tensor([s.value_target for s in batch])
+        value_loss = (values[:, 1].float() - targets) ** 2
+        objective = (
+            policy.sum()
+            + config.value_coef * value_loss.sum()
+            + config.kl_coef * kl.sum()
+            - config.entropy_coef * entropy.sum()
+        ) / len(samples)
+        phases["reference"] += time.perf_counter() - phase
+        phase = time.perf_counter()
+        if not bool(torch.isfinite(objective)):
+            raise BoundaryError("rl_loss", "non_finite_update")
+        objective.backward()
+        phases["backward"] += time.perf_counter() - phase
+        policy_total += float(policy.detach().sum())
+        value_total += float(value_loss.detach().sum())
+        # One bounded transfer per tensor; no per-kind CUDA synchronization.
+        masses = probabilities.detach().cpu().tolist()
+        current_logs = finite_logs.detach().cpu().tolist()
+        reference_logs = reference_log.detach().cpu().tolist()
+        # Include legal opportunities even when that action kind is never selected.
+        for row_index, sample in enumerate(batch):
+            frame = sample.frame
+            kinds = ([c["kind"] for c in frame.choices] if isinstance(frame, Frame) else
+                     [model.vocabulary["actions"][i]
+                      for i in (frame.host or frame).tensors["actions"].tolist()])
+            for kind in set(kinds):
+                indices = [i for i, value in enumerate(kinds) if value == kind]
+                row = catalogs.setdefault(kind, dict.fromkeys(
+                    ("opportunities", "selected", "probability_mass", "reference_mass",
+                     "entropy_contribution", "kl_contribution"), 0.0))
+                row["opportunities"] += 1
+                row["selected"] += float(kinds[sample.action] == kind)
+                row["probability_mass"] += sum(masses[row_index][i] for i in indices)
+                row["reference_mass"] += sum(
+                    math.exp(reference_logs[row_index][i]) for i in indices)
+                row["entropy_contribution"] -= sum(
+                    masses[row_index][i] * current_logs[row_index][i] for i in indices)
+                row["kl_contribution"] += sum(masses[row_index][i] * (
+                    current_logs[row_index][i] - reference_logs[row_index][i]) for i in indices)
+        choices = valid.sum(-1)
+        normalized = torch.where(choices > 1, entropy / choices.clamp(min=2).float().log(), 0)
+        detached = (
+            torch.stack(
+                (ratio.detach(), kl.detach(), entropy.detach(), normalized.detach(), choices)
+            )
+            .cpu()
+            .tolist()
+        )
+        rows.extend(
+            (sample, *metrics)
+            for sample, metrics in zip(batch, zip(*detached, strict=True), strict=True)
+        )
+    phase = time.perf_counter()
+    gradients = [p.grad for p in model.parameters() if p.grad is not None]
+    norm = float(torch.nn.utils.clip_grad_norm_(model.parameters(), config.max_grad_norm))
+    if not gradients or not math.isfinite(norm):
+        raise BoundaryError("rl_loss", "non_finite_update")
+    optimizer.step()
+    phases["optimizer"] += time.perf_counter() - phase
+    ratios = sorted(r[1] for r in rows)
+
+    def statistics(
+        group: list[tuple[RlSample, float, float, float, float, float]],
+    ) -> dict[str, Any]:
+        acting_values = [value for row in group if (value := row[0].acting_kl) is not None]
+        return {
+            "rows": len(group),
+            "kl": sum(r[2] for r in group) / len(group),
+            "entropy": sum(r[3] for r in group) / len(group),
+            "normalized_entropy": sum(r[4] for r in group) / len(group),
+            "clipped_fraction": sum(abs(r[1] - 1) > config.clip for r in group) / len(group),
+            "ratio_min": min(r[1] for r in group),
+            "ratio_max": max(r[1] for r in group),
+            "acting_kl": (
+                sum(acting_values) / len(group)
+                if len(acting_values) == len(group)
+                else None
+            ),
+        }
+
+    by_kind = {
+        kind: statistics([r for r in rows if r[0].action_kind == kind])
+        for kind in sorted({r[0].action_kind for r in rows})
+    }
+    totals = statistics(rows)
+    multi = [r for r in rows if r[5] >= 2]
+    acting_values = sorted(value for sample in samples
+                           if (value := sample.acting_kl) is not None)
+    return {
+        "phase_seconds": phases,
+        "timing_semantics": "host elapsed including device waits",
+        "policy_loss": policy_total / len(samples),
+        "value_loss": value_total / len(samples),
+        "kl": totals["kl"],
+        "anchor_loss": None,
+        "gradient_norm": norm,
+        "policy_entropy": totals["entropy"],
+        "policy_normalized_entropy": totals["normalized_entropy"],
+        "mean_ratio": sum(ratios) / len(ratios),
+        "clipped_fraction": totals["clipped_fraction"],
+        "ratio_quantiles": {
+            str(q): ratios[int(q * (len(ratios) - 1))] for q in (0, 0.05, 0.5, 0.9, 0.99, 1)
+        },
+        "clipped_fraction_multichoice": statistics(multi)["clipped_fraction"] if multi else None,
+        "by_action_kind": by_kind,
+        "by_catalog_kind": {kind: {key: (value if key == "opportunities" else
+            value / row["opportunities"]) for key, value in row.items()}
+            for kind, row in sorted(catalogs.items())},
+        "rl_samples": len(samples),
+        "anchor_samples": 0,
+        "acting_policy_kl": totals["acting_kl"],
+        "acting_kl_quantiles": (
+            {
+                str(q): acting_values[int(q * (len(samples) - 1))]
+                for q in (0, 0.5, 0.9, 0.99, 1)
+            }
+            if len(acting_values) == len(samples)
+            else None
+        ),
+        "value_coef": config.value_coef,
+        "entropy_coef": config.entropy_coef,
+        "update_seconds": time.perf_counter() - began,
+    }

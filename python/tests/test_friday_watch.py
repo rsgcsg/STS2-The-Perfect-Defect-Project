@@ -650,7 +650,21 @@ def test_tier_schedule_uses_fixed_boundaries_and_one_pending_without_catchup(wat
     assert len(offers) == 2
 
 
-def test_tier_prepare_overrides_serial_pipeline_and_never_opens_confirmation(watch, tmp_path):
+def test_quick_only_schedule_never_opens_intermediate100_or_confirmation(watch, tmp_path):
+    instance = tier_observer(watch, tmp_path, evaluation_tiers=rl3_tiers()[:1])
+    offers = []
+    instance.prepare_evaluation = lambda model, now, **options: offers.append(options)
+    for at in (14400, 28800, 43200):
+        instance.schedule_tiers({'version': at // 14400, 'model_artifact_id': 'a' * 64}, at)
+    assert [row['tier']['seed_prefix'] for row in offers] == [20, 20, 20]
+    assert [row['due_at'] for row in offers] == [14400, 28800, 43200]
+    assert not instance.state.get('confirmation_requested')
+
+
+@pytest.mark.parametrize("mode", ["submit", "direct"])
+def test_tier_prepare_overrides_serial_pipeline_and_never_opens_confirmation(
+    watch, tmp_path, monkeypatch, mode
+):
     from types import SimpleNamespace
 
     from stpd.evaluation.suites import rl3_learning_curve_manifest
@@ -667,11 +681,13 @@ def test_tier_prepare_overrides_serial_pipeline_and_never_opens_confirmation(wat
     manifest = tmp_path / 'new100.json'
     manifest.write_text(json.dumps(rl3_learning_curve_manifest('v0.111.0')))
     instance = tier_observer(watch, tmp_path)
-    instance.config.update(evaluation_mode='submit', evaluation_execution=str(execution),
+    monkeypatch.setenv('SLURM_CPUS_PER_TASK', '4')
+    instance.config.update(evaluation_mode=mode, evaluation_execution=str(execution),
         evaluation_manifest=str(manifest), runtime_source=str(runtime))
     instance.exchange = SimpleNamespace(materialize_model=lambda *_: tmp_path / 'model')
     instance.publish = lambda *_args, **_kwargs: None
-    with patch.object(watch.evaluate, 'submit', return_value={'job_id': 'fixture-123'}):
+    with (patch.object(watch.evaluate, 'submit', return_value={'job_id': 'fixture-123'}),
+          patch.object(watch.subprocess, 'Popen', return_value=SimpleNamespace(pid=123))):
         instance.prepare_evaluation({'version': 2, 'model_artifact_id': '1' * 64,
                                      'training': {'updates': 16}}, 14400,
                                     tier=rl3_tiers()[0], due_at=14400)

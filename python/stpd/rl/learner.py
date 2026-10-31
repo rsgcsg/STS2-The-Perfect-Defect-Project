@@ -21,7 +21,7 @@ import time
 import uuid
 from collections.abc import Callable, Iterable
 from concurrent.futures import Future, ThreadPoolExecutor
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any, TypeVar
 
@@ -38,9 +38,18 @@ from stpd.p1.tensor_input import ModelFrame, TensorFrame, compile_frame
 from stpd.workers.checkpoint_codec import decode_checkpoint, encode_checkpoint
 from stpd.workers.training_io import CheckpointPublisher, FrozenCheckpoint, ProgressCadence
 
+from .checkpoint import METADATA_ENCODING, PPO_SCHEMA, learner_state, metadata_tensor
+from .critic import (
+    CriticConfig,
+    CriticEpisode,
+    OnlineCritic,
+    enable_value_head,
+    held_out,
+    trace_gae,
+)
 from .ledger import DecisionLedger
 from .loss import LossConfig, RlSample, rl_update
-from .performance import PerformanceConfig
+from .performance import PerformanceConfig, prepare_models
 from .reward import REWARD_SPEC, episode_reward
 
 CONFIG_SCHEMA = "stpd/rl-learner-config-1"
@@ -70,6 +79,9 @@ class LearnerConfig:
     updates_per_version: int = 8
     max_reuse: int = 3
     max_staleness: int = 3
+    # Opt-in wall-clock freshness/cadence; None preserves version/update rules.
+    max_episode_age_seconds: float | None = None
+    publish_interval_seconds: float | None = None
     baseline_window: int = 64
     min_episodes_before_training: int = 4
     poll_seconds: float = 5.0
@@ -80,6 +92,8 @@ class LearnerConfig:
     # Explicit full learner checkpoint artifact id to continue this run from
     # (a new machine or a new 5 h allocation); never picked implicitly.
     resume_checkpoint: str | None = None
+    # Explicitly publish restored weights before actors receive another version.
+    republish_on_resume: bool = False
     tensorboard_steps: int = 10
     # Zero retains per-update exchange polling; positive values are opt-in cadence.
     exchange_poll_seconds: float = 0.0
@@ -96,6 +110,7 @@ class LearnerConfig:
     loss: LossConfig = field(default_factory=LossConfig)
     # Omitted means the exact legacy update path, not an implicit new plan.
     performance: PerformanceConfig | None = None
+    critic: CriticConfig | None = None
 
     @classmethod
     def read(cls, path: Path) -> LearnerConfig:
@@ -104,7 +119,9 @@ class LearnerConfig:
             raise BoundaryError("rl_learner", "unsupported_config")
         loss = LossConfig(**value.pop("loss", {}))
         performance = value.pop("performance", None)
+        critic = value.pop("critic", None)
         return cls(**value, loss=loss,
+                   critic=CriticConfig(**critic) if critic is not None else None,
                    performance=(PerformanceConfig(**performance)
                                 if performance is not None else None))
 
@@ -127,6 +144,7 @@ class Buffered:
     sample: RlSample
     uses: int = 0
     shard: str = ""
+    episode_started_at: float | None = None
 
 
 def _device(name: str) -> torch.device:
@@ -162,6 +180,15 @@ class Timer:
 class Learner:
     def __init__(self, config: LearnerConfig, work: Path, io: LearnerIO) -> None:
         self.config, self.work, self.io = config, work, io
+        if (config.critic is not None) != (config.loss.mode == "ppo"):
+            raise BoundaryError("rl_learner", "PPO_requires_explicit_critic_and_loss_mode")
+        if config.critic is not None and config.loss.value_coef <= 0:
+            raise BoundaryError("rl_learner", "PPO_requires_positive_value_loss")
+        self.checkpoint_schema = PPO_SCHEMA if config.critic is not None else CHECKPOINT_SCHEMA
+        for value in (config.max_episode_age_seconds, config.publish_interval_seconds):
+            if value is not None and (type(value) not in (int, float)
+                                     or not math.isfinite(value) or value <= 0):
+                raise BoundaryError("rl_learner", "invalid_time_freshness_or_cadence")
         if type(config.tensorboard_steps) is not int or config.tensorboard_steps < 0:
             raise BoundaryError("rl_learner", "invalid_tensorboard_steps")
         if (type(config.exchange_poll_seconds) not in (int, float)
@@ -194,6 +221,9 @@ class Learner:
         torch.set_num_threads(config.threads)
         self.random = random.Random(config.seed)
         self.exchange = Exchange(config.peer, config.run)
+        if (config.resume_checkpoint and config.republish_on_resume
+                and self._read_retry("resume_stop", self.exchange.stop_request) is not None):
+            raise BoundaryError("rl_learner", "cannot_republish_a_permanently_stopped_run")
         self.metrics = (TensorBoardMetrics(self.exchange, work / "tb")
                         if config.tensorboard_steps else None)
         self.producer = source_identity(ROOT)
@@ -233,8 +263,16 @@ class Learner:
         self.model = model.to(self.device).train()
         for parameter in self.model.parameters():
             parameter.requires_grad_(True)
+        if config.critic is not None:
+            enable_value_head(self.model, config.seed)
         self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=config.lr,
                                            weight_decay=config.weight_decay)
+        self.critic = (OnlineCritic(self.model, self.reference, self.optimizer, config.critic,
+                                   config.seed, config.performance) if config.critic else None)
+        self.critic_began = self.last_critic_checkpoint_at = time.monotonic()
+        self.last_critic_validation_update = -1
+        self.version_critic_revision = 0
+        self.last_model_capture_at = time.monotonic()
         self.buffer: list[Buffered] = []
         self.initial_behavior: dict[str, dict[str, Any]] = {}
         self.reference_cache: dict[str, torch.Tensor] = {}
@@ -274,6 +312,12 @@ class Learner:
         self.checkpoints = CheckpointPublisher(self.exchange.store, self.producer,
                                                background=True)
         self.version = self._initial_version()
+        self.resume_republish_pending = bool(
+            config.resume_checkpoint and config.republish_on_resume)
+        if self.resume_republish_pending:
+            self.maybe_version(force=True)
+            self._collect_version(wait=True)
+            self._take_checkpoint(wait=True)
 
     # Setup ------------------------------------------------------------
     def _anchor(self) -> list[tuple[Any, int]]:
@@ -360,23 +404,30 @@ class Learner:
         state = self.random.getstate()
         learner = {"run": self.config.run, "version": self.lineage_version,
                    "updates": self.updates, "counts": dict(self.counts),
+                   "version_critic_revision": self.version_critic_revision,
                    "returns": list(self.returns), "seen": sorted(self.seen),
                    "buffer": buffer, "random": [state[0], list(state[1]), state[2]],
                    "seen_episodes": self.seen_episodes,
                    "decision_ledger": self.ledger.state()}
+        if self.critic is not None:
+            self.critic.elapsed_seconds += time.monotonic() - self.critic_began
+            self.critic_began = time.monotonic()
+            learner["critic"] = self.critic.state()
         return encode_checkpoint({
-            "schema": CHECKPOINT_SCHEMA,
+            "schema": self.checkpoint_schema,
+            **({"learner_encoding": METADATA_ENCODING} if self.critic else {}),
             "weights": {k: v.detach().cpu().clone() for k, v in self.model.state_dict().items()},
             "optimizer": self.optimizer.state_dict(), "torch_rng": torch.get_rng_state(),
             "cuda_rng": torch.cuda.get_rng_state_all() if self.device.type == "cuda" else [],
             # One scalar keeps thousands of keys inside the codec's node limit.
-            "learner": json.dumps(learner, sort_keys=True)})
+            "learner": (metadata_tensor(learner) if self.critic
+                        else json.dumps(learner, sort_keys=True))})
 
     def _resume(self, artifact_id: str, latest: int) -> int:
         began = time.monotonic()
         manifest = self.exchange.store.get_manifest(artifact_id)
         info = manifest.parameters.value()
-        if (manifest.kind != "checkpoint" or info.get("schema") != CHECKPOINT_SCHEMA
+        if (manifest.kind != "checkpoint" or info.get("schema") != self.checkpoint_schema
                 or info.get("run") != self.config.run
                 or info.get("start_package_sha256") != self.start_sha256
                 or info.get("reference_package_sha256", self.start_sha256) != self.reference_sha256
@@ -384,12 +435,21 @@ class Learner:
             raise BoundaryError("rl_learner", "resume_checkpoint_binding_mismatch")
         state = decode_checkpoint(b"".join(self.exchange.store.read_payload(
             manifest.payload("checkpoint"))))
-        learner = json.loads(state["learner"])
-        if (state.get("schema") != CHECKPOINT_SCHEMA or learner["run"] != self.config.run
+        learner = learner_state(state)
+        if (state.get("schema") != self.checkpoint_schema or learner["run"] != self.config.run
                 or learner["version"] != info["version"] or learner["version"] > latest):
             raise BoundaryError("rl_learner", "resume_checkpoint_state_mismatch")
         self.model.load_state_dict(state["weights"])
         self.optimizer.load_state_dict(state["optimizer"])
+        critic_saved = learner.get("critic")
+        if (self.critic is None) != (critic_saved is None):
+            raise BoundaryError("rl_critic", "resume_method_mismatch")
+        if self.critic is not None:
+            if not isinstance(critic_saved, dict):
+                raise BoundaryError("rl_critic", "checkpoint_metadata_object_required")
+            self.critic.restore(critic_saved)
+            self.critic_began = time.monotonic()
+        self.version_critic_revision = learner.get("version_critic_revision", 0)
         torch.set_rng_state(state["torch_rng"])
         if self.device.type == "cuda" and state.get("cuda_rng"):
             torch.cuda.set_rng_state_all(state["cuda_rng"])
@@ -410,20 +470,35 @@ class Learner:
         saved = {key: (uses, advantage, version)
                  for _, key, uses, advantage, version in learner["buffer"]}
         restored: dict[str, Buffered] = {}
-        shards = sorted({entry[0] for entry in learner["buffer"]})
+        critic_episodes = ({e["run_id"]: e for e in critic_saved["episodes"]}
+                           if critic_saved else {})
+        critic_order = list(critic_episodes)
+        rebuilt_critic: dict[str, CriticEpisode] = {}
+        shards = sorted({entry[0] for entry in learner["buffer"]}
+                        | {e["shard"] for e in critic_episodes.values()})
         for rows in self.reader.map(
                 lambda key: self._read_retry("resume_shard",
                     lambda: self._read_once(key, restoring=True)), shards):
             for row in rows:
+                kinds = self._action_kinds(row["episode"]) if row["episode"] else {}
+                if self.critic is not None and row["episode"] is not None:
+                    run_id = row["episode"]["run_id"]
+                    if run_id in critic_episodes:
+                        identity = critic_episodes.pop(run_id)
+                        rebuilt_critic[run_id] = self._critic_episode(row, identity)
                 for frame, action, probability, old, key in row.get("samples", ()):
                     if key in saved:
                         uses, advantage, version = saved.pop(key)
                         restored[key] = Buffered(RlSample(
-                            frame, action, probability, old, advantage, version, key), uses,
-                            row["key"])
-        if saved:
+                            frame, action, probability, old, advantage, version, key,
+                            action_kind=kinds.get(key, "unknown")), uses,
+                            row["key"], self._episode_started_at(row["episode"], row["record"])
+                            if self.config.max_episode_age_seconds is not None else None)
+        if saved or critic_episodes:
             raise BoundaryError("rl_learner", "resume_buffer_samples_missing")
         self.buffer = [restored[key] for key in saved_order]
+        if self.critic is not None:
+            self.critic.episodes = [rebuilt_critic[key] for key in critic_order]
         self.seen = set(learner["seen"])
         self.timer.add("resume", began)
         self._event("resumed", checkpoint=artifact_id, checkpoint_version=learner["version"],
@@ -475,8 +550,7 @@ class Learner:
                     raise BoundaryError("rl_learner", "shard_record_model_mismatch")
                 # Reader may reject known ineligible work before CPU tensor preparation.
                 # Owner rechecks at admission; version advances can still retire prepared work.
-                eligible = (restoring or (getattr(self, "version", 0) - record["model_version"]
-                            <= self.config.max_staleness
+                eligible = (restoring or (not self._episode_stale(episode, record)
                     and not {step["behavior"]["mode"] for step in episode["steps"]}
                         - {"temperature_uniform"}
                     and episode_reward(episode)[0] is not None))
@@ -545,8 +619,51 @@ class Learner:
             self.seen.add(key)
 
 
+    @staticmethod
+    def _episode_started_at(episode: dict[str, Any], record: dict[str, Any]) -> float:
+        games = [g for g in record.get("games", ()) if g.get("run_id") == episode["run_id"]]
+        value = games[0].get("started_at") if len(games) == 1 else None
+        if (not isinstance(value, (int, float)) or isinstance(value, bool)
+                or not math.isfinite(value)):
+            raise BoundaryError("rl_learner", "time_freshness_requires_original_game_start")
+        return float(value)
+
+    def _episode_stale(self, episode: dict[str, Any], record: dict[str, Any]) -> bool:
+        if self.config.max_episode_age_seconds is None:
+            return bool(getattr(self, "version", 0) - record["model_version"]
+                        > self.config.max_staleness)
+        if episode_reward(episode)[0] is None:
+            return False  # preserve unknown/censored disposition before time handling
+        if self.critic is not None and not self.critic.ready:
+            return False  # frozen-policy warmup data trains only the value head
+        return (time.time() - self._episode_started_at(episode, record)
+                > self.config.max_episode_age_seconds)
+
+    @staticmethod
+    def _action_kinds(episode: dict[str, Any]) -> dict[str, str]:
+        return {f"{episode['run_id']}:{step['index']}":
+            episode["observations"][step["observation_index"]]["observation"]["catalog"][
+                step["action_index"]]["kind"] for step in episode["steps"]}
+
+    @staticmethod
+    def _critic_episode(row: dict[str, Any], identity: dict[str, Any]) -> CriticEpisode:
+        samples = row["samples"]
+        probabilities = []
+        for sample, step in zip(samples, row["episode"]["steps"], strict=True):
+            observation = row["episode"]["observations"][step["observation_index"]]["observation"]
+            catalog = observation["catalog"]
+            indices = {c["choice_id"]: i for i, c in enumerate(catalog)}
+            choices = [c["choice_id"] if isinstance(c, dict) else c for c in sample[0].choices]
+            probabilities.append([step["behavior"]["model_probabilities"][indices[c]]
+                                  for c in choices])
+        return CriticEpisode(**identity, frames=[r[0] for r in samples],
+            actions=[r[1] for r in samples], behavior=[r[2] for r in samples],
+            old_probabilities=probabilities, keys=[r[4] for r in samples])
+
     def _admit(self, rows: list[dict[str, Any]]) -> None:
         for row in rows:
+            if self.critic is not None:
+                self.critic.revision += 1  # admission/rejection/seen state also needs a final CP
             for name in ("reader_seconds", "projection_seconds", "input_prepare_seconds"):
                 self.timer.seconds["background_" + name] += row.get(name, 0.0)
             record, episode = row["record"], row["episode"]
@@ -562,7 +679,7 @@ class Learner:
                 continue
             self.seen_episodes[run_id] = content
             version = record["model_version"]
-            if self.version - version > self.config.max_staleness:
+            if self._episode_stale(episode, record):
                 self.ledger.episode("rejected", episode, record, reason="stale")
                 self.counts["stale_episodes"] += 1
                 continue
@@ -581,6 +698,53 @@ class Learner:
                       if len(self.returns) > 1 else 1.0)
             self.returns.append(reward)
             advantage = (reward - baseline) / max(spread, 0.05)
+            kinds = self._action_kinds(episode)
+            if self.critic is not None:
+                from stpd.evaluation.suites import require_non_evaluation_seed
+
+                seed = require_non_evaluation_seed(episode["identity"]["seed"])
+                for step in episode["steps"]:
+                    behavior = step["behavior"]
+                    if (behavior.get("temperature") != 1 or behavior.get("uniform_mix") != 0
+                            or not math.isclose(behavior["selected_probability"],
+                                behavior["model_probabilities"][step["action_index"]],
+                                rel_tol=1e-10, abs_tol=1e-12)):
+                        raise BoundaryError("rl_learner", "PPO_requires_direct_policy_sampling")
+                evicted = self.critic.add(self._critic_episode(row, {
+                    "run_id": run_id, "shard": row["key"], "seed": seed,
+                    "reward": reward, "version": version,
+                    "started_at": self._episode_started_at(episode, record)}))
+                kept = []
+                for item in self.buffer:
+                    if item.sample.key.rsplit(":", 1)[0] in evicted:
+                        self.ledger.retire(item.sample.key, item.uses,
+                                           "critic_capacity", self.version)
+                        self.counts["samples_retired_critic_capacity"] += 1
+                    else:
+                        kept.append(item)
+                self.buffer = kept
+                current_episode = self.critic.episodes[-1]
+                began = time.monotonic()
+                _, ratios, acting_kl = self.critic.evaluate(current_episode)
+                self.counts["arrival_policy_drift_microseconds"] += int(
+                    (time.monotonic() - began) * 1000000)
+                self.ledger.write("arrival_policy_drift", run_id=run_id,
+                    ids=current_episode.keys, acting_kl=acting_kl, ratios=ratios,
+                    episode_age_seconds=time.time() - current_episode.started_at,
+                    model_lag=self.version - version, warmup=not self.critic.ready,
+                    clipped_fraction=sum(abs(r - 1) > self.config.loss.clip for r in ratios)
+                                     / len(ratios) if ratios else None)
+                if held_out(seed):
+                    self.counts["critic_validation_episodes"] += 1
+                    self.ledger.episode("rejected", episode, record,
+                                        reason="critic_validation_only", reward=reward)
+                    continue
+                if not self.critic.ready:
+                    self.counts["critic_warmup_episodes"] += 1
+                    self.ledger.episode("rejected", episode, record,
+                                        reason="critic_warmup_only", reward=reward)
+                    continue
+                advantage = 0.0  # replaced with the CURRENT head immediately before every update
             self.ledger.episode("admitted", episode, record, reward=reward, advantage=advantage)
             if self.config.initial_policy_check and self.updates == 0:
                 for step in episode["steps"]:
@@ -590,7 +754,10 @@ class Learner:
                         "behavior": step["behavior"]}
             for frame, action, probability, old, key in row["samples"]:
                 self.buffer.append(Buffered(RlSample(frame, action, probability, old, advantage,
-                                                     version, key), shard=row["key"]))
+                                                     version, key, action_kind=kinds[key]),
+                                             shard=row["key"], episode_started_at=(
+                    self._episode_started_at(episode, record)
+                    if self.config.max_episode_age_seconds else None)))
             self.counts["rl_samples"] += len(row["samples"])
             if record.get("finished_at"):
                 self.latencies.append(time.time() - record["finished_at"])
@@ -602,11 +769,18 @@ class Learner:
             if item.uses >= self.config.max_reuse:
                 self.counts["samples_retired_reuse"] += 1
                 self.ledger.retire(item.sample.key, item.uses, "reuse", self.version)
-            elif item.sample.model_version < floor:
+            elif ((self.config.max_episode_age_seconds is None
+                   and item.sample.model_version < floor)
+                  or (self.config.max_episode_age_seconds is not None
+                      and item.episode_started_at is not None
+                      and time.time() - item.episode_started_at
+                          > self.config.max_episode_age_seconds)):
                 self.counts["samples_dropped_stale"] += 1
                 self.ledger.retire(item.sample.key, item.uses, "stale", self.version)
             else:
                 kept.append(item)
+        if self.critic is not None and len(kept) != len(self.buffer):
+            self.critic.revision += 1
         self.buffer = kept
         live = {item.sample.key for item in kept}
         for key in [k for k in self.reference_cache if k not in live]:
@@ -674,7 +848,95 @@ class Learner:
         if not passed:
             raise BoundaryError("rl_learner", "initial_eval_probability_mismatch")
 
+    def _critic_step(self) -> bool:
+        critic = self.critic
+        self.warmup_trained = False
+        if critic is None:
+            return True
+        began = time.monotonic()
+        result = critic.warmup_update()
+        self.timer.add("critic_warmup_train", began)
+        self.warmup_trained = result is not None
+        if result is not None:
+            self.ledger.write("critic_trained", **result)
+        elapsed = critic.elapsed_seconds + time.monotonic() - self.critic_began
+        if (critic.updates >= critic.config.min_updates
+                and critic.updates != self.last_critic_validation_update
+                and critic.updates % critic.config.validation_every == 0):
+            began = time.monotonic()
+            validation = critic.validate()
+            self.timer.add("critic_validation", began)
+            self.last_critic_validation_update = critic.updates
+            elapsed = critic.elapsed_seconds + time.monotonic() - self.critic_began
+            self._event("critic_validation", **validation, ready=critic.ready,
+                        elapsed_seconds=elapsed)
+            if (not critic.ready and validation["passed"]
+                    and critic.config.warmup_min_seconds <= elapsed
+                    < critic.config.warmup_max_seconds):
+                critic.ready = True
+                critic.revision += 1
+                critic.freeze_policy(False)
+                self._event("critic_ready", **validation, elapsed_seconds=elapsed)
+        if not critic.ready and elapsed >= critic.config.warmup_max_seconds:
+            raise BoundaryError("rl_critic", "warmup_not_qualified")
+        return critic.ready
+
+    def _ppo_batch(self, usable: list[Buffered]) -> list[Buffered]:
+        # Sequence minibatches bound complete-trace current-value evaluation.
+        # Pick episodes proportionally to remaining rows; favor fresh uses.
+        groups: dict[str, list[Buffered]] = collections.defaultdict(list)
+        for item in usable:
+            groups[item.sample.key.rsplit(":", 1)[0]].append(item)
+        for rows in groups.values():
+            self.random.shuffle(rows)
+            rows.sort(key=lambda item: item.uses)
+        batch: list[Buffered] = []
+        while groups and len(batch) < self.config.batch_size:
+            least = min(rows[0].uses for rows in groups.values())
+            names = [name for name, rows in groups.items() if rows[0].uses == least]
+            name = self.random.choices(names, weights=[len(groups[n]) for n in names])[0]
+            rows = groups[name]
+            take = min(len(rows), self.config.batch_size - len(batch),
+                       max(1, self.config.batch_size // 2) if len(groups) > 1
+                       else self.config.batch_size)
+            batch.extend(rows[:take])
+            if take == len(rows):
+                del groups[name]
+            else:
+                groups[name] = rows[take:]
+        return batch
+
+    def _fresh_ppo_samples(self, batch: list[Buffered]) -> list[RlSample]:
+        assert self.critic is not None
+        began = time.monotonic()
+        names = {item.sample.key.rsplit(":", 1)[0] for item in batch}
+        estimates: dict[str, tuple[float, float, float]] = {}
+        for episode in self.critic.episodes:
+            if episode.run_id not in names:
+                continue
+            values, ratios, acting_kl = self.critic.evaluate(episode)
+            advantages, targets = trace_gae(episode.reward, values, ratios,
+                self.critic.config.gamma, self.critic.config.gae_lambda)
+            estimates.update(zip(episode.keys,
+                zip(advantages, targets, acting_kl, strict=True), strict=True))
+            self.ledger.write("critic_prediction", run_id=episode.run_id, ids=episode.keys,
+                values=values, targets=targets, advantages=advantages, ratios=ratios,
+                acting_kl=acting_kl,
+                critic_updates=self.critic.updates, policy_update=self.updates, ready=True)
+        self.last_raw_advantages = [estimates[item.sample.key][0] for item in batch]
+        samples = [replace(item.sample, advantage=estimates[item.sample.key][0],
+                           value_target=estimates[item.sample.key][1],
+                           acting_kl=estimates[item.sample.key][2]) for item in batch]
+        mean = sum(s.advantage for s in samples) / len(samples)
+        spread = math.sqrt(sum((s.advantage - mean) ** 2 for s in samples) / len(samples))
+        self.timer.add("current_value_and_advantage", began)
+        return [replace(s, advantage=(s.advantage - mean) / max(spread, 1e-8)) for s in samples]
+
     def train_once(self) -> dict[str, Any] | None:
+        ready = self._critic_step()
+        self.policy_train_began = time.monotonic()
+        if not ready:
+            return None
         sample_began = time.monotonic()
         usable = self.usable()
         if (len(usable) < self.config.batch_size
@@ -687,25 +949,42 @@ class Learner:
             self.anchor_future = None
             self.timer.add("wait_anchor", began)
         # Least-used first, then random: each sample sees <= max_reuse updates.
-        self.random.shuffle(usable)
-        usable.sort(key=lambda item: item.uses)
-        batch = usable[:self.config.batch_size]
+        if self.critic is not None:
+            batch = self._ppo_batch(usable)
+        else:
+            self.random.shuffle(usable)
+            usable.sort(key=lambda item: item.uses)
+            batch = usable[:self.config.batch_size]
         sampling_seconds = time.monotonic() - sample_began
         anchor_began = time.monotonic()
         anchor = (self.random.sample(self.anchor, min(self.config.anchor_batch, len(self.anchor)))
                   if self.anchor else [])
         anchor_seconds = time.monotonic() - anchor_began
         if self.config.initial_policy_check and self.updates == 0:
-            self._check_initial_policy(batch)
+            if self.config.performance is not None:
+                with prepare_models(self.model, self.reference, self.config.performance):
+                    self._check_initial_policy(batch)
+            else:
+                self._check_initial_policy(batch)
+        samples = (self._fresh_ppo_samples(batch) if self.critic is not None
+                   else [item.sample for item in batch])
+        self.policy_train_began = time.monotonic()
         self.update_in_progress = True
         result = rl_update(self.model, self.reference, self.optimizer,
-                           [item.sample for item in batch], anchor, self.config.lr,
+                           samples, anchor, self.config.lr,
                            self.config.loss, self.reference_cache,
                            performance=self.config.performance, frame_cache=self.frame_cache)
         self.update_in_progress = False
         self.initial_behavior.clear()
-        self.last_advantages = [item.sample.advantage for item in batch]
+        self.last_advantages = [sample.advantage for sample in samples]
         self.updates += 1
+        if self.critic is not None:
+            self.critic.updates += 1
+            self.critic.revision += 1
+            result.update(raw_advantage_min=min(self.last_raw_advantages),
+                          raw_advantage_max=max(self.last_raw_advantages),
+                          raw_advantage_mean=sum(self.last_raw_advantages) / len(samples))
+            self.ledger.write("ppo_diagnostics", update=self.updates, **result)
         for item in batch:
             item.uses += 1
         self.ledger.trained([item.sample.key for item in batch], self.updates, self.version)
@@ -713,9 +992,9 @@ class Learner:
         result.update(update=self.updates, version=self.version,
                       buffer_size=len(self.buffer),
                       reader_pending=len(self.reads), reader_discovered=len(self.discovered),
-                      advantage_min=min(item.sample.advantage for item in batch),
-                      advantage_max=max(item.sample.advantage for item in batch),
-                      advantage_mean=sum(item.sample.advantage for item in batch) / len(batch),
+                      advantage_min=min(sample.advantage for sample in samples),
+                      advantage_max=max(sample.advantage for sample in samples),
+                      advantage_mean=sum(sample.advantage for sample in samples) / len(samples),
                       actual_sampling_entropy=(sum(self.ledger.live[item.sample.key][
                           "behavior_entropy"] for item in batch) / len(batch)
                           if self.config.decision_ledger else None),
@@ -740,6 +1019,8 @@ class Learner:
             "version": version, "parent_version": self.lineage_version,
             "updates": self.updates,
             "reward": REWARD_SPEC, "loss": asdict(self.config.loss),
+            "critic": ({"config": asdict(self.critic.config), "ready": self.critic.ready,
+                        "updates": self.critic.updates} if self.critic else None),
             "start_package_sha256": self.start_sha256,
             "reference_package_sha256": self.reference_sha256,
             "initial_state_mode": ("checkpoint" if self.config.resume_checkpoint
@@ -808,7 +1089,14 @@ class Learner:
 
     def maybe_version(self, force: bool = False) -> None:
         due = self.updates - self.version_updates
-        if due == 0 or not force and due < self.config.updates_per_version:
+        critic_changed = (force and self.critic is not None
+                          and self.critic.revision > self.version_critic_revision)
+        cadence_due = (time.monotonic() - self.last_model_capture_at
+                       >= self.config.publish_interval_seconds
+                       if self.config.publish_interval_seconds is not None
+                       else due >= self.config.updates_per_version)
+        if (not getattr(self, "resume_republish_pending", False) and not critic_changed
+                and (due == 0 or not force and not cadence_due)):
             return
         from spireagent.json_boundary import FrozenObject
 
@@ -817,13 +1105,18 @@ class Learner:
         version, parent = self.version + 1, self.lineage_version
         destination, _ = self._package(version)
         self.lineage_version, self.version_updates = version, self.updates
+        self.last_model_capture_at = time.monotonic()
+        self.resume_republish_pending = False
+        if self.critic is not None:
+            self.version_critic_revision = self.critic.revision
+            self.last_critic_checkpoint_at = time.monotonic()
         state = self._state() if not self.checkpoints.pending else None
         self.timer.add("version_capture", began)
         self.pending_version = self.publisher.submit(self._publish, version, parent,
             destination, sorted(self.seen), self.updates, self.counts["rl_samples"])
         if state is not None:
             self.checkpoints.submit(FrozenCheckpoint(state, (), FrozenObject.of(
-                {"schema": CHECKPOINT_SCHEMA, "run": self.config.run, "version": version,
+                {"schema": self.checkpoint_schema, "run": self.config.run, "version": version,
                  "updates": self.updates, "start_package_sha256": self.start_sha256,
                  "reference_package_sha256": self.reference_sha256,
                  "config": asdict(self.config), "producer": self.producer.to_dict()}), 0.0))
@@ -835,7 +1128,7 @@ class Learner:
         latest = self._read_retry("latest_checkpoint", self.exchange.latest_checkpoint)
         if self.lineage_version and (latest is None or latest["version"] < self.lineage_version):
             self.checkpoints.submit(FrozenCheckpoint(self._state(), (), FrozenObject.of(
-                {"schema": CHECKPOINT_SCHEMA, "run": self.config.run,
+                {"schema": self.checkpoint_schema, "run": self.config.run,
                  "version": self.lineage_version, "updates": self.updates,
                  "start_package_sha256": self.start_sha256,
                  "reference_package_sha256": self.reference_sha256,
@@ -926,11 +1219,17 @@ class Learner:
                 self._take_checkpoint(wait=False)
                 began = time.monotonic()
                 result = self.train_once()
+                if self.critic is not None:
+                    began = self.policy_train_began
+                    if (not self.critic.ready and time.monotonic() - self.last_critic_checkpoint_at
+                            >= self.critic.config.checkpoint_seconds):
+                        self.maybe_version(force=True)
                 if result is None:
                     self.timer.add("wait_data_check", began)
                     began = time.monotonic()
                     time.sleep(self.config.poll_seconds if not self.reads else 0.2)
-                    self.timer.add("wait_for_data", began)
+                    self.timer.add("warmup_cadence_wait" if self.warmup_trained
+                                   else "wait_for_data", began)
                     if time.monotonic() - self.last_event_at >= 30:
                         self._event("waiting")
                     continue
@@ -1002,7 +1301,8 @@ class Learner:
                    "counts": dict(self.counts), "timing": self.timer.report(),
                    "trajectory_to_training_seconds": _quantiles(self.latencies),
                    "decision_accounting": self.ledger.summary(),
-                   "device": str(self.device), "anchor": getattr(self, "anchor_identity", None)}
+                   "device": str(self.device), "anchor": getattr(self, "anchor_identity", None),
+                   "critic": self.critic.state() if self.critic else None}
         (self.work / "learner-summary.json").write_bytes(json_bytes(summary))
         self._event("finished", **{k: summary[k] for k in ("updates", "counts")})
         return summary

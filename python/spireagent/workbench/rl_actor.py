@@ -215,13 +215,17 @@ class Actor:
         for slot in slots:
             report = (json.loads(Path(slot["attempt_report"]).read_bytes())
                       if slot.get("attempt_report") else {"episodes": [{}]})
-            row = report["episodes"][0] if report.get("episodes") else {}
+            matches = [row for row in report.get("episodes", ())
+                       if row.get("run_id") == slot.get("run_id")]
+            row = matches[0] if len(matches) == 1 else {}
             game = {"seed": slot["seed"], "status": slot["status"],
                     "model_version": record["version"],
                     "reason": slot.get("reason") or row.get("reason"),
                     "run_id": slot.get("run_id") or row.get("run_id"),
                     "shard": slot.get("trajectory_shard_id") or row.get("trajectory_shard_id"),
                     "elapsed_seconds": row.get("elapsed_seconds"),
+                    "started_at": row.get("pipeline_started_at"),
+                    "model_published_at": record.get("published_at"),
                     "phase_seconds": row.get("phase_seconds"),
                     "behavior_policy": row.get("behavior_policy")}
             self.games.append(game)
