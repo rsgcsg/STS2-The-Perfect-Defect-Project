@@ -5,11 +5,17 @@ source and scope; refresh its owning status/identity before an operational actio
 CURRENT owns the active task and next step; its linked active plan owns progress.
 Historical execution matrices retain their original observations and obligations.
 
-## 对局台候选安装（2026-11-01，尚未验收）
+## 对局台候选安装（2026-11-01，保存验收阻塞）
 
-[PR344](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/344)普通合入develop（351958bd），[完整CI](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/41222237086)通过。首包Workbench `1b681889` / Mod `0.2.0-rc.71` 已安装，冷加载SHA为 `a57fbc1a6a66aabee75f7d128d3218f14596f98c8709bde0cf14e973b3a9afe3`；Runtime `0.1.0-rc.60` 经原入口加载为Human，0次执行。
+[PR344](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/344)与修复[PR345](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/345)已普通合入develop，最终修复合入4513f038；安装源码为ab816a93，[对应完整CI](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/41225831372)通过。当前Workbench包 `cc39dc7fde988a4d4c50922cf72fe12c077f772fb3abd66cf6035312de362d66`、LiveUI `0.1.0-rc.24`、Mod `0.2.0-rc.72` 已实际冷加载，Mod SHA为 `48a9d4c396e665fe64a1af1670787b1556767e4749b4ed09970dc85b7e04b2ef`。Runtime `0.1.0-rc.60` 原包SHA为 `f9f31492be93318161f6f7a6672d715b30f345b72e6c2f20d581b451f769d4e0`，实际加载代码SHA为 `1ebbf1b0494221d1ea9eb7bf6ab5808d0c1a39094fa72754dc173b105ebe0510`。
 
-实际打开动作窗后发现最小高度撑出屏幕；退出时又核到入库维护关闭会漏掉模型片段封存。首条[mac-daily部署](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/deployments) `7462014787` 如实记failure，固定于 [deploy/mac-daily/20261031T173540Z](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/tree/deploy/mac-daily/20261031T173540Z)。当前另版修复；安装、冷加载不等于日常用法验收。首次准备入口另有unconfirmed，未重发游戏动作；Stop确认后新CLI意图完成Human准备，后续鼠标入口仍待复验。当前派工与唯一下一步见[CURRENT](memory/CURRENT.md)。
+实点确认主窗/录制/模型/动作窗可用、动作窗底部不再溢出；三个功能窗的关闭重开、最小化还原、拖动、缩放不停止原Human Runtime，前后同一run且0次提交。原生鼠标准备动作列表完成；菜单不满足映射时如实显示“等局面稳定”。随后实际退出游戏，原维护观察器在入库关闭时仍完成关联Runtime Stop；重开核回同一Mod。此检查没有产生游戏动作，也不证明真人或模型对局流程。
+
+最后点“停录制并保存”暴露既有日常配置所绑临时Store已不存在，报 `store_not_found`；没有索引发布/回读成功，未自动换库，正在等用户选定持久本机库或已有库。第二条[mac-daily部署](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/deployments) `7462443141` 也如实记failure，固定于 [deploy/mac-daily/20261031T181337Z](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/tree/deploy/mac-daily/20261031T181337Z)。诊断仍按旧environment类型解析GLOBAL状态，故Runtime摘要与后台失联时的独立恢复未通过，另记[#346](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/issues/346)。正常主用例不经此诊断解析。
+
+首包Mod71动作窗溢出及入库关闭时漏模型退出封存的失败历史保留：首部署 `7462014787` 为failure，固定于 [deploy/mac-daily/20261031T173540Z](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/tree/deploy/mac-daily/20261031T173540Z)，旧Mod/Launcher/Tool曾经原owner回滚。旧Runtime私有pin缺归档URL，原installer拒绝恢复，未虚构成功；物理Runtime60保留为本卡明确依赖。首次准备unconfirmed未重发游戏动作，后续新意图和Mod72原生入口已完成准备。
+
+[#297](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/issues/297)数据用途决定已随PR344落文档并关闭；[#300](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/issues/300)展示局接评估账本、[#343](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/issues/343)窗口记忆/双击后补。用户0局；[#340](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/issues/340)保持打开，完整选择/执行/切换/封存/入库/读回、真人来源资格及模型效果均不作通过声明。当前唯一下一步见[CURRENT](memory/CURRENT.md)。
 
 ## 统筹同步（2026-10-31，历史）
 
