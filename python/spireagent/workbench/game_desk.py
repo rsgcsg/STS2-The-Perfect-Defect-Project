@@ -1320,6 +1320,13 @@ class GameDeskApplication:
         with self.models.lock:
             client = self.models.client
             active = client is not None and client.startup["run_id"] in self.sources["runtime"]
+            operation = self.models.state.get("operation") or {}
+            if (
+                active
+                and operation.get("action") == "stop"
+                and operation.get("status") in {"pending", "unknown"}
+            ):
+                reject("model_stop_pending_check_original")
         if active:
             self._wait_model(self.models.command("stop"), self.intent)
         with self.lock:

@@ -244,6 +244,26 @@ def test_maintenance_observes_only_before_game_exit_and_capacity(tmp_path, game,
     assert importer._maintenance["pending_candidates"][0]["session_id"] == "next-user-session"
 
 
+@pytest.mark.parametrize("status,game,expected", [
+    ("ready", False, 1), ("ready", True, 0), ("ready", None, 0),
+    ("unavailable", False, 0),
+])
+def test_model_only_desk_exit_is_independent_of_disabled_recording_intake(
+    tmp_path, status, game, expected
+):
+    config = ProjectConfig(tmp_path, "", "", None, combination())
+    importer = LocalRecordingImporter(config, SimpleNamespace(read=lambda: {
+        "status": status, "game_running": game, "candidates": []}))
+    service = P1RecordingMaintenance(importer)
+    finalized = []
+    service.game_desk = SimpleNamespace(finalize_after_game_exit=lambda: finalized.append(True))
+    assert importer._maintenance["policy"]["enabled"] is False
+    service.tick()
+    assert len(finalized) == expected
+    assert importer._maintenance["policy"]["enabled"] is False
+    assert importer.thread is None and importer.operation["status"] == "idle"
+
+
 def test_disk_full_during_failure_save_does_not_kill_worker_or_retry(tmp_path, monkeypatch):
     config = ProjectConfig(tmp_path, "", "", None, combination())
     importer = LocalRecordingImporter(config, None)

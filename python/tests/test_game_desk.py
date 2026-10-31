@@ -376,6 +376,17 @@ def test_partial_native_line_is_not_counted_and_later_complete_line_is_read_once
     assert len(desk.steps()) == 1
 
 
+@pytest.mark.parametrize("status", ["pending", "unknown"])
+def test_game_exit_observer_never_resends_an_unconfirmed_stop(tmp_path, status):
+    desk, app, owner, feedback, calls = app_fixture(tmp_path)
+    app.models.client = SimpleNamespace(startup={"run_id": "owned-run"})
+    app.models.state["operation"] = {"action": "stop", "status": status, "id": "original"}
+    desk.sources["runtime"]["owned-run"] = {}
+    with pytest.raises(BoundaryError, match="model_stop_pending_check_original"):
+        desk.finalize_after_game_exit()
+    assert app.models.commands == []
+
+
 def test_complete_catalog_presentation_retains_ids_and_uses_public_hand_target_and_cost():
     from spireagent.workbench.game_desk import present_choices
 
