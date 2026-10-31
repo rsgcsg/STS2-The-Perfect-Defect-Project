@@ -34,6 +34,8 @@ owns native legality, input delivery, causal proof or research admission.
   明确区分本机已写入、片段封存、录后核验/入库和远端备份。后台不可读或写入不健康
   就显示“没在确认保存/没在保存”，不保留正常红点。关闭所有业务窗后 launcher
   仍显示录制反馈。最近列表有界，计数不以列表行数冒充录制器计数。
+  重启后原录制器已待命但尚无会话核来源时，显示“原录制器待命、来源尚未核实”；
+  不显示未录制，也不据此默认 Human 或启动另一个本人片段。
 - **连续 / 一步 / 停，我来**走同一 LocalModelService。连续使用无自主预算上限的
   原 continuous 配置；不按 Boss、精英、奖励、商店或分数自动停。终局、真实失败、
   unknown 的原 owner 生命周期及安全拒绝仍照实保留。每个模型步始终写 Runtime 原件，

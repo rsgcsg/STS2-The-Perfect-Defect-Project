@@ -1116,13 +1116,18 @@ class GameDeskApplication:
         recorded = [step for step in steps if step["recording"] or step["actor"] == "model"]
         humans = [step for step in recorded if step["actor"] == "human" and step["recording"]]
         model = runtime.get("mode") in {"auto", "one_step", "shadow"}
+        # A restored Recorder can already be armed before a session exists.
+        # Expose that real state without inventing a Human declaration or
+        # granting this application permission to start the next Human segment.
+        inherited_recording = self.preference is None and feedback.get("armed") is True
+        requested = self.preference is True or inherited_recording
         healthy = (
             self.feedback_error is None
             and feedback.get("health", {}).get("append") == "healthy"
             and feedback.get("health", {}).get("disk") == "healthy"
             and feedback.get("health", {}).get("error") is None
         )
-        saving = self.preference is True and (
+        saving = requested and (
             bool(model)
             and not runtime.get("tainted")
             or feedback.get("lifecycle") == "recording"
@@ -1132,6 +1137,12 @@ class GameDeskApplication:
             message = self.feedback_error
         elif self.native_error:
             message = "没在保存：" + self.native_error
+        elif inherited_recording:
+            message = (
+                "● 原录制器正在保存；来源尚未核实，不默认算本人示范。"
+                if saving
+                else "原录制器已待命，当前没在保存；来源尚未核实。"
+            )
         elif self.preference is not True:
             message = "未录制：你的操作不保存为示范；模型轨迹始终保存。"
         elif model:
@@ -1163,11 +1174,11 @@ class GameDeskApplication:
             "schema": SCHEMA,
             "recording": {
                 "lifecycle": "standby"
-                if self.preference is True
+                if requested
                 and feedback.get("armed")
                 and feedback.get("lifecycle") in {"ready", "closed"}
                 else feedback.get("lifecycle", "unavailable"),
-                "requested": self.preference is True,
+                "requested": requested,
                 "saving": bool(saving)
                 and self.feedback_error is None
                 and self.native_error is None,

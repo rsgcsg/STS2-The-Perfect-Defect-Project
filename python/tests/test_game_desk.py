@@ -193,6 +193,20 @@ def test_stop_disarms_original_continuous_recorder_even_between_games(tmp_path, 
     assert feedback["armed"] is False
 
 
+@pytest.mark.parametrize("lifecycle,saving", [("ready", False), ("recording", True)])
+def test_inherited_armed_recorder_is_visible_without_guessing_human_origin(
+    tmp_path, lifecycle, saving
+):
+    desk, app, owner, feedback, calls = app_fixture(tmp_path)
+    feedback.update(armed=True, lifecycle=lifecycle)
+    desk.poll()
+    result = desk.view()["recording"]
+    assert result["requested"] is True and result["saving"] is saving
+    assert "来源尚未核实" in result["message"]
+    assert desk.preference is None and desk.steps() == []
+    assert calls == []  # Viewing inherited standby must not declare a new Human source.
+
+
 @pytest.mark.parametrize("action", ["auto", "one_step", "human_choice"])
 def test_model_and_rank_strip_response_schema_before_real_control_context_parser(tmp_path, action):
     desk, app, owner, feedback, calls = app_fixture(tmp_path)
