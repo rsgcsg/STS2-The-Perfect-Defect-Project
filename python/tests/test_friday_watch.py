@@ -687,7 +687,7 @@ def test_tier_prepare_overrides_serial_pipeline_and_never_opens_confirmation(
     instance.exchange = SimpleNamespace(materialize_model=lambda *_: tmp_path / 'model')
     instance.publish = lambda *_args, **_kwargs: None
     with (patch.object(watch.evaluate, 'submit', return_value={'job_id': 'fixture-123'}),
-          patch.object(watch.subprocess, 'Popen')):
+          patch.object(watch.subprocess, 'Popen', return_value=SimpleNamespace(pid=123))):
         instance.prepare_evaluation({'version': 2, 'model_artifact_id': '1' * 64,
                                      'training': {'updates': 16}}, 14400,
                                     tier=rl3_tiers()[0], due_at=14400)
