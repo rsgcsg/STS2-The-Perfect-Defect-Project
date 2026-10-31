@@ -35,7 +35,27 @@
 
 **从 2026-10-29 起，以后才做的待办都记在 [GitHub Issues 的 `backlog` 标签](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/issues?q=is%3Aissue+label%3Abacklog)，每条写清触发条件，做完由 PR 关闭；本表不再加新行，下面的旧行碰到时核一下状态，还没做完的搬进 Issues。**
 
-本表是本次收口留下的未完义务，后续分配后更新原条目，不另建注册表。首次/证据来自原报告，不把本轮重新发现当第一次；每个未派发项均无执行者。
+### 10-31逐行归位（当前去向；不是派工）
+
+原表的“待派发”是10-27时点；下面逐行对齐后续结果。没有新执行者；已交的实现、未完成的资格和触发条件分开。[#307](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/issues/307)继续保留尚未逐反例验收的义务，不用大类Issue代替完成。
+
+| 原行 | 当前结论与原证据 | 剩余 / 触发 |
+|---|---|---|
+| M023/M024/M049 输入排列 | T1输入v2已交，[PR263](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/263)；旧438与原10个argmax反例不追认 | [#324](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/issues/324)保严格并行输入/输出比较；[#332](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/issues/332)保下代输入选择，不重发T1 |
+| 执行→保存 | [M1R2](../evidence/MANAGED_SAVE_M1R2_20261027.md)/[M2b](../evidence/MANAGED_TIERS_M2B_20261027.md)和PR281已交同账本有界保存流水线 | 关闭这条旧待派发口吻；后续真实吞吐按[#319](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/issues/319)/[#321](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/issues/321)验 |
+| M051 settling | [M2a](../evidence/MANAGED_M2A_20261027.md)修具体Godot.Mathf.Log等等待根因；原unknown保留 | 不把新停滞当同根；实际新失败按原Host规则定位，整体触发归[#294](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/issues/294) |
+| M052/M053/M035/M038 机制/展示 | 后续M2a/M2e有局部修复；现证据不支持四项全标通过 | #307保每个原编号、差异与版本核对；碰到真实需求/失败再诊断，不开第四轮整包重放 |
+| M016/M018 支持域 | 未到达不算通过；D2b另发现水晶球小游戏未支持 | #307保原支持域；新能力须另版另验，原n10审计仍未准入 |
+| M003/M048 原件→重演 | X2/I1新局采集已修；M2e第三轮未证明个人profile全轨等价 | #307保旧启动事实缺失及整局重演；不补造旧29组，不重发原M3整包 |
+| Q状态/调度 | [X3](../evidence/Q_POLISH_X3_20261027.md)已装并核查询/新步骤准入 | 已开始trim不承诺暂停或零卡顿；同类真实干扰再接[#302](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/issues/302) |
+| M020/M026 Reference多开 | 保原1/2/4可行性，关闭渲染资格未验 | #307保该具体资格；真游戏批量需求出现且用户给窗口后才做，不挡当前Managed研究 |
+| 新候选评估矩阵 | T2/E1/D2/D2b已各有准确候选与实际矩阵 | 旧“候选不存在”已过期；当前成绩看各候选原ledger，不恢复旧100槽 |
+| checkpoint/训练/数值 | T2/D2已有正式训练与恢复；旧J-min数值失败保留 | 多模型连续用户流程仍未全验（#307）；长程保存结构失败归[#338](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/issues/338) |
+| 环境/大补丁 | E1/E2已统一多处解释器/依赖与共享环境 | 同类新失败接[#302](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/issues/302)，上游升级触发[#301](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/issues/301)，不整包重做 |
+
+### 10-27原表（历史证据，保留原状态）
+
+以下是当时留下的义务和理由，不是当前待派发队列；当前去向以上节为准。首次/证据来自原报告，不把本轮重新发现当第一次。
 
 | 位置 / 首次 | 挡住什么、现在知道什么 | 负责人 / 去向与下一判据 |
 |---|---|---|
@@ -54,6 +74,8 @@
 完整的旧M编号/失败/范围留 `replies/MANAGED-P1-EXCEPTIONS.md` 与 [Host原指南](../../components/host-runtime/docs/MANAGED_P1_EQUIVALENCE.md)，本表不接受例外，也不把全部编号改标已解决。Q3要求搬入的停用/空WAL/原异常和Tool换代问题已进入 [RESOLVED_ISSUES](../RESOLVED_ISSUES.zh-CN.md)。
 
 ### 运行和开发分开（用户 10-29 批）
+
+10-31核对：以下是已选规则，E3只写了规矩、未交付GitHub Environment/Deployment登记。实际运行组合仍须看原部署/安装收据与节点；下一次真实部署由部署者补登记，不补造历史Deployment，也不把Deployments页称为当前完整来源。
 
 在跑的东西各自固定在一个提交或标记上：学校学习者、Friday 打局者（冻结部署）、日常安装。每个节点在 GitHub 上是一个 Environment，每次部署由部署者核完实际安装以后记一条 Deployment，再打一个不可变的部署标记；"现在哪个节点跑的是哪个提交"看仓库的 Deployments 页，不看分支。develop 照常优化和重构，不影响正在跑的东西。换代只在学校每次分配结束时做：开一个新的 run，从上一个已发布的最好模型热启动，先短核再继续。main 只记录正式发布，触发条件在 backlog 里。
 
