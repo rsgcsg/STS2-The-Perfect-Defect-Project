@@ -82,6 +82,8 @@ export interface RuntimeServiceOwner {
   stop(): Promise<RuntimeStatus | AgentRuntimeStatus>;
   tick(expected?: { gameInstanceId?: string; recoveryEpoch?: number }): Promise<import("./contracts.js").TickResult | AgentRuntimeTickResult>;
   reconcileOriginalRequest?(requestId: string, expected?: { gameInstanceId?: string; recoveryEpoch?: number }): Promise<AgentReconcileResult>;
+  readHumanChoices?(): Promise<Record<string, unknown>>;
+  chooseHuman?(value: import("./agent-native-runtime.js").HumanSelection, expected: { gameInstanceId?: string; recoveryEpoch?: number }): Promise<AgentRuntimeTickResult>;
   actionReviewStatus?(): ReturnType<import("./action-review.js").ActionReview["status"]>;
   controlActionReview?(value: { enabled?: boolean; approve?: string }, expected: { gameInstanceId?: string; recoveryEpoch?: number }): Promise<void>;
 }

@@ -1,782 +1,147 @@
-using Godot;
-using System.Globalization;
 using System.Text.Json;
-using static Godot.Control;
 
 namespace STS2PlatformLiveUi;
 
-/// <summary>Five native presentations over one application backend. No worker or job state.</summary>
+/// <summary>One paired application view and command owner shared by every desk window.</summary>
 internal sealed class PlatformNativeWorkbenchPanel : IDisposable
 {
     private readonly PlatformNativeWorkbenchClient _client = new();
     private readonly PlatformNativeWorkbenchCommands _commands = new();
     private readonly CancellationTokenSource _lifetime = new();
-    private readonly Dictionary<string, string> _drafts = new(StringComparer.Ordinal);
-    private readonly Dictionary<string, Control> _fields = new(StringComparer.Ordinal);
     private readonly List<(Task<PlatformNativeWorkbenchCommandResult> Task, string Action)> _writes = [];
-    private readonly VBoxContainer _body = new();
-    private readonly VBoxContainer _recordingStatus = new();
-    private readonly VBoxContainer _recordingForms = new();
-    private readonly VBoxContainer _maintenanceStatus = new();
-    private readonly VBoxContainer _cards = new();
-    private readonly VBoxContainer _items = new();
-    private readonly VBoxContainer _forms = new();
-    private readonly VBoxContainer _result = new();
-    private readonly HBoxContainer _recordingButtons = new();
-    private readonly VBoxContainer _recovery = new();
-    private readonly HBoxContainer _pager = new();
-    private readonly Label _backgroundNotice = Label("训练和上传会在后台继续；收起面板不会停止这些任务。");
-    private readonly Label _connection = new() { AutowrapMode = TextServer.AutowrapMode.WordSmart };
-    private readonly Label _notice = new() { AutowrapMode = TextServer.AutowrapMode.WordSmart };
-    private readonly Label _fences = new() { AutowrapMode = TextServer.AutowrapMode.WordSmart };
-    private readonly Label _pagination = new();
-    private readonly Button _previous = new() { Text = "上一页" };
-    private readonly Button _next = new() { Text = "下一页" };
-    private Task<(long Generation, JsonElement? View, string? Error)>? _read;
-    private Task<(PlatformNativeWorkbenchConnection Connection, string? Url, long Generation)>? _externalOpen;
-    private JsonElement? _view;
-    private string _page = "play";
-    private string _section = "play";
-    private string? _context;
-    private int _offset;
-    private long _generation;
-    private string? _formsKey;
-    private string? _recordingContext;
-    private string? _itemsKey;
-    private bool _disposed;
-    private bool _visible;
-    internal ScrollContainer Root { get; } = new() { SizeFlagsHorizontal = SizeFlags.ExpandFill, SizeFlagsVertical = SizeFlags.ExpandFill };
+    private Task<JsonElement>? _deskRead, _choicesRead;
+    private PlatformNativeWorkbenchConnection? _readConnection;
+    internal JsonElement? Desk { get; private set; }
+    internal JsonElement[] Models { get; private set; } = [];
+    internal JsonElement[] Choices { get; private set; } = [];
+    internal bool Connected { get; private set; }
+    internal bool ChoicesAvailable { get; private set; }
+    internal bool ChoicesReadEnabled { get; private set; }
+    internal string? ChoicesError { get; private set; }
+    private bool _connectionNotice = true;
+    internal string Notice { get; private set; } = "正在连接本机后台…";
+    internal long Revision { get; private set; }
+    internal Action? Reconnect { get; set; }
 
-    internal PlatformNativeWorkbenchPanel(Action<PlatformPolicyCommand> directRecovery, Action openLegacyRecorder, Action openRuntimeDiagnostics)
+    internal bool CanSubmit(string action)
     {
-        Root.SetAnchorsAndOffsetsPreset(LayoutPreset.FullRect);
-        _body.SizeFlagsHorizontal = SizeFlags.ExpandFill;
-        _body.AddThemeConstantOverride("separation", 8);
-        Root.AddChild(_body);
-        var navigation = new HBoxContainer();
-        foreach ((string page, string label) in new[] { ("recording", "录制"), ("data", "资料管理"), ("play", "模型实战"), ("training", "训练"), ("models", "模型"), ("settings", "设置"), ("diagnostics", "诊断") })
-        {
-            string selected = page;
-            navigation.AddChild(Button(label, () => Navigate(selected, _context)));
-        }
-        _body.AddChild(navigation);
-        _body.AddChild(_connection);
-        var recovery = new HBoxContainer();
-        recovery.AddChild(Button("暂停本机加载/接管", () => ModelRecovery("models.human")));
-        recovery.AddChild(Button("结束本机模型任务", () => ModelRecovery("models.stop")));
-        recovery.AddChild(Button("直接归还 Human", () => directRecovery(PlatformPolicyCommand.Human)));
-        _recovery.AddChild(recovery);
-        recovery = new HBoxContainer();
-        recovery.AddChild(Button("直接停止当前 Runtime", () => directRecovery(PlatformPolicyCommand.Stop)));
-        recovery.AddChild(Button("刷新本页", () => Refresh(true)));
-        _recovery.AddChild(recovery);
-        var legacy = new HBoxContainer();
-        legacy.AddChild(Button("兼容录制窗口", openLegacyRecorder));
-        legacy.AddChild(Button("游戏运行诊断", openRuntimeDiagnostics));
-        _recovery.AddChild(legacy);
-        _body.AddChild(_recovery);
-        _body.AddChild(_backgroundNotice);
-        _body.AddChild(_notice);
-        _body.AddChild(_fences);
-        _body.AddChild(_recordingStatus);
-        _body.AddChild(_recordingForms);
-        _body.AddChild(_recordingButtons);
-        _body.AddChild(_maintenanceStatus);
-        _body.AddChild(_cards);
-        _body.AddChild(_items);
-        var pager = _pager;
-        _previous.Pressed += () => { _offset = Math.Max(0, _offset - 25); _generation++; Refresh(true); };
-        _next.Pressed += () => { _offset += 25; _generation++; Refresh(true); };
-        pager.AddChild(_previous); pager.AddChild(_pagination); pager.AddChild(_next);
-        _body.AddChild(pager);
-        _body.AddChild(_forms);
-        _body.AddChild(_result);
-        ApplySectionVisibility();
+        PlatformNativeWorkbenchConnection? connection = PlatformNativeWorkbenchConnection.Current;
+        return connection is not null && _commands.CanSubmit(connection.Binding.ConfigurationId, action);
     }
 
-    private static Label Label(string value) => new() { Text = value, AutowrapMode = TextServer.AutowrapMode.WordSmart, SizeFlagsHorizontal = SizeFlags.ExpandFill };
-    private static Button Button(string text, Action pressed)
-    { var button = new Button { Text = text }; button.Pressed += pressed; return button; }
-    private static void Clear(Node node) { foreach (Node child in node.GetChildren()) { node.RemoveChild(child); child.QueueFree(); } }
-    private static string? String(JsonElement value, string key) => value.ValueKind == JsonValueKind.Object && value.TryGetProperty(key, out JsonElement result) && result.ValueKind == JsonValueKind.String ? result.GetString() : null;
-    private static bool Boolean(JsonElement value, string key) => value.ValueKind == JsonValueKind.Object && value.TryGetProperty(key, out JsonElement result) && result.ValueKind == JsonValueKind.True;
-    private static JsonElement? Object(JsonElement value, string key) => value.ValueKind == JsonValueKind.Object && value.TryGetProperty(key, out JsonElement result) && result.ValueKind == JsonValueKind.Object ? result : null;
-    private static string Show(JsonElement value) => value.ValueKind == JsonValueKind.String ? value.GetString() ?? "" : value.GetRawText();
-
-    private void Navigate(string page, string? context)
+    internal void Refresh(bool choicesVisible)
     {
-        string apiPage = page is "recording" or "diagnostics" ? "data" : page;
-        bool changed = _section != page || _context != context;
-        _section = page; _page = apiPage; _context = context; _offset = 0; _generation++;
-        Root.ScrollVertical = 0;
-        ApplySectionVisibility();
-        if (changed) { _formsKey = null; _itemsKey = null; _drafts.Clear(); }
-        Refresh(true);
-    }
-
-    internal void OpenPage(string page)
-    {
-        if (page is not ("play" or "data")) throw new ArgumentException("native_page_not_supported");
-        Navigate(page == "data" ? "recording" : page, null);
-    }
-
-    internal void Refresh(bool visible)
-    {
-        if (_disposed || !visible || _read is { IsCompleted: false }) return;
+        if (_lifetime.IsCancellationRequested) return;
         PlatformNativeWorkbenchConnection? connection = PlatformNativeWorkbenchConnection.Current;
         if (connection is null || connection.Binding.ExpiresAt <= DateTimeOffset.UtcNow.ToUnixTimeSeconds())
         {
-            _connection.Text = "本机访问未连接或已过期。需要已验证工作台的明确本机访问设置；旧工具包保留浏览器入口。直接 Human/Stop 不依赖此连接。";
-            foreach (Control field in _fields.Values) if (field is BaseButton button) button.Disabled = true;
+            Unavailable("后台未连接，录制保存状态未确认。请点“重新连接”。");
             return;
         }
-        // A background page refresh does not change a confirmed connection.
-        // Reuse the validated view's binding instead of a second connection state.
-        if (_view is not JsonElement confirmed || PlatformNativeWorkbenchPair.Read(confirmed.GetProperty("binding")) != connection.Binding)
-            _connection.Text = "正在读取本机工作台…";
-        long generation = _generation;
-        string page = _page; int offset = _offset; string? context = _context;
-        _read = Task.Run(async () =>
-        {
-            try { return (generation, (JsonElement?)await _client.ViewAsync(connection, page, offset, context, _lifetime.Token), (string?)null); }
-            catch (Exception error) when (error is HttpRequestException or OperationCanceledException or JsonException or InvalidOperationException or IOException)
-            { return (generation, (JsonElement?)null, "本机状态不可用；未提交操作。请检查工作台连接。" ); }
-        });
+        _readConnection = connection;
+        _deskRead ??= Read(connection, "desk");
+        if (choicesVisible && ChoicesReadEnabled) _choicesRead ??= Read(connection, "choices");
     }
 
-    internal void OnFrame(bool visible)
-    {
-        _visible = visible;
-        if (_disposed) return;
-        if (_read is { IsCompleted: true })
-        {
-            var result = _read.GetAwaiter().GetResult(); _read = null;
-            if (result.Generation == _generation)
-            {
-                if (result.View is JsonElement view)
-                {
-                    PlatformNativeWorkbenchConnection? current = PlatformNativeWorkbenchConnection.Current;
-                    if (current is not null && PlatformNativeWorkbenchPair.Read(view.GetProperty("binding")) == current.Binding)
-                    { _view = view; if (_visible) Render(view, current); }
-                }
-                else _connection.Text = result.Error;
-            }
-        }
-        if (_externalOpen is { IsCompleted: true })
-        {
-            var external = _externalOpen.GetAwaiter().GetResult(); _externalOpen = null;
-            if (external.Url is not null && external.Generation == _generation
-                && PlatformNativeWorkbenchConnection.IsCurrent(external.Connection))
-                OS.ShellOpen(external.Url);
-            else _notice.Text = "所选工作台或对象已变化；未打开外部窗口。";
-        }
-        for (int index = _writes.Count - 1; index >= 0; index--)
-        {
-            var write = _writes[index]; if (!write.Task.IsCompleted) continue;
-            _writes.RemoveAt(index);
-            PlatformNativeWorkbenchCommandResult result = write.Task.GetAwaiter().GetResult();
-            // A completed write can leave owner IDs/capabilities unchanged.
-            // Recompute button eligibility only from the next fresh owner view.
-            _formsKey = null;
-            _notice.Text = result.Status switch {
-                "accepted" => write.Action.StartsWith("recording.", StringComparison.Ordinal)
-                    ? "操作已收到，正在刷新录制状态。"
-                    : "服务已接收操作；请查看所属任务的实际进度。",
-                "rejected" => _section == "play" ? PlayRecoveryMessage(result.ErrorCode) : "操作未投递：" + result.ErrorCode,
-                _ => "操作响应未确认。保留原任务上下文；不会自动重发。请明确核对或恢复原任务。"
-            };
-            Clear(_result);
-            if (_section != "play" && result.OwnerResponse is JsonElement owner)
-            {
-                _result.AddChild(Label("最近操作 · " + write.Action));
-                RenderSummary(_result, owner);
-                if (write.Action == "recordings.refresh" && owner.TryGetProperty("candidates", out JsonElement candidates))
-                    foreach (JsonElement candidate in candidates.EnumerateArray().Take(50))
-                    {
-                        string? identity = String(candidate, "candidate_id");
-                        if (identity is not null) _result.AddChild(Button("选择录制 · " + identity[..Math.Min(12, identity.Length)], () => SetDraft("recordings.import:candidate_id", identity)));
-                    }
-                if (write.Action == "identity.login" && String(owner, "approval_url") is string approval)
-                {
-                    string hub = HubUrl();
-                    if (PlatformNativeWorkbenchClient.TrustedLoginUrl(hub, approval))
-                        _result.AddChild(Button("打开此账号的授权页", () => OS.ShellOpen(approval)));
-                    if (String(owner, "user_code") is string code) _result.AddChild(Label("账号授权码：" + code));
-                }
-                if (String(owner, "selection_id") is string selection)
-                    _result.AddChild(Button("查看已登记模型", () => Navigate("play", selection)));
-            }
-            Refresh(_visible);
-        }
-        _fences.Text = _commands.Unconfirmed.Length == 0 ? "" : _section == "diagnostics"
-            ? "未确认的原命令（更换连接不会清除）：\n" + string.Join('\n', _commands.Unconfirmed)
-            : "上次操作还没有确认，请到诊断页核对。不要重复点击。";
-        _notice.Visible = !string.IsNullOrEmpty(_notice.Text);
-        _fences.Visible = !string.IsNullOrEmpty(_fences.Text);
-    }
+    private Task<JsonElement> Read(PlatformNativeWorkbenchConnection connection, string page) =>
+        Task.Run(() => _client.ViewAsync(connection, page, 0, null, _lifetime.Token));
 
-    private string HubUrl()
+    internal void Submit(string action, object payload)
     {
-        if (_view is not JsonElement view) return "";
-        foreach (JsonElement card in view.GetProperty("cards").EnumerateArray())
-            if (String(card, "owner") == "configuration") return String(card.GetProperty("data"), "trusted_hub_url") ?? "";
-        return "";
-    }
-
-    private JsonElement? OwnerData(JsonElement view, string owner)
-    {
-        foreach (JsonElement card in view.GetProperty("cards").EnumerateArray())
-            if (String(card, "owner") == owner) return Object(card, "data");
-        return null;
-    }
-
-    private static readonly Dictionary<string, string> Names = new(StringComparer.Ordinal) {
-        ["status"]="状态", ["phase"]="阶段", ["stage"]="阶段", ["availability"]="可用性", ["reason"]="原因",
-        ["requested_action"]="已登记控制意图", ["worker_state"]="Worker 实际状态", ["domain_completion_state"]="领域完成状态",
-        ["validation_state"]="结果验证", ["selected_result"]="结果是否选用", ["elapsed_seconds"]="累计用时（秒）",
-        ["error_code"]="错误", ["operation_id"]="任务", ["attempt_id"]="Attempt", ["recipe_id"]="训练配方",
-        ["source_id"]="来源", ["candidate_count"]="已结束录制", ["records"]="记录数", ["purpose"]="用途",
-        ["mode"]="控制模式", ["loaded"]="模型已加载", ["selection_id"]="模型选择", ["device_name"]="电脑名称",
-        ["device_id"]="电脑授权", ["team_configured"]="团队资源已配置", ["platform_local"]="当前本机游戏",
-        ["name"]="名称", ["description"]="说明", ["qualification"]="资格范围", ["claim"]="当前证据范围",
-        ["progress"]="训练进度", ["configuration_id"]="配置身份", ["checkpoint_id"]="Checkpoint",
-        ["preview_id"]="已核对预览", ["artifact_id"]="来源对象", ["input_id"]="训练输入", ["run_id"]="训练运行", ["consent_required"]="需要明确采集授权",
-        ["result_id"]="训练结果", ["model_id"]="模型产物", ["evaluation_id"]="评估产物"
-    };
-    private static string PlayRecoveryMessage(string? code) => code switch {
-        "runtime_command_unknown" or "native_task_command_unknown" or "previous_operation_requires_recovery"
-            or "clean_sealed_actor_required" => "操作结果还未核对。请先恢复并交还人工，或结束当前展示；不会自动重发。",
-        "runtime_status_unavailable_or_identity_drift" or "runtime_environment_unavailable_or_identity_drift"
-            or "native_model_context_changed" or "native_pair_changed" or "native_pair_expired_or_missing"
-            or "native_task_game_identity_mismatch" => "游戏连接已变化。请刷新连接，再恢复原任务。",
-        "model_not_loaded" => "请先选择模型并开始展示。",
-        "operation_in_progress" or "runtime_already_running" => "正在处理当前操作，请稍候；需要时可暂停或结束。",
-        "unsupported_run_profile" or "continuous_requires_runtime_v2" or "extended_requires_text_menu_runtime"
-            => "此模型或运行组件还不支持连续展示，请在模型设置中检查。",
-        "native_world_identity_changed" or "native_world_identity_unavailable"
-            => "当前游戏与原展示记录无法核对。请手动继续游戏，或明确准备新的展示。",
-        "stopped_actor_required" or "resource_already_associated" => "请先暂停或结束当前模型，再选择另一个模型。",
-        "model_readiness_blocked" or "text_runtime_local_install_required" => "模型准备尚未完成，请先在模型设置中检查本机运行组件。",
-        _ => "当前展示需要处理。请尝试恢复并交还人工，或结束；详细原因可在诊断中查看。"
-    };
-
-    private void RenderSummary(VBoxContainer target, JsonElement data)
-    {
-        if (String(data, "schema") == "spireagent/native-recording-maintenance-view-1")
-        {
-            foreach (string row in PlatformNativeRecordingPresentation.MaintenanceRows(data, _section == "diagnostics"))
-                target.AddChild(Label(row));
-            return;
-        }
-        if (String(data, "schema") == "spireagent/native-recording-view-1" && Object(data, "status") is JsonElement recording)
-        {
-            foreach (string row in _section == "diagnostics"
-                ? PlatformNativeRecordingPresentation.Details(recording)
-                : PlatformNativeRecordingPresentation.Rows(recording))
-                target.AddChild(Label(row));
-            if (Boolean(data, "model_recovery_required"))
-                target.AddChild(Label("本机模型尚在实战或需要恢复。开始/更改为本人、AI界面或未知来源前，请先明确归还 Human 或 Stop。"));
-            if (Object(data, "unconfirmed") is JsonElement uncertain)
-                target.AddChild(Label("保留未确认录制请求 · " + String(uncertain, "command_id") + "。刷新不会重试或证明它执行。"));
-            return;
-        }
-        foreach (JsonProperty property in data.EnumerateObject())
-        {
-            if (Names.TryGetValue(property.Name, out string? label))
-            {
-                string text = Show(property.Value);
-                if (property.Name is "status" or "phase" or "stage" or "availability" or "reason")
-                    text = PlatformNativeRecordingPresentation.StateLabel(text);
-                if (text.Length > 400) text = text[..400] + "…";
-                target.AddChild(Label(label + "：" + text));
-                if (property.Name is "result_id" or "model_id" or "evaluation_id" or "checkpoint_id"
-                    && property.Value.ValueKind == JsonValueKind.String && PlatformNativeWorkbenchPair.Hex(property.Value.GetString(), 64))
-                {
-                    string identity = property.Value.GetString()!;
-                    target.AddChild(Button("查看 " + label, () => Navigate("models", identity)));
-                }
-            }
-        }
-        if (data.TryGetProperty("candidates", out JsonElement candidates) && candidates.ValueKind == JsonValueKind.Array)
-            foreach (JsonElement candidate in candidates.EnumerateArray().Take(50))
-                if (String(candidate, "candidate_id") is string identity)
-                    target.AddChild(Button("选择已结束录制 · " + identity[..Math.Min(12, identity.Length)], () => SetDraft("recordings.import:candidate_id", identity)));
-        if (data.TryGetProperty("items", out JsonElement exports) && exports.ValueKind == JsonValueKind.Array)
-            foreach (JsonElement exported in exports.EnumerateArray().Take(50))
-                if (String(exported, "export_id") is string identity && PlatformNativeWorkbenchPair.Hex(identity, 64))
-                    target.AddChild(Button("选择授权团队导出 · " + identity[..12], () => SetDraft("downloads.start:export_id", identity)));
-        if (Object(data, "operation") is JsonElement operation)
-        {
-            RenderSummary(target, operation);
-            if (String(operation, "status") == "pending" && String(operation, "requested_action") is "pause" or "cancel")
-                target.AddChild(Label("暂停/取消意图已登记；Worker 仍未确认停止。"));
-            if (String(operation, "status") == "interrupted_unknown")
-                target.AddChild(Label("结果未知：先明确核对原 attempt，不自动启动或恢复。"));
-        }
-        if (Object(data, "session") is JsonElement session) RenderSummary(target, session);
-        if (Object(data, "parameters") is JsonElement parameters) RenderSummary(target, parameters);
-        if (Object(data, "runtime") is JsonElement runtime) RenderSummary(target, runtime);
-        if (Object(data, "default") is JsonElement settings && Object(settings, "template") is JsonElement template)
-            if (String(template, "consent_text") is string consent) target.AddChild(Label("当前完整采集声明：\n" + consent));
-        if (Object(data, "enrollment") is JsonElement enrollment && Object(enrollment, "template") is JsonElement previousTemplate)
-            if (String(previousTemplate, "consent_text") is string consent) target.AddChild(Label("已登记采集声明：\n" + consent));
-    }
-
-    private void ApplySectionVisibility()
-    {
-        bool daily = _section == "recording", diagnostics = _section == "diagnostics";
-        _recovery.Visible = diagnostics;
-        _backgroundNotice.Visible = _section is "training" or "settings";
-        _recordingStatus.Visible = daily || diagnostics;
-        _recordingForms.Visible = daily;
-        _recordingButtons.Visible = daily;
-        _maintenanceStatus.Visible = daily || diagnostics;
-        _cards.Visible = !daily && !diagnostics;
-        _items.Visible = !daily && !diagnostics && _section != "play";
-        _pager.Visible = !daily && !diagnostics && _section != "play";
-        _forms.Visible = !daily && !diagnostics;
-        _result.Visible = !daily;
-    }
-
-    private void Render(JsonElement view, PlatformNativeWorkbenchConnection connection)
-    {
-        if (OwnerData(view, "model_terminal") is JsonElement terminal)
-            _commands.ObserveModelTerminal(terminal);
-        bool daily = _section == "recording", diagnostics = _section == "diagnostics";
-        ApplySectionVisibility();
-        _connection.Text = diagnostics ? "工作台实例：" + connection.Binding.WorkbenchInstanceId : "已连接游戏工作台";
-        _notice.Visible = !string.IsNullOrEmpty(_notice.Text);
-        _fences.Visible = !string.IsNullOrEmpty(_fences.Text);
-        Clear(_cards); Clear(_recordingStatus); Clear(_maintenanceStatus);
-        bool workspaceMissing = _section == "data" && OwnerData(view, "workspace") is JsonElement workspace
-            && String(workspace, "status") == "not_created";
-        foreach (JsonElement card in view.GetProperty("cards").EnumerateArray())
-        {
-            string owner = String(card, "owner") ?? "任务";
-            VBoxContainer target = owner switch {
-                "native_recording" => _recordingStatus,
-                "recording_maintenance" => _maintenanceStatus,
-                _ => _cards
-            };
-            JsonElement data = card.GetProperty("data");
-            if (_section == "play")
-            {
-                if (owner == "mixed_run")
-                {
-                    target.AddChild(Label("混合局：" + String(data, "status") + " · F8 暂停接管 / F9 交还模型"));
-                    target.AddChild(Label("混合数据隔离保存，暂不训练，不算模型实战成绩。"));
-                    if (Object(data, "preview") is JsonElement preview && Object(preview, "choice") is JsonElement choice)
-                    {
-                        string confidence = preview.TryGetProperty("confidence", out var probability) && probability.ValueKind == JsonValueKind.Number
-                            ? (probability.GetDouble() * 100).ToString("F1") + "%" : "未提供";
-                        target.AddChild(Label("下一步：" + String(choice, "label") + " · 把握 " + confidence + "（分数归一化，不是胜率）"));
-                    }
-                }
-                if (owner == "models" && Object(data, "session") is JsonElement play)
-                {
-                    target.AddChild(Label(Boolean(play, "loaded") ? "模型已加载" : "选择模型，开始连续展示；暂停和结束随时可用。"));
-                    if (_commands.Unconfirmed.Length > 0)
-                        target.AddChild(Label("原操作结果还未确认，请先结束原模型并等待完成；不会重复提交。"));
-                    if (Object(play, "runtime") is JsonElement runtime)
-                    {
-                        if (OwnerData(view, "native_environment") is JsonElement resource
-                            && String(resource, "phase") == "recovery_required")
-                            target.AddChild(Label(String(runtime, "mode") == "human" && String(runtime, "controller") == "released"
-                                ? "后台已断开，已交还人工；当前游戏可手动继续。"
-                                : "后台已断开，请先恢复并交还人工，或结束。"));
-                        target.AddChild(Label(String(runtime, "mode") == "auto" ? "正在展示" : "已暂停，人工控制"));
-                        if (Object(runtime, "autonomy_budget") is JsonElement budget && String(budget, "mode") == "continuous")
-                            target.AddChild(Label("连续运行，直到暂停或结束。"));
-                        if (Boolean(runtime, "tainted") || Object(runtime, "pending_request") is not null)
-                            target.AddChild(Label("当前操作结果待核对，请先恢复或结束；不会自动重投。"));
-                    }
-                    if (String(play, "error_code") is string error) target.AddChild(Label(PlayRecoveryMessage(error)));
-                }
-                continue;
-            }
-            if (_section == "data" && PlatformNativeRecordingPresentation.DataRows(owner, data, workspaceMissing) is { } rows)
-            {
-                foreach (string row in rows) target.AddChild(Label(row));
-                continue;
-            }
-            if (owner is not ("native_recording" or "recording_maintenance"))
-                target.AddChild(Label("— " + PlatformNativeRecordingPresentation.OwnerLabel(owner) + " —"));
-            RenderSummary(target, data);
-        }
-        JsonElement pagination = view.GetProperty("pagination");
-        int total = pagination.GetProperty("total").GetInt32();
-        if (_section == "data") _pager.Visible = total > 0;
-        _pagination.Text = $"{_offset + 1}–{Math.Min(_offset + 25, total)} / {total}";
-        _previous.Disabled = _offset == 0; _next.Disabled = _offset + 25 >= total || _offset + 25 > 10000;
-        JsonElement items = view.GetProperty("items");
-        string itemsKey = _page + ":" + items.GetRawText();
-        if (_itemsKey != itemsKey)
-        {
-            _itemsKey = itemsKey; Clear(_items);
-            foreach (JsonElement item in items.EnumerateArray())
-            {
-                string? identity = String(item, "artifact_id") ?? String(item, "selection_id");
-                if (identity is null) continue;
-                string title = String(item, "label") ?? String(item, "kind") ?? "对象";
-                if (Object(item, "parameters") is JsonElement metadata) title = String(metadata, "display_name") ?? String(metadata, "name") ?? title;
-                string selected = identity;
-                _items.AddChild(Button(title + " · " + identity[..Math.Min(12, identity.Length)], () => Navigate(_page, selected)));
-                if (_page == "data" && PlatformNativeWorkbenchPair.Hex(identity, 64))
-                {
-                    var pick = new CheckBox { Text = "加入 Human 来源选择（资格仍由服务核对）" };
-                    string key = "datasets.human-preview:artifact_ids";
-                    pick.ButtonPressed = _drafts.GetValueOrDefault(key, "").Split(',').Contains(identity);
-                    pick.Toggled += chosen => {
-                        var ids = _drafts.GetValueOrDefault(key, "").Split(',', StringSplitOptions.RemoveEmptyEntries).ToHashSet(StringComparer.Ordinal);
-                        if (chosen) ids.Add(selected); else ids.Remove(selected);
-                        SetDraft(key, string.Join(',', ids.Order(StringComparer.Ordinal)));
-                    };
-                    _items.AddChild(pick);
-                }
-            }
-        }
-        JsonElement capabilities = view.GetProperty("capabilities");
-        string ownerContexts = string.Join(';', view.GetProperty("cards").EnumerateArray().Select(card => {
-            JsonElement data = card.GetProperty("data");
-            JsonElement? operation = Object(data, "operation") ?? (Object(data, "session") is JsonElement session ? Object(session, "operation") : null);
-            if (String(card, "owner") == "model_control")
-                return "model_control:" + String(data, "runtime_run_id") + ":" + String(data, "runtime_instance_id")
-                    + ":" + (data.TryGetProperty("recovery_epoch", out JsonElement epoch) ? epoch.GetRawText() : "");
-            if (String(card, "owner") == "native_recording" && Object(data, "status") is JsonElement recording)
-            {
-                _recordingContext = PlatformNativeWorkbenchCommands.RecordingContext(String(recording, "runtime_instance_id"), String(recording, "recording_session_id"));
-                return "native_recording:" + _recordingContext + ":" + String(recording, "recording_lifecycle")
-                    + ":" + (Object(recording, "source") is JsonElement source ? String(source, "segment_id") : "")
-                    + ":" + Boolean(data, "recovery_required");
-            }
-            return String(card, "owner") + ":" + (operation is JsonElement task ?
-                (String(task, "operation_id") ?? String(task, "id")) + ":" + String(task, "attempt_id") : "");
-        }));
-        string modelChoices = _section == "play" && OwnerData(view, "models") is JsonElement catalog
-            && catalog.TryGetProperty("policies", out JsonElement policies) ? policies.GetRawText() : "";
-        string formsKey = _section + ":" + _context + ":" + connection.Binding.PairId + ":"
-            + ownerContexts + ":" + capabilities.GetRawText() + ":" + _commands.Unconfirmed.Length
-            + ":" + modelChoices;
-        if (formsKey != _formsKey)
-        {
-            _formsKey = formsKey; string? focused = _fields.FirstOrDefault(item => item.Value.HasFocus()).Key;
-            Clear(_forms); Clear(_recordingForms); Clear(_recordingButtons); _fields.Clear();
-            foreach (JsonElement descriptor in capabilities.GetProperty("actions").EnumerateArray())
-            {
-                string? action = String(descriptor, "action_id");
-                if (action is null || !PlatformNativeWorkbenchClient.Actions.Contains(action)) continue;
-                bool recordingAction = action.StartsWith("recording.", StringComparison.Ordinal);
-                if (recordingAction != daily || diagnostics) continue;
-                if (_section == "play" && action is not ("models.takeover" or "models.auto" or "models.human" or "models.stop" or "models.reconcile")) continue;
-                if (action == "training.start") BuildTrainingForm(view, connection, descriptor);
-                else BuildActionForm(view, connection, descriptor, action);
-            }
-            foreach (string capability in (_section == "play" ? Array.Empty<string>() : new[] { "source_aware_prepare", "remote_execution" }))
-                if (capabilities.TryGetProperty(capability, out JsonElement support) && !Boolean(support, "enabled"))
-                    _forms.AddChild(Label((capability == "remote_execution" ? "远端计算" : "新来源准备") + "暂不可用：" + String(support, "reason")));
-            if (_section != "play") _forms.AddChild(Button("在外部继续此对象/任务", OpenExternalContext));
-            if (focused is not null && _fields.TryGetValue(focused, out Control? next)) next.GrabFocus();
-        }
-    }
-
-    private void OpenExternalContext()
-    {
-        if (_disposed || _externalOpen is { IsCompleted: false }) return;
+        if (_lifetime.IsCancellationRequested) return;
+        if (action == "desk.reconnect") { Reconnect?.Invoke(); return; }
         PlatformNativeWorkbenchConnection? connection = PlatformNativeWorkbenchConnection.Current;
-        if (connection is null) { _notice.Text = "本机连接已失效；未打开外部窗口。"; return; }
-        long generation = _generation;
-        string page = _page; int offset = _offset; string? context = _context;
-        _externalOpen = Task.Run(async () => {
-            try { return (connection, (string?)await _client.ExternalAsync(connection, page, offset, context, _lifetime.Token), generation); }
-            catch (Exception error) when (error is HttpRequestException or OperationCanceledException
-                or JsonException or InvalidOperationException or IOException)
-            { return (connection, (string?)null, generation); }
-        });
-    }
-
-    private void SetDraft(string key, string value)
-    {
-        _drafts[key] = value;
-        if (_fields.TryGetValue(key, out Control? field) && field is LineEdit input) input.Text = value;
-    }
-
-    private void BuildActionForm(JsonElement view, PlatformNativeWorkbenchConnection connection, JsonElement descriptor, string action)
-    {
-        bool recordingAction = action.StartsWith("recording.", StringComparison.Ordinal);
-        VBoxContainer destination = recordingAction ? _recordingForms : _forms;
-        if (recordingAction && !Boolean(descriptor, "enabled")) return;
-        var form = new VBoxContainer();
-        if (!recordingAction) form.AddChild(Label(String(descriptor, "label") ?? action));
-        var controls = new Dictionary<string, (string Type, Control Control)>();
-        var fieldLabels = new Dictionary<string, Label>();
-        foreach (JsonElement declared in descriptor.GetProperty("fields").EnumerateArray())
-        {
-            string name = String(declared, "name")!; string type = String(declared, "type")!;
-            string key = action + ":" + name;
-            var fieldLabel = Label(recordingAction ? name switch {
-                "source_kind" => "谁在操作？", "capture_profile_id" => "录制内容",
-                "actor_id" => "操作者代号（完整观察模式使用）", _ => String(declared, "label") ?? name
-            } : String(declared, "label") ?? name);
-            form.AddChild(fieldLabel); fieldLabels[name] = fieldLabel;
-            string saved = _drafts.GetValueOrDefault(key, Show(declared.GetProperty("default")));
-            Control control;
-            if (type == "boolean")
-            {
-                var check = new CheckBox { Text = String(declared, "label"), ButtonPressed = saved == "true" };
-                check.Toggled += selected => _drafts[key] = selected ? "true" : "false"; control = check;
-            }
-            else if (type is "enum" or "selection")
-            {
-                var select = new OptionButton(); select.AddItem("请选择"); select.SetItemMetadata(0, "");
-                JsonElement selections = _section == "play" && OwnerData(view, "models") is JsonElement catalog
-                    && catalog.TryGetProperty("policies", out JsonElement policies) ? policies : view.GetProperty("items");
-                if (type == "selection")
-                    foreach (JsonElement item in selections.EnumerateArray())
-                    { string? identity = String(item, "selection_id"); if (identity is null) continue;
-                      if (_section == "play" && action == "models.takeover"
-                          && (String(item, "environment_kind") != "native" || !item.TryGetProperty("run_profiles", out JsonElement profiles)
-                              || !profiles.EnumerateArray().Any(profile => String(profile, "id") == "continuous"))) continue;
-                      select.AddItem(String(item, "label") ?? identity); select.SetItemMetadata(select.ItemCount - 1, identity); }
-                else foreach (JsonElement option in declared.GetProperty("options").EnumerateArray())
-                { string? optionValue = String(option, "value");
-                  select.AddItem(recordingAction ? PlatformNativeRecordingPresentation.OptionLabel(name, optionValue, String(option, "label") ?? "") : String(option, "label"));
-                  select.SetItemMetadata(select.ItemCount - 1, optionValue ?? ""); }
-                for (int index = 0; index < select.ItemCount; index++) if (select.GetItemMetadata(index).AsString() == saved) select.Select(index);
-                select.ItemSelected += index => _drafts[key] = select.GetItemMetadata((int)index).AsString(); control = select;
-            }
-            else
-            {
-                var input = new LineEdit { Text = saved, MaxLength = type == "artifact-list" ? 32768 : 128 };
-                input.TextChanged += value => _drafts[key] = value; control = input;
-            }
-            _fields[key] = control; controls[name] = (type, control); form.AddChild(control);
-            if (_section == "play" && (action == "models.takeover" && name == "run_profile"
-                || action == "models.reconcile" && name == "request_id"))
-            { control.Visible = false; fieldLabel.Visible = false; }
-        }
-        if (recordingAction && controls.TryGetValue("actor_id", out var actor))
-        {
-            void UpdateActor()
-            {
-                string? profile = controls.TryGetValue("capture_profile_id", out var profileField)
-                    ? ((OptionButton)profileField.Control).GetItemMetadata(((OptionButton)profileField.Control).Selected).AsString()
-                    : Object(view.GetProperty("cards").EnumerateArray().First(card => String(card, "owner") == "native_recording").GetProperty("data"), "status") is JsonElement status
-                        ? String(status, "capture_profile_id") : null;
-                bool shown = PlatformNativeRecordingPresentation.NeedsOperatorId(profile);
-                actor.Control.Visible = shown; fieldLabels["actor_id"].Visible = shown;
-            }
-            if (controls.TryGetValue("capture_profile_id", out var profileField))
-                ((OptionButton)profileField.Control).ItemSelected += _ => UpdateActor();
-            UpdateActor();
-        }
-        if (recordingAction && action == "recording.start")
-            form.AddChild(Label("请按实际情况选择操作者。"));
-        if (action == "collection.consent")
-            form.AddChild(Label("此声明包含真实 Human 来源、上传及项目共享授权。AI 或未知来源不能声明为 Human；登录不自动上传旧私有资料。"));
-        Button submit = Button(recordingAction ? PlatformNativeRecordingPresentation.ActionLabel(action) : String(descriptor, "label") ?? action, () =>
-        {
-            try
-            {
-                Dictionary<string, object?> body;
-                if (action.StartsWith("training.", StringComparison.Ordinal)) body = TrainingControlPayload(view, action);
-                else
-                {
-                    body = [];
-                    foreach (var item in controls)
-                    {
-                        string value = item.Value.Control switch { LineEdit input => input.Text.Trim(), OptionButton select => select.GetItemMetadata(select.Selected).AsString(), _ => "" };
-                        object? selected = item.Value.Type switch {
-                            "boolean" => ((CheckBox)item.Value.Control).ButtonPressed,
-                            "optional-artifact" => value.Length == 0 ? null : value,
-                            "artifact-list" => value.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries),
-                            _ => value
-                        };
-                        if (item.Value.Type == "artifact" && !PlatformNativeWorkbenchPair.Hex(value, 64)) throw new InvalidOperationException("请选择完整对象编号。");
-                        if (item.Value.Type is "selection" or "enum" && value.Length == 0) throw new InvalidOperationException("请选择服务声明的选项。");
-                        body[item.Key] = selected;
-                    }
-                    if (_section == "play" && action == "models.takeover")
-                    {
-                        body["run_profile"] = "continuous";
-                        JsonElement? episode = OwnerData(view, "native_environment");
-                        if (episode is JsonElement resource && String(resource, "phase") is "ready" or "actor-associated")
-                            body["native_episode_ref"] = String(resource, "environment_ref");
-                    }
-                    if (action is "models.auto" or "models.shadow" or "models.one_step" or "models.tick")
-                    {
-                        JsonElement context = view.GetProperty("cards").EnumerateArray()
-                            .First(card => String(card, "owner") == "model_control").GetProperty("data");
-                        body["runtime_run_id"] = String(context, "runtime_run_id");
-                        body["runtime_instance_id"] = String(context, "runtime_instance_id");
-                        body["recovery_epoch"] = context.GetProperty("recovery_epoch").GetInt64();
-                    }
-                    if (action.StartsWith("recording.", StringComparison.Ordinal))
-                    {
-                        JsonElement recording = view.GetProperty("cards").EnumerateArray()
-                            .First(card => String(card, "owner") == "native_recording").GetProperty("data").GetProperty("status");
-                        body["kind"] = action switch { "recording.start" => "start_new_session", "recording.change_source" => "change_source", _ => action.Split('.')[1] };
-                        body["runtime_instance_id"] = String(recording, "runtime_instance_id");
-                        body["recording_session_id"] = String(recording, "recording_session_id");
-                        body["source_segment_id"] = Object(recording, "source") is JsonElement source ? String(source, "segment_id") : null;
-                        body["command_id"] = Guid.NewGuid().ToString("D");
-                        if (!body.ContainsKey("source_kind")) { body["source_kind"] = null; body["actor_id"] = null; }
-                        if (action == "recording.start" && body.GetValueOrDefault("capture_profile_id") as string
-                            == STS2HumanAnnotator.Core.P1NativeRecordingContract.ProfileId)
-                            body["actor_id"] = null;
-                    }
-                }
-                Submit(connection, action, body);
-            }
-            catch (Exception error) when (error is JsonException or InvalidOperationException or FormatException)
-            { _notice.Text = "尚未提交：" + error.Message; }
-        });
-        submit.Disabled = !Boolean(descriptor, "enabled") || !_commands.CanSubmit(connection.Binding.ConfigurationId, action, _recordingContext);
-        if (!Boolean(descriptor, "enabled")) form.AddChild(Label("当前不可用：" + String(descriptor, "reason")));
-        _fields[action + ":submit"] = submit;
-        if (recordingAction && action is not ("recording.start" or "recording.change_source"))
-        { form.AddChild(submit); _recordingButtons.AddChild(form); }
-        else { form.AddChild(submit); destination.AddChild(form); }
-    }
-
-    private static Dictionary<string, object?> TrainingControlPayload(JsonElement view, string action)
-    {
-        JsonElement operation = view.GetProperty("cards").EnumerateArray().First(card => String(card, "owner") == "training").GetProperty("data").GetProperty("operation");
-        var body = new Dictionary<string, object?> { ["operation_id"] = String(operation, "operation_id"), ["expected_attempt_id"] = String(operation, "attempt_id") };
-        if (action == "training.resume")
-        {
-            if (String(operation, "worker_state") != "terminal" || String(operation, "status") == "interrupted_unknown") throw new InvalidOperationException("先核对原 attempt 的停止与 checkpoint。");
-            body["checkpoint_id"] = String(operation, "checkpoint_id"); body["intent_id"] = Guid.NewGuid().ToString("N");
-            body["limits"] = operation.GetProperty("limits").Clone();
-        }
-        return body;
-    }
-
-    private void BuildTrainingForm(JsonElement view, PlatformNativeWorkbenchConnection connection, JsonElement descriptor)
-    {
-        JsonElement training = view.GetProperty("capabilities").GetProperty("training");
-        if (String(training, "schema") != "spireagent/training-capabilities-v1") return;
-        var form = new VBoxContainer();
-        form.AddChild(Label("明确训练：先选择来源与可信配方，资格/use 仍由服务核对。"));
-        var source = new LineEdit { Text = _drafts.GetValueOrDefault("training.start:source_id", _context ?? ""), MaxLength = 64 };
-        source.TextChanged += value => _drafts["training.start:source_id"] = value;
-        _fields["training.start:source_id"] = source; form.AddChild(Label("训练来源")); form.AddChild(source);
-        var recipe = new OptionButton();
-        JsonElement[] recipes = training.GetProperty("recipes").EnumerateArray().ToArray();
-        foreach (JsonElement declared in recipes) recipe.AddItem(String(declared, "recipe_id"));
-        string savedRecipe = _drafts.GetValueOrDefault("training.start:recipe", "structured-m2-cpu-v2");
-        int selectedIndex = Array.FindIndex(recipes, declared => String(declared, "recipe_id") == savedRecipe);
-        recipe.Select(selectedIndex);
-        _fields["training.start:recipe"] = recipe; form.AddChild(Label("训练配方")); form.AddChild(recipe);
-        var detail = new VBoxContainer(); form.AddChild(detail);
-        Dictionary<string, SpinBox> configFields = [], limitFields = [];
-        JsonElement selectedRecipe = default;
-        OptionButton placement = new();
-        Button submit = null!;
-        void Update()
-        {
-            Clear(detail); configFields.Clear(); limitFields.Clear();
-            if (recipe.Selected < 0 || recipe.Selected >= recipes.Length)
-            { detail.AddChild(Label("此配方未声明；请明确选择服务配方。")); if (submit is not null) submit.Disabled = true; return; }
-            selectedRecipe = recipes[recipe.Selected]; _drafts["training.start:recipe"] = String(selectedRecipe, "recipe_id")!;
-            placement = new OptionButton();
-            string[] advertised = selectedRecipe.GetProperty("placement_ids").EnumerateArray().Select(item => item.GetString()!).ToArray();
-            foreach (JsonElement resource in training.GetProperty("placements").EnumerateArray())
-            {
-                string identity = String(resource, "placement_id")!; if (!advertised.Contains(identity)) continue;
-                placement.AddItem(identity + (Boolean(resource, "remote") ? " · 远端" : " · 本机")); placement.SetItemMetadata(placement.ItemCount - 1, identity);
-            }
-            detail.AddChild(Label("计算资源")); detail.AddChild(placement);
-            foreach (JsonProperty declared in selectedRecipe.GetProperty("config_fields").EnumerateObject())
-            {
-                double minimum = declared.Value[0].GetDouble(), maximum = declared.Value[1].GetDouble();
-                double initial = selectedRecipe.GetProperty("config_defaults").GetProperty(declared.Name).GetDouble();
-                string key = "training.start:config:" + declared.Name;
-                if (_drafts.TryGetValue(key, out string? saved) && double.TryParse(saved, NumberStyles.Float, CultureInfo.InvariantCulture, out double previous)) initial = previous;
-                var number = new SpinBox { MinValue = minimum, MaxValue = maximum, Step = 1, Value = initial };
-                number.ValueChanged += value => _drafts[key] = value.ToString(CultureInfo.InvariantCulture);
-                configFields[declared.Name] = number; _fields[key] = number;
-                detail.AddChild(Label(declared.Name switch { "epochs" => "遍历轮数", "max_updates" => "更新步数上限", "checkpoint_every_boundaries" => "Checkpoint 保存间隔", _ => declared.Name })); detail.AddChild(number);
-            }
-            if (selectedRecipe.TryGetProperty("fixed_config_fields", out JsonElement fixedFields))
-                foreach (JsonElement fixedField in fixedFields.EnumerateArray())
-                    detail.AddChild(Label(fixedField.GetString() + "（配方固定）：" + Show(selectedRecipe.GetProperty("config_defaults").GetProperty(fixedField.GetString()!))));
-            foreach (JsonProperty declared in selectedRecipe.GetProperty("limits").EnumerateObject())
-            {
-                double minimum = declared.Value.GetProperty("minimum").GetDouble(), maximum = declared.Value.GetProperty("maximum").GetDouble();
-                double initial = declared.Value.TryGetProperty("default", out JsonElement supplied) ? supplied.GetDouble() : Math.Min(600, maximum);
-                string key = "training.start:limit:" + declared.Name;
-                if (_drafts.TryGetValue(key, out string? saved) && double.TryParse(saved, NumberStyles.Float, CultureInfo.InvariantCulture, out double previous)) initial = previous;
-                var number = new SpinBox { MinValue = minimum, MaxValue = maximum, Step = 1, Value = initial };
-                number.ValueChanged += value => _drafts[key] = value.ToString(CultureInfo.InvariantCulture);
-                limitFields[declared.Name] = number; _fields[key] = number;
-                detail.AddChild(Label(declared.Name == "wall_seconds" ? "累计运行时间上限（秒）" : "scratch 监测阈值 / artifact 预留上限（字节，分别检查）")); detail.AddChild(number);
-            }
-            bool available = Boolean(descriptor, "enabled") && Boolean(selectedRecipe, "dependencies_available") && placement.ItemCount > 0;
-            detail.AddChild(Label(available ? "不会自动上传、重试或加载到游戏。恢复保留原累计预算。" : "当前任务、配方依赖或计算资源不允许启动。"));
-            if (submit is not null) submit.Disabled = !available || !_commands.CanSubmit(connection.Binding.ConfigurationId, "training.start");
-        }
-        recipe.ItemSelected += _ => Update();
-        submit = Button("明确开始 / 新建一次训练", () =>
-        {
-            try
-            {
-                if (!PlatformNativeWorkbenchPair.Hex(source.Text.Trim(), 64) || placement.Selected < 0) throw new InvalidOperationException("请选择完整来源与计算资源。");
-                var config = JsonSerializer.Deserialize<Dictionary<string, object?>>(selectedRecipe.GetProperty("config_defaults").GetRawText())!;
-                foreach (var item in configFields) config[item.Key] = checked((long)item.Value.Value);
-                var limits = new Dictionary<string, long>(); foreach (var item in limitFields) limits[item.Key] = checked((long)item.Value.Value);
-                JsonElement? operation = OwnerData(view, "training") is JsonElement status ? Object(status, "operation") : null;
-                string? after = operation is JsonElement prior && String(prior, "status") == "completed"
-                    && (String(prior, "dataset_id") == source.Text.Trim() || Object(prior, "input_refs") is JsonElement inputs && String(inputs, "source_id") == source.Text.Trim()) ? String(prior, "operation_id") : null;
-                var payload = new Dictionary<string, object?> { ["schema"] = "spireagent/training-request-v1", ["intent_id"] = Guid.NewGuid().ToString("N"),
-                    ["recipe_id"] = String(selectedRecipe, "recipe_id"), ["source_id"] = source.Text.Trim(), ["config"] = config,
-                    ["placement_id"] = placement.GetItemMetadata(placement.Selected).AsString(), ["limits"] = limits, ["after_completed_operation_id"] = after };
-                Submit(connection, "training.start", payload);
-            }
-            catch (Exception error) when (error is JsonException or InvalidOperationException or OverflowException)
-            { _notice.Text = "尚未提交：" + error.Message; }
-        });
-        Update(); _fields["training.start:submit"] = submit; form.AddChild(submit); _forms.AddChild(form);
-    }
-
-    private void ModelRecovery(string action)
-    {
-        PlatformNativeWorkbenchConnection? current = PlatformNativeWorkbenchConnection.Current;
-        long now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-        if (current is not null && current.Binding.ExpiresAt > now)
-        { Submit(current, action, new Dictionary<string, object?>()); return; }
-        PlatformNativeWorkbenchCommands.NativeModelIntent? admitted = _commands.SubmittedModelIntent;
-        if (admitted is null || now > admitted.Connection.Binding.ExpiresAt + 600)
-        { _notice.Text = "没有本面板提交的可恢复模型意图，或恢复证明已过期。当前 Runtime 的直接 Human/Stop 仍可使用。"; return; }
-        Submit(admitted.Connection, action, new Dictionary<string, object?> {
-            ["native_request_id"] = admitted.RequestId }, originalRecovery: true);
-    }
-
-    internal void ModelHotkey(bool resume)
-    {
-        if (!resume) { ModelRecovery("models.human"); return; }
-        var connection = PlatformNativeWorkbenchConnection.Current;
         if (connection is null)
-        { _notice.Text = "先打开实战页加载模型并读取控制状态。"; return; }
-        Submit(connection, "mixed.resume", new Dictionary<string, object?>());
-    }
-
-    private void Submit(PlatformNativeWorkbenchConnection connection, string action, object payload, bool originalRecovery = false)
-    {
-        if (_disposed) return;
-        if (!originalRecovery && PlatformNativeWorkbenchConnection.Current?.Binding != connection.Binding)
-        { _notice.Text = "认证连接已变化。保留原任务上下文，请刷新后明确操作。"; return; }
-        if (!_commands.CanSubmit(connection.Binding.ConfigurationId, action, _recordingContext)) return;
-        if (_fields.TryGetValue(action + ":submit", out Control? control) && control is Button button) button.Disabled = true;
-        _notice.Text = "正在提交本次意图；不会重复发送。";
+        {
+            Notice = "后台未连接，未提交操作。请点“重新连接”。"; Revision++; return;
+        }
+        if (!CanSubmit(action))
+        {
+            _connectionNotice = false;
+            Notice = "上一操作仍在处理或结果未确认；先点“停，我来”或“停录制并保存”，不要重发。";
+            Revision++; return;
+        }
+        if (action == "desk.choices_open") { ChoicesReadEnabled = false; ChoicesAvailable = false; }
+        _connectionNotice = false;
+        Notice = action == "desk.model_stop" ? "正在停模型，请等待实际回执…"
+            : action == "desk.record_stop" ? "正在停录制并保存，请等待封存回执…" : "正在处理…";
+        Revision++;
         _writes.Add((_commands.RunAsync(_client, connection, action, payload, _lifetime.Token), action));
     }
 
+    internal void OnFrame()
+    {
+        CompleteRead(ref _deskRead, false);
+        CompleteRead(ref _choicesRead, true);
+        for (int i = _writes.Count - 1; i >= 0; i--)
+        {
+            var write = _writes[i];
+            if (!write.Task.IsCompleted) continue;
+            _writes.RemoveAt(i);
+            try
+            {
+                var result = write.Task.GetAwaiter().GetResult();
+                if (write.Action == "desk.choices_open" && result.Status == "accepted") ChoicesReadEnabled = true;
+                Notice = result.Status switch {
+                    "accepted" => ResultMessage(result.OwnerResponse) ?? "操作已接收，以当前状态和保存回执为准。",
+                    "rejected" => "未执行：" + (result.ErrorCode ?? "请求已过期，请刷新后重新选择。"),
+                    _ => "结果未确认；不会重发。请先点“停，我来”处理。"
+                };
+            }
+            catch (Exception error) when (error is not OutOfMemoryException)
+            { Notice = "结果未确认；不会重发。请先点“停，我来”处理。"; }
+            Revision++;
+            Refresh(false);
+        }
+    }
+
+    private void CompleteRead(ref Task<JsonElement>? read, bool choices)
+    {
+        if (read is not { IsCompleted: true }) return;
+        Task<JsonElement> completed = read; read = null;
+        try
+        {
+            JsonElement view = completed.GetAwaiter().GetResult();
+            if (_readConnection is null || !PlatformNativeWorkbenchConnection.IsCurrent(_readConnection)
+                || PlatformNativeWorkbenchPair.Read(view.GetProperty("binding")) != _readConnection.Binding) return;
+            JsonElement? desk = view.GetProperty("cards").EnumerateArray()
+                .Where(card => Text(card, "owner") == "game_desk")
+                .Select(card => (JsonElement?)card.GetProperty("data").Clone()).FirstOrDefault();
+            if (desk is null) throw new InvalidOperationException("game_desk_view_unavailable");
+            if (!choices) { Desk = desk; Models = Items(view); }
+            else { Choices = Items(view); Desk = desk; ChoicesAvailable = true; ChoicesError = null; }
+            Connected = true;
+            if (_connectionNotice) { Notice = ""; _connectionNotice = false; }
+            Revision++;
+        }
+        catch (Exception error) when (error is not OutOfMemoryException)
+        {
+            if (choices) { ChoicesAvailable = false; ChoicesError = "动作目录暂不可用，未提交动作。可继续在游戏内手动操作。"; Revision++; }
+            else Unavailable("后台未连接，没在确认保存。游戏仍可手动操作；请点“重新连接”。");
+        }
+    }
+
+    private void Unavailable(string notice)
+    {
+        if (Connected || Notice != notice) { Connected = false; _connectionNotice = true; Notice = notice; Revision++; }
+    }
+    private static JsonElement[] Items(JsonElement view) => view.GetProperty("items").EnumerateArray().Select(x => x.Clone()).ToArray();
+    private static string? ResultMessage(JsonElement? owner) => owner is JsonElement value
+        ? Text(value, "message") : null;
+    internal static JsonElement? Object(JsonElement value, string key) => value.ValueKind == JsonValueKind.Object
+        && value.TryGetProperty(key, out JsonElement item) && item.ValueKind == JsonValueKind.Object ? item : null;
+    internal static string? Text(JsonElement value, string key) => value.ValueKind == JsonValueKind.Object
+        && value.TryGetProperty(key, out JsonElement item) && item.ValueKind == JsonValueKind.String ? item.GetString() : null;
+    internal static string Value(JsonElement value, string key, string missing = "—") => value.ValueKind == JsonValueKind.Object
+        && value.TryGetProperty(key, out JsonElement item) && item.ValueKind is not (JsonValueKind.Null or JsonValueKind.Undefined)
+        ? item.ValueKind == JsonValueKind.String ? item.GetString() ?? missing : item.GetRawText() : missing;
+    internal static bool Flag(JsonElement value, string key) => value.ValueKind == JsonValueKind.Object
+        && value.TryGetProperty(key, out JsonElement item) && item.ValueKind == JsonValueKind.True;
+
     public void Dispose()
     {
-        if (_disposed) return; _disposed = true; _lifetime.Cancel(); _client.Dispose();
-        Task[] pending = _writes.Select(item => (Task)item.Task)
-            .Concat(_read is null ? [] : new Task[] { _read })
-            .Concat(_externalOpen is null ? [] : new Task[] { _externalOpen }).ToArray();
-        _ = Task.WhenAll(pending).ContinueWith(task => { _ = task.Exception; _lifetime.Dispose(); }, TaskScheduler.Default);
+        if (_lifetime.IsCancellationRequested) return;
+        _lifetime.Cancel(); _client.Dispose();
+        // Closing a window never disposes this owner. Game unload only cancels presentation waits.
     }
 }

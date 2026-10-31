@@ -237,6 +237,7 @@ def test_direct_serve_owns_context_before_application_and_restores_on_exit(
     cached = tempfile.tempdir
     scratch = str((config.state_dir / "workbench-tmp").resolve())
     closed = []
+    started = []
 
     class App:
         instance_id = "fixture"
@@ -252,6 +253,7 @@ def test_direct_serve_owns_context_before_application_and_restores_on_exit(
 
         p1_maintenance = SimpleNamespace(start=lambda: None)
         remote_training = SimpleNamespace(start_loop=lambda: None)
+        game_desk = SimpleNamespace(start=lambda: started.append("game_desk"))
 
         def close(self):
             closed.append("application")
@@ -277,6 +279,7 @@ def test_direct_serve_owns_context_before_application_and_restores_on_exit(
     else:
         assert developer_server.serve(config) == {"status": "stopped"}
     assert closed == ["application", "server"]
+    assert started == ["game_desk"]
     assert not (config.state_dir / "runtime.json").exists()
     assert {name: os.environ.get(name) for name in previous} == previous
     assert tempfile.tempdir == cached

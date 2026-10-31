@@ -10,6 +10,7 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Include="../PlatformLiveUiMount.cs" Link="PlatformLiveUiMount.cs" />
+    <Compile Include="../PlatformDeskSelection.cs" Link="PlatformDeskSelection.cs" />
     <Compile Include="../PlatformLiveActionFeed.cs" Link="PlatformLiveActionFeed.cs" />
     <Compile Include="../PlatformCollectionHandoff.cs" Link="PlatformCollectionHandoff.cs" />
     <Compile Include="../PlatformRecordingCommands.cs" Link="PlatformRecordingCommands.cs" />

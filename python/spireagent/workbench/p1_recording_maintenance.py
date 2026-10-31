@@ -77,6 +77,7 @@ class P1RecordingMaintenance:
     def __init__(self, importer: LocalRecordingImporter) -> None:
         self.importer = importer
         self.mixed_runs: Any | None = None
+        self.game_desk: Any | None = None
         self.stop = threading.Event()
         self.thread: threading.Thread | None = None
 
@@ -372,6 +373,13 @@ class P1RecordingMaintenance:
                 state.update(status="waiting_for_game_exit", error_code=None)
                 importer._save()
                 return dict(state)
+            if self.game_desk is not None:
+                try:
+                    self.game_desk.finalize_after_game_exit()
+                    state.pop("game_desk_error", None)
+                except (BoundaryError, OSError, ValueError) as error:
+                    state["game_desk_error"] = getattr(error, "code", type(error).__name__)
+                    importer._save()
             if min(shutil.disk_usage(importer.config.state_dir).free,
                    (catalog.get("space") or {}).get("free_bytes", 2**63)) < 15 * 1024**3:
                 state.update(status="low_space", error_code="fifteen_GiB_free_required")

@@ -15,6 +15,35 @@ account/recovery behavior. The project cloud entry is [hub.2-fire-2.com](https:/
 cloud project data requires an invited login. A successful deployment does not authorize
 collection or make historical receipts current evidence.
 
+## 游戏内对局台与同一 CLI/API（2026-11-01）
+
+日常用[游戏内对局台](../../apps/ingame-ui/README.md)，窗口只映射同一
+`spireagent.workbench.game_desk.GameDeskApplication`。默认用已有待命声明；打开页面不替人
+声明 Human，不启动学习模型。操作、错误和恢复规则见[交互规范](../../docs/UI_INTERACTION_SPEC.md#current-pre-training-scope)。
+
+工程入口：
+
+```sh
+python -m spireagent.workbench game-desk status --config /ABS/project.json
+python -m spireagent.workbench game-desk choices-open --config /ABS/project.json
+python -m spireagent.workbench game-desk choices --config /ABS/project.json
+python -m spireagent.workbench game-desk rank --config /ABS/project.json --catalog-key KEY --choice C1 --choice C2
+python -m spireagent.workbench game-desk model-auto --config /ABS/project.json --selection-id SELECTION
+python -m spireagent.workbench game-desk model-stop --config /ABS/project.json
+python -m spireagent.workbench game-desk recording --config /ABS/project.json
+```
+
+另有 `record-start / record-stop / model-step / mark --note 说明 / mistake / reconnect`；
+完整参数看 `game-desk --help`。命令只发一次；请求超时显示结果未知，先查原状态，不能盲重发。
+普通受认证本机 API 同为 `GET /api/game-desk`、`GET /api/game-desk/choices`、
+`GET /api/game-desk/recording` 和 `POST /api/game-desk/<下划线动作名>`。
+Native GUI 沿已配对固定 `/api/native-workbench/v1` 的 desk/choices 页面及 desk.* 动作映射它。
+
+`choices-open` 没模型时只准备无模型 Runtime 的 Human 选择端口，不替人选动作。
+模型注册/加载沿原 owner 核准确权重、adapter/core 和当前游戏来源；旧注册不改，必要时
+生成新注册。安装必须先准备准确 Runtime 包、本机模型依赖、配对和 Collection Tool，不能
+靠更新 DLL 单件完成。只见 GUI、编译成功或模型已加载，都不是实际回执或 Human 录制通过。
+
 ## Daily collection
 
 Opening the local Workbench first shows **本机工作台**, a no-login navigation page for

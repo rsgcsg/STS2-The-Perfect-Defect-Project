@@ -212,12 +212,34 @@ class NativeTasks:
             raise BoundaryError("recording", "native_recording_game_identity_mismatch")
         return value
 
-    def recording_command(self, connector_endpoint: object, observed: dict[str, Any], kind: str, *,
-                          source_declaration: dict[str, Any] | None = None,
-                          command_id: str | None = None,
-                          capture_profile_id: str | None = None,
-                          p1_native_origin: str | None = None,
-                          mixed_run_id: str | None = None) -> dict[str, Any]:
+    def recording_feedback(self, connector_endpoint: object) -> dict[str, Any]:
+        expected = self.connector_instance(connector_endpoint)
+        value = self._recording_request("/v1/tasks/recording/feedback")
+        if (
+            value.get("schema") != "sts2.platform/recording-feedback-1"
+            or value.get("runtime_instance_id") != expected
+            or not isinstance(value.get("health"), dict)
+            or type(value.get("count")) is not int
+            or type(value.get("armed")) is not bool
+            or value["count"] < 0
+            or value.get("lifecycle") not in {"ready", "recording", "paused", "closing", "closed"}
+            or self.connector_instance(connector_endpoint) != expected
+        ):
+            raise BoundaryError("recording", "native_recording_feedback_unavailable")
+        return value
+
+    def recording_command(
+        self,
+        connector_endpoint: object,
+        observed: dict[str, Any],
+        kind: str,
+        *,
+        source_declaration: dict[str, Any] | None = None,
+        command_id: str | None = None,
+        capture_profile_id: str | None = None,
+        p1_native_origin: str | None = None,
+        mixed_run_id: str | None = None,
+    ) -> dict[str, Any]:
         p1 = (capture_profile_id == P1_PROFILE if kind == "start_new_session"
               else observed.get("capture_profile_id") == P1_PROFILE)
         if p1:

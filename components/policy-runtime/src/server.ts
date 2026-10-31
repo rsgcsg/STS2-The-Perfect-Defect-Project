@@ -72,6 +72,12 @@ export async function startPolicyRuntimeHttpServer(runtime: RuntimeServiceOwner,
 async function dispatch(runtime: RuntimeServiceOwner, request: IncomingMessage, response: ServerResponse, maxBodyBytes: number, maxAutoTicks: number, ensureAutoWorker: () => void, onStopped?: () => void): Promise<void> {
   try {
     if (request.method === "GET" && request.url === "/status") { json(response, 200, { schema: HTTP_SCHEMA, status: runtime.status() }); return; }
+    if (request.method === "GET" && request.url === "/v2/human-choices") {
+      const denied = localRequestError(request);
+      if (denied) { json(response, denied.status, { schema: HTTP_SCHEMA, error: denied.error }); return; }
+      if (!runtime.readHumanChoices) throw new RuntimeControlPreconditionError("human_choice_unsupported", 409);
+      json(response, 200, { schema: HTTP_SCHEMA, run_id: runtime.status().run_id, choices: await runtime.readHumanChoices() }); return;
+    }
     if (request.method === "GET" && request.url === "/review") {
       const denied = localRequestError(request);
       if (denied) { json(response, denied.status, { schema: HTTP_SCHEMA, error: denied.error }); return; }
@@ -83,7 +89,7 @@ async function dispatch(runtime: RuntimeServiceOwner, request: IncomingMessage, 
       if (denied) { json(response, denied.status, { schema: HTTP_SCHEMA, error: denied.error }); return; }
       json(response, 200, await runtime.readEnvironment()); return;
     }
-    if (request.method !== "POST" || !["/v2/mode", "/v2/tick", "/v2/stop", "/v2/reconcile", "/v2/review"].includes(request.url ?? "")) { json(response, 404, { schema: HTTP_SCHEMA, error: "not_found" }); return; }
+    if (request.method !== "POST" || !["/v2/mode", "/v2/tick", "/v2/stop", "/v2/reconcile", "/v2/review", "/v2/human-choice"].includes(request.url ?? "")) { json(response, 404, { schema: HTTP_SCHEMA, error: "not_found" }); return; }
     const denied = mutationRequestError(request);
     if (denied) { request.resume(); json(response, denied.status, { schema: HTTP_SCHEMA, error: denied.error }); return; }
     const runHeader = "x-sts2-policy-run-id";
@@ -98,6 +104,14 @@ async function dispatch(runtime: RuntimeServiceOwner, request: IncomingMessage, 
       request.resume(); json(response, 409, { schema: HTTP_SCHEMA, error: "runtime_run_mismatch" }); return;
     }
     const body = await readBody(request, maxBodyBytes);
+    if (request.url === "/v2/human-choice") {
+      if (!runtime.chooseHuman) throw new RuntimeControlPreconditionError("human_choice_unsupported", 409);
+      const value = strictObject(body, ["catalog_key", "ranking"]);
+      const expected = controlPreconditions(request);
+      if (!expected) throw new RuntimeControlPreconditionError("runtime_recovery_precondition_required", 428);
+      const result = await runtime.chooseHuman(value as unknown as import("./agent-native-runtime.js").HumanSelection, expected);
+      json(response, 200, { schema: HTTP_SCHEMA, result, status: runtime.status() }); return;
+    }
     if (request.url === "/v2/review") {
       if (!runtime.controlActionReview) throw new RuntimeControlPreconditionError("action_review_unsupported", 409);
       const value = body as Record<string, unknown>;

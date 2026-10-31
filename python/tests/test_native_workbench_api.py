@@ -692,3 +692,42 @@ def test_native_artifact_pages_project_large_owner_metadata_without_changing_it(
         assert json.dumps(workspace.artifact(artifact_id), ensure_ascii=False) == original
     assert requests == [{"category": "models" if page == "models" else "all",
                          "limit": 25, "offset": 0}] * 2
+
+
+def test_desk_full_catalog_over_512_is_not_filtered_or_paginated(native_http, monkeypatch):
+    app, call, pair, _root, _secret, _peer = native_http
+    choices = [
+        {"choice_id": f"c{i}", "kind": "combat.play_card", "label": f"牌{i}"} for i in range(600)
+    ]
+    monkeypatch.setattr(
+        app.game_desk,
+        "choices",
+        lambda: {
+            "schema": "spireagent/game-desk-1",
+            "recording": {"saving": False},
+            "choices": choices,
+        },
+    )
+    view = call(PREFIX + "/view?page=choices")
+    assert view["pagination"]["total"] == 600
+    assert view["items"] == choices
+    assert view["binding"] == pair.to_dict()
+
+
+def test_desk_native_actions_call_one_application_owner_with_the_original_pair(
+    native_http, monkeypatch
+):
+    app, call, pair, _root, _secret, _peer = native_http
+    seen = []
+
+    def dispatch(action, payload, **kwargs):
+        seen.append((action, payload, kwargs["context"]))
+        return {"message": "原 owner 已完成", "recovery_confirmed": True}
+
+    monkeypatch.setattr(app.game_desk, "command", dispatch)
+    route, body = command("desk.model_stop", {})
+    result = call(route, body)
+    assert result["status"] == "accepted" and result["owner_response"]["recovery_confirmed"] is True
+    assert seen == [
+        ("model_stop", {}, {"request_id": body["request_id"], "binding": pair.to_dict()})
+    ]

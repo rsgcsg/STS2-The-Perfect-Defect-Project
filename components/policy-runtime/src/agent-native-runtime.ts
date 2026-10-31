@@ -52,6 +52,7 @@ interface SharedAgentRuntimeOptions {
 }
 export type NativeAgentRuntimeOptions = SharedAgentRuntimeOptions & (
   { environment: PlayerEnvironmentRestClient; globalTransport?: never } | { environment?: never; globalTransport: GlobalTransport });
+export interface HumanSelection { catalog_key: string; ranking: string[] }
 interface GlobalSource { full: FullPublicBasis; artifact: GlobalArtifact; ordinal: number }
 interface GlobalPrepared { source: GlobalSource; reduction: ReturnType<typeof reduce>; acquisition: AgentAcquisition; unit: string }
 export interface NativeAgentRuntimeOwner extends RuntimeServiceOwner {
@@ -59,6 +60,8 @@ export interface NativeAgentRuntimeOwner extends RuntimeServiceOwner {
   setMode(mode: RuntimeMode, expected?: RuntimeControlPreconditions): Promise<AgentRuntimeStatus>;
   stop(): Promise<AgentRuntimeStatus>;
   tick(expected?: RuntimeControlPreconditions): Promise<AgentRuntimeTickResult>;
+  readHumanChoices(): Promise<Record<string, unknown>>;
+  chooseHuman(value: HumanSelection, expected: RuntimeControlPreconditions): Promise<AgentRuntimeTickResult>;
   reconcileOriginalRequest(requestId: string, expected?: RuntimeControlPreconditions): Promise<AgentReconcileResult>;
   exportAgentState(): Promise<{ state: AgentOpaqueState; receipt: { path: string; metadata_path: string; bytes: number; sha256: string } }>;
   restoreAgentState(state: AgentOpaqueState, replacement: NdjsonAgentSessionPort): Promise<AgentStateMetadata>;
@@ -237,6 +240,45 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
       runtime_instance_id: runtime, recovery_epoch: epoch };
   }
 
+  /** A passive current P1 catalog. It never acquires control or advances Agent state. */
+  async readHumanChoices(): Promise<Record<string, unknown>> {
+    if (!this.options.globalTransport || !this.globalState) throw new RuntimeControlPreconditionError("human_choice_profile_unsupported", 409);
+    const epoch = this.owner.epoch;
+    if (this.stopped || this.stopping) throw new RuntimeControlPreconditionError("runtime_stopped", 409);
+    if (this.mode !== "human") {
+      const catalog = this.globalPrepared?.acquisition.catalog ?? [];
+      return { catalog_key: globalDigest(catalog), ready: false, reason: "model_running", catalog,
+        model_choice_id: this.lastDirective?.type === "act" && this.lastDirective.selection.kind === "handle" ? this.lastDirective.selection.action_id : null };
+    }
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort("human_catalog_timeout"), 1500);
+    try {
+      const full = await this.options.globalTransport.capture({ signal: controller.signal, maxResponseBytes: Math.min(this.manifest.limits.max_capture_bytes, 8 * 1024 * 1024) });
+      this.checkActive(epoch, controller.signal);
+      if (this.mode !== "human") throw new RuntimeControlPreconditionError("human_choice_requires_human", 409);
+      if (!this.globalIdentity || canonicalJson(full.capture.session) !== canonicalJson(this.globalIdentity.session)
+        || this.globalEpisode !== null && full.capture.game_continuity_id !== this.globalEpisode)
+        throw new RuntimeControlPreconditionError("runtime_game_mismatch", 409);
+      const reduced = reduce(structuredClone(this.globalState), full.basis);
+      const ready = full.basis.capture_status === "complete" && reduced.complete && reduced.observation.status === "decision" && full.basis.snapshot.status !== "settling";
+      return { catalog_key: globalDigest(modelView(reduced.observation)), ready, reason: ready ? null : "wait_for_stable_scene",
+        catalog: reduced.observation.catalog, observation: modelView(reduced.observation), model_choice_id: null };
+    } finally { clearTimeout(timer); }
+  }
+
+  async chooseHuman(value: HumanSelection, expected: RuntimeControlPreconditions): Promise<AgentRuntimeTickResult> {
+    if (!this.options.globalTransport || !value || typeof value.catalog_key !== "string" || !/^[a-f0-9]{64}$/u.test(value.catalog_key)
+      || !Array.isArray(value.ranking) || value.ranking.length < 1 || value.ranking.length > 4096
+      || value.ranking.some(id => typeof id !== "string" || id.length < 1 || id.length > 512)
+      || new Set(value.ranking).size !== value.ranking.length)
+      throw new RuntimeControlPreconditionError("invalid_human_selection", 400);
+    await this.checkPreconditions(expected);
+    if (this.mode !== "human" || this.tickActive) throw new RuntimeControlPreconditionError("human_choice_requires_human", 409);
+    this.admitMutation();
+    await this.setMode("one_step", expected);
+    return this.tick(expected, value);
+  }
+
   actionReviewStatus(): ReturnType<ActionReview["status"]> { return this.actionReview.status(); }
   async controlActionReview(value: { enabled?: boolean; approve?: string }, expected: RuntimeControlPreconditions): Promise<void> {
     await this.checkPreconditions(expected);
@@ -270,7 +312,7 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
     });
   }
 
-  async tick(expected?: RuntimeControlPreconditions): Promise<AgentRuntimeTickResult> {
+  async tick(expected?: RuntimeControlPreconditions, human?: HumanSelection): Promise<AgentRuntimeTickResult> {
     this.owner.checkEpoch(expected?.recoveryEpoch);
     if (this.tickActive) return { type: "not_admitted", reason: "tick_in_progress", status: this.status() };
     this.tickActive = true;
@@ -294,33 +336,46 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
           consumption_id: this.ledger.consumptionId, state_version: this.ledger.stateVersion,
           basis_acquisition_id: this.basisId, received_cursor: this.cursor,
           ...(this.manifest.execution_policy ? { operational_outcome: this.freshDecision?.outcome ?? null } : {}) };
-        const output = await this.port.next(this.context(), nextInput, handlers, active.signal, requestId => {
-          offer.pending = true;
-          if (this.manifest.input.history_mode === "sampled_current") {
-            this.agentUncertain = true; this.sampleNextRequestId = requestId;
-            const context = this.context();
-            this.sampleOfferEvidence = this.sampleOfferEvidence.then(() => this.emit("agent_sample_next_requested",
-              { ...context, request_id: requestId, input: nextInput }));
-            void this.sampleOfferEvidence.catch(() => undefined);
+        let output: AgentDirectiveOutput;
+        if (human) {
+          const catalog = this.globalPrepared!.acquisition.catalog!;
+          if (globalDigest(this.globalPrepared!.acquisition.observation) !== human.catalog_key || human.ranking.some(id => !catalog.some(c => c.choice_id === id))) {
+            await this.handoff("human_catalog_changed");
+            return { type: "not_admitted", reason: "human_catalog_changed", status: this.status() };
           }
-        });
-        offer.pending = false;
-        await this.sampleOfferEvidence;
-        this.checkActive(epoch, active.signal);
-        this.requireWatermark(output);
-        if (this.manifest.input.history_mode === "sampled_current") {
-          if (this.sampleNextRequestId === null) throw new AgentSessionError("sample_next_request_binding");
-          await this.emit("agent_sample_next_completed", { ...this.context(), request_id: this.sampleNextRequestId, output });
+          output = { continuity_token: this.ledger.continuityToken, consumption_id: this.ledger.consumptionId!, state_version: this.ledger.stateVersion,
+            directive: { type: "act", basis_acquisition_id: this.basisId!, selection: { kind: "handle", action_id: human.ranking[0]! }, scores: null } };
+          await this.emitGlobal("human_directive", { output, catalog_key: human.catalog_key, ranking: human.ranking,
+            origin: "manual_protocol_choice_not_human_witness" });
+        } else {
+          output = await this.port.next(this.context(), nextInput, handlers, active.signal, requestId => {
+            offer.pending = true;
+            if (this.manifest.input.history_mode === "sampled_current") {
+              this.agentUncertain = true; this.sampleNextRequestId = requestId;
+              const context = this.context();
+              this.sampleOfferEvidence = this.sampleOfferEvidence.then(() => this.emit("agent_sample_next_requested",
+                { ...context, request_id: requestId, input: nextInput }));
+              void this.sampleOfferEvidence.catch(() => undefined);
+            }
+          });
+          offer.pending = false;
+          await this.sampleOfferEvidence;
           this.checkActive(epoch, active.signal);
+          this.requireWatermark(output);
+          if (this.manifest.input.history_mode === "sampled_current") {
+            if (this.sampleNextRequestId === null) throw new AgentSessionError("sample_next_request_binding");
+            await this.emit("agent_sample_next_completed", { ...this.context(), request_id: this.sampleNextRequestId, output });
+            this.checkActive(epoch, active.signal);
+          }
+          await this.emit("agent_directive", { ...this.context(), output });
+          if (this.manifest.input.history_mode === "sampled_current") { this.agentUncertain = false; this.sampleNextRequestId = null; }
         }
         this.lastDirective = output.directive;
-        await this.emit("agent_directive", { ...this.context(), output });
-        if (this.manifest.input.history_mode === "sampled_current") { this.agentUncertain = false; this.sampleNextRequestId = null; }
         const fresh = this.freshDecision;
         if (fresh && fresh.advancedTo !== null && fresh.advancedTo === this.basisId) this.freshDecision = null;
         this.checkActive(epoch, active.signal);
         switch (output.directive.type) {
-          case "act": return await this.act(output, epoch, active.signal);
+          case "act": return human ? await this.actGlobal(output, epoch, active.signal, true) : await this.act(output, epoch, active.signal);
           case "await": {
             if (!this.knownCursors.has(output.directive.after_cursor)) throw new AgentSessionError("unknown_await_cursor");
             const waitId = randomUUID().replaceAll("-", "");
@@ -1483,7 +1538,7 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
         this.checkActive(epoch, signal); this.basisId = report.acquisition_id; return acknowledgement;
       } };
   }
-  private async actGlobal(output: AgentDirectiveOutput, epoch: number, signal: AbortSignal): Promise<AgentRuntimeTickResult> {
+  private async actGlobal(output: AgentDirectiveOutput, epoch: number, signal: AbortSignal, human = false): Promise<AgentRuntimeTickResult> {
     if (output.directive.type !== "act" || output.directive.selection.kind !== "handle") throw new AgentSessionError("global_handle_required");
     const choiceId = output.directive.selection.action_id;
     const prepared = this.globalPrepared!, directive = output.directive;
@@ -1497,7 +1552,7 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
     if (this.mode === "shadow") return { type: "shadow", status: this.status() };
     const scene = prepared.reduction.observation.scene;
     const content = scene.content as { surface?: { next_options?: unknown[] } };
-    await this.actionReview.wait(epoch, { acquisition_id: this.basisId, choice_id: choiceId,
+    if (!human) await this.actionReview.wait(epoch, { acquisition_id: this.basisId, choice_id: choiceId,
       observation: { catalog: prepared.acquisition.catalog, scene: {
         family: scene.family, native_kind: scene.native_kind,
         content: { surface: { next_options: content?.surface?.next_options ?? [] } }

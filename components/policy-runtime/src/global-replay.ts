@@ -141,7 +141,7 @@ export async function replayGlobalAgentRun(directory: string) {
     global_consumed: ["request_id", "report", "acknowledgement"], global_choice: ["acquisition_id", "occurrence", "choice_id", "origin"],
     global_dispatch: ["request_id", "acquisition_id", "source_ordinal", "choice_id", "step_index", "bound_action", "expected_snapshot_id"],
     global_receipt: ["request_id", "source_ordinal", "receipt"], global_dispatch_error: ["request_id", "sent", "reason"], global_result: ["acquisition_id", "result"],
-    agent_directive: ["output"], controller_acquired: ["controller"], controller_released: ["controller"], controller_release_unknown: ["controller", "reason"],
+    agent_directive: ["output"], human_directive: ["output", "catalog_key", "ranking", "origin"], controller_acquired: ["controller"], controller_released: ["controller"], controller_release_unknown: ["controller", "reason"],
     mode_changed: ["mode", "autonomy_budget", "controller"], autonomy_budget_exhausted: ["reason", "autonomy_budget", "controller"],
     handoff_to_human: ["reason", "autonomy_budget", "controller"], fail_closed: ["reason", "agent_state"], runtime_tainted: ["reason", "retry"],
     stopped: ["autonomy_budget", "controller", "pending_request", "agent_state"]
@@ -275,6 +275,17 @@ export async function replayGlobalAgentRun(directory: string) {
       consumedAcquisition = frame.acquisition_id;
     } else if (event.kind === "agent_directive") {
       const index = directives.findIndex(d => same(d, p.output)); require(index >= 0 && ledger && p.output.continuity_token === ledger.continuityToken && p.output.consumption_id === ledger.consumptionId && p.output.state_version === ledger.stateVersion, "global_directive_not_from_agent"); directives.splice(index, 1); lastDirective = p.output;
+    } else if (event.kind === "human_directive") {
+      const output = p.output, input = inputs.get(output.directive.basis_acquisition_id);
+      require(mode === "one_step" && ledger && output.continuity_token === ledger.continuityToken
+        && output.consumption_id === ledger.consumptionId && output.state_version === ledger.stateVersion
+        && input && p.catalog_key === globalDigest(input.input.observation)
+        && Array.isArray(p.ranking) && p.ranking.length > 0 && new Set(p.ranking).size === p.ranking.length
+        && p.ranking.every((id: unknown) => input.input.catalog.some((c: any) => c.choice_id === id))
+        && output.directive.type === "act" && output.directive.selection.kind === "handle"
+        && output.directive.selection.action_id === p.ranking[0] && output.directive.scores === null
+        && p.origin === "manual_protocol_choice_not_human_witness", "global_invalid_manual_selection");
+      lastDirective = output;
     } else if (event.kind === "global_choice") {
       require(mode !== null && mode !== "human" && mode !== "shadow" && !permanentlyFenced && !unknown && !active && lastDirective?.directive.type === "act" && lastDirective.directive.basis_acquisition_id === p.acquisition_id
         && lastDirective.directive.selection.kind === "handle" && lastDirective.directive.selection.action_id === p.choice_id && acknowledgements.has(p.acquisition_id), "global_choice_not_acknowledged");

@@ -120,6 +120,15 @@ public sealed class PlatformLiveStatusClient : IDisposable
             errors);
     }
 
+    /// <summary>Scalar Runtime status only; no Connector Snapshot or action catalog.</summary>
+    internal async Task<IPlatformRuntimeStatus> ReadRuntimeAsync(CancellationToken cancellationToken = default)
+    {
+        PolicyRuntimeHttpStatusResponse response = await GetAsync<PolicyRuntimeHttpStatusResponse>(
+            _policyRuntimeHttp, "status", cancellationToken);
+        EnsurePolicyRuntimeStatus(response.Schema, response.Status);
+        return response.Status;
+    }
+
     public async Task<PlatformPolicyBinding> ObserveBindingAsync(
         string expectedRunId, string expectedGameInstanceId, CancellationToken cancellationToken = default)
     {

@@ -180,6 +180,25 @@ this event. The record is an observation only: it has no decision, delivery or
 causal successor association, and it does not expand the policy's supported
 interactions. A failed event write triggers the existing fail-closed handoff.
 
+## Manual P1 choices through the same Runtime (rc.60)
+
+`GET /v2/human-choices` passively captures the current complete P1 catalog while in
+Human. It does not acquire control, call a Model, or advance consume/ACK state.
+While a model is running it returns its observed catalog/choice as read-only.
+`POST /v2/human-choice` takes `{catalog_key, ranking}` with the original run,
+game-instance and recovery-epoch headers. The owner starts one controlled step,
+reacquires the real observation, rejects a changed catalog before dispatch, and
+executes only the first ranked choice through the existing lowering/Connector/
+Receipt path. An uncertain delivery taints the same owner and is never retried.
+
+The immutable journal records `human_directive` with its acknowledged acquisition,
+ordered partial ranking and `manual_protocol_choice_not_human_witness` origin.
+This is neither an Agent's model output nor machine proof of physical Human
+input. The shared replay verifies it; trajectory points retain
+`decision_source=manual_protocol_choice`. Native mouse evidence remains the
+Recorder's original lane. Applications own ranking-label versions and uses,
+recording/annotation preferences, and informal display eligibility.
+
 ## Stateful observation port (opt-in)
 
 The separate `sts2.policy-runtime/decision-only-ndjson-4` profile consumes only

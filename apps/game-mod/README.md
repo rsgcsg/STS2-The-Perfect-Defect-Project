@@ -42,8 +42,12 @@ Matching SHA/MVID and source provenance do not waive a version mismatch.
 The current project uses one unconditional literal version. Conditional or
 executable MSBuild version selection is unsupported until deliberately reviewed.
 
-After cold load, click the visible Platform launcher to open the two-tab Workspace; `Escape`
-also closes it. Verification requires one exact `STS2_PLATFORM` Modset, one
+After cold load, click the visible Platform launcher to open the game desk. Its
+main window manages recording/notes, model control, choices and diagnostics;
+all daily controls use mouse buttons. Closing/minimizing a window changes only
+presentation; explicit Stop buttons own recording/model shutdown. See the
+[UI guide](../ingame-ui/README.md) for the shared CLI/API mappings.
+Verification requires one exact `STS2_PLATFORM` Modset, one
 common loaded SHA/MVID for Connector/Annotator/UI, component-specific embedded
 source provenance, a ready UI node, and Connector execution availability.
 `verify-loaded` polls this exact readiness envelope for a bounded startup

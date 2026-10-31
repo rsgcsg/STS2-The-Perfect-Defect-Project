@@ -8,6 +8,28 @@ starts only after the installed and loaded identities agree. Record each
 candidate/cohort separately; a new DLL or source revision receives no Human
 qualification from its predecessor. Retain the previous deployment for rollback.
 
+## 对局台：排序、鼠标和模型交替（2026-11-01，#340 / #297）
+
+当前游戏内操作以[对局台](../apps/ingame-ui/README.md)为准；[交互规范](UI_INTERACTION_SPEC.md#current-pre-training-scope)
+拥有窗口和按钮语义。本人录制的游戏内鼠标操作沿原 P1 native 原件、来源见证、封存、
+核验、派生和入库流程。切给模型时后台先封存 Human 片段，模型结束这一步或点“停，我来”
+后再接新 Human 片段；关闭/最小化任何窗口不等于 Stop。录制关掉也保留模型的准确版本、
+选择、实际提交与回执。
+
+数据用途已由用户本轮确定，取代 #297 的“用途待用户决定”：能核实的 native 人类动作
+按普通示范使用，继续过原来源/完整性/派生检查；模型段只作模型轨迹；人的排序标签单独
+版本保存，不接训练 loss；混合整局和非正式展示局都不算模型成绩。未排名是未评价，
+问题/“我点错了”只作标记，不自动作为负例，也不重写已执行动作或旧数据权重。
+人工协议排序明确记录输入者声明和原 Runtime 回执，单凭这条协议记录不证明物理 Human。
+
+新索引 `spireagent/game-desk-recording-1` 将 Recorder 与 Runtime 的原件引用、每步输入
+方式、排序和标记放在同一个 reader 下；排序标签为 `spireagent/human-ranking-labels-1`。
+索引不是新的游戏事实 owner，不按墙钟猜跨通道因果，也不替原件封存/typed verifier。
+用正常 `game-desk recording` 可读当前索引；停录制或已核游戏退出后将索引快照写入同一
+ArtifactStore 并逐 payload 读回。原件仍在原 Recorder/Runtime/录后维护链保存。
+旧 H1 的 `blocked_pending_user_policy` 等头部保留原字节；用途决定已明确，历史片段仍
+必须核原见证和分段，不能借本次决定补成人类来源或自动入训。
+
 ## Current P1 daily collection
 
 Use the current [Application collection controls](../python/docs/PROJECT_CONSOLE.md#daily-collection)
