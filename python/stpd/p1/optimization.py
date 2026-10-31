@@ -18,6 +18,7 @@ from spireagent.json_boundary import BoundaryError
 
 from .execution import microbatches
 from .model import MStd
+from .next_fact import NextFactBatch
 from .tensor_input import ModelFrame
 
 
@@ -25,6 +26,7 @@ def optimizer_update(
     model: MStd, optimizer: torch.optim.Optimizer, frames: Sequence[ModelFrame],
     targets: list[int], learning_rate: float, *, weights: list[float] | None = None,
     value_targets: list[tuple[float | None, float | None]] | None = None,
+    next_facts: NextFactBatch | None = None,
 ) -> dict[str, Any]:
     if not frames or len(frames) != len(targets):
         raise BoundaryError("p1_training", "optimizer_batch_length_mismatch")
@@ -47,11 +49,19 @@ def optimizer_update(
     finite_scores: list[torch.Tensor] = []
     sizes = []
     auxiliary_losses: list[torch.Tensor] = []
+    next_losses: list[torch.Tensor] = []
     for group in microbatches(frames, list(range(len(frames))), model):
         sizes.append(len(group))
         batch_frames = [frames[index] for index in group]
         values = None
-        if value_targets is not None:
+        features = None
+        if next_facts is not None:
+            scores, values, features = model.forward_with_action_features(
+                batch_frames, [targets[i] for i in group],
+                next_facts.enemy_positions(group),
+                check_finite=not model.execution.defer_score_sync)
+            finite_scores.append(torch.isfinite(values).all())
+        elif value_targets is not None:
             scores, values = model.forward_with_values(
                 batch_frames, check_finite=not model.execution.defer_score_sync)
             finite_scores.append(torch.isfinite(values).all())
@@ -88,10 +98,16 @@ def optimizer_update(
                     term = 0.01 * auxiliary.sum() / len(frames)
                     objective = objective + term
                     auxiliary_losses.append(term.detach())
+        if next_facts is not None and features is not None:
+            term = next_facts.loss(features, group)
+            objective = objective + term
+            next_losses.append(term.detach())
         objective.backward()
         losses.extend(loss.detach().unbind())
     if auxiliary_losses and not bool(torch.isfinite(torch.stack(auxiliary_losses)).all()):
         raise BoundaryError("p1_training", "non_finite_auxiliary_loss")
+    if next_losses and not bool(torch.isfinite(torch.stack(next_losses)).all()):
+        raise BoundaryError("p1_training", "non_finite_next_fact_loss")
     if finite_scores:
         checked_values = torch.cat((torch.stack(losses), torch.stack(finite_scores))).cpu().tolist()
         loss_values = checked_values[:len(losses)]
@@ -101,7 +117,8 @@ def optimizer_update(
         loss_values = torch.stack(losses).cpu().tolist()
     if not all(math.isfinite(loss) for loss in loss_values):
         raise BoundaryError("p1_training", "non_finite_loss")
-    gradients = [p.grad.norm() for p in model.parameters() if p.grad is not None]
+    gradients = [p.grad.norm() for g in optimizer.param_groups for p in g["params"]
+                 if p.grad is not None]
     norm = float(torch.linalg.vector_norm(torch.stack(gradients)))
     if not math.isfinite(norm):
         raise BoundaryError("p1_training", "non_finite_gradient")
@@ -109,4 +126,6 @@ def optimizer_update(
     return {"mean_N_loss": sum(loss_values) / len(frames), "gradient_norm": norm,
             "train_seconds": time.perf_counter() - began, "microbatch_sizes": sizes,
             **({"auxiliary_loss": sum(float(x) for x in auxiliary_losses)}
-               if value_targets is not None else {})}
+               if value_targets is not None else {}),
+            **({"next_fact_loss": sum(float(x) for x in next_losses)}
+               if next_facts is not None else {})}
