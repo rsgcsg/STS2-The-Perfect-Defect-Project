@@ -6,7 +6,7 @@
 
 ## 当前任务与唯一下一步
 
-本轮需求与验收以 [#340](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/issues/340) 和用户 v6 卡为准；长期窗口/用例语义归[交互规范](../UI_INTERACTION_SPEC.md#current-pre-training-scope)，入口去向归[游戏内指南](../../apps/ingame-ui/README.md)。当前在开发/验证，尚未声明新包安装或用户实测通过。原[统筹复核](../evidence/COORDINATION_1_20261031.md)保留已交历史义务和其他线，不再作为“等待选卡”的当前派工。
+本轮需求与验收以 [#340](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/issues/340) 和用户 v6 卡为准；长期窗口/用例语义归[交互规范](../UI_INTERACTION_SPEC.md#current-pre-training-scope)，入口去向归[游戏内指南](../../apps/ingame-ui/README.md)。PR344已普通合入develop（351958bd），首包Workbench1b681889/Mod71已安装并冷加载通过，但动作窗口实点检查失败，首次mac-daily部署如实记failure。当前修复动作窗最小尺寸和入库维护关闭时的模型片段退出封存，另版LiveUI24/Mod72仍待CI、安装与实机复验；原版与失败实物保留。真人实测仍未完成。原[统筹复核](../evidence/COORDINATION_1_20261031.md)保留已交历史义务和其他线，不再作为“等待选卡”的当前派工。
 
 | 对象 | 已知结果 / 剩余 |
 |---|---|
@@ -15,7 +15,7 @@
 | 数据量 / 概率 | 20/41局共同94seed层差+0.81，95%区间[-0.24,+1.95]，分不出来；n10未准入。DEV/TEST NLL翻倍而一选近似不变，先拆分排名/概率诊断，不自动废除留出 |
 | RL2 | v337为2691更新；最新完整CP335为2675更新。12路独立保存12/12、1967518文件核同，旧0/12失败历史保留；不再派补拷 |
 | RL3准备 | PR325/328已交，短链20更新、真实换模和2完整CP通过；不替200步/首小时/长跑学习效果。配置模板未批准，预取默认关 |
-| 录制 | 日常最后已核收据为Workbench0009eb35 / Mod67；本卡未重验加载或改安装。H1源码已合、未装、用户0局；排序尚未实现，交替/排序来源与准入仍分别验 |
+| 录制 | 初装Workbench1b681889 / Mod71安装、冷加载及Runtime60 Human零动作准备已核；UI实点发现缺口，当前另版修复。用户0局；完整选择/切换/封存/入库/读回与Human来源资格仍待验 |
 | 新用法 | 排序对照真实游戏、显示全部P1动作、人排几个并执行第一、可标问题，不需后台模型；交替各段标人或准确模型版本。复用原决策端口/控制/原件，不另起执行链 |
 
 ## Remaining Platform non-claims（运行与证据边界）
