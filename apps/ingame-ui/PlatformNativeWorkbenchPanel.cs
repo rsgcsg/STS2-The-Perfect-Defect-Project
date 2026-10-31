@@ -86,6 +86,7 @@ internal sealed class PlatformNativeWorkbenchPanel : IDisposable
                     "accepted" => ResultMessage(result.OwnerResponse) ?? "操作已接收，以当前状态和保存回执为准。",
                     "rejected" => "未执行：" + (result.ErrorCode ?? "请求已过期，请刷新后重新选择。"),
                     _ => "结果未确认；不会重发。请先点“停，我来”处理。"
+                        + (string.IsNullOrWhiteSpace(result.ErrorCode) ? "" : " 错误码：" + result.ErrorCode)
                 };
             }
             catch (Exception error) when (error is not OutOfMemoryException)
