@@ -6,9 +6,9 @@
 
 ## 当前任务与唯一下一步
 
-基线develop `1ec85334`；PR349正在改为v6，旧50ce原型/其CI不代表v6验收。当前0训练/0GPU，source尚在实现；先完成正常CPU测试、#338长CP编解码/恢复、原Actor到末CP短链，再进入约1h在线热身（最多2h不过停）与约20h连续运行（含热身），每4hquick20、末100颗与起点配对。硬截止2026-11-03 05:40 AEST，末2h保存报告。仅一张免费GPU累计≤30h，EAIT L40S优先、Friday GPU备用；Friday CPU12路起≤36核。FP32开/预取关，新鲜度按秒/完整acting KL/clip计量，实际需要时以更快学习的工程方法改善，不靠降lr或多丢数据凑新鲜。
+PR349已普通合入`627a9523`，真实CI和合并后CI通过；运行源`52a7cd83`冻结。11-01 07:27开始价值热身，08:29通过留出门并开始PPO，已正常保存v29/131策略更新；头1056更新另计。完整CP正常消费者绑定和首CP冷恢复已核，不等于训练后变强。现由Friday A30从末CP继任，batch64→256、lr1e-5→2e-5摊薄整局价值/GAE重算，实际恢复/采用/吞吐看本卡原运行收据。EAIT旧分配因交接脚本错误进入正常释放；原数据/失败保留，不归因GPU故障。约20h含热身与恢复，原终点11-02 03:27:51 AEST不重置；全卡11-03 05:40硬收口、末2h报告保全。一次一张免费GPU、累计≤30h，CPU游戏12路起≤36；FP32开/预取关，600秒新鲜度/60秒发版，按完整acting KL/clip和墙钟实战选择调优，不靠降lr/多丢数据凑新鲜。
 
-Friday SSH已恢复且无自有作业；当时6张A30占用，EAIT页面已登录、L40S很可能可用、额度26h41m。**唯一下一步：完成v6候选的CPU与完整恢复验证，再启动当时可用的一张GPU。**故障先核原分配/末CP，再查Friday，不双卡、不重投unknown、不碰凭据或秘密输入文件。角色/参数/恢复归[原SOP](../../python/docs/RL3_RUN.zh-CN.md#可选公开输入评分网络)。RL2不恢复，100评估seed永不训练。
+**唯一下一步：核Friday继任与新采样端实际采用，继续首200策略更新/首小时健康和每4h quick20。**起点quick20已20自然负、0unknown、audit1/1、均14.0层；旧100审计unknown未准入仍保留。用户已批末尾新固定同窗起点/最终各100（含旧56）：新轮unknown不重试，任一边unknown剔整seed对，union不同unknown种子>5整轮作废，其他缺失/删失保持未完成。PR351可选清理后继续采集已合入`921d4562`，不改变原audit/score资格，末轮独立研究投影另绑定原件。水晶球公开事实缺口已列[#350](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/issues/350)，本卡不修平台。新写用已验证共享scratch；旧data个人quota满，原件不删。故障先核旧分配/末CP再备用，不双卡；恢复不重置预算。角色/参数/恢复归[原SOP](../../python/docs/RL3_RUN.zh-CN.md#可选公开输入评分网络)。RL2不恢复，100评估seed永不训练。
 
 CARD-1A / [#340](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/issues/340)仍待用户试1–2局和原件/完整入库；本卡不碰Mac。原source ab816a93 / Workbench cc39dc7f / UI24 / Mod72 / Runtime60的已装与0动作保存范围见[STATUS](../STATUS.md)，不拿它作模型实战资格。
 
