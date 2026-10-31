@@ -181,6 +181,10 @@ def test_entropy_has_live_gradient_and_value_head_is_removed_from_actor_exports(
     assert after > before
     assert result["value_loss"] == 0 and result["acting_policy_kl"] == 0
     assert result["ratio_quantiles"]["0.5"] == pytest.approx(1, abs=1e-6)
+    unused = result["by_catalog_kind"]["event.leave"]
+    assert unused["opportunities"] == 4 and unused["selected"] == 0
+    assert unused["probability_mass"] == pytest.approx(float(probabilities[1]), abs=1e-6)
+    assert unused["reference_mass"] > 0
     assert not any(
         k.startswith(("win_head.", "progress_head."))
         for k in action_weights(critic.model.state_dict(), value_heads=True)

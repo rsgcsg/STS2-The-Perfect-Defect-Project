@@ -92,6 +92,11 @@ anchor系数0.5、每8更新发版、过期8版本、最多复用3次、12actor�
 }
 ```
 
+`evaluation_tiers`支持仅quick20（省略milestone一行），沿同一固定4h调度且不触发旧40局确认。
+Friday计算节点禁止嵌套sbatch时，看守可用`evaluation_mode="direct"`并独占4 CPU；
+原四路评估在这份分配内启动，少于4 CPU会明确拒绝。训练actors最多32路时加4评估路，
+总游戏并发不超过36。末100另用原evaluate入口，仍绑定同一100颗manifest和argmax。
+
 时长必须是300–72000秒的显式整数；模板null会明确拒绝准备/启动。
 默认原actor预算要求 `wall_seconds > games_per_ledger × episode_seconds + 180`。
 本卡短链路验证若只900秒，须在获批的smoke配置显式选例如1–2路、episode180、ledger1，
@@ -198,7 +203,7 @@ PPO训练用eval模式求导，禁dropout/id masking，与actor概率一致；le
 不靠降lr或多扔数据解决；原始失败和不同参数的时间边界必须保留。
 
 原decision ledger追加arrival_policy_drift、逐步critic_prediction、成功critic_trained及
-ppo_diagnostics，绑定原run_id:step.index、使用的critic/policy更新数、真实优势/目标/比率与KL。
+ppo_diagnostics（含by_catalog_kind合法机会数、未被选择种类的当前/起点概率质量、熵与KL贡献），绑定原run_id:step.index、使用的critic/policy更新数、真实优势/目标/比率与KL。
 原trained事件成功后才记策略首用，另含模型落后及开局到首训秒数；时钟界未知仍是null。
 上报当前KL/entropy、分类指标、概率比/clip分布、原始与归一化优势、value loss及真实阶段耗时。
 值头热身不算策略更新；额外整轨迹重算时间单列，不借旧固定窗称新方法仅多一成计算。

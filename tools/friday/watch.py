@@ -49,8 +49,6 @@ def read_config(path: Path) -> dict[str, Any]:
         raise ValueError('watch_actor_job_binding_mismatch')
     if value.get('evaluation_tiers') is not None:
         tiers(value)
-        if value['evaluation_mode'] != 'submit':
-            raise ValueError('RL3_parallel_evaluation_requires_submit_mode')
         from spireagent.workbench.reference_suite import load_manifest
         from stpd.evaluation.suites import RL3_LEARNING_CURVE_SUITE_ID
 
@@ -64,9 +62,11 @@ def read_config(path: Path) -> dict[str, Any]:
 def tiers(config: dict[str, Any]) -> list[dict[str, Any]]:
     values = config.get('evaluation_tiers', [])
     expected = {'quick': (14400, 20), 'milestone': (28800, 100)}
-    if (not isinstance(values, list) or len(values) != 2
-            or {v.get('name') for v in values if isinstance(v, dict)} != set(expected)):
-        raise ValueError('explicit_quick20_milestone100_tiers_required')
+    if (not isinstance(values, list) or not 1 <= len(values) <= 2
+            or {v.get('name') for v in values if isinstance(v, dict)}
+                not in ({'quick'}, set(expected))
+            or len({v.get('name') for v in values if isinstance(v, dict)}) != len(values)):
+        raise ValueError('explicit_quick20_optional_milestone100_tiers_required')
     for value in values:
         if ((value.get('seconds'), value.get('seed_prefix')) != expected[value['name']]
                 or type(value.get('seconds')) is not int
@@ -227,6 +227,9 @@ class Watcher:
                            confirmation: bool = False, tier: dict[str, Any] | None = None,
                            due_at: float | None = None):
         kind = tier['name'] if tier else ('confirmation' if confirmation else 'fixed20')
+        if (tier is not None and self.config['evaluation_mode'] == 'direct'
+                and int(os.environ.get('SLURM_CPUS_PER_TASK', '0')) < 4):
+            raise ValueError('direct_RL3_evaluation_requires_four_allocated_CPUs')
         root = self.work / 'evaluations' / f"{kind}-v{model['version']:06d}-{time.time_ns()}"
         root.mkdir(parents=True, mode=0o700)
         package = self.exchange.materialize_model(model, self.work / 'models')

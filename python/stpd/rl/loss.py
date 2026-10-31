@@ -372,6 +372,7 @@ def _ppo_update(
     phases = {name: 0.0 for name in ("forward", "reference", "backward", "optimizer")}
     rows: list[tuple[RlSample, float, float, float, float, float]] = []
     policy_total = value_total = 0.0
+    catalogs: dict[str, dict[str, float]] = {}
     for indices in microbatches(frames, list(range(len(frames))), model):
         batch = [samples[i] for i in indices]
         phase = time.perf_counter()
@@ -414,6 +415,30 @@ def _ppo_update(
         phases["backward"] += time.perf_counter() - phase
         policy_total += float(policy.detach().sum())
         value_total += float(value_loss.detach().sum())
+        # One bounded transfer per tensor; no per-kind CUDA synchronization.
+        masses = probabilities.detach().cpu().tolist()
+        current_logs = finite_logs.detach().cpu().tolist()
+        reference_logs = reference_log.detach().cpu().tolist()
+        # Include legal opportunities even when that action kind is never selected.
+        for row_index, sample in enumerate(batch):
+            frame = sample.frame
+            kinds = ([c["kind"] for c in frame.choices] if isinstance(frame, Frame) else
+                     [model.vocabulary["actions"][i]
+                      for i in (frame.host or frame).tensors["actions"].tolist()])
+            for kind in set(kinds):
+                indices = [i for i, value in enumerate(kinds) if value == kind]
+                row = catalogs.setdefault(kind, dict.fromkeys(
+                    ("opportunities", "selected", "probability_mass", "reference_mass",
+                     "entropy_contribution", "kl_contribution"), 0.0))
+                row["opportunities"] += 1
+                row["selected"] += float(kinds[sample.action] == kind)
+                row["probability_mass"] += sum(masses[row_index][i] for i in indices)
+                row["reference_mass"] += sum(
+                    math.exp(reference_logs[row_index][i]) for i in indices)
+                row["entropy_contribution"] -= sum(
+                    masses[row_index][i] * current_logs[row_index][i] for i in indices)
+                row["kl_contribution"] += sum(masses[row_index][i] * (
+                    current_logs[row_index][i] - reference_logs[row_index][i]) for i in indices)
         choices = valid.sum(-1)
         normalized = torch.where(choices > 1, entropy / choices.clamp(min=2).float().log(), 0)
         detached = (
@@ -480,6 +505,9 @@ def _ppo_update(
         },
         "clipped_fraction_multichoice": statistics(multi)["clipped_fraction"] if multi else None,
         "by_action_kind": by_kind,
+        "by_catalog_kind": {kind: {key: (value if key == "opportunities" else
+            value / row["opportunities"]) for key, value in row.items()}
+            for kind, row in sorted(catalogs.items())},
         "rl_samples": len(samples),
         "anchor_samples": 0,
         "acting_policy_kl": totals["acting_kl"],
