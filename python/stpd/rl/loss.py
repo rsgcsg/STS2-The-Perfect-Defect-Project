@@ -37,6 +37,8 @@ class RlSample:
     advantage: float
     model_version: int
     key: str
+    # Discounted terminal return for the optional independent critic.
+    return_target: float | None = None
 
 
 @dataclass(frozen=True)

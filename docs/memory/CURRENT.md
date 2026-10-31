@@ -1,12 +1,14 @@
-# 当前：CARD-1A 游戏内对局台开发与安装验收
+# 当前：CARD-RL-C 公开输入评分网络与同预算RL对照
 
-2026-11-01：用户已派 CARD-1A / [#340](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/issues/340)。本卡 owner 为主对话，范围是游戏内多窗口、排序/鼠标/模型的统一用例、记录/标记、清理 Mod GUI、直接安装及部署登记；用户实测后才收口。不训练、不改 RL、不碰凭据。1B 只读、1C 在训练侧另跑，本卡不写 `python/stpd`。预计本地 05:05 AEST 前完成，08:05 硬收口（不计等用户实测）。
+2026-11-01：用户已派CARD-RL-C，root负责；范围归[本轮设计](../plans/RL_CRITIC_20261101.md)。复用原learner/Friday actor/Exchange/CP/评估账本，原2016起点，critic开关保留旧方法；单A30总≤30h、不花钱、不碰凭据或Mac游戏，unknown不重投、评估seed永不训练。旧RL2不恢复。
 
 <!-- Resolve live GitHub refs before action; latest user instructions and live evidence override this file. -->
 
 ## 当前任务与唯一下一步
 
-本轮以[#340](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/issues/340)及用户v6卡为准，长期语义归[交互规范](../UI_INTERACTION_SPEC.md#current-pre-training-scope)，入口去向归[游戏内指南](../../apps/ingame-ui/README.md)。PR344/345已普通合入develop，安装source ab816a93完整CI绿；Workbench cc39dc7f / UI24 / Mod72 / Runtime60已装并冷加载，窗口与入库关闭时退出Stop实核通过（0游戏动作）。旧Store绑定缺失后，用户明确选择新建持久本机库；原owner建立并重绑、旧配置保留，无旧数据导入/改写、无云端保存。正式保存按钮成功，原CLI按准确artifact读取0动作/11控制事件索引；Deployment7462443141新增success并保留原failure。**唯一下一步：用户试1–2局覆盖鼠标/排序/模型展示/交替/一步/标记/点错/取消，然后由主对话核对原件与完整入库读回，再决定340收口。**游戏在菜单、未录制、Runtime Human无自动走；不重复安装或执行unknown请求。诊断GLOBAL类型分歧346、舒适项343与账本300保留，297用途决策已关闭。准确身份、失败历史和局部验证边界见[STATUS](../STATUS.md)。原[统筹复核](../evidence/COORDINATION_1_20261031.md)保留其他线的历史义务。
+当前在独立分支实现critic在线热身与逐步GAE，未提交训练、无实战结果；基线develop `1ec85334`。先验证候选与原CP恢复，再做有限短试、A/B同预算及100种子配对；只有B配对95%区间严格高于0且审计/保存通过才接≤20h长跑。开发预计3–5h，2026-11-04 05:40 AEST硬收口；参数与停止条件归[设计](../plans/RL_CRITIC_20261101.md)，运行归[原SOP](../../python/docs/RL3_RUN.zh-CN.md#可选公开输入评分网络)。Friday原SSH复用已失效，待用户恢复登录；Mac有用户游戏，重检查等待资源位。**唯一下一步：完成忠实测试与完整恢复验证。**源码/CI不替代真实采用、热身或效果。
+
+CARD-1A / [#340](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/issues/340)仍待用户试1–2局，再核原件与完整入库，本卡不抢Mac或重装。原source ab816a93 / Workbench cc39dc7f / UI24 / Mod72 / Runtime60已装，0动作/11控制事件保存回读范围见[STATUS](../STATUS.md)；诊断346、舒适项343、账本300保留，297已关闭。
 
 | 对象 | 已知结果 / 剩余 |
 |---|---|

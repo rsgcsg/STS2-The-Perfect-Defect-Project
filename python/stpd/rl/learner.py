@@ -21,7 +21,8 @@ import time
 import uuid
 from collections.abc import Callable, Iterable
 from concurrent.futures import Future, ThreadPoolExecutor
-from dataclasses import asdict, dataclass, field
+from contextlib import nullcontext
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any, TypeVar
 
@@ -38,9 +39,10 @@ from stpd.p1.tensor_input import ModelFrame, TensorFrame, compile_frame
 from stpd.workers.checkpoint_codec import decode_checkpoint, encode_checkpoint
 from stpd.workers.training_io import CheckpointPublisher, FrozenCheckpoint, ProgressCadence
 
+from .critic import CriticConfig, CriticEpisode, OnlineCritic, gae, held_out, terminal_targets
 from .ledger import DecisionLedger
 from .loss import LossConfig, RlSample, rl_update
-from .performance import PerformanceConfig
+from .performance import PerformanceConfig, prepare_models
 from .reward import REWARD_SPEC, episode_reward
 
 CONFIG_SCHEMA = "stpd/rl-learner-config-1"
@@ -96,6 +98,8 @@ class LearnerConfig:
     loss: LossConfig = field(default_factory=LossConfig)
     # Omitted means the exact legacy update path, not an implicit new plan.
     performance: PerformanceConfig | None = None
+    # None preserves the legacy estimator and optimizer path.
+    critic: CriticConfig | None = None
 
     @classmethod
     def read(cls, path: Path) -> LearnerConfig:
@@ -104,7 +108,9 @@ class LearnerConfig:
             raise BoundaryError("rl_learner", "unsupported_config")
         loss = LossConfig(**value.pop("loss", {}))
         performance = value.pop("performance", None)
+        critic = value.pop("critic", None)
         return cls(**value, loss=loss,
+                   critic=CriticConfig(**critic) if critic is not None else None,
                    performance=(PerformanceConfig(**performance)
                                 if performance is not None else None))
 
@@ -235,6 +241,14 @@ class Learner:
             parameter.requires_grad_(True)
         self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=config.lr,
                                            weight_decay=config.weight_decay)
+        self.critic = None
+        if config.critic is not None:
+            # The critic inherits the same declared input execution (including
+            # TensorFrame support), while its regression remains FP32.
+            with (prepare_models(self.model, self.reference, config.performance)
+                  if config.performance is not None else nullcontext()):
+                self.critic = OnlineCritic(self.model, config.critic, config.seed)
+        self.critic_began = time.monotonic()
         self.buffer: list[Buffered] = []
         self.initial_behavior: dict[str, dict[str, Any]] = {}
         self.reference_cache: dict[str, torch.Tensor] = {}
@@ -246,6 +260,7 @@ class Learner:
         self.update_in_progress = False
         self.updates = 0
         self.version_updates = 0
+        self.version_critic_revision = 0
         self.lineage_version = 0
         self.reader = ThreadPoolExecutor(max_workers=1, thread_name_prefix="rl-shard-read")
         self.discovery = ThreadPoolExecutor(max_workers=1, thread_name_prefix="rl-discovery")
@@ -355,16 +370,26 @@ class Learner:
     # Data -------------------------------------------------------------
     def _state(self) -> bytes:
         """Owner thread: everything a successor needs to keep training this run."""
-        buffer = [[i.shard, i.sample.key, i.uses, i.sample.advantage, i.sample.model_version]
+        buffer = [[i.shard, i.sample.key, i.uses, i.sample.advantage, i.sample.model_version,
+                   i.sample.return_target]
                   for i in self.buffer]
         state = self.random.getstate()
         learner = {"run": self.config.run, "version": self.lineage_version,
                    "updates": self.updates, "counts": dict(self.counts),
+                   "version_critic_revision": self.version_critic_revision,
                    "returns": list(self.returns), "seen": sorted(self.seen),
                    "buffer": buffer, "random": [state[0], list(state[1]), state[2]],
                    "seen_episodes": self.seen_episodes,
                    "decision_ledger": self.ledger.state()}
+        critic_state: dict[str, Any] = {}
+        if self.critic is not None:
+            self.critic.elapsed_seconds += time.monotonic() - self.critic_began
+            self.critic_began = time.monotonic()
+            learner["critic"] = self.critic.state()
+            critic_state = {"critic_weights": self.critic.network.state_dict(),
+                            "critic_optimizer": self.critic.optimizer.state_dict()}
         return encode_checkpoint({
+            **critic_state,
             "schema": CHECKPOINT_SCHEMA,
             "weights": {k: v.detach().cpu().clone() for k, v in self.model.state_dict().items()},
             "optimizer": self.optimizer.state_dict(), "torch_rng": torch.get_rng_state(),
@@ -388,6 +413,14 @@ class Learner:
         if (state.get("schema") != CHECKPOINT_SCHEMA or learner["run"] != self.config.run
                 or learner["version"] != info["version"] or learner["version"] > latest):
             raise BoundaryError("rl_learner", "resume_checkpoint_state_mismatch")
+        critic_saved = learner.get("critic")
+        if (self.critic is None) != (critic_saved is None):
+            raise BoundaryError("rl_critic", "resume_method_mismatch")
+        if self.critic is not None:
+            self.critic.restore(critic_saved)
+            self.critic.network.load_state_dict(state["critic_weights"])
+            self.critic.optimizer.load_state_dict(state["critic_optimizer"])
+            self.critic_began = time.monotonic()
         self.model.load_state_dict(state["weights"])
         self.optimizer.load_state_dict(state["optimizer"])
         torch.set_rng_state(state["torch_rng"])
@@ -398,6 +431,7 @@ class Learner:
         self.random.setstate((learner["random"][0], tuple(learner["random"][1]),
                               learner["random"][2]))
         self.updates = self.version_updates = learner["updates"]
+        self.version_critic_revision = learner.get("version_critic_revision", 0)
         self.counts.update(learner["counts"])
         self.returns.extend(learner["returns"])
         self.lineage_version = learner["version"]
@@ -407,22 +441,36 @@ class Learner:
         # The buffer is rebuilt from its own read-back shards, with the saved
         # advantage and reuse count; frames are never stored twice.
         saved_order = [entry[1] for entry in learner["buffer"]]
-        saved = {key: (uses, advantage, version)
-                 for _, key, uses, advantage, version in learner["buffer"]}
+        saved = {entry[1]: (entry[2], entry[3], entry[4], entry[5] if len(entry) > 5 else None)
+                 for entry in learner["buffer"]}
         restored: dict[str, Buffered] = {}
-        shards = sorted({entry[0] for entry in learner["buffer"]})
+        critic_episodes = ({e["run_id"]: e for e in critic_saved["episodes"]}
+                           if critic_saved is not None else {})
+        critic_order = list(critic_episodes)
+        restored_critic: dict[str, CriticEpisode] = {}
+        shards = sorted({entry[0] for entry in learner["buffer"]}
+                        | {e["shard"] for e in critic_episodes.values()})
         for rows in self.reader.map(
                 lambda key: self._read_retry("resume_shard",
                     lambda: self._read_once(key, restoring=True)), shards):
             for row in rows:
+                if self.critic is not None and row["episode"] is not None:
+                    run_id = row["episode"]["run_id"]
+                    if run_id in critic_episodes:
+                        identity = critic_episodes.pop(run_id)
+                        restored_critic[run_id] = CriticEpisode(**identity,
+                            frames=[r[0] for r in row["samples"]],
+                            keys=[r[4] for r in row["samples"]])
                 for frame, action, probability, old, key in row.get("samples", ()):
                     if key in saved:
-                        uses, advantage, version = saved.pop(key)
+                        uses, advantage, version, target = saved.pop(key)
                         restored[key] = Buffered(RlSample(
-                            frame, action, probability, old, advantage, version, key), uses,
+                            frame, action, probability, old, advantage, version, key, target), uses,
                             row["key"])
-        if saved:
+        if saved or critic_episodes:
             raise BoundaryError("rl_learner", "resume_buffer_samples_missing")
+        if self.critic is not None:
+            self.critic.episodes = [restored_critic[key] for key in critic_order]
         self.buffer = [restored[key] for key in saved_order]
         self.seen = set(learner["seen"])
         self.timer.add("resume", began)
@@ -588,9 +636,29 @@ class Learner:
                     self.initial_behavior[f"{run_id}:{step['index']}"] = {
                         "choices": [choice["choice_id"] for choice in observation["catalog"]],
                         "behavior": step["behavior"]}
-            for frame, action, probability, old, key in row["samples"]:
-                self.buffer.append(Buffered(RlSample(frame, action, probability, old, advantage,
-                                                     version, key), shard=row["key"]))
+            targets: list[float | None] = [None] * len(row["samples"])
+            advantages = [advantage] * len(row["samples"])
+            if self.critic is not None and row["samples"]:
+                # Public seed is used ONLY to split whole episodes, never as a network input.
+                seed = episode["identity"]["seed"]
+                from stpd.evaluation.suites import require_non_evaluation_seed
+                require_non_evaluation_seed(seed)
+                frames = [r[0] for r in row["samples"]]
+                keys = [r[4] for r in row["samples"]]
+                self.critic.add(CriticEpisode(
+                    run_id, row["key"], seed, reward, version, frames, keys))
+                values = self.critic.predict(frames)
+                targets = list(terminal_targets(reward, len(frames), self.critic.config.gamma))
+                advantages = gae(reward, values, self.critic.config.gamma,
+                                 self.critic.config.gae_lambda)
+                self.ledger.write("critic_prediction", run_id=run_id, ids=keys, values=values,
+                    targets=targets, advantages=advantages, critic_updates=self.critic.updates,
+                    ready=self.critic.ready, held_out=held_out(seed),
+                    policy_version=version)
+            for (frame, action, probability, old, key), estimate, target in zip(
+                    row["samples"], advantages, targets, strict=True):
+                self.buffer.append(Buffered(RlSample(frame, action, probability, old, estimate,
+                                                     version, key, target), shard=row["key"]))
             self.counts["rl_samples"] += len(row["samples"])
             if record.get("finished_at"):
                 self.latencies.append(time.time() - record["finished_at"])
@@ -674,7 +742,57 @@ class Learner:
         if not passed:
             raise BoundaryError("rl_learner", "initial_eval_probability_mismatch")
 
+    def _critic_step(self) -> bool:
+        """Train independently; a failed warmup never updates policy parameters."""
+        critic = self.critic
+        self.critic_training_active = False
+        if critic is None:
+            return True
+        began = time.monotonic()
+        result = critic.update()
+        self.critic_training_active = result is not None
+        self.timer.add("critic_train", began)
+        if result is not None:
+            self.ledger.write("critic_trained", **result)
+        if result is not None and critic.updates % critic.config.validation_every == 0:
+            began = time.monotonic()
+            validation = critic.validate()
+            self.timer.add("critic_validation", began)
+            self._event("critic_validation", **validation, ready=critic.ready)
+            elapsed = critic.elapsed_seconds + time.monotonic() - self.critic_began
+            if (not critic.ready and validation["passed"]
+                    and elapsed < critic.config.warmup_seconds):
+                critic.ready = True
+                critic.revision += 1
+                # Warmup buffer was collected while policy weights were frozen.
+                # Recompute complete episodes once with the accepted critic.
+                groups: dict[str, list[Buffered]] = collections.defaultdict(list)
+                for item in self.buffer:
+                    groups[item.sample.key.rsplit(":", 1)[0]].append(item)
+                for run_id, items in groups.items():
+                    items.sort(key=lambda i: int(i.sample.key.rsplit(":", 1)[1]))
+                    values = critic.predict([i.sample.frame for i in items])
+                    reward = items[-1].sample.return_target
+                    if reward is None:
+                        raise BoundaryError("rl_critic", "missing_terminal_target")
+                    advantages = gae(reward, values, critic.config.gamma, critic.config.gae_lambda)
+                    for item, advantage in zip(items, advantages, strict=True):
+                        item.sample = replace(item.sample, advantage=advantage)
+                    self.ledger.write("critic_prediction", run_id=run_id,
+                        ids=[i.sample.key for i in items], values=values, advantages=advantages,
+                        critic_updates=critic.updates, ready=True, recomputed_after_warmup=True)
+                self._event("critic_ready", **validation)
+        elapsed = critic.elapsed_seconds + time.monotonic() - self.critic_began
+        if not critic.ready and (critic.updates >= critic.config.warmup_max_updates
+                                 or elapsed >= critic.config.warmup_seconds):
+            raise BoundaryError("rl_critic", "warmup_not_qualified")
+        return critic.ready
+
     def train_once(self) -> dict[str, Any] | None:
+        ready = self._critic_step()
+        self.policy_train_began = time.monotonic()
+        if not ready:
+            return None
         sample_began = time.monotonic()
         usable = self.usable()
         if (len(usable) < self.config.batch_size
@@ -698,8 +816,14 @@ class Learner:
         if self.config.initial_policy_check and self.updates == 0:
             self._check_initial_policy(batch)
         self.update_in_progress = True
+        samples = [item.sample for item in batch]
+        if self.critic is not None:
+            mean = sum(s.advantage for s in samples) / len(samples)
+            spread = math.sqrt(sum((s.advantage - mean) ** 2 for s in samples) / len(samples))
+            samples = [replace(s, advantage=(s.advantage - mean) / max(spread, 0.05))
+                       for s in samples]
         result = rl_update(self.model, self.reference, self.optimizer,
-                           [item.sample for item in batch], anchor, self.config.lr,
+                           samples, anchor, self.config.lr,
                            self.config.loss, self.reference_cache,
                            performance=self.config.performance, frame_cache=self.frame_cache)
         self.update_in_progress = False
@@ -740,6 +864,10 @@ class Learner:
             "version": version, "parent_version": self.lineage_version,
             "updates": self.updates,
             "reward": REWARD_SPEC, "loss": asdict(self.config.loss),
+            "advantage_estimator": ({"id": "independent-public-return-critic-gae-v1",
+                "config": asdict(self.critic.config), "critic_updates": self.critic.updates,
+                "validation": self.critic.last_validation}
+                if self.critic else {"id": "legacy-episode"}),
             "start_package_sha256": self.start_sha256,
             "reference_package_sha256": self.reference_sha256,
             "initial_state_mode": ("checkpoint" if self.config.resume_checkpoint
@@ -808,7 +936,9 @@ class Learner:
 
     def maybe_version(self, force: bool = False) -> None:
         due = self.updates - self.version_updates
-        if due == 0 or not force and due < self.config.updates_per_version:
+        critic_changed = (force and self.critic is not None
+                          and self.critic.revision > self.version_critic_revision)
+        if not critic_changed and (due == 0 or not force and due < self.config.updates_per_version):
             return
         from spireagent.json_boundary import FrozenObject
 
@@ -817,6 +947,8 @@ class Learner:
         version, parent = self.version + 1, self.lineage_version
         destination, _ = self._package(version)
         self.lineage_version, self.version_updates = version, self.updates
+        if self.critic is not None:
+            self.version_critic_revision = self.critic.revision
         state = self._state() if not self.checkpoints.pending else None
         self.timer.add("version_capture", began)
         self.pending_version = self.publisher.submit(self._publish, version, parent,
@@ -926,7 +1058,13 @@ class Learner:
                 self._take_checkpoint(wait=False)
                 began = time.monotonic()
                 result = self.train_once()
+                if self.critic is not None:
+                    # Critic work already has its own mutually exclusive phases.
+                    began = self.policy_train_began
                 if result is None:
+                    if getattr(self, "critic_training_active", False):
+                        # Useful critic work is not an empty-data polling loop.
+                        continue
                     self.timer.add("wait_data_check", began)
                     began = time.monotonic()
                     time.sleep(self.config.poll_seconds if not self.reads else 0.2)
@@ -1002,7 +1140,8 @@ class Learner:
                    "counts": dict(self.counts), "timing": self.timer.report(),
                    "trajectory_to_training_seconds": _quantiles(self.latencies),
                    "decision_accounting": self.ledger.summary(),
-                   "device": str(self.device), "anchor": getattr(self, "anchor_identity", None)}
+                   "device": str(self.device), "anchor": getattr(self, "anchor_identity", None),
+                   "critic": self.critic.state() if self.critic else None}
         (self.work / "learner-summary.json").write_bytes(json_bytes(summary))
         self._event("finished", **{k: summary[k] for k in ("updates", "counts")})
         return summary

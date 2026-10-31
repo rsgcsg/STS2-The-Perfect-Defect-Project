@@ -140,3 +140,51 @@ learner原STOP/signal保存负责最终CP，看守负责原健康规则和排空
   需要换配置时，先完整存档和核停止，在新run/新目录用新的获批配置重新冻结。
 - 工具测试仅替换调度器和Exchange，证明接线和未知结果保护，不证明GPU可用、真实闭环、
   数据资格、模型变强或长跑已获批准；这些由该轮运行卡的实物验收负责。
+
+
+## 可选公开输入评分网络
+
+默认省略 `learner.critic` 或填 `null`，仍走原整局基线、原策略优化器与原发版链。
+显式配置后，由同一 learner 运行独立的 MStd 编码器副本和新建的 192→128→1 回报头；
+它只接收策略同一 `project()` 的 Frame/TensorFrame，不接收 seed、终局、未来或 RNG。
+seed 仅用于整局切分，终局仅作监督目标。旧 T2 胜率/进度头不载入。
+该值是折扣后的 reward-v2 回报，**不是通关概率**。actor/模型包不增加网络或搜索。
+
+```json
+"critic": {
+  "gamma": 1.0, "gae_lambda": 1.0, "lr": 0.0001, "batch_size": 64,
+  "max_rows": 60000, "min_train_episodes": 32, "min_validation_episodes": 8,
+  "min_updates": 128, "validation_every": 32,
+  "warmup_max_updates": 2000, "warmup_seconds": 2400,
+  "min_explained_variance": 0.05, "max_grad_norm": 1.0
+}
+```
+
+只收自然完整终局，原 reward v2 在最后一个决策给出，终局 bootstrap 为0；
+unknown/删失/无自然终局保持原拒收，不给0分、不补开。每步回报目标为
+`gamma^(剩余步数) * terminal_reward`，critic 用无权 MSE；梯度与策略分开。
+固定哈希约20%的训练 seed 整局留出，从不拟合 critic；阈值中的最少局数按唯一 seed 计。
+至少32训练 seed、8留出 seed、128更新，留出解释方差严格大于.05，且MSE低于
+训练标签均值常数，才开启策略更新。热身至多2400秒/2000更新，失败以
+`rl_critic:warmup_not_qualified` 结束并正常保全，不静默退回旧方法继续实验。
+热身期间策略权重、策略更新次数和策略首次使用账本均不变。
+
+开启后，对每份完整轨迹按当前独立 critic 的逐步值计算一次 GAE，终局无自举；
+lambda=1等于每步各自的蒙特卡洛回报减状态基线。原过期/复用门仍有效，
+每次策略更新内按均值/标准差归一化，标准差下限.05。热身前收的完整buffer在门通过时
+重算一次；以后已准入优势不随critic重训而暗改。异步轨迹与原探索重要性截断仍然存在，
+这是原有限陈旧策略链上的方法对照，不能把它称作严格同步、完全同策略采样的PPO。
+
+原 decision ledger 追加 `critic_prediction`（逐步ID、预测、目标、原始优势、critic更新数、
+策略版本、是否过门）及成功后的 `critic_trained`（采样ID/MSE/梯度）事件；
+评分是 learner 收到轨迹时的估计，不冒称 actor 当时的预测。
+`critic_validation` / `critic_ready` 记录整局留出、版本分布、逐行/等局MSE与早中晚决策位置误差。
+原首次有效新决策统计仍专指**策略**成功更新；critic热身与复用另从成功事件统计。
+
+完整CP包含critic权重/优化器/随机状态、按原顺序的回放引用、逐步目标、热身门和已耗时间。
+恢复必须同producer和同critic配置，从原核过的分片重建，不把Frame再存一遍。
+即便策略没有新更新，评分网络或回放有变化，停止时也发布新的不可变模型版本和CP；
+该版本的动作权重可与上一版相同，不能据版本号增大声称策略学习。原确认回执仍须核实际读取。
+
+本实现提供可选能力，不启用默认配方或授予训练资格。CARD-RL-C 的参数/资源/比较门见
+[本轮实验设计](../../docs/plans/RL_CRITIC_20261101.md)，真实结果由本轮报告与原账本拥有。
