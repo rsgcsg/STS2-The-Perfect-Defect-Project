@@ -24,6 +24,23 @@ test("desktop furniture cannot submit business commands or consume keyboard shor
   assert.match(desk, /MouseFilter = MouseFilterEnum\.Ignore/u);
 });
 
+test("fixed footers cannot inherit the hidden wrapped-label minimum that overflowed the action window", () => {
+  // Godot Label's wrapped minimum height depends on its current width. VBox sums
+  // that minimum, PanelContainer propagates it, and Auto vertical scrolling breaks
+  // that chain. The old empty-catalog window failed before any action row existed.
+  const choices = desk.slice(desk.indexOf("private void AddChoiceView"), desk.indexOf("private bool ChoicesVisible"));
+  assert.doesNotMatch(choices, /footer\.AddChild\(Label\(/u);
+  assert.match(choices, /body\.AddChild\(Label\("按先后点几个/u);
+  const furniture = desk.slice(desk.indexOf("internal sealed class PlatformDeskWindow"));
+  assert.match(furniture, /VerticalScrollMode = ScrollContainer\.ScrollMode\.Auto/u);
+  assert.match(furniture, /_scroll\.AddChild\(Body\); _stack\.AddChild\(_scroll\)/u);
+  assert.match(furniture, /_stack\.AddChild\(Footer\)/u);
+  assert.match(desk, /Window\("actions", "动作列表", new Vector2\(520, 540\), false\)/u);
+  assert.match(desk, /button\.ClipText = true;\s+button\.TextOverrunBehavior = TextServer\.OverrunBehavior\.TrimEllipsis/u);
+  assert.match(desk, /AddRecordingControls\(_recording\.Body, _recording\.Footer\)/u);
+  assert.match(desk, /AddModelControls\(_model\.Body, _model\.Footer\)/u);
+});
+
 test("the native game desk reuses trusted installed backend discovery without opening a browser", () => {
   assert.match(desk, /PlatformWorkbenchOpenClient\.OpenAsync/u);
   assert.doesNotMatch(`${mod}\n${desk}\n${panel}`, /OS\.ShellOpen|Process\.Start/u);
