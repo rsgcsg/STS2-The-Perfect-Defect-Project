@@ -25,7 +25,7 @@ from spireagent.encoding import canonical_json
 from spireagent.json_boundary import BoundaryError, FrozenObject, json_bytes
 
 from .developer import ROOT
-from .local_models import GLOBAL_MODEL_ADAPTERS, LocalModelService
+from .local_models import GLOBAL_ADAPTER, GLOBAL_MODEL_ADAPTERS, LocalModelService
 from .native_tasks import P1_PROFILE
 
 SCHEMA = "spireagent/game-desk-1"
@@ -566,6 +566,19 @@ class GameDeskApplication:
         if self.intent != intent:
             reject("native_model_intent_superseded")
 
+    def _environment_matches(self, manifest: dict[str, Any]) -> bool:
+        capabilities = self.models.native_tasks.connector_capabilities(self.app.config.platform_url)
+        producer = {k: v for k, v in capabilities["host"].items() if k != "runtime_instance_id"}
+
+        def digest(value: Any) -> str:
+            return hashlib.sha256(canonical_json(value).encode()).hexdigest()
+
+        expected = manifest["requirements"]["environment"]
+        return bool(
+            expected.get("producer_sha256") == digest(producer)
+            and expected.get("game_sha256") == digest(capabilities["game"])
+        )
+
     def _current_model_selection(self, selection: str) -> str:
         """Reuse the registration owner to bind unchanged weights to this combination.
 
@@ -573,6 +586,16 @@ class GameDeskApplication:
         new registration through that owner instead of editing historical pins.
         """
         entry = self.models.selection(selection)
+        if entry["adapter"] == GLOBAL_ADAPTER:
+            manifest = json.loads(self.models.entry_path(entry, "manifest").read_bytes())
+            if self._environment_matches(manifest):
+                return selection
+            result = self.app.local_model_registration.register_global_program()
+            if result.get("status") != "registered":
+                reject("model_registration_not_complete")
+            fresh: str = result["selection_id"]
+            self._set("manual_selection", fresh)
+            return fresh
         if entry["adapter"] not in GLOBAL_MODEL_ADAPTERS:
             return selection
         config = json.loads(self.models.entry_path(entry, "config").read_bytes())
@@ -584,18 +607,7 @@ class GameDeskApplication:
             candidate_entry = self.models.selection(candidate)
             manifest_path = self.models.entry_path(candidate_entry, "manifest")
             manifest = json.loads(manifest_path.read_bytes())
-            capabilities = self.models.native_tasks.connector_capabilities(
-                self.app.config.platform_url
-            )
-            producer = {k: v for k, v in capabilities["host"].items() if k != "runtime_instance_id"}
-
-            def digest(value: Any) -> str:
-                return hashlib.sha256(canonical_json(value).encode()).hexdigest()
-
-            expected = manifest["requirements"]["environment"]
-            if expected.get("producer_sha256") == digest(producer) and expected.get(
-                "game_sha256"
-            ) == digest(capabilities["game"]):
+            if self._environment_matches(manifest):
                 try:
                     self.models._public_manifest_contract(manifest_path, candidate)
                     return candidate
