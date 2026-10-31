@@ -199,7 +199,7 @@ internal sealed class PlatformLivePanel : IDisposable
         parent.AddChild(note);
         var row = Row(parent);
         row.AddChild(Command("标记问题", "desk.mark", () => new { note = note.Text, step_id = (string?)null }));
-        var mistake = Command("我点错了", "desk.mistake", () => new { step_id = _lastHumanStep });
+        var mistake = Command("我点错了", "desk.mistake", () => new { step_id = (string?)null });
         _mistakeButtons.Add(mistake); row.AddChild(mistake);
     }
 
