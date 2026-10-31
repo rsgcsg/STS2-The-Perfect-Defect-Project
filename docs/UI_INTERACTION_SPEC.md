@@ -58,6 +58,8 @@ owns native legality, input delivery, causal proof or research admission.
   模型停回 Human 后自动开始下一个本人片段。**停录制并保存**只停录制，模型继续；
   **停，我来**只停模型，录制意图保留。切换等当前已发送步骤的原回执，不推断撤销。
   每个原件仍由自己的 Recorder/Runtime owner 负责，不造第二条执行或录制链。
+  退出后原目录 owner 确认游戏已停止，便封存本对局台的模型原件和本机索引；这条
+  生命周期不依赖录制入库维护开关，关着本人录制看模型也适用。未确认的 Stop 不由观察循环重发。
 - **标记问题**保存说明；**我点错了**由后台刷新后定位上一个已记录的人类动作，
   不是 UI 记住的旧行，也不是最新模型步。标记不撤销游戏动作、不自动当负例。
   同一 actor/source/input_method/action/receipt/标记索引引用原件，排序标签另存

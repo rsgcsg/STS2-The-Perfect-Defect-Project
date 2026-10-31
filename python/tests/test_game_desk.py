@@ -376,6 +376,54 @@ def test_partial_native_line_is_not_counted_and_later_complete_line_is_read_once
     assert len(desk.steps()) == 1
 
 
+@pytest.mark.parametrize("status", ["pending", "unknown"])
+def test_game_exit_observer_never_resends_an_unconfirmed_stop(tmp_path, status):
+    desk, app, owner, feedback, calls = app_fixture(tmp_path)
+    app.models.client = SimpleNamespace(startup={"run_id": "owned-run"})
+    app.models.state["operation"] = {"action": "stop", "status": status, "id": "original"}
+    desk.sources["runtime"]["owned-run"] = {}
+    with pytest.raises(BoundaryError, match="model_stop_pending_check_original"):
+        desk.finalize_after_game_exit()
+    assert app.models.commands == []
+
+
+@pytest.mark.parametrize("changed", [False, True])
+def test_manual_program_registration_is_refreshed_after_mod_upgrade(tmp_path, changed):
+    import hashlib
+
+    from spireagent.encoding import canonical_json
+    from spireagent.workbench.local_models import GLOBAL_ADAPTER
+
+    desk, app, owner, feedback, calls = app_fixture(tmp_path)
+    producer = {"id": "connector", "implementation": {"artifact_sha256": "a" * 64}}
+    game = {"version": "fixture"}
+    manifest = {
+        "requirements": {
+            "environment": {
+                "producer_sha256": hashlib.sha256(canonical_json(producer).encode()).hexdigest(),
+                "game_sha256": hashlib.sha256(canonical_json(game).encode()).hexdigest(),
+            }
+        }
+    }
+    path = tmp_path / "old-manifest.json"
+    path.write_bytes(json_bytes(manifest))
+    if changed:
+        producer["implementation"]["artifact_sha256"] = "b" * 64
+    app.models.selection = lambda _: {"adapter": GLOBAL_ADAPTER}
+    app.models.entry_path = lambda *_: path
+    app.models.native_tasks.connector_capabilities = lambda _: {
+        "host": {**producer, "runtime_instance_id": "current-game"},
+        "game": game,
+    }
+    register = Mock(return_value={"status": "registered", "selection_id": "new-program"})
+    app.local_model_registration = SimpleNamespace(register_global_program=register)
+    assert desk._current_model_selection("old-program") == (
+        "new-program" if changed else "old-program"
+    )
+    assert register.call_count == int(changed)
+    assert json.loads(path.read_bytes()) == manifest  # Historical binding is unchanged.
+
+
 def test_complete_catalog_presentation_retains_ids_and_uses_public_hand_target_and_cost():
     from spireagent.workbench.game_desk import present_choices
 

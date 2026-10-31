@@ -5,7 +5,13 @@ source and scope; refresh its owning status/identity before an operational actio
 CURRENT owns the active task and next step; its linked active plan owns progress.
 Historical execution matrices retain their original observations and obligations.
 
-## 统筹同步（2026-10-31）
+## 对局台候选安装（2026-11-01，尚未验收）
+
+[PR344](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/344)普通合入develop（351958bd），[完整CI](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/actions/runs/41222237086)通过。首包Workbench `1b681889` / Mod `0.2.0-rc.71` 已安装，冷加载SHA为 `a57fbc1a6a66aabee75f7d128d3218f14596f98c8709bde0cf14e973b3a9afe3`；Runtime `0.1.0-rc.60` 经原入口加载为Human，0次执行。
+
+实际打开动作窗后发现最小高度撑出屏幕；退出时又核到入库维护关闭会漏掉模型片段封存。首条[mac-daily部署](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/deployments) `7462014787` 如实记failure，固定于 [deploy/mac-daily/20261031T173540Z](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/tree/deploy/mac-daily/20261031T173540Z)。当前另版修复；安装、冷加载不等于日常用法验收。首次准备入口另有unconfirmed，未重发游戏动作；Stop确认后新CLI意图完成Human准备，后续鼠标入口仍待复验。当前派工与唯一下一步见[CURRENT](memory/CURRENT.md)。
+
+## 统筹同步（2026-10-31，历史）
 
 D2/D2b均已收口；RL2永久停止且十二路补拷12/12完成；RL3没有启动。当前完整事实与调查范围见[统筹-1](evidence/COORDINATION_1_20261031.md)，下一步只由[CURRENT](memory/CURRENT.md)及用户新派发决定。
 

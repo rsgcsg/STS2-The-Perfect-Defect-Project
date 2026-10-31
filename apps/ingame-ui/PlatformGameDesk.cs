@@ -163,7 +163,10 @@ internal sealed class PlatformLivePanel : IDisposable
         var execute = Button("执行第 1 个", ExecuteRanking);
         var clear = Button("清空", () => { _selection.Clear(); RenderChoices(true); });
         controls.AddChild(execute); controls.AddChild(clear);
-        footer.AddChild(Label("按先后点几个，再执行第 1 个；再点已选项可取消。"));
+        // Wrapped text belongs inside the scroll body. While this window is hidden,
+        // Label can measure at near-zero width; a footer would propagate that tall
+        // minimum through VBox/PanelContainer and permanently enlarge the window.
+        body.AddChild(Label("按先后点几个，再执行第 1 个；再点已选项可取消。"));
         var rows = new VBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill };
         rows.AddThemeConstantOverride("separation", 6);
         body.AddChild(rows);
@@ -460,6 +463,7 @@ internal sealed class PlatformLivePanel : IDisposable
                     string capturedId = id;
                     var button = Button(label, () => { _selection.Toggle(capturedId); RenderChoices(true); });
                     button.Alignment = HorizontalAlignment.Left;
+                    button.ClipText = true;
                     button.TextOverrunBehavior = TextServer.OverrunBehavior.TrimEllipsis;
                     button.TooltipText = label;
                     button.CustomMinimumSize = new Vector2(0, 40);
@@ -555,7 +559,8 @@ internal sealed class PlatformDeskWindow
         header.AddChild(SmallButton("×", Close, "收回到主窗口；不停止录制或模型"));
         _stack.AddChild(header);
         _scroll = new ScrollContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill, SizeFlagsVertical = SizeFlags.ExpandFill,
-            HorizontalScrollMode = ScrollContainer.ScrollMode.Disabled, MouseFilter = MouseFilterEnum.Stop };
+            HorizontalScrollMode = ScrollContainer.ScrollMode.Disabled,
+            VerticalScrollMode = ScrollContainer.ScrollMode.Auto, MouseFilter = MouseFilterEnum.Stop };
         Body.AddThemeConstantOverride("separation", 7); _scroll.AddChild(Body); _stack.AddChild(_scroll);
         _stack.AddChild(Footer);
         _grip = new Control { CustomMinimumSize = new Vector2(24, 14), MouseFilter = MouseFilterEnum.Stop,

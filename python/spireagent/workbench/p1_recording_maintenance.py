@@ -306,6 +306,17 @@ class P1RecordingMaintenance:
             self.importer._save()
             return False
 
+    def _finalize_game_desk(self, catalog: dict[str, Any]) -> None:
+        if (self.game_desk is None or catalog.get("status") != "ready"
+                or catalog.get("game_running") is not False):
+            return
+        state = self.importer._maintenance
+        try:
+            self.game_desk.finalize_after_game_exit()
+            state.pop("game_desk_error", None)
+        except (BoundaryError, OSError, ValueError) as error:
+            state["game_desk_error"] = getattr(error, "code", type(error).__name__)
+
     def _tick(self) -> dict[str, Any]:
         from .collection_tool_registration import current_collection_tool
         from .local_recording_import import _selected_store
@@ -317,11 +328,14 @@ class P1RecordingMaintenance:
             policy = state["policy"]
             if not policy["enabled"]:
                 # Metadata-only inventory remains visible while dispatch is off.
-                # No Store/pack/derive/cloud work is admitted on this path.
+                # No recording-intake Store/pack/derive/cloud work is admitted.
+                # The independent desk still seals its own model-only record
+                # after the same owner positively confirms game exit.
                 if importer.catalog is not None:
                     catalog = importer.catalog.read()
                     self._pending(catalog)
                     state["catalog_status"] = catalog.get("status")
+                    self._finalize_game_desk(catalog)
                 return dict(state)
             operation = importer.operation
             if importer.thread is not None and importer.thread.is_alive():
@@ -373,13 +387,7 @@ class P1RecordingMaintenance:
                 state.update(status="waiting_for_game_exit", error_code=None)
                 importer._save()
                 return dict(state)
-            if self.game_desk is not None:
-                try:
-                    self.game_desk.finalize_after_game_exit()
-                    state.pop("game_desk_error", None)
-                except (BoundaryError, OSError, ValueError) as error:
-                    state["game_desk_error"] = getattr(error, "code", type(error).__name__)
-                    importer._save()
+            self._finalize_game_desk(catalog)
             if min(shutil.disk_usage(importer.config.state_dir).free,
                    (catalog.get("space") or {}).get("free_bytes", 2**63)) < 15 * 1024**3:
                 state.update(status="low_space", error_code="fifteen_GiB_free_required")
