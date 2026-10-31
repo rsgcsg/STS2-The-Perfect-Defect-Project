@@ -356,7 +356,8 @@ internal sealed class PlatformLivePanel : IDisposable
         _recording.SetTitle($"{recordingState} · {count} 步");
         string mode = Text(model, "mode") ?? "unknown";
         bool running = mode is "auto" or "one_step" || Flag(model, "busy");
-        string modelState = !_desk.Connected ? "模型状态未确认" : running ? "模型在走" : mode == "human" ? "你在走" : "模型已停";
+        string modelState = !_desk.Connected || mode == "unknown" ? "模型状态未确认"
+            : mode is "auto" or "one_step" ? "模型在走" : Flag(model, "busy") ? "正在准备 / 处理" : mode == "human" ? "你在走" : "模型已停";
         string modelLabel = Text(model, "label") ?? "未选模型";
         string modelText = $"{modelState} · {modelLabel}\n模型已走 {Value(model, "step_count")} 步";
         if (Text(model, "last_action") is string last) modelText += "\n最近：" + last;

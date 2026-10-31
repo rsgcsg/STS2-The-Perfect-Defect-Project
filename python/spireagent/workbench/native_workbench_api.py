@@ -22,9 +22,11 @@ COMMAND_SCHEMA = "spireagent/native-workbench-command-v1"
 RESULT_SCHEMA = "spireagent/native-workbench-command-result-v1"
 MAX_RESPONSE_BYTES = 262144
 MAX_COMMAND_BYTES = 32768
-PAGES = frozenset({"play", "data", "training", "models", "settings"})
+PAGES = frozenset({"play", "data", "training", "models", "settings", "desk", "choices"})
 ACTIONS = frozenset(
     {
+        *{"desk." + name for name in ("record_start", "record_stop", "model_auto", "model_step",
+            "model_stop", "choices_open", "rank", "mark", "mistake", "reconnect")},
         "workspace.create",
         "curation.prepare",
         "recordings.refresh",
@@ -71,6 +73,8 @@ ACTIONS = frozenset(
 )
 _PRECONDITION_CODES = frozenset(
     {
+        "invalid_desk_request", "human_catalog_changed", "no_recorded_human_action",
+        "annotation_step_not_found", "invalid_problem_note", "stop_before_changing_model",
         "invalid_training_request",
         "unsupported_training_recipe",
         "unsupported_resource_limits",
@@ -202,7 +206,7 @@ def artifact_summary(artifact: dict[str, Any], *, detail: bool = False) -> dict[
 
 def bounded_response(value: dict[str, Any]) -> bytes:
     raw = json.dumps(value, ensure_ascii=False, allow_nan=False).encode("utf-8")
-    if len(raw) > MAX_RESPONSE_BYTES:
+    if len(raw) > (8 * 1024**2 if value.get("page") == "choices" else MAX_RESPONSE_BYTES):
         raise fail("native_response_limit")
     return raw
 
@@ -326,11 +330,33 @@ class NativeWorkbenchApi:
             raise fail("invalid_native_query")
         if context_id is not None and not re.fullmatch(r"[A-Za-z0-9._-]{1,128}", context_id):
             raise fail("invalid_native_context")
+        if page in {"desk", "choices"}:
+            desk = self.app.game_desk.choices() if page == "choices" else self.app.game_desk.view()
+            items = (
+                desk.pop("choices", []) if page == "choices" else self.app.game_desk.models_list()
+            )
+            return {
+                "schema": VIEW_SCHEMA,
+                "binding": pair.to_dict(),
+                "page": page,
+                "observed_at": time.time(),
+                "availability": "ready",
+                "reason": None,
+                "capabilities": {"actions": []},
+                "cards": [
+                    {"owner": "game_desk", "schema": "spireagent/game-desk-1", "data": public(desk)}
+                ],
+                "items": [public(item) for item in items],
+                "pagination": {"limit": len(items), "offset": 0, "total": len(items)},
+                "context": {},
+            }
         cards: list[dict[str, Any]] = []
         source_prepare: dict[str, Any] = {
-            "enabled": False, "reason": "source3_data_view_required",
+            "enabled": False,
+            "reason": "source3_data_view_required",
             "scope": "saved_source3_to_ordered_training_partition",
-            "required_action": "datasets.source3-preview", "automatic_training": False,
+            "required_action": "datasets.source3-preview",
+            "automatic_training": False,
         }
         items: list[dict[str, Any]] = []
         controls: list[dict[str, Any]] = []
@@ -941,6 +967,10 @@ class NativeWorkbenchApi:
         self, action_id: str, body: dict[str, Any], *, pair: NativePair, request_id: str
     ) -> dict[str, Any]:
         app = self.app
+        if action_id.startswith("desk."):
+            context = {"request_id": request_id, "binding": pair.to_dict()}
+            return app.game_desk.command(action_id.removeprefix("desk."), body, context=context,
+                authorize=app.native_access.intent_authorizer(context, pair))
         if action_id == "workspace.create":
             exact(body, set())
             return app.create_managed_local_workspace()

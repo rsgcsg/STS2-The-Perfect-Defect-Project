@@ -242,37 +242,70 @@ class ManagedEpisodeExecutor:
         self.candidate = Path(configuration["candidate_directory"]).resolve()
         self.runtime = Path(configuration["runtime_directory"]).resolve()
         _verify_host(self.host, configuration["host_pin"])
-        validate_installed_package(self.runtime.parent, configuration["runtime_pin"],
-            required_paths=("dist/cli.js", "dist/global-replay.js", "dist/managed.js"))
-        runtime_version = json.loads(
-            (self.runtime.parent / "package.json").read_bytes()).get("version")
-        if (mode["mode"] == "central_batch"
-                and runtime_version not in {
-                    "0.1.0-rc.50", "0.1.0-rc.51", "0.1.0-rc.52", "0.1.0-rc.53",
-                    "0.1.0-rc.54", "0.1.0-rc.55", "0.1.0-rc.56", "0.1.0-rc.57",
-                    "0.1.0-rc.58", "0.1.0-rc.59"}):
+        validate_installed_package(
+            self.runtime.parent,
+            configuration["runtime_pin"],
+            required_paths=("dist/cli.js", "dist/global-replay.js", "dist/managed.js"),
+        )
+        runtime_version = json.loads((self.runtime.parent / "package.json").read_bytes()).get(
+            "version"
+        )
+        if mode["mode"] == "central_batch" and runtime_version not in {
+            "0.1.0-rc.50",
+            "0.1.0-rc.51",
+            "0.1.0-rc.52",
+            "0.1.0-rc.53",
+            "0.1.0-rc.54",
+            "0.1.0-rc.55",
+            "0.1.0-rc.56",
+            "0.1.0-rc.57",
+            "0.1.0-rc.58",
+            "0.1.0-rc.59",
+            "0.1.0-rc.60",
+        }:
             reject("runtime_explicit_adapter_environment_required")
-        if (self.settling_timeout_ms is not None
-                and runtime_version not in {"0.1.0-rc.52", "0.1.0-rc.53",
-                                            "0.1.0-rc.54", "0.1.0-rc.55", "0.1.0-rc.56",
-                                            "0.1.0-rc.57", "0.1.0-rc.58", "0.1.0-rc.59"}):
+        if self.settling_timeout_ms is not None and runtime_version not in {
+            "0.1.0-rc.52",
+            "0.1.0-rc.53",
+            "0.1.0-rc.54",
+            "0.1.0-rc.55",
+            "0.1.0-rc.56",
+            "0.1.0-rc.57",
+            "0.1.0-rc.58",
+            "0.1.0-rc.59",
+            "0.1.0-rc.60",
+        }:
             reject("runtime_settling_watchdog_required")
         self.evidence_durability = configuration.get(
             "evidence_durability",
-            "decision" if runtime_version in {
-                "0.1.0-rc.55", "0.1.0-rc.56", "0.1.0-rc.57", "0.1.0-rc.58", "0.1.0-rc.59"
-            } else "event",
+            "decision"
+            if runtime_version
+            in {
+                "0.1.0-rc.55",
+                "0.1.0-rc.56",
+                "0.1.0-rc.57",
+                "0.1.0-rc.58",
+                "0.1.0-rc.59",
+                "0.1.0-rc.60",
+            }
+            else "event",
         )
         if self.evidence_durability not in {"event", "decision"}:
             reject("invalid_evidence_durability")
         if self.evidence_durability == "decision" and runtime_version not in {
-                "0.1.0-rc.55", "0.1.0-rc.56", "0.1.0-rc.57", "0.1.0-rc.58", "0.1.0-rc.59"}:
+            "0.1.0-rc.55",
+            "0.1.0-rc.56",
+            "0.1.0-rc.57",
+            "0.1.0-rc.58",
+            "0.1.0-rc.59",
+            "0.1.0-rc.60",
+        }:
             reject("runtime_decision_durability_required")
         if configuration["agent_adapter"] != export.adapter_identity():
             reject("frozen_agent_implementation_changed")
         if self.measure_host_performance and json.loads(
-                (self.host / "package.json").read_bytes()).get("version") not in {
-                    "1.1.0-rc.46", "1.1.0-rc.57", "1.1.0-rc.58"}:
+            (self.host / "package.json").read_bytes()
+        ).get("version") not in {"1.1.0-rc.46", "1.1.0-rc.57", "1.1.0-rc.58"}:
             reject("host_performance_diagnostics_required")
         self.build = _candidate_audit(
             _audit(self.host, self.candidate, game_assembly_sha256=self.game_assembly_sha256),

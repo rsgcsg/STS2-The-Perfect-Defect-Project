@@ -21,6 +21,10 @@ from spireagent.workbench.readiness import read_receipt, readiness
 
 def main(argv: list[str] | None = None) -> int:
     arguments = sys.argv[1:] if argv is None else argv
+    if arguments and arguments[0] == "game-desk":
+        from spireagent.workbench.game_desk_cli import main as desk_main
+
+        return desk_main(arguments[1:])
     if arguments and arguments[0] == "evaluation":
         from spireagent.workbench.evaluation_ledger import main as evaluation_main
 

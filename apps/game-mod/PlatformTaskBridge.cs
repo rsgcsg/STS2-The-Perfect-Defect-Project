@@ -86,6 +86,25 @@ internal static class PlatformTaskBridge
                 });
                 Reply(context, 200, modelResult); return;
             }
+            if (request.HttpMethod == "GET" && request.RawUrl == "/v1/tasks/recording/feedback")
+            {
+                if (request.Headers["Cookie"] != null || request.Headers["Transfer-Encoding"] != null)
+                { Reply(context, 400, new { error = "invalid_recording_request" }); return; }
+                RecordingApplicationStatus status = RecordingApplicationService.Instance.QueryStatus();
+                Reply(context, 200, new {
+                    schema = "sts2.platform/recording-feedback-1",
+                    runtime_instance_id = PlayerEnvironmentService.GetPlayerEnvironmentControlSnapshot().RuntimeInstanceId,
+                    session_id = status.Lifecycle.SessionId,
+                    lifecycle = status.Lifecycle.State.ToString().ToLowerInvariant(),
+                    closeout = status.Closeout.State,
+                    count = status.Counters.Records,
+                    profile = status.Session?.CaptureProfileId,
+                    recording_directory = status.Session?.RecordingDirectory,
+                    armed = status.Continuous?.Armed == true,
+                    health = new { append = status.Health.Append, disk = status.Health.Disk, error = status.Health.LastError },
+                    observed_at = status.ObservedAt
+                }); return;
+            }
             if (request.RawUrl is "/v1/tasks/recording/status" or "/v1/tasks/recording/command")
             {
                 if (request.Headers["Cookie"] != null || request.Headers["Transfer-Encoding"] != null)

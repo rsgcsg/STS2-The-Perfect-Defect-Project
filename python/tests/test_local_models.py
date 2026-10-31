@@ -2525,3 +2525,22 @@ def test_actor_retirement_reverifies_typed_original_and_never_uses_cached_pass(
         service.native_actor_retirement_proof(context, "run-original")
     assert calls == ["run-original"]
     assert service.state["status"] == "stopped"
+
+
+def test_human_recovery_does_not_wait_for_a_failed_status_read(service):
+    calls = []
+
+    class RecoveryOnly:
+        def request(self, route, body=None, *, binding=None):
+            calls.append((route, body))
+            if route == "/status":
+                raise BoundaryError("local_model", "runtime_status_unavailable_or_identity_drift")
+            assert route == "/mode" and body == {"mode": "human"}
+            return {"status": status()}
+
+    service.client = RecoveryOnly()
+    service.state.update(status="loaded", loaded=True)
+    service.command("human")
+    assert finished(service)["operation"]["status"] == "completed"
+    assert calls[0] == ("/mode", {"mode": "human"})
+    assert sum(route == "/mode" for route, _ in calls) == 1

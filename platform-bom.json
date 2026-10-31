@@ -33,7 +33,7 @@
       "component_source_digest_sha256": "156db31267fef80ab723b1f6095521a74f3bff3f3b1eded3acfd688aa8c547f3"
     },
     "policy_runtime": {
-      "version": "0.1.0-rc.59",
+      "version": "0.1.0-rc.60",
       "source_revision": "1bf14d8e76563ad49cfeaa911ed83926b0266733",
       "component_tree_revision": "8725f964cf97262e01dc46b945f4ad152a0edf10",
       "component_source_digest_sha256": "ed7d5b8c45a4041e3ec39ce4f17ba6d5b50ef0b357d5b365e19a5f3b2ecea258"
@@ -45,13 +45,13 @@
       "component_source_digest_sha256": "8339f1572ac191881e37d81a93c76ba1fe6c16de3aac054c89b2e918a5621dfa"
     },
     "live_ui": {
-      "version": "0.1.0-rc.22",
+      "version": "0.1.0-rc.23",
       "source_revision": "113e4038a7282b1bce8c0753adb657eecf434c60",
       "component_tree_revision": "664646ba2e51ba715c6dfb011c13daf253b24887",
       "component_source_digest_sha256": "7b104d09202186188d3cabd85d30047891e1578bff0953f5d8107afdef832629"
     },
     "game_mod": {
-      "version": "0.2.0-rc.70",
+      "version": "0.2.0-rc.71",
       "source_revision": "4dea1908b31d5d2fc174c91dae62e63fcfa54a04",
       "component_tree_revision": "b4d2f985a9f8c12c3dbb95214e35f358af75504d",
       "component_source_digest_sha256": "4c3af6d3f2918a644151401d739baae5ba1176ff3dd784960b91696ad64cbc34"
@@ -271,7 +271,7 @@
       "version": "0.1.0-rc.1",
       "current_component_source_revision": "1bf14d8e76563ad49cfeaa911ed83926b0266733",
       "current_component_source_digest_sha256": "ed7d5b8c45a4041e3ec39ce4f17ba6d5b50ef0b357d5b365e19a5f3b2ecea258",
-      "current_component_version": "0.1.0-rc.59",
+      "current_component_version": "0.1.0-rc.60",
       "source_relation": "historical_runtime_source_precedes_standalone_consumer_package"
     },
     "annotator": {
@@ -918,7 +918,7 @@
       "loaded": "pass",
       "rollback_available": true,
       "rollback": "apps/game-mod/.local/deployments/2026-08-26T14-37-45.145Z",
-      "current_component_version": "0.2.0-rc.70"
+      "current_component_version": "0.2.0-rc.71"
     },
     "runtime": {
       "runtime_instance_id": "2388aba057ab4ff5a37588d235a28fab",

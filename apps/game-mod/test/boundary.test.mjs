@@ -93,23 +93,17 @@ test("component initializers are disabled only in the unified build", () => {
   }
 });
 
-test("Live UI uses a visible launcher and SceneTree status signals", () => {
-  const source = read("apps/ingame-ui/PlatformLiveUiMod.cs");
+test("Live UI uses a visible desk launcher and SceneTree signals without keyboard shortcuts", () => {
+  const mount = read("apps/ingame-ui/PlatformLiveUiMod.cs");
+  const source = read("apps/ingame-ui/PlatformGameDesk.cs");
   assert.match(source, /internal sealed class PlatformLivePanel : IDisposable/u);
-  assert.match(source, /tree\.ProcessFrame \+= _processFrameHandler/u);
-  assert.doesNotMatch(source, /Key\.K/u);
-  assert.match(source, /BuildHeaderButton\("Platform", ShowPanel/u);
-  assert.doesNotMatch(source, /Input\.IsKeyPressed|Input\.IsPhysicalKeyPressed/u);
-  assert.doesNotMatch(source, /class PlatformLivePanel : Control/u);
-  assert.doesNotMatch(source, /override void _(Ready|Process|Input)/u);
-  assert.match(source, /adding layer to SceneTree root/u);
-  assert.match(source, /panel mount failed/u);
-  assert.match(source, /panel ready; input=launcher/u);
-  // H1 explicitly adds visible handoff shortcuts. The launcher remains the
-  // UI entry; no hidden open-panel shortcut or arbitrary function key is added.
-  assert.deepEqual([...source.matchAll(/Key\.(F\d+)/gu)].map(match => match[1]), ["F8", "F9"]);
-  assert.match(source, /BuildHeaderButton\("F8 接管"/u);
-  assert.match(source, /BuildHeaderButton\("F9 模型"/u);
+  assert.match(source, /tree\.ProcessFrame \+= _frame/u);
+  assert.match(source, /Button\("对局台/u);
+  assert.doesNotMatch(source, /Key\.|Input\.IsKeyPressed|Input\.IsPhysicalKeyPressed/u);
+  assert.doesNotMatch(source, /class PlatformLivePanel : Control|override void _(Ready|Process|Input)/u);
+  assert.match(mount, /adding layer to SceneTree root/u);
+  assert.match(mount, /panel ready; input=launcher/u);
+  assert.match(source, /PlatformDeskWindow/u);
 });
 
 test("single-Mod deploy retires every legacy production manifest and DLL", () => {

@@ -240,7 +240,7 @@ def _runtime_wire_version(package: dict[str, Any]) -> int:
                    "0.1.0-rc.45", "0.1.0-rc.46", "0.1.0-rc.47", "0.1.0-rc.48", "0.1.0-rc.49",
                    "0.1.0-rc.50", "0.1.0-rc.51", "0.1.0-rc.52", "0.1.0-rc.53",
                    "0.1.0-rc.54", "0.1.0-rc.55", "0.1.0-rc.56", "0.1.0-rc.57",
-                   "0.1.0-rc.58", "0.1.0-rc.59"}:
+                   "0.1.0-rc.58", "0.1.0-rc.59", "0.1.0-rc.60"}:
         return 2
     if version in {f"0.1.0-rc.{revision}" for revision in range(1, 40)}:
         return 1
@@ -356,16 +356,40 @@ class RuntimeClient:
         self.opener = build_opener(ProxyHandler({}), NoRedirect())
 
     def request(
-        self, route: str, body: dict[str, Any] | None = None,
-        *, binding: RuntimeControlBinding | None = None,
+        self,
+        route: str,
+        body: dict[str, Any] | None = None,
+        *,
+        binding: RuntimeControlBinding | None = None,
     ) -> dict[str, Any]:
         if (
-            route not in {"/status", "/environment", "/mode", "/tick", "/stop",
-                          "/reconcile", "/review"}
+            route
+            not in {
+                "/status",
+                "/environment",
+                "/mode",
+                "/tick",
+                "/stop",
+                "/reconcile",
+                "/review",
+                "/human-choices",
+                "/human-choice",
+            }
             or (route == "/environment" and body is not None)
             or (
                 binding is not None
-                and (body is None or route not in {"/mode", "/tick", "/reconcile", "/review"})
+                and (
+                    body is None
+                    or route
+                    not in {
+                        "/mode",
+                        "/tick",
+                        "/reconcile",
+                        "/review",
+                        "/human-choices",
+                        "/human-choice",
+                    }
+                )
             )
             or (
                 route == "/reconcile"
@@ -388,17 +412,21 @@ class RuntimeClient:
             if binding is not None:
                 headers.update(binding.headers())
         request = Request(
-            self.address + ("/v2" if body is not None or route == "/environment" else "") + route,
+            self.address
+            + ("/v2" if body is not None or route in {"/environment", "/human-choices"} else "")
+            + route,
             data=canonical_json(body).encode() if body is not None else None,
             headers=headers,
         )
         fallback = (
-            "runtime_command_unknown" if body is not None else
-            "runtime_environment_unavailable_or_identity_drift" if route == "/environment" else
-            "runtime_status_unavailable_or_identity_drift"
+            "runtime_command_unknown"
+            if body is not None
+            else "runtime_environment_unavailable_or_identity_drift"
+            if route == "/environment"
+            else "runtime_status_unavailable_or_identity_drift"
         )
         try:
-            limit = REVIEW_JSON_LIMIT if route == "/review" else JSON_LIMIT
+            limit = REVIEW_JSON_LIMIT if route in {"/review", "/human-choices"} else JSON_LIMIT
             with self.opener.open(request, timeout=45 if body is not None else 2) as response:
                 raw = response.read(limit + 1)
             if len(raw) > limit:
@@ -410,9 +438,16 @@ class RuntimeClient:
             expected = "sts2.policy-runtime/http-2" + ("/tick-1" if route == "/tick" else "")
             if not isinstance(value, dict) or value.get("schema") != expected:
                 raise ValueError
+            if route == "/human-choices":
+                if value.get("run_id") != self.startup["run_id"] or not isinstance(
+                    value.get("choices"), dict
+                ):
+                    raise ValueError
+                return value
             if route == "/review":
-                if (value.get("run_id") != self.startup["run_id"]
-                        or not isinstance(value.get("review"), dict)):
+                if value.get("run_id") != self.startup["run_id"] or not isinstance(
+                    value.get("review"), dict
+                ):
                     raise ValueError
                 return value
             if route == "/reconcile" and (
@@ -446,13 +481,25 @@ class RuntimeClient:
                     503: {"runtime_environment_unavailable"},
                 }
                 if self.startup.get("schema") in AGENT_STARTUPS:
-                    allowed[409].update({"runtime_run_mismatch", "runtime_pending_request_mismatch",
-                                         "runtime_profile_reconcile_unsupported",
-                                         "runtime_reconcile_requires_human"})
+                    allowed[409].update(
+                        {
+                            "runtime_run_mismatch",
+                            "runtime_pending_request_mismatch",
+                            "runtime_profile_reconcile_unsupported",
+                            "runtime_reconcile_requires_human",
+                            "human_choice_requires_human",
+                            "runtime_tainted",
+                            "runtime_pending_request_unresolved",
+                            "runtime_stopped",
+                            "human_choice_profile_unsupported",
+                        }
+                    )
                 if (
-                    isinstance(rejected, dict) and set(rejected) == {"schema", "error"}
+                    isinstance(rejected, dict)
+                    and set(rejected) == {"schema", "error"}
                     and rejected["schema"] == "sts2.policy-runtime/http-2"
-                    and isinstance(code, str) and code in allowed.get(error.code, set())
+                    and isinstance(code, str)
+                    and code in allowed.get(error.code, set())
                 ):
                     rejection_code = code
             except (OSError, ValueError, TypeError):
@@ -1641,23 +1688,31 @@ class LocalModelService:
                                 self.state.get("previous_session")
                             )
                             unknown = code in {
-                                "runtime_command_unknown", "native_task_command_unknown"
+                                "runtime_command_unknown",
+                                "native_task_command_unknown",
                             }
                             safe_precondition = code in {
-                                "native_task_unavailable", "native_task_game_identity_mismatch",
+                                "native_task_unavailable",
+                                "native_task_game_identity_mismatch",
                                 "runtime_game_identity_required",
                                 "runtime_connector_binding_required",
                                 "connector_identity_unavailable",
                                 "recording_close_pending_or_failed",
                                 "runtime_upgrade_required_for_model_control",
                                 "runtime_environment_unavailable_or_identity_drift",
-                                "runtime_environment_unavailable", "runtime_game_mismatch",
+                                "runtime_environment_unavailable",
+                                "runtime_game_mismatch",
                                 "runtime_recovery_epoch_mismatch",
                                 "runtime_game_precondition_required",
                                 "runtime_recovery_precondition_required",
-                                "native_pending_request_required", "native_pending_request_changed",
-                                "runtime_pending_request_mismatch", "runtime_run_mismatch",
+                                "native_pending_request_required",
+                                "native_pending_request_changed",
+                                "runtime_pending_request_mismatch",
+                                "runtime_run_mismatch",
                                 "runtime_profile_reconcile_unsupported",
+                                "human_choice_requires_human",
+                                "runtime_stopped",
+                                "human_choice_profile_unsupported",
                                 "managed_environment_unavailable",
                                 "managed_environment_target_unavailable",
                                 "managed_environment_target_changed",
@@ -1666,14 +1721,17 @@ class LocalModelService:
                             self.state.update(
                                 status="command_unknown"
                                 if unknown
-                                else ("loaded" if safe_precondition and self.client is not None
-                                      else ("recovery_required" if pending_runtime else "failed")),
+                                else (
+                                    "loaded"
+                                    if safe_precondition and self.client is not None
+                                    else ("recovery_required" if pending_runtime else "failed")
+                                ),
                                 error_code=code,
                             )
                         current["status"] = (
-                            "unknown" if code in {
-                                "runtime_command_unknown", "native_task_command_unknown"
-                            } else "failed"
+                            "unknown"
+                            if code in {"runtime_command_unknown", "native_task_command_unknown"}
+                            else "failed"
                         )
                 finally:
                     with self.lock:
@@ -2014,13 +2072,18 @@ class LocalModelService:
         recovery = route == "/stop" or (route == "/mode" and body.get("mode") == "human")
         with nullcontext() if recovery else self.control_send_lock:
             self._require_intent(intent)
-            if binding is None and (route == "/tick" or (
-                route == "/mode" and body.get("mode") != "human"
-            )):
+            if binding is None and (
+                route in {"/tick", "/human-choice"}
+                or (route == "/mode" and body.get("mode") != "human")
+            ):
                 raise BoundaryError("local_model", "runtime_recovery_precondition_required")
             native = self.state.get("_native_intent")
             episode = self.state.get("native_episode")
-            if route in {"/mode", "/tick"} and not recovery and episode is not None:
+            if (
+                route in {"/mode", "/tick", "/human-choice"}
+                and not recovery
+                and episode is not None
+            ):
                 self._authorize_native_episode(episode)
                 if (
                     binding is None
@@ -2029,7 +2092,7 @@ class LocalModelService:
                     raise BoundaryError("native_episode", "runtime_or_installed_tuple_changed")
                 self._require_intent(intent)
             if (
-                route in {"/mode", "/tick"}
+                route in {"/mode", "/tick", "/human-choice"}
                 and not recovery
                 and isinstance(native, dict)
                 and native.get("intent_generation") == intent
@@ -2130,7 +2193,7 @@ class LocalModelService:
                 and package.get("version") in {
                     "0.1.0-rc.49", "0.1.0-rc.50", "0.1.0-rc.51", "0.1.0-rc.52",
                     "0.1.0-rc.53", "0.1.0-rc.54", "0.1.0-rc.55", "0.1.0-rc.56",
-                    "0.1.0-rc.57", "0.1.0-rc.58", "0.1.0-rc.59"}):
+                    "0.1.0-rc.57", "0.1.0-rc.58", "0.1.0-rc.59", "0.1.0-rc.60"}):
             command.extend((
                 "--initial-progress-original", initial_progress_original["path"],
                 "--initial-progress-original-sha256", initial_progress_original["sha256"],
@@ -2353,6 +2416,20 @@ class LocalModelService:
             "recovery_epoch": binding.recovery_epoch,
         }
 
+    def human_choices(self) -> dict[str, Any]:
+        """Passive current catalog from the owned Runtime; no model call or control."""
+        with self.lock:
+            client = self.client
+            if client is None or not self.state.get("loaded"):
+                raise BoundaryError("local_model", "model_not_loaded")
+            if self.state.get("managed_environment") is not None:
+                raise BoundaryError("local_model", "human_choice_requires_reference")
+        view = client.request("/human-choices")["choices"]
+        context = self.control_context()
+        if context["runtime_run_id"] != client.startup["run_id"]:
+            raise BoundaryError("local_model", "runtime_run_mismatch")
+        return {**view, "context": context}
+
     def command(
         self,
         action: str,
@@ -2361,19 +2438,24 @@ class LocalModelService:
         expected_context: dict[str, Any] | None = None,
         native_context: dict[str, Any] | None = None,
         native_authorizer: Callable[[], None] | None = None,
+        human_selection: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         if (action == "auto" and self.mixed_runs is not None
                 and self.mixed_runs.status().get("status") == "recording"
                 and self.mixed_runs.status().get("settings", {}).get("single_step")):
             action = "one_step"
-        if action not in MODES | {"stop", "reconcile", "tick"} or (
+        if action not in MODES | {"stop", "reconcile", "tick", "human_choice"} or (
             (action == "reconcile") != (request_id is not None)
         ):
             raise BoundaryError("local_model", "unsupported_local_command")
+        if (action == "human_choice") != (human_selection is not None):
+            raise BoundaryError("local_model", "invalid_human_selection")
         expected = (
             self.read_control_context(expected_context) if expected_context is not None else None
         )
-        if expected is not None and action not in {"auto", "shadow", "one_step", "tick"}:
+        if expected is not None and action not in {
+            "auto", "shadow", "one_step", "tick", "human_choice"
+        }:
             raise BoundaryError("local_model", "invalid_model_control_context")
         observed_generation = None
         if expected is not None:
@@ -2472,7 +2554,13 @@ class LocalModelService:
             return self._begin(
                 action,
                 lambda: self._execute_command(
-                    action, intent, client, connector_endpoint, managed_environment, expected
+                    action,
+                    intent,
+                    client,
+                    connector_endpoint,
+                    managed_environment,
+                    expected,
+                    human_selection,
                 ),
                 recovery=action in {"human", "stop"},
             )
@@ -2506,14 +2594,15 @@ class LocalModelService:
         connector_endpoint: Any,
         managed_environment: Any,
         expected: tuple[str, RuntimeControlBinding] | None = None,
+        human_selection: dict[str, Any] | None = None,
     ) -> None:
         assert client is not None
         self._require_intent(intent)
-        # Observe exact instance before every mutation; never address a new
-        # process that reused the same port after our owned process exited.
-        observation = client.request("/status")["status"]
         binding = None
-        if action in {"shadow", "one_step", "auto", "tick"}:
+        if action in {"shadow", "one_step", "auto", "tick", "human_choice"}:
+            # Non-recovery commands need a fresh observation. Human/Stop use
+            # their immutable original run header and cannot depend on a GET.
+            observation = client.request("/status")["status"]
             self._require_intent(intent)
             binding = RuntimeControlBinding.from_environment(
                 client.request("/environment"), observation["run_id"]
@@ -2565,7 +2654,7 @@ class LocalModelService:
                 )
                 preserved_mixed = (self.mixed_runs is not None
                     and self.mixed_runs.before_control(action, client, binding))
-                if not preserved_mixed:
+                if not preserved_mixed and action != "human_choice":
                     native = self.native_tasks.prepare_model(
                         observation, bound_endpoint, model_context=context
                     )
@@ -2574,7 +2663,14 @@ class LocalModelService:
                 # Native Close cannot authorize a replacement Runtime or game.
                 latest = client.request("/status")["status"]
                 NativeTasks.confirm_runtime(latest, binding.runtime_instance_id)
-        if action == "tick":
+        if action == "human_choice":
+            assert human_selection is not None
+            value = self._send_control(client, "/human-choice", human_selection, intent, binding)
+            runtime = value["status"]
+            with self.lock:
+                self._require_intent(intent)
+                self.state["last_human_choice_result"] = value["result"]
+        elif action == "tick":
             runtime = self._send_control(client, "/tick", {"max_ticks": 1}, intent, binding)[
                 "status"
             ]
@@ -3264,19 +3360,35 @@ class LocalModelService:
                 else None,
                 controller_at_stop=stop["controller"] if stop is not None else None,
             )
+        if startup["run_id"] in self.state.get("game_desk_runs", []):
+            report.update(
+                scope="informal_game_desk",
+                score_eligible=False,
+                contains_human_protocol_choices=report.get("event_counts", {}).get(
+                    "human_directive", 0
+                )
+                > 0,
+                agent_task_outcome={"status": "ineligible", "reason": "informal_game_desk"},
+            )
         mixed = self.mixed_runs.status() if self.mixed_runs is not None else {}
         is_mixed = startup["run_id"] in mixed.get("model_runs", [])
         if is_mixed:
-            report.update(scope="mixed_run_operation", score_eligible=False,
-                          training_admission="blocked_pending_user_policy",
-                          mixed_run_id=mixed["mixed_run_id"],
-                          agent_task_outcome={"status": "ineligible", "reason": "mixed_run"})
+            report.update(
+                scope="mixed_run_operation",
+                score_eligible=False,
+                training_admission="blocked_pending_user_policy",
+                mixed_run_id=mixed["mixed_run_id"],
+                agent_task_outcome={"status": "ineligible", "reason": "mixed_run"},
+            )
         identity = hashlib.sha256(canonical_json(report).encode()).hexdigest()
         report["evaluation_id"] = (
             identity  # Existing operational journal ID; schema remains native.
         )
-        target = (self.directory / ("mixed-operations" if is_mixed else "evaluations")
-                  / (identity + ".json"))
+        target = (
+            self.directory
+            / ("mixed-operations" if is_mixed else "evaluations")
+            / (identity + ".json")
+        )
         target.parent.mkdir(parents=True, exist_ok=True)
         raw = canonical_json(report).encode()
         try:

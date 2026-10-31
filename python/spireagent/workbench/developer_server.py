@@ -391,6 +391,9 @@ class Application:
         self.mixed_runs = MixedRunApplication(self)
         self.models.mixed_runs = self.mixed_runs
         self.p1_maintenance.mixed_runs = self.mixed_runs
+        from .game_desk import GameDeskApplication
+        self.game_desk = GameDeskApplication(self)
+        self.p1_maintenance.game_desk = self.game_desk
         self.local_recording_preview = LocalRecordingPreview(self.local_research_workspace)
         self.local_datasets = LocalDatasetService(config)
         self.local_training = LocalTrainingService(config)
@@ -1386,6 +1389,7 @@ class Application:
         return self.local_model_registration.register_teacher(variant=variant)
 
     def close(self) -> None:
+        self.game_desk.close()
         self.reference_evaluation.close()
         self.remote_training.close()
         self.p1_maintenance.close()
@@ -1590,6 +1594,39 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                 except (OSError, ValueError, TypeError, KeyError):
                     self.respond(400, b'{"error":"invalid_native_request"}')
                 return
+            if parsed.path in {
+                "/api/game-desk",
+                "/api/game-desk/choices",
+                "/api/game-desk/recording",
+            }:
+                if not self.authenticated_browser() and not self.control_client():
+                    self.respond(401, b'{"error":"local_control_authentication_required"}')
+                    return
+                try:
+                    query = parse_qs(parsed.query)
+                    if (
+                        parsed.path.endswith("/recording")
+                        and set(query) == {"artifact"}
+                        and len(query["artifact"]) == 1
+                    ):
+                        value = app.game_desk.read_saved(
+                            digest(query["artifact"][0], "game_desk.artifact")
+                        )
+                    elif parsed.query:
+                        raise BoundaryError("game_desk", "invalid_desk_query")
+                    elif parsed.path.endswith("/choices"):
+                        value = app.game_desk.choices()
+                    elif parsed.path.endswith("/recording"):
+                        value = {
+                            "schema": "spireagent/game-desk-recording-1",
+                            "steps": app.game_desk.steps(),
+                        }
+                    else:
+                        value = app.game_desk.view()
+                    self.respond(200, json.dumps(_safe_value(value), ensure_ascii=False).encode())
+                except BoundaryError as error:
+                    self.respond(409, json.dumps({"error": error.code}).encode())
+                return
             if parsed.path == "/health":
                 self.respond(200, json.dumps({"instance_id": app.instance_id}).encode())
             elif parsed.path == "/api/status":
@@ -1601,8 +1638,12 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                 if parsed.query:
                     self.respond(400, b'{"error":"invalid_reference_group_request"}')
                     return
-                self.respond(200, json.dumps({**app.reference_evaluation.status(),
-                                              "csrf_token": app.account.csrf}).encode())
+                self.respond(
+                    200,
+                    json.dumps(
+                        {**app.reference_evaluation.status(), "csrf_token": app.account.csrf}
+                    ).encode(),
+                )
             elif (
                 parsed.path == "/api/local-environment"
                 or parsed.path == ("/api/local-environment/reports")
@@ -2172,6 +2213,24 @@ def create_server(app: Application) -> ThreadingHTTPServer:
                 self.respond(403, json.dumps({"error": error.code}).encode())
 
         def application_post(self) -> None:
+            if self.path.startswith("/api/game-desk/"):
+                if not self.browser_write() and not self.control_client():
+                    self.respond(403, b'{"error":"local_control_authentication_required"}')
+                    return
+                try:
+                    app.check_environment_instance()
+                    value = app.game_desk.command(
+                        self.path.removeprefix("/api/game-desk/"),
+                        self.json_body(maximum=32768, reject_duplicate=True),
+                    )
+                    self.respond(200, json.dumps(_safe_value(value), ensure_ascii=False).encode())
+                except BoundaryError as error:
+                    self.respond(
+                        409, json.dumps({"error": error.code, "automatic_retry": False}).encode()
+                    )
+                except (OSError, ValueError, TypeError, KeyError):
+                    self.respond(400, b'{"error":"invalid_desk_request"}')
+                return
             if self.path.startswith("/api/reference-evaluations/"):
                 if not self.browser_write() and not self.control_client():
                     self.respond(403, b'{"error":"browser_action_denied"}')
@@ -2963,6 +3022,7 @@ def serve(config: ProjectConfig, *, config_path: Path | None = None) -> dict[str
                     f"http://127.0.0.1:{server.server_port}/", app.instance_id,
                     access=app.native_access, runtime_identity=app._workbench_runtime_identity,
                 )
+            app.game_desk.start()
             app.p1_maintenance.start()
             app.remote_training.start_loop()
             server.serve_forever(poll_interval=0.2)

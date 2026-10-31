@@ -13,6 +13,8 @@ export interface TrajectoryPoint {
   index: number;
   observation: P1Observation;
   chosen: string | null;
+  /** Caller choice is never presented as a model decision or machine Human proof. */
+  decision_source?: "manual_protocol_choice";
   /** Original recorded Runtime result, never derived from native Human input. */
   result?: P1Result;
   continuity_checks?: {
@@ -58,6 +60,15 @@ export async function extractTrajectory(runDirectory: string): Promise<Trajector
       awaitingResult.result = result;
       awaitingResult = null;
       awaitingAcquisition = null;
+      continue;
+    }
+    if (event.kind === "human_directive") {
+      const directive = event.payload.output.directive;
+      if (!offered || directive.basis_acquisition_id !== offeredAcquisition)
+        throw new Error("trajectory_manual_input_binding");
+      const point: TrajectoryPoint = { index: points.length, observation: withEnvelope(offered, occurrence ?? points.length),
+        chosen: directive.selection.action_id, decision_source: "manual_protocol_choice" };
+      points.push(point); awaitingResult = point; awaitingAcquisition = offeredAcquisition; offered = null;
       continue;
     }
     if (event.kind !== "global_agent_frame" || !event.payload?.artifact?.path) continue;

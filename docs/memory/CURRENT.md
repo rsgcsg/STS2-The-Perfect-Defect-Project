@@ -1,12 +1,12 @@
-# 当前：统筹复核已交，下一轮方案待用户选择
+# 当前：CARD-1A 游戏内对局台开发与安装验收
 
-2026-10-31：D2与D2b已收口；RL2永久关闭、不恢复；RL3尚未启动。当前只完成项目全景、入口和历史义务复核、文档归位与建议，不因旧卡或草稿继续训练/评估/安装。
+2026-11-01：用户已派 CARD-1A / [#340](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/issues/340)。本卡 owner 为主对话，范围是游戏内多窗口、排序/鼠标/模型的统一用例、记录/标记、清理 Mod GUI、直接安装及部署登记；用户实测后才收口。不训练、不改 RL、不碰凭据。1B 只读、1C 在训练侧另跑，本卡不写 `python/stpd`。预计本地 05:05 AEST 前完成，08:05 硬收口（不计等用户实测）。
 
 <!-- Resolve live GitHub refs before action; latest user instructions and live evidence override this file. -->
 
 ## 当前任务与唯一下一步
 
-[统筹-1复核与未完项](../evidence/COORDINATION_1_20261031.md)给准确调查基线、原owner及后续触发。唯一下一步是用户选下一轮完整结果及预算；甲/乙/丙仅参考，不是已派发队列。私有详细计划和报告由原任务交付，不复制进公开仓库。
+本轮需求与验收以 [#340](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/issues/340) 和用户 v6 卡为准；长期窗口/用例语义归[交互规范](../UI_INTERACTION_SPEC.md#current-pre-training-scope)，入口去向归[游戏内指南](../../apps/ingame-ui/README.md)。当前在开发/验证，尚未声明新包安装或用户实测通过。原[统筹复核](../evidence/COORDINATION_1_20261031.md)保留已交历史义务和其他线，不再作为“等待选卡”的当前派工。
 
 | 对象 | 已知结果 / 剩余 |
 |---|---|
