@@ -221,3 +221,23 @@ metadata64MiB限显式失败。legacy checkpoint-2字符串仍可读。恢复同
 
 本轮授权/时限/操作调整归[RL3任务设计](../../docs/plans/RL_CRITIC_20261101.md)，
 实际保存与结果归原运行账本。此配置示例不激活日常或正式配方。
+
+
+## 显式新配对轮与已清理unknown
+
+用户已在本卡明确授权末尾新的固定同窗配对轮：起点和末版各100颗原RL3种子，包含旧轮
+unknown的种子；旧轮原件和失败分母保留，新轮unknown一律不重试。两份计划使用同一
+冻结执行源码、Host/Runtime、原manifest、argmax和四路条件，并在同一时间窗并行启动。
+起点/末版artifact及weights SHA、两份计划SHA、协议SHA与新round_id在开局前固定。
+
+仅此类已明确批准的继续采集，可在原evaluate prepare CLI增加
+`--unknown-policy continue_cleaned`（对应计划字段`unknown_policy`）；默认省略仍在首个
+unknown停止。该选项只允许清理已确认的unknown继续新槽，不重新提供旧unknown；
+未清理的world、save_failed或typed_original_verification_failed仍停止。原Pipeline、Ledger
+审计、保存、来源与历史score_admitted字段不变，这个选项本身不赋予科学计分资格。
+
+本卡新轮按用户固定的研究配对规则单独报告：任一侧unknown，剔除该seed整对并列种子号、
+两边状态及原因；双边同seed只算一个。union unknown seed超过5整轮作废，最多5则其余
+自然终局按seed配对。pending、censored、未开或缺轨迹等其他缺口仍为未完成，不能冒充
+unknown剔除；未覆盖情形交用户决定。保留原审计事实，与新paired-rule资格分开，不把旧
+score_admitted强改为true。末轮先确认训练演员排空，两份四路评估也受总并发36约束。

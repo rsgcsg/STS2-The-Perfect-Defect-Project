@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -178,6 +179,56 @@ def test_real_ledger_unknown_stops_new_admission_and_never_reoffers(
     assert ledger.report()['score_admitted'] is False
 
 
+def test_explicit_clean_unknown_collection_keeps_full_ledger_and_never_reoffers(
+        evaluate, execution, tmp_path, monkeypatch):
+    from spireagent.workbench import evaluation_ledger as owner
+    from spireagent.workbench.reference_suite import SuiteLimits
+
+    plan, directory = prepared(evaluate, execution, tmp_path, unknown_policy='continue_cleaned')
+    assert evaluate.load_plan(directory / 'plan.json')['unknown_policy'] == 'continue_cleaned'
+    ledger = evaluate.create_ledger(plan, (tmp_path / 'ledger').resolve())
+    usage = shutil.disk_usage(tmp_path)
+    monkeypatch.setattr(owner.shutil, 'disk_usage', lambda _: usage._replace(free=100 * 1024**3))
+    offered = []
+
+    def unknown(row, manifest, artifacts, checkpoint):
+        offered.append(row['ledger_slot_id'])
+        row.update(status='unknown', execution_status='unknown',
+                   reason='runtime_execution_or_release_unknown', cleanup_accepted=True,
+                   world_mutation_offered=True)
+        checkpoint()
+
+    stop = ledger.directory / 'STOP'
+    executor = evaluate.StopOnUncertain(unknown, stop, unknown_policy='continue_cleaned')
+    for _ in range(2):
+        ledger.run_managed(workers=1, max_episodes=3, executor=executor,
+                           limits=SuiteLimits(10, 10, 10, 60))
+    assert len(offered) == len(set(offered)) == 6
+    assert not stop.exists()
+    assert ledger.report()['unknown'] == 6
+    assert ledger.report()['not_started'] == 54
+    assert ledger.report()['score_admitted'] is False
+
+
+@pytest.mark.parametrize('row', [
+    {'status': 'unknown', 'cleanup_accepted': False, 'world_mutation_offered': True},
+    {'status': 'save_failed', 'cleanup_accepted': True},
+    {'status': 'unknown', 'cleanup_accepted': True,
+     'execution_reason': 'typed_original_verification_failed'},
+])
+def test_clean_unknown_option_preserves_cleanup_save_and_integrity_stops(evaluate, tmp_path, row):
+    stop = tmp_path / 'STOP'
+    evaluate.StopOnUncertain(None, stop, unknown_policy='continue_cleaned').inspect(row)
+    assert stop.exists()
+
+
+@pytest.mark.parametrize('policy', [None, 'retry', True])
+def test_unknown_collection_policy_requires_explicit_supported_value(
+        evaluate, execution, tmp_path, policy):
+    with pytest.raises(ValueError, match='explicit_evaluation_unknown_policy'):
+        prepared(evaluate, execution, tmp_path, unknown_policy=policy)
+
+
 def test_evaluation_shares_aggregate_gate_and_uses_one_four_core_allocation(
         evaluate, execution, tmp_path):
     _plan, directory = prepared(evaluate, execution, tmp_path)
@@ -279,8 +330,10 @@ def test_prepare_cli_accepts_runtime_source_and_freezes_plan(execution, tmp_path
     for index in range(1, 4):
         command.extend(['--selection', f'checkpoint-{index}=model-{index}'])
     result = subprocess.run(command, check=True, capture_output=True, text=True, timeout=15,
-        env={'PATH': __import__('os').defpath,
-             'PYTHONPATH': str(FRIDAY.parents[1] / 'python')})
+        env={'PATH': os.defpath,
+             'PYTHONPATH': str(FRIDAY.parents[1] / 'python'),
+             **{key: os.environ[key] for key in ('LD_LIBRARY_PATH', 'DYLD_LIBRARY_PATH')
+                if key in os.environ}})
     plan = json.loads(result.stdout)
     assert plan['source_root'] == str(runtime)
     assert plan['planned'] == 60 and (output / 'plan.json').is_file()
