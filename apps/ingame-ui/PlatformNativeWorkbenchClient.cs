@@ -213,7 +213,7 @@ internal sealed class PlatformNativeWorkbenchCommands
     private static string Owner(string action) => action switch { "models.export" => "export", "models.register" => "registration",
         "evaluation.start" => "evaluation", "recordings.import" => "import", "recordings.refresh" => "recording_catalog",
         "downloads.start" => "member_download",
-        "desk.model_auto" or "desk.model_step" or "desk.model_stop" => "desk_model",
+        "desk.model_auto" or "desk.model_step" or "desk.model_stop" or "desk.rank" => "desk_model",
         "desk.record_start" or "desk.record_stop" => "desk_recording",
         "desk.mark" or "desk.mistake" => "desk_annotations",
         "desk.choices_open" => "desk_choices_prepare", _ => action.Split('.')[0] };

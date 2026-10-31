@@ -429,4 +429,35 @@ public sealed class PlatformNativeWorkbenchTests
         Assert.Empty(commands.Unconfirmed);
     }
 
+    [Fact]
+    public async Task UnknownRankingSharesTheModelStopFenceAndIsNeverResubmitted()
+    {
+        var connection = Connection(); var commands = new PlatformNativeWorkbenchCommands();
+        int rankingPosts = 0; bool confirmed = false;
+        using var http = new HttpClient(new Handler(async (request, token) => {
+            using JsonDocument body = JsonDocument.Parse(await request.Content!.ReadAsStringAsync(token));
+            string id = body.RootElement.GetProperty("request_id").GetString()!;
+            if (request.RequestUri!.AbsolutePath.EndsWith("desk.rank", StringComparison.Ordinal))
+            { rankingPosts++; throw new HttpRequestException("ranking response lost"); }
+            return Response(Result(connection.Binding, id, owner: new { recovery_confirmed = confirmed }));
+        }));
+        using var client = new PlatformNativeWorkbenchClient(http, _ => true);
+        var ranking = new { catalog_key = "scene", ranking = new[] { "choice-a", "choice-b" } };
+        Assert.Equal("unconfirmed", (await commands.RunAsync(client, connection, "desk.rank", ranking, CancellationToken.None)).Status);
+        Assert.False(commands.CanSubmit(connection.Binding.ConfigurationId, "desk.rank"));
+        Assert.False(commands.CanSubmit(connection.Binding.ConfigurationId, "desk.model_auto"));
+        Assert.False(commands.CanSubmit(connection.Binding.ConfigurationId, "desk.model_step"));
+        Assert.True(commands.CanSubmit(connection.Binding.ConfigurationId, "desk.model_stop"));
+        Assert.Equal("rejected", (await commands.RunAsync(client, connection, "desk.rank", ranking, CancellationToken.None)).Status);
+        await commands.RunAsync(client, connection, "desk.model_stop", new { }, CancellationToken.None);
+        Assert.False(commands.CanSubmit(connection.Binding.ConfigurationId, "desk.rank"));
+        Assert.Single(commands.Unconfirmed);
+        confirmed = true;
+        await commands.RunAsync(client, connection, "desk.model_stop", new { }, CancellationToken.None);
+        Assert.True(commands.CanSubmit(connection.Binding.ConfigurationId, "desk.rank"));
+        Assert.True(commands.CanSubmit(connection.Binding.ConfigurationId, "desk.model_auto"));
+        Assert.Empty(commands.Unconfirmed);
+        Assert.Equal(1, rankingPosts);
+    }
+
 }
