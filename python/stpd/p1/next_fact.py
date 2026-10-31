@@ -240,7 +240,7 @@ class NextFactSupervision(nn.Module):
         size = len(self.numeric) + len(self.boolean) + sum(map(len, self.classes.values()))
         # Preserve action-model initialization AND continuing training RNG.
         with torch.random.fork_rng(devices=[]):
-            torch.manual_seed(2001)
+            torch.set_rng_state(torch.Generator().manual_seed(2001).get_state())
             self.global_head = nn.Sequential(nn.Linear(384, 128), nn.GELU(),
                                              nn.Linear(128, max(1, size)))
             self.enemy_head = nn.Sequential(nn.Linear(577, 128), nn.GELU(), nn.Linear(128, 3))
