@@ -28,8 +28,9 @@ describe("manual ranking uses the same Runtime and original Receipt", () => {
       expect(events.find(e => e.kind === "global_choice").payload.choice_id).toBe(ids[0]);
       expect((await replayGlobalAgentRun(f.evidence.directory)).verdict).toBe("verified");
       const trajectory = await extractTrajectory(f.evidence.directory);
-      expect(trajectory.points[0].chosen).toBe(ids[0]);
-      expect(trajectory.points[0].decision_source).toBe("manual_protocol_choice");
+      expect(trajectory.points).toHaveLength(1);
+      expect(trajectory.points[0]!.chosen).toBe(ids[0]);
+      expect(trajectory.points[0]!.decision_source).toBe("manual_protocol_choice");
     } finally { await f.close(); }
   });
   it("rejects a changed catalog, duplicate ranking and stale recovery epoch without dispatch", async () => {

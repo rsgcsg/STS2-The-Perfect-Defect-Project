@@ -450,7 +450,7 @@ class GameDeskApplication:
 
     def _native_command(self, kind: str) -> dict[str, Any]:
         with self.record_lock:
-            owner = self.app.native_recording_status()["status"]
+            owner: dict[str, Any] = self.app.native_recording_status()["status"]
             if kind == "close":
                 if owner["recording_lifecycle"] == "closing":
                     return owner
@@ -467,7 +467,7 @@ class GameDeskApplication:
                         return owner
             if kind == "start_new_session" and owner["recording_lifecycle"] == "recording":
                 return owner
-            result = self.app.control_native_recording(
+            result: dict[str, Any] = self.app.control_native_recording(
                 {
                     "kind": kind,
                     "runtime_instance_id": owner["runtime_instance_id"],
@@ -546,7 +546,7 @@ class GameDeskApplication:
         deadline = time.monotonic() + seconds
         while time.monotonic() < deadline:
             with self.models.lock:
-                value = json.loads(json.dumps(self.models.state))
+                value: dict[str, Any] = json.loads(json.dumps(self.models.state))
             if intent != self.intent:
                 reject("native_model_intent_superseded")
             observed = value.get("operation") or {}
@@ -579,7 +579,7 @@ class GameDeskApplication:
         registration = self.app.local_model_registration
         status = registration.status(model_id)
         if status.get("status") == "registered":
-            candidate = status["selection_id"]
+            candidate: str = status["selection_id"]
             candidate_entry = self.models.selection(candidate)
             manifest_path = self.models.entry_path(candidate_entry, "manifest")
             manifest = json.loads(manifest_path.read_bytes())
@@ -604,7 +604,8 @@ class GameDeskApplication:
         result = registration.register(model_id)
         if result.get("status") != "registered":
             reject("model_registration_not_complete")
-        return result["selection_id"]
+        selected: str = result["selection_id"]
+        return selected
 
     def _ensure_loaded(
         self,
