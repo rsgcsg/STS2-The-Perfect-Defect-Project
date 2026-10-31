@@ -47,8 +47,9 @@ owns native legality, input delivery, causal proof or research admission.
   Runtime，保持 Human，不调用学习模型或自动出招。GET 目录只读；执行仍是同一
   Runtime 的一次有界人工选择，复用原 consume/ACK、lowering、Connector 与回执。
   人工协议选择记录为 `human_directive`，不能伪装成模型输出或机器验证的 Human。
-- 合法候选/来源绑定变化即清排序；动画未稳定不能执行。执行前 Runtime 再取真实
-  局面，目录变化拒绝并要求重排；发出后仍由 Connector 再验。unknown 保留原请求，
+- 稳定公开局面或来源绑定变化即清排序；动画未稳定不能执行。排序键绑定完整公开
+  观察摘要（排除瞬时采集编号），执行前 Runtime 再取真实局面，即使候选不变、仅
+  HP/能量等事实变化也拒绝并要求重排；发出后仍由 Connector 再验。unknown 保留原请求，
   不重发。“停，我来”先处理原 owner；tainted 原 Runtime 只能封存，不能靠换模式
   使旧执行可重试。普通 Stop 后可发新意图，旧未知不会抹掉。
 - 开着本人录制切给模型时，后台先封存当前 Human 原件，再交控制；保留录制意图。

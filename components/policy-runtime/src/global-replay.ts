@@ -279,7 +279,7 @@ export async function replayGlobalAgentRun(directory: string) {
       const output = p.output, input = inputs.get(output.directive.basis_acquisition_id);
       require(mode === "one_step" && ledger && output.continuity_token === ledger.continuityToken
         && output.consumption_id === ledger.consumptionId && output.state_version === ledger.stateVersion
-        && input && p.catalog_key === globalDigest(input.input.catalog)
+        && input && p.catalog_key === globalDigest(input.input.observation)
         && Array.isArray(p.ranking) && p.ranking.length > 0 && new Set(p.ranking).size === p.ranking.length
         && p.ranking.every((id: unknown) => input.input.catalog.some((c: any) => c.choice_id === id))
         && output.directive.type === "act" && output.directive.selection.kind === "handle"

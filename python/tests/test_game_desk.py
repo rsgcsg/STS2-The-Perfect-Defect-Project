@@ -40,6 +40,13 @@ class Models:
         }
 
     def command(self, action, **kwargs):
+        from spireagent.workbench.local_models import LocalModelService
+
+        if kwargs.get("expected_context") is not None:
+            LocalModelService.read_control_context(kwargs["expected_context"])
+        with self.lock:
+            if kwargs.get("intent_guard") is not None:
+                kwargs["intent_guard"]()
         self.commands.append(action)
         if action == "stop":
             self.client = None
@@ -173,6 +180,85 @@ def test_stop_recording_leaves_running_model_and_uses_durable_close(tmp_path, mo
     assert app.models.commands == []
     assert result["recording"]["saving"] is False
     published.assert_called_once()
+
+
+@pytest.mark.parametrize("lifecycle", ["ready", "closed"])
+def test_stop_disarms_original_continuous_recorder_even_between_games(tmp_path, lifecycle):
+    desk, app, owner, feedback, calls = app_fixture(tmp_path)
+    owner.update(recording_lifecycle=lifecycle, closeout_status="closed")
+    feedback.update(lifecycle=lifecycle, armed=True)
+    desk.publish_index = Mock()
+    assert desk.record_stop()["recovery_confirmed"] is True
+    assert [call["kind"] for call in calls] == ["close"]
+    assert feedback["armed"] is False
+
+
+@pytest.mark.parametrize("action", ["auto", "one_step", "human_choice"])
+def test_model_and_rank_strip_response_schema_before_real_control_context_parser(tmp_path, action):
+    desk, app, owner, feedback, calls = app_fixture(tmp_path)
+    context = {
+        "schema": "spireagent/runtime-control-context-1",
+        "runtime_run_id": "run-1",
+        "runtime_instance_id": "a" * 32,
+        "recovery_epoch": 0,
+    }
+    app.models.control_context = lambda: context
+    desk._ensure_loaded = Mock()
+    desk._attach_runtime = Mock()
+    desk.poll = Mock()
+    if action == "human_choice":
+        app.models.human_choices = lambda: {
+            "context": context,
+            "catalog": [],
+            "catalog_key": "b" * 64,
+            "ready": True,
+            "reason": None,
+            "observation": {},
+            "model_choice_id": None,
+        }
+        desk.choices()
+        desk.choice_context["ids"] = ["choice-1"]
+        desk.rank(desk.choice_context["catalog_key"], ["choice-1"])
+    else:
+        desk.models_list = lambda: [{"id": "model-1", "label": "Model"}]
+        desk.model_control("model-1", action)
+    assert app.models.commands == [action]
+
+
+def test_stop_ack_prevents_old_model_control_from_admitting_after_slow_load(tmp_path):
+    desk, app, owner, feedback, calls = app_fixture(tmp_path)
+    entered, release = threading.Event(), threading.Event()
+    errors = []
+    desk.models_list = lambda: [{"id": "model-1", "label": "Model"}]
+    desk._attach_runtime = Mock()
+    desk.poll = Mock()
+    app.models.control_context = lambda: {
+        "runtime_run_id": "run-1",
+        "runtime_instance_id": "a" * 32,
+        "recovery_epoch": 0,
+    }
+
+    def slow_load(*_):
+        entered.set()
+        assert release.wait(5)
+
+    desk._ensure_loaded = slow_load
+
+    def run():
+        try:
+            desk.model_control("model-1", "auto")
+        except BoundaryError as error:
+            errors.append(error.code)
+
+    worker = threading.Thread(target=run)
+    worker.start()
+    assert entered.wait(5)
+    assert desk.model_stop()["recovery_confirmed"] is True
+    release.set()
+    worker.join(5)
+    assert not worker.is_alive()
+    assert errors == ["native_model_intent_superseded"]
+    assert app.models.commands == []
 
 
 def test_unknown_recording_start_is_not_retried_by_observer_or_restart(tmp_path):

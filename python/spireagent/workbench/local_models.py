@@ -1857,11 +1857,13 @@ class LocalModelService:
 
     def prepare_and_load(self, identity: str, run_profile: str = "short", *,
                          native_context: dict[str, Any] | None = None,
-                         native_authorizer: Callable[[], None] | None = None) -> dict[str, Any]:
+                         native_authorizer: Callable[[], None] | None = None,
+                         intent_guard: Callable[[], None] | None = None) -> dict[str, Any]:
         """Prepare the existing selection in Human mode."""
         return self._prepare_and_load(identity, run_profile, takeover=False,
                                       native_context=native_context,
-                                      native_authorizer=native_authorizer)
+                                      native_authorizer=native_authorizer,
+                                      intent_guard=intent_guard)
 
     def prepare_and_takeover(self, identity: str, run_profile: str = "short", *,
                             native_context: dict[str, Any] | None = None,
@@ -1881,6 +1883,7 @@ class LocalModelService:
         native_authorizer: Callable[[], None] | None,
         agent_request: dict[str, Any] | None = None,
         native_episode_context: dict[str, Any] | None = None,
+        intent_guard: Callable[[], None] | None = None,
     ) -> dict[str, Any]:
         """Prepare a reviewed selection, then load in Human mode; never fetch model weights.
 
@@ -1950,6 +1953,8 @@ class LocalModelService:
 
         def admit() -> None:
             self._require_intent(intent)
+            if intent_guard is not None:
+                intent_guard()
             self._bind_native_episode_intent(native_episode_context)
             if native_context is not None:
                 if native_authorizer is None or set(native_context) != {"request_id", "binding"}:
@@ -2439,6 +2444,7 @@ class LocalModelService:
         native_context: dict[str, Any] | None = None,
         native_authorizer: Callable[[], None] | None = None,
         human_selection: dict[str, Any] | None = None,
+        intent_guard: Callable[[], None] | None = None,
     ) -> dict[str, Any]:
         if (action == "auto" and self.mixed_runs is not None
                 and self.mixed_runs.status().get("status") == "recording"
@@ -2472,6 +2478,8 @@ class LocalModelService:
             if fresh["recovery_epoch"] != expected[1].recovery_epoch:
                 raise BoundaryError("local_model", "runtime_recovery_epoch_mismatch")
         with self.lock:
+            if intent_guard is not None:
+                intent_guard()
             if self.execution_admission_guard is not None:
                 self.execution_admission_guard(action)
             if observed_generation is not None and observed_generation != self.intent_generation:

@@ -220,6 +220,7 @@ class NativeTasks:
             or value.get("runtime_instance_id") != expected
             or not isinstance(value.get("health"), dict)
             or type(value.get("count")) is not int
+            or type(value.get("armed")) is not bool
             or value["count"] < 0
             or value.get("lifecycle") not in {"ready", "recording", "paused", "closing", "closed"}
             or self.connector_instance(connector_endpoint) != expected

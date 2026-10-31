@@ -964,6 +964,34 @@ def test_prepare_and_load_does_not_install_when_backend_or_weights_blocked(servi
     assert calls == [] and service.process is None
 
 
+def test_desk_intent_guard_blocks_real_prepare_admission_before_worker(service, monkeypatch):
+    def superseded():
+        raise BoundaryError("game_desk", "native_model_intent_superseded")
+
+    monkeypatch.setattr(service, "readiness", lambda _: pytest.fail("no worker admitted"))
+    with pytest.raises(BoundaryError, match="native_model_intent_superseded"):
+        service.prepare_and_load("s1-human-combat-v4", intent_guard=superseded)
+    assert service.thread is None and service.process is None
+
+
+def test_desk_intent_guard_blocks_real_command_after_transport_preconditions(
+    service, runtime_http,
+):
+    client, _, requests = runtime_http
+    service.client = client
+    service.state.update(status="loaded", loaded=True)
+    context = service.control_context()
+    context.pop("schema")
+
+    def superseded():
+        raise BoundaryError("game_desk", "native_model_intent_superseded")
+
+    with pytest.raises(BoundaryError, match="native_model_intent_superseded"):
+        service.command("auto", expected_context=context, intent_guard=superseded)
+    assert service.thread is None
+    assert all(body is None for _, body in requests)
+
+
 def test_prepare_and_load_installs_only_pinned_runtime_before_existing_human_start(
     service, monkeypatch
 ):

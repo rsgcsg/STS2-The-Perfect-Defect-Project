@@ -261,7 +261,7 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
         throw new RuntimeControlPreconditionError("runtime_game_mismatch", 409);
       const reduced = reduce(structuredClone(this.globalState), full.basis);
       const ready = full.basis.capture_status === "complete" && reduced.complete && reduced.observation.status === "decision" && full.basis.snapshot.status !== "settling";
-      return { catalog_key: globalDigest(reduced.observation.catalog), ready, reason: ready ? null : "wait_for_stable_scene",
+      return { catalog_key: globalDigest(modelView(reduced.observation)), ready, reason: ready ? null : "wait_for_stable_scene",
         catalog: reduced.observation.catalog, observation: modelView(reduced.observation), model_choice_id: null };
     } finally { clearTimeout(timer); }
   }
@@ -339,7 +339,7 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
         let output: AgentDirectiveOutput;
         if (human) {
           const catalog = this.globalPrepared!.acquisition.catalog!;
-          if (globalDigest(catalog) !== human.catalog_key || human.ranking.some(id => !catalog.some(c => c.choice_id === id))) {
+          if (globalDigest(this.globalPrepared!.acquisition.observation) !== human.catalog_key || human.ranking.some(id => !catalog.some(c => c.choice_id === id))) {
             await this.handoff("human_catalog_changed");
             return { type: "not_admitted", reason: "human_catalog_changed", status: this.status() };
           }

@@ -25,7 +25,7 @@ from spireagent.encoding import canonical_json
 from spireagent.json_boundary import BoundaryError, FrozenObject, json_bytes
 
 from .developer import ROOT
-from .local_models import GLOBAL_MODEL_ADAPTERS
+from .local_models import GLOBAL_MODEL_ADAPTERS, LocalModelService
 from .native_tasks import P1_PROFILE
 
 SCHEMA = "spireagent/game-desk-1"
@@ -59,6 +59,14 @@ def now() -> str:
 
 def key(value: Any) -> str:
     return hashlib.sha256(json_bytes(value)).hexdigest()
+
+
+def control_request_context(value: dict[str, Any]) -> dict[str, Any]:
+    result = {
+        name: value[name] for name in ("runtime_run_id", "runtime_instance_id", "recovery_epoch")
+    }
+    LocalModelService.read_control_context(result)
+    return result
 
 
 def read_artifact(directory: Path, reference: dict[str, Any]) -> dict[str, Any]:
@@ -443,8 +451,20 @@ class GameDeskApplication:
     def _native_command(self, kind: str) -> dict[str, Any]:
         with self.record_lock:
             owner = self.app.native_recording_status()["status"]
-            if kind == "close" and owner["recording_lifecycle"] in {"ready", "closing", "closed"}:
-                return owner
+            if kind == "close":
+                if owner["recording_lifecycle"] == "closing":
+                    return owner
+                if owner["recording_lifecycle"] in {"ready", "closed"}:
+                    feedback = self.models.native_tasks.recording_feedback(
+                        self.app.config.platform_url
+                    )
+                    if (
+                        feedback["runtime_instance_id"] != owner["runtime_instance_id"]
+                        or feedback["session_id"] != owner["recording_session_id"]
+                    ):
+                        reject("native_recording_context_changed")
+                    if feedback["armed"] is False:
+                        return owner
             if kind == "start_new_session" and owner["recording_lifecycle"] == "recording":
                 return owner
             result = self.app.control_native_recording(
@@ -539,6 +559,12 @@ class GameDeskApplication:
             self.stop_event.wait(0.05)
         reject("model_operation_pending_check_status")
 
+    def _require_intent(self, intent: int) -> None:
+        # LocalModelService calls this under its short admission lock. Stop
+        # advances this token under that same lock without waiting for I/O.
+        if self.intent != intent:
+            reject("native_model_intent_superseded")
+
     def _current_model_selection(self, selection: str) -> str:
         """Reuse the registration owner to bind unchanged weights to this combination.
 
@@ -599,11 +625,18 @@ class GameDeskApplication:
                 or self.models.client.request("/status")["status"].get("mode") != "human"
             ):
                 reject("stop_before_changing_model")
-            self._wait_model(self.models.command("stop"), intent)
+            self._wait_model(
+                self.models.command("stop", intent_guard=lambda: self._require_intent(intent)),
+                intent,
+            )
         selection = self._current_model_selection(selection)
         self._wait_model(
             self.models.prepare_and_load(
-                selection, "continuous", native_context=context, native_authorizer=authorize
+                selection,
+                "continuous",
+                native_context=context,
+                native_authorizer=authorize,
+                intent_guard=lambda: self._require_intent(intent),
             ),
             intent,
         )
@@ -669,13 +702,14 @@ class GameDeskApplication:
                 selection_id=selection,
                 recording=self.preference is True,
             )
-            control = self.models.control_context()
+            control = control_request_context(self.models.control_context())
             self._wait_model(
                 self.models.command(
                     mode,
                     expected_context=control,
                     native_context=context,
                     native_authorizer=authorize,
+                    intent_guard=lambda: self._require_intent(intent),
                 ),
                 intent,
             )
@@ -688,9 +722,8 @@ class GameDeskApplication:
         return self.view()
 
     def model_stop(self) -> dict[str, Any]:
-        with self.lock:
-            self.intent += 1
         with self.models.lock:
+            self.intent += 1
             active = (
                 self.models.client is not None
                 or self.models.state.get("previous_session")
@@ -770,6 +803,7 @@ class GameDeskApplication:
                     "catalog_key": observed["runtime_catalog_key"],
                     "ranking": ranking,
                 },
+                intent_guard=lambda: self._require_intent(intent),
             )
             result = self._wait_model(value, intent)
             outcome = result.get("last_human_choice_result") or {}
@@ -859,7 +893,7 @@ class GameDeskApplication:
     def choices(self) -> dict[str, Any]:
         value = self.models.human_choices()
         catalog = value["catalog"]
-        context = value["context"]
+        context = control_request_context(value["context"])
         catalog_key = key({"context": context, "catalog": value["catalog_key"]})
         self.choice_context = {
             "catalog_key": catalog_key,

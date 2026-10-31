@@ -59,6 +59,43 @@ describe("manual ranking uses the same Runtime and original Receipt", () => {
       expect((await replayGlobalAgentRun(f.evidence.directory)).unknown_delivery).toBe(true);
     } finally { await f.close(); }
   });
+  it.each(["hp", "energy", "cost"])("rejects old ranking when %s changes with identical legal choices", async fact => {
+    const f = await globalRuntimeFixture({ autoBudget: { mode: "continuous" } });
+    try {
+      await f.runtime.setMode("human");
+      const original = await f.runtime.readHumanChoices();
+      const snapshot = f.source.basis.snapshot;
+      snapshot.snapshot_id += "-changed"; snapshot.sequence++;
+      for (const read of f.source.basis.reads)
+        read.response.expected_snapshot_id = read.response.observed_snapshot_id = snapshot.snapshot_id;
+      const combat = snapshot.interaction.content.context;
+      if (fact === "hp") combat.enemies[0].hp--;
+      else if (fact === "energy") combat.player.energy--;
+      else combat.player.hand[0].cost = "0";
+      const fresh = await f.runtime.readHumanChoices();
+      expect(fresh.catalog).toEqual(original.catalog);
+      expect(fresh.catalog_key).not.toBe(original.catalog_key);
+      const result = await f.runtime.chooseHuman({ catalog_key: original.catalog_key as string,
+        ranking: [(original.catalog as any[])[0].choice_id] }, await binding(f.runtime));
+      expect(result.type).toBe("not_admitted"); expect(f.source.steps).toBe(0);
+      await f.runtime.stop();
+      expect((await replayGlobalAgentRun(f.evidence.directory)).verdict).toBe("verified");
+    } finally { await f.close(); }
+  });
+  it("keeps a ranking when only transient snapshot/capture identifiers change", async () => {
+    const f = await globalRuntimeFixture({ autoBudget: { mode: "continuous" } });
+    try {
+      await f.runtime.setMode("human");
+      const original = await f.runtime.readHumanChoices();
+      const snapshot = f.source.basis.snapshot;
+      snapshot.snapshot_id += "-refreshed"; snapshot.sequence++;
+      for (const read of f.source.basis.reads)
+        read.response.expected_snapshot_id = read.response.observed_snapshot_id = snapshot.snapshot_id;
+      expect((await f.runtime.readHumanChoices()).catalog_key).toBe(original.catalog_key);
+      expect((await f.runtime.chooseHuman({ catalog_key: original.catalog_key as string,
+        ranking: [(original.catalog as any[])[0].choice_id] }, await binding(f.runtime))).type).toBe("delivered");
+    } finally { await f.close(); }
+  });
 });
 
 
