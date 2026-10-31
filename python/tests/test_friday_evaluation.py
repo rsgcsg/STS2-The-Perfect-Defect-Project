@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -329,8 +330,10 @@ def test_prepare_cli_accepts_runtime_source_and_freezes_plan(execution, tmp_path
     for index in range(1, 4):
         command.extend(['--selection', f'checkpoint-{index}=model-{index}'])
     result = subprocess.run(command, check=True, capture_output=True, text=True, timeout=15,
-        env={'PATH': __import__('os').defpath,
-             'PYTHONPATH': str(FRIDAY.parents[1] / 'python')})
+        env={'PATH': os.defpath,
+             'PYTHONPATH': str(FRIDAY.parents[1] / 'python'),
+             **{key: os.environ[key] for key in ('LD_LIBRARY_PATH', 'DYLD_LIBRARY_PATH')
+                if key in os.environ}})
     plan = json.loads(result.stdout)
     assert plan['source_root'] == str(runtime)
     assert plan['planned'] == 60 and (output / 'plan.json').is_file()

@@ -1,5 +1,13 @@
 # Friday 打局与评估运行手册
 
+本机容量检查同时看文件系统和个人配额：Friday登录节点的`usage`显示`/home`与`/data`
+实际used/quota；`df -h`的共享磁盘空闲不能替代它。已发生过`/data`个人500GB用满而
+文件系统仍空闲8TB的情况。开跑前按预计保留量核余量，并在本卡目录做写入/回读/fsync。
+需要本轮使用共享scratch时，用实际canonical路径`/data/scratch/$USER/<本卡目录>`，
+确认本人权限和现场写入，将计划/日志/结果与`TMPDIR`放到已核目录，提交时显式
+`SBATCH_EXPORT=ALL`使原launcher继承；原source/env可继续只读复用。故障旧现场、未决局
+和检查点保留，新worker用新名字/种子，不重投旧unknown；收尾按原Store/保全流程归档。
+
 新 Managed 打局、RL actor 和固定种子评估默认放 Friday；Mac 只做必要的 Mac 对照。
 连接或排队失败不会自动退回 Mac。这里复用原账本、Runtime、保存池和
 [轨迹格式](MANAGED_PRESERVATION.md)，不新增游戏循环。
