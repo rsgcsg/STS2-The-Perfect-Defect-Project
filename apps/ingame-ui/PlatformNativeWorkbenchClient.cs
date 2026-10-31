@@ -24,9 +24,11 @@ internal sealed class PlatformNativeWorkbenchClient : IDisposable
         "models.auto", "models.shadow", "models.one_step", "models.tick",
         "models.human", "models.stop", "models.reconcile", "identity.login", "identity.poll", "identity.logout",
         "mixed.start", "mixed.finish", "mixed.settings", "mixed.resume",
+        "desk.record_start", "desk.record_stop", "desk.model_auto", "desk.model_step", "desk.model_stop",
+        "desk.rank", "desk.mark", "desk.mistake", "desk.reconnect", "desk.choices_open",
         "collection.consent", "collection.prepare", "collection.upload", "downloads.start"
     };
-    private static readonly HashSet<string> Pages = new(StringComparer.Ordinal) { "play", "data", "training", "models", "settings" };
+    private static readonly HashSet<string> Pages = new(StringComparer.Ordinal) { "play", "data", "training", "models", "settings", "desk", "choices" };
     private static readonly HashSet<string> SafeRejects = new(StringComparer.Ordinal) {
         "native_loopback_required", "native_pair_expired_or_missing", "native_pair_mismatch",
         "native_configuration_changed", "native_game_pair_changed", "native_pair_unavailable",
@@ -66,9 +68,9 @@ internal sealed class PlatformNativeWorkbenchClient : IDisposable
         return request;
     }
 
-    private async Task<JsonDocument> ReadAsync(HttpResponseMessage response, CancellationToken token)
+    private async Task<JsonDocument> ReadAsync(HttpResponseMessage response, CancellationToken token, int maximumBytes = MaximumResponseBytes)
     {
-        if (response.Content.Headers.ContentLength is > MaximumResponseBytes)
+        if (response.Content.Headers.ContentLength is long contentLength && contentLength > maximumBytes)
             throw new InvalidOperationException("native_response_limit");
         using Stream stream = await response.Content.ReadAsStreamAsync(token).ConfigureAwait(false);
         using var output = new MemoryStream();
@@ -77,7 +79,7 @@ internal sealed class PlatformNativeWorkbenchClient : IDisposable
         {
             int count = await stream.ReadAsync(buffer, token).ConfigureAwait(false);
             if (count == 0) break;
-            if (output.Length + count > MaximumResponseBytes) throw new InvalidOperationException("native_response_limit");
+            if (output.Length + count > maximumBytes) throw new InvalidOperationException("native_response_limit");
             output.Write(buffer, 0, count);
         }
         return JsonDocument.Parse(output.ToArray());
@@ -95,7 +97,7 @@ internal sealed class PlatformNativeWorkbenchClient : IDisposable
         using HttpRequestMessage request = Request(connection, HttpMethod.Get, route);
         using HttpResponseMessage response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, deadline.Token).ConfigureAwait(false);
         if (response.StatusCode != HttpStatusCode.OK) throw new InvalidOperationException("native_view_unavailable");
-        using JsonDocument document = await ReadAsync(response, deadline.Token).ConfigureAwait(false);
+        using JsonDocument document = await ReadAsync(response, deadline.Token, page == "choices" ? 8 * 1024 * 1024 : MaximumResponseBytes).ConfigureAwait(false);
         JsonElement body = document.RootElement;
         if (!PlatformNativeWorkbenchPair.Names(body, "schema", "binding", "page", "observed_at", "availability", "reason",
             "capabilities", "cards", "items", "pagination", "context")
@@ -203,12 +205,18 @@ internal sealed class PlatformNativeWorkbenchCommands
     private readonly Dictionary<string, int> _pendingOwners = new(StringComparer.Ordinal);
     private readonly Dictionary<string, string> _unknown = new(StringComparer.Ordinal);
     private readonly Dictionary<string, NativeModelIntent> _unknownModels = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, long> _deskRecoveries = new(StringComparer.Ordinal);
+    private long _intent;
     internal static bool Recovery(string action) => action is "models.human" or "models.stop" or "models.reconcile"
         or "training.pause" or "training.cancel" or "training.reconcile" or "training.resume" or "identity.poll"
-        or "recording.close" or "recording.start";
+        or "recording.close" or "recording.start" or "desk.model_stop" or "desk.record_stop" or "desk.reconnect" or "desk.mark" or "desk.mistake" or "desk.choices_open";
     private static string Owner(string action) => action switch { "models.export" => "export", "models.register" => "registration",
         "evaluation.start" => "evaluation", "recordings.import" => "import", "recordings.refresh" => "recording_catalog",
-        "downloads.start" => "member_download", _ => action.Split('.')[0] };
+        "downloads.start" => "member_download",
+        "desk.model_auto" or "desk.model_step" or "desk.model_stop" => "desk_model",
+        "desk.record_start" or "desk.record_stop" => "desk_recording",
+        "desk.mark" or "desk.mistake" => "desk_annotations",
+        "desk.choices_open" => "desk_choices_prepare", _ => action.Split('.')[0] };
     private static string Scope(string config, string action, string? recordingContext = null) =>
         config + ":" + Owner(action) + (action.StartsWith("recording.", StringComparison.Ordinal) ? ":" + recordingContext : "");
     internal static string RecordingContext(string? runtime, string? session) => runtime + ":" + (session ?? "ready");
@@ -258,11 +266,13 @@ internal sealed class PlatformNativeWorkbenchCommands
     {
         string scope = Scope(connection.Binding.ConfigurationId, action, PayloadContext(action, payload));
         string pendingKey = connection.Binding.ConfigurationId + ":" + action;
+        long intent;
         lock (_gate)
         {
             // Recovery is an independent lane and may interrupt an unresolved owner POST.
             if (_pending.Contains(pendingKey) || (_pendingOwners.ContainsKey(scope) && !Recovery(action))) return new("", "rejected", null, "owner_command_pending");
             if (_unknown.ContainsKey(scope) && !Recovery(action)) return new("", "rejected", null, "owner_command_unconfirmed");
+            intent = ++_intent;
             _pending.Add(pendingKey);
             _pendingOwners[scope] = _pendingOwners.GetValueOrDefault(scope) + 1;
         }
@@ -280,13 +290,24 @@ internal sealed class PlatformNativeWorkbenchCommands
             {
                 if (result.Status == "unconfirmed")
                 {
-                    _unknown.TryAdd(scope, action + " · " + requestId);
+                    // A late old response cannot reinstate a fence after a newer
+                    // explicit owner-confirmed recovery. The original backend record remains.
+                    if (_deskRecoveries.GetValueOrDefault(scope) < intent)
+                        _unknown.TryAdd(scope, action + " · " + requestId);
                     bool originalRecovery = action is "models.human" or "models.stop"
                         && JsonSerializer.SerializeToElement(payload).TryGetProperty("native_request_id", out JsonElement recoveryRequest)
                         && recoveryRequest.ValueKind == JsonValueKind.String
                         && recoveryRequest.GetString() == _nativeModel?.RequestId;
                     if (_nativeModel is not null && (_nativeModel.RequestId == requestId || originalRecovery))
                         _unknownModels.TryAdd(scope, _nativeModel);
+                }
+                if (result.Status == "accepted" && action is "desk.model_stop" or "desk.record_stop"
+                    && result.OwnerResponse is JsonElement recovered
+                    && recovered.TryGetProperty("recovery_confirmed", out JsonElement confirmation)
+                    && confirmation.ValueKind == JsonValueKind.True)
+                {
+                    _deskRecoveries[scope] = Math.Max(intent, _deskRecoveries.GetValueOrDefault(scope));
+                    _unknown.Remove(scope);
                 }
                 if (result.Status == "rejected" && _nativeModel?.RequestId == requestId) _nativeModel = previousModel;
                 // An accepted recovery ACK can still be pending; no status read or new

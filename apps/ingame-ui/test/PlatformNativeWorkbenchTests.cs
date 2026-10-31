@@ -361,4 +361,72 @@ public sealed class PlatformNativeWorkbenchTests
         Assert.Equal(1, posts);
     }
 
+    [Fact]
+    public async Task DeskStopBypassesPendingModelAndOnlyConfirmedRecoveryClearsItsFence()
+    {
+        var connection = Connection(); var commands = new PlatformNativeWorkbenchCommands();
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        bool confirmed = false; int starts = 0;
+        using var http = new HttpClient(new Handler(async (request, token) => {
+            using JsonDocument body = JsonDocument.Parse(await request.Content!.ReadAsStringAsync(token));
+            string id = body.RootElement.GetProperty("request_id").GetString()!;
+            if (request.RequestUri!.AbsolutePath.EndsWith("desk.model_auto", StringComparison.Ordinal))
+            { starts++; entered.SetResult(); await release.Task.WaitAsync(token); throw new HttpRequestException("lost reply"); }
+            return Response(Result(connection.Binding, id, owner: new { recovery_confirmed = confirmed }));
+        }));
+        using var client = new PlatformNativeWorkbenchClient(http, _ => true);
+        Task<PlatformNativeWorkbenchCommandResult> first = commands.RunAsync(client, connection, "desk.model_auto", new { selection_id = "model" }, CancellationToken.None);
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        Assert.False(commands.CanSubmit(connection.Binding.ConfigurationId, "desk.model_step"));
+        Assert.True(commands.CanSubmit(connection.Binding.ConfigurationId, "desk.model_stop"));
+        Assert.True(commands.CanSubmit(connection.Binding.ConfigurationId, "desk.record_stop"));
+        Assert.Equal("accepted", (await commands.RunAsync(client, connection, "desk.model_stop", new { }, CancellationToken.None)).Status);
+        release.SetResult(); Assert.Equal("unconfirmed", (await first).Status);
+        Assert.False(commands.CanSubmit(connection.Binding.ConfigurationId, "desk.model_auto"));
+        Assert.Single(commands.Unconfirmed);
+        confirmed = true;
+        Assert.Equal("accepted", (await commands.RunAsync(client, connection, "desk.model_stop", new { }, CancellationToken.None)).Status);
+        Assert.True(commands.CanSubmit(connection.Binding.ConfigurationId, "desk.model_auto"));
+        Assert.Empty(commands.Unconfirmed); Assert.Equal(1, starts);
+    }
+
+    [Fact]
+    public async Task CompleteChoicesHaveTheirOwnBoundWithoutExpandingOtherViews()
+    {
+        var connection = Connection();
+        object View(string page) => new { schema = PlatformNativeWorkbenchClient.ViewSchema, binding = connection.Binding,
+            page, observed_at = "fixture", availability = "available", reason = (string?)null,
+            capabilities = new object[] { }, cards = new object[] { }, items = new[] { new { label = new string('x', 300000) } },
+            pagination = new { }, context = new { } };
+        using var http = new HttpClient(new Handler((request, _) => Task.FromResult(Response(View(
+            request.RequestUri!.Query.Contains("page=choices", StringComparison.Ordinal) ? "choices" : "desk")))));
+        using var client = new PlatformNativeWorkbenchClient(http, _ => true);
+        JsonElement choices = await client.ViewAsync(connection, "choices", 0, null);
+        Assert.Equal(300000, choices.GetProperty("items")[0].GetProperty("label").GetString()!.Length);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => client.ViewAsync(connection, "desk", 0, null));
+    }
+
+    [Fact]
+    public async Task LateDesktopUnknownCannotRelockANewerConfirmedRecovery()
+    {
+        var connection = Connection(); var commands = new PlatformNativeWorkbenchCommands();
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var http = new HttpClient(new Handler(async (request, token) => {
+            using JsonDocument body = JsonDocument.Parse(await request.Content!.ReadAsStringAsync(token));
+            string id = body.RootElement.GetProperty("request_id").GetString()!;
+            if (request.RequestUri!.AbsolutePath.EndsWith("desk.model_auto", StringComparison.Ordinal))
+            { entered.SetResult(); await release.Task.WaitAsync(token); throw new HttpRequestException("late unknown"); }
+            return Response(Result(connection.Binding, id, owner: new { recovery_confirmed = true }));
+        }));
+        using var client = new PlatformNativeWorkbenchClient(http, _ => true);
+        Task<PlatformNativeWorkbenchCommandResult> first = commands.RunAsync(client, connection, "desk.model_auto", new { selection_id = "model" }, CancellationToken.None);
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        Assert.Equal("accepted", (await commands.RunAsync(client, connection, "desk.model_stop", new { }, CancellationToken.None)).Status);
+        release.SetResult(); Assert.Equal("unconfirmed", (await first).Status);
+        Assert.True(commands.CanSubmit(connection.Binding.ConfigurationId, "desk.model_auto"));
+        Assert.Empty(commands.Unconfirmed);
+    }
+
 }

@@ -21,37 +21,21 @@ test("native and application fixed command catalogs agree without an arbitrary p
   assert.doesNotMatch(api,/eval\(|exec\(|shell=True|import_module\(/);
 });
 
-test("all five native pages, typed configuration and exact cumulative resume are discoverable", () => {
-  for(const page of ["play","data","training","models","settings"]) assert.ok(panel.includes(`"${page}"`));
-  assert.match(panel,/GetProperty\("config_fields"\)/);
-  assert.match(panel,/GetProperty\("limits"\)/);
-  assert.match(panel,/\["expected_attempt_id"\]/);
-  assert.match(panel,/body\["limits"\] = operation.GetProperty\("limits"\).Clone\(\)/);
-  assert.match(panel,/Worker 仍未确认停止/);
-  assert.match(panel,/source_aware_prepare.*remote_execution/s);
+test("retired native forms leave their supported application pages and CLI capabilities intact", () => {
+  for (const page of ["play", "data", "training", "models", "settings"])
+    { assert.ok(client.includes(`"${page}"`)); assert.ok(api.includes(`"${page}"`)); }
+  assert.doesNotMatch(panel, /config_fields|expected_attempt_id|BuildActionForm|native_action_not_supported/);
 });
 
-test("auth renewal refreshes captured controls while retaining drafts and unknown fences", () => {
-  assert.match(panel,/formsKey.*connection.Binding.PairId/s);
-  assert.match(panel,/ownerContexts/);
-  assert.match(panel,/_drafts.GetValueOrDefault/);
-  assert.match(client,/SubmittedModelIntent/);
-  assert.match(client,/Unconfirmed/);
-  assert.doesNotMatch(client,/_unknown.Clear\(/);
-  assert.match(panel,/Refresh\(_visible\)/);
-});
-
-test("completed writes refresh unchanged form eligibility without clearing user drafts", () => {
-  const frame = panel.slice(panel.indexOf("internal void OnFrame("), panel.indexOf("private string HubUrl()"));
-  const completed = frame.slice(frame.indexOf("var write = _writes[index]"));
-  assert.ok(completed.indexOf("_formsKey = null;") > completed.indexOf("write.Task.GetAwaiter().GetResult()"));
-  assert.ok(completed.indexOf("_formsKey = null;") < completed.indexOf("Refresh(_visible)"));
-  assert.doesNotMatch(completed, /_drafts.Clear\(|\.Disabled = false/);
-  const render = panel.slice(panel.indexOf("private void Render("), panel.indexOf("private void SetDraft("));
-  assert.match(render, /formsKey != _formsKey/);
-  assert.match(render, /BuildActionForm\(view, connection, descriptor, action\)/);
-  assert.match(render, /next.GrabFocus\(\)/);
-  assert.match(panel, /submit.Disabled = !Boolean\(descriptor, "enabled"\) \|\| !_commands.CanSubmit/);
+test("pair renewal and status reads cannot erase an uncertain command fence", () => {
+  assert.match(client, /SubmittedModelIntent/);
+  assert.match(client, /Unconfirmed/);
+  assert.doesNotMatch(client, /_unknown.Clear\(/);
+  assert.match(client, /_commands|class PlatformNativeWorkbenchCommands/);
+  assert.match(panel, /PlatformNativeWorkbenchConnection.IsCurrent/);
+  assert.match(panel, /PlatformNativeWorkbenchPair.Read/);
+  assert.match(panel, /_commands.CanSubmit/);
+  assert.doesNotMatch(panel, /\.Disabled = false/);
 });
 
 test("public bridge status remains secret-free and scoped pair routes are explicit", () => {
@@ -76,14 +60,11 @@ test("public bridge status remains secret-free and scoped pair routes are explic
 });
 
 
-test("recording forms keep explicit declaration, fixed owner API and original session context", () => {
+test("retired recording forms preserve the exact source and session application API", () => {
   for (const id of ["recording.start", "recording.pause", "recording.resume", "recording.change_source", "recording.close"])
     { assert.ok(client.includes(`"${id}"`)); assert.ok(api.includes(`"${id}"`)); }
-  assert.match(panel, /body\["runtime_instance_id"\]/);
-  assert.match(panel, /body\["recording_session_id"\]/);
-  assert.match(panel, /body\["source_segment_id"\]/);
-  assert.match(panel, /PlatformNativeWorkbenchCommands.RecordingContext/);
   assert.match(client, /PayloadContext\(action, payload\)/);
+  assert.match(client, /RecordingContext\(body.GetProperty\("runtime_instance_id"\)/);
   assert.match(api, /return app.control_native_recording\(body\)/);
   assert.match(bridge, /\/v2\/tasks\/prepare-model/);
 });
