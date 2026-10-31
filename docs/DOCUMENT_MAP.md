@@ -1,6 +1,6 @@
 # 项目地图：有什么、在哪、怎么做
 
-本页负责导航和能力概览，当前派工只由 [CURRENT](memory/CURRENT.md) 指向的任务负责。状态按本轮核到的支持范围写；“能用”不表示全部场景合格。准确版本和计数在[本轮事实收据](evidence/CONVERGENCE_BASELINE_20261027.md)，操作前仍须核实际安装和运行项。
+本页负责导航和能力概览，当前派工只由 [CURRENT](memory/CURRENT.md) 指向的任务负责。“能用”不表示全部场景合格；最新事实由[STATUS](STATUS.md)路由各自有日期的原收据，操作前仍须核实际安装和运行项。[10-27收据](evidence/CONVERGENCE_BASELINE_20261027.md)只证明其原组合，不拥有后续版本。[10-31入口复核](evidence/COORDINATION_1_20261031.md)列本次纠正与未完成项。
 
 ## 一套职责，按需展开
 
@@ -19,12 +19,13 @@
 | 种子和原样开局进度：新局能存 | 采集见证；`components/annotator` | [采集指南](ANNOTATOR_COLLECTION.md)、[X2 收据](evidence/CONVERGENCE_BASELINE_20261027.md#录制和自动入库) | 私有附件只在原件；不进 P1/模型，旧未知不补。[M3](plans/MANAGED_COVERAGE_20261027.zh-CN.md)已接录后自动对照，个人档整局重演未通过（M055 等差异已登记） |
 | R2 保存、按 ID 恢复、本地热集：能用 | 保存与传输；`python/spireagent/storage`、Workbench Store | [存储与容量 SOP](../python/docs/DATA_LIFECYCLE.md#项目存储真身工位与本机删除条件) | 有完整读回和实际 reader 才谈冷却；R2 是已保全内容的长期家，未保全本机原件仍须保护 |
 | 选数据、用途、整局切分和权重：能用 | 派生→训练；Curation 与 `python/stpd/p1` | [数据管理](../python/docs/research/DATA_MANAGEMENT.zh-CN.md)、[预览/确认冻结](../python/docs/RECOUNT-SOP.zh-CN.md) | 旧冻结 414 不变；录后入池，每次实验选局/权重并按模型血统隔离考试；DEV/TEST 不加权 |
-| 学校 GPU 训练与恢复入口：能用，有 8 步短测 | 训练；`python/stpd`、原 TrainingService/Ops/Scheduler | [准备包→提交→看进度→检查点](../python/docs/FULLRUN_TRAINING.md#下一轮-m-std先准备再一条命令开训) | 先 package，明确“开训”后 start；短测不算新正式训练。[输入 v2](../python/docs/P1_T0.md#model-input-v2-and-the-separate-content-sorted-438-projection) 与 T2 准备见 [PR263](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/263)，T2 等确认冻结与明确开训 |
+| 模仿训练、保存和恢复：已有正式训练；资源组合分验 | 训练；`python/stpd`、原 TrainingService/Ops/Scheduler | [准备包→提交→看进度→检查点](../python/docs/FULLRUN_TRAINING.md#下一轮-m-std先准备再一条命令开训) | T2已训练，D2/D2b已收口，不再等旧T2冻结；新训练仍先package、明确开训。D2长训保存触发结构上限，后续长训先处理[#338](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/issues/338)。学校入口短测不等于当前分配或长跑已验 |
 | 模型下载、注册、完整 Agent 接入：能用 | 模型→运行；`python/stpd/p1`、Workbench | [模型/Agent 操作](../python/docs/PROJECT_CONSOLE.md#p1-model正常下载注册与使用)、[运行入口](../python/docs/LOCAL_MODEL_TASK_FLOW.md#prepare-and-load) | 注册不等于激活；旧 438 输入仍受排列影响，权重和旧包保留 |
 | 真游戏 Reference 评估：能续接；原 100 槽用户 10-29 正式关掉 | 运行→评估；Workbench `evaluation_ledger` / `reference_suite` | [可续跑评估链路](../python/docs/LOCAL_MODEL_TASK_FLOW.md#可续跑的评估链路) | 35 槽已开/2 unknown 均保留；第 35 槽已封存，未重投；剩下 65 槽不再开 |
-| Managed 模拟评估和对照：部分可用 | Host 实现与同一评估账本；`components/host-runtime`、Workbench | [Host 对照指南](../components/host-runtime/docs/MANAGED_P1_EQUIVALENCE.md)、同上评估入口 | 与 Reference 是同一 Host 角色的两种实现；只在已验证范围作工程替身，成绩分开。修复与 r1.7 见 [M2a](evidence/MANAGED_M2A_20261027.md)，保存分档/流水线见 [M2b](evidence/MANAGED_TIERS_M2B_20261027.md)；r1.7 未装日常，整局等价与 RL 资格未授 |
+| Managed 模拟评估和对照：部分可用 | Host 实现与同一评估账本；`components/host-runtime`、Workbench | [Host 对照指南](../components/host-runtime/docs/MANAGED_P1_EQUIVALENCE.md)、[同一评估账本](../python/docs/LOCAL_MODEL_TASK_FLOW.md#可续跑的评估链路) | Reference/Managed是同一Host角色的不同实现，成绩分开。M2e已交，日常I1原件已带r1.7见证，T2模型仍用冻结r1.5；不能混成同一输入。n10水晶球小游戏未支持；全机制/任意模型严格等价仍未授 |
 | Friday 打局和 Managed 评估：能用，部署已冻结 | 运行→评估；根 `tools/friday`、Workbench `evaluation_ledger` | [Friday 手册](../python/docs/FRIDAY_ACTOR.md) | 10-29 起评估默认在这里跑；fc430 每核每小时 22.4 局；D1 的 60 槽已跑通 |
 | RL 打局者 / 学习者 / 长跑：RL2已停，RL3待配置 | 模型⇄Managed；`spireagent.workbench.rl_*`、`spireagent.rl_exchange`、`stpd.rl` | [运行图](../python/docs/RL_LONG_RUN.zh-CN.md)、[单配置启动](../python/docs/RL3_RUN.zh-CN.md)、[接口](../python/docs/RL_ACTOR_LEARNER.zh-CN.md) | 旧跨节点闭环不代替新组合验收；RL3长跑需用户明确授权 |
+| 排序与交替录制：新用法分状态 | 完整Agent决策端口、Workbench应用与Annotator/Runtime原件 | [混合局指南](ANNOTATOR_COLLECTION.md#混合局同一局里模型与人来回切换)、[现有人工P1选择器](../components/policy-runtime/examples/p1/human-chooser.mjs) | H1源码已合、未装、真实用户0局；新排序为真实游戏旁列全部动作、人排几个并执行第一、可标问题，不需后台模型。选择器目前只有单选；[连接与缺口](evidence/COORDINATION_1_20261031.md#新用法的连接位置)是设计说明，不是已实现或训练准入 |
 | 开发、修缺陷、测试、集成：现有流程 | 各功能 owner；根 `tools` 负责工程工具 | [工程入门](NEW_ENGINEER_GUIDE.md) → [工作流程](DEVELOPMENT_WORKFLOW.md) / [测试](TESTING.md#local-feedback-and-candidate-checks) | 缺陷归最先出错的层；[待修和重构](plans/CONVERGENCE_BASELINE_20261027.zh-CN.md#待修与重构去向) |
 | 安装、升级、核加载、回滚：现有入口 | `apps/game-mod` 与原安装 owner | [开发工具安装](../python/docs/DEVELOPER_KIT_INSTALL.md)、[Mod 生命周期](../apps/game-mod/README.md#lifecycle) | 用户录制优先；先核占用/登记和匹配 Tool；安装不随文档合并发生 |
 | Hub、队列、团队账号、云页面：保留冻结 | `python/spireagent/hub`、`python/deploy/hub`、`python/docs` | [现有 Hub 运维](../python/deploy/hub/RUNBOOK.md)、[账号恢复](../python/docs/IDENTITY_PROTOCOL.md) | 当前单人本机/R2/学校链不依赖整个团队产品；有旧 caller，不等于废除或当前已部署 |

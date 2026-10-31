@@ -5,11 +5,22 @@ source and scope; refresh its owning status/identity before an operational actio
 CURRENT owns the active task and next step; its linked active plan owns progress.
 Historical execution matrices retain their original observations and obligations.
 
-## 维护同步（2026-10-30）
+## 统筹同步（2026-10-31）
 
-RL2已收口且不恢复；RL3准备卡A/B已交（PR325、PR328），卡D及统一尺子PR329已合。当前数据D2在原负责人处训练/评估，卡C暂停。MAINT-1只做用户已批的清理、RL2十二路补拷、历史实验登记和Issue对齐，不改变运行配置、数据资格或模型效果结论。
+D2/D2b均已收口；RL2永久停止且十二路补拷12/12完成；RL3没有启动。当前完整事实与调查范围见[统筹-1](evidence/COORDINATION_1_20261031.md)，下一步只由[CURRENT](memory/CURRENT.md)及用户新派发决定。
 
-最新主线以[CURRENT](memory/CURRENT.md)为入口；[维护收据](evidence/MAINT_1_20261030.md)列准确证据和未完成项。下节“长跑前”及其更早状态都是原日期的历史，不是今天重启RL2或卡C的授权。
+| 声明 | 当前证据与限制 |
+|---|---|
+| D2拟合与保存 | 最高完整CP段内8856/累计12600，TRAIN94.470%/NLL0.154903；DEV63.817%/2.053911，TEST66.212%/1.896761。8928保存失败，72次更新未持久化；不是平台或正常预算结束。[#338](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/issues/338)保修复义务 |
+| D2b实战 | 预选五版各50槽，246自然负/4unknown；5976对2016共同49seed差+2.55层，普通95%区间[+0.53,+4.73]，8对照家族区间均跨0。20/41共同94seed差+0.81，95%区间[-0.24,+1.95]；n10原审计未准入，新100未开。原元数据失败试跑27开局/0准入另留，不混成绩 |
+| RL2保存 | [MAINT-1](evidence/MAINT_1_20261030.md)12/12、1967518文件逐SHA核同；不改旧0/12失败。v337推理权重与CP335完整恢复状态不是同一对象 |
+| 工程与运行 | PR328真实短链通过，200步/完整首小时/长跑效果仍未验；后台预取默认关。H1源码合入不等于安装，日常最新收据仍为I1组合，本卡没有核新加载 |
+
+原结果保存在原任务授权位置，公开索引不复制游戏、权重、私有计划或本机路径。以下各日期段都是历史观察，不派发旧任务，也不把旧“当前”或未完成声明当今天的事实。
+
+## 维护同步（2026-10-30，历史）
+
+RL2已收口且不恢复；RL3准备卡A/B、数据卡D已交。该时点D2仍在进行；后续D2/D2b结果以上节为准。MAINT-1执行范围和原分母见[维护收据](evidence/MAINT_1_20261030.md)。
 
 ## 最新可恢复入口（2026-10-29）
 

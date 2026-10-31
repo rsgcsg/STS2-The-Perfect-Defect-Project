@@ -22,8 +22,9 @@ If facts and requirements disagree, label the conflict and decide at the owning
 boundary. Ask the user when a genuine goal/authority/tradeoff remains unresolved;
 otherwise correct the stale owner. Do not create a second status/identity registry.
 
-Initial orientation is AGENTS → README → DOCUMENT_MAP → WORKING_RULES → CURRENT, then the active
-task and only relevant owner sections/code. The task names the purpose, output,
+Initial orientation is AGENTS → README → CURRENT → DOCUMENT_MAP, then the active
+task and only relevant owner sections/code; consult WORKING_RULES for shared practice
+or authorization questions. The task names the purpose, output,
 acceptance, costs and stop boundary; no active assignment means no automatic
 resumption of a historical backlog item. Fresh refs are verified before action.
 

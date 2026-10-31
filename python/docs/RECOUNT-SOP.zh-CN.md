@@ -160,11 +160,10 @@ Q3 安装使用 Annotator29 固定 Tool `aa168b7e…`，由统一 Mod 提供未�
 固定版本检查仍有效，旧 Tool 优先级、切分盐、目标与已冻结配置不变。
 已完整完成的同一原件在Tool升级后，只沿原封存哈希/身份与原完成记录识别新候选别名，
 不重复派生旧局、不重写原入库耗时。改peer/范围/投影会清完成记录，不沿旧完成跳过。
-Q小结还依赖锁定的 `local-models` extra（tokenizers）；collection-only kit初始化后，
-维护者须在Workbench停止时沿原环境入口补齐：
+Q小结还依赖锁定的 `local-models` extra（tokenizers）。E1a之后的新kit已在原安装入口包含所需依赖；仅旧的collection-only kit缺包时，维护者在Workbench停止后沿原环境入口补齐：
 `uv sync --project /ABS/release/source/python --locked --extra cloud --extra local-models`。
 此项不下载模型权重、不训练，也不选择Managed/评估Runtime。
-真人自动验收仍等用户正常下一局，完成事实只记在 Q3 报告。
+这段保留Q3旧组合的适用范围；后续X2/I1的正常局验收看各自原报告，不再把它们派发成“等下一局”。
 
 X2 使用 Annotator30 固定 Tool `5afc7d7688d5ac221937cc033ea56a97f059929143b3d2a7d85885f6f56709ba`，只向新封存原件附加真实开局种子、修正完整账号/profile路径后的原样进度；不进玩家快照、P1或模型。缺失仍unknown，旧原件不补填。该Tool仅追加在原优先级末尾，继续沿同原件候选别名避免重复派生，414冻结与用途不变。安装/隔离工程重建及下一局正常录制的验收分别见 X2 报告，不继承旧Human资格。
 
