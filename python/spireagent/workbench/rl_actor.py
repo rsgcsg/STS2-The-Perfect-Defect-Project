@@ -222,6 +222,8 @@ class Actor:
                     "run_id": slot.get("run_id") or row.get("run_id"),
                     "shard": slot.get("trajectory_shard_id") or row.get("trajectory_shard_id"),
                     "elapsed_seconds": row.get("elapsed_seconds"),
+                    "started_at": row.get("pipeline_started_at"),
+                    "model_published_at": record.get("published_at"),
                     "phase_seconds": row.get("phase_seconds"),
                     "behavior_policy": row.get("behavior_policy")}
             self.games.append(game)

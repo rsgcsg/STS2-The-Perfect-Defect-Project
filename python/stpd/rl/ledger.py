@@ -47,6 +47,8 @@ class DecisionLedger:
         if not self.enabled:
             return
         now = time.time()
+        game = next((g for g in record.get("games", ())
+                     if g.get("run_id") == episode["run_id"]), {})
         rows = []
         for step in episode["steps"]:
             observation = episode["observations"][step["observation_index"]]["observation"]
@@ -54,6 +56,7 @@ class DecisionLedger:
             row = {"id": f"{episode['run_id']}:{step['index']}", "catalog_size": count,
                 "decision": count >= 2, "generated_at": step.get("generated_at"),
                 "model_version": record["model_version"], "uses": 0,
+                "episode_started_at": game.get("started_at"),
                 "admitted_at": now if disposition == "admitted" else None,
                 "behavior_entropy": -sum(p * math.log(p)
                     for p in step["behavior"].get("probabilities", ()) if p > 0)}
@@ -84,6 +87,9 @@ class DecisionLedger:
                 first.append({"id": key, "decision": row["decision"],
                     "generated_to_first_seconds": delay,
                     "clock_offset_bound_seconds": self.offset,
+                    "model_lag": version - row["model_version"],
+                    "episode_to_first_seconds": (now - row["episode_started_at"]
+                        if row.get("episode_started_at") is not None else None),
                     "latency_interval_seconds": ([delay - self.offset, delay + self.offset]
                         if delay is not None and self.offset is not None else None)})
             row["uses"] += 1

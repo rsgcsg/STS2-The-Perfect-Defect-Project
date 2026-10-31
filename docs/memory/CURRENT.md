@@ -1,14 +1,16 @@
-# 当前：CARD-RL-C 公开输入评分网络与同预算RL对照
+# 当前：CARD-RL-C / RL3 在线PPO（用户v6）
 
-2026-11-01：用户已派CARD-RL-C，root负责；范围归[本轮设计](../plans/RL_CRITIC_20261101.md)。复用原learner/Friday actor/Exchange/CP/评估账本，原2016起点，critic开关保留旧方法；单A30总≤30h、不花钱、不碰凭据或Mac游戏，unknown不重投、评估seed永不训练。旧RL2不恢复。
+2026-11-01：用户已派RL3，替代暂停的10-30卡C；root负责。[本轮设计](../plans/RL_CRITIC_20261101.md)归v6，旧扫描/A-B方案已撤销且未运行。目标是每小时墙钟实战提升；长训s8136折1B温度，直接π采样、共享价值头/GAE/熵，anchor0、KL0监控，退化回好CP开KL .02。
 
 <!-- Resolve live GitHub refs before action; latest user instructions and live evidence override this file. -->
 
 ## 当前任务与唯一下一步
 
-当前在独立分支实现critic在线热身与逐步GAE，未提交训练、无实战结果；基线develop `1ec85334`。先验证候选与原CP恢复，再做有限短试、A/B同预算及100种子配对；只有B配对95%区间严格高于0且审计/保存通过才接≤20h长跑。开发预计3–5h，2026-11-04 05:40 AEST硬收口；参数与停止条件归[设计](../plans/RL_CRITIC_20261101.md)，运行归[原SOP](../../python/docs/RL3_RUN.zh-CN.md#可选公开输入评分网络)。Friday原SSH复用已失效，待用户恢复登录；Mac有用户游戏，重检查等待资源位。**唯一下一步：完成忠实测试与完整恢复验证。**源码/CI不替代真实采用、热身或效果。
+基线develop `1ec85334`；PR349正在改为v6，旧50ce原型/其CI不代表v6验收。当前0训练/0GPU，source尚在实现；先完成正常CPU测试、#338长CP编解码/恢复、原Actor到末CP短链，再进入约1h在线热身（最多2h不过停）与约20h连续运行（含热身），每4hquick20、末100颗与起点配对。硬截止2026-11-03 05:40 AEST，末2h保存报告。仅一张免费GPU累计≤30h，EAIT L40S优先、Friday GPU备用；Friday CPU12路起≤36核。FP32开/预取关，新鲜度按秒/完整acting KL/clip计量，实际需要时以更快学习的工程方法改善，不靠降lr或多丢数据凑新鲜。
 
-CARD-1A / [#340](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/issues/340)仍待用户试1–2局，再核原件与完整入库，本卡不抢Mac或重装。原source ab816a93 / Workbench cc39dc7f / UI24 / Mod72 / Runtime60已装，0动作/11控制事件保存回读范围见[STATUS](../STATUS.md)；诊断346、舒适项343、账本300保留，297已关闭。
+Friday SSH已恢复且无自有作业；当时6张A30占用，EAIT页面已登录、L40S很可能可用、额度26h41m。**唯一下一步：完成v6候选的CPU与完整恢复验证，再启动当时可用的一张GPU。**故障先核原分配/末CP，再查Friday，不双卡、不重投unknown、不碰凭据或秘密输入文件。角色/参数/恢复归[原SOP](../../python/docs/RL3_RUN.zh-CN.md#可选公开输入评分网络)。RL2不恢复，100评估seed永不训练。
+
+CARD-1A / [#340](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/issues/340)仍待用户试1–2局和原件/完整入库；本卡不碰Mac。原source ab816a93 / Workbench cc39dc7f / UI24 / Mod72 / Runtime60的已装与0动作保存范围见[STATUS](../STATUS.md)，不拿它作模型实战资格。
 
 | 对象 | 已知结果 / 剩余 |
 |---|---|

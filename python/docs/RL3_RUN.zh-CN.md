@@ -144,47 +144,75 @@ learner原STOP/signal保存负责最终CP，看守负责原健康规则和排空
 
 ## 可选公开输入评分网络
 
-默认省略 `learner.critic` 或填 `null`，仍走原整局基线、原策略优化器与原发版链。
-显式配置后，由同一 learner 运行独立的 MStd 编码器副本和新建的 192→128→1 回报头；
-它只接收策略同一 `project()` 的 Frame/TensorFrame，不接收 seed、终局、未来或 RNG。
-seed 仅用于整局切分，终局仅作监督目标。旧 T2 胜率/进度头不载入。
-该值是折扣后的 reward-v2 回报，**不是通关概率**。actor/模型包不增加网络或搜索。
+省略`critic`/填null、`loss.mode="legacy"`保留原整局基线。显式启用下面的PPO配置，
+同一个MStd加fresh progress_head，共用主干；win_head仅为既有导出结构保留、不训练，
+两头都从actor包剥掉。评分只接策略同一公开Frame/TensorFrame，seed仅用于整局切分，
+终局仅作目标；值是reward-v2的折扣回报，**不是通关概率**。不启用旧T2头。
 
 ```json
-"critic": {
-  "gamma": 1.0, "gae_lambda": 1.0, "lr": 0.0001, "batch_size": 64,
-  "max_rows": 60000, "min_train_episodes": 32, "min_validation_episodes": 8,
-  "min_updates": 128, "validation_every": 32,
-  "warmup_max_updates": 2000, "warmup_seconds": 2400,
-  "min_explained_variance": 0.05, "max_grad_norm": 1.0
+{
+  "max_episode_age_seconds": 600,
+  "publish_interval_seconds": 60,
+  "max_reuse": 2,
+  "anchor": null, "anchor_batch": 0,
+  "critic": {
+    "gamma": 0.999, "gae_lambda": 0.95,
+    "warmup_lr": 0.0001, "batch_size": 64, "max_rows": 60000,
+    "min_train_episodes": 32, "min_validation_episodes": 8,
+    "min_updates": 128, "validation_every": 32,
+    "warmup_min_seconds": 3600, "warmup_max_seconds": 7200,
+    "checkpoint_seconds": 600, "min_explained_variance": 0.0
+  },
+  "loss": {
+    "mode": "ppo", "clip": 0.2, "kl_coef": 0,
+    "anchor_coef": 0, "value_coef": 0.5, "entropy_coef": 0.01,
+    "max_grad_norm": 1.0
+  }
 }
 ```
 
-只收自然完整终局，原 reward v2 在最后一个决策给出，终局 bootstrap 为0；
-unknown/删失/无自然终局保持原拒收，不给0分、不补开。每步回报目标为
-`gamma^(剩余步数) * terminal_reward`，critic 用无权 MSE；梯度与策略分开。
-固定哈希约20%的训练 seed 整局留出，从不拟合 critic；阈值中的最少局数按唯一 seed 计。
-至少32训练 seed、8留出 seed、128更新，留出解释方差严格大于.05，且MSE低于
-训练标签均值常数，才开启策略更新。热身至多2400秒/2000更新，失败以
-`rl_critic:warmup_not_qualified` 结束并正常保全，不静默退回旧方法继续实验。
-热身期间策略权重、策略更新次数和策略首次使用账本均不变。
+PPO只接原接口`temperature_uniform/T=1/uniform_mix=0`，即直接π采样；读入时核真实
+记录的选择概率。温度校准须先在新起点包中把最后action线性层weight/bias除以已冻结T，
+不在actor另加探索修正。每小账本设1局，开局取后台已完整下载/核哈希的最新模型。
 
-开启后，对每份完整轨迹按当前独立 critic 的逐步值计算一次 GAE，终局无自举；
-lambda=1等于每步各自的蒙特卡洛回报减状态基线。原过期/复用门仍有效，
-每次策略更新内按均值/标准差归一化，标准差下限.05。热身前收的完整buffer在门通过时
-重算一次；以后已准入优势不随critic重训而暗改。异步轨迹与原探索重要性截断仍然存在，
-这是原有限陈旧策略链上的方法对照，不能把它称作严格同步、完全同策略采样的PPO。
+热身冻结全部动作参数/主干，只训fresh value head，策略更新数与策略首用计数为0；
+10%训练seed稳定哈希整局留出，始终既不训策略也不训价值。其余热身局只给价值训练，
+不塞入一小时后的策略buffer。至少32训练seed/8留出seed/128头更新，达到最小时长、
+留出EV>0且MSE低于训练均值常数才解冻；到2h仍不过，以`warmup_not_qualified`停机保全。
+可在新恢复配置中明确调整warmup时长/lr，已耗时和随机状态保留，gamma/lambda等目标不变。
+热身期间每10分钟仍保一份新不可变版本/完整CP，动作张量可能相同，不能把版本增加称为策略学习。
 
-原 decision ledger 追加 `critic_prediction`（逐步ID、预测、目标、原始优势、critic更新数、
-策略版本、是否过门）及成功后的 `critic_trained`（采样ID/MSE/梯度）事件；
-评分是 learner 收到轨迹时的估计，不冒称 actor 当时的预测。
-`critic_validation` / `critic_ready` 记录整局留出、版本分布、逐行/等局MSE与早中晚决策位置误差。
-原首次有效新决策统计仍专指**策略**成功更新；critic热身与复用另从成功事件统计。
+仅自然完整终局授原reward v2，当前先在终局给奖励；unknown/删失原样保留且无价值标签，
+不重开。每次策略更新前，用**当前**网络重算相关完整轨迹的值及全部动作分布，终局bootstrap0。
+使用截断未来重要性trace：`A[t]=delta[t]+gamma*lambda*min(1,rho[t+1])*A[t+1]`，
+价值目标`V[t]+min(1,rho[t])*A[t]`，rho为当前π/记录μ。这是V-trace(lambda)形式；
+当前动作的rho已在PPO裁剪比内，不再乘一次。rho=1时回到标准GAE/lambda回报。
+优势在实际minibatch内标准化，loss为PPO clip＋无权value MSE－entropy＋可选起点KL。
+PPO训练用eval模式求导，禁dropout/id masking，与actor概率一致；legacy训练模式不变。
 
-完整CP包含critic权重/优化器/随机状态、按原顺序的回放引用、逐步目标、热身门和已耗时间。
-恢复必须同producer和同critic配置，从原核过的分片重建，不把Frame再存一遍。
-即便策略没有新更新，评分网络或回放有变化，停止时也发布新的不可变模型版本和CP；
-该版本的动作权重可与上一版相同，不能据版本号增大声称策略学习。原确认回执仍须核实际读取。
+`max_episode_age_seconds`替代版本过期，起点600秒从原pipeline开局时间算；
+`publish_interval_seconds`替代按更新次数发版。省略两字段保留旧版本/更新门。
+当前Replay按整局FIFO有限保留，容量淘汰/过期/复用/热身/价值留出分别记账，不删原轨迹。
+既看秒数，也看**到达时完整acting-policy KL、clip及概率比**；KL小/clip合适时不为GPU忙或
+表面新鲜度改系统。确实太旧，按每小时实战收益选择分段、大批少更新、模型采用等提速，
+不靠降lr或多扔数据解决；原始失败和不同参数的时间边界必须保留。
 
-本实现提供可选能力，不启用默认配方或授予训练资格。CARD-RL-C 的参数/资源/比较门见
-[本轮实验设计](../../docs/plans/RL_CRITIC_20261101.md)，真实结果由本轮报告与原账本拥有。
+原decision ledger追加arrival_policy_drift、逐步critic_prediction、成功critic_trained及
+ppo_diagnostics，绑定原run_id:step.index、使用的critic/policy更新数、真实优势/目标/比率与KL。
+原trained事件成功后才记策略首用，另含模型落后及开局到首训秒数；时钟界未知仍是null。
+上报当前KL/entropy、分类指标、概率比/clip分布、原始与归一化优势、value loss及真实阶段耗时。
+值头热身不算策略更新；额外整轨迹重算时间单列，不借旧固定窗称新方法仅多一成计算。
+
+完整PPO CP为`stpd/rl-learner-checkpoint-3`：model/optimizer含共享价值头，learner JSON
+是受限uint8载荷，避免长元数据突破codec的100,000节点/8MiB header；总512MiB限不变，
+metadata64MiB限显式失败。legacy checkpoint-2字符串仍可读。恢复同producer/目标/起点，
+原分片重建Frame和原FIFO、开局时间/复用次数/优化器/RNG/热身门/已耗时间；watcher用同解码器，
+核actor动作张量时按原导出函数剥值头。拒收/退休或只训头也会触发最终新CP，不能丢末状态。
+
+正常分配边界用原learner CLI的`resume_checkpoint`续同run；必要时显式
+`republish_on_resume=true`，先把恢复的准确权重发成新不可变版本再继续。永久Exchange STOP
+存在时不允许借该选项重发复活。回退/调参/换机记原CP与配置变更，不覆盖模型、CP或旧失败。
+原STOP/watch保存和冷读门照旧；源码/CI通过不代表真实恢复或策略变强。
+
+本轮授权/时限/操作调整归[RL3任务设计](../../docs/plans/RL_CRITIC_20261101.md)，
+实际保存与结果归原运行账本。此配置示例不激活日常或正式配方。
