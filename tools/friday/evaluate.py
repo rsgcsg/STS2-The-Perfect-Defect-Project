@@ -46,7 +46,7 @@ def prepare(execution_path: Path, output: Path, *, selections: dict[str, str],
             workers: int = 4, wall_seconds: int = 7200, episode_seconds: int = 900,
             manifest_path: Path | None = None, limit: int | None = None,
             seed_prefix: int | None = None, runtime_source: Path | None = None,
-            observation_report: bool = False) -> dict[str, Any]:
+            observation_report: bool = False, unknown_policy: str = "stop") -> dict[str, Any]:
     from spireagent.json_boundary import json_bytes
     from spireagent.workbench.managed_retention import pipeline_configuration
     from spireagent.workbench.reference_suite import load_manifest
@@ -58,6 +58,8 @@ def prepare(execution_path: Path, output: Path, *, selections: dict[str, str],
             or wall_seconds <= episode_seconds + 180
             or limit is not None and (type(limit) is not int or not 1 <= limit <= 200)):
         raise ValueError("bounded_allocation_and_episode_limits_required")
+    if unknown_policy not in ('stop', 'continue_cleaned'):
+        raise ValueError('explicit_evaluation_unknown_policy_required')
     if type(observation_report) is not bool or observation_report and len(selections) != 1:
         raise ValueError('single_model_observation_report_required')
     if runtime_source is not None and (not runtime_source.is_absolute()
@@ -101,6 +103,7 @@ def prepare(execution_path: Path, output: Path, *, selections: dict[str, str],
                 "execution_upper_bound": min(workers, pipeline["pending_limit"])},
             "source_root": str(runtime_source or Path(__file__).resolve().parents[2]),
             **({"seed_prefix": seed_prefix} if seed_prefix is not None else {}),
+            **({"unknown_policy": unknown_policy} if unknown_policy != "stop" else {}),
             "target": "friday", "automatic_mac_fallback": False, "retry_unknown": False}
     save(output / "plan.json", plan)
     return plan
@@ -123,7 +126,8 @@ def load_plan(path: Path) -> dict[str, Any]:
     if (value.get("schema") != SCHEMA or value.get("target") != "friday"
             or value.get("automatic_mac_fallback") is not False
             or value.get("retry_unknown") is not False
-            or type(value.get("observation_report", False)) is not bool):
+            or type(value.get("observation_report", False)) is not bool
+            or value.get("unknown_policy", "stop") not in ('stop', 'continue_cleaned')):
         raise ValueError("frozen_friday_evaluation_plan_required")
     validate_execution(read_pinned(value["execution"]), value["selections"])
     read_pinned(value["manifest"])
@@ -227,10 +231,21 @@ def submit(plan_path: Path, *, constraint: str | None = None,
 
 class StopOnUncertain:
     """Delegate unchanged owner execution and halt NEW admission on uncertainty."""
-    def __init__(self, delegate: Any, stop: Path):
-        self.delegate, self.stop = delegate, stop
+    def __init__(self, delegate: Any, stop: Path, *, unknown_policy: str = 'stop'):
+        if unknown_policy not in ('stop', 'continue_cleaned'):
+            raise ValueError('explicit_evaluation_unknown_policy_required')
+        self.delegate, self.stop, self.unknown_policy = delegate, stop, unknown_policy
 
     def inspect(self, row: dict[str, Any]) -> None:
+        # Cleanup is not a proof of data integrity: keep the actual typed-failure stop.
+        integrity_failed = row.get('execution_reason') == 'typed_original_verification_failed'
+        if integrity_failed:
+            self.stop.touch()
+            return
+        if (self.unknown_policy == 'continue_cleaned'
+                and row.get('status') != 'save_failed'
+                and row.get('cleanup_accepted') is True):
+            return
         if (row.get('status') in {'unknown', 'save_failed'}
                 or row.get('execution_status') == 'unknown'
                 or row.get('world_mutation_offered') and not row.get('cleanup_accepted')):
@@ -354,7 +369,8 @@ def run(plan_path: Path) -> dict[str, Any]:
                             plan['wall_seconds'] - plan['episode_seconds'] - 180, 1, 30)
         phase_began = time.monotonic()
         result = ledger.run_managed(workers=plan['workers'], max_episodes=len(selected),
-            limits=limits, executor=StopOnUncertain(executor, ledger_stop), slot_ids=selected)
+            limits=limits, executor=StopOnUncertain(executor, ledger_stop,
+                unknown_policy=plan.get('unknown_policy', 'stop')), slot_ids=selected)
         phases['execution_and_pipeline_save'] = time.monotonic() - phase_began
     except Exception as error:  # noqa: BLE001 -- the existing attempt is retained, never retried.
         error_type, error_code = type(error).__name__, getattr(error, 'code', None)
@@ -419,6 +435,8 @@ def main():
     prepare_parser.add_argument('--wall-seconds', type=int, default=7200)
     prepare_parser.add_argument('--episode-seconds', type=int, default=900)
     prepare_parser.add_argument('--limit', type=int)
+    prepare_parser.add_argument('--unknown-policy', choices=('stop', 'continue_cleaned'),
+                                default='stop', help='continue only cleaned unknown; never retry')
     prepare_parser.add_argument('--observation-report', action='store_true',
                                 help='prepare verified trajectory details/cohort in this allocation')
     prepare_parser.add_argument('--seed-prefix', type=int,
@@ -444,7 +462,7 @@ def main():
             episode_seconds=args.episode_seconds,
             manifest_path=args.manifest.resolve() if args.manifest else None, limit=args.limit,
             seed_prefix=args.seed_prefix, runtime_source=args.runtime_source,
-            observation_report=args.observation_report)
+            observation_report=args.observation_report, unknown_policy=args.unknown_policy)
     elif args.command == 'submit':
         result = submit(args.plan.resolve(), constraint=args.constraint,
                         dry_run=args.dry_run, begin=args.begin)
