@@ -258,6 +258,11 @@ def profiler_stub(tmp_path):
     # The test process receives only these nonsensitive settings, not a copied account env.
     environment = {"PATH": os.defpath, "PYTHONPATH": str(stubs),
                    "FRIDAY_INFERENCE_THREADS": "1"}
+    # Module-managed Python can dynamically load libpython from these paths.
+    # Keep its interpreter identity while still excluding account credentials.
+    for key in ("LD_LIBRARY_PATH", "DYLD_LIBRARY_PATH"):
+        if os.environ.get(key):
+            environment[key] = os.environ[key]
     return command, environment, config, binding / "agent-performance.json"
 
 

@@ -1,12 +1,16 @@
-# 当前：CARD-1A 游戏内对局台开发与安装验收
+# 当前：CARD-RL-C / RL3 在线PPO（用户v6）
 
-2026-11-01：用户已派 CARD-1A / [#340](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/issues/340)。本卡 owner 为主对话，范围是游戏内多窗口、排序/鼠标/模型的统一用例、记录/标记、清理 Mod GUI、直接安装及部署登记；用户实测后才收口。不训练、不改 RL、不碰凭据。1B 只读、1C 在训练侧另跑，本卡不写 `python/stpd`。预计本地 05:05 AEST 前完成，08:05 硬收口（不计等用户实测）。
+2026-11-01：用户已派RL3，替代暂停的10-30卡C；root负责。[本轮设计](../plans/RL_CRITIC_20261101.md)归v6，旧扫描/A-B方案已撤销且未运行。目标是每小时墙钟实战提升；长训s8136折1B温度，直接π采样、共享价值头/GAE/熵，anchor0、KL0监控，退化回好CP开KL .02。
 
 <!-- Resolve live GitHub refs before action; latest user instructions and live evidence override this file. -->
 
 ## 当前任务与唯一下一步
 
-本轮以[#340](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/issues/340)及用户v6卡为准，长期语义归[交互规范](../UI_INTERACTION_SPEC.md#current-pre-training-scope)，入口去向归[游戏内指南](../../apps/ingame-ui/README.md)。PR344/345已普通合入develop，安装source ab816a93完整CI绿；Workbench cc39dc7f / UI24 / Mod72 / Runtime60已装并冷加载，窗口与入库关闭时退出Stop实核通过（0游戏动作）。旧Store绑定缺失后，用户明确选择新建持久本机库；原owner建立并重绑、旧配置保留，无旧数据导入/改写、无云端保存。正式保存按钮成功，原CLI按准确artifact读取0动作/11控制事件索引；Deployment7462443141新增success并保留原failure。**唯一下一步：用户试1–2局覆盖鼠标/排序/模型展示/交替/一步/标记/点错/取消，然后由主对话核对原件与完整入库读回，再决定340收口。**游戏在菜单、未录制、Runtime Human无自动走；不重复安装或执行unknown请求。诊断GLOBAL类型分歧346、舒适项343与账本300保留，297用途决策已关闭。准确身份、失败历史和局部验证边界见[STATUS](../STATUS.md)。原[统筹复核](../evidence/COORDINATION_1_20261031.md)保留其他线的历史义务。
+基线develop `1ec85334`；PR349正在改为v6，旧50ce原型/其CI不代表v6验收。当前0训练/0GPU，source尚在实现；先完成正常CPU测试、#338长CP编解码/恢复、原Actor到末CP短链，再进入约1h在线热身（最多2h不过停）与约20h连续运行（含热身），每4hquick20、末100颗与起点配对。硬截止2026-11-03 05:40 AEST，末2h保存报告。仅一张免费GPU累计≤30h，EAIT L40S优先、Friday GPU备用；Friday CPU12路起≤36核。FP32开/预取关，新鲜度按秒/完整acting KL/clip计量，实际需要时以更快学习的工程方法改善，不靠降lr或多丢数据凑新鲜。
+
+Friday SSH已恢复且无自有作业；当时6张A30占用，EAIT页面已登录、L40S很可能可用、额度26h41m。**唯一下一步：完成v6候选的CPU与完整恢复验证，再启动当时可用的一张GPU。**故障先核原分配/末CP，再查Friday，不双卡、不重投unknown、不碰凭据或秘密输入文件。角色/参数/恢复归[原SOP](../../python/docs/RL3_RUN.zh-CN.md#可选公开输入评分网络)。RL2不恢复，100评估seed永不训练。
+
+CARD-1A / [#340](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/issues/340)仍待用户试1–2局和原件/完整入库；本卡不碰Mac。原source ab816a93 / Workbench cc39dc7f / UI24 / Mod72 / Runtime60的已装与0动作保存范围见[STATUS](../STATUS.md)，不拿它作模型实战资格。
 
 | 对象 | 已知结果 / 剩余 |
 |---|---|

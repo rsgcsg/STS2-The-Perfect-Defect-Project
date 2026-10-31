@@ -34,6 +34,10 @@ def read_config(path: Path) -> dict[str, Any]:
             or type(value.get('started_at')) not in {int, float}
             or not math.isfinite(value['started_at'])):
         raise ValueError('bounded_RL_watch_configuration_required')
+    limit = value.get('unknown_stop_fraction', 0.05)
+    if (type(limit) not in (int, float) or not math.isfinite(limit) or not 0 < limit <= 1
+            or type(value.get('floor_stop_enabled', True)) is not bool):
+        raise ValueError('invalid_explicit_health_threshold')
     plan = json.loads(Path(value['actor_plan']).read_bytes())
     if plan['run'] != value['run'] or plan['peer'] != value['peer']:
         raise ValueError('watch_actor_run_peer_binding_mismatch')
@@ -45,8 +49,6 @@ def read_config(path: Path) -> dict[str, Any]:
         raise ValueError('watch_actor_job_binding_mismatch')
     if value.get('evaluation_tiers') is not None:
         tiers(value)
-        if value['evaluation_mode'] != 'submit':
-            raise ValueError('RL3_parallel_evaluation_requires_submit_mode')
         from spireagent.workbench.reference_suite import load_manifest
         from stpd.evaluation.suites import RL3_LEARNING_CURVE_SUITE_ID
 
@@ -60,9 +62,11 @@ def read_config(path: Path) -> dict[str, Any]:
 def tiers(config: dict[str, Any]) -> list[dict[str, Any]]:
     values = config.get('evaluation_tiers', [])
     expected = {'quick': (14400, 20), 'milestone': (28800, 100)}
-    if (not isinstance(values, list) or len(values) != 2
-            or {v.get('name') for v in values if isinstance(v, dict)} != set(expected)):
-        raise ValueError('explicit_quick20_milestone100_tiers_required')
+    if (not isinstance(values, list) or not 1 <= len(values) <= 2
+            or {v.get('name') for v in values if isinstance(v, dict)}
+                not in ({'quick'}, set(expected))
+            or len({v.get('name') for v in values if isinstance(v, dict)}) != len(values)):
+        raise ValueError('explicit_quick20_optional_milestone100_tiers_required')
     for value in values:
         if ((value.get('seconds'), value.get('seed_prefix')) != expected[value['name']]
                 or type(value.get('seconds')) is not int
@@ -101,8 +105,9 @@ def stop_reason(now: float, config: dict[str, Any], games: list[dict[str, Any]],
                 event: dict[str, Any] | None, evaluations: list[dict[str, Any]]) -> str | None:
     if now >= config['started_at'] + config['wall_seconds']:
         return 'first_round_wall_limit'
-    if games and sum(g['status'] == 'unknown' for g in games) / len(games) > 0.05:
-        return 'training_unknown_fraction_above_5_percent'
+    limit = config.get('unknown_stop_fraction', 0.05)
+    if games and sum(g['status'] == 'unknown' for g in games) / len(games) > limit:
+        return f'training_unknown_fraction_above_{100 * limit:g}_percent'
     if event:
         if event['kind'] == 'failed':
             return 'learner_failed'
@@ -114,7 +119,8 @@ def stop_reason(now: float, config: dict[str, Any], games: list[dict[str, Any]],
             return 'learner_KL_above_configured_threshold'
     completed = [row for row in evaluations if row['complete']
                  and row.get('evaluation_kind', 'fixed20') == 'fixed20']
-    if (len(completed) >= 2 and all(row['mean_max_floor'] is not None
+    if (config.get('floor_stop_enabled', True) and len(completed) >= 2
+            and all(row['mean_max_floor'] is not None
             and row['mean_max_floor'] < 11.75 for row in completed[-2:])):
         return 'two_evaluations_below_baseline_by_more_than_two_floors'
     return None
@@ -221,6 +227,9 @@ class Watcher:
                            confirmation: bool = False, tier: dict[str, Any] | None = None,
                            due_at: float | None = None):
         kind = tier['name'] if tier else ('confirmation' if confirmation else 'fixed20')
+        if (tier is not None and self.config['evaluation_mode'] == 'direct'
+                and int(os.environ.get('SLURM_CPUS_PER_TASK', '0')) < 4):
+            raise ValueError('direct_RL3_evaluation_requires_four_allocated_CPUs')
         root = self.work / 'evaluations' / f"{kind}-v{model['version']:06d}-{time.time_ns()}"
         root.mkdir(parents=True, mode=0o700)
         package = self.exchange.materialize_model(model, self.work / 'models')
@@ -427,14 +436,15 @@ class Watcher:
 
     def checkpoint_binding(self, checkpoint: dict[str, Any], model: dict[str, Any]) -> dict[str, Any]:
         import torch
-        from stpd.p1.export import load_model
+        from stpd.p1.export import action_weights, load_model
+        from stpd.rl.checkpoint import learner_state
         from stpd.workers.checkpoint_codec import decode_checkpoint
 
         manifest = self.exchange.store.get_manifest(checkpoint['checkpoint_artifact_id'])
         info = manifest.parameters.value()
         raw = b''.join(self.exchange.store.read_payload(manifest.payload('checkpoint')))
         state = decode_checkpoint(raw)
-        learner = json.loads(state['learner'])
+        learner = learner_state(state)
         updates = model['training']['updates']
         model_manifest = self.exchange.store.get_manifest(model['model_artifact_id'])
         if (manifest.kind != 'checkpoint' or info['run'] != self.config['run']
@@ -451,8 +461,9 @@ class Watcher:
         package = self.exchange.materialize_model(model, self.work / 'models')
         weights, _ = load_model(package / 'model.tensor-tree', model['model_sha256'])
         current = weights.state_dict()
-        if (current.keys() != state['weights'].keys()
-                or any(not torch.equal(value, state['weights'][name])
+        action_state = action_weights(state['weights'], value_heads=info['config'].get('critic') is not None)
+        if (current.keys() != action_state.keys()
+                or any(not torch.equal(value, action_state[name])
                        for name, value in current.items())):
             raise ValueError('milestone_checkpoint_model_weights_mismatch')
         return {'checkpoint_artifact_id': manifest.artifact_id,
