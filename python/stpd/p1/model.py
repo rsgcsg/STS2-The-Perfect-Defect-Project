@@ -382,7 +382,25 @@ class MStd(nn.Module):
         values = torch.cat((self.win_head(current), self.progress_head(current)), dim=1)
         return scores, values
 
-    def _forward_batch(self, frames: Sequence[ModelFrame], *, check_finite: bool = True
+    def forward_with_action_features(
+        self, frames: Sequence[ModelFrame], targets: list[int], enemy_positions: list[list[int]],
+        *, check_finite: bool = True,
+    ) -> tuple[list[Tensor], Tensor, tuple[Tensor, list[Tensor]]]:
+        """Training-only current/selected-action readout; no extra forward or RNG."""
+        if (not self.value_heads or len(targets) != len(frames)
+                or len(enemy_positions) != len(frames)):
+            raise ValueError("action_features_require_values_and_aligned_targets")
+        features: list[Tensor] = []
+        enemies: list[Tensor] = []
+        scores, current = self._forward_batch(
+            frames, check_finite=check_finite,
+            selected=(targets, enemy_positions, features, enemies))
+        values = torch.cat((self.win_head(current), self.progress_head(current)), dim=1)
+        return scores, values, (torch.stack(features), enemies)
+
+    def _forward_batch(self, frames: Sequence[ModelFrame], *, check_finite: bool = True,
+                       selected: tuple[list[int], list[list[int]], list[Tensor],
+                                       list[Tensor]] | None = None
                        ) -> tuple[list[Tensor], Tensor]:
         """Independent scenes with full catalogs; padding is never a public input.
 
@@ -486,6 +504,22 @@ class MStd(nn.Module):
         scores = self.head(
             torch.cat((action + read, current[:, None, :].expand(-1, action.shape[1], -1)), -1)
         ).squeeze(-1)
+        if selected is not None:
+            labels, enemy_positions, features, enemies = selected
+            selected_actions = action + read
+            for i, label in enumerate(labels):
+                if not 0 <= label < len(frames[i].choices):
+                    raise ValueError("selected_action_outside_catalog")
+                features.append(torch.cat((current[i], selected_actions[i, label])))
+                frame = frames[i]
+                if not isinstance(frame, Frame):
+                    raise ValueError("next_fact_requires_raw_T2_frames")
+                rows = {node.position: j for j, node in enumerate(frame.entities)
+                        if node.kind == "$.combat.content.enemies[]"}
+                for position in enemy_positions[i]:
+                    if position not in rows:
+                        raise ValueError("next_fact_enemy_node_missing")
+                    enemies.append(scene[i, rows[position]])
         outputs = [scores[i, : len(frame.choices)] for i, frame in enumerate(frames)]
         if any(
             score.shape != (len(frame.choices),)

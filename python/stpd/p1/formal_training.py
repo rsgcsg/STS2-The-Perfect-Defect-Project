@@ -27,6 +27,7 @@ from .execution import MStdExecution, microbatches
 from .export import input_spec
 from .input import Frame
 from .model import MStd
+from .next_fact import NextFactSupervision
 from .numerics import TrainingNumerics, training_scope
 from .optimization import optimizer_update
 from .spec import CHECKPOINT_FRACTIONS, MStdConfig
@@ -69,7 +70,7 @@ class Population(Generic[FrameT]):
 FORMAL_CODE_FILES = ("formal_training.py", "spec.py", "input.py", "model.py", "numerics.py",
                      "execution.py", "optimization.py", "weighting.py", "input_order.py",
                      "vocabulary.py", "public_vocabulary_v1.json", "input_identity.py",
-                     "value_targets.py", "tensor_input.py", "tensor_pack.py")
+                     "value_targets.py", "tensor_input.py", "tensor_pack.py", "next_fact.py")
 
 
 class MStdTrainer:
@@ -83,6 +84,7 @@ class MStdTrainer:
         config: MStdConfig,
         execution: MStdExecution | None = None,
         *, checkpoint_policy: str | None = None,
+        next_facts: NextFactSupervision | None = None,
     ) -> None:
         if set(populations) != {"train", "dev", "test"}:
             raise BoundaryError("p1_training", "partition_inventory_mismatch")
@@ -93,6 +95,9 @@ class MStdTrainer:
             raise BoundaryError("p1_training", "point_leakage_between_partitions")
         self.populations, self.vocabulary, self.config = populations, vocabulary, config
         self.execution = execution or MStdExecution()
+        self.next_facts = next_facts
+        if next_facts is not None and not config.value_heads:
+            raise BoundaryError("p1_training", "next_fact_requires_T2_value_heads")
         if self.execution.cpu_threads != config.cpu_threads:
             raise BoundaryError("p1_training", "formal_recipe_cpu_threads_mismatch")
         from .weighting import CHECKPOINT_POLICY
@@ -124,6 +129,9 @@ class MStdTrainer:
             self.optimizer = torch.optim.AdamW(
                 self.model.parameters(), lr=config.learning_rate, weight_decay=config.weight_decay
             )
+        if next_facts is not None:
+            next_facts.to(self.device)
+            self.optimizer.param_groups[0]["params"].extend(next_facts.parameters())
         self.generator = torch.Generator().manual_seed(config.seed + 1000)
         self.order = torch.randperm(
             len(populations["train"].frames), generator=self.generator
@@ -155,6 +163,7 @@ class MStdTrainer:
             raise BoundaryError("p1_training", "explicit_value_targets_required")
         self.identity = {
             "snapshot_id": snapshot_id,
+            **({"next_fact": next_facts.spec} if next_facts is not None else {}),
             "config": config.to_dict(),
             "architecture": self.model.architecture,
             "input_spec": input_spec(vocabulary),
@@ -251,7 +260,10 @@ class MStdTrainer:
                                   weights=([train.weights[i] for i in indices]
                                            if train.weights else None),
                                   value_targets=([train.values[i] for i in indices]
-                                                if self.config.value_heads else None))
+                                                if self.config.value_heads else None),
+                                  next_facts=(self.next_facts.batch(
+                                      [train.point_ids[i] for i in indices])
+                                      if self.next_facts is not None else None))
         train_seconds = time.perf_counter() - started
         self.step += 1
         self.cursor += len(indices)
@@ -262,6 +274,7 @@ class MStdTrainer:
             "batch_sha256": digest(json_bytes([train.point_ids[i] for i in indices])),
             "mean_N_loss": update["mean_N_loss"],
             **({"auxiliary_loss": update["auxiliary_loss"]} if self.config.value_heads else {}),
+            **({"next_fact_loss": update["next_fact_loss"]} if self.next_facts is not None else {}),
             "lr": lr,
             "gradient_norm": update["gradient_norm"],
         }
@@ -357,6 +370,8 @@ class MStdTrainer:
                 "schema": checkpoint_schema(self.config.value_heads),
                 "identity": self.identity,
                 "model": dict(self.model.state_dict()),
+                **({"next_fact_head": self.next_facts.state_dict()}
+                   if self.next_facts is not None else {}),
                 "optimizer": self.optimizer.state_dict(),
                 "rng": self._numerics.rng,
                 "sampler": {
@@ -387,6 +402,8 @@ class MStdTrainer:
                 or value.get("identity") != self.identity):
             raise BoundaryError("p1_training", "checkpoint_execution_identity_mismatch")
         self.model.load_state_dict(value["model"], strict=True)
+        if self.next_facts is not None:
+            self.next_facts.load_state_dict(value["next_fact_head"], strict=True)
         self.optimizer.load_state_dict(value["optimizer"])
         self._numerics.rng = value["rng"]
         self.generator.set_state(value["sampler"]["generator"])
