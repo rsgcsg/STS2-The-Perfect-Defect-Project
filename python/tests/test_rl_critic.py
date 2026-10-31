@@ -46,6 +46,7 @@ def seed(validation, offset=0):
 
 def controller(config=None):
     torch.set_num_threads(2)
+    torch.manual_seed(37)
     frame = project(observation())
     model = MStd(fit_vocabulary([frame])).eval()
     reference = copy.deepcopy(model)

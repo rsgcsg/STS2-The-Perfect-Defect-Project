@@ -47,7 +47,7 @@ class DecisionLedger:
         if not self.enabled:
             return
         now = time.time()
-        game = next((g for g in record.get("games", ())
+        game: dict[str, Any] = next((g for g in record.get("games", ())
                      if g.get("run_id") == episode["run_id"]), {})
         rows = []
         for step in episode["steps"]:

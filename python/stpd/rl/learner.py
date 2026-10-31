@@ -445,6 +445,8 @@ class Learner:
         if (self.critic is None) != (critic_saved is None):
             raise BoundaryError("rl_critic", "resume_method_mismatch")
         if self.critic is not None:
+            if not isinstance(critic_saved, dict):
+                raise BoundaryError("rl_critic", "checkpoint_metadata_object_required")
             self.critic.restore(critic_saved)
             self.critic_began = time.monotonic()
         self.version_critic_revision = learner.get("version_critic_revision", 0)
@@ -621,13 +623,15 @@ class Learner:
     def _episode_started_at(episode: dict[str, Any], record: dict[str, Any]) -> float:
         games = [g for g in record.get("games", ()) if g.get("run_id") == episode["run_id"]]
         value = games[0].get("started_at") if len(games) == 1 else None
-        if type(value) not in (int, float) or not math.isfinite(value):
+        if (not isinstance(value, (int, float)) or isinstance(value, bool)
+                or not math.isfinite(value)):
             raise BoundaryError("rl_learner", "time_freshness_requires_original_game_start")
         return float(value)
 
     def _episode_stale(self, episode: dict[str, Any], record: dict[str, Any]) -> bool:
         if self.config.max_episode_age_seconds is None:
-            return getattr(self, "version", 0) - record["model_version"] > self.config.max_staleness
+            return bool(getattr(self, "version", 0) - record["model_version"]
+                        > self.config.max_staleness)
         if episode_reward(episode)[0] is None:
             return False  # preserve unknown/censored disposition before time handling
         if self.critic is not None and not self.critic.ready:

@@ -439,6 +439,7 @@ def _ppo_update(
     def statistics(
         group: list[tuple[RlSample, float, float, float, float, float]],
     ) -> dict[str, Any]:
+        acting_values = [value for row in group if (value := row[0].acting_kl) is not None]
         return {
             "rows": len(group),
             "kl": sum(r[2] for r in group) / len(group),
@@ -448,8 +449,8 @@ def _ppo_update(
             "ratio_min": min(r[1] for r in group),
             "ratio_max": max(r[1] for r in group),
             "acting_kl": (
-                sum(r[0].acting_kl for r in group) / len(group)
-                if all(r[0].acting_kl is not None for r in group)
+                sum(acting_values) / len(group)
+                if len(acting_values) == len(group)
                 else None
             ),
         }
@@ -460,6 +461,8 @@ def _ppo_update(
     }
     totals = statistics(rows)
     multi = [r for r in rows if r[5] >= 2]
+    acting_values = sorted(value for sample in samples
+                           if (value := sample.acting_kl) is not None)
     return {
         "phase_seconds": phases,
         "timing_semantics": "host elapsed including device waits",
@@ -482,10 +485,10 @@ def _ppo_update(
         "acting_policy_kl": totals["acting_kl"],
         "acting_kl_quantiles": (
             {
-                str(q): sorted(s.acting_kl for s in samples)[int(q * (len(samples) - 1))]
+                str(q): acting_values[int(q * (len(samples) - 1))]
                 for q in (0, 0.5, 0.9, 0.99, 1)
             }
-            if all(s.acting_kl is not None for s in samples)
+            if len(acting_values) == len(samples)
             else None
         ),
         "value_coef": config.value_coef,
