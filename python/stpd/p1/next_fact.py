@@ -214,6 +214,10 @@ class NextFactSupervision(nn.Module):
         super().__init__()
         self.rows = dict(rows)
         train = [self.rows[key] for key in train_ids]
+        self.numeric = tuple(k for k in NUMERIC if any(k in r["numeric"] for r in train))
+        self.boolean = tuple(k for k in BOOLEAN if any(k in r["boolean"] for r in train))
+        self.enemy = tuple(k for k in ENEMY if any(
+            k in e["facts"] for r in train for e in r["enemies"]))
         self.statistics: dict[str, tuple[float, float]] = {}
         for key in (*NUMERIC, "enemy.hp_delta", "enemy.block"):
             values = (
@@ -231,26 +235,28 @@ class NextFactSupervision(nn.Module):
             self.statistics[key] = (mean, scale if scale > 0 else 1.0)
         self.classes = {
             key: ("<other>", *sorted({r["category"][key] for r in train if key in r["category"]}))
-            for key in CATEGORY
+            for key in CATEGORY if any(key in r["category"] for r in train)
         }
-        size = len(NUMERIC) + len(BOOLEAN) + sum(map(len, self.classes.values()))
+        size = len(self.numeric) + len(self.boolean) + sum(map(len, self.classes.values()))
         # Preserve action-model initialization AND continuing training RNG.
         with torch.random.fork_rng(devices=[]):
             torch.manual_seed(2001)
-            self.global_head = nn.Sequential(nn.Linear(384, 128), nn.GELU(), nn.Linear(128, size))
+            self.global_head = nn.Sequential(nn.Linear(384, 128), nn.GELU(),
+                                             nn.Linear(128, max(1, size)))
             self.enemy_head = nn.Sequential(nn.Linear(577, 128), nn.GELU(), nn.Linear(128, 3))
         self.spec = {
             "schema": "stpd/z-next-fact-a-1",
             "weight": 0.2,
-            "numeric": NUMERIC,
-            "boolean": BOOLEAN,
+            "numeric": self.numeric,
+            "boolean": self.boolean,
+            "enemy": self.enemy,
             "classes": self.classes,
             "statistics": self.statistics,
             "cross_turn": True,
             "rows_sha256": digest(json_bytes(self.rows)),
             "train_ids_sha256": digest(json_bytes(list(train_ids))),
             "enemy_input": "current/action + current enemy scene node + selected target bit",
-            "reduction": ("fixed field mean; valid targets averaged over effective batch"),
+            "reduction": ("TRAIN-supported fixed field mean; valid targets averaged over batch"),
         }
 
     def batch(self, ids: Sequence[str]) -> NextFactBatch:
@@ -267,7 +273,8 @@ class NextFactBatch:
             self.denominators.update(row["category"].keys())
             for enemy in row["enemies"]:
                 self.denominators.update("enemy." + k for k in enemy["facts"])
-        self.fields = len(NUMERIC) + len(BOOLEAN) + len(CATEGORY) + len(ENEMY)
+        self.fields = max(1, len(head.numeric) + len(head.boolean)
+                          + len(head.classes) + len(head.enemy))
 
     def enemy_positions(self, group: list[int]) -> list[list[int]]:
         return [[e["position"] for e in self.rows[i]["enemies"]] for i in group]
@@ -278,7 +285,8 @@ class NextFactBatch:
         prediction = cast(Tensor, head.global_head(features))
         total = prediction.sum() * 0
         column = 0
-        for family, keys in (("numeric", NUMERIC), ("boolean", BOOLEAN), ("category", CATEGORY)):
+        for family, keys in (("numeric", head.numeric), ("boolean", head.boolean),
+                             ("category", tuple(head.classes))):
             for key in keys:
                 width = len(head.classes[key]) if family == "category" else 1
                 selected = [j for j, i in enumerate(group) if key in self.rows[i][family]]
@@ -315,6 +323,8 @@ class NextFactBatch:
             )
             predictions = cast(Tensor, head.enemy_head(source))
             for k, key in enumerate(ENEMY):
+                if key not in head.enemy:
+                    continue
                 selected = [j for j, (_, e) in enumerate(enemy_rows) if key in e["facts"]]
                 if not selected:
                     continue
