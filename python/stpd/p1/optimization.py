@@ -37,6 +37,10 @@ def optimizer_update(
         raise BoundaryError("p1_training", "value_target_protocol_mismatch")
     if value_targets is not None and len(value_targets) != len(frames):
         raise BoundaryError("p1_training", "value_target_length_mismatch")
+    next_requested = next_facts is not None
+    if next_facts is not None and not next_facts.has_targets:
+        # As for wholly masked T2 value heads, no gradient means no AdamW decay.
+        next_facts = None
     # Preserve the original expression and RNG exactly for the all-one control.
     weighted = weights is not None and any(w != 1 for w in weights)
     began = time.perf_counter()
@@ -128,4 +132,4 @@ def optimizer_update(
             **({"auxiliary_loss": sum(float(x) for x in auxiliary_losses)}
                if value_targets is not None else {}),
             **({"next_fact_loss": sum(float(x) for x in next_losses)}
-               if next_facts is not None else {})}
+               if next_requested else {})}

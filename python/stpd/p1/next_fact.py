@@ -275,6 +275,9 @@ class NextFactBatch:
                 self.denominators.update("enemy." + k for k in enemy["facts"])
         self.fields = max(1, len(head.numeric) + len(head.boolean)
                           + len(head.classes) + len(head.enemy))
+        self.has_targets = any(self.denominators[k] for k in (
+            *head.numeric, *head.boolean, *head.classes,
+            *("enemy." + key for key in head.enemy)))
 
     def enemy_positions(self, group: list[int]) -> list[list[int]]:
         return [[e["position"] for e in self.rows[i]["enemies"]] for i in group]
