@@ -6,7 +6,7 @@
 
 ## 当前任务与唯一下一步
 
-本轮以[#340](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/issues/340)及用户v6卡为准，长期语义归[交互规范](../UI_INTERACTION_SPEC.md#current-pre-training-scope)，入口去向归[游戏内指南](../../apps/ingame-ui/README.md)。PR344/345已普通合入develop，最终source ab816a93完整CI绿；Workbench cc39dc7f / UI24 / Mod72 / Runtime60已装并冷加载，实际窗口操作与入库关闭时退出Stop通过（0游戏动作）。保存检查发现旧日常配置指向已不存在的临时Store，报store_not_found；没有入库回读成功，第二部署7462443141如实记failure。**唯一下一步：等待用户选定持久本机库或现有资料库，再经原owner修绑定、保存和回读，成功后通知用户试1–2局。**主对话仍负责，游戏在菜单、未录制、无模型自动走；不重复启动安装或执行unknown请求。诊断GLOBAL类型分歧另记[#346](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/issues/346)，舒适项343与账本300保留；297用途决策已关闭。首包失败、原件、回滚限制与当前准确身份见[STATUS](../STATUS.md)。真人验收仍未完。原[统筹复核](../evidence/COORDINATION_1_20261031.md)保留其他线的历史义务。
+本轮以[#340](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/issues/340)及用户v6卡为准，长期语义归[交互规范](../UI_INTERACTION_SPEC.md#current-pre-training-scope)，入口去向归[游戏内指南](../../apps/ingame-ui/README.md)。PR344/345已普通合入develop，安装source ab816a93完整CI绿；Workbench cc39dc7f / UI24 / Mod72 / Runtime60已装并冷加载，窗口与入库关闭时退出Stop实核通过（0游戏动作）。旧Store绑定缺失后，用户明确选择新建持久本机库；原owner建立并重绑、旧配置保留，无旧数据导入/改写、无云端保存。正式保存按钮成功，原CLI按准确artifact读取0动作/11控制事件索引；Deployment7462443141新增success并保留原failure。**唯一下一步：用户试1–2局覆盖鼠标/排序/模型展示/交替/一步/标记/点错/取消，然后由主对话核对原件与完整入库读回，再决定340收口。**游戏在菜单、未录制、Runtime Human无自动走；不重复安装或执行unknown请求。诊断GLOBAL类型分歧346、舒适项343与账本300保留，297用途决策已关闭。准确身份、失败历史和局部验证边界见[STATUS](../STATUS.md)。原[统筹复核](../evidence/COORDINATION_1_20261031.md)保留其他线的历史义务。
 
 | 对象 | 已知结果 / 剩余 |
 |---|---|
@@ -15,7 +15,7 @@
 | 数据量 / 概率 | 20/41局共同94seed层差+0.81，95%区间[-0.24,+1.95]，分不出来；n10未准入。DEV/TEST NLL翻倍而一选近似不变，先拆分排名/概率诊断，不自动废除留出 |
 | RL2 | v337为2691更新；最新完整CP335为2675更新。12路独立保存12/12、1967518文件核同，旧0/12失败历史保留；不再派补拷 |
 | RL3准备 | PR325/328已交，短链20更新、真实换模和2完整CP通过；不替200步/首小时/长跑学习效果。配置模板未批准，预取默认关 |
-| 录制 | Workbench cc39dc7f / Mod72实际加载和窗口/退出Stop零动作检查已核；Store旧绑定缺失，等用户选去向。用户0局，入库回读/Human资格未通过 |
+| 录制 | Workbench cc39dc7f / Mod72加载、窗口/退出Stop及新持久本机库0动作索引保存回读已核。用户0局；完整对局数据链与Human资格未通过 |
 | 新用法 | 排序对照真实游戏、显示全部P1动作、人排几个并执行第一、可标问题，不需后台模型；交替各段标人或准确模型版本。复用原决策端口/控制/原件，不另起执行链 |
 
 ## Remaining Platform non-claims（运行与证据边界）
