@@ -332,7 +332,7 @@ class NativeWorkbenchApi:
             raise fail("invalid_native_context")
         if page in {"desk", "choices"}:
             desk = self.app.game_desk.choices() if page == "choices" else self.app.game_desk.view()
-            items = (
+            desk_items = (
                 desk.pop("choices", []) if page == "choices" else self.app.game_desk.models_list()
             )
             return {
@@ -346,8 +346,8 @@ class NativeWorkbenchApi:
                 "cards": [
                     {"owner": "game_desk", "schema": "spireagent/game-desk-1", "data": public(desk)}
                 ],
-                "items": [public(item) for item in items],
-                "pagination": {"limit": len(items), "offset": 0, "total": len(items)},
+                "items": [public(item) for item in desk_items],
+                "pagination": {"limit": len(desk_items), "offset": 0, "total": len(desk_items)},
                 "context": {},
             }
         cards: list[dict[str, Any]] = []
