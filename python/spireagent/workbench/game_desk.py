@@ -490,7 +490,8 @@ class GameDeskApplication:
                 # The command already has an accepted owner result. A failed read
                 # cannot turn it into an unknown command or authorize another POST.
                 self.feedback_error = "后台状态暂不可用，没在确认保存；原命令已接受。"
-            return result["status"]
+            status: dict[str, Any] = result["status"]
+            return status
 
     def _close_native(self) -> None:
         owner = self._native_command("close")
