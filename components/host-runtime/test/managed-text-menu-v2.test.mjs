@@ -63,6 +63,7 @@ function controlledDriver(source, { submit = undefined } = {}) {
   const session = {
     get tainted() { return tainted; },
     observe: () => source,
+    async refreshSettling() { return source; },
     async mount() { return source; },
     async submit(request) {
       if (submit === undefined) throw new Error("text selection must not dispatch before play");
