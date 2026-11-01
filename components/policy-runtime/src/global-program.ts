@@ -1,12 +1,12 @@
 import { createHash } from "node:crypto";
-import { P1G_PROFILE, P1G_REVISION, P1G_INTERACTION_REVISION } from "@rsgcsg/sts2-connector-client/p1-global";
+import { P1G_PROFILE, P1G_REVISION, P1G_INTERACTION_REVISION, P1G_SPHERE_REVISION } from "@rsgcsg/sts2-connector-client/p1-global";
 import { AGENT_SESSION_PROTOCOL, AGENT_LIMIT_MAXIMA, DEFAULT_AGENT_TIMEOUT_MS, type AgentManifest, type AgentAdapterIdentity } from "./agent-session-contracts.js";
 import type { GlobalIdentity, GlobalExpectedEnvironment } from "./global-transport.js";
 import { globalDigest } from "./global-transport.js";
 import { p1CoreIdentity } from "./p1-global/core-identity.js";
 
 /** Fixed model-neutral program descriptor, not a learned Input/Target specification. */
-function programInput(revision: typeof P1G_REVISION | typeof P1G_INTERACTION_REVISION) {
+function programInput(revision: typeof P1G_REVISION | typeof P1G_INTERACTION_REVISION | typeof P1G_SPHERE_REVISION) {
   return Object.freeze({ id: "sts2-global-public-program-input", version: "1",
     sha256: globalDigest({ profile: P1G_PROFILE, revision, view: "modelView", catalog: "complete_semantic_choices",
       context: "once_per_semantic_occurrence", state_recovery: "none", models: [] }) });
@@ -16,7 +16,7 @@ export function globalEnvironmentRequirement(identity: GlobalIdentity): GlobalEx
   return { kind: "global-public-basis", host_kind: identity.kind, producer_sha256: globalDigest(identity.producer), game_sha256: globalDigest(identity.game) };
 }
 export function createGlobalProgramManifest(input: { episodeId: string; identity: GlobalIdentity; artifactPath: string; artifactBytes: Uint8Array;
-  adapter: AgentAdapterIdentity; p1Revision?: typeof P1G_REVISION | typeof P1G_INTERACTION_REVISION; manifestId?: string; agentTimeoutMs?: number }): AgentManifest {
+  adapter: AgentAdapterIdentity; p1Revision?: typeof P1G_REVISION | typeof P1G_INTERACTION_REVISION | typeof P1G_SPHERE_REVISION; manifestId?: string; agentTimeoutMs?: number }): AgentManifest {
   const revision = input.p1Revision ?? P1G_REVISION;
   const core = p1CoreIdentity(revision);
   const agentTimeoutMs = input.agentTimeoutMs ?? DEFAULT_AGENT_TIMEOUT_MS;

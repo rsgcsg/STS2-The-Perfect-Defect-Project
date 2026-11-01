@@ -263,3 +263,29 @@ Reads stay frozen to their advertised snapshot. A close interrupting refresh
 rejects publication. New child inputs and native failures stay explicit.
 See the [U1 evidence note](../../../docs/evidence/UNKNOWN_FIX_U1_20261101.md) for
 controlled Knight/Mittens counterexamples and the remaining evidence boundary.
+
+## Explicit r1.9 Crystal Sphere presentation
+
+Host62 exposes the original minigame through its existing public-basis/action
+path. Only the absent native screen is replaced in TestMode. STS2 still places
+items, consumes divinations, clears cells, reveals items and supplies/completes
+rewards. The parent event remains suspended while a board or reward child owns
+input. There is no automatic reward choice.
+
+The approved logical view publishes an item's full rectangle/type only after
+at least one occupied cell is clear. Entirely covered items have no public
+reference or inventory count. Image transparency corners and indistinguishable
+same-kind fragments are deliberately ignored under the user's v3 decision.
+The explicit P1 r1.9 contract and new InputSpec are described in
+[the protocol](../../../docs/protocols/P1_GLOBAL_R1.zh-CN.md) and
+[the model guide](../../../python/docs/P1_T0.md). Old profiles refuse the Sphere
+parent before paying a cost; defaults and running registrations do not migrate.
+
+For a prepared exact candidate, build its `u1-native-tests/U1Native.csproj` and
+run `sphere-empty`, `sphere-visible`, `sphere-reward` and the pending-Curse case.
+Then set `STS2_MANAGED_TEST_CANDIDATE` and run
+`node --test components/host-runtime/test/managed-sphere-public.test.mjs` from
+the repository. The latter uses privileged initial EnterRoom only, followed by
+the production dispatcher/serializer/pipe and current P1 choices through normal
+minigame completion and event Proceed. Reference rendering and whole-game model
+strength are separate; Reference qualification is deferred for this card.

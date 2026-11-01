@@ -561,3 +561,26 @@ ownerless 预览与提交后 owned 牌可能有不同伤害文本，分别如实
 本组合不包含 Crystal Sphere：可见部分图案的忠实表示与 Managed 渲染仍缺实物，见
 [#350](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/issues/350)。当前实际验证级别
 和未完成的 Reference 场景门以 CURRENT 链接的 U1 证据为准，源码实现/构建不替代场景资格。
+
+## r1.9：Managed 水晶球逻辑公开（2026-11-01，用户 v3 已批）
+
+显式 r1.9 继承 r1.8 的审判与 Claws，仍不继承 r1.6/r1.7。默认 r1.5、旧输入和
+历史记录不变。下一轮训练一次性选 r1.9，水晶球完成之前不迁移到 r1.8。
+
+`crystal_sphere` 属于 event 家族。观察包含 11×11 格子的清开状态、已清空格、剩余占卜
+次数和当前工具。仅当物品至少一个占用格已清开时，公开其种类文字、完整矩形位置与
+尺寸、已清开的占用格及是否全部揭示；一格都未清开的物品不分配公开引用，不输出种类、
+位置、库存或剩余物品统计。按用户决定忽略透明图片角落及同种物品局部外观的细小差别。
+此表示依据 §4.1 的逻辑状态原则，不要求像素截图、等价类或渲染器。
+
+每个原生格子和 Small/Big 工具组合对应一个 `event.choose`，subject 为格子、target 为
+工具，标签给出坐标及该公开范围中仍被覆盖的格数。121×2 个候选全部保留：点击已清格
+仍会消耗原生占卜次数，不能按 covered 数量过滤。投递绑定当前 run/room/event/minigame、
+实际原生格子对象及工具；调用原生 SetTool 和 CellClicked，规则、RevealItem、奖励与
+完成逻辑仍在游戏中。原生奖励子选择沿现有奖励/选牌入口交给 Agent，不自动选奖。
+
+工具、格子、可见物品及当前 sphere/event/room 的实体路径只在 r1.9 分配公开别名。
+transport 的 requires_profile_revision 不进入策略视图。新输入为
+`stpd-p1-mstd-input-v2-r19@1`，复用 V2 编码与网络；显式兼容构包保留全部参数、词表和
+tokenizer；正常训练入口接受明确选中的 r19。兼容/有限评分不证明模型已学会新机制。
+本次只实现和验证 Managed；Reference 水晶球读取与场景验证不属于本卡完成条件。

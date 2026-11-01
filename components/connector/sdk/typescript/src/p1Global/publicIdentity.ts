@@ -66,13 +66,16 @@ export function createPublicIdentityPolicy(nativeKind: string,
     card("cards[]"); card("cards[].card"); card("relics[].relic.card_previews[]");
   } else if (nativeKind === "shop_room") add(["room_entity_id", "shop_session_entity_id"]);
   else if (nativeKind === "game_over") add(["other_controls[].entity_id"]);
-  if (revision === "r1.8") {
+  if (["r1.8", "r1.9"].includes(revision)) {
     if (nativeKind === "event_option") {
       add(["abandon_confirmation.event_entity_id", "abandon_confirmation.room_entity_id"]);
       refs(["abandon_confirmation.parent_option_entity_id"]);
     } else if (nativeKind === "abandon_run_confirmation")
       add(["modal_entity_id", "event_entity_id", "room_entity_id", "parent_option_entity_id", "controls[].entity_id"]);
   }
+  if (revision === "r1.9" && nativeKind === "crystal_sphere")
+    add(["sphere_entity_id", "event_entity_id", "room_entity_id", "cells[].entity_id",
+      "visible_items[].entity_id", "tools[].entity_id"]);
   const eventCards = new Set<string>();
   const eventSurface = isObject(sceneContent) && isObject(sceneContent.surface) ? sceneContent.surface : null;
   if (["event_option", "event_dialogue"].includes(nativeKind) && Array.isArray(eventSurface?.options))

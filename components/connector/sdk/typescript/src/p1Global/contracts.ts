@@ -16,7 +16,8 @@ export const P1G_REVISION = "r1.5" as const;
 export const P1G_ORDER_REVISION = "r1.6" as const;
 export const P1G_SETTLED_REVISION = "r1.7" as const;
 export const P1G_INTERACTION_REVISION = "r1.8" as const;
-export type P1Revision = typeof P1G_REVISION | typeof P1G_ORDER_REVISION | typeof P1G_SETTLED_REVISION | typeof P1G_INTERACTION_REVISION;
+export const P1G_SPHERE_REVISION = "r1.9" as const;
+export type P1Revision = typeof P1G_REVISION | typeof P1G_ORDER_REVISION | typeof P1G_SETTLED_REVISION | typeof P1G_INTERACTION_REVISION | typeof P1G_SPHERE_REVISION;
 /** Approved noncombat belt boundary. Other scenes retain their original contract. */
 export const P1G_NONCOMBAT_POTION_SCENES: readonly string[] = Object.freeze([
   "event_option", "event_dialogue", "map_navigation", "rest_site", "shop_room", "shop_inventory",

@@ -85,7 +85,7 @@ export type Commitment = "decline_group" | "consume_group" | "decline_open_group
 
 export interface Lowering {
   /** Private continuation interpretation; absent on frozen revisions. */
-  readonly p1_revision?: "r1.7" | "r1.8";
+  readonly p1_revision?: "r1.7" | "r1.8" | "r1.9";
   /** First native step; null for a pure P1 commitment that performs no native input. */
   readonly first: NativeStep | null;
   /** Offline execution evidence only; never a public dispatch binding. */
@@ -125,7 +125,7 @@ export interface Reduction {
 }
 
 export function createSession(episodeId: string, hostKind: HostKind, revision: P1Observation["revision"] = P1G_REVISION): P1SessionState {
-  if (!["r1.5", "r1.6", "r1.7", "r1.8"].includes(revision)) throw new Error("unsupported_p1_revision");
+  if (!["r1.5", "r1.6", "r1.7", "r1.8", "r1.9"].includes(revision)) throw new Error("unsupported_p1_revision");
   return { revision, episode_id: episodeId, host_kind: hostKind, occurrence: 0, last_snapshot_id: null, last_commitments: null,
     aliases: {}, alias_counts: {}, reward_pages: 0, reward: null };
 }
@@ -137,7 +137,7 @@ const FAMILY: Readonly<Record<string, SceneFamily>> = {
   native_simple_card_selection: "selector", deck_transform_selection: "selector", deck_card_selection: "selector",
   deck_upgrade_selection: "upgrade", deck_enchant_selection: "enchant",
   card_reward_selection: "card_reward", reward_claim: "reward", reward_completion: "reward",
-  map_navigation: "map", event_option: "event", event_dialogue: "event", abandon_run_confirmation: "event",
+  map_navigation: "map", event_option: "event", event_dialogue: "event", abandon_run_confirmation: "event", crystal_sphere: "event",
   shop_inventory: "shop", shop_room: "shop", rest_site: "rest",
   treasure_room: "treasure", treasure_chest: "treasure", treasure_relic_selection: "treasure", treasure_completion: "treasure", relic_choice: "relic_choice", native_boss_relic_selection: "relic_choice",
   tutorial: "other", potion_popup: "other", game_over: "terminal"
@@ -412,11 +412,16 @@ function reduceCatalog(state: P1SessionState, basis: P1Basis, execution?: readon
   const hasAbandonIntention = isObject(expansion) && Object.hasOwn(expansion, "abandon_confirmation");
   const expandedInteraction = hasAbandonIntention || nativeKind === "abandon_run_confirmation"
     || expansion?.selector_request?.transformation_preview !== undefined;
-  if (expandedInteraction && state.revision !== "r1.8"
-      || expansion?.requires_profile_revision !== undefined && expansion.requires_profile_revision !== state.revision)
+  if (expandedInteraction && !["r1.8", "r1.9"].includes(state.revision)
+      || expansion?.requires_profile_revision !== undefined && expansion.requires_profile_revision !== state.revision
+        && !(expansion.requires_profile_revision === "r1.8" && state.revision === "r1.9"))
     missing.push("required:new_interaction_profile_r1.8");
+  if ((nativeKind === "crystal_sphere"
+      || nativeKind === "event_option" && interaction.content?.context?.event_id === "CRYSTAL_SPHERE")
+      && state.revision !== "r1.9")
+    missing.push("required:sphere_profile_r1.9");
   if (nativeKind === "abandon_run_confirmation" && (!completeAbandonConfirmation(expansion)
-      || state.revision !== "r1.8")) missing.push("required:abandon_confirmation_public_facts");
+      || !["r1.8", "r1.9"].includes(state.revision))) missing.push("required:abandon_confirmation_public_facts");
   if (hasAbandonIntention && (nativeKind !== "event_option" || !completeAbandonIntention(expansion.abandon_confirmation)
       || !boundAbandonIntention(expansion, snapshot.bound_actions.actions)))
     missing.push("required:abandon_intention_public_facts_or_binding");
@@ -493,7 +498,7 @@ function reduceCatalog(state: P1SessionState, basis: P1Basis, execution?: readon
   const context: Record<string, any> = isObject(interaction.content.context) ? interaction.content.context : {};
   const rawSurface: Record<string, any> = isObject(interaction.content.surface) ? interaction.content.surface : {};
   // The transport admission tag is validated above; it is not a game fact.
-  const surface = state.revision === "r1.8" && Object.hasOwn(rawSurface, "requires_profile_revision")
+  const surface = ["r1.8", "r1.9"].includes(state.revision) && Object.hasOwn(rawSurface, "requires_profile_revision")
     ? Object.fromEntries(Object.entries(rawSurface).filter(([key]) => key !== "requires_profile_revision")) : rawSurface;
   const nestedCombat = context.kind !== "combat" && isObject(context.combat) && context.combat.kind === "combat"
     ? context.combat as Record<string, any> : null;
@@ -677,7 +682,7 @@ function reduceCatalog(state: P1SessionState, basis: P1Basis, execution?: readon
   const candidates: { choice: Omit<P1Choice, "choice_id">; lowering: Lowering; sort: string }[] = [];
   const declined = new Set(reward?.declined ?? []);
   const excluded: ExcludedNative[] = [];
-  const qualifiedSelector = completeSelectorFacts(surface, state.revision === "r1.8");
+  const qualifiedSelector = completeSelectorFacts(surface, ["r1.8", "r1.9"].includes(state.revision));
   const bundleSelection = nativeKind === "card_bundle_selection" && completeSelector(surface);
   const selectionFamily = !["native_generated_card_choice", "card_bundle_selection"].includes(nativeKind)
     && ["selector", "upgrade", "enchant"].includes(family) && completeSelector(surface);
@@ -738,7 +743,7 @@ function reduceCatalog(state: P1SessionState, basis: P1Basis, execution?: readon
         || operation === "toggle_upgrade_view")) {
       exclude("forward_profile:complete_selector_public_presentations"); continue;
     }
-    if (nativeKind === "abandon_run_confirmation" && state.revision === "r1.8"
+    if (nativeKind === "abandon_run_confirmation" && ["r1.8", "r1.9"].includes(state.revision)
         && completeAbandonConfirmation(surface)) {
       const control = surface.controls.find((value: any) => value.entity_id === subjectId);
       if (control?.semantic_id === "no" && action.verb === "cancel") {
@@ -752,7 +757,7 @@ function reduceCatalog(state: P1SessionState, basis: P1Basis, execution?: readon
     let kind = nonCombatDiscard ? "potion.discard"
       : nonCombatPotionExecution && execution && action.verb === "use" ? "potion.use"
       : KIND_TABLE[`${actionOwnerKind}|${action.verb}|${role}`] ?? FAMILY_VERB[family]?.[action.verb];
-    if (nativeKind === "abandon_run_confirmation" && state.revision === "r1.8"
+    if (nativeKind === "abandon_run_confirmation" && ["r1.8", "r1.9"].includes(state.revision)
         && completeAbandonConfirmation(surface) && action.verb === "confirm"
         && surface.controls.some((value: any) => value.entity_id === subjectId && value.semantic_id === "yes")) kind = "event.choose";
     if (operation) kind = operation === "open_preview" ? `${family}.confirm`
@@ -772,7 +777,7 @@ function reduceCatalog(state: P1SessionState, basis: P1Basis, execution?: readon
     const subjectAlias = subjectId ? aliasFor(work, subjectId) : null;
     const targetAlias = target ? aliasFor(work, target) : null;
     const base = { follow: [] as FollowRule[], commitment: null as Lowering["commitment"], group_key: null as string | null, option_index: null as number | null, option_definition: null as string | null, option_entity: null as string | null, option_public: null as string | null };
-    const abandon = state.revision === "r1.8" && nativeKind === "event_option" && kind === "event.choose"
+    const abandon = ["r1.8", "r1.9"].includes(state.revision) && nativeKind === "event_option" && kind === "event.choose"
       ? abandonIntention(surface.abandon_confirmation, subjectId, basis) : null;
     if (abandon) {
       push({ kind: "event.choose", subject: subjectAlias, target: null,
@@ -830,7 +835,7 @@ function reduceCatalog(state: P1SessionState, basis: P1Basis, execution?: readon
     if (kind === "card_reward.decline" && reward?.open_group) kind = "card_reward.return";
     if (kind === "card_reward.take" && reward?.open_group) { commitment = "consume_open_group"; groupKey = reward.open_group; }
     const follow: FollowRule[] = [];
-    const intention = qualifiedSelector ? selectorIntention(surface, basis, action.verb, subjectId, state.revision === "r1.8") : null;
+    const intention = qualifiedSelector ? selectorIntention(surface, basis, action.verb, subjectId, ["r1.8", "r1.9"].includes(state.revision)) : null;
     if (intention) follow.push({ rule_id: "selector_intention", expect_native_kind: nativeKind,
       expect_verb: "confirm", optional: false });
     const shopLeave = nativeKind === "shop_inventory" && kind === "shop.leave"
@@ -901,8 +906,8 @@ function reduceCatalog(state: P1SessionState, basis: P1Basis, execution?: readon
     aliases: Object.fromEntries(Object.entries(work.aliases).filter(([id]) => !anonymous.has(id))),
     alias_counts: { ...work.counts, a: 0 }, reward_pages: rewardPages, reward
   };
-  if (["r1.7", "r1.8"].includes(state.revision)) for (const item of Object.values(lowering))
-    (item as { p1_revision?: "r1.7" | "r1.8" }).p1_revision = state.revision as "r1.7" | "r1.8";
+  if (["r1.7", "r1.8", "r1.9"].includes(state.revision)) for (const item of Object.values(lowering))
+    (item as { p1_revision?: "r1.7" | "r1.8" | "r1.9" }).p1_revision = state.revision as "r1.7" | "r1.8" | "r1.9";
   const complete = missing.length === 0 || (status === "terminal" && missing.every((item) => item.startsWith("read:")));
   return { state: nextState, observation: { ...observation, envelope: { ...observation.envelope, required_information_complete: complete } },
     lowering, forced_choice_id: forced, excluded, complete, missing,
@@ -978,7 +983,7 @@ export function resolveFollowBasis(rule: FollowRule, lowering: Lowering, basis: 
   // persistent counter against the untouched raw navigation provenance.
   const currentSnapshot = () => lowering.p1_revision === "r1.7"
     ? basis.snapshot as Record<string, any> : decodePlayerSnapshot(basis.snapshot).raw as Record<string, any>;
-  if (rule.rule_id === "abandon_intention" && lowering.p1_revision === "r1.8" && lowering.abandon_intention
+  if (rule.rule_id === "abandon_intention" && ["r1.8", "r1.9"].includes(lowering.p1_revision ?? "") && lowering.abandon_intention
       && !rule.optional && rule.expect_native_kind === "abandon_run_confirmation" && rule.expect_verb === "confirm"
       && matchesAbandonIntention(lowering.abandon_intention, basis)) {
     const snapshot = currentSnapshot();
@@ -1002,7 +1007,7 @@ export function resolveFollowBasis(rule: FollowRule, lowering: Lowering, basis: 
   }
   if (rule.rule_id === "selector_intention" && lowering.selector_intention && !rule.optional
       && rule.expect_native_kind === lowering.selector_intention.native_kind
-      && rule.expect_verb === "confirm" && matchesSelectorIntention(lowering.selector_intention, basis, lowering.p1_revision === "r1.8")) {
+      && rule.expect_verb === "confirm" && matchesSelectorIntention(lowering.selector_intention, basis, ["r1.8", "r1.9"].includes(lowering.p1_revision ?? ""))) {
     const snapshot = currentSnapshot();
     const surface = snapshot.interaction.content.surface;
     const controls = surface.current_controls.filter((c: Record<string, any>) => (c.operation === "confirm" || c.operation === "confirm_selection"));
