@@ -146,9 +146,9 @@ def joint_nodes(frames: list[TensorFrame]) -> JointNodes:
 
 
 def compile_frame(frame: Frame, model: MStd) -> TensorFrame:
-    from .input import V2_INPUT_SPEC
+    from .input import is_v2_encoding
 
-    if model.vocabulary.get("input_spec") != V2_INPUT_SPEC:
+    if not is_v2_encoding(model.vocabulary.get("input_spec")):
         raise ValueError("tensor_input_requires_v2")
     entities = frame.entities
     texts = sorted({text for node in entities for _, text in node.text})

@@ -240,7 +240,7 @@ def _runtime_wire_version(package: dict[str, Any]) -> int:
                    "0.1.0-rc.45", "0.1.0-rc.46", "0.1.0-rc.47", "0.1.0-rc.48", "0.1.0-rc.49",
                    "0.1.0-rc.50", "0.1.0-rc.51", "0.1.0-rc.52", "0.1.0-rc.53",
                    "0.1.0-rc.54", "0.1.0-rc.55", "0.1.0-rc.56", "0.1.0-rc.57",
-                   "0.1.0-rc.58", "0.1.0-rc.59", "0.1.0-rc.60"}:
+                   "0.1.0-rc.58", "0.1.0-rc.59", "0.1.0-rc.60", "0.1.0-rc.61"}:
         return 2
     if version in {f"0.1.0-rc.{revision}" for revision in range(1, 40)}:
         return 1
@@ -2198,7 +2198,7 @@ class LocalModelService:
                 and package.get("version") in {
                     "0.1.0-rc.49", "0.1.0-rc.50", "0.1.0-rc.51", "0.1.0-rc.52",
                     "0.1.0-rc.53", "0.1.0-rc.54", "0.1.0-rc.55", "0.1.0-rc.56",
-                    "0.1.0-rc.57", "0.1.0-rc.58", "0.1.0-rc.59", "0.1.0-rc.60"}):
+                    "0.1.0-rc.57", "0.1.0-rc.58", "0.1.0-rc.59", "0.1.0-rc.60", "0.1.0-rc.61"}):
             command.extend((
                 "--initial-progress-original", initial_progress_original["path"],
                 "--initial-progress-original-sha256", initial_progress_original["sha256"],

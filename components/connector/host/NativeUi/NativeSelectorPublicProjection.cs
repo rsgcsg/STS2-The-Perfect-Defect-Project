@@ -66,6 +66,7 @@ internal static class NativeSelectorPublicProjection
             ["capability_revision"] = NativeSelectorPublicFacts.CapabilityRevision,
             ["missing"] = Strings(missing.Order(StringComparer.Ordinal))
         };
+        if (facts.TransformationPreview != null) publicRequest["transformation_preview"] = facts.TransformationPreview;
         JsonObject? summary = facts.EnchantmentSummary is { } enchantment
             ? new() { ["title"] = enchantment.Title, ["description"] = enchantment.Description, ["amount"] = enchantment.Amount }
             : null;

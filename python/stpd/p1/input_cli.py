@@ -36,6 +36,10 @@ def main() -> None:
     sorted_model.add_argument("--package", type=Path, required=True)
     sorted_model.add_argument("--manifest", type=Path, required=True)
     sorted_model.add_argument("--output", type=Path, required=True)
+    compatible = commands.add_parser(
+        "rebind-r18", help="new r1.8 package; retain all original V2 parameters")
+    compatible.add_argument("--package", type=Path, required=True)
+    compatible.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     if args.command == "request":
         value = request(max_seconds=args.max_seconds, max_epochs=args.max_epochs,
@@ -43,6 +47,12 @@ def main() -> None:
         with args.output.open("xb") as handle:
             handle.write(json_bytes(value))
         print(json.dumps({"request": str(args.output.resolve()), "training_started": False}))
+    elif args.command == "rebind-r18":
+        from .export import compatibility_package
+
+        receipt = compatibility_package(args.package, args.output)
+        print(json.dumps({"package": str(args.output.resolve()), "receipt": receipt,
+                          "activated": False, "game_started": False}))
     else:
         from .export import register
 

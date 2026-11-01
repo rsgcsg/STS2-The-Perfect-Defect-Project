@@ -64,6 +64,7 @@ internal static partial class NativeUiActionRuntime
         INativeUiSurfaceActionAdapter[] adapters =
         {
             Adapter<PotionPopupSurface>("potion_popup", BuildPotionPopupBindings, StartPotionPopupCommand),
+            Adapter<AbandonRunConfirmationSurface>("abandon_run_confirmation", BuildAbandonBindings, StartAbandonCommand),
             Adapter<CombatTurnSurface>("combat_turn", BuildCombatBindings,
                 StartCombatCommand),
             Adapter<ShopRoomSurface>("shop_room", BuildShopRoomBindings,

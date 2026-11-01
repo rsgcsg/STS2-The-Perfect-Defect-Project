@@ -9,7 +9,7 @@ using MegaCrit.Sts2.Core.Models;
 
 namespace STS2Platform.NativeFoundation;
 
-internal enum NativeDetachedPreviewKind { DeckUpgrade, SingleEnchantment }
+internal enum NativeDetachedPreviewKind { DeckUpgrade, SingleEnchantment, DeterministicTransformation }
 
 /// <summary>Process-local presentation only. Original is the game-owned
 /// subject; Display is never added to a scope/pile or used as an input operand.
@@ -21,6 +21,38 @@ internal sealed class NativePreviewReadStateViolationException(string message) :
 
 internal static class NativeDetachedCardPreviewFactory
 {
+    internal static bool TryDeterministicTransform(CardModel original,
+        Func<CardModel, CardTransformation>? projection, out NativeDetachedCardPreview? result, out string? gap)
+    {
+        result = null;
+        if (!NativeCardPreviewReadQualification.TryPreflightDeterministicTransform(original, projection, out gap)) return false;
+        SourceStamp before = SourceStamp.Card(original);
+        SourceStamp canonicalBefore = SourceStamp.Card(ModelDb.Card<MegaCrit.Sts2.Core.Models.Cards.Maul>());
+        try
+        {
+            CardTransformation transformation = projection!(original);
+            before.AssertUnchanged(); canonicalBefore.AssertUnchanged();
+            if (!ReferenceEquals(transformation.Original, original) || transformation.Replacement is not { } display
+                || display.GetType() != typeof(MegaCrit.Sts2.Core.Models.Cards.Maul)
+                || ReferenceEquals(display, original) || !display.IsMutable || display.Owner != null
+                || transformation.ReplacementOptions != null
+                || !NativeCardPreviewReadQualification.TryPreflightDeterministicTransform(original, projection, out gap))
+            { gap ??= "native_deterministic_transform_result_unqualified"; return false; }
+            // NTransformPreview.Initialize renders the replacement using the
+            // ORIGINAL deck card's display pile, including enchantment text.
+            result = new(original, display, NativeDetachedPreviewKind.DeterministicTransformation, PileType.Deck, CardPreviewMode.Normal);
+            gap = null;
+            return true;
+        }
+        catch (NativePreviewReadStateViolationException) { throw; }
+        catch
+        {
+            before.AssertUnchanged(); canonicalBefore.AssertUnchanged();
+            gap = "native_deterministic_transform_preview_failed";
+            return false;
+        }
+    }
+
     internal static bool TryCanonicalHoverCopy(CardModel canonical, out CardModel? copy, out string? gap)
     {
         copy = null;

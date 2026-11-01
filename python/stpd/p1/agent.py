@@ -11,7 +11,7 @@ import torch
 
 from .data import digest
 from .export import adapter_identity, bound_projection, input_spec, load_model
-from .input import INPUT_SPEC, project
+from .input import project
 from .model import MStd
 
 SCHEMA = "sts2.policy-runtime/agent-session-1"
@@ -42,7 +42,7 @@ def installation(
         or manifest.get("input", {}).get("input_spec") != input_spec(model.vocabulary, projection)
         or manifest["input"].get("profile") != "p1-global-r1"
         or not isinstance(manifest["input"].get("global"), dict)
-        or manifest["input"]["global"].get("revision") != INPUT_SPEC["revision"]
+        or manifest["input"]["global"].get("revision") != projection["revision"]
         or manifest["input"].get("state_recovery")
         != {"mode": "none", "max_state_bytes": 0, "model_bindings": []}
         or config["checkpoint_sha256"] != payload["checkpoint_sha256"]
