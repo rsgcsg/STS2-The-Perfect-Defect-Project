@@ -333,6 +333,8 @@ def train(root: Path) -> None:
     from stpd.p1.value_head import AttentionValueResidual
     from stpd.workers.checkpoint_codec import encode_checkpoint
 
+    began = time.monotonic()
+    deadline = began + 5400
     torch.set_num_threads(16)
     torch.manual_seed(20261101)
     features = caches(root, "train")
@@ -364,13 +366,17 @@ def train(root: Path) -> None:
     best, best_epoch, best_weights = math.inf, 0, None
     rng = random.Random(20261101)
     history = []
-    began = time.monotonic()
+    budget_stop = False
+    optimizer_updates = 0
     for epoch in range(1, 21):
         ordered = rows["train"].copy()
         rng.shuffle(ordered)
         train_total = 0.0
         head.train()
         for start in range(0, len(ordered), 256):
+            if time.monotonic() >= deadline:
+                budget_stop = True
+                break
             scene, mask, mean, linear, target = batch(features, ordered[start : start + 256])
             optimizer.zero_grad(set_to_none=True)
             prediction = linear + head(scene, mask, mean)[:, 0]
@@ -380,15 +386,23 @@ def train(root: Path) -> None:
             loss.backward()
             torch.nn.utils.clip_grad_norm_(head.parameters(), 1.0)
             optimizer.step()
+            optimizer_updates += 1
             train_total += float(loss.detach()) * len(mean)
+        if budget_stop:
+            break  # A partial epoch never replaces the best fully validated candidate.
         head.eval()
         dev_total = 0.0
         with torch.no_grad():
             for start in range(0, len(rows["dev"]), 256):
+                if time.monotonic() >= deadline:
+                    budget_stop = True
+                    break
                 scene, mask, mean, linear, target = batch(
                     features, rows["dev"][start : start + 256]
                 )
                 dev_total += float(((linear + head(scene, mask, mean)[:, 0] - target) ** 2).sum())
+        if budget_stop:
+            break
         dev = dev_total / len(rows["dev"])
         if dev < best:
             best, best_epoch, best_weights = dev, epoch, copy.deepcopy(head.state_dict())
@@ -400,8 +414,8 @@ def train(root: Path) -> None:
         }
         history.append(record)
         print(json.dumps(record), flush=True)
-        if time.monotonic() - began >= 5400:
-            break
+    if best_weights is None:
+        raise ValueError("CPU_budget_exhausted_before_one_complete_internal_DEV_epoch")
     (root / "candidate.bin").write_bytes(encode_checkpoint({"weights": best_weights}))
     save(
         root / "candidate.json",
@@ -413,6 +427,10 @@ def train(root: Path) -> None:
             "best_epoch": best_epoch,
             "internal_dev_mse": best,
             "history": history,
+            "budget_stop": budget_stop,
+            "partial_epoch_not_selected": budget_stop,
+            "optimizer_updates_including_partial_epoch": optimizer_updates,
+            "wall_seconds": time.monotonic() - began,
             "train_rows": len(rows["train"]),
             "internal_dev_rows": len(rows["dev"]),
             "lr": 3e-4,
