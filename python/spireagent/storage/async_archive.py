@@ -34,8 +34,8 @@ class Archive:
     def __init__(self, root: Path, target: dict[str, Any]) -> None:
         from .config import open_peer
 
-        self.root, self.binding = root, target
-        self.target = open_peer(target)
+        self.root, self.binding = root, json.loads(json_bytes(target))
+        self.target = open_peer(self.binding)
         self.source = ManifestArtifactStore(LocalBlobStore(root), read_peers=(self.target,))
         self.queue = LocalBlobStore(root / ".archive")
         self.queue.put_if_absent("binding.json", json_bytes({"schema": SCHEMA, "peer": target}))
@@ -43,17 +43,22 @@ class Archive:
         self.thread: threading.Thread | None = None
         self.lock = threading.Lock()
         self.owned: set[str] = set()
+        self.owned_done: set[str] = set()
+        self.verified_at: float | None = None
         self.last_error: dict[str, Any] | None = None
 
     def offer(self, key: str, raw: bytes, *, start: bool = True) -> str:
         safe_key(key)
         digest = hashlib.sha256(raw).hexdigest()
         identity = hashlib.sha256(json_bytes([key, digest])).hexdigest()
-        if not (self.queue.root / "completed" / f"{identity}.json").is_file():
+        completed = (self.queue.root / "completed" / f"{identity}.json").is_file()
+        if not completed:
             self.queue.put_if_absent(f"pending/{identity}.json", json_bytes(
                 {"schema": SCHEMA, "key": key, "sha256": digest}))
         with self.lock:
             self.owned.add(identity)
+            if completed:
+                self.owned_done.add(identity)
             if start and self.thread is None:
                 self.thread = threading.Thread(target=self._loop,
                     name="shared-store-archive", daemon=True)
@@ -125,6 +130,19 @@ class Archive:
                 self.step()
             except Exception as error:  # noqa: BLE001 -- preserve pending, expose classified failure
                 self.last_error = {"error_type": type(error).__name__, "at": time.time()}
+            finally:
+                self._refresh_owned()
+
+    def _refresh_owned(self) -> None:
+        # Other processes can fulfill our intents. Only the background/drain
+        # owner stats still-pending receipts; learner event capture is O(1).
+        with self.lock:
+            pending = self.owned - self.owned_done
+        completed = {i for i in pending
+                     if (self.queue.root / "completed" / f"{i}.json").is_file()}
+        with self.lock:
+            self.owned_done.update(completed)
+            self.verified_at = time.time()
 
     def reconcile(self, run: str | None = None) -> None:
         """Recover publication→intent crash gaps; no gameplay or artifact invention."""
@@ -135,19 +153,23 @@ class Archive:
 
     def status(self, *, owned: bool = False) -> dict[str, Any]:
         with self.lock:
-            identities = set(self.owned) if owned else set()
+            planned, done, verified_at = len(self.owned), len(self.owned_done), self.verified_at
         if not owned:
             identities = {Path(k).stem for k in self.queue.keys("pending/")} | {
                 Path(k).stem for k in self.queue.keys("completed/")}
-        done = sum((self.queue.root / "completed" / f"{i}.json").is_file() for i in identities)
-        return {"schema": SCHEMA, "planned": len(identities), "completed": done,
-                "pending": len(identities) - done, "full_readback": done == len(identities),
+            planned = len(identities)
+            done = sum((self.queue.root / "completed" / f"{i}.json").is_file() for i in identities)
+            verified_at = time.time()
+        return {"schema": SCHEMA, "planned": planned, "completed": done,
+                "pending": planned - done, "full_readback": done == planned,
+                "verified_at": verified_at,
                 "last_error": self.last_error, "archive": self.binding}
 
     def drain(self, *, timeout: float = 120, owned: bool = True) -> dict[str, Any]:
         deadline = time.monotonic() + timeout
         while True:
             self.step()
+            self._refresh_owned()
             status = self.status(owned=owned)
             if status["full_readback"]:
                 return status
