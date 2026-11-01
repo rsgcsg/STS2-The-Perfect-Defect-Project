@@ -13,18 +13,17 @@ import hashlib
 import math
 import random
 from contextlib import nullcontext
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from typing import Any
 
 import torch
 from torch import nn
 
 from spireagent.json_boundary import BoundaryError
-from stpd.p1.execution import microbatches
 from stpd.p1.model import MStd, architecture
 from stpd.p1.tensor_input import ModelFrame
 
-from .performance import PerformanceConfig, prepare_models
+from .performance import PerformanceConfig, grouped_indices, prepare_models
 
 
 @dataclass(frozen=True)
@@ -196,11 +195,12 @@ class CriticEpisode:
     old_probabilities: list[list[float]]
     keys: list[str]
     started_at: float
+    prepared: dict[str, Any] | None = None
 
     def identity(self) -> dict[str, Any]:
         return {
             key: getattr(self, key)
-            for key in ("run_id", "shard", "seed", "reward", "version", "started_at")
+            for key in ("run_id", "shard", "seed", "reward", "version", "started_at", "prepared")
         }
 
 
@@ -267,10 +267,13 @@ class OnlineCritic:
                 name.startswith("progress_head.") if warmup else not name.startswith("win_head.")
             )
 
-    def execution(self) -> Any:
+    def execution(self, *, inference: bool = False) -> Any:
+        config = self.performance
+        if inference and config is not None and config.inference_microbatch_size is not None:
+            config = replace(config, microbatch_size=config.inference_microbatch_size)
         return (
-            prepare_models(self.model, self.reference, self.performance)
-            if self.performance is not None
+            prepare_models(self.model, self.reference, config)
+            if config is not None
             else nullcontext()
         )
 
@@ -289,15 +292,28 @@ class OnlineCritic:
             evicted.append(removed.run_id)
         return evicted
 
+    def _frames(self, episode: CriticEpisode) -> list[ModelFrame]:
+        if self.performance is not None and self.performance.tensor_cache:
+            from stpd.p1.tensor_input import TensorFrame, compile_frame
+
+            with torch.device("cpu"):
+                episode.frames = [frame if isinstance(frame, TensorFrame)
+                                  else compile_frame(frame, self.reference)
+                                  for frame in episode.frames]
+        return episode.frames
+
     def evaluate(self, episode: CriticEpisode) -> tuple[list[float], list[float], list[float]]:
-        values = [0.0] * len(episode.frames)
+        frames = self._frames(episode)
+        values = [0.0] * len(frames)
+        self.last_evaluation_microbatches: list[int] = []
         ratios = [0.0] * len(episode.frames)
         acting_kl = [0.0] * len(episode.frames)
         self.model.eval()  # actor-mode distributions; gradients are enabled only in update
-        with self.execution(), torch.no_grad():
-            for indices in microbatches(episode.frames, list(range(len(values))), self.model):
+        with self.execution(inference=True), torch.no_grad():
+            for indices in grouped_indices(frames, self.model, self.performance):
+                self.last_evaluation_microbatches.append(len(indices))
                 scores, predicted = self.model.forward_with_values(
-                    [episode.frames[i] for i in indices]
+                    [frames[i] for i in indices]
                 )
                 logits = nn.utils.rnn.pad_sequence(
                     [score.float() for score in scores], batch_first=True,
@@ -326,11 +342,12 @@ class OnlineCritic:
         return values, ratios, acting_kl
 
     def values(self, episode: CriticEpisode) -> list[float]:
-        output = [0.0] * len(episode.frames)
+        frames = self._frames(episode)
+        output = [0.0] * len(frames)
         self.model.eval()
-        with self.execution(), torch.no_grad():
-            for indices in microbatches(episode.frames, list(range(len(output))), self.model):
-                predictions = self.model.forward_values([episode.frames[i] for i in indices])
+        with self.execution(inference=True), torch.no_grad():
+            for indices in grouped_indices(frames, self.model, self.performance):
+                predictions = self.model.forward_values([frames[i] for i in indices])
                 for i, value in zip(indices, predictions[:, 1].cpu().tolist(), strict=True):
                     output[i] = value
         if not all(math.isfinite(v) for v in output):
@@ -345,7 +362,7 @@ class OnlineCritic:
             for e in self.episodes
             if not held_out(e.seed)
             for frame, target, key in zip(
-                e.frames,
+                self._frames(e),
                 terminal_targets(e.reward, len(e.frames), self.config.gamma),
                 e.keys,
                 strict=True,
@@ -362,7 +379,7 @@ class OnlineCritic:
         self.model.eval()
         total = 0.0
         with self.execution():
-            for indices in microbatches(frames, list(range(len(frames))), self.model):
+            for indices in grouped_indices(frames, self.model, self.performance):
                 _, prediction = self.model.forward_with_values([frames[i] for i in indices])
                 target = prediction.new_tensor([batch[i][1] for i in indices])
                 loss = (((prediction[:, 1].float() - target) / scale) ** 2).sum() / len(batch)

@@ -112,6 +112,8 @@ class LearnerConfig:
     read_retry_seconds: float = 1.0
     clock_offset_bound_seconds: float | None = None
     decision_ledger: bool = True
+    # Off by default. Runtime control may enable detached episode targets at an update boundary.
+    prepared_targets: bool = False
     initial_policy_check: bool = False
     loss: LossConfig = field(default_factory=LossConfig)
     # Omitted means the exact legacy update path, not an implicit new plan.
@@ -190,6 +192,11 @@ class Learner:
             raise BoundaryError("rl_learner", "PPO_requires_explicit_critic_and_loss_mode")
         if config.critic is not None and config.loss.value_coef <= 0:
             raise BoundaryError("rl_learner", "PPO_requires_positive_value_loss")
+        if (type(config.prepared_targets) is not bool or
+                (config.prepared_targets and (config.critic is None or config.max_reuse > 2
+                 or config.max_episode_age_seconds is None))):
+            raise BoundaryError("rl_learner", "prepared_targets_require_PPO_two_uses_and_age")
+        self.runtime_control: dict[str, Any] = {"sequence": 0, "sha256": None}
         self.checkpoint_schema = PPO_SCHEMA if config.critic is not None else CHECKPOINT_SCHEMA
         for value in (config.max_episode_age_seconds, config.publish_interval_seconds):
             if value is not None and (type(value) not in (int, float)
@@ -321,12 +328,44 @@ class Learner:
         self.checkpoints = CheckpointPublisher(self.exchange.store, self.producer,
                                                background=True)
         self.version = self._initial_version()
+        if (self.critic is not None and self.config.performance is not None
+                and self.config.performance.probe_inference_microbatches):
+            self._probe_inference_microbatches()
         self.resume_republish_pending = bool(
             config.resume_checkpoint and config.republish_on_resume)
         if self.resume_republish_pending:
             self.maybe_version(force=True)
             self._collect_version(wait=True)
             self._take_checkpoint(wait=True)
+
+    def _probe_inference_microbatches(self) -> None:
+        from .performance import probe_inference_microbatches
+
+        assert self.critic is not None and self.config.performance is not None
+        began = time.monotonic()
+        points = [(key, frame) for episode in self.critic.episodes
+                  for key, frame in zip(episode.keys, self.critic._frames(episode), strict=True)]
+        if not points:
+            raise BoundaryError("rl_performance", "restored_frames_required_for_inference_probe")
+        points.sort(key=lambda item: item[1].entity_count if isinstance(item[1], TensorFrame)
+                    else len(item[1].entities))
+        count = min(128, len(points))
+        selected = [points[round(i * (len(points) - 1) / max(1, count - 1))]
+                    for i in range(count)]
+        baseline = PerformanceConfig(**(getattr(self, "resume_performance", None) or
+            {"packed": True, "tensor_cache": True, "precompile_inputs": True}))
+        result = probe_inference_microbatches(self.model, self.reference,
+            [frame for _, frame in selected], self.config.performance, baseline)
+        performance = replace(self.config.performance, inference_microbatch_size=cast(
+            int, result["selected_microbatch_size"]))
+        self.config = replace(self.config, performance=performance)
+        self.critic.performance = performance
+        self.critic.revision += 1
+        result.update(at=time.time(), frame_keys=[key for key, _ in selected],
+                      policy_updates=self.updates, source=self.producer.to_dict())
+        (self.work / "inference-microbatch-probe.json").write_bytes(json_bytes(result))
+        self.timer.add("inference_microbatch_probe", began)
+        self._event("inference_microbatch_selected", **result)
 
     # Setup ------------------------------------------------------------
     def _anchor(self) -> list[tuple[Any, int]]:
@@ -417,7 +456,9 @@ class Learner:
                    "returns": list(self.returns), "seen": sorted(self.seen),
                    "buffer": buffer, "random": [state[0], list(state[1]), state[2]],
                    "seen_episodes": self.seen_episodes,
-                   "decision_ledger": self.ledger.state()}
+                   "decision_ledger": self.ledger.state(),
+                   "runtime_control": {**self.runtime_control,
+                                       "prepared_targets": self.config.prepared_targets}}
         if self.critic is not None:
             self.critic.elapsed_seconds += time.monotonic() - self.critic_began
             self.critic_began = time.monotonic()
@@ -436,6 +477,7 @@ class Learner:
         began = time.monotonic()
         manifest = self.exchange.store.get_manifest(artifact_id)
         info = manifest.parameters.value()
+        self.resume_performance = info.get("config", {}).get("performance")
         migration = (manifest.producer != self.producer and self.config.resume_source is not None
                      and manifest.producer.to_dict() == self.config.resume_source)
         if (manifest.kind != "checkpoint" or info.get("schema") != self.checkpoint_schema
@@ -450,6 +492,17 @@ class Learner:
         if (state.get("schema") != self.checkpoint_schema or learner["run"] != self.config.run
                 or learner["version"] != info["version"] or learner["version"] > latest):
             raise BoundaryError("rl_learner", "resume_checkpoint_state_mismatch")
+        control = learner.get("runtime_control")
+        if control is not None:
+            if (not isinstance(control, dict) or type(control.get("sequence")) is not int
+                    or control["sequence"] < 0 or type(control.get("prepared_targets")) is not bool
+                    or (control["sequence"] > 0 and
+                        (not isinstance(control.get("sha256"), str)
+                         or len(control["sha256"]) != 64))):
+                raise BoundaryError("rl_learner", "invalid_checkpoint_runtime_control")
+            self.runtime_control = {k: control[k] for k in ("sequence", "sha256")}
+            self.config = replace(self.config, prepared_targets=control["prepared_targets"])
+            self._validate_prepared_mode(control["prepared_targets"])
         self.model.load_state_dict(state["weights"])
         restore_optimizer(self.optimizer, self.model, state["optimizer"], migrate=migration)
         critic_saved = learner.get("critic")
@@ -749,7 +802,7 @@ class Learner:
                 self.buffer = kept
                 current_episode = self.critic.episodes[-1]
                 began = time.monotonic()
-                _, ratios, acting_kl = self.critic.evaluate(current_episode)
+                values, ratios, acting_kl = self.critic.evaluate(current_episode)
                 self.counts["arrival_policy_drift_microseconds"] += int(
                     (time.monotonic() - began) * 1000000)
                 self.ledger.write("arrival_policy_drift", run_id=run_id,
@@ -768,7 +821,9 @@ class Learner:
                     self.ledger.episode("rejected", episode, record,
                                         reason="critic_warmup_only", reward=reward)
                     continue
-                advantage = 0.0  # replaced with the CURRENT head immediately before every update
+                if self.config.prepared_targets:
+                    self._prepare_targets(current_episode, (values, ratios, acting_kl))
+                advantage = 0.0  # selected preparation method supplies detached GAE
             self.ledger.episode("admitted", episode, record, reward=reward, advantage=advantage)
             if self.config.initial_policy_check and self.updates == 0:
                 for step in episode["steps"]:
@@ -930,33 +985,121 @@ class Learner:
                 groups[name] = rows[take:]
         return batch
 
+    def _validate_prepared_mode(self, enabled: bool) -> None:
+        if enabled and (self.critic is None or self.config.max_reuse > 2
+                        or self.config.max_episode_age_seconds is None):
+            raise BoundaryError("rl_learner", "prepared_targets_require_PPO_two_uses_and_age")
+
+    def _apply_runtime_control(self) -> None:
+        """One atomic local command, consumed between successful optimizer updates.
+
+        The checkpoint owns the accepted sequence and effective mode on resume.
+        This changes target preparation, never episode age, data use or reward.
+        """
+        path = self.work / "runtime-control.json"
+        if not path.exists():
+            return
+        raw = path.read_bytes()
+        control = json.loads(raw)
+        if (not isinstance(control, dict)
+                or set(control) != {"schema", "sequence", "prepared_targets"}
+                or control["schema"] != "stpd/rl-runtime-control-1"
+                or type(control["sequence"]) is not int or control["sequence"] < 1
+                or type(control["prepared_targets"]) is not bool):
+            raise BoundaryError("rl_learner", "invalid_runtime_control")
+        sequence = self.runtime_control["sequence"]
+        digest = hashlib.sha256(raw).hexdigest()
+        if control["sequence"] <= sequence:
+            if control["sequence"] == sequence and digest != self.runtime_control["sha256"]:
+                raise BoundaryError("rl_learner", "runtime_control_sequence_content_changed")
+            return
+        if control["sequence"] != sequence + 1:
+            raise BoundaryError("rl_learner", "runtime_control_sequence_gap")
+        enabled = control["prepared_targets"]
+        self._validate_prepared_mode(enabled)
+        previous = self.config.prepared_targets
+        self.config = replace(self.config, prepared_targets=enabled)
+        self.runtime_control = {"sequence": control["sequence"], "sha256": digest}
+        if self.critic is not None:
+            self.critic.revision += 1
+        self._event("runtime_control_applied", sequence=control["sequence"],
+                    command_sha256=digest, prepared_targets=enabled, previous=previous,
+                    policy_update=self.updates, method="admission-v1" if enabled else "per-update")
+
+    def _prepare_targets(self, episode: CriticEpisode,
+                         evaluated: tuple[list[float], list[float], list[float]] | None = None
+                         ) -> dict[str, Any]:
+        """One raw whole-episode V-trace/GAE estimate, at most two successful uses.
+
+        This opt-in async admission method is distinct from per-update estimation.
+        Preparation/restart never extends the original game's freshness deadline.
+        """
+        assert self.critic is not None
+        config = self.critic.config
+        binding = {"method": "admission-v1", "gamma": config.gamma,
+            "lambda": config.gae_lambda, "reward": episode.reward, "reward_spec": REWARD_SPEC,
+            "control_sequence": self.runtime_control["sequence"],
+            "keys_sha256": hashlib.sha256(json_bytes(episode.keys)).hexdigest()}
+        saved = episode.prepared
+        if saved is not None and saved["binding"] == binding:
+            for name in ("values", "ratios", "advantages", "targets"):
+                array = saved.get(name)
+                if (not isinstance(array, list) or len(array) != len(episode.keys)
+                        or not all(type(v) in (int, float) and math.isfinite(v) for v in array)
+                        or (name == "ratios" and any(v <= 0 for v in array))):
+                    raise BoundaryError("rl_critic", "invalid_prepared_targets")
+            return saved
+        if saved is not None:
+            self.ledger.write("critic_preparation_invalidated", run_id=episode.run_id,
+                              previous=saved["binding"], current=binding)
+        values, ratios, acting_kl = evaluated or self.critic.evaluate(episode)
+        advantages, targets = trace_gae(episode.reward, values, ratios,
+                                        config.gamma, config.gae_lambda)
+        metadata = {"binding": binding, "policy_update": self.updates,
+                    "critic_update": self.critic.updates, "prepared_at": time.time(),
+                    "source": self.producer.to_dict()}
+        episode.prepared = {**metadata, "values": values, "ratios": ratios,
+                            "advantages": advantages, "targets": targets}
+        self.ledger.write("critic_prediction", run_id=episode.run_id, ids=episode.keys,
+            values=values, targets=targets, advantages=advantages, ratios=ratios,
+            acting_kl=acting_kl, critic_updates=self.critic.updates, policy_update=self.updates,
+            ready=True, preparation=metadata, acting_kl_scope="preparation_only")
+        return episode.prepared
+
     def _fresh_ppo_samples(self, batch: list[Buffered]) -> list[RlSample]:
         assert self.critic is not None
         began = time.monotonic()
         names = {item.sample.key.rsplit(":", 1)[0] for item in batch}
-        estimates: dict[str, tuple[float, float, float]] = {}
+        estimates: dict[str, tuple[float, float, list[float]]] = {}
         for episode in self.critic.episodes:
             if episode.run_id not in names:
                 continue
-            values, ratios, acting_kl = self.critic.evaluate(episode)
-            advantages, targets = trace_gae(episode.reward, values, ratios,
-                self.critic.config.gamma, self.critic.config.gae_lambda)
+            if self.config.prepared_targets:
+                prepared = self._prepare_targets(episode)
+                advantages, targets = prepared["advantages"], prepared["targets"]
+            else:
+                values, ratios, acting_kl = self.critic.evaluate(episode)
+                advantages, targets = trace_gae(episode.reward, values, ratios,
+                    self.critic.config.gamma, self.critic.config.gae_lambda)
+                self.ledger.write("critic_prediction", run_id=episode.run_id, ids=episode.keys,
+                    values=values, targets=targets, advantages=advantages, ratios=ratios,
+                    acting_kl=acting_kl,
+                    execution_microbatch_sizes=self.critic.last_evaluation_microbatches,
+                    critic_updates=self.critic.updates, policy_update=self.updates, ready=True)
             estimates.update(zip(episode.keys,
-                zip(advantages, targets, acting_kl, strict=True), strict=True))
-            self.ledger.write("critic_prediction", run_id=episode.run_id, ids=episode.keys,
-                values=values, targets=targets, advantages=advantages, ratios=ratios,
-                acting_kl=acting_kl,
-                critic_updates=self.critic.updates, policy_update=self.updates, ready=True)
+                zip(advantages, targets, episode.old_probabilities, strict=True), strict=True))
         self.last_raw_advantages = [estimates[item.sample.key][0] for item in batch]
         samples = [replace(item.sample, advantage=estimates[item.sample.key][0],
-                           value_target=estimates[item.sample.key][1],
-                           acting_kl=estimates[item.sample.key][2]) for item in batch]
+                           value_target=estimates[item.sample.key][1], acting_kl=None,
+                           behavior_probabilities=estimates[item.sample.key][2]) for item in batch]
         mean = sum(s.advantage for s in samples) / len(samples)
         spread = math.sqrt(sum((s.advantage - mean) ** 2 for s in samples) / len(samples))
-        self.timer.add("current_value_and_advantage", began)
+        self.timer.add("prepared_targets" if self.config.prepared_targets
+                       else "current_value_and_advantage", began)
         return [replace(s, advantage=(s.advantage - mean) / max(spread, 1e-8)) for s in samples]
 
     def train_once(self) -> dict[str, Any] | None:
+        self._apply_runtime_control()
         ready = self._critic_step()
         self.policy_train_began = time.monotonic()
         if not ready:
@@ -1011,7 +1154,9 @@ class Learner:
         if self.critic is not None:
             self.critic.updates += 1
             self.critic.revision += 1
-            result.update(raw_advantage_min=min(self.last_raw_advantages),
+            result.update(target_preparation=("admission-v1" if self.config.prepared_targets
+                                              else "per-update"),
+                          raw_advantage_min=min(self.last_raw_advantages),
                           value_target_std=scale,
                           value_head_lr=self.critic.config.head_lr or self.config.lr,
                           raw_advantage_max=max(self.last_raw_advantages),

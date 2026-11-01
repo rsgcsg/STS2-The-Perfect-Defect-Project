@@ -267,12 +267,15 @@ def test_learner_warmup_only_CP_FIFO_and_next_head_update_restore(tmp_path, monk
     successor.run()
 
 
-def test_resume_preserves_original_episode_age_and_retires_expired_buffer(tmp_path, monkeypatch):
+@pytest.mark.parametrize("prepared_targets", [False, True])
+def test_resume_preserves_original_episode_age_and_retires_expired_buffer(
+        tmp_path, monkeypatch, prepared_targets):
     from spireagent.workbench.rl_learner import IO
     from stpd.rl import learner as module
     from stpd.rl.learner import Learner
 
-    first, _ = _configured(tmp_path, monkeypatch)
+    first, _ = _configured(tmp_path, monkeypatch, max_reuse=2,
+                            prepared_targets=prepared_targets)
     first.critic.ready = True
     first.critic.freeze_policy(False)
     row = _incoming(first, "ready", "shard")
@@ -513,3 +516,130 @@ def test_vectorized_acting_KL_keeps_ragged_padding_and_real_zero_mass_distinct()
     e.old_probabilities[1] = [0.0, 1.0]
     with pytest.raises(BoundaryError, match='non_finite_prediction_or_ratio'):
         critic.evaluate(e)
+
+
+def test_prepared_targets_live_control_is_default_off_and_binds_actual_estimator(
+        tmp_path, monkeypatch):
+    from unittest.mock import Mock
+
+    learner, _ = _configured(tmp_path, monkeypatch, max_reuse=2)
+    assert learner.config.prepared_targets is False
+    learner.critic.ready = True
+    learner.critic.freeze_policy(False)
+    row = _incoming(learner, "ready", "shard")
+    learner._admit([row])
+    learner.critic.evaluate = Mock(wraps=learner.critic.evaluate)
+    learner._fresh_ppo_samples(learner.buffer)
+    learner._fresh_ppo_samples(learner.buffer)
+    assert learner.critic.evaluate.call_count == 2
+    path = learner.work / "runtime-control.json"
+    path.write_text(json.dumps({"schema": "stpd/rl-runtime-control-1", "sequence": 1,
+                                "prepared_targets": True}))
+    learner._apply_runtime_control()
+    learner._apply_runtime_control()  # unchanged command is idempotent
+    first = learner._fresh_ppo_samples(learner.buffer)
+    prepared = copy.deepcopy(learner.critic.episodes[-1].prepared)
+    assert prepared["policy_update"] == learner.updates
+    assert prepared["critic_update"] == learner.critic.updates
+    assert prepared["binding"]["control_sequence"] == 1
+    assert prepared["source"] == learner.producer.to_dict()
+    with torch.no_grad():
+        learner.model.progress_head.bias.add_(.1)
+    again = learner._fresh_ppo_samples(learner.buffer)
+    assert [s.value_target for s in first] == [s.value_target for s in again]
+    assert learner.critic.episodes[-1].prepared == prepared
+    assert learner.critic.evaluate.call_count == 3
+    assert all(s.behavior_probabilities is not None and s.acting_kl is None for s in again)
+    assert learner.buffer[0].uses == learner.updates == 0
+    learner.critic.config = replace(learner.critic.config, gae_lambda=.9)
+    learner._fresh_ppo_samples(learner.buffer)
+    assert learner.critic.evaluate.call_count == 4  # changed lambda invalidates, never relabels
+    assert learner.critic.episodes[-1].prepared["binding"]["lambda"] == .9
+    learner.critic.config = replace(learner.critic.config, gae_lambda=.95)
+    path.write_text(json.dumps({"schema": "stpd/rl-runtime-control-1", "sequence": 2,
+                                "prepared_targets": False}))
+    learner._apply_runtime_control()
+    learner._fresh_ppo_samples(learner.buffer)
+    assert learner.critic.evaluate.call_count == 5
+    with pytest.raises(BoundaryError, match="sequence_content_changed"):
+        path.write_text(json.dumps({"schema": "stpd/rl-runtime-control-1", "sequence": 2,
+                                    "prepared_targets": True}))
+        learner._apply_runtime_control()
+    path.unlink()
+    learner.exchange.request_stop("test_completed")
+    learner.run()
+
+
+def test_prepared_targets_CP_preserves_values_uses_control_and_next_successful_step(
+        tmp_path, monkeypatch):
+    from unittest.mock import Mock
+
+    from spireagent.workbench.rl_learner import IO
+    from stpd.rl.learner import Learner
+
+    first, _ = _configured(tmp_path, monkeypatch, max_reuse=2)
+    first.critic.ready = True
+    first.critic.freeze_policy(False)
+    (first.work / "runtime-control.json").write_text(json.dumps({
+        "schema": "stpd/rl-runtime-control-1", "sequence": 1, "prepared_targets": True}))
+    first._apply_runtime_control()
+    row = _incoming(first, "ready", "shard")
+    first._admit([row])
+    assert first.train_once()["target_preparation"] == "admission-v1"
+    assert first.buffer[0].uses == 1
+    cached = copy.deepcopy(first.critic.episodes[-1].prepared)
+    monkeypatch.setattr(Learner, "_read_once", lambda *_a, **_k: [copy.deepcopy(row)])
+    first.exchange.request_stop("test_completed")
+    first.run()
+    cp = first.exchange.latest_checkpoint()
+    second = Learner(replace(first.config, resume_checkpoint=cp["checkpoint_artifact_id"],
+                             prepared_targets=False), tmp_path / "next", IO)
+    assert second.config.prepared_targets is True  # CP owns the effective accepted mode
+    assert second.runtime_control == first.runtime_control
+    assert second.critic.episodes[-1].prepared == cached
+    assert second.buffer[0].uses == 1
+    assert second.buffer[0].episode_started_at == first.buffer[0].episode_started_at
+    second.critic.evaluate = Mock(wraps=second.critic.evaluate)
+    result = second.train_once()
+    assert result["update"] == 2 and second.buffer[0].uses == 2
+    assert result["acting_kl_measurement"] == "full_catalog_pre_optimizer_forward"
+    assert second.critic.evaluate.call_count == 0  # selected episode survives CP exactly
+    assert second.critic.episodes[-1].prepared == cached
+    assert second.usable() == []
+    second.run()
+
+
+def test_loss_recomputes_full_acting_KL_with_cached_targets_and_rejects_true_zero():
+    critic, frame = controller()
+    critic.freeze_policy(False)
+    model, reference = critic.model, critic.reference
+    with torch.no_grad():
+        logits = model.forward_batch([frame])[0]
+        old = logits.softmax(-1).double().tolist()
+    original = model.forward_with_values
+
+    def changed(frames, **kwargs):
+        scores, values = original(frames, **kwargs)
+        return [s + s.new_tensor([.4, -.4]) for s in scores], values
+
+    model.forward_with_values = changed
+    sample = RlSample(frame, 0, old[0], old[0], 1, 0, "cache:0", value_target=.1,
+                      acting_kl=0, behavior_probabilities=old)
+    optimizer = torch.optim.SGD(model.parameters(), lr=0)
+    result = rl_update(model, reference, optimizer, [sample], [], 0,
+                       LossConfig(mode="ppo", value_coef=.001))
+    expected_logs = (logits + logits.new_tensor([.4, -.4])).log_softmax(-1).double()
+    expected = float((expected_logs.exp() * (
+        expected_logs - torch.tensor(old).double().log())).sum())
+    assert result["acting_policy_kl"] == pytest.approx(expected, abs=1e-7)
+    assert result["acting_policy_kl"] > .01
+    assert result["mean_ratio"] == pytest.approx(float(expected_logs[0].exp()) / old[0], rel=1e-6)
+    before = copy.deepcopy(model.state_dict())
+    adam = torch.optim.AdamW(model.parameters(), lr=.01)
+    with pytest.raises(BoundaryError):
+        rl_update(model, reference, adam,
+                  [replace(sample, behavior_probability=1, old_probability=1,
+                            behavior_probabilities=[1., 0.])], [], .01,
+                  LossConfig(mode="ppo", value_coef=.001))
+    assert not adam.state
+    assert all(torch.equal(before[k], v) for k, v in model.state_dict().items())

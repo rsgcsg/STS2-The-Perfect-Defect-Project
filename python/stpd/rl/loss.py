@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import math
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 
 import torch
@@ -41,6 +41,7 @@ class RlSample:
     action_kind: str = "unknown"
     acting_kl: float | None = None
     value_scale: float = 1.0
+    behavior_probabilities: list[float] | None = None
 
 
 @dataclass(frozen=True)
@@ -69,20 +70,24 @@ def _scores(model: MStd, frames: list[ModelFrame]) -> torch.Tensor:
 
 def _reference(reference: MStd, batch: list[RlSample],
                cache: dict[str, torch.Tensor] | None, width: int,
-               device: torch.device) -> torch.Tensor:
+               device: torch.device, *, resident: bool = False,
+               defer_sync: bool = False) -> torch.Tensor:
     missing = [s for s in batch if cache is None or s.key not in cache]
     computed: dict[str, torch.Tensor] = {}
     if missing:
         with torch.no_grad():
-            scores = reference.forward_batch([s.frame for s in missing])
+            scores = reference.forward_batch([s.frame for s in missing],
+                                             check_finite=not defer_sync)
         for sample, value in zip(missing, scores, strict=True):
-            computed[sample.key] = F.log_softmax(value.detach(), dim=-1).cpu()
+            row = F.log_softmax(value.detach().float(), dim=-1)
+            computed[sample.key] = row if resident else row.cpu()
         if cache is not None:
             cache.update(computed)
     rows = [(computed if cache is None else cache)[s.key] for s in batch]
-    padded = torch.full((len(batch), width), -torch.inf)
+    target = device if resident else torch.device("cpu")
+    padded = torch.full((len(batch), width), -torch.inf, device=target)
     for index, row in enumerate(rows):
-        padded[index, :row.shape[0]] = row
+        padded[index, :row.shape[0]] = row.to(target)
     return padded.to(device)
 
 
@@ -131,7 +136,7 @@ def rl_update(model: MStd, reference: MStd, optimizer: torch.optim.Optimizer,
 
             with prepare_models(model, reference, performance):
                 return _ppo_update(model, reference, optimizer, samples, learning_rate,
-                                   config, reference_cache)
+                                   config, reference_cache, performance, frame_cache)
         return _ppo_update(model, reference, optimizer, samples, learning_rate,
                            config, reference_cache)
     if performance is not None:
@@ -353,6 +358,8 @@ def _ppo_update(
     learning_rate: float,
     config: LossConfig,
     reference_cache: dict[str, torch.Tensor] | None,
+    performance: PerformanceConfig | None = None,
+    frame_cache: dict[object, TensorFrame] | None = None,
 ) -> dict[str, Any]:
     """Clipped PPO + unweighted value MSE - entropy, one shared encoder forward.
 
@@ -371,7 +378,26 @@ def _ppo_update(
     optimizer.zero_grad(set_to_none=True)
     model.eval()
     device = model.ids.weight.device
+    if performance is not None and performance.tensor_cache:
+        from stpd.p1.tensor_input import TensorFrame, compile_frame
+
+        from .performance import cache_on_device
+
+        cache = frame_cache if frame_cache is not None else {}
+        prepared = []
+        for sample in samples:
+            key = ("rl", sample.key)
+            if key not in cache:
+                cache[key] = (sample.frame if isinstance(sample.frame, TensorFrame)
+                              else compile_frame(sample.frame, model))
+            if performance.device_cache and cache[key].tensors["actions"].device != device:
+                cache[key] = cache_on_device(cache[key], device)
+            prepared.append(replace(sample, frame=cache[key]))
+        samples = prepared
     frames = [s.frame for s in samples]
+    deferred = bool(performance and performance.defer_sync)
+    valid_update = torch.ones((), device=device, dtype=torch.bool)
+    sizes = []
     phases = {name: 0.0 for name in ("forward", "reference", "backward", "optimizer")}
     rows: list[tuple[RlSample, float, float, float, float, float]] = []
     policy_total = value_total = 0.0
@@ -379,19 +405,51 @@ def _ppo_update(
               if p.requires_grad and not name.startswith(("win_head.", "progress_head."))]
     component_gradients: list[list[torch.Tensor | None]] = [[], []]
     catalogs: dict[str, dict[str, float]] = {}
-    for indices in microbatches(frames, list(range(len(frames))), model):
+    from .performance import grouped_indices
+
+    for indices in grouped_indices(frames, model, performance):
+        sizes.append(len(indices))
         batch = [samples[i] for i in indices]
         phase = time.perf_counter()
-        scores, values = model.forward_with_values([frames[i] for i in indices])
+        scores, values = model.forward_with_values(
+            [frames[i] for i in indices], check_finite=not deferred)
+        valid_update = valid_update & torch.isfinite(torch.cat(scores)).all()
+        valid_update = valid_update & torch.isfinite(values).all()
         packed = torch.nn.utils.rnn.pad_sequence(
             [v.float() for v in scores], batch_first=True, padding_value=-torch.inf
         )
         phases["forward"] += time.perf_counter() - phase
         phase = time.perf_counter()
-        reference_log = _reference(reference, batch, reference_cache, packed.shape[1], device)
+        reference_log = _reference(reference, batch, reference_cache, packed.shape[1], device,
+            resident=bool(performance and performance.reference_device_cache), defer_sync=deferred)
         logs = F.log_softmax(packed, -1)
-        valid = torch.isfinite(logs)
-        if not bool(torch.isfinite(reference_log[valid]).all()):
+        # Fresh full-catalog acting KL belongs to this optimizer forward, including
+        # when V/GAE targets came from an earlier admission estimate.
+        if any(sample.behavior_probabilities is not None for sample in batch):
+            catalogs_old = []
+            for sample in batch:
+                old_catalog = sample.behavior_probabilities
+                width = len(sample.frame.choices)
+                if (old_catalog is None or len(old_catalog) != width
+                        or any(not math.isfinite(v) or v < 0 for v in old_catalog)
+                        or not math.isclose(sum(old_catalog), 1, abs_tol=1e-6)
+                        or not math.isclose(old_catalog[sample.action],
+                            sample.behavior_probability, rel_tol=1e-6, abs_tol=1e-10)):
+                    raise BoundaryError("rl_loss", "invalid_behavior_catalog")
+                catalogs_old.append(old_catalog + [0.0] * (logs.shape[1] - width))
+            current = logs.detach().double()
+            old_log = current.new_tensor(catalogs_old).log()
+            terms = torch.where(current.exp() > 0,
+                                current.exp() * (current - old_log), 0)
+            acting = terms.sum(-1)
+            valid_update = valid_update & torch.isfinite(acting).all()
+            batch = [replace(sample, acting_kl=value) for sample, value in
+                     zip(batch, acting.cpu().tolist(), strict=True)]
+        valid = torch.arange(logs.shape[1], device=device)[None, :] < logs.new_tensor(
+            [len(sample.frame.choices) for sample in batch])[:, None]
+        reference_valid = torch.isfinite(reference_log[valid]).all()
+        valid_update = valid_update & reference_valid
+        if not deferred and not bool(reference_valid):
             raise BoundaryError("rl_loss", "non_finite_reference")
         actions = torch.tensor([s.action for s in batch], device=device)
         chosen = logs.gather(1, actions[:, None]).squeeze(1)
@@ -416,7 +474,8 @@ def _ppo_update(
         ) / len(samples)
         phases["reference"] += time.perf_counter() - phase
         phase = time.perf_counter()
-        if not bool(torch.isfinite(objective)):
+        valid_update = valid_update & torch.isfinite(objective)
+        if not deferred and not bool(torch.isfinite(objective)):
             raise BoundaryError("rl_loss", "non_finite_update")
         if config.gradient_diagnostics and shared:
             for index, component in enumerate((policy.sum() / len(samples),
@@ -478,7 +537,7 @@ def _ppo_update(
     phase = time.perf_counter()
     gradients = [p.grad for p in model.parameters() if p.grad is not None]
     norm = float(torch.nn.utils.clip_grad_norm_(model.parameters(), config.max_grad_norm))
-    if not gradients or not math.isfinite(norm):
+    if not gradients or not math.isfinite(norm) or not bool(valid_update):
         raise BoundaryError("rl_loss", "non_finite_update")
     optimizer.step()
     phases["optimizer"] += time.perf_counter() - phase
@@ -509,8 +568,8 @@ def _ppo_update(
     }
     totals = statistics(rows)
     multi = [r for r in rows if r[5] >= 2]
-    acting_values = sorted(value for sample in samples
-                           if (value := sample.acting_kl) is not None)
+    acting_values = sorted(value for row in rows
+                           if (value := row[0].acting_kl) is not None)
     # Only tensors reached by the value loss are shared; action-only readout
     # parameters must not inflate the policy denominator.
     norms = [math.sqrt(sum(float(g.square().sum())
@@ -521,6 +580,8 @@ def _ppo_update(
         "shared_trunk_gradient_norms": ({"policy": norms[0], "weighted_value": norms[1],
             "value_to_policy": norms[1] / norms[0] if norms[0] > 0 else None}
             if norms else None),
+        "execution_microbatches": {"count": len(sizes), "rows": sum(sizes),
+            "min": min(sizes), "max": max(sizes), "mean": sum(sizes) / len(sizes)},
         "phase_seconds": phases,
         "timing_semantics": "host elapsed including device waits",
         "policy_loss": policy_total / len(samples),
@@ -543,6 +604,9 @@ def _ppo_update(
         "rl_samples": len(samples),
         "anchor_samples": 0,
         "acting_policy_kl": totals["acting_kl"],
+        "acting_policy_kl_multichoice": statistics(multi)["acting_kl"] if multi else None,
+        "acting_kl_measurement": ("full_catalog_pre_optimizer_forward"
+            if all(s.behavior_probabilities is not None for s in samples) else "caller_supplied"),
         "acting_kl_quantiles": (
             {
                 str(q): acting_values[int(q * (len(samples) - 1))]

@@ -301,3 +301,57 @@ attention_required，不自动开新轮。原STOP与保存阶段信号逐层传�
 及正常原件，不能用20对分母替换它们；现有rl_observation写JSON/CSV/SVG并明确投影范围。
 这只是quick报警，不套末100的unknown>5作废规则，不证明总体强度或正式发布资格。
 已封存v134轮不补不改。最终同窗起点/末版各100仍走上一节原规则。
+
+## 完整FP32执行与可选整局准备（11-01候选）
+
+“采用PREP-B FP32”指完整组合，而不是只把precision写成fp32：
+
+```json
+{"packed":true,"tensor_cache":true,"precompile_inputs":true,"joint_nodes":true,
+ "scene_attention_area":67108864,"text_attention_area":67108864,
+ "bucket":true,"reference_device_cache":true,"async_transfer":true,
+ "defer_sync":true,"microbatch_size":8,"precision":"fp32","tf32":false,
+ "probe_inference_microbatches":true}
+```
+
+PPO与critic均实际消费执行设置；桶排序只重排同一optimizer batch的微批，整局结果按原索引
+还原。完整目录、targets、action、key和scale保持对应，loss分母仍为整个batch行数。
+固定reference缓存在目标device构造；只有不可变输入和固定reference可缓存，当前策略与价值
+不作静态缓存。延迟检查仍在optimizer.step前拒绝真实非有限scores/value/reference/loss/梯度。
+FP32仅承诺既定容差内同目标；改变归约顺序不承诺逐位相同或所有长训轨迹相同。
+
+`inference_microbatch_size`只用于整局重算和固定验证；训练微批仍由microbatch_size控制。
+显式`probe_inference_microbatches=true`要求CUDA及已恢复的非空critic replay。恢复后、首个
+optimizer更新前，从实际replay按实体数量分位取至多128帧，和父CP原执行配置同权重比较完整
+分数、原单位value与argmax；候选8/32/64分别暖1、测2，保留实际微批数/显存/失败，再选通过
+数值门的最快者。CUDA OOM只淘汰该候选，不改已发生的训练/游戏事实；全失败则明确停止。
+选择写`inference-microbatch-probe.json`、原事件、展开配置及后续CP。冷恢复/探针耗时计原时钟，
+不是重置训练预算；真实吞吐须看正常训练后的窗口，不能拿探针或历史2.88倍冒称全链收益。
+
+默认`prepared_targets=false`，仍每次更新整局重算当前V/截断V-trace-GAE。可选true是明确的
+`admission-v1`方法阶段：完整合格自然TRAIN局在准入时，同一次当前forward准备raw V/ratio/
+advantage/target，最多两次成功使用；旧CP无准备数组时仅按需整局准备一次。
+不改reward、原开局600秒时效或原uses；heldout与warmup用途不变。raw优势每个实际batch才
+归一化，value EMA只缩放残差，不重解释缓存原单位。缓存绑定method/γ/λ/reward spec与值、
+原key顺序hash、控制序列及实际policy/head更新/source/time，进入原完整CP metadata tensor。
+γ/λ或控制阶段改变使缓存显式失效重算。不能把λ=1的截断trace普遍称为纯MC。
+
+生产样本每次loss forward均从完整原acting分布重算current→acting KL和selected ratio；
+准备时KL只作历史漂移。forced与多候选口径分别记录；真实旧概率0不会被padding mask吞掉。
+缓存阶段要求PPO、max_reuse≤2且启用原episode age规则。
+
+需切换时，在学习者work目录原子写入`runtime-control.json`，无需重启：
+
+```json
+{"schema":"stpd/rl-runtime-control-1","sequence":1,"prepared_targets":true}
+```
+
+命令在下一次train_once入口、optimizer更新之间生效。sequence从1递增，重复同字节命令不
+重复执行，同序列改内容/跳号明确拒绝；false同样是一次新序列。原事件记操作和前后模式。
+完整CP保存已接受seq/hash和effective mode；恢复以CP实际模式为准，启动JSON的默认false不
+偷偷关掉已启用阶段。新写命令应使用CP下一序列。无新World loop、Store、报告服务或批准层。
+
+11-01用户允许：切换后30–60分钟若重算仍≥20%直接开缓存；等待数据约>10%或多数数据已用满
+两次即可加到20–24路，再按事实向36路内调整，不要求为单项归因另等整轮。每次记录绝对时间、
+理由、原参数/新参数、实际采用和后续结果；总训练终点与全卡硬限不重置。新增actor用新正常
+plan/唯一actor与seed命名空间，原unknown不重发；全部活动allocation由本卡owner统一保全。
