@@ -103,7 +103,8 @@ def action_weights(state: dict[str, torch.Tensor], *, value_heads: bool = False
     removed = {"win_head.weight", "win_head.bias", "progress_head.weight", "progress_head.bias"}
     if value_heads and not removed <= state.keys():
         raise ValueError("declared auxiliary parameter inventory is incomplete")
-    return {key: value for key, value in state.items() if not value_heads or key not in removed}
+    return {key: value for key, value in state.items() if not value_heads or (key not in removed
+            and not key.startswith("progress_residual."))}
 
 
 def export_model(

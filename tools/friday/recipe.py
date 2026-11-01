@@ -96,6 +96,8 @@ def prepare(configuration: Path, output: Path) -> dict[str, Any]:
     learning = dict(config['learner'], wall_seconds=config['wall_seconds'])
     learning.setdefault('performance', None)
     learning.setdefault('background_io', False)
+    if isinstance(learning.get('critic'), dict):
+        learning['critic'] = {'head_kind': 'attention-residual-v1', **learning['critic']}
     save(output / 'learner.json', learning)
     from stpd.rl.learner import LearnerConfig
 

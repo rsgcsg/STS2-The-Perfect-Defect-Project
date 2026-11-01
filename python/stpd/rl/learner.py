@@ -141,6 +141,8 @@ class LearnerConfig:
         loss = LossConfig(**value.pop("loss", {}))
         performance = value.pop("performance", None)
         critic = value.pop("critic", None)
+        if critic is not None and not value.get("resume_checkpoint"):
+            critic = {"head_kind": "attention-residual-v1", **critic}
         return cls(**value, loss=loss,
                    critic=CriticConfig(**critic) if critic is not None else None,
                    performance=(PerformanceConfig(**performance)
@@ -294,7 +296,7 @@ class Learner:
         for parameter in self.model.parameters():
             parameter.requires_grad_(True)
         if config.critic is not None:
-            enable_value_head(self.model, config.seed)
+            enable_value_head(self.model, config.seed, config.critic.head_kind)
         self.optimizer = torch.optim.AdamW(optimizer_groups(self.model, config.critic),
                                            lr=config.lr, weight_decay=config.weight_decay)
         self.critic = (OnlineCritic(self.model, self.reference, self.optimizer, config.critic,
@@ -533,8 +535,27 @@ class Learner:
             self.runtime_control = {k: control[k] for k in ("sequence", "sha256")}
             self.config = replace(self.config, prepared_targets=control["prepared_targets"])
             self._validate_prepared_mode(control["prepared_targets"])
-        self.model.load_state_dict(state["weights"])
-        restore_optimizer(self.optimizer, self.model, state["optimizer"], migrate=migration)
+        added: tuple[str, ...] = ()
+        saved_head = learner.get("critic", {}).get("config", {}).get("head_kind", "linear")
+        zero_residual_upgrade = (self.critic is not None
+            and self.critic.config.head_kind == "attention-residual-v1" and saved_head == "linear")
+        if zero_residual_upgrade:
+            if not migration:
+                raise BoundaryError("rl_critic", "value_head_source_migration_required")
+            missing = self.model.load_state_dict(state["weights"], strict=False)
+            expected = {n for n in self.model.state_dict() if n.startswith("progress_residual.")}
+            if set(missing.missing_keys) != expected or missing.unexpected_keys or not expected:
+                raise BoundaryError("rl_critic", "unexpected_value_head_parameter_migration")
+            # enable_value_head created a zero-output residual inside fork_rng.
+            # No offline candidate is loaded; all existing policy/linear weights survive.
+            added = ("progress_residual.",)
+            self._event("value_head_zero_init", old_kind="linear", new_kind="attention-residual-v1",
+                        offline_candidate_imported=False,
+                        new_Adam_moments="fresh; all old parameter moments preserved")
+        else:
+            self.model.load_state_dict(state["weights"])
+        restore_optimizer(self.optimizer, self.model, state["optimizer"], migrate=migration,
+                          new_prefixes=added)
         critic_saved = learner.get("critic")
         if (self.critic is None) != (critic_saved is None):
             raise BoundaryError("rl_critic", "resume_method_mismatch")

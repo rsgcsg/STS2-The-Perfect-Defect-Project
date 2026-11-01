@@ -33,6 +33,18 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 @pytest.fixture
+def ample_maintenance_disk(monkeypatch):
+    # Scheduling tests own their space precondition; hosted CI may have <15 GiB.
+    # Only this consumer is replaced. Real Store/copy checks and low-space tests remain intact.
+    from types import SimpleNamespace
+
+    from spireagent.workbench import p1_recording_maintenance as maintenance
+
+    monkeypatch.setattr(maintenance, "shutil", SimpleNamespace(
+        disk_usage=lambda _: SimpleNamespace(free=20 * 1024**3)))
+
+
+@pytest.fixture
 def original(tmp_path):
     # Reuse the production C# store/packer fixture already frozen by its owning JS test.
     text = (ROOT / "tools/test/p1-native-bundle.test.mjs").read_text()
@@ -583,6 +595,7 @@ def test_p1_pack_returns_original_receipt_location_and_rejects_bad_results(
 
 
 @pytest.mark.parametrize("cohort_failed", [False, True])
+@pytest.mark.usefixtures("ample_maintenance_disk")
 def test_closed_recording_maintenance_uses_import_owner_and_survives_reopen(
     tmp_path,
     original,
@@ -780,6 +793,7 @@ def test_query_sources_keeps_unknown_metadata_and_does_not_double_count_views(
         query_p1_sources(store, filters={"hidden_state": "bad"})
 
 
+@pytest.mark.usefixtures("ample_maintenance_disk")
 def test_changed_maintenance_policy_rechecks_previously_completed_sources(
     tmp_path,
     original,
@@ -946,6 +960,7 @@ def test_cloud_maintenance_requires_scope_and_excludes_older_or_other_origin(tmp
 
 
 @pytest.mark.parametrize("runs", [[], ["run-0001", "run-0002"]])
+@pytest.mark.usefixtures("ample_maintenance_disk")
 def test_maintenance_derives_each_original_run_without_inventing_empty_run(
     tmp_path, monkeypatch, runs,
 ):
@@ -1230,6 +1245,7 @@ def test_interrupted_expanded_restore_never_publishes_partial_original(
     assert _raw_hashes(raw) == before_conflict
 
 
+@pytest.mark.usefixtures("ample_maintenance_disk")
 def test_recent_two_policy_schedules_only_the_oldest_in_scope_session(tmp_path, monkeypatch):
     from spireagent.workbench import local_recording_import as importing
     from spireagent.workbench.developer import ProjectConfig, combination

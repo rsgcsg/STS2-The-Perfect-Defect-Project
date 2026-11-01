@@ -456,3 +456,36 @@ allocation，Stop为每个plan写原STOP且对每个job只发一次信号，drai
 按原USR2维护、pending排空、显式旧新config digest与原start/schedule状态交接；GPU不重启。
 本卡owner在维护完成前也须跟踪新job原收据，并保全全部array，不能只拿主数组终态称完成。
 实际扩容时还须计入同时进行的评估游戏核，保持本卡总游戏核≤36。
+
+## Actor提交资源与实际容量核对
+
+仍使用正常`rl.py prepare/submit`与全新seed_namespace；资源可在`submit --memory-gb 6
+--exclude-node smp-9-0`显式给出。默认仍4GiB/不排节点，API与CLI映射同一submit；
+冻结计划、同run/source/peer父计划、submission lock/intent/STOP和unknown禁止重投不变。
+增加内存或避节点不是重发旧槽，也不能绕审计。本卡45秒audit不改；诊断保留原超时，
+不从FAILED1:0或贴4GiB峰值推断OOM/NFS根因。
+
+容量以`squeue -r`逐task及`sacct`完整窗核，不能按plan长度、array数量或RUNNING父行推算。
+局部array保留全部历史，实际存活索引单列；32路连续满30min且原同32任务无退出后才量
+训练计时/墙钟、秒更新、first-used/观测入账generated与等数据，窗口失败即作废。
+actor终止基础设施事件与已有World槽分别列；原unknown总分母、run/seed/reason/资格不改。
+
+## 零初始化MLP残差评分头（用户23:20决定）
+
+本轮直接从完整CP切到零初始化attention-residual-v1；离线候选未过线的历史保留且不导入。
+用户知悉结果后决定以后默认MLP，不设线性对照、回滚条件或额外运行验门，不等qualification。
+原策略lr、λ、value系数、entropy与目标尺度不变。已有离线工具只作分析，不能阻塞本次切换。
+
+新run的LearnerConfig.read和Friday recipe在启用critic而未指定kind时默认MLP，并把recipe
+冻结为显式head_kind；旧完整CP缺head_kind仍按linear解释，不回写历史。低层CriticConfig的
+linear默认只保留旧CP/API兼容，不是本轮对照臂。评分只接公开scene，critic特征detach；
+最后层为0、残差加在原线性基底上，策略正常PPO照常。actor导出剥全部progress_residual参数。
+
+从旧线性完整CP升级时配置critic.head_kind=attention-residual-v1，沿原正常resume_source和
+resume_critic_changes声明kind变化；不需要离线candidate或qualification文件。只允许新增
+残差缺键，原策略/线性权重和Adam矩、RNG、FIFO、EMA、固定留出、prepared控制seq保留；
+新残差Adam矩从空开始。后续MLP完整CP严格正常恢复，不再执行首次zero初始化迁移。
+
+只记录一个实际切点model/version、时间、updates及准确source；最终100+100把切前后阶段
+分开说明，不把全程效果单归头。原定训练终点和资源上限不变，原正常评估照常，不额外加
+切前后对照或1h/3h门。PR369和已准备好的Host/actor组合尽量同一自然批切，未ready不拖主切。
