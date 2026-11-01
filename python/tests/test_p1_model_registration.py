@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import io
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -18,9 +19,30 @@ from spireagent.workbench.local_model_registration import REGISTRY, LocalModelRe
 from spireagent.workbench.local_models import LocalModelService
 from stpd.p1.agent import installation
 from stpd.p1.execution import MStdExecution
-from stpd.p1.export import export_model
-from stpd.p1.input import LEGACY_INPUT_SPEC, fit_vocabulary, project
+from stpd.p1.export import declared_p1_revision, export_model
+from stpd.p1.input import (
+    LEGACY_INPUT_SPEC,
+    V2_R18_INPUT_SPEC,
+    V2_R19_INPUT_SPEC,
+    fit_vocabulary,
+    project,
+)
 from stpd.p1.model import MStd
+from stpd.p1.vocabulary import public_vocabulary
+
+
+@pytest.mark.parametrize("spec,revision", [
+    (LEGACY_INPUT_SPEC, "r1.5"), (V2_R18_INPUT_SPEC, "r1.8"), (V2_R19_INPUT_SPEC, "r1.9"),
+])
+def test_declared_revision_needs_only_canonical_descriptor_binding(tmp_path, spec, revision):
+    (tmp_path / "model.json").write_text(json.dumps({"input_spec": {
+        "id": spec["id"], "version": spec["version"], "sha256": "a" * 64}}))
+    assert not (tmp_path / "model.tensor-tree").exists()
+    assert declared_p1_revision(tmp_path) == revision
+    (tmp_path / "model.json").write_text(json.dumps({"input_spec": {
+        "id": spec["id"], "version": "unrecognized", "sha256": "a" * 64}}))
+    with pytest.raises(ValueError, match="unsupported declared P1 InputSpec"):
+        declared_p1_revision(tmp_path)
 
 
 @pytest.fixture(params=[
@@ -32,10 +54,12 @@ def p1_registration(tmp_path, monkeypatch, request):
     checkpoint = tmp_path / "last.tensor-tree"
     checkpoint.write_bytes(b"synthetic engineering checkpoint")
     value = observation()
-    projection = LEGACY_INPUT_SPEC if request.param == "legacy-detached" else None
+    projection = (LEGACY_INPUT_SPEC if request.param == "legacy-detached"
+                  else V2_R19_INPUT_SPEC if request.param == "r19-detached" else None)
     if projection is not None:
         value["revision"] = projection["revision"]
-    vocabulary = fit_vocabulary([project(value, input_projection=projection)])
+    vocabulary = (public_vocabulary(projection) if projection == V2_R19_INPUT_SPEC else
+                  fit_vocabulary([project(value, input_projection=projection)]))
     if projection is not None:
         vocabulary["input_spec"] = dict(projection)
     execution = (MStdExecution(implementation="experimental-packed-v1")
@@ -87,7 +111,8 @@ def p1_registration(tmp_path, monkeypatch, request):
         assert artifact.read_bytes() == (package / "model.tensor-tree").read_bytes()
         return {"schema": "sts2.policy-runtime/agent-manifest-1", "manifest_id": selection,
                 "input": {"profile": "p1-global-r1",
-                          "global": {"core_sha256": "a" * 64, "revision": "r1.5"}},
+                          "global": {"core_sha256": "a" * 64,
+                                     "revision": options.get("p1-revision", "r1.5")}},
                 "environment": {"kind": "native"}, "adapter": adapter}
 
     monkeypatch.setattr(service, "_global_environment_manifest", envelope)
@@ -114,6 +139,38 @@ def test_original_model_normal_registration_binds_exact_bytes_and_composition(p1
     (config_path.parent / "model.json").write_bytes(b"{}")
     assert models._original_native_composition(evidence)[1] == "original_package_metadata_changed"
     assert store.get_manifest(model.artifact_id).parents == ()
+
+
+@pytest.mark.parametrize("p1_registration", ["r19-detached"], indirect=True)
+def test_normal_r19_registration_and_reference_rebinding_keep_declared_revision(
+    p1_registration, monkeypatch,
+):
+    service, models, _, model, _, negotiations = p1_registration
+    result = service.register(model.artifact_id)
+    assert negotiations == [{"connector-endpoint": "http://127.0.0.1:19191",
+                             "p1-revision": "r1.9"}]
+    entry = models.selection(result["selection_id"])
+    _, manifest, _, _ = installation(models.entry_path(entry, "config"),
+                                    models.entry_path(entry, "manifest"), models.private_root)
+    assert manifest["input"]["global"]["revision"] == "r1.9"
+    monkeypatch.setattr(models, "_require_model_admission", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(models, "_authorize_native_episode",
+                        lambda _: {"endpoint": "http://127.0.0.1:19292"})
+    options = []
+
+    def envelope(_runtime, selected, *_args):
+        options.append(selected)
+        return {"requirements": {"environment": {"host_kind": "reference"}}, "support": {},
+                "input": {"global": manifest["input"]["global"]}}
+
+    monkeypatch.setattr(service, "_global_environment_manifest", envelope)
+    rebound = service.bind_reference_selection(result["selection_id"], {})
+    assert options == [{"connector-endpoint": "http://127.0.0.1:19292",
+                        "p1-revision": "r1.9"}]
+    bound = models.selection(rebound)
+    _, rebound_manifest, _, _ = installation(models.entry_path(bound, "config"),
+        models.entry_path(bound, "manifest"), models.private_root)
+    assert rebound_manifest["input"]["global"] == manifest["input"]["global"]
 
 
 def test_failed_p1_environment_negotiation_does_not_publish_selection(p1_registration, monkeypatch):

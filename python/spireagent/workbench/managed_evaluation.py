@@ -465,6 +465,9 @@ class ManagedEpisodeExecutor:
                     for i in range(0, len(host_args), 2)
                 }
                 package = Path(model["package_directory"])
+                revision = export.declared_p1_revision(package)
+                if revision != "r1.5":
+                    options["p1-revision"] = revision
                 envelope = global_environment_manifest(
                     self.runtime,
                     options,

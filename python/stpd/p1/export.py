@@ -73,6 +73,22 @@ def runtime_projection(vocabulary: dict[str, Any]) -> dict[str, Any]:
     return INPUT_SPEC if spec == LEGACY_INPUT_SPEC else spec
 
 
+def declared_p1_revision(package: Path) -> str:
+    """Read the model's declared protocol binding before environment negotiation.
+
+    Registration still verifies descriptor/package integrity and the full model.
+    This selection reads no weights and never guesses an unknown InputSpec.
+    """
+    descriptor = json.loads((package / "model.json").read_bytes())
+    declared = descriptor.get("input_spec")
+    if isinstance(declared, dict):
+        for spec in (LEGACY_INPUT_SPEC, INPUT_SPEC, SORTED_INPUT_SPEC, V2_INPUT_SPEC,
+                     V2_R18_INPUT_SPEC, V2_R19_INPUT_SPEC):
+            if (declared.get("id"), declared.get("version")) == (spec["id"], spec["version"]):
+                return "r1.5" if spec == LEGACY_INPUT_SPEC else str(spec["revision"])
+    raise ValueError("unsupported declared P1 InputSpec")
+
+
 def bound_projection(vocabulary: dict[str, Any], projection: object) -> dict[str, Any]:
     spec = validate_input_spec(projection)
     default = runtime_projection(vocabulary)
