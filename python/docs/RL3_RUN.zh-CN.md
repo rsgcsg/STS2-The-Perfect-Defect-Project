@@ -271,3 +271,33 @@ score_admitted强改为true。末轮先确认训练演员排空，两份四路�
 显式旧单组→独立head双组时按原参数注册顺序重映射原Adam moments，不清空主干；
 以后双组恢复用新配置的head_lr，不能被旧optimizer fixed_lr覆盖。迁移原producer、CP与
 实际配置差异记入原resumed事件，新CP由新producer签发，不改旧记录。永久STOP仍不可复活。
+
+## 后续quick：原池内补足20个合格自然配对
+
+显式`natural_quick`只用于direct四核、单一每4h quick计划，默认旧行为不变。
+watch配置保留`runtime_source`与原actor计划的严格绑定；可另给`evaluation_runtime_source`
+指定独立冻结评估源码，不升级actor/learner。`natural_quick.baseline_model`含准确的
+`model_artifact_id/model_sha256`；`baseline_cache`是原正常批次的plan/result/snapshot三个
+`{path,sha256}`引用；`baseline_unknown_seeds`列已知不能再打的同起点unknown（不改旧事实）。
+后续正常baseline补充批的原引用由watch state持久保留，供下一轮复用，未知或未资格的
+baseline不会再发。动作adapter必须与缓存原执行一致；不能仅改expected digest来制造一致。
+若控制源码更新而动作实现冻结，明确记录这个实现组合及两份真实producer。
+
+每轮冻结current与baseline模型、原100 manifest及四路/argmax/原保存审计条件。
+先打原前20；缺额按原1-based ordinal递增选后续seed，既不切片/重写manifest，也不重编号。
+`EvaluationLedger.create(seed_ordinals=[...])`和Friday prepare的`--seed-ordinals`提供这个
+新ledger子集，不能与seed_prefix同时用；原prefix行为保留。每个子批仍完整经过原
+Evaluate/Pipeline、原审计与全字节保存读回，再计数。当前局合格而baseline cache缺失时，
+正常补相同seed的起点局；任一边unknown则不计这对，原件/原flag保留，游标前进不重试。
+原score_admitted=false批次的自然局也不计入合格20对，不用补充审计回写救活旧批。
+
+该协调器是`tools/friday/quick.py`，通过原allocation.py资源入口串行调用正常evaluate，
+不是第二个游戏循环；始终四路，不把current与baseline并开成八路，200为原100池双边上界。
+20对、原100池耗尽、原墙钟上限三者先到即停；后两者不达20就是incomplete，不扩池。
+缺自然终局指标、保存/清理未确认、完整性失败或不闭合cache要求owner读原现场，watch保留
+attention_pending，不自动开新轮。原STOP与保存阶段信号逐层传到本轮停止新准入。
+
+主comparison/均值/图只使用双边合格交集，原批次audit/scored与所有尝试分母留在result.batches
+及正常原件，不能用20对分母替换它们；现有rl_observation写JSON/CSV/SVG并明确投影范围。
+这只是quick报警，不套末100的unknown>5作废规则，不证明总体强度或正式发布资格。
+已封存v134轮不补不改。最终同窗起点/末版各100仍走上一节原规则。

@@ -228,8 +228,9 @@ def run(path: Path) -> dict[str, Any]:
 
     def observe_stop() -> None:
         while not stopping.wait(.5):
-            if (root / 'STOP').exists() and active:
-                (active[0] / 'STOP').touch()
+            current = active[:1]
+            if (root / 'STOP').exists() and current:
+                (current[0] / 'STOP').touch()
 
     observer = threading.Thread(target=observe_stop, daemon=True)
     observer.start()
