@@ -163,6 +163,8 @@ def submit(path: Path, *, dry_run: bool = False,
         if len({p['job_id'] for p in parents}) != len(parents):
             raise ValueError('distinct_existing_same_run_parent_jobs_required')
     with scheduler.user_submission_lock():
+        if (root / 'submission-intent.json').exists():
+            raise ValueError('previous_actor_submission_requires_reconciliation_no_retry')
         existing = scheduler.output(['squeue', '-h', '-u', scheduler.username(), '-n',
                                      'spireagent-f2', '-o', '%i'])
         if parents:
@@ -173,8 +175,6 @@ def submit(path: Path, *, dry_run: bool = False,
             if len(plan['actors']) + sum(p['actors'] for p in parents
                                         if p['job_id'] in active) > 36:
                 raise ValueError('concurrent_RL_actor_limit_36_exceeded')
-            if (root / 'submission-intent.json').exists():
-                raise ValueError('previous_actor_submission_requires_reconciliation_no_retry')
         elif existing:
             raise ValueError('existing_friday_array_must_drain_before_new_submission')
         if (root / 'STOP').exists() or any((root / 'actors').glob('*/owner.json')):

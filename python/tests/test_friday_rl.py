@@ -401,4 +401,6 @@ def test_additional_submission_uncertain_outcome_is_not_offered_again(rl, inputs
         assert (extra / 'submission-intent.json').is_file()
         with pytest.raises(ValueError, match='reconciliation_no_retry'):
             rl.submit(extra / 'plan.json', additional_to=[parent])
+        with pytest.raises(ValueError, match='reconciliation_no_retry'):
+            rl.submit(extra / 'plan.json')  # changing entry mode cannot re-offer an unknown submit
     assert len(commands) == 1
