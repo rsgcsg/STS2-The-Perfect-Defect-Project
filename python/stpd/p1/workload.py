@@ -20,7 +20,16 @@ from .derivation import DERIVATION
 from .execution import MStdExecution
 from .export import input_spec
 from .formal_training import Population
-from .input import INPUT_SPEC, V2_INPUT_SPEC, Frame, fit_vocabulary, project, training_projection
+from .input import (
+    INPUT_SPEC,
+    V2_INPUT_SPEC,
+    V2_R19_INPUT_SPEC,
+    Frame,
+    fit_vocabulary,
+    is_v2_encoding,
+    project,
+    training_projection,
+)
 from .model import architecture
 from .spec import (
     DERIVED_RUN_SCHEMA,
@@ -67,7 +76,12 @@ def populations_from_reader(
 ) -> dict[str, Population]:
     """Project one already verified immutable read session, without reloading it."""
     selection = reader.selection
-    if selection["input_projection"] != INPUT_SPEC:
+    projection = training_projection(INPUT_SPEC if input_projection is None else input_projection)
+    try:
+        source_projection = training_projection(selection["input_projection"])
+    except ValueError as error:
+        raise BoundaryError("p1_workload", "current_InputSpec_required_for_new_training") from error
+    if source_projection["revision"] != projection["revision"]:
         raise BoundaryError("p1_workload", "current_InputSpec_required_for_new_training")
     counts = selection["partition_N"]
     if set(counts) - {"train", "dev", "test"} or not counts.get("train") or not counts.get("dev"):
@@ -76,7 +90,7 @@ def populations_from_reader(
     rows: dict[str, list[tuple[str, Any, int, Any]]] = {s: [] for s in ("train", "dev", "test")}
     points = reader.iter_supervised_points() if value_heads else reader.iter_points()
     for reference, observation in points:
-        frame = project(observation, input_projection=input_projection)
+        frame = project(observation, input_projection=projection)
         target = [c["choice_id"] for c in frame.choices].index(reference["chosen"])
         values = from_run_facts(reference["auxiliary_run_facts"]) if value_heads else None
         rows[reference["split"]].append((reference["point_id"], frame, target, values))
@@ -111,7 +125,7 @@ def prepare_p1_run(
     if checkpoint_policy not in {None, CHECKPOINT_POLICY}:
         raise BoundaryError("p1_workload", "unsupported_checkpoint_policy")
     projection = training_projection(INPUT_SPEC if input_projection is None else input_projection)
-    if config.value_heads and projection != V2_INPUT_SPEC:
+    if config.value_heads and not is_v2_encoding(projection):
         raise BoundaryError("p1_workload", "value_heads_require_v2_input")
     if initial_checkpoint is not None and (config.value_heads or loss_weighting is not None
                                            or checkpoint_policy
@@ -150,10 +164,10 @@ def prepare_p1_run(
                  if loss_weighting is not None else None)
     tensor_pack = None
     populations: Mapping[str, Population[ModelFrame]]
-    if projection == V2_INPUT_SPEC:
+    if is_v2_encoding(projection):
         from .vocabulary import public_vocabulary
 
-        vocabulary = public_vocabulary()
+        vocabulary = public_vocabulary(projection)
     else:
         vocabulary = None
     if vocabulary is not None and execution.implementation == "experimental-packed-v1":
@@ -280,7 +294,7 @@ def verify_p1_run(store: ArtifactStore, run_id: str, producer: Producer, *,
         or {p.role for p in training.parents} != (
             {"source", "tensor_pack"} if "tensor_pack_id" in info else {"source"})
         or {p.role for p in training.payloads} != {"vocabulary"}
-        or info.get("input_projection") not in (INPUT_SPEC, V2_INPUT_SPEC)
+        or info.get("input_projection") not in (INPUT_SPEC, V2_INPUT_SPEC, V2_R19_INPUT_SPEC)
         or info.get("target_spec") != target_spec(MStdConfig.decode(info["config"]).value_heads)
         or info.get("architecture") != architecture(MStdConfig.decode(info["config"]).value_heads,
                                                     MStdConfig.decode(info["config"]).model_size)

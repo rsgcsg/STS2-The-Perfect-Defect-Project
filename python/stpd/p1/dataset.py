@@ -21,7 +21,7 @@ from spireagent.storage.store import ArtifactStore
 from stpd.fullrun.data import group_run_fingerprints, split_run_fingerprints
 
 from .data import digest, json_bytes
-from .input import INPUT_SPEC, LEGACY_INPUT_SPEC, project, validate_input_spec
+from .input import INPUT_SPEC, LEGACY_INPUT_SPEC, V2_R19_INPUT_SPEC, project, validate_input_spec
 from .spec import SNAPSHOT_SCHEMA, TARGET_SPEC
 
 SOURCE_SCHEMA = "sts2.human-annotator/p1-native-session-bundle-1"
@@ -78,7 +78,9 @@ def load_projection(store: ArtifactStore, artifact_id: str) -> Projection:
         value.get("schema") != info["schema"]
         or (value.get("profile"), value.get("revision")) != ("p1-global-r1", info.get("revision"))
         or info.get("profile") != "p1-global-r1"
-        or info.get("revision") not in {INPUT_SPEC["revision"], LEGACY_INPUT_SPEC["revision"]}
+        or info.get("revision") not in {
+            INPUT_SPEC["revision"], LEGACY_INPUT_SPEC["revision"], V2_R19_INPUT_SPEC["revision"]
+        }
         or value.get("source_content_id") != original.get("content_id")
     ):
         raise BoundaryError("p1_snapshot", "projection_identity_mismatch")
@@ -437,8 +439,10 @@ def publish_snapshot(
     split_salt: str,
     split_by_group: Mapping[str, str] | None = None,
     selected_decisions: Mapping[str, Sequence[str]] | None = None,
+    input_projection: dict[str, Any] | None = None,
 ) -> Manifest:
-    value = inspect_projections(store, projection_ids, selected_decisions=selected_decisions)
+    value = inspect_projections(store, projection_ids, selected_decisions=selected_decisions,
+                                input_projection=input_projection)
     groups = {g["group_id"] for g in value["groups"] if g["N"] > 0}
     if not isinstance(split_salt, str) or not split_salt:
         raise BoundaryError("p1_snapshot", "explicit_split_identity_required")
@@ -481,7 +485,7 @@ def publish_snapshot(
                 "selection_sha256": digest(raw),
                 "purpose": "engineering",
                 "research_admission": "not_evaluated",
-                "input_projection": INPUT_SPEC,
+                "input_projection": value["input_projection"],
                 "target_spec": TARGET_SPEC,
                 "partition_N": value["partition_N"],
                 "group_count": len(groups),

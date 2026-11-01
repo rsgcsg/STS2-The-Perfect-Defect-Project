@@ -29,7 +29,7 @@ from stpd.p1.dataset import (
     projection_payload_role,
     publish_snapshot,
 )
-from stpd.p1.input import INPUT_SPEC, LEGACY_INPUT_SPEC
+from stpd.p1.input import INPUT_SPEC, LEGACY_INPUT_SPEC, V2_R19_INPUT_SPEC
 
 from .p1_training_data import _ledger
 
@@ -271,7 +271,7 @@ def prepare_p1_data(
         raise BoundaryError("p1_preparation", "unsupported_allocation_policy")
     started = time.monotonic()
     ledger = _ledger(owner, store)
-    specs = {s["revision"]: s for s in (INPUT_SPEC, LEGACY_INPUT_SPEC)}
+    specs = {s["revision"]: s for s in (INPUT_SPEC, LEGACY_INPUT_SPEC, V2_R19_INPUT_SPEC)}
     if not isinstance(revision, str) or revision not in specs:
         raise BoundaryError("p1_preparation", "unsupported_revision")
     discovered = discover_p1_projections(store)
@@ -359,7 +359,7 @@ def prepare_p1_data(
                     ledger, index, split_salt=split_salt, allocation_policy=allocation_policy
                 )
             allocation["quality_filtered_N"] = quality_filtered
-            if revision != INPUT_SPEC["revision"]:
+            if revision not in {INPUT_SPEC["revision"], V2_R19_INPUT_SPEC["revision"]}:
                 allocation["blockers"].append("legacy_revision_inventory_only")
                 allocation["ready_to_freeze"] = False
             selection = {

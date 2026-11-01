@@ -10,15 +10,20 @@ import json
 from importlib.resources import files
 from typing import TYPE_CHECKING, Any, cast
 
-from .input import V2_INPUT_SPEC
+from .input import V2_INPUT_SPEC, is_v2_encoding, training_projection, validate_input_spec
 
 if TYPE_CHECKING:
     from .model import MStd
 
 
-def public_vocabulary() -> dict[str, Any]:
-    return cast(dict[str, Any], json.loads(
+def public_vocabulary(input_projection: dict[str, Any] | None = None) -> dict[str, Any]:
+    spec = V2_INPUT_SPEC if input_projection is None else validate_input_spec(input_projection)
+    if not is_v2_encoding(spec):
+        raise ValueError("fixed public vocabulary requires v2 encoding")
+    vocabulary = cast(dict[str, Any], json.loads(
         files("stpd.p1").joinpath("public_vocabulary_v1.json").read_text()))
+    vocabulary["input_spec"] = copy.deepcopy(spec)
+    return vocabulary
 
 
 def validate_vocabulary(value: dict[str, Any]) -> None:
@@ -38,7 +43,8 @@ def validate_vocabulary(value: dict[str, Any]) -> None:
 
 
 def require_extension(old: dict[str, Any], new: dict[str, Any]) -> None:
-    if (old.get("input_spec") != V2_INPUT_SPEC or new.get("input_spec") != V2_INPUT_SPEC
+    if (not is_v2_encoding(training_projection(old.get("input_spec")))
+            or new.get("input_spec") != old.get("input_spec")
             or old["tokenizer"] != new["tokenizer"]):
         raise ValueError("parameter transfer requires the same v2 encoding and tokenizer")
     for table in ("ids", "fields", "kinds", "actions"):
@@ -71,7 +77,7 @@ def parameters_from_checkpoint(raw: bytes, vocabulary: dict[str, Any]) -> MStd:
     state = decode_checkpoint(raw)
     identity = state["identity"]
     if (state.get("schema") != CHECKPOINT_SCHEMA
-            or vocabulary.get("input_spec") != V2_INPUT_SPEC
+            or not is_v2_encoding(training_projection(vocabulary.get("input_spec")))
             or identity.get("architecture") != ARCHITECTURE
             or identity.get("vocabulary_sha256") != digest(json_bytes(vocabulary))
             or identity.get("input_spec") != input_spec(vocabulary)):

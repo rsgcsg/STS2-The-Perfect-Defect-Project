@@ -54,15 +54,20 @@ V2_INPUT_SPEC = {
 # Explicit new public interaction binding; identical V2 encoding and tensor shape.
 # This does not admit r1.8 data to any training pipeline.
 V2_R18_INPUT_SPEC = {**V2_INPUT_SPEC, "id": "stpd-p1-mstd-input-v2-r18", "revision": "r1.8"}
+# Combined Trial/Claws/Sphere input for an explicitly selected new training run.
+V2_R19_INPUT_SPEC = {**V2_INPUT_SPEC, "id": "stpd-p1-mstd-input-v2-r19", "revision": "r1.9"}
 
 
 def is_v2_encoding(value: object) -> bool:
-    return isinstance(value, dict) and value in (V2_INPUT_SPEC, V2_R18_INPUT_SPEC)
+    return isinstance(value, dict) and value in (
+        V2_INPUT_SPEC, V2_R18_INPUT_SPEC, V2_R19_INPUT_SPEC
+    )
 
 
 def validate_input_spec(value: object) -> dict[str, Any]:
     if not isinstance(value, dict) or value not in (
-        INPUT_SPEC, LEGACY_INPUT_SPEC, SORTED_INPUT_SPEC, V2_INPUT_SPEC, V2_R18_INPUT_SPEC
+        INPUT_SPEC, LEGACY_INPUT_SPEC, SORTED_INPUT_SPEC, V2_INPUT_SPEC, V2_R18_INPUT_SPEC,
+        V2_R19_INPUT_SPEC
     ):
         raise ValueError("unsupported P1 M-std InputSpec")
     return value
@@ -70,7 +75,7 @@ def validate_input_spec(value: object) -> dict[str, Any]:
 
 def training_projection(value: object) -> dict[str, Any]:
     spec = validate_input_spec(value)
-    if spec not in (INPUT_SPEC, V2_INPUT_SPEC):
+    if spec not in (INPUT_SPEC, V2_INPUT_SPEC, V2_R19_INPUT_SPEC):
         raise ValueError("new training requires v1 or v2 projection")
     return spec
 

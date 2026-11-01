@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Any
 import torch
 
 from spireagent.json_boundary import BoundaryError
-from stpd.p1.input import V2_INPUT_SPEC
+from stpd.p1.input import is_v2_encoding
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -121,7 +121,7 @@ def prepare_models(model: MStd, reference: MStd,
         raise BoundaryError("rl_performance", "bf16_requires_supported_cuda")
     if config.tf32 and device.type != "cuda":
         raise BoundaryError("rl_performance", "tf32_requires_cuda")
-    if config.tensor_cache and model.vocabulary.get("input_spec") != V2_INPUT_SPEC:
+    if config.tensor_cache and not is_v2_encoding(model.vocabulary.get("input_spec")):
         raise BoundaryError("rl_performance", "tensor_cache_requires_v2")
     if config.async_transfer and device.type not in {"cpu", "cuda"}:
         raise BoundaryError("rl_performance", "async_transfer_requires_cpu_or_cuda")
