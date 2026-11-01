@@ -324,6 +324,8 @@ class Learner:
         else:
             self.reader = ThreadPoolExecutor(max_workers=config.reader_workers,
                                              thread_name_prefix="rl-shard-read")
+        self.read_completion = ThreadPoolExecutor(max_workers=1,
+                                                 thread_name_prefix="rl-read-completion")
         self.discovery = ThreadPoolExecutor(max_workers=1, thread_name_prefix="rl-discovery")
         self.control = ThreadPoolExecutor(max_workers=1, thread_name_prefix="rl-stop")
         self.telemetry = ThreadPoolExecutor(max_workers=1, thread_name_prefix="rl-telemetry")
@@ -363,6 +365,7 @@ class Learner:
         except BaseException:
             # A failed resume/probe must not strand spawned reader children.
             self.reader.shutdown(wait=True, cancel_futures=True)
+            self.read_completion.shutdown(wait=True, cancel_futures=True)
             raise
 
     def _probe_inference_microbatches(self) -> None:
@@ -633,12 +636,25 @@ class Learner:
 
     def _submit_read(self, key: str) -> Future[list[dict[str, Any]] | bytes]:
         if self.config.reader_backend == "process":
-            return self.reader.submit(process_read, self._read_request(key))
-        return self.reader.submit(self._read, key)
+            future = self.reader.submit(process_read, self._read_request(key))
+        else:
+            future = self.reader.submit(self._read, key)
+        return (self.read_completion.submit(self._complete_read, future)
+                if self.config.background_io else future)
+
+    def _complete_read(self, future: Future[Any]) -> list[dict[str, Any]]:
+        return self._read_result(future.result())
 
     def _read_result(self, result: list[dict[str, Any]] | bytes) -> list[dict[str, Any]]:
-        return (decode_process_read(result, self.timer.seconds)
-                if isinstance(result, bytes) else result)
+        if not isinstance(result, bytes):
+            return result
+        seconds: dict[str, float] = collections.defaultdict(float)
+        try:
+            return decode_process_read(result, seconds)
+        finally:
+            with self.timer.lock:
+                for key, value in seconds.items():
+                    self.timer.seconds[key] += value
 
     def _read(self, key: str) -> list[dict[str, Any]]:
         return self._read_retry("read_shard", lambda: self._read_once(key))
@@ -655,6 +671,7 @@ class Learner:
             timing=timing)
 
     def poll(self) -> None:
+        began, admission_seconds = time.monotonic(), 0.0
         if self.config.background_io:
             if self.discovery_future is not None and self.discovery_future.done():
                 self.discovered.extend(self.discovery_future.result())
@@ -677,9 +694,18 @@ class Learner:
                     break
                 continue
             rows = self._read_result(future.result())
-            self._admit(rows)
+            admission_began = time.monotonic()
+            try:
+                self._admit(rows)  # Current policy/targets and all mutable accounting stay owner-only.
+            finally:
+                elapsed = time.monotonic() - admission_began
+                admission_seconds += elapsed
+                with self.timer.lock:
+                    self.timer.seconds["admission"] += elapsed
             del self.reads[key]
             self.seen.add(key)
+        with self.timer.lock:
+            self.timer.seconds["poll"] += time.monotonic() - began - admission_seconds
 
 
     _episode_started_at = staticmethod(episode_started_at)
@@ -1300,6 +1326,7 @@ class Learner:
             "counts": dict(self.counts), "seen_shards": sorted(self.seen),
             "buffer_size": len(self.buffer),
             "timing": self.timer.report(),
+            "archive": self.exchange.archive_status(),
             "mean_staleness": sum(staleness) / len(staleness) if staleness else 0,
             "max_staleness": max(staleness, default=0),
             "decision_accounting": self.ledger.summary(),
@@ -1359,7 +1386,6 @@ class Learner:
                         break
                     began = time.monotonic()
                     self.poll()
-                    self.timer.add("poll", began)
                     next_exchange_poll = time.monotonic() + (
                         min(self.config.exchange_poll_seconds, self.config.remote_stop_seconds)
                         if self.config.background_io else self.config.exchange_poll_seconds)
@@ -1434,6 +1460,7 @@ class Learner:
                 self.discovery.shutdown(wait=True, cancel_futures=True)
                 self.control.shutdown(wait=False, cancel_futures=True)
                 self.reader.shutdown(wait=True, cancel_futures=True)
+                self.read_completion.shutdown(wait=True, cancel_futures=True)
                 self.publisher.shutdown(wait=True)
                 if failure is not None:
                     self._event("failed", error_type=type(failure).__name__,
@@ -1444,6 +1471,7 @@ class Learner:
                 for pending in self.telemetry_pending:
                     pending.result()
                 self.ledger.close()
+                self.exchange.drain_archive()
         summary = {"schema": "stpd/rl-learner-summary-1", "run": self.config.run,
                    "updates": self.updates, "versions": [v["version"] for v in self.versions],
                    "version_artifacts": {str(v["version"]): v["model_artifact_id"]
@@ -1455,6 +1483,7 @@ class Learner:
                    "critic": self.critic.state() if self.critic else None}
         (self.work / "learner-summary.json").write_bytes(json_bytes(summary))
         self._event("finished", **{k: summary[k] for k in ("updates", "counts")})
+        self.exchange.drain_archive()
         return summary
 
 

@@ -31,10 +31,17 @@ def validate_execution(execution: dict[str, Any], selections: dict[str, str]) ->
         retention_configuration,
     )
 
+    from spireagent.storage.config import validate_peer
+
+    peer = execution.get("peer", {})
+    shared = (peer.get("kind") == "local" and "archive" in peer
+              and peer["archive"].get("kind") == "s3"
+              and execution.get("store") == peer.get("directory"))
     if (execution.get("schema") != "spireagent/managed-evaluation-execution-v1"
-            or execution.get("retention") != RETENTION or execution.get("store") != "s3"
-            or execution.get("peer", {}).get("kind") != "s3"):
+            or execution.get("retention") != RETENTION
+            or not shared and (execution.get("store") != "s3" or peer.get("kind") != "s3")):
         raise ValueError("fixed_remote_evaluation_configuration_required")
+    validate_peer(peer)
     if (not selections or len(set(selections.values())) != len(selections)
             or set(selections.values()) != set(execution["models"])):
         raise ValueError("exact_distinct_model_selections_required")

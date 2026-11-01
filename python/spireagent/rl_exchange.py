@@ -55,6 +55,17 @@ class Exchange:
         self.blobs = self.store.blobs
         self.prefix = f"exchange/rl/{run}/"
 
+    def archive_status(self) -> dict[str, Any] | None:
+        from spireagent.storage.async_archive import ArchivedStore
+
+        return self.store.archive.status(owned=True) if isinstance(self.store, ArchivedStore) else None
+
+    def drain_archive(self, timeout: float = 120) -> dict[str, Any] | None:
+        from spireagent.storage.async_archive import ArchivedStore
+
+        return (self.store.archive.drain(timeout=timeout, owned=True)
+                if isinstance(self.store, ArchivedStore) else None)
+
     def request_stop(self, reason: str) -> dict[str, Any]:
         """First request wins; later callers observe that original request."""
         if not isinstance(reason, str) or not reason:

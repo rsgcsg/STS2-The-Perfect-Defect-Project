@@ -318,7 +318,8 @@ class ManagedEpisodeExecutor:
         # Remote execution writes to this already-frozen peer binding. Credentials
         # remain environment-only; bucket/endpoint/prefix cannot follow env drift.
         location = storage["store"]
-        self.store = self.peer if location == "s3" else open_store(location)
+        self.store = (self.peer if location == "s3" or self.configuration["peer"].get(
+            "directory") == location else open_store(location))
         local_root = (self.store.blobs.root
                       if isinstance(self.store.blobs, LocalBlobStore) else None)
         self.preparation = {"store": location, "read_concurrency": self.read_concurrency,
