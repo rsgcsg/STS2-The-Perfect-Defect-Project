@@ -266,11 +266,14 @@ controlled Knight/Mittens counterexamples and the remaining evidence boundary.
 
 ## Explicit r1.9 Crystal Sphere presentation
 
-Host62 exposes the original minigame through its existing public-basis/action
+Host63 exposes the original minigame through its existing public-basis/action
 path. Only the absent native screen is replaced in TestMode. STS2 still places
 items, consumes divinations, clears cells, reveals items and supplies/completes
 rewards. The parent event remains suspended while a board or reward child owns
 input. There is no automatic reward choice.
+
+Public coordinates, dimensions and masks also use existing label/description text
+so the frozen numeric field vocabulary cannot merge their roles.
 
 The approved logical view publishes an item's full rectangle/type only after
 at least one occupied cell is clear. Entirely covered items have no public

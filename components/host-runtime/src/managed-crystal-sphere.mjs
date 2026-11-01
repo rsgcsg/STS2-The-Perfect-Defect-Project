@@ -46,7 +46,9 @@ export function crystalSphereSurface(state, ctx) {
   const complete = completeCrystalSphere(state);
   const surface = { kind: "crystal_sphere", requires_profile_revision: "r1.9",
     width: 11, height: 11, remaining_divinations: state.remaining_divinations,
-    selected_tool: state.selected_tool, sphere_entity_id: ctx.entityId("sphere", state.sphere_ref),
+    selected_tool: state.selected_tool,
+    description: `${state.remaining_divinations} divinations remaining; current tool ${state.selected_tool}`,
+    sphere_entity_id: ctx.entityId("sphere", state.sphere_ref),
     event_entity_id: ctx.entityId("event", state.event_ref), room_entity_id: ctx.entityId("room", state.room_ref),
     cells: [], visible_items: [], tools: [] };
   if (complete) {
@@ -56,11 +58,15 @@ export function crystalSphereSurface(state, ctx) {
     surface.tools = tools.map(tool => tool.properties);
     surface.visible_items = state.visible_items.map(item => ctx.referent({ role: "sphere_item",
       id: ctx.entityId("sphere_item", item.native_ref), label: item.label,
-      properties: { kind: item.kind, label: item.label, x: item.x, y: item.y, width: item.width, height: item.height,
+      properties: { kind: item.kind, label: item.label,
+        description: `${item.label}; column ${item.x}, row ${item.y}; width ${item.width}, height ${item.height}; `
+          + `cleared cells ${item.cleared_cells.map(cell => `(${cell.x},${cell.y})`).join(", ")}; fully revealed ${item.fully_revealed}`,
+        x: item.x, y: item.y, width: item.width, height: item.height,
         cleared_cells: item.cleared_cells.map(({ x, y }) => ({ x, y })), fully_revealed: item.fully_revealed } }).properties);
     surface.cells = [...state.cells].sort((a, b) => a.y - b.y || a.x - b.x).map(cell => {
       const subject = ctx.referent({ role: "sphere_cell", id: ctx.entityId("sphere_cell", cell.native_ref),
         label: `Cell ${cell.x},${cell.y}`, properties: { x: cell.x, y: cell.y, cleared: cell.cleared,
+          label: `Cell ${cell.x},${cell.y}: ${!cell.cleared ? "covered" : cell.empty ? "cleared empty" : "cleared occupied"}`,
           ...(cell.cleared ? { empty: cell.empty } : {}) } });
       for (const target of tools) {
         const tool = target.properties.tool, radius = tool === "Big" ? 1 : 0;

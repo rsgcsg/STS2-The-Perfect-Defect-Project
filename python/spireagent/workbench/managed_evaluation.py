@@ -315,7 +315,7 @@ class ManagedEpisodeExecutor:
             (self.host / "package.json").read_bytes()
         ).get("version") not in {
             "1.1.0-rc.46", "1.1.0-rc.57", "1.1.0-rc.58", "1.1.0-rc.59",
-            "1.1.0-rc.60", "1.1.0-rc.61", "1.1.0-rc.62"
+            "1.1.0-rc.60", "1.1.0-rc.61", "1.1.0-rc.62", "1.1.0-rc.63"
         }:
             reject("host_performance_diagnostics_required")
         self.build = _candidate_audit(

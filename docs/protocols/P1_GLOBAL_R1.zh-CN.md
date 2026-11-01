@@ -584,3 +584,5 @@ transport 的 requires_profile_revision 不进入策略视图。新输入为
 `stpd-p1-mstd-input-v2-r19@1`，复用 V2 编码与网络；显式兼容构包保留全部参数、词表和
 tokenizer；正常训练入口接受明确选中的 r19。兼容/有限评分不证明模型已学会新机制。
 本次只实现和验证 Managed；Reference 水晶球读取与场景验证不属于本卡完成条件。
+
+为保持旧冻结词表的字段角色可分辨，r1.9 Sphere 同时以既有 `label`/`description` 文字通道表达相同公开坐标、尺寸、清开格与状态。数值字段仍保留；不新增网络参数、提示或隐藏信息。

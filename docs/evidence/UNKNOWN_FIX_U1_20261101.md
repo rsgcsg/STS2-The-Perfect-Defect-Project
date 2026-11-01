@@ -246,7 +246,7 @@ before board/parent capture. No renderer, alternative rule engine or reward defa
 was added. Both parent and board require explicit r1.9; removing the transport tag
 cannot make the old profile select a new irreversible parent option.
 
-Host62/SDK19/Runtime62 bind P1r1.9 and `stpd-p1-mstd-input-v2-r19@1`. r1.9 inherits
+Host63/SDK19/Runtime62 bind P1r1.9 and `stpd-p1-mstd-input-v2-r19@1`. r1.9 inherits
 r1.8 Trial/Claws, not r1.6/r1.7. The new compatibility CLI retains every original
 parameter/table/tokenizer; defaults and running RL3 remain unchanged. Normal data
 prepare→CLI/HTTP freeze→Store→tensor-pack→CPU worker and the normal RL Learner's
