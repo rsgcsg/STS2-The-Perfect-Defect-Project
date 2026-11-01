@@ -402,7 +402,7 @@ def _ppo_update(
     rows: list[tuple[RlSample, float, float, float, float, float]] = []
     policy_total = value_total = 0.0
     shared = [p for name, p in model.named_parameters()
-              if p.requires_grad and not name.startswith(("win_head.", "progress_head."))]
+              if p.requires_grad and not name.startswith(("win_head.", "progress_head.", "progress_residual."))]
     component_gradients: list[list[torch.Tensor | None]] = [[], []]
     catalogs: dict[str, dict[str, float]] = {}
     from .performance import grouped_indices

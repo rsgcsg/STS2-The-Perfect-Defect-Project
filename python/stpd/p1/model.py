@@ -399,9 +399,11 @@ class MStd(nn.Module):
             detached = current.detach()
             progress = self.progress_head(detached) + self.progress_residual(
                 captured[0].detach(), captured[1].detach(), detached)
+            win = self.win_head(detached)
         else:
             progress = self.progress_head(current)
-        return torch.cat((self.win_head(current), progress), dim=1)
+            win = self.win_head(current)
+        return torch.cat((win, progress), dim=1)
 
     def forward_with_values(self, frames: Sequence[ModelFrame], *, check_finite: bool = True
                             ) -> tuple[list[Tensor], Tensor]:

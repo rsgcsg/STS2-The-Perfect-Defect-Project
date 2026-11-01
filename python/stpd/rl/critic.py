@@ -47,8 +47,11 @@ class CriticConfig:
     target_std_floor: float = 0.01
     head_lr: float | None = None
     fixed_validation: bool = False
+    head_kind: str = "linear"
 
     def __post_init__(self) -> None:
+        if self.head_kind not in ("linear", "attention-residual-v1"):
+            raise BoundaryError("rl_critic", "unsupported_value_head_kind")
         if (type(self.normalize_targets) is not bool or type(self.fixed_validation) is not bool
                 or any(type(v) not in (int, float) or not math.isfinite(v) or v <= 0
                        for v in (self.target_ema, self.target_std_floor))
@@ -94,7 +97,7 @@ class CriticConfig:
             raise BoundaryError("rl_critic", "invalid_warmup_bounds")
 
 
-def enable_value_head(model: MStd, seed: int) -> None:
+def enable_value_head(model: MStd, seed: int, kind: str = "linear") -> None:
     """Reuse the existing value-head architecture; never load the historical heads."""
     if model.value_heads:
         raise BoundaryError("rl_critic", "action_only_start_package_required")
@@ -110,6 +113,10 @@ def enable_value_head(model: MStd, seed: int) -> None:
             nn.init.zeros_(head.bias)
     model.value_heads = True
     model.architecture = architecture(True, model.model_size)
+    if kind == "attention-residual-v1":
+        model.enable_progress_residual(seed + 104729)
+    elif kind != "linear":
+        raise BoundaryError("rl_critic", "unsupported_value_head_kind")
 
 
 def held_out(seed: str) -> bool:
@@ -122,6 +129,8 @@ def optimizer_groups(model: MStd, config: CriticConfig | None) -> Any:
     if config is None or config.head_lr is None:
         return model.parameters()
     head = list(model.progress_head.parameters())
+    if hasattr(model, "progress_residual"):
+        head.extend(model.progress_residual.parameters())
     head_ids = {id(p) for p in head}
     return [{"params": [p for p in model.parameters() if id(p) not in head_ids]},
             {"params": head, "fixed_lr": config.head_lr, "lr": config.head_lr}]
@@ -264,7 +273,7 @@ class OnlineCritic:
     def freeze_policy(self, warmup: bool) -> None:
         for name, parameter in self.model.named_parameters():
             parameter.requires_grad_(
-                name.startswith("progress_head.") if warmup else not name.startswith("win_head.")
+                name.startswith(("progress_head.", "progress_residual.")) if warmup else not name.startswith("win_head.")
             )
 
     def execution(self, *, inference: bool = False) -> Any:

@@ -36,7 +36,7 @@ def test_zero_head_is_exact_rng_policy_value_and_export_identity_then_critic_iso
     (differentiable_values[:,1] - 3).square().mean().backward()
     assert model.progress_head.weight.grad is not None
     assert all(p.grad is None for n,p in model.named_parameters()
-               if not n.startswith(('progress_head.', 'progress_residual.')))
+               if not n.startswith(('win_head.', 'progress_head.', 'progress_residual.')))
     optimizer = torch.optim.AdamW(model.progress_residual.parameters(), lr=3e-4)
     optimizer.step()
     model.zero_grad(set_to_none=True)
