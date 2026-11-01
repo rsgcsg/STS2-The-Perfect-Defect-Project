@@ -73,7 +73,37 @@ def read_config(path: Path) -> dict[str, Any]:
         _, frozen = load_manifest(manifest, hashed(manifest))
         if frozen['suite_id'] != RL3_LEARNING_CURVE_SUITE_ID or len(frozen['seeds']) != 100:
             raise ValueError('RL3_registered100_evaluation_manifest_required')
+    if value.get('additional_actor_plans') is not None:
+        extras = value['additional_actor_plans']
+        if (not isinstance(extras, list) or not extras
+                or any(not isinstance(ref, dict) or set(ref) != {'plan', 'job_id'}
+                       for ref in extras)):
+            raise ValueError('explicit_additional_actor_plan_bindings_required')
+        names, jobs, count = set(), set(), 0
+        for allocation in actor_allocations(value):
+            frozen = (evaluate.read_pinned(allocation['reference'])
+                      if allocation.get('reference') else
+                      json.loads(Path(allocation['plan']).read_bytes()))
+            submitted = json.loads((Path(allocation['plan']).parent / 'submission.json').read_bytes())
+            current_names = {ref['actor'] for ref in frozen['actors']}
+            if (frozen['run'] != value['run'] or frozen['peer'] != value['peer']
+                    or frozen['source_root'] != value['runtime_source']
+                    or str(submitted['job_id']).split(';')[0] != allocation['job_id']
+                    or allocation['job_id'] in jobs or names & current_names):
+                raise ValueError('additional_actor_plan_or_submission_binding_mismatch')
+            names.update(current_names)
+            jobs.add(allocation['job_id'])
+            count += len(frozen['actors'])
+        if count > 36:
+            raise ValueError('concurrent_RL_actor_limit_36_exceeded')
     return value
+
+
+def actor_allocations(config: dict[str, Any]) -> list[dict[str, Any]]:
+    # Existing plans and submission receipts remain each allocation's owners.
+    return [{'plan': config.get('actor_plan'), 'job_id': str(config['actor_job_id'])}] + [
+        {'plan': ref['plan']['path'], 'job_id': str(ref['job_id']), 'reference': ref['plan']}
+        for ref in config.get('additional_actor_plans', [])]
 
 
 def tiers(config: dict[str, Any]) -> list[dict[str, Any]]:
@@ -217,9 +247,12 @@ class Watcher:
         if self.state['stop'] is None:
             self.state['stop'] = reason
             self.persist()
-        save(Path(self.config['actor_plan']).parent / 'STOP',
-             {'reason': self.state['stop'], 'run': self.config['run']})
-        actor_signal = self.signal_once(str(self.config['actor_job_id']))
+        actor_signals = []
+        for allocation in actor_allocations(self.config):
+            save(Path(allocation['plan']).parent / 'STOP',
+                 {'reason': self.state['stop'], 'run': self.config['run']})
+            actor_signals.append(self.signal_once(allocation['job_id']))
+        actor_signal = actor_signals[0]
         if 'drain_started_at' not in self.state:
             self.state['drain_started_at'] = time.time()
             self.persist()
@@ -660,17 +693,18 @@ class Watcher:
                 return True
         return False
 
-    def actor_health(self) -> dict[str, Any]:
+    def _actor_allocation_health(self, allocation: dict[str, Any]) -> dict[str, Any]:
         """Scheduler facts distinguish a healthy learner from lost actor capacity."""
-        accounting = job_accounting(str(self.config['actor_job_id']))
-        plan = json.loads(Path(self.config['actor_plan']).read_bytes())
+        accounting = job_accounting(allocation['job_id'])
+        plan = (evaluate.read_pinned(allocation['reference']) if allocation.get('reference')
+                else json.loads(Path(allocation['plan']).read_bytes()))
         expected = len(plan['actors'])
         rows = accounting['rows']
         running_jobs = {row['job_id'] for row in rows if row['state'] == 'RUNNING'}
         failed = [row for row in rows if row['state'] in TERMINAL
                   and (row['state'] != 'COMPLETED' or row['exit_code'] != '0:0')]
         stopped, results, active = [], [], set()
-        actor_root = Path(self.config['actor_plan']).parent / 'actors'
+        actor_root = Path(allocation['plan']).parent / 'actors'
         for ref in plan['actors']:
             root = actor_root / ref['actor']
             owner_path, result_path = root / 'owner.json', root / 'result.json'
@@ -695,10 +729,23 @@ class Watcher:
         health = {**accounting, 'expected': expected, 'running': len(running_jobs),
                   'active_actors': len(active), 'actor_results': results,
                   'failed': failed, 'stopped_ledgers': stopped}
-        # Preserve the historical Slurm-running field; active_actors is the game-loop capacity.
+        return health
+
+    def actor_health(self) -> dict[str, Any]:
+        parts = [self._actor_allocation_health(a) for a in actor_allocations(self.config)]
+        health = parts[0] if len(parts) == 1 else {
+            'job_id': str(self.config['actor_job_id']), 'allocations': parts,
+            'terminal': all(p['terminal'] for p in parts),
+            'all_completed': all(p['all_completed'] for p in parts),
+            **{name: sum(p[name] for p in parts)
+               for name in ('expected', 'running', 'active_actors')},
+            **{name: [row for p in parts for row in p[name]]
+               for name in ('rows', 'failed', 'actor_results', 'stopped_ledgers')}}
+        failed, results = health['failed'], health['actor_results']
+        missing = any(not p['rows'] for p in parts)
         signature = json.dumps({'failed': failed, 'actor_results': results,
-                                'missing': not rows}, sort_keys=True)
-        if (failed or results or not rows) and self.state.get('actor_attention') != signature:
+                                'missing': missing}, sort_keys=True)
+        if (failed or results or missing) and self.state.get('actor_attention') != signature:
             self.publish('attention', reason='actor_capacity_requires_owner_read', actors=health)
             self.state['actor_attention'] = signature
         return health
@@ -802,7 +849,9 @@ class Watcher:
             self.telemetry('attention', reason='learner_drain_observation_unavailable',
                            error_type=type(error).__name__)
         try:
-            accounting = job_accounting(str(self.config['actor_job_id']))
+            accounts = [job_accounting(a['job_id']) for a in actor_allocations(self.config)]
+            accounting = accounts[0] if len(accounts) == 1 else {
+                'terminal': all(a['terminal'] for a in accounts), 'allocations': accounts}
         except Exception as error:  # noqa: BLE001 -- preserve owner intent on external failure
             accounting = {'terminal': False, 'error_type': type(error).__name__}
         try:

@@ -139,14 +139,43 @@ def launcher(path: Path, plan: dict[str, Any]) -> str:
         '--mode evaluation', '--mode rl', 1)
 
 
-def submit(path: Path, *, dry_run: bool = False) -> dict[str, Any]:
+def submit(path: Path, *, dry_run: bool = False,
+           additional_to: list[Path] | None = None) -> dict[str, Any]:
     plan = load_plan(path)
     require_modules(Path(plan['source_root']))
     root = private_root(path.parent)
+    parents = []
+    if additional_to is not None:
+        if not additional_to or len(set(additional_to)) != len(additional_to):
+            raise ValueError('distinct_existing_same_run_parent_plans_required')
+        seen_names = {a['actor'] for a in plan['actors']}
+        for original in additional_to:
+            parent = load_plan(original)
+            if (original == path or parent['run'] != plan['run'] or parent['peer'] != plan['peer']
+                    or parent['source_root'] != plan['source_root']
+                    or {a['actor'] for a in parent['actors']} & seen_names):
+                raise ValueError('additional_actor_run_peer_source_or_names_mismatch')
+            seen_names.update(a['actor'] for a in parent['actors'])
+            submitted = json.loads((original.parent / 'submission.json').read_bytes())
+            parents.append({'plan': {'path': str(original), 'sha256': hashed(original)},
+                            'job_id': str(submitted['job_id']).split(';')[0],
+                            'actors': len(parent['actors'])})
+        if len({p['job_id'] for p in parents}) != len(parents):
+            raise ValueError('distinct_existing_same_run_parent_jobs_required')
     with scheduler.user_submission_lock():
         existing = scheduler.output(['squeue', '-h', '-u', scheduler.username(), '-n',
                                      'spireagent-f2', '-o', '%i'])
-        if existing:
+        if parents:
+            active = {line.split('_')[0].strip() for line in existing.splitlines() if line.strip()}
+            known = {p['job_id'] for p in parents}
+            if not active <= known:
+                raise ValueError('existing_friday_array_must_drain_before_new_submission')
+            if len(plan['actors']) + sum(p['actors'] for p in parents
+                                        if p['job_id'] in active) > 36:
+                raise ValueError('concurrent_RL_actor_limit_36_exceeded')
+            if (root / 'submission-intent.json').exists():
+                raise ValueError('previous_actor_submission_requires_reconciliation_no_retry')
+        elif existing:
             raise ValueError('existing_friday_array_must_drain_before_new_submission')
         if (root / 'STOP').exists() or any((root / 'actors').glob('*/owner.json')):
             raise ValueError('previous_actor_owner_requires_reconciliation_no_reoffer')
@@ -170,8 +199,11 @@ def submit(path: Path, *, dry_run: bool = False) -> dict[str, Any]:
             f'--output={logs}/%A_%a.out', f'--error={logs}/%A_%a.err', str(script)]
         result = {'schema': 'spireagent/friday-RL-submit-v1', 'command': command,
             'cores': count, 'idle_smp_cores': idle, 'queued_smp_jobs': queued,
-            'dry_run': dry_run, 'cross_actor_immediate_unknown_stop': False}
+            'dry_run': dry_run, 'cross_actor_immediate_unknown_stop': False,
+            **({'additional_to': parents} if parents else {})}
         if not dry_run:
+            if parents:
+                save(root / 'submission-intent.json', {**result, 'at': time.time()})
             result['job_id'] = scheduler.output(command)
             save(root / 'submission.json', result)
         return result
@@ -313,6 +345,7 @@ def main():
         sub.add_argument('--plan', type=Path, required=True)
         if name == 'submit':
             sub.add_argument('--dry-run', action='store_true')
+            sub.add_argument('--additional-to', type=Path, nargs='+')
     save_parser = commands.add_parser('save')
     save_parser.add_argument('--plan', type=Path, required=True)
     save_parser.add_argument('--actor', required=True)
@@ -326,7 +359,7 @@ def main():
             behavior=json.loads(args.behavior.read_bytes()) if args.behavior else None,
             seed_namespace=args.seed_namespace)
     elif args.command == 'submit':
-        result = submit(args.plan, dry_run=args.dry_run)
+        result = submit(args.plan, dry_run=args.dry_run, additional_to=args.additional_to)
     elif args.command == 'save':
         result = resume_snapshot(args.plan, args.actor)
     else:
