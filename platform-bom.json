@@ -3,22 +3,22 @@
   "version": "0.2.0-rc.1",
   "components": {
     "native_foundation": {
-      "version": "0.1.0-rc.12",
-      "source_revision": "d726594f8a9166cbb7261873f6465bcb09bf79ee",
-      "component_tree_revision": "a05f13ab8e887426b555173f0163ebc5e3e7b18c",
-      "component_source_digest_sha256": "c0814aaef54d9284f03aacb2b408568c90c84008fbefc01c032f17ee8ec85bdf"
+      "version": "0.1.0-rc.13",
+      "source_revision": "baa74dd0deb5ae0855ee24b0c2fb6e06ac3b3ade",
+      "component_tree_revision": "30a3b55a69244caf9edd43e4fb433238a986eff9",
+      "component_source_digest_sha256": "de8477dc72d368e792094c187fa0672fd010bda93398ffde73143781fa87806b"
     },
     "connector": {
-      "version": "1.3.0-rc.36",
-      "source_revision": "d726594f8a9166cbb7261873f6465bcb09bf79ee",
-      "component_tree_revision": "5a1c2dffc0f6d9ac6f80c718ee23738ff7f182f2",
-      "component_source_digest_sha256": "61914eb619feb8d129f1cdc53ad2fcfc46ed1fac845ec005dd7c96a8b6c4c852"
+      "version": "1.3.0-rc.37",
+      "source_revision": "baa74dd0deb5ae0855ee24b0c2fb6e06ac3b3ade",
+      "component_tree_revision": "ec465febfddbddd859323170429c23aa10a00689",
+      "component_source_digest_sha256": "052b87b6912a81341372dbc428a4b289771f926cc03abd858d0e1851d6f583c0"
     },
     "host_runtime": {
-      "version": "1.1.0-rc.60",
-      "source_revision": "96622cc966f9dd303432fe1cf64731e5e1a4a558",
-      "component_tree_revision": "2b491ea462eaf1daf5a1d2b74d4a345da42156d7",
-      "component_source_digest_sha256": "3b7fb7d251717560f0e27d9ee9d8dd512e5f6dd48a8cc7e82b9ab0ec3e118ad0"
+      "version": "1.1.0-rc.61",
+      "source_revision": "742160e243c72daff22ddbc89f03b73b1de6219e",
+      "component_tree_revision": "4346da970c3fe67c53518a1799a3765e5209c374",
+      "component_source_digest_sha256": "51ad01678d0dcd0b70712ceb661ab2387bf537c9015c2468d0f66c22e2cd4023"
     },
     "annotator": {
       "version": "0.3.0-rc.33",
@@ -33,10 +33,10 @@
       "component_source_digest_sha256": "156db31267fef80ab723b1f6095521a74f3bff3f3b1eded3acfd688aa8c547f3"
     },
     "policy_runtime": {
-      "version": "0.1.0-rc.60",
-      "source_revision": "96622cc966f9dd303432fe1cf64731e5e1a4a558",
-      "component_tree_revision": "c7af53db33bc4eb3c55523fed18a3bf3bc4469c0",
-      "component_source_digest_sha256": "83e2ea6e506dd6ca720e0298b21c3f18aa4cf897f9158f3b8ba0a8445d12e467"
+      "version": "0.1.0-rc.61",
+      "source_revision": "0759e76e619b9a6935b4c82f237c2d0b904c09ae",
+      "component_tree_revision": "3e4daa4d7ce782d714dc0cec76cd73b7e5d4f523",
+      "component_source_digest_sha256": "151df8df3ec203c1fec9921effd1c6599f727fb4ee7f5827b6d1fd8e09e1d176"
     },
     "workbench": {
       "version": "0.1.0-rc.4",
@@ -51,13 +51,13 @@
       "component_source_digest_sha256": "508649a51ab6eb2e75ef5eda5ab3c6c6fe42e10437fa4ded12062b6515f7cea5"
     },
     "game_mod": {
-      "version": "0.2.0-rc.72",
-      "source_revision": "1a353fcde60a3d8d6908f6d3e933d01ffb7f3c15",
-      "component_tree_revision": "885e251114ad8d601a47cc4c89e5163c2715f161",
-      "component_source_digest_sha256": "b270dec720d238c23d54c4144196ceb54f2687644c8b0e839e170f7e791066bf"
+      "version": "0.2.0-rc.73",
+      "source_revision": "baa74dd0deb5ae0855ee24b0c2fb6e06ac3b3ade",
+      "component_tree_revision": "26ce4d28b35fdf6f15d9a7d0679d708e6e56025b",
+      "component_source_digest_sha256": "af9ff08be273f9f5c79126f080bff24a2c270ef234a2de35aca5b12ccaa5ea77"
     },
     "player_environment_protocol": "1.0.0",
-    "typescript_sdk": "1.3.0-rc.17"
+    "typescript_sdk": "1.3.0-rc.18"
   },
   "public_packages": {
     "connector_host": {
@@ -157,8 +157,8 @@
     },
     "connector": {
       "source_revision": "09e5c2363fff64b2e8cfa07d16ec7cf22d8ad3b5",
-      "current_component_source_revision": "d726594f8a9166cbb7261873f6465bcb09bf79ee",
-      "current_component_source_digest_sha256": "61914eb619feb8d129f1cdc53ad2fcfc46ed1fac845ec005dd7c96a8b6c4c852",
+      "current_component_source_revision": "baa74dd0deb5ae0855ee24b0c2fb6e06ac3b3ade",
+      "current_component_source_digest_sha256": "052b87b6912a81341372dbc428a4b289771f926cc03abd858d0e1851d6f583c0",
       "source_relation": "loaded_human_v2_artifact_precedes_unified_platform_source",
       "artifact_sha256": "6c66cbf06757dca3e7d910467fb56b89376f109c6d7d0ba47d2bc0260ab4a3d2",
       "artifact_mvid": "11f1da35-558f-4346-8ec9-a493fea95cb8",
@@ -258,8 +258,8 @@
     "connector": {
       "source_revision": "4de52cfd72c6bf5b0d2312538152e81c616dabfb",
       "source_digest_sha256": "8651b47e2fec8e0c77689a8e8774377795d79c188f2d69910a116e72db8f78c1",
-      "current_component_source_revision": "d726594f8a9166cbb7261873f6465bcb09bf79ee",
-      "current_component_source_digest_sha256": "61914eb619feb8d129f1cdc53ad2fcfc46ed1fac845ec005dd7c96a8b6c4c852",
+      "current_component_source_revision": "baa74dd0deb5ae0855ee24b0c2fb6e06ac3b3ade",
+      "current_component_source_digest_sha256": "052b87b6912a81341372dbc428a4b289771f926cc03abd858d0e1851d6f583c0",
       "source_relation": "loaded_native_source_precedes_current_discriminator_source",
       "artifact_sha256": "04104ca5cd47c82329be185a8aa7017f7982b2062048fbf825488bead231d1c1",
       "artifact_mvid": "7408a183-f5a8-4f95-a997-dbf588b1536b",
@@ -269,9 +269,9 @@
       "source_revision": "e19b30315015664a5647ab351cdcefb09417f275",
       "source_digest_sha256": "d227321727d07edd2d4c67928edec439c26f156494dd9cfab98d2bac4debf346",
       "version": "0.1.0-rc.1",
-      "current_component_source_revision": "96622cc966f9dd303432fe1cf64731e5e1a4a558",
-      "current_component_source_digest_sha256": "83e2ea6e506dd6ca720e0298b21c3f18aa4cf897f9158f3b8ba0a8445d12e467",
-      "current_component_version": "0.1.0-rc.60",
+      "current_component_source_revision": "0759e76e619b9a6935b4c82f237c2d0b904c09ae",
+      "current_component_source_digest_sha256": "151df8df3ec203c1fec9921effd1c6599f727fb4ee7f5827b6d1fd8e09e1d176",
+      "current_component_version": "0.1.0-rc.61",
       "source_relation": "historical_runtime_source_precedes_standalone_consumer_package"
     },
     "annotator": {
@@ -910,15 +910,15 @@
       "version": "0.2.0-rc.1",
       "platform_source_revision": "b5389a0b4a1bbed37e6a9718776fdf38f06f50c9",
       "platform_source_digest_sha256": "dbcd6ec1df10cad5ad011eb61a2f2ca533d7a110cd3f1296efa9c154b98d0cea",
-      "current_component_source_revision": "1a353fcde60a3d8d6908f6d3e933d01ffb7f3c15",
-      "current_component_source_digest_sha256": "b270dec720d238c23d54c4144196ceb54f2687644c8b0e839e170f7e791066bf",
+      "current_component_source_revision": "baa74dd0deb5ae0855ee24b0c2fb6e06ac3b3ade",
+      "current_component_source_digest_sha256": "af9ff08be273f9f5c79126f080bff24a2c270ef234a2de35aca5b12ccaa5ea77",
       "artifact_sha256": "04104ca5cd47c82329be185a8aa7017f7982b2062048fbf825488bead231d1c1",
       "artifact_mvid": "7408a183-f5a8-4f95-a997-dbf588b1536b",
       "installed": "pass",
       "loaded": "pass",
       "rollback_available": true,
       "rollback": "apps/game-mod/.local/deployments/2026-08-26T14-37-45.145Z",
-      "current_component_version": "0.2.0-rc.72"
+      "current_component_version": "0.2.0-rc.73"
     },
     "runtime": {
       "runtime_instance_id": "2388aba057ab4ff5a37588d235a28fab",
