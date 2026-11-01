@@ -338,3 +338,69 @@ def test_resume_copy_reuses_terminal_owner_without_reopening_games(
     assert result['new_games'] == 0 and result['copy_resumed']
     assert (partial / 'payload').read_text() == 'retained original bytes'
     assert json.loads((persistent / 'snapshot.json').read_bytes())['full_readback']
+
+
+def test_same_run_additional_array_keeps_original_plan_and_single_core_workers(
+        rl, inputs, tmp_path):
+    _plan, parent = prepared(rl, inputs, actors=12)
+    (parent.parent / 'submission.json').write_text(json.dumps({'job_id': '123'}))
+    original = parent.read_bytes()
+    execution, learner, _ = inputs
+    extra = tmp_path.resolve() / 'extra'
+    plan = rl.prepare(execution, learner, extra, actors=12)
+    with (patch.object(rl, 'require_modules'),
+          patch.object(rl.scheduler, 'submission_lock_path', return_value=tmp_path / 'submit.lock'),
+          patch.object(rl.scheduler, 'output', side_effect=['123_[0-11]', '0/400/0/400', ''])):
+        result = rl.submit(extra / 'plan.json', additional_to=[parent], dry_run=True)
+    assert '--array=0-11%12' in result['command'] and '--cpus-per-task=1' in result['command']
+    assert result['additional_to'][0]['job_id'] == '123'
+    assert parent.read_bytes() == original
+    assert not {a['actor'] for a in _plan['actors']} & {a['actor'] for a in plan['actors']}
+    assert not (extra / 'submission-intent.json').exists()
+
+
+@pytest.mark.parametrize('existing,count,error', [
+    ('999_[0-11]', 12, 'must_drain'), ('123_[0-23]', 16, 'limit_36')])
+def test_additional_array_rejects_unlisted_owner_or_total_over36(
+        rl, inputs, tmp_path, existing, count, error):
+    _plan, parent = prepared(rl, inputs, actors=24)
+    (parent.parent / 'submission.json').write_text(json.dumps({'job_id': '123'}))
+    execution, learner, _ = inputs
+    extra = tmp_path.resolve() / 'extra'
+    rl.prepare(execution, learner, extra, actors=count)
+    with (patch.object(rl, 'require_modules'),
+          patch.object(rl.scheduler, 'submission_lock_path', return_value=tmp_path / 'submit.lock'),
+          patch.object(rl.scheduler, 'output', return_value=existing) as scheduler,
+          pytest.raises(ValueError, match=error)):
+        rl.submit(extra / 'plan.json', additional_to=[parent], dry_run=True)
+    assert scheduler.call_count == 1
+    assert not (extra / 'submission-intent.json').exists()
+
+
+def test_additional_submission_uncertain_outcome_is_not_offered_again(rl, inputs, tmp_path):
+    _plan, parent = prepared(rl, inputs, actors=12)
+    (parent.parent / 'submission.json').write_text(json.dumps({'job_id': '123'}))
+    execution, learner, _ = inputs
+    extra = tmp_path.resolve() / 'extra'
+    rl.prepare(execution, learner, extra, actors=12)
+    commands = []
+
+    def scheduler(command):
+        if command[0] == 'sbatch':
+            commands.append(command)
+            raise RuntimeError('injected_unknown_scheduler_response')
+        if command[0] == 'sinfo':
+            return '0/400/0/400'
+        return '123_[0-11]' if '-n' in command else ''
+
+    with (patch.object(rl, 'require_modules'),
+          patch.object(rl.scheduler, 'submission_lock_path', return_value=tmp_path / 'submit.lock'),
+          patch.object(rl.scheduler, 'output', side_effect=scheduler)):
+        with pytest.raises(RuntimeError, match='unknown_scheduler'):
+            rl.submit(extra / 'plan.json', additional_to=[parent])
+        assert (extra / 'submission-intent.json').is_file()
+        with pytest.raises(ValueError, match='reconciliation_no_retry'):
+            rl.submit(extra / 'plan.json', additional_to=[parent])
+        with pytest.raises(ValueError, match='reconciliation_no_retry'):
+            rl.submit(extra / 'plan.json')  # changing entry mode cannot re-offer an unknown submit
+    assert len(commands) == 1

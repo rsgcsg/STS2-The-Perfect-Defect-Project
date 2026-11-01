@@ -872,3 +872,65 @@ def test_watcher_observation_report_reads_only_verified_local_files(watch, tmp_p
     with (patch.object(watch.evaluate, 'load_plan', return_value=plan),
           pytest.raises(ValueError, match='pinned_input_changed')):
         instance.evaluation_report(root / 'result.json', {'plan': str(root / 'plan.json')})
+
+
+def test_additional_allocations_share_health_stop_and_require_all_to_drain(watch, tmp_path):
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    peer = {'kind': 'local', 'directory': str(tmp_path / 'peer')}
+    plans = []
+    for actor, job in (('first', '123'), ('extra', '456')):
+        path = tmp_path / actor / 'plan.json'
+        path.parent.mkdir()
+        path.write_text(json.dumps({'run': 'run', 'peer': peer, 'source_root': '/frozen/source',
+                                    'actors': [{'actor': actor}]}))
+        (path.parent / 'submission.json').write_text(json.dumps({'job_id': job}))
+        plans.append(path)
+    config = {'schema': watch.SCHEMA, 'run': 'run', 'peer': peer, 'started_at': 0,
+              'wall_seconds': 72000, 'poll_seconds': 60, 'evaluation_mode': 'direct',
+              'actor_plan': str(plans[0]), 'actor_job_id': '123',
+              'runtime_source': '/frozen/source', 'additional_actor_plans': [
+                  {'plan': {'path': str(plans[1]), 'sha256': watch.hashed(plans[1])},
+                   'job_id': '456'}]}
+    file = tmp_path / 'watch.json'
+    file.write_text(json.dumps(config))
+    assert watch.read_config(file) == config
+    exchange = SimpleNamespace(request_stop=Mock(),
+                               latest_event=lambda: {'kind': 'finished', 'at': 100},
+                               latest_model=lambda: {'version': 1},
+                               latest_checkpoint=lambda: {'version': 1})
+    with patch.object(watch, 'Exchange', return_value=exchange):
+        observer = watch.Watcher(config, tmp_path / 'watch')
+    observer.publish = Mock()
+
+    def accounting(job, terminal=False):
+        return {'job_id': job, 'rows': [{'job_id': job + '_0',
+                'state': 'COMPLETED' if terminal else 'RUNNING', 'exit_code': '0:0'}],
+                'terminal': terminal, 'all_completed': terminal}
+
+    with patch.object(watch, 'job_accounting', side_effect=lambda job: accounting(job)):
+        health = observer.actor_health()
+    assert health['expected'] == health['running'] == 2 and len(health['allocations']) == 2
+    with patch.object(watch.subprocess, 'run',
+                      return_value=SimpleNamespace(returncode=0)) as signal:
+        observer.stop('test_stop')
+        observer.stop('test_stop')
+    assert signal.call_count == 2
+    assert {call.args[0][-1] for call in signal.call_args_list} == {'123', '456'}
+    assert all((p.parent / 'STOP').is_file() for p in plans)
+    observer.state['drain_started_at'] = 100
+    with (patch.object(watch.time, 'time', return_value=200),
+          patch.object(watch, 'job_accounting',
+                       side_effect=lambda job: accounting(job, job == '123'))):
+        assert observer.drain() is False
+    with (patch.object(watch.time, 'time', return_value=200),
+          patch.object(watch, 'job_accounting', side_effect=lambda job: accounting(job, True))):
+        assert observer.drain() is True
+    changed = json.loads(plans[1].read_bytes())
+    changed['run'] = 'foreign'
+    plans[1].write_text(json.dumps(changed))
+    config['additional_actor_plans'][0]['plan']['sha256'] = watch.hashed(plans[1])
+    file.write_text(json.dumps(config))
+    with pytest.raises(ValueError, match='additional_actor_plan_or_submission_binding_mismatch'):
+        watch.read_config(file)
