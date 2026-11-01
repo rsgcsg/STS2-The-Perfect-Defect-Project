@@ -41,6 +41,7 @@ internal static class LiveObservationReader
     private static readonly ReaderRegistration[] ReaderRegistrations =
     {
         new(TutorialModalSurfaceReader.SurfaceKind, static () => new TutorialModalSurfaceReader()),
+        new(AbandonRunConfirmationSurfaceReader.SurfaceKind, static () => new AbandonRunConfirmationSurfaceReader()),
         new("deck_enchant_selection", static () => new DeckEnchantSurfaceReader()),
         new("combat_hand_card_selection", static () => new CombatHandCardSelectionSurfaceReader()),
         new("card_bundle_selection", static () => new CardBundleSelectionSurfaceReader()),

@@ -1038,10 +1038,47 @@ function currentSurface(state, ctx) {
       };
     }
     case "simple_card_select": return canonicalSelectorSurface(state, ctx, commonContext);
+    case "abandon_confirm": {
+      const controls = Array.isArray(state.controls) ? state.controls : [];
+      const complete = state.complete === true && state.stage === "awaiting_confirmation"
+        && state.modal_kind === "abandon_run_confirmation" && state.input_owner_ref === state.modal_ref
+        && ["run_ref", "room_ref", "event_ref", "parent_option_ref", "modal_ref", "header", "body"].every(key =>
+          typeof state[key] === "string" && state[key].trim().length > 0)
+        && controls.length === 2 && new Set(controls.map(control => control?.control_ref)).size === 2
+        && controls.every(control => plainObject(control) && typeof control.control_ref === "string"
+          && control.control_ref.trim().length > 0 && typeof control.label === "string" && control.label.trim().length > 0
+          && typeof control.enabled === "boolean" && (control.semantic_id === "yes" && control.operation === "confirm_abandon"
+            || control.semantic_id === "no" && control.operation === "cancel_abandon"))
+        && controls.filter(control => control.semantic_id === "yes").length === 1
+        && controls.filter(control => control.semantic_id === "no").length === 1;
+      const visibleControls = controls.filter(plainObject).map(control => {
+        const item = ctx.referent({ role: "control", id: ctx.entityId("control", control.control_ref),
+          label: control.label, enabled: complete && control.enabled, properties: {
+            semantic_id: control.semantic_id, operation: control.operation, label: control.label, enabled: control.enabled } });
+        if (complete && control.enabled) ctx.action({ verb: control.semantic_id === "yes" ? "confirm" : "cancel",
+          subject: item, label: control.label, raw: { cmd: "action", action: control.operation, args: {
+            run_ref: state.run_ref, room_ref: state.room_ref, event_ref: state.event_ref,
+            modal_ref: state.modal_ref, control_ref: control.control_ref } } });
+        return item.properties;
+      });
+      return { kind: "abandon_run_confirmation", stage: state.stage, prompt: visibleText(state.header),
+        surface: { kind: "abandon_run_confirmation", stage: state.stage, requires_profile_revision: "r1.8",
+          modal_entity_id: ctx.entityId("modal", state.modal_ref), event_entity_id: ctx.entityId("event", state.event_ref),
+          room_entity_id: ctx.entityId("room", state.room_ref), parent_option_entity_id: ctx.entityId("option", state.parent_option_ref),
+          title: visibleText(state.header), body: visibleText(state.body), controls: visibleControls },
+        context: { kind: "event", event_id: "TRIAL" }, ...supported, complete,
+        missing: complete ? [] : ["exact_current_abandon_confirmation"] };
+    }
     case "event_choice": {
       const currentOptions = Array.isArray(state.options) ? state.options : [];
       const optionRefs = new Set();
-      const complete = state.event_public_complete === true
+      const abandon = state.abandon_confirmation;
+      const abandonComplete = abandon == null || plainObject(abandon) && abandon.kind === "abandon_run_confirmation"
+        && abandon.event_ref === state.event_ref && abandon.room_ref === state.room_ref
+        && ["event_ref", "room_ref", "parent_option_ref", "title", "body"].every(key =>
+          typeof abandon[key] === "string" && abandon[key].trim().length > 0)
+        && currentOptions.filter(option => option?.native_ref === abandon.parent_option_ref).length === 1;
+      const complete = abandonComplete && state.event_public_complete === true
         && typeof state.room_ref === "string" && state.room_ref.length > 0
         && typeof state.event_ref === "string" && state.event_ref.length > 0
         && typeof state.event_id === "string" && typeof state.event_name === "string"
@@ -1085,7 +1122,13 @@ function currentSurface(state, ctx) {
       });
       return {
         kind: "event_option", stage: "ready", prompt: null,
-        surface: { kind: "event_option", options },
+        surface: { kind: "event_option", options,
+          ...(state.abandon_confirmation == null ? {} : { requires_profile_revision: "r1.8", abandon_confirmation: {
+            kind: state.abandon_confirmation.kind,
+            event_entity_id: ctx.entityId("event", state.abandon_confirmation.event_ref),
+            room_entity_id: ctx.entityId("room", state.abandon_confirmation.room_ref),
+            parent_option_entity_id: ctx.entityId("option", state.abandon_confirmation.parent_option_ref),
+            title: visibleText(state.abandon_confirmation.title), body: visibleText(state.abandon_confirmation.body) } }) },
         context: { kind: "event", event_id: state.event_id ?? null, name: visibleText(state.event_name),
           ancient: state.ancient ?? null, in_dialogue: state.in_dialogue ?? null,
           ...(state.description == null ? {} : { body: visibleText(state.description) }) },
@@ -2774,6 +2817,7 @@ export class ManagedPlayerEnvironmentSession {
   #validateSdk;
   #performance = new Map();
   #publicEntityAliases = new Map();
+  #stateDigest = null;
 
   constructor({
     process,
@@ -2894,6 +2938,14 @@ export class ManagedPlayerEnvironmentSession {
       throw new Error("managed_session_tainted_after_successor_projection_failure");
     if (this.#projection == null) throw new Error("No managed run is mounted.");
     return this.#projection.snapshot;
+  }
+
+  async refreshSettling({ timeoutMs = 10_000 } = {}) {
+    const snapshot = this.observe();
+    if (this.#tainted || snapshot.status !== "settling") return snapshot;
+    const state = await this.#process.request({ cmd: "observe_decision" }, timeoutMs);
+    if (state?.type !== "decision") throw new Error("managed_observe_decision_failed");
+    return this.#setState(state, timeoutMs, true);
   }
 
   settledRelicCounters(expectedSnapshotId) {
@@ -3065,7 +3117,7 @@ export class ManagedPlayerEnvironmentSession {
     return value;
   }
 
-  async #setState(state, timeoutMs) {
+  async #setState(state, timeoutMs, preserveUnchanged = false) {
     let enriched = state;
     if (state?.decision === "map_select" && !plainObject(state.context?.current_map)) {
       const mapReadStarted = performance.now();
@@ -3080,6 +3132,8 @@ export class ManagedPlayerEnvironmentSession {
         this.#record("map_enrichment", performance.now() - mapReadStarted);
       }
     }
+    const stateDigest = digest(enriched);
+    if (preserveUnchanged && stateDigest === this.#stateDigest) return this.#projection.snapshot;
     this.#sequence += 1;
     const projectionStarted = performance.now();
     this.#projection = projectManagedCandidateDecision({
@@ -3091,6 +3145,7 @@ export class ManagedPlayerEnvironmentSession {
       identityMode: this.#identityMode,
       validateSdk: this.#validateSdk
     });
+    this.#stateDigest = stateDigest;
     this.#record("projection_total", performance.now() - projectionStarted);
     for (const [name, milliseconds] of Object.entries(this.#projection.performance)) {
       if (name === "total_ms") continue;

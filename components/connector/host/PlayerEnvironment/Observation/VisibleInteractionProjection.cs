@@ -253,7 +253,11 @@ internal static partial class PlayerEnvironmentService
                 value.RequireManualConfirmation, value.CanCancel,
                 value.CanConfirm, value.Cards
             }),
-            EventOptionSurface value => ToNode(new { value.Kind, value.Options }),
+            EventOptionSurface value => ToNode(new { value.Kind, value.Options,
+                value.AbandonConfirmation, RequiresProfileRevision = value.AbandonConfirmation == null ? null : "r1.8" }),
+            AbandonRunConfirmationSurface value => ToNode(new { value.Kind, value.Stage, value.ModalEntityId,
+                value.EventEntityId, value.RoomEntityId, value.ParentOptionEntityId, value.Title, value.Body,
+                value.Controls, RequiresProfileRevision = "r1.8" }),
             PotionPopupSurface value => ToNode(new { value.Kind, value.PotionEntityId, value.DefinitionId,
                 value.Name, value.Slot, value.CanUse, value.CanDiscard, value.DirectCombatUse, value.UseTargetEntityIds }),
             EventDialogueSurface value => ToNode(new

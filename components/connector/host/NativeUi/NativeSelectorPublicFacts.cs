@@ -40,7 +40,7 @@ internal sealed record NativeSelectorPreviewFacts(
     NativeSelectorOccurrenceFacts Request, IReadOnlyList<NativeSelectorCandidatePreview> Candidates,
     [property: JsonIgnore] EnchantmentModel? Enchantment, int? EnchantmentAmount, NativeSelectorEnchantmentSummary? EnchantmentSummary,
     bool RequiresAggregateAfterPresentation,
-    IReadOnlyList<string> Missing)
+    IReadOnlyList<string> Missing, string? TransformationPreview = null)
 {
     // This is generation/source-fact readiness, not public presentation completeness.
     internal bool ModelFactsReady => Request.MechanicsQualified && Missing.Count == 0
@@ -67,8 +67,11 @@ internal static class NativeSelectorPublicFacts
     {
         var missing = new List<string>();
         bool qualified = MechanicsQualified(state.Owner.GetType(), originalOnlyTransform);
+        Func<CardModel, CardTransformation>? transformation = originalOnlyTransform && state.Owner is NDeckTransformSelectScreen transformOwner
+            ? TransformProjection(transformOwner) : null;
+        bool deterministicTransform = qualified && NativeCardPreviewReadQualification.IsDeterministicTransformProjection(transformation);
         bool customTransform = qualified && originalOnlyTransform && state.Owner is NDeckTransformSelectScreen transform
-            && !DefaultTransformProjectionQualified(TransformProjection(transform));
+            && !DefaultTransformProjectionQualified(transformation) && !deterministicTransform;
         qualified &= !customTransform;
         // Preferences getters are native methods too. Read their values only
         // after the fixed source/patch preflight, not as part of testing it.
@@ -116,7 +119,7 @@ internal static class NativeSelectorPublicFacts
             NativeDetachedCardPreview? preview = null;
             string? gap = null;
             string context = "native_original_only";
-            bool requiredAfter = state.Owner is NDeckUpgradeSelectScreen || singleEnchant;
+            bool requiredAfter = state.Owner is NDeckUpgradeSelectScreen || singleEnchant || deterministicTransform;
             if (state.Owner is NDeckUpgradeSelectScreen)
             {
                 context = "native_deck_upgrade_after";
@@ -128,14 +131,20 @@ internal static class NativeSelectorPublicFacts
                 NativeDetachedCardPreviewFactory.TrySingleEnchant(original, enchantment, exact, out preview, out gap);
             }
             else if (singleEnchant) gap = "native_selector_current_enchantment_owner_facts_unavailable";
+            else if (deterministicTransform)
+            {
+                context = "native_deterministic_transform_after";
+                NativeDetachedCardPreviewFactory.TryDeterministicTransform(original, transformation, out preview, out gap);
+            }
             // Multi-enchant's actual UI shows original cards plus the native
             // enchantment summary. It has no per-candidate MaxSelect=1 widget.
-            // Transform delegates/random generators are never invoked here.
+            // Unknown transform delegates and random generators are never invoked here.
             bool modelReady = !requiredAfter || preview != null;
             candidates.Add(new(original, preview, modelReady, context, gap == null ? Array.Empty<string>() : new[] { gap }));
         }
         return new(request, candidates.ToArray(), enchantment, amount, summary,
-            state.Owner is NDeckUpgradeSelectScreen || singleEnchant, missing.ToArray());
+            state.Owner is NDeckUpgradeSelectScreen || singleEnchant || deterministicTransform, missing.ToArray(),
+            deterministicTransform ? "deterministic_native_after" : null);
     }
 
     private static bool TrySummary(object owner, int amount, out NativeSelectorEnchantmentSummary? summary)

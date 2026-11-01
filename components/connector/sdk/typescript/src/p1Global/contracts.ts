@@ -15,7 +15,8 @@ export const P1G_REVISION = "r1.5" as const;
  * r1.5 handshake; a new r1.6 view must identify its derivation, never relabel raw. */
 export const P1G_ORDER_REVISION = "r1.6" as const;
 export const P1G_SETTLED_REVISION = "r1.7" as const;
-export type P1Revision = typeof P1G_REVISION | typeof P1G_ORDER_REVISION | typeof P1G_SETTLED_REVISION;
+export const P1G_INTERACTION_REVISION = "r1.8" as const;
+export type P1Revision = typeof P1G_REVISION | typeof P1G_ORDER_REVISION | typeof P1G_SETTLED_REVISION | typeof P1G_INTERACTION_REVISION;
 /** Approved noncombat belt boundary. Other scenes retain their original contract. */
 export const P1G_NONCOMBAT_POTION_SCENES: readonly string[] = Object.freeze([
   "event_option", "event_dialogue", "map_navigation", "rest_site", "shop_room", "shop_inventory",

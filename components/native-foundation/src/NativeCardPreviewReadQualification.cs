@@ -282,27 +282,30 @@ public static partial class NativeCardPreviewReadQualification
         {
             // Explicit exact-build method inventory; it contains no costs,
             // damage values or other reimplementation of native upgrade rules.
-            if (card.GetType().GetMethod("OnUpgrade", NativeMembers) is not { } upgrade
-                || !(upgrade.DeclaringType == typeof(CardModel)
-                    || upgrade.DeclaringType == card.GetType() && NativeUpgradeMethodInventory.Contains(card.GetType().Name))
-                // Harmony keys inherited methods by their actual declaration.
-                || !IsUnpatched(upgrade.DeclaringType?.GetMethod("OnUpgrade", NativeMembers | BindingFlags.DeclaredOnly))
-                // Reuse the render qualification for the effective native getter;
-                // native curses/status cards override the limit with zero.
-                || !NativeRenderMethod(card.GetType().GetMethod("get_MaxUpgradeLevel", NativeMembers))
-                || !MethodsUnpatched(typeof(CardModel), "UpgradeInternal", "get_IsUpgradable", "get_CurrentUpgradeLevel",
-                    "set_CurrentUpgradeLevel", "get_MaxUpgradeLevel", "AddKeyword", "RemoveKeyword", "InvokeEnergyCostChanged",
-                    "get_UpgradePreviewType", "set_UpgradePreviewType")
-                || !MethodsUnpatched(typeof(DynamicVar), "UpgradeValueBy", "get_WasJustUpgraded", "set_WasJustUpgraded")
-                || !NativeUpgradeMethodInventory.VariableGetters.All(name => MethodsUnpatched(typeof(DynamicVarSet), name))
-                || !MethodsUnpatched(typeof(CardEnergyCost), "UpgradeBy", "SetCustomBaseCost")
-                || !MethodsUnpatched(typeof(LocalCostModifier), "set_Amount")) return false;
+            if (!UpgradeClosureQualified(card.GetType())) return false;
             if (!card.IsUpgradable) { gap = "native_preview_card_not_upgradable"; return false; }
             gap = null;
             return true;
         }
         catch { return false; }
     }
+
+    private static bool UpgradeClosureQualified(Type type) =>
+            type.GetMethod("OnUpgrade", NativeMembers) is { } upgrade
+                && (upgrade.DeclaringType == typeof(CardModel)
+                    || upgrade.DeclaringType == type && NativeUpgradeMethodInventory.Contains(type.Name))
+                // Harmony keys inherited methods by their actual declaration.
+                && IsUnpatched(upgrade.DeclaringType?.GetMethod("OnUpgrade", NativeMembers | BindingFlags.DeclaredOnly))
+                // Reuse the render qualification for the effective native getter;
+                // native curses/status cards override the limit with zero.
+                && NativeRenderMethod(type.GetMethod("get_MaxUpgradeLevel", NativeMembers))
+                && MethodsUnpatched(typeof(CardModel), "UpgradeInternal", "get_IsUpgradable", "get_CurrentUpgradeLevel",
+                    "set_CurrentUpgradeLevel", "get_MaxUpgradeLevel", "AddKeyword", "RemoveKeyword", "InvokeEnergyCostChanged",
+                    "get_UpgradePreviewType", "set_UpgradePreviewType")
+                && MethodsUnpatched(typeof(DynamicVar), "UpgradeValueBy", "get_WasJustUpgraded", "set_WasJustUpgraded")
+                && NativeUpgradeMethodInventory.VariableGetters.All(name => MethodsUnpatched(typeof(DynamicVarSet), name))
+                && MethodsUnpatched(typeof(CardEnergyCost), "UpgradeBy", "SetCustomBaseCost")
+                && MethodsUnpatched(typeof(LocalCostModifier), "set_Amount");
 
     internal static bool TryPreflightSingleEnchant(CardModel card, EnchantmentModel canonical, out string? gap)
     {

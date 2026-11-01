@@ -294,6 +294,7 @@ export class ManagedPeDriverSession {
             || request.settled_relic_counters !== undefined && typeof request.settled_relic_counters !== "boolean")
           throw new Error("managed_capture_fields_invalid");
         this.#requireEpisode(); this.#requireExpectedEpisode(request);
+        await this.#started.session.refreshSettling({ timeoutMs: this.#timeoutMs });
         const full = captureManagedPublicBasis(this.#started.session, {
           generationId: this.#started.runtime.adapterRuntimeInstanceId,
           gameContinuityId: this.#gameContinuityId, ordinal: ++this.#captureOrdinal,
@@ -302,6 +303,7 @@ export class ManagedPeDriverSession {
       }
       case "observe":
         this.#requireEpisode();
+        await this.#started.session.refreshSettling({ timeoutMs: this.#timeoutMs });
         return { type: "observe_result", request_id: requestId,
           snapshot: this.#started.session.observe() };
       case "read":
@@ -337,6 +339,7 @@ export class ManagedPeDriverSession {
           throw new TypeError("Unsupported text-menu input_profile.");
         }
         if (profile === MANAGED_TEXT_MENU_V2_PROFILE) this.#requireTextV2Owner(intent);
+        await this.#started.session.refreshSettling({ timeoutMs: this.#timeoutMs });
         const context = {
           schema: profile === MANAGED_TEXT_MENU_V2_PROFILE
             ? MANAGED_TEXT_MENU_V2_CONTEXT_SCHEMA : TEXT_CONTEXT_SCHEMA,

@@ -538,7 +538,17 @@ public sealed record DeckEnchantSelectionSurface(
 public sealed record EventOptionSurface(
     string Kind,
     string ScreenEntityId,
-    IReadOnlyList<VisibleEventOption> Options) : ILiveSurface;
+    IReadOnlyList<VisibleEventOption> Options) : ILiveSurface
+{
+    public TrialAbandonIntention? AbandonConfirmation { get; init; }
+}
+
+public sealed record TrialAbandonIntention(string Kind, string EventEntityId, string RoomEntityId,
+    string ParentOptionEntityId, string Title, string Body);
+public sealed record VisibleAbandonControl(string EntityId, string SemanticId, string Operation, string Label, bool Enabled);
+public sealed record AbandonRunConfirmationSurface(string Kind, string Stage, string ScreenEntityId, string ModalEntityId,
+    string EventEntityId, string RoomEntityId, string ParentOptionEntityId, string Title, string Body,
+    IReadOnlyList<VisibleAbandonControl> Controls) : ILiveSurface;
 
 public sealed record VisibleDialogueLine(
     string EntityId,
