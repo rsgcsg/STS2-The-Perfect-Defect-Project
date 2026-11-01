@@ -1,18 +1,16 @@
-# 当前：CARD-RL-C / RL3 在线PPO（用户v7）
+# 当前：CARD-RL-C / RL3 在线PPO（用户v7及追加）
 
-2026-11-01：用户已派RL3，替代暂停的10-30卡C；root负责。[本轮设计](../plans/RL_CRITIC_20261101.md)归v7，旧扫描/A-B方案已撤销且未运行。目标是每小时墙钟实战提升；长训s8136折1B温度，直接π采样、共享价值头/GAE/熵，anchor0、KL0监控，退化回好CP开KL .02。
+用户已派RL3，root负责。[本轮设计](../plans/RL_CRITIC_20261101.md)及[原运行指南](../../python/docs/RL3_RUN.zh-CN.md)拥有配置；旧扫描卡撤销。最新用户决定：不回滚、不另开训练批，接当前完整状态；零输出MLP残差、未来新RL默认MLP，不用失败离线候选，不设线性对照/回退/额外价值验门。lr4e-5/head1e-4/λ.95/value.001/entropy.01、FP32批256微8、2use/600秒/prepared seq1保持。
 
 <!-- Resolve live GitHub refs before action; latest user instructions and live evidence override this file. -->
 
 ## 当前任务与唯一下一步
 
-截至11-01 23:10 AEST，实际GPU1400318/source3b5cadf6继续；原1399798全12＋1400350_0–7八路＋全新1400576十二路合32，后者全在smp-9-17/每路6GiB/exclude smp-9-0，正常watch1400589已接管。1400480全8和1400350_8–11旧4在smp-9-0 FAILED，旧21:32–22:03不是稳定32窗口，其扩容/learner瓶颈结论撤回。12次下一executor审计超时不是12个新World/unknown；其226原槽209saved/17unknown原样保留、infra类别另列。实际数由squeue逐task核，不从计划推算。用户游戏cap45；原单免费GPU/累计30h、训练11-02 03:27:51、全卡11-03 05:40末2h不变，不自行延长；不碰Mac/秘密输入/凭据，RL2不恢复。
+11-02联合切换：旧32Actor全部自然结束，旧GPU1400318正常0保存v732/5476；全部12938 exchange记录唯一seed读回。新GPU1400871/source c87f2c8c（PR368正常合并，含共享管道）已于00:56:08发布v733/5476及MLP完整CP。动作tensor/词表/InputSpec/执行逐项相同，包SHA仅因血统/CP元数据改变。Host63/Runtime62已正常冻结验证，本轮仍Input-v2/r1.5，不混r19。当前新GPU等数据，原12路只保存退出快照；正常提交器须按Actor已退出收据区分保全阶段，保持原名额/身份/unknown和全原件保全要求，再开新32与新watch。具体job/intent/最新采用以root本轮收据为准，不从计划推存活数。
 
-**唯一下一步：23:14:58后核同32任务完整30min稳定窗并重测，再决定36；接23:27:51正常quick，随后按完整CP与当前局自然收尾边界，一次部署零初始化MLP、已合管道和准备好的Host/actor组合；Host不锁60，未ready附带项不拖主切。** 当前仍lr4e-5/head1e-4/λ.95/value.001/entropy.01/无权TRAIN尺度、FP32批256微8、2use/600秒/prepared seq1。PR369准确4d5f521a六Linux+portable全绿，已普通合737950c5，共享scratch/后台R2归档和process结果后台解码源码已交、尚未部署，不冒称生产提速。切换须先排空全部旧R2 producers再精确seed本run记录，新热peer不能漏旧晚记录；原全前缀保全义务不变。实际仍Host58Runtime59/Input-v2；Host60仅随自然重启，U1 r18/r19新InputSpec不混。热参数控制归#319/#293，不在本卡。
+**唯一下一步：完成正常32路/看守接管并继续到原终点，再做最终三组同100与保全收口。** 训练11-02 03:27:51、全卡11-03 05:40末2h不延长；单免费GPU/累计30h、游戏cap45，不碰Mac游戏/秘密输入，RL2不恢复。旧失败12任务及所有unknown原样保留，旧21:32–22:03不是稳定32的比较作废；真正稳定32约97374首次用决策/h、wait0，只作观察证据，不据旧数字加38–40路。
 
-用户23:20已知离线候选未过线，决定本轮直接切零初始化MLP残差、以后默认MLP；离线候选不用，不保留线性对照，不设回滚或额外运行验门。冻结v518主干/原线性，只用256自然TRAIN（排永久held_out/48/eval100/unknown），内部DEV选epoch1；同47自然考题9796行，行EV.1493→.2466，但等局MSE.003557→.003827、均局bias+.002792→+.021665、相关中位.8350→.7480、抖动1754→4316，多个预先门失败。47局全策略logits/argmax/模型权重CP重载exact通过，不是闭环玩法或真实GPU迁移。相关工具/可选完整CP导入仍在[PR368](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/368)，线性默认不变；其CI空间前提阻塞由[PR371](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/371)保留产品guard修测试。正式价值工具PR360已合489d9b79并完成真实48点全链，旧23组只连续性。
-
-第三quick v471/2274对起点20合格pair为13.65→21.10/+7.45；与v296 CURRENT共同18直接+3.2778、固定组95[-1.3889,7.9444]跨0，是改善信号非确定增长或平台。current24offers=20合格自然+3unknown+1自然37层原批审计不准入，均保留。最终同窗100+100尚未执行，unknown剔整对逐项列而不按数量VOID；最终曲线、七Issue、#338末CP（仅提前核v518574/100000节点）和所有新旧array/GPU/Store/失败prefix完整保全仍欠。SOP为[原运行指南](../../python/docs/RL3_RUN.zh-CN.md)，private卡报告/本chat输出绑定实际对象，不借代码/CI作运行证明。
+最新quick v681/4836对起点20合格pair为14.25→15.7/+1.45；与v471共同18对22→15.722，−6.278，固定组95敏感[-9.611,-2.944]，近期退步用户知情仍不回滚。v681原22槽=20自然/2unknown。最终03:27后起点/v471/最终各原100同种子argmax、相同Host58Runtime59/原冻结eval源码；v471准确完整动作包已读回无fallback。三个pair分别剔unknown整对、逐项列，不补局、不按数量VOID；其他缺失incomplete。报告均差/区间、逐层死亡分布/max/Boss1/完整分母，训练按实际切点前后分段。仅建议final−v471区间全负选v471策略，否则final，评分头按零MLP，最后用户定，不自动下一轮。最终300局、原因及GPU/CPU全链性能分析、七Issue/#338实际末CP余量与全部旧新array/GPU/Store/observer/失败前缀保全仍欠。
 
 CARD-1A / [#340](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/issues/340)仍待用户试1–2局和原件/完整入库；本卡不碰Mac。原source ab816a93 / Workbench cc39dc7f / UI24 / Mod72 / Runtime60的已装与0动作保存范围见[STATUS](../STATUS.md)，不拿它作模型实战资格。
 

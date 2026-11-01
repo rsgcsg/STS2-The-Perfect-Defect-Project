@@ -441,9 +441,17 @@ plan/唯一actor与seed命名空间，原unknown不重发；全部活动allocati
 
 既有数组继续运行时，先正常prepare一个新output/唯一actor和seed命名空间、原run/peer与冻结
 actor source不变，再用`rl.py submit --plan NEW --additional-to EXISTING...`显式列出现有
-正常plan。默认submit仍拒绝并存的F2数组；新入口只允许列明的同run/peer/source父job，新增
-actor名不得重复，当前合计≤36。未列明的现有数组、变更的peer/run/source或超限明确拒绝。
+正常plan。默认submit仍拒绝并存的F2数组；活跃打局父job须同run/peer/source，新增
+actor名不得重复，当前活跃actor合计≤36。未列明的现有数组或超限明确拒绝。
 沿同一用户调度锁和公平资源检查、原单核数组/rl/ledger/Pipeline入口，不重开旧unknown。
+
+自然停完Actor但仍复制证据时，Slurm仍可能显示RUNNING。`--additional-to`会读取原
+`rl.run`在Actor的`wait()`返回后、snapshot前写下的结果：全部owner/plan/config/Actor/run
+绑定一致、退出0且summary为completed或stopped_signal，才把该父job记为preservation_only，
+不占活跃游戏名额；结果路径与SHA写入新提交收据。仅有STOP、summary、终止信号或Slurm
+状态都不够，cleanup未确认导致的stopped_ledger也不够。这样同run的新冻结peer/source可
+在旧证据继续完整保存时接管，不改作业名、不停止快照、不重投旧局；旧R2生产者排空后再
+seed的新peer要求仍保留。缺结果按仍活跃处理，绑定错误拒绝；归档是否已完成另看原snapshot。
 
 新工具可编排旧冻结actor源码：运行新`tools/friday/rl.py`时PYTHONPATH指向原actor source的
 python，保留require_modules真实绑定；生成的launcher仍运行plan.source_root。不升级动作
