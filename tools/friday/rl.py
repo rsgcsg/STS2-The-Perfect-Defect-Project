@@ -104,7 +104,7 @@ def prepare(execution: Path, learner: Path, output: Path, *, actors: int = 8,
 
 def load_plan(path: Path) -> dict[str, Any]:
     canonical_path(path)
-    value = json.loads(path.read_bytes())
+    value: dict[str, Any] = json.loads(path.read_bytes())
     if (value.get('schema') != SCHEMA or value.get('target') != 'friday'
             or value.get('retry_unknown') is not False
             or value.get('automatic_mac_fallback') is not False):
@@ -142,6 +142,43 @@ def launcher(path: Path, plan: dict[str, Any]) -> str:
         '--mode evaluation', '--mode rl', 1)
 
 
+def finished_actor_results(path: Path, plan: dict[str, Any]) -> list[dict[str, str]] | None:
+    """The normal parent writes result only after wait(), before its evidence copy.
+
+    A live Slurm allocation may therefore preserve bytes without a live Actor.
+    Missing results mean still active; malformed/foreign results never waive the
+    original binding. The exclusive owner files prohibit restarting these actors.
+    """
+    results = []
+    plan_sha256 = hashed(path)
+    for ref in plan['actors']:
+        owner_path = path.parent / 'actors' / ref['actor'] / 'owner.json'
+        if not owner_path.is_file():
+            return None
+        owner = json.loads(owner_path.read_bytes())
+        if owner.get('actor') != ref['actor'] or owner.get('plan_sha256') != plan_sha256:
+            raise ValueError('finished_actor_owner_binding_changed')
+        scratch = canonical_path(Path(owner['scratch']))
+        result_path = scratch / 'result.json'
+        if not result_path.is_file():
+            return None
+        result = json.loads(result_path.read_bytes())
+        summary = result.get('original_summary') or {}
+        if (result.get('schema') != 'spireagent/friday-RL-result-v1'
+                or result.get('actor') != ref['actor'] or result.get('run') != plan['run']
+                or result.get('actor_config_sha256') != ref['sha256']
+                or result.get('scratch_retained') != str(scratch)
+                or summary.get('schema') != 'spireagent/rl-actor-summary-1'
+                or summary.get('actor') != ref['actor'] or summary.get('run') != plan['run']):
+            raise ValueError('finished_actor_result_binding_changed')
+        if (result.get('exit_code') != 0 or result.get('error_type') is not None
+                or summary.get('status') not in {'completed', 'stopped_signal'}):
+            return None
+        results.append({'actor': ref['actor'], 'owner_job_id': str(owner['job_id']),
+                        'result_path': str(result_path), 'result_sha256': hashed(result_path)})
+    return results
+
+
 def submit(path: Path, *, dry_run: bool = False,
            additional_to: list[Path] | None = None, memory_gb: int = 4,
            exclude_nodes: list[str] | None = None) -> dict[str, Any]:
@@ -153,22 +190,26 @@ def submit(path: Path, *, dry_run: bool = False,
     plan = load_plan(path)
     require_modules(Path(plan['source_root']))
     root = private_root(path.parent)
-    parents = []
+    parents: list[dict[str, Any]] = []
     if additional_to is not None:
         if not additional_to or len(set(additional_to)) != len(additional_to):
             raise ValueError('distinct_existing_same_run_parent_plans_required')
         seen_names = {a['actor'] for a in plan['actors']}
         for original in additional_to:
             parent = load_plan(original)
-            if (original == path or parent['run'] != plan['run'] or parent['peer'] != plan['peer']
-                    or parent['source_root'] != plan['source_root']
+            finished = finished_actor_results(original, parent)
+            if (original == path or parent['run'] != plan['run']
+                    or not finished and (parent['peer'] != plan['peer']
+                                         or parent['source_root'] != plan['source_root'])
                     or {a['actor'] for a in parent['actors']} & seen_names):
                 raise ValueError('additional_actor_run_peer_source_or_names_mismatch')
             seen_names.update(a['actor'] for a in parent['actors'])
             submitted = json.loads((original.parent / 'submission.json').read_bytes())
             parents.append({'plan': {'path': str(original), 'sha256': hashed(original)},
                             'job_id': str(submitted['job_id']).split(';')[0],
-                            'actors': len(parent['actors'])})
+                            'actors': len(parent['actors']),
+                            **({'preservation_only': True, 'finished_actor_results': finished}
+                               if finished else {})})
         if len({p['job_id'] for p in parents}) != len(parents):
             raise ValueError('distinct_existing_same_run_parent_jobs_required')
     with scheduler.user_submission_lock():
@@ -182,7 +223,8 @@ def submit(path: Path, *, dry_run: bool = False,
             if not active <= known:
                 raise ValueError('existing_friday_array_must_drain_before_new_submission')
             if len(plan['actors']) + sum(p['actors'] for p in parents
-                                        if p['job_id'] in active) > 36:
+                                        if p['job_id'] in active
+                                        and not p.get('preservation_only')) > 36:
                 raise ValueError('concurrent_RL_actor_limit_36_exceeded')
         elif existing:
             raise ValueError('existing_friday_array_must_drain_before_new_submission')
@@ -247,7 +289,7 @@ def run(path: Path) -> dict[str, Any]:
     work.mkdir(mode=0o700)
 
     actor_process = None
-    forwarded_actor_signals = []
+    forwarded_actor_signals: list[int] = []
 
     def stop(number, _frame):
         # RL1 checks STOP/signalled between complete small ledgers, not within a ledger.

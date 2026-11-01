@@ -441,9 +441,17 @@ plan/唯一actor与seed命名空间，原unknown不重发；全部活动allocati
 
 既有数组继续运行时，先正常prepare一个新output/唯一actor和seed命名空间、原run/peer与冻结
 actor source不变，再用`rl.py submit --plan NEW --additional-to EXISTING...`显式列出现有
-正常plan。默认submit仍拒绝并存的F2数组；新入口只允许列明的同run/peer/source父job，新增
-actor名不得重复，当前合计≤36。未列明的现有数组、变更的peer/run/source或超限明确拒绝。
+正常plan。默认submit仍拒绝并存的F2数组；活跃打局父job须同run/peer/source，新增
+actor名不得重复，当前活跃actor合计≤36。未列明的现有数组或超限明确拒绝。
 沿同一用户调度锁和公平资源检查、原单核数组/rl/ledger/Pipeline入口，不重开旧unknown。
+
+自然停完Actor但仍复制证据时，Slurm仍可能显示RUNNING。`--additional-to`会读取原
+`rl.run`在Actor的`wait()`返回后、snapshot前写下的结果：全部owner/plan/config/Actor/run
+绑定一致、退出0且summary为completed或stopped_signal，才把该父job记为preservation_only，
+不占活跃游戏名额；结果路径与SHA写入新提交收据。仅有STOP、summary、终止信号或Slurm
+状态都不够，cleanup未确认导致的stopped_ledger也不够。这样同run的新冻结peer/source可
+在旧证据继续完整保存时接管，不改作业名、不停止快照、不重投旧局；旧R2生产者排空后再
+seed的新peer要求仍保留。缺结果按仍活跃处理，绑定错误拒绝；归档是否已完成另看原snapshot。
 
 新工具可编排旧冻结actor源码：运行新`tools/friday/rl.py`时PYTHONPATH指向原actor source的
 python，保留require_modules真实绑定；生成的launcher仍运行plan.source_root。不升级动作
@@ -489,3 +497,17 @@ resume_critic_changes声明kind变化；不需要离线candidate或qualification
 只记录一个实际切点model/version、时间、updates及准确source；最终100+100把切前后阶段
 分开说明，不把全程效果单归头。原定训练终点和资源上限不变，原正常评估照常，不额外加
 切前后对照或1h/3h门。PR369和已准备好的Host/actor组合尽量同一自然批切，未ready不拖主切。
+
+
+## 本轮批准的延长期与归档格式
+
+用户11-02追加允许到下一原四小时检查点07:27:51，保持原started_at与调度节拍，watch配置
+可表达最长24小时，不重置总GPU30小时与全卡保全硬限。已有GPU启动器的绝对timeout不能
+靠改磁盘配置热延时，须正常完整CP续接、明确新config/launcher/hash与实际开始时间。
+用户另批准新鲜度从开局600秒调到900秒；下一完整CP续接显式记录变更，只用于后续入账，
+不回写旧拒绝或重投旧局，2use/λ/学习率/value等不变，按实际首次使用和acting-KL报告。
+
+共享归档对exchange中的模型/分片/CP等单JSON记录解析依赖；正常decision-ledger产生JSONL、
+TensorBoard产生二进制，它们按原字节归档并读回，不作JSON解析。旧任务因该解析失败留下的
+pending与热Store原件保留，用修复后的正常archive drain继续，不重seed、不重投World；
+原Slurm失败终态不改写，CP/动作完整读回与归档恢复分别记录。

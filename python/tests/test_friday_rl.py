@@ -254,6 +254,21 @@ def test_parent_forwards_real_USR1_to_actor_process_and_retains_STOP(rl, inputs,
     (stubs / 'spireagent/__init__.py').write_text('', encoding='utf-8')
     (package / '__init__.py').write_text('', encoding='utf-8')
     ready = tmp_path / 'actor-ready'
+    snapshot_ready = tmp_path / 'snapshot-ready'
+    snapshot_release = tmp_path / 'snapshot-release'
+    (file.parent / 'submission.json').write_text(json.dumps({'job_id': '123'}))
+    execution, learner, _ = inputs
+    next_peer = {'kind': 'local', 'directory': str(tmp_path / 'hot-store'),
+                 'archive': plan['peer']}
+    frozen_execution = json.loads(execution.read_bytes())
+    frozen_execution.update(peer=next_peer, store=next_peer['directory'])
+    next_execution, next_learner = tmp_path / 'next-execution.json', tmp_path / 'next-learner.json'
+    next_execution.write_text(json.dumps(frozen_execution))
+    next_learner.write_text(json.dumps({**json.loads(learner.read_bytes()), 'peer': next_peer}))
+    next_plan = tmp_path / 'next-actors'
+    next_source = tmp_path / 'next-source'
+    next_source.mkdir()
+    rl.prepare(next_execution, next_learner, next_plan, actors=32, runtime_source=next_source)
     (package / 'rl_actor.py').write_text(textwrap.dedent('''\
         import argparse, json, os, signal, threading
         from pathlib import Path
@@ -274,18 +289,29 @@ def test_parent_forwards_real_USR1_to_actor_process_and_retains_STOP(rl, inputs,
             'status': 'stopped_signal', 'games': []}))
         '''), encoding='utf-8')
     driver = textwrap.dedent('''\
-        import json, sys
+        import json, os, sys, time
         from pathlib import Path
         sys.path.insert(0, sys.argv[1])
         import rl
         rl.require_modules = lambda _: None  # This test replaces only the Actor process boundary.
         rl.sys.platform = 'linux'
+        original_snapshot = rl.snapshot
+        def paused_snapshot(source, target):
+            Path(os.environ['TEST_SNAPSHOT_READY']).write_text('actor wait() completed')
+            deadline = time.monotonic() + 20
+            while not Path(os.environ['TEST_SNAPSHOT_RELEASE']).exists():
+                assert time.monotonic() < deadline, 'test did not release evidence snapshot'
+                time.sleep(.02)
+            return original_snapshot(source, target)
+        rl.snapshot = paused_snapshot
         print(json.dumps(rl.run(Path(sys.argv[2]))), flush=True)
         ''')
     command = [sys.executable, '-c', driver, str(FRIDAY), str(file)]
     environment = {'PATH': os.defpath, 'PYTHONPATH': str(stubs), 'TMPDIR': str(tmp_path),
                    'SLURM_JOB_ID': 'signal-stub', 'SLURM_CPUS_PER_TASK': '1',
-                   'SLURM_ARRAY_TASK_ID': '0', 'TEST_READY': str(ready)}
+                   'SLURM_ARRAY_TASK_ID': '0', 'TEST_READY': str(ready),
+                   'TEST_SNAPSHOT_READY': str(snapshot_ready),
+                   'TEST_SNAPSHOT_RELEASE': str(snapshot_release)}
     with subprocess.Popen(command, env=environment, cwd=tmp_path, stdout=subprocess.PIPE,
                           stderr=subprocess.PIPE, text=True) as process:
         try:
@@ -297,7 +323,30 @@ def test_parent_forwards_real_USR1_to_actor_process_and_retains_STOP(rl, inputs,
             origin = json.loads(ready.read_bytes())
             assert origin['pid'] != process.pid
             assert Path(origin['module']).resolve() == (package / 'rl_actor.py').resolve()
+            with (patch.object(rl, 'require_modules'),
+                  pytest.raises(ValueError, match='additional_actor_run_peer_source')):
+                rl.submit(next_plan / 'plan.json', additional_to=[file], dry_run=True)
             process.send_signal(signal.SIGUSR1)
+            deadline = time.monotonic() + 15
+            while (not snapshot_ready.exists() and process.poll() is None
+                   and time.monotonic() < deadline):
+                time.sleep(.02)
+            assert snapshot_ready.is_file() and process.poll() is None
+            with pytest.raises(ProcessLookupError):
+                os.kill(origin['pid'], 0)  # Original child is reaped, parent copy still pending.
+            with (patch.object(rl, 'require_modules'),
+                  patch.object(rl.scheduler, 'submission_lock_path',
+                               return_value=tmp_path / 'submit.lock'),
+                  patch.object(rl.scheduler, 'output',
+                               side_effect=['123_[0-0]', '0/400/0/400', ''])):
+                submitted = rl.submit(next_plan / 'plan.json', additional_to=[file], dry_run=True)
+            assert submitted['cores'] == 32
+            previous = submitted['additional_to'][0]
+            assert previous['preservation_only'] is True
+            assert previous['finished_actor_results'][0]['actor'] == plan['actors'][0]['actor']
+            prior_snapshot = file.parent / 'actors' / plan['actors'][0]['actor'] / 'snapshot.json'
+            assert not prior_snapshot.exists()
+            snapshot_release.touch()
             stdout, stderr = process.communicate(timeout=15)
             assert process.returncode == 0 and stderr == ''
         finally:
@@ -338,6 +387,34 @@ def test_resume_copy_reuses_terminal_owner_without_reopening_games(
     assert result['new_games'] == 0 and result['copy_resumed']
     assert (partial / 'payload').read_text() == 'retained original bytes'
     assert json.loads((persistent / 'snapshot.json').read_bytes())['full_readback']
+
+
+@pytest.mark.parametrize('problem', ['ledger_cleanup_unconfirmed', 'wrong_configuration'])
+def test_preservation_handoff_does_not_waive_unknown_cleanup_or_foreign_result(
+        rl, inputs, tmp_path, problem):
+    plan, path = prepared(rl, inputs, actors=1)
+    ref = plan['actors'][0]
+    persistent = path.parent / 'actors' / ref['actor']
+    persistent.mkdir(parents=True)
+    scratch = tmp_path.resolve() / 'closed-result'
+    scratch.mkdir()
+    (persistent / 'owner.json').write_text(json.dumps({'actor': ref['actor'], 'job_id': '42',
+        'scratch': str(scratch), 'plan_sha256': rl.hashed(path)}))
+    result = {'schema': 'spireagent/friday-RL-result-v1', 'actor': ref['actor'],
+        'run': plan['run'], 'actor_config_sha256': ref['sha256'],
+        'scratch_retained': str(scratch), 'exit_code': 0, 'error_type': None,
+        'original_summary': {'schema': 'spireagent/rl-actor-summary-1',
+            'actor': ref['actor'], 'run': plan['run'], 'status': 'stopped_signal'}}
+    if problem == 'ledger_cleanup_unconfirmed':
+        result['original_summary']['status'] = 'stopped_ledger:host_cleanup_unconfirmed'
+    else:
+        result['actor_config_sha256'] = 'f' * 64
+    (scratch / 'result.json').write_text(json.dumps(result))
+    if problem == 'ledger_cleanup_unconfirmed':
+        assert rl.finished_actor_results(path, plan) is None
+    else:
+        with pytest.raises(ValueError, match='result_binding_changed'):
+            rl.finished_actor_results(path, plan)
 
 
 def test_same_run_additional_array_keeps_original_plan_and_single_core_workers(

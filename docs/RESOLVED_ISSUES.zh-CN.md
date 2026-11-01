@@ -46,6 +46,10 @@
 
 | **测试分支或缺场景改变Managed结果、异步子项半发布**；M2e第三轮 | [Host56/Runtime57修复](evidence/MANAGED_M2E_R3_20261028.md)沿原生网格排序、召唤铃铛正式生成分支、事件场景调用、完整卡包pending及死亡边界修负责层；回放复用既有唯一公开操作合同。 | 复用原生规则和原始任务，不补造奖励资格、不猜同名对象、不重投六局旧未知。原件缺地图关闭输入的两处仍是重演边界，不能把来源字符串改相等或推成提前推进。 |
 
+| **Actor结束后证据快照挡住接管**；Friday提交→打局/保全生命周期 | 原Slurm RUNNING同时覆盖打局与末快照，已退出的12路仍阻止新32路。原 `rl.run`在子进程wait后、snapshot前已有具名结果；`rl.submit --additional-to`复用它，全部准确绑定且正常结束才记preservation_only。 | 复用原owner/结果/锁/Slurm，不改名绕guard，不杀快照，不把STOP或summary当退出证明；未确认cleanup与外来结果不豁免。真实Popen退出而父copy仍等待的回归覆盖接缝；实际保全完成仍看原snapshot收据。 |
+
+| **正常决策日志挡住共享归档排空**；learner→archive | JSONL多行及TensorBoard二进制被当作单JSON解析，完整CP已存后归档收尾失败。原archive仅对单JSON记录解析artifact依赖，其他正常blob逐字复制读回。 | 用原DecisionLedger→Learner发布和TensorBoard生产者验归档；失败pending保留、正常drain恢复，不回写原失败，不重投游戏。 |
+
 原方案可以复用，旧资格不能转贴。每次遇到同类问题，沿该行回原证据和链路节点，报告回答三句：以前遇到过吗；当时怎么解决；这次用不用、为什么。需要新取舍时按原四类变更与owner处理，不在这里新增规则或验收门。
 
 本页只保有明确消费者价值的重复问题入口；不要求为每份旧报告补摘要、不遍历原始Human内容。发现新的重复问题再补对应行，完整证据仍留原位置。
