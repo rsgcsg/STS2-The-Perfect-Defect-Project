@@ -83,7 +83,8 @@ internal sealed class AbandonRunConfirmationSurfaceReader : ILiveSurfaceReader
         Current? current = CaptureCurrent(ActiveInputResolver.Capture(), entities);
         if (current == null || entities.GetId(current.Modal, "screen") != expected.ScreenEntityId
             || current.Intention.EventEntityId != expected.EventEntityId || current.Intention.RoomEntityId != expected.RoomEntityId
-            || current.Intention.ParentOptionEntityId != expected.ParentOptionEntityId)
+            || current.Intention.ParentOptionEntityId != expected.ParentOptionEntityId
+            || current.Title != expected.Title || current.Body != expected.Body)
             return NativeInputResult.Rejected("trial_abandon_owner_changed", "The exact Trial confirmation is no longer current.");
         NPopupYesNoButton button = yes ? current.Yes : current.No;
         if (entities.GetId(button, "control") != expectedControlId || !Usable(button))

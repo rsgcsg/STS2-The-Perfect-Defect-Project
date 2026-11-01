@@ -491,7 +491,10 @@ function reduceCatalog(state: P1SessionState, basis: P1Basis, execution?: readon
   };
   const persistent = snapshot.persistent?.content as Record<string, any> | undefined;
   const context: Record<string, any> = isObject(interaction.content.context) ? interaction.content.context : {};
-  const surface: Record<string, any> = isObject(interaction.content.surface) ? interaction.content.surface : {};
+  const rawSurface: Record<string, any> = isObject(interaction.content.surface) ? interaction.content.surface : {};
+  // The transport admission tag is validated above; it is not a game fact.
+  const surface = state.revision === "r1.8" && Object.hasOwn(rawSurface, "requires_profile_revision")
+    ? Object.fromEntries(Object.entries(rawSurface).filter(([key]) => key !== "requires_profile_revision")) : rawSurface;
   const nestedCombat = context.kind !== "combat" && isObject(context.combat) && context.combat.kind === "combat"
     ? context.combat as Record<string, any> : null;
   const combatSource = family === "combat" || context.kind === "combat" ? context : nestedCombat;
@@ -503,7 +506,7 @@ function reduceCatalog(state: P1SessionState, basis: P1Basis, execution?: readon
   const extraReadSources = readInstances.filter(({ listed }) => !["run_deck", "combat_piles", "map"].includes(listed.kind))
     .map(({ listed, read }) => ({ kind: String(listed.kind), availability: (read ? "available" : "unknown") as Availability,
       content: publicDetailContent(String(listed.kind), read?.content ?? null) }));
-  const policy = createPublicIdentityPolicy(nativeKind, extraReadSources, { surface, context: sceneContext });
+  const policy = createPublicIdentityPolicy(nativeKind, extraReadSources, { surface, context: sceneContext }, state.revision);
   const rawFacts = {
     player: { content: persistent?.player }, run: { content: persistent?.run },
     scene: { content: { surface, context: sceneContext } }, combat: { content: publicCombat?.content },

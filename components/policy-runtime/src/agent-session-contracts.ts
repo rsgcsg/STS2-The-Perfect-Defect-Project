@@ -1,4 +1,4 @@
-import { P1G_REVISION } from "@rsgcsg/sts2-connector-client/p1-global";
+import { P1G_REVISION, P1G_INTERACTION_REVISION } from "@rsgcsg/sts2-connector-client/p1-global";
 import type { GlobalExpectedEnvironment } from "./global-transport.js";
 import type { ConnectorPolicyRequirements } from "./contracts.js";
 import { decodeNativeLogicalResult, type NativeLogicalResult } from "@rsgcsg/sts2-connector-client";
@@ -67,7 +67,7 @@ export interface AgentManifest {
   artifact: { id: string; path: string; sha256: string };
   input: {
     profile: "native-logical-v1" | "p1-global-r1";
-    global?: { revision: typeof P1G_REVISION; core_sha256: string };
+    global?: { revision: typeof P1G_REVISION | typeof P1G_INTERACTION_REVISION; core_sha256: string };
     input_spec: AgentInputSpec;
     projection: { id: string; version: string };
     state_format_version: string;
@@ -256,10 +256,12 @@ export function validateAgentManifest(value: unknown): AgentManifest {
   const global = sessionObject(manifest.input).profile === "p1-global-r1";
   const inputFields = ["profile", "input_spec", "projection", "state_format_version", "state_recovery", "history_mode", "consumption_mode", "gap_policy", "attachment"];
   const input = sessionObject(manifest.input, global ? [...inputFields, "global"] : inputFields);
-  if (global) { const g = sessionObject(input.global, ["revision", "core_sha256"]); choice(g.revision, [P1G_REVISION]); sessionDigest(g.core_sha256); }
+  if (global) { const g = sessionObject(input.global, ["revision", "core_sha256"]); choice(g.revision, [P1G_REVISION, P1G_INTERACTION_REVISION]); sessionDigest(g.core_sha256); }
   choice(input.profile, ["native-logical-v1", "p1-global-r1"]); validateAgentInputSpec(input.input_spec);
   const projection = sessionObject(input.projection, ["id", "version"]);
   sessionText(projection.id); sessionText(projection.version); sessionText(input.state_format_version);
+  if (global && (projection.id !== "p1-global-r1" || projection.version !== (input.global as Record<string, unknown>).revision))
+    throw new AgentSessionError("global_projection_revision_mismatch");
   const recovery = sessionObject(input.state_recovery, ["mode", "max_state_bytes", "model_bindings"]);
   const recoveryMode = choice(recovery.mode, ["opaque", "none"]);
   sessionInteger(recovery.max_state_bytes, recoveryMode === "opaque", 16 * 1024 * 1024);

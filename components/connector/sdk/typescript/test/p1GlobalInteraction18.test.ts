@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { createSession, reduce, resolveFollowBasis } from "../src/p1Global/index.js";
+import { createSession, reduce, resolveFollowBasis, createPublicIdentityPolicy, modelView, canonicalJson } from "../src/p1Global/index.js";
 import { completeSelectorFacts } from "../src/p1Global/selectorForward.js";
 import { selectorForwardPair } from "./fixtures/selector-forward.mjs";
 
@@ -70,4 +70,23 @@ it.each(["missing-option", "missing-action", "duplicate-action", "duplicate-targ
   const result = reduce(createSession("new", "managed", "r1.8"), basis);
   expect(result.complete).toBe(false);
   expect(result.missing).toContain("required:abandon_intention_public_facts_or_binding");
+});
+
+
+it("r1.8 aliases new Trial owners and exact controls but keeps arbitrary extensions literal", () => {
+  const basis = parent();
+  basis.snapshot.interaction.content.surface.extension_entity_id = "literal-extension";
+  const a = reduce(createSession("a", "managed", "r1.8"), basis);
+  const changed = JSON.parse(JSON.stringify(basis).replaceAll("trial-option", "other-option")
+    .replaceAll("trial-event", "other-event").replaceAll("trial-room", "other-room"));
+  const b = reduce(createSession("b", "managed", "r1.8"), changed);
+  expect(a.complete && b.complete).toBe(true);
+  expect(canonicalJson(modelView(a.observation))).toBe(canonicalJson(modelView(b.observation)));
+  const surface = a.observation.scene.content as any;
+  expect(surface.surface).not.toHaveProperty("requires_profile_revision");
+  expect(surface.surface.extension_entity_id).toBe("literal-extension");
+  const modal = createPublicIdentityPolicy("abandon_run_confirmation", [], undefined, "r1.8");
+  for (const field of ["modal_entity_id", "event_entity_id", "room_entity_id", "parent_option_entity_id", "controls[0].entity_id"])
+    expect(modal.relation(`scene.content.surface.${field}`)).toBe("declared");
+  expect(createPublicIdentityPolicy("event_option").relation("scene.content.surface.abandon_confirmation.event_entity_id")).toBeNull();
 });

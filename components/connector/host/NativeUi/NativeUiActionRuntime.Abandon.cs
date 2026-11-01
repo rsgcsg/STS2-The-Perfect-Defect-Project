@@ -13,7 +13,7 @@ internal static partial class NativeUiActionRuntime
             || control.SemanticId == "no" && control.Operation == "cancel_abandon"))
         .Select(control => NativeDescriptor($"trial_abandon:{surface.ScreenEntityId}:{control.EntityId}", control.Operation,
             "confirmation", control.Label, "NAbandonRunConfirmPopup exact current visible Yes/No",
-            new[] { new ActionEntityBinding("screen", surface.ScreenEntityId), new ActionEntityBinding("control", control.EntityId) })).ToArray();
+            new[] { new ActionEntityBinding("screen", surface.ScreenEntityId), new ActionEntityBinding("confirmation_control", control.EntityId) })).ToArray();
 
     private static IReadOnlyList<NativeUiBoundAction> BuildAbandonBindings(LiveObservation draft, AbandonRunConfirmationSurface surface) =>
         DescribeAbandonCommands(surface).Select(action => BindActionToCurrentObservation(draft, action))
@@ -24,7 +24,7 @@ internal static partial class NativeUiActionRuntime
         if (draft.Surface is not AbandonRunConfirmationSurface surface
             || !HasExactOperand(request, "screen_id", surface.ScreenEntityId))
             return NativeInputResult.Rejected("trial_abandon_owner_changed", "The exact current modal binding changed.");
-        var controlBindings = binding.Candidate.EntityBindings.Where(value => value.Role == "control").ToArray();
+        var controlBindings = binding.Candidate.EntityBindings.Where(value => value.Role == "confirmation_control").ToArray();
         if (controlBindings.Length != 1) return NativeInputResult.Rejected("trial_abandon_control_changed", "The exact native control binding is unavailable.");
         string id = controlBindings[0].EntityId;
         var controls = surface.Controls.Where(control => control.EntityId == id && control.Enabled

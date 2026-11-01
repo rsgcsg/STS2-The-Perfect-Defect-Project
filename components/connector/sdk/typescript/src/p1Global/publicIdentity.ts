@@ -1,4 +1,4 @@
-import { P1G_NONCOMBAT_POTION_SCENES } from "./contracts.js";
+import { P1G_NONCOMBAT_POTION_SCENES, P1G_REVISION, type P1Revision } from "./contracts.js";
 import { visibleCardSchema } from "../visibleState.js";
 import { isObject } from "./canonical.js";
 
@@ -27,7 +27,7 @@ const SELECTORS = new Set(["card_selection", "combat_hand_card_selection", "nati
 
 export function createPublicIdentityPolicy(nativeKind: string,
   extraReads: readonly { readonly kind: string; readonly content: unknown }[] = [],
-  sceneContent?: unknown) {
+  sceneContent?: unknown, revision: P1Revision = P1G_REVISION) {
   const declared = new Set(BASE_PATHS); const references = new Set(REFERENCES); const cards = [...CARD_ROOTS];
   const surface = "scene.content.surface.";
   const add = (fields: readonly string[]) => fields.forEach(field => declared.add(surface + field));
@@ -66,6 +66,13 @@ export function createPublicIdentityPolicy(nativeKind: string,
     card("cards[]"); card("cards[].card"); card("relics[].relic.card_previews[]");
   } else if (nativeKind === "shop_room") add(["room_entity_id", "shop_session_entity_id"]);
   else if (nativeKind === "game_over") add(["other_controls[].entity_id"]);
+  if (revision === "r1.8") {
+    if (nativeKind === "event_option") {
+      add(["abandon_confirmation.event_entity_id", "abandon_confirmation.room_entity_id"]);
+      refs(["abandon_confirmation.parent_option_entity_id"]);
+    } else if (nativeKind === "abandon_run_confirmation")
+      add(["modal_entity_id", "event_entity_id", "room_entity_id", "parent_option_entity_id", "controls[].entity_id"]);
+  }
   const eventCards = new Set<string>();
   const eventSurface = isObject(sceneContent) && isObject(sceneContent.surface) ? sceneContent.surface : null;
   if (["event_option", "event_dialogue"].includes(nativeKind) && Array.isArray(eventSurface?.options))
