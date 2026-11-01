@@ -193,3 +193,32 @@ Stop/consume ACK [#364](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Projec
 and typed-failure diagnostics [#365](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/issues/365).
 Each retains evidence, expected benefit, estimate and `when:managed-change`.
 These remaining items are not counted as fixed by this implementation candidate.
+
+### r1.8 final package and Linux supplement
+
+Actual Linux job1400454 completed 0:0 in 69 seconds: 11 fresh Trial/Claws native
+component cases/163 checks, both real pipe→PB1→r1.8 consumer gates, and one normal
+PE short chain (8/8 actions, 173 Reads, 0 partial). The three source/assembly audits
+before, after native cases and after PE are identical. U1 Friday occupancy returned
+to zero. The PE stopped at the declared action limit; it is not a natural game or
+long-run unknown-rate result. This evidence is bound to the actual Linux DLL above.
+
+The exact packaged Runtime61 and Host61 were separately extracted and consumed
+through their bundled SDK. An independent fresh native Trial component used the
+same normal Python registration/Agent→NDJSON→Runtime→Managed HTTP→native inputs;
+it closed with known state/released control, and independent semantic replay plus
+Python typed verification both passed. This does not transfer Reference/Human or
+training qualification. Runtime's broader local suite passed 740 tests with four
+explicitly gated skips; exact-game gate passed (including SDK651, NativeLogical184
+and Annotator470); the final affected Reference source/projection group passed23.
+
+PR367's first full Linux CI (41300605357, head d7cf6873) retained five passing
+shards and one failure. Three tests still expected Host60's current Mac/Linux pins
+and its old added-file inventory. They now bind the actual Host61 measurements,
+include both new source files, and explicitly assert the preserved Host60 tuples
+as historical. No product guard, assertion, denominator or artifact pin was
+weakened. The affected portable candidate tests pass10 with one exact-native skip;
+actual native gates above remain separate evidence. A new exact-head full CI is
+required before merge. The frozen Host61 package's original source is0759e76e;
+subsequent tests/docs/BOM commits do not relabel it. A per-file shipped-source bridge
+belongs to the U1 delivery receipt.
