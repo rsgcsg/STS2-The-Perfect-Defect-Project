@@ -47,15 +47,15 @@
     "effect": "Every Managed prepare compares the exact game Godot references with the built stub; a gap outside the reviewed baseline fails the build and names the member. Hosted CI has no game files and does not run it."
   },
   "expected_build": {
-    "source_patch_sha256": "197c2cf78f078c7c5fb4ef1f7710a1e71e92252e0fb2a5c397cfd5c9a3cded36",
-    "artifact_sha256": "336a8b6699276f0f158ee95c8d1650d06c76d94d1c202d8ea27688fde5e37af9",
-    "artifact_mvid": "b0dc30ba-d6b7-47bc-b6e0-bfe574912ed9",
+    "source_patch_sha256": "d7476c388f398742767a4fab83655e380772b32e7a5ea2891810480d1317a298",
+    "artifact_sha256": "a8c416a0dcc5a1397889cb7c3985b160975b96e38bdb185883f948f84b23094b",
+    "artifact_mvid": "93c38bb2-fcce-4d1b-a7aa-34931a824e46",
     "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0"
   },
   "previous_candidate_build": {
-    "source_patch_sha256": "7f1584f786cb4ba5b695fd93e321af8268b8265308a4cef1245ae255801a40de",
-    "artifact_sha256": "0b376bf504b75522e3e8e9bb766decd30ea4905f9ce484c4cfcece23701cea24",
-    "artifact_mvid": "f9fcb312-3c64-4e22-96d0-7436aef82e1c",
+    "source_patch_sha256": "197c2cf78f078c7c5fb4ef1f7710a1e71e92252e0fb2a5c397cfd5c9a3cded36",
+    "artifact_sha256": "336a8b6699276f0f158ee95c8d1650d06c76d94d1c202d8ea27688fde5e37af9",
+    "artifact_mvid": "b0dc30ba-d6b7-47bc-b6e0-bfe574912ed9",
     "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0"
   },
   "last_measured_build": {
@@ -105,9 +105,9 @@
         "occurrences": 7
       },
       "expected_build": {
-        "source_patch_sha256": "8e9112fdfbf7cf211355ab395856c3975270489e621a7cd7e1dd80f80369c1e4",
-        "artifact_sha256": "5054c21cda87a4c099cab0345d0b8e6541430ffdf6d57cfe73cd9b4df70e7dd7",
-        "artifact_mvid": "09a5beff-5a7f-4247-9229-bcb08d00ae1a",
+        "source_patch_sha256": "ebd2adf4ef75523fd6af29317f21354e57510cf9781c5df524c974d5f70f5585",
+        "artifact_sha256": "bb5513fd995595c1fc4aef25ad145255d226baea7192525f254f99ed0a93dd04",
+        "artifact_mvid": "739f4182-a6e6-49fa-8589-ddb3af127a61",
         "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0"
       },
       "non_claims": [
@@ -135,6 +135,13 @@
           "artifact_mvid": "8091f740-a0d0-4cc8-a425-4dd44ede3b4e",
           "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0",
           "scope": "Host58 pre-U1 immutable original; no qualification transferred."
+        },
+        {
+          "source_patch_sha256": "8e9112fdfbf7cf211355ab395856c3975270489e621a7cd7e1dd80f80369c1e4",
+          "artifact_sha256": "5054c21cda87a4c099cab0345d0b8e6541430ffdf6d57cfe73cd9b4df70e7dd7",
+          "artifact_mvid": "09a5beff-5a7f-4247-9229-bcb08d00ae1a",
+          "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0",
+          "scope": "Host59 first U1 five-class repair; exact original package and runtime evidence remain frozen."
         }
       ]
     }
@@ -448,6 +455,13 @@
       "risk": "medium",
       "effect": "Register actual player Kill completion before its synchronous portion; wait for all registered original Kill and OnEnded tasks within the existing five-second native commit bound before terminal capture. Preserve original exceptions and missing-end unknown; no HP-derived outcome.",
       "regression": "u1-native-tests: synchronous/async death gates, native end-commit gate, win-before-Kill ordering, failing original Kill after win, HP0 without end witness; exact SDK/P1/Input-v2 path."
+    },
+    {
+      "id": "native_settling_current_input_refresh",
+      "kind": "host_read_publication_boundary",
+      "risk": "medium",
+      "effect": "Read observe_decision pumps already-delivered native work and calls the same DetectDecisionPoint. Recheck the original pending card selector during and after the combat fallback. Normal capture/observe/text observe refresh only settling snapshots; unchanged native facts preserve snapshot identity and the existing stall watchdog. No native input replay, new legality or timeout extension.",
+      "regression": "u1-native-tests knight-late and knight-read: original Mittens hand producer released during fallback or after action return; production native command dispatch; unchanged/failed read, strict SDK/P1 r1.5 and Input-v2 full-catalog consumer. No replay of historical unknown."
     }
   ],
   "admission": {
@@ -519,6 +533,13 @@
       "artifact_sha256": "c3eed8fa9930d7428af0d9028a4ca0a0e5234853d8040bc99dd478f99fdd4df4",
       "artifact_mvid": "570a999a-e5e3-42e4-a000-0a733aea0ff3",
       "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0"
+    },
+    {
+      "source_patch_sha256": "7f1584f786cb4ba5b695fd93e321af8268b8265308a4cef1245ae255801a40de",
+      "artifact_sha256": "0b376bf504b75522e3e8e9bb766decd30ea4905f9ce484c4cfcece23701cea24",
+      "artifact_mvid": "f9fcb312-3c64-4e22-96d0-7436aef82e1c",
+      "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0",
+      "scope": "Previous measured candidate retained when Host60 advanced the immediate previous tuple to Host59."
     }
   ],
   "native_localization": {
