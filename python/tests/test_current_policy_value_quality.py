@@ -133,3 +133,28 @@ def test_frozen_reference_damage_fails_before_any_dispatch(tmp_path):
     assert ref == original
     with pytest.raises(ValueError, match="reference_changed"):
         module.bound(ref)
+
+
+def test_offline_gates_keep_flat_and_undefined_temporal_candidates_failed_and_serializable():
+    path = Path(__file__).resolve().parents[2] / "tools/friday/value_head_offline.py"
+    spec = importlib.util.spec_from_file_location("value_head_offline_test", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    target = [1., 2., 4., 8.]
+    baseline = summarize([game("a",target,target)])
+    gates,logs = module.quality_gates(baseline,baseline)
+    assert gates['correlation_valid_count'] and gates['correlation_median']
+    assert gates['jitter_valid_count'] and gates['jitter_no_flat_collapse']
+    flat = summarize([game("a",[1.,1.,1.,1.],target)])
+    gates,logs = module.quality_gates(baseline,flat)
+    assert not gates['correlation_valid_count'] and not gates['correlation_median']
+    assert not gates['jitter_no_flat_collapse'] and not gates['jitter_log_distance_25percent']
+    assert logs['candidate'] is None
+    json.dumps({'gates':gates,'logs':logs},allow_nan=False)
+    insufficient = summarize([game('a',[1.],[1.])])
+    # EV is undefined for this cohort; no runtime comparison should produce a pass.
+    assert insufficient['per_decision']['explained_variance'] is None
+    gates,logs = module.quality_gates(insufficient,insufficient)
+    assert not gates['per_decision_EV'] and not gates['equal_game_weighted_EV']
+    assert not gates['correlation_median'] and not gates['jitter_log_distance_25percent']
+    json.dumps({'gates':gates,'logs':logs},allow_nan=False)

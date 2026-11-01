@@ -540,7 +540,8 @@ class Learner:
         if residual_import is not None:
             if (not migration or self.critic is None
                     or self.critic.config.head_kind != "attention-residual-v1"
-                    or learner.get("critic", {}).get("config", {}).get("head_kind", "linear") != "linear"
+                    or learner.get("critic", {}).get("config", {}).get(
+                        "head_kind", "linear") != "linear"
                     or set(residual_import) != {"candidate_path", "candidate_sha256",
                                                 "qualification_path", "qualification_sha256"}):
                 raise BoundaryError("rl_critic", "invalid_explicit_value_head_upgrade")
@@ -551,7 +552,8 @@ class Learner:
                 raise BoundaryError("rl_critic", "offline_value_head_import_hash_mismatch")
             qualification = json.loads(paths["qualification"].read_bytes())
             if (qualification.get("passed") is not True
-                    or qualification.get("candidate_sha256") != residual_import["candidate_sha256"]):
+                    or qualification.get("candidate_sha256")
+                        != residual_import["candidate_sha256"]):
                 raise BoundaryError("rl_critic", "qualified_offline_value_head_required")
             missing = self.model.load_state_dict(state["weights"], strict=False)
             expected = {n for n in self.model.state_dict() if n.startswith("progress_residual.")}

@@ -306,7 +306,8 @@ class OnlineCritic:
     def freeze_policy(self, warmup: bool) -> None:
         for name, parameter in self.model.named_parameters():
             parameter.requires_grad_(
-                name.startswith(("progress_head.", "progress_residual.")) if warmup else not name.startswith("win_head.")
+                name.startswith(("progress_head.", "progress_residual."))
+                if warmup else not name.startswith("win_head.")
             )
 
     def execution(self, *, inference: bool = False) -> Any:

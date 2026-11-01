@@ -338,7 +338,8 @@ EvaluationLedger、PipelinedManagedExecutor、typed shard和allocation/GAME-SLOT
 trajectory/training retention，但这些局永不Exchange announce、不进策略或价值优化器。
 
 用 `submit --plan <root/plan.json>` 单次提交，或通过生成的正常allocation launcher运行。
-必须把actor、quick、U1与本次workers统一算入游戏并发36；CPU评分不占游戏路。
+必须把actor、quick、U1与本次workers统一算入当前用户批准的游戏总并发；本卡21:30追加为45，
+当前32＋4＋7＋1=44，不能据此改变其他卡限制。CPU评分不占游戏路。
 各slot最多1次offer；清洁unknown/censored单列且不补打。STOP/USR1停止新准入，已有
 正常调用按原预算收尾；进入一局前预留准备150秒、整局、清理120秒和保存180秒。
 失败/已有intent先核原收据，不能自动重投；未知不能改成负局或零层。保留saved的
@@ -349,6 +350,9 @@ unscored事实，不能为做价值诊断强改正式audit/scored资格。
 CPU FP32/eval/no_grad计算；标签是reward v2的完整终局MC折扣回报，不用lambda或价值
 自举。JSON与逐步CSV报告标准按行EV、每局等权偏差、局内先对两列各减本局均值的EV、
 前中后三分之一、固定预测分档校准及该冻结概率采样模型的层数分布；同时列所有失败分母。
+评分员主指标为整体EV、行/局bias、每局Pearson分布与差分抖动比；原centered EV归附表。
+差分比使用sample std(diff prediction)/sample std(diff target)，不加epsilon；不足行/零分母为null
+并计原因、近常量标记不改数。MC是平滑时间趋势，因此高相关或低抖动本身不证明玩法更好。
 等局权重分档使用inverse-full-game-length权重后在bin内归一，区别于每个入bin游戏等权。
 零目标方差不给EV，零自然局不给效果估计。固定组bootstrap仅为敏感性，不是总体资格。
 这些是Managed结果，不能替真游戏实力；raw价值也是回报估计，不是已校准的通关概率。
@@ -456,3 +460,24 @@ allocation，Stop为每个plan写原STOP且对每个job只发一次信号，drai
 按原USR2维护、pending排空、显式旧新config digest与原start/schedule状态交接；GPU不重启。
 本卡owner在维护完成前也须跟踪新job原收据，并保全全部array，不能只拿主数组终态称完成。
 实际扩容时还须计入同时进行的评估游戏核，保持本卡总游戏核≤36。
+
+## 离线注意力残差评分头
+
+仅在本卡明确授权和训练前固定门下运行`tools/friday/value_head_offline.py`。Friday正常资源
+登记与凭据loader内、纯CPU：`freeze --root <新实验目录> --point-root <v518价值点>
+--observer <既有training-observation/shards>`先写不可变TRAIN manifest，再`extract-train`。
+该选择按uploaded_at/run_id取最近最多256个唯一自然TRAIN局，排除永久held_out/eval池/unknown；
+按seed固定内部TRAIN/DEV。`train`只使用冻结公开scene特征和原线性输出、终局MC，无主干梯度，
+20epoch/90min拟合窗、单候选按内部DEV MSE选；不得让48考题参与拟合/归一化/早停。
+`candidate.bin/json`写定后才`extract-holdout`与`evaluate`；后者保留同47自然局的baseline与candidate，
+逐个冻结门、固定真实输入全logits/argmax/导出权重/完整CP重载exact，并写qualification.json。
+失败/已有目录先核原日志，禁止覆盖原分母或按考题调参重试。
+
+零末层保证起点值相同；新增`progress_residual.*`仅在价值入口执行，action_weights剥离全部
+残差参数；MLP模式下线性及注意力价值特征均detach，策略反传照常。旧CP未声明head_kind时
+仍是linear。过线的单次完整CP升级使用critic.head_kind=attention-residual-v1，明确
+resume_source/resume_critic_changes及resume_value_head四字段candidate_path/sha256、
+qualification_path/sha256；正常loader核hash/passed、仅容许新残差missing keys，旧权重不改，
+所有旧Adam矩逐参数迁移，新残差矩从空开始。原RNG/buffer/EMA/固定留出/control seq照常恢复。
+下一完整CP已带残差，后续恢复必须清空resume_value_head这一单次导入字段；不重复导入头。
+实际过线/上线是独立验收，源码和单测不代替真实完整CP与切点/quick/1h/3h校准收据。

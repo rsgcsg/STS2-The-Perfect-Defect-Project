@@ -6,13 +6,15 @@
 
 ## 当前任务与唯一下一步
 
-截至11-01 19:13 AEST，PR357/358已普通合入11eafd4f/7e8f8180且准确CI通过。learner实际source3b5cadf6/GPU1400318，16CPU/64GiB、torch4/8个spawn reader；原52a actor12路1399798继续，19:04新12路array1400350已运行，旧扩容1400175已完整封存。新watch1400364覆盖全部新旧array，observer1399828继续。原GPU1400147正常11464秒，之前39727秒GPU保守总账再加当前job；一次一张免费卡累计≤30h、游戏≤36，原训练11-02 03:27:51与全卡11-03 05:40末2h保全不重置。RL2不恢复，不碰Mac/秘密输入/凭据，eval100永不训练。
+截至11-01 21:52 AEST，本轮追加[升级卡](../plans/RL_CRITIC_20261101.md#2130升级追加)已授权：两项提速、32路、离线MLP过线后汇报并直接上线，Host60只随自然重启采用。用户另批准游戏总并发45；当前32actor＋quick4＋价值7＋U1预留1=44。GPU1400318/source3b5cadf6继续，actor1399798/1400350/1400480共32路，watch1400497/source1fc覆盖全部；旧watch1400364已正常维护退出，退役array1400175完整保全不重做。原训练11-02 03:27:51、全卡11-03 05:40末2h保全不变，03:27后续训仍待用户决定；一次一张免费GPU累计≤30h，不碰Mac/秘密输入/凭据，RL2不恢复。未采用Host59/60/61或新InputSpec。
 
-**唯一下一步：按真实首次使用/生成与拒绝原因量24路20–30min，接19:27 quick；收正式当前策略价值工具候选，再实现有界热参数控制。** reader完整恢复到1830更新、旧固定23组/EMA/双Adam与seq1保留；恢复约6.6min，首PPO后24min187更新，train中位2.38秒/最长3.92，整链约7.6秒/更新，未出现原27–55秒停顿。只是工程收益，不能当实力提高。当前仍策略4e-5/head1e-4、无权EMA残差value.001、lambda.95、batch256/2use/600秒/FP32/micro8、admission-v1缓存。用户已撤回此次lambda1/value.02预设，旧准备目录仅提案且未投入GPU；先按新尺子逐项选择，不预装MLP。reference KL .1–.17只是监控，watch停线为None；坏quick/行为按原卡回退。
+**唯一下一步：收CPU离线特征与单个MLP候选，按训练前固定门验同v518的47自然考题；通过才汇报并直接正常完整CP切换。** 当前仍lr4e-5/head1e-4、λ.95/value.001/entropy.01/无权TRAIN尺度、FP3232×8/no-grad8、2use/600秒/prepared seq1，不预先改变评分。λ1/value.02旧提案撤销且未训练，热参数控制已移出本卡归#319/#293。现有critic_review独占另一工作树实现shared scratch＋后台R2归档/poll/event移出owner，root负责MLP/CP和集成验收；管道候选尚未上线。
 
-新尺子固定v416/1749，同CP动作权重正常绑定、48个永久TRAIN留出seed、同训练纯π采样：46自然saved/2unknown，均13.37层/中位14/最高24/0胜。7826行完整MC EV.1708、局内EV.2301、等局EV.1743；按行偏差−.00320而按局+.01091，按局敏感区间跨0，旧“系统性低估两成”不成立。早/中/晚EV.038/.128/.270。正式工具候选[入口](../../tools/friday/value_validation.py)已9项数值反例、非作者及真实physical-read scorer通过；类型/准确CI/正式集成待收。评分改动前后及quick前后各做当前策略点，旧固定23/4627只连续性。下一点拟7games，24actor+EV7+quick4+U1预留1=36；U1此窗口单路两局旧Input-v2/Host59 normalActor/R2兼容短链，当前RL3/quick仍原Host58Runtime59。
+第三quick v471/2274正常完成20合格配对：起点13.65→21.10/+7.45；与v296 CURRENT共同18seed直接+3.2778、固定组95敏感[-1.3889,7.9444]跨0，是继续改善信号、不能证明继续增长或平台。当前24offers=20合格自然＋3unknown＋1自然37层但原批审计不准入，均保留不重打。下一quick仍23:27:51。末同窗100+100尚未执行，任一unknown剔整对并列seed/side/reason，数量不使整轮作废；其他缺失保持未完成。
 
-第二quick v296/1062（15:28冻结）16:33完成20合格自然配对：14.0→18.4/+4.4层，14远4近2同、固定suite敏感95%[.75,8]、0胜；1unknown原ordinal9不重发，补新21。下一quick19:27:51/23:27:51不移；将按共同合格seed比较相邻模型，动态采样训练曲线不替实力。末同窗起点/最终各100尚未freeze/执行；两边同Runtime/Host/条件，unknown剔整对并逐项列出，数量不令整轮作废，零有效对不给估计，其他缺失保持未完成，raw audit/scored不改。旧144槽131saved/1unknown/1save_pending/1trajectory_pending/10reserved等失败保留不重发。U1首批Host59源码/包已交但完整Actor/R2短链未收，P1r1.8新输入不混本轮。状态/恢复/工具条件看[原SOP](../../python/docs/RL3_RUN.zh-CN.md)，原EAIT失误与所有失败/保全义务仍归private本卡报告。最终100、完整统计/A10建议、7个when-next-rl的证据与未完、所有新旧数组保全仍欠。
+正式价值CLI PR360已合489d9b79，真实prepare/submit/collect/score完成：同48固定永久TRAIN留出、同π、完整MC。v416为46自然/2unknown、EV.170823；v518/2898为47自然/1unknown、9796行，EV.149316/等局.153590、行bias−.017203/均局+.002792（95敏感跨0）。每局相关中位.7365→.8350；真实差分抖动比中位2648→1754，目标本身是平滑折扣曲线，不能用相关代玩法或校准证明。局内centered EV仅附表。
+
+离线候选基于冻结v518，公开scene注意力4头/192＋原mean，313025参数、零末层残差；仅新分支拟合，主干/原线性固定。固定最近256自然TRAIN局（排除全部永久held_out/eval100/unknown）已冻结，CPU1400511提取中；19项隔离/导出/指标检查通过，完整CP/双Adam/RNG/buffer/EMA/control迁移另验中，非最终资格。内部TRAIN/DEV选一个候选，47考题只作一次最终评分，不按考题再调。完整门及执行见[原SOP](../../python/docs/RL3_RUN.zh-CN.md#离线注意力残差评分头)；最终100/训练曲线、七Issue与#338、所有新旧数组/GPU/Store/失败前缀保全仍欠。
 
 CARD-1A / [#340](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/issues/340)仍待用户试1–2局和原件/完整入库；本卡不碰Mac。原source ab816a93 / Workbench cc39dc7f / UI24 / Mod72 / Runtime60的已装与0动作保存范围见[STATUS](../STATUS.md)，不拿它作模型实战资格。
 

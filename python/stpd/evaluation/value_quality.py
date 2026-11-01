@@ -169,10 +169,13 @@ def summarize(games: list[dict[str, Any]]) -> dict[str, Any]:
         "definitions": {"bias": "prediction - MC target; headline bias weights games equally",
             "EV": "1 - Var(target-prediction)/Var(target); null when target variance is zero",
             "within_game": "center predictions and targets by their own game means, then pool EV",
-            "correlation": "per-game Pearson(prediction, terminal MC target); equal-game quantiles",
+            "correlation": ("per-game Pearson(prediction, terminal MC target); "
+                            "equal-game quantiles"),
             "jitter_ratio": "sample std(diff prediction) / sample std(diff target); no epsilon",
-            "undefined_temporal": "constant denominator or insufficient rows remain null and counted",
-            "temporal_caution": "MC targets are smooth time trends; correlation/jitter are not gameplay proof",
+            "undefined_temporal": ("constant denominator or insufficient rows "
+                                   "remain null and counted"),
+            "temporal_caution": ("MC targets are smooth time trends; "
+                                 "correlation/jitter are not gameplay proof"),
             "targets": "discounted full terminal return; no lambda or value bootstrap",
             "calibration": "fixed prediction bins; per-decision and inverse-game-length summaries",
             "scope": "frozen-policy Managed TRAIN-holdout sampling; not real-game proof"}}
