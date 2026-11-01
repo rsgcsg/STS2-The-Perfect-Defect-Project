@@ -299,22 +299,25 @@ class OnlineCritic:
                 scores, predicted = self.model.forward_with_values(
                     [episode.frames[i] for i in indices]
                 )
-                chosen_logs, kl_rows = [], []
-                for i, score in zip(indices, scores, strict=True):
-                    log = score.float().log_softmax(-1)
-                    chosen_logs.append(log[episode.actions[i]])
-                    old = torch.tensor(
-                        episode.old_probabilities[i], device=score.device, dtype=torch.float64
-                    )
-                    # Actor probabilities are recorded as float64 softmax values.
-                    # Preserve zeros as infinite KL if current mass becomes positive.
-                    current = log.double().exp()
-                    terms = torch.where(current > 0, current * (log.double() - old.log()), 0)
-                    kl_rows.append(terms.sum())
+                logits = nn.utils.rnn.pad_sequence(
+                    [score.float() for score in scores], batch_first=True,
+                    padding_value=-torch.inf)
+                logs = logits.log_softmax(-1)
+                actions = torch.tensor([episode.actions[i] for i in indices],
+                                       device=logs.device)
+                chosen_logs = logs.gather(1, actions[:, None]).squeeze(1)
+                width = logs.shape[1]
+                old = torch.tensor([episode.old_probabilities[i] +
+                    [0.0] * (width - len(episode.old_probabilities[i])) for i in indices],
+                    device=logs.device, dtype=torch.float64)
+                # Actor probabilities are float64. Padding contributes zero;
+                # a real zero with positive current mass retains infinite KL.
+                current = logs.double().exp()
+                terms = torch.where(current > 0, current * (logs.double() - old.log()), 0)
+                kl_rows = terms.sum(-1)
                 # One D2H transfer per microbatch, never float(CUDA) per row.
                 packed = torch.stack((predicted[:, 1].double(),
-                                      torch.stack(chosen_logs).double(),
-                                      torch.stack(kl_rows)), dim=1).cpu().tolist()
+                                      chosen_logs.double(), kl_rows), dim=1).cpu().tolist()
                 for i, (value, chosen, kl) in zip(indices, packed, strict=True):
                     values[i], acting_kl[i] = value, kl
                     ratios[i] = math.exp(chosen - math.log(episode.behavior[i]))
