@@ -113,6 +113,38 @@ def test_invalid_canonical_prefix_is_rejected(evaluate, execution, tmp_path, pre
         prepared(evaluate, execution, tmp_path, seed_prefix=prefix)
 
 
+def test_seed_subset_preserves_full_registered_manifest_and_original_ordinals(
+        evaluate, execution, tmp_path):
+    from stpd.evaluation.suites import rl3_learning_curve_manifest
+
+    manifest = tmp_path / 'original100.json'
+    value = rl3_learning_curve_manifest('v0.111.0')
+    manifest.write_text(json.dumps(value))
+    original = manifest.read_bytes()
+    plan, _ = prepared(evaluate, execution, tmp_path, manifest_path=manifest,
+                       seed_ordinals=[21, 56, 100])
+    assert plan['planned'] == 9 and plan['seed_ordinals'] == [21, 56, 100]
+    assert Path(plan['manifest']['path']).read_bytes() == original
+    ledger = evaluate.create_ledger(plan, (tmp_path / 'ledger').resolve())
+    assert {slot['seed_ordinal'] for slot in ledger.plan['slots']} == {21, 56, 100}
+    assert all(slot['seed'] == value['seeds'][slot['seed_ordinal'] - 1]
+               for slot in ledger.plan['slots'])
+    assert ledger.plan['originals'][0]['sha256'] == plan['manifest']['sha256']
+    assert ledger.plan['audit_selection']['count'] == 1
+
+
+@pytest.mark.parametrize('ordinals', [[], [0], [21], [True], [2, 1], [1, 1], ['1']])
+def test_seed_subset_rejects_invalid_or_reordered_original_ordinals(
+        evaluate, execution, tmp_path, ordinals):
+    with pytest.raises(ValueError, match='bounded_canonical_seed_ordinals'):
+        prepared(evaluate, execution, tmp_path, seed_ordinals=ordinals)
+
+
+def test_seed_prefix_and_subset_cannot_define_two_denominators(evaluate, execution, tmp_path):
+    with pytest.raises(ValueError, match='bounded_canonical_seed_ordinals'):
+        prepared(evaluate, execution, tmp_path, seed_prefix=10, seed_ordinals=[1])
+
+
 @pytest.mark.parametrize('changed', [
     {'store': '/tmp/local'},
     {'retention': {'tier': 'trajectory', 'purpose': 'training', 'audit_every': 50}},
@@ -300,11 +332,15 @@ def test_allocation_run_uses_original_ledger_and_retains_unknown_without_reoffer
 
     def signal_during_snapshot(source, destination):
         assert signal.getsignal(signal.SIGUSR1) != initial_handler
+        controller_stop.unlink(missing_ok=True)
         signal.raise_signal(signal.SIGUSR1)
+        assert controller_stop.exists()
         return original_snapshot(source, destination)
 
     monkeypatch.setattr(evaluate, 'snapshot', signal_during_snapshot)
-    result = evaluate.run(directory / 'plan.json')
+    controller_stop = tmp_path / 'controller-STOP'
+    result = evaluate.run(directory / 'plan.json', on_stop=controller_stop.touch)
+    assert controller_stop.exists()
     assert signal.getsignal(signal.SIGUSR1) == initial_handler
     assert result['timing']['process_wall_seconds'] >= result['timing']['phases']['snapshot']
     assert result['timing']['process_finished_at'] >= result['timing']['process_started_at']

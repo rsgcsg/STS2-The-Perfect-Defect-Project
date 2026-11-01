@@ -215,6 +215,7 @@ class EvaluationLedger:
         selections: dict[str, str],
         execution: Path,
         seed_prefix: int | None = None,
+        seed_ordinals: list[int] | None = None,
     ) -> EvaluationLedger:
         """Freeze a new Managed denominator; never clone or reset an old ledger."""
         if directory.exists() or not selections or len(set(selections.values())) != len(selections):
@@ -226,7 +227,15 @@ class EvaluationLedger:
             type(seed_prefix) is not int or not 1 <= seed_prefix <= len(manifest["seeds"])
         ):
             reject("invalid_seed_prefix")
-        seeds = manifest["seeds"][:seed_prefix]
+        if seed_ordinals is not None and (
+            seed_prefix is not None or not isinstance(seed_ordinals, list) or not seed_ordinals
+            or any(type(n) is not int or not 1 <= n <= len(manifest["seeds"])
+                   for n in seed_ordinals)
+            or seed_ordinals != sorted(set(seed_ordinals))
+        ):
+            reject("invalid_seed_ordinals")
+        ordinals = (seed_ordinals if seed_ordinals is not None
+                    else list(range(1, (seed_prefix or len(manifest["seeds"])) + 1)))
         raw = _read(execution)
         configuration = json.loads(raw)
         if configuration.get("schema") != "spireagent/managed-evaluation-execution-v1" or set(
@@ -241,7 +250,8 @@ class EvaluationLedger:
         if retention["tier"] == "diagnostic" and storage["store"] == "s3":
             reject("diagnostic_requires_node_store")
         slots = []
-        for ordinal, seed in enumerate(seeds, 1):
+        for ordinal in ordinals:
+            seed = manifest["seeds"][ordinal - 1]
             for step, selection in selections.items():
                 slot = {
                     "character": manifest["character"],
@@ -273,6 +283,7 @@ class EvaluationLedger:
             "created_at": datetime.now(UTC).isoformat(),
             "host_kind": "managed",
             **({"seed_prefix": seed_prefix} if seed_prefix is not None else {}),
+            **({"seed_ordinals": seed_ordinals} if seed_ordinals is not None else {}),
             **({"audit_selection": audit_selection} if audit_selection else {}),
             "execution": reference(execution),
             "storage": storage,
@@ -850,6 +861,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--manifest", type=Path)
     parser.add_argument("--manifest-sha256")
     parser.add_argument("--seed-prefix", type=int)
+    parser.add_argument("--seed-ordinals", type=int, nargs="+")
     parser.add_argument("--selections", type=Path)
     parser.add_argument("--execution", type=Path)
     parser.add_argument("--cloud-environment", type=Path)
@@ -861,6 +873,10 @@ def main(argv: list[str] | None = None) -> int:
             args.action != "create" or args.host != "managed"
         ):
             reject("seed_prefix_requires_managed_create")
+        if args.seed_ordinals is not None and (
+            args.action != "create" or args.host != "managed"
+        ):
+            reject("seed_ordinals_require_managed_create")
         if args.cloud_environment:
             import os
 
@@ -891,6 +907,7 @@ def main(argv: list[str] | None = None) -> int:
                     selections=json.loads(_read(args.selections)),
                     execution=args.execution.resolve(),
                     seed_prefix=args.seed_prefix,
+                    seed_ordinals=args.seed_ordinals,
                 )
                 result = ledger.report()
             elif args.action == "plan":

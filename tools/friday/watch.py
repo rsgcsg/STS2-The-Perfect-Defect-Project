@@ -44,6 +44,23 @@ def read_config(path: Path) -> dict[str, Any]:
     # Pin both the original runtime and actual submitted actor allocation.
     if plan['source_root'] != value['runtime_source']:
         raise ValueError('watch_frozen_runtime_binding_mismatch')
+    evaluation_source = value.get('evaluation_runtime_source')
+    if evaluation_source is not None:
+        source = Path(evaluation_source)
+        if (not source.is_absolute() or source.resolve() != source or source.is_symlink()
+                or not (source / 'tools/friday/evaluate.py').is_file()):
+            raise ValueError('canonical_frozen_evaluation_runtime_required')
+    if value.get('natural_quick') is not None:
+        natural = value['natural_quick']
+        if (value['evaluation_mode'] != 'direct' or not isinstance(natural, dict)
+                or not isinstance(natural.get('baseline_cache'), list)
+                or not natural['baseline_cache']
+                or set(natural.get('baseline_model', {})) !=
+                    {'model_artifact_id', 'model_sha256'}
+                or not isinstance(natural.get('baseline_unknown_seeds', []), list)):
+            raise ValueError('explicit_direct_natural_quick_baseline_required')
+        if {tier['name'] for tier in tiers(value)} != {'quick'}:
+            raise ValueError('natural_quick_requires_explicit_quick_only_schedule')
     submission = json.loads((Path(value['actor_plan']).parent / 'submission.json').read_bytes())
     if str(submission['job_id']).split(';')[0] != str(value['actor_job_id']):
         raise ValueError('watch_actor_job_binding_mismatch')
@@ -226,6 +243,8 @@ class Watcher:
     def prepare_evaluation(self, model: dict[str, Any], now: float, *,
                            confirmation: bool = False, tier: dict[str, Any] | None = None,
                            due_at: float | None = None):
+        if tier is not None and tier['name'] == 'quick' and self.config.get('natural_quick'):
+            return self.prepare_natural_quick(model, tier, due_at)
         kind = tier['name'] if tier else ('confirmation' if confirmation else 'fixed20')
         if (tier is not None and self.config['evaluation_mode'] == 'direct'
                 and int(os.environ.get('SLURM_CPUS_PER_TASK', '0')) < 4):
@@ -247,7 +266,9 @@ class Watcher:
             wall_seconds=tier.get('wall_seconds', 7200) if tier else (10800 if confirmation else 7200),
             manifest_path=Path(self.config['evaluation_manifest']),
             seed_prefix=tier['seed_prefix'] if tier else (40 if confirmation else 20),
-            runtime_source=Path(self.config['runtime_source']), observation_report=tier is not None)
+            runtime_source=Path(self.config.get('evaluation_runtime_source',
+                                                self.config['runtime_source'])),
+            observation_report=tier is not None)
         pending = {'plan': str(plan_path), 'version': model['version'],
                    'updates': model.get('training', {}).get('updates', 0),
                    'state': 'submission_intent', 'job_id': None, 'evaluation_kind': kind,
@@ -285,12 +306,96 @@ class Watcher:
         self.persist()
         self.publish('evaluation_started', **pending)
 
+    def prepare_natural_quick(self, model: dict[str, Any], tier: dict[str, Any],
+                              due_at: float | None) -> None:
+        import quick
+
+        if int(os.environ.get('SLURM_CPUS_PER_TASK', '0')) < 4:
+            raise ValueError('direct_RL3_evaluation_requires_four_allocated_CPUs')
+        config = self.config['natural_quick']
+        models = {'current': {k: model[k] for k in ('model_artifact_id', 'model_sha256')},
+                  'baseline': config['baseline_model']}
+        execution = json.loads(Path(self.config['evaluation_execution']).read_bytes())
+        execution['pipeline'] = {'pending_limit': 8, 'save_workers': 2}
+        execution['models'] = {role: {'artifact_id': record['model_artifact_id'],
+            'package_directory': str(self.exchange.materialize_model(record, self.work / 'models'))}
+            for role, record in models.items()}
+        root = self.work / 'evaluations' / f"natural20-v{model['version']:06d}-{time.time_ns()}"
+        input_path = self.work / 'natural-quick-execution.json'
+        save(input_path, execution)
+        quick.prepare(input_path, root, manifest_path=Path(self.config['evaluation_manifest']),
+            runtime_source=Path(self.config.get('evaluation_runtime_source',
+                                                self.config['runtime_source'])),
+            models=models, baseline_cache=self.state.get('natural_quick_baseline_cache',
+                                                         config['baseline_cache']),
+            baseline_unknown_seeds=config.get('baseline_unknown_seeds', []),
+            version=model['version'], updates=model.get('training', {}).get('updates', 0),
+            wall_seconds=tier.get('wall_seconds', 7200))
+        plan_path = root / 'plan.json'
+        pending = {'plan': str(plan_path), 'version': model['version'],
+                   'updates': model.get('training', {}).get('updates', 0),
+                   'state': 'submission_intent', 'job_id': None,
+                   'evaluation_kind': 'quick_natural20', 'planned': 20, 'due_at': due_at,
+                   'model_artifact_id': model['model_artifact_id'], 'prepared_at': time.time(),
+                   'plan_sha256': hashed(plan_path)}
+        self.state['pending'] = pending
+        self.persist()
+        launcher = root / 'launch.sh'
+        launcher.write_text(quick.launcher(plan_path, quick.load_plan(plan_path)))
+        with (root / 'direct.out').open('wb') as stdout, (root / 'direct.err').open('wb') as stderr:
+            self.direct = subprocess.Popen(['bash', str(launcher)], stdout=stdout, stderr=stderr)
+        pending.update(state='direct_running', pid=self.direct.pid)
+        self.persist()
+        self.publish('evaluation_started', **pending)
+
+    def finish_natural_quick(self, result_path: Path, pending: dict[str, Any]) -> None:
+        import quick
+
+        original = json.loads(result_path.read_bytes())
+        count = original.get('paired_n')
+        if (original.get('schema') != quick.SCHEMA
+                or original.get('plan_sha256') != pending['plan_sha256']
+                or original.get('model_artifact_id') != pending['model_artifact_id']
+                or original.get('version') != pending['version']
+                or original.get('updates') != pending['updates']
+                or type(count) is not int or not 0 <= count <= 20
+                or len(original.get('paired_seeds', [])) != count
+                or len(set(original.get('paired_seeds', []))) != count
+                or original.get('complete') is not (count == 20)
+                or original['comparison']['paired_n'] != count):
+            raise ValueError('natural_quick_original_result_binding_mismatch')
+        result = {'version': pending['version'], 'updates': pending['updates'],
+                  'model_artifact_id': pending['model_artifact_id'],
+                  'evaluation_kind': 'quick_natural20', 'complete': original['complete'],
+                  'paired_n': count, 'planned': 20, 'mean_max_floor': original['current_mean'],
+                  'baseline_paired_mean_floor': original['baseline_mean'],
+                  'comparison': original['comparison'], 'due_at': pending['due_at'],
+                  'evaluated_at': original['finished_at'], 'result_path': str(result_path),
+                  'result_sha256': hashed(result_path), 'report': original['report'],
+                  'reason': original['reason'], 'raw_ledger_flags_unchanged': True}
+        if not any(e.get('result_sha256') == result['result_sha256']
+                   for e in self.state['evaluations']):
+            self.state['evaluations'].append(result)
+        self.state['natural_quick_baseline_cache'] = original['baseline_cache']
+        if original['reason'] == 'non_unknown_or_unsettled_batch_requires_owner_read':
+            pending['state'] = 'attention_required'
+        else:
+            self.state['pending'] = None
+        self.persist()
+        self.append_reference('quick_natural20', result['result_sha256'], result)
+        self.publish('evaluation_finished', evaluation=result)
+
     def collect_evaluation(self):
         pending = self.state['pending']
         if pending is None:
             return
+        if pending.get('state') == 'attention_required':
+            return
         result_path = Path(pending['plan']).parent / 'result.json'
         if result_path.exists():
+            if pending.get('evaluation_kind') == 'quick_natural20':
+                self.finish_natural_quick(result_path, pending)
+                return
             result = evaluate_result(result_path, pending['version'], pending['updates'],
                 confirmation=pending.get('evaluation_kind') == 'confirmation',
                 kind=pending.get('evaluation_kind'), expected_planned=pending.get('planned'))
@@ -385,26 +490,8 @@ class Watcher:
         """One saved ledger -> existing validated trajectory/report implementation."""
         from stpd.evaluation.rl_observation import write_report
 
-        plan = evaluate.load_plan(Path(pending['plan']))
-        original = json.loads(result_path.read_bytes())
-        metadata = original.get('observation_report')
-        if (metadata is None or metadata.get('schema') != 'spireagent/evaluation-observation-files-1'
-                or metadata.get('ledger_report_sha256') != hashlib.sha256(
-                    json_bytes(original['ledger_report'])).hexdigest()):
-            raise ValueError('evaluation_job_observation_report_required')
-        files = {}
-        for name in ('source', 'details', 'cohort'):
-            reference = metadata['files'][name]
-            if Path(reference['path']).name != reference['path']:
-                raise ValueError('evaluation_report_file_name_required')
-            files[name] = evaluate.read_pinned({
-                'path': str(result_path.parent / 'evidence' / reference['path']),
-                'sha256': reference['sha256']})
-        if (files['source']['ledger_report'] != original['ledger_report']
-                or files['source']['plan_sha256'] != original['plan_sha256']
-                or files['cohort']['source_sha256'] != metadata['files']['source']['sha256']
-                or files['cohort']['details_sha256'] != metadata['files']['details']['sha256']):
-            raise ValueError('evaluation_report_original_binding_mismatch')
+        plan, original, files = evaluate.read_observation_report(result_path, Path(pending['plan']))
+        metadata = original['observation_report']
         cohort = files['cohort']
         protocol = {'manifest_sha256': plan['manifest']['sha256'],
                     'seed_prefix': plan.get('seed_prefix'),
