@@ -497,3 +497,17 @@ resume_critic_changes声明kind变化；不需要离线candidate或qualification
 只记录一个实际切点model/version、时间、updates及准确source；最终100+100把切前后阶段
 分开说明，不把全程效果单归头。原定训练终点和资源上限不变，原正常评估照常，不额外加
 切前后对照或1h/3h门。PR369和已准备好的Host/actor组合尽量同一自然批切，未ready不拖主切。
+
+
+## 本轮批准的延长期与归档格式
+
+用户11-02追加允许到下一原四小时检查点07:27:51，保持原started_at与调度节拍，watch配置
+可表达最长24小时，不重置总GPU30小时与全卡保全硬限。已有GPU启动器的绝对timeout不能
+靠改磁盘配置热延时，须正常完整CP续接、明确新config/launcher/hash与实际开始时间。
+用户另批准新鲜度从开局600秒调到900秒；下一完整CP续接显式记录变更，只用于后续入账，
+不回写旧拒绝或重投旧局，2use/λ/学习率/value等不变，按实际首次使用和acting-KL报告。
+
+共享归档对exchange中的模型/分片/CP等单JSON记录解析依赖；正常decision-ledger产生JSONL、
+TensorBoard产生二进制，它们按原字节归档并读回，不作JSON解析。旧任务因该解析失败留下的
+pending与热Store原件保留，用修复后的正常archive drain继续，不重seed、不重投World；
+原Slurm失败终态不改写，CP/动作完整读回与归档恢复分别记录。

@@ -86,7 +86,7 @@ class Archive:
             artifacts = []
             if key.startswith("manifests/"):
                 artifacts.append(Path(key).stem)
-            elif key.startswith("exchange/"):
+            elif key.startswith("exchange/") and key.endswith(".json"):
                 value = json.loads(raw)
                 artifacts.extend(value[name] for name in (
                     "model_artifact_id", "checkpoint_artifact_id", "shard_artifact_id")

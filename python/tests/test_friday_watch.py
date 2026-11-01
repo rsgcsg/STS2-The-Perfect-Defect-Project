@@ -896,6 +896,13 @@ def test_additional_allocations_share_health_stop_and_require_all_to_drain(watch
     file = tmp_path / 'watch.json'
     file.write_text(json.dumps(config))
     assert watch.read_config(file) == config
+    extended = {**config, 'wall_seconds': 86400}
+    file.write_text(json.dumps(extended))
+    assert watch.read_config(file) == extended
+    file.write_text(json.dumps({**extended, 'wall_seconds': 86401}))
+    with pytest.raises(ValueError, match='bounded_RL_watch_configuration'):
+        watch.read_config(file)
+    file.write_text(json.dumps(config))
     exchange = SimpleNamespace(request_stop=Mock(),
                                latest_event=lambda: {'kind': 'finished', 'at': 100},
                                latest_model=lambda: {'version': 1},

@@ -131,6 +131,38 @@ def test_existing_exchange_seed_is_exact_and_archive_binding_cannot_drift(tmp_pa
         open_peer({**binding, "archive": {"kind": "local", "directory": str(tmp_path / "wrong")}})
 
 
+def test_normal_decision_segments_and_tensorboard_binary_archive_without_JSON_parsing(tmp_path):
+    import collections
+    import json
+
+    from spireagent.rl_tensorboard import TensorBoardMetrics
+    from stpd.rl.ledger import DecisionLedger
+
+    binding, hot, archive = peers(tmp_path)
+    exchange = Exchange(binding, "normal-diagnostics")
+    ledger = DecisionLedger(tmp_path / "decision-ledger.jsonl")
+    ledger.write("first", updates=1)
+    ledger.write("second", updates=2)
+    learner = Learner.__new__(Learner)
+    learner.ledger, learner.exchange = ledger, exchange
+    learner.config = SimpleNamespace(background_io=False)
+    learner.telemetry_pending = collections.deque()
+    learner._publish_ledger()  # The real normal publisher creates a multi-record JSONL blob.
+    ledger.close()
+    metrics = TensorBoardMetrics(exchange, tmp_path / "metrics")
+    metrics.scalars({"train/policy_loss": .25}, 2)
+    metrics.publish()
+    keys = hot.blobs.keys(exchange.prefix)
+    decision_key = next(k for k in keys if "/decisions/" in k)
+    assert [json.loads(line)["kind"] for line in hot.blobs.get(decision_key).splitlines()] == [
+        "first", "second"]
+    assert any("/tb/" in k for k in keys)
+    assert exchange.drain_archive(10)["full_readback"]
+    for key in keys:
+        assert archive.blobs.get(key) == hot.blobs.get(key)
+    assert hot.archive.status()["pending"] == 0
+
+
 def test_archive_drain_checks_deadline_between_tasks_and_logs_safe_IO_failure(
         tmp_path, monkeypatch, capsys):
     from spireagent.storage import async_archive as module

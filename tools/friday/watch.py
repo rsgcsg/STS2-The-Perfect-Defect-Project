@@ -28,7 +28,7 @@ SCHEMA = 'spireagent/friday-rl-watch-config-1'
 def read_config(path: Path) -> dict[str, Any]:
     value = json.loads(path.read_bytes())
     if (value.get('schema') != SCHEMA or value.get('evaluation_mode') not in {'submit', 'direct'}
-            or not 1 <= value.get('wall_seconds', 0) <= 72000
+            or not 1 <= value.get('wall_seconds', 0) <= 86400
             or not 60 <= value.get('poll_seconds', 900) <= 1800
             or not 14400 <= value.get('evaluation_seconds', 18000) <= 18000
             or type(value.get('started_at')) not in {int, float}
