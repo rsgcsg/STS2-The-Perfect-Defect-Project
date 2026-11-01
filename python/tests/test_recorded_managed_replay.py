@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -66,6 +67,9 @@ def setup(tmp_path, monkeypatch, original, tool):  # noqa: F811
     (state / replay.CONFIG).write_text(json.dumps(config))
     monkeypatch.setattr(replay, "_execution_identity", lambda root: config["execution"])
     monkeypatch.setattr(replay, "_game_idle", lambda root: True)
+    # These replay behavior cases assume space for dispatch, independently of CI host capacity.
+    monkeypatch.setattr(replay, "shutil", SimpleNamespace(
+        which=shutil.which, disk_usage=lambda _: SimpleNamespace(free=20 * 1024**3)))
     monkeypatch.setattr(replay, "source_identity", lambda root: PRODUCER)
     from spireagent.workbench import local_recording_import
 
@@ -361,3 +365,14 @@ def test_stopped_owner_at_process_boundary_is_not_an_attempt(tmp_path, monkeypat
     maintenance.stop.set()
     monkeypatch.setattr(subprocess, "Popen", lambda *a, **k: pytest.fail("owner is closing"))
     assert replay._run(["unused"], tmp_path, tmp_path, maintenance, 1) == "not_started"
+
+
+def test_low_space_still_blocks_before_new_replay_attempt(setup, monkeypatch):
+    maintenance, raw, store, _remote, _original, _snapshots = setup
+    monkeypatch.setattr(replay.shutil, "disk_usage",
+                        lambda _: SimpleNamespace(free=15 * 1024**3 - 1))
+    monkeypatch.setattr(replay, "_run", lambda *_a, **_kw: pytest.fail("no low-space dispatch"))
+    replay.tick(maintenance)
+    assert maintenance.importer._maintenance["managed_replay_error"] == "fifteen_GiB_free_required"
+    assert maintenance.importer._maintenance["managed_replays"] == {}
+    assert store.manifest_ids() == (raw.artifact_id,)

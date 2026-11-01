@@ -338,8 +338,7 @@ EvaluationLedger、PipelinedManagedExecutor、typed shard和allocation/GAME-SLOT
 trajectory/training retention，但这些局永不Exchange announce、不进策略或价值优化器。
 
 用 `submit --plan <root/plan.json>` 单次提交，或通过生成的正常allocation launcher运行。
-必须把actor、quick、U1与本次workers统一算入当前用户批准的游戏总并发；本卡21:30追加为45，
-当前32＋4＋7＋1=44，不能据此改变其他卡限制。CPU评分不占游戏路。
+必须把actor、quick、U1与本次workers统一算入游戏并发36；CPU评分不占游戏路。
 各slot最多1次offer；清洁unknown/censored单列且不补打。STOP/USR1停止新准入，已有
 正常调用按原预算收尾；进入一局前预留准备150秒、整局、清理120秒和保存180秒。
 失败/已有intent先核原收据，不能自动重投；未知不能改成负局或零层。保留saved的
@@ -350,9 +349,6 @@ unscored事实，不能为做价值诊断强改正式audit/scored资格。
 CPU FP32/eval/no_grad计算；标签是reward v2的完整终局MC折扣回报，不用lambda或价值
 自举。JSON与逐步CSV报告标准按行EV、每局等权偏差、局内先对两列各减本局均值的EV、
 前中后三分之一、固定预测分档校准及该冻结概率采样模型的层数分布；同时列所有失败分母。
-评分员主指标为整体EV、行/局bias、每局Pearson分布与差分抖动比；原centered EV归附表。
-差分比使用sample std(diff prediction)/sample std(diff target)，不加epsilon；不足行/零分母为null
-并计原因、近常量标记不改数。MC是平滑时间趋势，因此高相关或低抖动本身不证明玩法更好。
 等局权重分档使用inverse-full-game-length权重后在bin内归一，区别于每个入bin游戏等权。
 零目标方差不给EV，零自然局不给效果估计。固定组bootstrap仅为敏感性，不是总体资格。
 这些是Managed结果，不能替真游戏实力；raw价值也是回报估计，不是已校准的通关概率。
@@ -460,6 +456,19 @@ allocation，Stop为每个plan写原STOP且对每个job只发一次信号，drai
 按原USR2维护、pending排空、显式旧新config digest与原start/schedule状态交接；GPU不重启。
 本卡owner在维护完成前也须跟踪新job原收据，并保全全部array，不能只拿主数组终态称完成。
 实际扩容时还须计入同时进行的评估游戏核，保持本卡总游戏核≤36。
+
+## Actor提交资源与实际容量核对
+
+仍使用正常`rl.py prepare/submit`与全新seed_namespace；资源可在`submit --memory-gb 6
+--exclude-node smp-9-0`显式给出。默认仍4GiB/不排节点，API与CLI映射同一submit；
+冻结计划、同run/source/peer父计划、submission lock/intent/STOP和unknown禁止重投不变。
+增加内存或避节点不是重发旧槽，也不能绕审计。本卡45秒audit不改；诊断保留原超时，
+不从FAILED1:0或贴4GiB峰值推断OOM/NFS根因。
+
+容量以`squeue -r`逐task及`sacct`完整窗核，不能按plan长度、array数量或RUNNING父行推算。
+局部array保留全部历史，实际存活索引单列；32路连续满30min且原同32任务无退出后才量
+训练计时/墙钟、秒更新、first-used/观测入账generated与等数据，窗口失败即作废。
+actor终止基础设施事件与已有World槽分别列；原unknown总分母、run/seed/reason/资格不改。
 
 ## 零初始化MLP残差评分头（用户23:20决定）
 
