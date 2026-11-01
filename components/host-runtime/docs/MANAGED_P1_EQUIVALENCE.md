@@ -251,3 +251,15 @@ Every application retains the raw comparison and both toggle values under
 `comparison_exceptions` with ID M060. `matching_points` uses this approved
 policy; `matching_points_without_exceptions` separately excludes affected
 points. A match under M060 does not establish full unqualified P1 equivalence.
+
+## Reading a pending native boundary
+
+Host60 refreshes an untainted settling page through read-only native
+`observe_decision` before normal capture/observe/text observe. This pumps work
+already delivered to STS2 and uses the same child-input resolver; it never
+repeats an action. Unchanged canonical native facts retain snapshot identity,
+so the existing stall watchdog is not reset by empty polls. Snapshot-addressed
+Reads stay frozen to their advertised snapshot. A close interrupting refresh
+rejects publication. New child inputs and native failures stay explicit.
+See the [U1 evidence note](../../../docs/evidence/UNKNOWN_FIX_U1_20261101.md) for
+controlled Knight/Mittens counterexamples and the remaining evidence boundary.

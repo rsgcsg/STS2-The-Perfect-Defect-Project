@@ -2215,10 +2215,10 @@ index 0000000..c77ba4d
 +}
 diff --git a/src/Sts2Headless/DeckGenericSelection.cs b/src/Sts2Headless/DeckGenericSelection.cs
 new file mode 100644
-index 0000000..d73aa87
+index 0000000..c7aff8e
 --- /dev/null
 +++ b/src/Sts2Headless/DeckGenericSelection.cs
-@@ -0,0 +1,117 @@
+@@ -0,0 +1,120 @@
 +using MegaCrit.Sts2.Core.CardSelection;
 +using MegaCrit.Sts2.Core.Entities.Cards;
 +using MegaCrit.Sts2.Core.Entities.Players;
@@ -2232,7 +2232,8 @@ index 0000000..d73aa87
 +internal sealed class DeckGenericSelection
 +{
 +    internal DeckGenericSelection(Player player, CardSelectorPrefs preferences,
-+        Func<CardModel, bool>? filter, List<CardModel> options, string family = "deck_card", bool isDefaultTransformation = false)
++        Func<CardModel, bool>? filter, List<CardModel> options, string family = "deck_card", bool isDefaultTransformation = false,
++        Func<CardModel, CardTransformation>? transformation = null)
 +    {
 +        Player = player;
 +        Preferences = preferences;
@@ -2240,6 +2241,7 @@ index 0000000..d73aa87
 +        Options = options;
 +        Family = family;
 +        IsDefaultTransformation = isDefaultTransformation;
++        Transformation = transformation;
 +    }
 +
 +    internal DeckGenericSelection(Player player, CardSelectorPrefs preferences,
@@ -2253,6 +2255,7 @@ index 0000000..d73aa87
 +
 +    internal string Family { get; }
 +    internal bool IsDefaultTransformation { get; }
++    internal Func<CardModel, CardTransformation>? Transformation { get; }
 +    internal object Identity { get; } = new();
 +    internal Task? Completion { get; set; }
 +    internal Player Player { get; }
@@ -2338,10 +2341,10 @@ index 0000000..d73aa87
 +}
 diff --git a/src/Sts2Headless/DeckTransformCallScope.cs b/src/Sts2Headless/DeckTransformCallScope.cs
 new file mode 100644
-index 0000000..1d64e67
+index 0000000..c533611
 --- /dev/null
 +++ b/src/Sts2Headless/DeckTransformCallScope.cs
-@@ -0,0 +1,78 @@
+@@ -0,0 +1,83 @@
 +using MegaCrit.Sts2.Core.CardSelection;
 +using MegaCrit.Sts2.Core.Commands;
 +using MegaCrit.Sts2.Core.Entities.Players;
@@ -2360,12 +2363,13 @@ index 0000000..1d64e67
 +    internal sealed class Frame
 +    {
 +        internal Frame(Player player, CardSelectorPrefs preferences,
-+            ICardSelector? selector, bool isDefaultTransformation, Frame? previous)
++            ICardSelector? selector, Func<CardModel, CardTransformation>? transformation, Frame? previous)
 +        {
 +            Player = player;
 +            Preferences = preferences;
 +            Selector = selector;
-+            IsDefaultTransformation = isDefaultTransformation;
++            IsDefaultTransformation = transformation == null;
++            Transformation = transformation;
 +            Previous = previous;
 +        }
 +        internal Player Player { get; }
@@ -2373,6 +2377,7 @@ index 0000000..1d64e67
 +        internal ICardSelector? Selector { get; }
 +        internal Frame? Previous { get; }
 +        internal bool IsDefaultTransformation { get; }
++        internal Func<CardModel, CardTransformation>? Transformation { get; }
 +        internal bool Consumed { get; set; }
 +        internal bool Closed { get; set; }
 +    }
@@ -2384,7 +2389,7 @@ index 0000000..1d64e67
 +    {
 +        // The original method assigns its random default after this entry seam.
 +        // A custom delegate can expose deterministic after facts; never invoke it to probe.
-+        __state = new Frame(player, prefs, CardSelectCmd.Selector, cardToTransformation == null, _current);
++        __state = new Frame(player, prefs, CardSelectCmd.Selector, cardToTransformation, _current);
 +        _current = __state;
 +    }
 +
@@ -2400,11 +2405,13 @@ index 0000000..1d64e67
 +    }
 +
 +    internal static bool TryTake(ICardSelector selector, int minSelect, int maxSelect,
-+        out Player? player, out CardSelectorPrefs preferences, out bool isDefaultTransformation, out bool mismatch)
++        out Player? player, out CardSelectorPrefs preferences, out bool isDefaultTransformation,
++        out Func<CardModel, CardTransformation>? transformation, out bool mismatch)
 +    {
 +        player = null;
 +        preferences = default;
 +        isDefaultTransformation = false;
++        transformation = null;
 +        Frame? frame = _current;
 +        mismatch = frame != null;
 +        if (frame == null || frame.Closed || frame.Consumed
@@ -2416,6 +2423,7 @@ index 0000000..1d64e67
 +        player = frame.Player;
 +        preferences = frame.Preferences;
 +        isDefaultTransformation = frame.IsDefaultTransformation;
++        transformation = frame.Transformation;
 +        mismatch = false;
 +        return true;
 +    }
@@ -3250,10 +3258,10 @@ index 0000000..18afe29
 +}
 diff --git a/src/Sts2Headless/ManagedSelectorPublicCapture.cs b/src/Sts2Headless/ManagedSelectorPublicCapture.cs
 new file mode 100644
-index 0000000..e69210f
+index 0000000..5fe3724
 --- /dev/null
 +++ b/src/Sts2Headless/ManagedSelectorPublicCapture.cs
-@@ -0,0 +1,135 @@
+@@ -0,0 +1,143 @@
 +using MegaCrit.Sts2.Core.CardSelection;
 +using MegaCrit.Sts2.Core.Entities.Cards;
 +using MegaCrit.Sts2.Core.Models;
@@ -3273,17 +3281,19 @@ index 0000000..e69210f
 +        bool preview, bool mechanicsQualified, bool canPreview, bool canConfirm, bool canCancel,
 +        Func<CardModel, bool> selectable, EnchantmentModel? enchantment = null, int amount = 0,
 +        Dictionary<string, object?>? summary = null, bool isDefaultTransformation = false,
-+        PileType displayPile = PileType.Deck)
++        PileType displayPile = PileType.Deck, Func<CardModel, CardTransformation>? transformation = null)
 +    {
 +        var missing = new HashSet<string>(StringComparer.Ordinal);
 +        if (completion == null || completion.IsCompleted)
 +            missing.Add("native_selector_original_request_not_pending");
 +        if (!mechanicsQualified) missing.Add("native_selector_mechanics_call_closure_unqualified");
-+        if (family == "deck_transform" && !isDefaultTransformation)
++        bool deterministicTransform = family == "deck_transform" && !isDefaultTransformation
++            && NativeCardPreviewReadQualification.IsDeterministicTransformProjection(transformation);
++        if (family == "deck_transform" && !isDefaultTransformation && !deterministicTransform)
 +            missing.Add("custom_transform_preview_unqualified");
 +        var previews = new List<Dictionary<string, object?>>();
 +        var cards = new List<Dictionary<string, object?>>();
-+        bool requiresAfter = family == "deck_upgrade" || family == "deck_enchant" && prefs.MaxSelect == 1;
++        bool requiresAfter = family == "deck_upgrade" || family == "deck_enchant" && prefs.MaxSelect == 1 || deterministicTransform;
 +        foreach (CardModel original in options)
 +        {
 +            string subject = NativeObjectIdentity.Get(original);
@@ -3305,6 +3315,11 @@ index 0000000..e69210f
 +            {
 +                displayContext = "native_single_enchantment_after";
 +                NativeDetachedCardPreviewFactory.TrySingleEnchant(original, enchantment, amount, out detached, out gap);
++            }
++            else if (deterministicTransform)
++            {
++                displayContext = "native_deterministic_transform_after";
++                NativeDetachedCardPreviewFactory.TryDeterministicTransform(original, transformation, out detached, out gap);
 +            }
 +            if (gap != null) candidateMissing.Add(gap);
 +            Dictionary<string, object?>? after = null;
@@ -3381,6 +3396,7 @@ index 0000000..e69210f
 +            ["capability_revision"] = "sts2.native-selector-public-facts/1",
 +            ["missing"] = missing.Order(StringComparer.Ordinal).ToArray()
 +        };
++        if (deterministicTransform) request["transformation_preview"] = "deterministic_native_after";
 +        return new(new()
 +        {
 +            ["selector_request"] = request, ["preview_options"] = previews,
@@ -3852,10 +3868,10 @@ index 0000000..85112ee
 +}
 diff --git a/src/Sts2Headless/NativeCardPreviewReadQualification.cs b/src/Sts2Headless/NativeCardPreviewReadQualification.cs
 new file mode 100644
-index 0000000..c572421
+index 0000000..1730d21
 --- /dev/null
 +++ b/src/Sts2Headless/NativeCardPreviewReadQualification.cs
-@@ -0,0 +1,388 @@
+@@ -0,0 +1,391 @@
 +using System;
 +using System.Collections.Generic;
 +using System.Linq;
@@ -4140,27 +4156,30 @@ index 0000000..c572421
 +        {
 +            // Explicit exact-build method inventory; it contains no costs,
 +            // damage values or other reimplementation of native upgrade rules.
-+            if (card.GetType().GetMethod("OnUpgrade", NativeMembers) is not { } upgrade
-+                || !(upgrade.DeclaringType == typeof(CardModel)
-+                    || upgrade.DeclaringType == card.GetType() && NativeUpgradeMethodInventory.Contains(card.GetType().Name))
-+                // Harmony keys inherited methods by their actual declaration.
-+                || !IsUnpatched(upgrade.DeclaringType?.GetMethod("OnUpgrade", NativeMembers | BindingFlags.DeclaredOnly))
-+                // Reuse the render qualification for the effective native getter;
-+                // native curses/status cards override the limit with zero.
-+                || !NativeRenderMethod(card.GetType().GetMethod("get_MaxUpgradeLevel", NativeMembers))
-+                || !MethodsUnpatched(typeof(CardModel), "UpgradeInternal", "get_IsUpgradable", "get_CurrentUpgradeLevel",
-+                    "set_CurrentUpgradeLevel", "get_MaxUpgradeLevel", "AddKeyword", "RemoveKeyword", "InvokeEnergyCostChanged",
-+                    "get_UpgradePreviewType", "set_UpgradePreviewType")
-+                || !MethodsUnpatched(typeof(DynamicVar), "UpgradeValueBy", "get_WasJustUpgraded", "set_WasJustUpgraded")
-+                || !NativeUpgradeMethodInventory.VariableGetters.All(name => MethodsUnpatched(typeof(DynamicVarSet), name))
-+                || !MethodsUnpatched(typeof(CardEnergyCost), "UpgradeBy", "SetCustomBaseCost")
-+                || !MethodsUnpatched(typeof(LocalCostModifier), "set_Amount")) return false;
++            if (!UpgradeClosureQualified(card.GetType())) return false;
 +            if (!card.IsUpgradable) { gap = "native_preview_card_not_upgradable"; return false; }
 +            gap = null;
 +            return true;
 +        }
 +        catch { return false; }
 +    }
++
++    private static bool UpgradeClosureQualified(Type type) =>
++            type.GetMethod("OnUpgrade", NativeMembers) is { } upgrade
++                && (upgrade.DeclaringType == typeof(CardModel)
++                    || upgrade.DeclaringType == type && NativeUpgradeMethodInventory.Contains(type.Name))
++                // Harmony keys inherited methods by their actual declaration.
++                && IsUnpatched(upgrade.DeclaringType?.GetMethod("OnUpgrade", NativeMembers | BindingFlags.DeclaredOnly))
++                // Reuse the render qualification for the effective native getter;
++                // native curses/status cards override the limit with zero.
++                && NativeRenderMethod(type.GetMethod("get_MaxUpgradeLevel", NativeMembers))
++                && MethodsUnpatched(typeof(CardModel), "UpgradeInternal", "get_IsUpgradable", "get_CurrentUpgradeLevel",
++                    "set_CurrentUpgradeLevel", "get_MaxUpgradeLevel", "AddKeyword", "RemoveKeyword", "InvokeEnergyCostChanged",
++                    "get_UpgradePreviewType", "set_UpgradePreviewType")
++                && MethodsUnpatched(typeof(DynamicVar), "UpgradeValueBy", "get_WasJustUpgraded", "set_WasJustUpgraded")
++                && NativeUpgradeMethodInventory.VariableGetters.All(name => MethodsUnpatched(typeof(DynamicVarSet), name))
++                && MethodsUnpatched(typeof(CardEnergyCost), "UpgradeBy", "SetCustomBaseCost")
++                && MethodsUnpatched(typeof(LocalCostModifier), "set_Amount");
 +
 +    internal static bool TryPreflightSingleEnchant(CardModel card, EnchantmentModel canonical, out string? gap)
 +    {
@@ -4886,10 +4905,10 @@ index 0000000..6742e80
 +}
 diff --git a/src/Sts2Headless/NativeDetachedCardPreview.cs b/src/Sts2Headless/NativeDetachedCardPreview.cs
 new file mode 100644
-index 0000000..f42207a
+index 0000000..eec9734
 --- /dev/null
 +++ b/src/Sts2Headless/NativeDetachedCardPreview.cs
-@@ -0,0 +1,176 @@
+@@ -0,0 +1,208 @@
 +using System;
 +using System.Collections.Generic;
 +using System.Linq;
@@ -4901,7 +4920,7 @@ index 0000000..f42207a
 +
 +namespace STS2Platform.NativeFoundation;
 +
-+internal enum NativeDetachedPreviewKind { DeckUpgrade, SingleEnchantment }
++internal enum NativeDetachedPreviewKind { DeckUpgrade, SingleEnchantment, DeterministicTransformation }
 +
 +/// <summary>Process-local presentation only. Original is the game-owned
 +/// subject; Display is never added to a scope/pile or used as an input operand.
@@ -4913,6 +4932,38 @@ index 0000000..f42207a
 +
 +internal static class NativeDetachedCardPreviewFactory
 +{
++    internal static bool TryDeterministicTransform(CardModel original,
++        Func<CardModel, CardTransformation>? projection, out NativeDetachedCardPreview? result, out string? gap)
++    {
++        result = null;
++        if (!NativeCardPreviewReadQualification.TryPreflightDeterministicTransform(original, projection, out gap)) return false;
++        SourceStamp before = SourceStamp.Card(original);
++        SourceStamp canonicalBefore = SourceStamp.Card(ModelDb.Card<MegaCrit.Sts2.Core.Models.Cards.Maul>());
++        try
++        {
++            CardTransformation transformation = projection!(original);
++            before.AssertUnchanged(); canonicalBefore.AssertUnchanged();
++            if (!ReferenceEquals(transformation.Original, original) || transformation.Replacement is not { } display
++                || display.GetType() != typeof(MegaCrit.Sts2.Core.Models.Cards.Maul)
++                || ReferenceEquals(display, original) || !display.IsMutable || display.Owner != null
++                || transformation.ReplacementOptions != null
++                || !NativeCardPreviewReadQualification.TryPreflightDeterministicTransform(original, projection, out gap))
++            { gap ??= "native_deterministic_transform_result_unqualified"; return false; }
++            // NTransformPreview.Initialize renders the replacement using the
++            // ORIGINAL deck card's display pile, including enchantment text.
++            result = new(original, display, NativeDetachedPreviewKind.DeterministicTransformation, PileType.Deck, CardPreviewMode.Normal);
++            gap = null;
++            return true;
++        }
++        catch (NativePreviewReadStateViolationException) { throw; }
++        catch
++        {
++            before.AssertUnchanged(); canonicalBefore.AssertUnchanged();
++            gap = "native_deterministic_transform_preview_failed";
++            return false;
++        }
++    }
++
 +    internal static bool TryCanonicalHoverCopy(CardModel canonical, out CardModel? copy, out string? gap)
 +    {
 +        copy = null;
@@ -5064,6 +5115,109 @@ index 0000000..f42207a
 +                || keywordSets.Any(value => !value.Set.SetEquals(value.Items)))
 +                throw new NativePreviewReadStateViolationException("Native detached preview changed its original model footprint");
 +        }
++    }
++}
+diff --git a/src/Sts2Headless/NativeDeterministicTransformReadQualification.cs b/src/Sts2Headless/NativeDeterministicTransformReadQualification.cs
+new file mode 100644
+index 0000000..3122144
+--- /dev/null
++++ b/src/Sts2Headless/NativeDeterministicTransformReadQualification.cs
+@@ -0,0 +1,97 @@
++using System;
++using System.Collections.Generic;
++using System.Linq;
++using System.Reflection;
++using MegaCrit.Sts2.Core.Entities.Cards;
++using MegaCrit.Sts2.Core.Localization.DynamicVars;
++using MegaCrit.Sts2.Core.Models;
++using MegaCrit.Sts2.Core.Models.Cards;
++using MegaCrit.Sts2.Core.Models.Relics;
++
++namespace STS2Platform.NativeFoundation;
++
++public static partial class NativeCardPreviewReadQualification
++{
++    // Exact Claws preview lambda passes forPreview=true to this native factory.
++    // Its false/Commit branch is never a read operation. No arbitrary delegate
++    // is invoked to discover whether it happens to be deterministic.
++    private static readonly MethodInfo? ClawsProjection = typeof(Claws).GetMethod("<AfterObtained>b__6_1", NativeMembers);
++
++    internal static bool IsDeterministicTransformProjection(Func<CardModel, CardTransformation>? projection) =>
++        typeof(CardModel).Module.ModuleVersionId == AuditedGameMvid
++        && projection != null && projection.GetInvocationList().Length == 1
++        && projection.Method == ClawsProjection && projection.Target?.GetType() == typeof(Claws)
++        && IsUnpatched(ClawsProjection)
++        && MethodsUnpatched(typeof(Claws), "CreateMaulFromOriginal")
++        && IsUnpatched(typeof(CardTransformation).GetConstructor(new[] { typeof(CardModel), typeof(CardModel) }));
++
++    internal static bool TryPreflightDeterministicTransform(CardModel original,
++        Func<CardModel, CardTransformation>? projection, out string? gap)
++    {
++        gap = "native_deterministic_transform_delegate_unqualified";
++        if (!IsDeterministicTransformProjection(projection)) return false;
++        if (!TryPreflightCopy(original, out gap)) return false;
++        gap = "native_claws_preview_factory_closure_unqualified";
++        try
++        {
++            if (!MethodsUnpatched(typeof(RelicModel), "get_Owner")
++                || !MethodsUnpatched(typeof(CardModel), "get_Owner", "get_IsUpgraded", "get_IsTransformable", "get_IsRemovable",
++                    "get_Keywords", "get_Pile", "get_CombatState", "get_Type", "get_Rarity", "get_Tags", "ToMutable")
++                || !MethodsUnpatched(typeof(CardTransformation), "AssertTransformable", "get_Original", "get_Replacement", "get_ReplacementOptions")
++                || !MethodsUnpatched(typeof(AbstractModel), "AssertCanonical")
++                || !MethodsUnpatched(typeof(ModelDb), "Card", "Get", "GetId")
++                || !IsUnpatched(typeof(ModelDb).GetMethod("Card", NativeMembers)?.MakeGenericMethod(typeof(Maul)))
++                || !typeof(ModelDb).GetMethods(NativeMembers).Where(method => method.IsGenericMethodDefinition
++                    && method.GetGenericArguments().Length == 1 && method.Name is "Get" or "GetId")
++                    .All(method => IsUnpatched(method.MakeGenericMethod(typeof(Maul))))
++                || projection!.Target is not Claws claws || !claws.IsMutable || !ReferenceEquals(claws.Owner, original.Owner)) return false;
++
++            // Obtain the fixed registered canonical by CLR field enumeration,
++            // before the native factory's ModelDb lookup or lazy card getters.
++            if (typeof(ModelDb).GetField("_contentById", NativeMembers)?.GetValue(null) is not Dictionary<ModelId, AbstractModel> registry
++                || registry.GetType() != typeof(Dictionary<ModelId, AbstractModel>)
++                || !ReferenceEquals(registry.Comparer, EqualityComparer<ModelId>.Default)) return false;
++            CardModel? canonical = registry.Values.OfType<Maul>().SingleOrDefault();
++            if (canonical == null || !CanonicalRegistryBindingQualified(canonical)
++                || Mutable?.GetValue(canonical) is not false || !CopyClosureUnpatched()
++                || !BaseImplementation(typeof(Maul), typeof(CardModel), "DeepCloneFields")
++                || !BaseImplementation(typeof(Maul), typeof(CardModel), "AfterCloned")
++                || !BaseImplementation(typeof(Maul), typeof(CardModel), "get_CanonicalKeywords")
++                || !MethodsUnpatched(typeof(Maul), "get_CanonicalVars")
++                || Enchantment?.GetValue(canonical) != null || Affliction?.GetValue(canonical) != null
++                || !CopyCostQualified(canonical) || !UpgradeClosureQualified(typeof(Maul))
++                || !FixedConstructorsUnpatched(typeof(DynamicVar)) || !FixedConstructorsUnpatched(typeof(DamageVar))
++                || !MethodsUnpatched(typeof(DamageVar), "set_Props") || !ReadOnlyVariableArrayQualified()) return false;
++            if (CardVars?.GetValue(canonical) is DynamicVarSet vars && !CopyVariablesQualified(canonical, vars)) return false;
++            if (Canonical?.GetValue(canonical) is { } parent && !ReferenceEquals(parent, canonical)) return false;
++            if (Keywords?.GetValue(canonical) is { } keywords && (keywords is not HashSet<CardKeyword> set
++                || set.GetType() != typeof(HashSet<CardKeyword>) || !ReferenceEquals(set.Comparer, EqualityComparer<CardKeyword>.Default))) return false;
++            if (typeof(CardModel).GetField("_temporaryStarCosts", NativeMembers)?.GetValue(canonical) is not List<TemporaryCardCost>) return false;
++
++            if (Enchantment?.GetValue(original) is EnchantmentModel attached)
++            {
++                if (!MethodsUnpatched(typeof(EnchantmentModel), "get_CanonicalInstance", "CanEnchant", "CanEnchantCardType")
++                    || !MethodsUnpatched(attached.GetType(), "CanEnchant", "CanEnchantCardType")
++                    || !MethodsUnpatched(typeof(CardEnergyCost), "get_CostsX")
++                    || !NativeRenderMethod(typeof(Maul).GetMethod("get_GainsBlock", NativeMembers))) return false;
++                // Existing attachment-copy preflight owns MutableClone and its
++                // initialized variables; reuse the mature model-only enchant
++                // update closure for this same native enchantment type.
++                var enchantmentCanonical = attached.CanonicalInstance;
++                if (enchantmentCanonical.GetType() != attached.GetType()
++                    || !TryPreflightSingleEnchant(original, enchantmentCanonical, out gap)) return false;
++            }
++            gap = null;
++            return true;
++        }
++        catch { return false; }
++    }
++
++    private static bool ReadOnlyVariableArrayQualified()
++    {
++        Type? type = typeof(CardModel).Assembly.GetType("<>z__ReadOnlyArray`1")?.MakeGenericType(typeof(DynamicVar));
++        return type != null && type.GetMethods(NativeMembers).All(IsUnpatched) && FixedConstructorsUnpatched(type)
++            && type.GetNestedTypes(NativeMembers).All(nested => nested.GetMethods(NativeMembers).All(IsUnpatched)
++                && FixedConstructorsUnpatched(nested));
 +    }
 +}
 diff --git a/src/Sts2Headless/NativeEnchantmentMethodInventory.cs b/src/Sts2Headless/NativeEnchantmentMethodInventory.cs
@@ -6828,10 +6982,10 @@ index 0000000..c06fe31
 +}
 diff --git a/src/Sts2Headless/NativeTrialAbandonPresentation.cs b/src/Sts2Headless/NativeTrialAbandonPresentation.cs
 new file mode 100644
-index 0000000..25607fb
+index 0000000..eafb1ee
 --- /dev/null
 +++ b/src/Sts2Headless/NativeTrialAbandonPresentation.cs
-@@ -0,0 +1,282 @@
+@@ -0,0 +1,295 @@
 +using MethodInfo = System.Reflection.MethodInfo;
 +using System.Reflection.Emit;
 +using System.Diagnostics;
@@ -6895,6 +7049,19 @@ index 0000000..25607fb
 +    internal static bool CanPresent(EventModel model, EventOption option) => HookReady && model is Trial trial
 +        && model.Owner?.RunState is RunState run && Owners.TryGetValue(run, out var owner)
 +        && owner.Current(trial, option) && !owner.OwnsInput;
++
++    internal static Dictionary<string, object?>? ParentCapability(EventModel model, EventOption option)
++    {
++        if (!CanPresent(model, option) || model.Owner?.RunState is not RunState run
++            || run.CurrentRoom is not EventRoom room) return null;
++        return new()
++        {
++            ["kind"] = "abandon_run_confirmation", ["event_ref"] = NativeObjectIdentity.Get(model),
++            ["room_ref"] = NativeObjectIdentity.Get(room), ["parent_option_ref"] = NativeObjectIdentity.Get(option),
++            ["title"] = Modal.Text("ABANDON_RUN_CONFIRMATION.header"),
++            ["body"] = Modal.Text("ABANDON_RUN_CONFIRMATION.body")
++        };
++    }
 +
 +    internal bool OwnsInput => modal is { } current && (current.Current() || current.DeliveryPending);
 +
@@ -7036,7 +7203,7 @@ index 0000000..25607fb
 +            && NativeObjectIdentity.Matches(yes ? yesControl : noControl, args.GetValueOrDefault("control_ref"))
 +                ? null : "The exact current Trial confirmation owner/control changed or was already consumed";
 +
-+        private static string Text(string key)
++        internal static string Text(string key)
 +        {
 +            string text = NativeVisibleText.Strip(new LocString("main_menu_ui", key).GetFormattedText());
 +            return !string.IsNullOrWhiteSpace(text) ? text
@@ -8167,7 +8334,7 @@ index 0000000..aeeb8a2
 +        (Stopwatch.GetTimestamp() - started) * 1000.0 / Stopwatch.Frequency;
 +}
 diff --git a/src/Sts2Headless/Program.cs b/src/Sts2Headless/Program.cs
-index 800f139..0da0544 100644
+index 800f139..32ce83c 100644
 --- a/src/Sts2Headless/Program.cs
 +++ b/src/Sts2Headless/Program.cs
 @@ -1,7 +1,9 @@
@@ -8209,7 +8376,7 @@ index 800f139..0da0544 100644
              }
  
              if (result != null)
-@@ -108,17 +114,61 @@ class Program
+@@ -108,17 +114,64 @@ class Program
          }
      }
  
@@ -8243,6 +8410,9 @@ index 800f139..0da0544 100644
 +            case "run_identity":
 +                return sim.GetRunIdentity();
 +
++            case "observe_decision":
++                return sim.ObserveDecision();
++
 +            case "process_metrics":
 +                return PerformanceLab.ProcessMetrics();
 +
@@ -8274,7 +8444,7 @@ index 800f139..0da0544 100644
  
              case "action":
 diff --git a/src/Sts2Headless/RunSimulator.cs b/src/Sts2Headless/RunSimulator.cs
-index 6b9de4a..25ec485 100644
+index 6b9de4a..313d07a 100644
 --- a/src/Sts2Headless/RunSimulator.cs
 +++ b/src/Sts2Headless/RunSimulator.cs
 @@ -1,4 +1,7 @@
@@ -10388,7 +10558,7 @@ index 6b9de4a..25ec485 100644
                  }
  
                  // Note: do NOT force-finish on `optCountAfter == optCountBefore`. Events can
-@@ -1679,86 +2164,103 @@ public class RunSimulator
+@@ -1679,170 +2164,204 @@ public class RunSimulator
          return DetectDecisionPoint();
      }
  
@@ -10553,8 +10723,17 @@ index 6b9de4a..25ec485 100644
      }
  
      #endregion
-@@ -1767,82 +2269,91 @@ public class RunSimulator
  
+     #region Decision Point Detection
+ 
++    public Dictionary<string, object?> ObserveDecision()
++    {
++        // Progress only work already delivered to the original native runtime.
++        // This read never chooses an input or repeats a previous action.
++        _syncCtx.Pump();
++        return DetectDecisionPoint();
++    }
++
      private Dictionary<string, object?> DetectDecisionPoint()
      {
 -        if (_runState == null)
@@ -10699,7 +10878,7 @@ index 6b9de4a..25ec485 100644
                  ["from_event"] = true,
                  ["player"] = PlayerSummary(_runState!.Players[0]),
              };
-@@ -1852,7 +2363,32 @@ public class RunSimulator
+@@ -1852,7 +2371,32 @@ public class RunSimulator
          checkCardSelect:
          if (_cardSelector.HasPending && _cardSelector.PendingOptions != null)
          {
@@ -10733,7 +10912,7 @@ index 6b9de4a..25ec485 100644
              {
                  var stats = new Dictionary<string, object?>();
                  try { foreach (var dv in card.DynamicVars.Values) stats[dv.Name.ToLowerInvariant()] = (int)dv.BaseValue; } catch { }
-@@ -1860,6 +2396,8 @@ public class RunSimulator
+@@ -1860,6 +2404,8 @@ public class RunSimulator
                  return new Dictionary<string, object?>
                  {
                      ["index"] = i,
@@ -10742,7 +10921,7 @@ index 6b9de4a..25ec485 100644
                      ["id"] = card.Id.ToString(),
                      ["name"] = _loc.Card(card.Id.Entry),
                      ["cost"] = card.EnergyCost?.GetResolved() ?? 0,
-@@ -1870,35 +2408,139 @@ public class RunSimulator
+@@ -1870,14 +2416,116 @@ public class RunSimulator
                      ["description"] = _loc.Bilingual("cards", card.Id.Entry + ".description"),
                      ["keywords"] = selkws?.Count > 0 ? selkws : null,
                      ["after_upgrade"] = GetUpgradedInfo(card),
@@ -10766,12 +10945,6 @@ index 6b9de4a..25ec485 100644
 -                ["type"] = "decision",
 -                ["decision"] = "card_select",
 -                ["context"] = RunContext(),
--                ["cards"] = opts,
--                ["min_select"] = _cardSelector.PendingMinSelect,
--                ["max_select"] = _cardSelector.PendingMaxSelect,
--                ["player"] = PlayerSummary(player),
--            };
--        }
 +                string? prompt = null;
 +                try { prompt = deckUpgrade.Preferences.Prompt.GetFormattedText(); } catch { }
 +                var publicCapture = ManagedSelectorPublicCapture.Capture(deckUpgrade.Identity, deckUpgrade.Completion,
@@ -10809,11 +10982,7 @@ index 6b9de4a..25ec485 100644
 +                    ["player"] = PlayerSummary(player),
 +                };
 +            }
- 
--        // Check if there's a pending card reward
--        if (_pendingCardReward != null)
--        {
--            return CardRewardState(player, _runState.CurrentRoom as CombatRoom);
++
 +            if (deckGeneric != null)
 +            {
 +                string? prompt = null;
@@ -10829,7 +10998,8 @@ index 6b9de4a..25ec485 100644
 +                        : deckGeneric.Enchantment == null ? DeckGenericCallScope.HookReady : DeckEnchantCallScope.HookReady,
 +                    canPreview, deckGeneric.CanConfirm(string.Join(",", deckGeneric.Selected.Select(NativeObjectIdentity.Get))) == null,
 +                    deckGeneric.CanCancelSelection() == null, deckGeneric.CanSelect,
-+                    deckGeneric.Enchantment, deckGeneric.Amount, summary, deckGeneric.IsDefaultTransformation);
++                    deckGeneric.Enchantment, deckGeneric.Amount, summary, deckGeneric.IsDefaultTransformation,
++                    transformation: deckGeneric.Transformation);
 +                return new Dictionary<string, object?>
 +                {
 +                    ["type"] = "decision",
@@ -10869,37 +11039,42 @@ index 6b9de4a..25ec485 100644
 +                ["type"] = "decision",
 +                ["decision"] = "card_select",
 +                ["context"] = RunContext(),
-+                ["cards"] = opts,
-+                ["min_select"] = _cardSelector.PendingMinSelect,
-+                ["max_select"] = _cardSelector.PendingMaxSelect,
-+                ["player"] = PlayerSummary(player),
-+            };
+                 ["cards"] = opts,
+                 ["min_select"] = _cardSelector.PendingMinSelect,
+                 ["max_select"] = _cardSelector.PendingMaxSelect,
+@@ -1885,20 +2533,23 @@ public class RunSimulator
+             };
          }
  
--        // Check if RunManager reports game over (victory)
--        if (RunManager.Instance.IsGameOver)
+-        // Check if there's a pending card reward
+-        if (_pendingCardReward != null)
 +        // RewardsSet owns reward generation, hooks, selection effects, history,
 +        // and completion. The Host only replaces the absent rewards screen.
 +        if (_rewardsSelector.IsAwaitingAction)
          {
--            return GameOverState(true);
+-            return CardRewardState(player, _runState.CurrentRoom as CombatRoom);
 +            return RewardSetState(player);
          }
  
-         var room = _runState.CurrentRoom;
- 
+-        // Check if RunManager reports game over (victory)
+-        if (RunManager.Instance.IsGameOver)
++        var room = _runState.CurrentRoom;
++
 +        // In the shipped UI, room proceed controls open the map before the next
 +        // map vote exits the current room. The managed Host represents that UI
 +        // owner change without mutating CurrentRoom ahead of the native vote.
 +        if (_mapPresentationOpen)
-+        {
+         {
+-            return GameOverState(true);
 +            return MapSelectState();
-+        }
-+
+         }
+ 
+-        var room = _runState.CurrentRoom;
+-
          // Map room — need to select a node
          if (room is MapRoom || room == null)
          {
-@@ -1908,9 +2550,13 @@ public class RunSimulator
+@@ -1908,9 +2559,13 @@ public class RunSimulator
          // Combat room
          if (room is CombatRoom combatRoom)
          {
@@ -10914,7 +11089,7 @@ index 6b9de4a..25ec485 100644
  
              // Re-check for pending card selections AFTER pump (BUG-024: start-of-turn effects
              // like Tools of Trade create card selections during Pump, AFTER the initial HasPending check)
-@@ -1919,7 +2565,7 @@ public class RunSimulator
+@@ -1919,7 +2574,7 @@ public class RunSimulator
                  goto checkCardSelect;  // Jump back to card_select handling
              }
  
@@ -10923,18 +11098,24 @@ index 6b9de4a..25ec485 100644
              {
                  return CombatPlayState(player);
              }
-@@ -1932,7 +2578,9 @@ public class RunSimulator
+@@ -1932,9 +2587,15 @@ public class RunSimulator
              {
                  _syncCtx.Pump();
                  Thread.Sleep(5);
 -                if (IsPlayPhase()) return CombatPlayState(player);
 +                if (RunManager.Instance.IsGameOver || player.Creature?.IsDead == true)
 +                    return GameOverState();
++                if (_cardSelector.HasPending && _cardSelector.PendingOptions != null)
++                    goto checkCardSelect;
 +                if (IsPlayerPhasePlay(player)) return CombatPlayState(player);
                  if (!CombatManager.Instance.IsInProgress) return DetectPostCombatState(player, combatRoom);
              }
++            if (_cardSelector.HasPending && _cardSelector.PendingOptions != null)
++                goto checkCardSelect;
              return CombatPlayState(player);
-@@ -1963,14 +2611,20 @@ public class RunSimulator
+         }
+ 
+@@ -1963,14 +2624,20 @@ public class RunSimulator
          }
  
          // Fallback
@@ -10962,7 +11143,7 @@ index 6b9de4a..25ec485 100644
      }
  
      private Dictionary<string, object?> MapSelectState()
-@@ -1992,76 +2646,32 @@ public class RunSimulator
+@@ -1992,76 +2659,32 @@ public class RunSimulator
              if (map == null)
                  return Error("No map available");
          }
@@ -11054,7 +11235,7 @@ index 6b9de4a..25ec485 100644
              ["choices"] = choices,
              ["player"] = PlayerSummary(_runState!.Players[0]),
              ["act"] = _runState.CurrentActIndex + 1,
-@@ -2070,6 +2680,38 @@ public class RunSimulator
+@@ -2070,6 +2693,38 @@ public class RunSimulator
          };
      }
  
@@ -11093,7 +11274,7 @@ index 6b9de4a..25ec485 100644
      private Dictionary<string, object?> CombatPlayState(Player player)
      {
          var pcs = player.PlayerCombatState;
-@@ -2079,11 +2721,6 @@ public class RunSimulator
+@@ -2079,11 +2734,6 @@ public class RunSimulator
          if (player.Creature != null && player.Creature.CurrentHp > 0)
              _lastKnownHp = player.Creature.CurrentHp;
  
@@ -11105,7 +11286,7 @@ index 6b9de4a..25ec485 100644
          var hand = pcs?.Hand?.Cards?.Select((c, i) =>
          {
              // Export the *currently resolved* stat values, not the card base: refresh the
-@@ -2109,78 +2746,30 @@ public class RunSimulator
+@@ -2109,78 +2759,30 @@ public class RunSimulator
              }
              catch { }
  
@@ -11196,7 +11377,7 @@ index 6b9de4a..25ec485 100644
              };
              if (starCost > 0)
              {
-@@ -2201,8 +2790,6 @@ public class RunSimulator
+@@ -2201,8 +2803,6 @@ public class RunSimulator
                  cardInfo["affliction"] = _loc.Bilingual("afflictions", c.Affliction.Id.Entry + ".title");
                  try { if (c.Affliction.Amount != 0) cardInfo["affliction_amount"] = c.Affliction.Amount; } catch { }
              }
@@ -11205,7 +11386,7 @@ index 6b9de4a..25ec485 100644
              return cardInfo;
          }).ToList() ?? new();
  
-@@ -2224,6 +2811,18 @@ public class RunSimulator
+@@ -2224,6 +2824,18 @@ public class RunSimulator
                              {
                                  ["type"] = intent.IntentType.ToString(),
                              };
@@ -11224,7 +11405,7 @@ index 6b9de4a..25ec485 100644
                              // Get damage for attack intents
                              if (intent is MegaCrit.Sts2.Core.MonsterMoves.Intents.AttackIntent atk && playerCreatures != null)
                              {
-@@ -2255,33 +2854,27 @@ public class RunSimulator
+@@ -2255,33 +2867,27 @@ public class RunSimulator
                  catch { }
  
                  // Enemy powers
@@ -11265,7 +11446,7 @@ index 6b9de4a..25ec485 100644
  
          var result = new Dictionary<string, object?>
          {
-@@ -2294,9 +2887,31 @@ public class RunSimulator
+@@ -2294,9 +2900,31 @@ public class RunSimulator
              ["hand"] = hand,
              ["enemies"] = enemies,
              ["player"] = PlayerSummary(player),
@@ -11298,7 +11479,7 @@ index 6b9de4a..25ec485 100644
          };
  
          // Character-specific mechanics
-@@ -2346,141 +2961,281 @@ public class RunSimulator
+@@ -2346,141 +2974,281 @@ public class RunSimulator
              Log($"Character-specific data: {ex.Message}");
          }
  
@@ -11675,7 +11856,7 @@ index 6b9de4a..25ec485 100644
      private Dictionary<string, object?> EventChoiceState(EventRoom eventRoom)
      {
          var localEvent = RunManager.Instance.EventSynchronizer?.GetLocalEvent();
-@@ -2492,166 +3247,81 @@ public class RunSimulator
+@@ -2492,189 +3260,103 @@ public class RunSimulator
          // instead and let DetectDecisionPoint show the current options for the next choice.
          if (_eventOptionChosen) _eventOptionChosen = false;
  
@@ -11837,7 +12018,28 @@ index 6b9de4a..25ec485 100644
 +                    default:
 +                        throw new NotSupportedException("event_hover_tip:" + tip.GetType().Name);
                  }
--
++            }
++            return new Dictionary<string, object?>
++            {
++                ["index"] = i, ["native_ref"] = NativeObjectIdentity.Get(opt),
++                ["title"] = StripVisibleText(opt.Title?.GetFormattedText()),
++                ["description"] = StripVisibleText(opt.Description?.GetFormattedText()),
++                ["is_locked"] = opt.IsLocked, ["is_enabled"] = _eventPresentation.IsEnabled(opt),
++                ["is_proceed"] = opt.IsProceed, ["was_chosen"] = opt.WasChosen,
++                ["will_kill_player"] = opt.WillKillPlayer?.Invoke(localEvent.Owner ?? throw new InvalidOperationException("event_owner_missing")) ?? false,
++                ["relic_name"] = opt.Relic == null ? null : StripVisibleText(opt.Relic.Title.GetFormattedText()),
++                ["relic_description"] = opt.Relic == null ? null : StripVisibleText(opt.Relic.DynamicDescription.GetFormattedText()),
++                ["tooltips"] = tips
++            };
++        }).ToList();
++        var eventContext = EventPublicContext(eventRoom);
++        var abandonCapabilities = currentOptions.Select(option => NativeTrialAbandonPresentation.ParentCapability(localEvent, option))
++            .Where(value => value != null).ToArray();
++        if (abandonCapabilities.Length > 1) throw new InvalidOperationException("Multiple native Trial confirmation owners");
++        var presentationMissing = currentOptions.Select(option => NativeTrialAbandonPresentation.CanPresent(localEvent, option)
++                ? null : NativeEventPresentationSupport.MissingCapability(localEvent, option))
++            .Where(reason => reason != null).Distinct(StringComparer.Ordinal).ToArray();
+ 
 -                return new Dictionary<string, object?>
 -                {
 -                    ["index"] = i,
@@ -11863,25 +12065,9 @@ index 6b9de4a..25ec485 100644
 -            if (d != localEvent.Description.LocEntryKey)
 -                eventDesc = d;
 -        }
-+            }
-+            return new Dictionary<string, object?>
-+            {
-+                ["index"] = i, ["native_ref"] = NativeObjectIdentity.Get(opt),
-+                ["title"] = StripVisibleText(opt.Title?.GetFormattedText()),
-+                ["description"] = StripVisibleText(opt.Description?.GetFormattedText()),
-+                ["is_locked"] = opt.IsLocked, ["is_enabled"] = _eventPresentation.IsEnabled(opt),
-+                ["is_proceed"] = opt.IsProceed, ["was_chosen"] = opt.WasChosen,
-+                ["will_kill_player"] = opt.WillKillPlayer?.Invoke(localEvent.Owner ?? throw new InvalidOperationException("event_owner_missing")) ?? false,
-+                ["relic_name"] = opt.Relic == null ? null : StripVisibleText(opt.Relic.Title.GetFormattedText()),
-+                ["relic_description"] = opt.Relic == null ? null : StripVisibleText(opt.Relic.DynamicDescription.GetFormattedText()),
-+                ["tooltips"] = tips
-+            };
-+        }).ToList();
-+        var eventContext = EventPublicContext(eventRoom);
-+        var presentationMissing = currentOptions.Select(option => NativeEventPresentationSupport.MissingCapability(localEvent, option))
-+            .Where(reason => reason != null).Distinct(StringComparer.Ordinal).ToArray();
- 
-         return new Dictionary<string, object?>
+-
+-        return new Dictionary<string, object?>
++        var state = new Dictionary<string, object?>
          {
              ["type"] = "decision",
              ["decision"] = "event_choice",
@@ -11903,7 +12089,11 @@ index 6b9de4a..25ec485 100644
              ["options"] = options,
              ["player"] = PlayerSummary(_runState!.Players[0]),
          };
-@@ -2661,20 +3331,13 @@ public class RunSimulator
++        if (abandonCapabilities.Length == 1) state["abandon_confirmation"] = abandonCapabilities[0];
++        return state;
+     }
+ 
+     private Dictionary<string, object?> RestSiteState(RestSiteRoom restRoom)
      {
          var options = restRoom.Options;
          var player = _runState!.Players[0];
@@ -11916,8 +12106,7 @@ index 6b9de4a..25ec485 100644
 -            return MapSelectState();
 -        }
 -
--        var optionList = options.Select((opt, i) => new Dictionary<string, object?>
-+        var optionList = options.Select((opt, i) => new Dictionary<string, object?>
+         var optionList = options.Select((opt, i) => new Dictionary<string, object?>
          {
              ["index"] = i,
 +            ["native_ref"] = NativeObjectIdentity.Get(opt),
@@ -11928,7 +12117,7 @@ index 6b9de4a..25ec485 100644
              ["is_enabled"] = opt.IsEnabled,
          }).ToList();
  
-@@ -2684,194 +3347,181 @@ public class RunSimulator
+@@ -2684,194 +3366,181 @@ public class RunSimulator
              ["decision"] = "rest_site",
              ["context"] = RunContext(),
              ["options"] = optionList,
@@ -12257,7 +12446,7 @@ index 6b9de4a..25ec485 100644
          };
      }
  
-@@ -2879,6 +3529,44 @@ public class RunSimulator
+@@ -2879,6 +3548,44 @@ public class RunSimulator
  
      #region Helpers
  
@@ -12302,7 +12491,7 @@ index 6b9de4a..25ec485 100644
      private void WaitForActionExecutor()
      {
          try
-@@ -2891,7 +3579,7 @@ public class RunSimulator
+@@ -2891,7 +3598,7 @@ public class RunSimulator
  
              // Executor may stay "running" while the game awaits headless card selection / reward (e.g. Attack Potion).
              // Spinning here would time out and downstream code could mis-handle an in-flight potion use (BUG-026).
@@ -12311,7 +12500,7 @@ index 6b9de4a..25ec485 100644
                  return;
  
              var executor = RunManager.Instance.ActionExecutor;
-@@ -2902,7 +3590,7 @@ public class RunSimulator
+@@ -2902,7 +3609,7 @@ public class RunSimulator
                  for (int i = 0; i < maxPumps; i++)
                  {
                      _syncCtx.Pump();
@@ -12320,7 +12509,7 @@ index 6b9de4a..25ec485 100644
                      Thread.Sleep(1);
                  }
              }
-@@ -2913,6 +3601,61 @@ public class RunSimulator
+@@ -2913,6 +3620,61 @@ public class RunSimulator
          }
      }
  
@@ -12382,7 +12571,7 @@ index 6b9de4a..25ec485 100644
      private void SpinWaitForCombatStable()
      {
          int maxIterations = 200;
-@@ -2920,14 +3663,32 @@ public class RunSimulator
+@@ -2920,14 +3682,32 @@ public class RunSimulator
          {
              _syncCtx.Pump();
              if (!CombatManager.Instance.IsInProgress) return;
@@ -12417,7 +12606,7 @@ index 6b9de4a..25ec485 100644
      private Dictionary<string, object?>? GetUpgradedInfo(CardModel card)
      {
          if (!card.IsUpgradable) return null;
-@@ -2965,38 +3726,90 @@ public class RunSimulator
+@@ -2965,38 +3745,90 @@ public class RunSimulator
          catch { return null; }
      }
  
@@ -12517,7 +12706,7 @@ index 6b9de4a..25ec485 100644
                  };
              }).Where(x => x != null).ToList(),
              ["deck_size"] = player.Deck?.Cards?.Count(c => c != null) ?? 0,
-@@ -3005,25 +3818,20 @@ public class RunSimulator
+@@ -3005,25 +3837,20 @@ public class RunSimulator
                  var dstats = new Dictionary<string, object?>();
                  try { foreach (var dv in c.DynamicVars.Values) dstats[dv.Name.ToLowerInvariant()] = (int)dv.BaseValue; } catch { }
                  var dkws = c.Keywords?.Where(k => k != CardKeyword.None).Select(k => k.ToString()).ToList();
@@ -12557,7 +12746,7 @@ index 6b9de4a..25ec485 100644
                  if (c.Affliction != null)
                  {
                      dcard["affliction"] = _loc.Bilingual("afflictions", c.Affliction.Id.Entry + ".title");
-@@ -3034,36 +3842,190 @@ public class RunSimulator
+@@ -3034,36 +3861,190 @@ public class RunSimulator
          };
      }
  
@@ -12754,7 +12943,7 @@ index 6b9de4a..25ec485 100644
          return ctx;
      }
  
-@@ -3074,6 +4036,11 @@ public class RunSimulator
+@@ -3074,6 +4055,11 @@ public class RunSimulator
  
          TestMode.IsOn = true;
  
@@ -12766,7 +12955,7 @@ index 6b9de4a..25ec485 100644
          // Install inline sync context on main thread
          SynchronizationContext.SetSynchronizationContext(_syncCtx);
  
-@@ -3099,14 +4066,6 @@ public class RunSimulator
+@@ -3099,14 +4085,6 @@ public class RunSimulator
          try { SaveManager.Instance.InitPrefsDataForTest(); }
          catch (Exception ex) { Console.Error.WriteLine($"[WARN] SaveManager.InitPrefsDataForTest: {ex.Message}"); }
  
@@ -12781,7 +12970,7 @@ index 6b9de4a..25ec485 100644
          // Patch Cmd.Wait to be a no-op in headless mode.
          // Cmd.Wait(duration) is used for UI animations (e.g., PreviewCardPileAdd during
          // Vantom's Dismember move adding Wounds). In headless mode, these never complete
-@@ -3139,9 +4098,15 @@ public class RunSimulator
+@@ -3139,9 +4117,15 @@ public class RunSimulator
          }
          Console.Error.WriteLine($"[INFO] ModelDb: {registered} registered, {failed} failed out of {subtypes.Count}");
  
@@ -12797,7 +12986,7 @@ index 6b9de4a..25ec485 100644
              ModelIdSerializationCache.Init();
              Console.Error.WriteLine("[INFO] ModelIdSerializationCache initialized");
          }
-@@ -3151,15 +4116,15 @@ public class RunSimulator
+@@ -3151,15 +4135,15 @@ public class RunSimulator
          }
      }
  
@@ -12819,7 +13008,7 @@ index 6b9de4a..25ec485 100644
              _ => null
          };
      }
-@@ -3263,86 +4228,461 @@ public class RunSimulator
+@@ -3263,86 +4247,461 @@ public class RunSimulator
          }
      }
  
@@ -12828,8 +13017,7 @@ index 6b9de4a..25ec485 100644
      {
 -        try
 +        private enum RequestKind
-         {
--            var harmony = new Harmony("sts2headless.yieldpatch");
++        {
 +            Select,
 +            Skip,
 +            StateChanged,
@@ -12839,19 +13027,20 @@ index 6b9de4a..25ec485 100644
 +        private sealed record RewardRequest(RequestKind Kind, Reward? Reward = null);
 +
 +        private sealed class SelectionContext
-+        {
+         {
+-            var harmony = new Harmony("sts2headless.yieldpatch");
 +            public required RewardsSet Set { get; init; }
 +            public TaskCompletionSource<RewardRequest>? Request { get; set; }
 +        }
-+
-+        private readonly object _gate = new();
-+        private readonly List<SelectionContext> _stack = new();
  
 -            // Patch YieldAwaitable.YieldAwaiter.IsCompleted to return true
 -            // This makes `await Task.Yield()` execute synchronously (continuation runs inline)
 -            var yieldAwaiterType = typeof(System.Runtime.CompilerServices.YieldAwaitable)
 -                .GetNestedType("YieldAwaiter");
 -            if (yieldAwaiterType != null)
++        private readonly object _gate = new();
++        private readonly List<SelectionContext> _stack = new();
++
 +        public RewardsSet? PendingSet
 +        {
 +            get
@@ -12882,7 +13071,7 @@ index 6b9de4a..25ec485 100644
 +            }
          }
 -    }
- 
+-
 -    /// <summary>
 -    /// Card selector for headless mode — picks first available card for any selection prompt.
 -    /// Used by cards like Headbutt, Armaments, etc. that need player to choose a card.
@@ -12900,12 +13089,23 @@ index 6b9de4a..25ec485 100644
 -        public int PendingMaxSelect { get; private set; }
 -        public string PendingPrompt { get; private set; } = "";
 -        private TaskCompletionSource<IEnumerable<CardModel>>? _pendingTcs;
+ 
+-        public bool HasPending => _pendingTcs != null && !_pendingTcs.Task.IsCompleted;
+-
+-        public Task<IEnumerable<CardModel>> GetSelectedCards(
+-            IEnumerable<CardModel> options, int minSelect, int maxSelect)
 +        public async Task SelectAsync(RewardsSet set)
-+        {
+         {
+-            var optList = options.ToList();
+-            if (optList.Count == 0)
+-                return Task.FromResult<IEnumerable<CardModel>>(Array.Empty<CardModel>());
 +            NativeRewardSetObservation.Register(set);
 +            var synchronizer = RunManager.Instance.RewardsSetSynchronizer;
 +            if (synchronizer.IsRewardsSetCompleted(set)) return;
-+
+ 
+-            // If only one option and minSelect requires it, auto-select
+-            if (optList.Count == 1 && minSelect >= 1)
+-                return Task.FromResult<IEnumerable<CardModel>>(optList);
 +            foreach (var reward in set.Rewards)
 +            {
 +                reward.MarkContentAsSeen();
@@ -12954,8 +13154,7 @@ index 6b9de4a..25ec485 100644
 +                }
 +            }
 +        }
- 
--        public bool HasPending => _pendingTcs != null && !_pendingTcs.Task.IsCompleted;
++
 +        public bool ResolveReward(object? expectedIdentity, out string? error)
 +        {
 +            lock (_gate)
@@ -13067,17 +13266,11 @@ index 6b9de4a..25ec485 100644
 +
 +        public NativeSelectorSelection? PendingNativeSelector
 +        { get { lock (_selectionGate) return HasPending ? _nativeSelector : null; } }
- 
-         public Task<IEnumerable<CardModel>> GetSelectedCards(
-             IEnumerable<CardModel> options, int minSelect, int maxSelect)
-         {
-             var optList = options.ToList();
--            if (optList.Count == 0)
--                return Task.FromResult<IEnumerable<CardModel>>(Array.Empty<CardModel>());
--
--            // If only one option and minSelect requires it, auto-select
--            if (optList.Count == 1 && minSelect >= 1)
--                return Task.FromResult<IEnumerable<CardModel>>(optList);
++
++        public Task<IEnumerable<CardModel>> GetSelectedCards(
++            IEnumerable<CardModel> options, int minSelect, int maxSelect)
++        {
++            var optList = options.ToList();
 +            bool exactUpgrade = DeckUpgradeCallScope.TryTake(this, minSelect, maxSelect,
 +                out Player? upgradePlayer, out CardSelectorPrefs upgradePrefs, out bool mismatchedScope);
 +            bool exactGeneric = DeckGenericCallScope.TryTake(this, minSelect, maxSelect,
@@ -13085,7 +13278,7 @@ index 6b9de4a..25ec485 100644
 +                out Func<CardModel, bool>? genericFilter, out bool mismatchedGenericScope);
 +            bool exactTransform = DeckTransformCallScope.TryTake(this, minSelect, maxSelect,
 +                out Player? transformPlayer, out CardSelectorPrefs transformPrefs,
-+                out bool isDefaultTransformation, out bool mismatchedTransformScope);
++                out bool isDefaultTransformation, out Func<CardModel, CardTransformation>? transformation, out bool mismatchedTransformScope);
 +            bool exactEnchant = DeckEnchantCallScope.TryTake(this, minSelect, maxSelect,
 +                out Player? enchantPlayer, out CardSelectorPrefs enchantPrefs,
 +                out EnchantmentModel? enchantModel, out int enchantAmount, out bool mismatchedEnchantScope);
@@ -13114,7 +13307,7 @@ index 6b9de4a..25ec485 100644
 +                    : null;
 +                _deckGeneric = exactTransform
 +                    ? new DeckGenericSelection(transformPlayer!, transformPrefs,
-+                        card => card.Type != CardType.Quest && card.IsTransformable, optList, "deck_transform", isDefaultTransformation)
++                        card => card.Type != CardType.Quest && card.IsTransformable, optList, "deck_transform", isDefaultTransformation, transformation)
 +                    : exactGeneric
 +                    ? new DeckGenericSelection(genericPlayer!, genericPrefs, genericFilter, optList)
 +                    : exactEnchant
@@ -13336,7 +13529,7 @@ index 6b9de4a..25ec485 100644
          }
  
          public void ResolvePendingByIndices(int[] indices)
-@@ -3357,15 +4697,36 @@ public class RunSimulator
+@@ -3357,15 +4716,36 @@ public class RunSimulator
  
          public void CancelPending()
          {
@@ -13377,7 +13570,7 @@ index 6b9de4a..25ec485 100644
  
          // NOTE: STS2 build 23372702 changed ICardSelector.GetSelectedCardReward to return
          // a CardRewardSelection struct { CardModel card; CardRewardAlternative alternative }.
-@@ -3375,55 +4736,110 @@ public class RunSimulator
+@@ -3375,55 +4755,110 @@ public class RunSimulator
              IReadOnlyList<MegaCrit.Sts2.Core.Entities.Cards.CardCreationResult> options,
              IReadOnlyList<CardRewardAlternative> alternatives)
          {
@@ -13522,7 +13715,7 @@ index 6b9de4a..25ec485 100644
          /// <summary>Harmony prefix: make Cmd.Wait() return completed task immediately (no-op in headless).</summary>
          public static bool CmdWaitPrefix(ref Task __result)
          {
-@@ -3447,178 +4863,106 @@ public class RunSimulator
+@@ -3447,178 +4882,106 @@ public class RunSimulator
  
      private static void InitLocManager()
      {
@@ -13670,13 +13863,13 @@ index 6b9de4a..25ec485 100644
 +                    finalizer: new HarmonyMethod(AccessTools.Method(typeof(NativeSelectorCallScope), nameof(NativeSelectorCallScope.Finalizer))));
              }
 -            tablesField!.SetValue(instance, tables);
-+            NativeSelectorCallScope.SimpleHookReady = true;
- 
+-
 -            // Set Language
 -            var langProp = typeof(LocManager).GetProperty("Language",
 -                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public);
 -            try { langProp?.SetValue(instance, "eng"); } catch { }
--
++            NativeSelectorCallScope.SimpleHookReady = true;
+ 
 -            // Set CultureInfo
 -            var cultureProp = typeof(LocManager).GetProperty("CultureInfo",
 -                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public);
@@ -13791,7 +13984,7 @@ index 6b9de4a..25ec485 100644
  
              // Patch FromChooseABundleScreen to use our card selector
              try
-@@ -3634,42 +4978,6 @@ public class RunSimulator
+@@ -3634,42 +4997,6 @@ public class RunSimulator
                  }
              }
              catch (Exception ex) { Console.Error.WriteLine($"[WARN] Bundle patch: {ex.Message}"); }
@@ -13834,7 +14027,7 @@ index 6b9de4a..25ec485 100644
          }
          catch (Exception ex)
          {
-@@ -3677,85 +4985,79 @@ public class RunSimulator
+@@ -3677,85 +5004,79 @@ public class RunSimulator
          }
      }
  
@@ -13983,7 +14176,7 @@ index 6b9de4a..25ec485 100644
          /// <summary>
          /// Intercept bundle selection — store bundles and wait for player to pick a pack index.
          /// </summary>
-@@ -3774,11 +5076,12 @@ public class RunSimulator
+@@ -3774,11 +5095,12 @@ public class RunSimulator
              var sim = _bundleSimRef;
              if (sim != null)
              {
@@ -13999,7 +14192,7 @@ index 6b9de4a..25ec485 100644
                  return false;
              }
  
-@@ -3789,16 +5092,12 @@ public class RunSimulator
+@@ -3789,16 +5111,12 @@ public class RunSimulator
          // Static reference so Harmony patch can access the simulator instance
          internal static RunSimulator? _bundleSimRef;
  
@@ -14018,7 +14211,7 @@ index 6b9de4a..25ec485 100644
      }
  
      private static Dictionary<string, object?> Error(string message) =>
-@@ -3826,36 +5125,54 @@ public class RunSimulator
+@@ -3826,36 +5144,54 @@ public class RunSimulator
          var currentCoord = _runState.CurrentMapCoord;
          var visited = _runState.VisitedMapCoords;
  
@@ -14092,7 +14285,7 @@ index 6b9de4a..25ec485 100644
          // Boss node
          var bossNode = new Dictionary<string, object?>
          {
-@@ -3867,13 +5184,12 @@ public class RunSimulator
+@@ -3867,13 +5203,12 @@ public class RunSimulator
          // Add boss name/id — use BossEncounter?.Id?.Entry
          try
          {
@@ -14109,7 +14302,7 @@ index 6b9de4a..25ec485 100644
              }
          }
          catch { }
-@@ -3896,15 +5212,124 @@ public class RunSimulator
+@@ -3896,15 +5231,124 @@ public class RunSimulator
      {
          try
          {
@@ -14775,10 +14968,11 @@ index 0000000..f121a08
 +}
 diff --git a/u1-native-tests/Program.cs b/u1-native-tests/Program.cs
 new file mode 100644
-index 0000000..eb805f5
+index 0000000..031058c
 --- /dev/null
 +++ b/u1-native-tests/Program.cs
-@@ -0,0 +1,487 @@
+@@ -0,0 +1,762 @@
++using MegaCrit.Sts2.Core.Models.Enchantments;
 +using System.Reflection;
 +using System.Runtime.Loader;
 +using System.Text.Json;
@@ -14812,7 +15006,11 @@ index 0000000..eb805f5
 +    static RunState run = null!;
 +    static Player player = null!;
 +    static int checks;
++    static Harmony? lateHarmony;
++    static readonly ManualResetEventSlim MittensEntered = new(false);
++    static readonly TaskCompletionSource MittensRelease = new(TaskCreationOptions.RunContinuationsAsynchronously);
 +    static bool baseline;
++    static Func<CardModel, CardTransformation>? clawsProjection;
 +    static readonly ManualResetEventSlim EndEntered = new(false);
 +    static readonly ManualResetEventSlim EndRelease = new(false);
 +    static readonly ManualResetEventSlim ObserverProjected = new(false);
@@ -14839,6 +15037,12 @@ index 0000000..eb805f5
 +        baseline = args.Contains("baseline");
 +        sim = Activator.CreateInstance(Simulator)!;
 +        string seed = "U1_" + (baseline ? "BASELINE_" : "NEW_") + args[0].ToUpperInvariant() + "_COMPONENT";
++        if (args[0] == "trial-driver")
++        {
++            try { TrialDriver(); }
++            finally { Call("CleanUp"); }
++            return;
++        }
 +        var start = (Dictionary<string, object?>)Call("StartRun", "Defect", 0, seed, "zh", null)!;
 +        Check(start.GetValueOrDefault("type") as string == "decision", "native setup: " + JsonSerializer.Serialize(start));
 +        run = Field<RunState>("_runState"); player = run.Players[0];
@@ -14847,6 +15051,13 @@ index 0000000..eb805f5
 +            switch (args[0])
 +            {
 +                case "bundle": Bundle(); break;
++                case "claws-baseline": ClawsBaseline(); break;
++                case "claws-zero": ClawsPreview(0); break;
++                case "claws-one": ClawsPreview(1); break;
++                case "claws-many": ClawsPreview(3); break;
++                case "claws-unknown": ClawsUnknown(); break;
++                case "knight-late": Knight(true, true); break;
++                case "knight-read": Knight(true, true, true); break;
 +                case "rest-mailbox": Rest(true); break;
 +                case "rest-dream": Rest(false); break;
 +                case "simple": Simple(); break;
@@ -14871,7 +15082,95 @@ index 0000000..eb805f5
 +            }
 +            Console.WriteLine($"{checks} exact native U1 checks passed ({args[0]}, baseline={baseline})");
 +        }
-+        finally { Call("CleanUp"); }
++        finally { MittensRelease.TrySetResult(); lateHarmony?.UnpatchAll(lateHarmony.Id); Call("CleanUp"); }
++    }
++    static void Knight(bool mittens = false, bool late = false, bool lateRead = false)
++    {
++        player.Creature.SetMaxHpInternal(1000);
++        player.Creature.SetCurrentHpInternal(1000);
++        var entered = (Dictionary<string, object?>)Call("EnterRoom", "monster", ModelDb.Encounter<MegaCrit.Sts2.Core.Models.Encounters.MysteriousKnightEventEncounter>().Id.Entry, null)!;
++        Check(entered.GetValueOrDefault("decision") as string == "combat_play", "original Knight encounter starts: " + JsonSerializer.Serialize(entered));
++        var room = (CombatRoom)run.CurrentRoom;
++        run.AppendToMapPointHistory(MapPointType.Monster, room.RoomType, room.Encounter.Id);
++        if (late)
++        {
++            lateHarmony = new Harmony("spireagent.u1.late-mittens-component");
++            var declared = typeof(ToastyMittens).GetMethod(nameof(ToastyMittens.AfterPlayerTurnStart))!;
++            var machine = declared.GetCustomAttribute<System.Runtime.CompilerServices.AsyncStateMachineAttribute>()!.StateMachineType;
++            lateHarmony.Patch(machine.GetMethod("MoveNext", Flags), transpiler: new HarmonyMethod(typeof(Program), nameof(DelayMittensInput)));
++            if (!lateRead) lateHarmony.Patch(Simulator.GetMethod("IsPlayerPhasePlay", Flags), prefix: new HarmonyMethod(typeof(Program), nameof(ReleaseDuringFallback)));
++        }
++        if (mittens) RelicCmd.Obtain(ModelDb.Relic<ToastyMittens>().ToMutable(), player).GetAwaiter().GetResult();
++        for (int i = 0; i < 6; i++)
++        {
++            var current = State();
++            var owner = (Dictionary<string, object?>)current["player"]!;
++            var after = Action("end_turn", new() { ["player_ref"] = owner["native_ref"] });
++            Emit("knight-turn-" + i, after);
++            Check(after.GetValueOrDefault("type") as string != "error", "real end-turn input was accepted: " + JsonSerializer.Serialize(after));
++            if (late && i == 0)
++            {
++                if (lateRead)
++                {
++                    Check(MittensEntered.IsSet && !MittensRelease.Task.IsCompleted, "the original hand producer is still pending after the action returned");
++                    Check(after.GetValueOrDefault("decision") as string == "combat_play", "the action truthfully returned a settling combat page");
++                    Emit("knight-read-before", after);
++                    MittensRelease.TrySetResult();
++                    using var command = JsonDocument.Parse("{\"cmd\":\"observe_decision\"}");
++                    var nativeProgram = Simulator.Assembly.GetType("Sts2Headless.Program")!;
++                    after = (Dictionary<string, object?>)nativeProgram.GetMethod("HandleCommand", Flags)!.Invoke(null, new object?[] { sim, command.RootElement })!;
++                    Emit("knight-read-after", after);
++                }
++                else Check(MittensEntered.IsSet && MittensRelease.Task.IsCompleted, "the real native hand producer was released during the fallback loop");
++                if (baseline)
++                {
++                    Check(after.GetValueOrDefault("decision") as string == "combat_play" && Call("IsNativePlayerPlayWindow", player) is false,
++                        "old final fallback publishes a settling combat page after the original hand child became current");
++                    after = State();
++                }
++                Check(after.GetValueOrDefault("decision") as string == "native_hand_select", "the current original child is visible at the actual boundary");
++            }
++            if (after.GetValueOrDefault("decision") as string == "native_hand_select")
++            {
++                var cards = ((IEnumerable<Dictionary<string, object?>>)after["cards"]!).ToArray();
++                var selected = Action("select_native_card", new() { ["selector_ref"] = after["selector_ref"], ["card_ref"] = cards[0]["native_ref"] });
++                Check(selected.GetValueOrDefault("type") as string != "error", "explicit component exhaust selection accepted: " + JsonSerializer.Serialize(selected));
++                if (selected.GetValueOrDefault("decision") as string == "native_hand_select")
++                {
++                    var confirmed = Action("confirm_native_selection", new() { ["selector_ref"] = selected["selector_ref"], ["selected_refs"] = string.Join(",", (string[])selected["selected_refs"]!) });
++                    Check(confirmed.GetValueOrDefault("type") as string != "error", "explicit original hand confirmation accepted: " + JsonSerializer.Serialize(confirmed));
++                }
++            }
++            Until(() => Call("IsNativePlayerPlayWindow", player) is true && CombatManager.Instance.DebugOnlyGetState()!.RoundNumber >= i + 2, "original Knight advances to the next actual player play window");
++        }
++    }
++    public static IEnumerable<CodeInstruction> DelayMittensInput(IEnumerable<CodeInstruction> instructions)
++    {
++        var target = AccessTools.DeclaredMethod(typeof(CardSelectCmd), nameof(CardSelectCmd.FromHand),
++            new[] { typeof(PlayerChoiceContext), typeof(Player), typeof(CardSelectorPrefs), typeof(Func<CardModel, bool>), typeof(AbstractModel) });
++        int count = 0;
++        foreach (var instruction in instructions)
++        {
++            if (instruction.Calls(target))
++            {
++                instruction.opcode = System.Reflection.Emit.OpCodes.Call;
++                instruction.operand = AccessTools.DeclaredMethod(typeof(Program), nameof(DelayedOriginalHand));
++                count++;
++            }
++            yield return instruction;
++        }
++        if (count != 1) throw new InvalidOperationException("fixture must wrap exactly one original FromHand call");
++    }
++    public static async Task<IEnumerable<CardModel>> DelayedOriginalHand(PlayerChoiceContext context, Player nativePlayer,
++        CardSelectorPrefs prefs, Func<CardModel, bool>? filter, AbstractModel source)
++    {
++        MittensEntered.Set();
++        await MittensRelease.Task;
++        return await CardSelectCmd.FromHand(context, nativePlayer, prefs, filter, source);
++    }
++    public static void ReleaseDuringFallback()
++    {
++        if (MittensEntered.IsSet) MittensRelease.TrySetResult();
 +    }
 +    static void Bundle()
 +    {
@@ -15087,10 +15386,48 @@ index 0000000..eb805f5
 +        return new() { ["run_ref"] = state["run_ref"], ["room_ref"] = state["room_ref"],
 +            ["event_ref"] = state["event_ref"], ["modal_ref"] = state["modal_ref"], ["control_ref"] = control["control_ref"] };
 +    }
++    // Only initial mount enters a privileged fresh Trial fixture. Subsequent
++    // JSON commands and every input use the production native dispatcher and
++    // WriteLine serializer over a real pipe, not recorded response substitutes.
++    static void TrialDriver()
++    {
++        var nativeProgram = Simulator.Assembly.GetType("Sts2Headless.Program")!;
++        var dispatch = nativeProgram.GetMethod("HandleCommand", Flags)!;
++        var write = nativeProgram.GetMethod("WriteLine", Flags)!;
++        void Send(Dictionary<string, object?> value) => write.Invoke(null, new object?[] { value });
++        Send(new() { ["type"] = "ready", ["version"] = "u1-component-trial" });
++        bool mounted = false;
++        string? line;
++        while ((line = Console.ReadLine()) != null)
++        {
++            using var document = JsonDocument.Parse(line);
++            string? command = document.RootElement.GetProperty("cmd").GetString();
++            Dictionary<string, object?> value;
++            if (command == "start_run" && !mounted)
++            {
++                mounted = true;
++                object?[] arguments = { sim, document.RootElement };
++                _ = (Dictionary<string, object?>)dispatch.Invoke(null, arguments)!;
++                sim = arguments[0]!;
++                run = Field<RunState>("_runState"); player = run.Players[0];
++                value = TrialPage();
++            }
++            else
++            {
++                object?[] arguments = { sim, document.RootElement };
++                value = (Dictionary<string, object?>)dispatch.Invoke(null, arguments)!;
++                sim = arguments[0]!;
++            }
++            Send(value);
++            if (command == "quit") return;
++        }
++    }
++
 +    static void TrialConfirmation(bool pending, bool failure)
 +    {
 +        var parent = TrialPage();
-+        Check(parent["event_public_complete"] is false, "old P1 capability guard remains incomplete until profile integration");
++        Check(parent["event_public_complete"] is true && parent.ContainsKey("abandon_confirmation"), "exact native Trial capability is public for the new profile; old P1 admission is tested by the consumer");
++        Emit("trial-parent-state", parent);
 +        var model = (Trial)((EventRoom)run.CurrentRoom!).LocalMutableEvent!;
 +        var option = model.CurrentOptions.Single(value => value.TextKey == "TRIAL.pages.REJECT.options.DOUBLE_DOWN");
 +        int hp = player.Creature.CurrentHp;
@@ -15264,6 +15601,137 @@ index 0000000..eb805f5
 +            Check(!option.WasChosen && !RunManager.Instance.IsAbandoned && player.Creature.CurrentHp == hp,
 +                "old refusal has no native choice or abandonment effect");
 +        }
++    }
++    public static void CaptureClawsProjection(Func<CardModel, CardTransformation>? cardToTransformation)
++        => clawsProjection = cardToTransformation;
++    static Task ObtainClaws()
++    {
++        var harmony = new Harmony("spireagent.u1.claws-original-producer");
++        harmony.Patch(AccessTools.DeclaredMethod(typeof(CardSelectCmd), nameof(CardSelectCmd.FromDeckForTransformation)),
++            prefix: new HarmonyMethod(typeof(Program), nameof(CaptureClawsProjection)));
++        try
++        {
++            Func<Task> obtain = () => RelicCmd.Obtain(ModelDb.Relic<Claws>().ToMutable(), player);
++            var original = (Task)Call("BeginHostOperation", obtain)!;
++            var selector = Field<object>("_cardSelector");
++            Until(() => clawsProjection != null && (bool)selector.GetType().GetProperty("HasPending")!.GetValue(selector)!,
++                "fresh original Claws creates its real native preview delegate and pending callback");
++            return original;
++        }
++        finally { harmony.UnpatchAll(harmony.Id); }
++    }
++    static void ClawsBaseline()
++    {
++            var original = ObtainClaws();
++            var state = State(); Emit("claws-baseline-state", state);
++            Emit("claws-original-delegate", new { type = clawsProjection!.Target?.GetType().FullName, method = clawsProjection.Method.Name });
++            Check(state.GetValueOrDefault("decision") as string == "deck_card_select" && state.GetValueOrDefault("origin") as string == "deck_transform",
++                "original Claws suspends on its exact native deck-transform callback");
++            var facts = (Dictionary<string, object?>)state["selector_public"]!;
++            var request = (Dictionary<string, object?>)facts["selector_request"]!;
++            Check(request["preview_information_complete"] is false && !original.IsCompleted,
++                "old preview refuses the real deterministic custom transformation instead of guessing an after");
++    }
++    static string ClawsRng() => JsonSerializer.Serialize(new { run = run.Rng.ToSerializable(), player = player.PlayerRng.ToSerializable() });
++    static string ClawsCard(CardModel card) => JsonSerializer.Serialize(new {
++        type = card.GetType().Name, card.CurrentUpgradeLevel, cost = card.EnergyCost.GetWithModifiers(CostModifiers.Local),
++        variables = card.DynamicVars.Values.Select(value => new { value.Name, value.BaseValue, value.EnchantedValue, value.PreviewValue }),
++        enchantment = card.Enchantment?.GetType().Name, amount = card.Enchantment?.Amount,
++        keywords = card.Keywords.Order().ToArray()
++    });
++    static int forbiddenClawsCalls;
++    public static void ForbiddenClawsFactory() => forbiddenClawsCalls++;
++    static void ClawsPreview(int selectedCount)
++    {
++        var deck = PileType.Deck.GetPile(player);
++        CardModel[] originals = deck.Cards.ToArray();
++        CardCmd.Upgrade(originals[0]);
++        CardCmd.Enchant(ModelDb.Enchantment<Sharp>().ToMutable(), originals[0], 3m);
++        Check(originals[0].IsUpgraded && originals[0].Enchantment is Sharp { Amount: 3 }, "native setup has a real upgraded/enchanted source");
++        var originalTask = ObtainClaws();
++        string[] before = originals.Select(ClawsCard).ToArray(); string rng = ClawsRng();
++        var state = State(); Emit("claws-preview-state", state);
++        var facts = (Dictionary<string, object?>)state["selector_public"]!;
++        var request = (Dictionary<string, object?>)facts["selector_request"]!;
++        var previews = (List<Dictionary<string, object?>>)facts["preview_options"]!;
++        Check(request.GetValueOrDefault("transformation_preview") as string == "deterministic_native_after"
++            && request["preview_information_complete"] is true && previews.Count == originals.Length,
++            "exact Claws publishes every original and its qualified deterministic native after");
++        Check(previews.All(value => value["after_availability"] as string == "available"
++            && value["display_context"] as string == "native_deterministic_transform_after"
++            && ((Dictionary<string, object?>)value["after"]!)["definition_id"] as string == "MAUL"
++            && Equals(((Dictionary<string, object?>)value["after"]!)["entity_id"], value["subject_entity_id"])),
++            "all detached Maul views keep original public subjects without becoming action operands");
++        var firstAfter = (Dictionary<string, object?>)previews[0]["after"]!;
++        Check(firstAfter["is_upgraded"] is true && firstAfter.GetValueOrDefault("existing_enchantment") is Dictionary<string, object?>,
++            "original factory carries the real source upgrade and supported enchantment into its public after");
++        var nativePreview = clawsProjection!(originals[0]).Replacement!;
++        var expectedPreview = NativePublicCardDetails.Capture(nativePreview, PileType.Deck);
++        var expectedPublic = expectedPreview.PublicCard; expectedPublic["entity_id"] = previews[0]["subject_entity_id"];
++        Check(expectedPreview.Complete && nativePreview.Owner == null && JsonSerializer.Serialize(expectedPublic) == JsonSerializer.Serialize(firstAfter),
++            "public after equals the original preview delegate with NTransformPreview's original Deck/Normal formatter context");
++        Check(originals.Select(ClawsCard).SequenceEqual(before) && deck.Cards.SequenceEqual(originals) && ClawsRng() == rng && !originalTask.IsCompleted,
++            "reading every preview leaves original models/deck/RNG and the suspended native callback unchanged");
++        var guard = new Harmony("spireagent.u1.claws-patched-factory"); forbiddenClawsCalls = 0;
++        guard.Patch(AccessTools.DeclaredMethod(typeof(Claws), "CreateMaulFromOriginal"),
++            prefix: new HarmonyMethod(typeof(Program), nameof(ForbiddenClawsFactory)));
++        try
++        {
++            var blocked = State();
++            var blockedRequest = (Dictionary<string, object?>)((Dictionary<string, object?>)blocked["selector_public"]!)["selector_request"]!;
++            Check(blockedRequest["preview_information_complete"] is false && forbiddenClawsCalls == 0,
++                "patched native factory is refused before it or a replacement rule can run");
++        }
++        finally { guard.UnpatchAll(guard.Id); }
++        Check(Action("select_deck_card", new() { ["selector_ref"] = "stale", ["card_ref"] = Ref(originals[0]) })["type"] as string == "error"
++            && !originalTask.IsCompleted && deck.Cards.SequenceEqual(originals), "stale selector cannot select or transform the source");
++        var selectedOriginals = originals.Take(selectedCount).ToArray();
++        foreach (CardModel card in selectedOriginals)
++        {
++            state = Action("select_deck_card", new() { ["selector_ref"] = state["selector_ref"], ["card_ref"] = Ref(card) });
++            Check(state["type"] as string != "error" && !originalTask.IsCompleted, "explicit native selection remains tentative");
++        }
++        state = Action("preview_deck_selection", new() { ["selector_ref"] = state["selector_ref"] });
++        Check(state.GetValueOrDefault("stage") as string == "preview" && !originalTask.IsCompleted,
++            "zero/one/multi selected set still needs explicit native confirmation");
++        var selectedRefs = string.Join(",", selectedOriginals.Select(Ref));
++        var result = Action("confirm_deck_selection", new() { ["selector_ref"] = state["selector_ref"], ["selected_refs"] = selectedRefs });
++        Emit("claws-confirm-state", result);
++        Check(result["type"] as string != "error" && originalTask.IsCompletedSuccessfully, "explicit confirmation resumes the original Claws task and actual CardCmd.Transform");
++        var replacements = deck.Cards.Where(value => !originals.Contains(value, ReferenceEqualityComparer.Instance)).ToArray();
++        Check(deck.Cards.Count == originals.Length && replacements.Length == selectedCount
++            && replacements.All(value => value is Maul) && selectedOriginals.All(value => !deck.Cards.Contains(value)),
++            "native transform replaces exactly the explicitly selected zero/one/multiple source cards");
++        if (selectedCount > 0)
++        {
++            CardModel actual = replacements.Single(value => value.IsUpgraded);
++            var rendered = NativePublicCardDetails.Capture(actual, PileType.Deck);
++            Check(rendered.Complete, "actual native replacement public formatter is qualified");
++            var actualPublic = rendered.PublicCard; actualPublic["entity_id"] = previews[0]["subject_entity_id"];
++            Emit("claws-frozen-after", firstAfter); Emit("claws-actual-after", actualPublic);
++            Check(ReferenceEquals(actual.Owner, player) && actual.IsUpgraded && actual.Enchantment is Sharp { Amount: 3 }
++                && actual.DynamicVars.Damage.BaseValue == nativePreview.DynamicVars.Damage.BaseValue,
++                "actual native transform independently retains owner, upgrade and supported enchantment");
++            // Original Claws intentionally creates an ownerless preview. Its
++            // public damage is 6 here; the committed owned card displays 9.
++            // Preserve both native contexts instead of assigning a fake owner.
++            Check(((string)firstAfter["description"]!).Contains("6") && ((string)actualPublic["description"]!).Contains("9")
++                && !Equals(firstAfter["description"], actualPublic["description"]),
++                "the real public preview and post-commit damage context remain distinct native facts");
++        }
++    }
++    static void ClawsUnknown()
++    {
++        int calls = 0;
++        var prefs = new CardSelectorPrefs(new LocString("gameplay_ui", "CHOOSE_CARD_UPGRADE_HEADER"), 0, 2) { RequireManualConfirmation = true };
++        Func<Task> offer = async () => await CardSelectCmd.FromDeckForTransformation(player, prefs, card => { calls++; throw new InvalidOperationException("unknown delegate must not run"); });
++        var task = (Task)Call("BeginHostOperation", offer)!;
++        var selector = Field<object>("_cardSelector");
++        Until(() => (bool)selector.GetType().GetProperty("HasPending")!.GetValue(selector)!, "unknown native transform request reaches its original callback");
++        var state = State();
++        var request = (Dictionary<string, object?>)((Dictionary<string, object?>)state["selector_public"]!)["selector_request"]!;
++        Check(request["preview_information_complete"] is false && !request.ContainsKey("transformation_preview") && calls == 0 && !task.IsCompleted,
++            "unknown delegate stays partial and is never invoked as a read or mislabeled deterministic");
 +    }
 +}
 diff --git a/u1-native-tests/U1Native.csproj b/u1-native-tests/U1Native.csproj

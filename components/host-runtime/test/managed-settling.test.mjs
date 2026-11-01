@@ -8,16 +8,25 @@ function fixture() {
   const pending = { ...combatState(), is_play_phase: false, turn_owner: "enemy" };
   let current = pending;
   const calls = [];
+  let pendingRead = null, readEntered = null;
   const process = { async request(request) {
     calls.push(request);
+    if (request.cmd === "observe_decision" && pendingRead) { readEntered(); await pendingRead; }
     if (["start_run", "observe_decision"].includes(request.cmd)) return structuredClone(current);
     throw new Error(`unexpected native input ${request.cmd}`);
-  } };
+  }, async stop() { return { code: 0 }; } };
   const session = new ManagedPlayerEnvironmentSession({ process,
     runtimeInstanceId: "settling-test", environmentFingerprint: "settling-environment" });
   const driver = new ManagedPeDriverSession({ session,
     runtime: { adapterRuntimeInstanceId: "settling-test" } });
   return { session, driver, calls, ready() { current = combatState(); },
+    holdRead() {
+      let release, entered;
+      pendingRead = new Promise(resolve => { release = resolve; });
+      const started = new Promise(resolve => { entered = resolve; });
+      readEntered = entered;
+      return { started, release };
+    },
     failRead() { current = { type: "error", message: "native pending task failed" }; } };
 }
 
@@ -57,3 +66,17 @@ test("a failed native observation is surfaced and leaves the old snapshot bound"
   await assert.rejects(driver.handle({ command: "capture" }), /managed_observe_decision_failed/);
   assert.equal(session.observe().snapshot_id, first.snapshot.snapshot_id);
 });
+
+for (const command of ["capture", "observe", "text_observe"]) {
+  test(`${command} cannot publish after shutdown interrupts its native refresh`, async () => {
+    const { driver, holdRead, ready } = fixture();
+    await driver.handle({ command: "reset", seed: "U1SETTLINGSHUTDOWNTEST" });
+    const gate = holdRead();
+    const offered = driver.handle({ command });
+    await gate.started;
+    await driver.shutdown({ force: true });
+    ready(); gate.release();
+    await assert.rejects(offered, /driver_closed/);
+    assert.equal(driver.status().episode_available, false);
+  });
+}
