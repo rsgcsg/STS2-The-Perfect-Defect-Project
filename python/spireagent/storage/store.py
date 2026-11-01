@@ -43,13 +43,14 @@ class ArtifactStore(Protocol):
 
 
 class ManifestArtifactStore:
-    def __init__(self, blobs: BlobStore, *, cache_manifests: bool = False) -> None:
+    def __init__(self, blobs: BlobStore, *, cache_manifests: bool = False,
+                 read_peers: tuple[ManifestArtifactStore, ...] = ()) -> None:
         self.blobs = blobs
         # Explicit operation-local reuse of immutable, already verified bytes.
         # Mutable control/completion/index slots never enter this cache.
         self._manifest_cache: dict[str, bytes] | None = {} if cache_manifests else None
         self._manifest_guard = threading.Lock()
-        self._peers: tuple[ManifestArtifactStore, ...] | None = None
+        self._peers: tuple[ManifestArtifactStore, ...] | None = read_peers or None
         self._cache_policy: dict[str, Any] | None = None
         if isinstance(blobs, LocalBlobStore):
             policy = blobs.root / "cache-policy.json"
