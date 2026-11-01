@@ -143,7 +143,13 @@ def launcher(path: Path, plan: dict[str, Any]) -> str:
 
 
 def submit(path: Path, *, dry_run: bool = False,
-           additional_to: list[Path] | None = None) -> dict[str, Any]:
+           additional_to: list[Path] | None = None, memory_gb: int = 4,
+           exclude_nodes: list[str] | None = None) -> dict[str, Any]:
+    if (type(memory_gb) is not int or memory_gb < 1
+            or exclude_nodes is not None and (not exclude_nodes
+                or any(not isinstance(node, str) or not NAME.fullmatch(node)
+                       for node in exclude_nodes))):
+        raise ValueError('positive_memory_and_explicit_scheduler_node_names_required')
     plan = load_plan(path)
     require_modules(Path(plan['source_root']))
     root = private_root(path.parent)
@@ -196,13 +202,15 @@ def submit(path: Path, *, dry_run: bool = False,
         minutes = (plan['wall_seconds'] + 300 + 59) // 60
         advance = plan.get('games_per_ledger', 1) * plan['episode_seconds'] + 180
         command = ['sbatch', '--parsable', '--partition=smp', '--nodes=1', '--ntasks=1',
-            '--cpus-per-task=1', '--mem=4G', f'--time={minutes}', '--no-requeue',
+            '--cpus-per-task=1', f'--mem={memory_gb}G', f'--time={minutes}', '--no-requeue',
             f'--signal=B:USR1@{advance}', '--job-name=spireagent-f2',
             f'--array=0-{count - 1}%{count}', '--constraint=fc430',
-            f'--output={logs}/%A_%a.out', f'--error={logs}/%A_%a.err', str(script)]
+            f'--output={logs}/%A_%a.out', f'--error={logs}/%A_%a.err',
+            *(['--exclude=' + ','.join(exclude_nodes)] if exclude_nodes else []), str(script)]
         result = {'schema': 'spireagent/friday-RL-submit-v1', 'command': command,
             'cores': count, 'idle_smp_cores': idle, 'queued_smp_jobs': queued,
-            'dry_run': dry_run, 'cross_actor_immediate_unknown_stop': False,
+            'dry_run': dry_run, 'memory_gb_per_actor': memory_gb,
+            'excluded_nodes': exclude_nodes or [], 'cross_actor_immediate_unknown_stop': False,
             **({'additional_to': parents} if parents else {})}
         if not dry_run:
             if parents:

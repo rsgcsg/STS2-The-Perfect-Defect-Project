@@ -404,3 +404,18 @@ def test_additional_submission_uncertain_outcome_is_not_offered_again(rl, inputs
         with pytest.raises(ValueError, match='reconciliation_no_retry'):
             rl.submit(extra / 'plan.json')  # changing entry mode cannot re-offer an unknown submit
     assert len(commands) == 1
+
+
+def test_submit_explicit_memory_and_excluded_node_use_normal_scheduler_argv(rl, inputs, tmp_path):
+    _plan, file = prepared(rl, inputs)
+    lock = tmp_path.resolve() / 'settings/submit.lock'
+    with (patch.object(rl, 'require_modules'),
+          patch.object(rl.scheduler, 'submission_lock_path', return_value=lock),
+          patch.object(rl.scheduler, 'output', side_effect=['', '0/400/0/400', ''])):
+        result = rl.submit(file, dry_run=True, memory_gb=6, exclude_nodes=['smp-9-0'])
+    assert '--mem=6G' in result['command'] and '--mem=4G' not in result['command']
+    assert '--exclude=smp-9-0' in result['command']
+    assert result['excluded_nodes'] == ['smp-9-0']
+    assert result['memory_gb_per_actor'] == 6
+    with pytest.raises(ValueError, match='positive_memory'):
+        rl.submit(file, dry_run=True, memory_gb=True)
