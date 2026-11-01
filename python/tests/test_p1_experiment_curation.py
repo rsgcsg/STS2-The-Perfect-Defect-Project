@@ -7,6 +7,7 @@ import pytest
 from legacy_p1_fixture import freeze_p1_data as legacy_freeze
 from test_artifact_store_v1 import PRODUCER
 from test_p1_cohort_intake import fixture, projection
+from test_p1_cohort_intake import intake_capacity as intake_capacity
 
 from spireagent.json_boundary import BoundaryError
 from spireagent.workbench.p1_cohort_intake import PREVIEW, refresh_cohort, render_summary

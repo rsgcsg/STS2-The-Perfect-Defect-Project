@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import math
 import re
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Any
@@ -129,7 +130,8 @@ def project(
         identity_relation = identity_paths(observation)
         relation = identity_relation if spec == V2_INPUT_SPEC else None
 
-    def visit(value: Any, path: str, position: int = 0, parent: int | None = None,
+    def visit(recurse: Callable[..., int], value: Any, path: str,
+              position: int = 0, parent: int | None = None,
               source_path: str = "$") -> int:
         row = len(entities)
         node = Entity(path, position)
@@ -177,7 +179,7 @@ def project(
                     child_source = (public_field_path(source_path, key) if symmetric
                                     else source_path + "." + key)
                     child_path = public_field_path(path, key) if symmetric else path + "." + key
-                    visit(item, child_path, parent=row, source_path=child_source)
+                    recurse(recurse, item, child_path, parent=row, source_path=child_source)
                 elif item is None:
                     node.text.append((key, "<MISSING>"))
                     node.numeric.append((key, None))
@@ -202,7 +204,7 @@ def project(
                     raise ValueError("unsupported public field")
         elif isinstance(value, list):
             for i, item in enumerate(value):
-                visit(item, path + "[]", i, row, source_path + f"[{i}]")
+                recurse(recurse, item, path + "[]", i, row, source_path + f"[{i}]")
         elif (isinstance(value, str) and relation is not None
               and relation(source_path) == "reference"):
             pending.append((row, value))
@@ -216,7 +218,9 @@ def project(
             node.text.append(("value", str(value)))
         return row
 
-    visit(observation, "$")
+    # Passing recursion explicitly avoids a self-referencing closure retaining
+    # the temporary entity graph until cyclic GC, including on errors.
+    visit(visit, observation, "$")
     tree_refs = [list(entity.refs) for entity in entities] if spec == SORTED_INPUT_SPEC else None
     reference_links = list(pending) if spec == SORTED_INPUT_SPEC else None
     if symmetric:
