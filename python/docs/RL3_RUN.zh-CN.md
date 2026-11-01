@@ -184,7 +184,7 @@ PPO只接原接口`temperature_uniform/T=1/uniform_mix=0`，即直接π采样；
 10%训练seed稳定哈希整局留出，始终既不训策略也不训价值。其余热身局只给价值训练，
 不塞入一小时后的策略buffer。至少32训练seed/8留出seed/128头更新，达到最小时长、
 留出EV>0且MSE低于训练均值常数才解冻；到2h仍不过，以`warmup_not_qualified`停机保全。
-可在新恢复配置中明确调整warmup时长/lr，已耗时和随机状态保留，gamma/lambda等目标不变。
+可在新恢复配置中明确调整warmup时长/lr，已耗时和随机状态保留；方法调整须走下面的显式迁移。
 热身期间每10分钟仍保一份新不可变版本/完整CP，动作张量可能相同，不能把版本增加称为策略学习。
 
 仅自然完整终局授原reward v2，当前先在终局给奖励；unknown/删失原样保留且无价值标签，
@@ -241,3 +241,33 @@ unknown停止。该选项只允许清理已确认的unknown继续新槽，不重
 自然终局按seed配对。pending、censored、未开或缺轨迹等其他缺口仍为未完成，不能冒充
 unknown剔除；未覆盖情形交用户决定。保留原审计事实，与新paired-rule资格分开，不把旧
 score_admitted强改为true。末轮先确认训练演员排空，两份四路评估也受总并发36约束。
+
+## 价值尺度、固定留出和有界后台读取
+
+可选`critic.normalize_targets=true`用TRAIN目标的无权EMA均值/二阶矩计算标准差，
+`target_ema=.01`、`target_std_floor=.01`；损失为`((Vraw-targetraw)/std)^2`。
+均值在归一化预测与标签的差中抵消，raw输出/GAE/终局奖励/EV不改单位；这不是PopArt，
+不重参数化head或Adam。loss.value_coef因此换了单位，必须重新选并看共享主干梯度比。
+`critic.head_lr`为raw价值头独立学习率，其余参数仍用策略lr；省略保留原单组优化器。
+每个validation周期的首个PPO步在既有ppo_diagnostics记录实际策略与加权价值的共享主干
+梯度范数和比值，动作专用readout不进分母；该额外反向成本计入update_seconds。
+
+`critic.fixed_validation=true`在收够min_validation_episodes个留出seed时一次冻结当前
+全部留出整局；既有ready CP迁移在恢复后冻结它实际持有的组，不按预测好坏挑选。
+固定run/shard引用、归一化统计、完整Adam/RNG都进原CP；固定组免FIFO淘汰，普通回放
+仍受max_rows软限并保留最后一份完整整局。尚未凑够固定组的早期warmup可正常恢复继续收数。
+新heldout seed仍不进任何优化器/归一化统计，但不替换固定组。validation_kind/run_ids绑定
+固定组；默认旧rolling行为不变。价值验证用相同场景encoder的value-only路径，省去动作readout。
+
+`background_io=true`启用已有异步发现/遥测，`read_ahead`限制预取；`reader_workers=1..8`
+控制读取/解析/CPU投影线程，默认1。后台只准备不可变CPU输入，owner仍按发现FIFO准入、
+复查新鲜度并记账，worker出错正常传播，不静默跳过。线程耗时与owner阶段可能重叠，
+不能将fractions相加；冷恢复另列，长期比较用相同窗口首次用数和未用过期分母。
+
+正常恢复默认仍要求同producer。升级源码时必须同时指定`resume_checkpoint`和
+`resume_source`（原producer完整repository/source_revision/uv_lock_sha256）；原run、
+起点/参考包、checkpoint格式/版本及载荷绑定仍严格核对。`resume_critic_changes`逐项列
+确切`{old,new}`，必须与实际非热身配置差异完全一致；未声明差异拒绝恢复。
+显式旧单组→独立head双组时按原参数注册顺序重映射原Adam moments，不清空主干；
+以后双组恢复用新配置的head_lr，不能被旧optimizer fixed_lr覆盖。迁移原producer、CP与
+实际配置差异记入原resumed事件，新CP由新producer签发，不改旧记录。永久STOP仍不可复活。

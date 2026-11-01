@@ -40,6 +40,7 @@ class RlSample:
     value_target: float | None = None
     action_kind: str = "unknown"
     acting_kl: float | None = None
+    value_scale: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -52,9 +53,10 @@ class LossConfig:
     mode: str = "legacy"
     value_coef: float = 0.0
     entropy_coef: float = 0.0
+    gradient_diagnostics: bool = False
 
     def __post_init__(self) -> None:
-        if (self.mode not in {"legacy", "ppo"}
+        if (type(self.gradient_diagnostics) is not bool or self.mode not in {"legacy", "ppo"}
                 or any(type(v) not in (int, float) or not math.isfinite(v) or v < 0
                        for v in (self.value_coef, self.entropy_coef))):
             raise BoundaryError("rl_loss", "invalid_PPO_configuration")
@@ -360,11 +362,12 @@ def _ppo_update(
     """
     if not samples or not model.value_heads or config.value_coef <= 0:
         raise BoundaryError("rl_loss", "PPO_requires_samples_and_value_head")
-    if any(s.value_target is None or not math.isfinite(s.value_target) for s in samples):
+    if any(s.value_target is None or not math.isfinite(s.value_target)
+           or not math.isfinite(s.value_scale) or s.value_scale <= 0 for s in samples):
         raise BoundaryError("rl_loss", "PPO_requires_finite_value_targets")
     began = time.perf_counter()
     for group in optimizer.param_groups:
-        group["lr"] = learning_rate
+        group["lr"] = group.get("fixed_lr", learning_rate)
     optimizer.zero_grad(set_to_none=True)
     model.eval()
     device = model.ids.weight.device
@@ -372,6 +375,9 @@ def _ppo_update(
     phases = {name: 0.0 for name in ("forward", "reference", "backward", "optimizer")}
     rows: list[tuple[RlSample, float, float, float, float, float]] = []
     policy_total = value_total = 0.0
+    shared = [p for name, p in model.named_parameters()
+              if p.requires_grad and not name.startswith(("win_head.", "progress_head."))]
+    component_gradients: list[list[torch.Tensor | None]] = [[], []]
     catalogs: dict[str, dict[str, float]] = {}
     for indices in microbatches(frames, list(range(len(frames))), model):
         batch = [samples[i] for i in indices]
@@ -400,7 +406,8 @@ def _ppo_update(
         kl = (probabilities * (finite_logs - reference_log.masked_fill(~valid, 0))).sum(-1)
         entropy = -(probabilities * finite_logs).sum(-1)
         targets = values.new_tensor([s.value_target for s in batch])
-        value_loss = (values[:, 1].float() - targets) ** 2
+        scales = values.new_tensor([s.value_scale for s in batch])
+        value_loss = ((values[:, 1].float() - targets) / scales) ** 2
         objective = (
             policy.sum()
             + config.value_coef * value_loss.sum()
@@ -411,6 +418,22 @@ def _ppo_update(
         phase = time.perf_counter()
         if not bool(torch.isfinite(objective)):
             raise BoundaryError("rl_loss", "non_finite_update")
+        if config.gradient_diagnostics and shared:
+            for index, component in enumerate((policy.sum() / len(samples),
+                    config.value_coef * value_loss.sum() / len(samples))):
+                partial_gradients = torch.autograd.grad(component, shared, retain_graph=True,
+                                                        allow_unused=True)
+                if not component_gradients[index]:
+                    component_gradients[index] = [g.detach().clone() if g is not None else None
+                                                   for g in partial_gradients]
+                else:
+                    for position, gradient in enumerate(partial_gradients):
+                        if gradient is not None:
+                            total = component_gradients[index][position]
+                            if total is None:
+                                component_gradients[index][position] = gradient.detach().clone()
+                            else:
+                                total.add_(gradient.detach())
         objective.backward()
         phases["backward"] += time.perf_counter() - phase
         policy_total += float(policy.detach().sum())
@@ -488,7 +511,16 @@ def _ppo_update(
     multi = [r for r in rows if r[5] >= 2]
     acting_values = sorted(value for sample in samples
                            if (value := sample.acting_kl) is not None)
+    # Only tensors reached by the value loss are shared; action-only readout
+    # parameters must not inflate the policy denominator.
+    norms = [math.sqrt(sum(float(g.square().sum())
+             for g, value_g in zip(gradients, component_gradients[1], strict=True)
+             if g is not None and value_g is not None))
+             for gradients in component_gradients] if config.gradient_diagnostics else None
     return {
+        "shared_trunk_gradient_norms": ({"policy": norms[0], "weighted_value": norms[1],
+            "value_to_policy": norms[1] / norms[0] if norms[0] > 0 else None}
+            if norms else None),
         "phase_seconds": phases,
         "timing_semantics": "host elapsed including device waits",
         "policy_loss": policy_total / len(samples),

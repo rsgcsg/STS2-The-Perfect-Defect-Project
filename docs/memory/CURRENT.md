@@ -1,6 +1,6 @@
-# 当前：CARD-RL-C / RL3 在线PPO（用户v6）
+# 当前：CARD-RL-C / RL3 在线PPO（用户v7）
 
-2026-11-01：用户已派RL3，替代暂停的10-30卡C；root负责。[本轮设计](../plans/RL_CRITIC_20261101.md)归v6，旧扫描/A-B方案已撤销且未运行。目标是每小时墙钟实战提升；长训s8136折1B温度，直接π采样、共享价值头/GAE/熵，anchor0、KL0监控，退化回好CP开KL .02。
+2026-11-01：用户已派RL3，替代暂停的10-30卡C；root负责。[本轮设计](../plans/RL_CRITIC_20261101.md)归v7，旧扫描/A-B方案已撤销且未运行。目标是每小时墙钟实战提升；长训s8136折1B温度，直接π采样、共享价值头/GAE/熵，anchor0、KL0监控，退化回好CP开KL .02。
 
 <!-- Resolve live GitHub refs before action; latest user instructions and live evidence override this file. -->
 
@@ -8,7 +8,7 @@
 
 PR349已普通合入`627a9523`，真实CI和合并后CI通过；运行源`52a7cd83`冻结。11-01 07:27开始价值热身，08:29通过留出门并开始PPO，已正常保存v29/131策略更新；头1056更新另计。完整CP正常消费者绑定和首CP冷恢复已核，不等于训练后变强。现由Friday A30从末CP继任，batch64→256、lr1e-5→2e-5摊薄整局价值/GAE重算，实际恢复/采用/吞吐看本卡原运行收据。EAIT旧分配因交接脚本错误进入正常释放；原数据/失败保留，不归因GPU故障。约20h含热身与恢复，原终点11-02 03:27:51 AEST不重置；全卡11-03 05:40硬收口、末2h报告保全。一次一张免费GPU、累计≤30h，CPU游戏12路起≤36；FP32开/预取关，600秒新鲜度/60秒发版，按完整acting KL/clip和墙钟实战选择调优，不靠降lr/多丢数据凑新鲜。
 
-**唯一下一步：核Friday继任与新采样端实际采用，继续首200策略更新/首小时健康和每4h quick20。**起点quick20已20自然负、0unknown、audit1/1、均14.0层；旧100审计unknown未准入仍保留。用户已批末尾新固定同窗起点/最终各100（含旧56）：新轮unknown不重试，任一边unknown剔整seed对，union不同unknown种子>5整轮作废，其他缺失/删失保持未完成。PR351可选清理后继续采集已合入`921d4562`，不改变原audit/score资格，末轮独立研究投影另绑定原件。水晶球公开事实缺口已列[#350](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/issues/350)，本卡不修平台。新写用已验证共享scratch；旧data个人quota满，原件不删。故障先核旧分配/末CP再备用，不双卡；恢复不重置预算。角色/参数/恢复归[原SOP](../../python/docs/RL3_RUN.zh-CN.md#可选公开输入评分网络)。RL2不恢复，100评估seed永不训练。
+**唯一下一步：按长期训练效率修后台读取、价值尺度/固定留出/独立学习率，并提高策略步长；在完整CP边界切换，随后实测吞吐和每4h quick。**首200原始诊断/完整CP和恢复采用已核。首轮v134/508为18自然负/1unknown/1未开；同18seed配对均+1.94层、区间跨0，未证提升。用户已放宽全部训练参数，当前十二路先不加核；后续quick用固定池后续seed补足20自然终局并补同seed起点，原unknown不重试；本轮18不补。每轮六项诊断和两图，轮转EV不冒充固定EV。起点quick20已20自然负、0unknown、audit1/1、均14.0层；旧100审计unknown未准入仍保留。用户已批末尾新固定同窗起点/最终各100（含旧56）：新轮unknown不重试，任一边unknown剔整seed对，union不同unknown种子>5整轮作废，其他缺失/删失保持未完成。PR351可选清理后继续采集已合入`921d4562`，不改变原audit/score资格，末轮独立研究投影另绑定原件。水晶球公开事实缺口已列[#350](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/issues/350)，本卡不修平台。新写用已验证共享scratch；旧data个人quota满，原件不删。故障先核旧分配/末CP再备用，不双卡；恢复不重置预算。角色/参数/恢复归[原SOP](../../python/docs/RL3_RUN.zh-CN.md#可选公开输入评分网络)。RL2不恢复，100评估seed永不训练。
 
 CARD-1A / [#340](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/issues/340)仍待用户试1–2局和原件/完整入库；本卡不碰Mac。原source ab816a93 / Workbench cc39dc7f / UI24 / Mod72 / Runtime60的已装与0动作保存范围见[STATUS](../STATUS.md)，不拿它作模型实战资格。
 
