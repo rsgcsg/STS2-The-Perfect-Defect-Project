@@ -518,7 +518,8 @@ def test_vectorized_acting_KL_keeps_ragged_padding_and_real_zero_mass_distinct()
         critic.evaluate(e)
 
 
-def test_prepared_targets_live_control_is_default_off_and_binds_actual_estimator(tmp_path, monkeypatch):
+def test_prepared_targets_live_control_is_default_off_and_binds_actual_estimator(
+        tmp_path, monkeypatch):
     from unittest.mock import Mock
 
     learner, _ = _configured(tmp_path, monkeypatch, max_reuse=2)
@@ -569,7 +570,8 @@ def test_prepared_targets_live_control_is_default_off_and_binds_actual_estimator
     learner.run()
 
 
-def test_prepared_targets_CP_preserves_values_uses_control_and_next_successful_step(tmp_path, monkeypatch):
+def test_prepared_targets_CP_preserves_values_uses_control_and_next_successful_step(
+        tmp_path, monkeypatch):
     from unittest.mock import Mock
 
     from spireagent.workbench.rl_learner import IO
@@ -627,7 +629,8 @@ def test_loss_recomputes_full_acting_KL_with_cached_targets_and_rejects_true_zer
     result = rl_update(model, reference, optimizer, [sample], [], 0,
                        LossConfig(mode="ppo", value_coef=.001))
     expected_logs = (logits + logits.new_tensor([.4, -.4])).log_softmax(-1).double()
-    expected = float((expected_logs.exp() * (expected_logs - torch.tensor(old).double().log())).sum())
+    expected = float((expected_logs.exp() * (
+        expected_logs - torch.tensor(old).double().log())).sum())
     assert result["acting_policy_kl"] == pytest.approx(expected, abs=1e-7)
     assert result["acting_policy_kl"] > .01
     assert result["mean_ratio"] == pytest.approx(float(expected_logs[0].exp()) / old[0], rel=1e-6)

@@ -176,6 +176,8 @@ def probe_inference_microbatches(model: MStd, reference: MStd, frames: list[Mode
         values = torch.empty((len(frames), 2))
         sizes = []
         with prepare_models(model, reference, execution), torch.no_grad():
+            if torch.backends.cuda.matmul.allow_tf32 != execution.tf32:
+                raise BoundaryError("rl_performance", "TF32_configuration_not_effective")
             for indices in grouped_indices(frames, model, execution):
                 output, prediction = model.forward_with_values([frames[i] for i in indices])
                 packed = torch.nn.utils.rnn.pad_sequence(output, batch_first=True).cpu()
@@ -227,7 +229,8 @@ def probe_inference_microbatches(model: MStd, reference: MStd, frames: list[Mode
         best = min(eligible, key=lambda row: float(row["median_seconds"]))
         return {"selected_microbatch_size": best["microbatch_size"],
                 "frames": len(frames), "candidates": rows,
-                "scope": "actual restored frames; same weights, full catalogs and raw value heads; no-grad",
+                "scope": ("actual restored frames; same weights, full catalogs and raw value heads; "
+                          "no-grad"),
                 "numerical_gate": {"atol": 2e-5, "rtol": 3e-4, "argmax_equal": True},
                 "method_changed": False, "training_updates": 0}
     finally:

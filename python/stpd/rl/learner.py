@@ -356,8 +356,8 @@ class Learner:
             {"packed": True, "tensor_cache": True, "precompile_inputs": True}))
         result = probe_inference_microbatches(self.model, self.reference,
             [frame for _, frame in selected], self.config.performance, baseline)
-        performance = replace(self.config.performance,
-                              inference_microbatch_size=cast(int, result["selected_microbatch_size"]))
+        performance = replace(self.config.performance, inference_microbatch_size=cast(
+            int, result["selected_microbatch_size"]))
         self.config = replace(self.config, performance=performance)
         self.critic.performance = performance
         self.critic.revision += 1
@@ -497,7 +497,8 @@ class Learner:
             if (not isinstance(control, dict) or type(control.get("sequence")) is not int
                     or control["sequence"] < 0 or type(control.get("prepared_targets")) is not bool
                     or (control["sequence"] > 0 and
-                        (not isinstance(control.get("sha256"), str) or len(control["sha256"]) != 64))):
+                        (not isinstance(control.get("sha256"), str)
+                         or len(control["sha256"]) != 64))):
                 raise BoundaryError("rl_learner", "invalid_checkpoint_runtime_control")
             self.runtime_control = {k: control[k] for k in ("sequence", "sha256")}
             self.config = replace(self.config, prepared_targets=control["prepared_targets"])
