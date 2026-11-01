@@ -847,7 +847,8 @@ def test_watcher_observation_report_reads_only_verified_local_files(watch, tmp_p
     evidence = root / 'evidence'
     evidence.mkdir(parents=True)
     ledger = {'slots': []}
-    source = {'plan_sha256': 'a' * 64, 'ledger_report': ledger}
+    watch.save(root / 'plan.json', {'fixture': 'bound normal plan bytes'})
+    source = {'plan_sha256': watch.hashed(root / 'plan.json'), 'ledger_report': ledger}
     watch.save(evidence / 'report-source.json', source)
     watch.save(evidence / 'report-details.json', {'episodes': []})
     current = cohort([8, 17])

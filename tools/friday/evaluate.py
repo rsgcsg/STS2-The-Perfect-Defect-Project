@@ -12,6 +12,7 @@ import sys
 import tempfile
 import threading
 import time
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -45,7 +46,8 @@ def validate_execution(execution: dict[str, Any], selections: dict[str, str]) ->
 def prepare(execution_path: Path, output: Path, *, selections: dict[str, str],
             workers: int = 4, wall_seconds: int = 7200, episode_seconds: int = 900,
             manifest_path: Path | None = None, limit: int | None = None,
-            seed_prefix: int | None = None, runtime_source: Path | None = None,
+            seed_prefix: int | None = None, seed_ordinals: list[int] | None = None,
+            runtime_source: Path | None = None,
             observation_report: bool = False, unknown_policy: str = "stop") -> dict[str, Any]:
     from spireagent.json_boundary import json_bytes
     from spireagent.workbench.managed_retention import pipeline_configuration
@@ -85,7 +87,13 @@ def prepare(execution_path: Path, output: Path, *, selections: dict[str, str],
     if seed_prefix is not None and (
             type(seed_prefix) is not int or not 1 <= seed_prefix <= len(value["seeds"])):
         raise ValueError("bounded_canonical_seed_prefix_required")
-    planned = (seed_prefix or len(value["seeds"])) * len(selections)
+    if seed_ordinals is not None and (
+            seed_prefix is not None or not isinstance(seed_ordinals, list) or not seed_ordinals
+            or any(type(n) is not int or not 1 <= n <= len(value['seeds']) for n in seed_ordinals)
+            or seed_ordinals != sorted(set(seed_ordinals))):
+        raise ValueError('bounded_canonical_seed_ordinals_required')
+    planned = (len(seed_ordinals) if seed_ordinals is not None
+               else seed_prefix or len(value["seeds"])) * len(selections)
     selected_count = min(limit or planned, planned)
     if selected_count > 200:
         raise ValueError("single_dispatch_maximum200_selected_slots")
@@ -103,6 +111,7 @@ def prepare(execution_path: Path, output: Path, *, selections: dict[str, str],
                 "execution_upper_bound": min(workers, pipeline["pending_limit"])},
             "source_root": str(runtime_source or Path(__file__).resolve().parents[2]),
             **({"seed_prefix": seed_prefix} if seed_prefix is not None else {}),
+            **({"seed_ordinals": seed_ordinals} if seed_ordinals is not None else {}),
             **({"unknown_policy": unknown_policy} if unknown_policy != "stop" else {}),
             "target": "friday", "automatic_mac_fallback": False, "retry_unknown": False}
     save(output / "plan.json", plan)
@@ -115,7 +124,10 @@ def create_ledger(plan: dict[str, Any], directory: Path):
     execution = read_pinned(plan["execution"])
     read_pinned(plan["manifest"])
     validate_execution(execution, plan["selections"])
-    options = {"seed_prefix": plan["seed_prefix"]} if "seed_prefix" in plan else {}
+    options: dict[str, Any] = ({"seed_prefix": plan["seed_prefix"]}
+                               if "seed_prefix" in plan else {})
+    if 'seed_ordinals' in plan:
+        options['seed_ordinals'] = plan['seed_ordinals']
     return EvaluationLedger.create(directory, Path(plan["manifest"]["path"]),
         plan["manifest"]["sha256"], selections=plan["selections"],
         execution=Path(plan["execution"]["path"]), **options)
@@ -134,13 +146,16 @@ def load_plan(path: Path) -> dict[str, Any]:
     return value
 
 
-def launcher(plan_path: Path, plan: dict[str, Any]) -> str:
+def launcher(plan_path: Path, plan: dict[str, Any], *, program: str = 'evaluate.py') -> str:
     """Nonsensitive user launcher; the program loads the user's private credentials."""
+    if program not in {'evaluate.py', 'quick.py'}:
+        raise ValueError('normal_evaluation_entrypoint_required')
     source = Path(plan["source_root"])
     actor = source.parent
     replacements = {"__ACTOR__": shlex.quote(str(actor)),
                     "__SOURCE__": shlex.quote(str(source)),
-                    "__PLAN__": shlex.quote(str(plan_path)), "__SLOT_MODE__": "evaluation"}
+                    "__PLAN__": shlex.quote(str(plan_path)), "__SLOT_MODE__": "evaluation",
+                    "__PROGRAM__": program}
     script = r'''#!/bin/bash
 set +x
 set -euo pipefail
@@ -168,7 +183,7 @@ export TOKENIZERS_PARALLELISM=false PYTHONUNBUFFERED=1
 export FRIDAY_INFERENCE_THREADS=${FRIDAY_INFERENCE_THREADS:-1}
 exec "$actor_root/env/bin/python" "$source_root/tools/friday/allocation.py" \
   --mode __SLOT_MODE__ --configuration __PLAN__ --source-root "$source_root" -- \
-  "$actor_root/env/bin/python" "$source_root/tools/friday/evaluate.py" run --plan __PLAN__
+  "$actor_root/env/bin/python" "$source_root/tools/friday/__PROGRAM__" run --plan __PLAN__
 '''
     for token, value in replacements.items():
         script = script.replace(token, value)
@@ -309,7 +324,36 @@ def prepare_observation_report(plan: dict[str, Any], summary: dict[str, Any],
                       (('source', source), ('details', details), ('cohort', cohort))}}
 
 
-def run(plan_path: Path) -> dict[str, Any]:
+def read_observation_report(result_path: Path, plan_path: Path) -> tuple[
+        dict[str, Any], dict[str, Any], dict[str, Any]]:
+    """Read the normal saved report, preserving its original ledger qualification."""
+    from spireagent.json_boundary import json_bytes
+
+    plan = load_plan(plan_path)
+    original = json.loads(result_path.read_bytes())
+    metadata = original.get('observation_report')
+    if (original.get('plan_sha256') != hashed(plan_path)
+            or metadata is None
+            or metadata.get('schema') != 'spireagent/evaluation-observation-files-1'
+            or metadata.get('ledger_report_sha256') != hashlib.sha256(
+                json_bytes(original['ledger_report'])).hexdigest()):
+        raise ValueError('evaluation_job_observation_report_required')
+    files = {}
+    for name in ('source', 'details', 'cohort'):
+        reference = metadata['files'][name]
+        if Path(reference['path']).name != reference['path']:
+            raise ValueError('evaluation_report_file_name_required')
+        files[name] = read_pinned({'path': str(result_path.parent / 'evidence' / reference['path']),
+                                  'sha256': reference['sha256']})
+    if (files['source']['ledger_report'] != original['ledger_report']
+            or files['source']['plan_sha256'] != original['plan_sha256']
+            or files['cohort']['source_sha256'] != metadata['files']['source']['sha256']
+            or files['cohort']['details_sha256'] != metadata['files']['details']['sha256']):
+        raise ValueError('evaluation_report_original_binding_mismatch')
+    return plan, original, files
+
+
+def run(plan_path: Path, *, on_stop: Callable[[], None] | None = None) -> dict[str, Any]:
     from spireagent.workbench.managed_pipeline import PipelinedManagedExecutor
     from spireagent.workbench.reference_suite import SuiteLimits
 
@@ -342,6 +386,8 @@ def run(plan_path: Path) -> dict[str, Any]:
 
     def stop(_number=None, _frame=None):
         ledger_stop.touch()
+        if on_stop is not None:
+            on_stop()
 
     def observe_stop():
         while not stopping.wait(1):
@@ -386,12 +432,17 @@ def run(plan_path: Path) -> dict[str, Any]:
         stopping.set()
         watcher.join(timeout=2)
         phases['executor_close'] = time.monotonic() - phase_began
+        if ledger_stop.exists() and on_stop is not None:
+            # StopOnUncertain can touch the original ledger flag directly,
+            # including a typed failure in the final offered slot.
+            on_stop()
         report = ledger.report()
         summary = {'schema': 'spireagent/friday-evaluation-result-v1',
             'status': 'failed' if error_type else (result or {}).get('status', 'failed'),
             'plan_sha256': hashed(plan_path), 'job_id': os.environ['SLURM_JOB_ID'],
             'elapsed_seconds': time.monotonic() - began, 'dispatch': result,
             'error_type': error_type, 'error_code': error_code, 'ledger_report': report,
+            'stop_requested': ledger_stop.exists(),
             'selected_slot_ids': selected, 'scratch_retained': str(scratch),
             'full_planned_denominator': plan['planned'], 'retry_unknown': False}
         summary['timing'] = {'process_started_at': process_started_at, 'phases': phases}
@@ -441,6 +492,8 @@ def main():
                                 help='prepare verified trajectory details/cohort in this allocation')
     prepare_parser.add_argument('--seed-prefix', type=int,
                                 help='freeze this original canonical seed prefix in a NEW ledger')
+    prepare_parser.add_argument('--seed-ordinals', type=int, nargs='+',
+                                help='freeze increasing original 1-based ordinals; keep full manifest')
     for name in ('submit', 'run'):
         command = commands.add_parser(name)
         command.add_argument('--plan', type=Path, required=True)
@@ -461,7 +514,8 @@ def main():
             workers=args.workers, wall_seconds=args.wall_seconds,
             episode_seconds=args.episode_seconds,
             manifest_path=args.manifest.resolve() if args.manifest else None, limit=args.limit,
-            seed_prefix=args.seed_prefix, runtime_source=args.runtime_source,
+            seed_prefix=args.seed_prefix, seed_ordinals=args.seed_ordinals,
+            runtime_source=args.runtime_source,
             observation_report=args.observation_report, unknown_policy=args.unknown_policy)
     elif args.command == 'submit':
         result = submit(args.plan.resolve(), constraint=args.constraint,
