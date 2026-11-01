@@ -237,8 +237,8 @@ unknown停止。该选项只允许清理已确认的unknown继续新槽，不重
 审计、保存、来源与历史score_admitted字段不变，这个选项本身不赋予科学计分资格。
 
 本卡新轮按用户固定的研究配对规则单独报告：任一侧unknown，剔除该seed整对并列种子号、
-两边状态及原因；双边同seed只算一个。union unknown seed超过5整轮作废，最多5则其余
-自然终局按seed配对。pending、censored、未开或缺轨迹等其他缺口仍为未完成，不能冒充
+两边状态及原因；双边同seed只算一个。按用户11-01傍晚新定，unknown数量不使整轮
+作废，其余合格自然终局按seed配对；零有效配对则不给效果估计。pending、censored、未开或缺轨迹等其他缺口仍为未完成，不能冒充
 unknown剔除；未覆盖情形交用户决定。保留原审计事实，与新paired-rule资格分开，不把旧
 score_admitted强改为true。末轮先确认训练演员排空，两份四路评估也受总并发36约束。
 
@@ -260,9 +260,20 @@ score_admitted强改为true。末轮先确认训练演员排空，两份四路�
 固定组；默认旧rolling行为不变。价值验证用相同场景encoder的value-only路径，省去动作readout。
 
 `background_io=true`启用已有异步发现/遥测，`read_ahead`限制预取；`reader_workers=1..8`
-控制读取/解析/CPU投影线程，默认1。后台只准备不可变CPU输入，owner仍按发现FIFO准入、
-复查新鲜度并记账，worker出错正常传播，不静默跳过。线程耗时与owner阶段可能重叠，
-不能将fractions相加；冷恢复另列，长期比较用相同窗口首次用数和未用过期分母。
+控制读取/解析/CPU投影并发，默认1。`reader_backend=thread`为原默认路径；`process`用
+spawn独立进程，子进程从同一固定包核SHA并加载CPU reference，每子进程torch线程为1。
+它们只读正常Exchange/typed shard并准备输入，不持策略/优化器/CUDA状态；主进程仍按发现
+FIFO准入、复查当前新鲜度并记账。提交时版本/热身状态只是预筛快照，不能绕owner复核。
+正常完整CP恢复也用同一reader重建原顺序/uses/原始开局时间，恢复不延长600秒期限。
+进程返回单bytes载荷（含传输成本），避免为每个小tensor打开共享内存文件描述符；这是
+本机同版本子进程私有IPC，不接收外部pickle。分类错误及安全诊断原样传播，只读Store
+重试上限不变，unknown游戏从不重投。正常退出和恢复失败均排空并回收reader子进程。
+
+CPU资源按主进程torch线程与reader并发安排，不能把reader进程计成游戏或自动申请更多核。
+进程启动/冷恢复另列，生产用相同窗口的首次用数、未用过期与实战验证收益；独立CPU诊断
+不替live吞吐。后台耗时与owner阶段重叠，fractions不能相加。实际actor产能看正常observer
+的原始uploaded_at与每局决策数；learner.generated/uploaded仅在读入后推进，其导数受reader
+限制，不等于actor实际生成速度。保留生成、上传、准入、首次使用、复用和过期各自分母。
 
 正常恢复默认仍要求同producer。升级源码时必须同时指定`resume_checkpoint`和
 `resume_source`（原producer完整repository/source_revision/uv_lock_sha256）；原run、
@@ -299,7 +310,7 @@ attention_required，不自动开新轮。原STOP与保存阶段信号逐层传�
 
 主comparison/均值/图只使用双边合格交集，原批次audit/scored与所有尝试分母留在result.batches
 及正常原件，不能用20对分母替换它们；现有rl_observation写JSON/CSV/SVG并明确投影范围。
-这只是quick报警，不套末100的unknown>5作废规则，不证明总体强度或正式发布资格。
+这只是quick报警，不证明总体强度或正式发布资格；末100按用户新定逐对剔除unknown。
 已封存v134轮不补不改。最终同窗起点/末版各100仍走上一节原规则。
 
 ## 完整FP32执行与可选整局准备（11-01候选）
