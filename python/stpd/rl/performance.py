@@ -229,8 +229,8 @@ def probe_inference_microbatches(model: MStd, reference: MStd, frames: list[Mode
         best = min(eligible, key=lambda row: float(row["median_seconds"]))
         return {"selected_microbatch_size": best["microbatch_size"],
                 "frames": len(frames), "candidates": rows,
-                "scope": ("actual restored frames; same weights, full catalogs and raw value heads; "
-                          "no-grad"),
+                "scope": ("actual restored frames; same weights, full catalogs, "
+                          "raw value heads; no-grad"),
                 "numerical_gate": {"atol": 2e-5, "rtol": 3e-4, "argmax_equal": True},
                 "method_changed": False, "training_updates": 0}
     finally:
