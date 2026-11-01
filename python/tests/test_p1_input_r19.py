@@ -222,7 +222,8 @@ def test_explicit_r19_store_tensor_pack_worker_and_gradients(tmp_path):
 def test_normal_data_preparation_explicit_r19_has_no_legacy_training_block(tmp_path):
     from test_p1_data_preparation import workspace
 
-    from spireagent.workbench.p1_data_preparation import prepare_p1_data
+    from spireagent.workbench.p1_data_preparation import freeze_p1_data, prepare_p1_data
+    from stpd.p1.dataset import iter_snapshot_points, load_snapshot
 
     owner, store, _ = workspace(tmp_path, names=())
     ids = [projection_fixture(store, f"r19-prepare-{i}", revision="r1.9")[0].artifact_id
@@ -231,6 +232,12 @@ def test_normal_data_preparation_explicit_r19_has_no_legacy_training_block(tmp_p
     assert result["revision"] == "r1.9"
     assert not result["conflicts"]
     assert "legacy_revision_inventory_only" not in result["allocation"]["blockers"]
+    assert result["selection"]["revision"] == "r1.9"
+    frozen = freeze_p1_data(owner, store, PRODUCER, **result["selection"])
+    _, selection = load_snapshot(store, frozen["snapshot_id"])
+    assert selection["input_projection"] == V2_R19_INPUT_SPEC
+    rows = list(iter_snapshot_points(store, frozen["snapshot_id"]))
+    assert len(rows) == 3 and all(obs["revision"] == "r1.9" for _, obs in rows)
     with pytest.raises(BoundaryError, match="unsupported_revision"):
         prepare_p1_data(owner, store, revision="r1.8", projection_ids=ids)
 

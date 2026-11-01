@@ -11,9 +11,35 @@ import pytest
 from test_p1_snapshot import projection_fixture
 from test_remote_training_http import client
 
+from spireagent.json_boundary import BoundaryError
 from spireagent.workbench.developer_cli import main
 from spireagent.workbench.p1_data_cli import p1_data_command
-from stpd.p1.dataset import iter_snapshot_points
+from stpd.p1.dataset import iter_snapshot_points, load_snapshot
+from stpd.p1.input import V2_R19_INPUT_SPEC
+
+
+def test_normal_cli_prepare_r19_selection_freezes_same_explicit_revision(tmp_path, capsys):
+    with client(tmp_path, reserve=False) as (app, _call, _provider, store, _owner, _snapshot, path):
+        ids = [projection_fixture(store, f"r19-http-{i}", revision="r1.9")[0].artifact_id
+               for i in range(3)]
+        request = tmp_path / "prepare-r19.json"
+        request.write_text(json.dumps({"revision": "r1.9", "projection_ids": ids}))
+        assert main(["p1-data", "--config", str(path), "--action", "prepare",
+                     "--input", str(request)]) == 0
+        prepared = json.loads(capsys.readouterr().out)
+        assert prepared["selection"]["revision"] == "r1.9"
+        request.write_text(json.dumps({"selection": prepared["selection"]}))
+        assert main(["p1-data", "--config", str(path), "--action", "freeze",
+                     "--input", str(request)]) == 0
+        frozen = json.loads(capsys.readouterr().out)
+        _, selection = load_snapshot(store, frozen["snapshot_id"])
+        assert selection["input_projection"] == V2_R19_INPUT_SPEC
+        rows = list(iter_snapshot_points(store, frozen["snapshot_id"]))
+        assert len(rows) == 3 and all(obs["revision"] == "r1.9" for _, obs in rows)
+        # This explicit version selection still cannot silently admit r1.8 data.
+        with pytest.raises(BoundaryError, match="unsupported_revision"):
+            p1_data_command(app.config, "freeze", {
+                "selection": {**prepared["selection"], "revision": "r1.8"}})
 
 
 def test_normal_data_prepare_freeze_increment_and_fixed_reader(tmp_path, capsys):
