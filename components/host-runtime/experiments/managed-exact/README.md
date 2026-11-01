@@ -426,3 +426,15 @@ private launch inputs never become Agent/P1 observation fields.
 Use the [recording diagnostic SOP](../../../../python/docs/MANAGED_RECORDING_REPLAY.zh-CN.md)
 for exact-original replay, optional idle Q dispatch and the Reference coverage
 plan. A first-combat prefix or matching graph does not qualify a whole game.
+
+## U1 child-input and terminal repair
+
+Host rc59 repairs native reward-child ownership after rest, ScrollBoxes bundle
+waiting, explicit manual zero-minimum selection, exact Kaiser death audio and
+pending original terminal tasks. The [U1 evidence and limitations](../../../../docs/evidence/UNKNOWN_FIX_U1_20261101.md)
+identify the native/public/model seams and retained unknown counterexamples.
+It keeps P1 r1.5/Input-v2 unchanged. The separate approved Sphere/Trial P1 r1.8
+work is not included; existing unsupported follow-ups still refuse explicitly.
+Run the `managed-u1-native.test.mjs` component fixture only against the normal
+prepared candidate with locked Python model dependencies, retaining its frozen
+artifact hashes. Native failure or missing end is never converted to a result.
