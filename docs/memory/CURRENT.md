@@ -28,14 +28,7 @@ CARD-1A / [#340](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/issue
 
 ## U1 独立修复入口（2026-11-01）
 
-U1 首批 PR359 / Host59 已交；PR361 / Host60 已 normal merge（3d711a90），不改
-P1/Input-v2，后者修晚到原生子输入/settling只读刷新。训练是否采用由 RL3 主管决定。
-Host59 两局正常 Actor/typed/R2 完整读回通过，`no_value_head`，不因此称 RL 就绪。
-新 P1r1.8/新 InputSpec 明确另版，Trial/Claws 原生组件→正常消费及 v416 参数保留已核；
-真实 Reference 两场景仍缺 [#366](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/issues/366)，
-未热换 RL3、未改变日常安装。全量129条分类及已达/未达范围沿
-[U1证据](../evidence/UNKNOWN_FIX_U1_20261101.md)恢复；Sphere/Architect/宝箱时序/Stop ACK/typed诊断
-分别归 #350/#362/#363/#364/#365。旧记录/失败分母保留，不因新实现回标通过。
+PR359/Host59首批、PR361/Host60晚到子输入与settling刷新已交；训练主决定自然重启采用。Host59两局Actor/typed/R2读回通过，no_value_head不当RL就绪。新P1r1.8/新InputSpec另版：Trial/Claws原生组件→正常消费、v416参数保留已核，真实Reference场景仍缺[#366](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/issues/366)。未热换RL3/日常。沿[U1证据](../evidence/UNKNOWN_FIX_U1_20261101.md)恢复129条分类、已达与未达；Sphere/Architect/宝箱/Stop ACK/typed诊断归#350/#362/#363/#364/#365，旧记录和分母保留。
 
 ## Remaining Platform non-claims（运行与证据边界）
 
