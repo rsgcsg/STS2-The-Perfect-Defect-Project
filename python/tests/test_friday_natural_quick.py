@@ -20,11 +20,12 @@ PROTOCOL = {'host_pin': {'version': 'fixture-host'}, 'runtime_pin': {'version': 
 @pytest.fixture
 def quick():
     batch = module_file('natural_quick_batch', FRIDAY / 'batch.py')
-    scheduler = module_file('natural_quick_scheduler', FRIDAY / 'submit.py')
-    with patch.dict(sys.modules, {'submit': scheduler, 'batch': batch}):
-        evaluate = module_file('natural_quick_evaluate', FRIDAY / 'evaluate.py')
-        with patch.dict(sys.modules, {'evaluate': evaluate}):
-            return module_file('natural_quick', FRIDAY / 'quick.py')
+    with patch.dict(sys.modules, {'batch': batch}):
+        scheduler = module_file('natural_quick_scheduler', FRIDAY / 'submit.py')
+        with patch.dict(sys.modules, {'submit': scheduler}):
+            evaluate = module_file('natural_quick_evaluate', FRIDAY / 'evaluate.py')
+            with patch.dict(sys.modules, {'evaluate': evaluate}):
+                return module_file('natural_quick', FRIDAY / 'quick.py')
 
 
 def save(path, value):
