@@ -305,7 +305,7 @@ class ManagedEpisodeExecutor:
             reject("frozen_agent_implementation_changed")
         if self.measure_host_performance and json.loads(
             (self.host / "package.json").read_bytes()
-        ).get("version") not in {"1.1.0-rc.46", "1.1.0-rc.57", "1.1.0-rc.58"}:
+        ).get("version") not in {"1.1.0-rc.46", "1.1.0-rc.57", "1.1.0-rc.58", "1.1.0-rc.59"}:
             reject("host_performance_diagnostics_required")
         self.build = _candidate_audit(
             _audit(self.host, self.candidate, game_assembly_sha256=self.game_assembly_sha256),

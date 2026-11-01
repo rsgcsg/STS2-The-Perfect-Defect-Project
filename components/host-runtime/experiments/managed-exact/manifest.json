@@ -47,9 +47,9 @@
     "effect": "Every Managed prepare compares the exact game Godot references with the built stub; a gap outside the reviewed baseline fails the build and names the member. Hosted CI has no game files and does not run it."
   },
   "expected_build": {
-    "source_patch_sha256": "de011e71826d20dd9e9db02c825e94877162d0646c0df70b19f84e5ca0b20a2b",
-    "artifact_sha256": "0e5feebdf33de9bc48a1fbd543735e006bed1766b1f07e90148801802e3cb1aa",
-    "artifact_mvid": "bb516baa-5308-4b47-a98e-ace6eda93028",
+    "source_patch_sha256": "197c2cf78f078c7c5fb4ef1f7710a1e71e92252e0fb2a5c397cfd5c9a3cded36",
+    "artifact_sha256": "336a8b6699276f0f158ee95c8d1650d06c76d94d1c202d8ea27688fde5e37af9",
+    "artifact_mvid": "b0dc30ba-d6b7-47bc-b6e0-bfe574912ed9",
     "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0"
   },
   "previous_candidate_build": {
@@ -105,9 +105,9 @@
         "occurrences": 7
       },
       "expected_build": {
-        "source_patch_sha256": "61c2fce855b4f0983b0c17e548e970ad55647f4f7993574e8f58cf597e553fac",
-        "artifact_sha256": "239be1e737428a3ddfcfca2b4b06d8b021559f4bd8ca35af97b538f66795b02d",
-        "artifact_mvid": "8091f740-a0d0-4cc8-a425-4dd44ede3b4e",
+        "source_patch_sha256": "8e9112fdfbf7cf211355ab395856c3975270489e621a7cd7e1dd80f80369c1e4",
+        "artifact_sha256": "5054c21cda87a4c099cab0345d0b8e6541430ffdf6d57cfe73cd9b4df70e7dd7",
+        "artifact_mvid": "09a5beff-5a7f-4247-9229-bcb08d00ae1a",
         "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0"
       },
       "non_claims": [
@@ -128,6 +128,13 @@
           "artifact_mvid": "fda8967a-4b90-42bb-a85a-fb75113e0cfe",
           "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0",
           "scope": "F2 intermediate build of PR282 b471dc; superseded before final source registration."
+        },
+        {
+          "source_patch_sha256": "61c2fce855b4f0983b0c17e548e970ad55647f4f7993574e8f58cf597e553fac",
+          "artifact_sha256": "239be1e737428a3ddfcfca2b4b06d8b021559f4bd8ca35af97b538f66795b02d",
+          "artifact_mvid": "8091f740-a0d0-4cc8-a425-4dd44ede3b4e",
+          "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0",
+          "scope": "Host58 pre-U1 immutable original; no qualification transferred."
         }
       ]
     }
@@ -413,6 +420,34 @@
       "risk": "medium",
       "effect": "Trial abandon confirmation and both CrystalSphere minigame entries require real native follow-up inputs. Retain original visible options, mark the whole page explicitly incomplete, and refuse raw invocation before Chosen/history/gold/curse effects. No synthetic answers, timeout completion, no-op scenes or default rewards.",
       "regression": "m2e-r3-native-tests: original option visibility, missing capture/serialization, no bound actions, refusal before WasChosen, unchanged gold/deck for both minigame entries. Full modal/minigame operations remain unqualified."
+    },
+    {
+      "id": "native_reward_child_owner_resolution",
+      "kind": "host_decision_boundary",
+      "risk": "medium",
+      "effect": "Use the common native decision owner resolver after rest choices and native selector commits; include pending native bundles in the existing reward wait. Parent tasks stay pending until the original explicit child input completes. No automatic skip or default bundle.",
+      "regression": "u1-native-tests: original ScrollBoxes reward callback, TinyMailbox and DreamCatcher heal reward children and parent resumption; stale bundle owner rejected; production serialization, SDK/P1 r1.5 and Input-v2."
+    },
+    {
+      "id": "native_manual_zero_minimum_selector",
+      "kind": "native_selector_preference_admission",
+      "risk": "medium",
+      "effect": "Admit original simple-grid min=0 only with RequireManualConfirmation; explicit empty confirmation invokes the original callback. Automatic zero-minimum transitions remain unsupported. Original objects and native selection bounds retained.",
+      "regression": "u1-native-tests: original min0/manual CardSelectCmd, explicit empty set and foreign-card refusal; frozen P1/Input-v2 complete catalog."
+    },
+    {
+      "id": "native_kaiser_death_audio_callsite",
+      "kind": "harmony_presentation_callsite",
+      "risk": "low",
+      "effect": "Only the single exact NAudioManager.PlayOneShot(string,float) call in each Crusher/Rocket.BeforeDeath is remapped. Null audio is omitted only in TestMode; all other cases call the original method. Native death, allied CrabRage and RNG unchanged; exact call-count drift fails.",
+      "regression": "u1-native-tests: both original BeforeDeath methods, real CreatureCmd.Kill, surviving ally CrabRage block and public successor."
+    },
+    {
+      "id": "native_pending_terminal_completion",
+      "kind": "host_terminal_publication_boundary",
+      "risk": "medium",
+      "effect": "Register actual player Kill completion before its synchronous portion; wait for all registered original Kill and OnEnded tasks within the existing five-second native commit bound before terminal capture. Preserve original exceptions and missing-end unknown; no HP-derived outcome.",
+      "regression": "u1-native-tests: synchronous/async death gates, native end-commit gate, win-before-Kill ordering, failing original Kill after win, HP0 without end witness; exact SDK/P1/Input-v2 path."
     }
   ],
   "admission": {
@@ -560,6 +595,12 @@
     "source_patch_sha256": "f7b6213c1b913f9aca501d317449e36793ae1efa255a5f53d61ed5ff11448f27",
     "artifact_sha256": "086eeda2f411fc7fe3f8b0de9530fb3d38774e22bb02e865cecec137db2a59f2",
     "artifact_mvid": "7ac2dfe3-d098-4dac-bef2-3f090635f791",
+    "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0"
+  },
+  "pre_u1_child_input_terminal_build": {
+    "source_patch_sha256": "de011e71826d20dd9e9db02c825e94877162d0646c0df70b19f84e5ca0b20a2b",
+    "artifact_sha256": "0e5feebdf33de9bc48a1fbd543735e006bed1766b1f07e90148801802e3cb1aa",
+    "artifact_mvid": "bb516baa-5308-4b47-a98e-ace6eda93028",
     "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0"
   }
 }
