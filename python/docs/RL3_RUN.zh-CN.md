@@ -456,3 +456,16 @@ allocation，Stop为每个plan写原STOP且对每个job只发一次信号，drai
 按原USR2维护、pending排空、显式旧新config digest与原start/schedule状态交接；GPU不重启。
 本卡owner在维护完成前也须跟踪新job原收据，并保全全部array，不能只拿主数组终态称完成。
 实际扩容时还须计入同时进行的评估游戏核，保持本卡总游戏核≤36。
+
+## Actor提交资源与实际容量核对
+
+仍使用正常`rl.py prepare/submit`与全新seed_namespace；资源可在`submit --memory-gb 6
+--exclude-node smp-9-0`显式给出。默认仍4GiB/不排节点，API与CLI映射同一submit；
+冻结计划、同run/source/peer父计划、submission lock/intent/STOP和unknown禁止重投不变。
+增加内存或避节点不是重发旧槽，也不能绕审计。本卡45秒audit不改；诊断保留原超时，
+不从FAILED1:0或贴4GiB峰值推断OOM/NFS根因。
+
+容量以`squeue -r`逐task及`sacct`完整窗核，不能按plan长度、array数量或RUNNING父行推算。
+局部array保留全部历史，实际存活索引单列；32路连续满30min且原同32任务无退出后才量
+训练计时/墙钟、秒更新、first-used/观测入账generated与等数据，窗口失败即作废。
+actor终止基础设施事件与已有World槽分别列；原unknown总分母、run/seed/reason/资格不改。
