@@ -461,23 +461,22 @@ allocation，Stop为每个plan写原STOP且对每个job只发一次信号，drai
 本卡owner在维护完成前也须跟踪新job原收据，并保全全部array，不能只拿主数组终态称完成。
 实际扩容时还须计入同时进行的评估游戏核，保持本卡总游戏核≤36。
 
-## 离线注意力残差评分头
+## 零初始化MLP残差评分头（用户23:20决定）
 
-仅在本卡明确授权和训练前固定门下运行`tools/friday/value_head_offline.py`。Friday正常资源
-登记与凭据loader内、纯CPU：`freeze --root <新实验目录> --point-root <v518价值点>
---observer <既有training-observation/shards>`先写不可变TRAIN manifest，再`extract-train`。
-该选择按uploaded_at/run_id取最近最多256个唯一自然TRAIN局，排除永久held_out/eval池/unknown；
-按seed固定内部TRAIN/DEV。`train`只使用冻结公开scene特征和原线性输出、终局MC，无主干梯度，
-20epoch/90min拟合窗、单候选按内部DEV MSE选；不得让48考题参与拟合/归一化/早停。
-`candidate.bin/json`写定后才`extract-holdout`与`evaluate`；后者保留同47自然局的baseline与candidate，
-逐个冻结门、固定真实输入全logits/argmax/导出权重/完整CP重载exact，并写qualification.json。
-失败/已有目录先核原日志，禁止覆盖原分母或按考题调参重试。
+本轮直接从完整CP切到零初始化attention-residual-v1；离线候选未过线的历史保留且不导入。
+用户知悉结果后决定以后默认MLP，不设线性对照、回滚条件或额外运行验门，不等qualification。
+原策略lr、λ、value系数、entropy与目标尺度不变。已有离线工具只作分析，不能阻塞本次切换。
 
-零末层保证起点值相同；新增`progress_residual.*`仅在价值入口执行，action_weights剥离全部
-残差参数；MLP模式下线性及注意力价值特征均detach，策略反传照常。旧CP未声明head_kind时
-仍是linear。过线的单次完整CP升级使用critic.head_kind=attention-residual-v1，明确
-resume_source/resume_critic_changes及resume_value_head四字段candidate_path/sha256、
-qualification_path/sha256；正常loader核hash/passed、仅容许新残差missing keys，旧权重不改，
-所有旧Adam矩逐参数迁移，新残差矩从空开始。原RNG/buffer/EMA/固定留出/control seq照常恢复。
-下一完整CP已带残差，后续恢复必须清空resume_value_head这一单次导入字段；不重复导入头。
-实际过线/上线是独立验收，源码和单测不代替真实完整CP与切点/quick/1h/3h校准收据。
+新run的LearnerConfig.read和Friday recipe在启用critic而未指定kind时默认MLP，并把recipe
+冻结为显式head_kind；旧完整CP缺head_kind仍按linear解释，不回写历史。低层CriticConfig的
+linear默认只保留旧CP/API兼容，不是本轮对照臂。评分只接公开scene，critic特征detach；
+最后层为0、残差加在原线性基底上，策略正常PPO照常。actor导出剥全部progress_residual参数。
+
+从旧线性完整CP升级时配置critic.head_kind=attention-residual-v1，沿原正常resume_source和
+resume_critic_changes声明kind变化；不需要离线candidate或qualification文件。只允许新增
+残差缺键，原策略/线性权重和Adam矩、RNG、FIFO、EMA、固定留出、prepared控制seq保留；
+新残差Adam矩从空开始。后续MLP完整CP严格正常恢复，不再执行首次zero初始化迁移。
+
+只记录一个实际切点model/version、时间、updates及准确source；最终100+100把切前后阶段
+分开说明，不把全程效果单归头。原定训练终点和资源上限不变，原正常评估照常，不额外加
+切前后对照或1h/3h门。PR369和已准备好的Host/actor组合尽量同一自然批切，未ready不拖主切。

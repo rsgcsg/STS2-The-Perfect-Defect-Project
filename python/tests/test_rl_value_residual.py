@@ -122,8 +122,6 @@ def test_declared_residual_parameter_addition_preserves_every_old_Adam_moment():
 def test_full_CP_residual_cut_preserves_policy_rng_buffer_critic_and_next_update(
     tmp_path, monkeypatch
 ):
-    import hashlib
-    import json
     from dataclasses import replace
 
     from test_rl_critic import _configured, _incoming
@@ -147,32 +145,17 @@ def test_full_CP_residual_cut_preserves_policy_rng_buffer_critic_and_next_update
     first.run()
     cp = first.exchange.latest_checkpoint()
     old_producer = first.producer
-    candidate = tmp_path / "head.bin"
-    head = AttentionValueResidual()
-    with torch.no_grad():
-        head.mlp[-1].bias.fill_(0.001)
-    candidate.write_bytes(encode_checkpoint({"weights": head.state_dict()}))
-    h = hashlib.sha256(candidate.read_bytes()).hexdigest()
-    qualification = tmp_path / "qualification.json"
-    qualification.write_text(json.dumps({"passed": True, "candidate_sha256": h}))
-    upgrade = {
-        "candidate_path": str(candidate),
-        "candidate_sha256": h,
-        "qualification_path": str(qualification),
-        "qualification_sha256": hashlib.sha256(qualification.read_bytes()).hexdigest(),
-    }
     monkeypatch.setattr(module, "source_identity", lambda _: Producer("test", "c" * 40, "b" * 64))
-    critic = replace(first.config.critic, head_kind="attention-residual-v1", head_lr=3e-4)
+    critic = replace(first.config.critic, head_kind="attention-residual-v1")
     changes = {
         k: {"old": getattr(first.config.critic, k), "new": getattr(critic, k)}
-        for k in ("head_kind", "head_lr")
+        for k in ("head_kind",)
     }
     config = replace(
         first.config,
         resume_checkpoint=cp["checkpoint_artifact_id"],
         resume_source=old_producer.to_dict(),
         resume_critic_changes=changes,
-        resume_value_head=upgrade,
         critic=critic,
     )
     successor = Learner(config, tmp_path / "residual", IO)
@@ -191,6 +174,15 @@ def test_full_CP_residual_cut_preserves_policy_rng_buffer_critic_and_next_update
             torch.equal(v, successor.optimizer.state[q][k])
             for k, v in first.optimizer.state[p].items()
         )
+    assert torch.count_nonzero(successor.model.progress_residual.mlp[-1].weight) == 0
+    assert torch.count_nonzero(successor.model.progress_residual.mlp[-1].bias) == 0
+    first.model.eval()
+    successor.model.eval()
+    frame = project(observation())
+    with torch.no_grad():
+        old_scores, old_values = first.model.forward_with_values([frame])
+        new_scores, new_values = successor.model.forward_with_values([frame])
+    assert torch.equal(old_scores[0], new_scores[0]) and torch.equal(old_values, new_values)
     before = {
         k: v.clone()
         for k, v in action_weights(successor.model.state_dict(), value_heads=True).items()
@@ -205,7 +197,6 @@ def test_full_CP_residual_cut_preserves_policy_rng_buffer_critic_and_next_update
         replace(
             config,
             resume_checkpoint=new_cp["checkpoint_artifact_id"],
-            resume_value_head=None,
             resume_source=None,
             resume_critic_changes=None,
         ),
@@ -223,3 +214,17 @@ def test_full_CP_residual_cut_preserves_policy_rng_buffer_critic_and_next_update
         )
     (third.work / "STOP").touch()
     third.run()
+
+
+def test_new_run_config_defaults_to_MLP_while_legacy_resume_remains_explicit(tmp_path):
+    import json
+
+    from stpd.rl.learner import LearnerConfig
+
+    path = tmp_path / "learner.json"
+    raw = {"schema": "stpd/rl-learner-config-1", "run": "defaults", "peer": {}, "critic": {}}
+    path.write_text(json.dumps(raw))
+    assert LearnerConfig.read(path).critic.head_kind == "attention-residual-v1"
+    raw["resume_checkpoint"] = "a" * 64
+    path.write_text(json.dumps(raw))
+    assert LearnerConfig.read(path).critic.head_kind == "linear"

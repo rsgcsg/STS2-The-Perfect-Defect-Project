@@ -109,8 +109,6 @@ class LearnerConfig:
     # Exact prior producer and exact critic old/new values for an intentional upgrade.
     resume_source: dict[str, str] | None = None
     resume_critic_changes: dict[str, Any] | None = None
-    # One explicit qualified offline residual import at a full-CP method cut.
-    resume_value_head: dict[str, str] | None = None
     # Explicitly publish restored weights before actors receive another version.
     republish_on_resume: bool = False
     tensorboard_steps: int = 10
@@ -143,6 +141,8 @@ class LearnerConfig:
         loss = LossConfig(**value.pop("loss", {}))
         performance = value.pop("performance", None)
         critic = value.pop("critic", None)
+        if critic is not None and not value.get("resume_checkpoint"):
+            critic = {"head_kind": "attention-residual-v1", **critic}
         return cls(**value, loss=loss,
                    critic=CriticConfig(**critic) if critic is not None else None,
                    performance=(PerformanceConfig(**performance)
@@ -535,36 +535,22 @@ class Learner:
             self.runtime_control = {k: control[k] for k in ("sequence", "sha256")}
             self.config = replace(self.config, prepared_targets=control["prepared_targets"])
             self._validate_prepared_mode(control["prepared_targets"])
-        residual_import = self.config.resume_value_head
         added: tuple[str, ...] = ()
-        if residual_import is not None:
-            if (not migration or self.critic is None
-                    or self.critic.config.head_kind != "attention-residual-v1"
-                    or learner.get("critic", {}).get("config", {}).get(
-                        "head_kind", "linear") != "linear"
-                    or set(residual_import) != {"candidate_path", "candidate_sha256",
-                                                "qualification_path", "qualification_sha256"}):
-                raise BoundaryError("rl_critic", "invalid_explicit_value_head_upgrade")
-            paths = {name: Path(residual_import[name + "_path"])
-                     for name in ("candidate", "qualification")}
-            if any(hashlib.sha256(path.read_bytes()).hexdigest()
-                   != residual_import[name + "_sha256"] for name, path in paths.items()):
-                raise BoundaryError("rl_critic", "offline_value_head_import_hash_mismatch")
-            qualification = json.loads(paths["qualification"].read_bytes())
-            if (qualification.get("passed") is not True
-                    or qualification.get("candidate_sha256")
-                        != residual_import["candidate_sha256"]):
-                raise BoundaryError("rl_critic", "qualified_offline_value_head_required")
+        saved_head = learner.get("critic", {}).get("config", {}).get("head_kind", "linear")
+        zero_residual_upgrade = (self.critic is not None
+            and self.critic.config.head_kind == "attention-residual-v1" and saved_head == "linear")
+        if zero_residual_upgrade:
+            if not migration:
+                raise BoundaryError("rl_critic", "value_head_source_migration_required")
             missing = self.model.load_state_dict(state["weights"], strict=False)
             expected = {n for n in self.model.state_dict() if n.startswith("progress_residual.")}
             if set(missing.missing_keys) != expected or missing.unexpected_keys or not expected:
                 raise BoundaryError("rl_critic", "unexpected_value_head_parameter_migration")
-            offline = decode_checkpoint(paths["candidate"].read_bytes())
-            self.model.progress_residual.load_state_dict(offline["weights"])
+            # enable_value_head created a zero-output residual inside fork_rng.
+            # No offline candidate is loaded; all existing policy/linear weights survive.
             added = ("progress_residual.",)
-            self._event("value_head_import", candidate_sha256=residual_import["candidate_sha256"],
-                        qualification_sha256=residual_import["qualification_sha256"],
-                        old_kind="linear", new_kind="attention-residual-v1",
+            self._event("value_head_zero_init", old_kind="linear", new_kind="attention-residual-v1",
+                        offline_candidate_imported=False,
                         new_Adam_moments="fresh; all old parameter moments preserved")
         else:
             self.model.load_state_dict(state["weights"])
