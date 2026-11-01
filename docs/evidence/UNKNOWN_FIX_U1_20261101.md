@@ -1,5 +1,10 @@
 # U1 native environment repair, 2026-11-01
 
+Current scope is the user's v3 card: PR367 is merged as `c0b9cc7c`;
+Reference scenes are deferred. The following timed deliveries retain their original
+scope. The combined r1.9 Sphere delivery is recorded at the end; do not migrate
+training to r1.8 before it. Old unknown outcomes and denominators remain frozen.
+
 Owner: U1. This first delivery repairs five existing Managed implementation
 failures without changing P1 r1.5, Input-v2, rewards, game rules or model weights.
 The fixed training snapshot contains 79 unknowns; these five causes account for
@@ -222,3 +227,41 @@ actual native gates above remain separate evidence. A new exact-head full CI is
 required before merge. The frozen Host61 package's original source is0759e76e;
 subsequent tests/docs/BOM commits do not relabel it. A per-file shipped-source bridge
 belongs to the U1 delivery receipt.
+
+## Combined r1.9 Managed Sphere (user v3)
+
+The approved route uses original logical cells, not pixels: an item is public only
+after one occupied cell is clear, then its type/rectangle/cleared cells/fully-revealed
+flag are supplied. Entirely covered items never get public refs, type, position or
+inventory counts. Image transparency corners and indistinguishable same-kind
+fragments are deliberately ignored under the user's decision. This supersedes
+the earlier rendering gap as a completion requirement for this Managed card.
+
+The TestMode adapter replaces only NCrystalSphereScreen.ShowScreen with the bound
+original minigame. All 121 cells × Small/Big are current exact native operands,
+including already-clear cells that still consume a divination. Original SetTool,
+CellClicked, reveal, completion and reward paths run; reward children retain the
+suspended original parent. A real Curse reveal's asynchronous completion is awaited
+before board/parent capture. No renderer, alternative rule engine or reward default
+was added. Both parent and board require explicit r1.9; removing the transport tag
+cannot make the old profile select a new irreversible parent option.
+
+Host62/SDK19/Runtime62 bind P1r1.9 and `stpd-p1-mstd-input-v2-r19@1`. r1.9 inherits
+r1.8 Trial/Claws, not r1.6/r1.7. The new compatibility CLI retains every original
+parameter/table/tokenizer; defaults and running RL3 remain unchanged. Normal data
+prepare→CLI/HTTP freeze→Store→tensor-pack→CPU worker and the normal RL Learner's
+packed 242-candidate path have bounded one-update checks. Historical standalone
+T0 remains r1.5; it is not the normal next-training path. r1.8 remains inference-only.
+
+Scoped non-author reviews accepted the native producer, root public/SDK/Runtime
+consumer and Python training consumer. Review found and corrected the actual
+pending-Curse publication race, missing-visible-item completeness check and
+prepare→freeze revision propagation. Original fixture/setup failures remain in
+the private evidence; none is a retry or relabel of an old unknown.
+
+The final package, exact Mac/Linux artifact identities, complete CI and actual
+packaged Python Agent→Runtime→Managed pipeline receipts are supplied with U1's
+version handoff. These checks establish this Managed interaction composition,
+not whole-game success, strategy strength, Reference/Human or cross-host parity.
+Architect #362 is deferred until first act3 Boss clear/Architect entry; #363–366
+remain outside this card. No further backlog work or monitoring is implied.

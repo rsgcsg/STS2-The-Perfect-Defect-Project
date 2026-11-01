@@ -26,9 +26,11 @@ CARD-1A / [#340](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/issue
 | 录制 | Workbench cc39dc7f / Mod72加载、窗口/退出Stop及新持久本机库0动作索引保存回读已核。用户0局；完整对局数据链与Human资格未通过 |
 | 新用法 | 排序对照真实游戏、显示全部P1动作、人排几个并执行第一、可标问题，不需后台模型；交替各段标人或准确模型版本。复用原决策端口/控制/原件，不另起执行链 |
 
-## U1 独立修复入口（2026-11-01）
+## U1 独立修复入口（2026-11-01 用户 v3）
 
-PR359/Host59首批、PR361/Host60晚到子输入与settling刷新已交；训练主决定自然重启采用。Host59两局Actor/typed/R2读回通过，no_value_head不当RL就绪。新P1r1.8/新InputSpec另版：Trial/Claws原生组件→正常消费、v416参数保留已核，真实Reference场景仍缺[#366](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/issues/366)。未热换RL3/日常。沿[U1证据](../evidence/UNKNOWN_FIX_U1_20261101.md)恢复129条分类、已达与未达；Sphere/Architect/宝箱/Stop ACK/typed诊断归#350/#362/#363/#364/#365，旧记录和分母保留。
+PR359/Host59、PR361/Host60与PR367/Trial/Claws已普通合并。Host59两局Actor/typed/R2读回通过；训练主决定自然重启采用旧输入修复。下一轮输入只迁移一次：Managed Sphere与Trial/Claws合成显式P1r1.9、InputSpec `stpd-p1-mstd-input-v2-r19@1`、Host62/SDK19/Runtime62，不先迁移r18。原参数兼容构包、全242候选、正常训练/冻结入口已接通；最终准确包与CI/运行交接沿[U1证据](../evidence/UNKNOWN_FIX_U1_20261101.md)，不热换当前RL3或日常安装。
+
+Sphere按用户批准的逻辑状态公开：至少一格露出的物品给完整矩形与种类，全未露面不公开；忽略透明角/同种局部图片细节。Reference本卡不要求，#366不挡Managed完成。#362建筑师等首次第三幕Boss清掉或首次进入再修；#363/#364/#365/#366留Issue，本卡不展开。129条分类和所有旧unknown/分母保留，不重发、不改成已恢复。
 
 ## Remaining Platform non-claims（运行与证据边界）
 
