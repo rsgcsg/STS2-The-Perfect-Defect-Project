@@ -131,6 +131,36 @@ def test_existing_exchange_seed_is_exact_and_archive_binding_cannot_drift(tmp_pa
         open_peer({**binding, "archive": {"kind": "local", "directory": str(tmp_path / "wrong")}})
 
 
+def test_archive_drain_checks_deadline_between_tasks_and_logs_safe_IO_failure(
+        tmp_path, monkeypatch, capsys):
+    from spireagent.storage import async_archive as module
+
+    _, hot, _ = peers(tmp_path)
+    archive = hot.archive
+    for i in range(6):
+        archive.offer(f"exchange/test/{i}.json", b"{}", start=False)
+    clock, copied = [0.0], []
+    monkeypatch.setattr(module.time, "monotonic", lambda: clock[0])
+
+    def bounded_one(identity):
+        copied.append(identity)
+        clock[0] += .02  # A task is not interrupted; its successor must respect the total deadline.
+
+    monkeypatch.setattr(archive, "_copy", bounded_one)
+    assert archive.step(deadline=.03) == 2 and len(copied) == 2
+
+    def quota_failure(_):
+        raise OSError("secret SDK/environment content must never reach diagnostics")
+
+    monkeypatch.setattr(archive, "_copy", quota_failure)
+    assert archive.step() == 0
+    assert archive.last_error["error_type"] == "OSError"
+    assert archive.last_error["stage"] == "shared_archive"
+    diagnostic = capsys.readouterr().err
+    assert '"error_type": "OSError"' in diagnostic and "secret SDK" not in diagnostic
+    assert archive.status()["pending"] == 6
+
+
 @pytest.mark.parametrize("change", [
     {"archive": {"kind": "local", "directory": "SAME"}},
     {"archive": {"kind": "local", "directory": "other", "archive": {}}},

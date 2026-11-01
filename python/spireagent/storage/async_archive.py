@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import sys
 import threading
 import time
 from pathlib import Path
@@ -100,9 +101,19 @@ class Archive:
                 "artifacts": artifacts, "archive": self.binding}))
             pending.unlink(missing_ok=True)  # The completed receipt retains the exact intent.
 
-    def step(self) -> int:
+    def _unexpected_error(self, error: Exception, intent: str | None = None) -> None:
+        self.last_error = {"stage": "shared_archive", "error_type": type(error).__name__,
+                           "pending": intent, "at": time.time()}
+        try:
+            print(json.dumps(self.last_error), file=sys.stderr, flush=True)
+        except OSError:
+            pass  # Keep the in-memory failure/pending when even the scheduler log is unwritable.
+
+    def step(self, *, deadline: float | None = None) -> int:
         completed = 0
         for key in self.queue.keys("pending/"):
+            if deadline is not None and time.monotonic() >= deadline:
+                break
             identity = Path(key).stem
             if (self.queue.root / "completed" / f"{identity}.json").is_file():
                 continue
@@ -118,6 +129,9 @@ class Archive:
                 failure_id = hashlib.sha256(json_bytes(failure)).hexdigest()
                 self.queue.put_if_absent(f"errors/{failure_id}.json", json_bytes(failure))
                 return completed
+            except Exception as error:  # noqa: BLE001 -- local quota/IO failures retain their intent
+                self._unexpected_error(error, identity)
+                return completed
             self.last_error = None
             completed += 1
         return completed
@@ -129,7 +143,7 @@ class Archive:
             try:
                 self.step()
             except Exception as error:  # noqa: BLE001 -- preserve pending, expose classified failure
-                self.last_error = {"error_type": type(error).__name__, "at": time.time()}
+                self._unexpected_error(error)
             finally:
                 self._refresh_owned()
 
@@ -168,7 +182,7 @@ class Archive:
     def drain(self, *, timeout: float = 120, owned: bool = True) -> dict[str, Any]:
         deadline = time.monotonic() + timeout
         while True:
-            self.step()
+            self.step(deadline=deadline)
             self._refresh_owned()
             status = self.status(owned=owned)
             if status["full_readback"]:

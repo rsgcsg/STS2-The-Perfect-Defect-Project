@@ -301,6 +301,8 @@ actor/learner退出时会等待本进程已发布内容的归档读回；不完�
 不把transport失败改记为游戏unknown。负责人最终还须在停止写入后运行
 `python -m spireagent.storage.async_archive --peer PEER.json --run EXACT_RUN --timeout 600`，
 重扫已发布manifest/本run记录，恢复publication→outbox之间的进程崩溃缺口并核完整读回。
+drain总限在任务之间检查；已开始的一次Store I/O仍受原S3超时约束，timeout不是硬抢占。
+本地quota/OSError也记录安全stage/类型/intent到scheduler stderr，不输出原异常message。
 这只处理Store对象和Exchange记录，不递归打包目录、凭据或邻近文件；原游戏scratch的正常
 snapshot保全义务照旧。`--operation status`可读待办/完成/分类错误，R2失败不静默回退。
 
