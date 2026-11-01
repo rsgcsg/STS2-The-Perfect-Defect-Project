@@ -357,6 +357,8 @@ def main():
         if name == 'submit':
             sub.add_argument('--dry-run', action='store_true')
             sub.add_argument('--additional-to', type=Path, nargs='+')
+            sub.add_argument('--memory-gb', type=int, default=4)
+            sub.add_argument('--exclude-node', action='append', dest='exclude_nodes')
     save_parser = commands.add_parser('save')
     save_parser.add_argument('--plan', type=Path, required=True)
     save_parser.add_argument('--actor', required=True)
@@ -370,7 +372,8 @@ def main():
             behavior=json.loads(args.behavior.read_bytes()) if args.behavior else None,
             seed_namespace=args.seed_namespace)
     elif args.command == 'submit':
-        result = submit(args.plan, dry_run=args.dry_run, additional_to=args.additional_to)
+        result = submit(args.plan, dry_run=args.dry_run, additional_to=args.additional_to,
+                        memory_gb=args.memory_gb, exclude_nodes=args.exclude_nodes)
     elif args.command == 'save':
         result = resume_snapshot(args.plan, args.actor)
     else:
