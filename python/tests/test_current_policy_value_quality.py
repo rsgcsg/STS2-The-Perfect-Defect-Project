@@ -6,7 +6,55 @@ from pathlib import Path
 
 import pytest
 
-from stpd.evaluation.value_quality import summarize
+from stpd.evaluation.value_quality import distribution, summarize, temporal_quality
+
+
+def test_temporal_perfect_and_rescaled_paths_keep_correlation_and_jitter_distinct():
+    target = [1., 2., 4., 8.]
+    perfect = temporal_quality(target, target)
+    scaled = temporal_quality([2 * x for x in target], target)
+    assert perfect["correlation"] == pytest.approx(1)
+    assert perfect["jitter_ratio"] == pytest.approx(1)
+    assert scaled["correlation"] == pytest.approx(1)
+    assert scaled["jitter_ratio"] == pytest.approx(2)
+
+
+def test_zero_jitter_is_preserved_rather_than_called_perfect():
+    result = temporal_quality([1., 2., 3., 4.], [1., 2., 4., 8.])
+    assert result["correlation"] > 0
+    assert result["jitter_ratio"] == 0
+    assert result["target_difference_std"] > 0
+
+
+@pytest.mark.parametrize("p,t,corr_reason,jitter_reason", [
+    ([1.], [2.], "fewer_than_two_rows", "fewer_than_three_rows"),
+    ([1., 2.], [2., 4.], None, "fewer_than_three_rows"),
+    ([1., 1., 1.], [2., 2., 2.], "constant_prediction_or_target", "constant_target_differences"),
+    ([1., 2., 3.], [3., 2., 1.], None, "constant_target_differences"),
+])
+def test_undefined_temporal_denominators_remain_explicit(p, t, corr_reason, jitter_reason):
+    result = temporal_quality(p, t)
+    assert result["correlation_undefined_reason"] == corr_reason
+    assert result["jitter_undefined_reason"] == jitter_reason
+    if corr_reason:
+        assert result["correlation"] is None
+    if jitter_reason:
+        assert result["jitter_ratio"] is None
+
+
+def test_near_constant_target_is_flagged_without_epsilon_or_imputation():
+    target = [1., 1. + 1e-10, 1. + 3e-10]
+    result = temporal_quality(target, target)
+    assert result["target_differences_near_constant"]
+    assert result["jitter_ratio"] == pytest.approx(1)
+    assert result["correlation"] == pytest.approx(1)
+
+
+def test_equal_game_distribution_preserves_missing_games_and_interpolates():
+    result = distribution([None, 1., 3., None])
+    assert result["total_games"] == 4 and result["valid_games"] == 2
+    assert result["undefined_games"] == 2 and result["median"] == 2
+    assert result["p10"] == pytest.approx(1.2)
 
 
 def game(name, predicted, targets, floor=10):

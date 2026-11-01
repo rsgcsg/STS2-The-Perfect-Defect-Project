@@ -7,8 +7,63 @@ from __future__ import annotations
 
 import math
 import random
+import statistics
 from collections import Counter
 from typing import Any
+
+
+def distribution(values: list[float | None]) -> dict[str, Any]:
+    """Equal-game, linearly interpolated quantiles; undefined games stay counted."""
+    valid = sorted(v for v in values if v is not None)
+    def quantile(q: float) -> float | None:
+        if not valid:
+            return None
+        index = (len(valid) - 1) * q
+        low = math.floor(index)
+        high = math.ceil(index)
+        return valid[low] + (valid[high] - valid[low]) * (index - low)
+    return {"total_games": len(values), "valid_games": len(valid),
+        "undefined_games": len(values) - len(valid),
+        **{name: quantile(q) for name, q in (("min", 0), ("p10", .1), ("p25", .25),
+            ("median", .5), ("p75", .75), ("p90", .9), ("max", 1))}}
+
+
+def temporal_quality(predictions: list[float], targets: list[float]) -> dict[str, Any]:
+    """Describe a realized MC path; neither correlation nor smoothness proves skill."""
+    if (not predictions or len(predictions) != len(targets)
+            or not all(type(v) in (int, float) and math.isfinite(v)
+                       for v in predictions + targets)):
+        raise ValueError("finite_aligned_temporal_predictions_required")
+    def std(values: list[float]) -> float | None:
+        return statistics.stdev(values) if len(values) >= 2 else None
+    ps, ts = std(predictions), std(targets)
+    correlation, correlation_reason = None, None
+    if len(targets) < 2:
+        correlation_reason = "fewer_than_two_rows"
+    elif not ps or not ts:
+        correlation_reason = "constant_prediction_or_target"
+    else:
+        pm, tm = statistics.fmean(predictions), statistics.fmean(targets)
+        covariance = math.fsum((p - pm) * (t - tm)
+                              for p, t in zip(predictions, targets, strict=True))
+        correlation = min(1.0, max(-1.0, covariance / ((len(targets) - 1) * ps * ts)))
+    dp = [b - a for a, b in zip(predictions[:-1], predictions[1:], strict=True)]
+    dt = [b - a for a, b in zip(targets[:-1], targets[1:], strict=True)]
+    pds, tds = std(dp), std(dt)
+    jitter, jitter_reason = None, None
+    if len(targets) < 3:
+        jitter_reason = "fewer_than_three_rows"
+    elif tds == 0:
+        jitter_reason = "constant_target_differences"
+    else:
+        assert pds is not None and tds is not None
+        jitter = pds / tds
+    return {"rows": len(targets), "prediction_std": ps, "target_std": ts,
+        "correlation": correlation, "correlation_undefined_reason": correlation_reason,
+        "prediction_difference_std": pds, "target_difference_std": tds,
+        "jitter_ratio": jitter, "jitter_undefined_reason": jitter_reason,
+        "target_differences_near_constant": (tds is not None and
+            tds <= max(1e-12, 1e-8 * max(abs(v) for v in targets)))}
 
 
 def _stats(predicted: list[float], targets: list[float], weights: list[float] | None = None
@@ -50,7 +105,8 @@ def summarize(games: list[dict[str, Any]]) -> dict[str, Any]:
                 or game["result"] not in ("win", "loss")):
             raise ValueError("finite_complete_predictions_targets_and_natural_outcome_required")
         stats = _stats(p, t)
-        per_game.append({k: game[k] for k in ("run_id", "seed", "floor", "result")} | stats)
+        per_game.append({k: game[k] for k in ("run_id", "seed", "floor", "result")} | stats
+                        | {"temporal": temporal_quality(p, t)})
         predictions.extend(p)
         targets.extend(t)
         weights.extend([1 / len(p)] * len(p))
@@ -96,7 +152,11 @@ def summarize(games: list[dict[str, Any]]) -> dict[str, Any]:
         "rows": len(predictions), "per_decision": _stats(predictions, targets),
         "equal_game_weighted": _stats(predictions, targets, weights),
         "mean_game_bias": math.fsum(biases) / len(biases),
+        "mean_absolute_game_bias": statistics.fmean(abs(v) for v in biases),
+        "absolute_game_bias": distribution([abs(v) for v in biases]),
         "mean_game_bias_bootstrap95_fixed_group_sensitivity": bias_sensitivity,
+        "within_game_correlation": distribution([g["temporal"]["correlation"] for g in per_game]),
+        "jitter_ratio": distribution([g["temporal"]["jitter_ratio"] for g in per_game]),
         "within_game": _stats(centered_predictions, centered_targets),
         "within_game_equal_game_weighted": _stats(centered_predictions, centered_targets, weights),
         "thirds": thirds, "calibration_fixed_prediction_bins": calibration,
@@ -109,6 +169,10 @@ def summarize(games: list[dict[str, Any]]) -> dict[str, Any]:
         "definitions": {"bias": "prediction - MC target; headline bias weights games equally",
             "EV": "1 - Var(target-prediction)/Var(target); null when target variance is zero",
             "within_game": "center predictions and targets by their own game means, then pool EV",
+            "correlation": "per-game Pearson(prediction, terminal MC target); equal-game quantiles",
+            "jitter_ratio": "sample std(diff prediction) / sample std(diff target); no epsilon",
+            "undefined_temporal": "constant denominator or insufficient rows remain null and counted",
+            "temporal_caution": "MC targets are smooth time trends; correlation/jitter are not gameplay proof",
             "targets": "discounted full terminal return; no lambda or value bootstrap",
             "calibration": "fixed prediction bins; per-decision and inverse-game-length summaries",
             "scope": "frozen-policy Managed TRAIN-holdout sampling; not real-game proof"}}
