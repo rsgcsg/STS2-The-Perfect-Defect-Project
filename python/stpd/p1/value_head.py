@@ -1,6 +1,8 @@
 """Public scene attention residual for a policy-independent progress critic."""
 from __future__ import annotations
 
+from typing import cast
+
 import torch
 from torch import Tensor, nn
 
@@ -20,4 +22,4 @@ class AttentionValueResidual(nn.Module):
     def forward(self, scene: Tensor, mask: Tensor, mean: Tensor) -> Tensor:
         pooled, _ = self.attention(self.query.expand(scene.shape[0], -1, -1),
                                    scene, scene, key_padding_mask=mask, need_weights=False)
-        return self.mlp(torch.cat((pooled[:, 0], mean), dim=1))
+        return cast(Tensor, self.mlp(torch.cat((pooled[:, 0], mean), dim=1)))

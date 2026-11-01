@@ -109,6 +109,8 @@ class LearnerConfig:
     # Exact prior producer and exact critic old/new values for an intentional upgrade.
     resume_source: dict[str, str] | None = None
     resume_critic_changes: dict[str, Any] | None = None
+    # One explicit qualified offline residual import at a full-CP method cut.
+    resume_value_head: dict[str, str] | None = None
     # Explicitly publish restored weights before actors receive another version.
     republish_on_resume: bool = False
     tensorboard_steps: int = 10
@@ -294,7 +296,7 @@ class Learner:
         for parameter in self.model.parameters():
             parameter.requires_grad_(True)
         if config.critic is not None:
-            enable_value_head(self.model, config.seed)
+            enable_value_head(self.model, config.seed, config.critic.head_kind)
         self.optimizer = torch.optim.AdamW(optimizer_groups(self.model, config.critic),
                                            lr=config.lr, weight_decay=config.weight_decay)
         self.critic = (OnlineCritic(self.model, self.reference, self.optimizer, config.critic,
@@ -533,8 +535,39 @@ class Learner:
             self.runtime_control = {k: control[k] for k in ("sequence", "sha256")}
             self.config = replace(self.config, prepared_targets=control["prepared_targets"])
             self._validate_prepared_mode(control["prepared_targets"])
-        self.model.load_state_dict(state["weights"])
-        restore_optimizer(self.optimizer, self.model, state["optimizer"], migrate=migration)
+        residual_import = self.config.resume_value_head
+        added: tuple[str, ...] = ()
+        if residual_import is not None:
+            if (not migration or self.critic is None
+                    or self.critic.config.head_kind != "attention-residual-v1"
+                    or learner.get("critic", {}).get("config", {}).get("head_kind", "linear") != "linear"
+                    or set(residual_import) != {"candidate_path", "candidate_sha256",
+                                                "qualification_path", "qualification_sha256"}):
+                raise BoundaryError("rl_critic", "invalid_explicit_value_head_upgrade")
+            paths = {name: Path(residual_import[name + "_path"])
+                     for name in ("candidate", "qualification")}
+            if any(hashlib.sha256(path.read_bytes()).hexdigest()
+                   != residual_import[name + "_sha256"] for name, path in paths.items()):
+                raise BoundaryError("rl_critic", "offline_value_head_import_hash_mismatch")
+            qualification = json.loads(paths["qualification"].read_bytes())
+            if (qualification.get("passed") is not True
+                    or qualification.get("candidate_sha256") != residual_import["candidate_sha256"]):
+                raise BoundaryError("rl_critic", "qualified_offline_value_head_required")
+            missing = self.model.load_state_dict(state["weights"], strict=False)
+            expected = {n for n in self.model.state_dict() if n.startswith("progress_residual.")}
+            if set(missing.missing_keys) != expected or missing.unexpected_keys or not expected:
+                raise BoundaryError("rl_critic", "unexpected_value_head_parameter_migration")
+            offline = decode_checkpoint(paths["candidate"].read_bytes())
+            self.model.progress_residual.load_state_dict(offline["weights"])
+            added = ("progress_residual.",)
+            self._event("value_head_import", candidate_sha256=residual_import["candidate_sha256"],
+                        qualification_sha256=residual_import["qualification_sha256"],
+                        old_kind="linear", new_kind="attention-residual-v1",
+                        new_Adam_moments="fresh; all old parameter moments preserved")
+        else:
+            self.model.load_state_dict(state["weights"])
+        restore_optimizer(self.optimizer, self.model, state["optimizer"], migrate=migration,
+                          new_prefixes=added)
         critic_saved = learner.get("critic")
         if (self.critic is None) != (critic_saved is None):
             raise BoundaryError("rl_critic", "resume_method_mismatch")

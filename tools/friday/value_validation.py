@@ -359,7 +359,8 @@ def score(path: Path, output: Path) -> dict[str, Any]:
         raise ValueError("same_frozen_policy_critic_required")
     torch.set_num_threads(4)
     model, _ = load_model(Path(point["package"]) / "model.tensor-tree", point["model"]["model_sha256"])
-    enable_value_head(model, point["learner_config"]["seed"])
+    enable_value_head(model, point["learner_config"]["seed"],
+                      saved["critic"]["config"].get("head_kind", "linear"))
     model.load_state_dict(state["weights"])
     model.eval()
     projection = runtime_projection(model.vocabulary)

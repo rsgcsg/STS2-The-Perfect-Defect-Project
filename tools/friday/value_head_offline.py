@@ -159,7 +159,7 @@ def extract_one(task: dict[str, Any]) -> dict[str, Any]:
     cache = {"run_id": row["run_id"], "seed": row["seed"], "kind": task["kind"],
         "internal_split": row.get("internal_split"), "scene": scenes,
         "mean": torch.stack(means), "linear": torch.tensor(linear),
-        "targets": torch.tensor(terminal_targets(reward, len(frames), .999)),
+        "targets": torch.tensor(terminal_targets(reward, len(frames), point["critic_config"]["gamma"]), dtype=torch.float64),
         "floor": ep["outcome"]["max_observed_floor"], "result": disposition,
         "zero_head_exact_policy_and_value": exact_zero,
         "full_policy_scores": scores, "point_sha256": digest(Path(task["point"]))}
@@ -225,7 +225,7 @@ def batch(features: list[Any], rows: list[tuple[int, int]]) -> tuple[Any, Any, A
     mask = torch.arange(scene.shape[1])[None, :] >= lengths[:, None]
     return (scene, mask, torch.stack([features[e]["mean"][i] for e, i in rows]),
             torch.stack([features[e]["linear"][i] for e, i in rows]),
-            torch.stack([features[e]["targets"][i] for e, i in rows]))
+            torch.stack([features[e]["targets"][i] for e, i in rows]).float())
 
 
 def train(root: Path) -> None:
@@ -293,9 +293,122 @@ def train(root: Path) -> None:
         "holdout_used": False, "selection": "single candidate by internal DEV MSE"})
 
 
+def verify_one(task: dict[str, Any]) -> dict[str, Any]:
+    import torch
+    from spireagent.rl_exchange import Exchange
+    from spireagent.workbench.managed_trajectory_store import read_shard
+    from stpd.p1.input import project
+    from stpd.p1.export import runtime_projection, action_weights
+    from stpd.workers.checkpoint_codec import decode_checkpoint, encode_checkpoint
+
+    torch.set_num_threads(4)
+    point = json.loads(Path(task["point"]).read_bytes())
+    model = load_base(point)
+    baseline = action_weights(model.state_dict(), value_heads=True)
+    baseline = {k: v.clone() for k,v in baseline.items()}
+    model.enable_progress_residual(20261101)
+    model.progress_residual.load_state_dict(decode_checkpoint(Path(task["candidate"]).read_bytes())["weights"])
+    model.eval()
+    cached = torch.load(task["cache"], weights_only=True)
+    exchange = Exchange(point["learner_config"]["peer"], point["learner_config"]["run"])
+    ep = next(e for e in read_shard(exchange.store, task["shard"], scratch=Path(task["scratch"]))
+              if e["run_id"] == cached["run_id"])
+    frames = [project(ep["observations"][step["observation_index"]]["observation"],
+                      input_projection=runtime_projection(model.vocabulary)) for step in ep["steps"]]
+    if len(frames) != len(cached["full_policy_scores"]):
+        raise ValueError("fixed_input_count_changed")
+    for phase in ("trained", "full_checkpoint_reload"):
+        if phase == "full_checkpoint_reload":
+            state = decode_checkpoint(encode_checkpoint({"weights": model.state_dict()}))
+            model.load_state_dict(state["weights"])
+        with torch.no_grad():
+            for start in range(0, len(frames), 8):
+                scores, _ = model.forward_with_values(frames[start:start+8])
+                if any(not torch.equal(score, cached["full_policy_scores"][start+i])
+                       or int(score.argmax()) != int(cached["full_policy_scores"][start+i].argmax())
+                       for i,score in enumerate(scores)):
+                    raise ValueError("trained_or_reloaded_head_changed_fixed_policy_scores")
+        exported = action_weights(model.state_dict(), value_heads=True)
+        if exported.keys() != baseline.keys() or any(not torch.equal(exported[k],v) for k,v in baseline.items()):
+            raise ValueError("trained_head_changed_exported_policy_weights")
+    return {"run_id": cached["run_id"], "rows": len(frames), "full_logits_exact": True,
+            "argmax_exact": True, "exported_weights_exact": True, "full_CP_reload_exact": True}
+
+
+def evaluate(root: Path) -> None:
+    import torch
+    from spireagent.workbench.evaluation_ledger import EvaluationLedger
+    from stpd.evaluation.value_quality import summarize
+    from stpd.p1.value_head import AttentionValueResidual
+    from stpd.workers.checkpoint_codec import decode_checkpoint
+
+    torch.set_num_threads(16)
+    candidate = json.loads((root / "candidate.json").read_bytes())
+    if candidate["candidate_sha256"] != digest(root / "candidate.bin") or candidate["holdout_used"] is not False:
+        raise ValueError("internally_selected_frozen_candidate_required")
+    features = caches(root, "holdout")
+    head = AttentionValueResidual().eval()
+    head.load_state_dict(decode_checkpoint((root / "candidate.bin").read_bytes())["weights"])
+    games, old_games = [], []
+    for f in features:
+        prediction = []
+        # One game at a time; no optimizer and no holdout model selection.
+        with torch.no_grad():
+            for start in range(0, len(f["targets"]), 256):
+                rows = [(0,i) for i in range(start, min(start+256,len(f["targets"])))]
+                scene,mask,mean,linear,_ = batch([f],rows)
+                prediction.extend((linear+head(scene,mask,mean)[:,0]).tolist())
+        base = {k:f[k] for k in ("run_id","seed","floor","result")}
+        games.append(base | {"predictions":prediction,"targets":f["targets"].tolist()})
+        old_games.append(base | {"predictions":f["linear"].tolist(),"targets":f["targets"].tolist()})
+    old,new = summarize(old_games), summarize(games)
+    gates: dict[str,bool] = {}
+    for field in ("per_decision","equal_game_weighted"):
+        gates[field+"_EV"] = new[field]["explained_variance"] >= old[field]["explained_variance"]-1e-6
+        gates[field+"_MSE"] = new[field]["mse"] <= old[field]["mse"]
+        gates[field+"_bias"] = abs(new[field]["bias_prediction_minus_target"]) <= abs(old[field]["bias_prediction_minus_target"])+.001
+    gates["absolute_game_bias_mean"] = new["mean_absolute_game_bias"] <= old["mean_absolute_game_bias"]
+    gates["absolute_game_bias_p90"] = new["absolute_game_bias"]["p90"] <= old["absolute_game_bias"]["p90"]
+    old_by = {g["run_id"]:g for g in old["per_game"]}
+    deltas = [g["temporal"]["correlation"]-old_by[g["run_id"]]["temporal"]["correlation"]
+              for g in new["per_game"] if g["temporal"]["correlation"] is not None
+              and old_by[g["run_id"]]["temporal"]["correlation"] is not None]
+    gates["correlation_valid_count"] = new["within_game_correlation"]["valid_games"] >= old["within_game_correlation"]["valid_games"]
+    gates["correlation_median"] = new["within_game_correlation"]["median"] >= old["within_game_correlation"]["median"]
+    gates["paired_correlation_delta_median"] = bool(deltas) and statistics.median(deltas) >= 0
+    gates["jitter_valid_count"] = new["jitter_ratio"]["valid_games"] >= old["jitter_ratio"]["valid_games"]
+    def log_jitter(report: dict[str,Any]) -> float:
+        ratios = [g["temporal"]["jitter_ratio"] for g in report["per_game"]]
+        return statistics.median(abs(math.log(v)) if v and v>0 else math.inf for v in ratios if v is not None)
+    old_log,new_log = log_jitter(old),log_jitter(new)
+    gates["jitter_log_distance_25percent"] = new_log <= .75*old_log
+    gates["jitter_no_flat_collapse"] = new["jitter_ratio"]["median"] >= .5
+    manifest = json.loads((root / "manifest.json").read_bytes())
+    point_path = Path(manifest["point"])
+    plan = json.loads((point_path.parent / "plan.json").read_bytes())
+    shards = {s["run_id"]:s["trajectory_shard_id"] for g in plan["groups"]
+              for s in EvaluationLedger(Path(g["ledger"])).slots() if s["status"] == "saved"}
+    feature_index = json.loads((root / "holdout-features.json").read_bytes())
+    tasks = [{"point":str(point_path),"candidate":str(root/"candidate.bin"),"cache":r["path"],
+              "shard":shards[r["run_id"]],"scratch":str(root/"policy-check"/r["run_id"])} for r in feature_index["files"]]
+    checks = []
+    (root/"policy-check").mkdir(mode=0o700)
+    with ProcessPoolExecutor(max_workers=4,mp_context=multiprocessing.get_context("spawn")) as pool:
+        for future in as_completed([pool.submit(verify_one,t) for t in tasks]):
+            checks.append(future.result())
+            print(json.dumps({"stage":"fixed_policy_check","completed":len(checks),"total":len(tasks)}),flush=True)
+    gates["fixed_full_real_policy_and_CP_reload"] = len(checks)==len(features) and all(f["zero_head_exact_policy_and_value"] for f in features)
+    save(root/"qualification.json",{"schema":"rl3/offline-value-head-qualification-1",
+        "candidate_sha256":digest(root/"candidate.bin"),"manifest_sha256":digest(root/"manifest.json"),
+        "passed":all(gates.values()),"gates":gates,"baseline":old,"candidate":new,
+        "jitter_median_abs_log": {"baseline":old_log,"candidate":new_log},
+        "fixed_input_checks":checks,"scoring_count":1,"holdout_optimizer_updates":0,
+        "scope":"same v518 fixed policy MC diagnostic; not closed-loop gameplay evidence"})
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("command", choices=("freeze", "extract-train", "extract-holdout", "train"))
+    p.add_argument("command", choices=("freeze", "extract-train", "extract-holdout", "train", "evaluate"))
     p.add_argument("--root", type=Path, required=True)
     p.add_argument("--point-root", type=Path)
     p.add_argument("--observer", type=Path)
@@ -304,8 +417,10 @@ def main() -> None:
         freeze(a.root, a.point_root, a.observer)
     elif a.command.startswith("extract-"):
         extract(a.root, a.command.removeprefix("extract-"))
-    else:
+    elif a.command == "train":
         train(a.root)
+    else:
+        evaluate(a.root)
 
 
 if __name__ == "__main__":

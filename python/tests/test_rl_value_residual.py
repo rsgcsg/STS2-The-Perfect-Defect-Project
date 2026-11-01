@@ -72,3 +72,100 @@ def test_attention_excludes_padding_and_value_features_are_detached():
     model = MStd(fit_vocabulary([frame])).eval()
     scene, mask, mean = model.value_features([frame])
     assert not scene.requires_grad and not mask.requires_grad and not mean.requires_grad
+
+
+def test_declared_residual_parameter_addition_preserves_every_old_Adam_moment():
+    import pytest
+    from spireagent.json_boundary import BoundaryError
+    from stpd.rl.critic import CriticConfig, optimizer_groups, restore_optimizer
+
+    torch.set_num_threads(2)
+    frame = project(observation())
+    model = MStd(fit_vocabulary([frame])).eval()
+    enable_value_head(model,7)
+    config = CriticConfig(head_lr=1e-4)
+    old = torch.optim.AdamW(optimizer_groups(model,config),lr=4e-5,weight_decay=0)
+    # Materialize moments for every legacy parameter, independent of unused branches.
+    for p in model.parameters():
+        p.grad = torch.full_like(p,.01)
+    old.step()
+    old.zero_grad(set_to_none=True)
+    old_state = copy.deepcopy(old.state_dict())
+    old_moments = {n:copy.deepcopy(old.state[p]) for n,p in model.named_parameters()}
+    model.enable_progress_residual(9)
+    successor = torch.optim.AdamW(optimizer_groups(model,config),lr=4e-5,weight_decay=0)
+    with pytest.raises(BoundaryError,match='not_declared'):
+        restore_optimizer(successor,model,old_state,migrate=False,new_prefixes=('progress_residual.',))
+    restore_optimizer(successor,model,old_state,migrate=True,new_prefixes=('progress_residual.',))
+    for n,p in model.named_parameters():
+        if n.startswith('progress_residual.'):
+            assert p not in successor.state
+        else:
+            assert all(torch.equal(v,successor.state[p][k]) for k,v in old_moments[n].items())
+    assert [g['lr'] for g in successor.param_groups] == [4e-5,1e-4]
+    roundtrip = torch.optim.AdamW(optimizer_groups(model,config),lr=4e-5,weight_decay=0)
+    restore_optimizer(roundtrip,model,successor.state_dict(),migrate=False)
+    assert [g['lr'] for g in roundtrip.param_groups] == [4e-5,1e-4]
+
+
+def test_full_CP_residual_cut_preserves_policy_rng_buffer_critic_and_next_update(tmp_path,monkeypatch):
+    import hashlib
+    import json
+    from dataclasses import replace
+    from test_rl_critic import _configured,_incoming
+    from spireagent.artifact_contracts import Producer
+    from spireagent.workbench.rl_learner import IO
+    from stpd.rl import learner as module
+    from stpd.rl.learner import Learner
+
+    first,_ = _configured(tmp_path,monkeypatch)
+    first.critic.ready = True
+    first.critic.freeze_policy(False)
+    rows = [_incoming(first,'train','train-shard')]
+    first._admit(rows)
+    first.train_once()
+    monkeypatch.setattr(Learner,'_read_once',lambda _self,shard,**_:copy.deepcopy(rows))
+    first.maybe_version(force=True)
+    first._collect_version(wait=True)
+    first._take_checkpoint(wait=True)
+    (first.work/'STOP').touch()
+    first.run()
+    cp = first.exchange.latest_checkpoint()
+    old_producer = first.producer
+    candidate = tmp_path/'head.bin'
+    head = AttentionValueResidual()
+    with torch.no_grad():
+        head.mlp[-1].bias.fill_(.001)
+    candidate.write_bytes(encode_checkpoint({'weights':head.state_dict()}))
+    h = hashlib.sha256(candidate.read_bytes()).hexdigest()
+    qualification = tmp_path/'qualification.json'
+    qualification.write_text(json.dumps({'passed':True,'candidate_sha256':h}))
+    upgrade = {'candidate_path':str(candidate),'candidate_sha256':h,
+               'qualification_path':str(qualification),
+               'qualification_sha256':hashlib.sha256(qualification.read_bytes()).hexdigest()}
+    monkeypatch.setattr(module,'source_identity',lambda _:Producer('test','c'*40,'b'*64))
+    critic = replace(first.config.critic,head_kind='attention-residual-v1',head_lr=3e-4)
+    changes = {k:{'old':getattr(first.config.critic,k),'new':getattr(critic,k)}
+               for k in ('head_kind','head_lr')}
+    config = replace(first.config,resume_checkpoint=cp['checkpoint_artifact_id'],
+                     resume_source=old_producer.to_dict(),resume_critic_changes=changes,
+                     resume_value_head=upgrade,critic=critic)
+    successor = Learner(config,tmp_path/'residual',IO)
+    assert successor.updates == first.updates
+    assert successor.random.getstate() == first.random.getstate()
+    assert successor.critic.target_mean == first.critic.target_mean
+    assert successor.critic.fixed_validation_ids == first.critic.fixed_validation_ids
+    assert successor.runtime_control == first.runtime_control
+    assert successor.ledger.counts == first.ledger.counts
+    assert [i.sample.key for i in successor.buffer] == [i.sample.key for i in first.buffer]
+    for k,v in first.model.state_dict().items():
+        assert torch.equal(v,successor.model.state_dict()[k])
+    for n,p in first.model.named_parameters():
+        q = dict(successor.model.named_parameters())[n]
+        assert all(torch.equal(v,successor.optimizer.state[q][k]) for k,v in first.optimizer.state[p].items())
+    before = {k:v.clone() for k,v in action_weights(successor.model.state_dict(),value_heads=True).items()}
+    assert before.keys() == action_weights(first.model.state_dict(),value_heads=True).keys()
+    successor.train_once()
+    assert successor.updates == first.updates+1
+    (successor.work/'STOP').touch()
+    successor.run()

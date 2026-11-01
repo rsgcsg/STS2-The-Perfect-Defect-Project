@@ -389,11 +389,17 @@ class MStd(nn.Module):
 
     def value_features(self, frames: Sequence[ModelFrame]) -> tuple[Tensor, Tensor, Tensor]:
         """Frozen public scene features for offline critic training; no policy readout."""
+        if not frames:
+            empty = self.ids.weight.new_empty
+            return empty((0, 0, 192)), torch.empty((0, 0), dtype=torch.bool,
+                device=self.ids.weight.device), empty((0, 192))
         captured: list[Tensor] = []
         _, current = self._forward_batch(frames, values_only=True, capture_scene=captured)
         return captured[0].detach(), captured[1].detach(), current.detach()
 
     def _values(self, current: Tensor, captured: list[Tensor]) -> Tensor:
+        if not len(current):
+            return current.new_empty((0, 2))
         if hasattr(self, "progress_residual"):
             # Both branches use detached features: critic gradients never enter policy.
             detached = current.detach()
