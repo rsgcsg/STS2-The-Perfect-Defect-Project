@@ -14,13 +14,13 @@ import copy
 import hashlib
 import json
 import math
+import multiprocessing
 import random
-import tempfile
 import threading
 import time
 import uuid
 from collections.abc import Callable, Iterable
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import Future, ProcessPoolExecutor, ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any, TypeVar, cast
@@ -34,7 +34,7 @@ from spireagent.source import source_identity
 from spireagent.storage.blobs import StoreError
 from stpd.p1.export import export_model, input_spec, load_model, runtime_projection
 from stpd.p1.input import project
-from stpd.p1.tensor_input import ModelFrame, TensorFrame, compile_frame
+from stpd.p1.tensor_input import TensorFrame
 from stpd.workers.checkpoint_codec import decode_checkpoint, encode_checkpoint
 from stpd.workers.training_io import CheckpointPublisher, FrozenCheckpoint, ProgressCadence
 
@@ -52,6 +52,18 @@ from .critic import (
 from .ledger import DecisionLedger
 from .loss import LossConfig, RlSample, rl_update
 from .performance import PerformanceConfig, prepare_models
+from .reader import (
+    ReadRequest,
+    bounded_read,
+    decode_process_read,
+    episode_stale,
+    episode_started_at,
+    initialize_process_reader,
+    log_io_error,
+    process_read,
+    project_episode,
+    read_once,
+)
 from .reward import REWARD_SPEC, episode_reward
 
 CONFIG_SCHEMA = "stpd/rl-learner-config-1"
@@ -106,6 +118,7 @@ class LearnerConfig:
     background_io: bool = False
     read_ahead: int = 2
     reader_workers: int = 1
+    reader_backend: str = "thread"
     remote_stop_seconds: float = 5.0
     remote_stop_read_timeout_seconds: float = 30.0
     read_retry_attempts: int = 3
@@ -212,6 +225,8 @@ class Learner:
                 or type(config.initial_policy_check) is not bool
                 or type(config.read_ahead) is not int
                 or not 1 <= config.read_ahead <= 32
+                or type(config.reader_backend) is not str
+                or config.reader_backend not in {"thread", "process"}
                 or type(config.reader_workers) is not int
                 or not 1 <= config.reader_workers <= 8
                 or type(config.read_retry_attempts) is not int
@@ -300,8 +315,15 @@ class Learner:
         self.updates = 0
         self.version_updates = 0
         self.lineage_version = 0
-        self.reader = ThreadPoolExecutor(max_workers=config.reader_workers,
-                                         thread_name_prefix="rl-shard-read")
+        self.reader: ThreadPoolExecutor | ProcessPoolExecutor
+        if config.reader_backend == "process":
+            self.reader = ProcessPoolExecutor(max_workers=config.reader_workers,
+                mp_context=multiprocessing.get_context("spawn"),
+                initializer=initialize_process_reader,
+                initargs=(config, work, io.read_shard, reference_package, self.reference_sha256))
+        else:
+            self.reader = ThreadPoolExecutor(max_workers=config.reader_workers,
+                                             thread_name_prefix="rl-shard-read")
         self.discovery = ThreadPoolExecutor(max_workers=1, thread_name_prefix="rl-discovery")
         self.control = ThreadPoolExecutor(max_workers=1, thread_name_prefix="rl-stop")
         self.telemetry = ThreadPoolExecutor(max_workers=1, thread_name_prefix="rl-telemetry")
@@ -314,7 +336,7 @@ class Learner:
         self.ledger = DecisionLedger(work / "decision-ledger.jsonl",
             enabled=config.decision_ledger, clock_offset_bound_seconds=bound)
         self.publisher = ThreadPoolExecutor(max_workers=1, thread_name_prefix="rl-version")
-        self.reads: dict[str, Future[list[dict[str, Any]]]] = {}
+        self.reads: dict[str, Future[list[dict[str, Any]] | bytes]] = {}
         self.pending_version: Future[dict[str, Any]] | None = None
         self.versions: list[dict[str, Any]] = []
         self.latencies: list[float] = []
@@ -327,16 +349,21 @@ class Learner:
         self.cadence = ProgressCadence(0, steps=10, seconds=30)
         self.checkpoints = CheckpointPublisher(self.exchange.store, self.producer,
                                                background=True)
-        self.version = self._initial_version()
-        if (self.critic is not None and self.config.performance is not None
-                and self.config.performance.probe_inference_microbatches):
-            self._probe_inference_microbatches()
-        self.resume_republish_pending = bool(
-            config.resume_checkpoint and config.republish_on_resume)
-        if self.resume_republish_pending:
-            self.maybe_version(force=True)
-            self._collect_version(wait=True)
-            self._take_checkpoint(wait=True)
+        try:
+            self.version = self._initial_version()
+            if (self.critic is not None and self.config.performance is not None
+                    and self.config.performance.probe_inference_microbatches):
+                self._probe_inference_microbatches()
+            self.resume_republish_pending = bool(
+                config.resume_checkpoint and config.republish_on_resume)
+            if self.resume_republish_pending:
+                self.maybe_version(force=True)
+                self._collect_version(wait=True)
+                self._take_checkpoint(wait=True)
+        except BaseException:
+            # A failed resume/probe must not strand spawned reader children.
+            self.reader.shutdown(wait=True, cancel_futures=True)
+            raise
 
     def _probe_inference_microbatches(self) -> None:
         from .performance import probe_inference_microbatches
@@ -541,9 +568,16 @@ class Learner:
         rebuilt_critic: dict[str, CriticEpisode] = {}
         shards = sorted({entry[0] for entry in learner["buffer"]}
                         | {e["shard"] for e in critic_episodes.values()})
-        for rows in self.reader.map(
+        results: Iterable[list[dict[str, Any]] | bytes]
+        if self.config.reader_backend == "process":
+            results = self.reader.map(process_read,
+                (self._read_request(key, restoring=True) for key in shards))
+        else:
+            results = self.reader.map(
                 lambda key: self._read_retry("resume_shard",
-                    lambda: self._read_once(key, restoring=True)), shards):
+                    lambda: self._read_once(key, restoring=True)), shards)
+        for result in results:
+            rows = self._read_result(result)
             for row in rows:
                 kinds = self._action_kinds(row["episode"]) if row["episode"] else {}
                 if self.critic is not None and row["episode"] is not None:
@@ -583,90 +617,42 @@ class Learner:
         return latest
 
     def _read_retry(self, operation: str, call: Callable[[], T]) -> T:
-        for attempt in range(1, self.config.read_retry_attempts + 1):
-            began = time.monotonic()
-            try:
-                return call()
-            except StoreError as error:
-                diagnostic = getattr(error, "diagnostic", {})
-                retry = (bool(diagnostic.get("retryable"))
-                         and attempt < self.config.read_retry_attempts)
-                # Local diagnostic only; an unavailable exchange must not hide its own failure.
-                self._local_io_event(operation, error, attempt, retry)
-                if not retry:
-                    raise
-                time.sleep(self.config.read_retry_seconds * attempt)
-            finally:
-                self.timer.add("read_" + operation, began)
-        raise AssertionError("unreachable")
+        def elapsed(seconds: float) -> None:
+            self.timer.seconds["read_" + operation] += seconds
+        return bounded_read(call, attempts=self.config.read_retry_attempts,
+            retry_seconds=self.config.read_retry_seconds,
+            on_error=lambda error, attempt, retry: self._local_io_event(
+                operation, error, attempt, retry), on_elapsed=elapsed)
 
     def _local_io_event(self, operation: str, error: StoreError, attempt: int, retry: bool) -> None:
-        value = {"at": time.time(), "kind": "read_failed", "operation": operation,
-            "error_type": type(error).__name__, "error_code": error.code,
-            "attempt": attempt, "retry": retry, **getattr(error, "diagnostic", {})}
-        # Independent append-only diagnostic file: no owner-thread log/RNG/buffer mutation.
-        with (self.work / "io-errors.jsonl").open("a", encoding="utf-8") as stream:
-            stream.write(json.dumps(value, sort_keys=True) + "\n")
+        log_io_error(self.work, operation, error, attempt, retry)
+
+    def _read_request(self, key: str, *, restoring: bool = False) -> ReadRequest:
+        return ReadRequest(key, getattr(self, "version", 0),
+            self.critic is not None and not self.critic.ready, restoring)
+
+    def _submit_read(self, key: str) -> Future[list[dict[str, Any]] | bytes]:
+        if self.config.reader_backend == "process":
+            return self.reader.submit(process_read, self._read_request(key))
+        return self.reader.submit(self._read, key)
+
+    def _read_result(self, result: list[dict[str, Any]] | bytes) -> list[dict[str, Any]]:
+        return (decode_process_read(result, self.timer.seconds)
+                if isinstance(result, bytes) else result)
 
     def _read(self, key: str) -> list[dict[str, Any]]:
         return self._read_retry("read_shard", lambda: self._read_once(key))
 
     def _read_once(self, key: str, *, restoring: bool = False) -> list[dict[str, Any]]:
-        began = time.monotonic()
-        record = self.exchange.shard_record(key)
-        rows: list[dict[str, Any]] = []
-        if record.get("shard_artifact_id") is None:
-            return [{"record": record, "episode": None, "key": key,
-                     "reader_seconds": time.monotonic() - began}]
-        with tempfile.TemporaryDirectory(prefix="rl-shard-", dir=self.work) as tmp:
-            for episode in self.io.read_shard(self.exchange.store, record["shard_artifact_id"],
-                                      scratch=Path(tmp)):
-                # Staleness trusts the record's version only when it names the
-                # model this episode was actually played with.
-                if episode["identity"]["model_artifact_id"] != record["model_artifact_id"]:
-                    raise BoundaryError("rl_learner", "shard_record_model_mismatch")
-                # Reader may reject known ineligible work before CPU tensor preparation.
-                # Owner rechecks at admission; version advances can still retire prepared work.
-                eligible = (restoring or (not self._episode_stale(episode, record)
-                    and not {step["behavior"]["mode"] for step in episode["steps"]}
-                        - {"temperature_uniform"}
-                    and episode_reward(episode)[0] is not None))
-                projection_began = time.monotonic()
-                timing: dict[str, float] = {}
-                samples = self._project(episode, timing) if eligible else []
-                rows.append({"record": record, "episode": episode, "key": key,
-                    "samples": samples,
-                    "projection_seconds": time.monotonic() - projection_began,
-                    "input_prepare_seconds": timing.get("input_prepare", 0.0)})
-        if rows:
-            rows[-1]["reader_seconds"] = time.monotonic() - began
-        return rows
+        return read_once(self.exchange, self.io.read_shard, self.work, key,
+            restoring=restoring, stale=self._episode_stale, projector=self._project)
 
     def _project(self, episode: dict[str, Any], timing: dict[str, float] | None = None
                  ) -> list[tuple[Any, int, float, float, str]]:
-        if episode["identity"]["input_spec"] != self.input_spec:
-            raise BoundaryError("rl_learner", "trajectory_input_spec_differs")
-        frames = []
-        for step in episode["steps"]:
-            observation = episode["observations"][step["observation_index"]]["observation"]
-            frame = project(observation, input_projection=self.projection)
-            action = [c["choice_id"] for c in frame.choices].index(step["action_id"])
-            prepared: ModelFrame = frame
-            if self.config.performance is not None and self.config.performance.precompile_inputs:
-                # Existing reader thread only: immutable CPU input metadata.
-                # Its tokenizer cache belongs to the frozen reference, never
-                # the model concurrently copied by the owner for publication.
-                prepare_began = time.monotonic()
-                with torch.device("cpu"):
-                    prepared = compile_frame(frame, self.reference)
-                if timing is not None:
-                    timing["input_prepare"] = (timing.get("input_prepare", 0.0)
-                                                + time.monotonic() - prepare_began)
-            behavior = step["behavior"]
-            frames.append((prepared, action, behavior["selected_probability"],
-                           behavior["model_probabilities"][step["action_index"]],
-                           f"{episode['run_id']}:{step['index']}"))
-        return frames
+        return project_episode(episode, spec=self.input_spec, projection=self.projection,
+            reference=self.reference,
+            precompile=bool(self.config.performance and self.config.performance.precompile_inputs),
+            timing=timing)
 
     def poll(self) -> None:
         if self.config.background_io:
@@ -679,42 +665,29 @@ class Learner:
             while self.discovered and len(self.reads) < self.config.read_ahead:
                 key = self.discovered.popleft()
                 if key not in self.seen and key not in self.reads:
-                    self.reads[key] = self.reader.submit(self._read, key)
+                    self.reads[key] = self._submit_read(key)
         else:
             for key in self._read_retry("list_shards", self.exchange.shard_keys):
                 if key not in self.seen and key not in self.reads:
-                    self.reads[key] = self.reader.submit(self._read, key)
+                    self.reads[key] = self._submit_read(key)
         for key, future in list(self.reads.items()):
             if not future.done():
                 # New bounded path consumes FIFO, never completion-order admission.
                 if self.config.background_io:
                     break
                 continue
-            rows = future.result()
+            rows = self._read_result(future.result())
             self._admit(rows)
             del self.reads[key]
             self.seen.add(key)
 
 
-    @staticmethod
-    def _episode_started_at(episode: dict[str, Any], record: dict[str, Any]) -> float:
-        games = [g for g in record.get("games", ()) if g.get("run_id") == episode["run_id"]]
-        value = games[0].get("started_at") if len(games) == 1 else None
-        if (not isinstance(value, (int, float)) or isinstance(value, bool)
-                or not math.isfinite(value)):
-            raise BoundaryError("rl_learner", "time_freshness_requires_original_game_start")
-        return float(value)
+    _episode_started_at = staticmethod(episode_started_at)
 
     def _episode_stale(self, episode: dict[str, Any], record: dict[str, Any]) -> bool:
-        if self.config.max_episode_age_seconds is None:
-            return bool(getattr(self, "version", 0) - record["model_version"]
-                        > self.config.max_staleness)
-        if episode_reward(episode)[0] is None:
-            return False  # preserve unknown/censored disposition before time handling
-        if self.critic is not None and not self.critic.ready:
-            return False  # frozen-policy warmup data trains only the value head
-        return (time.time() - self._episode_started_at(episode, record)
-                > self.config.max_episode_age_seconds)
+        return episode_stale(episode, record, max_age=self.config.max_episode_age_seconds,
+            max_staleness=self.config.max_staleness, version=getattr(self, "version", 0),
+            warmup=self.critic is not None and not self.critic.ready)
 
     @staticmethod
     def _action_kinds(episode: dict[str, Any]) -> dict[str, str]:
