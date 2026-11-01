@@ -69,6 +69,12 @@ def identity_paths(observation: dict[str, Any]) -> Callable[[str], str | None]:
         refs(["selected_bundle_entity_id", "selectable_bundle_entity_ids[]"])
     elif native in {"event_option", "event_dialogue", "rest_site"}:
         add(["options[].entity_id", "screen_entity_id", "room_entity_id"])
+        if native == "event_option" and observation.get("revision") == "r1.8":
+            add(["abandon_confirmation.event_entity_id", "abandon_confirmation.room_entity_id"])
+            refs(["abandon_confirmation.parent_option_entity_id"])
+    elif native == "abandon_run_confirmation" and observation.get("revision") == "r1.8":
+        add(["modal_entity_id", "event_entity_id", "room_entity_id", "parent_option_entity_id",
+             "controls[].entity_id"])
     elif native in {"treasure_room", "treasure_chest", "treasure_relic_selection",
                     "treasure_completion", "relic_choice", "native_boss_relic_selection"}:
         add(["room_entity_id", "screen_entity_id", "relics[].entity_id"])

@@ -15,7 +15,7 @@ from tokenizers import Tokenizer
 from torch import Tensor, nn
 
 from .execution import MStdExecution
-from .input import V2_INPUT_SPEC, Frame, Role, normalized, signed_log
+from .input import Frame, Role, is_v2_encoding, normalized, signed_log
 from .tensor_input import JointNodes, ModelFrame, Reduction, TensorFrame, joint_nodes, text_batch
 
 ARCHITECTURE: dict[str, Any] = {
@@ -126,7 +126,7 @@ class MStd(nn.Module):
         self.model_size = model_size
         self.architecture = architecture(value_heads, model_size)
         self.vocabulary = vocabulary
-        if vocabulary.get("input_spec") == V2_INPUT_SPEC:
+        if is_v2_encoding(vocabulary.get("input_spec")):
             from .vocabulary import validate_vocabulary
 
             validate_vocabulary(vocabulary)
@@ -181,7 +181,7 @@ class MStd(nn.Module):
             normalized_text, numbers = normalized(text)
             ids = self.tokenizer.encode(normalized_text).ids or [
                 self.tokenizer.token_to_id("<EMPTY>")
-                if self.vocabulary.get("input_spec") == V2_INPUT_SPEC else 1
+                if is_v2_encoding(self.vocabulary.get("input_spec")) else 1
             ]
             numeric = [0.0] * len(ids)
             cursor = 0
@@ -421,7 +421,7 @@ class MStd(nn.Module):
         tensor_frames = [f for f in frames if isinstance(f, TensorFrame)]
         if tensor_frames and (self.execution.implementation not in {
                 "experimental-packed-v1", "experimental-joint-nodes-v1"}
-                              or self.vocabulary.get("input_spec") != V2_INPUT_SPEC):
+                              or not is_v2_encoding(self.vocabulary.get("input_spec"))):
             raise ValueError("tensor_input_requires_v2_packed_execution")
         if tensor_frames and len(tensor_frames) != len(frames):
             raise ValueError("mixed_raw_and_tensor_microbatch")
@@ -483,7 +483,7 @@ class MStd(nn.Module):
                 if frame.choices:
                     source_roles = [s for s, _ in frame.roles]
                     target_roles = [t for _, t in frame.roles]
-                    if self.vocabulary.get("input_spec") == V2_INPUT_SPEC:
+                    if is_v2_encoding(self.vocabulary.get("input_spec")):
                         source = _view_role_vectors(
                             scene[batch], source_roles, self.absent_roles[0])
                         target = _view_role_vectors(
