@@ -118,6 +118,19 @@ def test_hot_store_cold_reads_use_only_the_explicit_archive(tmp_path):
     assert hot.archive.status(owned=True)["planned"] == 0  # Reading starts no archive worker.
 
 
+def test_existing_exchange_seed_is_exact_and_archive_binding_cannot_drift(tmp_path):
+    binding, hot, archive = peers(tmp_path)
+    old = Exchange(binding["archive"], "old-run")
+    event = old.publish_event("original", updates=17)
+    original_key = archive.blobs.keys(f"{old.prefix}learner-events/")[0]
+    seeded = hot.archive.seed_exchange(old.run)
+    assert seeded["records"] == 1 and seeded["full_readback"]
+    assert Exchange(binding, old.run).latest_event() == event
+    assert hot.blobs.get(original_key) == archive.blobs.get(original_key)
+    with pytest.raises(StoreError, match="immutable_key_collision"):
+        open_peer({**binding, "archive": {"kind": "local", "directory": str(tmp_path / "wrong")}})
+
+
 @pytest.mark.parametrize("change", [
     {"archive": {"kind": "local", "directory": "SAME"}},
     {"archive": {"kind": "local", "directory": "other", "archive": {}}},

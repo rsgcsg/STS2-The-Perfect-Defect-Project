@@ -37,15 +37,20 @@ def peer_binding(location: str) -> dict[str, Any]:
 def validate_peer(binding: dict[str, Any]) -> None:
     """Validate nonsecret transport configuration without constructing a client."""
     if set(binding) == {"kind", "directory", "archive"} and binding["kind"] == "local":
+        if not isinstance(binding["directory"], str) or not isinstance(binding["archive"], dict):
+            raise BoundaryError("p1_storage", "invalid_peer_binding")
         root = Path(binding["directory"])
         archive = binding["archive"]
-        if (not root.is_absolute() or root.is_symlink() or root.resolve() != root
-                or not isinstance(archive, dict) or "archive" in archive
-                or archive.get("kind") == "local" and Path(archive["directory"]).resolve() == root):
+        if "archive" in archive:
             raise BoundaryError("p1_storage", "distinct_frozen_shared_archive_required")
         validate_peer(archive)
+        if (not root.is_absolute() or root.is_symlink() or root.resolve() != root
+                or archive.get("kind") == "local" and Path(archive["directory"]).resolve() == root):
+            raise BoundaryError("p1_storage", "distinct_frozen_shared_archive_required")
         return
     if set(binding) == {"kind", "directory"} and binding["kind"] == "local":
+        if not isinstance(binding["directory"], str):
+            raise BoundaryError("p1_storage", "invalid_peer_binding")
         Path(binding["directory"])
         return
     if (set(binding) == {"kind", "bucket", "endpoint", "prefix", "region"}

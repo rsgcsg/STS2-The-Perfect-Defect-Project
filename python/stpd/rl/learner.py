@@ -621,7 +621,8 @@ class Learner:
 
     def _read_retry(self, operation: str, call: Callable[[], T]) -> T:
         def elapsed(seconds: float) -> None:
-            self.timer.seconds["read_" + operation] += seconds
+            with self.timer.lock:
+                self.timer.seconds["read_" + operation] += seconds
         return bounded_read(call, attempts=self.config.read_retry_attempts,
             retry_seconds=self.config.read_retry_seconds,
             on_error=lambda error, attempt, retry: self._local_io_event(
