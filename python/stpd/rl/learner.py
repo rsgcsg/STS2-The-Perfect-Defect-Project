@@ -33,7 +33,7 @@ from spireagent.rl_tensorboard import TensorBoardMetrics
 from spireagent.source import source_identity
 from spireagent.storage.blobs import StoreError
 from stpd.p1.export import export_model, input_spec, load_model, runtime_projection
-from stpd.p1.input import project
+from stpd.p1.input import project, training_projection
 from stpd.p1.tensor_input import TensorFrame
 from stpd.workers.checkpoint_codec import decode_checkpoint, encode_checkpoint
 from stpd.workers.training_io import CheckpointPublisher, FrozenCheckpoint, ProgressCadence
@@ -270,7 +270,7 @@ class Learner:
         descriptor = json.loads((package / "model.json").read_bytes())
         self.start_sha256 = descriptor["package_sha256"]
         model, _ = load_model(package / "model.tensor-tree", self.start_sha256)
-        self.projection = runtime_projection(model.vocabulary)
+        self.projection = training_projection(runtime_projection(model.vocabulary))
         self.input_spec = input_spec(model.vocabulary, self.projection)
         reference_package = package
         if config.reference_package:

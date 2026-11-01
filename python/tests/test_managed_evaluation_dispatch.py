@@ -1118,8 +1118,9 @@ def test_adapter_environment_requires_available_keys_before_host_and_each_offer(
     (["FRIDAY_INFERENCE_THREADS"], False),
     (["LD_LIBRARY_PATH", "FRIDAY_INFERENCE_THREADS"], False),
     (["LD_LIBRARY_PATH", "FRIDAY_INFERENCE_THREADS"], True)])
+@pytest.mark.parametrize("revision", ["r1.5", "r1.9"])
 def test_actual_runtime_process_command_forwards_only_requested_adapter_key_names(
-    tmp_path, monkeypatch, keys, central, synthetic_managed_admission,
+    tmp_path, monkeypatch, keys, central, revision, synthetic_managed_admission,
 ):
     """Real command assembly; node admission, Host, registration and Popen are faked."""
     from types import SimpleNamespace
@@ -1165,7 +1166,10 @@ def test_actual_runtime_process_command_forwards_only_requested_adapter_key_name
         ManagedHostServiceManager=SimpleNamespace(from_attachment=lambda _: manager),
     )
     monkeypatch.setattr(backend, "runtime_arguments", lambda *_: [])
-    monkeypatch.setattr(backend, "global_environment_manifest", lambda *_: {})
+    envelope_options = []
+    monkeypatch.setattr(backend, "global_environment_manifest",
+                        lambda _runtime, options, *_: envelope_options.append(dict(options)) or {})
+    monkeypatch.setattr(backend.export, "declared_p1_revision", lambda _: revision)
     monkeypatch.setattr(backend.export, "register",
                         lambda _package, target, *_args, **_kwargs: target.mkdir())
     captured = []
@@ -1181,6 +1185,7 @@ def test_actual_runtime_process_command_forwards_only_requested_adapter_key_name
     executor(row, {"ascension": 0, "host": "Managed", "character": "Defect"},
              artifacts, lambda: None)
     assert synthetic_managed_admission == ["checked"]
+    assert envelope_options == ([{}] if revision == "r1.5" else [{"p1-revision": "r1.9"}])
     assert len(captured) == 1
     command, environment = captured[0]
     assert command[:2] == ["node", str(tmp_path / "cli.js")]

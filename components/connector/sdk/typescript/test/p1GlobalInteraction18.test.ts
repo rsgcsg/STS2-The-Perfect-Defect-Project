@@ -90,3 +90,27 @@ it("r1.8 aliases new Trial owners and exact controls but keeps arbitrary extensi
     expect(modal.relation(`scene.content.surface.${field}`)).toBe("declared");
   expect(createPublicIdentityPolicy("event_option").relation("scene.content.surface.abandon_confirmation.event_entity_id")).toBeNull();
 });
+
+it("r1.9 retains r1.8 Trial/Claws public facts and exact continuations", () => {
+  for (const basis of [parent(), transformPair().outer]) {
+    const old = reduce(createSession("same", "managed", "r1.8"), basis);
+    const next = reduce(createSession("same", "managed", "r1.9"), basis);
+    expect(old.complete && next.complete).toBe(true);
+    expect({ ...modelView(next.observation), revision: "r1.8" }).toEqual(modelView(old.observation));
+    const oldPlan = old.lowering[old.observation.catalog[0]!.choice_id]!;
+    const nextPlan = next.lowering[next.observation.catalog[0]!.choice_id]!;
+    expect({ ...nextPlan, p1_revision: "r1.8" }).toEqual(oldPlan);
+    if (basis.snapshot.interaction.kind === "deck_transform_selection")
+      expect(resolveFollowBasis(nextPlan.follow[0]!, nextPlan, transformPair().preview)?.bound_action_id).toBe("exact-confirm");
+  }
+});
+
+it("the Sphere parent requires r1.9 before an irreversible event option is chosen", () => {
+  const basis = parent();
+  basis.snapshot.interaction.content.context.event_id = "CRYSTAL_SPHERE";
+  delete basis.snapshot.interaction.content.surface.abandon_confirmation;
+  delete basis.snapshot.interaction.content.surface.requires_profile_revision;
+  for (const revision of ["r1.5", "r1.8"] as const)
+    expect(reduce(createSession("old", "managed", revision), basis).missing).toContain("required:sphere_profile_r1.9");
+  expect(reduce(createSession("next", "managed", "r1.9"), basis).complete).toBe(true);
+});

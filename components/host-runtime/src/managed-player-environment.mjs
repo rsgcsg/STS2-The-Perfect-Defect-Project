@@ -8,6 +8,7 @@ import {
   decodePlayerSnapshot
 } from "@rsgcsg/sts2-connector-client";
 import { completePublicUpgradePreview } from "@rsgcsg/sts2-connector-client/p1-global";
+import { crystalSphereSurface } from "./managed-crystal-sphere.mjs";
 import { startManagedCandidateRuntime } from "./managed-candidate.mjs";
 
 const ACTION_LIMIT = 512;
@@ -1015,6 +1016,7 @@ function currentSurface(state, ctx) {
   };
 
   switch (state.decision) {
+    case "crystal_sphere": return { ...supported, ...crystalSphereSurface(state, ctx) };
     case "map_select": {
       const visibleMap = buildVisibleMap(state, ctx);
       if (visibleMap == null) {
@@ -1123,6 +1125,7 @@ function currentSurface(state, ctx) {
       return {
         kind: "event_option", stage: "ready", prompt: null,
         surface: { kind: "event_option", options,
+          ...(state.event_id === "CRYSTAL_SPHERE" ? { requires_profile_revision: "r1.9" } : {}),
           ...(state.abandon_confirmation == null ? {} : { requires_profile_revision: "r1.8", abandon_confirmation: {
             kind: state.abandon_confirmation.kind,
             event_entity_id: ctx.entityId("event", state.abandon_confirmation.event_ref),

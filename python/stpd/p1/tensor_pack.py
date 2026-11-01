@@ -22,7 +22,7 @@ from stpd.workers.checkpoint_codec import decode_checkpoint, encode_checkpoint
 from .data import digest, json_bytes
 from .dataset import SnapshotReader, projection_payload_role
 from .formal_training import Population
-from .input import V2_INPUT_SPEC, project
+from .input import is_v2_encoding, project, training_projection
 from .model import MStd
 from .tensor_input import ModelFrame, TensorFrame, compile_frame
 from .value_targets import from_run_facts
@@ -80,7 +80,8 @@ def publish_tensor_pack(store: ArtifactStore, reader: SnapshotReader, vocabulary
                         producer: Producer, *, loss_weighting: dict[str, Any] | None = None,
                         value_heads: bool = False,
                         ) -> tuple[Manifest, dict[str, Population[TensorFrame]]]:
-    if vocabulary.get("input_spec") != V2_INPUT_SPEC:
+    projection = training_projection(vocabulary.get("input_spec"))
+    if not is_v2_encoding(projection):
         raise BoundaryError("p1_tensor_pack", "v2_input_required")
     from .execution import MStdExecution
 
@@ -106,7 +107,7 @@ def publish_tensor_pack(store: ArtifactStore, reader: SnapshotReader, vocabulary
         pending.clear()
 
     for reference, observation in points:
-        raw_frame = project(observation, input_projection=V2_INPUT_SPEC)
+        raw_frame = project(observation, input_projection=projection)
         frame = compile_frame(raw_frame, model)
         target = frame.choices.index(reference["chosen"])
         point = reference["point_id"]

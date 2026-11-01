@@ -3,7 +3,7 @@ import { globalRuntimeFixture } from "./global-runtime-fixtures.js";
 import { replayGlobalAgentRun } from "../src/global-replay.js";
 import { validateAgentManifest } from "../src/agent-session-contracts.js";
 
-it.each(["r1.5", "r1.8"] as const)("executes and independently replays the explicitly bound %s profile", async revision => {
+it.each(["r1.5", "r1.8", "r1.9"] as const)("executes and independently replays the explicitly bound %s profile", async revision => {
   const f = await globalRuntimeFixture({ p1Revision: revision });
   try {
     expect(f.manifest.input.global?.revision).toBe(revision);

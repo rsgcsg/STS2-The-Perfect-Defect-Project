@@ -20,6 +20,7 @@ from .input import (
     SORTED_INPUT_SPEC,
     V2_INPUT_SPEC,
     V2_R18_INPUT_SPEC,
+    V2_R19_INPUT_SPEC,
     validate_input_spec,
 )
 from .model import ARCHITECTURE, MStd, architecture
@@ -70,6 +71,22 @@ def input_spec(
 def runtime_projection(vocabulary: dict[str, Any]) -> dict[str, Any]:
     spec = validate_input_spec(vocabulary["input_spec"])
     return INPUT_SPEC if spec == LEGACY_INPUT_SPEC else spec
+
+
+def declared_p1_revision(package: Path) -> str:
+    """Read the model's declared protocol binding before environment negotiation.
+
+    Registration still verifies descriptor/package integrity and the full model.
+    This selection reads no weights and never guesses an unknown InputSpec.
+    """
+    descriptor = json.loads((package / "model.json").read_bytes())
+    declared = descriptor.get("input_spec")
+    if isinstance(declared, dict):
+        for spec in (LEGACY_INPUT_SPEC, INPUT_SPEC, SORTED_INPUT_SPEC, V2_INPUT_SPEC,
+                     V2_R18_INPUT_SPEC, V2_R19_INPUT_SPEC):
+            if (declared.get("id"), declared.get("version")) == (spec["id"], spec["version"]):
+                return "r1.5" if spec == LEGACY_INPUT_SPEC else str(spec["revision"])
+    raise ValueError("unsupported declared P1 InputSpec")
 
 
 def bound_projection(vocabulary: dict[str, Any], projection: object) -> dict[str, Any]:
@@ -169,18 +186,24 @@ def load_model(path: Path, expected_sha256: str) -> tuple[MStd, dict[str, Any]]:
     return model.eval(), value
 
 
-def compatibility_package(package: Path, destination: Path) -> dict[str, Any]:
-    """Make an explicit r1.8 inference package from an immutable old V2 package.
+def compatibility_package(
+    package: Path, destination: Path, *, revision: str = "r1.8"
+) -> dict[str, Any]:
+    """Make an explicitly versioned package from an immutable old V2 package.
 
     Only InputSpec metadata changes. All vocabulary data, architecture, execution,
     action parameters and original training/checkpoint provenance stay intact.
     No training/resume admission or environment registration is performed here.
     """
+    targets = {"r1.8": V2_R18_INPUT_SPEC, "r1.9": V2_R19_INPUT_SPEC}
+    if revision not in targets:
+        raise ValueError("unsupported compatibility revision")
+    projection = targets[revision]
     descriptor_raw = (package / "model.json").read_bytes()
     descriptor = json.loads(descriptor_raw)
     model, payload = load_model(package / "model.tensor-tree", descriptor["package_sha256"])
     if model.vocabulary.get("input_spec") != V2_INPUT_SPEC:
-        raise ValueError("r1.8 compatibility requires an original V2 package")
+        raise ValueError(f"{revision} compatibility requires an original V2 package")
     if any(descriptor.get(key) != payload.get(key) for key in (
         "schema", "inference_execution", "architecture", "input_spec",
         "checkpoint_sha256", "training_identity"
@@ -189,7 +212,7 @@ def compatibility_package(package: Path, destination: Path) -> dict[str, Any]:
     ):
         raise ValueError("model descriptor differs from package")
     vocabulary = copy.deepcopy(payload["vocabulary"])
-    vocabulary["input_spec"] = copy.deepcopy(V2_R18_INPUT_SPEC)
+    vocabulary["input_spec"] = copy.deepcopy(projection)
     rebound = {**payload, "vocabulary": vocabulary, "input_spec": input_spec(vocabulary)}
     raw = encode_checkpoint(rebound)
     result = {**descriptor, "package_sha256": digest(raw), "input_spec": input_spec(vocabulary)}
@@ -201,7 +224,7 @@ def compatibility_package(package: Path, destination: Path) -> dict[str, Any]:
         "package_sha256": result["package_sha256"],
         "descriptor_sha256": digest(json_bytes(result)),
         "source_input_spec": descriptor["input_spec"], "input_spec": result["input_spec"],
-        "source_projection": V2_INPUT_SPEC, "projection": V2_R18_INPUT_SPEC,
+        "source_projection": V2_INPUT_SPEC, "projection": projection,
         "source_vocabulary_sha256": digest(json_bytes(payload["vocabulary"])),
         "vocabulary_sha256": digest(json_bytes(vocabulary)),
         "preserved_vocabulary_sha256": digest(json_bytes(preserved)),

@@ -29,7 +29,7 @@ from stpd.p1.dataset import (
     projection_payload_role,
     publish_snapshot,
 )
-from stpd.p1.input import INPUT_SPEC, LEGACY_INPUT_SPEC
+from stpd.p1.input import INPUT_SPEC, LEGACY_INPUT_SPEC, V2_R19_INPUT_SPEC
 
 from .p1_training_data import _ledger
 
@@ -271,7 +271,7 @@ def prepare_p1_data(
         raise BoundaryError("p1_preparation", "unsupported_allocation_policy")
     started = time.monotonic()
     ledger = _ledger(owner, store)
-    specs = {s["revision"]: s for s in (INPUT_SPEC, LEGACY_INPUT_SPEC)}
+    specs = {s["revision"]: s for s in (INPUT_SPEC, LEGACY_INPUT_SPEC, V2_R19_INPUT_SPEC)}
     if not isinstance(revision, str) or revision not in specs:
         raise BoundaryError("p1_preparation", "unsupported_revision")
     discovered = discover_p1_projections(store)
@@ -359,7 +359,7 @@ def prepare_p1_data(
                     ledger, index, split_salt=split_salt, allocation_policy=allocation_policy
                 )
             allocation["quality_filtered_N"] = quality_filtered
-            if revision != INPUT_SPEC["revision"]:
+            if revision not in {INPUT_SPEC["revision"], V2_R19_INPUT_SPEC["revision"]}:
                 allocation["blockers"].append("legacy_revision_inventory_only")
                 allocation["ready_to_freeze"] = False
             selection = {
@@ -367,6 +367,7 @@ def prepare_p1_data(
                 "selected_decisions": index["selection"],
                 "split_salt": split_salt,
                 "split_by_group": allocation["split_by_group"],
+                **({"revision": revision} if revision == V2_R19_INPUT_SPEC["revision"] else {}),
             }
         except BoundaryError as error:
             conflicts.append(
@@ -438,6 +439,7 @@ def freeze_p1_data(
     split_salt: str,
     split_by_group: dict[str, str] | None = None,
     selected_decisions: dict[str, list[str]] | None = None,
+    revision: str = "r1.5",
     reserve: bool = False,
     experiment: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -448,6 +450,9 @@ def freeze_p1_data(
         raise BoundaryError("p1_preparation", "invalid_reserve_boolean")
     if experiment is not None and (not isinstance(experiment, dict) or not reserve):
         raise BoundaryError("p1_preparation", "experiment_requires_reserved_object")
+    specs = {s["revision"]: s for s in (INPUT_SPEC, V2_R19_INPUT_SPEC)}
+    if not isinstance(revision, str) or revision not in specs:
+        raise BoundaryError("p1_preparation", "unsupported_revision")
     _selection_parameters(projection_ids, selected_decisions, split_salt, projections_required=True)
     if split_by_group is not None and (
         not isinstance(split_by_group, dict)
@@ -468,6 +473,7 @@ def freeze_p1_data(
         split_salt=split_salt,
         split_by_group=split_by_group,
         selected_decisions=selected_decisions,
+        input_projection=specs[revision],
     )
     _, value = load_snapshot(store, manifest.artifact_id)
     allocation = reserve_p1_snapshot(owner, store, manifest.artifact_id,

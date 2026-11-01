@@ -84,7 +84,8 @@ def global_environment_manifest(runtime: Path, options: dict[str, str], artifact
         "const identity=await t.negotiate(AbortSignal.timeout(5000));"
         "console.log(JSON.stringify(r.createGlobalProgramManifest("
         "{episodeId:process.argv[5],manifestId:process.argv[5],"
-        "identity,artifactPath:p,artifactBytes:await readFile(p),adapter:a})));"
+        "identity,artifactPath:p,artifactBytes:await readFile(p),adapter:a,"
+        "p1Revision:o['p1-revision']??'r1.5'})));"
     )
     reply = subprocess.run(
         [
@@ -1294,9 +1295,13 @@ class LocalModelRegistration:
         authorization = self.models._authorize_native_episode(context)
         deadline = monotonic() + REGISTRATION_SECONDS
         node_modules, _ = self._native_runtime(deadline=deadline)
+        options = {"connector-endpoint": _loopback(authorization["endpoint"])}
+        revision = manifest["input"]["global"]["revision"]
+        if revision != "r1.5":
+            options["p1-revision"] = revision
         envelope = self._global_environment_manifest(
             node_modules / RUNTIME_PACKAGE / "dist",
-            {"connector-endpoint": _loopback(authorization["endpoint"])},
+            options,
             Path(config["package_path"]), manifest["adapter"], selection, deadline)
         if (envelope.get("requirements", {}).get("environment", {}).get("host_kind")
                 != "reference" or envelope.get("input", {}).get("global")
@@ -1425,6 +1430,10 @@ class LocalModelRegistration:
                             or descriptor.get("checkpoint_sha256") != payload["checkpoint_sha256"]):
                         raise BoundaryError("local_model_registration",
                                             "model_package_binding_mismatch")
+                if not baseline:
+                    revision = export.declared_p1_revision(package)
+                    if revision != "r1.5":
+                        options["p1-revision"] = revision
                 envelope = self._global_environment_manifest(
                     runtime, options, package / "model.tensor-tree", adapter_identity(),
                     selection, deadline)

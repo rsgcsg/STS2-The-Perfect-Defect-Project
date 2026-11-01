@@ -47,9 +47,9 @@
     "effect": "Every Managed prepare compares the exact game Godot references with the built stub; a gap outside the reviewed baseline fails the build and names the member. Hosted CI has no game files and does not run it."
   },
   "expected_build": {
-    "source_patch_sha256": "40ac1bce81f904113e247d85789c33ad0cf654056435a581d271a0430fcd7fc0",
-    "artifact_sha256": "dec31cfc3da83f25890057737c25dbabeac23074652d514d4672a9cdb511d4a8",
-    "artifact_mvid": "664ecb03-a137-4bf2-8716-3b9dd0dc585f",
+    "source_patch_sha256": "0137fdda669e1f959f9e4d231f7fbf95f09269ffacbf84803d4ca63ceb9d2d5a",
+    "artifact_sha256": "26d91a40879a3942cd1fdf9b93c6f2daad6cbf837764c3d256114dc2beabb77f",
+    "artifact_mvid": "1df7d09d-d37e-43b8-b166-894ae4adbbd2",
     "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0"
   },
   "previous_candidate_build": {
@@ -105,9 +105,9 @@
         "occurrences": 7
       },
       "expected_build": {
-        "source_patch_sha256": "a2957fb5f5b7f04b0b7edeb88173325c20c2c38f8cd3e8179cb8790b6bdecbb3",
-        "artifact_sha256": "2f5e1eb8bdf4b9804f5038f5eb470b6710013cfb7d520ab1cfa9699085376e5a",
-        "artifact_mvid": "de8e7321-721a-41c9-afa6-41167813edc9",
+        "source_patch_sha256": "320f6efc4038ad623a3837b2706604db024ff5e5b292b67e2d5df10769ce52be",
+        "artifact_sha256": "a96c61b76831c1076eefaeb0d35c62c97d8bcebb692b2ea020963253b501dace",
+        "artifact_mvid": "d3a3a0d5-0418-43fe-ab9d-2935fb0625cd",
         "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0"
       },
       "non_claims": [
@@ -149,6 +149,13 @@
           "artifact_mvid": "739f4182-a6e6-49fa-8589-ddb3af127a61",
           "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0",
           "scope": "Host60 settling repair; original source/package immutable, no qualification transferred."
+        },
+        {
+          "source_patch_sha256": "a2957fb5f5b7f04b0b7edeb88173325c20c2c38f8cd3e8179cb8790b6bdecbb3",
+          "artifact_sha256": "2f5e1eb8bdf4b9804f5038f5eb470b6710013cfb7d520ab1cfa9699085376e5a",
+          "artifact_mvid": "de8e7321-721a-41c9-afa6-41167813edc9",
+          "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0",
+          "scope": "Host61 frozen Trial/Claws r1.8 source and actual Linux gates; not current Sphere source."
         }
       ]
     }
@@ -481,6 +488,13 @@
       "kind": "observation_adapter",
       "risk": "high",
       "effect": "Exact native Claws delegate/factory qualification uses original ownerless Maul preview with real upgrade/enchantment formatting; preserves preview-versus-committed owner context. Never executes arbitrary transformation delegates; actual native CardCmd.Transform remains authoritative."
+    },
+    {
+      "id": "native_crystal_sphere_logical_board",
+      "kind": "host_presentation_adapter",
+      "risk": "medium",
+      "effect": "TestMode replaces only native ShowScreen with the bound real minigame. Publish masks and items discovered from cleared occupied cells before type/ref allocation. Original SetTool/CellClicked/reveal/complete/rewards own all effects. Preserve parent and current child tasks, including awaited Curse reveal; explicit r1.9 public input, no hidden inventory or renderer.",
+      "regression": "u1-native-tests sphere-empty, sphere-visible, sphere-reward, sphere-curse-pending; real NDJSON pipe/PB1/P1 r1.9 completion and old-profile parent refusal."
     }
   ],
   "admission": {
@@ -647,6 +661,12 @@
     "source_patch_sha256": "d7476c388f398742767a4fab83655e380772b32e7a5ea2891810480d1317a298",
     "artifact_sha256": "a8c416a0dcc5a1397889cb7c3985b160975b96e38bdb185883f948f84b23094b",
     "artifact_mvid": "93c38bb2-fcce-4d1b-a7aa-34931a824e46",
+    "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0"
+  },
+  "host61_previous_candidate_build": {
+    "source_patch_sha256": "40ac1bce81f904113e247d85789c33ad0cf654056435a581d271a0430fcd7fc0",
+    "artifact_sha256": "dec31cfc3da83f25890057737c25dbabeac23074652d514d4672a9cdb511d4a8",
+    "artifact_mvid": "664ecb03-a137-4bf2-8716-3b9dd0dc585f",
     "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0"
   }
 }
