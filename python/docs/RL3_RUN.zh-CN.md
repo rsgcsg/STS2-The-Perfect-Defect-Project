@@ -283,6 +283,37 @@ CPU资源按主进程torch线程与reader并发安排，不能把reader进程计
 以后双组恢复用新配置的head_lr，不能被旧optimizer fixed_lr覆盖。迁移原producer、CP与
 实际配置差异记入原resumed事件，新CP由新producer签发，不改旧记录。永久STOP仍不可复活。
 
+## 当前策略价值尺子：固定模型、同策略采样与完整MC目标
+
+默认在任何评分相关改动前后、每轮quick前后各量一次，旧23seed/4627行仅作连续性参考。
+正常入口是 `tools/friday/value_validation.py`，复用完整CP/action绑定、正常
+EvaluationLedger、PipelinedManagedExecutor、typed shard和allocation/GAME-SLOT。
+没有新游戏循环，也不把训练批的lambda目标或动态训练层数当当前模型实力。
+
+在正常Friday loader与ML环境中，先用 `prepare --root <新目录> --learner-config <当前配置>
+--execution-template <已验证执行配置> --runtime-source <冻结执行源码> --count 48 --workers 7`
+准备。当前支持原canonical Defect/A0场景。首次按固定纯hash选48个canonical单槽组，
+全部通过永久TRAIN held_out检查且不属于任何保留评估池；后续加 `--seed-plan <首次fixed-seeds.json>`
+复用同组，不看结果换种子。CP、动作权重、代码/Host/Runtime、温度1/均匀混合0、完整
+输入和初始进度在offer前冻结。正常构造/close预检0World；未评分采样依法使用
+trajectory/training retention，但这些局永不Exchange announce、不进策略或价值优化器。
+
+用 `submit --plan <root/plan.json>` 单次提交，或通过生成的正常allocation launcher运行。
+必须把actor、quick、U1与本次workers统一算入游戏并发36；CPU评分不占游戏路。
+各slot最多1次offer；清洁unknown/censored单列且不补打。STOP/USR1停止新准入，已有
+正常调用按原预算收尾；进入一局前预留准备150秒、整局、清理120秒和保存180秒。
+失败/已有intent先核原收据，不能自动重投；未知不能改成负局或零层。保留saved的
+unscored事实，不能为做价值诊断强改正式audit/scored资格。
+
+正常采集完成后 `score --plan <root/plan.json> --output <新结果目录>` 物理读回typed轨迹，
+再核原attempt/intent、模型、InputSpec、执行条件与完整CP。用同一CP的raw价值头
+CPU FP32/eval/no_grad计算；标签是reward v2的完整终局MC折扣回报，不用lambda或价值
+自举。JSON与逐步CSV报告标准按行EV、每局等权偏差、局内先对两列各减本局均值的EV、
+前中后三分之一、固定预测分档校准及该冻结概率采样模型的层数分布；同时列所有失败分母。
+等局权重分档使用inverse-full-game-length权重后在bin内归一，区别于每个入bin游戏等权。
+零目标方差不给EV，零自然局不给效果估计。固定组bootstrap仅为敏感性，不是总体资格。
+这些是Managed结果，不能替真游戏实力；raw价值也是回报估计，不是已校准的通关概率。
+
 ## 后续quick：原池内补足20个合格自然配对
 
 显式`natural_quick`只用于direct四核、单一每4h quick计划，默认旧行为不变。
