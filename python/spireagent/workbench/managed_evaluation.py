@@ -263,6 +263,7 @@ class ManagedEpisodeExecutor:
             "0.1.0-rc.59",
             "0.1.0-rc.60",
             "0.1.0-rc.61",
+            "0.1.0-rc.62",
         }:
             reject("runtime_explicit_adapter_environment_required")
         if self.settling_timeout_ms is not None and runtime_version not in {
@@ -276,6 +277,7 @@ class ManagedEpisodeExecutor:
             "0.1.0-rc.59",
             "0.1.0-rc.60",
             "0.1.0-rc.61",
+            "0.1.0-rc.62",
         }:
             reject("runtime_settling_watchdog_required")
         self.evidence_durability = configuration.get(
@@ -290,6 +292,7 @@ class ManagedEpisodeExecutor:
                 "0.1.0-rc.59",
                 "0.1.0-rc.60",
                 "0.1.0-rc.61",
+                "0.1.0-rc.62",
             }
             else "event",
         )
@@ -303,6 +306,7 @@ class ManagedEpisodeExecutor:
             "0.1.0-rc.59",
             "0.1.0-rc.60",
             "0.1.0-rc.61",
+            "0.1.0-rc.62",
         }:
             reject("runtime_decision_durability_required")
         if configuration["agent_adapter"] != export.adapter_identity():
@@ -310,7 +314,8 @@ class ManagedEpisodeExecutor:
         if self.measure_host_performance and json.loads(
             (self.host / "package.json").read_bytes()
         ).get("version") not in {
-            "1.1.0-rc.46", "1.1.0-rc.57", "1.1.0-rc.58", "1.1.0-rc.59", "1.1.0-rc.60", "1.1.0-rc.61"
+            "1.1.0-rc.46", "1.1.0-rc.57", "1.1.0-rc.58", "1.1.0-rc.59",
+            "1.1.0-rc.60", "1.1.0-rc.61", "1.1.0-rc.62"
         }:
             reject("host_performance_diagnostics_required")
         self.build = _candidate_audit(
