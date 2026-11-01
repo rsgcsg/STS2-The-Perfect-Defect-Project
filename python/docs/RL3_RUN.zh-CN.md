@@ -355,3 +355,23 @@ advantage/target，最多两次成功使用；旧CP无准备数组时仅按需�
 两次即可加到20–24路，再按事实向36路内调整，不要求为单项归因另等整轮。每次记录绝对时间、
 理由、原参数/新参数、实际采用和后续结果；总训练终点与全卡硬限不重置。新增actor用新正常
 plan/唯一actor与seed命名空间，原unknown不重发；全部活动allocation由本卡owner统一保全。
+
+## 同run增加actor allocation
+
+既有数组继续运行时，先正常prepare一个新output/唯一actor和seed命名空间、原run/peer与冻结
+actor source不变，再用`rl.py submit --plan NEW --additional-to EXISTING...`显式列出现有
+正常plan。默认submit仍拒绝并存的F2数组；新入口只允许列明的同run/peer/source父job，新增
+actor名不得重复，当前合计≤36。未列明的现有数组、变更的peer/run/source或超限明确拒绝。
+沿同一用户调度锁和公平资源检查、原单核数组/rl/ledger/Pipeline入口，不重开旧unknown。
+
+新工具可编排旧冻结actor源码：运行新`tools/friday/rl.py`时PYTHONPATH指向原actor source的
+python，保留require_modules真实绑定；生成的launcher仍运行plan.source_root。不升级动作
+adapter或日常安装。额外提交先持久化submission-intent，响应未知后默认/额外两入口均拒绝
+重发，先核原请求和调度结果；成功的原submission.json拥有实际job身份。
+
+看守配置可列`additional_actor_plans`，每项为`{plan:{path,sha256},job_id}`，绑定原plan及其
+submission。read_config核run/peer/冻结source、actor名/job不重叠与≤36核；健康计数汇总所有
+allocation，Stop为每个plan写原STOP且对每个job只发一次信号，drain需全部终态。配置更新仍
+按原USR2维护、pending排空、显式旧新config digest与原start/schedule状态交接；GPU不重启。
+本卡owner在维护完成前也须跟踪新job原收据，并保全全部array，不能只拿主数组终态称完成。
+实际扩容时还须计入同时进行的评估游戏核，保持本卡总游戏核≤36。
