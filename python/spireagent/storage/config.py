@@ -34,11 +34,40 @@ def peer_binding(location: str) -> dict[str, Any]:
     return {"kind": "local", "directory": str(Path(location).resolve())}
 
 
-def open_peer(binding: dict[str, Any]) -> ManifestArtifactStore:
+def validate_peer(binding: dict[str, Any]) -> None:
+    """Validate nonsecret transport configuration without constructing a client."""
+    if set(binding) == {"kind", "directory", "archive"} and binding["kind"] == "local":
+        if not isinstance(binding["directory"], str) or not isinstance(binding["archive"], dict):
+            raise BoundaryError("p1_storage", "invalid_peer_binding")
+        root = Path(binding["directory"])
+        archive = binding["archive"]
+        if "archive" in archive:
+            raise BoundaryError("p1_storage", "distinct_frozen_shared_archive_required")
+        validate_peer(archive)
+        if (not root.is_absolute() or root.is_symlink() or root.resolve() != root
+                or archive.get("kind") == "local" and Path(archive["directory"]).resolve() == root):
+            raise BoundaryError("p1_storage", "distinct_frozen_shared_archive_required")
+        return
     if set(binding) == {"kind", "directory"} and binding["kind"] == "local":
-        return ManifestArtifactStore(LocalBlobStore(Path(binding["directory"])))
+        if not isinstance(binding["directory"], str):
+            raise BoundaryError("p1_storage", "invalid_peer_binding")
+        Path(binding["directory"])
+        return
     if (set(binding) == {"kind", "bucket", "endpoint", "prefix", "region"}
             and binding["kind"] == "s3"):
-        return ManifestArtifactStore(S3BlobStore(S3Config(**{
-            key: value for key, value in binding.items() if key != "kind"})))
+        S3Config(**{key: value for key, value in binding.items() if key != "kind"})
+        return
     raise BoundaryError("p1_storage", "invalid_peer_binding")
+
+
+def open_peer(binding: dict[str, Any]) -> ManifestArtifactStore:
+    validate_peer(binding)
+    if binding["kind"] == "local":
+        root = Path(binding["directory"])
+        if "archive" in binding:
+            from .async_archive import ArchivedStore
+
+            return ArchivedStore(root, binding["archive"])
+        return ManifestArtifactStore(LocalBlobStore(root))
+    return ManifestArtifactStore(S3BlobStore(S3Config(**{
+        key: value for key, value in binding.items() if key != "kind"})))

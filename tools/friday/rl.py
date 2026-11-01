@@ -44,13 +44,16 @@ def prepare(execution: Path, learner: Path, output: Path, *, actors: int = 8,
             or not NAME.fullmatch(learning.get('run', ''))):
         raise ValueError('original_learner_run_and_peer_configuration_required')
     peer = learning['peer']
-    if set(peer) != {'kind', 'bucket', 'endpoint', 'prefix', 'region'}:
-        raise ValueError('original_nonsecret_R2_peer_binding_required')
-    from spireagent.storage.s3 import S3Config
+    from spireagent.storage.config import validate_peer
 
-    S3Config(**{key: value for key, value in peer.items() if key != 'kind'})
-    if (peer.get('kind') != 's3' or base.get('peer') != peer
-            or base.get('store') != 's3' or base.get('retention') != RETENTION
+    shared = set(peer) == {'kind', 'directory', 'archive'} and peer.get('kind') == 'local'
+    if peer.get('kind') != 's3' and not shared:
+        raise ValueError('original_nonsecret_R2_or_shared_archive_peer_required')
+    if shared and peer['archive'].get('kind') != 's3':
+        raise ValueError('Friday_shared_store_requires_R2_archive')
+    validate_peer(peer)  # No credentials, client construction or network access in preparation.
+    if (base.get('peer') != peer or base.get('store') != (
+            peer['directory'] if shared else 's3') or base.get('retention') != RETENTION
             or base.get('schema') != 'spireagent/managed-evaluation-execution-v1'):
         raise ValueError('same_frozen_R2_execution_and_learner_peer_required')
     canonical_path(Path(base['candidate_directory']))

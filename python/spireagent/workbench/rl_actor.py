@@ -299,6 +299,13 @@ class Actor:
                    "timing": dict(self.timing),
                    "model_fetch_seconds": self.prefetch.fetch_seconds,
                    "model_prefetch_events": self.prefetch.events, "games": self.games}
+        try:
+            archive = self.exchange.drain_archive()
+        except StoreError as error:
+            archive = self.exchange.archive_status()
+            summary.update(status="archive_incomplete", archive_error=error.code)
+        if archive is not None:
+            summary["archive"] = archive
         (self.work / "actor-summary.json").write_bytes(json_bytes(summary))
         return summary
 
@@ -326,6 +333,8 @@ def main() -> None:
         configuration["actor"] = args.actor
     summary = Actor(configuration, args.work.resolve()).run()
     print(json.dumps({k: summary[k] for k in ("actor", "status", "counts")}))
+    if summary.get("archive", {}).get("full_readback") is False:
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

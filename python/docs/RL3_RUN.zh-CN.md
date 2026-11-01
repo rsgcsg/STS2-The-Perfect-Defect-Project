@@ -275,6 +275,45 @@ CPU资源按主进程torch线程与reader并发安排，不能把reader进程计
 的原始uploaded_at与每局决策数；learner.generated/uploaded仅在读入后推进，其导数受reader
 限制，不等于actor实际生成速度。保留生成、上传、准入、首次使用、复用和过期各自分母。
 
+#### Friday共享scratch热Store与后台归档（显式选用）
+
+Friday同节点角色可使用同一个物理共享目录，沿原Exchange/Store/typed reader读写：
+peer为`{"kind":"local","directory":"/data/scratch/USER/RUN/hot-store",
+"archive":{...原冻结的s3 peer...}}`，execution的`store`须为同一directory。
+actor、learner、watch都冻结同一个新peer；不是只改learner后继续让actor向旧R2入口发数据。
+默认local/s3配置不变。archive只接受一个明确现有peer，不跟随环境改变目标，不自动串接归档。
+
+热Store沿原原子不可覆盖写入、payload/typed读回；后台复用`copy_artifact`复制新root及尚缺
+依赖，完整读回新root payload；已发布的immutable父manifest按原reuse选项复用，不冒称重新
+逐字节审计整个历史前缀。相关Exchange record先确保所指artifact完整可读才归档。原artifact ID、
+producer、unknown、用途、训练资格和成功use计数不重写。本地成功只说明热数据可消费，
+不是R2保全完成；`.archive/pending`是持久待办，`.archive/completed`保存完整读回收据，
+归档失败分类保留在`.archive/errors`。不因归档失败重开游戏或丢弃本地原件。
+
+原run迁移前，必须先正常排空全部旧R2 producers，核完整最后记录后，再用正常loader运行
+`python -m spireagent.storage.async_archive --peer PEER.json
+--operation seed --run EXACT_RUN`，把原Exchange记录逐字节搬到新热Store；artifact冷缺失继续走
+原Store的显式archive读通道。这个准备动作不启动actor/learner、不改原记录、不延长开局年龄；
+实际切换仍走正常完整CP与源身份迁移。seed只是一次快照，晚到的旧R2记录不会自动出现在
+热listing；不允许留下双入口并写。完成切换后控制也归新peer，不能把旧R2读者当新热控制owner。
+
+actor/learner退出时会等待本进程已发布内容的归档读回；不完整会明确失败并保留shared目录，
+不把transport失败改记为游戏unknown。负责人最终还须在停止写入后运行
+`python -m spireagent.storage.async_archive --peer PEER.json --run EXACT_RUN --timeout 600`，
+重扫已发布manifest/本run记录，恢复publication→outbox之间的进程崩溃缺口并核完整读回。
+drain总限在任务之间检查；已开始的一次Store I/O仍受原S3超时约束，timeout不是硬抢占。
+本地quota/OSError也记录安全stage/类型/intent到scheduler stderr，不输出原异常message。
+这只处理Store对象和Exchange记录，不递归打包目录、凭据或邻近文件；原游戏scratch的正常
+snapshot保全义务照旧。`--operation status`可读待办/完成/分类错误，R2失败不静默回退。
+
+`background_io=true`时，listing与process-reader结果解码/收取在后台；owner仅消费就绪FIFO，
+当前policy的整局V/acting-KL/target准入以及uses/RNG仍在更新边界。新增`admission`阶段单列这些
+owner计算，`poll`不再重复包含它；与旧poll合并口径比较时须先还原定义。事件沿原telemetry
+线程发布到本地热peer，R2归档有独立后台队列，不再靠owner等待R2完成。独立CPU/R2检查仅
+证明传输与读回；真实训练占比、秒/更新、首次用/生成、等数据比例仍须新部署前后实测。
+archive状态的owner读使用后台更新的计数快照并带verified_at，可能滞后一个后台周期；原本地
+日志、持久发布与owner准入仍有真实I/O/计算成本，不能称事件成本或整段poll已全部消失。
+
 正常恢复默认仍要求同producer。升级源码时必须同时指定`resume_checkpoint`和
 `resume_source`（原producer完整repository/source_revision/uv_lock_sha256）；原run、
 起点/参考包、checkpoint格式/版本及载荷绑定仍严格核对。`resume_critic_changes`逐项列
