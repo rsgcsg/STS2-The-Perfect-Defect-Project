@@ -291,6 +291,7 @@ def compare(before: dict[str, Any], after: dict[str, Any]) -> dict[str, Any]:
 
 def write_report(
     cohorts: dict[str, dict[str, Any]], output: Path, *, through_floor: int | None = None,
+    scope_note: str | None = None,
 ) -> dict[str, Any]:
     comparisons = {name: compare(cohort, cohorts['current'])
                    for name, cohort in cohorts.items() if name != 'current'}
@@ -329,11 +330,13 @@ def write_report(
                 writer = csv.DictWriter(file, fieldnames=list(records[0]))
                 writer.writeheader()
                 writer.writerows(records)
-    svg = distribution_svg(cohorts, through_floor=through_floor)
+    svg = distribution_svg(cohorts, through_floor=through_floor, scope_note=scope_note)
     (output / 'distribution.svg').write_text(svg, encoding='utf-8')
     lines = ['# Saved fixed-seed evaluation', '',
              '| Cohort | Planned | Scored floors | Win / loss | Mean | Median | Max |',
              '|---|---:|---:|---|---:|---:|---:|']
+    if scope_note:
+        lines[2:2] = [scope_note, '']
     for name, c in cohorts.items():
         lines.append(f"| {name} | {c['planned']} | {c['floor_n']} | {c['wins']} / {c['losses']} | "
                      f"{c['mean_floor']} | {c['median_floor']} | {c['max_floor']} |")
@@ -350,6 +353,7 @@ def write_report(
 
 def distribution_svg(
     cohorts: dict[str, dict[str, Any]], *, through_floor: int | None = None,
+    scope_note: str | None = None,
 ) -> str:
     colors = ['#386cb0', '#f28e2b', '#59a14f']
     max_floor = max((r.get('observed_floor_lower_bound', r['floor']) or 0
@@ -408,8 +412,9 @@ def distribution_svg(
                 parts.append(f'<polygon points="{polygon}" fill="{color}" opacity="0.10"/>')
                 parts.append(f'<polyline points="{" ".join(points)}" fill="none" '
                              f'stroke="{color}" stroke-width="3"/>')
-    parts += ['<text x="55" y="665">Unknown / censored / unstarted remain in JSON and CSV; '
-              'Boss clearance requires explicit witnesses.</text>', '</g></svg>']
+    note = scope_note or ('Unknown / censored / unstarted remain in JSON and CSV; '
+                          'Boss clearance requires explicit witnesses.')
+    parts += [f'<text x="55" y="665">{html.escape(note)}</text>', '</g></svg>']
     return ''.join(parts)
 
 
