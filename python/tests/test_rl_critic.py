@@ -499,3 +499,17 @@ def test_component_gradient_diagnostics_include_parameters_first_used_in_later_m
     norms = result['shared_trunk_gradient_norms']
     assert norms['policy'] == pytest.approx(expected[0], rel=1e-5)
     assert norms['weighted_value'] == pytest.approx(expected[1], rel=1e-5)
+
+
+def test_vectorized_acting_KL_keeps_ragged_padding_and_real_zero_mass_distinct():
+    critic, frame = controller()
+    e = episode(frame)
+    e.frames[0] = replace(frame, choices=frame.choices[:1])
+    e.old_probabilities[0] = [1.0]
+    e.behavior[0] = 1.0
+    _, ratio, kl = critic.evaluate(e)
+    assert ratio[0] == 1 and kl[0] == 0
+    assert all(torch.isfinite(torch.tensor(kl)))
+    e.old_probabilities[1] = [0.0, 1.0]
+    with pytest.raises(BoundaryError, match='non_finite_prediction_or_ratio'):
+        critic.evaluate(e)
