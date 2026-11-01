@@ -23,7 +23,7 @@ from collections.abc import Callable, Iterable
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import Any, TypeVar, cast
 
 import torch
 
@@ -45,6 +45,8 @@ from .critic import (
     OnlineCritic,
     enable_value_head,
     held_out,
+    optimizer_groups,
+    restore_optimizer,
     trace_gae,
 )
 from .ledger import DecisionLedger
@@ -92,6 +94,9 @@ class LearnerConfig:
     # Explicit full learner checkpoint artifact id to continue this run from
     # (a new machine or a new 5 h allocation); never picked implicitly.
     resume_checkpoint: str | None = None
+    # Exact prior producer and exact critic old/new values for an intentional upgrade.
+    resume_source: dict[str, str] | None = None
+    resume_critic_changes: dict[str, Any] | None = None
     # Explicitly publish restored weights before actors receive another version.
     republish_on_resume: bool = False
     tensorboard_steps: int = 10
@@ -100,6 +105,7 @@ class LearnerConfig:
     # Opt-in bounded discovery; admission and RNG stay on the owner thread.
     background_io: bool = False
     read_ahead: int = 2
+    reader_workers: int = 1
     remote_stop_seconds: float = 5.0
     remote_stop_read_timeout_seconds: float = 30.0
     read_retry_attempts: int = 3
@@ -199,6 +205,8 @@ class Learner:
                 or type(config.initial_policy_check) is not bool
                 or type(config.read_ahead) is not int
                 or not 1 <= config.read_ahead <= 32
+                or type(config.reader_workers) is not int
+                or not 1 <= config.reader_workers <= 8
                 or type(config.read_retry_attempts) is not int
                 or not 1 <= config.read_retry_attempts <= 3
                 or type(config.remote_stop_seconds) not in (int, float)
@@ -265,8 +273,8 @@ class Learner:
             parameter.requires_grad_(True)
         if config.critic is not None:
             enable_value_head(self.model, config.seed)
-        self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=config.lr,
-                                           weight_decay=config.weight_decay)
+        self.optimizer = torch.optim.AdamW(optimizer_groups(self.model, config.critic),
+                                           lr=config.lr, weight_decay=config.weight_decay)
         self.critic = (OnlineCritic(self.model, self.reference, self.optimizer, config.critic,
                                    config.seed, config.performance) if config.critic else None)
         self.critic_began = self.last_critic_checkpoint_at = time.monotonic()
@@ -285,7 +293,8 @@ class Learner:
         self.updates = 0
         self.version_updates = 0
         self.lineage_version = 0
-        self.reader = ThreadPoolExecutor(max_workers=1, thread_name_prefix="rl-shard-read")
+        self.reader = ThreadPoolExecutor(max_workers=config.reader_workers,
+                                         thread_name_prefix="rl-shard-read")
         self.discovery = ThreadPoolExecutor(max_workers=1, thread_name_prefix="rl-discovery")
         self.control = ThreadPoolExecutor(max_workers=1, thread_name_prefix="rl-stop")
         self.telemetry = ThreadPoolExecutor(max_workers=1, thread_name_prefix="rl-telemetry")
@@ -427,11 +436,13 @@ class Learner:
         began = time.monotonic()
         manifest = self.exchange.store.get_manifest(artifact_id)
         info = manifest.parameters.value()
+        migration = (manifest.producer != self.producer and self.config.resume_source is not None
+                     and manifest.producer.to_dict() == self.config.resume_source)
         if (manifest.kind != "checkpoint" or info.get("schema") != self.checkpoint_schema
                 or info.get("run") != self.config.run
                 or info.get("start_package_sha256") != self.start_sha256
                 or info.get("reference_package_sha256", self.start_sha256) != self.reference_sha256
-                or manifest.producer != self.producer):
+                or (manifest.producer != self.producer and not migration)):
             raise BoundaryError("rl_learner", "resume_checkpoint_binding_mismatch")
         state = decode_checkpoint(b"".join(self.exchange.store.read_payload(
             manifest.payload("checkpoint"))))
@@ -440,14 +451,15 @@ class Learner:
                 or learner["version"] != info["version"] or learner["version"] > latest):
             raise BoundaryError("rl_learner", "resume_checkpoint_state_mismatch")
         self.model.load_state_dict(state["weights"])
-        self.optimizer.load_state_dict(state["optimizer"])
+        restore_optimizer(self.optimizer, self.model, state["optimizer"], migrate=migration)
         critic_saved = learner.get("critic")
         if (self.critic is None) != (critic_saved is None):
             raise BoundaryError("rl_critic", "resume_method_mismatch")
         if self.critic is not None:
             if not isinstance(critic_saved, dict):
                 raise BoundaryError("rl_critic", "checkpoint_metadata_object_required")
-            self.critic.restore(critic_saved)
+            self.critic.restore(critic_saved,
+                self.config.resume_critic_changes if migration else None)
             self.critic_began = time.monotonic()
         self.version_critic_revision = learner.get("version_critic_revision", 0)
         torch.set_rng_state(state["torch_rng"])
@@ -499,10 +511,21 @@ class Learner:
         self.buffer = [restored[key] for key in saved_order]
         if self.critic is not None:
             self.critic.episodes = [rebuilt_critic[key] for key in critic_order]
+            self.critic.freeze_validation()
         self.seen = set(learner["seen"])
         self.timer.add("resume", began)
         self._event("resumed", checkpoint=artifact_id, checkpoint_version=learner["version"],
-                    latest_version=latest, updates=self.updates, buffer=len(self.buffer))
+                    latest_version=latest, updates=self.updates, buffer=len(self.buffer),
+                    migrated_from=manifest.producer.to_dict() if migration else None,
+                    critic_changes=self.critic.resumed_config_changes if self.critic else {})
+        if migration and self.critic and self.critic.fixed_validation_initialized:
+            began = time.monotonic()
+            validation = self.critic.validate()
+            self.timer.add("critic_validation", began)
+            self.last_critic_validation_update = self.critic.updates
+            self._event("critic_validation", **validation, version=latest,
+                        phase="fixed_cohort_before_first_upgraded_update",
+                        policy_updates=self.updates)
         return latest
 
     def _read_retry(self, operation: str, call: Callable[[], T]) -> T:
@@ -968,11 +991,17 @@ class Learner:
                 self._check_initial_policy(batch)
         samples = (self._fresh_ppo_samples(batch) if self.critic is not None
                    else [item.sample for item in batch])
+        if self.critic is not None:
+            scale = self.critic.target_scale([cast(float, s.value_target) for s in samples])
+            samples = [replace(s, value_scale=scale) for s in samples]
         self.policy_train_began = time.monotonic()
         self.update_in_progress = True
         result = rl_update(self.model, self.reference, self.optimizer,
                            samples, anchor, self.config.lr,
-                           self.config.loss, self.reference_cache,
+                           replace(self.config.loss, gradient_diagnostics=True)
+                           if (self.critic and
+                               self.updates % self.critic.config.validation_every == 0)
+                           else self.config.loss, self.reference_cache,
                            performance=self.config.performance, frame_cache=self.frame_cache)
         self.update_in_progress = False
         self.initial_behavior.clear()
@@ -982,6 +1011,8 @@ class Learner:
             self.critic.updates += 1
             self.critic.revision += 1
             result.update(raw_advantage_min=min(self.last_raw_advantages),
+                          value_target_std=scale,
+                          value_head_lr=self.critic.config.head_lr or self.config.lr,
                           raw_advantage_max=max(self.last_raw_advantages),
                           raw_advantage_mean=sum(self.last_raw_advantages) / len(samples))
             self.ledger.write("ppo_diagnostics", update=self.updates, **result)

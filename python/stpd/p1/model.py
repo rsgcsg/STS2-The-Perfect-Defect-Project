@@ -398,7 +398,15 @@ class MStd(nn.Module):
         values = torch.cat((self.win_head(current), self.progress_head(current)), dim=1)
         return scores, values, (torch.stack(features), enemies)
 
+    def forward_values(self, frames: Sequence[ModelFrame]) -> Tensor:
+        """Value-only learner validation; identical scene encoder, no action readout."""
+        if not self.value_heads:
+            raise ValueError("value heads are not enabled")
+        _, current = self._forward_batch(frames, values_only=True)
+        return torch.cat((self.win_head(current), self.progress_head(current)), dim=1)
+
     def _forward_batch(self, frames: Sequence[ModelFrame], *, check_finite: bool = True,
+                       values_only: bool = False,
                        selected: tuple[list[int], list[list[int]], list[Tensor],
                                        list[Tensor]] | None = None
                        ) -> tuple[list[Tensor], Tensor]:
@@ -448,6 +456,9 @@ class MStd(nn.Module):
         packed = nn.utils.rnn.pad_sequence(nodes, batch_first=True)
         mask = torch.arange(packed.shape[1], device=device)[None, :] >= lengths[:, None]
         scene = self.scene(packed, src_key_padding_mask=mask)
+        current = (scene * (~mask).unsqueeze(-1)).sum(1) / lengths.unsqueeze(-1)
+        if values_only:
+            return [], current
         actions = []
         for batch, frame in enumerate(frames):
             if isinstance(frame, TensorFrame):
@@ -496,7 +507,6 @@ class MStd(nn.Module):
                         )
                     action = action + self.source_role(source) + self.target_role(target)
             actions.append(action)
-        current = (scene * (~mask).unsqueeze(-1)).sum(1) / lengths.unsqueeze(-1)
         if not any(frame.choices for frame in frames):
             return [self.ids.weight.new_empty((0,)) for _ in frames], current
         action = nn.utils.rnn.pad_sequence(actions, batch_first=True)
