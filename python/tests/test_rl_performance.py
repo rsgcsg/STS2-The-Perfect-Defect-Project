@@ -257,3 +257,107 @@ def test_real_learner_update_exports_original_actor_execution_with_explicit_trai
     assert exported.execution == original_execution
     learner.exchange.request_stop("diagnostic_complete")
     assert learner.run()["updates"] == 1
+
+
+
+def test_full_FP32_PPO_and_critic_preserve_trace_order_and_two_updates():
+    from stpd.rl.critic import CriticConfig, CriticEpisode, OnlineCritic, trace_gae
+    from stpd.rl.performance import grouped_indices
+
+    torch.set_num_threads(2)
+    torch.manual_seed(71)
+    model = MStd(public_vocabulary(), MStdExecution.for_plan("mstd-training-v1"),
+                 value_heads=True).eval()
+    other, reference = copy.deepcopy(model), copy.deepcopy(model)
+    frames = [synthetic_frame(size) for size in (4, 2, 3, 2, 5)]
+    old = PerformanceConfig(packed=True, tensor_cache=True, precompile_inputs=True,
+                            microbatch_size=1, defer_sync=True)
+    full = PerformanceConfig(packed=True, tensor_cache=True, precompile_inputs=True,
+        joint_nodes=True, scene_attention_area=67108864, text_attention_area=67108864,
+        bucket=True, reference_device_cache=True, async_transfer=True, defer_sync=True)
+    optimizers = [torch.optim.SGD(m.parameters(), lr=.001) for m in (model, other)]
+    traces, episodes = [], []
+    for member, optimizer, execution in zip((model, other), optimizers, (old, full), strict=True):
+        critic = OnlineCritic(member, reference, optimizer, CriticConfig(), 7, execution)
+        critic.freeze_policy(False)
+        e = CriticEpisode("trace", "shard", "unit-seed", .7, 0, frames.copy(),
+                          [0] * 5, [.5] * 5, [[.5, .5]] * 5,
+                          [f"trace:{i}" for i in range(5)], 1)
+        values, ratios, kl = critic.evaluate(e)
+        traces.append((values, ratios, kl, trace_gae(.7, values, ratios, .999, 1)))
+        assert critic.values(e) == pytest.approx(values, abs=2e-5, rel=3e-4)
+        assert sum(critic.last_evaluation_microbatches) == 5
+        episodes.append(e)
+    for left, right in zip(traces[0][:3], traces[1][:3], strict=True):
+        assert left == pytest.approx(right, abs=2e-5, rel=3e-4)
+    for left, right in zip(traces[0][3], traces[1][3], strict=True):
+        assert left == pytest.approx(right, abs=2e-5, rel=3e-4)
+    with prepare_models(other, reference, full):
+        order = [i for group in grouped_indices(episodes[1].frames, other, full) for i in group]
+    assert order != list(range(5)) and sorted(order) == list(range(5))
+    config = LossConfig(mode="ppo", value_coef=.001, entropy_coef=.01, kl_coef=.02,
+                        gradient_diagnostics=True)
+    samples = [RlSample(frame, 0, .5, .5, (.3 - i * .2), 0, f"trace:{i}",
+                         value_target=.07 + i * .01, value_scale=.1 + i * .02)
+               for i, frame in enumerate(frames)]
+    histories = [[], []]
+    for number, (member, optimizer, execution) in enumerate(zip(
+            (model, other), optimizers, (old, full), strict=True)):
+        cache, inputs = {}, {}
+        ref = copy.deepcopy(reference)
+        ref.forward_batch = Mock(wraps=ref.forward_batch)
+        for step in range(2):
+            result = rl_update(member, ref, optimizer, samples, [], .001, config, cache,
+                               performance=execution, frame_cache=inputs)
+            histories[number].append(result)
+            assert set(cache) == {s.key for s in samples}
+            assert all(value.device == member.ids.weight.device for value in cache.values())
+            assert len(inputs) == 5
+            if step:
+                assert ref.forward_batch.call_count == calls
+            calls = ref.forward_batch.call_count
+    assert histories[0][0]["execution_microbatches"]["max"] == 1
+    assert histories[1][0]["execution_microbatches"]["max"] == 5
+    for left, right in zip(histories[0], histories[1], strict=True):
+        for metric in ("policy_loss", "value_loss", "kl", "policy_entropy", "mean_ratio",
+                       "gradient_norm"):
+            assert left[metric] == pytest.approx(right[metric], abs=2e-5, rel=3e-4)
+    for name, parameter in model.named_parameters():
+        target = dict(other.named_parameters())[name]
+        assert torch.allclose(parameter, target, atol=2e-5, rtol=3e-4), name
+        assert (parameter.grad is None) == (target.grad is None), name
+        if parameter.grad is not None:
+            assert torch.allclose(parameter.grad, target.grad, atol=2e-6, rtol=3e-4), name
+
+
+@pytest.mark.parametrize("bad", ["reference_cache", "scores", "values"])
+def test_PPO_deferred_full_FP32_rejects_nonfinite_before_optimizer_step(bad):
+    from dataclasses import replace
+
+    from stpd.rl.critic import enable_value_head
+
+    model, reference, samples, _ = fixture()
+    enable_value_head(model, 7)
+    samples = [replace(s, value_target=.1) for s in samples]
+    before = copy.deepcopy(model.state_dict())
+    optimizer = torch.optim.AdamW(model.parameters(), lr=.01)
+    cache = {}
+    if bad == "reference_cache":
+        cache[samples[0].key] = torch.full((len(samples[0].frame.choices),), torch.nan)
+    else:
+        original = model.forward_with_values
+
+        def corrupt(frames, **kwargs):
+            scores, values = original(frames, **kwargs)
+            return ([score * torch.nan for score in scores] if bad == "scores" else scores,
+                    values * torch.nan if bad == "values" else values)
+
+        model.forward_with_values = corrupt
+    with pytest.raises(BoundaryError):
+        rl_update(model, reference, optimizer, samples, [], .01,
+            LossConfig(mode="ppo", value_coef=.001), cache,
+            performance=PerformanceConfig(packed=True, tensor_cache=True, joint_nodes=True,
+                bucket=True, reference_device_cache=True, async_transfer=True, defer_sync=True,
+                scene_attention_area=67108864, text_attention_area=67108864))
+    assert not optimizer.state
+    assert all(torch.equal(before[name], value) for name, value in model.state_dict().items())

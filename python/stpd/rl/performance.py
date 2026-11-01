@@ -18,7 +18,7 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
 
     from stpd.p1.model import MStd
-    from stpd.p1.tensor_input import TensorFrame
+    from stpd.p1.tensor_input import ModelFrame, TensorFrame
 
 
 @dataclass(frozen=True)
@@ -62,6 +62,20 @@ class PerformanceConfig:
             raise BoundaryError("rl_performance", "precompile_inputs_requires_tensor_cache")
 
 
+def grouped_indices(frames: list[ModelFrame], model: MStd,
+                    config: PerformanceConfig | None) -> Iterator[list[int]]:
+    """Reorder only the already-selected batch; callers scatter sequence outputs."""
+    from stpd.p1.execution import microbatches
+    from stpd.p1.tensor_input import TensorFrame
+
+    indices = list(range(len(frames)))
+    if config is not None and config.bucket:
+        sizes = [frame.entity_count if isinstance(frame, TensorFrame)
+                 else len(frame.entities) for frame in frames]
+        indices.sort(key=sizes.__getitem__)
+    return microbatches(frames, indices, model)
+
+
 def cache_on_device(frame: TensorFrame, device: torch.device) -> TensorFrame:
     """Move immutable input metadata once; no weights, dropout or padding are cached.
 
@@ -92,7 +106,7 @@ def prepare_models(model: MStd, reference: MStd,
                    config: PerformanceConfig) -> Iterator[None]:
     """Select training execution temporarily; package and reference identity survive.
 
-    No TF32 global is read or written on the default path. A selected BF16 path
+    On CUDA an explicit execution config also enforces its TF32 choice. BF16
     requires CUDA support; it never silently falls back to another precision.
     """
     device = model.ids.weight.device
@@ -121,9 +135,9 @@ def prepare_models(model: MStd, reference: MStd,
                 microbatch_size=config.microbatch_size,
                 scene_attention_area=config.scene_attention_area,
                 text_attention_area=config.text_attention_area)
-        if config.tf32:
+        if device.type == "cuda":
             old_tf32 = torch.backends.cuda.matmul.allow_tf32
-            torch.backends.cuda.matmul.allow_tf32 = True
+            torch.backends.cuda.matmul.allow_tf32 = config.tf32
         with torch.autocast(device_type=device.type, dtype=torch.bfloat16,
                             enabled=config.precision == "bf16"):
             yield

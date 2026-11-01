@@ -946,6 +946,7 @@ class Learner:
             self.ledger.write("critic_prediction", run_id=episode.run_id, ids=episode.keys,
                 values=values, targets=targets, advantages=advantages, ratios=ratios,
                 acting_kl=acting_kl,
+                execution_microbatch_sizes=self.critic.last_evaluation_microbatches,
                 critic_updates=self.critic.updates, policy_update=self.updates, ready=True)
         self.last_raw_advantages = [estimates[item.sample.key][0] for item in batch]
         samples = [replace(item.sample, advantage=estimates[item.sample.key][0],
