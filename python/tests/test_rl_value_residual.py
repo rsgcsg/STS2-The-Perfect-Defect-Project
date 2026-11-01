@@ -25,13 +25,15 @@ def test_zero_head_is_exact_rng_policy_value_and_export_identity_then_critic_iso
     rng = torch.get_rng_state().clone()
     model.enable_progress_residual(42)
     assert torch.equal(rng, torch.get_rng_state())
-    scores, values = model.forward_with_values([frame])
+    with torch.no_grad():
+        scores, values = model.forward_with_values([frame])
     assert torch.equal(old_scores[0], scores[0])
     assert torch.equal(old_values, values)
     assert sum(p.numel() for p in model.progress_residual.parameters()) == 313025
     for p in model.progress_residual.parameters():
         p.requires_grad_(True)
-    (values[:,1] - 3).square().mean().backward()
+    _, differentiable_values = model.forward_with_values([frame])
+    (differentiable_values[:,1] - 3).square().mean().backward()
     assert model.progress_head.weight.grad is not None
     assert all(p.grad is None for n,p in model.named_parameters()
                if not n.startswith(('progress_head.', 'progress_residual.')))
