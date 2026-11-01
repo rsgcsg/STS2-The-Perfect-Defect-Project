@@ -67,3 +67,41 @@ user before choosing another representation.
 Historical Knight settling, Tanx transformed preview, Stop/refresh boundary,
 typed evidence verification, Architect scene/RNG and treasure timing remain
 separate obligations. Neither this source batch nor its tests close them.
+
+## Host60 follow-up: settling reads and late native child inputs
+
+The PREP-B original at floor20 retained a delivered End turn and a complete,
+zero-action settling combat page. Its visible inventory includes Toasty Mittens.
+No later native task/child state was recorded: the precise historical timing is
+unproved, and the original remains unknown without replay.
+
+Two fresh Knight/Mittens component counterexamples isolate a future failure:
+when the original hand-selector continuation arrives during the final combat
+fallback, that loop omitted the current child; when it arrives after the action
+returns, normal capture kept the cached settling page forever. Host60 reuses the
+same native child resolver during/after fallback and adds read-only
+`observe_decision`, which pumps already-delivered work and calls that resolver.
+Normal capture, observe and text observe refresh only untainted settling pages.
+Canonical native facts that have not changed retain snapshot/sequence/Reads;
+new facts receive a new projection. Snapshot-addressed Read keeps its binding.
+No input is repeated and the existing stall timeout is unchanged.
+
+Fresh native cases pass 28/29 checks respectively. The second invokes production
+native command dispatch after the original hand producer is released following
+an action return. Its exact serialized bytes traverse normal capture, strict
+SDK, frozen P1 r1.5 and the actual Input-v2/MStd full-catalog consumer. The
+transport is substituted at this component seam; it is not a normal gameplay or
+Reference differential run. Earlier U1 and M2e native regressions also pass on
+the stable candidate. Non-author review found and accepted a repaired shutdown
+race: all three async read routes recheck the episode after refresh, preventing
+publication after an interrupting close. Three new race checks and the existing
+driver suite pass 22/22; focused Python consumers pass 117/117.
+
+Reproduce with normal prepare and `STS2_MANAGED_TEST_CANDIDATE`, then run
+`node --test --test-concurrency=1 components/host-runtime/test/managed-settling-native.test.mjs`.
+The portable counterpart is `managed-settling.test.mjs`. Keep generated native
+fixtures and original evidence local. Mac normal prepare reproduces the exact
+manifest tuple; separate Linux/package/CI evidence belongs to the final receipt.
+P1/InputSpec, gameplay rules, RNG, model weights and the active RL3 registration
+are unchanged. Roll back to the preserved Host59 combination in a new isolated
+registration. This follow-up is an implementation repair, not a new P1 feature.

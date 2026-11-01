@@ -2774,6 +2774,7 @@ export class ManagedPlayerEnvironmentSession {
   #validateSdk;
   #performance = new Map();
   #publicEntityAliases = new Map();
+  #stateDigest = null;
 
   constructor({
     process,
@@ -2894,6 +2895,14 @@ export class ManagedPlayerEnvironmentSession {
       throw new Error("managed_session_tainted_after_successor_projection_failure");
     if (this.#projection == null) throw new Error("No managed run is mounted.");
     return this.#projection.snapshot;
+  }
+
+  async refreshSettling({ timeoutMs = 10_000 } = {}) {
+    const snapshot = this.observe();
+    if (this.#tainted || snapshot.status !== "settling") return snapshot;
+    const state = await this.#process.request({ cmd: "observe_decision" }, timeoutMs);
+    if (state?.type !== "decision") throw new Error("managed_observe_decision_failed");
+    return this.#setState(state, timeoutMs, true);
   }
 
   settledRelicCounters(expectedSnapshotId) {
@@ -3065,7 +3074,7 @@ export class ManagedPlayerEnvironmentSession {
     return value;
   }
 
-  async #setState(state, timeoutMs) {
+  async #setState(state, timeoutMs, preserveUnchanged = false) {
     let enriched = state;
     if (state?.decision === "map_select" && !plainObject(state.context?.current_map)) {
       const mapReadStarted = performance.now();
@@ -3080,6 +3089,8 @@ export class ManagedPlayerEnvironmentSession {
         this.#record("map_enrichment", performance.now() - mapReadStarted);
       }
     }
+    const stateDigest = digest(enriched);
+    if (preserveUnchanged && stateDigest === this.#stateDigest) return this.#projection.snapshot;
     this.#sequence += 1;
     const projectionStarted = performance.now();
     this.#projection = projectManagedCandidateDecision({
@@ -3091,6 +3102,7 @@ export class ManagedPlayerEnvironmentSession {
       identityMode: this.#identityMode,
       validateSdk: this.#validateSdk
     });
+    this.#stateDigest = stateDigest;
     this.#record("projection_total", performance.now() - projectionStarted);
     for (const [name, milliseconds] of Object.entries(this.#projection.performance)) {
       if (name === "total_ms") continue;
