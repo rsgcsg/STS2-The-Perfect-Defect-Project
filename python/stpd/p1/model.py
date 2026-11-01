@@ -374,12 +374,43 @@ class MStd(nn.Module):
                       ) -> list[Tensor]:
         return self._forward_batch(frames, check_finite=check_finite)[0]
 
+    def enable_progress_residual(self, seed: int) -> None:
+        """Add an isolated zero-output critic branch without consuming policy RNG."""
+        from .value_head import AttentionValueResidual
+
+        if not self.value_heads or hasattr(self, "progress_residual"):
+            raise ValueError("linear_value_heads_required_before_residual")
+        device = self.ids.weight.device
+        with torch.random.fork_rng(
+            devices=[self.ids.weight.get_device()] if device.type == "cuda" else []
+        ):
+            torch.manual_seed(seed)
+            self.progress_residual = AttentionValueResidual().to(device)
+
+    def value_features(self, frames: Sequence[ModelFrame]) -> tuple[Tensor, Tensor, Tensor]:
+        """Frozen public scene features for offline critic training; no policy readout."""
+        captured: list[Tensor] = []
+        _, current = self._forward_batch(frames, values_only=True, capture_scene=captured)
+        return captured[0].detach(), captured[1].detach(), current.detach()
+
+    def _values(self, current: Tensor, captured: list[Tensor]) -> Tensor:
+        if hasattr(self, "progress_residual"):
+            # Both branches use detached features: critic gradients never enter policy.
+            detached = current.detach()
+            progress = self.progress_head(detached) + self.progress_residual(
+                captured[0].detach(), captured[1].detach(), detached)
+        else:
+            progress = self.progress_head(current)
+        return torch.cat((self.win_head(current), progress), dim=1)
+
     def forward_with_values(self, frames: Sequence[ModelFrame], *, check_finite: bool = True
                             ) -> tuple[list[Tensor], Tensor]:
         if not self.value_heads:
             raise ValueError("value heads are not enabled")
-        scores, current = self._forward_batch(frames, check_finite=check_finite)
-        values = torch.cat((self.win_head(current), self.progress_head(current)), dim=1)
+        captured: list[Tensor] = []
+        scores, current = self._forward_batch(frames, check_finite=check_finite,
+            capture_scene=captured if hasattr(self, "progress_residual") else None)
+        values = self._values(current, captured)
         return scores, values
 
     def forward_with_action_features(
@@ -392,21 +423,26 @@ class MStd(nn.Module):
             raise ValueError("action_features_require_values_and_aligned_targets")
         features: list[Tensor] = []
         enemies: list[Tensor] = []
+        captured: list[Tensor] = []
         scores, current = self._forward_batch(
             frames, check_finite=check_finite,
+            capture_scene=captured if hasattr(self, "progress_residual") else None,
             selected=(targets, enemy_positions, features, enemies))
-        values = torch.cat((self.win_head(current), self.progress_head(current)), dim=1)
+        values = self._values(current, captured)
         return scores, values, (torch.stack(features), enemies)
 
     def forward_values(self, frames: Sequence[ModelFrame]) -> Tensor:
         """Value-only learner validation; identical scene encoder, no action readout."""
         if not self.value_heads:
             raise ValueError("value heads are not enabled")
-        _, current = self._forward_batch(frames, values_only=True)
-        return torch.cat((self.win_head(current), self.progress_head(current)), dim=1)
+        captured: list[Tensor] = []
+        _, current = self._forward_batch(frames, values_only=True,
+            capture_scene=captured if hasattr(self, "progress_residual") else None)
+        return self._values(current, captured)
 
     def _forward_batch(self, frames: Sequence[ModelFrame], *, check_finite: bool = True,
                        values_only: bool = False,
+                       capture_scene: list[Tensor] | None = None,
                        selected: tuple[list[int], list[list[int]], list[Tensor],
                                        list[Tensor]] | None = None
                        ) -> tuple[list[Tensor], Tensor]:
@@ -457,6 +493,8 @@ class MStd(nn.Module):
         mask = torch.arange(packed.shape[1], device=device)[None, :] >= lengths[:, None]
         scene = self.scene(packed, src_key_padding_mask=mask)
         current = (scene * (~mask).unsqueeze(-1)).sum(1) / lengths.unsqueeze(-1)
+        if capture_scene is not None:
+            capture_scene.extend((scene, mask))
         if values_only:
             return [], current
         actions = []
