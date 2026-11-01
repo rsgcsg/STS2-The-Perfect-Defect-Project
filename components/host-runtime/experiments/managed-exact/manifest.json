@@ -106,8 +106,8 @@
       },
       "expected_build": {
         "source_patch_sha256": "8e9112fdfbf7cf211355ab395856c3975270489e621a7cd7e1dd80f80369c1e4",
-        "artifact_sha256": "74b4fea602077aa917361234b4a24fab3b1f0dbb573e8a17ceee3f4882e19f11",
-        "artifact_mvid": "53a780d8-f89e-4e87-b762-e75c3193c0dd",
+        "artifact_sha256": "5054c21cda87a4c099cab0345d0b8e6541430ffdf6d57cfe73cd9b4df70e7dd7",
+        "artifact_mvid": "09a5beff-5a7f-4247-9229-bcb08d00ae1a",
         "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0"
       },
       "non_claims": [
