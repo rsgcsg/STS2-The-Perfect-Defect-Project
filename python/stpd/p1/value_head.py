@@ -16,8 +16,8 @@ class AttentionValueResidual(nn.Module):
         self.attention = nn.MultiheadAttention(192, 4, dropout=0, batch_first=True)
         self.mlp = nn.Sequential(nn.Linear(384, 256), nn.GELU(),
                                  nn.Linear(256, 256), nn.GELU(), nn.Linear(256, 1))
-        nn.init.zeros_(self.mlp[-1].weight)
-        nn.init.zeros_(self.mlp[-1].bias)
+        nn.init.zeros_(cast(nn.Linear, self.mlp[-1]).weight)
+        nn.init.zeros_(cast(nn.Linear, self.mlp[-1]).bias)
 
     def forward(self, scene: Tensor, mask: Tensor, mean: Tensor) -> Tensor:
         pooled, _ = self.attention(self.query.expand(scene.shape[0], -1, -1),

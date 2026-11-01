@@ -177,14 +177,14 @@ def restore_optimizer(optimizer: torch.optim.Optimizer, model: MStd,
         if not migrate or len(state["param_groups"]) != 1 or len(optimizer.param_groups) != 2:
             raise BoundaryError("rl_critic", "optimizer_group_migration_not_declared")
         old_ids = state["param_groups"][0]["params"]
-        parameters = list(model.parameters())
-        if len(old_ids) != len(parameters):
+        legacy_parameters = list(model.parameters())
+        if len(old_ids) != len(legacy_parameters):
             raise BoundaryError("rl_critic", "optimizer_parameter_migration_mismatch")
         current = optimizer.state_dict()
         new_ids = {id(p): key for group, saved in zip(optimizer.param_groups,
                     current["param_groups"], strict=True)
                    for p, key in zip(group["params"], saved["params"], strict=True)}
-        mapping = {key: new_ids[id(p)] for key, p in zip(old_ids, parameters, strict=True)}
+        mapping = {key: new_ids[id(p)] for key, p in zip(old_ids, legacy_parameters, strict=True)}
         groups = [{**state["param_groups"][0], **group} for group in current["param_groups"]]
         state = {"state": {mapping[k]: v for k, v in state["state"].items()},
                  "param_groups": groups}

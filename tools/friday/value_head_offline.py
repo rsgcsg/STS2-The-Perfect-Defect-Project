@@ -167,7 +167,8 @@ def extract_one(task: dict[str, Any]) -> dict[str, Any]:
         )
         for s in ep["steps"]
     ]
-    scenes, means, linear, scores = [], [], [], []
+    scenes, means, linear = [], [], []
+    scores: list[Any] = []
     exact_zero = True
     rng_before = torch.get_rng_state().clone()
     # For fixed real holdout inputs compare full policy scores before/zero branch.
