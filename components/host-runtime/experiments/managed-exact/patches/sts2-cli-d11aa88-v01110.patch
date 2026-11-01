@@ -14968,10 +14968,10 @@ index 0000000..f121a08
 +}
 diff --git a/u1-native-tests/Program.cs b/u1-native-tests/Program.cs
 new file mode 100644
-index 0000000..031058c
+index 0000000..f6fc0c7
 --- /dev/null
 +++ b/u1-native-tests/Program.cs
-@@ -0,0 +1,762 @@
+@@ -0,0 +1,770 @@
 +using MegaCrit.Sts2.Core.Models.Enchantments;
 +using System.Reflection;
 +using System.Runtime.Loader;
@@ -15037,9 +15037,9 @@ index 0000000..031058c
 +        baseline = args.Contains("baseline");
 +        sim = Activator.CreateInstance(Simulator)!;
 +        string seed = "U1_" + (baseline ? "BASELINE_" : "NEW_") + args[0].ToUpperInvariant() + "_COMPONENT";
-+        if (args[0] == "trial-driver")
++        if (args[0] is "trial-driver" or "claws-driver")
 +        {
-+            try { TrialDriver(); }
++            try { TrialDriver(args[0] == "claws-driver"); }
 +            finally { Call("CleanUp"); }
 +            return;
 +        }
@@ -15389,7 +15389,7 @@ index 0000000..031058c
 +    // Only initial mount enters a privileged fresh Trial fixture. Subsequent
 +    // JSON commands and every input use the production native dispatcher and
 +    // WriteLine serializer over a real pipe, not recorded response substitutes.
-+    static void TrialDriver()
++    static void TrialDriver(bool claws = false)
 +    {
 +        var nativeProgram = Simulator.Assembly.GetType("Sts2Headless.Program")!;
 +        var dispatch = nativeProgram.GetMethod("HandleCommand", Flags)!;
@@ -15410,7 +15410,15 @@ index 0000000..031058c
 +                _ = (Dictionary<string, object?>)dispatch.Invoke(null, arguments)!;
 +                sim = arguments[0]!;
 +                run = Field<RunState>("_runState"); player = run.Players[0];
-+                value = TrialPage();
++                if (claws)
++                {
++                    var first = PileType.Deck.GetPile(player).Cards[0];
++                    CardCmd.Upgrade(first);
++                    CardCmd.Enchant(ModelDb.Enchantment<Sharp>().ToMutable(), first, 3m);
++                    _ = ObtainClaws();
++                    value = State();
++                }
++                else value = TrialPage();
 +            }
 +            else
 +            {

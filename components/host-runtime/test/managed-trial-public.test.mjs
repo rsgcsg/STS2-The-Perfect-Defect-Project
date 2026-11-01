@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
+import { appendFileSync } from "node:fs";
 import { execFile } from "node:child_process";
 import path from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
-import { createSession, reduce, resolveFollowBasis } from "@rsgcsg/sts2-connector-client/p1-global";
+import { createSession, reduce, resolveFollowBasis, modelView } from "@rsgcsg/sts2-connector-client/p1-global";
 import { resolveDotnet } from "../src/managed-candidate.mjs";
 import { startJsonLineProcess } from "../src/json-line-process.mjs";
 import { ManagedPlayerEnvironmentSession } from "../src/managed-player-environment.mjs";
@@ -33,6 +34,7 @@ test("r1.8 explicitly folds the chosen Trial abandonment through the exact nativ
       "the old profile cannot silently publish the new abandonment intention");
     const first = reduce(createSession("trial-new", "managed", "r1.8"), parent);
     assert.equal(first.complete, true, String(first.missing));
+    if (process.env.STS2_U1_OBSERVATIONS_PATH) appendFileSync(process.env.STS2_U1_OBSERVATIONS_PATH, JSON.stringify(modelView(first.observation)) + "\n");
     const choice = first.observation.catalog.find(value => value.label.startsWith("Confirm abandoning this run:"));
     assert.ok(choice, "abandonment consequences are explicit before model selection");
     assert.equal(first.forced_choice_id, null);
