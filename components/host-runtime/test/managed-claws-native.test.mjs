@@ -19,7 +19,7 @@ test("native Claws deterministic public preview preserves native reads and expli
   const hashes = () => artifacts.map(file => createHash("sha256").update(readFileSync(file)).digest("hex"));
   const before = hashes();
   await run(dotnet.command, ["build", path.join(candidate, "u1-native-tests/U1Native.csproj"), "-c", "Release",
-    "--no-restore", "-m:1", "-p:Deterministic=true", `-p:PathMap=${path.resolve(candidate)}=/_/candidate/`],
+    "-m:1", "-p:Deterministic=true", `-p:PathMap=${path.resolve(candidate)}=/_/candidate/`],
   { cwd: candidate, timeout: 180000, maxBuffer: 4 * 1024 * 1024 });
   assert.deepEqual(hashes(), before, "fixture build retains admitted artifact bytes");
   for (const [name, count] of Object.entries({ "claws-zero": 13, "claws-one": 17, "claws-many": 19, "claws-unknown": 3 })) {
