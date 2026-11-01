@@ -1,7 +1,7 @@
 """Recording intake with real Store/cache/Curation/Snapshot, synthetic source bytes.
 
-Only game observation and HTTP transport are replaced. No Human/cloud/runtime
-qualification is claimed by these fixtures.
+Game observation, HTTP transport and available disk capacity are controlled.
+No Human/cloud/runtime qualification is claimed by these fixtures.
 """
 from __future__ import annotations
 
@@ -18,6 +18,7 @@ from test_p1_t0 import observation
 
 from spireagent.artifact_contracts import Manifest, Parent
 from spireagent.json_boundary import BoundaryError, FrozenObject
+from spireagent.workbench import p1_cohort_intake as intake
 from spireagent.workbench.developer import ProjectConfig, combination
 from spireagent.workbench.local_recording_import import LocalRecordingImporter
 from spireagent.workbench.p1_cohort_cli import freeze_preview, reconcile_freeze
@@ -36,6 +37,30 @@ from stpd.p1.data import digest, json_bytes
 from stpd.p1.dataset import SOURCE_SCHEMA, TARGETS_SCHEMA
 
 TOOL = "a" * 64
+
+
+@pytest.fixture(autouse=True)
+def intake_capacity(monkeypatch):
+    # These tiny synthetic Store fixtures exercise intake behavior regardless of
+    # runner image occupancy. Keep the real guard; only its OS capacity input varies.
+    monkeypatch.setattr(intake, "shutil", SimpleNamespace(
+        disk_usage=lambda _: SimpleNamespace(free=30 * 1024**3)))
+
+
+@pytest.mark.parametrize("low_path", ["state", "cache"])
+@pytest.mark.parametrize("delta", [-1, 0, 1])
+def test_intake_capacity_boundary_checks_both_filesystems(tmp_path, monkeypatch, low_path, delta):
+    paths = [tmp_path / "state", tmp_path / "cache"]
+    limit = 15 * 1024**3
+    assert limit == intake.MIN_FREE_BYTES
+    monkeypatch.setattr(intake, "shutil", SimpleNamespace(disk_usage=lambda path:
+        SimpleNamespace(free=limit + delta
+                        if path.name == low_path else 30 * 1024**3)))
+    if delta < 0:
+        with pytest.raises(BoundaryError, match="fifteen_GiB_free_required"):
+            intake.require_intake_space(*paths)
+    else:
+        intake.require_intake_space(*paths)
 
 
 def projection(store, name, *, level=0, result="win", tool=TOOL, valid_N=True):

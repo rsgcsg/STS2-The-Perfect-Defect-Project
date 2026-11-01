@@ -42,7 +42,7 @@
 | **函数级推理通过、真实Actor入口失败**；M022/M040/M041/M054 | EOF误停整池/close卡住由原listener有界关闭修复；central4在CLI环境过滤丢AUTH，Runtime50映射显式env key；Python能力表分别接46/51且未来未知仍拒绝。 | 复用正常Runtime CLI和完整consumer负例，不把函数serve测试当整链。原central4全部unknown、0评分保留；[M1](evidence/MANAGED_SPEED_M1_20261027.md)另用4新槽实测，池308请求/0错误，3自然负1capture unknown；不从不同轨迹吞吐或305点argmax同推全数值/全游戏等价。 |
 | **同一Managed敌回合settling一直录到容量门**；M051 | M1的120秒同snapshot watchdog只封未知；旧槽和原件保留。M2a定位原生PhantasmalGardener.EnlargeMove调用缺失Godot.Mathf.Log(float)，原turn task fault。 | 在Godot依赖stub补与准确GodotSharp一致的MathF.Log，未改敌人规则/RNG/原生回合；原三回合到round4及单独新修复验证种子自然负17层/0unknown/完整typed R2读回。复用[Host owner与注册接缝](../components/host-runtime/docs/MANAGED_P1_EQUIVALENCE.md)；不放慢默认时钟、不重投原unknown、不泛称所有等待已修。 |
 | **报告首屏派发旧任务**；M047及本轮CURRENT | F首屏旧head/时限/进行中状态已被替换并标历史；本轮又查到CURRENT仍派发已结束的评估、35槽未封存。 | 当前摘要整段替换，历史回原任务；closeout的40行/无历史段只控形状，不能证明内容新鲜。恢复须核refs、原件和进程。 |
-| **CI模拟测试受真实磁盘余量干扰**；X1 | [PR253](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/253)的两个轻量模拟测试给固定容量观测并保失败stdout，31项与准确合并CI通过。 | 区分测试夹具和生产容量策略；保留真实低空间拒绝检查，不削弱生产门槛、不碰运气重跑。 |
+| **CI模拟测试受真实磁盘余量干扰**；X1 | [PR253](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/pull/253)的两个轻量模拟测试给固定容量观测并保失败stdout，31项与准确合并CI通过；RL3/PR357的cohort/curation合成测试复用模块局部容量观测，另验state/cache各自低于、等于、高于15GiB边界，原CI失败保留。 | 区分测试夹具和生产容量策略；保留真实低空间拒绝检查，不削弱生产门槛、不碰运气重跑。 |
 
 | **测试分支或缺场景改变Managed结果、异步子项半发布**；M2e第三轮 | [Host56/Runtime57修复](evidence/MANAGED_M2E_R3_20261028.md)沿原生网格排序、召唤铃铛正式生成分支、事件场景调用、完整卡包pending及死亡边界修负责层；回放复用既有唯一公开操作合同。 | 复用原生规则和原始任务，不补造奖励资格、不猜同名对象、不重投六局旧未知。原件缺地图关闭输入的两处仍是重演边界，不能把来源字符串改相等或推成提前推进。 |
 
