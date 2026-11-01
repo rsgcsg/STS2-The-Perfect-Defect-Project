@@ -13,6 +13,7 @@ import json
 import sys
 import threading
 import time
+from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
@@ -104,10 +105,9 @@ class Archive:
     def _unexpected_error(self, error: Exception, intent: str | None = None) -> None:
         self.last_error = {"stage": "shared_archive", "error_type": type(error).__name__,
                            "pending": intent, "at": time.time()}
-        try:
+        # Keep the in-memory failure/pending even when the scheduler log is unwritable.
+        with suppress(OSError):
             print(json.dumps(self.last_error), file=sys.stderr, flush=True)
-        except OSError:
-            pass  # Keep the in-memory failure/pending when even the scheduler log is unwritable.
 
     def step(self, *, deadline: float | None = None) -> int:
         completed = 0
