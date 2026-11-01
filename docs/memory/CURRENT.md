@@ -2,8 +2,6 @@
 
 2026-11-01：用户已派RL3，替代暂停的10-30卡C；root负责。[本轮设计](../plans/RL_CRITIC_20261101.md)归v7，旧扫描/A-B方案已撤销且未运行。目标是每小时墙钟实战提升；长训s8136折1B温度，直接π采样、共享价值头/GAE/熵，anchor0、KL0监控，退化回好CP开KL .02。
 
-<!-- Resolve live GitHub refs before action; latest user instructions and live evidence override this file. -->
-
 ## 当前任务与唯一下一步
 
 截至11-01 21:52 AEST，本轮追加[升级卡](../plans/RL_CRITIC_20261101.md#2130升级追加)已授权：两项提速、32路、离线MLP过线后汇报并直接上线，Host60只随自然重启采用。用户另批准游戏总并发45；当前32actor＋quick4＋价值7＋U1预留1=44。GPU1400318/source3b5cadf6继续，actor1399798/1400350/1400480共32路，watch1400497/source1fc覆盖全部；旧watch1400364已正常维护退出，退役array1400175完整保全不重做。原训练11-02 03:27:51、全卡11-03 05:40末2h保全不变，03:27后续训仍待用户决定；一次一张免费GPU累计≤30h，不碰Mac/秘密输入/凭据，RL2不恢复。未采用Host59/60/61或新InputSpec。
