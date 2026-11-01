@@ -28,9 +28,7 @@ CARD-1A / [#340](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/issue
 
 ## U1 独立修复入口（2026-11-01 用户 v3）
 
-PR359/Host59、PR361/Host60与PR367/Trial/Claws已普通合并。Host59两局Actor/typed/R2读回通过；训练主决定自然重启采用旧输入修复。下一轮输入只迁移一次：Managed Sphere与Trial/Claws合成显式P1r1.9、InputSpec `stpd-p1-mstd-input-v2-r19@1`、Host62/SDK19/Runtime62，不先迁移r18。原参数兼容构包、全242候选、正常训练/冻结入口已接通；最终准确包与CI/运行交接沿[U1证据](../evidence/UNKNOWN_FIX_U1_20261101.md)，不热换当前RL3或日常安装。
-
-Sphere按用户批准的逻辑状态公开：至少一格露出的物品给完整矩形与种类，全未露面不公开；忽略透明角/同种局部图片细节。Reference本卡不要求，#366不挡Managed完成。#362建筑师等首次第三幕Boss清掉或首次进入再修；#363/#364/#365/#366留Issue，本卡不展开。129条分类和所有旧unknown/分母保留，不重发、不改成已恢复。
+PR359/Host59、PR361/Host60与PR367/Trial/Claws已普通合并。Host59两局Actor/typed/R2读回通过；训练主决定自然重启采用旧输入修复。下一轮输入只迁移一次：Managed Sphere与Trial/Claws合成显式P1r1.9、InputSpec `stpd-p1-mstd-input-v2-r19@1`、Host62/SDK19/Runtime62，不先迁移r18。原参数兼容构包、全242候选、正常训练/冻结入口已接通；最终准确包与CI/运行交接沿[U1证据](../evidence/UNKNOWN_FIX_U1_20261101.md)，不热换当前RL3或日常安装。 Sphere按用户批准的逻辑状态公开：至少一格露出的物品给完整矩形与种类，全未露面不公开；忽略透明角/同种局部图片细节。Reference本卡不要求，#366不挡Managed完成。#362建筑师等首次第三幕Boss清掉或首次进入再修；#363/#364/#365/#366留Issue，本卡不展开。129条分类和所有旧unknown/分母保留，不重发、不改成已恢复。
 
 ## Remaining Platform non-claims（运行与证据边界）
 
