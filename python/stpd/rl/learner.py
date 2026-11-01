@@ -523,7 +523,8 @@ class Learner:
             validation = self.critic.validate()
             self.timer.add("critic_validation", began)
             self.last_critic_validation_update = self.critic.updates
-            self._event("critic_validation", **validation, version=latest,
+            self._event("critic_validation", **validation, version=learner["version"],
+                        checkpoint_artifact_id=artifact_id, latest_published_version=latest,
                         phase="fixed_cohort_before_first_upgraded_update",
                         policy_updates=self.updates)
         return latest
