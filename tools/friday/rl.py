@@ -104,7 +104,7 @@ def prepare(execution: Path, learner: Path, output: Path, *, actors: int = 8,
 
 def load_plan(path: Path) -> dict[str, Any]:
     canonical_path(path)
-    value = json.loads(path.read_bytes())
+    value: dict[str, Any] = json.loads(path.read_bytes())
     if (value.get('schema') != SCHEMA or value.get('target') != 'friday'
             or value.get('retry_unknown') is not False
             or value.get('automatic_mac_fallback') is not False):
@@ -190,7 +190,7 @@ def submit(path: Path, *, dry_run: bool = False,
     plan = load_plan(path)
     require_modules(Path(plan['source_root']))
     root = private_root(path.parent)
-    parents = []
+    parents: list[dict[str, Any]] = []
     if additional_to is not None:
         if not additional_to or len(set(additional_to)) != len(additional_to):
             raise ValueError('distinct_existing_same_run_parent_plans_required')
@@ -289,7 +289,7 @@ def run(path: Path) -> dict[str, Any]:
     work.mkdir(mode=0o700)
 
     actor_process = None
-    forwarded_actor_signals = []
+    forwarded_actor_signals: list[int] = []
 
     def stop(number, _frame):
         # RL1 checks STOP/signalled between complete small ledgers, not within a ledger.
