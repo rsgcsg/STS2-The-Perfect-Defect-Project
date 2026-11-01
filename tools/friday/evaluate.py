@@ -25,13 +25,12 @@ RETENTION = {"tier": "trajectory", "purpose": "evaluation", "audit_every": 50}
 
 
 def validate_execution(execution: dict[str, Any], selections: dict[str, str]) -> None:
+    from spireagent.storage.config import validate_peer
     from spireagent.workbench.managed_evaluation import storage_configuration
     from spireagent.workbench.managed_retention import (
         pipeline_configuration,
         retention_configuration,
     )
-
-    from spireagent.storage.config import validate_peer
 
     peer = execution.get("peer", {})
     shared = (peer.get("kind") == "local" and "archive" in peer

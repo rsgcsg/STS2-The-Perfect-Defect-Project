@@ -15,8 +15,8 @@ import time
 from pathlib import Path
 from typing import Any
 
-from spireagent.instance_lock import instance_lock
 from spireagent.artifact_contracts import Manifest
+from spireagent.instance_lock import instance_lock
 from spireagent.json_boundary import BoundaryError, json_bytes
 
 from .blobs import StoreError, safe_key
@@ -108,6 +108,10 @@ class Archive:
                     continue
                 self.last_error = {"stage": error.stage, "code": error.code,
                                    "at": time.time(), "pending": identity}
+                failure = {"stage": error.stage, "code": error.code, "pending": identity,
+                           "archive": self.binding}
+                failure_id = hashlib.sha256(json_bytes(failure)).hexdigest()
+                self.queue.put_if_absent(f"errors/{failure_id}.json", json_bytes(failure))
                 return completed
             self.last_error = None
             completed += 1
@@ -148,8 +152,28 @@ class Archive:
             if status["full_readback"]:
                 return status
             if time.monotonic() >= deadline:
-                raise StoreError("shared_archive_incomplete", "retain shared Store and resume archive drain")
-            self.wake.wait(.1)
+                raise StoreError("shared_archive_incomplete",
+                                 "retain shared Store and resume archive drain")
+            time.sleep(.1)
+
+    def seed_exchange(self, run: str) -> dict[str, Any]:
+        """Copy one existing exchange exactly before switching its frozen peer.
+
+        Artifact reads remain the existing verified Store read-through. This
+        imports no other run, changes no records and never reoffers a game.
+        """
+        from spireagent.rl_exchange import Exchange
+
+        prefix = Exchange({"kind": "local", "directory": str(self.root)}, run).prefix
+        keys = self.target.blobs.keys(prefix)
+        for key in keys:
+            raw = self.target.blobs.get(key)
+            self.source.blobs.put_if_absent(key, raw)
+            if self.source.blobs.get(key) != raw:
+                raise StoreError("shared_exchange_seed_readback_changed")
+        return {"schema": SCHEMA, "operation": "seed_exchange", "run": run,
+                "records": len(keys), "keys_sha256": hashlib.sha256(json_bytes(keys)).hexdigest(),
+                "full_readback": True, "game_offers": 0, "archive": self.binding}
 
 
 class ArchiveBlobs(LocalBlobStore):
@@ -184,15 +208,24 @@ def main() -> None:
     from .config import open_peer
 
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--peer", type=Path, required=True, help="nonsecret frozen local+archive binding")
+    parser.add_argument("--peer", type=Path, required=True,
+                        help="nonsecret frozen local+archive binding")
     parser.add_argument("--run")
+    parser.add_argument("--operation", choices=("seed", "drain", "status"), default="drain")
     parser.add_argument("--timeout", type=float, default=120)
     args = parser.parse_args()
     store = open_peer(json.loads(args.peer.read_bytes()))
     if not isinstance(store, ArchivedStore):
         raise StoreError("explicit_shared_archive_peer_required")
-    store.archive.reconcile(args.run)
-    result = store.archive.drain(timeout=args.timeout, owned=False)
+    if args.operation == "seed":
+        if not args.run:
+            parser.error("seed requires the exact existing run")
+        result = store.archive.seed_exchange(args.run)
+    elif args.operation == "status":
+        result = store.archive.status(owned=False)
+    else:
+        store.archive.reconcile(args.run)
+        result = store.archive.drain(timeout=args.timeout, owned=False)
     print(json.dumps(result), flush=True)
 
 

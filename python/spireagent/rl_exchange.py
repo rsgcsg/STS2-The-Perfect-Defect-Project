@@ -58,7 +58,8 @@ class Exchange:
     def archive_status(self) -> dict[str, Any] | None:
         from spireagent.storage.async_archive import ArchivedStore
 
-        return self.store.archive.status(owned=True) if isinstance(self.store, ArchivedStore) else None
+        return (self.store.archive.status(owned=True)
+                if isinstance(self.store, ArchivedStore) else None)
 
     def drain_archive(self, timeout: float = 120) -> dict[str, Any] | None:
         from spireagent.storage.async_archive import ArchivedStore

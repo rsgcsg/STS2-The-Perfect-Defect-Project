@@ -38,7 +38,8 @@ def publish_model(store):
     return model
 
 
-def test_hot_producer_typed_reader_and_background_archive_keep_original_bytes(tmp_path, monkeypatch):
+def test_hot_producer_typed_reader_and_background_archive_keep_original_bytes(
+        tmp_path, monkeypatch):
     binding, hot, archive = peers(tmp_path)
     blocked, entered = threading.Event(), threading.Event()
     original_put = hot.archive.target.blobs.put_if_absent
@@ -129,9 +130,11 @@ def test_shared_peer_cannot_archive_into_itself_or_chain_archives(tmp_path, chan
         open_peer(binding)
 
 
-def test_completed_read_collection_runs_off_owner_and_keeps_FIFO():
+def test_completed_read_collection_runs_off_owner_and_keeps_FIFO(monkeypatch):
+    from stpd.rl import learner as module
+
     learner = Learner.__new__(Learner)
-    learner.config = SimpleNamespace(reader_backend="thread", background_io=True)
+    learner.config = SimpleNamespace(reader_backend="process", background_io=True)
     learner.reader = ThreadPoolExecutor(max_workers=2)
     learner.read_completion = ThreadPoolExecutor(max_workers=1)
     gate = threading.Event()
@@ -146,7 +149,9 @@ def test_completed_read_collection_runs_off_owner_and_keeps_FIFO():
         decoded.append((rows[0]["key"], threading.get_ident()))
         return rows
 
-    learner._read, learner._read_result = read, decode
+    monkeypatch.setattr(module, "process_read", read)
+    learner._read_request = lambda key: key
+    learner._read_result = decode
     first, second = learner._submit_read("first"), learner._submit_read("second")
     time.sleep(.02)
     assert not first.done() and not second.done()

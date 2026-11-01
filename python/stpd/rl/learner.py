@@ -635,12 +635,13 @@ class Learner:
             self.critic is not None and not self.critic.ready, restoring)
 
     def _submit_read(self, key: str) -> Future[list[dict[str, Any]] | bytes]:
+        future: Future[Any]
         if self.config.reader_backend == "process":
             future = self.reader.submit(process_read, self._read_request(key))
-        else:
-            future = self.reader.submit(self._read, key)
-        return (self.read_completion.submit(self._complete_read, future)
-                if self.config.background_io else future)
+            if self.config.background_io:
+                return self.read_completion.submit(self._complete_read, future)
+            return future
+        return self.reader.submit(self._read, key)
 
     def _complete_read(self, future: Future[Any]) -> list[dict[str, Any]]:
         return self._read_result(future.result())
@@ -696,7 +697,8 @@ class Learner:
             rows = self._read_result(future.result())
             admission_began = time.monotonic()
             try:
-                self._admit(rows)  # Current policy/targets and all mutable accounting stay owner-only.
+                # Current policy/targets and all mutable accounting stay owner-only.
+                self._admit(rows)
             finally:
                 elapsed = time.monotonic() - admission_began
                 admission_seconds += elapsed
