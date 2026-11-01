@@ -307,6 +307,7 @@ def test_full_FP32_PPO_and_critic_preserve_trace_order_and_two_updates():
         ref = copy.deepcopy(reference)
         ref.forward_batch = Mock(wraps=ref.forward_batch)
         for step in range(2):
+            calls_before = ref.forward_batch.call_count
             result = rl_update(member, ref, optimizer, samples, [], .001, config, cache,
                                performance=execution, frame_cache=inputs)
             histories[number].append(result)
@@ -314,8 +315,7 @@ def test_full_FP32_PPO_and_critic_preserve_trace_order_and_two_updates():
             assert all(value.device == member.ids.weight.device for value in cache.values())
             assert len(inputs) == 5
             if step:
-                assert ref.forward_batch.call_count == calls
-            calls = ref.forward_batch.call_count
+                assert ref.forward_batch.call_count == calls_before
     assert histories[0][0]["execution_microbatches"]["max"] == 1
     assert histories[1][0]["execution_microbatches"]["max"] == 5
     for left, right in zip(histories[0], histories[1], strict=True):
