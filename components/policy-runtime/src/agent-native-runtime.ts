@@ -1364,7 +1364,7 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
   private async initializeGlobal(signal: AbortSignal): Promise<void> {
     const transport = this.options.globalTransport!, expected = this.manifest.requirements.environment;
     if (!("kind" in expected) || expected.kind !== "global-public-basis" || !this.manifest.input.global
-      || this.manifest.input.global.core_sha256 !== p1CoreIdentity().module_digest) throw new AgentSessionError("global_core_or_environment_contract");
+      || this.manifest.input.global.core_sha256 !== p1CoreIdentity(this.manifest.input.global.revision).module_digest) throw new AgentSessionError("global_core_or_environment_contract");
     const identity = await transport.negotiate(signal); this.checkActive(this.owner.epoch, signal);
     assertGlobalIdentity(identity, expected); assertGlobalProgramSupport(identity, this.manifest);
     if (this.options.evidence.durability === "decision" && identity.kind !== "managed")
@@ -1372,10 +1372,10 @@ class NativeAgentRuntime implements NativeAgentRuntimeOwner {
     if (this.options.managedSettlingTimeoutMs !== undefined && identity.kind !== "managed")
       throw new AgentSessionError("managed_settling_profile_required");
     this.globalIdentity = identity;
-    this.globalState = createSession(this.options.evidence.runId, transport.kind);
+    this.globalState = createSession(this.options.evidence.runId, transport.kind, this.manifest.input.global.revision);
     this.environment = { kind: "global_public_basis", ...identity.session, host_kind: identity.kind,
       producer_sha256: globalDigest(identity.producer), game_sha256: globalDigest(identity.game), game_continuity_id: identity.game_continuity_id };
-    await this.emitGlobal("global_initialized", { identity, core: p1CoreIdentity() });
+    await this.emitGlobal("global_initialized", { identity, core: p1CoreIdentity(this.manifest.input.global.revision) });
     if (this.options.initialProgressOriginal) {
       const original = this.options.initialProgressOriginal;
       assertInitialProgressOriginalBytes(original.metadata, original.bytes);

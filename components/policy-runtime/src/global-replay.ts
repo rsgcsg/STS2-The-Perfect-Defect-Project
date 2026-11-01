@@ -76,9 +76,10 @@ export async function replayGlobalAgentRun(directory: string) {
   const json = async (name: string) => JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(await readFile(join(directory, name))));
   const run = await json("manifest.json"), manifest = validateAgentManifest(await json("agent-manifest.json"));
   require(manifest.input.profile === "p1-global-r1" && manifest.input.global, "global_profile_required");
+  const selectedCore = p1CoreIdentity(manifest.input.global.revision);
   require(run.schema === "sts2.policy-runtime/agent-session-run-1" && run.agent_manifest_sha256 === globalDigest(manifest)
     && run.ended_at !== null && ["stopped", "tainted", "completed"].includes(run.status), "global_run_not_closed");
-  require(manifest.input.global.core_sha256 === p1CoreIdentity().module_digest, "global_core_identity_changed");
+  require(manifest.input.global.core_sha256 === selectedCore.module_digest, "global_core_identity_changed");
   const attestation = await json("adapter-attestation.json");
   require(attestation.run_id === run.run_id && attestation.agent_manifest_sha256 === run.agent_manifest_sha256
     && same(attestation.expected, manifest.adapter) && attestation.status === "attested" && same(attestation.actual, manifest.adapter), "global_adapter_identity");
@@ -165,9 +166,9 @@ export async function replayGlobalAgentRun(directory: string) {
         && p.fence_epoch >= 0 && p.new_dispatches_authorized === false, "global_control_fence_binding");
       controlFenced = true;
     } else if (event.kind === "global_initialized") {
-      require(!identity && same(p.core, p1CoreIdentity()), "global_initial_identity"); identity = p.identity;
+      require(!identity && same(p.core, selectedCore), "global_initial_identity"); identity = p.identity;
       const expected = manifest.requirements.environment; require("kind" in expected && identity, "global_environment_contract");
-      assertGlobalIdentity(identity, expected); assertGlobalProgramSupport(identity, manifest); state = createSession(run.run_id, identity.kind);
+      assertGlobalIdentity(identity, expected); assertGlobalProgramSupport(identity, manifest); state = createSession(run.run_id, identity.kind, manifest.input.global.revision);
     } else if (event.kind === "global_initial_progress_original") {
       require(identity?.kind === "reference" && !initialProgressOriginal && sources.size === 0, "initial_progress_original_order");
       const metadata = validateInitialProgressOriginal(p.original);
@@ -429,6 +430,6 @@ export async function replayGlobalAgentRun(directory: string) {
   const files = (await readdir(directory)).filter(name => /^global-/u.test(name)); require(files.every(name => referenced.has(name)) && referenced.size === files.length, "global_unreferenced_or_missing_original_artifact");
   return { schema: "sts2.policy-runtime/global-replay-1", run_id: run.run_id, sources: sources.size, observations, consumed, results,
     initial_progress_original: initialProgressOriginal,
-    unknown_delivery: unknown, technical_stop: noProgressStopped ? "no_progress" : null, profile: manifest.input.profile, core: p1CoreIdentity(), verdict: "verified" as const,
+    unknown_delivery: unknown, technical_stop: noProgressStopped ? "no_progress" : null, profile: manifest.input.profile, core: selectedCore, verdict: "verified" as const,
     scope: "original_public_basis_semantic_replay_and_actual_agent_dispatch_joins", native_qualification: false, human_origin: false, research_admission: false };
 }

@@ -82,7 +82,12 @@ internal sealed class EventOptionSurfaceReader : ILiveSurfaceReader
         var surface = new EventOptionSurface(
             Kind,
             entities.GetId(room, "screen"),
-            options);
+            options)
+        {
+            AbandonConfirmation = visibleButtons.Where(entry => entry.Button.IsEnabled && !entry.Button.Option.IsLocked)
+                .Select(entry => AbandonRunConfirmationSurfaceReader.ParentCapability(eventRoom, owner.Event, entry.Button.Option, entities))
+                .SingleOrDefault(value => value != null)
+        };
         var missing = new List<string>();
         if (context.Name == null)
             missing.Add("context.name");

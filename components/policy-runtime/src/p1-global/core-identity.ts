@@ -1,7 +1,7 @@
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { P1G_PROFILE, P1G_REVISION, sha256Hex } from "@rsgcsg/sts2-connector-client/p1-global";
+import { P1G_PROFILE, P1G_REVISION, P1G_INTERACTION_REVISION, sha256Hex } from "@rsgcsg/sts2-connector-client/p1-global";
 
 function coreDirectory(): string {
   const resolve = (import.meta as { resolve?: (specifier: string) => string }).resolve;
@@ -15,9 +15,10 @@ function coreDirectory(): string {
 }
 
 /** Identity of the exact shared P1 core used to produce or convert a record. */
-export function p1CoreIdentity(): { profile: string; revision: string; module_digest: string } {
+export function p1CoreIdentity(revision: typeof P1G_REVISION | typeof P1G_INTERACTION_REVISION = P1G_REVISION): { profile: string; revision: string; module_digest: string } {
+  if (![P1G_REVISION, P1G_INTERACTION_REVISION].includes(revision)) throw new Error("unsupported_runtime_p1_revision");
   const directory = coreDirectory();
   const files = readdirSync(directory).filter((name) => name.endsWith(".js")).sort();
   const digest = sha256Hex(files.map((name) => `${name}\u0000${sha256Hex(readFileSync(join(directory, name)))}`).join("\n"));
-  return { profile: P1G_PROFILE, revision: P1G_REVISION, module_digest: digest };
+  return { profile: P1G_PROFILE, revision, module_digest: digest };
 }

@@ -51,9 +51,18 @@ V2_INPUT_SPEC = {
 }
 
 
+# Explicit new public interaction binding; identical V2 encoding and tensor shape.
+# This does not admit r1.8 data to any training pipeline.
+V2_R18_INPUT_SPEC = {**V2_INPUT_SPEC, "id": "stpd-p1-mstd-input-v2-r18", "revision": "r1.8"}
+
+
+def is_v2_encoding(value: object) -> bool:
+    return isinstance(value, dict) and value in (V2_INPUT_SPEC, V2_R18_INPUT_SPEC)
+
+
 def validate_input_spec(value: object) -> dict[str, Any]:
     if not isinstance(value, dict) or value not in (
-        INPUT_SPEC, LEGACY_INPUT_SPEC, SORTED_INPUT_SPEC, V2_INPUT_SPEC
+        INPUT_SPEC, LEGACY_INPUT_SPEC, SORTED_INPUT_SPEC, V2_INPUT_SPEC, V2_R18_INPUT_SPEC
     ):
         raise ValueError("unsupported P1 M-std InputSpec")
     return value
@@ -120,7 +129,7 @@ def project(
     aliases: dict[str, int] = {}
     views: dict[str, list[int]] = {}
     sorting_bindings: dict[int, set[str]] = {}
-    symmetric = spec in (SORTED_INPUT_SPEC, V2_INPUT_SPEC)
+    symmetric = spec == SORTED_INPUT_SPEC or is_v2_encoding(spec)
     pending: list[tuple[int, str]] = []
     relation = None
     identity_relation = None
@@ -128,7 +137,7 @@ def project(
         from .input_identity import identity_paths
 
         identity_relation = identity_paths(observation)
-        relation = identity_relation if spec == V2_INPUT_SPEC else None
+        relation = identity_relation if is_v2_encoding(spec) else None
 
     def visit(recurse: Callable[..., int], value: Any, path: str,
               position: int = 0, parent: int | None = None,
@@ -278,7 +287,7 @@ def project(
             roles.append((aliases.get(choice.get("subject"), -1),
                           aliases.get(choice.get("target"), -1)))
     frame = Frame(entities, choices, roles)
-    if spec in (SORTED_INPUT_SPEC, V2_INPUT_SPEC):
+    if spec == SORTED_INPUT_SPEC or is_v2_encoding(spec):
         from .input_order import order_frame
 
         return order_frame(frame, observation, sorted_positions=spec == SORTED_INPUT_SPEC,

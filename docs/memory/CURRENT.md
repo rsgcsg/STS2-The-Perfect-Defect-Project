@@ -26,6 +26,10 @@ CARD-1A / [#340](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/issue
 | 录制 | Workbench cc39dc7f / Mod72加载、窗口/退出Stop及新持久本机库0动作索引保存回读已核。用户0局；完整对局数据链与Human资格未通过 |
 | 新用法 | 排序对照真实游戏、显示全部P1动作、人排几个并执行第一、可标问题，不需后台模型；交替各段标人或准确模型版本。复用原决策端口/控制/原件，不另起执行链 |
 
+## U1 独立修复入口（2026-11-01）
+
+PR359/Host59首批、PR361/Host60晚到子输入与settling刷新已交；训练主决定自然重启采用。Host59两局Actor/typed/R2读回通过，no_value_head不当RL就绪。新P1r1.8/新InputSpec另版：Trial/Claws原生组件→正常消费、v416参数保留已核，真实Reference场景仍缺[#366](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/issues/366)。未热换RL3/日常。沿[U1证据](../evidence/UNKNOWN_FIX_U1_20261101.md)恢复129条分类、已达与未达；Sphere/Architect/宝箱/Stop ACK/typed诊断归#350/#362/#363/#364/#365，旧记录和分母保留。
+
 ## Remaining Platform non-claims（运行与证据边界）
 
 - 未来价值loss默认无权重，T2原W1历史不回写；动作W1另由下代配置决定。

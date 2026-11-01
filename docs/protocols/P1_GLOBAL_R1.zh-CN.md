@@ -1,6 +1,6 @@
 # P1 全局 r1：可执行合同（profile `p1-global-r1`）
 
-状态：**r1.5，P1 的唯一权威文档**（2026-10-21 已授权修复取消/完成冲突；实现和实跑资格见 CURRENT）。其他 P1 文档（[P1](P1.zh-CN.md)、[Host/wire](P1_HOST_AND_WIRE.zh-CN.md)、[计划](../plans/P1_FORWARD_2026-10-15.zh-CN.md)、[ADR-0017](../adr/0017-p1-forward-decision-profile.md)）是背景和历史；本文定义P1语义；用户最新要求及组件权责仍优先，代码是待检验实现，不以当前代码覆盖需求。
+状态：**默认 r1.5；r1.8 显式交互组合已批准，实跑资格另列。P1 的唯一权威文档**（2026-10-21 已授权修复取消/完成冲突；实现和实跑资格见 CURRENT）。其他 P1 文档（[P1](P1.zh-CN.md)、[Host/wire](P1_HOST_AND_WIRE.zh-CN.md)、[计划](../plans/P1_FORWARD_2026-10-15.zh-CN.md)、[ADR-0017](../adr/0017-p1-forward-decision-profile.md)）是背景和历史；本文定义P1语义；用户最新要求及组件权责仍优先，代码是待检验实现，不以当前代码覆盖需求。
 推进规则见 [WORKING_RULES](../WORKING_RULES.zh-CN.md)；当前任务、差异和冻结门见
 [当前入口](../plans/p1-prefreeze-2026-10-18/README.md)与[待批冻结定义v0.3](../plans/p1-prefreeze-2026-10-18/SCOPE_v0.3.zh-CN.md)。
 第14–16节实测及第18节旧T1–T7均保留其注明日期/候选的历史范围；第17节拥有登记例外。
@@ -522,3 +522,42 @@ r1.7仅在派生副本替换这两个已有counter；玩家遗物、表面遗物
 
 其他19项展示计数的调查不构成改义授权，字段清单与逐机制证据归本轮M2a报告。
 新语义的相等不推翻旧r1.5严格差异，也不证明旧438输入/概率或整局资格等价。
+
+## r1.8：审判放弃意图与原生确定性变牌预览（2026-11-01，用户已批）
+
+这是显式选择的新交互组合：以冻结 r1.5 为基底，只加入以下两项；不隐式继承
+r1.6 的排序变更或 r1.7 的计数派生。SDK `createSession(episode, host, "r1.8")`、
+Runtime manifest `input.global.revision` 与 `input.projection.version` 必须共同选择
+r1.8，独立回放使用同一选择。默认仍为 r1.5。新页面即使删掉独立 revision 标签，
+旧 profile 也会根据实际新 capability 拒绝，不静默把新语义交给旧模型。
+
+审判 `event_option` 的可选 `abandon_confirmation` 公开当前事件、房间、唯一父选项和
+原生确认警告。P1 父候选明确写“确认放弃本局”与警告；模型实际选择后，先执行该父选项，
+再只在相同事件/房间/父选项、警告和游戏公开事实不变时，降低到当前真实 modal 的唯一
+Yes 绑定。缺失、禁用、歧义、换 owner 或警告改变均拒绝续接。原生 No 仍在 PB1 完整目录，
+P1 以 `forward_profile:abandon_confirmation_return_navigation` 明确排除；不默认放弃，
+不设 forced choice，不凭 HP/菜单状态制造终局。原生 Abandon Task、Kill 与历史提交决定终局。
+
+Claws 的 `deck_transform_selection` 在原生确定性预览确实合格时，公开
+`selector_request.transformation_preview=deterministic_native_after`，每个
+`preview_options` 保留同一个可操作原牌的 `subject_entity_id`、before、after、
+`display_context=native_deterministic_transform_after` 及明确 availability/missing。
+这是玩家可见的原生预览，after 不成为另一个操作 operand。只有精确原 Claws factory/
+delegate 与读取闭包合格才调用原预览；任意 delegate/被 patch factory 拒绝。原工厂的
+ownerless 预览与提交后 owned 牌可能有不同伤害文本，分别如实保留。结束所选集合仍需
+明确 Finish，并对同一集合、预览和公开世界事实续接原生确认；规则/RNG/实际变牌归游戏。
+
+新增 native ID 路径仅在 r1.8 按公开关系分配别名：父 capability 的 event/room 为
+声明、parent option 引用当前 options；modal 声明自身、event/room/parent 和两 controls。
+任意未声明扩展字段仍是字面事实。transport 的 `requires_profile_revision` 仅用于严格
+准入，在 r1.8 策略视图中移除；其余公开事实原样保留。
+
+模型另发 `stpd-p1-mstd-input-v2-r18@1`；编码与张量结构复用 Input-v2，但 revision
+绑定、包及 descriptor/hash 全部另版。兼容构包只改 InputSpec metadata，词表、tokenizer、
+网络与原参数逐项相同，不添加参数、不自动准入新训练、不改旧模型/旧记录或正在跑的 RL3。
+原字段未变时编码/分数等同性与新事实实际进入张量/分数分别验证；有限分数或敏感性不证明
+策略已经学会新含义。操作见 `python/docs/P1_T0.md` 的显式 r1.8 小节。
+
+本组合不包含 Crystal Sphere：可见部分图案的忠实表示与 Managed 渲染仍缺实物，见
+[#350](https://github.com/rsgcsg/STS2-The-Perfect-Defect-Project/issues/350)。当前实际验证级别
+和未完成的 Reference 场景门以 CURRENT 链接的 U1 证据为准，源码实现/构建不替代场景资格。

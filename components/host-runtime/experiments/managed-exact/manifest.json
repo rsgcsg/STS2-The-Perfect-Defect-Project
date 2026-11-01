@@ -47,9 +47,9 @@
     "effect": "Every Managed prepare compares the exact game Godot references with the built stub; a gap outside the reviewed baseline fails the build and names the member. Hosted CI has no game files and does not run it."
   },
   "expected_build": {
-    "source_patch_sha256": "d7476c388f398742767a4fab83655e380772b32e7a5ea2891810480d1317a298",
-    "artifact_sha256": "a8c416a0dcc5a1397889cb7c3985b160975b96e38bdb185883f948f84b23094b",
-    "artifact_mvid": "93c38bb2-fcce-4d1b-a7aa-34931a824e46",
+    "source_patch_sha256": "40ac1bce81f904113e247d85789c33ad0cf654056435a581d271a0430fcd7fc0",
+    "artifact_sha256": "dec31cfc3da83f25890057737c25dbabeac23074652d514d4672a9cdb511d4a8",
+    "artifact_mvid": "664ecb03-a137-4bf2-8716-3b9dd0dc585f",
     "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0"
   },
   "previous_candidate_build": {
@@ -105,9 +105,9 @@
         "occurrences": 7
       },
       "expected_build": {
-        "source_patch_sha256": "ebd2adf4ef75523fd6af29317f21354e57510cf9781c5df524c974d5f70f5585",
-        "artifact_sha256": "bb5513fd995595c1fc4aef25ad145255d226baea7192525f254f99ed0a93dd04",
-        "artifact_mvid": "739f4182-a6e6-49fa-8589-ddb3af127a61",
+        "source_patch_sha256": "a2957fb5f5b7f04b0b7edeb88173325c20c2c38f8cd3e8179cb8790b6bdecbb3",
+        "artifact_sha256": "2f5e1eb8bdf4b9804f5038f5eb470b6710013cfb7d520ab1cfa9699085376e5a",
+        "artifact_mvid": "de8e7321-721a-41c9-afa6-41167813edc9",
         "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0"
       },
       "non_claims": [
@@ -142,6 +142,13 @@
           "artifact_mvid": "09a5beff-5a7f-4247-9229-bcb08d00ae1a",
           "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0",
           "scope": "Host59 first U1 five-class repair; exact original package and runtime evidence remain frozen."
+        },
+        {
+          "source_patch_sha256": "ebd2adf4ef75523fd6af29317f21354e57510cf9781c5df524c974d5f70f5585",
+          "artifact_sha256": "bb5513fd995595c1fc4aef25ad145255d226baea7192525f254f99ed0a93dd04",
+          "artifact_mvid": "739f4182-a6e6-49fa-8589-ddb3af127a61",
+          "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0",
+          "scope": "Host60 settling repair; original source/package immutable, no qualification transferred."
         }
       ]
     }
@@ -462,6 +469,18 @@
       "risk": "medium",
       "effect": "Read observe_decision pumps already-delivered native work and calls the same DetectDecisionPoint. Recheck the original pending card selector during and after the combat fallback. Normal capture/observe/text observe refresh only settling snapshots; unchanged native facts preserve snapshot identity and the existing stall watchdog. No native input replay, new legality or timeout extension.",
       "regression": "u1-native-tests knight-late and knight-read: original Mittens hand producer released during fallback or after action return; production native command dispatch; unchanged/failed read, strict SDK/P1 r1.5 and Input-v2 full-catalog consumer. No replay of historical unknown."
+    },
+    {
+      "id": "native_trial_abandon_confirmation_presentation",
+      "kind": "host_presentation_adapter",
+      "risk": "high",
+      "effect": "Expose explicit current Trial warning and exact original Yes/No; only selected native control resumes original callback/Abandon task. New public P1 r1.8 opt-in; no default abandonment and no new terminal inference."
+    },
+    {
+      "id": "native_claws_deterministic_transform_preview",
+      "kind": "observation_adapter",
+      "risk": "high",
+      "effect": "Exact native Claws delegate/factory qualification uses original ownerless Maul preview with real upgrade/enchantment formatting; preserves preview-versus-committed owner context. Never executes arbitrary transformation delegates; actual native CardCmd.Transform remains authoritative."
     }
   ],
   "admission": {
@@ -622,6 +641,12 @@
     "source_patch_sha256": "de011e71826d20dd9e9db02c825e94877162d0646c0df70b19f84e5ca0b20a2b",
     "artifact_sha256": "0e5feebdf33de9bc48a1fbd543735e006bed1766b1f07e90148801802e3cb1aa",
     "artifact_mvid": "bb516baa-5308-4b47-a98e-ace6eda93028",
+    "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0"
+  },
+  "host60_previous_candidate_build": {
+    "source_patch_sha256": "d7476c388f398742767a4fab83655e380772b32e7a5ea2891810480d1317a298",
+    "artifact_sha256": "a8c416a0dcc5a1397889cb7c3985b160975b96e38bdb185883f948f84b23094b",
+    "artifact_mvid": "93c38bb2-fcce-4d1b-a7aa-34931a824e46",
     "localization_sha256": "7ba5ef6ac07c0be696499ba2bbf853f05830883475fefef3bbc7ffd25d8a77d0"
   }
 }

@@ -14,7 +14,14 @@ from stpd.workers.checkpoint_codec import decode_checkpoint, encode_checkpoint
 
 from .data import digest, json_bytes
 from .execution import MStdExecution
-from .input import INPUT_SPEC, LEGACY_INPUT_SPEC, SORTED_INPUT_SPEC, validate_input_spec
+from .input import (
+    INPUT_SPEC,
+    LEGACY_INPUT_SPEC,
+    SORTED_INPUT_SPEC,
+    V2_INPUT_SPEC,
+    V2_R18_INPUT_SPEC,
+    validate_input_spec,
+)
 from .model import ARCHITECTURE, MStd, architecture
 from .spec import EXECUTION_PACKAGE_SCHEMA, PACKAGE_SCHEMA
 
@@ -162,6 +169,56 @@ def load_model(path: Path, expected_sha256: str) -> tuple[MStd, dict[str, Any]]:
     return model.eval(), value
 
 
+def compatibility_package(package: Path, destination: Path) -> dict[str, Any]:
+    """Make an explicit r1.8 inference package from an immutable old V2 package.
+
+    Only InputSpec metadata changes. All vocabulary data, architecture, execution,
+    action parameters and original training/checkpoint provenance stay intact.
+    No training/resume admission or environment registration is performed here.
+    """
+    descriptor_raw = (package / "model.json").read_bytes()
+    descriptor = json.loads(descriptor_raw)
+    model, payload = load_model(package / "model.tensor-tree", descriptor["package_sha256"])
+    if model.vocabulary.get("input_spec") != V2_INPUT_SPEC:
+        raise ValueError("r1.8 compatibility requires an original V2 package")
+    if any(descriptor.get(key) != payload.get(key) for key in (
+        "schema", "inference_execution", "architecture", "input_spec",
+        "checkpoint_sha256", "training_identity"
+    )) or descriptor.get("parameters") != sum(
+        value.numel() for value in payload["weights"].values()
+    ):
+        raise ValueError("model descriptor differs from package")
+    vocabulary = copy.deepcopy(payload["vocabulary"])
+    vocabulary["input_spec"] = copy.deepcopy(V2_R18_INPUT_SPEC)
+    rebound = {**payload, "vocabulary": vocabulary, "input_spec": input_spec(vocabulary)}
+    raw = encode_checkpoint(rebound)
+    result = {**descriptor, "package_sha256": digest(raw), "input_spec": input_spec(vocabulary)}
+    preserved = {key: value for key, value in vocabulary.items() if key != "input_spec"}
+    receipt = {
+        "schema": "stpd/p1-input-compatibility-receipt-1",
+        "source_package_sha256": descriptor["package_sha256"],
+        "source_descriptor_sha256": digest(descriptor_raw),
+        "package_sha256": result["package_sha256"],
+        "descriptor_sha256": digest(json_bytes(result)),
+        "source_input_spec": descriptor["input_spec"], "input_spec": result["input_spec"],
+        "source_projection": V2_INPUT_SPEC, "projection": V2_R18_INPUT_SPEC,
+        "source_vocabulary_sha256": digest(json_bytes(payload["vocabulary"])),
+        "vocabulary_sha256": digest(json_bytes(vocabulary)),
+        "preserved_vocabulary_sha256": digest(json_bytes(preserved)),
+        "tokenizer_sha256": digest(vocabulary["tokenizer"].encode("utf-8")),
+        "tables_sha256": digest(json_bytes({key: vocabulary[key] for key in (
+            "ids", "fields", "kinds", "actions")})),
+        "weights_sha256": digest(encode_checkpoint({"weights": payload["weights"]})),
+        "changed_package_fields": ["vocabulary.input_spec", "input_spec"],
+        "training_admission_changed": False,
+    }
+    destination.mkdir(parents=True, exist_ok=False)
+    (destination / "model.tensor-tree").write_bytes(raw)
+    (destination / "model.json").write_bytes(json_bytes(result))
+    (destination / "compatibility.json").write_bytes(json_bytes(receipt))
+    return receipt
+
+
 def register(
     package: Path,
     root: Path,
@@ -203,9 +260,11 @@ def register(
         manifest.get("schema") != "sts2.policy-runtime/agent-manifest-1"
         or manifest.get("input", {}).get("profile") != "p1-global-r1"
         or not isinstance(manifest.get("input", {}).get("global"), dict)
-        or manifest["input"]["global"].get("revision") != INPUT_SPEC["revision"]
+        or manifest["input"]["global"].get("revision") != projection["revision"]
     ):
-        raise ValueError("registration needs a current r1.5 P1 environment manifest")
+        raise ValueError(
+            f"registration needs a current {projection['revision']} P1 environment manifest"
+        )
     manifest.update(
         manifest_id="p1-mstd-" + descriptor["package_sha256"][:16],
         agent={

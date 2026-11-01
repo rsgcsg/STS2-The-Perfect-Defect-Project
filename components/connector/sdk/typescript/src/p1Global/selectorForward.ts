@@ -9,9 +9,12 @@ const families = new Set(["deck_card", "deck_upgrade", "deck_enchant", "deck_tra
 const sorted = (ids: readonly string[]) => [...ids].sort();
 
 /** An opt-in native producer contract. Legacy selectors keep their explicit inputs. */
-export function completeSelectorFacts(surface: unknown): surface is Record<string, any> {
+export function completeSelectorFacts(surface: unknown, allowDeterministicTransform = false): surface is Record<string, any> {
   if (!isObject(surface) || !completeSelector(surface) || !completeCards(surface.cards) || !isObject(surface.selector_request)) return false;
   const r = surface.selector_request;
+  const deterministicTransform = Object.hasOwn(r, "transformation_preview");
+  if (deterministicTransform && (!allowDeterministicTransform || r.family !== "deck_transform"
+      || r.transformation_preview !== "deterministic_native_after")) return false;
   if (!text(surface.screen_entity_id) || !text(surface.request_entity_id)
       || r.entity_id !== surface.request_entity_id || r.owner_entity_id !== surface.screen_entity_id
       || !families.has(String(r.family)) || r.stage !== surface.stage
@@ -36,9 +39,10 @@ export function completeSelectorFacts(surface: unknown): surface is Record<strin
       || new Set(controls.map(c => c.operation)).size !== controls.length) return false;
   return surface.preview_options.every((option: unknown, index: number) => {
     if (!isObject(option) || option.subject_entity_id !== cards[index]!.entity_id
+        || deterministicTransform && option.display_context !== "native_deterministic_transform_after"
         || !text(option.display_context) || !Array.isArray(option.missing) || option.missing.length !== 0
         || !completeCards([option.before]) || canonicalJson(option.before) !== canonicalJson(cards[index])) return false;
-    const requiresAfter = r.family === "deck_upgrade" || r.family === "deck_enchant" && r.max_select === 1;
+    const requiresAfter = deterministicTransform || r.family === "deck_upgrade" || r.family === "deck_enchant" && r.max_select === 1;
     return requiresAfter ? option.after_availability === "available" && completeCards([option.after])
       && (option.after as Record<string, unknown>).entity_id === option.subject_entity_id
       : option.after === null && option.after_availability === "not_applicable";
@@ -94,8 +98,8 @@ export interface SelectorIntention {
 
 /** The Agent chooses an original card/set; only its native preview confirmation follows. */
 export function selectorIntention(surface: Record<string, any>, basis: P1Basis,
-  verb: string, subject: string | null): SelectorIntention | null {
-  if (!completeSelectorFacts(surface) || surface.stage !== "selecting") return null;
+  verb: string, subject: string | null, allowDeterministicTransform = false): SelectorIntention | null {
+  if (!completeSelectorFacts(surface, allowDeterministicTransform) || surface.stage !== "selecting") return null;
   let expected: string[];
   if (verb === "select" && subject && surface.selector_request.add_transition === "native_preview_at_max"
       && surface.cards.some((c: Record<string, any>) => c.entity_id === subject)
@@ -114,10 +118,10 @@ export function selectorIntention(surface: Record<string, any>, basis: P1Basis,
     world: rewardWorldFacts(basis), context: canonicalJson(snapshot.interaction.content.context), details };
 }
 
-export function matchesSelectorIntention(plan: SelectorIntention, basis: P1Basis): boolean {
+export function matchesSelectorIntention(plan: SelectorIntention, basis: P1Basis, allowDeterministicTransform = false): boolean {
   const snapshot = basis.snapshot as Record<string, any>;
   const surface = snapshot.interaction.content.surface;
-  return snapshot.interaction.kind === plan.native_kind && completeSelectorFacts(surface) && surface.stage === "preview"
+  return snapshot.interaction.kind === plan.native_kind && completeSelectorFacts(surface, allowDeterministicTransform) && surface.stage === "preview"
     && canonicalJson(sorted(surface.selected_card_entity_ids)) === canonicalJson(plan.expected_selected)
     && selectorFacts(surface) === plan.facts && rewardWorldFacts(basis) === plan.world
     && canonicalJson(snapshot.interaction.content.context) === plan.context && detailFacts(basis) === plan.details;
