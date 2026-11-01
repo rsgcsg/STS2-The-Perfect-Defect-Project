@@ -295,7 +295,7 @@ Evaluate/Pipeline、原审计与全字节保存读回，再计数。当前局合
 不是第二个游戏循环；始终四路，不把current与baseline并开成八路，200为原100池双边上界。
 20对、原100池耗尽、原墙钟上限三者先到即停；后两者不达20就是incomplete，不扩池。
 缺自然终局指标、保存/清理未确认、完整性失败或不闭合cache要求owner读原现场，watch保留
-attention_pending，不自动开新轮。原STOP与保存阶段信号逐层传到本轮停止新准入。
+attention_required，不自动开新轮。原STOP与保存阶段信号逐层传到本轮停止新准入。
 
 主comparison/均值/图只使用双边合格交集，原批次audit/scored与所有尝试分母留在result.batches
 及正常原件，不能用20对分母替换它们；现有rl_observation写JSON/CSV/SVG并明确投影范围。
