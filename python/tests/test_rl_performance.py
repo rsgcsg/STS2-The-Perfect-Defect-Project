@@ -281,7 +281,8 @@ def test_full_FP32_PPO_and_critic_preserve_trace_order_and_two_updates():
         critic = OnlineCritic(member, reference, optimizer, CriticConfig(), 7, execution)
         critic.freeze_policy(False)
         e = CriticEpisode("trace", "shard", "unit-seed", .7, 0, frames.copy(),
-                          [0] * 5, [.5] * 5, [[.5, .5]] * 5,
+                          [0] * 5, [1 / len(f.choices) for f in frames],
+                          [[1 / len(f.choices)] * len(f.choices) for f in frames],
                           [f"trace:{i}" for i in range(5)], 1)
         values, ratios, kl = critic.evaluate(e)
         traces.append((values, ratios, kl, trace_gae(.7, values, ratios, .999, 1)))
@@ -361,3 +362,37 @@ def test_PPO_deferred_full_FP32_rejects_nonfinite_before_optimizer_step(bad):
                 scene_attention_area=67108864, text_attention_area=67108864))
     assert not optimizer.state
     assert all(torch.equal(before[name], value) for name, value in model.state_dict().items())
+
+
+
+def test_no_grad_microbatch_is_independent_of_PPO_training_batch_cap():
+    from stpd.rl.critic import CriticConfig, CriticEpisode, OnlineCritic
+
+    torch.set_num_threads(2)
+    torch.manual_seed(71)
+    model = MStd(public_vocabulary(), MStdExecution.for_plan("mstd-training-v1"),
+                 value_heads=True).eval()
+    reference = copy.deepcopy(model)
+    frames = [synthetic_frame(2)] * 11
+    execution = PerformanceConfig(packed=True, tensor_cache=True, joint_nodes=True,
+        microbatch_size=2, inference_microbatch_size=8, bucket=True,
+        scene_attention_area=67108864, text_attention_area=67108864)
+    optimizer = torch.optim.SGD(model.parameters(), lr=0)
+    critic = OnlineCritic(model, reference, optimizer, CriticConfig(), 7, execution)
+    critic.freeze_policy(False)
+    e = CriticEpisode("cap", "shard", "unit-seed", .7, 0, frames, [0] * 11,
+        [.5] * 11, [[.5, .5]] * 11, [f"cap:{i}" for i in range(11)], 1)
+    critic.evaluate(e)
+    assert critic.last_evaluation_microbatches == [8, 3]
+    model.forward_values = Mock(wraps=model.forward_values)
+    critic.values(e)
+    assert [len(call.args[0]) for call in model.forward_values.call_args_list] == [8, 3]
+    samples = [RlSample(frame, 0, .5, .5, .1, 0, f"cap:{i}", value_target=.1)
+               for i, frame in enumerate(frames)]
+    result = rl_update(model, reference, optimizer, samples, [], 0,
+        LossConfig(mode="ppo", value_coef=.001), performance=execution)
+    assert result["execution_microbatches"] == {
+        "count": 6, "rows": 11, "min": 1, "max": 2, "mean": 11 / 6}
+    for invalid in (0, True, 65):
+        with pytest.raises(BoundaryError):
+            PerformanceConfig(inference_microbatch_size=invalid)

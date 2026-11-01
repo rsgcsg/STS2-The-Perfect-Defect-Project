@@ -41,6 +41,7 @@ class RlSample:
     action_kind: str = "unknown"
     acting_kl: float | None = None
     value_scale: float = 1.0
+    behavior_probabilities: list[float] | None = None
 
 
 @dataclass(frozen=True)
@@ -422,6 +423,28 @@ def _ppo_update(
         reference_log = _reference(reference, batch, reference_cache, packed.shape[1], device,
             resident=bool(performance and performance.reference_device_cache), defer_sync=deferred)
         logs = F.log_softmax(packed, -1)
+        # Fresh full-catalog acting KL belongs to this optimizer forward, including
+        # when V/GAE targets came from an earlier admission estimate.
+        if any(sample.behavior_probabilities is not None for sample in batch):
+            catalogs_old = []
+            for sample in batch:
+                old_catalog = sample.behavior_probabilities
+                width = len(sample.frame.choices)
+                if (old_catalog is None or len(old_catalog) != width
+                        or any(not math.isfinite(v) or v < 0 for v in old_catalog)
+                        or not math.isclose(sum(old_catalog), 1, abs_tol=1e-6)
+                        or not math.isclose(old_catalog[sample.action],
+                            sample.behavior_probability, rel_tol=1e-6, abs_tol=1e-10)):
+                    raise BoundaryError("rl_loss", "invalid_behavior_catalog")
+                catalogs_old.append(old_catalog + [0.0] * (logs.shape[1] - width))
+            current = logs.detach().double()
+            old_log = current.new_tensor(catalogs_old).log()
+            terms = torch.where(current.exp() > 0,
+                                current.exp() * (current - old_log), 0)
+            acting = terms.sum(-1)
+            valid_update = valid_update & torch.isfinite(acting).all()
+            batch = [replace(sample, acting_kl=value) for sample, value in
+                     zip(batch, acting.cpu().tolist(), strict=True)]
         valid = torch.arange(logs.shape[1], device=device)[None, :] < logs.new_tensor(
             [len(sample.frame.choices) for sample in batch])[:, None]
         reference_valid = torch.isfinite(reference_log[valid]).all()
@@ -545,8 +568,8 @@ def _ppo_update(
     }
     totals = statistics(rows)
     multi = [r for r in rows if r[5] >= 2]
-    acting_values = sorted(value for sample in samples
-                           if (value := sample.acting_kl) is not None)
+    acting_values = sorted(value for row in rows
+                           if (value := row[0].acting_kl) is not None)
     # Only tensors reached by the value loss are shared; action-only readout
     # parameters must not inflate the policy denominator.
     norms = [math.sqrt(sum(float(g.square().sum())
@@ -581,6 +604,9 @@ def _ppo_update(
         "rl_samples": len(samples),
         "anchor_samples": 0,
         "acting_policy_kl": totals["acting_kl"],
+        "acting_policy_kl_multichoice": statistics(multi)["acting_kl"] if multi else None,
+        "acting_kl_measurement": ("full_catalog_pre_optimizer_forward"
+            if all(s.behavior_probabilities is not None for s in samples) else "caller_supplied"),
         "acting_kl_quantiles": (
             {
                 str(q): acting_values[int(q * (len(samples) - 1))]

@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import torch
 
@@ -31,6 +31,8 @@ class PerformanceConfig:
     async_transfer: bool = False
     precompile_inputs: bool = False
     microbatch_size: int = 8
+    inference_microbatch_size: int | None = None
+    probe_inference_microbatches: bool = False
     scene_attention_area: int = 262144
     text_attention_area: int = 262144
     bucket: bool = False
@@ -43,13 +45,17 @@ class PerformanceConfig:
                 self.packed, self.tensor_cache, self.device_cache,
                 self.reference_device_cache, self.joint_nodes,
                 self.async_transfer, self.precompile_inputs,
-                self.bucket, self.defer_sync, self.tf32)):
+                self.bucket, self.defer_sync, self.tf32, self.probe_inference_microbatches)):
             raise BoundaryError("rl_performance", "invalid_boolean")
         if (type(self.microbatch_size) is not int or not 1 <= self.microbatch_size <= 64
                 or any(type(value) is not int or not 1 <= value <= 2**28 for value in (
                     self.scene_attention_area, self.text_attention_area))
                 or self.precision not in {"fp32", "bf16"}):
             raise BoundaryError("rl_performance", "invalid_execution_configuration")
+        if (self.inference_microbatch_size is not None and
+                (type(self.inference_microbatch_size) is not int
+                 or not 1 <= self.inference_microbatch_size <= 64)):
+            raise BoundaryError("rl_performance", "invalid_inference_microbatch")
         if self.tensor_cache and not self.packed:
             raise BoundaryError("rl_performance", "tensor_cache_requires_packed")
         if self.device_cache and not self.tensor_cache:
@@ -146,3 +152,83 @@ def prepare_models(model: MStd, reference: MStd,
         model.nonblocking_inputs, reference.nonblocking_inputs = old_nonblocking
         if old_tf32 is not None:
             torch.backends.cuda.matmul.allow_tf32 = old_tf32
+
+
+
+def probe_inference_microbatches(model: MStd, reference: MStd, frames: list[ModelFrame],
+                                config: PerformanceConfig,
+                                baseline: PerformanceConfig) -> dict[str, object]:
+    """Bounded CUDA 8/32/64 forward-only comparison on actual restored frames.
+
+    The historical path supplies same-weight complete scores and raw value heads.
+    No optimizer/RNG update, rollout or target preparation occurs here.
+    """
+    import statistics
+    import time
+
+    if model.ids.weight.device.type != "cuda" or not frames:
+        raise BoundaryError("rl_performance", "inference_probe_requires_CUDA_and_frames")
+    original_training = model.training
+    model.eval()
+
+    def forward(execution: PerformanceConfig) -> tuple[list[torch.Tensor], torch.Tensor, list[int]]:
+        scores: list[torch.Tensor] = [torch.empty(0)] * len(frames)
+        values = torch.empty((len(frames), 2))
+        sizes = []
+        with prepare_models(model, reference, execution), torch.no_grad():
+            for indices in grouped_indices(frames, model, execution):
+                output, prediction = model.forward_with_values([frames[i] for i in indices])
+                packed = torch.nn.utils.rnn.pad_sequence(output, batch_first=True).cpu()
+                predicted = prediction.cpu()
+                sizes.append(len(indices))
+                for position, index in enumerate(indices):
+                    scores[index] = packed[position, :len(frames[index].choices)].clone()
+                    values[index] = predicted[position]
+        return scores, values, sizes
+
+    rows: list[dict[str, Any]] = []
+    try:
+        expected_scores, expected_values, _ = forward(baseline)
+        for size in (8, 32, 64):
+            execution = replace(config, microbatch_size=size)
+            try:
+                forward(execution)  # per-option warmup is outside the measured windows
+                seconds = []
+                torch.cuda.reset_peak_memory_stats()
+                for _ in range(2):
+                    torch.cuda.synchronize()
+                    began = time.perf_counter()
+                    scores, values, groups = forward(execution)
+                    torch.cuda.synchronize()
+                    seconds.append(time.perf_counter() - began)
+                maximum = max(float((left - right).abs().max())
+                              for left, right in zip(scores, expected_scores, strict=True))
+                value_error = float((values - expected_values).abs().max())
+                argmax_equal = all(int(left.argmax()) == int(right.argmax())
+                                   for left, right in zip(scores, expected_scores, strict=True))
+                passed = (argmax_equal and torch.allclose(values, expected_values,
+                              atol=2e-5, rtol=3e-4)
+                          and all(torch.allclose(left, right, atol=2e-5, rtol=3e-4)
+                                  for left, right in zip(scores, expected_scores, strict=True)))
+                row = {"microbatch_size": size, "seconds": seconds,
+                    "median_seconds": statistics.median(seconds),
+                    "peak_allocated_bytes": torch.cuda.max_memory_allocated(),
+                    "actual_microbatch_sizes": groups,
+                    "max_logit_abs_error": maximum, "max_raw_value_abs_error": value_error,
+                    "complete_catalog_argmax_equal": argmax_equal,
+                    "status": "passed" if passed else "numerical_gate_failed"}
+            except torch.cuda.OutOfMemoryError:
+                row = {"microbatch_size": size, "status": "CUDA_out_of_memory"}
+                torch.cuda.empty_cache()
+            rows.append(row)
+        eligible = [row for row in rows if row["status"] == "passed"]
+        if not eligible:
+            raise BoundaryError("rl_performance", "no_inference_microbatch_passed")
+        best = min(eligible, key=lambda row: float(row["median_seconds"]))
+        return {"selected_microbatch_size": best["microbatch_size"],
+                "frames": len(frames), "candidates": rows,
+                "scope": "actual restored frames; same weights, full catalogs and raw value heads; no-grad",
+                "numerical_gate": {"atol": 2e-5, "rtol": 3e-4, "argmax_equal": True},
+                "method_changed": False, "training_updates": 0}
+    finally:
+        model.train(original_training)
