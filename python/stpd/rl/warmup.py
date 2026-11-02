@@ -4,6 +4,7 @@ Features come from MStd.value_features on the normal public-input reader, once
 with the selected frozen starting trunk. They never include terminal/HP labels
 as model inputs. This module owns numerical fitting, not storage or admission.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -48,7 +49,7 @@ class WarmupExample:
                 or not len(self.scene) or self.mean.shape != (192,)
                 or not bool(torch.isfinite(self.scene).all())
                 or not bool(torch.isfinite(self.mean).all())
-                or type(self.floor) is not int or not 0 <= self.floor <= 48
+                or type(self.floor) is not int or self.floor < 0
                 or (self.outcome is not None and (type(self.outcome) is not int
                     or not 0 <= self.outcome < OUTCOME_CLASSES
                     or not bool(outcome_mask([self.floor])[0, self.outcome])))
@@ -192,8 +193,13 @@ def _batch(model: MStd, examples: Sequence[WarmupExample]
     return logits, hp, outcome_valid, hp_valid, target, hp_target
 
 
-def evaluate_heads(model: MStd, examples: Sequence[WarmupExample], *, batch_size: int = 16
-                   ) -> dict[str, Any]:
+def evaluate_heads(
+    model: MStd,
+    examples: Sequence[WarmupExample],
+    *,
+    batch_size: int = 16,
+    return_predictions: bool = False,
+) -> dict[str, Any]:
     """Held-out diagnostics and same-row constants; no cross-dataset EV comparison."""
     losses: list[float] = []
     predicted: list[float] = []
@@ -203,6 +209,8 @@ def evaluate_heads(model: MStd, examples: Sequence[WarmupExample], *, batch_size
     by_game: dict[str, list[tuple[float, float]]] = defaultdict(list)
     labels: list[int] = []
     floors: list[int] = []
+    brier: list[float] = []
+    prediction_rows: list[dict[str, Any]] = []
     previous = model.rl4_heads.training
     model.rl4_heads.eval()
     try:
@@ -211,7 +219,10 @@ def evaluate_heads(model: MStd, examples: Sequence[WarmupExample], *, batch_size
                 rows = examples[offset:offset + batch_size]
                 logits, hp, ov, hv, target, hp_target = _batch(model, rows)
                 if bool(ov.any()):
-                    losses.extend(outcome_cross_entropy(logits[ov], target[ov]).cpu().tolist())
+                    nll = outcome_cross_entropy(logits[ov], target[ov]).cpu().tolist()
+                    losses.extend(nll)
+                    probabilities = logits[ov].softmax(-1)
+                    brier.extend(((probabilities - target[ov]).square().sum(-1)).cpu().tolist())
                     values = logits[ov].softmax(-1) @ class_reward_values(device=logits.device)
                     truth = target[ov] @ class_reward_values(device=logits.device)
                     p, a = values.cpu().tolist(), truth.cpu().tolist()
@@ -222,18 +233,41 @@ def evaluate_heads(model: MStd, examples: Sequence[WarmupExample], *, batch_size
                     floors.extend(row.floor for row in selected)
                     for row, prediction, answer in zip(selected, p, a, strict=True):
                         by_game[row.seed].append((prediction, answer))
+                    if return_predictions:
+                        original_indices = [
+                            i for i, row in enumerate(rows) if row.outcome is not None
+                        ]
+                        for i, local in enumerate(original_indices):
+                            prediction_rows.append(
+                                {
+                                    "index": offset + local,
+                                    "seed": rows[local].seed,
+                                    "prediction": p[i],
+                                    "target": a[i],
+                                    "floor": rows[local].floor,
+                                    "outcome_class": rows[local].outcome,
+                                    "nll": nll[i],
+                                    "probabilities": probabilities[i].cpu().tolist(),
+                                    "hp_prediction": float(hp[local]),
+                                    "hp_target": rows[local].hp,
+                                }
+                            )
                 if bool(hv.any()):
                     hp_errors.extend(((hp[hv] - hp_target[hv]).abs() * 100).cpu().tolist())
                     hp_losses.extend(F.huber_loss(hp[hv], hp_target[hv], reduction="none",
                                                  delta=0.1).cpu().tolist())
     finally:
         model.rl4_heads.train(previous)
-    report: dict[str, Any] = {"rows": len(examples),
+    report: dict[str, Any] = {
+        "rows": len(examples),
         "games": len({_seed(examples, i) for i in range(len(examples))}),
-        "outcome_rows": len(losses), "hp_rows": len(hp_errors),
+        "outcome_rows": len(losses),
+        "hp_rows": len(hp_errors),
         "nll": sum(losses) / len(losses) if losses else None,
+        "brier": sum(brier) / len(brier) if brier else None,
         "hp_mae_points": sum(hp_errors) / len(hp_errors) if hp_errors else None,
-        "hp_huber": sum(hp_losses) / len(hp_losses) if hp_losses else None}
+        "hp_huber": sum(hp_losses) / len(hp_losses) if hp_losses else None,
+    }
     if actual:
         errors = [(p - a) ** 2 for p, a in zip(predicted, actual, strict=True)]
         average = sum(actual) / len(actual)
@@ -245,13 +279,29 @@ def evaluate_heads(model: MStd, examples: Sequence[WarmupExample], *, batch_size
         probabilities = (frequencies + 1e-3).expand(len(labels), -1).clone()
         probabilities.masked_fill_(~outcome_mask(floors), 0)
         probabilities /= probabilities.sum(1, keepdim=True)
-        report.update({"mse": sum(errors) / len(errors), "constant_mse": variance,
-            "explained_variance": 1 - residual_variance / variance if variance > 0 else None,
-            "bias": residual_mean,
-            "equal_game_mse": sum(sum((p - a) ** 2 for p, a in rows) / len(rows)
-                                  for rows in by_game.values()) / len(by_game),
-            "constant_nll": float(-probabilities[torch.arange(len(labels)),
-                                                 torch.tensor(labels)].log().mean())})
+        report.update(
+            {
+                "mse": sum(errors) / len(errors),
+                "constant_mse": variance,
+                "explained_variance": 1 - residual_variance / variance if variance > 0 else None,
+                "bias": residual_mean,
+                "equal_game_mse": sum(
+                    sum((p - a) ** 2 for p, a in rows) / len(rows) for rows in by_game.values()
+                )
+                / len(by_game),
+                "constant_nll": float(
+                    -probabilities[torch.arange(len(labels)), torch.tensor(labels)].log().mean()
+                ),
+                "constant_brier": float(
+                    (probabilities - F.one_hot(torch.tensor(labels), OUTCOME_CLASSES))
+                    .square()
+                    .sum(-1)
+                    .mean()
+                ),
+            }
+        )
+    if return_predictions:
+        report["predictions"] = prediction_rows
     return report
 
 

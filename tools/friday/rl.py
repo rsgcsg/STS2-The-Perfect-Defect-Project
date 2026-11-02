@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Friday resource adapter for the original RL1 CPU actor; no gameplay loop."""
+"""Friday resource adapter for Managed actors and the RL4 GPU owner; no gameplay loop."""
 from __future__ import annotations
 
 import argparse
@@ -123,6 +123,7 @@ def prepare(execution: Path, learner: Path, output: Path, *, actors: int = 8,
         'constraint': 'fc430', 'retry_unknown': False, 'automatic_mac_fallback': False,
         'cross_actor_immediate_unknown_stop': False}
     if inference is not None:
+        assert segment_inference is not None
         plan['trajectory_encoding'] = 'short-segment-1'
         plan['inference'] = {'path': str(segment_inference), 'sha256': hashed(segment_inference)}
     save(output / 'plan.json', plan)
@@ -326,12 +327,14 @@ def run(path: Path) -> dict[str, Any]:
     work.mkdir(mode=0o700)
 
     actor_process = None
+    evidence_only = False
     forwarded_actor_signals: list[int] = []
 
     def stop(number, _frame):
         # RL1 checks STOP/signalled between complete small ledgers, not within a ledger.
-        (work / 'STOP').touch()
-        if (number == signal.SIGUSR1 and actor_process is not None
+        if not evidence_only:
+            (work / 'STOP').touch()
+        if (not evidence_only and number == signal.SIGUSR1 and actor_process is not None
                 and actor_process.poll() is None and not forwarded_actor_signals):
             try:
                 actor_process.send_signal(number)
@@ -352,6 +355,7 @@ def run(path: Path) -> dict[str, Any]:
                 [sys.executable, '-m', 'spireagent.workbench.rl_actor',
                  '--config', ref['path'], '--work', str(work)], stdout=stdout, stderr=stderr)
             code = actor_process.wait()
+            evidence_only = True
         if (work / 'actor-summary.json').is_file():
             summary = json.loads((work / 'actor-summary.json').read_bytes())
         uncertain = any(game.get('status') in {'unknown', 'save_failed'}
@@ -370,6 +374,8 @@ def run(path: Path) -> dict[str, Any]:
         save(root / 'STOP', {'actor': ref['actor'], 'reason': 'actor_failed',
                             'error_type': error_type, 'error_code': error_code})
     finally:
+        if actor_process is None or actor_process.poll() is not None:
+            evidence_only = True
         result = {'schema': 'spireagent/friday-RL-result-v1', 'actor': ref['actor'],
             'run': plan['run'], 'exit_code': code, 'error_type': error_type,
             'error_code': error_code, 'wall_seconds': time.monotonic() - began,

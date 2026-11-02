@@ -104,14 +104,16 @@ def segment_benchmark(args: Any) -> None:
         scene_attention_area=67108864,
         text_attention_area=67108864,
     )
-    probabilities = []
+    probabilities: list[list[float]] = []
     with torch.inference_mode():
         for indices in microbatches(frames, list(range(len(frames))), base):
             scores, _, _ = base.forward_rl4(
                 [frames[i] for i in indices], [floors[i] for i in indices]
             )
             probabilities.extend(score.float().softmax(-1).cpu().tolist() for score in scores)
-    rows, terminal, hp = [], [], []
+    rows: list[SegmentSample] = []
+    terminal: list[AuxiliarySample] = []
+    hp: list[AuxiliarySample] = []
     for index, (record, frame, probability) in enumerate(
         zip(records, frames, probabilities, strict=True)
     ):

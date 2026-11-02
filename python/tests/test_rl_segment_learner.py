@@ -6,6 +6,7 @@ No GPU, World or quality qualification is established by this engineering test.
 
 from __future__ import annotations
 
+import base64
 import copy
 from dataclasses import replace
 
@@ -149,7 +150,7 @@ def deliver(learner, tmp_path, actor, monkeypatch, *, battle=False):
         )
     scores = [client.consume(value) for value in inputs[:count]]
     client.close()
-    for name in ("manifest.json", "agent-manifest.json"):
+    for name in ("manifest.json", "agent-manifest.json", "adapter-attestation.json"):
         (directory / name).write_bytes(b"{}\n")
     (directory / "events.jsonl").write_bytes(
         b"".join(json_bytes({"sequence": i}) for i in range(1, count + 2))
@@ -162,8 +163,8 @@ def deliver(learner, tmp_path, actor, monkeypatch, *, battle=False):
     )
     records = []
 
-    def commit(segment):
-        artifact = publish_segment(learner.exchange.store, segment, PRODUCER)
+    def commit(segment, originals):
+        artifact = publish_segment(learner.exchange.store, segment, PRODUCER, originals=originals)
         record = {key: segment[key] for key in ("segment_id", "run_id", "rows", "mu")}
         record["segment_artifact_id"] = artifact.artifact_id
         learner.exchange.publish_segment(actor, len(records), record)
@@ -191,6 +192,7 @@ def deliver(learner, tmp_path, actor, monkeypatch, *, battle=False):
             assembler.transition(
                 {
                     "schema": "sts2.policy-runtime/verified-global-transition-1",
+                    "manifest_original_base64": base64.b64encode(b"{}\n").decode(),
                     "run_id": episode,
                     "step_index": index,
                     "verified_through_sequence": index + 2,
@@ -249,6 +251,24 @@ def test_battle_hp_arrives_across_segments_before_natural_episode_end(tmp_path, 
         assert all(state["hp"] == 0.57 and state["uses"] == 0 for state in states)
         manifest = learner.exchange.store.get_manifest(records[1]["segment_artifact_id"])
         assert Parent("hp-segment-0000", records[0]["segment_artifact_id"]) in manifest.parents
+        assert Parent("previous", records[0]["segment_artifact_id"]) in manifest.parents
+        from spireagent.storage.archives import _extract
+
+        journal, behavior = b"", b""
+        for index, record in enumerate(records):
+            artifact = learner.exchange.store.get_manifest(record["segment_artifact_id"])
+            raw = b"".join(learner.exchange.store.read_payload(artifact.payload("originals")))
+            directory = tmp_path / f"original-block-{index}"
+            _extract(raw, directory)
+            import json
+
+            commit = json.loads((directory / "commit.json").read_bytes())
+            assert commit["journal_start_bytes"] == len(journal)
+            assert commit["behavior_trace_start_bytes"] == len(behavior)
+            journal += (directory / "events-delta.jsonl").read_bytes()
+            behavior += (directory / "behavior-delta.jsonl").read_bytes()
+        assert journal == (tmp_path / "actor-hp/events.jsonl").read_bytes()
+        assert behavior == (tmp_path / "actor-hp/behavior.jsonl").read_bytes()
         final = read_segment(learner.exchange.store, manifest.artifact_id, scratch=tmp_path)
         final["hp_battles"][0]["hp"] = 0.42
         import pytest
@@ -256,7 +276,9 @@ def test_battle_hp_arrives_across_segments_before_natural_episode_end(tmp_path, 
         from spireagent.json_boundary import BoundaryError
 
         with pytest.raises(BoundaryError, match="battle_hp_boundary_changed"):
-            publish_segment(learner.exchange.store, final, PRODUCER)
+            publish_segment(
+                learner.exchange.store, final, PRODUCER, originals=b"invalid; not reached"
+            )
     finally:
         cleanup(learner)
 
@@ -276,6 +298,7 @@ def test_real_delivery_sgd_and_mid_dataset_restore_keep_frozen_targets_and_count
         original._step()
         assert original.updates == 1 and original.first_use == 2
         original.checkpoint(final=True)
+        saved_rng = torch.get_rng_state().clone()
         record = original.exchange.latest_checkpoint()
         assert record["version"] == 0 and record["checkpoint_sequence"] == 1
         replica_peer = {"kind": "local", "directory": str(tmp_path / "cold-peer")}
@@ -293,6 +316,7 @@ def test_real_delivery_sgd_and_mid_dataset_restore_keep_frozen_targets_and_count
             io,
         )
         assert restored.active["minibatch"] == 1 and restored.first_use == 2
+        assert torch.equal(torch.get_rng_state(), saved_rng)
         for key in ("targets", "probabilities", "advantages", "raw_advantages"):
             assert torch.equal(restored.active["frozen"][key], frozen[key])
         # Restored work materializes the real model/segment artifacts. Target
@@ -323,12 +347,79 @@ def test_real_delivery_sgd_and_mid_dataset_restore_keep_frozen_targets_and_count
 def test_permanent_remote_stop_rejects_before_publication_or_inference(tmp_path, monkeypatch):
     config, io = configuration(tmp_path, monkeypatch)
     exchange = Exchange(config.peer, config.run)
-    exchange.request_stop('permanent user stop')
+    exchange.request_stop("permanent user stop")
     import pytest
 
     from spireagent.json_boundary import BoundaryError
 
-    with pytest.raises(BoundaryError, match='cannot_resume_a_permanently_stopped_run'):
-        SegmentLearner(config, tmp_path/'stopped-work', io)
+    with pytest.raises(BoundaryError, match="cannot_resume_a_permanently_stopped_run"):
+        SegmentLearner(config, tmp_path / "stopped-work", io)
     assert exchange.latest_model() is None
-    assert not (tmp_path/'stopped-work/inference.json').exists()
+    assert not (tmp_path / "stopped-work/inference.json").exists()
+
+
+def test_budget_stop_publishes_partial_dataset_theta_and_keeps_resume_cursor(tmp_path, monkeypatch):
+    from stpd.p1.export import action_weights, load_model
+    from stpd.workers.checkpoint_codec import decode_checkpoint
+
+    config, io = configuration(tmp_path, monkeypatch)
+    learner = SegmentLearner(config, tmp_path / "work", io)
+    deliver(learner, tmp_path, "first", monkeypatch)
+    deliver(learner, tmp_path, "second", monkeypatch)
+    assert learner._prepare()
+    learner._step()
+    assert learner.updates == 1 and learner.version == 0 and learner.published_updates == 0
+    (learner.work / "STOP").touch()
+    summary = learner.run()
+    assert summary["updates"] == summary["published_updates"] == 1 and summary["versions"] == 1
+    record = learner.exchange.model(1)
+    checkpoint = learner.exchange.store.get_manifest(
+        learner.exchange.latest_checkpoint()["checkpoint_artifact_id"]
+    )
+    state = decode_checkpoint(
+        b"".join(learner.exchange.store.read_payload(checkpoint.payload("checkpoint")))
+    )
+    import json
+
+    metadata = json.loads(state["metadata"].cpu().numpy().tobytes())
+    assert metadata["active"]["minibatch"] == 1 and metadata["active"]["epoch"] == 0
+    assert metadata["first_use"] == 2 and metadata["published_updates"] == 1
+    package = learner.exchange.materialize_model(record, tmp_path / "readback")
+    actual, _ = load_model(package / "model.tensor-tree", record["model_sha256"])
+    for name, value in action_weights(state["weights"]).items():
+        assert torch.equal(value.cpu(), actual.state_dict()[name].cpu())
+    assert record["training"]["updates"] == 1
+
+
+def test_prepare_only_publishes_a_restorable_start_with_zero_uses(tmp_path, monkeypatch):
+    config, io = configuration(tmp_path, monkeypatch)
+    learner = SegmentLearner(config, tmp_path / "work", io)
+    summary = learner.run(initialize_only=True)
+    assert summary["updates"] == summary["first_use"] == summary["first_use_multi"] == 0
+    assert (
+        summary["versions"] == summary["unresolved_inflight"] == summary["unresolved_episodes"] == 0
+    )
+    assert learner.exchange.latest_checkpoint()["checkpoint_sequence"] == 1
+    assert learner.exchange.model(0)["training"]["updates"] == 0
+
+
+def test_async_checkpoint_is_announced_while_idle_before_next_capture_interval(
+    tmp_path, monkeypatch
+):
+    config, io = configuration(tmp_path, monkeypatch)
+    config = replace(config, wall_seconds=30)
+    learner = SegmentLearner(config, tmp_path / "work", io)
+    announced_after_stop = []
+    original = learner.exchange.publish_checkpoint
+
+    def published(*args, **kwargs):
+        result = original(*args, **kwargs)
+        announced_after_stop.append(learner.newlease_stopped)
+        (learner.work / "STOP").touch()
+        return result
+
+    monkeypatch.setattr(learner.exchange, "publish_checkpoint", published)
+    learner.checkpoint()  # Real asynchronous CAS publication; no data/actors.
+    learner.run()
+    assert announced_after_stop[0] is False
+    assert learner.exchange.latest_checkpoint()["checkpoint_sequence"] == 2

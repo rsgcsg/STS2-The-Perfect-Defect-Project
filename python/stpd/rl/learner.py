@@ -1,11 +1,8 @@
-"""RL learner: read shard records, train while actors keep playing, publish versions.
+"""Historical whole-episode reader/checkpoints and engineering regressions.
 
-The learner never waits for a whole actor batch. It trains whenever enough
-usable samples exist, never reuses a sample more than ``max_reuse`` times, drops
-trajectories more than ``max_staleness`` versions behind, and publishes a new
-model version every ``updates_per_version`` updates. Shard reads/projection and
-version publication run on background threads; time spent waiting for data is
-measured and reported rather than filled with repeated epochs.
+LearnerConfig remains the shared configuration owner. Supported live training
+uses segments and SegmentLearner through spireagent.workbench.rl_learner or the
+normal Friday GPU-owner entry. The legacy loop below is not a second live path.
 """
 from __future__ import annotations
 

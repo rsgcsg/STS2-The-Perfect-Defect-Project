@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Freeze, collect and score a current-policy critic diagnostic through normal APIs."""
+
 from __future__ import annotations
 
 import argparse
@@ -37,7 +38,9 @@ def bound(ref: dict[str, Any]) -> dict[str, Any]:
     return cast(dict[str, Any], json.loads(path.read_bytes()))
 
 
-def fixed_seeds(count: int) -> dict[str, Any]:
+def fixed_seeds(
+    count: int, *, namespace: str = "rl3-current-policy-value-validation-fixed-v1"
+) -> dict[str, Any]:
     from stpd.evaluation.suites import diagnostic_reference_manifest, seed_membership
     from stpd.rl.critic import held_out
 
@@ -47,8 +50,7 @@ def fixed_seeds(count: int) -> dict[str, Any]:
     seen: set[str] = set()
     index = 0
     while len(groups) < count:
-        group = hashlib.sha256(
-            ("rl3-current-policy-value-validation-fixed-v1:" + str(index)).encode()).hexdigest()[:32]
+        group = hashlib.sha256((namespace + ":" + str(index)).encode()).hexdigest()[:32]
         index += 1
         manifest = diagnostic_reference_manifest("v0.111.0", group, 1)
         manifest["host"] = "Managed"
@@ -56,14 +58,28 @@ def fixed_seeds(count: int) -> dict[str, Any]:
         if held_out(seed) and not seed_membership(seed) and seed not in seen:
             seen.add(seed)
             groups.append(manifest)
-    return {"schema": SEEDS, "groups": groups, "seeds": sorted(seen),
+    return {
+        "schema": SEEDS,
+        "groups": groups,
+        "seeds": sorted(seen),
+        "namespace": namespace,
         "permanent_exclusion": "held_out(seed): no policy or value optimizer admission",
-        "selection": "first canonical one-seed groups passing permanent TRAIN holdout hash; no outcomes"}
+        "selection": "first canonical one-seed groups passing permanent TRAIN holdout hash; no outcomes",
+    }
 
 
-def prepare(root: Path, learner_config: Path, execution_template: Path, runtime_source: Path, *,
-            count: int = 48, workers: int = 12, wall_seconds: int = 2700,
-            episode_seconds: int = 900, seeds_path: Path | None = None) -> dict[str, Any]:
+def prepare(
+    root: Path,
+    learner_config: Path,
+    execution_template: Path,
+    runtime_source: Path,
+    *,
+    count: int = 48,
+    workers: int = 12,
+    wall_seconds: int = 2700,
+    episode_seconds: int = 900,
+    seeds_path: Path | None = None,
+) -> dict[str, Any]:
     import evaluate
     import watch
     from spireagent.rl_exchange import Exchange
@@ -80,14 +96,61 @@ def prepare(root: Path, learner_config: Path, execution_template: Path, runtime_
         raise ValueError("complete_checkpoint_required")
     model = exchange.model(checkpoint["version"])
     root.mkdir(parents=True, mode=0o700)
-    binding = watch.Watcher({"peer": config["peer"], "run": config["run"],
-        "started_at": time.time()}, root / "normal-CP-reader").checkpoint_binding(checkpoint, model)
     manifest = exchange.store.get_manifest(checkpoint["checkpoint_artifact_id"])
     raw = b"".join(exchange.store.read_payload(manifest.payload("checkpoint")))
     state = decode_checkpoint(raw)
-    saved = learner_state(state)
-    if saved.get("critic", {}).get("ready") is not True:
-        raise ValueError("ready_critic_checkpoint_required")
+    if config.get("segments") is not None:
+        import torch
+        from stpd.p1.export import action_weights, load_model
+        from stpd.rl.segment_learner import CHECKPOINT_SCHEMA
+
+        saved = json.loads(state["metadata"].cpu().numpy().tobytes())
+        if (
+            state.get("schema") != CHECKPOINT_SCHEMA
+            or seeds_path is None
+            or saved["updates"] != saved["published_updates"]
+            or saved["updates"] != model["training"]["updates"]
+            or saved["version"] != model["version"]
+        ):
+            raise ValueError(
+                "frozen_published_RL4_policy_and_explicit_permanent_seed_plan_required"
+            )
+        package = exchange.materialize_model(model, root / "model")
+        policy, _ = load_model(package / "model.tensor-tree", model["model_sha256"])
+        if any(
+            not torch.equal(value.cpu(), policy.state_dict()[name].cpu())
+            for name, value in action_weights(state["weights"]).items()
+        ):
+            raise ValueError("checkpoint_policy_differs_from_published_MC_policy")
+        mu = next(item for item in saved["mu"] if item["version"] == model["version"])
+        head = exchange.store.get_manifest(mu["heads_artifact_id"])
+        heads = decode_checkpoint(
+            b"".join(exchange.store.read_payload(head.payload("checkpoint")))
+        )["heads"]
+        if any(
+            not torch.equal(value.cpu(), state["weights"]["rl4_heads." + name].cpu())
+            for name, value in heads.items()
+        ):
+            raise ValueError("checkpoint_heads_differ_from_published_MC_mu")
+        binding = {
+            "model_artifact_id": model["model_artifact_id"],
+            "model_sha256": model["model_sha256"],
+            "checkpoint_artifact_id": checkpoint["checkpoint_artifact_id"],
+            "checkpoint_parameters": {"config": saved["config"]},
+            "exact_policy_and_heads": True,
+        }
+        critic_config = saved["config"]["segments"]
+        target_statistics = None
+    else:
+        saved = learner_state(state)
+        if saved.get("critic", {}).get("ready") is not True:
+            raise ValueError("ready_critic_checkpoint_required")
+        binding = watch.Watcher(
+            {"peer": config["peer"], "run": config["run"], "started_at": time.time()},
+            root / "normal-CP-reader",
+        ).checkpoint_binding(checkpoint, model)
+        critic_config = saved["critic"]["config"]
+        target_statistics = saved["critic"]["target_statistics"]
     (root / "checkpoint.bin").write_bytes(raw)
     package = exchange.materialize_model(model, root / "model")
     seeds = json.loads(seeds_path.read_bytes()) if seeds_path else fixed_seeds(count)
@@ -97,18 +160,33 @@ def prepare(root: Path, learner_config: Path, execution_template: Path, runtime_
     if len(set(selected_seeds)) != count or sorted(selected_seeds) != seeds["seeds"]:
         raise ValueError("distinct_fixed_seed_plan_required")
     save(root / "fixed-seeds.json", seeds)
-    point = {"schema": "rl3/current-policy-critic-point-1", "point_id": root.name,
-        "frozen_at": time.time(), "checkpoint": checkpoint, "model": model,
-        "normal_full_CP_binding": binding, "checkpoint_file": str(root / "checkpoint.bin"),
+    point = {
+        "schema": "rl3/current-policy-critic-point-1",
+        "point_id": root.name,
+        "frozen_at": time.time(),
+        "checkpoint": checkpoint,
+        "model": model,
+        "normal_full_CP_binding": binding,
+        "checkpoint_file": str(root / "checkpoint.bin"),
         "checkpoint_payload_sha256": manifest.payload("checkpoint").sha256,
-        "package": str(package), "learner_config": binding["checkpoint_parameters"]["config"],
-        "critic_config": saved["critic"]["config"],
-        "critic_target_statistics": saved["critic"]["target_statistics"],
+        "package": str(package),
+        "learner_config": binding["checkpoint_parameters"]["config"],
+        "critic_config": critic_config,
+        "critic_target_statistics": target_statistics,
+        "heads_kind": "rl4" if config.get("segments") is not None else "rl3",
         "critic_policy_updates": saved["updates"],
-        "seed_plan": {"path": str(root / "fixed-seeds.json"),
-                      "sha256": hashed(root / "fixed-seeds.json")},
-        "behavior": {"mode": "temperature_uniform", "temperature": 1.0, "uniform_mix": 0},
-        "World_calls": 0, "optimizer_updates": 0}
+        "seed_plan": {
+            "path": str(root / "fixed-seeds.json"),
+            "sha256": hashed(root / "fixed-seeds.json"),
+        },
+        "behavior": {
+            "mode": "temperature_uniform",
+            "temperature": 1.0,
+            "uniform_mix": 0,
+        },
+        "World_calls": 0,
+        "optimizer_updates": 0,
+    }
     save(root / "point.json", point)
     template = root / "execution-template.json"
     template.write_bytes(execution_template.read_bytes())
@@ -326,6 +404,222 @@ def submit(path: Path, constraint: str | None = None) -> dict[str, Any]:
     return receipt
 
 
+def score_rl4(
+    path: Path, output: Path, plan: dict[str, Any], point: dict[str, Any]
+) -> dict[str, Any]:
+    """Same normal saved MC trajectory consumer, with RL4 outcome/HP readouts."""
+    import torch
+    from spireagent.rl_exchange import Exchange
+    from spireagent.workbench.evaluation_ledger import EvaluationLedger
+    from spireagent.workbench.managed_pipeline import verify_unscored_save
+    from spireagent.workbench.managed_trajectory_store import read_shard
+    from stpd.evaluation.value_quality import summarize
+    from stpd.p1.execution import microbatches
+    from stpd.p1.export import input_spec, load_model, runtime_projection
+    from stpd.p1.input import project
+    from stpd.p1.tensor_input import compile_frame
+    from stpd.rl.critic import held_out
+    from stpd.rl.heads import checked_terminal_class
+    from stpd.rl.reward import episode_reward
+    from stpd.rl.warmup import WarmupExample, evaluate_heads
+    from stpd.workers.checkpoint_codec import decode_checkpoint
+
+    original = json.loads((path.parent / "result.json").read_bytes())
+    if (
+        original["plan_sha256"] != hashed(path)
+        or hashed(Path(point["checkpoint_file"])) != point["checkpoint_payload_sha256"]
+    ):
+        raise ValueError("normal_RL4_MC_collection_or_checkpoint_binding_changed")
+    output.mkdir(parents=True, mode=0o700)
+    torch.set_num_threads(4)
+    model, _ = load_model(Path(point["package"]) / "model.tensor-tree", point["model"]["model_sha256"])
+    model.enable_rl4_heads(0)
+    model.load_state_dict(
+        decode_checkpoint(Path(point["checkpoint_file"]).read_bytes())["weights"]
+    )
+    model.eval().requires_grad_(False)
+    projection = runtime_projection(model.vocabulary)
+    spec = input_spec(model.vocabulary, projection)
+    exchange = Exchange(point["learner_config"]["peer"], point["learner_config"]["run"])
+    execution = bound(plan["execution"])
+    examples: list[WarmupExample] = []
+    games: list[dict[str, Any]] = []
+    excluded: list[dict[str, Any]] = []
+    for group in plan["groups"]:
+        slots = EvaluationLedger(Path(group["ledger"])).slots()
+        if (
+            len(slots) != 1
+            or slots[0]["seed"] != group["seed"]
+            or not held_out(group["seed"])
+        ):
+            raise ValueError("permanent_single_slot_holdout_required")
+        slot = slots[0]
+        if (
+            slot["status"] != "saved"
+            or not slot.get("cleanup_accepted")
+            or slot.get("score_eligible") is not False
+            or not slot.get("trajectory_shard_id")
+        ):
+            excluded.append(
+                {
+                    "seed": group["seed"],
+                    "status": slot["status"],
+                    "reason": slot.get("reason"),
+                    "run_id": slot.get("run_id"),
+                }
+            )
+            continue
+        matches = [
+            ep
+            for ep in read_shard(
+                exchange.store, slot["trajectory_shard_id"], scratch=output
+            )
+            if ep["run_id"] == slot["run_id"]
+        ]
+        if len(matches) != 1:
+            raise ValueError("unique_normal_MC_run_required")
+        episode = matches[0]
+        attempt = bound(slot["report"])
+        rows = [
+            row for row in attempt["episodes"] if row.get("run_id") == slot["run_id"]
+        ]
+        if len(rows) != 1:
+            raise ValueError("normal_MC_attempt_binding_required")
+        verify_unscored_save(rows[0], Path(slot["report"]["path"]))
+        identity = episode["identity"]
+        sampling = {**point["behavior"], "seed": rows[0]["intent_id"]}
+        if (
+            identity["seed"] != group["seed"]
+            or identity["model_artifact_id"] != point["model"]["model_artifact_id"]
+            or identity["model_sha256"] != point["model"]["model_sha256"]
+            or identity["input_spec"] != spec
+            or identity["behavior_policy"] != sampling
+            or rows[0].get("behavior_policy") != sampling
+            or any(
+                identity[key] != execution[key]
+                for key in ("producer", "host_pin", "runtime_pin")
+            )
+            or identity["initial_progress_sha256"]
+            != execution["initial_progress"]["progress_sha256"]
+        ):
+            raise ValueError("same_frozen_MC_policy_behavior_and_world_required")
+        reward, result = episode_reward(episode)
+        if reward is None:
+            excluded.append(
+                {"seed": group["seed"], "status": result, "run_id": slot["run_id"]}
+            )
+            continue
+        label = checked_terminal_class(
+            result=result, floor=episode["outcome"]["max_observed_floor"], reward=reward
+        )
+        hp_labels: dict[int, float] = {}
+        for span in episode["combat_spans"]:
+            end = span["end_observation_index"]
+            if end is None:
+                end = len(episode["observations"]) - 1
+            observation = episode["observations"][end]["observation"]
+            health = ((observation.get("player") or {}).get("content") or {}).get("hp")
+            native = str((observation.get("scene") or {}).get("native_kind", ""))
+            settled = (
+                native.startswith("reward") or observation.get("status") == "terminal"
+            )
+            if (
+                settled
+                and isinstance(health, (int, float))
+                and not isinstance(health, bool)
+            ):
+                hp_labels.update(
+                    {
+                        i: health / 100
+                        for i in range(span["start_observation_index"], end)
+                    }
+                )
+        floors, maximum = {}, 0
+        for observation in episode["observations"]:
+            floor = (
+                (observation["observation"].get("run") or {}).get("content") or {}
+            ).get("floor")
+            if type(floor) is int:
+                maximum = max(maximum, floor)
+            floors[observation["index"]] = maximum
+        steps = episode["steps"]
+        frames = [
+            compile_frame(
+                project(
+                    episode["observations"][step["observation_index"]]["observation"],
+                    input_projection=projection,
+                ),
+                model,
+            )
+            for step in steps
+        ]
+        first = len(examples)
+        with torch.inference_mode():
+            for indices in microbatches(frames, list(range(len(frames))), model):
+                scene, mask, mean = model.value_features([frames[i] for i in indices])
+                for local, index in enumerate(indices):
+                    observation_index = steps[index]["observation_index"]
+                    examples.append(
+                        WarmupExample(
+                            group["seed"],
+                            scene[local, ~mask[local]].clone(),
+                            mean[local].clone(),
+                            floors[observation_index],
+                            label,
+                            hp_labels.get(observation_index),
+                        )
+                    )
+        games.append(
+            {
+                "run_id": episode["run_id"],
+                "seed": group["seed"],
+                "result": result,
+                "floor": episode["outcome"]["max_observed_floor"],
+                "first": first,
+                "rows": len(steps),
+                "trajectory_shard_id": slot["trajectory_shard_id"],
+            }
+        )
+        print(
+            json.dumps(
+                {
+                    "stage": "RL4_MC_features",
+                    "games": len(games),
+                    "states": len(examples),
+                }
+            ),
+            flush=True,
+        )
+    metrics = (
+        evaluate_heads(model, examples, return_predictions=True) if examples else {}
+    )
+    predictions = metrics.pop("predictions", [])
+    for game in games:
+        selected = predictions[game["first"] : game["first"] + game["rows"]]
+        game.update(
+            predictions=[row["prediction"] for row in selected],
+            targets=[row["target"] for row in selected],
+        )
+    report = {
+        "schema": "rl4/current-policy-head-report-1",
+        "point": point,
+        "plan_sha256": hashed(path),
+        "collection_result_sha256": hashed(path.parent / "result.json"),
+        "planned": plan["selected_limit"],
+        "verified_natural_games": len(games),
+        "excluded": excluded,
+        "limited_current_policy_validation": len(games) >= 8,
+        "metrics": metrics,
+        "return_quality": summarize(games) if games else None,
+        "scoring_device": "CPU FP32 frozen same weights; no optimizer",
+        "targets": "observed terminal reward-v2 with gamma1; no bootstrap/lambda",
+        "unknown_retried": False,
+    }
+    save(output / "report.json", report)
+    save(output / "predictions.json", {"rows": predictions, "games": games})
+    return report
+
+
 def score(path: Path, output: Path) -> dict[str, Any]:
     import torch
     from spireagent.rl_exchange import Exchange
@@ -342,6 +636,8 @@ def score(path: Path, output: Path) -> dict[str, Any]:
 
     plan = load_plan(path)
     point = bound(plan["point"])
+    if point.get("heads_kind") == "rl4":
+        return score_rl4(path, output, plan, point)
     execution = bound(plan["execution"])
     original = json.loads((path.parent / "result.json").read_bytes())
     if original["plan_sha256"] != hashed(path):

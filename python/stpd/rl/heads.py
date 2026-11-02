@@ -53,8 +53,12 @@ class Rl4Heads(nn.Module):
 def outcome_mask(floors: Sequence[int] | Tensor, *, device: torch.device | None = None) -> Tensor:
     values = torch.as_tensor(floors, device=device)
     if (values.ndim != 1 or values.dtype not in (torch.int32, torch.int64)
-            or bool(((values < 0) | (values > 48)).any())):
+            or bool((values < 0).any())):
         raise ValueError("invalid_max_observed_floor")
+    # Golden Compass lengthens the native map. Reward-v2 already saturates its
+    # floor term at 48, so class48 also represents later equal-reward losses.
+    # Preserve actual public floors in inputs/records; only this mask is capped.
+    values = values.clamp(max=48)
     class_floors = torch.tensor(CLASS_FLOORS, device=values.device)
     return class_floors[None, :] >= values[:, None]
 
@@ -87,8 +91,9 @@ def class_reward_values(*, device: torch.device | None = None) -> Tensor:
 
 
 def checked_terminal_class(*, result: str, floor: int, reward: float) -> int:
-    if type(floor) is not int or not 0 <= floor <= 48 or result not in {"win", "loss"}:
+    if type(floor) is not int or floor < 0 or result not in {"win", "loss"}:
         raise ValueError("invalid_natural_terminal_class")
+    floor = min(floor, 48)
     candidates = [WIN_CLASS] if result == "win" else [
         index for index, value in enumerate(CLASS_FLOORS)
         if value == floor and index != WIN_CLASS]

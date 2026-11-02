@@ -150,6 +150,11 @@ def test_reward_class_checks_actual_reward_never_fills_missing_boss_witness():
     assert checked_terminal_class(result="loss", floor=35, reward=.5 * (35 / 48)**2 + .1) == 50
     assert checked_terminal_class(result="loss", floor=35, reward=.5 * (35 / 48)**2 + .2) == 35
     assert outcome_mask([35])[0, 50] and not outcome_mask([36])[0, 50]
+    # Golden Path adds two actual floors; reward-v2's floor term is already capped.
+    assert checked_terminal_class(result="loss", floor=50, reward=.7) == 48
+    assert checked_terminal_class(result="win", floor=50, reward=1) == 49
+    assert torch.equal(outcome_mask([48])[0], outcome_mask([50])[0])
+    assert set(torch.where(outcome_mask([50])[0])[0].tolist()) == {48, 49}
     with pytest.raises(ValueError, match="reward_mismatch"):
         checked_terminal_class(result="loss", floor=18, reward=.5 * (18 / 48)**2)
 
@@ -232,3 +237,26 @@ def test_warmup_cli_streams_verified_tensor_tree_blocks(tmp_path, monkeypatch, c
     broken.write_bytes(b"corrupted")
     with pytest.raises(ValueError, match="feature_hash"):
         FeatureExamples(manifest, descriptor["package_sha256"])[0]
+
+
+def test_head_metrics_keep_optional_rows_aligned_and_use_same_masked_constant():
+    import math
+
+    from stpd.rl.warmup import evaluate_heads
+
+    model, frame = member()
+    model.enable_rl4_heads(7)
+    with torch.no_grad():
+        scene, mask, mean = model.value_features([frame])
+    features = scene[0, ~mask[0]].clone()
+    examples = [WarmupExample('loss', features, mean[0], 50, 48, 0.0),
+        WarmupExample('hp-only', features, mean[0], 50, None, .5),
+        WarmupExample('win', features, mean[0], 50, 49, None)]
+    result = evaluate_heads(model, examples, return_predictions=True)
+    assert result['outcome_rows'] == 2 and result['hp_rows'] == 2
+    assert result['nll'] == pytest.approx(math.log(2))
+    assert result['brier'] == pytest.approx(.5)
+    assert result['constant_brier'] == pytest.approx(.5)
+    assert [row['index'] for row in result['predictions']] == [0, 2]
+    assert [row['seed'] for row in result['predictions']] == ['loss', 'win']
+    assert [row['hp_target'] for row in result['predictions']] == [0.0, None]

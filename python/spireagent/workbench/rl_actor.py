@@ -1,12 +1,9 @@
-"""CPU RL actor over the existing Managed ledger, executor and trajectory pipeline.
+"""CPU actor on the original Managed ledger, executor and save pipeline.
 
-One actor process plays one game at a time on the original ``run_managed`` path
-(no second game loop). Before each small ledger it takes the newest model
-version that has already been fetched and hash-checked in the background, so a
-model download never pauses play. Each sealed trajectory shard is announced to
-the learner as one immutable exchange record; unknown/censored games are
-announced too, never retried. Many actor processes, on one or many machines,
-differ only in ``actor`` name and their execution file.
+Live RL4 keeps the executor/registration package stable, adopts central immutable
+mu at segment boundaries, and publishes verified short segments through the same
+Store/Exchange. Legacy prefetch/whole-episode helpers remain for archived data
+and engineering fixtures; the live CLI requires explicit segments.
 """
 from __future__ import annotations
 

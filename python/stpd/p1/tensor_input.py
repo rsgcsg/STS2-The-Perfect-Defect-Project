@@ -6,7 +6,7 @@ and scene padding still follows the original microbatch, preserving dropout.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import torch
 from torch import Tensor
@@ -65,7 +65,7 @@ class TensorFrame:
             source.metadata_cache["text_keys"] = text_input_keys((
                 source.tensors["text_ids"], source.tensors["text_numbers"],
                 source.tensors["text_lengths"]))
-        return source.metadata_cache["text_keys"]
+        return cast(tuple[bytes, ...], source.metadata_cache["text_keys"])
 
     @property
     def text_count(self) -> int:

@@ -183,15 +183,25 @@ def test_run_calls_original_module_and_abnormal_results_fence_pending_workers(
             'run': plan['run'], 'status': 'completed',
             'games': [{'status': disposition, 'seed': 'test-no-game', 'shard': None}]}),
             encoding='utf-8')
-        return SimpleNamespace(wait=lambda: 0)
+        return SimpleNamespace(wait=lambda: 0, poll=lambda: 0)
 
     original_snapshot = rl.snapshot
     original_popen = subprocess.Popen
+    original_run = subprocess.run
+
+    def signal_after_copy(command, *args, **kwargs):
+        result = original_run(command, *args, **kwargs)
+        if command[0] == 'rsync':
+            # This is the actual late-signal failure: a new STOP after copying
+            # must not mutate the closed source before its byte readback.
+            signal.raise_signal(signal.SIGUSR1)
+        return result
 
     def checked_snapshot(source, target):
         assert (file.parent / 'STOP').is_file()
         assert callable(signal.getsignal(signal.SIGUSR1))
-        with patch.object(rl.subprocess, 'Popen', original_popen):
+        with (patch.object(rl.subprocess, 'Popen', original_popen),
+              patch.object(rl.subprocess, 'run', signal_after_copy)):
             return original_snapshot(source, target)
 
     monkeypatch.setattr(rl.subprocess, 'Popen', actor)

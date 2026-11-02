@@ -80,10 +80,13 @@ export async function replayGlobalAgentRun(directory: string) {
  * JSON read of that known mutable file is observed again; semantic failures and
  * immutable artifacts still fail immediately. No game request is repeated. */
 export async function readLiveManifest(directory: string): Promise<any> {
+  return (await readLiveManifestOriginal(directory)).value;
+}
+async function readLiveManifestOriginal(directory: string): Promise<{ value: any; raw: Buffer }> {
   const deadline = Date.now() + 30000;
   while (true) {
-    const raw = await readFile(join(directory, "manifest.json"), "utf8");
-    try { return JSON.parse(raw); }
+    const raw = await readFile(join(directory, "manifest.json"));
+    try { return { value: JSON.parse(raw.toString("utf8")), raw }; }
     catch (error) {
       if (!(error instanceof SyntaxError) || Date.now() >= deadline) throw error;
       await new Promise(resolve => setTimeout(resolve, 20));
@@ -99,6 +102,7 @@ export interface VerifiedGlobalTransition {
   run_id: string; step_index: number; result_sequence: number; verified_through_sequence: number; generated_at: string;
   input: any; directive: any; result: any; successor: any;
   original_paths: string[];
+  manifest_original_base64: string;
 }
 /** The existing semantic verifier, fed once in original event order. It emits
  * completed transitions only when the next real, ready public input closes them.
@@ -117,7 +121,8 @@ async function replayGlobalRun(directory: string, live?: {
   boundary?: (value: Record<string, unknown>) => Promise<void>;
 }) {
   const json = async (name: string) => JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(await readFile(join(directory, name))));
-  const run = live ? await readLiveManifest(directory) : await json("manifest.json");
+  const initialRun = live ? await readLiveManifestOriginal(directory) : null;
+  const run = initialRun ? initialRun.value : await json("manifest.json");
   const manifest = validateAgentManifest(await json("agent-manifest.json"));
   require(manifest.input.profile === "p1-global-r1" && manifest.input.global, "global_profile_required");
   const selectedCore = p1CoreIdentity(manifest.input.global.revision);
@@ -138,7 +143,7 @@ async function replayGlobalRun(directory: string, live?: {
   }
   let eventSchema: string | undefined;
   let newOriginalPaths: string[] = [];
-  let pendingTransition: Omit<VerifiedGlobalTransition, "successor" | "original_paths" | "verified_through_sequence"> | null = null;
+  let pendingTransition: Omit<VerifiedGlobalTransition, "successor" | "original_paths" | "verified_through_sequence" | "manifest_original_base64"> | null = null;
   let choices = 0, choiceGeneratedAt = "";
   let deferredTaint = false, deferredReleaseUnknown = false;
   const referenced = new Set<string>();
@@ -308,7 +313,7 @@ async function replayGlobalRun(directory: string, live?: {
         // receiveGlobal's original ready input is the boundary. No speculative
         // reduction mutates the replay state, and terminal needs no next action.
         await live.transition({ ...pendingTransition, successor: input, verified_through_sequence: event.sequence,
-          original_paths: newOriginalPaths });
+          original_paths: newOriginalPaths, manifest_original_base64: initialRun!.raw.toString("base64") });
         pendingTransition = null; newOriginalPaths = [];
       }
     } else if (event.kind === "global_agent_frame") {

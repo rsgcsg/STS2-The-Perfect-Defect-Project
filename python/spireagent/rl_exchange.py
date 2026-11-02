@@ -222,7 +222,8 @@ class Exchange:
                        "actor": actor, "sequence": sequence})
         if not self.blobs.put_if_absent(f"{self.prefix}shards/{actor}/{sequence:08d}.json", raw):
             reject("segment_record_already_published")
-        return json.loads(raw)
+        value: dict[str, Any] = json.loads(raw)
+        return value
 
     def segment_record(self, key: str) -> dict[str, Any]:
         if not key.startswith(f"{self.prefix}shards/"):

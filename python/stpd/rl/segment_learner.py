@@ -38,6 +38,7 @@ from stpd.p1.export import (
 )
 from stpd.p1.input import project
 from stpd.p1.local_inference import SegmentInferencePool
+from stpd.p1.model import MStd
 from stpd.p1.tensor_input import compile_frame
 from stpd.workers.checkpoint_codec import decode_checkpoint, encode_checkpoint
 from stpd.workers.training_io import CheckpointPublisher, FrozenCheckpoint
@@ -89,6 +90,7 @@ class SegmentLearner:
         self.active_auxiliary: tuple[list[AuxiliarySample], list[AuxiliarySample]] | None = None
         self.row_metadata: list[dict[str, Any]] = []
         self.updates = self.datasets = self.version = self.checkpoint_sequence = 0
+        self.published_updates = 0
         self.first_use = self.first_use_multi = 0
         self.performance = config.performance or PerformanceConfig()
         self.model = self._start_model()
@@ -126,22 +128,31 @@ class SegmentLearner:
             if config.tensorboard_steps
             else None
         )
-        self.pool: SegmentInferencePool | None = None
+        self.pool: SegmentInferencePool
         self.restored_mu: list[dict[str, Any]] = []
         self.checkpoints = CheckpointPublisher(self.exchange.store, self.producer, background=True)
-        if config.resume_checkpoint:
-            self._restore(config.resume_checkpoint)
+        restored_rng = self._restore(config.resume_checkpoint) if config.resume_checkpoint else None
         if config.resume_checkpoint and not config.republish_on_resume:
             identity = max(self.restored_mu, key=lambda value: value["version"])
             frozen = self._load_mu(identity)
-            initial = {"identity": identity, "model": frozen.eval()}
+            initial = {
+                "identity": identity,
+                "model": frozen.eval(),
+                "updates": self.published_updates,
+            }
         else:
             if config.resume_checkpoint:
                 self.version += 1
-            initial = self._publish_model(self._capture_model(), self.version)
+            initial = self._publish_model(self._capture_model(), self.version, self.updates)
         self._start_pool(initial)
+        if restored_rng is not None:
+            # Materializing immutable mu models initializes temporary modules.
+            # Restore the saved RNG only after those constructors have finished.
+            torch.set_rng_state(restored_rng[0])
+            if self.device.type == "cuda":
+                torch.cuda.set_rng_state_all(restored_rng[1])
 
-    def _start_model(self):
+    def _start_model(self) -> MStd:
         if self.config.start_package:
             package = Path(self.config.start_package)
         elif self.config.start_artifact_id and self.config.start_model_sha256:
@@ -186,7 +197,7 @@ class SegmentLearner:
         model.rl4_heads.load_state_dict(fitted["heads"], strict=True)
         return model
 
-    def _load_mu(self, identity):
+    def _load_mu(self, identity: dict[str, Any]) -> MStd:
         package = self.exchange.materialize_model(identity, self.work / "models")
         model, _ = load_model(package / "model.tensor-tree", identity["model_sha256"])
         head = self.exchange.store.get_manifest(identity["heads_artifact_id"])
@@ -203,11 +214,11 @@ class SegmentLearner:
         model.rl4_heads.load_state_dict(state["heads"], strict=True)
         return model.eval()
 
-    def _capture_model(self):
+    def _capture_model(self) -> MStd:
         with self.gpu_lock:
             return copy.deepcopy(self.model).cpu().eval()
 
-    def _publish_model(self, model, version: int) -> dict[str, Any]:
+    def _publish_model(self, model: MStd, version: int, updates: int) -> dict[str, Any]:
         self._configure_mu(model)
         destination = self.work / "versions" / f"{version:06d}"
         checkpoint = destination.with_suffix(".tensor-tree")
@@ -220,6 +231,7 @@ class SegmentLearner:
             {
                 "run": self.config.run,
                 "version": version,
+                "updates": updates,
                 "reward": REWARD_SPEC,
                 "segments": asdict(self.settings),
                 "producer": self.producer.to_dict(),
@@ -250,6 +262,7 @@ class SegmentLearner:
         }
         identity = {
             "version": version,
+            "updates": updates,
             "model_artifact_id": manifest.artifact_id,
             "model_sha256": weights,
             "heads_artifact_id": head.artifact_id,
@@ -268,11 +281,13 @@ class SegmentLearner:
                 "parent_version": version - 1 if version else None,
                 "published_at": time.time(),
                 "trajectory_encoding": "short-segment-1",
+                "training": {"updates": updates},
             }
         )
-        return {"identity": identity, "model": model}
+        return {"identity": identity, "model": model, "updates": updates}
 
     def _start_pool(self, publication: dict[str, Any]) -> None:
+        self.published_updates = publication["updates"]
         model = publication["model"].to(self.device).eval()
         self._configure_mu(model)
         self.pool = SegmentInferencePool(
@@ -295,7 +310,7 @@ class SegmentLearner:
         self.pool.latest = publication["identity"]["snapshot_sha256"]
         (self.work / "inference.json").write_bytes(json_bytes(self.pool.attachment()))
 
-    def _configure_mu(self, model) -> None:
+    def _configure_mu(self, model: MStd) -> None:
         model.deduplicate_text = self.performance.deduplicate_text
         for parameter in model.parameters():
             parameter.requires_grad_(False)
@@ -314,6 +329,7 @@ class SegmentLearner:
             return
         publication = self.pending_publication.result()
         self.pending_publication = None
+        self.published_updates = publication["updates"]
         model = publication["model"].to(self.device).eval()
         self._configure_mu(model)
         with self.condition:
@@ -540,6 +556,7 @@ class SegmentLearner:
                 "generated_at": step.get("generated_at"),
                 "floor": step["behavior"]["floor"],
                 "mu_version": segment["mu"]["version"],
+                "mu_updates": segment["mu"]["updates"],
             }
             for segment in segments
             for step in segment["steps"]
@@ -549,6 +566,8 @@ class SegmentLearner:
 
     def _step(self) -> None:
         active = self.active
+        assert active is not None and self.active_rows is not None
+        assert self.active_auxiliary is not None
         index, epoch = active["minibatch"], active["epoch"]
         terminal_parts = (
             minibatch_members(len(active["terminal"]), self.settings.minibatches)
@@ -596,6 +615,7 @@ class SegmentLearner:
                 },
                 first_use_floors=[row["floor"] for row in first],
                 first_use_version_lag=[self.version - row["mu_version"] for row in first],
+                first_use_pre_update_SGD_lag=[self.updates - row["mu_updates"] for row in first],
             )
             active["used"].extend(newly_used)
             with self.condition:
@@ -652,6 +672,8 @@ class SegmentLearner:
                     {
                         "decisions/first_use_floor": result.get("first_use_floors", []),
                         "decisions/first_use_version_lag": result.get("first_use_version_lag", []),
+                        "decisions/first_use_pre_update_SGD_lag": result.get(
+                            "first_use_pre_update_SGD_lag", []),
                     },
                     self.updates,
                 )
@@ -680,7 +702,7 @@ class SegmentLearner:
                 self._collect_publication(wait=True)
                 self.version += 1
                 self.pending_publication = self.publisher.submit(
-                    self._publish_model, self._capture_model(), self.version
+                    self._publish_model, self._capture_model(), self.version, self.updates
                 )
             with self.condition:
                 self.active = self.active_rows = self.active_auxiliary = None
@@ -688,7 +710,7 @@ class SegmentLearner:
 
     def _state(self) -> tuple[bytes, tuple[Parent, ...]]:
         with self.condition, self.gpu_lock:
-            metadata = {
+            metadata: dict[str, Any] = {
                 "schema": CHECKPOINT_SCHEMA,
                 "config": asdict(self.config),
                 "producer": self.producer.to_dict(),
@@ -704,6 +726,7 @@ class SegmentLearner:
                 ),
                 "mu": list(self.pool.snapshots.values()),
                 "updates": self.updates,
+                "published_updates": self.published_updates,
                 "datasets": self.datasets,
                 "version": self.version,
                 "first_use": self.first_use,
@@ -745,16 +768,19 @@ class SegmentLearner:
             )
             return encode_checkpoint(state), parents
 
-    def checkpoint(self, *, final: bool = False) -> None:
-        self._collect_publication(wait=True)
-        if self.metrics is not None:
-            self.metrics.publish()
-        taken = self.checkpoints.take(wait=final)
+    def _collect_checkpoint(self, *, wait: bool = False) -> None:
+        taken = self.checkpoints.take(wait=wait)
         if taken:
             info = taken[0].parameters.value()
             self.exchange.publish_checkpoint(
                 info["version"], taken[0].artifact_id, sequence=info["sequence"]
             )
+
+    def checkpoint(self, *, final: bool = False) -> None:
+        self._collect_publication(wait=True)
+        if self.metrics is not None:
+            self.metrics.publish()
+        self._collect_checkpoint(wait=final)
         if self.checkpoints.pending:
             return
         self.checkpoint_sequence += 1
@@ -775,12 +801,9 @@ class SegmentLearner:
             )
         )
         if final:
-            taken = self.checkpoints.take(wait=True)
-            self.exchange.publish_checkpoint(
-                self.version, taken[0].artifact_id, sequence=self.checkpoint_sequence
-            )
+            self._collect_checkpoint(wait=True)
 
-    def _restore(self, artifact_id: str) -> None:
+    def _restore(self, artifact_id: str) -> tuple[torch.Tensor, list[torch.Tensor]]:
         import tempfile
 
         manifest = self.exchange.store.get_manifest(artifact_id)
@@ -832,6 +855,7 @@ class SegmentLearner:
                 self.active[name] = [by_key.get(row["key"], row) for row in self.active[name]]
         for name in (
             "updates",
+            "published_updates",
             "datasets",
             "version",
             "first_use",
@@ -840,19 +864,18 @@ class SegmentLearner:
         ):
             setattr(self, name, metadata[name])
         self.rng.setstate(state["random"])
-        torch.set_rng_state(state["torch_rng"])
-        if self.device.type == "cuda":
-            torch.cuda.set_rng_state_all(state["cuda_rng"])
         self.restored_mu = metadata["mu"]
+        return state["torch_rng"], state["cuda_rng"]
 
-    def run(self) -> dict[str, Any]:
+    def run(self, *, initialize_only: bool = False) -> dict[str, Any]:
         began = time.monotonic()
         deadline = began + self.config.wall_seconds
         checkpoint_at = began + self.settings.checkpoint_seconds
         stop_checked = began
         try:
             while (
-                time.monotonic() < deadline
+                not initialize_only
+                and time.monotonic() < deadline
                 and not (self.work / "STOP").exists()
                 and self.version < self.config.max_versions
             ):
@@ -861,6 +884,7 @@ class SegmentLearner:
                     if self.exchange.stop_request() is not None:
                         break
                 self._collect_publication(wait=False)
+                self._collect_checkpoint()
                 if time.monotonic() >= checkpoint_at:
                     self.checkpoint()
                     checkpoint_at = time.monotonic() + self.settings.checkpoint_seconds
@@ -880,6 +904,15 @@ class SegmentLearner:
                 self._collect_publication(wait=False)
                 with self.condition:
                     self.condition.wait(0.2)
+            self._collect_publication(wait=True)
+            if self.updates > self.published_updates:
+                # A budget Stop can fall between successful SGD steps of a frozen
+                # dataset. Publish that exact end theta, retaining its active
+                # dataset/targets/cursor in CP so evaluation and resume agree.
+                self.version += 1
+                self.pending_publication = self.publisher.submit(
+                    self._publish_model, self._capture_model(), self.version, self.updates
+                )
             self.checkpoint(final=True)
             inference = self.pool.close()
             self.publisher.shutdown(wait=True)
@@ -888,6 +921,7 @@ class SegmentLearner:
             self.checkpoints.__exit__(None)
         summary = {
             "updates": self.updates,
+            "published_updates": self.published_updates,
             "versions": self.version,
             "datasets": self.datasets,
             "first_use": self.first_use,

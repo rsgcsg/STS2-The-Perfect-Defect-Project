@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import copy
 import hashlib
 
@@ -11,6 +12,8 @@ from test_rl_loop import PRODUCER, _model_artifact
 from spireagent.artifact_contracts import Manifest, Parent
 from spireagent.json_boundary import BoundaryError, json_bytes
 from spireagent.rl_exchange import Exchange
+from spireagent.storage.archives import _extract
+from spireagent.storage.store import copy_artifact
 from spireagent.workbench.managed_segment_store import publish_segment, read_segment
 from spireagent.workbench.rl_segment_producer import OriginalBarrier, SegmentAssembler
 from stpd.p1.data import digest
@@ -35,11 +38,12 @@ def fixture(tmp_path, count, *, terminal=False):
         "heads_artifact_id": head.artifact_id,
         "heads_sha256": head.payload("checkpoint").sha256,
         "version": 0,
+        "updates": 0,
         "precision": "fp32",
     }
     run = tmp_path / "run"
     run.mkdir()
-    for name in ("manifest.json", "agent-manifest.json"):
+    for name in ("manifest.json", "agent-manifest.json", "adapter-attestation.json"):
         (run / name).write_bytes(b"{}\n")
     (run / "global-source.json").write_bytes(b"original source bytes")
     (run / "events.jsonl").write_bytes(
@@ -76,6 +80,7 @@ def fixture(tmp_path, count, *, terminal=False):
             rows.append(
                 {
                     "schema": "sts2.policy-runtime/verified-global-transition-1",
+                    "manifest_original_base64": base64.b64encode(b"{}\n").decode(),
                     "run_id": "native-run",
                     "step_index": i,
                     "result_sequence": i + 1,
@@ -101,12 +106,13 @@ def test_whole_verified_segment_survives_store_exchange_cold_read(tmp_path, coun
     exchange, mu, run, trace, rows = fixture(tmp_path, count)
     delivered = []
 
-    def commit(segment):
-        manifest = publish_segment(exchange.store, segment, PRODUCER)
+    def commit(segment, originals):
+        manifest = publish_segment(exchange.store, segment, PRODUCER, originals=originals)
         record = {key: segment[key] for key in ("segment_id", "run_id", "rows", "mu")}
         record["segment_artifact_id"] = manifest.artifact_id
         exchange.publish_segment("actor", len(delivered), record)
         delivered.append(segment)
+        return {"segment_artifact_id": manifest.artifact_id}
 
     assembler = SegmentAssembler(
         {"behavior_policy": {"temperature": 1.0, "uniform_mix": 0.0}},
@@ -117,8 +123,13 @@ def test_whole_verified_segment_survives_store_exchange_cold_read(tmp_path, coun
         assembler.transition(row)
     assembler.finish(None)
     assembler.close()
-    cold = Exchange(exchange.binding, "segments")
-    record = cold.segment_record(cold.shard_keys()[0])
+    record = exchange.segment_record(exchange.shard_keys()[0])
+    cold = Exchange({"kind": "local", "directory": str(tmp_path/"empty-peer")}, "segments")
+    copied_id = copy_artifact(exchange.store, cold.store, record["segment_artifact_id"],
+                              scratch=tmp_path)
+    manifest = cold.store.get_manifest(copied_id)
+    cold.publish_segment("actor", 0, {key: record[key] for key in (
+        "segment_id", "run_id", "rows", "mu", "segment_artifact_id")})
     restored = read_segment(cold.store, record["segment_artifact_id"], scratch=tmp_path)
     assert restored == delivered[0] and restored["rows"] == count and restored["mu"] == mu
     original = restored["original_commit"]
@@ -129,11 +140,21 @@ def test_whole_verified_segment_survives_store_exchange_cold_read(tmp_path, coun
     assert original["verified_through_sequence"] == count + 1
     assert original["behavior_trace_bytes"] == trace.stat().st_size
     assert original["behavior_trace_prefix_sha256"] == (
-        hashlib.sha256(trace.read_bytes()).hexdigest())
+        hashlib.sha256(trace.read_bytes()).hexdigest()
+    )
+    raw = b"".join(cold.store.read_payload(manifest.payload("originals")))
+    _extract(raw, tmp_path/"recovered-originals")
+    assert (tmp_path/"recovered-originals/originals/global-source.json").read_bytes() == (
+        run/"global-source.json").read_bytes()
+    assert (tmp_path/"recovered-originals/events-delta.jsonl").read_bytes() == (
+        run/"events.jsonl").read_bytes()
+    assert (tmp_path/"recovered-originals/behavior-delta.jsonl").read_bytes() == trace.read_bytes()
+    with pytest.raises(BoundaryError, match="original_block_integrity_failure"):
+        publish_segment(cold.store, restored, PRODUCER, originals=b"wrong original block")
     bad = copy.deepcopy(restored)
     bad["steps"][-1]["behavior"]["mu"]["snapshot_sha256"] = "b" * 64
     with pytest.raises(BoundaryError, match="transition_behavior_binding_changed"):
-        publish_segment(cold.store, bad, PRODUCER)
+        publish_segment(cold.store, bad, PRODUCER, originals=b"invalid; not reached")
     with pytest.raises(BoundaryError, match="immutable_key_collision"):
         cold.publish_segment("actor", 0, {**record, "published_at": 1})
 
@@ -144,7 +165,7 @@ def test_terminal_tail_waits_for_normal_typed_label_and_unknown_is_not_a_loss(tm
     assembler = SegmentAssembler(
         {"behavior_policy": {"temperature": 1.0, "uniform_mix": 0.0}},
         OriginalBarrier(run, trace),
-        delivered.append,
+        lambda segment, _originals: delivered.append(segment),
     )
     assembler.transition(rows[0])
     assembler.finish(None)
@@ -159,7 +180,7 @@ def test_lost_segment_admission_receipt_does_not_repeat_the_original_offer(tmp_p
     _, _, run, trace, rows = fixture(tmp_path, 64)
     calls = []
 
-    def commit(segment):
+    def commit(segment, originals):
         calls.append(segment["segment_id"])
         raise TimeoutError("accepted remotely, reply unavailable")
 
@@ -176,3 +197,29 @@ def test_lost_segment_admission_receipt_does_not_repeat_the_original_offer(tmp_p
     assert calls == ["actor/0"]
     assert len(assembler.steps) == 64
     assembler.close()
+
+
+def test_terminal_battle_hp_uses_public_terminal_even_if_combat_span_remains_open():
+    from spireagent.workbench.rl_segment_producer import completed_auxiliary
+
+    observations = [{"observation": {"status": "decision"}} for _ in range(2)]
+    observations.append(
+        {
+            "observation": {
+                "status": "terminal",
+                "scene": {"native_kind": "game_over"},
+                "player": {"content": {"hp": 0}},
+            }
+        }
+    )
+    episode = {
+        "run_id": "native",
+        "observations": observations,
+        "combat_spans": [{"start_observation_index": 0, "end_observation_index": None}],
+        "steps": [{"index": i, "observation_index": i} for i in range(2)],
+    }
+    segments = [{"start_step": 0, "rows": 2, "segment_artifact_id": "original-segment"}]
+    result = completed_auxiliary(episode, segments, {"class": 3, "reward": 0.01})
+    assert [row["hp"] for row in result["hp_battles"][0]["states"]] == [0.0, 0.0]
+    observations[-1]["observation"]["player"]["content"]["hp"] = None
+    assert completed_auxiliary(episode, segments, {"class": 3, "reward": 0.01})["hp_battles"] == []

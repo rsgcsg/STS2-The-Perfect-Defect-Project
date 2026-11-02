@@ -251,7 +251,9 @@ class MStd(nn.Module):
     def _reused_text_vectors(self, inputs: tuple[Tensor, Tensor, Tensor],
                              keys: tuple[bytes, ...] | None) -> Tensor:
         keys = text_input_keys(inputs) if keys is None else keys
-        indices, inverse, unique = [], [], {}
+        indices: list[int] = []
+        inverse: list[int] = []
+        unique: dict[bytes, int] = {}
         for index, key in enumerate(keys):
             if key not in unique:
                 unique[key] = len(indices)
@@ -281,7 +283,7 @@ class MStd(nn.Module):
                 device, non_blocking=self.nonblocking_inputs))
             for local, index in enumerate(missing):
                 values[index] = encoded[local]
-        vectors = torch.stack(values)
+        vectors = torch.stack(cast(list[Tensor], values))
         if cache is not None and missing:
             cache.put(self.text_cache_namespace, tuple(ordered_keys[index] for index in missing),
                       encoded)

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from contextlib import nullcontext
-from typing import Any
+from typing import Any, cast
 
 import torch
 
@@ -90,15 +90,15 @@ def freeze_targets(
     for index, segment in enumerate(segments):
         if any(value is None for value in probabilities[index]):
             raise ValueError("deferred_segment_values_missing")
-        p = torch.stack(probabilities[index])
-        if p.shape != (len(segment["steps"]), OUTCOME_CLASSES):
+        current_p = torch.stack(cast(list[torch.Tensor], probabilities[index]))
+        if current_p.shape != (len(segment["steps"]), OUTCOME_CLASSES):
             raise ValueError("acting_outcome_distribution_shape_changed")
         target, advantage = categorical_lambda_targets(
-            p,
+            current_p,
             boundaries[index],
             terminal_class=segment["terminal"]["class"] if segment["terminal"] else None,
         )
-        current.append(p)
+        current.append(current_p)
         targets.append(target)
         raw_advantages.append(advantage)
     advantage = torch.cat(raw_advantages)
@@ -135,7 +135,7 @@ def samples_from_frozen(
         or len(frozen["targets"]) != sum(value["rows"] for value in members)
     ):
         raise ValueError("frozen_dataset_membership_changed")
-    rows = []
+    rows: list[SegmentSample] = []
     for segment in segments:
         model = models[segment["mu"]["snapshot_sha256"]]
         for step in segment["steps"]:

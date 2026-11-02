@@ -8,10 +8,13 @@ only by the normal typed save pipeline after it has checked the original run.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import os
+import shutil
 import subprocess
+import tempfile
 import threading
 import time
 from collections.abc import Callable
@@ -19,6 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from spireagent.json_boundary import BoundaryError, json_bytes
+from spireagent.storage.archives import archive_bundle
 from stpd.p1.sampling import distribution
 from stpd.p1.trajectory import validate_behavior
 
@@ -38,8 +42,10 @@ class OriginalBarrier:
         self.trace_hash = hashlib.sha256()
         self.trace_bytes = 0
 
-    def commit(self, steps: list[dict[str, Any]], *, trace_through_bytes: int) -> dict[str, Any]:
-        refs = []
+    def commit(
+        self, steps: list[dict[str, Any]], *, trace_through_bytes: int
+    ) -> tuple[dict[str, Any], bytes]:
+        refs: list[dict[str, Any]] = []
         for name in sorted({name for step in steps for name in step["original_paths"]}):
             path = self.run / name
             if path.parent != self.run or path.is_symlink():
@@ -49,6 +55,9 @@ class OriginalBarrier:
                 sha = hashlib.file_digest(stream, "sha256").hexdigest()
             refs.append({"path": name, "sha256": sha, "bytes": path.stat().st_size})
         through = steps[-1]["verified_through_sequence"]
+        journal_start, sequence_start = self.bytes, self.sequence
+        trace_start = self.trace_bytes
+        journal_delta, trace_delta = [], []
         while self.sequence < through:
             raw = self.journal.readline()
             if not raw.endswith(b"\n"):
@@ -59,15 +68,17 @@ class OriginalBarrier:
             self.hash.update(raw)
             self.bytes += len(raw)
             self.sequence += 1
+            journal_delta.append(raw)
         os.fsync(self.journal.fileno())
         while self.trace_bytes < trace_through_bytes:
-            chunk = self.trace_reader.read(min(1024**2, trace_through_bytes-self.trace_bytes))
+            chunk = self.trace_reader.read(min(1024**2, trace_through_bytes - self.trace_bytes))
             if not chunk:
                 raise BoundaryError("rl_segment", "original_behavior_prefix_missing")
             self.trace_hash.update(chunk)
             self.trace_bytes += len(chunk)
+            trace_delta.append(chunk)
         os.fsync(self.trace_reader.fileno())
-        for name in ("manifest.json", "agent-manifest.json"):
+        for name in ("manifest.json", "agent-manifest.json", "adapter-attestation.json"):
             with (self.run / name).open("rb") as stream:
                 os.fsync(stream.fileno())
         for directory in {self.run, self.trace.parent}:
@@ -76,17 +87,53 @@ class OriginalBarrier:
                 os.fsync(fd)
             finally:
                 os.close(fd)
-        return {
+        metadata: dict[str, Any] = {
             "schema": "stpd/segment-original-commit-1",
+            "run_id": steps[0]["run_id"],
+            "segment_id": steps[0]["behavior"]["lease"],
+            "journal_start_bytes": journal_start,
+            "journal_start_sequence": sequence_start,
             "journal_bytes": self.bytes,
             "verified_through_sequence": self.sequence,
             "journal_prefix_sha256": self.hash.hexdigest(),
             "artifacts": refs,
             "behavior_trace": str(self.trace),
+            "behavior_trace_start_bytes": trace_start,
             "behavior_trace_bytes": self.trace_bytes,
             "behavior_trace_prefix_sha256": self.trace_hash.hexdigest(),
             "at": time.time(),
         }
+        # This is the existing observer thread, separate from the actual game.
+        # Archive immutable original files and only the newly verified journal/
+        # behavior bytes. The previous-segment parent preserves the full chain.
+        with tempfile.TemporaryDirectory(prefix="segment-originals-") as stage_directory:
+            stage = Path(stage_directory)
+            (stage / "originals").mkdir()
+            for reference in refs:
+                target = stage / "originals" / reference["path"]
+                shutil.copyfile(self.run / reference["path"], target)
+                with target.open("rb") as stream:
+                    if hashlib.file_digest(stream, "sha256").hexdigest() != reference["sha256"]:
+                        raise BoundaryError("rl_segment", "original_changed_during_archive")
+            (stage / "events-delta.jsonl").write_bytes(b"".join(journal_delta))
+            (stage / "behavior-delta.jsonl").write_bytes(b"".join(trace_delta))
+            for name in ("agent-manifest.json", "adapter-attestation.json"):
+                shutil.copyfile(self.run / name, stage / name)
+            # Preserve the actual bytes used by the existing verifier at its
+            # initialization, without racing the live finalization rewrite.
+            (stage / "manifest.json").write_bytes(
+                base64.b64decode(steps[-1]["manifest_original_base64"], validate=True)
+            )
+            (stage / "commit.json").write_bytes(json_bytes(metadata))
+            original_bytes = archive_bundle(stage)
+        return (
+            {
+                **metadata,
+                "archive_sha256": hashlib.sha256(original_bytes).hexdigest(),
+                "archive_bytes": len(original_bytes),
+            },
+            original_bytes,
+        )
 
     def close(self) -> None:
         self.journal.close()
@@ -100,7 +147,7 @@ class SegmentAssembler:
         self,
         identity: dict[str, Any],
         barrier: OriginalBarrier,
-        commit: Callable[[dict[str, Any]], dict[str, Any] | None],
+        commit: Callable[[dict[str, Any], bytes], dict[str, Any] | None],
         *,
         step_limit: int = 64,
     ) -> None:
@@ -165,7 +212,12 @@ class SegmentAssembler:
         ):
             kind = str((after.get("scene") or {}).get("native_kind", ""))
             hp = ((after.get("player") or {}).get("content") or {}).get("hp")
-            if kind.startswith("reward") and type(hp) in (int, float) and hp >= 0:
+            if (
+                kind.startswith("reward")
+                and isinstance(hp, (int, float))
+                and not isinstance(hp, bool)
+                and hp >= 0
+            ):
                 self.hp_pending.append(
                     {
                         "battle_id": f"{row['run_id']}:{self.battle_start}",
@@ -215,6 +267,9 @@ class SegmentAssembler:
                         }
                     )
             battles.append({**battle, "states": states})
+        original_commit, original_bytes = self.barrier.commit(
+            self.steps, trace_through_bytes=self.trace_end
+        )
         value = {
             "schema": SCHEMA,
             "training_split": "TRAIN",
@@ -226,9 +281,12 @@ class SegmentAssembler:
             "steps": self.steps,
             "terminal": terminal,
             "hp_battles": battles,
-            "original_commit": self.barrier.commit(self.steps, trace_through_bytes=self.trace_end),
+            "original_commit": original_commit,
+            "previous_segment_artifact_id": (
+                self.committed[-1]["segment_artifact_id"] if self.committed else None
+            ),
         }
-        result = self.commit_segment(value)
+        result = self.commit_segment(value, original_bytes)
         self.committed.append(
             {
                 "segment_id": value["segment_id"],
@@ -262,7 +320,7 @@ class LiveSegmentProducer:
         run: Path,
         trace: Path,
         identity: dict[str, Any],
-        commit: Callable[[dict[str, Any]], dict[str, Any] | None],
+        commit: Callable[[dict[str, Any], bytes], dict[str, Any] | None],
         private: Path,
         *,
         step_limit: int = 64,
@@ -356,7 +414,11 @@ def completed_auxiliary(
     for span in episode["combat_spans"]:
         start, end = span["start_observation_index"], span["end_observation_index"]
         if end is None:
-            continue
+            if terminal is None:
+                continue
+            # Native terminal can retain combat availability. Use its actual
+            # public HP, without inventing a noncombat transition or a zero.
+            end = len(observations) - 1
         boundary = observations[end]["observation"]
         scene = boundary.get("scene") or {}
         player = (boundary.get("player") or {}).get("content") or {}
@@ -366,7 +428,12 @@ def completed_auxiliary(
         # Reward-boundary battles already entered the HP pool through their
         # committed segment. Only a real terminal battle needs this final label.
         settled = terminal is not None and boundary.get("status") == "terminal"
-        if not settled or type(health) not in (int, float) or health < 0:
+        if (
+            not settled
+            or not isinstance(health, (int, float))
+            or isinstance(health, bool)
+            or health < 0
+        ):
             continue
         states = [
             references[step["index"]] | {"hp": health / 100}
@@ -519,10 +586,10 @@ class SegmentManagedExecutor(PipelinedManagedExecutor):
             "initial_progress_sha256": self.configuration["initial_progress"]["progress_sha256"],
         }
 
-        def commit(segment: dict[str, Any]) -> dict[str, Any]:
+        def commit(segment: dict[str, Any], originals: bytes) -> dict[str, Any]:
             # Parent model artifacts already reside at the peer. Actors never
             # download a new full model merely to acknowledge a mu publication.
-            manifest = publish_segment(self.peer, segment, self.producer)
+            manifest = publish_segment(self.peer, segment, self.producer, originals=originals)
             observed = read_segment(
                 self.peer, manifest.artifact_id, scratch=artifacts.root / "private"
             )

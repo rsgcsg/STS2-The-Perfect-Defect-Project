@@ -25,6 +25,9 @@ it("the normal HTTP/Agent producer closes transitions before run end, including 
       expect(row.result.status).toBe("completed");
       expect(row.original_paths.length).toBeGreaterThan(0);
       expect(row.verified_through_sequence).toBeGreaterThan(row.result_sequence);
+      const originalManifest = JSON.parse(Buffer.from(row.manifest_original_base64, "base64").toString("utf8"));
+      expect(originalManifest.run_id).toBe(row.run_id);
+      expect(originalManifest.ended_at).toBeNull();
       rows.push(row); first();
     });
     expect((await f.runtime.tick()).type).toBe("delivered");

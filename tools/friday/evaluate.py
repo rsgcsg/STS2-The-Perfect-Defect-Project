@@ -15,10 +15,13 @@ import time
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import submit as scheduler
 from batch import capacity, hashed, private_root, read_pinned, save, snapshot
+
+if TYPE_CHECKING:
+    from spireagent.workbench.evaluation_ledger import EvaluationLedger
 
 SCHEMA = "spireagent/friday-evaluation-v1"
 RETENTION = {"tier": "trajectory", "purpose": "evaluation", "audit_every": 50}
@@ -124,7 +127,7 @@ def prepare(execution_path: Path, output: Path, *, selections: dict[str, str],
     return plan
 
 
-def create_ledger(plan: dict[str, Any], directory: Path):
+def create_ledger(plan: dict[str, Any], directory: Path) -> EvaluationLedger:
     from spireagent.workbench.evaluation_ledger import EvaluationLedger
 
     execution = read_pinned(plan["execution"])
@@ -140,7 +143,7 @@ def create_ledger(plan: dict[str, Any], directory: Path):
 
 
 def load_plan(path: Path) -> dict[str, Any]:
-    value = json.loads(path.read_bytes())
+    value: dict[str, Any] = json.loads(path.read_bytes())
     if (value.get("schema") != SCHEMA or value.get("target") != "friday"
             or value.get("automatic_mac_fallback") is not False
             or value.get("retry_unknown") is not False
@@ -389,9 +392,11 @@ def run(plan_path: Path, *, on_stop: Callable[[], None] | None = None) -> dict[s
     # All fixed seeds/models/audit slots/selection are durable before the first native offer.
     stopping = threading.Event()
     ledger_stop = ledger.directory / 'STOP'
+    world_closed = False
 
     def stop(_number=None, _frame=None):
-        ledger_stop.touch()
+        if not world_closed:
+            ledger_stop.touch()
         if on_stop is not None:
             on_stop()
 
@@ -442,6 +447,7 @@ def run(plan_path: Path, *, on_stop: Callable[[], None] | None = None) -> dict[s
             # StopOnUncertain can touch the original ledger flag directly,
             # including a typed failure in the final offered slot.
             on_stop()
+        world_closed = True
         report = ledger.report()
         summary = {'schema': 'spireagent/friday-evaluation-result-v1',
             'status': 'failed' if error_type else (result or {}).get('status', 'failed'),

@@ -28,6 +28,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--work", type=Path, required=True)
+    parser.add_argument("--initialize-only", action="store_true",
+                        help="publish the exact warmed start and full CP; no actors or SGD")
     args = parser.parse_args()
     os.umask(0o077)
     threading.current_thread().name = "rl-learner"
@@ -48,7 +50,8 @@ def main() -> None:
 
         summary = SegmentLearner(config, work,
             SegmentLearnerIO(read_segment=read_segment,
-                             publish_model=publish_detached_p1_model)).run()
+                             publish_model=publish_detached_p1_model)).run(
+                                 initialize_only=args.initialize_only)
     finally:
         for number, handler in previous.items():
             signal.signal(number, handler)

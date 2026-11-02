@@ -11,6 +11,11 @@
   Agent 实际 μ/完整概率、原件 fsync 屏障。**provides**：最多64行、单一 μ 的不可变
   `stpd/p1-trajectory-segment-1`，走原 Store analysis artifact 和 Exchange shard 键。
   未确认动作不入段；未知前已确认前缀可学。自然终局尾段等正常 typed 原件核验才准入。
+  同一artifact还含正常archive_bundle原始块：核验时的manifest实际字节、agent manifest、
+  adapter attestation、本段immutable source文件和journal/μ-trace增量。previous父引用串成
+  完整原件前缀；原观察线程上传并读回该块后才公告/准入，期间原lease继续占容量。
+  游戏主执行线程可继续现有段，不另建归档队列；整局final full_peer仍按原保存路径完成。
+
 - **中央推理 requires**：公开输入、完整 catalog、固定 μ 与 adapter/数值身份。
   **provides**：FP32 scores 和结局分布；沿常连接按 μ 合批，不判合法性。
   catalog=1 直接执行，概率1/logp0；训练前同 μ 批量补价值，不删行或填零。
@@ -34,6 +39,8 @@
 单局每批≤128行；ready 和在途预留共用4608行容量，满时暂停新段，已预留段仍可提交。
 多选优势只在整份冻结数据集归一化；每个 SGD 的策略分母为其多选数，价值分母为其总行数。
 跨 microbatch 累积同一分母；单选只参与价值传播。γ=1、λ=.99，目标按原段 μ 冻结一次。
+实际楼层不受默认地图48层限制；结局mask/类别按reward-v2的48层饱和项解释，
+保留真实楼层记录，50层自然win/loss仍核实际reward。
 
 每批从终局/HP池各抽≤256行，平分到4个 SGD，第二遍沿用。只记成功 optimizer.step：
 终局最多2份数据集/4次，HP最多1份/2次。KL(μ‖θ)的抽样估计超过.03，丢弃当前梯度并
@@ -51,6 +58,18 @@ python tools/friday/rl.py learn --config /ABS/learner.json --work /ABS/new-learn
   --execution /ABS/execution.json --actors-output /ABS/new-actors \
   --actors 32 --seed-namespace NEW-TRAIN-NAMESPACE
 ```
+
+CPU准备使用同一入口发布准确起点μ和完整CP，0World/0SGD并关闭服务：
+
+```bash
+python -m spireagent.workbench.rl_learner --config /ABS/cpu-init.json \
+  --work /ABS/new-initial-work --initialize-only
+```
+
+之后显式指定该CP、同run/源码/策略配置，切换device=cuda再 `learn`；不重新热身、不重置计数。
+前后16颗MC各由预先冻结且永久排除的32颗切分，使用原 `tools/friday/value_validation.py`
+prepare/submit/score；RL4分支严格联接完整CP、实际发布policy及heads，拒绝θ有未发布更新的点。
+原MC正常账本/Store读回不公告训练分片，不把unknown补负或重投。至少8自然局才给有限诊断。
 
 `segments.inference_batch` 等于 actors。`segments.warmup_artifact_id` 指向正常预热 CP；
 `start_artifact_id/start_model_sha256` 固定实际 r1.9 起点包；排除种子写
@@ -73,6 +92,11 @@ python tools/friday/rl.py learn --config /ABS/learner.json --work /ABS/new-learn
 前即拒绝恢复，不能按上面的同run续跑命令再次提交。
 到预算后停止新局/新段，现有段收尾，最多600秒 drain，存最终 CP，再释放 GPU。
 Actor 收到正常 AgentClose 后沿 Runtime/Host 原 Stop/Cleanup，计 censored，不制造失败或终局。
+若Stop落在数据集中间，已成功SGD的准确θ额外发布一次，CP保留原targets/epoch/minibatch，
+发布模型的training.updates与CP的published_updates对齐。异步CP完成后每轮及时公告，
+不等下个15分钟；恢复在所有μ模型实例化之后才还原Torch RNG，不能被构造临时模型消耗。
+
+游戏/Actor已关闭进入快照后，晚到停止信号只通知外部协调，不再新建或改写closed原件中的STOP。
 原件仍走正常后台 full_peer 归档及读回；保存失败/未知保留原记录，不以退出0代替原件成功。
 
 `updates.jsonl` 记录成功SGD、KL刹车、first-use、生成至首次成功使用的年龄、楼层/μ版本差和

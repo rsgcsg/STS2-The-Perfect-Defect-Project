@@ -494,6 +494,7 @@ class SegmentInferenceClient(SegmentConnection):
                                      "upper": adopted["server_time"]-began}
             self.mu, self.lease = adopted["mu"], adopted["lease"]
             self.in_segment = 0
+        assert self.mu is not None  # First nonempty input adopts a behavior lease above.
         if self.unit == unit:
             if self.cached is None or self.cached["observation_sha256"] != observation_hash:
                 raise ValueError("same consumption changed its RL basis")

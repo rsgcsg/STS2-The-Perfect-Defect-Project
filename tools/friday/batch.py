@@ -14,7 +14,7 @@ import subprocess
 import tempfile
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 SCHEMA = "spireagent/friday-batch-v1"
 POOL_SCHEMA = "spireagent/friday-diagnostic-seed-pool-v1"
@@ -91,7 +91,7 @@ def pool_groups(pool: dict[str, Any]) -> list[dict[str, Any]]:
             if seed in seen:
                 raise ValueError("duplicate_seed_in_pool")
             seen.add(seed)
-    return pool["groups"]
+    return cast(list[dict[str, Any]], pool["groups"])
 
 
 def claim_group(root: Path, pool: dict[str, Any], cell: str, owner: dict[str, str]
@@ -261,11 +261,13 @@ def run(configuration_path: Path, cell: str, *, wall_seconds: float,
                                 "ledger_result": result, "slot": current})
                 save(scratch / "results.json", results)
                 snapshot_started = time.monotonic()
+                active_ledger = None  # No World is active while copying this closed point.
                 receipt = snapshot(scratch, worker / "evidence")
                 snapshot_costs.append({"episode": len(results), "bytes": receipt["bytes"],
                                        "seconds": time.monotonic() - snapshot_started})
                 save(worker / "snapshot.json", receipt)
                 save(worker / "snapshot-costs.json", snapshot_costs)
+                active_ledger = ledger.directory
                 if stopping:
                     break
             active_ledger = None
@@ -280,8 +282,7 @@ def run(configuration_path: Path, cell: str, *, wall_seconds: float,
     finally:
         if executor is not None:
             executor.close()
-        for number, handler in previous.items():
-            signal.signal(number, handler)
+        active_ledger = None
         summary = {"schema": "spireagent/friday-worker-result-v1", **owner,
                    "elapsed_seconds": time.monotonic() - began,
                    "groups_requested": max_groups, "episodes": len(results),
@@ -290,9 +291,13 @@ def run(configuration_path: Path, cell: str, *, wall_seconds: float,
                    "results": results, "local_snapshot_costs": snapshot_costs,
                    "not_training_qualification": True}
         save(scratch / "worker-result.json", summary)
-        receipt = snapshot(scratch, worker / "evidence")
-        save(worker / "snapshot.json", receipt)
-        save(worker / "result.json", summary)
+        try:
+            receipt = snapshot(scratch, worker / "evidence")
+            save(worker / "snapshot.json", receipt)
+            save(worker / "result.json", summary)
+        finally:
+            for number, handler in previous.items():
+                signal.signal(number, handler)
     return summary
 
 
