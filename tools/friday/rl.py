@@ -35,11 +35,26 @@ def canonical_path(path: Path, *, existing: bool = True) -> Path:
 def prepare(execution: Path, learner: Path, output: Path, *, actors: int = 8,
             wall_seconds: int = 3300, episode_seconds: int = 900, max_games: int = 1000,
             games_per_ledger: int = 2, runtime_source: Path | None = None,
-            behavior: dict[str, Any] | None = None, seed_namespace: str | None = None
+            behavior: dict[str, Any] | None = None, seed_namespace: str | None = None,
+            segment_inference: Path | None = None
             ) -> dict[str, Any]:
     execution, learner = canonical_path(execution), canonical_path(learner)
     output = canonical_path(output, existing=False)
     base, learning = json.loads(execution.read_bytes()), json.loads(learner.read_bytes())
+    segment_settings = learning.get('segments')
+    inference = None
+    if segment_settings is not None:
+        from stpd.p1.local_inference import SEGMENT_SCHEMA
+        from stpd.rl.segments import SegmentConfig
+
+        settings = SegmentConfig(**segment_settings)
+        if segment_inference is None:
+            raise ValueError('prepared_segment_inference_attachment_required')
+        canonical_path(segment_inference)
+        inference = json.loads(segment_inference.read_bytes())
+        if (inference.get('schema') != SEGMENT_SCHEMA
+                or inference.get('segment_steps') != settings.steps):
+            raise ValueError('segment_inference_and_learner_steps_differ')
     if (learning.get('schema') not in {'stpd/rl-run-1', 'stpd/rl-learner-config-1'}
             or not NAME.fullmatch(learning.get('run', ''))):
         raise ValueError('original_learner_run_and_peer_configuration_required')
@@ -59,19 +74,25 @@ def prepare(execution: Path, learner: Path, output: Path, *, actors: int = 8,
     canonical_path(Path(base['candidate_directory']))
     if (type(actors) is not int or not 1 <= actors <= 200
             or type(wall_seconds) is not int or not 300 <= wall_seconds <= 79200
-            or type(episode_seconds) is not int or not 10 <= episode_seconds <= 1800
+            or type(episode_seconds) is not int or not 10 <= episode_seconds <= (
+                79200 if inference is not None else 1800)
             or type(games_per_ledger) is not int or not 1 <= games_per_ledger <= 10
-            or wall_seconds <= games_per_ledger * episode_seconds + 180
+            or wall_seconds <= (180 if inference is not None
+                                else games_per_ledger * episode_seconds + 180)
             or type(max_games) is not int or not 1 <= max_games <= 10000):
         raise ValueError('bounded_one_to_two_hundred_CPU_actor_budget_required')
     defaults = learning.get('actor_defaults', {})
     behavior = behavior if behavior is not None else defaults.get('behavior', {
-        'mode': 'temperature_uniform', 'temperature': 1.0, 'uniform_mix': 0.03})
+        'mode': 'temperature_uniform', 'temperature': 1.0,
+        'uniform_mix': 0.0 if inference is not None else 0.03})
     seed_namespace = seed_namespace or learning.get('seed_namespace')
     if (not isinstance(behavior, dict)
             or set(behavior) != {'mode', 'temperature', 'uniform_mix'}
             or not isinstance(seed_namespace, str) or not seed_namespace):
         raise ValueError('explicit_original_behavior_and_seed_namespace_required')
+    if inference is not None and behavior != {
+            'mode': 'temperature_uniform', 'temperature': 1.0, 'uniform_mix': 0.0}:
+        raise ValueError('short_segments_require_untempered_mu_without_random_mix')
     output.mkdir(parents=True, mode=0o700)
     private_root(output)
     frozen = output / 'execution.json'
@@ -86,6 +107,9 @@ def prepare(execution: Path, learner: Path, output: Path, *, actors: int = 8,
             'episode_seconds': episode_seconds, 'max_games': max_games,
             'games_per_ledger': games_per_ledger, 'behavior': behavior,
             'pipeline': defaults.get('pipeline', {'save_workers': 1, 'pending_limit': 2})}
+        if inference is not None:
+            actor['segments'] = {'inference': inference,
+                                 'excluded_seeds': settings.excluded_seeds}
         path = output / f'{name}.json'
         save(path, actor)
         actor_refs.append({'actor': name, 'path': str(path), 'sha256': hashed(path)})
@@ -98,6 +122,9 @@ def prepare(execution: Path, learner: Path, output: Path, *, actors: int = 8,
         'games_per_ledger': games_per_ledger,
         'constraint': 'fc430', 'retry_unknown': False, 'automatic_mac_fallback': False,
         'cross_actor_immediate_unknown_stop': False}
+    if inference is not None:
+        plan['trajectory_encoding'] = 'short-segment-1'
+        plan['inference'] = {'path': str(segment_inference), 'sha256': hashed(segment_inference)}
     save(output / 'plan.json', plan)
     return plan
 
@@ -118,6 +145,9 @@ def load_plan(path: Path) -> dict[str, Any]:
                 or actor['peer'] != value['peer'] or base['peer'] != value['peer']
                 or actor['execution'] != value['execution']['path']):
             raise ValueError('actor_learner_execution_binding_changed')
+        if (value.get('trajectory_encoding') == 'short-segment-1'
+                and actor.get('segments', {}).get('inference') != read_pinned(value['inference'])):
+            raise ValueError('segment_inference_attachment_changed')
     return value
 
 
@@ -172,7 +202,7 @@ def finished_actor_results(path: Path, plan: dict[str, Any]) -> list[dict[str, s
                 or summary.get('actor') != ref['actor'] or summary.get('run') != plan['run']):
             raise ValueError('finished_actor_result_binding_changed')
         if (result.get('exit_code') != 0 or result.get('error_type') is not None
-                or summary.get('status') not in {'completed', 'stopped_signal'}):
+                or summary.get('status') not in {'completed', 'stopped_signal', 'stopped_before_offer'}):
             return None
         results.append({'actor': ref['actor'], 'owner_job_id': str(owner['job_id']),
                         'result_path': str(result_path), 'result_sha256': hashed(result_path)})
@@ -222,10 +252,11 @@ def submit(path: Path, *, dry_run: bool = False,
             known = {p['job_id'] for p in parents}
             if not active <= known:
                 raise ValueError('existing_friday_array_must_drain_before_new_submission')
+            actor_limit = 40 if plan.get('trajectory_encoding') == 'short-segment-1' else 36
             if len(plan['actors']) + sum(p['actors'] for p in parents
                                         if p['job_id'] in active
-                                        and not p.get('preservation_only')) > 36:
-                raise ValueError('concurrent_RL_actor_limit_36_exceeded')
+                                        and not p.get('preservation_only')) > actor_limit:
+                raise ValueError(f'concurrent_RL_actor_limit_{actor_limit}_exceeded')
         elif existing:
             raise ValueError('existing_friday_array_must_drain_before_new_submission')
         if (root / 'STOP').exists() or any((root / 'actors').glob('*/owner.json')):
@@ -243,10 +274,17 @@ def submit(path: Path, *, dry_run: bool = False,
         logs = private_root(root / 'slurm')
         minutes = (plan['wall_seconds'] + 300 + 59) // 60
         advance = plan.get('games_per_ledger', 1) * plan['episode_seconds'] + 180
+        constraint = 'fc430'
+        if plan.get('trajectory_encoding') == 'short-segment-1':
+            advance = 300
+            features = scheduler.output(['sinfo', '-h', '-p', 'smp', '-o', '%f|%C'])
+            idle_fast = sum(int(row.split('|')[1].split('/')[1]) for row in features.splitlines()
+                            if 'fc430' in row.split('|')[0].split(','))
+            constraint = 'fc430' if idle_fast >= count else 'fc430|c6220'
         command = ['sbatch', '--parsable', '--partition=smp', '--nodes=1', '--ntasks=1',
             '--cpus-per-task=1', f'--mem={memory_gb}G', f'--time={minutes}', '--no-requeue',
             f'--signal=B:USR1@{advance}', '--job-name=spireagent-f2',
-            f'--array=0-{count - 1}%{count}', '--constraint=fc430',
+            f'--array=0-{count - 1}%{count}', f'--constraint={constraint}',
             f'--output={logs}/%A_%a.out', f'--error={logs}/%A_%a.err',
             *(['--exclude=' + ','.join(exclude_nodes)] if exclude_nodes else []), str(script)]
         result = {'schema': 'spireagent/friday-RL-submit-v1', 'command': command,
@@ -255,8 +293,7 @@ def submit(path: Path, *, dry_run: bool = False,
             'excluded_nodes': exclude_nodes or [], 'cross_actor_immediate_unknown_stop': False,
             **({'additional_to': parents} if parents else {})}
         if not dry_run:
-            if parents:
-                save(root / 'submission-intent.json', {**result, 'at': time.time()})
+            save(root / 'submission-intent.json', {**result, 'at': time.time()})
             result['job_id'] = scheduler.output(command)
             save(root / 'submission.json', result)
         return result
@@ -318,7 +355,11 @@ def run(path: Path) -> dict[str, Any]:
         if (work / 'actor-summary.json').is_file():
             summary = json.loads((work / 'actor-summary.json').read_bytes())
         uncertain = any(game.get('status') in {'unknown', 'save_failed'}
-                        or game.get('status') not in {'saved', 'finished'} and not game.get('shard')
+                        or (game.get('status') not in {'saved', 'finished'} and not game.get('shard')
+                            and not (plan.get('trajectory_encoding') == 'short-segment-1'
+                                and game.get('status') == 'censored'
+                                and game.get('cleanup_accepted') is True
+                                and game.get('segment_prefix_close') is True))
                         for game in (summary or {}).get('games', []))
         if code != 0 or summary is None or uncertain:
             # Fences pending workers before the potentially slow final NFS snapshot.
@@ -377,6 +418,69 @@ def resume_snapshot(path: Path, actor: str) -> dict[str, Any]:
     return {'actor': actor, 'copy_resumed': True, 'new_games': 0, 'snapshot': receipt}
 
 
+def learn(configuration: Path, work: Path, execution: Path, actors_output: Path, *,
+          actors: int, seed_namespace: str, episode_seconds: int = 14400,
+          memory_gb: int = 4) -> dict[str, Any]:
+    """The GPU owner starts its scorer, then submits the original CPU actor adapter.
+
+    The transient scorer capability reaches sbatch through its inherited environment;
+    attachment/plan/log files contain only public endpoint and identity metadata.
+    Resume uses the same explicit learner CP and fresh, never-offered actor names.
+    """
+    from spireagent.resource_slot import require_managed_slot
+    from spireagent.workbench.global_evidence_store import publish_detached_p1_model
+    from spireagent.workbench.managed_segment_store import read_segment
+    from stpd.p1.local_inference import AUTH_ENV
+    from stpd.rl.learner import LearnerConfig
+    from stpd.rl.segment_learner import SegmentLearner, SegmentLearnerIO
+
+    configuration = canonical_path(configuration)
+    config = LearnerConfig.read(configuration)
+    source = Path(__file__).resolve().parents[2]
+    require_modules(source)
+    require_managed_slot()
+    if (sys.platform != 'linux' or not os.environ.get('SLURM_JOB_ID')
+            or config.device != 'cuda' or config.segments is None
+            or actors != config.segments.inference_batch):
+        raise ValueError('allocated_Friday_GPU_and_matching_segment_actor_count_required')
+    work = canonical_path(work, existing=False)
+    canonical_path(actors_output, existing=False)
+    if work.exists() or actors_output.exists():
+        raise ValueError('fresh_learner_work_and_never_offered_actor_output_required')
+    work.mkdir(mode=0o700, parents=True)
+
+    def stop(_number, _frame):
+        (work / 'STOP').touch()
+
+    previous = {number: signal.signal(number, stop)
+                for number in (signal.SIGTERM, signal.SIGINT, signal.SIGUSR1)}
+    prior_auth = os.environ.get(AUTH_ENV)
+    try:
+        learner = SegmentLearner(config, work,
+            SegmentLearnerIO(read_segment, publish_detached_p1_model))
+        try:
+            prepare(execution, configuration, actors_output, actors=actors,
+                wall_seconds=int(config.wall_seconds)+600, episode_seconds=episode_seconds,
+                games_per_ledger=10, runtime_source=source, seed_namespace=seed_namespace,
+                segment_inference=work/'inference.json')
+            os.environ.update(learner.pool.environment())
+            submit(actors_output/'plan.json', memory_gb=memory_gb)
+        except BaseException:
+            # Preserve the initialized learner/CP even if the scheduler offer has
+            # no reply. submit's sticky intent requires original-job reconciliation.
+            (work/'STOP').touch()
+            learner.run()
+            raise
+        return learner.run()
+    finally:
+        if prior_auth is None:
+            os.environ.pop(AUTH_ENV, None)
+        else:
+            os.environ[AUTH_ENV] = prior_auth
+        for number, handler in previous.items():
+            signal.signal(number, handler)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest='command', required=True)
@@ -393,6 +497,8 @@ def main():
     prepare_parser.add_argument('--games-per-ledger', type=int, default=2)
     prepare_parser.add_argument('--seed-namespace')
     prepare_parser.add_argument('--behavior', type=Path)
+    prepare_parser.add_argument('--segment-inference', type=Path,
+                                help='normal central scorer attachment; no credential values')
     for name in ('submit', 'run'):
         sub = commands.add_parser(name)
         sub.add_argument('--plan', type=Path, required=True)
@@ -404,15 +510,31 @@ def main():
     save_parser = commands.add_parser('save')
     save_parser.add_argument('--plan', type=Path, required=True)
     save_parser.add_argument('--actor', required=True)
+    learn_parser = commands.add_parser('learn')
+    learn_parser.add_argument('--config', type=Path, required=True)
+    learn_parser.add_argument('--work', type=Path, required=True)
+    learn_parser.add_argument('--execution', type=Path, required=True)
+    learn_parser.add_argument('--actors-output', type=Path, required=True)
+    learn_parser.add_argument('--actors', type=int, default=32)
+    learn_parser.add_argument('--seed-namespace', required=True)
+    learn_parser.add_argument('--episode-seconds', type=int, default=14400)
+    learn_parser.add_argument('--memory-gb', type=int, default=4)
     args = parser.parse_args()
     os.umask(0o077)
-    if args.command == 'prepare':
+    if (args.command in {'run', 'submit'} and not getattr(args, 'dry_run', False)
+            and load_plan(args.plan).get('trajectory_encoding') != 'short-segment-1'):
+        raise ValueError('whole_episode_live_training_retired_use_segments')
+    if args.command == 'learn':
+        result = learn(args.config, args.work, args.execution, args.actors_output,
+            actors=args.actors, seed_namespace=args.seed_namespace,
+            episode_seconds=args.episode_seconds, memory_gb=args.memory_gb)
+    elif args.command == 'prepare':
         result = prepare(args.execution, args.learner_config, args.output,
             actors=args.actors, wall_seconds=args.wall_seconds,
             episode_seconds=args.episode_seconds, max_games=args.max_games,
             games_per_ledger=args.games_per_ledger, runtime_source=args.runtime_source,
             behavior=json.loads(args.behavior.read_bytes()) if args.behavior else None,
-            seed_namespace=args.seed_namespace)
+            seed_namespace=args.seed_namespace, segment_inference=args.segment_inference)
     elif args.command == 'submit':
         result = submit(args.plan, dry_run=args.dry_run, additional_to=args.additional_to,
                         memory_gb=args.memory_gb, exclude_nodes=args.exclude_nodes)
