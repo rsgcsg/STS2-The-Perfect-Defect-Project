@@ -103,8 +103,9 @@ def action_weights(state: dict[str, torch.Tensor], *, value_heads: bool = False
     removed = {"win_head.weight", "win_head.bias", "progress_head.weight", "progress_head.bias"}
     if value_heads and not removed <= state.keys():
         raise ValueError("declared auxiliary parameter inventory is incomplete")
-    return {key: value for key, value in state.items() if not value_heads or (key not in removed
-            and not key.startswith("progress_residual."))}
+    return {key: value for key, value in state.items() if not key.startswith("rl4_heads.")
+            and (not value_heads or (key not in removed
+            and not key.startswith("progress_residual.")))}
 
 
 def export_model(
@@ -143,7 +144,7 @@ def export_model(
         "parameters": sum(x.numel() for x in state.values()),
         **({"training_architecture": model.architecture,
             "auxiliary_heads": "stripped; never used for action selection"}
-           if model.value_heads else {}),
+           if model.value_heads or hasattr(model, "rl4_heads") else {}),
         "training_identity": training_identity,
         "agent_spec": {
             "id": "p1-mstd",

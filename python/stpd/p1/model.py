@@ -374,6 +374,40 @@ class MStd(nn.Module):
                       ) -> list[Tensor]:
         return self._forward_batch(frames, check_finite=check_finite)[0]
 
+    def enable_rl4_heads(self, seed: int, frequencies: Sequence[float] | None = None) -> None:
+        """New-run independent outcome/HP heads; preserve action weights and RNG."""
+        from stpd.rl.heads import Rl4Heads
+
+        if self.value_heads or hasattr(self, "rl4_heads"):
+            raise ValueError("rl4_requires_action_only_start")
+        device = self.ids.weight.device
+        with torch.random.fork_rng(
+            devices=[self.ids.weight.get_device()] if device.type == "cuda" else []
+        ):
+            torch.manual_seed(seed)
+            self.rl4_heads = Rl4Heads(frequencies).to(device)
+        self.architecture = {**self.architecture,
+            "auxiliary_heads": ["rl4-outcome-attention-50", "rl4-hp-attention-1"]}
+
+    def forward_rl4(self, frames: Sequence[ModelFrame], floors: Sequence[int] | Tensor,
+                    *, policy: bool = True, check_finite: bool = True
+                    ) -> tuple[list[Tensor], Tensor, Tensor]:
+        """One scene encoding; auxiliary gradients enter the shared public trunk."""
+        if not hasattr(self, "rl4_heads"):
+            raise ValueError("rl4_heads_not_enabled")
+        if not frames:
+            if len(floors):
+                raise ValueError("outcome_floor_batch_mismatch")
+            return [], self.ids.weight.new_empty((0, 50)), self.ids.weight.new_empty((0,))
+        captured: list[Tensor] = []
+        scores, current = self._forward_batch(frames, values_only=not policy,
+            check_finite=check_finite, capture_scene=captured)
+        logits, hp = self.rl4_heads(captured[0], captured[1], current, floors)
+        if check_finite and (not bool(torch.isfinite(hp).all())
+                or bool(torch.isnan(logits).any()) or bool(torch.isposinf(logits).any())):
+            raise ValueError("non_finite_rl4_head_outputs")
+        return scores, logits, hp
+
     def enable_progress_residual(self, seed: int) -> None:
         """Add an isolated zero-output critic branch without consuming policy RNG."""
         from .value_head import AttentionValueResidual
