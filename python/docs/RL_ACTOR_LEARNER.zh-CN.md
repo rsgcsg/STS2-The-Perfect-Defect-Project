@@ -301,3 +301,11 @@ Python，则必须重建其准确 producer/agent_adapter 配置，不能只覆�
 检查 reader 吞吐和准入等待。测速脚本把该 CPU 预备时间单列；消费侧提速不等于
 端到端节省了同样时间。做严格计时对照时把 `profile` 放进单独进程／计划，避免
 profiler保留的内存和收集开销影响相邻候选。
+
+### r1.8/r1.9正式保存的绑定
+
+包的InputSpec、实际注册InputSpec和完整input_projection分别保留。正式原件的Store
+父绑定复用模型owner的已准版本解析和兼容判定，不把陌生的V2版本按V1处理。若已关闭
+的局因绑定错误保存失败，先保留原plan、save_job、producer与失败报告，修保存owner后
+只补原件发布/读回，再经原ledger追加恢复结果；不能重开已经执行的World。打局source
+与本次保存source分别如实记录，原动作和自然终局不因保存恢复被改写。

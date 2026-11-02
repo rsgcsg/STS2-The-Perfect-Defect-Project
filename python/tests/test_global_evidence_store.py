@@ -60,7 +60,8 @@ def test_failed_stop_diagnostic_restores_without_becoming_a_typed_recording(tmp_
         )
 
 
-def _setup(tmp_path, monkeypatch):
+def _setup(tmp_path, monkeypatch, *, package_input_spec=None):
+    model_spec = package_input_spec or {"id": "fixture-input", "version": "1", "sha256": "a" * 64}
     directory = tmp_path / "closed"
     directory.mkdir()
     model = tmp_path / "model"
@@ -73,7 +74,7 @@ def _setup(tmp_path, monkeypatch):
             {
                 "schema": "stpd/p1-mstd-model-1",
                 "package_sha256": weight_sha,
-                "input_spec": {"id": "fixture-input", "version": "1", "sha256": "a" * 64},
+                "input_spec": model_spec,
             }
         )
     )
@@ -111,11 +112,7 @@ def _setup(tmp_path, monkeypatch):
             {
                 "input": {
                     "profile": "p1-global-r1",
-                    "input_spec": {
-                        "id": "fixture-input",
-                        "version": "1",
-                        "sha256": "a" * 64,
-                    },
+                    "input_spec": model_spec,
                 }
             }
         )
@@ -302,9 +299,11 @@ def test_explicit_current_binding_preserves_package_input_and_rejects_other_proj
     tmp_path,
     monkeypatch,
 ):
-    from stpd.p1.input import INPUT_SPEC
+    from stpd.p1.input import INPUT_SPEC, LEGACY_INPUT_SPEC
 
-    setup = _setup(tmp_path, monkeypatch)
+    setup = _setup(tmp_path, monkeypatch, package_input_spec={
+        "id": LEGACY_INPUT_SPEC["id"], "version": LEGACY_INPUT_SPEC["version"],
+        "sha256": "a" * 64})
     store, producer, directory, expected, model, runtime, _ = setup
     original = model.parameters.value()["input_spec"]
     current = {**original, "version": "2", "sha256": "c" * 64}
@@ -341,6 +340,30 @@ def test_explicit_current_binding_preserves_package_input_and_rejects_other_proj
                 scratch=tmp_path / "scratch",
             )
         expected["model_binding"][field] = previous
+
+
+@pytest.mark.parametrize("revision", ["r1.5", "r1.8", "r1.9"])
+def test_formal_parent_binding_uses_the_actual_versioned_v2_projection(
+    tmp_path, monkeypatch, revision,
+):
+    from stpd.p1.input import V2_INPUT_SPEC, V2_R18_INPUT_SPEC, V2_R19_INPUT_SPEC
+
+    projection = {"r1.5": V2_INPUT_SPEC, "r1.8": V2_R18_INPUT_SPEC,
+                  "r1.9": V2_R19_INPUT_SPEC}[revision]
+    setup = _setup(tmp_path, monkeypatch, package_input_spec={"id": projection["id"],
+        "version": projection["version"], "sha256": "a" * 64})
+    store, producer, directory, expected, model, runtime, _ = setup
+    expected["model_binding"] = {"package_input_spec": model.parameters.value()["input_spec"],
+        "input_spec": model.parameters.value()["input_spec"], "input_projection": projection}
+    artifact = _publish(setup, tmp_path / "scratch")
+    assert global_store.verify_global_artifact(store, artifact.artifact_id,
+        expected=expected, scratch=tmp_path / "scratch")["full_readback"]
+    wrong = V2_R18_INPUT_SPEC if revision == "r1.9" else V2_R19_INPUT_SPEC
+    expected["model_binding"]["input_projection"] = wrong
+    with pytest.raises(BoundaryError, match="trusted_model_binding_mismatch"):
+        global_store.publish_global_evidence(store, directory, producer, expected=expected,
+            model_artifact_id=model.artifact_id, runtime_artifact_id=runtime.artifact_id,
+            scratch=tmp_path / "scratch")
 
 
 def _importer(setup, tmp_path, monkeypatch):
