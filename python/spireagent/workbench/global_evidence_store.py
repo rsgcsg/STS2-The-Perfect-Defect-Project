@@ -231,16 +231,21 @@ def _parents(
         if descriptor["input_spec"] != verified.agent_manifest["input"]["input_spec"]:
             raise BoundaryError("global_store", "original_model_descriptor_mismatch")
     else:
+        if not isinstance(binding, dict):
+            raise BoundaryError("global_store", "trusted_model_binding_mismatch")
         if baseline:
             from stpd.p1.baseline_export import INPUT_PROJECTION
 
             projection = INPUT_PROJECTION
         else:
-            from stpd.p1.input import INPUT_SPEC, V2_INPUT_SPEC
+            from stpd.p1.export import bound_projection, projection_from_package_spec
 
-            projection = (V2_INPUT_SPEC
-                          if descriptor["input_spec"].get("id") == V2_INPUT_SPEC["id"]
-                          else INPUT_SPEC)
+            try:
+                package_projection = projection_from_package_spec(descriptor["input_spec"])
+                projection = bound_projection({"input_spec": package_projection},
+                                              binding.get("input_projection"))
+            except ValueError as error:
+                raise BoundaryError("global_store", "trusted_model_binding_mismatch") from error
         if (
             not isinstance(binding, dict)
             or binding.get("package_input_spec") != descriptor["input_spec"]
