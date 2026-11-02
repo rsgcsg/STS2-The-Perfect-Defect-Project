@@ -174,7 +174,20 @@ def segment_benchmark(args: Any) -> None:
             text_attention_area=67108864,
         )
         model.deduplicate_text = performance.deduplicate_text
-        optimizer = torch.optim.AdamW(model.parameters(), lr=4e-5, weight_decay=0)
+        optimizer = torch.optim.AdamW(
+            [
+                {
+                    "params": [
+                        p
+                        for name, p in model.named_parameters()
+                        if not name.startswith("rl4_heads.")
+                    ],
+                    "lr": 4e-5,
+                },
+                {"params": list(model.rl4_heads.parameters()), "lr": 1e-4},
+            ],
+            weight_decay=0,
+        )
         durations, updates = [], []
         torch.manual_seed(20261103)
         if device.type == "cuda":
@@ -199,8 +212,11 @@ def segment_benchmark(args: Any) -> None:
                 )
                 sync()
                 if step >= args.warmup:
-                    durations.append(time.perf_counter() - start)
                     updates.append(value)
+                    if value["stepped"]:
+                        durations.append(time.perf_counter() - start)
+                if not value["stepped"]:
+                    break
             probe = copy.deepcopy(base).requires_grad_(True)
             with (
                 prepare_models(probe, probe, performance),
@@ -251,7 +267,9 @@ def segment_benchmark(args: Any) -> None:
                     )
                 )
             result.update(
-                status="ok",
+                status="ok" if len(durations) == args.steps else "incomplete",
+                requested_SGD=args.steps,
+                successful_timed_SGD=len(durations),
                 seconds=durations,
                 updates=updates,
                 median_seconds=statistics.median(durations) if durations else None,

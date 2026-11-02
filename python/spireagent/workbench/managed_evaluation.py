@@ -271,6 +271,7 @@ class ManagedEpisodeExecutor:
             "0.1.0-rc.60",
             "0.1.0-rc.61",
             "0.1.0-rc.62",
+            "0.1.0-rc.63",
         }:
             reject("runtime_explicit_adapter_environment_required")
         if self.settling_timeout_ms is not None and runtime_version not in {
@@ -285,6 +286,7 @@ class ManagedEpisodeExecutor:
             "0.1.0-rc.60",
             "0.1.0-rc.61",
             "0.1.0-rc.62",
+            "0.1.0-rc.63",
         }:
             reject("runtime_settling_watchdog_required")
         self.evidence_durability = configuration.get(
@@ -300,6 +302,7 @@ class ManagedEpisodeExecutor:
                 "0.1.0-rc.60",
                 "0.1.0-rc.61",
                 "0.1.0-rc.62",
+                "0.1.0-rc.63",
             }
             else "event",
         )
@@ -314,6 +317,7 @@ class ManagedEpisodeExecutor:
             "0.1.0-rc.60",
             "0.1.0-rc.61",
             "0.1.0-rc.62",
+            "0.1.0-rc.63",
         }:
             reject("runtime_decision_durability_required")
         if configuration["agent_adapter"] != export.adapter_identity():
