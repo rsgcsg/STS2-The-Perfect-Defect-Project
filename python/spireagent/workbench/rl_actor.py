@@ -135,6 +135,7 @@ class Actor:
         if configuration.get("schema") != CONFIG_SCHEMA:
             reject("unsupported_actor_config")
         self.config, self.work = configuration, work
+        self.segment_mode = "segments" in configuration
         work.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.base = json.loads(Path(configuration["execution"]).read_bytes())
         if self.base.get("peer") != configuration["peer"]:
@@ -161,6 +162,29 @@ class Actor:
         self.timing: collections.defaultdict[str, float] = collections.defaultdict(float)
         self.games: list[dict[str, Any]] = []
         self.signalled: int | None = None
+        self.segment_stop_reason: str | None = None
+        self.service = None
+        if self.segment_mode:
+            from stpd.p1.local_inference import SegmentConnection
+
+            self.service = SegmentConnection(self.config["segments"]["inference"])
+
+    def _stop_before_offer(self) -> bool:
+        if self.signalled is not None or (self.work/"STOP").exists():
+            return True
+        if self.segment_stop_reason:
+            return True
+        if self.service is not None:
+            try:
+                state = self.service.request("status")
+            except (OSError, ValueError, TimeoutError):
+                # This read precedes the durable World offer. No game/action is
+                # unknown or retried merely because the learner has closed.
+                self.segment_stop_reason = "service_status_unavailable_before_offer"
+            else:
+                if not state["accepting_new_segments"]:
+                    self.segment_stop_reason = "learner_segment_budget_complete"
+        return self.segment_stop_reason is not None
 
     def _signal(self, number: int, _frame: Any) -> None:
         """Batch schedulers warn before the limit; finish the current game, start no more."""
@@ -170,6 +194,10 @@ class Actor:
         from .managed_pipeline import PipelinedManagedExecutor
 
         selection = f"rl-v{record['version']:06d}"
+        if self.segment_mode and self.executor is not None:
+            # Registration/package/lifecycle stay stable; the central inference
+            # owner adopts new immutable weights only at segment boundaries.
+            return f"rl-v{self.executor_version:06d}"
         if self.executor_version == record["version"]:
             return selection
         began = time.monotonic()
@@ -184,8 +212,16 @@ class Actor:
         path.write_bytes(json_bytes(execution))
         if self.executor is not None:
             self.executor.close()
-        self.executor = PipelinedManagedExecutor(
-            execution, episode_seconds=self.config["episode_seconds"], cleanup_seconds=120)
+        if self.segment_mode:
+            from .rl_segment_producer import SegmentManagedExecutor
+
+            self.executor = SegmentManagedExecutor(execution,
+                episode_seconds=self.config["episode_seconds"], cleanup_seconds=120,
+                exchange=self.exchange, actor=self.name,
+                attachment=self.config["segments"]["inference"], admission=self.service)
+        else:
+            self.executor = PipelinedManagedExecutor(
+                execution, episode_seconds=self.config["episode_seconds"], cleanup_seconds=120)
         self.executor.execution_path = path
         self.executor_version = record["version"]
         self.timing["executor_prepare"] += time.monotonic() - began
@@ -204,6 +240,16 @@ class Actor:
                                f"{self.name}\0{self.epoch}\0{self.chunk}".encode()).hexdigest()[:32]
         manifest = diagnostic_reference_manifest(SEED_GAME_VERSION, group,
                                                  self.config["games_per_ledger"])
+        if self.segment_mode:
+            from stpd.rl.critic import held_out
+
+            excluded = set(self.config["segments"]["excluded_seeds"])
+            # The existing generator already rejects permanent suites. Preserve
+            # the old RL3 held-out membership and explicit historical manifests.
+            # Only never-offered seed candidates are skipped, never old attempts.
+            seeds = manifest["seeds"]
+            if any(seed in excluded or held_out(seed) for seed in seeds):
+                return None
         manifest["host"] = "Managed"
         path = root / "manifest.json"
         path.write_bytes(json_bytes(manifest))
@@ -228,9 +274,18 @@ class Actor:
                     "model_published_at": record.get("published_at"),
                     "phase_seconds": row.get("phase_seconds"),
                     "behavior_policy": row.get("behavior_policy")}
+            if self.segment_mode:
+                game.update(segment_budget_close=row.get("segment_budget_close") is True,
+                            cleanup_accepted=row.get("cleanup_accepted") is True,
+                            segment_prefix_close=bool(row.get("segment_delivery")))
             self.games.append(game)
             self.counts["games_" + str(slot["status"])] += 1
             shards[game["shard"]].append(game)
+        if self.segment_mode:
+            self.exchange.publish_event("actor_games_closed", actor=self.name,
+                games=[game for group in shards.values() for game in group],
+                trajectory_encoding="short-segment-1")
+            return
         for shard, games in shards.items():
             disposition = "trajectory" if shard else "without_shard"
             self.exchange.publish_shard(self.name, self.sequence, {
@@ -248,14 +303,21 @@ class Actor:
         cpu_began = _cpu_seconds()
         deadline = began + self.config["wall_seconds"]
         episode_seconds = self.config["episode_seconds"]
-        self.prefetch.start()
+        if self.segment_mode:
+            self.prefetch.refresh()  # Download the registration package only once.
+        else:
+            self.prefetch.start()
         status = "completed"
         previous = {number: signal.signal(number, self._signal)
                     for number in (signal.SIGTERM, signal.SIGINT, signal.SIGUSR1)}
         try:
+            admission_margin = 60 if self.segment_mode else episode_seconds + 180
             while (len(self.games) < self.config["max_games"]
-                   and time.monotonic() + episode_seconds + 180 < deadline
+                   and time.monotonic() + admission_margin < deadline
                    and not (self.work / "STOP").exists() and self.signalled is None):
+                if self.segment_mode and self._stop_before_offer():
+                    status = "stopped_before_offer"
+                    break
                 newest = self.prefetch.newest()
                 if newest is None:
                     wait = time.monotonic()
@@ -267,11 +329,14 @@ class Actor:
                 step = time.monotonic()
                 ledger = self._ledger(selection)
                 self.timing["ledger_create"] += time.monotonic() - step
+                if ledger is None:
+                    continue
                 step = time.monotonic()
                 result = ledger.run_managed(workers=1, max_episodes=self.config["games_per_ledger"],
                     limits=SuiteLimits(150, episode_seconds, 120,
                                        max(1, deadline - time.monotonic() - 120), 1, 30),
-                    executor=self.executor)
+                    executor=self.executor,
+                    should_stop=self._stop_before_offer if self.segment_mode else None)
                 self.timing["ledger_run"] += time.monotonic() - step
                 step = time.monotonic()
                 self._announce(record, [s for s in ledger.slots() if s["status"] != "not_started"])
@@ -279,7 +344,8 @@ class Actor:
                 if result.get("status") == "stopped":
                     # Every ledger stop is the owner's to read (unknown cleanup not
                     # accepted, save failed, capacity, wall limit); never play on past it.
-                    status = f"stopped_ledger:{result.get('stop_reason')}"
+                    status = ("stopped_before_offer" if self.segment_stop_reason is not None
+                              else f"stopped_ledger:{result.get('stop_reason')}")
                     break
                 if self._unknown_limit():
                     status = "stopped_unknown_limit"
@@ -290,10 +356,13 @@ class Actor:
             self.prefetch.stop()
             if self.executor is not None:
                 self.executor.close()
+            if self.service is not None:
+                self.service.close()
         summary = {"schema": "spireagent/rl-actor-summary-1", "actor": self.name,
                    "run": self.config["run"],
                    "status": "stopped_signal" if self.signalled and status == "completed"
                    else status, "signal": self.signalled,
+                   "stop_reason": self.segment_stop_reason,
                    "wall_seconds": time.monotonic() - began, "counts": dict(self.counts),
                    "cpu_seconds": _cpu_seconds() - cpu_began,
                    "timing": dict(self.timing),
@@ -329,6 +398,8 @@ def main() -> None:
     args = parser.parse_args()
     os.umask(0o077)
     configuration = json.loads(args.config.read_bytes())
+    if 'segments' not in configuration:
+        reject('whole_episode_live_training_retired_use_segments')
     if args.actor:
         configuration["actor"] = args.actor
     summary = Actor(configuration, args.work.resolve()).run()

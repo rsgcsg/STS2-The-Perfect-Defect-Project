@@ -35,13 +35,16 @@ def adapter_identity() -> dict[str, str]:
     closure = {
         name: digest((root / name).read_bytes())
         for name in ("agent.py", "agent_driver.py", "local_inference.py", "export.py", "input.py",
-                     "model.py", "tensor_input.py", "data.py", "execution.py", "spec.py",
+                     "model.py", "tensor_input.py", "text_cache.py", "data.py", "execution.py",
+                     "spec.py",
                      "input_order.py", "sampling.py",
                      "vocabulary.py", "public_vocabulary_v1.json", "input_identity.py")
     }
     closure["checkpoint_codec.py"] = digest(
         (root.parent / "workers/checkpoint_codec.py").read_bytes()
     )
+    closure["rl/heads.py"] = digest((root.parent/"rl/heads.py").read_bytes())
+    closure["value_head.py"] = digest((root/"value_head.py").read_bytes())
     platform = root.parent.parent / "spireagent"
     for name in ("policy_files.py", "json_boundary.py"):
         closure["spireagent/" + name] = digest((platform / name).read_bytes())
@@ -73,6 +76,16 @@ def runtime_projection(vocabulary: dict[str, Any]) -> dict[str, Any]:
     return INPUT_SPEC if spec == LEGACY_INPUT_SPEC else spec
 
 
+def projection_from_package_spec(declared: object) -> dict[str, Any]:
+    """Resolve only an explicitly supported package InputSpec, without inference."""
+    if isinstance(declared, dict):
+        for spec in (LEGACY_INPUT_SPEC, INPUT_SPEC, SORTED_INPUT_SPEC, V2_INPUT_SPEC,
+                     V2_R18_INPUT_SPEC, V2_R19_INPUT_SPEC):
+            if (declared.get("id"), declared.get("version")) == (spec["id"], spec["version"]):
+                return spec
+    raise ValueError("unsupported declared P1 InputSpec")
+
+
 def declared_p1_revision(package: Path) -> str:
     """Read the model's declared protocol binding before environment negotiation.
 
@@ -80,13 +93,8 @@ def declared_p1_revision(package: Path) -> str:
     This selection reads no weights and never guesses an unknown InputSpec.
     """
     descriptor = json.loads((package / "model.json").read_bytes())
-    declared = descriptor.get("input_spec")
-    if isinstance(declared, dict):
-        for spec in (LEGACY_INPUT_SPEC, INPUT_SPEC, SORTED_INPUT_SPEC, V2_INPUT_SPEC,
-                     V2_R18_INPUT_SPEC, V2_R19_INPUT_SPEC):
-            if (declared.get("id"), declared.get("version")) == (spec["id"], spec["version"]):
-                return "r1.5" if spec == LEGACY_INPUT_SPEC else str(spec["revision"])
-    raise ValueError("unsupported declared P1 InputSpec")
+    spec = projection_from_package_spec(descriptor.get("input_spec"))
+    return "r1.5" if spec == LEGACY_INPUT_SPEC else str(spec["revision"])
 
 
 def bound_projection(vocabulary: dict[str, Any], projection: object) -> dict[str, Any]:

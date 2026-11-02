@@ -44,21 +44,25 @@ class _Request:
 class LocalInferencePool:
     """One command owns the listener, queue, models and explicit close."""
 
-    def __init__(self, packages: dict[str, Path], *, max_batch: int, window_ms: float) -> None:
+    def __init__(self, packages: dict[str, Path], *, max_batch: int, window_ms: float,
+                 models: dict[str, Any] | None = None,
+                 address: tuple[str, int] = ("127.0.0.1", 0)) -> None:
         if (
             type(max_batch) is not int
-            or not 1 <= max_batch <= 16
+            or not 1 <= max_batch <= (64 if models is not None else 16)
             or type(window_ms) not in {int, float}
             or not 0 <= window_ms <= 20
         ):
             raise ValueError("invalid local inference batch bounds")
-        torch.set_num_threads(2)
-        self.models = {sha: load_model(path, sha)[0] for sha, path in packages.items()}
+        if models is None:
+            torch.set_num_threads(2)
+        self.models = (models if models is not None else
+                       {sha: load_model(path, sha)[0] for sha, path in packages.items()})
         self.max_batch, self.window = max_batch, window_ms / 1000
         self.pool_id = secrets.token_hex(16)
         self.auth = secrets.token_bytes(32)
         self.adapter = adapter_identity()
-        self.listener = Listener(("127.0.0.1", 0), authkey=self.auth)
+        self.listener = Listener(address, authkey=self.auth)
         self.address = cast(tuple[str, int], self.listener.address)
         self.queue: queue.Queue[_Request | None] = queue.Queue()
         self.stopping = threading.Event()
@@ -105,6 +109,7 @@ class LocalInferencePool:
                 connection.close()
                 return
             thread = threading.Thread(target=self._actor, args=(connection,), daemon=True)
+            self.connections[:] = [item for item in self.connections if item.is_alive()]
             self.connections.append(thread)
             thread.start()
 
@@ -259,3 +264,277 @@ class LocalInferenceClient:
 
     def close(self) -> None:
         self.connection.close()
+
+
+SEGMENT_SCHEMA = "stpd/rl-inference-1"
+
+
+class SegmentInferencePool(LocalInferencePool):
+    """The same owned TCP/scorer queue, with immutable RL behavior snapshots.
+
+    Training and scoring share one GPU lock at microbatch boundaries. The control
+    callback belongs to the existing learner's capacity/commit owner; this service
+    does not choose actions, validate legality, own worlds or write a new ledger.
+    """
+
+    def __init__(self, model: Any, identity: dict[str, Any], *, control: Any,
+                 gpu_lock: Any, max_batch: int = 40, window_ms: float = 2,
+                 address: tuple[str, int] | None = None, segment_steps: int = 64) -> None:
+        if model.execution.implementation not in {
+                "experimental-packed-v1", "experimental-joint-nodes-v1"}:
+            raise ValueError("RL_inference_requires_explicit_packed_execution")
+        if any(parameter.requires_grad for parameter in model.parameters()):
+            raise ValueError("RL_inference_requires_immutable_snapshot")
+        key = identity["snapshot_sha256"]
+        self.snapshots = {key: identity}
+        self.latest = key
+        self.control, self.gpu_lock = control, gpu_lock
+        if type(segment_steps) is not int or not 1 <= segment_steps <= 64:
+            raise ValueError("invalid_RL_segment_steps")
+        self.segment_steps = segment_steps
+        from .text_cache import TextVectorCache
+
+        self.text_cache = TextVectorCache()
+        model.text_cache, model.text_cache_namespace = self.text_cache, key
+        self.model_lock = threading.RLock()
+        ip = socket.gethostbyname(socket.gethostname())
+        super().__init__({}, max_batch=max_batch, window_ms=window_ms,
+            models={key: model}, address=address or (ip, 0))
+
+    def attachment(self) -> dict[str, Any]:
+        return {**super().attachment(), "schema": SEGMENT_SCHEMA,
+                "segment_steps": self.segment_steps}
+
+    def close(self) -> dict[str, Any]:
+        return {**super().close(), "schema": SEGMENT_SCHEMA,
+                "text_cache": self.text_cache.report()}
+
+    def publish(self, model: Any, identity: dict[str, Any]) -> None:
+        if any(parameter.requires_grad for parameter in model.parameters()):
+            raise ValueError("RL_inference_requires_immutable_snapshot")
+        key = identity["snapshot_sha256"]
+        model.text_cache, model.text_cache_namespace = self.text_cache, key
+        with self.model_lock:
+            if key in self.models:
+                raise ValueError("behavior_snapshot_already_published")
+            self.models[key] = model
+            self.snapshots[key] = identity
+            self.latest = key
+
+    def retire(self, protected: set[str]) -> None:
+        with self.model_lock, self.gpu_lock:
+            for key in list(self.models):
+                if key not in protected and key != self.latest:
+                    del self.models[key]
+                    del self.snapshots[key]
+            self.text_cache.retire(protected | {self.latest})
+
+    def _actor(self, connection: Connection) -> None:
+        try:
+            while not self.stopping.is_set():
+                if not connection.poll(.2):
+                    continue
+                value = json.loads(connection.recv_bytes(MAX_BYTES))
+                if (value.get("schema") != SEGMENT_SCHEMA
+                        or value.get("pool_id") != self.pool_id
+                        or value.get("adapter") != self.adapter
+                        or type(value.get("request_id")) is not int):
+                    raise ValueError("RL inference binding differs")
+                try:
+                    if value["operation"] != "score":
+                        response = self.control(value)
+                    else:
+                        key = value["snapshot_sha256"]
+                        with self.model_lock:
+                            model = self.models[key]
+                            projection = bound_projection(model.vocabulary,
+                                                          value["input_projection"])
+                        answer: Future = Future()
+                        # Only public data enters the numerical queue.
+                        self.queue.put(_Request(key, value["observation"], answer,
+                            {"projection": projection, "floor": value["floor"],
+                             "queued_at": time.perf_counter()}))
+                        response = answer.result(timeout=120)
+                    connection.send_bytes(json_bytes({"request_id": value["request_id"],
+                                                       "result": response}))
+                except Exception as error:
+                    connection.send_bytes(json_bytes({"request_id": value["request_id"],
+                        "error": type(error).__name__, "error_code": getattr(error, "code", None)}))
+        except (OSError, EOFError, ValueError, TypeError, KeyError):
+            return  # No inference or control request is automatically retried.
+        finally:
+            connection.close()
+
+    def _score(self) -> None:
+        from stpd.p1.execution import microbatches
+        from stpd.p1.tensor_input import compile_frame
+
+        while True:
+            first = self.queue.get()
+            if first is None:
+                return
+            batch = [first]
+            deadline = time.perf_counter() + self.window
+            while len(batch) < self.max_batch:
+                remaining = deadline-time.perf_counter()
+                if remaining <= 0:
+                    break
+                try:
+                    item = self.queue.get(timeout=remaining)
+                except queue.Empty:
+                    break
+                if item is None:
+                    self.queue.put(None)
+                    break
+                batch.append(item)
+            for key in dict.fromkeys(item.model for item in batch):
+                jobs = [item for item in batch if item.model == key]
+                started = time.perf_counter()
+                try:
+                    with self.model_lock:
+                        model, identity = self.models[key], self.snapshots[key]
+                    frames = [compile_frame(project(item.observation,
+                        input_projection=item.projection["projection"]), model) for item in jobs]
+                    for indices in microbatches(frames, list(range(len(jobs))), model):
+                        group = [jobs[i] for i in indices]
+                        entered = time.perf_counter()
+                        with self.gpu_lock, torch.inference_mode():
+                            scores, outcome, _ = model.forward_rl4([frames[i] for i in indices],
+                                [item.projection["floor"] for item in group], check_finite=True)
+                            probabilities = outcome.float().softmax(-1).cpu().tolist()
+                            output = [value.float().cpu().tolist() for value in scores]
+                        elapsed = time.perf_counter()-started
+                        for item, score, probability in zip(
+                                group, output, probabilities, strict=True):
+                            item.answer.set_result({"scores": score,
+                                "outcome_probabilities": probability, "mu": identity,
+                                "server_seconds": elapsed, "batch_size": len(group),
+                                "queue_seconds": entered-item.projection["queued_at"]})
+                        self.stats["requests"] += len(group)
+                        self.stats["batches"] += 1
+                        histogram = self.stats.setdefault("batch_histogram", {})
+                        histogram[str(len(group))] = histogram.get(str(len(group)), 0) + 1
+                except Exception as error:
+                    for item in jobs:
+                        if not item.answer.done():
+                            item.answer.set_exception(error)
+                    self.stats["errors"] += len(jobs)
+                self.stats["score_seconds"] += time.perf_counter()-started
+
+
+class SegmentConnection:
+    """One persistent connection; callers reconcile a failed request, never retry it."""
+
+    def __init__(self, attachment: dict[str, Any]) -> None:
+        if (attachment.get("schema") != SEGMENT_SCHEMA
+                or attachment.get("adapter") != adapter_identity()):
+            raise ValueError("RL service attachment differs")
+        self.attachment = attachment
+        self.connection = Client(tuple(attachment["address"]),
+                                 authkey=bytes.fromhex(os.environ[AUTH_ENV]))
+        self.request_id = 0
+
+    def request(self, operation: str, **fields: Any) -> dict[str, Any]:
+        self.request_id += 1
+        self.connection.send_bytes(json_bytes({**fields, "schema": SEGMENT_SCHEMA,
+            "pool_id": self.attachment["pool_id"], "adapter": self.attachment["adapter"],
+            "request_id": self.request_id, "operation": operation}))
+        if not self.connection.poll(120):
+            raise TimeoutError("RL service request unavailable; original request not retried")
+        response = json.loads(self.connection.recv_bytes(MAX_BYTES))
+        if response.get("request_id") != self.request_id or "error" in response:
+            code = response.get('error_code') or response.get('error')
+            raise ValueError(f"RL service {operation} failed: {code}")
+        return cast(dict[str, Any], response["result"])
+
+    def close(self) -> None:
+        self.connection.close()
+
+
+class SegmentInferenceClient(SegmentConnection):
+    """One Agent's permanent connection and explicit per-consumption mu record."""
+
+    def __init__(self, attachment: dict[str, Any], projection: dict[str, Any],
+                 trace: Path) -> None:
+        if (attachment.get("schema") != SEGMENT_SCHEMA
+                or attachment.get("adapter") != adapter_identity()
+                or validate_input_spec(projection) != projection):
+            raise ValueError("RL inference attachment differs")
+        super().__init__(attachment)
+        self.projection = projection
+        self.trace = os.open(trace, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+        self.unit: str | None = None
+        self.cached: dict[str, Any] | None = None
+        self.mu: dict[str, Any] | None = None
+        self.lease: str | None = None
+        self.in_segment = 0
+        self.floor = 0
+        self.stop_requested = False
+        self.clock_offset: dict[str, float] | None = None
+
+    def consume(self, value: dict[str, Any]) -> list[float]:
+        from .data import digest
+
+        observation, catalog = value["observation"], value["catalog"]
+        if not catalog:
+            return []
+        unit = value["consumption_unit"]["id"]
+        observation_hash = digest(json_bytes(observation))
+        advanced = self.unit != unit
+        if advanced and (self.mu is None or self.in_segment >= self.attachment["segment_steps"]):
+            began = time.time()
+            adopted = self.request("begin", actor=self.attachment["actor"],
+                episode=self.attachment["episode"])
+            received = time.time()
+            if adopted.get("stopped"):
+                self.stop_requested = True
+                return [0.0] * len(catalog)  # ACK input, then normal Close; no act.
+            if type(adopted.get("server_time")) in (int, float):
+                self.clock_offset = {"lower": adopted["server_time"]-received,
+                                     "upper": adopted["server_time"]-began}
+            self.mu, self.lease = adopted["mu"], adopted["lease"]
+            self.in_segment = 0
+        if self.unit == unit:
+            if self.cached is None or self.cached["observation_sha256"] != observation_hash:
+                raise ValueError("same consumption changed its RL basis")
+            record = {**self.cached, "acquisition_id": value["acquisition_id"],
+                "input_sha256": digest(json_bytes(value)), "lease": self.lease,
+                "network_request": False, "request_seconds": 0.0,
+                "score_source": "reused_consumption"}
+        else:
+            public_floor = ((observation.get("run") or {}).get("content") or {}).get("floor")
+            if type(public_floor) is int:
+                self.floor = max(self.floor, public_floor)
+            began = time.perf_counter()
+            if len(catalog) == 1:
+                result: dict[str, Any] = {"scores": [0.0], "outcome_probabilities": None,
+                    "batch_size": 0, "queue_seconds": 0, "server_seconds": 0}
+            else:
+                result = self.request("score", snapshot_sha256=self.mu["snapshot_sha256"],
+                    observation=observation, floor=self.floor, input_projection=self.projection)
+                if result["mu"] != self.mu:
+                    raise ValueError("actual behavior snapshot changed within segment")
+            record = {"schema": "stpd/rl-behavior-decision-1", "mu": self.mu,
+                "lease": self.lease, "acquisition_id": value["acquisition_id"],
+                "input_sha256": digest(json_bytes(value)), "observation_sha256": observation_hash,
+                "catalog_sha256": digest(json_bytes(catalog)), "consumption_unit": unit,
+                "scores": result["scores"],
+                "outcome_probabilities": result["outcome_probabilities"],
+                "floor": self.floor, "request_seconds": time.perf_counter()-began,
+                "batch_size": result["batch_size"], "queue_seconds": result["queue_seconds"],
+                "server_seconds": result["server_seconds"],
+                "network_request": len(catalog) > 1,
+                "clock_offset": self.clock_offset,
+                "score_source": "deterministic_single_catalog" if len(catalog) == 1 else "model"}
+            self.unit, self.cached = unit, record
+        self.in_segment += int(advanced)
+        # Append, then the trajectory producer fsyncs this journal together with
+        # original Runtime bytes once per segment before atomic admission.
+        raw = json_bytes(record) + b"\n"
+        if os.write(self.trace, raw) != len(raw):
+            raise OSError("partial behavior journal write")
+        return cast(list[float], record["scores"])
+
+    def close(self) -> None:
+        self.connection.close()
+        os.close(self.trace)

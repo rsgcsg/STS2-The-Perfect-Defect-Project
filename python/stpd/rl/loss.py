@@ -29,6 +29,189 @@ if TYPE_CHECKING:
 
 
 @dataclass(frozen=True)
+class SegmentSample:
+    frame: ModelFrame
+    floor: int
+    key: str
+    action: int
+    behavior_probability: float
+    behavior_probabilities: list[float]
+    advantage: float  # normalized once across this frozen dataset's multi-choice rows
+    outcome_target: torch.Tensor
+
+
+@dataclass(frozen=True)
+class AuxiliarySample:
+    frame: ModelFrame
+    floor: int
+    key: str
+    outcome: int | None = None
+    hp: float | None = None
+
+
+def segment_update(model: MStd, optimizer: torch.optim.Optimizer,
+                   rows: list[SegmentSample], terminal: list[AuxiliarySample],
+                   hp_rows: list[AuxiliarySample], *, config: LossConfig,
+                   performance: PerformanceConfig, target_kl: float = 0.03,
+                   terminal_coef: float = 0.1, hp_coef: float = 0.1,
+                   gpu_lock: Any = None, diagnostics: bool = False) -> dict[str, Any]:
+    """One global minibatch, accumulated in microbatches with global denominators.
+
+    Parameters remain unchanged while all microbatches compute the current KL.
+    Exceeding it discards the accumulated gradients before optimizer.step and
+    stops the dataset; no auxiliary use or EMA update is then charged. This is
+    the same pre-update stop without a duplicate no-grad encoder pass.
+    """
+    from contextlib import nullcontext
+
+    from .heads import OUTCOME_CLASSES, outcome_cross_entropy
+    from .performance import grouped_indices, prepare_models
+
+    if not rows or not hasattr(model, "rl4_heads"):
+        raise ValueError("segment_update_requires_rows_and_heads")
+    device = model.ids.weight.device
+    multi = sum(len(row.frame.choices) > 1 for row in rows)
+    # Membership is fixed. Bucket/microbatch changes never select different rows.
+    work: list[tuple[str, Any]] = [("ppo", row) for row in rows]
+    work.extend(("terminal", row) for row in terminal)
+    work.extend(("hp", row) for row in hp_rows)
+    # Forced transitions and auxiliary states use the value-only scene path.
+    selected = [i for i, (kind, row) in enumerate(work)
+                if kind == "ppo" and len(row.frame.choices) > 1]
+    selected_set = set(selected)
+    value_only = [i for i in range(len(work)) if i not in selected_set]
+    all_frames = [row.frame for _, row in work]
+    totals = torch.zeros(8, device=device, dtype=torch.float64)
+    gradient_parts: dict[str, list[torch.Tensor]] = {}
+    trunk = [p for name, p in model.named_parameters()
+             if p.requires_grad and not name.startswith("rl4_heads.")]
+    optimizer.zero_grad(set_to_none=True)
+    original_mode = model.training
+    model.eval()  # Actor probabilities and PPO use the same dropout/id-mask-free function.
+    began = time.perf_counter()
+    lock = gpu_lock if gpu_lock is not None else nullcontext()
+    try:
+        # All precision context is thread local except TF32, whose explicit false
+        # setting is shared by this dedicated training/inference owner.
+        with prepare_models(model, model, performance):
+            for indices, policy in ((selected, True), (value_only, False)):
+                frames = [all_frames[index] for index in indices]
+                for relative in grouped_indices(frames, model, performance):
+                    group = [indices[index] for index in relative]
+                    with lock:
+                        with torch.autocast(device_type=device.type, dtype=torch.bfloat16,
+                                            enabled=performance.precision == "bf16"):
+                            scores, logits, prediction = model.forward_rl4(
+                                [all_frames[index] for index in group],
+                                [work[index][1].floor for index in group],
+                                policy=policy, check_finite=False)
+                        zero = logits.masked_fill(~torch.isfinite(logits), 0).sum() * 0
+                        components: dict[str, torch.Tensor] = {}
+                        ppo_local = [j for j, index in enumerate(group) if work[index][0] == "ppo"]
+                        if ppo_local:
+                            target = torch.stack([work[group[j]][1].outcome_target
+                                                  for j in ppo_local])
+                            td = outcome_cross_entropy(logits[ppo_local], target).sum() / len(rows)
+                            components["td"] = config.value_coef * td
+                            totals[0] += td.detach().double()
+                        if policy:
+                            objective = entropy = kl = clipped = reverse_kl = zero
+                            for local, index in enumerate(group):
+                                row = work[index][1]
+                                logp = scores[local].float().log_softmax(-1)
+                                probability = logp.exp()
+                                old = torch.tensor(row.behavior_probabilities,
+                                                   device=device, dtype=torch.float32)
+                                log_ratio = logp[row.action] - math.log(row.behavior_probability)
+                                ratio = log_ratio.exp()
+                                advantage = logp.new_tensor(row.advantage)
+                                objective = objective - torch.minimum(ratio * advantage,
+                                    ratio.clamp(1-config.clip, 1+config.clip) * advantage) / multi
+                                entropy = entropy - (probability * logp).sum() / multi
+                                kl = kl + (ratio - 1 - log_ratio) / multi
+                                clipped = clipped + (
+                                    (ratio.detach()-1).abs() > config.clip).float() / multi
+                                reverse_kl = reverse_kl + (probability * logp
+                                    - torch.special.xlogy(probability, old)).sum() / multi
+                            components["policy"] = objective - config.entropy_coef * entropy
+                            totals[1] += objective.detach().double()
+                            totals[2] += entropy.detach().double()
+                            totals[3] += kl.detach().double()
+                            totals[4] += clipped.detach().double()
+                            totals[5] += reverse_kl.detach().double()
+                        terminal_local = [j for j, index in enumerate(group)
+                                          if work[index][0] == "terminal"]
+                        if terminal_local:
+                            labels = torch.tensor([work[group[j]][1].outcome
+                                                   for j in terminal_local], device=device)
+                            target = F.one_hot(labels, OUTCOME_CLASSES).float()
+                            value = outcome_cross_entropy(
+                                logits[terminal_local], target).sum() / len(terminal)
+                            components["terminal"] = terminal_coef * value
+                            totals[6] += value.detach().double()
+                        hp_local = [j for j, index in enumerate(group) if work[index][0] == "hp"]
+                        if hp_local:
+                            target_hp = torch.tensor([work[group[j]][1].hp for j in hp_local],
+                                                     device=device, dtype=torch.float32)
+                            value = F.huber_loss(prediction[hp_local], target_hp,
+                                                 delta=0.1, reduction="sum") / len(hp_rows)
+                            components["hp"] = hp_coef * value
+                            totals[7] += value.detach().double()
+                        if diagnostics:
+                            for name, value in components.items():
+                                gradients = torch.autograd.grad(value, trunk,
+                                    retain_graph=True, allow_unused=True)
+                                accumulated = gradient_parts.setdefault(name,
+                                    [torch.zeros_like(p) for p in trunk])
+                                for total, gradient in zip(accumulated, gradients, strict=True):
+                                    if gradient is not None:
+                                        total.add_(gradient.detach())
+                        sum(components.values(), zero).backward()
+        measured = totals.cpu().tolist()
+        # A true zero behavior mass can make the full reverse KL infinite; retain
+        # that diagnostic explicitly, rather than disguising it as a finite KL.
+        if not all(math.isfinite(value) for i, value in enumerate(measured) if i != 5):
+            raise ValueError("non_finite_segment_loss_or_ratio")
+        result: dict[str, Any] = {"stepped": False, "rows": len(rows), "multi_rows": multi,
+            "td_loss": measured[0], "policy_loss": measured[1], "entropy": measured[2],
+            "approx_kl_mu_theta": measured[3], "clip_fraction": measured[4],
+            "acting_kl_theta_mu": measured[5] if math.isfinite(measured[5]) else None,
+            "acting_kl_infinite": not math.isfinite(measured[5]),
+            "terminal_loss": measured[6], "hp_loss": measured[7],
+            "terminal_rows": len(terminal), "hp_rows": len(hp_rows)}
+        if measured[3] > target_kl:
+            optimizer.zero_grad(set_to_none=True)
+            result.update(kl_stopped=True, seconds=time.perf_counter()-began)
+            return result
+        with lock:
+            norm = torch.nn.utils.clip_grad_norm_(model.parameters(), config.max_grad_norm)
+            if not bool(torch.isfinite(norm)):
+                raise ValueError("non_finite_segment_gradient")
+            optimizer.step()
+        if diagnostics:
+            norms = {name: float(torch.stack([g.square().sum() for g in gradients]).sum().sqrt())
+                     for name, gradients in gradient_parts.items()}
+            auxiliary = [sum((gradient_parts[name][i] for name in ("td", "terminal", "hp")
+                if name in gradient_parts), torch.zeros_like(parameter))
+                for i, parameter in enumerate(trunk)]
+            aux_norm = float(torch.stack([g.square().sum() for g in auxiliary]).sum().sqrt())
+            policy_gradient = gradient_parts.get("policy", [torch.zeros_like(p) for p in trunk])
+            policy_norm = norms.get("policy", 0.0)
+            dot = float(sum((a*b).sum() for a, b in zip(auxiliary, policy_gradient, strict=True)))
+            result["trunk_gradients"] = {"weighted_head_norms": norms,
+                "auxiliary_norm": aux_norm, "policy_norm": policy_norm,
+                "auxiliary_norm_share": (aux_norm/(aux_norm+policy_norm)
+                                         if aux_norm+policy_norm else 0),
+                "auxiliary_policy_cosine": (dot/(aux_norm*policy_norm)
+                                            if aux_norm*policy_norm else None)}
+        result.update(stepped=True, kl_stopped=False, gradient_norm=float(norm),
+                      seconds=time.perf_counter()-began)
+        return result
+    finally:
+        model.train(original_mode)
+
+
+@dataclass(frozen=True)
 class RlSample:
     frame: ModelFrame
     action: int

@@ -43,6 +43,11 @@ def preservation_route(retention: dict[str, Any], row: dict[str, Any]) -> str:
     tier = retention["tier"]
     terminal = (row.get("agent_task_outcome") or {}).get("terminal_observation") or {}
     abnormal = row.get("execution_status") != "finished" or not row.get("cleanup_accepted")
+    if row.get("trajectory_encoding") == "short-segment-1":
+        # Segments already carry the actual per-mu behavior. Keep the full normal
+        # original for audit; do not derive a second live training trajectory
+        # claiming that all decisions came from the registration's start weights.
+        return "full_peer"
     if tier == "trajectory" and abnormal:
         return "trajectory_and_full_peer"
     if tier == "formal" or abnormal or tier == "diagnostic" and terminal.get("result") != "win":

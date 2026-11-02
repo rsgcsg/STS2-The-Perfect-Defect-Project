@@ -19,19 +19,21 @@ from spireagent.rl_exchange import Exchange
 
 
 class TensorBoardMetrics:
-    def __init__(self, exchange: Exchange, directory: Path) -> None:
+    def __init__(self, exchange: Exchange, directory: Path, *,
+                 value_description: str = 'not applicable: no critic') -> None:
         self.exchange = exchange
         self.directory = directory / uuid.uuid4().hex
         self.writer: Any = None
         self.published: set[Path] = set()
+        self.value_description = value_description
 
     def _writer(self):
         from torch.utils.tensorboard import SummaryWriter
 
         if self.writer is None:
             self.writer = SummaryWriter(log_dir=str(self.directory))
-            self.writer.add_text('algorithm/value_loss', 'not applicable: no critic', 0)
-            self.writer.add_text('algorithm/state_value', 'not applicable: no critic', 0)
+            self.writer.add_text('algorithm/value_loss', self.value_description, 0)
+            self.writer.add_text('algorithm/state_value', self.value_description, 0)
         return self.writer
 
     def scalars(self, values: dict[str, Any], step: int, walltime: float | None = None) -> None:

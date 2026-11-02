@@ -23,7 +23,9 @@ from spireagent.storage.store import ManifestArtifactStore
 
 MODEL_SCHEMA = "spireagent/rl-model-version-1"
 SHARD_SCHEMA = "spireagent/rl-trajectory-shard-record-1"
+SEGMENT_SCHEMA = "spireagent/rl-trajectory-segment-record-1"
 CHECKPOINT_SCHEMA = "spireagent/rl-learner-checkpoint-record-1"
+SEGMENT_CHECKPOINT_SCHEMA = "spireagent/rl-learner-checkpoint-record-2"
 STOP_SCHEMA = "spireagent/rl-stop-request-1"
 EVENT_SCHEMA = "spireagent/rl-learner-event-1"
 _NAME = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
@@ -120,15 +122,22 @@ class Exchange:
         return value
 
     # Learner checkpoints (resume across machines/allocations) ----------
-    def publish_checkpoint(self, version: int, artifact_id: str) -> dict[str, Any]:
+    def publish_checkpoint(self, version: int, artifact_id: str, *,
+                           sequence: int | None = None) -> dict[str, Any]:
         """Name the full learner checkpoint taken at ``version``; the artifact is verified."""
-        if type(version) is not int or not 0 < version < 10**6:
+        if type(version) is not int or not (0 if sequence is not None else 1) <= version < 10**6:
             reject("invalid_checkpoint_record")
         if self.store.get_manifest(artifact_id).kind != "checkpoint":
             reject("checkpoint_record_binding_mismatch")
-        raw = _sealed({"schema": CHECKPOINT_SCHEMA, "run": self.run, "version": version,
+        if sequence is not None and (type(sequence) is not int or not 0 < sequence < 10**6):
+            reject("invalid_checkpoint_sequence")
+        raw = _sealed({"schema": (CHECKPOINT_SCHEMA if sequence is None
+                                   else SEGMENT_CHECKPOINT_SCHEMA),
+                       **({"checkpoint_sequence": sequence} if sequence is not None else {}),
+                       "run": self.run, "version": version,
                        "checkpoint_artifact_id": artifact_id, "published_at": time.time()})
-        if not self.blobs.put_if_absent(f"{self.prefix}checkpoints/{version:06d}.json", raw):
+        key = version if sequence is None else sequence
+        if not self.blobs.put_if_absent(f"{self.prefix}checkpoints/{key:06d}.json", raw):
             reject("checkpoint_record_already_published")
         value: dict[str, Any] = json.loads(raw)
         return value
@@ -138,7 +147,11 @@ class Exchange:
                       if k.endswith(".json"))
         if not keys:
             return None
-        value = _open(self.blobs.get(keys[-1]), CHECKPOINT_SCHEMA)
+        raw = self.blobs.get(keys[-1])
+        schema = json.loads(raw).get("schema")
+        if schema not in {CHECKPOINT_SCHEMA, SEGMENT_CHECKPOINT_SCHEMA}:
+            reject("unsupported_checkpoint_record")
+        value = _open(raw, schema)
         if value["run"] != self.run:
             reject("checkpoint_record_identity_mismatch")
         return value
@@ -197,6 +210,28 @@ class Exchange:
         return destination
 
     # Trajectory-shard records ------------------------------------------
+    def publish_segment(self, actor: str, sequence: int, record: dict[str, Any]) -> dict[str, Any]:
+        """Replace the live training edge; keep original shard records read-only."""
+        if not _NAME.fullmatch(actor) or type(sequence) is not int or not 0 <= sequence < 10**8:
+            reject("invalid_segment_record_key")
+        info = self.store.get_manifest(record["segment_artifact_id"]).parameters.value()
+        if (info.get("schema") != "stpd/p1-trajectory-segment-1"
+                or any(info[key] != record[key] for key in ("segment_id", "run_id", "rows", "mu"))):
+            reject("segment_record_binding_mismatch")
+        raw = _sealed({**record, "schema": SEGMENT_SCHEMA, "run": self.run,
+                       "actor": actor, "sequence": sequence})
+        if not self.blobs.put_if_absent(f"{self.prefix}shards/{actor}/{sequence:08d}.json", raw):
+            reject("segment_record_already_published")
+        return json.loads(raw)
+
+    def segment_record(self, key: str) -> dict[str, Any]:
+        if not key.startswith(f"{self.prefix}shards/"):
+            reject("foreign_segment_record")
+        value = _open(self.blobs.get(key), SEGMENT_SCHEMA)
+        if value.get("run") != self.run:
+            reject("segment_record_identity_mismatch")
+        return value
+
     def publish_shard(self, actor: str, sequence: int, record: dict[str, Any]) -> dict[str, Any]:
         if not _NAME.fullmatch(actor) or type(sequence) is not int or not 0 <= sequence < 10**8:
             reject("invalid_shard_record_key")

@@ -26,6 +26,8 @@ def serve_session(
     consumption_prefix: str = "mstd-",
     reuse_selection: bool = False,
     keyed_selection: bool = False,
+    score_input: Callable[[dict[str, Any]], list[float]] | None = None,
+    close_requested: Callable[[], bool] | None = None,
 ) -> None:
     """``keyed_selection`` passes the acknowledged consumption id as a draw key."""
     if keyed_selection and not reuse_selection:
@@ -66,7 +68,8 @@ def serve_session(
                 or value["catalog"] != value["observation"]["catalog"]
             ):
                 raise ValueError("P1 Agent needs its bound InputSpec and full current catalog")
-            scores = score(value["observation"])
+            scores = (score_input(value) if score_input is not None
+                      else score(value["observation"]))
             if len(scores) != len(value["catalog"]):
                 raise ValueError("P1 scores must cover the complete current catalog")
             advanced = value["consumption_unit"]["id"] != unit
@@ -141,7 +144,9 @@ def serve_session(
                 raise ValueError("P1 Agent next requires acknowledged input")
             value, scores, selected = committed
             directive: dict[str, Any]
-            if value["observation"]["status"] == "terminal":
+            if close_requested is not None and close_requested():
+                directive = {"type": "close", "reason": "training_segment_budget_complete"}
+            elif value["observation"]["status"] == "terminal":
                 directive = {"type": "close", "reason": "native_terminal_observed"}
             else:
                 if not scores:

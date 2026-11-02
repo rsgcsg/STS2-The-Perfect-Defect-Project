@@ -78,18 +78,22 @@ def serve(
         with torch.inference_mode():
             return model(frame).tolist() if frame.choices else []
 
-    client = None
+    client: Any = None
     if local_inference is not None:
         import json
 
         from spireagent.policy_files import bound_path
 
-        from .local_inference import LocalInferenceClient
+        from .local_inference import SEGMENT_SCHEMA, LocalInferenceClient, SegmentInferenceClient
 
         path = bound_path(owner, local_inference, stage="native_agent_support")
         attachment = json.loads(path.read_bytes())
-        client = LocalInferenceClient(
-            attachment, config["package_sha256"], config["input_projection"])
+        if attachment.get("schema") == SEGMENT_SCHEMA:
+            client = SegmentInferenceClient(attachment, config["input_projection"],
+                                            owner / "behavior-decisions.jsonl")
+        else:
+            client = LocalInferenceClient(
+                attachment, config["package_sha256"], config["input_projection"])
         # Installation still verifies the normal model binding; only scoring is
         # shared. Each actor retains its own original protocol state.
         del model
@@ -108,13 +112,19 @@ def serve(
     try:
         serve_session(
             manifest,
-            score if client is None else client,
+            score if client is None or local_inference is not None
+                and isinstance(client, SegmentInferenceClient) else client,
             chooser,
             source,
             destination,
             # Training sampling commits each draw on ACK; argmax keeps its original path.
             reuse_selection=behavior is not None,
             keyed_selection=behavior is not None,
+            score_input=(client.consume if isinstance(client, SegmentInferenceClient) else None)
+                if local_inference is not None else None,
+            close_requested=(lambda: client.stop_requested)
+                if local_inference is not None and isinstance(client, SegmentInferenceClient)
+                else None,
         )
     finally:
         if client is not None:

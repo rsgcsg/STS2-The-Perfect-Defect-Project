@@ -65,6 +65,7 @@ from .reader import (
     read_once,
 )
 from .reward import REWARD_SPEC, episode_reward
+from .segments import SegmentConfig
 
 CONFIG_SCHEMA = "stpd/rl-learner-config-1"
 CHECKPOINT_SCHEMA = "stpd/rl-learner-checkpoint-2"
@@ -132,6 +133,7 @@ class LearnerConfig:
     # Omitted means the exact legacy update path, not an implicit new plan.
     performance: PerformanceConfig | None = None
     critic: CriticConfig | None = None
+    segments: SegmentConfig | None = None
 
     @classmethod
     def read(cls, path: Path) -> LearnerConfig:
@@ -141,9 +143,11 @@ class LearnerConfig:
         loss = LossConfig(**value.pop("loss", {}))
         performance = value.pop("performance", None)
         critic = value.pop("critic", None)
+        segments = value.pop("segments", None)
         if critic is not None and not value.get("resume_checkpoint"):
             critic = {"head_kind": "attention-residual-v1", **critic}
         return cls(**value, loss=loss,
+                   segments=SegmentConfig(**segments) if segments is not None else None,
                    critic=CriticConfig(**critic) if critic is not None else None,
                    performance=(PerformanceConfig(**performance)
                                 if performance is not None else None))

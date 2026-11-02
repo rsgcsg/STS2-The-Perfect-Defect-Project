@@ -1,4 +1,90 @@
-# RL1 打局者/学习者（Managed，A0 Defect）
+# RL Actor—短段—Learner（Managed，A0 Defect）
+
+当前 live 入口采用 RL4 短段。CPU 沿原 `EvaluationLedger.run_managed`、
+`PipelinedManagedExecutor` 和 Runtime 原执行/回放状态机打局；GPU 常驻推理及学习。
+本页说明实现的操作契约；实际可用版本、预算和验收从 [CURRENT](../../docs/memory/CURRENT.md)
+进入原任务。旧整局训练实现仅供历史原件读取和工程回归，不能作为另一条 live 训练入口。
+
+## 原链的五条连接
+
+- **短段交付 requires**：Runtime 原语义状态机确认的 completed directive 与真实 successor、
+  Agent 实际 μ/完整概率、原件 fsync 屏障。**provides**：最多64行、单一 μ 的不可变
+  `stpd/p1-trajectory-segment-1`，走原 Store analysis artifact 和 Exchange shard 键。
+  未确认动作不入段；未知前已确认前缀可学。自然终局尾段等正常 typed 原件核验才准入。
+- **中央推理 requires**：公开输入、完整 catalog、固定 μ 与 adapter/数值身份。
+  **provides**：FP32 scores 和结局分布；沿常连接按 μ 合批，不判合法性。
+  catalog=1 直接执行，概率1/logp0；训练前同 μ 批量补价值，不删行或填零。
+- **发布/采用 requires**：成功数据集更新后的 θ 快照。
+  **provides**：正常 policy model 加独立 heads checkpoint，共同绑定 μ；Actor 的注册/执行器
+  保持稳定，只在段边界采用已发布 μ。正文里的版本不等于 SGD 次数。
+- **辅助回填 requires**：真实稳定公开 reward successor 的战后 HP，或正常 typed 自然终局。
+  **provides**：跨段原状态引用及观察标签。HP 在短段提交即入池；终局才从≤64个均匀深度状态
+  回填真实结局。unknown 无终局标签；辅助项不重放 PPO、不增 first-use。
+- **CP/恢复 requires**：θ、Adam、EMA、RNG、队列/预留、冻结目标/成员/SGD游标、
+  μ 和辅助池引用及实际使用次数。**provides**：正常 `checkpoint` artifact 和只追加
+  checkpoint record；空目录经 Store 递归取回，不重算冻结目标，不重发原 World/动作。
+
+## 数据集与数值
+
+`LearnerConfig.segments` 显式选新实现。缺少 segments 的 live Actor/Learner/Friday run 拒绝；
+旧 library 仅保留历史读取/测试。新 run 从固定 v1008/r1.9 policy 与已预热 heads CP 起步，
+不带旧 Adam。Z-next 关闭，结局/HP头都能训练共享主干。
+
+按整段累计≥1024行封批，1024…1087行全部平分4个 minibatch，做2遍、最多8次成功 SGD。
+单局每批≤128行；ready 和在途预留共用4608行容量，满时暂停新段，已预留段仍可提交。
+多选优势只在整份冻结数据集归一化；每个 SGD 的策略分母为其多选数，价值分母为其总行数。
+跨 microbatch 累积同一分母；单选只参与价值传播。γ=1、λ=.99，目标按原段 μ 冻结一次。
+
+每批从终局/HP池各抽≤256行，平分到4个 SGD，第二遍沿用。只记成功 optimizer.step：
+终局最多2份数据集/4次，HP最多1份/2次。KL(μ‖θ)的抽样估计超过.03，丢弃当前梯度并
+停止该数据集剩余 PPO/辅助更新；已经成功的更新保留并发布。
+BF16 仅训练前向，log-softmax、loss、Adam均FP32；acting/eval FP32，TF32关闭。
+精度和执行参数属于身份，改动另版记录，不能混用原 μ。
+
+## Friday 的正常启动与继续
+
+先在原 GPU 分配/资源槽中准备干净冻结源码、同一执行配置、非敏感 peer、learner JSON。
+启动命令在 GPU 节点执行；CPU 数组仍由既有 Friday adapter 和 E2 resource-slot 提交：
+
+```bash
+python tools/friday/rl.py learn --config /ABS/learner.json --work /ABS/new-learner-work \
+  --execution /ABS/execution.json --actors-output /ABS/new-actors \
+  --actors 32 --seed-namespace NEW-TRAIN-NAMESPACE
+```
+
+`segments.inference_batch` 等于 actors。`segments.warmup_artifact_id` 指向正常预热 CP；
+`start_artifact_id/start_model_sha256` 固定实际 r1.9 起点包；排除种子写
+`segments.excluded_seeds`（永久 suite 和原 held_out 同时拒绝）。
+`performance` 显式 packed/tensor_cache/precompile_inputs、microbatch、BF16、text dedup 与面积上限。
+
+`learn` 构造原 learner/scorer，写无秘密 inference attachment，调用现有 `prepare`/`submit`；
+临时 auth 只通过 sbatch 继承环境传给 Actor，不写配置、日志或报告。提交意图先持久化；
+若回复丢失，查原提交，不再发数组。`prepare`/`submit --dry-run` 本身不创建 World。
+
+继续时先核原 GPU/Actor 作业已收尾、unknown/未决 offer 已按原件处置。
+同 run/peer/source/config 写明确 `resume_checkpoint`，新 work 和 actors-output 路径再执行上述命令。
+恢复保留 θ/Adam/EMA/RNG、冻结目标、first-use/SGD/池计数；不换 seed 重放原失败。
+允许变更的时长/device/线程等由 `_restore` 明确校验；换源码须显式 `resume_source`，不能静默续。
+
+## 停止、观察、保存
+
+计划同run续跑时，使用 learner work/STOP 或 USR1（只置本地STOP），恢复用新的work目录。
+`Exchange.request_stop(reason)` 是原有不可撤销的永久停止；有该标记的run在模型/Actor初始化
+前即拒绝恢复，不能按上面的同run续跑命令再次提交。
+到预算后停止新局/新段，现有段收尾，最多600秒 drain，存最终 CP，再释放 GPU。
+Actor 收到正常 AgentClose 后沿 Runtime/Host 原 Stop/Cleanup，计 censored，不制造失败或终局。
+原件仍走正常后台 full_peer 归档及读回；保存失败/未知保留原记录，不以退出0代替原件成功。
+
+`updates.jsonl` 记录成功SGD、KL刹车、first-use、生成至首次成功使用的年龄、楼层/μ版本差和
+各头梯度。原 Exchange learner-events 与 TensorBoard 路径复用；CP时关闭上传 event 文件。
+请求全程延迟/批大小在 Agent μ journal；推理端 batch histogram、时间和有界文本缓存在summary。
+GPU忙闲/CPU占用须来自实际 profile/采样，不能用源码或 forward 时间代算。
+
+以下保留旧 RL1–RL3 操作史，仅用于解释旧原件/配置；旧 live 命令不再受支持。
+
+---
+
+# 历史：RL1–RL3 整局交付
 
 **范围：** 第一轮 RL 代码与小冒烟。只用 Managed；不开真游戏；训练局不进评估，训练种子来自
 `diagnostic_reference_manifest`（非评估命名空间）。正式长跑另发卡。

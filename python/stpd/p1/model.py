@@ -16,7 +16,15 @@ from torch import Tensor, nn
 
 from .execution import MStdExecution
 from .input import Frame, Role, is_v2_encoding, normalized, signed_log
-from .tensor_input import JointNodes, ModelFrame, Reduction, TensorFrame, joint_nodes, text_batch
+from .tensor_input import (
+    JointNodes,
+    ModelFrame,
+    Reduction,
+    TensorFrame,
+    joint_nodes,
+    text_batch,
+    text_input_keys,
+)
 
 ARCHITECTURE: dict[str, Any] = {
     "id": "q3-m-std-1",
@@ -123,6 +131,10 @@ class MStd(nn.Module):
         self.execution = execution or MStdExecution()
         # Scoped learner runtime only: neither state_dict nor package execution.
         self.nonblocking_inputs = False
+        self.deduplicate_text = False
+        self.text_cache: Any = None
+        self.text_cache_namespace: str | None = None
+        self.text_statistics = {"input_rows": 0, "unique_rows": 0, "encoded_rows": 0}
         self.model_size = model_size
         self.architecture = architecture(value_heads, model_size)
         self.vocabulary = vocabulary
@@ -194,9 +206,11 @@ class MStd(nn.Module):
             self._tokens[text] = ids, numeric
         return self._tokens[text]
 
-    def text_vectors(self, texts: list[str], *, inputs: tuple[Tensor, Tensor, Tensor] | None = None
+    def text_vectors(self, texts: list[str], *, inputs: tuple[Tensor, Tensor, Tensor] | None = None,
+                     keys: tuple[bytes, ...] | None = None
                      ) -> Tensor:
         device = self.ids.weight.device
+        reuse = self.deduplicate_text and not self.training
         if inputs is None:
             tokens = [self.tokenize(text) for text in texts]
             width = max(len(ids) for ids, _ in tokens)
@@ -205,25 +219,73 @@ class MStd(nn.Module):
             ids = torch.tensor(
                 [row + [0] * (width - len(row)) for row, _ in tokens],
                 dtype=torch.long,
-                device=device,
+                device="cpu" if reuse else device,
             )
             nums = torch.tensor(
                 [numbers + [0.0] * (width - len(numbers)) for _, numbers in tokens],
                 dtype=torch.float32,
-                device=device,
+                device="cpu" if reuse else device,
             ).unsqueeze(-1)
-            lengths = torch.tensor([len(row) for row, _ in tokens], device=device)
+            lengths = torch.tensor([len(row) for row, _ in tokens],
+                                   device="cpu" if reuse else device)
         else:
+            if reuse:
+                return self._reused_text_vectors(inputs, keys)
             ids = inputs[0].to(device, non_blocking=self.nonblocking_inputs)
             nums = inputs[1].to(device, non_blocking=self.nonblocking_inputs)
             lengths = inputs[2].to(device, non_blocking=self.nonblocking_inputs)
             width = ids.shape[1]
+        if reuse:
+            return self._reused_text_vectors((ids, nums, lengths), keys)
+        return self._encode_text(ids, nums, lengths)
+
+    def _encode_text(self, ids: Tensor, nums: Tensor, lengths: Tensor) -> Tensor:
+        device, width = ids.device, ids.shape[1]
         mask = torch.arange(width, device=device).unsqueeze(0) >= lengths.unsqueeze(1)
         value = self.text_ids(ids) + self.text_numbers(nums)
         value = value + positions(torch.arange(width, device=device), 128)
         encoded = self.text_blocks(value, src_key_padding_mask=mask)
         encoded = (encoded * (~mask).unsqueeze(-1)).sum(1) / (~mask).sum(1).unsqueeze(-1)
         return cast(Tensor, self.text_projection(encoded))
+
+    def _reused_text_vectors(self, inputs: tuple[Tensor, Tensor, Tensor],
+                             keys: tuple[bytes, ...] | None) -> Tensor:
+        keys = text_input_keys(inputs) if keys is None else keys
+        indices, inverse, unique = [], [], {}
+        for index, key in enumerate(keys):
+            if key not in unique:
+                unique[key] = len(indices)
+                indices.append(index)
+            inverse.append(unique[key])
+        ordered_keys = tuple(unique)
+        device = self.ids.weight.device
+        cache = (self.text_cache if self.text_cache_namespace is not None
+                 and not torch.is_grad_enabled() and not torch.is_autocast_enabled(device.type)
+                 and not any(parameter.requires_grad for parameter in self.parameters())
+                 else None)
+        values = [cache.get(self.text_cache_namespace, key) if cache is not None else None
+                  for key in ordered_keys]
+        missing = [index for index, value in enumerate(values) if value is None]
+        self.text_statistics["input_rows"] += len(keys)
+        self.text_statistics["unique_rows"] += len(indices)
+        self.text_statistics["encoded_rows"] += len(missing)
+        if missing:
+            selection = torch.tensor([indices[index] for index in missing], dtype=torch.long)
+            lengths = inputs[2].index_select(0, selection)
+            width = int(lengths.max())
+            ids = inputs[0].index_select(0, selection)[:, :width].to(
+                device, non_blocking=self.nonblocking_inputs)
+            nums = inputs[1].index_select(0, selection)[:, :width].to(
+                device, non_blocking=self.nonblocking_inputs)
+            encoded = self._encode_text(ids, nums, lengths.to(
+                device, non_blocking=self.nonblocking_inputs))
+            for local, index in enumerate(missing):
+                values[index] = encoded[local]
+        vectors = torch.stack(values)
+        if cache is not None and missing:
+            cache.put(self.text_cache_namespace, tuple(ordered_keys[index] for index in missing),
+                      encoded)
+        return vectors.index_select(0, torch.tensor(inverse, device=device))
 
     def tensor_nodes(self, frame: TensorFrame | JointNodes, vectors: Tensor) -> Tensor:
         device = self.ids.weight.device
@@ -492,8 +554,8 @@ class MStd(nn.Module):
                        ) -> tuple[list[Tensor], Tensor]:
         """Independent scenes with full catalogs; padding is never a public input.
 
-        Texts are deduplicated within each frame exactly as in single-frame scoring,
-        never across frames (each occurrence owns its training dropout).
+        Train-mode dropout keeps independent occurrences. The explicit eval-mode
+        execution may deduplicate text within a forward while retaining autograd.
         """
         if not frames:
             return [], self.ids.weight.new_empty((0, 192))
@@ -507,7 +569,11 @@ class MStd(nn.Module):
             raise ValueError("mixed_raw_and_tensor_microbatch")
         if tensor_frames:
             counts = [f.text_count for f in tensor_frames]
-            vectors = (self.text_vectors([], inputs=text_batch(tensor_frames)) if sum(counts)
+            sources = ([frame.host or frame for frame in tensor_frames]
+                       if self.deduplicate_text and not self.training else tensor_frames)
+            keys = (tuple(key for frame in sources for key in frame.text_keys)
+                    if self.deduplicate_text and not self.training else None)
+            vectors = (self.text_vectors([], inputs=text_batch(sources), keys=keys) if sum(counts)
                        else self.ids.weight.new_zeros((0, 192)))
         else:
             texts = [sorted({text for node in cast(Frame, f).entities for _, text in node.text})

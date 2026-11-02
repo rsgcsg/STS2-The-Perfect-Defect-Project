@@ -12,6 +12,7 @@ import io
 import json
 import shutil
 import time
+from collections.abc import Callable
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from contextlib import ExitStack, nullcontext
 from datetime import UTC, datetime
@@ -357,6 +358,7 @@ class EvaluationLedger:
         limits: SuiteLimits | None = None,
         executor: Any = None,
         slot_ids: tuple[str, ...] | None = None,
+        should_stop: Callable[[], bool] | None = None,
     ) -> dict[str, Any]:
         """The calling command holds the ledger lock; only this thread appends events.
 
@@ -492,6 +494,7 @@ class EvaluationLedger:
                         exhausted = True
                         break
                     if ((self.directory / "STOP").exists()
+                            or should_stop is not None and should_stop()
                             or time.monotonic() - began >= limits.suite_seconds):
                         stop_reason = "stop_requested_or_suite_wall_limit"
                         break
