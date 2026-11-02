@@ -387,7 +387,7 @@ class MStd(nn.Module):
             torch.manual_seed(seed)
             self.rl4_heads = Rl4Heads(frequencies).to(device)
         self.architecture = {**self.architecture,
-            "auxiliary_heads": ["rl4-outcome-attention-50", "rl4-hp-attention-1"]}
+            "auxiliary_heads": ["rl4-outcome-attention-51", "rl4-hp-attention-1"]}
 
     def forward_rl4(self, frames: Sequence[ModelFrame], floors: Sequence[int] | Tensor,
                     *, policy: bool = True, check_finite: bool = True
@@ -398,7 +398,9 @@ class MStd(nn.Module):
         if not frames:
             if len(floors):
                 raise ValueError("outcome_floor_batch_mismatch")
-            return [], self.ids.weight.new_empty((0, 50)), self.ids.weight.new_empty((0,))
+            from stpd.rl.heads import OUTCOME_CLASSES
+            return ([], self.ids.weight.new_empty((0, OUTCOME_CLASSES)),
+                    self.ids.weight.new_empty((0,)))
         captured: list[Tensor] = []
         scores, current = self._forward_batch(frames, values_only=not policy,
             check_finite=check_finite, capture_scene=captured)

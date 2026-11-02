@@ -14,6 +14,7 @@ from stpd.p1.export import action_weights, export_model, load_model
 from stpd.p1.input import fit_vocabulary, project
 from stpd.p1.model import MStd
 from stpd.rl.heads import (
+    OUTCOME_CLASSES,
     categorical_lambda_targets,
     checked_terminal_class,
     class_reward_values,
@@ -21,6 +22,7 @@ from stpd.rl.heads import (
     outcome_mask,
 )
 from stpd.rl.warmup import (
+    FeatureExamples,
     WarmupConfig,
     WarmupExample,
     validation_seed,
@@ -40,7 +42,7 @@ def test_enable_preserves_action_weights_rng_and_export_load(tmp_path):
     previous = copy.deepcopy(model.state_dict())
     scores = model.forward_batch([frame])[0].detach().clone()
     rng = torch.get_rng_state().clone()
-    model.enable_rl4_heads(29, [0] * 49 + [1])
+    model.enable_rl4_heads(29, [0] * 49 + [1, 0])
     assert torch.equal(rng, torch.get_rng_state())
     assert all(torch.equal(value, model.state_dict()[key]) for key, value in previous.items())
     stripped = action_weights(dict(model.state_dict()))
@@ -53,7 +55,7 @@ def test_enable_preserves_action_weights_rng_and_export_load(tmp_path):
     loaded, _ = load_model(tmp_path / "package/model.tensor-tree", descriptor["package_sha256"])
     assert torch.equal(scores, loaded.eval().forward_batch([frame])[0])
     assert descriptor["training_architecture"]["auxiliary_heads"] == [
-        "rl4-outcome-attention-50", "rl4-hp-attention-1"]
+        "rl4-outcome-attention-51", "rl4-hp-attention-1"]
     with pytest.raises(ValueError, match="action_only"):
         model.enable_rl4_heads(29)
 
@@ -62,7 +64,7 @@ def test_heads_are_independent_and_auxiliary_gradient_enters_trunk():
     model, frame = member()
     model.enable_rl4_heads(31)
     scores, logits, hp = model.forward_rl4([frame], [12])
-    assert len(scores) == 1 and logits.shape == (1, 50) and hp.shape == (1,)
+    assert len(scores) == 1 and logits.shape == (1, OUTCOME_CLASSES) and hp.shape == (1,)
     assert torch.isneginf(logits[0, :12]).all()
     assert torch.equal(hp, torch.zeros_like(hp))
     before = logits.detach().clone()
@@ -73,7 +75,7 @@ def test_heads_are_independent_and_auxiliary_gradient_enters_trunk():
     # gradients appear. Test the online trained-head path, rather than removing it.
     with torch.no_grad():
         model.rl4_heads.outcome.mlp[-1].weight.normal_(0, .02)
-    target = torch.nn.functional.one_hot(torch.tensor([24]), 50).float()
+    target = torch.nn.functional.one_hot(torch.tensor([24]), OUTCOME_CLASSES).float()
     outcome_cross_entropy(model.forward_rl4([frame], [12])[1], target).sum().backward()
     assert model.scene.layers[0].linear1.weight.grad.abs().sum() > 0
     assert model.rl4_heads.hp.mlp[-1].weight.grad is None
@@ -100,12 +102,12 @@ def test_value_only_skips_action_readout_and_matches_auxiliary_values():
 
 
 def test_masked_soft_targets_have_finite_loss_and_gradient():
-    logits = torch.randn(2, 50, requires_grad=True)
+    logits = torch.randn(2, OUTCOME_CLASSES, requires_grad=True)
     masked = logits.masked_fill(~outcome_mask([0, 48]), -torch.inf)
-    target = torch.zeros(2, 50)
+    target = torch.zeros(2, OUTCOME_CLASSES)
     target[0, 10] = .4
     target[0, 49] = .6
-    target[1, 48:] = .5
+    target[1, 48:50] = .5
     loss = outcome_cross_entropy(masked, target)
     loss.sum().backward()
     assert torch.isfinite(loss).all() and torch.isfinite(logits.grad).all()
@@ -119,8 +121,8 @@ def test_masked_soft_targets_have_finite_loss_and_gradient():
 @pytest.mark.parametrize("terminal", [False, True])
 def test_frozen_lambda_distribution_matches_scalar_gae(count, terminal):
     torch.manual_seed(13)
-    p = torch.rand(count, 50).softmax(-1).requires_grad_()
-    boundary = None if terminal else torch.rand(50).softmax(-1)
+    p = torch.rand(count, OUTCOME_CLASSES).softmax(-1).requires_grad_()
+    boundary = None if terminal else torch.rand(OUTCOME_CLASSES).softmax(-1)
     q, advantage = categorical_lambda_targets(p, boundary,
         terminal_class=49 if terminal else None, gae_lambda=.99)
     assert not q.requires_grad and not advantage.requires_grad
@@ -145,8 +147,27 @@ def test_reward_class_checks_actual_reward_never_fills_missing_boss_witness():
     assert checked_terminal_class(result="loss", floor=17, reward=.5 * (17 / 48)**2) == 17
     assert checked_terminal_class(result="loss", floor=18, reward=.5 * (18 / 48)**2 + .1) == 18
     assert checked_terminal_class(result="win", floor=48, reward=1) == 49
+    assert checked_terminal_class(result="loss", floor=35, reward=.5 * (35 / 48)**2 + .1) == 50
+    assert checked_terminal_class(result="loss", floor=35, reward=.5 * (35 / 48)**2 + .2) == 35
+    assert outcome_mask([35])[0, 50] and not outcome_mask([36])[0, 50]
     with pytest.raises(ValueError, match="reward_mismatch"):
         checked_terminal_class(result="loss", floor=18, reward=.5 * (18 / 48)**2)
+
+
+def test_normal_feature_reader_preserves_the_observed_alternate_map_reward(tmp_path):
+    from stpd.workers.checkpoint_codec import encode_checkpoint
+
+    raw = encode_checkpoint({"seed": "train-example", "scene": [torch.zeros(2, 192)],
+        "mean": torch.zeros(1, 192), "floors": [35], "outcome_class": 35,
+        "reward": .5 * (35 / 48)**2 + .1, "hp": [0.0]})
+    (tmp_path / "features.bin").write_bytes(raw)
+    manifest = {"model_package_sha256": "a" * 64, "terminal_label_encoding": "floor-win-1",
+        "episodes": [{"path": "features.bin", "sha256": hashlib.sha256(raw).hexdigest(),
+                      "rows": 1, "seed": "train-example"}]}
+    (tmp_path / "features.json").write_text(json.dumps(manifest))
+    row = FeatureExamples(tmp_path / "features.json", "a" * 64)[0]
+    assert row.floor == 35 and row.outcome == 50
+    assert abs(float(class_reward_values()[row.outcome]) - (.5 * (35/48)**2 + .1)) < 1e-6
 
 
 def test_warmup_changes_only_heads_keeps_seed_holdout_and_best_epoch():

@@ -25,7 +25,13 @@ from torch.nn import functional as F
 
 from stpd.p1.model import MStd
 
-from .heads import class_reward_values, outcome_cross_entropy, outcome_mask
+from .heads import (
+    OUTCOME_CLASSES,
+    checked_terminal_class,
+    class_reward_values,
+    outcome_cross_entropy,
+    outcome_mask,
+)
 
 
 @dataclass(frozen=True)
@@ -44,7 +50,8 @@ class WarmupExample:
                 or not bool(torch.isfinite(self.mean).all())
                 or type(self.floor) is not int or not 0 <= self.floor <= 48
                 or (self.outcome is not None and (type(self.outcome) is not int
-                    or not self.floor <= self.outcome <= 49))
+                    or not 0 <= self.outcome < OUTCOME_CLASSES
+                    or not bool(outcome_mask([self.floor])[0, self.outcome])))
                 or (self.hp is not None and (not math.isfinite(self.hp) or self.hp < 0))
                 or (self.outcome is None and self.hp is None)):
             raise ValueError("invalid_warmup_example")
@@ -83,6 +90,9 @@ class FeatureExamples(Sequence[WarmupExample]):
         value = json.loads(manifest.read_bytes())
         if value["model_package_sha256"] != expected_package_sha256:
             raise ValueError("warmup_feature_trunk_mismatch")
+        self.terminal_encoding = value.get("terminal_label_encoding", "rl4-class-1")
+        if self.terminal_encoding not in {"floor-win-1", "rl4-class-1"}:
+            raise ValueError("unsupported_warmup_terminal_label_encoding")
         self.root = manifest.parent
         self.records = value["episodes"]
         self.ends: list[int] = []
@@ -130,8 +140,12 @@ class FeatureExamples(Sequence[WarmupExample]):
             self._block, self._current = block, block_index
         local = index - (self.ends[block_index - 1] if block_index else 0)
         block = self._block
+        label = block["outcome_class"]
+        if self.terminal_encoding == "floor-win-1":
+            label = checked_terminal_class(result="win" if label == 49 else "loss",
+                floor=48 if label == 49 else label, reward=block["reward"])
         return WarmupExample(block["seed"], block["scene"][local], block["mean"][local],
-            block["floors"][local], block["outcome_class"], block["hp"][local])
+            block["floors"][local], label, block["hp"][local])
 
 
 class _IndexedExamples(Sequence[WarmupExample]):
@@ -173,7 +187,7 @@ def _batch(model: MStd, examples: Sequence[WarmupExample]
     hp_valid = torch.tensor([row.hp is not None for row in examples], device=device)
     labels = torch.tensor([row.outcome if row.outcome is not None else 49
                            for row in examples], device=device)
-    target = F.one_hot(labels, 50).float()
+    target = F.one_hot(labels, OUTCOME_CLASSES).float()
     hp_target = torch.tensor([row.hp or 0.0 for row in examples], device=device)
     return logits, hp, outcome_valid, hp_valid, target, hp_target
 
@@ -227,7 +241,7 @@ def evaluate_heads(model: MStd, examples: Sequence[WarmupExample], *, batch_size
         residual_mean = sum(p - a for p, a in zip(predicted, actual, strict=True)) / len(actual)
         residual_variance = sum((p - a - residual_mean) ** 2
             for p, a in zip(predicted, actual, strict=True)) / len(actual)
-        frequencies = torch.bincount(torch.tensor(labels), minlength=50).float()
+        frequencies = torch.bincount(torch.tensor(labels), minlength=OUTCOME_CLASSES).float()
         probabilities = (frequencies + 1e-3).expand(len(labels), -1).clone()
         probabilities.masked_fill_(~outcome_mask(floors), 0)
         probabilities /= probabilities.sum(1, keepdim=True)
@@ -358,7 +372,7 @@ def main() -> None:
     model, _ = load_model(arguments.package / "model.tensor-tree", package_sha)
     examples = FeatureExamples(arguments.features, package_sha)
     # Per-game frequencies preserve the selected TRAIN cohort's terminal mix.
-    frequencies = [0.0] * 50
+    frequencies = [0.0] * OUTCOME_CLASSES
     for end in examples.ends:
         row = examples[end - 1]
         if row.outcome is not None and not validation_seed(row.seed):

@@ -15,7 +15,11 @@ from torch import Tensor, nn
 
 from stpd.p1.value_head import AttentionValueResidual
 
-OUTCOME_CLASSES = 50
+# Golden Compass has a witnessed alternate Act-2 map: natural death on floor35
+# with only Boss1 cleared. Keep the original default classes, and split only the
+# actual reward ambiguity; this is still one outcome head, not another objective.
+OUTCOME_CLASSES = 51
+CLASS_FLOORS = tuple(range(49)) + (49, 35)
 WIN_CLASS = 49
 HEAD_PREFIX = "rl4_heads."
 
@@ -51,8 +55,8 @@ def outcome_mask(floors: Sequence[int] | Tensor, *, device: torch.device | None 
     if (values.ndim != 1 or values.dtype not in (torch.int32, torch.int64)
             or bool(((values < 0) | (values > 48)).any())):
         raise ValueError("invalid_max_observed_floor")
-    classes = torch.arange(OUTCOME_CLASSES, device=values.device)
-    return (classes[None, :] >= values[:, None]) | (classes[None, :] == WIN_CLASS)
+    class_floors = torch.tensor(CLASS_FLOORS, device=values.device)
+    return class_floors[None, :] >= values[:, None]
 
 
 def outcome_cross_entropy(logits: Tensor, targets: Tensor) -> Tensor:
@@ -79,17 +83,20 @@ def class_reward_values(*, device: torch.device | None = None) -> Tensor:
     """
     return torch.tensor([0.5 * (floor / 48) ** 2
                          + 0.1 * sum(boss < floor for boss in (17, 33, 48))
-                         for floor in range(49)] + [1.0], device=device)
+                         for floor in range(49)] + [1.0, 0.5 * (35 / 48) ** 2 + 0.1], device=device)
 
 
 def checked_terminal_class(*, result: str, floor: int, reward: float) -> int:
     if type(floor) is not int or not 0 <= floor <= 48 or result not in {"win", "loss"}:
         raise ValueError("invalid_natural_terminal_class")
-    label = WIN_CLASS if result == "win" else floor
-    expected = float(class_reward_values()[label])
-    if not math.isfinite(reward) or not math.isclose(reward, expected, abs_tol=1e-6):
+    candidates = [WIN_CLASS] if result == "win" else [
+        index for index, value in enumerate(CLASS_FLOORS)
+        if value == floor and index != WIN_CLASS]
+    matched = [label for label in candidates if math.isfinite(reward)
+        and math.isclose(reward, float(class_reward_values()[label]), abs_tol=1e-6)]
+    if len(matched) != 1:
         raise ValueError("terminal_class_reward_mismatch")
-    return label
+    return matched[0]
 
 
 def categorical_lambda_targets(probabilities: Tensor, boundary: Tensor | None, *,
