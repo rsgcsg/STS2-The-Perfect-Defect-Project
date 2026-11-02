@@ -639,9 +639,19 @@ class ManagedEpisodeExecutor:
                          runtime_instance_id: str) -> None:
         result = verify_agent_session_run_evidence(run, expected)
         if not result.passed or result.value is None:
+            self._record_typed_failure(row, artifacts, expected, result)
             reject("typed_original_verification_failed")
         self._record_verified_original(row, artifacts, run, expected, package,
                                        runtime_instance_id, result)
+
+    @staticmethod
+    def _record_typed_failure(row: dict[str, Any], artifacts: Any,
+                              expected: dict[str, Any], result: Any) -> None:
+        """Retain the actual verifier result, without inventing a historical cause."""
+        row["typed_verification"] = artifacts.put("typed-verification.json", json_bytes({
+            "status": result.status, "content_id": None, "expected": expected,
+            "findings": [{"code": finding.code, "detail": finding.detail,
+                          "path": finding.path} for finding in result.findings]}))
 
     def _record_verified_original(self, row: dict[str, Any], artifacts: Any, run: Path,
                                   expected: dict[str, Any], package: Path,

@@ -83,13 +83,13 @@ def test_diagnostic_direct_remote_rejected_before_any_world_or_package():
             "tier": "diagnostic", "audit_every": 100}}, episode_seconds=10, cleanup_seconds=10)
 
 
-@pytest.mark.parametrize("typed_pass", [True, False])
+@pytest.mark.parametrize("typed_pass,receipt_write_fails", [
+    (True, False), (False, False), (False, True)])
 def test_deferred_typed_classification_waits_for_close_and_preserves_original(
-        tmp_path, monkeypatch, typed_pass):
+        tmp_path, monkeypatch, typed_pass, receipt_write_fails):
     """Synthetic typed/native seams; queue, archive, transfer/readback are real."""
     import shutil
     from pathlib import Path
-    from types import SimpleNamespace
 
     import sts2_platform_evidence as evidence
     from test_global_evidence_store import _setup
@@ -126,12 +126,18 @@ def test_deferred_typed_classification_waits_for_close_and_preserves_original(
     def checkpoint():
         artifacts.save(report)
     typed_calls = []
+    failed_verifications = []
 
     def verify(*args):
         assert row["cleanup_accepted"] is True
         typed_calls.append(1)
         if not typed_pass:
-            return SimpleNamespace(passed=False, value=None)
+            # This deliberately incomplete synthetic original goes through the
+            # normal typed reader; only native execution is substituted.
+            result = evidence.AgentSessionRunEvidenceVerifier().verify(*args)
+            assert result.failed and result.findings
+            failed_verifications.append(result)
+            return result
         result = evidence.verify_agent_session_run_evidence(*args)
         result.status = "pass"
         return result
@@ -156,10 +162,25 @@ def test_deferred_typed_classification_waits_for_close_and_preserves_original(
     row.update(status="save_pending", cleanup_accepted=True)
     row["finish"] = artifacts.put("finish.json", json_bytes({"phase": "closed"}))
     checkpoint()
+    original_put = _Artifacts.put
+
+    def put(self, name, data):
+        if receipt_write_fails and name == "typed-verification.json":
+            raise OSError("injected typed diagnostic write failure")
+        return original_put(self, name, data)
+
+    monkeypatch.setattr(_Artifacts, "put", put)
     saved = executor.preserve_report(artifacts.root / "report.json")
     final = saved["episodes"][0]
     assert len(typed_calls) == 1
-    if typed_pass:
+    if receipt_write_fails:
+        # Optional diagnostic I/O must not leave the original verification
+        # pending, so a later read can never silently score this failed attempt.
+        assert final["status"] == "save_failed" and final["save_error"] == "OSError"
+        assert final["execution_status"] == "unknown"
+        assert final["execution_reason"] == "typed_original_verification_failed"
+        assert "stored_evidence_id" not in final and "typed_verification" not in final
+    elif typed_pass:
         assert final["status"] == final["execution_status"] == "finished"
         assert result_row(final, artifacts.root / "report.json")["natural_result"] == "loss"
         assert "stored_evidence_id" in final and len(calls) >= 2
@@ -171,8 +192,46 @@ def test_deferred_typed_classification_waits_for_close_and_preserves_original(
         assert "stored_evidence_id" not in final and "trajectory" not in final
         receipt = json.loads((artifacts.root / final["failure_preservation"]["path"]).read_bytes())
         assert receipt["full_readback"] and receipt["typed_recording_qualified"] is False
+        typed = json.loads((artifacts.root / final["typed_verification"]["path"]).read_bytes())
+        assert typed == {"status": "fail", "content_id": None, "expected": expected,
+            "findings": [{"code": f.code, "detail": f.detail, "path": f.path}
+                         for f in failed_verifications[0].findings]}
+        stored = executor.peer.get_manifest(final["stored_failure_id"])
+        facts = stored.parameters.value()["facts"]
+        assert facts["typed_verification"] == typed
+        from spireagent.workbench.managed_failure_store import verify_failure
+
+        # The independent peer reader still binds all failure metadata exactly.
+        altered = {**facts, "typed_verification": {**typed, "findings": []}}
+        with pytest.raises(BoundaryError, match="failed_original_identity"):
+            verify_failure(executor.peer, stored.artifact_id, facts=altered,
+                           scratch=artifacts.root / "private")
     assert (run / "global-original.bin").read_bytes() == (
         b"full input, catalog, scores and Receipt\r\n")
+
+
+def test_synchronous_typed_failure_keeps_normal_reader_findings(tmp_path, monkeypatch):
+    import sts2_platform_evidence as evidence
+    from test_global_evidence_store import _setup
+
+    from spireagent.workbench import managed_evaluation
+
+    _, _, run, expected, *_ = _setup(tmp_path, monkeypatch)
+    result = evidence.AgentSessionRunEvidenceVerifier().verify(run, expected)
+    assert result.failed and result.findings
+    monkeypatch.setattr(managed_evaluation, "verify_agent_session_run_evidence",
+                        lambda *_: result)
+    artifacts = _Artifacts(tmp_path / "attempt")
+    row = {"run_id": "run-fixture"}
+    executor = ManagedEpisodeExecutor.__new__(ManagedEpisodeExecutor)
+    with pytest.raises(BoundaryError, match="typed_original_verification_failed"):
+        executor._finish_original(row, artifacts, run, expected, tmp_path / "model", "runtime")
+    typed = json.loads((artifacts.root / row["typed_verification"]["path"]).read_bytes())
+    assert typed["status"] == "fail" and typed["content_id"] is None
+    assert typed["expected"] == expected
+    assert typed["findings"] == [
+        {"code": f.code, "detail": f.detail, "path": f.path} for f in result.findings]
+    assert "agent_task_outcome" not in row
 
 
 def test_evaluation_trajectory_admission_requires_original_and_matching_shard_readback(

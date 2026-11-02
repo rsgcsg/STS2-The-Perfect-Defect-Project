@@ -257,6 +257,7 @@ class PipelinedManagedExecutor(ManagedEpisodeExecutor):
                 # persist it without retrying the native episode.
                 row.update(execution_status="unknown",
                            execution_reason="typed_original_verification_failed")
+                self._record_typed_failure(row, artifacts, expected, verified)
                 checkpoint()
                 self._preserve_failure(row, artifacts, job, private)
                 row["elapsed_seconds"] = time.time() - row.get("pipeline_started_at", time.time())
@@ -352,6 +353,11 @@ class PipelinedManagedExecutor(ManagedEpisodeExecutor):
             "initial_progress_sha256": self.configuration["initial_progress"]["progress_sha256"],
             "status": row["execution_status"], "reason": row["execution_reason"],
             "finish": json.loads(_referenced(artifacts.root, row["finish"]))}
+        if "typed_verification" in row:
+            # The peer's immutable failure artifact must retain the finding even
+            # when the node-local attempt/report is no longer available.
+            facts["typed_verification"] = json.loads(
+                _referenced(artifacts.root, row["typed_verification"]))
         source = artifacts.root / (job["run"] or "runs")
         with _phase(row, "preserve"):
             stored = publish_failure(self.store, source, self.producer, facts, scratch=private)
