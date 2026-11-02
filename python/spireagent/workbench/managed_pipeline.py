@@ -255,9 +255,9 @@ class PipelinedManagedExecutor(ManagedEpisodeExecutor):
             if not verified.passed or verified.value is None:
                 # A failed typed original is still an owned full failed prefix;
                 # persist it without retrying the native episode.
-                self._record_typed_failure(row, artifacts, expected, verified)
                 row.update(execution_status="unknown",
                            execution_reason="typed_original_verification_failed")
+                self._record_typed_failure(row, artifacts, expected, verified)
                 checkpoint()
                 self._preserve_failure(row, artifacts, job, private)
                 row["elapsed_seconds"] = time.time() - row.get("pipeline_started_at", time.time())

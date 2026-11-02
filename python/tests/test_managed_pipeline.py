@@ -83,9 +83,10 @@ def test_diagnostic_direct_remote_rejected_before_any_world_or_package():
             "tier": "diagnostic", "audit_every": 100}}, episode_seconds=10, cleanup_seconds=10)
 
 
-@pytest.mark.parametrize("typed_pass", [True, False])
+@pytest.mark.parametrize("typed_pass,receipt_write_fails", [
+    (True, False), (False, False), (False, True)])
 def test_deferred_typed_classification_waits_for_close_and_preserves_original(
-        tmp_path, monkeypatch, typed_pass):
+        tmp_path, monkeypatch, typed_pass, receipt_write_fails):
     """Synthetic typed/native seams; queue, archive, transfer/readback are real."""
     import shutil
     from pathlib import Path
@@ -161,10 +162,25 @@ def test_deferred_typed_classification_waits_for_close_and_preserves_original(
     row.update(status="save_pending", cleanup_accepted=True)
     row["finish"] = artifacts.put("finish.json", json_bytes({"phase": "closed"}))
     checkpoint()
+    original_put = _Artifacts.put
+
+    def put(self, name, data):
+        if receipt_write_fails and name == "typed-verification.json":
+            raise OSError("injected typed diagnostic write failure")
+        return original_put(self, name, data)
+
+    monkeypatch.setattr(_Artifacts, "put", put)
     saved = executor.preserve_report(artifacts.root / "report.json")
     final = saved["episodes"][0]
     assert len(typed_calls) == 1
-    if typed_pass:
+    if receipt_write_fails:
+        # Optional diagnostic I/O must not leave the original verification
+        # pending, so a later read can never silently score this failed attempt.
+        assert final["status"] == "save_failed" and final["save_error"] == "OSError"
+        assert final["execution_status"] == "unknown"
+        assert final["execution_reason"] == "typed_original_verification_failed"
+        assert "stored_evidence_id" not in final and "typed_verification" not in final
+    elif typed_pass:
         assert final["status"] == final["execution_status"] == "finished"
         assert result_row(final, artifacts.root / "report.json")["natural_result"] == "loss"
         assert "stored_evidence_id" in final and len(calls) >= 2

@@ -43,6 +43,7 @@ P1/InputSpec、控制、游戏规则和资格判据均不变。非作者只读�
   真实VerificationResult.findings，包含code/detail/path；不补造空缺的历史原因。
 - pipeline正常failure artifact的facts嵌入这份结果，经过原hash/transfer/peer读回。
   节点attempt目录以后不在时，按stored_failure_id正常读manifest仍可取得finding。
+  诊断写盘失败时先保留原typed unknown，不能留下verification_pending被以后读验升格。
 - 成功receipt不变；早期无typed结果时不造finding；unknown、score及
   typed_recording_qualified=false保持。历史artifact无此字段仍按原facts验证。
 
@@ -51,7 +52,7 @@ P1/InputSpec、控制、游戏规则和资格判据均不变。非作者只读�
 `typed_verification`；旧记录缺字段就是缺失，不推断timeout，不重试World。
 peer验证证明记录/传输完整，不证明原历史失败原因。
 
-实际相关检查132/132，包括真实Verifier失败→正常序列化/归档/Store/传输/独立peer
+实际相关检查133/133，包括真实Verifier失败→正常序列化/归档/Store/传输/独立peer
 读回，以及篡改finding必须拒绝。正常通过和未sealed失败路径保留。原游戏前缀与原生
 执行在这些测试里是合成接缝，不授予游戏、Human或训练资格。规定候选门禁/CI另绑最终head。
 
