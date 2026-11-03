@@ -554,7 +554,9 @@ def test_initial_array_submit_unknown_keeps_intent_without_a_second_offer(rl, in
     assert len(commands) == 1
 
 
-@pytest.mark.parametrize("external, stop_at_creation", [(False, False), (True, False), (True, True)])
+@pytest.mark.parametrize(
+    "external, stop_at_creation", [(False, False), (True, False), (True, True)]
+)
 def test_gpu_owner_hands_transient_auth_to_original_cpu_submission_only(
     rl, inputs, tmp_path, monkeypatch, external, stop_at_creation
 ):
