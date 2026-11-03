@@ -556,7 +556,7 @@ def test_initial_array_submit_unknown_keeps_intent_without_a_second_offer(rl, in
 
 @pytest.mark.parametrize(
     "external, stop_at_creation, actor_count",
-    [(False, False, 32), (True, False, 32), (True, False, 8), (True, True, 32)]
+    [(False, False, 32), (True, False, 32), (True, False, 8), (True, False, 7), (True, True, 32)]
 )
 def test_gpu_owner_hands_transient_auth_to_original_cpu_submission_only(
     rl, inputs, tmp_path, monkeypatch, external, stop_at_creation, actor_count
@@ -572,8 +572,8 @@ def test_gpu_owner_hands_transient_auth_to_original_cpu_submission_only(
     learning['segments'] = {'steps': 64, 'inference_batch': 32}
     learning['actor_defaults']['behavior']['uniform_mix'] = 0
     configuration.write_text(json.dumps(learning))
-    config = SimpleNamespace(device='cuda', segments=SimpleNamespace(inference_batch=32),
-                             wall_seconds=3600)
+    config = SimpleNamespace(device='cuda', segments=SimpleNamespace(
+        inference_batch=32, dataset_rows=1024, episode_rows=128), wall_seconds=3600)
     monkeypatch.setattr(LearnerConfig, 'read', lambda _: config)
     monkeypatch.setattr(resource_slot, 'require_managed_slot', lambda: None)
     monkeypatch.setattr(rl, 'require_modules', lambda _: None)
@@ -605,6 +605,12 @@ def test_gpu_owner_hands_transient_auth_to_original_cpu_submission_only(
 
     monkeypatch.setattr(segment_learner, 'SegmentLearner', NumericalOwner)
     monkeypatch.setattr(rl, 'submit', submitted)
+    if actor_count < 8:
+        with pytest.raises(ValueError, match='bounded_segment_actor_count'):
+            rl.learn(configuration, work, execution, actors, actors=actor_count,
+                     seed_namespace='synthetic-new-seeds', external_submit=external)
+        assert calls == [] and not work.exists()
+        return
     if stop_at_creation:
         original_mkdir = Path.mkdir
 

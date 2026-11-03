@@ -447,9 +447,13 @@ def learn(configuration: Path, work: Path, execution: Path, actors_output: Path,
     source = Path(__file__).resolve().parents[2]
     require_modules(source)
     require_managed_slot()
+    settings = config.segments
+    minimum_actors = ((settings.dataset_rows + settings.episode_rows - 1)
+                      // settings.episode_rows) if settings is not None else 1
     if (sys.platform != 'linux' or not os.environ.get('SLURM_JOB_ID')
             or config.device != 'cuda' or config.segments is None
-            or type(actors) is not int or not 1 <= actors <= config.segments.inference_batch):
+            or type(actors) is not int
+            or not minimum_actors <= actors <= config.segments.inference_batch):
         raise ValueError('allocated_Friday_GPU_and_bounded_segment_actor_count_required')
     work = canonical_path(work, existing=False)
     canonical_path(actors_output, existing=False)

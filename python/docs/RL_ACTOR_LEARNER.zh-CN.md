@@ -85,8 +85,9 @@ python -m spireagent.workbench.rl_learner --config /ABS/cpu-init.json \
 prepare/submit/score；RL4分支严格联接完整CP、实际发布policy及heads，拒绝θ有未发布更新的点。
 原MC正常账本/Store读回不公告训练分片，不把unknown补负或重投。至少8自然局才给有限诊断。
 
-`segments.inference_batch` 是推理合批上限，实际 Actor 路数可在 1 到该上限内按 Friday
-现有公平份额缩减；减少 Actor 不改 CP 的模型、目标或计数，也不改已发布 μ 的数值上限。
+`segments.inference_batch` 是推理合批上限，实际 Actor 路数按 Friday 公平份额
+可缩减到 `ceil(dataset_rows / episode_rows)`（当前 8 路），最多为该上限；更少的长局会在
+凑齐数据集前被单局行数上限阻塞，因此启动时拒绝。减少 Actor 不改 CP 的模型、目标或计数，也不改已发布 μ 的数值上限。
 `segments.warmup_artifact_id` 指向正常预热 CP；
 `start_artifact_id/start_model_sha256` 固定实际 r1.9 起点包；排除种子写
 `segments.excluded_seeds`（永久 suite 和原 held_out 同时拒绝）。
