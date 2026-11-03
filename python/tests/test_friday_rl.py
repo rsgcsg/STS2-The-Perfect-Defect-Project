@@ -555,10 +555,11 @@ def test_initial_array_submit_unknown_keeps_intent_without_a_second_offer(rl, in
 
 
 @pytest.mark.parametrize(
-    "external, stop_at_creation", [(False, False), (True, False), (True, True)]
+    "external, stop_at_creation, actor_count",
+    [(False, False, 32), (True, False, 32), (True, False, 8), (True, True, 32)]
 )
 def test_gpu_owner_hands_transient_auth_to_original_cpu_submission_only(
-    rl, inputs, tmp_path, monkeypatch, external, stop_at_creation
+    rl, inputs, tmp_path, monkeypatch, external, stop_at_creation, actor_count
 ):
     """No Slurm/GPU: real prepare serializer, stubbed numerical/scheduler owners."""
     from spireagent import resource_slot
@@ -597,7 +598,7 @@ def test_gpu_owner_hands_transient_auth_to_original_cpu_submission_only(
     def submitted(path, **options):
         assert os.environ[AUTH_ENV] == capability
         plan = rl.load_plan(path)
-        assert len(plan['actors']) == 32 and options == {'memory_gb': 4}
+        assert len(plan['actors']) == actor_count and options == {'memory_gb': 4}
         assert all(capability not in file.read_text() for file in actors.glob('*.json'))
         calls.append('submit')
         return {'job_id': 'synthetic-unoffered'}
@@ -615,11 +616,11 @@ def test_gpu_owner_hands_transient_auth_to_original_cpu_submission_only(
 
         monkeypatch.setattr(Path, 'mkdir', race)
         with pytest.raises(ValueError, match='already_stopped'):
-            rl.learn(configuration, work, execution, actors, actors=32,
+            rl.learn(configuration, work, execution, actors, actors=actor_count,
                      seed_namespace='synthetic-new-seeds', external_submit=True)
         assert calls == []
         return
-    assert rl.learn(configuration, work, execution, actors, actors=32,
+    assert rl.learn(configuration, work, execution, actors, actors=actor_count,
                     seed_namespace='synthetic-new-seeds',
                     external_submit=external) == {'updates': 0}
     assert calls == (['run'] if external else ['submit', 'run'])
