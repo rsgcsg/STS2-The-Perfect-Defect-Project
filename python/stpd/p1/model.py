@@ -11,11 +11,11 @@ from collections.abc import Sequence
 from typing import Any, cast
 
 import torch
-from tokenizers import Tokenizer
 from torch import Tensor, nn
 
 from .execution import MStdExecution
-from .input import Frame, Role, is_v2_encoding, normalized, signed_log
+from .input import Frame, Role, is_v2_encoding, signed_log
+from .input_encoding import InputEncoding
 from .tensor_input import (
     JointNodes,
     ModelFrame,
@@ -142,11 +142,8 @@ class MStd(nn.Module):
             from .vocabulary import validate_vocabulary
 
             validate_vocabulary(vocabulary)
-        self.tokenizer = Tokenizer.from_str(vocabulary["tokenizer"])
-        self.tables = {
-            key: {name: i for i, name in enumerate(vocabulary[key])}
-            for key in ("ids", "kinds", "fields", "actions")
-        }
+        self._encoding = InputEncoding(vocabulary)
+        self.tokenizer, self.tables = self._encoding.tokenizer, self._encoding.tables
         if len(vocabulary["ids"]) > ARCHITECTURE["id_capacity"]:
             raise ValueError("symbolic ID vocabulary exceeds approved capacity")
         self.text_ids = nn.Embedding(4096, 128, padding_idx=0)
@@ -183,28 +180,13 @@ class MStd(nn.Module):
         if value_heads:
             self.win_head = nn.Linear(192, 1)
             self.progress_head = nn.Linear(192, 1)
-        self._tokens: dict[str, tuple[list[int], list[float]]] = {}
+        self._tokens = self._encoding.tokens
 
     def index(self, table: str, value: str) -> int:
-        return self.tables[table].get(value, 0)
+        return self._encoding.index(table, value)
 
     def tokenize(self, text: str) -> tuple[list[int], list[float]]:
-        if text not in self._tokens:
-            normalized_text, numbers = normalized(text)
-            ids = self.tokenizer.encode(normalized_text).ids or [
-                self.tokenizer.token_to_id("<EMPTY>")
-                if is_v2_encoding(self.vocabulary.get("input_spec")) else 1
-            ]
-            numeric = [0.0] * len(ids)
-            cursor = 0
-            for i, token in enumerate(ids):
-                if token == self.tokenizer.token_to_id("<NUM>"):
-                    numeric[i] = signed_log(numbers[cursor])
-                    cursor += 1
-            if cursor != len(numbers):
-                raise ValueError("text numeric marker/token binding mismatch")
-            self._tokens[text] = ids, numeric
-        return self._tokens[text]
+        return self._encoding.tokenize(text)
 
     def text_vectors(self, texts: list[str], *, inputs: tuple[Tensor, Tensor, Tensor] | None = None,
                      keys: tuple[bytes, ...] | None = None
