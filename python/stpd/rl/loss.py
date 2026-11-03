@@ -83,6 +83,7 @@ def segment_update(model: MStd, optimizer: torch.optim.Optimizer,
     all_frames = [row.frame for _, row in work]
     totals = torch.zeros(8, device=device, dtype=torch.float64)
     gradient_parts: dict[str, list[torch.Tensor]] = {}
+    auxiliary_reachable: set[int] = set()
     trunk = [p for name, p in model.named_parameters()
              if p.requires_grad and not name.startswith("rl4_heads.")]
     optimizer.zero_grad(set_to_none=True)
@@ -163,9 +164,12 @@ def segment_update(model: MStd, optimizer: torch.optim.Optimizer,
                                     retain_graph=True, allow_unused=True)
                                 accumulated = gradient_parts.setdefault(name,
                                     [torch.zeros_like(p) for p in trunk])
-                                for total, gradient in zip(accumulated, gradients, strict=True):
+                                for index, (total, gradient) in enumerate(
+                                        zip(accumulated, gradients, strict=True)):
                                     if gradient is not None:
                                         total.add_(gradient.detach())
+                                        if name != "policy":
+                                            auxiliary_reachable.add(index)
                         sum(components.values(), zero).backward()
         measured = totals.cpu().tolist()
         # A true zero behavior mass can make the full reverse KL infinite; retain
@@ -189,13 +193,19 @@ def segment_update(model: MStd, optimizer: torch.optim.Optimizer,
                 raise ValueError("non_finite_segment_gradient")
             optimizer.step()
         if diagnostics:
-            norms = {name: float(torch.stack([g.square().sum() for g in gradients]).sum().sqrt())
+            # The shared trunk is the graph reached by an auxiliary objective.
+            # Action-only readout gradients must not inflate its denominator.
+            shared = sorted(auxiliary_reachable)
+            norms = {name: float(torch.stack([gradients[i].square().sum()
+                                             for i in shared]).sum().sqrt()) if shared else 0.0
                      for name, gradients in gradient_parts.items()}
             auxiliary = [sum((gradient_parts[name][i] for name in ("td", "terminal", "hp")
                 if name in gradient_parts), torch.zeros_like(parameter))
-                for i, parameter in enumerate(trunk)]
-            aux_norm = float(torch.stack([g.square().sum() for g in auxiliary]).sum().sqrt())
-            policy_gradient = gradient_parts.get("policy", [torch.zeros_like(p) for p in trunk])
+                for i, parameter in enumerate(trunk) if i in auxiliary_reachable]
+            aux_norm = (float(torch.stack([g.square().sum() for g in auxiliary]).sum().sqrt())
+                        if auxiliary else 0.0)
+            policy_gradient = [gradient_parts["policy"][i] if "policy" in gradient_parts
+                               else torch.zeros_like(trunk[i]) for i in shared]
             policy_norm = norms.get("policy", 0.0)
             dot = float(sum((a*b).sum() for a, b in zip(auxiliary, policy_gradient, strict=True)))
             result["trunk_gradients"] = {"weighted_head_norms": norms,

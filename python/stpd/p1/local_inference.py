@@ -447,7 +447,10 @@ class SegmentConnection:
         self.connection.send_bytes(json_bytes({**fields, "schema": SEGMENT_SCHEMA,
             "pool_id": self.attachment["pool_id"], "adapter": self.attachment["adapter"],
             "request_id": self.request_id, "operation": operation}))
-        if not self.connection.poll(120):
+        # A begin is one owned capacity wait, not a scoring/network deadline.
+        # The Agent stays responsive through its existing await directives;
+        # learner Stop or episode_end wakes this same request without a retry.
+        if not self.connection.poll(None if operation == "begin" else 120):
             raise TimeoutError("RL service request unavailable; original request not retried")
         response = json.loads(self.connection.recv_bytes(MAX_BYTES))
         if response.get("request_id") != self.request_id or "error" in response:
@@ -479,8 +482,9 @@ class SegmentInferenceClient(SegmentConnection):
         self.floor = 0
         self.stop_requested = False
         self.clock_offset: dict[str, float] | None = None
+        self.begin: Future | None = None
 
-    def consume(self, value: dict[str, Any]) -> list[float]:
+    def consume(self, value: dict[str, Any]) -> list[float] | None:
         from .data import digest
 
         observation, catalog = value["observation"], value["catalog"]
@@ -490,10 +494,25 @@ class SegmentInferenceClient(SegmentConnection):
         observation_hash = digest(json_bytes(observation))
         advanced = self.unit != unit
         if advanced and (self.mu is None or self.in_segment >= self.attachment["segment_steps"]):
-            began = time.time()
-            adopted = self.request("begin", actor=self.attachment["actor"],
-                episode=self.attachment["episode"])
-            received = time.time()
+            if self.begin is None:
+                answer: Future = Future()
+                self.begin = answer
+
+                def wait_for_capacity() -> None:
+                    try:
+                        began = time.time()
+                        adopted = self.request("begin", actor=self.attachment["actor"],
+                            episode=self.attachment["episode"])
+                        answer.set_result((adopted, began, time.time()))
+                    except Exception as error:
+                        answer.set_exception(error)
+
+                threading.Thread(target=wait_for_capacity,
+                    name="RL-segment-capacity-wait", daemon=True).start()
+            if not self.begin.done():
+                return None  # No scores, behavior record, or policy draw yet.
+            adopted, began, received = self.begin.result()
+            self.begin = None
             if adopted.get("stopped"):
                 self.stop_requested = True
                 return [0.0] * len(catalog)  # ACK input, then normal Close; no act.

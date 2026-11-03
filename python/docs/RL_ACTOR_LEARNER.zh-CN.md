@@ -26,7 +26,8 @@
   **provides**：跨段原状态引用及观察标签。HP 在短段提交即入池；终局才从≤64个均匀深度状态
   回填真实结局。unknown 无终局标签；辅助项不重放 PPO、不增 first-use。
 - **CP/恢复 requires**：θ、Adam、EMA、RNG、队列/预留、冻结目标/成员/SGD游标、
-  μ 和辅助池引用及实际使用次数。**provides**：正常 `checkpoint` artifact 和只追加
+  μ 和辅助池引用及实际使用次数。成功优化后的计数、游标与数据集结束状态先完整提交，
+  日志/TensorBoard失败不得使CP带旧游标。**provides**：正常 `checkpoint` artifact 和只追加
   checkpoint record；空目录经 Store 递归取回，不重算冻结目标，不重发原 World/动作。
 
 ## 数据集与数值
@@ -36,7 +37,8 @@
 不带旧 Adam。Z-next 关闭，结局/HP头都能训练共享主干。
 
 按整段累计≥1024行封批，1024…1087行全部平分4个 minibatch，做2遍、最多8次成功 SGD。
-单局每批≤128行；ready 和在途预留共用4608行容量，满时暂停新段，已预留段仍可提交。
+单局每批≤128行只在dataset选取时应用，不额外限制全队列该局积压；ready和在途预留
+共用4608行容量，满时暂停新段，已预留段仍可提交。
 多选优势只在整份冻结数据集归一化；每个 SGD 的策略分母为其多选数，价值分母为其总行数。
 跨 microbatch 累积同一分母；单选只参与价值传播。γ=1、λ=.99，目标按原段 μ 冻结一次。
 实际楼层不受默认地图48层限制；结局mask/类别按reward-v2的48层饱和项解释，
@@ -98,9 +100,12 @@ prepare/submit/score；RL4分支严格联接完整CP、实际发布policy及head
 临时 auth 只通过 sbatch 继承环境传给 Actor，不写配置、日志或报告。提交意图先持久化；
 若回复丢失，查原提交，不再发数组。`prepare`/`submit --dry-run` 本身不创建 World。
 
-短段背压属于正常等待：一个 consume 可能顺序等待 begin 和 score，各自 TCP 上限120秒。
-正常短段 Managed 注册显式采用现有 Runtime manifest 的270000ms Agent调用上限，
-覆盖两次等待和序列化余量；原执行预算、Stop、RPC不重试和失败隔离均继续生效。
+短段背压属于正常等待：Agent只发出一份begin，在容量不足时先ACK公开输入，
+沿现有next/await保持响应；容量到位后才按已ACK的consumption key评分、首次抽样并缓存。
+同unit重复consume与不再consume的重复next均不得重抽，不写假评分或制造动作。
+begin不套评分RPC的120秒期限；learner Stop、episode_end或连接终止结束原等待，
+score仍有120秒上限。现有270000ms Agent manifest限制保留给单次评分/协议调用，
+不拿它充当容量等待上限；原执行预算、Stop、未知请求不重发和失败隔离继续生效。
 `episode_open` 是接纳原episode的唯一入口；已end的episode不能被迟到begin复活。
 恢复时，CP episode登记已关闭、却仍占容量的预留会回收并在正常summary记录
 `released_closed_reservations`；有效在途预留、数据、SGD和first-use计数保留，原CP不改。
@@ -129,7 +134,9 @@ Actor 收到正常 AgentClose 后沿 Runtime/Host 原 Stop/Cleanup，计 censore
 不等下个15分钟；恢复在所有μ模型实例化之后才还原Torch RNG，不能被构造临时模型消耗。
 
 游戏/Actor已关闭进入快照后，晚到停止信号只通知外部协调，不再新建或改写closed原件中的STOP。
-原件仍走正常后台 full_peer 归档及读回；保存失败/未知保留原记录，不以退出0代替原件成功。
+原件仍走正常后台full_peer归档及读回；Exchange的segment/head记录在其artifact依赖
+完成归档后才发布到R2。保存失败保留原BoundaryError的stage/recovery，首轮原件验证
+与后续peer读回失败分开查；原保存失败/未知保留，不以后来读回成功改写旧结果。
 
 `updates.jsonl` 记录成功SGD、KL刹车、first-use、生成至首次成功使用的年龄、楼层/μ版本差和
 各头梯度。原 Exchange learner-events 与 TensorBoard 路径复用；CP时关闭上传 event 文件。

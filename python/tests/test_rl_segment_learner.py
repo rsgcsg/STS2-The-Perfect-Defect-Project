@@ -11,6 +11,7 @@ import copy
 import threading
 from dataclasses import replace
 
+import pytest
 import torch
 from test_p1_input_v2 import public_state
 from test_rl_loop import PRODUCER
@@ -150,7 +151,15 @@ def deliver(learner, tmp_path, actor, monkeypatch, *, battle=False):
                 "catalog": observation["catalog"],
             }
         )
-    scores = [client.consume(value) for value in inputs[:count]]
+    scores = []
+    for value in inputs[:count]:
+        result = client.consume(value)
+        if result is None:
+            assert client.begin is not None
+            client.begin.result(timeout=2)
+            result = client.consume(value)
+        assert result is not None
+        scores.append(result)
     client.close()
     for name in ("manifest.json", "agent-manifest.json", "adapter-attestation.json"):
         (directory / name).write_bytes(b"{}\n")
@@ -489,7 +498,10 @@ def test_ended_episode_cancels_waiting_begin_without_an_orphan_reservation(
 
     monkeypatch.setattr(learner.condition, "wait", observed_wait)
     assert control.request("episode_open", actor="actor", episode="episode")["admitted"]
-    control.request("begin", actor="actor", episode="episode")
+    # Per-dataset episode_rows is not an admission cap: fill the actual unified
+    # capacity, then keep one real begin waiting across episode_end.
+    for _ in range(config.segments.capacity_rows // config.segments.steps):
+        control.request("begin", actor="actor", episode="episode")
 
     def request():
         try:
@@ -558,5 +570,63 @@ def test_cold_restore_releases_only_closed_episode_reservations(tmp_path, monkey
             assert torch.equal(value, restored.model.state_dict()[name])
     finally:
         cleanup(original)
+        if restored is not None:
+            cleanup(restored)
+
+
+@pytest.mark.parametrize('last_minibatch', [False, True])
+def test_telemetry_failure_cold_restore_keeps_complete_learning_transition(
+        tmp_path, monkeypatch, last_minibatch):
+    config, io = configuration(tmp_path, monkeypatch)
+    config = replace(config, tensorboard_steps=1)
+    original = SegmentLearner(config, tmp_path / 'telemetry-work', io)
+    restored = None
+    closed = False
+    try:
+        deliver(original, tmp_path, 'first', monkeypatch)
+        deliver(original, tmp_path, 'second', monkeypatch)
+        assert original._prepare()
+        if last_minibatch:
+            for _ in range(3):
+                original._step()
+
+        def broken_metric(*_args, **_kwargs):
+            raise OSError('synthetic metric failure after real optimizer step')
+
+        monkeypatch.setattr(original.metrics, 'scalars', broken_metric)
+        with pytest.raises(OSError, match='synthetic metric failure'):
+            original._step()
+        expected_updates = 4 if last_minibatch else 1
+        assert original.updates == expected_updates
+        assert (original.active is None) == last_minibatch
+        # The normal finally path publishes exact theta and saves a complete CP.
+        original.run(initialize_only=True)
+        closed = True
+        checkpoint = original.exchange.latest_checkpoint()
+        cold_peer = {'kind': 'local', 'directory': str(tmp_path / 'telemetry-cold-Store')}
+        cold = Exchange(cold_peer, config.run)
+        copy_artifact(original.exchange.store, cold.store,
+                      checkpoint['checkpoint_artifact_id'], scratch=tmp_path)
+        for identity in original.pool.snapshots.values():
+            cold.publish_model(original.exchange.model(identity["version"]))
+        restored = SegmentLearner(replace(config, peer=cold_peer,
+            resume_checkpoint=checkpoint['checkpoint_artifact_id'], republish_on_resume=False),
+            tmp_path / 'telemetry-empty-work', io)
+        assert restored.updates == expected_updates
+        for name, tensor in original.model.state_dict().items():
+            assert torch.equal(tensor, restored.model.state_dict()[name]), name
+        if last_minibatch:
+            assert restored.active is None and restored.datasets == 1
+            assert restored.first_use == 4
+            assert not restored._prepare()  # No accidental third epoch.
+        else:
+            assert restored.active['minibatch'] == 1 and restored.active['epoch'] == 0
+            assert restored._prepare()
+            restored._step()
+            assert restored.updates == 2 and restored.first_use == 4
+            assert restored.active['epoch'] == 1 and restored.active['minibatch'] == 0
+    finally:
+        if not closed:
+            cleanup(original)
         if restored is not None:
             cleanup(restored)

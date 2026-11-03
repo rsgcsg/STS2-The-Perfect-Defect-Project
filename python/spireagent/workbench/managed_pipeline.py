@@ -320,10 +320,13 @@ class PipelinedManagedExecutor(ManagedEpisodeExecutor):
                                    or row["execution_status"] != "finished" else "saved"),
                            reason=row["execution_reason"])
             row.pop("save_error", None)
+            row.pop("save_error_detail", None)
         except Exception as error:
             row.update(status="save_failed", reason="preservation_failed",
                        save_error=error.code if isinstance(error, BoundaryError)
                        else type(error).__name__)
+            if isinstance(error, BoundaryError):
+                row["save_error_detail"] = {"stage": error.stage, "recovery": error.recovery}
         row.setdefault("detail_seconds", {})["save_worker"] = time.monotonic() - started
         row["elapsed_seconds"] = time.time() - row.get("pipeline_started_at", time.time())
         report.update(status="completed" if row["status"] in {"saved", "finished"}

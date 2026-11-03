@@ -1,8 +1,8 @@
 """One P1 consume/ACK/next program driver for stateless scorers.
 
 The Runtime still owns budgets, Stop, delivery and unknown fencing. A randomized
-chooser commits its RNG only on ACK. Re-observing a committed consumption unit
-reuses its choice, and repeated next never draws again.
+chooser binds each draw to acknowledged input. A capacity wait can defer the
+first keyed draw until ready; repeated next never draws again.
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ def serve_session(
     consumption_prefix: str = "mstd-",
     reuse_selection: bool = False,
     keyed_selection: bool = False,
-    score_input: Callable[[dict[str, Any]], list[float]] | None = None,
+    score_input: Callable[[dict[str, Any]], list[float] | None] | None = None,
     close_requested: Callable[[], bool] | None = None,
 ) -> None:
     """``keyed_selection`` passes the acknowledged consumption id as a draw key."""
@@ -70,12 +70,15 @@ def serve_session(
                 raise ValueError("P1 Agent needs its bound InputSpec and full current catalog")
             scores = (score_input(value) if score_input is not None
                       else score(value["observation"]))
-            if len(scores) != len(value["catalog"]):
+            if scores is None and not keyed_selection:
+                raise ValueError("deferred P1 scoring requires an acknowledged keyed chooser")
+            if scores is not None and len(scores) != len(value["catalog"]):
                 raise ValueError("P1 scores must cover the complete current catalog")
             advanced = value["consumption_unit"]["id"] != unit
             if reuse_selection and not advanced and committed is not None:
                 prior, prior_scores, _ = committed
-                if value["catalog"] != prior["catalog"] or scores != prior_scores:
+                if (value["catalog"] != prior["catalog"]
+                        or prior_scores is not None and scores != prior_scores):
                     raise ValueError("P1 same consumption unit changed its choice basis")
             next_version = version + int(advanced)
             next_consumption = (
@@ -122,12 +125,14 @@ def serve_session(
             ):
                 raise ValueError("P1 Agent ACK does not bind pending consumption")
             _, value, scores, version, consumption, advanced = pending
-            if value["observation"]["status"] == "terminal":
+            if (scores is None or value["observation"]["status"] == "terminal"
+                    or close_requested is not None and close_requested()):
                 selected = None
             elif not reuse_selection:
                 # Preserve the deterministic M-std program's original next-time argmax.
                 selected = None
-            elif reuse_selection and not advanced and committed is not None:
+            elif (reuse_selection and not advanced and committed is not None
+                    and committed[2] is not None):
                 selected = committed[2]
             else:
                 if not scores:
@@ -144,8 +149,23 @@ def serve_session(
                 raise ValueError("P1 Agent next requires acknowledged input")
             value, scores, selected = committed
             directive: dict[str, Any]
+            if scores is None:
+                assert score_input is not None
+                scores = score_input(value)
+                if scores is not None:
+                    if len(scores) != len(value["catalog"]):
+                        raise ValueError("P1 scores must cover the complete current catalog")
+                    if (scores and value["observation"]["status"] != "terminal"
+                            and not (close_requested is not None and close_requested())):
+                        selected = select(scores, consumption)
+                        if type(selected) is not int or not 0 <= selected < len(scores):
+                            raise ValueError("P1 chooser selected outside full catalog")
+                    committed = value, scores, selected
             if close_requested is not None and close_requested():
                 directive = {"type": "close", "reason": "training_segment_budget_complete"}
+            elif scores is None:
+                directive = {"type": "await", "after_cursor": message["input"]["received_cursor"],
+                             "condition": "any_event", "timeout_ms": 1000}
             elif value["observation"]["status"] == "terminal":
                 directive = {"type": "close", "reason": "native_terminal_observed"}
             else:

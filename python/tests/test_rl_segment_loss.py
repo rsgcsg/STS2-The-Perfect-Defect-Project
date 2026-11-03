@@ -98,3 +98,24 @@ def test_gradient_diagnostics_do_not_change_the_update_or_rng():
     assert torch.equal(torch.get_rng_state(), after)
     for name, value in first.state_dict().items():
         assert torch.equal(value, second.state_dict()[name]), name
+
+
+def test_shared_trunk_diagnostics_exclude_amplified_action_only_readout():
+    first, rows, terminal, hp = prepared()
+    second = copy.deepcopy(first)
+    # Deliberately change only the policy readout's gradient. It is outside the
+    # graph reached by all three value objectives and must not change their
+    # shared-trunk norm ratio. Actual optimizer gradients still include it.
+    second.head[-1].weight.register_hook(lambda gradient: gradient * 100)
+    options = dict(config=LossConfig(mode='ppo', value_coef=.2, entropy_coef=.01,
+                                    max_grad_norm=1e9),
+                   performance=PerformanceConfig(microbatch_size=2), diagnostics=True)
+    a = segment_update(first, torch.optim.AdamW(first.parameters(), lr=0),
+                       rows, terminal, hp, **options)
+    b = segment_update(second, torch.optim.AdamW(second.parameters(), lr=0),
+                       rows, terminal, hp, **options)
+    assert b['gradient_norm'] > a['gradient_norm']
+    for key in ['policy_norm', 'auxiliary_norm', 'auxiliary_norm_share',
+                'auxiliary_policy_cosine']:
+        one, two = a['trunk_gradients'][key], b['trunk_gradients'][key]
+        assert one == two if one is None or two is None else abs(one-two) < 1e-6, key

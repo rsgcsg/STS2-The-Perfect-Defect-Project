@@ -158,6 +158,7 @@ def test_deferred_typed_classification_waits_for_close_and_preserves_original(
     checkpoint()
     refused = executor.preserve_report(artifacts.root / "report.json")
     assert refused["episodes"][0]["save_error"] == "closed_pending_original_required"
+    assert refused["episodes"][0]["save_error_detail"]["stage"] == "managed_pipeline"
     assert not typed_calls
     row.update(status="save_pending", cleanup_accepted=True)
     row["finish"] = artifacts.put("finish.json", json_bytes({"phase": "closed"}))
