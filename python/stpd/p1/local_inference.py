@@ -15,7 +15,9 @@ import secrets
 import socket
 import threading
 import time
+from collections.abc import Iterator
 from concurrent.futures import Future
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from multiprocessing import AuthenticationError
 from multiprocessing.connection import Client, Connection, Listener
@@ -287,7 +289,8 @@ SEGMENT_SCHEMA = "stpd/rl-inference-2"
 class SegmentInferencePool(LocalInferencePool):
     """The same owned TCP/scorer queue, with immutable RL behavior snapshots.
 
-    Training and scoring share one GPU lock at microbatch boundaries. The control
+    The default shares the training GPU lock at microbatch boundaries. Opt-in
+    CUDA scoring uses one high-priority side stream for immutable mu. The control
     callback belongs to the existing learner's capacity/commit owner; this service
     does not choose actions, validate legality, own worlds or write a new ledger.
     """
@@ -295,12 +298,24 @@ class SegmentInferencePool(LocalInferencePool):
     def __init__(self, model: Any, identity: dict[str, Any], *, control: Any,
                  gpu_lock: Any, max_batch: int = 40, window_ms: float = 2,
                  address: tuple[str, int] | None = None, segment_steps: int = 64,
-                 compiler_identity: dict[str, Any] | None = None) -> None:
+                 compiler_identity: dict[str, Any] | None = None,
+                 inference_stream: bool = False) -> None:
         if model.execution.implementation not in {
                 "experimental-packed-v1", "experimental-joint-nodes-v1"}:
             raise ValueError("RL_inference_requires_explicit_packed_execution")
         if any(parameter.requires_grad for parameter in model.parameters()):
             raise ValueError("RL_inference_requires_immutable_snapshot")
+        if type(inference_stream) is not bool:
+            raise ValueError("RL_inference_stream_flag_must_be_bool")
+        self.inference_stream_requested = inference_stream
+        self.cuda_stream: torch.cuda.Stream | None = None
+        self.inference_lock = threading.RLock()
+        self.model_ready: dict[str, torch.cuda.Event] = {}
+        self.device = next(model.parameters()).device
+        if inference_stream:
+            if self.device.type != "cuda":
+                raise ValueError("RL_inference_stream_requires_CUDA")
+            self.cuda_stream = torch.cuda.Stream(device=self.device, priority=-1)
         self.compiler = FrameCompiler(model.vocabulary)
         self.compiler_identity = copy.deepcopy(
             self.compiler.identity if compiler_identity is None else compiler_identity)
@@ -317,9 +332,11 @@ class SegmentInferencePool(LocalInferencePool):
         self.segment_steps = segment_steps
         from .text_cache import TextVectorCache
 
-        self.text_cache = TextVectorCache()
+        self.text_cache = TextVectorCache(stream_safe=inference_stream)
         model.text_cache, model.text_cache_namespace = self.text_cache, key
         self.model_lock = threading.RLock()
+        if self.cuda_stream is not None:
+            self.model_ready[key] = self._ready_model(model)
         ip = socket.gethostbyname(socket.gethostname())
         inherited = os.environ.get(AUTH_ENV)
         try:
@@ -332,11 +349,53 @@ class SegmentInferencePool(LocalInferencePool):
     def attachment(self) -> dict[str, Any]:
         return {**super().attachment(), "schema": SEGMENT_SCHEMA,
                 "segment_steps": self.segment_steps, "vocabulary": copy.deepcopy(self.vocabulary),
-                "compiler_identity": copy.deepcopy(self.compiler_identity)}
+                "compiler_identity": copy.deepcopy(self.compiler_identity),
+                "inference_stream": self._stream_metadata()}
 
     def close(self) -> dict[str, Any]:
-        return {**super().close(), "schema": SEGMENT_SCHEMA,
-                "text_cache": self.text_cache.report()}
+        summary = super().close()
+        if self.cuda_stream is not None:
+            self.cuda_stream.synchronize()
+        return {**summary, "schema": SEGMENT_SCHEMA,
+                "text_cache": self.text_cache.report(),
+                "inference_stream": self._stream_metadata()}
+
+    def _stream_metadata(self) -> dict[str, Any]:
+        return {"requested": self.inference_stream_requested,
+                "enabled": self.cuda_stream is not None,
+                "device": str(self.device),
+                "priority": self.cuda_stream.priority if self.cuda_stream is not None else None}
+
+    def _ready_model(self, model: Any) -> torch.cuda.Event:
+        assert self.cuda_stream is not None
+        tensors = [*model.parameters(), *model.buffers()]
+        if any(value.device != self.device for value in tensors):
+            raise ValueError("RL_inference_stream_requires_one_CUDA_device")
+        ready = torch.cuda.Event()
+        # Capture only this publication's H2D/initialization, not future SGD or
+        # CP work on the publisher's stream. The inference stream waits on this
+        # event, while record_stream protects each borrowed parameter storage.
+        ready.record(torch.cuda.current_stream(self.device))
+        for value in tensors:
+            value.record_stream(self.cuda_stream)
+        return ready
+
+    @contextmanager
+    def _execution(self, ready: torch.cuda.Event | None) -> Iterator[None]:
+        if self.cuda_stream is None:
+            with self.gpu_lock, torch.inference_mode():
+                yield
+            return
+        assert ready is not None
+        with torch.cuda.stream(self.cuda_stream), torch.inference_mode():
+            self.cuda_stream.wait_event(ready)
+            try:
+                yield
+            finally:
+                # Success already copies scores to CPU. On failure, drain only
+                # this owned stream before releasing models/cache references.
+                # Never synchronize the training/default stream or the device.
+                self.cuda_stream.synchronize()
 
     def publish(self, model: Any, identity: dict[str, Any]) -> None:
         if any(parameter.requires_grad for parameter in model.parameters()):
@@ -348,16 +407,21 @@ class SegmentInferencePool(LocalInferencePool):
         with self.model_lock:
             if key in self.models:
                 raise ValueError("behavior_snapshot_already_published")
+            if self.cuda_stream is not None:
+                self.model_ready[key] = self._ready_model(model)
             self.models[key] = model
             self.snapshots[key] = identity
             self.latest = key
 
     def retire(self, protected: set[str]) -> None:
-        with self.model_lock, self.gpu_lock:
+        outer = self.model_lock if self.cuda_stream is None else self.inference_lock
+        inner = self.gpu_lock if self.cuda_stream is None else self.model_lock
+        with outer, inner:
             for key in list(self.models):
                 if key not in protected and key != self.latest:
                     del self.models[key]
                     del self.snapshots[key]
+                    self.model_ready.pop(key, None)
             self.text_cache.retire(protected | {self.latest})
 
     def _actor(self, connection: Connection) -> None:
@@ -403,8 +467,6 @@ class SegmentInferencePool(LocalInferencePool):
             connection.close()
 
     def _score(self) -> None:
-        from stpd.p1.execution import microbatches
-
         pending = cast(queue.Queue[_CompiledRequest | None], self.queue)
         while True:
             first = pending.get()
@@ -427,35 +489,43 @@ class SegmentInferencePool(LocalInferencePool):
             for key in dict.fromkeys(item.model for item in batch):
                 jobs = [item for item in batch if item.model == key]
                 started = time.perf_counter()
+                guard = self.inference_lock if self.cuda_stream is not None else nullcontext()
                 try:
-                    with self.model_lock:
-                        model, identity = self.models[key], self.snapshots[key]
-                    frames = [item.frame for item in jobs]
-                    for indices in microbatches(frames, list(range(len(jobs))), model):
-                        group = [jobs[i] for i in indices]
-                        entered = time.perf_counter()
-                        with self.gpu_lock, torch.inference_mode():
-                            scores, outcome, _ = model.forward_rl4([frames[i] for i in indices],
-                                [item.floor for item in group], check_finite=True)
-                            probabilities = outcome.float().softmax(-1).cpu().tolist()
-                            output = [value.float().cpu().tolist() for value in scores]
-                        elapsed = time.perf_counter()-started
-                        for item, score, probability in zip(
-                                group, output, probabilities, strict=True):
-                            item.answer.set_result({"scores": score,
-                                "outcome_probabilities": probability, "mu": identity,
-                                "server_seconds": elapsed, "batch_size": len(group),
-                                "queue_seconds": entered-item.queued_at})
-                        self.stats["requests"] += len(group)
-                        self.stats["batches"] += 1
-                        histogram = self.stats.setdefault("batch_histogram", {})
-                        histogram[str(len(group))] = histogram.get(str(len(group)), 0) + 1
+                    with guard:
+                        self._score_jobs(key, jobs)
                 except Exception as error:
                     for item in jobs:
                         if not item.answer.done():
                             item.answer.set_exception(error)
                     self.stats["errors"] += len(jobs)
                 self.stats["score_seconds"] += time.perf_counter()-started
+
+    def _score_jobs(self, key: str, jobs: list[_CompiledRequest]) -> None:
+        from stpd.p1.execution import microbatches
+
+        with self.model_lock:
+            model, identity = self.models[key], self.snapshots[key]
+            ready = self.model_ready.get(key)
+        frames = [item.frame for item in jobs]
+        started = time.perf_counter()
+        for indices in microbatches(frames, list(range(len(jobs))), model):
+            group = [jobs[i] for i in indices]
+            entered = time.perf_counter()
+            with self._execution(ready):
+                scores, outcome, _ = model.forward_rl4([frames[i] for i in indices],
+                    [item.floor for item in group], check_finite=True)
+                probabilities = outcome.float().softmax(-1).cpu().tolist()
+                output = [value.float().cpu().tolist() for value in scores]
+            elapsed = time.perf_counter()-started
+            for item, score, probability in zip(group, output, probabilities, strict=True):
+                item.answer.set_result({"scores": score,
+                    "outcome_probabilities": probability, "mu": identity,
+                    "server_seconds": elapsed, "batch_size": len(group),
+                    "queue_seconds": entered-item.queued_at})
+            self.stats["requests"] += len(group)
+            self.stats["batches"] += 1
+            histogram = self.stats.setdefault("batch_histogram", {})
+            histogram[str(len(group))] = histogram.get(str(len(group)), 0) + 1
 
 
 class SegmentConnection:
