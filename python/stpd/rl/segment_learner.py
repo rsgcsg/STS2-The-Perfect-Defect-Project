@@ -797,29 +797,25 @@ class SegmentLearner:
 
     def _auxiliary(self, references: list[dict[str, Any]]) -> list[AuxiliarySample]:
         cache = {}
-        compiled = {}
         result = []
         for reference in references:
             artifact = reference["segment_artifact_id"]
-            if artifact not in cache:
-                cache[artifact] = self.io.read_segment(
-                    self.exchange.store, artifact, scratch=self.work
-                )
-            segment = cache[artifact]
-            step = segment["steps"][reference["row"]]
             # Input/vocabulary remains fixed while the shared trunk learns.
             if self.input_reader is not None:
-                if artifact not in compiled:
-                    compiled[artifact] = self.input_reader.body(artifact, segment)
-                frame = self.input_reader.frame(step["input"],
-                                               compiled[artifact]["current"][reference["row"]])
+                frame, floor = self.input_reader.auxiliary(artifact, reference["row"],
+                    read_segment=self.io.read_segment, scratch=self.work)
             else:
+                if artifact not in cache:
+                    cache[artifact] = self.io.read_segment(
+                        self.exchange.store, artifact, scratch=self.work)
+                step = cache[artifact]["steps"][reference["row"]]
                 frame = compile_frame(project(step["input"]["observation"],
                     input_projection=runtime_projection(self.model.vocabulary)), self.model)
+                floor = step["behavior"]["floor"]
             result.append(
                 AuxiliarySample(
                     frame,
-                    step["behavior"]["floor"],
+                    floor,
                     reference["key"],
                     outcome=reference.get("outcome"),
                     hp=reference.get("hp"),

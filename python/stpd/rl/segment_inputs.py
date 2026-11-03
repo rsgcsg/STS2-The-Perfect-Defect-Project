@@ -8,7 +8,11 @@ from __future__ import annotations
 
 import gzip
 import json
+import sys
+import threading
+from collections import OrderedDict
 from collections.abc import Callable, Iterable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -121,11 +125,23 @@ def publish_input_pack(store: ManifestArtifactStore, segment_ids: Iterable[str],
 
 
 class SegmentInputs:
-    """Read one frozen representation; cache lifetime belongs to a dataset."""
+    """Read one frozen representation; bounded verified bytes live with this reader.
+
+    Artifact IDs, compiler identity and pack membership are immutable in this
+    owner. Retain only compact verified input bytes, never trajectories, decoded
+    tensors, auxiliary labels or training state. A replacement reader is cold.
+    """
 
     def __init__(self, store: ManifestArtifactStore, vocabulary: dict[str, Any],
-                 identity: dict[str, Any], pack_id: str | None) -> None:
+                 identity: dict[str, Any], pack_id: str | None, *,
+                 cache_bytes: int = 512 * 1024**2) -> None:
+        if type(cache_bytes) is not int or cache_bytes < 0:
+            raise ValueError("nonnegative_input_cache_bytes_required")
         self.store, self.identity = store, identity
+        self._limit = cache_bytes
+        self._lock = threading.RLock()
+        self._cache: OrderedDict[str, _VerifiedInputs] = OrderedDict()
+        self._bytes = self._hits = self._misses = self._evictions = 0
         self.compiler = FrameCompiler(vocabulary)
         local = self.compiler.identity
         if (set(identity) != {"input_spec", "vocabulary_sha256", "compiler_sha256"}
@@ -175,11 +191,79 @@ class SegmentInputs:
         return self.compiler.decode(wire, observation=value["observation"],
                                     expected_identity=self.identity)
 
+    def _verified(self, artifact_id: str,
+                  load: Callable[[], dict[str, Any]]) -> _VerifiedInputs:
+        # Main auxiliary reads and the single prepare-ahead reader share this
+        # lifecycle. Serialize cold fills so the same immutable artifact is not
+        # simultaneously read/validated twice; decode happens outside the lock.
+        with self._lock:
+            found = self._cache.get(artifact_id)
+            if found is not None:
+                self._cache.move_to_end(artifact_id)
+                self._hits += 1
+                return found
+            self._misses += 1
+            segment = load()  # The normal reader validates the complete source.
+            body = self.body(artifact_id, segment)
+            current = tuple(_verified_row(step["input"], wire, step["behavior"]["floor"])
+                for step, wire in zip(segment["steps"], body["current"], strict=True))
+            boundary = (_verified_row(segment["steps"][-1]["successor"], body["boundary"], None)
+                        if segment["terminal"] is None else None)
+            # Count actual retained bytes and tuples, plus a conservative bound
+            # for the key, entry object and OrderedDict bookkeeping, as in the
+            # existing text cache. No views can retain an uncounted large owner.
+            size = (sum(sys.getsizeof(raw) for raw in current) + sys.getsizeof(current)
+                    + (sys.getsizeof(boundary) if boundary is not None else 0)
+                    + sys.getsizeof(artifact_id) + 512)
+            found = _VerifiedInputs(current, boundary, size)
+            if size <= self._limit:
+                while self._cache and self._bytes + size > self._limit:
+                    _, removed = self._cache.popitem(last=False)
+                    self._bytes -= removed.size
+                    self._evictions += 1
+                self._cache[artifact_id] = found
+                self._bytes += size
+            return found
+
+    def _decode(self, row: dict[str, Any]) -> TensorFrame:
+        frame = self.compiler.decode(row["wire"], expected_identity=self.identity,
+                                     **row["hashes"])
+        if frame.choices != tuple(row["choices"]):
+            raise BoundaryError("p1_frame_compiler", "catalog_choice_binding_mismatch")
+        return frame
+
+    def auxiliary(self, artifact_id: str, row: int, *,
+                  read_segment: Callable[..., dict[str, Any]], scratch: Path
+                  ) -> tuple[TensorFrame, int]:
+        inputs = self._verified(artifact_id, lambda: read_segment(
+            self.store, artifact_id, scratch=scratch))
+        value = json.loads(inputs.current[row])
+        return self._decode(value), value["floor"]
+
     def frames(self, artifact_id: str, segment: dict[str, Any]) -> dict[str, TensorFrame]:
-        body = self.body(artifact_id, segment)
-        result = {frame_key(step["input"]): self.frame(step["input"], wire)
-                  for step, wire in zip(segment["steps"], body["current"], strict=True)}
-        if segment["terminal"] is None:
-            final = segment["steps"][-1]["successor"]
-            result[frame_key(final)] = self.frame(final, body["boundary"])
+        inputs = self._verified(artifact_id, lambda: segment)
+        rows = inputs.current + ((inputs.boundary,) if inputs.boundary is not None else ())
+        result = {}
+        for raw in rows:
+            row = json.loads(raw)
+            result[row["input_key"]] = self._decode(row)
         return result
+
+    def cache_report(self) -> dict[str, int]:
+        with self._lock:
+            return {"limit_bytes": self._limit, "accounted_bytes": self._bytes,
+                    "segments": len(self._cache), "hits": self._hits, "misses": self._misses,
+                    "evictions": self._evictions}
+
+
+@dataclass(frozen=True, slots=True)
+class _VerifiedInputs:
+    current: tuple[bytes, ...]
+    boundary: bytes | None
+    size: int
+
+
+def _verified_row(value: dict[str, Any], wire: dict[str, Any], floor: int | None) -> bytes:
+    return json_bytes({"wire": wire, "hashes": observation_hashes(value["observation"]),
+        "choices": [choice.get("choice_id") for choice in value["observation"]["catalog"]],
+        "input_key": frame_key(value), "floor": floor})
