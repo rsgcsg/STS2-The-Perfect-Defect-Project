@@ -492,14 +492,20 @@ class SegmentManagedExecutor(PipelinedManagedExecutor):
         if result.get("admitted") is not True:
             raise BoundaryError("rl_segment", "learner_stopped_before_world_offer")
 
+    def _end_episode(self, connection: Any, **fields: Any) -> dict[str, Any]:
+        original = self.exchange.persist_episode_end(fields, self.producer)
+        result: dict[str, Any] = connection.request("episode_end",
+            **{key: value for key, value in original.items() if key != "operation"})
+        return result
+
     def __call__(
         self, row: dict[str, Any], manifest: dict[str, Any], artifacts: Any, checkpoint: Any
     ) -> None:
         super().__call__(row, manifest, artifacts, checkpoint)
         if row.get("run_id") is None and row.get("cleanup_accepted") is True:
             try:
-                self.admission.request(
-                    "episode_end",
+                self._end_episode(
+                    self.admission,
                     actor=self.actor,
                     episode=row["intent_id"],
                     run_id=None,
@@ -526,8 +532,8 @@ class SegmentManagedExecutor(PipelinedManagedExecutor):
             if observer.end_started:
                 raise BoundaryError("rl_segment", "original_episode_end_requires_reconciliation")
             observer.end_started = True
-            self.connections[run_id].request(
-                "episode_end",
+            self._end_episode(
+                self.connections[run_id],
                 run_id=run_id,
                 terminal=None,
                 outcome_states=[],
@@ -680,9 +686,10 @@ class SegmentManagedExecutor(PipelinedManagedExecutor):
         )
         auxiliary = completed_auxiliary(episode, observer.assembler.committed, terminal)
         auxiliary["typed_original"] = result.value.content_id
-        auxiliary.update(actor=self.actor, episode=observer.assembler.identity["intent_id"])
+        auxiliary.update(actor=self.actor, episode=observer.assembler.identity["intent_id"],
+                         segments=observer.assembler.committed)
         observer.end_started = True
-        self.connections[row["run_id"]].request("episode_end", **auxiliary)
+        self._end_episode(self.connections[row["run_id"]], **auxiliary)
         row["segment_delivery"] = artifacts.put(
             "segment-delivery.json",
             json_bytes(

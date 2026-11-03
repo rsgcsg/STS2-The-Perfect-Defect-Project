@@ -350,6 +350,11 @@ class SegmentInferencePool(LocalInferencePool):
                     raise ValueError("RL inference binding differs")
                 try:
                     if value["operation"] != "score":
+                        if value["operation"] not in {"status", "receipt"}:
+                            from spireagent.rl_exchange import control_input, input_key
+
+                            if value.get("input_key") != input_key(control_input(value)):
+                                raise ValueError("RL input key differs")
                         response = self.control(value)
                     else:
                         key = value["snapshot_sha256"]
@@ -431,7 +436,7 @@ class SegmentInferencePool(LocalInferencePool):
 
 
 class SegmentConnection:
-    """One persistent connection; callers reconcile a failed request, never retry it."""
+    """Persistent scoring; lost control replies resolve the same durable input key."""
 
     def __init__(self, attachment: dict[str, Any]) -> None:
         if (attachment.get("schema") != SEGMENT_SCHEMA
@@ -443,6 +448,29 @@ class SegmentConnection:
         self.request_id = 0
 
     def request(self, operation: str, **fields: Any) -> dict[str, Any]:
+        from spireagent.rl_exchange import control_input, input_key
+
+        if operation not in {"score", "status", "receipt"}:
+            original = control_input({**fields, "operation": operation})
+            fields = {**fields, "input_key": input_key(original)}
+        else:
+            original = None
+        try:
+            return self._request_once(operation, fields)
+        except (OSError, EOFError, TimeoutError):
+            if original is None:
+                raise  # Scoring/World actions are never automatically replayed.
+            self.connection.close()
+            self.connection = Client(tuple(self.attachment["address"]),
+                                     authkey=bytes.fromhex(os.environ[AUTH_ENV]))
+            receipt = self._request_once("receipt", {"input": original})
+            if receipt["found"]:
+                return cast(dict[str, Any], receipt["response"])
+            # The original owner explicitly found no durable acceptance. Same
+            # key/input, at most one further delivery; no game action is resent.
+            return self._request_once(operation, fields)
+
+    def _request_once(self, operation: str, fields: dict[str, Any]) -> dict[str, Any]:
         self.request_id += 1
         self.connection.send_bytes(json_bytes({**fields, "schema": SEGMENT_SCHEMA,
             "pool_id": self.attachment["pool_id"], "adapter": self.attachment["adapter"],
@@ -450,7 +478,7 @@ class SegmentConnection:
         # A begin is one owned capacity wait, not a scoring/network deadline.
         # The Agent stays responsive through its existing await directives;
         # learner Stop or episode_end wakes this same request without a retry.
-        if not self.connection.poll(None if operation == "begin" else 120):
+        if not self.connection.poll(None if operation in {"begin", "episode_open"} else 120):
             raise TimeoutError("RL service request unavailable; original request not retried")
         response = json.loads(self.connection.recv_bytes(MAX_BYTES))
         if response.get("request_id") != self.request_id or "error" in response:
@@ -502,7 +530,7 @@ class SegmentInferenceClient(SegmentConnection):
                     try:
                         began = time.time()
                         adopted = self.request("begin", actor=self.attachment["actor"],
-                            episode=self.attachment["episode"])
+                            episode=self.attachment["episode"], previous_lease=self.lease)
                         answer.set_result((adopted, began, time.time()))
                     except Exception as error:
                         answer.set_exception(error)

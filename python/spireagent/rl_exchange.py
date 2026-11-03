@@ -17,8 +17,12 @@ import uuid
 from pathlib import Path
 from typing import Any, NoReturn
 
-from spireagent.json_boundary import BoundaryError, json_bytes
+from spireagent.artifact_contracts import Manifest, Parent, Producer
+from spireagent.instance_lock import instance_lock
+from spireagent.json_boundary import BoundaryError, FrozenObject, json_bytes
+from spireagent.storage.blobs import StoreError
 from spireagent.storage.config import open_peer
+from spireagent.storage.local import LocalBlobStore
 from spireagent.storage.store import ManifestArtifactStore
 
 MODEL_SCHEMA = "spireagent/rl-model-version-1"
@@ -28,6 +32,8 @@ CHECKPOINT_SCHEMA = "spireagent/rl-learner-checkpoint-record-1"
 SEGMENT_CHECKPOINT_SCHEMA = "spireagent/rl-learner-checkpoint-record-2"
 STOP_SCHEMA = "spireagent/rl-stop-request-1"
 EVENT_SCHEMA = "spireagent/rl-learner-event-1"
+INPUT_SCHEMA = "spireagent/rl-segment-input-1"
+END_SCHEMA = "spireagent/rl-episode-end-input-1"
 _NAME = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 
 
@@ -48,6 +54,60 @@ def _open(raw: bytes, schema: str) -> dict[str, Any]:
     return value
 
 
+def control_input(value: dict[str, Any]) -> dict[str, Any]:
+    """Stable original input, excluding connection IDs, clocks and transport fields."""
+    operation = value["operation"]
+    fields = {
+        "episode_open": ("actor", "episode"),
+        "begin": ("actor", "episode", "previous_lease"),
+        "commit": ("segment_id", "segment_artifact_id", "run_id", "rows", "mu"),
+        "episode_end": ("actor", "episode", "run_id", "terminal", "outcome_states",
+                        "hp_battles", "typed_original", "segments", "unqualified"),
+    }
+    if operation not in fields:
+        reject("unsupported_input_operation")
+    result = {key: value[key] for key in fields[operation] if key in value}
+    if operation != "commit" and (not isinstance(result.get("actor"), str)
+                or not _NAME.fullmatch(result["actor"])
+                or not isinstance(result.get("episode"), str)
+                or not 0 < len(result["episode"]) <= 256):
+        reject("invalid_input_owner_identity")
+    if operation == "begin":
+        result.setdefault("previous_lease", None)
+        previous = result["previous_lease"]
+        if previous is not None and (not isinstance(previous, str)
+                or not previous.startswith(result["actor"] + "/")
+                or not previous.rpartition("/")[2].isdigit()):
+            reject("invalid_begin_predecessor")
+    if operation == "episode_end" and (not isinstance(result.get("outcome_states"), list)
+                or not isinstance(result.get("hp_battles"), list)
+                or (result.get("terminal") is not None
+                    and not isinstance(result["terminal"], dict))):
+        reject("invalid_episode_end_input")
+    return {"operation": operation, **result}
+
+
+def input_key(value: dict[str, Any]) -> str:
+    operation = value["operation"]
+    identity = ([value["segment_id"]] if operation == "commit" else
+                [value["actor"], value["episode"]] +
+                ([value.get("previous_lease")] if operation == "begin" else []))
+    return hashlib.sha256(json_bytes([operation, *identity])).hexdigest()
+
+
+def _input_artifacts(value: Any) -> set[str]:
+    if isinstance(value, list):
+        return set().union(*(_input_artifacts(item) for item in value))
+    if not isinstance(value, dict):
+        return set()
+    result = {item for key, item in value.items()
+              if key in {"segment_artifact_id", "heads_artifact_id", "model_artifact_id"}
+              and isinstance(item, str)}
+    for item in value.values():
+        result.update(_input_artifacts(item))
+    return result
+
+
 class Exchange:
     def __init__(self, peer: dict[str, Any], run: str) -> None:
         if not _NAME.fullmatch(run):
@@ -56,6 +116,134 @@ class Exchange:
         self.store: ManifestArtifactStore = open_peer(peer)
         self.blobs = self.store.blobs
         self.prefix = f"exchange/rl/{run}/"
+
+    # One append-only input log; request keys are indexes into these same facts.
+    def _optional(self, key: str) -> bytes | None:
+        try:
+            return self.blobs.get(key)
+        except StoreError as error:
+            if error.code != "object_not_found":
+                raise
+            return None
+
+    def input_records(self, after: int) -> list[dict[str, Any]]:
+        """List metadata once and read only the tail, never earlier input bodies."""
+        keys = sorted(key for key in self.blobs.keys(f"{self.prefix}inputs/")
+                      if key.endswith(".json") and int(Path(key).stem) > after)
+        records = [_open(self.blobs.get(key), INPUT_SCHEMA) for key in keys]
+        if [record["sequence"] for record in records] != list(
+                range(after + 1, after + len(records) + 1)):
+            reject("input_log_gap")
+        if any(record["run"] != self.run for record in records):
+            reject("input_log_run_changed")
+        return records
+
+    def require_input_position(self, sequence: int, head: str) -> None:
+        raw = self._optional(f"{self.prefix}inputs/{sequence:012d}.json")
+        if raw is None:
+            reject("input_log_missing_seed_original_exchange_before_restore")
+        record = _open(raw, INPUT_SCHEMA)
+        if (record["run"] != self.run or record["sequence"] != sequence
+                or record["input_artifact_id"] != head):
+            reject("checkpoint_input_head_changed")
+
+    def input_receipt(self, request: dict[str, Any]) -> dict[str, Any] | None:
+        request = control_input(request)
+        raw = self._optional(f"{self.prefix}input-keys/{input_key(request)}.json")
+        if raw is None:
+            return None
+        record = _open(raw, INPUT_SCHEMA)
+        if self._optional(f"{self.prefix}inputs/{record['sequence']:012d}.json") != raw:
+            reject("input_receipt_log_record_missing")
+        fact = self.read_input(record)
+        if fact["request"] != request:
+            reject("input_key_reused_with_different_request")
+        return {"record": record, **fact}
+
+    def read_input(self, record: dict[str, Any]) -> dict[str, Any]:
+        artifact = self.store.get_manifest(record["input_artifact_id"])
+        fact: dict[str, Any] = json.loads(self.store.bytes(artifact.payload("input")))
+        if (artifact.kind != "run_event" or fact.get("schema") != INPUT_SCHEMA
+                or fact.get("run") != self.run or fact.get("sequence") != record["sequence"]
+                or input_key(fact["request"]) != record["request_key"]
+                or hashlib.sha256(json_bytes(fact["request"])).hexdigest()
+                != record["input_sha256"]):
+            reject("input_fact_binding_changed")
+        return fact
+
+    def index_input(self, record: dict[str, Any]) -> None:
+        self.blobs.put_if_absent(
+            f"{self.prefix}input-keys/{record['request_key']}.json", _sealed(record))
+
+    def append_input(self, request: dict[str, Any], response: dict[str, Any], *,
+                     sequence: int, previous: str | None, producer: Producer,
+                     anchor: str | None = None) -> dict[str, Any]:
+        """Persist before apply/ACK. An uncertain write fences the learner owner."""
+        if not isinstance(self.blobs, LocalBlobStore):
+            reject("segment_input_owner_requires_local_durable_store")
+        request = control_input(request)
+        with instance_lock(self.blobs.root / ".rl-input-owners" / f"{self.run}.lock"):
+            latest = sequence - 1
+            if self._optional(f"{self.prefix}inputs/{sequence:012d}.json") is not None:
+                reject("input_owner_position_changed")
+            if type(sequence) is not int or sequence < 1:
+                reject("invalid_input_sequence")
+            if latest:
+                prior = _open(self.blobs.get(
+                    f"{self.prefix}inputs/{latest:012d}.json"), INPUT_SCHEMA)
+                if prior["input_artifact_id"] != previous:
+                    reject("input_owner_head_changed")
+            elif previous is not None:
+                reject("input_owner_head_changed")
+            fact = {"schema": INPUT_SCHEMA, "run": self.run, "sequence": sequence,
+                    "previous": previous, "anchor_checkpoint": anchor,
+                    "request": request, "response": response}
+            artifacts = _input_artifacts([request, response])
+            parents = ([Parent("previous_input", previous)] if previous else [])
+            if not previous and anchor:
+                parents.append(Parent("anchor_checkpoint", anchor))
+            parents.extend(Parent(f"data_{i}", artifact)
+                           for i, artifact in enumerate(sorted(artifacts)))
+            artifact = Manifest("run_event", producer, parents=tuple(parents),
+                payloads=(self.store.put_bytes("input", json_bytes(fact)),),
+                parameters=FrozenObject.of({"schema": INPUT_SCHEMA, "run": self.run,
+                                           "sequence": sequence}))
+            self.store.publish(artifact)
+            raw = _sealed({"schema": INPUT_SCHEMA, "run": self.run, "sequence": sequence,
+                "request_key": input_key(request),
+                "input_sha256": hashlib.sha256(json_bytes(request)).hexdigest(),
+                "input_artifact_id": artifact.artifact_id})
+            self.blobs.put_if_absent(f"{self.prefix}inputs/{sequence:012d}.json", raw)
+            record: dict[str, Any] = json.loads(raw)
+            self.index_input(record)
+            return record
+
+    def persist_episode_end(self, request: dict[str, Any], producer: Producer) -> dict[str, Any]:
+        """Producer's original close input exists even if its RPC never arrives."""
+        request = control_input({**request, "operation": "episode_end"})
+        artifact = Manifest("run_event", producer,
+            parents=tuple(Parent(f"data_{i}", artifact)
+                          for i, artifact in enumerate(sorted(_input_artifacts(request)))),
+            payloads=(self.store.put_bytes("input", json_bytes(request)),),
+            parameters=FrozenObject.of({"schema": END_SCHEMA, "run": self.run}))
+        self.store.publish(artifact)
+        self.blobs.put_if_absent(f"{self.prefix}episode-ends/{input_key(request)}.json",
+            _sealed({"schema": END_SCHEMA, "run": self.run,
+                     "input_artifact_id": artifact.artifact_id}))
+        return request
+
+    def episode_end_input(self, actor: str, episode: str) -> dict[str, Any] | None:
+        key = input_key({"operation": "episode_end", "actor": actor, "episode": episode})
+        raw = self._optional(f"{self.prefix}episode-ends/{key}.json")
+        if raw is None:
+            return None
+        record = _open(raw, END_SCHEMA)
+        artifact = self.store.get_manifest(record["input_artifact_id"])
+        request: dict[str, Any] = json.loads(self.store.bytes(artifact.payload("input")))
+        if (record["run"] != self.run or input_key(request) != key
+                or artifact.parameters.value().get("schema") != END_SCHEMA):
+            reject("episode_end_input_changed")
+        return request
 
     def archive_status(self) -> dict[str, Any] | None:
         from spireagent.storage.async_archive import ArchivedStore

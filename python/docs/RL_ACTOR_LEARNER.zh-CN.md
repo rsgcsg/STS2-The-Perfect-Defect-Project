@@ -29,6 +29,39 @@
   μ 和辅助池引用及实际使用次数。成功优化后的计数、游标与数据集结束状态先完整提交，
   日志/TensorBoard失败不得使CP带旧游标。**provides**：正常 `checkpoint` artifact 和只追加
   checkpoint record；空目录经 Store 递归取回，不重算冻结目标，不重发原 World/动作。
+  恢复还须同run的原Exchange输入日志/索引；只有CP artifact不代表已经取回消费日志。
+
+## 已接收输入与容量的恢复
+
+原Exchange以`spireagent/rl-segment-input-1`追加记录episode_open、begin许可、commit和
+episode_end。每项先经原Store落盘，原输入、原响应和前项artifact绑定为同一个run_event；
+顺序键与请求key只是同一事实的两个索引。CP在同一把状态锁下保存`input_sequence/input_head`
+及队列、预留、池和学习状态。恢复核CP head，再只读取该位置之后的输入，按原顺序应用；
+CP后的已ACK输入不靠reservation cursor或当前池是否仍有该项猜测。
+
+begin的key包含actor、episode与previous_lease；commit含原segment_id，关闭含原episode。
+连接ID、request_id和时间不进入key。丢控制回包只在原服务查询收据：已接收则返回原响应，
+明确未接收才以同key/原输入再交一次。score和游戏动作从不自动重发。终局producer在RPC前
+持久化原end输入；恢复只检查已有grant的准确segment键与活动episode的准确end键。
+终局及HP标签须与原末段的terminal和verified successor公开HP一致，全部校验后才入池。
+
+不确定日志写入、部分应用或发现另一个写入者时，当前learner停止接收并禁止新CP，
+写明确失败summary后退出；保留最后一致CP和原输入。旧版无输入位置的CP只允许从已闭合
+（无活动episode/lease）的原owner显式迁移，并将该CP绑定为新日志的anchor。
+发布号与CP序号续原Exchange高水位；SGD/使用次数和冻结游标仍恢复CP值。
+重放既有ACK可暂时产生超过正常行容量的待处理量；这些行照留，新grant继续受原容量限制。
+
+R2复制仍走原Archive outbox。只有learner启动本地容量观察线程，周期读取全root的pending
+元数据与文件系统空闲量，RPC读取缓存，不等R2或递归warmup历史。缺省未归档估算4GiB、
+最低空闲15GiB，分别可配`segments.archive_pending_bytes/archive_min_free_bytes`；
+估算按pending manifest自身payload的两倍加记录字节计，已归档父项不重复计。
+超过阈值、观察过期或本地计数出错只暂停新episode/grant；现有commit/end/Stop仍通。
+Actor开新World前等待该临时背压，受原Stop/总deadline约束，恢复后继续。
+这些操作阈值及观察周期`archive_poll_seconds`可显式迁移，不改变学习目标。
+
+跨空Store恢复先用原Archive的`seed_exchange(run)`取回同run日志与索引，再以准确CP启动
+正常learner；缺CP head对应原记录会在开放服务前明确拒绝。此seed会列取原Exchange历史，
+日志消费只读tail；不能把仅tail回放的速度当完整R2空Store恢复耗时。
 
 ## 数据集与数值
 

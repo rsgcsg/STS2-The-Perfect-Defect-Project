@@ -13,6 +13,8 @@ import threading
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
+OPERATIONAL_FIELDS = ("diagnostics_every", "archive_pending_bytes", "archive_min_free_bytes",
+                      "archive_poll_seconds")
 
 @dataclass(frozen=True)
 class SegmentConfig:
@@ -36,12 +38,15 @@ class SegmentConfig:
     diagnostics_every: int = 8
     excluded_seeds: list[str] = field(default_factory=list)
     warmup_artifact_id: str | None = None
+    archive_pending_bytes: int = 4 * 1024**3
+    archive_min_free_bytes: int = 15 * 1024**3
+    archive_poll_seconds: float = 2
 
     def __post_init__(self) -> None:
         positive = (self.steps, self.dataset_rows, self.minibatches, self.epochs,
             self.episode_rows, self.capacity_rows, self.terminal_games,
             self.hp_battles, self.auxiliary_rows, self.terminal_uses, self.hp_uses,
-            self.inference_batch, self.diagnostics_every)
+            self.inference_batch, self.diagnostics_every, self.archive_pending_bytes)
         if (any(type(v) is not int or v < 1 for v in positive)
                 or self.steps > 64 or self.episode_rows < self.steps
                 or self.capacity_rows < self.dataset_rows + self.steps
@@ -49,6 +54,8 @@ class SegmentConfig:
                 or not 0 < self.head_lr < 1 or not 1 <= self.inference_batch <= 40
                 or not 0 <= self.inference_window_ms <= 100
                 or not 0 < self.checkpoint_seconds <= 3600
+                or type(self.archive_min_free_bytes) is not int or self.archive_min_free_bytes < 0
+                or not 0.01 <= self.archive_poll_seconds <= 30
                 or any(not isinstance(seed, str) or not seed for seed in self.excluded_seeds)
                 or len(self.excluded_seeds) != len(set(self.excluded_seeds))):
             raise ValueError("invalid_segment_configuration")
@@ -87,7 +94,7 @@ class SegmentQueue:
     def occupied(self) -> int:
         return self.rows + sum(self.leases.values())
 
-    def reserve(self, lease: str) -> bool:
+    def reserve(self, lease: str, *, replay: bool = False) -> bool:
         with self.condition:
             actor, separator, number = lease.rpartition("/")
             if not actor or separator != "/" or not number.isdigit():
@@ -95,20 +102,25 @@ class SegmentQueue:
             sequence = int(number)
             if sequence != self.cursors.get(actor, -1) + 1:
                 raise ValueError("segment_lease_already_offered_or_out_of_order")
-            if self.occupied + self.config.steps > self.config.capacity_rows:
+            if not replay and self.occupied + self.config.steps > self.config.capacity_rows:
                 return False
             self.leases[lease] = self.config.steps
             self.cursors[actor] = sequence
             return True
 
-    def commit(self, lease: str, segment: dict[str, Any]) -> None:
-        """After the producer's atomic durable commit, replace the exact lease."""
+    def validate_commit(self, lease: str, segment: dict[str, Any]) -> None:
         with self.condition:
             size = segment.get("rows")
             if (lease not in self.leases or segment.get("segment_id") != lease
                     or type(size) is not int or not 1 <= size <= self.leases[lease]
                     or not isinstance(segment.get("run_id"), str)):
                 raise ValueError("segment_commit_binding_mismatch")
+
+    def commit(self, lease: str, segment: dict[str, Any]) -> None:
+        """After the producer's atomic durable commit, replace the exact lease."""
+        with self.condition:
+            self.validate_commit(lease, segment)
+            size = segment["rows"]
             self.leases.pop(lease)
             self.pending.append(copy.deepcopy(segment))
             self.rows += size
@@ -150,17 +162,18 @@ class SegmentQueue:
             return copy.deepcopy({"config": asdict(self.config), "pending": list(self.pending),
                 "leases": self.leases, "cursors": self.cursors, "rows": self.rows})
 
-    def restore(self, value: dict[str, Any]) -> None:
+    def restore(self, value: dict[str, Any], *, accepted_input_log: bool = False) -> None:
         with self.condition:
             previous, expected = dict(value["config"]), asdict(self.config)
-            previous.pop("diagnostics_every", None)
-            expected.pop("diagnostics_every", None)
+            for key in OPERATIONAL_FIELDS:
+                previous.pop(key, None)
+                expected.pop(key, None)
             if previous != expected:
                 raise ValueError("segment_queue_configuration_changed")
             pending = copy.deepcopy(value["pending"])
             rows = sum(s["rows"] for s in pending)
-            if (rows != value["rows"]
-                    or rows + sum(value["leases"].values()) > self.config.capacity_rows):
+            if (rows != value["rows"] or (not accepted_input_log
+                    and rows + sum(value["leases"].values()) > self.config.capacity_rows)):
                 raise ValueError("segment_queue_capacity_changed")
             self.pending = collections.deque(pending)
             self.leases = dict(value["leases"])
@@ -175,12 +188,15 @@ class AuxiliaryPool:
         self.limit, self.max_uses = groups, uses
         self.groups: collections.OrderedDict[str, list[dict[str, Any]]] = collections.OrderedDict()
 
-    def add(self, identity: str, rows: list[dict[str, Any]]) -> None:
+    def validate_add(self, identity: str, rows: list[dict[str, Any]]) -> None:
         if identity in self.groups:
             raise ValueError("auxiliary_group_already_added")
         keys = [r["key"] for r in rows]
         if len(keys) != len(set(keys)):
             raise ValueError("duplicate_auxiliary_state")
+
+    def add(self, identity: str, rows: list[dict[str, Any]]) -> None:
+        self.validate_add(identity, rows)
         self.groups[identity] = [copy.deepcopy(r) | {"uses": 0, "datasets": []} for r in rows]
         while len(self.groups) > self.limit:
             self.groups.popitem(last=False)
