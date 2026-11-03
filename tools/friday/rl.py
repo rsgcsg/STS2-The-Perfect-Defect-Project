@@ -191,10 +191,14 @@ def finished_actor_results(path: Path, plan: dict[str, Any]) -> list[dict[str, s
         owner = json.loads(owner_path.read_bytes())
         if owner.get('actor') != ref['actor'] or owner.get('plan_sha256') != plan_sha256:
             raise ValueError('finished_actor_owner_binding_changed')
-        scratch = canonical_path(Path(owner['scratch']))
-        result_path = scratch / 'result.json'
+        scratch = canonical_path(Path(owner['scratch']), existing=False)
+        result_path = path.parent/'actors'/ref['actor']/'result.json'
         if not result_path.is_file():
-            return None
+            # Node-local scratch is intentionally not visible on the login node.
+            # Before the verified persistent copy exists the owner is still active.
+            result_path = scratch/'result.json'
+            if not result_path.is_file():
+                return None
         result = json.loads(result_path.read_bytes())
         summary = result.get('original_summary') or {}
         if (result.get('schema') != 'spireagent/friday-RL-result-v1'

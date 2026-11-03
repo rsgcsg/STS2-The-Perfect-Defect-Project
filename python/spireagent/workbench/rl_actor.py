@@ -376,7 +376,13 @@ class Actor:
         return summary
 
     def _unknown_limit(self) -> bool:
-        """Stop this actor (never retry) when unknowns cluster; the learner keeps going."""
+        """Only an explicitly configured segment Actor stops for an unknown count.
+
+        Unknown games still end once; verified prefixes remain usable. Native
+        cleanup and preservation failures keep their original owner stops.
+        """
+        if self.segment_mode and "unknown_stop" not in self.config:
+            return False
         limit = self.config.get("unknown_stop", {"consecutive": 3, "fraction": 0.25,
                                                  "after": 8})
         statuses = [g["status"] for g in self.games]

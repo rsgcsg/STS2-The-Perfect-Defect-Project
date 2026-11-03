@@ -98,10 +98,24 @@ prepare/submit/score；RL4分支严格联接完整CP、实际发布policy及head
 临时 auth 只通过 sbatch 继承环境传给 Actor，不写配置、日志或报告。提交意图先持久化；
 若回复丢失，查原提交，不再发数组。`prepare`/`submit --dry-run` 本身不创建 World。
 
+短段背压属于正常等待：一个 consume 可能顺序等待 begin 和 score，各自 TCP 上限120秒。
+正常短段 Managed 注册显式采用现有 Runtime manifest 的270000ms Agent调用上限，
+覆盖两次等待和序列化余量；原执行预算、Stop、RPC不重试和失败隔离均继续生效。
+`episode_open` 是接纳原episode的唯一入口；已end的episode不能被迟到begin复活。
+恢复时，CP episode登记已关闭、却仍占容量的预留会回收并在正常summary记录
+`released_closed_reservations`；有效在途预留、数据、SGD和first-use计数保留，原CP不改。
+
+RL4默认不因unknown次数或比例停整个Actor。该局未知后只用之前已验证前缀，
+不重发未知动作、不重打原seed、不填终局负标签；清理已确认后可开下一新局。
+若Actor显式配置`unknown_stop`才采用该计数停机策略。原生cleanup未确认、
+实际保存/交付失败仍按原owner停止受影响路径；这不是unknown比例规则。
+
 继续时先核原 GPU/Actor 作业已收尾、unknown/未决 offer 已按原件处置。
 同 run/peer/source/config 写明确 `resume_checkpoint`，新 work 和 actors-output 路径再执行上述命令。
 恢复保留 θ/Adam/EMA/RNG、冻结目标、first-use/SGD/池计数；不换 seed 重放原失败。
-允许变更的时长/device/线程等由 `_restore` 明确校验；换源码须显式 `resume_source`，不能静默续。
+允许变更的时长/device/线程及仅诊断频率 `segments.diagnostics_every`、同一冻结minibatch内的
+`performance.microbatch_size` 由 `_restore` 明确校验；microbatch迁移只改变FP32累积顺序，
+不保证逐位相同，其他performance字段仍拒绝漂移。换源码须显式 `resume_source`，不能静默续。
 
 ## 停止、观察、保存
 

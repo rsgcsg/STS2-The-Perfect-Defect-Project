@@ -84,6 +84,7 @@ class SegmentLearner:
         self.hp = AuxiliaryPool(self.settings.hp_battles, self.settings.hp_uses)
         self.lease_owners: dict[str, dict[str, Any]] = {}
         self.actor_episodes: dict[str, str] = {}
+        self.released_closed_reservations: list[str] = []
         self.newlease_stopped = False
         self.active: dict[str, Any] | None = None
         self.active_rows: list[SegmentSample] | None = None
@@ -361,8 +362,8 @@ class SegmentLearner:
         if operation == "begin":
             actor, episode = request["actor"], request["episode"]
             with self.condition:
-                self.actor_episodes[f"{actor}:{episode}"] = episode
-                while not self.newlease_stopped:
+                episode_key = f"{actor}:{episode}"
+                while not self.newlease_stopped and episode_key in self.actor_episodes:
                     sequence = self.queue.cursors.get(actor, -1) + 1
                     lease = f"{actor}/{sequence}"
                     queued = sum(
@@ -833,6 +834,14 @@ class SegmentLearner:
         ):
             expected.pop(key, None)
             previous.pop(key, None)
+        # Diagnostics only read extra gradients; cadence is an operational cost.
+        # It does not change targets, membership, successful updates or optimizer math.
+        expected["segments"].pop("diagnostics_every", None)
+        previous["segments"].pop("diagnostics_every", None)
+        # Microbatch is gradient accumulation within the same frozen minibatch;
+        # membership, global denominators and successful SGD accounting stay fixed.
+        expected["performance"].pop("microbatch_size", None)
+        previous["performance"].pop("microbatch_size", None)
         if (
             metadata["schema"] != CHECKPOINT_SCHEMA
             or previous != expected
@@ -845,6 +854,14 @@ class SegmentLearner:
         self.queue.restore(metadata["queue"])
         self.lease_owners = metadata["lease_owners"]
         self.actor_episodes = metadata["actor_episodes"]
+        # The CP episode registry is authoritative: an ended episode cannot own
+        # an unused capacity reservation. Older timed-out begin calls could
+        # wake after episode_end and leave precisely these orphan reservations.
+        for lease, owner in list(self.lease_owners.items()):
+            if f"{owner['actor']}:{owner['episode']}" not in self.actor_episodes:
+                self.queue.release(lease)
+                self.lease_owners.pop(lease)
+                self.released_closed_reservations.append(lease)
         self.terminal.restore(metadata["terminal"])
         self.hp.restore(metadata["hp"])
         self.active = metadata["active"]
@@ -930,6 +947,7 @@ class SegmentLearner:
             "unresolved_inflight": len(self.queue.leases),
             "queued_rows": self.queue.rows,
             "unresolved_episodes": len(self.actor_episodes),
+            "released_closed_reservations": self.released_closed_reservations,
             "inference": inference,
             "trajectory_encoding": "short-segment-1",
             "counts": {"first_use": self.first_use, "first_use_multi": self.first_use_multi},

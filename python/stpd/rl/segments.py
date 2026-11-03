@@ -152,7 +152,10 @@ class SegmentQueue:
 
     def restore(self, value: dict[str, Any]) -> None:
         with self.condition:
-            if value["config"] != asdict(self.config):
+            previous, expected = dict(value["config"]), asdict(self.config)
+            previous.pop("diagnostics_every", None)
+            expected.pop("diagnostics_every", None)
+            if previous != expected:
                 raise ValueError("segment_queue_configuration_changed")
             pending = copy.deepcopy(value["pending"])
             rows = sum(s["rows"] for s in pending)

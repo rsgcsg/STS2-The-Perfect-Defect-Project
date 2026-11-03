@@ -207,6 +207,10 @@ class ManagedEpisodeExecutor:
         self, configuration: dict[str, Any], *, episode_seconds: float, cleanup_seconds: float
     ) -> None:
         self.configuration = configuration
+        agent_timeout = configuration.get("agent_timeout_ms")
+        if agent_timeout is not None and (type(agent_timeout) is not int
+                or not 1 <= agent_timeout <= 300000):
+            reject("invalid_agent_timeout")
         preparation_started = time.monotonic()
         storage = storage_configuration(configuration)
         self.read_concurrency = storage["read_concurrency"]
@@ -494,6 +498,8 @@ class ManagedEpisodeExecutor:
                 revision = export.declared_p1_revision(package)
                 if revision != "r1.5":
                     options["p1-revision"] = revision
+                if self.configuration.get("agent_timeout_ms") is not None:
+                    options["agent-timeout-ms"] = str(self.configuration["agent_timeout_ms"])
                 envelope = global_environment_manifest(
                     self.runtime,
                     options,

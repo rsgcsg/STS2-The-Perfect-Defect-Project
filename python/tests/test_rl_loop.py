@@ -487,3 +487,18 @@ def test_real_update_progress_roundtrips_through_sealed_exchange(tmp_path, monke
     learner.exchange.request_stop("test_completed")
     learner.run()
     assert learner.exchange.latest_checkpoint() is not None
+
+
+def test_segments_keep_unknown_prefix_policy_without_an_implicit_actor_stop():
+    from spireagent.workbench.rl_actor import Actor
+
+    actor = object.__new__(Actor)
+    actor.segment_mode = True
+    actor.config = {}
+    actor.games = [{"status": "unknown"} for _ in range(10)]
+    assert not actor._unknown_limit()
+    actor.config["unknown_stop"] = {"consecutive": 3, "fraction": 0.25, "after": 8}
+    assert actor._unknown_limit()
+    actor.config = {}
+    actor.segment_mode = False
+    assert actor._unknown_limit()
