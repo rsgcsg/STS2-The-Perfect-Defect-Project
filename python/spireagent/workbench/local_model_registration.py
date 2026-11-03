@@ -85,7 +85,8 @@ def global_environment_manifest(runtime: Path, options: dict[str, str], artifact
         "console.log(JSON.stringify(r.createGlobalProgramManifest("
         "{episodeId:process.argv[5],manifestId:process.argv[5],"
         "identity,artifactPath:p,artifactBytes:await readFile(p),adapter:a,"
-        "p1Revision:o['p1-revision']??'r1.5'})));"
+        "p1Revision:o['p1-revision']??'r1.5',"
+        "agentTimeoutMs:o['agent-timeout-ms']===undefined?undefined:Number(o['agent-timeout-ms'])})));"
     )
     reply = subprocess.run(
         [
@@ -109,6 +110,10 @@ def global_environment_manifest(runtime: Path, options: dict[str, str], artifact
     value = json.loads(reply.stdout)
     if not isinstance(value, dict):
         raise BoundaryError("global_program", "public_environment_unavailable")
+    requested_timeout = options.get("agent-timeout-ms")
+    if (requested_timeout is not None
+            and value.get("limits", {}).get("agent_timeout_ms") != int(requested_timeout)):
+        raise BoundaryError("global_program", "agent_timeout_not_negotiated")
     return value
 
 

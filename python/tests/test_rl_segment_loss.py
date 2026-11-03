@@ -79,3 +79,22 @@ def test_successful_update_reports_weighted_shared_trunk_gradients():
     assert result["trunk_gradients"]["policy_norm"] > 0
     assert set(result["trunk_gradients"]["weighted_head_norms"]) == {
         "policy", "td", "terminal", "hp"}
+
+
+def test_gradient_diagnostics_do_not_change_the_update_or_rng():
+    first, rows, terminal, hp = prepared()
+    second = copy.deepcopy(first)
+    config = LossConfig(mode="ppo", value_coef=.2, entropy_coef=.01)
+    options = dict(config=config, performance=PerformanceConfig(microbatch_size=2))
+    before = torch.get_rng_state().clone()
+    ordinary = segment_update(first, torch.optim.AdamW(
+        first.parameters(), lr=4e-5, weight_decay=0), rows, terminal, hp, **options)
+    after = torch.get_rng_state().clone()
+    torch.set_rng_state(before)
+    diagnostic = segment_update(second, torch.optim.AdamW(
+        second.parameters(), lr=4e-5, weight_decay=0), rows, terminal, hp,
+        diagnostics=True, **options)
+    assert ordinary["stepped"] and diagnostic["stepped"]
+    assert torch.equal(torch.get_rng_state(), after)
+    for name, value in first.state_dict().items():
+        assert torch.equal(value, second.state_dict()[name]), name

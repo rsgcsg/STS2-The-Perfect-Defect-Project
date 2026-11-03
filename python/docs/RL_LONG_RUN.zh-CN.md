@@ -2,11 +2,14 @@
 
 ## 当前 RL4 节点与运行入口
 
-Friday CPU节点继续跑原Managed Actor；单张A30节点常驻μ推理与θ训练，通过内网常连接互通。
+Friday CPU节点继续跑原Managed Actor；单张本卡批准的A30/A100常驻μ推理与θ训练，通过内网常连接互通。
 当前源码/预算从CURRENT进入本轮；启动与同CP继续见[原接口手册](RL_ACTOR_LEARNER.zh-CN.md#friday-的正常启动与继续)。
-正常入口是GPU分配中的 `tools/friday/rl.py learn`，内部复用原CPU prepare/submit/E2；
+正常入口为登录节点 `tools/friday/rl.py launch`；GPU脚本执行 `learn --external-submit`，
+原CPU prepare/submit/E2保持同一条链，避免计算节点嵌套sbatch被拒绝；
 不再用下面旧 `rl_run` / 学校GPU示例启动整局RL。凭据和临时推理auth只经环境。
 收尾先停新段、等现有段、CP/R2读回后释放；数组快照因时限中断时只用原 `rl.py save`，不再打局。
+短段unknown只结束该局、保留已验证前缀，不默认按比例停整个Actor；
+背压调用预算、已闭episode回收与同CP操作参数迁移见原接口手册，不靠修改运行中JSON生效。
 第一小时外是否继续以当前用户预算为准，本SOP不授权。
 
 ## 以下为旧部署操作史

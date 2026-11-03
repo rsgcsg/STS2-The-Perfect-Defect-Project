@@ -707,3 +707,24 @@ def test_login_queued_gpu_timeout_retains_stop_before_work_exists(rl, tmp_path, 
     assert Path(inherited['stop']).exists()
     assert not (tmp_path/'work').exists() and not (tmp_path/'actors').exists()
     assert AUTH_ENV not in os.environ and rl.LAUNCH_STOP_ENV not in os.environ
+
+
+def test_additional_active_parent_accepts_invisible_node_local_scratch(rl, inputs, tmp_path):
+    plan, path = prepared(rl, inputs, actors=1)
+    ref = plan['actors'][0]
+    persistent = path.parent/'actors'/ref['actor']
+    persistent.mkdir(parents=True)
+    scratch = tmp_path/'other-compute-node-only'
+    (persistent/'owner.json').write_text(json.dumps({'actor': ref['actor'], 'job_id': '42',
+        'scratch': str(scratch), 'plan_sha256': rl.hashed(path)}))
+    assert not scratch.exists()
+    assert rl.finished_actor_results(path, plan) is None
+    result = {'schema': 'spireagent/friday-RL-result-v1', 'actor': ref['actor'],
+        'run': plan['run'], 'actor_config_sha256': ref['sha256'],
+        'scratch_retained': str(scratch), 'exit_code': 0, 'error_type': None,
+        'original_summary': {'schema': 'spireagent/rl-actor-summary-1',
+            'actor': ref['actor'], 'run': plan['run'], 'status': 'completed'}}
+    (persistent/'result.json').write_text(json.dumps(result))
+    finished = rl.finished_actor_results(path, plan)
+    assert finished[0]['result_path'] == str(persistent/'result.json')
+    assert finished[0]['result_sha256'] == rl.hashed(persistent/'result.json')

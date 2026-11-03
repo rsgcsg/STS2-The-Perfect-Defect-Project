@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import base64
 import copy
+import threading
 from dataclasses import replace
 
 import torch
@@ -125,6 +126,7 @@ def deliver(learner, tmp_path, actor, monkeypatch, *, battle=False):
     spec = input_spec(learner.model.vocabulary, projection)
     client = SegmentInferenceClient(attachment, projection, trace)
     control = SegmentConnection(attachment)
+    assert control.request("episode_open", actor=actor, episode=episode)["admitted"]
     inputs = []
     count = 4 if battle else 2
     for index in range(count + 1):
@@ -311,7 +313,9 @@ def test_real_delivery_sgd_and_mid_dataset_restore_keep_frozen_targets_and_count
         )
         replica.publish_model(original.exchange.model(0))
         restored = SegmentLearner(
-            replace(config, peer=replica_peer, resume_checkpoint=record["checkpoint_artifact_id"]),
+            replace(config, peer=replica_peer,
+                    performance=replace(config.performance, microbatch_size=4),
+                    resume_checkpoint=record["checkpoint_artifact_id"]),
             tmp_path / "empty-restored-work",
             io,
         )
@@ -460,6 +464,98 @@ def test_cold_restore_loads_three_mu_snapshots_without_republishing_latest(
         assert restored.pool.snapshots == identities and restored.pool.latest == latest
         assert restored.updates == original.updates == 0
         assert restored.version == original.version == 2
+    finally:
+        cleanup(original)
+        if restored is not None:
+            cleanup(restored)
+
+
+def test_ended_episode_cancels_waiting_begin_without_an_orphan_reservation(
+    tmp_path, monkeypatch
+):
+    config, io = configuration(tmp_path, monkeypatch)
+    learner = SegmentLearner(config, tmp_path / "waiting-work", io)
+    for key, value in learner.pool.environment().items():
+        monkeypatch.setenv(key, value)
+    control = SegmentConnection(learner.pool.attachment())
+    waiting_client = SegmentConnection(learner.pool.attachment())
+    waiting = threading.Event()
+    original_wait = learner.condition.wait
+    answers, errors = [], []
+
+    def observed_wait(timeout=None):
+        waiting.set()
+        return original_wait(timeout)
+
+    monkeypatch.setattr(learner.condition, "wait", observed_wait)
+    assert control.request("episode_open", actor="actor", episode="episode")["admitted"]
+    control.request("begin", actor="actor", episode="episode")
+
+    def request():
+        try:
+            answers.append(waiting_client.request("begin", actor="actor", episode="episode"))
+        except Exception as error:
+            errors.append(error)
+
+    thread = threading.Thread(target=request, daemon=True)
+    thread.start()
+    try:
+        assert waiting.wait(2), "the real TCP begin did not reach capacity backpressure"
+        control.request("episode_end", actor="actor", episode="episode", run_id="run",
+                        terminal=None, outcome_states=[], hp_battles=[])
+        thread.join(2)
+        assert not thread.is_alive() and not errors and answers == [{"stopped": True}]
+        assert not learner.actor_episodes and not learner.queue.leases
+        assert not learner.lease_owners
+        assert control.request("begin", actor="actor", episode="episode") == {"stopped": True}
+        assert not learner.actor_episodes and not learner.queue.leases
+    finally:
+        with learner.condition:
+            learner.newlease_stopped = True
+            learner.condition.notify_all()
+        thread.join(2)
+        waiting_client.close()
+        control.close()
+        cleanup(learner)
+
+
+def test_cold_restore_releases_only_closed_episode_reservations(tmp_path, monkeypatch):
+    config, io = configuration(tmp_path, monkeypatch)
+    original = SegmentLearner(config, tmp_path / "orphan-work", io)
+    restored = None
+    try:
+        deliver(original, tmp_path, "actor-a", monkeypatch)
+        deliver(original, tmp_path, "actor-b", monkeypatch)
+        assert original._prepare()
+        original._step()
+        for episode in ("closed", "active"):
+            original.control({"operation": "episode_open", "actor": episode,
+                              "episode": episode})
+            original.control({"operation": "begin", "actor": episode, "episode": episode})
+        # Reproduce an old CP taken after episode_end but a late begin reserved.
+        original.actor_episodes.pop("closed:closed")
+        original.checkpoint(final=True)
+        saved_rng = torch.get_rng_state().clone()
+        checkpoint = original.exchange.latest_checkpoint()
+        replica_peer = {"kind": "local", "directory": str(tmp_path / "orphan-cold")}
+        replica = Exchange(replica_peer, config.run)
+        copy_artifact(original.exchange.store, replica.store,
+                      checkpoint["checkpoint_artifact_id"], scratch=tmp_path)
+        replica.publish_model(original.exchange.model(0))
+        restored = SegmentLearner(
+            replace(config, peer=replica_peer,
+                    segments=replace(config.segments, diagnostics_every=64),
+                    resume_checkpoint=checkpoint["checkpoint_artifact_id"]),
+            tmp_path / "orphan-replacement", io)
+        assert restored.released_closed_reservations == ["closed/0"]
+        assert set(restored.queue.leases) == set(restored.lease_owners) == {"active/0"}
+        assert restored.actor_episodes == {"active:active": "active"}
+        assert restored.updates == original.updates == 1
+        assert restored.first_use == original.first_use == 2
+        assert restored.first_use_multi == original.first_use_multi
+        assert torch.equal(torch.get_rng_state(), saved_rng)
+        for name, value in original.model.state_dict().items():
+            assert torch.equal(value, restored.model.state_dict()[name])
     finally:
         cleanup(original)
         if restored is not None:

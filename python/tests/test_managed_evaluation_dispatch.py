@@ -1119,8 +1119,9 @@ def test_adapter_environment_requires_available_keys_before_host_and_each_offer(
     (["LD_LIBRARY_PATH", "FRIDAY_INFERENCE_THREADS"], False),
     (["LD_LIBRARY_PATH", "FRIDAY_INFERENCE_THREADS"], True)])
 @pytest.mark.parametrize("revision", ["r1.5", "r1.9"])
+@pytest.mark.parametrize("agent_timeout", [None, 270000])
 def test_actual_runtime_process_command_forwards_only_requested_adapter_key_names(
-    tmp_path, monkeypatch, keys, central, revision, synthetic_managed_admission,
+    tmp_path, monkeypatch, keys, central, revision, agent_timeout, synthetic_managed_admission,
 ):
     """Real command assembly; node admission, Host, registration and Popen are faked."""
     from types import SimpleNamespace
@@ -1136,6 +1137,8 @@ def test_actual_runtime_process_command_forwards_only_requested_adapter_key_name
     executor.configuration = {"models": {"model": {"package_directory": str(tmp_path)}},
         "python_executable": "/synthetic/python", "host_pin": {},
         "initial_progress": {"progress_sha256": "progress"}}
+    if agent_timeout is not None:
+        executor.configuration["agent_timeout_ms"] = agent_timeout
     executor.preparation = {"store": "fixture"}
     executor.read_concurrency = 1
     executor.settling_timeout_ms = None
@@ -1185,7 +1188,10 @@ def test_actual_runtime_process_command_forwards_only_requested_adapter_key_name
     executor(row, {"ascension": 0, "host": "Managed", "character": "Defect"},
              artifacts, lambda: None)
     assert synthetic_managed_admission == ["checked"]
-    assert envelope_options == ([{}] if revision == "r1.5" else [{"p1-revision": "r1.9"}])
+    expected_options = {} if revision == "r1.5" else {"p1-revision": "r1.9"}
+    if agent_timeout is not None:
+        expected_options["agent-timeout-ms"] = str(agent_timeout)
+    assert envelope_options == [expected_options]
     assert len(captured) == 1
     command, environment = captured[0]
     assert command[:2] == ["node", str(tmp_path / "cli.js")]
@@ -1200,3 +1206,36 @@ def test_actual_runtime_process_command_forwards_only_requested_adapter_key_name
     assert environment["LD_LIBRARY_PATH"] == loader_value
     assert "synthetic-parent-credential" not in json.dumps(row)
     assert loader_value not in json.dumps(row)
+
+
+@pytest.mark.parametrize("value", [True, 0, -1, 300001, 1.5])
+def test_invalid_agent_timeout_is_rejected_before_host_or_store(value):
+    from spireagent.workbench.managed_evaluation import ManagedEpisodeExecutor
+    with pytest.raises(BoundaryError, match="invalid_agent_timeout"):
+        ManagedEpisodeExecutor({"agent_timeout_ms": value},
+                               episode_seconds=10, cleanup_seconds=10)
+
+
+@pytest.mark.parametrize("actual", [270000, 30000])
+def test_requested_agent_deadline_is_checked_against_runtime_reply(
+    tmp_path, monkeypatch, actual
+):
+    from types import SimpleNamespace
+
+    from spireagent.workbench import local_model_registration as registration
+
+    def runtime(command, **_kwargs):
+        assert "agentTimeoutMs:o['agent-timeout-ms']" in command[3]
+        assert json.loads(command[5])["agent-timeout-ms"] == "270000"
+        return SimpleNamespace(returncode=0, stdout=json.dumps(
+            {"limits": {"agent_timeout_ms": actual}}))
+
+    monkeypatch.setattr(registration.subprocess, "run", runtime)
+    args = (tmp_path, {"agent-timeout-ms": "270000"}, tmp_path/'artifact', {}, 'selection',
+            __import__('time').monotonic()+10)
+    if actual != 270000:
+        with pytest.raises(BoundaryError, match="agent_timeout_not_negotiated"):
+            registration.global_environment_manifest(*args)
+    else:
+        value = registration.global_environment_manifest(*args)
+        assert value['limits']['agent_timeout_ms'] == actual
