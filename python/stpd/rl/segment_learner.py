@@ -29,6 +29,7 @@ from spireagent.json_boundary import BoundaryError, FrozenObject, json_bytes
 from spireagent.rl_exchange import Exchange
 from spireagent.rl_tensorboard import TensorBoardMetrics
 from spireagent.source import source_identity
+from spireagent.storage.blobs import StoreError
 from stpd.p1.export import (
     action_weights,
     adapter_identity,
@@ -329,13 +330,22 @@ class SegmentLearner:
         if self.pending_publication is None or not wait and not self.pending_publication.done():
             return
         publication = self.pending_publication.result()
-        self.pending_publication = None
-        self.published_updates = publication["updates"]
         model = publication["model"].to(self.device).eval()
         self._configure_mu(model)
         with self.condition:
             self.pool.publish(model, publication["identity"])
+            self.published_updates = publication["updates"]
+            self.pending_publication = None
             self._retire_mu()
+
+    def _schedule_publication(self) -> None:
+        self._collect_publication(wait=True)
+        model = self._capture_model()
+        version = self.version + 1
+        publication = self.publisher.submit(
+            self._publish_model, model, version, self.updates
+        )
+        self.pending_publication, self.version = publication, version
 
     def _retire_mu(self) -> None:
         protected = {value["mu"]["snapshot_sha256"] for value in self.lease_owners.values()}
@@ -366,18 +376,9 @@ class SegmentLearner:
                 while not self.newlease_stopped and episode_key in self.actor_episodes:
                     sequence = self.queue.cursors.get(actor, -1) + 1
                     lease = f"{actor}/{sequence}"
-                    queued = sum(
-                        row["rows"] for row in self.queue.pending if row.get("episode") == episode
-                    )
-                    reserved = sum(
-                        self.queue.leases[key]
-                        for key, owner in self.lease_owners.items()
-                        if owner["episode"] == episode
-                    )
-                    if (
-                        queued + reserved + self.settings.steps <= self.settings.episode_rows
-                        and self.queue.reserve(lease)
-                    ):
+                    # The per-game share belongs to dataset selection, not to
+                    # admission. Only the unified queue capacity pauses producers.
+                    if self.queue.reserve(lease):
                         key = self.pool.latest
                         mu = self.pool.snapshots[key]
                         self.lease_owners[lease] = {"actor": actor, "episode": episode, "mu": mu}
@@ -394,14 +395,18 @@ class SegmentLearner:
                     for lease, owner in self.lease_owners.items()
                     if owner["actor"] == actor and owner["episode"] == episode
                 ]
-            published = set(self.exchange.shard_keys()) if owned else set()
             for lease in owned:
                 sequence = int(lease.rpartition("/")[2])
                 key = f"{self.exchange.prefix}shards/{actor}/{sequence:08d}.json"
-                if key in published:
-                    # Observe the original immutable publication after a lost
-                    # admission receipt; never resubmit a producer/World offer.
-                    self._admit(self.exchange.segment_record(key))
+                try:
+                    record = self.exchange.segment_record(key)
+                except StoreError as error:
+                    if error.code != "object_not_found":
+                        raise
+                else:
+                    # Read only this owner's exact records, not the full run's
+                    # growing history. This reconciles admission, never World.
+                    self._admit(record)
             with self.condition:
                 if request.get("terminal") is not None:
                     self.terminal.add(request["run_id"], request["outcome_states"])
@@ -646,6 +651,19 @@ class SegmentLearner:
             first_use=self.first_use,
             first_use_multi=self.first_use_multi,
         )
+        # Complete the in-memory learning transition before fallible logs,
+        # telemetry, or publication. A final CP must never pair new Adam/theta
+        # with the old minibatch cursor, nor leave an exhausted dataset active.
+        active["minibatch"] += 1
+        if active["minibatch"] == self.settings.minibatches:
+            active["epoch"] += 1
+            active["minibatch"] = 0
+        finished = result["kl_stopped"] or active["epoch"] == self.settings.epochs
+        if finished:
+            self.datasets += 1
+            with self.condition:
+                self.active = self.active_rows = self.active_auxiliary = None
+                self._retire_mu()
         with (self.work / "updates.jsonl").open("ab") as stream:
             stream.write(json_bytes(result))
         if self.updates % max(1, self.config.tensorboard_steps) == 0:
@@ -693,21 +711,8 @@ class SegmentLearner:
                     trajectory_encoding="short-segment-1",
                 )
             )
-        active["minibatch"] += 1
-        if active["minibatch"] == self.settings.minibatches:
-            active["epoch"] += 1
-            active["minibatch"] = 0
-        if result["kl_stopped"] or active["epoch"] == self.settings.epochs:
-            self.datasets += 1
-            if self.updates != active["start_updates"]:
-                self._collect_publication(wait=True)
-                self.version += 1
-                self.pending_publication = self.publisher.submit(
-                    self._publish_model, self._capture_model(), self.version, self.updates
-                )
-            with self.condition:
-                self.active = self.active_rows = self.active_auxiliary = None
-                self._retire_mu()
+        if finished and self.updates != active["start_updates"]:
+            self._schedule_publication()
 
     def _state(self) -> tuple[bytes, tuple[Parent, ...]]:
         with self.condition, self.gpu_lock:
@@ -767,7 +772,9 @@ class SegmentLearner:
             parents = tuple(
                 Parent(f"input_{i}", artifact) for i, artifact in enumerate(sorted(artifacts))
             )
-            return encode_checkpoint(state), parents
+        # Metadata was frozen above and theta/Adam/EMA have one writer (this
+        # learner thread). Encoding does not need to block control or inference.
+        return encode_checkpoint(state), parents
 
     def _collect_checkpoint(self, *, wait: bool = False) -> None:
         taken = self.checkpoints.take(wait=wait)
@@ -926,10 +933,7 @@ class SegmentLearner:
                 # A budget Stop can fall between successful SGD steps of a frozen
                 # dataset. Publish that exact end theta, retaining its active
                 # dataset/targets/cursor in CP so evaluation and resume agree.
-                self.version += 1
-                self.pending_publication = self.publisher.submit(
-                    self._publish_model, self._capture_model(), self.version, self.updates
-                )
+                self._schedule_publication()
             self.checkpoint(final=True)
             inference = self.pool.close()
             self.publisher.shutdown(wait=True)

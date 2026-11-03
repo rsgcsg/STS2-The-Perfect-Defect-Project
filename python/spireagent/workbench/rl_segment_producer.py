@@ -475,8 +475,8 @@ class SegmentManagedExecutor(PipelinedManagedExecutor):
         attachment: dict[str, Any],
         admission: Any,
     ) -> None:
-        # One consume may wait for begin and then score (120s each), plus framing.
-        # Use the existing Runtime manifest limit; native Stop/deadlines still own exit.
+        # Capacity waits use ACK/next/await; only the score RPC has a 120s limit.
+        # Keep the existing Agent call limit; native Stop/deadlines still own exit.
         configuration = {**configuration}
         configuration.setdefault("agent_timeout_ms", 270000)
         super().__init__(

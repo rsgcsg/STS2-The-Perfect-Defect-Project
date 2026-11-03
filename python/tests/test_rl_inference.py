@@ -5,6 +5,7 @@ import copy
 import io
 import json
 import threading
+import time
 from dataclasses import replace
 
 import torch
@@ -58,8 +59,17 @@ def test_real_scores_pin_mu_and_forced_skip_network(tmp_path, monkeypatch):
         return {"acquisition_id": f"acq-{index}", "consumption_unit": {"id": f"unit-{index}"},
                 "observation": value, "catalog": value["catalog"]}
 
+    def ready_scores(value):
+        result = client.consume(value)
+        if result is None:
+            assert client.begin is not None
+            client.begin.result(timeout=10)
+            result = client.consume(value)
+        assert result is not None
+        return result
+
     try:
-        actual = client.consume(current(0))
+        actual = ready_scores(current(0))
         with torch.no_grad():
             expected = model.forward_batch([
                 project(public_state(), input_projection=V2_INPUT_SPEC)])[0]
@@ -76,7 +86,7 @@ def test_real_scores_pin_mu_and_forced_skip_network(tmp_path, monkeypatch):
         repeated["acquisition_id"] = "acq-repeated"
         assert client.consume(repeated) == [0.0]
         assert client.mu == first and len(begins) == 1 and client.in_segment == 64
-        actual = client.consume(current(64))
+        actual = ready_scores(current(64))
         assert client.mu == second and len(begins) == 2
         with torch.no_grad():
             expected = updated.forward_batch([
@@ -126,8 +136,21 @@ def test_normal_consume_ack_next_closes_at_budget_without_a_synthetic_action(tmp
         completion = json.loads(output.getvalue().splitlines()[-1])["completion"]
         yield json.dumps({**envelope, "request_id": "a", "message_type": "consume_ack",
                           "completion": completion})
-        yield json.dumps({**envelope, "request_id": "b", "message_type": "next",
-                          "input": {"continuity_token": "one"}})
+        # A real Runtime may next/await before the single stopped begin reply
+        # arrives. Keep that normal protocol responsive; it must never act.
+        deadline = time.monotonic() + 10
+        request = 0
+        while True:
+            request += 1
+            yield json.dumps({**envelope, "request_id": f"next-{request}",
+                "message_type": "next",
+                "input": {"continuity_token": "one", "received_cursor": "known-cursor"}})
+            directive = json.loads(output.getvalue().splitlines()[-1])["output"]["directive"]
+            if directive["type"] == "close":
+                break
+            assert directive["type"] == "await"  # Never a fabricated act.
+            assert time.monotonic() < deadline, "normal stopped begin reply did not arrive"
+            time.sleep(.01)
 
     try:
         serve(owner / "config.json", owner / "manifest.json", owner, messages(), output,

@@ -89,7 +89,8 @@ class Archive:
             elif key.startswith("exchange/") and key.endswith(".json"):
                 value = json.loads(raw)
                 artifacts.extend(value[name] for name in (
-                    "model_artifact_id", "checkpoint_artifact_id", "shard_artifact_id")
+                    "model_artifact_id", "checkpoint_artifact_id", "shard_artifact_id",
+                    "segment_artifact_id", "heads_artifact_id")
                     if value.get(name) is not None)
             for artifact in artifacts:
                 copy_artifact(self.source, self.target, artifact, scratch=self.root,

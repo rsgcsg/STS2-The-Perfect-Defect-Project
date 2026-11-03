@@ -237,3 +237,57 @@ def test_completed_read_collection_runs_off_owner_and_keeps_FIFO(monkeypatch):
     assert all(thread != owner for _, thread in decoded)
     learner.reader.shutdown()
     learner.read_completion.shutdown()
+
+
+@pytest.mark.parametrize('kind', ['segment', 'heads'])
+def test_RL4_record_is_not_preserved_before_its_exact_artifact_dependencies(
+        tmp_path, kind):
+    from test_rl_segment_store import fixture
+
+    from spireagent.workbench.managed_segment_store import publish_segment, read_segment
+    from spireagent.workbench.rl_segment_producer import OriginalBarrier, SegmentAssembler
+
+    exchange, mu, run, trace, rows = fixture(tmp_path, 1)
+    segments = []
+
+    def commit(segment, originals):
+        manifest = publish_segment(exchange.store, segment, PRODUCER, originals=originals)
+        record = {key: segment[key] for key in ('segment_id', 'run_id', 'rows', 'mu')}
+        record['segment_artifact_id'] = manifest.artifact_id
+        exchange.publish_segment('actor', 0, record)
+        segments.append((segment, manifest))
+        return {'segment_artifact_id': manifest.artifact_id}
+
+    assembler = SegmentAssembler({'behavior_policy': {'temperature': 1.0, 'uniform_mix': 0.0}},
+                                 OriginalBarrier(run, trace), commit)
+    assembler.transition(rows[0])
+    assembler.finish(None)
+    assembler.close()
+    if kind == 'segment':
+        key = exchange.shard_keys()[0]
+    else:
+        exchange.publish_model({'run': exchange.run, **mu})
+        key = f'{exchange.prefix}models/000000.json'
+    target = {'kind': 'local', 'directory': str(tmp_path / 'R2-transport-fixture')}
+    archive = Archive(Path(exchange.binding['directory']), target)
+    # No manifest outbox worker exists. Only the normal record copy may copy
+    # dependencies; independently archived manifests cannot hide a missing edge.
+    original_put = archive.target.blobs.put_if_absent
+
+    def verify_dependencies_before_record(record_key, raw):
+        if record_key == key:
+            if kind == 'segment':
+                assert read_segment(archive.target, segments[0][1].artifact_id,
+                                    scratch=tmp_path) == segments[0][0]
+            else:
+                head = archive.target.get_manifest(mu['heads_artifact_id'])
+                assert (archive.target.bytes(head.payload('checkpoint'))
+                        == b'synthetic heads fixture')
+        return original_put(record_key, raw)
+
+    archive.target.blobs.put_if_absent = verify_dependencies_before_record
+    raw = exchange.blobs.get(key)
+    identity = archive.offer(key, raw, start=False)
+    archive._copy(identity)
+    assert archive.target.blobs.get(key) == raw
+    assert archive.status()['full_readback']
