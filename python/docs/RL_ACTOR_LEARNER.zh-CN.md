@@ -9,7 +9,8 @@
 
 - **短段交付 requires**：Runtime 原语义状态机确认的 completed directive 与真实 successor、
   Agent 实际 μ/完整概率、原件 fsync 屏障。**provides**：最多64行、单一 μ 的不可变
-  `stpd/p1-trajectory-segment-1`，走原 Store analysis artifact 和 Exchange shard 键。
+  `stpd/p1-trajectory-segment-2`，走原 Store analysis artifact 和 Exchange shard 键。
+  原schema1仅继续读取；schema2保留原件/trajectory，并增加`compiled_inputs` payload。
   未确认动作不入段；未知前已确认前缀可学。自然终局尾段等正常 typed 原件核验才准入。
   同一artifact还含正常archive_bundle原始块：核验时的manifest实际字节、agent manifest、
   adapter attestation、本段immutable source文件和journal/μ-trace增量。previous父引用串成
@@ -29,6 +30,72 @@
   μ 和辅助池引用及实际使用次数。成功优化后的计数、游标与数据集结束状态先完整提交，
   日志/TensorBoard失败不得使CP带旧游标。**provides**：正常 `checkpoint` artifact 和只追加
   checkpoint record；空目录经 Store 递归取回，不重算冻结目标，不重发原 World/动作。
+  恢复还须同run的原Exchange输入日志/索引；只有CP artifact不代表已经取回消费日志。
+
+## 已接收输入与容量的恢复
+
+原Exchange以`spireagent/rl-segment-input-1`追加记录episode_open、begin许可、commit和
+episode_end。每项先经原Store落盘，原输入、原响应和前项artifact绑定为同一个run_event；
+顺序键与请求key只是同一事实的两个索引。CP在同一把状态锁下保存`input_sequence/input_head`
+及队列、预留、池和学习状态。恢复核CP head，再只读取该位置之后的输入，按原顺序应用；
+CP后的已ACK输入不靠reservation cursor或当前池是否仍有该项猜测。
+
+begin的key包含actor、episode与previous_lease；commit含原segment_id，关闭含原episode。
+连接ID、request_id和时间不进入key。丢控制回包只在原服务查询收据：已接收则返回原响应，
+明确未接收才以同key/原输入再交一次。score和游戏动作从不自动重发。终局producer在RPC前
+持久化原end输入；恢复只检查已有grant的准确segment键与活动episode的准确end键。
+终局及HP标签须与原末段的terminal和verified successor公开HP一致，全部校验后才入池。
+
+不确定日志写入、部分应用或发现另一个写入者时，当前learner停止接收并禁止新CP，
+写明确失败summary后退出；保留最后一致CP和原输入。旧版无输入位置的CP只允许从已闭合
+（无活动episode/lease）的原owner显式迁移，并将该CP绑定为新日志的anchor。
+发布号与CP序号续原Exchange高水位；SGD/使用次数和冻结游标仍恢复CP值。
+重放既有ACK可暂时产生超过正常行容量的待处理量；这些行照留，新grant继续受原容量限制。
+
+R2复制仍走原Archive outbox。只有learner启动本地容量观察线程，周期读取全root的pending
+元数据与文件系统空闲量，RPC读取缓存，不等R2或递归warmup历史。缺省未归档估算4GiB、
+最低空闲20GiB，分别可配`segments.archive_pending_bytes/archive_min_free_bytes`；
+估算按pending manifest自身payload的两倍加记录字节计，已归档父项不重复计。
+超过阈值、观察过期或本地计数出错只暂停新episode/grant；现有commit/end/Stop仍通。
+Actor开新World前等待该临时背压，受原Stop/总deadline约束，恢复后继续。
+这些操作阈值及观察周期`archive_poll_seconds`可显式迁移，不改变学习目标。
+同一artifact的manifest、输入顺序索引与请求key索引复用原manifest outbox的完整读回收据；
+外层Exchange记录仍在依赖完成后发布并核字节，不为每个索引重复流式读回同一payload。
+Actor的`archive_incomplete`仍表示本次收尾未完成，原退出状态保留；可由原共享Archive
+继续保全并追加新读回收据，不重开World，也不把后来读回改写为原作业成功。
+
+跨空Store恢复先用原Archive的`seed_exchange(run)`取回同run日志与索引，再以准确CP启动
+正常learner；缺CP head对应原记录会在开放服务前明确拒绝。此seed会列取原Exchange历史，
+日志消费只读tail；不能把仅tail回放的速度当完整R2空Store恢复耗时。
+
+## 公开输入只编译一次与准备重叠
+
+Actor用冻结词表的`FrameCompiler`将公开观察编为`stpd/p1-compiled-frame-1`；
+只带非学习TensorFrame，不装M-std权重，不改变P1 r1.9公开信息或合法catalog。
+同一实际选择的编码用于`stpd/rl-inference-2`请求、μ trace和原段的compiled payload；
+中央推理与learner核观察/catalog/hash、词表/InputSpec和编译身份后只解码。
+非终局段末bootstrap需额外编码一次boundary，不声称跨段/进程共享缓存。
+推理attachment明确选择旧公开输入协议或新compiled协议；身份不符直接拒绝。
+
+`segments.input_compiler_identity`冻结**实际Actor CPU环境**的编译身份；GPU只用这份
+显式身份解码，不能把CPU/GPU Torch构建号当作相同。新run启用后，后续新段必须带编码。
+旧CP的原schema1段在开GPU前显式做CPU准备：枚举pending、active.segments、两个辅助池
+及active辅助引用的全部segment，调用`stpd.rl.segment_inputs.publish_input_pack`，
+传入原CP、原词表、正常`read_segment`、Store和本轮Producer。返回正常`feature_set`索引，
+每项的父artifact/hash仍绑定原segment，索引父项绑定原CP；不改原段、样本用途或uses。
+将其ID填`segments.input_pack_artifact_id`。缺少原段或身份不符会明确失败，GPU不临时重编译。
+准备后经原Archive保全并读回；同run源码迁移仍须显式`resume_source`。已有冻结目标不重算。
+
+`segments.prepare_ahead=true`仅启用一个CPU reader。learner封好当前数据集后，
+reader预读/解码下一份候选；这些行仍在原queue计容量，直到原dataset接口按完全相同的
+成员晋升。预读不抽辅助样本、不推进随机数/first-use/uses，也不冻结下一批目标。
+Future和CPU缓存不进CP；恢复从原成员重建。关闭时等待并关闭reader，读取异常按原owner失败。
+
+`segments.inference_stream=true`是显式CUDA选项：不可变μ在高优先独立stream评分，
+θ仍走训练stream。模型发布就绪事件、缓存就绪事件与`record_stream`保护跨stream数据；
+请求结束只同步自身stream，μ退休和评分共用原推理锁。CPU请求该选项会拒绝；
+默认false继续使用原串行路径。启用后的实际数值、延迟和训练重叠必须在真实GPU验，
+CPU测试跳过不能代替。以上四项是显式操作配置，恢复不改成员、标签、目标和计数。
 
 ## 数据集与数值
 
@@ -142,6 +209,8 @@ Actor 收到正常 AgentClose 后沿 Runtime/Host 原 Stop/Cleanup，计 censore
 各头梯度。原 Exchange learner-events 与 TensorBoard 路径复用；CP时关闭上传 event 文件。
 请求全程延迟/批大小在 Agent μ journal；推理端 batch histogram、时间和有界文本缓存在summary。
 GPU忙闲/CPU占用须来自实际 profile/采样，不能用源码或 forward 时间代算。
+summary的`timing`分开记录等数据、读/解码、消费等待、与optimizer重叠及target/aux时间；
+更新的`first_use_age_samples_seconds`可汇总同窗口真实分位数，不平均每批P95。
 
 以下保留旧 RL1–RL3 操作史，仅用于解释旧原件/配置；旧 live 命令不再受支持。
 

@@ -7,6 +7,7 @@ encoding on the same Store/Exchange, without a game loop or legality engine.
 
 from __future__ import annotations
 
+import copy
 import gzip
 import hashlib
 import io
@@ -20,6 +21,8 @@ from spireagent.storage.store import ManifestArtifactStore
 from stpd.p1.data import digest
 from stpd.p1.data import json_bytes as p1_json_bytes
 from stpd.p1.trajectory import validate_behavior
+from stpd.rl.segment_inputs import TRAJECTORY_SCHEMA as COMPILED_SCHEMA
+from stpd.rl.segment_inputs import segment_body, validate_body
 
 SCHEMA = "stpd/p1-trajectory-segment-1"
 MAX_BYTES = 64 * 1024**2
@@ -53,7 +56,7 @@ def _parents(store: ManifestArtifactStore, segment: dict[str, Any]) -> tuple[Par
         info = parent.parameters.value()
         if (
             parent.kind != "analysis"
-            or info.get("schema") != SCHEMA
+            or info.get("schema") not in {SCHEMA, COMPILED_SCHEMA}
             or info.get("run_id") != segment["run_id"]
             or info.get("end_step") != segment["steps"][0]["step_index"] - 1
         ):
@@ -80,7 +83,7 @@ def validate_segment(value: dict[str, Any]) -> None:
     steps = value.get("steps")
     mu = value.get("mu") or {}
     if (
-        value.get("schema") != SCHEMA
+        value.get("schema") not in {SCHEMA, COMPILED_SCHEMA}
         or not isinstance(steps, list)
         or not 1 <= len(steps) <= 64
         or value.get("rows") != len(steps)
@@ -92,6 +95,8 @@ def validate_segment(value: dict[str, Any]) -> None:
         or not isinstance(value.get("original_commit"), dict)
     ):
         raise BoundaryError("trajectory_segment", "invalid_segment")
+    if value["schema"] == COMPILED_SCHEMA:
+        validate_body(segment_body(value), value, value["compiler_identity"])
     original = value["original_commit"]
     if (
         original.get("run_id") != value["run_id"]
@@ -168,7 +173,19 @@ def publish_segment(
     store: ManifestArtifactStore, segment: dict[str, Any], producer: Producer, *, originals: bytes
 ) -> Manifest:
     validate_segment(segment)
-    raw = json_bytes(segment)
+    trajectory = segment
+    compiled_payload = None
+    if segment["schema"] == COMPILED_SCHEMA:
+        compiled = json_bytes(segment_body(segment))
+        if len(compiled) > MAX_BYTES:
+            raise BoundaryError("trajectory_segment", "compiled_segment_byte_limit")
+        compiled_payload = store.put_bytes("compiled_inputs", gzip.compress(
+            compiled, compresslevel=1, mtime=0), "application/gzip")
+        trajectory = copy.deepcopy(segment)
+        for step in trajectory["steps"]:
+            step["behavior"].pop("compiled_input")
+        trajectory.pop("compiled_boundary")
+    raw = json_bytes(trajectory)
     if len(raw) > MAX_BYTES:
         raise BoundaryError("trajectory_segment", "segment_byte_limit")
     parents = _parents(store, segment)
@@ -193,10 +210,11 @@ def publish_segment(
         "analysis",
         producer,
         parents=parents,
-        payloads=tuple(sorted((payload, original_payload))),
+        payloads=tuple(sorted((payload, original_payload) + (
+            (compiled_payload,) if compiled_payload is not None else ()))),
         parameters=FrozenObject.of(
             {
-                "schema": SCHEMA,
+                "schema": segment["schema"],
                 "run_id": segment["run_id"],
                 "segment_id": segment["segment_id"],
                 "rows": len(segment["steps"]),
@@ -221,10 +239,10 @@ def read_segment(
     info = manifest.parameters.value()
     if (
         manifest.kind != "analysis"
-        or info.get("schema") != SCHEMA
+        or info.get("schema") not in {SCHEMA, COMPILED_SCHEMA}
         or type(info.get("decoded_bytes")) is not int
         or not 0 < info["decoded_bytes"] <= MAX_BYTES
-        or len(manifest.payloads) != 2
+        or len(manifest.payloads) != (3 if info.get("schema") == COMPILED_SCHEMA else 2)
     ):
         raise BoundaryError("trajectory_segment", "invalid_segment_manifest")
     with tempfile.TemporaryDirectory(prefix="segment-read-", dir=scratch) as directory:
@@ -234,6 +252,23 @@ def read_segment(
     if len(raw) != info["decoded_bytes"] or hashlib.sha256(raw).hexdigest() != info["sha256"]:
         raise BoundaryError("trajectory_segment", "segment_integrity_failure")
     value: dict[str, Any] = json.loads(raw)
+    if info["schema"] == COMPILED_SCHEMA:
+        import io
+
+        compressed = store.bytes(manifest.payload("compiled_inputs"), maximum=MAX_BYTES)
+        with gzip.GzipFile(fileobj=io.BytesIO(compressed)) as stream:
+            compiled = stream.read(MAX_BYTES + 1)
+        if len(compiled) > MAX_BYTES:
+            raise BoundaryError("trajectory_segment", "compiled_segment_byte_limit")
+        body = json.loads(compiled)
+        if (body.get("compiler_identity") != value.get("compiler_identity")
+                or len(body.get("current", [])) != len(value["steps"])):
+            raise BoundaryError("trajectory_segment", "compiled_segment_binding_changed")
+        for step, wire in zip(value["steps"], body["current"], strict=True):
+            step["behavior"]["compiled_input"] = wire
+        value["compiled_boundary"] = body["boundary"]
+    if value.get("schema") != info["schema"]:
+        raise BoundaryError("trajectory_segment", "segment_encoding_changed")
     validate_segment(value)
     if manifest.parents != _parents(store, value):
         raise BoundaryError("trajectory_segment", "segment_parent_binding_changed")

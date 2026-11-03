@@ -10,6 +10,12 @@ Friday CPU节点继续跑原Managed Actor；单张本卡批准的A30/A100常驻�
 收尾先停新段、等现有段、CP/R2读回后释放；数组快照因时限中断时只用原 `rl.py save`，不再打局。
 短段unknown只结束该局、保留已验证前缀，不默认按比例停整个Actor；
 背压调用预算、已闭episode回收与同CP操作参数迁移见原接口手册，不靠修改运行中JSON生效。
+部署前冻结同一源码与Actor CPU compiler身份；旧CP先在CPU按原Store生成compiled-input pack，
+完整保全/读回后再申请GPU。新的CPU reader与独立推理stream操作字段及失败恢复见
+[公开输入准备](RL_ACTOR_LEARNER.zh-CN.md#公开输入只编译一次与准备重叠)。不改运行中的源码/配置。
+GPU关闭后可由CPU完成Archive与冷Store预取；非零CUDA RNG的最终替换恢复仍须真实CUDA进程，
+CPU不能代存成无CUDA RNG的新CP。先seed原Exchange，再按需取CP及受保护μ的payload，
+不为恢复递归复制全部warmup祖先。所有GPU初始化/收尾仍计本卡总预算。
 第一小时外是否继续以当前用户预算为准，本SOP不授权。
 
 ## 以下为旧部署操作史

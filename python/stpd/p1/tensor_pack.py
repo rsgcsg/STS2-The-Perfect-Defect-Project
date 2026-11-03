@@ -29,7 +29,8 @@ from .value_targets import from_run_facts
 from .weighting import point_weights
 
 SCHEMA = "stpd/p1-mstd-tensor-pack-1"
-CODE_FILES = ("tensor_pack.py", "tensor_input.py", "model.py", "input.py", "input_order.py",
+CODE_FILES = ("tensor_pack.py", "tensor_input.py", "model.py", "input_encoding.py",
+              "input.py", "input_order.py",
               "input_identity.py", "vocabulary.py", "public_vocabulary_v1.json", "dataset.py",
               "data.py", "value_targets.py", "weighting.py", "cohort.py", "spec.py", "execution.py")
 SHARD_POINTS = 128

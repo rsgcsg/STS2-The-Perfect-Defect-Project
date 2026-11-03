@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import shutil
 import sys
 import threading
 import time
@@ -48,6 +49,10 @@ class Archive:
         self.owned_done: set[str] = set()
         self.verified_at: float | None = None
         self.last_error: dict[str, Any] | None = None
+        self.capacity_snapshot: dict[str, Any] | None = None
+        self.capacity_stop = threading.Event()
+        self.capacity_thread: threading.Thread | None = None
+        self.capacity_interval = 2.0
 
     def offer(self, key: str, raw: bytes, *, start: bool = True) -> str:
         safe_key(key)
@@ -67,6 +72,71 @@ class Archive:
                 self.thread.start()
         self.wake.set()
         return identity
+
+    def _refresh_capacity(self) -> None:
+        """Local outbox metadata only; never wait for R2 or recurse model ancestry."""
+        try:
+            count = size = 0
+            for key in self.queue.keys("pending/"):
+                identity = Path(key).stem
+                if (self.queue.root / "completed" / f"{identity}.json").is_file():
+                    continue
+                try:
+                    task = json.loads(self.queue.get(key))
+                except StoreError as error:
+                    if error.code == "object_not_found":
+                        continue  # Another archive worker completed this intent.
+                    raise
+                raw = self.source.blobs.get(task["key"])
+                size += len(raw)
+                if task["key"].startswith("manifests/"):
+                    manifest = Manifest.from_bytes(raw)
+                    # Conservative CAS/temporary-copy allowance. Parents have
+                    # their own intents; don't repeatedly count warmup ancestry.
+                    size += 2 * sum(payload.size for payload in manifest.payloads)
+                count += 1
+            snapshot: dict[str, Any] = {"pending": count, "pending_bytes_estimate": size,
+                        "free_bytes": shutil.disk_usage(self.root).free,
+                        "verified_at": time.time(), "checked_monotonic": time.monotonic(),
+                        "error": None}
+        except Exception as error:  # noqa: BLE001 -- stale/error state pauses new leases
+            snapshot = {"verified_at": time.time(), "checked_monotonic": time.monotonic(),
+                        "error": type(error).__name__}
+        with self.lock:
+            self.capacity_snapshot = snapshot
+
+    def start_capacity_monitor(self, interval: float = 2) -> None:
+        if not 0.01 <= interval <= 30:
+            raise ValueError("invalid_archive_capacity_interval")
+        if self.capacity_thread is not None:
+            raise StoreError("archive_capacity_monitor_already_owned")
+        self.capacity_interval = interval
+        self.capacity_stop.clear()
+        self._refresh_capacity()
+
+        def monitor() -> None:
+            while not self.capacity_stop.wait(interval):
+                self._refresh_capacity()
+
+        self.capacity_thread = threading.Thread(target=monitor,
+            name="shared-store-capacity", daemon=True)
+        self.capacity_thread.start()
+
+    def stop_capacity_monitor(self) -> None:
+        self.capacity_stop.set()
+        if self.capacity_thread:
+            self.capacity_thread.join(timeout=self.capacity_interval + 1)
+            if self.capacity_thread.is_alive():
+                raise StoreError("archive_capacity_monitor_close_pending")
+            self.capacity_thread = None
+
+    def capacity_status(self) -> dict[str, Any]:
+        with self.lock:
+            value = dict(self.capacity_snapshot or {})
+        age = (time.monotonic() - value["checked_monotonic"]
+               if "checked_monotonic" in value else None)
+        return {**value, "age_seconds": age,
+                "fresh": age is not None and age <= max(1, 3 * self.capacity_interval)}
 
     def _copy(self, identity: str) -> None:
         receipt_key = f"completed/{identity}.json"
@@ -90,11 +160,20 @@ class Archive:
                 value = json.loads(raw)
                 artifacts.extend(value[name] for name in (
                     "model_artifact_id", "checkpoint_artifact_id", "shard_artifact_id",
-                    "segment_artifact_id", "heads_artifact_id")
+                    "segment_artifact_id", "heads_artifact_id", "input_artifact_id")
                     if value.get(name) is not None)
             for artifact in artifacts:
-                copy_artifact(self.source, self.target, artifact, scratch=self.root,
-                              reuse_published_parents=True)
+                if key.startswith("manifests/"):
+                    copy_artifact(self.source, self.target, artifact, scratch=self.root,
+                                  reuse_published_parents=True)
+                else:
+                    # Exchange indexes name the same immutable artifact. Reuse
+                    # its original manifest intent/readback receipt, rather than
+                    # streaming the same payload again for every record/index.
+                    manifest = self.source.get_manifest(artifact)
+                    dependency = self.offer(f"manifests/{artifact}.json",
+                                            manifest.to_bytes(), start=False)
+                    self._copy(dependency)
             self.target.blobs.put_if_absent(key, raw)
             if self.target.blobs.get(key) != raw:
                 raise StoreError("archive_record_readback_changed")

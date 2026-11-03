@@ -6,15 +6,22 @@ and scene padding still follows the original microbatch, preserving dropout.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, cast
+from typing import Any, Protocol, cast
 
 import torch
 from torch import Tensor
 
 from .input import Frame, Role, signed_log
 
-if TYPE_CHECKING:
-    from .model import MStd
+
+class FrameEncoding(Protocol):
+    """The parameter-free subset used by compilation, also supplied by MStd."""
+
+    vocabulary: dict[str, Any]
+
+    def index(self, table: str, value: str) -> int: ...
+
+    def tokenize(self, text: str) -> tuple[list[int], list[float]]: ...
 
 
 @dataclass(frozen=True)
@@ -155,7 +162,7 @@ def joint_nodes(frames: list[TensorFrame]) -> JointNodes:
     return JointNodes(tensors, reductions)
 
 
-def compile_frame(frame: Frame, model: MStd) -> TensorFrame:
+def compile_frame(frame: Frame, model: FrameEncoding) -> TensorFrame:
     from .input import is_v2_encoding
 
     if not is_v2_encoding(model.vocabulary.get("input_spec")):

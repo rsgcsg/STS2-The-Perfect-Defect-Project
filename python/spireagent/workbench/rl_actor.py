@@ -160,6 +160,7 @@ class Actor:
         self.games: list[dict[str, Any]] = []
         self.signalled: int | None = None
         self.segment_stop_reason: str | None = None
+        self.run_deadline: float | None = None
         self.service = None
         if self.segment_mode:
             from stpd.p1.local_inference import SegmentConnection
@@ -167,6 +168,18 @@ class Actor:
             self.service = SegmentConnection(self.config["segments"]["inference"])
 
     def _stop_before_offer(self) -> bool:
+        while True:
+            if self._stop_or_ready_before_offer():
+                return True
+            if self.service is None or not getattr(self, "archive_paused", False):
+                return False
+            deadline = getattr(self, "run_deadline", None)
+            if deadline is not None and time.monotonic() + 60 >= deadline:
+                self.segment_stop_reason = "actor_wall_limit_before_offer"
+                return True
+            time.sleep(1)
+
+    def _stop_or_ready_before_offer(self) -> bool:
         if self.signalled is not None or (self.work/"STOP").exists():
             return True
         if self.segment_stop_reason:
@@ -181,6 +194,7 @@ class Actor:
             else:
                 if not state["accepting_new_segments"]:
                     self.segment_stop_reason = "learner_segment_budget_complete"
+                self.archive_paused = not state.get("archive_capacity", {"ready": True})["ready"]
         return self.segment_stop_reason is not None
 
     def _signal(self, number: int, _frame: Any) -> None:
@@ -299,6 +313,7 @@ class Actor:
         began = time.monotonic()
         cpu_began = _cpu_seconds()
         deadline = began + self.config["wall_seconds"]
+        self.run_deadline = deadline
         episode_seconds = self.config["episode_seconds"]
         if self.segment_mode:
             self.prefetch.refresh()  # Download the registration package only once.

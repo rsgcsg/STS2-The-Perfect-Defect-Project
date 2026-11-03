@@ -25,6 +25,7 @@ from spireagent.workbench.managed_segment_store import publish_segment, read_seg
 from spireagent.workbench.rl_segment_producer import OriginalBarrier, SegmentAssembler
 from stpd.evaluation.suites import derive_game_seed
 from stpd.p1.export import export_model, input_spec, runtime_projection
+from stpd.p1.frame_compiler import FrameCompiler
 from stpd.p1.local_inference import SegmentConnection, SegmentInferenceClient
 from stpd.p1.model import MStd
 from stpd.p1.vocabulary import public_vocabulary
@@ -104,7 +105,8 @@ def configuration(tmp_path, monkeypatch):
     return config, SegmentLearnerIO(read_segment, publish_detached_p1_model)
 
 
-def deliver(learner, tmp_path, actor, monkeypatch, *, battle=False):
+def deliver(learner, tmp_path, actor, monkeypatch, *, battle=False,
+            connection_type=SegmentConnection, natural=False, end_transform=None, compiled=False):
     errors = []
     actual_control = learner.pool.control
 
@@ -126,7 +128,7 @@ def deliver(learner, tmp_path, actor, monkeypatch, *, battle=False):
     projection = runtime_projection(learner.model.vocabulary)
     spec = input_spec(learner.model.vocabulary, projection)
     client = SegmentInferenceClient(attachment, projection, trace)
-    control = SegmentConnection(attachment)
+    control = connection_type(attachment)
     assert control.request("episode_open", actor=actor, episode=episode)["admitted"]
     inputs = []
     count = 4 if battle else 2
@@ -137,11 +139,13 @@ def deliver(learner, tmp_path, actor, monkeypatch, *, battle=False):
         observation["run"] = {"content": {"floor": 3}}
         if battle:
             observation["combat"] = {
-                "availability": "available" if index < count else "unavailable"
+                "availability": "available" if index < count or natural else "unavailable"
             }
             if index == count:
-                observation["scene"] = {"native_kind": "reward_card"}
+                observation["scene"] = {"native_kind": "game_over" if natural else "reward_card"}
                 observation["player"] = {"content": {"hp": 57}}
+        if natural and index == count:
+            observation["status"] = "terminal"
         inputs.append(
             {
                 "acquisition_id": f"{actor}-{index}",
@@ -197,6 +201,7 @@ def deliver(learner, tmp_path, actor, monkeypatch, *, battle=False):
         OriginalBarrier(directory, trace),
         commit,
         step_limit=2,
+        compiler=FrameCompiler(learner.model.vocabulary) if compiled else None,
     )
     try:
         for index in range(count):
@@ -220,18 +225,26 @@ def deliver(learner, tmp_path, actor, monkeypatch, *, battle=False):
                     "original_paths": ["global-source.json"],
                 }
             )
-        assert (
-            control.request(
-                "episode_end",
-                actor=actor,
-                episode=episode,
-                run_id=episode,
-                terminal=None,
-                outcome_states=[],
-                hp_battles=[],
-            )["run_id"]
-            == episode
-        )
+        end = {"actor": actor, "episode": episode, "run_id": episode,
+               "terminal": None, "outcome_states": [], "hp_battles": []}
+        if natural:
+            from stpd.rl.heads import class_reward_values
+
+            terminal = {"class": 3, "reward": float(class_reward_values()[3]),
+                        "typed_original": "a" * 64}
+            assembler.finish(terminal)
+            states = [{"segment_artifact_id": record["segment_artifact_id"], "row": i,
+                       "key": f"{episode}:{index * 2 + i}"}
+                      for index, record in enumerate(records) for i in range(record["rows"])]
+            end.update(terminal=terminal, segments=assembler.committed,
+                       outcome_states=[{**state, "outcome": 3} for state in states])
+            if battle:
+                end["hp_battles"] = [{"battle_id": f"{episode}:0", "post_hp": 57,
+                    "post_observation_index": count,
+                    "states": [{**state, "hp": .57} for state in states]}]
+        if end_transform is not None:
+            end_transform(end)
+        assert control.request("episode_end", **end)["run_id"] == episode
     finally:
         control.close()
         assembler.close()
@@ -242,7 +255,18 @@ def cleanup(learner):
     learner._collect_publication(wait=True)
     learner.pool.close()
     learner.publisher.shutdown(wait=True)
+    learner.input_preparer.shutdown(wait=True, cancel_futures=True)
     learner.checkpoints.__exit__(None)
+    if learner.archive is not None:
+        learner.archive.stop_capacity_monitor()
+
+
+def copy_input_exchange(original, replica):
+    # A CP is consumer state; the unchanged Exchange input log/index is the
+    # other half of recovery. Cloud paths use Archive.seed_exchange instead.
+    for prefix in ("inputs/", "input-keys/"):
+        for key in original.exchange.blobs.keys(original.exchange.prefix + prefix):
+            replica.blobs.put_if_absent(key, original.exchange.blobs.get(key))
 
 
 def test_battle_hp_arrives_across_segments_before_natural_episode_end(tmp_path, monkeypatch):
@@ -321,6 +345,7 @@ def test_real_delivery_sgd_and_mid_dataset_restore_keep_frozen_targets_and_count
             scratch=tmp_path,
         )
         replica.publish_model(original.exchange.model(0))
+        copy_input_exchange(original, replica)
         restored = SegmentLearner(
             replace(config, peer=replica_peer,
                     performance=replace(config.performance, microbatch_size=4),
@@ -466,6 +491,7 @@ def test_cold_restore_loads_three_mu_snapshots_without_republishing_latest(
                       checkpoint["checkpoint_artifact_id"], scratch=tmp_path)
         for version in (0, 1, 2):
             replica.publish_model(original.exchange.model(version))
+        copy_input_exchange(original, replica)
         restored = SegmentLearner(
             replace(config, peer=replica_peer,
                     resume_checkpoint=checkpoint["checkpoint_artifact_id"]),
@@ -500,12 +526,15 @@ def test_ended_episode_cancels_waiting_begin_without_an_orphan_reservation(
     assert control.request("episode_open", actor="actor", episode="episode")["admitted"]
     # Per-dataset episode_rows is not an admission cap: fill the actual unified
     # capacity, then keep one real begin waiting across episode_end.
+    previous = None
     for _ in range(config.segments.capacity_rows // config.segments.steps):
-        control.request("begin", actor="actor", episode="episode")
+        previous = control.request("begin", actor="actor", episode="episode",
+                                   previous_lease=previous)["lease"]
 
     def request():
         try:
-            answers.append(waiting_client.request("begin", actor="actor", episode="episode"))
+            answers.append(waiting_client.request("begin", actor="actor", episode="episode",
+                                                   previous_lease=previous))
         except Exception as error:
             errors.append(error)
 
@@ -519,7 +548,8 @@ def test_ended_episode_cancels_waiting_begin_without_an_orphan_reservation(
         assert not thread.is_alive() and not errors and answers == [{"stopped": True}]
         assert not learner.actor_episodes and not learner.queue.leases
         assert not learner.lease_owners
-        assert control.request("begin", actor="actor", episode="episode") == {"stopped": True}
+        assert control.request("begin", actor="actor", episode="episode",
+                               previous_lease=previous) == {"stopped": True}
         assert not learner.actor_episodes and not learner.queue.leases
     finally:
         with learner.condition:
@@ -554,6 +584,7 @@ def test_cold_restore_releases_only_closed_episode_reservations(tmp_path, monkey
         copy_artifact(original.exchange.store, replica.store,
                       checkpoint["checkpoint_artifact_id"], scratch=tmp_path)
         replica.publish_model(original.exchange.model(0))
+        copy_input_exchange(original, replica)
         restored = SegmentLearner(
             replace(config, peer=replica_peer,
                     segments=replace(config.segments, diagnostics_every=64),
@@ -609,6 +640,7 @@ def test_telemetry_failure_cold_restore_keeps_complete_learning_transition(
                       checkpoint['checkpoint_artifact_id'], scratch=tmp_path)
         for identity in original.pool.snapshots.values():
             cold.publish_model(original.exchange.model(identity["version"]))
+        copy_input_exchange(original, cold)
         restored = SegmentLearner(replace(config, peer=cold_peer,
             resume_checkpoint=checkpoint['checkpoint_artifact_id'], republish_on_resume=False),
             tmp_path / 'telemetry-empty-work', io)
