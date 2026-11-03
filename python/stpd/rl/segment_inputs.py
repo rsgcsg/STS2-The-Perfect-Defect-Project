@@ -130,6 +130,7 @@ class SegmentInputs:
     Artifact IDs, compiler identity and pack membership are immutable in this
     owner. Retain only compact verified input bytes, never trajectories, decoded
     tensors, auxiliary labels or training state. A replacement reader is cold.
+    The bound covers LRU residency, excluding cold-fill/decode temporaries.
     """
 
     def __init__(self, store: ManifestArtifactStore, vocabulary: dict[str, Any],
@@ -141,6 +142,7 @@ class SegmentInputs:
         self._limit = cache_bytes
         self._lock = threading.RLock()
         self._cache: OrderedDict[str, _VerifiedInputs] = OrderedDict()
+        self._empty_cache_bytes = sys.getsizeof(self._cache)
         self._bytes = self._hits = self._misses = self._evictions = 0
         self.compiler = FrameCompiler(vocabulary)
         local = self.compiler.identity
@@ -210,20 +212,28 @@ class SegmentInputs:
             boundary = (_verified_row(segment["steps"][-1]["successor"], body["boundary"], None)
                         if segment["terminal"] is None else None)
             # Count actual retained bytes and tuples, plus a conservative bound
-            # for the key, entry object and OrderedDict bookkeeping, as in the
-            # existing text cache. No views can retain an uncounted large owner.
+            # for the key and entry object, as in the existing text cache. The
+            # OrderedDict's actual allocated table is counted separately below.
+            # No views can retain an uncounted large owner.
             size = (sum(sys.getsizeof(raw) for raw in current) + sys.getsizeof(current)
                     + (sys.getsizeof(boundary) if boundary is not None else 0)
                     + sys.getsizeof(artifact_id) + 512)
             found = _VerifiedInputs(current, boundary, size)
             if size <= self._limit:
-                while self._cache and self._bytes + size > self._limit:
+                self._cache[artifact_id] = found
+                self._bytes += size
+                while self._cache and self._accounted_bytes() > self._limit:
                     _, removed = self._cache.popitem(last=False)
                     self._bytes -= removed.size
                     self._evictions += 1
-                self._cache[artifact_id] = found
-                self._bytes += size
+                if not self._cache:
+                    self._cache.clear()  # Release any retained high-water table.
             return found
+
+    def _accounted_bytes(self) -> int:
+        # The reader's fixed empty container exists even when caching is off.
+        # Count all variable table capacity, including capacity after eviction.
+        return self._bytes + sys.getsizeof(self._cache) - self._empty_cache_bytes
 
     def _decode(self, row: dict[str, Any]) -> TensorFrame:
         frame = self.compiler.decode(row["wire"], expected_identity=self.identity,
@@ -251,7 +261,7 @@ class SegmentInputs:
 
     def cache_report(self) -> dict[str, int]:
         with self._lock:
-            return {"limit_bytes": self._limit, "accounted_bytes": self._bytes,
+            return {"limit_bytes": self._limit, "accounted_bytes": self._accounted_bytes(),
                     "segments": len(self._cache), "hits": self._hits, "misses": self._misses,
                     "evictions": self._evictions}
 

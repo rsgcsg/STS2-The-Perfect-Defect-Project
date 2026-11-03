@@ -91,6 +91,7 @@ Actor用冻结词表的`FrameCompiler`将公开观察编为`stpd/p1-compiled-fra
 不保留整段trajectory或解码TensorFrame。terminal/HP和后续数据集按原引用重新解码所选行、
 新建辅助样本，标签、成员、uses与随机数仍归原owner；主训练目标所需原trajectory仍正常读取。
 主线程和预读线程共用锁保护缓存；超限段不驻留，淘汰后重走原验证。缓存不进CP，替换恢复从冷读开始。
+此界只约束LRU驻留，不代表进程总RSS或锁外在途解码内存。
 
 `segments.prepare_ahead=true`仅启用一个CPU reader。learner封好当前数据集后，
 reader预读/解码下一份候选；这些行仍在原queue计容量，直到原dataset接口按完全相同的

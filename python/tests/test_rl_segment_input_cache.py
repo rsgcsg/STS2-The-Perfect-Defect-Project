@@ -1,6 +1,7 @@
 """Normal Store/pack consumers reuse only verified immutable CPU input bytes."""
 from __future__ import annotations
 
+import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
@@ -13,6 +14,7 @@ from test_rl_segment_learner import cleanup, configuration, deliver
 
 from spireagent.json_boundary import BoundaryError
 from spireagent.workbench.managed_segment_store import read_segment
+from stpd.rl import segment_inputs
 from stpd.rl.segment_inputs import SegmentInputs, publish_input_pack
 from stpd.rl.segment_learner import SegmentLearner
 
@@ -173,3 +175,40 @@ def test_cached_decode_still_checks_choices_against_original_catalog(inputs, tmp
     monkeypatch.setattr(reader.compiler, "decode", wrong_choices)
     with pytest.raises(BoundaryError, match="catalog_choice_binding_mismatch"):
         reader.auxiliary(artifact, 0, read_segment=read_segment, scratch=tmp_path)
+
+
+def test_container_high_water_capacity_is_counted_after_many_small_entries(
+        inputs, tmp_path, monkeypatch):
+    owner, records, make_reader = inputs
+    probe = make_reader()
+    if probe.entries:
+        pytest.skip("container allocation regression uses actor wire; old pack covered above")
+    source = owner.exchange.store.get_manifest(records[0]["segment_artifact_id"])
+    probe.auxiliary(source.artifact_id, 0, read_segment=read_segment, scratch=tmp_path)
+    small = probe.cache_report()["accounted_bytes"]
+    reader = make_reader(cache_bytes=small * 48)
+    for index in range(40):
+        # Distinct, normally verified manifests share an immutable fixture payload.
+        manifest = replace(source, producer=replace(PRODUCER, source_revision=f"{index:040x}"))
+        owner.exchange.store.publish(manifest)
+        reader.auxiliary(manifest.artifact_id, 0, read_segment=read_segment, scratch=tmp_path)
+    assert reader.cache_report()["segments"] == 40
+    high_water = sys.getsizeof(reader._cache)
+    original = segment_inputs._verified_row
+    sample = next(iter(probe._cache.values()))
+    row_count = len(sample.current) + int(sample.boundary is not None)
+    padding = (reader._limit - small - high_water - 1024) // row_count
+
+    def large_row(*args):
+        # Valid JSON whitespace creates real retained bytes of a larger row;
+        # source validation and the decoded mathematical input stay unchanged.
+        return original(*args) + b" " * padding
+
+    monkeypatch.setattr(segment_inputs, "_verified_row", large_row)
+    reader.auxiliary(source.artifact_id, 0, read_segment=read_segment, scratch=tmp_path)
+    report = reader.cache_report()
+    assert 0 < report["segments"] < 5
+    container = sys.getsizeof(reader._cache) - sys.getsizeof(type(reader._cache)())
+    retained = sum(entry.size for entry in reader._cache.values()) + container
+    assert report["accounted_bytes"] == retained
+    assert report["accounted_bytes"] <= report["limit_bytes"]
