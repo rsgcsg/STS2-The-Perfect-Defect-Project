@@ -423,3 +423,44 @@ def test_async_checkpoint_is_announced_while_idle_before_next_capture_interval(
     learner.run()
     assert announced_after_stop[0] is False
     assert learner.exchange.latest_checkpoint()["checkpoint_sequence"] == 2
+
+
+def test_cold_restore_loads_three_mu_snapshots_without_republishing_latest(
+    tmp_path, monkeypatch
+):
+    config, io = configuration(tmp_path, monkeypatch)
+    original = SegmentLearner(config, tmp_path / "three-mu-work", io)
+    restored = None
+    try:
+        # Distinct test-only weights create real publications, not SGD evidence.
+        # Keep all three protected versions as a live queued-data CP can do.
+        for version in (1, 2):
+            with torch.no_grad():
+                original.model.head[2].weight.add_(0.001 * version)
+            publication = original._publish_model(original._capture_model(), version, 0)
+            frozen = publication["model"]
+            original._configure_mu(frozen)
+            original.pool.publish(frozen, publication["identity"])
+            original.version = version
+        identities = copy.deepcopy(original.pool.snapshots)
+        latest = original.pool.latest
+        assert len(identities) == 3
+        original.checkpoint(final=True)
+        checkpoint = original.exchange.latest_checkpoint()
+        replica_peer = {"kind": "local", "directory": str(tmp_path / "three-mu-cold")}
+        replica = Exchange(replica_peer, config.run)
+        copy_artifact(original.exchange.store, replica.store,
+                      checkpoint["checkpoint_artifact_id"], scratch=tmp_path)
+        for version in (0, 1, 2):
+            replica.publish_model(original.exchange.model(version))
+        restored = SegmentLearner(
+            replace(config, peer=replica_peer,
+                    resume_checkpoint=checkpoint["checkpoint_artifact_id"]),
+            tmp_path / "three-mu-replacement", io)
+        assert restored.pool.snapshots == identities and restored.pool.latest == latest
+        assert restored.updates == original.updates == 0
+        assert restored.version == original.version == 2
+    finally:
+        cleanup(original)
+        if restored is not None:
+            cleanup(restored)
