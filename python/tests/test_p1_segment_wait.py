@@ -10,7 +10,8 @@ from stpd.p1.agent_driver import SCHEMA, serve_session
 
 
 @pytest.mark.parametrize('stop_waiting', [False, True])
-def test_acknowledged_capacity_wait_then_next_without_reconsume(stop_waiting):
+@pytest.mark.parametrize('keyed', [False, True])
+def test_acknowledged_capacity_wait_then_next_without_reconsume(stop_waiting, keyed):
     destination = io.StringIO()
     ready = stopped = False
     draws = []
@@ -55,18 +56,22 @@ def test_acknowledged_capacity_wait_then_next_without_reconsume(stop_waiting):
             assert directive['type'] == 'act'
             assert directive['basis_acquisition_id'] == value['acquisition_id']
             assert directive['selection']['action_id'] == 'second'
-            assert draws == [completion['consumption_id']]
+            assert draws == ([completion['consumption_id']] if keyed else [])
             yield message('next', 'repeat', input=next_input)
             assert last()['output']['directive'] == directive
-            assert draws == [completion['consumption_id']]
+            assert draws == ([completion['consumption_id']] if keyed else [])
 
-    def choose(scores, consumption):
+    def choose(scores, *args):
         assert scores == [1.0, 2.0]
-        draws.append(consumption)
+        if keyed:
+            assert len(args) == 1
+            draws.append(args[0])
+        else:
+            assert not args  # Preserve the original one-argument argmax caller.
         return 1
 
     serve_session(manifest, lambda _: pytest.fail('ordinary scorer is not this producer'),
-                  choose, requests(), destination, reuse_selection=True, keyed_selection=True,
+                  choose, requests(), destination, reuse_selection=keyed, keyed_selection=keyed,
                   score_input=lambda _: [1.0, 2.0] if ready else None,
                   close_requested=lambda: stopped)
 

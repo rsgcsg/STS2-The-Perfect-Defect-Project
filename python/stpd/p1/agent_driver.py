@@ -70,7 +70,7 @@ def serve_session(
                 raise ValueError("P1 Agent needs its bound InputSpec and full current catalog")
             scores = (score_input(value) if score_input is not None
                       else score(value["observation"]))
-            if scores is None and not keyed_selection:
+            if scores is None and reuse_selection and not keyed_selection:
                 raise ValueError("deferred P1 scoring requires an acknowledged keyed chooser")
             if scores is not None and len(scores) != len(value["catalog"]):
                 raise ValueError("P1 scores must cover the complete current catalog")
@@ -155,7 +155,7 @@ def serve_session(
                 if scores is not None:
                     if len(scores) != len(value["catalog"]):
                         raise ValueError("P1 scores must cover the complete current catalog")
-                    if (scores and value["observation"]["status"] != "terminal"
+                    if (reuse_selection and scores and value["observation"]["status"] != "terminal"
                             and not (close_requested is not None and close_requested())):
                         selected = select(scores, consumption)
                         if type(selected) is not int or not 0 <= selected < len(scores):
