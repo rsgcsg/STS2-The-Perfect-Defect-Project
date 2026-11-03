@@ -577,6 +577,7 @@ def test_gpu_owner_hands_transient_auth_to_original_cpu_submission_only(
     monkeypatch.setattr(rl.sys, 'platform', 'linux')
     monkeypatch.setenv('SLURM_JOB_ID', 'synthetic-gpu-owner')
     monkeypatch.setenv(AUTH_ENV, 'prior-capability')
+    monkeypatch.setenv(rl.LAUNCH_STOP_ENV, str(tmp_path/'login-STOP'))
     work = tmp_path.resolve()/'learner-work'
     capability = 'synthetic-new-capability'
     calls = []
@@ -644,6 +645,7 @@ def test_login_launch_submits_original_plan_with_same_environment(
         with pytest.raises(RuntimeError, match='unknown CPU'):
             rl.launch(script, config, work, actors, output)
         assert (actors/'STOP').exists()
+        assert (output/'STOP').exists()
     else:
         receipt = rl.launch(script, config, work, actors, output)
         assert receipt['GPU_job_id'] == 'synthetic-GPU'
@@ -655,3 +657,29 @@ def test_login_launch_submits_original_plan_with_same_environment(
     with pytest.raises(ValueError, match='fresh_login'):
         rl.launch(script, config, work, actors, output)
     assert sum(command[0] == 'sbatch' for command in commands) == 1
+
+
+def test_login_queued_gpu_timeout_retains_stop_before_work_exists(rl, tmp_path, monkeypatch):
+    from stpd.p1.local_inference import AUTH_ENV
+    script, config = tmp_path/'gpu.sh', tmp_path/'config.json'
+    script.write_text('#!/bin/sh\n')
+    config.write_text('{}')
+    monkeypatch.delenv(AUTH_ENV, raising=False)
+    monkeypatch.setattr(rl.scheduler, 'submission_lock_path', lambda: tmp_path/'submit.lock')
+    inherited = {}
+
+    def schedule(command):
+        if command[0] == 'sbatch':
+            inherited['stop'] = os.environ[rl.LAUNCH_STOP_ENV]
+            return 'queued-original'
+        return ''
+
+    monkeypatch.setattr(rl.scheduler, 'output', schedule)
+    clock = iter([0, 2])
+    monkeypatch.setattr(rl.time, 'monotonic', lambda: next(clock))
+    with pytest.raises(TimeoutError):
+        rl.launch(script, config, tmp_path/'work', tmp_path/'actors',
+                  tmp_path/'login', ready_seconds=1)
+    assert Path(inherited['stop']).exists()
+    assert not (tmp_path/'work').exists() and not (tmp_path/'actors').exists()
+    assert AUTH_ENV not in os.environ and rl.LAUNCH_STOP_ENV not in os.environ

@@ -23,6 +23,7 @@ from batch import capacity, hashed, private_root, read_pinned, save, snapshot
 
 SCHEMA = 'spireagent/friday-rl-actors-v1'
 NAME = re.compile(r'^[a-z0-9][a-z0-9-]{0,62}$')
+LAUNCH_STOP_ENV = 'STPD_FRIDAY_LAUNCH_STOP'
 RETENTION = {'tier': 'trajectory', 'purpose': 'training', 'audit_every': 50}
 
 
@@ -457,6 +458,10 @@ def learn(configuration: Path, work: Path, execution: Path, actors_output: Path,
     prior_auth = os.environ.get(AUTH_ENV)
     if external_submit and prior_auth is None:
         raise ValueError('login_launch_capability_required_for_external_submission')
+    if external_submit:
+        launch_stop = canonical_path(Path(os.environ[LAUNCH_STOP_ENV]), existing=False)
+        if launch_stop.exists():
+            raise ValueError('login_launch_already_stopped_reconcile_original_offer')
     work.mkdir(mode=0o700, parents=True)
 
     def stop(_number, _frame):
@@ -515,7 +520,15 @@ def launch(gpu_script: Path, configuration: Path, work: Path, actors_output: Pat
         raise ValueError('bounded_Friday_GPU_launch_required')
     root = private_root(output)
     prior = os.environ.get(AUTH_ENV)
+    prior_stop = os.environ.get(LAUNCH_STOP_ENV)
     os.environ[AUTH_ENV] = secrets.token_hex(32)
+    os.environ[LAUNCH_STOP_ENV] = str(root/'STOP')
+
+    def interrupted(_number, _frame):
+        raise InterruptedError('login_launch_interrupted_reconcile_original_offer')
+
+    handlers = {number: signal.signal(number, interrupted)
+                for number in (signal.SIGTERM, signal.SIGINT, signal.SIGUSR1)}
     command = ['sbatch', '--parsable', '--partition=smp_gpu', '--nodes=1', '--ntasks=1',
         f'--gres=gpu:{gpu}:1', f'--cpus-per-task={cpus}', f'--mem={memory_gb}G',
         f'--time={minutes}', '--no-requeue', '--export=ALL', '--job-name=rl4-learner',
@@ -533,6 +546,8 @@ def launch(gpu_script: Path, configuration: Path, work: Path, actors_output: Pat
         plan_file = actors_output/'plan.json'
         while True:
             try:
+                if not plan_file.exists():
+                    raise FileNotFoundError(plan_file)
                 plan = load_plan(plan_file)
                 break
             except (FileNotFoundError, json.JSONDecodeError):
@@ -546,6 +561,8 @@ def launch(gpu_script: Path, configuration: Path, work: Path, actors_output: Pat
         save(root/'launch-receipt.json', result)
         return result
     except BaseException:
+        # This also reaches a queued GPU via its inherited path before any work exists.
+        (root/'STOP').touch()
         # Local graceful stop only: preserve this run/CP and every original intent.
         if work.exists():
             (work/'STOP').touch()
@@ -553,6 +570,12 @@ def launch(gpu_script: Path, configuration: Path, work: Path, actors_output: Pat
             (actors_output/'STOP').touch()
         raise
     finally:
+        for number, handler in handlers.items():
+            signal.signal(number, handler)
+        if prior_stop is None:
+            os.environ.pop(LAUNCH_STOP_ENV, None)
+        else:
+            os.environ[LAUNCH_STOP_ENV] = prior_stop
         if prior is None:
             os.environ.pop(AUTH_ENV, None)
         else:
