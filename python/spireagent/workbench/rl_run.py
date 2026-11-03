@@ -1,4 +1,4 @@
-"""One command for one node: start the learner, then N CPU actors, then stop cleanly.
+"""Historical single-node composition and read-only time-ledger helpers.
 
 Actors on other machines run ``python -m spireagent.workbench.rl_actor`` with
 the same ``run`` and peer; this launcher only owns the processes it starts.
@@ -121,10 +121,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--work", type=Path, required=True)
-    args = parser.parse_args()
-    os.umask(0o077)
-    result = launch(json.loads(args.config.read_bytes()), args.work.resolve())
-    print(json.dumps(result["exit_codes"]))
+    parser.parse_args()
+    raise BoundaryError("rl_run", "legacy_live_launcher_retired_use_tools_friday_rl_learn")
 
 
 if __name__ == "__main__":

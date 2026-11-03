@@ -13,7 +13,7 @@ import os
 import shutil
 import subprocess
 import time
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, NoReturn
@@ -87,7 +87,8 @@ def _phase(row: dict[str, Any], name: str, *, detail: bool = False) -> Iterator[
 
 
 def _finish_runtime(process: subprocess.Popen, stdout: Path, row: dict[str, Any],
-                    artifacts: Any, deadline: float, cleanup_seconds: float) -> dict[str, Any]:
+                    artifacts: Any, deadline: float, cleanup_seconds: float, *,
+                    on_started: Callable[[dict[str, Any]], Any] | None = None) -> dict[str, Any]:
     """Observe the existing Runtime owner and send one exact-run Stop on handoff.
 
     Handoff/taint can leave the HTTP service alive; terminal Close can exit it.
@@ -115,17 +116,23 @@ def _finish_runtime(process: subprocess.Popen, stdout: Path, row: dict[str, Any]
     client = RuntimeClient(startup["address"], startup)
     row["run_id"] = startup["run_id"]
     row["startup"] = artifacts.put("runtime-startup.json", json_bytes(startup))
+    observer = on_started(startup) if on_started is not None else None
     operation = "status"
     try:
         while process.poll() is None:
+            if observer is not None and observer.error is not None:
+                raise BoundaryError("managed_evaluation", "incremental_trajectory_verifier_failed")
             state = client.request("/status")["status"]
             expired = time.monotonic() >= deadline
+            interrupted = observer is not None and observer.stop_requested
+            if interrupted:
+                row["short_segment_stop"] = "uncompleted_action_boundary"
             if any("managed_settling_stalled" in reason for reason in (
                     state.get("taint_reason") or "", *state.get("errors", []))):
                 row["settling_stalled"] = True
             if (state["lifecycle"] == "stopped" or state["mode"] == "human"
                     or state["tainted"] or state["autonomy_budget"]["state"] == "exhausted"
-                    or expired):
+                    or expired or interrupted):
                 row["runtime_final_status"] = artifacts.put(
                     "runtime-final-status.json", json_bytes(state))
                 if expired:
@@ -264,6 +271,7 @@ class ManagedEpisodeExecutor:
             "0.1.0-rc.60",
             "0.1.0-rc.61",
             "0.1.0-rc.62",
+            "0.1.0-rc.63",
         }:
             reject("runtime_explicit_adapter_environment_required")
         if self.settling_timeout_ms is not None and runtime_version not in {
@@ -278,6 +286,7 @@ class ManagedEpisodeExecutor:
             "0.1.0-rc.60",
             "0.1.0-rc.61",
             "0.1.0-rc.62",
+            "0.1.0-rc.63",
         }:
             reject("runtime_settling_watchdog_required")
         self.evidence_durability = configuration.get(
@@ -293,6 +302,7 @@ class ManagedEpisodeExecutor:
                 "0.1.0-rc.60",
                 "0.1.0-rc.61",
                 "0.1.0-rc.62",
+                "0.1.0-rc.63",
             }
             else "event",
         )
@@ -307,6 +317,7 @@ class ManagedEpisodeExecutor:
             "0.1.0-rc.60",
             "0.1.0-rc.61",
             "0.1.0-rc.62",
+            "0.1.0-rc.63",
         }:
             reject("runtime_decision_durability_required")
         if configuration["agent_adapter"] != export.adapter_identity():
@@ -373,6 +384,19 @@ class ManagedEpisodeExecutor:
     def close(self) -> dict[str, Any] | None:
         return self.inference_pool.close() if self.inference_pool else None
 
+    def _inference_binding(
+        self, row: dict[str, Any]
+    ) -> tuple[dict[str, Any], dict[str, str]] | None:
+        return ((self.inference_pool.attachment(), self.inference_pool.environment())
+                if self.inference_pool is not None else None)
+
+    def _runtime_started(self, startup: dict[str, Any], row: dict[str, Any],
+                         artifacts: Any, registration: Path) -> Any:
+        return None
+
+    def _before_world_offer(self, row: dict[str, Any]) -> None:
+        return None
+
     def __call__(
         self, row: dict[str, Any], manifest: dict[str, Any], artifacts: Any, checkpoint: Any
     ) -> None:
@@ -414,6 +438,7 @@ class ManagedEpisodeExecutor:
                 ready = client.ready()
                 row["host_service_instance_id"] = ready["service_instance_id"]
                 row["host_service_pid"] = launch.pid
+                self._before_world_offer(row)
                 row["world_mutation_offered"] = True
                 checkpoint()  # Durable offer BEFORE reset, never reoffer on a lost reply.
                 with _phase(row, "host_reset", detail=True):
@@ -523,15 +548,16 @@ class ManagedEpisodeExecutor:
                     args.extend(["--adapter-env-key", name])
                 environment = os.environ.copy()
                 row["inference_mode"] = "central_batch" if self.inference_pool else "per_actor"
-                if self.inference_pool is not None:
+                inference = self._inference_binding(row)
+                if inference is not None:
                     attachment = registration / "local-inference.json"
-                    binding = json_bytes(self.inference_pool.attachment())
+                    binding = json_bytes(inference[0])
                     attachment.write_bytes(binding)
                     row["inference_binding"] = artifacts.put(
                         "local-inference-binding.json", binding)
                     args.extend(["--adapter-arg=--local-inference",
                         "--adapter-arg=" + str(attachment)])
-                    credentials = self.inference_pool.environment()
+                    credentials = inference[1]
                     environment.update(credentials)
                     for name in credentials:
                         args.extend(["--adapter-env-key", name])
@@ -552,7 +578,9 @@ class ManagedEpisodeExecutor:
                 row["runtime_process_started_monotonic"] = runtime_started
                 startup = _finish_runtime(
                     runtime_process, private / "runtime.stdout", row, artifacts,
-                    started + self.episode_seconds, self.cleanup_seconds)
+                    started + self.episode_seconds, self.cleanup_seconds,
+                    on_started=lambda startup: self._runtime_started(
+                        startup, row, artifacts, registration))
                 row["runtime_window_seconds"] = time.monotonic() - runtime_started
             if self.measure_host_performance:
                 with _phase(row, "host_performance", detail=True):

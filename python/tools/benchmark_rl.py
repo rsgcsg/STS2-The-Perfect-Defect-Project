@@ -56,11 +56,257 @@ def phase_ranges(model: Any, reference: Any, optimizer: Any) -> Any:
             setattr(owner, name, original)
 
 
+def segment_benchmark(args: Any) -> None:
+    """Same diagnostic owner, now calling the production short-segment SGD.
+
+    Real TRAIN public states and observed labels supply the workload. Behavior
+    probabilities/TD targets are diagnostic constructions, never admitted replay.
+    Every case starts with identical weights/Adam/RNG and has no publication.
+    """
+    from dataclasses import replace
+
+    from stpd.p1.execution import microbatches
+    from stpd.p1.tensor_input import compile_frame
+    from stpd.rl.heads import OUTCOME_CLASSES
+    from stpd.rl.loss import AuxiliarySample, SegmentSample, segment_update
+    from stpd.rl.performance import PerformanceConfig, prepare_models
+    from stpd.workers.checkpoint_codec import decode_checkpoint
+
+    if args.output.exists():
+        raise ValueError("fresh_diagnostic_output_required")
+    args.output.mkdir(parents=True)
+    began = time.monotonic()
+    deadline = began + args.seconds
+    torch.set_num_threads(16)
+    torch.manual_seed(20261103)
+    device = torch.device(args.device)
+    descriptor = json.loads((args.package / "model.json").read_bytes())
+    base, _ = load_model(args.package / "model.tensor-tree", descriptor["package_sha256"])
+    base.enable_rl4_heads(0)
+    head_bytes = args.heads_checkpoint.read_bytes()
+    base.rl4_heads.load_state_dict(decode_checkpoint(head_bytes)["heads"], strict=True)
+    base.eval().to(device).requires_grad_(False)
+    records = [json.loads(line) for line in args.input.read_text().splitlines()]
+    if len(records) < 256 or any(row["reference"]["split"] != "train" for row in records):
+        raise ValueError("at_least_256_real_TRAIN_states_required")
+    records = records[:256]
+    frames = [
+        compile_frame(
+            project(row["observation"], input_projection=runtime_projection(base.vocabulary)), base
+        )
+        for row in records
+    ]
+    floors = [row["floor"] for row in records]
+    base.execution = replace(
+        base.execution,
+        implementation="experimental-packed-v1",
+        microbatch_size=16,
+        scene_attention_area=67108864,
+        text_attention_area=67108864,
+    )
+    probabilities: list[list[float]] = []
+    with torch.inference_mode():
+        for indices in microbatches(frames, list(range(len(frames))), base):
+            scores, _, _ = base.forward_rl4(
+                [frames[i] for i in indices], [floors[i] for i in indices]
+            )
+            probabilities.extend(score.float().softmax(-1).cpu().tolist() for score in scores)
+    rows: list[SegmentSample] = []
+    terminal: list[AuxiliarySample] = []
+    hp: list[AuxiliarySample] = []
+    for index, (record, frame, probability) in enumerate(
+        zip(records, frames, probabilities, strict=True)
+    ):
+        action = frame.choices.index(record["reference"]["chosen"])
+        label = record["outcome_class"]
+        target = torch.nn.functional.one_hot(torch.tensor(label), OUTCOME_CLASSES).float()
+        rows.append(
+            SegmentSample(
+                frame,
+                floors[index],
+                f"profile:{index}",
+                action,
+                probability[action],
+                probability,
+                math.sin(index),
+                target,
+            )
+        )
+        if len(terminal) < 64:
+            terminal.append(
+                AuxiliarySample(frame, floors[index], f"terminal:{index}", outcome=label)
+            )
+        if record.get("hp") is not None and len(hp) < 64:
+            hp.append(AuxiliarySample(frame, floors[index], f"hp:{index}", hp=record["hp"]))
+    # A smaller observed HP pool remains smaller; do not fabricate labels.
+
+    def sync():
+        if device.type == "cuda":
+            torch.cuda.synchronize()
+
+    identity = {
+        "schema": "stpd/rl4-compute-diagnostic-1",
+        "input_sha256": hashlib.sha256(args.input.read_bytes()).hexdigest(),
+        "heads_sha256": hashlib.sha256(head_bytes).hexdigest(),
+        "model_sha256": descriptor["package_sha256"],
+        "source_revision": args.source_revision,
+        "rows": len(rows),
+        "terminal_rows": len(terminal),
+        "hp_rows": len(hp),
+        "device": str(device),
+        "workload": "real TRAIN states; constructed diagnostic PPO/TD",
+        "plan_sha256": hashlib.sha256(args.plan.read_bytes()).hexdigest(),
+    }
+    (args.output / "identity.json").write_text(json.dumps(identity, indent=2))
+    plans = json.loads(args.plan.read_bytes())
+    results = []
+    reference_scores = None
+    for plan in plans:
+        if time.monotonic() >= deadline:
+            break
+        model = copy.deepcopy(base).requires_grad_(True)
+        performance = PerformanceConfig(
+            packed=True,
+            tensor_cache=True,
+            precompile_inputs=True,
+            microbatch_size=plan["microbatch"],
+            precision=plan["precision"],
+            deduplicate_text=plan["deduplicate_text"],
+            scene_attention_area=67108864,
+            text_attention_area=67108864,
+        )
+        model.deduplicate_text = performance.deduplicate_text
+        optimizer = torch.optim.AdamW(
+            [
+                {
+                    "params": [
+                        p
+                        for name, p in model.named_parameters()
+                        if not name.startswith("rl4_heads.")
+                    ],
+                    "lr": 4e-5,
+                },
+                {"params": list(model.rl4_heads.parameters()), "lr": 1e-4},
+            ],
+            weight_decay=0,
+        )
+        durations, updates = [], []
+        torch.manual_seed(20261103)
+        if device.type == "cuda":
+            torch.cuda.reset_peak_memory_stats()
+        result = {"name": plan["name"], "configuration": asdict(performance)}
+        try:
+            for step in range(args.warmup + args.steps):
+                if time.monotonic() >= deadline:
+                    break
+                sync()
+                start = time.perf_counter()
+                value = segment_update(
+                    model,
+                    optimizer,
+                    rows,
+                    terminal,
+                    hp,
+                    config=LossConfig(mode="ppo", value_coef=0.2, entropy_coef=0.01),
+                    performance=performance,
+                    target_kl=0.03,
+                    diagnostics=step == args.warmup,
+                )
+                sync()
+                if step >= args.warmup:
+                    updates.append(value)
+                    if value["stepped"]:
+                        durations.append(time.perf_counter() - start)
+                if not value["stepped"]:
+                    break
+            probe = copy.deepcopy(base).requires_grad_(True)
+            with (
+                prepare_models(probe, probe, performance),
+                torch.no_grad(),
+                torch.autocast(
+                    device_type=device.type,
+                    dtype=torch.bfloat16,
+                    enabled=performance.precision == "bf16",
+                ),
+            ):
+                scores = []
+                for indices in microbatches(frames[:64], list(range(64)), probe):
+                    output, _, _ = probe.forward_rl4(
+                        [frames[i] for i in indices], [floors[i] for i in indices]
+                    )
+                    scores.extend(value.float().softmax(-1).cpu() for value in output)
+            if reference_scores is None:
+                reference_scores = scores
+            result["probability_max_abs_difference"] = max(
+                float((p - q).abs().max()) for p, q in zip(scores, reference_scores, strict=True)
+            )
+            result["argmax_matches"] = sum(
+                int(p.argmax() == q.argmax()) for p, q in zip(scores, reference_scores, strict=True)
+            )
+            if plan.get("profile") and time.monotonic() < deadline:
+                activities = [torch.profiler.ProfilerActivity.CPU]
+                if device.type == "cuda":
+                    activities.append(torch.profiler.ProfilerActivity.CUDA)
+                with torch.profiler.profile(activities=activities, record_shapes=True) as prof:
+                    segment_update(
+                        model,
+                        optimizer,
+                        rows,
+                        terminal,
+                        hp,
+                        config=LossConfig(mode="ppo", value_coef=0.2, entropy_coef=0.01),
+                        performance=performance,
+                        target_kl=0.03,
+                    )
+                    sync()
+                prof.export_chrome_trace(str(args.output / f"{plan['name']}-trace.json"))
+                (args.output / f"{plan['name']}-profile.txt").write_text(
+                    prof.key_averages().table(
+                        sort_by="self_cuda_time_total"
+                        if device.type == "cuda"
+                        else "self_cpu_time_total",
+                        row_limit=40,
+                    )
+                )
+            result.update(
+                status="ok" if len(durations) == args.steps else "incomplete",
+                requested_SGD=args.steps,
+                successful_timed_SGD=len(durations),
+                seconds=durations,
+                updates=updates,
+                median_seconds=statistics.median(durations) if durations else None,
+                peak_cuda_bytes=torch.cuda.max_memory_allocated()
+                if device.type == "cuda"
+                else None,
+            )
+        except Exception as error:
+            result.update(status="failed", error_type=type(error).__name__, error=str(error)[:1000])
+        results.append(result)
+        (args.output / "results.json").write_text(json.dumps(results, indent=2, allow_nan=False))
+        print(
+            json.dumps(
+                {key: value for key, value in result.items() if key not in {"updates", "seconds"}}
+            ),
+            flush=True,
+        )
+        del optimizer, model
+        if device.type == "cuda":
+            torch.cuda.empty_cache()
+    (args.output / "timing.json").write_text(
+        json.dumps({"elapsed_seconds": time.monotonic() - began})
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--package", type=Path, required=True)
     parser.add_argument("--input", type=Path, required=True)
     parser.add_argument("--rl-input", type=Path)
+    parser.add_argument(
+        "--heads-checkpoint",
+        type=Path,
+        help="normal RL4 warmup CP selects the short-segment production update",
+    )
     parser.add_argument("--source-revision", default=None)
     parser.add_argument("--plan", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
@@ -71,6 +317,9 @@ def main() -> None:
     args = parser.parse_args()
     if args.steps < 3 or args.warmup < 0 or args.seconds <= 0:
         parser.error("positive bounded window required")
+    if args.heads_checkpoint is not None:
+        segment_benchmark(args)
+        return
     args.output.mkdir(parents=True, exist_ok=True)
     if (args.output / "identity.json").exists() or (args.output / "results.json").exists():
         parser.error("use a fresh diagnostic output directory")
@@ -183,8 +432,10 @@ def main() -> None:
             for parameter in reference.parameters():
                 parameter.requires_grad_(False)
             optimizer = torch.optim.AdamW(
-                model.parameters(), lr=1e-5, fused=plan.get("fused", False),
-                weight_decay=plan.get("weight_decay", 0.01)
+                model.parameters(),
+                lr=1e-5,
+                fused=plan.get("fused", False),
+                weight_decay=plan.get("weight_decay", 0.01),
             )
             config = None
             if plan.get("performance"):

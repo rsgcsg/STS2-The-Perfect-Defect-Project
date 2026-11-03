@@ -35,13 +35,16 @@ def adapter_identity() -> dict[str, str]:
     closure = {
         name: digest((root / name).read_bytes())
         for name in ("agent.py", "agent_driver.py", "local_inference.py", "export.py", "input.py",
-                     "model.py", "tensor_input.py", "data.py", "execution.py", "spec.py",
+                     "model.py", "tensor_input.py", "text_cache.py", "data.py", "execution.py",
+                     "spec.py",
                      "input_order.py", "sampling.py",
                      "vocabulary.py", "public_vocabulary_v1.json", "input_identity.py")
     }
     closure["checkpoint_codec.py"] = digest(
         (root.parent / "workers/checkpoint_codec.py").read_bytes()
     )
+    closure["rl/heads.py"] = digest((root.parent/"rl/heads.py").read_bytes())
+    closure["value_head.py"] = digest((root/"value_head.py").read_bytes())
     platform = root.parent.parent / "spireagent"
     for name in ("policy_files.py", "json_boundary.py"):
         closure["spireagent/" + name] = digest((platform / name).read_bytes())
@@ -108,8 +111,9 @@ def action_weights(state: dict[str, torch.Tensor], *, value_heads: bool = False
     removed = {"win_head.weight", "win_head.bias", "progress_head.weight", "progress_head.bias"}
     if value_heads and not removed <= state.keys():
         raise ValueError("declared auxiliary parameter inventory is incomplete")
-    return {key: value for key, value in state.items() if not value_heads or (key not in removed
-            and not key.startswith("progress_residual."))}
+    return {key: value for key, value in state.items() if not key.startswith("rl4_heads.")
+            and (not value_heads or (key not in removed
+            and not key.startswith("progress_residual.")))}
 
 
 def export_model(
@@ -148,7 +152,7 @@ def export_model(
         "parameters": sum(x.numel() for x in state.values()),
         **({"training_architecture": model.architecture,
             "auxiliary_heads": "stripped; never used for action selection"}
-           if model.value_heads else {}),
+           if model.value_heads or hasattr(model, "rl4_heads") else {}),
         "training_identity": training_identity,
         "agent_spec": {
             "id": "p1-mstd",

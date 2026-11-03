@@ -1,8 +1,23 @@
 # RL：系统速度与学习效果分开量
 
+## RL4 短段口径
+
+新短段沿同一 `game-decision-v1`：完整catalog≥2且首次成功SGD才增有效新D；
+forced、辅助回放和KL刹车中未成功的批不增。未知前已确认的合法前缀可以贡献D，未知动作本身不能。
+`first_use_multi`为累计有效新D，`first_use`含强制行；原件段数、接收数、重复两遍均不是新D。
+`updates.jsonl`保留每次SGD的KL/clip、首次使用年龄/楼层/μ差、辅助成功使用；CP恢复接原累计计数。
+用原始逐次记录的时间窗相减，整小时含等待/发布/收尾；不要把旧max_reuse上下界公式套给新段。
+M4固定真实工作测同成员/数值配置，BF16单列概率差与实际时间，不能以近似相等声称逐位等价。
+
 系统速度是冻结工作量的完成墙钟；学习效果是相同预算下的固定评估差值。
 两者分别报告。更快、吞吐更高、loss更低，都不自动等于策略变强。
 测速工作量可固定，墙钟仍有机器调度、缓存和网络波动，须报告重复次数和范围。
+
+固定TRAIN计算诊断可复用原工具：`python tools/benchmark_rl.py --package /ABS/policy \
+--heads-checkpoint /ABS/normal-warmup-cp --input /ABS/train-states.jsonl \
+--plan /ABS/cases.json --output /ABS/new-profile --source-revision FROZEN_SHA`。
+该模式调用真实 `segment_update`，真实TRAIN状态/标签之外的概率和TD为诊断构造；不发布模型，
+不进first-use或训练资格。各配置同起点，记录完整工作哈希、成功SGD数、概率差和实际墙钟。
 
 ## 唯一单位表
 

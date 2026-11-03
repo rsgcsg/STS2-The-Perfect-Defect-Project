@@ -183,15 +183,25 @@ def test_run_calls_original_module_and_abnormal_results_fence_pending_workers(
             'run': plan['run'], 'status': 'completed',
             'games': [{'status': disposition, 'seed': 'test-no-game', 'shard': None}]}),
             encoding='utf-8')
-        return SimpleNamespace(wait=lambda: 0)
+        return SimpleNamespace(wait=lambda: 0, poll=lambda: 0)
 
     original_snapshot = rl.snapshot
     original_popen = subprocess.Popen
+    original_run = subprocess.run
+
+    def signal_after_copy(command, *args, **kwargs):
+        result = original_run(command, *args, **kwargs)
+        if command[0] == 'rsync':
+            # This is the actual late-signal failure: a new STOP after copying
+            # must not mutate the closed source before its byte readback.
+            signal.raise_signal(signal.SIGUSR1)
+        return result
 
     def checked_snapshot(source, target):
         assert (file.parent / 'STOP').is_file()
         assert callable(signal.getsignal(signal.SIGUSR1))
-        with patch.object(rl.subprocess, 'Popen', original_popen):
+        with (patch.object(rl.subprocess, 'Popen', original_popen),
+              patch.object(rl.subprocess, 'run', signal_after_copy)):
             return original_snapshot(source, target)
 
     monkeypatch.setattr(rl.subprocess, 'Popen', actor)
@@ -496,3 +506,100 @@ def test_submit_explicit_memory_and_excluded_node_use_normal_scheduler_argv(rl, 
     assert result['memory_gb_per_actor'] == 6
     with pytest.raises(ValueError, match='positive_memory'):
         rl.submit(file, dry_run=True, memory_gb=True)
+
+
+def test_segment_prepare_binds_scorer_and_avoids_per_game_900_second_cut(rl, inputs):
+    from stpd.p1.export import adapter_identity
+    from stpd.p1.local_inference import SEGMENT_SCHEMA
+
+    execution, learner, output = inputs
+    learning = json.loads(learner.read_bytes())
+    learning['segments'] = {'steps': 64, 'excluded_seeds': ['frozen-evaluation-seed']}
+    learning['actor_defaults']['behavior']['uniform_mix'] = 0
+    learner.write_text(json.dumps(learning))
+    attachment = learner.parent/'inference.json'
+    attachment.write_text(json.dumps({'schema': SEGMENT_SCHEMA, 'adapter': adapter_identity(),
+        'pool_id': 'fixture', 'address': ['127.0.0.1', 1234], 'segment_steps': 64}))
+    plan = rl.prepare(execution, learner, output, actors=40, wall_seconds=4500,
+        episode_seconds=14400, games_per_ledger=10, segment_inference=attachment)
+    assert plan['trajectory_encoding'] == 'short-segment-1'
+    actor = json.loads(Path(plan['actors'][0]['path']).read_bytes())
+    assert actor['segments']['inference'] == json.loads(attachment.read_bytes())
+    assert actor['segments']['excluded_seeds'] == ['frozen-evaluation-seed']
+    assert actor['episode_seconds'] == 14400 and actor['behavior']['uniform_mix'] == 0
+    assert rl.load_plan(output/'plan.json')['inference']['sha256'] == rl.hashed(attachment)
+    attachment.write_text('{}')
+    with pytest.raises(ValueError):
+        rl.load_plan(output/'plan.json')
+
+
+def test_initial_array_submit_unknown_keeps_intent_without_a_second_offer(rl, inputs, tmp_path):
+    _, file = prepared(rl, inputs)
+    commands = []
+
+    def scheduler(command):
+        if command[0] == 'sbatch':
+            commands.append(command)
+            raise RuntimeError('injected_unknown_scheduler_response')
+        return '0/400/0/400' if command[0] == 'sinfo' else ''
+
+    with (patch.object(rl, 'require_modules'),
+          patch.object(rl.scheduler, 'submission_lock_path', return_value=tmp_path/'submit.lock'),
+          patch.object(rl.scheduler, 'output', side_effect=scheduler)):
+        with pytest.raises(RuntimeError, match='unknown_scheduler'):
+            rl.submit(file)
+        assert (file.parent/'submission-intent.json').exists()
+        with pytest.raises(ValueError, match='reconciliation_no_retry'):
+            rl.submit(file)
+    assert len(commands) == 1
+
+
+def test_gpu_owner_hands_transient_auth_to_original_cpu_submission_only(
+    rl, inputs, tmp_path, monkeypatch
+):
+    """No Slurm/GPU: real prepare serializer, stubbed numerical/scheduler owners."""
+    from spireagent import resource_slot
+    from stpd.p1.local_inference import AUTH_ENV, SEGMENT_SCHEMA
+    from stpd.rl import segment_learner
+    from stpd.rl.learner import LearnerConfig
+
+    execution, configuration, actors = inputs
+    learning = json.loads(configuration.read_bytes())
+    learning['segments'] = {'steps': 64, 'inference_batch': 32}
+    learning['actor_defaults']['behavior']['uniform_mix'] = 0
+    configuration.write_text(json.dumps(learning))
+    config = SimpleNamespace(device='cuda', segments=SimpleNamespace(inference_batch=32),
+                             wall_seconds=3600)
+    monkeypatch.setattr(LearnerConfig, 'read', lambda _: config)
+    monkeypatch.setattr(resource_slot, 'require_managed_slot', lambda: None)
+    monkeypatch.setattr(rl, 'require_modules', lambda _: None)
+    monkeypatch.setattr(rl.sys, 'platform', 'linux')
+    monkeypatch.setenv('SLURM_JOB_ID', 'synthetic-gpu-owner')
+    monkeypatch.setenv(AUTH_ENV, 'prior-capability')
+    work = tmp_path.resolve()/'learner-work'
+    capability = 'synthetic-new-capability'
+    calls = []
+
+    class NumericalOwner:
+        def __init__(self, config, work, io):
+            self.pool = SimpleNamespace(environment=lambda: {AUTH_ENV: capability})
+            (work/'inference.json').write_text(json.dumps({'schema': SEGMENT_SCHEMA,
+                'segment_steps': 64, 'pool_id': 'synthetic', 'address': ['127.0.0.1', 1234]}))
+
+        def run(self):
+            calls.append('run')
+            return {'updates': 0}
+
+    def submitted(path, **options):
+        assert os.environ[AUTH_ENV] == capability
+        plan = rl.load_plan(path)
+        assert len(plan['actors']) == 32 and options == {'memory_gb': 4}
+        assert all(capability not in file.read_text() for file in actors.glob('*.json'))
+        calls.append('submit')
+        return {'job_id': 'synthetic-unoffered'}
+
+    monkeypatch.setattr(segment_learner, 'SegmentLearner', NumericalOwner)
+    monkeypatch.setattr(rl, 'submit', submitted)
+    assert rl.learn(configuration, work, execution, actors, actors=32,
+                    seed_namespace='synthetic-new-seeds') == {'updates': 0}
+    assert calls == ['submit', 'run'] and os.environ[AUTH_ENV] == 'prior-capability'

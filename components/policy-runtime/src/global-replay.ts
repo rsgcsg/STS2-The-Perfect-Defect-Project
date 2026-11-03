@@ -73,28 +73,86 @@ export async function globalReplaySemanticIdentity() {
 /** Original source accounting and actual Agent bytes are replayed independently of saved projections.
  * No network, native execution, inference, native qualification or research admission. */
 export async function replayGlobalAgentRun(directory: string) {
+  return replayGlobalRun(directory);
+}
+
+/** Evidence's live manifest is rewritten at finalization. Only an incomplete
+ * JSON read of that known mutable file is observed again; semantic failures and
+ * immutable artifacts still fail immediately. No game request is repeated. */
+export async function readLiveManifest(directory: string): Promise<any> {
+  return (await readLiveManifestOriginal(directory)).value;
+}
+async function readLiveManifestOriginal(directory: string): Promise<{ value: any; raw: Buffer }> {
+  const deadline = Date.now() + 30000;
+  while (true) {
+    const raw = await readFile(join(directory, "manifest.json"));
+    try { return { value: JSON.parse(raw.toString("utf8")), raw }; }
+    catch (error) {
+      if (!(error instanceof SyntaxError) || Date.now() >= deadline) throw error;
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
+  }
+}
+
+export interface GlobalReplayEvent {
+  schema: string; sequence: number; recorded_at: string; kind: string; payload: any;
+}
+export interface VerifiedGlobalTransition {
+  schema: "sts2.policy-runtime/verified-global-transition-1";
+  run_id: string; step_index: number; result_sequence: number; verified_through_sequence: number; generated_at: string;
+  input: any; directive: any; result: any; successor: any;
+  original_paths: string[];
+  manifest_original_base64: string;
+}
+/** The existing semantic verifier, fed once in original event order. It emits
+ * completed transitions only when the next real, ready public input closes them.
+ * The caller durably commits original_paths plus the journal before admission.
+ * Final run closure/inventory remains the ordinary replay's responsibility. */
+export async function streamGlobalAgentRun(directory: string,
+    events: AsyncIterable<GlobalReplayEvent>,
+    transition: (value: VerifiedGlobalTransition) => Promise<void>,
+    boundary?: (value: Record<string, unknown>) => Promise<void>) {
+  return replayGlobalRun(directory, { events, transition, boundary });
+}
+
+async function replayGlobalRun(directory: string, live?: {
+  events: AsyncIterable<GlobalReplayEvent>;
+  transition: (value: VerifiedGlobalTransition) => Promise<void>;
+  boundary?: (value: Record<string, unknown>) => Promise<void>;
+}) {
   const json = async (name: string) => JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(await readFile(join(directory, name))));
-  const run = await json("manifest.json"), manifest = validateAgentManifest(await json("agent-manifest.json"));
+  const initialRun = live ? await readLiveManifestOriginal(directory) : null;
+  const run = initialRun ? initialRun.value : await json("manifest.json");
+  const manifest = validateAgentManifest(await json("agent-manifest.json"));
   require(manifest.input.profile === "p1-global-r1" && manifest.input.global, "global_profile_required");
   const selectedCore = p1CoreIdentity(manifest.input.global.revision);
   require(run.schema === "sts2.policy-runtime/agent-session-run-1" && run.agent_manifest_sha256 === globalDigest(manifest)
-    && run.ended_at !== null && ["stopped", "tainted", "completed"].includes(run.status), "global_run_not_closed");
+    && (live || run.ended_at !== null && ["stopped", "tainted", "completed"].includes(run.status)), "global_run_not_closed");
   require(manifest.input.global.core_sha256 === selectedCore.module_digest, "global_core_identity_changed");
   const attestation = await json("adapter-attestation.json");
   require(attestation.run_id === run.run_id && attestation.agent_manifest_sha256 === run.agent_manifest_sha256
     && same(attestation.expected, manifest.adapter) && attestation.status === "attested" && same(attestation.actual, manifest.adapter), "global_adapter_identity");
-  const rawEvents = await readFile(join(directory, "events.jsonl"));
-  require(rawEvents.length > 0 && rawEvents.length <= 128 * 1024 * 1024 && rawEvents.at(-1) === 10, "global_incomplete_journal");
-  const events: { schema: string; sequence: number; recorded_at: string; kind: string; payload: any }[] = new TextDecoder("utf-8", { fatal: true }).decode(rawEvents).trim().split("\n").map(line => JSON.parse(line));
-  require(events.length <= 65536 && events.at(-1)?.kind === "stopped", "global_stop_required");
-  const eventSchema = events[0]?.schema;
-  require(eventSchema === "sts2.policy-runtime/agent-session-event-1" || eventSchema === "sts2.policy-runtime/agent-session-event-2", "global_event_schema");
-  const eventVersion = eventSchema === "sts2.policy-runtime/agent-session-event-2" ? 2 : 1;
+  let events: Iterable<GlobalReplayEvent> | AsyncIterable<GlobalReplayEvent>;
+  if (live) events = live.events;
+  else {
+    const rawEvents = await readFile(join(directory, "events.jsonl"));
+    require(rawEvents.length > 0 && rawEvents.length <= 128 * 1024 * 1024 && rawEvents.at(-1) === 10, "global_incomplete_journal");
+    const parsed: GlobalReplayEvent[] = new TextDecoder("utf-8", { fatal: true }).decode(rawEvents).trim().split("\n").map(line => JSON.parse(line));
+    require(parsed.length <= 65536 && parsed.at(-1)?.kind === "stopped", "global_stop_required");
+    events = parsed;
+  }
+  let eventSchema: string | undefined;
+  let newOriginalPaths: string[] = [];
+  let pendingTransition: Omit<VerifiedGlobalTransition, "successor" | "original_paths" | "verified_through_sequence" | "manifest_original_base64"> | null = null;
+  let choices = 0, choiceGeneratedAt = "";
+  let deferredTaint = false, deferredReleaseUnknown = false;
   const referenced = new Set<string>();
   const artifact = async (ref: GlobalArtifact, role: GlobalArtifact["role"]): Promise<Buffer> => {
     exact(ref, ["role", "path", "bytes", "sha256"]);
     require(ref.role === role, "global_artifact_reference");
-    const bytes = await readGlobalArtifact(directory, ref); referenced.add(ref.path); return bytes;
+    const bytes = await readGlobalArtifact(directory, ref);
+    if (!referenced.has(ref.path)) newOriginalPaths.push(ref.path);
+    referenced.add(ref.path); return bytes;
   };
   // Capture chunks reference the same original source. Decode/verify that source
   // once per capture instead of reparsing the whole public state for every chunk.
@@ -147,8 +205,14 @@ export async function replayGlobalAgentRun(directory: string) {
     handoff_to_human: ["reason", "autonomy_budget", "controller"], fail_closed: ["reason", "agent_state"], runtime_tainted: ["reason", "retry"],
     stopped: ["autonomy_budget", "controller", "pending_request", "agent_state"]
   };
-  for (const [index, event] of events.entries()) {
+  let index = -1;
+  for await (const event of events) {
+    index++;
     exact(event, ["schema", "sequence", "recorded_at", "kind", "payload"]);
+    eventSchema ??= event.schema;
+    require(eventSchema === "sts2.policy-runtime/agent-session-event-1" || eventSchema === "sts2.policy-runtime/agent-session-event-2", "global_event_schema");
+    const eventVersion = eventSchema === "sts2.policy-runtime/agent-session-event-2" ? 2 : 1;
+    require(index < 65536, "global_event_limit");
     require(event.schema === eventSchema && event.sequence === index + 1 && Number.isFinite(Date.parse(event.recorded_at)) && !stopped, "global_journal_sequence");
     const p = event.payload, extra = event.kind === "global_transport_response" ? p.operation === "step" ? ["request_id"] : ["capture_request_id"] : [];
     require(fields[event.kind], "global_unknown_event_kind"); exact(p, ["session_id", "recovery_epoch", ...fields[event.kind]!, ...extra]);
@@ -245,13 +309,20 @@ export async function replayGlobalAgentRun(directory: string) {
       ledger.registerGlobal({ acquisition_id: p.acquisition_id, capture: { source_ordinal: p.source_ordinal, source_sha256: full!.capture.sha256 },
         observation: input.observation, catalog: input.catalog, catalog_materialized: true, publication_index: String(p.occurrence) }, full!.basis, source!.before!);
       inputs.set(p.acquisition_id, { input, source: p.source_ordinal, occurrence: p.occurrence });
+      if (live && pendingTransition) {
+        // receiveGlobal's original ready input is the boundary. No speculative
+        // reduction mutates the replay state, and terminal needs no next action.
+        await live.transition({ ...pendingTransition, successor: input, verified_through_sequence: event.sequence,
+          original_paths: newOriginalPaths, manifest_original_base64: initialRun!.raw.toString("base64") });
+        pendingTransition = null; newOriginalPaths = [];
+      }
     } else if (event.kind === "global_agent_frame") {
       require(p.direction === "in" || p.direction === "out", "global_frame_direction");
       const bytes = await artifact(p.artifact, p.direction === "in" ? "agent_in" : "agent_out");
       require(bytes.at(-1) === 10 && bytes.subarray(0, -1).indexOf(10) === -1, "global_agent_frame_boundary");
       let frame: any;
       try { frame = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)); }
-      catch { require(p.direction === "in" && run.status !== "completed", "global_invalid_agent_frame"); continue; }
+      catch { require(p.direction === "in" && (live || run.status !== "completed"), "global_invalid_agent_frame"); continue; }
       require(frame.schema === "sts2.policy-runtime/agent-session-1", "global_agent_frame_schema");
       if (frame.message_type === "ready") { require(p.direction === "in" && same(frame.adapter, manifest.adapter), "global_ready"); continue; }
       require(frame.session_id === session && Number.isSafeInteger(frame.recovery_epoch) && frame.recovery_epoch <= epoch, "global_frame_context");
@@ -295,6 +366,7 @@ export async function replayGlobalAgentRun(directory: string) {
         reduction.observation.catalog.find(c => c.choice_id === p.choice_id)?.kind ?? "") && p.occurrence === input.occurrence && p.origin === "agent_choice" && reduction.lowering[p.choice_id], "global_choice_not_in_catalog");
       if (noProgress) require(!noProgress.check(reduction.observation, reduction.observation.catalog.find(c => c.choice_id === p.choice_id)!).exhausted,
         "global_no_progress_stop_omitted");
+      choices++; choiceGeneratedAt = event.recorded_at;
       active = { acquisition: p.acquisition_id, choice: p.choice_id, lowering: reduction.lowering[p.choice_id]!, occurrence: input.occurrence, epoch: p.recovery_epoch,
         deliveries: [], dispatches: [], postSources: new Map(), errors: new Set() };
     } else if (event.kind === "global_dispatch") {
@@ -398,6 +470,20 @@ export async function replayGlobalAgentRun(directory: string) {
         if (active.lowering.commitment) delta = commitmentView(state);
       }
       require(same(p.result.commitment_delta, delta), "global_commitment_delta_changed");
+      if (live && p.result.status === "completed") {
+        require(!pendingTransition, "global_transition_successor_missing");
+        pendingTransition = { schema: "sts2.policy-runtime/verified-global-transition-1",
+          run_id: run.run_id, step_index: choices - 1, result_sequence: event.sequence,
+          generated_at: choiceGeneratedAt, input: inputs.get(active.acquisition)!.input,
+          directive: lastDirective, result: p.result };
+      } else if (live) {
+        // Preserve the original disposition and row numbers. A streaming
+        // research consumer may request the normal owner's technical Stop; a
+        // failed action is never inserted into a completed training trace.
+        await live.boundary?.({ schema: "sts2.policy-runtime/verified-global-boundary-1",
+          run_id: run.run_id, verified_through_sequence: event.sequence,
+          result: p.result, step_index: choices - 1 });
+      }
       results++; active = null;
     } else if (event.kind === "mode_changed") {
       require(identity && ["human", "auto", "one_step", "shadow"].includes(p.mode)
@@ -414,21 +500,37 @@ export async function replayGlobalAgentRun(directory: string) {
     } else if (event.kind === "controller_released") {
       require(p.controller === "released", "global_release_state"); control = "released";
     } else if (event.kind === "controller_release_unknown") {
-      require(p.controller === "unknown" && run.tainted === true && run.status === "tainted", "global_unconfirmed_release_state");
+      require(p.controller === "unknown" && (live || run.tainted === true && run.status === "tainted"), "global_unconfirmed_release_state");
+      deferredReleaseUnknown = true;
       control = "unknown"; permanentlyFenced = true;
     } else if (["handoff_to_human", "autonomy_budget_exhausted"].includes(event.kind)) {
       require(p.controller === control && control !== "held", "global_handoff_control_state"); mode = "human";
     } else if (event.kind === "runtime_tainted") {
-      require(p.retry === false && run.tainted === true, "global_taint_state"); mode = "human"; permanentlyFenced = true;
+      require(p.retry === false && (live || run.tainted === true), "global_taint_state");
+      deferredTaint = true; mode = "human"; permanentlyFenced = true;
     } else if (event.kind === "fail_closed") { mode = "human";
     } else if (event.kind === "stopped") {
-      require(index === events.length - 1 && p.pending_request === null && p.controller === control
+      if (live) {
+        // The stopped event precedes finalizeForStop. Await its final manifest;
+        // this does not delay any previously emitted verified prefix.
+        const deadline = Date.now() + 30000;
+        while (true) {
+          Object.assign(run, await readLiveManifest(directory));
+          if (run.ended_at !== null) break;
+          require(Date.now() < deadline, "global_final_manifest_missing");
+          await new Promise(resolve => setTimeout(resolve, 20));
+        }
+        require(!deferredTaint || run.tainted === true, "global_taint_state");
+        require(!deferredReleaseUnknown || run.tainted === true && run.status === "tainted", "global_unconfirmed_release_state");
+      }
+      require(p.pending_request === null && p.controller === control
         && control !== "held" && run.mode === "human", "global_final_closure"); stopped = true;
     }
   }
   require(stopped && !active && [...captureRequests.values()].every(r => r.terminal) && [...sources.values()].every(s => s.classified), "global_unaccounted_original_source_or_operation");
   const files = (await readdir(directory)).filter(name => /^global-/u.test(name)); require(files.every(name => referenced.has(name)) && referenced.size === files.length, "global_unreferenced_or_missing_original_artifact");
   return { schema: "sts2.policy-runtime/global-replay-1", run_id: run.run_id, sources: sources.size, observations, consumed, results,
+    ...(live ? { program_close_reason: lastDirective?.directive.type === "close" ? lastDirective.directive.reason : null } : {}),
     initial_progress_original: initialProgressOriginal,
     unknown_delivery: unknown, technical_stop: noProgressStopped ? "no_progress" : null, profile: manifest.input.profile, core: selectedCore, verdict: "verified" as const,
     scope: "original_public_basis_semantic_replay_and_actual_agent_dispatch_joins", native_qualification: false, human_origin: false, research_admission: false };

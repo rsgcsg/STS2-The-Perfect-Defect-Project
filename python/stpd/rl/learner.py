@@ -1,11 +1,8 @@
-"""RL learner: read shard records, train while actors keep playing, publish versions.
+"""Historical whole-episode reader/checkpoints and engineering regressions.
 
-The learner never waits for a whole actor batch. It trains whenever enough
-usable samples exist, never reuses a sample more than ``max_reuse`` times, drops
-trajectories more than ``max_staleness`` versions behind, and publishes a new
-model version every ``updates_per_version`` updates. Shard reads/projection and
-version publication run on background threads; time spent waiting for data is
-measured and reported rather than filled with repeated epochs.
+LearnerConfig remains the shared configuration owner. Supported live training
+uses segments and SegmentLearner through spireagent.workbench.rl_learner or the
+normal Friday GPU-owner entry. The legacy loop below is not a second live path.
 """
 from __future__ import annotations
 
@@ -65,6 +62,7 @@ from .reader import (
     read_once,
 )
 from .reward import REWARD_SPEC, episode_reward
+from .segments import SegmentConfig
 
 CONFIG_SCHEMA = "stpd/rl-learner-config-1"
 CHECKPOINT_SCHEMA = "stpd/rl-learner-checkpoint-2"
@@ -132,6 +130,7 @@ class LearnerConfig:
     # Omitted means the exact legacy update path, not an implicit new plan.
     performance: PerformanceConfig | None = None
     critic: CriticConfig | None = None
+    segments: SegmentConfig | None = None
 
     @classmethod
     def read(cls, path: Path) -> LearnerConfig:
@@ -141,9 +140,11 @@ class LearnerConfig:
         loss = LossConfig(**value.pop("loss", {}))
         performance = value.pop("performance", None)
         critic = value.pop("critic", None)
+        segments = value.pop("segments", None)
         if critic is not None and not value.get("resume_checkpoint"):
             critic = {"head_kind": "attention-residual-v1", **critic}
         return cls(**value, loss=loss,
+                   segments=SegmentConfig(**segments) if segments is not None else None,
                    critic=CriticConfig(**critic) if critic is not None else None,
                    performance=(PerformanceConfig(**performance)
                                 if performance is not None else None))

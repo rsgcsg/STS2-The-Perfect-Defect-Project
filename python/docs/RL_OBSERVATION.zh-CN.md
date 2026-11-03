@@ -1,5 +1,13 @@
 # 长跑评估与只读报告
 
+## 当前短段观察
+
+RL4 learner沿原 `learner-events/` 和 `tb/` 发布进度；`updates.jsonl`记录逐次SGD与首次使用。
+结局TD、终局CE和战后HP已是实际可记录项，不能沿旧“无critic”说明留成不适用或填0。
+FP32 argmax起点评估仍用下面原evaluate/ledger/report链，单独分母，旧unknown不改。
+结局头准不准须在当前策略的独立整局留出上，与同组常数基线比较NLL/EV/等局误差及偏差；
+旧TRAIN预热DEV改善和100局argmax分数都不能代替该检查。原件路径/typed状态决定资格。
+
 本页管已保存结果的展示和下一轮评估的操作。训练、数据准入、停止和换代仍由
 [长跑运行图](RL_LONG_RUN.zh-CN.md)与[Friday 原入口](FRIDAY_ACTOR.md)负责。
 读报告不会启动游戏、查询运行中进程、回写原账本或决定上线。

@@ -39,13 +39,15 @@ class PerformanceConfig:
     defer_sync: bool = False
     precision: str = "fp32"
     tf32: bool = False
+    deduplicate_text: bool = False
 
     def __post_init__(self) -> None:
         if any(type(value) is not bool for value in (
                 self.packed, self.tensor_cache, self.device_cache,
                 self.reference_device_cache, self.joint_nodes,
                 self.async_transfer, self.precompile_inputs,
-                self.bucket, self.defer_sync, self.tf32, self.probe_inference_microbatches)):
+                self.bucket, self.defer_sync, self.tf32, self.probe_inference_microbatches,
+                self.deduplicate_text)):
             raise BoundaryError("rl_performance", "invalid_boolean")
         if (type(self.microbatch_size) is not int or not 1 <= self.microbatch_size <= 64
                 or any(type(value) is not int or not 1 <= value <= 2**28 for value in (
@@ -127,6 +129,8 @@ def prepare_models(model: MStd, reference: MStd,
         raise BoundaryError("rl_performance", "async_transfer_requires_cpu_or_cuda")
     previous = model.execution, reference.execution
     old_nonblocking = model.nonblocking_inputs, reference.nonblocking_inputs
+    old_deduplicate = model.deduplicate_text, reference.deduplicate_text
+    model.deduplicate_text = reference.deduplicate_text = config.deduplicate_text
     old_tf32 = None
     try:
         for member in (model, reference):
@@ -150,6 +154,7 @@ def prepare_models(model: MStd, reference: MStd,
     finally:
         model.execution, reference.execution = previous
         model.nonblocking_inputs, reference.nonblocking_inputs = old_nonblocking
+        model.deduplicate_text, reference.deduplicate_text = old_deduplicate
         if old_tf32 is not None:
             torch.backends.cuda.matmul.allow_tf32 = old_tf32
 

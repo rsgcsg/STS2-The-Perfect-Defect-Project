@@ -6,7 +6,7 @@ and scene padding still follows the original microbatch, preserving dropout.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import torch
 from torch import Tensor
@@ -56,6 +56,16 @@ class TensorFrame:
     entity_count: int
     # Transient CPU metadata retained by device caches; never serialized.
     host: TensorFrame | None = field(default=None, repr=False, compare=False)
+    metadata_cache: dict[str, Any] = field(default_factory=dict, repr=False, compare=False)
+
+    @property
+    def text_keys(self) -> tuple[bytes, ...]:
+        source = self.host or self
+        if "text_keys" not in source.metadata_cache:
+            source.metadata_cache["text_keys"] = text_input_keys((
+                source.tensors["text_ids"], source.tensors["text_numbers"],
+                source.tensors["text_lengths"]))
+        return cast(tuple[bytes, ...], source.metadata_cache["text_keys"])
 
     @property
     def text_count(self) -> int:
@@ -214,3 +224,13 @@ def text_batch(frames: list[TensorFrame]) -> tuple[Tensor, Tensor, Tensor]:
             torch.cat([torch.nn.functional.pad(f.tensors["text_numbers"],
                       (0, 0, 0, width - f.text_width)) for f in frames]),
             torch.cat([f.tensors["text_lengths"] for f in frames]))
+
+
+def text_input_keys(inputs: tuple[Tensor, Tensor, Tensor]) -> tuple[bytes, ...]:
+    """Exact parameter-independent text identity; never read CUDA rows to Python."""
+    if any(value.device.type != "cpu" for value in inputs):
+        raise ValueError("text_reuse_requires_host_input_metadata")
+    ids, numbers = inputs[0].numpy(), inputs[1].numpy()
+    lengths = inputs[2].tolist()
+    return tuple(length.to_bytes(4, "little") + ids[i, :length].tobytes()
+                 + numbers[i, :length].tobytes() for i, length in enumerate(lengths))
