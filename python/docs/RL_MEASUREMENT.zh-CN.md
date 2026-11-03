@@ -11,13 +11,29 @@ M4固定真实工作测同成员/数值配置，BF16单列概率差与实际时�
 共享主干梯度只统计辅助损失实际可达的参数，动作专属readout不进入策略分母；
 缺少有效共享梯度时角度为null，不填0。完整分解会多做autograd；普通与诊断SGD分开计时。
 实际训练进程不做大trace的key_averages/导出统计；固定诊断在无Actor的有界工作上做，
-已有trace交独立CPU分析。日志的score_seconds包含投影、编译和等GPU锁，不是纯GPU前向。
-compiled协议把输入投影放在Actor；需同时报Actor编码时间/段bytes、中央解码与请求总延迟。
+已有trace交独立CPU分析。旧local-inference的score_seconds可含投影/编译；
+`stpd/rl-inference-2`的同名计时是scoring worker host区间，含排队后执行、H2D/事件等待/
+前向/D2H，compiled-frame解码在handler入队前，不在这个桶里。两者均不是纯GPU kernel时间。
+compiled协议的`compile_seconds`另计Actor编码；`request_seconds`从编码/JSON大小计算后开始，
+包含评分请求往返，排除段边界的begin容量等待。`compiled_wire_bytes`是编译输入JSON大小，
+不是实测TCP流量。服务端`server_seconds`从该μ的本批开始累计到当前microbatch完成，
+后面的组可包含前组耗时；不把它当逐请求独占GPU时间。
+`batch_histogram`在按μ/形状/面积拆分后记录microbatch数；producer trace的`batch_size`
+按请求加权。报告需写分母，不能将小批全部归因2ms合批窗口。
+
 summary的`timing`含`waiting_for_data_seconds`、`input_read_decode_seconds`、
 `input_wait_seconds`、`input_optimizer_overlap_seconds`与`target_and_auxiliary_seconds`。
 读/解码可与optimizer重叠，不能把各项相加当总墙钟或把重叠全算成收益。
 SGD事件的`first_use_age_samples_seconds`保留该次首次成功使用的逐行年龄；
 整窗P50/P95从全部原始样本计算，旧逐批分位数仅代表原批，不能平均成全窗分位数。
+恢复旧CP后，年龄统计含此前已生成而未首用的库存；按真实来源分组或明确保留这个混合分母，
+不能用任意年龄阈值伪造“新策略数据”来源。版本lag、真实SGD lag与概率差分别计量。
+主线程`target_and_auxiliary_seconds`与`optimizer_attempt_seconds`是host区间；2秒一次的
+NVML采样及这些区间不能拆出准确GPU训练/推理/重叠/空闲比例。若需要该结论，须用
+有界真实steady work的CUDA activity证据，离线分析，不在正式Actor线程导出重profile。
+缓存首次填充、相同成员热读、连续不同dataset和完整在线循环分别计时；辅助HP/终局uses
+上限会改变后续成员，不能把同512引用重复热测倍率作全链收益。配置有旧字段不代表新
+segment_update实际消费，旧能力要核到本次路径/开关。
 
 系统速度是冻结工作量的完成墙钟；学习效果是相同预算下的固定评估差值。
 两者分别报告。更快、吞吐更高、loss更低，都不自动等于策略变强。

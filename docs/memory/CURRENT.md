@@ -1,38 +1,34 @@
-# 当前：RL4准备与首小时实施
+# 当前：RL4-PREP已按未达标收口
 
-用户已派发RL4-PREP-EXEC v4.1，root唯一执行owner；最新已集成develop1fdf356a，
-实际已运行source1f57f47b。原任务与当前未完见[当前RL4段](../plans/RL_CRITIC_20261101.md)。
-RL2/RL3已结束，原unknown不重投；参数可按当前用户目标和真实证据有理由调整。
+用户要求的既定流程、历史/实际链路审核和单份完整报告已完成；root负责本轮交付。
+已运行组合source2d77049e/Runtime63/r1.9；源码交付#378/#379/#380已正常合并。
+新cache033a48ed仅有CPU真实同引用/数值/容量和CI证据，未热换进已结束的小时。
+本轮任务、实物与未达标原因见[RL4任务](../plans/RL_CRITIC_20261101.md)。
+RL2/RL3已结束，原unknown不重投；原卡/原评估分母不被本轮新证据升级。
 
 <!-- Resolve live GitHub refs before action; latest user instructions and live evidence override this file. -->
 
-## 当前任务与唯一下一步
+## 本轮结果与后续边界
 
-M0、2048局新头预热、起点100和前16MC已完成；短段、SGD、μ采用已有真实运行。
-最新窗口在内部120秒容量等待失败后正常Stop，累计189SGD，预留/活动局均0；
-非零GPU CP经空Store替换恢复与R2完整读回通过，完整健康小时仍未通过。
-第一批#378已通过精确CI并正常合并，源码/CI/失败历史已R2完整读回；
-D的真实CPU两局丢回包查原收据、原件保全、空Store早CP后322项输入重放均已通过；
-原Actor归档超时退出1保留，后续保全不改写该结果。诊断CP不替换正式189SGD的CP。
-Actor公开输入一次编译、learner预读/解码及独立CUDA推理stream已集成并经非作者复核；
-集成CPU44通过、CUDA3跳过，最终CI与实际CUDA待验。
-当前唯一下一步：冻结整包候选并CI正常合并；同步CPU准备正式旧CP的compiled-input pack，
-然后验真实健康小时、最终CUDA替换恢复、后16MC与固定TRAIN后点。
-source/config、实际计数和收据只看本卡唯一报告。
+最后小时189→362SGD、19,980新多选首用，约1.98万/h；91saved/31censored/8unknown。
+在途与活动局0证明owner排空；可复现的原件replay超时及低吞吐意味着完整健康验收未过。
+完整CP15→16的CPU空Store/CUDA替换与R2逐项复核通过，0额外SGD/World；
+前后16均自然saved16/unknown0，正常评分与R2读回完成；不是配对实力检验。
+固定TRAIN后点已完成，概率变化不作实力结论；D早CP后322项重放/原收据恢复事实保留。
+本卡不再自动派工。后续建议先修正常原件replay超时、验动态全循环性能，再决定长训。
+报告为共享交付目录replies/RL4-PREP-REPORT-20261103.md；当前不派生新正式训练。
 
-用户11-03批准单A100并追加2小时，GPU总限5小时；已用7052秒、余10948秒，
-含评估仍≤45游戏位。T0不因修复重置，目标11-06约03:42 AEST，24小时进度点不变。
-首小时外正式长训时长未批；结束后停新段、收尾、保存、释放，交同run继续命令。
-不碰Mac安装或真人录制；原100/48与永久heldout不训练，失败历史保留。
+用户已批单A100、GPU累计5小时；12个原GPU作业累计10911秒，余7089秒；排队不计使用。
+含评估仍≤45游戏位；首小时外正式长训未批。T0与原72小时目标不重置。
+本卡不删除资产、不碰Mac安装或真人录制，固定评估/永久heldout不训练。
 
 ## 其他已派工作入口
 
 CARD-1A仍待用户试1–2局与原件/入库；[STATUS](../STATUS.md)路由原安装证据，本卡不安装。
-原RL3最终12unknown的9同因覆盖/3根因未证及原分母保留，#373已合并；不再开诊断批。
+原RL3最终12unknown的9同因覆盖/3根因未证及原分母保留，#373不重开。
 U1的Host63/Runtime62/SDK19/r1.9沿正常冻结采用，原件看[U1](../evidence/UNKNOWN_FIX_U1_20261101.md)。
 
 ## Remaining Platform non-claims（运行与证据边界）
 
-固定100/48和永久heldout不训练；unknown不重试、不当负局或零层。
-Managed、真实安装运行、数据准入和模型效果分别看原收据；CI与合并不代替它们。
+unknown不重试、不当负局；CI/合并、owner排空、R2可读、数据资格和模型效果各看原收据。
 平台其他未完归[STATUS](../STATUS.md)、[U1证据](../evidence/UNKNOWN_FIX_U1_20261101.md)及原Issues，不在本卡自动扩范围。
