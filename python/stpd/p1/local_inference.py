@@ -7,6 +7,7 @@ forward_batch owns scoring. There is no daemon, registry or gameplay controller.
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 import queue
@@ -23,9 +24,11 @@ from typing import Any, cast
 
 import torch
 
-from .data import json_bytes
+from .data import digest, json_bytes
 from .export import adapter_identity, bound_projection, load_model
+from .frame_compiler import FrameCompiler
 from .input import project, validate_input_spec
+from .tensor_input import TensorFrame
 
 AUTH_ENV = "STPD_P1_LOCAL_INFERENCE_AUTH"
 SCHEMA = "stpd/p1-local-inference-1"
@@ -39,6 +42,15 @@ class _Request:
     observation: dict[str, Any]
     answer: Future
     projection: dict[str, Any]
+
+
+@dataclass
+class _CompiledRequest:
+    model: str
+    frame: TensorFrame
+    answer: Future
+    floor: int
+    queued_at: float
 
 
 class LocalInferencePool:
@@ -269,7 +281,7 @@ class LocalInferenceClient:
         self.connection.close()
 
 
-SEGMENT_SCHEMA = "stpd/rl-inference-1"
+SEGMENT_SCHEMA = "stpd/rl-inference-2"
 
 
 class SegmentInferencePool(LocalInferencePool):
@@ -282,12 +294,20 @@ class SegmentInferencePool(LocalInferencePool):
 
     def __init__(self, model: Any, identity: dict[str, Any], *, control: Any,
                  gpu_lock: Any, max_batch: int = 40, window_ms: float = 2,
-                 address: tuple[str, int] | None = None, segment_steps: int = 64) -> None:
+                 address: tuple[str, int] | None = None, segment_steps: int = 64,
+                 compiler_identity: dict[str, Any] | None = None) -> None:
         if model.execution.implementation not in {
                 "experimental-packed-v1", "experimental-joint-nodes-v1"}:
             raise ValueError("RL_inference_requires_explicit_packed_execution")
         if any(parameter.requires_grad for parameter in model.parameters()):
             raise ValueError("RL_inference_requires_immutable_snapshot")
+        self.compiler = FrameCompiler(model.vocabulary)
+        self.compiler_identity = copy.deepcopy(
+            self.compiler.identity if compiler_identity is None else compiler_identity)
+        if any(self.compiler_identity.get(field) != self.compiler.identity[field]
+               for field in ("input_spec", "vocabulary_sha256")):
+            raise ValueError("RL_compiler_vocabulary_binding_differs")
+        self.vocabulary = copy.deepcopy(model.vocabulary)
         key = identity["snapshot_sha256"]
         self.snapshots = {key: identity}
         self.latest = key
@@ -311,7 +331,8 @@ class SegmentInferencePool(LocalInferencePool):
 
     def attachment(self) -> dict[str, Any]:
         return {**super().attachment(), "schema": SEGMENT_SCHEMA,
-                "segment_steps": self.segment_steps}
+                "segment_steps": self.segment_steps, "vocabulary": copy.deepcopy(self.vocabulary),
+                "compiler_identity": copy.deepcopy(self.compiler_identity)}
 
     def close(self) -> dict[str, Any]:
         return {**super().close(), "schema": SEGMENT_SCHEMA,
@@ -320,6 +341,8 @@ class SegmentInferencePool(LocalInferencePool):
     def publish(self, model: Any, identity: dict[str, Any]) -> None:
         if any(parameter.requires_grad for parameter in model.parameters()):
             raise ValueError("RL_inference_requires_immutable_snapshot")
+        if digest(json_bytes(model.vocabulary)) != self.compiler_identity["vocabulary_sha256"]:
+            raise ValueError("RL_compiler_vocabulary_binding_differs")
         key = identity["snapshot_sha256"]
         model.text_cache, model.text_cache_namespace = self.text_cache, key
         with self.model_lock:
@@ -360,13 +383,14 @@ class SegmentInferencePool(LocalInferencePool):
                         key = value["snapshot_sha256"]
                         with self.model_lock:
                             model = self.models[key]
-                            projection = bound_projection(model.vocabulary,
-                                                          value["input_projection"])
+                            bound_projection(model.vocabulary, value["input_projection"])
+                        frame = self.compiler.decode(value["compiled_input"],
+                            expected_identity=self.compiler_identity)
                         answer: Future = Future()
-                        # Only public data enters the numerical queue.
-                        self.queue.put(_Request(key, value["observation"], answer,
-                            {"projection": projection, "floor": value["floor"],
-                             "queued_at": time.perf_counter()}))
+                        # Only already compiled public metadata enters the queue.
+                        cast(queue.Queue[_CompiledRequest | None], self.queue).put(
+                            _CompiledRequest(key, frame, answer, value["floor"],
+                                             time.perf_counter()))
                         response = answer.result(timeout=120)
                     connection.send_bytes(json_bytes({"request_id": value["request_id"],
                                                        "result": response}))
@@ -380,10 +404,10 @@ class SegmentInferencePool(LocalInferencePool):
 
     def _score(self) -> None:
         from stpd.p1.execution import microbatches
-        from stpd.p1.tensor_input import compile_frame
 
+        pending = cast(queue.Queue[_CompiledRequest | None], self.queue)
         while True:
-            first = self.queue.get()
+            first = pending.get()
             if first is None:
                 return
             batch = [first]
@@ -393,11 +417,11 @@ class SegmentInferencePool(LocalInferencePool):
                 if remaining <= 0:
                     break
                 try:
-                    item = self.queue.get(timeout=remaining)
+                    item = pending.get(timeout=remaining)
                 except queue.Empty:
                     break
                 if item is None:
-                    self.queue.put(None)
+                    pending.put(None)
                     break
                 batch.append(item)
             for key in dict.fromkeys(item.model for item in batch):
@@ -406,14 +430,13 @@ class SegmentInferencePool(LocalInferencePool):
                 try:
                     with self.model_lock:
                         model, identity = self.models[key], self.snapshots[key]
-                    frames = [compile_frame(project(item.observation,
-                        input_projection=item.projection["projection"]), model) for item in jobs]
+                    frames = [item.frame for item in jobs]
                     for indices in microbatches(frames, list(range(len(jobs))), model):
                         group = [jobs[i] for i in indices]
                         entered = time.perf_counter()
                         with self.gpu_lock, torch.inference_mode():
                             scores, outcome, _ = model.forward_rl4([frames[i] for i in indices],
-                                [item.projection["floor"] for item in group], check_finite=True)
+                                [item.floor for item in group], check_finite=True)
                             probabilities = outcome.float().softmax(-1).cpu().tolist()
                             output = [value.float().cpu().tolist() for value in scores]
                         elapsed = time.perf_counter()-started
@@ -422,7 +445,7 @@ class SegmentInferencePool(LocalInferencePool):
                             item.answer.set_result({"scores": score,
                                 "outcome_probabilities": probability, "mu": identity,
                                 "server_seconds": elapsed, "batch_size": len(group),
-                                "queue_seconds": entered-item.projection["queued_at"]})
+                                "queue_seconds": entered-item.queued_at})
                         self.stats["requests"] += len(group)
                         self.stats["batches"] += 1
                         histogram = self.stats.setdefault("batch_histogram", {})
@@ -499,6 +522,10 @@ class SegmentInferenceClient(SegmentConnection):
                 or attachment.get("adapter") != adapter_identity()
                 or validate_input_spec(projection) != projection):
             raise ValueError("RL inference attachment differs")
+        self.compiler = FrameCompiler(attachment["vocabulary"])
+        if (self.compiler.identity != attachment["compiler_identity"]
+                or self.compiler.identity["input_spec"] != projection):
+            raise ValueError("RL_producer_compiler_identity_differs")
         super().__init__(attachment)
         self.projection = projection
         self.trace = os.open(trace, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
@@ -513,8 +540,6 @@ class SegmentInferenceClient(SegmentConnection):
         self.begin: Future | None = None
 
     def consume(self, value: dict[str, Any]) -> list[float] | None:
-        from .data import digest
-
         observation, catalog = value["observation"], value["catalog"]
         if not catalog:
             return []
@@ -556,24 +581,31 @@ class SegmentInferenceClient(SegmentConnection):
             record = {**self.cached, "acquisition_id": value["acquisition_id"],
                 "input_sha256": digest(json_bytes(value)), "lease": self.lease,
                 "network_request": False, "request_seconds": 0.0,
+                "compile_seconds": 0.0,
                 "score_source": "reused_consumption"}
         else:
             public_floor = ((observation.get("run") or {}).get("content") or {}).get("floor")
             if type(public_floor) is int:
                 self.floor = max(self.floor, public_floor)
+            compile_began = time.perf_counter()
+            compiled = self.compiler.encode(observation)
+            compile_seconds = time.perf_counter()-compile_began
+            compiled_wire_bytes = len(json_bytes(compiled))
             began = time.perf_counter()
             if len(catalog) == 1:
                 result: dict[str, Any] = {"scores": [0.0], "outcome_probabilities": None,
                     "batch_size": 0, "queue_seconds": 0, "server_seconds": 0}
             else:
                 result = self.request("score", snapshot_sha256=self.mu["snapshot_sha256"],
-                    observation=observation, floor=self.floor, input_projection=self.projection)
+                    compiled_input=compiled, floor=self.floor, input_projection=self.projection)
                 if result["mu"] != self.mu:
                     raise ValueError("actual behavior snapshot changed within segment")
             record = {"schema": "stpd/rl-behavior-decision-1", "mu": self.mu,
                 "lease": self.lease, "acquisition_id": value["acquisition_id"],
                 "input_sha256": digest(json_bytes(value)), "observation_sha256": observation_hash,
                 "catalog_sha256": digest(json_bytes(catalog)), "consumption_unit": unit,
+                "compiled_input": compiled, "compile_seconds": compile_seconds,
+                "compiled_wire_bytes": compiled_wire_bytes,
                 "scores": result["scores"],
                 "outcome_probabilities": result["outcome_probabilities"],
                 "floor": self.floor, "request_seconds": time.perf_counter()-began,

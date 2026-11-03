@@ -121,18 +121,28 @@ class FrameCompiler:
 
     def decode(self, value: object, *, observation: dict[str, Any] | None = None,
                observation_sha256: str | None = None,
-               catalog_sha256: str | None = None) -> TensorFrame:
+               catalog_sha256: str | None = None,
+               expected_identity: dict[str, Any] | None = None) -> TensorFrame:
         """Hash-check raw input when present; never project/tokenize/recompile it.
 
         Callers with an already verified source can pass its two expected hashes
         instead. Omitting them verifies the self-contained wire bindings only.
+        An explicitly frozen producer identity may differ from this consumer's
+        runtime build, but must use this exact InputSpec and vocabulary. Encoding
+        always records the actual local compiler identity.
         """
         wire = object_fields(value, {"schema", "compiler", "observation_sha256",
             "catalog_sha256", "encoding", "frame_sha256", "data", "record_sha256"},
             "p1_frame_compiler")
         if wire["schema"] != SCHEMA or wire["encoding"] != ENCODING:
             _reject("unsupported_frame_encoding")
-        if wire["compiler"] != self.identity:
+        expected_compiler = self.identity if expected_identity is None else object_fields(
+            expected_identity, {"input_spec", "vocabulary_sha256", "compiler_sha256"},
+            "p1_frame_compiler")
+        if any(expected_compiler[key] != self.identity[key]
+               for key in ("input_spec", "vocabulary_sha256")):
+            _reject("compiler_vocabulary_mismatch")
+        if wire["compiler"] != expected_compiler:
             _reject("compiler_identity_mismatch")
         body = {key: entry for key, entry in wire.items() if key != "record_sha256"}
         try:

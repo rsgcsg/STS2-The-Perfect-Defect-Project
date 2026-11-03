@@ -35,7 +35,8 @@ def adapter_identity() -> dict[str, str]:
     closure = {
         name: digest((root / name).read_bytes())
         for name in ("agent.py", "agent_driver.py", "local_inference.py", "export.py", "input.py",
-                     "model.py", "input_encoding.py", "tensor_input.py", "text_cache.py",
+                     "model.py", "input_encoding.py", "frame_compiler.py", "tensor_input.py",
+                     "text_cache.py",
                      "data.py", "execution.py",
                      "spec.py",
                      "input_order.py", "sampling.py",
@@ -47,7 +48,7 @@ def adapter_identity() -> dict[str, str]:
     closure["rl/heads.py"] = digest((root.parent/"rl/heads.py").read_bytes())
     closure["value_head.py"] = digest((root/"value_head.py").read_bytes())
     platform = root.parent.parent / "spireagent"
-    for name in ("policy_files.py", "json_boundary.py"):
+    for name in ("policy_files.py", "json_boundary.py", "encoding.py"):
         closure["spireagent/" + name] = digest((platform / name).read_bytes())
     return {
         "id": ADAPTER,
