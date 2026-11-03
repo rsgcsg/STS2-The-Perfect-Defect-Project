@@ -359,10 +359,12 @@ def test_learner_CLI_defers_usr1_to_local_stop_and_restores_handlers(tmp_path, m
     import sys
 
     from spireagent.workbench import rl_learner as application
+    from stpd.rl import segment_learner
 
     config = tmp_path / 'learner.json'
     config.write_text(json.dumps({'schema': 'stpd/rl-learner-config-1', 'run': 'signal',
-                                 'peer': {'kind': 'local', 'directory': str(tmp_path / 'peer')}}))
+                                 'peer': {'kind': 'local', 'directory': str(tmp_path / 'peer')},
+                                 'segments': {}}))
     work = tmp_path / 'work'
     original = signal.getsignal(signal.SIGUSR1)
 
@@ -370,12 +372,13 @@ def test_learner_CLI_defers_usr1_to_local_stop_and_restores_handlers(tmp_path, m
         def __init__(self, *_):
             pass
 
-        def run(self):
+        def run(self, *, initialize_only=False):
+            assert initialize_only is False
             signal.raise_signal(signal.SIGUSR1)
             assert (work / 'STOP').exists()
             return {'updates': 0, 'versions': [], 'counts': {}}
 
-    monkeypatch.setattr(application, 'Learner', NoGameLearner)
+    monkeypatch.setattr(segment_learner, 'SegmentLearner', NoGameLearner)
     monkeypatch.setattr(sys, 'argv', ['rl_learner', '--config', str(config), '--work', str(work)])
     application.main()
     assert signal.getsignal(signal.SIGUSR1) == original
