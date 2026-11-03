@@ -46,7 +46,8 @@ class LocalInferencePool:
 
     def __init__(self, packages: dict[str, Path], *, max_batch: int, window_ms: float,
                  models: dict[str, Any] | None = None,
-                 address: tuple[str, int] = ("127.0.0.1", 0)) -> None:
+                 address: tuple[str, int] = ("127.0.0.1", 0),
+                 authkey: bytes | None = None) -> None:
         if (
             type(max_batch) is not int
             or not 1 <= max_batch <= (64 if models is not None else 16)
@@ -60,7 +61,9 @@ class LocalInferencePool:
                        {sha: load_model(path, sha)[0] for sha, path in packages.items()})
         self.max_batch, self.window = max_batch, window_ms / 1000
         self.pool_id = secrets.token_hex(16)
-        self.auth = secrets.token_bytes(32)
+        if authkey is not None and len(authkey) != 32:
+            raise ValueError("inference_capability_must_be_32_bytes")
+        self.auth = secrets.token_bytes(32) if authkey is None else authkey
         self.adapter = adapter_identity()
         self.listener = Listener(address, authkey=self.auth)
         self.address = cast(tuple[str, int], self.listener.address)
@@ -298,8 +301,13 @@ class SegmentInferencePool(LocalInferencePool):
         model.text_cache, model.text_cache_namespace = self.text_cache, key
         self.model_lock = threading.RLock()
         ip = socket.gethostbyname(socket.gethostname())
+        inherited = os.environ.get(AUTH_ENV)
+        try:
+            authkey = bytes.fromhex(inherited) if inherited is not None else None
+        except ValueError:
+            raise ValueError("invalid_inherited_inference_capability") from None
         super().__init__({}, max_batch=max_batch, window_ms=window_ms,
-            models={key: model}, address=address or (ip, 0))
+            models={key: model}, address=address or (ip, 0), authkey=authkey)
 
     def attachment(self) -> dict[str, Any]:
         return {**super().attachment(), "schema": SEGMENT_SCHEMA,

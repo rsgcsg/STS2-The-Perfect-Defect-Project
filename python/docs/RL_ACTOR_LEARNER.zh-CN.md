@@ -50,14 +50,28 @@ BF16 仅训练前向，log-softmax、loss、Adam均FP32；acting/eval FP32，TF3
 
 ## Friday 的正常启动与继续
 
-先在原 GPU 分配/资源槽中准备干净冻结源码、同一执行配置、非敏感 peer、learner JSON。
-启动命令在 GPU 节点执行；CPU 数组仍由既有 Friday adapter 和 E2 resource-slot 提交：
+先准备干净冻结源码、同一执行配置、非敏感 peer、learner JSON 和 GPU sbatch 脚本。
+Friday 登录节点运行 `launch`：原 GPU 作业只创建 scorer/Actor plan 并运行 learner，
+登录进程等原 plan 后调用既有 CPU `submit`，避免计算节点提交 CPU 数组被拒绝。
+GPU 脚本保留原 E2 resource-slot 和环境加载，内部执行：
 
 ```bash
 python tools/friday/rl.py learn --config /ABS/learner.json --work /ABS/new-learner-work \
   --execution /ABS/execution.json --actors-output /ABS/new-actors \
-  --actors 32 --seed-namespace NEW-TRAIN-NAMESPACE
+  --actors 32 --seed-namespace NEW-TRAIN-NAMESPACE --external-submit
 ```
+
+登录节点在相同已加载环境执行一次：
+
+```bash
+python tools/friday/rl.py launch --gpu-script /ABS/GPU.sh --config /ABS/learner.json \
+  --work /ABS/new-learner-work --actors-output /ABS/new-actors --output /ABS/new-launch \
+  --gpu a30 --minutes 85 --cpus 16 --memory-gb 64 --ready-seconds 120
+```
+
+`ready-seconds` 是包含排队的有限启动窗口，超时先核原 GPU intent/job，不能重发。
+GPU 家族和时长须在当前任务授权内。GPU/Actor 原作业、plan、提交意图和回执各保留；
+失败只写本次 work/Actor 的 STOP，原 run 和 CP 可显式继续。
 
 CPU准备使用同一入口发布准确起点μ和完整CP，0World/0SGD并关闭服务：
 
@@ -76,7 +90,8 @@ prepare/submit/score；RL4分支严格联接完整CP、实际发布policy及head
 `segments.excluded_seeds`（永久 suite 和原 held_out 同时拒绝）。
 `performance` 显式 packed/tensor_cache/precompile_inputs、microbatch、BF16、text dedup 与面积上限。
 
-`learn` 构造原 learner/scorer，写无秘密 inference attachment，调用现有 `prepare`/`submit`；
+`learn` 构造原 learner/scorer，写无秘密 inference attachment，调用现有 `prepare`；
+`launch` 在登录节点调用原 CPU `submit`，两次 sbatch 继承登录进程生成的同一个临时 auth。
 临时 auth 只通过 sbatch 继承环境传给 Actor，不写配置、日志或报告。提交意图先持久化；
 若回复丢失，查原提交，不再发数组。`prepare`/`submit --dry-run` 本身不创建 World。
 

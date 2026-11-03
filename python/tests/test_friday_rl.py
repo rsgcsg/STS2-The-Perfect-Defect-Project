@@ -554,8 +554,9 @@ def test_initial_array_submit_unknown_keeps_intent_without_a_second_offer(rl, in
     assert len(commands) == 1
 
 
+@pytest.mark.parametrize("external", [False, True])
 def test_gpu_owner_hands_transient_auth_to_original_cpu_submission_only(
-    rl, inputs, tmp_path, monkeypatch
+    rl, inputs, tmp_path, monkeypatch, external
 ):
     """No Slurm/GPU: real prepare serializer, stubbed numerical/scheduler owners."""
     from spireagent import resource_slot
@@ -601,5 +602,56 @@ def test_gpu_owner_hands_transient_auth_to_original_cpu_submission_only(
     monkeypatch.setattr(segment_learner, 'SegmentLearner', NumericalOwner)
     monkeypatch.setattr(rl, 'submit', submitted)
     assert rl.learn(configuration, work, execution, actors, actors=32,
-                    seed_namespace='synthetic-new-seeds') == {'updates': 0}
-    assert calls == ['submit', 'run'] and os.environ[AUTH_ENV] == 'prior-capability'
+                    seed_namespace='synthetic-new-seeds',
+                    external_submit=external) == {'updates': 0}
+    assert calls == (['run'] if external else ['submit', 'run'])
+    assert os.environ[AUTH_ENV] == 'prior-capability'
+
+
+@pytest.mark.parametrize('unknown_cpu', [False, True])
+def test_login_launch_submits_original_plan_with_same_environment(
+    rl, inputs, tmp_path, monkeypatch, unknown_cpu
+):
+    from stpd.p1.local_inference import AUTH_ENV
+
+    execution, config, actors = inputs
+    script = tmp_path/'gpu.sh'
+    script.write_text('#!/bin/sh\n')
+    work, output = tmp_path/'work', tmp_path/'login'
+    capabilities, commands = [], []
+    monkeypatch.setenv(AUTH_ENV, 'prior')
+    monkeypatch.setattr(rl.scheduler, 'submission_lock_path', lambda: tmp_path/'submit.lock')
+
+    def schedule(command):
+        commands.append(command)
+        if command[0] == 'sbatch':
+            capabilities.append(os.environ[AUTH_ENV])
+            rl.prepare(execution, config, actors)
+            return 'synthetic-GPU'
+        return ''
+
+    def submit(plan, **options):
+        capabilities.append(os.environ[AUTH_ENV])
+        assert rl.load_plan(plan)['learner_origin']['sha256'] == rl.hashed(config)
+        assert options == {'memory_gb': 4}
+        if unknown_cpu:
+            raise RuntimeError('unknown CPU response')
+        return {'job_id': 'synthetic-CPU'}
+
+    monkeypatch.setattr(rl.scheduler, 'output', schedule)
+    monkeypatch.setattr(rl, 'submit', submit)
+    if unknown_cpu:
+        with pytest.raises(RuntimeError, match='unknown CPU'):
+            rl.launch(script, config, work, actors, output)
+        assert (actors/'STOP').exists()
+    else:
+        receipt = rl.launch(script, config, work, actors, output)
+        assert receipt['GPU_job_id'] == 'synthetic-GPU'
+        assert (output/'launch-receipt.json').exists()
+    assert len(capabilities) == 2 and capabilities[0] == capabilities[1]
+    assert len(bytes.fromhex(capabilities[0])) == 32
+    assert os.environ[AUTH_ENV] == 'prior'
+    assert all(capabilities[0] not in f.read_text() for f in tmp_path.rglob('*.json'))
+    with pytest.raises(ValueError, match='fresh_login'):
+        rl.launch(script, config, work, actors, output)
+    assert sum(command[0] == 'sbatch' for command in commands) == 1
