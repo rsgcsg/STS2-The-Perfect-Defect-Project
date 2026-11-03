@@ -23,10 +23,11 @@ from typing import Any
 
 from spireagent.json_boundary import BoundaryError, json_bytes
 from spireagent.storage.archives import archive_bundle
+from stpd.p1.frame_compiler import FrameCompiler
 from stpd.p1.sampling import distribution
 from stpd.p1.trajectory import validate_behavior
 
-from .managed_segment_store import SCHEMA
+from .managed_segment_store import COMPILED_SCHEMA, SCHEMA
 
 
 class OriginalBarrier:
@@ -150,9 +151,11 @@ class SegmentAssembler:
         commit: Callable[[dict[str, Any], bytes], dict[str, Any] | None],
         *,
         step_limit: int = 64,
+        compiler: FrameCompiler | None = None,
     ) -> None:
         self.identity, self.barrier, self.commit_segment = identity, barrier, commit
         self.step_limit = step_limit
+        self.compiler = compiler
         self.steps: list[dict[str, Any]] = []
         self.terminal_pending = False
         self.trace = barrier.trace.open("rb")
@@ -271,7 +274,7 @@ class SegmentAssembler:
             self.steps, trace_through_bytes=self.trace_end
         )
         value = {
-            "schema": SCHEMA,
+            "schema": COMPILED_SCHEMA if self.compiler is not None else SCHEMA,
             "training_split": "TRAIN",
             "identity": self.identity,
             "run_id": self.steps[0]["run_id"],
@@ -286,6 +289,10 @@ class SegmentAssembler:
                 self.committed[-1]["segment_artifact_id"] if self.committed else None
             ),
         }
+        if self.compiler is not None:
+            value.update(compiler_identity=self.compiler.identity,
+                compiled_boundary=(self.compiler.encode(
+                    self.steps[-1]["successor"]["observation"]) if terminal is None else None))
         result = self.commit_segment(value, original_bytes)
         self.committed.append(
             {
@@ -324,9 +331,10 @@ class LiveSegmentProducer:
         private: Path,
         *,
         step_limit: int = 64,
+        compiler: FrameCompiler | None = None,
     ) -> None:
         self.assembler = SegmentAssembler(
-            identity, OriginalBarrier(run, trace), commit, step_limit=step_limit
+            identity, OriginalBarrier(run, trace), commit, step_limit=step_limit, compiler=compiler
         )
         self.error: BaseException | None = None
         self.report: dict[str, Any] | None = None
@@ -622,6 +630,7 @@ class SegmentManagedExecutor(PipelinedManagedExecutor):
             commit,
             artifacts.root / "private",
             step_limit=self.attachment["segment_steps"],
+            compiler=FrameCompiler(self.attachment["vocabulary"]),
         )
         self.connections[startup["run_id"]] = connection
         self.observers[startup["run_id"]] = observer

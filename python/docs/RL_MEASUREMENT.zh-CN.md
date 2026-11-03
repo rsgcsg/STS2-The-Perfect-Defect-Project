@@ -12,6 +12,12 @@ M4固定真实工作测同成员/数值配置，BF16单列概率差与实际时�
 缺少有效共享梯度时角度为null，不填0。完整分解会多做autograd；普通与诊断SGD分开计时。
 实际训练进程不做大trace的key_averages/导出统计；固定诊断在无Actor的有界工作上做，
 已有trace交独立CPU分析。日志的score_seconds包含投影、编译和等GPU锁，不是纯GPU前向。
+compiled协议把输入投影放在Actor；需同时报Actor编码时间/段bytes、中央解码与请求总延迟。
+summary的`timing`含`waiting_for_data_seconds`、`input_read_decode_seconds`、
+`input_wait_seconds`、`input_optimizer_overlap_seconds`与`target_and_auxiliary_seconds`。
+读/解码可与optimizer重叠，不能把各项相加当总墙钟或把重叠全算成收益。
+SGD事件的`first_use_age_samples_seconds`保留该次首次成功使用的逐行年龄；
+整窗P50/P95从全部原始样本计算，旧逐批分位数仅代表原批，不能平均成全窗分位数。
 
 系统速度是冻结工作量的完成墙钟；学习效果是相同预算下的固定评估差值。
 两者分别报告。更快、吞吐更高、loss更低，都不自动等于策略变强。

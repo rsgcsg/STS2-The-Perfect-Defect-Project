@@ -403,7 +403,8 @@ class Exchange:
         if not _NAME.fullmatch(actor) or type(sequence) is not int or not 0 <= sequence < 10**8:
             reject("invalid_segment_record_key")
         info = self.store.get_manifest(record["segment_artifact_id"]).parameters.value()
-        if (info.get("schema") != "stpd/p1-trajectory-segment-1"
+        if (info.get("schema") not in {
+                "stpd/p1-trajectory-segment-1", "stpd/p1-trajectory-segment-2"}
                 or any(info[key] != record[key] for key in ("segment_id", "run_id", "rows", "mu"))):
             reject("segment_record_binding_mismatch")
         raw = _sealed({**record, "schema": SEGMENT_SCHEMA, "run": self.run,

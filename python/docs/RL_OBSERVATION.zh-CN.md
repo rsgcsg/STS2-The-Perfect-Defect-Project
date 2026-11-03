@@ -10,6 +10,10 @@ unknown比例、成功终局分母和已验证前缀首用是三个指标；不�
 RL4 Actor；原生清理未确认和真实保存失败按原owner范围停止，不能与计数停机混为一谈。
 结局头准不准须在当前策略的独立整局留出上，与同组常数基线比较NLL/EV/等局误差及偏差；
 旧TRAIN预热DEV改善和100局argmax分数都不能代替该检查。原件路径/typed状态决定资格。
+观察新候选时同步核Actor/learner的compiler身份、实际compiled payload与配置的
+`prepare_ahead/inference_stream`，以及推理summary的requested/enabled/device/priority；
+配置true不证明CUDA已运行。报告用同一连续健康窗的原始年龄样本、输入阶段时间、
+Archive全root积压/空闲量、队列/预留与GPU采样，不把旧恢复窗混进新小时。
 
 本页管已保存结果的展示和下一轮评估的操作。训练、数据准入、停止和换代仍由
 [长跑运行图](RL_LONG_RUN.zh-CN.md)与[Friday 原入口](FRIDAY_ACTOR.md)负责。

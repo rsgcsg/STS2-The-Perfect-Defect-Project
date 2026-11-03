@@ -14,7 +14,8 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 OPERATIONAL_FIELDS = ("diagnostics_every", "archive_pending_bytes", "archive_min_free_bytes",
-                      "archive_poll_seconds")
+                      "archive_poll_seconds", "input_compiler_identity", "input_pack_artifact_id",
+                      "prepare_ahead", "inference_stream")
 
 @dataclass(frozen=True)
 class SegmentConfig:
@@ -39,8 +40,12 @@ class SegmentConfig:
     excluded_seeds: list[str] = field(default_factory=list)
     warmup_artifact_id: str | None = None
     archive_pending_bytes: int = 4 * 1024**3
-    archive_min_free_bytes: int = 15 * 1024**3
+    archive_min_free_bytes: int = 20 * 1024**3
     archive_poll_seconds: float = 2
+    input_compiler_identity: dict[str, Any] | None = None
+    input_pack_artifact_id: str | None = None
+    prepare_ahead: bool = False
+    inference_stream: bool = False
 
     def __post_init__(self) -> None:
         positive = (self.steps, self.dataset_rows, self.minibatches, self.epochs,
@@ -56,6 +61,13 @@ class SegmentConfig:
                 or not 0 < self.checkpoint_seconds <= 3600
                 or type(self.archive_min_free_bytes) is not int or self.archive_min_free_bytes < 0
                 or not 0.01 <= self.archive_poll_seconds <= 30
+                or type(self.prepare_ahead) is not bool or type(self.inference_stream) is not bool
+                or (self.input_compiler_identity is not None
+                    and not isinstance(self.input_compiler_identity, dict))
+                or (self.input_pack_artifact_id is not None and (
+                    not isinstance(self.input_pack_artifact_id, str)
+                    or len(self.input_pack_artifact_id) != 64
+                    or any(c not in '0123456789abcdef' for c in self.input_pack_artifact_id)))
                 or any(not isinstance(seed, str) or not seed for seed in self.excluded_seeds)
                 or len(self.excluded_seeds) != len(set(self.excluded_seeds))):
             raise ValueError("invalid_segment_configuration")
@@ -134,7 +146,7 @@ class SegmentQueue:
             self.leases.pop(lease)
             self.condition.notify_all()
 
-    def dataset(self) -> list[dict[str, Any]] | None:
+    def dataset(self, *, take: bool = True) -> list[dict[str, Any]] | None:
         with self.condition:
             totals: dict[str, int] = collections.defaultdict(int)
             chosen: list[dict[str, Any]] = []
@@ -150,6 +162,8 @@ class SegmentQueue:
                     break
             if count < self.config.dataset_rows:
                 return None
+            if not take:
+                return chosen  # Read-ahead remains charged to the original queue capacity.
             members = {s["segment_id"] for s in chosen}
             self.pending = collections.deque(s for s in self.pending
                 if s["segment_id"] not in members)

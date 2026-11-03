@@ -25,6 +25,7 @@ from spireagent.workbench.managed_segment_store import publish_segment, read_seg
 from spireagent.workbench.rl_segment_producer import OriginalBarrier, SegmentAssembler
 from stpd.evaluation.suites import derive_game_seed
 from stpd.p1.export import export_model, input_spec, runtime_projection
+from stpd.p1.frame_compiler import FrameCompiler
 from stpd.p1.local_inference import SegmentConnection, SegmentInferenceClient
 from stpd.p1.model import MStd
 from stpd.p1.vocabulary import public_vocabulary
@@ -105,7 +106,7 @@ def configuration(tmp_path, monkeypatch):
 
 
 def deliver(learner, tmp_path, actor, monkeypatch, *, battle=False,
-            connection_type=SegmentConnection, natural=False, end_transform=None):
+            connection_type=SegmentConnection, natural=False, end_transform=None, compiled=False):
     errors = []
     actual_control = learner.pool.control
 
@@ -200,6 +201,7 @@ def deliver(learner, tmp_path, actor, monkeypatch, *, battle=False,
         OriginalBarrier(directory, trace),
         commit,
         step_limit=2,
+        compiler=FrameCompiler(learner.model.vocabulary) if compiled else None,
     )
     try:
         for index in range(count):
@@ -253,6 +255,7 @@ def cleanup(learner):
     learner._collect_publication(wait=True)
     learner.pool.close()
     learner.publisher.shutdown(wait=True)
+    learner.input_preparer.shutdown(wait=True, cancel_futures=True)
     learner.checkpoints.__exit__(None)
     if learner.archive is not None:
         learner.archive.stop_capacity_monitor()

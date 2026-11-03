@@ -21,18 +21,26 @@ from stpd.p1.tensor_input import TensorFrame, compile_frame
 
 from .heads import OUTCOME_CLASSES, categorical_lambda_targets
 from .loss import SegmentSample
+from .segment_inputs import frame_key
 
 
-def _frame(value: dict[str, Any], model: MStd) -> TensorFrame:
+def _frame(value: dict[str, Any], model: MStd, *,
+           frames: Mapping[str, TensorFrame] | None = None) -> TensorFrame:
     projection = runtime_projection(model.vocabulary)
     if value["input_spec"] != input_spec(model.vocabulary, projection):
         raise ValueError("segment_model_input_spec_changed")
+    if frames is not None:
+        key = frame_key(value)
+        if key not in frames:
+            raise ValueError("frozen_compiled_input_missing")
+        return frames[key]
     with torch.device("cpu"):
         return compile_frame(project(value["observation"], input_projection=projection), model)
 
 
 def freeze_targets(
-    segments: list[dict[str, Any]], models: Mapping[str, MStd], *, gpu_lock: Any = None
+    segments: list[dict[str, Any]], models: Mapping[str, MStd], *, gpu_lock: Any = None,
+    frames: Mapping[str, TensorFrame] | None = None,
 ) -> dict[str, Any]:
     current: list[torch.Tensor] = []
     targets: list[torch.Tensor] = []
@@ -54,7 +62,8 @@ def freeze_targets(
             p.append(torch.tensor(value, dtype=torch.float32) if value is not None else None)
             if value is None:
                 deferred.setdefault(key, []).append(
-                    (index, local, _frame(step["input"], model), step["behavior"]["floor"])
+                    (index, local, _frame(step["input"], model, frames=frames),
+                     step["behavior"]["floor"])
                 )
             multi.append(len(step["input"]["catalog"]) > 1)
         probabilities.append(p)
@@ -68,17 +77,17 @@ def freeze_targets(
                 public_floor if type(public_floor) is int else final["behavior"]["floor"],
             )
             deferred.setdefault(key, []).append(
-                (index, -1, _frame(final["successor"], model), boundary_floor)
+                (index, -1, _frame(final["successor"], model, frames=frames), boundary_floor)
             )
         members.append({"segment_id": segment["segment_id"], "rows": len(p)})
     for key, work in deferred.items():
         model = models[key]
         if model.training:
             raise ValueError("behavior_snapshot_must_be_immutable_eval")
-        frames = [item[2] for item in work]
-        for indices in microbatches(frames, list(range(len(work))), model):
+        work_frames = [item[2] for item in work]
+        for indices in microbatches(work_frames, list(range(len(work))), model):
             with lock, torch.inference_mode():
-                _, logits, _ = model.forward_rl4([frames[i] for i in indices],
+                _, logits, _ = model.forward_rl4([work_frames[i] for i in indices],
                     [work[i][3] for i in indices], policy=False, check_finite=True)
                 values = logits.float().softmax(-1).cpu()
             for position, value in zip(indices, values, strict=True):
@@ -124,7 +133,8 @@ def freeze_targets(
 
 
 def samples_from_frozen(
-    segments: list[dict[str, Any]], models: Mapping[str, MStd], frozen: dict[str, Any]
+    segments: list[dict[str, Any]], models: Mapping[str, MStd], frozen: dict[str, Any], *,
+    frames: Mapping[str, TensorFrame] | None = None,
 ) -> list[SegmentSample]:
     members = [
         {"segment_id": value["segment_id"], "rows": len(value["steps"])} for value in segments
@@ -139,7 +149,7 @@ def samples_from_frozen(
     for segment in segments:
         model = models[segment["mu"]["snapshot_sha256"]]
         for step in segment["steps"]:
-            frame = _frame(step["input"], model)
+            frame = _frame(step["input"], model, frames=frames)
             action_id = step["directive"]["directive"]["selection"]["action_id"]
             action = frame.choices.index(action_id)
             # Model choices preserve the same IDs; bind probabilities by the

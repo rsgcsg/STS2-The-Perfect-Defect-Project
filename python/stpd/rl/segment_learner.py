@@ -42,7 +42,7 @@ from stpd.p1.export import (
 from stpd.p1.input import project
 from stpd.p1.local_inference import SegmentInferencePool
 from stpd.p1.model import MStd
-from stpd.p1.tensor_input import compile_frame
+from stpd.p1.tensor_input import TensorFrame, compile_frame
 from stpd.workers.checkpoint_codec import decode_checkpoint, encode_checkpoint
 from stpd.workers.training_io import CheckpointPublisher, FrozenCheckpoint
 
@@ -52,6 +52,7 @@ from .learner import ROOT, LearnerConfig, _device
 from .loss import AuxiliarySample, SegmentSample, segment_update
 from .performance import PerformanceConfig
 from .reward import REWARD_SPEC
+from .segment_inputs import SegmentInputs
 from .segment_targets import freeze_targets, samples_from_frozen
 from .segments import OPERATIONAL_FIELDS, AuxiliaryPool, SegmentQueue, minibatch_members
 
@@ -62,6 +63,15 @@ CHECKPOINT_SCHEMA = "stpd/rl-segment-checkpoint-1"
 class SegmentLearnerIO:
     read_segment: Callable[..., dict[str, Any]]
     publish_model: Callable[..., Any]
+
+
+@dataclass(frozen=True)
+class PreparedInputs:
+    records: list[dict[str, Any]]
+    segments: list[dict[str, Any]]
+    frames: dict[str, TensorFrame] | None
+    started: float
+    finished: float
 
 
 class SegmentLearner:
@@ -109,6 +119,18 @@ class SegmentLearner:
         self.first_use = self.first_use_multi = 0
         self.performance = config.performance or PerformanceConfig()
         self.model = self._start_model()
+        self.input_reader = (SegmentInputs(self.exchange.store, self.model.vocabulary,
+            self.settings.input_compiler_identity, self.settings.input_pack_artifact_id)
+            if self.settings.input_compiler_identity is not None else None)
+        self.input_preparer = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="rl-input-prepare")
+        self.prepared_inputs: Future[PreparedInputs] | None = None
+        self.prepared_records: list[dict[str, Any]] | None = None
+        self.optimizer_intervals: deque[tuple[float, float]] = deque(maxlen=64)
+        self.timing: dict[str, float] = {"input_read_decode_seconds": 0,
+            "input_wait_seconds": 0, "input_optimizer_overlap_seconds": 0,
+            "waiting_for_data_seconds": 0, "target_and_auxiliary_seconds": 0,
+            "optimizer_attempt_seconds": 0}
         if not hasattr(self.model, "rl4_heads") or self.model.value_heads:
             raise BoundaryError("rl_learner", "warmed_RL4_heads_required")
         self.model.to(self.device).eval()
@@ -326,6 +348,8 @@ class SegmentLearner:
             max_batch=self.settings.inference_batch,
             window_ms=self.settings.inference_window_ms,
             segment_steps=self.settings.steps,
+            compiler_identity=self.settings.input_compiler_identity,
+            inference_stream=self.settings.inference_stream,
         )
         for identity in self.restored_mu:
             if identity["snapshot_sha256"] in self.pool.snapshots:
@@ -733,8 +757,47 @@ class SegmentLearner:
             for value in records
         ]
 
+    def _read_inputs(self, records: list[dict[str, Any]]) -> PreparedInputs:
+        started = time.monotonic()
+        segments = self._load(records)
+        frames = None
+        if self.input_reader is not None:
+            frames = {}
+            for record, segment in zip(records, segments, strict=True):
+                frames.update(self.input_reader.frames(record["segment_artifact_id"], segment))
+        return PreparedInputs(records, segments, frames, started, time.monotonic())
+
+    def _prepare_ahead(self) -> None:
+        if not self.settings.prepare_ahead or self.prepared_inputs is not None:
+            return
+        with self.condition:
+            records = self.queue.dataset(take=False)
+            if records is None:
+                return
+            self.prepared_records = records
+            self.prepared_inputs = self.input_preparer.submit(self._read_inputs, records)
+
+    def _take_inputs(self, records: list[dict[str, Any]]) -> PreparedInputs:
+        waiting = time.monotonic()
+        if self.prepared_inputs is not None:
+            if self.prepared_records != records:
+                raise ValueError("prefetched_dataset_membership_changed")
+            prepared = self.prepared_inputs.result()
+            self.prepared_inputs = self.prepared_records = None
+        elif self.settings.prepare_ahead:
+            prepared = self.input_preparer.submit(self._read_inputs, records).result()
+        else:
+            prepared = self._read_inputs(records)
+        self.timing["input_wait_seconds"] += time.monotonic() - waiting
+        self.timing["input_read_decode_seconds"] += prepared.finished - prepared.started
+        self.timing["input_optimizer_overlap_seconds"] += sum(max(0,
+            min(finished, prepared.finished) - max(started, prepared.started))
+            for started, finished in self.optimizer_intervals)
+        return prepared
+
     def _auxiliary(self, references: list[dict[str, Any]]) -> list[AuxiliarySample]:
         cache = {}
+        compiled = {}
         result = []
         for reference in references:
             artifact = reference["segment_artifact_id"]
@@ -745,13 +808,14 @@ class SegmentLearner:
             segment = cache[artifact]
             step = segment["steps"][reference["row"]]
             # Input/vocabulary remains fixed while the shared trunk learns.
-            frame = compile_frame(
-                project(
-                    step["input"]["observation"],
-                    input_projection=runtime_projection(self.model.vocabulary),
-                ),
-                self.model,
-            )
+            if self.input_reader is not None:
+                if artifact not in compiled:
+                    compiled[artifact] = self.input_reader.body(artifact, segment)
+                frame = self.input_reader.frame(step["input"],
+                                               compiled[artifact]["current"][reference["row"]])
+            else:
+                frame = compile_frame(project(step["input"]["observation"],
+                    input_projection=runtime_projection(self.model.vocabulary)), self.model)
             result.append(
                 AuxiliarySample(
                     frame,
@@ -782,9 +846,12 @@ class SegmentLearner:
                 }
                 self.condition.notify_all()
             active = self.active
-        segments = self._load(active["segments"])
+        prepared = self._take_inputs(active["segments"])
+        segments = prepared.segments
+        target_started = time.monotonic()
         if active["frozen"] is None:
-            active["frozen"] = freeze_targets(segments, self.pool.models, gpu_lock=self.gpu_lock)
+            active["frozen"] = freeze_targets(segments, self.pool.models, gpu_lock=self.gpu_lock,
+                                               frames=prepared.frames)
             order = list(range(sum(value["rows"] for value in active["segments"])))
             self.rng.shuffle(order)
             active["members"] = [
@@ -798,7 +865,8 @@ class SegmentLearner:
                 active["hp"] = self.hp.sample(
                     self.settings.auxiliary_rows, self.rng, epochs=self.settings.epochs
                 )
-        self.active_rows = samples_from_frozen(segments, self.pool.models, active["frozen"])
+        self.active_rows = samples_from_frozen(segments, self.pool.models, active["frozen"],
+                                              frames=prepared.frames)
         self.row_metadata = [
             {
                 "generated_at": step.get("generated_at"),
@@ -810,6 +878,7 @@ class SegmentLearner:
             for step in segment["steps"]
         ]
         self.active_auxiliary = self._auxiliary(active["terminal"]), self._auxiliary(active["hp"])
+        self.timing["target_and_auxiliary_seconds"] += time.monotonic() - target_started
         return True
 
     def _step(self) -> None:
@@ -829,7 +898,9 @@ class SegmentLearner:
         )
         terminal = [self.active_auxiliary[0][i] for i in terminal_parts[index]]
         hp = [self.active_auxiliary[1][i] for i in hp_parts[index]]
-        result = segment_update(
+        optimizer_started = time.monotonic()
+        try:
+            result = segment_update(
             self.model,
             self.optimizer,
             [self.active_rows[i] for i in active["members"][index]],
@@ -840,7 +911,11 @@ class SegmentLearner:
             target_kl=self.settings.target_kl,
             gpu_lock=self.gpu_lock,
             diagnostics=self.updates % self.settings.diagnostics_every == 0,
-        )
+            )
+        finally:
+            optimizer_finished = time.monotonic()
+            self.optimizer_intervals.append((optimizer_started, optimizer_finished))
+            self.timing["optimizer_attempt_seconds"] += optimizer_finished - optimizer_started
         if result["stepped"]:
             used = set(active["used"])
             newly_used = [i for i in active["members"][index] if i not in used]
@@ -856,6 +931,7 @@ class SegmentLearner:
                     ages.append(now - datetime.fromisoformat(row["generated_at"]).timestamp())
             ages.sort()
             result.update(
+                first_use_age_samples_seconds=ages,
                 first_use_age_seconds={
                     "n": len(ages),
                     "median": ages[len(ages) // 2] if ages else None,
@@ -1006,6 +1082,8 @@ class SegmentLearner:
             artifacts.add(self.settings.warmup_artifact_id)
             if self.config.start_artifact_id:
                 artifacts.add(self.config.start_artifact_id)
+            if self.settings.input_pack_artifact_id:
+                artifacts.add(self.settings.input_pack_artifact_id)
             artifacts.update(value["segment_artifact_id"] for value in metadata["queue"]["pending"])
             for pool in (metadata["terminal"], metadata["hp"]):
                 artifacts.update(
@@ -1179,11 +1257,15 @@ class SegmentLearner:
                     self.checkpoint()
                     checkpoint_at = time.monotonic() + self.settings.checkpoint_seconds
                 if self.active_rows is None and not self._prepare():
+                    waiting = time.monotonic()
                     with self.condition:
                         self.condition.wait(0.1)
+                    self.timing["waiting_for_data_seconds"] += time.monotonic() - waiting
                     continue
+                self._prepare_ahead()
                 self._step()
         finally:
+            owner_window_seconds = time.monotonic() - began
             with self.condition:
                 self.newlease_stopped = True
                 self.condition.notify_all()
@@ -1210,6 +1292,7 @@ class SegmentLearner:
                     cleanup.callback(self.checkpoints.__exit__,
                                      RuntimeError if self.input_fenced else None)
                     cleanup.callback(self.publisher.shutdown, wait=True)
+                    cleanup.callback(self.input_preparer.shutdown, wait=True, cancel_futures=True)
                     inference = self.pool.close()
                     for future in self.telemetry:
                         future.result()
@@ -1221,6 +1304,8 @@ class SegmentLearner:
             "first_use": self.first_use,
             "first_use_multi": self.first_use_multi,
             "elapsed_seconds": time.monotonic() - began,
+            "owner_window_seconds": owner_window_seconds,
+            "timing": self.timing,
             "unresolved_inflight": len(self.queue.leases),
             "queued_rows": self.queue.rows,
             "unresolved_episodes": len(self.actor_episodes),
