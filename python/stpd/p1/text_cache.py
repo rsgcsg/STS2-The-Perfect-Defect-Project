@@ -26,6 +26,16 @@ class TextVectorCache:
         ] = collections.OrderedDict()
         self.sequence = self.bytes = self.hits = self.misses = self.evictions = 0
 
+    def __deepcopy__(self, memo: dict[int, Any]) -> TextVectorCache:
+        # Model publication deep-copies parameters before assigning a new mu.
+        # Cached vectors, CUDA events and the mutation lock belong to the old
+        # owner, not to those parameters. A copy starts cold with the same bound;
+        # memo retains aliases within the new object graph, never across owners.
+        with self.lock:
+            copied = TextVectorCache(self.limit, stream_safe=self.stream_safe)
+            memo[id(self)] = copied
+            return copied
+
     def get(self, namespace: str, key: bytes) -> torch.Tensor | None:
         with self.lock:
             found = self.rows.get((namespace, key))
