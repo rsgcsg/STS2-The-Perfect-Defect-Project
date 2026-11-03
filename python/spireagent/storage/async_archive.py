@@ -163,8 +163,17 @@ class Archive:
                     "segment_artifact_id", "heads_artifact_id", "input_artifact_id")
                     if value.get(name) is not None)
             for artifact in artifacts:
-                copy_artifact(self.source, self.target, artifact, scratch=self.root,
-                              reuse_published_parents=True)
+                if key.startswith("manifests/"):
+                    copy_artifact(self.source, self.target, artifact, scratch=self.root,
+                                  reuse_published_parents=True)
+                else:
+                    # Exchange indexes name the same immutable artifact. Reuse
+                    # its original manifest intent/readback receipt, rather than
+                    # streaming the same payload again for every record/index.
+                    manifest = self.source.get_manifest(artifact)
+                    dependency = self.offer(f"manifests/{artifact}.json",
+                                            manifest.to_bytes(), start=False)
+                    self._copy(dependency)
             self.target.blobs.put_if_absent(key, raw)
             if self.target.blobs.get(key) != raw:
                 raise StoreError("archive_record_readback_changed")

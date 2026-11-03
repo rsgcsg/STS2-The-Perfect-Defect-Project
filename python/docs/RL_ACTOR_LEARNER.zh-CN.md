@@ -58,6 +58,10 @@ R2复制仍走原Archive outbox。只有learner启动本地容量观察线程，
 超过阈值、观察过期或本地计数出错只暂停新episode/grant；现有commit/end/Stop仍通。
 Actor开新World前等待该临时背压，受原Stop/总deadline约束，恢复后继续。
 这些操作阈值及观察周期`archive_poll_seconds`可显式迁移，不改变学习目标。
+同一artifact的manifest、输入顺序索引与请求key索引复用原manifest outbox的完整读回收据；
+外层Exchange记录仍在依赖完成后发布并核字节，不为每个索引重复流式读回同一payload。
+Actor的`archive_incomplete`仍表示本次收尾未完成，原退出状态保留；可由原共享Archive
+继续保全并追加新读回收据，不重开World，也不把后来读回改写为原作业成功。
 
 跨空Store恢复先用原Archive的`seed_exchange(run)`取回同run日志与索引，再以准确CP启动
 正常learner；缺CP head对应原记录会在开放服务前明确拒绝。此seed会列取原Exchange历史，

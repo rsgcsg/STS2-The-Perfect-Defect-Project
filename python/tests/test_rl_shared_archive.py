@@ -118,6 +118,41 @@ def test_hot_store_cold_reads_use_only_the_explicit_archive(tmp_path):
     assert hot.archive.status(owned=True)["planned"] == 0  # Reading starts no archive worker.
 
 
+def test_input_manifest_and_both_exchange_indexes_share_one_full_dependency_readback(
+        tmp_path, monkeypatch):
+    import spireagent.storage.async_archive as module
+
+    offer = Archive.offer
+
+    def queued(archive, key, raw, *, start=True):
+        return offer(archive, key, raw, start=False)
+
+    # Control scheduling only; producers, CAS, durable outbox and target reads
+    # remain the actual implementations below.
+    monkeypatch.setattr(Archive, "offer", queued)
+    binding, hot, remote = peers(tmp_path)
+    exchange = Exchange(binding, "input-copy")
+    record = exchange.append_input(
+        {"operation": "episode_open", "actor": "actor", "episode": "episode"},
+        {"admitted": True}, sequence=1, previous=None, producer=PRODUCER)
+    copies = []
+    original = module.copy_artifact
+
+    def counted(source, target, artifact, **kwargs):
+        copies.append(artifact)
+        return original(source, target, artifact, **kwargs)
+
+    monkeypatch.setattr(module, "copy_artifact", counted)
+    assert exchange.drain_archive(10)["full_readback"]
+    assert copies == [record["input_artifact_id"]]
+    restored = Exchange(binding["archive"], exchange.run)
+    receipt = restored.input_receipt(
+        {"operation": "episode_open", "actor": "actor", "episode": "episode"})
+    assert receipt["response"] == {"admitted": True}
+    assert remote.get_manifest(record["input_artifact_id"]) == hot.get_manifest(
+        record["input_artifact_id"])
+
+
 def test_existing_exchange_seed_is_exact_and_archive_binding_cannot_drift(tmp_path):
     binding, hot, archive = peers(tmp_path)
     old = Exchange(binding["archive"], "old-run")
