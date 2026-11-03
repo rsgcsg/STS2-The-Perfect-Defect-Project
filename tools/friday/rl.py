@@ -8,6 +8,7 @@ import importlib.util
 import json
 import os
 import re
+import secrets
 import signal
 import subprocess
 import sys
@@ -22,6 +23,7 @@ from batch import capacity, hashed, private_root, read_pinned, save, snapshot
 
 SCHEMA = 'spireagent/friday-rl-actors-v1'
 NAME = re.compile(r'^[a-z0-9][a-z0-9-]{0,62}$')
+LAUNCH_STOP_ENV = 'STPD_FRIDAY_LAUNCH_STOP'
 RETENTION = {'tier': 'trajectory', 'purpose': 'training', 'audit_every': 50}
 
 
@@ -426,7 +428,7 @@ def resume_snapshot(path: Path, actor: str) -> dict[str, Any]:
 
 def learn(configuration: Path, work: Path, execution: Path, actors_output: Path, *,
           actors: int, seed_namespace: str, episode_seconds: int = 14400,
-          memory_gb: int = 4) -> dict[str, Any]:
+          memory_gb: int = 4, external_submit: bool = False) -> dict[str, Any]:
     """The GPU owner starts its scorer, then submits the original CPU actor adapter.
 
     The transient scorer capability reaches sbatch through its inherited environment;
@@ -445,22 +447,34 @@ def learn(configuration: Path, work: Path, execution: Path, actors_output: Path,
     source = Path(__file__).resolve().parents[2]
     require_modules(source)
     require_managed_slot()
+    settings = config.segments
+    minimum_actors = ((settings.dataset_rows + settings.episode_rows - 1)
+                      // settings.episode_rows) if settings is not None else 1
     if (sys.platform != 'linux' or not os.environ.get('SLURM_JOB_ID')
             or config.device != 'cuda' or config.segments is None
-            or actors != config.segments.inference_batch):
-        raise ValueError('allocated_Friday_GPU_and_matching_segment_actor_count_required')
+            or type(actors) is not int
+            or not minimum_actors <= actors <= config.segments.inference_batch):
+        raise ValueError('allocated_Friday_GPU_and_bounded_segment_actor_count_required')
     work = canonical_path(work, existing=False)
     canonical_path(actors_output, existing=False)
     if work.exists() or actors_output.exists():
         raise ValueError('fresh_learner_work_and_never_offered_actor_output_required')
+    prior_auth = os.environ.get(AUTH_ENV)
+    if external_submit and prior_auth is None:
+        raise ValueError('login_launch_capability_required_for_external_submission')
+    if external_submit:
+        launch_stop = canonical_path(Path(os.environ[LAUNCH_STOP_ENV]), existing=False)
+        if launch_stop.exists():
+            raise ValueError('login_launch_already_stopped_reconcile_original_offer')
     work.mkdir(mode=0o700, parents=True)
+    if external_submit and launch_stop.exists():
+        raise ValueError('login_launch_already_stopped_reconcile_original_offer')
 
     def stop(_number, _frame):
         (work / 'STOP').touch()
 
     previous = {number: signal.signal(number, stop)
                 for number in (signal.SIGTERM, signal.SIGINT, signal.SIGUSR1)}
-    prior_auth = os.environ.get(AUTH_ENV)
     try:
         learner = SegmentLearner(config, work,
             SegmentLearnerIO(read_segment, publish_detached_p1_model))
@@ -470,7 +484,8 @@ def learn(configuration: Path, work: Path, execution: Path, actors_output: Path,
                 games_per_ledger=10, runtime_source=source, seed_namespace=seed_namespace,
                 segment_inference=work/'inference.json')
             os.environ.update(learner.pool.environment())
-            submit(actors_output/'plan.json', memory_gb=memory_gb)
+            if not external_submit:
+                submit(actors_output/'plan.json', memory_gb=memory_gb)
         except BaseException:
             # Preserve the initialized learner/CP even if the scheduler offer has
             # no reply. submit's sticky intent requires original-job reconciliation.
@@ -485,6 +500,92 @@ def learn(configuration: Path, work: Path, execution: Path, actors_output: Path,
             os.environ[AUTH_ENV] = prior_auth
         for number, handler in previous.items():
             signal.signal(number, handler)
+
+
+def launch(gpu_script: Path, configuration: Path, work: Path, actors_output: Path,
+           output: Path, *, gpu: str = 'a30', minutes: int = 85,
+           cpus: int = 16, memory_gb: int = 64,
+           actor_memory_gb: int = 4, ready_seconds: float = 120) -> dict[str, Any]:
+    """Login-side resource adapter; both original sbatch calls inherit one capability.
+
+    The GPU script calls ``learn --external-submit`` and owns the learner/scorer.
+    This command only joins its normal prepared plan to the original CPU submit.
+    No capability is placed in a file, argument vector or scheduler receipt.
+    """
+    from stpd.p1.local_inference import AUTH_ENV
+
+    gpu_script, configuration = canonical_path(gpu_script), canonical_path(configuration)
+    work, actors_output = canonical_path(work, existing=False), canonical_path(
+        actors_output, existing=False)
+    output = canonical_path(output, existing=False)
+    if output.exists() or work.exists() or actors_output.exists():
+        raise ValueError('fresh_login_launch_and_unoffered_actor_output_required')
+    if (gpu not in {'a30', 'a100'} or not 1 <= minutes <= 180
+            or not 1 <= cpus <= 32 or not 1 <= memory_gb <= 256
+            or not 1 <= ready_seconds <= 3600):
+        raise ValueError('bounded_Friday_GPU_launch_required')
+    root = private_root(output)
+    prior = os.environ.get(AUTH_ENV)
+    prior_stop = os.environ.get(LAUNCH_STOP_ENV)
+    os.environ[AUTH_ENV] = secrets.token_hex(32)
+    os.environ[LAUNCH_STOP_ENV] = str(root/'STOP')
+
+    def interrupted(_number, _frame):
+        raise InterruptedError('login_launch_interrupted_reconcile_original_offer')
+
+    handlers = {number: signal.signal(number, interrupted)
+                for number in (signal.SIGTERM, signal.SIGINT, signal.SIGUSR1)}
+    command = ['sbatch', '--parsable', '--partition=smp_gpu', '--nodes=1', '--ntasks=1',
+        f'--gres=gpu:{gpu}:1', f'--cpus-per-task={cpus}', f'--mem={memory_gb}G',
+        f'--time={minutes}', '--no-requeue', '--export=ALL', '--job-name=rl4-learner',
+        f'--output={root}/GPU-%j.out', f'--error={root}/GPU-%j.err', str(gpu_script)]
+    try:
+        with scheduler.user_submission_lock():
+            if scheduler.output(['squeue', '-h', '-u', scheduler.username(),
+                                 '-p', 'smp_gpu', '-o', '%i']):
+                raise ValueError('another_Friday_GPU_job_requires_owner_scheduling')
+            save(root/'GPU-submission-intent.json', {'at': time.time(), 'command': command,
+                'script_sha256': hashed(gpu_script), 'configuration_sha256': hashed(configuration)})
+            job = scheduler.output(command)
+            save(root/'GPU-submission.json', {'job_id': job, 'at': time.time()})
+        deadline = time.monotonic()+ready_seconds
+        plan_file = actors_output/'plan.json'
+        while True:
+            try:
+                if not plan_file.exists():
+                    raise FileNotFoundError(plan_file)
+                plan = load_plan(plan_file)
+                break
+            except (FileNotFoundError, json.JSONDecodeError):
+                if time.monotonic() >= deadline:
+                    raise TimeoutError('GPU_actor_plan_not_ready_within_launch_window') from None
+                time.sleep(min(1, max(0, deadline-time.monotonic())))
+        if plan['learner_origin'] != {'path': str(configuration), 'sha256': hashed(configuration)}:
+            raise ValueError('GPU_prepared_actor_plan_has_different_learner_configuration')
+        actors = submit(plan_file, memory_gb=actor_memory_gb)
+        result = {'GPU_job_id': job, 'actors': actors, 'plan_sha256': hashed(plan_file)}
+        save(root/'launch-receipt.json', result)
+        return result
+    except BaseException:
+        # This also reaches a queued GPU via its inherited path before any work exists.
+        (root/'STOP').touch()
+        # Local graceful stop only: preserve this run/CP and every original intent.
+        if work.exists():
+            (work/'STOP').touch()
+        if actors_output.exists():
+            (actors_output/'STOP').touch()
+        raise
+    finally:
+        for number, handler in handlers.items():
+            signal.signal(number, handler)
+        if prior_stop is None:
+            os.environ.pop(LAUNCH_STOP_ENV, None)
+        else:
+            os.environ[LAUNCH_STOP_ENV] = prior_stop
+        if prior is None:
+            os.environ.pop(AUTH_ENV, None)
+        else:
+            os.environ[AUTH_ENV] = prior
 
 
 def main():
@@ -525,15 +626,32 @@ def main():
     learn_parser.add_argument('--seed-namespace', required=True)
     learn_parser.add_argument('--episode-seconds', type=int, default=14400)
     learn_parser.add_argument('--memory-gb', type=int, default=4)
+    learn_parser.add_argument('--external-submit', action='store_true',
+                              help='login launch owns sbatch; GPU only prepares the normal Actor plan')
+    launch_parser = commands.add_parser('launch')
+    for name in ('gpu-script', 'config', 'work', 'actors-output', 'output'):
+        launch_parser.add_argument('--'+name, type=Path, required=True)
+    launch_parser.add_argument('--gpu', choices=('a30', 'a100'), default='a30')
+    launch_parser.add_argument('--minutes', type=int, default=85)
+    launch_parser.add_argument('--cpus', type=int, default=16)
+    launch_parser.add_argument('--memory-gb', type=int, default=64)
+    launch_parser.add_argument('--actor-memory-gb', type=int, default=4)
+    launch_parser.add_argument('--ready-seconds', type=float, default=120)
     args = parser.parse_args()
     os.umask(0o077)
     if (args.command in {'run', 'submit'} and not getattr(args, 'dry_run', False)
             and load_plan(args.plan).get('trajectory_encoding') != 'short-segment-1'):
         raise ValueError('whole_episode_live_training_retired_use_segments')
-    if args.command == 'learn':
+    if args.command == 'launch':
+        result = launch(args.gpu_script, args.config, args.work, args.actors_output,
+            args.output, gpu=args.gpu, minutes=args.minutes, cpus=args.cpus,
+            memory_gb=args.memory_gb, actor_memory_gb=args.actor_memory_gb,
+            ready_seconds=args.ready_seconds)
+    elif args.command == 'learn':
         result = learn(args.config, args.work, args.execution, args.actors_output,
             actors=args.actors, seed_namespace=args.seed_namespace,
-            episode_seconds=args.episode_seconds, memory_gb=args.memory_gb)
+            episode_seconds=args.episode_seconds, memory_gb=args.memory_gb,
+            external_submit=args.external_submit)
     elif args.command == 'prepare':
         result = prepare(args.execution, args.learner_config, args.output,
             actors=args.actors, wall_seconds=args.wall_seconds,

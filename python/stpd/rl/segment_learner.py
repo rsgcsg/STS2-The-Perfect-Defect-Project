@@ -300,7 +300,7 @@ class SegmentLearner:
             segment_steps=self.settings.steps,
         )
         for identity in self.restored_mu:
-            if identity["snapshot_sha256"] == self.pool.latest:
+            if identity["snapshot_sha256"] in self.pool.snapshots:
                 continue
             frozen = self._load_mu(identity)
             frozen.to(self.device).eval()

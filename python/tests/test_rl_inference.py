@@ -14,7 +14,7 @@ from stpd.p1.agent import SCHEMA, serve
 from stpd.p1.data import json_bytes
 from stpd.p1.export import export_model, register
 from stpd.p1.input import V2_INPUT_SPEC, project
-from stpd.p1.local_inference import SegmentInferenceClient, SegmentInferencePool
+from stpd.p1.local_inference import AUTH_ENV, SegmentInferenceClient, SegmentInferencePool
 from stpd.p1.model import MStd
 from stpd.p1.vocabulary import public_vocabulary
 
@@ -41,7 +41,10 @@ def test_real_scores_pin_mu_and_forced_skip_network(tmp_path, monkeypatch):
         key = request.get("pinned_snapshot_sha256") or pool.latest
         return {"mu": pool.snapshots[key], "lease": f"actor/{len(begins)-1:08d}"}
 
+    inherited = "35" * 32
+    monkeypatch.setenv(AUTH_ENV, inherited)
     model, pool, first = model_and_pool(control)
+    assert pool.environment()[AUTH_ENV] == inherited
     for key, token in pool.environment().items():
         monkeypatch.setenv(key, token)
     trace = tmp_path / "decisions.jsonl"

@@ -554,8 +554,12 @@ def test_initial_array_submit_unknown_keeps_intent_without_a_second_offer(rl, in
     assert len(commands) == 1
 
 
+@pytest.mark.parametrize(
+    "external, stop_at_creation, actor_count",
+    [(False, False, 32), (True, False, 32), (True, False, 8), (True, False, 7), (True, True, 32)]
+)
 def test_gpu_owner_hands_transient_auth_to_original_cpu_submission_only(
-    rl, inputs, tmp_path, monkeypatch
+    rl, inputs, tmp_path, monkeypatch, external, stop_at_creation, actor_count
 ):
     """No Slurm/GPU: real prepare serializer, stubbed numerical/scheduler owners."""
     from spireagent import resource_slot
@@ -568,14 +572,15 @@ def test_gpu_owner_hands_transient_auth_to_original_cpu_submission_only(
     learning['segments'] = {'steps': 64, 'inference_batch': 32}
     learning['actor_defaults']['behavior']['uniform_mix'] = 0
     configuration.write_text(json.dumps(learning))
-    config = SimpleNamespace(device='cuda', segments=SimpleNamespace(inference_batch=32),
-                             wall_seconds=3600)
+    config = SimpleNamespace(device='cuda', segments=SimpleNamespace(
+        inference_batch=32, dataset_rows=1024, episode_rows=128), wall_seconds=3600)
     monkeypatch.setattr(LearnerConfig, 'read', lambda _: config)
     monkeypatch.setattr(resource_slot, 'require_managed_slot', lambda: None)
     monkeypatch.setattr(rl, 'require_modules', lambda _: None)
     monkeypatch.setattr(rl.sys, 'platform', 'linux')
     monkeypatch.setenv('SLURM_JOB_ID', 'synthetic-gpu-owner')
     monkeypatch.setenv(AUTH_ENV, 'prior-capability')
+    monkeypatch.setenv(rl.LAUNCH_STOP_ENV, str(tmp_path/'login-STOP'))
     work = tmp_path.resolve()/'learner-work'
     capability = 'synthetic-new-capability'
     calls = []
@@ -593,13 +598,112 @@ def test_gpu_owner_hands_transient_auth_to_original_cpu_submission_only(
     def submitted(path, **options):
         assert os.environ[AUTH_ENV] == capability
         plan = rl.load_plan(path)
-        assert len(plan['actors']) == 32 and options == {'memory_gb': 4}
+        assert len(plan['actors']) == actor_count and options == {'memory_gb': 4}
         assert all(capability not in file.read_text() for file in actors.glob('*.json'))
         calls.append('submit')
         return {'job_id': 'synthetic-unoffered'}
 
     monkeypatch.setattr(segment_learner, 'SegmentLearner', NumericalOwner)
     monkeypatch.setattr(rl, 'submit', submitted)
-    assert rl.learn(configuration, work, execution, actors, actors=32,
-                    seed_namespace='synthetic-new-seeds') == {'updates': 0}
-    assert calls == ['submit', 'run'] and os.environ[AUTH_ENV] == 'prior-capability'
+    if actor_count < 8:
+        with pytest.raises(ValueError, match='bounded_segment_actor_count'):
+            rl.learn(configuration, work, execution, actors, actors=actor_count,
+                     seed_namespace='synthetic-new-seeds', external_submit=external)
+        assert calls == [] and not work.exists()
+        return
+    if stop_at_creation:
+        original_mkdir = Path.mkdir
+
+        def race(path, *args, **kwargs):
+            result = original_mkdir(path, *args, **kwargs)
+            if path == work:
+                (tmp_path/'login-STOP').touch()
+            return result
+
+        monkeypatch.setattr(Path, 'mkdir', race)
+        with pytest.raises(ValueError, match='already_stopped'):
+            rl.learn(configuration, work, execution, actors, actors=actor_count,
+                     seed_namespace='synthetic-new-seeds', external_submit=True)
+        assert calls == []
+        return
+    assert rl.learn(configuration, work, execution, actors, actors=actor_count,
+                    seed_namespace='synthetic-new-seeds',
+                    external_submit=external) == {'updates': 0}
+    assert calls == (['run'] if external else ['submit', 'run'])
+    assert os.environ[AUTH_ENV] == 'prior-capability'
+
+
+@pytest.mark.parametrize('unknown_cpu', [False, True])
+def test_login_launch_submits_original_plan_with_same_environment(
+    rl, inputs, tmp_path, monkeypatch, unknown_cpu
+):
+    from stpd.p1.local_inference import AUTH_ENV
+
+    execution, config, actors = inputs
+    script = tmp_path/'gpu.sh'
+    script.write_text('#!/bin/sh\n')
+    work, output = tmp_path/'work', tmp_path/'login'
+    capabilities, commands = [], []
+    monkeypatch.setenv(AUTH_ENV, 'prior')
+    monkeypatch.setattr(rl.scheduler, 'submission_lock_path', lambda: tmp_path/'submit.lock')
+
+    def schedule(command):
+        commands.append(command)
+        if command[0] == 'sbatch':
+            capabilities.append(os.environ[AUTH_ENV])
+            rl.prepare(execution, config, actors)
+            return 'synthetic-GPU'
+        return ''
+
+    def submit(plan, **options):
+        capabilities.append(os.environ[AUTH_ENV])
+        assert rl.load_plan(plan)['learner_origin']['sha256'] == rl.hashed(config)
+        assert options == {'memory_gb': 4}
+        if unknown_cpu:
+            raise RuntimeError('unknown CPU response')
+        return {'job_id': 'synthetic-CPU'}
+
+    monkeypatch.setattr(rl.scheduler, 'output', schedule)
+    monkeypatch.setattr(rl, 'submit', submit)
+    if unknown_cpu:
+        with pytest.raises(RuntimeError, match='unknown CPU'):
+            rl.launch(script, config, work, actors, output)
+        assert (actors/'STOP').exists()
+        assert (output/'STOP').exists()
+    else:
+        receipt = rl.launch(script, config, work, actors, output)
+        assert receipt['GPU_job_id'] == 'synthetic-GPU'
+        assert (output/'launch-receipt.json').exists()
+    assert len(capabilities) == 2 and capabilities[0] == capabilities[1]
+    assert len(bytes.fromhex(capabilities[0])) == 32
+    assert os.environ[AUTH_ENV] == 'prior'
+    assert all(capabilities[0] not in f.read_text() for f in tmp_path.rglob('*.json'))
+    with pytest.raises(ValueError, match='fresh_login'):
+        rl.launch(script, config, work, actors, output)
+    assert sum(command[0] == 'sbatch' for command in commands) == 1
+
+
+def test_login_queued_gpu_timeout_retains_stop_before_work_exists(rl, tmp_path, monkeypatch):
+    from stpd.p1.local_inference import AUTH_ENV
+    script, config = tmp_path/'gpu.sh', tmp_path/'config.json'
+    script.write_text('#!/bin/sh\n')
+    config.write_text('{}')
+    monkeypatch.delenv(AUTH_ENV, raising=False)
+    monkeypatch.setattr(rl.scheduler, 'submission_lock_path', lambda: tmp_path/'submit.lock')
+    inherited = {}
+
+    def schedule(command):
+        if command[0] == 'sbatch':
+            inherited['stop'] = os.environ[rl.LAUNCH_STOP_ENV]
+            return 'queued-original'
+        return ''
+
+    monkeypatch.setattr(rl.scheduler, 'output', schedule)
+    clock = iter([0, 2])
+    monkeypatch.setattr(rl.time, 'monotonic', lambda: next(clock))
+    with pytest.raises(TimeoutError):
+        rl.launch(script, config, tmp_path/'work', tmp_path/'actors',
+                  tmp_path/'login', ready_seconds=1)
+    assert Path(inherited['stop']).exists()
+    assert not (tmp_path/'work').exists() and not (tmp_path/'actors').exists()
+    assert AUTH_ENV not in os.environ and rl.LAUNCH_STOP_ENV not in os.environ
