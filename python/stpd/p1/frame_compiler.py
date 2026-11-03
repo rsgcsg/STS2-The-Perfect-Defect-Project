@@ -17,6 +17,7 @@ import zlib
 from pathlib import Path
 from typing import Any, NoReturn
 
+import safetensors
 import tokenizers
 import torch
 from torch import Tensor
@@ -53,9 +54,12 @@ def compiler_digest() -> str:
     sources = {name: digest((root / name).read_bytes()) for name in CODE_FILES}
     sources["checkpoint_codec.py"] = digest(
         (root.parent / "workers/checkpoint_codec.py").read_bytes())
+    platform = root.parent.parent / "spireagent"
+    for name in ("json_boundary.py", "encoding.py"):
+        sources["spireagent/" + name] = digest((platform / name).read_bytes())
     sources["uv.lock"] = digest((root.parents[1] / "uv.lock").read_bytes())
     return digest(json_bytes({"sources": sources, "tokenizers": tokenizers.__version__,
-                              "torch": torch.__version__}))
+                              "torch": torch.__version__, "safetensors": safetensors.__version__}))
 
 
 def observation_hashes(observation: dict[str, Any]) -> dict[str, str]:

@@ -6,8 +6,10 @@ import copy
 import gzip
 import json
 import math
+from pathlib import Path
 
 import pytest
+import safetensors
 import torch
 from test_p1_input_r18 import claws, trial
 from test_p1_input_r19 import sphere
@@ -17,11 +19,16 @@ from spireagent.json_boundary import BoundaryError
 from stpd.p1 import frame_compiler
 from stpd.p1.data import digest, json_bytes
 from stpd.p1.execution import MStdExecution
+from stpd.p1.export import adapter_identity
+from stpd.p1.formal_training import MStdTrainer, Population
 from stpd.p1.frame_compiler import FrameCompiler, observation_hashes
 from stpd.p1.input import V2_INPUT_SPEC, V2_R18_INPUT_SPEC, V2_R19_INPUT_SPEC, project
 from stpd.p1.model import MStd
 from stpd.p1.numerics import TrainingNumerics
+from stpd.p1.spec import MStdConfig
 from stpd.p1.tensor_input import compile_frame
+from stpd.p1.tensor_pack import compiler_identity
+from stpd.p1.training import Trainer
 from stpd.p1.vocabulary import public_vocabulary
 from stpd.workers.checkpoint_codec import decode_checkpoint, encode_checkpoint
 
@@ -213,3 +220,51 @@ def test_compressed_payload_limit_is_applied_before_decode(monkeypatch):
     wire["data"] = base64.b64encode(gzip.compress(b"a" * 1024, mtime=0)).decode("ascii")
     with pytest.raises(BoundaryError, match="frame_size_limit"):
         compiler.decode(seal(wire))
+
+
+def test_extracted_encoding_changes_every_existing_executable_identity(monkeypatch):
+    vocabulary = public_vocabulary()
+    frame = project(public_state(), input_projection=V2_INPUT_SPEC)
+    population = Population((frame,), (0,), ("point-1",))
+
+    def identities():
+        formal = MStdTrainer({"train": population,
+                              "dev": Population((frame,), (0,), ("dev-1",)),
+                              "test": Population((), (), ())}, vocabulary, "a" * 64,
+                             MStdConfig(max_epochs=2))
+        legacy = Trainer([frame], [0], vocabulary, "a" * 64, 2)
+        return {"adapter": adapter_identity()["code_sha256"],
+                "formal": formal.identity["code"], "legacy": legacy.identity["code"],
+                "pack": compiler_identity(), "wire": frame_compiler.compiler_digest()}
+
+    before = identities()
+    read_bytes = Path.read_bytes
+
+    def changed_encoding(path):
+        raw = read_bytes(path)
+        return raw + b"\n# alternate encoding source\n" if path.name == "input_encoding.py" else raw
+
+    monkeypatch.setattr(Path, "read_bytes", changed_encoding)
+    after = identities()
+    assert before.keys() == after.keys()
+    assert all(before[key] != after[key] for key in before)
+    for key in ("formal", "legacy", "pack"):
+        assert before[key]["input_encoding.py"] != after[key]["input_encoding.py"]
+
+
+@pytest.mark.parametrize("dependency", ["json_boundary.py", "encoding.py", "safetensors"])
+def test_wire_identity_tracks_its_actual_codec_dependencies(monkeypatch, dependency):
+    before = frame_compiler.compiler_digest()
+    if dependency == "safetensors":
+        monkeypatch.setattr(safetensors, "__version__", "different-codec-version")
+    else:
+        read_bytes = Path.read_bytes
+
+        def changed_codec(path):
+            raw = read_bytes(path)
+            if path.name == dependency and path.parent.name == "spireagent":
+                return raw + b"\n# alternate codec source\n"
+            return raw
+
+        monkeypatch.setattr(Path, "read_bytes", changed_codec)
+    assert frame_compiler.compiler_digest() != before

@@ -67,7 +67,8 @@ class Population(Generic[FrameT]):
                 raise BoundaryError("p1_training", "target_outside_full_catalog")
 
 
-FORMAL_CODE_FILES = ("formal_training.py", "spec.py", "input.py", "model.py", "numerics.py",
+FORMAL_CODE_FILES = ("formal_training.py", "spec.py", "input.py", "model.py", "input_encoding.py",
+                     "numerics.py",
                      "execution.py", "optimization.py", "weighting.py", "input_order.py",
                      "vocabulary.py", "public_vocabulary_v1.json", "input_identity.py",
                      "value_targets.py", "tensor_input.py", "tensor_pack.py", "next_fact.py")

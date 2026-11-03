@@ -82,7 +82,8 @@ class Trainer:
             },
             "code": {
                 name: digest((code_root / name).read_bytes())
-                for name in ("data.py", "input.py", "model.py", "training.py", "numerics.py")
+                for name in ("data.py", "input.py", "model.py", "input_encoding.py",
+                             "training.py", "numerics.py")
             },
             "codec_sha256": digest((code_root.parent / "workers/checkpoint_codec.py").read_bytes()),
             "frame_count": len(frames),

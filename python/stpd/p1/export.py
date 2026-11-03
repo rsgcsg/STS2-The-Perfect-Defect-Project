@@ -35,7 +35,8 @@ def adapter_identity() -> dict[str, str]:
     closure = {
         name: digest((root / name).read_bytes())
         for name in ("agent.py", "agent_driver.py", "local_inference.py", "export.py", "input.py",
-                     "model.py", "tensor_input.py", "text_cache.py", "data.py", "execution.py",
+                     "model.py", "input_encoding.py", "tensor_input.py", "text_cache.py",
+                     "data.py", "execution.py",
                      "spec.py",
                      "input_order.py", "sampling.py",
                      "vocabulary.py", "public_vocabulary_v1.json", "input_identity.py")
