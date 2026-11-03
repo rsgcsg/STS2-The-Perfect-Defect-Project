@@ -463,6 +463,8 @@ def learn(configuration: Path, work: Path, execution: Path, actors_output: Path,
         if launch_stop.exists():
             raise ValueError('login_launch_already_stopped_reconcile_original_offer')
     work.mkdir(mode=0o700, parents=True)
+    if external_submit and launch_stop.exists():
+        raise ValueError('login_launch_already_stopped_reconcile_original_offer')
 
     def stop(_number, _frame):
         (work / 'STOP').touch()

@@ -554,9 +554,9 @@ def test_initial_array_submit_unknown_keeps_intent_without_a_second_offer(rl, in
     assert len(commands) == 1
 
 
-@pytest.mark.parametrize("external", [False, True])
+@pytest.mark.parametrize("external, stop_at_creation", [(False, False), (True, False), (True, True)])
 def test_gpu_owner_hands_transient_auth_to_original_cpu_submission_only(
-    rl, inputs, tmp_path, monkeypatch, external
+    rl, inputs, tmp_path, monkeypatch, external, stop_at_creation
 ):
     """No Slurm/GPU: real prepare serializer, stubbed numerical/scheduler owners."""
     from spireagent import resource_slot
@@ -602,6 +602,21 @@ def test_gpu_owner_hands_transient_auth_to_original_cpu_submission_only(
 
     monkeypatch.setattr(segment_learner, 'SegmentLearner', NumericalOwner)
     monkeypatch.setattr(rl, 'submit', submitted)
+    if stop_at_creation:
+        original_mkdir = Path.mkdir
+
+        def race(path, *args, **kwargs):
+            result = original_mkdir(path, *args, **kwargs)
+            if path == work:
+                (tmp_path/'login-STOP').touch()
+            return result
+
+        monkeypatch.setattr(Path, 'mkdir', race)
+        with pytest.raises(ValueError, match='already_stopped'):
+            rl.learn(configuration, work, execution, actors, actors=32,
+                     seed_namespace='synthetic-new-seeds', external_submit=True)
+        assert calls == []
+        return
     assert rl.learn(configuration, work, execution, actors, actors=32,
                     seed_namespace='synthetic-new-seeds',
                     external_submit=external) == {'updates': 0}
