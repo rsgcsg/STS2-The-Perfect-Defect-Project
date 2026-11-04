@@ -7,29 +7,28 @@ actor 默认在 Friday CPU 本地评分；CPU 进程准备完整批，learner �
 
 ## E1–E8 的合同、实现状态和选择
 
-“默认”只有一个；备选有显式开关，兼容只读不产生新 live 数据，退役实现没有运行开关。
+只用四种实现状态：默认（唯一）、临时（写退出条件及收口时点）、备选（写当前使用方/条件和选择规则）、只读（只读旧数据）。不用的实现移除，必要时从 Git 取回。
 组件承载角色，部署位置不另生业务链。E1/E7/E8 的含义变化由 RL4.1 卡授权；
 E3 是准备角色从训练中细分，其他边在原合同内替换实现。
 
 | 边 | requires → provides；失败含义 | 实现状态 | 开关 / 唯一入口 |
 |---|---|---|---|
 | E1 打局→段 | Runtime 确认的 completed directive、真实 successor、同 μ 全分布及尾值、原件 fsync 承诺 → ≤64 行单 μ 热段；未知动作不入段 | **默认**：Exchange 本地 `.rl-hot/<run>/<generation>`，准入不等待 archive；自然终局尾段仍等待 typed 终局 | `LearnerConfig.segments`；`SegmentManagedExecutor` → `put_hot_segment` → commit |
-| E1 历史编码 | 原完整 artifact/input pack → 原历史内容 | **兼容只读**：segment v1/v2 reader；逐段上传/压缩/复制后准入 **退役** | `managed_segment_store.read_segment`；旧 writer 拒绝 live 发布 |
+| E1 历史编码 | 原完整 artifact/input pack → 原历史内容 | **只读**：segment v1/v2 reader；逐段上传/压缩/复制后准入已移除 | `managed_segment_store.read_segment`；旧 writer 拒绝 live 发布 |
 | E2 推理 | 公平公开输入、完整 catalog、冻结 μ → scores 与51类分布；不判合法性 | **默认**：actor CPU μ、1线程、μ 内有界文字缓存 | `segments.central_scoring=false`；`LocalMuScorer`，actor loopback 统一服务 Agent 和 producer |
-| E2 中央实现 | 同上 | **备选**：中央不可变 μ 集合、合批，CUDA 固定独立高优先 stream；单卡选本地，两卡才考虑中央；没有自动 fallback | `segments.central_scoring=true` → `create_segment_inference_pool`；attachment `role=learner_central` 使 actor 选择 `RemoteMuScorer`；CPU 可作该实现的小测 |
-| E2 旧实现 | 同上 | 共用训练锁或默认 CUDA stream 的中央评分 **退役**；forced null 分布再由 learner 补算 **退役** | 无 live 开关；forced 和 bootstrap 均由 actor/helper 用原段 μ 提供 |
-| E3 段→ready | 准入热段、已验 aux、固定成员/随机顺序/4个切点 → 完整参数无关 PreparedBatch | **默认**：CPU spawn 进程、整批 advantage 和 targets、完整 forward/loss 元数据；主线程准备 **退役** | `BatchPreparer.submit`；`preparation_workers=4`、`preparation_threads=1`；`prepare_ahead=true`；`prepared_bytes=1GiB` 约束当前+下一批 |
-| E3 历史输入 | 原 artifact/compiled input pack → 不可变 wire | **兼容只读**：有界 SegmentInputs LRU；同 key 只有一个冷填充 owner，读验/等待均在共享锁外 | `SegmentInputs`；新热段不依赖 pack/cache 恢复 |
-| E4 更新 | `stage_batch` 一次后的完整批 → θ/Adam/EMA 更新及成功 uses | **默认**：整批 loss，4 minibatch × 1轮；按行 `segment_update` **退役** | `prepared_update`；KL 刹车未成功不记 uses，不补第二轮；benchmark 与 application 走同接口 |
-| E4 加速 | 同上 | **备选**：BF16、loss compile；G1 后才选新的默认 | `performance.precision=bf16`、`performance.compile_loss=true`；默认 FP32 / compile关闭；不设数值等价门 |
-| E5 发布/采用 | 更新后完整 θ 快照 → 完整 model+heads μ；段边界采用，旧尾值仍用旧 μ | **默认**：CPU 后台导出/哈希/Store 发布，跳过未发送中间版；默认 actor 按 grant 按需装载 | `_schedule_publication`；`SegmentGrant.mu`；当前/旧尾值显式 retain/release；中央备选在后台复制冻结模板和装载设备 |
+| E2 中央实现 | 同上 | **临时**：中央不可变 μ 集合、合批，CUDA 固定独立高优先 stream；退出条件：RL5 收卡时仍无两卡计划就退役。当前仅工程测试显式使用，单卡选本地，两卡计划获准后才考虑中央；没有自动 fallback | `segments.central_scoring=true` → `create_segment_inference_pool`；attachment `role=learner_central` 使 actor 选择 `RemoteMuScorer`；CPU 可作该实现的小测 |
+| E3 段→ready | 准入热段、已验 aux、固定成员/随机顺序/4个切点 → 完整参数无关 PreparedBatch | **临时**：CPU spawn 进程、整批 advantage 和 targets、完整 forward/loss 元数据；退出条件：I1 合入 develop 时转默认，旧主线程准备移除 | `BatchPreparer.submit`；`preparation_workers=4`、`preparation_threads=1`；`prepare_ahead=true`；`prepared_bytes=1GiB` 约束当前+下一批 |
+| E3 历史输入 | 原 artifact/compiled input pack → 不可变 wire | **只读**：有界 SegmentInputs LRU；同 key 只有一个冷填充 owner，读验/等待均在共享锁外 | `SegmentInputs`；新热段不依赖 pack/cache 恢复 |
+| E4 更新 | `stage_batch` 一次后的完整批 → θ/Adam/EMA 更新及成功 uses | **默认**：整批 loss，4 minibatch × 1轮；按行 `segment_update` 仅拒绝旧调用 | `prepared_update`；KL 刹车未成功不记 uses，不补第二轮；benchmark 与 application 走同接口 |
+| E4 加速 | 同上 | **临时**：BF16、loss compile；退出条件：G1 选定时，选中的转默认，其余退役；本轮 CPU 短测均关闭 | `performance.precision=bf16`、`performance.compile_loss=true`；默认 FP32 / compile关闭；不设数值等价门 |
+| E5 发布/采用 | 更新后完整 θ 快照 → 完整 model+heads μ；段边界采用，旧尾值仍用旧 μ | **默认**：CPU 后台导出/哈希/Store 发布，跳过未发送中间版；默认 actor 按 grant 按需装载 | `_schedule_publication`；`SegmentGrant.mu`；当前/旧尾值显式 retain/release；临时中央实现在后台复制冻结模板和装载设备 |
 | E6 标签 | Evidence 验证的真实终局或稳定 reward 的公开 HP → typed 标签及 exact RowRef | **默认**：Evidence-owned live verifier+绑定；全量二次 replay 仅抽样审计/评估 | `LiveGlobalReplay.verify(expected)` → 原 typed 入口；不是 observer 副本授权；审计失败追加 finding+Stop |
-| E7 CP | 构造、θ/heads/text、完整 Adam/参数组次序、EMA、计数、Python/Torch/CUDA RNG → 自包含 CP | **默认**：`checkpoint_state.SCHEMA`；无恢复 parent，不读旧 queue/aux/输入日志；mid-epoch重放恢复 **退役** | 配置 `resume_checkpoint`；新 `training_generation`；只恢复学习状态，旧热代追加丢弃处置 |
-| E7 旧 CP | 真实 CP16 + 原构造包/参数次序 → 同学习状态转换 CP；转换零 SGD/World | **兼容只读**：旧 schema `stpd/rl-segment-checkpoint-1`；显式 `convert_cp16`，没有隐式 fallback | application `--convert-cp16-package`；转换序号16、正常下一次保存17、首次新 μ58；转换和恢复 generation 各自具名 |
-| E8 保留/归档 | 开 World 前冻结 seed/selection/manifest hash → 普通自然 win/loss 抽约5%原件，其余留账；技术、unknown、异常、censored、评估全留 | **默认**：`audit_every=20`，原有 full_peer 保存/后台审计按规则调用；所有训练段全归档 **退役** | `managed_retention.training_audit_selected`；原 native+behavior 原件全部规定读回后才释放本轮新副本，旧资产不扫描清理 |
+| E7 CP | 构造、θ/heads/text、完整 Adam/参数组次序、EMA、计数、Python/Torch/CUDA RNG → 自包含 CP | **默认**：`checkpoint_state.SCHEMA`；无恢复 parent，不读旧 queue/aux/输入日志；mid-epoch重放恢复已移除 | 配置 `resume_checkpoint`；新 `training_generation`；只恢复学习状态，旧热代追加丢弃处置 |
+| E7 旧 CP | 真实 CP16 + 原构造包/参数次序 → 同学习状态转换 CP；转换零 SGD/World | **只读**：旧 schema `stpd/rl-segment-checkpoint-1`；显式 `convert_cp16`，没有隐式 fallback | application `--convert-cp16-package`；转换序号16、正常下一次保存17、首次新 μ58；转换和恢复 generation 各自具名 |
+| E8 保留/归档 | 开 World 前冻结 seed/selection/manifest hash → 普通自然 win/loss 抽约5%原件，其余留账；技术、unknown、异常、censored、评估全留 | **默认**：`audit_every=20`，原有 full_peer 保存/后台审计按规则调用；所有训练段全归档已移除 | `managed_retention.training_audit_selected`；原 native+behavior 原件全部规定读回后才释放本轮新副本，旧资产不扫描清理 |
 
-历史 `segments.inference_stream` 字段只兼容读取；当前实现选择由 `central_scoring` 决定，
-中央 CUDA 固定独立 stream。
+历史 `segments.inference_stream` 字段只读；当前实现选择由 `central_scoring` 决定，
+中央 CUDA 固定独立 stream。已移除共用训练锁/默认 stream 的中央评分，以及 forced null 分布再由 learner 补算的分支。
 
 ## 冻结身份和 μ
 

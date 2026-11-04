@@ -160,7 +160,7 @@ def main() -> None:
     finally:
         for number, handler in previous.items():
             signal.signal(number, handler)
-    print(json.dumps({k: summary[k] for k in ("updates", "versions", "counts")}))
+    print(json.dumps(summary))
 
 
 if __name__ == "__main__":

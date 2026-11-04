@@ -721,8 +721,11 @@ class SegmentConnection:
                 receipt = self._request_once("receipt", {"input": original})
                 if receipt["found"]:
                     return cast(dict[str, Any], receipt["response"])
-                if generation is not None and generation != self.attachment.get(
-                        "training_generation"):
+                # A loopback actor endpoint outlives learner generations. Its
+                # startup attachment cannot classify the original owner's input.
+                if (self.attachment.get("role") != "actor_local_mu"
+                        and generation is not None and generation != self.attachment.get(
+                            "training_generation")):
                     return {"reason": "generation_changed"}
                 # The owner has explicitly established absence. Resubmit only
                 # this control input, never consume/act or a policy selection.
@@ -738,6 +741,7 @@ class SegmentConnection:
             self._connect()
         assert self.connection is not None
         if (operation not in {"score", "status", "receipt"}
+                and self.attachment.get("role") != "actor_local_mu"
                 and fields.get("training_generation") is not None
                 and fields["training_generation"] != self.attachment.get("training_generation")):
             raise ConnectionResetError("learner_generation_changed_before_control_delivery")

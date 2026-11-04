@@ -66,7 +66,17 @@ def test_CP16_update_publish_adopt_CP_replace_only_learner_continue(
     assert actual_actor.prefetch.newest()[0]["training_generation"] == owner.generation
     assert exchange.latest_model() is None  # legacy namespace is deliberately not selected
     actor = actual_actor.actor_pool
-    client = SegmentConnection(actor.attachment())
+    class LostBeforeRestoredCommit(SegmentConnection):
+        injected = False
+
+        def _request_once(self, operation, fields):
+            if (operation == "commit" and fields.get("training_generation") == "g-second"
+                    and not self.injected):
+                self.injected = True
+                raise ConnectionResetError("lost before loopback control delivery")
+            return super()._request_once(operation, fields)
+
+    client = LostBeforeRestoredCommit(actor.attachment())
     replacement = None
     owner_closed = False
     try:
@@ -109,7 +119,8 @@ def test_CP16_update_publish_adopt_CP_replace_only_learner_continue(
             previous_lease=grant["lease"])
         assert new_grant["mu"]["training_generation"] == "g-second"
         assert new_grant["lease"] == "live/0"
-        client.attachment.update(training_generation="g-second")
+        # The producer's separate loopback channel retains its startup attachment.
+        # A new-generation control input must reach the actual learner unchanged.
         actor.scorer.retain_mu(old_key)
         if central:
             from spireagent.json_boundary import BoundaryError
@@ -134,6 +145,7 @@ def test_CP16_update_publish_adopt_CP_replace_only_learner_continue(
         assert replacement._prepare()
         while replacement.active is not None:
             replacement._step()
+        assert client.injected
         assert replacement.updates == 370
         assert replacement.first_use_multi > cp.counters.first_use_multi
         assert json.loads(rendezvous.read_bytes())["training_generation"] == "g-second"

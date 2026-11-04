@@ -354,7 +354,7 @@ def test_bounded_prefetch_is_default_off_because_admission_cut_can_differ(tmp_pa
     assert sizes == [3, 2]  # FIFO is preserved; the next update's candidate pool is not.
 
 
-def test_learner_CLI_defers_usr1_to_local_stop_and_restores_handlers(tmp_path, monkeypatch):
+def test_learner_CLI_defers_usr1_to_local_stop_and_restores_handlers(tmp_path, monkeypatch, capsys):
     import signal
     import sys
 
@@ -376,9 +376,11 @@ def test_learner_CLI_defers_usr1_to_local_stop_and_restores_handlers(tmp_path, m
             assert initialize_only is False
             signal.raise_signal(signal.SIGUSR1)
             assert (work / 'STOP').exists()
-            return {'updates': 0, 'versions': [], 'counts': {}}
+            return {'updates': 0, 'versions': 1, 'datasets': 0, 'first_use_multi': 0}
 
     monkeypatch.setattr(segment_learner, 'SegmentLearner', NoGameLearner)
     monkeypatch.setattr(sys, 'argv', ['rl_learner', '--config', str(config), '--work', str(work)])
     application.main()
     assert signal.getsignal(signal.SIGUSR1) == original
+    assert json.loads(capsys.readouterr().out) == {
+        'updates': 0, 'versions': 1, 'datasets': 0, 'first_use_multi': 0}

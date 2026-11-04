@@ -1,7 +1,7 @@
-# RL4.1 I1：源码候选待真实原件与提交
+# RL4.1 I1：真实 CP 已转换，恢复后更新待验
 
-用户11-04派发I1，唯一writer已接三线，基线a7f40bcb，未提交。CPU合成整链和只读复核已过；真实CP16/World、Friday数字、版本/pin/BOM仍未完成。共享SSH认证拒绝，版本登记文件在沙箱写域外；代跑命令及QUESTION交Claude。
-I1相关检查已收齐；下一步由Claude登记/提交/冻结，按原入口补实测；不自动开GPU或长训。接口和实现状态见[RL SOP](../../python/docs/RL_ACTOR_LEARNER.zh-CN.md)，三线冻结范围见[F0](../plans/RL4.1/F0-INTERFACES.md)。
+用户11-04续派I1；已提交候选d22f39ca在Friday新隔离release部署，真实CP16完整读回并保留学习状态转换。CPU单路短测新增8次可恢复更新（362→370），μ采用和同World只换learner已见证，但换代后未继续SGD，整链未通过。三次原attempt及失败分母保留，0 unknown另有2 save_failed；失败原件已由原Store完整读回保全，未改判。
+本地已修loopback换代、Runtime64收据错报63及CLI旧counts输出，待Claude提交后重绑BOM/pins并另版补验；没有热改远端d22。CPU短测已结束，无GPU/长训及活动World；不自动进入G1/H1或重投原意图。接口、四种实现状态及SOP见[RL SOP](../../python/docs/RL_ACTOR_LEARNER.zh-CN.md)，冻结范围见[F0](../plans/RL4.1/F0-INTERFACES.md)。
 
 ## 原轮结果与剩余授权
 
