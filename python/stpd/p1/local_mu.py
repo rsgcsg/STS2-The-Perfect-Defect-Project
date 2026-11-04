@@ -283,6 +283,7 @@ class ActorInferencePool(SegmentInferencePool):
         self.remote_attachment = copy.deepcopy(attachment)
         self.scorer = scorer
         self.leases: dict[tuple[str, str], tuple[str, str]] = {}
+        self.episode_owners: dict[tuple[str, str], dict[str, str]] = {}
         self.controls = threading.RLock()
         # Each connection gets its own control channel: a blocked begin must not
         # prevent the observer's commit/status/episode_end from reaching learner.
@@ -308,8 +309,17 @@ class ActorInferencePool(SegmentInferencePool):
                     "server_seconds": time.perf_counter() - started}
         fields = {key: item for key, item in value.items()
                   if key not in {"schema", "pool_id", "adapter", "request_id", "operation"}}
+        def record_open(reply: dict[str, Any], current: dict[str, Any]) -> None:
+            if (reply.get("admitted") and
+                    reply["training_generation"] == current.get("training_generation")):
+                with self.controls:
+                    self.episode_owners[(fields["actor"], fields["episode"])] = {
+                        key: reply[key] for key in ("run", "training_generation")}
+
         with SegmentConnection(self.remote_attachment) as remote:
             result = remote.request(operation, **fields)
+            if operation == "episode_open":
+                record_open(result, remote.attachment)
             if operation in {"begin", "episode_open"} and result.get("reason") == (
                     "generation_changed"):
                 # Re-admit the same live World under the new learning generation,
@@ -318,6 +328,7 @@ class ActorInferencePool(SegmentInferencePool):
                          "run": remote.attachment["run"],
                          "training_generation": remote.attachment["training_generation"]}
                 admission = remote.request("episode_open", **owner)
+                record_open(admission, remote.attachment)
                 if operation == "begin":
                     result = (remote.request("begin", **owner, previous_lease=None)
                               if admission.get("admitted") else {"stopped": True})
@@ -348,8 +359,15 @@ class ActorInferencePool(SegmentInferencePool):
                 if held is not None:
                     self.scorer.release_mu(held[0])
             elif operation == "episode_end":
+                owner_key = (fields["actor"], fields["episode"])
+                current_owner = self.episode_owners.get(owner_key)
+                current_close = (current_owner is not None and
+                    current_owner["training_generation"] == fields.get("training_generation"))
+                if current_close:
+                    self.episode_owners.pop(owner_key)
                 for lease, (key, episode) in list(self.leases.items()):
-                    if episode == fields.get("episode"):
+                    if (episode == fields.get("episode")
+                            and (current_close or lease[0] == fields.get("training_generation"))):
                         self.scorer.release_mu(key)
                         del self.leases[lease]
         return result
@@ -374,6 +392,15 @@ class ActorControlConnection(SegmentConnection):
         super().__init__(pool.attachment())
         self.scorer = pool.scorer
         self.pool = pool
+
+    def episode_owner(self, actor: str, episode: str) -> dict[str, str]:
+        with self.pool.controls:
+            owner = self.pool.episode_owners.get((actor, episode))
+            if owner is None:
+                from spireagent.json_boundary import BoundaryError
+
+                raise BoundaryError("rl_actor", "episode_admission_owner_missing")
+            return dict(owner)
 
     def release_discarded_lease(self, generation: str, lease: str) -> None:
         self.pool.release_discarded_lease(generation, lease)

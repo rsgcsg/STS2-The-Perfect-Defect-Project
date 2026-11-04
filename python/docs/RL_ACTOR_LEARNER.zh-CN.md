@@ -154,6 +154,12 @@ learner 把完整新 attachment 原子写回同一路径；环境 capability 保
 恢复前停止并确认旧 learner/prepare/SGD 已结束，保留 actor/World 和原件；新 work 目录、同一 run、
 新 generation、同一 peer/rendezvous/capability，从指定自包含 CP 启动。
 恢复撤销该 CP 所属旧热代，追加 discarded_on_restore；旧 ACK 仍可查。不要同时启动两个 learner。
+`episode_open` 的成功 ACK 带实际 run/generation；actor 按 episode 保存这个准入归属，
+恢复后的重新准入在等待新 lease 之前更新。producer 用该归属持久化 close，不能用启动 attachment
+或最后一条旧段猜代。旧 receipt 只读、不回滚归属；当前 episode close 释放该 World 各代的本地 μ 引用。
+当前代零段时只收口控制，不附 terminal/outcome/HP 训练标签；原 typed World 结果仍完整保留。
+观察线程和收口 tail 的第一个错误以 type/stage/code/errno 留在原 report/私有诊断，
+后来的 reconciliation 错误不覆盖它，不保存原 SDK 消息或连接地址。
 
 旧 CP16 转换先准备一个正常 learner JSON：同原 run、原 CP16 ID、目标新 generation，
 明确本轮 peer/资源和学习参数，再运行：

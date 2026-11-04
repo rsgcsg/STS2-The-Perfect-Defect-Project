@@ -15,6 +15,7 @@ import shutil
 import threading
 import time
 from collections.abc import Callable
+from contextlib import suppress
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
@@ -402,6 +403,8 @@ class LiveSegmentProducer:
             scorer=scorer, generation_discarded=generation_discarded
         )
         self.error: BaseException | None = None
+        self.error_record: dict[str, Any] | None = None
+        self.error_path = private / "segment-observer-error.json"
         self.report: dict[str, Any] | None = None
         self.stop_requested = False
         self.interruption: dict[str, Any] | None = None
@@ -418,6 +421,7 @@ class LiveSegmentProducer:
         self.thread.start()
 
     def _read(self) -> None:
+        stage = "verifier_events"
         try:
             assert self.process.stdout is not None
             for value in self.verifier.events():
@@ -427,19 +431,43 @@ class LiveSegmentProducer:
                     if self.interruption is None:
                         self.interruption = value
                         self.stop_requested = True
+                        stage = "interruption_finish"
                         self.assembler.finish(None)
+                        stage = "verifier_events"
                 elif self.interruption is not None:
                     self.after_interruption += 1
                 else:
+                    stage = "transition"
                     self.assembler.transition(value)
+                    stage = "verifier_events"
+            stage = "verifier_exit"
             if self.process.wait() != 0 or self.report is None:
                 raise BoundaryError("rl_segment", "original_prefix_verifier_failed")
         except BaseException as error:
-            self.error = error
+            self._record_error(error, stage)
+
+    def _record_error(self, error: BaseException, operation: str) -> None:
+        if self.error is not None:
+            return  # A later reconciliation failure cannot replace the first error.
+        self.error = error
+        # Never persist raw SDK messages, URLs, credentials or game inputs.
+        self.error_record = {"at": time.time(), "operation": operation,
+            "error_type": type(error).__name__}
+        if isinstance(error, BoundaryError):
+            self.error_record.update(stage=error.stage, code=error.code)
+        elif isinstance(error, OSError):
+            self.error_record["errno"] = error.errno
+        # The original failure remains authoritative if this disk write fails.
+        with suppress(OSError):
+            self.error_path.write_bytes(json_bytes(self.error_record))
 
     def finish(self, terminal: dict[str, Any] | None) -> None:
         self.wait()
-        self.assembler.finish(terminal)
+        try:
+            self.assembler.finish(terminal)
+        except BaseException as error:
+            self._record_error(error, "tail_finish")
+            raise
 
     def wait(self) -> None:
         self.thread.join(timeout=120)
@@ -571,23 +599,22 @@ class SegmentManagedExecutor(PipelinedManagedExecutor):
 
         row["training_audit_selected"] = training_audit_selected(row)
         result = self.admission.request("episode_open", actor=self.actor, episode=row["intent_id"])
-        if result.get("admitted") is not True:
+        row["segment_episode_admitted"] = result.get("admitted") is True
+        if not row["segment_episode_admitted"]:
             raise BoundaryError("rl_segment", "learner_stopped_before_world_offer")
 
     def _end_episode(self, connection: Any, **fields: Any) -> dict[str, Any]:
-        generations = {segment["training_generation"] for segment in fields.get("segments", [])}
-        if generations:
-            fields["run"] = self.exchange.run
-            fields["training_generation"] = fields["segments"][-1]["training_generation"]
-        elif "training_generation" in connection.attachment:
-            fields.update(
-                run=self.exchange.run,
-                training_generation=connection.attachment["training_generation"],
-            )
-        if generations:
-            fields["segments"] = [segment for segment in fields["segments"]
-                if segment["training_generation"] == fields["training_generation"]
-                and not segment.get("discarded_on_restore")]
+        # The actor owns the actual accepted episode admission, including a new
+        # generation with zero committed segments. A startup socket binding or
+        # the last old segment cannot identify that owner after learner restore.
+        fields.update(self.admission.episode_owner(fields["actor"], fields["episode"]))
+        fields["segments"] = [segment for segment in fields.get("segments", [])
+            if segment["training_generation"] == fields["training_generation"]
+            and not segment.get("discarded_on_restore")]
+        if not fields["segments"]:
+            # The original typed World result stays intact, but this generation
+            # has no verified rows to which training labels can be attached.
+            fields.update(terminal=None, outcome_states=[], hp_battles=[])
         original = self.exchange.persist_episode_end(fields, self.producer)
         result: dict[str, Any] = connection.request("episode_end",
             **{key: value for key, value in original.items() if key != "operation"})
@@ -608,7 +635,8 @@ class SegmentManagedExecutor(PipelinedManagedExecutor):
         self, row: dict[str, Any], manifest: dict[str, Any], artifacts: Any, checkpoint: Any
     ) -> None:
         super().__call__(row, manifest, artifacts, checkpoint)
-        if row.get("run_id") is None and row.get("cleanup_accepted") is True:
+        if (row.get("run_id") is None and row.get("cleanup_accepted") is True
+                and row.get("segment_episode_admitted") is True):
             try:
                 self._end_episode(
                     self.admission,
@@ -660,6 +688,8 @@ class SegmentManagedExecutor(PipelinedManagedExecutor):
             )
             report.update(status="stopped", stop_reason=row["reason"])
         finally:
+            if observer.error_record is not None:
+                row["segment_observer_error"] = observer.error_record
             row["segment_stream_close"] = {
                 "segments": observer.assembler.committed,
                 "interruption": observer.interruption,
@@ -974,14 +1004,12 @@ class SegmentManagedExecutor(PipelinedManagedExecutor):
             and observer.report is not None
             and observer.report.get("program_close_reason") == "training_segment_budget_complete"
         )
-        auxiliary = completed_auxiliary(episode, observer.assembler.committed, terminal)
-        if observer.assembler.committed:
-            generation = observer.assembler.committed[-1]["training_generation"]
-            auxiliary = completed_auxiliary(
-                episode,
-                [s for s in observer.assembler.committed if s["training_generation"] == generation],
-                terminal,
-            )
+        generation = self.admission.episode_owner(
+            self.actor, observer.assembler.identity["intent_id"])["training_generation"]
+        current_segments = [s for s in observer.assembler.committed
+            if s["training_generation"] == generation and not s.get("discarded_on_restore")]
+        auxiliary = completed_auxiliary(
+            episode, current_segments, terminal if current_segments else None)
         auxiliary["typed_original"] = result.value.content_id
         auxiliary.update(actor=self.actor, episode=observer.assembler.identity["intent_id"],
                          segments=observer.assembler.committed)

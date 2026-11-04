@@ -101,12 +101,17 @@ class DurableControl:
                         "response": old["response"] if old is not None else None}
             if old is not None:
                 return old["response"]
+            generation = self.pool.snapshots[self.pool.latest]["training_generation"]
+            if value.get("training_generation") != generation:
+                return {"reason": "generation_changed", "training_generation": generation}
             if operation == "begin":
                 response = {"mu": self.pool.snapshots[self.pool.latest],
                             "lease": f"actor/{self.next_lease}", "server_time": time.time()}
                 self.next_lease += 1
             elif operation == "episode_open":
-                response = {"admitted": True}
+                response = {"admitted": True, "run": self.exchange.run,
+                            "training_generation": self.pool.snapshots[
+                                self.pool.latest]["training_generation"]}
             elif operation == "commit":
                 response = {"segment_id": value["segment_id"]}
             else:
@@ -416,7 +421,8 @@ def test_restore_begin_readmits_same_episode_without_a_new_world(running, monkey
         if len(requests) == 1:
             return {"reason": "generation_changed"}
         if operation == "episode_open":
-            return {"admitted": admitted}
+            return {"admitted": admitted, "run": first["run"],
+                    "training_generation": "restored"}
         assert fields["episode"] == "same-live-world" and fields["previous_lease"] is None
         return {"mu": first, "lease": "actor/0"}
     monkeypatch.setattr(SegmentConnection, "request", restored_request)
@@ -502,3 +508,69 @@ def test_explicit_central_scoring_switch_cpu_smoke(monkeypatch):
     finally:
         summary = pool.close()
     assert summary["requests"] == 1
+
+
+@pytest.mark.parametrize("prior_begin", [False, True])
+def test_restore_zero_segment_close_uses_actual_episode_admission(
+    running, tmp_path, prior_begin
+):
+    from spireagent.workbench.rl_segment_producer import SegmentManagedExecutor
+    from stpd.p1.local_mu import ActorControlConnection
+
+    actor, old, control, exchange, first, path = running
+    admission = ActorControlConnection(actor)
+    episode = "zero-segment-world"
+    old_input = None
+    if prior_begin:
+        admission.request("episode_open", actor="actor", episode=episode)
+        admission.request("begin", actor="actor", episode=episode, previous_lease=None)
+        old_input = {"operation": "begin", "run": exchange.run,
+            "training_generation": first["training_generation"],
+            "actor": "actor", "episode": episode, "previous_lease": None}
+    old.close()
+    second, _ = publish_mu(exchange, tmp_path, 2)
+    restored = {**second, "training_generation": "restored"}
+    restored_control = DurableControl(exchange)
+    new = SegmentInferencePool(public_vocabulary(), restored, control=restored_control,
+        address=("127.0.0.1", 0), segment_steps=2)
+    restored_control.pool = control.pool = new
+    path.write_bytes(json_bytes(new.attachment()))
+    try:
+        if prior_begin:
+            admission.request("begin", actor="actor", episode=episode, previous_lease="actor/0")
+        else:
+            admission.request("episode_open", actor="actor", episode=episode)
+        assert admission.episode_owner("actor", episode) == {
+            "run": exchange.run, "training_generation": "restored"}
+        if old_input is not None:
+            # Historical receipt reads must not roll back the current owner.
+            assert admission.request("receipt", input=old_input)["found"]
+            assert admission.episode_owner("actor", episode)["training_generation"] == "restored"
+            admission.request("episode_end", actor="actor", episode=episode,
+                run=exchange.run, training_generation=first["training_generation"],
+                run_id="historical-close", segments=[], terminal=None,
+                outcome_states=[], hp_battles=[])
+            assert admission.episode_owner("actor", episode)["training_generation"] == "restored"
+            assert any(key[0] == "restored" for key in actor.leases)
+        executor = SegmentManagedExecutor.__new__(SegmentManagedExecutor)
+        executor.exchange, executor.producer, executor.admission = exchange, PRODUCER, admission
+        # The observer socket and model registration still name the startup A.
+        with SegmentConnection(actor.attachment()) as stale:
+            executor._end_episode(stale, actor="actor", episode=episode,
+                run_id="real-zero-segment-run",
+                segments=([{"training_generation": first["training_generation"]}]
+                          if prior_begin else []),
+                terminal={"class": 2, "reward": 1.0},
+                outcome_states=[{"training_generation": first["training_generation"]}],
+                hp_battles=[{"states": [{"training_generation": first["training_generation"]}]}])
+        original = exchange.episode_end_input("actor", episode, training_generation="restored")
+        assert original["segments"] == [] and original["run_id"] == "real-zero-segment-run"
+        assert original["terminal"] is None
+        assert original["outcome_states"] == original["hp_battles"] == []
+        assert exchange.episode_end_input("actor", episode,
+            training_generation=first["training_generation"]) is None
+        assert ("actor", episode) not in actor.episode_owners
+        assert not actor.leases
+        assert not any(actor.scorer.references.values())
+    finally:
+        admission.close()

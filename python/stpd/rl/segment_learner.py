@@ -703,7 +703,8 @@ class SegmentLearner:
                     return {"admitted": False}
                 return self._accept(
                     request,
-                    {"admitted": True},
+                    {"admitted": True, "run": self.config.run,
+                     "training_generation": self.generation},
                     lambda: self.actor_episodes.__setitem__(f"{actor}:{episode}", episode),
                 )
             if operation == "begin":

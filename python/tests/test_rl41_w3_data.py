@@ -645,3 +645,85 @@ def test_explicit_restore_discards_old_tail_before_any_bootstrap_score(tmp_path,
         assert len(delivered) == 1
     finally:
         assembler.close()
+
+
+def test_original_observer_error_survives_finish_reconciliation_failure(tmp_path):
+    from types import SimpleNamespace
+
+    from spireagent.workbench.rl_segment_producer import LiveSegmentProducer
+
+    producer = LiveSegmentProducer.__new__(LiveSegmentProducer)
+    producer.process = SimpleNamespace(stdout=object())
+    producer.error = producer.error_record = None
+    producer.error_path = tmp_path / "observer-error.json"
+    producer.interruption = None
+    first = BoundaryError("original_commit", "test_original_io_failed", "private URL must not copy")
+
+    def transition(_value):
+        raise first
+
+    def finish(_value):
+        raise BoundaryError("rl_segment", "original_segment_commit_requires_reconciliation")
+
+    producer.assembler = SimpleNamespace(transition=transition, finish=finish)
+    producer.verifier = SimpleNamespace(events=lambda: iter([{"verified": "transition"}]))
+    producer._read()
+    assert producer.error is first
+    record = json.loads(producer.error_path.read_bytes())
+    assert record["operation"] == "transition"
+    assert (record["stage"], record["code"]) == ("original_commit", "test_original_io_failed")
+    assert "private URL" not in producer.error_path.read_text()
+    producer.thread = SimpleNamespace(join=lambda **_: None, is_alive=lambda: False)
+    with pytest.raises(BoundaryError, match="original_segment_commit_requires_reconciliation"):
+        producer.wait()
+    assert producer.error is first and json.loads(producer.error_path.read_bytes()) == record
+
+
+def test_tail_finish_records_first_error_before_reconciliation(tmp_path):
+    from types import SimpleNamespace
+
+    from spireagent.workbench.rl_segment_producer import LiveSegmentProducer
+
+    producer = LiveSegmentProducer.__new__(LiveSegmentProducer)
+    producer.error = producer.error_record = None
+    producer.error_path = tmp_path / "tail-error.json"
+    producer.thread = SimpleNamespace(join=lambda **_: None, is_alive=lambda: False)
+    calls = []
+
+    def finish(_terminal):
+        calls.append(True)
+        if len(calls) == 1:
+            raise OSError(28, "private filesystem text")
+        raise BoundaryError("rl_segment", "original_segment_commit_requires_reconciliation")
+
+    producer.assembler = SimpleNamespace(finish=finish)
+    with pytest.raises(OSError):
+        producer.finish(None)
+    record = json.loads(producer.error_path.read_bytes())
+    assert record["operation"] == "tail_finish" and record["errno"] == 28
+    assert "private filesystem" not in producer.error_path.read_text()
+    with pytest.raises(BoundaryError, match="original_segment_commit_requires_reconciliation"):
+        producer.finish(None)
+    assert json.loads(producer.error_path.read_bytes()) == record
+
+
+@pytest.mark.parametrize("admitted", [False, True])
+def test_pre_world_cleanup_only_ends_actually_admitted_episode(monkeypatch, admitted):
+    from types import SimpleNamespace
+
+    from spireagent.workbench.rl_segment_producer import (
+        PipelinedManagedExecutor,
+        SegmentManagedExecutor,
+    )
+
+    executor = SegmentManagedExecutor.__new__(SegmentManagedExecutor)
+    executor.actor = "actor"
+    executor.admission = SimpleNamespace()
+    monkeypatch.setattr(PipelinedManagedExecutor, "__call__", lambda *a: None)
+    calls = []
+    executor._end_episode = lambda *_args, **fields: calls.append(fields)
+    row = {"cleanup_accepted": True, "intent_id": "no-world"}
+    if admitted:
+        row["segment_episode_admitted"] = True
+    executor(row, {}, None, lambda: None)
+    assert len(calls) == int(admitted)
