@@ -298,7 +298,7 @@ def submit(path: Path, *, dry_run: bool = False,
         if (root / 'submission-intent.json').exists():
             raise ValueError('previous_actor_submission_requires_reconciliation_no_retry')
         existing = scheduler.output(['squeue', '-h', '-u', scheduler.username(), '-n',
-                                     'spireagent-f2', '-p', partition, '-o', '%i'])
+                                     'spireagent-f2', '-o', '%i'])
         if parents:
             active = {line.split('_')[0].strip() for line in existing.splitlines() if line.strip()}
             known = {p['job_id'] for p in parents}

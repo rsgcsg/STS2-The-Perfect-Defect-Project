@@ -801,6 +801,30 @@ def test_general_segment_submission_keeps_300_second_advance(rl, tmp_path, monke
     assert "--partition=general" in result["command"]
 
 
+@pytest.mark.parametrize("partition", ["general", "debug"])
+def test_other_partition_RL_array_still_blocks_submission(rl, inputs, tmp_path, monkeypatch,
+                                                         partition):
+    _, plan = prepared(rl, inputs)
+    monkeypatch.setattr(rl, "require_modules", lambda _: None)
+    monkeypatch.setattr(rl.scheduler, "submission_lock_path", lambda: tmp_path / "submit.lock")
+
+    def scheduler(command):
+        if command[0] == "squeue":
+            # The existing allocation is in smp; a partition filter would hide
+            # it from this general/debug request and wrongly reach sbatch.
+            if "-p" in command and command[command.index("-p") + 1] != "smp":
+                return ""
+            return "other-array_0"
+        if command[0] == "sinfo":
+            return "0/1000/0/1000"
+        pytest.fail("must reject the foreign RL array before any sbatch")
+
+    monkeypatch.setattr(rl.scheduler, "output", scheduler)
+    with pytest.raises(ValueError, match="existing_friday_array_must_drain"):
+        rl.submit(plan, partition=partition)
+    assert not (plan.parent / "submission-intent.json").exists()
+
+
 def test_actor_terminal_facts_bind_raw_and_array_scheduler_ids(rl, tmp_path, monkeypatch):
     path = tmp_path / "plan.json"
     path.write_text("{}")
