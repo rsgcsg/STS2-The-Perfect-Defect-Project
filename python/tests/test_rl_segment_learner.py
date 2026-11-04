@@ -39,7 +39,10 @@ def test_permanent_remote_stop_rejects_before_publication_or_listener(tmp_path, 
 def test_initialize_only_saves_CP_with_zero_successful_uses(tmp_path, monkeypatch):
     config, io = configuration(tmp_path, monkeypatch)
     owner = SegmentLearner(config, tmp_path / "owner", io)
+    owner.optimizer.param_groups[0]["lr"] = 8e-5
     summary = owner.run(initialize_only=True)
+    assert summary["learning_configuration"]["lr"] == 8e-5
+    assert summary["learning_configuration"]["optimizer_param_groups"][0]["lr"] == 8e-5
     assert summary["updates"] == summary["first_use"] == summary["first_use_multi"] == 0
     assert summary["versions"] == 0 and summary["checkpoint_sequence"] == 1
     _, cp = read_cp(owner)

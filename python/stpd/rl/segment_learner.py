@@ -1092,6 +1092,8 @@ class SegmentLearner:
             )
         result.update(
             update=self.updates,
+            lr=self.optimizer.param_groups[0]["lr"],
+            head_lr=self.optimizer.param_groups[1]["lr"],
             dataset=batch.request.identity.sequence,
             minibatch=index,
             epoch=active["epoch"],
@@ -1131,6 +1133,8 @@ class SegmentLearner:
                         "gradient_norm",
                         "first_use",
                         "first_use_multi",
+                        "lr",
+                        "head_lr",
                     )
                 },
                 self.updates,
@@ -1341,7 +1345,11 @@ class SegmentLearner:
             "elapsed_seconds": time.monotonic() - began,
             "timing": self.timing,
             "memory": self._memory(),
-            "learning_configuration": {"lr": self.config.lr,
+            "learning_configuration": {"lr": self.optimizer.param_groups[0]["lr"],
+                "head_lr": self.optimizer.param_groups[1]["lr"],
+                "optimizer_param_groups": [
+                    {key: value for key, value in group.items() if key != "params"}
+                    for group in self.optimizer.param_groups],
                 "weight_decay": self.config.weight_decay, "loss": asdict(self.config.loss),
                 "segments": asdict(self.settings),
                 "performance": self.config.frozen()["performance"]},

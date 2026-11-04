@@ -183,8 +183,11 @@ python -m spireagent.workbench.rl_learner --config learner.json --work conversio
 python -m spireagent.workbench.rl_learner --config conversion/converted-learner.json --work fresh-learner
 ```
 
-原构造包只在显式转换时需要；自包含 CP 正常恢复不需要它。转换保留原非空 Adam、EMA、RNG、
+原构造包只在显式转换时需要；自包含 CP 正常恢复不需要它。转换保留原非空 Adam 动量、参数顺序、EMA、RNG、
 362 updates / 48951 first-use / 42787 multi / μ57；新参数差异写在转换记录中。
+显式转换按目标配置改写两组 lr（主干 lr、heads head_lr）及 weight_decay，并记录实际参数组；
+普通自包含 CP 恢复仍原样恢复参数组。progress 的 lr/head_lr 和 summary 的 optimizer_param_groups
+均读实际 optimizer，不以配置值代替。
 转换成功不自动证明真实打局恢复；须新段→成功更新→新 μ采用→新 CP→只换 learner→继续更新。
 
 ## 验证和停止点

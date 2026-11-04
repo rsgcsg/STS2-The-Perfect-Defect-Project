@@ -40,7 +40,7 @@ def test_CP16_update_publish_adopt_CP_replace_only_learner_continue(
 ):
     config, io = configuration(tmp_path, monkeypatch, generation="g-first")
     rendezvous = tmp_path / "shared" / "inference.json"
-    config = dataclasses.replace(config, segments=dataclasses.replace(
+    config = dataclasses.replace(config, lr=8e-5, segments=dataclasses.replace(
         config.segments, rendezvous_path=str(rendezvous), central_scoring=central))
     state, names = legacy_cp16(model)
     cp = convert_cp16(CP16ConversionInput(state, construction(model), names, "1" * 64,
@@ -85,7 +85,9 @@ def test_CP16_update_publish_adopt_CP_replace_only_learner_continue(
         deliver(owner, actor="b", connection=client, terminal=True)
         assert owner._prepare()
         while owner.active is not None:
-            owner._step()
+            result = owner._step()
+            assert result["lr"] == 8e-5
+            assert result["head_lr"] == config.segments.head_lr
         owner._collect_publication(wait=True)
         assert owner.updates == 366
         assert client.request("episode_open", actor="live", episode="same-world")["admitted"]
@@ -223,7 +225,9 @@ def test_application_CP16_conversion_uses_original_codec_without_optimizer_or_wo
     from stpd.workers.checkpoint_codec import encode_checkpoint
 
     config, _io = configuration(tmp_path, monkeypatch)
-    config = dataclasses.replace(config, performance=dataclasses.replace(config.performance,
+    config = dataclasses.replace(config, lr=8e-5, weight_decay=0.01,
+        segments=dataclasses.replace(config.segments, head_lr=2e-4),
+        performance=dataclasses.replace(config.performance,
         microbatch_size=training_group_size, scene_attention_area=2**32,
         text_attention_area=2**36))
     state, _names = legacy_cp16(model)
@@ -260,7 +264,12 @@ def test_application_CP16_conversion_uses_original_codec_without_optimizer_or_wo
     assert execution["scene_attention_area"] <= 2**28
     assert execution["text_attention_area"] <= 2**28
     assert_tree(cp.weights, state["weights"])
-    assert_tree(cp.optimizer, state["optimizer"])
+    assert_tree(cp.optimizer["state"], state["optimizer"]["state"])
+    assert [g["lr"] for g in cp.optimizer["param_groups"]] == [8e-5, 2e-4]
+    assert [g["weight_decay"] for g in cp.optimizer["param_groups"]] == [0.01, 0.01]
+    assert [g["lr"] for g in state["optimizer"]["param_groups"]] == [4e-5, 1e-4]
+    assert cp.conversion.config_changes["optimizer_param_groups"]["after"] == [
+        {k: v for k, v in g.items() if k != "params"} for g in cp.optimizer["param_groups"]]
     assert_tree(cp.ema, state["ema"])
     assert result["optimizer_calls"] == result["World_calls"] == 0
     continuation = LearnerConfig.read(tmp_path / "conversion/converted-learner.json")

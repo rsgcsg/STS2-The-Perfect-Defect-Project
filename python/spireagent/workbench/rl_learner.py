@@ -110,7 +110,10 @@ def convert_legacy_checkpoint(config: LearnerConfig, package: Path, work: Path, 
     target.write_text(json.dumps(continuation.frozen(), indent=2) + "\n")
     result = {"original_checkpoint": original.artifact_id, "original_sha256": payload.sha256,
         "converted_checkpoint": converted.artifact_id, "config": str(target),
-        "counters": asdict(cp.counters), "optimizer_calls": 0, "World_calls": 0}
+        "counters": asdict(cp.counters), "optimizer_calls": 0, "World_calls": 0,
+        "optimizer_param_groups": [
+            {key: value for key, value in group.items() if key != "params"}
+            for group in cp.optimizer["param_groups"]]}
     (work / "conversion-receipt.json").write_text(json.dumps(result, indent=2) + "\n")
     return result
 

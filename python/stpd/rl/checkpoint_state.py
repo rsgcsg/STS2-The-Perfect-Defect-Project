@@ -117,13 +117,29 @@ def convert_cp16(source: CP16ConversionInput) -> SelfContainedCheckpoint:
         for key, value in source.target_config.items()
         if previous.get(key) != value
     }
+    optimizer = cpu_copy(state["optimizer"])
+    before_groups = [{k: v for k, v in group.items() if k != "params"}
+                     for group in optimizer["param_groups"]]
+    # Explicit migration adopts the new recipe, preserving parameter order and
+    # every Adam moment. Ordinary self-contained restore remains exact.
+    for index, group in enumerate(optimizer["param_groups"]):
+        lr = (source.target_config.get("lr") if index == 0 else
+              source.target_config.get("segments", {}).get("head_lr"))
+        if lr is not None:
+            group["lr"] = lr
+        if "weight_decay" in source.target_config:
+            group["weight_decay"] = source.target_config["weight_decay"]
+    after_groups = [{k: v for k, v in group.items() if k != "params"}
+                    for group in optimizer["param_groups"]]
+    if before_groups != after_groups:
+        changes["optimizer_param_groups"] = {"before": before_groups, "after": after_groups}
     return SelfContainedCheckpoint(
         RunSequence(previous["run"], source.target_generation, 16),
         copy.deepcopy(source.construction),
         copy.deepcopy(source.target_config),
         copy.deepcopy(source.producer),
         cpu_copy(state["weights"]),
-        cpu_copy(state["optimizer"]),
+        optimizer,
         source.optimizer_parameter_names,
         cpu_copy(state["ema"]),
         LearningCounters(
