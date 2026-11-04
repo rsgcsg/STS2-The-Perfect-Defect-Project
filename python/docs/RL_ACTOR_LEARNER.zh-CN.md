@@ -142,6 +142,8 @@ boundary acquisition、step、input hash 和战斗范围，native terminal 变�
 
 ready、在途 lease 共用按路数冻结的 `capacity_rows=dataset_rows+actors*steps`；每批至少1024行，保留整段溢出行，
 单 episode 每数据集最多128行。PPO、延迟标签、aux、prepare、reader 各自持有 hot owner；
+各 payload 的归属修改通过固定256个锁条带并行；普通修改共持代际读锁，恢复独占整代后才撤销引用。
+这避免 NFS 上所有准备 worker 与 actor 争一把排他锁；不改变引用计数、原件或 unknown 的含义。
 commit/episode_end ACK 前取得下游所需引用，用尽或淘汰释放，最后引用才删除本轮临时热 bytes。
 每个数据集抽样的 aux 终局≤128行、最多2次且跨2个数据集；HP≤128行、1次/1个数据集。
 常驻池是另一口径：terminal最多256局、每局均匀抽最多64行；HP最多128场战斗，

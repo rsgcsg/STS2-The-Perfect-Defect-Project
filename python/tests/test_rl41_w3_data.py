@@ -293,6 +293,51 @@ def test_hot_read_verification_runs_outside_shared_owner_lock(tmp_path, monkeypa
         exchange.read_hot_payload(ref)
 
 
+def test_hot_mutation_of_other_payload_proceeds_and_generation_restore_still_excludes(
+        tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    import spireagent.rl_exchange as module
+    from spireagent.instance_lock import instance_lock
+
+    exchange = Exchange({"kind": "local", "directory": str(tmp_path)}, "locks")
+    with monkeypatch.context() as patch:
+        identifiers = iter(["1" * 32, "2" * 32])  # different fixed owner stripes
+        patch.setattr(module.uuid, "uuid4", lambda: SimpleNamespace(hex=next(identifiers)))
+        first = exchange.put_hot_payload(b"first", training_generation="g", owner="ppo")
+        second = exchange.put_hot_payload(b"second", training_generation="g", owner="ppo")
+    entered, proceed = threading.Event(), threading.Event()
+    original = exchange._write_hot_state
+
+    def blocked(store, key, state):
+        if key == first.slot + ".owners.json":
+            entered.set()
+            assert proceed.wait(5)
+        return original(store, key, state)
+
+    monkeypatch.setattr(exchange, "_write_hot_state", blocked)
+    with ThreadPoolExecutor(2) as workers:
+        mutation = workers.submit(exchange.retain_hot_payload, first, "aux")
+        assert entered.wait(5)
+        try:
+            # A slow fsync on one payload must not serialize another payload.
+            workers.submit(exchange.retain_hot_payload, second, "aux").result(5)
+            generation_lock = tmp_path / ".rl-hot/locks/g/owners.lock"
+            with pytest.raises(BoundaryError, match="already_running"):
+                with instance_lock(generation_lock, create=False):
+                    pytest.fail("restore acquired during an active payload mutation")
+        finally:
+            proceed.set()
+        mutation.result(5)
+    monkeypatch.setattr(exchange, "_write_hot_state", original)
+    for ref in (first, second):
+        exchange.release_hot_payload(ref, "ppo")
+        exchange.release_hot_payload(ref, "aux")
+    assert exchange.hot_status("g") == {"payloads": 0, "bytes": 0, "references": 0}
+    assert len(list((tmp_path / ".rl-hot/locks/g").glob("owners-*.lock"))) == 2
+    assert exchange.discard_hot_generation("g") == {"payloads": 0, "bytes": 0}
+
+
 def test_cp_and_archived_input_log_never_pull_hot_payloads_back_into_store(tmp_path):
     peer = {"kind": "local", "directory": str(tmp_path / "archive")}
     binding = {"kind": "local", "directory": str(tmp_path / "shared"), "archive": peer}

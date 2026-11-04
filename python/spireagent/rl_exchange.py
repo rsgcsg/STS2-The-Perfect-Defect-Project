@@ -17,7 +17,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any, NoReturn, cast
+from typing import Any, NoReturn
 
 from spireagent.artifact_contracts import Manifest, Parent, Producer
 from spireagent.instance_lock import instance_lock
@@ -190,33 +190,26 @@ class Exchange:
             Path(temporary).unlink(missing_ok=True)
 
     @contextmanager
-    def _hot_lock(self, ref: HotPayloadRef) -> Iterator[None]:
+    def _hot_lock(self, ref: HotPayloadRef, *, generation: bool = False) -> Iterator[None]:
         # Unlike the process-owner guard, a reference mutation waits for another
         # short mutation. Large reads/validation never run under this OS lock.
-        import os
-
         if ref.slot.split("/")[0] != self.run:
             reject("foreign_hot_payload")
         path = self._hot_store().root.joinpath(*ref.slot.split("/")[:2], "owners.lock")
         path.parent.mkdir(parents=True, exist_ok=True)
-        with path.open("a+b") as stream:
-            if os.name == "nt":
-                import msvcrt
-
-                crt = cast(Any, msvcrt)
-                crt.locking(stream.fileno(), crt.LK_LOCK, 1)
-            else:
-                import fcntl
-
-                fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
-            try:
+        with path.open("a+b"):
+            pass
+        # Normal mutations share a generation lease and serialize only a bounded
+        # stripe of payloads. Restore excludes every stripe before revoking the
+        # generation. A single NFS exclusive lock here made 8/12 workers slower
+        # than 4, even after all decode work had completed.
+        with instance_lock(path, create=False, shared=not generation, blocking=True):
+            if generation:
                 yield
-            finally:
-                if os.name == "nt":
-                    stream.seek(0)
-                    crt.locking(stream.fileno(), crt.LK_UNLCK, 1)
-                else:
-                    fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+            else:
+                stripe = hashlib.sha256(ref.slot.encode()).digest()[0]
+                with instance_lock(path.with_name(f"owners-{stripe:02x}.lock"), blocking=True):
+                    yield
 
     def put_hot_payload(self, raw: bytes, *, training_generation: str, owner: str,
                         costs: dict[str, float] | None = None) -> HotPayloadRef:
@@ -348,7 +341,7 @@ class Exchange:
         """
         ref = _hot_ref(HotPayloadRef(f"{self.run}/{training_generation}/restore", "0" * 64, 1))
         store = self._hot_store()
-        with self._hot_lock(ref):
+        with self._hot_lock(ref, generation=True):
             states = [(key, json.loads(store.get(key)))
                       for key in store.keys(f"{self.run}/{training_generation}/")
                       if key.endswith(".owners.json")]

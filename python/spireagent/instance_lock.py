@@ -11,7 +11,7 @@ from typing import Any, cast
 from spireagent.json_boundary import BoundaryError
 
 
-def _windows_shared_lease(descriptor: int) -> Callable[[], None]:
+def _windows_shared_lease(descriptor: int, *, blocking: bool = False) -> Callable[[], None]:
     """Win32 shared byte lock; CRT LK_NBRLCK is still exclusive."""
     import ctypes
     import msvcrt
@@ -36,7 +36,7 @@ def _windows_shared_lease(descriptor: int) -> Callable[[], None]:
     handle, offset = crt.get_osfhandle(descriptor), Overlapped()
     byref = ctypes.byref
     winerror, last_error = windows.WinError, windows.get_last_error
-    if not lock(handle, 1, 0, 1, 0, byref(offset)):
+    if not lock(handle, 0 if blocking else 1, 0, 1, 0, byref(offset)):
         raise winerror(last_error())
 
     def release() -> None:
@@ -47,7 +47,8 @@ def _windows_shared_lease(descriptor: int) -> Callable[[], None]:
 
 
 @contextlib.contextmanager
-def instance_lock(path: Path, *, create: bool = True, shared: bool = False) -> Iterator[None]:
+def instance_lock(path: Path, *, create: bool = True, shared: bool = False,
+                  blocking: bool = False) -> Iterator[None]:
     """OS-held lock; process death releases it without PID guesses or stale deletion.
 
     Observation callers use create=False to avoid initializing an owner path.
@@ -65,21 +66,21 @@ def instance_lock(path: Path, *, create: bool = True, shared: bool = False) -> I
             descriptor = handle.fileno()
             is_windows = os.name == "nt"
             if is_windows and shared:
-                release_shared = _windows_shared_lease(descriptor)
+                release_shared = _windows_shared_lease(descriptor, blocking=blocking)
             elif is_windows:
                 import msvcrt
 
                 crt = cast(Any, msvcrt)
                 native_lock = crt.locking
                 unlock_mode = crt.LK_UNLCK
-                native_lock(descriptor, crt.LK_NBLCK, 1)
+                native_lock(descriptor, crt.LK_LOCK if blocking else crt.LK_NBLCK, 1)
             else:
                 import fcntl
 
                 native_lock = fcntl.flock
                 unlock_mode = fcntl.LOCK_UN
                 mode = fcntl.LOCK_SH if shared else fcntl.LOCK_EX
-                native_lock(descriptor, mode | fcntl.LOCK_NB)
+                native_lock(descriptor, mode | (0 if blocking else fcntl.LOCK_NB))
         except OSError:
             raise BoundaryError("project", "already_running") from None
         try:

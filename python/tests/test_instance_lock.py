@@ -51,7 +51,8 @@ def test_shared_existing_lease_allows_reader_and_excludes_writer_across_processe
     assert _probe(path) == "acquired"
 
 
-def test_windows_shared_lease_uses_win32_shared_nonblocking_mode(tmp_path, monkeypatch):
+@pytest.mark.parametrize("blocking", [False, True])
+def test_windows_shared_lease_uses_win32_shared_mode(tmp_path, monkeypatch, blocking):
     import ctypes
 
     path = tmp_path / "windows-native.lock"
@@ -72,9 +73,10 @@ def test_windows_shared_lease_uses_win32_shared_nonblocking_mode(tmp_path, monke
     monkeypatch.setattr(ctypes, "get_last_error", lambda: 5, raising=False)
     monkeypatch.setattr(lock_module, "os", SimpleNamespace(name="nt"))
     monkeypatch.setitem(sys.modules, "msvcrt", SimpleNamespace(get_osfhandle=lambda _: 123))
-    with instance_lock(path, create=False, shared=True):
+    with instance_lock(path, create=False, shared=True, blocking=blocking):
         assert path.read_bytes() == b"unchanged"
-    assert calls == [("lock", (123, 1, 0, 1, 0), 0), ("unlock", (123, 0, 1, 0), 0)]
+    assert calls == [("lock", (123, 0 if blocking else 1, 0, 1, 0), 0),
+                     ("unlock", (123, 0, 1, 0), 0)]
 
 
 @pytest.mark.skipif(
