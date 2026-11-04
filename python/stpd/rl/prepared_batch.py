@@ -4,14 +4,15 @@ The learner alone selects members/aux uses and RNG order. CPU workers return a
 complete batch; metadata may describe buckets/joint tensors but never cached
 trainable text embeddings. Different batches/precision need not be equivalent.
 """
+
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Literal
 
+from spireagent.rl_contracts import HotPayloadRef, RowRef, RunSequence
 from torch import Tensor
 
-from spireagent.rl_contracts import HotPayloadRef, RowRef, RunSequence
 from stpd.p1.tensor_input import JointNodes, TensorFrame
 
 
@@ -23,6 +24,7 @@ class BatchMember:
     run_id: str
     rows: int
     mu_snapshot_sha256: str
+    episode: str  # exact granted original intent, not inferred from native run_id
 
 
 @dataclass(frozen=True)
@@ -32,6 +34,26 @@ class AuxiliarySelection:
     label: float
     uses_before: int
     use_limit: int  # terminal 2, HP 1; reserve until successful update
+
+
+@dataclass(frozen=True)
+class AuxiliaryInput:
+    """Verified parameter-free row bytes retained by the existing aux pool.
+
+    Created after normal source/label verification, never from theta or a new
+    Store. Pool retirement releases these bytes and its original hot reference.
+    """
+
+    source: RowRef
+    member: BatchMember
+    body: bytes
+
+
+@dataclass(frozen=True)
+class AuxiliaryFrame:
+    source: RowRef
+    frame: TensorFrame
+    floor: int
 
 
 @dataclass(frozen=True)
@@ -58,6 +80,9 @@ class PreparedGroup:
     rows: tuple[int, ...]  # indices into PreparedBatch.frames (PPO first, aux after)
     policy: bool
     joint: JointNodes
+    # All padding, text deduplication, scene/role gathers and masks are built on
+    # CPU. Never contains text embeddings or any other theta-dependent value.
+    tensors: dict[str, Tensor] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -67,13 +92,24 @@ class PreparedMinibatch:
     td_rows: int
     terminal_rows: int
     hp_rows: int  # denominators across groups, not per microbatch
+    tensors: dict[str, Tensor] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class FrameLayout:
+    choices: tuple[str, ...]
+    entity_count: int
+    text_count: int
+    text_width: int
 
 
 @dataclass(frozen=True)
 class PreparedBatch:
     request: PrepareRequest  # exact complete members and aux reservations
     row_refs: tuple[RowRef, ...]
-    frames: tuple[TensorFrame, ...]  # parameter-free CPU tensors, all PPO + aux rows
+    # Logical rows only. The complete forward tensors live once in groups;
+    # retaining the original TensorFrames too doubled IPC bytes for no consumer.
+    frames: tuple[FrameLayout, ...]
     kinds: tuple[Literal["ppo", "terminal", "hp"], ...]
     floors: Tensor  # [N] int64
     actions: Tensor  # [N] int64; -1 for aux
@@ -91,6 +127,10 @@ class PreparedBatch:
     minibatches: tuple[PreparedMinibatch, ...]
     prepared_at: float
     payload_bytes: int
+    metadata: tuple[dict[str, Any], ...] = ()
+    timings: dict[str, float] = field(default_factory=dict)
+    worker_pids: tuple[int, ...] = ()
+    label_updates: tuple[dict[str, Any], ...] = ()  # labels verified by the W3 source reader
 
     # A returned batch is ready only after whole-request read/verification/targets.
     # No worker owns theta, Adam, EMA, successful-use counters or model publication.

@@ -1,8 +1,10 @@
-"""Compiled public inputs on the original Store and segment membership.
+"""Compiled input row bytes, with historical RL4 artifact/input-pack readers.
 
 New segments carry their actor-produced frames. A frozen input pack can supply
 the same derived representation for an older checkpoint's original segments.
-Neither representation selects training rows, labels or uses.
+Neither representation selects training rows, labels or uses. RL4.1 reads hot
+segments in batch_preparation and retains verified auxiliary row bytes in the
+existing AuxPool. Its live path never uses the legacy artifact cache/input pack.
 """
 from __future__ import annotations
 
@@ -19,6 +21,7 @@ from typing import Any
 from spireagent.artifact_contracts import Manifest, Parent, Producer
 from spireagent.json_boundary import BoundaryError, FrozenObject
 from spireagent.storage.store import ManifestArtifactStore
+
 from stpd.p1.data import digest, json_bytes
 from stpd.p1.export import input_spec, runtime_projection
 from stpd.p1.frame_compiler import SCHEMA as FRAME_SCHEMA
@@ -277,3 +280,26 @@ def _verified_row(value: dict[str, Any], wire: dict[str, Any], floor: int | None
     return json_bytes({"wire": wire, "hashes": observation_hashes(value["observation"]),
         "choices": [choice.get("choice_id") for choice in value["observation"]["catalog"]],
         "input_key": frame_key(value), "floor": floor})
+
+
+def verified_auxiliary_bytes(step: dict[str, Any]) -> bytes:
+    """Snapshot only an already verified source row; no repeated full-body hash.
+
+    The normal HotSegment reader has checked wire hashes against the public
+    observation/catalog. Retain those exact bindings; the decoder still verifies
+    wire/tensor integrity and compiler/vocabulary before numerical consumption.
+    """
+    wire = step["behavior"]["compiled_input"]
+    return json_bytes({"wire": wire,
+        "hashes": {key: wire[key] for key in ("observation_sha256", "catalog_sha256")},
+        "choices": [choice["choice_id"] for choice in step["input"]["catalog"]],
+        "floor": step["behavior"]["floor"]})
+
+
+def decode_auxiliary_bytes(compiler: FrameCompiler, body: bytes,
+                           identity: dict[str, Any]) -> tuple[TensorFrame, int]:
+    row = json.loads(body)
+    frame = compiler.decode(row["wire"], expected_identity=identity, **row["hashes"])
+    if frame.choices != tuple(row["choices"]):
+        raise BoundaryError("rl_inputs", "auxiliary_catalog_binding_changed")
+    return frame, row["floor"]

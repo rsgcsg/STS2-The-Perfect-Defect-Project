@@ -1,141 +1,313 @@
-"""Short-segment replacement for the existing RL learner's live training edge.
+"""RL4.1 learner: complete CPU preparation, batched SGD, background mu and CP.
 
-The application supplies the same Store model publisher and the new trajectory
-reader. This owner freezes datasets/targets, shares one GPU between theta SGD
-and immutable mu inference, and checkpoints through the existing typed codec.
+One learning-state owner selects rows, charges successful uses and steps theta.
+Independent CPU processes own all parameter-free preparation. The control server
+holds identities only; actor-local mu inference is owned by the actor. CP-only
+restore discards hot input state, never replays accepted actions or input logs.
 """
 
 from __future__ import annotations
 
 import copy
 import hashlib
-import io
+import io as byte_io
 import json
-import math
+import multiprocessing
 import random
 import threading
 import time
+import uuid
 from collections import deque
 from collections.abc import Callable
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import Future, ProcessPoolExecutor, ThreadPoolExecutor
 from contextlib import ExitStack
 from dataclasses import asdict, dataclass, replace
-from datetime import datetime
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal
 
 import torch
-
 from spireagent.artifact_contracts import Manifest, Parent
 from spireagent.json_boundary import BoundaryError, FrozenObject, json_bytes
+from spireagent.rl_contracts import HotPayloadRef, RunSequence
 from spireagent.rl_exchange import Exchange, control_input
 from spireagent.rl_tensorboard import TensorBoardMetrics
 from spireagent.source import source_identity
-from spireagent.storage.blobs import StoreError
+
+from stpd.p1.data import json_bytes as p1_json_bytes
 from stpd.p1.export import (
-    action_weights,
     adapter_identity,
     export_model,
+    input_spec,
     load_model,
     runtime_projection,
 )
-from stpd.p1.input import project
+from stpd.p1.frame_compiler import FrameCompiler
 from stpd.p1.local_inference import SegmentInferencePool
 from stpd.p1.model import MStd
-from stpd.p1.tensor_input import TensorFrame, compile_frame
 from stpd.workers.checkpoint_codec import decode_checkpoint, encode_checkpoint
 from stpd.workers.training_io import CheckpointPublisher, FrozenCheckpoint
 
-from .checkpoint import metadata_tensor
-from .critic import held_out
+from .batch_preparation import (
+    BatchPreparer,
+    pack_transport,
+    stage_batch,
+    unpack_transport,
+    verify_auxiliary,
+)
+from .checkpoint_state import SCHEMA as CHECKPOINT_SCHEMA
+from .checkpoint_state import (
+    LearningCounters,
+    ModelConstruction,
+    RngState,
+    SelfContainedCheckpoint,
+    construct_model,
+    cpu_copy,
+    decode_state,
+    encode_state,
+    snapshot_weights,
+    text_digest,
+    validate_optimizer_order,
+)
 from .learner import ROOT, LearnerConfig, _device
-from .loss import AuxiliarySample, SegmentSample, segment_update
+from .loss import prepared_update
 from .performance import PerformanceConfig
+from .prepared_batch import AuxiliarySelection, BatchMember, PreparedBatch, PrepareRequest
 from .reward import REWARD_SPEC
-from .segment_inputs import SegmentInputs
-from .segment_targets import freeze_targets, samples_from_frozen
 from .segments import OPERATIONAL_FIELDS, AuxiliaryPool, SegmentQueue, minibatch_members
-
-CHECKPOINT_SCHEMA = "stpd/rl-segment-checkpoint-1"
 
 
 @dataclass(frozen=True)
 class SegmentLearnerIO:
+    # read_segment remains an explicit historical-reader dependency for application
+    # composition. The live edge calls Exchange.read_hot_segment, never this reader.
     read_segment: Callable[..., dict[str, Any]]
     publish_model: Callable[..., Any]
+    read_hot_segment: Callable[..., dict[str, Any]] | None = None
 
 
-@dataclass(frozen=True)
-class PreparedInputs:
-    records: list[dict[str, Any]]
-    segments: list[dict[str, Any]]
-    frames: dict[str, TensorFrame] | None
-    started: float
-    finished: float
+def _publisher_initialize() -> None:
+    torch.set_num_threads(1)
+    if torch.get_num_interop_threads() != 1:
+        torch.set_num_interop_threads(1)
+
+
+def _publish_snapshot(
+    snapshot: dict[str, Any],
+    *,
+    peer: dict[str, Any],
+    run: str,
+    generation: str,
+    version: int,
+    updates: int,
+    producer: Any,
+    publish_model: Callable[..., Any],
+    work: str,
+) -> dict[str, Any]:
+    """Independent CPU process: construction, hashing, export, Store publication."""
+    snapshot = unpack_transport(snapshot)
+    exchange = Exchange(peer, run)
+    model = construct_model(snapshot["construction"])
+    model.load_state_dict(snapshot["weights"], strict=True)
+    model.eval().requires_grad_(False)
+    model.deduplicate_text = snapshot["deduplicate_text"]
+    destination = Path(work) / "versions" / generation / f"{version:06d}"
+    checkpoint = destination.with_suffix(".tensor-tree")
+    checkpoint.parent.mkdir(parents=True, exist_ok=True)
+    checkpoint.write_bytes(encode_checkpoint({"weights": model.state_dict()}))
+    export_model(
+        model,
+        checkpoint,
+        destination,
+        {
+            "run": run,
+            "training_generation": generation,
+            "version": version,
+            "updates": updates,
+            "reward": REWARD_SPEC,
+            "producer": producer.to_dict(),
+        },
+    )
+    manifest = publish_model(exchange.store, destination, producer)
+    weights = manifest.payload("weights").sha256
+    raw = encode_checkpoint({"heads": model.rl4_heads.state_dict()})
+    payload = exchange.store.put_payload(
+        "checkpoint", byte_io.BytesIO(raw), "application/vnd.stpd.tensor-tree"
+    )
+    heads = Manifest(
+        "checkpoint",
+        producer,
+        parents=(Parent("policy", manifest.artifact_id),),
+        payloads=(payload,),
+        parameters=FrozenObject.of({"schema": "stpd/rl-behavior-heads-1"}),
+    )
+    exchange.store.publish(heads)
+    numerical = {
+        "precision": "fp32",
+        "tf32": False,
+        "projection": runtime_projection(model.vocabulary),
+        "execution": asdict(model.execution),
+        "adapter": adapter_identity(),
+        "deduplicate_text": model.deduplicate_text,
+    }
+    identity = {
+        "run": run,
+        "training_generation": generation,
+        "version": version,
+        "updates": updates,
+        "model_artifact_id": manifest.artifact_id,
+        "model_sha256": weights,
+        "heads_artifact_id": heads.artifact_id,
+        "heads_sha256": payload.sha256,
+        **numerical,
+        "text_digest": text_digest(snapshot["weights"]),
+        "vocabulary_sha256": snapshot["construction"].compiler_identity["vocabulary_sha256"],
+        "input_spec": snapshot["construction"].compiler_identity["input_spec"],
+        "compiler_identity": snapshot["construction"].compiler_identity,
+    }
+    identity["snapshot_sha256"] = hashlib.sha256(
+        p1_json_bytes({"weights": weights, "heads": payload.sha256, "numerical": numerical})
+    ).hexdigest()
+    record = exchange.publish_model(
+        {
+            **identity,
+            "parent_version": version - 1 if version else None,
+            "published_at": time.time(),
+            "trajectory_encoding": "hot-segment",
+            "training": {"updates": updates},
+        }
+    )
+    return {"identity": identity, "record": record, "updates": updates}
+
+
+def _encode_snapshot(checkpoint: SelfContainedCheckpoint) -> FrozenCheckpoint:
+    began = time.perf_counter()
+    raw = encode_state(checkpoint)
+    return FrozenCheckpoint(
+        raw,
+        (),
+        FrozenObject.of(
+            {
+                "schema": CHECKPOINT_SCHEMA,
+                "run": checkpoint.identity.run,
+                "training_generation": checkpoint.identity.training_generation,
+                "sequence": checkpoint.identity.sequence,
+                "version": checkpoint.counters.mu_version,
+            }
+        ),
+        time.perf_counter() - began,
+    )
+
+
+def _resume_config(value: dict[str, Any]) -> dict[str, Any]:
+    value = copy.deepcopy(value)
+    # Addresses, startup provenance and CPU scheduling do not change objectives.
+    for key in (
+        "peer",
+        "device",
+        "threads",
+        "wall_seconds",
+        "max_versions",
+        "resume_checkpoint",
+        "resume_source",
+        "republish_on_resume",
+        "start_package",
+        "start_artifact_id",
+        "start_model_sha256",
+        "tensorboard_steps",
+        "remote_stop_seconds",
+    ):
+        value.pop(key, None)
+    for key in OPERATIONAL_FIELDS:
+        value["segments"].pop(key, None)
+    return value
 
 
 class SegmentLearner:
     def __init__(self, config: LearnerConfig, work: Path, io: SegmentLearnerIO) -> None:
         if config.segments is None or config.anchor is not None or config.critic is not None:
             raise BoundaryError("rl_learner", "explicit_segment_config_without_legacy_objectives")
-        if config.loss.mode != "ppo" or config.loss.value_coef != 0.2:
-            raise BoundaryError("rl_learner", "explicit_RL4_PPO_loss_required")
-        self.config, self.settings, self.work, self.io = config, config.segments, work, io
+        settings = config.segments
+        if (
+            config.loss.mode != "ppo"
+            or config.loss.value_coef != 0.2
+            or config.loss.entropy_coef != 0.01
+            or settings.epochs != 1
+            or settings.auxiliary_rows > 128
+            or settings.terminal_uses != 2
+            or settings.hp_uses != 1
+        ):
+            raise BoundaryError("rl_learner", "RL41_four_head_one_epoch_configuration_required")
+        self.config, self.settings, self.work, self.io = config, settings, work, io
         work.mkdir(parents=True, exist_ok=True)
         self.producer = source_identity(ROOT)
         self.exchange = Exchange(config.peer, config.run)
-        from spireagent.storage.async_archive import ArchivedStore
-
-        self.archive = (self.exchange.store.archive
-                        if isinstance(self.exchange.store, ArchivedStore) else None)
         if self.exchange.stop_request() is not None:
             raise BoundaryError("rl_learner", "cannot_resume_a_permanently_stopped_run")
         self.device = _device(config.device)
         torch.set_num_threads(config.threads)
         torch.manual_seed(config.seed)
         self.rng = random.Random(config.seed)
-        self.queue = SegmentQueue(self.settings)
+        self.generation = settings.training_generation or "g" + uuid.uuid4().hex
+        self.queue = SegmentQueue(settings)
         self.condition = self.queue.condition
         self.gpu_lock = threading.RLock()
-        self.terminal = AuxiliaryPool(self.settings.terminal_games, self.settings.terminal_uses)
-        self.hp = AuxiliaryPool(self.settings.hp_battles, self.settings.hp_uses)
+        self.terminal = AuxiliaryPool(settings.terminal_games, settings.terminal_uses)
+        self.hp = AuxiliaryPool(settings.hp_battles, settings.hp_uses)
         self.lease_owners: dict[str, dict[str, Any]] = {}
         self.actor_episodes: dict[str, str] = {}
-        self.released_closed_reservations: list[str] = []
-        self.newlease_stopped = False
+        self.sources: dict[str, dict[str, Any]] = {}
+        self.hot_references: dict[tuple[str, str], HotPayloadRef] = {}
+        self.newlease_stopped = self.input_fenced = False
+        self.input_failure: dict[str, Any] | None = None
         self.input_sequence = 0
         self.input_head: str | None = None
-        self.input_anchor: str | None = None
-        self.input_fenced = False
-        self.input_failure: dict[str, Any] | None = None
-        self.replay_input: dict[str, Any] | None = None
-        self.replayed_inputs = 0
-        self.active: dict[str, Any] | None = None
-        self.active_rows: list[SegmentSample] | None = None
-        self.active_auxiliary: tuple[list[AuxiliarySample], list[AuxiliarySample]] | None = None
-        self.row_metadata: list[dict[str, Any]] = []
+        self.input_anchor = config.resume_checkpoint
         self.updates = self.datasets = self.version = self.checkpoint_sequence = 0
-        self.published_updates = 0
-        self.first_use = self.first_use_multi = 0
-        self.performance = config.performance or PerformanceConfig()
-        self.model = self._start_model()
-        self.input_reader = (SegmentInputs(self.exchange.store, self.model.vocabulary,
-            self.settings.input_compiler_identity, self.settings.input_pack_artifact_id)
-            if self.settings.input_compiler_identity is not None else None)
-        self.input_preparer = ThreadPoolExecutor(
-            max_workers=1, thread_name_prefix="rl-input-prepare")
-        self.prepared_inputs: Future[PreparedInputs] | None = None
-        self.prepared_records: list[dict[str, Any]] | None = None
-        self.optimizer_intervals: deque[tuple[float, float]] = deque(maxlen=64)
-        self.timing: dict[str, float] = {"input_read_decode_seconds": 0,
-            "input_wait_seconds": 0, "input_optimizer_overlap_seconds": 0,
-            "waiting_for_data_seconds": 0, "target_and_auxiliary_seconds": 0,
-            "optimizer_attempt_seconds": 0}
-        if not hasattr(self.model, "rl4_heads") or self.model.value_heads:
-            raise BoundaryError("rl_learner", "warmed_RL4_heads_required")
-        self.model.to(self.device).eval()
-        for parameter in self.model.parameters():
-            parameter.requires_grad_(True)
+        self.published_updates = self.first_use = self.first_use_multi = 0
+        self.active: dict[str, Any] | None = None
+        self.active_batch: PreparedBatch | None = None
+        self.device_batch: PreparedBatch | None = None
+        self.pending_batch: tuple[dict[str, Any], Future[PreparedBatch]] | None = None
+        self.performance = config.performance or PerformanceConfig(
+            packed=True,
+            tensor_cache=True,
+            joint_nodes=True,
+            microbatch_size=32,
+            deduplicate_text=True,
+            scene_attention_area=67108864,
+            text_attention_area=67108864,
+        )
+        self.timing = {
+            "preparation_wait_seconds": 0.0,
+            "preparation_seconds": 0.0,
+            "optimizer_attempt_seconds": 0.0,
+            "snapshot_seconds": 0.0,
+            "waiting_for_data_seconds": 0.0,
+            "input_transfer_host_seconds": 0.0,
+            "input_transfer_copies": 0.0,
+        }
+        self.cuda_rng: tuple[torch.Tensor, ...] = ()
+        self.conversion = None
+        restored = (
+            self._read_checkpoint(config.resume_checkpoint) if config.resume_checkpoint else None
+        )
+        if restored is not None:
+            if (
+                restored.identity.run != config.run
+                or restored.identity.training_generation == self.generation
+                or _resume_config(restored.config) != _resume_config(asdict(config))
+                or restored.producer != (config.resume_source or self.producer.to_dict())
+            ):
+                raise ValueError("self_contained_resume_source_config_or_generation_changed")
+            self.model = construct_model(restored.construction)
+            self.model.load_state_dict(restored.weights, strict=True)
+        else:
+            self.model = self._start_model()
+        self.model.to(self.device).eval().requires_grad_(True)
+        self.compiler_identity = (
+            settings.input_compiler_identity or FrameCompiler(self.model.vocabulary).identity
+        )
+        self.construction_template = self._initial_construction()
         self.optimizer = torch.optim.AdamW(
             [
                 {
@@ -146,61 +318,116 @@ class SegmentLearner:
                     ],
                     "lr": config.lr,
                 },
-                {"params": list(self.model.rl4_heads.parameters()), "lr": self.settings.head_lr},
+                {"params": list(self.model.rl4_heads.parameters()), "lr": settings.head_lr},
             ],
             weight_decay=config.weight_decay,
         )
         self.ema = {name: value.detach().clone() for name, value in self.model.state_dict().items()}
-        self.publisher = ThreadPoolExecutor(
-            max_workers=1, thread_name_prefix="rl-model-publication"
+        if restored is not None:
+            if self._optimizer_names() != restored.optimizer_parameter_names:
+                raise ValueError("checkpoint_optimizer_parameter_order_changed")
+            self.optimizer.load_state_dict(restored.optimizer)
+            self.ema = {name: value.to(self.device) for name, value in restored.ema.items()}
+            counters = restored.counters
+            for name, value in (
+                ("updates", counters.updates),
+                ("datasets", counters.datasets),
+                ("first_use", counters.first_use),
+                ("first_use_multi", counters.first_use_multi),
+                ("version", counters.mu_version),
+                ("published_updates", counters.published_updates),
+                ("checkpoint_sequence", restored.identity.sequence),
+            ):
+                setattr(self, name, value)
+            self.conversion = restored.conversion
+            self.cuda_rng = restored.rng.cuda_rng
+            self.rng.setstate(restored.rng.learner_random)
+        self.input_preparer = BatchPreparer(
+            self.model.vocabulary,
+            workers=settings.preparation_workers,
+            threads=settings.preparation_threads,
+            peer=config.peer,
+            run=config.run,
+            scratch=work,
+            reader=io.read_hot_segment,
+            microbatch_size=self.performance.microbatch_size,
+            deduplicate_text=self.performance.deduplicate_text,
+            scene_attention_area=self.performance.scene_attention_area,
+            text_attention_area=self.performance.text_attention_area,
+            excluded_seeds=frozenset(settings.excluded_seeds),
         )
-        self.pending_publication: Future | None = None
-        self.telemetry: deque[Future] = deque()
+        self.publisher = ProcessPoolExecutor(
+            max_workers=1,
+            mp_context=multiprocessing.get_context("spawn"),
+            initializer=_publisher_initialize,
+        )
+        self.telemetry = ThreadPoolExecutor(max_workers=1, thread_name_prefix="rl-telemetry")
+        self.telemetry_futures: deque[Future[Any]] = deque()
+        self.checkpoint_encoder = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="rl-cp-encode"
+        )
+        self.checkpoint_encoding: Future[FrozenCheckpoint] | None = None
+        self.checkpoints = CheckpointPublisher(self.exchange.store, self.producer, background=True)
+        self.checkpoint_requested = False
+        self.pending_publication: Future[dict[str, Any]] | None = None
+        self.latest_snapshot: dict[str, Any] | None = None
+        self.pending_labels: deque[tuple[Future[Any], tuple[BatchMember, ...], str]] = deque()
         self.metrics = (
             TensorBoardMetrics(
                 self.exchange,
                 work / "tb",
-                value_description="RL4 categorical TD with observed terminal/HP auxiliaries",
+                value_description="RL4.1 categorical TD and public terminal/HP labels",
             )
             if config.tensorboard_steps
             else None
         )
-        self.pool: SegmentInferencePool
-        self.restored_mu: list[dict[str, Any]] = []
-        self.checkpoints = CheckpointPublisher(self.exchange.store, self.producer, background=True)
-        restored_rng = self._restore(config.resume_checkpoint) if config.resume_checkpoint else None
-        # Publication/checkpoint identities are append-only even if theta is
-        # restored from an earlier checkpoint. These are not learning counters.
-        versions = self.exchange.model_versions()
-        if versions:
-            self.version = max(self.version, versions[-1])
-        latest_checkpoint = self.exchange.latest_checkpoint()
-        if latest_checkpoint:
-            self.checkpoint_sequence = max(self.checkpoint_sequence,
-                latest_checkpoint.get("checkpoint_sequence", latest_checkpoint["version"]))
-        if config.resume_checkpoint and not config.republish_on_resume:
-            identity = max(self.restored_mu, key=lambda value: value["version"])
-            frozen = self._load_mu(identity)
-            initial = {
-                "identity": identity,
-                "model": frozen.eval(),
-                "updates": self.published_updates,
-            }
-        else:
-            if config.resume_checkpoint:
-                self.version += 1
-            initial = self._publish_model(self._capture_model(), self.version, self.updates)
-        self._start_pool(initial)
-        self._restore_inputs()
-        if self.archive is not None:
-            self.archive.start_capacity_monitor(self.settings.archive_poll_seconds)
-        (self.work / "inference.json").write_bytes(json_bytes(self.pool.attachment()))
-        if restored_rng is not None:
-            # Materializing immutable mu models initializes temporary modules.
-            # Restore the saved RNG only after those constructors have finished.
-            torch.set_rng_state(restored_rng[0])
+        # First publication is initialization, outside the training loop. Restores
+        # always publish from embedded theta, never fetch an old mu/start package.
+        if restored is not None:
+            self.version += 1
+        initial = self._submit_publication(
+            self._capture_model(), self.version, self.updates
+        ).result()
+        self.published_updates = initial["updates"]
+        self.pool = SegmentInferencePool(
+            self.model.vocabulary,
+            initial["identity"],
+            control=self.control,
+            segment_steps=settings.steps,
+            compiler_identity=self.compiler_identity,
+        )
+        for destination in {
+            work / "inference.json",
+            Path(settings.rendezvous_path) if settings.rendezvous_path else work / "inference.json",
+        }:
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            temporary = destination.with_name("." + destination.name + "." + self.generation)
+            temporary.write_bytes(json_bytes(self.pool.attachment()))
+            temporary.replace(destination)
+        if restored is not None:
+            # Constructors/publication workers must not alter the resumed RNG.
+            torch.set_rng_state(restored.rng.torch_rng)
+            if restored.rng.python_random is not None:
+                random.setstate(restored.rng.python_random)
             if self.device.type == "cuda":
-                torch.cuda.set_rng_state_all(restored_rng[1])
+                torch.cuda.set_rng_state_all(list(restored.rng.cuda_rng))
+
+    def _read_checkpoint(self, artifact_id: str) -> SelfContainedCheckpoint:
+        manifest = self.exchange.store.get_manifest(artifact_id)
+        if (
+            manifest.kind != "checkpoint"
+            or manifest.parameters.value().get("schema") != CHECKPOINT_SCHEMA
+        ):
+            raise ValueError("self_contained_checkpoint_required_convert_CP16_explicitly")
+        # This is the entire restore IO: one manifest and its own payload.
+        checkpoint = decode_state(
+            self.exchange.store.bytes(
+                manifest.payload("checkpoint"), maximum=manifest.payload("checkpoint").size
+            )
+        )
+        if manifest.parents:
+            raise ValueError("self_contained_checkpoint_has_no_restore_parents")
+        return checkpoint
 
     def _start_model(self) -> MStd:
         if self.config.start_package:
@@ -214,718 +441,544 @@ class SegmentLearner:
                 self.work / "models",
             )
         else:
-            raise BoundaryError("rl_learner", "pinned_start_model_required")
+            raise BoundaryError("rl_learner", "start_package_or_self_contained_CP_required")
         descriptor = json.loads((package / "model.json").read_bytes())
-        sha = self.config.start_model_sha256 or descriptor["package_sha256"]
-        model, _ = load_model(package / "model.tensor-tree", sha)
-        self.start_sha256 = sha
-        if not self.settings.warmup_artifact_id:
-            raise BoundaryError("rl_learner", "explicit_warmup_checkpoint_required")
-        warmup = self.exchange.store.get_manifest(self.settings.warmup_artifact_id)
-        raw = b"".join(self.exchange.store.read_payload(warmup.payload("checkpoint")))
-        fitted = decode_checkpoint(raw)
-        if warmup.kind != "checkpoint" or fitted.get("schema") != "stpd/rl4-head-warmup-1":
-            raise ValueError("normal_RL4_warmup_checkpoint_required")
-        source_id = warmup.parent("model")
-        source_package = self.exchange.materialize_model(
-            {"model_artifact_id": source_id, "model_sha256": fitted["model_package_sha256"]},
-            self.work / "models",
+        model, _ = load_model(
+            package / "model.tensor-tree",
+            self.config.start_model_sha256 or descriptor["package_sha256"],
         )
-        source_model, _ = load_model(
-            source_package / "model.tensor-tree", fitted["model_package_sha256"]
-        )
-        policy = action_weights(source_model.state_dict())
-        if policy.keys() != model.state_dict().keys() or any(
-            not torch.equal(policy[name], value) for name, value in model.state_dict().items()
-        ):
-            raise ValueError("warmup_start_policy_weights_changed")
-        if {
-            key: value for key, value in source_model.vocabulary.items() if key != "input_spec"
-        } != {key: value for key, value in model.vocabulary.items() if key != "input_spec"}:
-            raise ValueError("warmup_start_vocabulary_changed")
         model.enable_rl4_heads(0)
-        model.rl4_heads.load_state_dict(fitted["heads"], strict=True)
+        # A pre-existing fitted head snapshot is an explicit initial state, not
+        # a warmup phase. RL4.1 never trains/opens a separate warmup path.
+        if self.settings.warmup_artifact_id:
+            artifact = self.exchange.store.get_manifest(self.settings.warmup_artifact_id)
+            fitted = decode_checkpoint(self.exchange.store.bytes(artifact.payload("checkpoint")))
+            if fitted.get("schema") != "stpd/rl4-head-warmup-1":
+                raise ValueError("explicit_fitted_RL4_heads_required")
+            if fitted["model_package_sha256"] != descriptor["package_sha256"]:
+                raise ValueError("fitted_heads_start_policy_changed_use_explicit_CP_conversion")
+            model.rl4_heads.load_state_dict(fitted["heads"], strict=True)
         return model
 
-    def _load_mu(self, identity: dict[str, Any]) -> MStd:
-        package = self.exchange.materialize_model(identity, self.work / "models")
-        model, _ = load_model(package / "model.tensor-tree", identity["model_sha256"])
-        head = self.exchange.store.get_manifest(identity["heads_artifact_id"])
-        payload = head.payload("checkpoint")
-        if (
-            head.kind != "checkpoint"
-            or payload.sha256 != identity["heads_sha256"]
-            or head.parameters.value().get("schema") != "stpd/rl-behavior-heads-1"
-            or head.parents != (Parent("policy", identity["model_artifact_id"]),)
-        ):
-            raise ValueError("behavior_heads_binding_changed")
-        state = decode_checkpoint(b"".join(self.exchange.store.read_payload(payload)))
-        model.enable_rl4_heads(0)
-        model.rl4_heads.load_state_dict(state["heads"], strict=True)
-        return model.eval()
+    def _optimizer_names(self) -> tuple[tuple[str, ...], ...]:
+        names = {id(parameter): name for name, parameter in self.model.named_parameters()}
+        return tuple(
+            tuple(names[id(parameter)] for parameter in group["params"])
+            for group in self.optimizer.param_groups
+        )
 
-    def _capture_model(self) -> MStd:
-        with self.gpu_lock:
-            return copy.deepcopy(self.model).cpu().eval()
-
-    def _publish_model(self, model: MStd, version: int, updates: int) -> dict[str, Any]:
-        self._configure_mu(model)
-        destination = self.work / "versions" / f"{version:06d}"
-        checkpoint = destination.with_suffix(".tensor-tree")
-        checkpoint.parent.mkdir(parents=True, exist_ok=True)
-        checkpoint.write_bytes(encode_checkpoint({"weights": model.state_dict()}))
-        export_model(
-            model,
-            checkpoint,
-            destination,
-            {
-                "run": self.config.run,
-                "version": version,
-                "updates": updates,
-                "reward": REWARD_SPEC,
-                "segments": asdict(self.settings),
-                "producer": self.producer.to_dict(),
-                "start_package_sha256": self.start_sha256,
-            },
-        )
-        manifest = self.io.publish_model(self.exchange.store, destination, self.producer)
-        weights = manifest.payload("weights").sha256
-        raw_heads = encode_checkpoint({"heads": model.rl4_heads.state_dict()})
-        head_payload = self.exchange.store.put_payload(
-            "checkpoint", io.BytesIO(raw_heads), "application/vnd.stpd.tensor-tree"
-        )
-        head = Manifest(
-            "checkpoint",
-            self.producer,
-            parents=(Parent("policy", manifest.artifact_id),),
-            payloads=(head_payload,),
-            parameters=FrozenObject.of({"schema": "stpd/rl-behavior-heads-1"}),
-        )
-        self.exchange.store.publish(head)
-        numerical = {
-            "precision": "fp32",
-            "tf32": False,
-            "projection": runtime_projection(model.vocabulary),
-            "execution": asdict(model.execution),
-            "adapter": adapter_identity(),
-            "deduplicate_text": model.deduplicate_text,
-        }
-        identity = {
-            "version": version,
-            "updates": updates,
-            "model_artifact_id": manifest.artifact_id,
-            "model_sha256": weights,
-            "heads_artifact_id": head.artifact_id,
-            "heads_sha256": head_payload.sha256,
-            **numerical,
-            "snapshot_sha256": hashlib.sha256(
-                json_bytes(
-                    {"weights": weights, "heads": head_payload.sha256, "numerical": numerical}
-                )
-            ).hexdigest(),
-        }
-        self.exchange.publish_model(
-            {
-                "run": self.config.run,
-                **identity,
-                "parent_version": version - 1 if version else None,
-                "published_at": time.time(),
-                "trajectory_encoding": "short-segment-1",
-                "training": {"updates": updates},
-            }
-        )
-        return {"identity": identity, "model": model, "updates": updates}
-
-    def _start_pool(self, publication: dict[str, Any]) -> None:
-        self.published_updates = publication["updates"]
-        model = publication["model"].to(self.device).eval()
-        self._configure_mu(model)
-        self.pool = SegmentInferencePool(
-            model,
-            publication["identity"],
-            control=self.control,
-            gpu_lock=self.gpu_lock,
-            max_batch=self.settings.inference_batch,
-            window_ms=self.settings.inference_window_ms,
-            segment_steps=self.settings.steps,
-            compiler_identity=self.settings.input_compiler_identity,
-            inference_stream=self.settings.inference_stream,
-        )
-        for identity in self.restored_mu:
-            if identity["snapshot_sha256"] in self.pool.snapshots:
-                continue
-            frozen = self._load_mu(identity)
-            frozen.to(self.device).eval()
-            self._configure_mu(frozen)
-            self.pool.publish(frozen, identity)
-        # Loading old protected snapshots must not make an old one latest.
-        self.pool.latest = publication["identity"]["snapshot_sha256"]
-
-    def _configure_mu(self, model: MStd) -> None:
-        model.deduplicate_text = self.performance.deduplicate_text
-        for parameter in model.parameters():
-            parameter.requires_grad_(False)
-        model.execution = replace(
-            model.execution,
+    def _initial_construction(self) -> ModelConstruction:
+        execution = replace(
+            self.model.execution,
             implementation="experimental-packed-v1",
-            microbatch_size=self.settings.inference_batch,
+            microbatch_size=min(64, self.settings.inference_batch),
             scene_attention_area=self.performance.scene_attention_area,
             text_attention_area=self.performance.text_attention_area,
         )
-        torch.backends.cuda.matmul.allow_tf32 = False
-        torch.backends.cudnn.allow_tf32 = False
+        return ModelConstruction(
+            copy.deepcopy(self.model.architecture),
+            copy.deepcopy(self.model.vocabulary),
+            input_spec(self.model.vocabulary, runtime_projection(self.model.vocabulary)),
+            copy.deepcopy(self.compiler_identity),
+            adapter_identity(),
+            {
+                "execution": asdict(execution),
+                "model_size": self.model.model_size,
+                "precision": "fp32",
+            },
+            "",
+        )
 
-    def _collect_publication(self, *, wait: bool) -> None:
-        if self.pending_publication is None or not wait and not self.pending_publication.done():
-            return
-        publication = self.pending_publication.result()
-        model = publication["model"].to(self.device).eval()
-        self._configure_mu(model)
-        with self.condition:
-            self.pool.publish(model, publication["identity"])
-            self.published_updates = publication["updates"]
-            self.pending_publication = None
-            self._retire_mu()
+    def _capture_model(self) -> dict[str, Any]:
+        began = time.perf_counter()
+        with self.gpu_lock:
+            weights = snapshot_weights(self.model.state_dict())
+        snapshot = {
+            "weights": weights,
+            "construction": self.construction_template,
+            "deduplicate_text": self.performance.deduplicate_text,
+            "updates": self.updates,
+        }
+        self.timing["snapshot_seconds"] += time.perf_counter() - began
+        return snapshot
+
+    def _submit_publication(
+        self, snapshot: dict[str, Any], version: int, updates: int
+    ) -> Future[Any]:
+        return self.publisher.submit(
+            _publish_snapshot,
+            pack_transport(snapshot),
+            peer=self.config.peer,
+            run=self.config.run,
+            generation=self.generation,
+            version=version,
+            updates=updates,
+            producer=self.producer,
+            publish_model=self.io.publish_model,
+            work=str(self.work),
+        )
+
+    def _kick_publication(self) -> None:
+        if self.pending_publication is None and self.latest_snapshot is not None:
+            snapshot, self.latest_snapshot = self.latest_snapshot, None
+            self.version += 1
+            self.pending_publication = self._submit_publication(
+                snapshot, self.version, snapshot["updates"]
+            )
+
+    def _collect_publication(self, *, wait: bool = False) -> None:
+        while self.pending_publication is not None:
+            if not wait and not self.pending_publication.done():
+                return
+            publication = self.pending_publication.result()
+            with self.condition:
+                self.pool.publish(publication["identity"])
+                self.published_updates = publication["updates"]
+                self.pending_publication = None
+                self.pool.retire(
+                    {owner["mu"]["snapshot_sha256"] for owner in self.lease_owners.values()}
+                )
+            self._kick_publication()
+            if not wait:
+                return
 
     def _schedule_publication(self) -> None:
-        self._collect_publication(wait=True)
-        model = self._capture_model()
-        version = self.version + 1
-        publication = self.publisher.submit(
-            self._publish_model, model, version, self.updates
-        )
-        self.pending_publication, self.version = publication, version
-
-    def _retire_mu(self) -> None:
-        protected = {value["mu"]["snapshot_sha256"] for value in self.lease_owners.values()}
-        protected.update(value["mu"]["snapshot_sha256"] for value in self.queue.pending)
-        if self.active:
-            protected.update(value["mu"]["snapshot_sha256"] for value in self.active["segments"])
-        self.pool.retire(protected)
+        self.latest_snapshot = (
+            self._capture_model()
+        )  # replace unsent snapshot; skip intermediate mu
+        self._collect_publication(wait=False)
+        self._kick_publication()
 
     def _receipt(self, request: dict[str, Any]) -> dict[str, Any] | None:
-        if self.input_fenced:
-            raise BoundaryError("rl_learner", "input_owner_fenced_restore_last_checkpoint")
-        if self.replay_input is not None:
-            return None
         receipt = self.exchange.input_receipt(request)
-        if receipt is None:
-            return None
-        if receipt["record"]["sequence"] > self.input_sequence:
-            self.input_fenced = self.newlease_stopped = True
-            raise BoundaryError("rl_learner", "durable_input_not_applied_restore_checkpoint")
-        return cast(dict[str, Any], receipt["response"])
+        return receipt["response"] if receipt is not None else None
 
-    def _archive_capacity(self) -> dict[str, Any]:
-        if self.archive is None:
-            return {"ready": True, "pending_bytes_estimate": 0}
-        status = self.archive.capacity_status()
-        ready = (status["fresh"] and status.get("error") is None
-                 and status.get("pending_bytes_estimate", 0) < self.settings.archive_pending_bytes
-                 and status.get("free_bytes", 0) >= self.settings.archive_min_free_bytes)
-        return {**status, "ready": ready,
-                "pending_limit_bytes": self.settings.archive_pending_bytes,
-                "minimum_free_bytes": self.settings.archive_min_free_bytes}
-
-    def _accept(self, request: dict[str, Any], response: dict[str, Any],
-                apply: Callable[[], None]) -> dict[str, Any]:
-        # Caller owns the condition and has validated every affected state.
-        # CP captures this same lock with the consumed offset and all state.
+    def _accept(
+        self, request: dict[str, Any], response: dict[str, Any], apply: Callable[[], None]
+    ) -> dict[str, Any]:
         duplicate = self._receipt(request)
         if duplicate is not None:
             return duplicate
         try:
-            if self.replay_input is None:
-                record = self.exchange.append_input(request, response,
-                    sequence=self.input_sequence + 1, previous=self.input_head,
-                    producer=self.producer, anchor=self.input_anchor)
-            else:
-                record = self.replay_input["record"]
-                if (self.replay_input["request"] != control_input(request)
-                        or self.replay_input["response"] != response):
-                    raise ValueError("input_replay_response_changed")
-                self.exchange.index_input(record)
+            record = self.exchange.append_input(
+                request,
+                response,
+                sequence=self.input_sequence + 1,
+                previous=self.input_head,
+                producer=self.producer,
+                anchor=self.input_anchor,
+            )
             apply()
             self.input_sequence, self.input_head = record["sequence"], record["input_artifact_id"]
         except BaseException as error:
-            # Never checkpoint a partially applied input with its earlier offset,
-            # or skip an uncertain log write and accept the next sequence.
             self.input_fenced = self.newlease_stopped = True
-            self.input_failure = {"operation": request["operation"],
+            self.input_failure = {
+                "operation": request["operation"],
+                "error_type": type(error).__name__,
                 "last_applied_sequence": self.input_sequence,
-                "error_type": type(error).__name__, "stage": getattr(error, "stage", None),
-                "code": getattr(error, "code", None)}
+            }
             self.condition.notify_all()
             raise
         self.condition.notify_all()
         return response
 
-    def _restore_inputs(self) -> None:
-        for record in self.exchange.input_records(self.input_sequence):
-            fact = self.exchange.read_input(record)
-            if (fact["previous"] != self.input_head
-                    or fact["anchor_checkpoint"] != self.input_anchor):
-                raise ValueError("input_replay_head_changed")
-            if fact["request"]["operation"] == "begin":
-                mu = fact["response"]["mu"]
-                if mu["snapshot_sha256"] not in self.pool.snapshots:
-                    frozen = self._load_mu(mu).to(self.device).eval()
-                    self._configure_mu(frozen)
-                    latest = self.pool.latest
-                    self.pool.publish(frozen, mu)
-                    self.pool.latest = latest
-            self.replay_input = {"record": record, **fact}
-            try:
-                self.control(fact["request"])
-                self.replayed_inputs += 1
-            finally:
-                self.replay_input = None
-        # A producer can have published the segment/end durably without its RPC
-        # arriving. Reconcile only exact grants restored by the authoritative log.
-        for lease, owner in list(self.lease_owners.items()):
-            sequence = int(lease.rpartition("/")[2])
-            key = f"{self.exchange.prefix}shards/{owner['actor']}/{sequence:08d}.json"
-            try:
-                request = self.exchange.segment_record(key)
-            except StoreError as error:
-                if error.code != "object_not_found":
-                    raise
-            else:
-                self.control({**request, "operation": "commit"})
-        for key, episode in list(self.actor_episodes.items()):
-            actor = key[:-(len(episode) + 1)]
-            close_input = self.exchange.episode_end_input(actor, episode)
-            if close_input is not None:
-                self.control(close_input)
-
     def control(self, request: dict[str, Any]) -> dict[str, Any]:
         operation = request["operation"]
-        if operation not in {"status", "receipt"}:
-            request = control_input(request)
-            with self.condition:
-                duplicate = self._receipt(request)
-                if duplicate is not None:
-                    return duplicate
-        if operation == "receipt":
-            with self.condition:
-                response = self._receipt(control_input(request["input"]))
-                return {"found": response is not None, "response": response}
-        if operation == "episode_open":
-            with self.condition:
-                while (not self.newlease_stopped and self.replay_input is None
-                       and not self._archive_capacity()["ready"]):
-                    self.condition.wait(0.1)
-                    duplicate = self._receipt(request)
-                    if duplicate is not None:
-                        return duplicate
-                if self.newlease_stopped:
-                    return {"admitted": False}
-                actor, episode = request["actor"], request["episode"]
-                return self._accept(request, {"admitted": True}, lambda:
-                    self.actor_episodes.__setitem__(f"{actor}:{episode}", episode))
         if operation == "status":
             return {
+                "run": self.config.run,
+                "training_generation": self.generation,
                 "accepting_new_segments": not self.newlease_stopped,
                 "server_time": time.time(),
                 "pool_id": self.pool.pool_id,
                 "input_sequence": self.input_sequence,
                 "input_fenced": self.input_fenced,
-                "archive_capacity": self._archive_capacity(),
             }
-        if operation == "begin":
-            actor, episode = request["actor"], request["episode"]
-            with self.condition:
-                episode_key = f"{actor}:{episode}"
-                while not self.newlease_stopped and episode_key in self.actor_episodes:
+        if operation == "receipt":
+            # Old generation receipts remain facts; querying does not restore a
+            # queue, re-grant a lease or retry a World action.
+            response = self._receipt(control_input(request["input"]))
+            return {"found": response is not None, "response": response}
+        request = control_input(request)
+        if request.get("run") != self.config.run:
+            return {
+                "stopped": True,
+                "reason": "generation_changed",
+                "training_generation": self.generation,
+            }
+        with self.condition:
+            if self.input_fenced:
+                raise BoundaryError("rl_learner", "input_owner_fenced_restore_last_checkpoint")
+            duplicate = self._receipt(request)
+            if duplicate is not None:
+                return duplicate
+            if request.get("training_generation") != self.generation:
+                return {
+                    "stopped": True,
+                    "reason": "generation_changed",
+                    "training_generation": self.generation,
+                }
+        if operation == "commit":
+            return self._admit(request)
+        if operation == "episode_end":
+            return self._end_episode(request)
+        actor, episode = request["actor"], request["episode"]
+        with self.condition:
+            if operation == "episode_open":
+                if self.newlease_stopped:
+                    return {"admitted": False}
+                return self._accept(
+                    request,
+                    {"admitted": True},
+                    lambda: self.actor_episodes.__setitem__(f"{actor}:{episode}", episode),
+                )
+            if operation == "begin":
+                while not self.newlease_stopped and f"{actor}:{episode}" in self.actor_episodes:
                     duplicate = self._receipt(request)
                     if duplicate is not None:
                         return duplicate
                     previous = request.get("previous_lease")
-                    if previous is not None and previous != (
-                            f"{actor}/{self.queue.cursors.get(actor, -1)}"):
+                    if (
+                        previous is not None
+                        and previous != f"{actor}/{self.queue.cursors.get(actor, -1)}"
+                    ):
                         raise ValueError("segment_begin_predecessor_changed")
-                    sequence = self.queue.cursors.get(actor, -1) + 1
-                    lease = f"{actor}/{sequence}"
-                    # The per-game share belongs to dataset selection, not to
-                    # admission. Only the unified queue capacity pauses producers.
-                    if (self.replay_input is not None or (self._archive_capacity()["ready"]
-                            and self.queue.occupied + self.settings.steps
-                            <= self.settings.capacity_rows)):
-                        grant_result: dict[str, Any] = (self.replay_input["response"]
-                            if self.replay_input is not None else
-                            {"mu": self.pool.snapshots[self.pool.latest], "lease": lease,
-                             "server_time": time.time()})
-                        if grant_result["lease"] != lease:
-                            raise ValueError("input_replay_lease_changed")
+                    lease = f"{actor}/{self.queue.cursors.get(actor, -1) + 1}"
+                    if self.queue.occupied + self.settings.steps <= self.settings.capacity_rows:
+                        mu = copy.deepcopy(self.pool.snapshots[self.pool.latest])
 
-                        def grant(lease: str = lease,
-                                  mu: dict[str, Any] = grant_result["mu"]) -> None:
-                            if not self.queue.reserve(lease, replay=self.replay_input is not None):
+                        def grant(lease: str = lease, mu: dict[str, Any] = mu) -> None:
+                            if not self.queue.reserve(lease):
                                 raise ValueError("input_reservation_capacity_changed")
                             self.lease_owners[lease] = {
-                                "actor": actor, "episode": episode, "mu": mu}
+                                "actor": actor,
+                                "episode": episode,
+                                "mu": mu,
+                            }
 
-                        return self._accept(request, grant_result, grant)
+                        return self._accept(
+                            request,
+                            {
+                                "run": self.config.run,
+                                "training_generation": self.generation,
+                                "mu": mu,
+                                "lease": lease,
+                                "server_time": time.time(),
+                            },
+                            grant,
+                        )
                     self.condition.wait(0.1)
                 return {"stopped": True}
-        if operation == "commit":
-            return self._admit(request)
-        if operation == "episode_end":
-            actor, episode = request["actor"], request["episode"]
-            with self.condition:
-                duplicate = self._receipt(request)
-                if duplicate is not None:
-                    return duplicate
-                self._validate_end(request)
-                owned = [
-                    lease
-                    for lease, owner in self.lease_owners.items()
-                    if owner["actor"] == actor and owner["episode"] == episode
-                ]
-            for lease in owned:
-                sequence = int(lease.rpartition("/")[2])
-                key = f"{self.exchange.prefix}shards/{actor}/{sequence:08d}.json"
-                try:
-                    record = self.exchange.segment_record(key)
-                except StoreError as error:
-                    if error.code != "object_not_found":
-                        raise
-                else:
-                    # Read only this owner's exact records, not the full run's
-                    # growing history. This reconciles admission, never World.
-                    self._admit(record)
-            with self.condition:
-                duplicate = self._receipt(request)
-                if duplicate is not None:
-                    return duplicate
-                self._validate_end(request)
-
-                def end() -> None:
-                    if request.get("terminal") is not None:
-                        self.terminal.add(request["run_id"], request["outcome_states"])
-                    for battle in request["hp_battles"]:
-                        self.hp.add(battle["battle_id"], battle["states"])
-                    for lease, owner in list(self.lease_owners.items()):
-                        if owner["actor"] == actor and owner["episode"] == episode:
-                            self.queue.release(lease)
-                            self.lease_owners.pop(lease)
-                    self.actor_episodes.pop(f"{actor}:{episode}", None)
-
-                return self._accept(request, {"run_id": request["run_id"]}, end)
         raise ValueError("unsupported_segment_control")
 
-    def _validate_end(self, request: dict[str, Any]) -> None:
-        if f"{request['actor']}:{request['episode']}" not in self.actor_episodes:
-            raise ValueError("episode_end_without_open")
-        terminal = request.get("terminal")
-        if terminal is None and request["outcome_states"]:
-            raise ValueError("nonterminal_outcome_labels")
-        groups = []
-        sources = {}
-        terminal_observation = None
-        if terminal is not None:
-            from .heads import OUTCOME_CLASSES, class_reward_values
+    @staticmethod
+    def _member(record: dict[str, Any]) -> BatchMember:
+        payload = record["payload"]
+        return BatchMember(
+            record["segment_id"],
+            payload if isinstance(payload, HotPayloadRef) else HotPayloadRef(**payload),
+            record["run_id"],
+            record["rows"],
+            record["mu"]["snapshot_sha256"],
+            record["episode"],
+        )
 
-            label = terminal["class"]
-            if (type(label) is not int or not 0 <= label < OUTCOME_CLASSES
-                    or not math.isclose(float(terminal["reward"]),
-                        float(class_reward_values()[label]), abs_tol=1e-6)):
-                raise ValueError("terminal_class_reward_mismatch")
-            committed = request.get("segments")
-            if not isinstance(committed, list) or not committed:
-                raise ValueError("terminal_original_segment_required")
-            artifact = committed[-1]["segment_artifact_id"]
-            source = self.io.read_segment(self.exchange.store, artifact, scratch=self.work)
-            sources[artifact] = source
-            terminal_observation = source["steps"][-1]["successor"]["observation"]
-            if (json_bytes(source["terminal"]) != json_bytes(terminal)
-                    or source["run_id"] != request["run_id"]
-                    or source["identity"]["intent_id"] != request["episode"]
-                    or terminal_observation["status"] != "terminal"):
-                raise ValueError("terminal_original_binding_changed")
-            self.terminal.validate_add(request["run_id"], request["outcome_states"])
-            groups.append(("outcome", request["outcome_states"], label))
-        battle_ids = [battle["battle_id"] for battle in request["hp_battles"]]
-        if len(battle_ids) != len(set(battle_ids)):
-            raise ValueError("duplicate_auxiliary_group")
-        for battle in request["hp_battles"]:
-            self.hp.validate_add(battle["battle_id"], battle["states"])
-            observed_hp = (((terminal_observation or {}).get("player") or {}).get(
-                "content") or {}).get("hp")
-            if (terminal_observation is None or not isinstance(observed_hp, (int, float))
-                    or isinstance(observed_hp, bool)
-                    or not math.isfinite(observed_hp) or observed_hp < 0
-                    or battle.get("post_hp") != observed_hp):
-                raise ValueError("terminal_hp_original_binding_changed")
-            groups.append(("hp", battle["states"], battle.get("post_hp", 0) / 100))
-        for kind, rows, label in groups:
-            for reference in rows:
-                artifact = reference["segment_artifact_id"]
-                if artifact not in sources:
-                    sources[artifact] = self.io.read_segment(
-                        self.exchange.store, artifact, scratch=self.work)
-                source = sources[artifact]
-                index = reference["row"]
-                if type(index) is not int or not 0 <= index < len(source["steps"]):
-                    raise ValueError("auxiliary_row_binding_changed")
-                step = source["steps"][index]
-                value = reference.get(kind)
-                valid_type = (type(value) is int if kind == "outcome"
-                              else type(value) in (int, float))
-                if (source["run_id"] != request["run_id"]
-                        or source["identity"]["intent_id"] != request["episode"]
-                        or reference["key"] != f"{request['run_id']}:{step['step_index']}"
-                        or not valid_type or value != label or not math.isfinite(float(label))
-                        or float(label) < 0):
-                    raise ValueError("auxiliary_label_binding_changed")
+    def _retain(self, payload: HotPayloadRef, owner: str) -> None:
+        with self.condition:
+            self.exchange.retain_hot_payload(payload, owner)
+            self.hot_references[payload.slot, owner] = payload
+
+    def _release(self, payload: HotPayloadRef, owner: str) -> None:
+        with self.condition:
+            self.exchange.release_hot_payload(payload, owner)
+            del self.hot_references[payload.slot, owner]
 
     def _admit(self, request: dict[str, Any]) -> dict[str, Any]:
-        segment = self.io.read_segment(
-            self.exchange.store, request["segment_artifact_id"], scratch=self.work
-        )
-        if any(segment[key] != request[key] for key in ("segment_id", "run_id", "rows", "mu")):
-            raise ValueError("segment_record_changed")
-        from stpd.evaluation.suites import seed_membership
-
-        seed = segment["identity"]["seed"]
-        if seed in self.settings.excluded_seeds or seed_membership(seed) or held_out(seed):
-            raise ValueError("segment_seed_is_held_out")
-        battles = []
-        sources = {request["segment_artifact_id"]: segment}
-        for battle in segment.get("hp_battles", []):
-            states = []
-            for state in battle["states"]:
-                reference = dict(state)
-                if "current_row" in reference:
-                    reference.update(
-                        segment_artifact_id=request["segment_artifact_id"],
-                        row=reference.pop("current_row"),
-                    )
-                artifact = reference["segment_artifact_id"]
-                if artifact not in sources:
-                    sources[artifact] = self.io.read_segment(
-                        self.exchange.store, artifact, scratch=self.work
-                    )
-                source = sources[artifact]
-                index = reference["row"]
-                if type(index) is not int or not 0 <= index < len(source["steps"]):
-                    raise ValueError("battle_hp_row_binding_changed")
-                step = source["steps"][index]
-                if (
-                    source["run_id"] != segment["run_id"]
-                    or reference["key"] != f"{segment['run_id']}:{step['step_index']}"
-                    or not battle["start_step"] <= step["step_index"] < battle["end_step"]
-                    or reference["hp"] != battle["hp"]
-                ):
-                    raise ValueError("battle_hp_state_binding_changed")
-                states.append(reference)
-            battles.append((battle["battle_id"], states))
+        # ACK checks only the immutable envelope/capacity. W3 verifies the source;
+        # workers perform complete read/decoding/target checks before ready.
         with self.condition:
-            duplicate = self._receipt({**request, "operation": "commit"})
+            duplicate = self._receipt(request)
             if duplicate is not None:
                 return duplicate
-            owner = self.lease_owners.get(segment["segment_id"])
-            if (
-                owner is None
-                or owner["mu"] != segment["mu"]
-                or owner["episode"] != segment["identity"]["intent_id"]
-            ):
+            owner = self.lease_owners.get(request["segment_id"])
+            if owner is None or owner["mu"] != request["mu"]:
                 raise ValueError("segment_reserved_behavior_changed")
-            for battle_id, states in battles:
-                self.hp.validate_add(battle_id, states)
-            if len({battle_id for battle_id, _ in battles}) != len(battles):
-                raise ValueError("duplicate_auxiliary_group")
-            queued = {**{key: request[key] for key in (
-                "segment_id", "run_id", "rows", "mu", "segment_artifact_id")},
-                "episode": owner["episode"]}
-            self.queue.validate_commit(segment["segment_id"], queued)
+            record = {**request, "episode": owner["episode"], "actor": owner["actor"]}
+            member = self._member(record)
+            if member.payload.slot.split("/")[:2] != [self.config.run, self.generation]:
+                raise ValueError("segment_payload_generation_changed")
+            self.queue.validate_commit(member.segment_id, record)
+            # Explicit owners, acquired before ACK; an uncertain write keeps refs
+            # and fences the owner rather than deleting/retrying unknown delivery.
+            self._retain(member.payload, "ppo:" + member.segment_id)
+            self._retain(member.payload, "delayed:" + owner["episode"])
 
             def admit() -> None:
-                self.queue.commit(segment["segment_id"], queued)
-                for battle_id, states in battles:
-                    self.hp.add(battle_id, states)
-                self.lease_owners.pop(segment["segment_id"])
+                self.queue.commit(member.segment_id, record)
+                self.sources[member.segment_id] = record
+                self.lease_owners.pop(member.segment_id)
 
-            return self._accept({**request, "operation": "commit"},
-                                {"segment_id": segment["segment_id"]}, admit)
+            return self._accept(request, {"segment_id": member.segment_id}, admit)
 
-    def _load(self, records: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        return [
-            self.io.read_segment(
-                self.exchange.store, value["segment_artifact_id"], scratch=self.work
+    def _members_for_run(self, run_id: str) -> tuple[BatchMember, ...]:
+        with self.condition:
+            return tuple(
+                self._member(record)
+                for record in self.sources.values()
+                if record["run_id"] == run_id
             )
-            for value in records
-        ]
 
-    def _read_inputs(self, records: list[dict[str, Any]]) -> PreparedInputs:
-        started = time.monotonic()
-        segments = self._load(records)
-        frames = None
-        if self.input_reader is not None:
-            frames = {}
-            for record, segment in zip(records, segments, strict=True):
-                frames.update(self.input_reader.frames(record["segment_artifact_id"], segment))
-        return PreparedInputs(records, segments, frames, started, time.monotonic())
+    def _end_episode(self, request: dict[str, Any]) -> dict[str, Any]:
+        with self.condition:
+            if f"{request['actor']}:{request['episode']}" not in self.actor_episodes:
+                raise ValueError("episode_end_without_open")
+            members = self._members_for_run(request["run_id"])
+        # No condition/GPU lock while source/label validation runs in a CPU worker.
+        groups = self.input_preparer.pool.submit(verify_auxiliary, request, members).result()
+        with self.condition:
+            duplicate = self._receipt(request)
+            if duplicate is not None:
+                return duplicate
+
+            def end() -> None:
+                self._add_auxiliary(groups)
+                for lease, owner in list(self.lease_owners.items()):
+                    if (
+                        owner["actor"] == request["actor"]
+                        and owner["episode"] == request["episode"]
+                    ):
+                        self.queue.release(lease)
+                        self.lease_owners.pop(lease)
+                self.actor_episodes.pop(f"{request['actor']}:{request['episode']}")
+
+            response = self._accept(request, {"run_id": request["run_id"]}, end)
+            for member in members:
+                self._release(member.payload, "delayed:" + request["episode"])
+            self._forget_unreferenced()
+            return response
+
+    def _add_auxiliary(self, groups: list[tuple[str, str, list[dict[str, Any]]]]) -> None:
+        for kind, identity, rows in groups:
+            pool = self.terminal if kind == "terminal" else self.hp
+            pool.validate_add(identity, rows)
+            before = {key: values for key, values in pool.groups.items()}
+            owner = f"aux:{kind}:{identity}"
+            for member in {row["member"].segment_id: row["member"] for row in rows}.values():
+                self._retain(member.payload, owner)
+            pool.add(identity, rows)
+            for key, old in before.items():
+                if key not in pool.groups:
+                    for member in {row["member"].segment_id: row["member"] for row in old}.values():
+                        self._release(member.payload, f"aux:{kind}:{key}")
+
+    def _collect_labels(self, *, wait: bool = False) -> None:
+        while self.pending_labels and (wait or self.pending_labels[0][0].done()):
+            future, members, owner = self.pending_labels.popleft()
+            groups = future.result()
+            with self.condition:
+                self._add_auxiliary(groups)
+                for member in members:
+                    self._release(member.payload, owner)
+
+    def _ready_labels(self, batch: PreparedBatch) -> None:
+        for labels in batch.label_updates:
+            if not labels["hp_battles"]:
+                continue
+            request = {**labels, "training_generation": self.generation, "outcome_states": []}
+            # Terminal supervision arrives through typed EpisodeLabels; a PPO
+            # source's already checked reward boundaries can backfill HP sooner.
+            request["terminal"] = None
+            members = self._members_for_run(labels["run_id"])
+            owner = "labels:" + labels["segment_id"]
+            for member in members:
+                self._retain(member.payload, owner)
+            self.pending_labels.append(
+                (
+                    self.input_preparer.pool.submit(verify_auxiliary, request, members),
+                    members,
+                    owner,
+                )
+            )
+
+    def _select(self, *, take: bool = True) -> dict[str, Any] | None:
+        with self.condition:
+            records = self.queue.dataset(take=take)
+            if records is None:
+                return None
+            n = sum(record["rows"] for record in records)
+            order = list(range(n))
+            self.rng.shuffle(order)
+            parts = tuple(
+                tuple(order[i] for i in group)
+                for group in minibatch_members(n, self.settings.minibatches)
+            )
+            reserved = {
+                row["key"]
+                for name in ("terminal", "hp")
+                for row in (self.active[name] if self.active else [])
+            }
+            selected = {}
+            for kind, pool in (("terminal", self.terminal), ("hp", self.hp)):
+                selected[kind] = pool.sample(
+                    self.settings.auxiliary_rows, self.rng, epochs=1, exclude=reserved
+                )
+            auxiliary, owners = [], []
+            auxiliary_kinds: tuple[Literal["terminal", "hp"], ...] = ("terminal", "hp")
+            for kind in auxiliary_kinds:
+                for i, row in enumerate(selected[kind]):
+                    auxiliary.append(
+                        AuxiliarySelection(
+                            row["source"],
+                            kind,
+                            float(row["outcome" if kind == "terminal" else "hp"]),
+                            row["uses"],
+                            2 if kind == "terminal" else 1,
+                        )
+                    )
+                    owners.append(i % self.settings.minibatches)
+            number = self.datasets + (2 if self.active is not None else 1)
+            request = PrepareRequest(
+                RunSequence(self.config.run, self.generation, number),
+                tuple(self._member(record) for record in records),
+                tuple(auxiliary),
+                parts,
+                tuple(owners),
+                self.compiler_identity,
+                self.rng.getstate(),
+                self.settings.prepared_bytes // 2,
+            )
+            active = {
+                "request": request,
+                "segments": records,
+                **selected,
+                "used": [],
+                "minibatch": 0,
+                "epoch": 0,
+                "start_updates": self.updates,
+                "taken": take,
+            }
+            return active
+
+    def _submit_batch(self, active: dict[str, Any]) -> Future[PreparedBatch]:
+        request = active["request"]
+        owner = f"prepare:{self.generation}:{request.identity.sequence}"
+        # Aux holds a complete verified row copy; only PPO still reads hot bytes.
+        for member in request.members:
+            self._retain(member.payload, owner)
+        inputs = tuple(row["prepared_input"] for kind in ("terminal", "hp") for row in active[kind])
+        return self.input_preparer.submit(request, inputs)
 
     def _prepare_ahead(self) -> None:
-        if not self.settings.prepare_ahead or self.prepared_inputs is not None:
-            return
-        with self.condition:
-            records = self.queue.dataset(take=False)
-            if records is None:
-                return
-            self.prepared_records = records
-            self.prepared_inputs = self.input_preparer.submit(self._read_inputs, records)
-
-    def _take_inputs(self, records: list[dict[str, Any]]) -> PreparedInputs:
-        waiting = time.monotonic()
-        if self.prepared_inputs is not None:
-            if self.prepared_records != records:
-                raise ValueError("prefetched_dataset_membership_changed")
-            prepared = self.prepared_inputs.result()
-            self.prepared_inputs = self.prepared_records = None
-        elif self.settings.prepare_ahead:
-            prepared = self.input_preparer.submit(self._read_inputs, records).result()
-        else:
-            prepared = self._read_inputs(records)
-        self.timing["input_wait_seconds"] += time.monotonic() - waiting
-        self.timing["input_read_decode_seconds"] += prepared.finished - prepared.started
-        self.timing["input_optimizer_overlap_seconds"] += sum(max(0,
-            min(finished, prepared.finished) - max(started, prepared.started))
-            for started, finished in self.optimizer_intervals)
-        return prepared
-
-    def _auxiliary(self, references: list[dict[str, Any]]) -> list[AuxiliarySample]:
-        cache = {}
-        result = []
-        for reference in references:
-            artifact = reference["segment_artifact_id"]
-            # Input/vocabulary remains fixed while the shared trunk learns.
-            if self.input_reader is not None:
-                frame, floor = self.input_reader.auxiliary(artifact, reference["row"],
-                    read_segment=self.io.read_segment, scratch=self.work)
-            else:
-                if artifact not in cache:
-                    cache[artifact] = self.io.read_segment(
-                        self.exchange.store, artifact, scratch=self.work)
-                step = cache[artifact]["steps"][reference["row"]]
-                frame = compile_frame(project(step["input"]["observation"],
-                    input_projection=runtime_projection(self.model.vocabulary)), self.model)
-                floor = step["behavior"]["floor"]
-            result.append(
-                AuxiliarySample(
-                    frame,
-                    floor,
-                    reference["key"],
-                    outcome=reference.get("outcome"),
-                    hp=reference.get("hp"),
-                )
-            )
-        return result
+        if self.pending_batch is None and self.settings.prepare_ahead:
+            active = self._select(take=False)
+            if active is not None:
+                self.pending_batch = active, self._submit_batch(active)
 
     def _prepare(self) -> bool:
-        with self.condition:
-            if self.active is None:
-                records = self.queue.dataset()
-                if records is None:
-                    return False
-                self.active = {
-                    "segments": records,
-                    "frozen": None,
-                    "epoch": 0,
-                    "minibatch": 0,
-                    "members": None,
-                    "used": [],
-                    "start_updates": self.updates,
-                    "terminal": [],
-                    "hp": [],
-                }
-                self.condition.notify_all()
-            active = self.active
-        prepared = self._take_inputs(active["segments"])
-        segments = prepared.segments
-        target_started = time.monotonic()
-        if active["frozen"] is None:
-            active["frozen"] = freeze_targets(segments, self.pool.models, gpu_lock=self.gpu_lock,
-                                               frames=prepared.frames)
-            order = list(range(sum(value["rows"] for value in active["segments"])))
-            self.rng.shuffle(order)
-            active["members"] = [
-                [order[index] for index in group]
-                for group in minibatch_members(len(order), self.settings.minibatches)
-            ]
+        if self.active_batch is not None:
+            return True
+        self._collect_labels()
+        if self.pending_batch is None:
+            active = self._select()
+            if active is None:
+                return False
+            self.pending_batch = active, self._submit_batch(active)
+        active, future = self.pending_batch
+        began = time.perf_counter()
+        batch = future.result()
+        self.timing["preparation_wait_seconds"] += time.perf_counter() - began
+        self.timing["preparation_seconds"] += batch.timings["request_wall_seconds"]
+        if not active["taken"]:
             with self.condition:
-                active["terminal"] = self.terminal.sample(
-                    self.settings.auxiliary_rows, self.rng, epochs=self.settings.epochs
-                )
-                active["hp"] = self.hp.sample(
-                    self.settings.auxiliary_rows, self.rng, epochs=self.settings.epochs
-                )
-        self.active_rows = samples_from_frozen(segments, self.pool.models, active["frozen"],
-                                              frames=prepared.frames)
-        self.row_metadata = [
-            {
-                "generated_at": step.get("generated_at"),
-                "floor": step["behavior"]["floor"],
-                "mu_version": segment["mu"]["version"],
-                "mu_updates": segment["mu"]["updates"],
-            }
-            for segment in segments
-            for step in segment["steps"]
-        ]
-        self.active_auxiliary = self._auxiliary(active["terminal"]), self._auxiliary(active["hp"])
-        self.timing["target_and_auxiliary_seconds"] += time.monotonic() - target_started
+                if self.queue.dataset() != active["segments"]:
+                    raise ValueError("prepared_dataset_membership_changed")
+            active["taken"] = True
+        self.pending_batch = None
+        self.active, self.active_batch = active, batch
+        active["start_updates"] = self.updates
+        transfer_started = time.perf_counter()
+        self.device_batch, copies = stage_batch(batch, self.device)
+        self.timing["input_transfer_host_seconds"] += time.perf_counter() - transfer_started
+        self.timing["input_transfer_copies"] += copies
+        self._ready_labels(batch)
+        # Complete batch owns its tensors now. Release preparation and PPO bytes;
+        # delayed-label/aux owners independently protect their own future reads.
+        for member in batch.request.members:
+            self._release(
+                member.payload, f"prepare:{self.generation}:{batch.request.identity.sequence}"
+            )
+        for member in batch.request.members:
+            self._release(member.payload, "ppo:" + member.segment_id)
+        self._event(
+            "batch_ready",
+            dataset=batch.request.identity.sequence,
+            rows=len(batch.metadata),
+            preparation=batch.timings,
+            bytes=batch.payload_bytes,
+        )
         return True
 
-    def _step(self) -> None:
-        active = self.active
-        assert active is not None and self.active_rows is not None
-        assert self.active_auxiliary is not None
-        index, epoch = active["minibatch"], active["epoch"]
-        terminal_parts = (
-            minibatch_members(len(active["terminal"]), self.settings.minibatches)
-            if len(active["terminal"]) >= self.settings.minibatches
-            else [list(range(len(active["terminal"])))] + [[]] * (self.settings.minibatches - 1)
-        )
-        hp_parts = (
-            minibatch_members(len(active["hp"]), self.settings.minibatches)
-            if len(active["hp"]) >= self.settings.minibatches
-            else [list(range(len(active["hp"])))] + [[]] * (self.settings.minibatches - 1)
-        )
-        terminal = [self.active_auxiliary[0][i] for i in terminal_parts[index]]
-        hp = [self.active_auxiliary[1][i] for i in hp_parts[index]]
-        optimizer_started = time.monotonic()
-        try:
-            result = segment_update(
+    def _step(self) -> dict[str, Any]:
+        active, batch = self.active, self.active_batch
+        assert active is not None and batch is not None
+        assert self.device_batch is not None
+        index = active["minibatch"]
+        began = time.perf_counter()
+        result = prepared_update(
             self.model,
             self.optimizer,
-            [self.active_rows[i] for i in active["members"][index]],
-            terminal,
-            hp,
+            self.device_batch.minibatches[index],
             config=self.config.loss,
             performance=self.performance,
             target_kl=self.settings.target_kl,
             gpu_lock=self.gpu_lock,
             diagnostics=self.updates % self.settings.diagnostics_every == 0,
-            )
-        finally:
-            optimizer_finished = time.monotonic()
-            self.optimizer_intervals.append((optimizer_started, optimizer_finished))
-            self.timing["optimizer_attempt_seconds"] += optimizer_finished - optimizer_started
+        )
+        self.timing["optimizer_attempt_seconds"] += time.perf_counter() - began
         if result["stepped"]:
-            used = set(active["used"])
-            newly_used = [i for i in active["members"][index] if i not in used]
+            newly_used = [i for i in batch.request.minibatch_rows[index] if i not in active["used"]]
             self.first_use += len(newly_used)
-            self.first_use_multi += sum(
-                len(self.active_rows[i].frame.choices) > 1 for i in newly_used
-            )
-            first = [self.row_metadata[i] for i in newly_used]
-            ages = []
+            self.first_use_multi += batch.minibatches[index].policy_rows
+            active["used"].extend(newly_used)
+            with self.condition:
+                for kind, pool in (("terminal", self.terminal), ("hp", self.hp)):
+                    offset = 0 if kind == "terminal" else len(active["terminal"])
+                    rows = [
+                        row
+                        for local, row in enumerate(active[kind])
+                        if batch.request.auxiliary_minibatches[offset + local] == index
+                    ]
+                    pool.used(rows, batch.request.identity.sequence, epochs=1)
+                    for identity, retired in pool.retire_exhausted().items():
+                        remaining = {
+                            row["member"].segment_id for row in pool.groups.get(identity, [])
+                        }
+                        for member in {
+                            row["member"].segment_id: row["member"] for row in retired
+                        }.values():
+                            if member.segment_id not in remaining:
+                                self._release(member.payload, f"aux:{kind}:{identity}")
+            decay = self.settings.ema_decay
+            with torch.no_grad():
+                weights = self.model.state_dict()
+                floating = [name for name, value in weights.items() if value.is_floating_point()]
+                torch._foreach_mul_([self.ema[name] for name in floating], decay)
+                torch._foreach_add_(
+                    [self.ema[name] for name in floating],
+                    [weights[name] for name in floating],
+                    alpha=1 - decay,
+                )
+                for name, value in weights.items():
+                    if not value.is_floating_point():
+                        self.ema[name].copy_(value)
+            self.updates += 1
+            rows = [batch.metadata[i] for i in newly_used]
             now = time.time()
-            for row in first:
-                if row["generated_at"] is not None:
-                    ages.append(now - datetime.fromisoformat(row["generated_at"]).timestamp())
-            ages.sort()
+            ages = sorted(
+                now - row["generated_timestamp"]
+                for row in rows
+                if row["generated_timestamp"] is not None
+            )
             result.update(
                 first_use_age_samples_seconds=ages,
                 first_use_age_seconds={
@@ -933,308 +986,179 @@ class SegmentLearner:
                     "median": ages[len(ages) // 2] if ages else None,
                     "p95": ages[min(len(ages) - 1, int(len(ages) * 0.95))] if ages else None,
                 },
-                first_use_floors=[row["floor"] for row in first],
-                first_use_version_lag=[self.version - row["mu_version"] for row in first],
-                first_use_pre_update_SGD_lag=[self.updates - row["mu_updates"] for row in first],
+                first_use_floors=[row["floor"] for row in rows],
+                first_use_version_lag=[self.version - row["mu_version"] for row in rows],
+                first_use_pre_update_SGD_lag=[self.updates - 1 - row["mu_updates"] for row in rows],
             )
-            active["used"].extend(newly_used)
-            with self.condition:
-                self.terminal.used(
-                    [active["terminal"][i] for i in terminal_parts[index]],
-                    self.datasets,
-                    epochs=self.settings.epochs,
-                )
-                self.hp.used(
-                    [active["hp"][i] for i in hp_parts[index]],
-                    self.datasets,
-                    epochs=self.settings.epochs,
-                )
-            decay = self.settings.ema_decay
-            for name, value in self.model.state_dict().items():
-                current = value.detach()
-                if current.is_floating_point():
-                    self.ema[name].mul_(decay).add_(current, alpha=1 - decay)
-                else:
-                    self.ema[name].copy_(current)
-            self.updates += 1
         result.update(
             update=self.updates,
-            dataset=self.datasets,
-            epoch=epoch,
+            dataset=batch.request.identity.sequence,
             minibatch=index,
+            epoch=0,
             first_use=self.first_use,
             first_use_multi=self.first_use_multi,
         )
-        # Complete the in-memory learning transition before fallible logs,
-        # telemetry, or publication. A final CP must never pair new Adam/theta
-        # with the old minibatch cursor, nor leave an exhausted dataset active.
         active["minibatch"] += 1
-        if active["minibatch"] == self.settings.minibatches:
-            active["epoch"] += 1
-            active["minibatch"] = 0
-        finished = result["kl_stopped"] or active["epoch"] == self.settings.epochs
+        finished = result["kl_stopped"] or active["minibatch"] == len(batch.minibatches)
         if finished:
             self.datasets += 1
-            with self.condition:
-                self.active = self.active_rows = self.active_auxiliary = None
-                self._retire_mu()
-        with (self.work / "updates.jsonl").open("ab") as stream:
-            stream.write(json_bytes(result))
-        if self.updates % max(1, self.config.tensorboard_steps) == 0:
-            if self.metrics is not None:
-                self.metrics.scalars(
-                    {
-                        f"train/{key}": result.get(key)
-                        for key in (
-                            "td_loss",
-                            "policy_loss",
-                            "entropy",
-                            "approx_kl_mu_theta",
-                            "acting_kl_theta_mu",
-                            "clip_fraction",
-                            "terminal_loss",
-                            "hp_loss",
-                            "gradient_norm",
-                            "first_use",
-                            "first_use_multi",
-                        )
-                    },
-                    self.updates,
-                )
-                self.metrics.histograms(
-                    {
-                        "decisions/first_use_floor": result.get("first_use_floors", []),
-                        "decisions/first_use_version_lag": result.get("first_use_version_lag", []),
-                        "decisions/first_use_pre_update_SGD_lag": result.get(
-                            "first_use_pre_update_SGD_lag", []),
-                    },
-                    self.updates,
-                )
-            while self.telemetry and self.telemetry[0].done():
-                self.telemetry.popleft().result()
-            if len(self.telemetry) >= 8:
-                self.telemetry.popleft().result()
-            self.telemetry.append(
-                self.publisher.submit(
-                    self.exchange.publish_event,
-                    "progress",
-                    **result,
-                    version=self.version,
-                    queued_rows=self.queue.rows,
-                    reserved_rows=sum(self.queue.leases.values()),
-                    trajectory_encoding="short-segment-1",
-                )
+            self.active = self.active_batch = None
+            self.device_batch = None
+            self._forget_unreferenced()
+            if self.updates > active["start_updates"]:
+                self._schedule_publication()
+        # Fallible IO follows the complete learning transition; CP never pairs
+        # new Adam/theta with old successful-use counters.
+        self._event("progress", **result, version=self.version)
+        if self.metrics is not None and self.updates % self.config.tensorboard_steps == 0:
+            self.metrics.scalars(
+                {
+                    f"train/{name}": result.get(name)
+                    for name in (
+                        "td_loss",
+                        "policy_loss",
+                        "entropy",
+                        "approx_kl_mu_theta",
+                        "clip_fraction",
+                        "terminal_loss",
+                        "hp_loss",
+                        "gradient_norm",
+                        "first_use",
+                        "first_use_multi",
+                    )
+                },
+                self.updates,
             )
-        if finished and self.updates != active["start_updates"]:
-            self._schedule_publication()
+        return result
+
+    def _forget_unreferenced(self) -> None:
+        with self.condition:
+            self._forget_locked()
+
+    def _forget_locked(self) -> None:
+        retained = {record["segment_id"] for record in self.queue.pending}
+        for active in (self.active, self.pending_batch[0] if self.pending_batch else None):
+            if active:
+                retained.update(record["segment_id"] for record in active["segments"])
+                retained.update(
+                    row["member"].segment_id for name in ("terminal", "hp") for row in active[name]
+                )
+        retained.update(
+            row["member"].segment_id
+            for pool in (self.terminal, self.hp)
+            for rows in pool.groups.values()
+            for row in rows
+        )
+        for identity, record in list(self.sources.items()):
+            if (
+                identity not in retained
+                and f"{record['actor']}:{record['episode']}" not in self.actor_episodes
+            ):
+                self.sources.pop(identity)
+
+    def _event(self, kind: str, **fields: Any) -> None:
+        while self.telemetry_futures and self.telemetry_futures[0].done():
+            self.telemetry_futures.popleft().result()
+        if len(self.telemetry_futures) >= 8:
+            self.telemetry_futures.popleft().result()
+        self.telemetry_futures.append(
+            self.telemetry.submit(
+                self.exchange.publish_event, kind, training_generation=self.generation, **fields
+            )
+        )
+
+    def _learning_state(self) -> SelfContainedCheckpoint:
+        with self.gpu_lock:
+            weights = snapshot_weights(self.model.state_dict())
+            optimizer, ema = cpu_copy(self.optimizer.state_dict()), snapshot_weights(self.ema)
+        names = self._optimizer_names()
+        validate_optimizer_order(optimizer, names, weights)
+        cuda = (
+            tuple(torch.cuda.get_rng_state_all()) if self.device.type == "cuda" else self.cuda_rng
+        )
+        return SelfContainedCheckpoint(
+            RunSequence(self.config.run, self.generation, self.checkpoint_sequence),
+            replace(self.construction_template, text_digest=text_digest(weights)),
+            asdict(self.config),
+            self.producer.to_dict(),
+            weights,
+            optimizer,
+            names,
+            ema,
+            LearningCounters(
+                self.updates,
+                self.datasets,
+                self.first_use,
+                self.first_use_multi,
+                self.version,
+                self.published_updates,
+            ),
+            RngState(
+                random.getstate(),
+                self.rng.getstate(),
+                torch.get_rng_state().clone(),
+                tuple(value.cpu().clone() for value in cuda),
+            ),
+            self.conversion,
+        )
 
     def _state(self) -> tuple[bytes, tuple[Parent, ...]]:
-        with self.condition, self.gpu_lock:
-            if self.input_fenced:
-                raise BoundaryError("rl_learner", "input_owner_fenced_restore_last_checkpoint")
-            metadata: dict[str, Any] = {
-                "schema": CHECKPOINT_SCHEMA,
-                "config": asdict(self.config),
-                "producer": self.producer.to_dict(),
-                "queue": self.queue.state(),
-                "lease_owners": self.lease_owners,
-                "actor_episodes": self.actor_episodes,
-                "terminal": self.terminal.state(),
-                "hp": self.hp.state(),
-                "active": (
-                    {key: value for key, value in self.active.items() if key != "frozen"}
-                    if self.active
-                    else None
-                ),
-                "mu": list(self.pool.snapshots.values()),
-                "updates": self.updates,
-                "published_updates": self.published_updates,
-                "datasets": self.datasets,
-                "version": self.version,
-                "first_use": self.first_use,
-                "first_use_multi": self.first_use_multi,
-                "checkpoint_sequence": self.checkpoint_sequence,
-                "input_sequence": self.input_sequence,
-                "input_head": self.input_head,
-                "input_anchor": self.input_anchor,
-            }
-            # Active auxiliary references must resume their original pool counters.
-            if metadata["active"] is not None:
-                metadata["active"] = copy.deepcopy(metadata["active"])
-            state = {
-                "schema": CHECKPOINT_SCHEMA,
-                "metadata": metadata_tensor(metadata),
-                "weights": self.model.state_dict(),
-                "optimizer": self.optimizer.state_dict(),
-                "ema": self.ema,
-                "random": self.rng.getstate(),
-                "torch_rng": torch.get_rng_state(),
-                "cuda_rng": torch.cuda.get_rng_state_all() if self.device.type == "cuda" else [],
-                "frozen": self.active["frozen"] if self.active else None,
-            }
-            artifacts = {value["heads_artifact_id"] for value in metadata["mu"]}
-            if self.input_head:
-                artifacts.add(self.input_head)
-            artifacts.add(self.settings.warmup_artifact_id)
-            if self.config.start_artifact_id:
-                artifacts.add(self.config.start_artifact_id)
-            if self.settings.input_pack_artifact_id:
-                artifacts.add(self.settings.input_pack_artifact_id)
-            artifacts.update(value["segment_artifact_id"] for value in metadata["queue"]["pending"])
-            for pool in (metadata["terminal"], metadata["hp"]):
-                artifacts.update(
-                    row["segment_artifact_id"] for _, group in pool["groups"] for row in group
-                )
-            if self.active:
-                artifacts.update(value["segment_artifact_id"] for value in self.active["segments"])
-                artifacts.update(
-                    row["segment_artifact_id"]
-                    for key in ("terminal", "hp")
-                    for row in self.active[key]
-                )
-            parents = tuple(
-                Parent(f"input_{i}", artifact) for i, artifact in enumerate(sorted(artifacts))
-            )
-        # Metadata was frozen above and theta/Adam/EMA have one writer (this
-        # learner thread). Encoding does not need to block control or inference.
-        return encode_checkpoint(state), parents
+        return encode_state(self._learning_state()), ()
 
     def _collect_checkpoint(self, *, wait: bool = False) -> None:
+        if self.checkpoint_encoding is not None and (wait or self.checkpoint_encoding.done()):
+            self.checkpoints.submit(self.checkpoint_encoding.result())
+            self.checkpoint_encoding = None
         taken = self.checkpoints.take(wait=wait)
         if taken:
             info = taken[0].parameters.value()
             self.exchange.publish_checkpoint(
-                info["version"], taken[0].artifact_id, sequence=info["sequence"]
+                info["version"],
+                taken[0].artifact_id,
+                sequence=info["sequence"],
+                training_generation=info["training_generation"],
             )
 
     def checkpoint(self, *, final: bool = False) -> None:
-        self._collect_publication(wait=True)
-        if self.metrics is not None:
-            self.metrics.publish()
+        if self.input_fenced:
+            raise BoundaryError("rl_learner", "input_owner_fenced_restore_last_checkpoint")
         self._collect_checkpoint(wait=final)
-        if self.checkpoints.pending:
+        if self.active is not None and not final:
+            self.checkpoint_requested = True
+            return
+        if self.checkpoint_encoding is not None or self.checkpoints.pending:
             return
         self.checkpoint_sequence += 1
-        raw, refs = self._state()
-        self.checkpoints.submit(
-            FrozenCheckpoint(
-                raw,
-                refs,
-                FrozenObject.of(
-                    {
-                        "schema": CHECKPOINT_SCHEMA,
-                        "run": self.config.run,
-                        "sequence": self.checkpoint_sequence,
-                        "version": self.version,
-                    }
-                ),
-                0.0,
-            )
+        self.checkpoint_encoding = self.checkpoint_encoder.submit(
+            _encode_snapshot, self._learning_state()
         )
+        self.checkpoint_requested = False
         if final:
             self._collect_checkpoint(wait=True)
 
-    def _restore(self, artifact_id: str) -> tuple[torch.Tensor, list[torch.Tensor]]:
-        import tempfile
-
-        manifest = self.exchange.store.get_manifest(artifact_id)
-        if (
-            manifest.kind != "checkpoint"
-            or manifest.parameters.value().get("schema") != CHECKPOINT_SCHEMA
-        ):
-            raise ValueError("segment_checkpoint_required")
-        with tempfile.TemporaryDirectory(prefix="segment-restore-", dir=self.work) as directory:
-            path = self.exchange.store.materialize(
-                manifest.payload("checkpoint"), Path(directory) / "cp"
-            )
-            state = decode_checkpoint(path.read_bytes())
-        metadata = json.loads(state["metadata"].cpu().numpy().tobytes())
-        expected = asdict(self.config)
-        previous = metadata["config"]
-        for key in (
-            "resume_checkpoint",
-            "resume_source",
-            "republish_on_resume",
-            "wall_seconds",
-            "device",
-            "threads",
-            "max_versions",
-            "peer",
-            "start_package",
-        ):
-            expected.pop(key, None)
-            previous.pop(key, None)
-        # Diagnostics only read extra gradients; cadence is an operational cost.
-        # It does not change targets, membership, successful updates or optimizer math.
-        for key in OPERATIONAL_FIELDS:
-            expected["segments"].pop(key, None)
-            previous["segments"].pop(key, None)
-        # Microbatch is gradient accumulation within the same frozen minibatch;
-        # membership, global denominators and successful SGD accounting stay fixed.
-        expected["performance"].pop("microbatch_size", None)
-        previous["performance"].pop("microbatch_size", None)
-        if (
-            metadata["schema"] != CHECKPOINT_SCHEMA
-            or previous != expected
-            or metadata["producer"] != (self.config.resume_source or self.producer.to_dict())
-        ):
-            raise ValueError("segment_resume_config_or_source_changed")
-        self.model.load_state_dict(state["weights"])
-        self.optimizer.load_state_dict(state["optimizer"])
-        self.ema = {key: value.to(self.device) for key, value in state["ema"].items()}
-        self.queue.restore(metadata["queue"], accepted_input_log="input_sequence" in metadata)
-        self.lease_owners = metadata["lease_owners"]
-        self.actor_episodes = metadata["actor_episodes"]
-        if "input_sequence" in metadata:
-            self.input_sequence = metadata["input_sequence"]
-            self.input_head = metadata["input_head"]
-            self.input_anchor = metadata["input_anchor"]
-            if ((self.input_sequence == 0) != (self.input_head is None)
-                    or type(self.input_sequence) is not int or self.input_sequence < 0):
-                raise ValueError("checkpoint_input_position_changed")
-            if self.input_head is not None:
-                self.exchange.require_input_position(self.input_sequence, self.input_head)
-        else:
-            # Explicit migration is limited to an already closed old owner.
-            # No historical grant/ACK is reconstructed from a segment's claims.
-            if self.lease_owners or self.actor_episodes:
-                raise ValueError("legacy_checkpoint_requires_quiescent_input_owner")
-            self.input_anchor = artifact_id
-        # The CP episode registry is authoritative: an ended episode cannot own
-        # an unused capacity reservation. Older timed-out begin calls could
-        # wake after episode_end and leave precisely these orphan reservations.
-        for lease, owner in list(self.lease_owners.items()):
-            if f"{owner['actor']}:{owner['episode']}" not in self.actor_episodes:
-                self.queue.release(lease)
-                self.lease_owners.pop(lease)
-                self.released_closed_reservations.append(lease)
-        self.terminal.restore(metadata["terminal"])
-        self.hp.restore(metadata["hp"])
-        self.active = metadata["active"]
-        if self.active:
-            self.active["frozen"] = state["frozen"]
-            for name, pool in (("terminal", self.terminal), ("hp", self.hp)):
-                by_key = {row["key"]: row for rows in pool.groups.values() for row in rows}
-                self.active[name] = [by_key.get(row["key"], row) for row in self.active[name]]
-        for name in (
-            "updates",
-            "published_updates",
-            "datasets",
-            "version",
-            "first_use",
-            "first_use_multi",
-            "checkpoint_sequence",
-        ):
-            setattr(self, name, metadata[name])
-        self.rng.setstate(state["random"])
-        self.restored_mu = metadata["mu"]
-        return state["torch_rng"], state["cuda_rng"]
+    def close(self) -> None:
+        with self.condition:
+            self.newlease_stopped = True
+            self.condition.notify_all()
+        self.pool.close()
+        with ExitStack() as cleanup:
+            cleanup.callback(self.publisher.shutdown, wait=True, cancel_futures=True)
+            cleanup.callback(self.telemetry.shutdown, wait=True, cancel_futures=False)
+            cleanup.callback(self.checkpoint_encoder.shutdown, wait=True, cancel_futures=False)
+            cleanup.callback(self.checkpoints.__exit__, RuntimeError if self.input_fenced else None)
+            self.input_preparer.shutdown(wait=True, cancel_futures=False)
+            for future, _, _ in self.pending_labels:
+                future.result()
+            for (_slot, owner), payload in list(self.hot_references.items()):
+                self._release(payload, owner)
+            for future in self.telemetry_futures:
+                future.result()
 
     def run(self, *, initialize_only: bool = False) -> dict[str, Any]:
         began = time.monotonic()
         deadline = began + self.config.wall_seconds
         checkpoint_at = began + self.settings.checkpoint_seconds
-        stop_checked = began
+        stop_at = began
         try:
             while (
                 not initialize_only
@@ -1243,55 +1167,50 @@ class SegmentLearner:
                 and not (self.work / "STOP").exists()
                 and self.version < self.config.max_versions
             ):
-                if time.monotonic() >= stop_checked:
-                    stop_checked = time.monotonic() + self.config.remote_stop_seconds
+                if time.monotonic() >= stop_at:
+                    stop_at = time.monotonic() + self.config.remote_stop_seconds
                     if self.exchange.stop_request() is not None:
                         break
-                self._collect_publication(wait=False)
+                self._collect_publication()
                 self._collect_checkpoint()
+                self._collect_labels()
                 if time.monotonic() >= checkpoint_at:
-                    self.checkpoint()
+                    self.checkpoint_requested = True
                     checkpoint_at = time.monotonic() + self.settings.checkpoint_seconds
-                if self.active_rows is None and not self._prepare():
-                    waiting = time.monotonic()
-                    with self.condition:
-                        self.condition.wait(0.1)
-                    self.timing["waiting_for_data_seconds"] += time.monotonic() - waiting
-                    continue
+                if self.active_batch is None:
+                    if self.checkpoint_requested:
+                        self.checkpoint()
+                    if not self._prepare():
+                        waiting = time.monotonic()
+                        with self.condition:
+                            self.condition.wait(0.1)
+                        self.timing["waiting_for_data_seconds"] += time.monotonic() - waiting
+                        continue
                 self._prepare_ahead()
                 self._step()
         finally:
-            owner_window_seconds = time.monotonic() - began
             with self.condition:
                 self.newlease_stopped = True
                 self.condition.notify_all()
-            # Existing pinned segments can still infer/commit; new leases stop.
-            # This drain is within the card's separately reserved closeout budget.
             try:
-                drain_deadline = time.monotonic() + 600
-                while (not self.input_fenced and (self.queue.leases or self.actor_episodes)
-                       and time.monotonic() < drain_deadline):
-                    self._collect_publication(wait=False)
+                # In-flight worlds close through the original producer/receipt
+                # path. No input is replayed and this is not a new training window.
+                drain = time.monotonic() + 600
+                while (
+                    not self.input_fenced
+                    and (self.queue.leases or self.actor_episodes)
+                    and time.monotonic() < drain
+                ):
                     with self.condition:
                         self.condition.wait(0.2)
                 if not self.input_fenced:
-                    self._collect_publication(wait=True)
+                    self._collect_labels(wait=True)
                     if self.updates > self.published_updates:
-                        # Publish partial-dataset theta while retaining the exact
-                        # active targets/cursor for evaluation and later resume.
                         self._schedule_publication()
+                    self._collect_publication(wait=True)
                     self.checkpoint(final=True)
             finally:
-                with ExitStack() as cleanup:
-                    if self.archive is not None:
-                        cleanup.callback(self.archive.stop_capacity_monitor)
-                    cleanup.callback(self.checkpoints.__exit__,
-                                     RuntimeError if self.input_fenced else None)
-                    cleanup.callback(self.publisher.shutdown, wait=True)
-                    cleanup.callback(self.input_preparer.shutdown, wait=True, cancel_futures=True)
-                    inference = self.pool.close()
-                    for future in self.telemetry:
-                        future.result()
+                self.close()
         summary = {
             "updates": self.updates,
             "published_updates": self.published_updates,
@@ -1299,21 +1218,16 @@ class SegmentLearner:
             "datasets": self.datasets,
             "first_use": self.first_use,
             "first_use_multi": self.first_use_multi,
+            "training_generation": self.generation,
+            "checkpoint_sequence": self.checkpoint_sequence,
             "elapsed_seconds": time.monotonic() - began,
-            "owner_window_seconds": owner_window_seconds,
             "timing": self.timing,
             "unresolved_inflight": len(self.queue.leases),
             "queued_rows": self.queue.rows,
             "unresolved_episodes": len(self.actor_episodes),
-            "released_closed_reservations": self.released_closed_reservations,
-            "input_sequence": self.input_sequence,
-            "input_head": self.input_head,
             "input_fenced": self.input_fenced,
             "input_failure": self.input_failure,
-            "replayed_inputs": self.replayed_inputs,
-            "inference": inference,
-            "trajectory_encoding": "short-segment-1",
-            "counts": {"first_use": self.first_use, "first_use_multi": self.first_use_multi},
+            "trajectory_encoding": "hot-segment",
         }
         (self.work / "learner-summary.json").write_bytes(json_bytes(summary))
         if self.input_fenced:

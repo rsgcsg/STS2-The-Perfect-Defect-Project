@@ -4,14 +4,23 @@ Serialize with the existing tensor-tree codec, not pickle. Construction, weights
 (including all heads/text), Adam, weight EMA, counters and RNG are embedded.
 Provenance references are descriptive, never prerequisites for restoring learning.
 """
+
 from __future__ import annotations
 
-from dataclasses import dataclass
+import copy
+import hashlib
+import json
+from collections import defaultdict
+from dataclasses import asdict, dataclass
 from typing import Any
 
+import torch
+from spireagent.rl_contracts import RunSequence
 from torch import Tensor
 
-from spireagent.rl_contracts import RunSequence
+# Internal CPU handoff encoding. I1 owns assigning/registering the public CP
+# schema number; this deliberately does not emit an unregistered public version.
+SCHEMA = "stpd/rl-self-contained-checkpoint"
 
 
 # W1 owns this payload; W3 transports the completed CP through original Store/R2.
@@ -90,4 +99,160 @@ def convert_cp16(source: CP16ConversionInput) -> SelfContainedCheckpoint:
     new mu is 58 in target_generation. Discard unconsumed hot data only;
     already successful updates/counts remain. Legacy source stays immutable.
     """
-    raise NotImplementedError("RL4.1 W1 implements CP16 migration; F0 defines the boundary")
+    state = source.legacy_state
+    metadata = json.loads(state["metadata"].cpu().numpy().tobytes())
+    if (
+        state.get("schema") != "stpd/rl-segment-checkpoint-1"
+        or metadata["checkpoint_sequence"] != 16
+        or source.target_generation == source.source_generation
+        or source.target_config["run"] != metadata["config"]["run"]
+    ):
+        raise ValueError("explicit_CP16_and_new_generation_required")
+    if text_digest(state["weights"]) != source.construction.text_digest:
+        raise ValueError("CP16_text_construction_does_not_match_theta")
+    validate_optimizer_order(state["optimizer"], source.optimizer_parameter_names, state["weights"])
+    previous = metadata["config"]
+    changes = {
+        key: {"before": previous.get(key), "after": value}
+        for key, value in source.target_config.items()
+        if previous.get(key) != value
+    }
+    return SelfContainedCheckpoint(
+        RunSequence(previous["run"], source.target_generation, 16),
+        copy.deepcopy(source.construction),
+        copy.deepcopy(source.target_config),
+        copy.deepcopy(source.producer),
+        cpu_copy(state["weights"]),
+        cpu_copy(state["optimizer"]),
+        source.optimizer_parameter_names,
+        cpu_copy(state["ema"]),
+        LearningCounters(
+            *(
+                metadata[name]
+                for name in (
+                    "updates",
+                    "datasets",
+                    "first_use",
+                    "first_use_multi",
+                    "version",
+                    "published_updates",
+                )
+            )
+        ),
+        RngState(
+            None,
+            copy.deepcopy(state["random"]),
+            state["torch_rng"].cpu().clone(),
+            tuple(value.cpu().clone() for value in state["cuda_rng"]),
+        ),
+        ConversionRecord(
+            source.source_checkpoint_artifact_id,
+            state["schema"],
+            16,
+            source.source_generation,
+            changes,
+            ("queue", "leases", "active_remainder", "auxiliary", "input_log", "delayed_labels"),
+        ),
+    )
+
+
+def cpu_copy(value: Any) -> Any:
+    """Own immutable bytes: state_dict() alone aliases the next Adam update."""
+    if isinstance(value, Tensor):
+        return value.detach().to(device="cpu", copy=True).contiguous()
+    if isinstance(value, dict):
+        return {key: cpu_copy(item) for key, item in value.items()}
+    if isinstance(value, tuple):
+        return tuple(cpu_copy(item) for item in value)
+    if isinstance(value, list):
+        return [cpu_copy(item) for item in value]
+    return copy.deepcopy(value)
+
+
+def snapshot_weights(weights: dict[str, Tensor]) -> dict[str, Tensor]:
+    """One owned slab and one D2H copy per dtype, rather than one sync per parameter."""
+    groups: dict[torch.dtype, list[tuple[str, Tensor]]] = defaultdict(list)
+    for name, tensor in weights.items():
+        groups[tensor.dtype].append((name, tensor))
+    result = {}
+    for group in groups.values():
+        slab = torch.cat([tensor.detach().reshape(-1) for _, tensor in group]).cpu()
+        cursor = 0
+        for name, tensor in group:
+            result[name] = slab[cursor : cursor + tensor.numel()].view(tensor.shape)
+            cursor += tensor.numel()
+    return {name: result[name] for name in weights}
+
+
+def text_digest(weights: dict[str, Tensor]) -> str:
+    result = hashlib.sha256()
+    for name, tensor in sorted(weights.items()):
+        if name.startswith(("text_ids.", "text_numbers.", "text_blocks.", "text_projection.")):
+            value = tensor.detach().cpu().contiguous()
+            result.update(name.encode())
+            result.update(str((value.dtype, tuple(value.shape))).encode())
+            result.update(value.view(torch.uint8).numpy().tobytes())
+    return result.hexdigest()
+
+
+def validate_optimizer_order(
+    optimizer: dict[str, Any], names: tuple[tuple[str, ...], ...], weights: dict[str, Tensor]
+) -> None:
+    groups = optimizer["param_groups"]
+    if (
+        len(groups) != len(names)
+        or any(
+            len(group["params"]) != len(order) for group, order in zip(groups, names, strict=True)
+        )
+        or len({name for group in names for name in group}) != sum(map(len, names))
+        or any(name not in weights for group in names for name in group)
+    ):
+        raise ValueError("checkpoint_optimizer_parameter_order_changed")
+
+
+def encode_state(checkpoint: SelfContainedCheckpoint) -> bytes:
+    from stpd.workers.checkpoint_codec import encode_checkpoint
+
+    return encode_checkpoint({"schema": SCHEMA, **asdict(checkpoint)})
+
+
+def decode_state(raw: bytes) -> SelfContainedCheckpoint:
+    from stpd.workers.checkpoint_codec import decode_checkpoint
+
+    value = decode_checkpoint(raw)
+    if value.pop("schema", None) != SCHEMA:
+        raise ValueError("explicit_self_contained_checkpoint_required")
+    value["identity"] = RunSequence(**value["identity"])
+    value["construction"] = ModelConstruction(**value["construction"])
+    value["counters"] = LearningCounters(**value["counters"])
+    value["rng"] = RngState(**value["rng"])
+    if value["conversion"] is not None:
+        value["conversion"] = ConversionRecord(**value["conversion"])
+    checkpoint = SelfContainedCheckpoint(**value)
+    validate_optimizer_order(
+        checkpoint.optimizer, checkpoint.optimizer_parameter_names, checkpoint.weights
+    )
+    if text_digest(checkpoint.weights) != checkpoint.construction.text_digest:
+        raise ValueError("checkpoint_text_digest_changed")
+    return checkpoint
+
+
+def construct_model(construction: ModelConstruction) -> Any:
+    """No start package, warmup checkpoint, input log or Exchange reads."""
+    from stpd.p1.execution import MStdExecution
+    from stpd.p1.export import input_spec, runtime_projection
+    from stpd.p1.model import MStd
+
+    model = MStd(
+        construction.vocabulary,
+        MStdExecution(**construction.numerical["execution"]),
+        model_size=construction.numerical["model_size"],
+    )
+    model.enable_rl4_heads(0)
+    if (
+        model.architecture != construction.architecture
+        or input_spec(model.vocabulary, runtime_projection(model.vocabulary))
+        != construction.input_spec
+    ):
+        raise ValueError("checkpoint_model_construction_changed")
+    return model

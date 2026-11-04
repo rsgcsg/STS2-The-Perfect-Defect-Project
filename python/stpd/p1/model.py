@@ -456,6 +456,50 @@ class MStd(nn.Module):
             raise ValueError("non_finite_rl4_head_outputs")
         return scores, logits, hp
 
+    def forward_prepared_rl4(self, group: Any) -> tuple[Tensor, Tensor, Tensor]:
+        """RL4.1 tensor region: metadata is complete before the GPU sees it.
+
+        Text is encoded from current theta on every update, with gradients through
+        CPU-selected duplicate occurrences. No learned value is cached here.
+        Static indexing/floor checks belong to the CPU preparation boundary;
+        dynamic finite/gradient/KL checks are combined once by the step owner.
+        """
+        device = self.ids.weight.device
+        t = {key: value.to(device, non_blocking=self.nonblocking_inputs)
+             for key, value in group.tensors.items()}
+        if len(t["text_lengths"]):
+            vectors = self._encode_text(t["text_ids"], t["text_numbers"], t["text_lengths"])
+            vectors = vectors.index_select(0, t["text_inverse"])
+        else:
+            vectors = self.ids.weight.new_empty((0, 192))
+        nodes = self.tensor_nodes(group.joint, vectors)
+        nodes = torch.cat((nodes, nodes.new_zeros((1, nodes.shape[1]))))
+        packed = nodes[t["scene_gather"]]
+        mask = t["scene_mask"]
+        scene = self.scene(packed, src_key_padding_mask=mask)
+        current = (scene * (~mask).unsqueeze(-1)).sum(1) / t["scene_lengths"]
+        logits = self.rl4_heads.outcome(scene, mask, current).float()
+        logits = logits.masked_fill(~t["outcome_valid"], -torch.inf)
+        hp = self.rl4_heads.hp(scene, mask, current)[:, 0].float()
+        if not group.policy:
+            return (logits.new_empty((len(group.rows), 0)),
+                    logits[:len(group.rows)], hp[:len(group.rows)])
+        action = self.action_types(t["action_types"])
+        flat_scene = scene.reshape(-1, scene.shape[-1])
+        roles = []
+        for index, key in enumerate(("source", "target")):
+            weights = t[key + "_weights"]
+            gathered = flat_scene[t[key + "_indices"]]
+            mean = (gathered * weights.unsqueeze(-1)).sum(1)
+            mean = torch.where(weights.sum(1, keepdim=True) > 0, mean, self.absent_roles[index])
+            roles.append(mean.reshape(action.shape))
+        action = action + self.source_role(roles[0]) + self.target_role(roles[1])
+        read, _ = self.cross(action, scene, scene, key_padding_mask=mask, need_weights=False)
+        scores = self.head(torch.cat((action + read,
+            current[:, None, :].expand(-1, action.shape[1], -1)), -1)).squeeze(-1)
+        return (scores.masked_fill(t["catalog_mask"], -torch.inf)[:len(group.rows)],
+                logits[:len(group.rows)], hp[:len(group.rows)])
+
     def enable_progress_residual(self, seed: int) -> None:
         """Add an isolated zero-output critic branch without consuming policy RNG."""
         from .value_head import AttentionValueResidual
