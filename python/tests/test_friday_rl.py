@@ -49,7 +49,7 @@ def inputs(tmp_path):
     execution = root / 'execution.json'
     execution.write_text(json.dumps({'schema': 'spireagent/managed-evaluation-execution-v1',
         'candidate_directory': str(candidate), 'peer': peer, 'store': 's3',
-        'retention': {'tier': 'trajectory', 'purpose': 'training', 'audit_every': 50}}),
+        'retention': {'tier': 'trajectory', 'purpose': 'training', 'audit_every': 20}}),
         encoding='utf-8')
     learner = root / 'learner.json'
     learner.write_text(json.dumps({'schema': 'stpd/rl-run-1', 'run': 'rl1-real-1',
@@ -97,9 +97,9 @@ def test_peer_drift_and_candidate_symlink_are_rejected(rl, inputs, tmp_path):
         rl.prepare(execution, learner, output)
 
 
-def test_explicit_learner_driven_scale_can_prepare_forty_actors(rl, inputs):
-    plan, _ = prepared(rl, inputs, actors=40)
-    assert len({ref['actor'] for ref in plan['actors']}) == 40
+def test_explicit_learner_driven_scale_can_prepare_fifty_six_actors(rl, inputs):
+    plan, _ = prepared(rl, inputs, actors=56)
+    assert len({ref['actor'] for ref in plan['actors']}) == 56
 
 
 def test_missing_or_foreign_RL1_modules_are_explicitly_refused_before_allocation(rl, inputs):
@@ -429,17 +429,17 @@ def test_preservation_handoff_does_not_waive_unknown_cleanup_or_foreign_result(
 
 def test_same_run_additional_array_keeps_original_plan_and_single_core_workers(
         rl, inputs, tmp_path):
-    _plan, parent = prepared(rl, inputs, actors=12)
+    _plan, parent = prepared(rl, inputs, actors=32)
     (parent.parent / 'submission.json').write_text(json.dumps({'job_id': '123'}))
     original = parent.read_bytes()
     execution, learner, _ = inputs
     extra = tmp_path.resolve() / 'extra'
-    plan = rl.prepare(execution, learner, extra, actors=12)
+    plan = rl.prepare(execution, learner, extra, actors=24)
     with (patch.object(rl, 'require_modules'),
           patch.object(rl.scheduler, 'submission_lock_path', return_value=tmp_path / 'submit.lock'),
-          patch.object(rl.scheduler, 'output', side_effect=['123_[0-11]', '0/400/0/400', ''])):
+          patch.object(rl.scheduler, 'output', side_effect=['123_[0-31]', '0/400/0/400', ''])):
         result = rl.submit(extra / 'plan.json', additional_to=[parent], dry_run=True)
-    assert '--array=0-11%12' in result['command'] and '--cpus-per-task=1' in result['command']
+    assert '--array=0-23%24' in result['command'] and '--cpus-per-task=1' in result['command']
     assert result['additional_to'][0]['job_id'] == '123'
     assert parent.read_bytes() == original
     assert not {a['actor'] for a in _plan['actors']} & {a['actor'] for a in plan['actors']}
@@ -447,8 +447,8 @@ def test_same_run_additional_array_keeps_original_plan_and_single_core_workers(
 
 
 @pytest.mark.parametrize('existing,count,error', [
-    ('999_[0-11]', 12, 'must_drain'), ('123_[0-23]', 16, 'limit_36')])
-def test_additional_array_rejects_unlisted_owner_or_total_over36(
+    ('999_[0-11]', 12, 'must_drain')])
+def test_additional_array_rejects_unlisted_owner(
         rl, inputs, tmp_path, existing, count, error):
     _plan, parent = prepared(rl, inputs, actors=24)
     (parent.parent / 'submission.json').write_text(json.dumps({'job_id': '123'}))
@@ -556,7 +556,7 @@ def test_initial_array_submit_unknown_keeps_intent_without_a_second_offer(rl, in
 
 @pytest.mark.parametrize(
     "external, stop_at_creation, actor_count",
-    [(False, False, 32), (True, False, 32), (True, False, 8), (True, False, 7), (True, True, 32)]
+    [(False, False, 56), (True, False, 48), (True, False, 8), (True, False, 7), (True, True, 32)]
 )
 def test_gpu_owner_hands_transient_auth_to_original_cpu_submission_only(
     rl, inputs, tmp_path, monkeypatch, external, stop_at_creation, actor_count
