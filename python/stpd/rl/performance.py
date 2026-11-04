@@ -10,8 +10,8 @@ from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 
 import torch
-
 from spireagent.json_boundary import BoundaryError
+
 from stpd.p1.input import is_v2_encoding
 
 if TYPE_CHECKING:
@@ -40,6 +40,7 @@ class PerformanceConfig:
     precision: str = "fp32"
     tf32: bool = False
     deduplicate_text: bool = False
+    compile_loss: bool = False  # tensor-only PPO/TD/terminal/HP region; G1 chooses
 
     def __post_init__(self) -> None:
         if any(type(value) is not bool for value in (
@@ -47,7 +48,7 @@ class PerformanceConfig:
                 self.reference_device_cache, self.joint_nodes,
                 self.async_transfer, self.precompile_inputs,
                 self.bucket, self.defer_sync, self.tf32, self.probe_inference_microbatches,
-                self.deduplicate_text)):
+                self.deduplicate_text, self.compile_loss)):
             raise BoundaryError("rl_performance", "invalid_boolean")
         if (type(self.microbatch_size) is not int or not 1 <= self.microbatch_size <= 64
                 or any(type(value) is not int or not 1 <= value <= 2**28 for value in (
