@@ -102,7 +102,7 @@ CPU不能代存成无CUDA RNG的新CP。先seed原Exchange，再按需取CP及�
 | 学校分配结束、主机丢失、SSH断线 | SSH断线先核真实进程，不重复启动；分配确实结束才接段 | 从R2完整读回CP并核哈希、源码、run、起点，再显式`resume_checkpoint`。同代码续训保留optimizer/计数；改学习者源码按原换代规则用新run热启动，不冒称无损续训 |
 | R2暂不可用，保存尚未确认 | 不把本地结束当已保存；停新准入、保留本地待保存/失败前缀 | 按原保存/读回入口核原请求结果，避免重复发布或重打。恢复后核原immutable对象，不盲重试有副作用操作 |
 | 磁盘不足或内存压力 | 按容量SOP停新准入；不删原件求继续 | 内存先分anon/filecache、OOM事件和进程RSS，不能把cgroup缓存占满直接叫泄漏。核实际写入卷、保全双副本峰值和剩余空间；有依据再改资源申请 |
-| 固定评估变差或停滞 | 连续两次平均最高层低于11.75按本轮规则停；连续三次没改善只报告 | 用原固定种子/独立账本和完整分母比较；评估unknown不算胜负，不换种子求好看。KL最近10次均值>0.1报告用户，不把0.02损失系数当自停阈值 |
+| 固定评估变差或停滞 | 历史RL3才采用连续两次平均最高层低于11.75的规则；RL4.x采用下文配对区间与具名rollback CP规则。连续三次没改善只报告 | 用原固定种子/独立账本和完整分母比较；评估unknown不算胜负，不换种子求好看。KL最近10次均值>0.1报告用户，不把0.02损失系数当自停阈值 |
 | 看守退出/状态过旧 | 游戏与训练进程可能仍活着，先核；补回监督不能重复开训练 | 新版支持`SIGUSR2`仅请求看守维修退出：不再开评估，等已有评估收齐且无全局停止原因后退出，不写训练STOP。USR1/TERM/INT仍是全局停止请求，含义不同 |
 
 ### 每次维修的固定顺序
@@ -206,3 +206,68 @@ wall/GPU预算、版本/更新数，以及Adam/RNG/buffer/baseline重置方式�
 采用前200步核loss/KL/clip/ratio/梯度；第一小时先保持12路、按逐条账本再定供数。
 下一次可比评估平均层数比上一代低超过1层时，按已批准运行卡回退到保留模型；
 回退/调整发生在完整存档边界，原失败分母、旧版本及原STOP不改不删。
+
+## RL4.1 长训运营入口（OPS 候选，集成后使用）
+
+原 `watch.py` 的 `mode=segments` 仍消费原 `rl.py launch/learn/prepare/submit`、
+`evaluate.py` 和 Store；不直接开 World。GPU launcher 保留48 h、显式异卡1运行+1排队门，
+`retain_capability`仅在成功交接后把同一capability留在登录owner环境中供新actor补位；异常恢复原环境。
+CPU 可先在 general/debug 验闭环。最终组合和 G2/H1 仍由 CURRENT
+原任务验收；这里不授予开训、GPU 或模型质量资格。
+
+- 冻结完整 learner JSON、原执行 JSON、peer、源码、CP、actor数和排除节点。prepare、learn、
+  bind_actors支持1–500路；短段RL采用idle_divisor=1，普通打局/评估保持四分之一，
+  排队超过300项仍降至32路。配置500不等于已取得500核。
+  rl41 profile版本上限为900000，正常learn显式冻结每actor最多100000局。
+- watcher配置使用 `schema=spireagent/friday-rl-watch-config-1`、`mode=segments`，必填
+  `run/peer/budget_id/deadline_at/training_seconds/actors/learner_config/execution/
+  runtime_source/learner_python`。deadline是UTC epoch；training_seconds≤72000。
+  `operating_budget={id,total_seconds,consumed_seconds}`随完整CP保存，恢复继承已耗时间和截止，
+  不重给20小时。具名运营窗口与CP16学习run分开，诊断不会占用/污染后续长训窗口。
+- 登录owner运行 `python tools/friday/watch.py --config <frozen-watch.json> --work <private-work>`。
+  capability只在内存/继承环境中，不写文件、命令参数或日志。`cpu_only=true`要求learner为cpu，
+  仅用于获批CPU证明。CPU分区、constraint与exclude_nodes明确冻结；GPU只用I1正常launcher。
+- learner allocation终态后，先排空并核每个原actor的Slurm raw/array ID。选最新完整CP；若它
+  还在共享盘pending，先完成同ID保全，再空目录正常reader读回。新allocation/generation、
+  actor名字和seed namespace继续；只丢旧热代，不重offer旧World。actor终态由learner owner
+  释放lease/delayed引用，原ACK保持，不能补造terminal或训练标签。
+- 未知sbatch回复保留原intent，禁止自动再投。owner重启复用原work；新目录继续需pinned
+  previous_watch_state。原state带原watch-config.json pin，run/peer/预算/截止/总时长必须相同。
+  旧job仍须对账；只有CP不能复活交付账本。CP-only恢复指学习状态和预算。
+
+计时是learner就绪后的服务/更新窗口，不是CUDA kernel秒；排队、初始化和退出排空另计。
+恢复用原owner保守时间与CP对账，原失败和回滚掉的更新不升级成有效训练。
+真实offer/close/actor终态按唯一intent归并，迟到/乱序不增分母；未offer准入单列。
+`watch.py mode=segments` 的全局5%门用已结束或已证失联尝试，在途不当成功；
+恰好5%不停、超过才停。短段Actor未显式配置 `unknown_stop` 时不按局部计数停机，
+直接 `rl.py launch/learn` 不自带该全局比例门。heartbeat不刷新SGD进展。
+learner发布failed/finished；故障Stop绑定generation，全run人工Stop仍有效。
+
+审计失败先持久化integrity finding，control不可达也由原owner停住。修后继续用
+`acknowledged_integrity_events={原event key:原record_sha256}`具名确认已经诊断的finding；
+原finding、失败和unknown保留。连续两次配对区间全负时停止并写具名rollback CP，先诊断再恢复。
+
+archive健康消费磁盘可用量、站点usage配额、inode、积压及观察新鲜度；不足暂停新lease/新局。
+未报告某挂载配额不等于无限配额；陈旧/错误观察不当通过。storage_inventory分物理路径种类和
+model/heads/CP逻辑载荷，两个时点量增长。热段最后引用释放即删；成功μ发布仅释放本次临时导出
+副本，规范Store不变。完整CP全入R2，本地仅冷却已远端逐字读回的旧payload，保最近3份及评估/
+回滚引用；共享chunk、活reader、未保全数据不删。结束走原archive drain，不靠人工cron。
+
+### 每两小时固定 Managed 评估
+
+`evaluate.py export-checkpoint --learner-config ... --checkpoint ... --output ...` 直接导出raw θ；
+CP16另给原构造包。prepare-checkpoint绑定CP→动作包→原evaluate/ledger，0学习/0私有开局。
+正常评估保全部完整原件，也保原P1轨迹供Boss/协议报告；unknown只保原件、不评分。
+submit支持general/debug及排除G1节点，仍用原容量门、E2和分区时限。
+
+watch的evaluation配置固定seconds=7200、seeds=50..100、canonical manifest pin、
+baseline_checkpoint、baseline_binding pin、baseline_batches（各批plan/result/snapshot pin）及执行JSON。
+所有点必须完全同题，核完整Host/Runtime/Input/初始进度/argmax协议，分别对CP16和上一点评估。
+报每层分布、最大层、Act1 Boss正见证、胜局、配对差区间；unknown或未获资格的那一对排除并单计，
+不补题。评估准备、排队后运行和在途停止都受同一绝对截止。
+
+首批技术停止只可用新批填原not_started、无offer且无run_id的题；fixed_baseline由原每行资格
+投影，保固定分母，拒绝重投任何已尝试seed，原失败status不升级。旧full_peer批没有轨迹时，
+`evaluate.py project-report --result ... --plan ... --output ...` 用原by-ID typed reader及P1 extractor
+只读补独立投影，绑定原result hash，不改原report/ledger。把精确observation_projection pin放进
+对应baseline batch。读回失败保持未证，不能重开该局。

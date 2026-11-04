@@ -65,7 +65,7 @@ def save(path: Path, value: Any) -> None:
 def capacity(idle: int, queued: int, requested: int, *,
              maximum: int = 200, idle_divisor: int = 4) -> int:
     if (min(idle, queued, requested) < 0 or requested > maximum
-            or maximum < 1 or idle_divisor < 1):
+            or not 1 <= maximum <= 500 or idle_divisor < 1):
         raise ValueError("invalid_capacity")
     return min(requested, idle // idle_divisor, maximum, 32 if queued > 300 else maximum)
 

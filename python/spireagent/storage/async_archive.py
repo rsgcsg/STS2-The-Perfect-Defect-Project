@@ -10,7 +10,10 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
+import re
 import shutil
+import subprocess
 import sys
 import threading
 import time
@@ -29,6 +32,79 @@ from .store import ManifestArtifactStore, copy_artifact
 SCHEMA = "spireagent/shared-store-archive-1"
 _services: dict[tuple[str, bytes], Archive] = {}
 _guard = threading.Lock()
+
+
+def filesystem_capacity(root: Path) -> dict[str, Any]:
+    """Filesystem, inode and (where installed) the site's per-user quota facts."""
+    space = shutil.disk_usage(root)
+    inodes = os.statvfs(root).f_favail if hasattr(os, "statvfs") else None
+    result: dict[str, Any] = {"filesystem_free_bytes": space.free, "free_bytes": space.free,
+        "free_inodes": inodes, "quota_status": "not_reported_for_path"}
+    usage = shutil.which("usage")
+    if usage is None:
+        result["quota_status"] = "command_unavailable"
+        return result
+    try:
+        raw = subprocess.check_output([usage], text=True, timeout=10)
+        matches: list[tuple[int, Path, int, int]] = []
+        for line in raw.splitlines():
+            fields = line.split()
+            if len(fields) != 3 or not fields[0].startswith('/'):
+                continue
+            mount = Path(fields[0])
+            if not root.is_relative_to(mount):
+                continue
+            sizes = []
+            for word in fields[1:]:
+                value = re.fullmatch(r"([0-9]+(?:\.[0-9]+)?)([KMGTPE]?)B?", word)
+                if value is None:
+                    raise ValueError("unrecognized_quota_size")
+                sizes.append(int(float(value[1]) * 1024 ** (" KMGTPE".index(value[2])
+                             if value[2] else 0)))
+            matches.append((len(mount.parts), mount, sizes[0], sizes[1]))
+        if matches:
+            _, mount, used, quota = max(matches)
+            result.update(quota_status="measured", quota_path=str(mount),
+                          quota_used_bytes=used, quota_limit_bytes=quota,
+                          free_bytes=min(space.free, max(0, quota - used)))
+    except (OSError, ValueError, subprocess.SubprocessError) as error:
+        result.update(quota_status="observation_failed", quota_error=type(error).__name__)
+    return result
+
+
+def storage_inventory(root: Path, *, stop: threading.Event | None = None) -> dict[str, Any]:
+    """Owned Store only: physical categories and logical artifact payloads, no raw reads."""
+    physical: dict[str, dict[str, int]] = {}
+    for directory, _, files in os.walk(root):
+        if stop is not None and stop.is_set():
+            return {"at": time.time(), "cancelled": True}
+        relative = Path(directory).relative_to(root)
+        category = relative.parts[0] if relative.parts else "root"
+        counts = physical.setdefault(category, {"bytes": 0, "files": 0})
+        for name in files:
+            path = Path(directory) / name
+            try:
+                counts["bytes"] += path.stat().st_size
+                counts["files"] += 1
+            except FileNotFoundError:
+                pass  # Reference release/archiving can remove a live hot/pending leaf.
+    logical: dict[str, dict[str, int]] = {}
+    seen: set[tuple[str, str]] = set()
+    for path in (root / "manifests").glob("*.json"):
+        if stop is not None and stop.is_set():
+            return {"at": time.time(), "cancelled": True}
+        manifest = Manifest.from_bytes(path.read_bytes())
+        schema = manifest.parameters.value().get("schema", "")
+        category = ("CP" if schema == "stpd/rl-segment-checkpoint-2" else
+                    "heads" if schema == "stpd/rl-behavior-heads-1" else manifest.kind)
+        counts = logical.setdefault(category, {"payload_bytes": 0, "artifacts": 0})
+        counts["artifacts"] += 1
+        for payload in manifest.payloads:
+            if (category, payload.sha256) not in seen:
+                counts["payload_bytes"] += payload.size
+                seen.add((category, payload.sha256))
+    return {"at": time.time(), "physical": physical, "logical": logical,
+            "physical_bytes": sum(c["bytes"] for c in physical.values())}
 
 
 class Archive:
@@ -53,6 +129,9 @@ class Archive:
         self.capacity_stop = threading.Event()
         self.capacity_thread: threading.Thread | None = None
         self.capacity_interval = 2.0
+        self.filesystem_snapshot: dict[str, Any] = {}
+        self.filesystem_checked = 0.0
+        self.inventory_snapshot: dict[str, Any] = {}
 
     def offer(self, key: str, raw: bytes, *, start: bool = True) -> str:
         safe_key(key)
@@ -77,8 +156,17 @@ class Archive:
     def _refresh_capacity(self) -> None:
         """Local outbox metadata only; never wait for R2 or recurse model ancestry."""
         try:
+            if time.monotonic() - self.filesystem_checked >= 60 or not self.filesystem_snapshot:
+                self.filesystem_snapshot = filesystem_capacity(self.root)
+                self.filesystem_checked = time.monotonic()
+                self.inventory_snapshot = storage_inventory(self.root, stop=self.capacity_stop)
+            # Filesystem/inodes may fill between the slower site-quota observations.
+            inodes = os.statvfs(self.root).f_favail if hasattr(os, "statvfs") else None
+            free = shutil.disk_usage(self.root).free
             count = size = 0
             for key in self.queue.keys("pending/"):
+                if self.capacity_stop.is_set():
+                    return
                 identity = Path(key).stem
                 if (self.queue.root / "completed" / f"{identity}.json").is_file():
                     continue
@@ -97,7 +185,9 @@ class Archive:
                     size += 2 * sum(payload.size for payload in manifest.payloads)
                 count += 1
             snapshot: dict[str, Any] = {"pending": count, "pending_bytes_estimate": size,
-                        "free_bytes": shutil.disk_usage(self.root).free,
+                        **self.filesystem_snapshot,
+                        "free_bytes": min(free, self.filesystem_snapshot["free_bytes"]),
+                        "free_inodes": inodes, "inventory": self.inventory_snapshot,
                         "verified_at": time.time(), "checked_monotonic": time.monotonic(),
                         "error": None}
         except Exception as error:  # noqa: BLE001 -- stale/error state pauses new leases
@@ -126,7 +216,7 @@ class Archive:
     def stop_capacity_monitor(self) -> None:
         self.capacity_stop.set()
         if self.capacity_thread:
-            self.capacity_thread.join(timeout=self.capacity_interval + 1)
+            self.capacity_thread.join(timeout=max(15, self.capacity_interval + 1))
             if self.capacity_thread.is_alive():
                 raise StoreError("archive_capacity_monitor_close_pending")
             self.capacity_thread = None

@@ -5,10 +5,11 @@ from __future__ import annotations
 import dataclasses
 
 import pytest
-from stpd.p1.frame_compiler import FrameCompiler
-from stpd.rl.segment_learner import SegmentLearner
 from test_rl41_w1 import configuration, deliver, ready, segment, source
 from test_rl41_w1 import model as model
+
+from stpd.p1.frame_compiler import FrameCompiler
+from stpd.rl.segment_learner import SegmentLearner
 
 
 def compiled_config(config):

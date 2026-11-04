@@ -7,13 +7,16 @@ import hashlib
 import importlib.util
 import json
 import os
+import queue
 import re
 import secrets
+import shlex
 import shutil
 import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -46,6 +49,7 @@ def prepare(execution: Path, learner: Path, output: Path, *, actors: int = 8,
     base, learning = json.loads(execution.read_bytes()), json.loads(learner.read_bytes())
     segment_settings = learning.get('segments')
     inference = None
+    inference_raw = None
     if segment_settings is not None:
         from stpd.p1.local_inference import SEGMENT_SCHEMA
         from stpd.rl.segments import SegmentConfig
@@ -54,7 +58,8 @@ def prepare(execution: Path, learner: Path, output: Path, *, actors: int = 8,
         if segment_inference is None:
             raise ValueError('prepared_segment_inference_attachment_required')
         canonical_path(segment_inference)
-        inference = json.loads(segment_inference.read_bytes())
+        inference_raw = segment_inference.read_bytes()
+        inference = json.loads(inference_raw)
         if (inference.get('schema') != SEGMENT_SCHEMA
                 or inference.get('segment_steps') != settings.steps):
             raise ValueError('segment_inference_and_learner_steps_differ')
@@ -79,14 +84,14 @@ def prepare(execution: Path, learner: Path, output: Path, *, actors: int = 8,
         raise ValueError('same_frozen_R2_execution_and_learner_peer_required')
     canonical_path(Path(base['candidate_directory']))
     if (type(actors) is not int or not 1 <= actors <= 500
-            or type(wall_seconds) is not int or not 300 <= wall_seconds <= 79200
+            or type(wall_seconds) is not int or not 300 <= wall_seconds <= 172800
             or type(episode_seconds) is not int or not 10 <= episode_seconds <= (
-                79200 if inference is not None else 1800)
+                172800 if inference is not None else 1800)
             or type(games_per_ledger) is not int or not 1 <= games_per_ledger <= 10
             or wall_seconds <= (180 if inference is not None
                                 else games_per_ledger * episode_seconds + 180)
-            or type(max_games) is not int or not 1 <= max_games <= 10000):
-        raise ValueError('bounded_one_to_two_hundred_CPU_actor_budget_required')
+            or type(max_games) is not int or not 1 <= max_games <= 100000):
+        raise ValueError('bounded_one_to_five_hundred_CPU_actor_budget_required')
     defaults = learning.get('actor_defaults', {})
     behavior = behavior if behavior is not None else defaults.get('behavior', {
         'mode': 'temperature_uniform', 'temperature': 1.0,
@@ -114,6 +119,8 @@ def prepare(execution: Path, learner: Path, output: Path, *, actors: int = 8,
             'games_per_ledger': games_per_ledger, 'behavior': behavior,
             'pipeline': defaults.get('pipeline', {'save_workers': 1, 'pending_limit': 2})}
         if inference is not None:
+            actor['deadline_at'] = learning.get('deadline_at')
+            actor['budget_id'] = (learning.get('operating_budget') or {}).get('id')
             actor['segments'] = {'inference': inference,
                                  'excluded_seeds': settings.excluded_seeds,
                                  'rendezvous': str(segment_inference)}
@@ -131,8 +138,13 @@ def prepare(execution: Path, learner: Path, output: Path, *, actors: int = 8,
         'cross_actor_immediate_unknown_stop': False}
     if inference is not None:
         assert segment_inference is not None
+        assert inference_raw is not None
+        # The rendezvous changes when a learner allocation is replaced. Keep
+        # this plan's original attachment immutable for later accounting/audit.
+        frozen_inference = output / 'inference.json'
+        frozen_inference.write_bytes(inference_raw)
         plan['trajectory_encoding'] = 'short-segment-1'
-        plan['inference'] = {'path': str(segment_inference), 'sha256': hashed(segment_inference)}
+        plan['inference'] = {'path': str(frozen_inference), 'sha256': hashed(frozen_inference)}
     if requested_learner is not None:
         plan['learner_request'] = {'path': str(canonical_path(requested_learner)),
                                    'sha256': hashed(requested_learner)}
@@ -195,6 +207,25 @@ def launcher(path: Path, plan: dict[str, Any]) -> str:
         '--mode evaluation', '--mode rl', 1)
 
 
+def learner_launcher(configuration: Path, work: Path, execution: Path, actors_output: Path, *,
+                     source: Path, actors: int, seed_namespace: str,
+                     python: Path, episode_seconds: int = 14400) -> str:
+    """Use the same environment and E2 owner for a learner allocation, CPU or GPU."""
+    config = json.loads(configuration.read_bytes())
+    allocation = configuration.parent / 'learner-allocation.json'
+    save(allocation, {'actors': actors, 'wall_seconds': config['wall_seconds'] + 600})
+    script = evaluate.launcher(allocation, {'source_root': str(source)})
+    prefix = script[:script.index('exec "$actor_root/env/bin/python"')]
+    command = [str(python), str(source / 'tools/friday/rl.py'), 'learn',
+        '--config', str(configuration), '--work', str(work), '--execution', str(execution),
+        '--actors-output', str(actors_output), '--actors', str(actors),
+        '--seed-namespace', seed_namespace, '--episode-seconds', str(episode_seconds),
+        '--external-submit']
+    return prefix + 'exec "$actor_root/env/bin/python" "$source_root/tools/friday/allocation.py" ' + (
+        '--mode learner --configuration ' + shlex.quote(str(allocation))
+        + ' --source-root "$source_root" -- ' + shlex.join(command) + '\n')
+
+
 def finished_actor_results(path: Path, plan: dict[str, Any]) -> list[dict[str, str]] | None:
     """The normal parent writes result only after wait(), before its evidence copy.
 
@@ -239,7 +270,10 @@ def finished_actor_results(path: Path, plan: dict[str, Any]) -> list[dict[str, s
 
 def submit(path: Path, *, dry_run: bool = False,
            additional_to: list[Path] | None = None, memory_gb: int = 4,
-           exclude_nodes: list[str] | None = None) -> dict[str, Any]:
+           exclude_nodes: list[str] | None = None, partition: str = 'smp',
+           constraint: str | None = None) -> dict[str, Any]:
+    if partition not in {'smp', 'general', 'debug'}:
+        raise ValueError('supported_Friday_CPU_partition_required')
     if (type(memory_gb) is not int or memory_gb < 1
             or exclude_nodes is not None and (not exclude_nodes
                 or any(not isinstance(node, str) or not NAME.fullmatch(node)
@@ -285,9 +319,9 @@ def submit(path: Path, *, dry_run: bool = False,
         if (root / 'STOP').exists() or any((root / 'actors').glob('*/owner.json')):
             raise ValueError('previous_actor_owner_requires_reconciliation_no_reoffer')
         idle = sum(int(line.split('/')[1]) for line in scheduler.output(
-            ['sinfo', '-h', '-p', 'smp', '-o', '%C']).splitlines())
+            ['sinfo', '-h', '-p', partition, '-o', '%C']).splitlines())
         queued = len(scheduler.output(
-            ['squeue', '-h', '-p', 'smp', '-t', 'PD', '-o', '%i']).splitlines())
+            ['squeue', '-h', '-p', partition, '-t', 'PD', '-o', '%i']).splitlines())
         count = len(plan['actors'])
         # The bounded short-segment deployment supports the approved 500-lane
         # scale. Keep idle/queue checks; other callers retain the default share.
@@ -301,22 +335,29 @@ def submit(path: Path, *, dry_run: bool = False,
         logs = private_root(root / 'slurm')
         minutes = (plan['wall_seconds'] + 300 + 59) // 60
         advance = plan.get('games_per_ledger', 1) * plan['episode_seconds'] + 180
-        constraint = 'fc430'
+        if partition == 'debug' and minutes > 60 or partition == 'general' and minutes > 1440:
+            raise ValueError('actor_exceeds_CPU_partition_wall_limit')
+        if constraint is None and partition == 'smp':
+            constraint = 'fc430'
         if plan.get('trajectory_encoding') == 'short-segment-1':
             advance = 300
+        if (plan.get('trajectory_encoding') == 'short-segment-1'
+                and partition == 'smp' and constraint == 'fc430'):
             features = scheduler.output(['sinfo', '-h', '-p', 'smp', '-o', '%f|%C'])
             idle_fast = sum(int(row.split('|')[1].split('/')[1]) for row in features.splitlines()
                             if 'fc430' in row.split('|')[0].split(','))
             constraint = 'fc430' if idle_fast >= count else 'fc430|c6220'
-        command = ['sbatch', '--parsable', '--partition=smp', '--nodes=1', '--ntasks=1',
+        command = ['sbatch', '--parsable', '--partition=' + partition, '--nodes=1', '--ntasks=1',
             '--cpus-per-task=1', f'--mem={memory_gb}G', f'--time={minutes}', '--no-requeue',
             f'--signal=B:USR1@{advance}', '--job-name=spireagent-f2',
-            f'--array=0-{count - 1}%{count}', f'--constraint={constraint}',
+            f'--array=0-{count - 1}%{count}',
+            *(['--constraint=' + constraint] if constraint else []),
             f'--output={logs}/%A_%a.out', f'--error={logs}/%A_%a.err',
             *(['--exclude=' + ','.join(exclude_nodes)] if exclude_nodes else []), str(script)]
         result = {'schema': 'spireagent/friday-RL-submit-v1', 'command': command,
             'cores': count, 'idle_smp_cores': idle, 'queued_smp_jobs': queued,
             'dry_run': dry_run, 'memory_gb_per_actor': memory_gb,
+            'partition': partition,
             'excluded_nodes': exclude_nodes or [], 'cross_actor_immediate_unknown_stop': False,
             **({'additional_to': parents} if parents else {})}
         if not dry_run:
@@ -486,6 +527,89 @@ def materialize_actor_runtime(reference: dict[str, str], scratch: Path,
     return derived_actor, receipt
 
 
+def actor_accounting(path: Path) -> list[dict[str, Any]]:
+    """Bind each array element to its frozen actor; don't confuse Slurm raw/display IDs."""
+    plan = load_plan(path)
+    submission = json.loads((path.parent / 'submission.json').read_bytes())
+    job = str(submission['job_id']).split(';')[0]
+    raw = subprocess.check_output(['sacct', '-n', '-P', '-j', job,
+        '--format=JobIDRaw,JobID,State,ExitCode'], text=True, timeout=15)
+    rows = {}
+    terminal = {'COMPLETED', 'FAILED', 'CANCELLED', 'TIMEOUT', 'OUT_OF_MEMORY',
+                'NODE_FAIL', 'PREEMPTED', 'BOOT_FAIL', 'DEADLINE', 'REVOKED'}
+    for line in raw.splitlines():
+        fields = line.split('|')
+        if len(fields) >= 4 and '.' not in fields[0]:
+            rows[fields[1]] = fields
+    results = []
+    for index, ref in enumerate(plan['actors']):
+        entry = rows.get(f'{job}_{index}')
+        if entry is None:
+            continue
+        raw_id, display, state, exit_code = entry[:4]
+        state = state.split()[0].rstrip('+')
+        owner_path = path.parent / 'actors' / ref['actor'] / 'owner.json'
+        if owner_path.exists():
+            owner = json.loads(owner_path.read_bytes())
+            if (owner.get('actor') != ref['actor'] or owner.get('job_id') != raw_id
+                    or owner.get('plan_sha256') != hashed(path)):
+                raise ValueError('terminal_actor_owner_or_submission_binding_changed')
+        results.append({'actor': ref['actor'], 'job_id': raw_id, 'array_job_id': display,
+                        'state': state, 'exit_code': exit_code, 'terminal': state in terminal})
+    return results
+
+
+class ActorAllocationMonitor:
+    """Background scheduler observation; only the learner owner releases capacity."""
+
+    def __init__(self, plan: Path):
+        self.plan = plan
+        self.stop = threading.Event()
+        self.observations: queue.SimpleQueue = queue.SimpleQueue()
+        self.thread = threading.Thread(target=self.observe, name='actor-allocation-monitor', daemon=True)
+
+    def observe(self):
+        while not self.stop.is_set():
+            try:
+                plans = [self.plan]
+                extras = self.plan.parent.parent / 'actor-allocations.json'
+                if extras.exists():
+                    plans.extend(Path(ref['path']) for ref in json.loads(extras.read_bytes())['plans']
+                                 if read_pinned(ref))
+                base = load_plan(self.plan)
+                for path in plans:
+                    if not (path.parent / 'submission.json').exists():
+                        continue
+                    candidate = load_plan(path)
+                    if candidate['run'] != base['run'] or candidate['peer'] != base['peer']:
+                        raise ValueError('replacement_actor_run_or_peer_changed')
+                    for row in actor_accounting(path):
+                        if row['terminal']:
+                            self.observations.put(row)
+            except Exception as error:  # noqa: BLE001 -- observation failure never retires a live actor
+                self.observations.put({'error_type': type(error).__name__,
+                                       'error_code': getattr(error, 'code', None)})
+            self.stop.wait(30)
+
+    def poll(self, learner):
+        while not self.observations.empty():
+            row = self.observations.get()
+            if 'error_type' in row:
+                learner._event('actor_accounting_unavailable', **row)
+            elif row['actor'] not in learner.retired_actors:
+                learner.retire_actor(row['actor'], row)
+
+    def __enter__(self):
+        self.thread.start()
+        return self
+
+    def __exit__(self, *_):
+        self.stop.set()
+        self.thread.join(timeout=20)
+        if self.thread.is_alive():
+            raise RuntimeError('actor_accounting_observer_not_released')
+
+
 def resume_snapshot(path: Path, actor: str) -> dict[str, Any]:
     """Resume only evidence copying after the original allocation is terminal."""
     plan = json.loads(path.read_bytes())
@@ -582,7 +706,8 @@ def learn(configuration: Path, work: Path, execution: Path, actors_output: Path,
         try:
             prepare(execution, effective_configuration, actors_output, actors=actors,
                 wall_seconds=int(config.wall_seconds)+600, episode_seconds=episode_seconds,
-                games_per_ledger=10, runtime_source=source, seed_namespace=seed_namespace,
+                max_games=100000, games_per_ledger=10, runtime_source=source,
+                seed_namespace=seed_namespace,
                 segment_inference=Path(config.segments.rendezvous_path),
                 requested_learner=configuration)
             os.environ.update(learner.pool.environment())
@@ -594,7 +719,8 @@ def learn(configuration: Path, work: Path, execution: Path, actors_output: Path,
             (work/'STOP').touch()
             learner.run()
             raise
-        return learner.run()
+        with ActorAllocationMonitor(actors_output / 'plan.json') as monitor:
+            return learner.run(on_tick=lambda: monitor.poll(learner))
     finally:
         if prior_auth is None:
             os.environ.pop(AUTH_ENV, None)
@@ -608,7 +734,8 @@ def launch(gpu_script: Path, configuration: Path, work: Path, actors_output: Pat
            output: Path, *, gpu: str = 'a30', minutes: int = 85,
            cpus: int = 16, memory_gb: int = 64,
            actor_memory_gb: int = 4, ready_seconds: float = 120,
-           alongside_job: str | None = None, reserve_only: bool = False) -> dict[str, Any]:
+           alongside_job: str | None = None, reserve_only: bool = False,
+           retain_capability: bool = False) -> dict[str, Any]:
     """Login-side resource adapter; both original sbatch calls inherit one capability.
 
     The GPU script calls ``learn --external-submit`` and owns the learner/scorer.
@@ -631,6 +758,7 @@ def launch(gpu_script: Path, configuration: Path, work: Path, actors_output: Pat
     root = private_root(output)
     prior = os.environ.get(AUTH_ENV)
     prior_stop = os.environ.get(LAUNCH_STOP_ENV)
+    completed = False
     os.environ[AUTH_ENV] = secrets.token_hex(32)
     os.environ[LAUNCH_STOP_ENV] = str(root/'STOP')
 
@@ -700,6 +828,7 @@ def launch(gpu_script: Path, configuration: Path, work: Path, actors_output: Pat
         actors = submit(plan_file, memory_gb=actor_memory_gb)
         result = {'GPU_job_id': job, 'actors': actors, 'plan_sha256': hashed(plan_file)}
         save(root/'launch-receipt.json', result)
+        completed = True
         return result
     except BaseException:
         # This also reaches a queued GPU via its inherited path before any work exists.
@@ -717,7 +846,9 @@ def launch(gpu_script: Path, configuration: Path, work: Path, actors_output: Pat
             os.environ.pop(LAUNCH_STOP_ENV, None)
         else:
             os.environ[LAUNCH_STOP_ENV] = prior_stop
-        if prior is None:
+        if retain_capability and completed:
+            pass  # The same login owner uses it for fresh replacement actors; environment only.
+        elif prior is None:
             os.environ.pop(AUTH_ENV, None)
         else:
             os.environ[AUTH_ENV] = prior
@@ -745,6 +876,8 @@ def main():
         sub = commands.add_parser(name)
         sub.add_argument('--plan', type=Path, required=True)
         if name == 'submit':
+            sub.add_argument('--partition', choices=('smp', 'general', 'debug'), default='smp')
+            sub.add_argument('--constraint')
             sub.add_argument('--dry-run', action='store_true')
             sub.add_argument('--additional-to', type=Path, nargs='+')
             sub.add_argument('--memory-gb', type=int, default=4)
@@ -804,7 +937,8 @@ def main():
             seed_namespace=args.seed_namespace, segment_inference=args.segment_inference)
     elif args.command == 'submit':
         result = submit(args.plan, dry_run=args.dry_run, additional_to=args.additional_to,
-                        memory_gb=args.memory_gb, exclude_nodes=args.exclude_nodes)
+                        memory_gb=args.memory_gb, exclude_nodes=args.exclude_nodes,
+                        partition=args.partition, constraint=args.constraint)
     elif args.command == 'save':
         result = resume_snapshot(args.plan, args.actor)
     else:

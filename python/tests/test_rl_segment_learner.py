@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import dataclasses
 import threading
+import time
+from types import SimpleNamespace
 
 import pytest
 from test_rl41_w1 import assert_tree, configuration, deliver
@@ -256,7 +258,8 @@ def test_episode_end_wakes_capacity_waiter_without_orphan_grant(tmp_path, monkey
         cleanup(owner)
 
 
-def test_reward_HP_backfills_cross_segment_rows_before_episode_end(tmp_path, monkeypatch):
+@pytest.mark.parametrize("closure", ["open", "closed", "retired"])
+def test_reward_HP_backfills_consumed_rows_across_episode_close(tmp_path, monkeypatch, closure):
     import copy
 
     from test_rl41_w1 import segment
@@ -267,7 +270,8 @@ def test_reward_HP_backfills_cross_segment_rows_before_episode_end(tmp_path, mon
 
     config, io = configuration(tmp_path, monkeypatch)
     config = dataclasses.replace(
-        config, segments=dataclasses.replace(config.segments, episode_rows=4)
+        config, segments=dataclasses.replace(config.segments, episode_rows=4,
+                                            dataset_rows=2, minibatches=1, epochs=1)
     )
     owner = SegmentLearner(config, tmp_path / "owner", io)
     scorer = LocalMuScorer(owner.exchange, tmp_path / "actor-model")
@@ -278,6 +282,7 @@ def test_reward_HP_backfills_cross_segment_rows_before_episode_end(tmp_path, mon
         "episode": "episode-a",
     }
     payloads = []
+    producer_released = False
     try:
         owner.control({**base, "operation": "episode_open"})
         previous = None
@@ -353,6 +358,21 @@ def test_reward_HP_backfills_cross_segment_rows_before_episode_end(tmp_path, mon
                 }
             )
             previous = grant["lease"]
+            if not number:
+                assert owner._prepare()
+                owner._step()
+                assert owner.active is None and owner.first_use == 2
+        close = {**base, "operation": "episode_end", "run_id": base["episode"],
+                 "terminal": None, "outcome_states": [], "hp_battles": []}
+        if closure == "closed":
+            owner.control(close)
+        elif closure == "retired":
+            owner.retire_actor("a", {"actor": "a", "job_id": "original",
+                                    "terminal": True, "state": "FAILED"})
+        if closure != "open":
+            for payload in payloads:
+                owner.exchange.release_hot_payload(payload, "episode:" + base["episode"])
+            producer_released = True
         assert owner._prepare()
         owner._collect_labels(wait=True)
         rows = owner.hp.groups[base["episode"] + ":0"]
@@ -361,19 +381,17 @@ def test_reward_HP_backfills_cross_segment_rows_before_episode_end(tmp_path, mon
             f"{base['episode']}:{i}" for i in range(4)
         ]
         assert {row["source"]["segment_id"] for row in rows} == {"a/0", "a/1"}
-        assert owner.actor_episodes  # label arrived while the same World is still open
-        owner.control(
-            {
-                **base,
-                "operation": "episode_end",
-                "run_id": base["episode"],
-                "terminal": None,
-                "outcome_states": [],
-                "hp_battles": [],
-            }
-        )
-        for payload in payloads:
-            owner.exchange.release_hot_payload(payload, "episode:" + base["episode"])
+        if closure == "open":
+            assert owner.actor_episodes
+            owner.control(close)
+        else:
+            assert not owner.actor_episodes
+        owner._step()
+        assert not any(ref_owner == "delayed:" + base["episode"]
+                       for _slot, ref_owner in owner.hot_references)
+        if not producer_released:
+            for payload in payloads:
+                owner.exchange.release_hot_payload(payload, "episode:" + base["episode"])
     finally:
         scorer.close()
         owner.close()
@@ -516,3 +534,216 @@ def test_zero_auxiliary_rows_disables_selection_from_nonempty_pool(tmp_path, mon
         assert not selected["terminal"] and not selected["hp"]
     finally:
         cleanup(owner)
+
+
+def test_CP_export_uses_exact_raw_theta_without_learning_or_auxiliary_heads(tmp_path, monkeypatch):
+    from stpd.evaluation.rl_checkpoint import export_checkpoint
+    from stpd.p1.export import action_weights, load_model
+    config, io = configuration(tmp_path, monkeypatch)
+    owner = SegmentLearner(config, tmp_path / "owner", io)
+    deliver(owner, actor="a")
+    deliver(owner, actor="b")
+    assert owner._prepare()
+    owner._step()
+    expected = action_weights(owner.model.state_dict())
+    owner.run(initialize_only=True)
+    record, _ = read_cp(owner)
+    binding = export_checkpoint(owner.exchange.store, record["checkpoint_artifact_id"],
+                                tmp_path / "evaluation")
+    from pathlib import Path
+    model, _ = load_model(Path(binding["package_directory"]) / "model.tensor-tree",
+                          binding["model_sha256"])
+    assert_tree(model.state_dict(), expected)
+    assert not any(k.startswith("rl4_heads.") for k in model.state_dict())
+    assert binding["updates"] == 1 and binding["weights"] == "raw"
+    assert binding["checkpoint_artifact_id"] == record["checkpoint_artifact_id"]
+    assert owner.exchange.latest_checkpoint(training_generation=owner.generation) == record
+
+
+def test_cold_restore_inherits_frozen_deadline_and_rejects_extension(tmp_path,monkeypatch):
+    from spireagent.json_boundary import BoundaryError
+
+    config, io = configuration(tmp_path, monkeypatch)
+    old_deadline = time.time() + 7200
+    config = dataclasses.replace(config, deadline_at=old_deadline)
+    owner = SegmentLearner(config, tmp_path / "first", io)
+    owner.run(initialize_only=True)
+    record = owner.exchange.latest_checkpoint(training_generation=owner.generation)
+    cold_peer = {"kind": "local", "directory": str(tmp_path / "cold")}
+    cold = Exchange(cold_peer, config.run)
+    copy_artifact(
+        owner.exchange.store, cold.store, record["checkpoint_artifact_id"], scratch=tmp_path
+    )
+    request = dataclasses.replace(
+        config,
+        peer=cold_peer,
+        start_package=None,
+        resume_checkpoint=record["checkpoint_artifact_id"],
+        deadline_at=old_deadline + 3600,
+        segments=dataclasses.replace(config.segments, training_generation="g-cold"),
+    )
+    with pytest.raises(BoundaryError, match="checkpoint_deadline_cannot_be_reset"):
+        SegmentLearner(request, tmp_path / "rejected", io)
+    replacement = SegmentLearner(
+        dataclasses.replace(request, deadline_at=None), tmp_path / "inherited", io
+    )
+    try:
+        assert replacement.deadline_at == old_deadline
+        assert replacement.config.deadline_at == old_deadline
+        assert replacement._learning_state().config["deadline_at"] == old_deadline
+    finally:
+        replacement.close()
+
+
+@pytest.mark.parametrize("pool_fails", [False, True])
+def test_capacity_monitor_failure_still_closes_all_learning_resources(pool_fails):
+    called = []
+
+    class Condition:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def notify_all(self):
+            pass
+
+    class Archive:
+        def stop_capacity_monitor(self):
+            called.append("archive")
+            raise RuntimeError("monitor still running")
+
+    def pool_close():
+        called.append("pool")
+        if pool_fails:
+            raise RuntimeError("pool close failure")
+
+    owner = SimpleNamespace(
+        condition=Condition(),
+        newlease_stopped=False,
+        input_fenced=False,
+        pending_labels=[],
+        hot_references={},
+        telemetry_futures=[],
+        pool=SimpleNamespace(close=pool_close),
+        archive=Archive(),
+        publisher=SimpleNamespace(shutdown=lambda **kw: called.append("publisher")),
+        telemetry=SimpleNamespace(shutdown=lambda **kw: called.append("telemetry")),
+        checkpoint_encoder=SimpleNamespace(shutdown=lambda **kw: called.append("encoder")),
+        checkpoints=SimpleNamespace(__exit__=lambda *args: called.append("checkpoints")),
+        input_preparer=SimpleNamespace(shutdown=lambda **kw: called.append("preparer")),
+    )
+    with pytest.raises(RuntimeError, match="monitor still running"):
+        SegmentLearner.close(owner)
+    assert set(called) == {
+        "pool",
+        "preparer",
+        "archive",
+        "checkpoints",
+        "encoder",
+        "telemetry",
+        "publisher",
+    }
+
+
+def test_operating_budget_restores_consumed_time_from_CP_without_reset(tmp_path, monkeypatch):
+    config, io = configuration(tmp_path, monkeypatch)
+    config = dataclasses.replace(
+        config,
+        wall_seconds=600,
+        deadline_at=time.time() + 7200,
+        operating_budget={"id": "ops-test", "total_seconds": 600, "consumed_seconds": 120},
+    )
+    owner = SegmentLearner(config, tmp_path / "owner", io)
+    owner.active_training_seconds = 30
+    owner.checkpoint(final=True)
+    record, cp = read_cp(owner)
+    assert cp.config["operating_budget"]["consumed_seconds"] == 150
+    owner.close()
+    cold_peer = {"kind": "local", "directory": str(tmp_path / "cold")}
+    cold = Exchange(cold_peer, config.run)
+    copy_artifact(
+        owner.exchange.store, cold.store, record["checkpoint_artifact_id"], scratch=tmp_path
+    )
+    request = dataclasses.replace(
+        config,
+        peer=cold_peer,
+        start_package=None,
+        resume_checkpoint=record["checkpoint_artifact_id"],
+        deadline_at=None,
+        operating_budget=None,
+        segments=dataclasses.replace(config.segments, training_generation="g-cold-budget"),
+    )
+    replacement = SegmentLearner(request, tmp_path / "replacement", io)
+    try:
+        assert replacement.config.operating_budget["consumed_seconds"] == 150
+        assert replacement.config.wall_seconds == 450
+        assert replacement.deadline_at == config.deadline_at
+        assert replacement._learning_state().config["operating_budget"]["consumed_seconds"] == 150
+    finally:
+        replacement.close()
+    with pytest.raises(ValueError, match="checkpoint_operating_budget_cannot_be_reset"):
+        SegmentLearner(
+            dataclasses.replace(
+                request,
+                operating_budget={
+                    "id": "different-budget",
+                    "total_seconds": 600,
+                    "consumed_seconds": 0,
+                },
+            ),
+            tmp_path / "rejected",
+            io,
+        )
+
+
+def test_terminal_actor_releases_capacity_but_preserves_original_ACKs_and_no_labels(
+    tmp_path, monkeypatch
+):
+    config, io = configuration(tmp_path, monkeypatch)
+    owner = SegmentLearner(config, tmp_path / "owner", io)
+    base = {
+        "run": config.run,
+        "training_generation": owner.generation,
+        "actor": "dead",
+        "episode": "e",
+    }
+    try:
+        opened = owner.control({**base, "operation": "episode_open"})
+        grant = owner.control({**base, "operation": "begin", "previous_lease": None})
+        assert grant["lease"] in owner.queue.leases
+        proof = {"actor": "dead", "job_id": "123", "terminal": False, "state": "RUNNING"}
+        with pytest.raises(ValueError, match="exact_terminal_actor_allocation_required"):
+            owner.retire_actor("dead", proof)
+        assert grant["lease"] in owner.queue.leases
+        result = owner.retire_actor("dead", {**proof, "terminal": True, "state": "FAILED"})
+        assert result["unresolved_episodes"] == ["e"] and result["new_games"] == 0
+        assert not owner.queue.leases and not owner.actor_episodes
+        assert not owner.terminal.groups and not owner.hp.groups
+        assert owner.control({**base, "operation": "episode_open"}) == opened
+        assert owner.control({**base, "episode": "new", "operation": "episode_open"})["stopped"]
+        assert owner.control({**base, "actor": "replacement", "operation": "episode_open"})[
+            "admitted"
+        ]
+    finally:
+        cleanup(owner)
+
+
+def test_learner_publishes_actual_failed_and_finished_events(tmp_path, monkeypatch):
+    config, io = configuration(tmp_path, monkeypatch)
+    owner = SegmentLearner(config, tmp_path / "owner", io)
+    owner.run(initialize_only=True)
+    assert owner.exchange.latest_event()["kind"] == "finished"
+    (tmp_path / "second").mkdir()
+    second_config, io = configuration(tmp_path / "second", monkeypatch)
+    second = SegmentLearner(second_config, tmp_path / "second/owner", io)
+
+    def failed():
+        raise BoundaryError("rl_learner", "injected_preparation_failure")
+
+    monkeypatch.setattr(second, "_prepare", failed)
+    with pytest.raises(BoundaryError, match="injected_preparation_failure"):
+        second.run()
+    event = second.exchange.latest_event()
+    assert event["kind"] == "failed" and event["error_code"] == "injected_preparation_failure"

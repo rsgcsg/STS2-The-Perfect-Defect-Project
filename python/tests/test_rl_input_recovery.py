@@ -5,10 +5,11 @@ from __future__ import annotations
 import dataclasses
 
 import pytest
+from test_rl41_w1 import configuration, deliver
+
 from spireagent.json_boundary import BoundaryError
 from stpd.p1.local_inference import SegmentConnection
 from stpd.rl.segment_learner import SegmentLearner
-from test_rl41_w1 import configuration, deliver
 
 
 @pytest.mark.parametrize("operation", ["commit", "episode_end"])

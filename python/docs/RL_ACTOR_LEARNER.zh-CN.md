@@ -2,6 +2,8 @@
 
 RL4.1 沿原 Actor、Exchange、Runtime、Evidence、Store 和归档入口接线。
 actor 默认在 Friday CPU 本地评分；CPU 进程准备完整批，learner 只负责数值更新、发布 μ 和保存 CP。
+长训运营由 `watch.py mode=segments` 调原 `rl.py launch/learn`，统一预算、故障停止、补位及全局5%门；
+直接 `launch/learn` 只提供资源/学习接点，不启动全局运营观察者。短段Actor默认不按局部unknown计数停机。
 本页拥有接口和操作方式；实际派工、预算、候选身份和验收由 [CURRENT](../../docs/memory/CURRENT.md)
 指向的当轮任务负责。源码/CPU fixture 通过不代表真实 World、部署、GPU 性能或模型实力通过。
 
@@ -160,17 +162,21 @@ commit/episode_end ACK 前取得下游所需引用，用尽或淘汰释放，最
 不改旧 accepted/unknown。断线先查原 receipt；原结果未知时不盲重投。
 明确新代且原请求不存在，旧 commit/episode_end 只追加丢弃；同一 World 通过新 begin 领新代 lease，
 不重新 offer seed。尾段写入撞上已撤销的旧热代也追加丢弃，不改成 unknown 或 accepted。
+关局或actor终态后，尚未准备的PPO段仍可能带跨段HP回填；此前段的delayed引用保留到同局PPO
+均交接给标签reader，再按真实引用释放。关局不等于所有标签已消费，也不补造终局标签。
 
 ## 启动、CPU 短测和只替换 learner
 
 正常应用：`python -m spireagent.workbench.rl_learner --config learner.json --work <fresh-work>`。
 Friday 入口仍是 `tools/friday/rl.py learn`，只在 Slurm 分配和原 resource-slot 内运行；
-`device=cpu` 可做已授权短测，`device=cuda` 沿原 GPU 分配。actor 数与 inference_batch 解耦，1–200路；
+`device=cpu` 可做已授权短测，`device=cuda` 沿原 GPU 分配。actor 数与 inference_batch 解耦，1–500路；
 CPU 单路短测同时设小 dataset/episode_rows，不能用默认1024行的最少8路条件冒称单路通过。
 使用 `rl.py prepare/submit/run/save` 原 actor 入口、完整原件保存和收据；unknown 不重试。
 
 配置固定 `segments.rendezvous_path` 为原启动的共享 inference.json。launcher 把此路径交 actor，
 learner 把完整新 attachment 原子写回同一路径；环境 capability 保持在原环境中，不写文件或日志。
+`rl.py prepare` 将当时的 attachment 原字节另存到各 actor plan 目录并绑定 hash；共享发现路径
+供下一代连接使用，不能作为旧计划的不可变引用。新代更新发现路径后，旧计划仍能正常核验和查账。
 恢复前停止并确认旧 learner/prepare/SGD 已结束，保留 actor/World 和原件；新 work 目录、同一 run、
 新 generation、同一 peer/rendezvous/capability，从指定自包含 CP 启动。
 恢复撤销该 CP 所属旧热代，追加 discarded_on_restore；旧 ACK 仍可查。不要同时启动两个 learner。
@@ -229,3 +235,5 @@ submit 校验完整计划；每个已分配 actor 只校验自己的固定配置
 副本不随单 actor 退出删除；原共享安装仍是长期恢复入口，节点外读回须提供同 pin 的可信代码位置。
 共享 inference 每次读取一次，避免 N 路各重读 N 份完整词表配置，造成平方级启动开销。
 11-05 I1 原约594核只允许约148路的旧限制已被本轮500路授权替代；旧128/256未offer的事实不改。
+
+长训的预算、恢复、固定评估、容量与CP保留入口见[原长训指南](RL_LONG_RUN.zh-CN.md#rl41-长训运营入口ops-候选集成后使用)。源码检查、CPU实际恢复和GPU/H1资格分开报告。

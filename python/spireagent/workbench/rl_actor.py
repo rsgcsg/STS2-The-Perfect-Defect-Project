@@ -252,7 +252,8 @@ class Actor:
             self.executor = SegmentManagedExecutor(execution,
                 episode_seconds=self.config["episode_seconds"], cleanup_seconds=120,
                 exchange=self.exchange, actor=self.name,
-                attachment=self.local_attachment, admission=self.service)
+                attachment=self.local_attachment, admission=self.service,
+                budget_id=self.config.get("budget_id"))
         else:
             self.executor = PipelinedManagedExecutor(
                 execution, episode_seconds=self.config["episode_seconds"], cleanup_seconds=120)
@@ -309,7 +310,11 @@ class Actor:
                     "phase_seconds": row.get("phase_seconds"),
                     "behavior_policy": row.get("behavior_policy")}
             if self.segment_mode:
-                game.update(segment_budget_close=row.get("segment_budget_close") is True,
+                game.update(intent_id=row.get("intent_id"),
+                            training_generation=(row.get("segment_admission_owner") or {}).get(
+                                "training_generation"),
+                            world_mutation_offered=slot.get("world_mutation_offered") is True,
+                            segment_budget_close=row.get("segment_budget_close") is True,
                             cleanup_accepted=row.get("cleanup_accepted") is True,
                             segment_prefix_close=bool(row.get("segment_delivery")))
             self.games.append(game)
@@ -317,6 +322,7 @@ class Actor:
             shards[game["shard"]].append(game)
         if self.segment_mode:
             self.exchange.publish_event("actor_games_closed", actor=self.name,
+                budget_id=self.config.get("budget_id"),
                 games=[game for group in shards.values() for game in group],
                 trajectory_encoding="short-segment-1")
             return
@@ -336,6 +342,10 @@ class Actor:
         began = time.monotonic()
         cpu_began = _cpu_seconds()
         deadline = began + self.config["wall_seconds"]
+        absolute = self.exchange.run_deadline(self.config.get("deadline_at"),
+                                              budget_id=self.config.get("budget_id"))
+        if absolute is not None:
+            deadline = min(deadline, began + max(0, absolute - time.time() - 600))
         self.run_deadline = deadline
         episode_seconds = self.config["episode_seconds"]
         if self.segment_mode:
@@ -417,14 +427,15 @@ class Actor:
         return summary
 
     def _unknown_limit(self) -> bool:
-        """Only an explicitly configured segment Actor stops for an unknown count.
+        """Only an explicitly configured segment Actor stops for a local count.
 
         Unknown games still end once; verified prefixes remain usable. Native
         cleanup and preservation failures keep their original owner stops.
         """
+        # SegmentWatcher owns the run-wide 5% gate and its complete denominator.
         if self.segment_mode and "unknown_stop" not in self.config:
             return False
-        limit = self.config.get("unknown_stop", {"consecutive": 3, "fraction": 0.25,
+        limit = self.config.get("unknown_stop", {"consecutive": 3, "fraction": 0.05,
                                                  "after": 8})
         statuses = [g["status"] for g in self.games]
         tail = statuses[-limit["consecutive"]:]

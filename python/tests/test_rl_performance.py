@@ -134,7 +134,12 @@ def test_wider_microbatch_still_obeys_attention_area_and_keeps_oversized_scene(l
         with pytest.raises(BoundaryError):
             MStdExecution(microbatch_size=invalid)
         with pytest.raises(BoundaryError):
+            PerformanceConfig(inference_microbatch_size=invalid)
+    for invalid in (True, 0, 1025):
+        with pytest.raises(BoundaryError):
             PerformanceConfig(microbatch_size=invalid)
+    assert PerformanceConfig(microbatch_size=65).microbatch_size == 65
+    assert PerformanceConfig(microbatch_size=1024).microbatch_size == 1024
 
 
 def test_bucket_preserves_samples_and_anchor_counts():

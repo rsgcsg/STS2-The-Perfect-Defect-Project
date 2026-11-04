@@ -62,7 +62,7 @@ def prepare_segment_diagnostic(model, records, probabilities, outcomes, root, pe
     The constructed successor sequence/probabilities is never offered to a live
     learner. Labels are the observed corpus labels, with no new research claim.
     """
-    from spireagent.rl_contracts import RunSequence
+    from spireagent.rl_contracts import RowRef, RunSequence
     from spireagent.rl_exchange import Exchange
     from stpd.evaluation.suites import derive_game_seed, seed_membership
     from stpd.p1.data import digest, json_bytes
@@ -78,7 +78,7 @@ def prepare_segment_diagnostic(model, records, probabilities, outcomes, root, pe
     exchange = Exchange(peer, "compute-diagnostic")
     compiler = FrameCompiler(model.vocabulary)
     generation = "g-diagnostic"
-    mu = {"run": exchange.run, "training_generation": generation,
+    mu: dict[str, Any] = {"run": exchange.run, "training_generation": generation,
           "version": 0, "updates": 0, "snapshot_sha256": "a" * 64}
     seed_number = 1
     while True:
@@ -95,7 +95,7 @@ def prepare_segment_diagnostic(model, records, probabilities, outcomes, root, pe
                    "input_spec": input_spec(model.vocabulary, runtime_projection(model.vocabulary)),
                    "acquisition_id": f"{run_id}:{i}", "consumption_unit": {"id": str(i)}}
                   for i, row in enumerate(corpus)]
-        steps = []
+        steps: list[dict[str, Any]] = []
         for local, (row, value) in enumerate(zip(corpus, inputs, strict=True)):
             index = start + local
             mass = probabilities[index]
@@ -139,7 +139,8 @@ def prepare_segment_diagnostic(model, records, probabilities, outcomes, root, pe
         members.append(BatchMember(segment_id, payload, run_id, len(steps),
                                    mu["snapshot_sha256"], run_id))
         for local, row in enumerate(corpus):
-            ref = {"run_id": run_id, "segment_id": segment_id, "training_generation": generation,
+            ref: RowRef = {"run_id": run_id, "segment_id": segment_id,
+                   "training_generation": generation,
                    "row": local, "key": f"{run_id}:{local}"}
             if start + local < 64 and row.get("outcome_class") is not None:
                 selections.append(AuxiliarySelection(ref, "terminal", row["outcome_class"], 0, 2))

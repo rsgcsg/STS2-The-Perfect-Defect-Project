@@ -443,4 +443,98 @@ def test_RL4_record_is_not_preserved_before_its_exact_artifact_dependencies(
     identity = archive.offer(key, raw, start=False)
     archive._copy(identity)
     assert archive.target.blobs.get(key) == raw
-    assert archive.status()['full_readback']
+    assert archive.status()["full_readback"]
+
+
+def test_CP_retention_preserves_recent_pins_shared_chunks_and_remote_history(tmp_path):
+    from test_rl41_w1 import PRODUCER
+
+    from spireagent.artifact_contracts import Manifest
+    from spireagent.json_boundary import FrozenObject
+
+    peer = {
+        "kind": "local",
+        "directory": str(tmp_path / "local"),
+        "archive": {"kind": "local", "directory": str(tmp_path / "remote")},
+    }
+    e = Exchange(peer, "cp-retention")
+    cp = []
+    for i in range(1, 7):
+        m = Manifest(
+            "checkpoint",
+            PRODUCER,
+            payloads=(e.store.put_bytes("checkpoint", f"CP{i}".encode()),),
+            parameters=FrozenObject.of({"schema": "stpd/rl-segment-checkpoint-2", "sequence": i}),
+        )
+        e.store.publish(m)
+        e.publish_checkpoint(i, m.artifact_id, sequence=i, training_generation="g-one")
+        cp.append(m)
+    model = Manifest("model", PRODUCER, payloads=(cp[1].payload("checkpoint"),))
+    e.store.publish(model)
+    e.drain_archive(10)
+    result = e.retain_checkpoints(protected=(cp[0].artifact_id,))
+    assert set(result["candidate_artifact_ids"]) == {cp[1].artifact_id, cp[2].artifact_id}
+    for index, m in enumerate(cp):
+        exists = (e.blobs.root / "objects/sha256" / m.payload("checkpoint").sha256).exists()
+        assert exists == (index != 2), (index, exists)
+
+
+def test_quota_inode_backlog_and_stale_capacity_reject_new_work(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    from spireagent.storage import async_archive as module
+    from stpd.rl.segments import SegmentConfig
+
+    monkeypatch.setattr(module.shutil, "which", lambda _: "/usr/bin/usage")
+    monkeypatch.setattr(module.shutil, "disk_usage", lambda _: SimpleNamespace(free=1000 * 1024**3))
+    monkeypatch.setattr(module.os, "statvfs", lambda _: SimpleNamespace(f_favail=12345))
+    monkeypatch.setattr(
+        module.subprocess,
+        "check_output",
+        lambda *args, **kwargs: "/data 90G 100G\n/data/scratch 190G 200G\n",
+    )
+    observed = module.filesystem_capacity(Path("/data/scratch/s4961270/store"))
+    assert observed["free_bytes"] == 10 * 1024**3 and observed["quota_status"] == "measured"
+    assert observed["free_inodes"] == 12345
+    state = {
+        "fresh": True,
+        "error": None,
+        "quota_status": "measured",
+        "free_bytes": 100 * 1024**3,
+        "free_inodes": 100000,
+        "pending_bytes_estimate": 0,
+    }
+    from stpd.rl.segment_learner import SegmentLearner
+
+    owner = SimpleNamespace(
+        settings=SegmentConfig(), archive=SimpleNamespace(capacity_status=lambda: state)
+    )
+    assert SegmentLearner.archive_capacity(owner)["ready"]
+    for changes in (
+        {"free_bytes": 1},
+        {"free_inodes": 1},
+        {"pending_bytes_estimate": 100 * 1024**3},
+        {"quota_status": "observation_failed"},
+        {"fresh": False},
+        {"error": "OSError"},
+    ):
+        saved = state.copy()
+        state.update(changes)
+        assert not SegmentLearner.archive_capacity(owner)["ready"], changes
+        state.clear()
+        state.update(saved)
+
+
+def test_same_budget_deadline_cold_peer_archives_identical_control_bytes(tmp_path):
+    remote = {'kind': 'local', 'directory': str(tmp_path / 'archive')}
+    first = Exchange({'kind': 'local', 'directory': str(tmp_path / 'first'), 'archive': remote},
+                     'deadline-cold')
+    second = Exchange({'kind': 'local', 'directory': str(tmp_path / 'second'), 'archive': remote},
+                      'deadline-cold')
+    assert first.run_deadline(10000, budget_id='one') == 10000
+    first.drain_archive(10)
+    assert second.run_deadline(10000.0, budget_id='one') == 10000
+    assert second.drain_archive(10)['full_readback']
+    assert second.run_deadline(20000, budget_id='two') == 20000
+    with pytest.raises(BoundaryError, match='run_deadline_cannot_be_reset'):
+        second.run_deadline(20001, budget_id='two')

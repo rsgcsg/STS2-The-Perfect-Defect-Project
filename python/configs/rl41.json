@@ -3,6 +3,7 @@
   "device": "cuda",
   "lr": 4e-05,
   "weight_decay": 0.0,
+  "max_versions": 900000,
   "anchor": null,
   "critic": null,
   "loss": {

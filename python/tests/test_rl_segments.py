@@ -4,6 +4,7 @@ from __future__ import annotations
 import random
 
 import pytest
+
 from stpd.rl.segments import AuxiliaryPool, SegmentConfig, SegmentQueue, minibatch_members
 
 

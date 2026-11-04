@@ -633,6 +633,7 @@ def test_segment_prepare_binds_scorer_and_avoids_per_game_900_second_cut(
     actor = json.loads(Path(plan['actors'][0]['path']).read_bytes())
     assert actor['segments']['inference'] == json.loads(attachment.read_bytes())
     assert actor['segments']['excluded_seeds'] == ['frozen-evaluation-seed']
+    assert actor['segments']['rendezvous'] == str(attachment)
     assert actor['episode_seconds'] == 14400 and actor['behavior']['uniform_mix'] == 0
     assert rl.load_plan(output/'plan.json')['inference']['sha256'] == rl.hashed(attachment)
     with patch.object(rl, 'read_pinned', wraps=rl.read_pinned) as pinned:
@@ -673,8 +674,17 @@ def test_segment_prepare_binds_scorer_and_avoids_per_game_900_second_cut(
         rl.main()  # actual CLI gate -> actual run -> original before-offer Stop
     assert pinned.call_count == 6  # both CLI gate and child verify only this actor
     (output/'STOP').unlink()
-    attachment.write_text('{}')
-    with pytest.raises(ValueError):
+    original_attachment = actor['segments']['inference']
+    attachment.write_text(json.dumps({**original_attachment, 'pool_id': 'replacement',
+                                     'address': ['127.0.0.1', 5678]}))
+    replacement = output.with_name('replacement-plan')
+    new_plan = rl.prepare(execution, learner, replacement, actors=1, wall_seconds=4500,
+        episode_seconds=14400, games_per_ledger=10, segment_inference=attachment)
+    assert rl.read_pinned(rl.load_plan(output/'plan.json')['inference']) == original_attachment
+    assert rl.read_pinned(rl.load_plan(replacement/'plan.json')['inference']) != original_attachment
+    assert plan['inference']['path'] != new_plan['inference']['path']
+    Path(plan['inference']['path']).write_text('{}')
+    with pytest.raises(ValueError, match='pinned_input_changed'):
         rl.load_plan(output/'plan.json')
 
 
@@ -740,7 +750,7 @@ def test_gpu_owner_hands_transient_auth_to_original_cpu_submission_only(
             (work/'inference.json').write_text(json.dumps({'schema': SEGMENT_SCHEMA,
                 'segment_steps': steps, 'pool_id': 'synthetic', 'address': ['127.0.0.1', 1234]}))
 
-        def run(self):
+        def run(self, *, on_tick=None):
             calls.append('run')
             return {'updates': 0}
 
@@ -791,9 +801,10 @@ def test_gpu_owner_hands_transient_auth_to_original_cpu_submission_only(
     assert os.environ[AUTH_ENV] == 'prior-capability'
 
 
+@pytest.mark.parametrize('retain_capability', [False, True])
 @pytest.mark.parametrize('unknown_cpu', [False, True])
 def test_login_launch_submits_original_plan_with_same_environment(
-    rl, inputs, tmp_path, monkeypatch, unknown_cpu
+    rl, inputs, tmp_path, monkeypatch, unknown_cpu, retain_capability
 ):
     from stpd.p1.local_inference import AUTH_ENV
 
@@ -827,19 +838,21 @@ def test_login_launch_submits_original_plan_with_same_environment(
     monkeypatch.setattr(rl, 'submit', submit)
     if unknown_cpu:
         with pytest.raises(RuntimeError, match='unknown CPU'):
-            rl.launch(script, config, work, actors, output)
+            rl.launch(script, config, work, actors, output, retain_capability=retain_capability)
         assert (actors/'STOP').exists()
         assert (output/'STOP').exists()
     else:
-        receipt = rl.launch(script, config, work, actors, output)
+        receipt = rl.launch(script, config, work, actors, output,
+                            retain_capability=retain_capability)
         assert receipt['GPU_job_id'] == 'synthetic-GPU'
         assert (output/'launch-receipt.json').exists()
     assert len(capabilities) == 2 and capabilities[0] == capabilities[1]
     assert len(bytes.fromhex(capabilities[0])) == 32
-    assert os.environ[AUTH_ENV] == 'prior'
+    assert os.environ[AUTH_ENV] == (capabilities[0]
+        if retain_capability and not unknown_cpu else 'prior')
     assert all(capabilities[0] not in f.read_text() for f in tmp_path.rglob('*.json'))
     with pytest.raises(ValueError, match='fresh_login'):
-        rl.launch(script, config, work, actors, output)
+        rl.launch(script, config, work, actors, output, retain_capability=retain_capability)
     assert sum(command[0] == 'sbatch' for command in commands) == 1
 
 
@@ -1026,3 +1039,91 @@ def test_allocation_holder_exits_at_explicit_execution_budget(tmp_path, monkeypa
                     '--budget-file', str(budget)], check=True, timeout=5)
     assert json.loads((root/'allocation.json').read_bytes())['initial_budget_seconds'] == 1
     assert json.loads((root/'released.json').read_bytes())['signals'] == []
+
+
+def test_long_actor_entry_accepts_500_and_keeps_fair_share(rl, inputs):
+    from stpd.rl.learner import LearnerConfig
+    from stpd.rl.segments import SegmentConfig
+
+    plan, _ = prepared(rl, inputs, actors=500, wall_seconds=72000, max_games=100000)
+    assert len({a["actor"] for a in plan["actors"]}) == 500
+    assert json.loads(Path(plan["actors"][-1]["path"]).read_bytes())["max_games"] == 100000
+    config = LearnerConfig(run="capacity", peer={}, segments=SegmentConfig()).bind_actors(500)
+    assert config.segments.capacity_rows == 1024 + 500 * 64
+    with pytest.raises(ValueError, match="segment_actor_count_required"):
+        config.bind_actors(501)
+    assert rl.capacity(1999, 0, 500, maximum=500) == 499
+    assert rl.capacity(2000, 301, 500, maximum=500) == 32
+
+
+def test_general_segment_submission_keeps_300_second_advance(rl, tmp_path, monkeypatch):
+    from contextlib import nullcontext
+
+    path = tmp_path / "plan.json"
+    path.write_text("{}")
+    plan = {
+        "source_root": str(tmp_path),
+        "actors": [{"actor": "one"}],
+        "wall_seconds": 3600,
+        "episode_seconds": 14400,
+        "games_per_ledger": 10,
+        "trajectory_encoding": "short-segment-1",
+    }
+    monkeypatch.setattr(rl, "load_plan", lambda _: plan)
+    monkeypatch.setattr(rl, "require_modules", lambda _: None)
+    monkeypatch.setattr(rl, "launcher", lambda *args: "#!/bin/bash\nexit 0\n")
+    monkeypatch.setattr(rl.scheduler, "user_submission_lock", nullcontext)
+    monkeypatch.setattr(
+        rl.scheduler, "output", lambda command: "0/100/0/100" if command[0] == "sinfo" else ""
+    )
+    result = rl.submit(path, dry_run=True, partition="general")
+    assert "--signal=B:USR1@300" in result["command"]
+    assert "--partition=general" in result["command"]
+
+
+@pytest.mark.parametrize("partition", ["general", "debug"])
+def test_other_partition_RL_array_still_blocks_submission(rl, inputs, tmp_path, monkeypatch,
+                                                         partition):
+    _, plan = prepared(rl, inputs)
+    monkeypatch.setattr(rl, "require_modules", lambda _: None)
+    monkeypatch.setattr(rl.scheduler, "submission_lock_path", lambda: tmp_path / "submit.lock")
+
+    def scheduler(command):
+        if command[0] == "squeue":
+            # The existing allocation is in smp; a partition filter would hide
+            # it from this general/debug request and wrongly reach sbatch.
+            if "-p" in command and command[command.index("-p") + 1] != "smp":
+                return ""
+            return "other-array_0"
+        if command[0] == "sinfo":
+            return "0/1000/0/1000"
+        pytest.fail("must reject the foreign RL array before any sbatch")
+
+    monkeypatch.setattr(rl.scheduler, "output", scheduler)
+    with pytest.raises(ValueError, match="existing_friday_array_must_drain"):
+        rl.submit(plan, partition=partition)
+    assert not (plan.parent / "submission-intent.json").exists()
+
+
+def test_actor_terminal_facts_bind_raw_and_array_scheduler_ids(rl, tmp_path, monkeypatch):
+    path = tmp_path / "plan.json"
+    path.write_text("{}")
+    plan = {"actors": [{"actor": "a"}, {"actor": "b"}]}
+    (tmp_path / "submission.json").write_text(json.dumps({"job_id": "77"}))
+    owner = tmp_path / "actors/a/owner.json"
+    owner.parent.mkdir(parents=True)
+    owner.write_text(json.dumps({"actor": "a", "job_id": "101", "plan_sha256": rl.hashed(path)}))
+    monkeypatch.setattr(rl, "load_plan", lambda _: plan)
+    monkeypatch.setattr(
+        rl.subprocess,
+        "check_output",
+        lambda *args, **kwargs: (
+            "101|77_0|FAILED|1:0\n101.batch|77_0.batch|FAILED|1:0\n102|77_1|RUNNING|0:0\n"
+        ),
+    )
+    rows = rl.actor_accounting(path)
+    assert rows[0]["actor"] == "a" and rows[0]["terminal"] is True
+    assert rows[1]["actor"] == "b" and rows[1]["terminal"] is False
+    owner.write_text(json.dumps({"actor": "a", "job_id": "77_0", "plan_sha256": rl.hashed(path)}))
+    with pytest.raises(ValueError, match="terminal_actor_owner_or_submission_binding_changed"):
+        rl.actor_accounting(path)

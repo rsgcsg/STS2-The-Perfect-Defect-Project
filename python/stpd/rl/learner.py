@@ -99,6 +99,10 @@ class LearnerConfig:
     poll_seconds: float = 5.0
     max_versions: int = 1000
     wall_seconds: float = 3600
+    # Absolute run budget survives process/allocation replacement, in UTC epoch seconds.
+    deadline_at: float | None = None
+    # Operational window, independent of CP16's immutable learning-run identity.
+    operating_budget: dict[str, Any] | None = None
     seed: int = 1
     anchor: dict[str, Any] | None = None
     # Explicit full learner checkpoint artifact id to continue this run from

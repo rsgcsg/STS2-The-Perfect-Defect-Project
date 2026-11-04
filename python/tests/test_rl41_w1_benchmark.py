@@ -20,6 +20,8 @@ import time
 from pathlib import Path
 
 import torch
+from test_rl41_w1 import training_seed
+
 from spireagent.rl_contracts import RunSequence
 from spireagent.rl_exchange import Exchange
 from stpd.p1.data import digest, json_bytes
@@ -34,7 +36,6 @@ from stpd.rl.loss import LossConfig, prepared_update
 from stpd.rl.performance import PerformanceConfig
 from stpd.rl.prepared_batch import AuxiliarySelection, BatchMember, PrepareRequest
 from stpd.rl.segments import minibatch_members
-from test_rl41_w1 import training_seed
 
 
 def build_templates(model, corpus):

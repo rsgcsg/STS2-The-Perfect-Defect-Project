@@ -580,6 +580,7 @@ class SegmentManagedExecutor(PipelinedManagedExecutor):
         actor: str,
         attachment: dict[str, Any],
         admission: Any,
+        budget_id: str | None = None,
     ) -> None:
         # Capacity waits use ACK/next/await; only the score RPC has a 120s limit.
         # Keep the existing Agent call limit; native Stop/deadlines still own exit.
@@ -590,6 +591,7 @@ class SegmentManagedExecutor(PipelinedManagedExecutor):
         )
         self.exchange, self.actor, self.attachment = exchange, actor, attachment
         self.admission = admission
+        self.budget_id = budget_id
         self.observers: dict[str, LiveSegmentProducer] = {}
         self.connections: dict[str, Any] = {}
         self.new_originals: dict[str, tuple[Path, Path]] = {}
@@ -600,9 +602,16 @@ class SegmentManagedExecutor(PipelinedManagedExecutor):
         row["training_audit_selected"] = training_audit_selected(
             row, audit_every=row["retention"]["audit_every"])
         result = self.admission.request("episode_open", actor=self.actor, episode=row["intent_id"])
+        row["segment_admission_owner"] = {
+            k: result[k] for k in ("run", "training_generation", "budget_id") if k in result}
         row["segment_episode_admitted"] = result.get("admitted") is True
         if not row["segment_episode_admitted"]:
             raise BoundaryError("rl_segment", "learner_stopped_before_world_offer")
+
+    def _world_offer_checkpointed(self, row: dict[str, Any]) -> None:
+        self.exchange.publish_event("actor_world_offered", actor=self.actor,
+            intent_id=row["intent_id"], seed=row["seed"], **{
+                k: v for k, v in row["segment_admission_owner"].items() if k != "run"})
 
     def _end_episode(self, connection: Any, **fields: Any) -> dict[str, Any]:
         # The actor owns the actual accepted episode admission, including a new
@@ -885,7 +894,7 @@ class SegmentManagedExecutor(PipelinedManagedExecutor):
                     prefix_bytes += len(part)
             if prefix is not None and (prefix_bytes != prefix["behavior_trace_bytes"]
                     or prefix_hash.hexdigest() != prefix["behavior_trace_prefix_sha256"]):
-                self.exchange.request_stop("behavior_original_changed_after_commit")
+                self._request_training_stop("behavior_original_changed_after_commit")
                 raise BoundaryError("rl_segment", "behavior_original_changed_after_commit")
             row["behavior_preservation"] = artifacts.put("behavior-preservation.json", json_bytes({
                 "artifact_id": manifest.artifact_id, "sha256": payload.sha256,
@@ -918,7 +927,7 @@ class SegmentManagedExecutor(PipelinedManagedExecutor):
                 or audited.value is None
                 or audited.value.content_id != typed["content_id"]
             ):
-                self.exchange.request_stop("sampled_original_audit_failed")
+                self._request_training_stop("sampled_original_audit_failed")
                 raise BoundaryError("rl_segment", "sampled_original_audit_failed")
         # Only our own fresh Runtime run can be released, after labels and all
         # required original preservation/audit. Failures use the full-peer path.
@@ -930,6 +939,21 @@ class SegmentManagedExecutor(PipelinedManagedExecutor):
         if route not in {"ledger_only", "full_peer"}:
             return
         self._release_new_originals(row, run)
+
+    def _request_training_stop(self, reason: str) -> None:
+        # A failed audit stops the actual current learner. Its immutable finding
+        # remains; after diagnosis a fresh generation can resume the same run.
+        self.exchange.publish_event("integrity_failed", reason=reason, budget_id=self.budget_id)
+        try:
+            state = self.admission.request("status")
+        except (OSError, ValueError, TimeoutError) as error:
+            self.exchange.publish_event("integrity_stop_pending", reason=reason,
+                                        budget_id=self.budget_id,
+                                        error_type=type(error).__name__)
+            return  # The normal watcher consumes the failure even without control.
+        if state["run"] != self.exchange.run:
+            raise BoundaryError("rl_segment", "audit_stop_run_changed")
+        self.exchange.request_stop(reason, training_generation=state["training_generation"])
 
     def _release_new_originals(self, row: dict[str, Any], run: Path) -> None:
         owned = self.new_originals.get(row["run_id"])
