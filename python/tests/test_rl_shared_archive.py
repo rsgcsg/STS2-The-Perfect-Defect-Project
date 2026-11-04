@@ -228,6 +228,129 @@ def test_archive_drain_checks_deadline_between_tasks_and_logs_safe_IO_failure(
     assert archive.status()["pending"] == 6
 
 
+def test_owned_archive_drain_does_not_scan_or_copy_another_producers_intent(
+        tmp_path, monkeypatch):
+    root, target = tmp_path / "hot", {"kind": "local", "directory": str(tmp_path / "cold")}
+    first, second = Archive(root, target), Archive(root, target)
+    for owner, key in ((first, "exchange/test/first.json"),
+                       (second, "exchange/test/second.json")):
+        owner.source.blobs.put_if_absent(key, b"{}")
+        owner.offer(key, b"{}", start=False)
+
+    def no_global_scan(_):
+        raise AssertionError("owned drain must not list the shared outbox")
+
+    monkeypatch.setattr(first.queue, "keys", no_global_scan)
+    assert first.drain(timeout=2, owned=True)["full_readback"]
+    assert first.target.blobs.get("exchange/test/first.json") == b"{}"
+    with pytest.raises(StoreError, match="object_not_found"):
+        first.target.blobs.get("exchange/test/second.json")
+    assert second.status(owned=True)["pending"] == 1
+    assert second.drain(timeout=2, owned=True)["full_readback"]
+
+
+def _archive_background_process(connection, root, target, label):
+    """Actual immutable Store and OS locks; report metadata scans across processes."""
+    archive = Archive(root, target)
+    channel_lock = threading.Lock()
+
+    def emit(value):
+        with channel_lock:
+            connection.send(value)
+
+    original_keys, original_copy, original_step = (
+        archive.queue.keys, archive._copy, archive.step)
+
+    def keys(prefix):
+        if prefix == "pending/":
+            emit({"event": "global_scan"})
+        return original_keys(prefix)
+
+    def copy(identity):
+        original_copy(identity)
+        emit({"event": "copied", "identity": identity})
+
+    def step(**options):
+        result = original_step(**options)
+        emit({"event": "step_complete", "owned": options.get("owned", False)})
+        return result
+
+    archive.queue.keys, archive._copy, archive.step = keys, copy, step
+    key = f"exchange/test/{label}.json"
+    archive.source.blobs.put_if_absent(key, b"{}")
+    identity = archive.offer(key, b"{}")
+    emit({"event": "ready", "identity": identity})
+    while connection.recv() == "wake":
+        archive.wake.set()
+
+
+def test_background_global_scan_has_one_owner_and_process_death_preserves_orphan_service(tmp_path):
+    import multiprocessing
+
+    context = multiprocessing.get_context("spawn")
+    root, target = tmp_path / "hot", {"kind": "local", "directory": str(tmp_path / "cold")}
+    processes, channels = [], []
+    observed = [[], []]
+
+    def await_event(index, predicate):
+        deadline = time.monotonic() + 15
+        channel = channels[index]
+        while True:
+            remaining = deadline - time.monotonic()
+            assert remaining > 0 and channel.poll(remaining), observed[index]
+            value = channel.recv()
+            observed[index].append(value)
+            if predicate(value):
+                return value
+
+    def start(label):
+        parent, child = context.Pipe()
+        process = context.Process(target=_archive_background_process,
+            args=(child, root, target, label))
+        processes.append(process)
+        channels.append(parent)
+        process.start()
+        child.close()
+
+    try:
+        start("leader")
+        await_event(0, lambda x: x["event"] == "global_scan")
+        await_event(0, lambda x: x["event"] == "copied")
+        start("follower")
+        await_event(1, lambda x: x["event"] == "step_complete" and x["owned"])
+        assert not any(x["event"] == "global_scan" for x in observed[1])
+
+        # A producer can die after an offer: no live process claims these IDs.
+        orphan = Archive(root, target)
+
+        def publish_orphan(name):
+            key, raw = f"exchange/test/{name}.json", b'{"original":"unchanged"}'
+            orphan.source.blobs.put_if_absent(key, raw)
+            return key, raw, orphan.offer(key, raw, start=False)
+
+        key, raw, identity = publish_orphan("before-death")
+        channels[0].send("wake")
+        await_event(0, lambda x: x["event"] == "copied" and x["identity"] == identity)
+        assert orphan.target.blobs.get(key) == raw
+
+        processes[0].terminate()
+        processes[0].join(5)
+        assert not processes[0].is_alive()
+        key, raw, identity = publish_orphan("after-death")
+        channels[1].send("wake")
+        await_event(1, lambda x: x["event"] == "global_scan")
+        await_event(1, lambda x: x["event"] == "copied" and x["identity"] == identity)
+        assert orphan.target.blobs.get(key) == raw
+        assert orphan.drain(timeout=2, owned=False)["full_readback"]
+    finally:
+        for process in processes:
+            if process.is_alive():
+                process.terminate()
+            process.join(5)
+        for channel in channels:
+            channel.close()
+
+
 @pytest.mark.parametrize("change", [
     {"archive": {"kind": "local", "directory": "SAME"}},
     {"archive": {"kind": "local", "directory": "other", "archive": {}}},

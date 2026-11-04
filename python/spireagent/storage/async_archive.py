@@ -14,7 +14,7 @@ import shutil
 import sys
 import threading
 import time
-from contextlib import suppress
+from contextlib import ExitStack, suppress
 from pathlib import Path
 from typing import Any
 
@@ -67,6 +67,7 @@ class Archive:
             if completed:
                 self.owned_done.add(identity)
             if start and self.thread is None:
+                (self.queue.root / "publisher.lock").touch(exist_ok=True)
                 self.thread = threading.Thread(target=self._loop,
                     name="shared-store-archive", daemon=True)
                 self.thread.start()
@@ -189,12 +190,16 @@ class Archive:
         with suppress(OSError):
             print(json.dumps(self.last_error), file=sys.stderr, flush=True)
 
-    def step(self, *, deadline: float | None = None) -> int:
+    def step(self, *, deadline: float | None = None, owned: bool = False) -> int:
+        if owned:
+            with self.lock:
+                identities = sorted(self.owned - self.owned_done)
+        else:
+            identities = [Path(key).stem for key in self.queue.keys("pending/")]
         completed = 0
-        for key in self.queue.keys("pending/"):
+        for identity in identities:
             if deadline is not None and time.monotonic() >= deadline:
                 break
-            identity = Path(key).stem
             if (self.queue.root / "completed" / f"{identity}.json").is_file():
                 continue
             try:
@@ -217,15 +222,29 @@ class Archive:
         return completed
 
     def _loop(self) -> None:
-        while True:
-            self.wake.wait(2)
-            self.wake.clear()
-            try:
-                self.step()
-            except Exception as error:  # noqa: BLE001 -- preserve pending, expose classified failure
-                self._unexpected_error(error)
-            finally:
-                self._refresh_owned()
+        # One existing publisher also services orphan intents. Keep its OS lock
+        # for the thread lifetime; releasing it each round recreates N global
+        # scans. Other producers serve their own IDs without listing the outbox.
+        with ExitStack() as leadership:
+            global_scan = False
+            while True:
+                self.wake.wait(2)
+                self.wake.clear()
+                try:
+                    if not global_scan:
+                        try:
+                            leadership.enter_context(instance_lock(
+                                self.queue.root / "publisher.lock", create=False))
+                        except BoundaryError as error:
+                            if error.code != "already_running":
+                                raise
+                        else:
+                            global_scan = True
+                    self.step(owned=not global_scan)
+                except Exception as error:  # noqa: BLE001 -- retain pending and classified failure
+                    self._unexpected_error(error)
+                finally:
+                    self._refresh_owned()
 
     def _refresh_owned(self) -> None:
         # Other processes can fulfill our intents. Only the background/drain
@@ -262,7 +281,7 @@ class Archive:
     def drain(self, *, timeout: float = 120, owned: bool = True) -> dict[str, Any]:
         deadline = time.monotonic() + timeout
         while True:
-            self.step(deadline=deadline)
+            self.step(deadline=deadline, owned=owned)
             self._refresh_owned()
             status = self.status(owned=owned)
             if status["full_readback"]:

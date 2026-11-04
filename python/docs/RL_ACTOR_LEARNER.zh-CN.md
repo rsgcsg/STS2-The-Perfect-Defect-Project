@@ -207,6 +207,9 @@ GPU throughput、真实 World、健康小时及实力结论各用其原实测。
 launcher、Actor、producer 和保存复核共用原 retention 配置，ledger 收据记录实际模数。
 未抽中的自然训练局走 ledger_only，不调用 native 原件的发布、归档或完整读回；
 段/控制账本、模型、CP 仍各按原 Store 归档。censored、unknown、技术失败及评估仍完整保留。
+共享 Store 的现有归档线程只由一个进程持有 OS 锁并扫描全局待存队列，继续接手死亡进程的孤儿任务；
+其他进程按自己的既有 owned 集合复制，不反复遍历全队列。进程退出释放锁后由存活线程接手。
+普通 drain 与它声明的 owned 范围一致；显式全局 drain/恢复入口保持，逐条锁、不可变发布和完整读回不变。
 原20模数的历史记录不重算、不改写。
 
 Friday submit 复用原容量函数和原 smp 调度；普通打局/评估默认仍用 idle 核的四分之一、上限200。
