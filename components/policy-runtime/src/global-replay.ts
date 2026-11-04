@@ -111,17 +111,26 @@ export interface VerifiedGlobalTransition {
 export async function streamGlobalAgentRun(directory: string,
     events: AsyncIterable<GlobalReplayEvent>,
     transition: (value: VerifiedGlobalTransition) => Promise<void>,
-    boundary?: (value: Record<string, unknown>) => Promise<void>) {
-  return replayGlobalRun(directory, { events, transition, boundary });
+    boundary?: (value: Record<string, unknown>) => Promise<void>,
+    proof?: (value: Record<string, unknown>) => void) {
+  return replayGlobalRun(directory, { events, transition, boundary, proof });
 }
 
 async function replayGlobalRun(directory: string, live?: {
   events: AsyncIterable<GlobalReplayEvent>;
   transition: (value: VerifiedGlobalTransition) => Promise<void>;
   boundary?: (value: Record<string, unknown>) => Promise<void>;
+  proof?: (value: Record<string, unknown>) => void;
 }) {
-  const json = async (name: string) => JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(await readFile(join(directory, name))));
+  const reads: Record<string, { sha256: string; bytes: number }> = {};
+  const originalRefs = new Map<string, GlobalArtifact>();
+  const json = async (name: string) => {
+    const raw = await readFile(join(directory, name));
+    reads[name] = { sha256: sha(raw), bytes: raw.length };
+    return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(raw));
+  };
   const initialRun = live ? await readLiveManifestOriginal(directory) : null;
+  const initialIdentity = initialRun ? structuredClone(initialRun.value) : null;
   const run = initialRun ? initialRun.value : await json("manifest.json");
   const manifest = validateAgentManifest(await json("agent-manifest.json"));
   require(manifest.input.profile === "p1-global-r1" && manifest.input.global, "global_profile_required");
@@ -151,6 +160,7 @@ async function replayGlobalRun(directory: string, live?: {
     exact(ref, ["role", "path", "bytes", "sha256"]);
     require(ref.role === role, "global_artifact_reference");
     const bytes = await readGlobalArtifact(directory, ref);
+    originalRefs.set(ref.path, ref);
     if (!referenced.has(ref.path)) newOriginalPaths.push(ref.path);
     referenced.add(ref.path); return bytes;
   };
@@ -515,7 +525,11 @@ async function replayGlobalRun(directory: string, live?: {
         // this does not delay any previously emitted verified prefix.
         const deadline = Date.now() + 30000;
         while (true) {
-          Object.assign(run, await readLiveManifest(directory));
+          const final = await readLiveManifestOriginal(directory);
+          for (const key of Object.keys(initialIdentity).filter(key => !["ended_at", "status", "mode", "tainted"].includes(key)))
+            require(same(final.value[key], initialIdentity[key]), "global_live_manifest_identity_changed");
+          Object.assign(run, final.value);
+          reads["manifest.json"] = { sha256: sha(final.raw), bytes: final.raw.length };
           if (run.ended_at !== null) break;
           require(Date.now() < deadline, "global_final_manifest_missing");
           await new Promise(resolve => setTimeout(resolve, 20));
@@ -529,6 +543,7 @@ async function replayGlobalRun(directory: string, live?: {
   }
   require(stopped && !active && [...captureRequests.values()].every(r => r.terminal) && [...sources.values()].every(s => s.classified), "global_unaccounted_original_source_or_operation");
   const files = (await readdir(directory)).filter(name => /^global-/u.test(name)); require(files.every(name => referenced.has(name)) && referenced.size === files.length, "global_unreferenced_or_missing_original_artifact");
+  live?.proof?.({ reads, artifacts: [...originalRefs.values()].sort((a, b) => a.path.localeCompare(b.path)) });
   return { schema: "sts2.policy-runtime/global-replay-1", run_id: run.run_id, sources: sources.size, observations, consumed, results,
     ...(live ? { program_close_reason: lastDirective?.directive.type === "close" ? lastDirective.directive.reason : null } : {}),
     initial_progress_original: initialProgressOriginal,

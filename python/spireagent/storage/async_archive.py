@@ -161,7 +161,7 @@ class Archive:
                 artifacts.extend(value[name] for name in (
                     "model_artifact_id", "checkpoint_artifact_id", "shard_artifact_id",
                     "segment_artifact_id", "heads_artifact_id", "input_artifact_id")
-                    if value.get(name) is not None)
+                    if value.get(name) is not None and not value[name].startswith("hot:"))
             for artifact in artifacts:
                 if key.startswith("manifests/"):
                     copy_artifact(self.source, self.target, artifact, scratch=self.root,
