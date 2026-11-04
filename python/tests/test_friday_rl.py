@@ -674,6 +674,8 @@ def test_login_launch_submits_original_plan_with_same_environment(
             capabilities.append(os.environ[AUTH_ENV])
             rl.prepare(execution, config, actors)
             return 'synthetic-GPU'
+        if command[0] == 'squeue' and '-j' in command:
+            return 'RUNNING'
         return ''
 
     def submit(plan, **options):
@@ -704,7 +706,7 @@ def test_login_launch_submits_original_plan_with_same_environment(
     assert sum(command[0] == 'sbatch' for command in commands) == 1
 
 
-def test_login_queued_gpu_timeout_retains_stop_before_work_exists(rl, tmp_path, monkeypatch):
+def test_running_gpu_plan_timeout_retains_stop_before_work_exists(rl, tmp_path, monkeypatch):
     from stpd.p1.local_inference import AUTH_ENV
     script, config = tmp_path/'gpu.sh', tmp_path/'config.json'
     script.write_text('#!/bin/sh\n')
@@ -717,6 +719,8 @@ def test_login_queued_gpu_timeout_retains_stop_before_work_exists(rl, tmp_path, 
         if command[0] == 'sbatch':
             inherited['stop'] = os.environ[rl.LAUNCH_STOP_ENV]
             return 'queued-original'
+        if command[0] == 'squeue' and '-j' in command:
+            return 'RUNNING'
         return ''
 
     monkeypatch.setattr(rl.scheduler, 'output', schedule)
@@ -749,3 +753,127 @@ def test_additional_active_parent_accepts_invisible_node_local_scratch(rl, input
     finished = rl.finished_actor_results(path, plan)
     assert finished[0]['result_path'] == str(persistent/'result.json')
     assert finished[0]['result_sha256'] == rl.hashed(persistent/'result.json')
+
+
+def test_gpu_queue_time_does_not_consume_running_readiness_or_36h_limit(
+    rl, inputs, tmp_path, monkeypatch
+):
+    execution, config, actors = inputs
+    script = tmp_path/'gpu.sh'
+    script.write_text('#!/bin/sh\n')
+    clock, observations, running = [0.0], [], [False]
+    monkeypatch.setattr(rl.scheduler, 'submission_lock_path', lambda: tmp_path/'submit.lock')
+    monkeypatch.setattr(rl.time, 'monotonic', lambda: clock[0])
+
+    def schedule(command):
+        if command[0] == 'sbatch':
+            assert '--time=2160' in command
+            return '81'
+        if command[0] == 'squeue' and '-j' in command:
+            observations.append(True)
+            if len(observations) < 3:
+                clock[0] += 1200  # Twenty queue minutes exceed the ready window.
+                return 'PENDING'
+            running[0] = True
+            return 'RUNNING'
+        return ''
+
+    def sleep(seconds):
+        clock[0] += seconds
+        if running[0]:
+            rl.prepare(execution, config, actors)
+
+    monkeypatch.setattr(rl.scheduler, 'output', schedule)
+    monkeypatch.setattr(rl.time, 'sleep', sleep)
+    monkeypatch.setattr(rl, 'submit', lambda *a, **kw: {'job_id': 'CPU'})
+    result = rl.launch(script, config, tmp_path/'work', actors, tmp_path/'login',
+                       minutes=2160, ready_seconds=120)
+    assert result['GPU_job_id'] == '81' and len(observations) == 4
+    assert (tmp_path/'login/GPU-started.json').exists()
+    assert not (tmp_path/'login/STOP').exists()
+
+
+@pytest.mark.parametrize('existing,detail,allowed', [
+    ('79', 'PENDING|gres/gpu:a100:1|rl4-learner', True),
+    ('79', 'RUNNING|gres/gpu:a100:1|rl4-learner', True),
+    ('79', 'RUNNING|gres/gpu:a30:1|rl4-learner', False),
+    ('79', 'PENDING|gres/gpu:a100:2|rl4-learner', False),
+    ('79', 'PENDING|gres/gpu:a100:1|foreign-job', False),
+    ('79\n80', 'PENDING|gres/gpu:a100:1|rl4-learner', False),
+])
+def test_explicit_opposite_gpu_queue_keeps_one_job_per_card(
+    rl, inputs, tmp_path, monkeypatch, existing, detail, allowed
+):
+    execution, config, actors = inputs
+    script = tmp_path/'gpu.sh'
+    script.write_text('#!/bin/sh\n')
+    offers = []
+    monkeypatch.setattr(rl.scheduler, 'submission_lock_path', lambda: tmp_path/'submit.lock')
+
+    def schedule(command):
+        if command[0] == 'sbatch':
+            offers.append(command)
+            rl.prepare(execution, config, actors)
+            return '80'
+        if command[0] == 'squeue':
+            if command[-1] == '%T':
+                return 'RUNNING'
+            return detail if '-j' in command else existing
+        return ''
+
+    monkeypatch.setattr(rl.scheduler, 'output', schedule)
+    monkeypatch.setattr(rl, 'submit', lambda *a, **kw: {'job_id': 'CPU'})
+    if allowed:
+        result = rl.launch(script, config, tmp_path/'work', actors, tmp_path/'login',
+                           gpu='a30', alongside_job='79')
+        assert result['GPU_job_id'] == '80' and len(offers) == 1
+    else:
+        with pytest.raises(ValueError, match='GPU.*owner|GPU.*scheduling'):
+            rl.launch(script, config, tmp_path/'work', actors, tmp_path/'login',
+                      gpu='a30', alongside_job='79')
+        assert not offers
+
+
+@pytest.mark.parametrize('state', ['PENDING', 'FAILED'])
+def test_existing_plan_cannot_offer_actors_before_live_gpu(
+    rl, inputs, tmp_path, monkeypatch, state
+):
+    execution, config, actors = inputs
+    script = tmp_path/'gpu.sh'
+    script.write_text('#!/bin/sh\n')
+    observed = []
+    monkeypatch.setattr(rl.scheduler, 'submission_lock_path', lambda: tmp_path/'submit.lock')
+
+    def schedule(command):
+        if command[0] == 'sbatch':
+            rl.prepare(execution, config, actors)
+            return '81'
+        if command[0] == 'squeue' and '-j' in command:
+            observed.append(state)
+            return state
+        return ''
+
+    monkeypatch.setattr(rl.scheduler, 'output', schedule)
+    monkeypatch.setattr(rl, 'submit', lambda *a, **kw: pytest.fail('GPU not RUNNING'))
+    if state == 'PENDING':
+        monkeypatch.setattr(rl.time, 'sleep', lambda *_: (_ for _ in ()).throw(
+            InterruptedError('operator ends read-only queue wait')))
+        error = InterruptedError
+    else:
+        error = RuntimeError
+    with pytest.raises(error):
+        rl.launch(script, config, tmp_path/'work', actors, tmp_path/'login')
+    assert observed == [state] and (tmp_path/'login/STOP').exists()
+
+
+def test_reserve_only_never_offers_cpu_or_needs_actor_readiness(rl, tmp_path, monkeypatch):
+    script, config = tmp_path/'gpu.sh', tmp_path/'config.json'
+    script.write_text('#!/bin/sh\n')
+    config.write_text('{}')
+    monkeypatch.setattr(rl.scheduler, 'submission_lock_path', lambda: tmp_path/'submit.lock')
+    monkeypatch.setattr(rl.scheduler, 'output', lambda cmd: '91' if cmd[0] == 'sbatch' else '')
+    monkeypatch.setattr(rl, 'submit', lambda *a, **kw: pytest.fail('reservation has no actors'))
+    receipt = rl.launch(script, config, tmp_path/'work', tmp_path/'actors', tmp_path/'login',
+                        reserve_only=True, minutes=2160)
+    assert receipt == {'GPU_job_id': '91', 'reservation_only': True, 'CPU_actors_offered': 0}
+    assert not (tmp_path/'work').exists() and not (tmp_path/'actors').exists()

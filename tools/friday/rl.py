@@ -529,7 +529,8 @@ def learn(configuration: Path, work: Path, execution: Path, actors_output: Path,
 def launch(gpu_script: Path, configuration: Path, work: Path, actors_output: Path,
            output: Path, *, gpu: str = 'a30', minutes: int = 85,
            cpus: int = 16, memory_gb: int = 64,
-           actor_memory_gb: int = 4, ready_seconds: float = 120) -> dict[str, Any]:
+           actor_memory_gb: int = 4, ready_seconds: float = 120,
+           alongside_job: str | None = None, reserve_only: bool = False) -> dict[str, Any]:
     """Login-side resource adapter; both original sbatch calls inherit one capability.
 
     The GPU script calls ``learn --external-submit`` and owns the learner/scorer.
@@ -544,9 +545,10 @@ def launch(gpu_script: Path, configuration: Path, work: Path, actors_output: Pat
     output = canonical_path(output, existing=False)
     if output.exists() or work.exists() or actors_output.exists():
         raise ValueError('fresh_login_launch_and_unoffered_actor_output_required')
-    if (gpu not in {'a30', 'a100'} or not 1 <= minutes <= 180
+    if (gpu not in {'a30', 'a100'} or not 1 <= minutes <= 2160
             or not 1 <= cpus <= 32 or not 1 <= memory_gb <= 256
-            or not 1 <= ready_seconds <= 3600):
+            or not 1 <= ready_seconds <= 3600
+            or alongside_job is not None and not re.fullmatch(r'[1-9][0-9]*', alongside_job)):
         raise ValueError('bounded_Friday_GPU_launch_required')
     root = private_root(output)
     prior = os.environ.get(AUTH_ENV)
@@ -565,25 +567,55 @@ def launch(gpu_script: Path, configuration: Path, work: Path, actors_output: Pat
         f'--output={root}/GPU-%j.out', f'--error={root}/GPU-%j.err', str(gpu_script)]
     try:
         with scheduler.user_submission_lock():
-            if scheduler.output(['squeue', '-h', '-u', scheduler.username(),
-                                 '-p', 'smp_gpu', '-o', '%i']):
-                raise ValueError('another_Friday_GPU_job_requires_owner_scheduling')
+            existing = scheduler.output(['squeue', '-h', '-u', scheduler.username(),
+                                          '-p', 'smp_gpu', '-o', '%i']).splitlines()
+            coexistence = None
+            if existing:
+                if alongside_job is None or existing != [alongside_job]:
+                    raise ValueError('another_Friday_GPU_job_requires_owner_scheduling')
+                detail = scheduler.output(['squeue', '-h', '-j', alongside_job,
+                                           '-o', '%T|%b|%j']).split('|')
+                other = 'a30' if gpu == 'a100' else 'a100'
+                if (len(detail) != 3 or detail[0] not in {'PENDING', 'RUNNING', 'CONFIGURING'}
+                        or detail[1] != f'gres/gpu:{other}:1' or detail[2] != 'rl4-learner'):
+                    raise ValueError('explicit_opposite_single_GPU_owner_required')
+                coexistence = {'job_id': alongside_job, 'state': detail[0], 'gres': detail[1]}
             save(root/'GPU-submission-intent.json', {'at': time.time(), 'command': command,
-                'script_sha256': hashed(gpu_script), 'configuration_sha256': hashed(configuration)})
+                'script_sha256': hashed(gpu_script), 'configuration_sha256': hashed(configuration),
+                'alongside': coexistence, 'reservation_only': reserve_only})
             job = scheduler.output(command)
             save(root/'GPU-submission.json', {'job_id': job, 'at': time.time()})
-        deadline = time.monotonic()+ready_seconds
+        if reserve_only:
+            result = {'GPU_job_id': job, 'reservation_only': True, 'CPU_actors_offered': 0}
+            save(root/'launch-receipt.json', result)
+            return result
+        deadline = None
         plan_file = actors_output/'plan.json'
         while True:
-            try:
-                if not plan_file.exists():
-                    raise FileNotFoundError(plan_file)
-                plan = load_plan(plan_file)
-                break
-            except (FileNotFoundError, json.JSONDecodeError):
-                if time.monotonic() >= deadline:
-                    raise TimeoutError('GPU_actor_plan_not_ready_within_launch_window') from None
-                time.sleep(min(1, max(0, deadline-time.monotonic())))
+            state = scheduler.output(['squeue', '-h', '-j', job, '-o', '%T']).strip()
+            if not state:
+                history = scheduler.output(['sacct', '-n', '-X', '-j', job,
+                                            '--format=State', '--parsable2']).splitlines()
+                names = [line.split('|')[0].strip().split() for line in history]
+                state = next((parts[0] for parts in names if parts), 'UNKNOWN')
+            if state in {'COMPLETED', 'FAILED', 'CANCELLED', 'TIMEOUT', 'NODE_FAIL',
+                         'OUT_OF_MEMORY', 'PREEMPTED', 'BOOT_FAIL', 'DEADLINE', 'REVOKED'}:
+                raise RuntimeError('GPU_job_ended_before_actor_plan_reconcile_original_offer')
+            if state == 'RUNNING' and deadline is None:
+                deadline = time.monotonic() + ready_seconds
+                save(root/'GPU-started.json', {'job_id': job, 'observed_at': time.time(),
+                                              'ready_seconds': ready_seconds})
+            if state == 'RUNNING':
+                try:
+                    if not plan_file.exists():
+                        raise FileNotFoundError(plan_file)
+                    plan = load_plan(plan_file)
+                    break
+                except (FileNotFoundError, json.JSONDecodeError):
+                    pass  # The original GPU owner may still be publishing its plan.
+            if deadline is not None and time.monotonic() >= deadline:
+                raise TimeoutError('GPU_actor_plan_not_ready_within_launch_window')
+            time.sleep(1 if deadline is not None else 5)
         if plan.get('learner_request', plan['learner_origin']) != {
                 'path': str(configuration), 'sha256': hashed(configuration)}:
             raise ValueError('GPU_prepared_actor_plan_has_different_learner_configuration')
@@ -661,7 +693,12 @@ def main():
     launch_parser.add_argument('--cpus', type=int, default=16)
     launch_parser.add_argument('--memory-gb', type=int, default=64)
     launch_parser.add_argument('--actor-memory-gb', type=int, default=4)
-    launch_parser.add_argument('--ready-seconds', type=float, default=120)
+    launch_parser.add_argument('--ready-seconds', type=float, default=120,
+        help='Actor-plan readiness after the GPU job is observed RUNNING; queue time is excluded')
+    launch_parser.add_argument('--reserve-only', action='store_true',
+        help='Submit the explicit allocation script without offering CPU actors')
+    launch_parser.add_argument('--alongside-job',
+        help='Explicit existing opposite-card Friday job; at most one A100 and one A30')
     args = parser.parse_args()
     os.umask(0o077)
     if (args.command in {'run', 'submit'} and not getattr(args, 'dry_run', False)
@@ -671,7 +708,8 @@ def main():
         result = launch(args.gpu_script, args.config, args.work, args.actors_output,
             args.output, gpu=args.gpu, minutes=args.minutes, cpus=args.cpus,
             memory_gb=args.memory_gb, actor_memory_gb=args.actor_memory_gb,
-            ready_seconds=args.ready_seconds)
+            ready_seconds=args.ready_seconds, alongside_job=args.alongside_job,
+            reserve_only=args.reserve_only)
     elif args.command == 'learn':
         result = learn(args.config, args.work, args.execution, args.actors_output,
             actors=args.actors, seed_namespace=args.seed_namespace,

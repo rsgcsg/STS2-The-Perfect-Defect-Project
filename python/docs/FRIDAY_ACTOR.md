@@ -210,3 +210,24 @@ R2不可达时遥测失败记stderr，原actor本地STOP/USR1仍按20小时执�
 [只读报告与下一轮操作](RL_OBSERVATION.zh-CN.md)复用本页原评估入口：
 同种子起点/上一轮比较、逐层图与缺失分母；独立多核submit、可选Slurm `--begin`，
 以及新看守的评估截止唤醒。源码合并不更新运行中的RL节点，采用时记录新部署。
+
+
+### GPU 排队与长分配
+
+RL 仍用 `tools/friday/rl.py launch`。`--ready-seconds` 只从原 GPU 作业真实
+RUNNING 后开始算；已有 plan 也必须先确认作业仍 RUNNING 才能提交 CPU actor。
+GPU 提前退出保留原请求与 STOP，不自动重投。排队本身不消费就绪窗口。
+
+`--minutes` 可显式申请到2160分钟（36h），申请时限不等于训练或使用预算授权。
+默认仍拒绝账户已有 GPU 作业；只有显式 `--alongside-job <id>` 才允许一个已核的
+opposite 型号 `rl4-learner` 单卡作业，最多一个 A100 和一个 A30，不接受同型、多个或不明作业。
+`--reserve-only` 只提交明确的分配脚本，不开 learner、不给 CPU actor 发任务；
+收据 `reservation_only=true` 不能当训练或G1通过。
+
+需要留卡时，分配脚本可调用 `tools/friday/gpu_session.py --root <private-new-dir>`。
+它只阻塞持有原 Slurm batch allocation，不训练、不伪造 GPU 负载、不写 capability。
+阶段使用原 `srun --jobid <id>`，在该 step 内走原环境加载器、resource-slot 与 learn。
+分配脚本应初始化该分配唯一 `SPIREAGENT_SLOT_ROOT` 并指向原 GAME-SLOT；收据记录其非秘密路径。
+各阶段先按正常 Stop/CP/Actor 原件收口，再 `scancel --signal=USR1 --batch <id>` 释放持有者。
+Slurm 硬时限到达仍会结束整个作业；持有程序不延长时限，运行中增加时限可能需要管理员权限。
+累计GPU预算、闲置2h预期和下一阶段负责人仍按当前任务/原槽位账本检查，不能由此入口推定新授权。
