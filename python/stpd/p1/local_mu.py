@@ -39,6 +39,12 @@ class LocalMuScorer:
     def __init__(self, exchange: Any, cache: Path, *, cache_bytes: int = 64 * 1024**2,
                  max_snapshots: int = 2) -> None:
         single_cpu_thread()
+        # One actor owns this CPU inference process. The fused MHA/encoder
+        # shortcut is slower than the ordinary SDPA path for these small,
+        # masked single-observation batches (measured on Friday AVX2 and M4).
+        # This file is in adapter_identity(), so a new grant binds the choice;
+        # existing immutable snapshots are never relabelled or hot-swapped.
+        torch.backends.mha.set_fastpath_enabled(False)
         self.exchange, self.cache_root = exchange, cache
         cache.mkdir(parents=True, exist_ok=True)
         self.text_cache = TextVectorCache(limit=cache_bytes)
@@ -197,6 +203,7 @@ class LocalMuScorer:
                 "p95": sample[min(len(sample) - 1, int(len(sample) * .95))] if sample else None}
             return {"threads": torch.get_num_threads(),
                     "interop_threads": torch.get_num_interop_threads(),
+                    "mha_fastpath": torch.backends.mha.get_fastpath_enabled(),
                     "scoring_threads": sorted(self.scoring_threads),
                     "resident_mu": len(self.models), "retained": dict(self.references),
                     "load_seconds": self.load_seconds, "requests": self.requests,

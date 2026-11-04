@@ -115,6 +115,12 @@ lr、四头系数、熵、clip/KL、λ、minibatch/轮数、aux行数与成功�
 
 ## 冻结身份和 μ
 
+Actor 的 CPU scorer 固定 1 个算子线程和 1 个 interop 线程，并关闭 Torch 的 MHA
+融合推理快路径，使用普通 SDPA 路径；同输入实测的选择与整路收益分别报告。
+这项进程级设置只在本地 CPU scorer 创建时应用，不改变独立 learner 或中央 CUDA scorer。
+Actor summary 的 `local_mu.mha_fastpath` 记录实际开关；选择包含在 adapter 的源码身份中，
+采用新源码须重新发布对应 μ，不热换正在运行的旧组合。
+
 μ 仍是完整 model 包及独立 `stpd/rl-behavior-heads-1` checkpoint；snapshot hash 绑定
 weights、heads、projection、adapter 和数值配置。`export.adapter_identity()` 的代码闭包包含
 `local_mu.py`。文字可训练；缓存 namespace 随实际 μ、文字权重和输入身份变化，不把文字冻结作加速。
