@@ -284,7 +284,8 @@ def test_terminal_battle_hp_uses_public_terminal_even_if_combat_span_remains_ope
         "combat_spans": [{"start_observation_index": 0, "end_observation_index": None}],
         "steps": [{"index": i, "observation_index": i} for i in range(2)],
     }
-    segments = [{"start_step": 0, "rows": 2, "segment_artifact_id": "original-segment"}]
+    segments = [{"start_step": 0, "rows": 2, "segment_id": "actor/0",
+                 "training_generation": "g-unit"}]
     result = completed_auxiliary(episode, segments, {"class": 3, "reward": 0.01})
     assert [row["hp"] for row in result["hp_battles"][0]["states"]] == [0.0, 0.0]
     observations[-1]["observation"]["player"]["content"]["hp"] = None

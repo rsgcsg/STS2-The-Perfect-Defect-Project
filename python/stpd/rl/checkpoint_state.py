@@ -15,12 +15,12 @@ from dataclasses import asdict, dataclass
 from typing import Any
 
 import torch
-from spireagent.rl_contracts import RunSequence
 from torch import Tensor
 
-# Internal CPU handoff encoding. I1 owns assigning/registering the public CP
-# schema number; this deliberately does not emit an unregistered public version.
-SCHEMA = "stpd/rl-self-contained-checkpoint"
+from spireagent.rl_contracts import RunSequence
+
+# RL4.1 self-contained format, registered in the shared VERSION-SLOT before publication.
+SCHEMA = "stpd/rl-segment-checkpoint-2"
 
 
 # W1 owns this payload; W3 transports the completed CP through original Store/R2.

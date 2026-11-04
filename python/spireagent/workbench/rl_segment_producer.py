@@ -142,11 +142,13 @@ class SegmentAssembler:
         step_limit: int = 64,
         compiler: FrameCompiler,
         scorer: LocalMuScorer,
+        generation_discarded: Callable[[str], bool],
     ) -> None:
         self.identity, self.barrier, self.commit_segment = identity, barrier, commit
         self.step_limit = step_limit
         self.compiler = compiler
         self.scorer = scorer
+        self.generation_discarded = generation_discarded
         if compiler is None or scorer is None:
             raise BoundaryError("rl_segment", "hot_segment_compiler_and_local_mu_required")
         self.retained_mu: str | None = None
@@ -240,6 +242,7 @@ class SegmentAssembler:
                         "start_step": self.battle_start,
                         "end_step": self.battle_end,
                         "hp": hp / 100,
+                        "post_hp": hp,
                         "boundary_step_index": row["step_index"],
                         "boundary_acquisition_id": row["successor"]["acquisition_id"],
                         "boundary_input_sha256": hashlib.sha256(
@@ -266,6 +269,8 @@ class SegmentAssembler:
         for battle in self.hp_pending:
             states = []
             for previous in self.committed:
+                if previous.get("discarded_on_restore"):
+                    continue
                 if (
                     previous["training_generation"]
                     != self.steps[0]["behavior"]["mu"]["training_generation"]
@@ -276,9 +281,10 @@ class SegmentAssembler:
                     if battle["start_step"] <= index < battle["end_step"]:
                         states.append(
                             {
-                                "key": f"{self.steps[0]['run_id']}:{index}",
-                                "segment_artifact_id": previous["segment_artifact_id"],
-                                "row": local,
+                                "source": {"run_id": self.steps[0]["run_id"],
+                                    "segment_id": previous["segment_id"],
+                                    "training_generation": previous["training_generation"],
+                                    "row": local, "key": f"{self.steps[0]['run_id']}:{index}"},
                                 "hp": battle["hp"],
                             }
                         )
@@ -286,12 +292,16 @@ class SegmentAssembler:
                 if battle["start_step"] <= step["step_index"] < battle["end_step"]:
                     states.append(
                         {
-                            "key": f"{step['run_id']}:{step['step_index']}",
-                            "current_row": local,
+                            "source": {"run_id": step["run_id"],
+                                "segment_id": step["behavior"]["lease"],
+                                "training_generation": step["behavior"]["mu"][
+                                    "training_generation"],
+                                "row": local, "key": f"{step['run_id']}:{step['step_index']}"},
                             "hp": battle["hp"],
                         }
                     )
-            battles.append({**battle, "states": states})
+            battles.append({**{key: item for key, item in battle.items() if key != "hp"},
+                            "post_hp": battle["post_hp"], "states": states})
         original_commit, original_bytes = self.barrier.commit(
             self.steps, trace_through_bytes=self.trace_end
         )
@@ -308,6 +318,7 @@ class SegmentAssembler:
             "original_commit": original_commit,
             "previous_segment_artifact_id": (
                 self.committed[-1]["segment_artifact_id"] if self.committed
+                and not self.committed[-1].get("discarded_on_restore")
                 and self.committed[-1]["training_generation"]
                 == self.steps[0]["behavior"]["mu"]["training_generation"] else None
             ),
@@ -317,7 +328,7 @@ class SegmentAssembler:
                 self.steps[-1]["successor"]["observation"]) if terminal is None else None))
         value.update(run=value["mu"]["run"],
                      training_generation=value["mu"]["training_generation"], bootstrap=None)
-        if terminal is None:
+        if terminal is None and not self.generation_discarded(value["training_generation"]):
             successor = self.steps[-1]["successor"]
             floor = ((successor["observation"].get("run") or {}).get("content") or {}).get(
                 "floor"
@@ -325,11 +336,17 @@ class SegmentAssembler:
             floor = max(self.max_floor, floor if type(floor) is int else 0)
             if value.get("compiled_boundary") is None:
                 raise BoundaryError("rl_segment", "compiled_bootstrap_required")
-            scored = self.scorer.score_compiled(value["mu"]["snapshot_sha256"],
-                value["compiled_boundary"], floor, policy=False)
-            if scored.snapshot_sha256 != value["mu"]["snapshot_sha256"]:
+            try:
+                scored = self.scorer.score_compiled(value["mu"]["snapshot_sha256"],
+                    value["compiled_boundary"], floor, policy=False)
+            except (OSError, EOFError, TimeoutError, ValueError, BoundaryError):
+                if not self.generation_discarded(value["training_generation"]):
+                    raise
+                scored = None  # explicitly discarded; never delivered as a trainable segment
+            if scored is not None and scored.snapshot_sha256 != value["mu"]["snapshot_sha256"]:
                 raise BoundaryError("rl_segment", "bootstrap_mu_changed")
-            value["bootstrap"] = {"mu_snapshot_sha256": scored.snapshot_sha256,
+            if scored is not None:
+                value["bootstrap"] = {"mu_snapshot_sha256": scored.snapshot_sha256,
                 "successor_input_sha256": hashlib.sha256(input_bytes(successor)).hexdigest(),
                 "floor": floor, "outcome_probabilities": list(scored.outcome_probabilities)}
         result = self.commit_segment(value, original_bytes)
@@ -378,10 +395,11 @@ class LiveSegmentProducer:
         step_limit: int = 64,
         compiler: FrameCompiler,
         scorer: LocalMuScorer,
+        generation_discarded: Callable[[str], bool],
     ) -> None:
         self.assembler = SegmentAssembler(
             identity, OriginalBarrier(run, trace), commit, step_limit=step_limit, compiler=compiler,
-            scorer=scorer
+            scorer=scorer, generation_discarded=generation_discarded
         )
         self.error: BaseException | None = None
         self.report: dict[str, Any] | None = None
@@ -452,12 +470,15 @@ def completed_auxiliary(
 
     references = {}
     for segment in segments:
+        if segment.get("discarded_on_restore"):
+            continue
         for local in range(segment["rows"]):
-            references[segment["start_step"] + local] = {
+            references[segment["start_step"] + local] = {"source": {
+                "run_id": episode["run_id"], "segment_id": segment["segment_id"],
+                "training_generation": segment["training_generation"],
                 "key": f"{episode['run_id']}:{segment['start_step'] + local}",
-                "segment_artifact_id": segment["segment_artifact_id"],
                 "row": local,
-            }
+            }}
     outcomes = []
     if terminal is not None:
         keys = sorted(references)
@@ -563,15 +584,25 @@ class SegmentManagedExecutor(PipelinedManagedExecutor):
                 run=self.exchange.run,
                 training_generation=connection.attachment["training_generation"],
             )
+        if generations:
+            fields["segments"] = [segment for segment in fields["segments"]
+                if segment["training_generation"] == fields["training_generation"]
+                and not segment.get("discarded_on_restore")]
         original = self.exchange.persist_episode_end(fields, self.producer)
         result: dict[str, Any] = connection.request("episode_end",
             **{key: value for key, value in original.items() if key != "operation"})
+        if result.get("reason") == "generation_changed":
+            self.exchange.publish_event("input_disposition", stage="discarded_on_restore",
+                training_generation=fields["training_generation"],
+                request_key=original.get("request_key"),
+                run_id=fields["run_id"], operation="episode_end")
         return result
 
     def _release_episode_payloads(self, observer: LiveSegmentProducer) -> None:
         owner = "episode:" + observer.assembler.identity["intent_id"]
         for segment in observer.assembler.committed:
-            self.exchange.release_hot_payload(segment["payload"], owner)
+            if segment.get("payload") is not None:
+                self.exchange.release_hot_payload(segment["payload"], owner)
 
     def __call__(
         self, row: dict[str, Any], manifest: dict[str, Any], artifacts: Any, checkpoint: Any
@@ -666,6 +697,59 @@ class SegmentManagedExecutor(PipelinedManagedExecutor):
             {AUTH_ENV: os.environ[AUTH_ENV]},
         )
 
+    def _discard_hot_segment(self, segment: dict[str, Any]) -> dict[str, Any]:
+        self.exchange.publish_event("input_disposition", stage="discarded_on_restore",
+            training_generation=segment["training_generation"],
+            segment_id=segment["segment_id"], original_commit=segment["original_commit"])
+        self.admission.release_discarded_lease(
+            segment["training_generation"], segment["segment_id"])
+        return {"training_generation": segment["training_generation"],
+                "discarded_on_restore": True, "original_commit": segment["original_commit"]}
+
+    def _commit_hot_segment(self, row: dict[str, Any], connection: Any,
+                            segment: dict[str, Any]) -> dict[str, Any]:
+        if self.exchange.hot_generation_discarded(segment["training_generation"]):
+            return self._discard_hot_segment(segment)
+        # No archive/compressed duplicate/Store manifest on the training edge.
+        began = time.perf_counter()
+        costs: dict[str, float] = {}
+        try:
+            payload = self.exchange.put_hot_segment(
+                segment, owner="episode:" + row["intent_id"], costs=costs
+            )
+        except BoundaryError as error:
+            if error.code != "hot_generation_discarded_on_restore":
+                raise
+            return self._discard_hot_segment(segment)
+        hot_write = time.perf_counter() - began
+        record = {key: segment[key] for key in (
+            "run", "training_generation", "segment_id", "run_id", "rows", "mu")}
+        record.update(payload=asdict(payload), segment_artifact_id="hot:" + payload.slot)
+        sequence = int(segment["segment_id"].rpartition("/")[2])
+        began = time.perf_counter()
+        self.exchange.publish_segment(self.actor, sequence, record)
+        record_write = time.perf_counter() - began
+        began = time.perf_counter()
+        accepted = connection.request("commit", **record)
+        if accepted.get("reason") == "generation_changed":
+            self.exchange.publish_event(
+                "input_disposition",
+                stage="discarded_on_restore",
+                training_generation=segment["training_generation"],
+                segment_id=segment["segment_id"],
+                payload=asdict(payload),
+            )
+        elif accepted.get("segment_id") != segment["segment_id"]:
+            raise BoundaryError("rl_segment", "segment_admission_receipt_changed")
+        return {"segment_artifact_id": "hot:" + payload.slot, "payload": asdict(payload),
+                "training_generation": segment["training_generation"],
+                "original_commit": segment["original_commit"],
+                "discarded_on_restore": accepted.get("reason") == "generation_changed",
+                "cost_seconds": {**segment["original_commit"]["cost_seconds"], **costs,
+                    "hot_write": hot_write, "control_record": record_write,
+                    "commit_ack": time.perf_counter() - began},
+                "hot_bytes": payload.size}
+
     def _runtime_started(
         self, startup: dict[str, Any], row: dict[str, Any], artifacts: Any, registration: Path
     ) -> LiveSegmentProducer:
@@ -684,41 +768,8 @@ class SegmentManagedExecutor(PipelinedManagedExecutor):
             "initial_progress_sha256": self.configuration["initial_progress"]["progress_sha256"],
         }
 
-        def commit(segment: dict[str, Any], originals: bytes) -> dict[str, Any]:
-            # No archive/compressed duplicate/Store manifest on the training edge.
-            began = time.perf_counter()
-            costs: dict[str, float] = {}
-            payload = self.exchange.put_hot_segment(
-                segment, owner="episode:" + row["intent_id"], costs=costs
-            )
-            hot_write = time.perf_counter() - began
-            record = {key: segment[key] for key in (
-                "run", "training_generation", "segment_id", "run_id", "rows", "mu")}
-            record.update(payload=asdict(payload), segment_artifact_id="hot:" + payload.slot)
-            sequence = int(segment["segment_id"].rpartition("/")[2])
-            began = time.perf_counter()
-            self.exchange.publish_segment(self.actor, sequence, record)
-            record_write = time.perf_counter() - began
-            began = time.perf_counter()
-            accepted = connection.request("commit", **record)
-            if accepted.get("generation_changed"):
-                self.exchange.publish_event(
-                    "input_disposition",
-                    stage="discarded_on_restore",
-                    training_generation=segment["training_generation"],
-                    segment_id=segment["segment_id"],
-                    payload=asdict(payload),
-                )
-            elif accepted.get("segment_id") != segment["segment_id"]:
-                raise BoundaryError("rl_segment", "segment_admission_receipt_changed")
-            return {"segment_artifact_id": "hot:" + payload.slot, "payload": asdict(payload),
-                    "training_generation": segment["training_generation"],
-                    "original_commit": segment["original_commit"],
-                    "discarded_on_restore": accepted.get("generation_changed") is True,
-                    "cost_seconds": {**segment["original_commit"]["cost_seconds"], **costs,
-                        "hot_write": hot_write, "control_record": record_write,
-                        "commit_ack": time.perf_counter() - began},
-                    "hot_bytes": payload.size}
+        def commit(segment: dict[str, Any], _originals: bytes) -> dict[str, Any]:
+            return self._commit_hot_segment(row, connection, segment)
 
         observer = LiveSegmentProducer(
             self.runtime,
@@ -730,6 +781,7 @@ class SegmentManagedExecutor(PipelinedManagedExecutor):
             step_limit=self.attachment["segment_steps"],
             compiler=FrameCompiler(self.attachment["vocabulary"]),
             scorer=self.admission.scorer,
+            generation_discarded=self.exchange.hot_generation_discarded,
         )
         self.new_originals[startup["run_id"]] = (
             artifacts.root / "runs" / startup["run_id"], registration / "behavior-decisions.jsonl")

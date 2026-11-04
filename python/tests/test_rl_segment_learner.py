@@ -6,12 +6,13 @@ import dataclasses
 import threading
 
 import pytest
+from test_rl41_w1 import assert_tree, configuration, deliver
+
 from spireagent.json_boundary import BoundaryError
 from spireagent.rl_exchange import Exchange
 from spireagent.storage.store import copy_artifact
 from stpd.rl.checkpoint_state import decode_state
 from stpd.rl.segment_learner import SegmentLearner
-from test_rl41_w1 import assert_tree, configuration, deliver
 
 
 def cleanup(learner):
@@ -189,10 +190,11 @@ def test_episode_end_wakes_capacity_waiter_without_orphan_grant(tmp_path, monkey
 def test_reward_HP_backfills_cross_segment_rows_before_episode_end(tmp_path, monkeypatch):
     import copy
 
+    from test_rl41_w1 import segment
+
     from stpd.p1.data import digest, json_bytes
     from stpd.p1.frame_compiler import FrameCompiler
     from stpd.p1.local_mu import LocalMuScorer
-    from test_rl41_w1 import segment
 
     config, io = configuration(tmp_path, monkeypatch)
     config = dataclasses.replace(
@@ -242,15 +244,17 @@ def test_reward_HP_backfills_cross_segment_rows_before_episode_end(tmp_path, mon
                 )
                 states = [
                     {
-                        "key": f"{base['episode']}:{i}",
-                        "segment_artifact_id": "hot:" + payloads[0].slot,
-                        "row": i,
+                        "source": {"run_id": base["episode"], "segment_id": "a/0",
+                            "training_generation": owner.generation, "row": i,
+                            "key": f"{base['episode']}:{i}"},
                         "hp": 0.57,
                     }
                     for i in range(2)
                 ]
                 states += [
-                    {"key": f"{base['episode']}:{i + 2}", "current_row": i, "hp": 0.57}
+                    {"source": {"run_id": base["episode"], "segment_id": "a/1",
+                        "training_generation": owner.generation, "row": i,
+                        "key": f"{base['episode']}:{i + 2}"}, "hp": 0.57}
                     for i in range(2)
                 ]
                 value["hp_battles"] = [
@@ -259,7 +263,7 @@ def test_reward_HP_backfills_cross_segment_rows_before_episode_end(tmp_path, mon
                         "states": states,
                         "start_step": 0,
                         "end_step": 4,
-                        "hp": 0.57,
+                        "post_hp": 57,
                         "boundary_step_index": 3,
                         "boundary_acquisition_id": successor["acquisition_id"],
                         "boundary_input_sha256": digest(json_bytes(successor)),

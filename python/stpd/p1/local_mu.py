@@ -188,10 +188,80 @@ class LocalMuScorer:
                     "score_seconds": self.score_seconds, "text_cache": self.text_cache.report()}
 
 
+class RemoteMuScorer:
+    """Explicit central alternative, sharing the same frozen-mu/tail interface."""
+
+    def __init__(self, attachment: dict[str, Any]) -> None:
+        self.attachment = copy.deepcopy(attachment)
+        self.identities: dict[str, dict[str, Any]] = {}
+        self.references: dict[str, int] = {}
+        self.lock = threading.RLock()
+        self.requests = 0
+
+    def adopt(self, identity: dict[str, Any]) -> None:
+        with self.lock:
+            key = identity["snapshot_sha256"]
+            if key in self.identities and self.identities[key] != identity:
+                raise ValueError("same_mu_identity_changed")
+            self.identities = {k: v for k, v in self.identities.items()
+                               if k == key or self.references.get(k, 0)}
+            self.identities[key] = copy.deepcopy(identity)
+
+    def retain_mu(self, snapshot_sha256: str) -> None:
+        with self.lock:
+            if snapshot_sha256 not in self.identities:
+                raise ValueError("central_mu_not_adopted")
+            self.references[snapshot_sha256] = self.references.get(snapshot_sha256, 0) + 1
+
+    def release_mu(self, snapshot_sha256: str) -> None:
+        with self.lock:
+            count = self.references[snapshot_sha256]
+            if count == 1:
+                del self.references[snapshot_sha256]
+            else:
+                self.references[snapshot_sha256] = count - 1
+
+    def score_compiled(self, snapshot_sha256: str, frame_wire: dict[str, Any], floor: int,
+                       *, policy: bool) -> MuScore:
+        from spireagent.json_boundary import BoundaryError
+
+        generation = self.identities[snapshot_sha256]["training_generation"]
+        with SegmentConnection(self.attachment) as remote:
+            if not policy:
+                # A tail may outlive a learner. Reconnect a read first; never
+                # resend an unknown score to a replacement that has no old mu.
+                status = remote.request("status")
+                if status["training_generation"] != generation:
+                    raise BoundaryError("rl_mu", "generation_changed")
+            try:
+                result = remote.request("score", snapshot_sha256=snapshot_sha256,
+                    compiled_input=frame_wire, floor=floor, policy=policy,
+                    input_projection=self.identities[snapshot_sha256]["projection"])
+            except (OSError, EOFError, TimeoutError):
+                status = remote.request("status")
+                if status["training_generation"] != generation:
+                    raise BoundaryError("rl_mu", "generation_changed") from None
+                raise
+        if result["mu"] != self.identities[snapshot_sha256]:
+            raise ValueError("central_mu_score_identity_changed")
+        with self.lock:
+            self.requests += 1
+        return MuScore(snapshot_sha256, tuple(result["scores"]) if policy else None,
+                       tuple(result["outcome_probabilities"]))
+
+    def report(self) -> dict[str, Any]:
+        with self.lock:
+            return {"backend": "central", "requests": self.requests,
+                    "retained": dict(self.references)}
+
+    def close(self) -> None:
+        pass
+
+
 class ActorInferencePool(SegmentInferencePool):
     """One actor process serves its Agent over loopback and proxies control only."""
 
-    def __init__(self, remote: SegmentConnection, scorer: LocalMuScorer) -> None:
+    def __init__(self, remote: SegmentConnection, scorer: LocalMuScorer | RemoteMuScorer) -> None:
         attachment = remote.attachment
         self.remote_attachment = copy.deepcopy(attachment)
         self.scorer = scorer
@@ -267,6 +337,14 @@ class ActorInferencePool(SegmentInferencePool):
                         del self.leases[lease]
         return result
 
+    def release_discarded_lease(self, generation: str, lease: str) -> None:
+        # This comes from the producer after it has observed explicit restore
+        # revocation. A later grant alone is not proof the observer has read old rows.
+        with self.controls:
+            held = self.leases.pop((generation, lease), None)
+            if held is not None:
+                self.scorer.release_mu(held[0])
+
     def close(self) -> dict[str, Any]:
         self.scorer.close()
         return super().close()
@@ -278,3 +356,7 @@ class ActorControlConnection(SegmentConnection):
     def __init__(self, pool: ActorInferencePool) -> None:
         super().__init__(pool.attachment())
         self.scorer = pool.scorer
+        self.pool = pool
+
+    def release_discarded_lease(self, generation: str, lease: str) -> None:
+        self.pool.release_discarded_lease(generation, lease)

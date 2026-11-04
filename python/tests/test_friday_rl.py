@@ -572,8 +572,10 @@ def test_gpu_owner_hands_transient_auth_to_original_cpu_submission_only(
     learning['segments'] = {'steps': 64, 'inference_batch': 32}
     learning['actor_defaults']['behavior']['uniform_mix'] = 0
     configuration.write_text(json.dumps(learning))
-    config = SimpleNamespace(device='cuda', segments=SimpleNamespace(
-        inference_batch=32, dataset_rows=1024, episode_rows=128), wall_seconds=3600)
+    from stpd.rl.segments import SegmentConfig
+
+    config = LearnerConfig(run=learning['run'], peer=learning['peer'], device='cuda',
+        segments=SegmentConfig(), wall_seconds=3600)
     monkeypatch.setattr(LearnerConfig, 'read', lambda _: config)
     monkeypatch.setattr(resource_slot, 'require_managed_slot', lambda: None)
     monkeypatch.setattr(rl, 'require_modules', lambda _: None)

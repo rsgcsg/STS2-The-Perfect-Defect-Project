@@ -233,7 +233,7 @@ class Exchange:
         store.put_if_absent(ref.slot + ".json", raw)
         with self._hot_lock(ref):
             if store._path(f"{self.run}/{training_generation}/discarded.json").exists():
-                store._path(ref.slot + ".json").unlink()
+                store._path(ref.slot + ".json").unlink(missing_ok=True)
                 reject("hot_generation_discarded_on_restore")
             store.put_if_absent(ref.slot + ".owners.json", json_bytes(
                 {"payload": asdict(ref), "owners": [owner]}))
@@ -335,6 +335,11 @@ class Exchange:
         return {"payloads": len(paths), "bytes": sum(p.stat().st_size for p in paths),
                 "references": sum(len(s["owners"]) for s in states)}
 
+    def hot_generation_discarded(self, training_generation: str) -> bool:
+        ref = _hot_ref(HotPayloadRef(f"{self.run}/{training_generation}/restore", "0" * 64, 1))
+        return self._hot_store()._path(
+            "/".join(ref.slot.split("/")[:2]) + "/discarded.json").exists()
+
     def discard_hot_generation(self, training_generation: str) -> dict[str, int]:
         """CP-only restore, after the old prepare/SGD owners have stopped.
 
@@ -358,12 +363,11 @@ class Exchange:
                 path.unlink()  # Includes a crashed put's new, not-yet-referenced slot.
             for key, _state in states:
                 store._path(key).unlink()
-        for record in self.input_records(0, training_generation=training_generation):
-            fact = self.read_input(record)
-            if fact["request"]["operation"] == "commit":
-                self.publish_event("input_disposition", stage="discarded_on_restore",
-                    request_key=record["request_key"], training_generation=training_generation,
-                    sequence=record["sequence"])
+        # CP-only recovery must not read an archived input log. This one
+        # generation disposition revokes transient hot state; original per-input
+        # ACK/used facts stay immutable and queryable under their original keys.
+        self.publish_event("input_disposition", stage="discarded_on_restore",
+            training_generation=training_generation, scope="hot_generation", **result)
         return result
 
     # One append-only input log; request keys are indexes into these same facts.

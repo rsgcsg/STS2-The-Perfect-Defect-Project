@@ -26,13 +26,13 @@ from pathlib import Path
 from typing import Any, Literal
 
 import torch
+
 from spireagent.artifact_contracts import Manifest, Parent
 from spireagent.json_boundary import BoundaryError, FrozenObject, json_bytes
 from spireagent.rl_contracts import HotPayloadRef, RunSequence
 from spireagent.rl_exchange import Exchange, control_input
 from spireagent.rl_tensorboard import TensorBoardMetrics
 from spireagent.source import source_identity
-
 from stpd.p1.data import json_bytes as p1_json_bytes
 from stpd.p1.export import (
     adapter_identity,
@@ -42,7 +42,7 @@ from stpd.p1.export import (
     runtime_projection,
 )
 from stpd.p1.frame_compiler import FrameCompiler
-from stpd.p1.local_inference import SegmentInferencePool
+from stpd.p1.local_inference import CentralInferencePool, create_segment_inference_pool
 from stpd.p1.model import MStd
 from stpd.workers.checkpoint_codec import decode_checkpoint, encode_checkpoint
 from stpd.workers.training_io import CheckpointPublisher, FrozenCheckpoint
@@ -280,6 +280,7 @@ class SegmentLearner:
         self.timing = {
             "preparation_wait_seconds": 0.0,
             "preparation_seconds": 0.0,
+            "prepared_batches": 0.0,
             "optimizer_attempt_seconds": 0.0,
             "snapshot_seconds": 0.0,
             "waiting_for_data_seconds": 0.0,
@@ -299,6 +300,19 @@ class SegmentLearner:
                 or restored.producer != (config.resume_source or self.producer.to_dict())
             ):
                 raise ValueError("self_contained_resume_source_config_or_generation_changed")
+            # Caller has stopped the old learner/preparers. This only revokes
+            # the old generation's new hot slots, never original CAS/assets.
+            discarded_generations = {restored.identity.training_generation}
+            if settings.rendezvous_path and Path(settings.rendezvous_path).exists():
+                previous_attachment = json.loads(Path(settings.rendezvous_path).read_bytes())
+                if previous_attachment["run"] != config.run:
+                    raise ValueError("restore_rendezvous_run_changed")
+                previous_generation = previous_attachment["training_generation"]
+                if previous_generation == self.generation:
+                    raise ValueError("restore_requires_fresh_training_generation")
+                discarded_generations.add(previous_generation)
+            for generation in sorted(discarded_generations):
+                self.exchange.discard_hot_generation(generation)
             self.model = construct_model(restored.construction)
             self.model.load_state_dict(restored.weights, strict=True)
         else:
@@ -381,6 +395,12 @@ class SegmentLearner:
             if config.tensorboard_steps
             else None
         )
+        # One private CPU template is constructed at initialization. Background
+        # publication deep-copies it without touching global RNG or live theta.
+        self.central_template = (
+            copy.deepcopy(self.model).cpu().eval().requires_grad_(False)
+            if settings.central_scoring else None
+        )
         # First publication is initialization, outside the training loop. Restores
         # always publish from embedded theta, never fetch an old mu/start package.
         if restored is not None:
@@ -389,10 +409,14 @@ class SegmentLearner:
             self._capture_model(), self.version, self.updates
         ).result()
         self.published_updates = initial["updates"]
-        self.pool = SegmentInferencePool(
+        self.pool = create_segment_inference_pool(
             self.model.vocabulary,
             initial["identity"],
             control=self.control,
+            central_scoring=settings.central_scoring,
+            model=initial.get("model"),
+            max_batch=settings.inference_batch,
+            window_ms=settings.inference_window_ms,
             segment_steps=settings.steps,
             compiler_identity=self.compiler_identity,
         )
@@ -505,7 +529,7 @@ class SegmentLearner:
     def _submit_publication(
         self, snapshot: dict[str, Any], version: int, updates: int
     ) -> Future[Any]:
-        return self.publisher.submit(
+        published = self.publisher.submit(
             _publish_snapshot,
             pack_transport(snapshot),
             peer=self.config.peer,
@@ -517,6 +541,31 @@ class SegmentLearner:
             publish_model=self.io.publish_model,
             work=str(self.work),
         )
+        if not self.settings.central_scoring:
+            return published
+        return self.telemetry.submit(self._central_publication, published, snapshot)
+
+    def _central_publication(
+        self, published: Future[Any], snapshot: dict[str, Any]
+    ) -> dict[str, Any]:
+        result = published.result()
+        if self.central_template is None:
+            raise ValueError("central_publication_requires_explicit_backend")
+        model = copy.deepcopy(self.central_template)
+        model.load_state_dict(snapshot["weights"], strict=True)
+        from stpd.p1.execution import MStdExecution
+
+        model.execution = MStdExecution.decode(result["identity"]["execution"])
+        model.eval().requires_grad_(False)
+        model.deduplicate_text = snapshot["deduplicate_text"]
+        if self.device.type == "cuda":
+            stream = torch.cuda.Stream(device=self.device)
+            with torch.cuda.stream(stream):
+                model.to(self.device)
+            stream.synchronize()  # worker wait; never the learner's training lock
+        else:
+            model.to(self.device)
+        return {**result, "model": model}
 
     def _kick_publication(self) -> None:
         if self.pending_publication is None and self.latest_snapshot is not None:
@@ -532,7 +581,10 @@ class SegmentLearner:
                 return
             publication = self.pending_publication.result()
             with self.condition:
-                self.pool.publish(publication["identity"])
+                if isinstance(self.pool, CentralInferencePool):
+                    self.pool.publish(publication["model"], publication["identity"])
+                else:
+                    self.pool.publish(publication["identity"])
                 self.published_updates = publication["updates"]
                 self.pending_publication = None
                 self.pool.retire(
@@ -733,12 +785,18 @@ class SegmentLearner:
             if f"{request['actor']}:{request['episode']}" not in self.actor_episodes:
                 raise ValueError("episode_end_without_open")
             members = self._members_for_run(request["run_id"])
+            request_hash = hashlib.sha256(json_bytes(request)).hexdigest()
         # No condition/GPU lock while source/label validation runs in a CPU worker.
         groups = self.input_preparer.pool.submit(verify_auxiliary, request, members).result()
         with self.condition:
             duplicate = self._receipt(request)
             if duplicate is not None:
                 return duplicate
+
+            if (f"{request['actor']}:{request['episode']}" not in self.actor_episodes
+                    or members != self._members_for_run(request["run_id"])
+                    or hashlib.sha256(json_bytes(request)).hexdigest() != request_hash):
+                raise ValueError("episode_end_source_or_owner_changed_during_validation")
 
             def end() -> None:
                 self._add_auxiliary(groups)
@@ -888,6 +946,7 @@ class SegmentLearner:
         batch = future.result()
         self.timing["preparation_wait_seconds"] += time.perf_counter() - began
         self.timing["preparation_seconds"] += batch.timings["request_wall_seconds"]
+        self.timing["prepared_batches"] += 1
         if not active["taken"]:
             with self.condition:
                 if self.queue.dataset() != active["segments"]:

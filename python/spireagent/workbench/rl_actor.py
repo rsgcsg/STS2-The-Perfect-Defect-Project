@@ -51,8 +51,10 @@ def _cpu_seconds() -> float:
 class ModelPrefetch:
     """Background: notice newer versions and materialize them; play never waits on this."""
 
-    def __init__(self, exchange: Exchange, cache: Path, poll_seconds: float) -> None:
+    def __init__(self, exchange: Exchange, cache: Path, poll_seconds: float, *,
+                 training_generation: str | None = None) -> None:
         self.exchange, self.cache, self.poll_seconds = exchange, cache, poll_seconds
+        self.training_generation = training_generation
         self.ready: dict[int, tuple[dict[str, Any], Path]] = {}
         self.fetch_seconds: list[float] = []
         self.error: dict[str, Any] | None = None
@@ -70,7 +72,8 @@ class ModelPrefetch:
 
     def refresh(self) -> None:
         self.operation = "latest_model"
-        latest = self.exchange.latest_model()
+        latest = (self.exchange.latest_model(training_generation=self.training_generation)
+                  if self.training_generation is not None else self.exchange.latest_model())
         if latest is None:
             return
         with self.lock:
@@ -144,8 +147,12 @@ class Actor:
         self.name = configuration["actor"]
         if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,62}", self.name):
             reject("invalid_actor_name")
+        generation = (configuration["segments"]["inference"].get("training_generation")
+                      if self.segment_mode else None)
+        if self.segment_mode and not isinstance(generation, str):
+            reject("explicit_segment_training_generation_required")
         self.prefetch = ModelPrefetch(self.exchange, work / "models",
-                                      configuration.get("model_poll_seconds", 5))
+            configuration.get("model_poll_seconds", 5), training_generation=generation)
         self.executor: Any = None
         self.executor_version: int | None = None
         self.sequence = len(self.exchange.blobs.keys(
@@ -164,12 +171,18 @@ class Actor:
         self.service = None
         if self.segment_mode:
             from stpd.p1.local_inference import SegmentConnection
-            from stpd.p1.local_mu import ActorControlConnection, ActorInferencePool, LocalMuScorer
+            from stpd.p1.local_mu import (
+                ActorControlConnection,
+                ActorInferencePool,
+                LocalMuScorer,
+                RemoteMuScorer,
+            )
 
             remote = dict(self.config["segments"]["inference"])
             if "rendezvous" in self.config["segments"]:
                 remote["rendezvous"] = self.config["segments"]["rendezvous"]
-            scorer = LocalMuScorer(self.exchange, work / "mu")
+            scorer = (RemoteMuScorer(remote) if remote.get("role") == "learner_central"
+                      else LocalMuScorer(self.exchange, work / "mu"))
             self.actor_pool = ActorInferencePool(SegmentConnection(remote), scorer)
             self.local_attachment = self.actor_pool.attachment()
             self.service = ActorControlConnection(self.actor_pool)

@@ -453,10 +453,10 @@ def learn(configuration: Path, work: Path, execution: Path, actors_output: Path,
     minimum_actors = ((settings.dataset_rows + settings.episode_rows - 1)
                       // settings.episode_rows) if settings is not None else 1
     if (sys.platform != 'linux' or not os.environ.get('SLURM_JOB_ID')
-            or config.device != 'cuda' or config.segments is None
+            or config.device not in {'cuda', 'cpu'} or config.segments is None
             or type(actors) is not int
             or not minimum_actors <= actors <= 200):
-        raise ValueError('allocated_Friday_GPU_and_bounded_segment_actor_count_required')
+        raise ValueError('allocated_Friday_learner_and_bounded_segment_actor_count_required')
     work = canonical_path(work, existing=False)
     canonical_path(actors_output, existing=False)
     if work.exists() or actors_output.exists():
@@ -478,13 +478,19 @@ def learn(configuration: Path, work: Path, execution: Path, actors_output: Path,
     previous = {number: signal.signal(number, stop)
                 for number in (signal.SIGTERM, signal.SIGINT, signal.SIGUSR1)}
     try:
+        from dataclasses import replace
+
+        # One stable path belongs to the launch, even when only learner/work is
+        # replaced. Preserve the inherited capability through the same launch.
+        config = replace(config, segments=replace(settings,
+            rendezvous_path=settings.rendezvous_path or str(work / 'inference.json')))
         learner = SegmentLearner(config, work,
             SegmentLearnerIO(read_segment, publish_detached_p1_model))
         try:
             prepare(execution, configuration, actors_output, actors=actors,
                 wall_seconds=int(config.wall_seconds)+600, episode_seconds=episode_seconds,
                 games_per_ledger=10, runtime_source=source, seed_namespace=seed_namespace,
-                segment_inference=work/'inference.json')
+                segment_inference=Path(config.segments.rendezvous_path))
             os.environ.update(learner.pool.environment())
             if not external_submit:
                 submit(actors_output/'plan.json', memory_gb=memory_gb)

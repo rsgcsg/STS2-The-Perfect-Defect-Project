@@ -21,9 +21,9 @@ from pathlib import Path
 from typing import Any, Literal, TypeVar, cast
 
 import torch
-from spireagent.rl_contracts import HotPayloadRef, RowRef
 from torch import Tensor
 
+from spireagent.rl_contracts import HotPayloadRef, RowRef
 from stpd.p1.export import input_spec, runtime_projection
 from stpd.p1.frame_compiler import FrameCompiler
 from stpd.p1.tensor_input import TensorFrame, joint_nodes, text_batch
@@ -220,22 +220,6 @@ def prepare_source(
         )
     decoded = time.perf_counter()
     p, targets, advantages = recorded_targets(segment)
-    battles = []
-    for battle in segment["hp_battles"]:
-        states = []
-        for state in battle["states"]:
-            if "current_row" in state:
-                row = state["current_row"]
-                if type(row) is not int or not 0 <= row < len(refs):
-                    raise ValueError("battle_hp_row_binding_changed")
-                current_ref = refs[row]
-                assert current_ref is not None
-                if state["key"] != current_ref["key"]:
-                    raise ValueError("battle_hp_row_binding_changed")
-                state = {key: value for key, value in state.items() if key != "current_row"}
-                state = {**state, "source": current_ref}
-            states.append(state)
-        battles.append({**battle, "states": states})
     return PreparedSource(
         segment["segment_id"],
         segment["run_id"],
@@ -256,7 +240,7 @@ def prepare_source(
             "segment_id": segment["segment_id"],
             "run_id": segment["run_id"],
             "terminal": segment["terminal"],
-            "hp_battles": battles,
+            "hp_battles": segment["hp_battles"],
         },
     )
 
@@ -989,14 +973,9 @@ def verify_auxiliary(
         return loaded[member.segment_id]
 
     def source(reference: dict[str, Any]) -> tuple[Any, dict[str, Any], int, dict[str, Any]]:
-        if "source" in reference:
-            ref = reference["source"]
-            member = by_segment[ref["segment_id"]]
-            index = ref["row"]
-            key = ref["key"]
-        else:
-            member = by_slot[reference["segment_artifact_id"].removeprefix("hot:")]
-            index, key = reference["row"], reference["key"]
+        ref = reference["source"]
+        member = by_segment[ref["segment_id"]]
+        index, key = ref["row"], ref["key"]
         segment = load(member)
         if type(index) is not int or not 0 <= index < segment["rows"]:
             raise ValueError("auxiliary_row_binding_changed")
@@ -1008,7 +987,7 @@ def verify_auxiliary(
             "row": index,
             "key": f"{segment['run_id']}:{step['step_index']}",
         }
-        if key != ref["key"] or ("source" in reference and reference["source"] != ref):
+        if key != ref["key"] or reference["source"] != ref:
             raise ValueError("auxiliary_row_binding_changed")
         return member, segment, index, ref
 

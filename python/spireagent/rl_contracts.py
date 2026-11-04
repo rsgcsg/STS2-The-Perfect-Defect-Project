@@ -10,7 +10,7 @@ from __future__ import annotations
 import hashlib
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, Literal, Protocol, TypedDict
+from typing import Any, Literal, NotRequired, Protocol, TypedDict
 
 from spireagent.json_boundary import json_bytes
 
@@ -106,7 +106,7 @@ class Behavior(TypedDict):
     queue_seconds: float
     server_seconds: float
     network_request: bool
-    clock_offset: float
+    clock_offset: dict[str, float] | None
     score_source: str
 
 
@@ -158,12 +158,14 @@ class HpRow(TypedDict):
 class HpBattle(TypedDict):
     battle_id: str
     states: list[HpRow]
-    post_hp: float
-    start_step: int
-    end_step: int
-    boundary_acquisition_id: str
-    boundary_step_index: int
-    boundary_input_sha256: str  # confirmed public successor bound by original segment proof
+    post_hp: float  # raw public HP; each HpRow.hp is post_hp / 100
+    start_step: NotRequired[int]
+    end_step: NotRequired[int]
+    boundary_acquisition_id: NotRequired[str]
+    boundary_step_index: NotRequired[int]
+    boundary_input_sha256: NotRequired[str]  # confirmed public reward successor
+    post_observation_index: NotRequired[int]  # typed terminal variant
+    public_native_kind: NotRequired[str | None]
 
 
 # W3 owns delayed labels; W1 owns aux selection/use counters. No PPO first-use replay.

@@ -692,6 +692,12 @@ class SegmentConnection:
     def request(self, operation: str, **fields: Any) -> dict[str, Any]:
         from spireagent.rl_exchange import control_input, input_key
 
+        if operation == "receipt":
+            # Older callers omit transport generation on receipt queries. Bind
+            # only absent fields; an explicitly named historical input stays old.
+            fields = {**fields, "input": {
+                **{key: self.attachment[key] for key in ("run", "training_generation")
+                   if key in self.attachment}, **fields["input"]}}
         if operation not in {"score", "status", "receipt"}:
             fields = {**{key: self.attachment[key] for key in ("run", "training_generation")
                          if key in self.attachment}, **fields}

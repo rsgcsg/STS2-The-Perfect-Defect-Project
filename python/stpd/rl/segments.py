@@ -17,7 +17,7 @@ OPERATIONAL_FIELDS = ("diagnostics_every", "archive_pending_bytes", "archive_min
                       "archive_poll_seconds", "input_compiler_identity", "input_pack_artifact_id",
                       "prepare_ahead", "inference_stream", "preparation_workers",
                       "preparation_threads", "prepared_bytes", "training_generation",
-                      "rendezvous_path")
+                      "rendezvous_path", "central_scoring")
 
 @dataclass(frozen=True)
 class SegmentConfig:
@@ -54,6 +54,7 @@ class SegmentConfig:
     training_generation: str | None = None
     # Original shared inference.json, atomically replaced on restore.
     rendezvous_path: str | None = None
+    central_scoring: bool = False
 
     def __post_init__(self) -> None:
         positive = (self.steps, self.dataset_rows, self.minibatches, self.epochs,
@@ -71,6 +72,7 @@ class SegmentConfig:
                 or type(self.archive_min_free_bytes) is not int or self.archive_min_free_bytes < 0
                 or not 0.01 <= self.archive_poll_seconds <= 30
                 or type(self.prepare_ahead) is not bool or type(self.inference_stream) is not bool
+                or type(self.central_scoring) is not bool
                 or self.preparation_workers * self.preparation_threads > 16
                 or (self.training_generation is not None and (
                     not isinstance(self.training_generation, str) or not self.training_generation))

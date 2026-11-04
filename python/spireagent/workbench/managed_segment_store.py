@@ -157,12 +157,13 @@ def validate_segment(value: dict[str, Any], *, _hot: bool = False) -> None:
         hp = ((observation.get("player") or {}).get("content") or {}).get("hp")
         if (
             successor["acquisition_id"] != battle["boundary_acquisition_id"]
+            or (_hot and battle.get("boundary_input_sha256") != digest(p1_json_bytes(successor)))
             or not str((observation.get("scene") or {}).get("native_kind", "")).startswith("reward")
             or (observation.get("combat") or {}).get("availability") == "available"
             or not isinstance(hp, (int, float))
             or isinstance(hp, bool)
             or hp < 0
-            or battle["hp"] != hp / 100
+            or (battle.get("post_hp") != hp if _hot else battle["hp"] != hp / 100)
             or not battle["start_step"] < battle["end_step"] <= boundary["step_index"] + 1
             or battle["start_step"] >= battle["end_step"]
             or battle["battle_id"] != f"{value['run_id']}:{battle['start_step']}"

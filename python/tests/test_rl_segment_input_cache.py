@@ -8,13 +8,14 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 
 import pytest
+from test_p1_frame_compiler import assert_frame_equal
+from test_rl41_w1 import model as model
+from test_rl_loop import PRODUCER
+
 from spireagent.json_boundary import BoundaryError
 from spireagent.workbench.managed_segment_store import read_segment
 from stpd.rl import segment_inputs
 from stpd.rl.segment_inputs import SegmentInputs, publish_input_pack
-from test_p1_frame_compiler import assert_frame_equal
-from test_rl41_w1 import model as model
-from test_rl_loop import PRODUCER
 
 
 @pytest.fixture(params=[False, True], ids=["old-pack", "actor-wire"])
@@ -26,6 +27,8 @@ def inputs(tmp_path, model, request):
     import hashlib
     from types import SimpleNamespace
 
+    from test_rl41_w1 import segment
+
     from spireagent.artifact_contracts import Manifest, Parent
     from spireagent.json_boundary import FrozenObject, json_bytes
     from spireagent.rl_exchange import Exchange
@@ -34,7 +37,6 @@ def inputs(tmp_path, model, request):
     from stpd.p1.frame_compiler import FrameCompiler
     from stpd.rl.segment_inputs import TRAJECTORY_SCHEMA, segment_body
     from stpd.workers.checkpoint_codec import encode_checkpoint
-    from test_rl41_w1 import segment
 
     exchange = Exchange({"kind": "local", "directory": str(tmp_path / "archive-peer")}, "archive")
     cp = tmp_path / "fixture-checkpoint"
@@ -221,7 +223,7 @@ def test_main_auxiliary_and_prepare_reader_share_one_complete_cold_fill(inputs, 
         second_started.set()
         return reader.frames(artifact, segment)
 
-    with ThreadPoolExecutor(max_workers=2) as pool:
+    with ThreadPoolExecutor(max_workers=3) as pool:
         first = pool.submit(
             reader.auxiliary, artifact, 1, read_segment=blocked_read, scratch=tmp_path
         )
@@ -229,6 +231,8 @@ def test_main_auxiliary_and_prepare_reader_share_one_complete_cold_fill(inputs, 
             assert entered.wait(5)
             second = pool.submit(prepared)
             assert second_started.wait(5)
+            # A cold IO owner and its same-key waiter cannot hold the shared lock.
+            assert pool.submit(reader.cache_report).result(timeout=2)["misses"] == 1
         finally:
             release.set()
         frame, _ = first.result(timeout=10)

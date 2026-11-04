@@ -102,7 +102,8 @@ def hot_fixture(tmp_path, count=4, *, terminal=False, hp=False, delayed_reward=F
 
     assembler = SegmentAssembler({"intent_id": "episode-a",
         "behavior_policy": {"temperature": 1.0, "uniform_mix": 0.0}},
-        OriginalBarrier(run, trace), commit, compiler=compiler, scorer=scorer, step_limit=2)
+        OriginalBarrier(run, trace), commit, compiler=compiler, scorer=scorer, step_limit=2,
+        generation_discarded=exchange.hot_generation_discarded)
     return exchange, assembler, scorer, rows, delivered
 
 
@@ -210,13 +211,13 @@ def test_hp_crosses_segments_and_uses_first_stable_reward_after_healing(tmp_path
         for row in rows:
             assembler.transition(row)
         battle = delivered[-1][0]["hp_battles"][0]
-        assert battle["hp"] == .57
+        assert battle["post_hp"] == 57
         assert battle["end_step"] == 4 - int(delayed)
         assert battle["boundary_step_index"] == 3
-        assert [r["key"] for r in battle["states"]] == [
+        assert [r["source"]["key"] for r in battle["states"]] == [
             f"native-run:{i}" for i in range(4 - int(delayed))
         ]
-        assert battle["states"][0]["segment_artifact_id"].startswith("hot:")
+        assert battle["states"][0]["source"]["segment_id"] == delivered[0][0]["segment_id"]
         assert (
             battle["boundary_input_sha256"]
             == hashlib.sha256(input_bytes(rows[-1]["successor"])).hexdigest()
@@ -615,3 +616,32 @@ def test_failed_sample_audit_appends_finding_stops_admission_and_keeps_originals
     assert exchange.stop_request()["reason"] == "sampled_original_audit_failed"
     assert (run / "original.bin").read_bytes() == b"must retain"
     assert trace.exists()
+
+
+def test_explicit_restore_discards_old_tail_before_any_bootstrap_score(tmp_path, monkeypatch):
+    exchange, assembler, scorer, rows, delivered = hot_fixture(tmp_path, count=8)
+    try:
+        for row in rows[:2]:
+            assembler.transition(row)
+        generation = delivered[0][0]["training_generation"]
+        exchange.discard_hot_generation(generation)
+
+        def forbidden_score(*_args, **_kwargs):
+            raise AssertionError("a revoked old tail must not ask central/local mu for bootstrap")
+
+        def discarded(segment, originals):
+            assert originals == b"" and segment["bootstrap"] is None
+            assert exchange.hot_generation_discarded(segment["training_generation"])
+            return {"training_generation": generation, "discarded_on_restore": True}
+
+        monkeypatch.setattr(scorer, "score_compiled", forbidden_score)
+        assembler.commit_segment = discarded
+        for row in rows[2:]:
+            assembler.transition(row)
+        assert assembler.committed[-1]["discarded_on_restore"]
+        assert assembler.committed[-1]["rows"] == 2
+        assert len(assembler.committed) == 4
+        assert all(segment.get("discarded_on_restore") for segment in assembler.committed[1:])
+        assert len(delivered) == 1
+    finally:
+        assembler.close()

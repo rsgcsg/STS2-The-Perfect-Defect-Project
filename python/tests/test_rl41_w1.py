@@ -14,6 +14,9 @@ from pathlib import Path
 
 import pytest
 import torch
+from test_p1_input_v2 import public_state
+from test_rl_loop import PRODUCER
+
 from spireagent.artifact_contracts import Manifest
 from spireagent.json_boundary import FrozenObject
 from spireagent.rl_contracts import HotPayloadRef, RunSequence
@@ -46,8 +49,6 @@ from stpd.rl.prepared_batch import BatchMember, PrepareRequest
 from stpd.rl.segment_learner import SegmentLearner, SegmentLearnerIO
 from stpd.rl.segment_targets import recorded_targets
 from stpd.rl.segments import SegmentConfig
-from test_p1_input_v2 import public_state
-from test_rl_loop import PRODUCER
 
 if torch.get_num_interop_threads() != 1:
     torch.set_num_interop_threads(1)
@@ -583,11 +584,9 @@ def deliver(
     assert control(commit)["segment_id"] == grant["lease"]
     refs = [
         {
-            "segment_artifact_id": "hot:" + payload.slot,
-            "payload": dataclasses.asdict(payload),
-            "training_generation": owner.generation,
-            "row": i,
-            "key": f"{value['run_id']}:{i}",
+            "source": {"run_id": value["run_id"], "segment_id": value["segment_id"],
+                       "training_generation": owner.generation, "row": i,
+                       "key": f"{value['run_id']}:{i}"},
             "outcome": 3,
         }
         for i in range(2)

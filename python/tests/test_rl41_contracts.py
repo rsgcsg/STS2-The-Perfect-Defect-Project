@@ -11,6 +11,7 @@ from typing import get_type_hints
 
 import pytest
 import torch
+from test_rl41_w1 import model as model
 
 import spireagent.rl_contracts as messages
 import stpd.rl.checkpoint_state as checkpoint
@@ -119,8 +120,20 @@ def test_cp_contract_roundtrips_native_adam_ema_and_rng_without_parents():
     assert not {"queue", "active", "leases", "aux", "parents"} & state.keys()
 
 
-def test_cp16_conversion_is_an_explicit_unimplemented_w1_entrypoint():
-    # F0 must not silently claim that the real CP16 has been converted/restored.
-    assert "source" in inspect.signature(checkpoint.convert_cp16).parameters
-    with pytest.raises(NotImplementedError, match="W1 implements CP16 migration"):
-        checkpoint.convert_cp16(None)
+def test_cp16_conversion_preserves_learning_state_and_rejects_reused_generation(model):
+    from test_rl41_w1 import assert_tree, construction, legacy_cp16
+    state, names = legacy_cp16(model)
+    source = checkpoint.CP16ConversionInput(
+        state, construction(model), names, "a" * 64, "g-old", "g-new",
+        {"run": "w1-unit"}, {"unit": True})
+    converted = checkpoint.convert_cp16(source)
+    assert converted.identity.sequence == 16
+    assert converted.counters.updates == 362
+    assert converted.counters.mu_version == 57
+    assert_tree(converted.weights, state["weights"])
+    assert_tree(converted.optimizer, state["optimizer"])
+    assert_tree(converted.ema, state["ema"])
+    assert converted.rng.learner_random == state["random"]
+    assert converted.conversion.discarded_hot_state
+    with pytest.raises(ValueError, match="explicit_CP16_and_new_generation_required"):
+        checkpoint.convert_cp16(dataclasses.replace(source, target_generation="g-old"))

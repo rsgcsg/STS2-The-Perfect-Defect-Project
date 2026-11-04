@@ -1,26 +1,14 @@
-# 当前：RL4-PREP已按未达标收口
+# RL4.1 I1：源码候选待真实原件与提交
 
-用户要求的既定流程、历史/实际链路审核和单份完整报告已完成；root负责本轮交付。
-已运行组合source2d77049e/Runtime63/r1.9；源码交付#378/#379/#380已正常合并。
-新cache033a48ed仅有CPU真实同引用/数值/容量和CI证据，未热换进已结束的小时。
-本轮任务、实物与未达标原因见[RL4任务](../plans/RL_CRITIC_20261101.md)。
-RL2/RL3已结束，原unknown不重投；原卡/原评估分母不被本轮新证据升级。
+用户11-04派发I1，唯一writer已接三线，基线a7f40bcb，未提交。CPU合成整链和只读复核已过；真实CP16/World、Friday数字、版本/pin/BOM仍未完成。共享SSH认证拒绝，版本登记文件在沙箱写域外；代跑命令及QUESTION交Claude。
+I1相关检查已收齐；下一步由Claude登记/提交/冻结，按原入口补实测；不自动开GPU或长训。接口和实现状态见[RL SOP](../../python/docs/RL_ACTOR_LEARNER.zh-CN.md)，三线冻结范围见[F0](../plans/RL4.1/F0-INTERFACES.md)。
+
+## 原轮结果与剩余授权
+
+RL4-PREP按未达标结卡，准确实物、原件replay超时、低吞吐和前后测边界由[RL4任务](../plans/RL_CRITIC_20261101.md)及其原收据负责。已运行source2d77049e/Runtime63/r1.9；#378/#379/#380已合；cache033a48ed只有CPU/CI证据，未热换。362SGD/CP16和旧unknown分母不被I1升级，RL2/RL3不重开。
+用户原批单A100、GPU累计5小时，原12个GPU作业累计10911秒、余7089秒；排队不计使用。含评估仍≤45游戏位；首小时外正式长训未批，T0与原72小时目标不重置。I1本轮只用CPU，不自动进入G1/H1，不删除资产、不碰Mac安装/真人录制，固定评估及永久heldout不训练。
 
 <!-- Resolve live GitHub refs before action; latest user instructions and live evidence override this file. -->
-
-## 本轮结果与后续边界
-
-最后小时189→362SGD、19,980新多选首用，约1.98万/h；91saved/31censored/8unknown。
-在途与活动局0证明owner排空；可复现的原件replay超时及低吞吐意味着完整健康验收未过。
-完整CP15→16的CPU空Store/CUDA替换与R2逐项复核通过，0额外SGD/World；
-前后16均自然saved16/unknown0，正常评分与R2读回完成；不是配对实力检验。
-固定TRAIN后点已完成，概率变化不作实力结论；D早CP后322项重放/原收据恢复事实保留。
-本卡不再自动派工。后续建议先修正常原件replay超时、验动态全循环性能，再决定长训。
-报告为共享交付目录replies/RL4-PREP-REPORT-20261103.md；当前不派生新正式训练。
-
-用户已批单A100、GPU累计5小时；12个原GPU作业累计10911秒，余7089秒；排队不计使用。
-含评估仍≤45游戏位；首小时外正式长训未批。T0与原72小时目标不重置。
-本卡不删除资产、不碰Mac安装或真人录制，固定评估/永久heldout不训练。
 
 ## 其他已派工作入口
 

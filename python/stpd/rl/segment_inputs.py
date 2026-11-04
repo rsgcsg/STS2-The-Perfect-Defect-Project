@@ -14,6 +14,7 @@ import sys
 import threading
 from collections import OrderedDict
 from collections.abc import Callable, Iterable
+from concurrent.futures import Future
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -21,7 +22,6 @@ from typing import Any
 from spireagent.artifact_contracts import Manifest, Parent, Producer
 from spireagent.json_boundary import BoundaryError, FrozenObject
 from spireagent.storage.store import ManifestArtifactStore
-
 from stpd.p1.data import digest, json_bytes
 from stpd.p1.export import input_spec, runtime_projection
 from stpd.p1.frame_compiler import SCHEMA as FRAME_SCHEMA
@@ -145,6 +145,7 @@ class SegmentInputs:
         self._limit = cache_bytes
         self._lock = threading.RLock()
         self._cache: OrderedDict[str, _VerifiedInputs] = OrderedDict()
+        self._fills: dict[str, Future[_VerifiedInputs]] = {}
         self._empty_cache_bytes = sys.getsizeof(self._cache)
         self._bytes = self._hits = self._misses = self._evictions = 0
         self.compiler = FrameCompiler(vocabulary)
@@ -173,7 +174,8 @@ class SegmentInputs:
                 raise BoundaryError("rl_inputs", "frozen_input_pack_parents_changed")
 
     def body(self, artifact_id: str, segment: dict[str, Any]) -> dict[str, Any]:
-        if segment.get("schema") == TRAJECTORY_SCHEMA:
+        if segment.get("schema") == TRAJECTORY_SCHEMA or (
+                "schema" not in segment and "training_generation" in segment):
             body = segment_body(segment)
         else:
             if artifact_id not in self.entries:
@@ -198,40 +200,53 @@ class SegmentInputs:
 
     def _verified(self, artifact_id: str,
                   load: Callable[[], dict[str, Any]]) -> _VerifiedInputs:
-        # Main auxiliary reads and the single prepare-ahead reader share this
-        # lifecycle. Serialize cold fills so the same immutable artifact is not
-        # simultaneously read/validated twice; decode happens outside the lock.
+        # One owner fills each key; all IO/hash/validation and waits happen
+        # outside the shared LRU lock, so other hits and keys remain available.
         with self._lock:
             found = self._cache.get(artifact_id)
             if found is not None:
                 self._cache.move_to_end(artifact_id)
                 self._hits += 1
                 return found
-            self._misses += 1
-            segment = load()  # The normal reader validates the complete source.
+            pending = self._fills.get(artifact_id)
+            owner = pending is None
+            if pending is None:
+                pending = Future()
+                self._fills[artifact_id] = pending
+                self._misses += 1
+        if not owner:
+            return pending.result()
+        try:
+            segment = load()
             body = self.body(artifact_id, segment)
             current = tuple(_verified_row(step["input"], wire, step["behavior"]["floor"])
                 for step, wire in zip(segment["steps"], body["current"], strict=True))
             boundary = (_verified_row(segment["steps"][-1]["successor"], body["boundary"], None)
                         if segment["terminal"] is None else None)
-            # Count actual retained bytes and tuples, plus a conservative bound
-            # for the key and entry object, as in the existing text cache. The
-            # OrderedDict's actual allocated table is counted separately below.
-            # No views can retain an uncounted large owner.
             size = (sum(sys.getsizeof(raw) for raw in current) + sys.getsizeof(current)
                     + (sys.getsizeof(boundary) if boundary is not None else 0)
                     + sys.getsizeof(artifact_id) + 512)
             found = _VerifiedInputs(current, boundary, size)
-            if size <= self._limit:
-                self._cache[artifact_id] = found
-                self._bytes += size
-                while self._cache and self._accounted_bytes() > self._limit:
-                    _, removed = self._cache.popitem(last=False)
-                    self._bytes -= removed.size
-                    self._evictions += 1
-                if not self._cache:
-                    self._cache.clear()  # Release any retained high-water table.
+            with self._lock:
+                if self._fills.get(artifact_id) is not pending:
+                    raise BoundaryError("rl_inputs", "cold_fill_owner_changed")
+                if size <= self._limit:
+                    self._cache[artifact_id] = found
+                    self._bytes += size
+                    while self._cache and self._accounted_bytes() > self._limit:
+                        _, removed = self._cache.popitem(last=False)
+                        self._bytes -= removed.size
+                        self._evictions += 1
+                    if not self._cache:
+                        self._cache.clear()
+                del self._fills[artifact_id]
+                pending.set_result(found)
             return found
+        except BaseException as error:
+            with self._lock:
+                self._fills.pop(artifact_id, None)
+                pending.set_exception(error)
+            raise
 
     def _accounted_bytes(self) -> int:
         # The reader's fixed empty container exists even when caching is off.

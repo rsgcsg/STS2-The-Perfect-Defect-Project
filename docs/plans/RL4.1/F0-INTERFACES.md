@@ -1,7 +1,7 @@
 # RL4.1 F0：三线文件边界
 
 基线 `origin/develop=e7770d3c113debf37ce1a899dccc300802733e17`；F0 只冻结内部接口和 stub。
-工作区根：`/Users/fire/Documents/Codex/2026-11-04/rl41/`；`freeze` 是共享对象的独立 clone，三条 worktree 归它管理，主 clone 保持原状。
+工作区按共享基线建立；三条独立 worktree 的源码由 I1 集成，主 clone 保持原状。
 链路位置：既有 Actor → Exchange → 准备 → learner → μ/CP；变更类为表示/传输。
 卡 v5 §12 优先：文字继续训练；actor 按 text digest 缓存；不设逐位、容限等价或同成员梯度门。
 
@@ -21,10 +21,10 @@
 | `python/spireagent/rl_contracts.py` | W3 生产 HotSegment/Commit/EpisodeLabels，W1 消费；W2 通过 LocalMuScorer 提供同 μ 的每行 51 类与非终局 bootstrap。共用 `control_request_key`；ACK 保留完整原 response/lease/μ，ready/used/restore 丢弃是后续追加处置。 |
 | 同上：MuIdentity/MuPublication、SegmentGrant、TextCacheNamespace、LearnerRendezvous | W1 后台发布完成的全量 μ；W2 在新段 begin 采用，旧 μ retain 到 forced/尾值完成；W3 负责 Exchange 传输。text digest 包含文字权重，namespace 同时绑定 tokenizer/词表/语义/数值模式。重连先查原 receipt，绝不重投 unknown 动作。 |
 | `python/stpd/rl/prepared_batch.py` | W1 的 PrepareRequest 固定整批成员、aux 与 4 个 minibatch 切点；CPU 准备进程返回 PreparedBatch：全部参数无关张量、整批多选归一 advantage、targets、mask、joint metadata、aux 预留；成功 SGD 才计 uses。默认 4×1，aux≤128+128、复用≤2/1。 |
-| `python/stpd/rl/checkpoint_state.py` | W1 的 SelfContainedCheckpoint 嵌入构造、θ/heads/text、完整 Adam/参数组次序、权重 EMA、计数及 Python/Torch/CUDA RNG；身份 `(run,generation,sequence)`。`convert_cp16(CP16ConversionInput)` 为显式待实现入口；保原学习状态，清未消费热数据，续 CP17/μ58。 |
+| `python/stpd/rl/checkpoint_state.py` | W1 的 SelfContainedCheckpoint 嵌入构造、θ/heads/text、完整 Adam/参数组次序、权重 EMA、计数及 Python/Torch/CUDA RNG；身份 `(run,generation,sequence)`。`convert_cp16(CP16ConversionInput)` 为显式转换入口；保原学习状态，清未消费热数据，续 CP17/μ58。 |
 
 CPU 环境：各工作区 `python/.venv` 指向已有 rl-critic 环境，不重复安装。
 运行：`cd python && OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 .venv/bin/python -m pytest -q tests/test_rl41_contracts.py`。
-F0 测试只证实 import、字段与现有 codec 可传递；实际目标/恢复/吞吐/学习质量留给 W1–W3/I1/G1/H1。
+当前合同测试已接实装 CP16 转换/codec；CPU 合成整链由 I1 复核。真实 CP16/World、吞吐及学习质量仍须原实测，不从接口测试推定。
 
 CORRECTION: T0 §3.8D 把 `self.ema` 称为尺度状态有误；当前 `segment_learner.py:952–958` 对整份 model state 更新权重 EMA，本接口保留该权重 EMA。
