@@ -58,7 +58,7 @@ def test_CP16_update_publish_adopt_CP_replace_only_learner_continue(
 
     execution = tmp_path / "execution.json"
     execution.write_text(json.dumps({"peer": config.peer,
-        "retention": {"tier": "trajectory", "purpose": "training", "audit_every": 20}}))
+        "retention": {"tier": "trajectory", "purpose": "training", "audit_every": 100}}))
     actual_actor = Actor({"schema": "spireagent/rl-actor-config-1", "actor": "integration",
         "execution": str(execution), "peer": config.peer, "run": config.run,
         "segments": {"inference": remote, "rendezvous": str(rendezvous)}}, tmp_path / "actor")

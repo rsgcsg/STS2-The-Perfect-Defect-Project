@@ -97,9 +97,17 @@ def test_peer_drift_and_candidate_symlink_are_rejected(rl, inputs, tmp_path):
         rl.prepare(execution, learner, output)
 
 
-def test_explicit_learner_driven_scale_can_prepare_fifty_six_actors(rl, inputs):
-    plan, _ = prepared(rl, inputs, actors=56)
-    assert len({ref['actor'] for ref in plan['actors']}) == 56
+@pytest.mark.parametrize("actors,audit_every", [(56, 20), (128, 100)])
+def test_explicit_scale_preserves_declared_training_audit_interval(rl, inputs, actors, audit_every):
+    execution, _, _ = inputs
+    configuration = json.loads(execution.read_bytes())
+    configuration['retention']['audit_every'] = audit_every
+    execution.write_text(json.dumps(configuration))
+    plan, _ = prepared(rl, inputs, actors=actors)
+    assert len({ref['actor'] for ref in plan['actors']}) == actors
+    actor = json.loads(Path(plan['actors'][0]['path']).read_bytes())
+    frozen = json.loads(Path(actor['execution']).read_bytes())
+    assert frozen['retention']['audit_every'] == audit_every
 
 
 def test_missing_or_foreign_RL1_modules_are_explicitly_refused_before_allocation(rl, inputs):

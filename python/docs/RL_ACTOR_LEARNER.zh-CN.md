@@ -182,3 +182,17 @@ python -m spireagent.workbench.rl_learner --config conversion/converted-learner.
 代际隔离、CP-only 与 unknown 不重投。重要跨线候选作非作者复核。
 加速可改变批次/精度/实现，不设逐位或容限等价门；G1看整循环速度、KL/熵/clip/各头 loss 和常数基线，
 GPU throughput、真实 World、健康小时及实力结论各用其原实测。CPU fixture 不替这些结论。
+
+
+### 规模化保留与正常调度
+
+本轮已批准的大路数档使用 execution 中原 `retention.audit_every=100`（约1%），
+小规模沿20（约5%）；这是按开局身份哈希抽样，不是每小批强制抽一局。
+launcher、Actor、producer 和保存复核共用原 retention 配置，ledger 收据记录实际模数。
+未抽中的自然训练局走 ledger_only，不调用 native 原件的发布、归档或完整读回；
+段/控制账本、模型、CP 仍各按原 Store 归档。censored、unknown、技术失败及评估仍完整保留。
+原20模数的历史记录不重算、不改写。
+
+正常 Friday submit 仍复用原 fair-share 门：可用 idle 核的四分之一、排队压力规则及单数组上限。
+11-05 02:20 用户允许128或256；本轮即时可用约594核，仅允许约148路，因此选择128，
+不绕过原门或另建跨分区调度。256未offer；以实际提交时容量为准。

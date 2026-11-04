@@ -597,7 +597,8 @@ class SegmentManagedExecutor(PipelinedManagedExecutor):
     def _before_world_offer(self, row: dict[str, Any]) -> None:
         from .managed_retention import training_audit_selected
 
-        row["training_audit_selected"] = training_audit_selected(row)
+        row["training_audit_selected"] = training_audit_selected(
+            row, audit_every=row["retention"]["audit_every"])
         result = self.admission.request("episode_open", actor=self.actor, episode=row["intent_id"])
         row["segment_episode_admitted"] = result.get("admitted") is True
         if not row["segment_episode_admitted"]:

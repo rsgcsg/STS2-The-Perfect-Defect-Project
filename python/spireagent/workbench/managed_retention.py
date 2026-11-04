@@ -51,7 +51,8 @@ def preservation_route(retention: dict[str, Any], row: dict[str, Any]) -> str:
         natural = terminal.get("status") == "observed" and terminal.get("result") in {"win", "loss"}
         if abnormal or not natural or retention.get("purpose") != "training":
             return "full_peer"
-        if row.get("training_audit_selected") is not training_audit_selected(row):
+        if row.get("training_audit_selected") is not training_audit_selected(
+                row, audit_every=retention["audit_every"]):
             raise BoundaryError("managed_retention", "training_audit_selection_changed")
         return "full_peer" if row["training_audit_selected"] else "ledger_only"
     if tier == "trajectory" and abnormal:
@@ -68,11 +69,13 @@ def preservation_route(retention: dict[str, Any], row: dict[str, Any]) -> str:
     return "trajectory_and_full_peer" if audit else "trajectory"
 
 
-def training_audit_selected(row: dict[str, Any]) -> bool:
+def training_audit_selected(row: dict[str, Any], *, audit_every: int = 20) -> bool:
     """Decide at open, with no result, length, slot-count or worker-count input."""
+    if type(audit_every) is not int or not 1 <= audit_every <= 10000:
+        raise BoundaryError("managed_retention", "invalid_training_audit_interval")
     key = json_bytes({"seed": row["seed"], "selection": row["selection_id"],
                       "manifest": row["manifest_sha256"]})
-    return int.from_bytes(hashlib.sha256(key).digest(), "big") % 20 == 0
+    return int.from_bytes(hashlib.sha256(key).digest(), "big") % audit_every == 0
 
 
 def pipeline_configuration(configuration: dict[str, Any]) -> dict[str, int]:

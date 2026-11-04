@@ -133,19 +133,22 @@ def test_sampling_is_per_open_identity_not_result_depth_or_small_ledger():
 
 
 @pytest.mark.parametrize("result", ["win", "loss"])
-def test_new_natural_training_routes_do_not_store_unsampled_originals(result):
-    retention = {"tier": "trajectory", "purpose": "training", "audit_every": 20}
+@pytest.mark.parametrize("audit_every", [20, 100])
+def test_new_natural_training_routes_do_not_store_unsampled_originals(result, audit_every):
+    retention = {"tier": "trajectory", "purpose": "training", "audit_every": audit_every}
     row = {"trajectory_encoding": "short-segment-1", "execution_status": "finished",
         "cleanup_accepted": True, "training_audit_selected": False,
         "agent_task_outcome": {"terminal_observation": {"status": "observed", "result": result}},
         "seed": "", "selection_id": "policy", "manifest_sha256": "b" * 64}
     row["seed"] = next(
-        str(i) for i in range(100) if not training_audit_selected({**row, "seed": str(i)})
+        str(i) for i in range(100) if not training_audit_selected(
+            {**row, "seed": str(i)}, audit_every=audit_every)
     )
     assert preservation_route(retention, row) == "ledger_only"
     sampled = {**row, "training_audit_selected": True}
     sampled["seed"] = next(
-        str(i) for i in range(1000) if training_audit_selected({**row, "seed": str(i)})
+        str(i) for i in range(1000) if training_audit_selected(
+            {**row, "seed": str(i)}, audit_every=audit_every)
     )
     assert preservation_route(retention, sampled) == "full_peer"
     with pytest.raises(BoundaryError, match="selection_changed"):
@@ -727,3 +730,63 @@ def test_pre_world_cleanup_only_ends_actually_admitted_episode(monkeypatch, admi
         row["segment_episode_admitted"] = True
     executor(row, {}, None, lambda: None)
     assert len(calls) == int(admitted)
+
+
+def test_one_percent_unsampled_original_never_enters_full_archive_path(tmp_path, monkeypatch):
+    import shutil
+    from types import SimpleNamespace
+
+    from test_global_evidence_store import _setup
+
+    from spireagent.workbench import managed_pipeline
+    from spireagent.workbench.managed_pipeline import PipelinedManagedExecutor
+    from spireagent.workbench.reference_suite import _Artifacts
+
+    store, producer, original, expected, model, _, _ = _setup(tmp_path, monkeypatch)
+    executor = PipelinedManagedExecutor.__new__(PipelinedManagedExecutor)
+    executor.store, executor.producer = store, producer
+    executor.runtime = Path(expected["global_runtime_directory"])
+    executor.preparation = {"store": str(tmp_path / "store")}
+    executor.configuration = {"models": {"m": {"artifact_id": model.artifact_id,
+        "package_directory": str(tmp_path / "model")}},
+        "peer": {"kind": "local", "directory": str(tmp_path / "peer")},
+        "host_pin": {}, "runtime_pin": {}, "initial_progress": {"progress_sha256": "c" * 64},
+        "retention": {"tier": "trajectory", "purpose": "training", "audit_every": 100}}
+    artifacts = _Artifacts(tmp_path / "attempt")
+    (artifacts.root / "private").mkdir()
+    run = artifacts.root / "runs/run-fixture"
+    run.parent.mkdir()
+    shutil.move(original, run)
+    expected["run_id"] = "run-fixture"
+    row = {"selection_id": "m", "manifest_sha256": "d" * 64,
+        "scenario": {"character": "Defect", "ascension": 0}, "run_id": "run-fixture",
+        "status": "save_pending", "execution_status": "verification_pending",
+        "cleanup_accepted": True, "verification_runtime_instance_id": "runtime",
+        "trajectory_encoding": "short-segment-1",
+        "retention": managed_pipeline.retention_configuration(executor.configuration)}
+    row["seed"] = next(str(i) for i in range(100) if not training_audit_selected(
+        {**row, "seed": str(i)}, audit_every=100))
+    row["training_audit_selected"] = False
+    row["finish"] = artifacts.put("finish.json", json_bytes({"phase": "closed"}))
+    report = {"episodes": [row]}
+    executor._write_job(row, artifacts, lambda: artifacts.save(report), expected, mode="sealed")
+    monkeypatch.setattr(managed_pipeline, "validate_installed_package", lambda *a, **kw: None)
+    # Replace native verification only; execute the normal preservation router.
+    monkeypatch.setattr(executor, "_verify_original", lambda *a: SimpleNamespace(
+        passed=True, value=SimpleNamespace(content_id="a" * 64)))
+
+    def recorded(value, *_args):
+        value.update(status="finished", reason="natural_loss", agent_task_outcome={
+            "terminal_observation": {"status": "observed", "result": "loss"}})
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("unsampled raw must not enter native archive publication/readback")
+
+    monkeypatch.setattr(executor, "_record_verified_original", recorded)
+    monkeypatch.setattr(PipelinedManagedExecutor.__mro__[1], "_preserve", forbidden)
+    result = executor.preserve_report(artifacts.root / "report.json")["episodes"][0]
+    assert result["status"] == "saved" and result["preservation_route"] == "ledger_only"
+    receipt = json.loads((artifacts.root / result["ledger_preservation"]["path"]).read_bytes())
+    assert receipt["sampling"] == "open_identity_sha256_mod100"
+    assert receipt["original_retained"] is False
+    assert not result.get("stored_evidence_id") and not result.get("stored_failure_id")

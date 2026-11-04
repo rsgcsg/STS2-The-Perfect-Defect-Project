@@ -140,8 +140,11 @@ class Actor:
         self.base = json.loads(Path(configuration["execution"]).read_bytes())
         if self.base.get("peer") != configuration["peer"]:
             reject("actor_exchange_must_use_execution_peer")
-        if self.base.get("retention") != {"tier": "trajectory", "purpose": "training",
-                                          "audit_every": 20}:
+        from .managed_retention import retention_configuration
+
+        retention = retention_configuration(self.base)
+        if (retention["tier"] != "trajectory" or retention.get("purpose") != "training"
+                or retention["score_eligible"]):
             reject("unscored_trajectory_training_intent_required")
         self.exchange = Exchange(configuration["peer"], configuration["run"])
         self.name = configuration["actor"]

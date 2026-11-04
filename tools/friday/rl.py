@@ -24,7 +24,6 @@ from batch import capacity, hashed, private_root, read_pinned, save, snapshot
 SCHEMA = 'spireagent/friday-rl-actors-v1'
 NAME = re.compile(r'^[a-z0-9][a-z0-9-]{0,62}$')
 LAUNCH_STOP_ENV = 'STPD_FRIDAY_LAUNCH_STOP'
-RETENTION = {'tier': 'trajectory', 'purpose': 'training', 'audit_every': 20}
 
 
 def canonical_path(path: Path, *, existing: bool = True) -> Path:
@@ -63,6 +62,7 @@ def prepare(execution: Path, learner: Path, output: Path, *, actors: int = 8,
         raise ValueError('original_learner_run_and_peer_configuration_required')
     peer = learning['peer']
     from spireagent.storage.config import validate_peer
+    from spireagent.workbench.managed_retention import retention_configuration
 
     shared = set(peer) == {'kind', 'directory', 'archive'} and peer.get('kind') == 'local'
     if peer.get('kind') != 's3' and not shared:
@@ -70,8 +70,10 @@ def prepare(execution: Path, learner: Path, output: Path, *, actors: int = 8,
     if shared and peer['archive'].get('kind') != 's3':
         raise ValueError('Friday_shared_store_requires_R2_archive')
     validate_peer(peer)  # No credentials, client construction or network access in preparation.
+    retention = retention_configuration(base)
     if (base.get('peer') != peer or base.get('store') != (
-            peer['directory'] if shared else 's3') or base.get('retention') != RETENTION
+            peer['directory'] if shared else 's3') or retention['tier'] != 'trajectory'
+            or retention.get('purpose') != 'training' or retention['score_eligible']
             or base.get('schema') != 'spireagent/managed-evaluation-execution-v1'):
         raise ValueError('same_frozen_R2_execution_and_learner_peer_required')
     canonical_path(Path(base['candidate_directory']))

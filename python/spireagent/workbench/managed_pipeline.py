@@ -320,7 +320,7 @@ class PipelinedManagedExecutor(ManagedEpisodeExecutor):
                 row["ledger_preservation"] = artifacts.put("ledger-preservation.json", json_bytes({
                     "status": "completed", "run_id": row["run_id"],
                     "content_id": verified.value.content_id, "original_retained": False,
-                    "sampling": "open_identity_sha256_mod20"}))
+                    "sampling": f"open_identity_sha256_mod{row['retention']['audit_every']}"}))
             elif route == "full_local":
                 with _phase(row, "preserve"):
                     runtime = publish_global_runtime(self.store, self.producer, expected)
