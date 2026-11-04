@@ -603,7 +603,7 @@ def test_gpu_owner_hands_transient_auth_to_original_cpu_submission_only(
             (work/'inference.json').write_text(json.dumps({'schema': SEGMENT_SCHEMA,
                 'segment_steps': steps, 'pool_id': 'synthetic', 'address': ['127.0.0.1', 1234]}))
 
-        def run(self):
+        def run(self, *, on_tick=None):
             calls.append('run')
             return {'updates': 0}
 
@@ -749,3 +749,67 @@ def test_additional_active_parent_accepts_invisible_node_local_scratch(rl, input
     finished = rl.finished_actor_results(path, plan)
     assert finished[0]['result_path'] == str(persistent/'result.json')
     assert finished[0]['result_sha256'] == rl.hashed(persistent/'result.json')
+
+
+def test_long_actor_entry_accepts_500_and_keeps_fair_share(rl, inputs):
+    from stpd.rl.learner import LearnerConfig
+    from stpd.rl.segments import SegmentConfig
+
+    plan, _ = prepared(rl, inputs, actors=500, wall_seconds=72000, max_games=100000)
+    assert len({a["actor"] for a in plan["actors"]}) == 500
+    assert json.loads(Path(plan["actors"][-1]["path"]).read_bytes())["max_games"] == 100000
+    config = LearnerConfig(run="capacity", peer={}, segments=SegmentConfig()).bind_actors(500)
+    assert config.segments.capacity_rows == 1024 + 500 * 64
+    with pytest.raises(ValueError, match="segment_actor_count_required"):
+        config.bind_actors(501)
+    assert rl.capacity(1999, 0, 500, maximum=500) == 499
+    assert rl.capacity(2000, 301, 500, maximum=500) == 32
+
+
+def test_general_segment_submission_keeps_300_second_advance(rl, tmp_path, monkeypatch):
+    from contextlib import nullcontext
+
+    path = tmp_path / "plan.json"
+    path.write_text("{}")
+    plan = {
+        "source_root": str(tmp_path),
+        "actors": [{"actor": "one"}],
+        "wall_seconds": 3600,
+        "episode_seconds": 14400,
+        "games_per_ledger": 10,
+        "trajectory_encoding": "short-segment-1",
+    }
+    monkeypatch.setattr(rl, "load_plan", lambda _: plan)
+    monkeypatch.setattr(rl, "require_modules", lambda _: None)
+    monkeypatch.setattr(rl, "launcher", lambda *args: "#!/bin/bash\nexit 0\n")
+    monkeypatch.setattr(rl.scheduler, "user_submission_lock", nullcontext)
+    monkeypatch.setattr(
+        rl.scheduler, "output", lambda command: "0/100/0/100" if command[0] == "sinfo" else ""
+    )
+    result = rl.submit(path, dry_run=True, partition="general")
+    assert "--signal=B:USR1@300" in result["command"]
+    assert "--partition=general" in result["command"]
+
+
+def test_actor_terminal_facts_bind_raw_and_array_scheduler_ids(rl, tmp_path, monkeypatch):
+    path = tmp_path / "plan.json"
+    path.write_text("{}")
+    plan = {"actors": [{"actor": "a"}, {"actor": "b"}]}
+    (tmp_path / "submission.json").write_text(json.dumps({"job_id": "77"}))
+    owner = tmp_path / "actors/a/owner.json"
+    owner.parent.mkdir(parents=True)
+    owner.write_text(json.dumps({"actor": "a", "job_id": "101", "plan_sha256": rl.hashed(path)}))
+    monkeypatch.setattr(rl, "load_plan", lambda _: plan)
+    monkeypatch.setattr(
+        rl.subprocess,
+        "check_output",
+        lambda *args, **kwargs: (
+            "101|77_0|FAILED|1:0\n101.batch|77_0.batch|FAILED|1:0\n102|77_1|RUNNING|0:0\n"
+        ),
+    )
+    rows = rl.actor_accounting(path)
+    assert rows[0]["actor"] == "a" and rows[0]["terminal"] is True
+    assert rows[1]["actor"] == "b" and rows[1]["terminal"] is False
+    owner.write_text(json.dumps({"actor": "a", "job_id": "77_0", "plan_sha256": rl.hashed(path)}))
+    with pytest.raises(ValueError, match="terminal_actor_owner_or_submission_binding_changed"):
+        rl.actor_accounting(path)

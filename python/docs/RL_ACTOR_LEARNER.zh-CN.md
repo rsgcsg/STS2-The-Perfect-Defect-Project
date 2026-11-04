@@ -156,7 +156,7 @@ commit/episode_end ACK 前取得下游所需引用，用尽或淘汰释放，最
 
 正常应用：`python -m spireagent.workbench.rl_learner --config learner.json --work <fresh-work>`。
 Friday 入口仍是 `tools/friday/rl.py learn`，只在 Slurm 分配和原 resource-slot 内运行；
-`device=cpu` 可做已授权短测，`device=cuda` 沿原 GPU 分配。actor 数与 inference_batch 解耦，1–200路；
+`device=cpu` 可做已授权短测，`device=cuda` 沿原 GPU 分配。actor 数与 inference_batch 解耦，1–500路；
 CPU 单路短测同时设小 dataset/episode_rows，不能用默认1024行的最少8路条件冒称单路通过。
 使用 `rl.py prepare/submit/run/save` 原 actor 入口、完整原件保存和收据；unknown 不重试。
 
@@ -207,3 +207,5 @@ launcher、Actor、producer 和保存复核共用原 retention 配置，ledger �
 正常 Friday submit 仍复用原 fair-share 门：可用 idle 核的四分之一、排队压力规则及单数组上限。
 11-05 02:20 用户允许128或256；本轮即时可用约594核，仅允许约148路，因此选择128，
 不绕过原门或另建跨分区调度。256未offer；以实际提交时容量为准。
+
+长训的预算、恢复、固定评估、容量与CP保留入口见[原长训指南](RL_LONG_RUN.zh-CN.md#rl41-长训运营入口ops-候选集成后使用)。源码检查、CPU实际恢复和GPU/H1资格分开报告。

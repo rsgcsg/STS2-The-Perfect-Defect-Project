@@ -109,7 +109,7 @@ def test_20_hour_actor_prepare_pins_old_runtime_and_single_core(watch, tmp_path)
                 "candidate_directory": str(tmp_path),
                 "peer": peer,
                 "store": "s3",
-                "retention": rl.RETENTION,
+                "retention": {"tier": "trajectory", "purpose": "training", "audit_every": 20},
             }
         )
     )
@@ -207,7 +207,7 @@ def test_split_runtime_submit_cli_keeps_strict_module_origin(watch, tmp_path):
                 "candidate_directory": str(tmp_path),
                 "peer": peer,
                 "store": "s3",
-                "retention": rl.RETENTION,
+                "retention": {"tier": "trajectory", "purpose": "training", "audit_every": 20},
             }
         )
     )

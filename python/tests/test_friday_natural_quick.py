@@ -295,3 +295,98 @@ def test_unclosed_baseline_cache_never_opens_a_new_current_world(quick, tmp_path
     result = quick.run(path)
     assert not result['complete'] and result['new_current_world_offers'] == 0
     assert result['reason'] == 'non_unknown_or_unsettled_batch_requires_owner_read'
+
+
+def save_ref(module, path, value):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(value))
+    return {"path": str(path), "sha256": module.hashed(path)}
+
+
+def test_baseline_continues_only_unoffered_and_never_upgrades_failed(quick, tmp_path, monkeypatch):
+    import copy
+
+    ev = quick.evaluate
+    monkeypatch.setitem(sys.modules, "quick", quick)
+    protocol = {
+        "host_pin": {},
+        "runtime_pin": {},
+        "input_spec": {},
+        "initial_progress_sha256": "a",
+        "behavior_policy": {"mode": "argmax"},
+    }
+    seeds = ["seed-" + str(i) for i in range(50)]
+    manifest = save_ref(ev, tmp_path / "manifest.json", {"seeds": seeds})
+    package = tmp_path / "package"
+    package.mkdir()
+    (package / "model.json").write_text(json.dumps({"package_sha256": "modelsha"}))
+    binding = {"model_artifact_id": "modelid", "model_sha256": "modelsha"}
+    reports = {}
+
+    def make_batch(name, indices, statuses):
+        execution = save_ref(
+            ev,
+            tmp_path / name / "execution.json",
+            {"models": {"cp": {"artifact_id": "modelid", "package_directory": str(package)}}},
+        )
+        plan = {"manifest": manifest, "execution": execution}
+        slots = []
+        rows = []
+        for i, status in zip(indices, statuses, strict=True):
+            slots.append(
+                {
+                    "seed": seeds[i],
+                    "status": status,
+                    "world_mutation_offered": status != "not_started",
+                    "cleanup_accepted": status != "not_started",
+                }
+            )
+            rows.append(
+                {
+                    "seed": seeds[i],
+                    "status": status,
+                    "scored": status == "finished",
+                    "floor": 10 if status == "finished" else None,
+                    "death_floor": 10 if status == "finished" else None,
+                    "result": "loss" if status == "finished" else None,
+                }
+            )
+        cohort = {
+            "rows": rows,
+            "floor_n": sum(r["scored"] for r in rows),
+            "protocol_observed": copy.deepcopy(protocol),
+            "character": "Defect",
+            "ascension": 0,
+        }
+        result = {"ledger_report": {"slots": slots, "score_admitted": True}}
+        refs = {
+            key: save_ref(ev, tmp_path / name / (key + ".json"), value)
+            for key, value in [
+                ("plan", plan),
+                ("result", result),
+                ("snapshot", {"full_readback": True}),
+            ]
+        }
+        reports[str(tmp_path / name / "result.json")] = (
+            plan,
+            result,
+            {"details": {"episodes": []}, "cohort": cohort},
+        )
+        return refs
+
+    first = make_batch(
+        "first", range(50), ["finished"] * 31 + ["save_failed"] + ["not_started"] * 18
+    )
+    remainder = make_batch("remainder", range(32, 50), ["finished"] * 18)
+    monkeypatch.setattr(
+        ev, "read_observation_report", lambda result, plan, **kwargs: reports[str(result)]
+    )
+    before = {k: Path(v["path"]).read_bytes() for k, v in first.items()}
+    result = ev.fixed_baseline([first, remainder], binding, manifest)
+    assert result["offers_accounted"] is True and result["cohort"]["planned"] == 50
+    assert result["cohort"]["floor_n"] == 49
+    assert result["excluded"] == [{"seed": seeds[31], "status": "save_failed"}]
+    assert before == {k: Path(v["path"]).read_bytes() for k, v in first.items()}
+    retried = make_batch("forbidden", range(31, 50), ["finished"] * 19)
+    with pytest.raises(ValueError, match="baseline_World_already_offered_never_retry"):
+        ev.fixed_baseline([first, retried], binding, manifest)

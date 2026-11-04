@@ -93,7 +93,8 @@ def configure_cache(store: Any, peer: str | dict[str, Any], *, max_bytes: int,
     return value
 
 
-def trim_cache(store: Any, *, protected: tuple[str, ...] = ()) -> dict[str, Any]:
+def trim_cache(store: Any, *, protected: tuple[str, ...] = (),
+               candidates: tuple[str, ...] | None = None) -> dict[str, Any]:
     """Remove only remote-verified old chunks; retain immutable identities/indexes.
 
     Inventory/remote readback happens before the short per-payload unlink leases.
@@ -122,8 +123,13 @@ def trim_cache(store: Any, *, protected: tuple[str, ...] = ()) -> dict[str, Any]
                         reverse=True)
     retained = set(protected) | set(identities[:policy["retain_recent"]])
     manifests = {identity: store.get_manifest(identity) for identity in identities}
-    retained.update(identity for identity, manifest in manifests.items()
-                    if manifest.kind in {"model", "checkpoint", "run_result"})
+    if candidates is None:
+        retained.update(identity for identity, manifest in manifests.items()
+                        if manifest.kind in {"model", "checkpoint", "run_result"})
+    else:
+        if not set(candidates) <= manifests.keys():
+            raise StoreError("cache_candidate_manifest_missing")
+        retained = set(protected) | (set(identities) - set(candidates))
     # Metadata ancestry stays local. Parent payloads recover independently by ID;
     # pinning a model must not pin its entire historical input corpus in RAM/disk.
     if not retained <= manifests.keys():
@@ -150,7 +156,7 @@ def trim_cache(store: Any, *, protected: tuple[str, ...] = ()) -> dict[str, Any]
     before = sum(p.stat().st_size for p in all_objects if p.is_file())
     remaining, removed, busy, unverified = before, [], [], []
     # Prefer oldest payload files, preserving shared chunks of every retained payload.
-    candidates = sorted((key for key, refs in chunks.items() if not refs & retained_payloads),
+    candidate_chunks = sorted((key for key, refs in chunks.items() if not refs & retained_payloads),
                         key=lambda key: files[key].stat().st_mtime_ns if files[key].exists() else 0)
     verified: set[tuple[int, str]] = set()
     remote_manifests: dict[int, set[str]] = {index: set() for index in range(len(peers))}
@@ -165,7 +171,7 @@ def trim_cache(store: Any, *, protected: tuple[str, ...] = ()) -> dict[str, Any]
         for parent in expected.parents:
             verify_manifest(peer, peer_index, parent.artifact_id)
 
-    for key in candidates:
+    for key in candidate_chunks:
         if remaining <= policy["max_bytes"]:
             break
         path = files[key]
@@ -222,4 +228,5 @@ def trim_cache(store: Any, *, protected: tuple[str, ...] = ()) -> dict[str, Any]
             "within_budget": remaining <= policy["max_bytes"], "removed_chunks": removed,
             "active_chunks": busy, "unverified_chunks": unverified,
             "retained_artifact_ids": sorted(retained), "manifests_and_indexes_retained": True,
+            **({"candidate_artifact_ids": list(candidates)} if candidates is not None else {}),
             "unmanaged_object_count": sum(p.name not in chunks for p in all_objects)}

@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import shlex
 import signal
@@ -57,7 +58,8 @@ def prepare(execution_path: Path, output: Path, *, selections: dict[str, str],
             manifest_path: Path | None = None, limit: int | None = None,
             seed_prefix: int | None = None, seed_ordinals: list[int] | None = None,
             runtime_source: Path | None = None,
-            observation_report: bool = False, unknown_policy: str = "stop") -> dict[str, Any]:
+            observation_report: bool = False, unknown_policy: str = "stop",
+            deadline_at: float | None = None) -> dict[str, Any]:
     from spireagent.json_boundary import json_bytes
     from spireagent.workbench.managed_retention import pipeline_configuration
     from spireagent.workbench.reference_suite import load_manifest
@@ -71,6 +73,9 @@ def prepare(execution_path: Path, output: Path, *, selections: dict[str, str],
         raise ValueError("bounded_allocation_and_episode_limits_required")
     if unknown_policy not in ('stop', 'continue_cleaned'):
         raise ValueError('explicit_evaluation_unknown_policy_required')
+    if deadline_at is not None and (type(deadline_at) not in (int, float)
+            or not math.isfinite(deadline_at) or deadline_at <= 0):
+        raise ValueError('absolute_evaluation_deadline_required')
     if type(observation_report) is not bool or observation_report and len(selections) != 1:
         raise ValueError('single_model_observation_report_required')
     if runtime_source is not None and (not runtime_source.is_absolute()
@@ -123,6 +128,8 @@ def prepare(execution_path: Path, output: Path, *, selections: dict[str, str],
             **({"seed_ordinals": seed_ordinals} if seed_ordinals is not None else {}),
             **({"unknown_policy": unknown_policy} if unknown_policy != "stop" else {}),
             "target": "friday", "automatic_mac_fallback": False, "retry_unknown": False}
+    if deadline_at is not None:
+        plan['deadline_at'] = deadline_at
     save(output / "plan.json", plan)
     return plan
 
@@ -151,8 +158,61 @@ def load_plan(path: Path) -> dict[str, Any]:
             or value.get("unknown_policy", "stop") not in ('stop', 'continue_cleaned')):
         raise ValueError("frozen_friday_evaluation_plan_required")
     validate_execution(read_pinned(value["execution"]), value["selections"])
+    if value.get('deadline_at') is not None and (
+            type(value['deadline_at']) not in (int, float)
+            or not math.isfinite(value['deadline_at']) or value['deadline_at'] <= 0):
+        raise ValueError('absolute_evaluation_deadline_required')
     read_pinned(value["manifest"])
+    if 'checkpoint_binding' in value:
+        binding = read_pinned(value['checkpoint_binding'])
+        execution = read_pinned(value['execution'])
+        models = list(execution['models'].values())
+        if (len(models) != 1 or models[0]['artifact_id'] != binding['model_artifact_id']
+                or json.loads((Path(models[0]['package_directory']) / 'model.json').read_bytes())[
+                    'package_sha256'] != binding['model_sha256']):
+            raise ValueError('checkpoint_evaluation_model_binding_changed')
     return value
+
+
+def prepare_checkpoint(configuration: Path, checkpoint: str, execution_path: Path,
+                       manifest: Path, output: Path, *, workers: int = 4,
+                       seeds: int = 50, wall_seconds: int = 7200,
+                       episode_seconds: int = 900,
+                       construction_package: Path | None = None,
+                       deadline_at: float | None = None) -> dict[str, Any]:
+    from spireagent.source import source_identity
+    from spireagent.storage.config import open_peer
+    from spireagent.workbench.global_evidence_store import publish_detached_p1_model
+    from stpd.evaluation.rl_checkpoint import export_checkpoint
+
+    if type(seeds) is not int or not 50 <= seeds <= 100:
+        raise ValueError('fixed_fifty_to_one_hundred_evaluation_seeds_required')
+    config = json.loads(configuration.read_bytes())
+    output.mkdir(parents=True, exist_ok=False, mode=0o700)
+    store = open_peer(config['peer'])
+    binding = export_checkpoint(store, checkpoint, output / 'export',
+                                construction_package=construction_package)
+    if binding['run'] != config['run']:
+        raise ValueError('checkpoint_evaluation_run_changed')
+    producer = source_identity(Path(__file__).resolve().parents[2] / 'python')
+    model = publish_detached_p1_model(store, Path(binding['package_directory']), producer)
+    binding['model_artifact_id'] = model.artifact_id
+    save(output / 'checkpoint-binding.json', binding)
+    execution = json.loads(execution_path.read_bytes())
+    execution.update(peer=config['peer'], store=config['peer'].get('directory', 's3'),
+        producer=producer.to_dict(), retention=RETENTION,
+        models={'checkpoint': {'artifact_id': model.artifact_id,
+                              'package_directory': binding['package_directory']}})
+    save(output / 'input-execution.json', execution)
+    plan = prepare(output / 'input-execution.json', output / 'evaluation',
+        selections={'checkpoint': 'checkpoint'}, workers=workers, wall_seconds=wall_seconds,
+        episode_seconds=episode_seconds, manifest_path=manifest, seed_prefix=seeds,
+        runtime_source=Path(__file__).resolve().parents[2], observation_report=True,
+        unknown_policy='continue_cleaned', deadline_at=deadline_at)
+    plan['checkpoint_binding'] = {'path': str(output / 'checkpoint-binding.json'),
+                                 'sha256': hashed(output / 'checkpoint-binding.json')}
+    save(output / 'evaluation/plan.json', plan)
+    return plan
 
 
 def launcher(plan_path: Path, plan: dict[str, Any], *, program: str = 'evaluate.py') -> str:
@@ -180,7 +240,7 @@ credentials=${FRIDAY_R2_ENV:-/data/$(id -un)/.config/spireagent/friday-r2.env}
 set -a
 source "$credentials"
 set +a
-if ! type module >/dev/null 2>&1; then source /etc/profile; fi
+if ! type module >/dev/null 2>&1; then set +u; source /etc/profile; set -u; fi
 module load python/3.11.5-gcccore-13.2.0 nodejs/20.9.0-gcccore-13.2.0
 test -x "$actor_root/node22.23.4/bin/node" || { echo 'pinned Node22.23.4 required' >&2; exit 2; }
 export PATH="$actor_root/env/bin:$actor_root/dotnet-sdk9.0.117:/data/$(id -un)/dotnet9:$PATH"
@@ -211,6 +271,8 @@ def submit(plan_path: Path, *, constraint: str | None = None,
             raise ValueError("future_begin_with_explicit_timezone_required")
         begin = parsed.astimezone().strftime("%Y-%m-%dT%H:%M:%S")
     plan = load_plan(plan_path)
+    if plan.get('deadline_at') is not None and time.time() >= plan['deadline_at'] - 900:
+        raise ValueError('absolute_deadline_prevents_new_evaluation_submission')
     root = private_root(plan_path.parent)
     with scheduler.user_submission_lock():
         job_name = 'spireagent-eval-' + hashlib.sha256(str(plan_path).encode()).hexdigest()[:12]
@@ -309,8 +371,10 @@ def prepare_observation_report(plan: dict[str, Any], summary: dict[str, Any],
     """Expensive verified trajectory reads stay in the evaluation allocation."""
     from spireagent.json_boundary import json_bytes
     from spireagent.storage.config import open_peer
+    from spireagent.workbench.global_evidence_store import materialize_global_evidence
     from spireagent.workbench.managed_trajectory_store import read_shard
     from stpd.evaluation.rl_observation import load_cohort, trajectory_details
+    from stpd.p1.trajectory import extract_trajectory
 
     slots = summary['ledger_report']['slots']
     execution = read_pinned(plan['execution'])
@@ -327,6 +391,42 @@ def prepare_observation_report(plan: dict[str, Any], summary: dict[str, Any],
             if episode['identity']['seed'] != wanted[episode['run_id']]['seed']:
                 raise ValueError('evaluation_detail_seed_binding_mismatch')
             episodes.append(trajectory_details(episode))
+    # Historical/full-peer evaluation batches have no trajectory shard. Reuse
+    # the normal by-ID typed reader; never replay a World or upgrade a failed row.
+    seen = {episode['run_id'] for episode in episodes}
+    for slot in slots:
+        if (slot.get('run_id') in seen or slot.get('status') != 'finished'
+                or not slot.get('stored_evidence_id')):
+            continue
+        original = Path(slot['report']['path'])
+        if not original.exists() and summary.get('scratch_retained'):
+            relative = original.relative_to(summary['scratch_retained'])
+            original = Path(plan['result_root']) / 'evidence' / relative
+        if hashed(original) != slot['report']['sha256']:
+            raise ValueError('original_evaluation_report_changed')
+        row = json.loads(original.read_bytes())['episodes'][0]
+        if (row['run_id'] != slot['run_id'] or row['seed'] != slot['seed']
+                or row.get('stored_evidence_id') != slot['stored_evidence_id']):
+            raise ValueError('original_evaluation_slot_binding_changed')
+        ref = row['save_job']
+        job_path = original.parent / ref['path']
+        if hashed(job_path) != ref['sha256']:
+            raise ValueError('original_evaluation_save_job_changed')
+        job = json.loads(job_path.read_bytes())
+        with materialize_global_evidence(store, slot['stored_evidence_id'], expected=job['expected'],
+                scratch=readback, read_concurrency=4) as verified:
+            identity = {key: job[key] for key in ('producer', 'host_pin', 'runtime_pin',
+                                                'model_artifact_id')}
+            identity.update(model_sha256=job['expected']['agent_artifact_sha256'],
+                input_spec=verified.agent_manifest['input']['input_spec'], seed=row['seed'],
+                character=row['scenario']['character'], ascension=row['scenario']['ascension'],
+                retention=row['retention'], behavior_policy=row.get('behavior_policy') or {
+                    'mode': 'argmax', 'temperature': None, 'uniform_mix': 0},
+                initial_progress_sha256=execution['initial_progress']['progress_sha256'])
+            trajectory = extract_trajectory(verified, identity=identity,
+                outcome=row['agent_task_outcome'], status=row['execution_status'],
+                reason=row['execution_reason'], max_floor=row['game_metrics']['max_observed_floor'])
+            episodes.append(trajectory_details(trajectory))
     source = scratch / 'report-source.json'
     details = scratch / 'report-details.json'
     cohort = scratch / 'report-cohort.json'
@@ -340,14 +440,18 @@ def prepare_observation_report(plan: dict[str, Any], summary: dict[str, Any],
                       (('source', source), ('details', details), ('cohort', cohort))}}
 
 
-def read_observation_report(result_path: Path, plan_path: Path) -> tuple[
+def read_observation_report(result_path: Path, plan_path: Path, *,
+                            projection: dict[str, str] | None = None) -> tuple[
         dict[str, Any], dict[str, Any], dict[str, Any]]:
     """Read the normal saved report, preserving its original ledger qualification."""
     from spireagent.json_boundary import json_bytes
 
     plan = load_plan(plan_path)
     original = json.loads(result_path.read_bytes())
-    metadata = original.get('observation_report')
+    metadata = read_pinned(projection) if projection is not None else original.get('observation_report')
+    root = Path(projection['path']).parent if projection is not None else result_path.parent / 'evidence'
+    if projection is not None and metadata.get('original_result_sha256') != hashed(result_path):
+        raise ValueError('observation_projection_original_result_changed')
     if (original.get('plan_sha256') != hashed(plan_path)
             or metadata is None
             or metadata.get('schema') != 'spireagent/evaluation-observation-files-1'
@@ -359,7 +463,7 @@ def read_observation_report(result_path: Path, plan_path: Path) -> tuple[
         reference = metadata['files'][name]
         if Path(reference['path']).name != reference['path']:
             raise ValueError('evaluation_report_file_name_required')
-        files[name] = read_pinned({'path': str(result_path.parent / 'evidence' / reference['path']),
+        files[name] = read_pinned({'path': str(root / reference['path']),
                                   'sha256': reference['sha256']})
     if (files['source']['ledger_report'] != original['ledger_report']
             or files['source']['plan_sha256'] != original['plan_sha256']
@@ -367,6 +471,103 @@ def read_observation_report(result_path: Path, plan_path: Path) -> tuple[
             or files['cohort']['details_sha256'] != metadata['files']['details']['sha256']):
         raise ValueError('evaluation_report_original_binding_mismatch')
     return plan, original, files
+
+
+def project_observation_report(result_path: Path, plan_path: Path, output: Path) -> dict[str, Any]:
+    """Read-only enrichment of a completed original batch, including full-peer rows."""
+    plan = load_plan(plan_path)
+    summary = json.loads(result_path.read_bytes())
+    if summary['plan_sha256'] != hashed(plan_path):
+        raise ValueError('original_evaluation_plan_changed')
+    output.mkdir(parents=True, exist_ok=False, mode=0o700)
+    metadata = prepare_observation_report({**plan, 'result_root': str(result_path.parent)},
+                                          summary, output)
+    metadata['original_result_sha256'] = hashed(result_path)
+    from spireagent.source import source_identity
+    metadata['projector'] = source_identity(Path(__file__).resolve().parents[2] / 'python').to_dict()
+    save(output / 'observation-projection.json', metadata)
+    return metadata
+
+
+def fixed_baseline(batches: list[dict[str, Any]], binding: dict[str, Any],
+                   manifest: dict[str, str], *, seeds: int = 50) -> dict[str, Any]:
+    """Project original admitted rows; continue only seeds whose World was never offered.
+
+    This is the existing multi-batch evaluation projection, not an admission or
+    ledger rewrite. Failed/unknown rows remain unscored with their original status.
+    """
+    import quick
+    from spireagent.json_boundary import json_bytes
+
+    frozen = read_pinned(manifest)
+    expected = frozen['seeds'][:seeds]
+    selected: dict[str, dict[str, Any]] = {}
+    slots: dict[str, dict[str, Any]] = {}
+    protocol = None
+    character = ascension = None
+    original_sources = []
+    for batch in batches:
+        for key in ('plan', 'result', 'snapshot'):
+            read_pinned(batch[key])
+        if read_pinned(batch['snapshot']).get('full_readback') is not True:
+            raise ValueError('baseline_full_snapshot_readback_required')
+        plan, result, files = read_observation_report(
+            Path(batch['result']['path']), Path(batch['plan']['path']),
+            projection=batch.get('observation_projection'))
+        execution = read_pinned(plan['execution'])
+        models = list(execution['models'].values())
+        if (plan['manifest']['sha256'] != manifest['sha256'] or len(models) != 1
+                or models[0]['artifact_id'] != binding['model_artifact_id']
+                or result.get('error_type') or not result['ledger_report']['score_admitted']):
+            raise ValueError('exact_original_baseline_checkpoint_and_admissions_required')
+        package = json.loads((Path(models[0]['package_directory']) / 'model.json').read_bytes())
+        if package['package_sha256'] != binding['model_sha256']:
+            raise ValueError('baseline_checkpoint_package_changed')
+        for episode in files['details']['episodes']:
+            identity = episode['trajectory']['identity']
+            if (identity['model_artifact_id'] != binding['model_artifact_id']
+                    or identity['model_sha256'] != binding['model_sha256']):
+                raise ValueError('baseline_trajectory_checkpoint_binding_changed')
+        cohort = files['cohort']
+        observed = cohort['protocol_observed']
+        required = {'host_pin', 'runtime_pin', 'input_spec', 'initial_progress_sha256',
+                    'behavior_policy'}
+        if cohort['floor_n']:
+            if not required <= observed.keys() or observed['behavior_policy']['mode'] != 'argmax':
+                raise ValueError('complete_argmax_evaluation_protocol_required')
+            if protocol is not None and observed != protocol:
+                raise ValueError('baseline_observed_protocol_changed')
+            protocol = observed
+        character, ascension = cohort['character'], cohort['ascension']
+        by_seed = {row['seed']: row for row in result['ledger_report']['slots']}
+        for row in cohort['rows']:
+            seed = row['seed']
+            slot = by_seed[seed]
+            if seed not in expected:
+                raise ValueError('baseline_outside_frozen_seed_set')
+            prior = slots.get(seed)
+            attempted = (slot['status'] != 'not_started' or slot.get('world_mutation_offered')
+                         or slot.get('run_id') is not None)
+            prior_attempted = prior is not None and (prior['status'] != 'not_started'
+                or prior.get('world_mutation_offered') or prior.get('run_id') is not None)
+            if prior_attempted and attempted:
+                raise ValueError('baseline_World_already_offered_never_retry')
+            if prior is None or not prior_attempted:
+                selected[seed], slots[seed] = row, slot
+        original_sources.append(batch)
+    if set(selected) != set(expected) or protocol is None:
+        raise ValueError('full_frozen_baseline_denominator_required')
+    rows = [selected[seed] for seed in expected]
+    cohort = quick.aggregate(rows, 'baseline', protocol, character, ascension)
+    complete = all(slot['status'] in {'finished', 'unknown', 'save_failed'}
+                   and slot.get('cleanup_accepted') is True for slot in slots.values())
+    cohort.update(source_sha256=hashlib.sha256(json_bytes(original_sources)).hexdigest(),
+        status_counts={status: sum(r['status'] == status for r in rows)
+                       for status in sorted({r['status'] for r in rows})})
+    return {'cohort': cohort, 'offers_accounted': complete, 'source_batches': original_sources,
+            'frozen_seeds': expected,
+            'excluded': [{'seed': r['seed'], 'status': r['status']} for r in rows if not r['scored']],
+            'qualification': 'Original per-row admission only; no failed row is upgraded.'}
 
 
 def run(plan_path: Path, *, on_stop: Callable[[], None] | None = None) -> dict[str, Any]:
@@ -399,6 +600,11 @@ def run(plan_path: Path, *, on_stop: Callable[[], None] | None = None) -> dict[s
     # All fixed seeds/models/audit slots/selection are durable before the first native offer.
     stopping = threading.Event()
     ledger_stop = ledger.directory / 'STOP'
+    remaining_wall = plan['wall_seconds']
+    if plan.get('deadline_at') is not None:
+        remaining_wall = min(remaining_wall, plan['deadline_at'] - time.time() - 900)
+        if remaining_wall <= plan['episode_seconds'] + 180:
+            ledger_stop.touch()
     world_closed = False
 
     def stop(_number=None, _frame=None):
@@ -409,7 +615,8 @@ def run(plan_path: Path, *, on_stop: Callable[[], None] | None = None) -> dict[s
 
     def observe_stop():
         while not stopping.wait(1):
-            if (root / 'STOP').exists():
+            if ((root / 'STOP').exists() or plan.get('deadline_at') is not None
+                    and time.time() >= plan['deadline_at'] - 900):
                 stop()
                 return
 
@@ -430,7 +637,7 @@ def run(plan_path: Path, *, on_stop: Callable[[], None] | None = None) -> dict[s
         save(scratch / 'preparation.json', executor.preparation)
         phases['executor_preparation'] = time.monotonic() - phase_began
         limits = SuiteLimits(150, plan['episode_seconds'], 120,
-                            plan['wall_seconds'] - plan['episode_seconds'] - 180, 1, 30)
+                            max(1, remaining_wall - plan['episode_seconds'] - 180), 1, 30)
         phase_began = time.monotonic()
         result = ledger.run_managed(workers=plan['workers'], max_episodes=len(selected),
             limits=limits, executor=StopOnUncertain(executor, ledger_stop,
@@ -494,11 +701,27 @@ def run(plan_path: Path, *, on_stop: Callable[[], None] | None = None) -> dict[s
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest='command', required=True)
+    projection_parser = commands.add_parser('project-report')
+    projection_parser.add_argument('--result', type=Path, required=True)
+    projection_parser.add_argument('--plan', type=Path, required=True)
+    projection_parser.add_argument('--output', type=Path, required=True)
     export_parser = commands.add_parser('export-checkpoint')
     export_parser.add_argument('--learner-config', type=Path, required=True)
     export_parser.add_argument('--checkpoint', required=True)
     export_parser.add_argument('--output', type=Path, required=True)
     export_parser.add_argument('--construction-package', type=Path)
+    cp_parser = commands.add_parser('prepare-checkpoint')
+    cp_parser.add_argument('--learner-config', type=Path, required=True)
+    cp_parser.add_argument('--checkpoint', required=True)
+    cp_parser.add_argument('--execution', type=Path, required=True)
+    cp_parser.add_argument('--manifest', type=Path, required=True)
+    cp_parser.add_argument('--output', type=Path, required=True)
+    cp_parser.add_argument('--workers', type=int, default=4)
+    cp_parser.add_argument('--seeds', type=int, default=50)
+    cp_parser.add_argument('--wall-seconds', type=int, default=7200)
+    cp_parser.add_argument('--episode-seconds', type=int, default=900)
+    cp_parser.add_argument('--deadline-at', type=float)
+    cp_parser.add_argument('--construction-package', type=Path)
     prepare_parser = commands.add_parser('prepare')
     prepare_parser.add_argument('--execution', type=Path, required=True)
     prepare_parser.add_argument('--output', type=Path, required=True)
@@ -529,7 +752,9 @@ def main():
             command.add_argument('--begin', help='earliest start ISO8601 with timezone; no reservation')
     args = parser.parse_args()
     os.umask(0o077)
-    if args.command == 'export-checkpoint':
+    if args.command == 'project-report':
+        result = project_observation_report(args.result, args.plan, args.output)
+    elif args.command == 'export-checkpoint':
         from spireagent.source import source_identity
         from spireagent.storage.config import open_peer
         from spireagent.workbench.global_evidence_store import publish_detached_p1_model
@@ -542,6 +767,11 @@ def main():
             source_identity(Path(__file__).resolve().parents[2] / 'python'))
         result['model_artifact_id'] = manifest.artifact_id
         save(args.output / 'checkpoint-binding.json', result)
+    elif args.command == 'prepare-checkpoint':
+        result = prepare_checkpoint(args.learner_config, args.checkpoint, args.execution,
+            args.manifest, args.output.resolve(), workers=args.workers, seeds=args.seeds,
+            wall_seconds=args.wall_seconds, episode_seconds=args.episode_seconds,
+            construction_package=args.construction_package, deadline_at=args.deadline_at)
     elif args.command == 'prepare':
         pairs = [value.split('=', 1) for value in args.selection]
         if any(len(pair) != 2 or not all(pair) for pair in pairs):

@@ -32,6 +32,9 @@ def metadata(mode: str, path: Path) -> dict[str, Any]:
         actor = json.loads(Path(configuration['actors'][index]['path']).read_bytes())
         lanes, games = 1, actor['max_games']
         wall, logs = actor['wall_seconds'], path.parent / 'slurm'
+    elif mode == 'learner':
+        lanes, games = configuration['actors'], 0
+        wall, logs = configuration['wall_seconds'], path.parent / 'slurm'
     else:
         raise ValueError('original_Friday_allocation_mode_required')
     return {'lanes': lanes, 'games_bound': games, 'wall_seconds': wall, 'logs': logs}
@@ -112,7 +115,7 @@ def run(mode: str, configuration: Path, source: Path, command: list[str], *,
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--mode', choices=('batch', 'evaluation', 'rl'), required=True)
+    parser.add_argument('--mode', choices=('batch', 'evaluation', 'rl', 'learner'), required=True)
     parser.add_argument('--configuration', type=Path, required=True)
     parser.add_argument('--source-root', type=Path, required=True)
     parser.add_argument('command', nargs=argparse.REMAINDER)

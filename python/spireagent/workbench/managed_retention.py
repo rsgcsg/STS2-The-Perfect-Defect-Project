@@ -44,7 +44,9 @@ def preservation_route(retention: dict[str, Any], row: dict[str, Any]) -> str:
     terminal = (row.get("agent_task_outcome") or {}).get("terminal_observation") or {}
     abnormal = row.get("execution_status") != "finished" or not row.get("cleanup_accepted")
     if retention.get("purpose") == "evaluation":
-        return "full_peer"
+        # Keep every evaluation original AND the existing typed P1 projection
+        # consumed by floor/Boss/protocol reporting. Unknown stays full original.
+        return "full_peer" if abnormal else "trajectory_and_full_peer"
     if row.get("trajectory_encoding") == "short-segment-1":
         # Only a qualified natural training result may discard its new original.
         # Censored, pending and unknown are retained even after a clean close.

@@ -62,10 +62,10 @@ def save(path: Path, value: Any) -> None:
         os.close(directory_fd)
 
 
-def capacity(idle: int, queued: int, requested: int) -> int:
-    if min(idle, queued, requested) < 0 or requested > 200:
+def capacity(idle: int, queued: int, requested: int, *, maximum: int = 200) -> int:
+    if min(idle, queued, requested) < 0 or not 1 <= maximum <= 500 or requested > maximum:
         raise ValueError("invalid_capacity")
-    return min(requested, idle // 4, 200, 32 if queued > 300 else 200)
+    return min(requested, idle // 4, maximum, 32 if queued > 300 else maximum)
 
 
 def pool_groups(pool: dict[str, Any]) -> list[dict[str, Any]]:

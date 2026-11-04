@@ -99,6 +99,10 @@ class LearnerConfig:
     poll_seconds: float = 5.0
     max_versions: int = 1000
     wall_seconds: float = 3600
+    # Absolute run budget survives process/allocation replacement, in UTC epoch seconds.
+    deadline_at: float | None = None
+    # Operational window, independent of CP16's immutable learning-run identity.
+    operating_budget: dict[str, Any] | None = None
     seed: int = 1
     anchor: dict[str, Any] | None = None
     # Explicit full learner checkpoint artifact id to continue this run from
@@ -144,7 +148,7 @@ class LearnerConfig:
 
     def bind_actors(self, actors: int) -> LearnerConfig:
         """Freeze the original queue capacity from an actual deployment fact."""
-        if type(actors) is not int or not 1 <= actors <= 200 or self.segments is None:
+        if type(actors) is not int or not 1 <= actors <= 500 or self.segments is None:
             raise BoundaryError("rl_learner", "segment_actor_count_required")
         return replace(self, segments=replace(self.segments,
             capacity_rows=self.segments.dataset_rows + actors * self.segments.steps))

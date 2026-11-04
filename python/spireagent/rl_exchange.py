@@ -10,11 +10,12 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 import time
 import uuid
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any, NoReturn, cast
@@ -274,14 +275,22 @@ class Exchange:
     def read_hot_payload(self, payload: HotPayloadRef | dict[str, Any]) -> bytes:
         ref = _hot_ref(payload)
         reader = "read:" + uuid.uuid4().hex
-        self.retain_hot_payload(ref, reader)
+        lock = self._hot_store()._path(
+            "/".join(ref.slot.split("/")[:2]) + "/readers/" + reader[5:] + ".lock")
         try:
-            raw = self._hot_store().get(ref.slot + ".json")
-            if len(raw) != ref.size or hashlib.sha256(raw).hexdigest() != ref.sha256:
-                reject("hot_payload_integrity_failure")
-            return raw
+            # Death releases this OS lease even if it precedes the finally below.
+            # A later CP restore can distinguish that stale ref from a live read.
+            with instance_lock(lock):
+                self.retain_hot_payload(ref, reader)
+                try:
+                    raw = self._hot_store().get(ref.slot + ".json")
+                    if len(raw) != ref.size or hashlib.sha256(raw).hexdigest() != ref.sha256:
+                        reject("hot_payload_integrity_failure")
+                    return raw
+                finally:
+                    self.release_hot_payload(ref, reader)
         finally:
-            self.release_hot_payload(ref, reader)
+            lock.unlink(missing_ok=True)
 
     def put_hot_segment(self, segment: dict[str, Any], *, owner: str,
                         costs: dict[str, float] | None = None) -> HotPayloadRef:
@@ -348,12 +357,21 @@ class Exchange:
         """
         ref = _hot_ref(HotPayloadRef(f"{self.run}/{training_generation}/restore", "0" * 64, 1))
         store = self._hot_store()
-        with self._hot_lock(ref):
+        with self._hot_lock(ref), ExitStack() as readers:
             states = [(key, json.loads(store.get(key)))
                       for key in store.keys(f"{self.run}/{training_generation}/")
                       if key.endswith(".owners.json")]
-            if any(owner.startswith("read:") for _, state in states for owner in state["owners"]):
-                reject("hot_generation_has_active_readers")
+            for _, state in states:
+                for owner in state["owners"]:
+                    if not owner.startswith("read:"):
+                        continue
+                    lock = store._path(f"{self.run}/{training_generation}/readers/{owner[5:]}.lock")
+                    if not lock.is_file():
+                        reject("hot_generation_has_active_readers")  # Historical unleased reader.
+                    try:
+                        readers.enter_context(instance_lock(lock, create=False))
+                    except BoundaryError:
+                        reject("hot_generation_has_active_readers")
             store.put_if_absent(f"{self.run}/{training_generation}/discarded.json",
                                json_bytes({"reason": "discarded_on_restore"}))
             paths = [store._path(key) for key in store.keys(f"{self.run}/{training_generation}/")
@@ -541,32 +559,73 @@ class Exchange:
         return (self.store.archive.drain(timeout=timeout, owned=True)
                 if isinstance(self.store, ArchivedStore) else None)
 
-    def request_stop(self, reason: str) -> dict[str, Any]:
+    def run_deadline(self, requested: float | None = None, *,
+                     budget_id: str | None = None) -> float | None:
+        """One immutable absolute deadline for this run, including all restorations."""
+        if budget_id is not None and (not isinstance(budget_id, str)
+                                      or not _NAME.fullmatch(budget_id)):
+            reject("invalid_operating_budget_id")
+        prefix = self.prefix + (f"control/budgets/{budget_id}/" if budget_id else "control/")
+        key = prefix + "deadline.json"
+        if requested is not None:
+            if (type(requested) not in (int, float) or not math.isfinite(requested)
+                    or requested <= 0):
+                reject("invalid_run_deadline")
+            try:
+                self.blobs.put_if_absent(key, _sealed({"schema": EVENT_SCHEMA, "run": self.run,
+                    "kind": "run_deadline", "deadline_at": float(requested)}))
+            except BoundaryError as error:
+                if error.code != "immutable_key_collision":
+                    raise
+        if key not in self.blobs.keys(prefix):
+            return None
+        record = _open(self.blobs.get(key), EVENT_SCHEMA)
+        value = record.get("deadline_at")
+        if (record.get("run") != self.run or record.get("kind") != "run_deadline"
+                or not isinstance(value, (int, float)) or isinstance(value, bool)
+                or not math.isfinite(value) or value <= 0):
+            reject("invalid_run_deadline")
+        if requested is not None and value != requested:
+            reject("run_deadline_cannot_be_reset")
+        return float(value)
+
+    def request_stop(self, reason: str, *,
+                     training_generation: str | None = None) -> dict[str, Any]:
         """First request wins; later callers observe that original request."""
         if not isinstance(reason, str) or not reason:
             reject("invalid_stop_reason")
-        existing = self.stop_request()
+        existing = self.stop_request(training_generation=training_generation)
         if existing is not None:
             return existing
         raw = _sealed({"schema": STOP_SCHEMA, "run": self.run, "reason": reason,
+                       **({"training_generation": training_generation}
+                          if training_generation is not None else {}),
                        "requested_at": time.time()})
         try:
-            self.blobs.put_if_absent(f"{self.prefix}control/stop.json", raw)
+            key = f"{self._input_prefix(training_generation)}control/stop.json"
+            self.blobs.put_if_absent(key, raw)
         except BoundaryError as error:
             if error.code != "immutable_key_collision":
                 raise
-        result = self.stop_request()
+        result = self.stop_request(training_generation=training_generation)
         if result is None:
             reject("stop_request_missing_after_publication")
         return result
 
-    def stop_request(self) -> dict[str, Any] | None:
-        key = f"{self.prefix}control/stop.json"
-        if key not in self.blobs.keys(f"{self.prefix}control/"):
+    def stop_request(self, *, training_generation: str | None = None) -> dict[str, Any] | None:
+        # An explicit whole-run stop remains binding. Operational stops fence only
+        # their generation; a fresh, authorized continuation preserves the old fact.
+        prefix = self.prefix
+        key = f"{prefix}control/stop.json"
+        if key not in self.blobs.keys(f"{prefix}control/") and training_generation is not None:
+            prefix = self._input_prefix(training_generation)
+            key = f"{prefix}control/stop.json"
+        if key not in self.blobs.keys(f"{prefix}control/"):
             return None
         value = _open(self.blobs.get(key), STOP_SCHEMA)
         if (value.get("run") != self.run or not isinstance(value.get("reason"), str)
-                or not value["reason"] or type(value.get("requested_at")) not in (int, float)):
+                or not value["reason"] or type(value.get("requested_at")) not in (int, float)
+                or value.get("training_generation") not in {None, training_generation}):
             reject("stop_request_identity_mismatch")
         return value
 
@@ -632,6 +691,49 @@ class Exchange:
         if value["run"] != self.run or value.get("training_generation") != training_generation:
             reject("checkpoint_record_identity_mismatch")
         return value
+
+    def checkpoint_records(self) -> list[dict[str, Any]]:
+        """All immutable CP records; sequence/counters order them, never generation names."""
+        records = []
+        prefixes = [f"{self.prefix}checkpoints/"]
+        if isinstance(self.blobs, LocalBlobStore):
+            generations = self.blobs.root / self.prefix / "generations"
+            if generations.is_dir():
+                prefixes.extend(f"{self.prefix}generations/{path.name}/checkpoints/"
+                                for path in generations.iterdir() if path.is_dir())
+        else:
+            prefixes.append(f"{self.prefix}generations/")
+        for key in (key for prefix in prefixes for key in self.blobs.keys(prefix)):
+            if "/checkpoints/" not in key or not key.endswith(".json"):
+                continue
+            raw = self.blobs.get(key)
+            schema = json.loads(raw).get("schema")
+            if schema not in {CHECKPOINT_SCHEMA, SEGMENT_CHECKPOINT_SCHEMA}:
+                reject("unsupported_checkpoint_record")
+            record = _open(raw, schema)
+            if record["run"] != self.run:
+                reject("checkpoint_record_identity_mismatch")
+            records.append(record)
+        return sorted(records, key=lambda r: (r.get("checkpoint_sequence", 0), r["published_at"]))
+
+    def retain_checkpoints(self, *, protected: tuple[str, ...] = (), recent: int = 3
+                           ) -> dict[str, Any]:
+        """R2 keeps every CP. Only remote-verified local CP payloads may cool."""
+        from spireagent.storage.async_archive import ArchivedStore
+        from spireagent.storage.cache import configure_cache, trim_cache
+
+        if not isinstance(self.store, ArchivedStore) or type(recent) is not int or recent < 3:
+            reject("archived_store_and_at_least_three_checkpoints_required")
+        records = self.checkpoint_records()
+        keep = {r["checkpoint_artifact_id"] for r in records[-recent:]} | set(protected)
+        candidates = tuple(sorted({r["checkpoint_artifact_id"] for r in records} - keep))
+        if self.store._cache_policy is None:
+            configure_cache(self.store, self.store.archive.binding,
+                            max_bytes=0, retain_recent=recent)
+        result = trim_cache(self.store, protected=tuple(sorted(keep)), candidates=candidates)
+        return {**result, "recent": recent, "protected_checkpoints": sorted(keep),
+                "all_checkpoint_ids": [r["checkpoint_artifact_id"] for r in records],
+                "remote_deletions": 0}
 
     # Model versions -----------------------------------------------------
     def publish_model(self, record: dict[str, Any]) -> dict[str, Any]:

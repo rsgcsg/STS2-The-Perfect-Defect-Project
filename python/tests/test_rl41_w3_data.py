@@ -157,7 +157,8 @@ def test_new_natural_training_routes_do_not_store_unsampled_originals(result, au
         assert preservation_route(retention, {**row, "execution_status": status}) == "full_peer"
     assert preservation_route(retention, {**row, "cleanup_accepted": False}) == "full_peer"
     assert preservation_route(retention, {**row, "agent_task_outcome": {}}) == "full_peer"
-    assert preservation_route({**retention, "purpose": "evaluation"}, row) == "full_peer"
+    assert preservation_route({**retention, "purpose": "evaluation"}, row) == (
+        "trajectory_and_full_peer")
 
 
 def test_hot_prefix_bootstrap_uses_confirmed_successor_and_old_mu(tmp_path):
@@ -589,6 +590,8 @@ def test_model_and_cp_numbers_are_scoped_by_generation_without_a_guessed_latest(
 def test_failed_sample_audit_appends_finding_stops_admission_and_keeps_originals(
     tmp_path, monkeypatch
 ):
+    from types import SimpleNamespace
+
     from sts2_platform_evidence import VerificationFinding, VerificationResult
     from sts2_platform_evidence import global_agent_session_run_evidence as evidence_owner
     from sts2_platform_evidence.agent_session_run_evidence import AgentSessionRunEvidenceVerifier
@@ -599,6 +602,9 @@ def test_failed_sample_audit_appends_finding_stops_admission_and_keeps_originals
     exchange = Exchange({"kind": "local", "directory": str(tmp_path / "peer")}, "audit-stop")
     executor = SegmentManagedExecutor.__new__(SegmentManagedExecutor)
     executor.exchange = exchange
+    executor.budget_id = None
+    executor.admission = SimpleNamespace(request=lambda operation: {
+        "run": exchange.run, "training_generation": "audit-g"})
     artifacts = _Artifacts(tmp_path / "attempt")
     run = artifacts.root / "run"
     run.mkdir()
@@ -616,7 +622,9 @@ def test_failed_sample_audit_appends_finding_stops_admission_and_keeps_originals
         executor._after_preservation(row, artifacts, run, {}, "full_peer")
     finding = json.loads((artifacts.root / row["sampling_audit"]["path"]).read_bytes())
     assert finding["findings"][0]["code"] == "audit_counterexample"
-    assert exchange.stop_request()["reason"] == "sampled_original_audit_failed"
+    assert exchange.stop_request(training_generation="audit-g")["reason"] == (
+        "sampled_original_audit_failed")
+    assert exchange.stop_request(training_generation="after-diagnosis") is None
     assert (run / "original.bin").read_bytes() == b"must retain"
     assert trace.exists()
 
@@ -790,3 +798,25 @@ def test_one_percent_unsampled_original_never_enters_full_archive_path(tmp_path,
     assert receipt["sampling"] == "open_identity_sha256_mod100"
     assert receipt["original_retained"] is False
     assert not result.get("stored_evidence_id") and not result.get("stored_failure_id")
+
+
+def test_integrity_finding_survives_unavailable_control_status(tmp_path):
+    from types import SimpleNamespace
+
+    from spireagent.workbench.rl_segment_producer import SegmentManagedExecutor
+
+    exchange = Exchange(
+        {"kind": "local", "directory": str(tmp_path / "peer")}, "audit-control-down"
+    )
+
+    def unavailable(*args, **kwargs):
+        raise OSError("control unavailable")
+
+    owner = SimpleNamespace(
+        exchange=exchange, budget_id="ops-test", admission=SimpleNamespace(request=unavailable)
+    )
+    SegmentManagedExecutor._request_training_stop(owner, "sampled_original_audit_failed")
+    events = exchange.event_records()
+    assert [e["kind"] for e in events] == ["integrity_failed", "integrity_stop_pending"]
+    assert events[0]["reason"] == "sampled_original_audit_failed"
+    assert events[0]["budget_id"] == "ops-test"

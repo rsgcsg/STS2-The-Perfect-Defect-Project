@@ -15,6 +15,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 OPERATIONAL_FIELDS = ("diagnostics_every", "archive_pending_bytes", "archive_min_free_bytes",
+                      "archive_min_free_inodes",
                       "archive_poll_seconds", "input_compiler_identity", "input_pack_artifact_id",
                       "prepare_ahead", "inference_stream", "preparation_workers",
                       "preparation_threads", "prepared_bytes", "training_generation",
@@ -45,6 +46,7 @@ class SegmentConfig:
     warmup_artifact_id: str | None = None
     archive_pending_bytes: int = 4 * 1024**3
     archive_min_free_bytes: int = 20 * 1024**3
+    archive_min_free_inodes: int = 10000
     archive_poll_seconds: float = 2
     input_compiler_identity: dict[str, Any] | None = None
     input_pack_artifact_id: str | None = None
@@ -79,6 +81,7 @@ class SegmentConfig:
                 or not 0 <= self.inference_window_ms <= 100
                 or not 0 < self.checkpoint_seconds <= 3600
                 or type(self.archive_min_free_bytes) is not int or self.archive_min_free_bytes < 0
+                or type(self.archive_min_free_inodes) is not int or self.archive_min_free_inodes < 0
                 or not 0.01 <= self.archive_poll_seconds <= 30
                 or type(self.prepare_ahead) is not bool or type(self.inference_stream) is not bool
                 or type(self.central_scoring) is not bool

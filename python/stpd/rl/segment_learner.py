@@ -12,6 +12,7 @@ import copy
 import hashlib
 import io as byte_io
 import json
+import math
 import multiprocessing
 import os
 import random
@@ -187,7 +188,13 @@ def _publish_snapshot(
             "training": {"updates": updates},
         }
     )
+    # These are this publication's disposable encoder inputs/copies. Canonical
+    # model+heads bytes and identities are already verified in the original Store.
+    released = checkpoint.stat().st_size + (destination / "model.tensor-tree").stat().st_size
+    checkpoint.unlink()
+    (destination / "model.tensor-tree").unlink()
     return {"identity": identity, "record": record, "updates": updates,
+            "temporary_export_released_bytes": released,
             "publication_seconds": time.perf_counter() - began,
             "publisher_memory": _process_memory()}
 
@@ -220,6 +227,8 @@ def _resume_config(value: dict[str, Any]) -> dict[str, Any]:
         "device",
         "threads",
         "wall_seconds",
+        "deadline_at",
+        "operating_budget",
         "max_versions",
         "resume_checkpoint",
         "resume_source",
@@ -258,13 +267,17 @@ class SegmentLearner:
         work.mkdir(parents=True, exist_ok=True)
         self.producer = source_identity(ROOT)
         self.exchange = Exchange(config.peer, config.run)
-        if self.exchange.stop_request() is not None:
+        self.archive = None
+        self.generation = settings.training_generation or "g" + uuid.uuid4().hex
+        if self.exchange.stop_request(training_generation=self.generation) is not None:
             raise BoundaryError("rl_learner", "cannot_resume_a_permanently_stopped_run")
+        self.deadline_at = None
+        self.active_training_began: float | None = None
+        self.active_training_seconds = 0.
         self.device = _device(config.device)
         torch.set_num_threads(config.threads)
         torch.manual_seed(config.seed)
         self.rng = random.Random(config.seed)
-        self.generation = settings.training_generation or "g" + uuid.uuid4().hex
         self.queue = SegmentQueue(settings)
         self.condition = self.queue.condition
         self.gpu_lock = threading.RLock()
@@ -272,6 +285,7 @@ class SegmentLearner:
         self.hp = AuxiliaryPool(settings.hp_battles, settings.hp_uses)
         self.lease_owners: dict[str, dict[str, Any]] = {}
         self.actor_episodes: dict[str, str] = {}
+        self.retired_actors: set[str] = set()
         self.sources: dict[str, dict[str, Any]] = {}
         self.hot_references: dict[tuple[str, str], HotPayloadRef] = {}
         self.newlease_stopped = self.input_fenced = False
@@ -309,6 +323,31 @@ class SegmentLearner:
         restored = (
             self._read_checkpoint(config.resume_checkpoint) if config.resume_checkpoint else None
         )
+        cp_deadline = restored.config.get("deadline_at") if restored is not None else None
+        if cp_deadline is not None and config.deadline_at not in {None, cp_deadline}:
+            raise BoundaryError("rl_learner", "checkpoint_deadline_cannot_be_reset")
+        cp_budget = restored.config.get("operating_budget") if restored is not None else None
+        budget = copy.deepcopy(config.operating_budget if config.operating_budget is not None
+                               else cp_budget)
+        if budget is not None:
+            if (set(budget) != {"id", "total_seconds", "consumed_seconds"}
+                    or not isinstance(budget["id"], str)
+                    or any(type(budget[k]) not in (int, float) or not math.isfinite(budget[k])
+                           for k in ("total_seconds", "consumed_seconds"))
+                    or budget["consumed_seconds"] < 0 or not 0 < budget["total_seconds"] <= 72000):
+                raise ValueError("invalid_operating_budget")
+            if cp_budget is not None:
+                if any(budget[k] != cp_budget[k] for k in ("id", "total_seconds")):
+                    raise ValueError("checkpoint_operating_budget_cannot_be_reset")
+                budget["consumed_seconds"] = max(budget["consumed_seconds"],
+                                                  cp_budget["consumed_seconds"])
+        self.deadline_at = self.exchange.run_deadline(
+            cp_deadline if cp_deadline is not None else config.deadline_at,
+            budget_id=budget["id"] if budget is not None else None)
+        self.config = replace(config, deadline_at=self.deadline_at, operating_budget=budget,
+            wall_seconds=min(config.wall_seconds,
+                             max(0, budget["total_seconds"] - budget["consumed_seconds"]))
+            if budget is not None else config.wall_seconds)
         if restored is not None:
             if (
                 restored.identity.run != config.run
@@ -455,6 +494,25 @@ class SegmentLearner:
                 random.setstate(restored.rng.python_random)
             if self.device.type == "cuda":
                 torch.cuda.set_rng_state_all(list(restored.rng.cuda_rng))
+        from spireagent.storage.async_archive import ArchivedStore
+
+        self.archive = self.exchange.store.archive if isinstance(
+            self.exchange.store, ArchivedStore) else None
+        if self.archive is not None:
+            self.archive.start_capacity_monitor(settings.archive_poll_seconds)
+
+    def archive_capacity(self) -> dict[str, Any]:
+        if self.archive is None:
+            return {"ready": True, "archive": "not_configured"}
+        state = self.archive.capacity_status()
+        ready = bool(state.get("fresh") and state.get("error") is None
+            and state.get("quota_status") != "observation_failed"
+            and state.get("free_bytes", 0) >= self.settings.archive_min_free_bytes
+            and (self.settings.archive_min_free_inodes == 0 or (
+                type(state.get("free_inodes")) is int
+                and state["free_inodes"] >= self.settings.archive_min_free_inodes))
+            and state.get("pending_bytes_estimate", 0) <= self.settings.archive_pending_bytes)
+        return {**state, "ready": ready}
 
     def _read_checkpoint(self, artifact_id: str) -> SelfContainedCheckpoint:
         manifest = self.exchange.store.get_manifest(artifact_id)
@@ -610,6 +668,7 @@ class SegmentLearner:
                 )
             self._event("model_published", version=publication["identity"]["version"],
                         updates=publication["updates"],
+                        temporary_export_released_bytes=publication["temporary_export_released_bytes"],
                         publication_seconds=publication["publication_seconds"],
                         publisher_memory=publication["publisher_memory"])
             self._kick_publication()
@@ -667,6 +726,7 @@ class SegmentLearner:
                 "pool_id": self.pool.pool_id,
                 "input_sequence": self.input_sequence,
                 "input_fenced": self.input_fenced,
+                "archive_capacity": self.archive_capacity(),
             }
         if operation == "receipt":
             # Old generation receipts remain facts; querying does not restore a
@@ -698,17 +758,23 @@ class SegmentLearner:
             return self._end_episode(request)
         actor, episode = request["actor"], request["episode"]
         with self.condition:
+            if actor in self.retired_actors:
+                return {"stopped": True, "reason": "actor_allocation_terminal"}
             if operation == "episode_open":
                 if self.newlease_stopped:
                     return {"admitted": False}
                 return self._accept(
                     request,
                     {"admitted": True, "run": self.config.run,
-                     "training_generation": self.generation},
+                     "training_generation": self.generation,
+                     "budget_id": (self.config.operating_budget or {}).get("id")},
                     lambda: self.actor_episodes.__setitem__(f"{actor}:{episode}", episode),
                 )
             if operation == "begin":
                 while not self.newlease_stopped and f"{actor}:{episode}" in self.actor_episodes:
+                    if not self.archive_capacity()["ready"]:
+                        self.condition.wait(self.settings.archive_poll_seconds)
+                        continue
                     duplicate = self._receipt(request)
                     if duplicate is not None:
                         return duplicate
@@ -846,6 +912,43 @@ class SegmentLearner:
                 self._release(member.payload, "delayed:" + request["episode"])
             self._forget_unreferenced()
             return response
+
+    def retire_actor(self, actor: str, allocation: dict[str, Any]) -> dict[str, Any]:
+        """Release capacity after the execution owner proves this actor is dead.
+
+        This is not episode_end: no terminal/labels/result is invented, no input
+        receipt changes, and replacement must have a new actor/seed namespace.
+        """
+        if (allocation.get("terminal") is not True or allocation.get("actor") != actor
+                or not isinstance(allocation.get("job_id"), str)
+                or allocation.get("state") not in {"COMPLETED", "FAILED", "CANCELLED",
+                    "TIMEOUT", "OUT_OF_MEMORY", "NODE_FAIL", "PREEMPTED", "BOOT_FAIL",
+                    "DEADLINE", "REVOKED"}):
+            raise ValueError("exact_terminal_actor_allocation_required")
+        with self.condition:
+            if actor in self.retired_actors:
+                return {"actor": actor, "already_retired": True}
+            episodes = [key.split(":", 1)[1] for key in self.actor_episodes
+                        if key.startswith(actor + ":")]
+            leases = [key for key, owner in self.lease_owners.items() if owner["actor"] == actor]
+            for key in leases:
+                self.queue.release(key)
+                self.lease_owners.pop(key)
+            for episode in episodes:
+                self.actor_episodes.pop(f"{actor}:{episode}")
+                for record in list(self.sources.values()):
+                    owner = "delayed:" + episode
+                    if (record["actor"] == actor and record["episode"] == episode
+                            and (record["payload"].slot, owner) in self.hot_references):
+                        self._release(record["payload"], owner)
+            self.retired_actors.add(actor)
+            result = {"actor": actor, "allocation": allocation,
+                      "unresolved_episodes": episodes, "released_leases": leases,
+                      "new_games": 0, "original_receipts_changed": False}
+            self._event("actor_retired", **result)
+            self._forget_locked()
+            self.condition.notify_all()
+            return result
 
     def _add_auxiliary(self, groups: list[tuple[str, str, list[dict[str, Any]]]]) -> None:
         for kind, identity, rows in groups:
@@ -1176,7 +1279,8 @@ class SegmentLearner:
             self.telemetry_futures.popleft().result()
         self.telemetry_futures.append(
             self.telemetry.submit(
-                self.exchange.publish_event, kind, training_generation=self.generation, **fields
+                self.exchange.publish_event, kind, training_generation=self.generation,
+                budget_id=(self.config.operating_budget or {}).get("id"), **fields
             )
         )
 
@@ -1189,10 +1293,15 @@ class SegmentLearner:
         cuda = (
             tuple(torch.cuda.get_rng_state_all()) if self.device.type == "cuda" else self.cuda_rng
         )
+        configuration = asdict(self.config)
+        if configuration["operating_budget"] is not None:
+            active = (time.monotonic() - self.active_training_began
+                      if self.active_training_began is not None else self.active_training_seconds)
+            configuration["operating_budget"]["consumed_seconds"] += active
         return SelfContainedCheckpoint(
             RunSequence(self.config.run, self.generation, self.checkpoint_sequence),
             replace(self.construction_template, text_digest=text_digest(weights)),
-            asdict(self.config),
+            configuration,
             self.producer.to_dict(),
             weights,
             optimizer,
@@ -1258,13 +1367,17 @@ class SegmentLearner:
         with self.condition:
             self.newlease_stopped = True
             self.condition.notify_all()
-        self.pool.close()
         with ExitStack() as cleanup:
             cleanup.callback(self.publisher.shutdown, wait=True, cancel_futures=True)
             cleanup.callback(self.telemetry.shutdown, wait=True, cancel_futures=False)
             cleanup.callback(self.checkpoint_encoder.shutdown, wait=True, cancel_futures=False)
             cleanup.callback(self.checkpoints.__exit__, RuntimeError if self.input_fenced else None)
-            self.input_preparer.shutdown(wait=True, cancel_futures=False)
+            if self.archive is not None:
+                cleanup.callback(self.archive.stop_capacity_monitor)
+            try:
+                self.pool.close()
+            finally:
+                self.input_preparer.shutdown(wait=True, cancel_futures=False)
             for future, _, _ in self.pending_labels:
                 future.result()
             for (_slot, owner), payload in list(self.hot_references.items()):
@@ -1272,22 +1385,48 @@ class SegmentLearner:
             for future in self.telemetry_futures:
                 future.result()
 
-    def run(self, *, initialize_only: bool = False) -> dict[str, Any]:
+    def run(self, *, initialize_only: bool = False,
+            on_tick: Callable[[], None] | None = None) -> dict[str, Any]:
+        try:
+            summary = self._run(initialize_only=initialize_only, on_tick=on_tick)
+        except BaseException as error:
+            fields = {"training_generation": self.generation, "updates": self.updates,
+                      "budget_id": (self.config.operating_budget or {}).get("id"),
+                      "error_type": type(error).__name__,
+                      "error_code": getattr(error, "code", None)}
+            try:
+                self.exchange.publish_event("failed", **fields)
+            except Exception as publication_error:
+                (self.work / "failed-event-unpublished.json").write_bytes(json_bytes(
+                    {**fields, "publication_error_type": type(publication_error).__name__}))
+            raise
+        self.exchange.publish_event("finished", **summary)
+        return summary
+
+    def _run(self, *, initialize_only: bool = False,
+             on_tick: Callable[[], None] | None = None) -> dict[str, Any]:
         began = time.monotonic()
+        self.active_training_began = began
         deadline = began + self.config.wall_seconds
         checkpoint_at = began + self.settings.checkpoint_seconds
         stop_at = began
         try:
+            self._event("training_started", active_seconds=0, updates=self.updates)
             while (
                 not initialize_only
                 and not self.input_fenced
                 and time.monotonic() < deadline
+                and (self.deadline_at is None or time.time() < self.deadline_at - 600)
                 and not (self.work / "STOP").exists()
                 and self.version < self.config.max_versions
             ):
                 if time.monotonic() >= stop_at:
                     stop_at = time.monotonic() + self.config.remote_stop_seconds
-                    if self.exchange.stop_request() is not None:
+                    if on_tick is not None:
+                        on_tick()
+                    self._event("heartbeat", active_seconds=time.monotonic() - began,
+                                updates=self.updates, archive_capacity=self.archive_capacity())
+                    if self.exchange.stop_request(training_generation=self.generation) is not None:
                         break
                 self._collect_publication()
                 self._collect_checkpoint()
@@ -1307,10 +1446,15 @@ class SegmentLearner:
                 self._prepare_ahead()
                 self._step()
         finally:
+            training_elapsed = time.monotonic() - began
+            self.active_training_seconds = training_elapsed
+            self.active_training_began = None
             with self.condition:
                 self.newlease_stopped = True
                 self.condition.notify_all()
             try:
+                self._event("training_window", active_seconds=training_elapsed,
+                            updates=self.updates)
                 # In-flight worlds close through the original producer/receipt
                 # path. No input is replayed and this is not a new training window.
                 drain = time.monotonic() + 600
@@ -1319,6 +1463,8 @@ class SegmentLearner:
                     and (self.queue.leases or self.actor_episodes)
                     and time.monotonic() < drain
                 ):
+                    if on_tick is not None:
+                        on_tick()
                     with self.condition:
                         self.condition.wait(0.2)
                 if not self.input_fenced:
@@ -1350,9 +1496,13 @@ class SegmentLearner:
             "unresolved_episodes": len(self.actor_episodes),
             "input_fenced": self.input_fenced,
             "input_failure": self.input_failure,
+            "deadline_at": self.deadline_at,
+            "budget_id": (self.config.operating_budget or {}).get("id"),
             "trajectory_encoding": "hot-segment",
         }
         (self.work / "learner-summary.json").write_bytes(json_bytes(summary))
         if self.input_fenced:
             raise BoundaryError("rl_learner", "input_owner_fenced_restore_last_checkpoint")
+        if self.queue.leases or self.actor_episodes:
+            raise BoundaryError("rl_learner", "unresolved_worlds_after_drain")
         return summary
