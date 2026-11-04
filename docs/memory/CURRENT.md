@@ -1,12 +1,11 @@
-# RL4.1：G0 已测；G1 恢复有更新，整体验证尚未通过
+# RL4.1：G1未通过，已停止新增World；资源保留交下一负责人
 
-I1续跑3已从真实CP16完成G0，实际A100为40GB；整组BF16 eager、无checkpoint，
-320行局部SGD热0.514s、峰10.44GiB，compile无稳态收益，正式profile已入库。
-源码`2def25eb`的两个32路G1档保留：首档被辅助磁盘观察中断；第二档恢复后实际继续33次SGD，
-但仍有2未决lease/2未收口episode，不能算整链通过。零段close写旧代已由原件证实，
-当前唯一i1 writer修准入归属与原异常记录并补反例；不重投旧World/seed，不修改原分母。
-本轮下一步是精确冻结修复后走新的正常G1短验，并收齐保全和量测；G2/H1尚未启动。
-本轮实物和剩余义务看外部任务`replies/RL4.1/I1-REPORT.md`；接口和SOP在[原RL指南](../../python/docs/RL_ACTOR_LEARNER.zh-CN.md)。
+I1已完成G0并选整组BF16 eager；四档G1的原失败保持，128/256未offer，H1/长训未开。
+最后Actor已沿原Runtime Stop正常释放并完成原件R2保全；原未决控制账本不重放补0。
+已修准入归属、1%保留和资源入口；HotRef64MiB与本地16MiB承载不一致另修，只有CPU证据。
+下一步由Claude/G2核最终SHA、M3与A1组合，再决定全新资格短验；不从本页自动开局。
+准确job、当前持有预算、全部收据和剩余义务只看外部`replies/RL4.1/I1-REPORT.md`；
+操作仍走[原RL指南](../../python/docs/RL_ACTOR_LEARNER.zh-CN.md)，不把持卡、保全或CPU测试当G1通过。
 
 ## 原轮结果与剩余授权
 
