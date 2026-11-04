@@ -3,12 +3,13 @@
  * after close. The research consumer supplies its own durable segment barrier.
  */
 import { open } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
-import { readLiveManifest, streamGlobalAgentRun, type GlobalReplayEvent } from "./global-replay.js";
+import { globalReplaySemanticIdentity, readLiveManifest, streamGlobalAgentRun, type GlobalReplayEvent } from "./global-replay.js";
 
-export async function* globalJournalEvents(directory: string): AsyncGenerator<GlobalReplayEvent> {
+export async function* globalJournalEvents(directory: string, bytes?: (raw: Buffer) => void): AsyncGenerator<GlobalReplayEvent> {
   const handle = await open(join(directory, "events.jsonl"), "r");
   let offset = 0, remainder: Buffer = Buffer.alloc(0);
   const buffer = Buffer.alloc(1024 * 1024);
@@ -35,6 +36,7 @@ export async function* globalJournalEvents(directory: string): AsyncGenerator<Gl
         const line = remainder.subarray(0, newline);
         remainder = remainder.subarray(newline + 1);
         const event = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(line)) as GlobalReplayEvent;
+        bytes?.(Buffer.concat([line, Buffer.from("\n")]));
         yield event;
         if (event.kind === "stopped") {
           if (remainder.length || (await handle.stat()).size !== offset)
@@ -55,8 +57,16 @@ async function main() {
     const bytes = JSON.stringify(value) + "\n";
     if (!process.stdout.write(bytes)) await new Promise<void>(resolve => process.stdout.once("drain", resolve));
   };
-  const report = await streamGlobalAgentRun(directory, globalJournalEvents(directory), write, write);
-  await write({ schema: "sts2.policy-runtime/verified-global-end-1", report });
+  const identity = await globalReplaySemanticIdentity();
+  const journal = createHash("sha256");
+  let journalBytes = 0, proof: Record<string, unknown> | undefined;
+  const report = await streamGlobalAgentRun(directory, globalJournalEvents(directory, raw => {
+    journal.update(raw); journalBytes += raw.length;
+  }), write, write, value => { proof = value; });
+  if (JSON.stringify(identity) !== JSON.stringify(await globalReplaySemanticIdentity()))
+    throw new Error("global_live_semantic_code_changed");
+  await write({ schema: "sts2.policy-runtime/verified-global-end-1", report,
+    proof: { ...proof, identity, journal: { sha256: journal.digest("hex"), bytes: journalBytes } } });
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url))

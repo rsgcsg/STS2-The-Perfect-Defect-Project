@@ -1,22 +1,22 @@
-"""Short verified trajectory segments on the existing immutable artifact Store.
+"""Hot-segment validation and read-only historical artifact readers.
 
-Runtime supplies the verified transition prefix; the actor supplies its actual
-behavior journal and durable original references. This is a new trajectory
-encoding on the same Store/Exchange, without a game loop or legality engine.
+Runtime supplies verified transitions and the actor supplies same-mu values.
+New rows use Exchange hot slots; the old archive-bundle writer is retired.
+Historical v1/v2 artifacts still undergo their original integrity/parent checks.
 """
 
 from __future__ import annotations
 
-import copy
 import gzip
 import hashlib
 import io
 import json
+import math
 from pathlib import Path
 from typing import Any
 
-from spireagent.artifact_contracts import Manifest, Parent, Producer
-from spireagent.json_boundary import BoundaryError, FrozenObject, json_bytes
+from spireagent.artifact_contracts import Parent
+from spireagent.json_boundary import BoundaryError
 from spireagent.storage.store import ManifestArtifactStore
 from stpd.p1.data import digest
 from stpd.p1.data import json_bytes as p1_json_bytes
@@ -79,11 +79,11 @@ def _parents(store: ManifestArtifactStore, segment: dict[str, Any]) -> tuple[Par
     )
 
 
-def validate_segment(value: dict[str, Any]) -> None:
+def validate_segment(value: dict[str, Any], *, _hot: bool = False) -> None:
     steps = value.get("steps")
     mu = value.get("mu") or {}
     if (
-        value.get("schema") not in {SCHEMA, COMPILED_SCHEMA}
+        (not _hot and value.get("schema") not in {SCHEMA, COMPILED_SCHEMA})
         or not isinstance(steps, list)
         or not 1 <= len(steps) <= 64
         or value.get("rows") != len(steps)
@@ -95,16 +95,16 @@ def validate_segment(value: dict[str, Any]) -> None:
         or not isinstance(value.get("original_commit"), dict)
     ):
         raise BoundaryError("trajectory_segment", "invalid_segment")
-    if value["schema"] == COMPILED_SCHEMA:
+    if _hot or value["schema"] == COMPILED_SCHEMA:
         validate_body(segment_body(value), value, value["compiler_identity"])
     original = value["original_commit"]
     if (
         original.get("run_id") != value["run_id"]
         or original.get("segment_id") != value["segment_id"]
-        or not isinstance(original.get("archive_sha256"), str)
+        or not _hot and (not isinstance(original.get("archive_sha256"), str)
         or len(original.get("archive_sha256", "")) != 64
         or type(original.get("archive_bytes")) is not int
-        or not 0 < original.get("archive_bytes", 0) <= MAX_ORIGINAL_BYTES
+        or not 0 < original.get("archive_bytes", 0) <= MAX_ORIGINAL_BYTES)
     ):
         raise BoundaryError("trajectory_segment", "invalid_original_block_binding")
     previous = None
@@ -151,6 +151,7 @@ def validate_segment(value: dict[str, Any]) -> None:
         )
         if boundary is None:
             raise BoundaryError("trajectory_segment", "battle_hp_boundary_changed")
+
         successor = boundary["successor"]
         observation = successor["observation"]
         hp = ((observation.get("player") or {}).get("content") or {}).get("hp")
@@ -162,78 +163,76 @@ def validate_segment(value: dict[str, Any]) -> None:
             or isinstance(hp, bool)
             or hp < 0
             or battle["hp"] != hp / 100
-            or battle["end_step"] != boundary["step_index"] + 1
+            or not battle["start_step"] < battle["end_step"] <= boundary["step_index"] + 1
             or battle["start_step"] >= battle["end_step"]
             or battle["battle_id"] != f"{value['run_id']}:{battle['start_step']}"
         ):
             raise BoundaryError("trajectory_segment", "battle_hp_boundary_changed")
 
 
-def publish_segment(
-    store: ManifestArtifactStore, segment: dict[str, Any], producer: Producer, *, originals: bytes
-) -> Manifest:
-    validate_segment(segment)
-    trajectory = segment
-    compiled_payload = None
-    if segment["schema"] == COMPILED_SCHEMA:
-        compiled = json_bytes(segment_body(segment))
-        if len(compiled) > MAX_BYTES:
-            raise BoundaryError("trajectory_segment", "compiled_segment_byte_limit")
-        compiled_payload = store.put_bytes("compiled_inputs", gzip.compress(
-            compiled, compresslevel=1, mtime=0), "application/gzip")
-        trajectory = copy.deepcopy(segment)
-        for step in trajectory["steps"]:
-            step["behavior"].pop("compiled_input")
-        trajectory.pop("compiled_boundary")
-    raw = json_bytes(trajectory)
-    if len(raw) > MAX_BYTES:
-        raise BoundaryError("trajectory_segment", "segment_byte_limit")
-    parents = _parents(store, segment)
-    expected = segment["original_commit"]
-    if (
-        len(originals) != expected["archive_bytes"]
-        or hashlib.sha256(originals).hexdigest() != expected["archive_sha256"]
-    ):
-        raise BoundaryError("trajectory_segment", "original_block_integrity_failure")
-    original_payload = store.put_payload("originals", io.BytesIO(originals), "application/gzip")
-    # The existing observer may continue to trail the game while this bounded
-    # upload/readback completes. Its lease stays charged, providing backpressure.
-    observed = hashlib.sha256()
-    for chunk in store.read_payload(original_payload):
-        observed.update(chunk)
-    if observed.hexdigest() != expected["archive_sha256"]:
-        raise BoundaryError("trajectory_segment", "original_block_peer_readback_failure")
-    payload = store.put_payload(
-        "trajectory", io.BytesIO(gzip.compress(raw, compresslevel=1, mtime=0)), "application/gzip"
-    )
-    manifest = Manifest(
-        "analysis",
-        producer,
-        parents=parents,
-        payloads=tuple(sorted((payload, original_payload) + (
-            (compiled_payload,) if compiled_payload is not None else ()))),
-        parameters=FrozenObject.of(
-            {
-                "schema": segment["schema"],
-                "run_id": segment["run_id"],
-                "segment_id": segment["segment_id"],
-                "rows": len(segment["steps"]),
-                "start_step": segment["steps"][0]["step_index"],
-                "end_step": segment["steps"][-1]["step_index"],
-                "decoded_bytes": len(raw),
-                "sha256": hashlib.sha256(raw).hexdigest(),
-                "mu": segment["mu"],
-            }
-        ),
-    )
-    store.publish(manifest)
-    return manifest
+def validate_hot_segment(value: dict[str, Any]) -> None:
+    """F0 HotSegment is an internal transport object, not an artifact schema."""
+    validate_segment(value, _hot=True)
+    mu = value["mu"]
+    if (value.get("run") != mu.get("run")
+            or not value.get("training_generation")
+            or value["training_generation"] != mu.get("training_generation")):
+        raise BoundaryError("trajectory_segment", "hot_segment_generation_changed")
+    original = value["original_commit"]
+    if (original.get("representation") != "live-prefix"
+            or len(original.get("journal_prefix_sha256", "")) != 64
+            or len(original.get("behavior_trace_prefix_sha256", "")) != 64):
+        raise BoundaryError("trajectory_segment", "hot_original_prefix_binding_changed")
+    for step in value["steps"]:
+        _probabilities(step["behavior"].get("outcome_probabilities"))
+        if type(step["behavior"].get("floor")) is not int or step["behavior"]["floor"] < 0:
+            raise BoundaryError("trajectory_segment", "invalid_behavior_floor")
+    bootstrap = value.get("bootstrap")
+    last = value["steps"][-1]
+    if value["terminal"] is None:
+        if (
+            last["successor"]["observation"]["status"] == "terminal"
+            or not isinstance(bootstrap, dict)
+            or bootstrap.get("mu_snapshot_sha256") != mu["snapshot_sha256"]
+            or bootstrap.get("successor_input_sha256") != digest(p1_json_bytes(last["successor"]))
+            or bootstrap.get("floor") != _boundary_floor(value)
+        ):
+            raise BoundaryError("trajectory_segment", "hot_bootstrap_binding_changed")
+        _probabilities(bootstrap.get("outcome_probabilities"))
+    elif bootstrap is not None:
+        raise BoundaryError("trajectory_segment", "terminal_has_no_bootstrap")
+
+
+def _boundary_floor(segment: dict[str, Any]) -> int:
+    successor = segment["steps"][-1]["successor"]["observation"]
+    floor = ((successor.get("run") or {}).get("content") or {}).get("floor")
+    return max([int(step["behavior"]["floor"]) for step in segment["steps"]]
+               + [floor if type(floor) is int else 0])
+
+
+def _probabilities(value: Any) -> None:
+    if (not isinstance(value, list) or len(value) != 51
+            or any(type(p) not in (float, int) or not math.isfinite(p) or p < 0 for p in value)
+            or not math.isclose(sum(value), 1, rel_tol=0, abs_tol=1e-5)):
+        raise BoundaryError("trajectory_segment", "invalid_behavior_outcome_distribution")
 
 
 def read_segment(
     store: ManifestArtifactStore, artifact_id: str, *, scratch: Path
 ) -> dict[str, Any]:
     import tempfile
+
+    if artifact_id.startswith("hot:"):
+        from spireagent.rl_exchange import Exchange
+        from spireagent.storage.local import LocalBlobStore
+
+        if not isinstance(store.blobs, LocalBlobStore):
+            raise BoundaryError("trajectory_segment", "hot_segment_requires_local_exchange")
+        slot = artifact_id.removeprefix("hot:")
+        exchange = Exchange(
+            {"kind": "local", "directory": str(store.blobs.root)}, slot.split("/")[0]
+        )
+        return exchange.read_hot_segment(exchange.hot_payload_reference(slot))
 
     manifest = store.get_manifest(artifact_id)
     info = manifest.parameters.value()
@@ -253,7 +252,6 @@ def read_segment(
         raise BoundaryError("trajectory_segment", "segment_integrity_failure")
     value: dict[str, Any] = json.loads(raw)
     if info["schema"] == COMPILED_SCHEMA:
-        import io
 
         compressed = store.bytes(manifest.payload("compiled_inputs"), maximum=MAX_BYTES)
         with gzip.GzipFile(fileobj=io.BytesIO(compressed)) as stream:

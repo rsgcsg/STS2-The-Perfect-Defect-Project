@@ -11,7 +11,11 @@ import time
 from pathlib import Path
 from typing import Any
 
-from sts2_platform_evidence import verify_agent_session_run_evidence
+from sts2_platform_evidence import (
+    AgentSessionRunEvidence,
+    VerificationResult,
+    verify_agent_session_run_evidence,
+)
 
 from spireagent.json_boundary import BoundaryError, json_bytes
 from spireagent.package_identity import validate_installed_package
@@ -47,6 +51,7 @@ def verify_closed_save(row: dict[str, Any], path: Path) -> None:
     job = json.loads(_referenced(path.parent, row["save_job"]))
     if (job.get("schema") != "spireagent/managed-save-job-1"
             or job.get("selection_id") != row.get("selection_id")
+            or job.get("training_audit_selected") != row.get("training_audit_selected")
             or job.get("retention") != row.get("retention")):
         raise BoundaryError("managed_pipeline", "save_job_identity_changed")
 
@@ -55,7 +60,15 @@ def verify_unscored_save(row: dict[str, Any], path: Path) -> None:
     verify_closed_save(row, path)
     if row.get("retention", {}).get("score_eligible") is not False:
         raise BoundaryError("managed_pipeline", "unscored_retention_required")
-    if row.get("trajectory_shard_id"):
+    if row.get("preservation_route") == "ledger_only":
+        receipt = json.loads(_referenced(path.parent, row["ledger_preservation"]))
+        typed = json.loads(_referenced(path.parent, row["typed_verification"]))
+        if (receipt.get("status") != "completed" or typed.get("status") != "pass"
+                or receipt.get("content_id") != typed.get("content_id")
+                or row.get("training_audit_selected") is not False
+                or preservation_route(row["retention"], row) != "ledger_only"):
+            raise BoundaryError("managed_pipeline", "qualified_ledger_only_receipt_required")
+    elif row.get("trajectory_shard_id"):
         receipt = json.loads(_referenced(path.parent, row["trajectory_preservation"]))
         if (receipt.get("status") != "completed" or receipt.get("full_readback") is not True
                 or receipt.get("artifact_id") != row["trajectory_shard_id"]
@@ -186,6 +199,7 @@ class PipelinedManagedExecutor(ManagedEpisodeExecutor):
             "mode": mode, "selection_id": row["selection_id"],
             "verification_runtime_instance_id": row.get("verification_runtime_instance_id"),
             "formal_audit_selected": row.get("formal_audit_selected"),
+            "training_audit_selected": row.get("training_audit_selected"),
             "ledger_slot_id": row.get("ledger_slot_id"),
             "episode": {"seed": row["seed"], "manifest_sha256": row["manifest_sha256"],
                         "scenario": row["scenario"]},
@@ -197,6 +211,14 @@ class PipelinedManagedExecutor(ManagedEpisodeExecutor):
             "retention": row["retention"], "peer": self.configuration["peer"],
             "store": self.preparation["store"]}))
         checkpoint()
+
+    def _verify_original(self, row: dict[str, Any], run: Path,
+                         expected: dict[str, Any]) -> VerificationResult[AgentSessionRunEvidence]:
+        return verify_agent_session_run_evidence(run, expected)
+
+    def _after_preservation(self, row: dict[str, Any], artifacts: Any, run: Path,
+                            expected: dict[str, Any], route: str) -> None:
+        pass
 
     def preserve_report(self, path: Path) -> dict[str, Any]:
         report: dict[str, Any] = json.loads(_read(path, max_bytes=MAX_REPORT_BYTES))
@@ -229,6 +251,7 @@ class PipelinedManagedExecutor(ManagedEpisodeExecutor):
                         != self.configuration.get("initial_progress", {}).get("progress_sha256"))
                     or job["selection_id"] != row["selection_id"]
                     or job.get("formal_audit_selected") != row.get("formal_audit_selected")
+                    or job.get("training_audit_selected") != row.get("training_audit_selected")
                     or job.get("ledger_slot_id") != row.get("ledger_slot_id")
                     or job.get("verification_runtime_instance_id")
                     != row.get("verification_runtime_instance_id")
@@ -251,7 +274,7 @@ class PipelinedManagedExecutor(ManagedEpisodeExecutor):
             run = path.parent / job["run"]
             # Re-open the sealed original, not a cached qualification bit.
             with _phase(row, "save_verify"):
-                verified = verify_agent_session_run_evidence(run, expected)
+                verified = self._verify_original(row, run, expected)
             if not verified.passed or verified.value is None:
                 # A failed typed original is still an owned full failed prefix;
                 # persist it without retrying the native episode.
@@ -266,10 +289,26 @@ class PipelinedManagedExecutor(ManagedEpisodeExecutor):
                 checkpoint()
                 return report
             if row.get("execution_status") == "verification_pending":
-                with _phase(row, "finish"):
-                    self._record_verified_original(row, artifacts, run, expected,
-                        Path(model["package_directory"]),
-                        job["verification_runtime_instance_id"], verified)
+                try:
+                    with _phase(row, "finish"):
+                        self._record_verified_original(row, artifacts, run, expected,
+                            Path(model["package_directory"]),
+                            job["verification_runtime_instance_id"], verified)
+                except Exception as error:
+                    # A lost label/segment ACK does not retry World or prevent
+                    # full retention of the original that was just verified.
+                    row.update(execution_status="unknown",
+                        execution_reason="post_verification_processing_failed",
+                        processing_error=error.code if isinstance(error, BoundaryError)
+                        else type(error).__name__)
+                    self._preserve_failure(row, artifacts, job, private)
+                    row["elapsed_seconds"] = time.time() - row.get(
+                        "pipeline_started_at", time.time()
+                    )
+                    row.setdefault("detail_seconds", {})["save_worker"] = time.monotonic() - started
+                    report.update(status="stopped", stop_reason=row["execution_reason"])
+                    checkpoint()
+                    return report
                 row["execution_status"], row["execution_reason"] = row["status"], row["reason"]
                 row.update(status="save_pending", reason="waiting_for_preservation")
                 checkpoint()
@@ -277,6 +316,11 @@ class PipelinedManagedExecutor(ManagedEpisodeExecutor):
             row["preservation_route"] = route
             if route in {"full_peer", "trajectory_and_full_peer"}:
                 super()._preserve(row, artifacts, checkpoint, run, expected, model, private)
+            elif route == "ledger_only":
+                row["ledger_preservation"] = artifacts.put("ledger-preservation.json", json_bytes({
+                    "status": "completed", "run_id": row["run_id"],
+                    "content_id": verified.value.content_id, "original_retained": False,
+                    "sampling": "open_identity_sha256_mod20"}))
             elif route == "full_local":
                 with _phase(row, "preserve"):
                     runtime = publish_global_runtime(self.store, self.producer, expected)
@@ -321,6 +365,7 @@ class PipelinedManagedExecutor(ManagedEpisodeExecutor):
                            reason=row["execution_reason"])
             row.pop("save_error", None)
             row.pop("save_error_detail", None)
+            self._after_preservation(row, artifacts, run, expected, route)
         except Exception as error:
             row.update(status="save_failed", reason="preservation_failed",
                        save_error=error.code if isinstance(error, BoundaryError)
@@ -361,6 +406,8 @@ class PipelinedManagedExecutor(ManagedEpisodeExecutor):
             # when the node-local attempt/report is no longer available.
             facts["typed_verification"] = json.loads(
                 _referenced(artifacts.root, row["typed_verification"]))
+        if "processing_error" in row:
+            facts["processing_error"] = row["processing_error"]
         source = artifacts.root / (job["run"] or "runs")
         with _phase(row, "preserve"):
             stored = publish_failure(self.store, source, self.producer, facts, scratch=private)
