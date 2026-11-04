@@ -58,6 +58,13 @@ flowchart LR
 ```
 
 一张表按 E1–E8 记吞吐、延迟、host/显存和磁盘；行/h必须写清 R（含强制）还是成功首用多选D。
+正常 progress 的 `first_use_policy_bias` 把**成功首用多选行**的完整 KL(μ‖πθ)、选中动作比率和
+裁剪观测，与 optimizer 尝试开始时的数据年龄、发布版本差和 SGD 更新差逐行对应后分桶。
+只持久化固定直方图边界、计数与和，窗口汇总可相加；分位数由合并后的直方图报区间近似，
+不能平均每批分位数。缺时间、负年龄及非有限值分别计数，forced、aux、多轮重复使用不进首用分母。
+`outside_clip` 是比率越界，`ppo_objective_clipped` 还按 advantage 方向判断；`ratio_above_one`
+只是 rho_bar=1 的反事实比例，未实施 V-trace。旧抽样近似 KL 与反向 `acting_kl_theta_mu` 字段不改。
+观测复用原 forward、只传小型 detached 行统计，并入原单次 pre-step D2H；不改 loss、uses、准入或年龄门。
 下列带日期数字是原测量，不能升级为当前G1实测；本轮准确SHA、原收据和预算由CURRENT指向的报告拥有。
 
 | 边 | 吞吐 / 延迟 | host / 显存预算和已有实测 | 长期磁盘增长 |

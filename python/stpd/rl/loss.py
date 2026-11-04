@@ -68,6 +68,7 @@ def batched_segment_loss(
     terminal_rows: int,
     hp_rows: int,
     policy_coef: float = 1.0,
+    row_diagnostics: list[torch.Tensor] | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor, tuple[torch.Tensor, ...], torch.Tensor]:
     """One tensor calculation for the entire optimizer batch, without row/group loops.
 
@@ -93,6 +94,16 @@ def batched_segment_loss(
         (probability * safe_logp - torch.special.xlogy(probability, t["old_probabilities"])).sum(-1)
         * policy_mask
     ).sum()
+    if row_diagnostics is not None:
+        with torch.no_grad():
+            old = t["old_probabilities"]
+            forward = (torch.special.xlogy(old, old) - old * safe_logp.detach()).sum(-1)
+            detached = ratio.detach()
+            objective_clipped = (detached * advantage
+                > detached.clamp(1 - clip, 1 + clip) * advantage)
+            row_diagnostics.append(torch.stack((forward, detached,
+                (detached - 1).abs().gt(clip).float(), objective_clipped.float(),
+                detached.gt(1).float(), t["policy_mask"]), dim=1))
     outcome_logp = logits.float().log_softmax(-1).masked_fill(~t["outcome_valid"], 0)
     ce = -(t["targets"] * outcome_logp).sum(-1)
     td = (ce * t["td_mask"]).sum() / max(td_rows, 1)
@@ -135,6 +146,7 @@ def prepared_update(
     target_kl: float = 0.03,
     gpu_lock: Any = None,
     diagnostics: bool = False,
+    collect_policy_rows: bool = False,
 ) -> dict[str, Any]:
     """One optimizer minibatch, with physical groups as a memory parameter.
 
@@ -159,6 +171,8 @@ def prepared_update(
     phases = dict.fromkeys(("forward", "loss", "diagnostics", "backward",
                            "norm_and_decision", "optimizer"), 0.0)
     diagnostic = _PreparedGradientDiagnostics(model) if diagnostics else None
+    row_diagnostics: list[torch.Tensor] | None = [] if collect_policy_rows else None
+    row_values: list[float] = []
     try:
         t = minibatch.tensors
         totals = t["targets"].new_zeros(8)
@@ -182,7 +196,8 @@ def prepared_update(
                     policy_coef=config.policy_coef,
                     terminal_coef=config.terminal_coef, hp_coef=config.hp_coef,
                     multi=minibatch.policy_rows, td_rows=minibatch.td_rows,
-                    terminal_rows=minibatch.terminal_rows, hp_rows=minibatch.hp_rows)
+                    terminal_rows=minibatch.terminal_rows, hp_rows=minibatch.hp_rows,
+                    row_diagnostics=row_diagnostics)
                 totals = totals + partial.detach()
                 dynamic_valid = dynamic_valid & valid
                 phases["loss"] += time.perf_counter() - phase
@@ -206,7 +221,11 @@ def prepared_update(
                                   valid.float()[None]))
             if diagnostic_values is not None:
                 decision = torch.cat((decision, diagnostic_values))
+            decision_size = decision.numel()
+            if row_diagnostics:
+                decision = torch.cat((decision, torch.cat(row_diagnostics).flatten()))
             measured = decision.cpu().tolist()  # one pre-step device synchronization
+            row_values, measured = measured[decision_size:], measured[:decision_size]
             phases["norm_and_decision"] += time.perf_counter() - phase
             phase = time.perf_counter()
             if not measured[9]:
@@ -250,6 +269,18 @@ def prepared_update(
         }
         if result["acting_kl_infinite"]:
             result["acting_kl_theta_mu"] = None
+        if collect_policy_rows:
+            # Logical row indices pair these transient pre-update observations
+            # with generation time/actual mu. The learner persists summaries only.
+            logical_rows = [row for group in minibatch.groups for row in group.rows]
+            result["_policy_rows"] = [
+                {"row": row, "kl_mu_theta": value[0] if math.isfinite(value[0]) else None,
+                 "ratio": value[1] if math.isfinite(value[1]) else None,
+                 "outside_clip": bool(value[2]), "ppo_objective_clipped": bool(value[3]),
+                 "ratio_above_one": bool(value[4])}
+                for row, value in zip(logical_rows, (row_values[i:i + 6]
+                    for i in range(0, len(row_values), 6)), strict=True) if value[5] > 0
+            ]
         if diagnostic_values is not None:
             norms = dict(zip(("policy", "td", "terminal", "hp"), measured[10:14], strict=True))
             aux_norm, dot = measured[14:16]

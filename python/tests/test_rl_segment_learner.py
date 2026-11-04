@@ -49,6 +49,46 @@ def test_initialize_only_saves_CP_with_zero_successful_uses(tmp_path, monkeypatc
     assert cp.counters.updates == 0 and cp.identity.training_generation == owner.generation
 
 
+def test_first_use_bias_pairs_rows_and_pools_histograms_without_pooling_quantiles():
+    from types import SimpleNamespace
+
+    import torch
+
+    from stpd.rl.segment_learner import _first_use_policy_bias
+
+    batch = SimpleNamespace(policy_mask=torch.tensor([True, False, True, True, True]),
+        metadata=[{"generated_timestamp": value, "mu_version": 8, "mu_updates": 18}
+                  for value in (99., 95., None, 101., 50.)])
+    samples = [{"row": index, "ratio": ratio, "kl_mu_theta": kl,
+                "outside_clip": ratio is not None and abs(ratio - 1) > .2,
+                "ppo_objective_clipped": index == 0,
+                "ratio_above_one": ratio is not None and ratio > 1}
+               for index, ratio, kl in ((4, 2., .3), (0, .5, .01), (1, 9., 9.),
+                                        (2, None, None), (3, 1., 0.))]
+    first = _first_use_policy_bias(batch, [0], samples, now=100., version=10, updates=20)
+    second = _first_use_policy_bias(batch, [1, 2, 3, 4], samples,
+                                    now=100., version=10, updates=20)
+    merged = _first_use_policy_bias(batch, [0, 1, 2, 3, 4], samples,
+                                    now=100., version=10, updates=20)
+    assert first["all"]["n"] == 1 and second["all"]["n"] == 3
+    assert merged["coverage_complete"] and merged["expected_n"] == merged["all"]["n"] == 4
+    assert merged["missing_age_n"] == merged["negative_age_n"] == 1
+    assert merged["age_seconds"][0]["n"] == 1  # Negative ages stay visible.
+    assert merged["age_seconds"][1]["ratio"]["sum"] == .5  # Exact logical pairing.
+    assert sum(part["n"] for part in merged["age_seconds"]) == 3
+    for metric in ("ratio", "kl_mu_theta"):
+        left, right, all_rows = (value["all"][metric] for value in (first, second, merged))
+        assert [a + b for a, b in zip(left["histogram"], right["histogram"], strict=True)
+                ] == all_rows["histogram"]
+        assert left["finite_n"] + right["finite_n"] == all_rows["finite_n"] == 3
+        assert all_rows["nonfinite_n"] == 1
+        assert left["sum"] + right["sum"] == pytest.approx(all_rows["sum"])
+    reused = _first_use_policy_bias(batch, [], samples, now=100., version=10, updates=20)
+    assert reused["all"]["n"] == 0 and reused["coverage_complete"]
+    gap = _first_use_policy_bias(batch, [0], [], now=100., version=10, updates=20)
+    assert not gap["coverage_complete"] and gap["expected_n"] == 1
+
+
 def test_async_CP_is_announced_while_idle(tmp_path, monkeypatch):
     config, io = configuration(tmp_path, monkeypatch)
     owner = SegmentLearner(config, tmp_path / "owner", io)
@@ -68,13 +108,38 @@ def test_async_CP_is_announced_while_idle(tmp_path, monkeypatch):
     assert read_cp(owner)[0]["checkpoint_sequence"] == 2
 
 
+def test_live_progress_pairs_only_successful_first_use_policy_rows_and_omits_transient_vectors(
+        tmp_path, monkeypatch):
+    config, io = configuration(tmp_path, monkeypatch)
+    config = dataclasses.replace(config, segments=dataclasses.replace(
+        config.segments, minibatches=1, epochs=2, target_kl=.99))
+    owner = SegmentLearner(config, tmp_path / "owner", io)
+    try:
+        deliver(owner, actor="a")
+        deliver(owner, actor="b")
+        assert owner._prepare()
+        first, reused = owner._step(), owner._step()
+        assert first["stepped"] and reused["stepped"]
+        assert first["first_use_policy_bias"]["all"]["n"] == 2
+        assert first["first_use_policy_bias"]["coverage_complete"]
+        assert reused["first_use_policy_bias"]["all"]["n"] == 0
+        assert reused["first_use_multi"] == first["first_use_multi"] == 2
+        for event in owner.exchange.event_records():
+            assert "_policy_rows" not in event
+    finally:
+        owner.close()
+
+
 def test_partial_dataset_stop_preserves_SGD_but_never_restores_hot_remainder(tmp_path, monkeypatch):
     config, io = configuration(tmp_path, monkeypatch)
     owner = SegmentLearner(config, tmp_path / "owner", io)
     deliver(owner, actor="a")
     deliver(owner, actor="b")
     assert owner._prepare()
-    owner._step()
+    step = owner._step()
+    assert "_policy_rows" not in step
+    assert step["first_use_policy_bias"]["coverage_complete"]
+    assert step["first_use_policy_bias"]["all"]["n"] == step["first_use_multi"]
     assert owner.updates == owner.first_use == 1 and owner.active is not None
     (owner.work / "STOP").touch()
     owner.run()

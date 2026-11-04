@@ -12,6 +12,7 @@ import copy
 import hashlib
 import io as byte_io
 import json
+import math
 import multiprocessing
 import os
 import random
@@ -99,6 +100,64 @@ def _process_memory() -> dict[str, int]:
     peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
     return {"pid": os.getpid(),
             "peak_rss_bytes": int(peak * (1 if sys.platform == "darwin" else 1024))}
+
+
+def _first_use_policy_bias(batch: PreparedBatch, newly_used: list[int],
+                          samples: list[dict[str, Any]], *, now: float,
+                          version: int, updates: int) -> dict[str, Any]:
+    """Mergeable observations of successful first-use multi-choice rows only."""
+    selected = {row for row in newly_used if bool(batch.policy_mask[row])}
+    rows = []
+    for sample in samples:
+        if sample["row"] not in selected:
+            continue
+        metadata = batch.metadata[sample["row"]]
+        rows.append({**sample,
+            "age": (now - metadata["generated_timestamp"]
+                    if metadata["generated_timestamp"] is not None else None),
+            "versions": version - metadata["mu_version"],
+            "SGD_updates": updates - metadata["mu_updates"]})
+    ratio_edges = (0., .1, .25, .5, .75, .8, .9, 1., 1.1, 1.2, 1.25, 1.5, 2., 4., 8.)
+    kl_edges = (0., 1e-6, 1e-5, 1e-4, 1e-3, .01, .03, .1, .3, 1.)
+
+    def distribution(items: list[dict[str, Any]], key: str,
+                     edges: tuple[float, ...]) -> dict[str, Any]:
+        values = [float(row[key]) for row in items if row[key] is not None
+                  and math.isfinite(row[key])]
+        counts = [0] * (len(edges) + 1)
+        for value in values:
+            index = next((i for i, edge in enumerate(edges) if value < edge), len(edges))
+            counts[index] += 1
+        return {"finite_n": len(values), "nonfinite_n": len(items) - len(values),
+                "sum": sum(values), "histogram": counts}
+
+    def summary(items: list[dict[str, Any]]) -> dict[str, Any]:
+        return {"n": len(items),
+            "kl_mu_theta": distribution(items, "kl_mu_theta", kl_edges),
+            "ratio": distribution(items, "ratio", ratio_edges),
+            **{key + "_n": sum(bool(row[key]) for row in items)
+               for key in ("outside_clip", "ppo_objective_clipped", "ratio_above_one")}}
+
+    def bins(key: str, edges: tuple[float, ...]) -> list[dict[str, Any]]:
+        bounds = (None, *edges, None)
+        return [{"lower_inclusive": lower, "upper_exclusive": upper,
+                 **summary([row for row in rows if row[key] is not None
+                    and (lower is None or row[key] >= lower)
+                    and (upper is None or row[key] < upper)])}
+                for lower, upper in zip(bounds[:-1], bounds[1:], strict=True)]
+
+    return {"scope": "successful_first_use_multi", "observed_at": now,
+        "age_reference": "optimizer_attempt_start", "pre_update_SGD": updates,
+        "published_mu_version": version,
+        "expected_n": len(selected), "coverage_complete": len(rows) == len(selected),
+        "missing_age_n": sum(row["age"] is None for row in rows),
+        "negative_age_n": sum(row["age"] is not None and row["age"] < 0 for row in rows),
+        "ratio_histogram_edges": ratio_edges, "kl_histogram_edges": kl_edges,
+        "histogram_rule": "bins split at each edge; equality belongs to its right bin",
+        "ratio_above_one_scope": "counterfactual rho_bar=1 threshold; no V-trace applied",
+        "all": summary(rows), "age_seconds": bins("age", (0., 5., 15., 30., 60., 120.)),
+        "version_lag": bins("versions", (0., 1., 2., 4., 8., 16.)),
+        "pre_update_SGD_lag": bins("SGD_updates", (0., 1., 2., 4., 8., 16.))}
 
 
 def _publish_snapshot(
@@ -1017,6 +1076,8 @@ class SegmentLearner:
         assert self.device_batch is not None
         index = active["minibatch"]
         began = time.perf_counter()
+        policy_observed_at = time.time()
+        policy_version, policy_updates = self.version, self.updates
         minibatch = self.device_batch.minibatches[index]
         if minibatch.epoch_auxiliary:
             epoch = active["epoch"]
@@ -1032,7 +1093,9 @@ class SegmentLearner:
             target_kl=self.settings.target_kl,
             gpu_lock=self.gpu_lock,
             diagnostics=self.updates % self.settings.diagnostics_every == 0,
+            collect_policy_rows=True,
         )
+        policy_samples = result.pop("_policy_rows", [])
         self.timing["optimizer_attempt_seconds"] += time.perf_counter() - began
         if result["stepped"]:
             newly_used = [i for i in batch.request.minibatch_rows[index] if i not in active["used"]]
@@ -1089,6 +1152,9 @@ class SegmentLearner:
                 first_use_floors=[row["floor"] for row in rows],
                 first_use_version_lag=[self.version - row["mu_version"] for row in rows],
                 first_use_pre_update_SGD_lag=[self.updates - 1 - row["mu_updates"] for row in rows],
+                first_use_policy_bias=_first_use_policy_bias(
+                    batch, newly_used, policy_samples, now=policy_observed_at,
+                    version=policy_version, updates=policy_updates),
             )
         result.update(
             update=self.updates,
