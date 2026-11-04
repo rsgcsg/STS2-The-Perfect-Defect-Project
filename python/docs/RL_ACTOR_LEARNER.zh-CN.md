@@ -121,6 +121,11 @@ Actor 的 CPU scorer 固定 1 个算子线程和 1 个 interop 线程，并关�
 Actor summary 的 `local_mu.mha_fastpath` 记录实际开关；选择包含在 adapter 的源码身份中，
 采用新源码须重新发布对应 μ，不热换正在运行的旧组合。
 
+临时中央评分复用每个 Actor 自己的一条认证评分连接，policy 与 forced/尾值调用串行；
+控制连接保持独立，容量许可等待不会挡住 commit。新 generation 的 grant 会关闭旧评分连接，
+下一次请求按原 rendezvous 连接；未知或协议错误的评分先废弃连接，只重连读取 status，
+不重送原 score。Actor 关闭时释放连接。这不构成中央 GPU 吞吐或几百路容量资格。
+
 μ 仍是完整 model 包及独立 `stpd/rl-behavior-heads-1` checkpoint；snapshot hash 绑定
 weights、heads、projection、adapter 和数值配置。`export.adapter_identity()` 的代码闭包包含
 `local_mu.py`。文字可训练；缓存 namespace 随实际 μ、文字权重和输入身份变化，不把文字冻结作加速。

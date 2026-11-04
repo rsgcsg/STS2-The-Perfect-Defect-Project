@@ -217,16 +217,31 @@ class RemoteMuScorer:
 
     def __init__(self, attachment: dict[str, Any]) -> None:
         self.attachment = copy.deepcopy(attachment)
+        # Scores do not wait for commits or grants. One actor-owned, serialized
+        # score channel can therefore serve policy and old-mu tails without
+        # opening/authenticating a new TCP connection for every row. Control
+        # channels stay separate so capacity waits cannot block a commit.
+        self.remote = SegmentConnection(self.attachment)
+        self.score_lock = threading.RLock()
+        self.closed = False
         self.identities: dict[str, dict[str, Any]] = {}
         self.references: dict[str, int] = {}
         self.lock = threading.RLock()
         self.requests = 0
 
     def adopt(self, identity: dict[str, Any]) -> None:
-        with self.lock:
+        with self.score_lock, self.lock:
+            if self.closed:
+                raise ValueError("actor_mu_owner_closed")
             key = identity["snapshot_sha256"]
             if key in self.identities and self.identities[key] != identity:
                 raise ValueError("same_mu_identity_changed")
+            if identity["training_generation"] != self.remote.attachment.get(
+                    "training_generation"):
+                # A new grant must not score on the closed predecessor's socket.
+                # Reconnect via the original rendezvous on the next new request;
+                # no outstanding or unknown score is resent.
+                self.remote.close()
             self.identities = {k: v for k, v in self.identities.items()
                                if k == key or self.references.get(k, 0)}
             self.identities[key] = copy.deepcopy(identity)
@@ -250,28 +265,43 @@ class RemoteMuScorer:
         from spireagent.json_boundary import BoundaryError
 
         generation = self.identities[snapshot_sha256]["training_generation"]
-        with SegmentConnection(self.attachment) as remote:
-            if not policy:
-                # A tail may outlive a learner. Reconnect a read first; never
-                # resend an unknown score to a replacement that has no old mu.
-                status = remote.request("status")
-                if status["training_generation"] != generation:
-                    raise BoundaryError("rl_mu", "generation_changed")
+        with self.score_lock:
+            if self.closed:
+                raise ValueError("actor_mu_owner_closed")
+            remote = self.remote
             try:
-                result = remote.request("score", snapshot_sha256=snapshot_sha256,
-                    compiled_input=frame_wire, floor=floor, policy=policy,
-                    input_projection=self.identities[snapshot_sha256]["projection"])
-            except (OSError, EOFError, TimeoutError):
-                status = remote.request("status")
-                if status["training_generation"] != generation:
-                    raise BoundaryError("rl_mu", "generation_changed") from None
+                if not policy:
+                    # A tail may outlive a learner. Read its generation before
+                    # asking for values; never substitute a replacement's mu.
+                    status = remote.request("status")
+                    if status["training_generation"] != generation:
+                        raise BoundaryError("rl_mu", "generation_changed")
+                try:
+                    result = remote.request("score", snapshot_sha256=snapshot_sha256,
+                        compiled_input=frame_wire, floor=floor, policy=policy,
+                        input_projection=self.identities[snapshot_sha256]["projection"])
+                except (OSError, EOFError, TimeoutError):
+                    # A late score response must not be mistaken for this read
+                    # or the next independent score. Discard the uncertain
+                    # channel before reconnecting for status only.
+                    remote.close()
+                    status = remote.request("status")
+                    if status["training_generation"] != generation:
+                        raise BoundaryError("rl_mu", "generation_changed") from None
+                    raise
+                if result["mu"] != self.identities[snapshot_sha256]:
+                    raise ValueError("central_mu_score_identity_changed")
+                scored = MuScore(snapshot_sha256,
+                    tuple(result["scores"]) if policy else None,
+                    tuple(result["outcome_probabilities"]))
+            except BaseException:
+                # Preserve the old context-manager cleanup on every failure,
+                # including malformed or mismatched replies. Never resend it.
+                remote.close()
                 raise
-        if result["mu"] != self.identities[snapshot_sha256]:
-            raise ValueError("central_mu_score_identity_changed")
         with self.lock:
             self.requests += 1
-        return MuScore(snapshot_sha256, tuple(result["scores"]) if policy else None,
-                       tuple(result["outcome_probabilities"]))
+        return scored
 
     def report(self) -> dict[str, Any]:
         with self.lock:
@@ -279,7 +309,9 @@ class RemoteMuScorer:
                     "retained": dict(self.references)}
 
     def close(self) -> None:
-        pass
+        with self.score_lock:
+            self.closed = True
+            self.remote.close()
 
 
 class ActorInferencePool(SegmentInferencePool):

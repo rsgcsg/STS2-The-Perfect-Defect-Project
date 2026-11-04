@@ -97,6 +97,12 @@ def test_CP16_update_publish_adopt_CP_replace_only_learner_continue(
         old_tail = segment(frozen_mu,
             name=grant["lease"], run_id="same-world", rows=2, generation=owner.generation,
             mu=grant["mu"])
+        if central:
+            # Leave a real score socket connected to the old learner. Adoption
+            # after replacement must reconnect before sending a new-mu score.
+            actor.scorer.score_compiled(old_key,
+                old_tail["steps"][-1]["behavior"]["compiled_input"], 3, policy=False)
+            old_score_connection = actor.scorer.remote.connection
         owner.checkpoint(final=True)
         record = exchange.latest_checkpoint(training_generation=owner.generation)
         assert record["checkpoint_sequence"] == 17
@@ -125,6 +131,11 @@ def test_CP16_update_publish_adopt_CP_replace_only_learner_continue(
         if central:
             from spireagent.json_boundary import BoundaryError
 
+            assert old_score_connection.closed
+            new_key = new_grant["mu"]["snapshot_sha256"]
+            assert actor.scorer.score_compiled(new_key,
+                old_tail["steps"][-1]["behavior"]["compiled_input"], 3,
+                policy=True).snapshot_sha256 == new_key
             with pytest.raises(BoundaryError, match="generation_changed"):
                 actor.scorer.score_compiled(old_key,
                     old_tail["steps"][-1]["behavior"]["compiled_input"], 3, policy=False)
@@ -190,9 +201,15 @@ def test_explicit_central_learner_publication_actor_and_tail(tmp_path, monkeypat
                 grant["mu"]["snapshot_sha256"], wire, 3, policy=False)
             assert score.scores is None and len(score.outcome_probabilities) == 51
             assert score.snapshot_sha256 == grant["mu"]["snapshot_sha256"]
+            connected = actor.scorer.remote.connection
+            assert connected is not None
+            assert actor.scorer.score_compiled(
+                grant["mu"]["snapshot_sha256"], wire, 3, policy=True).scores is not None
+            assert actor.scorer.remote.connection is connected
     finally:
         actor.close()
         owner.close()
+    assert connected.closed
 
 
 def test_application_CP16_conversion_uses_original_codec_without_optimizer_or_world(
