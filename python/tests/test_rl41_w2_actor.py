@@ -30,7 +30,7 @@ from stpd.p1.local_inference import (
     SegmentInferenceClient,
     SegmentInferencePool,
 )
-from stpd.p1.local_mu import ActorInferencePool, LocalMuScorer, single_cpu_thread
+from stpd.p1.local_mu import ActorInferencePool, LocalMuScorer, RemoteMuScorer, single_cpu_thread
 from stpd.p1.model import MStd
 from stpd.p1.vocabulary import public_vocabulary
 from stpd.workers.checkpoint_codec import encode_checkpoint
@@ -347,6 +347,87 @@ def test_lost_control_reply_queries_original_receipt_and_score_unknown_not_repla
         with pytest.raises(EOFError):
             client.request("score", snapshot_sha256=result["mu"]["snapshot_sha256"])
         assert calls == ["score"]
+
+
+def test_central_persistent_score_unknown_is_not_replayed(running, monkeypatch):
+    _, pool, _, _, first, _ = running
+    scorer = RemoteMuScorer(pool.attachment())
+    scorer.adopt(first)
+    calls = []
+
+    def lost(operation, fields):
+        calls.append(operation)
+        if operation == "score":
+            raise EOFError("original central score reply unknown")
+        assert operation == "status"
+        return {"training_generation": first["training_generation"]}
+
+    monkeypatch.setattr(scorer.remote, "_request_once", lost)
+    try:
+        with pytest.raises(EOFError, match="original central score"):
+            scorer.score_compiled(first["snapshot_sha256"], {}, 3, policy=True)
+        assert calls == ["score", "status"]
+        assert scorer.requests == 0
+    finally:
+        scorer.close()
+
+
+def test_central_late_score_discards_socket_before_status_and_next_score(running, monkeypatch):
+    _, _, _, _, first, _ = running
+    received = threading.Event()
+    scores = []
+
+    class LateScorePool(SegmentInferencePool):
+        def _dispatch(self, value):
+            if value["operation"] == "status":
+                return {"training_generation": first["training_generation"]}
+            assert value["operation"] == "score"
+            scores.append(value["request_id"])
+            if len(scores) == 1:
+                received.set()
+                time.sleep(.2)
+            return {"mu": first, "scores": [0., 1.],
+                    "outcome_probabilities": [1.] + [0.] * 50}
+
+    pool = LateScorePool(public_vocabulary(), first, control=None, address=("127.0.0.1", 0))
+    scorer = RemoteMuScorer(pool.attachment())
+    scorer.adopt(first)
+    original = scorer.remote._request_once
+    old_socket = None
+
+    def timeout_first(operation, fields):
+        nonlocal old_socket
+        if operation == "score" and old_socket is None:
+            scorer.remote._connect()
+            old_socket = scorer.remote.connection
+            poll = old_socket.poll
+
+            def short_poll(_timeout):
+                assert received.wait(timeout=1)
+                return poll(.005)
+
+            old_socket.poll = short_poll
+            try:
+                return original(operation, fields)
+            finally:
+                old_socket.poll = poll
+        if operation == "status":
+            assert old_socket.closed
+            assert scorer.remote.connection is None
+        return original(operation, fields)
+
+    monkeypatch.setattr(scorer.remote, "_request_once", timeout_first)
+    try:
+        with pytest.raises(TimeoutError):
+            scorer.score_compiled(first["snapshot_sha256"], {}, 3, policy=True)
+        assert len(scores) == 1 and scorer.requests == 0
+        # This is a new request, not a resend of the timed-out score.
+        result = scorer.score_compiled(first["snapshot_sha256"], {}, 3, policy=True)
+        assert result.scores == (0., 1.)
+        assert len(scores) == 2 and scorer.requests == 1
+    finally:
+        scorer.close()
+        pool.close()
 
 
 def test_bad_frame_and_foreign_compiler_rejected_without_recompile(running, tmp_path, monkeypatch):
