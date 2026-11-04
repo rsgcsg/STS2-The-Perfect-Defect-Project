@@ -73,7 +73,7 @@ def convert_legacy_checkpoint(config: LearnerConfig, package: Path, work: Path, 
     from stpd.p1.execution import MStdExecution
 
     model.execution = MStdExecution(implementation="experimental-packed-v1",
-        microbatch_size=config.performance.microbatch_size if config.performance else 32,
+        microbatch_size=min(64, config.segments.inference_batch),
         scene_attention_area=67108864, text_attention_area=67108864, cpu_threads=1)
     # The legacy segment optimizer inserts all action/text parameters first and
     # all RL heads second, preserving named_parameters iteration inside a group.

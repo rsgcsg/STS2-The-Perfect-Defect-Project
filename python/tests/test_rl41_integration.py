@@ -195,8 +195,9 @@ def test_explicit_central_learner_publication_actor_and_tail(tmp_path, monkeypat
         owner.close()
 
 
+@pytest.mark.parametrize("training_group_size", [2, 512])
 def test_application_CP16_conversion_uses_original_codec_without_optimizer_or_world(
-    tmp_path, monkeypatch, model
+    tmp_path, monkeypatch, model, training_group_size
 ):
     import spireagent.source
     from spireagent.workbench.rl_learner import convert_legacy_checkpoint
@@ -205,6 +206,9 @@ def test_application_CP16_conversion_uses_original_codec_without_optimizer_or_wo
     from stpd.workers.checkpoint_codec import encode_checkpoint
 
     config, _io = configuration(tmp_path, monkeypatch)
+    config = dataclasses.replace(config, performance=dataclasses.replace(config.performance,
+        microbatch_size=training_group_size, scene_attention_area=2**32,
+        text_attention_area=2**36))
     state, _names = legacy_cp16(model)
     from stpd.p1.frame_compiler import FrameCompiler
     from stpd.rl.checkpoint import metadata_tensor
@@ -233,6 +237,11 @@ def test_application_CP16_conversion_uses_original_codec_without_optimizer_or_wo
     assert not converted.parents
     payload = converted.payload("checkpoint")
     cp = decode_state(exchange.store.bytes(payload, maximum=payload.size))
+    assert cp.config["performance"]["microbatch_size"] == training_group_size
+    execution = cp.construction.numerical["execution"]
+    assert execution["microbatch_size"] == min(64, config.segments.inference_batch)
+    assert execution["scene_attention_area"] <= 2**28
+    assert execution["text_attention_area"] <= 2**28
     assert_tree(cp.weights, state["weights"])
     assert_tree(cp.optimizer, state["optimizer"])
     assert_tree(cp.ema, state["ema"])
