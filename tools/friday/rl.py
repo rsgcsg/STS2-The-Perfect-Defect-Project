@@ -465,10 +465,10 @@ def actor_accounting(path: Path) -> list[dict[str, Any]]:
             rows[fields[1]] = fields
     results = []
     for index, ref in enumerate(plan['actors']):
-        fields = rows.get(f'{job}_{index}')
-        if fields is None:
+        entry = rows.get(f'{job}_{index}')
+        if entry is None:
             continue
-        raw_id, display, state, exit_code = fields[:4]
+        raw_id, display, state, exit_code = entry[:4]
         state = state.split()[0].rstrip('+')
         owner_path = path.parent / 'actors' / ref['actor'] / 'owner.json'
         if owner_path.exists():

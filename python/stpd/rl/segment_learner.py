@@ -908,8 +908,9 @@ class SegmentLearner:
                 self.actor_episodes.pop(f"{request['actor']}:{request['episode']}")
 
             response = self._accept(request, {"run_id": request["run_id"]}, end)
-            for member in members:
-                self._release(member.payload, "delayed:" + request["episode"])
+            # A queued PPO segment can still carry HP labels for earlier rows
+            # in this closed episode. _forget_locked releases delayed owners
+            # only after all its PPO sources have handed off their label reads.
             self._forget_unreferenced()
             return response
 
@@ -936,11 +937,6 @@ class SegmentLearner:
                 self.lease_owners.pop(key)
             for episode in episodes:
                 self.actor_episodes.pop(f"{actor}:{episode}")
-                for record in list(self.sources.values()):
-                    owner = "delayed:" + episode
-                    if (record["actor"] == actor and record["episode"] == episode
-                            and (record["payload"].slot, owner) in self.hot_references):
-                        self._release(record["payload"], owner)
             self.retired_actors.add(actor)
             result = {"actor": actor, "allocation": allocation,
                       "unresolved_episodes": episodes, "released_leases": leases,
@@ -1245,6 +1241,16 @@ class SegmentLearner:
             self._forget_locked()
 
     def _forget_locked(self) -> None:
+        waiting = {(record["actor"], record["episode"])
+            for record in self.sources.values()
+            if (self._member(record).payload.slot, "ppo:" + record["segment_id"])
+            in self.hot_references}
+        for record in self.sources.values():
+            actor, episode = record["actor"], record["episode"]
+            if f"{actor}:{episode}" not in self.actor_episodes and (actor, episode) not in waiting:
+                payload, owner = self._member(record).payload, "delayed:" + episode
+                if (payload.slot, owner) in self.hot_references:
+                    self._release(payload, owner)
         retained = {record["segment_id"] for record in self.queue.pending}
         for active in (self.active, self.pending_batch[0] if self.pending_batch else None):
             if active:
@@ -1258,6 +1264,11 @@ class SegmentLearner:
             for rows in pool.groups.values()
             for row in rows
         )
+        # Pending label workers own hot references even after episode close;
+        # retain their source envelopes until those exact reads finish.
+        referenced = {slot for slot, _owner in self.hot_references}
+        retained.update(identity for identity, record in self.sources.items()
+                        if self._member(record).payload.slot in referenced)
         for identity, record in list(self.sources.items()):
             if (
                 identity not in retained

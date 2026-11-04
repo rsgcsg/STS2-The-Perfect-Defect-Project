@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 from contextlib import nullcontext
+from types import SimpleNamespace
 
 import pytest
 from test_friday_watch import watch as original_watch_fixture
@@ -168,6 +169,29 @@ def test_recovered_budget_anchor_adds_new_window_once(owner):
     assert owner.state["training_seconds"] == 3700
     owner.collect_events()
     assert owner.state["training_seconds"] == 3700
+
+
+@pytest.mark.parametrize("terminal", [False, True])
+def test_failed_event_stops_before_live_or_terminal_allocation_can_recover(
+        owner, watch, monkeypatch, terminal):
+    value = attempt(owner)
+    value["actor_plans"] = []
+    event(owner, "failed", training_generation="g-one", error_type="KeyError", updates=375)
+    owner.collect_segment_evaluation = lambda: None
+    owner.schedule_segment_evaluation = lambda: None
+    owner.retain_segment_checkpoints = lambda: None
+    stops = []
+    owner.stop_attempt = lambda _, reason: stops.append(reason)
+    owner.start_attempt = lambda: pytest.fail("a typed learner failure requires diagnosis")
+    monkeypatch.setitem(watch.sys.modules, "rl", SimpleNamespace())  # No actor allocations here.
+    monkeypatch.setattr(watch, "job_accounting", lambda _: {"terminal": terminal})
+    owner.tick_segment()
+    assert owner.state["stop"] == "learner_failed_requires_diagnosis"
+    assert value["failed"]["updates"] == 375 and stops
+    if terminal:
+        assert owner.state["active"] is None
+        owner.tick_segment()
+        assert len(owner.state["attempts"]) == 1
 
 
 def test_named_diagnosed_finding_allows_new_owner_without_deleting_history(owner, watch, tmp_path):

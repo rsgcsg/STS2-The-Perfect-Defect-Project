@@ -151,6 +151,8 @@ commit/episode_end ACK 前取得下游所需引用，用尽或淘汰释放，最
 不改旧 accepted/unknown。断线先查原 receipt；原结果未知时不盲重投。
 明确新代且原请求不存在，旧 commit/episode_end 只追加丢弃；同一 World 通过新 begin 领新代 lease，
 不重新 offer seed。尾段写入撞上已撤销的旧热代也追加丢弃，不改成 unknown 或 accepted。
+关局或actor终态后，尚未准备的PPO段仍可能带跨段HP回填；此前段的delayed引用保留到同局PPO
+均交接给标签reader，再按真实引用释放。关局不等于所有标签已消费，也不补造终局标签。
 
 ## 启动、CPU 短测和只替换 learner
 

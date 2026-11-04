@@ -1072,6 +1072,7 @@ class SegmentWatcher(Watcher):
                         attempt['window_closed'] = True
                 if event['kind'] == 'failed':
                     attempt['failed'] = event
+                    self.state['stop'] = self.state['stop'] or 'learner_failed_requires_diagnosis'
                 if event['kind'] == 'finished':
                     attempt['finished'] = True
             if event['kind'] == 'actor_retired':

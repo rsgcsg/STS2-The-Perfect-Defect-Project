@@ -190,7 +190,8 @@ def test_episode_end_wakes_capacity_waiter_without_orphan_grant(tmp_path, monkey
         cleanup(owner)
 
 
-def test_reward_HP_backfills_cross_segment_rows_before_episode_end(tmp_path, monkeypatch):
+@pytest.mark.parametrize("closure", ["open", "closed", "retired"])
+def test_reward_HP_backfills_consumed_rows_across_episode_close(tmp_path, monkeypatch, closure):
     import copy
 
     from test_rl41_w1 import segment
@@ -201,7 +202,8 @@ def test_reward_HP_backfills_cross_segment_rows_before_episode_end(tmp_path, mon
 
     config, io = configuration(tmp_path, monkeypatch)
     config = dataclasses.replace(
-        config, segments=dataclasses.replace(config.segments, episode_rows=4)
+        config, segments=dataclasses.replace(config.segments, episode_rows=4,
+                                            dataset_rows=2, minibatches=1, epochs=1)
     )
     owner = SegmentLearner(config, tmp_path / "owner", io)
     scorer = LocalMuScorer(owner.exchange, tmp_path / "actor-model")
@@ -212,6 +214,7 @@ def test_reward_HP_backfills_cross_segment_rows_before_episode_end(tmp_path, mon
         "episode": "episode-a",
     }
     payloads = []
+    producer_released = False
     try:
         owner.control({**base, "operation": "episode_open"})
         previous = None
@@ -287,6 +290,21 @@ def test_reward_HP_backfills_cross_segment_rows_before_episode_end(tmp_path, mon
                 }
             )
             previous = grant["lease"]
+            if not number:
+                assert owner._prepare()
+                owner._step()
+                assert owner.active is None and owner.first_use == 2
+        close = {**base, "operation": "episode_end", "run_id": base["episode"],
+                 "terminal": None, "outcome_states": [], "hp_battles": []}
+        if closure == "closed":
+            owner.control(close)
+        elif closure == "retired":
+            owner.retire_actor("a", {"actor": "a", "job_id": "original",
+                                    "terminal": True, "state": "FAILED"})
+        if closure != "open":
+            for payload in payloads:
+                owner.exchange.release_hot_payload(payload, "episode:" + base["episode"])
+            producer_released = True
         assert owner._prepare()
         owner._collect_labels(wait=True)
         rows = owner.hp.groups[base["episode"] + ":0"]
@@ -295,19 +313,17 @@ def test_reward_HP_backfills_cross_segment_rows_before_episode_end(tmp_path, mon
             f"{base['episode']}:{i}" for i in range(4)
         ]
         assert {row["source"]["segment_id"] for row in rows} == {"a/0", "a/1"}
-        assert owner.actor_episodes  # label arrived while the same World is still open
-        owner.control(
-            {
-                **base,
-                "operation": "episode_end",
-                "run_id": base["episode"],
-                "terminal": None,
-                "outcome_states": [],
-                "hp_battles": [],
-            }
-        )
-        for payload in payloads:
-            owner.exchange.release_hot_payload(payload, "episode:" + base["episode"])
+        if closure == "open":
+            assert owner.actor_episodes
+            owner.control(close)
+        else:
+            assert not owner.actor_episodes
+        owner._step()
+        assert not any(ref_owner == "delayed:" + base["episode"]
+                       for _slot, ref_owner in owner.hot_references)
+        if not producer_released:
+            for payload in payloads:
+                owner.exchange.release_hot_payload(payload, "episode:" + base["episode"])
     finally:
         scorer.close()
         owner.close()
