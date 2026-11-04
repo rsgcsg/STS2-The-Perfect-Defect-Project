@@ -223,6 +223,8 @@ launcher、Actor、producer 和保存复核共用原 retention 配置，ledger �
 共享 Store 的现有归档线程只由一个进程持有 OS 锁并扫描全局待存队列，继续接手死亡进程的孤儿任务；
 其他进程按自己的既有 owned 集合复制，不反复遍历全队列。进程退出释放锁后由存活线程接手。
 普通 drain 与它声明的 owned 范围一致；显式全局 drain/恢复入口保持，逐条锁、不可变发布和完整读回不变。
+同一队列优先按原 input index 的 run/generation 路径和补零序号服务，再处理其余原 intent；
+避免从随机 SHA 根反复遍历尚未发布的长 previous_input 父链。这只改变服务顺序，不应用/重放输入。
 原20模数的历史记录不重算、不改写。
 
 Friday submit 复用原容量函数和原 smp 调度；普通打局/评估默认仍用 idle 核的四分之一、上限200。

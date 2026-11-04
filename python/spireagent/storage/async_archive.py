@@ -280,14 +280,52 @@ class Archive:
         with suppress(OSError):
             print(json.dumps(self.last_error), file=sys.stderr, flush=True)
 
+    def _record_error(self, error: BoundaryError, identity: str) -> None:
+        self.last_error = {"stage": error.stage, "code": error.code,
+                           "at": time.time(), "pending": identity}
+        failure = {"stage": error.stage, "code": error.code, "pending": identity,
+                   "archive": self.binding}
+        failure_id = hashlib.sha256(json_bytes(failure)).hexdigest()
+        self.queue.put_if_absent(f"errors/{failure_id}.json", json_bytes(failure))
+
+    def _ordered_pending(self, identities: list[str],
+                         deadline: float | None) -> list[str] | None:
+        ranked = []
+        for identity in identities:
+            if deadline is not None and time.monotonic() >= deadline:
+                break
+            receipt = self.queue.root / "completed" / f"{identity}.json"
+            if receipt.is_file():
+                continue
+            try:
+                task = json.loads(self.queue.get(f"pending/{identity}.json"))
+                key = task["key"]
+                safe_key(key)
+            except BoundaryError as error:
+                if error.code == "object_not_found" and receipt.is_file():
+                    continue  # Another publisher finished after our first check.
+                self._record_error(error, identity)
+                return None
+            except Exception as error:  # noqa: BLE001 -- retain malformed/IO-failed intent
+                self._unexpected_error(error, identity)
+                return None
+            # Input indices already encode generation and zero-padded sequence.
+            # Their previous_input DAG must be copied bottom-up, rather than
+            # repeatedly discovering a long absent prefix from random SHA roots.
+            ranked.append((0, key, identity) if "/inputs/" in key else (1, identity, identity))
+        return [identity for _, _, identity in sorted(ranked)]
+
     def step(self, *, deadline: float | None = None, owned: bool = False) -> int:
         if owned:
             with self.lock:
                 identities = sorted(self.owned - self.owned_done)
         else:
             identities = [Path(key).stem for key in self.queue.keys("pending/")]
+        ordered = self._ordered_pending(identities, deadline)
+        if ordered is None:
+            return 0
         completed = 0
-        for identity in identities:
+        for identity in ordered:
             if deadline is not None and time.monotonic() >= deadline:
                 break
             if (self.queue.root / "completed" / f"{identity}.json").is_file():
@@ -297,12 +335,7 @@ class Archive:
             except BoundaryError as error:
                 if error.code == "already_running":
                     continue
-                self.last_error = {"stage": error.stage, "code": error.code,
-                                   "at": time.time(), "pending": identity}
-                failure = {"stage": error.stage, "code": error.code, "pending": identity,
-                           "archive": self.binding}
-                failure_id = hashlib.sha256(json_bytes(failure)).hexdigest()
-                self.queue.put_if_absent(f"errors/{failure_id}.json", json_bytes(failure))
+                self._record_error(error, identity)
                 return completed
             except Exception as error:  # noqa: BLE001 -- local quota/IO failures retain their intent
                 self._unexpected_error(error, identity)
