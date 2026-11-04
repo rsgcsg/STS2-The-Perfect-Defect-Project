@@ -24,7 +24,7 @@ from batch import capacity, hashed, private_root, read_pinned, save, snapshot
 SCHEMA = 'spireagent/friday-rl-actors-v1'
 NAME = re.compile(r'^[a-z0-9][a-z0-9-]{0,62}$')
 LAUNCH_STOP_ENV = 'STPD_FRIDAY_LAUNCH_STOP'
-RETENTION = {'tier': 'trajectory', 'purpose': 'training', 'audit_every': 50}
+RETENTION = {'tier': 'trajectory', 'purpose': 'training', 'audit_every': 20}
 
 
 def canonical_path(path: Path, *, existing: bool = True) -> Path:
@@ -111,7 +111,8 @@ def prepare(execution: Path, learner: Path, output: Path, *, actors: int = 8,
             'pipeline': defaults.get('pipeline', {'save_workers': 1, 'pending_limit': 2})}
         if inference is not None:
             actor['segments'] = {'inference': inference,
-                                 'excluded_seeds': settings.excluded_seeds}
+                                 'excluded_seeds': settings.excluded_seeds,
+                                 'rendezvous': str(segment_inference)}
         path = output / f'{name}.json'
         save(path, actor)
         actor_refs.append({'actor': name, 'path': str(path), 'sha256': hashed(path)})
@@ -209,7 +210,8 @@ def finished_actor_results(path: Path, plan: dict[str, Any]) -> list[dict[str, s
                 or summary.get('actor') != ref['actor'] or summary.get('run') != plan['run']):
             raise ValueError('finished_actor_result_binding_changed')
         if (result.get('exit_code') != 0 or result.get('error_type') is not None
-                or summary.get('status') not in {'completed', 'stopped_signal', 'stopped_before_offer'}):
+                or summary.get('status') not in {
+                    'completed', 'stopped_signal', 'stopped_before_offer'}):
             return None
         results.append({'actor': ref['actor'], 'owner_job_id': str(owner['job_id']),
                         'result_path': str(result_path), 'result_sha256': hashed(result_path)})
@@ -259,11 +261,6 @@ def submit(path: Path, *, dry_run: bool = False,
             known = {p['job_id'] for p in parents}
             if not active <= known:
                 raise ValueError('existing_friday_array_must_drain_before_new_submission')
-            actor_limit = 40 if plan.get('trajectory_encoding') == 'short-segment-1' else 36
-            if len(plan['actors']) + sum(p['actors'] for p in parents
-                                        if p['job_id'] in active
-                                        and not p.get('preservation_only')) > actor_limit:
-                raise ValueError(f'concurrent_RL_actor_limit_{actor_limit}_exceeded')
         elif existing:
             raise ValueError('existing_friday_array_must_drain_before_new_submission')
         if (root / 'STOP').exists() or any((root / 'actors').glob('*/owner.json')):
@@ -365,7 +362,8 @@ def run(path: Path) -> dict[str, Any]:
         if (work / 'actor-summary.json').is_file():
             summary = json.loads((work / 'actor-summary.json').read_bytes())
         uncertain = any(game.get('status') in {'unknown', 'save_failed'}
-                        or (game.get('status') not in {'saved', 'finished'} and not game.get('shard')
+                        or (game.get('status') not in {'saved', 'finished'}
+                            and not game.get('shard')
                             and not (plan.get('trajectory_encoding') == 'short-segment-1'
                                 and game.get('status') == 'censored'
                                 and game.get('cleanup_accepted') is True
@@ -433,9 +431,9 @@ def resume_snapshot(path: Path, actor: str) -> dict[str, Any]:
 def learn(configuration: Path, work: Path, execution: Path, actors_output: Path, *,
           actors: int, seed_namespace: str, episode_seconds: int = 14400,
           memory_gb: int = 4, external_submit: bool = False) -> dict[str, Any]:
-    """The GPU owner starts its scorer, then submits the original CPU actor adapter.
+    """The GPU owner starts control, then submits the CPU actor adapter.
 
-    The transient scorer capability reaches sbatch through its inherited environment;
+    The transient control capability reaches sbatch through its inherited environment;
     attachment/plan/log files contain only public endpoint and identity metadata.
     Resume uses the same explicit learner CP and fresh, never-offered actor names.
     """
@@ -457,7 +455,7 @@ def learn(configuration: Path, work: Path, execution: Path, actors_output: Path,
     if (sys.platform != 'linux' or not os.environ.get('SLURM_JOB_ID')
             or config.device != 'cuda' or config.segments is None
             or type(actors) is not int
-            or not minimum_actors <= actors <= config.segments.inference_batch):
+            or not minimum_actors <= actors <= 200):
         raise ValueError('allocated_Friday_GPU_and_bounded_segment_actor_count_required')
     work = canonical_path(work, existing=False)
     canonical_path(actors_output, existing=False)
@@ -631,7 +629,7 @@ def main():
     learn_parser.add_argument('--episode-seconds', type=int, default=14400)
     learn_parser.add_argument('--memory-gb', type=int, default=4)
     learn_parser.add_argument('--external-submit', action='store_true',
-                              help='login launch owns sbatch; GPU only prepares the normal Actor plan')
+                              help='login owns sbatch; GPU prepares the Actor plan')
     launch_parser = commands.add_parser('launch')
     for name in ('gpu-script', 'config', 'work', 'actors-output', 'output'):
         launch_parser.add_argument('--'+name, type=Path, required=True)

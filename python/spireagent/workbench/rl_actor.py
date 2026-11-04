@@ -138,7 +138,7 @@ class Actor:
         if self.base.get("peer") != configuration["peer"]:
             reject("actor_exchange_must_use_execution_peer")
         if self.base.get("retention") != {"tier": "trajectory", "purpose": "training",
-                                          "audit_every": 50}:
+                                          "audit_every": 20}:
             reject("unscored_trajectory_training_intent_required")
         self.exchange = Exchange(configuration["peer"], configuration["run"])
         self.name = configuration["actor"]
@@ -164,8 +164,15 @@ class Actor:
         self.service = None
         if self.segment_mode:
             from stpd.p1.local_inference import SegmentConnection
+            from stpd.p1.local_mu import ActorControlConnection, ActorInferencePool, LocalMuScorer
 
-            self.service = SegmentConnection(self.config["segments"]["inference"])
+            remote = dict(self.config["segments"]["inference"])
+            if "rendezvous" in self.config["segments"]:
+                remote["rendezvous"] = self.config["segments"]["rendezvous"]
+            scorer = LocalMuScorer(self.exchange, work / "mu")
+            self.actor_pool = ActorInferencePool(SegmentConnection(remote), scorer)
+            self.local_attachment = self.actor_pool.attachment()
+            self.service = ActorControlConnection(self.actor_pool)
 
     def _stop_before_offer(self) -> bool:
         while True:
@@ -206,8 +213,8 @@ class Actor:
 
         selection = f"rl-v{record['version']:06d}"
         if self.segment_mode and self.executor is not None:
-            # Registration/package/lifecycle stay stable; the central inference
-            # owner adopts new immutable weights only at segment boundaries.
+            # Registration/package/lifecycle stay stable; this actor's CPU scorer
+            # adopts new immutable weights only at segment boundaries.
             return f"rl-v{self.executor_version:06d}"
         if self.executor_version == record["version"]:
             return selection
@@ -229,7 +236,7 @@ class Actor:
             self.executor = SegmentManagedExecutor(execution,
                 episode_seconds=self.config["episode_seconds"], cleanup_seconds=120,
                 exchange=self.exchange, actor=self.name,
-                attachment=self.config["segments"]["inference"], admission=self.service)
+                attachment=self.local_attachment, admission=self.service)
         else:
             self.executor = PipelinedManagedExecutor(
                 execution, episode_seconds=self.config["episode_seconds"], cleanup_seconds=120)
@@ -370,6 +377,7 @@ class Actor:
                 self.executor.close()
             if self.service is not None:
                 self.service.close()
+                self.actor_pool.close()
         summary = {"schema": "spireagent/rl-actor-summary-1", "actor": self.name,
                    "run": self.config["run"],
                    "status": "stopped_signal" if self.signalled and status == "completed"
@@ -380,6 +388,8 @@ class Actor:
                    "timing": dict(self.timing),
                    "model_fetch_seconds": self.prefetch.fetch_seconds,
                    "model_prefetch_events": self.prefetch.events, "games": self.games}
+        if self.segment_mode:
+            summary["local_mu"] = self.actor_pool.scorer.report()
         try:
             archive = self.exchange.drain_archive()
         except StoreError as error:
