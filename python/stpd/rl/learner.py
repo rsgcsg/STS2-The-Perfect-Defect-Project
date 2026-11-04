@@ -144,7 +144,7 @@ class LearnerConfig:
 
     def bind_actors(self, actors: int) -> LearnerConfig:
         """Freeze the original queue capacity from an actual deployment fact."""
-        if type(actors) is not int or not 1 <= actors <= 200 or self.segments is None:
+        if type(actors) is not int or not 1 <= actors <= 500 or self.segments is None:
             raise BoundaryError("rl_learner", "segment_actor_count_required")
         return replace(self, segments=replace(self.segments,
             capacity_rows=self.segments.dataset_rows + actors * self.segments.steps))

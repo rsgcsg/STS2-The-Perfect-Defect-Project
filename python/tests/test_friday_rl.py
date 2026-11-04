@@ -516,7 +516,9 @@ def test_submit_explicit_memory_and_excluded_node_use_normal_scheduler_argv(rl, 
         rl.submit(file, dry_run=True, memory_gb=True)
 
 
-def test_segment_prepare_binds_scorer_and_avoids_per_game_900_second_cut(rl, inputs):
+@pytest.mark.parametrize('count', [40, 256, 500])
+def test_segment_prepare_binds_scorer_and_avoids_per_game_900_second_cut(
+        rl, inputs, tmp_path, count):
     from stpd.p1.export import adapter_identity
     from stpd.p1.local_inference import SEGMENT_SCHEMA
 
@@ -528,7 +530,7 @@ def test_segment_prepare_binds_scorer_and_avoids_per_game_900_second_cut(rl, inp
     attachment = learner.parent/'inference.json'
     attachment.write_text(json.dumps({'schema': SEGMENT_SCHEMA, 'adapter': adapter_identity(),
         'pool_id': 'fixture', 'address': ['127.0.0.1', 1234], 'segment_steps': 64}))
-    plan = rl.prepare(execution, learner, output, actors=40, wall_seconds=4500,
+    plan = rl.prepare(execution, learner, output, actors=count, wall_seconds=4500,
         episode_seconds=14400, games_per_ledger=10, segment_inference=attachment)
     assert plan['trajectory_encoding'] == 'short-segment-1'
     actor = json.loads(Path(plan['actors'][0]['path']).read_bytes())
@@ -536,6 +538,17 @@ def test_segment_prepare_binds_scorer_and_avoids_per_game_900_second_cut(rl, inp
     assert actor['segments']['excluded_seeds'] == ['frozen-evaluation-seed']
     assert actor['episode_seconds'] == 14400 and actor['behavior']['uniform_mix'] == 0
     assert rl.load_plan(output/'plan.json')['inference']['sha256'] == rl.hashed(attachment)
+    def scheduler(command):
+        if command[0] == 'sinfo':
+            return 'fc430|0/654/0/654' if '%f|%C' in command else '0/654/0/654'
+        return ''
+
+    with (patch.object(rl, 'require_modules'),
+          patch.object(rl.scheduler, 'submission_lock_path', return_value=tmp_path/'submit.lock'),
+          patch.object(rl.scheduler, 'output', side_effect=scheduler)):
+        submitted = rl.submit(output/'plan.json', dry_run=True)
+    assert submitted['cores'] == count
+    assert f'--array=0-{count - 1}%{count}' in submitted['command']
     attachment.write_text('{}')
     with pytest.raises(ValueError):
         rl.load_plan(output/'plan.json')
@@ -566,7 +579,7 @@ def test_initial_array_submit_unknown_keeps_intent_without_a_second_offer(rl, in
     "external, stop_at_creation, actor_count, steps",
     [(False, False, 56, 64), (True, False, 48, 64), (True, False, 8, 64),
      (True, False, 7, 64), (True, True, 32, 64), (True, False, 8, 48),
-     (True, False, 11, 48)]
+     (True, False, 11, 48), (True, False, 256, 64), (True, False, 500, 64)]
 )
 def test_gpu_owner_hands_transient_auth_to_original_cpu_submission_only(
     rl, inputs, tmp_path, monkeypatch, external, stop_at_creation, actor_count, steps

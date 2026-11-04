@@ -77,7 +77,7 @@ def prepare(execution: Path, learner: Path, output: Path, *, actors: int = 8,
             or base.get('schema') != 'spireagent/managed-evaluation-execution-v1'):
         raise ValueError('same_frozen_R2_execution_and_learner_peer_required')
     canonical_path(Path(base['candidate_directory']))
-    if (type(actors) is not int or not 1 <= actors <= 200
+    if (type(actors) is not int or not 1 <= actors <= 500
             or type(wall_seconds) is not int or not 300 <= wall_seconds <= 79200
             or type(episode_seconds) is not int or not 10 <= episode_seconds <= (
                 79200 if inference is not None else 1800)
@@ -279,7 +279,11 @@ def submit(path: Path, *, dry_run: bool = False,
         queued = len(scheduler.output(
             ['squeue', '-h', '-p', 'smp', '-t', 'PD', '-o', '%i']).splitlines())
         count = len(plan['actors'])
-        if capacity(idle, queued, count) < count:
+        # The bounded short-segment deployment supports the approved 500-lane
+        # scale. Keep idle/queue checks; other callers retain the default share.
+        options = ({'maximum': 500, 'idle_divisor': 1}
+                   if plan.get('trajectory_encoding') == 'short-segment-1' else {})
+        if capacity(idle, queued, count, **options) < count:
             raise ValueError('requested_RL_actors_exceed_current_fair_share')
         script = root / 'launch.sh'
         script.write_text(launcher(path, plan), encoding='utf-8')
@@ -466,7 +470,7 @@ def learn(configuration: Path, work: Path, execution: Path, actors_output: Path,
     if (sys.platform != 'linux' or not os.environ.get('SLURM_JOB_ID')
             or config.device not in {'cuda', 'cpu'} or config.segments is None
             or type(actors) is not int
-            or not minimum_actors <= actors <= 200):
+            or not minimum_actors <= actors <= 500):
         raise ValueError('allocated_Friday_learner_and_bounded_segment_actor_count_required')
     work = canonical_path(work, existing=False)
     canonical_path(actors_output, existing=False)
