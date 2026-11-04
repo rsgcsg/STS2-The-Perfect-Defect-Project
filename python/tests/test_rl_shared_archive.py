@@ -345,8 +345,9 @@ def test_archive_metadata_ordering_respects_deadline_before_copy(tmp_path, monke
     assert clock[0] == pytest.approx(.04)
 
 
-@pytest.mark.parametrize("key,code", [(None, "invalid_object_key"), (7, None),
-                                     ("", "invalid_object_key"), ("a/../escape", "nonportable_object_key")])
+@pytest.mark.parametrize("key,code", [
+    (None, "invalid_object_key"), (7, None),
+    ("", "invalid_object_key"), ("a/../escape", "nonportable_object_key")])
 def test_archive_ordering_retains_original_object_key_boundary(tmp_path, key, code):
     import json
 
