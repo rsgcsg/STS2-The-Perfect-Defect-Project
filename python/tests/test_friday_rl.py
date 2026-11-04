@@ -534,10 +534,20 @@ def test_segment_prepare_binds_scorer_and_avoids_per_game_900_second_cut(rl, inp
     actor = json.loads(Path(plan['actors'][0]['path']).read_bytes())
     assert actor['segments']['inference'] == json.loads(attachment.read_bytes())
     assert actor['segments']['excluded_seeds'] == ['frozen-evaluation-seed']
+    assert actor['segments']['rendezvous'] == str(attachment)
     assert actor['episode_seconds'] == 14400 and actor['behavior']['uniform_mix'] == 0
     assert rl.load_plan(output/'plan.json')['inference']['sha256'] == rl.hashed(attachment)
-    attachment.write_text('{}')
-    with pytest.raises(ValueError):
+    original_attachment = actor['segments']['inference']
+    attachment.write_text(json.dumps({**original_attachment, 'pool_id': 'replacement',
+                                     'address': ['127.0.0.1', 5678]}))
+    replacement = output.with_name('replacement-plan')
+    new_plan = rl.prepare(execution, learner, replacement, actors=1, wall_seconds=4500,
+        episode_seconds=14400, games_per_ledger=10, segment_inference=attachment)
+    assert rl.read_pinned(rl.load_plan(output/'plan.json')['inference']) == original_attachment
+    assert rl.read_pinned(rl.load_plan(replacement/'plan.json')['inference']) != original_attachment
+    assert plan['inference']['path'] != new_plan['inference']['path']
+    Path(plan['inference']['path']).write_text('{}')
+    with pytest.raises(ValueError, match='pinned_input_changed'):
         rl.load_plan(output/'plan.json')
 
 

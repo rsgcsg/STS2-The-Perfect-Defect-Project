@@ -162,6 +162,8 @@ CPU 单路短测同时设小 dataset/episode_rows，不能用默认1024行的最
 
 配置固定 `segments.rendezvous_path` 为原启动的共享 inference.json。launcher 把此路径交 actor，
 learner 把完整新 attachment 原子写回同一路径；环境 capability 保持在原环境中，不写文件或日志。
+`rl.py prepare` 将当时的 attachment 原字节另存到各 actor plan 目录并绑定 hash；共享发现路径
+供下一代连接使用，不能作为旧计划的不可变引用。新代更新发现路径后，旧计划仍能正常核验和查账。
 恢复前停止并确认旧 learner/prepare/SGD 已结束，保留 actor/World 和原件；新 work 目录、同一 run、
 新 generation、同一 peer/rendezvous/capability，从指定自包含 CP 启动。
 恢复撤销该 CP 所属旧热代，追加 discarded_on_restore；旧 ACK 仍可查。不要同时启动两个 learner。

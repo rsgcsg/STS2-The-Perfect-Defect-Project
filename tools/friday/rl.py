@@ -48,6 +48,7 @@ def prepare(execution: Path, learner: Path, output: Path, *, actors: int = 8,
     base, learning = json.loads(execution.read_bytes()), json.loads(learner.read_bytes())
     segment_settings = learning.get('segments')
     inference = None
+    inference_raw = None
     if segment_settings is not None:
         from stpd.p1.local_inference import SEGMENT_SCHEMA
         from stpd.rl.segments import SegmentConfig
@@ -56,7 +57,8 @@ def prepare(execution: Path, learner: Path, output: Path, *, actors: int = 8,
         if segment_inference is None:
             raise ValueError('prepared_segment_inference_attachment_required')
         canonical_path(segment_inference)
-        inference = json.loads(segment_inference.read_bytes())
+        inference_raw = segment_inference.read_bytes()
+        inference = json.loads(inference_raw)
         if (inference.get('schema') != SEGMENT_SCHEMA
                 or inference.get('segment_steps') != settings.steps):
             raise ValueError('segment_inference_and_learner_steps_differ')
@@ -135,8 +137,13 @@ def prepare(execution: Path, learner: Path, output: Path, *, actors: int = 8,
         'cross_actor_immediate_unknown_stop': False}
     if inference is not None:
         assert segment_inference is not None
+        assert inference_raw is not None
+        # The rendezvous changes when a learner allocation is replaced. Keep
+        # this plan's original attachment immutable for later accounting/audit.
+        frozen_inference = output / 'inference.json'
+        frozen_inference.write_bytes(inference_raw)
         plan['trajectory_encoding'] = 'short-segment-1'
-        plan['inference'] = {'path': str(segment_inference), 'sha256': hashed(segment_inference)}
+        plan['inference'] = {'path': str(frozen_inference), 'sha256': hashed(frozen_inference)}
     if requested_learner is not None:
         plan['learner_request'] = {'path': str(canonical_path(requested_learner)),
                                    'sha256': hashed(requested_learner)}
