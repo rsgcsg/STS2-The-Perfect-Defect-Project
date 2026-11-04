@@ -610,7 +610,7 @@ def test_quota_inode_backlog_and_stale_capacity_reject_new_work(tmp_path, monkey
         "check_output",
         lambda *args, **kwargs: "/data 90G 100G\n/data/scratch 190G 200G\n",
     )
-    observed = module.filesystem_capacity(Path("/data/scratch/s4961270/store"))
+    observed = module.filesystem_capacity(Path("/data/scratch/example-user/store"))
     assert observed["free_bytes"] == 10 * 1024**3 and observed["quota_status"] == "measured"
     assert observed["free_inodes"] == 12345
     state = {
