@@ -538,6 +538,23 @@ def test_segment_prepare_binds_scorer_and_avoids_per_game_900_second_cut(
     assert actor['segments']['excluded_seeds'] == ['frozen-evaluation-seed']
     assert actor['episode_seconds'] == 14400 and actor['behavior']['uniform_mix'] == 0
     assert rl.load_plan(output/'plan.json')['inference']['sha256'] == rl.hashed(attachment)
+    with patch.object(rl, 'read_pinned', wraps=rl.read_pinned) as pinned:
+        rl.load_plan(output/'plan.json', actor_index=count - 1)
+    assert pinned.call_count == 3  # execution, shared inference, selected actor; independent of N
+    assert [call.args[0]['path'] for call in pinned.call_args_list
+            if call.args[0]['path'].startswith(str(output/'friday-'))] == [
+                plan['actors'][-1]['path']]
+    first_actor = Path(plan['actors'][0]['path'])
+    original = first_actor.read_bytes()
+    first_actor.write_bytes(b'{}')
+    rl.load_plan(output/'plan.json', actor_index=count - 1)
+    with pytest.raises(ValueError, match='pinned_input_changed'):
+        rl.load_plan(output/'plan.json', actor_index=0)
+    with pytest.raises(ValueError, match='pinned_input_changed'):
+        rl.load_plan(output/'plan.json')  # supervisor still checks the entire plan
+    first_actor.write_bytes(original)
+    with pytest.raises(ValueError, match='frozen_actor_array_index'):
+        rl.load_plan(output/'plan.json', actor_index=count)
     def scheduler(command):
         if command[0] == 'sinfo':
             return 'fc430|0/654/0/654' if '%f|%C' in command else '0/654/0/654'
@@ -549,6 +566,16 @@ def test_segment_prepare_binds_scorer_and_avoids_per_game_900_second_cut(
         submitted = rl.submit(output/'plan.json', dry_run=True)
     assert submitted['cores'] == count
     assert f'--array=0-{count - 1}%{count}' in submitted['command']
+    (output/'STOP').touch()
+    with (patch.object(rl.sys, 'argv', ['rl.py', 'run', '--plan', str(output/'plan.json')]),
+          patch.object(rl.sys, 'platform', 'linux'),
+          patch.dict(rl.os.environ, {'SLURM_JOB_ID': 'synthetic', 'SLURM_CPUS_PER_TASK': '1',
+                                    'SLURM_ARRAY_TASK_ID': str(count - 1)}),
+          patch.object(rl, 'require_modules'),
+          patch.object(rl, 'read_pinned', wraps=rl.read_pinned) as pinned):
+        rl.main()  # actual CLI gate -> actual run -> original before-offer Stop
+    assert pinned.call_count == 6  # both CLI gate and child verify only this actor
+    (output/'STOP').unlink()
     attachment.write_text('{}')
     with pytest.raises(ValueError):
         rl.load_plan(output/'plan.json')

@@ -212,4 +212,6 @@ launcher、Actor、producer 和保存复核共用原 retention 配置，ledger �
 Friday submit 复用原容量函数和原 smp 调度；普通打局/评估默认仍用 idle 核的四分之一、上限200。
 短段 RL 按已批准的规模开放至500路，可用全部实际 idle 核，排队超过300项仍降至32路；
 实际路数与资源授权仍由本轮任务及 GAME-SLOT 决定，代码上限不构成开局授权。
+submit 校验完整计划；每个已分配 actor 只校验自己的固定配置与共享 execution/inference/learner 绑定。
+共享 inference 每次读取一次，避免 N 路各重读 N 份完整词表配置，造成平方级启动开销。
 11-05 I1 原约594核只允许约148路的旧限制已被本轮500路授权替代；旧128/256未offer的事实不改。

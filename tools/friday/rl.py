@@ -139,7 +139,7 @@ def prepare(execution: Path, learner: Path, output: Path, *, actors: int = 8,
     return plan
 
 
-def load_plan(path: Path) -> dict[str, Any]:
+def load_plan(path: Path, *, actor_index: int | None = None) -> dict[str, Any]:
     canonical_path(path)
     value: dict[str, Any] = json.loads(path.read_bytes())
     if (value.get('schema') != SCHEMA or value.get('target') != 'friday'
@@ -152,14 +152,23 @@ def load_plan(path: Path) -> dict[str, Any]:
     base = read_pinned(value['execution'])
     canonical_path(Path(value['source_root']))
     canonical_path(Path(base['candidate_directory']))
-    for ref in value['actors']:
+    references = value['actors']
+    if actor_index is not None:
+        if type(actor_index) is not int or not 0 <= actor_index < len(references):
+            raise ValueError('frozen_actor_array_index_required')
+        references = [references[actor_index]]
+    inference = (read_pinned(value['inference'])
+                 if value.get('trajectory_encoding') == 'short-segment-1' else None)
+    # Submission verifies every actor. An allocated child verifies its own
+    # binding, not all N other children (formerly N^2 shared reads/JSON decodes).
+    for ref in references:
         actor = read_pinned(ref)
         if (actor['actor'] != ref['actor'] or actor['run'] != value['run']
                 or actor['peer'] != value['peer'] or base['peer'] != value['peer']
                 or actor['execution'] != value['execution']['path']):
             raise ValueError('actor_learner_execution_binding_changed')
         if (value.get('trajectory_encoding') == 'short-segment-1'
-                and actor.get('segments', {}).get('inference') != read_pinned(value['inference'])):
+                and actor.get('segments', {}).get('inference') != inference):
             raise ValueError('segment_inference_attachment_changed')
     return value
 
@@ -317,13 +326,13 @@ def submit(path: Path, *, dry_run: bool = False,
 
 
 def run(path: Path) -> dict[str, Any]:
-    plan = load_plan(path)
+    index = int(os.environ.get('SLURM_ARRAY_TASK_ID', '-1'))
+    plan = load_plan(path, actor_index=index if index >= 0 else None)
     require_modules(Path(plan['source_root']))
     if (sys.platform != 'linux' or not os.environ.get('SLURM_JOB_ID')
             or int(os.environ.get('SLURM_CPUS_PER_TASK', '0')) < 1):
         raise ValueError('Friday_CPU_allocation_required_no_Mac_fallback')
-    index = int(os.environ.get('SLURM_ARRAY_TASK_ID', '-1'))
-    if not 0 <= index < len(plan['actors']):
+    if index < 0:
         raise ValueError('frozen_actor_array_index_required')
     root = private_root(path.parent)
     if (root / 'STOP').exists():
@@ -705,8 +714,10 @@ def main():
         help='Explicit existing opposite-card Friday job; at most one A100 and one A30')
     args = parser.parse_args()
     os.umask(0o077)
+    actor_index = int(os.environ.get('SLURM_ARRAY_TASK_ID', '-1')) if args.command == 'run' else -1
     if (args.command in {'run', 'submit'} and not getattr(args, 'dry_run', False)
-            and load_plan(args.plan).get('trajectory_encoding') != 'short-segment-1'):
+            and load_plan(args.plan, actor_index=actor_index if actor_index >= 0 else None
+                          ).get('trajectory_encoding') != 'short-segment-1'):
         raise ValueError('whole_episode_live_training_retired_use_segments')
     if args.command == 'launch':
         result = launch(args.gpu_script, args.config, args.work, args.actors_output,
