@@ -218,7 +218,7 @@ RL 仍用 `tools/friday/rl.py launch`。`--ready-seconds` 只从原 GPU 作业�
 RUNNING 后开始算；已有 plan 也必须先确认作业仍 RUNNING 才能提交 CPU actor。
 GPU 提前退出保留原请求与 STOP，不自动重投。排队本身不消费就绪窗口。
 
-`--minutes` 可显式申请到2160分钟（36h），申请时限不等于训练或使用预算授权。
+`--minutes` 可显式申请到2880分钟（48h），申请时限不等于训练或使用预算授权。
 默认仍拒绝账户已有 GPU 作业；只有显式 `--alongside-job <id>` 才允许一个已核的
 opposite 型号 `rl4-learner` 单卡作业，最多一个 A100 和一个 A30，不接受同型、多个或不明作业。
 `--reserve-only` 只提交明确的分配脚本，不开 learner、不给 CPU actor 发任务；
@@ -231,3 +231,7 @@ opposite 型号 `rl4-learner` 单卡作业，最多一个 A100 和一个 A30，�
 各阶段先按正常 Stop/CP/Actor 原件收口，再 `scancel --signal=USR1 --batch <id>` 释放持有者。
 Slurm 硬时限到达仍会结束整个作业；持有程序不延长时限，运行中增加时限可能需要管理员权限。
 累计GPU预算、闲置2h预期和下一阶段负责人仍按当前任务/原槽位账本检查，不能由此入口推定新授权。
+
+保留长分配时，可传 `gpu_session.py --budget-file <json>`，由操作者声明本分配允许的
+`{"seconds": ...}`。持有时长从本分配实际启动后算；累计原预算未扩大时须先分摊当前剩余量。
+该文件只是执行限额，不能授予预算；实际授权扩大后才可更新，并在原 GAME-SLOT 留下变更。

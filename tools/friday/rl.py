@@ -545,7 +545,7 @@ def launch(gpu_script: Path, configuration: Path, work: Path, actors_output: Pat
     output = canonical_path(output, existing=False)
     if output.exists() or work.exists() or actors_output.exists():
         raise ValueError('fresh_login_launch_and_unoffered_actor_output_required')
-    if (gpu not in {'a30', 'a100'} or not 1 <= minutes <= 2160
+    if (gpu not in {'a30', 'a100'} or not 1 <= minutes <= 2880
             or not 1 <= cpus <= 32 or not 1 <= memory_gb <= 256
             or not 1 <= ready_seconds <= 3600
             or alongside_job is not None and not re.fullmatch(r'[1-9][0-9]*', alongside_job)):

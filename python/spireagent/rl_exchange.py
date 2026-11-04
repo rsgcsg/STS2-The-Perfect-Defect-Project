@@ -154,7 +154,7 @@ class Exchange:
         if not isinstance(self.blobs, LocalBlobStore):
             reject("hot_payload_requires_shared_local_exchange")
         # This is the existing Exchange's working set, never Store CAS/parents.
-        return LocalBlobStore(self.blobs.root / ".rl-hot")
+        return LocalBlobStore(self.blobs.root / ".rl-hot", maximum=64 * 1024**2)
 
     def _hot_state(self, ref: HotPayloadRef) -> tuple[LocalBlobStore, str, dict[str, Any]]:
         ref = _hot_ref(ref)

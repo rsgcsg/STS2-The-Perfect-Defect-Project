@@ -755,7 +755,7 @@ def test_additional_active_parent_accepts_invisible_node_local_scratch(rl, input
     assert finished[0]['result_sha256'] == rl.hashed(persistent/'result.json')
 
 
-def test_gpu_queue_time_does_not_consume_running_readiness_or_36h_limit(
+def test_gpu_queue_time_does_not_consume_running_readiness_or_48h_limit(
     rl, inputs, tmp_path, monkeypatch
 ):
     execution, config, actors = inputs
@@ -767,7 +767,7 @@ def test_gpu_queue_time_does_not_consume_running_readiness_or_36h_limit(
 
     def schedule(command):
         if command[0] == 'sbatch':
-            assert '--time=2160' in command
+            assert '--time=2880' in command
             return '81'
         if command[0] == 'squeue' and '-j' in command:
             observations.append(True)
@@ -787,7 +787,7 @@ def test_gpu_queue_time_does_not_consume_running_readiness_or_36h_limit(
     monkeypatch.setattr(rl.time, 'sleep', sleep)
     monkeypatch.setattr(rl, 'submit', lambda *a, **kw: {'job_id': 'CPU'})
     result = rl.launch(script, config, tmp_path/'work', actors, tmp_path/'login',
-                       minutes=2160, ready_seconds=120)
+                       minutes=2880, ready_seconds=120)
     assert result['GPU_job_id'] == '81' and len(observations) == 4
     assert (tmp_path/'login/GPU-started.json').exists()
     assert not (tmp_path/'login/STOP').exists()
@@ -874,6 +874,18 @@ def test_reserve_only_never_offers_cpu_or_needs_actor_readiness(rl, tmp_path, mo
     monkeypatch.setattr(rl.scheduler, 'output', lambda cmd: '91' if cmd[0] == 'sbatch' else '')
     monkeypatch.setattr(rl, 'submit', lambda *a, **kw: pytest.fail('reservation has no actors'))
     receipt = rl.launch(script, config, tmp_path/'work', tmp_path/'actors', tmp_path/'login',
-                        reserve_only=True, minutes=2160)
+                        reserve_only=True, minutes=2880)
     assert receipt == {'GPU_job_id': '91', 'reservation_only': True, 'CPU_actors_offered': 0}
     assert not (tmp_path/'work').exists() and not (tmp_path/'actors').exists()
+
+
+def test_allocation_holder_exits_at_explicit_execution_budget(tmp_path, monkeypatch):
+    # Process/clock behavior only; this fixture does not qualify GPU allocation.
+    monkeypatch.setenv('SLURM_JOB_ID', '123456')
+    budget = tmp_path/'budget.json'
+    budget.write_text(json.dumps({'seconds': 1}))
+    root = tmp_path/'held'
+    subprocess.run([sys.executable, str(FRIDAY/'gpu_session.py'), '--root', str(root),
+                    '--budget-file', str(budget)], check=True, timeout=5)
+    assert json.loads((root/'allocation.json').read_bytes())['initial_budget_seconds'] == 1
+    assert json.loads((root/'released.json').read_bytes())['signals'] == []

@@ -790,3 +790,23 @@ def test_one_percent_unsampled_original_never_enters_full_archive_path(tmp_path,
     assert receipt["sampling"] == "open_identity_sha256_mod100"
     assert receipt["original_retained"] is False
     assert not result.get("stored_evidence_id") and not result.get("stored_failure_id")
+
+
+def test_hot_transport_honors_64mib_reference_without_widening_artifact_blobs(tmp_path):
+    from spireagent.storage.local import LocalBlobStore
+
+    # The actual shared LocalBlobStore used by HotRef must carry its declared
+    # range. Ordinary artifact chunks retain the original 16 MiB bound.
+    raw = b'x' * (17 * 1024**2)
+    ordinary = LocalBlobStore(tmp_path / 'ordinary')
+    with pytest.raises(StoreError, match='blob_exceeds_bounded_transport'):
+        ordinary.put_if_absent('too-large.json', raw)
+    exchange = Exchange({'kind': 'local', 'directory': str(tmp_path / 'exchange')}, 'hot-bound')
+    payload = exchange.put_hot_payload(raw, training_generation='g-test', owner='episode:test')
+    assert payload.size == len(raw) and payload.sha256 == hashlib.sha256(raw).hexdigest()
+    assert exchange.read_hot_payload(payload) == raw
+    exchange.retain_hot_payload(payload, 'ppo:test')
+    exchange.release_hot_payload(payload, 'episode:test')
+    assert exchange.read_hot_payload(payload) == raw
+    exchange.release_hot_payload(payload, 'ppo:test')
+    assert exchange.hot_status('g-test')['payloads'] == 0
