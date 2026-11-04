@@ -1,7 +1,7 @@
 """Command-owned P1 local scoring and RL control transport.
 
-General evaluation can share a local scorer. RL's learner listener carries only
-control and immutable identities; its numerical owner lives in actor local_mu.
+General evaluation can share a local scorer. RL defaults to a control-only
+learner listener and actor local_mu; central scoring is an explicit alternative.
 Actors keep the original consume/ACK/next state and complete public catalogs.
 """
 
@@ -15,7 +15,9 @@ import secrets
 import socket
 import threading
 import time
+from collections.abc import Iterator
 from concurrent.futures import Future
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from multiprocessing import AuthenticationError
 from multiprocessing.connection import Client, Connection, Listener
@@ -28,6 +30,7 @@ from .data import digest, json_bytes
 from .export import adapter_identity, bound_projection, load_model
 from .frame_compiler import FrameCompiler
 from .input import project, validate_input_spec
+from .tensor_input import TensorFrame
 
 AUTH_ENV = "STPD_P1_LOCAL_INFERENCE_AUTH"
 SCHEMA = "stpd/p1-local-inference-1"
@@ -43,6 +46,13 @@ class _Request:
     projection: dict[str, Any]
 
 
+@dataclass
+class _CompiledRequest:
+    model: str
+    frame: TensorFrame
+    answer: Future
+    floor: int
+    queued_at: float
 
 
 class LocalInferencePool:
@@ -336,7 +346,7 @@ class SegmentInferencePool(LocalInferencePool):
         if value["operation"] == "score":
             from spireagent.json_boundary import BoundaryError
 
-            raise BoundaryError("rl_control", "remote_scoring_retired_use_actor_local_mu")
+            raise BoundaryError("rl_control", "remote_scoring_disabled_use_actor_local_mu")
         self.stats["control_requests"] += 1
         return cast(dict[str, Any], self.control(value))
 
@@ -382,6 +392,272 @@ class SegmentInferencePool(LocalInferencePool):
         if self.acceptor.is_alive() or any(t.is_alive() for t in self.connections):
             raise RuntimeError("RL_control_owner_did_not_close")
         return {"schema": SEGMENT_SCHEMA, "closed": True, **self.stats}
+
+
+class CentralInferencePool(LocalInferencePool):
+    """Optional central scorer restored from the F0 implementation.
+
+    A worker batches immutable mu snapshots. CUDA always uses its own inference
+    stream; the scorer never acquires the learner's training lock. Construction
+    and publication receive already prepared snapshots, owned by the caller's
+    background publisher. Actor-local CPU remains the default selection.
+    """
+
+    def __init__(self, model: Any, identity: dict[str, Any], *, control: Any,
+                 max_batch: int = 40, window_ms: float = 2,
+                 address: tuple[str, int] | None = None, segment_steps: int = 64,
+                 compiler_identity: dict[str, Any] | None = None) -> None:
+        if model.execution.implementation not in {
+                "experimental-packed-v1", "experimental-joint-nodes-v1"}:
+            raise ValueError("RL_inference_requires_explicit_packed_execution")
+        if any(parameter.requires_grad for parameter in model.parameters()):
+            raise ValueError("RL_inference_requires_immutable_snapshot")
+        self.cuda_stream: torch.cuda.Stream | None = None
+        self.inference_lock = threading.RLock()
+        self.model_ready: dict[str, torch.cuda.Event] = {}
+        self.device = next(model.parameters()).device
+        inference_stream = self.device.type == "cuda"
+        self.inference_stream_requested = inference_stream
+        if inference_stream:
+            self.cuda_stream = torch.cuda.Stream(device=self.device, priority=-1)
+        self.compiler = FrameCompiler(model.vocabulary)
+        self.compiler_identity = copy.deepcopy(
+            self.compiler.identity if compiler_identity is None else compiler_identity)
+        if any(self.compiler_identity.get(field) != self.compiler.identity[field]
+               for field in ("input_spec", "vocabulary_sha256")):
+            raise ValueError("RL_compiler_vocabulary_binding_differs")
+        self.vocabulary = copy.deepcopy(model.vocabulary)
+        key = identity["snapshot_sha256"]
+        self.snapshots = {key: identity}
+        self.latest = key
+        self.control = control
+        self.execution_lock = threading.RLock()
+        if type(segment_steps) is not int or not 1 <= segment_steps <= 64:
+            raise ValueError("invalid_RL_segment_steps")
+        self.segment_steps = segment_steps
+        from .text_cache import TextVectorCache
+
+        self.text_cache = TextVectorCache(stream_safe=inference_stream)
+        model.text_cache, model.text_cache_namespace = self.text_cache, key
+        self.model_lock = threading.RLock()
+        if self.cuda_stream is not None:
+            self.model_ready[key] = self._ready_model(model)
+        ip = socket.gethostbyname(socket.gethostname())
+        inherited = os.environ.get(AUTH_ENV)
+        try:
+            authkey = bytes.fromhex(inherited) if inherited is not None else None
+        except ValueError:
+            raise ValueError("invalid_inherited_inference_capability") from None
+        super().__init__({}, max_batch=max_batch, window_ms=window_ms,
+            models={key: model}, address=address or (ip, 0), authkey=authkey)
+
+    def attachment(self) -> dict[str, Any]:
+        identity = self.snapshots[self.latest]
+        return {**super().attachment(), "schema": SEGMENT_SCHEMA,
+                **{key: identity[key] for key in ("run", "training_generation") if key in identity},
+                "role": "learner_central",
+                "segment_steps": self.segment_steps, "vocabulary": copy.deepcopy(self.vocabulary),
+                "compiler_identity": copy.deepcopy(self.compiler_identity),
+                "inference_stream": self._stream_metadata()}
+
+    def close(self) -> dict[str, Any]:
+        summary = super().close()
+        if self.cuda_stream is not None:
+            self.cuda_stream.synchronize()
+        return {**summary, "schema": SEGMENT_SCHEMA,
+                "text_cache": self.text_cache.report(),
+                "inference_stream": self._stream_metadata()}
+
+    def _stream_metadata(self) -> dict[str, Any]:
+        return {"requested": self.inference_stream_requested,
+                "enabled": self.cuda_stream is not None,
+                "device": str(self.device),
+                "priority": self.cuda_stream.priority if self.cuda_stream is not None else None}
+
+    def _ready_model(self, model: Any) -> torch.cuda.Event:
+        assert self.cuda_stream is not None
+        tensors = [*model.parameters(), *model.buffers()]
+        if any(value.device != self.device for value in tensors):
+            raise ValueError("RL_inference_stream_requires_one_CUDA_device")
+        ready = torch.cuda.Event()
+        # Capture only this publication's H2D/initialization, not future SGD or
+        # CP work on the publisher's stream. The inference stream waits on this
+        # event, while record_stream protects each borrowed parameter storage.
+        ready.record(torch.cuda.current_stream(self.device))
+        for value in tensors:
+            value.record_stream(self.cuda_stream)
+        return ready
+
+    @contextmanager
+    def _execution(self, ready: torch.cuda.Event | None) -> Iterator[None]:
+        if self.cuda_stream is None:
+            with self.execution_lock, torch.inference_mode():
+                yield
+            return
+        assert ready is not None
+        with torch.cuda.stream(self.cuda_stream), torch.inference_mode():
+            self.cuda_stream.wait_event(ready)
+            try:
+                yield
+            finally:
+                # Success already copies scores to CPU. On failure, drain only
+                # this owned stream before releasing models/cache references.
+                # Never synchronize the training/default stream or the device.
+                self.cuda_stream.synchronize()
+
+    def publish(self, model: Any, identity: dict[str, Any]) -> None:
+        if any(parameter.requires_grad for parameter in model.parameters()):
+            raise ValueError("RL_inference_requires_immutable_snapshot")
+        if digest(json_bytes(model.vocabulary)) != self.compiler_identity["vocabulary_sha256"]:
+            raise ValueError("RL_compiler_vocabulary_binding_differs")
+        key = identity["snapshot_sha256"]
+        model.text_cache, model.text_cache_namespace = self.text_cache, key
+        with self.model_lock:
+            if key in self.models:
+                raise ValueError("behavior_snapshot_already_published")
+            if self.cuda_stream is not None:
+                self.model_ready[key] = self._ready_model(model)
+            self.models[key] = model
+            self.snapshots[key] = identity
+            self.latest = key
+
+    def retire(self, protected: set[str]) -> None:
+        # Scoring borrows strong model/event references under this short lock.
+        # It may finish on its own stream after removal from the registry; never
+        # wait for inference_lock, a GPU lock or stream completion on the learner.
+        with self.model_lock:
+            for key in list(self.models):
+                if key not in protected and key != self.latest:
+                    del self.models[key]
+                    del self.snapshots[key]
+                    self.model_ready.pop(key, None)
+            self.text_cache.retire(protected | {self.latest})
+
+    def _actor(self, connection: Connection) -> None:
+        try:
+            while not self.stopping.is_set():
+                if not connection.poll(.2):
+                    continue
+                value = json.loads(connection.recv_bytes(MAX_BYTES))
+                if (value.get("schema") != SEGMENT_SCHEMA
+                        or value.get("pool_id") != self.pool_id
+                        or value.get("adapter") != self.adapter
+                        or type(value.get("request_id")) is not int):
+                    raise ValueError("RL inference binding differs")
+                try:
+                    if value["operation"] != "score":
+                        if value["operation"] not in {"status", "receipt"}:
+                            from spireagent.rl_exchange import control_input, input_key
+
+                            if value.get("input_key") != input_key(control_input(value)):
+                                raise ValueError("RL input key differs")
+                        response = self.control(value)
+                    else:
+                        key = value["snapshot_sha256"]
+                        with self.model_lock:
+                            model = self.models[key]
+                            bound_projection(model.vocabulary, value["input_projection"])
+                        frame = self.compiler.decode(value["compiled_input"],
+                            expected_identity=self.compiler_identity)
+                        answer: Future = Future()
+                        # Only already compiled public metadata enters the queue.
+                        cast(queue.Queue[_CompiledRequest | None], self.queue).put(
+                            _CompiledRequest(key, frame, answer, value["floor"],
+                                             time.perf_counter()))
+                        response = answer.result(timeout=120)
+                    connection.send_bytes(json_bytes({"request_id": value["request_id"],
+                                                       "result": response}))
+                except Exception as error:
+                    connection.send_bytes(json_bytes({"request_id": value["request_id"],
+                        "error": type(error).__name__, "error_code": getattr(error, "code", None)}))
+        except (OSError, EOFError, ValueError, TypeError, KeyError):
+            return  # No inference or control request is automatically retried.
+        finally:
+            connection.close()
+
+    def _score(self) -> None:
+        pending = cast(queue.Queue[_CompiledRequest | None], self.queue)
+        while True:
+            first = pending.get()
+            if first is None:
+                return
+            batch = [first]
+            deadline = time.perf_counter() + self.window
+            while len(batch) < self.max_batch:
+                remaining = deadline-time.perf_counter()
+                if remaining <= 0:
+                    break
+                try:
+                    item = pending.get(timeout=remaining)
+                except queue.Empty:
+                    break
+                if item is None:
+                    pending.put(None)
+                    break
+                batch.append(item)
+            for key in dict.fromkeys(item.model for item in batch):
+                jobs = [item for item in batch if item.model == key]
+                started = time.perf_counter()
+                guard = self.inference_lock if self.cuda_stream is not None else nullcontext()
+                try:
+                    with guard:
+                        self._score_jobs(key, jobs)
+                except Exception as error:
+                    for item in jobs:
+                        if not item.answer.done():
+                            item.answer.set_exception(error)
+                    self.stats["errors"] += len(jobs)
+                self.stats["score_seconds"] += time.perf_counter()-started
+
+    def _score_jobs(self, key: str, jobs: list[_CompiledRequest]) -> None:
+        from stpd.p1.execution import microbatches
+
+        with self.model_lock:
+            model, identity = self.models[key], self.snapshots[key]
+            ready = self.model_ready.get(key)
+        frames = [item.frame for item in jobs]
+        started = time.perf_counter()
+        for indices in microbatches(frames, list(range(len(jobs))), model):
+            group = [jobs[i] for i in indices]
+            entered = time.perf_counter()
+            with self._execution(ready):
+                scores, outcome, _ = model.forward_rl4([frames[i] for i in indices],
+                    [item.floor for item in group], check_finite=True)
+                probabilities = outcome.float().softmax(-1).cpu().tolist()
+                output = [value.float().cpu().tolist() for value in scores]
+            elapsed = time.perf_counter()-started
+            for item, score, probability in zip(group, output, probabilities, strict=True):
+                item.answer.set_result({"scores": score,
+                    "outcome_probabilities": probability, "mu": identity,
+                    "server_seconds": elapsed, "batch_size": len(group),
+                    "queue_seconds": entered-item.queued_at})
+            self.stats["requests"] += len(group)
+            self.stats["batches"] += 1
+            histogram = self.stats.setdefault("batch_histogram", {})
+            histogram[str(len(group))] = histogram.get(str(len(group)), 0) + 1
+
+
+def create_segment_inference_pool(
+    vocabulary: dict[str, Any], identity: dict[str, Any], *, control: Any,
+    central_scoring: bool = False, model: Any = None,
+    max_batch: int = 40, window_ms: float = 2,
+    address: tuple[str, int] | None = None, segment_steps: int = 64,
+    compiler_identity: dict[str, Any] | None = None,
+) -> SegmentInferencePool | CentralInferencePool:
+    """Select actor-local control by default, or an explicit central scorer.
+
+    Only the central arm consumes model/batching options. W1's background owner
+    supplies immutable snapshots and calls central.publish(model, identity);
+    the default control-only owner continues to use publish(identity).
+    """
+    if central_scoring:
+        if model is None or model.vocabulary != vocabulary:
+            raise ValueError("central_scoring_requires_bound_immutable_model")
+        return CentralInferencePool(model, identity, control=control, max_batch=max_batch,
+            window_ms=window_ms, address=address, segment_steps=segment_steps,
+            compiler_identity=compiler_identity)
+    return SegmentInferencePool(vocabulary, identity, control=control, address=address,
+        segment_steps=segment_steps, compiler_identity=compiler_identity)
 
 
 class SegmentConnection:

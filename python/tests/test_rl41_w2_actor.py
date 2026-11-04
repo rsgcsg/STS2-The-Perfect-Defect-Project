@@ -253,11 +253,11 @@ def test_cache_cold_on_adoption_and_retained_tail_released(running, tmp_path):
         client.close()
 
 
-def test_learner_has_no_models_worker_or_remote_score_path(running):
+def test_default_learner_has_no_models_worker_or_remote_score_path(running):
     _, pool, _, _, first, _ = running
     assert not hasattr(pool, "models") and not hasattr(pool, "worker")
     with (SegmentConnection(pool.attachment()) as client,
-          pytest.raises(ValueError, match="retired")):
+          pytest.raises(ValueError, match="disabled")):
         client.request("score", snapshot_sha256=first["snapshot_sha256"])
 
 
@@ -459,3 +459,41 @@ def test_retained_mu_capacity_wait_releases_control_lock_for_old_commit(running,
         assert results[0]["mu"] == third
         assert len(actor.scorer.models) == 2
         assert first["snapshot_sha256"] not in actor.scorer.models
+
+
+
+def test_explicit_central_scoring_switch_cpu_smoke(monkeypatch):
+    from stpd.p1.local_inference import CentralInferencePool, create_segment_inference_pool
+
+    single_cpu_thread()
+    vocabulary = public_vocabulary()
+    identity = {"snapshot_sha256": "a" * 64, "version": 1}
+    default = create_segment_inference_pool(vocabulary, identity, control=lambda _: {},
+                                           address=("127.0.0.1", 0))
+    try:
+        assert type(default) is SegmentInferencePool and not hasattr(default, "models")
+    finally:
+        default.close()
+    with torch.random.fork_rng(devices=[]):
+        model = MStd(vocabulary, MStdExecution.for_plan("mstd-training-v1")).eval()
+        model.enable_rl4_heads(7)
+    model.requires_grad_(False)
+    pool = create_segment_inference_pool(vocabulary, identity, control=lambda _: {},
+        central_scoring=True, model=model, max_batch=2, window_ms=0,
+        address=("127.0.0.1", 0))
+    assert isinstance(pool, CentralInferencePool)
+    for key, value in pool.environment().items():
+        monkeypatch.setenv(key, value)
+    try:
+        assert pool.attachment()["role"] == "learner_central"
+        assert pool.worker.is_alive()
+        with SegmentConnection(pool.attachment()) as client:
+            scored = client.request("score", snapshot_sha256=identity["snapshot_sha256"],
+                compiled_input=FrameCompiler(vocabulary).encode(public_state()), floor=0,
+                input_projection=vocabulary["input_spec"])
+        assert scored["mu"] == identity and len(scored["scores"]) == 2
+        assert len(scored["outcome_probabilities"]) == 51
+        assert all(math.isfinite(value) for value in scored["scores"])
+    finally:
+        summary = pool.close()
+    assert summary["requests"] == 1
