@@ -13,7 +13,10 @@ import hashlib
 import io as byte_io
 import json
 import multiprocessing
+import os
 import random
+import resource
+import sys
 import threading
 import time
 import uuid
@@ -91,6 +94,13 @@ def _publisher_initialize() -> None:
         torch.set_num_interop_threads(1)
 
 
+def _process_memory() -> dict[str, int]:
+    # getrusage is process-local; children and their high-water marks are separate.
+    peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    return {"pid": os.getpid(),
+            "peak_rss_bytes": int(peak * (1 if sys.platform == "darwin" else 1024))}
+
+
 def _publish_snapshot(
     snapshot: dict[str, Any],
     *,
@@ -104,6 +114,7 @@ def _publish_snapshot(
     work: str,
 ) -> dict[str, Any]:
     """Independent CPU process: construction, hashing, export, Store publication."""
+    began = time.perf_counter()
     snapshot = unpack_transport(snapshot)
     exchange = Exchange(peer, run)
     model = construct_model(snapshot["construction"])
@@ -176,7 +187,9 @@ def _publish_snapshot(
             "training": {"updates": updates},
         }
     )
-    return {"identity": identity, "record": record, "updates": updates}
+    return {"identity": identity, "record": record, "updates": updates,
+            "publication_seconds": time.perf_counter() - began,
+            "publisher_memory": _process_memory()}
 
 
 def _encode_snapshot(checkpoint: SelfContainedCheckpoint) -> FrozenCheckpoint:
@@ -192,6 +205,7 @@ def _encode_snapshot(checkpoint: SelfContainedCheckpoint) -> FrozenCheckpoint:
                 "training_generation": checkpoint.identity.training_generation,
                 "sequence": checkpoint.identity.sequence,
                 "version": checkpoint.counters.mu_version,
+                "encoder_memory": _process_memory(),
             }
         ),
         time.perf_counter() - began,
@@ -219,6 +233,11 @@ def _resume_config(value: dict[str, Any]) -> dict[str, Any]:
         value.pop(key, None)
     for key in OPERATIONAL_FIELDS:
         value["segments"].pop(key, None)
+    if value.get("performance") is not None:
+        from .performance import PREPARED_PERFORMANCE_FIELDS
+
+        value["performance"] = {key: value["performance"][key]
+                                for key in PREPARED_PERFORMANCE_FIELDS}
     return value
 
 
@@ -227,16 +246,14 @@ class SegmentLearner:
         if config.segments is None or config.anchor is not None or config.critic is not None:
             raise BoundaryError("rl_learner", "explicit_segment_config_without_legacy_objectives")
         settings = config.segments
-        if (
-            config.loss.mode != "ppo"
-            or config.loss.value_coef != 0.2
-            or config.loss.entropy_coef != 0.01
-            or settings.epochs != 1
-            or settings.auxiliary_rows > 128
-            or settings.terminal_uses != 2
-            or settings.hp_uses != 1
-        ):
-            raise BoundaryError("rl_learner", "RL41_four_head_one_epoch_configuration_required")
+        if config.performance is not None and config.performance.compile_loss:
+            raise BoundaryError("rl_learner", "prepared_loss_compile_retired_after_G0")
+        if config.loss.mode != "ppo":
+            raise BoundaryError("rl_learner", "RL41_requires_PPO_without_legacy_objectives")
+        if (type(config.lr) not in (int, float) or not 0 < config.lr < 1
+                or type(config.weight_decay) not in (int, float)
+                or not 0 <= config.weight_decay < 1):
+            raise BoundaryError("rl_learner", "invalid_optimizer_configuration")
         self.config, self.settings, self.work, self.io = config, settings, work, io
         work.mkdir(parents=True, exist_ok=True)
         self.producer = source_identity(ROOT)
@@ -317,6 +334,8 @@ class SegmentLearner:
             self.model.load_state_dict(restored.weights, strict=True)
         else:
             self.model = self._start_model()
+        if self.device.type == "cuda":
+            torch.cuda.reset_peak_memory_stats(self.device)
         self.model.to(self.device).eval().requires_grad_(True)
         self.compiler_identity = (
             settings.input_compiler_identity or FrameCompiler(self.model.vocabulary).identity
@@ -369,6 +388,7 @@ class SegmentLearner:
             scene_attention_area=self.performance.scene_attention_area,
             text_attention_area=self.performance.text_attention_area,
             excluded_seeds=frozenset(settings.excluded_seeds),
+            gae_lambda=settings.gae_lambda,
         )
         self.publisher = ProcessPoolExecutor(
             max_workers=1,
@@ -496,8 +516,6 @@ class SegmentLearner:
             self.model.execution,
             implementation="experimental-packed-v1",
             microbatch_size=min(64, self.settings.inference_batch),
-            scene_attention_area=self.performance.scene_attention_area,
-            text_attention_area=self.performance.text_attention_area,
         )
         return ModelConstruction(
             copy.deepcopy(self.model.architecture),
@@ -590,6 +608,10 @@ class SegmentLearner:
                 self.pool.retire(
                     {owner["mu"]["snapshot_sha256"] for owner in self.lease_owners.values()}
                 )
+            self._event("model_published", version=publication["identity"]["version"],
+                        updates=publication["updates"],
+                        publication_seconds=publication["publication_seconds"],
+                        publisher_memory=publication["publisher_memory"])
             self._kick_publication()
             if not wait:
                 return
@@ -696,7 +718,16 @@ class SegmentLearner:
                     ):
                         raise ValueError("segment_begin_predecessor_changed")
                     lease = f"{actor}/{self.queue.cursors.get(actor, -1) + 1}"
-                    if self.queue.occupied + self.settings.steps <= self.settings.capacity_rows:
+                    episode_pending = sum(
+                        record["rows"] for record in self.queue.pending
+                        if record["actor"] == actor and record["episode"] == episode)
+                    episode_inflight = sum(
+                        self.queue.leases[lease]
+                        for lease, owner in self.lease_owners.items()
+                        if owner["actor"] == actor and owner["episode"] == episode)
+                    if (self.queue.occupied + self.settings.steps <= self.settings.capacity_rows
+                            and episode_pending + episode_inflight + self.settings.steps
+                            <= self.settings.episode_rows):
                         mu = copy.deepcopy(self.pool.snapshots[self.pool.latest])
 
                         def grant(lease: str = lease, mu: dict[str, Any] = mu) -> None:
@@ -878,7 +909,8 @@ class SegmentLearner:
             selected = {}
             for kind, pool in (("terminal", self.terminal), ("hp", self.hp)):
                 selected[kind] = pool.sample(
-                    self.settings.auxiliary_rows, self.rng, epochs=1, exclude=reserved
+                    self.settings.auxiliary_rows, self.rng, epochs=1,
+                    exclude=reserved
                 )
             auxiliary, owners = [], []
             auxiliary_kinds: tuple[Literal["terminal", "hp"], ...] = ("terminal", "hp")
@@ -890,7 +922,7 @@ class SegmentLearner:
                             kind,
                             float(row["outcome" if kind == "terminal" else "hp"]),
                             row["uses"],
-                            2 if kind == "terminal" else 1,
+                            self.terminal.max_uses if kind == "terminal" else self.hp.max_uses,
                         )
                     )
                     owners.append(i % self.settings.minibatches)
@@ -904,6 +936,7 @@ class SegmentLearner:
                 self.compiler_identity,
                 self.rng.getstate(),
                 self.settings.prepared_bytes // 2,
+                epochs=self.settings.epochs,
             )
             active = {
                 "request": request,
@@ -983,10 +1016,16 @@ class SegmentLearner:
         assert self.device_batch is not None
         index = active["minibatch"]
         began = time.perf_counter()
+        minibatch = self.device_batch.minibatches[index]
+        if minibatch.epoch_auxiliary:
+            epoch = active["epoch"]
+            terminal_rows, hp_rows = minibatch.epoch_auxiliary_counts[epoch]
+            minibatch = replace(minibatch, terminal_rows=terminal_rows, hp_rows=hp_rows,
+                                tensors={**minibatch.tensors, **minibatch.epoch_auxiliary[epoch]})
         result = prepared_update(
             self.model,
             self.optimizer,
-            self.device_batch.minibatches[index],
+            minibatch,
             config=self.config.loss,
             performance=self.performance,
             target_kl=self.settings.target_kl,
@@ -997,7 +1036,7 @@ class SegmentLearner:
         if result["stepped"]:
             newly_used = [i for i in batch.request.minibatch_rows[index] if i not in active["used"]]
             self.first_use += len(newly_used)
-            self.first_use_multi += batch.minibatches[index].policy_rows
+            self.first_use_multi += sum(bool(batch.policy_mask[i]) for i in newly_used)
             active["used"].extend(newly_used)
             with self.condition:
                 for kind, pool in (("terminal", self.terminal), ("hp", self.hp)):
@@ -1006,6 +1045,7 @@ class SegmentLearner:
                         row
                         for local, row in enumerate(active[kind])
                         if batch.request.auxiliary_minibatches[offset + local] == index
+                        and row["uses"] < pool.max_uses
                     ]
                     pool.used(rows, batch.request.identity.sequence, epochs=1)
                     for identity, retired in pool.retire_exhausted().items():
@@ -1053,12 +1093,18 @@ class SegmentLearner:
             update=self.updates,
             dataset=batch.request.identity.sequence,
             minibatch=index,
-            epoch=0,
+            epoch=active["epoch"],
             first_use=self.first_use,
             first_use_multi=self.first_use_multi,
+            memory=self._memory(),
         )
         active["minibatch"] += 1
-        finished = result["kl_stopped"] or active["minibatch"] == len(batch.minibatches)
+        end_epoch = active["minibatch"] == len(batch.minibatches)
+        finished = result["kl_stopped"] or (
+            end_epoch and active["epoch"] + 1 >= self.settings.epochs)
+        if end_epoch and not finished:
+            active["epoch"] += 1
+            active["minibatch"] = 0
         if finished:
             self.datasets += 1
             self.active = self.active_batch = None
@@ -1114,6 +1160,13 @@ class SegmentLearner:
                 and f"{record['actor']}:{record['episode']}" not in self.actor_episodes
             ):
                 self.sources.pop(identity)
+
+    def _memory(self) -> dict[str, int]:
+        values = _process_memory()
+        if self.device.type == "cuda":
+            values.update(cuda_peak_allocated_bytes=torch.cuda.max_memory_allocated(self.device),
+                          cuda_peak_reserved_bytes=torch.cuda.max_memory_reserved(self.device))
+        return values
 
     def _event(self, kind: str, **fields: Any) -> None:
         while self.telemetry_futures and self.telemetry_futures[0].done():
@@ -1177,6 +1230,9 @@ class SegmentLearner:
                 sequence=info["sequence"],
                 training_generation=info["training_generation"],
             )
+            self._event("checkpoint_published", checkpoint_artifact_id=taken[0].artifact_id,
+                        sequence=info["sequence"], timing=taken[1],
+                        encoder_memory=info["encoder_memory"], memory=self._memory())
 
     def checkpoint(self, *, final: bool = False) -> None:
         if self.input_fenced:
@@ -1188,9 +1244,11 @@ class SegmentLearner:
         if self.checkpoint_encoding is not None or self.checkpoints.pending:
             return
         self.checkpoint_sequence += 1
-        self.checkpoint_encoding = self.checkpoint_encoder.submit(
-            _encode_snapshot, self._learning_state()
-        )
+        began = time.perf_counter()
+        state = self._learning_state()
+        self._event("checkpoint_captured", sequence=self.checkpoint_sequence,
+                    capture_seconds=time.perf_counter() - began, memory=self._memory())
+        self.checkpoint_encoding = self.checkpoint_encoder.submit(_encode_snapshot, state)
         self.checkpoint_requested = False
         if final:
             self._collect_checkpoint(wait=True)
@@ -1281,6 +1339,11 @@ class SegmentLearner:
             "checkpoint_sequence": self.checkpoint_sequence,
             "elapsed_seconds": time.monotonic() - began,
             "timing": self.timing,
+            "memory": self._memory(),
+            "learning_configuration": {"lr": self.config.lr,
+                "weight_decay": self.config.weight_decay, "loss": asdict(self.config.loss),
+                "segments": asdict(self.settings),
+                "performance": self.config.frozen()["performance"]},
             "unresolved_inflight": len(self.queue.leases),
             "queued_rows": self.queue.rows,
             "unresolved_episodes": len(self.actor_episodes),

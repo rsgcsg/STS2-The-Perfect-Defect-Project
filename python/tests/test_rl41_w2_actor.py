@@ -186,7 +186,12 @@ def test_full_mu_loading_distribution_identity_and_one_cpu_thread(running, tmp_p
         assert not any(p.requires_grad for p in actor.scorer.models[key].parameters())
         assert torch.get_num_threads() == torch.get_num_interop_threads() == 1
         assert actor.scorer.report()["threads"] == 1
-        assert actor.scorer.report()["scoring_threads"] == [(1, 1)]
+        report = actor.scorer.report()
+        assert report["scoring_threads"] == [(1, 1)]
+        assert report["score_latency_seconds"]["population"] == report["requests"] == 2
+        assert report["score_latency_seconds"]["sampled"] == 2
+        assert report["score_latency_seconds"]["median"] > 0
+        assert sum(report["score_latency_sample_seconds"]) == pytest.approx(report["score_seconds"])
         assert actor.scorer.text_cache.report()["accounted_bytes"] <= 2 * 1024**2
     finally:
         client.close()

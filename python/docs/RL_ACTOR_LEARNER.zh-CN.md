@@ -16,11 +16,11 @@ E3 是准备角色从训练中细分，其他边在原合同内替换实现。
 | E1 打局→段 | Runtime 确认的 completed directive、真实 successor、同 μ 全分布及尾值、原件 fsync 承诺 → ≤64 行单 μ 热段；未知动作不入段 | **默认**：Exchange 本地 `.rl-hot/<run>/<generation>`，准入不等待 archive；自然终局尾段仍等待 typed 终局 | `LearnerConfig.segments`；`SegmentManagedExecutor` → `put_hot_segment` → commit |
 | E1 历史编码 | 原完整 artifact/input pack → 原历史内容 | **只读**：segment v1/v2 reader；逐段上传/压缩/复制后准入已移除 | `managed_segment_store.read_segment`；旧 writer 拒绝 live 发布 |
 | E2 推理 | 公平公开输入、完整 catalog、冻结 μ → scores 与51类分布；不判合法性 | **默认**：actor CPU μ、1线程、μ 内有界文字缓存 | `segments.central_scoring=false`；`LocalMuScorer`，actor loopback 统一服务 Agent 和 producer |
-| E2 中央实现 | 同上 | **临时**：中央不可变 μ 集合、合批，CUDA 固定独立高优先 stream；退出条件：RL5 收卡时仍无两卡计划就退役。当前仅工程测试显式使用，单卡选本地，两卡计划获准后才考虑中央；没有自动 fallback | `segments.central_scoring=true` → `create_segment_inference_pool`；attachment `role=learner_central` 使 actor 选择 `RemoteMuScorer`；CPU 可作该实现的小测 |
-| E3 段→ready | 准入热段、已验 aux、固定成员/随机顺序/4个切点 → 完整参数无关 PreparedBatch | **临时**：CPU spawn 进程、整批 advantage 和 targets、完整 forward/loss 元数据；退出条件：I1 合入 develop 时转默认，旧主线程准备移除 | `BatchPreparer.submit`；`preparation_workers=4`、`preparation_threads=1`；`prepare_ahead=true`；`prepared_bytes=1GiB` 约束当前+下一批 |
+| E2 中央实现 | 同上 | **临时**：中央不可变 μ 集合、合批，CUDA 固定独立高优先 stream；退出条件：RL5 收卡时仍无两卡计划就退役。当前工程测试显式使用；当本地推理加到本卡100核仍喂不满GPU时，按实测比较同一卡的中央评分；没有自动 fallback | `segments.central_scoring=true` → `create_segment_inference_pool`；attachment `role=learner_central` 使 actor 选择 `RemoteMuScorer`；CPU 可作该实现的小测 |
+| E3 段→ready | 准入热段、已验 aux、固定成员/随机顺序/配置的minibatch切点 → 完整参数无关 PreparedBatch | **临时**：CPU spawn 进程、整批 advantage 和 targets、完整 forward/loss 元数据；退出条件：I1 合入 develop 时转默认，旧主线程准备移除 | `BatchPreparer.submit`；`preparation_workers=4`、`preparation_threads=1`；`prepare_ahead=true`；`prepared_bytes=1GiB` 约束当前+下一批 |
 | E3 历史输入 | 原 artifact/compiled input pack → 不可变 wire | **只读**：有界 SegmentInputs LRU；同 key 只有一个冷填充 owner，读验/等待均在共享锁外 | `SegmentInputs`；新热段不依赖 pack/cache 恢复 |
-| E4 更新 | `stage_batch` 一次后的完整批 → θ/Adam/EMA 更新及成功 uses | **默认**：整批 loss，4 minibatch × 1轮；按行 `segment_update` 仅拒绝旧调用 | `prepared_update`；每个物理 encoder 组用 non-reentrant activation checkpoint，整 minibatch 一次 loss/backward/Adam；KL 刹车未成功不记 uses，不补第二轮；benchmark 与 application 走同接口 |
-| E4 加速 | 同上 | **临时**：BF16、loss compile；退出条件：G1 选定时，选中的转默认，其余退役；本轮 CPU 短测均关闭 | `performance.precision=bf16`、`performance.compile_loss=true`；默认 FP32 / compile关闭；不设数值等价门 |
+| E4 更新 | `stage_batch` 一次后的完整批 → θ/Adam/EMA 更新及成功 uses | **默认**：整批 loss，4 minibatch × 1轮；按行 `segment_update` 仅拒绝旧调用 | `prepared_update`；每组 forward→整 minibatch 分母的 loss→backward 累加，全部组后只作一次 finite/KL/clip/Adam 决定；默认1轮，配置可调整，KL刹车结束剩余轮次；benchmark 与 application 同接口 |
+| E4 执行选择 | 同上 | **默认**：整组 BF16 eager、无 checkpoint；**备选**：显存不足时只缩小同一实现的物理组，或不支持 BF16 的已授权 CPU 语义检查显式选 FP32 | 正式 profile 的 cap512、scene area `2^32`、text area `2^36`；G0真实320行一组峰10.44GiB，FP32峰17.60GiB；compile无稳态收益，live `compile_loss=true`明确拒绝，checkpoint重算实现已退役 |
 | E5 发布/采用 | 更新后完整 θ 快照 → 完整 model+heads μ；段边界采用，旧尾值仍用旧 μ | **默认**：CPU 后台导出/哈希/Store 发布，跳过未发送中间版；默认 actor 按 grant 按需装载 | `_schedule_publication`；`SegmentGrant.mu`；当前/旧尾值显式 retain/release；临时中央实现在后台复制冻结模板和装载设备 |
 | E6 标签 | Evidence 验证的真实终局或稳定 reward 的公开 HP → typed 标签及 exact RowRef | **默认**：Evidence-owned live verifier+绑定；全量二次 replay 仅抽样审计/评估 | `LiveGlobalReplay.verify(expected)` → 原 typed 入口；不是 observer 副本授权；审计失败追加 finding+Stop |
 | E7 CP | 构造、θ/heads/text、完整 Adam/参数组次序、EMA、计数、Python/Torch/CUDA RNG → 自包含 CP | **默认**：`checkpoint_state.SCHEMA`；无恢复 parent，不读旧 queue/aux/输入日志；mid-epoch重放恢复已移除 | 配置 `resume_checkpoint`；新 `training_generation`；只恢复学习状态，旧热代追加丢弃处置 |
@@ -30,19 +30,88 @@ E3 是准备角色从训练中细分，其他边在原合同内替换实现。
 历史 `segments.inference_stream` 字段只读；当前实现选择由 `central_scoring` 决定，
 中央 CUDA 固定独立 stream。已移除共用训练锁/默认 stream 的中央评分，以及 forced null 分布再由 learner 补算的分支。
 
+## 进程、线程和质量预算
+
+```mermaid
+flowchart LR
+  subgraph CPU[Friday CPU actor × N；每路1核]
+    H[Host / Runtime 游戏进程] --> A[Actor 进程：控制与段 producer]
+    A <--> M[Actor 内 CPU μ 评分与有界文字缓存]
+  end
+  A -->|E1 热段 / E6 typed标签| X[原 Exchange / Store]
+  subgraph GPU[单 GPU allocation；准备另配8–16核]
+    L[Learner 主进程：成员、许可、SGD、Adam/EMA、计数]
+    C[原控制连接线程：begin / commit / end]
+    P[CPU spawn 准备进程 ×4：每进程1线程]
+    U[CPU spawn 发布进程：导出、哈希、发布]
+    T[CP 编码/Store发布线程；有界遥测线程]
+    C <--> L
+    P -->|E3 ready批| L
+    L -->|E5 冻结快照| U
+    L -->|E7 owned CPU快照| T
+  end
+  X --> P
+  U --> X
+  T --> X
+  X -->|段边界采用 μ| A
+  X -->|E8 规定保留| R2[R2 原归档 / 抽样审计]
+```
+
+一张表按 E1–E8 记吞吐、延迟、host/显存和磁盘；行/h必须写清 R（含强制）还是成功首用多选D。
+下列带日期数字是原测量，不能升级为当前G1实测；本轮准确SHA、原收据和预算由CURRENT指向的报告拥有。
+
+| 边 | 吞吐 / 延迟 | host / 显存预算和已有实测 | 长期磁盘增长 |
+|---|---|---|---|
+| E1 生产/准入 | 64步段；旧R2单路0.350s/R，仅估算起点；G1报实际段到达与等待 | actor/Host分别量峰RSS；GPU0 | 普通局5%原件；其余留账，技术失败全留；G1量MB/h |
+| E2 评分 | 报forward+D2H的P50/P95及μ文字缓存命中；不是端到端单步耗时 | CPU模型/文字缓存每actor有界；中央实现另量显存 | μ包随版本增长，不能称全盘有界 |
+| E3 准备 | W1原1024行2.78–2.93s；G1量连续不同dataset与等待 | 4进程各自量RSS；current+next共`prepared_bytes=1GiB` | 热段最后引用释放；原不可变账本另算 |
+| E4 SGD | G0真实1024+128+128的320行minibatch：BF16热0.514s、FP32热0.906s | 整组BF16峰10.44GiB allocated/11.94GiB reserved；FP32峰17.60GiB；G0进程峰4.48GiB RSS；PreparedBatch158.13MiB | SGD本身无持久增长 |
+| E5 发布/采用 | 报snapshot、后台导出发布和段边界采用分别耗时；未发中间版可跳过 | 逐进程RSS；后台CPU不保存live GPU图 | 每版model+heads、导出副本各算MB/h |
+| E6 aux | 默认每dataset终局128、HP128；只计实际存在和成功使用的行 | pool按局/战斗数有界；PreparedBatch包含所选aux | typed标签/账本增长单列，不能由池有界推全盘有界 |
+| E7 CP | 默认900s；保存/恢复分别量，G1短验可显式缩短 | 量snapshot、编码/发布期间RSS与节点数；原修后CP编码峰669MiB是独立CPU诊断 | 原CP约85MB，900s约340MB/h；新CP以实际字节和次数算 |
+| E8 归档/审计 | 后台量选中、完成和等待，训练路径不等待全局replay | 保存worker/磁盘积压另量 | 规定全留+5%原件+不可变CAS；实测增长并估剩余可跑时长 |
+
+容量统一换算成成功首用多选/h时，actor用实测R/h×多选比例×首用率；GPU用实际dataset的多选数/全轮SGD时间。
+准备/SGD/发布可重叠，不能相加当总墙钟；整链吞吐取瓶颈。
+先在≤100 actor核内喂GPU，再比较组大小/精度；100核仍喂不满才比较E2中央实现。
+报告15万、30万和最快配法时区分实测与外推；G0局部0.514s不等于在线15万/h已经通过。
+
 ## 内存与物理批形状
 
-`microbatch_size` 只限制物理 encoder 组；scene/text attention area 仍可能把实际组缩到1行。
-例如512节点的 padded scene，默认 `scene_attention_area=262144` 只能容纳1行；
-4行需至少 `1048576`。这不改1024 PPO行、128 terminal+128 HP、四份minibatch的成员、
-整批归一化、各头分母和一次Adam决定。各组 encoder 在 backward 重算，
-只保留全批小输出，不把全部 encoder 激活叠到一次 backward；代价是额外 forward。
-逐组梯度累积也必须沿用整 minibatch 分母，全部组结束后才裁剪、判断KL和step，当前不另开一条实现。
+`microbatch_size`限制物理encoder组；scene/text area仍可能先把组缩小。
+G0的真实320行组，scene为`[320,1123]`、文字`[2048,128]`，旧4行area使整批碎成80次forward。
+正式profile用cap512及足够area，让通常的256 PPO+32 terminal+32 HP在一组中完成；整段溢出仍按实际形状分组。
+显存不足只缩小同一实现的组：每组forward→loss→backward累加；全组共享分母，最后一次裁剪、KL/finite决定和Adam。
+不保留所有encoder图、不重算forward。诊断先累加四头梯度向量再求范数/夹角；不能把组范数相加充当全批范数。
 
-学习状态在 `_learning_state` 已冻结为owned CPU bytes；`encode_state` 只展开dataclass元数据，
-不再对共享slab上的每个Tensor做deepcopy。原CP schema/codec与读回校验不变；
-模型、Adam、EMA、RNG和恢复计数都保留。量内存时分进程记录RSS/PSS、CP前后与forward/backward峰值，
-不要把整批行数误当microbatch，或把Slurm所有进程的高水位相加当物理常驻量。
+学习状态在 `_learning_state` 冻结为owned CPU bytes；`encode_state`只展开dataclass元数据，
+不对共享slab每个Tensor做deepcopy。schema/codec及θ、Adam、EMA、RNG和恢复计数不变。
+峰值按进程及阶段报告，区分RSS、CUDA allocated/reserved和nvidia-smi采样；不能把不同时间的高水位相加当同时常驻量。
+
+## 一个正式配置和生效开关
+
+唯一出发点是仓库`python/configs/rl41.json`。普通运行JSON声明`"profile":"rl41"`，补run、peer、原CP、
+新generation、rendezvous和资源时限；各section的显式值覆盖该profile，最后仍是原`LearnerConfig`。
+`learn --actors N`与转换的`--actors N`都冻结`capacity_rows=dataset_rows+N*steps`；
+正常`learn`把生效参数写入`work/learner-config.json`，plan同时绑定原请求和生效文件的hash。
+至少需要`ceil(dataset_rows/(episode_rows//steps*steps))`路：默认8路，steps48/episode128需11路。
+原episode份额按pending+inflight共同限额，避免最快一局填满global容量却永远凑不齐dataset。
+
+lr、四头系数、熵、clip/KL、λ、minibatch/轮数、aux行数与成功复用上限、段长和EMA均由配置消费；
+范围/类型检查不强制卡上的某个数。默认仍为卡上1024、4×1、aux128/128与2/1、λ.99，文字可训练、Z-next关闭。
+多轮只增加成功使用次数，first_use只记第一次；aux按每epoch预备mask，达到配置use_limit的行后续轮次不再贡献loss，
+对应head分母也同步变化。auxiliary_rows0关闭抽样。KL刹车不记uses并结束该dataset剩余轮次，不靠重复补到目标次数。
+γ1是当前原生终局类别目标的含义；γ<1如何表示折扣目标须先明确，不能给分类概率直接乘γ或假称新字段已生效。
+实际effective配置保存在CP及正常summary，改方法值在本轮收据中明确报告；旧CP只读，正常恢复仍核方法配置一致。
+
+| 选项 / 状态 | prepared训练的实际行为 |
+|---|---|
+| **默认**：microbatch/scene area/text area、deduplicate_text、precision、tf32 | 六个字段实际参与CPU组形状、文字去重或learner精度；生效配置只导出这六项 |
+| **只读**：packed/tensor_cache/joint_nodes | 历史row路径选择；prepared固定用完整tensor/joint元数据，不用它们选另一训练实现 |
+| **只读**：device_cache/reference_device_cache/async_transfer/precompile_inputs | 历史row/reference输入缓存；prepared统一stage完整slab一次，无这些训练开关 |
+| **只读**：bucket/defer_sync | 历史row重排/同步选项；prepared已固定整批partition和一次pre-step决定，不读取它们 |
+| **只读**：inference_microbatch_size/probe_inference_microbatches | 历史推理诊断；actor执行由μ construction及central_scoring决定，不是prepared训练参数 |
+| 已退役：compile_loss=true、activation checkpoint重算 | G0 compile热0.515s对eager0.514s，冷编30.79s；live明确拒绝true。checkpoint只保留历史配置/收据，源码只有逐组累加一种实现 |
 
 ## 冻结身份和 μ
 
@@ -60,7 +129,7 @@ boundary acquisition、step、input hash 和战斗范围，native terminal 变�
 
 ## 容量、失败和引用
 
-ready、在途 lease 共用 `capacity_rows=4608`；每批至少1024行，保留整段溢出行，
+ready、在途 lease 共用按路数冻结的 `capacity_rows=dataset_rows+actors*steps`；每批至少1024行，保留整段溢出行，
 单 episode 每数据集最多128行。PPO、延迟标签、aux、prepare、reader 各自持有 hot owner；
 commit/episode_end ACK 前取得下游所需引用，用尽或淘汰释放，最后引用才删除本轮临时热 bytes。
 每个数据集抽样的 aux 终局≤128行、最多2次且跨2个数据集；HP≤128行、1次/1个数据集。
@@ -92,7 +161,7 @@ learner 把完整新 attachment 原子写回同一路径；环境 capability 保
 ```sh
 python -m spireagent.workbench.rl_learner --config learner.json --work conversion \
   --convert-cp16-package /ABS/original-construction-package \
-  --source-generation g-legacy --conversion-generation g-converted
+  --source-generation g-legacy --conversion-generation g-converted --actors 32
 # 零 SGD/World；输出 conversion-receipt.json 和 converted-learner.json。
 python -m spireagent.workbench.rl_learner --config conversion/converted-learner.json --work fresh-learner
 ```

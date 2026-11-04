@@ -100,6 +100,7 @@ def _initialize(
     reader: Callable[..., dict[str, Any]] | None,
     scratch: str,
     excluded_seeds: frozenset[str],
+    gae_lambda: float = 0.99,
 ) -> None:
     torch.set_num_threads(threads)
     if torch.get_num_interop_threads() != 1:
@@ -109,6 +110,7 @@ def _initialize(
     from spireagent.rl_exchange import Exchange
 
     _worker.update(
+        gae_lambda=gae_lambda,
         compiler=FrameCompiler(vocabulary),
         expected_spec=input_spec(vocabulary, runtime_projection(vocabulary)),
         exchange=Exchange(peer, run) if peer is not None else None,
@@ -144,6 +146,7 @@ def _read_source(
         _worker["compiler"],
         _worker["expected_spec"],
         excluded_seeds=_worker["excluded_seeds"],
+        gae_lambda=_worker["gae_lambda"],
     )
     source = dataclasses.replace(source, seconds={**source.seconds, "read_verify": read_seconds})
     return pack_transport(contiguous_slabs(source)[0])
@@ -155,6 +158,7 @@ def prepare_source(
     expected_spec: dict[str, Any],
     *,
     excluded_seeds: frozenset[str] = frozenset(),
+    gae_lambda: float = 0.99,
 ) -> PreparedSource:
     """One verified source read, one decoder call per current row; no boundary frame decode."""
     began = time.perf_counter()
@@ -219,7 +223,7 @@ def prepare_source(
             }
         )
     decoded = time.perf_counter()
-    p, targets, advantages = recorded_targets(segment)
+    p, targets, advantages = recorded_targets(segment, gae_lambda=gae_lambda)
     return PreparedSource(
         segment["segment_id"],
         segment["run_id"],
@@ -377,6 +381,8 @@ def assemble(
     auxiliary_frames: tuple[AuxiliaryFrame, ...] = (),
 ) -> PreparedBatch:
     began = time.perf_counter()
+    if type(request.epochs) is not int or request.epochs < 1:
+        raise ValueError("positive_prepared_epochs_required")
     by_id = {source.segment_id: source for source in sources}
     if len(by_id) != len(sources):
         raise ValueError("duplicate_preparation_source")
@@ -426,7 +432,7 @@ def assemble(
             bound_ref != aux.source
             or not math.isfinite(aux.label)
             or not 0 <= aux.uses_before < aux.use_limit
-            or aux.use_limit != (2 if aux.kind == "terminal" else 1)
+            or type(aux.use_limit) is not int or aux.use_limit < 1
         ):
             raise ValueError("auxiliary_binding_or_successful_use_limit_changed")
         frames.append(aux_frame)
@@ -443,8 +449,6 @@ def assemble(
             if aux.label < 0:
                 raise ValueError("invalid_public_hp_label")
             hp_labels[n + local] = aux.label
-    if sum(kind == "terminal" for kind in kinds) > 128 or sum(kind == "hp" for kind in kinds) > 128:
-        raise ValueError("auxiliary_rows_exceed_128_per_head")
     total = len(frames)
     floor_tensor = torch.tensor(floors, dtype=torch.long)
     policy_mask = torch.tensor([i < n and len(f.choices) > 1 for i, f in enumerate(frames)])
@@ -476,49 +480,28 @@ def assemble(
         work = list(members) + [
             n + local for local, owner in enumerate(request.auxiliary_minibatches) if owner == index
         ]
-        grouped: dict[tuple[bool, int], list[int]] = defaultdict(list)
-        for row in work:
-            grouped[
-                (
-                    bool(policy_mask[row]),
-                    _bucket(frames[row].entity_count, (32, 64, 128, 256, 512, 1024)),
-                )
-            ].append(row)
         groups = []
-        for (policy, scene_width), members_in_bucket in sorted(grouped.items(), reverse=True):
-            group: list[int] = []
-            text_count = text_width = 0
-            for row in members_in_bucket:
-                frame = frames[row]
-                width = _bucket(max(text_width, frame.text_width), (8, 16, 32, 64, 128, 256, 512))
-                if group and (
-                    len(group) >= microbatch_size
-                    or (len(group) + 1) * scene_width**2 > scene_attention_area
-                    or (text_count + frame.text_count) * width**2 > text_attention_area
-                ):
-                    groups.append(
-                        prepare_group(
-                            [frames[i] for i in group],
-                            tuple(group),
-                            policy,
-                            floor_tensor[group],
-                            deduplicate_text=deduplicate_text,
-                        )
-                    )
-                    group, text_count, text_width = [], 0, 0
-                group.append(row)
-                text_count += frame.text_count
-                text_width = max(text_width, frame.text_width)
-            if group:
-                groups.append(
-                    prepare_group(
-                        [frames[i] for i in group],
-                        tuple(group),
-                        policy,
-                        floor_tensor[group],
-                        deduplicate_text=deduplicate_text,
-                    )
-                )
+        group: list[int] = []
+        text_count = text_width = scene_width = 0
+        for row in work:
+            frame = frames[row]
+            width = _bucket(max(text_width, frame.text_width), (8, 16, 32, 64, 128, 256, 512))
+            scene = _bucket(max(scene_width, frame.entity_count), (32, 64, 128, 256, 512, 1024))
+            if group and (
+                len(group) >= microbatch_size
+                or (len(group) + 1) * scene**2 > scene_attention_area
+                or (text_count + frame.text_count) * width**2 > text_attention_area
+            ):
+                groups.append(prepare_group([frames[i] for i in group], tuple(group), True,
+                    floor_tensor[group], deduplicate_text=deduplicate_text))
+                group, text_count, text_width, scene_width = [], 0, 0, 0
+            group.append(row)
+            text_count += frame.text_count
+            text_width = max(text_width, frame.text_width)
+            scene_width = max(scene_width, frame.entity_count)
+        if group:
+            groups.append(prepare_group([frames[i] for i in group], tuple(group), True,
+                floor_tensor[group], deduplicate_text=deduplicate_text))
         order = [row for group in groups for row in group.rows]
         selector = torch.tensor(order, dtype=torch.long)
         policy_indices = torch.nonzero(policy_mask[selector], as_tuple=True)[0]
@@ -528,10 +511,13 @@ def assemble(
         old_padded = torch.full((len(order), width), 1.0 / width)
         catalog_valid = torch.ones((len(order), width), dtype=torch.bool)
         for local, row in enumerate(order):
-            if policy_mask[row]:
-                old_padded[local].zero_()
-                old_padded[local, : len(old[row])] = torch.tensor(old[row])
-                catalog_valid[local, len(old[row]) :] = False
+            count = len(frames[row].choices)
+            catalog_valid[local, count:] = False
+            old_padded[local].zero_()
+            if row < n:
+                old_padded[local, :count] = torch.tensor(old[row])
+            else:
+                old_padded[local, :count] = 1.0 / count  # no policy loss on auxiliary rows
         mb_data = {
             "policy_indices": policy_indices,
             "td_indices": torch.nonzero(td_mask[selector], as_tuple=True)[0],
@@ -549,6 +535,18 @@ def assemble(
             "terminal_mask": terminal_mask[selector].float(),
             "hp_mask": hp_mask[selector].float(),
         }
+        epoch_auxiliary, epoch_counts = [], []
+        if request.epochs > 1:
+            for epoch in range(request.epochs):
+                eligible = torch.tensor([
+                    row < n or (request.auxiliary[row - n].uses_before + epoch
+                                < request.auxiliary[row - n].use_limit)
+                    for row in order], dtype=torch.float32)
+                masks = {name: mb_data[name] * eligible
+                         for name in ("terminal_mask", "hp_mask")}
+                epoch_auxiliary.append(masks)
+                epoch_counts.append((int(masks["terminal_mask"].sum()),
+                                     int(masks["hp_mask"].sum())))
         minibatches.append(
             PreparedMinibatch(
                 tuple(groups),
@@ -557,6 +555,8 @@ def assemble(
                 len(mb_data["terminal_indices"]),
                 len(mb_data["hp_indices"]),
                 mb_data,
+                tuple(epoch_auxiliary),
+                tuple(epoch_counts),
             )
         )
     metadata_ready = time.perf_counter()
@@ -685,12 +685,14 @@ class BatchPreparer:
         scene_attention_area: int = 67108864,
         text_attention_area: int = 67108864,
         excluded_seeds: frozenset[str] = frozenset(),
+        gae_lambda: float = 0.99,
     ) -> None:
         self.pool = ProcessPoolExecutor(
             max_workers=workers,
             mp_context=multiprocessing.get_context("spawn"),
             initializer=_initialize,
-            initargs=(vocabulary, threads, peer, run, reader, str(scratch), excluded_seeds),
+            initargs=(vocabulary, threads, peer, run, reader,
+                      str(scratch), excluded_seeds, gae_lambda),
         )
         self.coordinator = ThreadPoolExecutor(
             max_workers=1, thread_name_prefix="rl-ready-coordinator"

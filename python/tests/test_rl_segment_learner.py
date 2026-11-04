@@ -144,7 +144,8 @@ def test_episode_end_wakes_capacity_waiter_without_orphan_grant(tmp_path, monkey
     }
     owner.control({**base, "operation": "episode_open"})
     previous = None
-    for _ in range(config.segments.capacity_rows // config.segments.steps):
+    for _ in range(min(config.segments.capacity_rows, config.segments.episode_rows)
+                   // config.segments.steps):
         previous = owner.control({**base, "operation": "begin", "previous_lease": previous})[
             "lease"
         ]
@@ -308,3 +309,142 @@ def test_reward_HP_backfills_cross_segment_rows_before_episode_end(tmp_path, mon
     finally:
         scorer.close()
         owner.close()
+
+
+def test_rl41_profile_binds_capacity_and_exposes_only_live_performance(tmp_path):
+    import json
+
+    from stpd.rl.learner import LearnerConfig
+    from stpd.rl.performance import PREPARED_PERFORMANCE_FIELDS
+
+    path = tmp_path / "bindings.json"
+    path.write_text(json.dumps({"schema": "stpd/rl-learner-config-1", "profile": "rl41",
+        "run": "profile-unit", "peer": {"kind": "local", "directory": str(tmp_path / "peer")},
+        "wall_seconds": 123, "segments": {"training_generation": "g-profile"}}))
+    config = LearnerConfig.read(path).bind_actors(32)
+    assert (config.loss.mode, config.loss.value_coef, config.loss.entropy_coef) == ("ppo", .2, .01)
+    assert (config.segments.steps, config.segments.dataset_rows,
+            config.segments.capacity_rows) == (64, 1024, 3072)
+    assert (config.segments.minibatches, config.segments.epochs) == (4, 1)
+    assert (config.segments.auxiliary_rows, config.segments.terminal_uses,
+            config.segments.hp_uses) == (128, 2, 1)
+    assert config.wall_seconds == 123 and config.segments.training_generation == "g-profile"
+    assert set(config.frozen()["performance"]) == set(PREPARED_PERFORMANCE_FIELDS)
+    frozen = tmp_path / "effective.json"
+    frozen.write_text(json.dumps(config.frozen()))
+    assert LearnerConfig.read(frozen).frozen() == config.frozen()
+    path.write_text(path.read_text().replace('"rl41"', '"unknown-profile"'))
+    with pytest.raises(BoundaryError, match="unsupported_profile"):
+        LearnerConfig.read(path)
+
+
+def test_fast_episode_backpressure_keeps_first_dataset_reachable(tmp_path, monkeypatch):
+    import time
+    from concurrent.futures import ThreadPoolExecutor
+
+    from test_rl41_w1 import segment
+
+    from spireagent.rl_exchange import control_input
+
+    config, io = configuration(tmp_path, monkeypatch)
+    config = dataclasses.replace(config, segments=dataclasses.replace(config.segments,
+        steps=2, dataset_rows=8, episode_rows=4, capacity_rows=12))
+    owner = SegmentLearner(config, tmp_path / "owner", io)
+    pool = ThreadPoolExecutor(1)
+    from stpd.p1.local_mu import LocalMuScorer
+    scorer = LocalMuScorer(owner.exchange, owner.work / "fixture-mu")
+
+    def request(actor, operation, **fields):
+        return owner.control(control_input({"operation": operation, "run": config.run,
+            "training_generation": owner.generation, "actor": actor, "episode": "episode-" + actor,
+            **fields}))
+
+    def commit(actor, previous, start):
+        grant = request(actor, "begin", previous_lease=previous)
+        scorer.adopt(grant["mu"])
+        frozen = scorer.models[grant["mu"]["snapshot_sha256"]]
+        value = segment(frozen, name=grant["lease"], run_id="episode-" + actor,
+            rows=2, start=start, generation=owner.generation, mu=grant["mu"])
+        payload = owner.exchange.put_hot_segment(value, owner="fixture:" + actor)
+        result = owner.control(control_input({"operation": "commit", "run": config.run,
+            "training_generation": owner.generation, "segment_id": grant["lease"],
+            "run_id": value["run_id"], "rows": 2, "mu": grant["mu"],
+            "payload": dataclasses.asdict(payload)}))
+        assert result["segment_id"] == grant["lease"]
+        return grant["lease"]
+
+    try:
+        for actor in ("a", "b"):
+            assert request(actor, "episode_open")["admitted"]
+        previous = commit("a", None, 0)
+        previous = commit("a", previous, 2)
+        waiting = pool.submit(request, "a", "begin", previous_lease=previous)
+        time.sleep(.1)
+        assert not waiting.done()  # old code granted a third same-episode segment
+        other = commit("b", None, 0)
+        commit("b", other, 2)
+        chosen = owner.queue.dataset()
+        assert sum(value["rows"] for value in chosen) == 8
+        assert {run: sum(v["rows"] for v in chosen if v["run_id"] == run)
+                for run in {v["run_id"] for v in chosen}} == {"episode-a": 4, "episode-b": 4}
+        assert waiting.result(timeout=2)["lease"] == "a/2"
+    finally:
+        with owner.condition:
+            owner.newlease_stopped = True
+            owner.condition.notify_all()
+        pool.shutdown(wait=True)
+        scorer.close()
+        owner.close()
+
+
+@pytest.mark.parametrize("terminal_uses", [1, 4])
+def test_configured_epochs_and_coefficients_preserve_first_use_and_aux_limits(
+        tmp_path, monkeypatch, terminal_uses):
+    config, io = configuration(tmp_path, monkeypatch)
+    config = dataclasses.replace(config, lr=1e-8,
+        loss=dataclasses.replace(config.loss, policy_coef=.7, value_coef=.3,
+                                 entropy_coef=.02, terminal_coef=.2, hp_coef=.3),
+        segments=dataclasses.replace(config.segments, epochs=2, terminal_uses=terminal_uses,
+                                     hp_uses=2,
+                                     gae_lambda=0, head_lr=1e-8, target_kl=.9))
+    owner = SegmentLearner(config, tmp_path / "owner", io)
+    try:
+        deliver(owner, actor="a", terminal=True)
+        deliver(owner, actor="b", terminal=True)
+        assert owner._prepare()
+        expected_multi = int(owner.active_batch.policy_mask.sum())
+        auxiliary = list(owner.active["terminal"])
+        assert auxiliary
+        results = [owner._step() for _ in range(config.segments.minibatches * 2)]
+        assert all(result["stepped"] for result in results)
+        assert [result["epoch"] for result in results] == [0] * 4 + [1] * 4
+        assert owner.active is None and owner.datasets == 1 and owner.updates == 8
+        assert owner.first_use == 4 and owner.first_use_multi == expected_multi
+        assert all(row["uses"] == min(2, terminal_uses) and row["datasets"] == [1]
+                   for row in auxiliary)
+        assert sum(r["terminal_rows"] for r in results[:4]) == len(auxiliary)
+        assert sum(r["terminal_rows"] for r in results[4:]) == (
+            len(auxiliary) if terminal_uses > 1 else 0)
+        owner.checkpoint(final=True)
+        _, cp = read_cp(owner)
+        assert cp.config["segments"]["epochs"] == 2
+        assert cp.config["segments"]["gae_lambda"] == 0
+        assert cp.config["loss"]["policy_coef"] == .7
+    finally:
+        cleanup(owner)
+
+
+def test_zero_auxiliary_rows_disables_selection_from_nonempty_pool(tmp_path, monkeypatch):
+    config, io = configuration(tmp_path, monkeypatch)
+    config = dataclasses.replace(config, segments=dataclasses.replace(config.segments,
+                                                                     auxiliary_rows=0))
+    owner = SegmentLearner(config, tmp_path / "owner", io)
+    try:
+        deliver(owner, actor="a", terminal=True)
+        deliver(owner, actor="b", terminal=True)
+        assert owner.terminal.groups
+        selected = owner._select(take=False)
+        assert selected is not None and not selected["request"].auxiliary
+        assert not selected["terminal"] and not selected["hp"]
+    finally:
+        cleanup(owner)

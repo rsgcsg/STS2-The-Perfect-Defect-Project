@@ -132,11 +132,39 @@ class LearnerConfig:
     critic: CriticConfig | None = None
     segments: SegmentConfig | None = None
 
+    def frozen(self) -> dict[str, Any]:
+        """Ordinary run JSON; prepared runs expose only effective performance choices."""
+        from .performance import PREPARED_PERFORMANCE_FIELDS
+
+        value = {"schema": CONFIG_SCHEMA, **asdict(self)}
+        if self.segments is not None and value["performance"] is not None:
+            value["performance"] = {key: value["performance"][key]
+                                    for key in PREPARED_PERFORMANCE_FIELDS}
+        return value
+
+    def bind_actors(self, actors: int) -> LearnerConfig:
+        """Freeze the original queue capacity from an actual deployment fact."""
+        if type(actors) is not int or not 1 <= actors <= 200 or self.segments is None:
+            raise BoundaryError("rl_learner", "segment_actor_count_required")
+        return replace(self, segments=replace(self.segments,
+            capacity_rows=self.segments.dataset_rows + actors * self.segments.steps))
+
     @classmethod
     def read(cls, path: Path) -> LearnerConfig:
         value = json.loads(path.read_bytes())
         if value.pop("schema", None) != CONFIG_SCHEMA:
             raise BoundaryError("rl_learner", "unsupported_config")
+        profile = value.pop("profile", None)
+        if profile is not None:
+            if profile != "rl41":
+                raise BoundaryError("rl_learner", "unsupported_profile")
+            defaults = json.loads((ROOT / "configs/rl41.json").read_bytes())
+            if defaults.pop("schema", None) != CONFIG_SCHEMA:
+                raise BoundaryError("rl_learner", "unsupported_profile_config")
+            for section in ("loss", "performance", "segments"):
+                if isinstance(value.get(section), dict):
+                    value[section] = {**defaults[section], **value[section]}
+            value = {**defaults, **value}
         loss = LossConfig(**value.pop("loss", {}))
         performance = value.pop("performance", None)
         critic = value.pop("critic", None)

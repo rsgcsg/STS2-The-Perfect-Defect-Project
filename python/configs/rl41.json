@@ -1,0 +1,53 @@
+{
+  "schema": "stpd/rl-learner-config-1",
+  "device": "cuda",
+  "lr": 4e-05,
+  "weight_decay": 0.0,
+  "anchor": null,
+  "critic": null,
+  "loss": {
+    "mode": "ppo",
+    "clip": 0.2,
+    "value_coef": 0.2,
+    "entropy_coef": 0.01,
+    "max_grad_norm": 1.0,
+    "policy_coef": 1.0,
+    "terminal_coef": 0.1,
+    "hp_coef": 0.1
+  },
+  "segments": {
+    "steps": 64,
+    "dataset_rows": 1024,
+    "minibatches": 4,
+    "epochs": 1,
+    "episode_rows": 128,
+    "terminal_games": 256,
+    "hp_battles": 128,
+    "auxiliary_rows": 128,
+    "terminal_uses": 2,
+    "hp_uses": 1,
+    "target_kl": 0.03,
+    "ema_decay": 0.999,
+    "head_lr": 0.0001,
+    "checkpoint_seconds": 900,
+    "inference_batch": 32,
+    "inference_window_ms": 2,
+    "diagnostics_every": 8,
+    "warmup_artifact_id": null,
+    "input_pack_artifact_id": null,
+    "prepare_ahead": true,
+    "preparation_workers": 4,
+    "preparation_threads": 1,
+    "prepared_bytes": 1073741824,
+    "central_scoring": false,
+    "gae_lambda": 0.99
+  },
+  "performance": {
+    "microbatch_size": 512,
+    "scene_attention_area": 4294967296,
+    "text_attention_area": 68719476736,
+    "deduplicate_text": true,
+    "precision": "bf16",
+    "tf32": false
+  }
+}

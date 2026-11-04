@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+import random
 import tempfile
 import threading
 import time
@@ -52,6 +53,8 @@ class LocalMuScorer:
         self.closed = False
         self.load_seconds: list[float] = []
         self.score_seconds = 0.0
+        self.score_sample: list[float] = []
+        self.score_sample_rng = random.Random(0)  # telemetry only, never acting RNG
         self.requests = 0
         self.scoring_threads: set[tuple[int, int]] = set()
 
@@ -174,18 +177,32 @@ class LocalMuScorer:
             scores, outcome, _ = model.forward_rl4([frame], [floor], check_finite=True)
             probabilities = tuple(outcome.float().softmax(-1)[0].tolist())
             score = tuple(scores[0].float().tolist()) if policy else None
+            elapsed = time.perf_counter() - started
             self.requests += 1
-            self.score_seconds += time.perf_counter() - started
+            self.score_seconds += elapsed
+            if len(self.score_sample) < 4096:
+                self.score_sample.append(elapsed)
+            else:
+                slot = self.score_sample_rng.randrange(self.requests)
+                if slot < len(self.score_sample):
+                    self.score_sample[slot] = elapsed
             return MuScore(snapshot_sha256, score, probabilities)
 
     def report(self) -> dict[str, Any]:
         with self.lock:
+            sample = sorted(self.score_sample)
+            latency = {"population": self.requests, "sampled": len(sample),
+                "sampling": "uniform reservoir; all requests when population<=4096",
+                "median": sample[len(sample) // 2] if sample else None,
+                "p95": sample[min(len(sample) - 1, int(len(sample) * .95))] if sample else None}
             return {"threads": torch.get_num_threads(),
                     "interop_threads": torch.get_num_interop_threads(),
                     "scoring_threads": sorted(self.scoring_threads),
                     "resident_mu": len(self.models), "retained": dict(self.references),
                     "load_seconds": self.load_seconds, "requests": self.requests,
-                    "score_seconds": self.score_seconds, "text_cache": self.text_cache.report()}
+                    "score_seconds": self.score_seconds, "score_latency_seconds": latency,
+                    "score_latency_sample_seconds": list(self.score_sample),
+                    "text_cache": self.text_cache.report()}
 
 
 class RemoteMuScorer:

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import collections
 import copy
+import math
 import random
 import threading
 from dataclasses import asdict, dataclass, field
@@ -17,7 +18,7 @@ OPERATIONAL_FIELDS = ("diagnostics_every", "archive_pending_bytes", "archive_min
                       "archive_poll_seconds", "input_compiler_identity", "input_pack_artifact_id",
                       "prepare_ahead", "inference_stream", "preparation_workers",
                       "preparation_threads", "prepared_bytes", "training_generation",
-                      "rendezvous_path", "central_scoring")
+                      "rendezvous_path", "central_scoring", "checkpoint_seconds", "capacity_rows")
 
 @dataclass(frozen=True)
 class SegmentConfig:
@@ -25,6 +26,7 @@ class SegmentConfig:
     dataset_rows: int = 1024
     minibatches: int = 4
     epochs: int = 1
+    gae_lambda: float = 0.99
     episode_rows: int = 128
     capacity_rows: int = 4608
     terminal_games: int = 256
@@ -59,11 +61,18 @@ class SegmentConfig:
     def __post_init__(self) -> None:
         positive = (self.steps, self.dataset_rows, self.minibatches, self.epochs,
             self.episode_rows, self.capacity_rows, self.terminal_games,
-            self.hp_battles, self.auxiliary_rows, self.terminal_uses, self.hp_uses,
+            self.hp_battles, self.terminal_uses, self.hp_uses,
             self.inference_batch, self.diagnostics_every, self.archive_pending_bytes,
             self.preparation_workers, self.preparation_threads, self.prepared_bytes)
         if (any(type(v) is not int or v < 1 for v in positive)
                 or self.steps > 64 or self.episode_rows < self.steps
+                or self.dataset_rows < self.minibatches
+                or type(self.auxiliary_rows) is not int or self.auxiliary_rows < 0
+                or type(self.gae_lambda) not in (int, float) or not 0 <= self.gae_lambda <= 1
+                or any(type(v) not in (int, float) or not math.isfinite(v)
+                       for v in (self.target_kl, self.ema_decay, self.head_lr,
+                                 self.inference_window_ms, self.checkpoint_seconds,
+                                 self.archive_poll_seconds))
                 or self.capacity_rows < self.dataset_rows + self.steps
                 or not 0 < self.target_kl < 1 or not 0 < self.ema_decay < 1
                 or not 0 < self.head_lr < 1

@@ -1,12 +1,17 @@
-# RL4.1 I1：恢复后SGD已通过，内存修复待提交
+# RL4.1：G0 已测，G1 待新源码冻结
 
-用户11-04续跑2；f213bd9c已在Friday新隔离release用全新seed补验：真实CP16从362更新到374保存，只换learner、同actor/World继续至388正常退出，385更新CP已在R2完整读回，未决episode/lease均0。全部短测在40分钟内结束、GPU0、无活动作业；本轮18World中的15unknown和1save_failed原样保留，另1saved/1censored，未重投旧意图。
-内存大头是CP对共享slab逐Tensor deepcopy及整minibatch叠加encoder图；源码已改浅展开编码和按组重算，CPU实形状、回归及非作者复核通过，未提交/未部署真实链。另对齐Friday Evidence37依赖并在bootstrap核实际consumer导入。唯一下一步由Claude提交并重绑候选、接回原卡G1准备，不自动开G1/H1或GPU；预算不重置。接口、四种状态及SOP见[RL SOP](../../python/docs/RL_ACTOR_LEARNER.zh-CN.md)，冻结范围见[F0](../plans/RL4.1/F0-INTERFACES.md)。
+I1续跑3从干净`21e3a87b`出发；真实CP16与1024+128+128行完成G0，实际A100为40GB。
+已选整组BF16 eager、无checkpoint，局部320行SGD热0.514s、峰10.44GiB；compile无稳态收益。
+正式profile、逐组梯度累加、参数接线与正常运行观测正在本轮唯一i1工作区收尾，尚未取得提交SHA或G1运行证据。
+下一步是Claude按当前授权复核并提交该候选（不push），再沿正常Friday入口做G1：≥2个dataset、保存CP、只换learner继续SGD。
+本轮实物和剩余义务看外部任务`replies/RL4.1/I1-REPORT.md`；接口和SOP在[原RL指南](../../python/docs/RL_ACTOR_LEARNER.zh-CN.md)。
 
 ## 原轮结果与剩余授权
 
 RL4-PREP按未达标结卡，准确实物、原件replay超时、低吞吐和前后测边界由[RL4任务](../plans/RL_CRITIC_20261101.md)及其原收据负责。已运行source2d77049e/Runtime63/r1.9；#378/#379/#380已合；cache033a48ed只有CPU/CI证据，未热换。362SGD/CP16和旧unknown分母不被I1升级，RL2/RL3不重开。
-用户原批单A100、GPU累计5小时，原12个GPU作业累计10911秒、余7089秒；排队不计使用。含评估仍≤45游戏位；首小时外正式长训未批，T0与原72小时目标不重置。I1本轮只用CPU，不自动进入G1/H1，不删除资产、不碰Mac安装/真人录制，固定评估及永久heldout不训练。
+旧RL4原12个GPU作业累计10911秒，是原历史成本，不改写。11-04 22:00用户将本轮GPU额度改为累计≤8h、同时一张A100或A30；G0≤1h、G1≤2h，排队不计。当前新GPU作业3+46+112=161秒，均结束；一项传输上限失败保留，0 World。
+actor可在100核以内按瓶颈提速、先登记原GAME-SLOT；不是旧45路上限继续生效。正式规模CPU SGD彩排已取消并入G1。
+不长训、不push、不删资产、不读凭据；H1是G1后的推荐交接，本轮不自行启动；固定评估及永久heldout不训练。
 
 <!-- Resolve live GitHub refs before action; latest user instructions and live evidence override this file. -->
 

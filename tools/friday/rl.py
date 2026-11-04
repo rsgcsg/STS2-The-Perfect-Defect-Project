@@ -38,7 +38,8 @@ def prepare(execution: Path, learner: Path, output: Path, *, actors: int = 8,
             wall_seconds: int = 3300, episode_seconds: int = 900, max_games: int = 1000,
             games_per_ledger: int = 2, runtime_source: Path | None = None,
             behavior: dict[str, Any] | None = None, seed_namespace: str | None = None,
-            segment_inference: Path | None = None
+            segment_inference: Path | None = None,
+            requested_learner: Path | None = None
             ) -> dict[str, Any]:
     execution, learner = canonical_path(execution), canonical_path(learner)
     output = canonical_path(output, existing=False)
@@ -129,6 +130,9 @@ def prepare(execution: Path, learner: Path, output: Path, *, actors: int = 8,
         assert segment_inference is not None
         plan['trajectory_encoding'] = 'short-segment-1'
         plan['inference'] = {'path': str(segment_inference), 'sha256': hashed(segment_inference)}
+    if requested_learner is not None:
+        plan['learner_request'] = {'path': str(canonical_path(requested_learner)),
+                                   'sha256': hashed(requested_learner)}
     save(output / 'plan.json', plan)
     return plan
 
@@ -140,6 +144,9 @@ def load_plan(path: Path) -> dict[str, Any]:
             or value.get('retry_unknown') is not False
             or value.get('automatic_mac_fallback') is not False):
         raise ValueError('frozen_Friday_RL_actor_plan_required')
+    if 'learner_request' in value:
+        read_pinned(value['learner_request'])
+        read_pinned(value['learner_origin'])
     base = read_pinned(value['execution'])
     canonical_path(Path(value['source_root']))
     canonical_path(Path(base['candidate_directory']))
@@ -450,8 +457,10 @@ def learn(configuration: Path, work: Path, execution: Path, actors_output: Path,
     require_modules(source)
     require_managed_slot()
     settings = config.segments
-    minimum_actors = ((settings.dataset_rows + settings.episode_rows - 1)
-                      // settings.episode_rows) if settings is not None else 1
+    episode_capacity = (settings.episode_rows // settings.steps * settings.steps
+                        if settings is not None else 1)
+    minimum_actors = ((settings.dataset_rows + episode_capacity - 1)
+                      // episode_capacity) if settings is not None else 1
     if (sys.platform != 'linux' or not os.environ.get('SLURM_JOB_ID')
             or config.device not in {'cuda', 'cpu'} or config.segments is None
             or type(actors) is not int
@@ -482,15 +491,20 @@ def learn(configuration: Path, work: Path, execution: Path, actors_output: Path,
 
         # One stable path belongs to the launch, even when only learner/work is
         # replaced. Preserve the inherited capability through the same launch.
-        config = replace(config, segments=replace(settings,
+        config = config.bind_actors(actors)
+        assert config.segments is not None
+        config = replace(config, segments=replace(config.segments,
             rendezvous_path=settings.rendezvous_path or str(work / 'inference.json')))
+        effective_configuration = work / 'learner-config.json'
+        save(effective_configuration, config.frozen())
         learner = SegmentLearner(config, work,
             SegmentLearnerIO(read_segment, publish_detached_p1_model))
         try:
-            prepare(execution, configuration, actors_output, actors=actors,
+            prepare(execution, effective_configuration, actors_output, actors=actors,
                 wall_seconds=int(config.wall_seconds)+600, episode_seconds=episode_seconds,
                 games_per_ledger=10, runtime_source=source, seed_namespace=seed_namespace,
-                segment_inference=Path(config.segments.rendezvous_path))
+                segment_inference=Path(config.segments.rendezvous_path),
+                requested_learner=configuration)
             os.environ.update(learner.pool.environment())
             if not external_submit:
                 submit(actors_output/'plan.json', memory_gb=memory_gb)
@@ -568,7 +582,8 @@ def launch(gpu_script: Path, configuration: Path, work: Path, actors_output: Pat
                 if time.monotonic() >= deadline:
                     raise TimeoutError('GPU_actor_plan_not_ready_within_launch_window') from None
                 time.sleep(min(1, max(0, deadline-time.monotonic())))
-        if plan['learner_origin'] != {'path': str(configuration), 'sha256': hashed(configuration)}:
+        if plan.get('learner_request', plan['learner_origin']) != {
+                'path': str(configuration), 'sha256': hashed(configuration)}:
             raise ValueError('GPU_prepared_actor_plan_has_different_learner_configuration')
         actors = submit(plan_file, memory_gb=actor_memory_gb)
         result = {'GPU_job_id': job, 'actors': actors, 'plan_sha256': hashed(plan_file)}

@@ -24,7 +24,9 @@ from .loss import SegmentSample
 from .segment_inputs import frame_key
 
 
-def recorded_targets(segment: dict[str, Any]) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+def recorded_targets(
+    segment: dict[str, Any], *, gae_lambda: float = 0.99,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """CPU only. Every current/forced/tail value belongs to this segment's mu.
 
     Unlike the historical reader below this never receives a learned model and
@@ -79,7 +81,8 @@ def recorded_targets(segment: dict[str, Any]) -> tuple[torch.Tensor, torch.Tenso
         if not bool(valid[:, terminal["class"]].all()):
             raise ValueError("terminal_before_observed_floor")
     targets, advantages = categorical_lambda_targets(
-        probabilities, tail, terminal_class=terminal["class"] if terminal is not None else None
+        probabilities, tail, terminal_class=terminal["class"] if terminal is not None else None,
+        gae_lambda=gae_lambda
     )
     return probabilities, targets, advantages
 

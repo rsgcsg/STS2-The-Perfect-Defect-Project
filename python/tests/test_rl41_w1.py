@@ -863,27 +863,14 @@ def test_complete_batch_stages_each_dtype_once_and_keeps_CPU_owner(model, monkey
         assert all(t.device.type == "meta" for t in group.joint.tensors.values())
 
 
-def test_compile_loss_switch_traces_one_full_tensor_region(model, monkeypatch):
-    import stpd.rl.loss as module
-
-    actual = torch.compile
-    calls = []
-
-    def cpu_compile(function, **options):
-        calls.append(options)
-        return actual(function, backend="eager", **options)
-
-    monkeypatch.setattr(torch, "compile", cpu_compile)
-    monkeypatch.setattr(module, "_compiled_segment_loss", None)
+def test_prepared_compile_candidate_is_retired_after_G0(model):
     batch = ready(model, [segment(model)])
-    result = prepared_update(
-        model,
-        torch.optim.AdamW(model.parameters(), lr=4e-5),
-        batch.minibatches[0],
-        config=LossConfig(mode="ppo", value_coef=0.2, entropy_coef=0.01),
-        performance=PerformanceConfig(compile_loss=True),
-    )
-    assert result["stepped"] and calls == [{"fullgraph": True, "dynamic": True}]
+    optimizer = torch.optim.AdamW(model.parameters(), lr=4e-5)
+    with pytest.raises(ValueError, match="compile_retired_after_G0"):
+        prepared_update(model, optimizer, batch.minibatches[0],
+            config=LossConfig(mode="ppo", value_coef=.2, entropy_coef=.01),
+            performance=PerformanceConfig(compile_loss=True))
+    assert not optimizer.state
 
 
 def test_bf16_on_CPU_is_explicitly_rejected_without_a_precision_fallback(model):
@@ -940,3 +927,15 @@ def test_late_auxiliary_snapshot_survives_source_retirement_and_rejects_wrong_bi
     finally:
         preparer.shutdown()
         exchange.release_hot_payload(current_ref, "test")
+
+
+def test_configured_lambda_reaches_prepared_targets_from_recorded_mu(model):
+    value = segment(model, rows=2)
+    value["bootstrap"]["outcome_probabilities"] = [0.] * 49 + [1., 0.]
+    compiler = FrameCompiler(model.vocabulary)
+    spec = input_spec(model.vocabulary, runtime_projection(model.vocabulary))
+    one_step = prepare_source(value, compiler, spec, gae_lambda=0)
+    full_trace = prepare_source(value, compiler, spec, gae_lambda=1)
+    assert torch.equal(one_step.targets[0], one_step.probabilities[1])
+    assert full_trace.targets[:, 49].eq(1).all()
+    assert not torch.equal(one_step.raw_advantages, full_trace.raw_advantages)

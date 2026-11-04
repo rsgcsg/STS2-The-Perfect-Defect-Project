@@ -10,9 +10,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-from spireagent.rl_contracts import HotPayloadRef, RowRef, RunSequence
 from torch import Tensor
 
+from spireagent.rl_contracts import HotPayloadRef, RowRef, RunSequence
 from stpd.p1.tensor_input import JointNodes, TensorFrame
 
 
@@ -33,7 +33,7 @@ class AuxiliarySelection:
     kind: Literal["terminal", "hp"]
     label: float
     uses_before: int
-    use_limit: int  # terminal 2, HP 1; reserve until successful update
+    use_limit: int  # configured total successful uses; admission does not charge a use
 
 
 @dataclass(frozen=True)
@@ -60,12 +60,13 @@ class AuxiliaryFrame:
 class PrepareRequest:
     identity: RunSequence  # sequence is dataset number
     members: tuple[BatchMember, ...]
-    auxiliary: tuple[AuxiliarySelection, ...]  # <=128 terminal + <=128 HP
-    minibatch_rows: tuple[tuple[int, ...], ...]  # four exhaustive disjoint PPO partitions
+    auxiliary: tuple[AuxiliarySelection, ...]  # configured per-head selection
+    minibatch_rows: tuple[tuple[int, ...], ...]  # exhaustive disjoint PPO partitions
     auxiliary_minibatches: tuple[int, ...]  # one minibatch index per selected aux row
     compiler_identity: dict[str, Any]
     selection_rng_state: tuple[Any, ...]
     max_output_bytes: int  # current + next bounded by original learner owner
+    epochs: int = 1
 
 
 @dataclass(frozen=True)
@@ -93,6 +94,10 @@ class PreparedMinibatch:
     terminal_rows: int
     hp_rows: int  # denominators across groups, not per microbatch
     tensors: dict[str, Tensor] = field(default_factory=dict)
+    # Only multi-epoch requests need new masks: exhausted aux rows stop learning
+    # while PPO rows retain their frozen targets and dataset normalization.
+    epoch_auxiliary: tuple[dict[str, Tensor], ...] = ()
+    epoch_auxiliary_counts: tuple[tuple[int, int], ...] = ()
 
 
 @dataclass(frozen=True)

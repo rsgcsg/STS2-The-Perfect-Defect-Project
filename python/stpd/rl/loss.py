@@ -14,7 +14,6 @@ from typing import TYPE_CHECKING, Any
 
 import torch
 from torch.nn import functional as F
-from torch.utils.checkpoint import checkpoint
 
 from spireagent.json_boundary import BoundaryError
 from stpd.p1.execution import microbatches
@@ -68,6 +67,7 @@ def batched_segment_loss(
     td_rows: int,
     terminal_rows: int,
     hp_rows: int,
+    policy_coef: float = 1.0,
 ) -> tuple[torch.Tensor, torch.Tensor, tuple[torch.Tensor, ...], torch.Tensor]:
     """One tensor calculation for the entire optimizer batch, without row/group loops.
 
@@ -106,7 +106,7 @@ def batched_segment_loss(
         else logits.new_zeros(())
     )
     components = (
-        policy - entropy_coef * entropy,
+        policy_coef * policy - entropy_coef * entropy,
         value_coef * td,
         terminal_coef * terminal,
         hp_coef * hp_loss,
@@ -125,9 +125,6 @@ def batched_segment_loss(
     )
 
 
-_compiled_segment_loss: Any = None
-
-
 def prepared_update(
     model: MStd,
     optimizer: torch.optim.Optimizer,
@@ -136,23 +133,21 @@ def prepared_update(
     config: LossConfig,
     performance: PerformanceConfig,
     target_kl: float = 0.03,
-    terminal_coef: float = 0.1,
-    hp_coef: float = 0.1,
     gpu_lock: Any = None,
     diagnostics: bool = False,
 ) -> dict[str, Any]:
-    """Prepared tensors -> one batched loss/backward -> one pre-step decision.
+    """One optimizer minibatch, with physical groups as a memory parameter.
 
-    Each encoder group is recomputed during backward so activations from all
-    groups do not accumulate. Loss is evaluated once after concatenating their
-    outputs. There is one D2H decision (loss/outputs/norm/KL) before Adam;
-    no per-row probability tensors, finite checks, item() or GPU scalar branches.
+    A full group needs one forward/backward. Smaller groups accumulate gradients
+    with the same minibatch denominators, then share one clip/KL/Adam decision.
+    No encoder graph survives into the next group and no forward is recomputed.
     """
     from contextlib import nullcontext
 
-    from .performance import prepare_models
+    from .performance import prepared_precision
 
-    global _compiled_segment_loss
+    if performance.compile_loss:
+        raise ValueError("prepared_loss_compile_retired_after_G0")
     began = time.perf_counter()
     device = model.ids.weight.device
     if minibatch.tensors["targets"].device != device:
@@ -160,82 +155,60 @@ def prepared_update(
     lock = gpu_lock if gpu_lock is not None else nullcontext()
     optimizer.zero_grad(set_to_none=True)
     original_mode = model.training
-    model.eval()  # no dropout/id masking in the acting/PPO function; autograd stays on
+    model.eval()
+    phases = dict.fromkeys(("forward", "loss", "diagnostics", "backward",
+                           "norm_and_decision", "optimizer"), 0.0)
+    diagnostic = _PreparedGradientDiagnostics(model) if diagnostics else None
     try:
         t = minibatch.tensors
-        with lock, prepare_models(model, model, performance):
-            forward_started = time.perf_counter()
-            outputs = [
-                checkpoint(model.forward_prepared_rl4, group, use_reentrant=False)
-                for group in minibatch.groups
-            ]
-            width = t["old_probabilities"].shape[1]
-            scores = torch.cat(
-                [
-                    F.pad(
-                        row[0],
-                        (0, width - row[0].shape[1]),
-                        value=-torch.inf if group.policy else 0,
-                    )
-                    for row, group in zip(outputs, minibatch.groups, strict=True)
-                ]
-            )
-            logits = torch.cat([row[1] for row in outputs])
-            hp = torch.cat([row[2] for row in outputs])
-            forward_finished = time.perf_counter()
-            loss_function = batched_segment_loss
-            if performance.compile_loss:
-                if _compiled_segment_loss is None:
-                    _compiled_segment_loss = torch.compile(
-                        batched_segment_loss, fullgraph=True, dynamic=True
-                    )
-                loss_function = _compiled_segment_loss
-            loss, totals, components, dynamic_valid = loss_function(
-                scores,
-                logits,
-                hp,
-                t,
-                clip=config.clip,
-                entropy_coef=config.entropy_coef,
-                value_coef=config.value_coef,
-                terminal_coef=terminal_coef,
-                hp_coef=hp_coef,
-                multi=minibatch.policy_rows,
-                td_rows=minibatch.td_rows,
-                terminal_rows=minibatch.terminal_rows,
-                hp_rows=minibatch.hp_rows,
-            )
-            loss_finished = time.perf_counter()
-            diagnostic_values = None
-            if diagnostics:
-                diagnostic_values = _prepared_gradient_diagnostics(
-                    model,
-                    components,
-                    (
-                        minibatch.policy_rows,
-                        minibatch.td_rows,
-                        minibatch.terminal_rows,
-                        minibatch.hp_rows,
-                    ),
-                )
-            backward_started = time.perf_counter()
-            loss.backward()
-            backward_finished = time.perf_counter()
+        totals = t["targets"].new_zeros(8)
+        dynamic_valid = torch.ones((), device=device, dtype=torch.bool)
+        offset = 0
+        with lock, prepared_precision(model, performance):
+            for group in minibatch.groups:
+                phase = time.perf_counter()
+                scores, logits, hp = model.forward_prepared_rl4(group)
+                scores = F.pad(scores, (0, t["old_probabilities"].shape[1] - scores.shape[1]),
+                               value=-torch.inf if group.policy else 0)
+                phases["forward"] += time.perf_counter() - phase
+                rows = len(group.rows)
+                group_tensors = {key: value[offset:offset + rows]
+                                 for key, value in t.items() if not key.endswith("_indices")}
+                offset += rows
+                phase = time.perf_counter()
+                loss, partial, components, valid = batched_segment_loss(
+                    scores, logits, hp, group_tensors, clip=config.clip,
+                    entropy_coef=config.entropy_coef, value_coef=config.value_coef,
+                    policy_coef=config.policy_coef,
+                    terminal_coef=config.terminal_coef, hp_coef=config.hp_coef,
+                    multi=minibatch.policy_rows, td_rows=minibatch.td_rows,
+                    terminal_rows=minibatch.terminal_rows, hp_rows=minibatch.hp_rows)
+                totals = totals + partial.detach()
+                dynamic_valid = dynamic_valid & valid
+                phases["loss"] += time.perf_counter() - phase
+                if diagnostic is not None:
+                    phase = time.perf_counter()
+                    diagnostic.add(components, (minibatch.policy_rows, minibatch.td_rows,
+                                               minibatch.terminal_rows, minibatch.hp_rows))
+                    phases["diagnostics"] += time.perf_counter() - phase
+                phase = time.perf_counter()
+                loss.backward()
+                phases["backward"] += time.perf_counter() - phase
+                # Metric-only branches are not traversed by loss.backward().
+                # Drop their small graphs before the next encoder allocation.
+                del loss, partial, components, valid, scores, logits, hp
+            phase = time.perf_counter()
+            diagnostic_values = diagnostic.result(totals) if diagnostic is not None else None
             norm = torch.nn.utils.clip_grad_norm_(model.parameters(), config.max_grad_norm)
-            # Reverse KL may be +inf when recorded mu has true zero mass. It is
-            # diagnostic, unlike PPO's selected-action ratio, and is not rejected.
-            valid = (
-                dynamic_valid
-                & torch.isfinite(norm)
-                & torch.isfinite(totals[[0, 1, 2, 3, 4, 6, 7]]).all()
-            )
-            decision = torch.cat(
-                (totals.detach().float(), norm.detach().float()[None], valid.float()[None])
-            )
+            valid = (dynamic_valid & torch.isfinite(norm)
+                     & torch.isfinite(totals[[0, 1, 2, 3, 4, 6, 7]]).all())
+            decision = torch.cat((totals.detach().float(), norm.detach().float()[None],
+                                  valid.float()[None]))
             if diagnostic_values is not None:
                 decision = torch.cat((decision, diagnostic_values))
-            measured = decision.cpu().tolist()  # the single pre-step device synchronization
-            decision_finished = time.perf_counter()
+            measured = decision.cpu().tolist()  # one pre-step device synchronization
+            phases["norm_and_decision"] += time.perf_counter() - phase
+            phase = time.perf_counter()
             if not measured[9]:
                 optimizer.zero_grad(set_to_none=True)
                 raise ValueError("non_finite_prepared_outputs_loss_or_gradient")
@@ -244,7 +217,7 @@ def prepared_update(
                 optimizer.zero_grad(set_to_none=True)
             else:
                 optimizer.step()
-            step_finished = time.perf_counter()
+            phases["optimizer"] += time.perf_counter() - phase
         result = {
             "stepped": not stopped,
             "kl_stopped": stopped,
@@ -272,12 +245,7 @@ def prepared_update(
             "hp_rows": minibatch.hp_rows,
             "seconds": time.perf_counter() - began,
             "host_timing": {
-                "forward": forward_finished - forward_started,
-                "loss": loss_finished - forward_finished,
-                "diagnostics": backward_started - loss_finished,
-                "backward": backward_finished - backward_started,
-                "norm_and_decision": decision_finished - backward_finished,
-                "optimizer": step_finished - decision_finished,
+                **phases,
             },
         }
         if result["acting_kl_infinite"]:
@@ -302,49 +270,51 @@ def prepared_update(
         model.train(original_mode)
 
 
-def _prepared_gradient_diagnostics(
-    model: MStd, components: tuple[torch.Tensor, ...], counts: tuple[int, ...]
-) -> torch.Tensor:
-    """Occasional weighted-head gradients, read with the same pre-step decision."""
-    trunk = [
-        p
-        for name, p in model.named_parameters()
-        if p.requires_grad and not name.startswith("rl4_heads.")
-    ]
-    parts: list[list[torch.Tensor]] = []
-    reachable: set[int] = set()
-    for index, count in enumerate(counts):
-        gradients = (
-            torch.autograd.grad(components[index], trunk, retain_graph=True, allow_unused=True)
-            if count
-            else (None,) * len(trunk)
-        )
-        parts.append(
-            [
-                gradient.detach() if gradient is not None else torch.zeros_like(parameter)
-                for gradient, parameter in zip(gradients, trunk, strict=True)
-            ]
-        )
-        if index:
-            reachable.update(i for i, gradient in enumerate(gradients) if gradient is not None)
-    shared = sorted(reachable)
-    norms = [
-        torch.stack([part[i].square().sum() for i in shared]).sum().sqrt()
-        if shared
-        else components[0].new_zeros(())
-        for part in parts
-    ]
-    auxiliary = [sum((part[i] for part in parts[1:]), torch.zeros_like(trunk[i])) for i in shared]
-    aux_norm = (
-        torch.stack([g.square().sum() for g in auxiliary]).sum().sqrt()
-        if shared
-        else components[0].new_zeros(())
-    )
-    dot = sum(
-        ((g * parts[0][i]).sum() for i, g in zip(shared, auxiliary, strict=True)),
-        components[0].new_zeros(()),
-    )
-    return torch.stack((*norms, aux_norm, dot)).detach().float()
+
+class _PreparedGradientDiagnostics:
+    """Accumulate occasional per-head trunk gradients across physical groups."""
+
+    def __init__(self, model: MStd) -> None:
+        self.trunk = [p for name, p in model.named_parameters()
+                      if p.requires_grad and not name.startswith("rl4_heads.")]
+        self.parts: list[list[torch.Tensor | None]] = [[None] * len(self.trunk) for _ in range(4)]
+        self.reachable: set[int] = set()
+
+    def add(self, components: tuple[torch.Tensor, ...], counts: tuple[int, ...]) -> None:
+        for index, count in enumerate(counts):
+            if not count:
+                continue
+            gradients = torch.autograd.grad(components[index], self.trunk,
+                                             retain_graph=True, allow_unused=True)
+            for position, gradient in enumerate(gradients):
+                if gradient is None:
+                    continue
+                if index:
+                    self.reachable.add(position)
+                current = self.parts[index][position]
+                if current is None:
+                    self.parts[index][position] = gradient.detach().clone()
+                else:
+                    current.add_(gradient.detach())
+
+    def result(self, reference: torch.Tensor) -> torch.Tensor:
+        shared = sorted(self.reachable)
+        if not shared:
+            return reference.new_zeros(6)
+        parts: list[list[torch.Tensor]] = []
+        for source in self.parts:
+            row = []
+            for i in shared:
+                gradient = source[i]
+                row.append(gradient if gradient is not None else torch.zeros_like(self.trunk[i]))
+            parts.append(row)
+        norms = [torch.stack([g.square().sum() for g in part]).sum().sqrt() for part in parts]
+        auxiliary = [sum((part[i] for part in parts[1:]), torch.zeros_like(parts[0][i]))
+                     for i in range(len(shared))]
+        aux_norm = torch.stack([g.square().sum() for g in auxiliary]).sum().sqrt()
+        dot = sum(((g * parts[0][i]).sum() for i, g in enumerate(auxiliary)),
+                  reference.new_zeros(()))
+        return torch.stack((*norms, aux_norm, dot)).detach().float()
 
 @dataclass(frozen=True)
 class RlSample:
@@ -373,11 +343,20 @@ class LossConfig:
     value_coef: float = 0.0
     entropy_coef: float = 0.0
     gradient_diagnostics: bool = False
+    policy_coef: float = 1.0
+    terminal_coef: float = 0.1
+    hp_coef: float = 0.1
 
     def __post_init__(self) -> None:
         if (type(self.gradient_diagnostics) is not bool or self.mode not in {"legacy", "ppo"}
                 or any(type(v) not in (int, float) or not math.isfinite(v) or v < 0
-                       for v in (self.value_coef, self.entropy_coef))):
+                       for v in (self.value_coef, self.entropy_coef, self.policy_coef,
+                                 self.terminal_coef, self.hp_coef, self.kl_coef, self.anchor_coef))
+                or type(self.clip) not in (int, float) or not 0 < self.clip <= 1
+                or type(self.max_grad_norm) not in (int, float)
+                or not math.isfinite(self.max_grad_norm) or self.max_grad_norm <= 0
+                or type(self.rho_max) not in (int, float)
+                or not math.isfinite(self.rho_max) or self.rho_max <= 0):
             raise BoundaryError("rl_loss", "invalid_PPO_configuration")
 
 

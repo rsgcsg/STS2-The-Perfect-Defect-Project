@@ -15,7 +15,9 @@ from stpd.rl.performance import PerformanceConfig
 from stpd.rl.prepared_batch import AuxiliarySelection
 
 
-def test_four_head_means_and_coefficients_exclude_forced_policy_and_padding():
+@pytest.mark.parametrize("coefficients", [(1., .2, .1, .1), (.4, .5, .2, .7)])
+def test_four_head_means_and_coefficients_exclude_forced_policy_and_padding(coefficients):
+    policy_coef, value_coef, terminal_coef, hp_coef = coefficients
     scores = torch.tensor([[math.log(0.6), math.log(0.4)], [0.0, 0.0], [0.0, 0.0], [0.0, 0.0]])
     logits = torch.zeros((4, 51), requires_grad=True)
     hp = torch.zeros(4, requires_grad=True)
@@ -41,9 +43,10 @@ def test_four_head_means_and_coefficients_exclude_forced_policy_and_padding():
         t,
         clip=0.2,
         entropy_coef=0.01,
-        value_coef=0.2,
-        terminal_coef=0.1,
-        hp_coef=0.1,
+        policy_coef=policy_coef,
+        value_coef=value_coef,
+        terminal_coef=terminal_coef,
+        hp_coef=hp_coef,
         multi=1,
         td_rows=2,
         terminal_rows=1,
@@ -55,7 +58,8 @@ def test_four_head_means_and_coefficients_exclude_forced_policy_and_padding():
     assert float(totals[1]) == pytest.approx(-1.0)
     assert float(totals[2]) == pytest.approx(entropy)
     assert float(totals[7]) == pytest.approx(0.037)
-    assert float(loss) == pytest.approx(-1 - 0.01 * entropy + 0.3 * math.log(51) + 0.1 * 0.037)
+    assert float(loss) == pytest.approx(-policy_coef - 0.01 * entropy
+        + (value_coef + terminal_coef) * math.log(51) + hp_coef * 0.037)
 
 
 def test_impossible_classes_and_padded_candidates_have_no_probability_mass(model):
@@ -131,33 +135,38 @@ def test_old_row_loss_is_retired():
         segment_update()
 
 
-def test_encoder_groups_release_saved_activations_before_whole_minibatch_loss(model, monkeypatch):
-    """A microbatch must bound live encoder activations, not just forward width."""
-    import stpd.rl.loss as module
-
+def test_encoder_groups_accumulate_once_and_release_before_next_forward(model, monkeypatch):
+    """Group size bounds saved activations without an extra recomputation pass."""
     batch = ready(model, [segment(model, forced=False)])
     minibatch = batch.minibatches[0]
     assert len(minibatch.groups) > 1
     static = {p.untyped_storage().data_ptr() for p in model.parameters()}
     for group in minibatch.groups:
         static.update(t.untyped_storage().data_ptr() for t in group.tensors.values())
-    retained = []
-    original = module.batched_segment_loss
+    live = 0
+
+    class Saved:
+        def __init__(self, tensor):
+            nonlocal live
+            self.tensor = tensor.detach()
+            self.counted = tensor.untyped_storage().data_ptr() not in static
+            live += int(self.counted)
+
+        def __del__(self):
+            nonlocal live
+            live -= int(self.counted)
+
+    original = model.forward_prepared_rl4
     observed = []
 
-    def loss(*args, **kwargs):
-        observed.append(sum(t.numel() * t.element_size() for t in retained
-                            if t.untyped_storage().data_ptr() not in static))
-        return original(*args, **kwargs)
+    def forward(group):
+        observed.append(live)
+        return original(group)
 
-    def pack(tensor):
-        retained.append(tensor)
-        return tensor
-
-    monkeypatch.setattr(module, "batched_segment_loss", loss)
-    with torch.autograd.graph.saved_tensors_hooks(pack, lambda tensor: tensor):
+    monkeypatch.setattr(model, "forward_prepared_rl4", forward)
+    with torch.autograd.graph.saved_tensors_hooks(Saved, lambda value: value.tensor):
         result = prepared_update(model, torch.optim.AdamW(model.parameters(), lr=4e-5),
             minibatch, config=LossConfig(mode="ppo", value_coef=.2, entropy_coef=.01),
             performance=PerformanceConfig())
     assert result["stepped"]
-    assert observed == [0]  # encoder graphs have not retained any intermediate tensor
+    assert observed == [0] * len(minibatch.groups)

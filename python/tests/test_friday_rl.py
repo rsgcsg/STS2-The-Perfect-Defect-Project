@@ -555,11 +555,13 @@ def test_initial_array_submit_unknown_keeps_intent_without_a_second_offer(rl, in
 
 
 @pytest.mark.parametrize(
-    "external, stop_at_creation, actor_count",
-    [(False, False, 56), (True, False, 48), (True, False, 8), (True, False, 7), (True, True, 32)]
+    "external, stop_at_creation, actor_count, steps",
+    [(False, False, 56, 64), (True, False, 48, 64), (True, False, 8, 64),
+     (True, False, 7, 64), (True, True, 32, 64), (True, False, 8, 48),
+     (True, False, 11, 48)]
 )
 def test_gpu_owner_hands_transient_auth_to_original_cpu_submission_only(
-    rl, inputs, tmp_path, monkeypatch, external, stop_at_creation, actor_count
+    rl, inputs, tmp_path, monkeypatch, external, stop_at_creation, actor_count, steps
 ):
     """No Slurm/GPU: real prepare serializer, stubbed numerical/scheduler owners."""
     from spireagent import resource_slot
@@ -569,13 +571,13 @@ def test_gpu_owner_hands_transient_auth_to_original_cpu_submission_only(
 
     execution, configuration, actors = inputs
     learning = json.loads(configuration.read_bytes())
-    learning['segments'] = {'steps': 64, 'inference_batch': 32}
+    learning['segments'] = {'steps': steps, 'inference_batch': 32}
     learning['actor_defaults']['behavior']['uniform_mix'] = 0
     configuration.write_text(json.dumps(learning))
     from stpd.rl.segments import SegmentConfig
 
     config = LearnerConfig(run=learning['run'], peer=learning['peer'], device='cuda',
-        segments=SegmentConfig(), wall_seconds=3600)
+        segments=SegmentConfig(steps=steps), wall_seconds=3600)
     monkeypatch.setattr(LearnerConfig, 'read', lambda _: config)
     monkeypatch.setattr(resource_slot, 'require_managed_slot', lambda: None)
     monkeypatch.setattr(rl, 'require_modules', lambda _: None)
@@ -591,7 +593,7 @@ def test_gpu_owner_hands_transient_auth_to_original_cpu_submission_only(
         def __init__(self, config, work, io):
             self.pool = SimpleNamespace(environment=lambda: {AUTH_ENV: capability})
             (work/'inference.json').write_text(json.dumps({'schema': SEGMENT_SCHEMA,
-                'segment_steps': 64, 'pool_id': 'synthetic', 'address': ['127.0.0.1', 1234]}))
+                'segment_steps': steps, 'pool_id': 'synthetic', 'address': ['127.0.0.1', 1234]}))
 
         def run(self):
             calls.append('run')
@@ -607,7 +609,8 @@ def test_gpu_owner_hands_transient_auth_to_original_cpu_submission_only(
 
     monkeypatch.setattr(segment_learner, 'SegmentLearner', NumericalOwner)
     monkeypatch.setattr(rl, 'submit', submitted)
-    if actor_count < 8:
+    episode_capacity = 128 // steps * steps
+    if actor_count * episode_capacity < 1024:
         with pytest.raises(ValueError, match='bounded_segment_actor_count'):
             rl.learn(configuration, work, execution, actors, actors=actor_count,
                      seed_namespace='synthetic-new-seeds', external_submit=external)
@@ -631,6 +634,14 @@ def test_gpu_owner_hands_transient_auth_to_original_cpu_submission_only(
     assert rl.learn(configuration, work, execution, actors, actors=actor_count,
                     seed_namespace='synthetic-new-seeds',
                     external_submit=external) == {'updates': 0}
+    effective = json.loads((work/'learner-config.json').read_bytes())
+    assert effective['segments']['capacity_rows'] == 1024 + actor_count * steps
+    assert not set(effective['performance'] or {}) & {'packed', 'tensor_cache', 'joint_nodes'}
+    plan = rl.load_plan(actors/'plan.json')
+    assert plan['learner_origin'] == {'path': str(work/'learner-config.json'),
+                                      'sha256': rl.hashed(work/'learner-config.json')}
+    assert plan['learner_request'] == {'path': str(configuration),
+                                       'sha256': rl.hashed(configuration)}
     assert calls == (['run'] if external else ['submit', 'run'])
     assert os.environ[AUTH_ENV] == 'prior-capability'
 

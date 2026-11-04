@@ -24,6 +24,20 @@
 | **修复/审查总在换Agent后重新调查**；工程协作 | 已有当前任务、原解法和非作者review机制；新窗口不会带来新授权或重新获得时间预算。 | 先查本表原件，按[任务与恢复](AI_COLLABORATION.md#resuming-without-selecting-an-obsolete-task)、[复用/新开规则](AI_COLLABORATION.md#reuse-or-start-a-worker)继续同一有界结果。 | **原执行者处理修复/补证/返工**；独立问题或必要非作者审查才另开。先亲核差异与证据，再集成；不因换上下文重跑全库/重置截止。 摘要仅线索，恢复走CURRENT唯一任务及AI原五项核查；父任务未验收/未到截止，主管不以派发或恢复报告结束职责。 |
 | **复用环境仍漏全门前置**；执行环境→所选门 | root工作区Node与Python独立公开Node consumer不同；TMP放进Git树会改变非Git fixture的寻根结果。 | 复用[原doctor](../python/tools/doctor.py)、[Python锁](../python/package-lock.json)及[governance fixture](../tools/check-governance.test.mjs)，分别核root/consumer pins、实际installed内容和非Git TMP。 | **保两次环境失败原件，按12入口盘清requires/provides再选完整门**；不以能import ML证明全部环境齐，不改断言/路由求绿，不重建整套依赖。当前证据只从[CURRENT](memory/CURRENT.md)进入。 |
 
+## RL4.1：旧加速选项在 prepared 训练上的去向（2026-11-04）
+
+G0真实批表明组大小受attention area先限制；不是把旧开关全部打开就会更快。
+当前默认由[原RL接口SOP](../python/docs/RL_ACTOR_LEARNER.zh-CN.md#一个正式配置和生效开关)和`python/configs/rl41.json`负责。
+下面仍按原四种实现状态；退役代码从Git取回，不新增平行状态登记。
+
+| 旧选项 / 原问题 | prepared路径实际状态及复用边界 |
+|---|---|
+| packed、tensor_cache、joint_nodes | **只读**旧row实现配置。prepared固定CPU构造完整joint/tensor元数据，不把三个旧bool当训练加速按钮 |
+| device_cache、reference_device_cache、async_transfer、precompile_inputs | **只读**旧row/reference缓存配置。新路径完整PreparedBatch按dtype slab一次stage；每批owned CPU输入与next共限1GiB |
+| bucket、defer_sync | **只读**旧row重排与同步配置；prepared用冻结partition、整minibatch分母和一次pre-step决定 |
+| deduplicate_text、组行数、scene/text area、precision、tf32 | **默认**由唯一profile的六个实际字段选择；小显存缩组是同一逐组梯度累加实现的参数，FP32只作不支持BF16的已授权检查等明确备选 |
+| compile_loss、checkpoint重算 | G0已选BF16 eager、无checkpoint；compile稳态无收益且冷编约31s，live true明确拒绝，额外实现已退役；G0历史收据保留 |
+
 ## 10-25 至 10-27 收口增量：按原问题复用，不扩大资格
 
 下面承接Q3末尾和F最终报告要求迁入的条目。完整原失败/版本/分母仍见原报告；各M编号是查找键，**“已修”仅指所述实现/工具**，不授Managed整局或真人研究资格。[本轮事实收据](evidence/CONVERGENCE_BASELINE_20261027.md)定位原Q2/Q3/F/X1/X2报告，未修部分进[原待办](plans/CONVERGENCE_BASELINE_20261027.zh-CN.md#待修与重构去向)。

@@ -107,8 +107,7 @@ def convert_legacy_checkpoint(config: LearnerConfig, package: Path, work: Path, 
         start_model_sha256=None, resume_checkpoint=converted.artifact_id,
         resume_source=producer.to_dict())
     work.mkdir(parents=True, exist_ok=True)
-    target.write_text(json.dumps({"schema": "stpd/rl-learner-config-1",
-                                 **asdict(continuation)}, indent=2) + "\n")
+    target.write_text(json.dumps(continuation.frozen(), indent=2) + "\n")
     result = {"original_checkpoint": original.artifact_id, "original_sha256": payload.sha256,
         "converted_checkpoint": converted.artifact_id, "config": str(target),
         "counters": asdict(cp.counters), "optimizer_calls": 0, "World_calls": 0}
@@ -120,6 +119,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--work", type=Path, required=True)
+    parser.add_argument("--actors", type=int,
+                        help="bind dataset + actors*steps capacity for CP16 conversion")
     parser.add_argument("--initialize-only", action="store_true",
                         help="publish the exact warmed start and full CP; no actors or SGD")
     parser.add_argument("--convert-cp16-package", type=Path,
@@ -131,7 +132,10 @@ def main() -> None:
         if not args.source_generation or not args.conversion_generation:
             parser.error("conversion requires --source-generation and --conversion-generation")
         os.umask(0o077)
-        print(json.dumps(convert_legacy_checkpoint(LearnerConfig.read(args.config),
+        conversion_config = LearnerConfig.read(args.config)
+        if args.actors is not None:
+            conversion_config = conversion_config.bind_actors(args.actors)
+        print(json.dumps(convert_legacy_checkpoint(conversion_config,
             args.convert_cp16_package, args.work.resolve(),
             source_generation=args.source_generation,
             conversion_generation=args.conversion_generation)))
