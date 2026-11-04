@@ -200,7 +200,10 @@ exec "$actor_root/env/bin/python" "$source_root/tools/friday/allocation.py" \
 
 
 def submit(plan_path: Path, *, constraint: str | None = None,
-           dry_run: bool = False, begin: str | None = None) -> dict[str, Any]:
+           dry_run: bool = False, begin: str | None = None,
+           partition: str = 'smp', exclude_nodes: list[str] | None = None) -> dict[str, Any]:
+    if partition not in {'smp', 'general', 'debug'}:
+        raise ValueError('supported_Friday_CPU_partition_required')
     # Slurm owns the timer; this is an earliest start, not a resource reservation.
     if begin is not None:
         parsed = datetime.fromisoformat(begin)
@@ -220,9 +223,9 @@ def submit(plan_path: Path, *, constraint: str | None = None,
         if (root / 'submission-intent.json').exists():
             raise ValueError('previous_evaluation_submission_requires_owner_reconciliation')
         idle = sum(int(line.split('/')[1]) for line in scheduler.output(
-            ['sinfo', '-h', '-p', 'smp', '-o', '%C']).splitlines())
+            ['sinfo', '-h', '-p', partition, '-o', '%C']).splitlines())
         queued = len(scheduler.output(
-            ['squeue', '-h', '-p', 'smp', '-t', 'PD', '-o', '%i']).splitlines())
+            ['squeue', '-h', '-p', partition, '-t', 'PD', '-o', '%i']).splitlines())
         if capacity(idle, queued, plan['workers']) < plan['workers']:
             raise ValueError('requested_evaluation_workers_exceed_current_fair_share')
         script = root / 'launch.sh'
@@ -230,18 +233,22 @@ def submit(plan_path: Path, *, constraint: str | None = None,
         script.chmod(0o700)
         logs = private_root(root / 'slurm')
         minutes = (plan['wall_seconds'] + 300 + 59) // 60
-        command = ['sbatch', '--parsable', '--partition=smp', '--nodes=1', '--ntasks=1',
+        if partition == 'debug' and minutes > 60 or partition == 'general' and minutes > 1440:
+            raise ValueError('evaluation_exceeds_CPU_partition_wall_limit')
+        command = ['sbatch', '--parsable', '--partition=' + partition, '--nodes=1', '--ntasks=1',
                    f"--cpus-per-task={plan['workers']}", f"--mem={4 * plan['workers']}G",
                    f'--time={minutes}', '--no-requeue', '--signal=B:USR1@300',
                    f'--job-name={job_name}', f'--output={logs}/%j.out',
                    f'--error={logs}/%j.err']
         if constraint:
             command.append('--constraint=' + constraint)
+        if exclude_nodes:
+            command.append('--exclude=' + ','.join(exclude_nodes))
         if begin is not None:
             command.append('--begin=' + begin)
         command.append(str(script))
         result = {'schema': 'spireagent/friday-evaluation-submit-v1',
-                  'idle_smp_cores': idle, 'queued_smp_jobs': queued,
+                  'idle_smp_cores': idle, 'queued_smp_jobs': queued, 'partition': partition,
                   'cores': plan['workers'], 'command': command, 'dry_run': dry_run,
                   'earliest_begin_local': begin, 'scheduler_start_guaranteed': False}
         if not dry_run:
@@ -487,6 +494,11 @@ def run(plan_path: Path, *, on_stop: Callable[[], None] | None = None) -> dict[s
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest='command', required=True)
+    export_parser = commands.add_parser('export-checkpoint')
+    export_parser.add_argument('--learner-config', type=Path, required=True)
+    export_parser.add_argument('--checkpoint', required=True)
+    export_parser.add_argument('--output', type=Path, required=True)
+    export_parser.add_argument('--construction-package', type=Path)
     prepare_parser = commands.add_parser('prepare')
     prepare_parser.add_argument('--execution', type=Path, required=True)
     prepare_parser.add_argument('--output', type=Path, required=True)
@@ -510,12 +522,27 @@ def main():
         command = commands.add_parser(name)
         command.add_argument('--plan', type=Path, required=True)
         if name == 'submit':
+            command.add_argument('--partition', choices=('smp', 'general', 'debug'), default='smp')
+            command.add_argument('--exclude-node', action='append', dest='exclude_nodes')
             command.add_argument('--constraint')
             command.add_argument('--dry-run', action='store_true')
             command.add_argument('--begin', help='earliest start ISO8601 with timezone; no reservation')
     args = parser.parse_args()
     os.umask(0o077)
-    if args.command == 'prepare':
+    if args.command == 'export-checkpoint':
+        from spireagent.source import source_identity
+        from spireagent.storage.config import open_peer
+        from spireagent.workbench.global_evidence_store import publish_detached_p1_model
+        from stpd.evaluation.rl_checkpoint import export_checkpoint
+        config = json.loads(args.learner_config.read_bytes())
+        store = open_peer(config['peer'])
+        result = export_checkpoint(store, args.checkpoint, args.output.resolve(),
+                                   construction_package=args.construction_package)
+        manifest = publish_detached_p1_model(store, Path(result['package_directory']),
+            source_identity(Path(__file__).resolve().parents[2] / 'python'))
+        result['model_artifact_id'] = manifest.artifact_id
+        save(args.output / 'checkpoint-binding.json', result)
+    elif args.command == 'prepare':
         pairs = [value.split('=', 1) for value in args.selection]
         if any(len(pair) != 2 or not all(pair) for pair in pairs):
             parser.error('--selection requires label=selection')
@@ -531,7 +558,8 @@ def main():
             observation_report=args.observation_report, unknown_policy=args.unknown_policy)
     elif args.command == 'submit':
         result = submit(args.plan.resolve(), constraint=args.constraint,
-                        dry_run=args.dry_run, begin=args.begin)
+                        dry_run=args.dry_run, begin=args.begin,
+                        partition=args.partition, exclude_nodes=args.exclude_nodes)
     else:
         result = run(args.plan.resolve())
     print(json.dumps(result, sort_keys=True))

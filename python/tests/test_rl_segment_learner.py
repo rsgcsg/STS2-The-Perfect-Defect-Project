@@ -448,3 +448,27 @@ def test_zero_auxiliary_rows_disables_selection_from_nonempty_pool(tmp_path, mon
         assert not selected["terminal"] and not selected["hp"]
     finally:
         cleanup(owner)
+
+
+def test_CP_export_uses_exact_raw_theta_without_learning_or_auxiliary_heads(tmp_path, monkeypatch):
+    from stpd.evaluation.rl_checkpoint import export_checkpoint
+    from stpd.p1.export import action_weights, load_model
+    config, io = configuration(tmp_path, monkeypatch)
+    owner = SegmentLearner(config, tmp_path / "owner", io)
+    deliver(owner, actor="a")
+    deliver(owner, actor="b")
+    assert owner._prepare()
+    owner._step()
+    expected = action_weights(owner.model.state_dict())
+    owner.run(initialize_only=True)
+    record, _ = read_cp(owner)
+    binding = export_checkpoint(owner.exchange.store, record["checkpoint_artifact_id"],
+                                tmp_path / "evaluation")
+    from pathlib import Path
+    model, _ = load_model(Path(binding["package_directory"]) / "model.tensor-tree",
+                          binding["model_sha256"])
+    assert_tree(model.state_dict(), expected)
+    assert not any(k.startswith("rl4_heads.") for k in model.state_dict())
+    assert binding["updates"] == 1 and binding["weights"] == "raw"
+    assert binding["checkpoint_artifact_id"] == record["checkpoint_artifact_id"]
+    assert owner.exchange.latest_checkpoint(training_generation=owner.generation) == record
