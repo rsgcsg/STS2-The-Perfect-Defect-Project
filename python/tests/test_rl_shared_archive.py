@@ -249,6 +249,122 @@ def test_owned_archive_drain_does_not_scan_or_copy_another_producers_intent(
     assert second.drain(timeout=2, owned=True)["full_readback"]
 
 
+@pytest.mark.parametrize("owned", [False, True])
+def test_input_chain_is_archived_in_sequence_before_random_manifest_roots(
+        tmp_path, monkeypatch, owned):
+    from spireagent.storage import async_archive as module
+
+    offer = Archive.offer
+    monkeypatch.setattr(Archive, "offer",
+                        lambda owner, key, raw, **_: offer(owner, key, raw, start=False))
+    binding, hot, remote = peers(tmp_path)
+    exchange = Exchange(binding, "archive-order")
+    records, previous = [], None
+    for sequence in range(1, 4):
+        record = exchange.append_input(
+            {"operation": "episode_open", "actor": f"actor{sequence}", "episode": "episode"},
+            {"admitted": True}, sequence=sequence, previous=previous, producer=PRODUCER)
+        records.append(record)
+        previous = record["input_artifact_id"]
+    archive, original_keys = hot.archive, hot.archive.queue.keys
+
+    def reversed_listing(prefix):
+        if prefix != "pending/":
+            return original_keys(prefix)
+        assert not owned, "owned service cannot list the global queue"
+        return tuple(reversed(original_keys(prefix)))
+
+    monkeypatch.setattr(archive.queue, "keys", reversed_listing)
+    roots = []
+    original_copy = module.copy_artifact
+
+    def checked_copy(source, target, identity, **options):
+        if identity in {r["input_artifact_id"] for r in records}:
+            number = next(i for i, r in enumerate(records) if r["input_artifact_id"] == identity)
+            if number:
+                assert target.get_manifest(records[number - 1]["input_artifact_id"])
+            roots.append(identity)
+        return original_copy(source, target, identity, **options)
+
+    monkeypatch.setattr(module, "copy_artifact", checked_copy)
+    assert archive.step(owned=owned) > 0
+    assert roots == [record["input_artifact_id"] for record in records]
+    restored = Exchange(binding["archive"], exchange.run)
+    assert restored.input_records(0) == records
+    assert [restored.read_input(record) for record in records] == [
+        exchange.read_input(record) for record in records]
+
+
+def test_missing_pending_metadata_requires_a_completed_receipt(tmp_path, monkeypatch):
+    _, hot, _ = peers(tmp_path)
+    archive = hot.archive
+    key = "exchange/test/original.json"
+    archive.source.blobs.put_if_absent(key, b"{}")
+    identity = archive.offer(key, b"{}", start=False)
+    get = archive.queue.get
+    raced = False
+
+    def complete_during_metadata_read(path):
+        nonlocal raced
+        if path == f"pending/{identity}.json" and not raced:
+            raced = True
+            archive._copy(identity)
+            raise StoreError("object_not_found")
+        return get(path)
+
+    monkeypatch.setattr(archive.queue, "get", complete_during_metadata_read)
+    assert archive.step(owned=True) == 0 and archive.last_error is None
+    assert archive.target.blobs.get(key) == b"{}"
+
+    other = "exchange/test/missing.json"
+    archive.source.blobs.put_if_absent(other, b"{}")
+    missing = archive.offer(other, b"{}", start=False)
+    (archive.queue.root / "pending" / f"{missing}.json").unlink()
+    assert archive.step(owned=True) == 0
+    assert archive.last_error["code"] == "object_not_found"
+    assert archive.last_error["pending"] == missing
+
+
+def test_archive_metadata_ordering_respects_deadline_before_copy(tmp_path, monkeypatch):
+    from spireagent.storage import async_archive as module
+
+    _, hot, _ = peers(tmp_path)
+    archive = hot.archive
+    for i in range(6):
+        archive.offer(f"exchange/test/{i}.json", b"{}", start=False)
+    clock, copied, get = [0.], [], archive.queue.get
+    monkeypatch.setattr(module.time, "monotonic", lambda: clock[0])
+
+    def slow_metadata(key):
+        clock[0] += .02
+        return get(key)
+
+    monkeypatch.setattr(archive.queue, "get", slow_metadata)
+    monkeypatch.setattr(archive, "_copy", lambda identity: copied.append(identity))
+    assert archive.step(deadline=.03) == 0 and not copied
+    assert clock[0] == pytest.approx(.04)
+
+
+@pytest.mark.parametrize("key,code", [(None, "invalid_object_key"), (7, None),
+                                     ("", "invalid_object_key"), ("a/../escape", "nonportable_object_key")])
+def test_archive_ordering_retains_original_object_key_boundary(tmp_path, key, code):
+    import json
+
+    _, hot, _ = peers(tmp_path)
+    archive = hot.archive
+    identity = archive.offer("exchange/test/original.json", b"{}", start=False)
+    path = archive.queue.root / "pending" / f"{identity}.json"
+    task = json.loads(path.read_bytes())
+    task["key"] = key
+    path.write_text(json.dumps(task))
+    assert archive.step(owned=True) == 0
+    if code is None:
+        assert archive.last_error["error_type"] == "TypeError"
+    else:
+        assert archive.last_error["code"] == code
+    assert archive.last_error["pending"] == identity and path.exists()
+
+
 def _archive_background_process(connection, root, target, label):
     """Actual immutable Store and OS locks; report metadata scans across processes."""
     archive = Archive(root, target)
