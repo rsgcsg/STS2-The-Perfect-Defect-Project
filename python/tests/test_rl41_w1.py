@@ -793,6 +793,23 @@ def test_snapshot_has_owned_storage_and_publication_stays_off_owner(tmp_path, mo
         owner.pending_publication = None
         owner.latest_snapshot = None
         assert owner.version == 0
+        # Owned CP weights/EMA are views into one slab per dtype. deepcopy of
+        # every view clones the complete slab for every parameter (GiB per CP).
+        checkpoint = owner._learning_state()
+
+        def no_tensor_deepcopy(_tensor, _memo):
+            raise AssertionError("checkpoint_encoding_must_not_clone_owned_tensor_storage")
+
+        with monkeypatch.context() as boundary:
+            boundary.setattr(torch.Tensor, "__deepcopy__", no_tensor_deepcopy)
+            raw = encode_state(checkpoint)
+        restored = decode_state(raw)
+        for field in ("weights", "optimizer", "ema"):
+            assert_tree(getattr(restored, field), getattr(checkpoint, field))
+        assert_tree(restored.rng.torch_rng, checkpoint.rng.torch_rng)
+        assert_tree(restored.rng.cuda_rng, checkpoint.rng.cuda_rng)
+        assert restored.identity == checkpoint.identity
+        assert restored.counters == checkpoint.counters
     finally:
         owner.close()
 

@@ -7,11 +7,12 @@ import math
 
 import pytest
 import torch
+from test_rl41_w1 import model as model
+from test_rl41_w1 import ready, segment
+
 from stpd.rl.loss import LossConfig, batched_segment_loss, prepared_update, segment_update
 from stpd.rl.performance import PerformanceConfig
 from stpd.rl.prepared_batch import AuxiliarySelection
-from test_rl41_w1 import model as model
-from test_rl41_w1 import ready, segment
 
 
 def test_four_head_means_and_coefficients_exclude_forced_policy_and_padding():
@@ -128,3 +129,35 @@ def test_dynamic_nan_prevents_Adam_and_does_not_leave_gradients(model, monkeypat
 def test_old_row_loss_is_retired():
     with pytest.raises(ValueError, match="retired_use_prepared_update"):
         segment_update()
+
+
+def test_encoder_groups_release_saved_activations_before_whole_minibatch_loss(model, monkeypatch):
+    """A microbatch must bound live encoder activations, not just forward width."""
+    import stpd.rl.loss as module
+
+    batch = ready(model, [segment(model, forced=False)])
+    minibatch = batch.minibatches[0]
+    assert len(minibatch.groups) > 1
+    static = {p.untyped_storage().data_ptr() for p in model.parameters()}
+    for group in minibatch.groups:
+        static.update(t.untyped_storage().data_ptr() for t in group.tensors.values())
+    retained = []
+    original = module.batched_segment_loss
+    observed = []
+
+    def loss(*args, **kwargs):
+        observed.append(sum(t.numel() * t.element_size() for t in retained
+                            if t.untyped_storage().data_ptr() not in static))
+        return original(*args, **kwargs)
+
+    def pack(tensor):
+        retained.append(tensor)
+        return tensor
+
+    monkeypatch.setattr(module, "batched_segment_loss", loss)
+    with torch.autograd.graph.saved_tensors_hooks(pack, lambda tensor: tensor):
+        result = prepared_update(model, torch.optim.AdamW(model.parameters(), lr=4e-5),
+            minibatch, config=LossConfig(mode="ppo", value_coef=.2, entropy_coef=.01),
+            performance=PerformanceConfig())
+    assert result["stepped"]
+    assert observed == [0]  # encoder graphs have not retained any intermediate tensor

@@ -1,7 +1,7 @@
-# RL4.1 I1：真实 CP 已转换，恢复后更新待验
+# RL4.1 I1：恢复后SGD已通过，内存修复待提交
 
-用户11-04续派I1；已提交候选d22f39ca在Friday新隔离release部署，真实CP16完整读回并保留学习状态转换。CPU单路短测新增8次可恢复更新（362→370），μ采用和同World只换learner已见证，但换代后未继续SGD，整链未通过。三次原attempt及失败分母保留，0 unknown另有2 save_failed；失败原件已由原Store完整读回保全，未改判。
-本地已修loopback换代、Runtime64收据错报63及CLI旧counts输出，待Claude提交后重绑BOM/pins并另版补验；没有热改远端d22。CPU短测已结束，无GPU/长训及活动World；不自动进入G1/H1或重投原意图。接口、四种实现状态及SOP见[RL SOP](../../python/docs/RL_ACTOR_LEARNER.zh-CN.md)，冻结范围见[F0](../plans/RL4.1/F0-INTERFACES.md)。
+用户11-04续跑2；f213bd9c已在Friday新隔离release用全新seed补验：真实CP16从362更新到374保存，只换learner、同actor/World继续至388正常退出，385更新CP已在R2完整读回，未决episode/lease均0。全部短测在40分钟内结束、GPU0、无活动作业；本轮18World中的15unknown和1save_failed原样保留，另1saved/1censored，未重投旧意图。
+内存大头是CP对共享slab逐Tensor deepcopy及整minibatch叠加encoder图；源码已改浅展开编码和按组重算，CPU实形状、回归及非作者复核通过，未提交/未部署真实链。另对齐Friday Evidence37依赖并在bootstrap核实际consumer导入。唯一下一步由Claude提交并重绑候选、接回原卡G1准备，不自动开G1/H1或GPU；预算不重置。接口、四种状态及SOP见[RL SOP](../../python/docs/RL_ACTOR_LEARNER.zh-CN.md)，冻结范围见[F0](../plans/RL4.1/F0-INTERFACES.md)。
 
 ## 原轮结果与剩余授权
 

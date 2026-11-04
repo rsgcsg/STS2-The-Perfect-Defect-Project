@@ -13,9 +13,10 @@ from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 
 import torch
-from spireagent.json_boundary import BoundaryError
 from torch.nn import functional as F
+from torch.utils.checkpoint import checkpoint
 
+from spireagent.json_boundary import BoundaryError
 from stpd.p1.execution import microbatches
 from stpd.p1.input import Frame
 from stpd.p1.model import MStd
@@ -142,8 +143,9 @@ def prepared_update(
 ) -> dict[str, Any]:
     """Prepared tensors -> one batched loss/backward -> one pre-step decision.
 
-    Physical encoder groups bound memory. Loss is evaluated once after concatenating
-    their outputs. There is one D2H decision (loss/outputs/norm/KL) before Adam;
+    Each encoder group is recomputed during backward so activations from all
+    groups do not accumulate. Loss is evaluated once after concatenating their
+    outputs. There is one D2H decision (loss/outputs/norm/KL) before Adam;
     no per-row probability tensors, finite checks, item() or GPU scalar branches.
     """
     from contextlib import nullcontext
@@ -163,7 +165,10 @@ def prepared_update(
         t = minibatch.tensors
         with lock, prepare_models(model, model, performance):
             forward_started = time.perf_counter()
-            outputs = [model.forward_prepared_rl4(group) for group in minibatch.groups]
+            outputs = [
+                checkpoint(model.forward_prepared_rl4, group, use_reentrant=False)
+                for group in minibatch.groups
+            ]
             width = t["old_probabilities"].shape[1]
             scores = torch.cat(
                 [

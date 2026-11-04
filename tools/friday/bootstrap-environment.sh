@@ -33,9 +33,11 @@ F2_UV="$F2_ROOT/bootstrap/bin/uv"
 "$F2_UV" pip freeze --python "$F2_ROOT/env/bin/python" > "$F2_ROOT/evidence/environment-freeze.txt"
 "$F2_ROOT/env/bin/python" - <<'PY'
 import json,sys,torch,tokenizers,platform
+from importlib.metadata import version
+from sts2_platform_evidence.global_agent_session_run_evidence import LiveGlobalReplay, audit_global_session
 assert sys.version_info[:3]==(3,11,5)
 assert torch.__version__=='2.13.0+cpu' and torch.version.cuda is None
 assert tokenizers.__version__=='0.22.2'
-print(json.dumps({'python':sys.version,'torch':torch.__version__,'tokenizers':tokenizers.__version__,'cuda':torch.version.cuda,'machine':platform.machine()}))
+print(json.dumps({'python':sys.version,'torch':torch.__version__,'tokenizers':tokenizers.__version__,'cuda':torch.version.cuda,'machine':platform.machine(),'evidence':version('rsgcsg-sts2-platform-evidence')}))
 PY
 sha256sum "$SCRIPT_DIR/requirements-cpu.txt" "$F2_ROOT/evidence/environment-freeze.txt"

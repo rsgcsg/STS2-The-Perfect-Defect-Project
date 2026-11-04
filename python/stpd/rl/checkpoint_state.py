@@ -11,7 +11,7 @@ import copy
 import hashlib
 import json
 from collections import defaultdict
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass, fields, is_dataclass
 from typing import Any
 
 import torch
@@ -213,7 +213,16 @@ def validate_optimizer_order(
 def encode_state(checkpoint: SelfContainedCheckpoint) -> bytes:
     from stpd.workers.checkpoint_codec import encode_checkpoint
 
-    return encode_checkpoint({"schema": SCHEMA, **asdict(checkpoint)})
+    # _learning_state already owns immutable snapshot bytes. asdict() deepcopies
+    # every Tensor view independently, cloning the entire shared slab once per
+    # parameter. Convert metadata dataclasses without copying tensor storage.
+    state: dict[str, Any] = {"schema": SCHEMA}
+    for field in fields(checkpoint):
+        value = getattr(checkpoint, field.name)
+        if is_dataclass(value) and not isinstance(value, type):
+            value = {part.name: getattr(value, part.name) for part in fields(value)}
+        state[field.name] = value
+    return encode_checkpoint(state)
 
 
 def decode_state(raw: bytes) -> SelfContainedCheckpoint:

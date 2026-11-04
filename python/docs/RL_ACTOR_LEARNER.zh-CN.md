@@ -19,7 +19,7 @@ E3 是准备角色从训练中细分，其他边在原合同内替换实现。
 | E2 中央实现 | 同上 | **临时**：中央不可变 μ 集合、合批，CUDA 固定独立高优先 stream；退出条件：RL5 收卡时仍无两卡计划就退役。当前仅工程测试显式使用，单卡选本地，两卡计划获准后才考虑中央；没有自动 fallback | `segments.central_scoring=true` → `create_segment_inference_pool`；attachment `role=learner_central` 使 actor 选择 `RemoteMuScorer`；CPU 可作该实现的小测 |
 | E3 段→ready | 准入热段、已验 aux、固定成员/随机顺序/4个切点 → 完整参数无关 PreparedBatch | **临时**：CPU spawn 进程、整批 advantage 和 targets、完整 forward/loss 元数据；退出条件：I1 合入 develop 时转默认，旧主线程准备移除 | `BatchPreparer.submit`；`preparation_workers=4`、`preparation_threads=1`；`prepare_ahead=true`；`prepared_bytes=1GiB` 约束当前+下一批 |
 | E3 历史输入 | 原 artifact/compiled input pack → 不可变 wire | **只读**：有界 SegmentInputs LRU；同 key 只有一个冷填充 owner，读验/等待均在共享锁外 | `SegmentInputs`；新热段不依赖 pack/cache 恢复 |
-| E4 更新 | `stage_batch` 一次后的完整批 → θ/Adam/EMA 更新及成功 uses | **默认**：整批 loss，4 minibatch × 1轮；按行 `segment_update` 仅拒绝旧调用 | `prepared_update`；KL 刹车未成功不记 uses，不补第二轮；benchmark 与 application 走同接口 |
+| E4 更新 | `stage_batch` 一次后的完整批 → θ/Adam/EMA 更新及成功 uses | **默认**：整批 loss，4 minibatch × 1轮；按行 `segment_update` 仅拒绝旧调用 | `prepared_update`；每个物理 encoder 组用 non-reentrant activation checkpoint，整 minibatch 一次 loss/backward/Adam；KL 刹车未成功不记 uses，不补第二轮；benchmark 与 application 走同接口 |
 | E4 加速 | 同上 | **临时**：BF16、loss compile；退出条件：G1 选定时，选中的转默认，其余退役；本轮 CPU 短测均关闭 | `performance.precision=bf16`、`performance.compile_loss=true`；默认 FP32 / compile关闭；不设数值等价门 |
 | E5 发布/采用 | 更新后完整 θ 快照 → 完整 model+heads μ；段边界采用，旧尾值仍用旧 μ | **默认**：CPU 后台导出/哈希/Store 发布，跳过未发送中间版；默认 actor 按 grant 按需装载 | `_schedule_publication`；`SegmentGrant.mu`；当前/旧尾值显式 retain/release；临时中央实现在后台复制冻结模板和装载设备 |
 | E6 标签 | Evidence 验证的真实终局或稳定 reward 的公开 HP → typed 标签及 exact RowRef | **默认**：Evidence-owned live verifier+绑定；全量二次 replay 仅抽样审计/评估 | `LiveGlobalReplay.verify(expected)` → 原 typed 入口；不是 observer 副本授权；审计失败追加 finding+Stop |
@@ -29,6 +29,20 @@ E3 是准备角色从训练中细分，其他边在原合同内替换实现。
 
 历史 `segments.inference_stream` 字段只读；当前实现选择由 `central_scoring` 决定，
 中央 CUDA 固定独立 stream。已移除共用训练锁/默认 stream 的中央评分，以及 forced null 分布再由 learner 补算的分支。
+
+## 内存与物理批形状
+
+`microbatch_size` 只限制物理 encoder 组；scene/text attention area 仍可能把实际组缩到1行。
+例如512节点的 padded scene，默认 `scene_attention_area=262144` 只能容纳1行；
+4行需至少 `1048576`。这不改1024 PPO行、128 terminal+128 HP、四份minibatch的成员、
+整批归一化、各头分母和一次Adam决定。各组 encoder 在 backward 重算，
+只保留全批小输出，不把全部 encoder 激活叠到一次 backward；代价是额外 forward。
+逐组梯度累积也必须沿用整 minibatch 分母，全部组结束后才裁剪、判断KL和step，当前不另开一条实现。
+
+学习状态在 `_learning_state` 已冻结为owned CPU bytes；`encode_state` 只展开dataclass元数据，
+不再对共享slab上的每个Tensor做deepcopy。原CP schema/codec与读回校验不变；
+模型、Adam、EMA、RNG和恢复计数都保留。量内存时分进程记录RSS/PSS、CP前后与forward/backward峰值，
+不要把整批行数误当microbatch，或把Slurm所有进程的高水位相加当物理常驻量。
 
 ## 冻结身份和 μ
 
@@ -49,7 +63,9 @@ boundary acquisition、step、input hash 和战斗范围，native terminal 变�
 ready、在途 lease 共用 `capacity_rows=4608`；每批至少1024行，保留整段溢出行，
 单 episode 每数据集最多128行。PPO、延迟标签、aux、prepare、reader 各自持有 hot owner；
 commit/episode_end ACK 前取得下游所需引用，用尽或淘汰释放，最后引用才删除本轮临时热 bytes。
-aux 终局≤128行、最多2次且跨2个数据集；HP≤128行、1次/1个数据集。
+每个数据集抽样的 aux 终局≤128行、最多2次且跨2个数据集；HP≤128行、1次/1个数据集。
+常驻池是另一口径：terminal最多256局、每局均匀抽最多64行；HP最多128场战斗，
+每场行数随原件变化，128行/批不是整个HP池的行数上限。
 
 输入 ACK 是原输入及完整 response 的不可变事实。ready、used、discarded_on_restore 都是后续处置，
 不改旧 accepted/unknown。断线先查原 receipt；原结果未知时不盲重投。
