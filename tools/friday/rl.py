@@ -9,6 +9,7 @@ import json
 import os
 import re
 import secrets
+import shutil
 import signal
 import subprocess
 import sys
@@ -373,12 +374,18 @@ def run(path: Path) -> dict[str, Any]:
     code = None
     error_type = error_code = None
     summary = None
+    materialization = None
     try:
+        actor_configuration = Path(ref['path'])
+        if plan.get('trajectory_encoding') == 'short-segment-1':
+            actor_configuration, materialization = materialize_actor_runtime(
+                ref, scratch, Path('/tmp') / f'spireagent-friday-runtime-{os.getuid()}')
         with ((scratch / 'actor.out').open('wb') as stdout,
               (scratch / 'actor.err').open('wb') as stderr):
             actor_process = subprocess.Popen(
                 [sys.executable, '-m', 'spireagent.workbench.rl_actor',
-                 '--config', ref['path'], '--work', str(work)], stdout=stdout, stderr=stderr)
+                 '--config', str(actor_configuration), '--work', str(work)],
+                stdout=stdout, stderr=stderr)
             code = actor_process.wait()
             evidence_only = True
         if (work / 'actor-summary.json').is_file():
@@ -408,6 +415,7 @@ def run(path: Path) -> dict[str, Any]:
             'original_summary': summary, 'scratch_retained': str(scratch),
             'actor_config_sha256': ref['sha256'], 'retry_unknown': False,
             'cross_actor_immediate_unknown_stop': False,
+            'runtime_materialization': materialization,
             'forwarded_actor_signals': forwarded_actor_signals}
         save(scratch / 'result.json', result)
         try:
@@ -419,6 +427,63 @@ def run(path: Path) -> dict[str, Any]:
             for number, handler in previous.items():
                 signal.signal(number, handler)
     return result
+
+
+def materialize_actor_runtime(reference: dict[str, str], scratch: Path,
+                              cache_root: Path) -> tuple[Path, dict[str, Any]]:
+    """Copy the exact bundled install locally before any Actor/World is offered.
+
+    Runtime/SDK/zod bytes and all normal pin checks remain unchanged. Each node
+    has one cache writer; actor execution paths are private derived inputs.
+    """
+    from spireagent.instance_lock import instance_lock
+    from spireagent.workbench.runtime_install import (
+        RUNTIME_PACKAGE,
+        validate_runtime_install,
+    )
+
+    actor = read_pinned(reference)
+    execution_path = canonical_path(Path(actor['execution']))
+    configuration = json.loads(execution_path.read_bytes())
+    runtime = canonical_path(Path(configuration['runtime_directory']))
+    pin = configuration['runtime_pin']
+    if pin.get('dependency_layout') != 'bundled_source_candidate':
+        raise ValueError('node_local_runtime_requires_complete_bundled_install')
+    digest = pin['package_content_sha256']
+    if not isinstance(digest, str) or not re.fullmatch('[a-f0-9]{64}', digest):
+        raise ValueError('pinned_runtime_content_required')
+    source_modules = runtime.parent.parent.parent
+    if source_modules / RUNTIME_PACKAGE / 'dist' != runtime:
+        raise ValueError('pinned_runtime_install_layout_required')
+    root = private_root(private_root(cache_root) / digest)
+    target = canonical_path(root / 'install', existing=False)
+    with instance_lock(root / 'materialize.lock', blocking=True):
+        cached = target.exists()
+        if not cached:
+            validate_runtime_install(source_modules, pin, pin['bundled_connector_pin'])
+            stage = Path(tempfile.mkdtemp(prefix='stage-', dir=root))
+            package = stage / 'node_modules' / RUNTIME_PACKAGE
+            package.parent.mkdir(parents=True)
+            shutil.copytree(runtime.parent, package, symlinks=True)
+            validate_runtime_install(stage / 'node_modules', pin, pin['bundled_connector_pin'])
+            stage.rename(target)
+        observed = validate_runtime_install(
+            target / 'node_modules', pin, pin['bundled_connector_pin'])
+    derived_execution = scratch / 'runtime-execution.json'
+    save(derived_execution, {**configuration,
+        'runtime_directory': str(target / 'node_modules' / RUNTIME_PACKAGE / 'dist')})
+    derived_actor = scratch / 'runtime-actor.json'
+    save(derived_actor, {**actor, 'execution': str(derived_execution)})
+    receipt = {'source_actor_sha256': reference['sha256'],
+        'source_execution_sha256': hashed(execution_path),
+        'derived_actor_sha256': hashed(derived_actor),
+        'derived_execution_sha256': hashed(derived_execution),
+        'source_runtime': str(runtime),
+        'runtime_directory': str(target / 'node_modules' / RUNTIME_PACKAGE / 'dist'),
+        'cache_hit': cached, 'verified_package': observed,
+        'World_calls_during_materialization': 0}
+    save(scratch / 'runtime-materialization.json', receipt)
+    return derived_actor, receipt
 
 
 def resume_snapshot(path: Path, actor: str) -> dict[str, Any]:

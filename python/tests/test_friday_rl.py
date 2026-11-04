@@ -15,6 +15,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
+from test_runtime_install import bundled_release as bundled_release
 
 pytest.importorskip('fcntl', reason='Friday RL actors target POSIX Slurm')
 FRIDAY = Path(__file__).resolve().parents[2] / 'tools/friday'
@@ -135,6 +136,102 @@ def test_module_binding_uses_the_current_project_exchange_owner(rl, tmp_path):
     with patch.object(rl.importlib.util, 'find_spec',
                       side_effect=lambda name: SimpleNamespace(origin=str(paths[name]))):
         rl.require_modules(source)
+
+
+def test_actor_runtime_materializes_full_pinned_bundle_and_rechecks_cache(
+        rl, tmp_path, bundled_release):
+    from spireagent.package_identity import PackageIdentityError
+
+    _, package, pin = bundled_release
+    execution = tmp_path.resolve()/'execution-runtime.json'
+    original = {'runtime_directory': str(package/'dist'), 'runtime_pin': pin,
+                'peer': {'kind': 'local', 'directory': str(tmp_path/'store')}}
+    execution.write_text(json.dumps(original))
+    actor = tmp_path.resolve()/'runtime-actor-source.json'
+    configuration = {'actor': 'a', 'execution': str(execution), 'run': 'bounded-test'}
+    actor.write_text(json.dumps(configuration))
+    reference = {'path': str(actor), 'sha256': rl.hashed(actor)}
+    source_bytes = actor.read_bytes(), execution.read_bytes()
+    cache = tmp_path.resolve()/'node-cache'
+    for number in range(2):
+        scratch = tmp_path.resolve()/f'worker-{number}'
+        scratch.mkdir()
+        derived, receipt = rl.materialize_actor_runtime(reference, scratch, cache)
+        actual = json.loads(derived.read_bytes())
+        actual_execution = json.loads(Path(actual['execution']).read_bytes())
+        assert {k: v for k, v in actual.items() if k != 'execution'} == {
+            k: v for k, v in configuration.items() if k != 'execution'}
+        assert {k: v for k, v in actual_execution.items() if k != 'runtime_directory'} == {
+            k: v for k, v in original.items() if k != 'runtime_directory'}
+        assert receipt['cache_hit'] is bool(number)
+        assert (receipt['verified_package']['package_content_sha256']
+                == pin['package_content_sha256'])
+        assert receipt['derived_actor_sha256'] == rl.hashed(derived)
+        assert receipt['World_calls_during_materialization'] == 0
+    assert (actor.read_bytes(), execution.read_bytes()) == source_bytes
+    target = Path(actual_execution['runtime_directory']).parent
+    assert (target/'node_modules/zod/package.json').is_file()
+    (target/'dist/cli.js').write_text('modified cache')
+    scratch = tmp_path.resolve()/'worker-bad'
+    scratch.mkdir()
+    with pytest.raises(PackageIdentityError, match='content differs'):
+        rl.materialize_actor_runtime(reference, scratch, cache)
+    assert not (scratch/'runtime-actor.json').exists()
+
+
+def test_normal_worker_passes_materialized_configuration_before_any_actor_offer(
+        rl, inputs, tmp_path, bundled_release, monkeypatch):
+    _, package, pin = bundled_release
+    execution, _, _ = inputs
+    base = json.loads(execution.read_bytes())
+    base.update(runtime_directory=str(package/'dist'), runtime_pin=pin)
+    execution.write_text(json.dumps(base))
+    plan, path = prepared(rl, inputs, actors=1)
+    inference = {'schema': 'synthetic-inference'}
+    attachment = path.parent/'inference.json'
+    attachment.write_text(json.dumps(inference))
+    plan.update(trajectory_encoding='short-segment-1',
+        inference={'path': str(attachment), 'sha256': rl.hashed(attachment)})
+    ref = plan['actors'][0]
+    actor_path = Path(ref['path'])
+    actor = json.loads(actor_path.read_bytes())
+    actor['segments'] = {'inference': inference}
+    actor_path.write_text(json.dumps(actor))
+    ref['sha256'] = rl.hashed(actor_path)
+    path.write_text(json.dumps(plan))
+    monkeypatch.setattr(rl, 'require_modules', lambda _: None)
+    monkeypatch.setattr(rl.sys, 'platform', 'linux')
+    monkeypatch.setenv('SLURM_JOB_ID', 'synthetic')
+    monkeypatch.setenv('SLURM_CPUS_PER_TASK', '1')
+    monkeypatch.setenv('SLURM_ARRAY_TASK_ID', '0')
+    materialize = rl.materialize_actor_runtime
+    monkeypatch.setattr(rl, 'materialize_actor_runtime',
+        lambda reference, scratch, _cache: materialize(
+            reference, scratch, tmp_path.resolve()/'isolated-cache'))
+    observed = []
+    real_popen = rl.subprocess.Popen
+
+    def start(command, **options):
+        if 'spireagent.workbench.rl_actor' not in command:
+            return real_popen(command, **options)
+        actual = Path(command[command.index('--config')+1])
+        assert actual != actor_path
+        private = json.loads(actual.read_bytes())
+        local = json.loads(Path(private['execution']).read_bytes())
+        assert local['runtime_directory'] != str(package/'dist')
+        observed.append(actual)
+        work = Path(command[command.index('--work')+1])
+        (work/'actor-summary.json').write_text(json.dumps({
+            'schema': 'spireagent/rl-actor-summary-1', 'actor': ref['actor'],
+            'run': plan['run'], 'status': 'stopped_before_offer', 'games': []}))
+        return SimpleNamespace(wait=lambda: 0, poll=lambda: 0)
+
+    monkeypatch.setattr(rl.subprocess, 'Popen', start)
+    result = rl.run(path)
+    assert len(observed) == 1
+    assert result['runtime_materialization']['verified_package']['package_content_sha256'] == pin[
+        'package_content_sha256']
+    assert result['actor_config_sha256'] == ref['sha256']
 
 
 def test_submit_reuses_F2_gate_and_fc430_single_core_array(rl, inputs, tmp_path):
