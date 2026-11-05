@@ -103,6 +103,8 @@ class LearnerConfig:
     deadline_at: float | None = None
     # Operational window, independent of CP16's immutable learning-run identity.
     operating_budget: dict[str, Any] | None = None
+    # Explicitly link a completed operating window; ordinary restore cannot reset it.
+    operating_budget_parent: dict[str, Any] | None = None
     seed: int = 1
     anchor: dict[str, Any] | None = None
     # Explicit full learner checkpoint artifact id to continue this run from

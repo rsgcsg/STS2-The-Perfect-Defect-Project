@@ -19,10 +19,19 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import submit as scheduler
-from batch import capacity, hashed, private_root, read_pinned, save, snapshot
+from batch import (
+    capacity,
+    hashed,
+    private_root,
+    publish_exclusive,
+    read_pinned,
+    save,
+    snapshot,
+)
 
 if TYPE_CHECKING:
     from spireagent.workbench.evaluation_ledger import EvaluationLedger
+
 
 SCHEMA = "spireagent/friday-evaluation-v1"
 RETENTION = {"tier": "trajectory", "purpose": "evaluation", "audit_every": 50}
@@ -172,6 +181,16 @@ def load_plan(path: Path) -> dict[str, Any]:
                     'package_sha256'] != binding['model_sha256']):
             raise ValueError('checkpoint_evaluation_model_binding_changed')
     return value
+
+
+def prepare_learning_curve_manifest(game_directory: Path, output: Path) -> dict[str, Any]:
+    """Use the exact shipped version, including its v prefix; never guess a version."""
+    from stpd.evaluation.suites import rl3_learning_curve_manifest
+
+    release = json.loads((game_directory / 'release_info.json').read_bytes())
+    manifest = rl3_learning_curve_manifest(release['version'])
+    save(output, manifest)
+    return manifest
 
 
 def prepare_checkpoint(configuration: Path, checkpoint: str, execution_path: Path,
@@ -585,14 +604,13 @@ def run(plan_path: Path, *, on_stop: Callable[[], None] | None = None) -> dict[s
     if (root / 'STOP').exists():
         return {'status': 'stopped', 'reason': 'stop_requested', 'new_games': 0}
     # One plan gets one allocation owner. Lost jobs are reconciled, never rerun as new games.
-    descriptor = os.open(root / 'owner.json', os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    if (root / 'owner.json').exists():
+        raise FileExistsError(root / 'owner.json')
     scratch = Path(tempfile.mkdtemp(prefix='spireagent-friday-evaluation-')).resolve()
     scratch.chmod(0o700)
-    with os.fdopen(descriptor, 'wb') as owner:
-        owner.write(json.dumps({'job_id': os.environ['SLURM_JOB_ID'], 'scratch': str(scratch),
-                                'plan_sha256': hashed(plan_path)}).encode())
-        owner.flush()
-        os.fsync(owner.fileno())
+    publish_exclusive(root / 'owner.json',
+        {'job_id': os.environ['SLURM_JOB_ID'], 'scratch': str(scratch),
+         'plan_sha256': hashed(plan_path)})
     ledger = create_ledger(plan, scratch / 'ledger')
     ledger_prepared_seconds = time.monotonic() - process_began
     selected = tuple(row['slot_id'] for row in ledger.plan['slots'][:plan['selected_limit']])
@@ -702,6 +720,9 @@ def run(plan_path: Path, *, on_stop: Callable[[], None] | None = None) -> dict[s
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest='command', required=True)
+    manifest_parser = commands.add_parser('prepare-manifest')
+    manifest_parser.add_argument('--game-directory', type=Path, required=True)
+    manifest_parser.add_argument('--output', type=Path, required=True)
     projection_parser = commands.add_parser('project-report')
     projection_parser.add_argument('--result', type=Path, required=True)
     projection_parser.add_argument('--plan', type=Path, required=True)
@@ -753,7 +774,9 @@ def main():
             command.add_argument('--begin', help='earliest start ISO8601 with timezone; no reservation')
     args = parser.parse_args()
     os.umask(0o077)
-    if args.command == 'project-report':
+    if args.command == 'prepare-manifest':
+        result = prepare_learning_curve_manifest(args.game_directory, args.output)
+    elif args.command == 'project-report':
         result = project_observation_report(args.result, args.plan, args.output)
     elif args.command == 'export-checkpoint':
         from spireagent.source import source_identity

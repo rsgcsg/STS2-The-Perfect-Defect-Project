@@ -287,6 +287,7 @@ def _resume_config(value: dict[str, Any]) -> dict[str, Any]:
         "wall_seconds",
         "deadline_at",
         "operating_budget",
+        "operating_budget_parent",
         "max_versions",
         "resume_checkpoint",
         "resume_source",
@@ -382,25 +383,36 @@ class SegmentLearner:
             self._read_checkpoint(config.resume_checkpoint) if config.resume_checkpoint else None
         )
         cp_deadline = restored.config.get("deadline_at") if restored is not None else None
-        if cp_deadline is not None and config.deadline_at not in {None, cp_deadline}:
-            raise BoundaryError("rl_learner", "checkpoint_deadline_cannot_be_reset")
         cp_budget = restored.config.get("operating_budget") if restored is not None else None
         budget = copy.deepcopy(config.operating_budget if config.operating_budget is not None
                                else cp_budget)
-        if budget is not None:
-            if (set(budget) != {"id", "total_seconds", "consumed_seconds"}
-                    or not isinstance(budget["id"], str)
-                    or any(type(budget[k]) not in (int, float) or not math.isfinite(budget[k])
-                           for k in ("total_seconds", "consumed_seconds"))
-                    or budget["consumed_seconds"] < 0 or not 0 < budget["total_seconds"] <= 72000):
-                raise ValueError("invalid_operating_budget")
-            if cp_budget is not None:
-                if any(budget[k] != cp_budget[k] for k in ("id", "total_seconds")):
-                    raise ValueError("checkpoint_operating_budget_cannot_be_reset")
-                budget["consumed_seconds"] = max(budget["consumed_seconds"],
-                                                  cp_budget["consumed_seconds"])
+        if budget is not None and (
+            not isinstance(budget, dict)
+            or set(budget) != {"id", "total_seconds", "consumed_seconds"}
+            or not isinstance(budget["id"], str)
+            or any(type(budget[k]) not in (int, float) or not math.isfinite(budget[k])
+                   for k in ("total_seconds", "consumed_seconds"))
+            or budget["consumed_seconds"] < 0 or not 0 < budget["total_seconds"] <= 72000
+        ):
+            raise ValueError("invalid_operating_budget")
+        new_window = bool(cp_budget and budget and cp_budget["id"] != budget["id"])
+        if new_window:
+            assert budget is not None and cp_budget is not None
+            expected_parent = {"checkpoint_artifact_id": config.resume_checkpoint,
+                               "operating_budget": cp_budget, "deadline_at": cp_deadline}
+            if (config.operating_budget_parent != expected_parent
+                    or budget["consumed_seconds"] != 0 or config.deadline_at is None):
+                raise ValueError("checkpoint_operating_budget_cannot_be_reset")
+        if (not new_window and cp_deadline is not None
+                and config.deadline_at not in {None, cp_deadline}):
+            raise BoundaryError("rl_learner", "checkpoint_deadline_cannot_be_reset")
+        if budget is not None and cp_budget is not None and not new_window:
+            if any(budget[k] != cp_budget[k] for k in ("id", "total_seconds")):
+                raise ValueError("checkpoint_operating_budget_cannot_be_reset")
+            budget["consumed_seconds"] = max(budget["consumed_seconds"],
+                                              cp_budget["consumed_seconds"])
         self.deadline_at = self.exchange.run_deadline(
-            cp_deadline if cp_deadline is not None else config.deadline_at,
+            cp_deadline if cp_deadline is not None and not new_window else config.deadline_at,
             budget_id=budget["id"] if budget is not None else None)
         self.config = replace(config, deadline_at=self.deadline_at, operating_budget=budget,
             wall_seconds=min(config.wall_seconds,

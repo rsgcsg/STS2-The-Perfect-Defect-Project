@@ -278,3 +278,24 @@ baseline_checkpoint、baseline_binding pin、baseline_batches（各批plan/resul
 `evaluate.py project-report --result ... --plan ... --output ...` 用原by-ID typed reader及P1 extractor
 只读补独立投影，绑定原result hash，不改原report/ledger。把精确observation_projection pin放进
 对应baseline batch。读回失败保持未证，不能重开该局。
+
+### 完整发布与新运营窗口
+
+Friday worker/evaluation owner以完整fsync临时字节原子不覆盖发布，既有owner永久排他；
+读者遇空、截断JSON或截断UTF-8视为尚未发布，后续观察，不据此重开旧局或停整链。
+完整但身份/哈希/schema错误仍拒绝。STOP只看存在，空STOP仍生效；mutable state/result沿原fsync原子save。
+step-id完整且指向另一job即拒绝，半成品在原ready窗口等待。
+
+H1通过后用户可明确开一个新的72000秒运营窗口，并继续同一学习状态。
+新watch配置用`previous_window_state={path,sha256}`绑定已结束的原watch state，run/peer相同、预算id不同；
+指定`learner_config.resume_checkpoint`必须属于原窗口的budget id/total/deadline和owned generation。
+原learner接收`operating_budget_parent={checkpoint_artifact_id,operating_budget,deadline_at}`明确父链接，
+完整继承θ/Adam/EMA/RNG/训练计数，μ按普通恢复重新发布，旧CP和旧窗口耗时不改。
+这只用于明确授权的新运营窗口；同窗口故障恢复仍继承已耗时间，禁止重置预算或deadline。
+
+评估manifest先用`evaluate.py prepare-manifest --game-directory <已部署游戏> --output <manifest.json>`
+读取原`release_info.json`的精确`version`（当前为`v0.111.0`），再交原prepare-checkpoint。
+不自行去掉/添加版本前缀，也不替换固定种子。
+`evaluation.initial_checkpoint`可指定本次长训起点CP作为首个2h周期的anchor：入场先安排其50槽，
+后续仍在7200/14400/...秒评估当前CP；首个当前点同时对CP16和该H1 anchor逐seed比较。
+这复用同一个pending/ledger/evaluation owner，不增加并行业务链；每个计划最多16workers，合计不超过已批CPU上限。

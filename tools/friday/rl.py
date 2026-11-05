@@ -23,7 +23,16 @@ from typing import Any
 
 import evaluate
 import submit as scheduler
-from batch import capacity, hashed, private_root, read_pinned, save, snapshot
+from batch import (
+    capacity,
+    hashed,
+    private_root,
+    publish_exclusive,
+    read_pinned,
+    read_published,
+    save,
+    snapshot,
+)
 
 SCHEMA = 'spireagent/friday-rl-actors-v1'
 NAME = re.compile(r'^[a-z0-9][a-z0-9-]{0,62}$')
@@ -244,7 +253,9 @@ def finished_actor_results(path: Path, plan: dict[str, Any]) -> list[dict[str, s
         owner_path = path.parent / 'actors' / ref['actor'] / 'owner.json'
         if not owner_path.is_file():
             return None
-        owner = json.loads(owner_path.read_bytes())
+        owner = read_published(owner_path)
+        if owner is None:
+            return None
         if owner.get('actor') != ref['actor'] or owner.get('plan_sha256') != plan_sha256:
             raise ValueError('finished_actor_owner_binding_changed')
         scratch = canonical_path(Path(owner['scratch']), existing=False)
@@ -255,7 +266,9 @@ def finished_actor_results(path: Path, plan: dict[str, Any]) -> list[dict[str, s
             result_path = scratch/'result.json'
             if not result_path.is_file():
                 return None
-        result = json.loads(result_path.read_bytes())
+        result = read_published(result_path)
+        if result is None:
+            return None
         summary = result.get('original_summary') or {}
         if (result.get('schema') != 'spireagent/friday-RL-result-v1'
                 or result.get('actor') != ref['actor'] or result.get('run') != plan['run']
@@ -387,14 +400,13 @@ def run(path: Path) -> dict[str, Any]:
     ref = plan['actors'][index]
     read_pinned(ref)
     persistent = private_root(root / 'actors' / ref['actor'])
-    descriptor = os.open(persistent / 'owner.json', os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    if (persistent / 'owner.json').exists():
+        raise FileExistsError(persistent / 'owner.json')
     scratch = Path(tempfile.mkdtemp(prefix='spireagent-friday-rl-')).resolve()
     scratch.chmod(0o700)
-    with os.fdopen(descriptor, 'wb') as owner:
-        owner.write(json.dumps({'actor': ref['actor'], 'job_id': os.environ['SLURM_JOB_ID'],
-                                'scratch': str(scratch), 'plan_sha256': hashed(path)}).encode())
-        owner.flush()
-        os.fsync(owner.fileno())
+    publish_exclusive(persistent / 'owner.json',
+        {'actor': ref['actor'], 'job_id': os.environ['SLURM_JOB_ID'],
+         'scratch': str(scratch), 'plan_sha256': hashed(path)})
     work = scratch / 'actor'
     work.mkdir(mode=0o700)
 
@@ -544,7 +556,9 @@ def materialize_actor_runtime(reference: dict[str, str], scratch: Path,
 def actor_accounting(path: Path) -> list[dict[str, Any]]:
     """Bind each array element to its frozen actor; don't confuse Slurm raw/display IDs."""
     plan = load_plan(path)
-    submission = json.loads((path.parent / 'submission.json').read_bytes())
+    submission = read_published(path.parent / 'submission.json')
+    if submission is None:
+        return []
     job = str(submission['job_id']).split(';')[0]
     raw = subprocess.check_output(['sacct', '-n', '-P', '-j', job,
         '--format=JobIDRaw,JobID,State,ExitCode'], text=True, timeout=15)
@@ -563,11 +577,10 @@ def actor_accounting(path: Path) -> list[dict[str, Any]]:
         raw_id, display, state, exit_code = entry[:4]
         state = state.split()[0].rstrip('+')
         owner_path = path.parent / 'actors' / ref['actor'] / 'owner.json'
-        if owner_path.exists():
-            owner = json.loads(owner_path.read_bytes())
-            if (owner.get('actor') != ref['actor'] or owner.get('job_id') != raw_id
-                    or owner.get('plan_sha256') != hashed(path)):
-                raise ValueError('terminal_actor_owner_or_submission_binding_changed')
+        owner = read_published(owner_path)
+        if owner is not None and (owner.get('actor') != ref['actor']
+                or owner.get('job_id') != raw_id or owner.get('plan_sha256') != hashed(path)):
+            raise ValueError('terminal_actor_owner_or_submission_binding_changed')
         results.append({'actor': ref['actor'], 'job_id': raw_id, 'array_job_id': display,
                         'state': state, 'exit_code': exit_code, 'terminal': state in terminal})
     return results
@@ -587,9 +600,9 @@ class ActorAllocationMonitor:
             try:
                 plans = [self.plan]
                 extras = self.plan.parent.parent / 'actor-allocations.json'
-                if extras.exists():
-                    plans.extend(Path(ref['path']) for ref in json.loads(extras.read_bytes())['plans']
-                                 if read_pinned(ref))
+                extra_plans = read_published(extras)
+                if extra_plans is not None:
+                    plans.extend(Path(ref['path']) for ref in extra_plans['plans'] if read_pinned(ref))
                 base = load_plan(self.plan)
                 for path in plans:
                     if not (path.parent / 'submission.json').exists():
@@ -747,7 +760,10 @@ def resume_snapshot(path: Path, actor: str) -> dict[str, Any]:
         raise ValueError('actor_not_in_frozen_plan')
     read_pinned(reference)
     persistent = private_root(path.parent / 'actors' / actor)
-    owner = json.loads((persistent / 'owner.json').read_bytes())
+    owner = read_published(persistent / 'owner.json')
+    if owner is None:
+        return {'actor': actor, 'copy_resumed': False, 'new_games': 0,
+                'reason': 'owner_not_published'}
     if owner['plan_sha256'] != hashed(path) or owner['actor'] != actor:
         raise ValueError('saved_actor_owner_binding_changed')
     status = subprocess.check_output(['sacct', '-n', '-P', '-j', owner['job_id'],
@@ -759,7 +775,10 @@ def resume_snapshot(path: Path, actor: str) -> dict[str, Any]:
     if not states or any(state not in terminal for state in states):
         raise ValueError('original_actor_allocation_must_be_terminal')
     scratch = Path(owner['scratch'])
-    result = json.loads((scratch / 'result.json').read_bytes())
+    result = read_published(scratch / 'result.json')
+    if result is None:
+        return {'actor': actor, 'copy_resumed': False, 'new_games': 0,
+                'reason': 'result_not_published'}
     if result['actor'] != actor or result['run'] != plan['run']:
         raise ValueError('saved_actor_result_binding_changed')
     receipt = snapshot(scratch, persistent / 'evidence')
@@ -947,13 +966,21 @@ def launch(gpu_script: Path, configuration: Path, work: Path, actors_output: Pat
                 with (root / 'srun.out').open('wb') as out, (root / 'srun.err').open('wb') as err:
                     step_process = subprocess.Popen(command, stdout=out, stderr=err)
                 step_deadline = time.monotonic() + ready_seconds
-                while not step_file.exists():
+                while True:
+                    try:
+                        step_identity = step_file.read_text().strip()
+                    except FileNotFoundError:
+                        step_identity = ''
+                    if re.fullmatch(r'[1-9][0-9]*\.[0-9]+', step_identity):
+                        if not step_identity.startswith(held_job_id + '.'):
+                            raise ValueError('exact_held_GPU_step_identity_required')
+                        break
                     if step_process.poll() is not None:
                         raise RuntimeError('held_GPU_step_ended_before_identity_reconcile_original_offer')
                     if time.monotonic() >= step_deadline:
                         raise TimeoutError('held_GPU_step_identity_unknown_reconcile_original_offer')
                     time.sleep(1)
-                job = step_file.read_text().strip()
+                job = step_identity
                 if not re.fullmatch(re.escape(held_job_id) + r'\.[0-9]+', job):
                     raise ValueError('exact_held_GPU_step_identity_required')
             save(root/'GPU-submission.json', {'job_id': job, 'at': time.time(),

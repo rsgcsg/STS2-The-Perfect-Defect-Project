@@ -1,0 +1,187 @@
+"""Original Friday publication seams: no game, scheduler offers or recovery replay."""
+import json
+import os
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from types import SimpleNamespace
+
+import pytest
+from test_friday_rl import rl as original_rl
+from test_friday_watch import watch as original_watch
+
+
+@pytest.fixture
+def rl():
+    return original_rl.__wrapped__()
+
+
+@pytest.mark.parametrize('raw', [b'', b'{"actor":', b'{"actor":"\xe4'])
+def test_live_owner_partial_bytes_wait_and_complete_foreign_owner_still_rejects(
+    rl, tmp_path, monkeypatch, raw
+):
+    plan = tmp_path/'plan.json'
+    plan.write_text('{}')
+    (tmp_path/'submission.json').write_text('{"job_id":"79"}')
+    owner = tmp_path/'actors/a/owner.json'
+    owner.parent.mkdir(parents=True)
+    owner.write_bytes(raw)
+    monkeypatch.setattr(rl, 'load_plan', lambda _: {'actors': [{'actor': 'a'}]})
+    monkeypatch.setattr(rl.subprocess, 'check_output',
+                        lambda *a, **k: '790|79_0|RUNNING|0:0\n')
+    assert rl.actor_accounting(plan)[0]['state'] == 'RUNNING'
+    owner.write_text('{"actor":"foreign","job_id":"790","plan_sha256":"bad"}')
+    with pytest.raises(ValueError, match='binding_changed'):
+        rl.actor_accounting(plan)
+
+
+def test_exclusive_publication_never_exposes_half_owner_and_never_adopts_existing(
+    rl, tmp_path, monkeypatch
+):
+    from spireagent.storage import local
+    path = tmp_path/'owner.json'
+    reached, release = threading.Event(), threading.Event()
+    original_link = os.link
+    def link(source, target):
+        assert json.loads(source.read_bytes()) == {'actor': 'a'}
+        assert not path.exists()
+        reached.set()
+        assert release.wait(5)
+        return original_link(source, target)
+    monkeypatch.setattr(local.os, 'link', link)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(rl.publish_exclusive, path, {'actor': 'a'})
+        assert reached.wait(5)
+        assert rl.read_published(path) is None
+        release.set()
+        future.result(timeout=5)
+    assert rl.read_published(path) == {'actor': 'a'}
+    with pytest.raises(FileExistsError):
+        rl.publish_exclusive(path, {'actor': 'a'})
+
+
+def test_two_distinct_workers_cannot_both_win_same_owner(rl, tmp_path):
+    path = tmp_path/'owner.json'
+    barrier = threading.Barrier(8)
+    def publish(number):
+        barrier.wait()
+        try:
+            rl.publish_exclusive(path, {'actor': str(number)})
+            return True
+        except FileExistsError:
+            return False
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        assert sum(pool.map(publish, range(8))) == 1
+    assert rl.read_published(path)['actor'] in {str(i) for i in range(8)}
+
+
+@pytest.mark.parametrize('raw', [b'', b'{"ledger_report":', b'{"x":"\xe4'])
+def test_terminal_evaluation_waits_for_result_and_snapshot_publication(tmp_path, monkeypatch, raw):
+    watch = original_watch.__wrapped__()
+    config = {'run': 'publication', 'peer': {'kind': 'local', 'directory': str(tmp_path/'store')},
+              'budget_id': 'publication-budget', 'deadline_at': 9999999999,
+              'training_seconds': 3600, 'actors': 1}
+    owner = watch.SegmentWatcher(config, tmp_path/'watch')
+    root = tmp_path/'eval'
+    root.mkdir()
+    (root/'result.json').write_bytes(raw)
+    (root/'snapshot.json').write_text('{"full_readback":true}')
+    owner.state['pending'] = {'root': str(root), 'plan': str(root/'plan.json'),
+                              'stage': 'running', 'job_id': '80'}
+    monkeypatch.setattr(watch, 'job_accounting', lambda _: {'terminal': True})
+    owner.evaluation_cohort = lambda *a: pytest.fail('unpublished result must wait')
+    owner.collect_segment_evaluation()
+    assert owner.state['stop'] is None and owner.state['pending']['stage'] == 'running'
+
+
+def test_exact_game_version_is_taken_from_shipped_release(rl, tmp_path):
+    game = tmp_path/'game'
+    game.mkdir()
+    (game/'release_info.json').write_text('{"version":"v0.111.0"}')
+    manifest = rl.evaluate.prepare_learning_curve_manifest(game, tmp_path/'manifest.json')
+    assert manifest['game_version'] == 'v0.111.0' and len(manifest['seeds']) == 100
+    (game/'release_info.json').write_text('{"version":"0.111.0"}')
+    with pytest.raises(ValueError, match='explicit exact game version'):
+        rl.evaluate.prepare_learning_curve_manifest(game, tmp_path/'bad.json')
+
+
+def test_completed_window_reference_cannot_authorize_other_window_CP(tmp_path, monkeypatch):
+    import hashlib
+    import sys
+    watch = original_watch.__wrapped__()
+    prior_cfg = {'run': 'continuation',
+                 'peer': {'kind': 'local', 'directory': str(tmp_path/'store')},
+                 'budget_id': 'h1-good', 'training_seconds': 3600, 'deadline_at': 9999990000}
+    config_file = tmp_path/'prior-config.json'
+    config_file.write_text(json.dumps(prior_cfg))
+    previous = {'active': None, 'stop': 'run_budget_complete',
+                'configuration': {'path': str(config_file),
+                                  'sha256': hashlib.sha256(config_file.read_bytes()).hexdigest()},
+                'attempts': [{'generation': 'g-good'}]}
+    state_file = tmp_path/'prior-state.json'
+    state_file.write_text(json.dumps(previous))
+    config = {**prior_cfg, 'budget_id': 'long', 'training_seconds': 72000,
+              'deadline_at': 9999999999, 'actors': 1, 'cpu_only': True,
+              'previous_window_state': {'path': str(state_file),
+                'sha256': hashlib.sha256(state_file.read_bytes()).hexdigest()}}
+    owner = watch.SegmentWatcher(config, tmp_path/'watch')
+    owner.select_checkpoint = lambda: {
+        'checkpoint_artifact_id': 'b'*64, 'deadline_at': prior_cfg['deadline_at'],
+        'training_generation': 'g-failed',
+        'operating_budget': {'id': 'failed-window', 'total_seconds': 3600,
+                             'consumed_seconds': 80}}
+    monkeypatch.setitem(sys.modules, 'rl', SimpleNamespace())
+    with pytest.raises(ValueError, match='does_not_belong'):
+        owner.start_attempt()
+    assert not owner.state['attempts']
+
+
+def test_H1_anchor_is_first_cycle_point_without_moving_two_hour_cadence(tmp_path):
+    watch = original_watch.__wrapped__()
+    config = {'run': 'anchor', 'peer': {'kind': 'local', 'directory': str(tmp_path/'store')},
+              'budget_id': 'anchor-budget', 'deadline_at': 9999999999,
+              'training_seconds': 72000, 'actors': 1,
+              'evaluation': {'initial_checkpoint': 'a'*64}}
+    owner = watch.SegmentWatcher(config, tmp_path/'watch')
+    assert owner.state['next_evaluation_seconds'] == 0
+    called = []
+    def cold(identity):
+        called.append(identity)
+        raise LookupError('anchor_selected_before_offer')
+    owner.cold_checkpoint = cold
+    with pytest.raises(LookupError, match='anchor_selected'):
+        owner.schedule_segment_evaluation()
+    assert called == ['a'*64]
+
+
+def test_no_evaluation_is_still_a_valid_optional_value(tmp_path):
+    watch = original_watch.__wrapped__()
+    config = {'run': 'no-evaluation',
+              'peer': {'kind': 'local', 'directory': str(tmp_path/'store')},
+              'budget_id': 'no-eval-budget', 'deadline_at': 9999999999,
+              'training_seconds': 3600, 'actors': 1, 'evaluation': None}
+    owner = watch.SegmentWatcher(config, tmp_path/'watch')
+    assert owner.state['next_evaluation_seconds'] == 7200
+
+
+def test_holder_waits_for_first_complete_budget_without_declaring_unlimited_hold(tmp_path):
+    import subprocess
+    import sys
+    import time
+    from pathlib import Path
+    budget = tmp_path/'budget.json'
+    budget.write_bytes(b'')
+    root = tmp_path/'holder'
+    script = Path(__file__).resolve().parents[2]/'tools/friday/gpu_session.py'
+    env = {**os.environ, 'SLURM_JOB_ID': '123'}
+    child = subprocess.Popen([sys.executable, str(script), '--root', str(root),
+                              '--budget-file', str(budget)], env=env)
+    try:
+        time.sleep(.25)
+        assert child.poll() is None and not (root/'allocation.json').exists()
+        budget.write_text('{"seconds":1}')
+        assert child.wait(timeout=5) == 0
+        assert json.loads((root/'allocation.json').read_bytes())['initial_budget_seconds'] == 1
+    finally:
+        if child.poll() is None:
+            child.kill()
+            child.wait()

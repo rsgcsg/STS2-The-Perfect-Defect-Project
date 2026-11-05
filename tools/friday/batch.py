@@ -32,9 +32,43 @@ def hashed(path: Path) -> str:
 
 def read_pinned(reference: dict[str, str]) -> Any:
     path = Path(reference["path"])
-    if path.is_symlink() or hashed(path) != reference["sha256"]:
+    if path.is_symlink():
         raise ValueError("pinned_input_changed")
-    return json.loads(path.read_bytes())
+    raw = path.read_bytes()
+    if hashlib.sha256(raw).hexdigest() != reference["sha256"]:
+        raise ValueError("pinned_input_changed")
+    return json.loads(raw)
+
+
+def read_published(path: Path) -> dict[str, Any] | None:
+    """A live publication may be absent/partial; complete objects remain strict."""
+    try:
+        raw = path.read_bytes()
+        if not raw:
+            return None
+        value = json.loads(raw)
+    except (FileNotFoundError, json.JSONDecodeError, UnicodeDecodeError):
+        return None
+    if not isinstance(value, dict):
+        raise TypeError('published_JSON_object_required')
+    return value
+
+
+def publish_exclusive(path: Path, value: Any) -> None:
+    """Complete fsynced bytes before atomic publication; every existing owner wins."""
+    from spireagent.storage.blobs import StoreError
+    from spireagent.storage.local import LocalBlobStore
+
+    if path.exists():
+        raise FileExistsError(path)
+    try:
+        created = LocalBlobStore(path.parent).put_if_absent(path.name, canonical(value))
+    except StoreError as error:
+        if error.code != 'immutable_key_collision':
+            raise
+        raise FileExistsError(path) from None
+    if not created:
+        raise FileExistsError(path)
 
 
 def private_root(path: Path) -> Path:

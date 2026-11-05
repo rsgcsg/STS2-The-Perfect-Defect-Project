@@ -747,3 +747,46 @@ def test_learner_publishes_actual_failed_and_finished_events(tmp_path, monkeypat
         second.run()
     event = second.exchange.latest_event()
     assert event["kind"] == "failed" and event["error_code"] == "injected_preparation_failure"
+
+
+def test_explicit_completed_window_link_preserves_learning_state_with_new_budget(
+    tmp_path, monkeypatch
+):
+    config, io = configuration(tmp_path, monkeypatch)
+    old_deadline = time.time()+7200
+    config = dataclasses.replace(config, deadline_at=old_deadline,
+        operating_budget={'id': 'h1-window', 'total_seconds': 3600, 'consumed_seconds': 0})
+    owner = SegmentLearner(config, tmp_path/'h1-owner', io)
+    owner.active_training_seconds = 3600
+    owner.checkpoint(final=True)
+    record, cp = read_cp(owner)
+    owner.close()
+    parent = {'checkpoint_artifact_id': record['checkpoint_artifact_id'],
+              'operating_budget': cp.config['operating_budget'], 'deadline_at': old_deadline}
+    request = dataclasses.replace(config, start_package=None,
+        resume_checkpoint=record['checkpoint_artifact_id'], deadline_at=old_deadline+72000,
+        operating_budget={'id': 'long-window', 'total_seconds': 72000, 'consumed_seconds': 0},
+        operating_budget_parent=parent,
+        segments=dataclasses.replace(config.segments, training_generation='g-long'))
+    replacement = SegmentLearner(request, tmp_path/'long-owner', io)
+    try:
+        restored = replacement._learning_state()
+        assert_tree(restored.weights, cp.weights)
+        assert_tree(restored.optimizer, cp.optimizer)
+        assert_tree(restored.ema, cp.ema)
+        assert restored.counters.updates == cp.counters.updates
+        assert restored.counters.datasets == cp.counters.datasets
+        assert restored.counters.first_use == cp.counters.first_use
+        assert restored.counters.first_use_multi == cp.counters.first_use_multi
+        assert restored.counters.mu_version == cp.counters.mu_version+1
+        assert restored.counters.published_updates == cp.counters.updates
+        assert_tree(restored.rng.torch_rng, cp.rng.torch_rng)
+        assert restored.rng.learner_random == cp.rng.learner_random
+        assert replacement.config.operating_budget['total_seconds'] == 72000
+        assert cp.config['operating_budget']['consumed_seconds'] == 3600
+        assert restored.config['operating_budget_parent'] == parent
+    finally:
+        replacement.close()
+    with pytest.raises(ValueError, match='cannot_be_reset'):
+        SegmentLearner(dataclasses.replace(request, operating_budget_parent={**parent,
+            'checkpoint_artifact_id': '0'*64}), tmp_path/'bad-window', io)

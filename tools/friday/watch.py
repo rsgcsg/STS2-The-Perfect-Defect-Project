@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any, cast
 
 import evaluate
-from batch import hashed, private_root, save
+from batch import hashed, private_root, read_published, save
 from spireagent.json_boundary import json_bytes
 from spireagent.rl_exchange import Exchange
 
@@ -432,7 +432,9 @@ class Watcher:
         if pending.get('state') == 'attention_required':
             return
         result_path = Path(pending['plan']).parent / 'result.json'
-        if result_path.exists():
+        if result_path.exists() and read_published(result_path) is None:
+            return
+        if read_published(result_path) is not None:
             if pending.get('evaluation_kind') == 'quick_natural20':
                 self.finish_natural_quick(result_path, pending)
                 return
@@ -716,7 +718,7 @@ class Watcher:
         for ref in plan['actors']:
             root = actor_root / ref['actor']
             owner_path, result_path = root / 'owner.json', root / 'result.json'
-            owner = json.loads(owner_path.read_bytes()) if owner_path.exists() else None
+            owner = read_published(owner_path)
             preserved = result_path.exists()
             if not preserved and owner is not None:
                 # rl.run seals the exit result here BEFORE its potentially long snapshot.
@@ -725,7 +727,11 @@ class Watcher:
                 if owner is not None and str(owner['job_id']) in running_jobs:
                     active.add(str(owner['job_id']))
                 continue
-            value = json.loads(result_path.read_bytes())
+            value = read_published(result_path)
+            if value is None:
+                if owner is not None and str(owner['job_id']) in running_jobs:
+                    active.add(str(owner['job_id']))
+                continue
             if value['actor'] != ref['actor'] or value['run'] != self.config['run']:
                 raise ValueError('actor_health_result_binding_changed')
             summary = value.get('original_summary') or {}
@@ -977,12 +983,22 @@ def read_segment_config(path: Path) -> dict[str, Any]:
                 or event['kind'] != 'integrity_failed' or event.get('budget_id') != value['budget_id']
                 or event['record_sha256'] != digest):
             raise ValueError('pinned_diagnosed_integrity_findings_required')
+    if value.get('previous_window_state') is not None:
+        previous = evaluate.read_pinned(value['previous_window_state'])
+        prior = evaluate.read_pinned(previous['configuration'])
+        if (previous['active'] is not None or previous['stop'] != 'run_budget_complete'
+                or prior['run'] != value['run'] or prior['peer'] != value['peer']
+                or prior['budget_id'] == value['budget_id']):
+            raise ValueError('completed_distinct_previous_operating_window_required')
     if value.get('evaluation') is not None:
         evaluation = value['evaluation']
         if (not 50 <= evaluation.get('seeds', 50) <= 100
                 or evaluation.get('seconds', 7200) != 7200
                 or evaluation.get('partition', 'general') not in {'general', 'debug', 'smp'}):
             raise ValueError('fixed_two_hour_paired_evaluation_required')
+        if (evaluation.get('initial_checkpoint') is not None
+                and evaluation['initial_checkpoint'] != base.resume_checkpoint):
+            raise ValueError('initial_evaluation_must_bind_continuation_checkpoint')
         binding = evaluate.read_pinned(evaluation['baseline_binding'])
         if binding['checkpoint_artifact_id'] != evaluation['baseline_checkpoint']:
             raise ValueError('baseline_checkpoint_model_and_result_binding_required')
@@ -1015,7 +1031,7 @@ class SegmentWatcher(Watcher):
                 raise ValueError('previous_watch_run_peer_and_budget_identity_changed')
         frozen_config = self.work / 'watch-config.json'
         if not frozen_config.exists():
-            frozen_config.write_bytes(json_bytes(config))
+            save(frozen_config, config)
         if hashed(frozen_config) != hashlib.sha256(json_bytes(config)).hexdigest():
             raise ValueError('watch_resume_configuration_changed')
         config_reference = {'path': str(frozen_config), 'sha256': hashed(frozen_config)}
@@ -1028,7 +1044,8 @@ class SegmentWatcher(Watcher):
              'unresolved_admission_generations': {},
              'blocking_integrity_findings': {},
              'configuration': config_reference,
-             'pending': None, 'evaluations': [], 'next_evaluation_seconds': 7200,
+             'pending': None, 'evaluations': [], 'next_evaluation_seconds': (
+                 0 if (config.get('evaluation') or {}).get('initial_checkpoint') else 7200),
              'protected_checkpoints': [], 'incarnation': None})
         if previous is not None:
             if any(config.get('acknowledged_integrity_events', {}).get(key) != digest
@@ -1204,6 +1221,10 @@ class SegmentWatcher(Watcher):
         from spireagent.storage.config import open_peer
         from spireagent.storage.store import copy_artifact
         from stpd.rl.learner import LearnerConfig
+        base = LearnerConfig.read(Path(self.config['learner_config']))
+        if self.config.get('previous_window_state') and not self.state['attempts']:
+            assert base.resume_checkpoint is not None
+            return self.cold_checkpoint(base.resume_checkpoint)
         records = self.exchange.checkpoint_records()
         identities = list(dict.fromkeys(r['checkpoint_artifact_id'] for r in reversed(records)))
         fallback = LearnerConfig.read(Path(self.config['learner_config'])).resume_checkpoint
@@ -1261,9 +1282,22 @@ class SegmentWatcher(Watcher):
                 rl.launch).parameters:
             raise ValueError('I1_launch_retain_capability_integration_required_before_GPU_offer')
         cp = self.select_checkpoint()
-        if cp.get('deadline_at') is not None and cp['deadline_at'] != self.config['deadline_at']:
+        new_window = bool(self.config.get('previous_window_state') and not self.state['attempts'])
+        if new_window:
+            previous = evaluate.read_pinned(self.config['previous_window_state'])
+            prior = evaluate.read_pinned(previous['configuration'])
+            generations = {g for a in previous['attempts']
+                           for g in a.get('generations', [a['generation']])}
+            budget = cp.get('operating_budget') or {}
+            if (budget.get('id') != prior['budget_id']
+                    or budget.get('total_seconds') != prior['training_seconds']
+                    or cp.get('deadline_at') != prior['deadline_at']
+                    or cp.get('training_generation') not in generations):
+                raise ValueError('checkpoint_does_not_belong_to_completed_previous_window')
+        if (not new_window and cp.get('deadline_at') is not None
+                and cp['deadline_at'] != self.config['deadline_at']):
             raise ValueError('checkpoint_deadline_cannot_be_reset')
-        if cp.get('operating_budget') is not None:
+        if cp.get('operating_budget') is not None and not new_window:
             budget = cp['operating_budget']
             if not self.state['attempts'] and not self.config.get('previous_watch_state'):
                 raise ValueError('original_watch_state_required_to_reconcile_deliveries')
@@ -1287,6 +1321,10 @@ class SegmentWatcher(Watcher):
         config = dataclasses.replace(base, resume_checkpoint=cp['checkpoint_artifact_id'],
             resume_source=cp['producer'], start_package=None, start_artifact_id=None,
             start_model_sha256=None, deadline_at=self.config['deadline_at'], wall_seconds=remaining,
+            operating_budget_parent=({
+                'checkpoint_artifact_id': cp['checkpoint_artifact_id'],
+                'operating_budget': cp['operating_budget'], 'deadline_at': cp['deadline_at']}
+                if new_window else base.operating_budget_parent),
             operating_budget={'id': self.config['budget_id'],
                 'total_seconds': self.config['training_seconds'],
                 'consumed_seconds': self.state['training_seconds']},
@@ -1431,7 +1469,9 @@ class SegmentWatcher(Watcher):
 
     def evaluation_cohort(self, plan_path: Path, result_path: Path
                           ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], bool]:
-        snapshot = json.loads((plan_path.parent / 'snapshot.json').read_bytes())
+        snapshot = read_published(plan_path.parent / 'snapshot.json')
+        if snapshot is None:
+            raise FileNotFoundError('evaluation_snapshot_not_published')
         if snapshot.get('full_readback') is not True:
             raise ValueError('evaluation_full_snapshot_readback_required')
         plan, result, files = evaluate.read_observation_report(result_path, plan_path)
@@ -1479,10 +1519,8 @@ class SegmentWatcher(Watcher):
             return
         path = Path(pending['plan'])
         result_path = path.parent / 'result.json'
-        if not result_path.exists():
-            self.state['stop'] = 'evaluation_allocation_lost_originals_require_diagnosis'
-            pending['stage'] = 'failed'
-            self.persist()
+        if (read_published(result_path) is None
+                or read_published(path.parent / 'snapshot.json') is None):
             return
         plan, result, cohort, closed = self.evaluation_cohort(path, result_path)
         binding = evaluate.read_pinned(plan['checkpoint_binding'])
@@ -1560,7 +1598,8 @@ class SegmentWatcher(Watcher):
             self.telemetry('evaluation_not_started', reason='absolute_deadline_headroom',
                            due_training_seconds=due)
             return
-        cp = self.select_checkpoint()
+        cp = (self.cold_checkpoint(cfg['initial_checkpoint'])
+              if due == 0 and cfg.get('initial_checkpoint') else self.select_checkpoint())
         if cp['checkpoint_artifact_id'] not in self.state['protected_checkpoints']:
             self.state['protected_checkpoints'].append(cp['checkpoint_artifact_id'])
         number = len(self.state['evaluations']) + 1

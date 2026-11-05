@@ -7,7 +7,6 @@ USR1 to this batch owner to release. Slurm's explicit time limit remains hard.
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import signal
 import socket
@@ -15,20 +14,37 @@ import threading
 import time
 from pathlib import Path
 
+from batch import read_published, save
+
 
 def hold(root: Path, budget_file: Path | None = None) -> int:
     job = os.environ.get('SLURM_JOB_ID')
     if not job or not job.isdigit():
         raise ValueError('existing_Slurm_allocation_required')
+    last_budget: int | None = None
+
     def seconds() -> int | None:
+        nonlocal last_budget
         if budget_file is None:
             return None
-        value = json.loads(budget_file.read_bytes())["seconds"]
+        record = read_published(budget_file)
+        if record is None:
+            return last_budget
+        value = record['seconds']
         if type(value) is not int or not 1 <= value <= 172800:
             raise ValueError('explicit_GPU_budget_seconds_required')
+        last_budget = value
         return value
 
+    began = time.monotonic()
     initial_budget = seconds()
+    # A configured but unpublished budget is not permission for an unlimited hold.
+    # Wait for its complete first publication before declaring allocation readiness.
+    while budget_file is not None and initial_budget is None:
+        if time.monotonic() - began >= 60:
+            raise TimeoutError('GPU_budget_not_published_within_startup_window')
+        time.sleep(.1)
+        initial_budget = seconds()
     root.mkdir(mode=0o700, parents=True, exist_ok=False)
     stopped = threading.Event()
     requested: list[int] = []
@@ -49,16 +65,14 @@ def hold(root: Path, budget_file: Path | None = None) -> int:
         'resource_owner': 'Slurm batch allocation',
         'GPU_load_generated': False, 'secrets_written': False}
     try:
-        (root/'allocation.json').write_text(json.dumps(receipt, indent=2)+'\n')
-        began = time.monotonic()
+        save(root/'allocation.json', receipt)
         while not stopped.is_set():
             limit = seconds()
             if limit is not None and time.monotonic() - began >= limit:
                 break
             stopped.wait(1)
     finally:
-        (root/'released.json').write_text(json.dumps(
-            {'at': time.time(), 'job_id': job, 'signals': requested})+'\n')
+        save(root/'released.json', {'at': time.time(), 'job_id': job, 'signals': requested})
         for number, handler in handlers.items():
             signal.signal(number, handler)
     return 0
