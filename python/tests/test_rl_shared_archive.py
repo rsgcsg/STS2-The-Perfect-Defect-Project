@@ -345,6 +345,36 @@ def test_archive_metadata_ordering_respects_deadline_before_copy(tmp_path, monke
     assert clock[0] == pytest.approx(.04)
 
 
+def test_order_cache_avoids_rescanning_but_does_not_cache_source_or_completion(
+        tmp_path, monkeypatch):
+    _, hot, _ = peers(tmp_path)
+    archive = hot.archive
+    key, raw = "exchange/test/original.json", b'{"immutable":"original"}'
+    archive.source.blobs.put_if_absent(key, raw)
+    identity = archive.offer(key, raw, start=False)
+    assert archive._ordered_pending([identity], None) == [identity]
+    get, reads = archive.queue.get, []
+
+    def counted(key):
+        reads.append(key)
+        return get(key)
+
+    monkeypatch.setattr(archive.queue, "get", counted)
+    assert archive._ordered_pending([identity], None) == [identity]
+    assert reads == []  # Ordering reuses immutable metadata, never R2 receipts.
+    path = archive.source.blobs._path(key)
+    path.write_bytes(b'{"changed":true}')
+    assert archive.step(owned=True) == 0
+    assert archive.last_error["code"] == "archive_source_changed"
+    assert reads == [f"pending/{identity}.json"]  # _copy reopens the real intent.
+    assert archive.status(owned=False)["pending"] == 1
+    path.write_bytes(raw)
+    assert archive.step(owned=True) == 1
+    assert archive.target.blobs.get(key) == raw
+    assert archive.step(owned=True) == 0
+    assert archive.status(owned=False)["full_readback"]
+
+
 @pytest.mark.parametrize("key,code", [
     (None, "invalid_object_key"), (7, None),
     ("", "invalid_object_key"), ("a/../escape", "nonportable_object_key")])

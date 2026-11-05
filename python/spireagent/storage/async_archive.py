@@ -14,6 +14,7 @@ import shutil
 import sys
 import threading
 import time
+from collections import OrderedDict
 from contextlib import ExitStack, suppress
 from pathlib import Path
 from typing import Any
@@ -47,6 +48,9 @@ class Archive:
         self.lock = threading.Lock()
         self.owned: set[str] = set()
         self.owned_done: set[str] = set()
+        # Immutable pending intent ordering only. Completion, payload bytes and
+        # readback remain uncached and are rechecked by _copy.
+        self.order_keys: OrderedDict[str, tuple[int, str, str]] = OrderedDict()
         self.verified_at: float | None = None
         self.last_error: dict[str, Any] | None = None
         self.capacity_snapshot: dict[str, Any] | None = None
@@ -205,7 +209,12 @@ class Archive:
             if deadline is not None and time.monotonic() >= deadline:
                 break
             receipt = self.queue.root / "completed" / f"{identity}.json"
-            if receipt.is_file():
+            with self.lock:
+                rank = self.order_keys.get(identity)
+                if rank is not None:
+                    self.order_keys.move_to_end(identity)
+            if rank is not None:
+                ranked.append(rank)
                 continue
             try:
                 task = json.loads(self.queue.get(f"pending/{identity}.json"))
@@ -222,7 +231,12 @@ class Archive:
             # Input indices already encode generation and zero-padded sequence.
             # Their previous_input DAG must be copied bottom-up, rather than
             # repeatedly discovering a long absent prefix from random SHA roots.
-            ranked.append((0, key, identity) if "/inputs/" in key else (1, identity, identity))
+            rank = (0, key, identity) if "/inputs/" in key else (1, identity, identity)
+            with self.lock:
+                self.order_keys[identity] = rank
+                if len(self.order_keys) > 16384:
+                    self.order_keys.popitem(last=False)
+            ranked.append(rank)
         return [identity for _, _, identity in sorted(ranked)]
 
     def step(self, *, deadline: float | None = None, owned: bool = False) -> int:
